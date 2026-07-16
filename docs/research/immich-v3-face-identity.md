@@ -103,7 +103,7 @@ ImmichFaceAnchor             # small rotating sample, not every face forever
 The repair loop should be conservative:
 
 1. Reconcile all current people, including hidden people. A still-present mapped person ID remains linked; name changes do not alter identity.
-2. For each event under review, derive suggested attendees from the current person IDs returned on that event's assets. De-duplicate by portal person.
+2. For each event under review, derive people suggested for attendance from the current person IDs returned on that event's assets. De-duplicate by portal person.
 3. If a mapped person ID disappears, mark the link `needs_review` and suppress suggestions from it. Do not map by name.
 4. Inspect surviving face anchors. If several known face IDs now consistently point to one current person ID, show that person as a high-confidence **repair proposal** and explain that a merge/recluster likely occurred. The curator confirms the relink.
 5. If face IDs also disappeared, use asset checksum/path and approximate bounding boxes to present candidates. Never auto-relink from this weaker evidence; a forced detection run or external-file move can invalidate both sides.
