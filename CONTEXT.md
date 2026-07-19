@@ -4,16 +4,18 @@ This context covers the private publication of one curator's photos and videos t
 
 ## Language
 
+### People, roles, and discovery
+
 **Curator**:
 The sole Person with authority to publish media and control who may access it. Curator is a role on a Person, and that same Person may also be a Recipient rather than having a separate identity.
 _Avoid_: Publisher, admin, photographer
 
 **Recipient**:
-A Person who has been invited to receive access to published media but does not publish or manage sharing. Each Recipient is exactly one Person; invitation, email, session, and access changes do not create or replace that Person.
+A Person who has been invited to receive access to published media but does not publish or manage sharing. Each Recipient is exactly one Person with one case-insensitively unique login email; Invitation, email, Session, and access changes do not create or replace that Person.
 _Avoid_: User, viewer, contributor
 
 **Eligible Recipient**:
-A Recipient whose access is neither suspended nor revoked. Completing onboarding is not required for Audience approval, but Publication and activity notifications wait until onboarding is complete.
+A Recipient whose access is neither suspended nor revoked. Completing Onboarding is not required for Audience approval, but Publication and activity notifications wait until Onboarding is complete.
 _Avoid_: Active user, enabled user
 
 **Person**:
@@ -40,36 +42,90 @@ _Avoid_: Bubble, group, Audience
 A Person's current partners, every descendant, and every descendant's current partners recursively through all generations. It provides relationship-annotated choices for that Recipient's Interest list but never adds them without explicit opt-in. Siblings and their descendants are not included automatically.
 _Avoid_: Immediate family, household
 
+### Recipient access
+
+**Invitation**:
+A Curator-issued, single-use offer sent to a Person's login email that expires after fourteen days and begins Recipient access. It is explicitly accepted and may be revoked or reissued without replacing the Person.
+_Avoid_: Share link, login link
+
+**Onboarding**:
+The initial Recipient setup between Invitation acceptance and the Recipient's explicit completion. Completion is required for all access and delivery of published Media items and for Publication or activity notifications, and a later email change does not repeat it.
+_Avoid_: Registration, account creation
+
+**Suspension**:
+A reversible pause of Recipient access that invalidates every Session. Lifting it restores access from still-valid Audiences after the Recipient signs in again.
+_Avoid_: Revocation, sign-out
+
+**Revocation**:
+The permanent end of a Recipient's current access that invalidates every Session and every existing Audience entry for authorization. Reinviting the same Person preserves their history but does not restore earlier access without explicit Curator approval.
+_Avoid_: Suspension, withdrawal
+
+**Session**:
+A separately revocable authorization for one Recipient on one browser or device, established after email verification. It never replaces the Recipient or grants access beyond that Recipient's valid Audiences.
+_Avoid_: Account, Audience, device
+
+**Trusted-device session**:
+A Recipient Session that remains valid until one year of inactivity and may continue indefinitely while the device remains active.
+_Avoid_: Permanent login, account
+
+**Public-computer session**:
+A Recipient Session chosen for a public or shared computer whose browser credential is discarded when the browser session ends and whose server-side authorization expires after twelve hours.
+_Avoid_: Trusted device, incognito mode
+
+### Media and publication
+
+**Source album**:
+An Immich album tracked by the portal as media provenance; when the Curator chooses to draft it, it maps by default to one Event but may be combined, divided, ignored, or partially unpublished without changing Immich. An ignored Source album remains ignored and tracked until the Curator restores it, and one absent from Immich becomes Source missing.
+_Avoid_: Event, published album
+
+**Source missing**:
+The state of a Source album or Media item that the portal still knows about but Immich can no longer serve. Its record remains available only to the Curator for relinking or correction, while its published representation stays in Recipient listings until a correction Publication but cannot deliver Media.
+_Avoid_: Deleted, withdrawn
+
+**Media item**:
+A portal-tracked photo or video backed by an Immich asset that may appear in multiple Events, with item-level Audience entitlement equal to the union of their approved Audiences. A Curator-confirmed relink replaces that backing asset while preserving portal identity, Event placement, Audiences, stable URL, Comments, Favorites, and history.
+_Avoid_: Asset, file
+
 **Event**:
-A narrative container for related photos and videos, which may contain moments with different audiences.
+A narrative container for related Media items drawn from one or more Source albums, possibly through Moments with different Audiences. Its presentation metadata becomes portal-owned after initialization from Immich and cannot be overwritten by source changes; during a split, the Curator designates which result retains its identity while the others receive new identities.
 _Avoid_: Album, gallery
 
 **Moment**:
-A curator-only part of an event with one audience, often used where attendance changes; recipients see one filtered event rather than its moment boundaries.
+A curator-only part of an Event that has one approved Audience once published; Recipients see one filtered Event without its Moment boundaries. Media items default to local-capture-date proposals using a curator-chosen timezone for unzoned timestamps, but the Curator may merge, split, or manually place items with no usable date.
 _Avoid_: Sub-album, segment
 
 **Loose item**:
-A photo or video shared independently rather than through an event.
+A Media item shared independently rather than through an Event.
 _Avoid_: One-off, loose photo
+
+**Archive download**:
+A single-use ZIP of original Media items, bound for fifteen minutes to one Recipient and Session, containing either every item they may access in an Event or an explicit subset. Its selection is reauthorized before delivery and excludes inaccessible Media items and source-library paths.
+_Avoid_: Album export, backup
 
 **Audience proposal**:
 A draft set of Eligible Recipients for a Moment or Loose item. For a Moment, the system derives it by intersecting confirmed Attendance with Interest lists; the Curator may add or exclude Eligible Recipients for either kind of item, and those overrides persist through draft recalculation. It becomes an Audience only after Curator approval. The Curator never appears in a proposal because Curator authority already provides access.
 _Avoid_: Automatic sharing, recipient list
 
 **Audience**:
-A Curator-approved snapshot, which may be empty, of the Eligible Recipients allowed to access one Moment or Loose item. It is the sole source of item-level media access for an Eligible Recipient and never recalculates from later changes to Attendance, Family relationships, Interest lists, or Visibility circles. Recipient-wide suspension or revocation disables all recipient access without changing existing Audience snapshots.
+A Curator-approved snapshot, which may be empty, of the Eligible Recipients allowed to access one Moment or Loose item and the sole source of item-level media access. It never recalculates from later changes to Attendance, Family relationships, Interest lists, or Visibility circles; Suspension disables its access temporarily, while Revocation invalidates its existing entry permanently.
 _Avoid_: Members, invitees
 
 **Publication**:
-The curator's approval that makes an event or subsequent update visible to its audiences.
+The Curator's atomic approval that makes an Event or its entire Staged update visible to its reviewed Audiences. Every Moment requires an approved Audience, including an explicitly approved empty Audience for curator-only material.
 _Avoid_: Sync, import
 
 **Staged update**:
-The single coalescing set of source-library changes to a published event that remains private until the curator publishes it.
+The single coalescing net change to a published Event that remains private until the Curator publishes it. It may include source additions and removals, optional source metadata suggestions, Curator edits, Moment assignment or structure, ordering, and Audiences; changes that cancel before Publication leave no residue.
 _Avoid_: Live sync, pending upload
 
+**Withdrawal**:
+The Curator's immediate revocation of Recipient access to an Event, Moment, or Media item without erasing its identity, interactions, or publication history. Restoration requires a new Publication with freshly reviewed Audience snapshots.
+_Avoid_: Delete, source missing, unpublish
+
+### Notifications and interactions
+
 **Notification preference**:
-A Recipient's choice to receive publication emails immediately, in a weekly digest, or not at all. Publication and activity notifications do not begin until the Recipient completes onboarding.
+A Recipient's choice to receive Publication emails immediately, in a weekly digest, or not at all. Publication and activity notifications do not begin until the Recipient completes Onboarding.
 _Avoid_: Access preference, subscription
 
 **Favorite**:
