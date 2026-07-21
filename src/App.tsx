@@ -45,6 +45,7 @@ import { Avatar, AvatarFallback, AvatarImage, Badge, Button, Card, Dialog, Dialo
 import { cn } from "./lib/utils";
 
 type VariantKey = "A" | "B" | "C";
+type AccentKey = "cyan" | "sky" | "blue";
 type AppView = "inbox" | "events" | "people" | "activity";
 type EditorSection = "media" | "moments" | "attendance" | "audiences" | "review";
 
@@ -132,7 +133,7 @@ const variantNames: Record<VariantKey, string> = {
 function useVariant() {
   const read = (): VariantKey => {
     const value = new URLSearchParams(window.location.search).get("variant")?.toUpperCase();
-    return value === "B" || value === "C" ? value : "A";
+    return value === "A" || value === "C" ? value : "B";
   };
   const [variant, setVariantState] = useState<VariantKey>(read);
 
@@ -161,7 +162,39 @@ function useTheme() {
   return { dark, toggle };
 }
 
-function PrototypeSwitcher({ variant, setVariant }: { variant: VariantKey; setVariant: (value: VariantKey) => void }) {
+function useAccent(dark: boolean) {
+  const read = (): AccentKey => {
+    const value = new URLSearchParams(window.location.search).get("accent");
+    return value === "cyan" || value === "blue" ? value : "sky";
+  };
+  const [accent, setAccentState] = useState<AccentKey>(read);
+
+  const setAccent = (next: AccentKey) => {
+    const params = new URLSearchParams(window.location.search);
+    params.set("accent", next);
+    window.history.replaceState(null, "", `${window.location.pathname}?${params.toString()}`);
+    setAccentState(next);
+  };
+
+  useEffect(() => {
+    const palettes = {
+      cyan: dark ? { primary: "#22d3ee", foreground: "#083344", secondary: "#164e63", secondaryForeground: "#a5f3fc", ring: "#22d3ee" } : { primary: "#0891b2", foreground: "#ffffff", secondary: "#cffafe", secondaryForeground: "#155e75", ring: "#06b6d4" },
+      sky: dark ? { primary: "#38bdf8", foreground: "#082f49", secondary: "#0c4a6e", secondaryForeground: "#bae6fd", ring: "#38bdf8" } : { primary: "#0284c7", foreground: "#ffffff", secondary: "#e0f2fe", secondaryForeground: "#075985", ring: "#0ea5e9" },
+      blue: dark ? { primary: "#60a5fa", foreground: "#172554", secondary: "#1e3a8a", secondaryForeground: "#bfdbfe", ring: "#60a5fa" } : { primary: "#2563eb", foreground: "#ffffff", secondary: "#dbeafe", secondaryForeground: "#1e40af", ring: "#3b82f6" },
+    } as const;
+    const palette = palettes[accent];
+    const root = document.documentElement;
+    root.style.setProperty("--primary", palette.primary);
+    root.style.setProperty("--primary-foreground", palette.foreground);
+    root.style.setProperty("--secondary", palette.secondary);
+    root.style.setProperty("--secondary-foreground", palette.secondaryForeground);
+    root.style.setProperty("--ring", palette.ring);
+  }, [accent, dark]);
+
+  return { accent, setAccent };
+}
+
+function PrototypeSwitcher({ variant, setVariant, accent, setAccent }: { variant: VariantKey; setVariant: (value: VariantKey) => void; accent: AccentKey; setAccent: (value: AccentKey) => void }) {
   const variants: VariantKey[] = ["A", "B", "C"];
   const cycle = (direction: -1 | 1) => {
     const current = variants.indexOf(variant);
@@ -181,10 +214,19 @@ function PrototypeSwitcher({ variant, setVariant }: { variant: VariantKey; setVa
 
   if (import.meta.env.PROD) return null;
   return (
-    <div className="fixed bottom-5 left-1/2 z-[100] flex -translate-x-1/2 items-center rounded-full border border-white/15 bg-zinc-950 p-1.5 text-white shadow-2xl shadow-black/40">
-      <button className="rounded-full p-2 hover:bg-white/15" onClick={() => cycle(-1)} aria-label="Previous variant"><ArrowLeft className="size-4" /></button>
-      <div className="min-w-52 px-3 text-center text-xs font-semibold"><span className="text-blue-300">{variant}</span> · {variantNames[variant]}</div>
-      <button className="rounded-full p-2 hover:bg-white/15" onClick={() => cycle(1)} aria-label="Next variant"><ArrowRight className="size-4" /></button>
+    <div className="fixed bottom-4 left-1/2 z-[100] -translate-x-1/2 rounded-2xl border border-white/15 bg-zinc-950 p-1.5 text-white shadow-2xl shadow-black/40">
+      <div className="flex items-center">
+        <button className="rounded-full p-2 hover:bg-white/15" onClick={() => cycle(-1)} aria-label="Previous variant"><ArrowLeft className="size-4" /></button>
+        <div className="min-w-52 px-3 text-center text-xs font-semibold"><span className="text-sky-300">{variant}</span> · {variantNames[variant]}</div>
+        <button className="rounded-full p-2 hover:bg-white/15" onClick={() => cycle(1)} aria-label="Next variant"><ArrowRight className="size-4" /></button>
+      </div>
+      <div className="flex items-center justify-center gap-1 border-t border-white/10 pt-1.5">
+        {(["cyan", "sky", "blue"] as AccentKey[]).map((color) => (
+          <button key={color} onClick={() => setAccent(color)} className={cn("flex items-center gap-1.5 rounded-full px-2 py-1 text-[10px] font-semibold capitalize", accent === color ? "bg-white/15 text-white" : "text-white/55 hover:text-white")}>
+            <span className={cn("size-2.5 rounded-full", color === "cyan" ? "bg-cyan-500" : color === "sky" ? "bg-sky-500" : "bg-blue-500")} />{color}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
@@ -193,7 +235,7 @@ function Brand({ compact = false }: { compact?: boolean }) {
   return (
     <div className="flex items-center gap-3">
       <div className="grid size-9 place-items-center rounded-xl bg-primary text-primary-foreground"><GalleryHorizontalEnd className="size-5" /></div>
-      {!compact && <span className="text-lg font-bold tracking-tight">Kinframe</span>}
+      {!compact && <span className="text-lg font-bold tracking-tight">Memento</span>}
     </div>
   );
 }
@@ -359,15 +401,79 @@ function ReviewPage() {
   );
 }
 
+const workflowSteps = [
+  { label: "Media", detail: "86 organized", complete: true },
+  { label: "Moments", detail: "4 organized", complete: true },
+  { label: "Attendance", detail: "12 confirmed", complete: true },
+  { label: "Audiences", detail: "4 reviewed", complete: true },
+  { label: "Final review", detail: "Next step", complete: false },
+];
+
+function WorkflowProgress() {
+  return (
+    <div className="border-b border-border bg-card px-4 py-3">
+      <div className="mb-3 flex items-center justify-between gap-4">
+        <div className="flex items-center gap-2"><Badge tone="blue">Draft · 4 of 5 complete</Badge><span className="hidden text-xs text-muted-foreground sm:inline">Next: final Publication review</span></div>
+        <span className="text-xs font-semibold text-primary">80%</span>
+      </div>
+      <div className="flex items-start">
+        {workflowSteps.map((step, index) => (
+          <div key={step.label} className="relative flex min-w-0 flex-1 flex-col items-center text-center">
+            {index > 0 && <span className={cn("absolute right-1/2 top-2.5 h-0.5 w-full", step.complete ? "bg-primary" : "bg-border")} />}
+            <span className={cn("relative z-[1] grid size-5 place-items-center rounded-full border", step.complete ? "border-primary bg-primary text-primary-foreground" : "border-primary bg-card text-primary")}>{step.complete ? <Check className="size-3" /> : <span className="size-1.5 rounded-full bg-primary" />}</span>
+            <span className={cn("mt-1.5 truncate text-[10px] font-semibold sm:text-xs", !step.complete && "text-primary")}>{step.label}</span>
+            <span className="hidden text-[10px] text-muted-foreground md:block">{step.detail}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function VariantB({ dark, toggle }: { dark: boolean; toggle: () => void }) {
   const [selectedMoment, setSelectedMoment] = useState(1);
   const [queueOpen, setQueueOpen] = useState(true);
   return (
     <div className="flex h-screen min-h-[680px] flex-col overflow-hidden bg-background pb-16">
-      <header className="flex h-14 shrink-0 items-center gap-4 border-b border-border bg-card px-3"><Brand compact /><Button variant="ghost" size="icon" onClick={() => setQueueOpen((value) => !value)}><PanelLeftClose className="size-4" /></Button><div className="hidden items-center gap-2 text-sm sm:flex"><span className="text-muted-foreground">Events</span><ChevronRight className="size-3" /><strong>Summer reunion</strong><Badge>Draft</Badge></div><div className="ml-auto flex items-center gap-2"><span className="hidden text-xs text-muted-foreground md:block">Saved 10 sec ago</span><Button variant="outline" size="sm"><Eye className="size-4" />Preview</Button><PublishDialog><Button size="sm"><Upload className="size-4" />Publish</Button></PublishDialog><ThemeButton dark={dark} toggle={toggle} /></div></header>
+      <header className="flex h-14 shrink-0 items-center gap-4 border-b border-border bg-card px-3"><Brand /><Button variant="ghost" size="icon" onClick={() => setQueueOpen((value) => !value)}><PanelLeftClose className="size-4" /></Button><div className="hidden items-center gap-2 text-sm sm:flex"><span className="text-muted-foreground">Events</span><ChevronRight className="size-3" /><strong>Summer reunion</strong><Badge>Draft</Badge></div><div className="ml-auto flex items-center gap-2"><span className="hidden text-xs text-muted-foreground md:block">Saved 10 sec ago</span><Button variant="outline" size="sm"><Eye className="size-4" />Preview</Button><PublishDialog><Button size="sm"><Upload className="size-4" />Publish</Button></PublishDialog><ThemeButton dark={dark} toggle={toggle} /></div></header>
       <div className="flex min-h-0 flex-1">
-        <aside className={cn("hidden shrink-0 border-r border-border bg-card transition-all lg:block", queueOpen ? "w-72" : "w-0 overflow-hidden border-0")}><div className="flex items-center justify-between border-b border-border p-3"><div><div className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Work queue</div><div className="text-xs text-muted-foreground">7 items</div></div><Button size="icon" variant="ghost"><ListFilter className="size-4" /></Button></div><div className="h-[calc(100%-64px)] overflow-y-auto">{queue.map((item, index) => <button key={item.title} className={cn("w-full border-b border-border p-3 text-left hover:bg-accent", index === 1 && "border-l-2 border-l-primary bg-primary/10")}><div className="flex items-start gap-2"><item.icon className={cn("mt-0.5 size-4 shrink-0", item.tone === "red" ? "text-red-500" : item.tone === "amber" ? "text-amber-500" : item.tone === "purple" ? "text-violet-500" : "text-blue-500")} /><div><div className="text-xs font-semibold leading-5">{item.title}</div><div className="mt-1 text-[11px] text-muted-foreground">{item.meta}</div></div></div></button>)}<div className="p-3"><div className="mb-2 text-xs font-bold uppercase tracking-wider text-muted-foreground">Event sections</div>{["Media · 86", "Moments · 4", "Attendance · 12", "Audiences · Reviewed", "Final review"].map((item, index) => <button key={item} className={cn("flex w-full items-center rounded-lg px-2 py-2 text-xs", index === 1 ? "bg-accent font-semibold" : "text-muted-foreground hover:bg-accent")}><span className={cn("mr-2 size-1.5 rounded-full", index < 4 ? "bg-emerald-500" : "bg-blue-500")} />{item}</button>)}</div></div></aside>
-        <main className="min-w-0 flex-1 overflow-y-auto"><div className="sticky top-0 z-10 flex items-center gap-3 border-b border-border bg-background/95 px-4 py-3 backdrop-blur"><div><h1 className="text-lg font-bold">Moment organizer</h1><p className="text-xs text-muted-foreground">4 Moments · 86 items · select a Moment to inspect privacy</p></div><div className="ml-auto hidden gap-1 sm:flex"><Button size="sm" variant="outline"><GitMerge className="size-3" />Merge</Button><Button size="sm" variant="outline"><Split className="size-3" />Split</Button><Button size="sm" variant="outline"><Plus className="size-3" />Moment</Button></div></div><div className="grid grid-cols-[150px_minmax(0,1fr)] gap-1 p-3 sm:grid-cols-[190px_minmax(0,1fr)]">{moments.map((moment, row) => <div key={moment.title} className="contents"><button onClick={() => setSelectedMoment(row)} className={cn("sticky left-0 z-[1] min-h-32 rounded-l-xl border border-r-0 border-border p-3 text-left", selectedMoment === row ? "border-primary bg-primary/10" : "bg-card hover:bg-accent")}><div className="text-xs font-bold">{moment.title}</div><div className="mt-1 text-[11px] text-muted-foreground">{moment.date} · {moment.items}</div><div className="mt-3 flex flex-col items-start gap-1"><Badge tone={moment.color}>{moment.audience}</Badge>{row === 1 && <Badge tone="green">12 present</Badge>}</div></button><button onClick={() => setSelectedMoment(row)} className={cn("grid min-w-0 grid-cols-4 gap-1 overflow-hidden rounded-r-xl border border-l-0 border-border p-1", selectedMoment === row && "border-primary bg-primary/10")}>{photos.slice(row, row + 4).map((photo, index) => <div key={`${photo.src}${index}`} className="relative min-w-0 overflow-hidden rounded-lg"><img src={photo.src} alt={photo.alt} className="h-32 w-full object-cover sm:h-40" />{row === 2 && index === 3 && <div className="absolute inset-0 grid place-items-center bg-black/60 text-xs font-bold text-white">+5</div>}</div>)}</button></div>)}</div></main>
+        <aside className={cn("hidden shrink-0 border-r border-border bg-card transition-all lg:block", queueOpen ? "w-80" : "w-0 overflow-hidden border-0")}>
+          <div className="flex items-center justify-between border-b border-border p-3">
+            <div><div className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Curator work</div><div className="text-xs text-muted-foreground">2 in progress · 3 need attention</div></div>
+            <Button size="icon" variant="ghost"><ListFilter className="size-4" /></Button>
+          </div>
+          <div className="h-[calc(100%-64px)] overflow-y-auto">
+            <div className="border-b border-border p-3">
+              <div className="mb-2 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Needs attention</div>
+              <button className="flex w-full items-start gap-2 rounded-xl border border-red-500/25 bg-red-500/5 p-3 text-left hover:bg-red-500/10">
+                <AlertTriangle className="mt-0.5 size-4 shrink-0 text-red-500" />
+                <div className="min-w-0 flex-1"><div className="text-xs font-semibold">3 source files unavailable</div><div className="mt-1 text-[11px] text-muted-foreground">Lake Weekend · delivery stopped</div></div>
+                <ChevronRight className="size-4 text-muted-foreground" />
+              </button>
+            </div>
+            <div className="border-b border-border p-3">
+              <div className="mb-2 flex items-center justify-between"><span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Work in progress</span><button className="text-[10px] font-semibold text-primary">View all</button></div>
+              <button className="w-full rounded-xl border border-primary/40 bg-primary/10 p-3 text-left">
+                <div className="flex items-start justify-between gap-2"><div><div className="text-xs font-bold">Summer reunion</div><div className="mt-0.5 text-[11px] text-muted-foreground">Draft Event · 86 items</div></div><Badge tone="blue">4 of 5</Badge></div>
+                <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-border"><div className="h-full w-4/5 rounded-full bg-primary" /></div>
+                <div className="mt-2 flex items-center justify-between text-[11px]"><span className="text-muted-foreground">Next: final review</span><span className="font-semibold text-primary">80%</span></div>
+              </button>
+              <button className="mt-2 w-full rounded-xl border border-border p-3 text-left hover:bg-accent">
+                <div className="flex items-start justify-between gap-2"><div><div className="text-xs font-bold">Grandma's 80th</div><div className="mt-0.5 text-[11px] text-muted-foreground">Staged update · 18 changes</div></div><Badge tone="amber">3 of 5</Badge></div>
+                <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-border"><div className="h-full w-3/5 rounded-full bg-amber-500" /></div>
+                <div className="mt-2 text-[11px] text-muted-foreground">Next: review Audience changes</div>
+              </button>
+            </div>
+            <div className="border-b border-border p-3">
+              <button className="flex w-full items-center gap-2 rounded-lg p-2 text-left text-xs hover:bg-accent"><ImagePlus className="size-4 text-primary" /><span className="flex-1 font-semibold">2 new Source albums</span><Badge tone="blue">Triage</Badge></button>
+            </div>
+            <div className="p-3">
+              <div className="mb-2 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Summer reunion steps</div>
+              {workflowSteps.map((step, index) => <button key={step.label} className={cn("flex w-full items-center rounded-lg px-2 py-2 text-xs", index === 1 ? "bg-accent font-semibold" : "text-muted-foreground hover:bg-accent")}><span className={cn("mr-2 grid size-4 place-items-center rounded-full border", step.complete ? "border-emerald-500 bg-emerald-500 text-white" : "border-primary text-primary")}>{step.complete ? <Check className="size-2.5" /> : <span className="size-1 rounded-full bg-primary" />}</span><span className="flex-1 text-left">{step.label}</span><span className="text-[10px]">{step.detail}</span></button>)}
+            </div>
+          </div>
+        </aside>
+        <main className="min-w-0 flex-1 overflow-y-auto"><WorkflowProgress /><div className="sticky top-0 z-10 flex items-center gap-3 border-b border-border bg-background/95 px-4 py-3 backdrop-blur"><div><h1 className="text-lg font-bold">Moment organizer</h1><p className="text-xs text-muted-foreground">4 Moments · 86 items · select a Moment to inspect privacy</p></div><div className="ml-auto hidden gap-1 sm:flex"><Button size="sm" variant="outline"><GitMerge className="size-3" />Merge</Button><Button size="sm" variant="outline"><Split className="size-3" />Split</Button><Button size="sm" variant="outline"><Plus className="size-3" />Moment</Button></div></div><div className="grid grid-cols-[150px_minmax(0,1fr)] gap-1 p-3 sm:grid-cols-[190px_minmax(0,1fr)]">{moments.map((moment, row) => <div key={moment.title} className="contents"><button onClick={() => setSelectedMoment(row)} className={cn("sticky left-0 z-[1] min-h-32 rounded-l-xl border border-r-0 border-border p-3 text-left", selectedMoment === row ? "border-primary bg-primary/10" : "bg-card hover:bg-accent")}><div className="text-xs font-bold">{moment.title}</div><div className="mt-1 text-[11px] text-muted-foreground">{moment.date} · {moment.items}</div><div className="mt-3 flex flex-col items-start gap-1"><Badge tone={moment.color}>{moment.audience}</Badge>{row === 1 && <Badge tone="green">12 present</Badge>}</div></button><button onClick={() => setSelectedMoment(row)} className={cn("grid min-w-0 grid-cols-4 gap-1 overflow-hidden rounded-r-xl border border-l-0 border-border p-1", selectedMoment === row && "border-primary bg-primary/10")}>{photos.slice(row, row + 4).map((photo, index) => <div key={`${photo.src}${index}`} className="relative min-w-0 overflow-hidden rounded-lg"><img src={photo.src} alt={photo.alt} className="h-32 w-full object-cover sm:h-40" />{row === 2 && index === 3 && <div className="absolute inset-0 grid place-items-center bg-black/60 text-xs font-bold text-white">+5</div>}</div>)}</button></div>)}</div></main>
         <aside className="hidden w-96 shrink-0 overflow-y-auto border-l border-border bg-card xl:block"><div className="border-b border-border p-4"><div className="flex items-start justify-between"><div><Badge tone="blue">Jun 15</Badge><h2 className="mt-2 text-lg font-bold">{moments[selectedMoment].title}</h2><p className="text-xs text-muted-foreground">{moments[selectedMoment].items} items · {moments[selectedMoment].people}</p></div><Button size="icon" variant="ghost"><MoreHorizontal className="size-4" /></Button></div></div><div className="p-4"><AudiencePanel compact /></div></aside>
       </div>
       <div className="fixed inset-x-0 bottom-16 z-30 border-t border-border bg-card p-2 xl:hidden"><div className="flex items-center justify-between"><div><div className="text-sm font-semibold">{moments[selectedMoment].title}</div><div className="text-xs text-muted-foreground">{moments[selectedMoment].audience}</div></div><Button size="sm"><ShieldCheck className="size-4" />Inspect Audience</Button></div></div>
@@ -395,12 +501,13 @@ function VariantC({ dark, toggle }: { dark: boolean; toggle: () => void }) {
 export default function App() {
   const { variant, setVariant } = useVariant();
   const { dark, toggle } = useTheme();
+  const { accent, setAccent } = useAccent(dark);
   return (
     <>
       {variant === "A" && <VariantA dark={dark} toggle={toggle} />}
       {variant === "B" && <VariantB dark={dark} toggle={toggle} />}
       {variant === "C" && <VariantC dark={dark} toggle={toggle} />}
-      <PrototypeSwitcher variant={variant} setVariant={setVariant} />
+      <PrototypeSwitcher variant={variant} setVariant={setVariant} accent={accent} setAccent={setAccent} />
     </>
   );
 }

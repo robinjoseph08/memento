@@ -51,7 +51,7 @@ export function Badge({
 }) {
   const tones = {
     neutral: "bg-muted text-muted-foreground",
-    blue: "bg-blue-500/15 text-blue-500 dark:text-blue-300",
+    blue: "bg-primary/15 text-primary",
     green: "bg-emerald-500/15 text-emerald-600 dark:text-emerald-300",
     amber: "bg-amber-500/15 text-amber-700 dark:text-amber-300",
     red: "bg-red-500/15 text-red-700 dark:text-red-300",
