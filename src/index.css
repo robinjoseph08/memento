@@ -1,0 +1,76 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap');
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  font-family: "DM Sans", system-ui, sans-serif;
+  color-scheme: light;
+  --background: #f8fafc;
+  --foreground: #172033;
+  --card: #ffffff;
+  --card-foreground: #172033;
+  --popover: #ffffff;
+  --popover-foreground: #172033;
+  --primary: #2563eb;
+  --primary-foreground: #ffffff;
+  --secondary: #e8eefc;
+  --secondary-foreground: #1d4ed8;
+  --muted: #edf1f7;
+  --muted-foreground: #64748b;
+  --accent: #e7edf7;
+  --accent-foreground: #172033;
+  --destructive: #dc2626;
+  --border: #dce3ee;
+  --ring: #3b82f6;
+}
+
+.dark {
+  color-scheme: dark;
+  --background: #090b10;
+  --foreground: #eef2f8;
+  --card: #11141b;
+  --card-foreground: #eef2f8;
+  --popover: #11141b;
+  --popover-foreground: #eef2f8;
+  --primary: #6ea8fe;
+  --primary-foreground: #07101f;
+  --secondary: #1b2a44;
+  --secondary-foreground: #b9d4ff;
+  --muted: #1c2029;
+  --muted-foreground: #98a2b3;
+  --accent: #222733;
+  --accent-foreground: #f8fafc;
+  --destructive: #dc2626;
+  --border: #282d37;
+  --ring: #60a5fa;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-ring: var(--ring);
+}
+
+* { border-color: var(--border); }
+body { margin: 0; min-width: 320px; min-height: 100vh; background: var(--background); color: var(--foreground); }
+button, [role="button"] { cursor: pointer; }
+::selection { background: color-mix(in srgb, var(--primary) 35%, transparent); }
+
+.photo-fade { background: linear-gradient(180deg, transparent 36%, rgba(3, 7, 18, .9)); }
+.scrollbar-none::-webkit-scrollbar { display: none; }
+.scrollbar-none { scrollbar-width: none; }
