@@ -1,155 +1,134 @@
-// Three variants of the Curator publishing workflow, switchable via ?variant=, on a throwaway single-page prototype.
+// Three responsive Recipient experience variants, switchable via ?variant=, on a throwaway single-page prototype.
 import { useEffect, useId, useMemo, useState } from "react";
 import {
-  AlertTriangle,
   ArrowLeft,
   ArrowRight,
   Bell,
+  CalendarDays,
   Check,
-  ChevronDown,
+  ChevronLeft,
   ChevronRight,
-  CircleHelp,
   Clock3,
-  Eye,
-  GalleryHorizontalEnd,
-  GitMerge,
-  Grid2X2,
-  ImagePlus,
-  Inbox,
+  Download,
+  Heart,
+  Home,
+  Images,
   Info,
-  LayoutDashboard,
+  LayoutGrid,
   ListFilter,
+  Mail,
+  MapPin,
   Menu,
-  MessageSquare,
+  MessageCircle,
   Moon,
   MoreHorizontal,
-  MoveRight,
-  PanelLeftClose,
-  ContactRound,
-  Plus,
-  RefreshCw,
+  Play,
   Search,
   Settings,
   ShieldCheck,
   Sparkles,
-  Split,
   Sun,
-  Undo2,
-  Upload,
-  UserRoundCheck,
+  UserRound,
   UsersRound,
-  WandSparkles,
   X,
 } from "lucide-react";
-import { Avatar, AvatarFallback, AvatarImage, Badge, Button, Card, Dialog, DialogContent, DialogDescription, DialogTitle, DialogTrigger } from "./components/ui";
+import {
+  Avatar,
+  AvatarFallback,
+  AvatarImage,
+  Badge,
+  Button,
+  Card,
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogTitle,
+} from "./components/ui";
 import { cn } from "./lib/utils";
 
 type VariantKey = "A" | "B" | "C";
-type AccentKey = "cyan" | "sky" | "blue";
-type AppView = "inbox" | "events" | "people" | "activity";
-type EditorSection = "media" | "moments" | "attendance" | "audiences" | "review";
-
-type Person = {
-  name: string;
-  initials: string;
-  image: string;
-  reasons: Array<{ label: string; tone: "blue" | "green" | "purple" | "red" }>;
-  detail: string;
-  included: boolean;
+type View = "photos" | "events" | "people" | "favorites";
+type Photo = {
+  id: number;
+  src: string;
+  alt: string;
+  date: string;
+  event?: string;
+  loose?: boolean;
+  video?: boolean;
 };
 
-const photos = [
-  { src: "https://images.unsplash.com/photo-1490750967868-88aa4486c946?auto=format&fit=crop&w=900&q=80", alt: "Wildflowers in a garden" },
-  { src: "https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?auto=format&fit=crop&w=900&q=80", alt: "Family picnic landscape" },
-  { src: "https://images.unsplash.com/photo-1533488765986-dfa2a9939acd?auto=format&fit=crop&w=900&q=80", alt: "Children outdoors" },
-  { src: "https://images.unsplash.com/photo-1529156069898-49953e39b3ac?auto=format&fit=crop&w=900&q=80", alt: "Family gathering" },
-  { src: "https://images.unsplash.com/photo-1499209974431-9dddcece7f88?auto=format&fit=crop&w=900&q=80", alt: "Summer field" },
-  { src: "https://images.unsplash.com/photo-1504151932400-72d4384f04b3?auto=format&fit=crop&w=900&q=80", alt: "Parent and child" },
-  { src: "https://images.unsplash.com/photo-1609220136736-443140cffec6?auto=format&fit=crop&w=900&q=80", alt: "Family walking together" },
-  { src: "https://images.unsplash.com/photo-1474552226712-ac0f0961a954?auto=format&fit=crop&w=900&q=80", alt: "Couple outdoors" },
+type Publication = {
+  id: string;
+  title: string;
+  detail: string;
+  published: string;
+  event?: string;
+  photoIds: number[];
+};
+
+const photos: Photo[] = [
+  { id: 1, src: "https://images.unsplash.com/photo-1529156069898-49953e39b3ac?auto=format&fit=crop&w=1200&q=85", alt: "Family gathering outdoors", date: "June 16, 2026", event: "Summer reunion" },
+  { id: 2, src: "https://images.unsplash.com/photo-1609220136736-443140cffec6?auto=format&fit=crop&w=1200&q=85", alt: "Family walking together", date: "June 16, 2026", event: "Summer reunion" },
+  { id: 3, src: "https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?auto=format&fit=crop&w=1200&q=85", alt: "Picnic in a green field", date: "June 15, 2026", event: "Summer reunion" },
+  { id: 4, src: "https://images.unsplash.com/photo-1533488765986-dfa2a9939acd?auto=format&fit=crop&w=1200&q=85", alt: "Children playing outside", date: "June 15, 2026", event: "Summer reunion", video: true },
+  { id: 5, src: "https://images.unsplash.com/photo-1499209974431-9dddcece7f88?auto=format&fit=crop&w=1200&q=85", alt: "Summer field at sunset", date: "June 15, 2026", event: "Summer reunion" },
+  { id: 6, src: "https://images.unsplash.com/photo-1504151932400-72d4384f04b3?auto=format&fit=crop&w=1200&q=85", alt: "Parent and child together", date: "June 14, 2026", event: "Summer reunion" },
+  { id: 7, src: "https://images.unsplash.com/photo-1474552226712-ac0f0961a954?auto=format&fit=crop&w=1200&q=85", alt: "Couple laughing outdoors", date: "May 28, 2026", event: "Grandma's 80th" },
+  { id: 8, src: "https://images.unsplash.com/photo-1511895426328-dc8714191300?auto=format&fit=crop&w=1200&q=85", alt: "Family seated together", date: "May 28, 2026", event: "Grandma's 80th" },
+  { id: 9, src: "https://images.unsplash.com/photo-1513159446162-54eb8bdaa79b?auto=format&fit=crop&w=1200&q=85", alt: "Birthday celebration", date: "May 28, 2026", event: "Grandma's 80th" },
+  { id: 10, src: "https://images.unsplash.com/photo-1490750967868-88aa4486c946?auto=format&fit=crop&w=1200&q=85", alt: "Wildflowers in the garden", date: "May 20, 2026", loose: true },
+  { id: 11, src: "https://images.unsplash.com/photo-1529333166437-7750a6dd5a70?auto=format&fit=crop&w=1200&q=85", alt: "Family enjoying a walk", date: "April 12, 2026", event: "Spring break" },
+  { id: 12, src: "https://images.unsplash.com/photo-1542037104857-ffbb0b9155fb?auto=format&fit=crop&w=1200&q=85", alt: "Family smiling together", date: "April 12, 2026", event: "Spring break" },
+  { id: 13, src: "https://images.unsplash.com/photo-1485217988980-11786ced9454?auto=format&fit=crop&w=1200&q=85", alt: "Family on a sunny day", date: "April 11, 2026", event: "Spring break" },
+  { id: 14, src: "https://images.unsplash.com/photo-1503454537195-1dcabb73ffb9?auto=format&fit=crop&w=1200&q=85", alt: "Child smiling outdoors", date: "March 30, 2026", loose: true },
 ];
 
-const people: Person[] = [
-  {
-    name: "Maya Chen",
-    initials: "MC",
-    image: "https://i.pravatar.cc/96?img=47",
-    reasons: [
-      { label: "Present", tone: "green" },
-      { label: "Interested in Leo", tone: "blue" },
-    ],
-    detail: "Maya is confirmed in this Moment. Her Interest list also matches Leo Chen.",
-    included: true,
-  },
-  {
-    name: "Jordan Lee",
-    initials: "JL",
-    image: "https://i.pravatar.cc/96?img=12",
-    reasons: [{ label: "Interested in Maya + 2", tone: "blue" }],
-    detail: "Jordan is interested in Maya Chen, Leo Chen, and Nora Lee, who are confirmed present.",
-    included: true,
-  },
-  {
-    name: "Priya Shah",
-    initials: "PS",
-    image: "https://i.pravatar.cc/96?img=32",
-    reasons: [{ label: "Manually included", tone: "purple" }],
-    detail: "You manually included Priya. No current Attendance or Interest-list match applies.",
-    included: true,
-  },
-  {
-    name: "Eli Chen",
-    initials: "EC",
-    image: "https://i.pravatar.cc/96?img=5",
-    reasons: [
-      { label: "Present", tone: "green" },
-      { label: "Manually excluded", tone: "red" },
-    ],
-    detail: "Eli is confirmed present, but you manually excluded him from this Audience proposal.",
-    included: false,
-  },
+const publications: Publication[] = [
+  { id: "reunion", title: "Summer reunion", detail: "24 new photos", published: "Published today", event: "Summer reunion", photoIds: [1, 2, 3, 4] },
+  { id: "grandma", title: "Grandma's 80th", detail: "8 photos added", published: "Updated yesterday", event: "Grandma's 80th", photoIds: [7, 8, 9] },
+  { id: "loose", title: "A couple from the garden", detail: "2 new photos", published: "Published Monday", photoIds: [10, 14] },
 ];
 
-const queue = [
-  { icon: AlertTriangle, tone: "red" as const, title: "3 source files unavailable", meta: "Lake Weekend · delivery stopped", action: "Review now" },
-  { icon: ShieldCheck, tone: "purple" as const, title: "Summer reunion ready to review", meta: "4 Moments · 86 Media items", action: "Continue review" },
-  { icon: RefreshCw, tone: "amber" as const, title: "18 staged changes", meta: "Grandma's 80th · updated 2 hours ago", action: "Review update" },
-  { icon: ImagePlus, tone: "blue" as const, title: "2 new Source albums", meta: "Discovered from Immich", action: "Triage" },
-];
-
-const moments = [
-  { title: "Friday arrival", date: "Jun 14", items: 18, people: "Maya, Eli, Leo + 2", audience: "7 recipients", color: "green" as const },
-  { title: "Saturday picnic", date: "Jun 15", items: 42, people: "Maya, Nora, Leo + 8", audience: "12 recipients", color: "blue" as const },
-  { title: "After the picnic", date: "Jun 15", items: 9, people: "Nora, Robin", audience: "Curator only", color: "neutral" as const },
-  { title: "Sunday breakfast", date: "Jun 16", items: 17, people: "Jordan, Priya, Leo + 3", audience: "8 recipients", color: "purple" as const },
+const people = [
+  { id: 1, name: "Maya Chen", relation: "Cousin", image: "https://i.pravatar.cc/120?img=47", interested: true },
+  { id: 2, name: "Leo Chen", relation: "Maya's son", image: "https://i.pravatar.cc/120?img=7", interested: true },
+  { id: 3, name: "Nora Lee", relation: "Cousin", image: "https://i.pravatar.cc/120?img=44", interested: false },
+  { id: 4, name: "Jordan Lee", relation: "Nora's partner", image: "https://i.pravatar.cc/120?img=12", interested: false },
+  { id: 5, name: "Priya Shah", relation: "Aunt", image: "https://i.pravatar.cc/120?img=32", interested: true },
+  { id: 6, name: "Eli Chen", relation: "Uncle", image: "https://i.pravatar.cc/120?img=5", interested: false },
 ];
 
 const variantNames: Record<VariantKey, string> = {
-  A: "Guided work queue",
-  B: "Split-pane command center",
-  C: "Event canvas",
+  A: "Timeline library",
+  B: "Publication feed",
+  C: "Event archive",
 };
+
+const navItems: Array<{ id: View; label: string; icon: typeof Home }> = [
+  { id: "photos", label: "Photos", icon: Images },
+  { id: "events", label: "Events", icon: CalendarDays },
+  { id: "people", label: "People", icon: UsersRound },
+  { id: "favorites", label: "Favorites", icon: Heart },
+];
 
 function useVariant() {
   const read = (): VariantKey => {
     const value = new URLSearchParams(window.location.search).get("variant")?.toUpperCase();
-    return value === "A" || value === "C" ? value : "B";
+    return value === "B" || value === "C" ? value : "A";
   };
   const [variant, setVariantState] = useState<VariantKey>(read);
-
   const setVariant = (next: VariantKey) => {
     const params = new URLSearchParams(window.location.search);
     params.set("variant", next);
     window.history.replaceState(null, "", `${window.location.pathname}?${params.toString()}`);
     setVariantState(next);
   };
-
   useEffect(() => {
     const onPopState = () => setVariantState(read());
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
-
   return { variant, setVariant };
 }
 
@@ -157,50 +136,17 @@ function useTheme() {
   const [dark, setDark] = useState(() => document.documentElement.classList.contains("dark"));
   const toggle = () => {
     document.documentElement.classList.toggle("dark");
-    setDark((value) => !value);
+    setDark((current) => !current);
   };
   return { dark, toggle };
 }
 
-function useAccent(dark: boolean) {
-  const read = (): AccentKey => {
-    const value = new URLSearchParams(window.location.search).get("accent");
-    return value === "cyan" || value === "blue" ? value : "sky";
-  };
-  const [accent, setAccentState] = useState<AccentKey>(read);
-
-  const setAccent = (next: AccentKey) => {
-    const params = new URLSearchParams(window.location.search);
-    params.set("accent", next);
-    window.history.replaceState(null, "", `${window.location.pathname}?${params.toString()}`);
-    setAccentState(next);
-  };
-
-  useEffect(() => {
-    const palettes = {
-      cyan: dark ? { primary: "#22d3ee", foreground: "#083344", secondary: "#164e63", secondaryForeground: "#a5f3fc", ring: "#22d3ee" } : { primary: "#0891b2", foreground: "#ffffff", secondary: "#cffafe", secondaryForeground: "#155e75", ring: "#06b6d4" },
-      sky: dark ? { primary: "#38bdf8", foreground: "#082f49", secondary: "#0c4a6e", secondaryForeground: "#bae6fd", ring: "#38bdf8" } : { primary: "#0284c7", foreground: "#ffffff", secondary: "#e0f2fe", secondaryForeground: "#075985", ring: "#0ea5e9" },
-      blue: dark ? { primary: "#60a5fa", foreground: "#172554", secondary: "#1e3a8a", secondaryForeground: "#bfdbfe", ring: "#60a5fa" } : { primary: "#2563eb", foreground: "#ffffff", secondary: "#dbeafe", secondaryForeground: "#1e40af", ring: "#3b82f6" },
-    } as const;
-    const palette = palettes[accent];
-    const root = document.documentElement;
-    root.style.setProperty("--primary", palette.primary);
-    root.style.setProperty("--primary-foreground", palette.foreground);
-    root.style.setProperty("--secondary", palette.secondary);
-    root.style.setProperty("--secondary-foreground", palette.secondaryForeground);
-    root.style.setProperty("--ring", palette.ring);
-  }, [accent, dark]);
-
-  return { accent, setAccent };
-}
-
-function PrototypeSwitcher({ variant, setVariant, accent, setAccent }: { variant: VariantKey; setVariant: (value: VariantKey) => void; accent: AccentKey; setAccent: (value: AccentKey) => void }) {
+function PrototypeSwitcher({ variant, setVariant }: { variant: VariantKey; setVariant: (value: VariantKey) => void }) {
   const variants: VariantKey[] = ["A", "B", "C"];
   const cycle = (direction: -1 | 1) => {
     const current = variants.indexOf(variant);
     setVariant(variants[(current + direction + variants.length) % variants.length]);
   };
-
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement;
@@ -211,323 +157,214 @@ function PrototypeSwitcher({ variant, setVariant, accent, setAccent }: { variant
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   });
-
   if (import.meta.env.PROD) return null;
   return (
-    <div className="fixed bottom-4 left-1/2 z-[100] -translate-x-1/2 rounded-2xl border border-white/15 bg-zinc-950 p-1.5 text-white shadow-2xl shadow-black/40">
-      <div className="flex items-center">
-        <button className="rounded-full p-2 hover:bg-white/15" onClick={() => cycle(-1)} aria-label="Previous variant"><ArrowLeft className="size-4" /></button>
-        <div className="min-w-52 px-3 text-center text-xs font-semibold"><span className="text-sky-300">{variant}</span> · {variantNames[variant]}</div>
-        <button className="rounded-full p-2 hover:bg-white/15" onClick={() => cycle(1)} aria-label="Next variant"><ArrowRight className="size-4" /></button>
-      </div>
-      <div className="flex items-center justify-center gap-1 border-t border-white/10 pt-1.5">
-        {(["cyan", "sky", "blue"] as AccentKey[]).map((color) => (
-          <button key={color} onClick={() => setAccent(color)} className={cn("flex items-center gap-1.5 rounded-full px-2 py-1 text-[10px] font-semibold capitalize", accent === color ? "bg-white/15 text-white" : "text-white/55 hover:text-white")}>
-            <span className={cn("size-2.5 rounded-full", color === "cyan" ? "bg-cyan-500" : color === "sky" ? "bg-sky-500" : "bg-blue-500")} />{color}
-          </button>
-        ))}
-      </div>
+    <div className="fixed bottom-[5.5rem] left-1/2 z-[100] flex -translate-x-1/2 items-center rounded-full border border-white/15 bg-zinc-950 p-1.5 text-white shadow-2xl shadow-black/40 lg:bottom-5">
+      <button className="rounded-full p-2 hover:bg-white/15" onClick={() => cycle(-1)} aria-label="Previous variant"><ArrowLeft className="size-4" /></button>
+      <div className="min-w-52 px-3 text-center text-xs font-semibold"><span className="text-sky-300">{variant}</span> · {variantNames[variant]}</div>
+      <button className="rounded-full p-2 hover:bg-white/15" onClick={() => cycle(1)} aria-label="Next variant"><ArrowRight className="size-4" /></button>
     </div>
   );
 }
 
 function MementoMark({ className }: { className?: string }) {
   const id = useId();
-  const leftId = `${id}-memento-left`;
-  const rightId = `${id}-memento-right`;
-  const heroId = `${id}-memento-hero`;
   return (
     <svg className={className} viewBox="160 200 704 640" role="img" aria-label="Memento">
-      {/* Mirrors design/app-icon/memento-icon-dark.svg. Keep the geometry in sync with the master icon. */}
       <defs>
-        <linearGradient id={leftId} x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="var(--primary)" stopOpacity=".78" /><stop offset="1" stopColor="var(--primary)" stopOpacity=".62" /></linearGradient>
-        <linearGradient id={rightId} x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="var(--primary)" /><stop offset="1" stopColor="var(--primary)" stopOpacity=".82" /></linearGradient>
-        <linearGradient id={heroId} x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="var(--secondary-foreground)" /><stop offset="1" stopColor="var(--primary)" /></linearGradient>
+        <linearGradient id={`${id}-left`} x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="var(--primary)" stopOpacity=".78" /><stop offset="1" stopColor="var(--primary)" stopOpacity=".62" /></linearGradient>
+        <linearGradient id={`${id}-right`} x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="var(--primary)" /><stop offset="1" stopColor="var(--primary)" stopOpacity=".82" /></linearGradient>
+        <linearGradient id={`${id}-hero`} x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="var(--secondary-foreground)" /><stop offset="1" stopColor="var(--primary)" /></linearGradient>
       </defs>
-      <rect x="246" y="270" width="410" height="500" rx="112" fill={`url(#${leftId})`} transform="rotate(-15 451 520)" />
-      <rect x="368" y="270" width="410" height="500" rx="112" fill={`url(#${rightId})`} transform="rotate(15 573 520)" />
-      <rect x="322" y="282" width="380" height="500" rx="106" fill={`url(#${heroId})`} />
+      <rect x="246" y="270" width="410" height="500" rx="112" fill={`url(#${id}-left)`} transform="rotate(-15 451 520)" />
+      <rect x="368" y="270" width="410" height="500" rx="112" fill={`url(#${id}-right)`} transform="rotate(15 573 520)" />
+      <rect x="322" y="282" width="380" height="500" rx="106" fill={`url(#${id}-hero)`} />
     </svg>
   );
 }
 
 function Brand({ compact = false }: { compact?: boolean }) {
-  return (
-    <div className="flex items-center gap-3">
-      <MementoMark className="size-9 shrink-0" />
-      {!compact && <span className="text-lg font-bold tracking-tight">Memento</span>}
-    </div>
-  );
+  return <div className="flex items-center gap-3"><MementoMark className="size-9 shrink-0" />{!compact && <span className="text-lg font-bold tracking-tight">Memento</span>}</div>;
 }
 
 function ThemeButton({ dark, toggle }: { dark: boolean; toggle: () => void }) {
   return <Button variant="ghost" size="icon" onClick={toggle} aria-label="Toggle color theme">{dark ? <Sun className="size-4" /> : <Moon className="size-4" />}</Button>;
 }
 
-function HeaderActions({ dark, toggle }: { dark: boolean; toggle: () => void }) {
+function HeaderTools({ dark, toggle, onSettings, onOnboarding }: { dark: boolean; toggle: () => void; onSettings: () => void; onOnboarding: () => void }) {
+  const [profileOpen, setProfileOpen] = useState(false);
   return (
-    <div className="flex items-center gap-1">
-      <Button variant="ghost" size="icon"><Search className="size-4" /></Button>
-      <Button variant="ghost" size="icon" className="relative"><Bell className="size-4" /><span className="absolute right-2 top-2 size-2 rounded-full bg-blue-500" /></Button>
+    <div className="relative flex items-center gap-1">
+      <Button variant="ghost" size="icon" aria-label="Search"><Search className="size-4" /></Button>
+      <Button variant="ghost" size="icon" className="relative" aria-label="Notifications"><Bell className="size-4" /><span className="absolute right-2 top-2 size-2 rounded-full bg-primary" /></Button>
       <ThemeButton dark={dark} toggle={toggle} />
-      <Avatar className="ml-1 block size-9 overflow-hidden rounded-full"><AvatarImage src="https://i.pravatar.cc/96?img=11" /><AvatarFallback>RJ</AvatarFallback></Avatar>
+      <button onClick={() => setProfileOpen((value) => !value)} className="ml-1 rounded-full" aria-label="Open profile menu">
+        <Avatar className="block size-9 overflow-hidden rounded-full"><AvatarImage src="https://i.pravatar.cc/96?img=49" /><AvatarFallback>JL</AvatarFallback></Avatar>
+      </button>
+      {profileOpen && <div className="absolute right-0 top-12 z-40 w-64 rounded-2xl border border-border bg-card p-2 text-card-foreground shadow-2xl">
+        <div className="flex items-center gap-3 border-b border-border p-3"><Avatar className="size-10 overflow-hidden rounded-full"><AvatarImage src="https://i.pravatar.cc/96?img=49" /><AvatarFallback>JL</AvatarFallback></Avatar><div><div className="text-sm font-bold">Jamie Lee</div><div className="text-xs text-muted-foreground">jamie@example.com</div></div></div>
+        <button onClick={() => { onSettings(); setProfileOpen(false); }} className="mt-1 flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold hover:bg-accent"><Settings className="size-4" />Settings</button>
+        <button onClick={() => { onOnboarding(); setProfileOpen(false); }} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold hover:bg-accent"><Sparkles className="size-4" />Replay onboarding</button>
+      </div>}
     </div>
   );
 }
 
-function PhotoStrip({ offset = 0, className }: { offset?: number; className?: string }) {
+function BottomNav({ view, setView, eventFirst = false }: { view: View; setView: (view: View) => void; eventFirst?: boolean }) {
+  const items = eventFirst ? [navItems[1], navItems[0], navItems[2], navItems[3]] : navItems;
   return (
-    <div className={cn("grid grid-cols-4 gap-1 overflow-hidden rounded-xl", className)}>
-      {photos.slice(offset, offset + 4).map((photo) => <img key={photo.src} src={photo.src} alt={photo.alt} className="aspect-square size-full object-cover" />)}
-    </div>
+    <nav className="fixed inset-x-2 bottom-2 z-40 flex justify-around rounded-2xl border border-border bg-card/95 p-1.5 shadow-2xl backdrop-blur lg:hidden">
+      {items.map((item) => <button key={item.id} onClick={() => setView(item.id)} className={cn("flex min-w-16 flex-col items-center gap-1 rounded-xl px-2 py-1.5 text-[10px] font-semibold", view === item.id ? "bg-primary/15 text-primary" : "text-muted-foreground")}><item.icon className="size-5" />{item.label}</button>)}
+    </nav>
   );
 }
 
-function PublishDialog({ children }: { children: React.ReactNode }) {
+function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
+  const [frequency, setFrequency] = useState("Immediately");
   return (
-    <Dialog>
-      <DialogTrigger asChild>{children}</DialogTrigger>
-      <DialogContent>
-        <div className="mb-5 flex size-12 items-center justify-center rounded-full bg-blue-500/15 text-blue-500"><Upload className="size-6" /></div>
-        <DialogTitle className="text-2xl font-bold">Publish Summer reunion?</DialogTitle>
-        <DialogDescription className="mt-2 text-muted-foreground">This publishes the complete reviewed Event draft to its approved Audiences.</DialogDescription>
-        <div className="my-6 grid gap-3 sm:grid-cols-3">
-          <Card className="p-4"><div className="text-2xl font-bold">86</div><div className="text-xs text-muted-foreground">Media items</div></Card>
-          <Card className="p-4"><div className="text-2xl font-bold">4</div><div className="text-xs text-muted-foreground">Moments reviewed</div></Card>
-          <Card className="p-4"><div className="text-2xl font-bold">12</div><div className="text-xs text-muted-foreground">Recipients at most</div></Card>
-        </div>
-        <div className="rounded-2xl bg-muted p-4 text-sm">
-          <div className="flex items-start gap-3"><Eye className="mt-0.5 size-4 text-muted-foreground" /><div><strong>One curator-only Moment</strong><p className="mt-1 text-muted-foreground">“After the picnic” has an empty Audience. It will remain visible only to you.</p></div></div>
-        </div>
-        <div className="mt-6 flex justify-end gap-2"><Button variant="ghost">Keep editing</Button><Button><Upload className="size-4" />Publish Event</Button></div>
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-xl">
+        <DialogTitle className="text-2xl font-bold">Settings</DialogTitle>
+        <DialogDescription className="mt-1">Manage notifications and this browser session.</DialogDescription>
+        <section className="mt-6">
+          <div className="flex items-center gap-3"><span className="grid size-10 place-items-center rounded-full bg-primary/15 text-primary"><Mail className="size-5" /></span><div><h3 className="font-bold">New publication emails</h3><p className="text-sm text-muted-foreground">Choose when Memento tells you about newly shared material.</p></div></div>
+          <div className="mt-4 grid gap-2 sm:grid-cols-3">{["Immediately", "Weekly", "None"].map((option) => <button key={option} onClick={() => setFrequency(option)} className={cn("rounded-2xl border p-4 text-left", frequency === option ? "border-primary bg-primary/10" : "border-border hover:bg-accent")}><div className="flex items-center justify-between"><span className="font-semibold">{option}</span>{frequency === option && <Check className="size-4 text-primary" />}</div><div className="mt-1 text-xs text-muted-foreground">{option === "Immediately" ? "After each publication" : option === "Weekly" ? "One Sunday summary" : "No publication email"}</div></button>)}</div>
+        </section>
+        <section className="mt-7 border-t border-border pt-6"><div className="flex items-start gap-3"><ShieldCheck className="mt-0.5 size-5 text-emerald-500" /><div className="flex-1"><h3 className="font-bold">This browser is trusted</h3><p className="mt-1 text-sm text-muted-foreground">Last active today. It stays signed in for up to one year while you continue using it.</p><button className="mt-3 text-sm font-semibold text-red-500">Sign out this browser</button></div></div></section>
       </DialogContent>
     </Dialog>
   );
 }
 
-function AudiencePerson({ person, compact = false }: { person: Person; compact?: boolean }) {
-  const [included, setIncluded] = useState(person.included);
+function OnboardingDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
+  const [step, setStep] = useState(1);
+  const steps = ["Invitation", "Privacy", "Interests", "Notifications", "Ready"];
   return (
-    <div className={cn("flex items-start gap-3", compact ? "py-2" : "rounded-2xl border border-border p-4")}>
-      <Avatar className="block size-10 shrink-0 overflow-hidden rounded-full"><AvatarImage src={person.image} /><AvatarFallback>{person.initials}</AvatarFallback></Avatar>
-      <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-center gap-2"><span className="font-semibold">{person.name}</span>{!included && <Badge tone="red">Excluded</Badge>}</div>
-        <div className="mt-1.5 flex flex-wrap gap-1.5">{person.reasons.map((reason) => <Badge key={reason.label} tone={reason.tone}>{reason.label}</Badge>)}</div>
-        {!compact && <p className="mt-2 text-xs leading-5 text-muted-foreground">{person.detail}</p>}
-      </div>
-      <button
-        onClick={() => setIncluded((value) => !value)}
-        className={cn("relative mt-1 h-6 w-11 shrink-0 rounded-full transition-colors", included ? "bg-primary" : "bg-muted")}
-        aria-label={`${included ? "Exclude" : "Include"} ${person.name}`}
-      ><span className={cn("absolute top-1 size-4 rounded-full bg-white transition-all", included ? "left-6" : "left-1")} /></button>
-    </div>
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-2xl">
+        <div className="mb-6 flex gap-1">{steps.map((label, index) => <div key={label} className="min-w-0 flex-1"><div className={cn("h-1.5 rounded-full", index + 1 <= step ? "bg-primary" : "bg-muted")} /><div className="mt-1 hidden text-center text-[10px] text-muted-foreground sm:block">{label}</div></div>)}</div>
+        {step === 1 && <div><Badge tone="blue">Invitation from Robin</Badge><DialogTitle className="mt-4 text-3xl font-bold">Welcome to Memento</DialogTitle><DialogDescription className="mt-3 text-base leading-7">Robin invited you to privately view family photos and videos selected for you.</DialogDescription><Card className="mt-6 overflow-hidden"><div className="grid grid-cols-3 gap-1">{photos.slice(0, 3).map((photo) => <img key={photo.id} src={photo.src} alt="" className="aspect-square size-full object-cover" />)}</div></Card></div>}
+        {step === 2 && <div><span className="grid size-12 place-items-center rounded-full bg-emerald-500/15 text-emerald-500"><ShieldCheck className="size-6" /></span><DialogTitle className="mt-4 text-3xl font-bold">Private by design</DialogTitle><DialogDescription className="mt-3 text-base leading-7">You only see photos Robin has approved for you. There are no public links, and Memento never reveals photos you cannot access.</DialogDescription><div className="mt-6 space-y-3 text-sm"><div className="flex gap-3 rounded-xl bg-muted p-4"><Check className="size-5 text-emerald-500" />Comments stay with people who can view that photo.</div><div className="flex gap-3 rounded-xl bg-muted p-4"><Check className="size-5 text-emerald-500" />Favorites aren't shared with other recipients.</div></div></div>}
+        {step === 3 && <div><DialogTitle className="text-3xl font-bold">Who do you want to follow?</DialogTitle><DialogDescription className="mt-2 leading-6">Choose People you are interested in. This helps Robin decide what to share later, but it never grants access.</DialogDescription><div className="mt-5 grid gap-2 sm:grid-cols-2">{people.slice(0, 4).map((person) => <button key={person.id} className={cn("flex items-center gap-3 rounded-xl border p-3 text-left", person.interested && "border-primary bg-primary/10")}><Avatar className="size-10 overflow-hidden rounded-full"><AvatarImage src={person.image} /><AvatarFallback>{person.name[0]}</AvatarFallback></Avatar><div className="min-w-0 flex-1"><div className="truncate text-sm font-semibold">{person.name}</div><div className="text-xs text-muted-foreground">{person.relation}</div></div>{person.interested && <Check className="size-4 text-primary" />}</button>)}</div></div>}
+        {step === 4 && <div><DialogTitle className="text-3xl font-bold">How should we let you know?</DialogTitle><DialogDescription className="mt-2">You can change this any time in Settings.</DialogDescription><div className="mt-6 space-y-2">{["Email me immediately", "Send a weekly summary", "Don't email me"].map((option, index) => <button key={option} className={cn("flex w-full items-center gap-3 rounded-2xl border p-4 text-left", index === 0 ? "border-primary bg-primary/10" : "border-border")}><span className={cn("grid size-5 place-items-center rounded-full border", index === 0 ? "border-primary bg-primary" : "border-border")}>{index === 0 && <Check className="size-3 text-primary-foreground" />}</span><span className="font-semibold">{option}</span></button>)}</div></div>}
+        {step === 5 && <div className="py-4 text-center"><span className="mx-auto grid size-16 place-items-center rounded-full bg-primary/15 text-primary"><Sparkles className="size-8" /></span><DialogTitle className="mt-5 text-3xl font-bold">You're ready</DialogTitle><DialogDescription className="mx-auto mt-3 max-w-md text-base leading-7">Your private family collection is waiting. Start with the newest photos shared with you.</DialogDescription></div>}
+        <div className="mt-8 flex items-center justify-between"><Button variant="ghost" onClick={() => setStep((current) => Math.max(1, current - 1))} disabled={step === 1}><ChevronLeft className="size-4" />Back</Button>{step < 5 ? <Button onClick={() => setStep((current) => current + 1)}>{step === 1 ? "Accept invitation" : "Continue"}<ChevronRight className="size-4" /></Button> : <Button onClick={() => onOpenChange(false)}>View my photos</Button>}</div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
-function AudiencePanel({ compact = false }: { compact?: boolean }) {
-  const includedCount = people.filter((person) => person.included).length;
+function MediaViewer({ photo, open, onOpenChange }: { photo: Photo | null; open: boolean; onOpenChange: (open: boolean) => void }) {
+  const [favorite, setFavorite] = useState(false);
+  if (!photo) return null;
   return (
-    <div>
-      <div className="mb-4 flex items-center justify-between">
-        <div><h3 className="font-bold">Audience proposal</h3><p className="text-xs text-muted-foreground">{includedCount} included · 1 excluded</p></div>
-        <Button size="sm" variant="outline"><Plus className="size-3" />Add</Button>
-      </div>
-      <div className={cn("space-y-2", compact && "divide-y divide-border space-y-0")}>{people.map((person) => <AudiencePerson key={person.name} person={person} compact={compact} />)}</div>
-      <button className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl p-2 text-xs font-semibold text-muted-foreground hover:bg-accent"><Eye className="size-3.5" />View full Interest lists and audit details</button>
-    </div>
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-6xl overflow-hidden p-0">
+        <DialogTitle className="sr-only">{photo.alt}</DialogTitle>
+        <div className="grid max-h-[88vh] lg:grid-cols-[minmax(0,1fr)_340px]">
+          <div className="relative grid min-h-72 place-items-center overflow-hidden bg-zinc-950 lg:min-h-[680px]"><img src={photo.src} alt={photo.alt} className="max-h-[68vh] w-full object-contain lg:max-h-[88vh]" />{photo.video && <span className="absolute grid size-16 place-items-center rounded-full bg-white/90 text-zinc-950 shadow-xl"><Play className="ml-1 size-7 fill-current" /></span>}<div className="absolute left-3 top-3 flex gap-2 lg:hidden"><button className="grid size-10 place-items-center rounded-full bg-black/55 text-white" onClick={() => setFavorite((value) => !value)}><Heart className={cn("size-5", favorite && "fill-red-500 text-red-500")} /></button><button className="grid size-10 place-items-center rounded-full bg-black/55 text-white"><Download className="size-5" /></button></div></div>
+          <aside className="overflow-y-auto bg-card p-5"><div className="hidden items-center gap-2 lg:flex"><Button variant={favorite ? "secondary" : "outline"} size="sm" onClick={() => setFavorite((value) => !value)}><Heart className={cn("size-4", favorite && "fill-current")} />{favorite ? "Favorited" : "Favorite"}</Button><Button variant="outline" size="sm"><Download className="size-4" />Original</Button><Button variant="ghost" size="icon"><MoreHorizontal className="size-4" /></Button></div>{favorite && <div className="mt-4 rounded-xl bg-primary/10 p-3 text-xs text-primary">Favorites aren't shared with other recipients.</div>}<div className="mt-5"><h3 className="font-bold">{photo.event ?? "Shared photo"}</h3><p className="mt-1 text-sm text-muted-foreground">{photo.date}{photo.loose ? " · Shared independently" : ""}</p></div><div className="mt-6 border-t border-border pt-5"><div className="flex items-center justify-between"><h3 className="font-bold">Comments</h3><Badge>2</Badge></div><div className="mt-4 space-y-4"><div className="flex gap-3"><Avatar className="size-8 shrink-0 overflow-hidden rounded-full"><AvatarImage src="https://i.pravatar.cc/96?img=47" /><AvatarFallback>MC</AvatarFallback></Avatar><div><div className="text-xs font-bold">Maya Chen <span className="font-normal text-muted-foreground">2h</span></div><p className="mt-1 text-sm">This one made me laugh so much!</p></div></div><div className="flex gap-3"><Avatar className="size-8 shrink-0 overflow-hidden rounded-full"><AvatarImage src="https://i.pravatar.cc/96?img=11" /><AvatarFallback>RJ</AvatarFallback></Avatar><div><div className="text-xs font-bold">Robin <span className="font-normal text-muted-foreground">1h</span></div><p className="mt-1 text-sm">I almost missed that moment.</p></div></div></div><div className="mt-5 flex gap-2"><input className="min-w-0 flex-1 rounded-full border border-border bg-background px-4 text-sm outline-none focus:border-primary" placeholder="Write a comment" /><Button size="sm">Send</Button></div><p className="mt-3 text-[11px] leading-4 text-muted-foreground">Comments are visible to Robin and recipients who can access this photo.</p></div></aside>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
-function MomentList({ selected, onSelect, dense = false }: { selected?: number; onSelect?: (index: number) => void; dense?: boolean }) {
-  return (
-    <div className="space-y-3">
-      {moments.map((moment, index) => (
-        <button key={moment.title} onClick={() => onSelect?.(index)} className={cn("w-full text-left transition-colors", dense ? "border-b border-border px-3 py-3" : "rounded-2xl border border-border p-4", selected === index ? "border-primary bg-primary/10" : "hover:bg-accent/60")}>
-          <div className="flex items-start justify-between gap-3">
-            <div><div className="flex items-center gap-2"><span className="font-semibold">{moment.title}</span>{index === 2 && <Badge>Curator only</Badge>}</div><p className="mt-1 text-xs text-muted-foreground">{moment.date} · {moment.items} items</p></div>
-            <ChevronRight className="size-4 text-muted-foreground" />
-          </div>
-          <div className="mt-3 flex flex-wrap gap-2"><Badge tone="green"><UserRoundCheck className="size-3" />{moment.people}</Badge><Badge tone={moment.color}><UsersRound className="size-3" />{moment.audience}</Badge></div>
-        </button>
-      ))}
-    </div>
-  );
+function PhotoTile({ photo, onOpen, className }: { photo: Photo; onOpen: (photo: Photo) => void; className?: string }) {
+  return <button onClick={() => onOpen(photo)} className={cn("group relative overflow-hidden rounded-lg bg-muted text-left", className)}><img src={photo.src} alt={photo.alt} className="size-full object-cover transition duration-300 group-hover:scale-[1.03]" />{photo.video && <span className="absolute left-2 top-2 grid size-7 place-items-center rounded-full bg-black/55 text-white"><Play className="ml-0.5 size-3.5 fill-current" /></span>}{photo.loose && <Badge className="absolute bottom-2 left-2 bg-black/55 text-white">Shared photo</Badge>}<span className="absolute inset-0 bg-black/0 transition group-hover:bg-black/10" /></button>;
 }
 
-function PeopleMatrix() {
-  const rows = [
-    { name: "Maya Chen", avatar: "https://i.pravatar.cc/96?img=47", circles: [true, true, false], impact: "Visible to 8 recipients" },
-    { name: "Jordan Lee", avatar: "https://i.pravatar.cc/96?img=12", circles: [false, true, true], impact: "Visible to 11 recipients" },
-    { name: "Priya Shah", avatar: "https://i.pravatar.cc/96?img=32", circles: [false, false, true], impact: "Visible to 5 recipients" },
-    { name: "Leo Chen", avatar: "https://i.pravatar.cc/96?img=7", circles: [true, true, false], impact: "Visible to 8 recipients" },
+function NewForYou({ seen, onSeen, onOpen, style = "rail" }: { seen: Set<string>; onSeen: (id: string) => void; onOpen: (photo: Photo) => void; style?: "rail" | "feed" | "compact" }) {
+  const unseen = publications.filter((publication) => !seen.has(publication.id));
+  if (unseen.length === 0) return <div className="rounded-2xl border border-border bg-card p-5"><div className="flex items-center gap-3"><span className="grid size-10 place-items-center rounded-full bg-emerald-500/15 text-emerald-500"><Check className="size-5" /></span><div><h3 className="font-bold">You're all caught up</h3><p className="text-sm text-muted-foreground">New Publications will appear here.</p></div></div></div>;
+  if (style === "feed") return <div className="space-y-6">{unseen.map((publication) => { const publicationPhotos = publication.photoIds.map((id) => photos.find((photo) => photo.id === id)!).filter(Boolean); return <article key={publication.id} className="overflow-hidden rounded-3xl border border-border bg-card shadow-sm"><div className="flex items-start justify-between p-5 sm:p-6"><div><Badge tone="blue"><Sparkles className="size-3" />New for you</Badge><h2 className="mt-3 text-2xl font-bold">{publication.title}</h2><p className="mt-1 text-sm text-muted-foreground">{publication.detail} · {publication.published}</p></div><button onClick={() => onSeen(publication.id)} className="text-xs font-semibold text-muted-foreground hover:text-foreground">Mark seen</button></div><div className={cn("grid gap-1", publicationPhotos.length === 2 ? "grid-cols-2" : "grid-cols-3", publicationPhotos.length > 3 && "grid-rows-2")}><PhotoTile photo={publicationPhotos[0]} onOpen={() => { onSeen(publication.id); onOpen(publicationPhotos[0]); }} className={cn("aspect-square rounded-none", publicationPhotos.length > 3 && "col-span-2 row-span-2")} />{publicationPhotos.slice(1).map((photo) => <PhotoTile key={photo.id} photo={photo} onOpen={() => { onSeen(publication.id); onOpen(photo); }} className="aspect-square rounded-none" />)}</div><div className="flex items-center justify-between p-4 sm:px-6"><Button variant="ghost" size="sm" onClick={() => onSeen(publication.id)}>View {publication.event ? "Event" : "photos"}<ChevronRight className="size-4" /></Button><div className="flex gap-1"><Button variant="ghost" size="icon"><Heart className="size-4" /></Button><Button variant="ghost" size="icon"><MessageCircle className="size-4" /></Button></div></div></article>; })}</div>;
+  return <div className={cn(style === "rail" ? "scrollbar-none flex snap-x gap-3 overflow-x-auto pb-2" : "space-y-3")}>{unseen.map((publication) => { const publicationPhotos = publication.photoIds.map((id) => photos.find((photo) => photo.id === id)!).filter(Boolean); return <button key={publication.id} onClick={() => { onSeen(publication.id); onOpen(publicationPhotos[0]); }} className={cn("group overflow-hidden rounded-2xl border border-border bg-card text-left shadow-sm", style === "rail" ? "w-[82vw] max-w-sm shrink-0 snap-start" : "flex w-full p-2")}><div className={cn("grid grid-cols-3 gap-0.5 overflow-hidden", style === "rail" ? "h-40" : "h-24 w-36 shrink-0 rounded-xl")}>{publicationPhotos.slice(0, 3).map((photo) => <img key={photo.id} src={photo.src} alt="" className="size-full object-cover transition group-hover:scale-[1.02]" />)}</div><div className={cn("p-4", style === "compact" && "min-w-0 py-2")}><div className="flex items-center gap-2"><span className="size-2 rounded-full bg-primary" /><span className="text-xs font-bold uppercase tracking-wide text-primary">New for you</span></div><h3 className="mt-1 truncate font-bold">{publication.title}</h3><p className="mt-1 text-sm text-muted-foreground">{publication.detail} · {publication.published}</p></div></button>; })}</div>;
+}
+
+function Timeline({ onOpen, compact = false }: { onOpen: (photo: Photo) => void; compact?: boolean }) {
+  const groups = [
+    { date: "June 16", items: photos.slice(0, 2) },
+    { date: "June 15", items: photos.slice(2, 5) },
+    { date: "May 28", items: photos.slice(6, 9) },
+    { date: "April", items: photos.slice(10, 14) },
   ];
-  return (
-    <div className="overflow-hidden rounded-2xl border border-border">
-      <div className="grid grid-cols-[minmax(180px,1fr)_repeat(3,90px)] bg-muted px-4 py-3 text-xs font-semibold text-muted-foreground"><span>Person</span><span className="text-center">Chen</span><span className="text-center">Local</span><span className="text-center">Shah</span></div>
-      {rows.map((row) => <div key={row.name} className="grid grid-cols-[minmax(180px,1fr)_repeat(3,90px)] items-center border-t border-border px-4 py-3"><div className="flex items-center gap-3"><Avatar className="size-9 overflow-hidden rounded-full"><AvatarImage src={row.avatar} /><AvatarFallback>{row.name[0]}</AvatarFallback></Avatar><div><div className="text-sm font-semibold">{row.name}</div><div className="text-xs text-muted-foreground">{row.impact}</div></div></div>{row.circles.map((active, index) => <div key={index} className="grid place-items-center"><button className={cn("grid size-7 place-items-center rounded-lg border", active ? "border-primary bg-primary text-primary-foreground" : "border-border hover:bg-accent")}>{active && <Check className="size-4" />}</button></div>)}</div>)}
-    </div>
-  );
+  return <div className="space-y-8">{groups.map((group) => <section key={group.date}><div className="mb-3 flex items-center justify-between"><h3 className="text-sm font-bold">{group.date}</h3><button className="text-xs text-muted-foreground hover:text-foreground">Select</button></div><div className={cn("grid gap-1", compact ? "grid-cols-2 sm:grid-cols-3" : "grid-cols-2 sm:grid-cols-3 xl:grid-cols-5")}>{group.items.map((photo, index) => <PhotoTile key={photo.id} photo={photo} onOpen={onOpen} className={cn("aspect-square", !compact && index === 0 && group.items.length > 3 && "sm:col-span-2 sm:row-span-2")} />)}</div></section>)}</div>;
 }
 
-function VariantA({ dark, toggle }: { dark: boolean; toggle: () => void }) {
-  const [view, setView] = useState<AppView>("inbox");
-  const [section, setSection] = useState<EditorSection>("moments");
-  const nav = [
-    { id: "inbox" as const, label: "Inbox", icon: Inbox, count: 7 },
-    { id: "events" as const, label: "Events", icon: GalleryHorizontalEnd },
-    { id: "people" as const, label: "People", icon: ContactRound },
-    { id: "activity" as const, label: "Activity", icon: Clock3 },
+function EventsView({ onOpen }: { onOpen: (photo: Photo) => void }) {
+  const [selected, setSelected] = useState<string | null>(null);
+  const eventCards = [
+    { title: "Summer reunion", date: "June 14–16", count: 24, cover: photos[0], photos: photos.slice(0, 6) },
+    { title: "Grandma's 80th", date: "May 28", count: 31, cover: photos[7], photos: photos.slice(6, 9) },
+    { title: "Spring break", date: "April 11–12", count: 42, cover: photos[11], photos: photos.slice(10, 13) },
   ];
-  return (
-    <div className="min-h-screen bg-background pb-24">
-      <aside className="fixed inset-y-0 left-0 z-20 hidden w-60 border-r border-border bg-card p-5 lg:block">
-        <Brand />
-        <nav className="mt-10 space-y-1">{nav.map((item) => <button key={item.id} onClick={() => setView(item.id)} className={cn("flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold", view === item.id ? "bg-primary/15 text-primary" : "text-muted-foreground hover:bg-accent hover:text-foreground")}><item.icon className="size-4" /><span className="flex-1 text-left">{item.label}</span>{item.count && <Badge tone="blue">{item.count}</Badge>}</button>)}</nav>
-        <div className="absolute inset-x-5 bottom-5"><button className="flex w-full items-center gap-3 rounded-xl p-3 hover:bg-accent"><Avatar className="size-9 overflow-hidden rounded-full"><AvatarImage src="https://i.pravatar.cc/96?img=11" /><AvatarFallback>RJ</AvatarFallback></Avatar><div className="text-left"><div className="text-sm font-semibold">Robin</div><div className="text-xs text-muted-foreground">Curator</div></div><Settings className="ml-auto size-4 text-muted-foreground" /></button></div>
-      </aside>
-      <header className="sticky top-0 z-10 flex h-16 items-center justify-between border-b border-border bg-background/90 px-4 backdrop-blur-xl lg:ml-60 lg:px-8"><div className="lg:hidden"><Brand /></div><div className="hidden text-sm text-muted-foreground lg:block">All changes saved</div><HeaderActions dark={dark} toggle={toggle} /></header>
-      <main className="mx-auto max-w-7xl px-4 py-7 lg:ml-60 lg:px-8">
-        {view === "inbox" && <div>
-          <div className="mb-8"><Badge tone="blue"><Sparkles className="size-3" />7 items need attention</Badge><h1 className="mt-3 text-3xl font-bold tracking-tight sm:text-4xl">Good afternoon, Robin</h1><p className="mt-2 text-muted-foreground">Start with privacy and delivery issues, then keep publishing.</p></div>
-          <div className="grid gap-8 xl:grid-cols-[minmax(0,1fr)_380px]">
-            <div><div className="mb-3 flex items-center justify-between"><h2 className="font-bold">Your work queue</h2><Button size="sm" variant="ghost"><ListFilter className="size-4" />Filter</Button></div><div className="space-y-3">{queue.map((item, index) => <Card key={item.title} className={cn("flex flex-col gap-4 p-4 sm:flex-row sm:items-center", index === 0 && "border-red-500/35")}><div className={cn("grid size-11 shrink-0 place-items-center rounded-xl", item.tone === "red" ? "bg-red-500/15 text-red-500" : item.tone === "amber" ? "bg-amber-500/15 text-amber-500" : item.tone === "purple" ? "bg-violet-500/15 text-violet-500" : "bg-blue-500/15 text-blue-500")}><item.icon className="size-5" /></div><div className="min-w-0 flex-1"><h3 className="font-semibold">{item.title}</h3><p className="mt-1 text-sm text-muted-foreground">{item.meta}</p></div><Button variant={index === 1 ? "default" : "outline"} size="sm" onClick={() => { setView("events"); setSection(index === 2 ? "review" : "moments"); }}>{item.action}<ChevronRight className="size-4" /></Button></Card>)}</div>
-            <Card className="mt-8 p-5"><div className="flex items-center justify-between"><div><h2 className="font-bold">New from Immich</h2><p className="text-sm text-muted-foreground">Triage individually or select several</p></div><Button size="sm" variant="outline">Select</Button></div><div className="mt-4 grid grid-cols-2 gap-3"><div className="overflow-hidden rounded-xl border border-border"><img src={photos[6].src} alt={photos[6].alt} className="aspect-video w-full object-cover" /><div className="p-3"><div className="text-sm font-semibold">School picnic</div><div className="text-xs text-muted-foreground">34 items</div><div className="mt-3 flex gap-1"><Button size="sm" className="flex-1">Draft</Button><Button size="sm" variant="ghost">Ignore</Button></div></div></div><div className="overflow-hidden rounded-xl border border-border"><img src={photos[4].src} alt={photos[4].alt} className="aspect-video w-full object-cover" /><div className="p-3"><div className="text-sm font-semibold">Garden</div><div className="text-xs text-muted-foreground">12 items</div><div className="mt-3 flex gap-1"><Button size="sm" className="flex-1">Draft</Button><Button size="sm" variant="ghost">Ignore</Button></div></div></div></div></Card></div>
-            <div><Card className="sticky top-24 overflow-hidden"><div className="relative"><img src={photos[3].src} alt={photos[3].alt} className="h-52 w-full object-cover" /><div className="photo-fade absolute inset-0" /><div className="absolute bottom-4 left-4 text-white"><Badge className="mb-2 bg-white/15 text-white">Draft Event</Badge><h2 className="text-2xl font-bold">Summer reunion</h2><p className="text-sm text-white/70">86 items · Jun 14–16</p></div></div><div className="p-5"><div className="mb-3 flex items-center justify-between text-sm"><span className="font-semibold">Review progress</span><span className="text-muted-foreground">4 of 5</span></div><div className="h-2 overflow-hidden rounded-full bg-muted"><div className="h-full w-4/5 rounded-full bg-primary" /></div><div className="mt-5 space-y-3 text-sm">{["Media organized", "Attendance confirmed", "Audiences reviewed", "Recipient preview", "Final review"].map((label, index) => <div key={label} className="flex items-center gap-3"><span className={cn("grid size-5 place-items-center rounded-full", index < 4 ? "bg-emerald-500 text-white" : "border border-border")} >{index < 4 && <Check className="size-3" />}</span><span className={cn(index === 4 && "font-semibold")}>{label}</span></div>)}</div><Button className="mt-6 w-full" onClick={() => setView("events")}>Continue review<MoveRight className="size-4" /></Button></div></Card></div>
-          </div>
-        </div>}
-        {view === "events" && <div>
-          <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between"><div><button onClick={() => setView("inbox")} className="mb-3 flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground"><ArrowLeft className="size-4" />Inbox</button><div className="flex items-center gap-2"><Badge>Draft Event</Badge><span className="text-xs text-muted-foreground">Saved just now</span></div><h1 className="mt-2 text-3xl font-bold">Summer reunion</h1><p className="mt-1 text-sm text-muted-foreground">Jun 14–16 · 86 Media items · 4 Moments</p></div><div className="flex gap-2"><Button variant="outline"><Eye className="size-4" />View as Recipient</Button><PublishDialog><Button><Upload className="size-4" />Review and publish</Button></PublishDialog></div></div>
-          <div className="mb-6 overflow-x-auto scrollbar-none"><div className="flex min-w-max gap-1 rounded-xl bg-muted p-1">{(["media", "moments", "attendance", "audiences", "review"] as EditorSection[]).map((item) => <button key={item} onClick={() => setSection(item)} className={cn("rounded-lg px-4 py-2 text-sm font-semibold capitalize", section === item ? "bg-card text-foreground shadow-sm" : "text-muted-foreground")}>{item}{item === "review" && <span className="ml-2 inline-block size-2 rounded-full bg-blue-500" />}</button>)}</div></div>
-          {section === "media" && <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">{photos.concat(photos.slice(0, 2)).map((photo, index) => <div key={`${photo.src}${index}`} className="group relative overflow-hidden rounded-xl"><img src={photo.src} alt={photo.alt} className="aspect-square size-full object-cover" /><button className="absolute right-2 top-2 grid size-7 place-items-center rounded-full bg-black/60 text-white opacity-0 group-hover:opacity-100"><MoreHorizontal className="size-4" /></button>{index === 2 && <Badge className="absolute bottom-2 left-2 bg-black/60 text-white">Unknown date</Badge>}</div>)}</div>}
-          {section === "moments" && <div className="grid gap-6 lg:grid-cols-[380px_minmax(0,1fr)]"><div><div className="mb-4 flex items-center justify-between"><div><h2 className="font-bold">Moments</h2><p className="text-sm text-muted-foreground">Curator-only organization</p></div><Button size="sm" variant="outline"><Plus className="size-4" />New</Button></div><MomentList selected={1} /></div><Card className="overflow-hidden"><PhotoStrip className="rounded-none" /><div className="p-5"><div className="flex items-start justify-between"><div><Badge tone="blue">Jun 15</Badge><h2 className="mt-2 text-xl font-bold">Saturday picnic</h2><p className="text-sm text-muted-foreground">42 items · default capture-time order</p></div><Button variant="ghost" size="icon"><MoreHorizontal className="size-4" /></Button></div><div className="mt-5 grid gap-3 sm:grid-cols-2"><Button variant="outline"><GitMerge className="size-4" />Merge Moment</Button><Button variant="outline"><Split className="size-4" />Split or move items</Button></div><div className="mt-6 rounded-2xl bg-muted p-4"><div className="flex items-center gap-2 font-semibold"><WandSparkles className="size-4 text-blue-500" />Later arrivals follow your organization</div><p className="mt-1 text-sm text-muted-foreground">New items captured on Jun 15 will enter this merged Moment.</p></div></div></Card></div>}
-          {section === "attendance" && <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px]"><Card className="p-5"><div className="mb-5 flex items-center justify-between"><div><h2 className="font-bold">Suggested people</h2><p className="text-sm text-muted-foreground">Confirm Attendance for Saturday picnic</p></div><Badge tone="amber">3 to review</Badge></div><div className="grid gap-3 sm:grid-cols-2">{["Maya Chen", "Leo Chen", "Nora Lee", "Eli Chen"].map((name, index) => <div className="flex items-center gap-3 rounded-xl border border-border p-3" key={name}><Avatar className="size-11 overflow-hidden rounded-full"><AvatarImage src={`https://i.pravatar.cc/96?img=${[47,7,44,5][index]}`} /><AvatarFallback>{name[0]}</AvatarFallback></Avatar><div className="flex-1"><div className="font-semibold">{name}</div><button className="text-xs text-blue-500">Inspect supporting Media</button></div><Button size="icon" variant={index < 2 ? "default" : "outline"}><Check className="size-4" /></Button></div>)}</div></Card><Card className="p-5"><h3 className="font-bold">Attendance matters</h3><p className="mt-2 text-sm leading-6 text-muted-foreground">Confirmed Attendance explains Audience proposals. Face suggestions never grant access.</p><PhotoStrip className="mt-5" /></Card></div>}
-          {section === "audiences" && <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_340px]"><Card className="p-5"><AudiencePanel /></Card><Card className="h-fit p-5"><h3 className="font-bold">Privacy summary</h3><div className="mt-4 space-y-4 text-sm"><div className="flex gap-3"><span className="grid size-8 place-items-center rounded-full bg-emerald-500/15 text-emerald-500"><UserRoundCheck className="size-4" /></span><div><strong>2 recipients are present</strong><p className="text-xs text-muted-foreground">Direct Attendance is always a proposal reason.</p></div></div><div className="flex gap-3"><span className="grid size-8 place-items-center rounded-full bg-blue-500/15 text-blue-500"><UsersRound className="size-4" /></span><div><strong>2 Interest-list matches</strong><p className="text-xs text-muted-foreground">You can inspect complete Interest lists.</p></div></div><div className="flex gap-3"><span className="grid size-8 place-items-center rounded-full bg-violet-500/15 text-violet-500"><Plus className="size-4" /></span><div><strong>1 manual inclusion</strong><p className="text-xs text-muted-foreground">Priya Shah was added by you.</p></div></div></div></Card></div>}
-          {section === "review" && <ReviewPage />}
-        </div>}
-        {view === "people" && <div><div className="mb-7 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between"><div><Badge tone="blue">People and discovery</Badge><h1 className="mt-2 text-3xl font-bold">Visibility circles</h1><p className="mt-1 text-muted-foreground">Manage discovery without changing media access.</p></div><div className="flex gap-2"><Button variant="outline"><ContactRound className="size-4" />People directory</Button><Button><Plus className="size-4" />New circle</Button></div></div><Card className="p-5"><div className="mb-5 flex items-center justify-between"><div><h2 className="font-bold">Circle membership</h2><p className="text-sm text-muted-foreground">Overlapping circles are expected. Membership is not transitive.</p></div><Button variant="outline" size="sm"><Eye className="size-4" />Preview as Maya</Button></div><div className="overflow-x-auto"><PeopleMatrix /></div><div className="mt-4 flex items-start gap-2 rounded-xl bg-blue-500/10 p-3 text-sm text-blue-600 dark:text-blue-300"><Info className="mt-0.5 size-4 shrink-0" />Changing membership may deactivate Interest-list choices. Existing Audiences and access will not change.</div></Card></div>}
-        {view === "activity" && <div><h1 className="text-3xl font-bold">Curator activity</h1><p className="mt-2 text-muted-foreground">Publications, access changes, interactions, and source reconciliation.</p><Card className="mt-8 divide-y divide-border">{["You confirmed Maya and Leo in Saturday picnic", "Immich reconciliation found 18 changes", "Jordan favorited 4 Media items", "You withdrew one Media item from Lake Weekend"].map((text, index) => <div key={text} className="flex items-center gap-3 p-4"><span className="grid size-9 place-items-center rounded-full bg-muted">{index === 2 ? <MessageSquare className="size-4" /> : <Clock3 className="size-4" />}</span><div className="flex-1 text-sm font-medium">{text}</div><span className="text-xs text-muted-foreground">{index + 1}h</span></div>)}</Card></div>}
-      </main>
-      <nav className="fixed inset-x-3 bottom-20 z-30 flex justify-around rounded-2xl border border-border bg-card/95 p-2 shadow-xl backdrop-blur lg:hidden">{nav.slice(0, 4).map((item) => <button key={item.id} onClick={() => setView(item.id)} className={cn("flex min-w-16 flex-col items-center gap-1 rounded-xl px-2 py-1.5 text-[10px] font-semibold", view === item.id ? "bg-primary/15 text-primary" : "text-muted-foreground")}><item.icon className="size-5" />{item.label}</button>)}</nav>
-    </div>
-  );
+  const event = eventCards.find((item) => item.title === selected);
+  if (event) return <div><button onClick={() => setSelected(null)} className="mb-5 flex items-center gap-2 text-sm font-semibold text-muted-foreground hover:text-foreground"><ChevronLeft className="size-4" />All Events</button><div className="relative overflow-hidden rounded-3xl"><img src={event.cover.src} alt="" className="h-64 w-full object-cover sm:h-80" /><div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/10 to-transparent" /><div className="absolute inset-x-0 bottom-0 p-6 text-white sm:p-8"><h1 className="text-3xl font-bold sm:text-4xl">{event.title}</h1><p className="mt-2 text-white/75">{event.date} · {event.count} photos and videos</p></div></div><div className="mt-6 flex items-center justify-between"><div><h2 className="font-bold">The Event</h2><p className="text-sm text-muted-foreground">Everything shared with you, in Robin's chosen order.</p></div><Button variant="outline" size="sm"><Download className="size-4" />Download Event</Button></div><div className="mt-4 grid grid-cols-2 gap-1 sm:grid-cols-3 lg:grid-cols-4">{event.photos.concat(event.photos.slice(0, 2)).map((photo, index) => <PhotoTile key={`${photo.id}-${index}`} photo={photo} onOpen={onOpen} className="aspect-square" />)}</div></div>;
+  return <div><div className="mb-7"><h1 className="text-3xl font-bold">Events</h1><p className="mt-1 text-muted-foreground">Family stories collected and arranged by Robin.</p></div><div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-3">{eventCards.map((item) => <button key={item.title} onClick={() => setSelected(item.title)} className="group overflow-hidden rounded-3xl border border-border bg-card text-left shadow-sm"><div className="relative overflow-hidden"><img src={item.cover.src} alt="" className="aspect-[4/3] w-full object-cover transition duration-500 group-hover:scale-105" /><div className="absolute inset-0 bg-gradient-to-t from-black/75 via-transparent to-transparent" /><div className="absolute bottom-4 left-4 text-white"><h2 className="text-xl font-bold">{item.title}</h2><p className="text-sm text-white/75">{item.date}</p></div></div><div className="flex items-center justify-between p-4"><span className="text-sm text-muted-foreground">{item.count} photos and videos</span><ChevronRight className="size-4" /></div></button>)}</div></div>;
 }
 
-function ReviewPage() {
-  return (
-    <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
-      <div><Card className="p-5"><div className="flex items-center justify-between"><div><Badge tone="green"><Check className="size-3" />Ready</Badge><h2 className="mt-2 text-xl font-bold">Review all Moment Audiences</h2></div><Button variant="outline" size="sm"><Eye className="size-4" />View as Recipient</Button></div><div className="mt-5"><MomentList /></div></Card></div>
-      <div className="space-y-4"><Card className="p-5"><h3 className="font-bold">Publication summary</h3><dl className="mt-4 space-y-3 text-sm"><div className="flex justify-between"><dt className="text-muted-foreground">Media items</dt><dd className="font-semibold">86</dd></div><div className="flex justify-between"><dt className="text-muted-foreground">Moments</dt><dd className="font-semibold">4 reviewed</dd></div><div className="flex justify-between"><dt className="text-muted-foreground">Maximum audience</dt><dd className="font-semibold">12 recipients</dd></div><div className="flex justify-between"><dt className="text-muted-foreground">Curator-only</dt><dd className="font-semibold">1 Moment</dd></div></dl><PublishDialog><Button className="mt-6 w-full"><Upload className="size-4" />Publish Event</Button></PublishDialog></Card><Card className="p-5"><div className="flex gap-3"><CircleHelp className="size-5 text-muted-foreground" /><div><h3 className="font-semibold">Notifications come later</h3><p className="mt-1 text-sm text-muted-foreground">This prototype focuses on the publishing decision. Notification behavior is resolved separately.</p></div></div></Card></div>
-    </div>
-  );
+function PeopleView() {
+  const [query, setQuery] = useState("");
+  const [choices, setChoices] = useState(() => new Set(people.filter((person) => person.interested).map((person) => person.id)));
+  const [selected, setSelected] = useState(people[0]);
+  const visible = people.filter((person) => person.name.toLowerCase().includes(query.toLowerCase()));
+  const toggle = (id: number) => setChoices((current) => { const next = new Set(current); next.has(id) ? next.delete(id) : next.add(id); return next; });
+  return <div><div className="mb-6"><Badge tone="blue">People you can discover</Badge><h1 className="mt-3 text-3xl font-bold">People I'm interested in</h1><p className="mt-2 max-w-2xl text-muted-foreground">Your choices help Robin decide what to share later. They never grant access to photos.</p></div><div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_340px]"><Card className="overflow-hidden"><div className="border-b border-border p-4"><label className="flex items-center gap-3 rounded-full bg-muted px-4 py-2.5"><Search className="size-4 text-muted-foreground" /><input value={query} onChange={(event) => setQuery(event.target.value)} className="min-w-0 flex-1 bg-transparent text-sm outline-none" placeholder="Search People" /></label></div><div className="divide-y divide-border">{visible.map((person) => <div key={person.id} className={cn("flex items-center gap-3 p-4", selected.id === person.id && "bg-primary/5")}><button onClick={() => setSelected(person)} className="flex min-w-0 flex-1 items-center gap-3 text-left"><Avatar className="size-12 shrink-0 overflow-hidden rounded-full"><AvatarImage src={person.image} /><AvatarFallback>{person.name[0]}</AvatarFallback></Avatar><div className="min-w-0"><div className="font-bold">{person.name}</div><div className="text-sm text-muted-foreground">{person.relation}</div></div></button><button onClick={() => toggle(person.id)} className={cn("relative h-7 w-12 shrink-0 rounded-full transition", choices.has(person.id) ? "bg-primary" : "bg-muted")} aria-label={`${choices.has(person.id) ? "Remove" : "Add"} ${person.name}`}><span className={cn("absolute top-1 size-5 rounded-full bg-white transition-all", choices.has(person.id) ? "left-6" : "left-1")} /></button></div>)}</div></Card><Card className="hidden h-fit overflow-hidden lg:block"><img src={selected.image} alt="" className="aspect-[16/10] w-full object-cover" /><div className="p-5"><h2 className="text-xl font-bold">{selected.name}</h2><p className="text-sm text-muted-foreground">{selected.relation}</p><div className="mt-5 rounded-xl bg-muted p-4 text-sm leading-6"><strong>Why can I see {selected.name.split(" ")[0]}?</strong><p className="mt-1 text-muted-foreground">You and {selected.name.split(" ")[0]} are in a shared family Visibility circle managed by Robin.</p></div></div></Card></div></div>;
 }
 
-const workflowSteps = [
-  { label: "Media", detail: "86 organized", complete: true },
-  { label: "Moments", detail: "4 organized", complete: true },
-  { label: "Attendance", detail: "12 confirmed", complete: true },
-  { label: "Audiences", detail: "4 reviewed", complete: true },
-  { label: "Final review", detail: "Next step", complete: false },
-];
-
-function WorkflowProgress() {
-  return (
-    <div className="border-b border-border bg-card px-4 py-3">
-      <div className="mb-3 flex items-center justify-between gap-4">
-        <div className="flex items-center gap-2"><Badge tone="blue">Draft · 4 of 5 complete</Badge><span className="hidden text-xs text-muted-foreground sm:inline">Next: final Publication review</span></div>
-        <span className="text-xs font-semibold text-primary">80%</span>
-      </div>
-      <div className="flex items-start">
-        {workflowSteps.map((step, index) => (
-          <div key={step.label} className="relative flex min-w-0 flex-1 flex-col items-center text-center">
-            {index > 0 && <span className={cn("absolute right-1/2 top-2.5 h-0.5 w-full", step.complete ? "bg-primary" : "bg-border")} />}
-            <span className={cn("relative z-[1] grid size-5 place-items-center rounded-full border", step.complete ? "border-primary bg-primary text-primary-foreground" : "border-primary bg-card text-primary")}>{step.complete ? <Check className="size-3" /> : <span className="size-1.5 rounded-full bg-primary" />}</span>
-            <span className={cn("mt-1.5 truncate text-[10px] font-semibold sm:text-xs", !step.complete && "text-primary")}>{step.label}</span>
-            <span className="hidden text-[10px] text-muted-foreground md:block">{step.detail}</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
+function FavoritesView({ onOpen }: { onOpen: (photo: Photo) => void }) {
+  const favorites = [photos[1], photos[3], photos[7], photos[10], photos[13]];
+  return <div><div className="mb-7"><span className="grid size-12 place-items-center rounded-full bg-red-500/15 text-red-500"><Heart className="size-6 fill-current" /></span><h1 className="mt-4 text-3xl font-bold">Favorites</h1><p className="mt-1 text-muted-foreground">Favorites aren't shared with other recipients.</p></div><div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">{favorites.map((photo) => <PhotoTile key={photo.id} photo={photo} onOpen={onOpen} className="aspect-square" />)}</div></div>;
 }
 
-function VariantB({ dark, toggle }: { dark: boolean; toggle: () => void }) {
-  const [selectedMoment, setSelectedMoment] = useState(1);
-  const [queueOpen, setQueueOpen] = useState(true);
-  return (
-    <div className="flex h-screen min-h-[680px] flex-col overflow-hidden bg-background pb-16">
-      <header className="flex h-14 shrink-0 items-center gap-4 border-b border-border bg-card px-3"><Brand /><Button variant="ghost" size="icon" onClick={() => setQueueOpen((value) => !value)}><PanelLeftClose className="size-4" /></Button><div className="hidden items-center gap-2 text-sm sm:flex"><span className="text-muted-foreground">Events</span><ChevronRight className="size-3" /><strong>Summer reunion</strong><Badge>Draft</Badge></div><div className="ml-auto flex items-center gap-2"><span className="hidden text-xs text-muted-foreground md:block">Saved 10 sec ago</span><Button variant="outline" size="sm"><Eye className="size-4" />Preview</Button><PublishDialog><Button size="sm"><Upload className="size-4" />Publish</Button></PublishDialog><ThemeButton dark={dark} toggle={toggle} /></div></header>
-      <div className="flex min-h-0 flex-1">
-        <aside className={cn("hidden shrink-0 border-r border-border bg-card transition-all lg:block", queueOpen ? "w-80" : "w-0 overflow-hidden border-0")}>
-          <div className="flex items-center justify-between border-b border-border p-3">
-            <div><div className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Curator work</div><div className="text-xs text-muted-foreground">2 in progress · 3 need attention</div></div>
-            <Button size="icon" variant="ghost"><ListFilter className="size-4" /></Button>
-          </div>
-          <div className="h-[calc(100%-64px)] overflow-y-auto">
-            <div className="border-b border-border p-3">
-              <div className="mb-2 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Needs attention</div>
-              <button className="flex w-full items-start gap-2 rounded-xl border border-red-500/25 bg-red-500/5 p-3 text-left hover:bg-red-500/10">
-                <AlertTriangle className="mt-0.5 size-4 shrink-0 text-red-500" />
-                <div className="min-w-0 flex-1"><div className="text-xs font-semibold">3 source files unavailable</div><div className="mt-1 text-[11px] text-muted-foreground">Lake Weekend · delivery stopped</div></div>
-                <ChevronRight className="size-4 text-muted-foreground" />
-              </button>
-            </div>
-            <div className="border-b border-border p-3">
-              <div className="mb-2 flex items-center justify-between"><span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Work in progress</span><button className="text-[10px] font-semibold text-primary">View all</button></div>
-              <button className="w-full rounded-xl border border-primary/40 bg-primary/10 p-3 text-left">
-                <div className="flex items-start justify-between gap-2"><div><div className="text-xs font-bold">Summer reunion</div><div className="mt-0.5 text-[11px] text-muted-foreground">Draft Event · 86 items</div></div><Badge tone="blue">4 of 5</Badge></div>
-                <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-border"><div className="h-full w-4/5 rounded-full bg-primary" /></div>
-                <div className="mt-2 flex items-center justify-between text-[11px]"><span className="text-muted-foreground">Next: final review</span><span className="font-semibold text-primary">80%</span></div>
-              </button>
-              <button className="mt-2 w-full rounded-xl border border-border p-3 text-left hover:bg-accent">
-                <div className="flex items-start justify-between gap-2"><div><div className="text-xs font-bold">Grandma's 80th</div><div className="mt-0.5 text-[11px] text-muted-foreground">Staged update · 18 changes</div></div><Badge tone="amber">3 of 5</Badge></div>
-                <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-border"><div className="h-full w-3/5 rounded-full bg-amber-500" /></div>
-                <div className="mt-2 text-[11px] text-muted-foreground">Next: review Audience changes</div>
-              </button>
-            </div>
-            <div className="border-b border-border p-3">
-              <button className="flex w-full items-center gap-2 rounded-lg p-2 text-left text-xs hover:bg-accent"><ImagePlus className="size-4 text-primary" /><span className="flex-1 font-semibold">2 new Source albums</span><Badge tone="blue">Triage</Badge></button>
-            </div>
-            <div className="p-3">
-              <div className="mb-2 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Summer reunion steps</div>
-              {workflowSteps.map((step, index) => <button key={step.label} className={cn("flex w-full items-center rounded-lg px-2 py-2 text-xs", index === 1 ? "bg-accent font-semibold" : "text-muted-foreground hover:bg-accent")}><span className={cn("mr-2 grid size-4 place-items-center rounded-full border", step.complete ? "border-emerald-500 bg-emerald-500 text-white" : "border-primary text-primary")}>{step.complete ? <Check className="size-2.5" /> : <span className="size-1 rounded-full bg-primary" />}</span><span className="flex-1 text-left">{step.label}</span><span className="text-[10px]">{step.detail}</span></button>)}
-            </div>
-          </div>
-        </aside>
-        <main className="min-w-0 flex-1 overflow-y-auto"><WorkflowProgress /><div className="sticky top-0 z-10 flex items-center gap-3 border-b border-border bg-background/95 px-4 py-3 backdrop-blur"><div><h1 className="text-lg font-bold">Moment organizer</h1><p className="text-xs text-muted-foreground">4 Moments · 86 items · select a Moment to inspect privacy</p></div><div className="ml-auto hidden gap-1 sm:flex"><Button size="sm" variant="outline"><GitMerge className="size-3" />Merge</Button><Button size="sm" variant="outline"><Split className="size-3" />Split</Button><Button size="sm" variant="outline"><Plus className="size-3" />Moment</Button></div></div><div className="grid grid-cols-[150px_minmax(0,1fr)] gap-1 p-3 sm:grid-cols-[190px_minmax(0,1fr)]">{moments.map((moment, row) => <div key={moment.title} className="contents"><button onClick={() => setSelectedMoment(row)} className={cn("sticky left-0 z-[1] min-h-32 rounded-l-xl border border-r-0 border-border p-3 text-left", selectedMoment === row ? "border-primary bg-primary/10" : "bg-card hover:bg-accent")}><div className="text-xs font-bold">{moment.title}</div><div className="mt-1 text-[11px] text-muted-foreground">{moment.date} · {moment.items}</div><div className="mt-3 flex flex-col items-start gap-1"><Badge tone={moment.color}>{moment.audience}</Badge>{row === 1 && <Badge tone="green">12 present</Badge>}</div></button><button onClick={() => setSelectedMoment(row)} className={cn("grid min-w-0 grid-cols-4 gap-1 overflow-hidden rounded-r-xl border border-l-0 border-border p-1", selectedMoment === row && "border-primary bg-primary/10")}>{photos.slice(row, row + 4).map((photo, index) => <div key={`${photo.src}${index}`} className="relative min-w-0 overflow-hidden rounded-lg"><img src={photo.src} alt={photo.alt} className="h-32 w-full object-cover sm:h-40" />{row === 2 && index === 3 && <div className="absolute inset-0 grid place-items-center bg-black/60 text-xs font-bold text-white">+5</div>}</div>)}</button></div>)}</div></main>
-        <aside className="hidden w-96 shrink-0 overflow-y-auto border-l border-border bg-card xl:block"><div className="border-b border-border p-4"><div className="flex items-start justify-between"><div><Badge tone="blue">Jun 15</Badge><h2 className="mt-2 text-lg font-bold">{moments[selectedMoment].title}</h2><p className="text-xs text-muted-foreground">{moments[selectedMoment].items} items · {moments[selectedMoment].people}</p></div><Button size="icon" variant="ghost"><MoreHorizontal className="size-4" /></Button></div></div><div className="p-4"><AudiencePanel compact /></div></aside>
-      </div>
-      <div className="fixed inset-x-0 bottom-16 z-30 border-t border-border bg-card p-2 xl:hidden"><div className="flex items-center justify-between"><div><div className="text-sm font-semibold">{moments[selectedMoment].title}</div><div className="text-xs text-muted-foreground">{moments[selectedMoment].audience}</div></div><Button size="sm"><ShieldCheck className="size-4" />Inspect Audience</Button></div></div>
-    </div>
-  );
+function CommonView({ view, onOpen }: { view: View; onOpen: (photo: Photo) => void }) {
+  if (view === "events") return <EventsView onOpen={onOpen} />;
+  if (view === "people") return <PeopleView />;
+  if (view === "favorites") return <FavoritesView onOpen={onOpen} />;
+  return null;
 }
 
-function VariantC({ dark, toggle }: { dark: boolean; toggle: () => void }) {
-  const [selectedMoment, setSelectedMoment] = useState(1);
-  const [privacyOpen, setPrivacyOpen] = useState(true);
-  const visiblePhotos = useMemo(() => photos.concat(photos.slice(0, 4)), []);
-  return (
-    <div className="relative min-h-screen overflow-hidden bg-zinc-950 pb-24 text-white">
-      <div className="fixed inset-x-0 top-0 z-20 flex h-16 items-center gap-3 bg-gradient-to-b from-black/80 to-transparent px-4 sm:px-6"><button className="grid size-10 place-items-center rounded-full bg-black/35 backdrop-blur"><Menu className="size-5" /></button><Brand /><Badge className="hidden bg-white/15 text-white sm:inline-flex">Draft Event</Badge><div className="ml-auto flex items-center gap-2"><button className="grid size-10 place-items-center rounded-full bg-black/35 backdrop-blur"><Search className="size-5" /></button><ThemeButton dark={dark} toggle={toggle} /><PublishDialog><Button className="bg-white text-zinc-950 hover:bg-white/90"><Upload className="size-4" />Review</Button></PublishDialog></div></div>
-      <div className="relative h-[58vh] min-h-[440px] overflow-hidden"><div className="grid h-full grid-cols-3 grid-rows-2 gap-1">{visiblePhotos.slice(0, 6).map((photo, index) => <button key={`${photo.src}${index}`} className={cn("group relative overflow-hidden", index === 0 && "col-span-2 row-span-2")}><img src={photo.src} alt={photo.alt} className="size-full object-cover transition-transform duration-500 group-hover:scale-105" /><div className="absolute inset-0 bg-black/0 transition-colors group-hover:bg-black/20" /><span className="absolute right-3 top-3 grid size-7 place-items-center rounded-full border border-white/50 bg-black/20 opacity-0 group-hover:opacity-100"><Check className="size-4" /></span></button>)}</div><div className="pointer-events-none absolute inset-x-0 bottom-0 h-48 bg-gradient-to-t from-zinc-950 to-transparent" /><div className="absolute bottom-8 left-5 sm:left-8"><div className="mb-2 flex gap-2"><Badge className="bg-white/15 text-white">Summer reunion</Badge><Badge className="bg-blue-500/80 text-white">Saved</Badge></div><h1 className="text-3xl font-bold sm:text-5xl">{moments[selectedMoment].title}</h1><p className="mt-2 text-white/70">{moments[selectedMoment].date} · {moments[selectedMoment].items} Media items</p></div></div>
-      <div className="relative z-10 mx-auto -mt-2 grid max-w-[1500px] gap-5 px-4 sm:px-6 xl:grid-cols-[minmax(0,1fr)_390px]">
-        <div><div className="mb-3 flex items-center justify-between"><div><h2 className="font-semibold">Event timeline</h2><p className="text-xs text-white/50">Drag items between Moments on desktop. Select and move on mobile.</p></div><div className="flex gap-1"><Button size="sm" className="border-white/15 bg-white/10 text-white hover:bg-white/20"><GitMerge className="size-4" />Merge</Button><Button size="sm" className="border-white/15 bg-white/10 text-white hover:bg-white/20"><Split className="size-4" />Split</Button></div></div><div className="scrollbar-none flex snap-x gap-3 overflow-x-auto pb-4">{moments.map((moment, index) => <button key={moment.title} onClick={() => setSelectedMoment(index)} className={cn("min-w-64 snap-start rounded-2xl border p-3 text-left", selectedMoment === index ? "border-blue-400 bg-blue-500/15" : "border-white/10 bg-white/5 hover:bg-white/10")}><PhotoStrip offset={index % 3} /><div className="mt-3 flex items-start justify-between"><div><div className="font-semibold">{moment.title}</div><div className="text-xs text-white/50">{moment.date} · {moment.items} items</div></div>{selectedMoment === index && <span className="grid size-6 place-items-center rounded-full bg-blue-500"><Check className="size-3" /></span>}</div><div className="mt-3"><Badge className={cn("text-white", index === 2 ? "bg-white/10" : "bg-blue-500/30")}>{moment.audience}</Badge></div></button>)}</div><div className="mt-3 grid gap-3 sm:grid-cols-3"><button className="rounded-2xl border border-white/10 bg-white/5 p-4 text-left hover:bg-white/10"><WandSparkles className="mb-3 size-5 text-blue-300" /><div className="font-semibold">Confirm Attendance</div><div className="mt-1 text-xs text-white/50">3 suggestions to review</div></button><button onClick={() => setPrivacyOpen(true)} className="rounded-2xl border border-blue-400/30 bg-blue-500/10 p-4 text-left hover:bg-blue-500/15"><ShieldCheck className="mb-3 size-5 text-blue-300" /><div className="font-semibold">Review Audience</div><div className="mt-1 text-xs text-white/50">4 explanations available</div></button><button className="rounded-2xl border border-white/10 bg-white/5 p-4 text-left hover:bg-white/10"><Eye className="mb-3 size-5 text-blue-300" /><div className="font-semibold">Preview as Recipient</div><div className="mt-1 text-xs text-white/50">Check filtered Event views</div></button></div></div>
-        <aside className={cn("rounded-3xl border border-white/10 bg-zinc-900 p-5 shadow-2xl transition-all", privacyOpen ? "block" : "hidden xl:block")}><div className="mb-5 flex items-start justify-between"><div><Badge className="bg-blue-500/20 text-blue-200"><ShieldCheck className="size-3" />Privacy lens</Badge><h2 className="mt-3 text-xl font-bold">Who can see this?</h2><p className="mt-1 text-xs text-white/50">Reasons are visible only to the Curator.</p></div><button onClick={() => setPrivacyOpen(false)} className="rounded-full p-2 hover:bg-white/10"><X className="size-4" /></button></div><div className="space-y-2">{people.map((person) => <div key={person.name} className="rounded-2xl bg-white/5 p-3"><div className="flex gap-3"><Avatar className="size-9 shrink-0 overflow-hidden rounded-full"><AvatarImage src={person.image} /><AvatarFallback>{person.initials}</AvatarFallback></Avatar><div className="min-w-0"><div className="text-sm font-semibold">{person.name}</div><div className="mt-1 flex flex-wrap gap-1">{person.reasons.map((reason) => <Badge key={reason.label} tone={reason.tone}>{reason.label}</Badge>)}</div></div></div></div>)}</div><button className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl border border-white/10 p-3 text-xs font-semibold hover:bg-white/10"><Eye className="size-4" />See full Audience reasoning</button></aside>
-      </div>
-      {!privacyOpen && <button onClick={() => setPrivacyOpen(true)} className="fixed bottom-24 right-5 z-30 flex items-center gap-2 rounded-full bg-blue-500 px-4 py-3 text-sm font-bold shadow-xl"><ShieldCheck className="size-4" />Privacy lens</button>}
-    </div>
-  );
+type VariantProps = {
+  dark: boolean;
+  toggle: () => void;
+  onSettings: () => void;
+  onOnboarding: () => void;
+  onOpen: (photo: Photo) => void;
+  seen: Set<string>;
+  onSeen: (id: string) => void;
+};
+
+function VariantA({ dark, toggle, onSettings, onOnboarding, onOpen, seen, onSeen }: VariantProps) {
+  const [view, setView] = useState<View>("photos");
+  return <div className="min-h-screen bg-background pb-24 lg:pb-8"><aside className="fixed inset-y-0 left-0 z-20 hidden w-64 border-r border-border bg-card p-5 lg:block"><Brand /><nav className="mt-10 space-y-1">{navItems.map((item) => <button key={item.id} onClick={() => setView(item.id)} className={cn("flex w-full items-center gap-3 rounded-xl px-3 py-3 text-sm font-semibold", view === item.id ? "bg-primary/15 text-primary" : "text-muted-foreground hover:bg-accent hover:text-foreground")}><item.icon className="size-5" />{item.label}</button>)}</nav><div className="absolute inset-x-5 bottom-5 rounded-2xl bg-muted p-3"><div className="flex items-center gap-2 text-xs text-muted-foreground"><ShieldCheck className="size-4 text-emerald-500" />Private family collection</div></div></aside><header className="sticky top-0 z-20 flex h-16 items-center border-b border-border bg-background/90 px-4 backdrop-blur-xl lg:ml-64 lg:px-7"><div className="lg:hidden"><Brand /></div><label className="mx-auto hidden w-full max-w-xl items-center gap-3 rounded-full bg-muted px-4 py-2.5 lg:flex"><Search className="size-4 text-muted-foreground" /><input className="min-w-0 flex-1 bg-transparent text-sm outline-none" placeholder="Search Events, dates, places, and People" /></label><HeaderTools dark={dark} toggle={toggle} onSettings={onSettings} onOnboarding={onOnboarding} /></header><main className="mx-auto max-w-[1500px] px-4 py-7 lg:ml-64 lg:px-8">{view === "photos" ? <><div className="mb-6 flex items-end justify-between"><div><h1 className="text-3xl font-bold">Photos</h1><p className="mt-1 text-muted-foreground">Your private family timeline</p></div><Button variant="outline" size="sm" className="hidden sm:flex"><ListFilter className="size-4" />Filter</Button></div><section className="mb-10"><div className="mb-4 flex items-center justify-between"><div><div className="flex items-center gap-2"><Sparkles className="size-4 text-primary" /><h2 className="font-bold">New for you</h2></div><p className="mt-1 text-sm text-muted-foreground">Recent Publications you haven't opened yet</p></div>{publications.some((item) => !seen.has(item.id)) && <button onClick={() => publications.forEach((item) => onSeen(item.id))} className="text-xs font-semibold text-primary">Mark all seen</button>}</div><NewForYou seen={seen} onSeen={onSeen} onOpen={onOpen} /></section><section><h2 className="mb-4 text-lg font-bold">Your timeline</h2><Timeline onOpen={onOpen} /></section></> : <CommonView view={view} onOpen={onOpen} />}</main><BottomNav view={view} setView={setView} /></div>;
+}
+
+function VariantB({ dark, toggle, onSettings, onOnboarding, onOpen, seen, onSeen }: VariantProps) {
+  const [view, setView] = useState<View>("photos");
+  return <div className="min-h-screen bg-background pb-24"><header className="sticky top-0 z-30 border-b border-border bg-card/95 backdrop-blur-xl"><div className="mx-auto flex h-16 max-w-7xl items-center gap-6 px-4"><Brand /><nav className="hidden h-full items-center gap-1 lg:flex">{navItems.map((item) => <button key={item.id} onClick={() => setView(item.id)} className={cn("h-full border-b-2 px-4 text-sm font-semibold", view === item.id ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground")}>{item.label}</button>)}</nav><div className="ml-auto"><HeaderTools dark={dark} toggle={toggle} onSettings={onSettings} onOnboarding={onOnboarding} /></div></div></header><main className={cn("mx-auto px-4 py-7", view === "photos" ? "max-w-6xl" : "max-w-7xl")}>{view === "photos" ? <div className="grid gap-8 lg:grid-cols-[minmax(0,720px)_280px]"><div><div className="mb-7"><Badge tone="blue"><Sparkles className="size-3" />{publications.filter((item) => !seen.has(item.id)).length} updates waiting</Badge><h1 className="mt-3 text-3xl font-bold sm:text-4xl">New from your family</h1><p className="mt-2 text-muted-foreground">Every update is selected and shared by Robin.</p></div><NewForYou seen={seen} onSeen={onSeen} onOpen={onOpen} style="feed" /><div className="my-10 flex items-center gap-4"><div className="h-px flex-1 bg-border" /><span className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Earlier photos</span><div className="h-px flex-1 bg-border" /></div><Timeline onOpen={onOpen} compact /></div><aside className="hidden lg:block"><div className="sticky top-24 space-y-4"><Card className="p-5"><h3 className="font-bold">Your collection</h3><div className="mt-4 space-y-3 text-sm"><button className="flex w-full items-center justify-between"><span className="text-muted-foreground">This week</span><strong>34 photos</strong></button><button className="flex w-full items-center justify-between"><span className="text-muted-foreground">May</span><strong>46 photos</strong></button><button className="flex w-full items-center justify-between"><span className="text-muted-foreground">April</span><strong>42 photos</strong></button><button className="flex w-full items-center justify-between"><span className="text-muted-foreground">2025</span><strong>312 photos</strong></button></div></Card><Card className="p-5"><div className="flex gap-3"><Info className="mt-0.5 size-5 text-primary" /><div><h3 className="font-bold">Only what is shared with you</h3><p className="mt-2 text-sm leading-6 text-muted-foreground">Counts and previews never include private material or photos shared with someone else.</p></div></div></Card></div></aside></div> : <CommonView view={view} onOpen={onOpen} />}</main><BottomNav view={view} setView={setView} /></div>;
+}
+
+function VariantC({ dark, toggle, onSettings, onOnboarding, onOpen, seen, onSeen }: VariantProps) {
+  const [view, setView] = useState<View>("events");
+  const recent = publications.filter((item) => !seen.has(item.id));
+  return <div className="min-h-screen bg-background pb-24"><header className="absolute inset-x-0 top-0 z-30 flex h-16 items-center px-4 text-white sm:px-7"><Brand /><nav className="mx-auto hidden rounded-full bg-black/25 p-1 backdrop-blur lg:flex">{[navItems[1], navItems[0], navItems[2], navItems[3]].map((item) => <button key={item.id} onClick={() => setView(item.id)} className={cn("rounded-full px-4 py-2 text-sm font-semibold", view === item.id ? "bg-white text-zinc-950" : "text-white/75 hover:text-white")}>{item.label}</button>)}</nav><div className="ml-auto rounded-full bg-black/25 backdrop-blur"><HeaderTools dark={dark} toggle={toggle} onSettings={onSettings} onOnboarding={onOnboarding} /></div></header>{view === "events" ? <main><section className="relative h-[66vh] min-h-[520px] overflow-hidden bg-zinc-950"><img src={photos[0].src} alt="Summer reunion" className="size-full object-cover opacity-85" /><div className="absolute inset-0 bg-gradient-to-t from-zinc-950 via-black/10 to-black/45" /><div className="absolute inset-x-0 bottom-0 mx-auto max-w-7xl p-5 pb-12 text-white sm:p-10"><Badge className="bg-white/15 text-white"><Sparkles className="size-3" />{recent.length ? "New Event" : "Featured Event"}</Badge><h1 className="mt-4 max-w-3xl text-4xl font-bold sm:text-6xl">Summer reunion</h1><p className="mt-3 text-white/75">June 14–16 · 24 photos and videos shared with you</p><div className="mt-6 flex gap-2"><Button className="bg-white text-zinc-950 hover:bg-white/90" onClick={() => onOpen(photos[0])}><Images className="size-4" />Open Event</Button><Button className="border-white/25 bg-black/20 text-white hover:bg-black/35" variant="outline"><Download className="size-4" />Download</Button></div></div></section><section className="relative z-10 mx-auto -mt-4 max-w-7xl rounded-t-[2rem] bg-background px-4 py-9 sm:px-8"><div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_350px]"><div><div className="mb-5 flex items-end justify-between"><div><h2 className="text-2xl font-bold">Your Events</h2><p className="mt-1 text-sm text-muted-foreground">Family stories arranged for you</p></div><button className="text-sm font-semibold text-primary">See all</button></div><div className="grid gap-4 sm:grid-cols-2">{[{ title: "Grandma's 80th", photo: photos[7], date: "May 28 · 31 photos" }, { title: "Spring break", photo: photos[11], date: "April 11–12 · 42 photos" }].map((event) => <button key={event.title} onClick={() => setView("events")} className="group relative overflow-hidden rounded-3xl text-left"><img src={event.photo.src} alt="" className="aspect-[4/3] w-full object-cover transition duration-500 group-hover:scale-105" /><div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent" /><div className="absolute bottom-0 p-5 text-white"><h3 className="text-xl font-bold">{event.title}</h3><p className="text-sm text-white/70">{event.date}</p></div></button>)}</div><div className="mt-9"><div className="mb-4 flex items-center justify-between"><h2 className="text-xl font-bold">Shared separately</h2><button onClick={() => setView("photos")} className="text-sm font-semibold text-primary">View timeline</button></div><div className="grid grid-cols-2 gap-2 sm:grid-cols-4">{photos.filter((photo) => photo.loose).map((photo) => <PhotoTile key={photo.id} photo={photo} onOpen={onOpen} className="aspect-square" />)}</div></div></div><aside><div className="mb-4 flex items-center justify-between"><h2 className="font-bold">Recently published</h2>{recent.length > 0 && <span className="text-xs font-semibold text-primary">{recent.length} new</span>}</div><NewForYou seen={seen} onSeen={onSeen} onOpen={onOpen} style="compact" /></aside></div></section></main> : <main className="mx-auto max-w-7xl px-4 pb-10 pt-24">{view === "photos" ? <><div className="mb-7"><h1 className="text-3xl font-bold">Photos</h1><p className="mt-1 text-muted-foreground">Everything shared with you, by date</p></div><Timeline onOpen={onOpen} /></> : <CommonView view={view} onOpen={onOpen} />}</main>}<BottomNav view={view} setView={setView} eventFirst /></div>;
 }
 
 export default function App() {
   const { variant, setVariant } = useVariant();
   const { dark, toggle } = useTheme();
-  const { accent, setAccent } = useAccent(dark);
-  return (
-    <>
-      {variant === "A" && <VariantA dark={dark} toggle={toggle} />}
-      {variant === "B" && <VariantB dark={dark} toggle={toggle} />}
-      {variant === "C" && <VariantC dark={dark} toggle={toggle} />}
-      <PrototypeSwitcher variant={variant} setVariant={setVariant} accent={accent} setAccent={setAccent} />
-    </>
-  );
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [onboardingOpen, setOnboardingOpen] = useState(false);
+  const [selectedPhoto, setSelectedPhoto] = useState<Photo | null>(null);
+  const [seen, setSeen] = useState<Set<string>>(() => new Set());
+  const props: VariantProps = useMemo(() => ({
+    dark,
+    toggle,
+    onSettings: () => setSettingsOpen(true),
+    onOnboarding: () => setOnboardingOpen(true),
+    onOpen: (photo: Photo) => setSelectedPhoto(photo),
+    seen,
+    onSeen: (id: string) => setSeen((current) => new Set(current).add(id)),
+  }), [dark, seen]);
+  return <>{variant === "A" && <VariantA {...props} />}{variant === "B" && <VariantB {...props} />}{variant === "C" && <VariantC {...props} />}<MediaViewer photo={selectedPhoto} open={selectedPhoto !== null} onOpenChange={(open) => !open && setSelectedPhoto(null)} /><SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} /><OnboardingDialog open={onboardingOpen} onOpenChange={setOnboardingOpen} /><PrototypeSwitcher variant={variant} setVariant={setVariant} /></>;
 }
