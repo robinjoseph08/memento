@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" color="#ffffff">
+  <!-- The hero card remains whole. The two rear cards reduce to separated visible wings so the stack survives one-color rendering. -->
+  <rect x="154" y="330" width="96" height="374" rx="48" fill="currentColor"/>
+  <rect x="774" y="330" width="96" height="374" rx="48" fill="currentColor"/>
+  <rect x="322" y="282" width="380" height="500" rx="106" fill="currentColor"/>
+</svg>

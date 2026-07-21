@@ -1,5 +1,5 @@
 // Three variants of the Curator publishing workflow, switchable via ?variant=, on a throwaway single-page prototype.
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import {
   AlertTriangle,
   ArrowLeft,
@@ -231,10 +231,30 @@ function PrototypeSwitcher({ variant, setVariant, accent, setAccent }: { variant
   );
 }
 
+function MementoMark({ className }: { className?: string }) {
+  const id = useId();
+  const leftId = `${id}-memento-left`;
+  const rightId = `${id}-memento-right`;
+  const heroId = `${id}-memento-hero`;
+  return (
+    <svg className={className} viewBox="160 200 704 640" role="img" aria-label="Memento">
+      {/* Mirrors design/app-icon/memento-icon-dark.svg. Keep the geometry in sync with the master icon. */}
+      <defs>
+        <linearGradient id={leftId} x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="var(--primary)" stopOpacity=".78" /><stop offset="1" stopColor="var(--primary)" stopOpacity=".62" /></linearGradient>
+        <linearGradient id={rightId} x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="var(--primary)" /><stop offset="1" stopColor="var(--primary)" stopOpacity=".82" /></linearGradient>
+        <linearGradient id={heroId} x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="var(--secondary-foreground)" /><stop offset="1" stopColor="var(--primary)" /></linearGradient>
+      </defs>
+      <rect x="246" y="270" width="410" height="500" rx="112" fill={`url(#${leftId})`} transform="rotate(-15 451 520)" />
+      <rect x="368" y="270" width="410" height="500" rx="112" fill={`url(#${rightId})`} transform="rotate(15 573 520)" />
+      <rect x="322" y="282" width="380" height="500" rx="106" fill={`url(#${heroId})`} />
+    </svg>
+  );
+}
+
 function Brand({ compact = false }: { compact?: boolean }) {
   return (
     <div className="flex items-center gap-3">
-      <div className="grid size-9 place-items-center rounded-xl bg-primary text-primary-foreground"><GalleryHorizontalEnd className="size-5" /></div>
+      <MementoMark className="size-9 shrink-0" />
       {!compact && <span className="text-lg font-bold tracking-tight">Memento</span>}
     </div>
   );

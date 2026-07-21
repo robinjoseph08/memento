@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <style>
+    .tile-top{stop-color:#f8fafc}.tile-bottom{stop-color:#e2e8f0}.glow{stop-color:#0ea5e9;stop-opacity:.08}.left-top{stop-color:#38bdf8}.left-bottom{stop-color:#0ea5e9}.right-top{stop-color:#0ea5e9}.right-bottom{stop-color:#0284c7}.hero-top{stop-color:#0369a1}.hero-bottom{stop-color:#075985}.edge{stroke:#0f172a;stroke-opacity:.07}
+    @media (prefers-color-scheme:dark){.tile-top{stop-color:#111c26}.tile-bottom{stop-color:#070d13}.glow{stop-opacity:.18}.left-top{stop-color:#0284c7}.left-bottom{stop-color:#0369a1}.right-top{stop-color:#38bdf8}.right-bottom{stop-color:#0ea5e9}.hero-top{stop-color:#bae6fd}.hero-bottom{stop-color:#7dd3fc}.edge{stroke:#e0f2fe;stroke-opacity:.07}}
+  </style>
+  <defs>
+    <linearGradient id="mf-bg" x1="0" y1="0" x2="0" y2="1"><stop class="tile-top" offset="0"/><stop class="tile-bottom" offset="1"/></linearGradient>
+    <radialGradient id="mf-glow" cx="50%" cy="48%" r="48%"><stop class="glow" offset="0"/><stop offset="1" stop-color="#0ea5e9" stop-opacity="0"/></radialGradient>
+    <linearGradient id="mf-left" x1="0" y1="0" x2="0" y2="1"><stop class="left-top" offset="0"/><stop class="left-bottom" offset="1"/></linearGradient>
+    <linearGradient id="mf-right" x1="0" y1="0" x2="0" y2="1"><stop class="right-top" offset="0"/><stop class="right-bottom" offset="1"/></linearGradient>
+    <linearGradient id="mf-hero" x1="0" y1="0" x2="0" y2="1"><stop class="hero-top" offset="0"/><stop class="hero-bottom" offset="1"/></linearGradient>
+  </defs>
+  <rect width="1024" height="1024" rx="234" fill="url(#mf-bg)"/>
+  <rect width="1024" height="1024" rx="234" fill="url(#mf-glow)"/>
+  <rect x="246" y="270" width="410" height="500" rx="112" fill="url(#mf-left)" transform="rotate(-15 451 520)"/>
+  <rect x="368" y="270" width="410" height="500" rx="112" fill="url(#mf-right)" transform="rotate(15 573 520)"/>
+  <rect x="322" y="282" width="380" height="500" rx="106" fill="url(#mf-hero)"/>
+  <rect class="edge" x="5" y="5" width="1014" height="1014" rx="229" fill="none" stroke-width="10"/>
+</svg>
