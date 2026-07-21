@@ -1,6 +1,6 @@
 # Immich v3.0.3 person and face identity behavior
 
-Research for [Validate Immich v3.0.3 person and face identity behavior](https://github.com/robinjoseph08/photo-sharing/issues/3). This is pinned to Immich `v3.0.3` (commit [`cd308ad`](https://github.com/immich-app/immich/tree/cd308ad93093735135f99d85ce6980c8e93df231)); later releases may behave differently.
+Research for [Validate Immich v3.0.3 person and face identity behavior](https://github.com/robinjoseph08/memento/issues/3). This is pinned to Immich `v3.0.3` (commit [`cd308ad`](https://github.com/immich-app/immich/tree/cd308ad93093735135f99d85ce6980c8e93df231)); later releases may behave differently.
 
 ## Conclusion
 
