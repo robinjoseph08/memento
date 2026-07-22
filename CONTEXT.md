@@ -102,6 +102,10 @@ _Avoid_: Sub-album, segment
 A Media item shared independently rather than through an Event.
 _Avoid_: One-off, loose photo
 
+**Place label**:
+A Curator-approved, recipient-visible name associated with an Event, Moment, or Loose item for where it occurred. Source coordinates or location metadata may suggest it, but only Publication exposes it to Recipients, and it never exposes exact coordinates by itself.
+_Avoid_: GPS location, geotag
+
 **Archive download**:
 A single-use ZIP of original Media items, bound for fifteen minutes to one Recipient and Session, containing either every item they may access in an Event or an explicit subset. Its selection is reauthorized before delivery and excludes inaccessible Media items and source-library paths.
 _Avoid_: Album export, backup
