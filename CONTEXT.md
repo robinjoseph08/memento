@@ -80,6 +80,10 @@ _Avoid_: Permanent login, account
 A Recipient Session chosen for a public or shared computer whose browser credential is discarded when the browser session ends and whose server-side authorization expires after twelve hours.
 _Avoid_: Trusted device, incognito mode
 
+**Recovery hold**:
+A system-wide safety state after database restoration that blocks Recipient access and optional notifications until the Curator reviews the restored authorization state. It invalidates restored Sessions without changing People, Audiences, Publications, or interaction history.
+_Avoid_: Maintenance mode, outage, suspension
+
 ### Media and publication
 
 **Source album**:

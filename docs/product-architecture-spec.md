@@ -189,7 +189,8 @@ Frontend requirements:
 - Dark mode is the default, light mode is supported, and the accent family is Tailwind sky.
 - UI primitives SHOULD follow shadcn-style composition and accessible headless primitives.
 - Fonts MUST be bundled with the application. Runtime requests to Google Fonts or another font CDN are forbidden.
-- The PWA MUST have a stable manifest ID, appropriate icons, standalone display, HTTPS service worker registration, and feature-detected push UX.
+- The PWA MUST have a stable manifest ID, the selected Memento icon showing three fanned photo tiles becoming one archive stack, standalone display, HTTPS service worker registration, and feature-detected push UX.
+- The selected open-licensed Google Font MUST be self-hosted in the production image. Runtime requests to Google Fonts remain forbidden.
 
 At bootstrap, maintainers MUST select the latest stable project dependencies available at that time. The resulting exact versions MUST then be pinned in manifests and lockfiles. Production image tags and tool versions MUST NOT float on `latest`. Immich remains pinned contractually to v3.0.3 regardless of dependency bootstrap timing.
 
@@ -249,7 +250,7 @@ Person only
 - Request and verification responses MUST not reveal whether the email belongs to a Recipient.
 - A successful verification creates an opaque random server-side Session. Sessions MUST NOT be JWTs.
 - Trusted-device Sessions expire after one year of inactivity and have no absolute lifetime while used.
-- Public-computer Sessions use a browser-session cookie and expire no later than 12 hours after creation. They cannot register Web Push. Authorized downloads remain available, but every download surface MUST show a prominent shared-computer privacy reminder.
+- Public-computer Sessions use a browser-session cookie and expire no later than 12 hours after creation. They cannot register Web Push. The interface MUST prominently offer sign-out throughout the Session. Authorized downloads remain available, but every download surface MUST show a prominent shared-computer privacy reminder.
 - Recipients can inspect, rename, revoke, and sign out all of their Sessions. The Curator can inspect Sessions for every Recipient.
 - Revoking or expiring a trusted Session immediately disables every linked Web Push subscription. Signing out all Sessions disables all subscriptions for that Recipient.
 - Session displays include browser/platform, creation, last meaningful activity, and approximate location when an optional local GeoIP database is configured. Memento MUST never perform request-time third-party GeoIP lookups.
@@ -303,11 +304,12 @@ Person only
 - Primary destinations are Photos, Events, and Favorites. Desktop uses a persistent rail and mobile uses bottom navigation.
 - Photos is the landing page. **New for you** appears above the chronological library only when authorized unseen Publications exist. It is durable in-portal state, not an algorithmic feed.
 - Photos, Events, and Favorites use dense justified rows based on real aspect ratios. Complete thumbnails are preserved on mobile.
+- Photos supports explicit multi-selection for subset archives and other applicable bulk actions. Desktop makes selection primary and efficient; mobile supports it as a secondary interaction.
 - Desktop provides a visible-date rail with hover, jump, and drag-to-scrub. Mobile receives an appropriate compact date navigation treatment.
 - Event pages are seamless Curator-ordered galleries with no Moment hints or inaccessible totals.
 - The near-fullscreen viewer exposes Favorite, original download, details, and item-level Comments. Desktop uses a side panel and mobile stacks interactions below the Media.
 - Favorites MUST explain: **“Favorites aren't shared with other recipients.”**
-- Interest-list editing lives in the avatar menu with Settings and Onboarding, not in primary navigation.
+- Interest-list editing lives in the avatar menu with Settings and Onboarding, not in primary navigation. Its guidance MUST explain that choosing People helps the Curator share relevant Event photos even when the Recipient did not attend.
 - Every Curator flow MUST be available on mobile through focused drill-down surfaces. Desktop remains optimized for dense and bulk work.
 
 ### Curator workspace
@@ -682,7 +684,7 @@ The Curator has independent email and per-device push controls for new Comments,
 
 ### Engagement
 
-Meaningful first-party activity includes authenticated visits, Sessions, opening primary destinations, Events, or the Media viewer, starting video, downloads, Comments, Favorite changes, and Invitation suggestions.
+Meaningful first-party activity includes authenticated visits, Sessions, opening primary destinations, Events, or the Media viewer, starting video, downloads, Comments, Favorite changes, and Invitation suggestions. Curator Recipient lists MUST prominently show each Recipient's latest meaningful authenticated activity.
 
 It excludes background and service-worker traffic, prefetches, incidental thumbnail loading, email opens, and Preview as Recipient. The Curator can inspect latest meaningful activity, active days for 7, 30, and 90 days, visit frequency, explicitly opened Events and Media, downloads, Comments, Favorites, per-Recipient timelines, and Recipients who explicitly opened a Media item.
 
@@ -702,7 +704,7 @@ MVP provides one authenticated Recipient search across Photos and Events from th
 
 - Index Event titles and descriptions, Media capture dates, Curator-approved Place labels, and discoverable People.
 - Do not index filenames, camera details, raw EXIF, Immich tags, Comments, Favorites, faces, or raw coordinates for Recipient search.
-- Dates support year, month, exact date, and explicit range.
+- Dates support year, month, exact date, and explicit range. A Media item matches its capture date, and an Event matches its current published date range.
 - Text matching is case-insensitive and diacritic-insensitive with token and prefix matching plus modest typo tolerance for longer terms. Use PostgreSQL `unaccent`, text search, and `pg_trgm`.
 - Person matching is limited to People discoverable through current shared Visibility circles and returns only authorized Moments with confirmed Attendance. Results may say a Person attended but MUST NOT imply they appear in every result.
 - Results group by Event plus Shared separately. Global Photos results deduplicate a Media item; Event-specific reuse remains visible in each authorized Event.
@@ -1070,7 +1072,7 @@ The same suite gates every proposed Immich upgrade before the contract version c
 
 ### Phase 6: Recipient library and protected Media
 
-- Build the selected Timeline library, Events, Favorites navigation shell, New for you, justified galleries, date navigation, lightbox, details, and responsive PWA.
+- Build the selected Photos library, Events, Favorites navigation shell, New for you, justified galleries, date navigation, lightbox, details, and responsive PWA.
 - Implement protected thumbnail, preview, video Range, original, archive-plan, and multi-part archive routes with private caching.
 - Implement Curator split-pane workspace and Preview as Recipient.
 
