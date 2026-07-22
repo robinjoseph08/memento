@@ -103,7 +103,7 @@ A Media item shared independently rather than through an Event.
 _Avoid_: One-off, loose photo
 
 **Place label**:
-A Curator-approved, recipient-visible name associated with an Event, Moment, or Loose item for where it occurred. Source coordinates or location metadata may suggest it, but only Publication exposes it to Recipients, and it never exposes exact coordinates by itself.
+A portal-owned, Curator-approved name associated with an Event, Moment, or Loose item for where it occurred. Source coordinates or location metadata may suggest it, but only Publication makes it visible to authorized Recipients, and the label never exposes exact coordinates by itself.
 _Avoid_: GPS location, geotag
 
 **Archive download**:
