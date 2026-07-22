@@ -190,7 +190,7 @@ Frontend requirements:
 - UI primitives SHOULD follow shadcn-style composition and accessible headless primitives.
 - Fonts MUST be bundled with the application. Runtime requests to Google Fonts or another font CDN are forbidden.
 - The PWA MUST have a stable manifest ID, the selected Memento icon showing three fanned photo tiles becoming one archive stack, standalone display, HTTPS service worker registration, and feature-detected push UX.
-- The selected open-licensed Google Font MUST be self-hosted in the production image. Runtime requests to Google Fonts remain forbidden.
+- DM Sans at weights 400, 500, 600, and 700 is the selected open-licensed Google Font and MUST be self-hosted in the production image. Runtime requests to Google Fonts remain forbidden.
 
 At bootstrap, maintainers MUST select the latest stable project dependencies available at that time. The resulting exact versions MUST then be pinned in manifests and lockfiles. Production image tags and tool versions MUST NOT float on `latest`. Immich remains pinned contractually to v3.0.3 regardless of dependency bootstrap timing.
 
@@ -210,7 +210,9 @@ Operator documentation MUST warn that first-time setup should be completed befor
 
 ### People and Recipient lifecycle
 
-Person lifecycle: `current -> archived`, with `merge` moving references to a Curator-selected survivor. Referenced People are not hard-deleted.
+Person lifecycle: `current -> archived`, with `merge` moving historical references to a Curator-selected survivor. Referenced People are not hard-deleted.
+
+A Person merge MUST run as one audited transaction and MUST NOT union roles, current Recipient access generations, login emails, or Sessions implicitly. If either Person is the Curator, that Person must be the survivor; the sole Curator role can never move through merge. At most one side may have a current Recipient access generation. When the source alone has current Recipient access, the Curator must explicitly transfer that one generation and resolve any email conflict before commit. Merging two People with current Recipient access is rejected until one access generation is revoked. Every Session belonging to either Person is invalidated, historical access generations and audit attribution remain distinguishable, and a preview must show all references and identity effects before confirmation.
 
 Recipient access lifecycle:
 
@@ -259,7 +261,7 @@ Person only
 ### Relationships, Visibility circles, and Interest lists
 
 - Only the Curator can create, edit, archive, or merge People and family relationships.
-- Parent-child, sibling, and current or former partner relationships are explicit and support multiple parents and partners. Family branches include current partners, descendants recursively, and descendants' current partners. Siblings, siblings' descendants, and former partners are excluded unless reached by another qualifying relationship. Relationships never grant access.
+- Parent-child, sibling, and current or former partner relationships are explicit and support multiple parents and partners. The directed parent-child graph MUST remain acyclic; a mutation is rejected when the proposed parent is already the Person's descendant. Family branches include current partners, descendants recursively, and descendants' current partners. Siblings, siblings' descendants, and former partners are excluded unless reached by another qualifying relationship. Relationships never grant access.
 - Visibility circles overlap. Recipient discovery is the union of circles containing their Person and is not transitive.
 - The Recipient People directory hides email, Recipient and Onboarding status, other Interest lists, hidden relationship intermediates, and circle structure.
 - Interest lists start empty. Family-branch People are unselected suggestions, never automatic additions. The Recipient's own Person is not selectable because confirmed Attendance independently proposes that Recipient.
@@ -345,7 +347,7 @@ All timestamps MUST use `timestamptz`. Durable domain identities SHOULD use UUID
 
 | Records | Required constraints and indexes |
 | --- | --- |
-| `system_settings` | Singleton key. Stores setup-enabled state, connected Immich contract version, notification defaults, current security epoch, recovery-hold state, and schema-safe global settings. Setup and recovery transitions are row-locked. |
+| `system_settings` | Singleton key. Stores setup-enabled state, connected Immich contract version, notification defaults, current security epoch, recovery-hold state, and the hash of the last applied recovery nonce. Setup and recovery transitions are row-locked. |
 | `people` | Stable portal identity, display and sort names, archive and merge metadata. Index normalized names with `unaccent` and trigram support. A merge survivor cannot equal the source. |
 | `person_roles` | Unique `(person_id, role)`; role limited to Curator and Recipient. A partial unique constraint permits only one current Curator. |
 | `recipient_access_generations` | Unique `(person_id, generation)`, exactly one current generation at most. State captures pending, onboarding, completed, suspended, or revoked, with state timestamps. Access generation is immutable once ended. |
@@ -474,7 +476,7 @@ Album responses do not contain assets in v3.0.3. Memento MUST obtain membership 
 - A default schedule between 5 and 15 minutes is appropriate and MUST be configurable. Opening or reviewing an Event SHOULD trigger bounded on-demand reconciliation.
 - Album summary timestamps and counts are hints, not complete change cursors.
 - A pagination pass is a candidate set. Memento MUST deduplicate IDs, compare album summaries before and after, and retry when they change.
-- A removal MUST appear in two consecutive stable, identical membership passes before it is staged. Additions MAY stage after one validated pass because they remain private.
+- A removal MUST appear in two consecutive stable, identical membership passes before it is staged. Failed, incomplete, summary-changing, or otherwise unstable passes never advance absence evidence. Any intervening validated set that differs resets the consecutive evidence. Additions MAY stage after one validated pass because they remain private.
 - Reconciliation MUST be idempotent, bounded in concurrency, and use timeouts, exponential backoff, and jitter.
 - The net diff is against the last published source revision and the current editable state, so add-then-remove before Publication leaves no residue.
 - NAS changes are visible only after Immich scans the external library. Expected freshness is Immich scan delay plus Memento reconciliation delay.
@@ -741,9 +743,10 @@ The following are release-blocking invariants:
 ### Startup and migrations
 
 - Startup validates configuration without printing secrets, connects to the Memento database, verifies required extensions, applies or validates Bun migrations, validates Immich v3.0.3, then starts readiness.
-- `MEMENTO_RECOVERY_MODE=enter` is an explicit one-shot startup mode. Before HTTP traffic, job claims, outbox dispatch, or readiness begin, one transaction locks `system_settings`; if recovery hold is not already active, it sets the hold, replaces the current security epoch with fresh cryptographic randomness, and records an audit event. If the hold is already active, restart is idempotent and does not rotate again.
+- `MEMENTO_RECOVERY_NONCE=<fresh-random-value>` explicitly enters restored-database recovery. The operator MUST generate a new nonce for every restore and MUST NOT reuse a value from configuration backups.
+- Before HTTP traffic, job claims, outbox dispatch, or readiness begin, one transaction locks `system_settings`. When the supplied nonce hash differs from the last applied hash, the transaction sets recovery hold, replaces the current security epoch with fresh cryptographic randomness, stores the nonce hash, and records an audit event. Restarting with the same nonce is idempotent, while a newly supplied nonce always rotates the epoch even when the restored snapshot already records an active hold.
 - While recovery hold is active, Recipient content, optional email, Web Push, notification assembly, and delivery workers fail closed. Only liveness, restricted recovery status, email-code authentication, and Curator recovery-review operations are available. General readiness reports the recovery restriction without exposing private state.
-- The operator removes the one-shot recovery setting after the hold is recorded. Only a Curator authenticated by a fresh email code in the new epoch may explicitly lift the persisted hold after review. A normal restart MUST NOT clear it.
+- The operator removes the recovery nonce after the hold is recorded. Only a Curator authenticated by a fresh email code in the new epoch may explicitly lift the persisted hold after review. A normal restart MUST NOT clear it.
 - Every Session authentication query MUST compare the Session row's epoch with the current singleton epoch. Every push assembly and send MUST perform the same check through its linked Session.
 - Migrations run once under a PostgreSQL advisory lock. A failed migration MUST not be marked applied.
 - Planned downtime during upgrade is acceptable. Operators SHOULD stop traffic and the single app instance before schema-changing upgrades.
@@ -771,6 +774,7 @@ On SIGTERM or SIGINT, the process MUST:
 - Operators SHOULD run a daily PostgreSQL backup for a 24-hour recovery point objective and recovery within several hours.
 - Memento documents `pg_dump` and `pg_restore` but does not schedule, retain, encrypt, copy, or test backups for the operator.
 - Operators SHOULD store backups outside the PostgreSQL container and periodically test restore into a separate logical database.
+- The Go binary MUST provide a read-only restore-validation operation for a candidate database. It checks migration compatibility, required extensions, setup singleton and sole-Curator constraints, foreign keys, current projections, security settings, and representative record counts without serving HTTP, claiming work, contacting delivery providers, or mutating the candidate.
 - VAPID private keys, SMTP credentials, Immich API keys, configuration, and optional GeoIP files require a separate secrets/configuration backup.
 - Restoring Memento can resurrect Sessions and authorization state that changed after the recovery point. The application MUST support a recovery hold that blocks all Recipient access, Web Push, and optional email after restore. Entering recovery hold rotates the current security epoch so every restored Session and linked push subscription becomes invalid. The Curator signs in with a fresh email code, reviews restored Recipient access, Audiences, Withdrawals, and Publications, and explicitly lifts the hold before Recipient readiness returns.
 - Restoring Memento does not restore Media that Immich can no longer serve.
@@ -812,7 +816,8 @@ Performance tests MUST report dataset shape, cold or warm cache state, PostgreSQ
 ### Unit tests
 
 - Domain state transitions for Recipient access generations, Invitations, Onboarding, suspension, revocation, Publication, Withdrawal, Staged update coalescing, and source-missing behavior.
-- Audience proposal reasoning, manual override stability, Family branch traversal, Visibility-circle eligibility, and Interest-list deactivation.
+- Person merge gates covering the sole Curator, two current Recipient generations, explicit transfer, email conflicts, Session invalidation, and preservation of distinguishable authorization history.
+- Audience proposal reasoning, manual override stability, Family branch traversal, parent-child cycle rejection, Visibility-circle eligibility, and Interest-list deactivation.
 - Authorization matrix functions covering roles, Sessions, access generations, placements, Withdrawals, and Media reuse.
 - Notification eligibility, 15-minute coalescing, weekly scheduling across timezones and daylight transitions, self-Comment suppression, quiet changes, and preference independence.
 - Search normalization, date parsing, safe grouping, cover selection, and no-result behavior.
@@ -835,7 +840,7 @@ A disposable Immich v3.0.3 instance with fixtures MUST test:
 
 - version gate and least-privilege API key permissions;
 - owned album discovery and paginated metadata membership;
-- changing summaries during pagination and two-pass removal handling;
+- changing summaries during pagination and two-pass removal handling, including proof that failed, incomplete, unstable, or differing intervening passes reset or do not advance removal evidence;
 - DTO normalization and forbidden metadata stripping;
 - thumbnail redirects with retained authentication;
 - video and original byte ranges and safe response headers;
@@ -853,12 +858,14 @@ The same suite gates every proposed Immich upgrade before the contract version c
 - Rate limits work by IP and normalized email without account disclosure.
 - Property-based or table-driven tests generate combinations of Recipient state, Audience generation, Session state, Withdrawal, source availability, and placement reuse.
 - Fuzz JSON binding, archive selections, Range headers, redirect handling, and normalized Immich responses.
+- Use a controlled resolver and dialer to prove push endpoint validation rejects DNS rebinding between validation and connection, including public-to-loopback, private, link-local, and metadata-service answer changes.
+- Inject every readiness dependency failure and assert an allowlisted health schema that excludes database connection strings, Immich URLs, Recipient data, and raw dependency errors.
 
 ### Frontend tests
 
 - Vitest and React Testing Library cover state rendering, accessible controls, permission-safe empty states, nonlinear progress, and responsive component behavior.
 - Generated Tygo types are rebuilt in CI and the frontend cannot compile against hand-maintained duplicate wire types.
-- Playwright covers Chromium and Firefox desktop and mobile viewports, Invitation and Onboarding, trusted and public-computer Sessions, Curator publication, Preview as Recipient, Recipient galleries, search, Comments, Favorites, archives, and push capability states.
+- Playwright covers Chromium and Firefox desktop and mobile viewports, Invitation and Onboarding, trusted and public-computer Sessions, Curator publication, Preview as Recipient, Recipient galleries, search, Comments, Favorites, archives, and push capability states. Public-computer coverage MUST assert that push enrollment is unavailable, sign-out remains prominent, and every original, Event archive, and subset archive surface shows the shared-computer warning.
 - Automated accessibility checks cover keyboard navigation, focus management, labels, contrast, dialogs, reduced motion, and screen-reader names.
 - Service-worker tests prove protected Media is not added to offline caches.
 - Network assertions prove no runtime Google Fonts or analytics request.
@@ -867,7 +874,7 @@ The same suite gates every proposed Immich upgrade before the contract version c
 
 - Use a local SMTP test server to assert required versus optional email, message coalescing, embedded preview limits, unsubscribe, retry, and synchronous failures.
 - Use a Web Push test endpoint or standards-compatible fixture for payload encryption, VAPID, terminal subscription cleanup, and channel independence.
-- Reauthorize immediately before both channel sends under concurrent revocation and Withdrawal.
+- Reauthorize immediately before both channel sends under concurrent revocation and Withdrawal. For partially invalidated batches, assert the exact surviving Publication and Comment identities, titles, counts, authors, and preview bytes, and require enabled email and push to represent the same surviving activity set.
 
 ### Performance and operations tests
 
@@ -875,6 +882,7 @@ The same suite gates every proposed Immich upgrade before the contract version c
 - Measure all baseline targets at steady state and during reconciliation, Publication, and notification assembly.
 - Test graceful shutdown during HTTP requests, streams, job claims, reconciliation, SMTP, and push.
 - Perform a documented `pg_dump` and `pg_restore` drill into a separate Memento database and verify migrations, counts, Sessions revocation expectations, Publications, interactions, and search consistency.
+- Instrument recovery startup to prove no non-liveness HTTP route, job claim, outbox dispatch, notification assembly, or delivery starts before hold persistence and security-epoch rotation. Assert that repeating the same recovery nonce does not rotate again, a fresh nonce always rotates even when the restored snapshot already contains a hold, and normal restart never clears the hold.
 
 ## Acceptance scenarios
 
@@ -889,6 +897,12 @@ The same suite gates every proposed Immich upgrade before the contract version c
 **Given** first-time setup committed  
 **When** any browser or unauthenticated caller revisits setup  
 **Then** Memento reveals only that setup is unavailable and cannot create another Curator.
+
+### Person merge cannot union authority
+
+**Given** two People include the sole Curator, two current Recipient access generations, or conflicting login emails
+**When** the Curator previews and attempts a merge
+**Then** Memento requires the Curator Person to survive, rejects two current access generations, requires explicit transfer and email resolution where allowed, invalidates both People's Sessions, and never unions roles or current Audience authority implicitly.
 
 ### Pending Recipient preapproval
 
@@ -1030,9 +1044,9 @@ The same suite gates every proposed Immich upgrade before the contract version c
 
 ### Restored authorization is held
 
-**Given** the operator restores a database backup that may predate access changes  
-**When** Memento starts in recovery hold  
-**Then** it rotates the security epoch, rejects every restored Session, disables linked push, blocks Recipient access and optional delivery, and remains held until a freshly authenticated Curator reviews state and explicitly releases it.
+**Given** the operator restores a database backup that may predate access changes, including one captured during an earlier Recovery hold
+**When** Memento starts with a fresh recovery nonce
+**Then** it rotates the security epoch before serving non-liveness traffic or claiming work, rejects every restored Session, disables linked push, blocks Recipient access and optional delivery, and remains held until a freshly authenticated Curator reviews state and explicitly releases it.
 
 ### Graceful worker recovery
 

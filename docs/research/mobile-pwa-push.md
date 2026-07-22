@@ -11,7 +11,7 @@ The important asymmetry is installation:
 - On iPhone and iPad, Web Push is available to a web app only after the recipient adds it to the Home Screen, and support begins with iOS/iPadOS 16.4. The installed app must then request permission in response to a direct interaction such as tapping an “Enable notifications” button. Notifications appear with native-app notifications on the Lock Screen and in Notification Center and participate in Focus settings. [WebKit: Web Push for Web Apps on iOS and iPadOS](https://webkit.org/blog/13878/web-push-for-web-apps-on-ios-and-ipados/)
 - On Android, Chrome and Firefox support Web Push, including while the site is not open. Installation is not a Web Push prerequisite on Android: permission belongs to the website/origin, so a site opened in a browser tab can subscribe too. Installing the PWA still gives the family a more app-like launch point. This “installation is optional” conclusion is an inference from Chrome's site-notification model and the standards API, which contain no install gate; Chrome documents notification permission for websites, while Mozilla documents Web Push delivery in Firefox for Android. [Google Chrome Help: notifications on Android](https://support.google.com/chrome/answer/3220216?co=GENIE.Platform%3DAndroid&hl=en-XX), [Mozilla: Web Push notifications in Firefox](https://support.mozilla.org/en-US/kb/push-notifications-firefox), [Push API](https://w3c.github.io/push-api/)
 
-Push should therefore be a supported enhancement, but it should not replace email in the initial product. Keep the portal's authenticated activity feed as the source of truth and email as the universal notification channel. Add push later as an opt-in immediate-notification channel. This avoids making installation, browser support, a durable subscription, or best-effort background delivery prerequisites for learning that photos were published.
+Push should therefore supplement rather than replace email. Keep the portal's authenticated activity feed as the source of truth and email as the universal notification channel. The subsequent product decision includes push in MVP as an optional per-device channel, without making installation, browser support, a durable subscription, or best-effort background delivery prerequisites for learning that photos were published.
 
 ## Platform matrix
 
@@ -93,9 +93,9 @@ Because Apple notifications can appear on the Lock Screen and Web Push services 
 ## Product implication for this effort
 
 - Build the site responsive and installable as a PWA from the start: manifest, stable manifest `id`, icons, standalone display, HTTPS, and a service worker.
-- Keep the already-decided email choices of immediate, weekly digest, or none as the MVP notification behavior.
-- Treat push as a later per-device opt-in for immediate publication/update notices. It can coexist with an account-level email cadence; the eventual product decision can let a recipient choose email, push, both, or neither without changing access.
+- Keep the email choices of immediate, weekly digest, or none as MVP notification behavior.
+- Include push in MVP as a per-device opt-in. A Recipient can choose email, push, both, or neither without changing access.
 - Preserve one durable in-portal “new since your last visit” view regardless of notification settings or delivery success.
-- If push is added, coalesce it at the same boundary as email: one notice per publication or published staged update, never one per photo.
+- Coalesce immediate email and push over the same 15-minute window and include the same currently authorized Publication and Comment activity, never one notice per photo.
 
 This keeps the low-friction email path for every relative while allowing frequent mobile users to install the portal and receive native-feeling alerts.
