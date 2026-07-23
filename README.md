@@ -29,43 +29,35 @@ The current foundation does not yet expose first-time browser setup or Recipient
 
 ## Developer prerequisites
 
-The foundation pins Go 1.25.5 in `go.mod` and `.go-version`, Node.js 24.13.0 in `.node-version`, pnpm 11.16.0 in `package.json`, Tygo 0.2.21 as a Go tool, and all container base tags in deployment files. Install Docker with the Compose plugin and a PostgreSQL client if you want to inspect the test database manually.
+[Mise](https://mise.jdx.dev/) is the source of truth for development tool versions and project tasks. `mise.toml` pins Go 1.25.5, Node.js 24.13.0, and pnpm 11.16.0. Tygo 0.2.21 remains pinned as a Go tool in `go.mod`, and deployment files pin all container base tags.
 
-Install frontend dependencies:
-
-```sh
-corepack enable
-corepack prepare pnpm@11.16.0 --activate
-pnpm install --frozen-lockfile
-```
-
-Run the same checks as CI:
+Install mise and Docker with the Compose plugin, then install the pinned tools and project dependencies:
 
 ```sh
-./scripts/check-go-format.sh
-pnpm format:check
-go vet ./...
-pnpm lint
-pnpm types:check
-go test ./...
-pnpm test
-pnpm build
-
-# Requires PostgreSQL 17 with an empty memento database.
-MEMENTO_TEST_DATABASE_URL='postgresql://memento_app:test-only-password@127.0.0.1:5432/memento?sslmode=disable' \
-  go test -count=1 -tags=integration ./...
-
-docker run --rm -v "$PWD/Caddyfile:/etc/caddy/Caddyfile:ro" \
-  caddy:2.10.2-alpine \
-  caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
-./scripts/test-production.sh
+mise install
+mise run setup
 ```
 
-Generate API types after changing an exported Go wire type:
+List the available development tasks with `mise tasks ls`. Common commands include:
 
 ```sh
-pnpm types:generate
+mise run dev
+mise run format
+mise run lint
+mise run test
+mise run build
+mise run types:generate
 ```
+
+Run the complete suite used by CI with one command:
+
+```sh
+# The integration task requires PostgreSQL 17 with the restricted memento_app
+# role and an empty memento database provisioned by deploy/init-test-database.sql.
+mise run ci
+```
+
+The `ci` task checks formatting and generated types, runs linters and unit tests, builds the frontend, runs PostgreSQL integration tests, validates Caddy, and assembles and tests the production topology. Individual checks are also available through names such as `mise run format:check`, `mise run types:check`, `mise run test:integration`, `mise run caddy:validate`, and `mise run test:production`. Set `MEMENTO_TEST_DATABASE_URL` to override the integration task's default local connection.
 
 ## Provision PostgreSQL beside Immich
 

@@ -1,0 +1,90 @@
+[tools]
+go = "1.25.5"
+node = "24.13.0"
+"npm:pnpm" = "11.16.0"
+
+[tasks.setup]
+description = "Install project dependencies"
+run = "pnpm install --frozen-lockfile"
+
+[tasks.dev]
+description = "Run the frontend development server"
+depends = ["setup"]
+run = "pnpm dev"
+
+[tasks.format]
+description = "Format Go and frontend files"
+depends = ["setup"]
+run = ["go fmt ./...", "pnpm format"]
+
+[tasks."format:check"]
+description = "Check Go and frontend formatting"
+depends = ["setup"]
+wait_for = ["types:check"]
+run = ["./scripts/check-go-format.sh", "pnpm format:check"]
+
+[tasks.lint]
+description = "Lint Go and frontend code"
+depends = ["setup"]
+wait_for = ["types:check"]
+run = ["go vet ./...", "pnpm lint"]
+
+[tasks."types:generate"]
+description = "Generate TypeScript API types from Go wire types"
+depends = ["setup"]
+run = "pnpm types:generate"
+
+[tasks."types:check"]
+description = "Check generated TypeScript API types"
+depends = ["setup"]
+run = "pnpm types:check"
+
+[tasks.test]
+description = "Run Go and frontend unit tests"
+depends = ["setup"]
+wait_for = ["types:check"]
+run = ["go test ./...", "pnpm test"]
+
+[tasks."test:race"]
+description = "Run Go unit tests with the race detector"
+run = "go test -race ./..."
+
+[tasks.build]
+description = "Build the frontend"
+depends = ["setup"]
+wait_for = ["types:check"]
+run = "pnpm build"
+
+[tasks."test:integration"]
+description = "Run PostgreSQL integration tests"
+run = '''
+MEMENTO_TEST_DATABASE_URL="${MEMENTO_TEST_DATABASE_URL:-postgresql://memento_app:test-only-password@127.0.0.1:5432/memento?sslmode=disable}" \
+  go test -count=1 -tags=integration ./...
+'''
+
+[tasks."caddy:validate"]
+description = "Validate the production Caddy configuration"
+run = '''
+docker run --rm \
+  --volume "$PWD/Caddyfile:/etc/caddy/Caddyfile:ro" \
+  caddy:2.10.2-alpine \
+  caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+'''
+
+[tasks."test:production"]
+description = "Assemble and test the production topology"
+wait_for = ["types:check"]
+run = "./scripts/test-production.sh"
+
+[tasks.ci]
+description = "Run the complete CI validation suite"
+depends = [
+  "format:check",
+  "lint",
+  "types:check",
+  "test",
+  "build",
+  "test:integration",
+  "caddy:validate",
+  "test:production",
+]
