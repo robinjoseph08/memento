@@ -41,7 +41,7 @@ mise run setup
 List the available development tasks with `mise tasks ls`. Common commands include:
 
 ```sh
-mise run dev
+mise run start
 mise run format
 mise run lint
 mise run test

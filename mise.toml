@@ -16,10 +16,10 @@ run = "go tool tygo generate"
 description = "Install dependencies and generate API types"
 depends = ["types:generate"]
 
-[tasks.dev]
+[tasks.start]
 description = "Run the frontend development server"
 depends = ["types:generate"]
-run = "pnpm dev"
+run = "pnpm start"
 
 [tasks.format]
 description = "Format Go and frontend files"
