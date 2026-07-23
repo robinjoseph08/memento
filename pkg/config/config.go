@@ -40,10 +40,9 @@ type DatabaseConfig struct {
 }
 
 type ImmichConfig struct {
-	URL             string
-	APIKey          string
-	ExpectedVersion string
-	HealthTimeout   time.Duration
+	URL           string
+	APIKey        string
+	HealthTimeout time.Duration
 }
 
 type WorkerConfig struct {
@@ -66,10 +65,9 @@ type rawConfig struct {
 		HealthTimeout string `koanf:"health_timeout"`
 	} `koanf:"database"`
 	Immich struct {
-		URL             string `koanf:"url"`
-		APIKey          string `koanf:"api_key"`
-		ExpectedVersion string `koanf:"expected_version"`
-		HealthTimeout   string `koanf:"health_timeout"`
+		URL           string `koanf:"url"`
+		APIKey        string `koanf:"api_key"`
+		HealthTimeout string `koanf:"health_timeout"`
 	} `koanf:"immich"`
 	Worker struct {
 		PollInterval      string `koanf:"poll_interval"`
@@ -86,7 +84,6 @@ var defaults = map[string]any{
 	"database.name":             "memento",
 	"database.max_open_conns":   10,
 	"database.health_timeout":   "2s",
-	"immich.expected_version":   "3.0.3",
 	"immich.health_timeout":     "2s",
 	"worker.poll_interval":      "1s",
 	"worker.heartbeat_interval": "2s",
@@ -144,7 +141,6 @@ func envKey(key string) string {
 		"MEMENTO_DATABASE_HEALTH_TIMEOUT":   "database.health_timeout",
 		"MEMENTO_IMMICH_URL":                "immich.url",
 		"MEMENTO_IMMICH_API_KEY":            "immich.api_key",
-		"MEMENTO_IMMICH_EXPECTED_VERSION":   "immich.expected_version",
 		"MEMENTO_IMMICH_HEALTH_TIMEOUT":     "immich.health_timeout",
 		"MEMENTO_WORKER_POLL_INTERVAL":      "worker.poll_interval",
 		"MEMENTO_WORKER_HEARTBEAT_INTERVAL": "worker.heartbeat_interval",
@@ -185,7 +181,6 @@ func parse(raw rawConfig) (Config, error) {
 	cfg.Database.MaxOpenConns = raw.Database.MaxOpenConns
 	cfg.Immich.URL = raw.Immich.URL
 	cfg.Immich.APIKey = raw.Immich.APIKey
-	cfg.Immich.ExpectedVersion = raw.Immich.ExpectedVersion
 
 	var err error
 	if cfg.HTTP.ShutdownTimeout, err = duration("http.shutdown_timeout", raw.HTTP.ShutdownTimeout); err != nil {
@@ -258,9 +253,6 @@ func (c Config) Validate() error {
 	}
 	if c.Immich.APIKey == "" {
 		return errors.New("immich.api_key is required")
-	}
-	if c.Immich.ExpectedVersion == "" {
-		return errors.New("immich.expected_version is required")
 	}
 	if c.Worker.HeartbeatMaxAge <= c.Worker.HeartbeatInterval {
 		return errors.New("worker.heartbeat_max_age must exceed worker.heartbeat_interval")

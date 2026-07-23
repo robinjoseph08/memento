@@ -4,6 +4,7 @@ package server
 import (
 	"errors"
 	"net/http"
+	"strconv"
 
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
@@ -14,11 +15,18 @@ import (
 
 // Problem is the stable, non-sensitive API error document.
 type Problem struct {
-	Type      string `json:"type"`
-	Title     string `json:"title"`
-	Status    int    `json:"status"`
-	RequestID string `json:"request_id,omitempty"`
+	Type        string            `json:"type"`
+	Title       string            `json:"title"`
+	Status      int               `json:"status"`
+	Code        string            `json:"code"`
+	Message     string            `json:"message"`
+	FieldErrors map[string]string `json:"field_errors,omitempty"`
+	RequestID   string            `json:"request_id,omitempty"`
 }
+
+type routePolicy string
+
+const publicSafe routePolicy = "public_safe"
 
 // New constructs routes and middleware. Health routes use the public-safe policy.
 func New(service *health.Service) *echo.Echo {
@@ -30,9 +38,18 @@ func New(service *health.Service) *echo.Echo {
 	e.Use(middleware.BodyLimit("10M"))
 	e.HTTPErrorHandler = problemHandler
 
-	e.GET("/api/health/live", service.Live)
-	e.GET("/api/health/ready", service.Ready)
+	registerRoute(e, http.MethodGet, "/api/health/live", service.Live, publicSafe)
+	registerRoute(e, http.MethodGet, "/api/health/ready", service.Ready, publicSafe)
 	return e
+}
+
+func registerRoute(e *echo.Echo, method, path string, handler echo.HandlerFunc, policy routePolicy) *echo.Route {
+	if policy == "" {
+		panic("route policy is required")
+	}
+	route := e.Add(method, path, handler)
+	route.Name = "policy:" + string(policy)
+	return route
 }
 
 func problemHandler(err error, c echo.Context) {
@@ -53,6 +70,8 @@ func problemHandler(err error, c echo.Context) {
 		Type:      "about:blank",
 		Title:     title,
 		Status:    status,
+		Code:      "http_" + strconv.Itoa(status),
+		Message:   title,
 		RequestID: goliblogger.IDFromEchoContext(c),
 	})
 }

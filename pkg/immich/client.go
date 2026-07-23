@@ -9,19 +9,20 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
 
 	"github.com/robinjoseph08/memento/pkg/config"
 )
 
-const maxVersionResponse = 32 << 10
+const (
+	maxVersionResponse = 32 << 10
+	supportedVersion   = "3.0.3"
+)
 
 // Client checks the configured private Immich API without exposing its URL or key.
 type Client struct {
 	baseURL       *url.URL
 	apiKey        string
-	expected      string
 	healthTimeout time.Duration
 	httpClient    *http.Client
 }
@@ -41,7 +42,11 @@ func New(cfg config.ImmichConfig, httpClient *http.Client) (*Client, error) {
 	if httpClient == nil {
 		httpClient = &http.Client{}
 	}
-	return &Client{baseURL: baseURL, apiKey: cfg.APIKey, expected: cfg.ExpectedVersion, healthTimeout: cfg.HealthTimeout, httpClient: httpClient}, nil
+	safeHTTPClient := *httpClient
+	safeHTTPClient.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	return &Client{baseURL: baseURL, apiKey: cfg.APIKey, healthTimeout: cfg.HealthTimeout, httpClient: &safeHTTPClient}, nil
 }
 
 // Check verifies basic reachability and the exact supported server version.
@@ -71,7 +76,7 @@ func (c *Client) Check(ctx context.Context) error {
 		return errors.New("Immich returned an invalid version")
 	}
 	actual := fmt.Sprintf("%d.%d.%d", version.Major, version.Minor, version.Patch)
-	if actual != strings.TrimPrefix(c.expected, "v") {
+	if actual != supportedVersion {
 		return errors.New("Immich version is unsupported")
 	}
 	return nil

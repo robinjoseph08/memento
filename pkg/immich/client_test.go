@@ -15,7 +15,7 @@ import (
 )
 
 func clientConfig(serverURL string) config.ImmichConfig {
-	return config.ImmichConfig{URL: serverURL, APIKey: "secret-key", ExpectedVersion: "3.0.3", HealthTimeout: 100 * time.Millisecond}
+	return config.ImmichConfig{URL: serverURL, APIKey: "secret-key", HealthTimeout: 100 * time.Millisecond}
 }
 
 func TestCheckValidatesVersionAndAPIKey(t *testing.T) {
@@ -64,6 +64,29 @@ type failingTransport struct{}
 
 func (failingTransport) RoundTrip(*http.Request) (*http.Response, error) {
 	return nil, errors.New("dial http://private.internal?key=secret")
+}
+
+func TestCheckRejectsRedirectsWithoutForwardingAPIKey(t *testing.T) {
+	targetRequests := make(chan *http.Request, 1)
+	target := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		targetRequests <- r.Clone(r.Context())
+	}))
+	defer target.Close()
+
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "secret-key", r.Header.Get("x-api-key"))
+		http.Redirect(w, r, target.URL, http.StatusTemporaryRedirect)
+	}))
+	defer source.Close()
+
+	client, err := New(clientConfig(source.URL), source.Client())
+	require.NoError(t, err)
+	require.EqualError(t, client.Check(context.Background()), "Immich version check failed")
+	select {
+	case request := <-targetRequests:
+		t.Fatalf("redirect target received request with API key %q", request.Header.Get("x-api-key"))
+	default:
+	}
 }
 
 func TestCheckRedactsTransportErrors(t *testing.T) {

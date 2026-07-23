@@ -21,7 +21,19 @@ func TestUnknownRouteReturnsStableProblemWithRequestID(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, response.Code)
 	assert.Contains(t, response.Body.String(), `"type":"about:blank"`)
 	assert.Contains(t, response.Body.String(), `"title":"Not Found"`)
+	assert.Contains(t, response.Body.String(), `"code":"http_404"`)
+	assert.Contains(t, response.Body.String(), `"message":"Not Found"`)
 	assert.Regexp(t, `"request_id":"[0-9a-f-]+"`, response.Body.String())
+}
+
+func TestHealthRoutesDeclarePublicSafePolicy(t *testing.T) {
+	e := New(new(health.Service))
+	policies := make(map[string]string)
+	for _, route := range e.Routes() {
+		policies[route.Path] = route.Name
+	}
+	assert.Equal(t, "policy:public_safe", policies["/api/health/live"])
+	assert.Equal(t, "policy:public_safe", policies["/api/health/ready"])
 }
 
 func TestBodyLimitUsesStableProblem(t *testing.T) {

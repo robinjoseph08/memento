@@ -28,7 +28,6 @@ func TestLoadUsesDefaultsAndEnvironment(t *testing.T) {
 	assert.Equal(t, ":8081", cfg.HTTP.Address)
 	assert.Equal(t, 7*time.Second, cfg.HTTP.ShutdownTimeout)
 	assert.Equal(t, 4, cfg.Database.MaxOpenConns)
-	assert.Equal(t, "3.0.3", cfg.Immich.ExpectedVersion)
 }
 
 func TestLoadPrecedenceIncludesYAMLAndSecretFiles(t *testing.T) {
@@ -103,7 +102,6 @@ func TestValidateRejectsUnsafeValues(t *testing.T) {
 		{"Immich URL", func(c *Config) { c.Immich.URL = "" }, "immich.url is required"},
 		{"Immich credentials", func(c *Config) { c.Immich.URL = "https://user:pass@immich.example" }, "without credentials"},
 		{"Immich key", func(c *Config) { c.Immich.APIKey = "" }, "immich.api_key is required"},
-		{"Immich version", func(c *Config) { c.Immich.ExpectedVersion = "" }, "immich.expected_version is required"},
 		{"heartbeat", func(c *Config) { c.Worker.HeartbeatMaxAge = c.Worker.HeartbeatInterval }, "heartbeat_max_age"},
 		{"poll lease", func(c *Config) { c.Worker.LeaseDuration = c.Worker.PollInterval }, "lease_duration"},
 		{"heartbeat lease", func(c *Config) { c.Worker.LeaseDuration = c.Worker.HeartbeatInterval }, "heartbeat_interval"},

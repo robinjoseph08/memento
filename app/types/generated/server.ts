@@ -7,5 +7,8 @@ export interface Problem {
   type: string;
   title: string;
   status: number /* int */;
+  code: string;
+  message: string;
+  field_errors?: { [key: string]: string};
   request_id?: string;
 }

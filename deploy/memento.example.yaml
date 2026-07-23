@@ -11,7 +11,6 @@ database:
 
 immich:
   url: http://immich:2283
-  expected_version: 3.0.3
   health_timeout: 2s
 
 worker:
