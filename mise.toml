@@ -22,7 +22,11 @@ description = "Build the development API binary used by Air"
 run = "mkdir -p ./tmp/air && go build -o ./tmp/air/memento ./cmd/api"
 
 [tasks.start]
-description = "Start the API and frontend development servers"
+description = "Start a complete API and frontend development environment"
+run = "./scripts/start.sh"
+
+[tasks."start:servers"]
+hide = true
 depends = ["start:air", "start:web"]
 
 [tasks."start:air"]
@@ -37,7 +41,7 @@ run = '''
 target=${MEMENTO_API_PROXY_TARGET:-http://127.0.0.1:8081}
 target=${target%/}
 until curl --silent --fail "$target/api/health/live" >/dev/null; do sleep 0.5; done
-pnpm start
+pnpm start --host 127.0.0.1 --port "${MEMENTO_WEB_PORT:-5173}" --strictPort
 '''
 
 [tasks.format]
@@ -87,6 +91,15 @@ run = "pnpm build"
 description = "Run PostgreSQL integration tests"
 run = "./scripts/test-integration.sh"
 
+[tasks."test:development"]
+description = "Start and verify the disposable development environment"
+run = "./scripts/test-development.sh"
+
+[tasks."ci:development"]
+hide = true
+depends = ["check"]
+run = "mise test:development"
+
 [tasks."caddy:validate"]
 description = "Validate the production Caddy configuration"
 run = '''
@@ -108,7 +121,7 @@ depends = ["lint", "lint:js", "types:generate", "test", "build"]
 [tasks.ci]
 description = "Run the complete CI validation suite"
 depends = [
-  "check",
+  "ci:development",
   "test:race",
   "test:integration",
   "caddy:validate",

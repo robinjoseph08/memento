@@ -27,9 +27,9 @@ Each commit should be in the format of `[{Category}] {Change description}`
 
 Run `mise check` to validate changes before pushing them. It is the fast, worktree-safe local gate for linting, generated types, unit tests, and the frontend build.
 
-Run `mise ci` when the complete CI-equivalent suite is needed. It adds race detection, isolated PostgreSQL integration tests, Caddy validation, and the production topology test.
+Run `mise ci` when the complete CI-equivalent suite is needed. It adds race detection, isolated PostgreSQL integration tests, the disposable development environment test, Caddy validation, and the production topology test.
 
-Use `mise start` to run the Go API with Air hot reload and the Vite frontend together. Air regenerates Tygo types before rebuilding the API.
+Use `mise start` to run the Go API with Air hot reload and the Vite frontend together. Without external runtime configuration, it manages disposable PostgreSQL and Immich stub containers and prints dynamic local URLs. Air regenerates Tygo types before rebuilding the API.
 
 ## Agent skills
 
