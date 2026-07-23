@@ -86,8 +86,8 @@ description = "Assemble and test the production topology"
 depends = ["types:generate"]
 run = "./scripts/test-production.sh"
 
-[tasks.ci]
-description = "Run the complete CI validation suite"
+[tasks.check]
+description = "Run all validation checks"
 depends = [
   "lint",
   "lint:js",

@@ -49,4 +49,4 @@ jobs:
           cache: true
 
       - name: Run validation
-        run: mise run ci
+        run: mise run check
