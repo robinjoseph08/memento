@@ -20,6 +20,19 @@ const (
 	supportedVersion   = "3.0.3"
 )
 
+type safeError string
+
+func (err safeError) Error() string { return string(err) }
+
+var (
+	errParseURL             = errors.New("parse Immich URL")
+	errCreateVersionRequest = errors.New("create Immich version request")
+	errUnreachable          = safeError("Immich is unreachable")
+	errVersionCheckFailed   = safeError("Immich version check failed")
+	errInvalidVersion       = safeError("Immich returned an invalid version")
+	errUnsupportedVersion   = safeError("Immich version is unsupported")
+)
+
 // Client checks the configured private Immich API without exposing its URL or key.
 type Client struct {
 	baseURL       *url.URL
@@ -38,7 +51,7 @@ type versionResponse struct {
 func New(cfg config.ImmichConfig, httpClient *http.Client) (*Client, error) {
 	baseURL, err := url.Parse(cfg.URL)
 	if err != nil {
-		return nil, errors.New("parse Immich URL")
+		return nil, errParseURL
 	}
 	if httpClient == nil {
 		httpClient = &http.Client{}
@@ -58,34 +71,34 @@ func (c *Client) Check(ctx context.Context) error {
 	endpoint := c.baseURL.JoinPath("api", "server", "version")
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
 	if err != nil {
-		return errors.New("create Immich version request")
+		return errCreateVersionRequest
 	}
 	req.Header.Set("x-api-key", c.apiKey)
 	response, err := c.httpClient.Do(req)
 	if err != nil {
-		return errors.New("Immich is unreachable")
+		return errUnreachable
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxVersionResponse))
-		return errors.New("Immich version check failed")
+		return errVersionCheckFailed
 	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, maxVersionResponse+1))
 	if err != nil || len(body) > maxVersionResponse {
-		return errors.New("Immich returned an invalid version")
+		return errInvalidVersion
 	}
 	var version versionResponse
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&version); err != nil {
-		return errors.New("Immich returned an invalid version")
+		return errInvalidVersion
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		return errors.New("Immich returned an invalid version")
+		return errInvalidVersion
 	}
 	actual := fmt.Sprintf("%d.%d.%d", version.Major, version.Minor, version.Patch)
 	if actual != supportedVersion {
-		return errors.New("Immich version is unsupported")
+		return errUnsupportedVersion
 	}
 	return nil
 }

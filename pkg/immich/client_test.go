@@ -116,5 +116,5 @@ func TestNewRejectsInvalidURLWithoutEchoingIt(t *testing.T) {
 	cfg := clientConfig("https://%zz-secret")
 	_, err := New(cfg, nil)
 	require.EqualError(t, err, "parse Immich URL")
-	assert.False(t, strings.Contains(err.Error(), "secret"))
+	assert.NotContains(t, err.Error(), "secret")
 }

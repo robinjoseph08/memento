@@ -22,7 +22,7 @@ type fakeWorker struct{ healthy bool }
 
 func (w fakeWorker) Healthy(time.Duration) bool { return w.healthy }
 
-func request(t *testing.T, service *Service, handler echo.HandlerFunc) *httptest.ResponseRecorder {
+func request(t *testing.T, handler echo.HandlerFunc) *httptest.ResponseRecorder {
 	t.Helper()
 	e := echo.New()
 	recorder := httptest.NewRecorder()
@@ -39,7 +39,7 @@ func TestLiveDoesNotCallDependencies(t *testing.T) {
 	}
 	service := newWithChecks(failIfCalled, failIfCalled, failIfCalled, checkerFunc(failIfCalled), fakeWorker{}, time.Second, time.Second)
 
-	response := request(t, service, service.Live)
+	response := request(t, service.Live)
 
 	assert.Equal(t, http.StatusOK, response.Code)
 	assert.JSONEq(t, `{"status":"live"}`, response.Body.String())
@@ -50,7 +50,7 @@ func TestReadyReportsAllowlistedHealthyChecks(t *testing.T) {
 	ok := func(context.Context) error { return nil }
 	service := newWithChecks(ok, ok, ok, checkerFunc(ok), fakeWorker{healthy: true}, time.Second, time.Second)
 
-	response := request(t, service, service.Ready)
+	response := request(t, service.Ready)
 
 	assert.Equal(t, http.StatusOK, response.Code)
 	assert.JSONEq(t, `{
@@ -86,7 +86,7 @@ func TestReadyReportsEachUnsafeDependencySymmetrically(t *testing.T) {
 				checkerFunc(func(context.Context) error { return test.immich }),
 				fakeWorker{healthy: test.worker}, time.Second, time.Second,
 			)
-			response := request(t, service, service.Ready)
+			response := request(t, service.Ready)
 			assert.Equal(t, http.StatusServiceUnavailable, response.Code)
 			assert.Contains(t, response.Body.String(), `"`+test.failedKey+`":"unavailable"`)
 			assert.NotContains(t, response.Body.String(), "secret")
@@ -105,7 +105,7 @@ func TestDrainingDropsReadinessBeforeCallingDependencies(t *testing.T) {
 	service := newWithChecks(called, called, called, checkerFunc(called), fakeWorker{healthy: true}, time.Second, time.Second)
 	service.SetDraining()
 
-	response := request(t, service, service.Ready)
+	response := request(t, service.Ready)
 
 	assert.True(t, service.IsDraining())
 	assert.Equal(t, http.StatusServiceUnavailable, response.Code)
@@ -121,7 +121,7 @@ func TestReadyBoundsPostgreSQLCheck(t *testing.T) {
 		fakeWorker{healthy: true}, time.Millisecond, time.Second,
 	)
 	started := time.Now()
-	response := request(t, service, service.Ready)
+	response := request(t, service.Ready)
 	assert.Equal(t, http.StatusServiceUnavailable, response.Code)
 	assert.Less(t, time.Since(started), 100*time.Millisecond)
 }

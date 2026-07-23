@@ -15,6 +15,12 @@ import (
 	"github.com/uptrace/bun"
 )
 
+var (
+	errDatabaseRequired   = errors.New("worker database is required")
+	errLeaseOwnerRequired = errors.New("worker lease owner is required")
+	errLeaseOwnershipLost = errors.New("lease ownership lost")
+)
+
 // Job is a leased unit of work.
 type Job struct {
 	ID      int64
@@ -44,10 +50,10 @@ type Worker struct {
 // New constructs a worker with a process-unique lease owner.
 func New(db *bun.DB, cfg config.WorkerConfig, owner string, handlers map[string]Handler) (*Worker, error) {
 	if db == nil {
-		return nil, errors.New("worker database is required")
+		return nil, errDatabaseRequired
 	}
 	if owner == "" {
-		return nil, errors.New("worker lease owner is required")
+		return nil, errLeaseOwnerRequired
 	}
 	if handlers == nil {
 		handlers = map[string]Handler{}
@@ -153,7 +159,7 @@ func (w *Worker) heartbeatLease(ctx context.Context) error {
 		return fmt.Errorf("heartbeat job: %w", err)
 	}
 	if affected, _ := result.RowsAffected(); affected != 1 {
-		return errors.New("heartbeat job: lease ownership lost")
+		return fmt.Errorf("heartbeat job: %w", errLeaseOwnershipLost)
 	}
 	return nil
 }
@@ -182,7 +188,7 @@ func (w *Worker) claim(ctx context.Context) (*Job, error) {
 		FROM candidate
 		WHERE job.id = candidate.id
 		RETURNING job.id, job.kind, job.payload
-	`, bun.In(kinds), w.owner, w.cfg.LeaseDuration.Microseconds()).Scan(ctx, &job.ID, &job.Kind, &job.Payload)
+	`, bun.List(kinds), w.owner, w.cfg.LeaseDuration.Microseconds()).Scan(ctx, &job.ID, &job.Kind, &job.Payload)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -201,7 +207,7 @@ func (w *Worker) complete(ctx context.Context, id int64) error {
 		return fmt.Errorf("complete job: %w", err)
 	}
 	if affected, _ := result.RowsAffected(); affected != 1 {
-		return errors.New("complete job: lease ownership lost")
+		return fmt.Errorf("complete job: %w", errLeaseOwnershipLost)
 	}
 	return nil
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -10,6 +11,8 @@ import (
 	"github.com/robinjoseph08/memento/pkg/database"
 	"github.com/robinjoseph08/memento/pkg/migrations"
 )
+
+var errUsage = errors.New("usage: migrations apply|validate")
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -20,7 +23,7 @@ func main() {
 
 func run(args []string) error {
 	if len(args) != 1 || (args[0] != "apply" && args[0] != "validate") {
-		return fmt.Errorf("usage: migrations apply|validate")
+		return errUsage
 	}
 	cfg, err := config.Load("")
 	if err != nil {

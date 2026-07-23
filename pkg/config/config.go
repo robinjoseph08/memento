@@ -78,6 +78,24 @@ type rawConfig struct {
 	} `koanf:"worker"`
 }
 
+var (
+	errSecretFileEmpty          = errors.New("file is empty")
+	errPositiveDuration         = errors.New("must be a positive duration")
+	errHTTPAddressRequired      = errors.New("http.address is required")
+	errDatabaseURLRequired      = errors.New("database.url is required")
+	errDatabaseNameRequired     = errors.New("database.name is required")
+	errDatabaseConnections      = errors.New("database.max_open_conns must be at least 2 for the migration lock")
+	errDatabaseURLInvalid       = errors.New("database.url must be a PostgreSQL URL")
+	errDatabaseSelectionInvalid = errors.New("database.url must select one logical database")
+	errDatabaseNameMismatch     = errors.New("database.url must select the configured Memento database")
+	errImmichURLRequired        = errors.New("immich.url is required")
+	errImmichURLInvalid         = errors.New("immich.url must be an HTTP URL without credentials")
+	errImmichAPIKeyRequired     = errors.New("immich.api_key is required")
+	errHeartbeatMaxAge          = errors.New("worker.heartbeat_max_age must exceed worker.heartbeat_interval")
+	errLeasePollInterval        = errors.New("worker.lease_duration must exceed worker.poll_interval")
+	errLeaseHeartbeatInterval   = errors.New("worker.lease_duration must exceed worker.heartbeat_interval")
+)
+
 var defaults = map[string]any{
 	"http.address":              "127.0.0.1:8081",
 	"http.shutdown_timeout":     "8s",
@@ -165,7 +183,7 @@ func loadSecretFile(k *koanf.Koanf, key, environment string) error {
 	}
 	value := strings.TrimSpace(string(contents))
 	if value == "" {
-		return fmt.Errorf("read %s: file is empty", environment)
+		return fmt.Errorf("read %s: %w", environment, errSecretFileEmpty)
 	}
 	if err := k.Set(key, value); err != nil {
 		return fmt.Errorf("set %s: %w", environment, err)
@@ -213,7 +231,7 @@ func parse(raw rawConfig) (Config, error) {
 func duration(name, value string) (time.Duration, error) {
 	d, err := time.ParseDuration(value)
 	if err != nil || d <= 0 {
-		return 0, fmt.Errorf("%s must be a positive duration", name)
+		return 0, fmt.Errorf("%s %w", name, errPositiveDuration)
 	}
 	return d, nil
 }
@@ -221,47 +239,47 @@ func duration(name, value string) (time.Duration, error) {
 // Validate rejects unsafe or incomplete runtime configuration.
 func (c Config) Validate() error {
 	if c.HTTP.Address == "" {
-		return errors.New("http.address is required")
+		return errHTTPAddressRequired
 	}
 	if c.Database.URL == "" {
-		return errors.New("database.url is required")
+		return errDatabaseURLRequired
 	}
 	if c.Database.Name == "" {
-		return errors.New("database.name is required")
+		return errDatabaseNameRequired
 	}
 	if c.Database.MaxOpenConns < 2 {
-		return errors.New("database.max_open_conns must be at least 2 for the migration lock")
+		return errDatabaseConnections
 	}
 	databaseURL, err := url.Parse(c.Database.URL)
 	if err != nil || (databaseURL.Scheme != "postgres" && databaseURL.Scheme != "postgresql") || databaseURL.Host == "" {
-		return errors.New("database.url must be a PostgreSQL URL")
+		return errDatabaseURLInvalid
 	}
 	actualName := strings.TrimPrefix(databaseURL.EscapedPath(), "/")
 	actualName, err = url.PathUnescape(actualName)
 	if err != nil || actualName == "" || strings.Contains(actualName, "/") {
-		return errors.New("database.url must select one logical database")
+		return errDatabaseSelectionInvalid
 	}
 	if actualName != c.Database.Name {
-		return fmt.Errorf("database.url must select the configured Memento database %q", c.Database.Name)
+		return fmt.Errorf("%w %q", errDatabaseNameMismatch, c.Database.Name)
 	}
 	if c.Immich.URL == "" {
-		return errors.New("immich.url is required")
+		return errImmichURLRequired
 	}
 	immichURL, err := url.Parse(c.Immich.URL)
 	if err != nil || (immichURL.Scheme != "http" && immichURL.Scheme != "https") || immichURL.Host == "" || immichURL.User != nil {
-		return errors.New("immich.url must be an HTTP URL without credentials")
+		return errImmichURLInvalid
 	}
 	if c.Immich.APIKey == "" {
-		return errors.New("immich.api_key is required")
+		return errImmichAPIKeyRequired
 	}
 	if c.Worker.HeartbeatMaxAge <= c.Worker.HeartbeatInterval {
-		return errors.New("worker.heartbeat_max_age must exceed worker.heartbeat_interval")
+		return errHeartbeatMaxAge
 	}
 	if c.Worker.LeaseDuration <= c.Worker.PollInterval {
-		return errors.New("worker.lease_duration must exceed worker.poll_interval")
+		return errLeasePollInterval
 	}
 	if c.Worker.LeaseDuration <= c.Worker.HeartbeatInterval {
-		return errors.New("worker.lease_duration must exceed worker.heartbeat_interval")
+		return errLeaseHeartbeatInterval
 	}
 	return nil
 }

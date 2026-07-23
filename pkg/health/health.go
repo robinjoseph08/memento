@@ -39,12 +39,12 @@ type ReadyResponse struct {
 
 // Checker is a safe dependency readiness check.
 type Checker interface {
-	Check(context.Context) error
+	Check(ctx context.Context) error
 }
 
 // Worker exposes freshness without a database call.
 type Worker interface {
-	Healthy(time.Duration) bool
+	Healthy(maxAge time.Duration) bool
 }
 
 // Service owns process state and readiness dependencies.

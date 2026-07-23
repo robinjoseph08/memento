@@ -23,7 +23,7 @@ func TestNewWiresRealPostgreSQLMigrationAndSetupChecks(t *testing.T) {
 		service := New(db, ok, fakeWorker{healthy: true}, 50*time.Millisecond, time.Second)
 		require.NoError(t, db.Close())
 
-		response := request(t, service, service.Ready)
+		response := request(t, service.Ready)
 
 		assert.Equal(t, http.StatusServiceUnavailable, response.Code)
 		assert.Contains(t, response.Body.String(), `"postgresql":"unavailable"`)
@@ -36,7 +36,7 @@ func TestNewWiresRealPostgreSQLMigrationAndSetupChecks(t *testing.T) {
 		require.NoError(t, err)
 		service := New(db, ok, fakeWorker{healthy: true}, time.Second, time.Second)
 
-		response := request(t, service, service.Ready)
+		response := request(t, service.Ready)
 
 		assert.Equal(t, http.StatusServiceUnavailable, response.Code)
 		assert.Contains(t, response.Body.String(), `"postgresql":"ok"`)
@@ -51,7 +51,7 @@ func TestNewWiresRealPostgreSQLMigrationAndSetupChecks(t *testing.T) {
 		require.NoError(t, err)
 		service := New(db, ok, fakeWorker{healthy: true}, time.Second, time.Second)
 
-		response := request(t, service, service.Ready)
+		response := request(t, service.Ready)
 
 		assert.Equal(t, http.StatusServiceUnavailable, response.Code)
 		assert.Contains(t, response.Body.String(), `"migrations":"ok"`)

@@ -15,13 +15,13 @@ type ReadinessGate interface {
 
 // HTTPServer stops new requests and drains accepted requests.
 type HTTPServer interface {
-	Shutdown(context.Context) error
+	Shutdown(ctx context.Context) error
 }
 
 // Worker stops claims and releases leases after bounded work drains.
 type Worker interface {
 	StopClaims()
-	Drain(context.Context) error
+	Drain(ctx context.Context) error
 }
 
 // Closer closes the PostgreSQL pool last.

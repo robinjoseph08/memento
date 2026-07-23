@@ -43,13 +43,12 @@ func New(service *health.Service) *echo.Echo {
 	return e
 }
 
-func registerRoute(e *echo.Echo, method, path string, handler echo.HandlerFunc, policy routePolicy) *echo.Route {
+func registerRoute(e *echo.Echo, method, path string, handler echo.HandlerFunc, policy routePolicy) {
 	if policy == "" {
 		panic("route policy is required")
 	}
 	route := e.Add(method, path, handler)
 	route.Name = "policy:" + string(policy)
-	return route
 }
 
 func problemHandler(err error, c echo.Context) {

@@ -12,8 +12,9 @@
     "build": "tsc -b && vite build",
     "start": "vite",
     "format": "prettier --write .",
-    "format:check": "prettier --check .",
-    "lint": "eslint . --max-warnings 0",
+    "lint:eslint": "eslint --max-warnings 0 .",
+    "lint:prettier": "prettier --check .",
+    "lint:types": "tsc -b --noEmit",
     "test": "vitest run"
   },
   "dependencies": {

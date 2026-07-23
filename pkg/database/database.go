@@ -13,11 +13,17 @@ import (
 	"github.com/uptrace/bun/driver/pgdriver"
 )
 
+var (
+	errParseURL             = errors.New("parse Memento database URL")
+	errVerifyDatabase       = errors.New("verify Memento logical database")
+	errDatabaseNameMismatch = errors.New("connected logical database does not match Memento configuration")
+)
+
 // Open connects only after config validation has confirmed the selected logical database.
 func Open(ctx context.Context, cfg config.DatabaseConfig) (*bun.DB, error) {
 	connector, err := pgdriver.NewDriver().OpenConnector(cfg.URL)
 	if err != nil {
-		return nil, errors.New("parse Memento database URL")
+		return nil, errParseURL
 	}
 	db := bun.NewDB(sql.OpenDB(connector), pgdialect.New())
 	db.SetMaxOpenConns(cfg.MaxOpenConns)
@@ -28,11 +34,11 @@ func Open(ctx context.Context, cfg config.DatabaseConfig) (*bun.DB, error) {
 	var databaseName string
 	if err := db.NewRaw(`SELECT current_database()`).Scan(ctx, &databaseName); err != nil {
 		_ = db.Close()
-		return nil, errors.New("verify Memento logical database")
+		return nil, errVerifyDatabase
 	}
 	if databaseName != cfg.Name {
 		_ = db.Close()
-		return nil, errors.New("connected logical database does not match Memento configuration")
+		return nil, errDatabaseNameMismatch
 	}
 	return db, nil
 }

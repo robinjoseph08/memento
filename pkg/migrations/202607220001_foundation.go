@@ -11,7 +11,13 @@ import (
 	"github.com/uptrace/bun/migrate"
 )
 
-var collection = migrate.NewMigrations()
+var (
+	collection                    = migrate.NewMigrations()
+	errUnappliedMigrations        = errors.New("database has unapplied migrations")
+	errUnknownMigrations          = errors.New("database contains unknown migrations")
+	errRequiredExtensions         = errors.New("required PostgreSQL extensions are unavailable")
+	errSystemSettingsInconsistent = errors.New("system settings singleton is inconsistent")
+)
 
 func init() {
 	collection.MustRegister(
@@ -114,7 +120,7 @@ func Current(ctx context.Context, db *bun.DB) error {
 	}
 	for _, migration := range statuses {
 		if !migration.IsApplied() {
-			return errors.New("database has unapplied migrations")
+			return errUnappliedMigrations
 		}
 	}
 	missing, err := migrator.MissingMigrations(ctx)
@@ -122,7 +128,7 @@ func Current(ctx context.Context, db *bun.DB) error {
 		return fmt.Errorf("read missing migrations: %w", err)
 	}
 	if len(missing) != 0 {
-		return errors.New("database contains unknown migrations")
+		return errUnknownMigrations
 	}
 	return nil
 }
@@ -134,7 +140,7 @@ func Extensions(ctx context.Context, db *bun.DB) error {
 		return fmt.Errorf("verify required extensions: %w", err)
 	}
 	if count != 2 {
-		return errors.New("required PostgreSQL extensions are unavailable")
+		return errRequiredExtensions
 	}
 	return nil
 }
@@ -146,7 +152,7 @@ func SetupConsistent(ctx context.Context, db *bun.DB) error {
 		return fmt.Errorf("verify system settings: %w", err)
 	}
 	if count != 1 {
-		return errors.New("system settings singleton is inconsistent")
+		return errSystemSettingsInconsistent
 	}
 	return nil
 }

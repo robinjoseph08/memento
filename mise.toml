@@ -2,6 +2,7 @@
 go = "1.25.5"
 node = "24.13.0"
 "npm:pnpm" = "11.16.0"
+"github:golangci/golangci-lint" = "2.7.2"
 
 [tasks."dependencies:install"]
 hide = true
@@ -26,15 +27,29 @@ description = "Format Go and frontend files"
 depends = ["types:generate"]
 run = ["go fmt ./...", "pnpm format"]
 
-[tasks."format:check"]
-description = "Check Go and frontend formatting"
-depends = ["types:generate"]
-run = ["./scripts/check-go-format.sh", "pnpm format:check"]
-
 [tasks.lint]
-description = "Lint Go and frontend code"
+description = "Run Go linting"
+env = { GOLANGCI_LINT_CACHE = "{{config_root}}/tmp/golangci-lint-cache" }
+run = "golangci-lint run"
+
+[tasks."lint:js"]
+description = "Run all JavaScript and TypeScript linting"
+depends = ["types:generate", "lint:eslint", "lint:prettier", "lint:types"]
+
+[tasks."lint:eslint"]
+description = "Run ESLint"
+depends = ["dependencies:install"]
+run = "pnpm lint:eslint"
+
+[tasks."lint:prettier"]
+description = "Run Prettier checks"
+depends = ["dependencies:install"]
+run = "pnpm lint:prettier"
+
+[tasks."lint:types"]
+description = "Run TypeScript type checking"
 depends = ["types:generate"]
-run = ["go vet ./...", "pnpm lint"]
+run = "pnpm lint:types"
 
 [tasks.test]
 description = "Run Go and frontend unit tests"
@@ -74,8 +89,8 @@ run = "./scripts/test-production.sh"
 [tasks.ci]
 description = "Run the complete CI validation suite"
 depends = [
-  "format:check",
   "lint",
+  "lint:js",
   "types:generate",
   "test",
   "build",

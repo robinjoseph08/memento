@@ -3,7 +3,6 @@ package config
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -122,5 +121,5 @@ func TestErrorsDoNotContainSecrets(t *testing.T) {
 	t.Setenv("MEMENTO_DATABASE_URL", "postgresql://memento:"+secret+"@db:5432/immich")
 	_, err := Load("")
 	require.Error(t, err)
-	assert.False(t, strings.Contains(err.Error(), secret))
+	assert.NotContains(t, err.Error(), secret)
 }

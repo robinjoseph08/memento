@@ -80,9 +80,9 @@ func TestShutdownClosesDatabaseAndJoinsEveryFailure(t *testing.T) {
 		fakeDatabase{r: r, err: errors.New("database failure")},
 	)
 	require.Error(t, err)
-	assert.ErrorContains(t, err, "HTTP failure")
-	assert.ErrorContains(t, err, "worker failure")
-	assert.ErrorContains(t, err, "database failure")
+	require.ErrorContains(t, err, "HTTP failure")
+	require.ErrorContains(t, err, "worker failure")
+	require.ErrorContains(t, err, "database failure")
 	assert.Equal(t, "database", r.steps[len(r.steps)-1])
 }
 

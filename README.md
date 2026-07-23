@@ -44,6 +44,7 @@ List the available development tasks with `mise tasks ls`. Common commands inclu
 mise run start
 mise run format
 mise run lint
+mise run lint:js
 mise run test
 mise run build
 mise run types:generate
@@ -57,9 +58,9 @@ Run the complete suite used by CI with one command:
 mise run ci
 ```
 
-Tygo output under `app/types/generated/` is gitignored. Mise generates it from Go before every frontend task, so contributors never need to commit regenerated files with a PR. The production Docker build also generates its own copy instead of depending on the local working tree.
+Tygo output under `app/types/generated/` is gitignored. Mise generates it from Go before every frontend task that consumes it, so contributors never need to commit regenerated files with a PR. The production Docker build also generates its own copy instead of depending on the local working tree.
 
-The `ci` task generates API types, checks formatting, runs linters and unit tests, builds the frontend, runs PostgreSQL integration tests, validates Caddy, and assembles and tests the production topology. Individual checks are also available through names such as `mise run format:check`, `mise run types:generate`, `mise run test:integration`, `mise run caddy:validate`, and `mise run test:production`. Set `MEMENTO_TEST_DATABASE_URL` to override the integration task's default local connection.
+The `ci` task generates API types, runs Go and frontend linters and unit tests, builds the frontend, runs PostgreSQL integration tests, validates Caddy, and assembles and tests the production topology. `mise run lint` runs golangci-lint, while `mise run lint:js` runs ESLint, Prettier, and TypeScript checks in parallel. Individual checks are also available through names such as `mise run lint:eslint`, `mise run lint:prettier`, `mise run lint:types`, `mise run types:generate`, `mise run test:integration`, `mise run caddy:validate`, and `mise run test:production`. Set `MEMENTO_TEST_DATABASE_URL` to override the integration task's default local connection.
 
 ## Provision PostgreSQL beside Immich
 
