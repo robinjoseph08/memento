@@ -25,7 +25,7 @@ run = "pnpm start"
 [tasks.format]
 description = "Format Go and frontend files"
 depends = ["types:generate"]
-run = ["go fmt ./...", "pnpm format"]
+run = ["golangci-lint fmt", "pnpm format"]
 
 [tasks.lint]
 description = "Run Go linting"
