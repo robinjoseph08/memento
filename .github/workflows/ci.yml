@@ -16,30 +16,10 @@ jobs:
   validate:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    services:
-      postgres:
-        image: postgres:17.7-alpine3.23
-        env:
-          POSTGRES_DB: postgres
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: test-admin-only-password
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres -d postgres"
-          --health-interval 1s
-          --health-timeout 3s
-          --health-retries 30
 
     steps:
       - name: Check out repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-
-      - name: Provision restricted application database role
-        run: >-
-          docker exec --interactive "${{ job.services.postgres.id }}"
-          psql --set ON_ERROR_STOP=1 --username postgres --dbname postgres
-          < deploy/init-test-database.sql
 
       - name: Install pinned tools
         uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4.2.1

@@ -53,14 +53,14 @@ mise run types:generate
 Run the complete suite used by CI with one command:
 
 ```sh
-# The integration task requires PostgreSQL 17 with the restricted memento_app
-# role and an empty memento database provisioned by deploy/init-test-database.sql.
 mise run check
 ```
 
+The integration task uses Docker to provision an isolated PostgreSQL 17 database on a dynamic local port, then removes it when the tests finish. It does not connect to an existing PostgreSQL server unless `MEMENTO_TEST_DATABASE_URL` is explicitly set.
+
 Tygo output under `app/types/generated/` is gitignored. Mise generates it from Go before every frontend task that consumes it, so contributors never need to commit regenerated files with a PR. The production Docker build also generates its own copy instead of depending on the local working tree.
 
-The `check` task generates API types, runs Go and frontend linters and unit tests, builds the frontend, runs PostgreSQL integration tests, validates Caddy, and assembles and tests the production topology. `mise run lint` runs golangci-lint, while `mise run lint:js` runs ESLint, Prettier, and TypeScript checks in parallel. Individual checks are also available through names such as `mise run lint:eslint`, `mise run lint:prettier`, `mise run lint:types`, `mise run types:generate`, `mise run test:integration`, `mise run caddy:validate`, and `mise run test:production`. Set `MEMENTO_TEST_DATABASE_URL` to override the integration task's default local connection.
+The `check` task generates API types, runs Go and frontend linters and unit tests, builds the frontend, runs PostgreSQL integration tests, validates Caddy, and assembles and tests the production topology. `mise run lint` runs golangci-lint, while `mise run lint:js` runs ESLint, Prettier, and TypeScript checks in parallel. Individual checks are also available through names such as `mise run lint:eslint`, `mise run lint:prettier`, `mise run lint:types`, `mise run types:generate`, `mise run test:integration`, `mise run caddy:validate`, and `mise run test:production`. Set `MEMENTO_TEST_DATABASE_URL` to use an explicitly managed integration database instead of the disposable container.
 
 ## Provision PostgreSQL beside Immich
 

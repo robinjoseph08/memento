@@ -67,10 +67,7 @@ run = "pnpm build"
 
 [tasks."test:integration"]
 description = "Run PostgreSQL integration tests"
-run = '''
-MEMENTO_TEST_DATABASE_URL="${MEMENTO_TEST_DATABASE_URL:-postgresql://memento_app:test-only-password@127.0.0.1:5432/memento?sslmode=disable}" \
-  go test -count=1 -tags=integration ./...
-'''
+run = "./scripts/test-integration.sh"
 
 [tasks."caddy:validate"]
 description = "Validate the production Caddy configuration"
