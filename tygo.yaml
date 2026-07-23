@@ -3,7 +3,3 @@ packages:
     output_path: "app/types/generated/health.ts"
     fallback_type: unknown
     preserve_comments: none
-  - path: "github.com/robinjoseph08/memento/pkg/server"
-    output_path: "app/types/generated/server.ts"
-    fallback_type: unknown
-    preserve_comments: none

@@ -26,7 +26,7 @@ func request(t *testing.T, handler echo.HandlerFunc) *httptest.ResponseRecorder 
 	t.Helper()
 	e := echo.New()
 	recorder := httptest.NewRecorder()
-	ctx := e.NewContext(httptest.NewRequest(http.MethodGet, "/", nil), recorder)
+	ctx := e.NewContext(httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil), recorder)
 	require.NoError(t, handler(ctx))
 	return recorder
 }

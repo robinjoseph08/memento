@@ -3,6 +3,7 @@ module github.com/robinjoseph08/memento
 go 1.25.5
 
 require (
+	github.com/iancoleman/strcase v0.3.0
 	github.com/knadh/koanf/parsers/yaml v1.1.0
 	github.com/knadh/koanf/providers/confmap v1.0.0
 	github.com/knadh/koanf/providers/env v1.1.0

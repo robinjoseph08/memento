@@ -57,7 +57,7 @@ curl --fail --silent --output /dev/null "$base_url/service-worker.js"
 [ "$(curl --fail --silent "$base_url/api/health/live")" = '{"status":"live"}' ]
 api_code=$(curl --silent --output "$temporary/api.json" --write-out '%{http_code}' "$base_url/api")
 [ "$api_code" = 404 ]
-grep -q '"code":"http_404"' "$temporary/api.json"
+grep -q '"code":"not_found"' "$temporary/api.json"
 curl --fail --silent --dump-header "$temporary/headers" --output /dev/null "$base_url/"
 grep -qi '^Content-Security-Policy:' "$temporary/headers"
 if grep -qi '^Server:' "$temporary/headers"; then
