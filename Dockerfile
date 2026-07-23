@@ -15,10 +15,10 @@ WORKDIR /src
 RUN npm install --global pnpm@11.16.0
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile
-COPY app ./app
-COPY --from=typegen /src/app/types/generated ./app/types/generated
 COPY public ./public
 COPY tsconfig.json tsconfig.app.json tsconfig.node.json vite.config.ts ./
+COPY app ./app
+COPY --from=typegen /src/app/types/generated ./app/types/generated
 RUN pnpm build
 
 FROM go-base AS backend

@@ -2,7 +2,7 @@
 go = "1.25.5"
 node = "24.13.0"
 "npm:pnpm" = "11.16.0"
-"github:golangci/golangci-lint" = "2.7.2"
+"github:golangci/golangci-lint" = "2.12.2"
 "github:air-verse/air" = "1.64.2"
 
 [tasks."dependencies:install"]

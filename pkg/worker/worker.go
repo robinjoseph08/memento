@@ -112,7 +112,7 @@ func (w *Worker) claimAndRun(ctx context.Context) {
 		defer w.wg.Done()
 		defer cancel()
 		handlerErr := w.handlers[job.Kind](jobCtx, *job)
-		finalizeCtx, finalizeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		finalizeCtx, finalizeCancel := context.WithTimeout(context.WithoutCancel(jobCtx), 5*time.Second)
 		defer finalizeCancel()
 		if handlerErr == nil {
 			if err := w.complete(finalizeCtx, job.ID); err != nil {
