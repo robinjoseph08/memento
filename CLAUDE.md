@@ -29,6 +29,8 @@ Run `mise check` to validate changes before pushing them. It is the fast, worktr
 
 Run `mise ci` when the complete CI-equivalent suite is needed. It adds race detection, isolated PostgreSQL integration tests, Caddy validation, and the production topology test.
 
+Use `mise start` to run the Go API with Air hot reload and the Vite frontend together. Air regenerates Tygo types before rebuilding the API.
+
 ## Agent skills
 
 ### Issue tracker

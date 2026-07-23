@@ -29,7 +29,7 @@ The current foundation does not yet expose first-time browser setup or Recipient
 
 ## Developer prerequisites
 
-[Mise](https://mise.jdx.dev/) is the source of truth for development tool versions and project tasks. `mise.toml` pins Go 1.25.5, Node.js 24.13.0, and pnpm 11.16.0. Tygo 0.2.21 remains pinned as a Go tool in `go.mod`, and deployment files pin all container base tags.
+[Mise](https://mise.jdx.dev/) is the source of truth for development tool versions and project tasks. `mise.toml` pins Go 1.25.5, Node.js 24.13.0, pnpm 11.16.0, Air 1.64.2, and golangci-lint 2.7.2. Tygo 0.2.21 remains pinned as a Go tool in `go.mod`, and deployment files pin all container base tags.
 
 Install mise and Docker with the Compose plugin, then install the pinned tools, project dependencies, and generated API types:
 
@@ -49,6 +49,8 @@ mise run test
 mise run build
 mise run types:generate
 ```
+
+`mise start` runs the Go API through Air and the Vite frontend together. Air rebuilds the API and regenerates Tygo types when Go files change. Supply the required runtime configuration described below before starting. Vite proxies `/api` to `http://127.0.0.1:8081` by default; when the API uses another address, set `MEMENTO_API_PROXY_TARGET` to its HTTP origin.
 
 Validate changes before pushing with the fast local gate:
 

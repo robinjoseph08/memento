@@ -3,6 +3,7 @@ go = "1.25.5"
 node = "24.13.0"
 "npm:pnpm" = "11.16.0"
 "github:golangci/golangci-lint" = "2.7.2"
+"github:air-verse/air" = "1.64.2"
 
 [tasks."dependencies:install"]
 hide = true
@@ -10,21 +11,38 @@ run = "pnpm install --frozen-lockfile"
 
 [tasks."types:generate"]
 description = "Generate ignored TypeScript API types from Go wire types"
-depends = ["dependencies:install"]
 run = "go tool tygo generate"
 
 [tasks.setup]
 description = "Install dependencies and generate API types"
-depends = ["types:generate"]
+depends = ["dependencies:install", "types:generate"]
+
+[tasks."build:air"]
+description = "Build the development API binary used by Air"
+run = "mkdir -p ./tmp/air && go build -o ./tmp/air/memento ./cmd/api"
 
 [tasks.start]
-description = "Run the frontend development server"
+description = "Start the API and frontend development servers"
+depends = ["start:air", "start:web"]
+
+[tasks."start:air"]
+description = "Start the Go API with Air hot reload"
 depends = ["types:generate"]
-run = "pnpm start"
+run = "air"
+
+[tasks."start:web"]
+description = "Start Vite after the Go API is reachable"
+depends = ["dependencies:install", "types:generate"]
+run = '''
+target=${MEMENTO_API_PROXY_TARGET:-http://127.0.0.1:8081}
+target=${target%/}
+until curl --silent --fail "$target/api/health/live" >/dev/null; do sleep 0.5; done
+pnpm start
+'''
 
 [tasks.format]
 description = "Format Go and frontend files"
-depends = ["types:generate"]
+depends = ["dependencies:install", "types:generate"]
 run = ["golangci-lint fmt", "pnpm format"]
 
 [tasks.lint]
@@ -48,12 +66,12 @@ run = "pnpm lint:prettier"
 
 [tasks."lint:types"]
 description = "Run TypeScript type checking"
-depends = ["types:generate"]
+depends = ["dependencies:install", "types:generate"]
 run = "pnpm lint:types"
 
 [tasks.test]
 description = "Run Go and frontend unit tests"
-depends = ["types:generate"]
+depends = ["dependencies:install", "types:generate"]
 run = ["go test ./...", "pnpm test"]
 
 [tasks."test:race"]
@@ -62,7 +80,7 @@ run = "go test -race ./..."
 
 [tasks.build]
 description = "Build the frontend"
-depends = ["types:generate"]
+depends = ["dependencies:install", "types:generate"]
 run = "pnpm build"
 
 [tasks."test:integration"]

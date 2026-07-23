@@ -2,6 +2,9 @@ import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vitest/config";
 
+const apiProxyTarget =
+  process.env.MEMENTO_API_PROXY_TARGET ?? "http://127.0.0.1:8081";
+
 export default defineConfig({
   clearScreen: false,
   plugins: [react(), tailwindcss()],
@@ -13,7 +16,7 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      "/api": "http://127.0.0.1:8081",
+      "/api": apiProxyTarget,
     },
   },
   test: {
