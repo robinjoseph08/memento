@@ -1,0 +1,91 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:17.7-alpine3.23
+        env:
+          POSTGRES_DB: memento
+          POSTGRES_USER: memento_app
+          POSTGRES_PASSWORD: test-only-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U memento_app -d memento"
+          --health-interval 1s
+          --health-timeout 3s
+          --health-retries 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: .node-version
+
+      - name: Activate pinned pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.16.0 --activate
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check formatting
+        run: |
+          ./scripts/check-go-format.sh
+          pnpm format:check
+
+      - name: Lint
+        run: |
+          go vet ./...
+          pnpm lint
+
+      - name: Check generated API types
+        run: pnpm types:check
+
+      - name: Run unit tests
+        run: |
+          go test ./...
+          pnpm test
+
+      - name: Build frontend
+        run: pnpm build
+
+      - name: Run PostgreSQL integration tests
+        env:
+          MEMENTO_TEST_DATABASE_URL: postgresql://memento_app:test-only-password@127.0.0.1:5432/memento?sslmode=disable
+        run: go test -count=1 -tags=integration ./...
+
+      - name: Validate Caddy configuration
+        run: >-
+          docker run --rm
+          --volume "$PWD/Caddyfile:/etc/caddy/Caddyfile:ro"
+          caddy:2.10.2-alpine
+          caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+
+      - name: Assemble and test production topology
+        run: ./scripts/test-production.sh

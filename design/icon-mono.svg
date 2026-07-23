@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <g fill="currentColor">
+    <path d="M166 330l-7-28a72 72 0 0 1 52-87l175-44a72 72 0 0 1 87 52l20 80z" />
+    <path d="M531 303l20-80a72 72 0 0 1 87-52l175 44a72 72 0 0 1 52 87l-7 28z" />
+    <rect x="307" y="374" width="410" height="390" rx="72" />
+  </g>
+</svg>

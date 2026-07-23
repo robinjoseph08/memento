@@ -1,0 +1,5 @@
+:3001 {
+	header /api/server/version Content-Type application/json
+	respond /api/server/version `{ "major": 3, "minor": 0, "patch": 3 }` 200
+	respond 404
+}

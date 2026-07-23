@@ -1,0 +1,49 @@
+services:
+  postgres:
+    image: postgres:17.7-alpine3.23
+    environment:
+      POSTGRES_DB: memento
+      POSTGRES_USER: memento_app
+      POSTGRES_PASSWORD: test-only-password
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U memento_app -d memento"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+    ports:
+      - "127.0.0.1:54329:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+
+  immich:
+    image: caddy:2.10.2-alpine
+    command:
+      [
+        "caddy",
+        "run",
+        "--config",
+        "/etc/caddy/Caddyfile",
+        "--adapter",
+        "caddyfile",
+      ]
+    volumes:
+      - ./test-immich.Caddyfile:/etc/caddy/Caddyfile:ro
+
+  memento:
+    image: memento:test
+    build:
+      context: ..
+    environment:
+      LOG_FORMAT: json
+      MEMENTO_DATABASE_URL: postgresql://memento_app:test-only-password@postgres:5432/memento?sslmode=disable
+      MEMENTO_IMMICH_URL: http://immich:3001
+      MEMENTO_IMMICH_API_KEY: test-only-key
+      MEMENTO_HTTP_SHUTDOWN_TIMEOUT: 8s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      immich:
+        condition: service_started
+    ports:
+      - "127.0.0.1:18080:8080"
+    stop_grace_period: 10s
