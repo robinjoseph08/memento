@@ -62,7 +62,7 @@ container=$($compose ps --quiet memento)
 image_user=$(docker inspect --format '{{.Config.User}}' "$container")
 [ -n "$image_user" ] && [ "$image_user" != 0 ] && [ "$image_user" != root ]
 [ "$($compose exec --no-TTY memento id -u)" -ne 0 ]
-if $compose exec --no-TTY immich wget -q -O /dev/null http://memento:8081/api/health/live 2>/dev/null; then
+if $compose exec --no-TTY immich wget -q -O /dev/null http://memento:8091/api/health/live 2>/dev/null; then
   printf 'Go API is reachable outside its loopback production boundary\n' >&2
   exit 1
 fi

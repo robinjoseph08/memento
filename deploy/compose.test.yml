@@ -40,6 +40,7 @@ services:
       MEMENTO_DATABASE_URL: postgresql://memento_app:test-only-password@postgres:5432/memento?sslmode=disable
       MEMENTO_IMMICH_URL: http://immich:3001
       MEMENTO_IMMICH_API_KEY: test-only-key
+      MEMENTO_HTTP_ADDRESS: 127.0.0.1:8091
       MEMENTO_HTTP_SHUTDOWN_TIMEOUT: 8s
     depends_on:
       postgres:

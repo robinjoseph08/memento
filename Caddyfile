@@ -19,7 +19,7 @@
 
 	@api path /api /api/*
 	handle @api {
-		reverse_proxy {$MEMENTO_GO_ADDRESS:127.0.0.1:8081}
+		reverse_proxy {$MEMENTO_HTTP_ADDRESS:127.0.0.1:8081}
 	}
 
 	handle {
