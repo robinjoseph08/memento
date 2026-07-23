@@ -65,11 +65,21 @@ main {
   letter-spacing: 0.2em;
 }
 
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  font-family: "DM Serif Display", serif;
+  font-weight: 400;
+}
+
 h1 {
   margin: 0.45rem 0 0;
   font-size: clamp(3rem, 12vw, 5.5rem);
   line-height: 1;
-  letter-spacing: -0.055em;
+  letter-spacing: -0.03em;
 }
 
 .lede {
