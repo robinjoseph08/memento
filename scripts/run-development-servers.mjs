@@ -3,7 +3,12 @@ import console from "node:console";
 import process from "node:process";
 import { clearTimeout, setTimeout } from "node:timers";
 
-const child = spawn("mise", ["run", "start:servers"], {
+const command = process.argv[2] ?? "mise";
+const commandArguments = process.argv[2]
+  ? process.argv.slice(3)
+  : ["run", "start:servers"];
+
+const child = spawn(command, commandArguments, {
   detached: true,
   stdio: "inherit",
 });

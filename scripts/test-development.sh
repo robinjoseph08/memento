@@ -53,7 +53,7 @@ trap 'exit 143' TERM
   unset MEMENTO_WORKER_DRAIN_TIMEOUT
   export MEMENTO_DEV_INSTANCE="$instance"
   cd "$root"
-  exec mise start
+  exec node ./scripts/run-development-servers.mjs mise start
 ) >"$log" 2>&1 &
 start_pid=$!
 
