@@ -1,21 +1,28 @@
 # syntax=docker/dockerfile:1.7
 
+FROM golang:1.25.5-alpine3.23 AS go-base
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY pkg ./pkg
+
+FROM go-base AS typegen
+COPY tygo.yaml ./
+RUN go tool tygo generate
+
 FROM node:24.13.0-alpine3.23 AS frontend
 WORKDIR /src
 RUN npm install --global pnpm@11.16.0
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile
 COPY app ./app
+COPY --from=typegen /src/app/types/generated ./app/types/generated
 COPY public ./public
 COPY tsconfig.json tsconfig.app.json tsconfig.node.json vite.config.ts ./
 RUN pnpm build
 
-FROM golang:1.25.5-alpine3.23 AS backend
-WORKDIR /src
-COPY go.mod go.sum ./
-RUN go mod download
+FROM go-base AS backend
 COPY cmd ./cmd
-COPY pkg ./pkg
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/memento ./cmd/api
 
 FROM caddy:2.10.2-alpine

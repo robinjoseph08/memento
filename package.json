@@ -14,9 +14,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "eslint . --max-warnings 0",
-    "test": "vitest run",
-    "types:check": "./scripts/check-generated.sh",
-    "types:generate": "go tool tygo generate"
+    "test": "vitest run"
   },
   "dependencies": {
     "@fontsource/dm-sans": "5.3.0",

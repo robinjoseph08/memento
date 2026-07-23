@@ -31,7 +31,7 @@ The current foundation does not yet expose first-time browser setup or Recipient
 
 [Mise](https://mise.jdx.dev/) is the source of truth for development tool versions and project tasks. `mise.toml` pins Go 1.25.5, Node.js 24.13.0, and pnpm 11.16.0. Tygo 0.2.21 remains pinned as a Go tool in `go.mod`, and deployment files pin all container base tags.
 
-Install mise and Docker with the Compose plugin, then install the pinned tools and project dependencies:
+Install mise and Docker with the Compose plugin, then install the pinned tools, project dependencies, and generated API types:
 
 ```sh
 mise install
@@ -57,7 +57,9 @@ Run the complete suite used by CI with one command:
 mise run ci
 ```
 
-The `ci` task checks formatting and generated types, runs linters and unit tests, builds the frontend, runs PostgreSQL integration tests, validates Caddy, and assembles and tests the production topology. Individual checks are also available through names such as `mise run format:check`, `mise run types:check`, `mise run test:integration`, `mise run caddy:validate`, and `mise run test:production`. Set `MEMENTO_TEST_DATABASE_URL` to override the integration task's default local connection.
+Tygo output under `app/types/generated/` is gitignored. Mise generates it from Go before every frontend task, so contributors never need to commit regenerated files with a PR. The production Docker build also generates its own copy instead of depending on the local working tree.
+
+The `ci` task generates API types, checks formatting, runs linters and unit tests, builds the frontend, runs PostgreSQL integration tests, validates Caddy, and assembles and tests the production topology. Individual checks are also available through names such as `mise run format:check`, `mise run types:generate`, `mise run test:integration`, `mise run caddy:validate`, and `mise run test:production`. Set `MEMENTO_TEST_DATABASE_URL` to override the integration task's default local connection.
 
 ## Provision PostgreSQL beside Immich
 

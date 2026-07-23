@@ -3,46 +3,42 @@ go = "1.25.5"
 node = "24.13.0"
 "npm:pnpm" = "11.16.0"
 
-[tasks.setup]
-description = "Install project dependencies"
+[tasks."dependencies:install"]
+hide = true
 run = "pnpm install --frozen-lockfile"
+
+[tasks."types:generate"]
+description = "Generate ignored TypeScript API types from Go wire types"
+depends = ["dependencies:install"]
+run = "go tool tygo generate"
+
+[tasks.setup]
+description = "Install dependencies and generate API types"
+depends = ["types:generate"]
 
 [tasks.dev]
 description = "Run the frontend development server"
-depends = ["setup"]
+depends = ["types:generate"]
 run = "pnpm dev"
 
 [tasks.format]
 description = "Format Go and frontend files"
-depends = ["setup"]
+depends = ["types:generate"]
 run = ["go fmt ./...", "pnpm format"]
 
 [tasks."format:check"]
 description = "Check Go and frontend formatting"
-depends = ["setup"]
-wait_for = ["types:check"]
+depends = ["types:generate"]
 run = ["./scripts/check-go-format.sh", "pnpm format:check"]
 
 [tasks.lint]
 description = "Lint Go and frontend code"
-depends = ["setup"]
-wait_for = ["types:check"]
+depends = ["types:generate"]
 run = ["go vet ./...", "pnpm lint"]
-
-[tasks."types:generate"]
-description = "Generate TypeScript API types from Go wire types"
-depends = ["setup"]
-run = "pnpm types:generate"
-
-[tasks."types:check"]
-description = "Check generated TypeScript API types"
-depends = ["setup"]
-run = "pnpm types:check"
 
 [tasks.test]
 description = "Run Go and frontend unit tests"
-depends = ["setup"]
-wait_for = ["types:check"]
+depends = ["types:generate"]
 run = ["go test ./...", "pnpm test"]
 
 [tasks."test:race"]
@@ -51,8 +47,7 @@ run = "go test -race ./..."
 
 [tasks.build]
 description = "Build the frontend"
-depends = ["setup"]
-wait_for = ["types:check"]
+depends = ["types:generate"]
 run = "pnpm build"
 
 [tasks."test:integration"]
@@ -73,7 +68,7 @@ docker run --rm \
 
 [tasks."test:production"]
 description = "Assemble and test the production topology"
-wait_for = ["types:check"]
+depends = ["types:generate"]
 run = "./scripts/test-production.sh"
 
 [tasks.ci]
@@ -81,7 +76,7 @@ description = "Run the complete CI validation suite"
 depends = [
   "format:check",
   "lint",
-  "types:check",
+  "types:generate",
   "test",
   "build",
   "test:integration",
