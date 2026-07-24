@@ -182,6 +182,8 @@ func peopleError(err error) error {
 		return errcodes.Conflict("This Person changed after it was loaded. Reload and try again.")
 	case errors.Is(err, ErrCuratorMustSurvive):
 		return errcodes.Conflict("The Curator Person must be the merge survivor.")
+	case errors.Is(err, ErrSurvivorMustBeCurrent):
+		return errcodes.Conflict("Choose a current Person as the merge survivor.")
 	case errors.Is(err, ErrTwoCurrentGenerations):
 		return errcodes.Conflict("Resolve one current Recipient access generation before merging.")
 	case errors.Is(err, ErrGenerationTransferNeeded):

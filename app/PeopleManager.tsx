@@ -262,7 +262,7 @@ export function PeopleManager({ session }: { session: SessionResponse }) {
               >
                 <option value="">Choose survivor</option>
                 {people.data?.people
-                  .filter((person) => person.status !== "merged")
+                  .filter((person) => person.status === "current")
                   .map((person) => (
                     <option key={person.id} value={person.id}>
                       {person.display_name}
@@ -447,7 +447,19 @@ function MergeConfirmation({
           {preview.affected_references.historical_audit_rows_preserved}{" "}
           historical attribution rows remain attached to their original Person.
         </li>
-        <li>Roles are not implicitly combined.</li>
+        <li>
+          Source roles:{" "}
+          {preview.affected_references.source_roles.join(", ") || "None"}.
+        </li>
+        <li>
+          Survivor roles:{" "}
+          {preview.affected_references.survivor_roles.join(", ") || "None"}.
+        </li>
+        <li>
+          {preview.affected_references.recipient_role_will_transfer
+            ? "The source Recipient role moves with its current access generation; no other roles are combined."
+            : "Roles are not combined or transferred."}
+        </li>
         <li>Audience authority is unchanged.</li>
         <li>
           {preview.affected_references.current_recipient_generation_id

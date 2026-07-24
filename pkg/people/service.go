@@ -23,6 +23,7 @@ var (
 	ErrInvalidPerson            = errors.New("Person details are invalid")
 	ErrStale                    = errors.New("Person was changed by another request")
 	ErrCuratorMustSurvive       = errors.New("the Curator Person must survive the merge")
+	ErrSurvivorMustBeCurrent    = errors.New("the survivor Person must be current")
 	ErrTwoCurrentGenerations    = errors.New("both People have current Recipient access generations")
 	ErrGenerationTransferNeeded = errors.New("the source current Recipient access generation requires explicit transfer")
 	ErrEmailResolutionNeeded    = errors.New("the login email conflict requires explicit resolution")
@@ -91,6 +92,7 @@ type ReferenceEffects struct {
 	HistoricalAuditRowsPreserved int      `json:"historical_audit_rows_preserved"`
 	SourceRoles                  []string `json:"source_roles"`
 	SurvivorRoles                []string `json:"survivor_roles"`
+	RecipientRoleWillTransfer    bool     `json:"recipient_role_will_transfer"`
 }
 
 // MergePreview is generated to TypeScript by Tygo.
@@ -127,7 +129,7 @@ type Service struct {
 
 func New(db *bun.DB) *Service { return &Service{db: db, now: time.Now} }
 
-func names(displayName, sortName string) (string, string, error) {
+func normalizePersonNames(displayName, sortName string) (string, string, error) {
 	displayName = strings.TrimSpace(displayName)
 	sortName = strings.TrimSpace(sortName)
 	if sortName == "" {
@@ -141,7 +143,7 @@ func names(displayName, sortName string) (string, string, error) {
 }
 
 func (s *Service) Create(ctx context.Context, actor setup.CuratorSession, request CreateRequest) (Person, error) {
-	displayName, sortName, err := names(request.DisplayName, request.SortName)
+	displayName, sortName, err := normalizePersonNames(request.DisplayName, request.SortName)
 	if err != nil {
 		return Person{}, err
 	}
@@ -242,7 +244,7 @@ func getPerson(ctx context.Context, db bun.IDB, id uuid.UUID, lock bool) (Person
 }
 
 func (s *Service) Update(ctx context.Context, actor setup.CuratorSession, id uuid.UUID, request UpdateRequest) (Person, error) {
-	displayName, sortName, err := names(request.DisplayName, request.SortName)
+	displayName, sortName, err := normalizePersonNames(request.DisplayName, request.SortName)
 	if err != nil {
 		return Person{}, err
 	}
@@ -325,9 +327,24 @@ func (s *Service) PreviewMerge(ctx context.Context, sourceID, survivorID uuid.UU
 	if source.Status == "merged" || survivor.Status == "merged" {
 		return MergePreview{}, ErrInvalidMerge
 	}
+	var historicalAuditRows int
+	if err := s.db.NewRaw(`SELECT count(*) FROM security_audit_events
+		WHERE actor_person_id IN (?, ?) OR subject_person_id IN (?, ?)`, sourceID, survivorID, sourceID, survivorID).Scan(ctx, &historicalAuditRows); err != nil {
+		return MergePreview{}, err
+	}
 	preview := MergePreview{Source: source, Survivor: survivor, CanMerge: true, Blockers: []string{}, RolesWillNotBeUnioned: true, AudienceAuthorityUnchanged: true}
-	preview.References = ReferenceEffects{SessionsInvalidated: source.ActiveSessions + survivor.ActiveSessions, HistoricalAuditRowsPreserved: source.HistoricalAuditCount + survivor.HistoricalAuditCount, SourceRoles: source.Roles, SurvivorRoles: survivor.Roles}
+	preview.References = ReferenceEffects{
+		SessionsInvalidated:          source.ActiveSessions + survivor.ActiveSessions,
+		HistoricalAuditRowsPreserved: historicalAuditRows,
+		SourceRoles:                  source.Roles,
+		SurvivorRoles:                survivor.Roles,
+		RecipientRoleWillTransfer:    source.CurrentAccess != nil && contains(source.Roles, "recipient"),
+	}
 	preview.SessionsWillBeInvalidated = preview.References.SessionsInvalidated > 0
+	if survivor.Status != "current" {
+		preview.CanMerge = false
+		preview.Blockers = append(preview.Blockers, "The survivor Person must be current.")
+	}
 	if contains(source.Roles, "curator") {
 		preview.CanMerge = false
 		preview.Blockers = append(preview.Blockers, "The Curator Person must be the survivor.")
@@ -389,6 +406,9 @@ func (s *Service) Merge(ctx context.Context, actor setup.CuratorSession, request
 		}
 		if source.Status == "merged" || survivor.Status == "merged" {
 			return ErrInvalidMerge
+		}
+		if survivor.Status != "current" {
+			return ErrSurvivorMustBeCurrent
 		}
 		if contains(source.Roles, "curator") {
 			return ErrCuratorMustSurvive

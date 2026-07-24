@@ -25,14 +25,14 @@ func TestRoutesDeclareExplicitCuratorPolicies(t *testing.T) {
 	}
 }
 
-func TestNamesTrimAndDefaultSortName(t *testing.T) {
-	displayName, sortName, err := names("  Robin Joseph  ", "")
+func TestNormalizePersonNamesTrimsAndDefaultsSortName(t *testing.T) {
+	displayName, sortName, err := normalizePersonNames("  Robin Joseph  ", "")
 	require.NoError(t, err)
 	assert.Equal(t, "Robin Joseph", displayName)
 	assert.Equal(t, displayName, sortName)
 
-	_, _, err = names("", "Sort")
+	_, _, err = normalizePersonNames("", "Sort")
 	require.ErrorIs(t, err, ErrInvalidPerson)
-	_, _, err = names("Person", string(make([]byte, maxNameLength+1)))
+	_, _, err = normalizePersonNames("Person", string(make([]byte, maxNameLength+1)))
 	require.ErrorIs(t, err, ErrInvalidPerson)
 }

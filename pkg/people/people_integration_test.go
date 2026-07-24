@@ -135,6 +135,31 @@ func TestMergePreviewAndConfirmationEnforceAuthorityAndGenerationGates(t *testin
 	require.ErrorIs(t, err, ErrCuratorMustSurvive)
 }
 
+func TestMergeRejectsArchivedSurvivorBeforeTransferringAccess(t *testing.T) {
+	fixture := newPeopleFixture(t)
+	ctx := context.Background()
+	source := addPerson(t, fixture.db, "Source", "Source")
+	survivor := addPerson(t, fixture.db, "Archived survivor", "Archived survivor")
+	sourceAccess := addAccess(t, fixture.db, source, true, "source@example.com")
+	archivedSurvivor, err := fixture.service.Archive(ctx, fixture.actor, survivor, 1)
+	require.NoError(t, err)
+
+	preview, err := fixture.service.PreviewMerge(ctx, source, survivor)
+	require.NoError(t, err)
+	assert.False(t, preview.CanMerge)
+	assert.Contains(t, preview.Blockers, "The survivor Person must be current.")
+	assert.True(t, preview.References.RecipientRoleWillTransfer)
+
+	_, err = fixture.service.Merge(ctx, fixture.actor, MergeRequest{
+		SourcePersonID: source.String(), SurvivorPersonID: survivor.String(),
+		SourceVersion: 1, SurvivorVersion: archivedSurvivor.Version, TransferCurrentAccessGeneration: true,
+	})
+	require.ErrorIs(t, err, ErrSurvivorMustBeCurrent)
+	var generationPerson uuid.UUID
+	require.NoError(t, fixture.db.NewRaw(`SELECT person_id FROM recipient_access_generations WHERE id = ?`, sourceAccess).Scan(ctx, &generationPerson))
+	assert.Equal(t, source, generationPerson)
+}
+
 func TestMergeExplicitlyTransfersGenerationResolvesEmailInvalidatesSessionsAndPreservesAttribution(t *testing.T) {
 	fixture := newPeopleFixture(t)
 	ctx := context.Background()
@@ -144,7 +169,13 @@ func TestMergeExplicitlyTransfersGenerationResolvesEmailInvalidatesSessionsAndPr
 	survivorOldAccess := addAccess(t, fixture.db, survivor, false, "robin@example.com")
 	sourceSession := addSession(t, fixture.db, source, sourceAccess)
 	survivorSession := addSession(t, fixture.db, survivor, survivorOldAccess)
-	_, err := fixture.db.NewRaw(`INSERT INTO security_audit_events (actor_person_id, subject_person_id, action, outcome, session_id) VALUES (?, ?, 'source_history', 'success', ?), (?, ?, 'survivor_history', 'success', ?)`, fixture.actor.PersonID, source, fixture.actor.SessionID, fixture.actor.PersonID, survivor, fixture.actor.SessionID).Exec(ctx)
+	_, err := fixture.db.NewRaw(`INSERT INTO security_audit_events (actor_person_id, subject_person_id, action, outcome, session_id) VALUES
+		(?, ?, 'source_history', 'success', ?),
+		(?, ?, 'survivor_history', 'success', ?),
+		(?, ?, 'shared_history', 'success', ?)`,
+		fixture.actor.PersonID, source, fixture.actor.SessionID,
+		fixture.actor.PersonID, survivor, fixture.actor.SessionID,
+		source, survivor, fixture.actor.SessionID).Exec(ctx)
 	require.NoError(t, err)
 
 	preview, err := fixture.service.PreviewMerge(ctx, source, survivor)
@@ -154,6 +185,10 @@ func TestMergeExplicitlyTransfersGenerationResolvesEmailInvalidatesSessionsAndPr
 	assert.True(t, preview.RequiresEmailResolution)
 	assert.Equal(t, sourceAccess.String(), preview.References.CurrentRecipientGenerationID)
 	assert.Equal(t, 2, preview.References.SessionsInvalidated)
+	assert.Equal(t, 3, preview.References.HistoricalAuditRowsPreserved)
+	assert.Equal(t, []string{"recipient"}, preview.References.SourceRoles)
+	assert.Equal(t, []string{"recipient"}, preview.References.SurvivorRoles)
+	assert.True(t, preview.References.RecipientRoleWillTransfer)
 	assert.True(t, preview.RolesWillNotBeUnioned)
 	assert.True(t, preview.AudienceAuthorityUnchanged)
 

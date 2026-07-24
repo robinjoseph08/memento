@@ -57,7 +57,7 @@ func keys(values map[string]json.RawMessage) []string {
 
 func newServer(t *testing.T) *echo.Echo {
 	t.Helper()
-	e, err := New(new(health.Service), nil, nil)
+	e, err := New(new(health.Service), nil, nil, nil)
 	require.NoError(t, err)
 	return e
 }
