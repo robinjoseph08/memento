@@ -8,11 +8,13 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/pem"
 	"math/big"
 	"net"
 	"net/textproto"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -23,14 +25,18 @@ import (
 )
 
 type smtpFixture struct {
-	listener      net.Listener
-	address       string
-	roots         *x509.CertPool
-	rcptCode      int
-	dropAfterData bool
-	startTLS      *tls.Config
-	mu            sync.Mutex
-	messages      [][]byte
+	listener       net.Listener
+	address        string
+	roots          *x509.CertPool
+	rcptCode       int
+	dropAfterData  bool
+	dropOnSTARTTLS bool
+	stallRecipient bool
+	startTLS       *tls.Config
+	authUsername   string
+	authPassword   string
+	mu             sync.Mutex
+	messages       [][]byte
 }
 
 func newSMTPFixture(t *testing.T, secure bool, rcptCode int) *smtpFixture {
@@ -90,11 +96,17 @@ func (s *smtpFixture) handle(conn net.Conn) {
 			if s.startTLS != nil && !upgraded {
 				_, _ = writer.WriteString("250-local\r\n250 STARTTLS\r\n")
 				_ = writer.Flush()
+			} else if s.authUsername != "" {
+				_, _ = writer.WriteString("250-local\r\n250 AUTH PLAIN\r\n")
+				_ = writer.Flush()
 			} else {
 				write("250 local")
 			}
 		case line == "STARTTLS" && s.startTLS != nil && !upgraded:
 			write("220 begin TLS")
+			if s.dropOnSTARTTLS {
+				return
+			}
 			secure := tls.Server(conn, s.startTLS)
 			if err := secure.HandshakeContext(context.Background()); err != nil {
 				return
@@ -103,9 +115,22 @@ func (s *smtpFixture) handle(conn net.Conn) {
 			reader = textproto.NewReader(bufio.NewReader(conn))
 			writer = bufio.NewWriter(conn)
 			upgraded = true
+		case strings.HasPrefix(line, "AUTH PLAIN "):
+			encoded := strings.TrimPrefix(line, "AUTH PLAIN ")
+			credentials, err := base64.StdEncoding.DecodeString(encoded)
+			expected := "\x00" + s.authUsername + "\x00" + s.authPassword
+			if err != nil || string(credentials) != expected {
+				write("535 raw private authentication rejection")
+			} else {
+				write("235 authenticated")
+			}
 		case len(line) >= 4 && line[:4] == "MAIL":
 			write("250 sender accepted")
 		case len(line) >= 4 && line[:4] == "RCPT":
+			if s.stallRecipient {
+				<-time.After(time.Second)
+				return
+			}
 			switch s.rcptCode {
 			case 451:
 				write("451 raw temporary private response")
@@ -153,16 +178,38 @@ func (s *smtpFixture) count() int {
 	return len(s.messages)
 }
 
+func (s *smtpFixture) capturedMessages() [][]byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result := make([][]byte, len(s.messages))
+	for index := range s.messages {
+		result[index] = append([]byte(nil), s.messages[index]...)
+	}
+	return result
+}
+
 func TestImplicitTLSSendsWithCertificateVerification(t *testing.T) {
 	server := newSMTPFixture(t, true, 250)
 	client, err := New(server.config("implicit_tls"), &tls.Config{RootCAs: server.roots})
 	require.NoError(t, err)
+	assert.Equal(t, StatusUnavailable, client.Status(), "secure SMTP is not healthy before its first successful delivery")
 
 	err = client.Send(context.Background(), Message{ID: "delivery-1", To: "operator@example.com", Subject: "Test", Body: "private body"})
 
 	require.NoError(t, err)
 	assert.Equal(t, 1, server.count())
 	assert.Equal(t, StatusOK, client.Status())
+}
+
+func TestInsecureDevelopmentWarningSurvivesDeliveryFailure(t *testing.T) {
+	server := newSMTPFixture(t, false, 451)
+	client, err := New(server.config("insecure"), nil)
+	require.NoError(t, err)
+
+	err = client.Send(context.Background(), Message{ID: "delivery-insecure", To: "operator@example.com", Subject: "Test", Body: "private body"})
+
+	require.Error(t, err)
+	assert.Equal(t, StatusInsecureDevelopment, client.Status())
 }
 
 func TestSTARTTLSSendsWithCertificateVerification(t *testing.T) {
@@ -202,6 +249,34 @@ func TestImplicitTLSRejectsUntrustedCertificate(t *testing.T) {
 	assert.Equal(t, 0, server.count())
 }
 
+func TestSTARTTLSRejectsUntrustedCertificate(t *testing.T) {
+	server := newSMTPFixtureMode(t, "starttls", 250)
+	client, err := New(server.config("starttls"), &tls.Config{RootCAs: x509.NewCertPool()})
+	require.NoError(t, err)
+
+	err = client.Send(context.Background(), Message{ID: "delivery-starttls-untrusted", To: "operator@example.com", Subject: "Test", Body: "private body"})
+
+	var failure *DeliveryError
+	require.ErrorAs(t, err, &failure)
+	assert.Equal(t, "tls_verification_failed", failure.Diagnostic)
+	assert.False(t, failure.Temporary)
+	assert.Equal(t, 0, server.count())
+}
+
+func TestInterruptedSTARTTLSHandshakeIsTemporary(t *testing.T) {
+	server := newSMTPFixtureMode(t, "starttls", 250)
+	server.dropOnSTARTTLS = true
+	client, err := New(server.config("starttls"), &tls.Config{RootCAs: server.roots})
+	require.NoError(t, err)
+
+	err = client.Send(context.Background(), Message{ID: "delivery-starttls-interrupted", To: "operator@example.com", Subject: "Test", Body: "private body"})
+
+	var failure *DeliveryError
+	require.ErrorAs(t, err, &failure)
+	assert.Equal(t, "smtp_unavailable", failure.Diagnostic)
+	assert.True(t, failure.Temporary)
+}
+
 func TestSTARTTLSCannotDowngradeToPlaintext(t *testing.T) {
 	server := newSMTPFixture(t, false, 250)
 	client, err := New(server.config("starttls"), nil)
@@ -213,6 +288,73 @@ func TestSTARTTLSCannotDowngradeToPlaintext(t *testing.T) {
 	require.ErrorAs(t, err, &failure)
 	assert.Equal(t, "tls_required", failure.Diagnostic)
 	assert.Equal(t, 0, server.count())
+}
+
+func TestAuthenticatedSMTPUsesConfiguredCredentials(t *testing.T) {
+	server := newSMTPFixture(t, true, 250)
+	server.authUsername = "mailer"
+	server.authPassword = "secret"
+	cfg := server.config("implicit_tls")
+	cfg.Username = "mailer"
+	cfg.Password = "secret"
+	client, err := New(cfg, &tls.Config{RootCAs: server.roots})
+	require.NoError(t, err)
+
+	err = client.Send(context.Background(), Message{ID: "delivery-authenticated", To: "operator@example.com", Subject: "Test", Body: "private body"})
+
+	require.NoError(t, err)
+	assert.Equal(t, 1, server.count())
+}
+
+func TestAuthenticationRejectionIsSanitized(t *testing.T) {
+	server := newSMTPFixture(t, true, 250)
+	server.authUsername = "mailer"
+	server.authPassword = "expected"
+	cfg := server.config("implicit_tls")
+	cfg.Username = "mailer"
+	cfg.Password = "wrong"
+	client, err := New(cfg, &tls.Config{RootCAs: server.roots})
+	require.NoError(t, err)
+
+	err = client.Send(context.Background(), Message{ID: "delivery-auth-rejected", To: "operator@example.com", Subject: "Test", Body: "private body"})
+
+	var failure *DeliveryError
+	require.ErrorAs(t, err, &failure)
+	assert.Equal(t, "authentication_rejected", failure.Diagnostic)
+	assert.NotContains(t, err.Error(), "private authentication")
+}
+
+func TestCancellationInterruptsSMTPConversation(t *testing.T) {
+	server := newSMTPFixture(t, true, 250)
+	server.stallRecipient = true
+	cfg := server.config("implicit_tls")
+	cfg.Timeout = time.Second
+	client, err := New(cfg, &tls.Config{RootCAs: server.roots})
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(20*time.Millisecond, cancel)
+	started := time.Now()
+
+	err = client.Send(ctx, Message{ID: "delivery-cancelled", To: "operator@example.com", Subject: "Test", Body: "private body"})
+
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Less(t, time.Since(started), 500*time.Millisecond)
+}
+
+func TestStableMessageIDIsPreservedAcrossReplay(t *testing.T) {
+	server := newSMTPFixture(t, true, 250)
+	client, err := New(server.config("implicit_tls"), &tls.Config{RootCAs: server.roots})
+	require.NoError(t, err)
+	message := Message{ID: "stable-delivery-id", To: "operator@example.com", Subject: "Test", Body: "private body"}
+
+	require.NoError(t, client.Send(context.Background(), message))
+	require.NoError(t, client.Send(context.Background(), message))
+
+	captured := server.capturedMessages()
+	require.Len(t, captured, 2)
+	for _, body := range captured {
+		assert.Contains(t, string(body), "Message-ID: <stable-delivery-id@memento.local>")
+	}
 }
 
 func TestSMTPResponsesAreReducedToSafeFailureCodes(t *testing.T) {

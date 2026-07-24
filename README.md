@@ -19,7 +19,7 @@ The current foundation requires:
 - the `unaccent` and `pg_trgm` extension files installed on that PostgreSQL server;
 - an Immich API key limited to the permissions documented in the specification;
 - HTTPS for public access;
-- generic SMTP credentials when email delivery is enabled;
+- generic SMTP access when email delivery is enabled, with credentials when the server requires authentication;
 - a backup location outside the PostgreSQL container.
 
 A later MVP phase will also require HTTPS-capable devices for Web Push. Supporting a later Immich release requires a future Memento release that updates the hardcoded version pin after its connector contract suite passes.
@@ -187,7 +187,9 @@ curl --fail https://memento.example/api/setup/email/test/<DELIVERY_ID>
 
 The request transaction commits an `email_deliveries` row and outbox event before returning. The in-process worker later leases the outbox event, creates an idempotent job, and attempts SMTP. Temporary failures retry with bounded exponential backoff for at most 24 hours. A permanent synchronous rejection reports an allowlisted failure code and creates an unresolved delivery problem without exposing the recipient, message, credentials, or raw provider response. This required test path does not read optional notification preferences.
 
-Plaintext SMTP is forbidden by default. `mode: insecure` additionally requires `insecure_development: true` and a literal loopback or private IP endpoint. Startup logs a warning and readiness reports `"smtp":"insecure_development"` while active. This exception is only for a controlled development SMTP fixture, never production.
+SMTP delivery is at least once because provider acceptance cannot be committed atomically with PostgreSQL after a process crash. A stable `Message-ID` and persisted sent state limit observable replay, but cannot guarantee that a provider will suppress every duplicate.
+
+Plaintext SMTP is forbidden by default. `mode: insecure` additionally requires `insecure_development: true`, a literal loopback or private IP endpoint, and no credentials. Startup logs a warning and readiness reports `"smtp":"insecure_development"` while active, including after a delivery failure. This exception is only for a controlled development SMTP fixture, never production.
 
 ### Private Docker network
 

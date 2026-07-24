@@ -120,6 +120,35 @@ func TestHeartbeatPreventsASecondWorkerFromReclaimingLiveWork(t *testing.T) {
 	require.NoError(t, first.Drain(drainCtx))
 }
 
+type busyDispatcher struct{}
+
+func (busyDispatcher) Dispatch(context.Context, string, time.Duration) (bool, error) {
+	return true, nil
+}
+
+func TestOutboxBacklogDoesNotStarvePendingJobs(t *testing.T) {
+	db := testdb.Open(t)
+	require.NoError(t, migrations.Apply(context.Background(), db))
+	_, err := db.NewRaw(`INSERT INTO jobs (kind) VALUES ('quick')`).Exec(context.Background())
+	require.NoError(t, err)
+	completed := make(chan struct{})
+	jobWorker, err := New(db, testConfig(), "fair-owner", map[string]Handler{
+		"quick": func(context.Context, Job) error { close(completed); return nil },
+	}, WithDispatcher(busyDispatcher{}))
+	require.NoError(t, err)
+	jobWorker.Start(context.Background())
+	defer func() {
+		jobWorker.StopClaims()
+		_ = jobWorker.Drain(context.Background())
+	}()
+
+	select {
+	case <-completed:
+	case <-time.After(time.Second):
+		t.Fatal("continuous outbox dispatch starved a pending job")
+	}
+}
+
 func TestExpiredLeaseIsReclaimedAndCompleted(t *testing.T) {
 	db := testdb.Open(t)
 	require.NoError(t, migrations.Apply(context.Background(), db))

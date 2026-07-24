@@ -131,7 +131,7 @@ func (w *Worker) run(ctx context.Context) {
 				continue
 			}
 			if w.dispatcher != nil {
-				if dispatched, err := w.dispatcher.Dispatch(ctx, w.owner, w.cfg.LeaseDuration); err != nil || dispatched {
+				if _, err := w.dispatcher.Dispatch(ctx, w.owner, w.cfg.LeaseDuration); err != nil {
 					continue
 				}
 			}

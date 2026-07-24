@@ -123,7 +123,14 @@ func TestValidateRejectsUnsafeSMTP(t *testing.T) {
 		{"invalid sender", func(c *SMTPConfig) { c.FromAddress = "not-an-email" }, "single email"},
 		{"plaintext opt in", func(c *SMTPConfig) { c.Mode = "insecure" }, "insecure_development"},
 		{"plaintext public host", func(c *SMTPConfig) { c.Mode = "insecure"; c.InsecureDevelopment = true }, "loopback or private"},
-		{"secure with insecure warning", func(c *SMTPConfig) { c.InsecureDevelopment = true }, "smtp.mode"},
+		{"plaintext credentials", func(c *SMTPConfig) {
+			c.Mode = "insecure"
+			c.InsecureDevelopment = true
+			c.Host = "127.0.0.1"
+			c.Username = "mailer"
+			c.Password = "secret"
+		}, "credentials are not permitted"},
+		{"secure with insecure warning", func(c *SMTPConfig) { c.InsecureDevelopment = true }, "permitted only"},
 		{"retry bounds", func(c *SMTPConfig) { c.RetryBase = 2 * time.Hour }, "retry durations"},
 	}
 	for _, test := range tests {

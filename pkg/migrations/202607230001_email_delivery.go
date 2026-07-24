@@ -73,6 +73,8 @@ func init() {
 					`DROP TABLE IF EXISTS outbox_events`,
 					`DROP TABLE IF EXISTS delivery_problems`,
 					`DROP TABLE IF EXISTS email_deliveries`,
+					`DELETE FROM jobs WHERE kind = 'send_required_email'`,
+					`UPDATE jobs SET status = 'pending', available_at = now(), lease_owner = NULL, lease_expires_at = NULL WHERE status = 'failed'`,
 					`DROP INDEX IF EXISTS jobs_idempotency_key_idx`,
 					`ALTER TABLE jobs DROP COLUMN IF EXISTS last_safe_error`,
 					`ALTER TABLE jobs DROP COLUMN IF EXISTS idempotency_key`,

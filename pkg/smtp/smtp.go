@@ -89,14 +89,15 @@ func New(cfg config.SMTPConfig, tlsConfig *tls.Config) (*Client, error) {
 	client := &Client{cfg: cfg, tlsConfig: tlsConfig, dialer: net.Dialer{Timeout: cfg.Timeout}}
 	if cfg.Mode == "insecure" {
 		client.status.Store(2)
-	} else {
-		client.status.Store(1)
 	}
 	return client, nil
 }
 
 // Status returns an allowlisted health detail.
 func (c *Client) Status() string {
+	if c.cfg.Mode == "insecure" {
+		return StatusInsecureDevelopment
+	}
 	switch c.status.Load() {
 	case 1:
 		return StatusOK
@@ -111,9 +112,7 @@ func (c *Client) Status() string {
 func (c *Client) Send(ctx context.Context, message Message) error {
 	conn, err := c.connect(ctx)
 	if err != nil {
-		failure := classify("connect", err)
-		c.mark(failure)
-		return failure
+		return c.fail(ctx, "connect", err)
 	}
 	defer conn.Close()
 	deadline := time.Now().Add(c.cfg.Timeout)
@@ -125,12 +124,12 @@ func (c *Client) Send(ctx context.Context, message Message) error {
 		c.mark(failure)
 		return failure
 	}
+	stopCancellation := context.AfterFunc(ctx, func() { _ = conn.SetDeadline(time.Now()) })
+	defer stopCancellation()
 
 	client, err := netsmtp.NewClient(conn, c.cfg.Host)
 	if err != nil {
-		failure := classify("greeting", err)
-		c.mark(failure)
-		return failure
+		return c.fail(ctx, "greeting", err)
 	}
 	defer client.Close()
 	if c.cfg.Mode == "starttls" {
@@ -140,9 +139,7 @@ func (c *Client) Send(ctx context.Context, message Message) error {
 			return failure
 		}
 		if err := client.StartTLS(c.tlsConfig); err != nil {
-			failure := classify("tls", err)
-			c.mark(failure)
-			return failure
+			return c.fail(ctx, "tls", err)
 		}
 	}
 	if c.cfg.Username != "" {
@@ -152,9 +149,7 @@ func (c *Client) Send(ctx context.Context, message Message) error {
 			return failure
 		}
 		if err := client.Auth(plainAuth{username: c.cfg.Username, password: c.cfg.Password}); err != nil {
-			failure := classify("auth", err)
-			c.mark(failure)
-			return failure
+			return c.fail(ctx, "auth", err)
 		}
 	}
 	from, _ := mail.ParseAddress(c.cfg.FromAddress)
@@ -163,31 +158,21 @@ func (c *Client) Send(ctx context.Context, message Message) error {
 		return &DeliveryError{Diagnostic: "invalid_recipient", Temporary: false}
 	}
 	if err := client.Mail(from.Address); err != nil {
-		failure := classify("mail", err)
-		c.mark(failure)
-		return failure
+		return c.fail(ctx, "mail", err)
 	}
 	if err := client.Rcpt(to.Address); err != nil {
-		failure := classify("recipient", err)
-		c.mark(failure)
-		return failure
+		return c.fail(ctx, "recipient", err)
 	}
 	writer, err := client.Data()
 	if err != nil {
-		failure := classify("data", err)
-		c.mark(failure)
-		return failure
+		return c.fail(ctx, "data", err)
 	}
 	if _, err := io.WriteString(writer, formatMessage(c.cfg.FromAddress, message)); err != nil {
 		_ = writer.Close()
-		failure := classify("body", err)
-		c.mark(failure)
-		return failure
+		return c.fail(ctx, "body", err)
 	}
 	if err := writer.Close(); err != nil {
-		failure := classify("data", err)
-		c.mark(failure)
-		return failure
+		return c.fail(ctx, "data", err)
 	}
 	// writer.Close read the server's final acceptance response. A later QUIT
 	// failure must not retry an already accepted message.
@@ -206,6 +191,15 @@ func (c *Client) connect(ctx context.Context) (net.Conn, error) {
 		return (&tls.Dialer{NetDialer: &c.dialer, Config: c.tlsConfig}).DialContext(ctx, "tcp", address)
 	}
 	return c.dialer.DialContext(ctx, "tcp", address)
+}
+
+func (c *Client) fail(ctx context.Context, stage string, err error) error {
+	failure := classify(stage, err)
+	c.mark(failure)
+	if contextErr := ctx.Err(); contextErr != nil {
+		return contextErr
+	}
+	return failure
 }
 
 func (c *Client) mark(failure *DeliveryError) {
@@ -235,6 +229,10 @@ func classify(stage string, err error) *DeliveryError {
 		return &DeliveryError{Diagnostic: "tls_verification_failed", Temporary: false}
 	}
 	if stage == "tls" {
+		var networkError net.Error
+		if errors.As(err, &networkError) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			return &DeliveryError{Diagnostic: "smtp_unavailable", Temporary: true}
+		}
 		return &DeliveryError{Diagnostic: "tls_verification_failed", Temporary: false}
 	}
 	return &DeliveryError{Diagnostic: "smtp_unavailable", Temporary: true}

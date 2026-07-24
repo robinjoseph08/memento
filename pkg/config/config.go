@@ -137,6 +137,8 @@ var (
 	errSMTPCredentials          = errors.New("smtp.username and smtp.password must either both be set or both be empty")
 	errSMTPAddressInvalid       = errors.New("smtp.from_address and smtp.test_recipient must be single email addresses")
 	errSMTPInsecureFlag         = errors.New("smtp.insecure_development must be enabled for insecure mode")
+	errSMTPInsecureMode         = errors.New("smtp.insecure_development is permitted only with smtp.mode insecure")
+	errSMTPInsecureCredentials  = errors.New("SMTP credentials are not permitted with insecure development transport")
 	errSMTPInsecureHost         = errors.New("insecure SMTP is limited to loopback or private IP addresses")
 	errSMTPRetryBounds          = errors.New("SMTP retry durations must satisfy retry_base <= retry_max <= retry_window <= 24h")
 	errWorkerRetryBounds        = errors.New("worker retry durations must satisfy worker.retry_base <= worker.retry_max <= 24h")
@@ -419,12 +421,15 @@ func (c SMTPConfig) Validate() error {
 		if !c.InsecureDevelopment {
 			return errSMTPInsecureFlag
 		}
+		if c.Username != "" {
+			return errSMTPInsecureCredentials
+		}
 		ip := net.ParseIP(c.Host)
 		if c.Host != "localhost" && (ip == nil || (!ip.IsLoopback() && !ip.IsPrivate())) {
 			return errSMTPInsecureHost
 		}
 	} else if c.InsecureDevelopment {
-		return errSMTPModeInvalid
+		return errSMTPInsecureMode
 	}
 	if c.RetryBase > c.RetryMax || c.RetryMax > c.RetryWindow || c.RetryWindow > 24*time.Hour {
 		return errSMTPRetryBounds
