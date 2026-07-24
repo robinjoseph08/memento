@@ -1,5 +1,8 @@
 :3001 {
-	header /api/server/version Content-Type application/json
-	respond /api/server/version `{ "major": 3, "minor": 0, "patch": 3 }` 200
+	header Content-Type application/json
+	respond /api/server/version `{ "major": 3, "minor": 0, "patch": 3, "prerelease": null }` 200
+	respond /api/api-keys/me `{ "id": "00000000-0000-4000-8000-000000000001", "name": "Memento development", "permissions": ["album.read", "asset.download", "asset.read", "asset.view", "face.read", "person.read"], "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z" }` 200
+	respond /api/albums `[]` 200
+	respond /api/search/metadata `{ "albums": { "items": [], "count": 0, "total": 0, "facets": [] }, "assets": { "items": [], "count": 0, "total": 0, "facets": [], "nextPage": null } }` 200
 	respond 404
 }

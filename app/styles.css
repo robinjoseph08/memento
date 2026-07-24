@@ -287,6 +287,205 @@ h1 {
   font-size: 0.9rem;
 }
 
+.curator-card {
+  width: min(100%, 68rem);
+  padding: clamp(1.5rem, 4vw, 3rem);
+}
+
+.curator-card .mark {
+  width: 4rem;
+  height: 4rem;
+  margin-bottom: 0.75rem;
+}
+
+.curator-card h1 {
+  font-size: clamp(2.5rem, 8vw, 4rem);
+}
+
+.source-workspace {
+  margin-top: 2.5rem;
+  padding-top: 2rem;
+  border-top: 1px solid #334155;
+  text-align: left;
+}
+
+.source-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1.5rem;
+}
+
+.source-header h2 {
+  margin: 0.3rem 0;
+  font-size: clamp(1.8rem, 5vw, 2.5rem);
+}
+
+.source-header p:not(.step-label) {
+  max-width: 35rem;
+  margin: 0;
+  color: #94a3b8;
+  line-height: 1.5;
+}
+
+.source-connect,
+.source-sign-out,
+.source-primary-action,
+.source-load-more,
+.source-tabs button,
+.source-album-summary button {
+  min-height: 2.65rem;
+  padding: 0.65rem 1rem;
+  border: 1px solid #38bdf8;
+  border-radius: 0.7rem;
+  background: transparent;
+  color: #bae6fd;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.source-connect,
+.source-primary-action {
+  border: 0;
+  background: #0284c7;
+  color: white;
+}
+
+.source-header-actions {
+  display: flex;
+  flex-shrink: 0;
+  gap: 0.75rem;
+}
+
+.source-connect:disabled,
+.source-sign-out:disabled,
+.source-primary-action:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.source-success {
+  margin: 1rem 0 0;
+  padding: 0.75rem;
+  border: 1px solid rgb(52 211 153 / 35%);
+  border-radius: 0.75rem;
+  background: rgb(6 78 59 / 25%);
+  color: #a7f3d0;
+}
+
+.source-workspace > .form-error {
+  margin-top: 1rem;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.source-tabs {
+  display: flex;
+  gap: 0.6rem;
+  margin: 1.5rem 0 1rem;
+}
+
+.source-tabs button[aria-pressed="true"] {
+  background: rgb(14 165 233 / 20%);
+}
+
+.source-list {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.source-load-more {
+  display: block;
+  margin: 1rem auto 0;
+}
+
+.source-album {
+  padding: 1rem;
+  border: 1px solid #334155;
+  border-radius: 1rem;
+  background: rgb(2 6 23 / 45%);
+}
+
+.source-album-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.source-album h3 {
+  margin: 0;
+  font-size: 1.35rem;
+}
+
+.source-album-summary p,
+.source-empty {
+  margin: 0.3rem 0 0;
+  color: #94a3b8;
+}
+
+.source-empty {
+  padding: 1.5rem;
+  border: 1px dashed #334155;
+  border-radius: 0.85rem;
+  text-align: center;
+}
+
+.source-details {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid #334155;
+  color: #cbd5e1;
+}
+
+.source-details > p {
+  white-space: pre-wrap;
+}
+
+.source-details dl {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.5rem;
+}
+
+.source-details dt {
+  color: #7dd3fc;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.source-details dd {
+  margin: 0.2rem 0 0;
+}
+
+@media (max-width: 42rem) {
+  .source-header {
+    flex-direction: column;
+  }
+
+  .source-header-actions {
+    width: 100%;
+    flex-direction: column;
+  }
+
+  .source-connect,
+  .source-sign-out {
+    width: 100%;
+  }
+}
+
 @media (prefers-color-scheme: light) {
   :root {
     color-scheme: light;
@@ -352,6 +551,52 @@ h1 {
   .setup-form .setup-secondary-actions button {
     border-color: #0284c7;
     color: #075985;
+  }
+
+  .source-workspace,
+  .source-details {
+    border-color: #bae6fd;
+  }
+
+  .source-header p:not(.step-label),
+  .source-album-summary p,
+  .source-empty {
+    color: #475569;
+  }
+
+  .source-tabs button,
+  .source-album-summary button,
+  .source-load-more,
+  .source-sign-out {
+    border-color: #0284c7;
+    color: #075985;
+  }
+
+  .source-tabs button[aria-pressed="true"] {
+    background: #e0f2fe;
+  }
+
+  .source-album {
+    border-color: #bae6fd;
+    background: rgb(255 255 255 / 70%);
+  }
+
+  .source-details {
+    color: #334155;
+  }
+
+  .source-details dt {
+    color: #0369a1;
+  }
+
+  .source-empty {
+    border-color: #7dd3fc;
+  }
+
+  .source-success {
+    border-color: #6ee7b7;
+    background: #ecfdf5;
+    color: #065f46;
   }
 }
 

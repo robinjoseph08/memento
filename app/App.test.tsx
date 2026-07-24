@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { BrowserRouter } from "react-router-dom";
 import { afterEach, expect, test, vi } from "vitest";
 
 import { App } from "./App";
@@ -9,9 +10,11 @@ function renderApp() {
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
   return render(
-    <QueryClientProvider client={client}>
-      <App />
-    </QueryClientProvider>,
+    <BrowserRouter>
+      <QueryClientProvider client={client}>
+        <App />
+      </QueryClientProvider>
+    </BrowserRouter>,
   );
 }
 
@@ -41,6 +44,7 @@ function stringBody(body: BodyInit | null | undefined) {
 
 afterEach(() => {
   cleanup();
+  window.history.replaceState(null, "", "/");
   vi.restoreAllMocks();
 });
 
@@ -273,6 +277,12 @@ test("restores and refreshes a signed-in Trusted-device Session", async () => {
       });
       return Promise.resolve(new Response(null, { status: 204 }));
     }
+    if (path.startsWith("/api/sources?")) {
+      return Promise.resolve(jsonResponse({ albums: [], next_cursor: null }));
+    }
+    if (path.startsWith("/api/people?")) {
+      return Promise.resolve(jsonResponse({ people: [] }));
+    }
     return Promise.resolve(
       jsonResponse({
         display_name: "Robin Joseph",
@@ -290,11 +300,211 @@ test("restores and refreshes a signed-in Trusted-device Session", async () => {
       "Setup is complete. You're signed in as Robin Joseph.",
     ),
   ).toBeInTheDocument();
-  expect(fetchMock).toHaveBeenCalledTimes(4);
-  expect(fetchMock).toHaveBeenLastCalledWith(
+  expect(fetchMock).toHaveBeenCalledTimes(5);
+  expect(fetchMock).toHaveBeenCalledWith(
     "/api/people?query=&include_archived=false",
     expect.objectContaining({ credentials: "same-origin" }),
   );
+  expect(fetchMock).toHaveBeenCalledWith(
+    "/api/sources?disposition=unreviewed&limit=50",
+    expect.objectContaining({ credentials: "same-origin" }),
+  );
+});
+
+test("validates Immich and supports private Source album ignore and restore triage", async () => {
+  const csrfToken = "c".repeat(64);
+  const sourceID = "11111111-1111-4111-8111-111111111111";
+  let disposition: "unreviewed" | "ignored" = "unreviewed";
+  let version = 1;
+  const requests: Array<{ path: string; init?: RequestInit }> = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = requestPath(input);
+      requests.push({ path, init });
+      if (path === "/api/setup") {
+        return Promise.resolve(
+          jsonResponse({ error: { message: "Setup not found." } }, 404),
+        );
+      }
+      if (path === "/api/session") {
+        return Promise.resolve(
+          jsonResponse({
+            display_name: "Robin Joseph",
+            session_type: "public",
+            csrf_token: csrfToken,
+          }),
+        );
+      }
+      if (path === "/api/sources/discover") {
+        return Promise.resolve(
+          jsonResponse({ status: "connected", discovered_count: 1 }),
+        );
+      }
+      if (path === "/api/session/logout") {
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      if (path === `/api/sources/${sourceID}/ignore`) {
+        expect(init?.headers).toMatchObject({ "If-Match": `"${version}"` });
+        disposition = "ignored";
+        version += 1;
+        return Promise.resolve(jsonResponse(sourceAlbum(disposition)));
+      }
+      if (path === `/api/sources/${sourceID}/restore`) {
+        expect(init?.headers).toMatchObject({ "If-Match": `"${version}"` });
+        disposition = "unreviewed";
+        version += 1;
+        return Promise.resolve(jsonResponse(sourceAlbum(disposition)));
+      }
+      if (path.startsWith("/api/people?")) {
+        return Promise.resolve(jsonResponse({ people: [] }));
+      }
+      if (path.startsWith("/api/sources?")) {
+        const requestedDisposition = new URL(
+          path,
+          "https://memento.test",
+        ).searchParams.get("disposition");
+        return Promise.resolve(
+          jsonResponse({
+            albums:
+              requestedDisposition === disposition
+                ? [sourceAlbum(disposition)]
+                : [],
+            next_cursor: null,
+          }),
+        );
+      }
+      return Promise.reject(new Error(`Unexpected request: ${path}`));
+    }),
+  );
+
+  function sourceAlbum(state: "unreviewed" | "ignored") {
+    return {
+      id: sourceID,
+      name: "Family trip",
+      description: "A normalized summary",
+      asset_count: 7,
+      source_created_at: "2026-01-01T00:00:00Z",
+      source_updated_at: "2026-02-01T00:00:00Z",
+      start_at: "2026-01-01T00:00:00Z",
+      end_at: "2026-01-07T00:00:00Z",
+      disposition: state,
+      version,
+      first_seen_at: "2026-03-01T00:00:00Z",
+      last_seen_at: "2026-03-02T00:00:00Z",
+      source_missing: false,
+    };
+  }
+
+  renderApp();
+  expect(await screen.findByText("Family trip")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Connect and discover" }));
+  expect(
+    await screen.findByText("Immich v3.0.3 connected. Found 1 owned album."),
+  ).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Inspect Family trip" }));
+  expect(screen.getByText("A normalized summary")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Ignore Source album" }));
+  await vi.waitFor(() =>
+    expect(screen.queryByText("Family trip")).not.toBeInTheDocument(),
+  );
+  expect(screen.getByRole("status")).toHaveTextContent("Ignored Family trip.");
+  fireEvent.click(screen.getByRole("button", { name: "Ignored" }));
+  expect(window.location.search).toBe("?source_view=ignored");
+  expect(await screen.findByText("Family trip")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Inspect Family trip" }));
+  fireEvent.click(screen.getByRole("button", { name: "Restore to inbox" }));
+  await vi.waitFor(() =>
+    expect(screen.queryByText("Family trip")).not.toBeInTheDocument(),
+  );
+
+  const mutations = requests.filter(({ init }) => init?.method === "POST");
+  expect(mutations).toHaveLength(3);
+  for (const mutation of mutations) {
+    expect(mutation.init?.headers).toMatchObject({
+      "X-Memento-CSRF": csrfToken,
+    });
+    expect(mutation.path).not.toContain("Immich");
+  }
+
+  expect(screen.getByRole("status")).toHaveTextContent(
+    "Restored Family trip to the Source album inbox.",
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+  expect(await screen.findByText("Setup is complete.")).toBeInTheDocument();
+  expect(screen.queryByText("Source albums")).not.toBeInTheDocument();
+});
+
+test("loads the next opaque Source album cursor without replacing prior results", async () => {
+  const cursor = "opaque/cursor+value";
+  const album = (id: string, name: string) => ({
+    id,
+    name,
+    description: "",
+    asset_count: 1,
+    source_created_at: "2026-01-01T00:00:00Z",
+    source_updated_at: "2026-01-01T00:00:00Z",
+    start_at: null,
+    end_at: null,
+    disposition: "unreviewed",
+    version: 1,
+    first_seen_at: "2026-03-01T00:00:00Z",
+    last_seen_at: "2026-03-01T00:00:00Z",
+    source_missing: false,
+  });
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) => {
+      const path = requestPath(input);
+      if (path === "/api/setup") {
+        return Promise.resolve(
+          jsonResponse({ error: { message: "Setup not found." } }, 404),
+        );
+      }
+      if (path === "/api/session") {
+        return Promise.resolve(
+          jsonResponse({
+            display_name: "Robin Joseph",
+            session_type: "trusted",
+            csrf_token: "c".repeat(64),
+          }),
+        );
+      }
+      if (path === "/api/session/refresh") {
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      if (path.startsWith("/api/sources?")) {
+        const requestedCursor = new URL(
+          path,
+          "https://memento.test",
+        ).searchParams.get("cursor");
+        return Promise.resolve(
+          requestedCursor === cursor
+            ? jsonResponse({
+                albums: [
+                  album("22222222-2222-4222-8222-222222222222", "Second"),
+                ],
+                next_cursor: null,
+              })
+            : jsonResponse({
+                albums: [
+                  album("11111111-1111-4111-8111-111111111111", "First"),
+                ],
+                next_cursor: cursor,
+              }),
+        );
+      }
+      return Promise.reject(new Error(`Unexpected request: ${path}`));
+    }),
+  );
+
+  renderApp();
+  expect(await screen.findByText("First")).toBeInTheDocument();
+  fireEvent.click(
+    screen.getByRole("button", { name: "Load more Source albums" }),
+  );
+  expect(await screen.findByText("Second")).toBeInTheDocument();
+  expect(screen.getByText("First")).toBeInTheDocument();
 });
 
 test("announces a concurrent setup conflict without claiming success", async () => {

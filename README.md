@@ -2,7 +2,7 @@
 
 Memento is a self-hosted portal for privately publishing selected photos and videos from one Curator's existing Immich library to family Recipients. Immich remains the media source. Memento owns People, Events, Audiences, Publications, Recipient access, interactions, and notifications.
 
-The repository includes the deployable application foundation and first-browser Curator setup: a React PWA, a Go API and in-process worker, PostgreSQL migrations, Caddy, and one production image. Additional product workflows are delivered in later implementation phases. See [the product and architecture specification](docs/product-architecture-spec.md) and [canonical domain language](CONTEXT.md).
+The repository includes the deployable application foundation, first-browser Curator setup, and the private Source album inbox: a React PWA, a Go API and in-process worker, PostgreSQL migrations, Caddy, and one production image. See [the product and architecture specification](docs/product-architecture-spec.md) and [canonical domain language](CONTEXT.md).
 
 ## Deployment topology
 
@@ -22,7 +22,7 @@ The current foundation requires:
 - generic SMTP access when email delivery is enabled, with credentials when the server requires authentication;
 - a backup location outside the PostgreSQL container.
 
-A later MVP phase will also require HTTPS-capable devices for Web Push. Supporting a later Immich release requires a future Memento release that updates the hardcoded version pin after its connector contract suite passes.
+A later MVP phase will also require HTTPS-capable devices for Web Push. Supporting a later Immich release requires a future Memento release that updates the hardcoded version pin after its connector contract suite passes. Source discovery validates that the API key has exactly `album.read`, `asset.read`, `asset.view`, `asset.download`, `person.read`, and `face.read`; missing or additional permissions fail the least-privilege gate.
 
 The PostgreSQL image recommended by Immich v3.0.3 already contains `unaccent` and `pg_trgm`, but extensions must be created separately inside each logical database.
 
@@ -201,6 +201,12 @@ A code permits at most five verification attempts and is single-use. Requesting 
 The Session credential is an opaque random value stored only as a hash on the server. The browser receives it in a host-prefixed Secure, HttpOnly, SameSite Lax cookie. Public-computer Sessions use a browser-session cookie and expire server-side within twelve hours. Trusted-device Sessions use a persistent cookie, refresh through a CSRF-protected mutation when the application opens, and expire after one year of inactivity. Session mutations require the Session-bound CSRF token returned by the API.
 
 Setup closure is stored in PostgreSQL. Clearing cookies, using another browser, changing configuration, or restarting Memento does not reopen it. There is no CLI override. Safe GET requests only inspect persisted setup or Session state and never create identity or Session records.
+
+### Discover and triage Source albums
+
+In the Curator browser Session created during setup, select **Connect and discover** in the Source album workspace. Memento validates Immich v3.0.3 and the exact least-privilege permission set before requesting owned albums. A failed version, permission, authentication, rate-limit, response, or availability check writes no discovery state.
+
+Discovery stores normalized album summaries under Memento identities. It does not create Events, Publications, Audiences, Media delivery routes, or Recipient-visible content. Inspect an unreviewed Source album and select **Ignore Source album** to remove it from the inbox. The **Ignored** view can restore it later while preserving its Memento identity, first-seen time, last-seen time, and source-missing state. Immich IDs, paths, library identifiers, owner details, faces, direct URLs, API keys, and raw DTOs are not returned to the browser.
 
 ### Private Docker network
 

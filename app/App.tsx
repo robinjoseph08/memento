@@ -1,5 +1,11 @@
-import { useMutation, useQuery } from "@tanstack/react-query";
+import {
+  useInfiniteQuery,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useSearchParams } from "react-router-dom";
 
 import { APIError, apiJSON, apiNoContent } from "./api";
 import { PeopleManager } from "./PeopleManager";
@@ -13,6 +19,11 @@ import type {
   VerifyCodeRequest,
   VerifyCodeResponse,
 } from "./types/generated/setup";
+import type {
+  Album as SourceAlbum,
+  DiscoveryResponse,
+  ListResponse as SourceListResponse,
+} from "./types/generated/sources";
 
 type BootstrapState =
   | { kind: "available" }
@@ -389,9 +400,265 @@ function SetupFlow({
   );
 }
 
-function ReadyCard({ session }: { session?: SessionResponse }) {
+function formatSourceDate(value: unknown) {
+  if (typeof value !== "string") {
+    return "Unknown";
+  }
+  const date = new Date(value);
+  return Number.isNaN(date.valueOf())
+    ? "Unknown"
+    : new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(date);
+}
+
+function SourceAlbumCard({
+  album,
+  csrfToken,
+  onTriaged,
+}: {
+  album: SourceAlbum;
+  csrfToken: string;
+  onTriaged: (message: string) => void;
+}) {
+  const queryClient = useQueryClient();
+  const [inspecting, setInspecting] = useState(false);
+  const mutation = useMutation({
+    mutationFn: () =>
+      apiJSON<SourceAlbum>(
+        `/api/sources/${album.id}/${album.disposition === "ignored" ? "restore" : "ignore"}`,
+        {
+          method: "POST",
+          headers: {
+            "If-Match": `"${album.version}"`,
+            "X-Memento-CSRF": csrfToken,
+          },
+        },
+      ),
+    onSuccess: async () => {
+      onTriaged(
+        album.disposition === "ignored"
+          ? `Restored ${album.name} to the Source album inbox.`
+          : `Ignored ${album.name}.`,
+      );
+      await queryClient.invalidateQueries({ queryKey: ["sources"] });
+    },
+  });
+  const detailsID = `source-album-${album.id}-details`;
+  return (
+    <article className="source-album">
+      <div className="source-album-summary">
+        <div>
+          <h3>{album.name}</h3>
+          <p>
+            {album.asset_count} {album.asset_count === 1 ? "item" : "items"}
+            {album.source_missing ? " · Source missing" : ""}
+          </p>
+        </div>
+        <button
+          aria-controls={detailsID}
+          aria-expanded={inspecting}
+          aria-label={`${inspecting ? "Close details for" : "Inspect"} ${album.name}`}
+          onClick={() => setInspecting((value) => !value)}
+          type="button"
+        >
+          {inspecting ? "Close" : "Inspect"}
+        </button>
+      </div>
+      {inspecting ? (
+        <div className="source-details" id={detailsID}>
+          <p>{album.description || "No source description."}</p>
+          <dl>
+            <div>
+              <dt>Source updated</dt>
+              <dd>{formatSourceDate(album.source_updated_at)}</dd>
+            </div>
+            <div>
+              <dt>Last seen</dt>
+              <dd>{formatSourceDate(album.last_seen_at)}</dd>
+            </div>
+          </dl>
+          <ErrorMessage error={mutation.error} />
+          <button
+            className="source-primary-action"
+            disabled={mutation.isPending}
+            onClick={() => mutation.mutate()}
+            type="button"
+          >
+            {mutation.isPending
+              ? "Saving…"
+              : album.disposition === "ignored"
+                ? "Restore to inbox"
+                : "Ignore Source album"}
+          </button>
+        </div>
+      ) : null}
+    </article>
+  );
+}
+
+function SourceWorkspace({
+  session,
+  onSignOut,
+}: {
+  session: SessionResponse;
+  onSignOut: () => void;
+}) {
+  const queryClient = useQueryClient();
+  const [triageStatus, setTriageStatus] = useState("");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const disposition =
+    searchParams.get("source_view") === "ignored" ? "ignored" : "unreviewed";
+  const selectDisposition = (nextDisposition: "unreviewed" | "ignored") => {
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      if (nextDisposition === "ignored") {
+        next.set("source_view", "ignored");
+      } else {
+        next.delete("source_view");
+      }
+      return next;
+    });
+  };
+  const sources = useInfiniteQuery({
+    queryKey: ["sources", disposition],
+    queryFn: ({ pageParam }) => {
+      const params = new URLSearchParams({ disposition, limit: "50" });
+      if (pageParam) {
+        params.set("cursor", pageParam);
+      }
+      return apiJSON<SourceListResponse>(`/api/sources?${params.toString()}`);
+    },
+    initialPageParam: "",
+    getNextPageParam: (page) => page.next_cursor ?? undefined,
+    retry: false,
+  });
+  const albums = sources.data?.pages.flatMap((page) => page.albums);
+  const discover = useMutation({
+    mutationFn: () =>
+      apiJSON<DiscoveryResponse>("/api/sources/discover", {
+        method: "POST",
+        headers: { "X-Memento-CSRF": session.csrf_token },
+      }),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["sources"] });
+    },
+  });
+  const signOut = useMutation({
+    mutationFn: () =>
+      apiNoContent("/api/session/logout", {
+        method: "POST",
+        headers: { "X-Memento-CSRF": session.csrf_token },
+      }),
+    onSuccess: onSignOut,
+  });
+
+  return (
+    <section aria-labelledby="sources-title" className="source-workspace">
+      <header className="source-header">
+        <div>
+          <p className="step-label">Curator workspace</p>
+          <h2 id="sources-title">Source albums</h2>
+          <p>
+            Inspect owned Immich albums privately. Nothing here is visible to
+            Recipients.
+          </p>
+        </div>
+        <div className="source-header-actions">
+          <button
+            className="source-connect"
+            disabled={discover.isPending}
+            onClick={() => discover.mutate()}
+            type="button"
+          >
+            {discover.isPending ? "Validating…" : "Connect and discover"}
+          </button>
+          <button
+            className="source-sign-out"
+            disabled={signOut.isPending}
+            onClick={() => signOut.mutate()}
+            type="button"
+          >
+            {signOut.isPending ? "Signing out…" : "Sign out"}
+          </button>
+        </div>
+      </header>
+      {discover.data ? (
+        <p aria-live="polite" className="source-success">
+          Immich v3.0.3 connected. Found {discover.data.discovered_count} owned
+          {discover.data.discovered_count === 1 ? " album" : " albums"}.
+        </p>
+      ) : null}
+      <ErrorMessage error={discover.error} />
+      <ErrorMessage error={signOut.error} />
+      <div aria-label="Source album views" className="source-tabs" role="group">
+        <button
+          aria-pressed={disposition === "unreviewed"}
+          onClick={() => selectDisposition("unreviewed")}
+          type="button"
+        >
+          Inbox
+        </button>
+        <button
+          aria-pressed={disposition === "ignored"}
+          onClick={() => selectDisposition("ignored")}
+          type="button"
+        >
+          Ignored
+        </button>
+      </div>
+      <p aria-live="polite" className="visually-hidden" role="status">
+        {triageStatus}
+      </p>
+      {sources.isPending ? (
+        <p className="source-empty">Loading Source albums…</p>
+      ) : null}
+      {sources.isError ? <ErrorMessage error={sources.error} /> : null}
+      {albums?.length === 0 ? (
+        <p className="source-empty">
+          {disposition === "ignored"
+            ? "No ignored Source albums."
+            : "No unreviewed Source albums. Connect Immich to discover owned albums."}
+        </p>
+      ) : null}
+      <div className="source-list">
+        {albums?.map((album) => (
+          <SourceAlbumCard
+            album={album}
+            csrfToken={session.csrf_token}
+            key={album.id}
+            onTriaged={setTriageStatus}
+          />
+        ))}
+      </div>
+      {sources.hasNextPage ? (
+        <button
+          className="source-load-more"
+          disabled={sources.isFetchingNextPage}
+          onClick={() => void sources.fetchNextPage()}
+          type="button"
+        >
+          {sources.isFetchingNextPage ? "Loading…" : "Load more Source albums"}
+        </button>
+      ) : null}
+    </section>
+  );
+}
+
+function ReadyCard({
+  session,
+  onSignOut,
+}: {
+  session?: SessionResponse;
+  onSignOut: () => void;
+}) {
   if (session) {
-    return <PeopleManager session={session} />;
+    return (
+      <>
+        <PeopleManager session={session} />
+        <section className="shell-card curator-card">
+          <SourceWorkspace onSignOut={onSignOut} session={session} />
+        </section>
+      </>
+    );
   }
   return (
     <section aria-labelledby="memento-title" className="shell-card">
@@ -407,16 +674,22 @@ function ReadyCard({ session }: { session?: SessionResponse }) {
 
 export function App() {
   const [completedSession, setCompletedSession] = useState<SessionResponse>();
+  const [signedOut, setSignedOut] = useState(false);
   const bootstrap = useQuery({
     queryKey: ["bootstrap"],
     queryFn: fetchBootstrap,
     retry: false,
   });
 
-  if (completedSession) {
+  const signOut = () => {
+    setCompletedSession(undefined);
+    setSignedOut(true);
+  };
+
+  if (completedSession && !signedOut) {
     return (
       <main>
-        <ReadyCard session={completedSession} />
+        <ReadyCard onSignOut={signOut} session={completedSession} />
       </main>
     );
   }
@@ -457,10 +730,12 @@ export function App() {
   }
 
   const session =
-    bootstrap.data.kind === "session" ? bootstrap.data.session : undefined;
+    !signedOut && bootstrap.data.kind === "session"
+      ? bootstrap.data.session
+      : undefined;
   return (
     <main>
-      <ReadyCard session={session} />
+      <ReadyCard onSignOut={signOut} session={session} />
     </main>
   );
 }

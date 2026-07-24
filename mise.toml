@@ -117,6 +117,10 @@ run = "pnpm build"
 description = "Run PostgreSQL integration tests"
 run = "./tests/test-integration.sh"
 
+[tasks."test:immich-contract"]
+description = "Run the connector contract against Immich v3.0.3"
+run = "./tests/test-immich-contract.sh"
+
 [tasks."compose:validate"]
 description = "Validate the development Docker Compose configuration"
 run = "docker compose config --quiet"
@@ -145,6 +149,7 @@ depends = [
   "check",
   "test:race",
   "test:integration",
+  "test:immich-contract",
   "compose:validate",
   "caddy:validate",
   "test:production",
