@@ -32,6 +32,7 @@ import (
 	"github.com/robinjoseph08/memento/pkg/worker"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/uptrace/bun"
 )
 
 type scriptedSender struct {
@@ -56,6 +57,28 @@ func (s *scriptedSender) count() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.calls
+}
+
+type overlappingSender struct {
+	started       chan struct{}
+	release       chan struct{}
+	staleResult   error
+	currentResult error
+	mu            sync.Mutex
+	calls         int
+}
+
+func (s *overlappingSender) Send(context.Context, smtp.Message) error {
+	s.mu.Lock()
+	s.calls++
+	call := s.calls
+	s.mu.Unlock()
+	if call == 1 {
+		close(s.started)
+		<-s.release
+		return s.staleResult
+	}
+	return s.currentResult
 }
 
 func deliveryConfig() config.SMTPConfig {
@@ -175,6 +198,46 @@ func TestTemporaryFailureRetriesWithBoundedBackoff(t *testing.T) {
 	assert.NotContains(t, safeError, "secret")
 }
 
+func TestInterruptedRetryPreservesDurableBackoff(t *testing.T) {
+	db := testdb.Open(t)
+	require.NoError(t, migrations.Apply(context.Background(), db))
+	sender := &scriptedSender{results: []error{errors.New("temporary SMTP interruption"), nil}}
+	cfg := deliveryConfig()
+	cfg.RetryBase = 300 * time.Millisecond
+	cfg.RetryMax = 300 * time.Millisecond
+	service := New(db, cfg, sender)
+	response, err := service.RequestTest(context.Background())
+	require.NoError(t, err)
+	dispatched, err := outbox.New(db).Dispatch(context.Background(), "dispatcher", time.Second)
+	require.NoError(t, err)
+	assert.True(t, dispatched)
+	var job worker.Job
+	require.NoError(t, db.NewRaw(`SELECT id, kind, payload, attempts FROM jobs`).Scan(context.Background(), &job.ID, &job.Kind, &job.Payload, &job.Attempts))
+	leaseJob(t, db, &job, "interrupted-worker")
+
+	err = service.Handle(context.Background(), job)
+	require.EqualError(t, err, "smtp_unavailable")
+	assert.Equal(t, 1, sender.count())
+	_, err = db.NewRaw(`UPDATE jobs SET lease_expires_at = now() - interval '1 second' WHERE id = ?`, job.ID).Exec(context.Background())
+	require.NoError(t, err)
+	jobWorker, err := worker.New(db, workerConfig(), "recovery-worker", map[string]worker.Handler{JobKind: service.Handle})
+	require.NoError(t, err)
+	jobWorker.Start(context.Background())
+	defer stopWorker(jobWorker)
+
+	require.Eventually(t, func() bool {
+		var pending bool
+		err := db.NewRaw(`SELECT status = 'pending' AND available_at > now() FROM jobs WHERE id = ?`, job.ID).Scan(context.Background(), &pending)
+		return err == nil && pending
+	}, time.Second, 5*time.Millisecond)
+	assert.Equal(t, 1, sender.count(), "lease recovery must not bypass the persisted retry timestamp")
+	require.Eventually(t, func() bool {
+		status, statusErr := service.Status(context.Background(), response.DeliveryID)
+		return statusErr == nil && status.Status == "sent"
+	}, 2*time.Second, 10*time.Millisecond)
+	assert.Equal(t, 2, sender.count())
+}
+
 func TestExpiredLeaseRecoversWithoutRepeatingRecordedEffect(t *testing.T) {
 	db := testdb.Open(t)
 	require.NoError(t, migrations.Apply(context.Background(), db))
@@ -190,6 +253,7 @@ func TestExpiredLeaseRecoversWithoutRepeatingRecordedEffect(t *testing.T) {
 	assert.True(t, dispatched)
 	var job worker.Job
 	require.NoError(t, db.NewRaw(`SELECT id, kind, payload, attempts FROM jobs`).Scan(context.Background(), &job.ID, &job.Kind, &job.Payload, &job.Attempts))
+	leaseJob(t, db, &job, "interrupted-worker")
 	require.NoError(t, service.Handle(context.Background(), job))
 	assert.Equal(t, 1, server.count())
 	_, err = db.NewRaw(`UPDATE jobs SET status = 'running', lease_owner = 'dead-process', lease_expires_at = now() - interval '1 second'`).Exec(context.Background())
@@ -207,6 +271,70 @@ func TestExpiredLeaseRecoversWithoutRepeatingRecordedEffect(t *testing.T) {
 	assert.Equal(t, 1, server.count(), "a recorded send must make lease recovery idempotent")
 }
 
+func TestOnlyCurrentLeaseCanPersistTerminalDeliveryState(t *testing.T) {
+	tests := []struct {
+		name          string
+		staleResult   error
+		currentResult error
+		wantStatus    string
+		wantProblems  int
+	}{
+		{
+			name:        "stale rejection cannot overwrite current success",
+			staleResult: &smtp.DeliveryError{Diagnostic: "recipient_rejected", Temporary: false},
+			wantStatus:  "sent",
+		},
+		{
+			name:          "stale success cannot overwrite current rejection",
+			currentResult: &smtp.DeliveryError{Diagnostic: "recipient_rejected", Temporary: false},
+			wantStatus:    "failed", wantProblems: 1,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			db := testdb.Open(t)
+			require.NoError(t, migrations.Apply(context.Background(), db))
+			sender := &overlappingSender{
+				started: make(chan struct{}), release: make(chan struct{}),
+				staleResult: test.staleResult, currentResult: test.currentResult,
+			}
+			service := New(db, deliveryConfig(), sender)
+			response, err := service.RequestTest(context.Background())
+			require.NoError(t, err)
+			dispatched, err := outbox.New(db).Dispatch(context.Background(), "dispatcher", time.Second)
+			require.NoError(t, err)
+			assert.True(t, dispatched)
+			var staleJob worker.Job
+			require.NoError(t, db.NewRaw(`SELECT id, kind, payload, attempts FROM jobs`).Scan(context.Background(), &staleJob.ID, &staleJob.Kind, &staleJob.Payload, &staleJob.Attempts))
+			leaseJob(t, db, &staleJob, "stale-worker")
+			staleResult := make(chan error, 1)
+			go func() { staleResult <- service.Handle(context.Background(), staleJob) }()
+			select {
+			case <-sender.started:
+			case <-time.After(time.Second):
+				t.Fatal("stale delivery attempt did not reach SMTP")
+			}
+			currentJob := staleJob
+			leaseJob(t, db, &currentJob, "current-worker")
+
+			currentErr := service.Handle(context.Background(), currentJob)
+			if test.currentResult == nil {
+				require.NoError(t, currentErr)
+			} else {
+				require.EqualError(t, currentErr, "recipient_rejected")
+			}
+			close(sender.release)
+			require.ErrorIs(t, <-staleResult, errDeliveryLeaseLost)
+			status, err := service.Status(context.Background(), response.DeliveryID)
+			require.NoError(t, err)
+			assert.Equal(t, test.wantStatus, status.Status)
+			var problems int
+			require.NoError(t, db.NewRaw(`SELECT count(*) FROM delivery_problems`).Scan(context.Background(), &problems))
+			assert.Equal(t, test.wantProblems, problems)
+		})
+	}
+}
+
 func TestRetryWindowExhaustionBecomesPermanentFailure(t *testing.T) {
 	db := testdb.Open(t)
 	require.NoError(t, migrations.Apply(context.Background(), db))
@@ -220,6 +348,7 @@ func TestRetryWindowExhaustionBecomesPermanentFailure(t *testing.T) {
 	require.NoError(t, err)
 	var job worker.Job
 	require.NoError(t, db.NewRaw(`SELECT id, kind, payload, attempts FROM jobs`).Scan(context.Background(), &job.ID, &job.Kind, &job.Payload, &job.Attempts))
+	leaseJob(t, db, &job, "exhaustion-worker")
 
 	err = service.Handle(context.Background(), job)
 
@@ -388,6 +517,16 @@ func deliveryTestCertificate(t *testing.T) (tls.Certificate, *x509.Certificate) 
 	leaf, err := x509.ParseCertificate(der)
 	require.NoError(t, err)
 	return certificate, leaf
+}
+
+func leaseJob(t *testing.T, db *bun.DB, job *worker.Job, owner string) {
+	t.Helper()
+	_, err := db.NewRaw(`
+		UPDATE jobs SET status = 'running', lease_owner = ?, lease_expires_at = now() + interval '1 minute'
+		WHERE id = ?
+	`, owner, job.ID).Exec(context.Background())
+	require.NoError(t, err)
+	job.LeaseOwner = owner
 }
 
 func stopWorker(jobWorker *worker.Worker) {

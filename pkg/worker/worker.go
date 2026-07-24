@@ -25,10 +25,11 @@ var (
 
 // Job is a leased unit of work.
 type Job struct {
-	ID       int64
-	Kind     string
-	Payload  json.RawMessage
-	Attempts int
+	ID         int64
+	Kind       string
+	Payload    json.RawMessage
+	Attempts   int
+	LeaseOwner string
 }
 
 // Handler processes one job. It must honor context cancellation.
@@ -255,6 +256,7 @@ func (w *Worker) claim(ctx context.Context) (*Job, error) {
 	if err != nil {
 		return nil, fmt.Errorf("claim job: %w", err)
 	}
+	job.LeaseOwner = w.owner
 	return &job, nil
 }
 

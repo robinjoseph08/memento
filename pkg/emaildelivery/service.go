@@ -21,10 +21,11 @@ import (
 const JobKind = "send_required_email"
 
 var (
-	errGenerateIdentity = errors.New("generate email delivery identity")
-	ErrNotConfigured    = errors.New("SMTP is not configured")
-	ErrSetupComplete    = errors.New("test email is available only during setup")
-	ErrDeliveryAbsent   = errors.New("email delivery not found")
+	errGenerateIdentity  = errors.New("generate email delivery identity")
+	errDeliveryLeaseLost = errors.New("email delivery job lease lost")
+	ErrNotConfigured     = errors.New("SMTP is not configured")
+	ErrSetupComplete     = errors.New("test email is available only during setup")
+	ErrDeliveryAbsent    = errors.New("email delivery not found")
 )
 
 // TestEmailResponse is generated to TypeScript by Tygo.
@@ -54,6 +55,7 @@ type delivery struct {
 	Status        string
 	Attempts      int
 	LastSafeError *string
+	NextRetryAt   *time.Time
 	CreatedAt     time.Time
 }
 
@@ -140,9 +142,9 @@ func (s *Service) Handle(ctx context.Context, job worker.Job) error {
 	}
 	var message delivery
 	err := s.db.NewRaw(`
-		SELECT id, public_id, recipient, subject, body, status, attempts, last_safe_error, created_at
+		SELECT id, public_id, recipient, subject, body, status, attempts, last_safe_error, next_retry_at, created_at
 		FROM email_deliveries WHERE id = ?
-	`, payload.DeliveryID).Scan(ctx, &message.ID, &message.PublicID, &message.Recipient, &message.Subject, &message.Body, &message.Status, &message.Attempts, &message.LastSafeError, &message.CreatedAt)
+	`, payload.DeliveryID).Scan(ctx, &message.ID, &message.PublicID, &message.Recipient, &message.Subject, &message.Body, &message.Status, &message.Attempts, &message.LastSafeError, &message.NextRetryAt, &message.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return worker.Permanent("delivery_missing")
 	}
@@ -152,33 +154,59 @@ func (s *Service) Handle(ctx context.Context, job worker.Job) error {
 	if message.Status == "sent" || message.Status == "failed" {
 		return nil
 	}
+	if err := s.requireLease(ctx, job); err != nil {
+		return err
+	}
 	if time.Since(message.CreatedAt) >= s.cfg.RetryWindow {
-		if err := s.recordFailure(ctx, message.ID, "retry_window_exhausted"); err != nil {
+		if err := s.recordFailure(ctx, job, message.ID, "retry_window_exhausted"); err != nil {
 			return err
 		}
 		return worker.Permanent("retry_window_exhausted")
 	}
-	_, err = s.db.NewRaw(`UPDATE email_deliveries SET attempts = attempts + 1, updated_at = now() WHERE id = ? AND status = 'queued'`, message.ID).Exec(ctx)
+	if message.NextRetryAt != nil && time.Until(*message.NextRetryAt) > 0 {
+		diagnostic := "smtp_unavailable"
+		if message.LastSafeError != nil {
+			diagnostic = *message.LastSafeError
+		}
+		return worker.RetryAfter(time.Until(*message.NextRetryAt), diagnostic)
+	}
+	updated, err := s.db.NewRaw(`
+		UPDATE email_deliveries SET attempts = attempts + 1, updated_at = now()
+		WHERE id = ? AND status = 'queued' AND EXISTS (
+			SELECT 1 FROM jobs WHERE id = ? AND status = 'running' AND lease_owner = ? AND lease_expires_at > now()
+		)
+	`, message.ID, job.ID, job.LeaseOwner).Exec(ctx)
 	if err != nil {
 		return err
+	}
+	if affected, _ := updated.RowsAffected(); affected != 1 {
+		return errDeliveryLeaseLost
 	}
 	err = s.sender.Send(ctx, smtp.Message{
 		ID: message.PublicID, To: message.Recipient, Subject: message.Subject, Body: message.Body,
 	})
 	if err == nil {
-		_, updateErr := s.db.NewRaw(`
+		updated, updateErr := s.db.NewRaw(`
 			UPDATE email_deliveries SET status = 'sent', sent_at = now(), next_retry_at = NULL,
 				last_safe_error = NULL, updated_at = now()
-			WHERE id = ? AND status = 'queued'
-		`, message.ID).Exec(ctx)
-		return updateErr
+			WHERE id = ? AND status = 'queued' AND EXISTS (
+				SELECT 1 FROM jobs WHERE id = ? AND status = 'running' AND lease_owner = ? AND lease_expires_at > now()
+			)
+		`, message.ID, job.ID, job.LeaseOwner).Exec(ctx)
+		if updateErr != nil {
+			return updateErr
+		}
+		if affected, _ := updated.RowsAffected(); affected != 1 {
+			return errDeliveryLeaseLost
+		}
+		return nil
 	}
 	failure := &smtp.DeliveryError{Diagnostic: "smtp_unavailable", Temporary: true}
 	if !errors.As(err, &failure) {
 		failure = &smtp.DeliveryError{Diagnostic: "smtp_unavailable", Temporary: true}
 	}
 	if !failure.Temporary {
-		if err := s.recordFailure(ctx, message.ID, failure.Diagnostic); err != nil {
+		if err := s.recordFailure(ctx, job, message.ID, failure.Diagnostic); err != nil {
 			return err
 		}
 		return worker.Permanent(failure.Diagnostic)
@@ -186,7 +214,7 @@ func (s *Service) Handle(ctx context.Context, job worker.Job) error {
 	delay := s.retryDelay(message.Attempts)
 	remaining := s.cfg.RetryWindow - time.Since(message.CreatedAt)
 	if remaining <= 0 {
-		if err := s.recordFailure(ctx, message.ID, "retry_window_exhausted"); err != nil {
+		if err := s.recordFailure(ctx, job, message.ID, "retry_window_exhausted"); err != nil {
 			return err
 		}
 		return worker.Permanent("retry_window_exhausted")
@@ -194,12 +222,17 @@ func (s *Service) Handle(ctx context.Context, job worker.Job) error {
 	if delay > remaining {
 		delay = remaining
 	}
-	_, updateErr := s.db.NewRaw(`
+	updated, updateErr := s.db.NewRaw(`
 		UPDATE email_deliveries SET last_safe_error = ?, next_retry_at = now() + (? * interval '1 microsecond'), updated_at = now()
-		WHERE id = ? AND status = 'queued'
-	`, failure.Diagnostic, delay.Microseconds(), message.ID).Exec(ctx)
+		WHERE id = ? AND status = 'queued' AND EXISTS (
+			SELECT 1 FROM jobs WHERE id = ? AND status = 'running' AND lease_owner = ? AND lease_expires_at > now()
+		)
+	`, failure.Diagnostic, delay.Microseconds(), message.ID, job.ID, job.LeaseOwner).Exec(ctx)
 	if updateErr != nil {
 		return updateErr
+	}
+	if affected, _ := updated.RowsAffected(); affected != 1 {
+		return errDeliveryLeaseLost
 	}
 	return worker.RetryAfter(delay, failure.Diagnostic)
 }
@@ -239,16 +272,38 @@ func (s *Service) retryDelay(attempts int) time.Duration {
 	return result
 }
 
-func (s *Service) recordFailure(ctx context.Context, id int64, diagnostic string) error {
+func (s *Service) requireLease(ctx context.Context, job worker.Job) error {
+	var owned bool
+	err := s.db.NewRaw(`
+		SELECT EXISTS (
+			SELECT 1 FROM jobs WHERE id = ? AND status = 'running' AND lease_owner = ? AND lease_expires_at > now()
+		)
+	`, job.ID, job.LeaseOwner).Scan(ctx, &owned)
+	if err != nil {
+		return err
+	}
+	if !owned {
+		return errDeliveryLeaseLost
+	}
+	return nil
+}
+
+func (s *Service) recordFailure(ctx context.Context, job worker.Job, id int64, diagnostic string) error {
 	return s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
-		if _, err := tx.NewRaw(`
+		updated, err := tx.NewRaw(`
 			UPDATE email_deliveries SET status = 'failed', failed_at = now(), last_safe_error = ?,
 				next_retry_at = NULL, updated_at = now()
-			WHERE id = ? AND status = 'queued'
-		`, diagnostic, id).Exec(ctx); err != nil {
+			WHERE id = ? AND status = 'queued' AND EXISTS (
+				SELECT 1 FROM jobs WHERE id = ? AND status = 'running' AND lease_owner = ? AND lease_expires_at > now()
+			)
+		`, diagnostic, id, job.ID, job.LeaseOwner).Exec(ctx)
+		if err != nil {
 			return err
 		}
-		_, err := tx.NewRaw(`
+		if affected, _ := updated.RowsAffected(); affected != 1 {
+			return errDeliveryLeaseLost
+		}
+		_, err = tx.NewRaw(`
 			INSERT INTO delivery_problems (email_delivery_id, diagnostic)
 			VALUES (?, ?) ON CONFLICT (email_delivery_id) DO NOTHING
 		`, id, diagnostic).Exec(ctx)
