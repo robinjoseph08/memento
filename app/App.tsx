@@ -1,5 +1,5 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState, type FormEvent } from "react";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 
 import type {
   AvailabilityResponse,
@@ -149,6 +149,7 @@ function SetupFlow({
   const [step, setStep] = useState<"identity" | "code" | "onboarding">(
     "identity",
   );
+  const stepHeading = useRef<HTMLHeadingElement>(null);
   const [displayName, setDisplayName] = useState("");
   const [email, setEmail] = useState("");
   const [challengeID, setChallengeID] = useState("");
@@ -160,6 +161,10 @@ function SetupFlow({
     useState(false);
   const [emailPreference, setEmailPreference] = useState("immediate");
   const [sessionType, setSessionType] = useState("trusted");
+
+  useEffect(() => {
+    stepHeading.current?.focus();
+  }, [step]);
 
   const requestCode = useMutation({
     mutationFn: (request: RequestCodeRequest) =>
@@ -186,18 +191,18 @@ function SetupFlow({
   });
 
   const completeSetup = useMutation({
-    mutationFn: (request: CompleteRequest) =>
-      apiJSON<CompleteResponse>("/api/setup/complete", {
+    mutationFn: async (request: CompleteRequest) => {
+      const completed = await apiJSON<CompleteResponse>("/api/setup/complete", {
         method: "POST",
         body: JSON.stringify(request),
-      }),
-    onSuccess: (response) => {
-      onComplete({
-        display_name: displayName.trim(),
-        session_type: sessionType,
-        csrf_token: response.csrf_token,
       });
+      const session = await apiJSON<SessionResponse>("/api/session");
+      if (session.csrf_token !== completed.csrf_token) {
+        throw new APIError("The new Session could not be confirmed.", 500);
+      }
+      return session;
     },
+    onSuccess: onComplete,
   });
 
   function submitIdentity(event: FormEvent<HTMLFormElement>) {
@@ -208,6 +213,16 @@ function SetupFlow({
   function submitCode(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     verifyCode.mutate({ challenge_id: challengeID, code });
+  }
+
+  function restartSetup() {
+    setChallengeID("");
+    setCode("");
+    setVerificationToken("");
+    requestCode.reset();
+    verifyCode.reset();
+    completeSetup.reset();
+    setStep("identity");
   }
 
   function submitOnboarding(event: FormEvent<HTMLFormElement>) {
@@ -233,7 +248,7 @@ function SetupFlow({
               ? "Step 2 of 3"
               : "Step 3 of 3"}
         </p>
-        <h2>
+        <h2 ref={stepHeading} tabIndex={-1}>
           {step === "identity"
             ? "Set up the Curator"
             : step === "code"
@@ -280,8 +295,8 @@ function SetupFlow({
       {step === "code" ? (
         <form className="setup-form" onSubmit={submitCode}>
           <p className="form-intro">
-            Enter the eight-digit single-use code sent to your email. It expires
-            in ten minutes.
+            An eight-digit single-use code is queued for delivery to your email.
+            It expires ten minutes after the request is accepted.
           </p>
           <label>
             Verification code
@@ -296,15 +311,35 @@ function SetupFlow({
               value={code}
             />
           </label>
-          <ErrorMessage error={verifyCode.error} />
+          <ErrorMessage error={verifyCode.error ?? requestCode.error} />
           <button disabled={verifyCode.isPending} type="submit">
             {verifyCode.isPending ? "Verifying…" : "Verify email"}
           </button>
+          <div className="setup-secondary-actions">
+            <button
+              disabled={requestCode.isPending}
+              onClick={() =>
+                requestCode.mutate({ display_name: displayName, email })
+              }
+              type="button"
+            >
+              {requestCode.isPending
+                ? "Queuing another code…"
+                : "Send another code"}
+            </button>
+            <button onClick={restartSetup} type="button">
+              Change name or email
+            </button>
+          </div>
         </form>
       ) : null}
 
       {step === "onboarding" ? (
         <form className="setup-form choices" onSubmit={submitOnboarding}>
+          <p className="form-intro">
+            Your verified setup link remains valid for thirty minutes. If it
+            expires, start over and request another code.
+          </p>
           <label className="choice">
             <input
               checked={privacyAcknowledged}
@@ -386,28 +421,18 @@ function SetupFlow({
           <button disabled={completeSetup.isPending} type="submit">
             {completeSetup.isPending ? "Completing setup…" : "Complete setup"}
           </button>
+          <div className="setup-secondary-actions">
+            <button onClick={restartSetup} type="button">
+              Start setup over
+            </button>
+          </div>
         </form>
       ) : null}
     </section>
   );
 }
 
-function ReadyCard({
-  session,
-  onSignedOut,
-}: {
-  session?: SessionResponse;
-  onSignedOut?: () => void;
-}) {
-  const logout = useMutation({
-    mutationFn: () =>
-      apiNoContent("/api/session/logout", {
-        method: "POST",
-        headers: { "X-Memento-CSRF": session?.csrf_token ?? "" },
-      }),
-    onSuccess: onSignedOut,
-  });
-
+function ReadyCard({ session }: { session?: SessionResponse }) {
   return (
     <section aria-labelledby="memento-title" className="shell-card">
       <BrandHeader />
@@ -420,24 +445,11 @@ function ReadyCard({
         <span aria-hidden="true" className="status-dot" />
         Setup complete
       </p>
-      {session ? (
-        <div className="session-actions">
-          <ErrorMessage error={logout.error} />
-          <button
-            disabled={logout.isPending}
-            onClick={() => logout.mutate()}
-            type="button"
-          >
-            {logout.isPending ? "Signing out…" : "Sign out"}
-          </button>
-        </div>
-      ) : null}
     </section>
   );
 }
 
 export function App() {
-  const queryClient = useQueryClient();
   const [completedSession, setCompletedSession] = useState<SessionResponse>();
   const bootstrap = useQuery({
     queryKey: ["bootstrap"],
@@ -445,15 +457,10 @@ export function App() {
     retry: false,
   });
 
-  function showSignedOut() {
-    setCompletedSession(undefined);
-    queryClient.setQueryData<BootstrapState>(["bootstrap"], { kind: "closed" });
-  }
-
   if (completedSession) {
     return (
       <main>
-        <ReadyCard session={completedSession} onSignedOut={showSignedOut} />
+        <ReadyCard session={completedSession} />
       </main>
     );
   }
@@ -497,7 +504,7 @@ export function App() {
     bootstrap.data.kind === "session" ? bootstrap.data.session : undefined;
   return (
     <main>
-      <ReadyCard session={session} onSignedOut={showSignedOut} />
+      <ReadyCard session={session} />
     </main>
   );
 }

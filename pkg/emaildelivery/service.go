@@ -54,10 +54,11 @@ type StatusResponse struct {
 
 // RequiredMessage is committed by a domain transaction before worker delivery.
 type RequiredMessage struct {
-	Kind      string
-	Recipient string
-	Subject   string
-	Body      string
+	Kind          string
+	Recipient     string
+	Subject       string
+	Body          string
+	DeliverBefore *time.Time
 }
 
 type jobPayload struct {
@@ -75,6 +76,7 @@ type delivery struct {
 	Attempts      int
 	LastSafeError *string
 	NextRetryAt   *time.Time
+	DeliverBefore *time.Time
 	CreatedAt     time.Time
 }
 
@@ -135,6 +137,9 @@ func (s *Service) QueueRequired(ctx context.Context, tx bun.Tx, message Required
 	if message.Kind != "required_test" && message.Kind != KindSetupCode {
 		return 0, "", fmt.Errorf("%w: %s", errUnsupportedKind, message.Kind)
 	}
+	if (message.Kind == KindSetupCode) != (message.DeliverBefore != nil) {
+		return 0, "", errSensitiveBody
+	}
 	publicID, err := randomID()
 	if err != nil {
 		return 0, "", errGenerateIdentity
@@ -145,10 +150,10 @@ func (s *Service) QueueRequired(ctx context.Context, tx bun.Tx, message Required
 	}
 	var id int64
 	if err := tx.NewRaw(`
-		INSERT INTO email_deliveries (public_id, kind, recipient, subject, body)
-		VALUES (?, ?, ?, ?, ?)
+		INSERT INTO email_deliveries (public_id, kind, recipient, subject, body, deliver_before)
+		VALUES (?, ?, ?, ?, ?, ?)
 		RETURNING id
-	`, publicID, message.Kind, message.Recipient, message.Subject, body).Scan(ctx, &id); err != nil {
+	`, publicID, message.Kind, message.Recipient, message.Subject, body, message.DeliverBefore).Scan(ctx, &id); err != nil {
 		return 0, "", err
 	}
 	payload, err := json.Marshal(jobPayload{DeliveryID: id})
@@ -195,9 +200,14 @@ func (s *Service) Handle(ctx context.Context, job worker.Job) error {
 	}
 	var message delivery
 	err := s.db.NewRaw(`
-		SELECT id, public_id, kind, recipient, subject, body, status, attempts, last_safe_error, next_retry_at, created_at
+		SELECT id, public_id, kind, recipient, subject, body, status, attempts, last_safe_error,
+		       next_retry_at, deliver_before, created_at
 		FROM email_deliveries WHERE id = ?
-	`, payload.DeliveryID).Scan(ctx, &message.ID, &message.PublicID, &message.Kind, &message.Recipient, &message.Subject, &message.Body, &message.Status, &message.Attempts, &message.LastSafeError, &message.NextRetryAt, &message.CreatedAt)
+	`, payload.DeliveryID).Scan(
+		ctx, &message.ID, &message.PublicID, &message.Kind, &message.Recipient, &message.Subject,
+		&message.Body, &message.Status, &message.Attempts, &message.LastSafeError,
+		&message.NextRetryAt, &message.DeliverBefore, &message.CreatedAt,
+	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return worker.Permanent("delivery_missing")
 	}
@@ -209,6 +219,22 @@ func (s *Service) Handle(ctx context.Context, job worker.Job) error {
 	}
 	if err := s.requireLease(ctx, job); err != nil {
 		return err
+	}
+	if message.Kind == KindSetupCode {
+		var obsolete bool
+		err := s.db.NewRaw(`
+			SELECT setup_complete OR now() >= ?
+			FROM system_settings WHERE id = 1
+		`, message.DeliverBefore).Scan(ctx, &obsolete)
+		if err != nil {
+			return err
+		}
+		if obsolete {
+			if err := s.recordFailure(ctx, job, message.ID, "delivery_expired"); err != nil {
+				return err
+			}
+			return worker.Permanent("delivery_expired")
+		}
 	}
 	message.Body, err = s.deliveryBody(message.Kind, message.Body)
 	if err != nil {

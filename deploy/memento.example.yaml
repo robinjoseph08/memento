@@ -19,6 +19,8 @@ security:
   setup_rate_window: 15m
   setup_email_limit: 3
   setup_ip_limit: 20
+  # Forwarded client IPs are accepted only from these explicit proxy networks.
+  trusted_proxy_cidrs: "127.0.0.0/8,::1/128"
 
 # Enable after replacing every address and SMTP endpoint. starttls requires the
 # server to advertise STARTTLS and never downgrades to plaintext. implicit_tls

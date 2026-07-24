@@ -22,18 +22,24 @@ func TestQueueRequiredRejectsUnknownEmailKindBeforePersistence(t *testing.T) {
 	require.ErrorIs(t, err, errUnsupportedKind)
 }
 
-func TestSetupCodeBodyIsEncryptedForPersistence(t *testing.T) {
-	service := New(nil, config.SMTPConfig{}, nil, "test-only-security-secret-32-bytes")
+func TestSetupCodeBodyIsEncryptedForPersistenceAndStableRestarts(t *testing.T) {
+	const secret = "test-only-security-secret-32-bytes"
+	service := New(nil, config.SMTPConfig{}, nil, secret)
 	plaintext := "Your setup code is 12345678."
+	message := RequiredMessage{Kind: KindSetupCode, Body: plaintext}
 
-	persisted, err := service.persistedBody(RequiredMessage{Kind: KindSetupCode, Body: plaintext})
+	persisted, err := service.persistedBody(message)
+	require.NoError(t, err)
+	second, err := service.persistedBody(message)
 	require.NoError(t, err)
 	assert.NotContains(t, persisted, "12345678")
+	assert.NotEqual(t, persisted, second, "each body needs a fresh authenticated-encryption nonce")
 
-	decrypted, err := service.deliveryBody(KindSetupCode, persisted)
+	restarted := New(nil, config.SMTPConfig{}, nil, secret)
+	decrypted, err := restarted.deliveryBody(KindSetupCode, persisted)
 	require.NoError(t, err)
 	assert.Equal(t, plaintext, decrypted)
-	_, err = New(nil, config.SMTPConfig{}, nil).deliveryBody(KindSetupCode, persisted)
+	_, err = New(nil, config.SMTPConfig{}, nil, "different-security-secret-32-bytes").deliveryBody(KindSetupCode, persisted)
 	require.ErrorIs(t, err, errSensitiveBody)
 }
 

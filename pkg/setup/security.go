@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 	"sync"
 	"time"
@@ -23,8 +24,8 @@ type requestMetadata struct {
 
 type requestMetadataKey struct{}
 
-func withRequestMetadata(ctx context.Context, request *http.Request) context.Context {
-	metadata := requestMetadata{ClientIP: clientIP(request), UserAgent: request.UserAgent()}
+func withRequestMetadata(ctx context.Context, request *http.Request, trustedProxies []netip.Prefix) context.Context {
+	metadata := requestMetadata{ClientIP: clientIP(request, trustedProxies), UserAgent: request.UserAgent()}
 	userAgentRunes := []rune(metadata.UserAgent)
 	if len(userAgentRunes) > 512 {
 		metadata.UserAgent = string(userAgentRunes[:512])
@@ -37,7 +38,7 @@ func metadataFromContext(ctx context.Context) requestMetadata {
 	return metadata
 }
 
-func clientIP(request *http.Request) string {
+func clientIP(request *http.Request, trustedProxies []netip.Prefix) string {
 	peer := request.RemoteAddr
 	if host, _, err := net.SplitHostPort(peer); err == nil {
 		peer = host
@@ -46,7 +47,8 @@ func clientIP(request *http.Request) string {
 	if peerIP == nil {
 		return ""
 	}
-	if peerIP.IsLoopback() {
+	peerAddress, valid := netip.AddrFromSlice(peerIP)
+	if valid && addressInPrefixes(peerAddress.Unmap(), trustedProxies) {
 		forwarded := strings.Split(request.Header.Get("X-Forwarded-For"), ",")
 		for index := len(forwarded) - 1; index >= 0; index-- {
 			candidate := net.ParseIP(strings.TrimSpace(forwarded[index]))
@@ -56,6 +58,40 @@ func clientIP(request *http.Request) string {
 		}
 	}
 	return peerIP.String()
+}
+
+func secureSetupCompletion(request *http.Request, trustedProxies []netip.Prefix) bool {
+	if request.TLS != nil {
+		return true
+	}
+	host := request.Host
+	if parsedHost, _, err := net.SplitHostPort(host); err == nil {
+		host = parsedHost
+	}
+	if host == "localhost" {
+		return true
+	}
+	if hostAddress, err := netip.ParseAddr(host); err == nil && hostAddress.IsLoopback() {
+		return true
+	}
+	peer := request.RemoteAddr
+	if peerHost, _, err := net.SplitHostPort(peer); err == nil {
+		peer = peerHost
+	}
+	peerAddress, err := netip.ParseAddr(peer)
+	if err != nil || !addressInPrefixes(peerAddress.Unmap(), trustedProxies) {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(request.Header.Get("X-Forwarded-Proto")), "https")
+}
+
+func addressInPrefixes(address netip.Addr, prefixes []netip.Prefix) bool {
+	for _, prefix := range prefixes {
+		if prefix.Contains(address) {
+			return true
+		}
+	}
+	return false
 }
 
 type rateWindow struct {

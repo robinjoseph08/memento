@@ -20,6 +20,9 @@ func init() {
 					`ALTER TABLE system_settings ADD CONSTRAINT system_settings_security_epoch_length CHECK (octet_length(security_epoch) = 32)`,
 					`ALTER TABLE email_deliveries DROP CONSTRAINT email_deliveries_kind_check`,
 					`ALTER TABLE email_deliveries ADD CONSTRAINT email_deliveries_kind_check CHECK (kind IN ('required_test', 'setup_code'))`,
+					`ALTER TABLE email_deliveries ADD COLUMN deliver_before timestamptz`,
+					`ALTER TABLE email_deliveries ADD CONSTRAINT email_deliveries_setup_deadline_check
+						CHECK ((kind = 'setup_code') = (deliver_before IS NOT NULL))`,
 					`CREATE TABLE people (
 						id uuid PRIMARY KEY,
 						display_name text NOT NULL CHECK (display_name <> '' AND char_length(display_name) <= 120),
@@ -87,9 +90,11 @@ func init() {
 						expires_at timestamptz NOT NULL,
 						verified_at timestamptz,
 						verification_token_hash bytea UNIQUE CHECK (verification_token_hash IS NULL OR octet_length(verification_token_hash) = 32),
+						verification_expires_at timestamptz,
 						consumed_at timestamptz,
 						created_at timestamptz NOT NULL DEFAULT now(),
-						CHECK (verified_at IS NULL OR verification_token_hash IS NOT NULL),
+						CHECK ((verified_at IS NULL) = (verification_token_hash IS NULL)),
+						CHECK ((verified_at IS NULL) = (verification_expires_at IS NULL)),
 						CHECK (consumed_at IS NULL OR verified_at IS NOT NULL)
 					)`,
 					`CREATE INDEX login_challenges_active_idx ON login_challenges (expires_at, id) WHERE consumed_at IS NULL`,
@@ -155,6 +160,8 @@ func init() {
 					`DELETE FROM outbox_events WHERE aggregate_kind = 'email_delivery' AND aggregate_id IN (SELECT public_id FROM email_deliveries WHERE kind = 'setup_code')`,
 					`DELETE FROM delivery_problems WHERE email_delivery_id IN (SELECT id FROM email_deliveries WHERE kind = 'setup_code')`,
 					`DELETE FROM email_deliveries WHERE kind = 'setup_code'`,
+					`ALTER TABLE email_deliveries DROP CONSTRAINT email_deliveries_setup_deadline_check`,
+					`ALTER TABLE email_deliveries DROP COLUMN deliver_before`,
 					`ALTER TABLE email_deliveries DROP CONSTRAINT email_deliveries_kind_check`,
 					`ALTER TABLE email_deliveries ADD CONSTRAINT email_deliveries_kind_check CHECK (kind IN ('required_test'))`,
 					`ALTER TABLE system_settings DROP COLUMN IF EXISTS security_epoch`,

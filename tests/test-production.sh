@@ -61,6 +61,9 @@ done
 curl --fail --silent --output /dev/null "$base_url/manifest.webmanifest"
 curl --fail --silent --output /dev/null "$base_url/service-worker.js"
 [ "$(curl --fail --silent "$base_url/api/health/live")" = '{"status":"live"}' ]
+curl --fail --silent --dump-header "$temporary/setup-headers" --output "$temporary/setup.json" "$base_url/api/setup"
+grep -q '"status":"available"' "$temporary/setup.json"
+grep -qi '^Cache-Control: no-store' "$temporary/setup-headers"
 api_code=$(curl --silent --output "$temporary/api.json" --write-out '%{http_code}' "$base_url/api")
 [ "$api_code" = 404 ]
 grep -q '"code":"not_found"' "$temporary/api.json"

@@ -24,10 +24,11 @@ import (
 )
 
 const (
-	challengeLifetime = 10 * time.Minute
-	maximumAttempts   = 5
-	trustedLifetime   = 365 * 24 * time.Hour
-	publicLifetime    = 12 * time.Hour
+	challengeLifetime    = 10 * time.Minute
+	verificationLifetime = 30 * time.Minute
+	maximumAttempts      = 5
+	trustedLifetime      = 365 * 24 * time.Hour
+	publicLifetime       = 12 * time.Hour
 )
 
 var (
@@ -95,13 +96,14 @@ type SessionResponse struct {
 }
 
 type challenge struct {
-	DisplayName string
-	Email       string
-	Normalized  string
-	Attempts    int
-	ExpiresAt   time.Time
-	VerifiedAt  sql.NullTime
-	ConsumedAt  sql.NullTime
+	DisplayName           string
+	Email                 string
+	Normalized            string
+	Attempts              int
+	ExpiresAt             time.Time
+	VerifiedAt            sql.NullTime
+	VerificationExpiresAt sql.NullTime
+	ConsumedAt            sql.NullTime
 }
 
 type completedSession struct {
@@ -167,8 +169,6 @@ func (s *Service) RequestCode(ctx context.Context, request RequestCodeRequest) (
 	if err != nil {
 		return RequestCodeResponse{}, errGenerateCredential
 	}
-	now := s.now().UTC()
-	expiresAt := now.Add(challengeLifetime)
 	codeHash := s.codeHash(challengeRaw, code)
 
 	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
@@ -179,11 +179,14 @@ func (s *Service) RequestCode(ctx context.Context, request RequestCodeRequest) (
 		if complete {
 			return ErrSetupComplete
 		}
+		now := s.now().UTC()
+		expiresAt := now.Add(challengeLifetime)
 		deliveryID, _, err := s.delivery.QueueRequired(ctx, tx, emaildelivery.RequiredMessage{
-			Kind:      emaildelivery.KindSetupCode,
-			Recipient: email,
-			Subject:   "Your Memento setup code",
-			Body:      fmt.Sprintf("Your Memento setup code is %s. It expires in 10 minutes.", code),
+			Kind:          emaildelivery.KindSetupCode,
+			Recipient:     email,
+			Subject:       "Your Memento setup code",
+			Body:          fmt.Sprintf("Your Memento setup code is %s. It expires in 10 minutes.", code),
+			DeliverBefore: &expiresAt,
 		})
 		if err != nil {
 			return err
@@ -201,7 +204,7 @@ func (s *Service) RequestCode(ctx context.Context, request RequestCodeRequest) (
 	if err != nil {
 		return RequestCodeResponse{}, fmt.Errorf("request setup code: %w", err)
 	}
-	return RequestCodeResponse{ChallengeID: challengeID, Status: "code_sent"}, nil
+	return RequestCodeResponse{ChallengeID: challengeID, Status: "queued"}, nil
 }
 
 // VerifyCode consumes one code and returns a separate credential for final setup.
@@ -215,7 +218,6 @@ func (s *Service) VerifyCode(ctx context.Context, request VerifyCodeRequest) (Ve
 		return VerifyCodeResponse{}, err
 	}
 	invalid := false
-	now := s.now().UTC()
 	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 		var complete bool
 		if err := tx.NewRaw(`SELECT setup_complete FROM system_settings WHERE id = 1 FOR SHARE`).Scan(ctx, &complete); err != nil {
@@ -236,6 +238,7 @@ func (s *Service) VerifyCode(ctx context.Context, request VerifyCodeRequest) (Ve
 		if err != nil {
 			return err
 		}
+		now := s.now().UTC()
 		if stored.Attempts >= maximumAttempts || !now.Before(stored.ExpiresAt) || stored.VerifiedAt.Valid || stored.ConsumedAt.Valid {
 			invalid = true
 			return s.appendAudit(ctx, tx, "setup_code_verified", "invalid", nil, nil, nil)
@@ -254,9 +257,9 @@ func (s *Service) VerifyCode(ctx context.Context, request VerifyCodeRequest) (Ve
 		}
 		if _, err = tx.NewRaw(`
 			UPDATE login_challenges
-			SET verified_at = ?, verification_token_hash = ?
+			SET verified_at = ?, verification_token_hash = ?, verification_expires_at = ?
 			WHERE challenge_hash = ?
-		`, now, tokenHash(verificationRaw), tokenHash(challengeRaw)).Exec(ctx); err != nil {
+		`, now, tokenHash(verificationRaw), now.Add(verificationLifetime), tokenHash(challengeRaw)).Exec(ctx); err != nil {
 			return err
 		}
 		return s.appendAudit(ctx, tx, "setup_code_verified", "success", nil, nil, nil)
@@ -301,16 +304,7 @@ func (s *Service) complete(ctx context.Context, request CompleteRequest) (comple
 	if err != nil {
 		return completedSession{}, err
 	}
-	now := s.now().UTC()
 	var idleExpiresAt, absoluteExpiresAt *time.Time
-	if request.SessionType == "trusted" {
-		expiry := now.Add(trustedLifetime)
-		idleExpiresAt = &expiry
-	} else {
-		expiry := now.Add(publicLifetime)
-		absoluteExpiresAt = &expiry
-	}
-
 	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 		var complete bool
 		var securityEpoch []byte
@@ -329,17 +323,30 @@ func (s *Service) complete(ctx context.Context, request CompleteRequest) (comple
 		}
 		var stored challenge
 		err := tx.NewRaw(`
-			SELECT display_name, email, normalized_email, attempts, expires_at, verified_at, consumed_at
+			SELECT display_name, email, normalized_email, attempts, expires_at, verified_at,
+			       verification_expires_at, consumed_at
 			FROM login_challenges WHERE verification_token_hash = ? FOR UPDATE
-		`, tokenHash(verificationRaw)).Scan(ctx, &stored.DisplayName, &stored.Email, &stored.Normalized, &stored.Attempts, &stored.ExpiresAt, &stored.VerifiedAt, &stored.ConsumedAt)
+		`, tokenHash(verificationRaw)).Scan(
+			ctx, &stored.DisplayName, &stored.Email, &stored.Normalized, &stored.Attempts,
+			&stored.ExpiresAt, &stored.VerifiedAt, &stored.VerificationExpiresAt, &stored.ConsumedAt,
+		)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrInvalidToken
 		}
 		if err != nil {
 			return err
 		}
-		if !stored.VerifiedAt.Valid || stored.ConsumedAt.Valid || !now.Before(stored.ExpiresAt) {
+		now := s.now().UTC()
+		if !stored.VerifiedAt.Valid || !stored.VerificationExpiresAt.Valid || stored.ConsumedAt.Valid ||
+			!now.Before(stored.VerificationExpiresAt.Time) {
 			return ErrInvalidToken
+		}
+		if request.SessionType == "trusted" {
+			expiry := now.Add(trustedLifetime)
+			idleExpiresAt = &expiry
+		} else {
+			expiry := now.Add(publicLifetime)
+			absoluteExpiresAt = &expiry
 		}
 		statements := []struct {
 			query string

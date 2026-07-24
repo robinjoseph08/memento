@@ -3,7 +3,10 @@
 package setup
 
 import (
+	"bytes"
 	"context"
+	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 	"github.com/robinjoseph08/memento/internal/testdb"
 	"github.com/robinjoseph08/memento/pkg/binder"
@@ -143,6 +147,7 @@ func completionRequest(token, sessionType string) CompleteRequest {
 
 func performJSON(e *echo.Echo, method, path, body string, headers map[string]string, cookies ...*http.Cookie) *httptest.ResponseRecorder {
 	request := httptest.NewRequestWithContext(context.Background(), method, path, strings.NewReader(body))
+	request.TLS = new(tls.ConnectionState)
 	request.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
 	for name, value := range headers {
 		request.Header.Set(name, value)
@@ -169,10 +174,43 @@ func TestCodeRequestRollsBackWhenRequiredEmailIsUnavailable(t *testing.T) {
 	}
 }
 
+func TestExpiredSetupCodeEmailIsNeverDelivered(t *testing.T) {
+	db, service := newSetupService(t)
+	_, err := service.RequestCode(context.Background(), RequestCodeRequest{
+		DisplayName: "Expired Delivery", Email: "expired-delivery@example.com",
+	})
+	require.NoError(t, err)
+	_, err = db.NewRaw(`UPDATE email_deliveries SET deliver_before = now() - interval '1 second'`).Exec(context.Background())
+	require.NoError(t, err)
+	dispatched, err := outbox.New(db).Dispatch(context.Background(), "expired-dispatcher", time.Minute)
+	require.NoError(t, err)
+	require.True(t, dispatched)
+	var job worker.Job
+	err = db.NewRaw(`
+		WITH candidate AS (SELECT id FROM jobs WHERE status = 'pending' ORDER BY id LIMIT 1)
+		UPDATE jobs AS job SET status = 'running', lease_owner = 'expired-worker',
+			lease_expires_at = now() + interval '1 minute'
+		FROM candidate WHERE job.id = candidate.id
+		RETURNING job.id, job.kind, job.payload, job.attempts
+	`).Scan(context.Background(), &job.ID, &job.Kind, &job.Payload, &job.Attempts)
+	require.NoError(t, err)
+	job.LeaseOwner = "expired-worker"
+	err = service.delivery.Handle(context.Background(), job)
+	require.ErrorContains(t, err, "delivery_expired")
+
+	senderValue, ok := setupSenders.Load(db)
+	require.True(t, ok)
+	assert.Empty(t, senderValue.(*acceptingSender).messages)
+	var status, body string
+	require.NoError(t, db.NewRaw(`SELECT status, body FROM email_deliveries`).Scan(context.Background(), &status, &body))
+	assert.Equal(t, "failed", status)
+	assert.Empty(t, body)
+}
+
 func TestCodeRequestAndVerificationCreateNoIdentityOrSession(t *testing.T) {
 	db, service := newSetupService(t)
 	challenge := requestedChallenge(t, db, service, "Robin Joseph", "Robin@Example.com")
-	assert.Equal(t, "code_sent", challenge.Status)
+	assert.Equal(t, "queued", challenge.Status)
 	assert.Len(t, challenge.ChallengeID, 64)
 
 	verified, err := service.VerifyCode(context.Background(), VerifyCodeRequest{ChallengeID: challenge.ChallengeID, Code: latestCode(t, db)})
@@ -189,6 +227,50 @@ func TestCodeRequestAndVerificationCreateNoIdentityOrSession(t *testing.T) {
 	require.ErrorIs(t, err, ErrInvalidCode)
 }
 
+func TestLockWaitCannotExtendChallengeOrVerificationLifetime(t *testing.T) {
+	t.Run("code verification", func(t *testing.T) {
+		db, service := newSetupService(t)
+		challenge := requestedChallenge(t, db, service, "Delayed Code", "delayed-code@example.com")
+		code := latestCode(t, db)
+		_, err := db.NewRaw(`UPDATE login_challenges SET expires_at = now() + interval '100 milliseconds'`).Exec(context.Background())
+		require.NoError(t, err)
+		lock, err := db.BeginTx(context.Background(), nil)
+		require.NoError(t, err)
+		_, err = lock.NewRaw(`SELECT id FROM system_settings WHERE id = 1 FOR UPDATE`).Exec(context.Background())
+		require.NoError(t, err)
+		result := make(chan error, 1)
+		go func() {
+			_, verifyErr := service.VerifyCode(context.Background(), VerifyCodeRequest{ChallengeID: challenge.ChallengeID, Code: code})
+			result <- verifyErr
+		}()
+		time.Sleep(200 * time.Millisecond)
+		require.NoError(t, lock.Commit())
+		require.ErrorIs(t, <-result, ErrInvalidCode)
+	})
+
+	t.Run("final completion", func(t *testing.T) {
+		db, service := newSetupService(t)
+		verified := verifiedChallenge(t, db, service, "Delayed Completion", "delayed-completion@example.com")
+		_, err := db.NewRaw(`UPDATE login_challenges SET verification_expires_at = now() + interval '100 milliseconds'`).Exec(context.Background())
+		require.NoError(t, err)
+		lock, err := db.BeginTx(context.Background(), nil)
+		require.NoError(t, err)
+		_, err = lock.NewRaw(`SELECT id FROM system_settings WHERE id = 1 FOR UPDATE`).Exec(context.Background())
+		require.NoError(t, err)
+		result := make(chan error, 1)
+		go func() {
+			_, completeErr := service.complete(context.Background(), completionRequest(verified.VerificationToken, "trusted"))
+			result <- completeErr
+		}()
+		time.Sleep(200 * time.Millisecond)
+		require.NoError(t, lock.Commit())
+		require.ErrorIs(t, <-result, ErrInvalidToken)
+		var people int
+		require.NoError(t, db.NewRaw(`SELECT count(*) FROM people`).Scan(context.Background(), &people))
+		assert.Zero(t, people)
+	})
+}
+
 func TestCodeExpiryAndFiveAttemptLimit(t *testing.T) {
 	t.Run("expired code", func(t *testing.T) {
 		db, service := newSetupService(t)
@@ -201,10 +283,20 @@ func TestCodeExpiryAndFiveAttemptLimit(t *testing.T) {
 		require.ErrorIs(t, err, ErrInvalidCode)
 	})
 
+	t.Run("verified setup uses its independent completion lifetime", func(t *testing.T) {
+		db, service := newSetupService(t)
+		verified := verifiedChallenge(t, db, service, "Independent Completion", "independent-completion@example.com")
+		_, err := db.NewRaw(`UPDATE login_challenges SET expires_at = now() - interval '1 second'`).Exec(context.Background())
+		require.NoError(t, err)
+
+		_, err = service.complete(context.Background(), completionRequest(verified.VerificationToken, "trusted"))
+		require.NoError(t, err)
+	})
+
 	t.Run("verified challenge expires before completion", func(t *testing.T) {
 		db, service := newSetupService(t)
 		verified := verifiedChallenge(t, db, service, "Expired Completion", "expired-completion@example.com")
-		_, err := db.NewRaw(`UPDATE login_challenges SET expires_at = now() - interval '1 second'`).Exec(context.Background())
+		_, err := db.NewRaw(`UPDATE login_challenges SET verification_expires_at = now() - interval '1 second'`).Exec(context.Background())
 		require.NoError(t, err)
 
 		_, err = service.complete(context.Background(), completionRequest(verified.VerificationToken, "trusted"))
@@ -269,36 +361,103 @@ func TestFinalSetupStoresCompletedIdentityChoicesAndOpaqueSession(t *testing.T) 
 	assert.False(t, storedCredential, "the browser credential must never be stored directly")
 }
 
+func TestLateFinalSetupFailureRollsBackEveryWrite(t *testing.T) {
+	db, service := newSetupService(t)
+	verified := verifiedChallenge(t, db, service, "Rollback Person", "rollback@example.com")
+	_, err := db.ExecContext(context.Background(), `
+		CREATE FUNCTION reject_setup_completion_audit() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN
+			IF NEW.action = 'setup_completed' THEN
+				RAISE EXCEPTION 'deterministic late setup failure';
+			END IF;
+			RETURN NEW;
+		END
+		$$;
+		CREATE TRIGGER reject_setup_completion_audit
+		BEFORE INSERT ON security_audit_events
+		FOR EACH ROW EXECUTE FUNCTION reject_setup_completion_audit();
+	`)
+	require.NoError(t, err)
+
+	_, err = service.complete(context.Background(), completionRequest(verified.VerificationToken, "trusted"))
+	require.ErrorContains(t, err, "complete setup")
+	for _, table := range []string{
+		"people", "person_roles", "recipient_access_generations", "recipient_emails",
+		"onboarding_choices", "notification_preferences", "sessions",
+	} {
+		var count int
+		require.NoError(t, db.NewRaw(`SELECT count(*) FROM `+table).Scan(context.Background(), &count))
+		assert.Zero(t, count, table)
+	}
+	var complete, consumed bool
+	require.NoError(t, db.NewRaw(`SELECT setup_complete FROM system_settings WHERE id = 1`).Scan(context.Background(), &complete))
+	require.NoError(t, db.NewRaw(`SELECT consumed_at IS NOT NULL FROM login_challenges WHERE verification_token_hash IS NOT NULL`).Scan(context.Background(), &consumed))
+	assert.False(t, complete)
+	assert.False(t, consumed)
+	var completionAudits int
+	require.NoError(t, db.NewRaw(`SELECT count(*) FROM security_audit_events WHERE action IN ('setup_completed', 'session_created')`).Scan(context.Background(), &completionAudits))
+	assert.Zero(t, completionAudits)
+}
+
 func TestConcurrentFinalSetupHasOneWinnerAndOneConflict(t *testing.T) {
 	db, service := newSetupService(t)
 	first := verifiedChallenge(t, db, service, "First Browser", "first@example.com")
 	second := verifiedChallenge(t, db, service, "Second Browser", "second@example.com")
 	e := newSetupHTTP(t, service)
-	requests := []CompleteRequest{
-		completionRequest(first.VerificationToken, "trusted"),
-		completionRequest(second.VerificationToken, "trusted"),
+	requests := []struct {
+		name    string
+		request CompleteRequest
+	}{
+		{name: "First Browser", request: completionRequest(first.VerificationToken, "trusted")},
+		{name: "Second Browser", request: completionRequest(second.VerificationToken, "trusted")},
+	}
+	type namedResponse struct {
+		name     string
+		response *httptest.ResponseRecorder
 	}
 	start := make(chan struct{})
-	responses := make(chan *httptest.ResponseRecorder, 2)
+	responses := make(chan namedResponse, 2)
 	var wait sync.WaitGroup
 	for _, request := range requests {
-		payload, err := json.Marshal(request)
+		payload, err := json.Marshal(request.request)
 		require.NoError(t, err)
 		wait.Add(1)
-		go func(body string) {
+		go func(name, body string) {
 			defer wait.Done()
 			<-start
-			responses <- performJSON(e, http.MethodPost, "/api/setup/complete", body, nil)
-		}(string(payload))
+			responses <- namedResponse{name: name, response: performJSON(e, http.MethodPost, "/api/setup/complete", body, nil)}
+		}(request.name, string(payload))
 	}
 	close(start)
 	wait.Wait()
 	close(responses)
 	statuses := make([]int, 0, 2)
-	for response := range responses {
-		statuses = append(statuses, response.Code)
+	var winner, loser namedResponse
+	for result := range responses {
+		statuses = append(statuses, result.response.Code)
+		if result.response.Code == http.StatusCreated {
+			winner = result
+		} else {
+			loser = result
+		}
 	}
 	assert.ElementsMatch(t, []int{http.StatusCreated, http.StatusConflict}, statuses)
+	require.NotNil(t, winner.response)
+	require.NotNil(t, loser.response)
+	winnerCookies := winner.response.Result().Cookies()
+	require.Len(t, winnerCookies, 1)
+	winnerSession, err := service.Session(context.Background(), winnerCookies[0].Value)
+	require.NoError(t, err)
+	assert.Equal(t, winner.name, winnerSession.DisplayName)
+	var storedName, storedEmail string
+	require.NoError(t, db.NewRaw(`
+		SELECT person.display_name, email.normalized_email
+		FROM people AS person
+		JOIN recipient_access_generations AS access ON access.person_id = person.id AND access.is_current
+		JOIN recipient_emails AS email ON email.recipient_access_generation_id = access.id AND email.is_current
+	`).Scan(context.Background(), &storedName, &storedEmail))
+	assert.Equal(t, winner.name, storedName)
+	assert.Equal(t, strings.ToLower(strings.Split(winner.name, " ")[0])+"@example.com", storedEmail)
 
 	for table, expected := range map[string]int{
 		"people": 1, "person_roles": 2, "recipient_access_generations": 1,
@@ -311,6 +470,12 @@ func TestConcurrentFinalSetupHasOneWinnerAndOneConflict(t *testing.T) {
 	var consumed int
 	require.NoError(t, db.NewRaw(`SELECT count(*) FROM login_challenges WHERE consumed_at IS NOT NULL`).Scan(context.Background(), &consumed))
 	assert.Equal(t, 1, consumed)
+	var loserUnconsumed bool
+	loserEmail := strings.ToLower(strings.Split(loser.name, " ")[0]) + "@example.com"
+	require.NoError(t, db.NewRaw(`
+		SELECT consumed_at IS NULL FROM login_challenges WHERE normalized_email = ?
+	`, loserEmail).Scan(context.Background(), &loserUnconsumed))
+	assert.True(t, loserUnconsumed)
 }
 
 func TestSecureCookiesAndSessionBoundCSRF(t *testing.T) {
@@ -401,18 +566,145 @@ func TestTrustedSessionRefreshExtendsInactivityWithoutMutatingGET(t *testing.T) 
 	assert.Greater(t, afterExpiry, beforeExpiry)
 }
 
-func TestSetupRateLimitsAreNonEnumerating(t *testing.T) {
-	_, service := newSetupService(t)
-	service.security.SetupEmailLimit = 1
-	service.security.SetupIPLimit = 2
-	e := newSetupHTTP(t, service)
-	body := `{"display_name":"Rate Limited","email":"rate@example.com"}`
-	first := performJSON(e, http.MethodPost, "/api/setup/code", body, nil)
-	require.Equal(t, http.StatusAccepted, first.Code)
-	second := performJSON(e, http.MethodPost, "/api/setup/code", body, nil)
-	assert.Equal(t, http.StatusTooManyRequests, second.Code)
-	assert.Contains(t, second.Body.String(), "Too many setup attempts")
-	assert.NotContains(t, strings.ToLower(second.Body.String()), "rate@example.com")
+func TestExpiredEpochAndAccessInvalidSessionsAcrossRoutes(t *testing.T) {
+	tests := []struct {
+		name        string
+		sessionType string
+		invalidate  func(*testing.T, *bun.DB, *Service, time.Time)
+	}{
+		{
+			name: "Public-computer Session at twelve-hour boundary", sessionType: "public",
+			invalidate: func(_ *testing.T, _ *bun.DB, service *Service, createdAt time.Time) {
+				service.now = func() time.Time { return createdAt.Add(12 * time.Hour) }
+			},
+		},
+		{
+			name: "Trusted-device Session at one-year boundary", sessionType: "trusted",
+			invalidate: func(_ *testing.T, _ *bun.DB, service *Service, createdAt time.Time) {
+				service.now = func() time.Time { return createdAt.Add(365 * 24 * time.Hour) }
+			},
+		},
+		{
+			name: "rotated security epoch", sessionType: "trusted",
+			invalidate: func(t *testing.T, db *bun.DB, _ *Service, _ time.Time) {
+				_, err := db.NewRaw(`UPDATE system_settings SET security_epoch = decode(repeat('ab', 32), 'hex')`).Exec(context.Background())
+				require.NoError(t, err)
+			},
+		},
+		{
+			name: "suspended access generation", sessionType: "trusted",
+			invalidate: func(t *testing.T, db *bun.DB, _ *Service, _ time.Time) {
+				_, err := db.NewRaw(`UPDATE recipient_access_generations SET state = 'suspended'`).Exec(context.Background())
+				require.NoError(t, err)
+			},
+		},
+		{
+			name: "noncurrent access generation", sessionType: "trusted",
+			invalidate: func(t *testing.T, db *bun.DB, _ *Service, _ time.Time) {
+				_, err := db.NewRaw(`UPDATE recipient_access_generations SET is_current = false`).Exec(context.Background())
+				require.NoError(t, err)
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			db, service := newSetupService(t)
+			createdAt := time.Now().UTC().Truncate(time.Microsecond)
+			service.now = func() time.Time { return createdAt }
+			verified := verifiedChallenge(t, db, service, "Invalid Session", "invalid-session@example.com")
+			completed, err := service.complete(context.Background(), completionRequest(verified.VerificationToken, test.sessionType))
+			require.NoError(t, err)
+			test.invalidate(t, db, service, createdAt)
+			e := newSetupHTTP(t, service)
+			cookie := &http.Cookie{Name: CookieName, Value: completed.Credential}
+
+			getResponse := httptest.NewRecorder()
+			getRequest := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/session", nil)
+			getRequest.AddCookie(cookie)
+			e.ServeHTTP(getResponse, getRequest)
+			assert.Equal(t, http.StatusUnauthorized, getResponse.Code)
+			refreshResponse := performJSON(e, http.MethodPost, "/api/session/refresh", "", map[string]string{CSRFHeader: completed.CSRFToken}, cookie)
+			assert.Equal(t, http.StatusUnauthorized, refreshResponse.Code)
+			logoutResponse := performJSON(e, http.MethodPost, "/api/session/logout", "", map[string]string{CSRFHeader: completed.CSRFToken}, cookie)
+			assert.Equal(t, http.StatusUnauthorized, logoutResponse.Code)
+		})
+	}
+}
+
+func TestSessionBoundCSRFCannotCrossSessions(t *testing.T) {
+	db, service := newSetupService(t)
+	verified := verifiedChallenge(t, db, service, "CSRF Person", "csrf@example.com")
+	first, err := service.complete(context.Background(), completionRequest(verified.VerificationToken, "trusted"))
+	require.NoError(t, err)
+
+	var personID, accessID uuid.UUID
+	var securityEpoch []byte
+	require.NoError(t, db.NewRaw(`SELECT person_id, recipient_access_generation_id, security_epoch FROM sessions`).Scan(
+		context.Background(), &personID, &accessID, &securityEpoch,
+	))
+	secondRaw := bytes.Repeat([]byte{0x42}, 32)
+	secondCredential := hex.EncodeToString(secondRaw)
+	secondSessionID := uuid.MustParse("00000000-0000-4000-8000-000000000002")
+	createdAt := time.Now().UTC()
+	_, err = db.NewRaw(`
+		INSERT INTO sessions (
+			id, credential_hash, person_id, recipient_access_generation_id, security_epoch,
+			session_type, created_at, last_activity_at, idle_expires_at
+		) VALUES (?, ?, ?, ?, ?, 'trusted', ?, ?, ?)
+	`, secondSessionID, tokenHash(secondRaw), personID, accessID, securityEpoch, createdAt, createdAt, createdAt.Add(365*24*time.Hour)).Exec(context.Background())
+	require.NoError(t, err)
+	secondCSRF := service.csrfToken(secondRaw)
+
+	_, err = service.refresh(context.Background(), secondCredential, first.CSRFToken)
+	require.ErrorIs(t, err, ErrCSRF)
+	require.ErrorIs(t, service.Logout(context.Background(), secondCredential, first.CSRFToken), ErrCSRF)
+	_, err = service.refresh(context.Background(), first.Credential, secondCSRF)
+	require.ErrorIs(t, err, ErrCSRF)
+
+	var secondActivity time.Time
+	require.NoError(t, db.NewRaw(`SELECT last_activity_at FROM sessions WHERE id = ?`, secondSessionID).Scan(context.Background(), &secondActivity))
+	assert.Equal(t, createdAt.Truncate(time.Microsecond), secondActivity)
+}
+
+func TestSetupRateLimitsAreNonEnumeratingAcrossMutations(t *testing.T) {
+	tests := []struct {
+		name  string
+		path  string
+		body  string
+		limit func(*Service)
+	}{
+		{
+			name: "code request by normalized email", path: "/api/setup/code",
+			body:  `{"display_name":"Rate Limited","email":"rate@example.com"}`,
+			limit: func(service *Service) { service.security.SetupEmailLimit = 1 },
+		},
+		{
+			name: "verification by IP", path: "/api/setup/verify",
+			body:  `{"challenge_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","code":"12345678"}`,
+			limit: func(service *Service) { service.security.SetupIPLimit = 1 },
+		},
+		{
+			name: "completion by IP", path: "/api/setup/complete",
+			body:  `{"verification_token":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","privacy_acknowledged":true,"engagement_acknowledged":true,"interest_list_acknowledged":true,"email_preference":"immediate","session_type":"trusted"}`,
+			limit: func(service *Service) { service.security.SetupIPLimit = 1 },
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			db, service := newSetupService(t)
+			test.limit(service)
+			e := newSetupHTTP(t, service)
+			first := performJSON(e, http.MethodPost, test.path, test.body, nil)
+			assert.NotEqual(t, http.StatusTooManyRequests, first.Code)
+			second := performJSON(e, http.MethodPost, test.path, test.body, nil)
+			assert.Equal(t, http.StatusTooManyRequests, second.Code)
+			assert.Contains(t, second.Body.String(), "Too many setup attempts")
+			assert.NotContains(t, strings.ToLower(second.Body.String()), "rate@example.com")
+			var people int
+			require.NoError(t, db.NewRaw(`SELECT count(*) FROM people`).Scan(context.Background(), &people))
+			assert.Zero(t, people)
+		})
+	}
 }
 
 func TestSetupClosureSurvivesNewServiceAndSafeGETsCreateNothing(t *testing.T) {
@@ -453,6 +745,22 @@ func TestSetupClosureSurvivesNewServiceAndSafeGETsCreateNothing(t *testing.T) {
 	require.NoError(t, db.NewRaw(`SELECT count(*) FROM sessions`).Scan(context.Background(), &sessions))
 	assert.Equal(t, 1, people)
 	assert.Equal(t, 1, sessions)
+}
+
+func TestSetupCompletionRejectsInsecureNonLoopbackRequest(t *testing.T) {
+	db, service := newSetupService(t)
+	e := newSetupHTTP(t, service)
+	body := `{"verification_token":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","privacy_acknowledged":true,"engagement_acknowledged":true,"interest_list_acknowledged":true,"email_preference":"immediate","session_type":"trusted"}`
+	request := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "http://memento.example/api/setup/complete", strings.NewReader(body))
+	request.RemoteAddr = "203.0.113.7:1234"
+	request.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	response := httptest.NewRecorder()
+	e.ServeHTTP(response, request)
+	assert.Equal(t, http.StatusBadRequest, response.Code)
+	assert.Contains(t, response.Body.String(), "requires HTTPS")
+	var complete bool
+	require.NoError(t, db.NewRaw(`SELECT setup_complete FROM system_settings WHERE id = 1`).Scan(context.Background(), &complete))
+	assert.False(t, complete)
 }
 
 func TestSetupMutationRequiresJSON(t *testing.T) {

@@ -31,6 +31,8 @@ func TestLoadUsesDefaultsAndEnvironment(t *testing.T) {
 	assert.Equal(t, 15*time.Minute, cfg.Security.SetupRateWindow)
 	assert.Equal(t, 3, cfg.Security.SetupEmailLimit)
 	assert.Equal(t, 20, cfg.Security.SetupIPLimit)
+	require.Len(t, cfg.Security.TrustedProxyCIDRs, 2)
+	assert.Equal(t, "127.0.0.0/8", cfg.Security.TrustedProxyCIDRs[0].String())
 }
 
 func TestLoadPrecedenceIncludesYAMLAndSecretFiles(t *testing.T) {
@@ -77,6 +79,13 @@ func TestLoadRejectsMissingConfigurationFile(t *testing.T) {
 	setRequiredEnvironment(t)
 	_, err := Load(filepath.Join(t.TempDir(), "missing.yaml"))
 	require.ErrorContains(t, err, "load configuration file")
+}
+
+func TestLoadRejectsInvalidTrustedProxyCIDR(t *testing.T) {
+	setRequiredEnvironment(t)
+	t.Setenv("MEMENTO_SECURITY_TRUSTED_PROXY_CIDRS", "127.0.0.0/8,not-a-network")
+	_, err := Load("")
+	require.ErrorContains(t, err, "security.trusted_proxy_cidrs")
 }
 
 func TestLoadRejectsInvalidDuration(t *testing.T) {

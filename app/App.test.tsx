@@ -56,10 +56,7 @@ test("completes the first-browser setup workflow with explicit Onboarding choice
       }
       if (path === "/api/setup/code") {
         return Promise.resolve(
-          jsonResponse(
-            { challenge_id: "a".repeat(64), status: "code_sent" },
-            202,
-          ),
+          jsonResponse({ challenge_id: "a".repeat(64), status: "queued" }, 202),
         );
       }
       if (path === "/api/setup/verify") {
@@ -73,6 +70,15 @@ test("completes the first-browser setup workflow with explicit Onboarding choice
       if (path === "/api/setup/complete") {
         return Promise.resolve(
           jsonResponse({ status: "complete", csrf_token: "c".repeat(64) }, 201),
+        );
+      }
+      if (path === "/api/session") {
+        return Promise.resolve(
+          jsonResponse({
+            display_name: "Robin Joseph",
+            session_type: "public",
+            csrf_token: "c".repeat(64),
+          }),
         );
       }
       return Promise.reject(new Error(`Unexpected request: ${path}`));
@@ -91,12 +97,20 @@ test("completes the first-browser setup workflow with explicit Onboarding choice
     screen.getByRole("button", { name: "Send verification code" }),
   );
 
-  fireEvent.change(await screen.findByLabelText("Verification code"), {
+  expect(
+    await screen.findByRole("heading", { name: "Verify your email" }),
+  ).toHaveFocus();
+  fireEvent.change(screen.getByLabelText("Verification code"), {
     target: { value: "12345678" },
   });
   fireEvent.click(screen.getByRole("button", { name: "Verify email" }));
 
-  fireEvent.click(await screen.findByLabelText(/Private individual access/));
+  expect(
+    await screen.findByRole("heading", {
+      name: "Choose how Memento works for you",
+    }),
+  ).toHaveFocus();
+  fireEvent.click(screen.getByLabelText(/Private individual access/));
   fireEvent.click(screen.getByLabelText(/Curator-visible engagement/));
   fireEvent.click(screen.getByLabelText(/Interest list starts empty/));
   fireEvent.change(screen.getByLabelText("Publication and Comment email"), {
@@ -131,7 +145,96 @@ test("completes the first-browser setup workflow with explicit Onboarding choice
   expect(completionCall?.init?.headers).toMatchObject({
     "Content-Type": "application/json",
   });
-  expect(screen.getByRole("button", { name: "Sign out" })).toBeInTheDocument();
+});
+
+test("can queue another code or restart identity entry", async () => {
+  const fetchMock = vi.fn((input: RequestInfo | URL) => {
+    const path = requestPath(input);
+    if (path === "/api/setup") {
+      return Promise.resolve(jsonResponse({ status: "available" }));
+    }
+    return Promise.resolve(
+      jsonResponse({ challenge_id: "a".repeat(64), status: "queued" }, 202),
+    );
+  });
+  vi.stubGlobal("fetch", fetchMock);
+
+  renderApp();
+  fireEvent.change(await screen.findByLabelText("Your name"), {
+    target: { value: "Retry Person" },
+  });
+  fireEvent.change(screen.getByLabelText("Login email"), {
+    target: { value: "retry@example.com" },
+  });
+  fireEvent.click(
+    screen.getByRole("button", { name: "Send verification code" }),
+  );
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Send another code" }),
+  );
+  await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+  fireEvent.click(screen.getByRole("button", { name: "Change name or email" }));
+  expect(await screen.findByLabelText("Your name")).toHaveValue("Retry Person");
+});
+
+test("does not claim sign-in until the Secure cookie restores a Session", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) => {
+      const path = requestPath(input);
+      if (path === "/api/setup") {
+        return Promise.resolve(jsonResponse({ status: "available" }));
+      }
+      if (path === "/api/setup/code") {
+        return Promise.resolve(
+          jsonResponse({ challenge_id: "a".repeat(64), status: "queued" }, 202),
+        );
+      }
+      if (path === "/api/setup/verify") {
+        return Promise.resolve(
+          jsonResponse({
+            verification_token: "b".repeat(64),
+            status: "verified",
+          }),
+        );
+      }
+      if (path === "/api/setup/complete") {
+        return Promise.resolve(
+          jsonResponse({ status: "complete", csrf_token: "c".repeat(64) }, 201),
+        );
+      }
+      return Promise.resolve(
+        jsonResponse(
+          { error: { message: "A valid Session is required." } },
+          401,
+        ),
+      );
+    }),
+  );
+
+  renderApp();
+  fireEvent.change(await screen.findByLabelText("Your name"), {
+    target: { value: "Cookie Lost" },
+  });
+  fireEvent.change(screen.getByLabelText("Login email"), {
+    target: { value: "cookie-lost@example.com" },
+  });
+  fireEvent.click(
+    screen.getByRole("button", { name: "Send verification code" }),
+  );
+  fireEvent.change(await screen.findByLabelText("Verification code"), {
+    target: { value: "12345678" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Verify email" }));
+  fireEvent.click(await screen.findByLabelText(/Private individual access/));
+  fireEvent.click(screen.getByLabelText(/Curator-visible engagement/));
+  fireEvent.click(screen.getByLabelText(/Interest list starts empty/));
+  fireEvent.click(screen.getByRole("button", { name: "Complete setup" }));
+
+  expect(
+    await screen.findByText("A valid Session is required."),
+  ).toHaveAttribute("role", "alert");
+  expect(screen.queryByText(/You're signed in/)).not.toBeInTheDocument();
 });
 
 test("safe bootstrap GETs show permanent closure without starting setup", async () => {
@@ -194,45 +297,6 @@ test("restores and refreshes a signed-in Trusted-device Session", async () => {
   expect(fetchMock).toHaveBeenCalledTimes(3);
 });
 
-test("keeps sign-out prominent and sends Session-bound CSRF", async () => {
-  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
-    const path = requestPath(input);
-    if (path === "/api/setup") {
-      return Promise.resolve(
-        jsonResponse({ error: { message: "Setup not found." } }, 404),
-      );
-    }
-    if (path === "/api/session/logout") {
-      expect(init?.method).toBe("POST");
-      expect(init?.headers).toMatchObject({
-        "X-Memento-CSRF": "c".repeat(64),
-      });
-      return Promise.resolve(new Response(null, { status: 204 }));
-    }
-    return Promise.resolve(
-      jsonResponse({
-        display_name: "Public Person",
-        session_type: "public",
-        csrf_token: "c".repeat(64),
-      }),
-    );
-  });
-  vi.stubGlobal("fetch", fetchMock);
-
-  renderApp();
-  fireEvent.click(await screen.findByRole("button", { name: "Sign out" }));
-
-  expect(
-    await screen.findByText(
-      "Setup is complete. Memento is ready for private family sharing.",
-    ),
-  ).toBeInTheDocument();
-  expect(
-    screen.queryByRole("button", { name: "Sign out" }),
-  ).not.toBeInTheDocument();
-  expect(fetchMock).toHaveBeenCalledTimes(3);
-});
-
 test("announces a concurrent setup conflict without claiming success", async () => {
   vi.stubGlobal(
     "fetch",
@@ -243,10 +307,7 @@ test("announces a concurrent setup conflict without claiming success", async () 
       }
       if (path === "/api/setup/code") {
         return Promise.resolve(
-          jsonResponse(
-            { challenge_id: "a".repeat(64), status: "code_sent" },
-            202,
-          ),
+          jsonResponse({ challenge_id: "a".repeat(64), status: "queued" }, 202),
         );
       }
       if (path === "/api/setup/verify") {

@@ -1,6 +1,7 @@
 package setup
 
 import (
+	"context"
 	"errors"
 	"mime"
 	"net/http"
@@ -35,7 +36,7 @@ func NewHandler(service *Service) *Handler {
 }
 
 func (h *Handler) Available(c echo.Context) error {
-	response, err := h.service.Available(withRequestMetadata(c.Request().Context(), c.Request()))
+	response, err := h.service.Available(h.requestContext(c))
 	if errors.Is(err, ErrSetupComplete) {
 		return errcodes.NotFound("Setup")
 	}
@@ -50,10 +51,10 @@ func (h *Handler) RequestCode(c echo.Context) error {
 	if err := bindJSON(c, &request); err != nil {
 		return err
 	}
-	if !h.limiter.allowRequestCode(clientIP(c.Request()), request.Email) {
+	if !h.limiter.allowRequestCode(h.clientIP(c), request.Email) {
 		return setupRateLimited()
 	}
-	response, err := h.service.RequestCode(withRequestMetadata(c.Request().Context(), c.Request()), request)
+	response, err := h.service.RequestCode(h.requestContext(c), request)
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrSetupComplete):
@@ -74,10 +75,10 @@ func (h *Handler) VerifyCode(c echo.Context) error {
 	if err := bindJSON(c, &request); err != nil {
 		return err
 	}
-	if !h.limiter.allowIP(clientIP(c.Request())) {
+	if !h.limiter.allowIP(h.clientIP(c)) {
 		return setupRateLimited()
 	}
-	response, err := h.service.VerifyCode(withRequestMetadata(c.Request().Context(), c.Request()), request)
+	response, err := h.service.VerifyCode(h.requestContext(c), request)
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrSetupComplete):
@@ -96,10 +97,13 @@ func (h *Handler) Complete(c echo.Context) error {
 	if err := bindJSON(c, &request); err != nil {
 		return err
 	}
-	if !h.limiter.allowIP(clientIP(c.Request())) {
+	if !h.limiter.allowIP(h.clientIP(c)) {
 		return setupRateLimited()
 	}
-	completed, err := h.service.complete(withRequestMetadata(c.Request().Context(), c.Request()), request)
+	if !secureSetupCompletion(c.Request(), h.service.security.TrustedProxyCIDRs) {
+		return errcodes.BadRequest("Setup completion requires HTTPS or a loopback address.")
+	}
+	completed, err := h.service.complete(h.requestContext(c), request)
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrSetupComplete):
@@ -121,7 +125,7 @@ func (h *Handler) Session(c echo.Context) error {
 	if err != nil {
 		return errcodes.Unauthorized("A valid Session is required.")
 	}
-	response, err := h.service.Session(withRequestMetadata(c.Request().Context(), c.Request()), credential)
+	response, err := h.service.Session(h.requestContext(c), credential)
 	if errors.Is(err, ErrUnauthenticated) {
 		return errcodes.Unauthorized("A valid Session is required.")
 	}
@@ -137,7 +141,7 @@ func (h *Handler) Refresh(c echo.Context) error {
 		return errcodes.Unauthorized("A valid Session is required.")
 	}
 	refreshed, err := h.service.refresh(
-		withRequestMetadata(c.Request().Context(), c.Request()),
+		h.requestContext(c),
 		credential,
 		c.Request().Header.Get(CSRFHeader),
 	)
@@ -163,7 +167,7 @@ func (h *Handler) Logout(c echo.Context) error {
 		return errcodes.Unauthorized("A valid Session is required.")
 	}
 	err = h.service.Logout(
-		withRequestMetadata(c.Request().Context(), c.Request()),
+		h.requestContext(c),
 		credential,
 		c.Request().Header.Get(CSRFHeader),
 	)
@@ -215,6 +219,14 @@ func bindJSON(c echo.Context, target any) error {
 		return errcodes.UnsupportedMediaType()
 	}
 	return c.Bind(target)
+}
+
+func (h *Handler) requestContext(c echo.Context) context.Context {
+	return withRequestMetadata(c.Request().Context(), c.Request(), h.service.security.TrustedProxyCIDRs)
+}
+
+func (h *Handler) clientIP(c echo.Context) string {
+	return clientIP(c.Request(), h.service.security.TrustedProxyCIDRs)
 }
 
 func setupConflict() error {

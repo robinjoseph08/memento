@@ -3,6 +3,7 @@ package setup
 import (
 	"context"
 	"errors"
+	"net/netip"
 	"testing"
 	"time"
 
@@ -16,6 +17,7 @@ func testSecurityConfig() config.SecurityConfig {
 	return config.SecurityConfig{
 		Secret: unitSecret, SetupRateWindow: 15 * time.Minute,
 		SetupEmailLimit: 3, SetupIPLimit: 20,
+		TrustedProxyCIDRs: []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")},
 	}
 }
 
