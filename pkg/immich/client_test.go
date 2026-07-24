@@ -116,16 +116,24 @@ func TestOwnedAlbumsNormalizesAndStripsRawImmichFields(t *testing.T) {
 
 func TestOwnedAlbumsRejectsMalformedOrDuplicateSummaries(t *testing.T) {
 	id := uuid.New().String()
+	validFields := `"albumName":"Album","description":"","assetCount":0,"createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"`
+	validAlbum := `{"id":"` + id + `",` + validFields + `}`
 	tests := []struct {
 		name string
 		body string
 	}{
 		{"malformed JSON", `{`},
 		{"null album list", `null`},
-		{"invalid ID", `[{"id":"private","assetCount":0,"createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"}]`},
-		{"invalid timestamp", `[{"id":"` + id + `","assetCount":0,"createdAt":"private-path","updatedAt":"2026-01-01T00:00:00Z"}]`},
-		{"negative count", `[{"id":"` + id + `","assetCount":-1,"createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"}]`},
-		{"duplicate ID", `[{"id":"` + id + `","assetCount":0,"createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"},{"id":"` + id + `","assetCount":0,"createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"}]`},
+		{"missing album name", `[{"id":"` + id + `","description":"","assetCount":0,"createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"}]`},
+		{"null album name", `[{"id":"` + id + `","albumName":null,"description":"","assetCount":0,"createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"}]`},
+		{"missing description", `[{"id":"` + id + `","albumName":"Album","assetCount":0,"createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"}]`},
+		{"null description", `[{"id":"` + id + `","albumName":"Album","description":null,"assetCount":0,"createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"}]`},
+		{"missing asset count", `[{"id":"` + id + `","albumName":"Album","description":"","createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"}]`},
+		{"null asset count", `[{"id":"` + id + `","albumName":"Album","description":"","assetCount":null,"createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"}]`},
+		{"invalid ID", `[{"id":"private",` + validFields + `}]`},
+		{"invalid timestamp", `[{"id":"` + id + `","albumName":"Album","description":"","assetCount":0,"createdAt":"private-path","updatedAt":"2026-01-01T00:00:00Z"}]`},
+		{"negative count", `[{"id":"` + id + `","albumName":"Album","description":"","assetCount":-1,"createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"}]`},
+		{"duplicate ID", `[` + validAlbum + `,` + validAlbum + `]`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -161,7 +169,7 @@ func TestAlbumAssetsPageUsesPinnedPaginationAndStripsSensitiveDTOFields(t *testi
 		assert.False(t, request.WithExif)
 		assert.False(t, request.WithPeople)
 		_, _ = w.Write([]byte(`{"assets":{"count":1,"items":[{` +
-			`"id":"` + assetID.String() + `","type":"IMAGE","width":1200,"height":800,"localDateTime":"2026-01-01T10:00:00.000",` +
+			`"id":"` + assetID.String() + `","type":"IMAGE","width":1200,"height":800,"localDateTime":"2026-01-01T10:00:00.000Z",` +
 			`"originalPath":"/secret/source.jpg","libraryId":"secret-library","people":[{"name":"Private face"}]` +
 			`}],"nextPage":"3"},"albums":{"items":[]}}`))
 	})
@@ -191,18 +199,25 @@ func TestAlbumAssetsPageRejectsInvalidEntryPointsAndResponses(t *testing.T) {
 
 	albumID := uuid.New()
 	duplicateID := uuid.NewString()
+	validAssetFields := `"type":"IMAGE","width":1200,"height":800,"localDateTime":"2026-01-01T10:00:00Z"`
+	validAsset := `{"id":"` + duplicateID + `",` + validAssetFields + `}`
 	for name, body := range map[string]string{
-		"missing assets":    `{}`,
-		"null assets":       `{"assets":null}`,
-		"missing count":     `{"assets":{"items":[],"nextPage":null}}`,
-		"count mismatch":    `{"assets":{"count":1,"items":[],"nextPage":null}}`,
-		"missing items":     `{"assets":{"count":0,"nextPage":null}}`,
-		"null items":        `{"assets":{"count":0,"items":null,"nextPage":null}}`,
-		"missing next page": `{"assets":{"count":0,"items":[]}}`,
-		"duplicate asset":   `{"assets":{"count":2,"items":[{"id":"` + duplicateID + `","type":"IMAGE"},{"id":"` + duplicateID + `","type":"IMAGE"}],"nextPage":null}}`,
-		"bad asset":         `{"assets":{"count":1,"items":[{"id":"private","type":"IMAGE"}],"nextPage":null}}`,
-		"bad type":          `{"assets":{"count":1,"items":[{"id":"` + uuid.NewString() + `","type":"PRIVATE"}],"nextPage":null}}`,
-		"skipped next page": `{"assets":{"count":0,"items":[],"nextPage":"3"}}`,
+		"missing assets":          `{}`,
+		"null assets":             `{"assets":null}`,
+		"missing count":           `{"assets":{"items":[],"nextPage":null}}`,
+		"count mismatch":          `{"assets":{"count":1,"items":[],"nextPage":null}}`,
+		"missing items":           `{"assets":{"count":0,"nextPage":null}}`,
+		"null items":              `{"assets":{"count":0,"items":null,"nextPage":null}}`,
+		"missing next page":       `{"assets":{"count":0,"items":[]}}`,
+		"duplicate asset":         `{"assets":{"count":2,"items":[` + validAsset + `,` + validAsset + `],"nextPage":null}}`,
+		"bad asset":               `{"assets":{"count":1,"items":[{"id":"private",` + validAssetFields + `}],"nextPage":null}}`,
+		"bad type":                `{"assets":{"count":1,"items":[{"id":"` + uuid.NewString() + `","type":"PRIVATE","width":1200,"height":800,"localDateTime":"2026-01-01T10:00:00Z"}],"nextPage":null}}`,
+		"missing width":           `{"assets":{"count":1,"items":[{"id":"` + uuid.NewString() + `","type":"IMAGE","height":800,"localDateTime":"2026-01-01T10:00:00Z"}],"nextPage":null}}`,
+		"missing height":          `{"assets":{"count":1,"items":[{"id":"` + uuid.NewString() + `","type":"IMAGE","width":1200,"localDateTime":"2026-01-01T10:00:00Z"}],"nextPage":null}}`,
+		"missing local date time": `{"assets":{"count":1,"items":[{"id":"` + uuid.NewString() + `","type":"IMAGE","width":1200,"height":800}],"nextPage":null}}`,
+		"null local date time":    `{"assets":{"count":1,"items":[{"id":"` + uuid.NewString() + `","type":"IMAGE","width":1200,"height":800,"localDateTime":null}],"nextPage":null}}`,
+		"bad local date time":     `{"assets":{"count":1,"items":[{"id":"` + uuid.NewString() + `","type":"IMAGE","width":1200,"height":800,"localDateTime":"yesterday"}],"nextPage":null}}`,
+		"skipped next page":       `{"assets":{"count":0,"items":[],"nextPage":"3"}}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			server := contractServer(t, func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(body)) })

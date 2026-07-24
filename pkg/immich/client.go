@@ -78,12 +78,12 @@ type apiKeyResponse struct {
 }
 
 type albumResponse struct {
-	ID                         string  `json:"id"`
-	AlbumName                  string  `json:"albumName"`
-	Description                string  `json:"description"`
-	AssetCount                 int     `json:"assetCount"`
-	CreatedAt                  string  `json:"createdAt"`
-	UpdatedAt                  string  `json:"updatedAt"`
+	ID                         *string `json:"id"`
+	AlbumName                  *string `json:"albumName"`
+	Description                *string `json:"description"`
+	AssetCount                 *int    `json:"assetCount"`
+	CreatedAt                  *string `json:"createdAt"`
+	UpdatedAt                  *string `json:"updatedAt"`
 	StartDate                  *string `json:"startDate"`
 	EndDate                    *string `json:"endDate"`
 	LastModifiedAssetTimestamp *string `json:"lastModifiedAssetTimestamp"`
@@ -100,11 +100,11 @@ type searchAssetsResponse struct {
 }
 
 type assetResponse struct {
-	ID            string `json:"id"`
-	Type          string `json:"type"`
-	Width         *int   `json:"width"`
-	Height        *int   `json:"height"`
-	LocalDateTime string `json:"localDateTime"`
+	ID            *string         `json:"id"`
+	Type          *string         `json:"type"`
+	Width         json.RawMessage `json:"width"`
+	Height        json.RawMessage `json:"height"`
+	LocalDateTime *string         `json:"localDateTime"`
 }
 
 // AlbumSummary is the normalized subset Memento retains from an owned album.
@@ -229,8 +229,15 @@ func (c *Client) AlbumAssetsPage(ctx context.Context, albumID uuid.UUID, page in
 	result := AssetPage{Items: make([]AssetSummary, 0, len(*response.Assets.Items))}
 	seen := make(map[uuid.UUID]struct{}, len(*response.Assets.Items))
 	for _, raw := range *response.Assets.Items {
-		assetID, err := uuid.Parse(raw.ID)
-		if err != nil || assetID == uuid.Nil || !validAssetType(raw.Type) || invalidDimension(raw.Width) || invalidDimension(raw.Height) {
+		if raw.ID == nil || raw.Type == nil || raw.LocalDateTime == nil {
+			return AssetPage{}, errInvalidResponse
+		}
+		assetID, err := uuid.Parse(*raw.ID)
+		width, widthErr := requiredNullableDimension(raw.Width)
+		height, heightErr := requiredNullableDimension(raw.Height)
+		localDateTime := strings.TrimSpace(*raw.LocalDateTime)
+		_, timeErr := time.Parse(time.RFC3339Nano, localDateTime)
+		if err != nil || assetID == uuid.Nil || !validAssetType(*raw.Type) || widthErr != nil || heightErr != nil || timeErr != nil {
 			return AssetPage{}, errInvalidResponse
 		}
 		if _, duplicate := seen[assetID]; duplicate {
@@ -238,8 +245,8 @@ func (c *Client) AlbumAssetsPage(ctx context.Context, albumID uuid.UUID, page in
 		}
 		seen[assetID] = struct{}{}
 		result.Items = append(result.Items, AssetSummary{
-			SourceID: assetID, MediaType: strings.ToLower(raw.Type), Width: raw.Width, Height: raw.Height,
-			LocalDateTime: truncate(strings.TrimSpace(raw.LocalDateTime), 64),
+			SourceID: assetID, MediaType: strings.ToLower(*raw.Type), Width: width, Height: height,
+			LocalDateTime: truncate(localDateTime, 64),
 		})
 	}
 	if string(response.Assets.NextPage) != "null" {
@@ -330,15 +337,18 @@ func samePermissions(actual, required []string) bool {
 }
 
 func normalizeAlbum(raw albumResponse) (AlbumSummary, error) {
-	id, err := uuid.Parse(raw.ID)
-	if err != nil || id == uuid.Nil || raw.AssetCount < 0 {
+	if raw.ID == nil || raw.AlbumName == nil || raw.Description == nil || raw.AssetCount == nil || raw.CreatedAt == nil || raw.UpdatedAt == nil {
 		return AlbumSummary{}, errInvalidResponse
 	}
-	createdAt, err := time.Parse(time.RFC3339, raw.CreatedAt)
+	id, err := uuid.Parse(*raw.ID)
+	if err != nil || id == uuid.Nil || *raw.AssetCount < 0 {
+		return AlbumSummary{}, errInvalidResponse
+	}
+	createdAt, err := time.Parse(time.RFC3339, *raw.CreatedAt)
 	if err != nil {
 		return AlbumSummary{}, errInvalidResponse
 	}
-	updatedAt, err := time.Parse(time.RFC3339, raw.UpdatedAt)
+	updatedAt, err := time.Parse(time.RFC3339, *raw.UpdatedAt)
 	if err != nil {
 		return AlbumSummary{}, errInvalidResponse
 	}
@@ -354,13 +364,13 @@ func normalizeAlbum(raw albumResponse) (AlbumSummary, error) {
 	if err != nil {
 		return AlbumSummary{}, errInvalidResponse
 	}
-	name := truncate(strings.TrimSpace(raw.AlbumName), 240)
+	name := truncate(strings.TrimSpace(*raw.AlbumName), 240)
 	if name == "" {
 		name = "Untitled Source album"
 	}
 	return AlbumSummary{
-		SourceID: id, Name: name, Description: truncate(strings.TrimSpace(raw.Description), 2000),
-		AssetCount: raw.AssetCount, CreatedAt: createdAt.UTC(), UpdatedAt: updatedAt.UTC(),
+		SourceID: id, Name: name, Description: truncate(strings.TrimSpace(*raw.Description), 2000),
+		AssetCount: *raw.AssetCount, CreatedAt: createdAt.UTC(), UpdatedAt: updatedAt.UTC(),
 		StartDate: startDate, EndDate: endDate, LastModifiedAssetTimestamp: lastModified,
 	}, nil
 }
@@ -388,6 +398,16 @@ func validAssetType(value string) bool {
 	return value == "IMAGE" || value == "VIDEO" || value == "AUDIO" || value == "OTHER"
 }
 
-func invalidDimension(value *int) bool {
-	return value != nil && *value < 0
+func requiredNullableDimension(raw json.RawMessage) (*int, error) {
+	if len(raw) == 0 {
+		return nil, errInvalidResponse
+	}
+	if string(raw) == "null" {
+		return nil, nil
+	}
+	var value int
+	if err := json.Unmarshal(raw, &value); err != nil || value < 0 {
+		return nil, errInvalidResponse
+	}
+	return &value, nil
 }
