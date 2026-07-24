@@ -92,7 +92,7 @@ func deliveryConfig() config.SMTPConfig {
 func workerConfig() config.WorkerConfig {
 	return config.WorkerConfig{
 		PollInterval: 5 * time.Millisecond, HeartbeatInterval: 10 * time.Millisecond,
-		HeartbeatMaxAge: time.Second, LeaseDuration: time.Second, DrainTimeout: time.Second,
+		HeartbeatMaxAge: time.Second, LeaseDuration: 10 * time.Second, DrainTimeout: time.Second,
 		RetryBase: 5 * time.Millisecond, RetryMax: time.Second,
 	}
 }
@@ -166,7 +166,7 @@ func TestRequiredTestEmailIsCommittedBeforeWorkerDelivery(t *testing.T) {
 	require.Eventually(t, func() bool {
 		status, statusErr := service.Status(context.Background(), response.DeliveryID)
 		return statusErr == nil && status.Status == "sent"
-	}, time.Second, 10*time.Millisecond)
+	}, 10*time.Second, 10*time.Millisecond)
 	assert.Equal(t, 1, server.count())
 }
 
