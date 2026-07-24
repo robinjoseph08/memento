@@ -14,6 +14,7 @@ compose() {
 cleanup() {
   compose down --volumes --remove-orphans >/dev/null 2>&1 || true
   docker image rm "memento:$image_tag" >/dev/null 2>&1 || true
+  docker image rm "$project-front:latest" >/dev/null 2>&1 || true
   docker image rm "$project-immich:latest" >/dev/null 2>&1 || true
   rm -rf "$temporary"
 }
@@ -71,6 +72,40 @@ curl --fail --silent --dump-header "$temporary/headers" --output /dev/null "$bas
 grep -qi '^Content-Security-Policy:' "$temporary/headers"
 if grep -qi '^Server:' "$temporary/headers"; then
   printf 'Caddy exposed its Server header\n' >&2
+  exit 1
+fi
+
+compose up --build --detach --no-deps front
+front_endpoint=$(compose port front 8443 | head -n 1)
+[ -n "$front_endpoint" ] || {
+  compose logs front
+  printf 'front proxy test port was not published\n' >&2
+  exit 1
+}
+front_port=${front_endpoint##*:}
+front_url="https://localhost:$front_port"
+front_ready=false
+for _ in $(seq 1 30); do
+  if curl --insecure --fail --silent "$front_url/api/setup" > "$temporary/front-setup.json"; then
+    front_ready=true
+    break
+  fi
+  sleep 1
+done
+[ "$front_ready" = true ] || {
+  compose logs front memento
+  printf 'front proxy did not become ready\n' >&2
+  exit 1
+}
+grep -q '"status":"available"' "$temporary/front-setup.json"
+front_complete_code=$(curl --insecure --silent --output "$temporary/front-complete.json" --write-out '%{http_code}' \
+  --header 'Content-Type: application/json' \
+  --data '{"verification_token":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","privacy_acknowledged":true,"engagement_acknowledged":true,"interest_list_acknowledged":true,"email_preference":"immediate","session_type":"trusted"}' \
+  "$front_url/api/setup/complete")
+[ "$front_complete_code" = 400 ]
+grep -q 'Setup verification is invalid or expired' "$temporary/front-complete.json"
+if grep -q 'requires HTTPS' "$temporary/front-complete.json"; then
+  printf 'bundled Caddy lost the trusted front proxy HTTPS scheme\n' >&2
   exit 1
 fi
 

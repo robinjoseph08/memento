@@ -57,6 +57,8 @@ func TestClientIPTrustsForwardingOnlyFromLoopback(t *testing.T) {
 	proxied.Header.Set("X-Forwarded-For", "198.51.100.10, 192.0.2.5")
 	trusted := []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")}
 	assert.Equal(t, "192.0.2.5", clientIP(proxied, trusted))
+	proxied.Header.Set("X-Memento-Client-IP", "198.51.100.20")
+	assert.Equal(t, "198.51.100.20", clientIP(proxied, trusted))
 	assert.Equal(t, "127.0.0.1", clientIP(proxied, nil))
 
 	direct := httptest.NewRequestWithContext(context.Background(), "GET", "/", nil)

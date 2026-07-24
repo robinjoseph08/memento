@@ -168,7 +168,7 @@ Build the one-image production topology with an explicit application tag:
 docker build --tag memento:0.1.0 .
 ```
 
-Caddy listens on port 8080 by default, serves the frontend with SPA fallback, and proxies `/api/*` to the Go process on loopback. Set `MEMENTO_SITE_ADDRESS` to a Caddy site address for direct TLS exposure. The container health check calls only `/api/health/live`; use `/api/health/ready` for traffic readiness.
+Caddy listens on port 8080 by default, serves the frontend with SPA fallback, and proxies `/api/*` to the Go process on loopback. Set `MEMENTO_SITE_ADDRESS` to a Caddy site address for direct TLS exposure. When a separate reverse proxy terminates HTTPS in front of the bundled Caddy process, set `MEMENTO_CADDY_TRUSTED_PROXY_CIDRS` to its space-separated CIDR networks. Caddy then preserves the trusted client address and original HTTPS scheme; untrusted forwarding headers remain ignored. The container health check calls only `/api/health/live`; use `/api/health/ready` for traffic readiness.
 
 ### Verify required email delivery
 

@@ -337,8 +337,8 @@ function SetupFlow({
       {step === "onboarding" ? (
         <form className="setup-form choices" onSubmit={submitOnboarding}>
           <p className="form-intro">
-            Your verified setup link remains valid for thirty minutes. If it
-            expires, start over and request another code.
+            Your verified email remains valid for thirty minutes. If the
+            verification expires, start over and request another code.
           </p>
           <label className="choice">
             <input

@@ -49,6 +49,9 @@ func clientIP(request *http.Request, trustedProxies []netip.Prefix) string {
 	}
 	peerAddress, valid := netip.AddrFromSlice(peerIP)
 	if valid && addressInPrefixes(peerAddress.Unmap(), trustedProxies) {
+		if forwardedByCaddy := net.ParseIP(strings.TrimSpace(request.Header.Get("X-Memento-Client-IP"))); forwardedByCaddy != nil {
+			return forwardedByCaddy.String()
+		}
 		forwarded := strings.Split(request.Header.Get("X-Forwarded-For"), ",")
 		for index := len(forwarded) - 1; index >= 0; index-- {
 			candidate := net.ParseIP(strings.TrimSpace(forwarded[index]))
