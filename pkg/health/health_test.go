@@ -113,8 +113,13 @@ func TestDrainingDropsReadinessBeforeCallingDependencies(t *testing.T) {
 }
 
 func TestReadyBoundsPostgreSQLCheck(t *testing.T) {
+	var deadline time.Time
 	service := newWithChecks(
-		func(ctx context.Context) error { <-ctx.Done(); return ctx.Err() },
+		func(ctx context.Context) error {
+			deadline, _ = ctx.Deadline()
+			<-ctx.Done()
+			return ctx.Err()
+		},
 		func(context.Context) error { return nil },
 		func(context.Context) error { return nil },
 		checkerFunc(func(context.Context) error { return nil }),
@@ -123,5 +128,6 @@ func TestReadyBoundsPostgreSQLCheck(t *testing.T) {
 	started := time.Now()
 	response := request(t, service.Ready)
 	assert.Equal(t, http.StatusServiceUnavailable, response.Code)
-	assert.Less(t, time.Since(started), 100*time.Millisecond)
+	assert.WithinDuration(t, started.Add(time.Millisecond), deadline, 250*time.Millisecond)
+	assert.Less(t, time.Since(started), time.Second)
 }
