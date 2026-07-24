@@ -62,6 +62,7 @@ func TestCheckRejectsUnsupportedVersionsAndInvalidPermissionSets(t *testing.T) {
 		want        string
 	}{
 		{"older version", `{"major":3,"minor":0,"patch":2,"prerelease":null}`, permissionsJSON, "Immich version is unsupported"},
+		{"duplicate version member", `{"major":4,"major":3,"minor":0,"patch":3,"prerelease":null}`, permissionsJSON, "Immich returned an invalid response"},
 		{"prerelease", `{"major":3,"minor":0,"patch":3,"prerelease":1}`, permissionsJSON, "Immich version is unsupported"},
 		{"missing major", `{"minor":0,"patch":3,"prerelease":null}`, permissionsJSON, "Immich returned an invalid response"},
 		{"null major", `{"major":null,"minor":0,"patch":3,"prerelease":null}`, permissionsJSON, "Immich returned an invalid response"},
@@ -89,6 +90,20 @@ func TestCheckRejectsUnsupportedVersionsAndInvalidPermissionSets(t *testing.T) {
 			require.EqualError(t, client.Check(context.Background()), test.want)
 		})
 	}
+}
+
+func TestCheckRejectsDuplicatePermissionMember(t *testing.T) {
+	server := contractServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/server/version" {
+			_, _ = w.Write([]byte(`{"major":3,"minor":0,"patch":3,"prerelease":null}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"permissions":["all"],"permissions":` + permissionsJSON + `}`))
+	})
+	defer server.Close()
+	client, err := New(clientConfig(server.URL), server.Client())
+	require.NoError(t, err)
+	require.EqualError(t, client.Check(context.Background()), "Immich returned an invalid response")
 }
 
 func TestOwnedAlbumsNormalizesAndStripsRawImmichFields(t *testing.T) {
@@ -140,6 +155,7 @@ func TestOwnedAlbumsRejectsMalformedOrDuplicateSummaries(t *testing.T) {
 		{"invalid timestamp", `[{"id":"` + id + `","albumName":"Album","description":"","assetCount":0,"createdAt":"private-path","updatedAt":"2026-01-01T00:00:00Z"}]`},
 		{"negative count", `[{"id":"` + id + `","albumName":"Album","description":"","assetCount":-1,"createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"}]`},
 		{"duplicate ID", `[` + validAlbum + `,` + validAlbum + `]`},
+		{"duplicate ID member", `[{"id":"` + uuid.NewString() + `","id":"` + id + `",` + validFields + `}]`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -239,6 +255,7 @@ func TestAlbumAssetsPageRejectsInvalidEntryPointsAndResponses(t *testing.T) {
 		"null assets":              `{"assets":null}`,
 		"missing count":            `{"assets":{"items":[],"nextPage":null,"total":0}}`,
 		"count mismatch":           `{"assets":{"count":1,"items":[],"nextPage":null,"total":0}}`,
+		"duplicate count member":   `{"assets":{"count":1,"count":0,"items":[],"nextPage":null,"total":0}}`,
 		"missing items":            `{"assets":{"count":0,"nextPage":null,"total":0}}`,
 		"null items":               `{"assets":{"count":0,"items":null,"nextPage":null,"total":0}}`,
 		"missing next page":        `{"assets":{"count":0,"items":[],"total":0}}`,

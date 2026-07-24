@@ -316,11 +316,77 @@ func (c *Client) doJSON(ctx context.Context, method, path string, query url.Valu
 	if err != nil || len(contents) > maxJSONResponse {
 		return errInvalidResponse
 	}
+	if err := validateUniqueJSON(contents); err != nil {
+		return errInvalidResponse
+	}
 	decoder := json.NewDecoder(bytes.NewReader(contents))
 	if err := decoder.Decode(target); err != nil {
 		return errInvalidResponse
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return errInvalidResponse
+	}
+	return nil
+}
+
+func validateUniqueJSON(contents []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(contents))
+	if err := consumeUniqueJSONValue(decoder); err != nil {
+		return err
+	}
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		if err != nil {
+			return err
+		}
+		return errInvalidResponse
+	}
+	return nil
+}
+
+func consumeUniqueJSONValue(decoder *json.Decoder) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	delimiter, compound := token.(json.Delim)
+	if !compound {
+		return nil
+	}
+	switch delimiter {
+	case '{':
+		seen := map[string]struct{}{}
+		for decoder.More() {
+			keyToken, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return errInvalidResponse
+			}
+			if _, duplicate := seen[key]; duplicate {
+				return errInvalidResponse
+			}
+			seen[key] = struct{}{}
+			if err := consumeUniqueJSONValue(decoder); err != nil {
+				return err
+			}
+		}
+		closing, err := decoder.Token()
+		if err != nil || closing != json.Delim('}') {
+			return errInvalidResponse
+		}
+	case '[':
+		for decoder.More() {
+			if err := consumeUniqueJSONValue(decoder); err != nil {
+				return err
+			}
+		}
+		closing, err := decoder.Token()
+		if err != nil || closing != json.Delim(']') {
+			return errInvalidResponse
+		}
+	default:
 		return errInvalidResponse
 	}
 	return nil
