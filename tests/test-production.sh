@@ -14,13 +14,19 @@ compose() {
 cleanup() {
   compose down --volumes --remove-orphans >/dev/null 2>&1 || true
   docker image rm "memento:$image_tag" >/dev/null 2>&1 || true
+  docker image rm "$project-immich:latest" >/dev/null 2>&1 || true
   rm -rf "$temporary"
 }
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-compose up --build --detach --wait --wait-timeout 90
+compose up --build --detach --wait --wait-timeout 90 postgres immich
+compose exec --no-TTY postgres \
+  psql --username postgres --dbname postgres --set ON_ERROR_STOP=1 \
+  < "$root/tests/fixtures/init-database.sql" >/dev/null
+compose build memento
+compose up --detach --wait --wait-timeout 90 memento
 endpoint=$(compose port memento 8080 | head -n 1)
 [ -n "$endpoint" ] || {
   compose logs
@@ -68,7 +74,7 @@ fi
 compose exec --no-TTY postgres psql --username memento_app --dbname memento --tuples-only --command \
   "SELECT count(*) FROM pg_extension WHERE extname IN ('unaccent', 'pg_trgm');" | grep -Eq '^[[:space:]]*2[[:space:]]*$'
 compose exec --no-TTY postgres psql --username memento_app --dbname memento --tuples-only --command \
-  "SELECT count(*) FROM bun_migrations;" | grep -Eq '^[[:space:]]*2[[:space:]]*$'
+  "SELECT count(*) FROM bun_migrations;" | grep -Eq '^[[:space:]]*3[[:space:]]*$'
 compose exec --no-TTY postgres psql --username postgres --dbname postgres --tuples-only --command \
   "SELECT rolsuper FROM pg_roles WHERE rolname = 'memento_app';" | grep -Eq '^[[:space:]]*f[[:space:]]*$'
 compose exec --no-TTY memento sh -c "ps | grep -q '[m]emento' && ps | grep -q '[c]addy'"
@@ -85,7 +91,7 @@ compose stop immich
 ready_code=$(curl --silent --output "$ready_body" --write-out '%{http_code}' "$base_url/api/health/ready")
 [ "$ready_code" = 503 ]
 grep -q '"immich":"unavailable"' "$ready_body"
-if grep -Eq 'test-only-key|postgresql://|http://immich|test-only-password' "$ready_body"; then
+if grep -Eq 'test-only-key|test-only-security-secret|postgresql://|http://immich|test-only-password' "$ready_body"; then
   printf 'readiness exposed private dependency configuration\n' >&2
   exit 1
 fi
@@ -108,7 +114,7 @@ elapsed=$(($(date +%s) - started))
 compose exec --no-TTY postgres psql --username memento_app --dbname memento --tuples-only --command \
   "SELECT count(*) FROM jobs WHERE status = 'running' AND lease_expires_at IS NULL;" | grep -Eq '^[[:space:]]*0[[:space:]]*$'
 
-if compose logs memento | grep -Eq 'test-only-key|postgresql://|test-only-password'; then
+if compose logs memento | grep -Eq 'test-only-key|test-only-security-secret|postgresql://|test-only-password'; then
   printf 'container logs exposed a configured secret\n' >&2
   exit 1
 fi

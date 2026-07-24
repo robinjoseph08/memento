@@ -25,7 +25,6 @@ docker run --detach \
   --env POSTGRES_DB=postgres \
   --env POSTGRES_USER=postgres \
   --env POSTGRES_PASSWORD=test-admin-only-password \
-  --mount "type=bind,source=$root/tests/fixtures/init-database.sql,target=/docker-entrypoint-initdb.d/init-database.sql,readonly" \
   --publish 127.0.0.1::5432 \
   --tmpfs /var/lib/postgresql/data \
   postgres:17.7-alpine3.23 >/dev/null
@@ -35,7 +34,7 @@ endpoint=
 for _ in $(seq 1 60); do
   endpoint=$(docker port "$container" 5432/tcp 2>/dev/null | head -n 1 || true)
   if [ -n "$endpoint" ] && docker exec "$container" \
-    psql --username memento_app --dbname memento --command 'SELECT 1' >/dev/null 2>&1; then
+    psql --username postgres --dbname postgres --command 'SELECT 1' >/dev/null 2>&1; then
     ready=true
     break
   fi
@@ -47,6 +46,10 @@ if [ "$ready" != true ]; then
   echo "integration PostgreSQL did not become ready" >&2
   exit 1
 fi
+
+docker exec --interactive "$container" \
+  psql --username postgres --dbname postgres --set ON_ERROR_STOP=1 \
+  < "$root/tests/fixtures/init-database.sql" >/dev/null
 
 port=${endpoint##*:}
 MEMENTO_TEST_DATABASE_URL="postgresql://memento_app:test-only-password@127.0.0.1:$port/memento?sslmode=disable" \

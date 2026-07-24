@@ -15,6 +15,7 @@ func setRequiredEnvironment(t *testing.T) {
 	t.Setenv("MEMENTO_DATABASE_URL", "postgresql://memento:secret@db:5432/memento?sslmode=require")
 	t.Setenv("MEMENTO_IMMICH_URL", "https://immich.internal")
 	t.Setenv("MEMENTO_IMMICH_API_KEY", "private-key")
+	t.Setenv("MEMENTO_SECURITY_SECRET", "test-only-security-secret-32-bytes")
 }
 
 func TestLoadUsesDefaultsAndEnvironment(t *testing.T) {
@@ -32,6 +33,7 @@ func TestLoadUsesDefaultsAndEnvironment(t *testing.T) {
 func TestLoadPrecedenceIncludesYAMLAndSecretFiles(t *testing.T) {
 	t.Setenv("MEMENTO_DATABASE_URL", "postgresql://memento:env@db:5432/memento")
 	t.Setenv("MEMENTO_IMMICH_URL", "https://environment.example")
+	t.Setenv("MEMENTO_SECURITY_SECRET", "test-only-security-secret-32-bytes")
 	secretPath := filepath.Join(t.TempDir(), "immich-key")
 	require.NoError(t, os.WriteFile(secretPath, []byte("file-key\n"), 0o600))
 	t.Setenv("MEMENTO_IMMICH_API_KEY_FILE", secretPath)
@@ -174,6 +176,7 @@ func TestValidateRejectsUnsafeValues(t *testing.T) {
 		{"Immich URL", func(c *Config) { c.Immich.URL = "" }, "immich.url is required"},
 		{"Immich credentials", func(c *Config) { c.Immich.URL = "https://user:pass@immich.example" }, "without credentials"},
 		{"Immich key", func(c *Config) { c.Immich.APIKey = "" }, "immich.api_key is required"},
+		{"security secret", func(c *Config) { c.Security.Secret = "short" }, "security.secret must contain at least 32 bytes"},
 		{"heartbeat", func(c *Config) { c.Worker.HeartbeatMaxAge = c.Worker.HeartbeatInterval }, "heartbeat_max_age"},
 		{"poll lease", func(c *Config) { c.Worker.LeaseDuration = c.Worker.PollInterval }, "lease_duration"},
 		{"heartbeat lease", func(c *Config) { c.Worker.LeaseDuration = c.Worker.HeartbeatInterval }, "heartbeat_interval"},

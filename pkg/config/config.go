@@ -26,6 +26,7 @@ type Config struct {
 	HTTP     HTTPConfig
 	Database DatabaseConfig
 	Immich   ImmichConfig
+	Security SecurityConfig
 	SMTP     SMTPConfig
 	Worker   WorkerConfig
 }
@@ -46,6 +47,10 @@ type ImmichConfig struct {
 	URL           string
 	APIKey        string
 	HealthTimeout time.Duration
+}
+
+type SecurityConfig struct {
+	Secret string
 }
 
 type SMTPConfig struct {
@@ -91,6 +96,9 @@ type rawConfig struct {
 		APIKey        string `koanf:"api_key"`
 		HealthTimeout string `koanf:"health_timeout"`
 	} `koanf:"immich"`
+	Security struct {
+		Secret string `koanf:"secret"`
+	} `koanf:"security"`
 	SMTP struct {
 		Enabled             bool   `koanf:"enabled"`
 		Host                string `koanf:"host"`
@@ -131,6 +139,7 @@ var (
 	errImmichURLRequired        = errors.New("immich.url is required")
 	errImmichURLInvalid         = errors.New("immich.url must be an HTTP URL without credentials")
 	errImmichAPIKeyRequired     = errors.New("immich.api_key is required")
+	errSecuritySecretRequired   = errors.New("security.secret must contain at least 32 bytes")
 	errSMTPHostRequired         = errors.New("smtp.host is required when SMTP is enabled")
 	errSMTPPortInvalid          = errors.New("smtp.port must be between 1 and 65535")
 	errSMTPModeInvalid          = errors.New("smtp.mode must be implicit_tls, starttls, or insecure")
@@ -194,6 +203,9 @@ func Load(path string) (Config, error) {
 	if err := loadSecretFile(k, "immich.api_key", "MEMENTO_IMMICH_API_KEY_FILE"); err != nil {
 		return Config{}, err
 	}
+	if err := loadSecretFile(k, "security.secret", "MEMENTO_SECURITY_SECRET_FILE"); err != nil {
+		return Config{}, err
+	}
 	if err := loadSecretFile(k, "smtp.password", "MEMENTO_SMTP_PASSWORD_FILE"); err != nil {
 		return Config{}, err
 	}
@@ -223,6 +235,7 @@ func envKey(key string) string {
 		"MEMENTO_IMMICH_URL":                "immich.url",
 		"MEMENTO_IMMICH_API_KEY":            "immich.api_key",
 		"MEMENTO_IMMICH_HEALTH_TIMEOUT":     "immich.health_timeout",
+		"MEMENTO_SECURITY_SECRET":           "security.secret",
 		"MEMENTO_SMTP_ENABLED":              "smtp.enabled",
 		"MEMENTO_SMTP_HOST":                 "smtp.host",
 		"MEMENTO_SMTP_PORT":                 "smtp.port",
@@ -278,6 +291,7 @@ func parse(raw rawConfig) (Config, error) {
 	cfg.Database.MaxOpenConns = raw.Database.MaxOpenConns
 	cfg.Immich.URL = raw.Immich.URL
 	cfg.Immich.APIKey = raw.Immich.APIKey
+	cfg.Security.Secret = raw.Security.Secret
 	cfg.SMTP.Enabled = raw.SMTP.Enabled
 	cfg.SMTP.Host = raw.SMTP.Host
 	cfg.SMTP.Port = raw.SMTP.Port
@@ -378,6 +392,9 @@ func (c Config) Validate() error {
 	}
 	if c.Immich.APIKey == "" {
 		return errImmichAPIKeyRequired
+	}
+	if len(c.Security.Secret) < 32 {
+		return errSecuritySecretRequired
 	}
 	if err := c.SMTP.Validate(); err != nil {
 		return err

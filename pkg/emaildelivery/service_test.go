@@ -1,12 +1,26 @@
 package emaildelivery
 
 import (
+	"context"
 	"testing"
 	"time"
 
 	"github.com/robinjoseph08/memento/pkg/config"
+	"github.com/robinjoseph08/memento/pkg/smtp"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/uptrace/bun"
 )
+
+type discardSender struct{}
+
+func (discardSender) Send(context.Context, smtp.Message) error { return nil }
+
+func TestQueueRequiredRejectsUnknownEmailKindBeforePersistence(t *testing.T) {
+	service := New(nil, config.SMTPConfig{Enabled: true}, discardSender{})
+	_, _, err := service.QueueRequired(context.Background(), bun.Tx{}, RequiredMessage{Kind: "optional"})
+	require.ErrorIs(t, err, errUnsupportedKind)
+}
 
 func TestRetryDelayStaysWithinConfiguredExponentialBounds(t *testing.T) {
 	service := New(nil, config.SMTPConfig{RetryBase: 100 * time.Millisecond, RetryMax: 400 * time.Millisecond}, nil)

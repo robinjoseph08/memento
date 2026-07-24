@@ -18,11 +18,15 @@ import (
 	"github.com/uptrace/bun"
 )
 
-const JobKind = "send_required_email"
+const (
+	JobKind       = "send_required_email"
+	KindSetupCode = "setup_code"
+)
 
 var (
 	errGenerateIdentity  = errors.New("generate email delivery identity")
 	errDeliveryLeaseLost = errors.New("email delivery job lease lost")
+	errUnsupportedKind   = errors.New("unsupported required email kind")
 	ErrNotConfigured     = errors.New("SMTP is not configured")
 	ErrSetupComplete     = errors.New("test email is available only during setup")
 	ErrDeliveryAbsent    = errors.New("email delivery not found")
@@ -40,6 +44,14 @@ type StatusResponse struct {
 	Status     string  `json:"status"`
 	Attempts   int     `json:"attempts"`
 	Failure    *string `json:"failure,omitempty"`
+}
+
+// RequiredMessage is committed by a domain transaction before worker delivery.
+type RequiredMessage struct {
+	Kind      string
+	Recipient string
+	Subject   string
+	Body      string
 }
 
 type jobPayload struct {
@@ -75,12 +87,8 @@ func (s *Service) RequestTest(ctx context.Context) (TestEmailResponse, error) {
 	if !s.cfg.Enabled || s.sender == nil {
 		return TestEmailResponse{}, ErrNotConfigured
 	}
-	publicID, err := randomID()
-	if err != nil {
-		return TestEmailResponse{}, errGenerateIdentity
-	}
-	var id int64
-	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+	var publicID string
+	err := s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 		var setupComplete bool
 		if err := tx.NewRaw(`SELECT setup_complete FROM system_settings WHERE id = 1 FOR SHARE`).Scan(ctx, &setupComplete); err != nil {
 			return err
@@ -88,27 +96,52 @@ func (s *Service) RequestTest(ctx context.Context) (TestEmailResponse, error) {
 		if setupComplete {
 			return ErrSetupComplete
 		}
-		if err := tx.NewRaw(`
-			INSERT INTO email_deliveries (public_id, kind, recipient, subject, body)
-			VALUES (?, 'required_test', ?, 'Memento email delivery test', ?)
-			RETURNING id
-		`, publicID, s.cfg.TestRecipient, "Memento delivered this required test email through the durable PostgreSQL outbox.").Scan(ctx, &id); err != nil {
-			return err
-		}
-		payload, err := json.Marshal(jobPayload{DeliveryID: id})
-		if err != nil {
-			return err
-		}
-		_, err = tx.NewRaw(`
-			INSERT INTO outbox_events (kind, aggregate_kind, aggregate_id, aggregate_version, payload)
-			VALUES (?, 'email_delivery', ?, 1, ?::jsonb)
-		`, JobKind, publicID, string(payload)).Exec(ctx)
+		_, queuedID, err := s.QueueRequired(ctx, tx, RequiredMessage{
+			Kind:      "required_test",
+			Recipient: s.cfg.TestRecipient,
+			Subject:   "Memento email delivery test",
+			Body:      "Memento delivered this required test email through the durable PostgreSQL outbox.",
+		})
+		publicID = queuedID
 		return err
 	})
 	if err != nil {
 		return TestEmailResponse{}, fmt.Errorf("request required test email: %w", err)
 	}
 	return TestEmailResponse{DeliveryID: publicID, Status: "queued"}, nil
+}
+
+// QueueRequired adds required email and outbox records to the caller's transaction.
+func (s *Service) QueueRequired(ctx context.Context, tx bun.Tx, message RequiredMessage) (int64, string, error) {
+	if !s.cfg.Enabled || s.sender == nil {
+		return 0, "", ErrNotConfigured
+	}
+	if message.Kind != "required_test" && message.Kind != KindSetupCode {
+		return 0, "", fmt.Errorf("%w: %s", errUnsupportedKind, message.Kind)
+	}
+	publicID, err := randomID()
+	if err != nil {
+		return 0, "", errGenerateIdentity
+	}
+	var id int64
+	if err := tx.NewRaw(`
+		INSERT INTO email_deliveries (public_id, kind, recipient, subject, body)
+		VALUES (?, ?, ?, ?, ?)
+		RETURNING id
+	`, publicID, message.Kind, message.Recipient, message.Subject, message.Body).Scan(ctx, &id); err != nil {
+		return 0, "", err
+	}
+	payload, err := json.Marshal(jobPayload{DeliveryID: id})
+	if err != nil {
+		return 0, "", err
+	}
+	if _, err := tx.NewRaw(`
+		INSERT INTO outbox_events (kind, aggregate_kind, aggregate_id, aggregate_version, payload)
+		VALUES (?, 'email_delivery', ?, 1, ?::jsonb)
+	`, JobKind, publicID, string(payload)).Exec(ctx); err != nil {
+		return 0, "", err
+	}
+	return id, publicID, nil
 }
 
 // Status returns only allowlisted operator-visible delivery details.

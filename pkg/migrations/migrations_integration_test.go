@@ -65,6 +65,28 @@ func TestEmailDeliveryInfrastructureEnforcesDurableState(t *testing.T) {
 	assert.ErrorContains(t, err, "outbox_events_aggregate_kind_aggregate_id_aggregate_version")
 }
 
+func TestSetupInfrastructureEnforcesSingletonCuratorAndSecurityEpoch(t *testing.T) {
+	db := testdb.Open(t)
+	ctx := context.Background()
+	require.NoError(t, Apply(ctx, db))
+
+	var epochLength int
+	require.NoError(t, db.NewRaw(`SELECT octet_length(security_epoch) FROM system_settings WHERE id = 1`).Scan(ctx, &epochLength))
+	assert.Equal(t, 32, epochLength)
+
+	_, err := db.ExecContext(ctx, `
+		INSERT INTO people (id, display_name, sort_name)
+		VALUES ('00000000-0000-0000-0000-000000000001', 'First', 'first'),
+		       ('00000000-0000-0000-0000-000000000002', 'Second', 'second');
+		INSERT INTO person_roles (person_id, role)
+		VALUES ('00000000-0000-0000-0000-000000000001', 'curator');
+		INSERT INTO person_roles (person_id, role)
+		VALUES ('00000000-0000-0000-0000-000000000002', 'curator');
+	`)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "person_roles_sole_curator_idx")
+}
+
 func TestJobsRejectRunningStateWithoutAReclaimableLease(t *testing.T) {
 	db := testdb.Open(t)
 	ctx := context.Background()
@@ -86,11 +108,22 @@ func TestCurrentDetectsUnappliedMigration(t *testing.T) {
 	assert.EqualError(t, Current(ctx, db), "database has unapplied migrations")
 }
 
-func TestSetupConsistentRejectsMissingSingleton(t *testing.T) {
-	db := testdb.Open(t)
-	ctx := context.Background()
-	require.NoError(t, Apply(ctx, db))
-	_, err := db.ExecContext(ctx, `DELETE FROM system_settings`)
-	require.NoError(t, err)
-	assert.EqualError(t, SetupConsistent(ctx, db), "system settings singleton is inconsistent")
+func TestSetupConsistentRejectsMissingOrMismatchedState(t *testing.T) {
+	t.Run("missing singleton", func(t *testing.T) {
+		db := testdb.Open(t)
+		ctx := context.Background()
+		require.NoError(t, Apply(ctx, db))
+		_, err := db.ExecContext(ctx, `DELETE FROM system_settings`)
+		require.NoError(t, err)
+		assert.EqualError(t, SetupConsistent(ctx, db), "system settings singleton is inconsistent")
+	})
+
+	t.Run("complete without Curator", func(t *testing.T) {
+		db := testdb.Open(t)
+		ctx := context.Background()
+		require.NoError(t, Apply(ctx, db))
+		_, err := db.ExecContext(ctx, `UPDATE system_settings SET setup_complete = true WHERE id = 1`)
+		require.NoError(t, err)
+		assert.EqualError(t, SetupConsistent(ctx, db), "system settings singleton is inconsistent")
+	})
 }
