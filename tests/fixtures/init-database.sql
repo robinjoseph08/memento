@@ -1,0 +1,20 @@
+CREATE ROLE memento_app
+  WITH LOGIN
+  PASSWORD 'test-only-password'
+  NOSUPERUSER
+  NOCREATEDB
+  NOCREATEROLE
+  NOINHERIT;
+
+CREATE DATABASE memento
+  WITH OWNER = memento_app
+  ENCODING = 'UTF8'
+  TEMPLATE = template0;
+
+REVOKE ALL ON DATABASE memento FROM PUBLIC;
+GRANT CONNECT, TEMPORARY ON DATABASE memento TO memento_app;
+
+\connect memento
+
+REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+GRANT USAGE, CREATE ON SCHEMA public TO memento_app;

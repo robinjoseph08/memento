@@ -1,0 +1,11 @@
+.git
+.github
+.idea
+.vscode
+coverage
+dist
+node_modules
+app/types/generated
+*.log
+.env
+.env.*

@@ -1,0 +1,6 @@
+dist/
+node_modules/
+app/types/generated/
+docs/
+CONTEXT.md
+pnpm-lock.yaml

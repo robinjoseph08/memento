@@ -4,7 +4,7 @@
 
 Status: implementation-ready specification for the MVP.
 
-Memento is currently a planning repository. No application implementation is present as of this specification.
+The Phase 1 deployable application foundation is implemented. Setup, Recipient workflows, restore validation, Recovery hold, and the remaining product phases are not yet implemented.
 
 The key words **MUST**, **MUST NOT**, **REQUIRED**, **SHOULD**, **SHOULD NOT**, and **MAY** are normative. They have their usual requirements-language meanings. Product terms such as Person, Recipient, Pending Recipient, Audience, Publication, and Staged update have the exact meanings in [`CONTEXT.md`](../CONTEXT.md).
 
@@ -519,7 +519,7 @@ All application JSON and protected Media routes are under `/api`. Stable portal 
 - List endpoints use cursor pagination with deterministic tie-breakers. Offset pagination MAY be used only for small Curator configuration lists.
 - Mutations requiring conflict protection use an entity version or `If-Match` and return `409 Conflict` for stale state.
 - Validation failures return `422`; authentication failures `401`; authenticated denial and hidden-resource access use a non-enumerating `404` where disclosure matters; rate limits return `429`; dependency unavailability returns `503` only when retry is appropriate.
-- Errors use one stable problem document with code, safe message, field errors when applicable, and request ID. Stack traces and dependency bodies are never returned.
+- Errors use one stable `error` envelope with a machine-readable code, safe message, HTTP status code, field errors when applicable, and request ID. Stack traces and dependency bodies are never returned.
 - Mutation endpoints that can be retried by browsers SHOULD accept an idempotency key.
 - Free-text search queries MUST be sent in POST bodies or transient client state, not URLs.
 

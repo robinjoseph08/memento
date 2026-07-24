@@ -1,0 +1,150 @@
+[tools]
+go = "1.26.5"
+node = "24.18.0"
+"npm:pnpm" = "11.16.0"
+"github:golangci/golangci-lint" = "2.12.2"
+"github:air-verse/air" = "1.64.2"
+
+[tasks."dependencies:install"]
+hide = true
+run = "pnpm install --frozen-lockfile"
+
+[tasks."types:generate"]
+description = "Generate ignored TypeScript API types from Go wire types"
+run = "go tool tygo generate"
+
+[tasks.setup]
+description = "Install dependencies and generate API types"
+depends = ["dependencies:install", "types:generate"]
+
+[tasks."build:air"]
+description = "Build the development API binary used by Air"
+run = "mkdir -p ./tmp/air && go build -o ./tmp/air/memento ./cmd/api"
+
+[tasks.start]
+description = "Start PostgreSQL, the Immich stub, the API, and the frontend"
+depends = ["start:deps", "start:air", "start:web"]
+
+[tasks."start:deps"]
+description = "Start development dependencies with Docker Compose"
+run = "docker compose up --abort-on-container-exit"
+
+[tasks."start:air"]
+description = "Start the Go API with Air hot reload"
+depends = ["types:generate"]
+run = '''
+postgres_port=${MEMENTO_DEV_POSTGRES_PORT:-54320}
+immich_port=${MEMENTO_DEV_IMMICH_PORT:-3001}
+ready=false
+deadline=$(($(date +%s) + 60))
+while [ "$(date +%s)" -lt "$deadline" ]; do
+  if docker compose exec --no-TTY postgres sh -c \
+    'PGCONNECT_TIMEOUT=2 PGPASSWORD=development-only-password psql --host 127.0.0.1 --username memento_app --dbname memento --command "SELECT 1"' >/dev/null 2>&1 \
+    && curl --silent --fail --connect-timeout 1 --max-time 2 \
+      "http://127.0.0.1:$immich_port/api/server/version" >/dev/null; then
+    ready=true
+    break
+  fi
+  sleep 0.5
+done
+if [ "$ready" != true ]; then
+  docker compose ps >&2
+  docker compose logs >&2
+  echo "Development dependencies did not become ready within 60 seconds" >&2
+  exit 1
+fi
+export MEMENTO_DATABASE_URL=${MEMENTO_DATABASE_URL:-"postgresql://memento_app:development-only-password@127.0.0.1:$postgres_port/memento?sslmode=disable"}
+export MEMENTO_IMMICH_URL=${MEMENTO_IMMICH_URL:-"http://127.0.0.1:$immich_port"}
+export MEMENTO_IMMICH_API_KEY=${MEMENTO_IMMICH_API_KEY:-development-only-key}
+air
+'''
+
+[tasks."start:web"]
+description = "Start Vite after the Go API is reachable"
+depends = ["dependencies:install", "types:generate"]
+run = '''
+target=${MEMENTO_API_PROXY_TARGET:-http://127.0.0.1:8081}
+target=${target%/}
+until curl --silent --fail "$target/api/health/live" >/dev/null; do sleep 0.5; done
+pnpm start --host 127.0.0.1 --port "${MEMENTO_WEB_PORT:-5173}" --strictPort
+'''
+
+[tasks.format]
+description = "Format Go and frontend files"
+depends = ["dependencies:install", "types:generate"]
+run = ["golangci-lint fmt", "pnpm format"]
+
+[tasks.lint]
+description = "Run Go linting"
+env = { GOLANGCI_LINT_CACHE = "{{config_root}}/tmp/golangci-lint-cache" }
+run = "golangci-lint run"
+
+[tasks."lint:js"]
+description = "Run all JavaScript and TypeScript linting"
+depends = ["types:generate", "lint:eslint", "lint:prettier", "lint:types"]
+
+[tasks."lint:eslint"]
+description = "Run ESLint"
+depends = ["dependencies:install"]
+run = "pnpm lint:eslint"
+
+[tasks."lint:prettier"]
+description = "Run Prettier checks"
+depends = ["dependencies:install"]
+run = "pnpm lint:prettier"
+
+[tasks."lint:types"]
+description = "Run TypeScript type checking"
+depends = ["dependencies:install", "types:generate"]
+run = "pnpm lint:types"
+
+[tasks.test]
+description = "Run Go and frontend unit tests"
+depends = ["dependencies:install", "types:generate"]
+run = ["go test ./...", "pnpm test"]
+
+[tasks."test:race"]
+description = "Run Go unit tests with the race detector"
+run = "go test -race ./..."
+
+[tasks.build]
+description = "Build the frontend"
+depends = ["dependencies:install", "types:generate"]
+run = "pnpm build"
+
+[tasks."test:integration"]
+description = "Run PostgreSQL integration tests"
+run = "./tests/test-integration.sh"
+
+[tasks."compose:validate"]
+description = "Validate the development Docker Compose configuration"
+run = "docker compose config --quiet"
+
+[tasks."caddy:validate"]
+description = "Validate the production Caddy configuration"
+run = '''
+docker run --rm \
+  --volume "$PWD/Caddyfile:/etc/caddy/Caddyfile:ro" \
+  caddy:2.10.2-alpine \
+  caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+'''
+
+[tasks."test:production"]
+description = "Assemble and test the production topology"
+depends = ["types:generate"]
+run = "./tests/test-production.sh"
+
+[tasks.check]
+description = "Run fast validation checks before pushing"
+depends = ["lint", "lint:js", "types:generate", "test", "build"]
+
+[tasks.ci]
+description = "Run the complete CI validation suite"
+depends = [
+  "check",
+  "test:race",
+  "test:integration",
+  "compose:validate",
+  "caddy:validate",
+  "test:production",
+]

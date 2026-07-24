@@ -1,0 +1,21 @@
+# Secrets are intentionally omitted. Supply database.url and immich.api_key
+# through MEMENTO_DATABASE_URL(_FILE) and MEMENTO_IMMICH_API_KEY(_FILE).
+http:
+  address: "127.0.0.1:8081"
+  shutdown_timeout: 8s
+
+database:
+  name: memento
+  max_open_conns: 10
+  health_timeout: 2s
+
+immich:
+  url: http://immich:2283
+  health_timeout: 2s
+
+worker:
+  poll_interval: 1s
+  heartbeat_interval: 2s
+  heartbeat_max_age: 10s
+  lease_duration: 30s
+  drain_timeout: 5s

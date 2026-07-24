@@ -1,0 +1,48 @@
+services:
+  postgres:
+    image: postgres:17.7-alpine3.23
+    environment:
+      POSTGRES_DB: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: development-admin-password
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U memento_app -d memento"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+    ports:
+      - "127.0.0.1:${MEMENTO_DEV_POSTGRES_PORT:-54320}:5432"
+    volumes:
+      - memento-postgres:/var/lib/postgresql/data
+      - ./dev/init-database.sql:/docker-entrypoint-initdb.d/init-database.sql:ro
+
+  immich:
+    image: caddy:2.10.2-alpine
+    command:
+      [
+        "caddy",
+        "run",
+        "--config",
+        "/etc/caddy/Caddyfile",
+        "--adapter",
+        "caddyfile",
+      ]
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "wget",
+          "--quiet",
+          "--spider",
+          "http://127.0.0.1:3001/api/server/version",
+        ]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+    ports:
+      - "127.0.0.1:${MEMENTO_DEV_IMMICH_PORT:-3001}:3001"
+    volumes:
+      - ./tests/fixtures/immich.Caddyfile:/etc/caddy/Caddyfile:ro
+
+volumes:
+  memento-postgres:

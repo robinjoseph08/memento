@@ -1,0 +1,50 @@
+services:
+  postgres:
+    image: postgres:17.7-alpine3.23
+    environment:
+      POSTGRES_DB: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: test-admin-only-password
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+    tmpfs:
+      - /var/lib/postgresql/data
+    volumes:
+      - ./fixtures/init-database.sql:/docker-entrypoint-initdb.d/init-database.sql:ro
+
+  immich:
+    image: caddy:2.10.2-alpine
+    command:
+      [
+        "caddy",
+        "run",
+        "--config",
+        "/etc/caddy/Caddyfile",
+        "--adapter",
+        "caddyfile",
+      ]
+    volumes:
+      - ./fixtures/immich.Caddyfile:/etc/caddy/Caddyfile:ro
+
+  memento:
+    image: "memento:${MEMENTO_TEST_IMAGE_TAG:-test}"
+    build:
+      context: ..
+    environment:
+      LOG_FORMAT: json
+      MEMENTO_DATABASE_URL: postgresql://memento_app:test-only-password@postgres:5432/memento?sslmode=disable
+      MEMENTO_IMMICH_URL: http://immich:3001
+      MEMENTO_IMMICH_API_KEY: test-only-key
+      MEMENTO_HTTP_ADDRESS: 127.0.0.1:8091
+      MEMENTO_HTTP_SHUTDOWN_TIMEOUT: 8s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      immich:
+        condition: service_started
+    ports:
+      - "127.0.0.1::8080"
+    stop_grace_period: 10s

@@ -1,0 +1,30 @@
+{$MEMENTO_SITE_ADDRESS::8080} {
+	encode zstd gzip
+
+	header {
+		Content-Security-Policy "default-src 'self'; base-uri 'self'; connect-src 'self'; font-src 'self'; form-action 'self'; frame-ancestors 'none'; img-src 'self' data:; object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'"
+		Cross-Origin-Opener-Policy "same-origin"
+		Cross-Origin-Resource-Policy "same-origin"
+		Permissions-Policy "camera=(), geolocation=(), microphone=()"
+		Referrer-Policy "no-referrer"
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		-Server
+	}
+
+	request_body {
+		max_size 10MB
+	}
+
+	@api path /api /api/*
+	handle @api {
+		reverse_proxy {$MEMENTO_HTTP_ADDRESS:127.0.0.1:8081}
+	}
+
+	handle {
+		root * /srv/memento
+		try_files {path} /index.html
+		file_server
+	}
+}

@@ -1,0 +1,5 @@
+packages:
+  - path: "github.com/robinjoseph08/memento/pkg/health"
+    output_path: "app/types/generated/health.ts"
+    fallback_type: unknown
+    preserve_comments: none

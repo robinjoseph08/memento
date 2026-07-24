@@ -325,3 +325,7 @@ tags
 .ionide
 
 # End of https://www.toptal.com/developers/gitignore/api/macos,node,vim,go,visualstudiocode,jetbrains+all
+
+# Generated API types and tool caches
+app/types/generated/*.ts
+tmp/
