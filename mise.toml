@@ -56,6 +56,7 @@ fi
 export MEMENTO_DATABASE_URL=${MEMENTO_DATABASE_URL:-"postgresql://memento_app:development-only-password@127.0.0.1:$postgres_port/memento?sslmode=disable"}
 export MEMENTO_IMMICH_URL=${MEMENTO_IMMICH_URL:-"http://127.0.0.1:$immich_port"}
 export MEMENTO_IMMICH_API_KEY=${MEMENTO_IMMICH_API_KEY:-development-only-key}
+export MEMENTO_SECURITY_SECRET=${MEMENTO_SECURITY_SECRET:-development-only-security-secret-32-bytes}
 air
 '''
 
@@ -123,10 +124,10 @@ run = "docker compose config --quiet"
 [tasks."caddy:validate"]
 description = "Validate the production Caddy configuration"
 run = '''
-docker run --rm \
-  --volume "$PWD/Caddyfile:/etc/caddy/Caddyfile:ro" \
+docker run --rm --interactive \
   caddy:2.10.2-alpine \
-  caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+  caddy validate --config - --adapter caddyfile \
+  < "$PWD/Caddyfile"
 '''
 
 [tasks."test:production"]

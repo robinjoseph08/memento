@@ -7,3 +7,7 @@ packages:
     output_path: "app/types/generated/health.ts"
     fallback_type: unknown
     preserve_comments: none
+  - path: "github.com/robinjoseph08/memento/pkg/setup"
+    output_path: "app/types/generated/setup.ts"
+    fallback_type: unknown
+    preserve_comments: none

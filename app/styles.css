@@ -108,6 +108,185 @@ h1 {
   box-shadow: 0 0 1rem rgb(56 189 248 / 80%);
 }
 
+.setup-card {
+  width: min(100%, 44rem);
+  padding: clamp(1.75rem, 5vw, 3.5rem);
+}
+
+.setup-card .mark {
+  width: 4.5rem;
+  height: 4.5rem;
+  margin-bottom: 1rem;
+}
+
+.setup-card h1 {
+  font-size: clamp(2.5rem, 9vw, 4rem);
+}
+
+.setup-heading {
+  margin-top: 2.25rem;
+}
+
+.setup-heading h2 {
+  margin: 0.35rem 0 0;
+  color: #e0f2fe;
+  font-size: clamp(1.65rem, 5vw, 2.25rem);
+  line-height: 1.15;
+}
+
+.setup-heading h2:focus-visible {
+  outline: 2px solid #38bdf8;
+  outline-offset: 0.35rem;
+}
+
+.step-label {
+  margin: 0;
+  color: #38bdf8;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.setup-form {
+  display: grid;
+  gap: 1.15rem;
+  margin-top: 1.75rem;
+  text-align: left;
+}
+
+.form-intro {
+  margin: 0;
+  color: #94a3b8;
+  line-height: 1.6;
+}
+
+.setup-form > label:not(.choice, .radio-choice) {
+  display: grid;
+  gap: 0.45rem;
+  color: #bae6fd;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.setup-form input:not([type="checkbox"], [type="radio"]),
+.setup-form select {
+  width: 100%;
+  min-height: 3rem;
+  padding: 0.7rem 0.85rem;
+  border: 1px solid #334155;
+  border-radius: 0.75rem;
+  outline: none;
+  background: #020617;
+  color: #e0f2fe;
+}
+
+.setup-form input:focus,
+.setup-form select:focus {
+  border-color: #38bdf8;
+  box-shadow: 0 0 0 3px rgb(56 189 248 / 18%);
+}
+
+.setup-form button {
+  min-height: 3rem;
+  padding: 0.75rem 1rem;
+  border: 0;
+  border-radius: 0.75rem;
+  background: #0284c7;
+  color: white;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.setup-form button:hover:not(:disabled) {
+  background: #0369a1;
+}
+
+.setup-form button:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.setup-secondary-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+}
+
+.setup-form .setup-secondary-actions button {
+  min-height: 2.5rem;
+  border: 1px solid #38bdf8;
+  background: transparent;
+  color: #bae6fd;
+}
+
+.setup-form .setup-secondary-actions button:hover:not(:disabled) {
+  background: rgb(14 165 233 / 12%);
+}
+
+.form-error {
+  margin: 0;
+  padding: 0.75rem;
+  border: 1px solid rgb(248 113 113 / 35%);
+  border-radius: 0.75rem;
+  background: rgb(127 29 29 / 25%);
+  color: #fecaca;
+}
+
+.choices {
+  gap: 1rem;
+}
+
+.choice {
+  display: grid;
+  grid-template-columns: 1.25rem 1fr;
+  gap: 0.75rem;
+  padding: 0.9rem;
+  border: 1px solid #334155;
+  border-radius: 0.8rem;
+  color: #94a3b8;
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
+.choice input,
+.radio-choice input {
+  width: 1.1rem;
+  height: 1.1rem;
+  margin: 0.15rem 0 0;
+  accent-color: #0ea5e9;
+}
+
+.choice strong {
+  display: block;
+  margin-bottom: 0.2rem;
+  color: #e0f2fe;
+}
+
+.setup-form fieldset {
+  display: grid;
+  gap: 0.75rem;
+  margin: 0;
+  padding: 1rem;
+  border: 1px solid #334155;
+  border-radius: 0.8rem;
+}
+
+.setup-form legend {
+  padding: 0 0.35rem;
+  color: #bae6fd;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.radio-choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
+  color: #cbd5e1;
+  font-size: 0.9rem;
+}
+
 @media (prefers-color-scheme: light) {
   :root {
     color-scheme: light;
@@ -136,6 +315,42 @@ h1 {
   }
 
   .status {
+    color: #075985;
+  }
+
+  .setup-heading h2,
+  .choice strong {
+    color: #0c4a6e;
+  }
+
+  .form-intro,
+  .choice {
+    color: #475569;
+  }
+
+  .setup-form > label:not(.choice, .radio-choice),
+  .setup-form legend {
+    color: #075985;
+  }
+
+  .setup-form input:not([type="checkbox"], [type="radio"]),
+  .setup-form select {
+    border-color: #bae6fd;
+    background: white;
+    color: #0c4a6e;
+  }
+
+  .choice,
+  .setup-form fieldset {
+    border-color: #bae6fd;
+  }
+
+  .radio-choice {
+    color: #334155;
+  }
+
+  .setup-form .setup-secondary-actions button {
+    border-color: #0284c7;
     color: #075985;
   }
 }

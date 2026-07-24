@@ -95,6 +95,11 @@ func ValidationError(message string) error {
 	return &Error{HTTPCode: http.StatusUnprocessableEntity, Message: message, Code: "validation_error", FieldErrors: nil}
 }
 
+// TooManyRequests returns a non-enumerating 429 error.
+func TooManyRequests(message string) error {
+	return &Error{HTTPCode: http.StatusTooManyRequests, Message: message, Code: "rate_limited", FieldErrors: nil}
+}
+
 // ServiceUnavailable returns a retryable 503 error with a safe message.
 func ServiceUnavailable(message string) error {
 	return &Error{HTTPCode: http.StatusServiceUnavailable, Message: message, Code: "service_unavailable", FieldErrors: nil}

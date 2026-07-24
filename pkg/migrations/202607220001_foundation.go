@@ -145,13 +145,18 @@ func Extensions(ctx context.Context, db *bun.DB) error {
 	return nil
 }
 
-// SetupConsistent verifies the foundational singleton without exposing its state.
+// SetupConsistent verifies the singleton and sole-Curator transition without exposing state.
 func SetupConsistent(ctx context.Context, db *bun.DB) error {
-	var count int
-	if err := db.NewRaw(`SELECT count(*) FROM system_settings WHERE id = 1`).Scan(ctx, &count); err != nil {
+	var settingsCount, curatorCount int
+	var setupComplete bool
+	if err := db.NewRaw(`
+		SELECT count(*), COALESCE(bool_or(setup_complete), false),
+		       (SELECT count(*) FROM person_roles WHERE role = 'curator')
+		FROM system_settings WHERE id = 1
+	`).Scan(ctx, &settingsCount, &setupComplete, &curatorCount); err != nil {
 		return fmt.Errorf("verify system settings: %w", err)
 	}
-	if count != 1 {
+	if settingsCount != 1 || (setupComplete && curatorCount != 1) || (!setupComplete && curatorCount != 0) {
 		return errSystemSettingsInconsistent
 	}
 	return nil

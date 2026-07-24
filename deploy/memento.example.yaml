@@ -1,5 +1,6 @@
-# Secrets are intentionally omitted. Supply database.url, immich.api_key, and
-# smtp.password through their MEMENTO_* value or MEMENTO_*_FILE setting.
+# Secrets are intentionally omitted. Supply database.url, immich.api_key,
+# security.secret, and smtp.password through their MEMENTO_* value or
+# MEMENTO_*_FILE setting.
 http:
   address: "127.0.0.1:8081"
   shutdown_timeout: 8s
@@ -12,6 +13,14 @@ database:
 immich:
   url: http://immich:2283
   health_timeout: 2s
+
+# Generate at least 32 random bytes and keep this stable across restarts.
+security:
+  setup_rate_window: 15m
+  setup_email_limit: 3
+  setup_ip_limit: 20
+  # Forwarded client IPs are accepted only from these explicit proxy networks.
+  trusted_proxy_cidrs: "127.0.0.0/8,::1/128"
 
 # Enable after replacing every address and SMTP endpoint. starttls requires the
 # server to advertise STARTTLS and never downgrades to plaintext. implicit_tls

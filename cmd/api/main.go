@@ -21,6 +21,7 @@ import (
 	"github.com/robinjoseph08/memento/pkg/migrations"
 	"github.com/robinjoseph08/memento/pkg/outbox"
 	"github.com/robinjoseph08/memento/pkg/server"
+	"github.com/robinjoseph08/memento/pkg/setup"
 	mementosmtp "github.com/robinjoseph08/memento/pkg/smtp"
 	"github.com/robinjoseph08/memento/pkg/worker"
 )
@@ -82,7 +83,7 @@ func run() error {
 			log.Warn("insecure development SMTP transport is active")
 		}
 	}
-	emailService := emaildelivery.New(db, cfg.SMTP, emailSender)
+	emailService := emaildelivery.New(db, cfg.SMTP, emailSender, cfg.Security.Secret)
 	handlers := map[string]worker.Handler{}
 	if cfg.SMTP.Enabled {
 		handlers[emaildelivery.JobKind] = emailService.Handle
@@ -101,7 +102,8 @@ func run() error {
 		return err
 	}
 	healthService := health.New(db, immichClient, jobWorker, cfg.Database.HealthTimeout, cfg.Worker.HeartbeatMaxAge, deliveryHealth)
-	e, err := server.New(healthService, emaildelivery.NewHandler(emailService))
+	setupHandler := setup.NewHandler(setup.New(db, emailService, cfg.Security))
+	e, err := server.New(healthService, emaildelivery.NewHandler(emailService), setupHandler)
 	if err != nil {
 		_ = db.Close()
 		log.Err(err).Error("HTTP server initialization failed")

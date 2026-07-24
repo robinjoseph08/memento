@@ -12,10 +12,11 @@ import (
 	"github.com/robinjoseph08/memento/pkg/emaildelivery"
 	"github.com/robinjoseph08/memento/pkg/errcodes"
 	"github.com/robinjoseph08/memento/pkg/health"
+	"github.com/robinjoseph08/memento/pkg/setup"
 )
 
 // New constructs the HTTP application and delegates route ownership to handler packages.
-func New(healthService *health.Service, emailHandler ...*emaildelivery.Handler) (*echo.Echo, error) {
+func New(healthService *health.Service, emailHandler *emaildelivery.Handler, setupHandler *setup.Handler) (*echo.Echo, error) {
 	e := echo.New()
 	requestBinder, err := binder.New()
 	if err != nil {
@@ -29,8 +30,11 @@ func New(healthService *health.Service, emailHandler ...*emaildelivery.Handler) 
 	e.Use(middleware.BodyLimit("10M"))
 
 	health.RegisterRoutes(e, healthService)
-	if len(emailHandler) != 0 && emailHandler[0] != nil {
-		emaildelivery.RegisterRoutes(e, emailHandler[0])
+	if emailHandler != nil {
+		emaildelivery.RegisterRoutes(e, emailHandler)
+	}
+	if setupHandler != nil {
+		setup.RegisterRoutes(e, setupHandler)
 	}
 	e.HTTPErrorHandler = errcodes.NewHandler().Handle
 	return e, nil

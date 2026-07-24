@@ -15,6 +15,7 @@ func setRequiredEnvironment(t *testing.T) {
 	t.Setenv("MEMENTO_DATABASE_URL", "postgresql://memento:secret@db:5432/memento?sslmode=require")
 	t.Setenv("MEMENTO_IMMICH_URL", "https://immich.internal")
 	t.Setenv("MEMENTO_IMMICH_API_KEY", "private-key")
+	t.Setenv("MEMENTO_SECURITY_SECRET", "test-only-security-secret-32-bytes")
 }
 
 func TestLoadUsesDefaultsAndEnvironment(t *testing.T) {
@@ -27,11 +28,17 @@ func TestLoadUsesDefaultsAndEnvironment(t *testing.T) {
 	assert.Equal(t, "127.0.0.1:8081", cfg.HTTP.Address)
 	assert.Equal(t, 7*time.Second, cfg.HTTP.ShutdownTimeout)
 	assert.Equal(t, 4, cfg.Database.MaxOpenConns)
+	assert.Equal(t, 15*time.Minute, cfg.Security.SetupRateWindow)
+	assert.Equal(t, 3, cfg.Security.SetupEmailLimit)
+	assert.Equal(t, 20, cfg.Security.SetupIPLimit)
+	require.Len(t, cfg.Security.TrustedProxyCIDRs, 2)
+	assert.Equal(t, "127.0.0.0/8", cfg.Security.TrustedProxyCIDRs[0].String())
 }
 
 func TestLoadPrecedenceIncludesYAMLAndSecretFiles(t *testing.T) {
 	t.Setenv("MEMENTO_DATABASE_URL", "postgresql://memento:env@db:5432/memento")
 	t.Setenv("MEMENTO_IMMICH_URL", "https://environment.example")
+	t.Setenv("MEMENTO_SECURITY_SECRET", "test-only-security-secret-32-bytes")
 	secretPath := filepath.Join(t.TempDir(), "immich-key")
 	require.NoError(t, os.WriteFile(secretPath, []byte("file-key\n"), 0o600))
 	t.Setenv("MEMENTO_IMMICH_API_KEY_FILE", secretPath)
@@ -72,6 +79,13 @@ func TestLoadRejectsMissingConfigurationFile(t *testing.T) {
 	setRequiredEnvironment(t)
 	_, err := Load(filepath.Join(t.TempDir(), "missing.yaml"))
 	require.ErrorContains(t, err, "load configuration file")
+}
+
+func TestLoadRejectsInvalidTrustedProxyCIDR(t *testing.T) {
+	setRequiredEnvironment(t)
+	t.Setenv("MEMENTO_SECURITY_TRUSTED_PROXY_CIDRS", "127.0.0.0/8,not-a-network")
+	_, err := Load("")
+	require.ErrorContains(t, err, "security.trusted_proxy_cidrs")
 }
 
 func TestLoadRejectsInvalidDuration(t *testing.T) {
@@ -174,6 +188,10 @@ func TestValidateRejectsUnsafeValues(t *testing.T) {
 		{"Immich URL", func(c *Config) { c.Immich.URL = "" }, "immich.url is required"},
 		{"Immich credentials", func(c *Config) { c.Immich.URL = "https://user:pass@immich.example" }, "without credentials"},
 		{"Immich key", func(c *Config) { c.Immich.APIKey = "" }, "immich.api_key is required"},
+		{"security secret", func(c *Config) { c.Security.Secret = "short" }, "security.secret must contain at least 32 bytes"},
+		{"setup rate window", func(c *Config) { c.Security.SetupRateWindow = 0 }, "setup rate limits must be positive"},
+		{"setup email limit", func(c *Config) { c.Security.SetupEmailLimit = 0 }, "setup rate limits must be positive"},
+		{"setup IP limit", func(c *Config) { c.Security.SetupIPLimit = 0 }, "setup rate limits must be positive"},
 		{"heartbeat", func(c *Config) { c.Worker.HeartbeatMaxAge = c.Worker.HeartbeatInterval }, "heartbeat_max_age"},
 		{"poll lease", func(c *Config) { c.Worker.LeaseDuration = c.Worker.PollInterval }, "lease_duration"},
 		{"heartbeat lease", func(c *Config) { c.Worker.LeaseDuration = c.Worker.HeartbeatInterval }, "heartbeat_interval"},

@@ -2,7 +2,7 @@
 
 Memento is a self-hosted portal for privately publishing selected photos and videos from one Curator's existing Immich library to family Recipients. Immich remains the media source. Memento owns People, Events, Audiences, Publications, Recipient access, interactions, and notifications.
 
-The repository now includes the deployable application foundation: a React PWA shell, a Go API and in-process worker, PostgreSQL migrations, Caddy, and one production image. Product workflows are delivered in later implementation phases. See [the product and architecture specification](docs/product-architecture-spec.md) and [canonical domain language](CONTEXT.md).
+The repository includes the deployable application foundation and first-browser Curator setup: a React PWA, a Go API and in-process worker, PostgreSQL migrations, Caddy, and one production image. Additional product workflows are delivered in later implementation phases. See [the product and architecture specification](docs/product-architecture-spec.md) and [canonical domain language](CONTEXT.md).
 
 ## Deployment topology
 
@@ -26,7 +26,7 @@ A later MVP phase will also require HTTPS-capable devices for Web Push. Supporti
 
 The PostgreSQL image recommended by Immich v3.0.3 already contains `unaccent` and `pg_trgm`, but extensions must be created separately inside each logical database.
 
-The current foundation does not yet expose first-time browser setup or Recipient content. When setup is delivered, complete it before public exposure. Setup will have no CLI token, and its first successful transaction will create the first Person with Curator and Recipient roles and then disable setup.
+Complete first-browser setup before public exposure. Browser setup requires HTTPS, except on a browser-recognized loopback address such as `localhost`; a private-network HTTP address is not sufficient because the required Secure Session cookie would be discarded. Setup has no CLI token. Its first successful transaction creates the sole Person with Curator and Recipient roles, records completed Onboarding choices, creates an opaque server-side Session, and permanently disables setup.
 
 ## Developer prerequisites
 
@@ -158,8 +158,9 @@ Required settings are:
 - `MEMENTO_DATABASE_URL` or `MEMENTO_DATABASE_URL_FILE`
 - `MEMENTO_IMMICH_URL`
 - `MEMENTO_IMMICH_API_KEY` or `MEMENTO_IMMICH_API_KEY_FILE`
+- `MEMENTO_SECURITY_SECRET` or `MEMENTO_SECURITY_SECRET_FILE`, containing at least 32 random bytes and kept stable across restarts
 
-Environment names for YAML fields use the `MEMENTO_` prefix and underscores, such as `MEMENTO_HTTP_SHUTDOWN_TIMEOUT` and `MEMENTO_WORKER_LEASE_DURATION`. Secret file values override direct environment values and surrounding whitespace is removed. SMTP is optional until email is needed; when enabled, its host, transport mode, sender, test recipient, and optional username are ordinary settings, while its password should use `MEMENTO_SMTP_PASSWORD_FILE`. Never put real credentials in the YAML example, image, logs, or health output.
+Environment names for YAML fields use the `MEMENTO_` prefix and underscores, such as `MEMENTO_HTTP_SHUTDOWN_TIMEOUT` and `MEMENTO_WORKER_LEASE_DURATION`. Secret file values override direct environment values and surrounding whitespace is removed. Generate the security secret with a cryptographically secure tool, store it like the database and Immich credentials, and do not rotate it as a routine restart action. Setup bursts default to three code requests per normalized email and twenty setup mutations per client IP in fifteen minutes. Configure them with `MEMENTO_SECURITY_SETUP_EMAIL_LIMIT`, `MEMENTO_SECURITY_SETUP_IP_LIMIT`, and `MEMENTO_SECURITY_SETUP_RATE_WINDOW`. `MEMENTO_SECURITY_TRUSTED_PROXY_CIDRS` explicitly identifies proxies whose forwarding headers may supply the client IP; it defaults to the loopback networks used by the bundled Caddy process. SMTP is optional until email is needed, but must be enabled before first-browser setup can send its verification code. When enabled, its host, transport mode, sender, test recipient, and optional username are ordinary settings, while its password should use `MEMENTO_SMTP_PASSWORD_FILE`. Never put real credentials in the YAML example, image, logs, or health output.
 
 Build the one-image production topology with an explicit application tag:
 
@@ -167,7 +168,7 @@ Build the one-image production topology with an explicit application tag:
 docker build --tag memento:0.1.0 .
 ```
 
-Caddy listens on port 8080 by default, serves the frontend with SPA fallback, and proxies `/api/*` to the Go process on loopback. Set `MEMENTO_SITE_ADDRESS` to a Caddy site address for direct TLS exposure. The container health check calls only `/api/health/live`; use `/api/health/ready` for traffic readiness.
+Caddy listens on port 8080 by default, serves the frontend with SPA fallback, and proxies `/api/*` to the Go process on loopback. Set `MEMENTO_SITE_ADDRESS` to a Caddy site address for direct TLS exposure. When a separate reverse proxy terminates HTTPS in front of the bundled Caddy process, set `MEMENTO_CADDY_TRUSTED_PROXY_CIDRS` to its space-separated CIDR networks. Caddy then preserves the trusted client address and original HTTPS scheme; untrusted forwarding headers remain ignored. The container health check calls only `/api/health/live`; use `/api/health/ready` for traffic readiness.
 
 ### Verify required email delivery
 
@@ -190,6 +191,16 @@ The request transaction commits an `email_deliveries` row and outbox event befor
 SMTP delivery is at least once because provider acceptance cannot be committed atomically with PostgreSQL after a process crash. A stable `Message-ID` and persisted sent state limit observable replay, but cannot guarantee that a provider will suppress every duplicate.
 
 Plaintext SMTP is forbidden by default. `mode: insecure` additionally requires `insecure_development: true`, a literal loopback or private IP endpoint, and no credentials. Startup logs a warning and readiness reports `"smtp":"insecure_development"` while active, including after a delivery failure. This exception is only for a controlled development SMTP fixture, never production.
+
+### Complete first-browser setup
+
+After the required test email succeeds, open Memento over HTTPS or on a loopback address in the first browser. Enter the first Person's name and login email, verify the eight-digit code within ten minutes, review every Onboarding acknowledgment, choose an email preference and browser Session type, then explicitly complete setup within thirty minutes of verification.
+
+A code permits at most five verification attempts and is single-use. Requesting or verifying it does not create a Person or Session. The durable email body containing a setup code is encrypted at rest and erased after terminal delivery. Final completion takes the singleton setup lock and creates the Person, Curator and Recipient roles, completed Recipient access generation, current login email, Onboarding choices, notification preference, initial Session, and safe security audit records in one transaction. A concurrent final request receives a conflict without retaining partial identity or Session records.
+
+The Session credential is an opaque random value stored only as a hash on the server. The browser receives it in a host-prefixed Secure, HttpOnly, SameSite Lax cookie. Public-computer Sessions use a browser-session cookie and expire server-side within twelve hours. Trusted-device Sessions use a persistent cookie, refresh through a CSRF-protected mutation when the application opens, and expire after one year of inactivity. Session mutations require the Session-bound CSRF token returned by the API.
+
+Setup closure is stored in PostgreSQL. Clearing cookies, using another browser, changing configuration, or restarting Memento does not reopen it. There is no CLI override. Safe GET requests only inspect persisted setup or Session state and never create identity or Session records.
 
 ### Private Docker network
 

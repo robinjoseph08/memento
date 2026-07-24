@@ -1,3 +1,10 @@
+{
+	servers {
+		trusted_proxies static {$MEMENTO_CADDY_TRUSTED_PROXY_CIDRS:127.0.0.0/8 ::1/128}
+		trusted_proxies_strict
+	}
+}
+
 {$MEMENTO_SITE_ADDRESS::8080} {
 	encode zstd gzip
 
@@ -19,7 +26,9 @@
 
 	@api path /api /api/*
 	handle @api {
-		reverse_proxy {$MEMENTO_HTTP_ADDRESS:127.0.0.1:8081}
+		reverse_proxy {$MEMENTO_HTTP_ADDRESS:127.0.0.1:8081} {
+			header_up X-Memento-Client-IP {client_ip}
+		}
 	}
 
 	handle {
