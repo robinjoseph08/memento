@@ -3,10 +3,21 @@
 package emaildelivery
 
 import (
+	"bufio"
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"errors"
+	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/textproto"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -110,13 +121,15 @@ func TestInvalidDeliveryIdentifiersAndPayloadsFailSafely(t *testing.T) {
 func TestRequiredTestEmailIsCommittedBeforeWorkerDelivery(t *testing.T) {
 	db := testdb.Open(t)
 	require.NoError(t, migrations.Apply(context.Background(), db))
-	sender := new(scriptedSender)
-	service := New(db, deliveryConfig(), sender)
+	server := newDeliverySMTPFixture(t, 250)
+	smtpClient, err := smtp.New(server.config(), &tls.Config{RootCAs: server.roots})
+	require.NoError(t, err)
+	service := New(db, server.config(), smtpClient)
 
 	response, err := service.RequestTest(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, "queued", response.Status)
-	assert.Zero(t, sender.count(), "request path must not contact SMTP")
+	assert.Zero(t, server.count(), "request path must not contact SMTP")
 	var events, jobs int
 	require.NoError(t, db.NewRaw(`SELECT count(*) FROM outbox_events WHERE delivered_at IS NULL`).Scan(context.Background(), &events))
 	require.NoError(t, db.NewRaw(`SELECT count(*) FROM jobs`).Scan(context.Background(), &jobs))
@@ -131,7 +144,7 @@ func TestRequiredTestEmailIsCommittedBeforeWorkerDelivery(t *testing.T) {
 		status, statusErr := service.Status(context.Background(), response.DeliveryID)
 		return statusErr == nil && status.Status == "sent"
 	}, time.Second, 10*time.Millisecond)
-	assert.Equal(t, 1, sender.count())
+	assert.Equal(t, 1, server.count())
 }
 
 func TestTemporaryFailureRetriesWithBoundedBackoff(t *testing.T) {
@@ -165,16 +178,20 @@ func TestTemporaryFailureRetriesWithBoundedBackoff(t *testing.T) {
 func TestExpiredLeaseRecoversWithoutRepeatingRecordedEffect(t *testing.T) {
 	db := testdb.Open(t)
 	require.NoError(t, migrations.Apply(context.Background(), db))
-	sender := new(scriptedSender)
-	service := New(db, deliveryConfig(), sender)
-	response, err := service.RequestTest(context.Background())
+	server := newDeliverySMTPFixture(t, 250)
+	smtpClient, err := smtp.New(server.config(), &tls.Config{RootCAs: server.roots})
+	require.NoError(t, err)
+	service := New(db, server.config(), smtpClient)
+	_, err = service.RequestTest(context.Background())
 	require.NoError(t, err)
 	dispatcher := outbox.New(db)
 	dispatched, err := dispatcher.Dispatch(context.Background(), "interrupted-dispatcher", time.Second)
 	require.NoError(t, err)
 	assert.True(t, dispatched)
-	_, err = db.NewRaw(`UPDATE email_deliveries SET status = 'sent', sent_at = now() WHERE public_id = ?`, response.DeliveryID).Exec(context.Background())
-	require.NoError(t, err)
+	var job worker.Job
+	require.NoError(t, db.NewRaw(`SELECT id, kind, payload, attempts FROM jobs`).Scan(context.Background(), &job.ID, &job.Kind, &job.Payload, &job.Attempts))
+	require.NoError(t, service.Handle(context.Background(), job))
+	assert.Equal(t, 1, server.count())
 	_, err = db.NewRaw(`UPDATE jobs SET status = 'running', lease_owner = 'dead-process', lease_expires_at = now() - interval '1 second'`).Exec(context.Background())
 	require.NoError(t, err)
 
@@ -187,7 +204,7 @@ func TestExpiredLeaseRecoversWithoutRepeatingRecordedEffect(t *testing.T) {
 		err := db.NewRaw(`SELECT status FROM jobs`).Scan(context.Background(), &status)
 		return err == nil && status == "completed"
 	}, time.Second, 5*time.Millisecond)
-	assert.Zero(t, sender.count(), "a recorded send must make lease recovery idempotent")
+	assert.Equal(t, 1, server.count(), "a recorded send must make lease recovery idempotent")
 }
 
 func TestRetryWindowExhaustionBecomesPermanentFailure(t *testing.T) {
@@ -217,8 +234,10 @@ func TestRetryWindowExhaustionBecomesPermanentFailure(t *testing.T) {
 func TestPermanentRecipientRejectionCreatesSafeOperatorVisibleFailure(t *testing.T) {
 	db := testdb.Open(t)
 	require.NoError(t, migrations.Apply(context.Background(), db))
-	sender := &scriptedSender{results: []error{&smtp.DeliveryError{Diagnostic: "recipient_rejected", Temporary: false}}}
-	service := New(db, deliveryConfig(), sender)
+	server := newDeliverySMTPFixture(t, 550)
+	smtpClient, err := smtp.New(server.config(), &tls.Config{RootCAs: server.roots})
+	require.NoError(t, err)
+	service := New(db, server.config(), smtpClient)
 	response, err := service.RequestTest(context.Background())
 	require.NoError(t, err)
 	jobWorker, err := worker.New(db, workerConfig(), "failure-worker", map[string]worker.Handler{JobKind: service.Handle}, worker.WithDispatcher(outbox.New(db)))
@@ -257,6 +276,118 @@ func TestOutboxLeaseIsReclaimableAfterInterruptedDispatch(t *testing.T) {
 	var jobs int
 	require.NoError(t, db.NewRaw(`SELECT count(*) FROM jobs`).Scan(context.Background(), &jobs))
 	assert.Equal(t, 1, jobs)
+}
+
+type deliverySMTPFixture struct {
+	listener net.Listener
+	address  string
+	roots    *x509.CertPool
+	rcptCode int
+	mu       sync.Mutex
+	messages int
+}
+
+func newDeliverySMTPFixture(t *testing.T, rcptCode int) *deliverySMTPFixture {
+	t.Helper()
+	listener, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	certificate, leaf := deliveryTestCertificate(t)
+	fixture := &deliverySMTPFixture{
+		listener: tls.NewListener(listener, &tls.Config{Certificates: []tls.Certificate{certificate}, MinVersion: tls.VersionTLS12}),
+		address:  listener.Addr().String(), roots: x509.NewCertPool(), rcptCode: rcptCode,
+	}
+	fixture.roots.AddCert(leaf)
+	go fixture.serve()
+	t.Cleanup(func() { _ = fixture.listener.Close() })
+	return fixture
+}
+
+func (s *deliverySMTPFixture) serve() {
+	for {
+		conn, err := s.listener.Accept()
+		if err != nil {
+			return
+		}
+		go s.handle(conn)
+	}
+}
+
+func (s *deliverySMTPFixture) handle(conn net.Conn) {
+	defer conn.Close()
+	reader := textproto.NewReader(bufio.NewReader(conn))
+	writer := bufio.NewWriter(conn)
+	write := func(value string) { _, _ = writer.WriteString(value + "\r\n"); _ = writer.Flush() }
+	write("220 local test SMTP")
+	for {
+		line, err := reader.ReadLine()
+		if err != nil {
+			return
+		}
+		switch {
+		case len(line) >= 4 && (line[:4] == "EHLO" || line[:4] == "HELO"):
+			write("250 local")
+		case len(line) >= 4 && line[:4] == "MAIL":
+			write("250 sender accepted")
+		case len(line) >= 4 && line[:4] == "RCPT":
+			if s.rcptCode == 550 {
+				write("550 raw permanent private response")
+			} else {
+				write("250 recipient accepted")
+			}
+		case line == "DATA":
+			write("354 continue")
+			if _, err := reader.ReadDotBytes(); err != nil {
+				return
+			}
+			s.mu.Lock()
+			s.messages++
+			s.mu.Unlock()
+			write("250 queued")
+		case line == "QUIT":
+			write("221 bye")
+			return
+		default:
+			write("500 unsupported")
+		}
+	}
+}
+
+func (s *deliverySMTPFixture) config() config.SMTPConfig {
+	host, port, _ := net.SplitHostPort(s.address)
+	portNumber, _ := strconv.Atoi(port)
+	cfg := deliveryConfig()
+	cfg.Host = host
+	cfg.Port = portNumber
+	return cfg
+}
+
+func (s *deliverySMTPFixture) count() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.messages
+}
+
+func deliveryTestCertificate(t *testing.T) (tls.Certificate, *x509.Certificate) {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "127.0.0.1"},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
+		KeyUsage:    x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment | x509.KeyUsageCertSign,
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}, BasicConstraintsValid: true, IsCA: true,
+		IPAddresses: []net.IP{net.ParseIP("127.0.0.1")},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	require.NoError(t, err)
+	certificate, err := tls.X509KeyPair(
+		pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}),
+		pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}),
+	)
+	require.NoError(t, err)
+	leaf, err := x509.ParseCertificate(der)
+	require.NoError(t, err)
+	return certificate, leaf
 }
 
 func stopWorker(jobWorker *worker.Worker) {
