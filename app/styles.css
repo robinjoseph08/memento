@@ -526,6 +526,51 @@ h1 {
     border-color: #0284c7;
     color: #075985;
   }
+
+  .source-workspace,
+  .source-details {
+    border-color: #bae6fd;
+  }
+
+  .source-header p:not(.step-label),
+  .source-album-summary p,
+  .source-empty {
+    color: #475569;
+  }
+
+  .source-tabs button,
+  .source-album-summary button,
+  .source-load-more {
+    border-color: #0284c7;
+    color: #075985;
+  }
+
+  .source-tabs button[aria-pressed="true"] {
+    background: #e0f2fe;
+  }
+
+  .source-album {
+    border-color: #bae6fd;
+    background: rgb(255 255 255 / 70%);
+  }
+
+  .source-details {
+    color: #334155;
+  }
+
+  .source-details dt {
+    color: #0369a1;
+  }
+
+  .source-empty {
+    border-color: #7dd3fc;
+  }
+
+  .source-success {
+    border-color: #6ee7b7;
+    background: #ecfdf5;
+    color: #065f46;
+  }
 }
 
 .people-shell {

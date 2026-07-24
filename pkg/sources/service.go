@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,9 +17,12 @@ import (
 )
 
 var (
-	ErrNotFound          = errors.New("source album not found")
-	ErrInvalidTransition = errors.New("source album disposition transition is invalid")
-	ErrDependency        = errors.New("immich dependency unavailable")
+	ErrNotFound             = errors.New("source album not found")
+	ErrInvalidTransition    = errors.New("source album disposition transition is invalid")
+	ErrInvalidCursor        = errors.New("source album cursor is invalid")
+	ErrStaleVersion         = errors.New("source album version is stale")
+	ErrInvalidConfiguration = errors.New("immich configuration is invalid")
+	ErrDependency           = errors.New("immich dependency unavailable")
 )
 
 // Connector is the narrow, normalized Immich boundary used by discovery.
@@ -38,6 +42,7 @@ type Album struct {
 	StartAt         *time.Time `json:"start_at"`
 	EndAt           *time.Time `json:"end_at"`
 	Disposition     string     `json:"disposition"`
+	Version         int64      `json:"version"`
 	FirstSeenAt     time.Time  `json:"first_seen_at"`
 	LastSeenAt      time.Time  `json:"last_seen_at"`
 	SourceMissing   bool       `json:"source_missing"`
@@ -45,8 +50,8 @@ type Album struct {
 
 // ListResponse is generated to TypeScript by Tygo.
 type ListResponse struct {
-	Albums   []Album `json:"albums"`
-	NextPage *int    `json:"next_page"`
+	Albums     []Album `json:"albums"`
+	NextCursor *string `json:"next_cursor"`
 }
 
 // DiscoveryResponse is generated to TypeScript by Tygo.
@@ -70,6 +75,9 @@ func New(db *bun.DB, connector Connector) *Service {
 // writes nothing unless both dependency calls complete successfully.
 func (s *Service) Discover(ctx context.Context) (DiscoveryResponse, error) {
 	if err := s.connector.Check(ctx); err != nil {
+		if immich.IsConfigurationError(err) {
+			return DiscoveryResponse{}, ErrInvalidConfiguration
+		}
 		return DiscoveryResponse{}, ErrDependency
 	}
 	albums, err := s.connector.OwnedAlbums(ctx)
@@ -83,7 +91,8 @@ func (s *Service) Discover(ctx context.Context) (DiscoveryResponse, error) {
 		}
 		if _, err := tx.NewRaw(`
 			UPDATE source_albums
-			SET source_missing = true, missing_since = COALESCE(missing_since, ?), updated_at = ?
+			SET source_missing = true, missing_since = COALESCE(missing_since, ?),
+			    version = version + 1, updated_at = ?
 			WHERE source_missing = false
 		`, now, now).Exec(ctx); err != nil {
 			return fmt.Errorf("mark absent Source albums: %w", err)
@@ -118,6 +127,7 @@ func (s *Service) Discover(ctx context.Context) (DiscoveryResponse, error) {
 					missing_since = NULL,
 					source_fingerprint = EXCLUDED.source_fingerprint,
 					next_reconciliation_at = EXCLUDED.next_reconciliation_at,
+					version = source_albums.version + 1,
 					updated_at = EXCLUDED.updated_at
 			`, publicID, album.SourceID, album.Name, album.Description, album.AssetCount,
 				album.CreatedAt, album.UpdatedAt, album.StartDate, album.EndDate,
@@ -133,25 +143,31 @@ func (s *Service) Discover(ctx context.Context) (DiscoveryResponse, error) {
 	return DiscoveryResponse{Status: "connected", DiscoveredCount: len(albums)}, nil
 }
 
-// List returns a private, paginated disposition view without source identifiers.
-func (s *Service) List(ctx context.Context, disposition string, page, limit int) (ListResponse, error) {
+// List returns a private, cursor-paginated disposition view without source identifiers.
+func (s *Service) List(ctx context.Context, disposition, encodedCursor string, limit int) (ListResponse, error) {
 	if disposition != "unreviewed" && disposition != "ignored" {
 		return ListResponse{}, ErrInvalidTransition
-	}
-	if page < 1 {
-		page = 1
 	}
 	if limit < 1 || limit > 100 {
 		limit = 50
 	}
-	rows, err := s.db.QueryContext(ctx, `
+	cursor, err := decodeListCursor(encodedCursor)
+	if err != nil {
+		return ListResponse{}, ErrInvalidCursor
+	}
+	query := `
 		SELECT id, name, description, asset_count, source_created_at, source_updated_at,
-		       source_start_at, source_end_at, disposition, first_seen_at, last_seen_at, source_missing
+		       source_start_at, source_end_at, disposition, version, first_seen_at, last_seen_at, source_missing
 		FROM source_albums
-		WHERE disposition = ?
-		ORDER BY first_seen_at DESC, id
-		LIMIT ? OFFSET ?
-	`, disposition, limit+1, (page-1)*limit)
+		WHERE disposition = ?`
+	args := []any{disposition}
+	if cursor != nil {
+		query += ` AND (first_seen_at < ? OR (first_seen_at = ? AND id > ?))`
+		args = append(args, cursor.FirstSeenAt, cursor.FirstSeenAt, cursor.ID)
+	}
+	query += ` ORDER BY first_seen_at DESC, id LIMIT ?`
+	args = append(args, limit+1)
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return ListResponse{}, err
 	}
@@ -167,20 +183,23 @@ func (s *Service) List(ctx context.Context, disposition string, page, limit int)
 	if err := rows.Err(); err != nil {
 		return ListResponse{}, err
 	}
-	var nextPage *int
+	var nextCursor *string
 	if len(albums) > limit {
 		albums = albums[:limit]
-		next := page + 1
-		nextPage = &next
+		next, err := encodeListCursor(albums[len(albums)-1])
+		if err != nil {
+			return ListResponse{}, err
+		}
+		nextCursor = &next
 	}
-	return ListResponse{Albums: albums, NextPage: nextPage}, nil
+	return ListResponse{Albums: albums, NextCursor: nextCursor}, nil
 }
 
 // Get returns one normalized Source album by its Memento identity.
 func (s *Service) Get(ctx context.Context, id uuid.UUID) (Album, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, name, description, asset_count, source_created_at, source_updated_at,
-		       source_start_at, source_end_at, disposition, first_seen_at, last_seen_at, source_missing
+		       source_start_at, source_end_at, disposition, version, first_seen_at, last_seen_at, source_missing
 		FROM source_albums WHERE id = ?
 	`, id)
 	album, err := scanAlbum(row)
@@ -191,25 +210,26 @@ func (s *Service) Get(ctx context.Context, id uuid.UUID) (Album, error) {
 }
 
 // Ignore preserves source identity and last-seen state while removing the album from the inbox.
-func (s *Service) Ignore(ctx context.Context, id uuid.UUID) (Album, error) {
-	return s.transition(ctx, id, "unreviewed", "ignored")
+func (s *Service) Ignore(ctx context.Context, id uuid.UUID, version int64) (Album, error) {
+	return s.transition(ctx, id, version, "unreviewed", "ignored")
 }
 
 // Restore returns an ignored Source album to the unreviewed inbox.
-func (s *Service) Restore(ctx context.Context, id uuid.UUID) (Album, error) {
-	return s.transition(ctx, id, "ignored", "unreviewed")
+func (s *Service) Restore(ctx context.Context, id uuid.UUID, version int64) (Album, error) {
+	return s.transition(ctx, id, version, "ignored", "unreviewed")
 }
 
-func (s *Service) transition(ctx context.Context, id uuid.UUID, from, to string) (Album, error) {
+func (s *Service) transition(ctx context.Context, id uuid.UUID, version int64, from, to string) (Album, error) {
 	now := s.now().UTC()
 	var ignoredAt any
 	if to == "ignored" {
 		ignoredAt = now
 	}
 	result, err := s.db.NewRaw(`
-		UPDATE source_albums SET disposition = ?, ignored_at = ?, updated_at = ?
-		WHERE id = ? AND disposition = ?
-	`, to, ignoredAt, now, id, from).Exec(ctx)
+		UPDATE source_albums
+		SET disposition = ?, ignored_at = ?, version = version + 1, updated_at = ?
+		WHERE id = ? AND disposition = ? AND version = ?
+	`, to, ignoredAt, now, id, from, version).Exec(ctx)
 	if err != nil {
 		return Album{}, err
 	}
@@ -218,16 +238,54 @@ func (s *Service) transition(ctx context.Context, id uuid.UUID, from, to string)
 		return Album{}, err
 	}
 	if affected == 0 {
-		var exists bool
-		if err := s.db.NewRaw(`SELECT EXISTS (SELECT 1 FROM source_albums WHERE id = ?)`, id).Scan(ctx, &exists); err != nil {
-			return Album{}, err
-		}
-		if !exists {
+		var currentDisposition string
+		var currentVersion int64
+		err := s.db.NewRaw(`SELECT disposition, version FROM source_albums WHERE id = ?`, id).Scan(ctx, &currentDisposition, &currentVersion)
+		if errors.Is(err, sql.ErrNoRows) {
 			return Album{}, ErrNotFound
 		}
-		return Album{}, ErrInvalidTransition
+		if err != nil {
+			return Album{}, err
+		}
+		if currentDisposition != from {
+			return Album{}, ErrInvalidTransition
+		}
+		return Album{}, ErrStaleVersion
 	}
 	return s.Get(ctx, id)
+}
+
+type listCursor struct {
+	FirstSeenAt time.Time `json:"first_seen_at"`
+	ID          uuid.UUID `json:"id"`
+}
+
+func encodeListCursor(album Album) (string, error) {
+	id, err := uuid.Parse(album.ID)
+	if err != nil || id == uuid.Nil || album.FirstSeenAt.IsZero() {
+		return "", ErrInvalidCursor
+	}
+	encoded, err := json.Marshal(listCursor{FirstSeenAt: album.FirstSeenAt, ID: id})
+	if err != nil {
+		return "", fmt.Errorf("encode Source album cursor: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(encoded), nil
+}
+
+func decodeListCursor(encoded string) (*listCursor, error) {
+	if encoded == "" {
+		return nil, nil
+	}
+	contents, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil {
+		return nil, ErrInvalidCursor
+	}
+	var cursor listCursor
+	if err := json.Unmarshal(contents, &cursor); err != nil || cursor.ID == uuid.Nil || cursor.FirstSeenAt.IsZero() {
+		return nil, ErrInvalidCursor
+	}
+	cursor.FirstSeenAt = cursor.FirstSeenAt.UTC()
+	return &cursor, nil
 }
 
 func albumFingerprint(album immich.AlbumSummary) ([32]byte, error) {
@@ -256,7 +314,7 @@ func scanAlbum(row scanner) (Album, error) {
 	err := row.Scan(
 		&album.ID, &album.Name, &album.Description, &album.AssetCount,
 		&album.SourceCreatedAt, &album.SourceUpdatedAt, &album.StartAt, &album.EndAt,
-		&album.Disposition, &album.FirstSeenAt, &album.LastSeenAt, &album.SourceMissing,
+		&album.Disposition, &album.Version, &album.FirstSeenAt, &album.LastSeenAt, &album.SourceMissing,
 	)
 	return album, err
 }

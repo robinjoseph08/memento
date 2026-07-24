@@ -5,6 +5,7 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useSearchParams } from "react-router-dom";
 
 import { APIError, apiJSON, apiNoContent } from "./api";
 import { PeopleManager } from "./PeopleManager";
@@ -424,7 +425,10 @@ function SourceAlbumCard({
         `/api/sources/${album.id}/${album.disposition === "ignored" ? "restore" : "ignore"}`,
         {
           method: "POST",
-          headers: { "X-Memento-CSRF": csrfToken },
+          headers: {
+            "If-Match": `"${album.version}"`,
+            "X-Memento-CSRF": csrfToken,
+          },
         },
       ),
     onSuccess: async () => {
@@ -479,17 +483,31 @@ function SourceAlbumCard({
 
 function SourceWorkspace({ session }: { session: SessionResponse }) {
   const queryClient = useQueryClient();
-  const [disposition, setDisposition] = useState<"unreviewed" | "ignored">(
-    "unreviewed",
-  );
+  const [searchParams, setSearchParams] = useSearchParams();
+  const disposition =
+    searchParams.get("source_view") === "ignored" ? "ignored" : "unreviewed";
+  const selectDisposition = (nextDisposition: "unreviewed" | "ignored") => {
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      if (nextDisposition === "ignored") {
+        next.set("source_view", "ignored");
+      } else {
+        next.delete("source_view");
+      }
+      return next;
+    });
+  };
   const sources = useInfiniteQuery({
     queryKey: ["sources", disposition],
-    queryFn: ({ pageParam }) =>
-      apiJSON<SourceListResponse>(
-        `/api/sources?disposition=${disposition}&limit=50&page=${pageParam}`,
-      ),
-    initialPageParam: 1,
-    getNextPageParam: (page) => page.next_page ?? undefined,
+    queryFn: ({ pageParam }) => {
+      const params = new URLSearchParams({ disposition, limit: "50" });
+      if (pageParam) {
+        params.set("cursor", pageParam);
+      }
+      return apiJSON<SourceListResponse>(`/api/sources?${params.toString()}`);
+    },
+    initialPageParam: "",
+    getNextPageParam: (page) => page.next_cursor ?? undefined,
     retry: false,
   });
   const albums = sources.data?.pages.flatMap((page) => page.albums);
@@ -534,14 +552,14 @@ function SourceWorkspace({ session }: { session: SessionResponse }) {
       <div aria-label="Source album views" className="source-tabs" role="group">
         <button
           aria-pressed={disposition === "unreviewed"}
-          onClick={() => setDisposition("unreviewed")}
+          onClick={() => selectDisposition("unreviewed")}
           type="button"
         >
           Inbox
         </button>
         <button
           aria-pressed={disposition === "ignored"}
-          onClick={() => setDisposition("ignored")}
+          onClick={() => selectDisposition("ignored")}
           type="button"
         >
           Ignored

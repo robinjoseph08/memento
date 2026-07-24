@@ -23,6 +23,7 @@ func init() {
 						source_end_at timestamptz,
 						source_last_modified_asset_at timestamptz,
 						disposition text NOT NULL DEFAULT 'unreviewed' CHECK (disposition IN ('unreviewed', 'ignored')),
+						version bigint NOT NULL DEFAULT 1 CHECK (version > 0),
 						ignored_at timestamptz,
 						first_seen_at timestamptz NOT NULL,
 						last_seen_at timestamptz NOT NULL,
@@ -36,7 +37,7 @@ func init() {
 						CHECK (source_missing = (missing_since IS NOT NULL)),
 						CHECK (last_seen_at >= first_seen_at)
 					)`,
-					`CREATE INDEX source_albums_disposition_idx ON source_albums (disposition, first_seen_at, id)`,
+					`CREATE INDEX source_albums_disposition_idx ON source_albums (disposition, first_seen_at DESC, id)`,
 					`CREATE INDEX source_albums_missing_idx ON source_albums (source_missing, last_seen_at)`,
 					`CREATE INDEX source_albums_reconciliation_due_idx ON source_albums (next_reconciliation_at, id)`,
 				}

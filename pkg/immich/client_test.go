@@ -121,6 +121,7 @@ func TestOwnedAlbumsRejectsMalformedOrDuplicateSummaries(t *testing.T) {
 		body string
 	}{
 		{"malformed JSON", `{`},
+		{"null album list", `null`},
 		{"invalid ID", `[{"id":"private","assetCount":0,"createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"}]`},
 		{"invalid timestamp", `[{"id":"` + id + `","assetCount":0,"createdAt":"private-path","updatedAt":"2026-01-01T00:00:00Z"}]`},
 		{"negative count", `[{"id":"` + id + `","assetCount":-1,"createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"}]`},
@@ -190,9 +191,14 @@ func TestAlbumAssetsPageRejectsInvalidEntryPointsAndResponses(t *testing.T) {
 
 	albumID := uuid.New()
 	for name, body := range map[string]string{
-		"bad asset":     `{"assets":{"items":[{"id":"private","type":"IMAGE"}],"nextPage":null}}`,
-		"bad type":      `{"assets":{"items":[{"id":"` + uuid.NewString() + `","type":"PRIVATE"}],"nextPage":null}}`,
-		"bad next page": `{"assets":{"items":[],"nextPage":"1"}}`,
+		"missing assets":    `{}`,
+		"null assets":       `{"assets":null}`,
+		"missing items":     `{"assets":{"nextPage":null}}`,
+		"null items":        `{"assets":{"items":null,"nextPage":null}}`,
+		"missing next page": `{"assets":{"items":[]}}`,
+		"bad asset":         `{"assets":{"items":[{"id":"private","type":"IMAGE"}],"nextPage":null}}`,
+		"bad type":          `{"assets":{"items":[{"id":"` + uuid.NewString() + `","type":"PRIVATE"}],"nextPage":null}}`,
+		"bad next page":     `{"assets":{"items":[],"nextPage":"1"}}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			server := contractServer(t, func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(body)) })

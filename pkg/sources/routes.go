@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
@@ -37,8 +38,11 @@ func (h *Handler) Discover(c echo.Context) error {
 		return err
 	}
 	response, err := h.service.Discover(c.Request().Context())
+	if errors.Is(err, ErrInvalidConfiguration) {
+		return errcodes.ValidationError("Immich must be version v3.0.3 with exactly the required read permissions.")
+	}
 	if errors.Is(err, ErrDependency) {
-		return errcodes.ServiceUnavailable("Immich could not be validated. Check its version and API key permissions.")
+		return errcodes.ServiceUnavailable("Immich is temporarily unavailable. Try discovery again.")
 	}
 	if err != nil {
 		return err
@@ -54,17 +58,16 @@ func (h *Handler) List(c echo.Context) error {
 	if disposition == "" {
 		disposition = "unreviewed"
 	}
-	page, err := positiveQuery(c.QueryParam("page"), 1)
-	if err != nil {
-		return errcodes.ValidationError("Page must be a positive number.")
-	}
 	limit, err := positiveQuery(c.QueryParam("limit"), 50)
 	if err != nil || limit > 100 {
 		return errcodes.ValidationError("Limit must be between 1 and 100.")
 	}
-	response, err := h.service.List(c.Request().Context(), disposition, page, limit)
+	response, err := h.service.List(c.Request().Context(), disposition, c.QueryParam("cursor"), limit)
 	if errors.Is(err, ErrInvalidTransition) {
 		return errcodes.ValidationError("Disposition must be unreviewed or ignored.")
+	}
+	if errors.Is(err, ErrInvalidCursor) {
+		return errcodes.ValidationError("Cursor is invalid.")
 	}
 	if err != nil {
 		return err
@@ -98,7 +101,7 @@ func (h *Handler) Restore(c echo.Context) error {
 	return h.mutateDisposition(c, h.service.Restore)
 }
 
-func (h *Handler) mutateDisposition(c echo.Context, mutate func(context.Context, uuid.UUID) (Album, error)) error {
+func (h *Handler) mutateDisposition(c echo.Context, mutate func(context.Context, uuid.UUID, int64) (Album, error)) error {
 	if err := h.authorize(c, true); err != nil {
 		return err
 	}
@@ -106,12 +109,18 @@ func (h *Handler) mutateDisposition(c echo.Context, mutate func(context.Context,
 	if err != nil {
 		return err
 	}
-	album, err := mutate(c.Request().Context(), id)
+	version, err := sourceVersion(c)
+	if err != nil {
+		return err
+	}
+	album, err := mutate(c.Request().Context(), id, version)
 	switch {
 	case errors.Is(err, ErrNotFound):
 		return errcodes.NotFound("Source album")
 	case errors.Is(err, ErrInvalidTransition):
 		return errcodes.Conflict("Source album is already in the requested state.")
+	case errors.Is(err, ErrStaleVersion):
+		return errcodes.Conflict("Source album changed. Refresh and try again.")
 	case err != nil:
 		return err
 	default:
@@ -147,6 +156,18 @@ func sourceID(c echo.Context) (uuid.UUID, error) {
 		return uuid.Nil, errcodes.NotFound("Source album")
 	}
 	return id, nil
+}
+
+func sourceVersion(c echo.Context) (int64, error) {
+	raw := strings.TrimSpace(c.Request().Header.Get("If-Match"))
+	if len(raw) >= 2 && raw[0] == '"' && raw[len(raw)-1] == '"' {
+		raw = raw[1 : len(raw)-1]
+	}
+	version, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || version < 1 {
+		return 0, errcodes.ValidationError("If-Match must contain the current Source album version.")
+	}
+	return version, nil
 }
 
 var errPositiveQuery = errors.New("query value must be positive")

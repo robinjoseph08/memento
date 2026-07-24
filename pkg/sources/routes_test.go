@@ -103,19 +103,26 @@ func TestDiscoveryDependencyFailureReturnsOnlySafeDiagnostics(t *testing.T) {
 	var payload map[string]any
 	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &payload))
 	serialized := response.Body.String()
-	assert.Contains(t, serialized, "Immich could not be validated")
+	assert.Contains(t, serialized, "Immich is temporarily unavailable")
 	assert.NotContains(t, serialized, "private")
 }
 
 func TestSourceListRejectsInvalidPaginationBeforeDatabaseAccess(t *testing.T) {
 	e := sourceHTTP(nil, &fakeAuthorizer{})
 	for path, message := range map[string]string{
-		"/api/sources?page=0":     "Page must be a positive number.",
-		"/api/sources?limit=101":  "Limit must be between 1 and 100.",
-		"/api/sources?limit=word": "Limit must be between 1 and 100.",
+		"/api/sources?cursor=not-a-cursor": "Cursor is invalid.",
+		"/api/sources?limit=101":           "Limit must be between 1 and 100.",
+		"/api/sources?limit=word":          "Limit must be between 1 and 100.",
 	} {
 		response := sourceRequest(e, http.MethodGet, path, "session", "")
 		assert.Equal(t, http.StatusUnprocessableEntity, response.Code)
 		assert.Contains(t, response.Body.String(), message)
 	}
+}
+
+func TestSourceTriageRequiresOptimisticVersion(t *testing.T) {
+	e := sourceHTTP(nil, &fakeAuthorizer{})
+	response := sourceRequest(e, http.MethodPost, "/api/sources/11111111-1111-4111-8111-111111111111/ignore", "session", "csrf")
+	assert.Equal(t, http.StatusUnprocessableEntity, response.Code)
+	assert.Contains(t, response.Body.String(), "If-Match")
 }

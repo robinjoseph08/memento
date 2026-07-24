@@ -59,7 +59,7 @@ func TestDiscoveryPersistsOnlyNormalizedSourceInventory(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, DiscoveryResponse{Status: "connected", DiscoveredCount: 1}, response)
 
-	listed, err := service.List(context.Background(), "unreviewed", 1, 50)
+	listed, err := service.List(context.Background(), "unreviewed", "", 50)
 	require.NoError(t, err)
 	require.Len(t, listed.Albums, 1)
 	album := listed.Albums[0]
@@ -86,16 +86,19 @@ func TestIgnoreRestoreAndRediscoveryPreserveDurableIdentityAndLastSeenState(t *t
 	firstSeen := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	service.now = func() time.Time { return firstSeen }
 	require.NoError(t, discover(service))
-	inbox, err := service.List(context.Background(), "unreviewed", 1, 50)
+	inbox, err := service.List(context.Background(), "unreviewed", "", 50)
 	require.NoError(t, err)
 	id := uuid.MustParse(inbox.Albums[0].ID)
 
-	ignored, err := service.Ignore(context.Background(), id)
+	ignored, err := service.Ignore(context.Background(), id, inbox.Albums[0].Version)
 	require.NoError(t, err)
 	assert.Equal(t, "ignored", ignored.Disposition)
+	assert.Greater(t, ignored.Version, inbox.Albums[0].Version)
 	assert.Equal(t, firstSeen, ignored.LastSeenAt)
-	_, err = service.Ignore(context.Background(), id)
+	_, err = service.Ignore(context.Background(), id, ignored.Version)
 	require.ErrorIs(t, err, ErrInvalidTransition)
+	_, err = service.Restore(context.Background(), id, inbox.Albums[0].Version)
+	require.ErrorIs(t, err, ErrStaleVersion)
 
 	secondSeen := firstSeen.Add(time.Hour)
 	service.now = func() time.Time { return secondSeen }
@@ -109,12 +112,12 @@ func TestIgnoreRestoreAndRediscoveryPreserveDurableIdentityAndLastSeenState(t *t
 	assert.Equal(t, firstSeen, stillIgnored.FirstSeenAt)
 	assert.Equal(t, secondSeen, stillIgnored.LastSeenAt)
 
-	restored, err := service.Restore(context.Background(), id)
+	restored, err := service.Restore(context.Background(), id, stillIgnored.Version)
 	require.NoError(t, err)
 	assert.Equal(t, id.String(), restored.ID)
 	assert.Equal(t, "unreviewed", restored.Disposition)
 	assert.Equal(t, secondSeen, restored.LastSeenAt)
-	_, err = service.Restore(context.Background(), id)
+	_, err = service.Restore(context.Background(), id, restored.Version)
 	require.ErrorIs(t, err, ErrInvalidTransition)
 }
 
@@ -124,7 +127,7 @@ func TestSuccessfulAbsentDiscoveryMarksSourceMissingWithoutErasingIt(t *testing.
 	firstSeen := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	service.now = func() time.Time { return firstSeen }
 	require.NoError(t, discover(service))
-	listed, err := service.List(context.Background(), "unreviewed", 1, 50)
+	listed, err := service.List(context.Background(), "unreviewed", "", 50)
 	require.NoError(t, err)
 	id := uuid.MustParse(listed.Albums[0].ID)
 
@@ -164,20 +167,22 @@ func TestSourceInventoryListPaginationAndNotFoundTransitions(t *testing.T) {
 	}}
 	service := newSourceService(t, connector)
 	require.NoError(t, discover(service))
-	first, err := service.List(context.Background(), "unreviewed", 1, 2)
+	first, err := service.List(context.Background(), "unreviewed", "", 2)
 	require.NoError(t, err)
 	require.Len(t, first.Albums, 2)
-	require.NotNil(t, first.NextPage)
-	assert.Equal(t, 2, *first.NextPage)
-	second, err := service.List(context.Background(), "unreviewed", 2, 2)
+	require.NotNil(t, first.NextCursor)
+	assert.NotContains(t, *first.NextCursor, first.Albums[1].ID)
+	second, err := service.List(context.Background(), "unreviewed", *first.NextCursor, 2)
 	require.NoError(t, err)
 	assert.Len(t, second.Albums, 1)
-	assert.Nil(t, second.NextPage)
-	_, err = service.List(context.Background(), "private", 1, 10)
+	assert.Nil(t, second.NextCursor)
+	_, err = service.List(context.Background(), "private", "", 10)
 	require.ErrorIs(t, err, ErrInvalidTransition)
+	_, err = service.List(context.Background(), "unreviewed", "not-a-cursor", 10)
+	require.ErrorIs(t, err, ErrInvalidCursor)
 	_, err = service.Get(context.Background(), uuid.New())
 	require.ErrorIs(t, err, ErrNotFound)
-	_, err = service.Ignore(context.Background(), uuid.New())
+	_, err = service.Ignore(context.Background(), uuid.New(), 1)
 	require.ErrorIs(t, err, ErrNotFound)
 }
 

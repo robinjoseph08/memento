@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { BrowserRouter } from "react-router-dom";
 import { afterEach, expect, test, vi } from "vitest";
 
 import { App } from "./App";
@@ -9,9 +10,11 @@ function renderApp() {
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
   return render(
-    <QueryClientProvider client={client}>
-      <App />
-    </QueryClientProvider>,
+    <BrowserRouter>
+      <QueryClientProvider client={client}>
+        <App />
+      </QueryClientProvider>
+    </BrowserRouter>,
   );
 }
 
@@ -41,6 +44,7 @@ function stringBody(body: BodyInit | null | undefined) {
 
 afterEach(() => {
   cleanup();
+  window.history.replaceState(null, "", "/");
   vi.restoreAllMocks();
 });
 
@@ -274,7 +278,7 @@ test("restores and refreshes a signed-in Trusted-device Session", async () => {
       return Promise.resolve(new Response(null, { status: 204 }));
     }
     if (path.startsWith("/api/sources?")) {
-      return Promise.resolve(jsonResponse({ albums: [], next_page: null }));
+      return Promise.resolve(jsonResponse({ albums: [], next_cursor: null }));
     }
     if (path.startsWith("/api/people?")) {
       return Promise.resolve(jsonResponse({ people: [] }));
@@ -311,6 +315,7 @@ test("validates Immich and supports private Source album ignore and restore tria
   const csrfToken = "c".repeat(64);
   const sourceID = "11111111-1111-4111-8111-111111111111";
   let disposition: "unreviewed" | "ignored" = "unreviewed";
+  let version = 1;
   const requests: Array<{ path: string; init?: RequestInit }> = [];
   vi.stubGlobal(
     "fetch",
@@ -337,11 +342,15 @@ test("validates Immich and supports private Source album ignore and restore tria
         );
       }
       if (path === `/api/sources/${sourceID}/ignore`) {
+        expect(init?.headers).toMatchObject({ "If-Match": `"${version}"` });
         disposition = "ignored";
+        version += 1;
         return Promise.resolve(jsonResponse(sourceAlbum(disposition)));
       }
       if (path === `/api/sources/${sourceID}/restore`) {
+        expect(init?.headers).toMatchObject({ "If-Match": `"${version}"` });
         disposition = "unreviewed";
+        version += 1;
         return Promise.resolve(jsonResponse(sourceAlbum(disposition)));
       }
       if (path.startsWith("/api/people?")) {
@@ -358,7 +367,7 @@ test("validates Immich and supports private Source album ignore and restore tria
               requestedDisposition === disposition
                 ? [sourceAlbum(disposition)]
                 : [],
-            next_page: null,
+            next_cursor: null,
           }),
         );
       }
@@ -377,6 +386,7 @@ test("validates Immich and supports private Source album ignore and restore tria
       start_at: "2026-01-01T00:00:00Z",
       end_at: "2026-01-07T00:00:00Z",
       disposition: state,
+      version,
       first_seen_at: "2026-03-01T00:00:00Z",
       last_seen_at: "2026-03-02T00:00:00Z",
       source_missing: false,
@@ -396,6 +406,7 @@ test("validates Immich and supports private Source album ignore and restore tria
     expect(screen.queryByText("Family trip")).not.toBeInTheDocument(),
   );
   fireEvent.click(screen.getByRole("button", { name: "Ignored" }));
+  expect(window.location.search).toBe("?source_view=ignored");
   expect(await screen.findByText("Family trip")).toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "Inspect" }));
   fireEvent.click(screen.getByRole("button", { name: "Restore to inbox" }));

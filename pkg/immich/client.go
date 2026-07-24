@@ -50,6 +50,12 @@ var (
 	errAlbumAssetsFailed  = safeError("Immich album membership lookup failed")
 )
 
+// IsConfigurationError reports whether validation failed because the operator
+// must change the Immich version or API key permissions before retrying.
+func IsConfigurationError(err error) bool {
+	return errors.Is(err, errUnsupportedVersion) || errors.Is(err, errInvalidPermissions)
+}
+
 // Client accesses only allowlisted Immich v3.0.3 read operations. It never
 // returns raw DTOs, source URLs, paths, owner IDs, library IDs, or face data.
 type Client struct {
@@ -83,10 +89,12 @@ type albumResponse struct {
 }
 
 type searchResponse struct {
-	Assets struct {
-		Items    []assetResponse `json:"items"`
-		NextPage *string         `json:"nextPage"`
-	} `json:"assets"`
+	Assets *searchAssetsResponse `json:"assets"`
+}
+
+type searchAssetsResponse struct {
+	Items    *[]assetResponse `json:"items"`
+	NextPage json.RawMessage  `json:"nextPage"`
 }
 
 type assetResponse struct {
@@ -172,6 +180,9 @@ func (c *Client) OwnedAlbums(ctx context.Context) ([]AlbumSummary, error) {
 	if err := c.getJSONQuery(ctx, "albums", url.Values{"isOwned": {"true"}}, &response, errOwnedAlbumsFailed); err != nil {
 		return nil, err
 	}
+	if response == nil {
+		return nil, errInvalidResponse
+	}
 	albums := make([]AlbumSummary, 0, len(response))
 	seen := make(map[uuid.UUID]struct{}, len(response))
 	for _, raw := range response {
@@ -208,8 +219,11 @@ func (c *Client) AlbumAssetsPage(ctx context.Context, albumID uuid.UUID, page in
 	if err := c.doJSON(ctx, http.MethodPost, "search/metadata", nil, body, &response, errAlbumAssetsFailed); err != nil {
 		return AssetPage{}, err
 	}
-	result := AssetPage{Items: make([]AssetSummary, 0, len(response.Assets.Items))}
-	for _, raw := range response.Assets.Items {
+	if response.Assets == nil || response.Assets.Items == nil || len(response.Assets.NextPage) == 0 {
+		return AssetPage{}, errInvalidResponse
+	}
+	result := AssetPage{Items: make([]AssetSummary, 0, len(*response.Assets.Items))}
+	for _, raw := range *response.Assets.Items {
 		assetID, err := uuid.Parse(raw.ID)
 		if err != nil || assetID == uuid.Nil || !validAssetType(raw.Type) || invalidDimension(raw.Width) || invalidDimension(raw.Height) {
 			return AssetPage{}, errInvalidResponse
@@ -219,8 +233,12 @@ func (c *Client) AlbumAssetsPage(ctx context.Context, albumID uuid.UUID, page in
 			LocalDateTime: truncate(strings.TrimSpace(raw.LocalDateTime), 64),
 		})
 	}
-	if response.Assets.NextPage != nil {
-		next, err := strconv.Atoi(*response.Assets.NextPage)
+	if string(response.Assets.NextPage) != "null" {
+		var nextValue string
+		if err := json.Unmarshal(response.Assets.NextPage, &nextValue); err != nil {
+			return AssetPage{}, errInvalidResponse
+		}
+		next, err := strconv.Atoi(nextValue)
 		if err != nil || next <= page {
 			return AssetPage{}, errInvalidResponse
 		}
