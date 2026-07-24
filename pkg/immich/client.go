@@ -74,19 +74,19 @@ type versionResponse struct {
 }
 
 type apiKeyResponse struct {
-	Permissions []string `json:"permissions"`
+	Permissions *[]string `json:"permissions"`
 }
 
 type albumResponse struct {
-	ID                         *string `json:"id"`
-	AlbumName                  *string `json:"albumName"`
-	Description                *string `json:"description"`
-	AssetCount                 *int    `json:"assetCount"`
-	CreatedAt                  *string `json:"createdAt"`
-	UpdatedAt                  *string `json:"updatedAt"`
-	StartDate                  *string `json:"startDate"`
-	EndDate                    *string `json:"endDate"`
-	LastModifiedAssetTimestamp *string `json:"lastModifiedAssetTimestamp"`
+	ID                         *string         `json:"id"`
+	AlbumName                  *string         `json:"albumName"`
+	Description                *string         `json:"description"`
+	AssetCount                 *int            `json:"assetCount"`
+	CreatedAt                  *string         `json:"createdAt"`
+	UpdatedAt                  *string         `json:"updatedAt"`
+	StartDate                  json.RawMessage `json:"startDate"`
+	EndDate                    json.RawMessage `json:"endDate"`
+	LastModifiedAssetTimestamp json.RawMessage `json:"lastModifiedAssetTimestamp"`
 }
 
 type searchResponse struct {
@@ -221,7 +221,10 @@ func (c *Client) Check(ctx context.Context) error {
 	if err := c.getJSON(ctx, "api-keys/me", &key, errRequestFailed); err != nil {
 		return err
 	}
-	if !samePermissions(key.Permissions, requiredPermissions) {
+	if key.Permissions == nil {
+		return errInvalidResponse
+	}
+	if !samePermissions(*key.Permissions, requiredPermissions) {
 		return errInvalidPermissions
 	}
 	return nil
@@ -274,7 +277,7 @@ func (c *Client) AlbumAssetsPage(ctx context.Context, albumID uuid.UUID, page in
 	}
 	if response.Assets == nil || response.Assets.Count == nil || response.Assets.Items == nil || response.Assets.Total == nil ||
 		len(response.Assets.NextPage) == 0 || *response.Assets.Count != len(*response.Assets.Items) ||
-		*response.Assets.Total < 0 || len(*response.Assets.Items) > assetPageSize {
+		*response.Assets.Total != len(*response.Assets.Items) || len(*response.Assets.Items) > assetPageSize {
 		return AssetPage{}, errInvalidResponse
 	}
 	result := AssetPage{Items: make([]AssetSummary, 0, len(*response.Assets.Items))}
@@ -311,12 +314,7 @@ func (c *Client) AlbumAssetsPage(ctx context.Context, albumID uuid.UUID, page in
 		}
 		result.NextPage = &next
 	}
-	firstIndex := (page - 1) * assetPageSize
-	if result.NextPage != nil {
-		if len(result.Items) != assetPageSize || *response.Assets.Total <= page*assetPageSize {
-			return AssetPage{}, errInvalidResponse
-		}
-	} else if *response.Assets.Total != firstIndex+len(result.Items) {
+	if result.NextPage != nil && len(result.Items) != assetPageSize {
 		return AssetPage{}, errInvalidResponse
 	}
 	return result, nil
@@ -516,11 +514,15 @@ func normalizeAlbum(raw albumResponse) (AlbumSummary, error) {
 	}, nil
 }
 
-func optionalTime(value *string) (*time.Time, error) {
-	if value == nil || *value == "" {
+func optionalTime(raw json.RawMessage) (*time.Time, error) {
+	if len(raw) == 0 {
 		return nil, nil
 	}
-	parsed, err := time.Parse(time.RFC3339, *value)
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil || strings.TrimSpace(value) == "" {
+		return nil, errInvalidResponse
+	}
+	parsed, err := time.Parse(time.RFC3339, value)
 	if err != nil {
 		return nil, err
 	}

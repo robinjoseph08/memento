@@ -96,6 +96,8 @@ func TestCheckRejectsUnsupportedVersionsAndInvalidPermissionSets(t *testing.T) {
 
 func TestCheckRejectsAmbiguousPermissionMembers(t *testing.T) {
 	for name, body := range map[string]string{
+		"missing":        `{}`,
+		"null":           `{"permissions":null}`,
 		"duplicate":      `{"permissions":["all"],"permissions":` + permissionsJSON + `}`,
 		"case variant":   `{"Permissions":` + permissionsJSON + `}`,
 		"case collision": `{"permissions":["all"],"Permissions":` + permissionsJSON + `}`,
@@ -167,6 +169,9 @@ func TestOwnedAlbumsRejectsMalformedOrDuplicateSummaries(t *testing.T) {
 		{"duplicate ID", `[` + validAlbum + `,` + validAlbum + `]`},
 		{"duplicate ID member", `[{"id":"` + uuid.NewString() + `","id":"` + id + `",` + validFields + `}]`},
 		{"case-colliding ID member", `[{"id":"private","ID":"` + id + `",` + validFields + `}]`},
+		{"null optional start date", `[{"id":"` + id + `",` + validFields + `,"startDate":null}]`},
+		{"empty optional end date", `[{"id":"` + id + `",` + validFields + `,"endDate":""}]`},
+		{"null optional last modified", `[{"id":"` + id + `",` + validFields + `,"lastModifiedAssetTimestamp":null}]`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -204,7 +209,7 @@ func TestAlbumAssetsPageUsesPinnedPaginationAndStripsSensitiveDTOFields(t *testi
 		_, _ = w.Write([]byte(`{"assets":{"count":1,"items":[{` +
 			`"id":"` + assetID.String() + `","type":"IMAGE","width":1200,"height":800,"localDateTime":"2026-01-01T10:00:00.000Z",` +
 			`"originalPath":"/secret/source.jpg","libraryId":"secret-library","people":[{"name":"Private face"}]` +
-			`}],"nextPage":null,"total":1001},"albums":{"items":[]}}`))
+			`}],"nextPage":null,"total":1},"albums":{"items":[]}}`))
 	})
 	defer server.Close()
 	client, err := New(clientConfig(server.URL), server.Client())
@@ -232,7 +237,7 @@ func TestAlbumAssetsPageAcceptsOnlyFullNonterminalPages(t *testing.T) {
 	}
 	payload, err := json.Marshal(map[string]any{
 		"assets": map[string]any{
-			"count": assetPageSize, "items": items, "nextPage": "2", "total": assetPageSize + 1,
+			"count": assetPageSize, "items": items, "nextPage": "2", "total": assetPageSize,
 		},
 	})
 	require.NoError(t, err)
@@ -274,7 +279,7 @@ func TestAlbumAssetsPageRejectsInvalidEntryPointsAndResponses(t *testing.T) {
 		"missing total":               `{"assets":{"count":0,"items":[],"nextPage":null}}`,
 		"null total":                  `{"assets":{"count":0,"items":[],"nextPage":null,"total":null}}`,
 		"mismatched total":            `{"assets":{"count":0,"items":[],"nextPage":null,"total":1}}`,
-		"underfilled continuation":    `{"assets":{"count":0,"items":[],"nextPage":"2","total":1}}`,
+		"underfilled continuation":    `{"assets":{"count":1,"items":[` + validAsset + `],"nextPage":"2","total":1}}`,
 		"duplicate asset":             `{"assets":{"count":2,"items":[` + validAsset + `,` + validAsset + `],"nextPage":null,"total":2}}`,
 		"bad asset":                   `{"assets":{"count":1,"items":[{"id":"private",` + validAssetFields + `}],"nextPage":null,"total":1}}`,
 		"bad type":                    `{"assets":{"count":1,"items":[{"id":"` + uuid.NewString() + `","type":"PRIVATE","width":1200,"height":800,"localDateTime":"2026-01-01T10:00:00Z"}],"nextPage":null,"total":1}}`,
@@ -283,7 +288,7 @@ func TestAlbumAssetsPageRejectsInvalidEntryPointsAndResponses(t *testing.T) {
 		"missing local date time":     `{"assets":{"count":1,"items":[{"id":"` + uuid.NewString() + `","type":"IMAGE","width":1200,"height":800}],"nextPage":null,"total":1}}`,
 		"null local date time":        `{"assets":{"count":1,"items":[{"id":"` + uuid.NewString() + `","type":"IMAGE","width":1200,"height":800,"localDateTime":null}],"nextPage":null,"total":1}}`,
 		"bad local date time":         `{"assets":{"count":1,"items":[{"id":"` + uuid.NewString() + `","type":"IMAGE","width":1200,"height":800,"localDateTime":"yesterday"}],"nextPage":null,"total":1}}`,
-		"skipped next page":           `{"assets":{"count":0,"items":[],"nextPage":"3","total":1}}`,
+		"skipped next page":           `{"assets":{"count":0,"items":[],"nextPage":"3","total":0}}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			server := contractServer(t, func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(body)) })
