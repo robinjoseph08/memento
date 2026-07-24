@@ -439,7 +439,7 @@ function ReadyCard({ session }: { session?: SessionResponse }) {
       <p className="lede">
         {session
           ? `Setup is complete. You're signed in as ${session.display_name}.`
-          : "Setup is complete. Memento is ready for private family sharing."}
+          : "Setup is complete."}
       </p>
       <p aria-live="polite" className="status">
         <span aria-hidden="true" className="status-dot" />

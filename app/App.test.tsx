@@ -253,11 +253,7 @@ test("safe bootstrap GETs show permanent closure without starting setup", async 
 
   renderApp();
 
-  expect(
-    await screen.findByText(
-      "Setup is complete. Memento is ready for private family sharing.",
-    ),
-  ).toBeInTheDocument();
+  expect(await screen.findByText("Setup is complete.")).toBeInTheDocument();
   expect(fetchMock).toHaveBeenCalledTimes(2);
   expect(screen.queryByLabelText("Login email")).not.toBeInTheDocument();
 });
