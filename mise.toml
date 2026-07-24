@@ -86,7 +86,7 @@ depends = ["types:generate", "lint:eslint", "lint:prettier", "lint:types"]
 
 [tasks."lint:eslint"]
 description = "Run ESLint"
-depends = ["dependencies:install"]
+depends = ["dependencies:install", "types:generate"]
 run = "pnpm lint:eslint"
 
 [tasks."lint:prettier"]
