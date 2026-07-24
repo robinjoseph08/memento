@@ -25,7 +25,7 @@ docker run --detach \
   --env POSTGRES_DB=postgres \
   --env POSTGRES_USER=postgres \
   --env POSTGRES_PASSWORD=test-admin-only-password \
-  --mount "type=bind,source=$root/deploy/init-test-database.sql,target=/docker-entrypoint-initdb.d/init-test-database.sql,readonly" \
+  --mount "type=bind,source=$root/tests/fixtures/init-database.sql,target=/docker-entrypoint-initdb.d/init-database.sql,readonly" \
   --publish 127.0.0.1::5432 \
   --tmpfs /var/lib/postgresql/data \
   postgres:17.7-alpine3.23 >/dev/null

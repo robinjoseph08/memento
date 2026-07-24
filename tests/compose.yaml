@@ -13,7 +13,7 @@ services:
     tmpfs:
       - /var/lib/postgresql/data
     volumes:
-      - ./init-test-database.sql:/docker-entrypoint-initdb.d/init-test-database.sql:ro
+      - ./fixtures/init-database.sql:/docker-entrypoint-initdb.d/init-database.sql:ro
 
   immich:
     image: caddy:2.10.2-alpine
@@ -27,7 +27,7 @@ services:
         "caddyfile",
       ]
     volumes:
-      - ./test-immich.Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./fixtures/immich.Caddyfile:/etc/caddy/Caddyfile:ro
 
   memento:
     image: "memento:${MEMENTO_TEST_IMAGE_TAG:-test}"

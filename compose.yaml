@@ -14,7 +14,7 @@ services:
       - "127.0.0.1:${MEMENTO_DEV_POSTGRES_PORT:-54320}:5432"
     volumes:
       - memento-postgres:/var/lib/postgresql/data
-      - ./deploy/init-development-database.sql:/docker-entrypoint-initdb.d/init-development-database.sql:ro
+      - ./dev/init-database.sql:/docker-entrypoint-initdb.d/init-database.sql:ro
 
   immich:
     image: caddy:2.10.2-alpine
@@ -42,7 +42,7 @@ services:
     ports:
       - "127.0.0.1:${MEMENTO_DEV_IMMICH_PORT:-3001}:3001"
     volumes:
-      - ./deploy/test-immich.Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./tests/fixtures/immich.Caddyfile:/etc/caddy/Caddyfile:ro
 
 volumes:
   memento-postgres:

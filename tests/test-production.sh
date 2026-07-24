@@ -8,7 +8,7 @@ export MEMENTO_TEST_IMAGE_TAG=$image_tag
 temporary=$(mktemp -d)
 
 compose() {
-  docker compose --project-name "$project" --file "$root/deploy/compose.test.yml" "$@"
+  docker compose --project-name "$project" --file "$root/tests/compose.yaml" "$@"
 }
 
 cleanup() {
