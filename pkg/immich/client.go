@@ -67,9 +67,9 @@ type Client struct {
 }
 
 type versionResponse struct {
-	Major      int             `json:"major"`
-	Minor      int             `json:"minor"`
-	Patch      int             `json:"patch"`
+	Major      *int            `json:"major"`
+	Minor      *int            `json:"minor"`
+	Patch      *int            `json:"patch"`
 	Prerelease json.RawMessage `json:"prerelease"`
 }
 
@@ -97,6 +97,7 @@ type searchAssetsResponse struct {
 	Count    *int             `json:"count"`
 	Items    *[]assetResponse `json:"items"`
 	NextPage json.RawMessage  `json:"nextPage"`
+	Total    *int             `json:"total"`
 }
 
 type assetResponse struct {
@@ -158,10 +159,10 @@ func (c *Client) Check(ctx context.Context) error {
 	if err := c.getJSON(ctx, "server/version", &version, errRequestFailed); err != nil {
 		return err
 	}
-	if len(version.Prerelease) == 0 {
+	if version.Major == nil || version.Minor == nil || version.Patch == nil || len(version.Prerelease) == 0 {
 		return errInvalidResponse
 	}
-	actual := fmt.Sprintf("%d.%d.%d", version.Major, version.Minor, version.Patch)
+	actual := fmt.Sprintf("%d.%d.%d", *version.Major, *version.Minor, *version.Patch)
 	if actual != supportedVersion || string(version.Prerelease) != "null" {
 		return errUnsupportedVersion
 	}
@@ -204,7 +205,7 @@ func (c *Client) OwnedAlbums(ctx context.Context) ([]AlbumSummary, error) {
 // AlbumAssetsPage reads one bounded page of complete album membership metadata.
 // Callers begin at page 1 and follow NextPage until nil.
 func (c *Client) AlbumAssetsPage(ctx context.Context, albumID uuid.UUID, page int) (AssetPage, error) {
-	if albumID == uuid.Nil || page < 1 {
+	if albumID == uuid.Nil || page < 1 || page > int(^uint(0)>>1)/assetPageSize {
 		return AssetPage{}, errInvalidResponse
 	}
 	body, err := json.Marshal(map[string]any{
@@ -221,9 +222,9 @@ func (c *Client) AlbumAssetsPage(ctx context.Context, albumID uuid.UUID, page in
 	if err := c.doJSON(ctx, http.MethodPost, "search/metadata", nil, body, &response, errAlbumAssetsFailed); err != nil {
 		return AssetPage{}, err
 	}
-	if response.Assets == nil || response.Assets.Count == nil || response.Assets.Items == nil ||
+	if response.Assets == nil || response.Assets.Count == nil || response.Assets.Items == nil || response.Assets.Total == nil ||
 		len(response.Assets.NextPage) == 0 || *response.Assets.Count != len(*response.Assets.Items) ||
-		len(*response.Assets.Items) > assetPageSize {
+		*response.Assets.Total < 0 || len(*response.Assets.Items) > assetPageSize {
 		return AssetPage{}, errInvalidResponse
 	}
 	result := AssetPage{Items: make([]AssetSummary, 0, len(*response.Assets.Items))}
@@ -259,6 +260,14 @@ func (c *Client) AlbumAssetsPage(ctx context.Context, albumID uuid.UUID, page in
 			return AssetPage{}, errInvalidResponse
 		}
 		result.NextPage = &next
+	}
+	firstIndex := (page - 1) * assetPageSize
+	if result.NextPage != nil {
+		if len(result.Items) != assetPageSize || *response.Assets.Total <= page*assetPageSize {
+			return AssetPage{}, errInvalidResponse
+		}
+	} else if *response.Assets.Total != firstIndex+len(result.Items) {
+		return AssetPage{}, errInvalidResponse
 	}
 	return result, nil
 }

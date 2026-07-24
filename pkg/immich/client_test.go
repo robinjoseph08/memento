@@ -63,6 +63,12 @@ func TestCheckRejectsUnsupportedVersionsAndInvalidPermissionSets(t *testing.T) {
 	}{
 		{"older version", `{"major":3,"minor":0,"patch":2,"prerelease":null}`, permissionsJSON, "Immich version is unsupported"},
 		{"prerelease", `{"major":3,"minor":0,"patch":3,"prerelease":1}`, permissionsJSON, "Immich version is unsupported"},
+		{"missing major", `{"minor":0,"patch":3,"prerelease":null}`, permissionsJSON, "Immich returned an invalid response"},
+		{"null major", `{"major":null,"minor":0,"patch":3,"prerelease":null}`, permissionsJSON, "Immich returned an invalid response"},
+		{"missing minor", `{"major":3,"patch":3,"prerelease":null}`, permissionsJSON, "Immich returned an invalid response"},
+		{"null minor", `{"major":3,"minor":null,"patch":3,"prerelease":null}`, permissionsJSON, "Immich returned an invalid response"},
+		{"missing patch", `{"major":3,"minor":0,"prerelease":null}`, permissionsJSON, "Immich returned an invalid response"},
+		{"null patch", `{"major":3,"minor":0,"patch":null,"prerelease":null}`, permissionsJSON, "Immich returned an invalid response"},
 		{"missing permission", `{"major":3,"minor":0,"patch":3,"prerelease":null}`, `["album.read"]`, "Immich API key permissions are invalid"},
 		{"extra permission", `{"major":3,"minor":0,"patch":3,"prerelease":null}`, `["all","album.read","asset.download","asset.read","asset.view","face.read","person.read"]`, "Immich API key permissions are invalid"},
 		{"duplicate permission", `{"major":3,"minor":0,"patch":3,"prerelease":null}`, `["album.read","album.read","asset.read","asset.view","face.read","person.read"]`, "Immich API key permissions are invalid"},
@@ -171,7 +177,7 @@ func TestAlbumAssetsPageUsesPinnedPaginationAndStripsSensitiveDTOFields(t *testi
 		_, _ = w.Write([]byte(`{"assets":{"count":1,"items":[{` +
 			`"id":"` + assetID.String() + `","type":"IMAGE","width":1200,"height":800,"localDateTime":"2026-01-01T10:00:00.000Z",` +
 			`"originalPath":"/secret/source.jpg","libraryId":"secret-library","people":[{"name":"Private face"}]` +
-			`}],"nextPage":"3"},"albums":{"items":[]}}`))
+			`}],"nextPage":null,"total":1001},"albums":{"items":[]}}`))
 	})
 	defer server.Close()
 	client, err := New(clientConfig(server.URL), server.Client())
@@ -181,12 +187,39 @@ func TestAlbumAssetsPageUsesPinnedPaginationAndStripsSensitiveDTOFields(t *testi
 	require.Len(t, page.Items, 1)
 	assert.Equal(t, assetID, page.Items[0].SourceID)
 	assert.Equal(t, "image", page.Items[0].MediaType)
-	require.NotNil(t, page.NextPage)
-	assert.Equal(t, 3, *page.NextPage)
+	assert.Nil(t, page.NextPage)
 	serialized, err := json.Marshal(page)
 	require.NoError(t, err)
 	assert.NotContains(t, string(serialized), "secret")
 	assert.NotContains(t, string(serialized), "face")
+}
+
+func TestAlbumAssetsPageAcceptsOnlyFullNonterminalPages(t *testing.T) {
+	albumID := uuid.New()
+	items := make([]map[string]any, assetPageSize)
+	for index := range items {
+		items[index] = map[string]any{
+			"id": uuid.NewString(), "type": "IMAGE", "width": nil, "height": nil,
+			"localDateTime": "2026-01-01T10:00:00Z",
+		}
+	}
+	payload, err := json.Marshal(map[string]any{
+		"assets": map[string]any{
+			"count": assetPageSize, "items": items, "nextPage": "2", "total": assetPageSize + 1,
+		},
+	})
+	require.NoError(t, err)
+	server := contractServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(payload)
+	})
+	defer server.Close()
+	client, err := New(clientConfig(server.URL), server.Client())
+	require.NoError(t, err)
+	page, err := client.AlbumAssetsPage(context.Background(), albumID, 1)
+	require.NoError(t, err)
+	assert.Len(t, page.Items, assetPageSize)
+	require.NotNil(t, page.NextPage)
+	assert.Equal(t, 2, *page.NextPage)
 }
 
 func TestAlbumAssetsPageRejectsInvalidEntryPointsAndResponses(t *testing.T) {
@@ -202,22 +235,26 @@ func TestAlbumAssetsPageRejectsInvalidEntryPointsAndResponses(t *testing.T) {
 	validAssetFields := `"type":"IMAGE","width":1200,"height":800,"localDateTime":"2026-01-01T10:00:00Z"`
 	validAsset := `{"id":"` + duplicateID + `",` + validAssetFields + `}`
 	for name, body := range map[string]string{
-		"missing assets":          `{}`,
-		"null assets":             `{"assets":null}`,
-		"missing count":           `{"assets":{"items":[],"nextPage":null}}`,
-		"count mismatch":          `{"assets":{"count":1,"items":[],"nextPage":null}}`,
-		"missing items":           `{"assets":{"count":0,"nextPage":null}}`,
-		"null items":              `{"assets":{"count":0,"items":null,"nextPage":null}}`,
-		"missing next page":       `{"assets":{"count":0,"items":[]}}`,
-		"duplicate asset":         `{"assets":{"count":2,"items":[` + validAsset + `,` + validAsset + `],"nextPage":null}}`,
-		"bad asset":               `{"assets":{"count":1,"items":[{"id":"private",` + validAssetFields + `}],"nextPage":null}}`,
-		"bad type":                `{"assets":{"count":1,"items":[{"id":"` + uuid.NewString() + `","type":"PRIVATE","width":1200,"height":800,"localDateTime":"2026-01-01T10:00:00Z"}],"nextPage":null}}`,
-		"missing width":           `{"assets":{"count":1,"items":[{"id":"` + uuid.NewString() + `","type":"IMAGE","height":800,"localDateTime":"2026-01-01T10:00:00Z"}],"nextPage":null}}`,
-		"missing height":          `{"assets":{"count":1,"items":[{"id":"` + uuid.NewString() + `","type":"IMAGE","width":1200,"localDateTime":"2026-01-01T10:00:00Z"}],"nextPage":null}}`,
-		"missing local date time": `{"assets":{"count":1,"items":[{"id":"` + uuid.NewString() + `","type":"IMAGE","width":1200,"height":800}],"nextPage":null}}`,
-		"null local date time":    `{"assets":{"count":1,"items":[{"id":"` + uuid.NewString() + `","type":"IMAGE","width":1200,"height":800,"localDateTime":null}],"nextPage":null}}`,
-		"bad local date time":     `{"assets":{"count":1,"items":[{"id":"` + uuid.NewString() + `","type":"IMAGE","width":1200,"height":800,"localDateTime":"yesterday"}],"nextPage":null}}`,
-		"skipped next page":       `{"assets":{"count":0,"items":[],"nextPage":"3"}}`,
+		"missing assets":           `{}`,
+		"null assets":              `{"assets":null}`,
+		"missing count":            `{"assets":{"items":[],"nextPage":null,"total":0}}`,
+		"count mismatch":           `{"assets":{"count":1,"items":[],"nextPage":null,"total":0}}`,
+		"missing items":            `{"assets":{"count":0,"nextPage":null,"total":0}}`,
+		"null items":               `{"assets":{"count":0,"items":null,"nextPage":null,"total":0}}`,
+		"missing next page":        `{"assets":{"count":0,"items":[],"total":0}}`,
+		"missing total":            `{"assets":{"count":0,"items":[],"nextPage":null}}`,
+		"null total":               `{"assets":{"count":0,"items":[],"nextPage":null,"total":null}}`,
+		"mismatched total":         `{"assets":{"count":0,"items":[],"nextPage":null,"total":1}}`,
+		"underfilled continuation": `{"assets":{"count":0,"items":[],"nextPage":"2","total":1}}`,
+		"duplicate asset":          `{"assets":{"count":2,"items":[` + validAsset + `,` + validAsset + `],"nextPage":null,"total":2}}`,
+		"bad asset":                `{"assets":{"count":1,"items":[{"id":"private",` + validAssetFields + `}],"nextPage":null,"total":1}}`,
+		"bad type":                 `{"assets":{"count":1,"items":[{"id":"` + uuid.NewString() + `","type":"PRIVATE","width":1200,"height":800,"localDateTime":"2026-01-01T10:00:00Z"}],"nextPage":null,"total":1}}`,
+		"missing width":            `{"assets":{"count":1,"items":[{"id":"` + uuid.NewString() + `","type":"IMAGE","height":800,"localDateTime":"2026-01-01T10:00:00Z"}],"nextPage":null,"total":1}}`,
+		"missing height":           `{"assets":{"count":1,"items":[{"id":"` + uuid.NewString() + `","type":"IMAGE","width":1200,"localDateTime":"2026-01-01T10:00:00Z"}],"nextPage":null,"total":1}}`,
+		"missing local date time":  `{"assets":{"count":1,"items":[{"id":"` + uuid.NewString() + `","type":"IMAGE","width":1200,"height":800}],"nextPage":null,"total":1}}`,
+		"null local date time":     `{"assets":{"count":1,"items":[{"id":"` + uuid.NewString() + `","type":"IMAGE","width":1200,"height":800,"localDateTime":null}],"nextPage":null,"total":1}}`,
+		"bad local date time":      `{"assets":{"count":1,"items":[{"id":"` + uuid.NewString() + `","type":"IMAGE","width":1200,"height":800,"localDateTime":"yesterday"}],"nextPage":null,"total":1}}`,
+		"skipped next page":        `{"assets":{"count":0,"items":[],"nextPage":"3","total":1}}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			server := contractServer(t, func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(body)) })
