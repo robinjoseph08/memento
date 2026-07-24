@@ -666,6 +666,22 @@ func TestSessionBoundCSRFCannotCrossSessions(t *testing.T) {
 	assert.Equal(t, createdAt.Truncate(time.Microsecond), secondActivity)
 }
 
+func TestAuthorizeCuratorRequiresCurrentRoleAndSessionBoundCSRFForMutations(t *testing.T) {
+	db, service := newSetupService(t)
+	verified := verifiedChallenge(t, db, service, "Source Curator", "source-curator@example.com")
+	completed, err := service.complete(context.Background(), completionRequest(verified.VerificationToken, "trusted"))
+	require.NoError(t, err)
+
+	require.NoError(t, service.AuthorizeCurator(context.Background(), completed.Credential, "", false))
+	require.NoError(t, service.AuthorizeCurator(context.Background(), completed.Credential, completed.CSRFToken, true))
+	require.ErrorIs(t, service.AuthorizeCurator(context.Background(), completed.Credential, "wrong", true), ErrCSRF)
+	require.ErrorIs(t, service.AuthorizeCurator(context.Background(), "invalid", completed.CSRFToken, true), ErrUnauthenticated)
+
+	_, err = db.ExecContext(context.Background(), `DELETE FROM person_roles WHERE role = 'curator'`)
+	require.NoError(t, err)
+	require.ErrorIs(t, service.AuthorizeCurator(context.Background(), completed.Credential, "", false), ErrUnauthenticated)
+}
+
 func TestSetupRateLimitsAreNonEnumeratingAcrossMutations(t *testing.T) {
 	tests := []struct {
 		name  string

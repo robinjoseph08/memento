@@ -1,4 +1,9 @@
-import { useMutation, useQuery } from "@tanstack/react-query";
+import {
+  useInfiniteQuery,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 
 import { APIError, apiJSON, apiNoContent } from "./api";
@@ -13,6 +18,11 @@ import type {
   VerifyCodeRequest,
   VerifyCodeResponse,
 } from "./types/generated/setup";
+import type {
+  Album as SourceAlbum,
+  DiscoveryResponse,
+  ListResponse as SourceListResponse,
+} from "./types/generated/sources";
 
 type BootstrapState =
   | { kind: "available" }
@@ -389,9 +399,198 @@ function SetupFlow({
   );
 }
 
+function formatSourceDate(value: unknown) {
+  if (typeof value !== "string") {
+    return "Unknown";
+  }
+  const date = new Date(value);
+  return Number.isNaN(date.valueOf())
+    ? "Unknown"
+    : new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(date);
+}
+
+function SourceAlbumCard({
+  album,
+  csrfToken,
+}: {
+  album: SourceAlbum;
+  csrfToken: string;
+}) {
+  const queryClient = useQueryClient();
+  const [inspecting, setInspecting] = useState(false);
+  const mutation = useMutation({
+    mutationFn: () =>
+      apiJSON<SourceAlbum>(
+        `/api/sources/${album.id}/${album.disposition === "ignored" ? "restore" : "ignore"}`,
+        {
+          method: "POST",
+          headers: { "X-Memento-CSRF": csrfToken },
+        },
+      ),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["sources"] });
+    },
+  });
+  return (
+    <article className="source-album">
+      <div className="source-album-summary">
+        <div>
+          <h3>{album.name}</h3>
+          <p>
+            {album.asset_count} {album.asset_count === 1 ? "item" : "items"}
+            {album.source_missing ? " · Source missing" : ""}
+          </p>
+        </div>
+        <button onClick={() => setInspecting((value) => !value)} type="button">
+          {inspecting ? "Close" : "Inspect"}
+        </button>
+      </div>
+      {inspecting ? (
+        <div className="source-details">
+          <p>{album.description || "No source description."}</p>
+          <dl>
+            <div>
+              <dt>Source updated</dt>
+              <dd>{formatSourceDate(album.source_updated_at)}</dd>
+            </div>
+            <div>
+              <dt>Last seen</dt>
+              <dd>{formatSourceDate(album.last_seen_at)}</dd>
+            </div>
+          </dl>
+          <ErrorMessage error={mutation.error} />
+          <button
+            className="source-primary-action"
+            disabled={mutation.isPending}
+            onClick={() => mutation.mutate()}
+            type="button"
+          >
+            {mutation.isPending
+              ? "Saving…"
+              : album.disposition === "ignored"
+                ? "Restore to inbox"
+                : "Ignore Source album"}
+          </button>
+        </div>
+      ) : null}
+    </article>
+  );
+}
+
+function SourceWorkspace({ session }: { session: SessionResponse }) {
+  const queryClient = useQueryClient();
+  const [disposition, setDisposition] = useState<"unreviewed" | "ignored">(
+    "unreviewed",
+  );
+  const sources = useInfiniteQuery({
+    queryKey: ["sources", disposition],
+    queryFn: ({ pageParam }) =>
+      apiJSON<SourceListResponse>(
+        `/api/sources?disposition=${disposition}&limit=50&page=${pageParam}`,
+      ),
+    initialPageParam: 1,
+    getNextPageParam: (page) => page.next_page ?? undefined,
+    retry: false,
+  });
+  const albums = sources.data?.pages.flatMap((page) => page.albums);
+  const discover = useMutation({
+    mutationFn: () =>
+      apiJSON<DiscoveryResponse>("/api/sources/discover", {
+        method: "POST",
+        headers: { "X-Memento-CSRF": session.csrf_token },
+      }),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["sources"] });
+    },
+  });
+
+  return (
+    <section aria-labelledby="sources-title" className="source-workspace">
+      <header className="source-header">
+        <div>
+          <p className="step-label">Curator workspace</p>
+          <h2 id="sources-title">Source albums</h2>
+          <p>
+            Inspect owned Immich albums privately. Nothing here is visible to
+            Recipients.
+          </p>
+        </div>
+        <button
+          className="source-connect"
+          disabled={discover.isPending}
+          onClick={() => discover.mutate()}
+          type="button"
+        >
+          {discover.isPending ? "Validating…" : "Connect and discover"}
+        </button>
+      </header>
+      {discover.data ? (
+        <p aria-live="polite" className="source-success">
+          Immich v3.0.3 connected. Found {discover.data.discovered_count} owned
+          {discover.data.discovered_count === 1 ? " album" : " albums"}.
+        </p>
+      ) : null}
+      <ErrorMessage error={discover.error} />
+      <div aria-label="Source album views" className="source-tabs" role="group">
+        <button
+          aria-pressed={disposition === "unreviewed"}
+          onClick={() => setDisposition("unreviewed")}
+          type="button"
+        >
+          Inbox
+        </button>
+        <button
+          aria-pressed={disposition === "ignored"}
+          onClick={() => setDisposition("ignored")}
+          type="button"
+        >
+          Ignored
+        </button>
+      </div>
+      {sources.isPending ? (
+        <p className="source-empty">Loading Source albums…</p>
+      ) : null}
+      {sources.isError ? <ErrorMessage error={sources.error} /> : null}
+      {albums?.length === 0 ? (
+        <p className="source-empty">
+          {disposition === "ignored"
+            ? "No ignored Source albums."
+            : "No unreviewed Source albums. Connect Immich to discover owned albums."}
+        </p>
+      ) : null}
+      <div className="source-list">
+        {albums?.map((album) => (
+          <SourceAlbumCard
+            album={album}
+            csrfToken={session.csrf_token}
+            key={album.id}
+          />
+        ))}
+      </div>
+      {sources.hasNextPage ? (
+        <button
+          className="source-load-more"
+          disabled={sources.isFetchingNextPage}
+          onClick={() => void sources.fetchNextPage()}
+          type="button"
+        >
+          {sources.isFetchingNextPage ? "Loading…" : "Load more Source albums"}
+        </button>
+      ) : null}
+    </section>
+  );
+}
+
 function ReadyCard({ session }: { session?: SessionResponse }) {
   if (session) {
-    return <PeopleManager session={session} />;
+    return (
+      <>
+        <PeopleManager session={session} />
+        <section className="shell-card curator-card">
+          <SourceWorkspace session={session} />
+        </section>
+      </>
+    );
   }
   return (
     <section aria-labelledby="memento-title" className="shell-card">

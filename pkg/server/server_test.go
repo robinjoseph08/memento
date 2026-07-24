@@ -58,13 +58,13 @@ func keys(values map[string]json.RawMessage) []string {
 
 func newServer(t *testing.T) *echo.Echo {
 	t.Helper()
-	e, err := New(new(health.Service), nil, nil, nil)
+	e, err := New(new(health.Service), nil, nil, nil, nil)
 	require.NoError(t, err)
 	return e
 }
 
 func TestServerRegistersPeopleRoutesWhenHandlerIsProvided(t *testing.T) {
-	e, err := New(new(health.Service), nil, nil, people.NewHandler(nil, nil))
+	e, err := New(new(health.Service), nil, nil, people.NewHandler(nil, nil), nil)
 	require.NoError(t, err)
 	routes := make(map[string]bool)
 	for _, route := range e.Routes() {
