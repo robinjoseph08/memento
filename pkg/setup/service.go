@@ -40,6 +40,7 @@ var (
 	ErrUnauthenticated    = errors.New("session is invalid or expired")
 	ErrCSRF               = errors.New("CSRF token is invalid")
 	ErrSessionType        = errors.New("session type does not support this operation")
+	ErrNotCurator         = errors.New("curator authority is required")
 	errGenerateCredential = errors.New("generate secure setup credential")
 )
 
@@ -119,6 +120,12 @@ type authenticatedSession struct {
 	Credential  []byte
 	PersonID    uuid.UUID
 	SessionID   uuid.UUID
+}
+
+// CuratorSession identifies an authenticated Curator action without exposing a browser credential.
+type CuratorSession struct {
+	PersonID  uuid.UUID
+	SessionID uuid.UUID
 }
 
 // Service coordinates setup state, required email, identity, and Session persistence.
@@ -402,6 +409,27 @@ func (s *Service) Session(ctx context.Context, credential string) (SessionRespon
 		SessionType: authenticated.SessionType,
 		CSRFToken:   s.csrfToken(authenticated.Credential),
 	}, nil
+}
+
+// AuthorizeCurator verifies a current Session, the sole Curator role, and CSRF for mutations.
+func (s *Service) AuthorizeCurator(ctx context.Context, credential, csrfToken string, mutation bool) (CuratorSession, error) {
+	authenticated, err := s.authenticate(ctx, credential)
+	if err != nil {
+		return CuratorSession{}, err
+	}
+	if mutation && !s.validCSRF(authenticated.Credential, csrfToken) {
+		return CuratorSession{}, ErrCSRF
+	}
+	var curator bool
+	if err := s.db.NewRaw(`SELECT EXISTS (
+		SELECT 1 FROM person_roles WHERE person_id = ? AND role = 'curator'
+	)`, authenticated.PersonID).Scan(ctx, &curator); err != nil {
+		return CuratorSession{}, err
+	}
+	if !curator {
+		return CuratorSession{}, ErrNotCurator
+	}
+	return CuratorSession{PersonID: authenticated.PersonID, SessionID: authenticated.SessionID}, nil
 }
 
 // refresh extends a Trusted-device Session after a Session-bound CSRF check.
