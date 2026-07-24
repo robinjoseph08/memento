@@ -1,4 +1,8 @@
 packages:
+  - path: "github.com/robinjoseph08/memento/pkg/emaildelivery"
+    output_path: "app/types/generated/emaildelivery.ts"
+    fallback_type: unknown
+    preserve_comments: none
   - path: "github.com/robinjoseph08/memento/pkg/health"
     output_path: "app/types/generated/health.ts"
     fallback_type: unknown

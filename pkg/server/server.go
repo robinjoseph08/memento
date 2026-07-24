@@ -9,12 +9,13 @@ import (
 	goliblogger "github.com/robinjoseph08/golib/echo/v4/middleware/logger"
 	golibrecovery "github.com/robinjoseph08/golib/echo/v4/middleware/recovery"
 	"github.com/robinjoseph08/memento/pkg/binder"
+	"github.com/robinjoseph08/memento/pkg/emaildelivery"
 	"github.com/robinjoseph08/memento/pkg/errcodes"
 	"github.com/robinjoseph08/memento/pkg/health"
 )
 
 // New constructs the HTTP application and delegates route ownership to handler packages.
-func New(healthService *health.Service) (*echo.Echo, error) {
+func New(healthService *health.Service, emailHandler ...*emaildelivery.Handler) (*echo.Echo, error) {
 	e := echo.New()
 	requestBinder, err := binder.New()
 	if err != nil {
@@ -28,6 +29,9 @@ func New(healthService *health.Service) (*echo.Echo, error) {
 	e.Use(middleware.BodyLimit("10M"))
 
 	health.RegisterRoutes(e, healthService)
+	if len(emailHandler) != 0 && emailHandler[0] != nil {
+		emaildelivery.RegisterRoutes(e, emailHandler[0])
+	}
 	e.HTTPErrorHandler = errcodes.NewHandler().Handle
 	return e, nil
 }

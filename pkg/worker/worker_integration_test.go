@@ -21,6 +21,8 @@ func testConfig() config.WorkerConfig {
 		HeartbeatMaxAge:   time.Second,
 		LeaseDuration:     time.Second,
 		DrainTimeout:      time.Second,
+		RetryBase:         5 * time.Millisecond,
+		RetryMax:          time.Second,
 	}
 }
 

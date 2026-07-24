@@ -43,6 +43,28 @@ func TestApplyFromEmptyDatabaseUnderConcurrentLock(t *testing.T) {
 	assert.Zero(t, jobsCount)
 }
 
+func TestEmailDeliveryInfrastructureEnforcesDurableState(t *testing.T) {
+	db := testdb.Open(t)
+	ctx := context.Background()
+	require.NoError(t, Apply(ctx, db))
+
+	var tables int
+	require.NoError(t, db.NewRaw(`
+		SELECT count(*) FROM information_schema.tables
+		WHERE table_schema = current_schema()
+		  AND table_name IN ('email_deliveries', 'delivery_problems', 'outbox_events')
+	`).Scan(ctx, &tables))
+	assert.Equal(t, 3, tables)
+
+	_, err := db.ExecContext(ctx, `
+		INSERT INTO outbox_events (kind, aggregate_kind, aggregate_id, aggregate_version)
+		VALUES ('send_required_email', 'email_delivery', '1', 1),
+		       ('send_required_email', 'email_delivery', '1', 1)
+	`)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "outbox_events_aggregate_kind_aggregate_id_aggregate_version")
+}
+
 func TestJobsRejectRunningStateWithoutAReclaimableLease(t *testing.T) {
 	db := testdb.Open(t)
 	ctx := context.Background()

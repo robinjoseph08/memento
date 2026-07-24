@@ -19,9 +19,10 @@ The current foundation requires:
 - the `unaccent` and `pg_trgm` extension files installed on that PostgreSQL server;
 - an Immich API key limited to the permissions documented in the specification;
 - HTTPS for public access;
+- generic SMTP credentials when email delivery is enabled;
 - a backup location outside the PostgreSQL container.
 
-Later MVP phases will also require generic SMTP credentials for email and HTTPS-capable devices for Web Push. Supporting a later Immich release requires a future Memento release that updates the hardcoded version pin after its connector contract suite passes.
+A later MVP phase will also require HTTPS-capable devices for Web Push. Supporting a later Immich release requires a future Memento release that updates the hardcoded version pin after its connector contract suite passes.
 
 The PostgreSQL image recommended by Immich v3.0.3 already contains `unaccent` and `pg_trgm`, but extensions must be created separately inside each logical database.
 
@@ -158,7 +159,7 @@ Required settings are:
 - `MEMENTO_IMMICH_URL`
 - `MEMENTO_IMMICH_API_KEY` or `MEMENTO_IMMICH_API_KEY_FILE`
 
-Environment names for YAML fields use the `MEMENTO_` prefix and underscores, such as `MEMENTO_HTTP_SHUTDOWN_TIMEOUT` and `MEMENTO_WORKER_LEASE_DURATION`. Secret file values override direct environment values and surrounding whitespace is removed. Never put real credentials in the YAML example, image, logs, or health output.
+Environment names for YAML fields use the `MEMENTO_` prefix and underscores, such as `MEMENTO_HTTP_SHUTDOWN_TIMEOUT` and `MEMENTO_WORKER_LEASE_DURATION`. Secret file values override direct environment values and surrounding whitespace is removed. SMTP is optional until email is needed; when enabled, its host, transport mode, sender, test recipient, and optional username are ordinary settings, while its password should use `MEMENTO_SMTP_PASSWORD_FILE`. Never put real credentials in the YAML example, image, logs, or health output.
 
 Build the one-image production topology with an explicit application tag:
 
@@ -167,6 +168,26 @@ docker build --tag memento:0.1.0 .
 ```
 
 Caddy listens on port 8080 by default, serves the frontend with SPA fallback, and proxies `/api/*` to the Go process on loopback. Set `MEMENTO_SITE_ADDRESS` to a Caddy site address for direct TLS exposure. The container health check calls only `/api/health/live`; use `/api/health/ready` for traffic readiness.
+
+### Verify required email delivery
+
+Configure the `smtp` section shown in [`deploy/memento.example.yaml`](deploy/memento.example.yaml), then restart Memento. Production delivery accepts `starttls` or `implicit_tls`; both verify the server certificate and hostname. STARTTLS fails rather than downgrading when the extension is unavailable. Authenticated and unauthenticated SMTP are supported. Set both username and password or neither.
+
+While first-time setup remains incomplete and the deployment is still on its controlled endpoint, enqueue the configured test recipient without putting an address or message body in the request:
+
+```sh
+curl --fail --request POST https://memento.example/api/setup/email/test
+```
+
+The `202 Accepted` response contains only a delivery ID and `queued` status. Poll its safe status until it reports `sent` or `failed`:
+
+```sh
+curl --fail https://memento.example/api/setup/email/test/<DELIVERY_ID>
+```
+
+The request transaction commits an `email_deliveries` row and outbox event before returning. The in-process worker later leases the outbox event, creates an idempotent job, and attempts SMTP. Temporary failures retry with bounded exponential backoff for at most 24 hours. A permanent synchronous rejection reports an allowlisted failure code and creates an unresolved delivery problem without exposing the recipient, message, credentials, or raw provider response. This required test path does not read optional notification preferences.
+
+Plaintext SMTP is forbidden by default. `mode: insecure` additionally requires `insecure_development: true` and a literal loopback or private IP endpoint. Startup logs a warning and readiness reports `"smtp":"insecure_development"` while active. This exception is only for a controlled development SMTP fixture, never production.
 
 ### Private Docker network
 

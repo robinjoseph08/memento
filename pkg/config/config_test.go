@@ -81,6 +81,72 @@ func TestLoadRejectsInvalidDuration(t *testing.T) {
 	require.EqualError(t, err, "worker.poll_interval must be a positive duration")
 }
 
+func TestLoadSecureSMTPAndPasswordFile(t *testing.T) {
+	setRequiredEnvironment(t)
+	passwordPath := filepath.Join(t.TempDir(), "smtp-password")
+	require.NoError(t, os.WriteFile(passwordPath, []byte("smtp-secret\n"), 0o600))
+	t.Setenv("MEMENTO_SMTP_ENABLED", "true")
+	t.Setenv("MEMENTO_SMTP_HOST", "smtp.example.com")
+	t.Setenv("MEMENTO_SMTP_PORT", "465")
+	t.Setenv("MEMENTO_SMTP_MODE", "implicit_tls")
+	t.Setenv("MEMENTO_SMTP_USERNAME", "mailer")
+	t.Setenv("MEMENTO_SMTP_PASSWORD_FILE", passwordPath)
+	t.Setenv("MEMENTO_SMTP_FROM_ADDRESS", "memento@example.com")
+	t.Setenv("MEMENTO_SMTP_TEST_RECIPIENT", "operator@example.com")
+
+	cfg, err := Load("")
+	require.NoError(t, err)
+	assert.True(t, cfg.SMTP.Enabled)
+	assert.Equal(t, "smtp-secret", cfg.SMTP.Password)
+	assert.Equal(t, "implicit_tls", cfg.SMTP.Mode)
+}
+
+func TestValidateRejectsUnsafeSMTP(t *testing.T) {
+	setRequiredEnvironment(t)
+	valid, err := Load("")
+	require.NoError(t, err)
+	valid.SMTP = SMTPConfig{
+		Enabled: true, Host: "smtp.example.com", Port: 587, Mode: "starttls",
+		FromAddress: "memento@example.com", TestRecipient: "operator@example.com",
+		Timeout: time.Second, RetryBase: time.Second, RetryMax: time.Minute, RetryWindow: time.Hour,
+	}
+
+	tests := []struct {
+		name string
+		edit func(*SMTPConfig)
+		want string
+	}{
+		{"missing host", func(c *SMTPConfig) { c.Host = "" }, "smtp.host"},
+		{"invalid port", func(c *SMTPConfig) { c.Port = 0 }, "smtp.port"},
+		{"invalid mode", func(c *SMTPConfig) { c.Mode = "plaintext" }, "smtp.mode"},
+		{"partial credentials", func(c *SMTPConfig) { c.Username = "mailer" }, "both be set"},
+		{"invalid sender", func(c *SMTPConfig) { c.FromAddress = "not-an-email" }, "single email"},
+		{"plaintext opt in", func(c *SMTPConfig) { c.Mode = "insecure" }, "insecure_development"},
+		{"plaintext public host", func(c *SMTPConfig) { c.Mode = "insecure"; c.InsecureDevelopment = true }, "loopback or private"},
+		{"secure with insecure warning", func(c *SMTPConfig) { c.InsecureDevelopment = true }, "smtp.mode"},
+		{"retry bounds", func(c *SMTPConfig) { c.RetryBase = 2 * time.Hour }, "retry durations"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := valid
+			test.edit(&candidate.SMTP)
+			assert.ErrorContains(t, candidate.Validate(), test.want)
+		})
+	}
+}
+
+func TestValidateAcceptsExplicitLoopbackSMTPForDevelopment(t *testing.T) {
+	setRequiredEnvironment(t)
+	cfg, err := Load("")
+	require.NoError(t, err)
+	cfg.SMTP = SMTPConfig{
+		Enabled: true, Host: "127.0.0.1", Port: 1025, Mode: "insecure", InsecureDevelopment: true,
+		FromAddress: "memento@example.com", TestRecipient: "operator@example.com",
+		Timeout: time.Second, RetryBase: time.Second, RetryMax: time.Minute, RetryWindow: time.Hour,
+	}
+	assert.NoError(t, cfg.Validate())
+}
+
 func TestValidateRejectsUnsafeValues(t *testing.T) {
 	setRequiredEnvironment(t)
 	valid, err := Load("")
@@ -104,6 +170,7 @@ func TestValidateRejectsUnsafeValues(t *testing.T) {
 		{"heartbeat", func(c *Config) { c.Worker.HeartbeatMaxAge = c.Worker.HeartbeatInterval }, "heartbeat_max_age"},
 		{"poll lease", func(c *Config) { c.Worker.LeaseDuration = c.Worker.PollInterval }, "lease_duration"},
 		{"heartbeat lease", func(c *Config) { c.Worker.LeaseDuration = c.Worker.HeartbeatInterval }, "heartbeat_interval"},
+		{"worker retry bounds", func(c *Config) { c.Worker.RetryBase = 2 * c.Worker.RetryMax }, "worker.retry_base"},
 	}
 
 	for _, test := range tests {

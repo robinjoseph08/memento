@@ -68,7 +68,7 @@ fi
 compose exec --no-TTY postgres psql --username memento_app --dbname memento --tuples-only --command \
   "SELECT count(*) FROM pg_extension WHERE extname IN ('unaccent', 'pg_trgm');" | grep -Eq '^[[:space:]]*2[[:space:]]*$'
 compose exec --no-TTY postgres psql --username memento_app --dbname memento --tuples-only --command \
-  "SELECT count(*) FROM bun_migrations;" | grep -Eq '^[[:space:]]*1[[:space:]]*$'
+  "SELECT count(*) FROM bun_migrations;" | grep -Eq '^[[:space:]]*2[[:space:]]*$'
 compose exec --no-TTY postgres psql --username postgres --dbname postgres --tuples-only --command \
   "SELECT rolsuper FROM pg_roles WHERE rolname = 'memento_app';" | grep -Eq '^[[:space:]]*f[[:space:]]*$'
 compose exec --no-TTY memento sh -c "ps | grep -q '[m]emento' && ps | grep -q '[c]addy'"

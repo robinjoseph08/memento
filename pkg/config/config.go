@@ -4,6 +4,8 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net"
+	"net/mail"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -24,6 +26,7 @@ type Config struct {
 	HTTP     HTTPConfig
 	Database DatabaseConfig
 	Immich   ImmichConfig
+	SMTP     SMTPConfig
 	Worker   WorkerConfig
 }
 
@@ -45,12 +48,31 @@ type ImmichConfig struct {
 	HealthTimeout time.Duration
 }
 
+type SMTPConfig struct {
+	Enabled             bool
+	Host                string
+	Port                int
+	Mode                string
+	ServerName          string
+	Username            string
+	Password            string
+	FromAddress         string
+	TestRecipient       string
+	InsecureDevelopment bool
+	Timeout             time.Duration
+	RetryBase           time.Duration
+	RetryMax            time.Duration
+	RetryWindow         time.Duration
+}
+
 type WorkerConfig struct {
 	PollInterval      time.Duration
 	HeartbeatInterval time.Duration
 	HeartbeatMaxAge   time.Duration
 	LeaseDuration     time.Duration
 	DrainTimeout      time.Duration
+	RetryBase         time.Duration
+	RetryMax          time.Duration
 }
 
 type rawConfig struct {
@@ -69,12 +91,30 @@ type rawConfig struct {
 		APIKey        string `koanf:"api_key"`
 		HealthTimeout string `koanf:"health_timeout"`
 	} `koanf:"immich"`
+	SMTP struct {
+		Enabled             bool   `koanf:"enabled"`
+		Host                string `koanf:"host"`
+		Port                int    `koanf:"port"`
+		Mode                string `koanf:"mode"`
+		ServerName          string `koanf:"server_name"`
+		Username            string `koanf:"username"`
+		Password            string `koanf:"password"`
+		FromAddress         string `koanf:"from_address"`
+		TestRecipient       string `koanf:"test_recipient"`
+		InsecureDevelopment bool   `koanf:"insecure_development"`
+		Timeout             string `koanf:"timeout"`
+		RetryBase           string `koanf:"retry_base"`
+		RetryMax            string `koanf:"retry_max"`
+		RetryWindow         string `koanf:"retry_window"`
+	} `koanf:"smtp"`
 	Worker struct {
 		PollInterval      string `koanf:"poll_interval"`
 		HeartbeatInterval string `koanf:"heartbeat_interval"`
 		HeartbeatMaxAge   string `koanf:"heartbeat_max_age"`
 		LeaseDuration     string `koanf:"lease_duration"`
 		DrainTimeout      string `koanf:"drain_timeout"`
+		RetryBase         string `koanf:"retry_base"`
+		RetryMax          string `koanf:"retry_max"`
 	} `koanf:"worker"`
 }
 
@@ -91,6 +131,15 @@ var (
 	errImmichURLRequired        = errors.New("immich.url is required")
 	errImmichURLInvalid         = errors.New("immich.url must be an HTTP URL without credentials")
 	errImmichAPIKeyRequired     = errors.New("immich.api_key is required")
+	errSMTPHostRequired         = errors.New("smtp.host is required when SMTP is enabled")
+	errSMTPPortInvalid          = errors.New("smtp.port must be between 1 and 65535")
+	errSMTPModeInvalid          = errors.New("smtp.mode must be implicit_tls, starttls, or insecure")
+	errSMTPCredentials          = errors.New("smtp.username and smtp.password must either both be set or both be empty")
+	errSMTPAddressInvalid       = errors.New("smtp.from_address and smtp.test_recipient must be single email addresses")
+	errSMTPInsecureFlag         = errors.New("smtp.insecure_development must be enabled for insecure mode")
+	errSMTPInsecureHost         = errors.New("insecure SMTP is limited to loopback or private IP addresses")
+	errSMTPRetryBounds          = errors.New("SMTP retry durations must satisfy retry_base <= retry_max <= retry_window <= 24h")
+	errWorkerRetryBounds        = errors.New("worker retry durations must satisfy worker.retry_base <= worker.retry_max <= 24h")
 	errHeartbeatMaxAge          = errors.New("worker.heartbeat_max_age must exceed worker.heartbeat_interval")
 	errLeasePollInterval        = errors.New("worker.lease_duration must exceed worker.poll_interval")
 	errLeaseHeartbeatInterval   = errors.New("worker.lease_duration must exceed worker.heartbeat_interval")
@@ -103,11 +152,20 @@ var defaults = map[string]any{
 	"database.max_open_conns":   10,
 	"database.health_timeout":   "2s",
 	"immich.health_timeout":     "2s",
+	"smtp.enabled":              false,
+	"smtp.port":                 587,
+	"smtp.mode":                 "starttls",
+	"smtp.timeout":              "10s",
+	"smtp.retry_base":           "30s",
+	"smtp.retry_max":            "1h",
+	"smtp.retry_window":         "24h",
 	"worker.poll_interval":      "1s",
 	"worker.heartbeat_interval": "2s",
 	"worker.heartbeat_max_age":  "10s",
 	"worker.lease_duration":     "30s",
 	"worker.drain_timeout":      "5s",
+	"worker.retry_base":         "1s",
+	"worker.retry_max":          "1h",
 }
 
 // Load reads defaults, an optional YAML file, environment variables, and secret files in that order.
@@ -132,6 +190,9 @@ func Load(path string) (Config, error) {
 		return Config{}, err
 	}
 	if err := loadSecretFile(k, "immich.api_key", "MEMENTO_IMMICH_API_KEY_FILE"); err != nil {
+		return Config{}, err
+	}
+	if err := loadSecretFile(k, "smtp.password", "MEMENTO_SMTP_PASSWORD_FILE"); err != nil {
 		return Config{}, err
 	}
 
@@ -160,11 +221,27 @@ func envKey(key string) string {
 		"MEMENTO_IMMICH_URL":                "immich.url",
 		"MEMENTO_IMMICH_API_KEY":            "immich.api_key",
 		"MEMENTO_IMMICH_HEALTH_TIMEOUT":     "immich.health_timeout",
+		"MEMENTO_SMTP_ENABLED":              "smtp.enabled",
+		"MEMENTO_SMTP_HOST":                 "smtp.host",
+		"MEMENTO_SMTP_PORT":                 "smtp.port",
+		"MEMENTO_SMTP_MODE":                 "smtp.mode",
+		"MEMENTO_SMTP_SERVER_NAME":          "smtp.server_name",
+		"MEMENTO_SMTP_USERNAME":             "smtp.username",
+		"MEMENTO_SMTP_PASSWORD":             "smtp.password",
+		"MEMENTO_SMTP_FROM_ADDRESS":         "smtp.from_address",
+		"MEMENTO_SMTP_TEST_RECIPIENT":       "smtp.test_recipient",
+		"MEMENTO_SMTP_INSECURE_DEVELOPMENT": "smtp.insecure_development",
+		"MEMENTO_SMTP_TIMEOUT":              "smtp.timeout",
+		"MEMENTO_SMTP_RETRY_BASE":           "smtp.retry_base",
+		"MEMENTO_SMTP_RETRY_MAX":            "smtp.retry_max",
+		"MEMENTO_SMTP_RETRY_WINDOW":         "smtp.retry_window",
 		"MEMENTO_WORKER_POLL_INTERVAL":      "worker.poll_interval",
 		"MEMENTO_WORKER_HEARTBEAT_INTERVAL": "worker.heartbeat_interval",
 		"MEMENTO_WORKER_HEARTBEAT_MAX_AGE":  "worker.heartbeat_max_age",
 		"MEMENTO_WORKER_LEASE_DURATION":     "worker.lease_duration",
 		"MEMENTO_WORKER_DRAIN_TIMEOUT":      "worker.drain_timeout",
+		"MEMENTO_WORKER_RETRY_BASE":         "worker.retry_base",
+		"MEMENTO_WORKER_RETRY_MAX":          "worker.retry_max",
 	}
 	if transformed, ok := known[key]; ok {
 		return transformed
@@ -199,6 +276,16 @@ func parse(raw rawConfig) (Config, error) {
 	cfg.Database.MaxOpenConns = raw.Database.MaxOpenConns
 	cfg.Immich.URL = raw.Immich.URL
 	cfg.Immich.APIKey = raw.Immich.APIKey
+	cfg.SMTP.Enabled = raw.SMTP.Enabled
+	cfg.SMTP.Host = raw.SMTP.Host
+	cfg.SMTP.Port = raw.SMTP.Port
+	cfg.SMTP.Mode = raw.SMTP.Mode
+	cfg.SMTP.ServerName = raw.SMTP.ServerName
+	cfg.SMTP.Username = raw.SMTP.Username
+	cfg.SMTP.Password = raw.SMTP.Password
+	cfg.SMTP.FromAddress = raw.SMTP.FromAddress
+	cfg.SMTP.TestRecipient = raw.SMTP.TestRecipient
+	cfg.SMTP.InsecureDevelopment = raw.SMTP.InsecureDevelopment
 
 	var err error
 	if cfg.HTTP.ShutdownTimeout, err = duration("http.shutdown_timeout", raw.HTTP.ShutdownTimeout); err != nil {
@@ -208,6 +295,18 @@ func parse(raw rawConfig) (Config, error) {
 		return Config{}, err
 	}
 	if cfg.Immich.HealthTimeout, err = duration("immich.health_timeout", raw.Immich.HealthTimeout); err != nil {
+		return Config{}, err
+	}
+	if cfg.SMTP.Timeout, err = duration("smtp.timeout", raw.SMTP.Timeout); err != nil {
+		return Config{}, err
+	}
+	if cfg.SMTP.RetryBase, err = duration("smtp.retry_base", raw.SMTP.RetryBase); err != nil {
+		return Config{}, err
+	}
+	if cfg.SMTP.RetryMax, err = duration("smtp.retry_max", raw.SMTP.RetryMax); err != nil {
+		return Config{}, err
+	}
+	if cfg.SMTP.RetryWindow, err = duration("smtp.retry_window", raw.SMTP.RetryWindow); err != nil {
 		return Config{}, err
 	}
 	if cfg.Worker.PollInterval, err = duration("worker.poll_interval", raw.Worker.PollInterval); err != nil {
@@ -223,6 +322,12 @@ func parse(raw rawConfig) (Config, error) {
 		return Config{}, err
 	}
 	if cfg.Worker.DrainTimeout, err = duration("worker.drain_timeout", raw.Worker.DrainTimeout); err != nil {
+		return Config{}, err
+	}
+	if cfg.Worker.RetryBase, err = duration("worker.retry_base", raw.Worker.RetryBase); err != nil {
+		return Config{}, err
+	}
+	if cfg.Worker.RetryMax, err = duration("worker.retry_max", raw.Worker.RetryMax); err != nil {
 		return Config{}, err
 	}
 	return cfg, nil
@@ -272,6 +377,9 @@ func (c Config) Validate() error {
 	if c.Immich.APIKey == "" {
 		return errImmichAPIKeyRequired
 	}
+	if err := c.SMTP.Validate(); err != nil {
+		return err
+	}
 	if c.Worker.HeartbeatMaxAge <= c.Worker.HeartbeatInterval {
 		return errHeartbeatMaxAge
 	}
@@ -281,5 +389,50 @@ func (c Config) Validate() error {
 	if c.Worker.LeaseDuration <= c.Worker.HeartbeatInterval {
 		return errLeaseHeartbeatInterval
 	}
+	if c.Worker.RetryBase > c.Worker.RetryMax || c.Worker.RetryMax > 24*time.Hour {
+		return errWorkerRetryBounds
+	}
 	return nil
+}
+
+// Validate rejects unsafe SMTP configuration when SMTP is enabled.
+func (c SMTPConfig) Validate() error {
+	if !c.Enabled {
+		return nil
+	}
+	if c.Host == "" {
+		return errSMTPHostRequired
+	}
+	if c.Port < 1 || c.Port > 65535 {
+		return errSMTPPortInvalid
+	}
+	if c.Mode != "implicit_tls" && c.Mode != "starttls" && c.Mode != "insecure" {
+		return errSMTPModeInvalid
+	}
+	if (c.Username == "") != (c.Password == "") {
+		return errSMTPCredentials
+	}
+	if !singleAddress(c.FromAddress) || !singleAddress(c.TestRecipient) {
+		return errSMTPAddressInvalid
+	}
+	if c.Mode == "insecure" {
+		if !c.InsecureDevelopment {
+			return errSMTPInsecureFlag
+		}
+		ip := net.ParseIP(c.Host)
+		if c.Host != "localhost" && (ip == nil || (!ip.IsLoopback() && !ip.IsPrivate())) {
+			return errSMTPInsecureHost
+		}
+	} else if c.InsecureDevelopment {
+		return errSMTPModeInvalid
+	}
+	if c.RetryBase > c.RetryMax || c.RetryMax > c.RetryWindow || c.RetryWindow > 24*time.Hour {
+		return errSMTPRetryBounds
+	}
+	return nil
+}
+
+func singleAddress(value string) bool {
+	address, err := mail.ParseAddress(value)
+	return err == nil && address.Address == value
 }
