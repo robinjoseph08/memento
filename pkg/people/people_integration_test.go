@@ -8,8 +8,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -31,6 +33,17 @@ type peopleFixture struct {
 	service *Service
 	actor   setup.CuratorSession
 }
+
+type queryCounter struct {
+	count atomic.Int64
+}
+
+func (counter *queryCounter) BeforeQuery(ctx context.Context, _ *bun.QueryEvent) context.Context {
+	counter.count.Add(1)
+	return ctx
+}
+
+func (*queryCounter) AfterQuery(context.Context, *bun.QueryEvent) {}
 
 func newPeopleFixture(t *testing.T) peopleFixture {
 	t.Helper()
@@ -162,6 +175,20 @@ func TestPeopleSearchNormalizesCaseAccentsAndWhitespace(t *testing.T) {
 	assert.Empty(t, result.People)
 }
 
+func TestPeopleListUsesBoundedQueries(t *testing.T) {
+	fixture := newPeopleFixture(t)
+	ctx := context.Background()
+	for i := range 20 {
+		addPerson(t, fixture.db, fmt.Sprintf("Person %02d", i), fmt.Sprintf("Person %02d", i))
+	}
+	counter := new(queryCounter)
+	fixture.db.AddQueryHook(counter)
+	result, err := fixture.service.List(ctx, "", false)
+	require.NoError(t, err)
+	assert.Len(t, result.People, 21)
+	assert.LessOrEqual(t, counter.count.Load(), int64(7))
+}
+
 func TestPeopleRoutesEnforceCuratorCSRFAndPreserveMergeDirection(t *testing.T) {
 	fixture := newPeopleFixture(t)
 	ctx := context.Background()
@@ -230,15 +257,18 @@ func TestMergeRejectsStaleSourceAndSurvivorVersionsWithoutEffects(t *testing.T) 
 			ctx := context.Background()
 			source := addPerson(t, fixture.db, "Source", "Source")
 			survivor := addPerson(t, fixture.db, "Survivor", "Survivor")
+			preview, err := fixture.service.PreviewMerge(ctx, fixture.actor, source, survivor)
+			require.NoError(t, err)
 			staleID := source
 			if staleSide == "survivor" {
 				staleID = survivor
 			}
-			_, err := fixture.service.Update(ctx, fixture.actor, staleID, UpdateRequest{DisplayName: "Changed", SortName: "Changed", Version: 1})
+			_, err = fixture.service.Update(ctx, fixture.actor, staleID, UpdateRequest{DisplayName: "Changed", SortName: "Changed", Version: 1})
 			require.NoError(t, err)
 
 			_, err = fixture.service.Merge(ctx, fixture.actor, MergeRequest{
 				SourcePersonID: source.String(), SurvivorPersonID: survivor.String(), SourceVersion: 1, SurvivorVersion: 1,
+				PreviewFingerprint: preview.PreviewFingerprint,
 			})
 			require.ErrorIs(t, err, ErrStale)
 			storedSource, getErr := fixture.service.Get(ctx, source)
@@ -266,6 +296,7 @@ func TestMergeIntoCuratorPreservesCurrentSessionAndAuthority(t *testing.T) {
 	assert.Zero(t, preview.References.SessionsInvalidated)
 	merged, err := fixture.service.Merge(ctx, fixture.actor, MergeRequest{
 		SourcePersonID: source.String(), SurvivorPersonID: fixture.actor.PersonID.String(), SourceVersion: 1, SurvivorVersion: 1,
+		PreviewFingerprint: preview.PreviewFingerprint,
 	})
 	require.NoError(t, err)
 	assert.Equal(t, fixture.actor.PersonID.String(), merged.ID)
@@ -286,14 +317,14 @@ func TestMergePreviewAndConfirmationEnforceAuthorityAndGenerationGates(t *testin
 	require.NoError(t, err)
 	assert.False(t, preview.CanMerge)
 	assert.Contains(t, preview.Blockers, "Resolve one current Recipient access generation before merging.")
-	_, err = fixture.service.Merge(ctx, fixture.actor, MergeRequest{SourcePersonID: source.String(), SurvivorPersonID: survivor.String(), SourceVersion: 1, SurvivorVersion: 1, TransferCurrentAccessGeneration: true})
+	_, err = fixture.service.Merge(ctx, fixture.actor, MergeRequest{SourcePersonID: source.String(), SurvivorPersonID: survivor.String(), SourceVersion: 1, SurvivorVersion: 1, TransferCurrentAccessGeneration: true, PreviewFingerprint: preview.PreviewFingerprint})
 	require.ErrorIs(t, err, ErrTwoCurrentGenerations)
 
 	curatorPreview, err := fixture.service.PreviewMerge(ctx, fixture.actor, fixture.actor.PersonID, survivor)
 	require.NoError(t, err)
 	assert.False(t, curatorPreview.CanMerge)
 	assert.Contains(t, curatorPreview.Blockers, "The Curator Person must be the survivor.")
-	_, err = fixture.service.Merge(ctx, fixture.actor, MergeRequest{SourcePersonID: fixture.actor.PersonID.String(), SurvivorPersonID: survivor.String(), SourceVersion: 1, SurvivorVersion: 1})
+	_, err = fixture.service.Merge(ctx, fixture.actor, MergeRequest{SourcePersonID: fixture.actor.PersonID.String(), SurvivorPersonID: survivor.String(), SourceVersion: 1, SurvivorVersion: 1, PreviewFingerprint: curatorPreview.PreviewFingerprint})
 	require.ErrorIs(t, err, ErrCuratorMustSurvive)
 }
 
@@ -311,11 +342,47 @@ func TestMergeRejectsChangedResultingGenerationAfterPreview(t *testing.T) {
 	_, err = fixture.service.Merge(ctx, fixture.actor, MergeRequest{
 		SourcePersonID: source.String(), SurvivorPersonID: survivor.String(), SourceVersion: 1, SurvivorVersion: 1,
 		TransferCurrentAccessGeneration: true, ExpectedRecipientGeneration: preview.References.ResultingRecipientGeneration,
+		PreviewFingerprint: preview.PreviewFingerprint,
 	})
 	require.ErrorIs(t, err, ErrStale)
 	var generationPerson uuid.UUID
 	require.NoError(t, fixture.db.NewRaw(`SELECT person_id FROM recipient_access_generations WHERE id = ?`, sourceAccess).Scan(ctx, &generationPerson))
 	assert.Equal(t, source, generationPerson)
+}
+
+func TestMergeRejectsReferenceChangesAfterPreview(t *testing.T) {
+	for _, changedReference := range []string{"email", "current generation"} {
+		t.Run(changedReference, func(t *testing.T) {
+			fixture := newPeopleFixture(t)
+			ctx := context.Background()
+			source := addPerson(t, fixture.db, "Source", "Source")
+			survivor := addPerson(t, fixture.db, "Survivor", "Survivor")
+			sourceAccess := addAccess(t, fixture.db, source, true, "source@example.com")
+			preview, err := fixture.service.PreviewMerge(ctx, fixture.actor, source, survivor)
+			require.NoError(t, err)
+			if changedReference == "email" {
+				_, err = fixture.db.NewRaw(`UPDATE recipient_emails SET email = 'changed@example.com', normalized_email = 'changed@example.com' WHERE recipient_access_generation_id = ? AND is_current`, sourceAccess).Exec(ctx)
+				require.NoError(t, err)
+			} else {
+				_, err = fixture.db.NewRaw(`UPDATE recipient_access_generations SET is_current = false WHERE id = ?`, sourceAccess).Exec(ctx)
+				require.NoError(t, err)
+				sourceAccess = addAccess(t, fixture.db, source, true, "replacement@example.com")
+			}
+
+			_, err = fixture.service.Merge(ctx, fixture.actor, MergeRequest{
+				SourcePersonID: source.String(), SurvivorPersonID: survivor.String(), SourceVersion: 1, SurvivorVersion: 1,
+				TransferCurrentAccessGeneration: true, ExpectedRecipientGeneration: preview.References.ResultingRecipientGeneration,
+				PreviewFingerprint: preview.PreviewFingerprint,
+			})
+			require.ErrorIs(t, err, ErrStale)
+			var generationPerson uuid.UUID
+			require.NoError(t, fixture.db.NewRaw(`SELECT person_id FROM recipient_access_generations WHERE id = ?`, sourceAccess).Scan(ctx, &generationPerson))
+			assert.Equal(t, source, generationPerson)
+			var mergeAudits int
+			require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM security_audit_events WHERE action = 'people_merged'`).Scan(ctx, &mergeAudits))
+			assert.Zero(t, mergeAudits)
+		})
+	}
 }
 
 func TestMergeRejectsArchivedSurvivorBeforeTransferringAccess(t *testing.T) {
@@ -336,6 +403,7 @@ func TestMergeRejectsArchivedSurvivorBeforeTransferringAccess(t *testing.T) {
 	_, err = fixture.service.Merge(ctx, fixture.actor, MergeRequest{
 		SourcePersonID: source.String(), SurvivorPersonID: survivor.String(),
 		SourceVersion: 1, SurvivorVersion: archivedSurvivor.Version, TransferCurrentAccessGeneration: true,
+		PreviewFingerprint: preview.PreviewFingerprint,
 	})
 	require.ErrorIs(t, err, ErrSurvivorMustBeCurrent)
 	var generationPerson uuid.UUID
@@ -376,12 +444,12 @@ func TestMergeExplicitlyTransfersGenerationResolvesEmailInvalidatesSessionsAndPr
 	assert.True(t, preview.RolesWillNotBeUnioned)
 	assert.True(t, preview.AudienceAuthorityUnchanged)
 
-	_, err = fixture.service.Merge(ctx, fixture.actor, MergeRequest{SourcePersonID: source.String(), SurvivorPersonID: survivor.String(), SourceVersion: 1, SurvivorVersion: 1})
+	_, err = fixture.service.Merge(ctx, fixture.actor, MergeRequest{SourcePersonID: source.String(), SurvivorPersonID: survivor.String(), SourceVersion: 1, SurvivorVersion: 1, PreviewFingerprint: preview.PreviewFingerprint})
 	require.ErrorIs(t, err, ErrGenerationTransferNeeded)
-	_, err = fixture.service.Merge(ctx, fixture.actor, MergeRequest{SourcePersonID: source.String(), SurvivorPersonID: survivor.String(), SourceVersion: 1, SurvivorVersion: 1, TransferCurrentAccessGeneration: true, ExpectedRecipientGeneration: preview.References.ResultingRecipientGeneration})
+	_, err = fixture.service.Merge(ctx, fixture.actor, MergeRequest{SourcePersonID: source.String(), SurvivorPersonID: survivor.String(), SourceVersion: 1, SurvivorVersion: 1, TransferCurrentAccessGeneration: true, ExpectedRecipientGeneration: preview.References.ResultingRecipientGeneration, PreviewFingerprint: preview.PreviewFingerprint})
 	require.ErrorIs(t, err, ErrEmailResolutionNeeded)
 
-	merged, err := fixture.service.Merge(ctx, fixture.actor, MergeRequest{SourcePersonID: source.String(), SurvivorPersonID: survivor.String(), SourceVersion: 1, SurvivorVersion: 1, TransferCurrentAccessGeneration: true, ExpectedRecipientGeneration: preview.References.ResultingRecipientGeneration, EmailResolution: "keep_survivor"})
+	merged, err := fixture.service.Merge(ctx, fixture.actor, MergeRequest{SourcePersonID: source.String(), SurvivorPersonID: survivor.String(), SourceVersion: 1, SurvivorVersion: 1, TransferCurrentAccessGeneration: true, ExpectedRecipientGeneration: preview.References.ResultingRecipientGeneration, PreviewFingerprint: preview.PreviewFingerprint, EmailResolution: "keep_survivor"})
 	require.NoError(t, err)
 	assert.Equal(t, survivor.String(), merged.ID)
 	assert.Equal(t, int64(2), merged.Version)
@@ -422,11 +490,14 @@ func TestMergeEmailResolutionCanKeepSourceEmail(t *testing.T) {
 	survivor := addPerson(t, fixture.db, "Survivor email", "Survivor email")
 	sourceAccess := addAccess(t, fixture.db, source, true, "source-kept@example.com")
 	addAccess(t, fixture.db, survivor, false, "survivor-ended@example.com")
+	preview, err := fixture.service.PreviewMerge(ctx, fixture.actor, source, survivor)
+	require.NoError(t, err)
 
 	merged, err := fixture.service.Merge(ctx, fixture.actor, MergeRequest{
 		SourcePersonID: source.String(), SurvivorPersonID: survivor.String(),
 		SourceVersion: 1, SurvivorVersion: 1, TransferCurrentAccessGeneration: true,
-		ExpectedRecipientGeneration: 2, EmailResolution: "keep_source",
+		ExpectedRecipientGeneration: preview.References.ResultingRecipientGeneration,
+		PreviewFingerprint:          preview.PreviewFingerprint, EmailResolution: "keep_source",
 	})
 	require.NoError(t, err)
 	assert.Equal(t, "source-kept@example.com", merged.CurrentLoginEmail)
@@ -442,10 +513,12 @@ func TestMergeLateAuditFailureRollsBackEveryEffect(t *testing.T) {
 	survivor := addPerson(t, fixture.db, "Rollback survivor", "Rollback survivor")
 	sourceAccess := addAccess(t, fixture.db, source, true, "rollback@example.com")
 	sessionID := addSession(t, fixture.db, source, sourceAccess)
-	_, err := fixture.db.ExecContext(ctx, `CREATE FUNCTION reject_people_merge_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.action = 'people_merged' THEN RAISE EXCEPTION 'late merge failure'; END IF; RETURN NEW; END $$; CREATE TRIGGER reject_people_merge_audit BEFORE INSERT ON security_audit_events FOR EACH ROW EXECUTE FUNCTION reject_people_merge_audit()`)
+	preview, err := fixture.service.PreviewMerge(ctx, fixture.actor, source, survivor)
+	require.NoError(t, err)
+	_, err = fixture.db.ExecContext(ctx, `CREATE FUNCTION reject_people_merge_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.action = 'people_merged' THEN RAISE EXCEPTION 'late merge failure'; END IF; RETURN NEW; END $$; CREATE TRIGGER reject_people_merge_audit BEFORE INSERT ON security_audit_events FOR EACH ROW EXECUTE FUNCTION reject_people_merge_audit()`)
 	require.NoError(t, err)
 
-	_, err = fixture.service.Merge(ctx, fixture.actor, MergeRequest{SourcePersonID: source.String(), SurvivorPersonID: survivor.String(), SourceVersion: 1, SurvivorVersion: 1, TransferCurrentAccessGeneration: true, ExpectedRecipientGeneration: 1})
+	_, err = fixture.service.Merge(ctx, fixture.actor, MergeRequest{SourcePersonID: source.String(), SurvivorPersonID: survivor.String(), SourceVersion: 1, SurvivorVersion: 1, TransferCurrentAccessGeneration: true, ExpectedRecipientGeneration: preview.References.ResultingRecipientGeneration, PreviewFingerprint: preview.PreviewFingerprint})
 	require.ErrorContains(t, err, "late merge failure")
 	storedSource, getErr := fixture.service.Get(ctx, source)
 	require.NoError(t, getErr)

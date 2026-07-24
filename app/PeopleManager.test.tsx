@@ -112,6 +112,7 @@ test("previews and confirms the exact source, survivor, generation, email, and v
     roles_will_not_be_unioned: true,
     audience_authority_unchanged: true,
     current_curator_session_kept: false,
+    preview_fingerprint: "f".repeat(64),
     can_merge: true,
     blockers: [],
   };
@@ -187,6 +188,7 @@ test("previews and confirms the exact source, survivor, generation, email, and v
     survivor_version: 1,
     transfer_current_access_generation: true,
     expected_recipient_generation: 4,
+    preview_fingerprint: "f".repeat(64),
     email_resolution: "keep_survivor",
   });
   expect(mergeRequest?.init?.headers).toEqual(

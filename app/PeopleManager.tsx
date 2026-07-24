@@ -330,6 +330,7 @@ export function PeopleManager({ session }: { session: SessionResponse }) {
                     expected_recipient_generation:
                       preview.affected_references
                         .resulting_recipient_generation ?? 0,
+                    preview_fingerprint: preview.preview_fingerprint,
                     email_resolution: emailResolution,
                   })
                 }

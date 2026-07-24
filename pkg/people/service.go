@@ -3,7 +3,9 @@ package people
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -109,6 +111,7 @@ type MergePreview struct {
 	RolesWillNotBeUnioned      bool             `json:"roles_will_not_be_unioned"`
 	AudienceAuthorityUnchanged bool             `json:"audience_authority_unchanged"`
 	CurrentCuratorSessionKept  bool             `json:"current_curator_session_kept"`
+	PreviewFingerprint         string           `json:"preview_fingerprint"`
 	CanMerge                   bool             `json:"can_merge"`
 	Blockers                   []string         `json:"blockers"`
 }
@@ -121,6 +124,7 @@ type MergeRequest struct {
 	SurvivorVersion                 int64  `json:"survivor_version" validate:"required,min=1"`
 	TransferCurrentAccessGeneration bool   `json:"transfer_current_access_generation"`
 	ExpectedRecipientGeneration     int    `json:"expected_recipient_generation" validate:"omitempty,min=1"`
+	PreviewFingerprint              string `json:"preview_fingerprint" validate:"required,len=64,hexadecimal"`
 	EmailResolution                 string `json:"email_resolution" validate:"omitempty,oneof=keep_source keep_survivor"`
 }
 
@@ -173,27 +177,118 @@ func (s *Service) Create(ctx context.Context, actor setup.CuratorSession, reques
 	return created, nil
 }
 
+type personListRow struct {
+	ID                 uuid.UUID     `bun:"id"`
+	DisplayName        string        `bun:"display_name"`
+	SortName           string        `bun:"sort_name"`
+	Version            int64         `bun:"version"`
+	CreatedAt          time.Time     `bun:"created_at"`
+	UpdatedAt          time.Time     `bun:"updated_at"`
+	ArchivedAt         *time.Time    `bun:"archived_at"`
+	MergedAt           *time.Time    `bun:"merged_at"`
+	MergedIntoPersonID uuid.NullUUID `bun:"merged_into_person_id"`
+}
+
+type personRoleRow struct {
+	PersonID uuid.UUID `bun:"person_id"`
+	Role     string    `bun:"role"`
+}
+
+type personAccessRow struct {
+	PersonID   uuid.UUID `bun:"person_id"`
+	ID         uuid.UUID `bun:"id"`
+	Email      string    `bun:"email"`
+	State      string    `bun:"state"`
+	Generation int       `bun:"generation"`
+}
+
+type personCountRow struct {
+	PersonID uuid.UUID `bun:"person_id"`
+	Count    int       `bun:"count"`
+}
+
 func (s *Service) List(ctx context.Context, query string, includeArchived bool) (ListResponse, error) {
 	query = escapeLikePattern(strings.TrimSpace(query))
 	result := ListResponse{People: []Person{}}
 	err := s.db.RunInTx(ctx, readOnlySnapshot(), func(ctx context.Context, tx bun.Tx) error {
-		ids := make([]uuid.UUID, 0)
+		rows := make([]personListRow, 0)
 		if err := tx.NewRaw(`
-			SELECT id FROM people
+			SELECT id, display_name, sort_name, version, created_at, updated_at, archived_at, merged_at, merged_into_person_id
+			FROM people
 			WHERE (? OR archived_at IS NULL)
 			  AND (? = '' OR memento_normalize_person_name(display_name || ' ' || sort_name)
 			      LIKE '%' || memento_normalize_person_name(?) || '%' ESCAPE E'\\')
 			ORDER BY (merged_at IS NOT NULL), (archived_at IS NOT NULL), memento_normalize_person_name(sort_name), id
-			LIMIT 200`, includeArchived, query, query).Scan(ctx, &ids); err != nil {
+			LIMIT 200`, includeArchived, query, query).Scan(ctx, &rows); err != nil {
 			return err
 		}
-		result.People = make([]Person, 0, len(ids))
-		for _, id := range ids {
-			person, err := getPerson(ctx, tx, id, false)
-			if err != nil {
-				return err
+		if len(rows) == 0 {
+			return nil
+		}
+		ids := make([]uuid.UUID, len(rows))
+		indexByID := make(map[uuid.UUID]int, len(rows))
+		result.People = make([]Person, len(rows))
+		for i, row := range rows {
+			ids[i] = row.ID
+			indexByID[row.ID] = i
+			person := Person{
+				ID: row.ID.String(), DisplayName: row.DisplayName, SortName: row.SortName, Version: row.Version,
+				CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt, ArchivedAt: row.ArchivedAt, MergedAt: row.MergedAt,
+				Roles: []string{},
 			}
-			result.People = append(result.People, person)
+			if row.MergedIntoPersonID.Valid {
+				person.MergedIntoPersonID = row.MergedIntoPersonID.UUID.String()
+			}
+			switch {
+			case row.MergedAt != nil:
+				person.Status = "merged"
+			case row.ArchivedAt != nil:
+				person.Status = "archived"
+			default:
+				person.Status = "current"
+			}
+			result.People[i] = person
+		}
+
+		roles := make([]personRoleRow, 0)
+		if err := tx.NewRaw(`SELECT person_id, role FROM person_roles WHERE person_id IN (?) ORDER BY person_id, role`, bun.List(ids)).Scan(ctx, &roles); err != nil {
+			return err
+		}
+		for _, role := range roles {
+			i := indexByID[role.PersonID]
+			result.People[i].Roles = append(result.People[i].Roles, role.Role)
+		}
+
+		accesses := make([]personAccessRow, 0)
+		if err := tx.NewRaw(`SELECT access.person_id, access.id, access.generation, access.state, COALESCE(email.email, '') AS email
+			FROM recipient_access_generations AS access
+			LEFT JOIN recipient_emails AS email ON email.recipient_access_generation_id = access.id AND email.is_current
+			WHERE access.person_id IN (?) AND access.is_current`, bun.List(ids)).Scan(ctx, &accesses); err != nil {
+			return err
+		}
+		for _, access := range accesses {
+			i := indexByID[access.PersonID]
+			result.People[i].CurrentAccess = &Access{ID: access.ID.String(), Generation: access.Generation, State: access.State}
+			result.People[i].CurrentLoginEmail = access.Email
+		}
+
+		sessionCounts := make([]personCountRow, 0)
+		if err := tx.NewRaw(`SELECT person_id, count(*) AS count FROM sessions WHERE person_id IN (?) AND revoked_at IS NULL GROUP BY person_id`, bun.List(ids)).Scan(ctx, &sessionCounts); err != nil {
+			return err
+		}
+		for _, count := range sessionCounts {
+			result.People[indexByID[count.PersonID]].UnrevokedSessions = count.Count
+		}
+
+		auditCounts := make([]personCountRow, 0)
+		if err := tx.NewRaw(`SELECT person.id AS person_id, count(audit.id) AS count
+			FROM people AS person
+			LEFT JOIN security_audit_events AS audit ON audit.actor_person_id = person.id OR audit.subject_person_id = person.id
+			WHERE person.id IN (?) GROUP BY person.id`, bun.List(ids)).Scan(ctx, &auditCounts); err != nil {
+			return err
+		}
+		for _, count := range auditCounts {
+			result.People[indexByID[count.PersonID]].HistoricalAuditCount = count.Count
 		}
 		return nil
 	})
@@ -358,18 +453,18 @@ func (s *Service) PreviewMerge(ctx context.Context, actor setup.CuratorSession, 
 	var preview MergePreview
 	err := s.db.RunInTx(ctx, readOnlySnapshot(), func(ctx context.Context, tx bun.Tx) error {
 		var err error
-		preview, err = previewMerge(ctx, tx, actor, sourceID, survivorID)
+		preview, err = previewMerge(ctx, tx, actor, sourceID, survivorID, false)
 		return err
 	})
 	return preview, err
 }
 
-func previewMerge(ctx context.Context, db bun.IDB, actor setup.CuratorSession, sourceID, survivorID uuid.UUID) (MergePreview, error) {
-	source, err := getPerson(ctx, db, sourceID, false)
+func previewMerge(ctx context.Context, db bun.IDB, actor setup.CuratorSession, sourceID, survivorID uuid.UUID, lockPeople bool) (MergePreview, error) {
+	source, err := getPerson(ctx, db, sourceID, lockPeople)
 	if err != nil {
 		return MergePreview{}, err
 	}
-	survivor, err := getPerson(ctx, db, survivorID, false)
+	survivor, err := getPerson(ctx, db, survivorID, lockPeople)
 	if err != nil {
 		return MergePreview{}, err
 	}
@@ -432,6 +527,12 @@ func previewMerge(ctx context.Context, db bun.IDB, actor setup.CuratorSession, s
 		preview.SurvivorEmail = survivorEmail
 		preview.RequiresEmailResolution = survivorEmail != "" && source.CurrentLoginEmail != "" && !strings.EqualFold(survivorEmail, source.CurrentLoginEmail)
 	}
+	encoded, err := json.Marshal(preview)
+	if err != nil {
+		return MergePreview{}, err
+	}
+	fingerprint := sha256.Sum256(encoded)
+	preview.PreviewFingerprint = hex.EncodeToString(fingerprint[:])
 	return preview, nil
 }
 
@@ -472,14 +573,15 @@ func (s *Service) Merge(ctx context.Context, actor setup.CuratorSession, request
 				return err
 			}
 		}
-		source, err := getPerson(ctx, tx, sourceID, true)
+		currentPreview, err := previewMerge(ctx, tx, actor, sourceID, survivorID, true)
 		if err != nil {
 			return err
 		}
-		survivor, err := getPerson(ctx, tx, survivorID, true)
-		if err != nil {
-			return err
+		if request.PreviewFingerprint != currentPreview.PreviewFingerprint {
+			return ErrStale
 		}
+		source := currentPreview.Source
+		survivor := currentPreview.Survivor
 		if source.Version != request.SourceVersion || survivor.Version != request.SurvivorVersion {
 			return ErrStale
 		}
