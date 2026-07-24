@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/robinjoseph08/memento/pkg/config"
 	"github.com/robinjoseph08/memento/pkg/emaildelivery"
 	"github.com/uptrace/bun"
 )
@@ -37,6 +38,7 @@ var (
 	ErrInvalidChoices     = errors.New("onboarding choices are incomplete")
 	ErrUnauthenticated    = errors.New("session is invalid or expired")
 	ErrCSRF               = errors.New("CSRF token is invalid")
+	ErrSessionType        = errors.New("session type does not support this operation")
 	errGenerateCredential = errors.New("generate secure setup credential")
 )
 
@@ -106,25 +108,32 @@ type completedSession struct {
 	Credential  string
 	CSRFToken   string
 	SessionType string
+	ExpiresAt   *time.Time
 }
 
 type authenticatedSession struct {
 	DisplayName string
 	SessionType string
 	Credential  []byte
+	PersonID    uuid.UUID
+	SessionID   uuid.UUID
 }
 
 // Service coordinates setup state, required email, identity, and Session persistence.
 type Service struct {
 	db       *bun.DB
 	delivery *emaildelivery.Service
+	security config.SecurityConfig
 	secret   []byte
 	now      func() time.Time
 	random   io.Reader
 }
 
-func New(db *bun.DB, delivery *emaildelivery.Service, secret string) *Service {
-	return &Service{db: db, delivery: delivery, secret: []byte(secret), now: time.Now, random: rand.Reader}
+func New(db *bun.DB, delivery *emaildelivery.Service, security config.SecurityConfig) *Service {
+	return &Service{
+		db: db, delivery: delivery, security: security, secret: []byte(security.Secret),
+		now: time.Now, random: rand.Reader,
+	}
 }
 
 // Available reports only whether the public setup workflow still exists.
@@ -179,13 +188,15 @@ func (s *Service) RequestCode(ctx context.Context, request RequestCodeRequest) (
 		if err != nil {
 			return err
 		}
-		_, err = tx.NewRaw(`
+		if _, err = tx.NewRaw(`
 			INSERT INTO login_challenges (
 				id, challenge_hash, code_hash, display_name, email, normalized_email,
 				email_delivery_id, expires_at, created_at
 			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-		`, challengeUUID, tokenHash(challengeRaw), codeHash, displayName, email, normalizedEmail, deliveryID, expiresAt, now).Exec(ctx)
-		return err
+		`, challengeUUID, tokenHash(challengeRaw), codeHash, displayName, email, normalizedEmail, deliveryID, expiresAt, now).Exec(ctx); err != nil {
+			return err
+		}
+		return s.appendAudit(ctx, tx, "setup_code_requested", "success", nil, nil, nil)
 	})
 	if err != nil {
 		return RequestCodeResponse{}, fmt.Errorf("request setup code: %w", err)
@@ -220,14 +231,14 @@ func (s *Service) VerifyCode(ctx context.Context, request VerifyCodeRequest) (Ve
 		`, tokenHash(challengeRaw)).Scan(ctx, &stored.DisplayName, &stored.Email, &stored.Normalized, &stored.Attempts, &stored.ExpiresAt, &stored.VerifiedAt, &stored.ConsumedAt)
 		if errors.Is(err, sql.ErrNoRows) {
 			invalid = true
-			return nil
+			return s.appendAudit(ctx, tx, "setup_code_verified", "invalid", nil, nil, nil)
 		}
 		if err != nil {
 			return err
 		}
 		if stored.Attempts >= maximumAttempts || !now.Before(stored.ExpiresAt) || stored.VerifiedAt.Valid || stored.ConsumedAt.Valid {
 			invalid = true
-			return nil
+			return s.appendAudit(ctx, tx, "setup_code_verified", "invalid", nil, nil, nil)
 		}
 		var expectedHash []byte
 		if err := tx.NewRaw(`SELECT code_hash FROM login_challenges WHERE challenge_hash = ?`, tokenHash(challengeRaw)).Scan(ctx, &expectedHash); err != nil {
@@ -236,15 +247,19 @@ func (s *Service) VerifyCode(ctx context.Context, request VerifyCodeRequest) (Ve
 		actualHash := s.codeHash(challengeRaw, request.Code)
 		if subtle.ConstantTimeCompare(expectedHash, actualHash) != 1 {
 			invalid = true
-			_, err := tx.NewRaw(`UPDATE login_challenges SET attempts = attempts + 1 WHERE challenge_hash = ?`, tokenHash(challengeRaw)).Exec(ctx)
-			return err
+			if _, err := tx.NewRaw(`UPDATE login_challenges SET attempts = attempts + 1 WHERE challenge_hash = ?`, tokenHash(challengeRaw)).Exec(ctx); err != nil {
+				return err
+			}
+			return s.appendAudit(ctx, tx, "setup_code_verified", "invalid", nil, nil, nil)
 		}
-		_, err = tx.NewRaw(`
+		if _, err = tx.NewRaw(`
 			UPDATE login_challenges
 			SET verified_at = ?, verification_token_hash = ?
 			WHERE challenge_hash = ?
-		`, now, tokenHash(verificationRaw), tokenHash(challengeRaw)).Exec(ctx)
-		return err
+		`, now, tokenHash(verificationRaw), tokenHash(challengeRaw)).Exec(ctx); err != nil {
+			return err
+		}
+		return s.appendAudit(ctx, tx, "setup_code_verified", "success", nil, nil, nil)
 	})
 	if err != nil {
 		return VerifyCodeResponse{}, fmt.Errorf("verify setup code: %w", err)
@@ -355,12 +370,18 @@ func (s *Service) complete(ctx context.Context, request CompleteRequest) (comple
 				}
 			}
 		}
-		return nil
+		if err := s.appendAudit(ctx, tx, "setup_completed", "success", &personID, &personID, &sessionID); err != nil {
+			return err
+		}
+		return s.appendAudit(ctx, tx, "session_created", "success", &personID, &personID, &sessionID)
 	})
 	if err != nil {
 		return completedSession{}, fmt.Errorf("complete setup: %w", err)
 	}
-	return completedSession{Credential: credential, CSRFToken: s.csrfToken(credentialRaw), SessionType: request.SessionType}, nil
+	return completedSession{
+		Credential: credential, CSRFToken: s.csrfToken(credentialRaw),
+		SessionType: request.SessionType, ExpiresAt: idleExpiresAt,
+	}, nil
 }
 
 // Session returns safe browser state without mutating Session activity.
@@ -376,28 +397,72 @@ func (s *Service) Session(ctx context.Context, credential string) (SessionRespon
 	}, nil
 }
 
+// refresh extends a Trusted-device Session after a Session-bound CSRF check.
+func (s *Service) refresh(ctx context.Context, credential, csrfToken string) (completedSession, error) {
+	authenticated, err := s.authenticate(ctx, credential)
+	if err != nil {
+		return completedSession{}, err
+	}
+	if authenticated.SessionType != "trusted" {
+		return completedSession{}, ErrSessionType
+	}
+	if !s.validCSRF(authenticated.Credential, csrfToken) {
+		return completedSession{}, ErrCSRF
+	}
+	now := s.now().UTC()
+	expiresAt := now.Add(trustedLifetime)
+	result, err := s.db.NewRaw(`
+		UPDATE sessions AS session
+		SET last_activity_at = ?, idle_expires_at = ?
+		WHERE session.id = ? AND session.revoked_at IS NULL AND session.idle_expires_at > ?
+		  AND EXISTS (
+			SELECT 1 FROM system_settings AS settings
+			WHERE settings.id = 1 AND settings.setup_complete AND settings.security_epoch = session.security_epoch
+		  )
+	`, now, expiresAt, authenticated.SessionID, now).Exec(ctx)
+	if err != nil {
+		return completedSession{}, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return completedSession{}, err
+	}
+	if affected != 1 {
+		return completedSession{}, ErrUnauthenticated
+	}
+	return completedSession{
+		Credential: credential, CSRFToken: s.csrfToken(authenticated.Credential),
+		SessionType: authenticated.SessionType, ExpiresAt: &expiresAt,
+	}, nil
+}
+
 // Logout revokes the current Session after a Session-bound CSRF check.
 func (s *Service) Logout(ctx context.Context, credential, csrfToken string) error {
 	authenticated, err := s.authenticate(ctx, credential)
 	if err != nil {
 		return err
 	}
-	expected := s.csrfToken(authenticated.Credential)
-	if subtle.ConstantTimeCompare([]byte(expected), []byte(csrfToken)) != 1 {
+	if !s.validCSRF(authenticated.Credential, csrfToken) {
 		return ErrCSRF
 	}
-	result, err := s.db.NewRaw(`UPDATE sessions SET revoked_at = ? WHERE credential_hash = ? AND revoked_at IS NULL`, s.now().UTC(), tokenHash(authenticated.Credential)).Exec(ctx)
-	if err != nil {
-		return err
-	}
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if affected != 1 {
-		return ErrUnauthenticated
-	}
-	return nil
+	now := s.now().UTC()
+	return s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		result, err := tx.NewRaw(`UPDATE sessions SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL`, now, authenticated.SessionID).Exec(ctx)
+		if err != nil {
+			return err
+		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if affected != 1 {
+			return ErrUnauthenticated
+		}
+		return s.appendAudit(
+			ctx, tx, "session_signed_out", "success",
+			&authenticated.PersonID, &authenticated.PersonID, &authenticated.SessionID,
+		)
+	})
 }
 
 func (s *Service) authenticate(ctx context.Context, credential string) (authenticatedSession, error) {
@@ -407,8 +472,9 @@ func (s *Service) authenticate(ctx context.Context, credential string) (authenti
 	}
 	var result authenticatedSession
 	result.Credential = credentialRaw
+	now := s.now().UTC()
 	err = s.db.NewRaw(`
-		SELECT person.display_name, session.session_type
+		SELECT person.display_name, session.session_type, person.id, session.id
 		FROM sessions AS session
 		JOIN people AS person ON person.id = session.person_id AND person.archived_at IS NULL
 		JOIN recipient_access_generations AS access
@@ -424,7 +490,9 @@ func (s *Service) authenticate(ctx context.Context, credential string) (authenti
 		  AND session.revoked_at IS NULL
 		  AND ((session.session_type = 'trusted' AND session.idle_expires_at > ?)
 		    OR (session.session_type = 'public' AND session.absolute_expires_at > ?))
-	`, tokenHash(credentialRaw), s.now().UTC(), s.now().UTC()).Scan(ctx, &result.DisplayName, &result.SessionType)
+	`, tokenHash(credentialRaw), now, now).Scan(
+		ctx, &result.DisplayName, &result.SessionType, &result.PersonID, &result.SessionID,
+	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return authenticatedSession{}, ErrUnauthenticated
 	}
@@ -432,6 +500,11 @@ func (s *Service) authenticate(ctx context.Context, credential string) (authenti
 		return authenticatedSession{}, err
 	}
 	return result, nil
+}
+
+func (s *Service) validCSRF(credential []byte, token string) bool {
+	expected := s.csrfToken(credential)
+	return subtle.ConstantTimeCompare([]byte(expected), []byte(token)) == 1
 }
 
 func normalizeEmail(value string) (string, string, error) {

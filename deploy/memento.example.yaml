@@ -15,7 +15,10 @@ immich:
   health_timeout: 2s
 
 # Generate at least 32 random bytes and keep this stable across restarts.
-security: {}
+security:
+  setup_rate_window: 15m
+  setup_email_limit: 3
+  setup_ip_limit: 20
 
 # Enable after replacing every address and SMTP endpoint. starttls requires the
 # server to advertise STARTTLS and never downgrades to plaintext. implicit_tls

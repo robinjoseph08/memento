@@ -131,6 +131,7 @@ test("completes the first-browser setup workflow with explicit Onboarding choice
   expect(completionCall?.init?.headers).toMatchObject({
     "Content-Type": "application/json",
   });
+  expect(screen.getByRole("button", { name: "Sign out" })).toBeInTheDocument();
 });
 
 test("safe bootstrap GETs show permanent closure without starting setup", async () => {
@@ -158,24 +159,30 @@ test("safe bootstrap GETs show permanent closure without starting setup", async 
   expect(screen.queryByLabelText("Login email")).not.toBeInTheDocument();
 });
 
-test("restores signed-in setup completion from the server-side Session", async () => {
-  vi.stubGlobal(
-    "fetch",
-    vi.fn((input: RequestInfo | URL) => {
-      if (requestPath(input) === "/api/setup") {
-        return Promise.resolve(
-          jsonResponse({ error: { message: "Setup not found." } }, 404),
-        );
-      }
+test("restores and refreshes a signed-in Trusted-device Session", async () => {
+  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const path = requestPath(input);
+    if (path === "/api/setup") {
       return Promise.resolve(
-        jsonResponse({
-          display_name: "Robin Joseph",
-          session_type: "trusted",
-          csrf_token: "c".repeat(64),
-        }),
+        jsonResponse({ error: { message: "Setup not found." } }, 404),
       );
-    }),
-  );
+    }
+    if (path === "/api/session/refresh") {
+      expect(init?.method).toBe("POST");
+      expect(init?.headers).toMatchObject({
+        "X-Memento-CSRF": "c".repeat(64),
+      });
+      return Promise.resolve(new Response(null, { status: 204 }));
+    }
+    return Promise.resolve(
+      jsonResponse({
+        display_name: "Robin Joseph",
+        session_type: "trusted",
+        csrf_token: "c".repeat(64),
+      }),
+    );
+  });
+  vi.stubGlobal("fetch", fetchMock);
 
   renderApp();
 
@@ -184,6 +191,46 @@ test("restores signed-in setup completion from the server-side Session", async (
       "Setup is complete. You're signed in as Robin Joseph.",
     ),
   ).toBeInTheDocument();
+  expect(fetchMock).toHaveBeenCalledTimes(3);
+});
+
+test("keeps sign-out prominent and sends Session-bound CSRF", async () => {
+  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const path = requestPath(input);
+    if (path === "/api/setup") {
+      return Promise.resolve(
+        jsonResponse({ error: { message: "Setup not found." } }, 404),
+      );
+    }
+    if (path === "/api/session/logout") {
+      expect(init?.method).toBe("POST");
+      expect(init?.headers).toMatchObject({
+        "X-Memento-CSRF": "c".repeat(64),
+      });
+      return Promise.resolve(new Response(null, { status: 204 }));
+    }
+    return Promise.resolve(
+      jsonResponse({
+        display_name: "Public Person",
+        session_type: "public",
+        csrf_token: "c".repeat(64),
+      }),
+    );
+  });
+  vi.stubGlobal("fetch", fetchMock);
+
+  renderApp();
+  fireEvent.click(await screen.findByRole("button", { name: "Sign out" }));
+
+  expect(
+    await screen.findByText(
+      "Setup is complete. Memento is ready for private family sharing.",
+    ),
+  ).toBeInTheDocument();
+  expect(
+    screen.queryByRole("button", { name: "Sign out" }),
+  ).not.toBeInTheDocument();
+  expect(fetchMock).toHaveBeenCalledTimes(3);
 });
 
 test("announces a concurrent setup conflict without claiming success", async () => {

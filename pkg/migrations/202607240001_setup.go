@@ -110,6 +110,22 @@ func init() {
 					)`,
 					`CREATE INDEX sessions_active_credential_idx ON sessions (credential_hash) WHERE revoked_at IS NULL`,
 					`CREATE INDEX sessions_person_active_idx ON sessions (person_id, created_at DESC) WHERE revoked_at IS NULL`,
+					`CREATE INDEX sessions_expiry_idx ON sessions (COALESCE(idle_expires_at, absolute_expires_at)) WHERE revoked_at IS NULL`,
+					`CREATE TABLE security_audit_events (
+						id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+						actor_person_id uuid REFERENCES people(id) ON DELETE RESTRICT,
+						subject_person_id uuid REFERENCES people(id) ON DELETE RESTRICT,
+						action text NOT NULL CHECK (action <> ''),
+						outcome text NOT NULL CHECK (outcome <> ''),
+						client_ip inet,
+						user_agent text NOT NULL DEFAULT '',
+						session_id uuid REFERENCES sessions(id) ON DELETE RESTRICT,
+						metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+						created_at timestamptz NOT NULL DEFAULT now()
+					)`,
+					`CREATE INDEX security_audit_subject_time_idx ON security_audit_events (subject_person_id, created_at DESC) WHERE subject_person_id IS NOT NULL`,
+					`CREATE INDEX security_audit_actor_time_idx ON security_audit_events (actor_person_id, created_at DESC) WHERE actor_person_id IS NOT NULL`,
+					`CREATE INDEX security_audit_action_time_idx ON security_audit_events (action, created_at DESC)`,
 				}
 				for _, statement := range statements {
 					if _, err := tx.ExecContext(ctx, statement); err != nil {
@@ -126,6 +142,7 @@ func init() {
 		func(ctx context.Context, db *bun.DB) error {
 			return db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 				statements := []string{
+					`DROP TABLE IF EXISTS security_audit_events`,
 					`DROP TABLE IF EXISTS sessions`,
 					`DROP TABLE IF EXISTS login_challenges`,
 					`DROP TABLE IF EXISTS notification_preferences`,

@@ -21,12 +21,21 @@ const (
 )
 
 // Handler exposes first-browser setup and the resulting browser Session.
-type Handler struct{ service *Service }
+type Handler struct {
+	service *Service
+	limiter *setupLimiter
+}
 
-func NewHandler(service *Service) *Handler { return &Handler{service: service} }
+func NewHandler(service *Service) *Handler {
+	handler := &Handler{service: service}
+	if service != nil {
+		handler.limiter = newSetupLimiter(service.security)
+	}
+	return handler
+}
 
 func (h *Handler) Available(c echo.Context) error {
-	response, err := h.service.Available(c.Request().Context())
+	response, err := h.service.Available(withRequestMetadata(c.Request().Context(), c.Request()))
 	if errors.Is(err, ErrSetupComplete) {
 		return errcodes.NotFound("Setup")
 	}
@@ -41,7 +50,10 @@ func (h *Handler) RequestCode(c echo.Context) error {
 	if err := bindJSON(c, &request); err != nil {
 		return err
 	}
-	response, err := h.service.RequestCode(c.Request().Context(), request)
+	if !h.limiter.allowRequestCode(clientIP(c.Request()), request.Email) {
+		return setupRateLimited()
+	}
+	response, err := h.service.RequestCode(withRequestMetadata(c.Request().Context(), c.Request()), request)
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrSetupComplete):
@@ -62,7 +74,10 @@ func (h *Handler) VerifyCode(c echo.Context) error {
 	if err := bindJSON(c, &request); err != nil {
 		return err
 	}
-	response, err := h.service.VerifyCode(c.Request().Context(), request)
+	if !h.limiter.allowIP(clientIP(c.Request())) {
+		return setupRateLimited()
+	}
+	response, err := h.service.VerifyCode(withRequestMetadata(c.Request().Context(), c.Request()), request)
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrSetupComplete):
@@ -81,7 +96,10 @@ func (h *Handler) Complete(c echo.Context) error {
 	if err := bindJSON(c, &request); err != nil {
 		return err
 	}
-	completed, err := h.service.complete(c.Request().Context(), request)
+	if !h.limiter.allowIP(clientIP(c.Request())) {
+		return setupRateLimited()
+	}
+	completed, err := h.service.complete(withRequestMetadata(c.Request().Context(), c.Request()), request)
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrSetupComplete):
@@ -103,7 +121,7 @@ func (h *Handler) Session(c echo.Context) error {
 	if err != nil {
 		return errcodes.Unauthorized("A valid Session is required.")
 	}
-	response, err := h.service.Session(c.Request().Context(), credential)
+	response, err := h.service.Session(withRequestMetadata(c.Request().Context(), c.Request()), credential)
 	if errors.Is(err, ErrUnauthenticated) {
 		return errcodes.Unauthorized("A valid Session is required.")
 	}
@@ -113,12 +131,42 @@ func (h *Handler) Session(c echo.Context) error {
 	return c.JSON(http.StatusOK, response)
 }
 
+func (h *Handler) Refresh(c echo.Context) error {
+	credential, err := sessionCredential(c)
+	if err != nil {
+		return errcodes.Unauthorized("A valid Session is required.")
+	}
+	refreshed, err := h.service.refresh(
+		withRequestMetadata(c.Request().Context(), c.Request()),
+		credential,
+		c.Request().Header.Get(CSRFHeader),
+	)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrUnauthenticated):
+			return errcodes.Unauthorized("A valid Session is required.")
+		case errors.Is(err, ErrCSRF):
+			return errcodes.Forbidden("Changing this Session without a valid CSRF token")
+		case errors.Is(err, ErrSessionType):
+			return errcodes.BadRequest("Only a Trusted-device Session can be refreshed.")
+		default:
+			return err
+		}
+	}
+	setSessionCookie(c, refreshed)
+	return c.NoContent(http.StatusNoContent)
+}
+
 func (h *Handler) Logout(c echo.Context) error {
 	credential, err := sessionCredential(c)
 	if err != nil {
 		return errcodes.Unauthorized("A valid Session is required.")
 	}
-	err = h.service.Logout(c.Request().Context(), credential, c.Request().Header.Get(CSRFHeader))
+	err = h.service.Logout(
+		withRequestMetadata(c.Request().Context(), c.Request()),
+		credential,
+		c.Request().Header.Get(CSRFHeader),
+	)
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrUnauthenticated):
@@ -148,6 +196,8 @@ func RegisterRoutes(e *echo.Echo, handler *Handler) {
 	sessionGroup := e.Group("/api/session", noStore)
 	session := sessionGroup.GET("", handler.Session)
 	session.Name = sessionPolicy
+	refresh := sessionGroup.POST("/refresh", handler.Refresh)
+	refresh.Name = sessionMutationPolicy
 	logout := sessionGroup.POST("/logout", handler.Logout)
 	logout.Name = sessionMutationPolicy
 }
@@ -171,6 +221,10 @@ func setupConflict() error {
 	return errcodes.Conflict("Setup is no longer available.")
 }
 
+func setupRateLimited() error {
+	return errcodes.TooManyRequests("Too many setup attempts. Try again later.")
+}
+
 func sessionCredential(c echo.Context) (string, error) {
 	cookie, err := c.Cookie(CookieName)
 	if err != nil || cookie.Value == "" {
@@ -190,7 +244,11 @@ func setSessionCookie(c echo.Context, session completedSession) {
 	}
 	if session.SessionType == "trusted" {
 		cookie.MaxAge = int(trustedLifetime.Seconds())
-		cookie.Expires = time.Now().UTC().Add(trustedLifetime)
+		if session.ExpiresAt != nil {
+			cookie.Expires = *session.ExpiresAt
+		} else {
+			cookie.Expires = time.Now().UTC().Add(trustedLifetime)
+		}
 	}
 	c.SetCookie(cookie)
 }

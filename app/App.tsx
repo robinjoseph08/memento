@@ -1,4 +1,4 @@
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState, type FormEvent } from "react";
 
 import type {
@@ -26,7 +26,7 @@ class APIError extends Error {
   }
 }
 
-async function apiJSON<T>(path: string, init?: RequestInit): Promise<T> {
+async function apiResponse(path: string, init?: RequestInit) {
   const response = await fetch(path, {
     credentials: "same-origin",
     ...init,
@@ -36,21 +36,30 @@ async function apiJSON<T>(path: string, init?: RequestInit): Promise<T> {
       ...init?.headers,
     },
   });
-  if (!response.ok) {
-    let message = "Memento is unavailable.";
-    try {
-      const payload = (await response.json()) as {
-        error?: { message?: string };
-      };
-      if (payload.error?.message) {
-        message = payload.error.message;
-      }
-    } catch {
-      // The safe fallback does not expose response internals.
-    }
-    throw new APIError(message, response.status);
+  if (response.ok) {
+    return response;
   }
+  let message = "Memento is unavailable.";
+  try {
+    const payload = (await response.json()) as {
+      error?: { message?: string };
+    };
+    if (payload.error?.message) {
+      message = payload.error.message;
+    }
+  } catch {
+    // The safe fallback does not expose response internals.
+  }
+  throw new APIError(message, response.status);
+}
+
+async function apiJSON<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await apiResponse(path, init);
   return (await response.json()) as T;
+}
+
+async function apiNoContent(path: string, init: RequestInit): Promise<void> {
+  await apiResponse(path, init);
 }
 
 async function fetchBootstrap(): Promise<BootstrapState> {
@@ -65,6 +74,12 @@ async function fetchBootstrap(): Promise<BootstrapState> {
 
   try {
     const session = await apiJSON<SessionResponse>("/api/session");
+    if (session.session_type === "trusted") {
+      await apiNoContent("/api/session/refresh", {
+        method: "POST",
+        headers: { "X-Memento-CSRF": session.csrf_token },
+      });
+    }
     return { kind: "session", session };
   } catch (error) {
     if (error instanceof APIError && error.status === 401) {
@@ -129,7 +144,7 @@ function ErrorMessage({ error }: { error: Error | null }) {
 function SetupFlow({
   onComplete,
 }: {
-  onComplete: (displayName: string) => void;
+  onComplete: (session: SessionResponse) => void;
 }) {
   const [step, setStep] = useState<"identity" | "code" | "onboarding">(
     "identity",
@@ -176,8 +191,12 @@ function SetupFlow({
         method: "POST",
         body: JSON.stringify(request),
       }),
-    onSuccess: () => {
-      onComplete(displayName);
+    onSuccess: (response) => {
+      onComplete({
+        display_name: displayName.trim(),
+        session_type: sessionType,
+        csrf_token: response.csrf_token,
+      });
     },
   });
 
@@ -216,7 +235,7 @@ function SetupFlow({
         </p>
         <h2>
           {step === "identity"
-            ? "Create your Curator"
+            ? "Set up the Curator"
             : step === "code"
               ? "Verify your email"
               : "Choose how Memento works for you"}
@@ -226,8 +245,8 @@ function SetupFlow({
       {step === "identity" ? (
         <form className="setup-form" onSubmit={submitIdentity}>
           <p className="form-intro">
-            The first verified person becomes the sole Curator and a Recipient.
-            Complete setup before exposing Memento publicly.
+            The Person who completes setup receives the sole Curator role and is
+            also a Recipient. Complete setup before exposing Memento publicly.
           </p>
           <label>
             Your name
@@ -373,35 +392,68 @@ function SetupFlow({
   );
 }
 
-function ReadyCard({ displayName }: { displayName?: string }) {
+function ReadyCard({
+  session,
+  onSignedOut,
+}: {
+  session?: SessionResponse;
+  onSignedOut?: () => void;
+}) {
+  const logout = useMutation({
+    mutationFn: () =>
+      apiNoContent("/api/session/logout", {
+        method: "POST",
+        headers: { "X-Memento-CSRF": session?.csrf_token ?? "" },
+      }),
+    onSuccess: onSignedOut,
+  });
+
   return (
     <section aria-labelledby="memento-title" className="shell-card">
       <BrandHeader />
       <p className="lede">
-        {displayName
-          ? `Setup is complete. You're signed in as ${displayName}.`
+        {session
+          ? `Setup is complete. You're signed in as ${session.display_name}.`
           : "Setup is complete. Memento is ready for private family sharing."}
       </p>
       <p aria-live="polite" className="status">
         <span aria-hidden="true" className="status-dot" />
         Setup complete
       </p>
+      {session ? (
+        <div className="session-actions">
+          <ErrorMessage error={logout.error} />
+          <button
+            disabled={logout.isPending}
+            onClick={() => logout.mutate()}
+            type="button"
+          >
+            {logout.isPending ? "Signing out…" : "Sign out"}
+          </button>
+        </div>
+      ) : null}
     </section>
   );
 }
 
 export function App() {
-  const [completedName, setCompletedName] = useState<string>();
+  const queryClient = useQueryClient();
+  const [completedSession, setCompletedSession] = useState<SessionResponse>();
   const bootstrap = useQuery({
     queryKey: ["bootstrap"],
     queryFn: fetchBootstrap,
     retry: false,
   });
 
-  if (completedName) {
+  function showSignedOut() {
+    setCompletedSession(undefined);
+    queryClient.setQueryData<BootstrapState>(["bootstrap"], { kind: "closed" });
+  }
+
+  if (completedSession) {
     return (
       <main>
-        <ReadyCard displayName={completedName} />
+        <ReadyCard session={completedSession} onSignedOut={showSignedOut} />
       </main>
     );
   }
@@ -436,20 +488,16 @@ export function App() {
   if (bootstrap.data.kind === "available") {
     return (
       <main>
-        <SetupFlow onComplete={setCompletedName} />
+        <SetupFlow onComplete={setCompletedSession} />
       </main>
     );
   }
 
+  const session =
+    bootstrap.data.kind === "session" ? bootstrap.data.session : undefined;
   return (
     <main>
-      <ReadyCard
-        displayName={
-          bootstrap.data.kind === "session"
-            ? bootstrap.data.session.display_name
-            : undefined
-        }
-      />
+      <ReadyCard session={session} onSignedOut={showSignedOut} />
     </main>
   );
 }

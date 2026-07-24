@@ -83,7 +83,7 @@ func run() error {
 			log.Warn("insecure development SMTP transport is active")
 		}
 	}
-	emailService := emaildelivery.New(db, cfg.SMTP, emailSender)
+	emailService := emaildelivery.New(db, cfg.SMTP, emailSender, cfg.Security.Secret)
 	handlers := map[string]worker.Handler{}
 	if cfg.SMTP.Enabled {
 		handlers[emaildelivery.JobKind] = emailService.Handle
@@ -102,7 +102,7 @@ func run() error {
 		return err
 	}
 	healthService := health.New(db, immichClient, jobWorker, cfg.Database.HealthTimeout, cfg.Worker.HeartbeatMaxAge, deliveryHealth)
-	setupHandler := setup.NewHandler(setup.New(db, emailService, cfg.Security.Secret))
+	setupHandler := setup.NewHandler(setup.New(db, emailService, cfg.Security))
 	e, err := server.New(healthService, emaildelivery.NewHandler(emailService), setupHandler)
 	if err != nil {
 		_ = db.Close()

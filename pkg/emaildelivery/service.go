@@ -3,8 +3,12 @@ package emaildelivery
 
 import (
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -27,6 +31,8 @@ var (
 	errGenerateIdentity  = errors.New("generate email delivery identity")
 	errDeliveryLeaseLost = errors.New("email delivery job lease lost")
 	errUnsupportedKind   = errors.New("unsupported required email kind")
+	errSensitiveBodyKey  = errors.New("sensitive email encryption key is unavailable")
+	errSensitiveBody     = errors.New("sensitive email body is invalid")
 	ErrNotConfigured     = errors.New("SMTP is not configured")
 	ErrSetupComplete     = errors.New("test email is available only during setup")
 	ErrDeliveryAbsent    = errors.New("email delivery not found")
@@ -61,6 +67,7 @@ type jobPayload struct {
 type delivery struct {
 	ID            int64
 	PublicID      string
+	Kind          string
 	Recipient     string
 	Subject       string
 	Body          string
@@ -73,13 +80,22 @@ type delivery struct {
 
 // Service creates required test requests and handles their leased jobs.
 type Service struct {
-	db     *bun.DB
-	cfg    config.SMTPConfig
-	sender smtp.Sender
+	db       *bun.DB
+	cfg      config.SMTPConfig
+	sender   smtp.Sender
+	bodyAEAD cipher.AEAD
 }
 
-func New(db *bun.DB, cfg config.SMTPConfig, sender smtp.Sender) *Service {
-	return &Service{db: db, cfg: cfg, sender: sender}
+func New(db *bun.DB, cfg config.SMTPConfig, sender smtp.Sender, securitySecret ...string) *Service {
+	service := &Service{db: db, cfg: cfg, sender: sender}
+	if len(securitySecret) != 0 && len(securitySecret[0]) >= 32 {
+		key := sha256.Sum256(append([]byte("memento:required-email:"), []byte(securitySecret[0])...))
+		block, err := aes.NewCipher(key[:])
+		if err == nil {
+			service.bodyAEAD, _ = cipher.NewGCM(block)
+		}
+	}
+	return service
 }
 
 // RequestTest atomically commits the delivery and its outbox event.
@@ -123,12 +139,16 @@ func (s *Service) QueueRequired(ctx context.Context, tx bun.Tx, message Required
 	if err != nil {
 		return 0, "", errGenerateIdentity
 	}
+	body, err := s.persistedBody(message)
+	if err != nil {
+		return 0, "", err
+	}
 	var id int64
 	if err := tx.NewRaw(`
 		INSERT INTO email_deliveries (public_id, kind, recipient, subject, body)
 		VALUES (?, ?, ?, ?, ?)
 		RETURNING id
-	`, publicID, message.Kind, message.Recipient, message.Subject, message.Body).Scan(ctx, &id); err != nil {
+	`, publicID, message.Kind, message.Recipient, message.Subject, body).Scan(ctx, &id); err != nil {
 		return 0, "", err
 	}
 	payload, err := json.Marshal(jobPayload{DeliveryID: id})
@@ -175,9 +195,9 @@ func (s *Service) Handle(ctx context.Context, job worker.Job) error {
 	}
 	var message delivery
 	err := s.db.NewRaw(`
-		SELECT id, public_id, recipient, subject, body, status, attempts, last_safe_error, next_retry_at, created_at
+		SELECT id, public_id, kind, recipient, subject, body, status, attempts, last_safe_error, next_retry_at, created_at
 		FROM email_deliveries WHERE id = ?
-	`, payload.DeliveryID).Scan(ctx, &message.ID, &message.PublicID, &message.Recipient, &message.Subject, &message.Body, &message.Status, &message.Attempts, &message.LastSafeError, &message.NextRetryAt, &message.CreatedAt)
+	`, payload.DeliveryID).Scan(ctx, &message.ID, &message.PublicID, &message.Kind, &message.Recipient, &message.Subject, &message.Body, &message.Status, &message.Attempts, &message.LastSafeError, &message.NextRetryAt, &message.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return worker.Permanent("delivery_missing")
 	}
@@ -189,6 +209,13 @@ func (s *Service) Handle(ctx context.Context, job worker.Job) error {
 	}
 	if err := s.requireLease(ctx, job); err != nil {
 		return err
+	}
+	message.Body, err = s.deliveryBody(message.Kind, message.Body)
+	if err != nil {
+		if recordErr := s.recordFailure(ctx, job, message.ID, "delivery_payload_invalid"); recordErr != nil {
+			return recordErr
+		}
+		return worker.Permanent("delivery_payload_invalid")
 	}
 	if time.Since(message.CreatedAt) >= s.cfg.RetryWindow {
 		if err := s.recordFailure(ctx, job, message.ID, "retry_window_exhausted"); err != nil {
@@ -221,7 +248,7 @@ func (s *Service) Handle(ctx context.Context, job worker.Job) error {
 	if err == nil {
 		updated, updateErr := s.db.NewRaw(`
 			UPDATE email_deliveries SET status = 'sent', sent_at = now(), next_retry_at = NULL,
-				last_safe_error = NULL, updated_at = now()
+				last_safe_error = NULL, body = CASE WHEN kind = 'setup_code' THEN '' ELSE body END, updated_at = now()
 			WHERE id = ? AND status = 'queued' AND EXISTS (
 				SELECT 1 FROM jobs WHERE id = ? AND status = 'running' AND lease_owner = ? AND lease_expires_at > now()
 			)
@@ -268,6 +295,40 @@ func (s *Service) Handle(ctx context.Context, job worker.Job) error {
 		return errDeliveryLeaseLost
 	}
 	return worker.RetryAfter(delay, failure.Diagnostic)
+}
+
+func (s *Service) persistedBody(message RequiredMessage) (string, error) {
+	if message.Kind != KindSetupCode {
+		return message.Body, nil
+	}
+	if s.bodyAEAD == nil {
+		return "", errSensitiveBodyKey
+	}
+	nonce := make([]byte, s.bodyAEAD.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		return "", errGenerateIdentity
+	}
+	sealed := s.bodyAEAD.Seal(nonce, nonce, []byte(message.Body), []byte(message.Kind))
+	return "v1:" + base64.RawStdEncoding.EncodeToString(sealed), nil
+}
+
+func (s *Service) deliveryBody(kind, body string) (string, error) {
+	if kind != KindSetupCode {
+		return body, nil
+	}
+	if s.bodyAEAD == nil || len(body) < 4 || body[:3] != "v1:" {
+		return "", errSensitiveBody
+	}
+	sealed, err := base64.RawStdEncoding.DecodeString(body[3:])
+	if err != nil || len(sealed) < s.bodyAEAD.NonceSize() {
+		return "", errSensitiveBody
+	}
+	nonce := sealed[:s.bodyAEAD.NonceSize()]
+	plaintext, err := s.bodyAEAD.Open(nil, nonce, sealed[s.bodyAEAD.NonceSize():], []byte(kind))
+	if err != nil {
+		return "", errSensitiveBody
+	}
+	return string(plaintext), nil
 }
 
 func randomID() (string, error) {
@@ -325,7 +386,7 @@ func (s *Service) recordFailure(ctx context.Context, job worker.Job, id int64, d
 	return s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 		updated, err := tx.NewRaw(`
 			UPDATE email_deliveries SET status = 'failed', failed_at = now(), last_safe_error = ?,
-				next_retry_at = NULL, updated_at = now()
+				next_retry_at = NULL, body = CASE WHEN kind = 'setup_code' THEN '' ELSE body END, updated_at = now()
 			WHERE id = ? AND status = 'queued' AND EXISTS (
 				SELECT 1 FROM jobs WHERE id = ? AND status = 'running' AND lease_owner = ? AND lease_expires_at > now()
 			)

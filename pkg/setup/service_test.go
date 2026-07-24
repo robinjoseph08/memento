@@ -4,11 +4,20 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
+	"github.com/robinjoseph08/memento/pkg/config"
 	"github.com/stretchr/testify/require"
 )
 
 const unitSecret = "test-only-security-secret-32-bytes"
+
+func testSecurityConfig() config.SecurityConfig {
+	return config.SecurityConfig{
+		Secret: unitSecret, SetupRateWindow: 15 * time.Minute,
+		SetupEmailLimit: 3, SetupIPLimit: 20,
+	}
+}
 
 var errTestRandomUnavailable = errors.New("test randomness unavailable")
 
@@ -17,7 +26,7 @@ type failingReader struct{}
 func (failingReader) Read([]byte) (int, error) { return 0, errTestRandomUnavailable }
 
 func TestSetupRejectsInvalidInputBeforePersistence(t *testing.T) {
-	service := New(nil, nil, unitSecret)
+	service := New(nil, nil, testSecurityConfig())
 
 	_, err := service.RequestCode(context.Background(), RequestCodeRequest{DisplayName: "", Email: "invalid"})
 	require.ErrorIs(t, err, ErrInvalidIdentity)
@@ -32,7 +41,7 @@ func TestSetupRejectsInvalidInputBeforePersistence(t *testing.T) {
 }
 
 func TestSetupFailsBeforePersistenceWhenSecureRandomnessIsUnavailable(t *testing.T) {
-	service := New(nil, nil, unitSecret)
+	service := New(nil, nil, testSecurityConfig())
 	service.random = failingReader{}
 
 	_, err := service.RequestCode(context.Background(), RequestCodeRequest{DisplayName: "Robin", Email: "robin@example.com"})

@@ -24,6 +24,7 @@ func TestRoutesDeclareExplicitSetupAndSessionPolicies(t *testing.T) {
 	assert.Equal(t, setupOnlyPolicy, policies["POST /api/setup/verify"])
 	assert.Equal(t, setupOnlyPolicy, policies["POST /api/setup/complete"])
 	assert.Equal(t, sessionPolicy, policies["GET /api/session"])
+	assert.Equal(t, sessionMutationPolicy, policies["POST /api/session/refresh"])
 	assert.Equal(t, sessionMutationPolicy, policies["POST /api/session/logout"])
 }
 

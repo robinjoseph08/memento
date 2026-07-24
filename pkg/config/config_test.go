@@ -28,6 +28,9 @@ func TestLoadUsesDefaultsAndEnvironment(t *testing.T) {
 	assert.Equal(t, "127.0.0.1:8081", cfg.HTTP.Address)
 	assert.Equal(t, 7*time.Second, cfg.HTTP.ShutdownTimeout)
 	assert.Equal(t, 4, cfg.Database.MaxOpenConns)
+	assert.Equal(t, 15*time.Minute, cfg.Security.SetupRateWindow)
+	assert.Equal(t, 3, cfg.Security.SetupEmailLimit)
+	assert.Equal(t, 20, cfg.Security.SetupIPLimit)
 }
 
 func TestLoadPrecedenceIncludesYAMLAndSecretFiles(t *testing.T) {
@@ -177,6 +180,9 @@ func TestValidateRejectsUnsafeValues(t *testing.T) {
 		{"Immich credentials", func(c *Config) { c.Immich.URL = "https://user:pass@immich.example" }, "without credentials"},
 		{"Immich key", func(c *Config) { c.Immich.APIKey = "" }, "immich.api_key is required"},
 		{"security secret", func(c *Config) { c.Security.Secret = "short" }, "security.secret must contain at least 32 bytes"},
+		{"setup rate window", func(c *Config) { c.Security.SetupRateWindow = 0 }, "setup rate limits must be positive"},
+		{"setup email limit", func(c *Config) { c.Security.SetupEmailLimit = 0 }, "setup rate limits must be positive"},
+		{"setup IP limit", func(c *Config) { c.Security.SetupIPLimit = 0 }, "setup rate limits must be positive"},
 		{"heartbeat", func(c *Config) { c.Worker.HeartbeatMaxAge = c.Worker.HeartbeatInterval }, "heartbeat_max_age"},
 		{"poll lease", func(c *Config) { c.Worker.LeaseDuration = c.Worker.PollInterval }, "lease_duration"},
 		{"heartbeat lease", func(c *Config) { c.Worker.LeaseDuration = c.Worker.HeartbeatInterval }, "heartbeat_interval"},

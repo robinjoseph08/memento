@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/labstack/echo/v4"
 	"github.com/robinjoseph08/memento/internal/testdb"
@@ -19,7 +20,9 @@ import (
 	"github.com/robinjoseph08/memento/pkg/emaildelivery"
 	"github.com/robinjoseph08/memento/pkg/errcodes"
 	"github.com/robinjoseph08/memento/pkg/migrations"
+	"github.com/robinjoseph08/memento/pkg/outbox"
 	"github.com/robinjoseph08/memento/pkg/smtp"
+	"github.com/robinjoseph08/memento/pkg/worker"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/uptrace/bun"
@@ -27,16 +30,32 @@ import (
 
 const integrationSecret = "test-only-security-secret-32-bytes"
 
-type acceptingSender struct{}
+type acceptingSender struct {
+	messages chan smtp.Message
+}
 
-func (acceptingSender) Send(context.Context, smtp.Message) error { return nil }
+func (sender *acceptingSender) Send(_ context.Context, message smtp.Message) error {
+	sender.messages <- message
+	return nil
+}
+
+var (
+	setupSenders sync.Map
+	setupCodes   sync.Map
+)
 
 func newSetupService(t *testing.T) (*bun.DB, *Service) {
 	t.Helper()
 	db := testdb.Open(t)
 	require.NoError(t, migrations.Apply(context.Background(), db))
-	delivery := emaildelivery.New(db, config.SMTPConfig{Enabled: true}, acceptingSender{})
-	return db, New(db, delivery, integrationSecret)
+	sender := &acceptingSender{messages: make(chan smtp.Message, 4)}
+	setupSenders.Store(db, sender)
+	t.Cleanup(func() {
+		setupSenders.Delete(db)
+		setupCodes.Delete(db)
+	})
+	delivery := emaildelivery.New(db, config.SMTPConfig{Enabled: true, RetryWindow: time.Hour}, sender, integrationSecret)
+	return db, New(db, delivery, testSecurityConfig())
 }
 
 func newSetupHTTP(t *testing.T, service *Service) *echo.Echo {
@@ -54,16 +73,53 @@ func requestedChallenge(t *testing.T, db *bun.DB, service *Service, name, email 
 	t.Helper()
 	response, err := service.RequestCode(context.Background(), RequestCodeRequest{DisplayName: name, Email: email})
 	require.NoError(t, err)
+	var persistedBody string
+	require.NoError(t, db.NewRaw(`SELECT body FROM email_deliveries ORDER BY id DESC LIMIT 1`).Scan(context.Background(), &persistedBody))
+	assert.True(t, strings.HasPrefix(persistedBody, "v1:"), "setup code email must be encrypted at rest")
+	deliverLatestCode(t, db, service.delivery)
 	return response
+}
+
+func deliverLatestCode(t *testing.T, db *bun.DB, delivery *emaildelivery.Service) {
+	t.Helper()
+	ctx := context.Background()
+	dispatched, err := outbox.New(db).Dispatch(ctx, "setup-test-dispatcher", time.Minute)
+	require.NoError(t, err)
+	require.True(t, dispatched)
+	var job worker.Job
+	err = db.NewRaw(`
+		WITH candidate AS (
+			SELECT id FROM jobs WHERE status = 'pending' ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED
+		)
+		UPDATE jobs AS job SET status = 'running', lease_owner = 'setup-test-worker',
+			lease_expires_at = now() + interval '1 minute'
+		FROM candidate WHERE job.id = candidate.id
+		RETURNING job.id, job.kind, job.payload, job.attempts
+	`).Scan(ctx, &job.ID, &job.Kind, &job.Payload, &job.Attempts)
+	require.NoError(t, err)
+	job.LeaseOwner = "setup-test-worker"
+	require.NoError(t, delivery.Handle(ctx, job))
+	var persistedBody string
+	require.NoError(t, db.NewRaw(`SELECT body FROM email_deliveries ORDER BY id DESC LIMIT 1`).Scan(ctx, &persistedBody))
+	assert.Empty(t, persistedBody, "sensitive body must be erased after terminal delivery")
+	_, err = db.NewRaw(`
+		UPDATE jobs SET status = 'completed', lease_owner = NULL, lease_expires_at = NULL WHERE id = ?
+	`, job.ID).Exec(ctx)
+	require.NoError(t, err)
+
+	senderValue, ok := setupSenders.Load(db)
+	require.True(t, ok)
+	message := <-senderValue.(*acceptingSender).messages
+	code := regexp.MustCompile(`\b[0-9]{8}\b`).FindString(message.Body)
+	require.Len(t, code, 8)
+	setupCodes.Store(db, code)
 }
 
 func latestCode(t *testing.T, db *bun.DB) string {
 	t.Helper()
-	var body string
-	require.NoError(t, db.NewRaw(`SELECT body FROM email_deliveries WHERE kind = 'setup_code' ORDER BY id DESC LIMIT 1`).Scan(context.Background(), &body))
-	code := regexp.MustCompile(`\b[0-9]{8}\b`).FindString(body)
-	require.Len(t, code, 8)
-	return code
+	code, ok := setupCodes.Load(db)
+	require.True(t, ok)
+	return code.(string)
 }
 
 func verifiedChallenge(t *testing.T, db *bun.DB, service *Service, name, email string) VerifyCodeResponse {
@@ -102,7 +158,7 @@ func performJSON(e *echo.Echo, method, path, body string, headers map[string]str
 func TestCodeRequestRollsBackWhenRequiredEmailIsUnavailable(t *testing.T) {
 	db := testdb.Open(t)
 	require.NoError(t, migrations.Apply(context.Background(), db))
-	service := New(db, emaildelivery.New(db, config.SMTPConfig{}, nil), integrationSecret)
+	service := New(db, emaildelivery.New(db, config.SMTPConfig{}, nil), testSecurityConfig())
 
 	_, err := service.RequestCode(context.Background(), RequestCodeRequest{DisplayName: "Robin", Email: "robin@example.com"})
 	require.ErrorIs(t, err, emaildelivery.ErrNotConfigured)
@@ -204,6 +260,10 @@ func TestFinalSetupStoresCompletedIdentityChoicesAndOpaqueSession(t *testing.T) 
 	assert.Equal(t, 1, preferences)
 	assert.Equal(t, 1, sessions)
 
+	var auditActions []string
+	require.NoError(t, db.NewRaw(`SELECT action FROM security_audit_events ORDER BY id`).Scan(context.Background(), &auditActions))
+	assert.Equal(t, []string{"setup_code_requested", "setup_code_verified", "setup_completed", "session_created"}, auditActions)
+
 	var storedCredential bool
 	require.NoError(t, db.NewRaw(`SELECT EXISTS (SELECT 1 FROM sessions WHERE encode(credential_hash, 'hex') = ?)`, completed.Credential).Scan(context.Background(), &storedCredential))
 	assert.False(t, storedCredential, "the browser credential must never be stored directly")
@@ -295,6 +355,64 @@ func TestSecureCookiesAndSessionBoundCSRF(t *testing.T) {
 	assert.Zero(t, active)
 	_, err = service.Session(context.Background(), cookie.Value)
 	require.ErrorIs(t, err, ErrUnauthenticated)
+	var signedOutAudit int
+	require.NoError(t, db.NewRaw(`SELECT count(*) FROM security_audit_events WHERE action = 'session_signed_out' AND outcome = 'success'`).Scan(context.Background(), &signedOutAudit))
+	assert.Equal(t, 1, signedOutAudit)
+}
+
+func TestTrustedSessionRefreshExtendsInactivityWithoutMutatingGET(t *testing.T) {
+	db, service := newSetupService(t)
+	verified := verifiedChallenge(t, db, service, "Trusted Person", "trusted@example.com")
+	e := newSetupHTTP(t, service)
+	payload, err := json.Marshal(completionRequest(verified.VerificationToken, "trusted"))
+	require.NoError(t, err)
+	completeResponse := performJSON(e, http.MethodPost, "/api/setup/complete", string(payload), nil)
+	require.Equal(t, http.StatusCreated, completeResponse.Code)
+	cookie := completeResponse.Result().Cookies()[0]
+	var completed CompleteResponse
+	require.NoError(t, json.Unmarshal(completeResponse.Body.Bytes(), &completed))
+
+	var beforeActivity, beforeExpiry time.Time
+	require.NoError(t, db.NewRaw(`SELECT last_activity_at, idle_expires_at FROM sessions`).Scan(context.Background(), &beforeActivity, &beforeExpiry))
+	getSession := httptest.NewRecorder()
+	request := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/session", nil)
+	request.AddCookie(cookie)
+	e.ServeHTTP(getSession, request)
+	require.Equal(t, http.StatusOK, getSession.Code)
+	var afterGET time.Time
+	require.NoError(t, db.NewRaw(`SELECT last_activity_at FROM sessions`).Scan(context.Background(), &afterGET))
+	assert.Equal(t, beforeActivity, afterGET, "safe GET must not refresh Session activity")
+
+	refreshTime := beforeActivity.Add(24 * time.Hour)
+	service.now = func() time.Time { return refreshTime }
+	refreshed := performJSON(
+		e, http.MethodPost, "/api/session/refresh", "",
+		map[string]string{CSRFHeader: completed.CSRFToken}, cookie,
+	)
+	require.Equal(t, http.StatusNoContent, refreshed.Code)
+	cookies := refreshed.Result().Cookies()
+	require.Len(t, cookies, 1)
+	assert.Greater(t, cookies[0].MaxAge, 0)
+	assert.WithinDuration(t, refreshTime.Add(trustedLifetime), cookies[0].Expires, time.Second)
+
+	var afterActivity, afterExpiry time.Time
+	require.NoError(t, db.NewRaw(`SELECT last_activity_at, idle_expires_at FROM sessions`).Scan(context.Background(), &afterActivity, &afterExpiry))
+	assert.Equal(t, refreshTime, afterActivity)
+	assert.Greater(t, afterExpiry, beforeExpiry)
+}
+
+func TestSetupRateLimitsAreNonEnumerating(t *testing.T) {
+	_, service := newSetupService(t)
+	service.security.SetupEmailLimit = 1
+	service.security.SetupIPLimit = 2
+	e := newSetupHTTP(t, service)
+	body := `{"display_name":"Rate Limited","email":"rate@example.com"}`
+	first := performJSON(e, http.MethodPost, "/api/setup/code", body, nil)
+	require.Equal(t, http.StatusAccepted, first.Code)
+	second := performJSON(e, http.MethodPost, "/api/setup/code", body, nil)
+	assert.Equal(t, http.StatusTooManyRequests, second.Code)
+	assert.Contains(t, second.Body.String(), "Too many setup attempts")
+	assert.NotContains(t, strings.ToLower(second.Body.String()), "rate@example.com")
 }
 
 func TestSetupClosureSurvivesNewServiceAndSafeGETsCreateNothing(t *testing.T) {
@@ -313,7 +431,12 @@ func TestSetupClosureSurvivesNewServiceAndSafeGETsCreateNothing(t *testing.T) {
 	verified := verifiedChallenge(t, db, service, "Permanent Curator", "permanent@example.com")
 	_, err := service.complete(context.Background(), completionRequest(verified.VerificationToken, "trusted"))
 	require.NoError(t, err)
-	restarted := New(db, emaildelivery.New(db, config.SMTPConfig{Enabled: true}, acceptingSender{}), integrationSecret)
+	restartedSender := &acceptingSender{messages: make(chan smtp.Message, 1)}
+	restarted := New(
+		db,
+		emaildelivery.New(db, config.SMTPConfig{Enabled: true}, restartedSender, integrationSecret),
+		testSecurityConfig(),
+	)
 	restartedHTTP := newSetupHTTP(t, restarted)
 
 	after := httptest.NewRecorder()
