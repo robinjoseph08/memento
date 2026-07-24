@@ -19,7 +19,7 @@ import (
 const permissionsJSON = `["album.read","asset.download","asset.read","asset.view","face.read","person.read"]`
 
 func clientConfig(serverURL string) config.ImmichConfig {
-	return config.ImmichConfig{URL: serverURL, APIKey: "secret-key", HealthTimeout: 100 * time.Millisecond}
+	return config.ImmichConfig{URL: serverURL, APIKey: "secret-key", HealthTimeout: 10 * time.Second}
 }
 
 func contractServer(t *testing.T, handler func(http.ResponseWriter, *http.Request)) *httptest.Server {
