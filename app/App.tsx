@@ -413,9 +413,11 @@ function formatSourceDate(value: unknown) {
 function SourceAlbumCard({
   album,
   csrfToken,
+  onTriaged,
 }: {
   album: SourceAlbum;
   csrfToken: string;
+  onTriaged: (message: string) => void;
 }) {
   const queryClient = useQueryClient();
   const [inspecting, setInspecting] = useState(false);
@@ -432,9 +434,15 @@ function SourceAlbumCard({
         },
       ),
     onSuccess: async () => {
+      onTriaged(
+        album.disposition === "ignored"
+          ? `Restored ${album.name} to the Source album inbox.`
+          : `Ignored ${album.name}.`,
+      );
       await queryClient.invalidateQueries({ queryKey: ["sources"] });
     },
   });
+  const detailsID = `source-album-${album.id}-details`;
   return (
     <article className="source-album">
       <div className="source-album-summary">
@@ -445,12 +453,18 @@ function SourceAlbumCard({
             {album.source_missing ? " · Source missing" : ""}
           </p>
         </div>
-        <button onClick={() => setInspecting((value) => !value)} type="button">
+        <button
+          aria-controls={detailsID}
+          aria-expanded={inspecting}
+          aria-label={`${inspecting ? "Close details for" : "Inspect"} ${album.name}`}
+          onClick={() => setInspecting((value) => !value)}
+          type="button"
+        >
           {inspecting ? "Close" : "Inspect"}
         </button>
       </div>
       {inspecting ? (
-        <div className="source-details">
+        <div className="source-details" id={detailsID}>
           <p>{album.description || "No source description."}</p>
           <dl>
             <div>
@@ -481,8 +495,15 @@ function SourceAlbumCard({
   );
 }
 
-function SourceWorkspace({ session }: { session: SessionResponse }) {
+function SourceWorkspace({
+  session,
+  onSignOut,
+}: {
+  session: SessionResponse;
+  onSignOut: () => void;
+}) {
   const queryClient = useQueryClient();
+  const [triageStatus, setTriageStatus] = useState("");
   const [searchParams, setSearchParams] = useSearchParams();
   const disposition =
     searchParams.get("source_view") === "ignored" ? "ignored" : "unreviewed";
@@ -521,6 +542,14 @@ function SourceWorkspace({ session }: { session: SessionResponse }) {
       await queryClient.invalidateQueries({ queryKey: ["sources"] });
     },
   });
+  const signOut = useMutation({
+    mutationFn: () =>
+      apiResponse("/api/session/logout", {
+        method: "POST",
+        headers: { "X-Memento-CSRF": session.csrf_token },
+      }),
+    onSuccess: onSignOut,
+  });
 
   return (
     <section aria-labelledby="sources-title" className="source-workspace">
@@ -533,14 +562,24 @@ function SourceWorkspace({ session }: { session: SessionResponse }) {
             Recipients.
           </p>
         </div>
-        <button
-          className="source-connect"
-          disabled={discover.isPending}
-          onClick={() => discover.mutate()}
-          type="button"
-        >
-          {discover.isPending ? "Validating…" : "Connect and discover"}
-        </button>
+        <div className="source-header-actions">
+          <button
+            className="source-connect"
+            disabled={discover.isPending}
+            onClick={() => discover.mutate()}
+            type="button"
+          >
+            {discover.isPending ? "Validating…" : "Connect and discover"}
+          </button>
+          <button
+            className="source-sign-out"
+            disabled={signOut.isPending}
+            onClick={() => signOut.mutate()}
+            type="button"
+          >
+            {signOut.isPending ? "Signing out…" : "Sign out"}
+          </button>
+        </div>
       </header>
       {discover.data ? (
         <p aria-live="polite" className="source-success">
@@ -549,6 +588,7 @@ function SourceWorkspace({ session }: { session: SessionResponse }) {
         </p>
       ) : null}
       <ErrorMessage error={discover.error} />
+      <ErrorMessage error={signOut.error} />
       <div aria-label="Source album views" className="source-tabs" role="group">
         <button
           aria-pressed={disposition === "unreviewed"}
@@ -565,6 +605,9 @@ function SourceWorkspace({ session }: { session: SessionResponse }) {
           Ignored
         </button>
       </div>
+      <p aria-live="polite" className="visually-hidden" role="status">
+        {triageStatus}
+      </p>
       {sources.isPending ? (
         <p className="source-empty">Loading Source albums…</p>
       ) : null}
@@ -582,6 +625,7 @@ function SourceWorkspace({ session }: { session: SessionResponse }) {
             album={album}
             csrfToken={session.csrf_token}
             key={album.id}
+            onTriaged={setTriageStatus}
           />
         ))}
       </div>
@@ -599,13 +643,19 @@ function SourceWorkspace({ session }: { session: SessionResponse }) {
   );
 }
 
-function ReadyCard({ session }: { session?: SessionResponse }) {
+function ReadyCard({
+  session,
+  onSignOut,
+}: {
+  session?: SessionResponse;
+  onSignOut: () => void;
+}) {
   if (session) {
     return (
       <>
         <PeopleManager session={session} />
         <section className="shell-card curator-card">
-          <SourceWorkspace session={session} />
+          <SourceWorkspace onSignOut={onSignOut} session={session} />
         </section>
       </>
     );
@@ -624,16 +674,22 @@ function ReadyCard({ session }: { session?: SessionResponse }) {
 
 export function App() {
   const [completedSession, setCompletedSession] = useState<SessionResponse>();
+  const [signedOut, setSignedOut] = useState(false);
   const bootstrap = useQuery({
     queryKey: ["bootstrap"],
     queryFn: fetchBootstrap,
     retry: false,
   });
 
-  if (completedSession) {
+  const signOut = () => {
+    setCompletedSession(undefined);
+    setSignedOut(true);
+  };
+
+  if (completedSession && !signedOut) {
     return (
       <main>
-        <ReadyCard session={completedSession} />
+        <ReadyCard onSignOut={signOut} session={completedSession} />
       </main>
     );
   }
@@ -674,10 +730,12 @@ export function App() {
   }
 
   const session =
-    bootstrap.data.kind === "session" ? bootstrap.data.session : undefined;
+    !signedOut && bootstrap.data.kind === "session"
+      ? bootstrap.data.session
+      : undefined;
   return (
     <main>
-      <ReadyCard session={session} />
+      <ReadyCard onSignOut={signOut} session={session} />
     </main>
   );
 }

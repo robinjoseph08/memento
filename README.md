@@ -204,7 +204,7 @@ Setup closure is stored in PostgreSQL. Clearing cookies, using another browser, 
 
 ### Discover and triage Source albums
 
-After setup, sign in as the Curator and select **Connect and discover** in the Source album workspace. Memento validates Immich v3.0.3 and the exact least-privilege permission set before requesting owned albums. A failed version, permission, authentication, rate-limit, response, or availability check writes no discovery state.
+In the Curator browser Session created during setup, select **Connect and discover** in the Source album workspace. Memento validates Immich v3.0.3 and the exact least-privilege permission set before requesting owned albums. A failed version, permission, authentication, rate-limit, response, or availability check writes no discovery state.
 
 Discovery stores normalized album summaries under Memento identities. It does not create Events, Publications, Audiences, Media delivery routes, or Recipient-visible content. Inspect an unreviewed Source album and select **Ignore Source album** to remove it from the inbox. The **Ignored** view can restore it later while preserving its Memento identity, first-seen time, last-seen time, and source-missing state. Immich IDs, paths, library identifiers, owner details, faces, direct URLs, API keys, and raw DTOs are not returned to the browser.
 

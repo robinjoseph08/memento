@@ -45,12 +45,19 @@ func sourceHTTP(service *Service, authorizer Authorizer) *echo.Echo {
 }
 
 func sourceRequest(e *echo.Echo, method, path string, session, csrf string) *httptest.ResponseRecorder {
+	return sourceVersionedRequest(e, method, path, session, csrf, "")
+}
+
+func sourceVersionedRequest(e *echo.Echo, method, path string, session, csrf, version string) *httptest.ResponseRecorder {
 	request := httptest.NewRequestWithContext(context.Background(), method, path, nil)
 	if session != "" {
 		request.AddCookie(&http.Cookie{Name: setup.CookieName, Value: session})
 	}
 	if csrf != "" {
 		request.Header.Set(setup.CSRFHeader, csrf)
+	}
+	if version != "" {
+		request.Header.Set("If-Match", version)
 	}
 	response := httptest.NewRecorder()
 	e.ServeHTTP(response, request)
@@ -73,15 +80,23 @@ func TestSourceRoutesRequireCuratorSessionBeforeAccessingService(t *testing.T) {
 }
 
 func TestSourceMutationsRequireSessionBoundCSRF(t *testing.T) {
-	authorizer := &fakeAuthorizer{err: setup.ErrCSRF}
-	e := sourceHTTP(nil, authorizer)
-	response := sourceRequest(e, http.MethodPost, "/api/sources/discover", "opaque-session", "wrong-csrf")
-	assert.Equal(t, http.StatusForbidden, response.Code)
-	assert.Equal(t, "opaque-session", authorizer.credential)
-	assert.Equal(t, "wrong-csrf", authorizer.csrf)
-	assert.True(t, authorizer.mutation)
-	assert.NotContains(t, response.Body.String(), "opaque-session")
-	assert.NotContains(t, response.Body.String(), "wrong-csrf")
+	for _, path := range []string{
+		"/api/sources/discover",
+		"/api/sources/11111111-1111-4111-8111-111111111111/ignore",
+		"/api/sources/11111111-1111-4111-8111-111111111111/restore",
+	} {
+		t.Run(path, func(t *testing.T) {
+			authorizer := &fakeAuthorizer{err: setup.ErrCSRF}
+			e := sourceHTTP(nil, authorizer)
+			response := sourceRequest(e, http.MethodPost, path, "opaque-session", "wrong-csrf")
+			assert.Equal(t, http.StatusForbidden, response.Code)
+			assert.Equal(t, "opaque-session", authorizer.credential)
+			assert.Equal(t, "wrong-csrf", authorizer.csrf)
+			assert.True(t, authorizer.mutation)
+			assert.NotContains(t, response.Body.String(), "opaque-session")
+			assert.NotContains(t, response.Body.String(), "wrong-csrf")
+		})
+	}
 }
 
 func TestSourceReadsDoNotRequireCSRFButStillRequireCuratorRole(t *testing.T) {

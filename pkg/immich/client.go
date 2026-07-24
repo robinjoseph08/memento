@@ -46,6 +46,7 @@ var (
 	errInvalidResponse    = safeError("Immich returned an invalid response")
 	errUnsupportedVersion = safeError("Immich version is unsupported")
 	errInvalidPermissions = safeError("Immich API key permissions are invalid")
+	errInvalidCredentials = safeError("Immich API key is invalid")
 	errOwnedAlbumsFailed  = safeError("Immich album discovery failed")
 	errAlbumAssetsFailed  = safeError("Immich album membership lookup failed")
 )
@@ -53,7 +54,7 @@ var (
 // IsConfigurationError reports whether validation failed because the operator
 // must change the Immich version or API key permissions before retrying.
 func IsConfigurationError(err error) bool {
-	return errors.Is(err, errUnsupportedVersion) || errors.Is(err, errInvalidPermissions)
+	return errors.Is(err, errUnsupportedVersion) || errors.Is(err, errInvalidPermissions) || errors.Is(err, errInvalidCredentials)
 }
 
 // Client accesses only allowlisted Immich v3.0.3 read operations. It never
@@ -93,6 +94,7 @@ type searchResponse struct {
 }
 
 type searchAssetsResponse struct {
+	Count    *int             `json:"count"`
 	Items    *[]assetResponse `json:"items"`
 	NextPage json.RawMessage  `json:"nextPage"`
 }
@@ -219,15 +221,22 @@ func (c *Client) AlbumAssetsPage(ctx context.Context, albumID uuid.UUID, page in
 	if err := c.doJSON(ctx, http.MethodPost, "search/metadata", nil, body, &response, errAlbumAssetsFailed); err != nil {
 		return AssetPage{}, err
 	}
-	if response.Assets == nil || response.Assets.Items == nil || len(response.Assets.NextPage) == 0 {
+	if response.Assets == nil || response.Assets.Count == nil || response.Assets.Items == nil ||
+		len(response.Assets.NextPage) == 0 || *response.Assets.Count != len(*response.Assets.Items) ||
+		len(*response.Assets.Items) > assetPageSize {
 		return AssetPage{}, errInvalidResponse
 	}
 	result := AssetPage{Items: make([]AssetSummary, 0, len(*response.Assets.Items))}
+	seen := make(map[uuid.UUID]struct{}, len(*response.Assets.Items))
 	for _, raw := range *response.Assets.Items {
 		assetID, err := uuid.Parse(raw.ID)
 		if err != nil || assetID == uuid.Nil || !validAssetType(raw.Type) || invalidDimension(raw.Width) || invalidDimension(raw.Height) {
 			return AssetPage{}, errInvalidResponse
 		}
+		if _, duplicate := seen[assetID]; duplicate {
+			return AssetPage{}, errInvalidResponse
+		}
+		seen[assetID] = struct{}{}
 		result.Items = append(result.Items, AssetSummary{
 			SourceID: assetID, MediaType: strings.ToLower(raw.Type), Width: raw.Width, Height: raw.Height,
 			LocalDateTime: truncate(strings.TrimSpace(raw.LocalDateTime), 64),
@@ -239,7 +248,7 @@ func (c *Client) AlbumAssetsPage(ctx context.Context, albumID uuid.UUID, page in
 			return AssetPage{}, errInvalidResponse
 		}
 		next, err := strconv.Atoi(nextValue)
-		if err != nil || next <= page {
+		if err != nil || next != page+1 {
 			return AssetPage{}, errInvalidResponse
 		}
 		result.NextPage = &next
@@ -282,6 +291,9 @@ func (c *Client) doJSON(ctx context.Context, method, path string, query url.Valu
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxJSONResponse))
+		if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
+			return errInvalidCredentials
+		}
 		return statusError
 	}
 	contents, err := io.ReadAll(io.LimitReader(response.Body, maxJSONResponse+1))

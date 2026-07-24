@@ -156,25 +156,25 @@ func TestAlbumAssetsPageUsesPinnedPaginationAndStripsSensitiveDTOFields(t *testi
 			return
 		}
 		assert.Equal(t, []string{albumID.String()}, request.AlbumIDs)
-		assert.Equal(t, 1, request.Page)
+		assert.Equal(t, 2, request.Page)
 		assert.Equal(t, 1000, request.Size)
 		assert.False(t, request.WithExif)
 		assert.False(t, request.WithPeople)
-		_, _ = w.Write([]byte(`{"assets":{"items":[{` +
+		_, _ = w.Write([]byte(`{"assets":{"count":1,"items":[{` +
 			`"id":"` + assetID.String() + `","type":"IMAGE","width":1200,"height":800,"localDateTime":"2026-01-01T10:00:00.000",` +
 			`"originalPath":"/secret/source.jpg","libraryId":"secret-library","people":[{"name":"Private face"}]` +
-			`}],"nextPage":"2"},"albums":{"items":[]}}`))
+			`}],"nextPage":"3"},"albums":{"items":[]}}`))
 	})
 	defer server.Close()
 	client, err := New(clientConfig(server.URL), server.Client())
 	require.NoError(t, err)
-	page, err := client.AlbumAssetsPage(context.Background(), albumID, 1)
+	page, err := client.AlbumAssetsPage(context.Background(), albumID, 2)
 	require.NoError(t, err)
 	require.Len(t, page.Items, 1)
 	assert.Equal(t, assetID, page.Items[0].SourceID)
 	assert.Equal(t, "image", page.Items[0].MediaType)
 	require.NotNil(t, page.NextPage)
-	assert.Equal(t, 2, *page.NextPage)
+	assert.Equal(t, 3, *page.NextPage)
 	serialized, err := json.Marshal(page)
 	require.NoError(t, err)
 	assert.NotContains(t, string(serialized), "secret")
@@ -190,15 +190,19 @@ func TestAlbumAssetsPageRejectsInvalidEntryPointsAndResponses(t *testing.T) {
 	require.EqualError(t, err, "Immich returned an invalid response")
 
 	albumID := uuid.New()
+	duplicateID := uuid.NewString()
 	for name, body := range map[string]string{
 		"missing assets":    `{}`,
 		"null assets":       `{"assets":null}`,
-		"missing items":     `{"assets":{"nextPage":null}}`,
-		"null items":        `{"assets":{"items":null,"nextPage":null}}`,
-		"missing next page": `{"assets":{"items":[]}}`,
-		"bad asset":         `{"assets":{"items":[{"id":"private","type":"IMAGE"}],"nextPage":null}}`,
-		"bad type":          `{"assets":{"items":[{"id":"` + uuid.NewString() + `","type":"PRIVATE"}],"nextPage":null}}`,
-		"bad next page":     `{"assets":{"items":[],"nextPage":"1"}}`,
+		"missing count":     `{"assets":{"items":[],"nextPage":null}}`,
+		"count mismatch":    `{"assets":{"count":1,"items":[],"nextPage":null}}`,
+		"missing items":     `{"assets":{"count":0,"nextPage":null}}`,
+		"null items":        `{"assets":{"count":0,"items":null,"nextPage":null}}`,
+		"missing next page": `{"assets":{"count":0,"items":[]}}`,
+		"duplicate asset":   `{"assets":{"count":2,"items":[{"id":"` + duplicateID + `","type":"IMAGE"},{"id":"` + duplicateID + `","type":"IMAGE"}],"nextPage":null}}`,
+		"bad asset":         `{"assets":{"count":1,"items":[{"id":"private","type":"IMAGE"}],"nextPage":null}}`,
+		"bad type":          `{"assets":{"count":1,"items":[{"id":"` + uuid.NewString() + `","type":"PRIVATE"}],"nextPage":null}}`,
+		"skipped next page": `{"assets":{"count":0,"items":[],"nextPage":"3"}}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			server := contractServer(t, func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(body)) })
@@ -235,7 +239,13 @@ func TestClientReturnsSafeFailClosedDependencyErrors(t *testing.T) {
 				client, err := New(clientConfig(server.URL), server.Client())
 				require.NoError(t, err)
 				err = operation.run(client)
-				require.EqualError(t, err, operation.want)
+				if status == http.StatusUnauthorized || status == http.StatusForbidden {
+					require.EqualError(t, err, "Immich API key is invalid")
+					assert.True(t, IsConfigurationError(err))
+				} else {
+					require.EqualError(t, err, operation.want)
+					assert.False(t, IsConfigurationError(err))
+				}
 				assert.NotContains(t, err.Error(), "private")
 			})
 		}

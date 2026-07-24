@@ -71,8 +71,9 @@ func New(db *bun.DB, connector Connector) *Service {
 	return &Service{db: db, connector: connector, now: time.Now}
 }
 
-// Discover validates the pinned connection before fetching owned albums. It
-// writes nothing unless both dependency calls complete successfully.
+// Discover validates the connection, then serializes snapshot retrieval and
+// persistence so an older dependency snapshot cannot commit after a newer one.
+// It writes nothing unless both dependency calls complete successfully.
 func (s *Service) Discover(ctx context.Context) (DiscoveryResponse, error) {
 	if err := s.connector.Check(ctx); err != nil {
 		if immich.IsConfigurationError(err) {
@@ -80,15 +81,20 @@ func (s *Service) Discover(ctx context.Context) (DiscoveryResponse, error) {
 		}
 		return DiscoveryResponse{}, ErrDependency
 	}
-	albums, err := s.connector.OwnedAlbums(ctx)
-	if err != nil {
-		return DiscoveryResponse{}, ErrDependency
-	}
-	now := s.now().UTC()
-	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+	var albums []immich.AlbumSummary
+	err := s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 		if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('memento:sources:discovery', 0))`); err != nil {
 			return fmt.Errorf("lock Source discovery: %w", err)
 		}
+		var err error
+		albums, err = s.connector.OwnedAlbums(ctx)
+		if err != nil {
+			if immich.IsConfigurationError(err) {
+				return ErrInvalidConfiguration
+			}
+			return ErrDependency
+		}
+		now := s.now().UTC()
 		if _, err := tx.NewRaw(`
 			UPDATE source_albums
 			SET source_missing = true, missing_since = COALESCE(missing_since, ?),
@@ -137,6 +143,9 @@ func (s *Service) Discover(ctx context.Context) (DiscoveryResponse, error) {
 		}
 		return nil
 	})
+	if errors.Is(err, ErrInvalidConfiguration) || errors.Is(err, ErrDependency) {
+		return DiscoveryResponse{}, err
+	}
 	if err != nil {
 		return DiscoveryResponse{}, fmt.Errorf("persist Source album discovery: %w", err)
 	}

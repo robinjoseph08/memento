@@ -39,7 +39,7 @@ func (h *Handler) Discover(c echo.Context) error {
 	}
 	response, err := h.service.Discover(c.Request().Context())
 	if errors.Is(err, ErrInvalidConfiguration) {
-		return errcodes.ValidationError("Immich must be version v3.0.3 with exactly the required read permissions.")
+		return errcodes.ValidationError("Immich must be version v3.0.3 with a valid API key containing exactly the required read permissions.")
 	}
 	if errors.Is(err, ErrDependency) {
 		return errcodes.ServiceUnavailable("Immich is temporarily unavailable. Try discovery again.")

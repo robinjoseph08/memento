@@ -4,7 +4,11 @@ package sources
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"net/http"
+	"sync"
 	"testing"
 	"time"
 
@@ -41,7 +45,7 @@ func sourceAlbum(id uuid.UUID, name string, count int) immich.AlbumSummary {
 	}
 }
 
-func newSourceService(t *testing.T, connector *fakeConnector) *Service {
+func newSourceService(t *testing.T, connector Connector) *Service {
 	t.Helper()
 	db := testdb.Open(t)
 	require.NoError(t, migrations.Apply(context.Background(), db))
@@ -142,23 +146,144 @@ func TestSuccessfulAbsentDiscoveryMarksSourceMissingWithoutErasingIt(t *testing.
 
 func TestDependencyFailuresFailClosedBeforePersistence(t *testing.T) {
 	tests := []struct {
-		name      string
-		connector *fakeConnector
+		name string
+		fail func(*fakeConnector)
 	}{
-		{"version or permission validation", &fakeConnector{checkErr: errConnectorUnavailable}},
-		{"owned album listing", &fakeConnector{listErr: errConnectorUnavailable}},
+		{"version or permission validation", func(connector *fakeConnector) { connector.checkErr = errConnectorUnavailable }},
+		{"owned album listing", func(connector *fakeConnector) { connector.listErr = errConnectorUnavailable }},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			service := newSourceService(t, test.connector)
-			_, err := service.Discover(context.Background())
+			connector := &fakeConnector{albums: []immich.AlbumSummary{sourceAlbum(uuid.New(), "Existing", 2)}}
+			service := newSourceService(t, connector)
+			require.NoError(t, discover(service))
+			before, err := service.List(context.Background(), "unreviewed", "", 10)
+			require.NoError(t, err)
+			require.Len(t, before.Albums, 1)
+
+			test.fail(connector)
+			connector.albums = nil
+			_, err = service.Discover(context.Background())
 			require.ErrorIs(t, err, ErrDependency)
 			assert.NotContains(t, err.Error(), "private")
-			var count int
-			require.NoError(t, service.db.NewRaw(`SELECT count(*) FROM source_albums`).Scan(context.Background(), &count))
-			assert.Zero(t, count)
+
+			after, err := service.Get(context.Background(), uuid.MustParse(before.Albums[0].ID))
+			require.NoError(t, err)
+			assert.Equal(t, before.Albums[0], after)
 		})
 	}
+}
+
+func TestAuthenticatedSourceRoutesWireDiscoveryInspectionAndTriage(t *testing.T) {
+	connector := &fakeConnector{albums: []immich.AlbumSummary{sourceAlbum(uuid.New(), "Route album", 4)}}
+	service := newSourceService(t, connector)
+	e := sourceHTTP(service, &fakeAuthorizer{})
+
+	discovered := sourceRequest(e, http.MethodPost, "/api/sources/discover", "session", "csrf")
+	require.Equal(t, http.StatusOK, discovered.Code)
+	assert.Equal(t, "no-store", discovered.Header().Get("Cache-Control"))
+
+	listed := sourceRequest(e, http.MethodGet, "/api/sources?disposition=unreviewed", "session", "")
+	require.Equal(t, http.StatusOK, listed.Code)
+	var listPayload struct {
+		Albums []map[string]any `json:"albums"`
+	}
+	require.NoError(t, json.Unmarshal(listed.Body.Bytes(), &listPayload))
+	require.Len(t, listPayload.Albums, 1)
+	assert.ElementsMatch(t, []string{
+		"id", "name", "description", "asset_count", "source_created_at", "source_updated_at",
+		"start_at", "end_at", "disposition", "version", "first_seen_at", "last_seen_at", "source_missing",
+	}, mapKeys(listPayload.Albums[0]))
+	id := listPayload.Albums[0]["id"].(string)
+	version := int64(listPayload.Albums[0]["version"].(float64))
+
+	detail := sourceRequest(e, http.MethodGet, "/api/sources/"+id, "session", "")
+	require.Equal(t, http.StatusOK, detail.Code)
+	assert.NotContains(t, detail.Body.String(), "immich_album_id")
+
+	ignored := sourceVersionedRequest(e, http.MethodPost, "/api/sources/"+id+"/ignore", "session", "csrf", fmt.Sprint(version))
+	require.Equal(t, http.StatusOK, ignored.Code)
+	var ignoredAlbum Album
+	require.NoError(t, json.Unmarshal(ignored.Body.Bytes(), &ignoredAlbum))
+	assert.Equal(t, "ignored", ignoredAlbum.Disposition)
+	assert.Greater(t, ignoredAlbum.Version, version)
+
+	restored := sourceVersionedRequest(e, http.MethodPost, "/api/sources/"+id+"/restore", "session", "csrf", fmt.Sprint(ignoredAlbum.Version))
+	require.Equal(t, http.StatusOK, restored.Code)
+	var restoredAlbum Album
+	require.NoError(t, json.Unmarshal(restored.Body.Bytes(), &restoredAlbum))
+	assert.Equal(t, "unreviewed", restoredAlbum.Disposition)
+}
+
+func mapKeys(values map[string]any) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	return keys
+}
+
+type serializedConnector struct {
+	mu            sync.Mutex
+	listCalls     int
+	firstStarted  chan struct{}
+	releaseFirst  chan struct{}
+	secondStarted chan struct{}
+	snapshots     [][]immich.AlbumSummary
+}
+
+func (connector *serializedConnector) Check(context.Context) error { return nil }
+
+func (connector *serializedConnector) OwnedAlbums(context.Context) ([]immich.AlbumSummary, error) {
+	connector.mu.Lock()
+	call := connector.listCalls
+	snapshot := connector.snapshots[call]
+	connector.listCalls++
+	connector.mu.Unlock()
+	if call == 0 {
+		close(connector.firstStarted)
+		<-connector.releaseFirst
+	} else if call == 1 {
+		close(connector.secondStarted)
+	}
+	return snapshot, nil
+}
+
+func TestConcurrentDiscoveriesSerializeDependencySnapshots(t *testing.T) {
+	connector := &serializedConnector{
+		firstStarted:  make(chan struct{}),
+		releaseFirst:  make(chan struct{}),
+		secondStarted: make(chan struct{}),
+		snapshots: [][]immich.AlbumSummary{
+			{sourceAlbum(uuid.New(), "Older snapshot", 1)},
+			{sourceAlbum(uuid.New(), "Newer snapshot", 1)},
+		},
+	}
+	service := newSourceService(t, connector)
+	firstResult := make(chan error, 1)
+	secondResult := make(chan error, 1)
+	go func() { firstResult <- discover(service) }()
+	<-connector.firstStarted
+	go func() { secondResult <- discover(service) }()
+
+	select {
+	case <-connector.secondStarted:
+		t.Fatal("second dependency snapshot began before the first discovery committed")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(connector.releaseFirst)
+	require.NoError(t, <-firstResult)
+	require.NoError(t, <-secondResult)
+
+	listed, err := service.List(context.Background(), "unreviewed", "", 10)
+	require.NoError(t, err)
+	require.Len(t, listed.Albums, 2)
+	states := map[string]bool{}
+	for _, album := range listed.Albums {
+		states[album.Name] = album.SourceMissing
+	}
+	assert.True(t, states["Older snapshot"])
+	assert.False(t, states["Newer snapshot"])
 }
 
 func TestSourceInventoryListPaginationAndNotFoundTransitions(t *testing.T) {
@@ -174,8 +299,13 @@ func TestSourceInventoryListPaginationAndNotFoundTransitions(t *testing.T) {
 	assert.NotContains(t, *first.NextCursor, first.Albums[1].ID)
 	second, err := service.List(context.Background(), "unreviewed", *first.NextCursor, 2)
 	require.NoError(t, err)
-	assert.Len(t, second.Albums, 1)
+	require.Len(t, second.Albums, 1)
 	assert.Nil(t, second.NextCursor)
+	allIDs := map[string]struct{}{}
+	for _, album := range append(first.Albums, second.Albums...) {
+		allIDs[album.ID] = struct{}{}
+	}
+	assert.Len(t, allIDs, 3, "cursor pages must neither duplicate nor omit Source albums")
 	_, err = service.List(context.Background(), "private", "", 10)
 	require.ErrorIs(t, err, ErrInvalidTransition)
 	_, err = service.List(context.Background(), "unreviewed", "not-a-cursor", 10)
