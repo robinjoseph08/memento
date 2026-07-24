@@ -35,4 +35,6 @@ func TestNormalizePersonNamesTrimsAndDefaultsSortName(t *testing.T) {
 	require.ErrorIs(t, err, ErrInvalidPerson)
 	_, _, err = normalizePersonNames("Person", string(make([]byte, maxNameLength+1)))
 	require.ErrorIs(t, err, ErrInvalidPerson)
+	_, _, err = normalizePersonNames("Null\x00Person", "Sort")
+	require.ErrorIs(t, err, ErrInvalidPerson)
 }

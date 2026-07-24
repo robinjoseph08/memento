@@ -513,6 +513,39 @@ h1 {
   background: #9a3412;
 }
 
+@media (prefers-color-scheme: light) {
+  .people-shell {
+    border-color: rgb(3 105 161 / 15%);
+    background: rgb(255 255 255 / 90%);
+    box-shadow: 0 2rem 6rem rgb(2 132 199 / 12%);
+  }
+
+  .person-row,
+  .people-panel {
+    border-color: #bae6fd;
+    background: rgb(240 249 255 / 85%);
+  }
+
+  .person-row span,
+  .person-facts dt {
+    color: #475569;
+  }
+
+  .person-row.selected {
+    border-color: #0284c7;
+    background: #e0f2fe;
+  }
+
+  .person-facts div {
+    background: white;
+  }
+
+  .merge-preview {
+    border-color: #c2410c;
+    background: #fff7ed;
+  }
+}
+
 @media (max-width: 54rem) {
   main {
     display: block;

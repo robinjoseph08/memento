@@ -98,6 +98,10 @@ done
   exit 1
 }
 grep -q '"status":"available"' "$temporary/front-setup.json"
+people_code=$(curl --insecure --silent --output "$temporary/front-people.json" --write-out '%{http_code}' \
+  "$front_url/api/people")
+[ "$people_code" = 401 ]
+grep -q 'A valid Session is required' "$temporary/front-people.json"
 front_complete_code=$(curl --insecure --silent --output "$temporary/front-complete.json" --write-out '%{http_code}' \
   --header 'Content-Type: application/json' \
   --data '{"verification_token":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","privacy_acknowledged":true,"engagement_acknowledged":true,"interest_list_acknowledged":true,"email_preference":"immediate","session_type":"trusted"}' \

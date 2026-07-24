@@ -45,7 +45,7 @@ type Person struct {
 	Roles                []string   `json:"roles"`
 	CurrentAccess        *Access    `json:"current_recipient_access,omitempty"`
 	CurrentLoginEmail    string     `json:"current_login_email,omitempty"`
-	ActiveSessions       int        `json:"active_sessions"`
+	UnrevokedSessions    int        `json:"unrevoked_sessions"`
 	HistoricalAuditCount int        `json:"historical_audit_count"`
 }
 
@@ -93,6 +93,7 @@ type ReferenceEffects struct {
 	SourceRoles                  []string `json:"source_roles"`
 	SurvivorRoles                []string `json:"survivor_roles"`
 	RecipientRoleWillTransfer    bool     `json:"recipient_role_will_transfer"`
+	ResultingRecipientGeneration int      `json:"resulting_recipient_generation,omitempty"`
 }
 
 // MergePreview is generated to TypeScript by Tygo.
@@ -107,6 +108,7 @@ type MergePreview struct {
 	SessionsWillBeInvalidated  bool             `json:"sessions_will_be_invalidated"`
 	RolesWillNotBeUnioned      bool             `json:"roles_will_not_be_unioned"`
 	AudienceAuthorityUnchanged bool             `json:"audience_authority_unchanged"`
+	CurrentCuratorSessionKept  bool             `json:"current_curator_session_kept"`
 	CanMerge                   bool             `json:"can_merge"`
 	Blockers                   []string         `json:"blockers"`
 }
@@ -118,6 +120,7 @@ type MergeRequest struct {
 	SourceVersion                   int64  `json:"source_version" validate:"required,min=1"`
 	SurvivorVersion                 int64  `json:"survivor_version" validate:"required,min=1"`
 	TransferCurrentAccessGeneration bool   `json:"transfer_current_access_generation"`
+	ExpectedRecipientGeneration     int    `json:"expected_recipient_generation" validate:"omitempty,min=1"`
 	EmailResolution                 string `json:"email_resolution" validate:"omitempty,oneof=keep_source keep_survivor"`
 }
 
@@ -135,7 +138,8 @@ func normalizePersonNames(displayName, sortName string) (string, string, error) 
 	if sortName == "" {
 		sortName = displayName
 	}
-	if displayName == "" || sortName == "" || !utf8.ValidString(displayName) || !utf8.ValidString(sortName) ||
+	if displayName == "" || sortName == "" || strings.ContainsRune(displayName, '\x00') || strings.ContainsRune(sortName, '\x00') ||
+		!utf8.ValidString(displayName) || !utf8.ValidString(sortName) ||
 		utf8.RuneCountInString(displayName) > maxNameLength || utf8.RuneCountInString(sortName) > maxNameLength {
 		return "", "", ErrInvalidPerson
 	}
@@ -152,44 +156,66 @@ func (s *Service) Create(ctx context.Context, actor setup.CuratorSession, reques
 		return Person{}, err
 	}
 	now := s.now().UTC()
+	var created Person
 	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 		if _, err := tx.NewRaw(`INSERT INTO people (id, display_name, sort_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`, id, displayName, sortName, now, now).Exec(ctx); err != nil {
 			return err
 		}
-		return appendAudit(ctx, tx, actor, &id, "person_created", map[string]any{"version": 1})
+		if err := appendAudit(ctx, tx, actor, &id, "person_created", map[string]any{"version": 1}); err != nil {
+			return err
+		}
+		created, err = getPerson(ctx, tx, id, false)
+		return err
 	})
 	if err != nil {
 		return Person{}, fmt.Errorf("create Person: %w", err)
 	}
-	return s.Get(ctx, id)
+	return created, nil
 }
 
 func (s *Service) List(ctx context.Context, query string, includeArchived bool) (ListResponse, error) {
-	query = strings.TrimSpace(query)
-	ids := make([]uuid.UUID, 0)
-	err := s.db.NewRaw(`
-		SELECT id FROM people
-		WHERE (? OR archived_at IS NULL)
-		  AND (? = '' OR memento_normalize_person_name(display_name || ' ' || sort_name)
-		      LIKE '%' || memento_normalize_person_name(?) || '%')
-		ORDER BY (merged_at IS NOT NULL), (archived_at IS NOT NULL), memento_normalize_person_name(sort_name), id
-		LIMIT 200`, includeArchived, query, query).Scan(ctx, &ids)
-	if err != nil {
-		return ListResponse{}, err
-	}
-	result := ListResponse{People: make([]Person, 0, len(ids))}
-	for _, id := range ids {
-		person, err := s.Get(ctx, id)
-		if err != nil {
-			return ListResponse{}, err
+	query = escapeLikePattern(strings.TrimSpace(query))
+	result := ListResponse{People: []Person{}}
+	err := s.db.RunInTx(ctx, readOnlySnapshot(), func(ctx context.Context, tx bun.Tx) error {
+		ids := make([]uuid.UUID, 0)
+		if err := tx.NewRaw(`
+			SELECT id FROM people
+			WHERE (? OR archived_at IS NULL)
+			  AND (? = '' OR memento_normalize_person_name(display_name || ' ' || sort_name)
+			      LIKE '%' || memento_normalize_person_name(?) || '%' ESCAPE E'\\')
+			ORDER BY (merged_at IS NOT NULL), (archived_at IS NOT NULL), memento_normalize_person_name(sort_name), id
+			LIMIT 200`, includeArchived, query, query).Scan(ctx, &ids); err != nil {
+			return err
 		}
-		result.People = append(result.People, person)
-	}
-	return result, nil
+		result.People = make([]Person, 0, len(ids))
+		for _, id := range ids {
+			person, err := getPerson(ctx, tx, id, false)
+			if err != nil {
+				return err
+			}
+			result.People = append(result.People, person)
+		}
+		return nil
+	})
+	return result, err
+}
+
+func escapeLikePattern(value string) string {
+	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(value)
+}
+
+func readOnlySnapshot() *sql.TxOptions {
+	return &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true}
 }
 
 func (s *Service) Get(ctx context.Context, id uuid.UUID) (Person, error) {
-	return getPerson(ctx, s.db, id, false)
+	var person Person
+	err := s.db.RunInTx(ctx, readOnlySnapshot(), func(ctx context.Context, tx bun.Tx) error {
+		var err error
+		person, err = getPerson(ctx, tx, id, false)
+		return err
+	})
+	return person, err
 }
 
 func getPerson(ctx context.Context, db bun.IDB, id uuid.UUID, lock bool) (Person, error) {
@@ -232,9 +258,12 @@ func getPerson(ctx context.Context, db bun.IDB, id uuid.UUID, lock bool) (Person
 	if err == nil {
 		access.ID = accessID.String()
 		person.CurrentAccess = &access
-		_ = db.NewRaw(`SELECT email FROM recipient_emails WHERE recipient_access_generation_id = ? AND is_current`, accessID).Scan(ctx, &person.CurrentLoginEmail)
+		emailErr := db.NewRaw(`SELECT email FROM recipient_emails WHERE recipient_access_generation_id = ? AND is_current`, accessID).Scan(ctx, &person.CurrentLoginEmail)
+		if emailErr != nil && !errors.Is(emailErr, sql.ErrNoRows) {
+			return Person{}, emailErr
+		}
 	}
-	if err := db.NewRaw(`SELECT count(*) FROM sessions WHERE person_id = ? AND revoked_at IS NULL`, id).Scan(ctx, &person.ActiveSessions); err != nil {
+	if err := db.NewRaw(`SELECT count(*) FROM sessions WHERE person_id = ? AND revoked_at IS NULL`, id).Scan(ctx, &person.UnrevokedSessions); err != nil {
 		return Person{}, err
 	}
 	if err := db.NewRaw(`SELECT count(*) FROM security_audit_events WHERE actor_person_id = ? OR subject_person_id = ?`, id, id).Scan(ctx, &person.HistoricalAuditCount); err != nil {
@@ -249,6 +278,7 @@ func (s *Service) Update(ctx context.Context, actor setup.CuratorSession, id uui
 		return Person{}, err
 	}
 	now := s.now().UTC()
+	var updated Person
 	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 		result, err := tx.NewRaw(`UPDATE people SET display_name = ?, sort_name = ?, version = version + 1, updated_at = ? WHERE id = ? AND version = ? AND merged_at IS NULL`, displayName, sortName, now, id, request.Version).Exec(ctx)
 		if err != nil {
@@ -261,16 +291,21 @@ func (s *Service) Update(ctx context.Context, actor setup.CuratorSession, id uui
 		if count == 0 {
 			return staleOrNotFound(ctx, tx, id)
 		}
-		return appendAudit(ctx, tx, actor, &id, "person_updated", map[string]any{"previous_version": request.Version})
+		if err := appendAudit(ctx, tx, actor, &id, "person_updated", map[string]any{"previous_version": request.Version}); err != nil {
+			return err
+		}
+		updated, err = getPerson(ctx, tx, id, false)
+		return err
 	})
 	if err != nil {
 		return Person{}, err
 	}
-	return s.Get(ctx, id)
+	return updated, nil
 }
 
 func (s *Service) Archive(ctx context.Context, actor setup.CuratorSession, id uuid.UUID, version int64) (Person, error) {
 	now := s.now().UTC()
+	var archived Person
 	err := s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 		var curator bool
 		if err := tx.NewRaw(`SELECT EXISTS (SELECT 1 FROM person_roles WHERE person_id = ? AND role = 'curator')`, id).Scan(ctx, &curator); err != nil {
@@ -293,12 +328,16 @@ func (s *Service) Archive(ctx context.Context, actor setup.CuratorSession, id uu
 		if _, err := tx.NewRaw(`UPDATE sessions SET revoked_at = ? WHERE person_id = ? AND revoked_at IS NULL`, now, id).Exec(ctx); err != nil {
 			return err
 		}
-		return appendAudit(ctx, tx, actor, &id, "person_archived", map[string]any{"previous_version": version})
+		if err := appendAudit(ctx, tx, actor, &id, "person_archived", map[string]any{"previous_version": version}); err != nil {
+			return err
+		}
+		archived, err = getPerson(ctx, tx, id, false)
+		return err
 	})
 	if err != nil {
 		return Person{}, err
 	}
-	return s.Get(ctx, id)
+	return archived, nil
 }
 
 func staleOrNotFound(ctx context.Context, db bun.IDB, id uuid.UUID) error {
@@ -312,15 +351,25 @@ func staleOrNotFound(ctx context.Context, db bun.IDB, id uuid.UUID) error {
 	return ErrStale
 }
 
-func (s *Service) PreviewMerge(ctx context.Context, sourceID, survivorID uuid.UUID) (MergePreview, error) {
+func (s *Service) PreviewMerge(ctx context.Context, actor setup.CuratorSession, sourceID, survivorID uuid.UUID) (MergePreview, error) {
 	if sourceID == survivorID {
 		return MergePreview{}, ErrInvalidMerge
 	}
-	source, err := s.Get(ctx, sourceID)
+	var preview MergePreview
+	err := s.db.RunInTx(ctx, readOnlySnapshot(), func(ctx context.Context, tx bun.Tx) error {
+		var err error
+		preview, err = previewMerge(ctx, tx, actor, sourceID, survivorID)
+		return err
+	})
+	return preview, err
+}
+
+func previewMerge(ctx context.Context, db bun.IDB, actor setup.CuratorSession, sourceID, survivorID uuid.UUID) (MergePreview, error) {
+	source, err := getPerson(ctx, db, sourceID, false)
 	if err != nil {
 		return MergePreview{}, err
 	}
-	survivor, err := s.Get(ctx, survivorID)
+	survivor, err := getPerson(ctx, db, survivorID, false)
 	if err != nil {
 		return MergePreview{}, err
 	}
@@ -328,19 +377,34 @@ func (s *Service) PreviewMerge(ctx context.Context, sourceID, survivorID uuid.UU
 		return MergePreview{}, ErrInvalidMerge
 	}
 	var historicalAuditRows int
-	if err := s.db.NewRaw(`SELECT count(*) FROM security_audit_events
+	if err := db.NewRaw(`SELECT count(*) FROM security_audit_events
 		WHERE actor_person_id IN (?, ?) OR subject_person_id IN (?, ?)`, sourceID, survivorID, sourceID, survivorID).Scan(ctx, &historicalAuditRows); err != nil {
 		return MergePreview{}, err
 	}
-	preview := MergePreview{Source: source, Survivor: survivor, CanMerge: true, Blockers: []string{}, RolesWillNotBeUnioned: true, AudienceAuthorityUnchanged: true}
+	currentCuratorSessionKept := actor.PersonID == survivorID
+	var sessionsInvalidated int
+	sessionQuery := `SELECT count(*) FROM sessions WHERE person_id IN (?, ?) AND revoked_at IS NULL`
+	sessionArgs := []any{sourceID, survivorID}
+	if currentCuratorSessionKept {
+		sessionQuery += ` AND id <> ?`
+		sessionArgs = append(sessionArgs, actor.SessionID)
+	}
+	if err := db.NewRaw(sessionQuery, sessionArgs...).Scan(ctx, &sessionsInvalidated); err != nil {
+		return MergePreview{}, err
+	}
+	preview := MergePreview{
+		Source: source, Survivor: survivor, CanMerge: true, Blockers: []string{},
+		RolesWillNotBeUnioned: true, AudienceAuthorityUnchanged: true,
+		CurrentCuratorSessionKept: currentCuratorSessionKept,
+	}
 	preview.References = ReferenceEffects{
-		SessionsInvalidated:          source.ActiveSessions + survivor.ActiveSessions,
+		SessionsInvalidated:          sessionsInvalidated,
 		HistoricalAuditRowsPreserved: historicalAuditRows,
 		SourceRoles:                  source.Roles,
 		SurvivorRoles:                survivor.Roles,
 		RecipientRoleWillTransfer:    source.CurrentAccess != nil && contains(source.Roles, "recipient"),
 	}
-	preview.SessionsWillBeInvalidated = preview.References.SessionsInvalidated > 0
+	preview.SessionsWillBeInvalidated = sessionsInvalidated > 0
 	if survivor.Status != "current" {
 		preview.CanMerge = false
 		preview.Blockers = append(preview.Blockers, "The survivor Person must be current.")
@@ -356,9 +420,15 @@ func (s *Service) PreviewMerge(ctx context.Context, sourceID, survivorID uuid.UU
 	if source.CurrentAccess != nil && survivor.CurrentAccess == nil {
 		preview.RequiresGenerationTransfer = true
 		preview.References.CurrentRecipientGenerationID = source.CurrentAccess.ID
+		if err := db.NewRaw(`SELECT COALESCE(max(generation), 0) + 1 FROM recipient_access_generations WHERE person_id = ?`, survivorID).Scan(ctx, &preview.References.ResultingRecipientGeneration); err != nil {
+			return MergePreview{}, err
+		}
 		preview.SourceEmail = source.CurrentLoginEmail
 		var survivorEmail string
-		_ = s.db.NewRaw(`SELECT email.email FROM recipient_emails email JOIN recipient_access_generations access ON access.id = email.recipient_access_generation_id WHERE access.person_id = ? AND email.is_current ORDER BY email.created_at DESC LIMIT 1`, survivorID).Scan(ctx, &survivorEmail)
+		emailErr := db.NewRaw(`SELECT email.email FROM recipient_emails email JOIN recipient_access_generations access ON access.id = email.recipient_access_generation_id WHERE access.person_id = ? AND email.is_current ORDER BY email.created_at DESC LIMIT 1`, survivorID).Scan(ctx, &survivorEmail)
+		if emailErr != nil && !errors.Is(emailErr, sql.ErrNoRows) {
+			return MergePreview{}, emailErr
+		}
 		preview.SurvivorEmail = survivorEmail
 		preview.RequiresEmailResolution = survivorEmail != "" && source.CurrentLoginEmail != "" && !strings.EqualFold(survivorEmail, source.CurrentLoginEmail)
 	}
@@ -388,16 +458,25 @@ func (s *Service) Merge(ctx context.Context, actor setup.CuratorSession, request
 		return Person{}, err
 	}
 	now := s.now().UTC()
+	var merged Person
 	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
-		// Lock in stable UUID order before evaluating either identity.
-		if _, err := tx.NewRaw(`SELECT id FROM people WHERE id IN (?, ?) ORDER BY id FOR UPDATE`, sourceID, survivorID).Exec(ctx); err != nil {
-			return err
+		// Parent locks serialize child inserts, then stable child-row locks protect every evaluated merge input.
+		for _, lock := range []string{
+			`SELECT id FROM people WHERE id IN (?, ?) ORDER BY id FOR UPDATE`,
+			`SELECT person_id FROM person_roles WHERE person_id IN (?, ?) ORDER BY person_id, role FOR UPDATE`,
+			`SELECT id FROM recipient_access_generations WHERE person_id IN (?, ?) ORDER BY id FOR UPDATE`,
+			`SELECT email.id FROM recipient_emails AS email JOIN recipient_access_generations AS access ON access.id = email.recipient_access_generation_id WHERE access.person_id IN (?, ?) ORDER BY email.id FOR UPDATE OF email`,
+			`SELECT id FROM sessions WHERE person_id IN (?, ?) ORDER BY id FOR UPDATE`,
+		} {
+			if _, err := tx.NewRaw(lock, sourceID, survivorID).Exec(ctx); err != nil {
+				return err
+			}
 		}
-		source, err := getPerson(ctx, tx, sourceID, false)
+		source, err := getPerson(ctx, tx, sourceID, true)
 		if err != nil {
 			return err
 		}
-		survivor, err := getPerson(ctx, tx, survivorID, false)
+		survivor, err := getPerson(ctx, tx, survivorID, true)
 		if err != nil {
 			return err
 		}
@@ -416,9 +495,16 @@ func (s *Service) Merge(ctx context.Context, actor setup.CuratorSession, request
 		if source.CurrentAccess != nil && survivor.CurrentAccess != nil {
 			return ErrTwoCurrentGenerations
 		}
+		resultingGeneration := 0
 		if source.CurrentAccess != nil {
 			if !request.TransferCurrentAccessGeneration {
 				return ErrGenerationTransferNeeded
+			}
+			if err := tx.NewRaw(`SELECT COALESCE(max(generation), 0) + 1 FROM recipient_access_generations WHERE person_id = ?`, survivorID).Scan(ctx, &resultingGeneration); err != nil {
+				return err
+			}
+			if request.ExpectedRecipientGeneration != resultingGeneration {
+				return ErrStale
 			}
 			var survivorEmailID uuid.UUID
 			var survivorEmail string
@@ -431,11 +517,11 @@ func (s *Service) Merge(ctx context.Context, actor setup.CuratorSession, request
 				return ErrEmailResolutionNeeded
 			}
 			if conflict {
-				if _, err := tx.NewRaw(`UPDATE recipient_emails SET is_current = false, ended_at = ? WHERE id = ?`, now, survivorEmailID).Exec(ctx); err != nil {
+				if err := execExactlyOne(ctx, tx, `UPDATE recipient_emails SET is_current = false, ended_at = ? WHERE id = ? AND is_current`, now, survivorEmailID); err != nil {
 					return err
 				}
 				if request.EmailResolution == "keep_survivor" {
-					if _, err := tx.NewRaw(`UPDATE recipient_emails SET is_current = false, ended_at = ? WHERE recipient_access_generation_id = ? AND is_current`, now, source.CurrentAccess.ID).Exec(ctx); err != nil {
+					if err := execExactlyOne(ctx, tx, `UPDATE recipient_emails SET is_current = false, ended_at = ? WHERE recipient_access_generation_id = ? AND is_current`, now, source.CurrentAccess.ID); err != nil {
 						return err
 					}
 					if _, err := tx.NewRaw(`INSERT INTO recipient_emails (id, recipient_access_generation_id, email, normalized_email, is_current, created_at) VALUES (?, ?, ?, lower(?), true, ?)`, newEmailID, source.CurrentAccess.ID, survivorEmail, survivorEmail, now).Exec(ctx); err != nil {
@@ -443,55 +529,63 @@ func (s *Service) Merge(ctx context.Context, actor setup.CuratorSession, request
 					}
 				}
 			}
-			if _, err := tx.NewRaw(`UPDATE recipient_access_generations
-				SET person_id = ?, generation = (
-					SELECT COALESCE(max(existing.generation), 0) + 1
-					FROM recipient_access_generations AS existing WHERE existing.person_id = ?
-				), updated_at = ?
-				WHERE id = ? AND person_id = ? AND is_current`, survivorID, survivorID, now, source.CurrentAccess.ID, sourceID).Exec(ctx); err != nil {
+			if err := execExactlyOne(ctx, tx, `UPDATE recipient_access_generations SET person_id = ?, generation = ?, updated_at = ? WHERE id = ? AND person_id = ? AND is_current`, survivorID, resultingGeneration, now, source.CurrentAccess.ID, sourceID); err != nil {
 				return err
 			}
 			if contains(source.Roles, "recipient") {
 				if _, err := tx.NewRaw(`INSERT INTO person_roles (person_id, role, created_at) VALUES (?, 'recipient', ?) ON CONFLICT DO NOTHING`, survivorID, now).Exec(ctx); err != nil {
 					return err
 				}
-				if _, err := tx.NewRaw(`DELETE FROM person_roles WHERE person_id = ? AND role = 'recipient'`, sourceID).Exec(ctx); err != nil {
+				if err := execExactlyOne(ctx, tx, `DELETE FROM person_roles WHERE person_id = ? AND role = 'recipient'`, sourceID); err != nil {
 					return err
 				}
 			}
 		}
-		if _, err := tx.NewRaw(`UPDATE sessions SET revoked_at = ? WHERE person_id IN (?, ?) AND revoked_at IS NULL`, now, sourceID, survivorID).Exec(ctx); err != nil {
+		sessionQuery := `UPDATE sessions SET revoked_at = ? WHERE person_id IN (?, ?) AND revoked_at IS NULL`
+		sessionArgs := []any{now, sourceID, survivorID}
+		if actor.PersonID == survivorID {
+			sessionQuery += ` AND id <> ?`
+			sessionArgs = append(sessionArgs, actor.SessionID)
+		}
+		if _, err := tx.NewRaw(sessionQuery, sessionArgs...).Exec(ctx); err != nil {
 			return err
 		}
-		result, err := tx.NewRaw(`UPDATE people SET archived_at = COALESCE(archived_at, ?), merged_at = ?, merged_into_person_id = ?, version = version + 1, updated_at = ? WHERE id = ? AND version = ?`, now, now, survivorID, now, sourceID, request.SourceVersion).Exec(ctx)
-		if err != nil {
+		if err := execExactlyOne(ctx, tx, `UPDATE people SET archived_at = COALESCE(archived_at, ?), merged_at = ?, merged_into_person_id = ?, version = version + 1, updated_at = ? WHERE id = ? AND version = ?`, now, now, survivorID, now, sourceID, request.SourceVersion); err != nil {
 			return err
 		}
-		affected, err := result.RowsAffected()
-		if err != nil {
+		if err := execExactlyOne(ctx, tx, `UPDATE people SET version = version + 1, updated_at = ? WHERE id = ? AND version = ?`, now, survivorID, request.SurvivorVersion); err != nil {
 			return err
 		}
-		if affected != 1 {
-			return ErrStale
+		metadata := map[string]any{
+			"survivor_person_id": survivorID.String(), "source_version": request.SourceVersion,
+			"survivor_version": request.SurvivorVersion, "generation_transferred": source.CurrentAccess != nil,
+			"resulting_recipient_generation": resultingGeneration, "email_resolution": request.EmailResolution,
 		}
-		result, err = tx.NewRaw(`UPDATE people SET version = version + 1, updated_at = ? WHERE id = ? AND version = ?`, now, survivorID, request.SurvivorVersion).Exec(ctx)
-		if err != nil {
+		if err := appendAudit(ctx, tx, actor, &sourceID, "people_merged", metadata); err != nil {
 			return err
 		}
-		affected, err = result.RowsAffected()
-		if err != nil {
-			return err
-		}
-		if affected != 1 {
-			return ErrStale
-		}
-		metadata := map[string]any{"survivor_person_id": survivorID.String(), "source_version": request.SourceVersion, "survivor_version": request.SurvivorVersion, "generation_transferred": source.CurrentAccess != nil, "email_resolution": request.EmailResolution}
-		return appendAudit(ctx, tx, actor, &sourceID, "people_merged", metadata)
+		merged, err = getPerson(ctx, tx, survivorID, false)
+		return err
 	})
 	if err != nil {
 		return Person{}, err
 	}
-	return s.Get(ctx, survivorID)
+	return merged, nil
+}
+
+func execExactlyOne(ctx context.Context, tx bun.Tx, query string, args ...any) error {
+	result, err := tx.NewRaw(query, args...).Exec(ctx)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected != 1 {
+		return ErrStale
+	}
+	return nil
 }
 
 func appendAudit(ctx context.Context, tx bun.Tx, actor setup.CuratorSession, subject *uuid.UUID, action string, metadata map[string]any) error {

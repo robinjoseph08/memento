@@ -20,6 +20,16 @@ function ErrorNotice({ error }: { error: Error | null }) {
   ) : null;
 }
 
+function personOptionLabel(person: Person) {
+  const details = [
+    person.sort_name,
+    person.status,
+    person.current_login_email,
+    person.id.slice(0, 8),
+  ].filter(Boolean);
+  return `${person.display_name} (${details.join(" · ")})`;
+}
+
 export function PeopleManager({ session }: { session: SessionResponse }) {
   const queryClient = useQueryClient();
   const [search, setSearch] = useState("");
@@ -46,6 +56,14 @@ export function PeopleManager({ session }: { session: SessionResponse }) {
 
   async function refreshPeople() {
     await queryClient.invalidateQueries({ queryKey: ["people"] });
+  }
+
+  function clearMergeSelection() {
+    setMergeSourceID("");
+    setMergeSurvivorID("");
+    setPreview(undefined);
+    setTransferGeneration(false);
+    setEmailResolution("");
   }
 
   const createPerson = useMutation({
@@ -138,7 +156,10 @@ export function PeopleManager({ session }: { session: SessionResponse }) {
         <label>
           Search People
           <input
-            onChange={(event) => setSearch(event.target.value)}
+            onChange={(event) => {
+              setSearch(event.target.value);
+              clearMergeSelection();
+            }}
             placeholder="Name or sort name"
             type="search"
             value={search}
@@ -147,7 +168,10 @@ export function PeopleManager({ session }: { session: SessionResponse }) {
         <label className="inline-choice">
           <input
             checked={includeArchived}
-            onChange={(event) => setIncludeArchived(event.target.checked)}
+            onChange={(event) => {
+              setIncludeArchived(event.target.checked);
+              clearMergeSelection();
+            }}
             type="checkbox"
           />
           Include archived and merged People
@@ -209,7 +233,16 @@ export function PeopleManager({ session }: { session: SessionResponse }) {
             <PersonDetail
               archiveError={archivePerson.error}
               key={`${selected.id}:${selected.version}`}
-              onArchive={() => archivePerson.mutate(selected)}
+              archivePending={archivePerson.isPending}
+              onArchive={() => {
+                if (
+                  window.confirm(
+                    `Archive ${selected.display_name}? This cannot be undone and revokes all unrevoked Session records for this Person.`,
+                  )
+                ) {
+                  archivePerson.mutate(selected);
+                }
+              }}
               onUpdate={(request) =>
                 updatePerson.mutate({ id: selected.id, request })
               }
@@ -246,7 +279,7 @@ export function PeopleManager({ session }: { session: SessionResponse }) {
                   .filter((person) => person.status !== "merged")
                   .map((person) => (
                     <option key={person.id} value={person.id}>
-                      {person.display_name}
+                      {personOptionLabel(person)}
                     </option>
                   ))}
               </select>
@@ -265,7 +298,7 @@ export function PeopleManager({ session }: { session: SessionResponse }) {
                   .filter((person) => person.status === "current")
                   .map((person) => (
                     <option key={person.id} value={person.id}>
-                      {person.display_name}
+                      {personOptionLabel(person)}
                     </option>
                   ))}
               </select>
@@ -294,6 +327,9 @@ export function PeopleManager({ session }: { session: SessionResponse }) {
                     source_version: preview.source.version,
                     survivor_version: preview.survivor.version,
                     transfer_current_access_generation: transferGeneration,
+                    expected_recipient_generation:
+                      preview.affected_references
+                        .resulting_recipient_generation ?? 0,
                     email_resolution: emailResolution,
                   })
                 }
@@ -317,12 +353,14 @@ function PersonDetail({
   onArchive,
   updateError,
   archiveError,
+  archivePending,
 }: {
   person: Person;
   onUpdate: (request: UpdateRequest) => void;
   onArchive: () => void;
   updateError: Error | null;
   archiveError: Error | null;
+  archivePending: boolean;
 }) {
   const [displayName, setDisplayName] = useState(person.display_name);
   const [sortName, setSortName] = useState(person.sort_name);
@@ -381,8 +419,8 @@ function PersonDetail({
           <dd>{person.current_login_email || "None"}</dd>
         </div>
         <div>
-          <dt>Active Sessions</dt>
-          <dd>{person.active_sessions}</dd>
+          <dt>Unrevoked Session records</dt>
+          <dd>{person.unrevoked_sessions}</dd>
         </div>
         <div>
           <dt>Historical attribution rows</dt>
@@ -397,7 +435,12 @@ function PersonDetail({
         <button type="submit">Save changes</button>
       ) : null}
       {person.status === "current" && !person.roles.includes("curator") ? (
-        <button className="danger-button" onClick={onArchive} type="button">
+        <button
+          className="danger-button"
+          disabled={archivePending}
+          onClick={onArchive}
+          type="button"
+        >
           Archive Person
         </button>
       ) : null}
@@ -432,16 +475,16 @@ function MergeConfirmation({
     <div className="merge-preview" aria-live="polite">
       <h3>Merge preview</h3>
       <p>
-        <strong>Survivor:</strong> {preview.survivor.display_name}
+        <strong>Survivor:</strong> {personOptionLabel(preview.survivor)}
       </p>
       <p>
         <strong>Source retained in history:</strong>{" "}
-        {preview.source.display_name}
+        {personOptionLabel(preview.source)}
       </p>
       <ul>
         <li>
-          {preview.affected_references.sessions_invalidated} Sessions will be
-          invalidated.
+          {preview.affected_references.sessions_invalidated} unrevoked Session
+          records will be revoked.
         </li>
         <li>
           {preview.affected_references.historical_audit_rows_preserved}{" "}
@@ -463,10 +506,13 @@ function MergeConfirmation({
         <li>Audience authority is unchanged.</li>
         <li>
           {preview.affected_references.current_recipient_generation_id
-            ? "One current Recipient generation can be explicitly transferred."
+            ? `Recipient generation ${preview.source.current_recipient_access?.generation} (${preview.source.current_recipient_access?.state}) will become generation ${preview.affected_references.resulting_recipient_generation} for the survivor if explicitly transferred.`
             : "No current Recipient generation moves."}
         </li>
       </ul>
+      {preview.current_curator_session_kept ? (
+        <p>The current Curator Session stays signed in.</p>
+      ) : null}
       {preview.blockers.map((blocker) => (
         <p className="form-error" key={blocker}>
           {blocker}

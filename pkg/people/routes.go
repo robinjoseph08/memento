@@ -139,7 +139,8 @@ func (h *Handler) Archive(c echo.Context) error {
 }
 
 func (h *Handler) PreviewMerge(c echo.Context) error {
-	if _, err := h.authorize(c, true); err != nil {
+	actor, err := h.authorize(c, true)
+	if err != nil {
 		return err
 	}
 	var request MergePreviewRequest
@@ -151,7 +152,7 @@ func (h *Handler) PreviewMerge(c echo.Context) error {
 	if sourceErr != nil || survivorErr != nil {
 		return errcodes.ValidationError("Choose two valid People.")
 	}
-	preview, err := h.service.PreviewMerge(c.Request().Context(), sourceID, survivorID)
+	preview, err := h.service.PreviewMerge(c.Request().Context(), actor, sourceID, survivorID)
 	if err != nil {
 		return peopleError(err)
 	}
