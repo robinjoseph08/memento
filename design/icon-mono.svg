@@ -1,18 +1,11 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
-  <defs>
-    <mask id="front-photo-cutout">
-      <rect width="1024" height="1024" fill="white" />
-      <rect x="279" y="326" width="466" height="446" rx="100" fill="black" />
-    </mask>
-    <mask id="stack-cutouts">
-      <rect width="1024" height="1024" fill="white" />
-      <rect x="279" y="326" width="466" height="446" rx="100" fill="black" />
-      <rect x="408" y="242" width="396" height="496" rx="100" fill="black" transform="rotate(14 606 490)" />
-    </mask>
-  </defs>
   <g fill="currentColor">
-    <rect x="248" y="270" width="340" height="440" rx="72" transform="rotate(-14 418 490)" mask="url(#stack-cutouts)" />
-    <rect x="436" y="270" width="340" height="440" rx="72" transform="rotate(14 606 490)" mask="url(#front-photo-cutout)" />
-    <rect x="307" y="354" width="410" height="390" rx="72" />
+    <g transform="matrix(0.970296 -0.241922 0.241922 0.970296 -106.125342 115.678446)">
+      <path d="M482.798 339.197 419.35 323.377c-52.481-13.085-105.713 18.9-118.798 71.381L248 605.534V342c0-39.738 32.262-72 72-72h196c7.022 0 13.81 1.007 20.229 2.885-16.2 8.864-30.08 22.395-39.389 39.904z" />
+    </g>
+    <g transform="matrix(0.970296 0.241922 -0.241922 0.970296 136.542519 -132.049575)">
+      <path d="M436 365.426V342c0-39.738 32.262-72 72-72h196c39.738 0 72 32.262 72 72v263.534l-52.552-210.776c-13.086-52.481-66.317-84.466-118.798-71.381z" />
+    </g>
+    <path d="M717 426v246c0 39.738-32.262 72-72 72H379c-39.738 0-72-32.262-72-72V426c0-39.738 32.262-72 72-72h266c39.738 0 72 32.262 72 72Z" />
   </g>
 </svg>
