@@ -1,6 +1,8 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 
+import { APIError, apiJSON, apiNoContent } from "./api";
+import { PeopleManager } from "./PeopleManager";
 import type {
   AvailabilityResponse,
   CompleteRequest,
@@ -16,51 +18,6 @@ type BootstrapState =
   | { kind: "available" }
   | { kind: "session"; session: SessionResponse }
   | { kind: "closed" };
-
-class APIError extends Error {
-  constructor(
-    message: string,
-    readonly status: number,
-  ) {
-    super(message);
-  }
-}
-
-async function apiResponse(path: string, init?: RequestInit) {
-  const response = await fetch(path, {
-    credentials: "same-origin",
-    ...init,
-    headers: {
-      Accept: "application/json",
-      ...(init?.body ? { "Content-Type": "application/json" } : {}),
-      ...init?.headers,
-    },
-  });
-  if (response.ok) {
-    return response;
-  }
-  let message = "Memento is unavailable.";
-  try {
-    const payload = (await response.json()) as {
-      error?: { message?: string };
-    };
-    if (payload.error?.message) {
-      message = payload.error.message;
-    }
-  } catch {
-    // The safe fallback does not expose response internals.
-  }
-  throw new APIError(message, response.status);
-}
-
-async function apiJSON<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await apiResponse(path, init);
-  return (await response.json()) as T;
-}
-
-async function apiNoContent(path: string, init: RequestInit): Promise<void> {
-  await apiResponse(path, init);
-}
 
 async function fetchBootstrap(): Promise<BootstrapState> {
   try {
@@ -433,17 +390,16 @@ function SetupFlow({
 }
 
 function ReadyCard({ session }: { session?: SessionResponse }) {
+  if (session) {
+    return <PeopleManager session={session} />;
+  }
   return (
     <section aria-labelledby="memento-title" className="shell-card">
       <BrandHeader />
-      <p className="lede">
-        {session
-          ? `Setup is complete. You're signed in as ${session.display_name}.`
-          : "Setup is complete."}
-      </p>
+      <p className="lede">Setup is complete.</p>
       <p aria-live="polite" className="status">
         <span aria-hidden="true" className="status-dot" />
-        Setup complete
+        Sign in to manage Memento
       </p>
     </section>
   );

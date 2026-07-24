@@ -290,7 +290,11 @@ test("restores and refreshes a signed-in Trusted-device Session", async () => {
       "Setup is complete. You're signed in as Robin Joseph.",
     ),
   ).toBeInTheDocument();
-  expect(fetchMock).toHaveBeenCalledTimes(3);
+  expect(fetchMock).toHaveBeenCalledTimes(4);
+  expect(fetchMock).toHaveBeenLastCalledWith(
+    "/api/people?query=&include_archived=false",
+    expect.objectContaining({ credentials: "same-origin" }),
+  );
 });
 
 test("announces a concurrent setup conflict without claiming success", async () => {
