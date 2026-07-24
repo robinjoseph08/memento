@@ -33,8 +33,12 @@ ready=false
 endpoint=
 for _ in $(seq 1 60); do
   endpoint=$(docker port "$container" 5432/tcp 2>/dev/null | head -n 1 || true)
+  # The image's initialization server only listens on its Unix socket and
+  # shuts down before the final server starts. Probe TCP so that temporary
+  # initialization readiness cannot race with loading the fixture.
   if [ -n "$endpoint" ] && docker exec "$container" \
-    psql --username postgres --dbname postgres --command 'SELECT 1' >/dev/null 2>&1; then
+    psql --host 127.0.0.1 --username postgres --dbname postgres \
+      --command 'SELECT 1' >/dev/null 2>&1; then
     ready=true
     break
   fi
