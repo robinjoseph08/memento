@@ -544,7 +544,7 @@ function SourceWorkspace({
   });
   const signOut = useMutation({
     mutationFn: () =>
-      apiResponse("/api/session/logout", {
+      apiNoContent("/api/session/logout", {
         method: "POST",
         headers: { "X-Memento-CSRF": session.csrf_token },
       }),

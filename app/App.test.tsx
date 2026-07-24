@@ -306,7 +306,7 @@ test("restores and refreshes a signed-in Trusted-device Session", async () => {
     expect.objectContaining({ credentials: "same-origin" }),
   );
   expect(fetchMock).toHaveBeenCalledWith(
-    "/api/sources?disposition=unreviewed&limit=50&page=1",
+    "/api/sources?disposition=unreviewed&limit=50",
     expect.objectContaining({ credentials: "same-origin" }),
   );
 });

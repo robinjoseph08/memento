@@ -672,14 +672,19 @@ func TestAuthorizeCuratorRequiresCurrentRoleAndSessionBoundCSRFForMutations(t *t
 	completed, err := service.complete(context.Background(), completionRequest(verified.VerificationToken, "trusted"))
 	require.NoError(t, err)
 
-	require.NoError(t, service.AuthorizeCurator(context.Background(), completed.Credential, "", false))
-	require.NoError(t, service.AuthorizeCurator(context.Background(), completed.Credential, completed.CSRFToken, true))
-	require.ErrorIs(t, service.AuthorizeCurator(context.Background(), completed.Credential, "wrong", true), ErrCSRF)
-	require.ErrorIs(t, service.AuthorizeCurator(context.Background(), "invalid", completed.CSRFToken, true), ErrUnauthenticated)
+	_, err = service.AuthorizeCurator(context.Background(), completed.Credential, "", false)
+	require.NoError(t, err)
+	_, err = service.AuthorizeCurator(context.Background(), completed.Credential, completed.CSRFToken, true)
+	require.NoError(t, err)
+	_, err = service.AuthorizeCurator(context.Background(), completed.Credential, "wrong", true)
+	require.ErrorIs(t, err, ErrCSRF)
+	_, err = service.AuthorizeCurator(context.Background(), "invalid", completed.CSRFToken, true)
+	require.ErrorIs(t, err, ErrUnauthenticated)
 
 	_, err = db.ExecContext(context.Background(), `DELETE FROM person_roles WHERE role = 'curator'`)
 	require.NoError(t, err)
-	require.ErrorIs(t, service.AuthorizeCurator(context.Background(), completed.Credential, "", false), ErrUnauthenticated)
+	_, err = service.AuthorizeCurator(context.Background(), completed.Credential, "", false)
+	require.ErrorIs(t, err, ErrNotCurator)
 }
 
 func TestSetupRateLimitsAreNonEnumeratingAcrossMutations(t *testing.T) {
