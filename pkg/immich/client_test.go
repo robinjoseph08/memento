@@ -63,6 +63,8 @@ func TestCheckRejectsUnsupportedVersionsAndInvalidPermissionSets(t *testing.T) {
 	}{
 		{"older version", `{"major":3,"minor":0,"patch":2,"prerelease":null}`, permissionsJSON, "Immich version is unsupported"},
 		{"duplicate version member", `{"major":4,"major":3,"minor":0,"patch":3,"prerelease":null}`, permissionsJSON, "Immich returned an invalid response"},
+		{"case-variant version member", `{"Major":3,"minor":0,"patch":3,"prerelease":null}`, permissionsJSON, "Immich returned an invalid response"},
+		{"case-colliding version member", `{"major":4,"Major":3,"minor":0,"patch":3,"prerelease":null}`, permissionsJSON, "Immich returned an invalid response"},
 		{"prerelease", `{"major":3,"minor":0,"patch":3,"prerelease":1}`, permissionsJSON, "Immich version is unsupported"},
 		{"missing major", `{"minor":0,"patch":3,"prerelease":null}`, permissionsJSON, "Immich returned an invalid response"},
 		{"null major", `{"major":null,"minor":0,"patch":3,"prerelease":null}`, permissionsJSON, "Immich returned an invalid response"},
@@ -92,18 +94,26 @@ func TestCheckRejectsUnsupportedVersionsAndInvalidPermissionSets(t *testing.T) {
 	}
 }
 
-func TestCheckRejectsDuplicatePermissionMember(t *testing.T) {
-	server := contractServer(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/server/version" {
-			_, _ = w.Write([]byte(`{"major":3,"minor":0,"patch":3,"prerelease":null}`))
-			return
-		}
-		_, _ = w.Write([]byte(`{"permissions":["all"],"permissions":` + permissionsJSON + `}`))
-	})
-	defer server.Close()
-	client, err := New(clientConfig(server.URL), server.Client())
-	require.NoError(t, err)
-	require.EqualError(t, client.Check(context.Background()), "Immich returned an invalid response")
+func TestCheckRejectsAmbiguousPermissionMembers(t *testing.T) {
+	for name, body := range map[string]string{
+		"duplicate":      `{"permissions":["all"],"permissions":` + permissionsJSON + `}`,
+		"case variant":   `{"Permissions":` + permissionsJSON + `}`,
+		"case collision": `{"permissions":["all"],"Permissions":` + permissionsJSON + `}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := contractServer(t, func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/api/server/version" {
+					_, _ = w.Write([]byte(`{"major":3,"minor":0,"patch":3,"prerelease":null}`))
+					return
+				}
+				_, _ = w.Write([]byte(body))
+			})
+			defer server.Close()
+			client, err := New(clientConfig(server.URL), server.Client())
+			require.NoError(t, err)
+			require.EqualError(t, client.Check(context.Background()), "Immich returned an invalid response")
+		})
+	}
 }
 
 func TestOwnedAlbumsNormalizesAndStripsRawImmichFields(t *testing.T) {
@@ -156,6 +166,7 @@ func TestOwnedAlbumsRejectsMalformedOrDuplicateSummaries(t *testing.T) {
 		{"negative count", `[{"id":"` + id + `","albumName":"Album","description":"","assetCount":-1,"createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"}]`},
 		{"duplicate ID", `[` + validAlbum + `,` + validAlbum + `]`},
 		{"duplicate ID member", `[{"id":"` + uuid.NewString() + `","id":"` + id + `",` + validFields + `}]`},
+		{"case-colliding ID member", `[{"id":"private","ID":"` + id + `",` + validFields + `}]`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -251,27 +262,28 @@ func TestAlbumAssetsPageRejectsInvalidEntryPointsAndResponses(t *testing.T) {
 	validAssetFields := `"type":"IMAGE","width":1200,"height":800,"localDateTime":"2026-01-01T10:00:00Z"`
 	validAsset := `{"id":"` + duplicateID + `",` + validAssetFields + `}`
 	for name, body := range map[string]string{
-		"missing assets":           `{}`,
-		"null assets":              `{"assets":null}`,
-		"missing count":            `{"assets":{"items":[],"nextPage":null,"total":0}}`,
-		"count mismatch":           `{"assets":{"count":1,"items":[],"nextPage":null,"total":0}}`,
-		"duplicate count member":   `{"assets":{"count":1,"count":0,"items":[],"nextPage":null,"total":0}}`,
-		"missing items":            `{"assets":{"count":0,"nextPage":null,"total":0}}`,
-		"null items":               `{"assets":{"count":0,"items":null,"nextPage":null,"total":0}}`,
-		"missing next page":        `{"assets":{"count":0,"items":[],"total":0}}`,
-		"missing total":            `{"assets":{"count":0,"items":[],"nextPage":null}}`,
-		"null total":               `{"assets":{"count":0,"items":[],"nextPage":null,"total":null}}`,
-		"mismatched total":         `{"assets":{"count":0,"items":[],"nextPage":null,"total":1}}`,
-		"underfilled continuation": `{"assets":{"count":0,"items":[],"nextPage":"2","total":1}}`,
-		"duplicate asset":          `{"assets":{"count":2,"items":[` + validAsset + `,` + validAsset + `],"nextPage":null,"total":2}}`,
-		"bad asset":                `{"assets":{"count":1,"items":[{"id":"private",` + validAssetFields + `}],"nextPage":null,"total":1}}`,
-		"bad type":                 `{"assets":{"count":1,"items":[{"id":"` + uuid.NewString() + `","type":"PRIVATE","width":1200,"height":800,"localDateTime":"2026-01-01T10:00:00Z"}],"nextPage":null,"total":1}}`,
-		"missing width":            `{"assets":{"count":1,"items":[{"id":"` + uuid.NewString() + `","type":"IMAGE","height":800,"localDateTime":"2026-01-01T10:00:00Z"}],"nextPage":null,"total":1}}`,
-		"missing height":           `{"assets":{"count":1,"items":[{"id":"` + uuid.NewString() + `","type":"IMAGE","width":1200,"localDateTime":"2026-01-01T10:00:00Z"}],"nextPage":null,"total":1}}`,
-		"missing local date time":  `{"assets":{"count":1,"items":[{"id":"` + uuid.NewString() + `","type":"IMAGE","width":1200,"height":800}],"nextPage":null,"total":1}}`,
-		"null local date time":     `{"assets":{"count":1,"items":[{"id":"` + uuid.NewString() + `","type":"IMAGE","width":1200,"height":800,"localDateTime":null}],"nextPage":null,"total":1}}`,
-		"bad local date time":      `{"assets":{"count":1,"items":[{"id":"` + uuid.NewString() + `","type":"IMAGE","width":1200,"height":800,"localDateTime":"yesterday"}],"nextPage":null,"total":1}}`,
-		"skipped next page":        `{"assets":{"count":0,"items":[],"nextPage":"3","total":1}}`,
+		"missing assets":              `{}`,
+		"null assets":                 `{"assets":null}`,
+		"missing count":               `{"assets":{"items":[],"nextPage":null,"total":0}}`,
+		"count mismatch":              `{"assets":{"count":1,"items":[],"nextPage":null,"total":0}}`,
+		"duplicate count member":      `{"assets":{"count":1,"count":0,"items":[],"nextPage":null,"total":0}}`,
+		"case-colliding count member": `{"assets":{"count":1,"Count":0,"items":[],"nextPage":null,"total":0}}`,
+		"missing items":               `{"assets":{"count":0,"nextPage":null,"total":0}}`,
+		"null items":                  `{"assets":{"count":0,"items":null,"nextPage":null,"total":0}}`,
+		"missing next page":           `{"assets":{"count":0,"items":[],"total":0}}`,
+		"missing total":               `{"assets":{"count":0,"items":[],"nextPage":null}}`,
+		"null total":                  `{"assets":{"count":0,"items":[],"nextPage":null,"total":null}}`,
+		"mismatched total":            `{"assets":{"count":0,"items":[],"nextPage":null,"total":1}}`,
+		"underfilled continuation":    `{"assets":{"count":0,"items":[],"nextPage":"2","total":1}}`,
+		"duplicate asset":             `{"assets":{"count":2,"items":[` + validAsset + `,` + validAsset + `],"nextPage":null,"total":2}}`,
+		"bad asset":                   `{"assets":{"count":1,"items":[{"id":"private",` + validAssetFields + `}],"nextPage":null,"total":1}}`,
+		"bad type":                    `{"assets":{"count":1,"items":[{"id":"` + uuid.NewString() + `","type":"PRIVATE","width":1200,"height":800,"localDateTime":"2026-01-01T10:00:00Z"}],"nextPage":null,"total":1}}`,
+		"missing width":               `{"assets":{"count":1,"items":[{"id":"` + uuid.NewString() + `","type":"IMAGE","height":800,"localDateTime":"2026-01-01T10:00:00Z"}],"nextPage":null,"total":1}}`,
+		"missing height":              `{"assets":{"count":1,"items":[{"id":"` + uuid.NewString() + `","type":"IMAGE","width":1200,"localDateTime":"2026-01-01T10:00:00Z"}],"nextPage":null,"total":1}}`,
+		"missing local date time":     `{"assets":{"count":1,"items":[{"id":"` + uuid.NewString() + `","type":"IMAGE","width":1200,"height":800}],"nextPage":null,"total":1}}`,
+		"null local date time":        `{"assets":{"count":1,"items":[{"id":"` + uuid.NewString() + `","type":"IMAGE","width":1200,"height":800,"localDateTime":null}],"nextPage":null,"total":1}}`,
+		"bad local date time":         `{"assets":{"count":1,"items":[{"id":"` + uuid.NewString() + `","type":"IMAGE","width":1200,"height":800,"localDateTime":"yesterday"}],"nextPage":null,"total":1}}`,
+		"skipped next page":           `{"assets":{"count":0,"items":[],"nextPage":"3","total":1}}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			server := contractServer(t, func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(body)) })

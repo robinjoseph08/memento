@@ -108,6 +108,56 @@ type assetResponse struct {
 	LocalDateTime *string         `json:"localDateTime"`
 }
 
+func (response *versionResponse) UnmarshalJSON(contents []byte) error {
+	type exactVersionResponse versionResponse
+	if err := rejectCaseVariantFields(contents, "major", "minor", "patch", "prerelease"); err != nil {
+		return err
+	}
+	return json.Unmarshal(contents, (*exactVersionResponse)(response))
+}
+
+func (response *apiKeyResponse) UnmarshalJSON(contents []byte) error {
+	type exactAPIKeyResponse apiKeyResponse
+	if err := rejectCaseVariantFields(contents, "permissions"); err != nil {
+		return err
+	}
+	return json.Unmarshal(contents, (*exactAPIKeyResponse)(response))
+}
+
+func (response *albumResponse) UnmarshalJSON(contents []byte) error {
+	type exactAlbumResponse albumResponse
+	if err := rejectCaseVariantFields(contents,
+		"id", "albumName", "description", "assetCount", "createdAt", "updatedAt",
+		"startDate", "endDate", "lastModifiedAssetTimestamp"); err != nil {
+		return err
+	}
+	return json.Unmarshal(contents, (*exactAlbumResponse)(response))
+}
+
+func (response *searchResponse) UnmarshalJSON(contents []byte) error {
+	type exactSearchResponse searchResponse
+	if err := rejectCaseVariantFields(contents, "assets"); err != nil {
+		return err
+	}
+	return json.Unmarshal(contents, (*exactSearchResponse)(response))
+}
+
+func (response *searchAssetsResponse) UnmarshalJSON(contents []byte) error {
+	type exactSearchAssetsResponse searchAssetsResponse
+	if err := rejectCaseVariantFields(contents, "count", "items", "nextPage", "total"); err != nil {
+		return err
+	}
+	return json.Unmarshal(contents, (*exactSearchAssetsResponse)(response))
+}
+
+func (response *assetResponse) UnmarshalJSON(contents []byte) error {
+	type exactAssetResponse assetResponse
+	if err := rejectCaseVariantFields(contents, "id", "type", "width", "height", "localDateTime"); err != nil {
+		return err
+	}
+	return json.Unmarshal(contents, (*exactAssetResponse)(response))
+}
+
 // AlbumSummary is the normalized subset Memento retains from an owned album.
 type AlbumSummary struct {
 	SourceID                   uuid.UUID
@@ -329,6 +379,21 @@ func (c *Client) doJSON(ctx context.Context, method, path string, query url.Valu
 	return nil
 }
 
+func rejectCaseVariantFields(contents []byte, exactFields ...string) error {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(contents, &object); err != nil {
+		return err
+	}
+	for key := range object {
+		for _, exact := range exactFields {
+			if key != exact && strings.EqualFold(key, exact) {
+				return errInvalidResponse
+			}
+		}
+	}
+	return nil
+}
+
 func validateUniqueJSON(contents []byte) error {
 	decoder := json.NewDecoder(bytes.NewReader(contents))
 	if err := consumeUniqueJSONValue(decoder); err != nil {
@@ -364,10 +429,11 @@ func consumeUniqueJSONValue(decoder *json.Decoder) error {
 			if !ok {
 				return errInvalidResponse
 			}
-			if _, duplicate := seen[key]; duplicate {
+			foldedKey := strings.ToLower(key)
+			if _, duplicate := seen[foldedKey]; duplicate {
 				return errInvalidResponse
 			}
-			seen[key] = struct{}{}
+			seen[foldedKey] = struct{}{}
 			if err := consumeUniqueJSONValue(decoder); err != nil {
 				return err
 			}
