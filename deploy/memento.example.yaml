@@ -1,5 +1,5 @@
-# Secrets are intentionally omitted. Supply database.url and immich.api_key
-# through MEMENTO_DATABASE_URL(_FILE) and MEMENTO_IMMICH_API_KEY(_FILE).
+# Secrets are intentionally omitted. Supply database.url, immich.api_key, and
+# smtp.password through their MEMENTO_* value or MEMENTO_*_FILE setting.
 http:
   address: "127.0.0.1:8081"
   shutdown_timeout: 8s
@@ -13,9 +13,30 @@ immich:
   url: http://immich:2283
   health_timeout: 2s
 
+# Enable after replacing every address and SMTP endpoint. starttls requires the
+# server to advertise STARTTLS and never downgrades to plaintext. implicit_tls
+# is also supported. Insecure transport is development-only and is rejected
+# unless explicitly enabled for a loopback or private IP address.
+smtp:
+  enabled: false
+  host: smtp.example.com
+  port: 587
+  mode: starttls
+  server_name: smtp.example.com
+  username: memento
+  from_address: memento@example.com
+  test_recipient: operator@example.com
+  insecure_development: false
+  timeout: 10s
+  retry_base: 30s
+  retry_max: 1h
+  retry_window: 24h
+
 worker:
   poll_interval: 1s
   heartbeat_interval: 2s
   heartbeat_max_age: 10s
   lease_duration: 30s
   drain_timeout: 5s
+  retry_base: 1s
+  retry_max: 1h

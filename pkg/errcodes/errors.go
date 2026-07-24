@@ -95,6 +95,11 @@ func ValidationError(message string) error {
 	return &Error{HTTPCode: http.StatusUnprocessableEntity, Message: message, Code: "validation_error", FieldErrors: nil}
 }
 
+// ServiceUnavailable returns a retryable 503 error with a safe message.
+func ServiceUnavailable(message string) error {
+	return &Error{HTTPCode: http.StatusServiceUnavailable, Message: message, Code: "service_unavailable", FieldErrors: nil}
+}
+
 // FieldValidationError returns a 422 error with safe per-field messages.
 func FieldValidationError(message string, fieldErrors map[string]string) error {
 	return &Error{

@@ -29,6 +29,7 @@ type ReadyChecks struct {
 	Setup      string `json:"setup"`
 	Worker     string `json:"worker"`
 	Immich     string `json:"immich"`
+	SMTP       string `json:"smtp"`
 }
 
 // ReadyResponse is generated to TypeScript by Tygo.
@@ -47,6 +48,15 @@ type Worker interface {
 	Healthy(maxAge time.Duration) bool
 }
 
+// DeliveryStatus exposes only an allowlisted SMTP condition.
+type DeliveryStatus interface {
+	Status() string
+}
+
+type disabledDelivery struct{}
+
+func (disabledDelivery) Status() string { return "disabled" }
+
 // Service owns process state and readiness dependencies.
 type Service struct {
 	postgres        func(context.Context) error
@@ -54,12 +64,13 @@ type Service struct {
 	setup           func(context.Context) error
 	immich          Checker
 	worker          Worker
+	delivery        DeliveryStatus
 	databaseTimeout time.Duration
 	heartbeatMaxAge time.Duration
 	draining        atomic.Bool
 }
 
-func New(db *bun.DB, immich Checker, worker Worker, databaseTimeout, heartbeatMaxAge time.Duration) *Service {
+func New(db *bun.DB, immich Checker, worker Worker, databaseTimeout, heartbeatMaxAge time.Duration, delivery ...DeliveryStatus) *Service {
 	return newWithChecks(
 		db.PingContext,
 		func(ctx context.Context) error { return migrations.Current(ctx, db) },
@@ -68,11 +79,16 @@ func New(db *bun.DB, immich Checker, worker Worker, databaseTimeout, heartbeatMa
 		worker,
 		databaseTimeout,
 		heartbeatMaxAge,
+		delivery...,
 	)
 }
 
-func newWithChecks(postgres, migration, setup func(context.Context) error, immich Checker, worker Worker, databaseTimeout, heartbeatMaxAge time.Duration) *Service {
-	return &Service{postgres: postgres, migration: migration, setup: setup, immich: immich, worker: worker, databaseTimeout: databaseTimeout, heartbeatMaxAge: heartbeatMaxAge}
+func newWithChecks(postgres, migration, setup func(context.Context) error, immich Checker, worker Worker, databaseTimeout, heartbeatMaxAge time.Duration, deliveries ...DeliveryStatus) *Service {
+	delivery := DeliveryStatus(disabledDelivery{})
+	if len(deliveries) != 0 && deliveries[0] != nil {
+		delivery = deliveries[0]
+	}
+	return &Service{postgres: postgres, migration: migration, setup: setup, immich: immich, worker: worker, delivery: delivery, databaseTimeout: databaseTimeout, heartbeatMaxAge: heartbeatMaxAge}
 }
 
 // SetDraining drops readiness synchronously before shutdown work starts.
@@ -92,12 +108,17 @@ func (s *Service) Live(c echo.Context) error {
 
 // Ready checks each required dependency with secret-safe status values.
 func (s *Service) Ready(c echo.Context) error {
+	smtpStatus := "disabled"
+	if s.delivery != nil {
+		smtpStatus = s.delivery.Status()
+	}
 	checks := ReadyChecks{
 		PostgreSQL: StatusUnavailable,
 		Migrations: StatusUnavailable,
 		Setup:      StatusUnavailable,
 		Worker:     StatusUnavailable,
 		Immich:     StatusUnavailable,
+		SMTP:       smtpStatus,
 	}
 	if s.draining.Load() {
 		return c.JSON(http.StatusServiceUnavailable, ReadyResponse{Status: "not_ready", Checks: checks})

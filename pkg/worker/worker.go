@@ -3,10 +3,12 @@ package worker
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -23,20 +25,54 @@ var (
 
 // Job is a leased unit of work.
 type Job struct {
-	ID      int64
-	Kind    string
-	Payload json.RawMessage
+	ID         int64
+	Kind       string
+	Payload    json.RawMessage
+	Attempts   int
+	LeaseOwner string
 }
 
 // Handler processes one job. It must honor context cancellation.
 type Handler func(context.Context, Job) error
 
+// Dispatcher durably hands one leased outbox event to the jobs table.
+type Dispatcher interface {
+	Dispatch(ctx context.Context, owner string, lease time.Duration) (bool, error)
+}
+
+type handlerFailure struct {
+	diagnostic string
+	retryAfter time.Duration
+	permanent  bool
+}
+
+func (e *handlerFailure) Error() string { return e.diagnostic }
+
+// RetryAfter returns a secret-safe retry result for a handler.
+func RetryAfter(delay time.Duration, diagnostic string) error {
+	return &handlerFailure{diagnostic: diagnostic, retryAfter: delay}
+}
+
+// Permanent returns a secret-safe terminal result for a handler.
+func Permanent(diagnostic string) error {
+	return &handlerFailure{diagnostic: diagnostic, permanent: true}
+}
+
+// Option configures optional worker infrastructure.
+type Option func(*Worker)
+
+// WithDispatcher enables transactional outbox dispatch before ordinary claims.
+func WithDispatcher(dispatcher Dispatcher) Option {
+	return func(w *Worker) { w.dispatcher = dispatcher }
+}
+
 // Worker polls PostgreSQL, heartbeats, and owns at most one active job at a time.
 type Worker struct {
-	db       *bun.DB
-	cfg      config.WorkerConfig
-	owner    string
-	handlers map[string]Handler
+	db         *bun.DB
+	cfg        config.WorkerConfig
+	owner      string
+	handlers   map[string]Handler
+	dispatcher Dispatcher
 
 	claimsOpen   atomic.Bool
 	heartbeat    atomic.Int64
@@ -48,7 +84,7 @@ type Worker struct {
 }
 
 // New constructs a worker with a process-unique lease owner.
-func New(db *bun.DB, cfg config.WorkerConfig, owner string, handlers map[string]Handler) (*Worker, error) {
+func New(db *bun.DB, cfg config.WorkerConfig, owner string, handlers map[string]Handler, options ...Option) (*Worker, error) {
 	if db == nil {
 		return nil, errDatabaseRequired
 	}
@@ -58,7 +94,11 @@ func New(db *bun.DB, cfg config.WorkerConfig, owner string, handlers map[string]
 	if handlers == nil {
 		handlers = map[string]Handler{}
 	}
-	return &Worker{db: db, cfg: cfg, owner: owner, handlers: handlers}, nil
+	w := &Worker{db: db, cfg: cfg, owner: owner, handlers: handlers}
+	for _, option := range options {
+		option(w)
+	}
+	return w, nil
 }
 
 // Start begins polling and records a heartbeat immediately.
@@ -88,10 +128,17 @@ func (w *Worker) run(ctx context.Context) {
 				w.cancelActive()
 			}
 		case <-poll.C:
-			if !w.claimsOpen.Load() || len(w.handlers) == 0 || w.hasActiveJob() {
+			if !w.claimsOpen.Load() || w.hasActiveJob() {
 				continue
 			}
-			w.claimAndRun(ctx)
+			if w.dispatcher != nil {
+				if _, err := w.dispatcher.Dispatch(ctx, w.owner, w.cfg.LeaseDuration); err != nil {
+					continue
+				}
+			}
+			if len(w.handlers) != 0 {
+				w.claimAndRun(ctx)
+			}
 		}
 	}
 }
@@ -116,10 +163,24 @@ func (w *Worker) claimAndRun(ctx context.Context) {
 		defer finalizeCancel()
 		if handlerErr == nil {
 			if err := w.complete(finalizeCtx, job.ID); err != nil {
-				_ = w.release(finalizeCtx, job.ID)
+				_ = w.retry(finalizeCtx, job.ID, 0, "completion_interrupted")
 			}
 		} else {
-			_ = w.release(finalizeCtx, job.ID)
+			var failure *handlerFailure
+			if errors.As(handlerErr, &failure) && failure.permanent {
+				_ = w.fail(finalizeCtx, job.ID, failure.diagnostic)
+			} else {
+				delay := w.retryDelay(job.Attempts)
+				diagnostic := "handler_unavailable"
+				if errors.As(handlerErr, &failure) {
+					delay = failure.retryAfter
+					diagnostic = failure.diagnostic
+				}
+				if errors.Is(handlerErr, context.Canceled) {
+					delay = 0
+				}
+				_ = w.retry(finalizeCtx, job.ID, delay, diagnostic)
+			}
 		}
 		w.mu.Lock()
 		if w.activeID == job.ID {
@@ -187,14 +248,15 @@ func (w *Worker) claim(ctx context.Context) (*Job, error) {
 		SET status = 'running', lease_owner = ?, lease_expires_at = now() + (? * interval '1 microsecond'), updated_at = now()
 		FROM candidate
 		WHERE job.id = candidate.id
-		RETURNING job.id, job.kind, job.payload
-	`, bun.List(kinds), w.owner, w.cfg.LeaseDuration.Microseconds()).Scan(ctx, &job.ID, &job.Kind, &job.Payload)
+		RETURNING job.id, job.kind, job.payload, job.attempts
+	`, bun.List(kinds), w.owner, w.cfg.LeaseDuration.Microseconds()).Scan(ctx, &job.ID, &job.Kind, &job.Payload, &job.Attempts)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("claim job: %w", err)
 	}
+	job.LeaseOwner = w.owner
 	return &job, nil
 }
 
@@ -212,16 +274,68 @@ func (w *Worker) complete(ctx context.Context, id int64) error {
 	return nil
 }
 
-func (w *Worker) release(ctx context.Context, id int64) error {
-	_, err := w.db.NewRaw(`
+func (w *Worker) retry(ctx context.Context, id int64, delay time.Duration, diagnostic string) error {
+	result, err := w.db.NewRaw(`
 		UPDATE jobs
-		SET status = 'pending', attempts = attempts + 1, available_at = now(), lease_owner = NULL, lease_expires_at = NULL, updated_at = now()
-		WHERE id = ? AND status = 'running' AND lease_owner = ?
-	`, id, w.owner).Exec(ctx)
+		SET status = 'pending', attempts = attempts + 1,
+			available_at = now() + (? * interval '1 microsecond'), last_safe_error = ?,
+			lease_owner = NULL, lease_expires_at = NULL, updated_at = now()
+		WHERE id = ? AND status = 'running' AND lease_owner = ? AND lease_expires_at > now()
+	`, delay.Microseconds(), diagnostic, id, w.owner).Exec(ctx)
 	if err != nil {
-		return fmt.Errorf("release job: %w", err)
+		return fmt.Errorf("retry job: %w", err)
+	}
+	if affected, _ := result.RowsAffected(); affected != 1 {
+		return fmt.Errorf("retry job: %w", errLeaseOwnershipLost)
 	}
 	return nil
+}
+
+func (w *Worker) fail(ctx context.Context, id int64, diagnostic string) error {
+	result, err := w.db.NewRaw(`
+		UPDATE jobs
+		SET status = 'failed', attempts = attempts + 1, last_safe_error = ?,
+			lease_owner = NULL, lease_expires_at = NULL, updated_at = now()
+		WHERE id = ? AND status = 'running' AND lease_owner = ? AND lease_expires_at > now()
+	`, diagnostic, id, w.owner).Exec(ctx)
+	if err != nil {
+		return fmt.Errorf("fail job: %w", err)
+	}
+	if affected, _ := result.RowsAffected(); affected != 1 {
+		return fmt.Errorf("fail job: %w", errLeaseOwnershipLost)
+	}
+	return nil
+}
+
+func (w *Worker) retryDelay(attempts int) time.Duration {
+	delay := w.cfg.RetryBase
+	for range attempts {
+		if delay >= w.cfg.RetryMax/2 {
+			delay = w.cfg.RetryMax
+			break
+		}
+		delay *= 2
+	}
+	if delay > w.cfg.RetryMax {
+		delay = w.cfg.RetryMax
+	}
+	return jitter(delay, w.cfg.RetryMax)
+}
+
+func jitter(delay, maximum time.Duration) time.Duration {
+	spread := delay / 5
+	if spread <= 0 {
+		return delay
+	}
+	value, err := rand.Int(rand.Reader, big.NewInt(int64(2*spread)+1))
+	if err != nil {
+		return delay
+	}
+	result := delay - spread + time.Duration(value.Int64())
+	if result > maximum {
+		return maximum
+	}
+	return result
 }
 
 // StopClaims prevents any subsequent job claim and cancels active dependency work.

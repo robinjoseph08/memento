@@ -14,11 +14,14 @@ import (
 	"github.com/robinjoseph08/golib/logger"
 	"github.com/robinjoseph08/memento/pkg/config"
 	"github.com/robinjoseph08/memento/pkg/database"
+	"github.com/robinjoseph08/memento/pkg/emaildelivery"
 	"github.com/robinjoseph08/memento/pkg/health"
 	"github.com/robinjoseph08/memento/pkg/immich"
 	"github.com/robinjoseph08/memento/pkg/lifecycle"
 	"github.com/robinjoseph08/memento/pkg/migrations"
+	"github.com/robinjoseph08/memento/pkg/outbox"
 	"github.com/robinjoseph08/memento/pkg/server"
+	mementosmtp "github.com/robinjoseph08/memento/pkg/smtp"
 	"github.com/robinjoseph08/memento/pkg/worker"
 )
 
@@ -64,20 +67,41 @@ func run() error {
 		log.Warn("Immich is not ready; liveness remains available")
 	}
 
+	var emailSender mementosmtp.Sender
+	var deliveryHealth health.DeliveryStatus = mementosmtp.Disabled{}
+	if cfg.SMTP.Enabled {
+		smtpClient, smtpErr := mementosmtp.New(cfg.SMTP, nil)
+		if smtpErr != nil {
+			_ = db.Close()
+			log.Error("SMTP configuration is invalid")
+			return smtpErr
+		}
+		emailSender = smtpClient
+		deliveryHealth = smtpClient
+		if cfg.SMTP.InsecureDevelopment {
+			log.Warn("insecure development SMTP transport is active")
+		}
+	}
+	emailService := emaildelivery.New(db, cfg.SMTP, emailSender)
+	handlers := map[string]worker.Handler{}
+	if cfg.SMTP.Enabled {
+		handlers[emaildelivery.JobKind] = emailService.Handle
+	}
+
 	owner, err := leaseOwner()
 	if err != nil {
 		_ = db.Close()
 		log.Error("worker identity generation failed")
 		return err
 	}
-	jobWorker, err := worker.New(db, cfg.Worker, owner, nil)
+	jobWorker, err := worker.New(db, cfg.Worker, owner, handlers, worker.WithDispatcher(outbox.New(db)))
 	if err != nil {
 		_ = db.Close()
 		log.Err(err).Error("worker startup failed")
 		return err
 	}
-	healthService := health.New(db, immichClient, jobWorker, cfg.Database.HealthTimeout, cfg.Worker.HeartbeatMaxAge)
-	e, err := server.New(healthService)
+	healthService := health.New(db, immichClient, jobWorker, cfg.Database.HealthTimeout, cfg.Worker.HeartbeatMaxAge, deliveryHealth)
+	e, err := server.New(healthService, emaildelivery.NewHandler(emailService))
 	if err != nil {
 		_ = db.Close()
 		log.Err(err).Error("HTTP server initialization failed")

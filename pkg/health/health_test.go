@@ -22,6 +22,10 @@ type fakeWorker struct{ healthy bool }
 
 func (w fakeWorker) Healthy(time.Duration) bool { return w.healthy }
 
+type fakeDelivery string
+
+func (d fakeDelivery) Status() string { return string(d) }
+
 func request(t *testing.T, handler echo.HandlerFunc) *httptest.ResponseRecorder {
 	t.Helper()
 	e := echo.New()
@@ -55,8 +59,18 @@ func TestReadyReportsAllowlistedHealthyChecks(t *testing.T) {
 	assert.Equal(t, http.StatusOK, response.Code)
 	assert.JSONEq(t, `{
 		"status":"ready",
-		"checks":{"postgresql":"ok","migrations":"ok","setup":"ok","worker":"ok","immich":"ok"}
+		"checks":{"postgresql":"ok","migrations":"ok","setup":"ok","worker":"ok","immich":"ok","smtp":"disabled"}
 	}`, response.Body.String())
+}
+
+func TestReadyReportsSMTPWithoutChangingLibraryReadiness(t *testing.T) {
+	ok := func(context.Context) error { return nil }
+	service := newWithChecks(ok, ok, ok, checkerFunc(ok), fakeWorker{healthy: true}, time.Second, time.Second, fakeDelivery("insecure_development"))
+
+	response := request(t, service.Ready)
+
+	assert.Equal(t, http.StatusOK, response.Code)
+	assert.Contains(t, response.Body.String(), `"smtp":"insecure_development"`)
 }
 
 func TestReadyReportsEachUnsafeDependencySymmetrically(t *testing.T) {
