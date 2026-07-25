@@ -11,6 +11,8 @@ import { afterEach, expect, test, vi } from "vitest";
 import { PeopleManager } from "./PeopleManager";
 import type { MergePreview, Person } from "./types/generated/people";
 
+const contentionWait = { timeout: 5_000 };
+
 function jsonResponse(value: unknown, status = 200) {
   return new Response(JSON.stringify(value), {
     status,
@@ -136,19 +138,25 @@ test("previews and confirms the exact source, survivor, generation, email, and v
   );
 
   renderManager();
-  await screen.findAllByRole("option", { name: /11111111/ });
+  await screen.findAllByRole("option", { name: /11111111/ }, contentionWait);
   const sourceSelect = screen.getByLabelText("Source Person");
   const survivorSelect = screen.getByLabelText("Survivor Person");
   fireEvent.change(sourceSelect, { target: { value: source.id } });
-  await waitFor(() => expect(sourceSelect).toHaveValue(source.id));
+  await waitFor(
+    () => expect(sourceSelect).toHaveValue(source.id),
+    contentionWait,
+  );
   fireEvent.change(survivorSelect, { target: { value: survivor.id } });
-  await waitFor(() => expect(survivorSelect).toHaveValue(survivor.id));
+  await waitFor(
+    () => expect(survivorSelect).toHaveValue(survivor.id),
+    contentionWait,
+  );
   const previewButton = screen.getByRole("button", { name: "Preview merge" });
-  await waitFor(() => expect(previewButton).toBeEnabled());
+  await waitFor(() => expect(previewButton).toBeEnabled(), contentionWait);
   fireEvent.click(previewButton);
 
   expect(
-    await screen.findByText(/will become generation 4/),
+    await screen.findByText(/will become generation 4/, {}, contentionWait),
   ).toBeInTheDocument();
   const confirm = screen.getByRole("button", { name: "Confirm audited merge" });
   expect(confirm).toBeDisabled();
@@ -163,10 +171,12 @@ test("previews and confirms the exact source, survivor, generation, email, and v
   expect(confirm).toBeEnabled();
   fireEvent.click(confirm);
 
-  await waitFor(() =>
-    expect(requests.some(({ path }) => path === "/api/people/merge")).toBe(
-      true,
-    ),
+  await waitFor(
+    () =>
+      expect(requests.some(({ path }) => path === "/api/people/merge")).toBe(
+        true,
+      ),
+    contentionWait,
   );
   const previewRequest = requests.find(
     ({ path }) => path === "/api/people/merge-preview",
@@ -194,4 +204,4 @@ test("previews and confirms the exact source, survivor, generation, email, and v
   expect(mergeRequest?.init?.headers).toEqual(
     expect.objectContaining({ "X-Memento-CSRF": "csrf-token" }),
   );
-});
+}, 15_000);

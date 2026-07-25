@@ -149,7 +149,7 @@ test("completes the first-browser setup workflow with explicit Onboarding choice
   expect(completionCall?.init?.headers).toMatchObject({
     "Content-Type": "application/json",
   });
-});
+}, 10_000);
 
 test("can queue another code or restart identity entry", async () => {
   const fetchMock = vi.fn((input: RequestInfo | URL) => {

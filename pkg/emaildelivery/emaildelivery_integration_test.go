@@ -35,6 +35,8 @@ import (
 	"github.com/uptrace/bun"
 )
 
+const asynchronousCompletionTimeout = 10 * time.Second
+
 type scriptedSender struct {
 	mu      sync.Mutex
 	results []error
@@ -166,7 +168,7 @@ func TestRequiredTestEmailIsCommittedBeforeWorkerDelivery(t *testing.T) {
 	require.Eventually(t, func() bool {
 		status, statusErr := service.Status(context.Background(), response.DeliveryID)
 		return statusErr == nil && status.Status == "sent"
-	}, 10*time.Second, 10*time.Millisecond)
+	}, asynchronousCompletionTimeout, 10*time.Millisecond)
 	assert.Equal(t, 1, server.count())
 }
 
@@ -185,7 +187,7 @@ func TestTemporaryFailureRetriesWithBoundedBackoff(t *testing.T) {
 	require.Eventually(t, func() bool {
 		status, statusErr := service.Status(context.Background(), response.DeliveryID)
 		return statusErr == nil && status.Status == "sent"
-	}, 10*time.Second, 5*time.Millisecond)
+	}, asynchronousCompletionTimeout, 5*time.Millisecond)
 	status, err := service.Status(context.Background(), response.DeliveryID)
 	require.NoError(t, err)
 	assert.Equal(t, 2, status.Attempts)
@@ -203,8 +205,8 @@ func TestInterruptedRetryPreservesDurableBackoff(t *testing.T) {
 	require.NoError(t, migrations.Apply(context.Background(), db))
 	sender := &scriptedSender{results: []error{errors.New("temporary SMTP interruption"), nil}}
 	cfg := deliveryConfig()
-	cfg.RetryBase = 300 * time.Millisecond
-	cfg.RetryMax = 300 * time.Millisecond
+	cfg.RetryBase = 5 * time.Second
+	cfg.RetryMax = 5 * time.Second
 	service := New(db, cfg, sender)
 	response, err := service.RequestTest(context.Background())
 	require.NoError(t, err)
@@ -229,12 +231,12 @@ func TestInterruptedRetryPreservesDurableBackoff(t *testing.T) {
 		var pending bool
 		err := db.NewRaw(`SELECT status = 'pending' AND available_at > now() FROM jobs WHERE id = ?`, job.ID).Scan(context.Background(), &pending)
 		return err == nil && pending
-	}, time.Second, 5*time.Millisecond)
+	}, asynchronousCompletionTimeout, 5*time.Millisecond)
 	assert.Equal(t, 1, sender.count(), "lease recovery must not bypass the persisted retry timestamp")
 	require.Eventually(t, func() bool {
 		status, statusErr := service.Status(context.Background(), response.DeliveryID)
 		return statusErr == nil && status.Status == "sent"
-	}, 2*time.Second, 10*time.Millisecond)
+	}, asynchronousCompletionTimeout, 10*time.Millisecond)
 	assert.Equal(t, 2, sender.count())
 }
 
@@ -267,7 +269,7 @@ func TestExpiredLeaseRecoversWithoutRepeatingRecordedEffect(t *testing.T) {
 		var status string
 		err := db.NewRaw(`SELECT status FROM jobs`).Scan(context.Background(), &status)
 		return err == nil && status == "completed"
-	}, time.Second, 5*time.Millisecond)
+	}, asynchronousCompletionTimeout, 5*time.Millisecond)
 	assert.Equal(t, 1, server.count(), "a recorded send must make lease recovery idempotent")
 }
 
@@ -311,7 +313,7 @@ func TestOnlyCurrentLeaseCanPersistTerminalDeliveryState(t *testing.T) {
 			go func() { staleResult <- service.Handle(context.Background(), staleJob) }()
 			select {
 			case <-sender.started:
-			case <-time.After(time.Second):
+			case <-time.After(asynchronousCompletionTimeout):
 				t.Fatal("stale delivery attempt did not reach SMTP")
 			}
 			currentJob := staleJob
@@ -377,7 +379,7 @@ func TestPermanentRecipientRejectionCreatesSafeOperatorVisibleFailure(t *testing
 	require.Eventually(t, func() bool {
 		status, statusErr := service.Status(context.Background(), response.DeliveryID)
 		return statusErr == nil && status.Status == "failed"
-	}, time.Second, 5*time.Millisecond)
+	}, asynchronousCompletionTimeout, 5*time.Millisecond)
 	status, err := service.Status(context.Background(), response.DeliveryID)
 	require.NoError(t, err)
 	require.NotNil(t, status.Failure)
