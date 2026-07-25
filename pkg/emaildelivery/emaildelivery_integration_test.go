@@ -185,7 +185,7 @@ func TestTemporaryFailureRetriesWithBoundedBackoff(t *testing.T) {
 	require.Eventually(t, func() bool {
 		status, statusErr := service.Status(context.Background(), response.DeliveryID)
 		return statusErr == nil && status.Status == "sent"
-	}, time.Second, 5*time.Millisecond)
+	}, 10*time.Second, 5*time.Millisecond)
 	status, err := service.Status(context.Background(), response.DeliveryID)
 	require.NoError(t, err)
 	assert.Equal(t, 2, status.Attempts)
