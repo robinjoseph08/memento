@@ -212,6 +212,33 @@ func TestRecurringJobReschedulesWithoutRecordingFailure(t *testing.T) {
 	require.NoError(t, jobWorker.Drain(context.Background()))
 }
 
+func TestRecurringJobHonorsRerunRequestedDuringActiveLease(t *testing.T) {
+	db := testdb.Open(t)
+	require.NoError(t, migrations.Apply(context.Background(), db))
+	var id int64
+	require.NoError(t, db.NewRaw(`
+		INSERT INTO jobs (kind, status, lease_owner, lease_expires_at, rerun_requested)
+		VALUES ('recurring', 'running', 'recurring-owner', now() + interval '1 hour', true)
+		RETURNING id
+	`).Scan(context.Background(), &id))
+	jobWorker, err := New(db, testConfig(), "recurring-owner", nil)
+	require.NoError(t, err)
+	require.NoError(t, jobWorker.reschedule(context.Background(), id, time.Hour))
+
+	var status string
+	var attempts int
+	var rerunRequested bool
+	var immediatelyAvailable bool
+	require.NoError(t, db.NewRaw(`
+		SELECT status, attempts, rerun_requested, available_at <= now()
+		FROM jobs WHERE id = ?
+	`, id).Scan(context.Background(), &status, &attempts, &rerunRequested, &immediatelyAvailable))
+	assert.Equal(t, "pending", status)
+	assert.Zero(t, attempts)
+	assert.False(t, rerunRequested)
+	assert.True(t, immediatelyAvailable)
+}
+
 func TestWorkerKeepsDependencyConcurrencyBoundedToOne(t *testing.T) {
 	db := testdb.Open(t)
 	require.NoError(t, migrations.Apply(context.Background(), db))

@@ -327,6 +327,22 @@ func TestAlbumAssetsPageAcceptsOnlyFullNonterminalPages(t *testing.T) {
 	assert.Equal(t, 2, *page.NextPage)
 }
 
+func TestAlbumAssetsPagePreservesDuplicateIdentifiersForSnapshotDeduplication(t *testing.T) {
+	albumID := uuid.New()
+	assetID := uuid.NewString()
+	asset := `{"id":"` + assetID + `","type":"IMAGE","width":1200,"height":800,"localDateTime":"2026-01-01T10:00:00Z"}`
+	server := contractServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"assets":{"count":2,"items":[` + asset + `,` + asset + `],"nextPage":null,"total":2}}`))
+	})
+	defer server.Close()
+	client, err := New(clientConfig(server.URL), server.Client())
+	require.NoError(t, err)
+	page, err := client.AlbumAssetsPage(context.Background(), albumID, 1)
+	require.NoError(t, err)
+	require.Len(t, page.Items, 2)
+	assert.Equal(t, page.Items[0], page.Items[1])
+}
+
 func TestAlbumAssetsPageRejectsInvalidEntryPointsAndResponses(t *testing.T) {
 	client, err := New(clientConfig("https://immich.internal"), nil)
 	require.NoError(t, err)
@@ -353,9 +369,9 @@ func TestAlbumAssetsPageRejectsInvalidEntryPointsAndResponses(t *testing.T) {
 		"null total":                  `{"assets":{"count":0,"items":[],"nextPage":null,"total":null}}`,
 		"mismatched total":            `{"assets":{"count":0,"items":[],"nextPage":null,"total":1}}`,
 		"underfilled continuation":    `{"assets":{"count":1,"items":[` + validAsset + `],"nextPage":"2","total":1}}`,
-		"duplicate asset":             `{"assets":{"count":2,"items":[` + validAsset + `,` + validAsset + `],"nextPage":null,"total":2}}`,
 		"bad asset":                   `{"assets":{"count":1,"items":[{"id":"private",` + validAssetFields + `}],"nextPage":null,"total":1}}`,
 		"bad type":                    `{"assets":{"count":1,"items":[{"id":"` + uuid.NewString() + `","type":"PRIVATE","width":1200,"height":800,"localDateTime":"2026-01-01T10:00:00Z"}],"nextPage":null,"total":1}}`,
+		"unsupported audio":           `{"assets":{"count":1,"items":[{"id":"` + uuid.NewString() + `","type":"AUDIO","width":1200,"height":800,"localDateTime":"2026-01-01T10:00:00Z"}],"nextPage":null,"total":1}}`,
 		"missing width":               `{"assets":{"count":1,"items":[{"id":"` + uuid.NewString() + `","type":"IMAGE","height":800,"localDateTime":"2026-01-01T10:00:00Z"}],"nextPage":null,"total":1}}`,
 		"missing height":              `{"assets":{"count":1,"items":[{"id":"` + uuid.NewString() + `","type":"IMAGE","width":1200,"localDateTime":"2026-01-01T10:00:00Z"}],"nextPage":null,"total":1}}`,
 		"missing local date time":     `{"assets":{"count":1,"items":[{"id":"` + uuid.NewString() + `","type":"IMAGE","width":1200,"height":800}],"nextPage":null,"total":1}}`,

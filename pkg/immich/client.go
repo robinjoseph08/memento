@@ -297,7 +297,6 @@ func (c *Client) AlbumAssetsPage(ctx context.Context, albumID uuid.UUID, page in
 		return AssetPage{}, errInvalidResponse
 	}
 	result := AssetPage{Items: make([]AssetSummary, 0, len(*response.Assets.Items))}
-	seen := make(map[uuid.UUID]struct{}, len(*response.Assets.Items))
 	for _, raw := range *response.Assets.Items {
 		if raw.ID == nil || raw.Type == nil || raw.LocalDateTime == nil {
 			return AssetPage{}, errInvalidResponse
@@ -310,10 +309,6 @@ func (c *Client) AlbumAssetsPage(ctx context.Context, albumID uuid.UUID, page in
 		if err != nil || assetID == uuid.Nil || !validAssetType(*raw.Type) || widthErr != nil || heightErr != nil || timeErr != nil {
 			return AssetPage{}, errInvalidResponse
 		}
-		if _, duplicate := seen[assetID]; duplicate {
-			return AssetPage{}, errInvalidResponse
-		}
-		seen[assetID] = struct{}{}
 		result.Items = append(result.Items, AssetSummary{
 			SourceID: assetID, MediaType: strings.ToLower(*raw.Type), Width: width, Height: height,
 			LocalDateTime: truncate(localDateTime, 64),
@@ -554,7 +549,7 @@ func truncate(value string, maximum int) string {
 }
 
 func validAssetType(value string) bool {
-	return value == "IMAGE" || value == "VIDEO" || value == "AUDIO" || value == "OTHER"
+	return value == "IMAGE" || value == "VIDEO"
 }
 
 func requiredNullableDimension(raw json.RawMessage) (*int, error) {

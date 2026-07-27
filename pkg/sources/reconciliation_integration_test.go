@@ -87,22 +87,46 @@ func newReconciliationService(t *testing.T, connector *reconciliationConnector) 
 	return service, uuid.MustParse(listed.Albums[0].ID)
 }
 
+func TestCuratorRequestDuringActiveScanRequestsImmediateRerun(t *testing.T) {
+	connector := &reconciliationConnector{summary: sourceAlbum(uuid.New(), "Active album", 0)}
+	connector.pages = map[int]immich.AssetPage{1: {}}
+	service, sourceAlbumID := newReconciliationService(t, connector)
+	_, err := service.db.NewRaw(`
+		UPDATE jobs SET status = 'running', lease_owner = 'active-worker',
+			lease_expires_at = now() + interval '1 hour'
+		WHERE idempotency_key = ?
+	`, "source-reconcile:"+sourceAlbumID.String()).Exec(context.Background())
+	require.NoError(t, err)
+
+	response, err := service.QueueReconciliation(context.Background(), sourceAlbumID)
+	require.NoError(t, err)
+	assert.Equal(t, "queued", response.Status)
+	var status string
+	var rerunRequested bool
+	require.NoError(t, service.db.NewRaw(`
+		SELECT status, rerun_requested FROM jobs WHERE idempotency_key = ?
+	`, "source-reconcile:"+sourceAlbumID.String()).Scan(context.Background(), &status, &rerunRequested))
+	assert.Equal(t, "running", status)
+	assert.True(t, rerunRequested)
+}
+
 func TestReconciliationConsumesMoreThanOneThousandItemsAndDeduplicatesIdentifiers(t *testing.T) {
 	albumID := uuid.New()
-	connector := &reconciliationConnector{summary: sourceAlbum(albumID, "Large album", 1001), pages: map[int]immich.AssetPage{}}
-	assets := make([]immich.AssetSummary, 1001)
+	connector := &reconciliationConnector{summary: sourceAlbum(albumID, "Large album", 1002), pages: map[int]immich.AssetPage{}}
+	assets := make([]immich.AssetSummary, 1002)
 	for index := range assets {
 		assets[index] = reconciliationAsset(uuid.New())
 	}
-	next := 2
-	connector.pages[1] = immich.AssetPage{Items: assets[:1000], NextPage: &next}
-	connector.pages[2] = immich.AssetPage{Items: []immich.AssetSummary{assets[0], assets[1000]}}
+	second, third := 2, 3
+	connector.pages[1] = immich.AssetPage{Items: assets[:1000], NextPage: &second}
+	connector.pages[2] = immich.AssetPage{Items: []immich.AssetSummary{assets[0], assets[1000]}, NextPage: &third}
+	connector.pages[3] = immich.AssetPage{Items: []immich.AssetSummary{assets[1001]}}
 	service, sourceAlbumID := newReconciliationService(t, connector)
 
 	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
-	assert.Equal(t, []int{1, 2}, connector.pageCalls)
-	assertTableCount(t, service, "source_album_memberships", 1001)
-	assertTableCount(t, service, "media_items", 1001)
+	assert.Equal(t, []int{1, 2, 3}, connector.pageCalls)
+	assertTableCount(t, service, "source_album_memberships", 1002)
+	assertTableCount(t, service, "media_items", 1002)
 
 	var stablePasses, additions int
 	require.NoError(t, service.db.NewRaw(`
@@ -110,7 +134,7 @@ func TestReconciliationConsumesMoreThanOneThousandItemsAndDeduplicatesIdentifier
 		WHERE source_album_id = ? ORDER BY started_at DESC LIMIT 1
 	`, sourceAlbumID).Scan(context.Background(), &stablePasses, &additions))
 	assert.Equal(t, 1, stablePasses)
-	assert.Equal(t, 1001, additions)
+	assert.Equal(t, 1002, additions)
 }
 
 func TestReconciliationIgnoresFailureAndInstabilityUntilTwoIdenticalValidatedRemovalPasses(t *testing.T) {

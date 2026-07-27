@@ -58,7 +58,7 @@ func newSourceService(t *testing.T, connector Connector) *Service {
 	t.Helper()
 	db := testdb.Open(t)
 	require.NoError(t, migrations.Apply(context.Background(), db))
-	return New(db, connector)
+	return New(db, connector, 10*time.Minute)
 }
 
 func TestDiscoveryPersistsOnlyNormalizedSourceInventory(t *testing.T) {

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
@@ -125,7 +126,7 @@ func TestSourceReadsDoNotRequireCSRFButStillRequireCuratorRole(t *testing.T) {
 
 func TestDiscoveryDependencyFailureReturnsOnlySafeDiagnostics(t *testing.T) {
 	authorizer := &fakeAuthorizer{}
-	service := New(nil, failingConnector{})
+	service := New(nil, failingConnector{}, 10*time.Minute)
 	e := sourceHTTP(service, authorizer)
 	response := sourceRequest(e, http.MethodPost, "/api/sources/discover", "opaque-session", "csrf")
 	assert.Equal(t, http.StatusServiceUnavailable, response.Code)

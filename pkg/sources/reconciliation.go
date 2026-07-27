@@ -70,7 +70,7 @@ func enqueueReconciliation(ctx context.Context, tx bun.Tx, sourceAlbumID uuid.UU
 			available_at = CASE WHEN jobs.status = 'running' THEN jobs.available_at ELSE LEAST(jobs.available_at, EXCLUDED.available_at) END,
 			attempts = CASE WHEN jobs.status IN ('completed', 'failed') THEN 0 ELSE jobs.attempts END,
 			last_safe_error = CASE WHEN jobs.status IN ('completed', 'failed') THEN NULL ELSE jobs.last_safe_error END,
-			updated_at = now()
+			rerun_requested = jobs.status = 'running', updated_at = now()
 	`, ReconciliationJobKind, string(payload), "source-reconcile:"+sourceAlbumID.String(), availableAt).Exec(ctx)
 	if err != nil {
 		return fmt.Errorf("queue Source reconciliation: %w", err)
@@ -154,14 +154,12 @@ func (s *Service) readSnapshot(ctx context.Context, albumID uuid.UUID) (reconcil
 		return snapshot, err
 	}
 
-	expectedPages := (before.AssetCount + 999) / 1000
-	if expectedPages < 1 {
-		expectedPages = 1
-	}
 	assets := make(map[uuid.UUID]immich.AssetSummary, before.AssetCount)
 	pageNumber := 1
+	pagesRead := 0
 	for {
-		if pageNumber > expectedPages {
+		pagesRead++
+		if pagesRead > max(1, before.AssetCount+1) {
 			snapshot.diagnostic = "pagination_incomplete"
 			return snapshot, ErrUnstable
 		}
@@ -170,6 +168,7 @@ func (s *Service) readSnapshot(ctx context.Context, albumID uuid.UUID) (reconcil
 			snapshot.diagnostic = "dependency_unavailable"
 			return snapshot, ErrDependency
 		}
+		assetsBeforePage := len(assets)
 		for _, asset := range page.Items {
 			if existing, duplicate := assets[asset.SourceID]; duplicate {
 				if !sameAsset(existing, asset) {
@@ -183,7 +182,7 @@ func (s *Service) readSnapshot(ctx context.Context, albumID uuid.UUID) (reconcil
 		if page.NextPage == nil {
 			break
 		}
-		if *page.NextPage <= pageNumber {
+		if *page.NextPage <= pageNumber || len(assets) == assetsBeforePage {
 			snapshot.diagnostic = "pagination_incomplete"
 			return snapshot, ErrUnstable
 		}
@@ -259,7 +258,7 @@ func (s *Service) applyValidatedSnapshot(
 		for _, assetID := range assetIDs[start:end] {
 			batch = append(batch, snapshot.assets[assetID])
 		}
-		if err := upsertAssetBatch(ctx, tx, sourceAlbumID, batch, now); err != nil {
+		if err := upsertMediaItemBatch(ctx, tx, sourceAlbumID, batch, now); err != nil {
 			return 0, 0, 0, err
 		}
 	}
@@ -311,7 +310,7 @@ func (s *Service) applyValidatedSnapshot(
 	return stablePasses, additions, removals, nil
 }
 
-type databaseAsset struct {
+type databaseMediaItem struct {
 	PortalID          uuid.UUID `json:"portal_id"`
 	ImmichAssetID     uuid.UUID `json:"immich_asset_id"`
 	MediaType         string    `json:"media_type"`
@@ -321,18 +320,18 @@ type databaseAsset struct {
 	SourceFingerprint string    `json:"source_fingerprint"`
 }
 
-func upsertAssetBatch(ctx context.Context, tx bun.Tx, sourceAlbumID uuid.UUID, assets []immich.AssetSummary, now time.Time) error {
+func upsertMediaItemBatch(ctx context.Context, tx bun.Tx, sourceAlbumID uuid.UUID, assets []immich.AssetSummary, now time.Time) error {
 	if len(assets) == 0 {
 		return nil
 	}
-	rows := make([]databaseAsset, 0, len(assets))
+	rows := make([]databaseMediaItem, 0, len(assets))
 	for _, asset := range assets {
 		portalID, err := uuid.NewRandom()
 		if err != nil {
 			return err
 		}
 		fingerprint := fingerprintAsset(asset)
-		rows = append(rows, databaseAsset{
+		rows = append(rows, databaseMediaItem{
 			PortalID: portalID, ImmichAssetID: asset.SourceID, MediaType: asset.MediaType,
 			Width: asset.Width, Height: asset.Height, LocalDateTime: asset.LocalDateTime,
 			SourceFingerprint: hex.EncodeToString(fingerprint[:]),

@@ -71,12 +71,11 @@ type Service struct {
 	reconciliationInterval time.Duration
 }
 
-func New(db *bun.DB, connector Connector, intervals ...time.Duration) *Service {
-	interval := 10 * time.Minute
-	if len(intervals) > 0 && intervals[0] > 0 {
-		interval = intervals[0]
+func New(db *bun.DB, connector Connector, reconciliationInterval time.Duration) *Service {
+	return &Service{
+		db: db, connector: connector, now: time.Now,
+		reconciliationInterval: reconciliationInterval,
 	}
-	return &Service{db: db, connector: connector, now: time.Now, reconciliationInterval: interval}
 }
 
 // Discover validates the connection, then serializes snapshot retrieval and

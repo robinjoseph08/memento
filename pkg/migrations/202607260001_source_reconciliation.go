@@ -11,6 +11,7 @@ func init() {
 		func(ctx context.Context, db *bun.DB) error {
 			return db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 				statements := []string{
+					`ALTER TABLE jobs ADD COLUMN rerun_requested boolean NOT NULL DEFAULT false`,
 					`ALTER TABLE source_albums ADD COLUMN candidate_membership_fingerprint bytea`,
 					`ALTER TABLE source_albums ADD COLUMN candidate_membership_passes integer NOT NULL DEFAULT 0 CHECK (candidate_membership_passes >= 0)`,
 					`ALTER TABLE source_albums ADD COLUMN last_reconciled_at timestamptz`,
@@ -21,7 +22,7 @@ func init() {
 					`CREATE TABLE media_items (
 						id uuid PRIMARY KEY,
 						immich_asset_id uuid NOT NULL UNIQUE,
-						media_type text NOT NULL CHECK (media_type IN ('image', 'video', 'audio', 'other')),
+						media_type text NOT NULL CHECK (media_type IN ('image', 'video')),
 						width integer CHECK (width IS NULL OR width >= 0),
 						height integer CHECK (height IS NULL OR height >= 0),
 						local_date_time text NOT NULL CHECK (local_date_time <> '' AND char_length(local_date_time) <= 64),
@@ -84,6 +85,7 @@ func init() {
 					`ALTER TABLE source_albums DROP COLUMN IF EXISTS last_reconciled_at`,
 					`ALTER TABLE source_albums DROP COLUMN IF EXISTS candidate_membership_passes`,
 					`ALTER TABLE source_albums DROP COLUMN IF EXISTS candidate_membership_fingerprint`,
+					`ALTER TABLE jobs DROP COLUMN IF EXISTS rerun_requested`,
 				}
 				for _, statement := range statements {
 					if _, err := tx.ExecContext(ctx, statement); err != nil {
