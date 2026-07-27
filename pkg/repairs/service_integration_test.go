@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/robinjoseph08/memento/internal/testdb"
+	"github.com/robinjoseph08/memento/pkg/events"
 	"github.com/robinjoseph08/memento/pkg/immich"
 	"github.com/robinjoseph08/memento/pkg/migrations"
 	"github.com/robinjoseph08/memento/pkg/people"
@@ -114,6 +115,29 @@ func hashBytes(value string) []byte {
 }
 
 func checksum(value string) string { return hex.EncodeToString(hashBytes(value)[:20]) }
+
+func waitForRepairBlockedQuery(t *testing.T, db *bun.DB, blockerPID int, pattern string) {
+	t.Helper()
+	deadline := time.Now().Add(4 * time.Second)
+	for {
+		var waiting bool
+		err := db.NewRaw(`
+			SELECT EXISTS (
+				SELECT 1 FROM pg_stat_activity
+				WHERE datname = current_database() AND wait_event_type = 'Lock'
+				  AND ? = ANY(pg_blocking_pids(pid)) AND query LIKE ?
+			)
+		`, blockerPID, pattern).Scan(context.Background(), &waiting)
+		require.NoError(t, err)
+		if waiting {
+			return
+		}
+		if time.Now().After(deadline) {
+			require.FailNow(t, "expected query did not wait for the controlled lock", pattern)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
 
 func addAnchorBacking(t *testing.T, fixture repairFixture, linkedAt time.Time, active bool) uuid.UUID {
 	t.Helper()
@@ -771,10 +795,21 @@ func TestMediaConfirmationPreservesPortalIdentityAndMovesBacking(t *testing.T) {
 	`, competingMediaID, competingAssetID, competingMediaID, competingAssetID, checksum("same"),
 		competingCandidateID, competingMediaID, newMediaID, competingAssetID, newAssetID)
 	require.NoError(t, err)
-	mediaBlocker, err := fixture.db.BeginTx(context.Background(), nil)
+	eventBlocker, err := fixture.db.BeginTx(context.Background(), nil)
 	require.NoError(t, err)
-	_, err = mediaBlocker.NewRaw(`SELECT id FROM media_items WHERE id IN (?, ?) ORDER BY id FOR UPDATE`, oldMediaID, newMediaID).Exec(context.Background())
+	_, err = eventBlocker.ExecContext(context.Background(), `LOCK TABLE events IN ACCESS EXCLUSIVE MODE`)
 	require.NoError(t, err)
+	var eventBlockerPID int
+	require.NoError(t, eventBlocker.NewRaw(`SELECT pg_backend_pid()`).Scan(context.Background(), &eventBlockerPID))
+	concurrentEvent := make(chan error, 1)
+	go func() {
+		_, createErr := events.New(fixture.db).CreateEvent(context.Background(), fixture.actor, events.CreateEventRequest{
+			SourceAlbumIDs: []string{sourceAlbumID.String()}, MediaItemIDs: []string{newMediaID.String()},
+			Timezone: "UTC", Title: "Concurrent repair draft",
+		})
+		concurrentEvent <- createErr
+	}()
+	waitForRepairBlockedQuery(t, fixture.db, eventBlockerPID, `%INSERT INTO events%`)
 	confirmation := make(chan error, 1)
 	go func() {
 		_, confirmErr := fixture.service.ConfirmMedia(context.Background(), fixture.actor, candidateID)
@@ -782,7 +817,7 @@ func TestMediaConfirmationPreservesPortalIdentityAndMovesBacking(t *testing.T) {
 	}()
 	select {
 	case confirmErr := <-confirmation:
-		t.Fatalf("confirmation completed while Media rows were locked: %v", confirmErr)
+		t.Fatalf("confirmation completed while Event creation held the candidate Media: %v", confirmErr)
 	case <-time.After(100 * time.Millisecond):
 	}
 	candidateProbe, err := fixture.db.BeginTx(context.Background(), nil)
@@ -790,12 +825,18 @@ func TestMediaConfirmationPreservesPortalIdentityAndMovesBacking(t *testing.T) {
 	_, err = candidateProbe.NewRaw(`SELECT id FROM media_repair_candidates WHERE id = ? FOR UPDATE NOWAIT`, candidateID).Exec(context.Background())
 	require.NoError(t, err, "confirmation must wait for Media rows before locking its candidate")
 	require.NoError(t, candidateProbe.Rollback())
-	require.NoError(t, mediaBlocker.Commit())
+	require.NoError(t, eventBlocker.Rollback())
+	select {
+	case createErr := <-concurrentEvent:
+		require.NoError(t, createErr)
+	case <-time.After(time.Second):
+		t.Fatal("Event creation did not complete after its table was released")
+	}
 	select {
 	case confirmErr := <-confirmation:
 		require.NoError(t, confirmErr)
 	case <-time.After(time.Second):
-		t.Fatal("confirmation did not complete after Media rows were released")
+		t.Fatal("confirmation did not complete after Event creation")
 	}
 	var actualAssetID uuid.UUID
 	var availability string
