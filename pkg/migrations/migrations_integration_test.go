@@ -54,7 +54,7 @@ func TestSourceReconciliationMigrationBackfillsExistingAlbums(t *testing.T) {
 	for _, migration := range allMigrations {
 		if migration.Name == "202607260001" {
 			foundSourceReconciliation = true
-			continue
+			break
 		}
 		priorMigrations.Add(migration)
 	}
@@ -94,7 +94,7 @@ func TestRecipientMigrationAppliesAfterExistingMigrationLedger(t *testing.T) {
 	for _, migration := range allMigrations {
 		if migration.Name == "202607260003" {
 			foundRecipients = true
-			continue
+			break
 		}
 		priorMigrations.Add(migration)
 	}
@@ -109,6 +109,43 @@ func TestRecipientMigrationAppliesAfterExistingMigrationLedger(t *testing.T) {
 	var after int
 	require.NoError(t, db.NewRaw(`SELECT count(*) FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = 'invitations'`).Scan(ctx, &after))
 	assert.Equal(t, 1, after)
+}
+
+func TestDraftMigrationRollbackRestoresRequiredCaptureDates(t *testing.T) {
+	db := testdb.Open(t)
+	ctx := context.Background()
+	priorMigrations := migrate.NewMigrations()
+	for _, migration := range collection.Sorted() {
+		if migration.Name == "202607270001" {
+			break
+		}
+		priorMigrations.Add(migration)
+	}
+	require.NoError(t, applyCollection(ctx, db, priorMigrations))
+	require.NoError(t, Apply(ctx, db))
+
+	migrator := migrate.NewMigrator(db, collection, migrate.WithMarkAppliedOnSuccess(true))
+	_, err := db.ExecContext(ctx, `
+		INSERT INTO media_items (
+			id, immich_asset_id, media_type, local_date_time, first_seen_at, last_seen_at
+		) VALUES (
+			'11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222',
+			'image', NULL, now(), now()
+		)
+	`)
+	require.NoError(t, err)
+	_, err = migrator.Rollback(ctx)
+	require.ErrorContains(t, err, "contains null values", "rollback must fail instead of fabricating or deleting unknown capture dates")
+	_, err = db.ExecContext(ctx, `DELETE FROM media_items WHERE local_date_time IS NULL`)
+	require.NoError(t, err)
+	_, err = migrator.Rollback(ctx)
+	require.NoError(t, err)
+	var nullable string
+	require.NoError(t, db.NewRaw(`
+		SELECT is_nullable FROM information_schema.columns
+		WHERE table_schema = current_schema() AND table_name = 'media_items' AND column_name = 'local_date_time'
+	`).Scan(ctx, &nullable))
+	assert.Equal(t, "NO", nullable)
 }
 
 func TestEmailDeliveryInfrastructureEnforcesDurableState(t *testing.T) {

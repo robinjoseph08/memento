@@ -89,9 +89,10 @@ func (connector *reconciliationConnector) setMembership(assets ...immich.AssetSu
 
 func reconciliationAsset(id uuid.UUID) immich.AssetSummary {
 	width, height := 1200, 800
+	localDateTime := "2026-01-01T10:00:00Z"
 	return immich.AssetSummary{
 		SourceID: id, MediaType: "image", Width: &width, Height: &height,
-		LocalDateTime: "2026-01-01T10:00:00Z",
+		LocalDateTime: &localDateTime,
 	}
 }
 
@@ -265,6 +266,56 @@ func TestReconciliationConsumesMoreThanOneThousandItemsAndDeduplicatesIdentifier
 	assert.Equal(t, 1002, additions)
 }
 
+func TestReconciliationPersistsZonedUnzonedAndUnknownCaptureDates(t *testing.T) {
+	zoned := reconciliationAsset(uuid.New())
+	unzoned := reconciliationAsset(uuid.New())
+	unzonedValue := "2026-01-01T10:00:00"
+	unzoned.LocalDateTime = &unzonedValue
+	unknown := reconciliationAsset(uuid.New())
+	unknown.LocalDateTime = nil
+	connector := &reconciliationConnector{summary: sourceAlbum(uuid.New(), "Capture dates", 3)}
+	connector.pages = map[int]immich.AssetPage{1: {Items: []immich.AssetSummary{zoned, unzoned, unknown}}}
+	service, sourceAlbumID := newReconciliationService(t, connector)
+
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	for _, test := range []struct {
+		asset immich.AssetSummary
+		want  *string
+	}{
+		{zoned, zoned.LocalDateTime},
+		{unzoned, unzoned.LocalDateTime},
+		{unknown, nil},
+	} {
+		var localDateTime *string
+		require.NoError(t, service.db.NewRaw(`
+			SELECT local_date_time FROM media_items WHERE immich_asset_id = ?
+		`, test.asset.SourceID).Scan(context.Background(), &localDateTime))
+		assert.Equal(t, test.want, localDateTime)
+	}
+}
+
+func TestReconciliationPersistsLaterSourceMetadata(t *testing.T) {
+	asset := reconciliationAsset(uuid.New())
+	connector := &reconciliationConnector{summary: sourceAlbum(uuid.New(), "Initial name", 1)}
+	connector.pages = map[int]immich.AssetPage{1: {Items: []immich.AssetSummary{asset}}}
+	service, sourceAlbumID := newReconciliationService(t, connector)
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+
+	connector.summary.Name = "Later Immich name"
+	connector.summary.Description = "Later Immich description"
+	connector.summary.UpdatedAt = connector.summary.UpdatedAt.Add(time.Minute)
+	connector.summary.LastModifiedAssetTimestamp = &connector.summary.UpdatedAt
+	connector.albumCalls = 0
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+
+	var name, description string
+	require.NoError(t, service.db.NewRaw(`
+		SELECT name, description FROM source_albums WHERE id = ?
+	`, sourceAlbumID).Scan(context.Background(), &name, &description))
+	assert.Equal(t, "Later Immich name", name)
+	assert.Equal(t, "Later Immich description", description)
+}
+
 func TestReconciliationIgnoresFailureAndInstabilityUntilTwoIdenticalValidatedRemovalPasses(t *testing.T) {
 	kept, removed := reconciliationAsset(uuid.New()), reconciliationAsset(uuid.New())
 	connector := &reconciliationConnector{summary: sourceAlbum(uuid.New(), "Stable album", 2), dependency: errors.New("private dependency")}
@@ -363,10 +414,55 @@ func TestAddThenRemoveBeforePublicationLeavesNoEditableResidue(t *testing.T) {
 	assert.Zero(t, removals)
 }
 
+func TestReconciliationRetainsMediaReferencedByEventAndLooseDrafts(t *testing.T) {
+	for _, kind := range []string{"event", "loose_item"} {
+		t.Run(kind, func(t *testing.T) {
+			asset := reconciliationAsset(uuid.New())
+			connector := &reconciliationConnector{summary: sourceAlbum(uuid.New(), "Retained draft", 1)}
+			connector.pages = map[int]immich.AssetPage{1: {Items: []immich.AssetSummary{asset}}}
+			service, sourceAlbumID := newReconciliationService(t, connector)
+			require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+			var mediaID uuid.UUID
+			require.NoError(t, service.db.NewRaw(`
+				SELECT id FROM media_items WHERE immich_asset_id = ?
+			`, asset.SourceID).Scan(context.Background(), &mediaID))
+
+			draftID := uuid.New()
+			if kind == "event" {
+				_, err := service.db.NewRaw(`
+					INSERT INTO events (id, title, grouping_timezone) VALUES (?, 'Retained Event', 'UTC');
+					INSERT INTO draft_media_placements (event_id, media_item_id, position)
+					VALUES (?, ?, 0)
+				`, draftID, draftID, mediaID).Exec(context.Background())
+				require.NoError(t, err)
+			} else {
+				_, err := service.db.NewRaw(`
+					INSERT INTO loose_items (id, media_item_id, grouping_timezone) VALUES (?, ?, 'UTC')
+				`, draftID, mediaID).Exec(context.Background())
+				require.NoError(t, err)
+			}
+
+			connector.setMembership()
+			require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+			require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+			assertTableCount(t, service, "source_album_memberships", 0)
+			assertTableCount(t, service, "media_items", 1)
+			var draftCount int
+			table := "loose_items"
+			if kind == "event" {
+				table = "events"
+			}
+			require.NoError(t, service.db.NewRaw(`SELECT count(*) FROM `+table+` WHERE id = ?`, draftID).Scan(context.Background(), &draftCount))
+			assert.Equal(t, 1, draftCount)
+		})
+	}
+}
+
 func TestConflictingDuplicateAndNonAdvancingPagesAreUnstable(t *testing.T) {
 	asset := reconciliationAsset(uuid.New())
 	conflict := asset
-	conflict.LocalDateTime = "2026-01-02T10:00:00Z"
+	conflictingDateTime := "2026-01-02T10:00:00Z"
+	conflict.LocalDateTime = &conflictingDateTime
 	connector := &reconciliationConnector{summary: sourceAlbum(uuid.New(), "Invalid pages", 1)}
 	connector.pages = map[int]immich.AssetPage{1: {Items: []immich.AssetSummary{asset, conflict}}}
 	service, sourceAlbumID := newReconciliationService(t, connector)

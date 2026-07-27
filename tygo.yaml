@@ -1,3 +1,6 @@
+type_mappings:
+  time.Time: "string /* RFC3339 */"
+
 packages:
   - path: "github.com/robinjoseph08/memento/pkg/emaildelivery"
     output_path: "app/types/generated/emaildelivery.ts"
@@ -25,5 +28,9 @@ packages:
     preserve_comments: none
   - path: "github.com/robinjoseph08/memento/pkg/sources"
     output_path: "app/types/generated/sources.ts"
+    fallback_type: unknown
+    preserve_comments: none
+  - path: "github.com/robinjoseph08/memento/pkg/events"
+    output_path: "app/types/generated/events.ts"
     fallback_type: unknown
     preserve_comments: none

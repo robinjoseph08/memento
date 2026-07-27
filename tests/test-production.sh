@@ -68,6 +68,16 @@ grep -qi '^Cache-Control: no-store' "$temporary/setup-headers"
 api_code=$(curl --silent --output "$temporary/api.json" --write-out '%{http_code}' "$base_url/api")
 [ "$api_code" = 404 ]
 grep -q '"code":"not_found"' "$temporary/api.json"
+for draft_path in \
+  /api/events/11111111-1111-4111-8111-111111111111 \
+  /api/loose-items/11111111-1111-4111-8111-111111111111 \
+  /api/sources/11111111-1111-4111-8111-111111111111/media-items; do
+  draft_code=$(curl --silent --dump-header "$temporary/draft-headers" --output "$temporary/draft.json" \
+    --write-out '%{http_code}' "$base_url$draft_path")
+  [ "$draft_code" = 401 ]
+  grep -q 'A valid Curator Session is required' "$temporary/draft.json"
+  grep -qi '^Cache-Control: no-store' "$temporary/draft-headers"
+done
 curl --fail --silent --dump-header "$temporary/headers" --output /dev/null "$base_url/"
 grep -qi '^Content-Security-Policy:' "$temporary/headers"
 curl --fail --silent --dump-header "$temporary/invitation-headers" --output "$temporary/invitation.html" \
@@ -143,10 +153,11 @@ fi
 compose exec --no-TTY postgres psql --username memento_app --dbname memento --tuples-only --command \
   "SELECT count(*) FROM pg_extension WHERE extname IN ('unaccent', 'pg_trgm');" | grep -Eq '^[[:space:]]*2[[:space:]]*$'
 compose exec --no-TTY postgres psql --username memento_app --dbname memento --tuples-only --command \
-  "SELECT count(*) FROM bun_migrations;" | grep -Eq '^[[:space:]]*8[[:space:]]*$'
+  "SELECT count(*) FROM bun_migrations;" | grep -Eq '^[[:space:]]*9[[:space:]]*$'
 compose exec --no-TTY postgres psql --username postgres --dbname postgres --tuples-only --command \
   "SELECT rolsuper FROM pg_roles WHERE rolname = 'memento_app';" | grep -Eq '^[[:space:]]*f[[:space:]]*$'
 compose exec --no-TTY memento sh -c "ps | grep -q '[m]emento' && ps | grep -q '[c]addy'"
+compose exec --no-TTY memento sh -c "grep -aq 'America/Los_Angeles' /usr/local/bin/memento"
 container=$(compose ps --quiet memento)
 image_user=$(docker inspect --format '{{.Config.User}}' "$container")
 [ -n "$image_user" ] && [ "$image_user" != 0 ] && [ "$image_user" != root ]

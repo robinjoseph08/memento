@@ -2,7 +2,7 @@
 
 Memento is a self-hosted portal for privately publishing selected photos and videos from one Curator's existing Immich library to family Recipients. Immich remains the media source. Memento owns People, Events, Audiences, Publications, Recipient access, interactions, and notifications.
 
-The repository includes the deployable application foundation, first-browser Curator setup, and the private Source album inbox: a React PWA, a Go API and in-process worker, PostgreSQL migrations, Caddy, and one production image. See [the product and architecture specification](docs/product-architecture-spec.md) and [canonical domain language](CONTEXT.md).
+The repository includes the deployable application foundation, first-browser Curator setup, the private Source album inbox, and private drafting of Events and Loose items with initial local-day Moment proposals: a React PWA, a Go API and in-process worker, PostgreSQL migrations, Caddy, and one production image. See [the product and architecture specification](docs/product-architecture-spec.md) and [canonical domain language](CONTEXT.md).
 
 ## Deployment topology
 

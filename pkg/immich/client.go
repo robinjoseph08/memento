@@ -106,7 +106,7 @@ type assetResponse struct {
 	Type          *string         `json:"type"`
 	Width         json.RawMessage `json:"width"`
 	Height        json.RawMessage `json:"height"`
-	LocalDateTime *string         `json:"localDateTime"`
+	LocalDateTime json.RawMessage `json:"localDateTime"`
 }
 
 func (response *versionResponse) UnmarshalJSON(contents []byte) error {
@@ -178,7 +178,7 @@ type AssetSummary struct {
 	MediaType     string
 	Width         *int
 	Height        *int
-	LocalDateTime string
+	LocalDateTime *string
 }
 
 // AssetPage is one explicit entry point into Immich metadata pagination.
@@ -299,20 +299,19 @@ func (c *Client) AlbumAssetsPage(ctx context.Context, albumID uuid.UUID, page in
 	}
 	result := AssetPage{Items: make([]AssetSummary, 0, len(*response.Assets.Items))}
 	for _, raw := range *response.Assets.Items {
-		if raw.ID == nil || raw.Type == nil || raw.LocalDateTime == nil {
+		if raw.ID == nil || raw.Type == nil {
 			return AssetPage{}, errInvalidResponse
 		}
 		assetID, err := uuid.Parse(*raw.ID)
 		width, widthErr := requiredNullableDimension(raw.Width)
 		height, heightErr := requiredNullableDimension(raw.Height)
-		localDateTime := strings.TrimSpace(*raw.LocalDateTime)
-		_, timeErr := time.Parse(time.RFC3339Nano, localDateTime)
-		if err != nil || assetID == uuid.Nil || !validAssetType(*raw.Type) || widthErr != nil || heightErr != nil || timeErr != nil {
+		localDateTime, localDateTimeErr := requiredNullableLocalDateTime(raw.LocalDateTime)
+		if err != nil || assetID == uuid.Nil || !validAssetType(*raw.Type) || widthErr != nil || heightErr != nil || localDateTimeErr != nil {
 			return AssetPage{}, errInvalidResponse
 		}
 		result.Items = append(result.Items, AssetSummary{
 			SourceID: assetID, MediaType: strings.ToLower(*raw.Type), Width: width, Height: height,
-			LocalDateTime: truncate(localDateTime, 64),
+			LocalDateTime: localDateTime,
 		})
 	}
 	if string(response.Assets.NextPage) != "null" {
@@ -551,6 +550,38 @@ func truncate(value string, maximum int) string {
 
 func validAssetType(value string) bool {
 	return value == "IMAGE" || value == "VIDEO"
+}
+
+func requiredNullableLocalDateTime(raw json.RawMessage) (*string, error) {
+	if len(raw) == 0 {
+		return nil, errInvalidResponse
+	}
+	if string(raw) == "null" {
+		return nil, nil
+	}
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return nil, errInvalidResponse
+	}
+	value = strings.TrimSpace(value)
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil || parsed.Year() <= 0 {
+		valid := false
+		for _, layout := range []string{
+			"2006-01-02T15:04:05.999999999", "2006-01-02T15:04:05",
+			"2006-01-02 15:04:05.999999999", "2006-01-02 15:04:05",
+		} {
+			if candidate, parseErr := time.Parse(layout, value); parseErr == nil && candidate.Year() > 0 {
+				valid = true
+				break
+			}
+		}
+		if !valid {
+			return nil, errInvalidResponse
+		}
+	}
+	value = truncate(value, 64)
+	return &value, nil
 }
 
 func requiredNullableDimension(raw json.RawMessage) (*int, error) {

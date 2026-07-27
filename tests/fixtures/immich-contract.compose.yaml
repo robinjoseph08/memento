@@ -8,10 +8,11 @@ services:
       DB_DATABASE_NAME: immich
       REDIS_HOSTNAME: redis
       IMMICH_MACHINE_LEARNING_URL: http://machine-learning:3003
+      IMMICH_WORKERS_INCLUDE: api
     ports:
       - "127.0.0.1::2283"
-    tmpfs:
-      - /data
+    volumes:
+      - immich-data:/data
     depends_on:
       database:
         condition: service_healthy
@@ -41,3 +42,6 @@ services:
       interval: 1s
       timeout: 1s
       retries: 60
+
+volumes:
+  immich-data:

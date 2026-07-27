@@ -13,22 +13,36 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+wait_for_server() {
+  for _ in $(seq 1 180); do
+    if curl --fail --silent --show-error "$1/api/server/ping" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
 attempt=1
 while [ "$attempt" -le 2 ]; do
   docker compose --project-name "$project" --file "$compose_file" up --detach --quiet-pull
   endpoint=$(docker compose --project-name "$project" --file "$compose_file" port server 2283)
-  port=${endpoint##*:}
+  base_url="http://127.0.0.1:${endpoint##*:}"
 
   ready=false
-  for _ in $(seq 1 180); do
-    if curl --fail --silent --show-error "http://127.0.0.1:$port/api/server/ping" >/dev/null 2>&1; then
+  if wait_for_server "$base_url"; then
+    # The initial connection can cache Immich's custom PostgreSQL types before
+    # fresh-database migrations create them. Restart after migration so enum
+    # arrays use the right type on the second connection.
+    docker compose --project-name "$project" --file "$compose_file" restart server
+    endpoint=$(docker compose --project-name "$project" --file "$compose_file" port server 2283)
+    base_url="http://127.0.0.1:${endpoint##*:}"
+    if wait_for_server "$base_url"; then
       ready=true
-      break
     fi
-    sleep 1
-  done
+  fi
 
-  if [ "$ready" = true ] && MEMENTO_TEST_IMMICH_URL="http://127.0.0.1:$port" \
+  if [ "$ready" = true ] && MEMENTO_TEST_IMMICH_URL="$base_url" \
     go test -count=1 -tags=immichcontract ./pkg/immich; then
     exit 0
   fi

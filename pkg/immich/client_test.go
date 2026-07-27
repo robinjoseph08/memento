@@ -220,11 +220,32 @@ func TestAlbumAssetsPageUsesPinnedPaginationAndStripsSensitiveDTOFields(t *testi
 	require.Len(t, page.Items, 1)
 	assert.Equal(t, assetID, page.Items[0].SourceID)
 	assert.Equal(t, "image", page.Items[0].MediaType)
+	require.NotNil(t, page.Items[0].LocalDateTime)
+	assert.Equal(t, "2026-01-01T10:00:00.000Z", *page.Items[0].LocalDateTime)
 	assert.Nil(t, page.NextPage)
 	serialized, err := json.Marshal(page)
 	require.NoError(t, err)
 	assert.NotContains(t, string(serialized), "secret")
 	assert.NotContains(t, string(serialized), "face")
+}
+
+func TestAlbumAssetsPagePreservesUnzonedAndUnknownCaptureDates(t *testing.T) {
+	albumID := uuid.New()
+	server := contractServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"assets":{"count":2,"items":[` +
+			`{"id":"` + uuid.NewString() + `","type":"IMAGE","width":1200,"height":800,"localDateTime":"2026-01-01T10:00:00"},` +
+			`{"id":"` + uuid.NewString() + `","type":"IMAGE","width":1200,"height":800,"localDateTime":null}` +
+			`],"nextPage":null,"total":2}}`))
+	})
+	defer server.Close()
+	client, err := New(clientConfig(server.URL), server.Client())
+	require.NoError(t, err)
+	page, err := client.AlbumAssetsPage(context.Background(), albumID, 1)
+	require.NoError(t, err)
+	require.Len(t, page.Items, 2)
+	require.NotNil(t, page.Items[0].LocalDateTime)
+	assert.Equal(t, "2026-01-01T10:00:00", *page.Items[0].LocalDateTime)
+	assert.Nil(t, page.Items[1].LocalDateTime)
 }
 
 func TestAlbumSummaryUsesPinnedDetailContract(t *testing.T) {
@@ -377,8 +398,9 @@ func TestAlbumAssetsPageRejectsInvalidEntryPointsAndResponses(t *testing.T) {
 		"missing height":              `{"assets":{"count":1,"items":[{"id":"` + uuid.NewString() + `","type":"IMAGE","width":1200,"localDateTime":"2026-01-01T10:00:00Z"}],"nextPage":null,"total":1}}`,
 		"unstorable width":            `{"assets":{"count":1,"items":[{"id":"` + uuid.NewString() + `","type":"IMAGE","width":2147483648,"height":800,"localDateTime":"2026-01-01T10:00:00Z"}],"nextPage":null,"total":1}}`,
 		"missing local date time":     `{"assets":{"count":1,"items":[{"id":"` + uuid.NewString() + `","type":"IMAGE","width":1200,"height":800}],"nextPage":null,"total":1}}`,
-		"null local date time":        `{"assets":{"count":1,"items":[{"id":"` + uuid.NewString() + `","type":"IMAGE","width":1200,"height":800,"localDateTime":null}],"nextPage":null,"total":1}}`,
 		"bad local date time":         `{"assets":{"count":1,"items":[{"id":"` + uuid.NewString() + `","type":"IMAGE","width":1200,"height":800,"localDateTime":"yesterday"}],"nextPage":null,"total":1}}`,
+		"zoned year zero":             `{"assets":{"count":1,"items":[{"id":"` + uuid.NewString() + `","type":"IMAGE","width":1200,"height":800,"localDateTime":"0000-01-01T00:00:00Z"}],"nextPage":null,"total":1}}`,
+		"unzoned year zero":           `{"assets":{"count":1,"items":[{"id":"` + uuid.NewString() + `","type":"IMAGE","width":1200,"height":800,"localDateTime":"0000-01-01T00:00:00"}],"nextPage":null,"total":1}}`,
 		"skipped next page":           `{"assets":{"count":0,"items":[],"nextPage":"3","total":0}}`,
 	} {
 		t.Run(name, func(t *testing.T) {

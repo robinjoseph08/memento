@@ -290,6 +290,8 @@ func (s *Service) applyValidatedSnapshot(
 		if _, err := tx.NewRaw(`
 			DELETE FROM media_items AS media
 			WHERE NOT EXISTS (SELECT 1 FROM source_album_memberships WHERE media_item_id = media.id)
+			  AND NOT EXISTS (SELECT 1 FROM draft_media_placements WHERE media_item_id = media.id)
+			  AND NOT EXISTS (SELECT 1 FROM loose_items WHERE media_item_id = media.id)
 		`).Exec(ctx); err != nil {
 			return 0, 0, 0, err
 		}
@@ -322,7 +324,7 @@ type databaseMediaItem struct {
 	MediaType         string    `json:"media_type"`
 	Width             *int      `json:"width"`
 	Height            *int      `json:"height"`
-	LocalDateTime     string    `json:"local_date_time"`
+	LocalDateTime     *string   `json:"local_date_time"`
 	SourceFingerprint string    `json:"source_fingerprint"`
 }
 
@@ -474,10 +476,17 @@ func fingerprintAsset(asset immich.AssetSummary) [32]byte {
 }
 
 func sameAsset(left, right immich.AssetSummary) bool {
-	if left.SourceID != right.SourceID || left.MediaType != right.MediaType || left.LocalDateTime != right.LocalDateTime {
+	if left.SourceID != right.SourceID || left.MediaType != right.MediaType || !sameOptionalString(left.LocalDateTime, right.LocalDateTime) {
 		return false
 	}
 	return sameOptionalInt(left.Width, right.Width) && sameOptionalInt(left.Height, right.Height)
+}
+
+func sameOptionalString(left, right *string) bool {
+	if left == nil || right == nil {
+		return left == right
+	}
+	return *left == *right
 }
 
 func sameOptionalInt(left, right *int) bool {
