@@ -21,6 +21,7 @@ func init() {
 						challenge_hash bytea NOT NULL UNIQUE CHECK (octet_length(challenge_hash) = 32),
 						code_hash bytea NOT NULL CHECK (octet_length(code_hash) = 32),
 						recipient_access_generation_id uuid NOT NULL REFERENCES recipient_access_generations(id) ON DELETE RESTRICT,
+						recipient_email_id uuid NOT NULL REFERENCES recipient_emails(id) ON DELETE RESTRICT,
 						email_delivery_id bigint NOT NULL REFERENCES email_deliveries(id) ON DELETE RESTRICT,
 						attempts integer NOT NULL DEFAULT 0 CHECK (attempts BETWEEN 0 AND 5),
 						expires_at timestamptz NOT NULL,

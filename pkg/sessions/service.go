@@ -165,23 +165,6 @@ func (s *Service) RequestSignIn(ctx context.Context, request SignInRequest) (Sig
 	if !s.delivery.Configured() {
 		return SignInStartResponse{}, emaildelivery.ErrNotConfigured
 	}
-	var accessID uuid.UUID
-	var email, name string
-	err = s.db.NewRaw(`
-		SELECT access.id, recipient_email.email, person.display_name
-		FROM recipient_emails AS recipient_email
-		JOIN recipient_access_generations AS access ON access.id = recipient_email.recipient_access_generation_id
-		JOIN people AS person ON person.id = access.person_id AND person.archived_at IS NULL AND person.merged_at IS NULL
-		JOIN system_settings AS settings ON settings.id = 1 AND settings.setup_complete
-		WHERE recipient_email.normalized_email = ? AND recipient_email.is_current
-		  AND access.is_current AND access.state = 'completed'
-	`, normalized).Scan(ctx, &accessID, &email, &name)
-	if errors.Is(err, sql.ErrNoRows) {
-		return response, nil
-	}
-	if err != nil {
-		return SignInStartResponse{}, err
-	}
 	code, err := s.randomCode()
 	if err != nil {
 		return SignInStartResponse{}, err
@@ -193,6 +176,24 @@ func (s *Service) RequestSignIn(ctx context.Context, request SignInRequest) (Sig
 	now := s.now().UTC()
 	expiresAt := now.Add(codeLifetime)
 	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		var accessID, emailID uuid.UUID
+		var email, name string
+		err := tx.NewRaw(`
+			SELECT access.id, recipient_email.id, recipient_email.email, person.display_name
+			FROM recipient_emails AS recipient_email
+			JOIN recipient_access_generations AS access ON access.id = recipient_email.recipient_access_generation_id
+			JOIN people AS person ON person.id = access.person_id AND person.archived_at IS NULL AND person.merged_at IS NULL
+			JOIN system_settings AS settings ON settings.id = 1 AND settings.setup_complete
+			WHERE recipient_email.normalized_email = ? AND recipient_email.is_current
+			  AND access.is_current AND access.state = 'completed'
+			FOR UPDATE OF recipient_email, access
+		`, normalized).Scan(ctx, &accessID, &emailID, &email, &name)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
 		deliveryID, _, err := s.delivery.QueueRequired(ctx, tx, emaildelivery.RequiredMessage{
 			Kind: emaildelivery.KindSignInCode, Recipient: email, Subject: "Your Memento sign-in code",
 			Body: fmt.Sprintf("Hello %s,\n\nYour Memento sign-in code is %s. It expires in 10 minutes and can be used once.", name, code), DeliverBefore: &expiresAt,
@@ -200,7 +201,7 @@ func (s *Service) RequestSignIn(ctx context.Context, request SignInRequest) (Sig
 		if err != nil {
 			return err
 		}
-		_, err = tx.NewRaw(`INSERT INTO sign_in_challenges (id, challenge_hash, code_hash, recipient_access_generation_id, email_delivery_id, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, challengeUUID, digest(challengeRaw), s.codeHash("sign-in", challengeRaw, code), accessID, deliveryID, expiresAt, now).Exec(ctx)
+		_, err = tx.NewRaw(`INSERT INTO sign_in_challenges (id, challenge_hash, code_hash, recipient_access_generation_id, recipient_email_id, email_delivery_id, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, challengeUUID, digest(challengeRaw), s.codeHash("sign-in", challengeRaw, code), accessID, emailID, deliveryID, expiresAt, now).Exec(ctx)
 		return err
 	})
 	if err != nil {
@@ -228,7 +229,7 @@ func (s *Service) VerifySignIn(ctx context.Context, request SignInVerifyRequest)
 			       access.id, access.person_id
 			FROM sign_in_challenges AS challenge
 			JOIN recipient_access_generations AS access ON access.id = challenge.recipient_access_generation_id AND access.is_current AND access.state = 'completed'
-			JOIN recipient_emails AS recipient_email ON recipient_email.recipient_access_generation_id = access.id AND recipient_email.is_current
+			JOIN recipient_emails AS recipient_email ON recipient_email.id = challenge.recipient_email_id AND recipient_email.recipient_access_generation_id = access.id AND recipient_email.is_current
 			WHERE challenge.challenge_hash = ? FOR UPDATE OF challenge, access
 		`, digest(challengeRaw)).Scan(ctx, &challengeID, &expected, &attempts, &expiresAt, &consumedAt, &accessID, &personID)
 		if errors.Is(err, sql.ErrNoRows) {

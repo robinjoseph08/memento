@@ -91,11 +91,15 @@ func insertChallenge(t *testing.T, f fixture, fill byte, code string) string {
 	challengeID := hex.EncodeToString(raw)
 	expires := f.now.Add(10 * time.Minute)
 	require.NoError(t, f.db.RunInTx(context.Background(), nil, func(ctx context.Context, tx bun.Tx) error {
+		var emailID uuid.UUID
+		if err := tx.NewRaw(`SELECT id FROM recipient_emails WHERE recipient_access_generation_id = ? AND is_current`, f.accessID).Scan(ctx, &emailID); err != nil {
+			return err
+		}
 		deliveryID, _, err := f.delivery.QueueRequired(ctx, tx, emaildelivery.RequiredMessage{Kind: emaildelivery.KindSignInCode, Recipient: "alex@example.com", Subject: "code", Body: "code", DeliverBefore: &expires})
 		if err != nil {
 			return err
 		}
-		_, err = tx.NewRaw(`INSERT INTO sign_in_challenges (id, challenge_hash, code_hash, recipient_access_generation_id, email_delivery_id, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, uuid.New(), digest(raw), f.service.codeHash("sign-in", raw, code), f.accessID, deliveryID, expires, f.now).Exec(ctx)
+		_, err = tx.NewRaw(`INSERT INTO sign_in_challenges (id, challenge_hash, code_hash, recipient_access_generation_id, recipient_email_id, email_delivery_id, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, uuid.New(), digest(raw), f.service.codeHash("sign-in", raw, code), f.accessID, emailID, deliveryID, expires, f.now).Exec(ctx)
 		return err
 	}))
 	return challengeID
@@ -124,6 +128,20 @@ func TestSignInCodeIsEightDigitSingleUseAndCreatesPolicyBoundSessions(t *testing
 			}
 		})
 	}
+}
+
+func TestSignInChallengeIsBoundToTheAddressThatReceivedIt(t *testing.T) {
+	f := newFixture(t)
+	challenge := insertChallenge(t, f, 0x46, "12345678")
+	_, err := f.db.NewRaw(`
+		UPDATE recipient_emails SET is_current = false, ended_at = ? WHERE recipient_access_generation_id = ? AND is_current;
+		INSERT INTO recipient_emails (id, recipient_access_generation_id, email, normalized_email, is_current, created_at)
+		VALUES (?, ?, 'alex-new@example.com', 'alex-new@example.com', true, ?)
+	`, f.now, f.accessID, uuid.New(), f.accessID, f.now).Exec(context.Background())
+	require.NoError(t, err)
+
+	_, err = f.service.VerifySignIn(context.Background(), SignInVerifyRequest{ChallengeID: challenge, Code: "12345678", SessionType: "trusted"})
+	assert.ErrorIs(t, err, ErrInvalidCode, "a code sent before identity rotation must not authenticate the replacement address")
 }
 
 func TestFiveFailedSignInAttemptsConsumeTheChallengeBudget(t *testing.T) {
