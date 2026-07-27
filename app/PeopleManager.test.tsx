@@ -420,6 +420,10 @@ test("previews and confirms the exact source, survivor, generation, email, and v
       interest_entries_moved: 1,
       interest_history_owners_retained: 0,
       visibility_reference_fingerprint: "b".repeat(64),
+      attendance_entries_moved: 1,
+      audience_overrides_moved: 1,
+      audience_reasons_moved: 2,
+      audience_reference_fingerprint: "c".repeat(64),
     },
     requires_generation_transfer: true,
     requires_email_resolution: true,
@@ -488,6 +492,11 @@ test("previews and confirms the exact source, survivor, generation, email, and v
     screen.getByText(/2 Family relationship references/),
   ).toBeInTheDocument();
   expect(screen.getByText(/1 active Family relationships/)).toBeInTheDocument();
+  expect(
+    screen.getByText(/1 confirmed Attendance entries/),
+  ).toBeInTheDocument();
+  expect(screen.getByText(/1 manual Audience overrides/)).toBeInTheDocument();
+  expect(screen.getByText(/2 proposal reasons/)).toBeInTheDocument();
   const confirm = screen.getByRole("button", { name: "Confirm audited merge" });
   expect(confirm).toBeDisabled();
   fireEvent.click(

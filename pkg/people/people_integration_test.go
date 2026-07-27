@@ -18,6 +18,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 	"github.com/robinjoseph08/memento/internal/testdb"
+	audiencespkg "github.com/robinjoseph08/memento/pkg/audiences"
 	"github.com/robinjoseph08/memento/pkg/binder"
 	"github.com/robinjoseph08/memento/pkg/config"
 	"github.com/robinjoseph08/memento/pkg/errcodes"
@@ -810,6 +811,67 @@ func TestMergePreviewsAndMovesEveryFamilyRelationshipEndpointAtomically(t *testi
 	require.NoError(t, fixture.db.NewRaw(`SELECT metadata::text FROM security_audit_events WHERE action = 'people_merged'`).Scan(ctx, &auditMetadata))
 	assert.Contains(t, auditMetadata, `"family_relationships_moved": 6`)
 	assert.Contains(t, auditMetadata, `"family_relationships_archived": 1`)
+}
+
+func TestPersonMergeMovesAttendanceAndOverridesWithoutRewritingApprovedSnapshots(t *testing.T) {
+	fixture := newPeopleFixture(t)
+	ctx := context.Background()
+	source := addPerson(t, fixture.db, "Source Recipient", "Source Recipient")
+	survivor := addPerson(t, fixture.db, "Survivor", "Survivor")
+	addAccess(t, fixture.db, source, true, "source-audience@example.com")
+	eventID, momentID, mediaID, assetID, looseID := uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	_, err := fixture.db.NewRaw(`
+		INSERT INTO events (id, title, grouping_timezone) VALUES (?, 'Audience merge', 'UTC');
+		INSERT INTO draft_moments (id, event_id, position, proposed_day, grouping_timezone, source_days) VALUES (?, ?, 0, '2026-01-01', 'UTC', ARRAY['2026-01-01'::date]);
+		INSERT INTO media_items (id, immich_asset_id, media_type, first_seen_at, last_seen_at) VALUES (?, ?, 'image', now(), now());
+		INSERT INTO loose_items (id, media_item_id, grouping_timezone) VALUES (?, ?, 'UTC')
+	`, eventID, momentID, eventID, mediaID, assetID, looseID, mediaID).Exec(ctx)
+	require.NoError(t, err)
+
+	audienceService := audiencespkg.New(fixture.db, nil)
+	attendanceIDs := []string{source.String()}
+	momentReview, err := audienceService.ConfirmAttendance(ctx, fixture.actor, momentID, 1, audiencespkg.AttendanceRequest{PersonIDs: &attendanceIDs})
+	require.NoError(t, err)
+	require.Len(t, momentReview.Proposal, 1)
+	assert.Equal(t, source.String(), momentReview.Proposal[0].Recipient.ID)
+	looseReview, err := audienceService.SetOverride(ctx, fixture.actor, "loose_item", looseID, 1, audiencespkg.OverrideRequest{RecipientPersonID: source.String(), State: "included"})
+	require.NoError(t, err)
+	firstApproval, err := audienceService.Approve(ctx, fixture.actor, "loose_item", looseID, looseReview.Version)
+	require.NoError(t, err)
+	require.Len(t, firstApproval.Audience.Recipients, 1)
+	assert.Equal(t, source.String(), firstApproval.Audience.Recipients[0].ID)
+
+	preview, err := fixture.service.PreviewMerge(ctx, fixture.actor, source, survivor)
+	require.NoError(t, err)
+	assert.Equal(t, 1, preview.References.AttendanceEntriesMoved)
+	assert.Equal(t, 1, preview.References.AudienceOverridesMoved)
+	assert.Equal(t, 1, preview.References.AudienceReasonsMoved)
+	assert.Len(t, preview.References.AudienceReferenceFingerprint, 64)
+	_, err = fixture.service.Merge(ctx, fixture.actor, MergeRequest{
+		SourcePersonID: source.String(), SurvivorPersonID: survivor.String(), SourceVersion: 1, SurvivorVersion: 1,
+		TransferCurrentAccessGeneration: true, ExpectedRecipientGeneration: preview.References.ResultingRecipientGeneration,
+		PreviewFingerprint: preview.PreviewFingerprint,
+	})
+	require.NoError(t, err)
+
+	momentReview, err = audienceService.Recalculate(ctx, fixture.actor, "moment", momentID, momentReview.Version)
+	require.NoError(t, err)
+	require.Len(t, momentReview.Attendance, 1)
+	assert.Equal(t, survivor.String(), momentReview.Attendance[0].ID)
+	require.Len(t, momentReview.Proposal, 1)
+	assert.Equal(t, survivor.String(), momentReview.Proposal[0].Recipient.ID)
+	assert.Equal(t, "present", momentReview.Proposal[0].Reasons[0].Kind)
+	looseReview, err = audienceService.Recalculate(ctx, fixture.actor, "loose_item", looseID, firstApproval.Version)
+	require.NoError(t, err)
+	require.NotNil(t, looseReview.ApprovedAudience)
+	require.Len(t, looseReview.ApprovedAudience.Recipients, 1)
+	assert.Equal(t, source.String(), looseReview.ApprovedAudience.Recipients[0].ID, "approved history keeps its original Person identity")
+	require.Len(t, looseReview.Proposal, 1)
+	assert.Equal(t, survivor.String(), looseReview.Proposal[0].Recipient.ID)
+	secondApproval, err := audienceService.Approve(ctx, fixture.actor, "loose_item", looseID, looseReview.Version)
+	require.NoError(t, err)
+	require.Len(t, secondApproval.Audience.Recipients, 1)
+	assert.Equal(t, survivor.String(), secondApproval.Audience.Recipients[0].ID)
 }
 
 func TestFamilyMutationAndPersonMergeUseOneDeadlockFreeLockOrder(t *testing.T) {

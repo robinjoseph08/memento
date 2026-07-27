@@ -117,6 +117,14 @@ type Service struct {
 	now       func() time.Time
 }
 
+// PersonMergeEffects summarizes active Audience references moved to a surviving Person.
+type PersonMergeEffects struct {
+	AttendanceEntriesMoved int
+	AudienceOverridesMoved int
+	AudienceReasonsMoved   int
+	ReferenceFingerprint   string
+}
+
 func New(db *bun.DB, connector Connector) *Service {
 	return &Service{db: db, connector: connector, now: time.Now}
 }
@@ -280,6 +288,12 @@ func (s *Service) SetOverride(ctx context.Context, actor setup.CuratorSession, k
 	var response Review
 	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 		if err := lockTarget(ctx, tx, t, version); err != nil {
+			return err
+		}
+		var lockedRecipient uuid.UUID
+		if err := tx.NewRaw(`SELECT id FROM people WHERE id = ? FOR SHARE`, recipientID).Scan(ctx, &lockedRecipient); errors.Is(err, sql.ErrNoRows) {
+			return ErrRecipientIneligible
+		} else if err != nil {
 			return err
 		}
 		var eligible bool
@@ -539,6 +553,9 @@ func parseIDs(raw []string) ([]uuid.UUID, error) {
 }
 
 func recalculate(ctx context.Context, tx bun.Tx, t target, now time.Time) error {
+	if err := lockAudienceReferences(ctx, tx); err != nil {
+		return err
+	}
 	if _, err := tx.NewRaw(`DELETE FROM audience_proposals WHERE target_kind = ? AND target_id = ?`, t.kind, t.id).Exec(ctx); err != nil {
 		return err
 	}
@@ -687,6 +704,141 @@ func (s *Service) faceEvidence(ctx context.Context, momentID uuid.UUID) ([]FaceE
 		return result[i].EvidenceID < result[j].EvidenceID
 	})
 	return result, true
+}
+
+func lockAudienceReferences(ctx context.Context, tx bun.Tx) error {
+	_, err := tx.NewRaw(`SELECT pg_advisory_xact_lock(hashtextextended('memento:audiences', 0))`).Exec(ctx)
+	return err
+}
+
+// LockReferences serializes a Person merge with proposal recalculation and locks affected active references.
+func LockReferences(ctx context.Context, tx bun.Tx, sourceID, survivorID uuid.UUID) error {
+	if err := lockAudienceReferences(ctx, tx); err != nil {
+		return err
+	}
+	for _, query := range []string{
+		`SELECT moment_id, person_id FROM attendance WHERE person_id IN (?, ?) ORDER BY moment_id, person_id FOR UPDATE`,
+		`SELECT target_kind, target_id, recipient_person_id FROM audience_overrides WHERE recipient_person_id IN (?, ?) ORDER BY target_kind, target_id, recipient_person_id FOR UPDATE`,
+		`SELECT id FROM audience_reasons WHERE matching_person_id IN (?, ?) ORDER BY id FOR UPDATE`,
+	} {
+		if _, err := tx.NewRaw(query, sourceID, survivorID).Exec(ctx); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// PreviewPersonMerge reports active Attendance and Audience references affected by a merge.
+func PreviewPersonMerge(ctx context.Context, db bun.IDB, sourceID, survivorID uuid.UUID) (PersonMergeEffects, error) {
+	type attendanceReference struct {
+		MomentID, PersonID, ConfirmedByID uuid.UUID
+		Source                            string
+		ConfirmedAt                       time.Time
+	}
+	type overrideReference struct {
+		TargetKind            string
+		TargetID, RecipientID uuid.UUID
+		State                 string
+		UpdatedByID           uuid.UUID
+		UpdatedAt             time.Time
+	}
+	type reasonReference struct {
+		ID                                int64
+		TargetKind, Kind                  string
+		TargetID, RecipientID, MatchingID uuid.UUID
+	}
+	attendance := make([]attendanceReference, 0)
+	if err := db.NewRaw(`SELECT moment_id, person_id, source, confirmed_by_person_id AS confirmed_by_id, confirmed_at FROM attendance WHERE person_id IN (?, ?) ORDER BY moment_id, person_id`, sourceID, survivorID).Scan(ctx, &attendance); err != nil {
+		return PersonMergeEffects{}, err
+	}
+	overrides := make([]overrideReference, 0)
+	if err := db.NewRaw(`SELECT target_kind, target_id, recipient_person_id AS recipient_id, state, updated_by_person_id AS updated_by_id, updated_at FROM audience_overrides WHERE recipient_person_id IN (?, ?) ORDER BY target_kind, target_id, recipient_person_id`, sourceID, survivorID).Scan(ctx, &overrides); err != nil {
+		return PersonMergeEffects{}, err
+	}
+	reasons := make([]reasonReference, 0)
+	if err := db.NewRaw(`SELECT id, target_kind, target_id, recipient_person_id AS recipient_id, kind, matching_person_id AS matching_id FROM audience_reasons WHERE matching_person_id IN (?, ?) ORDER BY id`, sourceID, survivorID).Scan(ctx, &reasons); err != nil {
+		return PersonMergeEffects{}, err
+	}
+	effects := PersonMergeEffects{}
+	for _, reference := range attendance {
+		if reference.PersonID == sourceID {
+			effects.AttendanceEntriesMoved++
+		}
+	}
+	for _, reference := range overrides {
+		if reference.RecipientID == sourceID {
+			effects.AudienceOverridesMoved++
+		}
+	}
+	for _, reference := range reasons {
+		if reference.MatchingID == sourceID {
+			effects.AudienceReasonsMoved++
+		}
+	}
+	encoded, err := json.Marshal(struct {
+		Attendance []attendanceReference `json:"attendance"`
+		Overrides  []overrideReference   `json:"overrides"`
+		Reasons    []reasonReference     `json:"reasons"`
+	}{Attendance: attendance, Overrides: overrides, Reasons: reasons})
+	if err != nil {
+		return PersonMergeEffects{}, err
+	}
+	digest := sha256.Sum256(encoded)
+	effects.ReferenceFingerprint = hex.EncodeToString(digest[:])
+	return effects, nil
+}
+
+// MergePersonReferences moves active Attendance and Audience references to the surviving Person.
+// Approved snapshots and publication audit attribution remain attached to the original Person.
+func MergePersonReferences(ctx context.Context, tx bun.Tx, sourceID, survivorID uuid.UUID) (PersonMergeEffects, error) {
+	if sourceID == survivorID {
+		return PersonMergeEffects{}, ErrInvalid
+	}
+	if err := LockReferences(ctx, tx, sourceID, survivorID); err != nil {
+		return PersonMergeEffects{}, err
+	}
+	effects, err := PreviewPersonMerge(ctx, tx, sourceID, survivorID)
+	if err != nil {
+		return PersonMergeEffects{}, err
+	}
+	if _, err := tx.NewRaw(`INSERT INTO attendance (moment_id, person_id, source, confirmed_by_person_id, confirmed_at) SELECT moment_id, ?, source, confirmed_by_person_id, confirmed_at FROM attendance WHERE person_id = ? ON CONFLICT (moment_id, person_id) DO NOTHING`, survivorID, sourceID).Exec(ctx); err != nil {
+		return PersonMergeEffects{}, err
+	}
+	if _, err := tx.NewRaw(`DELETE FROM attendance WHERE person_id = ?`, sourceID).Exec(ctx); err != nil {
+		return PersonMergeEffects{}, err
+	}
+	if _, err := tx.NewRaw(`
+		INSERT INTO audience_overrides (target_kind, target_id, recipient_person_id, state, updated_by_person_id, updated_at)
+		SELECT target_kind, target_id, ?, state, updated_by_person_id, updated_at
+		FROM audience_overrides WHERE recipient_person_id = ?
+		ON CONFLICT (target_kind, target_id, recipient_person_id) DO UPDATE SET
+			state = CASE WHEN EXCLUDED.updated_at >= audience_overrides.updated_at THEN EXCLUDED.state ELSE audience_overrides.state END,
+			updated_by_person_id = CASE WHEN EXCLUDED.updated_at >= audience_overrides.updated_at THEN EXCLUDED.updated_by_person_id ELSE audience_overrides.updated_by_person_id END,
+			updated_at = GREATEST(EXCLUDED.updated_at, audience_overrides.updated_at)
+	`, survivorID, sourceID).Exec(ctx); err != nil {
+		return PersonMergeEffects{}, err
+	}
+	if _, err := tx.NewRaw(`DELETE FROM audience_overrides WHERE recipient_person_id = ?`, sourceID).Exec(ctx); err != nil {
+		return PersonMergeEffects{}, err
+	}
+	if _, err := tx.NewRaw(`
+		DELETE FROM audience_reasons AS source_reason
+		WHERE source_reason.matching_person_id = ?
+			AND EXISTS (
+				SELECT 1 FROM audience_reasons AS survivor_reason
+				WHERE survivor_reason.target_kind = source_reason.target_kind
+					AND survivor_reason.target_id = source_reason.target_id
+					AND survivor_reason.recipient_person_id = source_reason.recipient_person_id
+					AND survivor_reason.kind = source_reason.kind
+					AND survivor_reason.matching_person_id = ?
+			)
+	`, sourceID, survivorID).Exec(ctx); err != nil {
+		return PersonMergeEffects{}, err
+	}
+	if _, err := tx.NewRaw(`UPDATE audience_reasons SET matching_person_id = ? WHERE matching_person_id = ?`, survivorID, sourceID).Exec(ctx); err != nil {
+		return PersonMergeEffects{}, err
+	}
+	return effects, nil
 }
 
 func appendPublicationAudit(ctx context.Context, tx bun.Tx, actor setup.CuratorSession, t target, action string, metadata map[string]any) error {
