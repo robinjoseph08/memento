@@ -57,6 +57,35 @@ func TestCuratorRecoveryChangesOnlyEmailAndRevokesAllSessions(t *testing.T) {
 	require.NoError(t, f.db.NewRaw(`SELECT count(*) FROM push_subscriptions WHERE person_id = ? AND disabled_at IS NULL`, f.personID).Scan(context.Background(), &activePush))
 	assert.Zero(t, activeSessions)
 	assert.Zero(t, activePush)
+	err = f.service.CompleteRecovery(context.Background(), actor, f.personID, RecoveryCompleteRequest{RecoveryID: recoveryID.String(), Code: code})
+	assert.ErrorIs(t, err, ErrInvalidCode, "recovery proof must be single-use")
 	_, err = f.service.VerifySignIn(context.Background(), SignInVerifyRequest{ChallengeID: oldAddressChallenge, Code: "13572468", SessionType: "trusted"})
 	assert.ErrorIs(t, err, ErrInvalidCode, "recovery must invalidate codes sent to the unavailable mailbox")
+}
+
+func TestRecoveryCannotCrossAccessGenerationReplacement(t *testing.T) {
+	f := newFixture(t)
+	curatorID := uuid.New()
+	_, err := f.db.NewRaw(`INSERT INTO people (id, display_name, sort_name) VALUES (?, 'Robin', 'robin'); INSERT INTO person_roles (person_id, role) VALUES (?, 'curator')`, curatorID, curatorID).Exec(context.Background())
+	require.NoError(t, err)
+	recoveryID := uuid.New()
+	code := "24681357"
+	_, err = f.db.NewRaw(`INSERT INTO curator_recovery_requests (id, person_id, recipient_access_generation_id, new_email, new_normalized_email, code_hash, expires_at, created_by_person_id) VALUES (?, ?, ?, 'stale@example.com', 'stale@example.com', ?, ?, ?)`, recoveryID, f.personID, f.accessID, f.service.codeHash("recovery", recoveryID[:], code), f.now.Add(codeLifetime), curatorID).Exec(context.Background())
+	require.NoError(t, err)
+	newAccessID, newSessionID := uuid.New(), uuid.New()
+	var epoch []byte
+	require.NoError(t, f.db.NewRaw(`SELECT security_epoch FROM system_settings WHERE id = 1`).Scan(context.Background(), &epoch))
+	_, err = f.db.NewRaw(`UPDATE recipient_access_generations SET state = 'revoked', is_current = false, ended_at = now() WHERE id = ?; UPDATE recipient_emails SET is_current = false, ended_at = now() WHERE recipient_access_generation_id = ? AND is_current; INSERT INTO recipient_access_generations (id, person_id, generation, state, is_current, onboarding_completed_at) VALUES (?, ?, 2, 'completed', true, now()); INSERT INTO recipient_emails (id, recipient_access_generation_id, email, normalized_email) VALUES (?, ?, 'replacement@example.com', 'replacement@example.com'); INSERT INTO sessions (id, credential_hash, person_id, recipient_access_generation_id, security_epoch, session_type, idle_expires_at) VALUES (?, ?, ?, ?, ?, 'trusted', now() + interval '1 year'); INSERT INTO push_subscriptions (id, session_id, person_id, endpoint_hash) VALUES (?, ?, ?, ?)`, f.accessID, f.accessID, newAccessID, f.personID, uuid.New(), newAccessID, newSessionID, bytes.Repeat([]byte{0x61}, 32), f.personID, newAccessID, epoch, uuid.New(), newSessionID, f.personID, bytes.Repeat([]byte{0x62}, 32)).Exec(context.Background())
+	require.NoError(t, err)
+
+	err = f.service.CompleteRecovery(context.Background(), setup.CuratorSession{PersonID: curatorID, SessionID: f.sessionID}, f.personID, RecoveryCompleteRequest{RecoveryID: recoveryID.String(), Code: code})
+	assert.ErrorIs(t, err, ErrRecoveryNotFound)
+	var currentEmail string
+	var sessionActive, pushActive bool
+	require.NoError(t, f.db.NewRaw(`SELECT normalized_email FROM recipient_emails WHERE recipient_access_generation_id = ? AND is_current`, newAccessID).Scan(context.Background(), &currentEmail))
+	require.NoError(t, f.db.NewRaw(`SELECT revoked_at IS NULL FROM sessions WHERE id = ?`, newSessionID).Scan(context.Background(), &sessionActive))
+	require.NoError(t, f.db.NewRaw(`SELECT disabled_at IS NULL FROM push_subscriptions WHERE session_id = ?`, newSessionID).Scan(context.Background(), &pushActive))
+	assert.Equal(t, "replacement@example.com", currentEmail)
+	assert.True(t, sessionActive)
+	assert.True(t, pushActive)
 }

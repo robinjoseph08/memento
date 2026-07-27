@@ -102,6 +102,11 @@ type InvitationActionRequest struct {
 	InvitationID string `json:"invitation_id" validate:"required,uuid"`
 }
 
+// LifecycleActionRequest protects a Curator action from targeting a replacement generation.
+type LifecycleActionRequest struct {
+	AccessID string `json:"access_id" validate:"required,uuid"`
+}
+
 // TokenRequest exchanges a browser-held Invitation token without putting it in the API URL.
 type TokenRequest struct {
 	Token string `json:"token" validate:"required,len=64,hexadecimal"`
@@ -754,21 +759,21 @@ func (s *Service) CompleteOnboarding(ctx context.Context, actor setup.SessionAct
 }
 
 // Suspend reversibly blocks access while preserving the current generation and Audience history.
-func (s *Service) Suspend(ctx context.Context, actor setup.CuratorSession, personID uuid.UUID) (Recipient, error) {
-	return s.transition(ctx, actor, personID, "completed", "suspended", false, "recipient_suspended")
+func (s *Service) Suspend(ctx context.Context, actor setup.CuratorSession, personID, accessID uuid.UUID) (Recipient, error) {
+	return s.transition(ctx, actor, personID, accessID, "completed", "suspended", false, "recipient_suspended")
 }
 
 // Restore lifts a Suspension without changing the access generation.
-func (s *Service) Restore(ctx context.Context, actor setup.CuratorSession, personID uuid.UUID) (Recipient, error) {
-	return s.transition(ctx, actor, personID, "suspended", "completed", false, "recipient_suspension_lifted")
+func (s *Service) Restore(ctx context.Context, actor setup.CuratorSession, personID, accessID uuid.UUID) (Recipient, error) {
+	return s.transition(ctx, actor, personID, accessID, "suspended", "completed", false, "recipient_suspension_lifted")
 }
 
 // RevokeAccess permanently ends the current generation and invalidates its Sessions.
-func (s *Service) RevokeAccess(ctx context.Context, actor setup.CuratorSession, personID uuid.UUID) (Recipient, error) {
-	return s.transition(ctx, actor, personID, "", "revoked", true, "recipient_access_revoked")
+func (s *Service) RevokeAccess(ctx context.Context, actor setup.CuratorSession, personID, accessID uuid.UUID) (Recipient, error) {
+	return s.transition(ctx, actor, personID, accessID, "", "revoked", true, "recipient_access_revoked")
 }
 
-func (s *Service) transition(ctx context.Context, actor setup.CuratorSession, personID uuid.UUID, expected, next string, end bool, action string) (Recipient, error) {
+func (s *Service) transition(ctx context.Context, actor setup.CuratorSession, personID, expectedAccessID uuid.UUID, expected, next string, end bool, action string) (Recipient, error) {
 	var response Recipient
 	err := s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 		if err := lockActorAndRecipient(ctx, tx, actor.PersonID, personID); err != nil {
@@ -783,6 +788,9 @@ func (s *Service) transition(ctx context.Context, actor setup.CuratorSession, pe
 		}
 		if err != nil {
 			return err
+		}
+		if accessID != expectedAccessID {
+			return ErrLifecycleState
 		}
 		if curator {
 			return ErrCuratorLifecycle

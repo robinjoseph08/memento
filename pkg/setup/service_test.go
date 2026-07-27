@@ -66,6 +66,22 @@ func TestSetupRejectsInvalidInputBeforePersistence(t *testing.T) {
 	}
 }
 
+func TestDescribeUserAgentRecognizesIOSBrowserTokens(t *testing.T) {
+	tests := []struct {
+		userAgent string
+		browser   string
+	}{
+		{userAgent: "Mozilla/5.0 (iPhone) AppleWebKit/605.1.15 CriOS/126.0 Mobile/15E148 Safari/604.1", browser: "Chrome"},
+		{userAgent: "Mozilla/5.0 (iPhone) AppleWebKit/605.1.15 FxiOS/127.0 Mobile/15E148 Safari/605.1.15", browser: "Firefox"},
+		{userAgent: "Mozilla/5.0 (iPhone) AppleWebKit/605.1.15 EdgiOS/126.0 Mobile/15E148 Safari/605.1.15", browser: "Edge"},
+	}
+	for _, test := range tests {
+		browser, platform := describeUserAgent(test.userAgent)
+		require.Equal(t, test.browser, browser)
+		require.Equal(t, "iOS", platform)
+	}
+}
+
 func TestSetupFailsBeforePersistenceWhenSecureRandomnessIsUnavailable(t *testing.T) {
 	service := New(nil, nil, testSecurityConfig())
 	service.random = failingReader{}

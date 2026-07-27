@@ -701,11 +701,11 @@ func (s *Service) sessionMetadata(ctx context.Context) (browser, platform, clien
 func describeUserAgent(value string) (string, string) {
 	browser, platform := "Unknown browser", "Unknown platform"
 	switch {
-	case strings.Contains(value, "Firefox/"):
+	case strings.Contains(value, "Firefox/"), strings.Contains(value, "FxiOS/"):
 		browser = "Firefox"
-	case strings.Contains(value, "Edg/"):
+	case strings.Contains(value, "Edg/"), strings.Contains(value, "EdgiOS/"):
 		browser = "Edge"
-	case strings.Contains(value, "Chrome/"):
+	case strings.Contains(value, "Chrome/"), strings.Contains(value, "CriOS/"):
 		browser = "Chrome"
 	case strings.Contains(value, "Safari/"):
 		browser = "Safari"

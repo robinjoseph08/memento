@@ -142,6 +142,7 @@ function SignInFlow({
   const [challengeID, setChallengeID] = useState("");
   const [code, setCode] = useState("");
   const [sessionType, setSessionType] = useState("trusted");
+  const [verified, setVerified] = useState(false);
   const requestCode = useMutation({
     mutationFn: () =>
       apiJSON<SignInStartResponse>("/api/auth/sign-in/request", {
@@ -150,15 +151,19 @@ function SignInFlow({
       }),
     onSuccess: (response) => setChallengeID(response.challenge_id),
   });
+  const bootstrap = useMutation({
+    mutationFn: () => apiJSON<SessionResponse>("/api/session"),
+    onSuccess: onComplete,
+  });
   const verify = useMutation({
     mutationFn: (request: SignInVerifyRequest) =>
       apiJSON("/api/auth/sign-in/verify", {
         method: "POST",
         body: JSON.stringify(request),
       }),
-    onSuccess: async () => {
-      const session = await apiJSON<SessionResponse>("/api/session");
-      onComplete(session);
+    onSuccess: () => {
+      setVerified(true);
+      bootstrap.mutate();
     },
   });
   return (
@@ -178,8 +183,8 @@ function SignInFlow({
           }}
         >
           <p className="form-intro">
-            Enter your login email. Memento always returns the same response and
-            sends a code only when sign-in is available.
+            Enter your login email. Memento does not reveal whether an address
+            is eligible and sends a code only when sign-in is available.
           </p>
           <label>
             Login email
@@ -196,6 +201,21 @@ function SignInFlow({
             {requestCode.isPending ? "Requesting…" : "Send sign-in code"}
           </button>
         </form>
+      ) : verified ? (
+        <div className="setup-form">
+          <p className="form-intro">
+            Your code was accepted. Loading your Session does not reuse the
+            single-use code.
+          </p>
+          <ErrorMessage error={bootstrap.error} />
+          {bootstrap.isError ? (
+            <button onClick={() => bootstrap.mutate()} type="button">
+              Retry loading Session
+            </button>
+          ) : (
+            <p role="status">Loading Session…</p>
+          )}
+        </div>
       ) : (
         <form
           className="setup-form"
@@ -1228,7 +1248,11 @@ function SessionManager({
         only when the operator configured a local GeoIP database.
       </p>
       {sessions.data?.sessions.map((item) => (
-        <article className="session-row" key={item.id}>
+        <article
+          aria-label={`Session ${item.label || `${item.browser} on ${item.platform}`}`}
+          className="session-row"
+          key={item.id}
+        >
           <div>
             <strong>
               {item.label || `${item.browser} on ${item.platform}`}
@@ -1246,6 +1270,7 @@ function SessionManager({
           <label>
             Session name
             <input
+              aria-label={`Session name for ${item.label || `${item.browser} on ${item.platform}`}`}
               onChange={(event) =>
                 setLabels((current) => ({
                   ...current,
@@ -1256,6 +1281,7 @@ function SessionManager({
             />
           </label>
           <button
+            aria-label={`Save name for ${item.label || `${item.browser} on ${item.platform}`}`}
             disabled={rename.isPending || item.status !== "active"}
             onClick={() =>
               rename.mutate({
@@ -1268,6 +1294,7 @@ function SessionManager({
             Save name
           </button>
           <button
+            aria-label={`${item.current ? "Sign out" : "Revoke"} ${item.label || `${item.browser} on ${item.platform}`}`}
             className="danger-button"
             disabled={revoke.isPending || item.status !== "active"}
             onClick={() => revoke.mutate(item.id)}
@@ -1277,7 +1304,11 @@ function SessionManager({
           </button>
         </article>
       ))}
-      <ErrorMessage error={sessions.error ?? rename.error ?? revoke.error} />
+      <ErrorMessage
+        error={
+          sessions.error ?? rename.error ?? revoke.error ?? signOutAll.error
+        }
+      />
       <button
         className="danger-button"
         disabled={signOutAll.isPending}

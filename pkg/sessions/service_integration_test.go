@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"testing"
 	"time"
 
@@ -139,6 +140,73 @@ func TestFiveFailedSignInAttemptsConsumeTheChallengeBudget(t *testing.T) {
 	assert.Equal(t, 5, attempts)
 }
 
+func TestSignInExpiryBoundaryAndConcurrentSingleUse(t *testing.T) {
+	t.Run("expires at ten minutes", func(t *testing.T) {
+		f := newFixture(t)
+		challenge := insertChallenge(t, f, 0x49, "12345678")
+		f.service.now = func() time.Time { return f.now.Add(codeLifetime) }
+		_, err := f.service.VerifySignIn(context.Background(), SignInVerifyRequest{ChallengeID: challenge, Code: "12345678", SessionType: "trusted"})
+		assert.ErrorIs(t, err, ErrInvalidCode)
+		var sessions int
+		require.NoError(t, f.db.NewRaw(`SELECT count(*) FROM sessions`).Scan(context.Background(), &sessions))
+		assert.Equal(t, 1, sessions)
+	})
+
+	t.Run("one concurrent verification wins", func(t *testing.T) {
+		f := newFixture(t)
+		challenge := insertChallenge(t, f, 0x4a, "12345678")
+		results := make(chan error, 2)
+		for range 2 {
+			go func() {
+				_, err := f.service.VerifySignIn(context.Background(), SignInVerifyRequest{ChallengeID: challenge, Code: "12345678", SessionType: "trusted"})
+				results <- err
+			}()
+		}
+		successes, rejected := 0, 0
+		for range 2 {
+			err := <-results
+			if err == nil {
+				successes++
+			} else if errors.Is(err, ErrInvalidCode) {
+				rejected++
+			}
+		}
+		assert.Equal(t, 1, successes)
+		assert.Equal(t, 1, rejected)
+		var sessions int
+		require.NoError(t, f.db.NewRaw(`SELECT count(*) FROM sessions`).Scan(context.Background(), &sessions))
+		assert.Equal(t, 2, sessions)
+	})
+}
+
+func TestSignInStartDoesNotDeliverForIneligibleAccess(t *testing.T) {
+	tests := []struct {
+		name       string
+		invalidate string
+	}{
+		{name: "suspended", invalidate: `UPDATE recipient_access_generations SET state = 'suspended'`},
+		{name: "revoked", invalidate: `UPDATE recipient_access_generations SET state = 'revoked', is_current = false, ended_at = now()`},
+		{name: "noncurrent", invalidate: `UPDATE recipient_access_generations SET is_current = false`},
+		{name: "archived Person", invalidate: `UPDATE people SET archived_at = now() WHERE display_name = 'Alex'`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			f := newFixture(t)
+			_, err := f.db.ExecContext(context.Background(), test.invalidate)
+			require.NoError(t, err)
+			f.service.random = bytes.NewReader(bytes.Repeat([]byte{0x4b}, 128))
+			response, err := f.service.RequestSignIn(context.Background(), SignInRequest{Email: "alex@example.com"})
+			require.NoError(t, err)
+			assert.Equal(t, "accepted", response.Status)
+			var challenges, deliveries int
+			require.NoError(t, f.db.NewRaw(`SELECT count(*) FROM sign_in_challenges`).Scan(context.Background(), &challenges))
+			require.NoError(t, f.db.NewRaw(`SELECT count(*) FROM email_deliveries WHERE kind = 'sign_in_code'`).Scan(context.Background(), &deliveries))
+			assert.Zero(t, challenges)
+			assert.Zero(t, deliveries)
+		})
+	}
+}
+
 func TestSessionInspectionRenameRevocationAndSignOutAllDisablePush(t *testing.T) {
 	f := newFixture(t)
 	actor, err := f.auth.AuthorizeSession(context.Background(), f.credential, f.csrf, true)
@@ -148,22 +216,62 @@ func TestSessionInspectionRenameRevocationAndSignOutAllDisablePush(t *testing.T)
 	hash := sha256.Sum256(raw)
 	var epoch []byte
 	require.NoError(t, f.db.NewRaw(`SELECT security_epoch FROM system_settings WHERE id = 1`).Scan(context.Background(), &epoch))
-	_, err = f.db.NewRaw(`INSERT INTO sessions (id, credential_hash, person_id, recipient_access_generation_id, security_epoch, session_type, absolute_expires_at) VALUES (?, ?, ?, ?, ?, 'public', ?); INSERT INTO push_subscriptions (id, session_id, person_id, endpoint_hash) VALUES (?, ?, ?, ?)`, secondID, hash[:], f.personID, f.accessID, epoch, f.now.Add(12*time.Hour), uuid.New(), f.sessionID, f.personID, bytes.Repeat([]byte{0x77}, 32)).Exec(context.Background())
+	_, err = f.db.NewRaw(`INSERT INTO sessions (id, credential_hash, person_id, recipient_access_generation_id, security_epoch, session_type, absolute_expires_at) VALUES (?, ?, ?, ?, ?, 'public', ?); INSERT INTO push_subscriptions (id, session_id, person_id, endpoint_hash) VALUES (?, ?, ?, ?)`, secondID, hash[:], f.personID, f.accessID, epoch, f.now.Add(12*time.Hour), uuid.New(), secondID, f.personID, bytes.Repeat([]byte{0x77}, 32)).Exec(context.Background())
 	require.NoError(t, err)
 	list, err := f.service.ListSelf(context.Background(), actor)
 	require.NoError(t, err)
 	require.Len(t, list.Sessions, 2)
 	assert.True(t, list.Sessions[0].Current || list.Sessions[1].Current)
+	for _, item := range list.Sessions {
+		if item.ID == secondID.String() {
+			assert.Equal(t, "public", item.SessionType)
+			assert.Equal(t, "active", item.Status)
+			assert.False(t, item.PushAllowed)
+			assert.Equal(t, f.now.Add(12*time.Hour), item.ExpiresAt.UTC())
+		}
+	}
 	require.NoError(t, f.service.Rename(context.Background(), actor, secondID, RenameRequest{Label: "Shared laptop"}))
+	var label string
+	require.NoError(t, f.db.NewRaw(`SELECT label FROM sessions WHERE id = ?`, secondID).Scan(context.Background(), &label))
+	assert.Equal(t, "Shared laptop", label)
 	current, err := f.service.Revoke(context.Background(), actor, secondID)
 	require.NoError(t, err)
 	assert.False(t, current)
+	var revoked, pushDisabled bool
+	require.NoError(t, f.db.NewRaw(`SELECT revoked_at IS NOT NULL FROM sessions WHERE id = ?`, secondID).Scan(context.Background(), &revoked))
+	require.NoError(t, f.db.NewRaw(`SELECT disabled_at IS NOT NULL FROM push_subscriptions WHERE session_id = ?`, secondID).Scan(context.Background(), &pushDisabled))
+	assert.True(t, revoked)
+	assert.True(t, pushDisabled)
 	require.NoError(t, f.service.SignOutAll(context.Background(), actor))
 	var activeSessions, activePush int
 	require.NoError(t, f.db.NewRaw(`SELECT count(*) FROM sessions WHERE revoked_at IS NULL`).Scan(context.Background(), &activeSessions))
 	require.NoError(t, f.db.NewRaw(`SELECT count(*) FROM push_subscriptions WHERE disabled_at IS NULL`).Scan(context.Background(), &activePush))
 	assert.Zero(t, activeSessions)
 	assert.Zero(t, activePush)
+}
+
+func TestSessionMutationsCannotCrossRecipientBoundary(t *testing.T) {
+	f := newFixture(t)
+	actor, err := f.auth.AuthorizeSession(context.Background(), f.credential, f.csrf, true)
+	require.NoError(t, err)
+	otherPersonID, otherAccessID, otherSessionID := uuid.New(), uuid.New(), uuid.New()
+	var epoch []byte
+	require.NoError(t, f.db.NewRaw(`SELECT security_epoch FROM system_settings WHERE id = 1`).Scan(context.Background(), &epoch))
+	_, err = f.db.NewRaw(`INSERT INTO people (id, display_name, sort_name) VALUES (?, 'Other', 'other'); INSERT INTO recipient_access_generations (id, person_id, generation, state, is_current, onboarding_completed_at) VALUES (?, ?, 1, 'completed', true, now()); INSERT INTO sessions (id, credential_hash, person_id, recipient_access_generation_id, security_epoch, session_type, idle_expires_at) VALUES (?, ?, ?, ?, ?, 'trusted', now() + interval '1 year')`, otherPersonID, otherAccessID, otherPersonID, otherSessionID, bytes.Repeat([]byte{0x4c}, 32), otherPersonID, otherAccessID, epoch).Exec(context.Background())
+	require.NoError(t, err)
+
+	list, err := f.service.ListSelf(context.Background(), actor)
+	require.NoError(t, err)
+	require.Len(t, list.Sessions, 1)
+	assert.Equal(t, f.sessionID.String(), list.Sessions[0].ID)
+	assert.ErrorIs(t, f.service.Rename(context.Background(), actor, otherSessionID, RenameRequest{Label: "Mine"}), ErrInvalidSession)
+	_, err = f.service.Revoke(context.Background(), actor, otherSessionID)
+	assert.ErrorIs(t, err, ErrInvalidSession)
+	var label string
+	var active bool
+	require.NoError(t, f.db.NewRaw(`SELECT label, revoked_at IS NULL FROM sessions WHERE id = ?`, otherSessionID).Scan(context.Background(), &label, &active))
+	assert.Empty(t, label)
+	assert.True(t, active)
 }
 
 func TestEmailChangeStartQueuesFreshProofsToBothAddresses(t *testing.T) {
@@ -185,6 +293,13 @@ func TestSignedInEmailChangeRequiresBothCodesAndPreservesIdentity(t *testing.T) 
 	actor, err := f.auth.AuthorizeSession(context.Background(), f.credential, f.csrf, true)
 	require.NoError(t, err)
 	oldAddressChallenge := insertChallenge(t, f, 0x46, "87654321")
+	siblingID := uuid.New()
+	siblingRaw := bytes.Repeat([]byte{0x47}, 32)
+	siblingHash := sha256.Sum256(siblingRaw)
+	var epoch []byte
+	require.NoError(t, f.db.NewRaw(`SELECT security_epoch FROM system_settings WHERE id = 1`).Scan(context.Background(), &epoch))
+	_, err = f.db.NewRaw(`INSERT INTO sessions (id, credential_hash, person_id, recipient_access_generation_id, security_epoch, session_type, idle_expires_at) VALUES (?, ?, ?, ?, ?, 'trusted', ?); INSERT INTO push_subscriptions (id, session_id, person_id, endpoint_hash) VALUES (?, ?, ?, ?)`, siblingID, siblingHash[:], f.personID, f.accessID, epoch, f.now.Add(365*24*time.Hour), uuid.New(), siblingID, f.personID, bytes.Repeat([]byte{0x48}, 32)).Exec(context.Background())
+	require.NoError(t, err)
 	requestID := uuid.New()
 	oldCode, newCode := "11112222", "33334444"
 	_, err = f.db.NewRaw(`INSERT INTO email_change_requests (id, person_id, recipient_access_generation_id, session_id, old_email, new_email, new_normalized_email, old_code_hash, new_code_hash, expires_at) VALUES (?, ?, ?, ?, 'alex@example.com', 'new@example.com', 'new@example.com', ?, ?, ?)`, requestID, f.personID, f.accessID, f.sessionID, f.service.codeHash("email-change-old", requestID[:], oldCode), f.service.codeHash("email-change-new", requestID[:], newCode), f.now.Add(10*time.Minute)).Exec(context.Background())
@@ -200,6 +315,17 @@ func TestSignedInEmailChangeRequiresBothCodesAndPreservesIdentity(t *testing.T) 
 	assert.Equal(t, f.personID, personID)
 	assert.Equal(t, f.accessID, accessID)
 	assert.Equal(t, "new@example.com", email)
+	_, err = f.auth.AuthorizeSession(context.Background(), f.credential, result.CSRFToken, false)
+	assert.ErrorIs(t, err, setup.ErrUnauthenticated, "email change must retire the previous credential")
+	_, err = f.auth.AuthorizeSession(context.Background(), result.session.Credential, result.CSRFToken, false)
+	require.NoError(t, err)
+	var siblingRevoked, siblingPushDisabled bool
+	require.NoError(t, f.db.NewRaw(`SELECT revoked_at IS NOT NULL FROM sessions WHERE id = ?`, siblingID).Scan(context.Background(), &siblingRevoked))
+	require.NoError(t, f.db.NewRaw(`SELECT disabled_at IS NOT NULL FROM push_subscriptions WHERE session_id = ?`, siblingID).Scan(context.Background(), &siblingPushDisabled))
+	assert.True(t, siblingRevoked)
+	assert.True(t, siblingPushDisabled)
+	_, err = f.service.CompleteEmailChange(context.Background(), actor, EmailChangeCompleteRequest{RequestID: requestID.String(), OldCode: oldCode, NewCode: newCode})
+	assert.ErrorIs(t, err, ErrInvalidCode, "email-change proofs must be single-use")
 	_, err = f.service.VerifySignIn(context.Background(), SignInVerifyRequest{ChallengeID: oldAddressChallenge, Code: "87654321", SessionType: "trusted"})
 	assert.ErrorIs(t, err, ErrInvalidCode, "changing email must invalidate codes sent to the old mailbox")
 }

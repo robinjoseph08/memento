@@ -565,7 +565,18 @@ func (s *Service) CompleteRecovery(ctx context.Context, actor setup.CuratorSessi
 		var attempts int
 		var expiresAt time.Time
 		var consumedAt *time.Time
-		err := tx.NewRaw(`SELECT recipient_access_generation_id, new_email, new_normalized_email, code_hash, attempts, expires_at, consumed_at FROM curator_recovery_requests WHERE id = ? AND person_id = ? FOR UPDATE`, recoveryID, personID).Scan(ctx, &accessID, &email, &normalized, &codeHash, &attempts, &expiresAt, &consumedAt)
+		err := tx.NewRaw(`
+			SELECT request.recipient_access_generation_id, request.new_email, request.new_normalized_email,
+			       request.code_hash, request.attempts, request.expires_at, request.consumed_at
+			FROM curator_recovery_requests AS request
+			JOIN recipient_access_generations AS access
+			  ON access.id = request.recipient_access_generation_id
+			 AND access.person_id = request.person_id
+			 AND access.is_current
+			 AND access.state IN ('completed', 'suspended')
+			WHERE request.id = ? AND request.person_id = ?
+			FOR UPDATE OF request, access
+		`, recoveryID, personID).Scan(ctx, &accessID, &email, &normalized, &codeHash, &attempts, &expiresAt, &consumedAt)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrRecoveryNotFound
 		}
@@ -597,10 +608,10 @@ func (s *Service) CompleteRecovery(ctx context.Context, actor setup.CuratorSessi
 		if _, err := tx.NewRaw(`UPDATE sign_in_challenges SET consumed_at = ? WHERE recipient_access_generation_id = ? AND consumed_at IS NULL`, now, accessID).Exec(ctx); err != nil {
 			return err
 		}
-		if _, err := tx.NewRaw(`UPDATE sessions SET revoked_at = ? WHERE person_id = ? AND revoked_at IS NULL`, now, personID).Exec(ctx); err != nil {
+		if _, err := tx.NewRaw(`UPDATE sessions SET revoked_at = ? WHERE recipient_access_generation_id = ? AND revoked_at IS NULL`, now, accessID).Exec(ctx); err != nil {
 			return err
 		}
-		if _, err := tx.NewRaw(`UPDATE push_subscriptions SET disabled_at = ? WHERE person_id = ? AND disabled_at IS NULL`, now, personID).Exec(ctx); err != nil {
+		if _, err := tx.NewRaw(`UPDATE push_subscriptions AS push SET disabled_at = ? WHERE push.person_id = ? AND push.disabled_at IS NULL AND EXISTS (SELECT 1 FROM sessions AS session WHERE session.id = push.session_id AND session.recipient_access_generation_id = ?)`, now, personID, accessID).Exec(ctx); err != nil {
 			return err
 		}
 		if _, err := tx.NewRaw(`UPDATE curator_recovery_requests SET consumed_at = ? WHERE id = ?`, now, recoveryID).Exec(ctx); err != nil {

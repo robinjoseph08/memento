@@ -65,6 +65,8 @@ test("signs in with an eight-digit code and keeps Public-computer warnings promi
         signedIn = true;
         return Promise.resolve(json({ status: "signed_in" }));
       }
+      if (path.startsWith("/api/sessions/") && init?.method === "PATCH")
+        return Promise.resolve(new Response(null, { status: 204 }));
       if (path === "/api/sessions")
         return Promise.resolve(
           json({
@@ -123,8 +125,25 @@ test("signs in with an eight-digit code and keeps Public-computer warnings promi
   fireEvent.click(screen.getByText("Sessions and login email"));
   expect(await screen.findByText("Push unavailable")).toBeVisible();
   expect(
-    screen.getByRole("button", { name: "Sign out this browser" }),
+    screen.getByRole("button", { name: "Sign out Firefox on Linux" }),
   ).toBeVisible();
+  fireEvent.change(screen.getByLabelText("Session name for Firefox on Linux"), {
+    target: { value: "Shared laptop" },
+  });
+  fireEvent.click(
+    screen.getByRole("button", { name: "Save name for Firefox on Linux" }),
+  );
+  await vi.waitFor(() =>
+    expect(
+      requests.some(
+        ({ path, init }) =>
+          path === "/api/sessions/11111111-1111-4111-8111-111111111111" &&
+          init?.method === "PATCH" &&
+          (JSON.parse(init.body as string) as { label: string }).label ===
+            "Shared laptop",
+      ),
+    ).toBe(true),
+  );
   const verify = requests.find(
     ({ path }) => path === "/api/auth/sign-in/verify",
   );
@@ -133,4 +152,83 @@ test("signs in with an eight-digit code and keeps Public-computer warnings promi
     code: "12345678",
     session_type: "public",
   });
+});
+
+test("retries Session bootstrap without reusing an accepted sign-in code", async () => {
+  let signedIn = false;
+  let bootstrapFailures = 1;
+  let verificationCalls = 0;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) => {
+      const path =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.href
+            : input.url;
+      if (path === "/api/setup")
+        return Promise.resolve(json({ error: { message: "not found" } }, 404));
+      if (path === "/api/session") {
+        if (!signedIn)
+          return Promise.resolve(json({ error: { message: "sign in" } }, 401));
+        if (bootstrapFailures > 0) {
+          bootstrapFailures -= 1;
+          return Promise.resolve(
+            json(
+              { error: { message: "Session temporarily unavailable" } },
+              503,
+            ),
+          );
+        }
+        return Promise.resolve(
+          json({
+            display_name: "Alex",
+            session_type: "trusted",
+            csrf_token: "c".repeat(64),
+            curator: false,
+            onboarding_required: false,
+          }),
+        );
+      }
+      if (path === "/api/auth/sign-in/request")
+        return Promise.resolve(
+          json({ challenge_id: "a".repeat(64), status: "accepted" }, 202),
+        );
+      if (path === "/api/auth/sign-in/verify") {
+        verificationCalls += 1;
+        signedIn = true;
+        return Promise.resolve(json({ status: "signed_in" }));
+      }
+      if (path === "/api/sessions")
+        return Promise.resolve(json({ sessions: [] }));
+      if (path === "/api/me/interest-list")
+        return Promise.resolve(
+          json({
+            recipient: { id: "1", display_name: "Alex", sort_name: "alex" },
+            version: 0,
+            entries: [],
+            history: [],
+          }),
+        );
+      if (path.startsWith("/api/me/people?"))
+        return Promise.resolve(json({ people: [] }));
+      return Promise.reject(new Error(`Unexpected request: ${path}`));
+    }),
+  );
+
+  renderApp();
+  fireEvent.change(await screen.findByLabelText("Login email"), {
+    target: { value: "alex@example.com" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Send sign-in code" }));
+  fireEvent.change(await screen.findByLabelText("Sign-in code"), {
+    target: { value: "12345678" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Verify and sign in" }));
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Retry loading Session" }),
+  );
+  expect(await screen.findByText("Your Interest list")).toBeVisible();
+  expect(verificationCalls).toBe(1);
 });

@@ -22,6 +22,7 @@ type limiter struct {
 	secret              []byte
 	entries             map[string]rateEntry
 	now                 func() time.Time
+	lastCleanup         time.Time
 }
 
 func newLimiter(cfg config.SecurityConfig) *limiter {
@@ -53,6 +54,14 @@ func (l *limiter) allow(ip, email string) bool {
 	now := l.now().UTC()
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if l.lastCleanup.IsZero() || now.Sub(l.lastCleanup) >= l.window {
+		for key, entry := range l.entries {
+			if now.Sub(entry.started) >= l.window {
+				delete(l.entries, key)
+			}
+		}
+		l.lastCleanup = now
+	}
 	for _, value := range keys {
 		entry := l.entries[value.key]
 		if entry.started.IsZero() || now.Sub(entry.started) >= l.window {

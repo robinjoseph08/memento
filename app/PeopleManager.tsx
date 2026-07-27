@@ -550,6 +550,7 @@ function RecipientControls({
   session: SessionResponse;
 }) {
   const queryClient = useQueryClient();
+  const isCurator = person.roles.includes("curator");
   const [email, setEmail] = useState("");
   const [recoveryEmail, setRecoveryEmail] = useState("");
   const [recoveryCode, setRecoveryCode] = useState("");
@@ -564,6 +565,9 @@ function RecipientControls({
   async function refresh() {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ["recipient", person.id] }),
+      queryClient.invalidateQueries({
+        queryKey: ["recipient-sessions", person.id],
+      }),
       queryClient.invalidateQueries({ queryKey: ["people"] }),
     ]);
   }
@@ -578,10 +582,17 @@ function RecipientControls({
     onSuccess: refresh,
   });
   const lifecycleAction = useMutation({
-    mutationFn: (action: "suspend" | "restore" | "revoke") =>
+    mutationFn: ({
+      action,
+      accessID,
+    }: {
+      action: "suspend" | "restore" | "revoke";
+      accessID: string;
+    }) =>
       apiJSON<Recipient>(`/api/recipients/${person.id}/${action}`, {
         method: "POST",
         headers: { "X-Memento-CSRF": session.csrf_token },
+        body: JSON.stringify({ access_id: accessID }),
       }),
     onSuccess: refresh,
   });
@@ -706,31 +717,59 @@ function RecipientControls({
               Create and send Invitation
             </button>
           ) : null}
-          {current.access.state === "completed" ? (
+          {isCurator ? (
+            <p>
+              Curator access cannot be suspended, revoked, or recovered here.
+              Use signed-in email change for Curator identity changes.
+            </p>
+          ) : null}
+          {!isCurator && current.access.state === "completed" ? (
             <button
               disabled={lifecycleAction.isPending}
-              onClick={() => lifecycleAction.mutate("suspend")}
+              onClick={() =>
+                lifecycleAction.mutate({
+                  action: "suspend",
+                  accessID: current.access.id,
+                })
+              }
               type="button"
             >
               Suspend Recipient access
             </button>
           ) : null}
-          {current.access.state === "suspended" ? (
+          {!isCurator && current.access.state === "suspended" ? (
             <button
               disabled={lifecycleAction.isPending}
-              onClick={() => lifecycleAction.mutate("restore")}
+              onClick={() =>
+                lifecycleAction.mutate({
+                  action: "restore",
+                  accessID: current.access.id,
+                })
+              }
               type="button"
             >
               Lift Suspension
             </button>
           ) : null}
-          {["pending", "onboarding", "completed", "suspended"].includes(
+          {!isCurator &&
+          ["pending", "onboarding", "completed", "suspended"].includes(
             current.access.state,
           ) ? (
             <button
               className="danger-button"
               disabled={lifecycleAction.isPending}
-              onClick={() => lifecycleAction.mutate("revoke")}
+              onClick={() => {
+                if (
+                  window.confirm(
+                    `Revoke access generation ${current.access.generation} for ${person.display_name}? Every Session will be invalidated and reinvitation will create an isolated generation.`,
+                  )
+                ) {
+                  lifecycleAction.mutate({
+                    action: "revoke",
+                    accessID: current.access.id,
+                  });
+                }
+              }}
               type="button"
             >
               Revoke Recipient access generation
@@ -750,7 +789,8 @@ function RecipientControls({
               ))}
             </details>
           ) : null}
-          {["completed", "suspended"].includes(current.access.state) ? (
+          {!isCurator &&
+          ["completed", "suspended"].includes(current.access.state) ? (
             <div className="recipient-recovery">
               <h4>Curator email recovery</h4>
               {!recovery ? (

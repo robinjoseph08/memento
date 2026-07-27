@@ -139,7 +139,7 @@ func (h *Handler) RevokeAccess(c echo.Context) error {
 	return h.lifecycleAction(c, h.service.RevokeAccess)
 }
 
-type lifecycleAction func(context.Context, setup.CuratorSession, uuid.UUID) (Recipient, error)
+type lifecycleAction func(context.Context, setup.CuratorSession, uuid.UUID, uuid.UUID) (Recipient, error)
 
 func (h *Handler) lifecycleAction(c echo.Context, action lifecycleAction) error {
 	actor, err := h.authorize(c, true)
@@ -150,7 +150,15 @@ func (h *Handler) lifecycleAction(c echo.Context, action lifecycleAction) error 
 	if err != nil {
 		return err
 	}
-	response, err := action(h.requestContext(c), actor, id)
+	var request LifecycleActionRequest
+	if err := bindJSON(c, &request); err != nil {
+		return err
+	}
+	accessID, err := uuid.Parse(request.AccessID)
+	if err != nil || accessID == uuid.Nil {
+		return errcodes.ValidationError("Choose a valid Recipient access generation.")
+	}
+	response, err := action(h.requestContext(c), actor, id, accessID)
 	if err != nil {
 		return recipientError(err)
 	}

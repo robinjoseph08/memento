@@ -18,4 +18,5 @@ func TestSignInLimiterUsesBothNormalizedEmailAndIP(t *testing.T) {
 	assert.False(t, limiter.allow("192.0.2.1", "third@example.com"), "the IP dimension must apply across identities")
 	now = now.Add(15 * time.Minute)
 	assert.True(t, limiter.allow("192.0.2.1", "alex@example.com"))
+	assert.Len(t, limiter.entries, 2, "expired keys must be removed instead of accumulating for the process lifetime")
 }
