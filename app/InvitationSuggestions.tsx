@@ -327,7 +327,10 @@ function CuratorSuggestionCard({
           <label>
             Search current People
             <input
-              onChange={(event) => setPersonSearch(event.target.value)}
+              onChange={(event) => {
+                setPersonSearch(event.target.value);
+                setPersonID("");
+              }}
               placeholder="Search by display or sort name"
               value={personSearch}
             />

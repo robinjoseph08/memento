@@ -270,6 +270,14 @@ describe("InvitationSuggestions", () => {
     });
     expect(acceptButton).toBeDisabled();
     fireEvent.change(screen.getByLabelText("Match an existing Person"), {
+      target: { value: "55555555-5555-4555-8555-555555555555" },
+    });
+    expect(acceptButton).toBeEnabled();
+    fireEvent.change(screen.getByLabelText("Search current People"), {
+      target: { value: "Taylor" },
+    });
+    expect(acceptButton).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Match an existing Person"), {
       target: { value: "44444444-4444-4444-8444-444444444444" },
     });
     expect(acceptButton).toBeEnabled();
