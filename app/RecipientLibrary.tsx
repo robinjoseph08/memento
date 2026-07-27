@@ -202,7 +202,7 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
 
   return (
     <section aria-label="Recipient library" className="recipient-library">
-      <aside aria-label="Library navigation" className="library-rail">
+      <nav aria-label="Library navigation" className="library-rail">
         <div className="library-brand">Memento</div>
         {(["photos", "events", "favorites"] as Destination[]).map((item) => (
           <button
@@ -219,7 +219,7 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
             {item[0].toUpperCase() + item.slice(1)}
           </button>
         ))}
-      </aside>
+      </nav>
       <div className="library-content">
         {openedEvent ? (
           <>
@@ -236,7 +236,10 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
                 <p>{event.data.pages[0].description}</p>
               ) : null}
               {event.data?.pages[0] ? (
-                <span>{event.data.pages[0].media_count} items</span>
+                <span>
+                  {event.data.pages[0].media_count}{" "}
+                  {event.data.pages[0].media_count === 1 ? "item" : "items"}
+                </span>
               ) : null}
             </header>
             <LibraryError error={event.error} />

@@ -139,6 +139,9 @@ test("lands on Photos with durable New for you and real-ratio authorized thumbna
 
   expect(await screen.findByRole("heading", { name: "Photos" })).toBeVisible();
   expect(
+    screen.getAllByRole("navigation", { name: "Library navigation" }),
+  ).toHaveLength(2);
+  expect(
     await screen.findByRole("heading", { name: "New for you" }),
   ).toBeVisible();
   const image = await screen.findByAltText("Photo 1 from July 2026");
@@ -163,6 +166,8 @@ test("lands on Photos with durable New for you and real-ratio authorized thumbna
 
   fireEvent.click(newEvent);
   await screen.findByRole("heading", { name: "Family weekend" });
+  expect(await screen.findByText("1 item")).toBeVisible();
+  expect(screen.queryByText("1 items")).not.toBeInTheDocument();
   await waitFor(() =>
     expect(
       requests.find(({ path }) => path.endsWith("publication-1/seen"))?.init,
