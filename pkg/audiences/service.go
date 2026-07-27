@@ -382,9 +382,39 @@ func (s *Service) Approve(ctx context.Context, actor setup.CuratorSession, kind 
 }
 
 func lockEligibleProposalRecipients(ctx context.Context, tx bun.Tx, t target) (int, error) {
-	var includedCount int
-	if err := tx.NewRaw(`SELECT count(*) FROM audience_proposals WHERE target_kind = ? AND target_id = ? AND included`, t.kind, t.id).Scan(ctx, &includedCount); err != nil {
+	type includedProposal struct {
+		RecipientID uuid.UUID `bun:"recipient_id"`
+		AccessID    uuid.UUID `bun:"access_id"`
+	}
+	var included []includedProposal
+	if err := tx.NewRaw(`
+		SELECT recipient_person_id AS recipient_id, recipient_access_generation_id AS access_id
+		FROM audience_proposals
+		WHERE target_kind = ? AND target_id = ? AND included
+		ORDER BY recipient_person_id
+	`, t.kind, t.id).Scan(ctx, &included); err != nil {
 		return 0, err
+	}
+	if len(included) == 0 {
+		return 0, nil
+	}
+	recipientIDs := make([]uuid.UUID, 0, len(included))
+	accessIDs := make([]uuid.UUID, 0, len(included))
+	for _, proposal := range included {
+		recipientIDs = append(recipientIDs, proposal.RecipientID)
+		accessIDs = append(accessIDs, proposal.AccessID)
+	}
+	for _, lock := range []struct {
+		query string
+		ids   []uuid.UUID
+	}{
+		{`SELECT id FROM people WHERE id IN (?) ORDER BY id FOR SHARE`, recipientIDs},
+		{`SELECT person_id FROM person_roles WHERE person_id IN (?) ORDER BY person_id, role FOR SHARE`, recipientIDs},
+		{`SELECT id FROM recipient_access_generations WHERE id IN (?) ORDER BY id FOR SHARE`, accessIDs},
+	} {
+		if _, err := tx.NewRaw(lock.query, bun.List(lock.ids)).Exec(ctx); err != nil {
+			return 0, err
+		}
 	}
 	var eligible []uuid.UUID
 	if err := tx.NewRaw(`
@@ -408,14 +438,13 @@ func lockEligibleProposalRecipients(ctx context.Context, tx bun.Tx, t target) (i
 				WHERE curator_role.person_id = proposal.recipient_person_id
 					AND curator_role.role = 'curator'
 			)
-		FOR SHARE OF access, person, recipient_role
 	`, t.kind, t.id).Scan(ctx, &eligible); err != nil {
 		return 0, err
 	}
-	if len(eligible) != includedCount {
+	if len(eligible) != len(included) {
 		return 0, ErrProposalStale
 	}
-	return includedCount, nil
+	return len(included), nil
 }
 
 func validTarget(kind string, id uuid.UUID) (target, error) {

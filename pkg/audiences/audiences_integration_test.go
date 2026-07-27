@@ -290,6 +290,31 @@ func TestApprovalRejectsProposalWhenRecipientEligibilityChanged(t *testing.T) {
 	assert.False(t, reloaded.AudienceComplete)
 }
 
+func TestApprovalUsesPersonBeforeAccessLockOrder(t *testing.T) {
+	f := newAudienceFixture(t)
+	ctx := context.Background()
+	review, err := f.service.ConfirmAttendance(ctx, f.actor, f.momentID, 1, attendanceRequest(f.people["present"].String()))
+	require.NoError(t, err)
+	blocker, err := f.db.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	_, err = blocker.NewRaw(`SELECT id FROM people WHERE id = ? FOR UPDATE`, f.people["present"]).Exec(ctx)
+	require.NoError(t, err)
+
+	approvalResult := make(chan error, 1)
+	go func() {
+		_, err := f.service.Approve(ctx, f.actor, targetMoment, f.momentID, review.Version)
+		approvalResult <- err
+	}()
+	time.Sleep(100 * time.Millisecond)
+	assert.Empty(t, approvalResult, "approval must wait for the Person lock before taking the access lock")
+	_, err = blocker.NewRaw(`SELECT id FROM recipient_access_generations WHERE id = ? FOR UPDATE`, f.access["present"]).Exec(ctx)
+	require.NoError(t, err, "Person lifecycle work must take the access lock without deadlocking against approval")
+	_, err = blocker.NewRaw(`UPDATE people SET archived_at = now() WHERE id = ?`, f.people["present"]).Exec(ctx)
+	require.NoError(t, err)
+	require.NoError(t, blocker.Commit())
+	assert.ErrorIs(t, <-approvalResult, ErrProposalStale)
+}
+
 func TestArchivedAttendeesCanBeRemovedFromAttendance(t *testing.T) {
 	f := newAudienceFixture(t)
 	ctx := context.Background()
