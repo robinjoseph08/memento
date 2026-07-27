@@ -6,14 +6,18 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/labstack/echo/v4"
 	"github.com/robinjoseph08/memento/internal/testdb"
 	"github.com/robinjoseph08/memento/pkg/config"
+	"github.com/robinjoseph08/memento/pkg/errcodes"
 	"github.com/robinjoseph08/memento/pkg/migrations"
 	"github.com/robinjoseph08/memento/pkg/people"
 	"github.com/robinjoseph08/memento/pkg/setup"
@@ -83,6 +87,32 @@ func newSuggestionFixture(t *testing.T) suggestionFixture {
 
 func boolPointer(value bool) *bool { return &value }
 
+type allowingSuggestionAuthorizer struct {
+	requester setup.SessionActor
+	curator   setup.CuratorSession
+}
+
+func (authorizer allowingSuggestionAuthorizer) AuthorizeSession(context.Context, string, string, bool) (setup.SessionActor, error) {
+	return authorizer.requester, nil
+}
+
+func (authorizer allowingSuggestionAuthorizer) AuthorizeCurator(context.Context, string, string, bool) (setup.CuratorSession, error) {
+	return authorizer.curator, nil
+}
+
+func suggestionRequest(handler *Handler, method, path, body string) *httptest.ResponseRecorder {
+	e := echo.New()
+	e.HTTPErrorHandler = errcodes.NewHandler().Handle
+	RegisterRoutes(e, handler)
+	request := httptest.NewRequest(method, path, strings.NewReader(body))
+	request.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	request.Header.Set(setup.CSRFHeader, "csrf")
+	request.AddCookie(&http.Cookie{Name: setup.CookieName, Value: "credential"})
+	response := httptest.NewRecorder()
+	e.ServeHTTP(response, request)
+	return response
+}
+
 func submitSuggestion(t *testing.T, fixture suggestionFixture, actor setup.SessionActor, name, email string) RequesterSuggestion {
 	t.Helper()
 	request := httptest.NewRequest("POST", "/api/invitation-suggestions", nil)
@@ -151,10 +181,35 @@ func TestSubmissionIsIsolatedAuditedAndHasNoIdentityOrAccessSideEffects(t *testi
 
 	encoded, err := json.Marshal(mine.Suggestions[0])
 	require.NoError(t, err)
-	assert.NotContains(t, string(encoded), "matched_person")
-	assert.NotContains(t, string(encoded), "invitation")
-	assert.NotContains(t, string(encoded), "onboarding")
-	assert.NotContains(t, string(encoded), "recipient_access")
+	var requesterPayload map[string]any
+	require.NoError(t, json.Unmarshal(encoded, &requesterPayload))
+	assert.ElementsMatch(t, []string{
+		"id", "name", "email", "relationship_context", "spoke_with_person", "status", "submitted_at",
+	}, mapKeys(requesterPayload), "requester JSON must remain an exact suggestion-only contract")
+}
+
+func mapKeys(values map[string]any) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	return keys
+}
+
+func TestExistingPersonAdvisoriesMatchNameOrEmailIndependently(t *testing.T) {
+	fixture := newSuggestionFixture(t)
+	nameOnly := submitSuggestion(t, fixture, fixture.requester, "Taylor Existing", "different@example.com")
+	emailOnly := submitSuggestion(t, fixture, fixture.otherRequester, "Different Name", "taylor@example.com")
+	queue, err := fixture.service.ListCurator(context.Background(), "submitted")
+	require.NoError(t, err)
+	matchesBySuggestion := make(map[string][]PersonMatch)
+	for _, suggestion := range queue.Suggestions {
+		matchesBySuggestion[suggestion.ID] = suggestion.MatchingPeople
+	}
+	require.Len(t, matchesBySuggestion[nameOnly.ID], 1)
+	assert.Equal(t, []string{"same_name"}, matchesBySuggestion[nameOnly.ID][0].Reasons)
+	require.Len(t, matchesBySuggestion[emailOnly.ID], 1)
+	assert.Equal(t, []string{"same_recipient_email"}, matchesBySuggestion[emailOnly.ID][0].Reasons)
 }
 
 func TestDuplicateSubmissionAndExplicitExistingPersonMatchNeverCreateAccess(t *testing.T) {
@@ -202,6 +257,34 @@ func TestDuplicateSubmissionAndExplicitExistingPersonMatchNeverCreateAccess(t *t
 	assert.NotContains(t, string(encoded), fixture.existingID.String(), "requester status must not reveal the Curator's Person match")
 }
 
+func TestAcceptRouteRequiresExactlyOneUsableExistingOrNewPerson(t *testing.T) {
+	fixture := newSuggestionFixture(t)
+	handler := NewHandler(fixture.service, allowingSuggestionAuthorizer{requester: fixture.requester, curator: fixture.curator})
+	existing := submitSuggestion(t, fixture, fixture.requester, "Existing", "existing-route@example.com")
+	response := suggestionRequest(handler, http.MethodPost, "/api/invitation-suggestions/curator/"+existing.ID+"/accept", `{"person_id":"`+fixture.existingID.String()+`"}`)
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+
+	created := submitSuggestion(t, fixture, fixture.requester, "Created", "created-route@example.com")
+	response = suggestionRequest(handler, http.MethodPost, "/api/invitation-suggestions/curator/"+created.ID+"/accept", `{"create_person":{"display_name":"Created Person","sort_name":"Person, Created"}}`)
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	assert.Contains(t, response.Body.String(), `"matched_person_name":"Created Person"`)
+
+	invalid := submitSuggestion(t, fixture, fixture.requester, "Invalid", "invalid-route@example.com")
+	path := "/api/invitation-suggestions/curator/" + invalid.ID + "/accept"
+	for _, body := range []string{
+		`{}`,
+		`{"person_id":"` + fixture.existingID.String() + `","create_person":{"display_name":"Both"}}`,
+		`{"person_id":"not-a-uuid"}`,
+	} {
+		response = suggestionRequest(handler, http.MethodPost, path, body)
+		assert.Equal(t, http.StatusUnprocessableEntity, response.Code, response.Body.String())
+	}
+	response = suggestionRequest(handler, http.MethodPost, path, `{"person_id":"`+uuid.New().String()+`"}`)
+	assert.Equal(t, http.StatusConflict, response.Code, response.Body.String())
+	response = suggestionRequest(handler, http.MethodPost, "/api/invitation-suggestions/curator/"+invalid.ID+"/reject", "")
+	assert.Equal(t, http.StatusOK, response.Code, response.Body.String())
+}
+
 func TestAcceptWithNewPersonAndRejectAreExplicitAndDoNotDesignateRecipientAccess(t *testing.T) {
 	fixture := newSuggestionFixture(t)
 	acceptedSuggestion := submitSuggestion(t, fixture, fixture.requester, "New Relative", "new@example.com")
@@ -230,6 +313,49 @@ func TestAcceptWithNewPersonAndRejectAreExplicitAndDoNotDesignateRecipientAccess
 	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM curator_activity_items WHERE invitation_suggestion_id IN (?, ?)`, acceptedSuggestion.ID, rejectedSuggestion.ID).Scan(context.Background(), &curatorActivity))
 	assert.Equal(t, 4, recipientActivity)
 	assert.Equal(t, 4, curatorActivity)
+	activityRows := make([]struct {
+		SuggestionID uuid.UUID
+		Action       string
+		ActorID      uuid.UUID
+	}, 0)
+	require.NoError(t, fixture.db.NewRaw(`
+		SELECT invitation_suggestion_id AS suggestion_id, action, actor_person_id AS actor_id
+		FROM recipient_activity_items WHERE invitation_suggestion_id IN (?, ?)
+		ORDER BY invitation_suggestion_id, action
+	`, acceptedSuggestion.ID, rejectedSuggestion.ID).Scan(context.Background(), &activityRows))
+	actualActivity := make([]string, 0, len(activityRows))
+	for _, row := range activityRows {
+		actualActivity = append(actualActivity, row.SuggestionID.String()+"/"+row.Action+"/"+row.ActorID.String())
+	}
+	assert.ElementsMatch(t, []string{
+		acceptedSuggestion.ID + "/invitation_suggestion_submitted/" + fixture.requester.PersonID.String(),
+		acceptedSuggestion.ID + "/invitation_suggestion_accepted/" + fixture.curator.PersonID.String(),
+		rejectedSuggestion.ID + "/invitation_suggestion_submitted/" + fixture.otherRequester.PersonID.String(),
+		rejectedSuggestion.ID + "/invitation_suggestion_rejected/" + fixture.curator.PersonID.String(),
+	}, actualActivity)
+	transitionAudits := make([]struct {
+		Action    string
+		ActorID   uuid.UUID
+		SubjectID uuid.UUID
+		SessionID uuid.UUID
+	}, 0)
+	require.NoError(t, fixture.db.NewRaw(`
+		SELECT action, actor_person_id AS actor_id, subject_person_id AS subject_id, session_id
+		FROM security_audit_events
+		WHERE metadata->>'invitation_suggestion_id' IN (?, ?)
+		  AND action IN ('invitation_suggestion_accepted', 'invitation_suggestion_rejected')
+		ORDER BY action
+	`, acceptedSuggestion.ID, rejectedSuggestion.ID).Scan(context.Background(), &transitionAudits))
+	require.Len(t, transitionAudits, 2)
+	for _, audit := range transitionAudits {
+		assert.Equal(t, fixture.curator.PersonID, audit.ActorID)
+		assert.Equal(t, fixture.curator.SessionID, audit.SessionID)
+		if audit.Action == "invitation_suggestion_accepted" {
+			assert.Equal(t, fixture.requester.PersonID, audit.SubjectID)
+		} else {
+			assert.Equal(t, fixture.otherRequester.PersonID, audit.SubjectID)
+		}
+	}
 }
 
 func TestPersonMergeMovesSuggestionOwnershipAndMatchWithoutRewritingAttribution(t *testing.T) {
@@ -310,6 +436,34 @@ func TestWithdrawalAndCuratorResolutionSerializeWithOneWinner(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, mine.Suggestions, 1)
 	assert.Contains(t, []string{"withdrawn", "rejected"}, mine.Suggestions[0].Status)
+	winningAction := "invitation_suggestion_withdrawn"
+	winningActor, winningSession := fixture.requester.PersonID, fixture.requester.SessionID
+	if mine.Suggestions[0].Status == "rejected" {
+		winningAction = "invitation_suggestion_rejected"
+		winningActor, winningSession = fixture.curator.PersonID, fixture.curator.SessionID
+	}
+	for _, table := range []string{"recipient_activity_items", "curator_activity_items"} {
+		rows := make([]struct {
+			Action  string
+			ActorID uuid.UUID
+		}, 0)
+		require.NoError(t, fixture.db.NewRaw(`SELECT action, actor_person_id AS actor_id FROM `+table+` WHERE invitation_suggestion_id = ? ORDER BY id`, id).Scan(context.Background(), &rows))
+		require.Len(t, rows, 2, "submission plus exactly one winning transition must be durable in "+table)
+		assert.Equal(t, "invitation_suggestion_submitted", rows[0].Action)
+		assert.Equal(t, fixture.requester.PersonID, rows[0].ActorID)
+		assert.Equal(t, winningAction, rows[1].Action)
+		assert.Equal(t, winningActor, rows[1].ActorID)
+	}
+	var auditAction string
+	var auditActor, auditSubject, auditSession uuid.UUID
+	require.NoError(t, fixture.db.NewRaw(`
+		SELECT action, actor_person_id, subject_person_id, session_id FROM security_audit_events
+		WHERE metadata->>'invitation_suggestion_id' = ? AND action <> 'invitation_suggestion_submitted'
+	`, submitted.ID).Scan(context.Background(), &auditAction, &auditActor, &auditSubject, &auditSession))
+	assert.Equal(t, winningAction, auditAction)
+	assert.Equal(t, winningActor, auditActor)
+	assert.Equal(t, fixture.requester.PersonID, auditSubject)
+	assert.Equal(t, winningSession, auditSession)
 	_, err = fixture.service.Withdraw(context.Background(), fixture.otherRequester, id)
 	assert.ErrorIs(t, err, ErrNotFound, "a requester must not use another Recipient's suggestion ID")
 }

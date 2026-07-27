@@ -1,5 +1,11 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { InvitationSuggestions } from "./InvitationSuggestions";
@@ -43,6 +49,7 @@ function renderSuggestions(activeSession = session) {
 }
 
 afterEach(() => {
+  cleanup();
   vi.unstubAllGlobals();
 });
 
@@ -156,6 +163,9 @@ describe("InvitationSuggestions", () => {
     expect(
       screen.queryByRole("button", { name: "Withdraw" }),
     ).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument(),
+    );
   });
 
   it("lets the Curator explicitly match an existing Person without presenting access as automatic", async () => {
@@ -171,9 +181,9 @@ describe("InvitationSuggestions", () => {
           return response({
             people: [
               {
-                id: "22222222-2222-4222-8222-222222222222",
-                display_name: "Taylor Existing",
-                sort_name: "Existing, Taylor",
+                id: "55555555-5555-4555-8555-555555555555",
+                display_name: "Morgan Search Result",
+                sort_name: "Search Result, Morgan",
                 version: 1,
                 status: "current",
                 created_at: "2026-07-27T12:00:00Z",
@@ -208,6 +218,15 @@ describe("InvitationSuggestions", () => {
                 {
                   person_id: "22222222-2222-4222-8222-222222222222",
                   display_name: "Taylor Existing",
+                  sort_name: "Existing, Taylor A",
+                  current_login_email: "taylor-a@example.com",
+                  reasons: ["same_name"],
+                },
+                {
+                  person_id: "44444444-4444-4444-8444-444444444444",
+                  display_name: "Taylor Existing",
+                  sort_name: "Existing, Taylor B",
+                  current_login_email: "taylor-b@example.com",
                   reasons: ["same_name", "same_recipient_email"],
                 },
               ],
@@ -228,18 +247,106 @@ describe("InvitationSuggestions", () => {
         /Acceptance does not designate Recipient access or send an Invitation/,
       ),
     ).toBeInTheDocument();
+    expect(
+      screen.getByRole("option", {
+        name: /Taylor Existing \(Existing, Taylor A · taylor-a@example.com · 22222222\)/,
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("option", {
+        name: /Taylor Existing \(Existing, Taylor B · taylor-b@example.com · 44444444\)/,
+      }),
+    ).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Search current People"), {
+      target: { value: "Morgan" },
+    });
+    expect(
+      await screen.findByRole("option", {
+        name: /Morgan Search Result \(Search Result, Morgan · 55555555\)/,
+      }),
+    ).toBeInTheDocument();
     const acceptButton = screen.getByRole("button", {
       name: "Match Person and accept",
     });
     expect(acceptButton).toBeDisabled();
     fireEvent.change(screen.getByLabelText("Match an existing Person"), {
-      target: { value: "22222222-2222-4222-8222-222222222222" },
+      target: { value: "44444444-4444-4444-8444-444444444444" },
     });
     expect(acceptButton).toBeEnabled();
     fireEvent.click(acceptButton);
     await waitFor(() => expect(acceptedBodies).toHaveLength(1));
     expect(acceptedBodies[0]).toEqual({
-      person_id: "22222222-2222-4222-8222-222222222222",
+      person_id: "44444444-4444-4444-8444-444444444444",
     });
   });
+
+  it.each([
+    ["accept", "Match Person and accept"],
+    ["reject", "Reject suggestion"],
+  ])(
+    "refreshes Curator controls when a competing withdrawal beats %s",
+    async (action, buttonName) => {
+      let suggestion = {
+        id: "11111111-1111-4111-8111-111111111111",
+        requester_person_id: "33333333-3333-4333-8333-333333333333",
+        requester_name: "Alex Requester",
+        name: "Taylor Existing",
+        email: "taylor@example.com",
+        relationship_context: "Cousin",
+        spoke_with_person: true,
+        status: "submitted",
+        submitted_at: "2026-07-27T12:00:00Z",
+        matching_people: [
+          {
+            person_id: "22222222-2222-4222-8222-222222222222",
+            display_name: "Taylor Existing",
+            sort_name: "Existing, Taylor",
+            reasons: ["same_name"],
+          },
+        ],
+        duplicate_suggestion_count: 0,
+        matched_person_name: "",
+      };
+      vi.stubGlobal(
+        "fetch",
+        vi.fn((input: RequestInfo | URL) => {
+          const path = requestPath(input);
+          if (path === "/api/invitation-suggestions") {
+            return Promise.resolve(response({ suggestions: [] }));
+          }
+          if (path.endsWith(`/${action}`)) {
+            suggestion = { ...suggestion, status: "withdrawn" };
+            return Promise.resolve(
+              response(
+                {
+                  error: {
+                    message:
+                      "This Invitation suggestion is no longer Submitted. Refresh before trying again.",
+                  },
+                },
+                409,
+              ),
+            );
+          }
+          return Promise.resolve(response({ suggestions: [suggestion] }));
+        }),
+      );
+
+      renderSuggestions({ ...session, curator: true });
+      if (action === "accept") {
+        fireEvent.change(
+          await screen.findByLabelText("Match an existing Person"),
+          {
+            target: { value: "22222222-2222-4222-8222-222222222222" },
+          },
+        );
+      }
+      fireEvent.click(await screen.findByRole("button", { name: buttonName }));
+
+      await screen.findByText("Withdrawn");
+      expect(
+        screen.queryByRole("button", { name: buttonName }),
+      ).not.toBeInTheDocument();
+    },
+  );
 });

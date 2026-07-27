@@ -205,8 +205,14 @@ func suggestionError(err error) error {
 		return errcodes.Conflict("This Invitation suggestion is no longer Submitted. Refresh before trying again.")
 	case errors.Is(err, ErrPersonUnavailable):
 		return errcodes.Conflict("Choose a current Person for this Invitation suggestion.")
-	case errors.Is(err, ErrInvalidSuggestion), errors.Is(err, ErrInvalidResolution), errors.Is(err, people.ErrInvalidPerson):
-		return errcodes.ValidationError("Enter valid Invitation suggestion details and choose exactly one current or new Person when accepting.")
+	case errors.Is(err, ErrInvalidSuggestion):
+		return errcodes.ValidationError("Enter a valid name, email, relationship context, and spoken answer for this Invitation suggestion.")
+	case errors.Is(err, ErrInvalidStatus):
+		return errcodes.ValidationError("Choose a valid Invitation suggestion status filter.")
+	case errors.Is(err, ErrInvalidResolution):
+		return errcodes.ValidationError("Choose exactly one current or new Person when accepting this Invitation suggestion.")
+	case errors.Is(err, people.ErrInvalidPerson):
+		return errcodes.ValidationError("Enter valid details for the new Person.")
 	case errors.Is(err, setup.ErrUnauthenticated):
 		return errcodes.Unauthorized("A valid completed Recipient Session is required.")
 	default:

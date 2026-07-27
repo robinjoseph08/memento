@@ -26,6 +26,7 @@ const (
 
 var (
 	ErrInvalidSuggestion = errors.New("invitation suggestion is invalid")
+	ErrInvalidStatus     = errors.New("invitation suggestion status is invalid")
 	ErrNotFound          = errors.New("invitation suggestion not found")
 	ErrNotSubmitted      = errors.New("invitation suggestion is no longer submitted")
 	ErrInvalidResolution = errors.New("invitation suggestion resolution is invalid")
@@ -59,9 +60,11 @@ type RequesterListResponse struct {
 
 // PersonMatch is Curator-only advisory matching information. It never resolves a suggestion automatically.
 type PersonMatch struct {
-	PersonID    string   `json:"person_id"`
-	DisplayName string   `json:"display_name"`
-	Reasons     []string `json:"reasons"`
+	PersonID          string   `json:"person_id"`
+	DisplayName       string   `json:"display_name"`
+	SortName          string   `json:"sort_name"`
+	CurrentLoginEmail string   `json:"current_login_email,omitempty"`
+	Reasons           []string `json:"reasons"`
 }
 
 // CuratorSuggestion includes decision data that is never returned to the requester.
@@ -233,7 +236,7 @@ func (s *Service) Withdraw(ctx context.Context, actor setup.SessionActor, id uui
 // ListCurator returns the review queue with advisory duplicate and Person matches.
 func (s *Service) ListCurator(ctx context.Context, status string) (CuratorListResponse, error) {
 	if status != "" && status != "submitted" && status != "accepted" && status != "rejected" && status != "withdrawn" {
-		return CuratorListResponse{}, ErrInvalidSuggestion
+		return CuratorListResponse{}, ErrInvalidStatus
 	}
 	rows := make([]suggestionRow, 0)
 	query := `
@@ -262,13 +265,21 @@ func (s *Service) ListCurator(ctx context.Context, status string) (CuratorListRe
 			return CuratorListResponse{}, err
 		}
 		matches := make([]struct {
-			ID          uuid.UUID
-			DisplayName string
-			NameMatch   bool
-			EmailMatch  bool
+			ID                uuid.UUID
+			DisplayName       string
+			SortName          string
+			CurrentLoginEmail string
+			NameMatch         bool
+			EmailMatch        bool
 		}, 0)
 		if err := s.db.NewRaw(`
-			SELECT person.id, person.display_name,
+			SELECT person.id, person.display_name, person.sort_name,
+			       COALESCE((
+			           SELECT email.email FROM recipient_access_generations access
+			           JOIN recipient_emails email ON email.recipient_access_generation_id = access.id AND email.is_current
+			           WHERE access.person_id = person.id AND access.is_current
+			           ORDER BY email.created_at DESC LIMIT 1
+			       ), '') AS current_login_email,
 			       memento_normalize_person_name(person.display_name) = memento_normalize_person_name(?) AS name_match,
 			       EXISTS (
 				   SELECT 1 FROM recipient_access_generations access
@@ -295,7 +306,10 @@ func (s *Service) ListCurator(ctx context.Context, status string) (CuratorListRe
 			if match.EmailMatch {
 				reasons = append(reasons, "same_recipient_email")
 			}
-			item.MatchingPeople[matchIndex] = PersonMatch{PersonID: match.ID.String(), DisplayName: match.DisplayName, Reasons: reasons}
+			item.MatchingPeople[matchIndex] = PersonMatch{
+				PersonID: match.ID.String(), DisplayName: match.DisplayName, SortName: match.SortName,
+				CurrentLoginEmail: match.CurrentLoginEmail, Reasons: reasons,
+			}
 		}
 		response.Suggestions[index] = item
 	}

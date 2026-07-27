@@ -2,6 +2,7 @@ package suggestions
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -34,23 +35,40 @@ func TestRoutesDeclareSeparateRequesterAndCuratorPolicies(t *testing.T) {
 	assert.Empty(t, expected)
 }
 
+type authorizationCall struct {
+	credential string
+	csrfToken  string
+	mutation   bool
+}
+
 type denyingAuthorizer struct {
 	recipientError error
 	curatorError   error
+	recipientCalls []authorizationCall
+	curatorCalls   []authorizationCall
 }
 
-func (authorizer denyingAuthorizer) AuthorizeSession(context.Context, string, string, bool) (setup.SessionActor, error) {
+func (authorizer *denyingAuthorizer) AuthorizeSession(_ context.Context, credential, csrfToken string, mutation bool) (setup.SessionActor, error) {
+	authorizer.recipientCalls = append(authorizer.recipientCalls, authorizationCall{credential: credential, csrfToken: csrfToken, mutation: mutation})
+	if errors.Is(authorizer.recipientError, setup.ErrCSRF) && !mutation {
+		return setup.SessionActor{}, nil
+	}
 	return setup.SessionActor{}, authorizer.recipientError
 }
 
-func (authorizer denyingAuthorizer) AuthorizeCurator(context.Context, string, string, bool) (setup.CuratorSession, error) {
+func (authorizer *denyingAuthorizer) AuthorizeCurator(_ context.Context, credential, csrfToken string, mutation bool) (setup.CuratorSession, error) {
+	authorizer.curatorCalls = append(authorizer.curatorCalls, authorizationCall{credential: credential, csrfToken: csrfToken, mutation: mutation})
+	if errors.Is(authorizer.curatorError, setup.ErrCSRF) && !mutation {
+		return setup.CuratorSession{}, nil
+	}
 	return setup.CuratorSession{}, authorizer.curatorError
 }
 
 func TestMutationAuthorizationRejectsMissingCSRFBeforeReadingFreeFormData(t *testing.T) {
 	e := echo.New()
 	e.HTTPErrorHandler = errcodes.NewHandler().Handle
-	RegisterRoutes(e, NewHandler(nil, denyingAuthorizer{recipientError: setup.ErrCSRF, curatorError: setup.ErrCSRF}))
+	authorizer := &denyingAuthorizer{recipientError: setup.ErrCSRF, curatorError: setup.ErrCSRF}
+	RegisterRoutes(e, NewHandler(nil, authorizer))
 	tests := []string{
 		"/api/invitation-suggestions",
 		"/api/invitation-suggestions/11111111-1111-4111-8111-111111111111/withdraw",
@@ -65,12 +83,19 @@ func TestMutationAuthorizationRejectsMissingCSRFBeforeReadingFreeFormData(t *tes
 		assert.Equal(t, http.StatusForbidden, response.Code, path)
 		assert.Equal(t, "no-store", response.Header().Get(echo.HeaderCacheControl), path)
 	}
+	calls := append(authorizer.recipientCalls, authorizer.curatorCalls...)
+	require.Len(t, calls, len(tests))
+	for _, call := range calls {
+		assert.Equal(t, "credential", call.credential)
+		assert.Empty(t, call.csrfToken)
+		assert.True(t, call.mutation, "every suggestion mutation must request CSRF authorization")
+	}
 }
 
 func TestCuratorRouteHidesFromANonCurator(t *testing.T) {
 	e := echo.New()
 	e.HTTPErrorHandler = errcodes.NewHandler().Handle
-	RegisterRoutes(e, NewHandler(nil, denyingAuthorizer{curatorError: setup.ErrNotCurator}))
+	RegisterRoutes(e, NewHandler(nil, &denyingAuthorizer{curatorError: setup.ErrNotCurator}))
 	request := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/invitation-suggestions/curator", nil)
 	request.AddCookie(&http.Cookie{Name: setup.CookieName, Value: "recipient-credential"})
 	response := httptest.NewRecorder()

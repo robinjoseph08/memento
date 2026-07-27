@@ -2,7 +2,10 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState, type FormEvent } from "react";
 
 import { apiJSON } from "./api";
-import type { ListResponse as PeopleListResponse } from "./types/generated/people";
+import type {
+  ListResponse as PeopleListResponse,
+  Person,
+} from "./types/generated/people";
 import type { SessionResponse } from "./types/generated/setup";
 import type {
   AcceptRequest,
@@ -33,6 +36,20 @@ function formatSubmittedAt(value: string) {
 
 function statusLabel(status: string) {
   return status.charAt(0).toUpperCase() + status.slice(1);
+}
+
+type PersonOption = Pick<
+  Person,
+  "id" | "display_name" | "sort_name" | "current_login_email"
+>;
+
+function personOptionLabel(person: PersonOption) {
+  const details = [
+    person.sort_name,
+    person.current_login_email,
+    person.id.slice(0, 8),
+  ].filter(Boolean);
+  return `${person.display_name} (${details.join(" · ")})`;
 }
 
 function RequesterSuggestions({ session }: { session: SessionResponse }) {
@@ -86,6 +103,7 @@ function RequesterSuggestions({ session }: { session: SessionResponse }) {
           queryKey: ["invitation-suggestions", "curator"],
         }),
       ]);
+      withdraw.reset();
     },
   });
 
@@ -212,16 +230,35 @@ function RequesterSuggestions({ session }: { session: SessionResponse }) {
 function CuratorSuggestionCard({
   suggestion,
   session,
-  people,
 }: {
   suggestion: CuratorSuggestion;
   session: SessionResponse;
-  people: PeopleListResponse["people"];
 }) {
   const queryClient = useQueryClient();
   const [personID, setPersonID] = useState("");
+  const [personSearch, setPersonSearch] = useState("");
   const [newName, setNewName] = useState(suggestion.name);
   const [newSortName, setNewSortName] = useState("");
+  const people = useQuery({
+    queryKey: ["people", "suggestion-matches", personSearch],
+    queryFn: () =>
+      apiJSON<PeopleListResponse>(
+        `/api/people?query=${encodeURIComponent(personSearch)}&include_archived=false`,
+      ),
+    enabled: personSearch.trim() !== "",
+  });
+  const personOptions = new Map<string, PersonOption>();
+  for (const match of suggestion.matching_people) {
+    personOptions.set(match.person_id, {
+      id: match.person_id,
+      display_name: match.display_name,
+      sort_name: match.sort_name,
+      current_login_email: match.current_login_email,
+    });
+  }
+  for (const person of people.data?.people ?? []) {
+    if (person.status === "current") personOptions.set(person.id, person);
+  }
   const refresh = async () => {
     await Promise.all([
       queryClient.invalidateQueries({
@@ -288,19 +325,26 @@ function CuratorSuggestionCard({
             </p>
           ) : null}
           <label>
+            Search current People
+            <input
+              onChange={(event) => setPersonSearch(event.target.value)}
+              placeholder="Search by display or sort name"
+              value={personSearch}
+            />
+          </label>
+          <ErrorNotice error={people.error} />
+          <label>
             Match an existing Person
             <select
               onChange={(event) => setPersonID(event.target.value)}
               value={personID}
             >
               <option value="">Choose a current Person</option>
-              {people
-                .filter((person) => person.status === "current")
-                .map((person) => (
-                  <option key={person.id} value={person.id}>
-                    {person.display_name}
-                  </option>
-                ))}
+              {[...personOptions.values()].map((person) => (
+                <option key={person.id} value={person.id}>
+                  {personOptionLabel(person)}
+                </option>
+              ))}
             </select>
           </label>
           <button
@@ -375,11 +419,6 @@ function CuratorSuggestions({ session }: { session: SessionResponse }) {
     queryFn: () =>
       apiJSON<CuratorListResponse>("/api/invitation-suggestions/curator"),
   });
-  const people = useQuery({
-    queryKey: ["people", "suggestion-matches"],
-    queryFn: () =>
-      apiJSON<PeopleListResponse>("/api/people?query=&include_archived=false"),
-  });
   return (
     <section
       aria-labelledby="curator-suggestions-title"
@@ -393,10 +432,8 @@ function CuratorSuggestions({ session }: { session: SessionResponse }) {
           and Invitation sending remain separate actions.
         </p>
       </header>
-      <ErrorNotice error={suggestions.error ?? people.error} />
-      {suggestions.isPending || people.isPending ? (
-        <p>Loading review queue…</p>
-      ) : null}
+      <ErrorNotice error={suggestions.error} />
+      {suggestions.isPending ? <p>Loading review queue…</p> : null}
       {suggestions.data?.suggestions.length === 0 ? (
         <p>No suggestions to review.</p>
       ) : null}
@@ -404,7 +441,6 @@ function CuratorSuggestions({ session }: { session: SessionResponse }) {
         {suggestions.data?.suggestions.map((suggestion) => (
           <CuratorSuggestionCard
             key={suggestion.id}
-            people={people.data?.people ?? []}
             session={session}
             suggestion={suggestion}
           />
