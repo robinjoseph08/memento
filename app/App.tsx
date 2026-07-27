@@ -785,20 +785,20 @@ function RecipientOnboarding({
           body: JSON.stringify(draft),
         },
       );
-      const completed = await apiJSON<SessionResponse>("/api/session");
-      if (
-        completed.onboarding_required ||
-        completed.csrf_token !== response.csrf_token
-      ) {
-        throw new APIError(
-          "The completed Session could not be confirmed.",
-          500,
-        );
-      }
-      return completed;
+      return {
+        ...session,
+        session_type: draft.session_type,
+        csrf_token: response.csrf_token,
+        onboarding_required: false,
+      };
     },
     onSuccess: onComplete,
   });
+  const busy = save.isPending || complete.isPending;
+  const updateDraft = (next: OnboardingRequest) => {
+    save.reset();
+    setDraft(next);
+  };
   const pushSupported =
     "serviceWorker" in navigator &&
     "PushManager" in window &&
@@ -836,8 +836,9 @@ function RecipientOnboarding({
           <label className="choice">
             <input
               checked={draft.privacy_acknowledged}
+              disabled={busy}
               onChange={(event) =>
-                setDraft({
+                updateDraft({
                   ...draft,
                   privacy_acknowledged: event.target.checked,
                 })
@@ -854,8 +855,9 @@ function RecipientOnboarding({
           <label className="choice">
             <input
               checked={draft.engagement_acknowledged}
+              disabled={busy}
               onChange={(event) =>
-                setDraft({
+                updateDraft({
                   ...draft,
                   engagement_acknowledged: event.target.checked,
                 })
@@ -872,8 +874,9 @@ function RecipientOnboarding({
           <label className="choice">
             <input
               checked={draft.interest_list_acknowledged}
+              disabled={busy}
               onChange={(event) =>
-                setDraft({
+                updateDraft({
                   ...draft,
                   interest_list_acknowledged: event.target.checked,
                 })
@@ -890,8 +893,9 @@ function RecipientOnboarding({
           <label className="choice">
             <input
               checked={draft.email_previews_acknowledged}
+              disabled={busy}
               onChange={(event) =>
-                setDraft({
+                updateDraft({
                   ...draft,
                   email_previews_acknowledged: event.target.checked,
                 })
@@ -912,8 +916,9 @@ function RecipientOnboarding({
           <label>
             Publication and Comment email
             <select
+              disabled={busy}
               onChange={(event) =>
-                setDraft({ ...draft, email_preference: event.target.value })
+                updateDraft({ ...draft, email_preference: event.target.value })
               }
               value={draft.email_preference}
             >
@@ -927,8 +932,11 @@ function RecipientOnboarding({
             <label className="radio-choice">
               <input
                 checked={draft.session_type === "trusted"}
+                disabled={busy}
                 name="recipient-session-type"
-                onChange={() => setDraft({ ...draft, session_type: "trusted" })}
+                onChange={() =>
+                  updateDraft({ ...draft, session_type: "trusted" })
+                }
                 required
                 type="radio"
               />
@@ -937,8 +945,11 @@ function RecipientOnboarding({
             <label className="radio-choice">
               <input
                 checked={draft.session_type === "public"}
+                disabled={busy}
                 name="recipient-session-type"
-                onChange={() => setDraft({ ...draft, session_type: "public" })}
+                onChange={() =>
+                  updateDraft({ ...draft, session_type: "public" })
+                }
                 required
                 type="radio"
               />
@@ -948,8 +959,9 @@ function RecipientOnboarding({
           <label className="choice">
             <input
               checked={draft.push_guidance_acknowledged}
+              disabled={busy}
               onChange={(event) =>
-                setDraft({
+                updateDraft({
                   ...draft,
                   push_guidance_acknowledged: event.target.checked,
                 })
@@ -975,17 +987,10 @@ function RecipientOnboarding({
             <p aria-live="polite">Your Onboarding choices were saved.</p>
           ) : null}
           <div className="setup-secondary-actions">
-            <button
-              disabled={save.isPending || complete.isPending}
-              onClick={() => save.mutate()}
-              type="button"
-            >
+            <button disabled={busy} onClick={() => save.mutate()} type="button">
               {save.isPending ? "Saving…" : "Save and continue later"}
             </button>
-            <button
-              disabled={save.isPending || complete.isPending}
-              type="submit"
-            >
+            <button disabled={busy} type="submit">
               {complete.isPending
                 ? "Completing Onboarding…"
                 : "Complete Onboarding"}
@@ -1150,6 +1155,7 @@ function InvitationLanding() {
   const [token] = useState(() => searchParams.get("token") ?? "");
   const [accepted, setAccepted] = useState(false);
   const [acceptedSession, setAcceptedSession] = useState<SessionResponse>();
+  const [exitedInvitation, setExitedInvitation] = useState(false);
   const invitation = useQuery({
     queryKey: ["invitation", token],
     queryFn: () =>
@@ -1174,11 +1180,16 @@ function InvitationLanding() {
     queryKey: ["accepted-invitation-session"],
     queryFn: () => apiJSON<SessionResponse>("/api/session"),
     enabled: accepted,
-    retry: false,
+    retry: 2,
+    retryDelay: 0,
   });
   const currentSession = accepted
     ? (acceptedSession ?? acceptedIdentity.data)
     : undefined;
+
+  if (exitedInvitation) {
+    return <MementoApp />;
+  }
 
   if (currentSession) {
     return (
@@ -1188,6 +1199,7 @@ function InvitationLanding() {
           onSignOut={() => {
             setAccepted(false);
             setAcceptedSession(undefined);
+            setExitedInvitation(true);
           }}
           session={currentSession}
         />
@@ -1214,6 +1226,14 @@ function InvitationLanding() {
               <p aria-live="polite">Opening your Onboarding securely…</p>
             ) : null}
             <ErrorMessage error={acceptedIdentity.error} />
+            {acceptedIdentity.isError ? (
+              <button
+                onClick={() => void acceptedIdentity.refetch()}
+                type="button"
+              >
+                Open Onboarding again
+              </button>
+            ) : null}
           </>
         ) : null}
         {!accepted && token && invitation.isPending ? (

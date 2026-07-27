@@ -126,7 +126,7 @@ type OnboardingRequest struct {
 	EmailPreviewsAcknowledged bool   `json:"email_previews_acknowledged"`
 	PushGuidanceAcknowledged  bool   `json:"push_guidance_acknowledged"`
 	EmailPreference           string `json:"email_preference" validate:"required,oneof=immediate weekly none"`
-	SessionType               string `json:"session_type" validate:"required,oneof=trusted public"`
+	SessionType               string `json:"session_type" validate:"omitempty,oneof=trusted public"`
 }
 
 // OnboardingResponse restores informed choices without exposing identity credentials.

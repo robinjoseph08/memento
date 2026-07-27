@@ -30,4 +30,27 @@ func TestOnboardingRejectsInvalidOrIncompleteChoicesBeforePersistence(t *testing
 		PushGuidanceAcknowledged: true, EmailPreference: "immediate",
 	})
 	require.ErrorIs(t, err, ErrOnboardingChoices, "completion requires an explicit browser choice")
+
+	acknowledgments := []struct {
+		name  string
+		clear func(*OnboardingRequest)
+	}{
+		{"private access", func(request *OnboardingRequest) { request.PrivacyAcknowledged = false }},
+		{"engagement", func(request *OnboardingRequest) { request.EngagementAcknowledged = false }},
+		{"Interest list", func(request *OnboardingRequest) { request.InterestListAcknowledged = false }},
+		{"email previews", func(request *OnboardingRequest) { request.EmailPreviewsAcknowledged = false }},
+		{"push guidance", func(request *OnboardingRequest) { request.PushGuidanceAcknowledged = false }},
+	}
+	for _, acknowledgment := range acknowledgments {
+		t.Run(acknowledgment.name, func(t *testing.T) {
+			request := OnboardingRequest{
+				PrivacyAcknowledged: true, EngagementAcknowledged: true,
+				InterestListAcknowledged: true, EmailPreviewsAcknowledged: true,
+				PushGuidanceAcknowledged: true, EmailPreference: "immediate", SessionType: "trusted",
+			}
+			acknowledgment.clear(&request)
+			_, err := service.CompleteOnboarding(context.Background(), actor, request)
+			require.ErrorIs(t, err, ErrOnboardingChoices)
+		})
+	}
 }

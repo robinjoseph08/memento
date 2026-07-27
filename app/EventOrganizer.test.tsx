@@ -194,6 +194,7 @@ function renderOrganizer() {
           session_type: "public",
           csrf_token: csrfToken,
           curator: true,
+          onboarding_required: false,
         }}
       />
     </QueryClientProvider>,

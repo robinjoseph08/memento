@@ -81,6 +81,9 @@ test("opens an Invitation read-only and removes its token only after explicit ac
       if (path === "/api/auth/invitations/accept") {
         return acceptance;
       }
+      if (path === "/api/session") {
+        return new Promise<Response>(() => undefined);
+      }
       return Promise.reject(new Error(`Unexpected request: ${path}`));
     }),
   );
@@ -152,6 +155,196 @@ test("keeps a failed Invitation token available for an explicit retry", async ()
   expect(
     screen.getByRole("button", { name: "Accept Invitation" }),
   ).toBeEnabled();
+});
+
+test("recovers Onboarding after Session confirmation fails without retrying acceptance", async () => {
+  const token = "e".repeat(64);
+  const csrfToken = "f".repeat(64);
+  let acceptanceCalls = 0;
+  let sessionCalls = 0;
+  window.history.replaceState(null, "", `/invitation?token=${token}`);
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) => {
+      const path = requestPath(input);
+      if (path === "/api/auth/invitations/inspect") {
+        return Promise.resolve(
+          jsonResponse({
+            recipient_name: "Alex",
+            curator_name: "Robin",
+            expires_at: "2026-08-10T12:00:00Z",
+          }),
+        );
+      }
+      if (path === "/api/auth/invitations/accept") {
+        acceptanceCalls += 1;
+        return Promise.resolve(jsonResponse({ status: "onboarding" }));
+      }
+      if (path === "/api/session") {
+        sessionCalls += 1;
+        return Promise.resolve(
+          sessionCalls <= 3
+            ? jsonResponse({ error: { message: "Session unavailable." } }, 503)
+            : jsonResponse({
+                display_name: "Alex",
+                session_type: "public",
+                csrf_token: csrfToken,
+                curator: false,
+                onboarding_required: true,
+              }),
+        );
+      }
+      if (path === "/api/onboarding") {
+        return Promise.resolve(
+          jsonResponse({
+            status: "onboarding",
+            recipient_name: "Alex",
+            privacy_acknowledged: false,
+            engagement_acknowledged: false,
+            interest_list_acknowledged: false,
+            email_previews_acknowledged: false,
+            push_guidance_acknowledged: false,
+            email_preference: "immediate",
+            session_type: "",
+            csrf_token: csrfToken,
+          }),
+        );
+      }
+      if (path === "/api/me/interest-list") {
+        return Promise.resolve(
+          jsonResponse({
+            recipient: {
+              id: "11111111-1111-4111-8111-111111111111",
+              display_name: "Alex",
+              sort_name: "alex",
+            },
+            version: 0,
+            entries: [],
+            history: [],
+          }),
+        );
+      }
+      if (path.startsWith("/api/me/people?")) {
+        return Promise.resolve(jsonResponse({ people: [] }));
+      }
+      return Promise.reject(new Error(`Unexpected request: ${path}`));
+    }),
+  );
+
+  renderApp();
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Accept Invitation" }),
+  );
+  expect(
+    await screen.findByRole("button", { name: "Open Onboarding again" }),
+  ).toBeInTheDocument();
+  expect(acceptanceCalls).toBe(1);
+  fireEvent.click(
+    screen.getByRole("button", { name: "Open Onboarding again" }),
+  );
+  expect(
+    await screen.findByRole("heading", { name: "Welcome, Alex" }),
+  ).toBeInTheDocument();
+  expect(acceptanceCalls).toBe(1);
+  expect(window.location.search).toBe("");
+});
+
+test("hands accepted identity to Onboarding and leaves the consumed Invitation after sign-out", async () => {
+  const token = "c".repeat(64);
+  const csrfToken = "d".repeat(64);
+  let signedOut = false;
+  window.history.replaceState(null, "", `/invitation?token=${token}`);
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) => {
+      const path = requestPath(input);
+      if (path === "/api/auth/invitations/inspect") {
+        return Promise.resolve(
+          jsonResponse({
+            recipient_name: "Alex",
+            curator_name: "Robin",
+            expires_at: "2026-08-10T12:00:00Z",
+          }),
+        );
+      }
+      if (path === "/api/auth/invitations/accept") {
+        return Promise.resolve(jsonResponse({ status: "onboarding" }));
+      }
+      if (path === "/api/setup") {
+        return Promise.resolve(
+          jsonResponse({ error: { message: "Setup not found." } }, 404),
+        );
+      }
+      if (path === "/api/session/logout") {
+        signedOut = true;
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      if (path === "/api/session") {
+        return Promise.resolve(
+          signedOut
+            ? jsonResponse({ error: { message: "Sign in required." } }, 401)
+            : jsonResponse({
+                display_name: "Alex",
+                session_type: "public",
+                csrf_token: csrfToken,
+                curator: false,
+                onboarding_required: true,
+              }),
+        );
+      }
+      if (path === "/api/onboarding") {
+        return Promise.resolve(
+          jsonResponse({
+            status: "onboarding",
+            recipient_name: "Alex",
+            privacy_acknowledged: false,
+            engagement_acknowledged: false,
+            interest_list_acknowledged: false,
+            email_previews_acknowledged: false,
+            push_guidance_acknowledged: false,
+            email_preference: "immediate",
+            session_type: "",
+            csrf_token: csrfToken,
+          }),
+        );
+      }
+      if (path === "/api/me/interest-list") {
+        return Promise.resolve(
+          jsonResponse({
+            recipient: {
+              id: "11111111-1111-4111-8111-111111111111",
+              display_name: "Alex",
+              sort_name: "alex",
+            },
+            version: 0,
+            entries: [],
+            history: [],
+          }),
+        );
+      }
+      if (path.startsWith("/api/me/people?")) {
+        return Promise.resolve(jsonResponse({ people: [] }));
+      }
+      return Promise.reject(new Error(`Unexpected request: ${path}`));
+    }),
+  );
+
+  renderApp();
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Accept Invitation" }),
+  );
+  expect(
+    await screen.findByRole("heading", { name: "Welcome, Alex" }),
+  ).toBeInTheDocument();
+  expect(
+    screen.getByRole("heading", { name: "Your Interest list" }),
+  ).toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+  expect(await screen.findByText("Setup is complete.")).toBeInTheDocument();
+  expect(
+    screen.queryByRole("button", { name: "Accept Invitation" }),
+  ).not.toBeInTheDocument();
 });
 
 test("restores, saves, and explicitly completes Recipient Onboarding", async () => {
@@ -284,6 +477,15 @@ test("restores, saves, and explicitly completes Recipient Onboarding", async () 
     email_preference: "weekly",
     session_type: "trusted",
   });
+  fireEvent.change(screen.getByLabelText("Publication and Comment email"), {
+    target: { value: "immediate" },
+  });
+  expect(
+    screen.queryByText("Your Onboarding choices were saved."),
+  ).not.toBeInTheDocument();
+  fireEvent.change(screen.getByLabelText("Publication and Comment email"), {
+    target: { value: "weekly" },
+  });
 
   fireEvent.click(screen.getByRole("button", { name: "Complete Onboarding" }));
   await waitFor(() =>
@@ -297,8 +499,17 @@ test("restores, saves, and explicitly completes Recipient Onboarding", async () 
   expect(completeRequest?.init?.headers).toMatchObject({
     "X-Memento-CSRF": oldCSRF,
   });
+  expect(JSON.parse(stringBody(completeRequest?.init?.body))).toEqual({
+    privacy_acknowledged: true,
+    engagement_acknowledged: true,
+    interest_list_acknowledged: true,
+    email_previews_acknowledged: true,
+    push_guidance_acknowledged: true,
+    email_preference: "weekly",
+    session_type: "trusted",
+  });
   expect(requests.filter(({ path }) => path === "/api/session")).toHaveLength(
-    2,
+    1,
   );
 });
 

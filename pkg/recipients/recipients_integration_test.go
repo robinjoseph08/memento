@@ -264,6 +264,56 @@ func TestRecipientRoutesAttributeSecurityAuditRequests(t *testing.T) {
 	}
 }
 
+func TestOnboardingRoutesSaveAnUnselectedDraftAndRotateToAPublicSession(t *testing.T) {
+	fixture := newRecipientFixture(t)
+	e := recipientHTTP(t, fixture)
+	designate(t, fixture)
+	_, token := deterministicIssue(t, fixture, 0x38)
+	accepted := serveRecipient(fixture, e, "/api/auth/invitations/accept", `{"token":"`+token+`"}`, "")
+	require.Equal(t, http.StatusOK, accepted.Code, accepted.Body.String())
+	acceptedCookies := accepted.Result().Cookies()
+	require.Len(t, acceptedCookies, 1)
+	onboardingCookie := acceptedCookies[0]
+	onboardingSession, err := fixture.auth.Session(context.Background(), onboardingCookie.Value)
+	require.NoError(t, err)
+
+	draftRequest := httptest.NewRequestWithContext(context.Background(), http.MethodPatch, "/api/onboarding", strings.NewReader(`{"privacy_acknowledged":true,"email_preference":"weekly","session_type":""}`))
+	draftRequest.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	draftRequest.Header.Set(setup.CSRFHeader, onboardingSession.CSRFToken)
+	draftRequest.AddCookie(onboardingCookie)
+	draftResponse := httptest.NewRecorder()
+	e.ServeHTTP(draftResponse, draftRequest)
+	require.Equal(t, http.StatusOK, draftResponse.Code, draftResponse.Body.String())
+	assert.Contains(t, draftResponse.Body.String(), `"session_type":""`)
+
+	completionBody := `{"privacy_acknowledged":true,"engagement_acknowledged":true,"interest_list_acknowledged":true,"email_previews_acknowledged":true,"push_guidance_acknowledged":true,"email_preference":"weekly","session_type":"public"}`
+	completionRequest := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/onboarding/complete", strings.NewReader(completionBody))
+	completionRequest.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	completionRequest.Header.Set(setup.CSRFHeader, onboardingSession.CSRFToken)
+	completionRequest.AddCookie(onboardingCookie)
+	completionResponse := httptest.NewRecorder()
+	e.ServeHTTP(completionResponse, completionRequest)
+	require.Equal(t, http.StatusOK, completionResponse.Code, completionResponse.Body.String())
+	completedCookies := completionResponse.Result().Cookies()
+	require.Len(t, completedCookies, 1, "completion must return the rotated credential cookie")
+	completedCookie := completedCookies[0]
+	assert.NotEqual(t, onboardingCookie.Value, completedCookie.Value)
+	assert.Zero(t, completedCookie.MaxAge, "Public-computer completion must remain non-persistent")
+	_, err = fixture.auth.Session(context.Background(), onboardingCookie.Value)
+	assert.ErrorIs(t, err, setup.ErrUnauthenticated)
+	completedSession, err := fixture.auth.Session(context.Background(), completedCookie.Value)
+	require.NoError(t, err)
+	assert.False(t, completedSession.OnboardingRequired)
+	assert.Equal(t, "public", completedSession.SessionType)
+	completedActor, err := fixture.auth.AuthorizeSession(context.Background(), completedCookie.Value, completedSession.CSRFToken, false)
+	require.NoError(t, err)
+	var idleExpiresAtIsNull bool
+	var absoluteExpiresAt time.Time
+	require.NoError(t, fixture.db.NewRaw(`SELECT idle_expires_at IS NULL, absolute_expires_at FROM sessions WHERE id = ?`, completedActor.SessionID).Scan(context.Background(), &idleExpiresAtIsNull, &absoluteExpiresAt))
+	assert.True(t, idleExpiresAtIsNull)
+	assert.Equal(t, fixture.now.Add(12*time.Hour), absoluteExpiresAt.UTC())
+}
+
 func TestInvitationActionRejectsAnInspectedInvitationAfterReplacement(t *testing.T) {
 	fixture := newRecipientFixture(t)
 	designate(t, fixture)
@@ -438,9 +488,11 @@ func TestInspectIsReadOnlyAndAcceptIsSingleUseWithRestrictedOnboardingSession(t 
 	actor, err := fixture.auth.AuthorizeInterestSession(context.Background(), accepted.session.Credential, "", false)
 	require.NoError(t, err)
 	assert.Equal(t, fixture.personID, actor.PersonID)
-	var queuedReminder int
+	var queuedReminder, undeliveredReminderEvent int
 	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM email_deliveries WHERE invitation_id = ? AND kind = ? AND status = 'queued'`, invitation.Invitation.ID, emaildelivery.KindInvitationAutomaticReminder).Scan(context.Background(), &queuedReminder))
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM outbox_events AS event JOIN email_deliveries AS delivery ON delivery.public_id = event.aggregate_id WHERE delivery.invitation_id = ? AND delivery.kind = ? AND event.delivered_at IS NULL`, invitation.Invitation.ID, emaildelivery.KindInvitationAutomaticReminder).Scan(context.Background(), &undeliveredReminderEvent))
 	assert.Zero(t, queuedReminder)
+	assert.Zero(t, undeliveredReminderEvent, "acceptance must retire the reminder's outbox event")
 }
 
 func TestAcceptanceSessionFailureLeavesTheInvitationLiveAndRetryable(t *testing.T) {
@@ -555,6 +607,9 @@ func TestResumableOnboardingPersistsInterestsAndAtomicallyUnlocksCurrentAccessWi
 	assert.True(t, informed)
 	assert.True(t, completedAt)
 	assert.Equal(t, 2, informedVersion)
+	var notificationPreference string
+	require.NoError(t, fixture.db.NewRaw(`SELECT email_preference FROM notification_preferences WHERE recipient_access_generation_id = ?`, actor.AccessID).Scan(context.Background(), &notificationPreference))
+	assert.Equal(t, "weekly", notificationPreference)
 	var deliveriesAfter, outboxAfter, queuedReminder int
 	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM email_deliveries`).Scan(context.Background(), &deliveriesAfter))
 	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM outbox_events`).Scan(context.Background(), &outboxAfter))

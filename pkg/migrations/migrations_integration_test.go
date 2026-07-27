@@ -203,7 +203,7 @@ func TestOnboardingMigrationPreservesLegacyAcknowledgmentsAndAddsResumableProgre
 	priorMigrations := migrate.NewMigrations()
 	foundOnboarding := false
 	for _, migration := range collection.Sorted() {
-		if migration.Name == "202607270004" {
+		if migration.Name == "202607270005" {
 			foundOnboarding = true
 			break
 		}
