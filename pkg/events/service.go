@@ -10,6 +10,9 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	// Embed IANA timezone data for the minimal production image.
+	_ "time/tzdata"
 	"unicode/utf8"
 
 	"github.com/google/uuid"
