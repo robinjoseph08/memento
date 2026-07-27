@@ -136,8 +136,11 @@ func (s *Service) Designate(ctx context.Context, actor setup.CuratorSession, per
 	now := s.now().UTC()
 	var result Recipient
 	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if err := lockActorAndRecipient(ctx, tx, actor.PersonID, personID); err != nil {
+			return err
+		}
 		var archivedAt, mergedAt *time.Time
-		err := tx.NewRaw(`SELECT archived_at, merged_at FROM people WHERE id = ? FOR UPDATE`, personID).Scan(ctx, &archivedAt, &mergedAt)
+		err := tx.NewRaw(`SELECT archived_at, merged_at FROM people WHERE id = ?`, personID).Scan(ctx, &archivedAt, &mergedAt)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrPersonNotFound
 		}
@@ -279,6 +282,9 @@ func (s *Service) issue(ctx context.Context, actor setup.CuratorSession, personI
 	}
 	var result Recipient
 	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if err := lockActorAndRecipient(ctx, tx, actor.PersonID, personID); err != nil {
+			return err
+		}
 		current, err := lockPendingRecipient(ctx, tx, personID)
 		if err != nil {
 			return err
@@ -430,6 +436,9 @@ type liveMutation func(context.Context, bun.Tx, lockedRecipient, uuid.UUID, time
 func (s *Service) mutateLive(ctx context.Context, actor setup.CuratorSession, personID uuid.UUID, action string, mutation liveMutation) (Recipient, error) {
 	var response Recipient
 	err := s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if err := lockActorAndRecipient(ctx, tx, actor.PersonID, personID); err != nil {
+			return err
+		}
 		current, err := lockPendingRecipient(ctx, tx, personID)
 		if err != nil {
 			return err
@@ -529,6 +538,27 @@ func (s *Service) lookupToken(ctx context.Context, token string, lock bool) (tok
 
 func lookupTokenIn(ctx context.Context, db bun.IDB, decoded []byte, lock bool) (tokenRow, []byte, error) {
 	hash := sha256.Sum256(decoded)
+	if lock {
+		var accessID, personID uuid.UUID
+		err := db.NewRaw(`
+			SELECT invitation.recipient_access_generation_id, access.person_id
+			FROM invitations AS invitation
+			JOIN recipient_access_generations AS access ON access.id = invitation.recipient_access_generation_id
+			WHERE invitation.token_hash = ?
+		`, hash[:]).Scan(ctx, &accessID, &personID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return tokenRow{}, nil, ErrInvitationToken
+		}
+		if err != nil {
+			return tokenRow{}, nil, err
+		}
+		if err := db.NewRaw(`SELECT id FROM people WHERE id = ? FOR NO KEY UPDATE`, personID).Scan(ctx, &personID); err != nil {
+			return tokenRow{}, nil, err
+		}
+		if err := db.NewRaw(`SELECT id FROM recipient_access_generations WHERE id = ? AND person_id = ? FOR UPDATE`, accessID, personID).Scan(ctx, &accessID); err != nil {
+			return tokenRow{}, nil, err
+		}
+	}
 	query := `
 		SELECT invitation.id, invitation.token_hash, invitation.expires_at, invitation.accepted_at,
 		       invitation.revoked_at, invitation.superseded_at, access.id, access.state,
@@ -540,7 +570,7 @@ func lookupTokenIn(ctx context.Context, db bun.IDB, decoded []byte, lock bool) (
 		JOIN people AS person ON person.id = access.person_id AND person.archived_at IS NULL AND person.merged_at IS NULL
 		WHERE invitation.token_hash = ?`
 	if lock {
-		query += ` FOR UPDATE OF invitation, access`
+		query += ` FOR UPDATE OF invitation`
 	}
 	var row tokenRow
 	var expected []byte
@@ -564,6 +594,11 @@ func decodeToken(value string) ([]byte, error) {
 		return nil, ErrInvitationToken
 	}
 	return decoded, nil
+}
+
+func lockActorAndRecipient(ctx context.Context, tx bun.Tx, actorID, recipientID uuid.UUID) error {
+	_, err := tx.NewRaw(`SELECT id FROM people WHERE id IN (?, ?) ORDER BY id FOR NO KEY UPDATE`, actorID, recipientID).Exec(ctx)
+	return err
 }
 
 func curatorName(ctx context.Context, db bun.IDB, actorID uuid.UUID) (string, error) {

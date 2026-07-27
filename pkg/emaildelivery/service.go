@@ -272,6 +272,9 @@ func (s *Service) Handle(ctx context.Context, job worker.Job) error {
 		}
 		return worker.RetryAfter(time.Until(*message.NextRetryAt), diagnostic)
 	}
+	if invitationKind(message.Kind) {
+		return s.handleInvitationAttempt(ctx, job, message, retryStartedAt)
+	}
 	updated, err := s.db.NewRaw(`
 		UPDATE email_deliveries SET attempts = attempts + 1, updated_at = now()
 		WHERE id = ? AND status = 'queued' AND EXISTS (
@@ -326,42 +329,35 @@ func (s *Service) Handle(ctx context.Context, job worker.Job) error {
 	return worker.RetryAfter(delay, failure.Diagnostic)
 }
 
-func invitationKind(kind string) bool {
-	return kind == KindInvitationInitial || kind == KindInvitationAutomaticReminder || kind == KindInvitationManualReminder
-}
-
-func (s *Service) deliveryObsolete(ctx context.Context, message delivery) (bool, error) {
-	if message.Kind == KindSetupCode {
-		var obsolete bool
-		err := s.db.NewRaw(`SELECT setup_complete OR now() >= ? FROM system_settings WHERE id = 1`, message.DeliverBefore).Scan(ctx, &obsolete)
-		return obsolete, err
-	}
-	if message.InvitationID == nil {
-		return true, nil
-	}
-	var live bool
-	err := s.db.NewRaw(`
-		SELECT EXISTS (
-			SELECT 1 FROM invitations AS invitation
-			JOIN recipient_access_generations AS access ON access.id = invitation.recipient_access_generation_id AND access.is_current
-			JOIN recipient_emails AS email ON email.id = invitation.recipient_email_id AND email.is_current
-			JOIN people AS person ON person.id = access.person_id AND person.archived_at IS NULL AND person.merged_at IS NULL
-			WHERE invitation.id = ? AND invitation.accepted_at IS NULL AND invitation.revoked_at IS NULL
-			  AND invitation.superseded_at IS NULL AND invitation.expires_at > now()
-		)
-	`, *message.InvitationID).Scan(ctx, &live)
-	return !live, err
-}
-
-func (s *Service) recordSent(ctx context.Context, job worker.Job, message delivery) error {
-	return s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+func (s *Service) handleInvitationAttempt(ctx context.Context, job worker.Job, message delivery, retryStartedAt time.Time) error {
+	var outcome error
+	err := s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		var invitationID string
+		if err := tx.NewRaw(`SELECT id FROM invitations WHERE id = ? FOR UPDATE`, *message.InvitationID).Scan(ctx, &invitationID); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				if err := s.recordFailureIn(ctx, tx, job, message.ID, "delivery_expired"); err != nil {
+					return err
+				}
+				outcome = worker.Permanent("delivery_expired")
+				return nil
+			}
+			return err
+		}
+		obsolete, err := s.deliveryObsoleteIn(ctx, tx, message)
+		if err != nil {
+			return err
+		}
+		if obsolete {
+			if err := s.recordFailureIn(ctx, tx, job, message.ID, "delivery_expired"); err != nil {
+				return err
+			}
+			outcome = worker.Permanent("delivery_expired")
+			return nil
+		}
 		updated, err := tx.NewRaw(`
-			UPDATE email_deliveries SET status = 'sent', sent_at = now(), next_retry_at = NULL,
-				last_safe_error = NULL,
-				body = CASE WHEN kind = 'setup_code' OR kind LIKE 'invitation_%' THEN '' ELSE body END,
-				updated_at = now()
+			UPDATE email_deliveries SET attempts = attempts + 1, updated_at = clock_timestamp()
 			WHERE id = ? AND status = 'queued' AND EXISTS (
-				SELECT 1 FROM jobs WHERE id = ? AND status = 'running' AND lease_owner = ? AND lease_expires_at > now()
+				SELECT 1 FROM jobs WHERE id = ? AND status = 'running' AND lease_owner = ? AND lease_expires_at > clock_timestamp()
 			)
 		`, message.ID, job.ID, job.LeaseOwner).Exec(ctx)
 		if err != nil {
@@ -370,19 +366,121 @@ func (s *Service) recordSent(ctx context.Context, job worker.Job, message delive
 		if affected, _ := updated.RowsAffected(); affected != 1 {
 			return errDeliveryLeaseLost
 		}
-		if message.InvitationID == nil {
+		sendErr := s.sender.Send(ctx, smtp.Message{
+			ID: message.PublicID, To: message.Recipient, Subject: message.Subject, Body: message.Body,
+		})
+		if sendErr == nil {
+			return s.recordSentIn(ctx, tx, job, message)
+		}
+		failure := &smtp.DeliveryError{Diagnostic: "smtp_unavailable", Temporary: true}
+		if !errors.As(sendErr, &failure) {
+			failure = &smtp.DeliveryError{Diagnostic: "smtp_unavailable", Temporary: true}
+		}
+		if !failure.Temporary {
+			if err := s.recordFailureIn(ctx, tx, job, message.ID, failure.Diagnostic); err != nil {
+				return err
+			}
+			outcome = worker.Permanent(failure.Diagnostic)
 			return nil
 		}
-		column := "sent_at"
-		switch message.Kind {
-		case KindInvitationAutomaticReminder:
-			column = "automatic_reminded_at"
-		case KindInvitationManualReminder:
-			column = "last_manual_reminded_at"
+		delay := s.retryDelay(message.Attempts)
+		remaining := s.cfg.RetryWindow - time.Since(retryStartedAt)
+		if remaining <= 0 {
+			if err := s.recordFailureIn(ctx, tx, job, message.ID, "retry_window_exhausted"); err != nil {
+				return err
+			}
+			outcome = worker.Permanent("retry_window_exhausted")
+			return nil
 		}
-		_, err = tx.NewRaw(`UPDATE invitations SET `+column+` = now() WHERE id = ?`, *message.InvitationID).Exec(ctx)
-		return err
+		if delay > remaining {
+			delay = remaining
+		}
+		updated, err = tx.NewRaw(`
+			UPDATE email_deliveries SET last_safe_error = ?, next_retry_at = clock_timestamp() + (? * interval '1 microsecond'), updated_at = clock_timestamp()
+			WHERE id = ? AND status = 'queued' AND EXISTS (
+				SELECT 1 FROM jobs WHERE id = ? AND status = 'running' AND lease_owner = ? AND lease_expires_at > clock_timestamp()
+			)
+		`, failure.Diagnostic, delay.Microseconds(), message.ID, job.ID, job.LeaseOwner).Exec(ctx)
+		if err != nil {
+			return err
+		}
+		if affected, _ := updated.RowsAffected(); affected != 1 {
+			return errDeliveryLeaseLost
+		}
+		outcome = worker.RetryAfter(delay, failure.Diagnostic)
+		return nil
 	})
+	if err != nil {
+		return err
+	}
+	return outcome
+}
+
+func invitationKind(kind string) bool {
+	return kind == KindInvitationInitial || kind == KindInvitationAutomaticReminder || kind == KindInvitationManualReminder
+}
+
+func (s *Service) deliveryObsolete(ctx context.Context, message delivery) (bool, error) {
+	return s.deliveryObsoleteIn(ctx, s.db, message)
+}
+
+func (s *Service) deliveryObsoleteIn(ctx context.Context, db bun.IDB, message delivery) (bool, error) {
+	if message.Kind == KindSetupCode {
+		var obsolete bool
+		err := db.NewRaw(`SELECT setup_complete OR now() >= ? FROM system_settings WHERE id = 1`, message.DeliverBefore).Scan(ctx, &obsolete)
+		return obsolete, err
+	}
+	if message.InvitationID == nil {
+		return true, nil
+	}
+	var live bool
+	err := db.NewRaw(`
+		SELECT EXISTS (
+			SELECT 1 FROM invitations AS invitation
+			JOIN recipient_access_generations AS access ON access.id = invitation.recipient_access_generation_id AND access.is_current
+			JOIN recipient_emails AS email ON email.id = invitation.recipient_email_id AND email.is_current
+			JOIN people AS person ON person.id = access.person_id AND person.archived_at IS NULL AND person.merged_at IS NULL
+			WHERE invitation.id = ? AND invitation.accepted_at IS NULL AND invitation.revoked_at IS NULL
+			  AND invitation.superseded_at IS NULL AND invitation.expires_at > clock_timestamp()
+		)
+	`, *message.InvitationID).Scan(ctx, &live)
+	return !live, err
+}
+
+func (s *Service) recordSent(ctx context.Context, job worker.Job, message delivery) error {
+	return s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		return s.recordSentIn(ctx, tx, job, message)
+	})
+}
+
+func (s *Service) recordSentIn(ctx context.Context, tx bun.Tx, job worker.Job, message delivery) error {
+	updated, err := tx.NewRaw(`
+			UPDATE email_deliveries SET status = 'sent', sent_at = clock_timestamp(), next_retry_at = NULL,
+				last_safe_error = NULL,
+				body = CASE WHEN kind = 'setup_code' OR kind LIKE 'invitation_%' THEN '' ELSE body END,
+				updated_at = clock_timestamp()
+			WHERE id = ? AND status = 'queued' AND EXISTS (
+				SELECT 1 FROM jobs WHERE id = ? AND status = 'running' AND lease_owner = ? AND lease_expires_at > clock_timestamp()
+			)
+	`, message.ID, job.ID, job.LeaseOwner).Exec(ctx)
+	if err != nil {
+		return err
+	}
+	if affected, _ := updated.RowsAffected(); affected != 1 {
+		return errDeliveryLeaseLost
+	}
+	if message.InvitationID == nil {
+		return nil
+	}
+	column := "sent_at"
+	switch message.Kind {
+	case KindInvitationAutomaticReminder:
+		column = "automatic_reminded_at"
+	case KindInvitationManualReminder:
+		column = "last_manual_reminded_at"
+	}
+	_, err = tx.NewRaw(`UPDATE invitations SET `+column+` = clock_timestamp() WHERE id = ?`, *message.InvitationID).Exec(ctx)
+	return err
 }
 
 func (s *Service) persistedBody(message RequiredMessage) (string, error) {
@@ -472,25 +570,29 @@ func (s *Service) requireLease(ctx context.Context, job worker.Job) error {
 
 func (s *Service) recordFailure(ctx context.Context, job worker.Job, id int64, diagnostic string) error {
 	return s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
-		updated, err := tx.NewRaw(`
-			UPDATE email_deliveries SET status = 'failed', failed_at = now(), last_safe_error = ?,
-				next_retry_at = NULL,
-				body = CASE WHEN kind = 'setup_code' OR kind LIKE 'invitation_%' THEN '' ELSE body END,
-				updated_at = now()
-			WHERE id = ? AND status = 'queued' AND EXISTS (
-				SELECT 1 FROM jobs WHERE id = ? AND status = 'running' AND lease_owner = ? AND lease_expires_at > now()
-			)
-		`, diagnostic, id, job.ID, job.LeaseOwner).Exec(ctx)
-		if err != nil {
-			return err
-		}
-		if affected, _ := updated.RowsAffected(); affected != 1 {
-			return errDeliveryLeaseLost
-		}
-		_, err = tx.NewRaw(`
-			INSERT INTO delivery_problems (email_delivery_id, diagnostic)
-			VALUES (?, ?) ON CONFLICT (email_delivery_id) DO NOTHING
-		`, id, diagnostic).Exec(ctx)
-		return err
+		return s.recordFailureIn(ctx, tx, job, id, diagnostic)
 	})
+}
+
+func (s *Service) recordFailureIn(ctx context.Context, tx bun.Tx, job worker.Job, id int64, diagnostic string) error {
+	updated, err := tx.NewRaw(`
+		UPDATE email_deliveries SET status = 'failed', failed_at = clock_timestamp(), last_safe_error = ?,
+			next_retry_at = NULL,
+			body = CASE WHEN kind = 'setup_code' OR kind LIKE 'invitation_%' THEN '' ELSE body END,
+			updated_at = clock_timestamp()
+		WHERE id = ? AND status = 'queued' AND EXISTS (
+			SELECT 1 FROM jobs WHERE id = ? AND status = 'running' AND lease_owner = ? AND lease_expires_at > clock_timestamp()
+		)
+	`, diagnostic, id, job.ID, job.LeaseOwner).Exec(ctx)
+	if err != nil {
+		return err
+	}
+	if affected, _ := updated.RowsAffected(); affected != 1 {
+		return errDeliveryLeaseLost
+	}
+	_, err = tx.NewRaw(`
+		INSERT INTO delivery_problems (email_delivery_id, diagnostic)
+		VALUES (?, ?) ON CONFLICT (email_delivery_id) DO NOTHING
+	`, id, diagnostic).Exec(ctx)
+	return err
 }

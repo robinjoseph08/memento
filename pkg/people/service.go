@@ -382,6 +382,9 @@ func (s *Service) Update(ctx context.Context, actor setup.CuratorSession, id uui
 	now := s.now().UTC()
 	var updated Person
 	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if err := lockActorAndSubject(ctx, tx, actor.PersonID, id); err != nil {
+			return err
+		}
 		result, err := tx.NewRaw(`UPDATE people SET display_name = ?, sort_name = ?, version = version + 1, updated_at = ? WHERE id = ? AND version = ? AND merged_at IS NULL`, displayName, sortName, now, id, request.Version).Exec(ctx)
 		if err != nil {
 			return err
@@ -409,6 +412,9 @@ func (s *Service) Archive(ctx context.Context, actor setup.CuratorSession, id uu
 	now := s.now().UTC()
 	var archived Person
 	err := s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if err := lockActorAndSubject(ctx, tx, actor.PersonID, id); err != nil {
+			return err
+		}
 		var curator bool
 		if err := tx.NewRaw(`SELECT EXISTS (SELECT 1 FROM person_roles WHERE person_id = ? AND role = 'curator')`, id).Scan(ctx, &curator); err != nil {
 			return err
@@ -427,26 +433,31 @@ func (s *Service) Archive(ctx context.Context, actor setup.CuratorSession, id uu
 		if count == 0 {
 			return staleOrNotFound(ctx, tx, id)
 		}
-		if _, err := tx.NewRaw(`
-			UPDATE invitations AS invitation SET revoked_at = ?
-			FROM recipient_access_generations AS access
-			WHERE invitation.recipient_access_generation_id = access.id AND access.person_id = ? AND access.is_current
-			  AND invitation.accepted_at IS NULL AND invitation.revoked_at IS NULL AND invitation.superseded_at IS NULL
-		`, now, id).Exec(ctx); err != nil {
-			return err
+		var accessID uuid.UUID
+		accessErr := tx.NewRaw(`SELECT id FROM recipient_access_generations WHERE person_id = ? AND is_current FOR UPDATE`, id).Scan(ctx, &accessID)
+		if accessErr != nil && !errors.Is(accessErr, sql.ErrNoRows) {
+			return accessErr
 		}
-		if _, err := tx.NewRaw(`
-			UPDATE recipient_emails AS email SET is_current = false, ended_at = ?
-			FROM recipient_access_generations AS access
-			WHERE email.recipient_access_generation_id = access.id AND access.person_id = ? AND access.is_current AND email.is_current
-		`, now, id).Exec(ctx); err != nil {
-			return err
-		}
-		if _, err := tx.NewRaw(`
-			UPDATE recipient_access_generations SET state = 'revoked', is_current = false, ended_at = ?, updated_at = ?
-			WHERE person_id = ? AND is_current
-		`, now, now, id).Exec(ctx); err != nil {
-			return err
+		if accessErr == nil {
+			if _, err := tx.NewRaw(`
+				UPDATE invitations SET revoked_at = ?
+				WHERE recipient_access_generation_id = ?
+				  AND accepted_at IS NULL AND revoked_at IS NULL AND superseded_at IS NULL
+			`, now, accessID).Exec(ctx); err != nil {
+				return err
+			}
+			if _, err := tx.NewRaw(`
+				UPDATE recipient_emails SET is_current = false, ended_at = ?
+				WHERE recipient_access_generation_id = ? AND is_current
+			`, now, accessID).Exec(ctx); err != nil {
+				return err
+			}
+			if err := execExactlyOne(ctx, tx, `
+				UPDATE recipient_access_generations SET state = 'revoked', is_current = false, ended_at = ?, updated_at = ?
+				WHERE id = ? AND is_current
+			`, now, now, accessID); err != nil {
+				return err
+			}
 		}
 		if _, err := tx.NewRaw(`UPDATE sessions SET revoked_at = ? WHERE person_id = ? AND revoked_at IS NULL`, now, id).Exec(ctx); err != nil {
 			return err
@@ -609,8 +620,10 @@ func (s *Service) Merge(ctx context.Context, actor setup.CuratorSession, request
 			return err
 		}
 		// The graph lock precedes stable parent and child-row locks across Family mutations and Person merges.
+		if _, err := tx.NewRaw(`SELECT id FROM people WHERE id IN (?, ?, ?) ORDER BY id FOR NO KEY UPDATE`, actor.PersonID, sourceID, survivorID).Exec(ctx); err != nil {
+			return err
+		}
 		for _, lock := range []string{
-			`SELECT id FROM people WHERE id IN (?, ?) ORDER BY id FOR UPDATE`,
 			`SELECT person_id FROM person_roles WHERE person_id IN (?, ?) ORDER BY person_id, role FOR UPDATE`,
 			`SELECT id FROM recipient_access_generations WHERE person_id IN (?, ?) ORDER BY id FOR UPDATE`,
 			`SELECT email.id FROM recipient_emails AS email JOIN recipient_access_generations AS access ON access.id = email.recipient_access_generation_id WHERE access.person_id IN (?, ?) ORDER BY email.id FOR UPDATE OF email`,
@@ -620,7 +633,7 @@ func (s *Service) Merge(ctx context.Context, actor setup.CuratorSession, request
 				return err
 			}
 		}
-		currentPreview, err := previewMerge(ctx, tx, actor, sourceID, survivorID, true)
+		currentPreview, err := previewMerge(ctx, tx, actor, sourceID, survivorID, false)
 		if err != nil {
 			return err
 		}
@@ -738,6 +751,11 @@ func (s *Service) Merge(ctx context.Context, actor setup.CuratorSession, request
 		return Person{}, err
 	}
 	return merged, nil
+}
+
+func lockActorAndSubject(ctx context.Context, tx bun.Tx, actorID, subjectID uuid.UUID) error {
+	_, err := tx.NewRaw(`SELECT id FROM people WHERE id IN (?, ?) ORDER BY id FOR NO KEY UPDATE`, actorID, subjectID).Exec(ctx)
+	return err
 }
 
 func execExactlyOne(ctx context.Context, tx bun.Tx, query string, args ...any) error {
