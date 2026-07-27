@@ -34,3 +34,7 @@ packages:
     output_path: "app/types/generated/events.ts"
     fallback_type: unknown
     preserve_comments: none
+  - path: "github.com/robinjoseph08/memento/pkg/repairs"
+    output_path: "app/types/generated/repairs.ts"
+    fallback_type: unknown
+    preserve_comments: none

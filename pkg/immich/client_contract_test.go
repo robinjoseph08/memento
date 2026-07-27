@@ -89,6 +89,10 @@ func TestImmichV303LiveContract(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, page.Items)
 	assert.Nil(t, page.NextPage)
+
+	people, err := client.People(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, people)
 }
 
 func contractPOST(

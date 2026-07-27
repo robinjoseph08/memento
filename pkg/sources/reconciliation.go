@@ -288,8 +288,34 @@ func (s *Service) applyValidatedSnapshot(
 		}
 		removals = int(removed)
 		if _, err := tx.NewRaw(`
+			UPDATE media_items AS media SET availability = 'source_missing', updated_at = ?
+			WHERE availability = 'current'
+			  AND NOT EXISTS (SELECT 1 FROM source_album_memberships WHERE media_item_id = media.id)
+		`, now).Exec(ctx); err != nil {
+			return 0, 0, 0, err
+		}
+		if err := proposeMediaRepairs(ctx, tx, now); err != nil {
+			return 0, 0, 0, err
+		}
+		// Evidence-free additions predate repair support and have no safe identity seam to preserve.
+		if _, err := tx.NewRaw(`
+			DELETE FROM media_backings AS backing
+			WHERE backing.active AND backing.checksum IS NULL
+			  AND EXISTS (
+				SELECT 1 FROM media_items AS media WHERE media.id = backing.media_item_id
+				  AND media.availability = 'source_missing'
+				  AND NOT EXISTS (SELECT 1 FROM source_album_memberships WHERE media_item_id = media.id)
+				  AND NOT EXISTS (SELECT 1 FROM media_repair_candidates WHERE media_item_id = media.id)
+			  )
+		`).Exec(ctx); err != nil {
+			return 0, 0, 0, err
+		}
+		if _, err := tx.NewRaw(`
 			DELETE FROM media_items AS media
-			WHERE NOT EXISTS (SELECT 1 FROM source_album_memberships WHERE media_item_id = media.id)
+			WHERE availability = 'source_missing'
+			  AND NOT EXISTS (SELECT 1 FROM source_album_memberships WHERE media_item_id = media.id)
+			  AND NOT EXISTS (SELECT 1 FROM media_backings WHERE media_item_id = media.id)
+			  AND NOT EXISTS (SELECT 1 FROM media_repair_candidates WHERE media_item_id = media.id)
 			  AND NOT EXISTS (SELECT 1 FROM draft_media_placements WHERE media_item_id = media.id)
 			  AND NOT EXISTS (SELECT 1 FROM loose_items WHERE media_item_id = media.id)
 		`).Exec(ctx); err != nil {
@@ -320,11 +346,16 @@ func (s *Service) applyValidatedSnapshot(
 
 type databaseMediaItem struct {
 	PortalID          uuid.UUID `json:"portal_id"`
+	BackingID         uuid.UUID `json:"backing_id"`
 	ImmichAssetID     uuid.UUID `json:"immich_asset_id"`
 	MediaType         string    `json:"media_type"`
 	Width             *int      `json:"width"`
 	Height            *int      `json:"height"`
 	LocalDateTime     *string   `json:"local_date_time"`
+	CaptureAt         string    `json:"capture_at"`
+	Checksum          string    `json:"checksum"`
+	Filename          string    `json:"filename"`
+	OriginalPath      string    `json:"original_path"`
 	SourceFingerprint string    `json:"source_fingerprint"`
 }
 
@@ -338,10 +369,15 @@ func upsertMediaItemBatch(ctx context.Context, tx bun.Tx, sourceAlbumID uuid.UUI
 		if err != nil {
 			return err
 		}
+		backingID, err := uuid.NewRandom()
+		if err != nil {
+			return err
+		}
 		fingerprint := fingerprintAsset(asset)
 		rows = append(rows, databaseMediaItem{
-			PortalID: portalID, ImmichAssetID: asset.SourceID, MediaType: asset.MediaType,
+			PortalID: portalID, BackingID: backingID, ImmichAssetID: asset.SourceID, MediaType: asset.MediaType,
 			Width: asset.Width, Height: asset.Height, LocalDateTime: asset.LocalDateTime,
+			CaptureAt: asset.CaptureAt, Checksum: asset.Checksum, Filename: asset.Filename, OriginalPath: asset.OriginalPath,
 			SourceFingerprint: hex.EncodeToString(fingerprint[:]),
 		})
 	}
@@ -350,8 +386,9 @@ func upsertMediaItemBatch(ctx context.Context, tx bun.Tx, sourceAlbumID uuid.UUI
 		return err
 	}
 	incoming := `jsonb_to_recordset(?::jsonb) AS incoming(
-		portal_id uuid, immich_asset_id uuid, media_type text, width integer,
-		height integer, local_date_time text, source_fingerprint text
+		portal_id uuid, backing_id uuid, immich_asset_id uuid, media_type text, width integer,
+		height integer, local_date_time text, capture_at text, checksum text,
+		filename text, original_path text, source_fingerprint text
 	)`
 	if _, err := tx.NewRaw(`
 		INSERT INTO media_items (
@@ -361,9 +398,23 @@ func upsertMediaItemBatch(ctx context.Context, tx bun.Tx, sourceAlbumID uuid.UUI
 		FROM `+incoming+`
 		ON CONFLICT (immich_asset_id) DO UPDATE SET
 			media_type = EXCLUDED.media_type, width = EXCLUDED.width, height = EXCLUDED.height,
-			local_date_time = EXCLUDED.local_date_time, last_seen_at = EXCLUDED.last_seen_at,
+			local_date_time = EXCLUDED.local_date_time, availability = 'current', last_seen_at = EXCLUDED.last_seen_at,
 			updated_at = EXCLUDED.updated_at
 	`, now, now, now, string(payload)).Exec(ctx); err != nil {
+		return err
+	}
+	if _, err := tx.NewRaw(`
+		INSERT INTO media_backings (
+			id, media_item_id, immich_asset_id, checksum, capture_at, filename, original_path, linked_at
+		)
+		SELECT incoming.backing_id, media.id, incoming.immich_asset_id,
+			NULLIF(incoming.checksum, ''), NULLIF(incoming.capture_at, ''), incoming.filename, incoming.original_path, ?
+		FROM `+incoming+`
+		JOIN media_items AS media ON media.immich_asset_id = incoming.immich_asset_id
+		ON CONFLICT (immich_asset_id) WHERE active DO UPDATE SET
+			checksum = EXCLUDED.checksum, capture_at = EXCLUDED.capture_at,
+			filename = EXCLUDED.filename, original_path = EXCLUDED.original_path
+	`, now, string(payload)).Exec(ctx); err != nil {
 		return err
 	}
 	_, err = tx.NewRaw(`
@@ -378,6 +429,30 @@ func upsertMediaItemBatch(ctx context.Context, tx bun.Tx, sourceAlbumID uuid.UUI
 			last_seen_at = EXCLUDED.last_seen_at,
 			source_fingerprint = EXCLUDED.source_fingerprint
 	`, sourceAlbumID, now, now, string(payload)).Exec(ctx)
+	return err
+}
+
+func proposeMediaRepairs(ctx context.Context, tx bun.Tx, now time.Time) error {
+	_, err := tx.NewRaw(`
+		INSERT INTO media_repair_candidates (
+			id, media_item_id, candidate_media_item_id, previous_immich_asset_id,
+			candidate_immich_asset_id, conflict_evidence, created_at
+		)
+		SELECT gen_random_uuid(), missing.media_item_id, addition.media_item_id,
+			missing.immich_asset_id, addition.immich_asset_id,
+			CASE WHEN count(*) OVER (PARTITION BY missing.checksum) > 1
+				THEN jsonb_build_array('checksum_matches_multiple_media') ELSE '[]'::jsonb END,
+			?
+		FROM media_backings AS missing
+		JOIN media_items AS missing_item ON missing_item.id = missing.media_item_id
+		JOIN media_backings AS addition ON addition.checksum = missing.checksum AND addition.media_item_id <> missing.media_item_id
+		JOIN media_items AS addition_item ON addition_item.id = addition.media_item_id
+		WHERE missing.active AND addition.active AND missing.checksum IS NOT NULL
+		  AND missing_item.availability = 'source_missing' AND addition_item.availability = 'current'
+		ON CONFLICT (media_item_id, candidate_immich_asset_id) WHERE state = 'pending' DO UPDATE SET
+			candidate_media_item_id = EXCLUDED.candidate_media_item_id,
+			conflict_evidence = EXCLUDED.conflict_evidence
+	`, now).Exec(ctx)
 	return err
 }
 

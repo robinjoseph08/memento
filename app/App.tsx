@@ -10,6 +10,7 @@ import { useSearchParams } from "react-router-dom";
 import { APIError, apiJSON, apiNoContent } from "./api";
 import { FamilyManager } from "./FamilyManager";
 import { PeopleManager } from "./PeopleManager";
+import { RepairWorkspace } from "./RepairWorkspace";
 import type {
   AvailabilityResponse,
   CompleteRequest,
@@ -696,6 +697,9 @@ function ReadyCard({
         <FamilyManager session={session} />
         <section className="shell-card curator-card">
           <SourceWorkspace onSignOut={onSignOut} session={session} />
+        </section>
+        <section className="shell-card curator-card">
+          <RepairWorkspace csrfToken={session.csrf_token} />
         </section>
       </>
     );

@@ -96,6 +96,15 @@ func reconciliationAsset(id uuid.UUID) immich.AssetSummary {
 	}
 }
 
+func repairableReconciliationAsset(id uuid.UUID, path string) immich.AssetSummary {
+	asset := reconciliationAsset(id)
+	asset.CaptureAt = "2026-01-01T10:00:00Z"
+	asset.Checksum = "1111111111111111111111111111111111111111"
+	asset.Filename = "family.jpg"
+	asset.OriginalPath = path
+	return asset
+}
+
 func newReconciliationService(t *testing.T, connector Connector) (*Service, uuid.UUID) {
 	t.Helper()
 	service := newSourceService(t, connector)
@@ -456,6 +465,74 @@ func TestReconciliationRetainsMediaReferencedByEventAndLooseDrafts(t *testing.T)
 			assert.Equal(t, 1, draftCount)
 		})
 	}
+}
+
+func TestDeleteReimportAndPathMoveStayAddRemoveUntilRepairConfirmation(t *testing.T) {
+	oldAsset := repairableReconciliationAsset(uuid.New(), "/library/old/family.jpg")
+	connector := &reconciliationConnector{summary: sourceAlbum(uuid.New(), "Repair album", 1)}
+	connector.pages = map[int]immich.AssetPage{1: {Items: []immich.AssetSummary{oldAsset}}}
+	service, sourceAlbumID := newReconciliationService(t, connector)
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	var stableMediaID uuid.UUID
+	require.NoError(t, service.db.NewRaw(`SELECT id FROM media_items WHERE immich_asset_id = ?`, oldAsset.SourceID).Scan(context.Background(), &stableMediaID))
+
+	moved := repairableReconciliationAsset(uuid.New(), "/library/moved/family.jpg")
+	connector.setMembership(moved)
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	assertTableCount(t, service, "source_album_memberships", 2)
+	assertTableCount(t, service, "media_items", 2)
+	var candidates int
+	require.NoError(t, service.db.NewRaw(`SELECT count(*) FROM media_repair_candidates`).Scan(context.Background(), &candidates))
+	assert.Zero(t, candidates, "one pass remains an addition plus a possible removal")
+
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	assertTableCount(t, service, "source_album_memberships", 1)
+	assertTableCount(t, service, "media_items", 2)
+	type candidateRow struct {
+		MediaItemID, PreviousID, CandidateID uuid.UUID
+		State                                string
+	}
+	var candidate candidateRow
+	require.NoError(t, service.db.NewRaw(`
+		SELECT media_item_id, previous_immich_asset_id AS previous_id,
+			candidate_immich_asset_id AS candidate_id, state
+		FROM media_repair_candidates
+	`).Scan(context.Background(), &candidate))
+	assert.Equal(t, stableMediaID, candidate.MediaItemID)
+	assert.Equal(t, oldAsset.SourceID, candidate.PreviousID)
+	assert.Equal(t, moved.SourceID, candidate.CandidateID)
+	assert.Equal(t, "pending", candidate.State)
+	var oldPath, newPath, checksum string
+	require.NoError(t, service.db.NewRaw(`
+		SELECT old.original_path, replacement.original_path, old.checksum
+		FROM media_repair_candidates AS repair
+		JOIN media_backings AS old ON old.immich_asset_id = repair.previous_immich_asset_id
+		JOIN media_backings AS replacement ON replacement.immich_asset_id = repair.candidate_immich_asset_id
+	`).Scan(context.Background(), &oldPath, &newPath, &checksum))
+	assert.Equal(t, "/library/old/family.jpg", oldPath)
+	assert.Equal(t, "/library/moved/family.jpg", newPath)
+	assert.Equal(t, oldAsset.Checksum, checksum)
+}
+
+func TestAmbiguousChecksumCandidatesExposeConflictEvidence(t *testing.T) {
+	first := repairableReconciliationAsset(uuid.New(), "/library/a/family.jpg")
+	second := repairableReconciliationAsset(uuid.New(), "/library/b/family.jpg")
+	connector := &reconciliationConnector{summary: sourceAlbum(uuid.New(), "Ambiguous album", 2)}
+	connector.pages = map[int]immich.AssetPage{1: {Items: []immich.AssetSummary{first, second}}}
+	service, sourceAlbumID := newReconciliationService(t, connector)
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+
+	replacement := repairableReconciliationAsset(uuid.New(), "/library/new/family.jpg")
+	connector.setMembership(replacement)
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	var pending, conflicted int
+	require.NoError(t, service.db.NewRaw(`
+		SELECT count(*), count(*) FILTER (WHERE conflict_evidence ? 'checksum_matches_multiple_media')
+		FROM media_repair_candidates WHERE state = 'pending'
+	`).Scan(context.Background(), &pending, &conflicted))
+	assert.Equal(t, 2, pending)
+	assert.Equal(t, 2, conflicted)
 }
 
 func TestConflictingDuplicateAndNonAdvancingPagesAreUnstable(t *testing.T) {
