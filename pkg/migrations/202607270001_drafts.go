@@ -98,7 +98,6 @@ func init() {
 					`ALTER TABLE media_items DROP CONSTRAINT media_items_local_date_time_check`,
 					`ALTER TABLE media_items ADD CONSTRAINT media_items_local_date_time_check
 						CHECK (local_date_time <> '' AND char_length(local_date_time) <= 64)`,
-					`ALTER TABLE media_items ALTER COLUMN local_date_time SET NOT NULL`,
 					`UPDATE source_albums SET disposition = 'unreviewed' WHERE disposition = 'drafted'`,
 					`ALTER TABLE source_albums DROP CONSTRAINT source_albums_disposition_check`,
 					`ALTER TABLE source_albums ADD CONSTRAINT source_albums_disposition_check

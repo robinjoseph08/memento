@@ -1,3 +1,6 @@
+type_mappings:
+  time.Time: "string /* RFC3339 */"
+
 packages:
   - path: "github.com/robinjoseph08/memento/pkg/emaildelivery"
     output_path: "app/types/generated/emaildelivery.ts"

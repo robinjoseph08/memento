@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -172,6 +173,55 @@ func TestDraftsCombineAndDivideSourcesWhileReusingStableMediaIdentities(t *testi
 	assert.Equal(t, []string{"drafted", "drafted"}, dispositions)
 }
 
+func TestConcurrentEventReadsDoNotStarveTheConnectionPool(t *testing.T) {
+	fixture := newDraftFixture(t)
+	ctx := context.Background()
+	event, err := fixture.service.CreateEvent(ctx, fixture.actor, CreateEventRequest{
+		SourceAlbumIDs: []string{fixture.sources["first"].String(), fixture.sources["second"].String()},
+		Timezone:       "UTC",
+	})
+	require.NoError(t, err)
+	fixture.db.SetMaxOpenConns(2)
+	start := make(chan struct{})
+	results := make(chan error, 4)
+	for range 4 {
+		go func() {
+			<-start
+			_, err := fixture.service.GetEvent(ctx, uuid.MustParse(event.ID))
+			results <- err
+		}()
+	}
+	close(start)
+	for range 4 {
+		select {
+		case err := <-results:
+			require.NoError(t, err)
+		case <-time.After(2 * time.Second):
+			t.Fatal("concurrent Event reads starved the database connection pool")
+		}
+	}
+}
+
+func TestSourceMediaListsOnlySelectableStableMediaIdentities(t *testing.T) {
+	fixture := newDraftFixture(t)
+	ctx := context.Background()
+	first, err := fixture.service.SourceMedia(ctx, fixture.sources["first"])
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{
+		fixture.media["shared"].String(), fixture.media["first_only"].String(), fixture.media["unknown"].String(),
+	}, mediaIDs(first.MediaItems))
+	assert.NotContains(t, mediaIDs(first.MediaItems), fixture.media["second_only"].String())
+
+	second, err := fixture.service.SourceMedia(ctx, fixture.sources["second"])
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{
+		fixture.media["shared"].String(), fixture.media["second_only"].String(),
+	}, mediaIDs(second.MediaItems))
+
+	_, err = fixture.service.SourceMedia(ctx, fixture.sources["ignored"])
+	require.ErrorIs(t, err, ErrSourceUnavailable)
+}
+
 func TestRecipientSessionsCannotSeeDraftRoutesBeforePublication(t *testing.T) {
 	fixture := newDraftFixture(t)
 	ctx := context.Background()
@@ -181,7 +231,7 @@ func TestRecipientSessionsCannotSeeDraftRoutesBeforePublication(t *testing.T) {
 		Timezone:       "UTC",
 	})
 	require.NoError(t, err)
-	looseItem, err := fixture.service.CreateLooseItem(ctx, fixture.actor, CreateLooseItemRequest{
+	looseItem, _, err := fixture.service.CreateLooseItem(ctx, fixture.actor, CreateLooseItemRequest{
 		MediaItemID: fixture.media["unknown"].String(), Timezone: "UTC",
 	})
 	require.NoError(t, err)
@@ -208,6 +258,51 @@ func TestRecipientSessionsCannotSeeDraftRoutesBeforePublication(t *testing.T) {
 		assert.Equal(t, http.StatusNotFound, response.Code, "%s %s", test.method, test.path)
 		assert.NotContains(t, response.Body.String(), event.ID)
 		assert.NotContains(t, response.Body.String(), looseItem.ID)
+	}
+}
+
+func TestDraftRoutesRecordRequestAttributionAndReportLooseItemCreationStatus(t *testing.T) {
+	fixture := newDraftFixture(t)
+	ctx := context.Background()
+	_, err := fixture.db.NewRaw(`INSERT INTO person_roles (person_id, role) VALUES (?, 'curator')`, fixture.actor.PersonID).Exec(ctx)
+	require.NoError(t, err)
+	setupService := setup.New(fixture.db, nil, config.SecurityConfig{Secret: "draft-route-audit-test-secret"})
+	session, err := setupService.Session(ctx, fixture.credential)
+	require.NoError(t, err)
+	e := draftHTTP(fixture.service, setupService)
+	post := func(path, body string) *httptest.ResponseRecorder {
+		request := httptest.NewRequestWithContext(ctx, http.MethodPost, path, strings.NewReader(body))
+		request.RemoteAddr = "203.0.113.10:1234"
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("User-Agent", "memento-integration-test")
+		request.Header.Set(setup.CSRFHeader, session.CSRFToken)
+		request.AddCookie(&http.Cookie{Name: setup.CookieName, Value: fixture.credential})
+		response := httptest.NewRecorder()
+		e.ServeHTTP(response, request)
+		return response
+	}
+
+	eventResponse := post("/api/events", fmt.Sprintf(
+		`{"source_album_ids":[%q],"media_item_ids":[%q],"timezone":"UTC"}`,
+		fixture.sources["first"], fixture.media["first_only"],
+	))
+	assert.Equal(t, http.StatusCreated, eventResponse.Code)
+	looseBody := fmt.Sprintf(`{"media_item_id":%q,"timezone":"UTC"}`, fixture.media["unknown"])
+	assert.Equal(t, http.StatusCreated, post("/api/loose-items", looseBody).Code)
+	assert.Equal(t, http.StatusOK, post("/api/loose-items", looseBody).Code)
+
+	var audits []struct {
+		ClientIP  string `bun:"client_ip"`
+		UserAgent string `bun:"user_agent"`
+	}
+	require.NoError(t, fixture.db.NewRaw(`
+		SELECT host(client_ip) AS client_ip, user_agent FROM security_audit_events
+		WHERE action IN ('event_draft_created', 'loose_item_draft_created') ORDER BY action
+	`).Scan(ctx, &audits))
+	require.Len(t, audits, 2)
+	for _, audit := range audits {
+		assert.Equal(t, "203.0.113.10", audit.ClientIP)
+		assert.Equal(t, "memento-integration-test", audit.UserAgent)
 	}
 }
 
@@ -240,18 +335,20 @@ func TestEventMetadataRemainsPortalOwnedWhileSourceChangesBecomeSuggestions(t *t
 func TestLooseItemsReuseMediaIdentityAndKeepUnknownDatesUnassigned(t *testing.T) {
 	fixture := newDraftFixture(t)
 	ctx := context.Background()
-	created, err := fixture.service.CreateLooseItem(ctx, fixture.actor, CreateLooseItemRequest{
+	created, inserted, err := fixture.service.CreateLooseItem(ctx, fixture.actor, CreateLooseItemRequest{
 		MediaItemID: fixture.media["unknown"].String(), Timezone: "Pacific/Auckland", Title: "A loose photo",
 	})
 	require.NoError(t, err)
+	assert.True(t, inserted)
 	assert.Equal(t, fixture.media["unknown"].String(), created.MediaItem.ID)
 	assert.Nil(t, created.ProposedDay)
 	assert.Equal(t, "draft", created.Lifecycle)
 
-	retried, err := fixture.service.CreateLooseItem(ctx, fixture.actor, CreateLooseItemRequest{
+	retried, inserted, err := fixture.service.CreateLooseItem(ctx, fixture.actor, CreateLooseItemRequest{
 		MediaItemID: fixture.media["unknown"].String(), Timezone: "UTC", Title: "Retry must not overwrite",
 	})
 	require.NoError(t, err)
+	assert.False(t, inserted)
 	assert.Equal(t, created.ID, retried.ID)
 	assert.Equal(t, "A loose photo", retried.Title)
 	assert.Equal(t, "Pacific/Auckland", retried.GroupingTimezone)
@@ -261,6 +358,31 @@ func TestLooseItemsReuseMediaIdentityAndKeepUnknownDatesUnassigned(t *testing.T)
 	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM security_audit_events WHERE action = 'loose_item_draft_created'`).Scan(ctx, &auditRows))
 	assert.Equal(t, 1, looseRows)
 	assert.Equal(t, 1, auditRows)
+}
+
+func TestDraftMetadataLimitsCountUnicodeCharacters(t *testing.T) {
+	fixture := newDraftFixture(t)
+	ctx := context.Background()
+	title := strings.Repeat("🎉", 240)
+	description := strings.Repeat("家", 2000)
+	event, err := fixture.service.CreateEvent(ctx, fixture.actor, CreateEventRequest{
+		SourceAlbumIDs: []string{fixture.sources["first"].String()},
+		MediaItemIDs:   []string{fixture.media["first_only"].String()},
+		Timezone:       "UTC",
+		Title:          title,
+		Description:    description,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, title, event.Title)
+	assert.Equal(t, description, event.Description)
+
+	looseItem, inserted, err := fixture.service.CreateLooseItem(ctx, fixture.actor, CreateLooseItemRequest{
+		MediaItemID: fixture.media["unknown"].String(), Timezone: "UTC", Title: title, Description: description,
+	})
+	require.NoError(t, err)
+	assert.True(t, inserted)
+	assert.Equal(t, title, looseItem.Title)
+	assert.Equal(t, description, looseItem.Description)
 }
 
 func TestInvalidDraftInputsRollBackWithoutCreatingPrivateState(t *testing.T) {
@@ -318,7 +440,7 @@ func TestDraftAuditFailuresRollBackEventAndLooseItemCreation(t *testing.T) {
 					Timezone:       "UTC",
 				})
 			} else {
-				_, err = fixture.service.CreateLooseItem(ctx, fixture.actor, CreateLooseItemRequest{
+				_, _, err = fixture.service.CreateLooseItem(ctx, fixture.actor, CreateLooseItemRequest{
 					MediaItemID: fixture.media["first_only"].String(), Timezone: "UTC",
 				})
 			}
@@ -351,7 +473,7 @@ func TestDraftLookupsAndLooseItemValidationFailClosed(t *testing.T) {
 		{MediaItemID: fixture.media["first_only"].String(), Timezone: "Mars/Olympus"},
 		{MediaItemID: uuid.NewString(), Timezone: "UTC"},
 	} {
-		_, err := fixture.service.CreateLooseItem(ctx, fixture.actor, request)
+		_, _, err := fixture.service.CreateLooseItem(ctx, fixture.actor, request)
 		require.Error(t, err)
 		assert.True(t, errors.Is(err, ErrInvalid) || errors.Is(err, ErrMediaUnavailable))
 	}

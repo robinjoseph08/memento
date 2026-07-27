@@ -26,6 +26,10 @@ func (authorizer *draftAuthorizer) AuthorizeCurator(_ context.Context, _, _ stri
 	return authorizer.actor, authorizer.err
 }
 
+func (authorizer *draftAuthorizer) ContextWithRequestMetadata(ctx context.Context, _ *http.Request) context.Context {
+	return ctx
+}
+
 func draftHTTP(service *Service, authorizer Authorizer) *echo.Echo {
 	e := echo.New()
 	requestBinder, err := binder.New()

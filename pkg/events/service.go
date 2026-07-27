@@ -10,11 +10,14 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/robinjoseph08/memento/pkg/setup"
 	"github.com/uptrace/bun"
 )
+
+const maxDraftMediaItems = 100000
 
 var (
 	ErrNotFound          = errors.New("draft not found")
@@ -26,27 +29,27 @@ var (
 // CreateEventRequest initializes one portal-owned Event from selected Source material.
 type CreateEventRequest struct {
 	SourceAlbumIDs []string `json:"source_album_ids" validate:"required,min=1,max=100"`
-	MediaItemIDs   []string `json:"media_item_ids" validate:"max=100000"`
+	MediaItemIDs   []string `json:"media_item_ids,omitempty" validate:"max=100000"`
 	Timezone       string   `json:"timezone" validate:"required,max=100"`
-	Title          string   `json:"title" validate:"max=240" mod:"trim"`
-	Description    string   `json:"description" validate:"max=2000" mod:"trim"`
+	Title          string   `json:"title,omitempty" validate:"max=240" mod:"trim"`
+	Description    string   `json:"description,omitempty" validate:"max=2000" mod:"trim"`
 }
 
 // CreateLooseItemRequest initializes a private Loose item around an existing Media identity.
 type CreateLooseItemRequest struct {
 	MediaItemID string `json:"media_item_id" validate:"required"`
 	Timezone    string `json:"timezone" validate:"required,max=100"`
-	Title       string `json:"title" validate:"max=240" mod:"trim"`
-	Description string `json:"description" validate:"max=2000" mod:"trim"`
+	Title       string `json:"title,omitempty" validate:"max=240" mod:"trim"`
+	Description string `json:"description,omitempty" validate:"max=2000" mod:"trim"`
 }
 
 // MediaItem is the portal-owned, path-free representation used while organizing drafts.
 type MediaItem struct {
 	ID            string  `json:"id"`
 	MediaType     string  `json:"media_type"`
-	Width         *int    `json:"width"`
-	Height        *int    `json:"height"`
-	LocalDateTime *string `json:"local_date_time"`
+	Width         *int    `json:"width" tstype:"number | null,required"`
+	Height        *int    `json:"height" tstype:"number | null,required"`
+	LocalDateTime *string `json:"local_date_time" tstype:"string | null,required"`
 }
 
 // Moment is an initial local-day proposal. Recipients never receive this draft type.
@@ -66,7 +69,7 @@ type SourceMetadataSuggestion struct {
 // EventSource records private provenance through a stable portal Source identity.
 type EventSource struct {
 	ID                 string                    `json:"id"`
-	MetadataSuggestion *SourceMetadataSuggestion `json:"metadata_suggestion"`
+	MetadataSuggestion *SourceMetadataSuggestion `json:"metadata_suggestion" tstype:"SourceMetadataSuggestion | null,required"`
 }
 
 // Event is a portal-owned private draft.
@@ -91,7 +94,7 @@ type LooseItem struct {
 	Title            string    `json:"title"`
 	Description      string    `json:"description"`
 	GroupingTimezone string    `json:"grouping_timezone"`
-	ProposedDay      *string   `json:"proposed_day"`
+	ProposedDay      *string   `json:"proposed_day" tstype:"string | null,required"`
 	Version          int64     `json:"version"`
 	MediaItem        MediaItem `json:"media_item"`
 	CreatedAt        time.Time `json:"created_at"`
@@ -103,7 +106,7 @@ type SourceMediaResponse struct {
 	MediaItems []MediaItem `json:"media_items"`
 }
 
-// Service persists private editable drafts without contacting or mutating Immich.
+// Service persists private drafts without contacting or mutating Immich.
 type Service struct {
 	db  *bun.DB
 	now func() time.Time
@@ -132,6 +135,18 @@ type mediaRecord struct {
 	momentID      uuid.UUID
 }
 
+type draftMomentRow struct {
+	ID          uuid.UUID `json:"id"`
+	Position    int       `json:"position"`
+	ProposedDay string    `json:"proposed_day"`
+}
+
+type draftPlacementRow struct {
+	MediaItemID   uuid.UUID  `json:"media_item_id"`
+	DraftMomentID *uuid.UUID `json:"draft_moment_id"`
+	Position      int        `json:"position"`
+}
+
 // CreateEvent creates stable Event and Moment identities in one transaction.
 func (s *Service) CreateEvent(ctx context.Context, actor setup.CuratorSession, request CreateEventRequest) (Event, error) {
 	location, err := draftLocation(request.Timezone)
@@ -142,6 +157,9 @@ func (s *Service) CreateEvent(ctx context.Context, actor setup.CuratorSession, r
 	if err != nil || len(sourceIDs) == 0 {
 		return Event{}, ErrInvalid
 	}
+	if len(request.MediaItemIDs) > maxDraftMediaItems {
+		return Event{}, ErrInvalid
+	}
 	selectedIDs, err := parseUniqueIDs(request.MediaItemIDs)
 	if err != nil {
 		return Event{}, ErrInvalid
@@ -149,6 +167,7 @@ func (s *Service) CreateEvent(ctx context.Context, actor setup.CuratorSession, r
 
 	eventID := uuid.New()
 	now := s.now().UTC()
+	var created Event
 	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 		sources, err := lockSources(ctx, tx, sourceIDs)
 		if err != nil {
@@ -171,7 +190,7 @@ func (s *Service) CreateEvent(ctx context.Context, actor setup.CuratorSession, r
 		if description == "" && len(sourceIDs) == 1 {
 			description = sources[sourceIDs[0]].Description
 		}
-		if title == "" || len(title) > 240 || len(description) > 2000 {
+		if title == "" || utf8.RuneCountInString(title) > 240 || utf8.RuneCountInString(description) > 2000 {
 			return ErrInvalid
 		}
 		if _, err := tx.NewRaw(`
@@ -193,7 +212,7 @@ func (s *Service) CreateEvent(ctx context.Context, actor setup.CuratorSession, r
 		}
 
 		momentByDay := make(map[string]uuid.UUID)
-		momentPosition := 0
+		moments := make([]draftMomentRow, 0)
 		for index := range media {
 			if media[index].day == nil {
 				continue
@@ -202,27 +221,28 @@ func (s *Service) CreateEvent(ctx context.Context, actor setup.CuratorSession, r
 			if !exists {
 				momentID = uuid.New()
 				momentByDay[*media[index].day] = momentID
-				if _, err := tx.NewRaw(`
-					INSERT INTO draft_moments (id, event_id, position, proposed_day, grouping_timezone)
-					VALUES (?, ?, ?, ?::date, ?)
-				`, momentID, eventID, momentPosition, *media[index].day, location.String()).Exec(ctx); err != nil {
-					return err
-				}
-				momentPosition++
+				moments = append(moments, draftMomentRow{
+					ID: momentID, Position: len(moments), ProposedDay: *media[index].day,
+				})
 			}
 			media[index].momentID = momentID
 		}
+		if err := insertDraftMoments(ctx, tx, eventID, location.String(), moments); err != nil {
+			return err
+		}
+		placements := make([]draftPlacementRow, 0, len(media))
 		for position, item := range media {
-			var momentID any
+			var momentID *uuid.UUID
 			if item.momentID != uuid.Nil {
-				momentID = item.momentID
+				id := item.momentID
+				momentID = &id
 			}
-			if _, err := tx.NewRaw(`
-				INSERT INTO draft_media_placements (event_id, media_item_id, draft_moment_id, position, created_at)
-				VALUES (?, ?, ?, ?, ?)
-			`, eventID, item.ID, momentID, position, now).Exec(ctx); err != nil {
-				return err
-			}
+			placements = append(placements, draftPlacementRow{
+				MediaItemID: item.ID, DraftMomentID: momentID, Position: position,
+			})
+		}
+		if err := insertDraftPlacements(ctx, tx, eventID, now, placements); err != nil {
+			return err
 		}
 		if _, err := tx.NewRaw(`
 			UPDATE source_albums SET disposition = 'drafted', ignored_at = NULL,
@@ -231,14 +251,49 @@ func (s *Service) CreateEvent(ctx context.Context, actor setup.CuratorSession, r
 		`, now, bun.List(sourceIDs)).Exec(ctx); err != nil {
 			return err
 		}
-		return appendDraftAudit(ctx, tx, actor, "event_draft_created", map[string]any{
+		if err := appendDraftAudit(ctx, tx, actor, "event_draft_created", map[string]any{
 			"event_id": eventID.String(), "source_count": len(sourceIDs), "media_count": len(media),
-		})
+		}); err != nil {
+			return err
+		}
+		created, err = getEvent(ctx, tx, eventID)
+		return err
 	})
 	if err != nil {
 		return Event{}, err
 	}
-	return s.GetEvent(ctx, eventID)
+	return created, nil
+}
+
+func insertDraftMoments(ctx context.Context, tx bun.Tx, eventID uuid.UUID, timezone string, moments []draftMomentRow) error {
+	if len(moments) == 0 {
+		return nil
+	}
+	payload, err := json.Marshal(moments)
+	if err != nil {
+		return err
+	}
+	_, err = tx.NewRaw(`
+		INSERT INTO draft_moments (id, event_id, position, proposed_day, grouping_timezone)
+		SELECT incoming.id, ?, incoming.position, incoming.proposed_day::date, ?
+		FROM jsonb_to_recordset(?::jsonb) AS incoming(id uuid, position integer, proposed_day text)
+	`, eventID, timezone, string(payload)).Exec(ctx)
+	return err
+}
+
+func insertDraftPlacements(ctx context.Context, tx bun.Tx, eventID uuid.UUID, now time.Time, placements []draftPlacementRow) error {
+	payload, err := json.Marshal(placements)
+	if err != nil {
+		return err
+	}
+	_, err = tx.NewRaw(`
+		INSERT INTO draft_media_placements (event_id, media_item_id, draft_moment_id, position, created_at)
+		SELECT ?, incoming.media_item_id, incoming.draft_moment_id, incoming.position, ?
+		FROM jsonb_to_recordset(?::jsonb) AS incoming(
+			media_item_id uuid, draft_moment_id uuid, position integer
+		)
+	`, eventID, now, string(payload)).Exec(ctx)
+	return err
 }
 
 func lockSources(ctx context.Context, tx bun.Tx, sourceIDs []uuid.UUID) (map[uuid.UUID]sourceRecord, error) {
@@ -276,12 +331,17 @@ func selectMedia(ctx context.Context, tx bun.Tx, sourceIDs, selectedIDs []uuid.U
 		query += ` AND media.id IN (?)`
 		args = append(args, bun.List(selectedIDs))
 	}
+	query += ` LIMIT ?`
+	args = append(args, maxDraftMediaItems+1)
 	var media []mediaRecord
 	if err := tx.NewRaw(query, args...).Scan(ctx, &media); err != nil {
 		return nil, err
 	}
 	if len(selectedIDs) > 0 && len(media) != len(selectedIDs) {
 		return nil, ErrMediaUnavailable
+	}
+	if len(media) > maxDraftMediaItems {
+		return nil, ErrInvalid
 	}
 	return media, nil
 }
@@ -331,8 +391,12 @@ func captureDay(raw *string, location *time.Location) (*string, *time.Time) {
 
 // GetEvent returns one Curator-only draft and computes optional Source suggestions.
 func (s *Service) GetEvent(ctx context.Context, id uuid.UUID) (Event, error) {
+	return getEvent(ctx, s.db, id)
+}
+
+func getEvent(ctx context.Context, db bun.IDB, id uuid.UUID) (Event, error) {
 	var event Event
-	err := s.db.NewRaw(`
+	err := db.NewRaw(`
 		SELECT id, lifecycle, title, description, grouping_timezone, version, created_at, updated_at
 		FROM events WHERE id = ?
 	`, id).Scan(ctx, &event.ID, &event.Lifecycle, &event.Title, &event.Description,
@@ -344,7 +408,7 @@ func (s *Service) GetEvent(ctx context.Context, id uuid.UUID) (Event, error) {
 		return Event{}, err
 	}
 	event.Sources = make([]EventSource, 0)
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := db.QueryContext(ctx, `
 		SELECT source.id, source.name, source.description,
 			event_source.initialized_name, event_source.initialized_description
 		FROM event_sources AS event_source
@@ -374,7 +438,7 @@ func (s *Service) GetEvent(ctx context.Context, id uuid.UUID) (Event, error) {
 	}
 
 	event.Moments = make([]Moment, 0)
-	momentRows, err := s.db.QueryContext(ctx, `
+	momentRows, err := db.QueryContext(ctx, `
 		SELECT id, proposed_day::text, grouping_timezone
 		FROM draft_moments WHERE event_id = ? ORDER BY position
 	`, id)
@@ -387,11 +451,6 @@ func (s *Service) GetEvent(ctx context.Context, id uuid.UUID) (Event, error) {
 			_ = momentRows.Close()
 			return Event{}, err
 		}
-		moment.MediaItems, err = s.eventMedia(ctx, id, uuid.MustParse(moment.ID), false)
-		if err != nil {
-			_ = momentRows.Close()
-			return Event{}, err
-		}
 		event.Moments = append(event.Moments, moment)
 	}
 	if err := momentRows.Close(); err != nil {
@@ -400,14 +459,20 @@ func (s *Service) GetEvent(ctx context.Context, id uuid.UUID) (Event, error) {
 	if err := momentRows.Err(); err != nil {
 		return Event{}, err
 	}
-	event.UnassignedMedia, err = s.eventMedia(ctx, id, uuid.Nil, true)
+	for index := range event.Moments {
+		event.Moments[index].MediaItems, err = eventMedia(ctx, db, id, uuid.MustParse(event.Moments[index].ID), false)
+		if err != nil {
+			return Event{}, err
+		}
+	}
+	event.UnassignedMedia, err = eventMedia(ctx, db, id, uuid.Nil, true)
 	if err != nil {
 		return Event{}, err
 	}
 	return event, nil
 }
 
-func (s *Service) eventMedia(ctx context.Context, eventID, momentID uuid.UUID, unassigned bool) ([]MediaItem, error) {
+func eventMedia(ctx context.Context, db bun.IDB, eventID, momentID uuid.UUID, unassigned bool) ([]MediaItem, error) {
 	query := `
 		SELECT media.id, media.media_type, media.width, media.height, media.local_date_time
 		FROM draft_media_placements AS placement
@@ -422,7 +487,7 @@ func (s *Service) eventMedia(ctx context.Context, eventID, momentID uuid.UUID, u
 	}
 	query += ` ORDER BY placement.position`
 	var media []MediaItem
-	if err := s.db.NewRaw(query, args...).Scan(ctx, &media); err != nil {
+	if err := db.NewRaw(query, args...).Scan(ctx, &media); err != nil {
 		return nil, err
 	}
 	if media == nil {
@@ -433,12 +498,19 @@ func (s *Service) eventMedia(ctx context.Context, eventID, momentID uuid.UUID, u
 
 // SourceMedia lists stable portal Media IDs without exposing Immich identifiers.
 func (s *Service) SourceMedia(ctx context.Context, sourceID uuid.UUID) (SourceMediaResponse, error) {
-	var exists bool
-	if err := s.db.NewRaw(`SELECT EXISTS (SELECT 1 FROM source_albums WHERE id = ?)`, sourceID).Scan(ctx, &exists); err != nil {
+	var disposition string
+	var missing bool
+	err := s.db.NewRaw(`
+		SELECT disposition, source_missing FROM source_albums WHERE id = ?
+	`, sourceID).Scan(ctx, &disposition, &missing)
+	if errors.Is(err, sql.ErrNoRows) {
+		return SourceMediaResponse{}, ErrNotFound
+	}
+	if err != nil {
 		return SourceMediaResponse{}, err
 	}
-	if !exists {
-		return SourceMediaResponse{}, ErrNotFound
+	if missing || disposition == "ignored" {
+		return SourceMediaResponse{}, ErrSourceUnavailable
 	}
 	var media []MediaItem
 	if err := s.db.NewRaw(`
@@ -447,8 +519,12 @@ func (s *Service) SourceMedia(ctx context.Context, sourceID uuid.UUID) (SourceMe
 		JOIN media_items AS media ON media.id = membership.media_item_id
 		WHERE membership.source_album_id = ?
 		ORDER BY media.local_date_time NULLS LAST, media.id
-	`, sourceID).Scan(ctx, &media); err != nil {
+		LIMIT ?
+	`, sourceID, maxDraftMediaItems+1).Scan(ctx, &media); err != nil {
 		return SourceMediaResponse{}, err
+	}
+	if len(media) > maxDraftMediaItems {
+		return SourceMediaResponse{}, ErrInvalid
 	}
 	if media == nil {
 		media = make([]MediaItem, 0)
@@ -457,20 +533,24 @@ func (s *Service) SourceMedia(ctx context.Context, sourceID uuid.UUID) (SourceMe
 }
 
 // CreateLooseItem creates or returns the one stable Loose identity for a Media item.
-func (s *Service) CreateLooseItem(ctx context.Context, actor setup.CuratorSession, request CreateLooseItemRequest) (LooseItem, error) {
+func (s *Service) CreateLooseItem(ctx context.Context, actor setup.CuratorSession, request CreateLooseItemRequest) (LooseItem, bool, error) {
 	mediaID, err := uuid.Parse(request.MediaItemID)
 	if err != nil || mediaID == uuid.Nil {
-		return LooseItem{}, ErrInvalid
+		return LooseItem{}, false, ErrInvalid
 	}
 	location, err := draftLocation(request.Timezone)
 	if err != nil {
-		return LooseItem{}, ErrInvalid
+		return LooseItem{}, false, ErrInvalid
 	}
-	if len(request.Title) > 240 || len(request.Description) > 2000 {
-		return LooseItem{}, ErrInvalid
+	title := strings.TrimSpace(request.Title)
+	description := strings.TrimSpace(request.Description)
+	if utf8.RuneCountInString(title) > 240 || utf8.RuneCountInString(description) > 2000 {
+		return LooseItem{}, false, ErrInvalid
 	}
 	looseID := uuid.New()
 	now := s.now().UTC()
+	inserted := false
+	var result LooseItem
 	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 		var capture *string
 		err := tx.NewRaw(`SELECT local_date_time FROM media_items WHERE id = ? FOR UPDATE`, mediaID).Scan(ctx, &capture)
@@ -484,7 +564,8 @@ func (s *Service) CreateLooseItem(ctx context.Context, actor setup.CuratorSessio
 		err = tx.NewRaw(`SELECT id FROM loose_items WHERE media_item_id = ?`, mediaID).Scan(ctx, &existing)
 		if err == nil {
 			looseID = existing
-			return nil
+			result, err = getLooseItem(ctx, tx, looseID)
+			return err
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
 			return err
@@ -494,24 +575,32 @@ func (s *Service) CreateLooseItem(ctx context.Context, actor setup.CuratorSessio
 			INSERT INTO loose_items (
 				id, media_item_id, title, description, grouping_timezone, proposed_day, created_at, updated_at
 			) VALUES (?, ?, ?, ?, ?, ?::date, ?, ?)
-		`, looseID, mediaID, strings.TrimSpace(request.Title), strings.TrimSpace(request.Description),
-			location.String(), day, now, now).Exec(ctx); err != nil {
+		`, looseID, mediaID, title, description, location.String(), day, now, now).Exec(ctx); err != nil {
 			return err
 		}
-		return appendDraftAudit(ctx, tx, actor, "loose_item_draft_created", map[string]any{
+		if err := appendDraftAudit(ctx, tx, actor, "loose_item_draft_created", map[string]any{
 			"loose_item_id": looseID.String(), "media_item_id": mediaID.String(),
-		})
+		}); err != nil {
+			return err
+		}
+		inserted = true
+		result, err = getLooseItem(ctx, tx, looseID)
+		return err
 	})
 	if err != nil {
-		return LooseItem{}, err
+		return LooseItem{}, false, err
 	}
-	return s.GetLooseItem(ctx, looseID)
+	return result, inserted, nil
 }
 
 // GetLooseItem returns one Curator-only Loose draft.
 func (s *Service) GetLooseItem(ctx context.Context, id uuid.UUID) (LooseItem, error) {
+	return getLooseItem(ctx, s.db, id)
+}
+
+func getLooseItem(ctx context.Context, db bun.IDB, id uuid.UUID) (LooseItem, error) {
 	var item LooseItem
-	err := s.db.NewRaw(`
+	err := db.NewRaw(`
 		SELECT loose.id, loose.lifecycle, loose.title, loose.description, loose.grouping_timezone,
 			loose.proposed_day::text, loose.version, loose.created_at, loose.updated_at,
 			media.id, media.media_type, media.width, media.height, media.local_date_time

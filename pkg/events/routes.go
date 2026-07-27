@@ -19,6 +19,7 @@ const (
 // Authorizer authenticates the sole Curator without exposing Session internals.
 type Authorizer interface {
 	AuthorizeCurator(ctx context.Context, credential, csrfToken string, mutation bool) (setup.CuratorSession, error)
+	ContextWithRequestMetadata(ctx context.Context, request *http.Request) context.Context
 }
 
 // Handler exposes only private Curator drafting routes.
@@ -31,6 +32,10 @@ func NewHandler(service *Service, authorizer Authorizer) *Handler {
 	return &Handler{service: service, authorizer: authorizer}
 }
 
+func (h *Handler) requestContext(c echo.Context) context.Context {
+	return h.authorizer.ContextWithRequestMetadata(c.Request().Context(), c.Request())
+}
+
 func (h *Handler) CreateEvent(c echo.Context) error {
 	actor, err := h.authorize(c, true)
 	if err != nil {
@@ -40,7 +45,7 @@ func (h *Handler) CreateEvent(c echo.Context) error {
 	if err := c.Bind(&request); err != nil {
 		return err
 	}
-	event, err := h.service.CreateEvent(c.Request().Context(), actor, request)
+	event, err := h.service.CreateEvent(h.requestContext(c), actor, request)
 	if mapped := draftError(err, "Event"); mapped != nil {
 		return mapped
 	}
@@ -86,11 +91,15 @@ func (h *Handler) CreateLooseItem(c echo.Context) error {
 	if err := c.Bind(&request); err != nil {
 		return err
 	}
-	item, err := h.service.CreateLooseItem(c.Request().Context(), actor, request)
+	item, created, err := h.service.CreateLooseItem(h.requestContext(c), actor, request)
 	if mapped := draftError(err, "Loose item"); mapped != nil {
 		return mapped
 	}
-	return c.JSON(http.StatusCreated, item)
+	status := http.StatusOK
+	if created {
+		status = http.StatusCreated
+	}
+	return c.JSON(status, item)
 }
 
 func (h *Handler) GetLooseItem(c echo.Context) error {
@@ -137,9 +146,11 @@ func draftError(err error, resource string) error {
 	case errors.Is(err, ErrNotFound):
 		return errcodes.NotFound(resource)
 	case errors.Is(err, ErrInvalid):
-		return errcodes.ValidationError("Draft identifiers and timezone must be valid.")
+		return errcodes.ValidationError("Draft fields must be valid and within their limits.")
 	case errors.Is(err, ErrSourceUnavailable):
 		return errcodes.Conflict("Every Source album must be available and not ignored.")
+	case errors.Is(err, ErrMediaUnavailable) && resource == "Loose item":
+		return errcodes.Conflict("The selected Media item is unavailable.")
 	case errors.Is(err, ErrMediaUnavailable):
 		return errcodes.Conflict("Every selected Media item must belong to a selected Source album and remain available.")
 	default:

@@ -11,12 +11,12 @@ import (
 func TestCaptureDayUsesExplicitTimezoneAndLeavesUnknownCaptureDatesUnassigned(t *testing.T) {
 	losAngeles, err := time.LoadLocation("America/Los_Angeles")
 	require.NoError(t, err)
-	zoned := "2026-05-02T01:30:00Z"
+	zoned := "2026-05-02T00:30:00+14:00"
 	day, instant := captureDay(&zoned, losAngeles)
 	require.NotNil(t, day)
 	assert.Equal(t, "2026-05-02", *day)
 	require.NotNil(t, instant)
-	assert.Equal(t, "2026-05-02T01:30:00Z", instant.Format(time.RFC3339))
+	assert.Equal(t, "2026-05-01T10:30:00Z", instant.Format(time.RFC3339))
 
 	unzoned := "2026-05-01T22:30:00"
 	day, instant = captureDay(&unzoned, losAngeles)
