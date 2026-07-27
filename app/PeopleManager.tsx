@@ -55,7 +55,12 @@ export function PeopleManager({ session }: { session: SessionResponse }) {
   );
 
   async function refreshPeople() {
-    await queryClient.invalidateQueries({ queryKey: ["people"] });
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["people"] }),
+      queryClient.invalidateQueries({ queryKey: ["family-people"] }),
+      queryClient.invalidateQueries({ queryKey: ["family-relationships"] }),
+      queryClient.invalidateQueries({ queryKey: ["family-branch"] }),
+    ]);
   }
 
   function clearMergeSelection() {

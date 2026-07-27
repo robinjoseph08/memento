@@ -41,17 +41,20 @@ function renderManager() {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
-  return render(
-    <QueryClientProvider client={client}>
-      <PeopleManager
-        session={{
-          display_name: "Curator",
-          session_type: "trusted",
-          csrf_token: "csrf-token",
-        }}
-      />
-    </QueryClientProvider>,
-  );
+  return {
+    client,
+    ...render(
+      <QueryClientProvider client={client}>
+        <PeopleManager
+          session={{
+            display_name: "Curator",
+            session_type: "trusted",
+            csrf_token: "csrf-token",
+          }}
+        />
+      </QueryClientProvider>,
+    ),
+  };
 }
 
 function person(id: string, displayName: string, sortName: string): Person {
@@ -140,7 +143,13 @@ test("previews and confirms the exact source, survivor, generation, email, and v
     }),
   );
 
-  renderManager();
+  const { client } = renderManager();
+  const familyKeys = [
+    ["family-people", ""],
+    ["family-relationships", false],
+    ["family-branch", source.id],
+  ] as const;
+  for (const key of familyKeys) client.setQueryData(key, { cached: true });
   await screen.findAllByRole("option", { name: /11111111/ }, contentionWait);
   const sourceSelect = screen.getByLabelText("Source Person");
   const survivorSelect = screen.getByLabelText("Survivor Person");
@@ -211,4 +220,7 @@ test("previews and confirms the exact source, survivor, generation, email, and v
   expect(mergeRequest?.init?.headers).toEqual(
     expect.objectContaining({ "X-Memento-CSRF": "csrf-token" }),
   );
+  for (const key of familyKeys) {
+    expect(client.getQueryState(key)?.isInvalidated).toBe(true);
+  }
 }, 15_000);

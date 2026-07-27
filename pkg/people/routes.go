@@ -184,6 +184,8 @@ func peopleError(err error) error {
 	switch {
 	case errors.Is(err, ErrNotFound):
 		return errcodes.NotFound("Person")
+	case errors.Is(err, ErrMergeStale):
+		return errcodes.Conflict("A Person or affected reference changed after this merge was previewed. Preview the merge again.")
 	case errors.Is(err, ErrStale):
 		return errcodes.Conflict("This Person changed after it was loaded. Reload and try again.")
 	case errors.Is(err, ErrCuratorMustSurvive):

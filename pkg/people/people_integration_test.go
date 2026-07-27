@@ -234,6 +234,15 @@ func TestPeopleRoutesEnforceCuratorCSRFAndPreserveMergeDirection(t *testing.T) {
 	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &preview))
 	assert.Equal(t, source.String(), preview.Source.ID)
 	assert.Equal(t, survivor.String(), preview.Survivor.ID)
+	child := addPerson(t, fixture.db, "Newly related child", "Newly related child")
+	_, err = fixture.db.NewRaw(`INSERT INTO family_relationships (id, relationship_type, person_a_id, person_b_id) VALUES (?, 'parent_child', ?, ?)`, uuid.New(), source, child).Exec(ctx)
+	require.NoError(t, err)
+	staleMerge := servePeople(e, http.MethodPost, "/api/people/merge", curatorCredential, curatorSession.CSRFToken, MergeRequest{
+		SourcePersonID: source.String(), SurvivorPersonID: survivor.String(), SourceVersion: preview.Source.Version, SurvivorVersion: preview.Survivor.Version,
+		PreviewFingerprint: preview.PreviewFingerprint,
+	})
+	assert.Equal(t, http.StatusConflict, staleMerge.Code)
+	assert.Contains(t, staleMerge.Body.String(), "A Person or affected reference changed")
 }
 
 func TestFamilyRoutesEnforceCuratorAuthorizationCSRFAndErrorMapping(t *testing.T) {
@@ -655,7 +664,7 @@ func TestMergeRejectsStaleFamilyRelationshipPreview(t *testing.T) {
 		SourcePersonID: source.String(), SurvivorPersonID: survivor.String(), SourceVersion: 1, SurvivorVersion: 1,
 		PreviewFingerprint: preview.PreviewFingerprint,
 	})
-	require.ErrorIs(t, err, ErrStale)
+	require.ErrorIs(t, err, ErrMergeStale)
 	storedSource, getErr := fixture.service.Get(ctx, source)
 	require.NoError(t, getErr)
 	assert.Equal(t, "current", storedSource.Status)

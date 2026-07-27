@@ -25,6 +25,7 @@ var (
 	ErrNotFound                 = errors.New("Person not found")
 	ErrInvalidPerson            = errors.New("Person details are invalid")
 	ErrStale                    = errors.New("Person was changed by another request")
+	ErrMergeStale               = fmt.Errorf("merge preview is stale: %w", ErrStale)
 	ErrCuratorMustSurvive       = errors.New("the Curator Person must survive the merge")
 	ErrSurvivorMustBeCurrent    = errors.New("the survivor Person must be current")
 	ErrTwoCurrentGenerations    = errors.New("both People have current Recipient access generations")
@@ -603,12 +604,12 @@ func (s *Service) Merge(ctx context.Context, actor setup.CuratorSession, request
 			return err
 		}
 		if request.PreviewFingerprint != currentPreview.PreviewFingerprint {
-			return ErrStale
+			return ErrMergeStale
 		}
 		source := currentPreview.Source
 		survivor := currentPreview.Survivor
 		if source.Version != request.SourceVersion || survivor.Version != request.SurvivorVersion {
-			return ErrStale
+			return ErrMergeStale
 		}
 		if source.Status == "merged" || survivor.Status == "merged" {
 			return ErrInvalidMerge
@@ -641,7 +642,7 @@ func (s *Service) Merge(ctx context.Context, actor setup.CuratorSession, request
 				return err
 			}
 			if request.ExpectedRecipientGeneration != resultingGeneration {
-				return ErrStale
+				return ErrMergeStale
 			}
 			var survivorEmailID uuid.UUID
 			var survivorEmail string
