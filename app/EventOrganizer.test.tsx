@@ -182,6 +182,10 @@ test("organizes merged and split days with pointer and keyboard controls, autosa
   expect(
     await screen.findByRole("heading", { name: "Family weekend" }),
   ).toBeInTheDocument();
+  expect(screen.getByText("1 of 5 complete")).toBeInTheDocument();
+  expect(
+    screen.getByRole("heading", { name: "Readiness" }).closest("section"),
+  ).toHaveTextContent("Next action: Media organization");
 
   const mergeButtons = screen.getAllByRole("button", {
     name: "Merge with previous Moment",
@@ -198,17 +202,23 @@ test("organizes merged and split days with pointer and keyboard controls, autosa
   for (const label of splitMomentLabels)
     expect(label).toHaveTextContent("2026-05-01");
 
-  const thirdRow = screen
-    .getByRole("checkbox", { name: /third photo/ })
-    .closest("li");
-  expect(thirdRow).not.toBeNull();
-  fireEvent.keyDown(thirdRow!, { key: "ArrowUp", altKey: true });
+  const thirdCheckbox = screen.getByRole("checkbox", { name: /third photo/ });
+  thirdCheckbox.focus();
+  expect(thirdCheckbox).toHaveFocus();
+  fireEvent.keyDown(thirdCheckbox, { key: "ArrowUp", altKey: true });
 
   fireEvent.click(screen.getByRole("checkbox", { name: /loose photo/ }));
   fireEvent.change(screen.getByLabelText("Move selected to"), {
     target: { value: momentOneID },
   });
   fireEvent.click(screen.getByRole("button", { name: "Move selected Media" }));
+
+  const covers = screen.getAllByLabelText("Cover");
+  fireEvent.change(covers[0], { target: { value: items.loose.id } });
+  fireEvent.change(covers[1], { target: { value: items.b.id } });
+  fireEvent.click(
+    screen.getByRole("button", { name: "Move Moment 2 earlier" }),
+  );
 
   fireEvent.click(
     screen.getAllByRole("button", {
@@ -218,9 +228,23 @@ test("organizes merged and split days with pointer and keyboard controls, autosa
   expect(
     screen.getByRole("button", { name: "Inspect", pressed: true }),
   ).toBeInTheDocument();
+  expect(document.querySelector(".inspect-pane")).toHaveFocus();
+  fireEvent.click(screen.getByLabelText("Attendance reviewed"));
+  fireEvent.click(screen.getByLabelText(/Audience reviewed/));
+  fireEvent.click(screen.getByRole("button", { name: "Event" }));
+  fireEvent.click(
+    screen.getAllByRole("button", {
+      name: "Inspect Attendance and Audience",
+    })[1],
+  );
   fireEvent.click(screen.getByLabelText("Attendance reviewed"));
   fireEvent.click(screen.getByLabelText(/Audience reviewed/));
   fireEvent.click(screen.getByLabelText("Final review complete"));
+
+  expect(screen.getByText("5 of 5 complete")).toBeInTheDocument();
+  expect(
+    screen.getByRole("heading", { name: "Readiness" }).closest("section"),
+  ).toHaveTextContent("Next action: Ready to publish");
 
   await waitFor(() => expect(saves.length).toBeGreaterThan(0), {
     timeout: 3000,
@@ -231,7 +255,21 @@ test("organizes merged and split days with pointer and keyboard controls, autosa
   const lastSave = saves.at(-1)!;
   expect(lastSave.unassigned_media_ids).toEqual([]);
   expect(lastSave.moments).toHaveLength(2);
-  expect(lastSave.moments[0].media_item_ids).toContain(items.loose.id);
+  expect(lastSave.moments[0].media_item_ids).toEqual([items.b.id]);
+  expect(lastSave.moments[0].cover_media_item_id).toBe(items.b.id);
+  expect(lastSave.moments[1].id).toBe(momentOneID);
+  expect(lastSave.moments[1].media_item_ids).toEqual([
+    items.c.id,
+    items.a.id,
+    items.loose.id,
+  ]);
+  expect(lastSave.moments[1].cover_media_item_id).toBe(items.loose.id);
+  expect(lastSave.moments.every((moment) => moment.attendance_complete)).toBe(
+    true,
+  );
+  expect(lastSave.moments.every((moment) => moment.audience_complete)).toBe(
+    true,
+  );
   expect(lastSave.final_review_complete).toBe(true);
 
   firstRender.unmount();
@@ -241,6 +279,11 @@ test("organizes merged and split days with pointer and keyboard controls, autosa
   );
   expect(await screen.findByLabelText("Final review complete")).toBeChecked();
   expect(document.querySelector(".unassigned li")).toBeNull();
+  expect(
+    screen
+      .getAllByLabelText("Cover")
+      .map((cover) => (cover as HTMLSelectElement).value),
+  ).toEqual([items.b.id, items.loose.id]);
 });
 
 test("mobile drill-down moves between Work, Event organization, and inspection", async () => {
@@ -269,13 +312,15 @@ test("mobile drill-down moves between Work, Event organization, and inspection",
   renderOrganizer();
   expect(
     screen.getByRole("button", { name: "Work", pressed: true }),
-  ).toBeInTheDocument();
+  ).toHaveAttribute("aria-controls", "work-pane");
+  expect(document.querySelector(".work-pane")).toHaveFocus();
   fireEvent.click(
     await screen.findByRole("button", { name: /Family weekend/ }),
   );
   expect(
     screen.getByRole("button", { name: "Event", pressed: true }),
-  ).toBeInTheDocument();
+  ).toHaveAttribute("aria-controls", "organize-pane");
+  expect(document.querySelector(".organize-pane")).toHaveFocus();
   fireEvent.click(
     (
       await screen.findAllByRole("button", {
@@ -285,12 +330,13 @@ test("mobile drill-down moves between Work, Event organization, and inspection",
   );
   expect(
     screen.getByRole("button", { name: "Inspect", pressed: true }),
-  ).toBeInTheDocument();
+  ).toHaveAttribute("aria-controls", "inspect-pane");
+  expect(document.querySelector(".inspect-pane")).toHaveFocus();
   expect(screen.getByLabelText("Attendance reviewed")).toBeInTheDocument();
 });
 
 test("recovers an ordinary failed autosave with an explicit retry", async () => {
-  let attempts = 0;
+  const attempts: OrganizeEventRequest[] = [];
   vi.stubGlobal(
     "fetch",
     vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
@@ -310,17 +356,16 @@ test("recovers an ordinary failed autosave with an explicit retry", async () => 
         });
       if (path === `/api/events/${eventID}`) return response(draft());
       if (path === `/api/events/${eventID}/organization`) {
-        attempts += 1;
-        if (attempts === 1)
+        const request = JSON.parse(
+          stringBody(init?.body),
+        ) as OrganizeEventRequest;
+        attempts.push(request);
+        if (attempts.length === 1)
           return response(
             { error: { message: "Autosave is temporarily unavailable." } },
             503,
           );
-        return response(
-          eventFromRequest(
-            JSON.parse(stringBody(init?.body)) as OrganizeEventRequest,
-          ),
-        );
+        return response(eventFromRequest(request));
       }
       throw new Error(`Unexpected request: ${path}`);
     }),
@@ -336,9 +381,17 @@ test("recovers an ordinary failed autosave with an explicit retry", async () => 
   expect(await screen.findByRole("alert")).toHaveTextContent(
     "Autosave is temporarily unavailable.",
   );
+  fireEvent.change(screen.getByLabelText("Title for Moment 1"), {
+    target: { value: "Latest recovered title" },
+  });
   fireEvent.click(screen.getByRole("button", { name: "Retry autosave" }));
   expect(await screen.findByText("All changes saved")).toBeInTheDocument();
-  expect(attempts).toBe(2);
+  expect(attempts).toHaveLength(2);
+  expect(attempts[0].moments[0].title).toBe("Recovered title");
+  expect(attempts[1].moments[0].title).toBe("Latest recovered title");
+  expect(screen.getByLabelText("Title for Moment 1")).toHaveValue(
+    "Latest recovered title",
+  );
 });
 
 test("keeps stale autosaves recoverable without silently overwriting newer work", async () => {
@@ -396,10 +449,85 @@ test("keeps stale autosaves recoverable without silently overwriting newer work"
     "Your edits have not overwritten the newer version.",
   );
   expect(putBodies).toHaveLength(1);
-  fireEvent.click(screen.getByRole("button", { name: "Keep my changes" }));
+  expect(screen.getByRole("alert")).toHaveTextContent(
+    "Replacing it will discard organization saved by the other browser.",
+  );
+  fireEvent.click(
+    screen.getByRole("button", {
+      name: "Replace newer version with my changes",
+    }),
+  );
   await waitFor(() => expect(putBodies).toHaveLength(2), { timeout: 3000 });
   expect(putBodies[1].moments[0].title).toBe("My local title");
   expect(await screen.findByText("All changes saved")).toBeInTheDocument();
+});
+
+test("keeps a conflict recoverable when loading the newer version fails", async () => {
+  let serverDraft = draft();
+  let failRefetch = false;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = pathOf(input);
+      if (path === "/api/events" && !init?.method)
+        return response({
+          events: [
+            {
+              id: eventID,
+              title: serverDraft.title,
+              version: serverDraft.version,
+              moment_count: 2,
+              unassigned_count: 1,
+              updated_at: serverDraft.updated_at,
+            },
+          ],
+        });
+      if (path === `/api/events/${eventID}`) {
+        if (failRefetch)
+          return response(
+            { error: { message: "Newer work is temporarily unavailable." } },
+            503,
+          );
+        return response(serverDraft);
+      }
+      if (path === `/api/events/${eventID}/organization`) {
+        serverDraft = draft(2);
+        serverDraft.moments[0].title = "Newer Moment organization";
+        failRefetch = true;
+        return response(
+          { error: { message: "This Event changed in another browser." } },
+          409,
+        );
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    }),
+  );
+
+  renderOrganizer();
+  fireEvent.click(
+    await screen.findByRole("button", { name: /Family weekend/ }),
+  );
+  fireEvent.change(await screen.findByLabelText("Title for Moment 1"), {
+    target: { value: "My local title" },
+  });
+  const conflict = await screen.findByRole("alert");
+  fireEvent.click(screen.getByRole("button", { name: "Load newer version" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "Newer work is temporarily unavailable.",
+  );
+  expect(screen.getByLabelText("Title for Moment 1")).toHaveValue(
+    "My local title",
+  );
+  expect(conflict).toBeInTheDocument();
+
+  failRefetch = false;
+  fireEvent.click(screen.getByRole("button", { name: "Load newer version" }));
+  await waitFor(() =>
+    expect(screen.getByLabelText("Title for Moment 1")).toHaveValue(
+      "Newer Moment organization",
+    ),
+  );
+  expect(screen.getByText("All changes saved")).toBeInTheDocument();
 });
 
 test("preserves edits made while an autosave is in flight", async () => {
@@ -446,6 +574,8 @@ test("preserves edits made while an autosave is in flight", async () => {
   fireEvent.change(title, { target: { value: "First edit" } });
   await waitFor(() => expect(putBodies).toHaveLength(1), { timeout: 3000 });
   fireEvent.change(title, { target: { value: "Later edit" } });
+  await new Promise((resolve) => window.setTimeout(resolve, 600));
+  expect(putBodies).toHaveLength(1);
   resolveFirstSave?.(response(eventFromRequest(putBodies[0])));
 
   await waitFor(() => expect(putBodies).toHaveLength(2), { timeout: 3000 });
@@ -511,6 +641,115 @@ test("creates the first Moment from selected undated Media", async () => {
   expect(saves[0].unassigned_media_ids).toEqual([items.b.id]);
 });
 
+test("keeps bulk moves valid when Moments are emptied or merged", async () => {
+  const saves: OrganizeEventRequest[] = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = pathOf(input);
+      if (path === "/api/events" && !init?.method)
+        return response({
+          events: [
+            {
+              id: eventID,
+              title: "Family weekend",
+              version: 1,
+              moment_count: 2,
+              unassigned_count: 1,
+              updated_at: "2026-05-03T00:00:00Z",
+            },
+          ],
+        });
+      if (path === `/api/events/${eventID}`) return response(draft());
+      if (path === `/api/events/${eventID}/organization`) {
+        const request = JSON.parse(
+          stringBody(init?.body),
+        ) as OrganizeEventRequest;
+        saves.push(request);
+        return response(eventFromRequest(request));
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    }),
+  );
+
+  renderOrganizer();
+  fireEvent.click(
+    await screen.findByRole("button", { name: /Family weekend/ }),
+  );
+  fireEvent.change(await screen.findByLabelText("Move selected to"), {
+    target: { value: momentTwoID },
+  });
+  fireEvent.click(
+    screen.getAllByRole("button", { name: "Merge with previous Moment" })[1],
+  );
+  expect(screen.getByLabelText("Move selected to")).toHaveValue(momentOneID);
+
+  fireEvent.click(screen.getByRole("checkbox", { name: /loose photo/ }));
+  fireEvent.click(screen.getByRole("button", { name: "Move selected Media" }));
+  await waitFor(() => expect(saves).toHaveLength(1), { timeout: 3000 });
+  expect(saves[0].moments).toHaveLength(1);
+  expect(saves[0].moments[0].media_item_ids).toEqual([
+    items.a.id,
+    items.b.id,
+    items.c.id,
+    items.loose.id,
+  ]);
+  expect(saves[0].unassigned_media_ids).toEqual([]);
+});
+
+test("removes a Moment emptied by a bulk move", async () => {
+  const saves: OrganizeEventRequest[] = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = pathOf(input);
+      if (path === "/api/events" && !init?.method)
+        return response({
+          events: [
+            {
+              id: eventID,
+              title: "Family weekend",
+              version: 1,
+              moment_count: 2,
+              unassigned_count: 1,
+              updated_at: "2026-05-03T00:00:00Z",
+            },
+          ],
+        });
+      if (path === `/api/events/${eventID}`) return response(draft());
+      if (path === `/api/events/${eventID}/organization`) {
+        const request = JSON.parse(
+          stringBody(init?.body),
+        ) as OrganizeEventRequest;
+        saves.push(request);
+        return response(eventFromRequest(request));
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    }),
+  );
+
+  renderOrganizer();
+  fireEvent.click(
+    await screen.findByRole("button", { name: /Family weekend/ }),
+  );
+  fireEvent.click(
+    await screen.findByRole("checkbox", { name: /second photo/ }),
+  );
+  fireEvent.click(screen.getByRole("checkbox", { name: /third photo/ }));
+  fireEvent.change(screen.getByLabelText("Move selected to"), {
+    target: { value: momentOneID },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Move selected Media" }));
+
+  await waitFor(() => expect(saves).toHaveLength(1), { timeout: 3000 });
+  expect(saves[0].moments).toHaveLength(1);
+  expect(saves[0].moments[0].media_item_ids).toEqual([
+    items.a.id,
+    items.b.id,
+    items.c.id,
+  ]);
+});
+
 test("loads the selected Event instead of retaining the previous draft", async () => {
   const secondID = "44444444-4444-4444-8444-444444444444";
   const first = draft();
@@ -566,4 +805,102 @@ test("loads the selected Event instead of retaining the previous draft", async (
     await screen.findByRole("heading", { name: "Summer picnic" }),
   ).toBeInTheDocument();
   expect(screen.getByLabelText("Title for Moment 1")).toHaveValue("Friday");
+});
+
+test("does not silently discard a draft when navigating between Events", async () => {
+  const secondID = "44444444-4444-4444-8444-444444444444";
+  const second = { ...draft(), id: secondID, title: "Summer picnic" };
+  const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = pathOf(input);
+      if (path === "/api/events" && !init?.method)
+        return response({
+          events: [
+            {
+              id: eventID,
+              title: "Family weekend",
+              version: 1,
+              moment_count: 2,
+              unassigned_count: 1,
+              updated_at: "2026-05-03T00:00:00Z",
+            },
+            {
+              id: secondID,
+              title: second.title,
+              version: 1,
+              moment_count: 2,
+              unassigned_count: 1,
+              updated_at: "2026-05-03T00:00:00Z",
+            },
+          ],
+        });
+      if (path === `/api/events/${eventID}`) return response(draft());
+      if (path === `/api/events/${secondID}`) return response(second);
+      throw new Error(`Unexpected request: ${path}`);
+    }),
+  );
+
+  renderOrganizer();
+  fireEvent.click(
+    await screen.findByRole("button", { name: /Family weekend/ }),
+  );
+  fireEvent.change(await screen.findByLabelText("Title for Moment 1"), {
+    target: { value: "Not saved yet" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: /Summer picnic/ }));
+  expect(confirm).toHaveBeenCalledWith(
+    "Discard changes that have not finished saving?",
+  );
+  expect(screen.getByRole("heading", { name: "Family weekend" })).toBeVisible();
+  expect(screen.getByLabelText("Title for Moment 1")).toHaveValue(
+    "Not saved yet",
+  );
+});
+
+test("reports and retries a selected Event load failure", async () => {
+  let failLoad = true;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = pathOf(input);
+      if (path === "/api/events" && !init?.method)
+        return response({
+          events: [
+            {
+              id: eventID,
+              title: "Family weekend",
+              version: 1,
+              moment_count: 2,
+              unassigned_count: 1,
+              updated_at: "2026-05-03T00:00:00Z",
+            },
+          ],
+        });
+      if (path === `/api/events/${eventID}`) {
+        if (failLoad) {
+          failLoad = false;
+          return response(
+            { error: { message: "The Event is temporarily unavailable." } },
+            503,
+          );
+        }
+        return response(draft());
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    }),
+  );
+
+  renderOrganizer();
+  fireEvent.click(
+    await screen.findByRole("button", { name: /Family weekend/ }),
+  );
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "The Event is temporarily unavailable.",
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Retry loading Event" }));
+  expect(
+    await screen.findByRole("heading", { name: "Family weekend" }),
+  ).toBeInTheDocument();
 });

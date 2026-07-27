@@ -456,14 +456,19 @@ func (s *Service) ListEvents(ctx context.Context) (EventListResponse, error) {
 	result := EventListResponse{Events: make([]EventSummary, 0)}
 	err := s.db.NewRaw(`
 		SELECT event.id, event.title, event.version,
-			count(DISTINCT moment.id)::integer AS moment_count,
-			count(DISTINCT placement.media_item_id) FILTER (WHERE placement.draft_moment_id IS NULL)::integer AS unassigned_count,
+			COALESCE(moment.moment_count, 0)::integer AS moment_count,
+			COALESCE(placement.unassigned_count, 0)::integer AS unassigned_count,
 			event.updated_at
 		FROM events AS event
-		LEFT JOIN draft_moments AS moment ON moment.event_id = event.id
-		LEFT JOIN draft_media_placements AS placement ON placement.event_id = event.id
+		LEFT JOIN (
+			SELECT event_id, count(*) AS moment_count
+			FROM draft_moments GROUP BY event_id
+		) AS moment ON moment.event_id = event.id
+		LEFT JOIN (
+			SELECT event_id, count(*) FILTER (WHERE draft_moment_id IS NULL) AS unassigned_count
+			FROM draft_media_placements GROUP BY event_id
+		) AS placement ON placement.event_id = event.id
 		WHERE event.lifecycle = 'draft'
-		GROUP BY event.id
 		ORDER BY event.updated_at DESC, event.id
 	`).Scan(ctx, &result.Events)
 	return result, err

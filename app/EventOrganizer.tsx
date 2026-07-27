@@ -148,7 +148,13 @@ function MediaRow({
   );
 }
 
-export function EventOrganizer({ session }: { session: SessionResponse }) {
+export function EventOrganizer({
+  session,
+  onDirtyChange,
+}: {
+  session: SessionResponse;
+  onDirtyChange?: (dirty: boolean) => void;
+}) {
   const queryClient = useQueryClient();
   const [selectedID, setSelectedID] = useState("");
   const [draft, setDraft] = useState<DraftEvent>();
@@ -158,11 +164,15 @@ export function EventOrganizer({ session }: { session: SessionResponse }) {
   const [inspectedMomentID, setInspectedMomentID] = useState("");
   const [activePane, setActivePane] = useState<Pane>("work");
   const [saveState, setSaveState] = useState<SaveState>("saved");
+  const [conflictRecoveryError, setConflictRecoveryError] = useState("");
   const [revision, setRevision] = useState(0);
   const revisionRef = useRef(0);
   const latestDraftRef = useRef<DraftEvent | undefined>(undefined);
   const selectedIDRef = useRef("");
   const localDuringConflict = useRef<DraftEvent | undefined>(undefined);
+  const workPaneRef = useRef<HTMLElement>(null);
+  const organizePaneRef = useRef<HTMLElement>(null);
+  const inspectPaneRef = useRef<HTMLElement>(null);
 
   const work = useQuery({
     queryKey: ["events"],
@@ -219,6 +229,7 @@ export function EventOrganizer({ session }: { session: SessionResponse }) {
         localDuringConflict.current = cloneEvent(
           latest?.id === attempted.event.id ? latest : attempted.event,
         );
+        setConflictRecoveryError("");
         setSaveState("conflict");
       } else {
         setSaveState("unsaved");
@@ -227,6 +238,26 @@ export function EventOrganizer({ session }: { session: SessionResponse }) {
   });
 
   const saveDraft = save.mutate;
+  useEffect(() => {
+    const dirty = saveState !== "saved";
+    onDirtyChange?.(dirty);
+    const preventDirtyUnload = (event: BeforeUnloadEvent) => {
+      if (!dirty) return;
+      event.preventDefault();
+    };
+    window.addEventListener("beforeunload", preventDirtyUnload);
+    return () => window.removeEventListener("beforeunload", preventDirtyUnload);
+  }, [onDirtyChange, saveState]);
+
+  useEffect(() => {
+    const panes = {
+      work: workPaneRef,
+      organize: organizePaneRef,
+      inspect: inspectPaneRef,
+    };
+    panes[activePane].current?.focus();
+  }, [activePane]);
+
   useEffect(() => {
     if (
       !currentDraft ||
@@ -281,7 +312,12 @@ export function EventOrganizer({ session }: { session: SessionResponse }) {
   }
 
   function moveSelected(targetID = destination) {
-    if (selectedMedia.size === 0) return;
+    if (
+      selectedMedia.size === 0 ||
+      (targetID !== "unassigned" &&
+        !currentDraft?.moments.some((moment) => moment.id === targetID))
+    )
+      return;
     change((next) => {
       const moving: MediaItem[] = [];
       for (const id of selectedMedia) {
@@ -292,8 +328,11 @@ export function EventOrganizer({ session }: { session: SessionResponse }) {
       if (targetID === "unassigned") next.unassigned_media.push(...moving);
       else
         next.moments
-          .find((moment) => moment.id === targetID)
-          ?.media_items.push(...moving);
+          .find((moment) => moment.id === targetID)!
+          .media_items.push(...moving);
+      next.moments = next.moments.filter(
+        (moment) => moment.media_items.length > 0,
+      );
       for (const moment of next.moments) {
         if (
           moment.cover_media_item_id &&
@@ -318,6 +357,9 @@ export function EventOrganizer({ session }: { session: SessionResponse }) {
         if (located.index >= 0)
           moving.push(...located.items.splice(located.index, 1));
       }
+      next.moments = next.moments.filter(
+        (moment) => moment.media_items.length > 0,
+      );
       for (const moment of next.moments) {
         if (
           moment.cover_media_item_id &&
@@ -381,13 +423,16 @@ export function EventOrganizer({ session }: { session: SessionResponse }) {
 
   function mergeWithPrevious(index: number) {
     if (!currentDraft || index < 1) return;
+    const previousID = currentDraft.moments[index - 1].id;
+    const removedID = currentDraft.moments[index].id;
     change((next) => {
       const previous = next.moments[index - 1];
       const removed = next.moments[index];
       previous.media_items.push(...removed.media_items);
       next.moments.splice(index, 1);
     });
-    setInspectedMomentID(currentDraft.moments[index - 1].id);
+    if (destination === removedID) setDestination(previousID);
+    setInspectedMomentID(previousID);
   }
 
   function reorderMoment(index: number, direction: -1 | 1) {
@@ -402,15 +447,21 @@ export function EventOrganizer({ session }: { session: SessionResponse }) {
   }
 
   async function loadNewerVersion() {
-    localDuringConflict.current = undefined;
+    setConflictRecoveryError("");
     const result = await eventQuery.refetch();
-    if (result.data) {
-      const next = cloneEvent(result.data);
-      latestDraftRef.current = next;
-      setDraft(next);
-      setRevision(0);
-      setSaveState("saved");
+    if (!result.isSuccess || !result.data) {
+      setConflictRecoveryError(
+        result.error?.message ?? "The newer Event could not be loaded.",
+      );
+      return;
     }
+    const next = cloneEvent(result.data);
+    latestDraftRef.current = next;
+    localDuringConflict.current = undefined;
+    save.reset();
+    setDraft(next);
+    setRevision(0);
+    setSaveState("saved");
   }
 
   async function keepMyChanges() {
@@ -418,8 +469,14 @@ export function EventOrganizer({ session }: { session: SessionResponse }) {
     const local =
       latest?.id === selectedID ? latest : localDuringConflict.current;
     if (!local) return;
+    setConflictRecoveryError("");
     const result = await eventQuery.refetch();
-    if (!result.data) return;
+    if (!result.isSuccess || !result.data) {
+      setConflictRecoveryError(
+        result.error?.message ?? "The newer Event could not be loaded.",
+      );
+      return;
+    }
     const next = cloneEvent(local);
     next.version = result.data.version;
     const nextRevision = revisionRef.current + 1;
@@ -427,6 +484,7 @@ export function EventOrganizer({ session }: { session: SessionResponse }) {
     latestDraftRef.current = next;
     setDraft(next);
     localDuringConflict.current = undefined;
+    save.reset();
     setSaveState("unsaved");
     setRevision(nextRevision);
   }
@@ -465,6 +523,7 @@ export function EventOrganizer({ session }: { session: SessionResponse }) {
       <nav aria-label="Mobile workspace panes" className="mobile-pane-nav">
         {(["work", "organize", "inspect"] as Pane[]).map((pane) => (
           <button
+            aria-controls={`${pane}-pane`}
             aria-pressed={activePane === pane}
             key={pane}
             onClick={() => setActivePane(pane)}
@@ -482,11 +541,17 @@ export function EventOrganizer({ session }: { session: SessionResponse }) {
         <div className="conflict" role="alert">
           <strong>This Event changed in another browser.</strong>
           <p>Your edits have not overwritten the newer version.</p>
+          <p>
+            Replacing it will discard organization saved by the other browser.
+          </p>
+          {conflictRecoveryError ? (
+            <p className="form-error">{conflictRecoveryError}</p>
+          ) : null}
           <button onClick={() => void loadNewerVersion()} type="button">
             Load newer version
           </button>
           <button onClick={() => void keepMyChanges()} type="button">
-            Keep my changes
+            Replace newer version with my changes
           </button>
         </div>
       ) : save.isError ? (
@@ -508,7 +573,12 @@ export function EventOrganizer({ session }: { session: SessionResponse }) {
         </div>
       ) : null}
       <div className="curator-split" data-active-pane={activePane}>
-        <aside className="work-pane">
+        <aside
+          className="work-pane"
+          id="work-pane"
+          ref={workPaneRef}
+          tabIndex={-1}
+        >
           <h3>Draft work</h3>
           {work.isPending ? <p>Loading drafts…</p> : null}
           {work.isError ? (
@@ -523,6 +593,14 @@ export function EventOrganizer({ session }: { session: SessionResponse }) {
                 <button
                   aria-current={selectedID === event.id ? "page" : undefined}
                   onClick={() => {
+                    if (event.id === selectedID) return;
+                    if (
+                      saveState !== "saved" &&
+                      !window.confirm(
+                        "Discard changes that have not finished saving?",
+                      )
+                    )
+                      return;
                     selectedIDRef.current = event.id;
                     latestDraftRef.current = undefined;
                     localDuringConflict.current = undefined;
@@ -533,6 +611,7 @@ export function EventOrganizer({ session }: { session: SessionResponse }) {
                     setInspectedMomentID("");
                     setRevision(0);
                     setSaveState("saved");
+                    setConflictRecoveryError("");
                     setSelectedID(event.id);
                     setActivePane("organize");
                   }}
@@ -549,13 +628,24 @@ export function EventOrganizer({ session }: { session: SessionResponse }) {
           </ul>
         </aside>
         <section
-          className="organize-pane"
           aria-label="Active Event organization"
+          className="organize-pane"
+          id="organize-pane"
+          ref={organizePaneRef}
+          tabIndex={-1}
         >
           {!selectedID ? (
             <p className="pane-empty">Choose an Event draft from Work.</p>
           ) : null}
           {eventQuery.isPending && selectedID ? <p>Loading Event…</p> : null}
+          {eventQuery.isError && selectedID && saveState !== "conflict" ? (
+            <div className="form-error" role="alert">
+              <p>{eventQuery.error.message}</p>
+              <button onClick={() => void eventQuery.refetch()} type="button">
+                Retry loading Event
+              </button>
+            </div>
+          ) : null}
           {currentDraft ? (
             <>
               <header>
@@ -705,7 +795,14 @@ export function EventOrganizer({ session }: { session: SessionResponse }) {
                     </ul>
                     <div className="moment-actions">
                       <button
-                        disabled={selectedMedia.size === 0}
+                        disabled={
+                          moment.media_items.filter((item) =>
+                            selectedMedia.has(item.id),
+                          ).length === 0 ||
+                          moment.media_items.every((item) =>
+                            selectedMedia.has(item.id),
+                          )
+                        }
                         onClick={() => splitMoment(moment)}
                         type="button"
                       >
@@ -734,7 +831,12 @@ export function EventOrganizer({ session }: { session: SessionResponse }) {
             </>
           ) : null}
         </section>
-        <aside className="inspect-pane">
+        <aside
+          className="inspect-pane"
+          id="inspect-pane"
+          ref={inspectPaneRef}
+          tabIndex={-1}
+        >
           <h3>Attendance and Audience</h3>
           {!inspected ? (
             <p>Choose a Moment to inspect.</p>

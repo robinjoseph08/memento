@@ -709,12 +709,18 @@ function ReadyCard({
   onSignOut: () => void;
 }) {
   const [searchParams, setSearchParams] = useSearchParams();
+  const [draftsDirty, setDraftsDirty] = useState(false);
   if (session && searchParams.get("workspace") === "drafts") {
     return (
       <section className="draft-work-shell">
         <button
           className="back-to-management"
           onClick={() => {
+            if (
+              draftsDirty &&
+              !window.confirm("Discard changes that have not finished saving?")
+            )
+              return;
             setSearchParams((current) => {
               const next = new URLSearchParams(current);
               next.delete("workspace");
@@ -725,7 +731,7 @@ function ReadyCard({
         >
           Back to Curator management
         </button>
-        <EventOrganizer session={session} />
+        <EventOrganizer onDirtyChange={setDraftsDirty} session={session} />
       </section>
     );
   }

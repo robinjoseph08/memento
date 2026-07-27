@@ -827,6 +827,77 @@ func TestOrganizingRejectsInvalidCoversAndMissingOrDuplicateMedia(t *testing.T) 
 		UnassignedMediaIDs: mediaIDs(created.UnassignedMedia),
 	})
 	require.ErrorIs(t, err, ErrInvalid)
+
+	_, err = fixture.service.OrganizeEvent(ctx, fixture.actor, uuid.MustParse(created.ID), OrganizeEventRequest{
+		Version: created.Version,
+		Moments: []OrganizeMoment{{
+			ID: created.Moments[0].ID, ProposedDay: created.Moments[0].ProposedDay,
+			MediaItemIDs: assigned[:len(assigned)-1],
+		}},
+		UnassignedMediaIDs: mediaIDs(created.UnassignedMedia),
+	})
+	require.ErrorIs(t, err, ErrInvalid, "an omitted Media item must not delete its placement")
+
+	replaced := append([]string(nil), assigned...)
+	replaced[0] = uuid.NewString()
+	_, err = fixture.service.OrganizeEvent(ctx, fixture.actor, uuid.MustParse(created.ID), OrganizeEventRequest{
+		Version: created.Version,
+		Moments: []OrganizeMoment{{
+			ID: created.Moments[0].ID, ProposedDay: created.Moments[0].ProposedDay,
+			MediaItemIDs: replaced,
+		}},
+		UnassignedMediaIDs: mediaIDs(created.UnassignedMedia),
+	})
+	require.ErrorIs(t, err, ErrInvalid, "a foreign replacement must fail even when cardinality matches")
+
+	reloaded, err := fixture.service.GetEvent(ctx, uuid.MustParse(created.ID))
+	require.NoError(t, err)
+	assert.Equal(t, created.Version, reloaded.Version)
+	assert.ElementsMatch(t, allEventMediaIDs(created), allEventMediaIDs(reloaded))
+}
+
+func TestOrganizationRouteBindsPersistsAndRejectsAStaleSnapshot(t *testing.T) {
+	fixture := newDraftFixture(t)
+	ctx := context.Background()
+	created, err := fixture.service.CreateEvent(ctx, fixture.actor, CreateEventRequest{
+		SourceAlbumIDs: []string{fixture.sources["first"].String()}, Timezone: "UTC",
+	})
+	require.NoError(t, err)
+
+	request := OrganizeEventRequest{
+		Version: created.Version, UnassignedMediaIDs: mediaIDs(created.UnassignedMedia),
+	}
+	for _, moment := range created.Moments {
+		request.Moments = append(request.Moments, OrganizeMoment{
+			ID: moment.ID, Title: "Through HTTP", ProposedDay: moment.ProposedDay,
+			MediaItemIDs: mediaIDs(moment.MediaItems),
+		})
+	}
+	body, err := json.Marshal(request)
+	require.NoError(t, err)
+	e := draftHTTP(fixture.service, &draftAuthorizer{actor: fixture.actor})
+
+	put := draftRequest(e, http.MethodPut, "/api/events/"+created.ID+"/organization", string(body))
+	require.Equal(t, http.StatusOK, put.Code, put.Body.String())
+	var organized Event
+	require.NoError(t, json.Unmarshal(put.Body.Bytes(), &organized))
+	assert.Equal(t, created.Version+1, organized.Version)
+	assert.Equal(t, "Through HTTP", organized.Moments[0].Title)
+
+	get := draftRequest(e, http.MethodGet, "/api/events/"+created.ID, "")
+	require.Equal(t, http.StatusOK, get.Code, get.Body.String())
+	var reloaded Event
+	require.NoError(t, json.Unmarshal(get.Body.Bytes(), &reloaded))
+	assert.Equal(t, organized.Version, reloaded.Version)
+	assert.Equal(t, organized.Moments, reloaded.Moments)
+
+	stale := draftRequest(e, http.MethodPut, "/api/events/"+created.ID+"/organization", string(body))
+	assert.Equal(t, http.StatusConflict, stale.Code)
+	assert.Contains(t, stale.Body.String(), "changed in another browser")
+	unchanged, err := fixture.service.GetEvent(ctx, uuid.MustParse(created.ID))
+	require.NoError(t, err)
+	assert.Equal(t, organized.Version, unchanged.Version)
+	assert.Equal(t, organized.Moments, unchanged.Moments)
 }
 
 func mediaIDs(media []MediaItem) []string {

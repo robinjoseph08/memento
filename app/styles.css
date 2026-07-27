@@ -1463,7 +1463,7 @@ h1 {
   }
 }
 
-@media (max-width: 54rem) {
+@media (max-width: 64rem) {
   main {
     display: block;
     padding: 0;
