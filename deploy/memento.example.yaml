@@ -20,6 +20,11 @@ sources:
   # Stable Source album membership is reconciled by the durable worker.
   reconciliation_interval: 10m
 
+geoip:
+  # Optional MaxMind-compatible City database read locally at startup. No
+  # request-time network lookup is performed.
+  database_path: ""
+
 # Generate at least 32 random bytes and keep this stable across restarts.
 security:
   setup_rate_window: 15m
@@ -27,6 +32,9 @@ security:
   setup_ip_limit: 20
   invitation_accept_rate_window: 15m
   invitation_accept_ip_limit: 20
+  sign_in_rate_window: 15m
+  sign_in_email_limit: 3
+  sign_in_ip_limit: 10
   # Forwarded client IPs are accepted only from these explicit proxy networks.
   trusted_proxy_cidrs: "127.0.0.0/8,::1/128"
 

@@ -18,6 +18,10 @@ packages:
     output_path: "app/types/generated/setup.ts"
     fallback_type: unknown
     preserve_comments: none
+  - path: "github.com/robinjoseph08/memento/pkg/sessions"
+    output_path: "app/types/generated/sessions.ts"
+    fallback_type: unknown
+    preserve_comments: none
   - path: "github.com/robinjoseph08/memento/pkg/people"
     output_path: "app/types/generated/people.ts"
     fallback_type: unknown

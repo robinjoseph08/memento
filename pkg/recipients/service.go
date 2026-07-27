@@ -43,6 +43,8 @@ var (
 	ErrInvitationState       = errors.New("Recipient state does not permit this Invitation action")
 	ErrOnboardingUnavailable = errors.New("Onboarding is not available")
 	ErrOnboardingChoices     = errors.New("Onboarding choices are incomplete")
+	ErrLifecycleState        = errors.New("Recipient lifecycle transition is unavailable")
+	ErrCuratorLifecycle      = errors.New("the Curator Recipient cannot be changed through this lifecycle")
 	errGenerateToken         = errors.New("generate Invitation token")
 )
 
@@ -98,6 +100,11 @@ type Recipient struct {
 // InvitationActionRequest protects a Curator action from targeting a replacement Invitation.
 type InvitationActionRequest struct {
 	InvitationID string `json:"invitation_id" validate:"required,uuid"`
+}
+
+// LifecycleActionRequest protects a Curator action from targeting a replacement generation.
+type LifecycleActionRequest struct {
+	AccessID string `json:"access_id" validate:"required,uuid"`
 }
 
 // TokenRequest exchanges a browser-held Invitation token without putting it in the API URL.
@@ -747,6 +754,90 @@ func (s *Service) CompleteOnboarding(ctx context.Context, actor setup.SessionAct
 		}
 		response = OnboardingCompleteResponse{Status: "complete", CSRFToken: browserSession.CSRFToken, session: browserSession}
 		return nil
+	})
+	return response, err
+}
+
+// Suspend reversibly blocks access while preserving the current generation and Audience history.
+func (s *Service) Suspend(ctx context.Context, actor setup.CuratorSession, personID, accessID uuid.UUID) (Recipient, error) {
+	return s.transition(ctx, actor, personID, accessID, "completed", "suspended", false, "recipient_suspended")
+}
+
+// Restore lifts a Suspension without changing the access generation.
+func (s *Service) Restore(ctx context.Context, actor setup.CuratorSession, personID, accessID uuid.UUID) (Recipient, error) {
+	return s.transition(ctx, actor, personID, accessID, "suspended", "completed", false, "recipient_suspension_lifted")
+}
+
+// RevokeAccess permanently ends the current generation and invalidates its Sessions.
+func (s *Service) RevokeAccess(ctx context.Context, actor setup.CuratorSession, personID, accessID uuid.UUID) (Recipient, error) {
+	return s.transition(ctx, actor, personID, accessID, "", "revoked", true, "recipient_access_revoked")
+}
+
+func (s *Service) transition(ctx context.Context, actor setup.CuratorSession, personID, expectedAccessID uuid.UUID, expected, next string, end bool, action string) (Recipient, error) {
+	var response Recipient
+	err := s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if err := lockActorAndRecipient(ctx, tx, actor.PersonID, personID); err != nil {
+			return err
+		}
+		var accessID uuid.UUID
+		var state string
+		var curator bool
+		err := tx.NewRaw(`SELECT access.id, access.state, EXISTS (SELECT 1 FROM person_roles WHERE person_id = access.person_id AND role = 'curator') FROM recipient_access_generations AS access WHERE access.person_id = ? AND access.is_current FOR UPDATE`, personID).Scan(ctx, &accessID, &state, &curator)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrRecipientNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if accessID != expectedAccessID {
+			return ErrLifecycleState
+		}
+		if curator {
+			return ErrCuratorLifecycle
+		}
+		if expected != "" && state != expected {
+			return ErrLifecycleState
+		}
+		if end && state == "revoked" {
+			return ErrLifecycleState
+		}
+		now := s.now().UTC()
+		if end {
+			if _, err := tx.NewRaw(`UPDATE recipient_access_generations SET state = 'revoked', is_current = false, ended_at = ?, updated_at = ? WHERE id = ? AND is_current`, now, now, accessID).Exec(ctx); err != nil {
+				return err
+			}
+			if _, err := tx.NewRaw(`UPDATE recipient_emails SET is_current = false, ended_at = ? WHERE recipient_access_generation_id = ? AND is_current`, now, accessID).Exec(ctx); err != nil {
+				return err
+			}
+			if _, err := tx.NewRaw(`UPDATE invitations SET revoked_at = ? WHERE recipient_access_generation_id = ? AND accepted_at IS NULL AND revoked_at IS NULL AND superseded_at IS NULL`, now, accessID).Exec(ctx); err != nil {
+				return err
+			}
+		} else {
+			result, err := tx.NewRaw(`UPDATE recipient_access_generations SET state = ?, updated_at = ? WHERE id = ? AND state = ? AND is_current`, next, now, accessID, expected).Exec(ctx)
+			if err != nil {
+				return err
+			}
+			if affected, _ := result.RowsAffected(); affected != 1 {
+				return ErrLifecycleState
+			}
+		}
+		if next == "suspended" || end {
+			if _, err := tx.NewRaw(`UPDATE sessions SET revoked_at = ? WHERE recipient_access_generation_id = ? AND revoked_at IS NULL`, now, accessID).Exec(ctx); err != nil {
+				return err
+			}
+			if _, err := tx.NewRaw(`UPDATE push_subscriptions SET disabled_at = ? WHERE person_id = ? AND disabled_at IS NULL`, now, personID).Exec(ctx); err != nil {
+				return err
+			}
+		}
+		if err := appendAudit(ctx, tx, actor, personID, action, map[string]any{"generation_id": accessID.String()}); err != nil {
+			return err
+		}
+		if end {
+			response = Recipient{PersonID: personID.String(), Access: Access{ID: accessID.String(), State: "revoked"}}
+			return tx.NewRaw(`SELECT display_name FROM people WHERE id = ?`, personID).Scan(ctx, &response.PersonName)
+		}
+		response, err = getRecipient(ctx, tx, personID, now)
+		return err
 	})
 	return response, err
 }

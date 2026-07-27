@@ -29,6 +29,7 @@ type Config struct {
 	Database DatabaseConfig
 	Immich   ImmichConfig
 	Sources  SourcesConfig
+	GeoIP    GeoIPConfig
 	Security SecurityConfig
 	SMTP     SMTPConfig
 	Worker   WorkerConfig
@@ -57,6 +58,10 @@ type SourcesConfig struct {
 	ReconciliationInterval time.Duration
 }
 
+type GeoIPConfig struct {
+	DatabasePath string
+}
+
 type SecurityConfig struct {
 	Secret                     string
 	SetupRateWindow            time.Duration
@@ -64,6 +69,9 @@ type SecurityConfig struct {
 	SetupIPLimit               int
 	InvitationAcceptRateWindow time.Duration
 	InvitationAcceptIPLimit    int
+	SignInRateWindow           time.Duration
+	SignInEmailLimit           int
+	SignInIPLimit              int
 	TrustedProxyCIDRs          []netip.Prefix
 }
 
@@ -114,6 +122,9 @@ type rawConfig struct {
 	Sources struct {
 		ReconciliationInterval string `koanf:"reconciliation_interval"`
 	} `koanf:"sources"`
+	GeoIP struct {
+		DatabasePath string `koanf:"database_path"`
+	} `koanf:"geoip"`
 	Security struct {
 		Secret                     string `koanf:"secret"`
 		SetupRateWindow            string `koanf:"setup_rate_window"`
@@ -121,6 +132,9 @@ type rawConfig struct {
 		SetupIPLimit               int    `koanf:"setup_ip_limit"`
 		InvitationAcceptRateWindow string `koanf:"invitation_accept_rate_window"`
 		InvitationAcceptIPLimit    int    `koanf:"invitation_accept_ip_limit"`
+		SignInRateWindow           string `koanf:"sign_in_rate_window"`
+		SignInEmailLimit           int    `koanf:"sign_in_email_limit"`
+		SignInIPLimit              int    `koanf:"sign_in_ip_limit"`
 		TrustedProxyCIDRs          string `koanf:"trusted_proxy_cidrs"`
 	} `koanf:"security"`
 	SMTP struct {
@@ -169,6 +183,7 @@ var (
 	errSecuritySecretRequired   = errors.New("security.secret must contain at least 32 bytes")
 	errSetupRateLimits          = errors.New("security setup rate limits must be positive")
 	errInvitationRateLimits     = errors.New("security Invitation acceptance rate limits must be positive")
+	errSignInRateLimits         = errors.New("security sign-in rate limits must be positive")
 	errTrustedProxyCIDR         = errors.New("security.trusted_proxy_cidrs must contain valid CIDR prefixes")
 	errSMTPHostRequired         = errors.New("smtp.host is required when SMTP is enabled")
 	errSMTPPortInvalid          = errors.New("smtp.port must be between 1 and 65535")
@@ -199,6 +214,9 @@ var defaults = map[string]any{
 	"security.setup_ip_limit":                20,
 	"security.invitation_accept_rate_window": "15m",
 	"security.invitation_accept_ip_limit":    20,
+	"security.sign_in_rate_window":           "15m",
+	"security.sign_in_email_limit":           3,
+	"security.sign_in_ip_limit":              10,
 	"security.trusted_proxy_cidrs":           "127.0.0.0/8,::1/128",
 	"smtp.enabled":                           false,
 	"smtp.port":                              587,
@@ -274,12 +292,16 @@ func envKey(key string) string {
 		"MEMENTO_IMMICH_API_KEY":                         "immich.api_key",
 		"MEMENTO_IMMICH_HEALTH_TIMEOUT":                  "immich.health_timeout",
 		"MEMENTO_SOURCES_RECONCILIATION_INTERVAL":        "sources.reconciliation_interval",
+		"MEMENTO_GEOIP_DATABASE_PATH":                    "geoip.database_path",
 		"MEMENTO_SECURITY_SECRET":                        "security.secret",
 		"MEMENTO_SECURITY_SETUP_RATE_WINDOW":             "security.setup_rate_window",
 		"MEMENTO_SECURITY_SETUP_EMAIL_LIMIT":             "security.setup_email_limit",
 		"MEMENTO_SECURITY_SETUP_IP_LIMIT":                "security.setup_ip_limit",
 		"MEMENTO_SECURITY_INVITATION_ACCEPT_RATE_WINDOW": "security.invitation_accept_rate_window",
 		"MEMENTO_SECURITY_INVITATION_ACCEPT_IP_LIMIT":    "security.invitation_accept_ip_limit",
+		"MEMENTO_SECURITY_SIGN_IN_RATE_WINDOW":           "security.sign_in_rate_window",
+		"MEMENTO_SECURITY_SIGN_IN_EMAIL_LIMIT":           "security.sign_in_email_limit",
+		"MEMENTO_SECURITY_SIGN_IN_IP_LIMIT":              "security.sign_in_ip_limit",
 		"MEMENTO_SECURITY_TRUSTED_PROXY_CIDRS":           "security.trusted_proxy_cidrs",
 		"MEMENTO_SMTP_ENABLED":                           "smtp.enabled",
 		"MEMENTO_SMTP_HOST":                              "smtp.host",
@@ -337,10 +359,13 @@ func parse(raw rawConfig) (Config, error) {
 	cfg.Database.MaxOpenConns = raw.Database.MaxOpenConns
 	cfg.Immich.URL = raw.Immich.URL
 	cfg.Immich.APIKey = raw.Immich.APIKey
+	cfg.GeoIP.DatabasePath = raw.GeoIP.DatabasePath
 	cfg.Security.Secret = raw.Security.Secret
 	cfg.Security.SetupEmailLimit = raw.Security.SetupEmailLimit
 	cfg.Security.SetupIPLimit = raw.Security.SetupIPLimit
 	cfg.Security.InvitationAcceptIPLimit = raw.Security.InvitationAcceptIPLimit
+	cfg.Security.SignInEmailLimit = raw.Security.SignInEmailLimit
+	cfg.Security.SignInIPLimit = raw.Security.SignInIPLimit
 	var err error
 	cfg.Security.TrustedProxyCIDRs, err = cidrPrefixes(raw.Security.TrustedProxyCIDRs)
 	if err != nil {
@@ -373,6 +398,9 @@ func parse(raw rawConfig) (Config, error) {
 		return Config{}, err
 	}
 	if cfg.Security.InvitationAcceptRateWindow, err = duration("security.invitation_accept_rate_window", raw.Security.InvitationAcceptRateWindow); err != nil {
+		return Config{}, err
+	}
+	if cfg.Security.SignInRateWindow, err = duration("security.sign_in_rate_window", raw.Security.SignInRateWindow); err != nil {
 		return Config{}, err
 	}
 	if cfg.SMTP.Timeout, err = duration("smtp.timeout", raw.SMTP.Timeout); err != nil {
@@ -508,6 +536,9 @@ func (c Config) Validate() error {
 	}
 	if c.Security.InvitationAcceptRateWindow <= 0 || c.Security.InvitationAcceptIPLimit <= 0 {
 		return errInvitationRateLimits
+	}
+	if c.Security.SignInRateWindow <= 0 || c.Security.SignInEmailLimit <= 0 || c.Security.SignInIPLimit <= 0 {
+		return errSignInRateLimits
 	}
 	if err := c.SMTP.Validate(); err != nil {
 		return err

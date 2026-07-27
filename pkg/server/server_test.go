@@ -23,6 +23,7 @@ import (
 	"github.com/robinjoseph08/memento/pkg/people"
 	"github.com/robinjoseph08/memento/pkg/recipients"
 	"github.com/robinjoseph08/memento/pkg/repairs"
+	"github.com/robinjoseph08/memento/pkg/sessions"
 	"github.com/robinjoseph08/memento/pkg/suggestions"
 	"github.com/robinjoseph08/memento/pkg/visibility"
 	"github.com/stretchr/testify/assert"
@@ -149,6 +150,24 @@ func TestServerRegistersSuggestionRoutesWhenHandlerIsProvided(t *testing.T) {
 		"GET /api/invitation-suggestions", "POST /api/invitation-suggestions",
 		"POST /api/invitation-suggestions/:id/withdraw", "GET /api/invitation-suggestions/curator",
 		"POST /api/invitation-suggestions/curator/:id/reject", "POST /api/invitation-suggestions/curator/:id/accept",
+	} {
+		assert.True(t, routes[route], route)
+	}
+}
+
+func TestServerRegistersSessionRoutesWhenHandlerIsProvided(t *testing.T) {
+	e, err := New(new(health.Service), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, sessions.NewHandler(nil, nil))
+	require.NoError(t, err)
+	routes := make(map[string]bool)
+	for _, route := range e.Routes() {
+		routes[route.Method+" "+route.Path] = true
+	}
+	for _, route := range []string{
+		"POST /api/auth/sign-in/request", "POST /api/auth/sign-in/verify", "GET /api/sessions",
+		"PATCH /api/sessions/:session_id", "DELETE /api/sessions/:session_id", "POST /api/sessions/sign-out-all",
+		"POST /api/me/email-change/request", "POST /api/me/email-change/complete",
+		"GET /api/recipients/:person_id/sessions", "POST /api/recipients/:person_id/email-recovery/request",
+		"POST /api/recipients/:person_id/email-recovery/complete",
 	} {
 		assert.True(t, routes[route], route)
 	}

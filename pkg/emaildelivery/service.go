@@ -28,6 +28,10 @@ const (
 	KindInvitationInitial           = "invitation_initial"
 	KindInvitationAutomaticReminder = "invitation_automatic_reminder"
 	KindInvitationManualReminder    = "invitation_manual_reminder"
+	KindSignInCode                  = "sign_in_code"
+	KindEmailChangeOldCode          = "email_change_old_code"
+	KindEmailChangeNewCode          = "email_change_new_code"
+	KindCuratorRecoveryCode         = "curator_recovery_code"
 )
 
 var (
@@ -107,6 +111,9 @@ func New(db *bun.DB, cfg config.SMTPConfig, sender smtp.Sender, securitySecret .
 	return service
 }
 
+// Configured reports whether required security email can be durably queued.
+func (s *Service) Configured() bool { return s != nil && s.cfg.Enabled && s.sender != nil }
+
 // RequestTest atomically commits the delivery and its outbox event.
 func (s *Service) RequestTest(ctx context.Context) (TestEmailResponse, error) {
 	if !s.cfg.Enabled || s.sender == nil {
@@ -141,10 +148,10 @@ func (s *Service) QueueRequired(ctx context.Context, tx bun.Tx, message Required
 	if !s.cfg.Enabled || s.sender == nil {
 		return 0, "", ErrNotConfigured
 	}
-	if message.Kind != "required_test" && message.Kind != KindSetupCode && !invitationKind(message.Kind) {
+	if message.Kind != "required_test" && !codeKind(message.Kind) && !invitationKind(message.Kind) {
 		return 0, "", fmt.Errorf("%w: %s", errUnsupportedKind, message.Kind)
 	}
-	if ((message.Kind == KindSetupCode) || invitationKind(message.Kind)) != (message.DeliverBefore != nil) ||
+	if (codeKind(message.Kind) || invitationKind(message.Kind)) != (message.DeliverBefore != nil) ||
 		invitationKind(message.Kind) != (message.InvitationID != nil) {
 		return 0, "", errSensitiveBody
 	}
@@ -236,7 +243,7 @@ func (s *Service) Handle(ctx context.Context, job worker.Job) error {
 	if err := s.requireLease(ctx, job); err != nil {
 		return err
 	}
-	if message.Kind == KindSetupCode || invitationKind(message.Kind) {
+	if codeKind(message.Kind) || invitationKind(message.Kind) {
 		obsolete, err := s.deliveryObsolete(ctx, message)
 		if err != nil {
 			return err
@@ -420,14 +427,23 @@ func invitationKind(kind string) bool {
 	return kind == KindInvitationInitial || kind == KindInvitationAutomaticReminder || kind == KindInvitationManualReminder
 }
 
+func codeKind(kind string) bool {
+	return kind == KindSetupCode || kind == KindSignInCode || kind == KindEmailChangeOldCode ||
+		kind == KindEmailChangeNewCode || kind == KindCuratorRecoveryCode
+}
+
 func (s *Service) deliveryObsolete(ctx context.Context, message delivery) (bool, error) {
 	return s.deliveryObsoleteIn(ctx, s.db, message)
 }
 
 func (s *Service) deliveryObsoleteIn(ctx context.Context, db bun.IDB, message delivery) (bool, error) {
-	if message.Kind == KindSetupCode {
+	if codeKind(message.Kind) {
 		var obsolete bool
-		err := db.NewRaw(`SELECT setup_complete OR now() >= ? FROM system_settings WHERE id = 1`, message.DeliverBefore).Scan(ctx, &obsolete)
+		if message.Kind == KindSetupCode {
+			err := db.NewRaw(`SELECT setup_complete OR now() >= ? FROM system_settings WHERE id = 1`, message.DeliverBefore).Scan(ctx, &obsolete)
+			return obsolete, err
+		}
+		err := db.NewRaw(`SELECT now() >= ?`, message.DeliverBefore).Scan(ctx, &obsolete)
 		return obsolete, err
 	}
 	if message.InvitationID == nil {
@@ -463,7 +479,7 @@ func (s *Service) recordSentIn(ctx context.Context, tx bun.Tx, job worker.Job, m
 	updated, err := tx.NewRaw(`
 			UPDATE email_deliveries SET status = 'sent', sent_at = clock_timestamp(), next_retry_at = NULL,
 				last_safe_error = NULL,
-				body = CASE WHEN kind = 'setup_code' OR kind LIKE 'invitation_%' THEN '' ELSE body END,
+				body = CASE WHEN kind IN ('setup_code', 'sign_in_code', 'email_change_old_code', 'email_change_new_code', 'curator_recovery_code') OR kind LIKE 'invitation_%' THEN '' ELSE body END,
 				updated_at = clock_timestamp()
 			WHERE id = ? AND status = 'queued' AND EXISTS (
 				SELECT 1 FROM jobs WHERE id = ? AND status = 'running' AND lease_owner = ? AND lease_expires_at > clock_timestamp()
@@ -490,7 +506,7 @@ func (s *Service) recordSentIn(ctx context.Context, tx bun.Tx, job worker.Job, m
 }
 
 func (s *Service) persistedBody(message RequiredMessage) (string, error) {
-	if message.Kind != KindSetupCode && !invitationKind(message.Kind) {
+	if !codeKind(message.Kind) && !invitationKind(message.Kind) {
 		return message.Body, nil
 	}
 	if s.bodyAEAD == nil {
@@ -505,7 +521,7 @@ func (s *Service) persistedBody(message RequiredMessage) (string, error) {
 }
 
 func (s *Service) deliveryBody(kind, body string) (string, error) {
-	if kind != KindSetupCode && !invitationKind(kind) {
+	if !codeKind(kind) && !invitationKind(kind) {
 		return body, nil
 	}
 	if s.bodyAEAD == nil || len(body) < 4 || body[:3] != "v1:" {
@@ -607,7 +623,7 @@ func (s *Service) recordFailureIn(ctx context.Context, tx bun.Tx, job worker.Job
 	updated, err := tx.NewRaw(`
 		UPDATE email_deliveries SET status = 'failed', failed_at = clock_timestamp(), last_safe_error = ?,
 			next_retry_at = NULL,
-			body = CASE WHEN kind = 'setup_code' OR kind LIKE 'invitation_%' THEN '' ELSE body END,
+			body = CASE WHEN kind IN ('setup_code', 'sign_in_code', 'email_change_old_code', 'email_change_new_code', 'curator_recovery_code') OR kind LIKE 'invitation_%' THEN '' ELSE body END,
 			updated_at = clock_timestamp()
 		WHERE id = ? AND status = 'queued' AND EXISTS (
 			SELECT 1 FROM jobs WHERE id = ? AND status = 'running' AND lease_owner = ? AND lease_expires_at > clock_timestamp()

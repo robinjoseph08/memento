@@ -27,6 +27,7 @@ import (
 	"github.com/robinjoseph08/memento/pkg/recipients"
 	"github.com/robinjoseph08/memento/pkg/repairs"
 	"github.com/robinjoseph08/memento/pkg/server"
+	"github.com/robinjoseph08/memento/pkg/sessions"
 	"github.com/robinjoseph08/memento/pkg/setup"
 	mementosmtp "github.com/robinjoseph08/memento/pkg/smtp"
 	"github.com/robinjoseph08/memento/pkg/sources"
@@ -110,6 +111,16 @@ func run() error {
 	}
 	healthService := health.New(db, immichClient, jobWorker, cfg.Database.HealthTimeout, cfg.Worker.HeartbeatMaxAge, deliveryHealth)
 	setupService := setup.New(db, emailService, cfg.Security)
+	localGeoIP, err := sessions.OpenLocalGeoIP(cfg.GeoIP.DatabasePath)
+	if err != nil {
+		_ = db.Close()
+		log.Err(err).Error("local GeoIP database is invalid")
+		return err
+	}
+	if localGeoIP != nil {
+		defer func() { _ = localGeoIP.Close() }()
+		setupService.SetLocationResolver(localGeoIP)
+	}
 	setupHandler := setup.NewHandler(setupService)
 	peopleService := people.New(db)
 	peopleHandler := people.NewHandler(peopleService, setupService)
@@ -121,7 +132,8 @@ func run() error {
 	repairHandler := repairs.NewHandler(repairs.New(db, immichClient), setupService)
 	suggestionHandler := suggestions.NewHandler(suggestions.New(db, peopleService), setupService)
 	audienceHandler := audiences.NewHandler(audiences.New(db, immichClient), setupService)
-	e, err := server.New(healthService, emaildelivery.NewHandler(emailService), setupHandler, peopleHandler, familyHandler, visibilityHandler, recipientHandler, sourceHandler, eventHandler, repairHandler, suggestionHandler, audienceHandler)
+	sessionHandler := sessions.NewHandler(sessions.New(db, emailService, setupService, cfg.Security), setupService)
+	e, err := server.New(healthService, emaildelivery.NewHandler(emailService), setupHandler, peopleHandler, familyHandler, visibilityHandler, recipientHandler, sourceHandler, eventHandler, repairHandler, suggestionHandler, audienceHandler, sessionHandler)
 	if err != nil {
 		_ = db.Close()
 		log.Err(err).Error("HTTP server initialization failed")

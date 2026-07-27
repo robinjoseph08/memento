@@ -749,7 +749,7 @@ test("safe bootstrap GETs show permanent closure without starting setup", async 
 
   expect(await screen.findByText("Setup is complete.")).toBeInTheDocument();
   expect(fetchMock).toHaveBeenCalledTimes(2);
-  expect(screen.queryByLabelText("Login email")).not.toBeInTheDocument();
+  expect(screen.getByLabelText("Login email")).toBeInTheDocument();
 });
 
 test("restores and refreshes a signed-in Trusted-device Session", async () => {
@@ -812,7 +812,7 @@ test("restores and refreshes a signed-in Trusted-device Session", async () => {
       "Setup is complete. You're signed in as Robin Joseph.",
     ),
   ).toBeInTheDocument();
-  expect(fetchMock).toHaveBeenCalledTimes(13);
+  expect(fetchMock).toHaveBeenCalledTimes(14);
   expect(fetchMock).toHaveBeenCalledWith(
     "/api/people?query=&include_archived=false",
     expect.objectContaining({ credentials: "same-origin" }),

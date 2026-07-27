@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState, type FormEvent } from "react";
 
-import { apiJSON } from "./api";
+import { apiJSON, apiNoContent } from "./api";
 import type {
   CreateRequest,
   ListResponse,
@@ -18,6 +18,10 @@ import type {
   Recipient,
 } from "./types/generated/recipients";
 import type { SessionResponse } from "./types/generated/setup";
+import type {
+  ListResponse as SessionListResponse,
+  RecoveryStartResponse,
+} from "./types/generated/sessions";
 
 function ErrorNotice({ error }: { error: Error | null }) {
   return error ? (
@@ -546,7 +550,11 @@ function RecipientControls({
   session: SessionResponse;
 }) {
   const queryClient = useQueryClient();
+  const isCurator = person.roles.includes("curator");
   const [email, setEmail] = useState("");
+  const [recoveryEmail, setRecoveryEmail] = useState("");
+  const [recoveryCode, setRecoveryCode] = useState("");
+  const [recovery, setRecovery] = useState<RecoveryStartResponse>();
   const recipient = useQuery({
     queryKey: ["recipient", person.id],
     queryFn: () => apiJSON<Recipient>(`/api/recipients/${person.id}`),
@@ -557,6 +565,9 @@ function RecipientControls({
   async function refresh() {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ["recipient", person.id] }),
+      queryClient.invalidateQueries({
+        queryKey: ["recipient-sessions", person.id],
+      }),
       queryClient.invalidateQueries({ queryKey: ["people"] }),
     ]);
   }
@@ -569,6 +580,63 @@ function RecipientControls({
         body: JSON.stringify(request),
       }),
     onSuccess: refresh,
+  });
+  const lifecycleAction = useMutation({
+    mutationFn: ({
+      action,
+      accessID,
+    }: {
+      action: "suspend" | "restore" | "revoke";
+      accessID: string;
+    }) =>
+      apiJSON<Recipient>(`/api/recipients/${person.id}/${action}`, {
+        method: "POST",
+        headers: { "X-Memento-CSRF": session.csrf_token },
+        body: JSON.stringify({ access_id: accessID }),
+      }),
+    onSuccess: refresh,
+  });
+  const recipientSessions = useQuery({
+    queryKey: ["recipient-sessions", person.id],
+    queryFn: () =>
+      apiJSON<SessionListResponse>(`/api/recipients/${person.id}/sessions`),
+    enabled:
+      Boolean(person.current_recipient_access) &&
+      person.current_recipient_access?.state !== "pending",
+    retry: false,
+  });
+  const startRecovery = useMutation({
+    mutationFn: () =>
+      apiJSON<RecoveryStartResponse>(
+        `/api/recipients/${person.id}/email-recovery/request`,
+        {
+          method: "POST",
+          headers: { "X-Memento-CSRF": session.csrf_token },
+          body: JSON.stringify({ new_email: recoveryEmail }),
+        },
+      ),
+    onSuccess: setRecovery,
+  });
+  const completeRecovery = useMutation({
+    mutationFn: () => {
+      if (!recovery) throw new Error("Start recovery first.");
+      return apiNoContent(
+        `/api/recipients/${person.id}/email-recovery/complete`,
+        {
+          method: "POST",
+          headers: { "X-Memento-CSRF": session.csrf_token },
+          body: JSON.stringify({
+            recovery_id: recovery.recovery_id,
+            code: recoveryCode,
+          }),
+        },
+      );
+    },
+    onSuccess: async () => {
+      setRecovery(undefined);
+      setRecoveryCode("");
+      await refresh();
+    },
   });
   const invitationAction = useMutation({
     mutationFn: ({
@@ -595,7 +663,14 @@ function RecipientControls({
 
   const current = recipient.data;
   const invitation = current?.invitation;
-  const error = designate.error ?? invitationAction.error ?? recipient.error;
+  const error =
+    designate.error ??
+    invitationAction.error ??
+    lifecycleAction.error ??
+    startRecovery.error ??
+    completeRecovery.error ??
+    recipientSessions.error ??
+    recipient.error;
   return (
     <section
       className="recipient-controls"
@@ -641,6 +716,125 @@ function RecipientControls({
             >
               Create and send Invitation
             </button>
+          ) : null}
+          {isCurator ? (
+            <p>
+              Curator access cannot be suspended, revoked, or recovered here.
+              Use signed-in email change for Curator identity changes.
+            </p>
+          ) : null}
+          {!isCurator && current.access.state === "completed" ? (
+            <button
+              disabled={lifecycleAction.isPending}
+              onClick={() =>
+                lifecycleAction.mutate({
+                  action: "suspend",
+                  accessID: current.access.id,
+                })
+              }
+              type="button"
+            >
+              Suspend Recipient access
+            </button>
+          ) : null}
+          {!isCurator && current.access.state === "suspended" ? (
+            <button
+              disabled={lifecycleAction.isPending}
+              onClick={() =>
+                lifecycleAction.mutate({
+                  action: "restore",
+                  accessID: current.access.id,
+                })
+              }
+              type="button"
+            >
+              Lift Suspension
+            </button>
+          ) : null}
+          {!isCurator &&
+          ["pending", "onboarding", "completed", "suspended"].includes(
+            current.access.state,
+          ) ? (
+            <button
+              className="danger-button"
+              disabled={lifecycleAction.isPending}
+              onClick={() => {
+                if (
+                  window.confirm(
+                    `Revoke access generation ${current.access.generation} for ${person.display_name}? Every Session will be invalidated and reinvitation will create an isolated generation.`,
+                  )
+                ) {
+                  lifecycleAction.mutate({
+                    action: "revoke",
+                    accessID: current.access.id,
+                  });
+                }
+              }}
+              type="button"
+            >
+              Revoke Recipient access generation
+            </button>
+          ) : null}
+          {recipientSessions.data?.sessions.length ? (
+            <details>
+              <summary>Inspect Recipient Sessions</summary>
+              {recipientSessions.data.sessions.map((item) => (
+                <p key={item.id}>
+                  <strong>
+                    {item.label || `${item.browser} on ${item.platform}`}
+                  </strong>
+                  {` · ${item.session_type} · ${item.status} · created ${formatInvitationDate(item.created_at)} · last active ${formatInvitationDate(item.last_activity_at)}`}
+                  {item.location ? ` · ${item.location}` : ""}
+                </p>
+              ))}
+            </details>
+          ) : null}
+          {!isCurator &&
+          ["completed", "suspended"].includes(current.access.state) ? (
+            <div className="recipient-recovery">
+              <h4>Curator email recovery</h4>
+              {!recovery ? (
+                <>
+                  <label>
+                    Replacement login email
+                    <input
+                      onChange={(event) => setRecoveryEmail(event.target.value)}
+                      type="email"
+                      value={recoveryEmail}
+                    />
+                  </label>
+                  <button
+                    disabled={startRecovery.isPending || !recoveryEmail}
+                    onClick={() => startRecovery.mutate()}
+                    type="button"
+                  >
+                    Send recovery code
+                  </button>
+                </>
+              ) : (
+                <>
+                  <p>
+                    Completing recovery preserves this Person and generation but
+                    revokes every Session.
+                  </p>
+                  <label>
+                    Recovery code
+                    <input
+                      inputMode="numeric"
+                      onChange={(event) => setRecoveryCode(event.target.value)}
+                      value={recoveryCode}
+                    />
+                  </label>
+                  <button
+                    disabled={completeRecovery.isPending}
+                    onClick={() => completeRecovery.mutate()}
+                    type="button"
+                  >
+                    Complete email recovery
+                  </button>
+                </>
+              )}
+            </div>
           ) : null}
           {invitation ? (
             <div className="invitation-status">
