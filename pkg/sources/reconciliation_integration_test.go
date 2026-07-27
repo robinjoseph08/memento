@@ -514,6 +514,33 @@ func TestDeleteReimportAndPathMoveStayAddRemoveUntilRepairConfirmation(t *testin
 	assert.Equal(t, oldAsset.Checksum, checksum)
 }
 
+func TestRejectedMediaRepairIsNotProposedAgain(t *testing.T) {
+	oldAsset := repairableReconciliationAsset(uuid.New(), "/library/old/family.jpg")
+	connector := &reconciliationConnector{summary: sourceAlbum(uuid.New(), "Rejected repair album", 1)}
+	connector.pages = map[int]immich.AssetPage{1: {Items: []immich.AssetSummary{oldAsset}}}
+	service, sourceAlbumID := newReconciliationService(t, connector)
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+
+	replacement := repairableReconciliationAsset(uuid.New(), "/library/new/family.jpg")
+	connector.setMembership(replacement)
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	result, err := service.db.NewRaw(`UPDATE media_repair_candidates SET state = 'rejected', resolved_at = now() WHERE state = 'pending'`).Exec(context.Background())
+	require.NoError(t, err)
+	rejected, err := result.RowsAffected()
+	require.NoError(t, err)
+	require.EqualValues(t, 1, rejected)
+
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	var rejectedCount, pendingCount int
+	require.NoError(t, service.db.NewRaw(`
+		SELECT count(*) FILTER (WHERE state = 'rejected'), count(*) FILTER (WHERE state = 'pending')
+		FROM media_repair_candidates
+	`).Scan(context.Background(), &rejectedCount, &pendingCount))
+	assert.Equal(t, 1, rejectedCount)
+	assert.Zero(t, pendingCount)
+}
+
 func TestAmbiguousChecksumCandidatesExposeConflictEvidence(t *testing.T) {
 	first := repairableReconciliationAsset(uuid.New(), "/library/a/family.jpg")
 	second := repairableReconciliationAsset(uuid.New(), "/library/b/family.jpg")

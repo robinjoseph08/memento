@@ -80,7 +80,20 @@ test("shows private normalized Media evidence and confirms only after an explici
               filename: "new.jpg",
               path: "/private/moved/new.jpg",
             },
-            face_anchors: [{ face_id: "face", asset_id: "asset" }],
+            face_anchors: [
+              {
+                face_id: "face-anchor-id",
+                asset_id: "anchor-asset-id",
+                checksum: "anchor-checksum",
+                image_width: 1600,
+                image_height: 1200,
+                x1: 10,
+                y1: 20,
+                x2: 110,
+                y2: 220,
+                last_immich_person_id: "prior-person-id",
+              },
+            ],
             conflicts: ["checksum_matches_multiple_media"],
             created_at: "2026-01-01T00:00:00Z",
           },
@@ -94,6 +107,12 @@ test("shows private normalized Media evidence and confirms only after an explici
   expect(screen.getByText("/private/moved/new.jpg")).toBeInTheDocument();
   expect(screen.getAllByText("abcd")).toHaveLength(2);
   expect(screen.getByText("1 related face anchor")).toBeInTheDocument();
+  expect(screen.getByText("face-anchor-id")).toBeInTheDocument();
+  expect(screen.getByText("anchor-asset-id")).toBeInTheDocument();
+  expect(screen.getByText("anchor-checksum")).toBeInTheDocument();
+  expect(screen.getByText("prior-person-id")).toBeInTheDocument();
+  expect(screen.getByText("1600 × 1200")).toBeInTheDocument();
+  expect(screen.getByText("10, 20 to 110, 220")).toBeInTheDocument();
   expect(
     screen.getByText("checksum matches multiple media"),
   ).toBeInTheDocument();

@@ -4,6 +4,7 @@ import { useState } from "react";
 import { apiJSON } from "./api";
 import type { ListResponse as PeopleListResponse } from "./types/generated/people";
 import type {
+  FaceAnchorEvidence,
   LinkPersonRequest,
   ListResponse,
   MediaCandidate,
@@ -92,6 +93,43 @@ function Conflicts({ values }: { values: string[] }) {
   );
 }
 
+function FaceAnchors({ values }: { values: FaceAnchorEvidence[] }) {
+  if (values.length === 0) {
+    return <p>No related face anchors.</p>;
+  }
+  return (
+    <section className="repair-anchors">
+      <h4>
+        {values.length} related face{" "}
+        {values.length === 1 ? "anchor" : "anchors"}
+      </h4>
+      <ol>
+        {values.map((anchor) => (
+          <li key={`${anchor.asset_id}:${anchor.face_id}`}>
+            <dl className="repair-evidence">
+              <EvidenceField label="Face ID" value={anchor.face_id} />
+              <EvidenceField label="Asset ID" value={anchor.asset_id} />
+              <EvidenceField label="Checksum" value={anchor.checksum} />
+              <EvidenceField
+                label="Last Immich Person"
+                value={anchor.last_immich_person_id}
+              />
+              <EvidenceField
+                label="Image dimensions"
+                value={`${anchor.image_width} × ${anchor.image_height}`}
+              />
+              <EvidenceField
+                label="Face bounds"
+                value={`${anchor.x1}, ${anchor.y1} to ${anchor.x2}, ${anchor.y2}`}
+              />
+            </dl>
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}
+
 function PersonRepair({
   candidate,
   csrfToken,
@@ -117,10 +155,7 @@ function PersonRepair({
           value={candidate.candidate_immich_person_name}
         />
       </dl>
-      <p>
-        {candidate.face_anchors.length} surviving face
-        {candidate.face_anchors.length === 1 ? " anchor" : " anchors"}
-      </p>
+      <FaceAnchors values={candidate.face_anchors} />
       <Conflicts values={candidate.conflicts} />
       {candidate.state === "pending" && candidate.candidate_immich_person_id ? (
         <CandidateActions
@@ -183,10 +218,7 @@ function MediaRepair({
           </dl>
         </section>
       </div>
-      <p>
-        {candidate.face_anchors.length} related face
-        {candidate.face_anchors.length === 1 ? " anchor" : " anchors"}
-      </p>
+      <FaceAnchors values={candidate.face_anchors} />
       <Conflicts values={candidate.conflicts} />
       {candidate.state === "pending" ? (
         <CandidateActions

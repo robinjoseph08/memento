@@ -1057,6 +1057,19 @@ h1 {
   overflow-wrap: anywhere;
 }
 
+.repair-anchors ol {
+  display: grid;
+  gap: 0.75rem;
+  margin: 0.75rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.repair-anchors .repair-evidence {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0;
+}
+
 .repair-conflicts {
   padding: 0.75rem;
   border: 1px solid rgb(251 146 60 / 35%);
@@ -1084,7 +1097,8 @@ h1 {
 }
 
 @media (max-width: 640px) {
-  .repair-comparison {
+  .repair-comparison,
+  .repair-anchors .repair-evidence {
     grid-template-columns: 1fr;
   }
 }

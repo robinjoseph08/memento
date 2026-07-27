@@ -190,9 +190,12 @@ func (s *Service) ReconcilePeople(ctx context.Context) (MutationResponse, error)
 			}
 		}
 
-		type linkRow struct{ PersonID, ImmichPersonID uuid.UUID }
+		type linkRow struct {
+			PersonID, ImmichPersonID uuid.UUID
+			State                    string
+		}
 		var links []linkRow
-		if err := tx.NewRaw(`SELECT person_id, immich_person_id FROM immich_person_links ORDER BY person_id FOR UPDATE`).Scan(ctx, &links); err != nil {
+		if err := tx.NewRaw(`SELECT person_id, immich_person_id, state FROM immich_person_links ORDER BY person_id FOR UPDATE`).Scan(ctx, &links); err != nil {
 			return err
 		}
 		anchorsByPerson := map[uuid.UUID][]anchorRow{}
@@ -200,12 +203,35 @@ func (s *Service) ReconcilePeople(ctx context.Context) (MutationResponse, error)
 			anchorsByPerson[anchor.PersonID] = append(anchorsByPerson[anchor.PersonID], anchor)
 		}
 		for _, link := range links {
-			candidate, conflicts, matched := evaluatePersonLink(link.ImmichPersonID, present, anchorsByPerson[link.PersonID], facesByID)
+			personAnchors := anchorsByPerson[link.PersonID]
+			candidate, conflicts, matched := evaluatePersonLink(link.ImmichPersonID, present, personAnchors, facesByID)
 			if matched {
-				if _, err := tx.NewRaw(`UPDATE immich_person_links SET state = 'linked', last_seen_at = ?, version = version + 1 WHERE person_id = ?`, now, link.PersonID).Exec(ctx); err != nil {
+				if _, err := tx.NewRaw(`UPDATE immich_person_links SET last_seen_at = ?, version = version + 1 WHERE person_id = ?`, now, link.PersonID).Exec(ctx); err != nil {
 					return err
 				}
+				if link.State == "linked" {
+					if _, err := tx.NewRaw(`DELETE FROM person_repair_candidates WHERE person_id = ? AND state = 'pending'`, link.PersonID).Exec(ctx); err != nil {
+						return err
+					}
+					continue
+				}
 				if _, err := tx.NewRaw(`DELETE FROM person_repair_candidates WHERE person_id = ? AND state = 'pending'`, link.PersonID).Exec(ctx); err != nil {
+					return err
+				}
+				if _, err := tx.NewRaw(`
+					INSERT INTO person_repair_candidates (
+						id, person_id, previous_immich_person_id, candidate_immich_person_id,
+						anchor_count, conflict_evidence, created_at
+					)
+					SELECT ?, ?, ?, ?, ?, '[]'::jsonb, ?
+					WHERE NOT EXISTS (
+						SELECT 1 FROM person_repair_candidates
+						WHERE person_id = ? AND state = 'rejected'
+						  AND previous_immich_person_id = ?
+						  AND candidate_immich_person_id = ?
+					)
+				`, uuid.New(), link.PersonID, link.ImmichPersonID, link.ImmichPersonID, len(personAnchors), now,
+					link.PersonID, link.ImmichPersonID, link.ImmichPersonID).Exec(ctx); err != nil {
 					return err
 				}
 				continue
@@ -233,7 +259,7 @@ func (s *Service) ReconcilePeople(ctx context.Context) (MutationResponse, error)
 					  AND previous_immich_person_id = ?
 					  AND candidate_immich_person_id IS NOT DISTINCT FROM ?
 				)
-			`, candidateID, link.PersonID, link.ImmichPersonID, candidate, len(anchorsByPerson[link.PersonID]), string(encodedConflicts), now,
+			`, candidateID, link.PersonID, link.ImmichPersonID, candidate, len(personAnchors), string(encodedConflicts), now,
 				link.PersonID, link.ImmichPersonID, candidate).Exec(ctx); err != nil {
 				return err
 			}

@@ -133,6 +133,30 @@ func TestPersonMergeBecomesReviewAndSuppressesAttendanceUntilExplicitConfirmatio
 	assert.Zero(t, audienceRows)
 }
 
+func TestRecoveredPersonLinkStillRequiresExplicitConfirmation(t *testing.T) {
+	fixture := newRepairFixture(t, 0)
+	fixture.connector.people = nil
+	require.NoError(t, reconcile(fixture.service))
+
+	fixture.connector.people = []immich.PersonSummary{{SourceID: fixture.oldID, Name: "Immich member"}}
+	require.NoError(t, reconcile(fixture.service))
+	suggestions, err := fixture.service.SuggestionPersonIDs(context.Background(), []uuid.UUID{fixture.oldID})
+	require.NoError(t, err)
+	assert.Empty(t, suggestions)
+	listed, err := fixture.service.List(context.Background())
+	require.NoError(t, err)
+	require.Len(t, listed.PersonCandidates, 1)
+	candidate := listed.PersonCandidates[0]
+	assert.Equal(t, "pending", candidate.State)
+	assert.Equal(t, fixture.oldID.String(), candidate.CandidateImmichPersonID)
+
+	_, err = fixture.service.ConfirmPerson(context.Background(), fixture.actor, uuid.MustParse(candidate.ID))
+	require.NoError(t, err)
+	suggestions, err = fixture.service.SuggestionPersonIDs(context.Background(), []uuid.UUID{fixture.oldID})
+	require.NoError(t, err)
+	assert.Equal(t, []uuid.UUID{fixture.personID}, suggestions)
+}
+
 func TestFaceReassignmentAndAnchorConflictRequireReview(t *testing.T) {
 	fixture := newRepairFixture(t, 2)
 	other := uuid.New()

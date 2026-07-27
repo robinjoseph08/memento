@@ -449,6 +449,12 @@ func proposeMediaRepairs(ctx context.Context, tx bun.Tx, now time.Time) error {
 		JOIN media_items AS addition_item ON addition_item.id = addition.media_item_id
 		WHERE missing.active AND addition.active AND missing.checksum IS NOT NULL
 		  AND missing_item.availability = 'source_missing' AND addition_item.availability = 'current'
+		  AND NOT EXISTS (
+			SELECT 1 FROM media_repair_candidates AS rejected
+			WHERE rejected.media_item_id = missing.media_item_id
+			  AND rejected.candidate_immich_asset_id = addition.immich_asset_id
+			  AND rejected.state = 'rejected'
+		  )
 		ON CONFLICT (media_item_id, candidate_immich_asset_id) WHERE state = 'pending' DO UPDATE SET
 			candidate_media_item_id = EXCLUDED.candidate_media_item_id,
 			conflict_evidence = EXCLUDED.conflict_evidence
