@@ -708,6 +708,9 @@ func (s *Service) ConfirmPerson(ctx context.Context, actor setup.CuratorSession,
 	} else if currentCandidate != nil || !previousPresent {
 		return MutationResponse{}, ErrConflict
 	}
+	if err := s.requireCurrentImmichPerson(ctx, targetID); err != nil {
+		return MutationResponse{}, err
+	}
 	return s.linkPersonWithAnchors(ctx, actor, personID, targetID, &candidateID, currentAnchors)
 }
 
@@ -778,30 +781,42 @@ func (s *Service) RejectPerson(ctx context.Context, actor setup.CuratorSession, 
 func (s *Service) ConfirmMedia(ctx context.Context, actor setup.CuratorSession, candidateID uuid.UUID) (MutationResponse, error) {
 	now := s.now().UTC()
 	err := s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
-		var mediaItemID, candidateMediaItemID, previousAssetID, candidateAssetID uuid.UUID
+		var mediaItemID, previousAssetID, candidateAssetID uuid.UUID
+		var candidateMediaItemID uuid.NullUUID
 		err := tx.NewRaw(`
 			SELECT media_item_id, candidate_media_item_id, previous_immich_asset_id, candidate_immich_asset_id
-			FROM media_repair_candidates WHERE id = ? AND state = 'pending' FOR UPDATE
+			FROM media_repair_candidates WHERE id = ? AND state = 'pending'
 		`, candidateID).Scan(ctx, &mediaItemID, &candidateMediaItemID, &previousAssetID, &candidateAssetID)
 		if errors.Is(err, sql.ErrNoRows) {
-			var exists bool
-			if scanErr := tx.NewRaw(`SELECT EXISTS (SELECT 1 FROM media_repair_candidates WHERE id = ?)`, candidateID).Scan(ctx, &exists); scanErr != nil {
-				return scanErr
-			}
-			if exists {
-				return ErrAlreadyResolved
-			}
-			return ErrNotFound
+			return mediaCandidateMissingError(ctx, tx, candidateID)
 		}
 		if err != nil {
 			return err
 		}
-		if candidateMediaItemID == uuid.Nil {
+		if !candidateMediaItemID.Valid {
 			return ErrConflict
 		}
-		if _, err := tx.NewRaw(`SELECT id FROM media_items WHERE id IN (?, ?) ORDER BY id FOR UPDATE`, mediaItemID, candidateMediaItemID).Exec(ctx); err != nil {
+		if _, err := tx.NewRaw(`SELECT id FROM media_items WHERE id IN (?, ?) ORDER BY id FOR UPDATE`, mediaItemID, candidateMediaItemID.UUID).Exec(ctx); err != nil {
 			return err
 		}
+		var lockedMediaItemID, lockedPreviousAssetID, lockedCandidateAssetID uuid.UUID
+		var lockedCandidateMediaItemID uuid.NullUUID
+		err = tx.NewRaw(`
+			SELECT media_item_id, candidate_media_item_id, previous_immich_asset_id, candidate_immich_asset_id
+			FROM media_repair_candidates WHERE id = ? AND state = 'pending' FOR UPDATE
+		`, candidateID).Scan(ctx, &lockedMediaItemID, &lockedCandidateMediaItemID, &lockedPreviousAssetID, &lockedCandidateAssetID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return mediaCandidateMissingError(ctx, tx, candidateID)
+		}
+		if err != nil {
+			return err
+		}
+		if !lockedCandidateMediaItemID.Valid || lockedMediaItemID != mediaItemID ||
+			lockedCandidateMediaItemID.UUID != candidateMediaItemID.UUID || lockedPreviousAssetID != previousAssetID ||
+			lockedCandidateAssetID != candidateAssetID {
+			return ErrConflict
+		}
+		candidateMediaID := candidateMediaItemID.UUID
 		var previousChecksum, candidateChecksum sql.NullString
 		var previousAvailability, candidateAvailability string
 		var previousHasMembership, candidateHasMembership bool
@@ -814,7 +829,7 @@ func (s *Service) ConfirmMedia(ctx context.Context, actor setup.CuratorSession, 
 			JOIN media_backings AS candidate ON candidate.media_item_id = ? AND candidate.immich_asset_id = ? AND candidate.active
 			JOIN media_items AS candidate_item ON candidate_item.id = candidate.media_item_id
 			WHERE previous.media_item_id = ? AND previous.immich_asset_id = ? AND previous.active
-		`, candidateMediaItemID, candidateAssetID, mediaItemID, previousAssetID).Scan(ctx,
+		`, candidateMediaID, candidateAssetID, mediaItemID, previousAssetID).Scan(ctx,
 			&previousChecksum, &candidateChecksum, &previousAvailability, &candidateAvailability,
 			&previousHasMembership, &candidateHasMembership); errors.Is(err, sql.ErrNoRows) {
 			return ErrConflict
@@ -828,7 +843,7 @@ func (s *Service) ConfirmMedia(ctx context.Context, actor setup.CuratorSession, 
 		if err := execRepairExactlyOne(ctx, tx, `UPDATE media_backings SET active = false, ended_at = ? WHERE media_item_id = ? AND active AND immich_asset_id = ?`, now, mediaItemID, previousAssetID); err != nil {
 			return err
 		}
-		membershipResult, err := tx.NewRaw(`UPDATE source_album_memberships SET media_item_id = ? WHERE media_item_id = ?`, mediaItemID, candidateMediaItemID).Exec(ctx)
+		membershipResult, err := tx.NewRaw(`UPDATE source_album_memberships SET media_item_id = ? WHERE media_item_id = ?`, mediaItemID, candidateMediaID).Exec(ctx)
 		if err != nil {
 			return err
 		}
@@ -839,7 +854,7 @@ func (s *Service) ConfirmMedia(ctx context.Context, actor setup.CuratorSession, 
 		if memberships == 0 {
 			return ErrConflict
 		}
-		if err := execRepairExactlyOne(ctx, tx, `UPDATE media_backings SET media_item_id = ?, state = 'confirmed', confirmed_at = ? WHERE media_item_id = ? AND active AND immich_asset_id = ?`, mediaItemID, now, candidateMediaItemID, candidateAssetID); err != nil {
+		if err := execRepairExactlyOne(ctx, tx, `UPDATE media_backings SET media_item_id = ?, state = 'confirmed', confirmed_at = ? WHERE media_item_id = ? AND active AND immich_asset_id = ?`, mediaItemID, now, candidateMediaID, candidateAssetID); err != nil {
 			return err
 		}
 		if err := execRepairExactlyOne(ctx, tx, `UPDATE media_repair_candidates SET state = 'confirmed', resolved_at = ?, resolved_by_person_id = ?, candidate_media_item_id = NULL WHERE id = ? AND state = 'pending'`, now, actor.PersonID, candidateID); err != nil {
@@ -850,10 +865,10 @@ func (s *Service) ConfirmMedia(ctx context.Context, actor setup.CuratorSession, 
 			SET state = 'superseded', resolved_at = ?, resolved_by_person_id = ?, candidate_media_item_id = NULL
 			WHERE id <> ? AND state = 'pending'
 			  AND (media_item_id = ? OR candidate_media_item_id = ?)
-		`, now, actor.PersonID, candidateID, mediaItemID, candidateMediaItemID).Exec(ctx); err != nil {
+		`, now, actor.PersonID, candidateID, mediaItemID, candidateMediaID).Exec(ctx); err != nil {
 			return err
 		}
-		if err := execRepairExactlyOne(ctx, tx, `DELETE FROM media_items WHERE id = ?`, candidateMediaItemID); err != nil {
+		if err := execRepairExactlyOne(ctx, tx, `DELETE FROM media_items WHERE id = ?`, candidateMediaID); err != nil {
 			return err
 		}
 		if err := execRepairExactlyOne(ctx, tx, `UPDATE media_items SET immich_asset_id = ?, availability = 'current', last_seen_at = ?, updated_at = ? WHERE id = ? AND immich_asset_id = ?`, candidateAssetID, now, now, mediaItemID, previousAssetID); err != nil {
@@ -865,6 +880,17 @@ func (s *Service) ConfirmMedia(ctx context.Context, actor setup.CuratorSession, 
 		return MutationResponse{}, err
 	}
 	return MutationResponse{Status: "confirmed"}, nil
+}
+
+func mediaCandidateMissingError(ctx context.Context, tx bun.Tx, candidateID uuid.UUID) error {
+	var exists bool
+	if err := tx.NewRaw(`SELECT EXISTS (SELECT 1 FROM media_repair_candidates WHERE id = ?)`, candidateID).Scan(ctx, &exists); err != nil {
+		return err
+	}
+	if exists {
+		return ErrAlreadyResolved
+	}
+	return ErrNotFound
 }
 
 func execRepairExactlyOne(ctx context.Context, tx bun.Tx, query string, args ...any) error {

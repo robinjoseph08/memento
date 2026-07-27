@@ -203,6 +203,37 @@ func TestPersonConfirmationRejectsChangedFaceEvidence(t *testing.T) {
 	assert.Empty(t, suggestions)
 }
 
+func TestPersonConfirmationRevalidatesIdentityAfterAnchorEvaluation(t *testing.T) {
+	fixture := newRepairFixture(t, 1)
+	replacement := uuid.New()
+	fixture.connector.people = []immich.PersonSummary{{SourceID: replacement, Name: "Replacement"}}
+	faces := fixture.connector.faces[fixture.assetIDs[0]]
+	faces[0].PersonID = &replacement
+	fixture.connector.faces[fixture.assetIDs[0]] = faces
+	require.NoError(t, reconcile(fixture.service))
+	listed, err := fixture.service.List(context.Background())
+	require.NoError(t, err)
+	require.Len(t, listed.PersonCandidates, 1)
+	fixture.connector.faceStarted = make(chan struct{})
+	fixture.connector.releaseFace = make(chan struct{})
+	result := make(chan error, 1)
+	go func() {
+		_, confirmErr := fixture.service.ConfirmPerson(context.Background(), fixture.actor, uuid.MustParse(listed.PersonCandidates[0].ID))
+		result <- confirmErr
+	}()
+	select {
+	case <-fixture.connector.faceStarted:
+	case <-time.After(time.Second):
+		t.Fatal("Person evidence evaluation did not start")
+	}
+	fixture.connector.people = nil
+	close(fixture.connector.releaseFace)
+	assert.ErrorIs(t, <-result, ErrConflict)
+	var state string
+	require.NoError(t, fixture.db.NewRaw(`SELECT state FROM immich_person_links WHERE person_id = ?`, fixture.personID).Scan(context.Background(), &state))
+	assert.Equal(t, "needs_review", state)
+}
+
 func TestRecoveredPersonLinkStillRequiresExplicitConfirmation(t *testing.T) {
 	fixture := newRepairFixture(t, 0)
 	fixture.connector.people = nil
@@ -632,8 +663,32 @@ func TestMediaConfirmationPreservesPortalIdentityAndMovesBacking(t *testing.T) {
 	`, competingMediaID, competingAssetID, competingMediaID, competingAssetID, checksum("same"),
 		competingCandidateID, competingMediaID, newMediaID, competingAssetID, newAssetID)
 	require.NoError(t, err)
-	_, err = fixture.service.ConfirmMedia(context.Background(), fixture.actor, candidateID)
+	mediaBlocker, err := fixture.db.BeginTx(context.Background(), nil)
 	require.NoError(t, err)
+	_, err = mediaBlocker.NewRaw(`SELECT id FROM media_items WHERE id IN (?, ?) ORDER BY id FOR UPDATE`, oldMediaID, newMediaID).Exec(context.Background())
+	require.NoError(t, err)
+	confirmation := make(chan error, 1)
+	go func() {
+		_, confirmErr := fixture.service.ConfirmMedia(context.Background(), fixture.actor, candidateID)
+		confirmation <- confirmErr
+	}()
+	select {
+	case confirmErr := <-confirmation:
+		t.Fatalf("confirmation completed while Media rows were locked: %v", confirmErr)
+	case <-time.After(100 * time.Millisecond):
+	}
+	candidateProbe, err := fixture.db.BeginTx(context.Background(), nil)
+	require.NoError(t, err)
+	_, err = candidateProbe.NewRaw(`SELECT id FROM media_repair_candidates WHERE id = ? FOR UPDATE NOWAIT`, candidateID).Exec(context.Background())
+	require.NoError(t, err, "confirmation must wait for Media rows before locking its candidate")
+	require.NoError(t, candidateProbe.Rollback())
+	require.NoError(t, mediaBlocker.Commit())
+	select {
+	case confirmErr := <-confirmation:
+		require.NoError(t, confirmErr)
+	case <-time.After(time.Second):
+		t.Fatal("confirmation did not complete after Media rows were released")
+	}
 	var actualAssetID uuid.UUID
 	var availability string
 	require.NoError(t, fixture.db.NewRaw(`SELECT immich_asset_id, availability FROM media_items WHERE id = ?`, oldMediaID).Scan(context.Background(), &actualAssetID, &availability))
