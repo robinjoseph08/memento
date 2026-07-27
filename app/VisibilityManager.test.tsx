@@ -247,6 +247,7 @@ test("lets a Recipient edit only their own discoverable Interest choices", async
   const nextCursor = "opaque/cursor+value";
   let interest: InterestListResponse = {
     recipient,
+    version: 0,
     entries: [],
     history: [],
   };
@@ -273,6 +274,7 @@ test("lets a Recipient edit only their own discoverable Interest choices", async
       ) {
         interest = {
           recipient,
+          version: 1,
           entries: [
             {
               person: alex,
@@ -328,6 +330,10 @@ test("lets a Recipient edit only their own discoverable Interest choices", async
   await waitFor(() => expect(alexChoice).toBeChecked());
   const mutation = requests.find(({ init }) => init?.method === "PUT");
   expect(mutation?.path).toBe(`/api/me/interest-list/${alex.id}`);
+  expect(stringBody(mutation?.init?.body)).toEqual({
+    selected: true,
+    version: 0,
+  });
   expect(mutation?.init?.headers).toEqual(
     expect.objectContaining({ "X-Memento-CSRF": "recipient-csrf" }),
   );
@@ -349,6 +355,7 @@ test("edits an empty Interest list on a Recipient's behalf and shows attributed 
   const alex = curatorPerson("33333333-3333-4333-8333-333333333333", "Alex");
   let interest: InterestListResponse = {
     recipient,
+    version: 0,
     entries: [],
     history: [],
   };
@@ -378,6 +385,7 @@ test("edits an empty Interest list on a Recipient's behalf and shows attributed 
       ) {
         interest = {
           recipient,
+          version: 1,
           entries: [
             {
               person: alex,
@@ -420,7 +428,10 @@ test("edits an empty Interest list on a Recipient's behalf and shows attributed 
   expect(await screen.findByText(/selected by Curator/)).toBeInTheDocument();
 
   const mutation = requests.find(({ init }) => init?.method === "PUT");
-  expect(stringBody(mutation?.init?.body)).toEqual({ selected: true });
+  expect(stringBody(mutation?.init?.body)).toEqual({
+    selected: true,
+    version: 0,
+  });
   expect(mutation?.init?.headers).toEqual(
     expect.objectContaining({ "X-Memento-CSRF": "csrf-token" }),
   );

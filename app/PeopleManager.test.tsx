@@ -363,7 +363,7 @@ test("previews and confirms the exact source, survivor, generation, email, and v
       family_reference_fingerprint: "a".repeat(64),
       visibility_memberships_moved: 1,
       interest_entries_moved: 1,
-      interest_history_owners_moved: 0,
+      interest_history_owners_retained: 0,
       visibility_reference_fingerprint: "b".repeat(64),
     },
     requires_generation_transfer: true,
@@ -398,12 +398,17 @@ test("previews and confirms the exact source, survivor, generation, email, and v
   );
 
   const { client } = renderManager();
-  const familyKeys = [
+  const relatedQueryKeys = [
     ["family-people", ""],
     ["family-relationships", false],
     ["family-branch", source.id],
+    ["visibility-people"],
+    ["visibility-circles"],
+    ["curator-interest-list", source.id],
+    ["curator-discoverable", source.id],
   ] as const;
-  for (const key of familyKeys) client.setQueryData(key, { cached: true });
+  for (const key of relatedQueryKeys)
+    client.setQueryData(key, { cached: true });
   await screen.findAllByRole("option", { name: /11111111/ }, contentionWait);
   const sourceSelect = screen.getByLabelText("Source Person");
   const survivorSelect = screen.getByLabelText("Survivor Person");
@@ -474,7 +479,7 @@ test("previews and confirms the exact source, survivor, generation, email, and v
   expect(mergeRequest?.init?.headers).toEqual(
     expect.objectContaining({ "X-Memento-CSRF": "csrf-token" }),
   );
-  for (const key of familyKeys) {
+  for (const key of relatedQueryKeys) {
     expect(client.getQueryState(key)?.isInvalidated).toBe(true);
   }
 }, 15_000);

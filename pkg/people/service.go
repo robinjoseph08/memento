@@ -106,7 +106,7 @@ type ReferenceEffects struct {
 	FamilyReferenceFingerprint     string   `json:"family_reference_fingerprint"`
 	VisibilityMembershipsMoved     int      `json:"visibility_memberships_moved"`
 	InterestEntriesMoved           int      `json:"interest_entries_moved"`
-	InterestHistoryOwnersMoved     int      `json:"interest_history_owners_moved"`
+	InterestHistoryOwnersRetained  int      `json:"interest_history_owners_retained"`
 	VisibilityReferenceFingerprint string   `json:"visibility_reference_fingerprint"`
 }
 
@@ -583,7 +583,7 @@ func previewMerge(ctx context.Context, db bun.IDB, actor setup.CuratorSession, s
 	}
 	preview.References.VisibilityMembershipsMoved = visibilityEffects.CircleMembershipsMoved
 	preview.References.InterestEntriesMoved = visibilityEffects.InterestEntriesMoved
-	preview.References.InterestHistoryOwnersMoved = visibilityEffects.InterestHistoryOwnersMoved
+	preview.References.InterestHistoryOwnersRetained = visibilityEffects.InterestHistoryOwnersRetained
 	preview.References.VisibilityReferenceFingerprint = visibilityEffects.ReferenceFingerprint
 	if errors.Is(familyErr, family.ErrMergeCycle) {
 		preview.CanMerge = false

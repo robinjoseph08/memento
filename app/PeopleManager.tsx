@@ -67,6 +67,10 @@ export function PeopleManager({ session }: { session: SessionResponse }) {
       queryClient.invalidateQueries({ queryKey: ["family-people"] }),
       queryClient.invalidateQueries({ queryKey: ["family-relationships"] }),
       queryClient.invalidateQueries({ queryKey: ["family-branch"] }),
+      queryClient.invalidateQueries({ queryKey: ["visibility-people"] }),
+      queryClient.invalidateQueries({ queryKey: ["visibility-circles"] }),
+      queryClient.invalidateQueries({ queryKey: ["curator-interest-list"] }),
+      queryClient.invalidateQueries({ queryKey: ["curator-discoverable"] }),
     ]);
   }
 
@@ -796,8 +800,9 @@ function MergeConfirmation({
           choices will move or reconcile against the survivor.
         </li>
         <li>
-          {preview.affected_references.interest_history_owners_moved} retained
-          Interest history owner references will move to the survivor.
+          {preview.affected_references.interest_history_owners_retained}{" "}
+          Interest history owner references will remain attributed to the source
+          Person.
         </li>
         <li>
           Source roles:{" "}

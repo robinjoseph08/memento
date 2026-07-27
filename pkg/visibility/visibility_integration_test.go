@@ -309,7 +309,7 @@ func TestInterestChoicesAreExplicitAuditedAndStayInactiveAcrossEligibilityReturn
 	require.NoError(t, err)
 	assert.Empty(t, proposals)
 
-	reselected, err := fixture.service.MutateInterest(ctx, fixture.actor, recipient, selected, true)
+	reselected, err := fixture.service.MutateInterest(ctx, fixture.actor, recipient, selected, true, stillInactive.Version)
 	require.NoError(t, err)
 	assert.Equal(t, "active", reselected.Entries[0].State)
 	assert.Len(t, reselected.History, 3)
@@ -326,11 +326,11 @@ func TestInterestHistoryUsesAnOpaqueDeterministicCursor(t *testing.T) {
 	recipient := addVisibilityPerson(t, fixture.db, "Recipient", true)
 	selected := addVisibilityPerson(t, fixture.db, "Selected", false)
 	createCircleWithMembers(t, fixture, "Family", recipient, selected)
-	_, err := fixture.service.MutateInterest(ctx, fixture.actor, recipient, selected, true)
+	chosen, err := fixture.service.MutateInterest(ctx, fixture.actor, recipient, selected, true)
 	require.NoError(t, err)
-	_, err = fixture.service.MutateInterest(ctx, fixture.actor, recipient, selected, false)
+	removed, err := fixture.service.MutateInterest(ctx, fixture.actor, recipient, selected, false, chosen.Version)
 	require.NoError(t, err)
-	_, err = fixture.service.MutateInterest(ctx, fixture.actor, recipient, selected, true)
+	_, err = fixture.service.MutateInterest(ctx, fixture.actor, recipient, selected, true, removed.Version)
 	require.NoError(t, err)
 
 	first, err := fixture.service.InterestList(ctx, fixture.actor, recipient, HistoryPageRequest{Limit: 2})
@@ -348,6 +348,30 @@ func TestInterestHistoryUsesAnOpaqueDeterministicCursor(t *testing.T) {
 	require.ErrorIs(t, err, ErrInvalidCursor)
 }
 
+func TestInterestMutationsRejectAStaleListVersion(t *testing.T) {
+	fixture := newVisibilityFixture(t)
+	ctx := context.Background()
+	recipient := addVisibilityPerson(t, fixture.db, "Recipient", true)
+	selected := addVisibilityPerson(t, fixture.db, "Selected", false)
+	createCircleWithMembers(t, fixture, "Family", recipient, selected)
+
+	chosen, err := fixture.service.MutateInterest(ctx, fixture.actor, recipient, selected, true, 0)
+	require.NoError(t, err)
+	assert.Greater(t, chosen.Version, int64(0))
+
+	_, err = fixture.service.MutateInterest(ctx, fixture.actor, recipient, selected, false, 0)
+	require.ErrorIs(t, err, ErrStale)
+	unchanged, err := fixture.service.InterestList(ctx, fixture.actor, recipient, HistoryPageRequest{})
+	require.NoError(t, err)
+	require.Len(t, unchanged.Entries, 1)
+	assert.Equal(t, "active", unchanged.Entries[0].State)
+
+	removed, err := fixture.service.MutateInterest(ctx, fixture.actor, recipient, selected, false, chosen.Version)
+	require.NoError(t, err)
+	assert.Empty(t, removed.Entries)
+	assert.Greater(t, removed.Version, chosen.Version)
+}
+
 func TestRecipientAndCuratorProposalRulesDoNotTreatVisibilityAsAuthority(t *testing.T) {
 	fixture := newVisibilityFixture(t)
 	ctx := context.Background()
@@ -360,13 +384,13 @@ func TestRecipientAndCuratorProposalRulesDoNotTreatVisibilityAsAuthority(t *test
 	attendee := addVisibilityPerson(t, fixture.db, "Attendee A", false)
 	secondAttendee := addVisibilityPerson(t, fixture.db, "Attendee B", false)
 	createCircleWithMembers(t, fixture, "Proposal circle", pending, suspended, completed, attendee, secondAttendee, fixture.curator)
-	_, err := fixture.service.MutateInterest(ctx, fixture.actor, pending, attendee, true)
+	pendingList, err := fixture.service.MutateInterest(ctx, fixture.actor, pending, attendee, true)
 	require.NoError(t, err)
 	_, err = fixture.service.MutateInterest(ctx, fixture.actor, suspended, attendee, true)
 	require.NoError(t, err)
 	_, err = fixture.service.MutateInterest(ctx, fixture.actor, fixture.curator, attendee, true)
 	require.NoError(t, err)
-	_, err = fixture.service.MutateInterest(ctx, fixture.actor, pending, secondAttendee, true)
+	_, err = fixture.service.MutateInterest(ctx, fixture.actor, pending, secondAttendee, true, pendingList.Version)
 	require.NoError(t, err)
 
 	proposals, err := fixture.service.ProposeRecipients(ctx, fixture.actor, []uuid.UUID{attendee, secondAttendee, completed})
@@ -413,7 +437,7 @@ func TestPersonLifecycleChangesDeactivateOrMoveInterestReferencesWithoutLosingHi
 	require.NoError(t, err)
 	assert.Equal(t, "ineligible", inactive.Entries[0].State)
 	assert.Equal(t, "deactivated", inactive.History[0].Action)
-	removed, err := fixture.service.MutateInterest(ctx, fixture.actor, recipient, selected, false)
+	removed, err := fixture.service.MutateInterest(ctx, fixture.actor, recipient, selected, false, inactive.Version)
 	require.NoError(t, err)
 	assert.Empty(t, removed.Entries, "an unavailable Person can still be explicitly removed")
 	assert.Equal(t, "deselected", removed.History[0].Result)
@@ -426,7 +450,7 @@ func TestPersonLifecycleChangesDeactivateOrMoveInterestReferencesWithoutLosingHi
 	circle = listed.Circles[0]
 	circle, err = fixture.service.SetMembership(ctx, fixture.actor, uuid.MustParse(circle.ID), selected, MembershipRequest{Included: boolPointer(true), Version: circle.Version})
 	require.NoError(t, err)
-	_, err = fixture.service.MutateInterest(ctx, fixture.actor, recipient, selected, true)
+	_, err = fixture.service.MutateInterest(ctx, fixture.actor, recipient, selected, true, removed.Version)
 	require.NoError(t, err)
 	now = now.Add(time.Second)
 	require.NoError(t, fixture.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
@@ -580,7 +604,7 @@ func TestConcurrentVisibilityMutationsProduceOneTypedLoser(t *testing.T) {
 	assert.Equal(t, 1, stale)
 }
 
-func TestMergingAnInterestListOwnerMovesTheirRetainedHistory(t *testing.T) {
+func TestMergingAnInterestListOwnerKeepsHistoryAttributedToTheSource(t *testing.T) {
 	fixture := newVisibilityFixture(t)
 	ctx := context.Background()
 	source := addVisibilityPerson(t, fixture.db, "Source Recipient", true)
@@ -598,13 +622,12 @@ func TestMergingAnInterestListOwnerMovesTheirRetainedHistory(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, moved.Entries, 1)
 	assert.Equal(t, selected.String(), moved.Entries[0].Person.ID)
-	require.Len(t, moved.History, 2)
+	require.Len(t, moved.History, 1)
 	assert.Equal(t, "moved", moved.History[0].Action)
-	assert.Equal(t, "selected", moved.History[1].Action)
 
 	var sourceHistory int
 	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM interest_list_history WHERE recipient_person_id = ?`, source).Scan(ctx, &sourceHistory))
-	assert.Zero(t, sourceHistory)
+	assert.Equal(t, 1, sourceHistory, "append-only history remains attributed to the merged source Person")
 }
 
 func TestCircleAuditFailureRollsBackTheMutation(t *testing.T) {

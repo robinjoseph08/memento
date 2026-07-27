@@ -271,7 +271,7 @@ func (h *Handler) mutateInterest(c echo.Context, actor setup.SessionActor, recip
 	if request.Selected == nil {
 		return errcodes.ValidationError("selected is required.")
 	}
-	response, err := h.service.MutateInterest(h.requestContext(c), actor, recipientID, selectedID, *request.Selected)
+	response, err := h.service.MutateInterest(h.requestContext(c), actor, recipientID, selectedID, *request.Selected, request.Version)
 	if err != nil {
 		return visibilityError(err)
 	}
@@ -321,7 +321,7 @@ func visibilityError(err error) error {
 	case errors.Is(err, ErrDuplicateName):
 		return errcodes.Conflict("An active Visibility circle already uses that name.")
 	case errors.Is(err, ErrStale):
-		return errcodes.Conflict("This Visibility circle changed after it was loaded. Reload and try again.")
+		return errcodes.Conflict("This Visibility resource changed after it was loaded. Reload and try again.")
 	case errors.Is(err, ErrInvalidCursor):
 		return errcodes.ValidationError("The People or Interest history cursor is invalid. Reload and try again.")
 	case errors.Is(err, ErrInvalid):

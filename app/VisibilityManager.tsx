@@ -199,7 +199,10 @@ export function RecipientVisibilityManager({
       apiJSON<InterestListResponse>(`/api/me/interest-list/${person.id}`, {
         method: "PUT",
         headers: { "X-Memento-CSRF": session.csrf_token },
-        body: JSON.stringify({ selected }),
+        body: JSON.stringify({
+          selected,
+          version: interest.data?.version ?? 0,
+        }),
       }),
     onSuccess: (response) => {
       queryClient.setQueryData(["recipient-interest-list"], response);
@@ -446,7 +449,10 @@ export function VisibilityManager({ session }: { session: SessionResponse }) {
         {
           method: "PUT",
           headers: { "X-Memento-CSRF": session.csrf_token },
-          body: JSON.stringify({ selected }),
+          body: JSON.stringify({
+            selected,
+            version: interest.data?.version ?? 0,
+          }),
         },
       ),
     onSuccess: (response, variables) => {

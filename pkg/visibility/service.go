@@ -119,6 +119,7 @@ type InterestHistory struct {
 // InterestListResponse is visible only to its Recipient or the Curator.
 type InterestListResponse struct {
 	Recipient         Person            `json:"recipient"`
+	Version           int64             `json:"version"`
 	Entries           []InterestEntry   `json:"entries"`
 	History           []InterestHistory `json:"history"`
 	HistoryNextCursor *string           `json:"history_next_cursor,omitempty"`
@@ -138,6 +139,7 @@ type historyCursor struct {
 // InterestMutationRequest explicitly selects or deselects one Person.
 type InterestMutationRequest struct {
 	Selected *bool `json:"selected" validate:"required"`
+	Version  int64 `json:"version" validate:"min=0"`
 }
 
 // ProposalRecipient explains why one Eligible Recipient is proposed for Attendance.
@@ -583,6 +585,9 @@ func (s *Service) InterestList(ctx context.Context, actor setup.SessionActor, re
 		return InterestListResponse{}, err
 	}
 	response := InterestListResponse{Recipient: recipient, Entries: []InterestEntry{}, History: []InterestHistory{}}
+	if response.Version, err = interestListVersion(ctx, s.db, recipientID); err != nil {
+		return InterestListResponse{}, err
+	}
 	type entryRow struct {
 		personRow
 		State     string    `bun:"state"`
@@ -651,7 +656,17 @@ func encodeHistoryCursor(cursor historyCursor) (string, error) {
 	return base64.RawURLEncoding.EncodeToString(encoded), nil
 }
 
-func (s *Service) MutateInterest(ctx context.Context, actor setup.SessionActor, recipientID, selectedID uuid.UUID, selected bool) (InterestListResponse, error) {
+func (s *Service) MutateInterest(ctx context.Context, actor setup.SessionActor, recipientID, selectedID uuid.UUID, selected bool, expectedVersions ...int64) (InterestListResponse, error) {
+	if len(expectedVersions) > 1 {
+		return InterestListResponse{}, ErrInvalid
+	}
+	expectedVersion := int64(0)
+	if len(expectedVersions) == 1 {
+		expectedVersion = expectedVersions[0]
+	}
+	if expectedVersion < 0 {
+		return InterestListResponse{}, ErrInvalid
+	}
 	if !actor.Curator && actor.PersonID != recipientID {
 		return InterestListResponse{}, ErrNotAuthorized
 	}
@@ -664,6 +679,13 @@ func (s *Service) MutateInterest(ctx context.Context, actor setup.SessionActor, 
 		}
 		if err := requireRecipient(ctx, tx, recipientID); err != nil {
 			return err
+		}
+		currentVersion, err := interestListVersion(ctx, tx, recipientID)
+		if err != nil {
+			return err
+		}
+		if currentVersion != expectedVersion {
+			return ErrStale
 		}
 		if selected {
 			if !actor.Curator {
@@ -720,6 +742,12 @@ func (s *Service) MutateInterest(ctx context.Context, actor setup.SessionActor, 
 	return s.InterestList(ctx, actor, recipientID, HistoryPageRequest{})
 }
 
+func interestListVersion(ctx context.Context, db bun.IDB, recipientID uuid.UUID) (int64, error) {
+	var version int64
+	err := db.NewRaw(`SELECT COALESCE(max(id), 0) FROM interest_list_history WHERE recipient_person_id = ?`, recipientID).Scan(ctx, &version)
+	return version, err
+}
+
 func sharedCircle(ctx context.Context, db bun.IDB, recipientID, selectedID uuid.UUID) (bool, error) {
 	var eligible bool
 	err := db.NewRaw(`SELECT EXISTS (
@@ -773,10 +801,10 @@ func ArchivePersonReferences(ctx context.Context, tx bun.Tx, personID uuid.UUID,
 
 // PersonMergeEffects summarizes Visibility and Interest references affected by a Person merge.
 type PersonMergeEffects struct {
-	CircleMembershipsMoved     int
-	InterestEntriesMoved       int
-	InterestHistoryOwnersMoved int
-	ReferenceFingerprint       string
+	CircleMembershipsMoved        int
+	InterestEntriesMoved          int
+	InterestHistoryOwnersRetained int
+	ReferenceFingerprint          string
 }
 
 // PreviewPersonMerge reports every current Visibility and Interest reference affected by a merge.
@@ -828,7 +856,7 @@ func PreviewPersonMerge(ctx context.Context, db bun.IDB, sourceID, survivorID uu
 	}
 	for _, reference := range history {
 		if reference.RecipientID == sourceID {
-			effects.InterestHistoryOwnersMoved++
+			effects.InterestHistoryOwnersRetained++
 		}
 	}
 	encoded, err := json.Marshal(struct {
@@ -860,9 +888,6 @@ func MergePersonReferences(ctx context.Context, tx bun.Tx, sourceID, survivorID 
 		return err
 	}
 	if _, err := tx.NewRaw(`DELETE FROM visibility_circle_members WHERE person_id = ?`, sourceID).Exec(ctx); err != nil {
-		return err
-	}
-	if _, err := tx.NewRaw(`UPDATE interest_list_history SET recipient_person_id = ? WHERE recipient_person_id = ?`, survivorID, sourceID).Exec(ctx); err != nil {
 		return err
 	}
 	type mergeEntryRow struct {
