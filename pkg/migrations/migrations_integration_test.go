@@ -85,6 +85,32 @@ func TestSourceReconciliationMigrationBackfillsExistingAlbums(t *testing.T) {
 	assert.Equal(t, sourceAlbumID, payloadSourceID)
 }
 
+func TestRecipientMigrationAppliesAfterExistingMigrationLedger(t *testing.T) {
+	db := testdb.Open(t)
+	ctx := context.Background()
+	allMigrations := collection.Sorted()
+	priorMigrations := migrate.NewMigrations()
+	foundRecipients := false
+	for _, migration := range allMigrations {
+		if migration.Name == "202607260003" {
+			foundRecipients = true
+			continue
+		}
+		priorMigrations.Add(migration)
+	}
+	require.True(t, foundRecipients)
+	require.NoError(t, applyCollection(ctx, db, priorMigrations))
+
+	var before int
+	require.NoError(t, db.NewRaw(`SELECT count(*) FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = 'invitations'`).Scan(ctx, &before))
+	assert.Zero(t, before)
+	require.NoError(t, Apply(ctx, db))
+	require.NoError(t, Current(ctx, db))
+	var after int
+	require.NoError(t, db.NewRaw(`SELECT count(*) FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = 'invitations'`).Scan(ctx, &after))
+	assert.Equal(t, 1, after)
+}
+
 func TestEmailDeliveryInfrastructureEnforcesDurableState(t *testing.T) {
 	db := testdb.Open(t)
 	ctx := context.Background()

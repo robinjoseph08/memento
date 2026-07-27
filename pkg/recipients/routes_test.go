@@ -8,7 +8,9 @@ import (
 	"testing"
 
 	"github.com/labstack/echo/v4"
+	"github.com/robinjoseph08/memento/pkg/config"
 	"github.com/robinjoseph08/memento/pkg/errcodes"
+	"github.com/robinjoseph08/memento/pkg/setup"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -45,7 +47,8 @@ func TestInvitationRoutesUseSafeMethodsAndExplicitPolicies(t *testing.T) {
 func TestRegisteredTokenRoutesPreventCachingAndReferrerLeakage(t *testing.T) {
 	e := echo.New()
 	e.HTTPErrorHandler = errcodes.NewHandler().Handle
-	RegisterRoutes(e, NewHandler(New(nil, nil, "https://memento.example"), nil))
+	auth := setup.New(nil, nil, config.SecurityConfig{})
+	RegisterRoutes(e, NewHandler(New(nil, nil, "https://memento.example"), auth))
 	tests := []struct {
 		method string
 		path   string

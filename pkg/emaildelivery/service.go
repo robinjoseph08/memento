@@ -230,7 +230,7 @@ func (s *Service) Handle(ctx context.Context, job worker.Job) error {
 	if err != nil {
 		return err
 	}
-	if message.Status == "sent" || message.Status == "failed" {
+	if message.Status == "sent" || message.Status == "failed" || message.Status == "cancelled" {
 		return nil
 	}
 	if err := s.requireLease(ctx, job); err != nil {
@@ -242,6 +242,9 @@ func (s *Service) Handle(ctx context.Context, job worker.Job) error {
 			return err
 		}
 		if obsolete {
+			if invitationKind(message.Kind) {
+				return s.recordCancellation(ctx, job, message.ID)
+			}
 			if err := s.recordFailure(ctx, job, message.ID, "delivery_expired"); err != nil {
 				return err
 			}
@@ -335,10 +338,9 @@ func (s *Service) handleInvitationAttempt(ctx context.Context, job worker.Job, m
 		var invitationID string
 		if err := tx.NewRaw(`SELECT id FROM invitations WHERE id = ? FOR UPDATE`, *message.InvitationID).Scan(ctx, &invitationID); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
-				if err := s.recordFailureIn(ctx, tx, job, message.ID, "delivery_expired"); err != nil {
+				if err := s.recordCancellationIn(ctx, tx, job, message.ID); err != nil {
 					return err
 				}
-				outcome = worker.Permanent("delivery_expired")
 				return nil
 			}
 			return err
@@ -348,10 +350,9 @@ func (s *Service) handleInvitationAttempt(ctx context.Context, job worker.Job, m
 			return err
 		}
 		if obsolete {
-			if err := s.recordFailureIn(ctx, tx, job, message.ID, "delivery_expired"); err != nil {
+			if err := s.recordCancellationIn(ctx, tx, job, message.ID); err != nil {
 				return err
 			}
-			outcome = worker.Permanent("delivery_expired")
 			return nil
 		}
 		updated, err := tx.NewRaw(`
@@ -563,6 +564,29 @@ func (s *Service) requireLease(ctx context.Context, job worker.Job) error {
 		return err
 	}
 	if !owned {
+		return errDeliveryLeaseLost
+	}
+	return nil
+}
+
+func (s *Service) recordCancellation(ctx context.Context, job worker.Job, id int64) error {
+	return s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		return s.recordCancellationIn(ctx, tx, job, id)
+	})
+}
+
+func (s *Service) recordCancellationIn(ctx context.Context, tx bun.Tx, job worker.Job, id int64) error {
+	updated, err := tx.NewRaw(`
+		UPDATE email_deliveries SET status = 'cancelled', last_safe_error = NULL, next_retry_at = NULL,
+			body = '', updated_at = clock_timestamp()
+		WHERE id = ? AND status = 'queued' AND EXISTS (
+			SELECT 1 FROM jobs WHERE id = ? AND status = 'running' AND lease_owner = ? AND lease_expires_at > clock_timestamp()
+		)
+	`, id, job.ID, job.LeaseOwner).Exec(ctx)
+	if err != nil {
+		return err
+	}
+	if affected, _ := updated.RowsAffected(); affected != 1 {
 		return errDeliveryLeaseLost
 	}
 	return nil

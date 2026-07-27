@@ -29,6 +29,10 @@ func NewHandler(service *Service, auth *setup.Service) *Handler {
 	return &Handler{service: service, auth: auth}
 }
 
+func (h *Handler) requestContext(c echo.Context) context.Context {
+	return h.auth.ContextWithRequestMetadata(c.Request().Context(), c.Request())
+}
+
 func (h *Handler) authorize(c echo.Context, mutation bool) (setup.CuratorSession, error) {
 	cookie, err := c.Cookie(setup.CookieName)
 	if err != nil || cookie.Value == "" {
@@ -86,7 +90,7 @@ func (h *Handler) Designate(c echo.Context) error {
 	if err := bindJSON(c, &request); err != nil {
 		return err
 	}
-	response, err := h.service.Designate(c.Request().Context(), actor, id, request)
+	response, err := h.service.Designate(h.requestContext(c), actor, id, request)
 	if err != nil {
 		return recipientError(err)
 	}
@@ -94,7 +98,19 @@ func (h *Handler) Designate(c echo.Context) error {
 }
 
 func (h *Handler) Send(c echo.Context) error {
-	return h.invitationAction(c, h.service.Send)
+	actor, err := h.authorize(c, true)
+	if err != nil {
+		return err
+	}
+	id, err := personID(c)
+	if err != nil {
+		return err
+	}
+	response, err := h.service.Send(h.requestContext(c), actor, id)
+	if err != nil {
+		return recipientError(err)
+	}
+	return c.JSON(http.StatusOK, response)
 }
 
 func (h *Handler) Reissue(c echo.Context) error {
@@ -109,7 +125,7 @@ func (h *Handler) Remind(c echo.Context) error {
 	return h.invitationAction(c, h.service.Remind)
 }
 
-type invitationAction func(context.Context, setup.CuratorSession, uuid.UUID) (Recipient, error)
+type invitationAction func(context.Context, setup.CuratorSession, uuid.UUID, uuid.UUID) (Recipient, error)
 
 func (h *Handler) invitationAction(c echo.Context, action invitationAction) error {
 	actor, err := h.authorize(c, true)
@@ -120,7 +136,15 @@ func (h *Handler) invitationAction(c echo.Context, action invitationAction) erro
 	if err != nil {
 		return err
 	}
-	response, err := action(c.Request().Context(), actor, id)
+	var request InvitationActionRequest
+	if err := bindJSON(c, &request); err != nil {
+		return err
+	}
+	invitationID, err := uuid.Parse(request.InvitationID)
+	if err != nil || invitationID == uuid.Nil {
+		return errcodes.ValidationError("Choose a valid Invitation.")
+	}
+	response, err := action(h.requestContext(c), actor, id, invitationID)
 	if err != nil {
 		return recipientError(err)
 	}
@@ -143,7 +167,7 @@ func (h *Handler) Accept(c echo.Context) error {
 	if err := bindJSON(c, &request); err != nil {
 		return invitationTokenError()
 	}
-	response, err := h.service.Accept(c.Request().Context(), request.Token)
+	response, err := h.service.Accept(h.requestContext(c), request.Token)
 	if errors.Is(err, ErrInvitationToken) {
 		return invitationTokenError()
 	}
@@ -167,6 +191,8 @@ func recipientError(err error) error {
 		return errcodes.Conflict("Use the current Invitation or explicitly reissue it.")
 	case errors.Is(err, ErrInvitationNotFound), errors.Is(err, ErrInvitationNotLive):
 		return errcodes.Conflict("There is no live Invitation for this Pending Recipient.")
+	case errors.Is(err, ErrInvitationStale):
+		return errcodes.Conflict("The Invitation changed. Refresh before trying again.")
 	case errors.Is(err, ErrInvitationNotSent):
 		return errcodes.Conflict("Wait for the initial Invitation delivery before sending a reminder.")
 	case errors.Is(err, ErrInvitationState):

@@ -11,6 +11,8 @@ func init() {
 		func(ctx context.Context, db *bun.DB) error {
 			return db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 				statements := []string{
+					`ALTER TABLE email_deliveries DROP CONSTRAINT email_deliveries_status_check`,
+					`ALTER TABLE email_deliveries ADD CONSTRAINT email_deliveries_status_check CHECK (status IN ('queued', 'sent', 'failed', 'cancelled'))`,
 					`CREATE TABLE invitations (
 						id uuid PRIMARY KEY,
 						recipient_access_generation_id uuid NOT NULL REFERENCES recipient_access_generations(id) ON DELETE RESTRICT,
@@ -64,6 +66,8 @@ func init() {
 					`DELETE FROM outbox_events WHERE aggregate_kind = 'email_delivery' AND aggregate_id IN (SELECT public_id FROM email_deliveries WHERE kind LIKE 'invitation_%')`,
 					`DELETE FROM delivery_problems WHERE email_delivery_id IN (SELECT id FROM email_deliveries WHERE kind LIKE 'invitation_%')`,
 					`DELETE FROM email_deliveries WHERE kind LIKE 'invitation_%'`,
+					`ALTER TABLE email_deliveries DROP CONSTRAINT email_deliveries_status_check`,
+					`ALTER TABLE email_deliveries ADD CONSTRAINT email_deliveries_status_check CHECK (status IN ('queued', 'sent', 'failed'))`,
 					`ALTER TABLE email_deliveries DROP CONSTRAINT email_deliveries_invitation_check`,
 					`ALTER TABLE email_deliveries DROP CONSTRAINT email_deliveries_deadline_check`,
 					`ALTER TABLE email_deliveries DROP COLUMN available_at`,

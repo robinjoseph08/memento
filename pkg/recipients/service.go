@@ -38,6 +38,7 @@ var (
 	ErrInvitationNotFound = errors.New("Invitation not found")
 	ErrInvitationNotLive  = errors.New("Invitation is not live")
 	ErrInvitationNotSent  = errors.New("Invitation initial delivery has not completed")
+	ErrInvitationStale    = errors.New("Invitation changed since it was inspected")
 	ErrInvitationToken    = errors.New("Invitation is invalid")
 	ErrInvitationState    = errors.New("Recipient state does not permit this Invitation action")
 	errGenerateToken      = errors.New("generate Invitation token")
@@ -79,6 +80,11 @@ type Recipient struct {
 	Email      string      `json:"email"`
 	Access     Access      `json:"access"`
 	Invitation *Invitation `json:"invitation,omitempty"`
+}
+
+// InvitationActionRequest protects a Curator action from targeting a replacement Invitation.
+type InvitationActionRequest struct {
+	InvitationID string `json:"invitation_id" validate:"required,uuid"`
 }
 
 // TokenRequest exchanges a browser-held Invitation token without putting it in the API URL.
@@ -263,15 +269,15 @@ func (row invitationRow) public(now time.Time) Invitation {
 
 // Send creates and queues the first Invitation for a pending generation.
 func (s *Service) Send(ctx context.Context, actor setup.CuratorSession, personID uuid.UUID) (Recipient, error) {
-	return s.issue(ctx, actor, personID, false)
+	return s.issue(ctx, actor, personID, nil)
 }
 
-// Reissue supersedes any unaccepted offer and creates a fresh token and expiry.
-func (s *Service) Reissue(ctx context.Context, actor setup.CuratorSession, personID uuid.UUID) (Recipient, error) {
-	return s.issue(ctx, actor, personID, true)
+// Reissue supersedes the inspected offer and creates a fresh token and expiry.
+func (s *Service) Reissue(ctx context.Context, actor setup.CuratorSession, personID, invitationID uuid.UUID) (Recipient, error) {
+	return s.issue(ctx, actor, personID, &invitationID)
 }
 
-func (s *Service) issue(ctx context.Context, actor setup.CuratorSession, personID uuid.UUID, reissue bool) (Recipient, error) {
+func (s *Service) issue(ctx context.Context, actor setup.CuratorSession, personID uuid.UUID, reissueID *uuid.UUID) (Recipient, error) {
 	invitationID, err := uuid.NewRandomFromReader(s.random)
 	if err != nil {
 		return Recipient{}, errGenerateToken
@@ -296,16 +302,28 @@ func (s *Service) issue(ctx context.Context, actor setup.CuratorSession, personI
 		if err := tx.NewRaw(`SELECT count(*) FILTER (WHERE accepted_at IS NULL AND revoked_at IS NULL AND superseded_at IS NULL), count(*) FROM invitations WHERE recipient_access_generation_id = ?`, current.accessID).Scan(ctx, &liveCount, &historyCount); err != nil {
 			return err
 		}
-		if !reissue && historyCount > 0 {
+		if reissueID == nil && historyCount > 0 {
 			return ErrInvitationExists
 		}
-		if !reissue && liveCount > 0 {
+		if reissueID == nil && liveCount > 0 {
 			return ErrInvitationExists
 		}
-		if reissue && historyCount == 0 {
+		if reissueID != nil && historyCount == 0 {
 			return ErrInvitationNotFound
 		}
-		if reissue {
+		if reissueID != nil {
+			var latestID uuid.UUID
+			if err := tx.NewRaw(`
+				SELECT id FROM invitations WHERE recipient_access_generation_id = ?
+				ORDER BY (accepted_at IS NULL AND revoked_at IS NULL AND superseded_at IS NULL) DESC,
+				         COALESCE(accepted_at, revoked_at, superseded_at, issued_at) DESC, issued_at DESC, id DESC
+				LIMIT 1
+			`, current.accessID).Scan(ctx, &latestID); err != nil {
+				return err
+			}
+			if latestID != *reissueID {
+				return ErrInvitationStale
+			}
 			if _, err := tx.NewRaw(`UPDATE invitations SET superseded_at = ? WHERE recipient_access_generation_id = ? AND accepted_at IS NULL AND revoked_at IS NULL AND superseded_at IS NULL`, now, current.accessID).Exec(ctx); err != nil {
 				return err
 			}
@@ -343,7 +361,7 @@ func (s *Service) issue(ctx context.Context, actor setup.CuratorSession, personI
 			return err
 		}
 		action := "invitation_sent"
-		if reissue {
+		if reissueID != nil {
 			action = "invitation_reissued"
 		}
 		if err := appendAudit(ctx, tx, actor, personID, action, map[string]any{"invitation_id": invitationID.String(), "generation": current.generation, "expires_at": expiresAt}); err != nil {
@@ -390,8 +408,8 @@ func lockPendingRecipient(ctx context.Context, tx bun.Tx, personID uuid.UUID) (l
 }
 
 // Revoke invalidates the current live Invitation without ending Recipient access.
-func (s *Service) Revoke(ctx context.Context, actor setup.CuratorSession, personID uuid.UUID) (Recipient, error) {
-	return s.mutateLive(ctx, actor, personID, "invitation_revoked", func(ctx context.Context, tx bun.Tx, _ lockedRecipient, invitationID uuid.UUID, now time.Time) error {
+func (s *Service) Revoke(ctx context.Context, actor setup.CuratorSession, personID, invitationID uuid.UUID) (Recipient, error) {
+	return s.mutateLive(ctx, actor, personID, invitationID, "invitation_revoked", func(ctx context.Context, tx bun.Tx, _ lockedRecipient, invitationID uuid.UUID, now time.Time) error {
 		result, err := tx.NewRaw(`UPDATE invitations SET revoked_at = ? WHERE id = ? AND accepted_at IS NULL AND revoked_at IS NULL AND superseded_at IS NULL AND expires_at > ?`, now, invitationID, now).Exec(ctx)
 		if err != nil {
 			return err
@@ -404,8 +422,8 @@ func (s *Service) Revoke(ctx context.Context, actor setup.CuratorSession, person
 }
 
 // Remind queues a manual reminder without extending or replacing the Invitation.
-func (s *Service) Remind(ctx context.Context, actor setup.CuratorSession, personID uuid.UUID) (Recipient, error) {
-	return s.mutateLive(ctx, actor, personID, "invitation_manual_reminder_requested", func(ctx context.Context, tx bun.Tx, current lockedRecipient, invitationID uuid.UUID, now time.Time) error {
+func (s *Service) Remind(ctx context.Context, actor setup.CuratorSession, personID, invitationID uuid.UUID) (Recipient, error) {
+	return s.mutateLive(ctx, actor, personID, invitationID, "invitation_manual_reminder_requested", func(ctx context.Context, tx bun.Tx, current lockedRecipient, invitationID uuid.UUID, now time.Time) error {
 		var expiresAt time.Time
 		var sentAt *time.Time
 		if err := tx.NewRaw(`SELECT expires_at, sent_at FROM invitations WHERE id = ?`, invitationID).Scan(ctx, &expiresAt, &sentAt); err != nil {
@@ -433,7 +451,7 @@ func (s *Service) Remind(ctx context.Context, actor setup.CuratorSession, person
 
 type liveMutation func(context.Context, bun.Tx, lockedRecipient, uuid.UUID, time.Time) error
 
-func (s *Service) mutateLive(ctx context.Context, actor setup.CuratorSession, personID uuid.UUID, action string, mutation liveMutation) (Recipient, error) {
+func (s *Service) mutateLive(ctx context.Context, actor setup.CuratorSession, personID, expectedInvitationID uuid.UUID, action string, mutation liveMutation) (Recipient, error) {
 	var response Recipient
 	err := s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 		if err := lockActorAndRecipient(ctx, tx, actor.PersonID, personID); err != nil {
@@ -451,6 +469,9 @@ func (s *Service) mutateLive(ctx context.Context, actor setup.CuratorSession, pe
 		}
 		if err != nil {
 			return err
+		}
+		if invitationID != expectedInvitationID {
+			return ErrInvitationStale
 		}
 		if err := mutation(ctx, tx, current, invitationID, now); err != nil {
 			return err
@@ -503,7 +524,11 @@ func (s *Service) Accept(ctx context.Context, token string) (AcceptResponse, err
 		if affected, _ := result.RowsAffected(); affected != 1 {
 			return ErrInvitationToken
 		}
-		_, err = tx.NewRaw(`INSERT INTO security_audit_events (subject_person_id, action, outcome, metadata) VALUES (?, 'invitation_accepted', 'success', ?::jsonb)`, row.personID, fmt.Sprintf(`{"invitation_id":%q}`, row.invitationID.String())).Exec(ctx)
+		request := setup.RequestMetadataFromContext(ctx)
+		_, err = tx.NewRaw(`
+			INSERT INTO security_audit_events (subject_person_id, action, outcome, client_ip, user_agent, metadata)
+			VALUES (?, 'invitation_accepted', 'success', NULLIF(?, '')::inet, ?, ?::jsonb)
+		`, row.personID, request.ClientIP, request.UserAgent, fmt.Sprintf(`{"invitation_id":%q}`, row.invitationID.String())).Exec(ctx)
 		return err
 	})
 	if err != nil {
@@ -612,6 +637,10 @@ func appendAudit(ctx context.Context, tx bun.Tx, actor setup.CuratorSession, sub
 	if err != nil {
 		return err
 	}
-	_, err = tx.NewRaw(`INSERT INTO security_audit_events (actor_person_id, subject_person_id, action, outcome, session_id, metadata) VALUES (?, ?, ?, 'success', ?, ?::jsonb)`, actor.PersonID, subject, action, actor.SessionID, string(encoded)).Exec(ctx)
+	request := setup.RequestMetadataFromContext(ctx)
+	_, err = tx.NewRaw(`
+		INSERT INTO security_audit_events (actor_person_id, subject_person_id, action, outcome, client_ip, user_agent, session_id, metadata)
+		VALUES (?, ?, ?, 'success', NULLIF(?, '')::inet, ?, ?, ?::jsonb)
+	`, actor.PersonID, subject, action, request.ClientIP, request.UserAgent, actor.SessionID, string(encoded)).Exec(ctx)
 	return err
 }

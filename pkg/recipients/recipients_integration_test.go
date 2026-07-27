@@ -155,6 +155,7 @@ func recipientHTTP(t *testing.T, fixture recipientFixture) *echo.Echo {
 func serveRecipient(fixture recipientFixture, e *echo.Echo, path, body, csrf string) *httptest.ResponseRecorder {
 	request := httptest.NewRequestWithContext(context.Background(), http.MethodPost, path, strings.NewReader(body))
 	request.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	request.Header.Set("User-Agent", "memento-integration-test")
 	if csrf != "" {
 		request.Header.Set(setup.CSRFHeader, csrf)
 	}
@@ -164,29 +165,37 @@ func serveRecipient(fixture recipientFixture, e *echo.Echo, path, body, csrf str
 	return response
 }
 
+func currentInvitationBody(t *testing.T, fixture recipientFixture) string {
+	t.Helper()
+	recipient, err := fixture.service.Get(context.Background(), fixture.personID)
+	require.NoError(t, err)
+	require.NotNil(t, recipient.Invitation)
+	return `{"invitation_id":"` + recipient.Invitation.ID + `"}`
+}
+
 func TestRecipientMutationsRequireSessionBoundCSRF(t *testing.T) {
 	tests := []struct {
 		name   string
 		path   func(recipientFixture) string
-		body   string
+		body   func(*testing.T, recipientFixture) string
 		setup  func(*testing.T, recipientFixture)
 		status int
 	}{
-		{"designate", func(f recipientFixture) string { return "/api/recipients/" + f.personID.String() + "/designate" }, `{"email":"alex@example.com"}`, func(*testing.T, recipientFixture) {}, http.StatusCreated},
-		{"send", func(f recipientFixture) string { return "/api/recipients/" + f.personID.String() + "/invitation/send" }, `{}`, func(t *testing.T, f recipientFixture) { designate(t, f) }, http.StatusOK},
+		{"designate", func(f recipientFixture) string { return "/api/recipients/" + f.personID.String() + "/designate" }, func(*testing.T, recipientFixture) string { return `{"email":"alex@example.com"}` }, func(*testing.T, recipientFixture) {}, http.StatusCreated},
+		{"send", func(f recipientFixture) string { return "/api/recipients/" + f.personID.String() + "/invitation/send" }, func(*testing.T, recipientFixture) string { return `{}` }, func(t *testing.T, f recipientFixture) { designate(t, f) }, http.StatusOK},
 		{"revoke", func(f recipientFixture) string {
 			return "/api/recipients/" + f.personID.String() + "/invitation/revoke"
-		}, `{}`, func(t *testing.T, f recipientFixture) { designate(t, f); deterministicIssue(t, f, 0x31) }, http.StatusOK},
+		}, currentInvitationBody, func(t *testing.T, f recipientFixture) { designate(t, f); deterministicIssue(t, f, 0x31) }, http.StatusOK},
 		{"reissue", func(f recipientFixture) string {
 			return "/api/recipients/" + f.personID.String() + "/invitation/reissue"
-		}, `{}`, func(t *testing.T, f recipientFixture) {
+		}, currentInvitationBody, func(t *testing.T, f recipientFixture) {
 			designate(t, f)
 			deterministicIssue(t, f, 0x32)
 			f.service.random = bytes.NewReader(bytes.Repeat([]byte{0x33}, 48))
 		}, http.StatusOK},
 		{"remind", func(f recipientFixture) string {
 			return "/api/recipients/" + f.personID.String() + "/invitation/remind"
-		}, `{}`, func(t *testing.T, f recipientFixture) {
+		}, currentInvitationBody, func(t *testing.T, f recipientFixture) {
 			designate(t, f)
 			issued, _ := deterministicIssue(t, f, 0x34)
 			_, err := f.db.NewRaw(`UPDATE invitations SET sent_at = ? WHERE id = ?`, f.now, issued.Invitation.ID).Exec(context.Background())
@@ -198,12 +207,49 @@ func TestRecipientMutationsRequireSessionBoundCSRF(t *testing.T) {
 			fixture := newRecipientFixture(t)
 			test.setup(t, fixture)
 			e := recipientHTTP(t, fixture)
-			withoutCSRF := serveRecipient(fixture, e, test.path(fixture), test.body, "")
+			body := test.body(t, fixture)
+			withoutCSRF := serveRecipient(fixture, e, test.path(fixture), body, "")
 			assert.Equal(t, http.StatusForbidden, withoutCSRF.Code)
-			withCSRF := serveRecipient(fixture, e, test.path(fixture), test.body, fixture.csrf)
+			withCSRF := serveRecipient(fixture, e, test.path(fixture), body, fixture.csrf)
 			assert.Equal(t, test.status, withCSRF.Code, withCSRF.Body.String())
 		})
 	}
+}
+
+func TestRecipientRoutesAttributeSecurityAuditRequests(t *testing.T) {
+	fixture := newRecipientFixture(t)
+	e := recipientHTTP(t, fixture)
+
+	designated := serveRecipient(fixture, e, "/api/recipients/"+fixture.personID.String()+"/designate", `{"email":"alex@example.com"}`, fixture.csrf)
+	require.Equal(t, http.StatusCreated, designated.Code, designated.Body.String())
+	_, token := deterministicIssue(t, fixture, 0x35)
+	accepted := serveRecipient(fixture, e, "/api/auth/invitations/accept", `{"token":"`+token+`"}`, "")
+	require.Equal(t, http.StatusOK, accepted.Code, accepted.Body.String())
+
+	for _, action := range []string{"pending_recipient_designated", "invitation_accepted"} {
+		var clientIP, userAgent string
+		require.NoError(t, fixture.db.NewRaw(`SELECT client_ip::text, user_agent FROM security_audit_events WHERE action = ?`, action).Scan(context.Background(), &clientIP, &userAgent))
+		assert.Equal(t, "192.0.2.1/32", clientIP, action)
+		assert.Equal(t, "memento-integration-test", userAgent, action)
+	}
+}
+
+func TestInvitationActionRejectsAnInspectedInvitationAfterReplacement(t *testing.T) {
+	fixture := newRecipientFixture(t)
+	designate(t, fixture)
+	inspected, _ := deterministicIssue(t, fixture, 0x36)
+	fixture.service.random = bytes.NewReader(bytes.Repeat([]byte{0x37}, 48))
+	replacement, err := fixture.service.Reissue(context.Background(), fixture.actor, fixture.personID, uuid.MustParse(inspected.Invitation.ID))
+	require.NoError(t, err)
+
+	e := recipientHTTP(t, fixture)
+	response := serveRecipient(fixture, e, "/api/recipients/"+fixture.personID.String()+"/invitation/revoke", `{"invitation_id":"`+inspected.Invitation.ID+`"}`, fixture.csrf)
+	assert.Equal(t, http.StatusConflict, response.Code)
+	assert.Contains(t, response.Body.String(), "Invitation changed")
+	current, err := fixture.service.Get(context.Background(), fixture.personID)
+	require.NoError(t, err)
+	assert.Equal(t, replacement.Invitation.ID, current.Invitation.ID)
+	assert.Equal(t, "active", current.Invitation.Status)
 }
 
 func TestDesignateCreatesPendingGenerationWithoutDeliveryOrAccessSession(t *testing.T) {
@@ -333,9 +379,9 @@ func TestInspectIsReadOnlyAndAcceptIsSingleUseWithoutCreatingSession(t *testing.
 func TestRevocationExpiryAndReissueInvalidateOldTokens(t *testing.T) {
 	fixture := newRecipientFixture(t)
 	designate(t, fixture)
-	_, oldToken := deterministicIssue(t, fixture, 0x21)
+	oldInvitation, oldToken := deterministicIssue(t, fixture, 0x21)
 
-	revoked, err := fixture.service.Revoke(context.Background(), fixture.actor, fixture.personID)
+	revoked, err := fixture.service.Revoke(context.Background(), fixture.actor, fixture.personID, uuid.MustParse(oldInvitation.Invitation.ID))
 	require.NoError(t, err)
 	assert.Equal(t, "revoked", revoked.Invitation.Status)
 	_, err = fixture.service.Inspect(context.Background(), oldToken)
@@ -343,7 +389,7 @@ func TestRevocationExpiryAndReissueInvalidateOldTokens(t *testing.T) {
 
 	data := bytes.Repeat([]byte{0x58}, 48)
 	fixture.service.random = bytes.NewReader(data)
-	reissued, err := fixture.service.Reissue(context.Background(), fixture.actor, fixture.personID)
+	reissued, err := fixture.service.Reissue(context.Background(), fixture.actor, fixture.personID, uuid.MustParse(revoked.Invitation.ID))
 	require.NoError(t, err)
 	newToken := hex.EncodeToString(data[16:48])
 	assert.Equal(t, "active", reissued.Invitation.Status)
@@ -357,7 +403,7 @@ func TestRevocationExpiryAndReissueInvalidateOldTokens(t *testing.T) {
 	assert.ErrorIs(t, err, ErrInvitationToken)
 	_, err = fixture.service.Accept(context.Background(), newToken)
 	assert.ErrorIs(t, err, ErrInvitationToken)
-	_, err = fixture.service.Remind(context.Background(), fixture.actor, fixture.personID)
+	_, err = fixture.service.Remind(context.Background(), fixture.actor, fixture.personID, uuid.MustParse(reissued.Invitation.ID))
 	assert.ErrorIs(t, err, ErrInvitationNotFound)
 }
 
@@ -367,7 +413,7 @@ func TestActiveReissueSupersedesOldTokenAndLeavesOneLiveInvitation(t *testing.T)
 	oldInvitation, oldToken := deterministicIssue(t, fixture, 0xf1)
 	data := bytes.Repeat([]byte{0x01}, 48)
 	fixture.service.random = bytes.NewReader(data)
-	reissued, err := fixture.service.Reissue(context.Background(), fixture.actor, fixture.personID)
+	reissued, err := fixture.service.Reissue(context.Background(), fixture.actor, fixture.personID, uuid.MustParse(oldInvitation.Invitation.ID))
 	require.NoError(t, err)
 	newToken := hex.EncodeToString(data[16:48])
 	assert.NotEqual(t, oldInvitation.Invitation.ID, reissued.Invitation.ID)
@@ -432,12 +478,26 @@ func dispatchDelivery(t *testing.T, fixture recipientFixture, invitationID, kind
 	return fixture.delivery.Handle(context.Background(), claimDelivery(t, fixture, invitationID, kind, owner))
 }
 
+func assertDeliveryCancelled(t *testing.T, fixture recipientFixture, invitationID, kind string) {
+	t.Helper()
+	var status string
+	var problems int
+	require.NoError(t, fixture.db.NewRaw(`SELECT status FROM email_deliveries WHERE invitation_id = ? AND kind = ?`, invitationID, kind).Scan(context.Background(), &status))
+	require.NoError(t, fixture.db.NewRaw(`
+		SELECT count(*) FROM delivery_problems AS problem
+		JOIN email_deliveries AS delivery ON delivery.id = problem.email_delivery_id
+		WHERE delivery.invitation_id = ? AND delivery.kind = ?
+	`, invitationID, kind).Scan(context.Background(), &problems))
+	assert.Equal(t, "cancelled", status)
+	assert.Zero(t, problems)
+}
+
 func TestAllInvitationDeliveryKindsCompleteAndRecordResults(t *testing.T) {
 	fixture := newRecipientFixture(t)
 	designate(t, fixture)
 	invitation, _ := deterministicIssue(t, fixture, 0x51)
 	require.NoError(t, dispatchDelivery(t, fixture, invitation.Invitation.ID, emaildelivery.KindInvitationInitial, "initial-success"))
-	_, err := fixture.service.Remind(context.Background(), fixture.actor, fixture.personID)
+	_, err := fixture.service.Remind(context.Background(), fixture.actor, fixture.personID, uuid.MustParse(invitation.Invitation.ID))
 	require.NoError(t, err)
 	require.NoError(t, dispatchDelivery(t, fixture, invitation.Invitation.ID, emaildelivery.KindInvitationManualReminder, "manual-success"))
 	_, err = fixture.db.NewRaw(`UPDATE email_deliveries SET available_at = now() WHERE invitation_id = ? AND kind = ?`, invitation.Invitation.ID, emaildelivery.KindInvitationAutomaticReminder).Exec(context.Background())
@@ -487,7 +547,7 @@ func TestRevocationWaitsForInFlightInvitationDelivery(t *testing.T) {
 
 	revoked := make(chan error, 1)
 	go func() {
-		_, err := fixture.service.Revoke(ctx, fixture.actor, fixture.personID)
+		_, err := fixture.service.Revoke(ctx, fixture.actor, fixture.personID, uuid.MustParse(invitation.Invitation.ID))
 		revoked <- err
 	}()
 	waitForBlockedQuery(t, ctx, fixture.db, deliveryPID, `%SELECT id FROM invitations WHERE recipient_access_generation_id%FOR UPDATE%`)
@@ -523,12 +583,44 @@ func TestDeliveryRechecksObsolescenceAfterWaitingForInvitation(t *testing.T) {
 	go func() { delivered <- fixture.delivery.Handle(ctx, job) }()
 	waitForBlockedQuery(t, ctx, fixture.db, blockerPID, `%SELECT id FROM invitations WHERE id =%FOR UPDATE%`)
 	require.NoError(t, terminalTx.Commit())
-	require.Error(t, <-delivered)
+	require.NoError(t, <-delivered)
 	assert.Zero(t, fixture.sender.count())
-	var status, diagnostic string
-	require.NoError(t, fixture.db.NewRaw(`SELECT status, last_safe_error FROM email_deliveries WHERE invitation_id = ? AND kind = ?`, invitation.Invitation.ID, emaildelivery.KindInvitationInitial).Scan(ctx, &status, &diagnostic))
-	assert.Equal(t, "failed", status)
-	assert.Equal(t, "delivery_expired", diagnostic)
+	assertDeliveryCancelled(t, fixture, invitation.Invitation.ID, emaildelivery.KindInvitationInitial)
+	require.NoError(t, fixture.delivery.Handle(ctx, job), "cancelled delivery retries must be idempotent")
+}
+
+func TestObsoleteDeliveryDoesNotCancelAfterLosingItsLease(t *testing.T) {
+	fixture := newRecipientFixture(t)
+	designate(t, fixture)
+	invitation, _ := deterministicIssue(t, fixture, 0x49)
+	job := claimDelivery(t, fixture, invitation.Invitation.ID, emaildelivery.KindInvitationInitial, "obsolete-lease-owner")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	terminalTx, err := fixture.db.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	defer func() { _ = terminalTx.Rollback() }()
+	_, err = terminalTx.NewRaw(`SELECT id FROM invitations WHERE id = ? FOR UPDATE`, invitation.Invitation.ID).Exec(ctx)
+	require.NoError(t, err)
+	_, err = terminalTx.NewRaw(`UPDATE invitations SET revoked_at = ? WHERE id = ?`, fixture.now, invitation.Invitation.ID).Exec(ctx)
+	require.NoError(t, err)
+	var blockerPID int
+	require.NoError(t, terminalTx.NewRaw(`SELECT pg_backend_pid()`).Scan(ctx, &blockerPID))
+
+	delivered := make(chan error, 1)
+	go func() { delivered <- fixture.delivery.Handle(ctx, job) }()
+	waitForBlockedQuery(t, ctx, fixture.db, blockerPID, `%SELECT id FROM invitations WHERE id =%FOR UPDATE%`)
+	_, err = fixture.db.NewRaw(`UPDATE jobs SET lease_owner = 'replacement-owner', lease_expires_at = now() + interval '1 minute' WHERE id = ?`, job.ID).Exec(ctx)
+	require.NoError(t, err)
+	require.NoError(t, terminalTx.Commit())
+	require.EqualError(t, <-delivered, "email delivery job lease lost")
+
+	var status string
+	var problems int
+	require.NoError(t, fixture.db.NewRaw(`SELECT status FROM email_deliveries WHERE invitation_id = ? AND kind = ?`, invitation.Invitation.ID, emaildelivery.KindInvitationInitial).Scan(ctx, &status))
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM delivery_problems AS problem JOIN email_deliveries AS delivery ON delivery.id = problem.email_delivery_id WHERE delivery.invitation_id = ? AND delivery.kind = ?`, invitation.Invitation.ID, emaildelivery.KindInvitationInitial).Scan(ctx, &problems))
+	assert.Equal(t, "queued", status)
+	assert.Zero(t, problems)
 }
 
 func TestDeliveryUsesWallClockWhenInvitationExpiresWhileWaitingForLock(t *testing.T) {
@@ -561,8 +653,9 @@ func TestDeliveryUsesWallClockWhenInvitationExpiresWhileWaitingForLock(t *testin
 	waitForBlockedQuery(t, ctx, fixture.db, blockerPID, `%SELECT id FROM invitations WHERE id =%FOR UPDATE%`)
 	time.Sleep(600 * time.Millisecond)
 	require.NoError(t, expiryTx.Commit())
-	require.Error(t, <-delivered)
+	require.NoError(t, <-delivered)
 	assert.Zero(t, fixture.sender.count())
+	assertDeliveryCancelled(t, fixture, invitation.Invitation.ID, emaildelivery.KindInvitationInitial)
 }
 
 func TestArchivingPendingRecipientRevokesAccessInvitationAndDelivery(t *testing.T) {
@@ -588,8 +681,9 @@ func TestArchivingPendingRecipientRevokesAccessInvitationAndDelivery(t *testing.
 	_, err = fixture.db.NewRaw(`UPDATE email_deliveries SET available_at = now() WHERE invitation_id = ? AND kind = ?`, invitation.Invitation.ID, emaildelivery.KindInvitationAutomaticReminder).Exec(context.Background())
 	require.NoError(t, err)
 	err = dispatchDelivery(t, fixture, invitation.Invitation.ID, emaildelivery.KindInvitationAutomaticReminder, "archived-recipient")
-	require.Error(t, err)
+	require.NoError(t, err)
 	assert.Zero(t, fixture.sender.count())
+	assertDeliveryCancelled(t, fixture, invitation.Invitation.ID, emaildelivery.KindInvitationAutomaticReminder)
 }
 
 func TestAcceptedSupersededAndExpiredInvitationsCancelDelivery(t *testing.T) {
@@ -604,7 +698,7 @@ func TestAcceptedSupersededAndExpiredInvitationsCancelDelivery(t *testing.T) {
 				require.NoError(t, err)
 			case "superseded":
 				fixture.service.random = bytes.NewReader(bytes.Repeat([]byte{0x53}, 48))
-				_, err := fixture.service.Reissue(context.Background(), fixture.actor, fixture.personID)
+				_, err := fixture.service.Reissue(context.Background(), fixture.actor, fixture.personID, uuid.MustParse(invitation.Invitation.ID))
 				require.NoError(t, err)
 			case "expired":
 				_, err := fixture.db.NewRaw(`UPDATE invitations SET issued_at = now() - interval '15 days', expires_at = now() - interval '1 day', automatic_reminder_scheduled_at = now() - interval '8 days' WHERE id = ?`, invitation.Invitation.ID).Exec(context.Background())
@@ -613,12 +707,9 @@ func TestAcceptedSupersededAndExpiredInvitationsCancelDelivery(t *testing.T) {
 			_, err := fixture.db.NewRaw(`UPDATE email_deliveries SET available_at = now() WHERE invitation_id = ? AND kind = ?`, invitation.Invitation.ID, emaildelivery.KindInvitationAutomaticReminder).Exec(context.Background())
 			require.NoError(t, err)
 			err = dispatchDelivery(t, fixture, invitation.Invitation.ID, emaildelivery.KindInvitationAutomaticReminder, "stale-"+terminal)
-			require.Error(t, err)
+			require.NoError(t, err)
 			assert.Zero(t, fixture.sender.count())
-			var status, diagnostic string
-			require.NoError(t, fixture.db.NewRaw(`SELECT status, last_safe_error FROM email_deliveries WHERE invitation_id = ? AND kind = ?`, invitation.Invitation.ID, emaildelivery.KindInvitationAutomaticReminder).Scan(context.Background(), &status, &diagnostic))
-			assert.Equal(t, "failed", status)
-			assert.Equal(t, "delivery_expired", diagnostic)
+			assertDeliveryCancelled(t, fixture, invitation.Invitation.ID, emaildelivery.KindInvitationAutomaticReminder)
 		})
 	}
 }
@@ -627,7 +718,7 @@ func TestRevokedInvitationCancelsItsScheduledAutomaticReminderAtDelivery(t *test
 	fixture := newRecipientFixture(t)
 	designate(t, fixture)
 	invitation, _ := deterministicIssue(t, fixture, 0x72)
-	_, err := fixture.service.Revoke(context.Background(), fixture.actor, fixture.personID)
+	_, err := fixture.service.Revoke(context.Background(), fixture.actor, fixture.personID, uuid.MustParse(invitation.Invitation.ID))
 	require.NoError(t, err)
 
 	_, err = fixture.db.NewRaw(`UPDATE outbox_events AS event SET delivered_at = CASE WHEN delivery.kind = ? THEN now() ELSE event.delivered_at END, available_at = CASE WHEN delivery.kind = ? THEN now() ELSE event.available_at END FROM email_deliveries AS delivery WHERE event.aggregate_id = delivery.public_id AND delivery.invitation_id = ?`, emaildelivery.KindInvitationInitial, emaildelivery.KindInvitationAutomaticReminder, invitation.Invitation.ID).Exec(context.Background())
@@ -644,12 +735,9 @@ func TestRevokedInvitationCancelsItsScheduledAutomaticReminderAtDelivery(t *test
 	`, invitation.Invitation.ID, emaildelivery.KindInvitationAutomaticReminder).Scan(context.Background(), &job.ID, &job.Kind, &job.Payload))
 	job.LeaseOwner = "revoked-reminder"
 	err = fixture.delivery.Handle(context.Background(), job)
-	require.Error(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, 0, fixture.sender.count())
-	var status, diagnostic string
-	require.NoError(t, fixture.db.NewRaw(`SELECT status, last_safe_error FROM email_deliveries WHERE invitation_id = ? AND kind = ?`, invitation.Invitation.ID, emaildelivery.KindInvitationAutomaticReminder).Scan(context.Background(), &status, &diagnostic))
-	assert.Equal(t, "failed", status)
-	assert.Equal(t, "delivery_expired", diagnostic)
+	assertDeliveryCancelled(t, fixture, invitation.Invitation.ID, emaildelivery.KindInvitationAutomaticReminder)
 }
 
 func TestManualReminderIsDurableAndDoesNotExtendInvitation(t *testing.T) {
@@ -658,11 +746,11 @@ func TestManualReminderIsDurableAndDoesNotExtendInvitation(t *testing.T) {
 	sent, _ := deterministicIssue(t, fixture, 0x63)
 	originalExpiry := sent.Invitation.ExpiresAt
 
-	_, err := fixture.service.Remind(context.Background(), fixture.actor, fixture.personID)
+	_, err := fixture.service.Remind(context.Background(), fixture.actor, fixture.personID, uuid.MustParse(sent.Invitation.ID))
 	require.ErrorIs(t, err, ErrInvitationNotSent)
 	_, err = fixture.db.NewRaw(`UPDATE invitations SET sent_at = ? WHERE id = ?`, fixture.now, sent.Invitation.ID).Exec(context.Background())
 	require.NoError(t, err)
-	reminded, err := fixture.service.Remind(context.Background(), fixture.actor, fixture.personID)
+	reminded, err := fixture.service.Remind(context.Background(), fixture.actor, fixture.personID, uuid.MustParse(sent.Invitation.ID))
 	require.NoError(t, err)
 	assert.Equal(t, originalExpiry, reminded.Invitation.ExpiresAt)
 	assert.Equal(t, 1, reminded.Invitation.ManualReminderCount)
@@ -789,6 +877,39 @@ func TestAcceptLocksRecipientAccessBeforeInvitation(t *testing.T) {
 	require.NoError(t, err, "acceptance must not lock its Invitation before Recipient access")
 	require.NoError(t, accessTx.Rollback())
 	require.NoError(t, <-accepted)
+}
+
+func TestConcurrentReissueAllowsOnlyTheActionTargetingTheCurrentInvitation(t *testing.T) {
+	fixture := newRecipientFixture(t)
+	designate(t, fixture)
+	current, _ := deterministicIssue(t, fixture, 0x71)
+	fixture.service.random = randReader{}
+
+	var wait sync.WaitGroup
+	results := make(chan error, 2)
+	for range 2 {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			_, err := fixture.service.Reissue(context.Background(), fixture.actor, fixture.personID, uuid.MustParse(current.Invitation.ID))
+			results <- err
+		}()
+	}
+	wait.Wait()
+	close(results)
+	var successes, stale int
+	for err := range results {
+		if err == nil {
+			successes++
+		} else if errors.Is(err, ErrInvitationStale) {
+			stale++
+		}
+	}
+	assert.Equal(t, 1, successes)
+	assert.Equal(t, 1, stale)
+	var live int
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM invitations WHERE accepted_at IS NULL AND revoked_at IS NULL AND superseded_at IS NULL`).Scan(context.Background(), &live))
+	assert.Equal(t, 1, live)
 }
 
 func TestConcurrentSendLeavesOneLiveInvitation(t *testing.T) {
