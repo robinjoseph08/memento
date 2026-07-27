@@ -143,7 +143,7 @@ test("@desktop Recipient lands on Photos and sees only filtered Event totals", a
     .click();
   await expect(page.getByText("1 item")).toBeVisible();
   await page.getByRole("button", { name: /Family weekend/ }).click();
-  await expect(page.getByText("1 items")).toBeVisible();
+  await expect(page.getByText("1 item")).toBeVisible();
   await expect(page.getByText(/Moment/)).toHaveCount(0);
 });
 
