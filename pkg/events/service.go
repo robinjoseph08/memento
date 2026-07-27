@@ -68,6 +68,8 @@ type Moment struct {
 	Title              string      `json:"title"`
 	ProposedDay        string      `json:"proposed_day"`
 	GroupingTimezone   string      `json:"grouping_timezone"`
+	SourceDays         []string    `json:"source_days"`
+	ProposalKind       string      `json:"proposal_kind"`
 	CoverMediaItemID   *string     `json:"cover_media_item_id" tstype:"string | null,required"`
 	AttendanceComplete bool        `json:"attendance_complete"`
 	AudienceComplete   bool        `json:"audience_complete"`
@@ -187,6 +189,8 @@ type draftMomentRow struct {
 	ID                 uuid.UUID  `json:"id"`
 	Position           int        `json:"position"`
 	ProposedDay        string     `json:"proposed_day"`
+	SourceDays         []string   `json:"source_days,omitempty"`
+	ProposalKind       string     `json:"proposal_kind,omitempty"`
 	Title              string     `json:"title,omitempty"`
 	CoverMediaItemID   *uuid.UUID `json:"cover_media_item_id,omitempty"`
 	AttendanceComplete bool       `json:"attendance_complete,omitempty"`
@@ -275,6 +279,7 @@ func (s *Service) CreateEvent(ctx context.Context, actor setup.CuratorSession, r
 				momentByDay[*media[index].day] = momentID
 				moments = append(moments, draftMomentRow{
 					ID: momentID, Position: len(moments), ProposedDay: *media[index].day,
+					SourceDays: []string{*media[index].day}, ProposalKind: "local_day",
 				})
 			}
 			media[index].momentID = momentID
@@ -327,15 +332,18 @@ func insertDraftMoments(ctx context.Context, tx bun.Tx, eventID uuid.UUID, timez
 	}
 	_, err = tx.NewRaw(`
 		INSERT INTO draft_moments (
-			id, event_id, position, proposed_day, grouping_timezone, title,
-			cover_media_item_id, attendance_complete, audience_complete
+			id, event_id, position, proposed_day, grouping_timezone, source_days,
+			proposal_kind, title, cover_media_item_id, attendance_complete, audience_complete
 		)
 		SELECT incoming.id, ?, incoming.position, incoming.proposed_day::date, ?,
-			COALESCE(incoming.title, ''), incoming.cover_media_item_id,
-			COALESCE(incoming.attendance_complete, false), COALESCE(incoming.audience_complete, false)
+			COALESCE(incoming.source_days, '{}'::date[]),
+			COALESCE(incoming.proposal_kind, 'manual'), COALESCE(incoming.title, ''),
+			incoming.cover_media_item_id, COALESCE(incoming.attendance_complete, false),
+			COALESCE(incoming.audience_complete, false)
 		FROM jsonb_to_recordset(?::jsonb) AS incoming(
-			id uuid, position integer, proposed_day text, title text,
-			cover_media_item_id uuid, attendance_complete boolean, audience_complete boolean
+			id uuid, position integer, proposed_day text, source_days date[],
+			proposal_kind text, title text, cover_media_item_id uuid,
+			attendance_complete boolean, audience_complete boolean
 		)
 	`, eventID, timezone, string(payload)).Exec(ctx)
 	return err
@@ -560,6 +568,9 @@ func (s *Service) OrganizeEvent(ctx context.Context, actor setup.CuratorSession,
 				return ErrInvalid
 			}
 		}
+		if err := applyMomentProvenance(ctx, tx, id, momentRows, placements); err != nil {
+			return err
+		}
 		if _, err := tx.NewRaw(`DELETE FROM draft_media_placements WHERE event_id = ?`, id).Exec(ctx); err != nil {
 			return err
 		}
@@ -595,6 +606,119 @@ func containsUUID(values []uuid.UUID, target uuid.UUID) bool {
 		}
 	}
 	return false
+}
+
+func applyMomentProvenance(ctx context.Context, tx bun.Tx, eventID uuid.UUID, moments []draftMomentRow, placements []draftPlacementRow) error {
+	type priorMoment struct {
+		sourceDays []string
+	}
+	priorMoments := make(map[uuid.UUID]priorMoment)
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id, to_json(source_days)::text
+		FROM draft_moments WHERE event_id = ?
+	`, eventID)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var id uuid.UUID
+		var sourceDaysJSON string
+		if err := rows.Scan(&id, &sourceDaysJSON); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		var sourceDays []string
+		if err := json.Unmarshal([]byte(sourceDaysJSON), &sourceDays); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		priorMoments[id] = priorMoment{sourceDays: sourceDays}
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	priorPlacement := make(map[uuid.UUID]uuid.UUID)
+	rows, err = tx.QueryContext(ctx, `
+		SELECT media_item_id, draft_moment_id
+		FROM draft_media_placements
+		WHERE event_id = ? AND draft_moment_id IS NOT NULL
+	`, eventID)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var mediaID, momentID uuid.UUID
+		if err := rows.Scan(&mediaID, &momentID); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		priorPlacement[mediaID] = momentID
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	targetIndex := make(map[uuid.UUID]int, len(moments))
+	sourceDaysByTarget := make([]map[string]struct{}, len(moments))
+	for index, moment := range moments {
+		targetIndex[moment.ID] = index
+		sourceDaysByTarget[index] = make(map[string]struct{})
+	}
+	for _, placement := range placements {
+		if placement.DraftMomentID == nil {
+			continue
+		}
+		priorMomentID, exists := priorPlacement[placement.MediaItemID]
+		if !exists {
+			continue
+		}
+		index, exists := targetIndex[*placement.DraftMomentID]
+		if !exists {
+			return ErrInvalid
+		}
+		for _, day := range priorMoments[priorMomentID].sourceDays {
+			sourceDaysByTarget[index][day] = struct{}{}
+		}
+	}
+
+	targetsBySourceDay := make(map[string]int)
+	for _, sourceDays := range sourceDaysByTarget {
+		for day := range sourceDays {
+			targetsBySourceDay[day]++
+		}
+	}
+	for index, sourceDays := range sourceDaysByTarget {
+		moments[index].SourceDays = make([]string, 0, len(sourceDays))
+		for day := range sourceDays {
+			moments[index].SourceDays = append(moments[index].SourceDays, day)
+		}
+		sort.Strings(moments[index].SourceDays)
+		split := false
+		for _, day := range moments[index].SourceDays {
+			if targetsBySourceDay[day] > 1 {
+				split = true
+				break
+			}
+		}
+		switch {
+		case len(moments[index].SourceDays) == 0:
+			moments[index].ProposalKind = "manual"
+		case split:
+			moments[index].ProposalKind = "split_day"
+		case len(moments[index].SourceDays) > 1:
+			moments[index].ProposalKind = "merged_days"
+		default:
+			moments[index].ProposalKind = "local_day"
+		}
+	}
+	return nil
 }
 
 // GetEvent returns one Curator-only draft and computes optional Source suggestions.
@@ -650,7 +774,8 @@ func getEvent(ctx context.Context, db bun.IDB, id uuid.UUID) (Event, error) {
 	event.Moments = make([]Moment, 0)
 	momentRows, err := db.QueryContext(ctx, `
 		SELECT id, title, proposed_day::text, grouping_timezone,
-			cover_media_item_id::text, attendance_complete, audience_complete
+			to_json(source_days)::text, proposal_kind, cover_media_item_id::text,
+			attendance_complete, audience_complete
 		FROM draft_moments WHERE event_id = ? ORDER BY position
 	`, id)
 	if err != nil {
@@ -658,9 +783,15 @@ func getEvent(ctx context.Context, db bun.IDB, id uuid.UUID) (Event, error) {
 	}
 	for momentRows.Next() {
 		var moment Moment
+		var sourceDaysJSON string
 		if err := momentRows.Scan(&moment.ID, &moment.Title, &moment.ProposedDay,
-			&moment.GroupingTimezone, &moment.CoverMediaItemID,
-			&moment.AttendanceComplete, &moment.AudienceComplete); err != nil {
+			&moment.GroupingTimezone, &sourceDaysJSON, &moment.ProposalKind,
+			&moment.CoverMediaItemID, &moment.AttendanceComplete,
+			&moment.AudienceComplete); err != nil {
+			_ = momentRows.Close()
+			return Event{}, err
+		}
+		if err := json.Unmarshal([]byte(sourceDaysJSON), &moment.SourceDays); err != nil {
 			_ = momentRows.Close()
 			return Event{}, err
 		}

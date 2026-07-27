@@ -53,6 +53,8 @@ function draft(version = 1): DraftEvent {
         title: "Friday",
         proposed_day: "2026-05-01",
         grouping_timezone: "UTC",
+        source_days: ["2026-05-01"],
+        proposal_kind: "local_day",
         cover_media_item_id: items.a.id,
         attendance_complete: false,
         audience_complete: false,
@@ -63,6 +65,8 @@ function draft(version = 1): DraftEvent {
         title: "Saturday",
         proposed_day: "2026-05-02",
         grouping_timezone: "UTC",
+        source_days: ["2026-05-02"],
+        proposal_kind: "local_day",
         cover_media_item_id: items.b.id,
         attendance_complete: false,
         audience_complete: false,
@@ -104,6 +108,8 @@ function eventFromRequest(request: OrganizeEventRequest): DraftEvent {
     title: moment.title ?? "",
     proposed_day: moment.proposed_day,
     grouping_timezone: "UTC",
+    source_days: [moment.proposed_day],
+    proposal_kind: "local_day",
     cover_media_item_id: moment.cover_media_item_id,
     attendance_complete: moment.attendance_complete,
     audience_complete: moment.audience_complete,
@@ -381,6 +387,8 @@ test("recovers an ordinary failed autosave with an explicit retry", async () => 
   expect(await screen.findByRole("alert")).toHaveTextContent(
     "Autosave is temporarily unavailable.",
   );
+  await new Promise((resolve) => window.setTimeout(resolve, 600));
+  expect(attempts).toHaveLength(1);
   fireEvent.change(screen.getByLabelText("Title for Moment 1"), {
     target: { value: "Latest recovered title" },
   });
@@ -732,10 +740,8 @@ test("removes a Moment emptied by a bulk move", async () => {
   fireEvent.click(
     await screen.findByRole("button", { name: /Family weekend/ }),
   );
-  fireEvent.click(
-    await screen.findByRole("checkbox", { name: /second photo/ }),
-  );
-  fireEvent.click(screen.getByRole("checkbox", { name: /third photo/ }));
+  fireEvent.click(await screen.findByRole("checkbox", { name: /third photo/ }));
+  fireEvent.click(screen.getByRole("checkbox", { name: /second photo/ }));
   fireEvent.change(screen.getByLabelText("Move selected to"), {
     target: { value: momentOneID },
   });

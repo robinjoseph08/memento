@@ -710,7 +710,34 @@ function ReadyCard({
 }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const [draftsDirty, setDraftsDirty] = useState(false);
-  if (session && searchParams.get("workspace") === "drafts") {
+  const [draftsSaving, setDraftsSaving] = useState(false);
+  const draftsRequested = searchParams.get("workspace") === "drafts";
+
+  useEffect(() => {
+    const restoreDraftLocation = () =>
+      setSearchParams(
+        (current) => {
+          const next = new URLSearchParams(current);
+          next.set("workspace", "drafts");
+          return next;
+        },
+        { replace: true },
+      );
+    const protectDraftHistory = () => {
+      if (!draftsDirty) return;
+      if (draftsSaving) {
+        restoreDraftLocation();
+        return;
+      }
+      if (window.confirm("Discard changes that have not finished saving?"))
+        setDraftsDirty(false);
+      else restoreDraftLocation();
+    };
+    window.addEventListener("popstate", protectDraftHistory);
+    return () => window.removeEventListener("popstate", protectDraftHistory);
+  }, [draftsDirty, draftsSaving, setSearchParams]);
+
+  if (session && (draftsRequested || draftsDirty)) {
     return (
       <section className="draft-work-shell">
         <button
@@ -721,17 +748,23 @@ function ReadyCard({
               !window.confirm("Discard changes that have not finished saving?")
             )
               return;
+            setDraftsDirty(false);
             setSearchParams((current) => {
               const next = new URLSearchParams(current);
               next.delete("workspace");
               return next;
             });
           }}
+          disabled={draftsSaving}
           type="button"
         >
           Back to Curator management
         </button>
-        <EventOrganizer onDirtyChange={setDraftsDirty} session={session} />
+        <EventOrganizer
+          onDirtyChange={setDraftsDirty}
+          onSavingChange={setDraftsSaving}
+          session={session}
+        />
       </section>
     );
   }

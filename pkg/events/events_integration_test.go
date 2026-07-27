@@ -726,6 +726,10 @@ func TestCuratorOrganizesMomentsWithOrderingCoversReadinessAndOptimisticVersions
 	require.Len(t, organized.Moments, 1, "same and adjacent day proposals can be merged")
 	assert.Equal(t, allAssigned, mediaIDs(organized.Moments[0].MediaItems), "manual Media ordering is stable")
 	assert.Equal(t, cover, *organized.Moments[0].CoverMediaItemID)
+	assert.Equal(t, "merged_days", organized.Moments[0].ProposalKind)
+	assert.ElementsMatch(t, []string{
+		created.Moments[0].ProposedDay, created.Moments[1].ProposedDay,
+	}, organized.Moments[0].SourceDays)
 	assert.True(t, organized.Moments[0].AttendanceComplete)
 	assert.True(t, organized.Moments[0].AudienceComplete)
 	assert.True(t, organized.FinalReviewComplete)
@@ -742,6 +746,10 @@ func TestCuratorOrganizesMomentsWithOrderingCoversReadinessAndOptimisticVersions
 	require.NoError(t, err)
 	require.Len(t, split.Moments, 2, "one local day can be split into separate Moments")
 	assert.Equal(t, organized.Moments[0].ProposedDay, split.Moments[1].ProposedDay)
+	for _, moment := range split.Moments {
+		assert.Equal(t, "split_day", moment.ProposalKind)
+		assert.Equal(t, organized.Moments[0].SourceDays, moment.SourceDays)
+	}
 
 	_, err = fixture.service.OrganizeEvent(ctx, fixture.actor, uuid.MustParse(created.ID), OrganizeEventRequest{
 		Version: organized.Version,

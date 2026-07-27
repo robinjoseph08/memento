@@ -12,7 +12,7 @@ import type {
 import type { SessionResponse } from "./types/generated/setup";
 
 type Pane = "work" | "organize" | "inspect";
-type SaveState = "saved" | "saving" | "unsaved" | "conflict";
+type SaveState = "saved" | "saving" | "unsaved" | "failed" | "conflict";
 type SaveAttempt = { event: DraftEvent; revision: number };
 
 function mediaLabel(item: MediaItem) {
@@ -151,9 +151,11 @@ function MediaRow({
 export function EventOrganizer({
   session,
   onDirtyChange,
+  onSavingChange,
 }: {
   session: SessionResponse;
   onDirtyChange?: (dirty: boolean) => void;
+  onSavingChange?: (saving: boolean) => void;
 }) {
   const queryClient = useQueryClient();
   const [selectedID, setSelectedID] = useState("");
@@ -232,7 +234,7 @@ export function EventOrganizer({
         setConflictRecoveryError("");
         setSaveState("conflict");
       } else {
-        setSaveState("unsaved");
+        setSaveState("failed");
       }
     },
   });
@@ -241,13 +243,14 @@ export function EventOrganizer({
   useEffect(() => {
     const dirty = saveState !== "saved";
     onDirtyChange?.(dirty);
+    onSavingChange?.(saveState === "saving");
     const preventDirtyUnload = (event: BeforeUnloadEvent) => {
       if (!dirty) return;
       event.preventDefault();
     };
     window.addEventListener("beforeunload", preventDirtyUnload);
     return () => window.removeEventListener("beforeunload", preventDirtyUnload);
-  }, [onDirtyChange, saveState]);
+  }, [onDirtyChange, onSavingChange, saveState]);
 
   useEffect(() => {
     const panes = {
@@ -263,6 +266,7 @@ export function EventOrganizer({
       !currentDraft ||
       revision === 0 ||
       saveState === "conflict" ||
+      saveState === "failed" ||
       save.isPending
     )
       return;
@@ -311,6 +315,20 @@ export function EventOrganizer({
     });
   }
 
+  function takeSelectedMedia(event: DraftEvent) {
+    const moving: MediaItem[] = [];
+    const takeFrom = (items: MediaItem[]) =>
+      items.filter((item) => {
+        if (!selectedMedia.has(item.id)) return true;
+        moving.push(item);
+        return false;
+      });
+    event.unassigned_media = takeFrom(event.unassigned_media);
+    for (const moment of event.moments)
+      moment.media_items = takeFrom(moment.media_items);
+    return moving;
+  }
+
   function moveSelected(targetID = destination) {
     if (
       selectedMedia.size === 0 ||
@@ -319,12 +337,7 @@ export function EventOrganizer({
     )
       return;
     change((next) => {
-      const moving: MediaItem[] = [];
-      for (const id of selectedMedia) {
-        const located = locateMedia(next, id);
-        if (located.index >= 0)
-          moving.push(...located.items.splice(located.index, 1));
-      }
+      const moving = takeSelectedMedia(next);
       if (targetID === "unassigned") next.unassigned_media.push(...moving);
       else
         next.moments
@@ -351,12 +364,7 @@ export function EventOrganizer({
     if (!currentDraft || selectedMedia.size === 0 || !newMomentDay) return;
     const id = crypto.randomUUID();
     change((next) => {
-      const moving: MediaItem[] = [];
-      for (const mediaID of selectedMedia) {
-        const located = locateMedia(next, mediaID);
-        if (located.index >= 0)
-          moving.push(...located.items.splice(located.index, 1));
-      }
+      const moving = takeSelectedMedia(next);
       next.moments = next.moments.filter(
         (moment) => moment.media_items.length > 0,
       );
@@ -375,6 +383,8 @@ export function EventOrganizer({
         title: "",
         proposed_day: newMomentDay,
         grouping_timezone: next.grouping_timezone,
+        source_days: [],
+        proposal_kind: "manual",
         cover_media_item_id: null,
         attendance_complete: false,
         audience_complete: false,
@@ -411,6 +421,8 @@ export function EventOrganizer({
         title: "",
         proposed_day: source.proposed_day,
         grouping_timezone: source.grouping_timezone,
+        source_days: source.source_days,
+        proposal_kind: "split_day",
         cover_media_item_id: null,
         attendance_complete: false,
         audience_complete: false,
@@ -517,7 +529,9 @@ export function EventOrganizer({
               ? "Saving…"
               : saveState === "conflict"
                 ? "Save conflict"
-                : "Changes not saved yet"}
+                : saveState === "failed"
+                  ? "Autosave failed"
+                  : "Changes not saved yet"}
         </p>
       </header>
       <nav aria-label="Mobile workspace panes" className="mobile-pane-nav">
@@ -592,6 +606,7 @@ export function EventOrganizer({
               <li key={event.id}>
                 <button
                   aria-current={selectedID === event.id ? "page" : undefined}
+                  disabled={event.id !== selectedID && save.isPending}
                   onClick={() => {
                     if (event.id === selectedID) return;
                     if (
