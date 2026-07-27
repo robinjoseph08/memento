@@ -243,6 +243,81 @@ test("creates, edits, archives, and inspects relationship-annotated Family branc
   expect(screen.getByText("Alex's Family branch")).toBeInTheDocument();
 }, 15_000);
 
+test("keeps an in-progress edit stale when a refetch removes its relationship", async () => {
+  const alex = person("11111111-1111-1111-1111-111111111111", "Alex");
+  const blair = person("22222222-2222-2222-2222-222222222222", "Blair");
+  const relationship: Relationship = {
+    id: "33333333-3333-3333-3333-333333333333",
+    relationship_type: "sibling",
+    person_a: alex,
+    person_b: blair,
+    version: 1,
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+  };
+  let relationships = [relationship];
+  const requests: Array<{ path: string; init?: RequestInit }> = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = requestPath(input);
+      requests.push({ path, init });
+      if (path === "/api/people?query=&include_archived=false") {
+        return jsonResponse({ people: [alex, blair] });
+      }
+      if (path.startsWith("/api/relationships?")) {
+        return jsonResponse({ relationships });
+      }
+      if (path === `/api/relationships/${relationship.id}`) {
+        return jsonResponse(
+          { error: { message: "The connection changed in another request." } },
+          409,
+        );
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    }),
+  );
+
+  const { client } = renderManager();
+  const row = await screen.findByRole(
+    "button",
+    { name: /Alex and Blair are siblings/ },
+    contentionWait,
+  );
+  fireEvent.click(row);
+  relationships = [];
+  act(() => {
+    client.setQueryData(["family-relationships", false], { relationships });
+  });
+  expect(
+    await screen.findByText(
+      "No active Family relationships.",
+      {},
+      contentionWait,
+    ),
+  ).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Save connection" }));
+
+  expect(
+    await screen.findByRole("alert", {}, contentionWait),
+  ).toHaveTextContent("The connection changed in another request.");
+  const update = requests.find(({ init }) => init?.method === "PATCH");
+  expect(update?.path).toBe(`/api/relationships/${relationship.id}`);
+  expect(JSON.parse(stringBody(update?.init?.body))).toEqual({
+    relationship_type: "sibling",
+    person_a_id: alex.id,
+    person_b_id: blair.id,
+    partner_status: "",
+    version: 1,
+  });
+  expect(
+    requests.some(
+      ({ path, init }) =>
+        path === "/api/relationships" && init?.method === "POST",
+    ),
+  ).toBe(false);
+});
+
 test("searches relationship endpoints independently and preserves selected People", async () => {
   const alex = person("11111111-1111-1111-1111-111111111111", "Alex");
   const blair = person("22222222-2222-2222-2222-222222222222", "Blair");

@@ -129,9 +129,7 @@ function PersonPicker({
 export function FamilyManager({ session }: { session: SessionResponse }) {
   const queryClient = useQueryClient();
   const [includeArchived, setIncludeArchived] = useState(false);
-  const [selectedRelationshipID, setSelectedRelationshipID] = useState("");
-  const [selectedRelationshipVersion, setSelectedRelationshipVersion] =
-    useState<number>();
+  const [selected, setSelected] = useState<Relationship>();
   const [relationshipType, setRelationshipType] = useState("parent_child");
   const [personAID, setPersonAID] = useState("");
   const [personBID, setPersonBID] = useState("");
@@ -152,13 +150,8 @@ export function FamilyManager({ session }: { session: SessionResponse }) {
     enabled: branchPersonID !== "",
   });
 
-  const selected = relationships.data?.relationships.find(
-    (relationship) => relationship.id === selectedRelationshipID,
-  );
-
   async function refreshFamily() {
-    setSelectedRelationshipID("");
-    setSelectedRelationshipVersion(undefined);
+    setSelected(undefined);
     setRelationshipType("parent_child");
     setPersonAID("");
     setPersonBID("");
@@ -195,8 +188,7 @@ export function FamilyManager({ session }: { session: SessionResponse }) {
   });
 
   function clearForm() {
-    setSelectedRelationshipID("");
-    setSelectedRelationshipVersion(undefined);
+    setSelected(undefined);
     setRelationshipType("parent_child");
     setPersonAID("");
     setPersonBID("");
@@ -206,8 +198,7 @@ export function FamilyManager({ session }: { session: SessionResponse }) {
   }
 
   function inspectRelationship(relationship: Relationship) {
-    setSelectedRelationshipID(relationship.id);
-    setSelectedRelationshipVersion(relationship.version);
+    setSelected(relationship);
     setRelationshipType(relationship.relationship_type);
     setPersonAID(relationship.person_a.id);
     setPersonBID(relationship.person_b.id);
@@ -223,9 +214,7 @@ export function FamilyManager({ session }: { session: SessionResponse }) {
       person_a_id: personAID,
       person_b_id: personBID,
       partner_status: relationshipType === "partner" ? partnerStatus : "",
-      ...(selectedRelationshipVersion !== undefined
-        ? { version: selectedRelationshipVersion }
-        : {}),
+      ...(selected ? { version: selected.version } : {}),
     });
   }
 
@@ -275,7 +264,7 @@ export function FamilyManager({ session }: { session: SessionResponse }) {
             {relationships.data?.relationships.map((relationship) => (
               <button
                 className={
-                  relationship.id === selectedRelationshipID
+                  relationship.id === selected?.id
                     ? "relationship-row selected"
                     : "relationship-row"
                 }
@@ -380,10 +369,7 @@ export function FamilyManager({ session }: { session: SessionResponse }) {
                     `Archive this connection: ${relationshipLabel(selected)}?`,
                   )
                 ) {
-                  archiveRelationship.mutate({
-                    ...selected,
-                    version: selectedRelationshipVersion ?? selected.version,
-                  });
+                  archiveRelationship.mutate(selected);
                 }
               }}
               type="button"
