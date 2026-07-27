@@ -398,7 +398,7 @@ test("restores and refreshes a signed-in Trusted-device Session", async () => {
       "Setup is complete. You're signed in as Robin Joseph.",
     ),
   ).toBeInTheDocument();
-  expect(fetchMock).toHaveBeenCalledTimes(9);
+  expect(fetchMock).toHaveBeenCalledTimes(11);
   expect(fetchMock).toHaveBeenCalledWith(
     "/api/people?query=&include_archived=false",
     expect.objectContaining({ credentials: "same-origin" }),
@@ -413,6 +413,10 @@ test("restores and refreshes a signed-in Trusted-device Session", async () => {
   );
   expect(fetchMock).toHaveBeenCalledWith(
     "/api/sources?disposition=unreviewed&limit=50",
+    expect.objectContaining({ credentials: "same-origin" }),
+  );
+  expect(fetchMock).toHaveBeenCalledWith(
+    "/api/repairs",
     expect.objectContaining({ credentials: "same-origin" }),
   );
 });
