@@ -1,5 +1,11 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { BrowserRouter } from "react-router-dom";
 import { afterEach, expect, test, vi } from "vitest";
 
@@ -52,6 +58,10 @@ test("opens an Invitation read-only and removes its token only after explicit ac
   const token = "a".repeat(64);
   window.history.replaceState(null, "", `/invitation?token=${token}`);
   const requests: Array<{ path: string; init?: RequestInit }> = [];
+  let resolveAcceptance: (response: Response) => void = () => undefined;
+  const acceptance = new Promise<Response>((resolve) => {
+    resolveAcceptance = resolve;
+  });
   vi.stubGlobal(
     "fetch",
     vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
@@ -67,7 +77,7 @@ test("opens an Invitation read-only and removes its token only after explicit ac
         );
       }
       if (path === "/api/auth/invitations/accept") {
-        return Promise.resolve(jsonResponse({ status: "onboarding" }));
+        return acceptance;
       }
       return Promise.reject(new Error(`Unexpected request: ${path}`));
     }),
@@ -91,9 +101,11 @@ test("opens an Invitation read-only and removes its token only after explicit ac
   ).toBe(false);
 
   fireEvent.click(screen.getByRole("button", { name: "Accept Invitation" }));
+  await waitFor(() => expect(window.location.search).toBe(""));
+  expect(screen.queryByText("Invitation accepted.")).not.toBeInTheDocument();
+  resolveAcceptance(jsonResponse({ status: "onboarding" }));
   expect(await screen.findByText("Invitation accepted.")).toBeInTheDocument();
   expect(window.location.pathname).toBe("/invitation");
-  expect(window.location.search).toBe("");
   expect(requests[1]).toMatchObject({
     path: "/api/auth/invitations/accept",
     init: { method: "POST" },

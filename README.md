@@ -155,7 +155,7 @@ Configuration precedence is built-in defaults, an optional YAML file, environmen
 
 Required settings are:
 
-- `MEMENTO_HTTP_PUBLIC_URL`, set to the externally reachable HTTP or HTTPS origin used in personalized Invitation links
+- `MEMENTO_HTTP_PUBLIC_URL`, set to the externally reachable HTTPS origin used in personalized Invitation links; HTTP is accepted only for loopback development origins
 - `MEMENTO_DATABASE_URL` or `MEMENTO_DATABASE_URL_FILE`
 - `MEMENTO_IMMICH_URL`
 - `MEMENTO_IMMICH_API_KEY` or `MEMENTO_IMMICH_API_KEY_FILE`

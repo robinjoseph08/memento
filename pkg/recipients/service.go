@@ -56,21 +56,32 @@ type Access struct {
 	State      string `json:"state"`
 }
 
+// DeliveryStatus exposes only safe state needed for Curator recovery actions.
+type DeliveryStatus struct {
+	Status      string     `json:"status"`
+	Attempts    int        `json:"attempts"`
+	Failure     *string    `json:"failure,omitempty"`
+	NextRetryAt *time.Time `json:"next_retry_at,omitempty"`
+}
+
 // Invitation is the Curator-safe Invitation status. It never contains a token.
 type Invitation struct {
-	ID                            string     `json:"id"`
-	Status                        string     `json:"status"`
-	IssuedAt                      time.Time  `json:"issued_at"`
-	ExpiresAt                     time.Time  `json:"expires_at"`
-	SentAt                        *time.Time `json:"sent_at,omitempty"`
-	AcceptedAt                    *time.Time `json:"accepted_at,omitempty"`
-	RevokedAt                     *time.Time `json:"revoked_at,omitempty"`
-	SupersededAt                  *time.Time `json:"superseded_at,omitempty"`
-	AutomaticReminderScheduledAt  time.Time  `json:"automatic_reminder_scheduled_at"`
-	AutomaticRemindedAt           *time.Time `json:"automatic_reminded_at,omitempty"`
-	LastManualReminderRequestedAt *time.Time `json:"last_manual_reminder_requested_at,omitempty"`
-	LastManualRemindedAt          *time.Time `json:"last_manual_reminded_at,omitempty"`
-	ManualReminderCount           int        `json:"manual_reminder_count"`
+	ID                            string          `json:"id"`
+	Status                        string          `json:"status"`
+	IssuedAt                      time.Time       `json:"issued_at"`
+	ExpiresAt                     time.Time       `json:"expires_at"`
+	SentAt                        *time.Time      `json:"sent_at,omitempty"`
+	AcceptedAt                    *time.Time      `json:"accepted_at,omitempty"`
+	RevokedAt                     *time.Time      `json:"revoked_at,omitempty"`
+	SupersededAt                  *time.Time      `json:"superseded_at,omitempty"`
+	AutomaticReminderScheduledAt  time.Time       `json:"automatic_reminder_scheduled_at"`
+	AutomaticRemindedAt           *time.Time      `json:"automatic_reminded_at,omitempty"`
+	LastManualReminderRequestedAt *time.Time      `json:"last_manual_reminder_requested_at,omitempty"`
+	LastManualRemindedAt          *time.Time      `json:"last_manual_reminded_at,omitempty"`
+	ManualReminderCount           int             `json:"manual_reminder_count"`
+	InitialDelivery               *DeliveryStatus `json:"initial_delivery,omitempty"`
+	AutomaticReminderDelivery     *DeliveryStatus `json:"automatic_reminder_delivery,omitempty"`
+	LastManualReminderDelivery    *DeliveryStatus `json:"last_manual_reminder_delivery,omitempty"`
 }
 
 // Recipient is the Curator's current Recipient administration view.
@@ -226,6 +237,33 @@ func getRecipient(ctx context.Context, db bun.IDB, personID uuid.UUID, now time.
 	}
 	if err == nil {
 		invitation := row.public(now)
+		var deliveries []struct {
+			Kind        string
+			Status      string
+			Attempts    int
+			Failure     *string `bun:"last_safe_error"`
+			NextRetryAt *time.Time
+		}
+		if err := db.NewRaw(`
+			SELECT kind, status, attempts, last_safe_error, next_retry_at
+			FROM email_deliveries WHERE invitation_id = ? ORDER BY id
+		`, row.ID).Scan(ctx, &deliveries); err != nil {
+			return Recipient{}, err
+		}
+		for index := range deliveries {
+			delivery := DeliveryStatus{
+				Status: deliveries[index].Status, Attempts: deliveries[index].Attempts,
+				Failure: deliveries[index].Failure, NextRetryAt: deliveries[index].NextRetryAt,
+			}
+			switch deliveries[index].Kind {
+			case emaildelivery.KindInvitationInitial:
+				invitation.InitialDelivery = &delivery
+			case emaildelivery.KindInvitationAutomaticReminder:
+				invitation.AutomaticReminderDelivery = &delivery
+			case emaildelivery.KindInvitationManualReminder:
+				invitation.LastManualReminderDelivery = &delivery
+			}
+		}
 		result.Invitation = &invitation
 	}
 	return result, nil
@@ -355,7 +393,7 @@ func (s *Service) issue(ctx context.Context, actor setup.CuratorSession, personI
 		}
 		reminderBody := fmt.Sprintf("Hello %s,\n\nThis is the one automatic reminder that %s invited you to the private Memento family archive. Your single-use Invitation expires at %s. Open %s and complete Onboarding before Media becomes available.", current.personName, curatorName, expiry, link)
 		if _, _, err := s.delivery.QueueRequired(ctx, tx, emaildelivery.RequiredMessage{
-			Kind: emaildelivery.KindInvitationAutomaticReminder, Recipient: current.email, Subject: "Your Memento Invitation expires in seven days",
+			Kind: emaildelivery.KindInvitationAutomaticReminder, Recipient: current.email, Subject: "Reminder: your Memento Invitation",
 			Body: reminderBody, DeliverBefore: &expiresAt, AvailableAt: &reminderAt, InvitationID: &invitationIDString,
 		}); err != nil {
 			return err

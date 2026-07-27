@@ -454,6 +454,12 @@ func (s *Service) recordSent(ctx context.Context, job worker.Job, message delive
 }
 
 func (s *Service) recordSentIn(ctx context.Context, tx bun.Tx, job worker.Job, message delivery) error {
+	if message.InvitationID != nil {
+		var invitationID string
+		if err := tx.NewRaw(`SELECT id FROM invitations WHERE id = ? FOR UPDATE`, *message.InvitationID).Scan(ctx, &invitationID); err != nil {
+			return err
+		}
+	}
 	updated, err := tx.NewRaw(`
 			UPDATE email_deliveries SET status = 'sent', sent_at = clock_timestamp(), next_retry_at = NULL,
 				last_safe_error = NULL,

@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -154,7 +155,7 @@ var (
 	errPositiveDuration         = errors.New("must be a positive duration")
 	errHTTPAddressRequired      = errors.New("http.address is required")
 	errHTTPPublicURLRequired    = errors.New("http.public_url is required")
-	errHTTPPublicURLInvalid     = errors.New("http.public_url must be an absolute HTTP or HTTPS origin without credentials, query, or fragment")
+	errHTTPPublicURLInvalid     = errors.New("http.public_url must be an HTTPS origin, or an HTTP loopback origin for development, without credentials, path, query, or fragment")
 	errDatabaseURLRequired      = errors.New("database.url is required")
 	errDatabaseNameRequired     = errors.New("database.name is required")
 	errDatabaseConnections      = errors.New("database.max_open_conns must be at least 2 for the migration lock")
@@ -434,6 +435,25 @@ func duration(name, value string) (time.Duration, error) {
 	return d, nil
 }
 
+func validPublicOrigin(publicURL *url.URL) bool {
+	hostname := publicURL.Hostname()
+	if hostname == "" || strings.HasSuffix(publicURL.Host, ":") {
+		return false
+	}
+	if port := publicURL.Port(); port != "" {
+		value, err := strconv.Atoi(port)
+		if err != nil || value < 1 || value > 65535 {
+			return false
+		}
+	}
+	if publicURL.Scheme == "https" {
+		return true
+	}
+	hostname = strings.TrimSuffix(strings.ToLower(hostname), ".")
+	ip := net.ParseIP(hostname)
+	return hostname == "localhost" || strings.HasSuffix(hostname, ".localhost") || (ip != nil && ip.IsLoopback())
+}
+
 // Validate rejects unsafe or incomplete runtime configuration.
 func (c Config) Validate() error {
 	if c.HTTP.Address == "" {
@@ -443,7 +463,7 @@ func (c Config) Validate() error {
 		return errHTTPPublicURLRequired
 	}
 	publicURL, err := url.Parse(c.HTTP.PublicURL)
-	if err != nil || (publicURL.Scheme != "http" && publicURL.Scheme != "https") || publicURL.Host == "" || publicURL.User != nil || (publicURL.Path != "" && publicURL.Path != "/") || publicURL.RawQuery != "" || publicURL.Fragment != "" {
+	if err != nil || (publicURL.Scheme != "http" && publicURL.Scheme != "https") || !validPublicOrigin(publicURL) || publicURL.User != nil || (publicURL.Path != "" && publicURL.Path != "/") || publicURL.RawQuery != "" || publicURL.Fragment != "" {
 		return errHTTPPublicURLInvalid
 	}
 	if c.Database.URL == "" {

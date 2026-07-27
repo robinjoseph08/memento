@@ -11,7 +11,9 @@ import type {
   UpdateRequest,
 } from "./types/generated/people";
 import type {
+  DeliveryStatus,
   DesignateRequest,
+  Invitation,
   InvitationActionRequest,
   Recipient,
 } from "./types/generated/recipients";
@@ -478,6 +480,60 @@ function formatInvitationDate(value: unknown) {
       }).format(date);
 }
 
+function deliveryFailureLabel(value: string) {
+  return value.replaceAll("_", " ");
+}
+
+function deliveryStatusLabel(
+  delivery: DeliveryStatus | undefined,
+  sentAt?: unknown,
+) {
+  if (sentAt) {
+    return `Sent ${formatInvitationDate(sentAt)}`;
+  }
+  if (!delivery) {
+    return "Status unavailable";
+  }
+  switch (delivery.status) {
+    case "queued":
+      if (delivery.attempts > 0) {
+        return delivery.next_retry_at
+          ? `Retrying after ${formatInvitationDate(delivery.next_retry_at)}`
+          : "Retrying";
+      }
+      return "Pending";
+    case "failed":
+      return delivery.failure
+        ? `Failed (${deliveryFailureLabel(delivery.failure)})`
+        : "Failed";
+    case "cancelled":
+      return "Cancelled";
+    case "sent":
+      return "Sent";
+    default:
+      return "Status unavailable";
+  }
+}
+
+function automaticReminderLabel(invitation: Invitation) {
+  if (invitation.automatic_reminded_at) {
+    return deliveryStatusLabel(
+      invitation.automatic_reminder_delivery,
+      invitation.automatic_reminded_at,
+    );
+  }
+  if (invitation.status !== "active") {
+    return `Will not be sent because the Invitation is ${invitation.status}`;
+  }
+  if (
+    invitation.automatic_reminder_delivery?.status === "queued" &&
+    invitation.automatic_reminder_delivery.attempts === 0
+  ) {
+    return `Scheduled ${formatInvitationDate(invitation.automatic_reminder_scheduled_at)}`;
+  }
+  return deliveryStatusLabel(invitation.automatic_reminder_delivery);
+}
+
 function RecipientControls({
   person,
   session,
@@ -590,19 +646,21 @@ function RecipientControls({
                 {formatInvitationDate(invitation.expires_at)}.
               </p>
               <p>
-                Initial delivery: {formatInvitationDate(invitation.sent_at)}.
-                Automatic reminder scheduled{" "}
-                {formatInvitationDate(
-                  invitation.automatic_reminder_scheduled_at,
+                Initial delivery:{" "}
+                {deliveryStatusLabel(
+                  invitation.initial_delivery,
+                  invitation.sent_at,
                 )}
-                .
-                {invitation.automatic_reminded_at
-                  ? ` Sent ${formatInvitationDate(invitation.automatic_reminded_at)}.`
-                  : ""}
+                . Automatic reminder: {automaticReminderLabel(invitation)}.
               </p>
               {invitation.manual_reminder_count > 0 ? (
                 <p>
                   Manual reminders requested: {invitation.manual_reminder_count}
+                  . Latest delivery:{" "}
+                  {deliveryStatusLabel(
+                    invitation.last_manual_reminder_delivery,
+                    invitation.last_manual_reminded_at,
+                  )}
                   .
                 </p>
               ) : null}

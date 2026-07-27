@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -56,6 +57,12 @@ func (sender *acceptingSender) message(index int) mementosmtp.Message {
 	sender.mu.Lock()
 	defer sender.mu.Unlock()
 	return sender.messages[index]
+}
+
+type rejectingSender struct{}
+
+func (rejectingSender) Send(context.Context, mementosmtp.Message) error {
+	return &mementosmtp.DeliveryError{Diagnostic: "recipient_rejected", Temporary: false}
 }
 
 type blockingSender struct {
@@ -340,9 +347,17 @@ func TestSendPersistsOnlyTokenHashAndDurableInitialAndSevenDayReminder(t *testin
 	job.LeaseOwner = "invitation-link-test"
 	require.NoError(t, fixture.delivery.Handle(context.Background(), job))
 	require.Equal(t, 1, fixture.sender.count())
-	assert.Equal(t, "Alex@example.com", fixture.sender.message(0).To)
-	assert.Contains(t, fixture.sender.message(0).Body, "https://memento.example/invitation?token="+token)
-	assert.Contains(t, fixture.sender.message(0).Body, result.Invitation.ExpiresAt.Format(time.RFC1123))
+	message := fixture.sender.message(0)
+	assert.Equal(t, "Alex@example.com", message.To)
+	assert.Equal(t, "Robin invited you to Memento", message.Subject)
+	assert.Contains(t, message.Body, "Hello Alex")
+	assert.Contains(t, message.Body, "Robin invited you")
+	assert.Contains(t, message.Body, "private family photo and video archive")
+	assert.Contains(t, message.Body, "only for your login email")
+	assert.Contains(t, message.Body, "can be used once")
+	assert.Contains(t, message.Body, "complete Onboarding before any Media becomes available")
+	assert.Contains(t, message.Body, "https://memento.example/invitation?token="+token)
+	assert.Contains(t, message.Body, result.Invitation.ExpiresAt.Format(time.RFC1123))
 }
 
 func TestInspectIsReadOnlyAndAcceptIsSingleUseWithoutCreatingSession(t *testing.T) {
@@ -350,6 +365,22 @@ func TestInspectIsReadOnlyAndAcceptIsSingleUseWithoutCreatingSession(t *testing.
 	designate(t, fixture)
 	invitation, token := deterministicIssue(t, fixture, 0x37)
 	before := *invitation.Invitation
+	snapshot := func() string {
+		var value string
+		require.NoError(t, fixture.db.NewRaw(`
+			SELECT jsonb_build_object(
+				'invitation', (SELECT to_jsonb(row) FROM invitations AS row WHERE row.id = ?),
+				'access', (SELECT to_jsonb(row) FROM recipient_access_generations AS row WHERE row.id = ?),
+				'email', (SELECT jsonb_agg(to_jsonb(row) ORDER BY row.created_at) FROM recipient_emails AS row WHERE row.recipient_access_generation_id = ?),
+				'audits', (SELECT count(*) FROM security_audit_events),
+				'sessions', (SELECT count(*) FROM sessions),
+				'deliveries', (SELECT jsonb_agg(to_jsonb(row) ORDER BY row.id) FROM email_deliveries AS row WHERE row.invitation_id = ?),
+				'jobs', (SELECT count(*) FROM jobs)
+			)::text
+		`, invitation.Invitation.ID, invitation.Access.ID, invitation.Access.ID, invitation.Invitation.ID).Scan(context.Background(), &value))
+		return value
+	}
+	beforeInspect := snapshot()
 
 	inspected, err := fixture.service.Inspect(context.Background(), token)
 	require.NoError(t, err)
@@ -358,6 +389,7 @@ func TestInspectIsReadOnlyAndAcceptIsSingleUseWithoutCreatingSession(t *testing.
 	afterInspect, err := fixture.service.Get(context.Background(), fixture.personID)
 	require.NoError(t, err)
 	assert.Equal(t, before, *afterInspect.Invitation)
+	assert.Equal(t, beforeInspect, snapshot(), "inspection must not mutate hidden state")
 
 	accepted, err := fixture.service.Accept(context.Background(), token)
 	require.NoError(t, err)
@@ -443,6 +475,11 @@ func TestInvitationTokenIsBoundToItsCurrentLoginEmail(t *testing.T) {
 	assert.ErrorIs(t, err, ErrInvitationToken)
 	_, err = fixture.service.Accept(context.Background(), token)
 	assert.ErrorIs(t, err, ErrInvitationToken)
+	for index, kind := range []string{emaildelivery.KindInvitationInitial, emaildelivery.KindInvitationAutomaticReminder} {
+		require.NoError(t, dispatchDelivery(t, fixture, invitation.Invitation.ID, kind, fmt.Sprintf("changed-email-%d", index)))
+		assertDeliveryCancelled(t, fixture, invitation.Invitation.ID, kind)
+	}
+	assert.Zero(t, fixture.sender.count(), "queued Invitation mail must not go to the former login email")
 }
 
 func claimDelivery(t *testing.T, fixture recipientFixture, invitationID, kind, owner string) worker.Job {
@@ -504,6 +541,7 @@ func TestAllInvitationDeliveryKindsCompleteAndRecordResults(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, dispatchDelivery(t, fixture, invitation.Invitation.ID, emaildelivery.KindInvitationAutomaticReminder, "automatic-success"))
 	assert.Equal(t, 3, fixture.sender.count())
+	assert.Equal(t, "Reminder: your Memento Invitation", fixture.sender.message(2).Subject)
 	for index := range 3 {
 		assert.Equal(t, "Alex@example.com", fixture.sender.message(index).To)
 		assert.Contains(t, fixture.sender.message(index).Body, invitation.Invitation.ExpiresAt.Format(time.RFC1123))
@@ -516,6 +554,24 @@ func TestAllInvitationDeliveryKindsCompleteAndRecordResults(t *testing.T) {
 	var uncleared int
 	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM email_deliveries WHERE invitation_id = ? AND body <> ''`, invitation.Invitation.ID).Scan(context.Background(), &uncleared))
 	assert.Zero(t, uncleared)
+}
+
+func TestCuratorInspectionReportsPermanentInvitationDeliveryFailure(t *testing.T) {
+	fixture := newRecipientFixture(t)
+	designate(t, fixture)
+	invitation, _ := deterministicIssue(t, fixture, 0x52)
+	job := claimDelivery(t, fixture, invitation.Invitation.ID, emaildelivery.KindInvitationInitial, "permanent-failure")
+	secret := "integration-security-secret-at-least-32-bytes"
+	fixture.delivery = emaildelivery.New(fixture.db, config.SMTPConfig{Enabled: true, RetryBase: time.Second, RetryMax: time.Minute, RetryWindow: 24 * time.Hour}, rejectingSender{}, secret)
+
+	require.Error(t, fixture.delivery.Handle(context.Background(), job))
+	inspected, err := fixture.service.Get(context.Background(), fixture.personID)
+	require.NoError(t, err)
+	require.NotNil(t, inspected.Invitation.InitialDelivery)
+	assert.Equal(t, "failed", inspected.Invitation.InitialDelivery.Status)
+	assert.Equal(t, 1, inspected.Invitation.InitialDelivery.Attempts)
+	require.NotNil(t, inspected.Invitation.InitialDelivery.Failure)
+	assert.Equal(t, "recipient_rejected", *inspected.Invitation.InitialDelivery.Failure)
 }
 
 func TestInvitationDeliveryCommitsBeforeSMTP(t *testing.T) {
@@ -556,6 +612,44 @@ func TestInvitationDeliveryCommitsBeforeSMTP(t *testing.T) {
 	require.NoError(t, fixture.db.NewRaw(`SELECT sent_at, revoked_at FROM invitations WHERE id = ?`, invitation.Invitation.ID).Scan(ctx, &sentAt, &revokedAt))
 	require.NotNil(t, sentAt)
 	require.NotNil(t, revokedAt)
+}
+
+func TestTerminalDeliveryLocksInvitationBeforeDelivery(t *testing.T) {
+	fixture := newRecipientFixture(t)
+	designate(t, fixture)
+	invitation, _ := deterministicIssue(t, fixture, 0x50)
+	job := claimDelivery(t, fixture, invitation.Invitation.ID, emaildelivery.KindInvitationInitial, "terminal-lock-order")
+
+	blocking := &blockingSender{started: make(chan struct{}), release: make(chan struct{})}
+	secret := "integration-security-secret-at-least-32-bytes"
+	fixture.delivery = emaildelivery.New(fixture.db, config.SMTPConfig{Enabled: true, RetryBase: time.Second, RetryMax: time.Minute, RetryWindow: 24 * time.Hour}, blocking, secret)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	delivered := make(chan error, 1)
+	go func() { delivered <- fixture.delivery.Handle(ctx, job) }()
+	select {
+	case <-blocking.started:
+	case <-ctx.Done():
+		require.FailNow(t, "SMTP delivery did not start", ctx.Err())
+	}
+
+	invitationTx, err := fixture.db.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	defer func() { _ = invitationTx.Rollback() }()
+	_, err = invitationTx.NewRaw(`SELECT id FROM invitations WHERE id = ? FOR UPDATE`, invitation.Invitation.ID).Exec(ctx)
+	require.NoError(t, err)
+	var blockerPID int
+	require.NoError(t, invitationTx.NewRaw(`SELECT pg_backend_pid()`).Scan(ctx, &blockerPID))
+
+	close(blocking.release)
+	waitForBlockedQuery(t, ctx, fixture.db, blockerPID, `%SELECT id FROM invitations WHERE id =%FOR UPDATE%`)
+	_, err = invitationTx.NewRaw(`
+		SELECT id FROM email_deliveries WHERE invitation_id = ? AND kind = ? FOR UPDATE NOWAIT
+	`, invitation.Invitation.ID, emaildelivery.KindInvitationInitial).Exec(ctx)
+	require.NoError(t, err, "terminal recording must not lock delivery before its Invitation")
+	require.NoError(t, invitationTx.Rollback())
+	require.NoError(t, <-delivered)
 }
 
 func TestDeliveryRechecksObsolescenceAfterWaitingForInvitation(t *testing.T) {
@@ -818,6 +912,84 @@ func TestArchivePersonLockAllowsConcurrentSessionAuditToFinish(t *testing.T) {
 	require.NoError(t, err, "Person NO KEY UPDATE locks must remain compatible with audit foreign-key checks")
 	require.NoError(t, logoutTx.Commit())
 	require.NoError(t, <-archived)
+}
+
+func TestDesignateRechecksPersonAfterWaitingForArchive(t *testing.T) {
+	fixture := newRecipientFixture(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	archiveTx, err := fixture.db.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	defer func() { _ = archiveTx.Rollback() }()
+	_, err = archiveTx.NewRaw(`SELECT id FROM people WHERE id = ? FOR NO KEY UPDATE`, fixture.personID).Exec(ctx)
+	require.NoError(t, err)
+	_, err = archiveTx.NewRaw(`UPDATE people SET archived_at = ?, updated_at = ? WHERE id = ?`, fixture.now, fixture.now, fixture.personID).Exec(ctx)
+	require.NoError(t, err)
+	var blockerPID int
+	require.NoError(t, archiveTx.NewRaw(`SELECT pg_backend_pid()`).Scan(ctx, &blockerPID))
+
+	designated := make(chan error, 1)
+	go func() {
+		_, err := fixture.service.Designate(ctx, fixture.actor, fixture.personID, DesignateRequest{Email: "alex@example.com"})
+		designated <- err
+	}()
+	waitForBlockedQuery(t, ctx, fixture.db, blockerPID, `%SELECT id FROM people WHERE id IN%ORDER BY id FOR NO KEY UPDATE%`)
+	require.NoError(t, archiveTx.Commit())
+	require.ErrorIs(t, <-designated, ErrPersonUnavailable)
+	var accessCount int
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM recipient_access_generations WHERE person_id = ?`, fixture.personID).Scan(ctx, &accessCount))
+	assert.Zero(t, accessCount)
+}
+
+func TestInvitationActionsLockPeopleBeforeRecipientState(t *testing.T) {
+	actions := map[string]func(context.Context, recipientFixture, uuid.UUID) error{
+		"revoke": func(ctx context.Context, fixture recipientFixture, invitationID uuid.UUID) error {
+			_, err := fixture.service.Revoke(ctx, fixture.actor, fixture.personID, invitationID)
+			return err
+		},
+		"reissue": func(ctx context.Context, fixture recipientFixture, invitationID uuid.UUID) error {
+			_, err := fixture.service.Reissue(ctx, fixture.actor, fixture.personID, invitationID)
+			return err
+		},
+		"remind": func(ctx context.Context, fixture recipientFixture, invitationID uuid.UUID) error {
+			_, err := fixture.service.Remind(ctx, fixture.actor, fixture.personID, invitationID)
+			return err
+		},
+	}
+	for name, action := range actions {
+		t.Run(name, func(t *testing.T) {
+			fixture := newRecipientFixture(t)
+			designate(t, fixture)
+			invitation, _ := deterministicIssue(t, fixture, 0x44)
+			fixture.service.random = randReader{}
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			personTx, err := fixture.db.BeginTx(ctx, nil)
+			require.NoError(t, err)
+			defer func() { _ = personTx.Rollback() }()
+			_, err = personTx.NewRaw(`SELECT id FROM people WHERE id = ? FOR NO KEY UPDATE`, fixture.personID).Exec(ctx)
+			require.NoError(t, err)
+			var blockerPID int
+			require.NoError(t, personTx.NewRaw(`SELECT pg_backend_pid()`).Scan(ctx, &blockerPID))
+
+			finished := make(chan error, 1)
+			go func() { finished <- action(ctx, fixture, uuid.MustParse(invitation.Invitation.ID)) }()
+			waitForBlockedQuery(t, ctx, fixture.db, blockerPID, `%SELECT id FROM people WHERE id IN%ORDER BY id FOR NO KEY UPDATE%`)
+			_, err = personTx.NewRaw(`SELECT id FROM recipient_access_generations WHERE id = ? FOR UPDATE NOWAIT`, invitation.Access.ID).Exec(ctx)
+			require.NoError(t, err, "Invitation action must not lock Recipient access before its Person")
+			_, err = personTx.NewRaw(`SELECT id FROM invitations WHERE id = ? FOR UPDATE NOWAIT`, invitation.Invitation.ID).Exec(ctx)
+			require.NoError(t, err, "Invitation action must not lock Invitation before its Person")
+			require.NoError(t, personTx.Rollback())
+			actionErr := <-finished
+			if name == "remind" {
+				require.ErrorIs(t, actionErr, ErrInvitationNotSent)
+			} else {
+				require.NoError(t, actionErr)
+			}
+		})
+	}
 }
 
 func TestAcceptLocksPersonBeforeRecipientAccess(t *testing.T) {

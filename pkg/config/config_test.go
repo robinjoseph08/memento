@@ -186,7 +186,10 @@ func TestValidateRejectsUnsafeValues(t *testing.T) {
 	}{
 		{"HTTP address", func(c *Config) { c.HTTP.Address = "" }, "http.address is required"},
 		{"HTTP public URL missing", func(c *Config) { c.HTTP.PublicURL = "" }, "http.public_url is required"},
-		{"HTTP public URL relative", func(c *Config) { c.HTTP.PublicURL = "/memento" }, "absolute HTTP or HTTPS origin"},
+		{"HTTP public URL relative", func(c *Config) { c.HTTP.PublicURL = "/memento" }, "HTTPS origin"},
+		{"HTTP public URL insecure", func(c *Config) { c.HTTP.PublicURL = "http://memento.example" }, "HTTP loopback origin"},
+		{"HTTP public URL oversized port", func(c *Config) { c.HTTP.PublicURL = "https://memento.example:99999" }, "HTTPS origin"},
+		{"HTTP public URL empty port", func(c *Config) { c.HTTP.PublicURL = "https://memento.example:" }, "HTTPS origin"},
 		{"HTTP public URL credentials", func(c *Config) { c.HTTP.PublicURL = "https://user:pass@memento.example" }, "without credentials"},
 		{"database URL", func(c *Config) { c.Database.URL = "" }, "database.url is required"},
 		{"database name", func(c *Config) { c.Database.Name = "" }, "database.name is required"},

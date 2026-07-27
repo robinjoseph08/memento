@@ -134,6 +134,15 @@ test("designates a Pending Recipient separately from sending an Invitation", asy
                     expires_at: "2026-08-10T12:00:00Z",
                     automatic_reminder_scheduled_at: "2026-08-03T12:00:00Z",
                     manual_reminder_count: 0,
+                    initial_delivery: {
+                      status: "failed",
+                      attempts: 1,
+                      failure: "recipient_rejected",
+                    },
+                    automatic_reminder_delivery: {
+                      status: "queued",
+                      attempts: 0,
+                    },
                   },
                 }
               : {}),
@@ -180,6 +189,12 @@ test("designates a Pending Recipient separately from sending an Invitation", asy
   expect(revoke.closest(".invitation-status")).toHaveTextContent(
     "Invitation: active",
   );
+  expect(revoke.closest(".invitation-status")).toHaveTextContent(
+    "Initial delivery: Failed (recipient rejected)",
+  );
+  expect(revoke.closest(".invitation-status")).toHaveTextContent(
+    "Automatic reminder: Scheduled",
+  );
   const sendRequest = requests.find(({ path }) =>
     path.endsWith("/invitation/send"),
   );
@@ -201,6 +216,7 @@ test("wires every Invitation control to its exact mutation", async () => {
     current_login_email: "alex@example.com",
   };
   let status = "active";
+  let invitationID = "invitation-id";
   const requests: Array<{ path: string; init?: RequestInit }> = [];
   vi.stubGlobal(
     "fetch",
@@ -218,7 +234,7 @@ test("wires every Invitation control to its exact mutation", async () => {
             email: "alex@example.com",
             access: alex.current_recipient_access,
             invitation: {
-              id: "invitation-id",
+              id: invitationID,
               status,
               issued_at: "2026-07-27T12:00:00Z",
               expires_at: "2026-08-10T12:00:00Z",
@@ -231,7 +247,10 @@ test("wires every Invitation control to its exact mutation", async () => {
       }
       if (path.includes("/invitation/") && init?.method === "POST") {
         if (path.endsWith("/revoke")) status = "revoked";
-        if (path.endsWith("/reissue")) status = "active";
+        if (path.endsWith("/reissue")) {
+          status = "active";
+          invitationID = "replacement-id";
+        }
         return Promise.resolve(jsonResponse({ status }));
       }
       return Promise.reject(new Error(`Unexpected request: ${path}`));
@@ -258,18 +277,33 @@ test("wires every Invitation control to its exact mutation", async () => {
       requests.filter(({ path }) => path.endsWith("/reissue")),
     ).toHaveLength(2),
   );
-  for (const request of requests.filter(({ path }) =>
+  const actionRequests = requests.filter(({ path }) =>
     path.includes("/invitation/"),
-  )) {
+  );
+  for (const request of actionRequests) {
     expect(request.init).toMatchObject({
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "X-Memento-CSRF": "csrf-token",
       },
-      body: JSON.stringify({ invitation_id: "invitation-id" }),
     });
   }
+  expect(
+    actionRequests.find(({ path }) => path.endsWith("/remind"))?.init?.body,
+  ).toBe(JSON.stringify({ invitation_id: "invitation-id" }));
+  expect(
+    actionRequests.find(({ path }) => path.endsWith("/revoke"))?.init?.body,
+  ).toBe(JSON.stringify({ invitation_id: "replacement-id" }));
+  const reissues = actionRequests.filter(({ path }) =>
+    path.endsWith("/reissue"),
+  );
+  expect(reissues[0]?.init?.body).toBe(
+    JSON.stringify({ invitation_id: "invitation-id" }),
+  );
+  expect(reissues[1]?.init?.body).toBe(
+    JSON.stringify({ invitation_id: "replacement-id" }),
+  );
 });
 
 test("previews and confirms the exact source, survivor, generation, email, and versions", async () => {

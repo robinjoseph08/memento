@@ -714,7 +714,7 @@ function ReadyCard({
 
 function InvitationLanding() {
   const [searchParams] = useSearchParams();
-  const token = searchParams.get("token") ?? "";
+  const [token] = useState(() => searchParams.get("token") ?? "");
   const [accepted, setAccepted] = useState(false);
   const invitation = useQuery({
     queryKey: ["invitation", token],
@@ -731,10 +731,10 @@ function InvitationLanding() {
         method: "POST",
         body: JSON.stringify({ token }),
       }),
-    onSuccess: () => {
+    onMutate: () => {
       window.history.replaceState({}, "", "/invitation");
-      setAccepted(true);
     },
+    onSuccess: () => setAccepted(true),
   });
 
   return (

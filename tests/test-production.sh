@@ -75,6 +75,22 @@ curl --fail --silent --dump-header "$temporary/invitation-headers" --output "$te
 grep -q '<title>Memento</title>' "$temporary/invitation.html"
 grep -qi '^Referrer-Policy: no-referrer' "$temporary/invitation-headers"
 grep -qi '^Cache-Control: no-store' "$temporary/invitation-headers"
+invitation_token=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+inspect_code=$(curl --silent --dump-header "$temporary/inspect-headers" --output "$temporary/inspect.json" --write-out '%{http_code}' \
+  --header "X-Memento-Invitation: $invitation_token" "$base_url/api/auth/invitations/inspect")
+[ "$inspect_code" = 404 ]
+grep -q '"code":"not_found"' "$temporary/inspect.json"
+grep -qi '^Referrer-Policy: no-referrer' "$temporary/inspect-headers"
+grep -qi '^Cache-Control: no-store' "$temporary/inspect-headers"
+for expected in 404 404 429; do
+  accept_code=$(curl --silent --dump-header "$temporary/accept-headers" --output "$temporary/accept.json" --write-out '%{http_code}' \
+    --header 'Content-Type: application/json' --data "{\"token\":\"$invitation_token\"}" \
+    "$base_url/api/auth/invitations/accept")
+  [ "$accept_code" = "$expected" ]
+done
+grep -q '"code":"rate_limited"' "$temporary/accept.json"
+grep -qi '^Referrer-Policy: no-referrer' "$temporary/accept-headers"
+grep -qi '^Cache-Control: no-store' "$temporary/accept-headers"
 if grep -qi '^Server:' "$temporary/headers"; then
   printf 'Caddy exposed its Server header\n' >&2
   exit 1
