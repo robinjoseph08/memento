@@ -278,6 +278,8 @@ function stubOrganizerAPI(initial: DraftEvent) {
           moment.attendance_complete = true;
           moment.audience_complete = false;
         }
+        persisted.version += 1;
+        persisted.final_review_complete = false;
         review.version += 1;
         review.attendance_confirmed = true;
         review.audience_complete = false;
@@ -296,6 +298,8 @@ function stubOrganizerAPI(initial: DraftEvent) {
           (candidate) => candidate.id === approvalMatch[1],
         );
         if (moment) moment.audience_complete = true;
+        persisted.version += 1;
+        persisted.final_review_complete = false;
         review.version += 1;
         review.audience_complete = true;
         return response({
@@ -571,6 +575,34 @@ test("autosaves readiness and persists the complete organization after reload", 
       .map((cover) => (cover as HTMLSelectElement).value),
   ).toEqual([items.b.id, items.loose.id]);
 }, 15_000);
+
+test("rebases Audience version changes without discarding unsaved organization", async () => {
+  const saves = stubOrganizerAPI(draft());
+  renderOrganizer();
+  fireEvent.click(
+    await screen.findByRole("button", { name: /Family weekend/ }),
+  );
+  await screen.findByLabelText("Title for Moment 1");
+  fireEvent.click(
+    screen.getAllByRole("button", {
+      name: "Inspect Attendance and Audience",
+    })[0],
+  );
+  const confirm = await screen.findByRole("button", {
+    name: "Confirm Attendance",
+  });
+  fireEvent.change(screen.getByLabelText("Title for Moment 1"), {
+    target: { value: "Unsaved organization survives" },
+  });
+  fireEvent.click(confirm);
+
+  await waitFor(() => expect(saves.length).toBeGreaterThan(0));
+  expect(saves.at(-1)?.version).toBe(2);
+  expect(saves.at(-1)?.moments[0].title).toBe("Unsaved organization survives");
+  expect(screen.getByLabelText("Title for Moment 1")).toHaveValue(
+    "Unsaved organization survives",
+  );
+});
 
 test("mobile drill-down moves between Work, Event organization, and inspection", async () => {
   vi.stubGlobal(

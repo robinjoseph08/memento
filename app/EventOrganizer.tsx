@@ -365,14 +365,43 @@ export function EventOrganizer({
     const localRevision = revisionRef.current;
     void apiJSON<DraftEvent>(`/api/events/${eventID}`)
       .then((current) => {
-        queryClient.setQueryData(["event", eventID], current);
         if (
-          selectedIDRef.current === eventID &&
-          revisionRef.current === localRevision
+          selectedIDRef.current !== eventID ||
+          revisionRef.current !== localRevision
         ) {
-          latestDraftRef.current = current;
-          setDraft(current);
+          queryClient.setQueryData(["event", eventID], current);
+          return;
         }
+        const latest = latestDraftRef.current;
+        if (localRevision > 0 && latest?.id === eventID) {
+          const reviewByMoment = new Map(
+            current.moments.map((moment) => [moment.id, moment]),
+          );
+          const rebased = cloneEvent(latest);
+          rebased.version = current.version;
+          rebased.lifecycle = current.lifecycle;
+          rebased.final_review_complete = false;
+          rebased.published_editable_version =
+            current.published_editable_version;
+          rebased.moments = rebased.moments.map((moment) => {
+            const review = reviewByMoment.get(moment.id);
+            return review
+              ? {
+                  ...moment,
+                  attendance_complete: review.attendance_complete,
+                  audience_complete: review.audience_complete,
+                }
+              : moment;
+          });
+          latestDraftRef.current = rebased;
+          queryClient.setQueryData(["event", eventID], rebased);
+          setDraft(rebased);
+          setSaveState("unsaved");
+          return;
+        }
+        latestDraftRef.current = current;
+        queryClient.setQueryData(["event", eventID], current);
+        setDraft(current);
       })
       .catch(() =>
         queryClient.invalidateQueries({ queryKey: ["event", eventID] }),
