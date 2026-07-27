@@ -50,6 +50,7 @@ function renderManager() {
             display_name: "Curator",
             session_type: "trusted",
             csrf_token: "csrf-token",
+            curator: true,
           }}
         />
       </QueryClientProvider>,

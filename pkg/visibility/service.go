@@ -4,6 +4,7 @@ package visibility
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/google/uuid"
+	"github.com/robinjoseph08/memento/pkg/family"
 	"github.com/robinjoseph08/memento/pkg/setup"
 	"github.com/uptrace/bun"
 )
@@ -20,6 +22,7 @@ var (
 	ErrPersonNotFound    = errors.New("person not found")
 	ErrPersonUnavailable = errors.New("person is unavailable")
 	ErrRecipientRequired = errors.New("interest list owner must be a Recipient")
+	ErrNotAuthorized     = errors.New("visibility resource is not available to this actor")
 	ErrSelfSelection     = errors.New("recipient cannot select their own Person")
 	ErrNotDiscoverable   = errors.New("person is not discoverable")
 	ErrInvalid           = errors.New("visibility request is invalid")
@@ -29,9 +32,16 @@ var (
 
 // Person is the only Person shape exposed by Recipient discovery APIs.
 type Person struct {
-	ID          string `json:"id"`
-	DisplayName string `json:"display_name"`
-	SortName    string `json:"sort_name"`
+	ID           string                  `json:"id"`
+	DisplayName  string                  `json:"display_name"`
+	SortName     string                  `json:"sort_name"`
+	Relationship *RelationshipAnnotation `json:"relationship,omitempty"`
+}
+
+// RelationshipAnnotation explains a visible Person's Family connection without exposing intermediates.
+type RelationshipAnnotation struct {
+	ConnectionType string `json:"connection_type"`
+	Generation     int    `json:"generation,omitempty"`
 }
 
 // Circle is a Curator-only Visibility circle and its direct members.
@@ -63,12 +73,25 @@ type CircleVersionRequest struct {
 
 // MembershipRequest changes one direct circle membership.
 type MembershipRequest struct {
-	Included bool `json:"included"`
+	Included bool  `json:"included"`
+	Version  int64 `json:"version" validate:"required,min=1"`
 }
 
 // DiscoveryResponse contains only the union visible to one Recipient.
 type DiscoveryResponse struct {
-	People []Person `json:"people"`
+	People     []Person `json:"people"`
+	NextCursor *string  `json:"next_cursor,omitempty"`
+}
+
+// DiscoveryPageRequest selects one deterministic page of the Recipient directory.
+type DiscoveryPageRequest struct {
+	Cursor string
+	Limit  int
+}
+
+type discoveryCursor struct {
+	SortKey string    `json:"sort_key"`
+	ID      uuid.UUID `json:"id"`
 }
 
 // InterestEntry is one retained choice and its current eligibility.
@@ -149,6 +172,9 @@ func lockVisibility(ctx context.Context, tx bun.Tx) error {
 }
 
 func (s *Service) CreateCircle(ctx context.Context, actor setup.SessionActor, request CircleRequest) (Circle, error) {
+	if !actor.Curator {
+		return Circle{}, ErrNotAuthorized
+	}
 	name, err := normalizeCircleName(request.Name)
 	if err != nil {
 		return Circle{}, err
@@ -183,6 +209,9 @@ func (s *Service) CreateCircle(ctx context.Context, actor setup.SessionActor, re
 }
 
 func (s *Service) UpdateCircle(ctx context.Context, actor setup.SessionActor, id uuid.UUID, request CircleRequest) (Circle, error) {
+	if !actor.Curator {
+		return Circle{}, ErrNotAuthorized
+	}
 	name, err := normalizeCircleName(request.Name)
 	if err != nil || request.Version < 1 {
 		return Circle{}, ErrInvalid
@@ -224,6 +253,9 @@ func (s *Service) UpdateCircle(ctx context.Context, actor setup.SessionActor, id
 }
 
 func (s *Service) ArchiveCircle(ctx context.Context, actor setup.SessionActor, id uuid.UUID, version int64) (Circle, error) {
+	if !actor.Curator {
+		return Circle{}, ErrNotAuthorized
+	}
 	if version < 1 {
 		return Circle{}, ErrInvalid
 	}
@@ -259,7 +291,13 @@ func (s *Service) ArchiveCircle(ctx context.Context, actor setup.SessionActor, i
 	return circle, err
 }
 
-func (s *Service) SetMembership(ctx context.Context, actor setup.SessionActor, circleID, personID uuid.UUID, included bool) (Circle, error) {
+func (s *Service) SetMembership(ctx context.Context, actor setup.SessionActor, circleID, personID uuid.UUID, request MembershipRequest) (Circle, error) {
+	if !actor.Curator {
+		return Circle{}, ErrNotAuthorized
+	}
+	if request.Version < 1 {
+		return Circle{}, ErrInvalid
+	}
 	var circle Circle
 	err := s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 		if err := lockVisibility(ctx, tx); err != nil {
@@ -269,14 +307,14 @@ func (s *Service) SetMembership(ctx context.Context, actor setup.SessionActor, c
 		if err != nil {
 			return err
 		}
-		if row.ArchivedAt != nil {
+		if row.ArchivedAt != nil || row.Version != request.Version {
 			return ErrStale
 		}
 		if err := requireCurrentPerson(ctx, tx, personID); err != nil {
 			return err
 		}
 		now := s.now().UTC()
-		if included {
+		if request.Included {
 			_, err = tx.NewRaw(`INSERT INTO visibility_circle_members (circle_id, person_id, created_at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING`, circleID, personID, now).Exec(ctx)
 		} else {
 			_, err = tx.NewRaw(`DELETE FROM visibility_circle_members WHERE circle_id = ? AND person_id = ?`, circleID, personID).Exec(ctx)
@@ -284,16 +322,20 @@ func (s *Service) SetMembership(ctx context.Context, actor setup.SessionActor, c
 		if err != nil {
 			return err
 		}
-		if _, err := tx.NewRaw(`UPDATE visibility_circles SET version = version + 1, updated_at = ? WHERE id = ?`, now, circleID).Exec(ctx); err != nil {
+		result, err := tx.NewRaw(`UPDATE visibility_circles SET version = version + 1, updated_at = ? WHERE id = ? AND version = ? AND archived_at IS NULL`, now, circleID, request.Version).Exec(ctx)
+		if err != nil {
 			return err
 		}
-		if !included {
+		if err := requireOne(result); err != nil {
+			return err
+		}
+		if !request.Included {
 			if err := reconcileEligibility(ctx, tx, actor, now); err != nil {
 				return err
 			}
 		}
 		action := "visibility_circle_member_removed"
-		if included {
+		if request.Included {
 			action = "visibility_circle_member_added"
 		}
 		if err := appendAudit(ctx, tx, actor, personID, action, map[string]any{"circle_id": circleID}); err != nil {
@@ -305,7 +347,10 @@ func (s *Service) SetMembership(ctx context.Context, actor setup.SessionActor, c
 	return circle, err
 }
 
-func (s *Service) ListCircles(ctx context.Context, includeArchived bool) (CircleListResponse, error) {
+func (s *Service) ListCircles(ctx context.Context, actor setup.SessionActor, includeArchived bool) (CircleListResponse, error) {
+	if !actor.Curator {
+		return CircleListResponse{}, ErrNotAuthorized
+	}
 	response := CircleListResponse{Circles: []Circle{}}
 	err := s.db.RunInTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true}, func(ctx context.Context, tx bun.Tx) error {
 		rows := make([]circleRow, 0)
@@ -359,29 +404,141 @@ func circleFromRow(ctx context.Context, db bun.IDB, row circleRow) (Circle, erro
 	return circle, nil
 }
 
-func (s *Service) Discover(ctx context.Context, recipientID uuid.UUID) (DiscoveryResponse, error) {
+func (s *Service) Discover(ctx context.Context, actor setup.SessionActor, recipientID uuid.UUID, page DiscoveryPageRequest) (DiscoveryResponse, error) {
+	if !actor.Curator && actor.PersonID != recipientID {
+		return DiscoveryResponse{}, ErrNotAuthorized
+	}
 	if err := requireRecipient(ctx, s.db, recipientID); err != nil {
 		return DiscoveryResponse{}, err
 	}
-	rows := make([]personRow, 0)
-	if err := s.db.NewRaw(`SELECT person.id, person.display_name, person.sort_name
+	if page.Limit == 0 {
+		page.Limit = 100
+	}
+	if page.Limit < 1 || page.Limit > 200 {
+		return DiscoveryResponse{}, ErrInvalid
+	}
+	cursor, hasCursor, err := decodeDiscoveryCursor(page.Cursor)
+	if err != nil {
+		return DiscoveryResponse{}, ErrInvalid
+	}
+	type discoveryRow struct {
+		personRow
+		SortKey string `bun:"sort_key"`
+	}
+	rows := make([]discoveryRow, 0)
+	if err := s.db.NewRaw(`SELECT person.id, person.display_name, person.sort_name, memento_normalize_person_name(person.sort_name) AS sort_key
 		FROM visibility_circle_members AS own_membership
 		JOIN visibility_circles AS circle ON circle.id = own_membership.circle_id AND circle.archived_at IS NULL
 		JOIN visibility_circle_members AS visible_membership ON visible_membership.circle_id = circle.id
 		JOIN people AS person ON person.id = visible_membership.person_id AND person.archived_at IS NULL AND person.merged_at IS NULL
 		WHERE own_membership.person_id = ? AND person.id <> ?
 		GROUP BY person.id, person.display_name, person.sort_name
-		ORDER BY memento_normalize_person_name(person.sort_name), person.id`, recipientID, recipientID).Scan(ctx, &rows); err != nil {
+		HAVING NOT ? OR (memento_normalize_person_name(person.sort_name), person.id) > (?, ?)
+		ORDER BY memento_normalize_person_name(person.sort_name), person.id
+		LIMIT ?`, recipientID, recipientID, hasCursor, cursor.SortKey, cursor.ID, page.Limit+1).Scan(ctx, &rows); err != nil {
+		return DiscoveryResponse{}, err
+	}
+	annotations, err := s.relationshipAnnotations(ctx, recipientID)
+	if err != nil {
 		return DiscoveryResponse{}, err
 	}
 	response := DiscoveryResponse{People: []Person{}}
+	if len(rows) > page.Limit {
+		last := rows[page.Limit-1]
+		next, err := encodeDiscoveryCursor(discoveryCursor{SortKey: last.SortKey, ID: last.ID})
+		if err != nil {
+			return DiscoveryResponse{}, err
+		}
+		response.NextCursor = &next
+		rows = rows[:page.Limit]
+	}
 	for _, row := range rows {
-		response.People = append(response.People, row.person())
+		person := row.person()
+		person.Relationship = annotations[row.ID]
+		response.People = append(response.People, person)
 	}
 	return response, nil
 }
 
-func (s *Service) InterestList(ctx context.Context, recipientID uuid.UUID) (InterestListResponse, error) {
+func decodeDiscoveryCursor(value string) (discoveryCursor, bool, error) {
+	if value == "" {
+		return discoveryCursor{}, false, nil
+	}
+	encoded, err := base64.RawURLEncoding.DecodeString(value)
+	if err != nil {
+		return discoveryCursor{}, false, err
+	}
+	var cursor discoveryCursor
+	if err := json.Unmarshal(encoded, &cursor); err != nil || cursor.SortKey == "" || cursor.ID == uuid.Nil {
+		return discoveryCursor{}, false, ErrInvalid
+	}
+	return cursor, true, nil
+}
+
+func encodeDiscoveryCursor(cursor discoveryCursor) (string, error) {
+	encoded, err := json.Marshal(cursor)
+	if err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(encoded), nil
+}
+
+func (s *Service) relationshipAnnotations(ctx context.Context, recipientID uuid.UUID) (map[uuid.UUID]*RelationshipAnnotation, error) {
+	annotations := map[uuid.UUID]*RelationshipAnnotation{}
+	familyService := family.New(s.db)
+	branch, err := familyService.Branch(ctx, recipientID)
+	if err != nil {
+		return nil, err
+	}
+	for _, member := range branch.Members {
+		personID, err := uuid.Parse(member.Person.ID)
+		if err != nil {
+			return nil, err
+		}
+		annotations[personID] = &RelationshipAnnotation{ConnectionType: member.ConnectionType, Generation: member.Generation}
+	}
+	relationships, err := familyService.List(ctx, false)
+	if err != nil {
+		return nil, err
+	}
+	for _, relationship := range relationships.Relationships {
+		personAID := uuid.MustParse(relationship.PersonA.ID)
+		personBID := uuid.MustParse(relationship.PersonB.ID)
+		var otherID uuid.UUID
+		var connection string
+		switch {
+		case personAID == recipientID:
+			otherID = personBID
+			switch relationship.Type {
+			case "parent_child":
+				connection = "child"
+			case "sibling":
+				connection = "sibling"
+			case "partner":
+				connection = relationship.PartnerStatus + "_partner"
+			}
+		case personBID == recipientID:
+			otherID = personAID
+			switch relationship.Type {
+			case "parent_child":
+				connection = "parent"
+			case "sibling":
+				connection = "sibling"
+			case "partner":
+				connection = relationship.PartnerStatus + "_partner"
+			}
+		}
+		if connection != "" {
+			annotations[otherID] = &RelationshipAnnotation{ConnectionType: connection}
+		}
+	}
+	return annotations, nil
+}
+
+func (s *Service) InterestList(ctx context.Context, actor setup.SessionActor, recipientID uuid.UUID) (InterestListResponse, error) {
+	if !actor.Curator && actor.PersonID != recipientID {
+		return InterestListResponse{}, ErrNotAuthorized
+	}
 	if err := requireRecipient(ctx, s.db, recipientID); err != nil {
 		return InterestListResponse{}, err
 	}
@@ -417,7 +574,7 @@ func (s *Service) InterestList(ctx context.Context, recipientID uuid.UUID) (Inte
 		CreatedAt        time.Time `bun:"created_at"`
 	}
 	history := make([]historyRow, 0)
-	if err := s.db.NewRaw(`SELECT history.id, selected.id AS selected_id, selected.display_name AS selected_name, selected.sort_name AS selected_sort_name, actor.id AS actor_id, actor.display_name AS actor_name, actor.sort_name AS actor_sort_name, history.action, history.result, history.reason, history.created_at FROM interest_list_history AS history JOIN people AS selected ON selected.id = history.selected_person_id JOIN people AS actor ON actor.id = history.actor_person_id WHERE history.recipient_person_id = ? ORDER BY history.created_at DESC, history.id DESC LIMIT 200`, recipientID).Scan(ctx, &history); err != nil {
+	if err := s.db.NewRaw(`SELECT history.id, selected.id AS selected_id, selected.display_name AS selected_name, selected.sort_name AS selected_sort_name, actor.id AS actor_id, actor.display_name AS actor_name, actor.sort_name AS actor_sort_name, history.action, history.result, history.reason, history.created_at FROM interest_list_history AS history JOIN people AS selected ON selected.id = history.selected_person_id JOIN people AS actor ON actor.id = history.actor_person_id WHERE history.recipient_person_id = ? ORDER BY history.created_at DESC, history.id DESC`, recipientID).Scan(ctx, &history); err != nil {
 		return InterestListResponse{}, err
 	}
 	for _, item := range history {
@@ -427,6 +584,9 @@ func (s *Service) InterestList(ctx context.Context, recipientID uuid.UUID) (Inte
 }
 
 func (s *Service) MutateInterest(ctx context.Context, actor setup.SessionActor, recipientID, selectedID uuid.UUID, selected bool) (InterestListResponse, error) {
+	if !actor.Curator && actor.PersonID != recipientID {
+		return InterestListResponse{}, ErrNotAuthorized
+	}
 	if recipientID == selectedID {
 		return InterestListResponse{}, ErrSelfSelection
 	}
@@ -438,11 +598,30 @@ func (s *Service) MutateInterest(ctx context.Context, actor setup.SessionActor, 
 			return err
 		}
 		if selected {
-			if err := requireCurrentPerson(ctx, tx, selectedID); err != nil {
+			if !actor.Curator {
+				eligible, err := sharedCircle(ctx, tx, recipientID, selectedID)
+				if err != nil {
+					return err
+				}
+				if !eligible {
+					return ErrPersonNotFound
+				}
+			} else if err := requireCurrentPerson(ctx, tx, selectedID); err != nil {
 				return err
 			}
-		} else if err := requirePersonExists(ctx, tx, selectedID); err != nil {
-			return err
+		} else {
+			if !actor.Curator {
+				var exists bool
+				if err := tx.NewRaw(`SELECT EXISTS (SELECT 1 FROM interest_list_entries WHERE recipient_person_id = ? AND selected_person_id = ?)`, recipientID, selectedID).Scan(ctx, &exists); err != nil {
+					return err
+				}
+				if !exists {
+					return ErrPersonNotFound
+				}
+			}
+			if err := requirePersonExists(ctx, tx, selectedID); err != nil {
+				return err
+			}
 		}
 		now := s.now().UTC()
 		action, result := "deselected", "deselected"
@@ -470,7 +649,7 @@ func (s *Service) MutateInterest(ctx context.Context, actor setup.SessionActor, 
 	if err != nil {
 		return InterestListResponse{}, err
 	}
-	return s.InterestList(ctx, recipientID)
+	return s.InterestList(ctx, actor, recipientID)
 }
 
 func sharedCircle(ctx context.Context, db bun.IDB, recipientID, selectedID uuid.UUID) (bool, error) {
@@ -542,6 +721,9 @@ func MergePersonReferences(ctx context.Context, tx bun.Tx, sourceID, survivorID 
 	if _, err := tx.NewRaw(`DELETE FROM visibility_circle_members WHERE person_id = ?`, sourceID).Exec(ctx); err != nil {
 		return err
 	}
+	if _, err := tx.NewRaw(`UPDATE interest_list_history SET recipient_person_id = ? WHERE recipient_person_id = ?`, survivorID, sourceID).Exec(ctx); err != nil {
+		return err
+	}
 	type mergeEntryRow struct {
 		RecipientID uuid.UUID `bun:"recipient_person_id"`
 		SelectedID  uuid.UUID `bun:"selected_person_id"`
@@ -590,7 +772,10 @@ func MergePersonReferences(ctx context.Context, tx bun.Tx, sourceID, survivorID 
 }
 
 // ProposeRecipients returns proposal inputs only; it does not create Audience authority.
-func (s *Service) ProposeRecipients(ctx context.Context, attendanceIDs []uuid.UUID) ([]ProposalRecipient, error) {
+func (s *Service) ProposeRecipients(ctx context.Context, actor setup.SessionActor, attendanceIDs []uuid.UUID) ([]ProposalRecipient, error) {
+	if !actor.Curator {
+		return nil, ErrNotAuthorized
+	}
 	if len(attendanceIDs) == 0 {
 		return []ProposalRecipient{}, nil
 	}

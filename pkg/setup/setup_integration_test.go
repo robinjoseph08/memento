@@ -504,6 +504,7 @@ func TestSecureCookiesAndSessionBoundCSRF(t *testing.T) {
 	assert.Equal(t, "Cookie Person", session.DisplayName)
 	assert.Equal(t, "public", session.SessionType)
 	assert.Equal(t, completed.CSRFToken, session.CSRFToken)
+	assert.True(t, session.Curator)
 
 	withoutCSRF := performJSON(e, http.MethodPost, "/api/session/logout", "", nil, cookie)
 	assert.Equal(t, http.StatusForbidden, withoutCSRF.Code)

@@ -163,6 +163,7 @@ test("completes the first-browser setup workflow with explicit Onboarding choice
             display_name: "Robin Joseph",
             session_type: "public",
             csrf_token: "c".repeat(64),
+            curator: true,
           }),
         );
       }
@@ -384,6 +385,7 @@ test("restores and refreshes a signed-in Trusted-device Session", async () => {
         display_name: "Robin Joseph",
         session_type: "trusted",
         csrf_token: "c".repeat(64),
+        curator: true,
       }),
     );
   });
@@ -437,6 +439,7 @@ test("validates Immich and supports private Source album ignore and restore tria
             display_name: "Robin Joseph",
             session_type: "public",
             csrf_token: csrfToken,
+            curator: true,
           }),
         );
       }
@@ -589,6 +592,7 @@ test("loads the next opaque Source album cursor without replacing prior results"
             display_name: "Robin Joseph",
             session_type: "trusted",
             csrf_token: "c".repeat(64),
+            curator: true,
           }),
         );
       }

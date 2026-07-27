@@ -94,6 +94,7 @@ type SessionResponse struct {
 	DisplayName string `json:"display_name"`
 	SessionType string `json:"session_type"`
 	CSRFToken   string `json:"csrf_token"`
+	Curator     bool   `json:"curator"`
 }
 
 type challenge struct {
@@ -411,10 +412,15 @@ func (s *Service) Session(ctx context.Context, credential string) (SessionRespon
 	if err != nil {
 		return SessionResponse{}, err
 	}
+	var curator bool
+	if err := s.db.NewRaw(`SELECT EXISTS (SELECT 1 FROM person_roles WHERE person_id = ? AND role = 'curator')`, authenticated.PersonID).Scan(ctx, &curator); err != nil {
+		return SessionResponse{}, err
+	}
 	return SessionResponse{
 		DisplayName: authenticated.DisplayName,
 		SessionType: authenticated.SessionType,
 		CSRFToken:   s.csrfToken(authenticated.Credential),
+		Curator:     curator,
 	}, nil
 }
 

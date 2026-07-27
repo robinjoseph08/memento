@@ -38,6 +38,163 @@ function formatHistoryAction(action: string, result: string) {
   return "selected";
 }
 
+function formatRelationship(person: Person) {
+  const annotation = person.relationship;
+  if (!annotation) return "";
+  const label = annotation.connection_type.replaceAll("_", " ");
+  return annotation.generation
+    ? `${label}, generation ${annotation.generation}`
+    : label;
+}
+
+async function discoverAll(path: string): Promise<DiscoveryResponse> {
+  const people: Person[] = [];
+  let cursor: string | undefined;
+  do {
+    const query = new URLSearchParams({ limit: "200" });
+    if (cursor) query.set("cursor", cursor);
+    const page = await apiJSON<DiscoveryResponse>(`${path}?${query}`);
+    people.push(...page.people);
+    cursor = page.next_cursor;
+  } while (cursor);
+  return { people };
+}
+
+export function RecipientVisibilityManager({
+  session,
+  onSignOut,
+}: {
+  session: SessionResponse;
+  onSignOut: () => void;
+}) {
+  const queryClient = useQueryClient();
+  const interest = useQuery({
+    queryKey: ["recipient-interest-list"],
+    queryFn: () => apiJSON<InterestListResponse>("/api/me/interest-list"),
+  });
+  const discoverable = useQuery({
+    queryKey: ["recipient-discoverable"],
+    queryFn: () => discoverAll("/api/me/people"),
+  });
+  const choices = useMemo(() => {
+    const people = new Map<string, Person>();
+    for (const person of discoverable.data?.people ?? []) {
+      people.set(person.id, person);
+    }
+    for (const entry of interest.data?.entries ?? []) {
+      if (!people.has(entry.person.id)) {
+        people.set(entry.person.id, entry.person);
+      }
+    }
+    return [...people.values()].sort(byName);
+  }, [discoverable.data?.people, interest.data?.entries]);
+  const mutateInterest = useMutation({
+    mutationFn: ({ person, selected }: { person: Person; selected: boolean }) =>
+      apiJSON<InterestListResponse>(`/api/me/interest-list/${person.id}`, {
+        method: "PUT",
+        headers: { "X-Memento-CSRF": session.csrf_token },
+        body: JSON.stringify({ selected }),
+      }),
+    onSuccess: (response) => {
+      queryClient.setQueryData(["recipient-interest-list"], response);
+    },
+  });
+
+  return (
+    <section
+      aria-labelledby="recipient-interest-title"
+      className="visibility-shell"
+    >
+      <header className="visibility-header">
+        <div>
+          <p className="eyebrow">PRIVATE DISCOVERY</p>
+          <h2 id="recipient-interest-title">Your Interest list</h2>
+          <p>
+            Choose discoverable People whose Attendance should suggest Media for
+            you. Choices prepare proposals and never grant access.
+          </p>
+        </div>
+        <div className="header-actions">
+          <span>Signed in as {session.display_name}</span>
+          <button onClick={onSignOut} type="button">
+            Sign out
+          </button>
+        </div>
+      </header>
+      <ErrorNotice
+        error={interest.error ?? discoverable.error ?? mutateInterest.error}
+      />
+      {interest.isPending || discoverable.isPending ? (
+        <p>Loading your private Interest list…</p>
+      ) : null}
+      {interest.isSuccess && discoverable.isSuccess ? (
+        <div className="interest-editor">
+          {choices.length ? (
+            <div className="interest-choices">
+              {choices.map((person) => {
+                const entry = interest.data.entries.find(
+                  (candidate) => candidate.person.id === person.id,
+                );
+                const active = entry?.state === "active";
+                const currentlyDiscoverable = discoverable.data.people.some(
+                  (candidate) => candidate.id === person.id,
+                );
+                return (
+                  <label className="choice" key={person.id}>
+                    <input
+                      checked={active}
+                      disabled={
+                        mutateInterest.isPending ||
+                        (!active && !currentlyDiscoverable)
+                      }
+                      onChange={(event) =>
+                        mutateInterest.mutate({
+                          person,
+                          selected: event.target.checked,
+                        })
+                      }
+                      type="checkbox"
+                    />
+                    <span>
+                      <strong>{person.display_name}</strong>
+                      {person.relationship ? (
+                        <small>{formatRelationship(person)}</small>
+                      ) : null}
+                      {entry?.state === "ineligible"
+                        ? currentlyDiscoverable
+                          ? "Inactive after visibility loss. Select again to restore."
+                          : "Inactive because this Person is no longer discoverable."
+                        : "Explicit Interest choice"}
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+          ) : (
+            <p>No People are discoverable through shared circles.</p>
+          )}
+          <details>
+            <summary>Your Interest list history</summary>
+            {interest.data.history.length ? (
+              <ol className="interest-history">
+                {interest.data.history.map((history) => (
+                  <li key={history.id}>
+                    <strong>{history.person.display_name}</strong>{" "}
+                    {formatHistoryAction(history.action, history.result)} by{" "}
+                    {history.actor.display_name}
+                  </li>
+                ))}
+              </ol>
+            ) : (
+              <p>No Interest list changes yet.</p>
+            )}
+          </details>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 export function VisibilityManager({ session }: { session: SessionResponse }) {
   const queryClient = useQueryClient();
   const [circleName, setCircleName] = useState("");
@@ -67,9 +224,7 @@ export function VisibilityManager({ session }: { session: SessionResponse }) {
   const discoverable = useQuery({
     queryKey: ["curator-discoverable", recipientID],
     queryFn: () =>
-      apiJSON<DiscoveryResponse>(
-        `/api/interest-lists/${recipientID}/discoverable`,
-      ),
+      discoverAll(`/api/interest-lists/${recipientID}/discoverable`),
     enabled: recipientID !== "",
   });
 
@@ -93,7 +248,9 @@ export function VisibilityManager({ session }: { session: SessionResponse }) {
       choices.set(person.id, person);
     }
     for (const entry of interest.data?.entries ?? []) {
-      choices.set(entry.person.id, entry.person);
+      if (!choices.has(entry.person.id)) {
+        choices.set(entry.person.id, entry.person);
+      }
     }
     return [...choices.values()].sort(byName);
   }, [discoverable.data?.people, interest.data?.entries]);
@@ -158,7 +315,7 @@ export function VisibilityManager({ session }: { session: SessionResponse }) {
         {
           method: "PUT",
           headers: { "X-Memento-CSRF": session.csrf_token },
-          body: JSON.stringify({ included }),
+          body: JSON.stringify({ included, version: circle.version }),
         },
       ),
     onSuccess: async () => {
@@ -456,6 +613,9 @@ export function VisibilityManager({ session }: { session: SessionResponse }) {
                         />
                         <span>
                           <strong>{person.display_name}</strong>
+                          {person.relationship ? (
+                            <small>{formatRelationship(person)}</small>
+                          ) : null}
                           {entry?.state === "ineligible"
                             ? currentlyDiscoverable
                               ? "Inactive after visibility loss. Select again to restore."

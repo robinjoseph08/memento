@@ -9,7 +9,10 @@ import {
 } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 
-import { VisibilityManager } from "./VisibilityManager";
+import {
+  RecipientVisibilityManager,
+  VisibilityManager,
+} from "./VisibilityManager";
 import type { Person as CuratorPerson } from "./types/generated/people";
 import type {
   Circle,
@@ -64,6 +67,7 @@ function renderManager() {
           display_name: "Curator",
           session_type: "trusted",
           csrf_token: "csrf-token",
+          curator: true,
         }}
       />
     </QueryClientProvider>,
@@ -159,7 +163,10 @@ test("manages overlapping circle membership with a desktop matrix and mobile fil
   const membershipRequest = requests.find(({ path }) =>
     path.includes("/members/"),
   );
-  expect(stringBody(membershipRequest?.init?.body)).toEqual({ included: true });
+  expect(stringBody(membershipRequest?.init?.body)).toEqual({
+    included: true,
+    version: 1,
+  });
   expect(membershipRequest?.init?.headers).toEqual(
     expect.objectContaining({ "X-Memento-CSRF": "csrf-token" }),
   );
@@ -191,6 +198,97 @@ test("manages overlapping circle membership with a desktop matrix and mobile fil
   expect(stringBody(createRequest?.init?.body)).toEqual({
     name: "Grandparents",
   });
+});
+
+test("lets a Recipient edit only their own discoverable Interest choices", async () => {
+  const recipient = curatorPerson(
+    "22222222-2222-4222-8222-222222222222",
+    "Recipient",
+    ["recipient"],
+  );
+  const alex = {
+    id: "33333333-3333-4333-8333-333333333333",
+    display_name: "Alex",
+    sort_name: "Alex",
+    relationship: { connection_type: "sibling", generation: 0 },
+  };
+  let interest: InterestListResponse = {
+    recipient,
+    entries: [],
+    history: [],
+  };
+  const requests: Array<{ path: string; init?: RequestInit }> = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = requestPath(input);
+      requests.push({ path, init });
+      if (path.startsWith("/api/me/people?")) {
+        return jsonResponse({ people: [alex] });
+      }
+      if (path === "/api/me/interest-list") {
+        return jsonResponse(interest);
+      }
+      if (
+        path === `/api/me/interest-list/${alex.id}` &&
+        init?.method === "PUT"
+      ) {
+        interest = {
+          recipient,
+          entries: [
+            {
+              person: alex,
+              state: "active",
+              chosen_at: "2026-01-01T00:00:00Z",
+              updated_at: "2026-01-01T00:00:00Z",
+            },
+          ],
+          history: [
+            {
+              id: 1,
+              person: alex,
+              actor: recipient,
+              action: "selected",
+              result: "active",
+              reason: "explicit",
+              created_at: "2026-01-01T00:00:00Z",
+            },
+          ],
+        };
+        return jsonResponse(interest);
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    }),
+  );
+  const onSignOut = vi.fn();
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
+  render(
+    <QueryClientProvider client={client}>
+      <RecipientVisibilityManager
+        onSignOut={onSignOut}
+        session={{
+          display_name: "Recipient",
+          session_type: "trusted",
+          csrf_token: "recipient-csrf",
+          curator: false,
+        }}
+      />
+    </QueryClientProvider>,
+  );
+
+  const alexChoice = await screen.findByRole("checkbox", { name: /Alex/ });
+  expect(screen.getByText("sibling")).toBeInTheDocument();
+  fireEvent.click(alexChoice);
+  await waitFor(() => expect(alexChoice).toBeChecked());
+  const mutation = requests.find(({ init }) => init?.method === "PUT");
+  expect(mutation?.path).toBe(`/api/me/interest-list/${alex.id}`);
+  expect(mutation?.init?.headers).toEqual(
+    expect.objectContaining({ "X-Memento-CSRF": "recipient-csrf" }),
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+  expect(onSignOut).toHaveBeenCalledOnce();
 });
 
 test("edits an empty Interest list on a Recipient's behalf and shows attributed history", async () => {
@@ -225,7 +323,9 @@ test("edits an empty Interest list on a Recipient's behalf and shows attributed 
       if (path === `/api/interest-lists/${recipient.id}`) {
         return jsonResponse(interest);
       }
-      if (path === `/api/interest-lists/${recipient.id}/discoverable`) {
+      if (
+        path.startsWith(`/api/interest-lists/${recipient.id}/discoverable?`)
+      ) {
         return jsonResponse({ people: [alex] });
       }
       if (

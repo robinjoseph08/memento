@@ -65,7 +65,8 @@ func (h *Handler) requestContext(c echo.Context) context.Context {
 }
 
 func (h *Handler) ListCircles(c echo.Context) error {
-	if _, err := h.authorize(c, false, true); err != nil {
+	actor, err := h.authorize(c, false, true)
+	if err != nil {
 		return err
 	}
 	includeArchived := false
@@ -76,7 +77,7 @@ func (h *Handler) ListCircles(c echo.Context) error {
 		}
 		includeArchived = parsed
 	}
-	response, err := h.service.ListCircles(c.Request().Context(), includeArchived)
+	response, err := h.service.ListCircles(c.Request().Context(), actor, includeArchived)
 	if err != nil {
 		return err
 	}
@@ -156,7 +157,7 @@ func (h *Handler) SetMembership(c echo.Context) error {
 	if err := bindJSON(c, &request); err != nil {
 		return err
 	}
-	circle, err := h.service.SetMembership(h.requestContext(c), actor, circleID, personID, request.Included)
+	circle, err := h.service.SetMembership(h.requestContext(c), actor, circleID, personID, request)
 	if err != nil {
 		return visibilityError(err)
 	}
@@ -164,14 +165,19 @@ func (h *Handler) SetMembership(c echo.Context) error {
 }
 
 func (h *Handler) CuratorDiscover(c echo.Context) error {
-	if _, err := h.authorize(c, false, true); err != nil {
+	actor, err := h.authorize(c, false, true)
+	if err != nil {
 		return err
 	}
 	recipientID, err := uuid.Parse(c.Param("recipient_id"))
 	if err != nil {
 		return errcodes.NotFound("Recipient")
 	}
-	response, err := h.service.Discover(c.Request().Context(), recipientID)
+	page, err := discoveryPage(c)
+	if err != nil {
+		return err
+	}
+	response, err := h.service.Discover(c.Request().Context(), actor, recipientID, page)
 	if err != nil {
 		return visibilityError(err)
 	}
@@ -179,14 +185,15 @@ func (h *Handler) CuratorDiscover(c echo.Context) error {
 }
 
 func (h *Handler) CuratorInterestList(c echo.Context) error {
-	if _, err := h.authorize(c, false, true); err != nil {
+	actor, err := h.authorize(c, false, true)
+	if err != nil {
 		return err
 	}
 	recipientID, err := uuid.Parse(c.Param("recipient_id"))
 	if err != nil {
 		return errcodes.NotFound("Recipient")
 	}
-	response, err := h.service.InterestList(c.Request().Context(), recipientID)
+	response, err := h.service.InterestList(c.Request().Context(), actor, recipientID)
 	if err != nil {
 		return visibilityError(err)
 	}
@@ -206,7 +213,11 @@ func (h *Handler) DiscoverSelf(c echo.Context) error {
 	if err != nil {
 		return err
 	}
-	response, err := h.service.Discover(c.Request().Context(), actor.PersonID)
+	page, err := discoveryPage(c)
+	if err != nil {
+		return err
+	}
+	response, err := h.service.Discover(c.Request().Context(), actor, actor.PersonID, page)
 	if err != nil {
 		return visibilityError(err)
 	}
@@ -218,7 +229,7 @@ func (h *Handler) InterestListSelf(c echo.Context) error {
 	if err != nil {
 		return err
 	}
-	response, err := h.service.InterestList(c.Request().Context(), actor.PersonID)
+	response, err := h.service.InterestList(c.Request().Context(), actor, actor.PersonID)
 	if err != nil {
 		return visibilityError(err)
 	}
@@ -253,6 +264,18 @@ func (h *Handler) mutateInterest(c echo.Context, actor setup.SessionActor, recip
 	return c.JSON(http.StatusOK, response)
 }
 
+func discoveryPage(c echo.Context) (DiscoveryPageRequest, error) {
+	page := DiscoveryPageRequest{Cursor: c.QueryParam("cursor"), Limit: 100}
+	if value := c.QueryParam("limit"); value != "" {
+		limit, err := strconv.Atoi(value)
+		if err != nil || limit < 1 || limit > 200 {
+			return DiscoveryPageRequest{}, errcodes.ValidationError("limit must be between 1 and 200.")
+		}
+		page.Limit = limit
+	}
+	return page, nil
+}
+
 func visibilityError(err error) error {
 	switch {
 	case errors.Is(err, ErrCircleNotFound):
@@ -263,6 +286,8 @@ func visibilityError(err error) error {
 		return errcodes.Conflict("Choose a current Person.")
 	case errors.Is(err, ErrRecipientRequired):
 		return errcodes.Conflict("Choose a Person with Recipient access for this Interest list.")
+	case errors.Is(err, ErrNotAuthorized):
+		return errcodes.NotFound("Visibility resource")
 	case errors.Is(err, ErrSelfSelection):
 		return errcodes.ValidationError("A Recipient cannot add their own Person to their Interest list.")
 	case errors.Is(err, ErrNotDiscoverable):
