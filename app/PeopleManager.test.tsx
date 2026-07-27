@@ -158,7 +158,9 @@ test("designates a Pending Recipient separately from sending an Invitation", asy
   );
 
   renderManager();
-  fireEvent.click(await screen.findByRole("button", { name: /^Alex/ }));
+  fireEvent.click(
+    await screen.findByRole("button", { name: /^Alex/ }, contentionWait),
+  );
   fireEvent.change(screen.getByLabelText("Login email"), {
     target: { value: "alex@example.com" },
   });
@@ -166,9 +168,11 @@ test("designates a Pending Recipient separately from sending an Invitation", asy
     screen.getByRole("button", { name: "Designate Pending Recipient" }),
   );
 
-  const send = await screen.findByRole("button", {
-    name: "Create and send Invitation",
-  });
+  const send = await screen.findByRole(
+    "button",
+    { name: "Create and send Invitation" },
+    contentionWait,
+  );
   const designateRequest = requests.find(({ path }) =>
     path.endsWith("/designate"),
   );
@@ -183,9 +187,11 @@ test("designates a Pending Recipient separately from sending an Invitation", asy
   );
 
   fireEvent.click(send);
-  const revoke = await screen.findByRole("button", {
-    name: "Revoke Invitation",
-  });
+  const revoke = await screen.findByRole(
+    "button",
+    { name: "Revoke Invitation" },
+    contentionWait,
+  );
   expect(revoke.closest(".invitation-status")).toHaveTextContent(
     "Invitation: active",
   );
@@ -258,24 +264,38 @@ test("wires every Invitation control to its exact mutation", async () => {
   );
 
   renderManager();
-  fireEvent.click(await screen.findByRole("button", { name: /^Alex/ }));
+  fireEvent.click(
+    await screen.findByRole("button", { name: /^Alex/ }, contentionWait),
+  );
   for (const control of [
     ["Send manual reminder", "/remind"],
     ["Reissue with new link", "/reissue"],
     ["Revoke Invitation", "/revoke"],
   ] as const) {
-    fireEvent.click(await screen.findByRole("button", { name: control[0] }));
-    await waitFor(() =>
-      expect(requests.some(({ path }) => path.endsWith(control[1]))).toBe(true),
+    fireEvent.click(
+      await screen.findByRole("button", { name: control[0] }, contentionWait),
+    );
+    await waitFor(
+      () =>
+        expect(requests.some(({ path }) => path.endsWith(control[1]))).toBe(
+          true,
+        ),
+      contentionWait,
     );
   }
   fireEvent.click(
-    await screen.findByRole("button", { name: "Reissue Invitation" }),
+    await screen.findByRole(
+      "button",
+      { name: "Reissue Invitation" },
+      contentionWait,
+    ),
   );
-  await waitFor(() =>
-    expect(
-      requests.filter(({ path }) => path.endsWith("/reissue")),
-    ).toHaveLength(2),
+  await waitFor(
+    () =>
+      expect(
+        requests.filter(({ path }) => path.endsWith("/reissue")),
+      ).toHaveLength(2),
+    contentionWait,
   );
   const actionRequests = requests.filter(({ path }) =>
     path.includes("/invitation/"),
