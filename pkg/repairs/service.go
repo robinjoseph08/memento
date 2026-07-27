@@ -525,15 +525,15 @@ func (s *Service) linkPerson(ctx context.Context, actor setup.CuratorSession, pe
 func (s *Service) linkPersonWithAnchors(ctx context.Context, actor setup.CuratorSession, personID, immichPersonID uuid.UUID, candidateID *uuid.UUID, anchors []collectedAnchor) (MutationResponse, error) {
 	now := s.now().UTC()
 	err := s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
-		var lockedPersonID uuid.UUID
-		if err := tx.NewRaw(`
-			SELECT id FROM people
-			WHERE id = ? AND archived_at IS NULL AND merged_at IS NULL
-			FOR UPDATE
-		`, personID).Scan(ctx, &lockedPersonID); errors.Is(err, sql.ErrNoRows) {
-			return ErrInvalid
-		} else if err != nil {
+		if _, err := tx.NewRaw(`SELECT id FROM people WHERE id IN (?, ?) ORDER BY id FOR UPDATE`, personID, actor.PersonID).Exec(ctx); err != nil {
 			return err
+		}
+		var current bool
+		if err := tx.NewRaw(`SELECT EXISTS (SELECT 1 FROM people WHERE id = ? AND archived_at IS NULL AND merged_at IS NULL)`, personID).Scan(ctx, &current); err != nil {
+			return err
+		}
+		if !current {
+			return ErrInvalid
 		}
 		if _, err := tx.NewRaw(`
 			SELECT person_id FROM immich_person_links
@@ -922,6 +922,17 @@ func (s *Service) resolveCandidate(ctx context.Context, actor setup.CuratorSessi
 	now := s.now().UTC()
 	returnResult := MutationResponse{}
 	err := s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if kind == "person" {
+			var subjectPersonID uuid.UUID
+			if err := tx.NewRaw(`SELECT person_id FROM person_repair_candidates WHERE id = ?`, candidateID).Scan(ctx, &subjectPersonID); errors.Is(err, sql.ErrNoRows) {
+				return ErrNotFound
+			} else if err != nil {
+				return err
+			}
+			if _, err := tx.NewRaw(`SELECT id FROM people WHERE id IN (?, ?) ORDER BY id FOR UPDATE`, subjectPersonID, actor.PersonID).Exec(ctx); err != nil {
+				return err
+			}
+		}
 		result, err := tx.NewRaw(`UPDATE `+table+` SET state = ?, resolved_at = ?, resolved_by_person_id = ? WHERE id = ? AND state = 'pending'`, state, now, actor.PersonID, candidateID).Exec(ctx)
 		if err != nil {
 			return err

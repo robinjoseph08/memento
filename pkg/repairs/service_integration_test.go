@@ -356,6 +356,47 @@ func TestRejectedRepairStaysRejectedAndCannotRestoreSuggestions(t *testing.T) {
 	assert.Empty(t, suggestions)
 }
 
+func TestPersonRejectionLocksPeopleBeforeCandidate(t *testing.T) {
+	fixture := newRepairFixture(t, 1)
+	replacement := uuid.New()
+	fixture.connector.people = []immich.PersonSummary{{SourceID: replacement, Name: "Replacement"}}
+	faces := fixture.connector.faces[fixture.assetIDs[0]]
+	faces[0].PersonID = &replacement
+	fixture.connector.faces[fixture.assetIDs[0]] = faces
+	require.NoError(t, reconcile(fixture.service))
+	listed, err := fixture.service.List(context.Background())
+	require.NoError(t, err)
+	require.Len(t, listed.PersonCandidates, 1)
+	candidateID := uuid.MustParse(listed.PersonCandidates[0].ID)
+
+	personBlocker, err := fixture.db.BeginTx(context.Background(), nil)
+	require.NoError(t, err)
+	_, err = personBlocker.NewRaw(`SELECT id FROM people WHERE id = ? FOR UPDATE`, fixture.actor.PersonID).Exec(context.Background())
+	require.NoError(t, err)
+	rejection := make(chan error, 1)
+	go func() {
+		_, rejectErr := fixture.service.RejectPerson(context.Background(), fixture.actor, candidateID)
+		rejection <- rejectErr
+	}()
+	select {
+	case rejectErr := <-rejection:
+		t.Fatalf("rejection completed while the actor Person was locked: %v", rejectErr)
+	case <-time.After(100 * time.Millisecond):
+	}
+	candidateProbe, err := fixture.db.BeginTx(context.Background(), nil)
+	require.NoError(t, err)
+	_, err = candidateProbe.NewRaw(`SELECT id FROM person_repair_candidates WHERE id = ? FOR UPDATE NOWAIT`, candidateID).Exec(context.Background())
+	require.NoError(t, err, "rejection must lock People before its candidate")
+	require.NoError(t, candidateProbe.Rollback())
+	require.NoError(t, personBlocker.Commit())
+	select {
+	case rejectErr := <-rejection:
+		require.NoError(t, rejectErr)
+	case <-time.After(time.Second):
+		t.Fatal("rejection did not complete after Person lock release")
+	}
+}
+
 func TestNewImmichPersonRemainsAdditionUntilCuratorLinksIt(t *testing.T) {
 	fixture := newRepairFixture(t, 0)
 	addition := uuid.New()
