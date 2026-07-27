@@ -279,6 +279,19 @@ func TestPublicationBuildsImmutableHistoryAndFilteredCurrentProjections(t *testi
 	assert.Equal(t, []uuid.UUID{fixture.people["hidden"]}, secondAudience)
 }
 
+func TestPublicationSupportsManuallyPlacedUndatedMedia(t *testing.T) {
+	fixture := newPublicationFixture(t)
+	ctx := context.Background()
+	_, err := fixture.db.NewRaw(`UPDATE media_items SET local_date_time = NULL WHERE id = ?`, fixture.media[0]).Exec(ctx)
+	require.NoError(t, err)
+	_, err = fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, fixture.request())
+	require.NoError(t, err)
+	view, err := fixture.service.RecipientEvent(ctx, fixture.actorFor("shared"), fixture.event)
+	require.NoError(t, err)
+	require.Len(t, view.Media, 1)
+	assert.Nil(t, view.Media[0].LocalDateTime)
+}
+
 func TestPublishedCapturePresentationChangesOnlyWithANewPublication(t *testing.T) {
 	fixture := newPublicationFixture(t)
 	ctx := context.Background()
