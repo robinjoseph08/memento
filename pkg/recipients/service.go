@@ -98,14 +98,15 @@ type AcceptResponse struct {
 }
 
 type Service struct {
-	db       *bun.DB
-	delivery *emaildelivery.Service
-	now      func() time.Time
-	random   io.Reader
+	db        *bun.DB
+	delivery  *emaildelivery.Service
+	publicURL string
+	now       func() time.Time
+	random    io.Reader
 }
 
-func New(db *bun.DB, delivery *emaildelivery.Service) *Service {
-	return &Service{db: db, delivery: delivery, now: time.Now, random: rand.Reader}
+func New(db *bun.DB, delivery *emaildelivery.Service, publicURL string) *Service {
+	return &Service{db: db, delivery: delivery, publicURL: strings.TrimRight(publicURL, "/"), now: time.Now, random: rand.Reader}
 }
 
 func normalizeEmail(value string) (string, string, error) {
@@ -314,7 +315,7 @@ func (s *Service) issue(ctx context.Context, actor setup.CuratorSession, personI
 			return err
 		}
 		rawToken := hex.EncodeToString(token)
-		link := "/invitation?token=" + rawToken
+		link := s.publicURL + "/invitation?token=" + rawToken
 		invitationIDString := invitationID.String()
 		body := fmt.Sprintf("Hello %s,\n\n%s invited you to Memento, a private family photo and video archive. This personalized offer is only for your login email and can be used once. Open %s within 14 days, then explicitly accept and complete Onboarding before any Media becomes available. Do not forward this private link.", current.personName, curatorName, link)
 		if _, _, err := s.delivery.QueueRequired(ctx, tx, emaildelivery.RequiredMessage{

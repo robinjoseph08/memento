@@ -45,6 +45,12 @@ func (sender *acceptingSender) count() int {
 	return len(sender.messages)
 }
 
+func (sender *acceptingSender) message(index int) mementosmtp.Message {
+	sender.mu.Lock()
+	defer sender.mu.Unlock()
+	return sender.messages[index]
+}
+
 type recipientFixture struct {
 	db       *bun.DB
 	service  *Service
@@ -81,7 +87,7 @@ func newRecipientFixture(t *testing.T) recipientFixture {
 	smtpConfig := config.SMTPConfig{Enabled: true, RetryBase: time.Second, RetryMax: time.Minute, RetryWindow: 24 * time.Hour}
 	sender := &acceptingSender{}
 	delivery := emaildelivery.New(db, smtpConfig, sender, "integration-security-secret-at-least-32-bytes")
-	service := New(db, delivery)
+	service := New(db, delivery, "https://memento.example")
 	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
 	service.now = func() time.Time { return now }
 	return recipientFixture{db: db, service: service, delivery: delivery, sender: sender, actor: setup.CuratorSession{PersonID: curatorID, SessionID: sessionID}, personID: personID, now: now}
@@ -178,6 +184,18 @@ func TestSendPersistsOnlyTokenHashAndDurableInitialAndSevenDayReminder(t *testin
 	var jobs int
 	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM jobs WHERE kind = ?`, emaildelivery.JobKind).Scan(context.Background(), &jobs))
 	assert.Equal(t, 2, jobs)
+
+	var job worker.Job
+	require.NoError(t, fixture.db.NewRaw(`
+		UPDATE jobs AS job SET status = 'running', lease_owner = 'invitation-link-test', lease_expires_at = now() + interval '1 minute'
+		FROM email_deliveries AS delivery
+		WHERE (job.payload ->> 'delivery_id')::bigint = delivery.id AND delivery.invitation_id = ? AND delivery.kind = ?
+		RETURNING job.id, job.kind, job.payload
+	`, result.Invitation.ID, emaildelivery.KindInvitationInitial).Scan(context.Background(), &job.ID, &job.Kind, &job.Payload))
+	job.LeaseOwner = "invitation-link-test"
+	require.NoError(t, fixture.delivery.Handle(context.Background(), job))
+	require.Equal(t, 1, fixture.sender.count())
+	assert.Contains(t, fixture.sender.message(0).Body, "https://memento.example/invitation?token="+token)
 }
 
 func TestInspectIsReadOnlyAndAcceptIsSingleUseWithoutCreatingSession(t *testing.T) {

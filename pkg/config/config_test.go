@@ -12,6 +12,7 @@ import (
 
 func setRequiredEnvironment(t *testing.T) {
 	t.Helper()
+	t.Setenv("MEMENTO_HTTP_PUBLIC_URL", "https://memento.example")
 	t.Setenv("MEMENTO_DATABASE_URL", "postgresql://memento:secret@db:5432/memento?sslmode=require")
 	t.Setenv("MEMENTO_IMMICH_URL", "https://immich.internal")
 	t.Setenv("MEMENTO_IMMICH_API_KEY", "private-key")
@@ -26,6 +27,7 @@ func TestLoadUsesDefaultsAndEnvironment(t *testing.T) {
 	cfg, err := Load("")
 	require.NoError(t, err)
 	assert.Equal(t, "127.0.0.1:8081", cfg.HTTP.Address)
+	assert.Equal(t, "https://memento.example", cfg.HTTP.PublicURL)
 	assert.Equal(t, 7*time.Second, cfg.HTTP.ShutdownTimeout)
 	assert.Equal(t, 4, cfg.Database.MaxOpenConns)
 	assert.Equal(t, 15*time.Minute, cfg.Security.SetupRateWindow)
@@ -37,6 +39,7 @@ func TestLoadUsesDefaultsAndEnvironment(t *testing.T) {
 }
 
 func TestLoadPrecedenceIncludesYAMLAndSecretFiles(t *testing.T) {
+	t.Setenv("MEMENTO_HTTP_PUBLIC_URL", "https://memento.example")
 	t.Setenv("MEMENTO_DATABASE_URL", "postgresql://memento:env@db:5432/memento")
 	t.Setenv("MEMENTO_IMMICH_URL", "https://environment.example")
 	t.Setenv("MEMENTO_SECURITY_SECRET", "test-only-security-secret-32-bytes")
@@ -180,6 +183,9 @@ func TestValidateRejectsUnsafeValues(t *testing.T) {
 		want string
 	}{
 		{"HTTP address", func(c *Config) { c.HTTP.Address = "" }, "http.address is required"},
+		{"HTTP public URL missing", func(c *Config) { c.HTTP.PublicURL = "" }, "http.public_url is required"},
+		{"HTTP public URL relative", func(c *Config) { c.HTTP.PublicURL = "/memento" }, "absolute HTTP or HTTPS origin"},
+		{"HTTP public URL credentials", func(c *Config) { c.HTTP.PublicURL = "https://user:pass@memento.example" }, "without credentials"},
 		{"database URL", func(c *Config) { c.Database.URL = "" }, "database.url is required"},
 		{"database name", func(c *Config) { c.Database.Name = "" }, "database.name is required"},
 		{"connection count", func(c *Config) { c.Database.MaxOpenConns = 1 }, "database.max_open_conns must be at least 2"},

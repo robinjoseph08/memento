@@ -74,6 +74,7 @@ curl --fail --silent --dump-header "$temporary/invitation-headers" --output "$te
   "$base_url/invitation?token=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 grep -q '<title>Memento</title>' "$temporary/invitation.html"
 grep -qi '^Referrer-Policy: no-referrer' "$temporary/invitation-headers"
+grep -qi '^Cache-Control: no-store' "$temporary/invitation-headers"
 if grep -qi '^Server:' "$temporary/headers"; then
   printf 'Caddy exposed its Server header\n' >&2
   exit 1

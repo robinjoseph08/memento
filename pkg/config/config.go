@@ -35,6 +35,7 @@ type Config struct {
 
 type HTTPConfig struct {
 	Address         string
+	PublicURL       string
 	ShutdownTimeout time.Duration
 }
 
@@ -93,6 +94,7 @@ type WorkerConfig struct {
 type rawConfig struct {
 	HTTP struct {
 		Address         string `koanf:"address"`
+		PublicURL       string `koanf:"public_url"`
 		ShutdownTimeout string `koanf:"shutdown_timeout"`
 	} `koanf:"http"`
 	Database struct {
@@ -147,6 +149,8 @@ var (
 	errSecretFileEmpty          = errors.New("file is empty")
 	errPositiveDuration         = errors.New("must be a positive duration")
 	errHTTPAddressRequired      = errors.New("http.address is required")
+	errHTTPPublicURLRequired    = errors.New("http.public_url is required")
+	errHTTPPublicURLInvalid     = errors.New("http.public_url must be an absolute HTTP or HTTPS origin without credentials, query, or fragment")
 	errDatabaseURLRequired      = errors.New("database.url is required")
 	errDatabaseNameRequired     = errors.New("database.name is required")
 	errDatabaseConnections      = errors.New("database.max_open_conns must be at least 2 for the migration lock")
@@ -252,6 +256,7 @@ func Load(path string) (Config, error) {
 func envKey(key string) string {
 	known := map[string]string{
 		"MEMENTO_HTTP_ADDRESS":                    "http.address",
+		"MEMENTO_HTTP_PUBLIC_URL":                 "http.public_url",
 		"MEMENTO_HTTP_SHUTDOWN_TIMEOUT":           "http.shutdown_timeout",
 		"MEMENTO_DATABASE_URL":                    "database.url",
 		"MEMENTO_DATABASE_NAME":                   "database.name",
@@ -316,6 +321,7 @@ func loadSecretFile(k *koanf.Koanf, key, environment string) error {
 func parse(raw rawConfig) (Config, error) {
 	var cfg Config
 	cfg.HTTP.Address = raw.HTTP.Address
+	cfg.HTTP.PublicURL = strings.TrimRight(raw.HTTP.PublicURL, "/")
 	cfg.Database.URL = raw.Database.URL
 	cfg.Database.Name = raw.Database.Name
 	cfg.Database.MaxOpenConns = raw.Database.MaxOpenConns
@@ -419,6 +425,13 @@ func duration(name, value string) (time.Duration, error) {
 func (c Config) Validate() error {
 	if c.HTTP.Address == "" {
 		return errHTTPAddressRequired
+	}
+	if c.HTTP.PublicURL == "" {
+		return errHTTPPublicURLRequired
+	}
+	publicURL, err := url.Parse(c.HTTP.PublicURL)
+	if err != nil || (publicURL.Scheme != "http" && publicURL.Scheme != "https") || publicURL.Host == "" || publicURL.User != nil || (publicURL.Path != "" && publicURL.Path != "/") || publicURL.RawQuery != "" || publicURL.Fragment != "" {
+		return errHTTPPublicURLInvalid
 	}
 	if c.Database.URL == "" {
 		return errDatabaseURLRequired
