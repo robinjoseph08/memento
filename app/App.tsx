@@ -1262,7 +1262,7 @@ function SessionManager({
               {item.session_type === "public"
                 ? "Public computer"
                 : "Trusted device"}
-              {` · ${item.status} · last active ${formatSourceDate(item.last_activity_at)}`}
+              {` · ${item.status} · created ${formatSourceDate(item.created_at)} · last active ${formatSourceDate(item.last_activity_at)}`}
               {item.location ? ` · ${item.location}` : ""}
             </span>
             {!item.push_allowed ? <span>Push unavailable</span> : null}

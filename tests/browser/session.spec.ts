@@ -102,6 +102,7 @@ test("@desktop Public-computer Session disables push and keeps privacy actions p
     page.getByRole("button", { name: "Sign out Library computer" }),
   ).toBeVisible();
   await expect(page.getByText("Push unavailable")).toBeVisible();
+  await expect(page.getByText(/created .* last active/)).toBeVisible();
 });
 
 test("@desktop Curator recovery and Recipient lifecycle keep generation actions current", async ({
@@ -289,7 +290,9 @@ test("@desktop Curator recovery and Recipient lifecycle keep generation actions 
   await page.goto("/");
   await page.getByRole("button", { name: /Alex/ }).click();
   await page.getByText("Inspect Recipient Sessions").click();
-  await expect(page.getByText(/Alex phone.*active/)).toBeVisible();
+  await expect(
+    page.getByText(/Alex phone.*active.*created.*last active/),
+  ).toBeVisible();
   await page
     .getByLabel("Replacement login email")
     .fill("recovered@example.com");

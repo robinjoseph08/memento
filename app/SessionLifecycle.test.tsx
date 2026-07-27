@@ -128,6 +128,7 @@ test("signs in with an eight-digit code and keeps Public-computer warnings promi
   ).toBeVisible();
   fireEvent.click(screen.getByText("Sessions and login email"));
   expect(await screen.findByText("Push unavailable")).toBeVisible();
+  expect(screen.getByText(/created .* last active/)).toBeVisible();
   expect(
     screen.getByRole("button", { name: "Sign out Firefox on Linux" }),
   ).toBeVisible();

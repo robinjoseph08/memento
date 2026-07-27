@@ -783,7 +783,7 @@ function RecipientControls({
                   <strong>
                     {item.label || `${item.browser} on ${item.platform}`}
                   </strong>
-                  {` · ${item.session_type} · ${item.status}`}
+                  {` · ${item.session_type} · ${item.status} · created ${formatInvitationDate(item.created_at)} · last active ${formatInvitationDate(item.last_activity_at)}`}
                   {item.location ? ` · ${item.location}` : ""}
                 </p>
               ))}
