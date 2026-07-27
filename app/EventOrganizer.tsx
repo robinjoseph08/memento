@@ -672,14 +672,14 @@ export function EventOrganizer({
           ref={workPaneRef}
           tabIndex={-1}
         >
-          <h3>Draft work</h3>
-          {work.isPending ? <p>Loading drafts…</p> : null}
+          <h3>Event work</h3>
+          {work.isPending ? <p>Loading Events…</p> : null}
           {work.isError ? (
             <p className="form-error" role="alert">
               {work.error.message}
             </p>
           ) : null}
-          {work.data?.events.length === 0 ? <p>No Event drafts yet.</p> : null}
+          {work.data?.events.length === 0 ? <p>No Events yet.</p> : null}
           <ul className="event-list">
             {work.data?.events.map((event) => (
               <li key={event.id}>
@@ -719,6 +719,7 @@ export function EventOrganizer({
                 >
                   <strong>{event.title}</strong>
                   <span>
+                    {event.lifecycle === "published" ? "Published" : "Draft"} ·{" "}
                     {event.moment_count} Moments · {event.unassigned_count}{" "}
                     unassigned
                   </span>
@@ -735,7 +736,7 @@ export function EventOrganizer({
           tabIndex={-1}
         >
           {!selectedID ? (
-            <p className="pane-empty">Choose an Event draft from Work.</p>
+            <p className="pane-empty">Choose an Event from Work.</p>
           ) : null}
           {eventQuery.isPending && selectedID ? <p>Loading Event…</p> : null}
           {eventQuery.isError && selectedID && saveState !== "conflict" ? (

@@ -171,6 +171,11 @@ func TestPublicationBuildsImmutableHistoryAndFilteredCurrentProjections(t *testi
 	require.NoError(t, fixture.db.NewRaw(`SELECT EXISTS (SELECT 1 FROM new_for_you_entries WHERE recipient_access_generation_id = ?)`, fixture.access["pending"]).Scan(ctx, &pendingNewForYou))
 	assert.False(t, pendingNewForYou)
 
+	work, err := fixture.service.ListEvents(ctx)
+	require.NoError(t, err)
+	require.Len(t, work.Events, 1, "published Events remain available for corrected revisions and Recipient preview")
+	assert.Equal(t, "published", work.Events[0].Lifecycle)
+
 	for table, expected := range map[string]int{
 		"publications": 1, "published_event_revisions": 1, "published_moments": 3,
 		"published_media_placements": 3, "audience_entries": 3,

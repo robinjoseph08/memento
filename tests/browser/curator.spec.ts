@@ -135,6 +135,7 @@ async function mockCuratorAPI(
           events: [
             {
               id: eventID,
+              lifecycle: persisted.lifecycle,
               title: persisted.title,
               version: persisted.version,
               moment_count: persisted.moments.length,
@@ -306,6 +307,13 @@ test("@desktop @mobile publishes atomically and keeps Recipient preview read onl
   await expect(
     page.getByText("Published revision 1 atomically."),
   ).toBeVisible();
+
+  await page.reload();
+  await expect(page.getByText(/Published · 2 Moments/)).toBeVisible();
+  await page.getByRole("button", { name: /Family weekend/ }).click();
+  if ((page.viewportSize()?.width ?? 1280) <= 1024) {
+    await page.getByRole("button", { name: "Inspect", exact: true }).click();
+  }
   await page
     .getByLabel("Preview Recipient")
     .selectOption("ffffffff-ffff-4fff-8fff-ffffffffffff");

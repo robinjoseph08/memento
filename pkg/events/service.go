@@ -96,6 +96,7 @@ type OrganizeEventRequest struct {
 // EventSummary supports Curator work navigation without loading every Media item.
 type EventSummary struct {
 	ID              string    `json:"id"`
+	Lifecycle       string    `json:"lifecycle"`
 	Title           string    `json:"title"`
 	Version         int64     `json:"version"`
 	MomentCount     int       `json:"moment_count"`
@@ -461,11 +462,11 @@ func captureDay(raw *string, location *time.Location) (*string, *time.Time) {
 	return nil, nil
 }
 
-// ListEvents returns private draft work ordered by recent activity.
+// ListEvents returns private editable Events ordered by recent activity.
 func (s *Service) ListEvents(ctx context.Context) (EventListResponse, error) {
 	result := EventListResponse{Events: make([]EventSummary, 0)}
 	err := s.db.NewRaw(`
-		SELECT event.id, event.title, event.version,
+		SELECT event.id, event.lifecycle, event.title, event.version,
 			COALESCE(moment.moment_count, 0)::integer AS moment_count,
 			COALESCE(placement.unassigned_count, 0)::integer AS unassigned_count,
 			event.updated_at
@@ -478,7 +479,7 @@ func (s *Service) ListEvents(ctx context.Context) (EventListResponse, error) {
 			SELECT event_id, count(*) FILTER (WHERE draft_moment_id IS NULL) AS unassigned_count
 			FROM draft_media_placements GROUP BY event_id
 		) AS placement ON placement.event_id = event.id
-		WHERE event.lifecycle = 'draft'
+		WHERE event.lifecycle IN ('draft', 'published')
 		ORDER BY event.updated_at DESC, event.id
 	`).Scan(ctx, &result.Events)
 	return result, err
