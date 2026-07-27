@@ -215,7 +215,12 @@ export function EventOrganizer({
     retry: false,
   });
   const preview = useQuery({
-    queryKey: ["event-preview", selectedID, previewRecipientID],
+    queryKey: [
+      "event-preview",
+      selectedID,
+      currentDraft?.version,
+      previewRecipientID,
+    ],
     queryFn: () =>
       apiJSON<PublishedEventView>(
         `/api/events/${selectedID}/preview?recipient_person_id=${encodeURIComponent(previewRecipientID)}`,
@@ -347,6 +352,7 @@ export function EventOrganizer({
 
   function change(mutator: (next: DraftEvent) => void) {
     if (!currentDraft) return;
+    setPreviewOpen(false);
     const next = cloneEvent(currentDraft);
     mutator(next);
     const nextRevision = revisionRef.current + 1;
@@ -359,6 +365,7 @@ export function EventOrganizer({
 
   function reflectReview(mutator: (next: DraftEvent) => void) {
     if (!currentDraft) return;
+    setPreviewOpen(false);
     const next = cloneEvent(currentDraft);
     mutator(next);
     next.final_review_complete = false;

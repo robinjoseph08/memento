@@ -400,6 +400,12 @@ test("publishes ready work and previews Recipient output read only", async () =>
       screen.getByRole("button", { name: action, hidden: true }),
     ).toBeDisabled();
   }
+  fireEvent.change(screen.getByLabelText("Title for Moment 1"), {
+    target: { value: "A new correction" },
+  });
+  expect(
+    screen.queryByRole("region", { name: "Read-only Recipient preview" }),
+  ).not.toBeInTheDocument();
 });
 
 test("organizes merged and split days with pointer and keyboard controls", async () => {
