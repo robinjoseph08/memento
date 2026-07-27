@@ -13,10 +13,12 @@ import (
 )
 
 type routeAuthorizer struct {
-	err error
+	err       error
+	mutations []bool
 }
 
-func (authorizer *routeAuthorizer) AuthorizeCurator(context.Context, string, string, bool) (setup.CuratorSession, error) {
+func (authorizer *routeAuthorizer) AuthorizeCurator(_ context.Context, _, _ string, mutation bool) (setup.CuratorSession, error) {
+	authorizer.mutations = append(authorizer.mutations, mutation)
 	return setup.CuratorSession{}, authorizer.err
 }
 
@@ -52,6 +54,7 @@ func TestRepairRoutesAreCuratorOnlyBeforePrivateEvidenceIsRead(t *testing.T) {
 	} {
 		response := repairRequest(repairHTTP(&routeAuthorizer{}), route.method, route.path, "", "")
 		assert.Equal(t, http.StatusUnauthorized, response.Code, "%s %s", route.method, route.path)
+		assert.Equal(t, "no-store", response.Header().Get(echo.HeaderCacheControl))
 		assert.NotContains(t, response.Body.String(), "checksum")
 		assert.NotContains(t, response.Body.String(), "path")
 	}
@@ -75,6 +78,8 @@ func TestRepairMutationsRequireSessionBoundCSRF(t *testing.T) {
 		authorizer := &routeAuthorizer{err: setup.ErrCSRF}
 		response := repairRequest(repairHTTP(authorizer), http.MethodPost, path, "session", "wrong")
 		assert.Equal(t, http.StatusForbidden, response.Code, path)
+		assert.Equal(t, []bool{true}, authorizer.mutations, path)
+		assert.Equal(t, "no-store", response.Header().Get(echo.HeaderCacheControl))
 		assert.NotContains(t, response.Body.String(), "wrong")
 	}
 }

@@ -541,6 +541,23 @@ func TestRejectedMediaRepairIsNotProposedAgain(t *testing.T) {
 	assert.Zero(t, pendingCount)
 }
 
+func TestMediaRepairRequiresExactChecksumDespiteMatchingMetadata(t *testing.T) {
+	oldAsset := repairableReconciliationAsset(uuid.New(), "/library/old/family.jpg")
+	connector := &reconciliationConnector{summary: sourceAlbum(uuid.New(), "Exact checksum album", 1)}
+	connector.pages = map[int]immich.AssetPage{1: {Items: []immich.AssetSummary{oldAsset}}}
+	service, sourceAlbumID := newReconciliationService(t, connector)
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+
+	replacement := repairableReconciliationAsset(uuid.New(), "/library/new/family.jpg")
+	replacement.Checksum = "2222222222222222222222222222222222222222"
+	connector.setMembership(replacement)
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	var candidates int
+	require.NoError(t, service.db.NewRaw(`SELECT count(*) FROM media_repair_candidates`).Scan(context.Background(), &candidates))
+	assert.Zero(t, candidates)
+}
+
 func TestAmbiguousChecksumCandidatesExposeConflictEvidence(t *testing.T) {
 	first := repairableReconciliationAsset(uuid.New(), "/library/a/family.jpg")
 	second := repairableReconciliationAsset(uuid.New(), "/library/b/family.jpg")

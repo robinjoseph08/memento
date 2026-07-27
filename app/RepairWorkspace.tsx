@@ -25,10 +25,14 @@ function EvidenceField({ label, value }: { label: string; value?: string }) {
 function CandidateActions({
   kind,
   candidateID,
+  candidateLabel,
+  canConfirm = true,
   csrfToken,
 }: {
   kind: "people" | "media";
   candidateID: string;
+  candidateLabel: string;
+  canConfirm?: boolean;
   csrfToken: string;
 }) {
   const queryClient = useQueryClient();
@@ -55,17 +59,32 @@ function CandidateActions({
           {resolve.error.message}
         </p>
       ) : null}
+      {resolve.data ? (
+        <p role="status">
+          Repair{" "}
+          {resolve.data.status === "confirmed" ? "confirmed" : "rejected"}.
+        </p>
+      ) : null}
+      <p>
+        {kind === "people"
+          ? "Rejecting keeps Attendance suggestions suppressed and permanently dismisses this exact proposal."
+          : "Rejecting keeps the addition and removal separate and permanently dismisses this exact proposal."}
+      </p>
       <div className="repair-actions">
+        {canConfirm ? (
+          <button
+            aria-label={`Confirm repair for ${candidateLabel}`}
+            disabled={resolve.isPending}
+            onClick={() => resolve.mutate("confirm")}
+            type="button"
+          >
+            {resolve.isPending && action === "confirm"
+              ? "Confirming…"
+              : "Confirm repair"}
+          </button>
+        ) : null}
         <button
-          disabled={resolve.isPending}
-          onClick={() => resolve.mutate("confirm")}
-          type="button"
-        >
-          {resolve.isPending && action === "confirm"
-            ? "Confirming…"
-            : "Confirm repair"}
-        </button>
-        <button
+          aria-label={`Reject repair for ${candidateLabel}`}
           disabled={resolve.isPending}
           onClick={() => resolve.mutate("reject")}
           type="button"
@@ -77,13 +96,21 @@ function CandidateActions({
   );
 }
 
-function Conflicts({ values }: { values: string[] }) {
+function Conflicts({
+  values,
+  pending,
+}: {
+  values: string[];
+  pending: boolean;
+}) {
   if (values.length === 0) {
     return <p className="repair-confidence">No conflicting evidence.</p>;
   }
   return (
     <div className="repair-conflicts">
-      <strong>Conflicts requiring judgment</strong>
+      <strong>
+        {pending ? "Conflicts requiring judgment" : "Conflict evidence"}
+      </strong>
       <ul>
         {values.map((value) => (
           <li key={value}>{value.replaceAll("_", " ")}</li>
@@ -138,11 +165,14 @@ function PersonRepair({
   csrfToken: string;
 }) {
   return (
-    <article className="repair-card">
+    <article
+      aria-labelledby={`person-repair-${candidate.id}`}
+      className="repair-card"
+    >
       <header>
         <div>
           <p className="step-label">Person link · {candidate.state}</p>
-          <h3>{candidate.person_name}</h3>
+          <h3 id={`person-repair-${candidate.id}`}>{candidate.person_name}</h3>
         </div>
       </header>
       <dl className="repair-evidence">
@@ -154,12 +184,21 @@ function PersonRepair({
           label="Proposed Immich Person"
           value={candidate.candidate_immich_person_name}
         />
+        <EvidenceField
+          label="Proposed Immich Person ID"
+          value={candidate.candidate_immich_person_id}
+        />
       </dl>
       <FaceAnchors values={candidate.face_anchors} />
-      <Conflicts values={candidate.conflicts} />
-      {candidate.state === "pending" && candidate.candidate_immich_person_id ? (
+      <Conflicts
+        pending={candidate.state === "pending"}
+        values={candidate.conflicts}
+      />
+      {candidate.state === "pending" ? (
         <CandidateActions
           candidateID={candidate.id}
+          candidateLabel={candidate.person_name}
+          canConfirm={Boolean(candidate.candidate_immich_person_id)}
           csrfToken={csrfToken}
           kind="people"
         />
@@ -176,17 +215,26 @@ function MediaRepair({
   csrfToken: string;
 }) {
   return (
-    <article className="repair-card">
+    <article
+      aria-labelledby={`media-repair-${candidate.id}`}
+      className="repair-card"
+    >
       <header>
         <div>
           <p className="step-label">Media backing · {candidate.state}</p>
-          <h3>{candidate.candidate.filename || "Unnamed Media item"}</h3>
+          <h3 id={`media-repair-${candidate.id}`}>
+            {candidate.candidate.filename || "Unnamed Media item"}
+          </h3>
         </div>
       </header>
       <div className="repair-comparison">
         <section>
           <h4>Previous backing</h4>
           <dl className="repair-evidence">
+            <EvidenceField
+              label="Immich asset ID"
+              value={candidate.previous_immich_asset_id}
+            />
             <EvidenceField
               label="Checksum"
               value={candidate.previous.checksum}
@@ -202,6 +250,10 @@ function MediaRepair({
         <section>
           <h4>Candidate backing</h4>
           <dl className="repair-evidence">
+            <EvidenceField
+              label="Immich asset ID"
+              value={candidate.candidate_immich_asset_id}
+            />
             <EvidenceField
               label="Checksum"
               value={candidate.candidate.checksum}
@@ -219,10 +271,16 @@ function MediaRepair({
         </section>
       </div>
       <FaceAnchors values={candidate.face_anchors} />
-      <Conflicts values={candidate.conflicts} />
+      <Conflicts
+        pending={candidate.state === "pending"}
+        values={candidate.conflicts}
+      />
       {candidate.state === "pending" ? (
         <CandidateActions
           candidateID={candidate.id}
+          candidateLabel={
+            candidate.candidate.filename || candidate.candidate_immich_asset_id
+          }
           csrfToken={csrfToken}
           kind="media"
         />
@@ -241,7 +299,15 @@ function ImmichPersonAddition({
   csrfToken: string;
 }) {
   const queryClient = useQueryClient();
-  const [personID, setPersonID] = useState(people[0]?.id ?? "");
+  const currentPeople = people.filter(
+    (candidate) => candidate.status === "current",
+  );
+  const [selectedPersonID, setSelectedPersonID] = useState("");
+  const personID = currentPeople.some(
+    (candidate) => candidate.id === selectedPersonID,
+  )
+    ? selectedPersonID
+    : (currentPeople[0]?.id ?? "");
   const link = useMutation({
     mutationFn: (request: LinkPersonRequest) =>
       apiJSON<MutationResponse>("/api/repairs/people/link", {
@@ -254,9 +320,24 @@ function ImmichPersonAddition({
     },
   });
   return (
-    <article className="repair-card repair-addition">
+    <article
+      aria-labelledby={`person-addition-${person.immich_person_id}`}
+      className="repair-card repair-addition"
+    >
       <p className="step-label">New Immich identity · addition</p>
-      <h3>{person.name || "Unnamed Immich Person"}</h3>
+      <h3 id={`person-addition-${person.immich_person_id}`}>
+        {person.name || "Unnamed Immich Person"}
+      </h3>
+      <dl className="repair-evidence">
+        <EvidenceField
+          label="Immich Person ID"
+          value={person.immich_person_id}
+        />
+        <EvidenceField
+          label="Visibility"
+          value={person.hidden ? "Hidden" : "Visible"}
+        />
+      </dl>
       <p>
         This identity produces no Attendance suggestions until you explicitly
         link it to a Person.
@@ -264,16 +345,14 @@ function ImmichPersonAddition({
       <label>
         Portal Person
         <select
-          onChange={(event) => setPersonID(event.target.value)}
+          onChange={(event) => setSelectedPersonID(event.target.value)}
           value={personID}
         >
-          {people
-            .filter((candidate) => candidate.status === "current")
-            .map((candidate) => (
-              <option key={candidate.id} value={candidate.id}>
-                {candidate.display_name}
-              </option>
-            ))}
+          {currentPeople.map((candidate) => (
+            <option key={candidate.id} value={candidate.id}>
+              {candidate.display_name}
+            </option>
+          ))}
         </select>
       </label>
       {link.error ? (
@@ -342,13 +421,13 @@ export function RepairWorkspace({ csrfToken }: { csrfToken: string }) {
           onClick={() => reconcile.mutate()}
           type="button"
         >
-          {reconcile.isPending ? "Checking…" : "Check identities"}
+          {reconcile.isPending ? "Checking…" : "Check Person links"}
         </button>
       </header>
       {repairs.isPending ? <p>Loading repair evidence…</p> : null}
-      {repairs.error || reconcile.error ? (
+      {repairs.error || people.error || reconcile.error ? (
         <p className="form-error" role="alert">
-          {(repairs.error ?? reconcile.error)?.message}
+          {(repairs.error ?? people.error ?? reconcile.error)?.message}
         </p>
       ) : null}
       {empty ? <p>No Immich identity changes need review.</p> : null}

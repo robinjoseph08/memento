@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"time"
 
@@ -124,6 +125,22 @@ type anchorRow struct {
 	LastSeenAt   time.Time      `bun:"last_seen_at"`
 }
 
+func faceAnchorEvidence(rows []anchorRow) []FaceAnchorEvidence {
+	result := make([]FaceAnchorEvidence, 0, len(rows))
+	for _, row := range rows {
+		evidence := FaceAnchorEvidence{FaceID: row.FaceID.String(), AssetID: row.AssetID.String(), ImageWidth: row.ImageWidth,
+			ImageHeight: row.ImageHeight, X1: row.X1, Y1: row.Y1, X2: row.X2, Y2: row.Y2}
+		if row.Checksum.Valid {
+			evidence.Checksum = row.Checksum.String
+		}
+		if row.LastPersonID.Valid {
+			evidence.LastPersonID = row.LastPersonID.UUID.String()
+		}
+		result = append(result, evidence)
+	}
+	return result
+}
+
 // Service keeps repair state separate from Recipient authorization and published identity.
 type Service struct {
 	db        *bun.DB
@@ -161,6 +178,9 @@ func (s *Service) ReconcilePeople(ctx context.Context) (MutationResponse, error)
 		}
 		assetSeen[anchor.AssetID] = struct{}{}
 		faces, faceErr := s.connector.Faces(ctx, anchor.AssetID)
+		if errors.Is(faceErr, immich.ErrNotFound) {
+			continue
+		}
 		if faceErr != nil {
 			return MutationResponse{}, ErrDependency
 		}
@@ -204,6 +224,10 @@ func (s *Service) ReconcilePeople(ctx context.Context) (MutationResponse, error)
 		}
 		for _, link := range links {
 			personAnchors := anchorsByPerson[link.PersonID]
+			encodedAnchors, err := json.Marshal(faceAnchorEvidence(personAnchors))
+			if err != nil {
+				return err
+			}
 			candidate, conflicts, matched := evaluatePersonLink(link.ImmichPersonID, present, personAnchors, facesByID)
 			if matched {
 				if _, err := tx.NewRaw(`UPDATE immich_person_links SET last_seen_at = ?, version = version + 1 WHERE person_id = ?`, now, link.PersonID).Exec(ctx); err != nil {
@@ -221,16 +245,16 @@ func (s *Service) ReconcilePeople(ctx context.Context) (MutationResponse, error)
 				if _, err := tx.NewRaw(`
 					INSERT INTO person_repair_candidates (
 						id, person_id, previous_immich_person_id, candidate_immich_person_id,
-						anchor_count, conflict_evidence, created_at
+						anchor_count, anchor_evidence, conflict_evidence, created_at
 					)
-					SELECT ?, ?, ?, ?, ?, '[]'::jsonb, ?
+					SELECT ?, ?, ?, ?, ?, ?::jsonb, '[]'::jsonb, ?
 					WHERE NOT EXISTS (
 						SELECT 1 FROM person_repair_candidates
 						WHERE person_id = ? AND state = 'rejected'
 						  AND previous_immich_person_id = ?
 						  AND candidate_immich_person_id = ?
 					)
-				`, uuid.New(), link.PersonID, link.ImmichPersonID, link.ImmichPersonID, len(personAnchors), now,
+				`, uuid.New(), link.PersonID, link.ImmichPersonID, link.ImmichPersonID, len(personAnchors), string(encodedAnchors), now,
 					link.PersonID, link.ImmichPersonID, link.ImmichPersonID).Exec(ctx); err != nil {
 					return err
 				}
@@ -250,16 +274,16 @@ func (s *Service) ReconcilePeople(ctx context.Context) (MutationResponse, error)
 			if _, err := tx.NewRaw(`
 				INSERT INTO person_repair_candidates (
 					id, person_id, previous_immich_person_id, candidate_immich_person_id,
-					anchor_count, conflict_evidence, created_at
+					anchor_count, anchor_evidence, conflict_evidence, created_at
 				)
-				SELECT ?, ?, ?, ?, ?, ?::jsonb, ?
+				SELECT ?, ?, ?, ?, ?, ?::jsonb, ?::jsonb, ?
 				WHERE NOT EXISTS (
 					SELECT 1 FROM person_repair_candidates
 					WHERE person_id = ? AND state = 'rejected'
 					  AND previous_immich_person_id = ?
 					  AND candidate_immich_person_id IS NOT DISTINCT FROM ?
 				)
-			`, candidateID, link.PersonID, link.ImmichPersonID, candidate, len(personAnchors), string(encodedConflicts), now,
+			`, candidateID, link.PersonID, link.ImmichPersonID, candidate, len(personAnchors), string(encodedAnchors), string(encodedConflicts), now,
 				link.PersonID, link.ImmichPersonID, candidate).Exec(ctx); err != nil {
 				return err
 			}
@@ -269,7 +293,7 @@ func (s *Service) ReconcilePeople(ctx context.Context) (MutationResponse, error)
 	if err != nil {
 		return MutationResponse{}, fmt.Errorf("reconcile Immich identities: %w", err)
 	}
-	return MutationResponse{Status: "reviewed"}, nil
+	return MutationResponse{Status: "reconciled"}, nil
 }
 
 func evaluatePersonLink(current uuid.UUID, present map[uuid.UUID]immich.PersonSummary, anchors []anchorRow, faces map[uuid.UUID]immich.FaceSummary) (*uuid.UUID, []string, bool) {
@@ -358,7 +382,7 @@ func (s *Service) listPersonCandidates(ctx context.Context, response *ListRespon
 		ID, PersonID, PreviousID         uuid.UUID
 		CandidateID                      uuid.NullUUID
 		PersonName, CandidateName, State string
-		Conflicts                        json.RawMessage
+		Anchors, Conflicts               json.RawMessage
 		CreatedAt                        time.Time
 		ResolvedAt                       *time.Time
 	}
@@ -368,7 +392,8 @@ func (s *Service) listPersonCandidates(ctx context.Context, response *ListRespon
 			candidate.previous_immich_person_id AS previous_id,
 			candidate.candidate_immich_person_id AS candidate_id,
 			COALESCE(inventory.name, '') AS candidate_name, candidate.state,
-			candidate.conflict_evidence AS conflicts, candidate.created_at, candidate.resolved_at
+			candidate.anchor_evidence AS anchors, candidate.conflict_evidence AS conflicts,
+			candidate.created_at, candidate.resolved_at
 		FROM person_repair_candidates AS candidate
 		JOIN people AS person ON person.id = candidate.person_id
 		LEFT JOIN immich_people_inventory AS inventory ON inventory.immich_person_id = candidate.candidate_immich_person_id
@@ -386,38 +411,12 @@ func (s *Service) listPersonCandidates(ctx context.Context, response *ListRespon
 		if err := json.Unmarshal(raw.Conflicts, &candidate.Conflicts); err != nil {
 			return err
 		}
-		anchors, err := s.personAnchors(ctx, raw.PersonID)
-		if err != nil {
+		if err := json.Unmarshal(raw.Anchors, &candidate.Anchors); err != nil {
 			return err
 		}
-		candidate.Anchors = anchors
 		response.PersonCandidates = append(response.PersonCandidates, candidate)
 	}
 	return nil
-}
-
-func (s *Service) personAnchors(ctx context.Context, personID uuid.UUID) ([]FaceAnchorEvidence, error) {
-	var rows []anchorRow
-	if err := s.db.NewRaw(`
-		SELECT id, person_id, immich_face_id, immich_asset_id, asset_checksum,
-			image_width, image_height, x1, y1, x2, y2, last_linked_immich_person_id, last_seen_at
-		FROM immich_face_anchors WHERE person_id = ? ORDER BY last_seen_at DESC, immich_face_id LIMIT 12
-	`, personID).Scan(ctx, &rows); err != nil {
-		return nil, err
-	}
-	result := make([]FaceAnchorEvidence, 0, len(rows))
-	for _, row := range rows {
-		evidence := FaceAnchorEvidence{FaceID: row.FaceID.String(), AssetID: row.AssetID.String(), ImageWidth: row.ImageWidth,
-			ImageHeight: row.ImageHeight, X1: row.X1, Y1: row.Y1, X2: row.X2, Y2: row.Y2}
-		if row.Checksum.Valid {
-			evidence.Checksum = row.Checksum.String
-		}
-		if row.LastPersonID.Valid {
-			evidence.LastPersonID = row.LastPersonID.UUID.String()
-		}
-		result = append(result, evidence)
-	}
-	return result, nil
 }
 
 func (s *Service) listMediaCandidates(ctx context.Context, response *ListResponse) error {
@@ -545,7 +544,19 @@ func (s *Service) linkPerson(ctx context.Context, actor setup.CuratorSession, pe
 		`, personID, immichPersonID, now, now, actor.PersonID).Exec(ctx); err != nil {
 			return err
 		}
-		if _, err := tx.NewRaw(`UPDATE person_repair_candidates SET state = 'confirmed', resolved_at = ?, resolved_by_person_id = ? WHERE person_id = ? AND state = 'pending'`, now, actor.PersonID, personID).Exec(ctx); err != nil {
+		if candidateID != nil {
+			if err := execRepairExactlyOne(ctx, tx, `UPDATE person_repair_candidates SET state = 'confirmed', resolved_at = ?, resolved_by_person_id = ? WHERE id = ? AND state = 'pending'`, now, actor.PersonID, *candidateID); err != nil {
+				return err
+			}
+		} else {
+			if _, err := tx.NewRaw(`UPDATE person_repair_candidates SET state = 'confirmed', resolved_at = ?, resolved_by_person_id = ? WHERE person_id = ? AND candidate_immich_person_id = ? AND state = 'pending'`, now, actor.PersonID, personID, immichPersonID).Exec(ctx); err != nil {
+				return err
+			}
+			if _, err := tx.NewRaw(`UPDATE person_repair_candidates SET state = 'rejected', resolved_at = ?, resolved_by_person_id = ? WHERE person_id = ? AND state = 'pending'`, now, actor.PersonID, personID).Exec(ctx); err != nil {
+				return err
+			}
+		}
+		if _, err := tx.NewRaw(`DELETE FROM immich_face_anchors WHERE person_id = ?`, personID).Exec(ctx); err != nil {
 			return err
 		}
 		if err := storeAnchors(ctx, tx, personID, immichPersonID, anchors, now); err != nil {
@@ -577,6 +588,9 @@ func (s *Service) collectAnchors(ctx context.Context, immichPersonID uuid.UUID) 
 	result := make([]collectedAnchor, 0, 5)
 	for _, backing := range backings {
 		faces, err := s.connector.Faces(ctx, backing.AssetID)
+		if errors.Is(err, immich.ErrNotFound) {
+			continue
+		}
 		if err != nil {
 			return nil, ErrDependency
 		}
@@ -615,9 +629,20 @@ func storeAnchors(ctx context.Context, tx bun.Tx, personID, immichPersonID uuid.
 
 // ConfirmPerson confirms a generated Person repair candidate.
 func (s *Service) ConfirmPerson(ctx context.Context, actor setup.CuratorSession, candidateID uuid.UUID) (MutationResponse, error) {
-	var personID uuid.UUID
+	var personID, previousID uuid.UUID
 	var replacement uuid.NullUUID
-	if err := s.db.NewRaw(`SELECT person_id, candidate_immich_person_id FROM person_repair_candidates WHERE id = ? AND state = 'pending'`, candidateID).Scan(ctx, &personID, &replacement); errors.Is(err, sql.ErrNoRows) {
+	var encodedConflicts json.RawMessage
+	if err := s.db.NewRaw(`
+		SELECT person_id, previous_immich_person_id, candidate_immich_person_id, conflict_evidence
+		FROM person_repair_candidates WHERE id = ? AND state = 'pending'
+	`, candidateID).Scan(ctx, &personID, &previousID, &replacement, &encodedConflicts); errors.Is(err, sql.ErrNoRows) {
+		var exists bool
+		if scanErr := s.db.NewRaw(`SELECT EXISTS (SELECT 1 FROM person_repair_candidates WHERE id = ?)`, candidateID).Scan(ctx, &exists); scanErr != nil {
+			return MutationResponse{}, scanErr
+		}
+		if exists {
+			return MutationResponse{}, ErrAlreadyResolved
+		}
 		return MutationResponse{}, ErrNotFound
 	} else if err != nil {
 		return MutationResponse{}, err
@@ -625,7 +650,63 @@ func (s *Service) ConfirmPerson(ctx context.Context, actor setup.CuratorSession,
 	if !replacement.Valid {
 		return MutationResponse{}, ErrConflict
 	}
+	var expectedConflicts []string
+	if err := json.Unmarshal(encodedConflicts, &expectedConflicts); err != nil {
+		return MutationResponse{}, err
+	}
+	currentCandidate, currentConflicts, err := s.currentPersonEvaluation(ctx, personID, previousID)
+	if err != nil {
+		return MutationResponse{}, err
+	}
+	if currentCandidate == nil || *currentCandidate != replacement.UUID || !slices.Equal(currentConflicts, expectedConflicts) {
+		return MutationResponse{}, ErrConflict
+	}
 	return s.linkPerson(ctx, actor, personID, replacement.UUID, &candidateID)
+}
+
+func (s *Service) currentPersonEvaluation(ctx context.Context, personID, previousID uuid.UUID) (*uuid.UUID, []string, error) {
+	if err := s.connector.Check(ctx); err != nil {
+		return nil, nil, ErrDependency
+	}
+	people, err := s.connector.People(ctx)
+	if err != nil {
+		return nil, nil, ErrDependency
+	}
+	present := make(map[uuid.UUID]immich.PersonSummary, len(people))
+	for _, person := range people {
+		present[person.SourceID] = person
+	}
+	var anchors []anchorRow
+	if err := s.db.NewRaw(`
+		SELECT id, person_id, immich_face_id, immich_asset_id, asset_checksum,
+			image_width, image_height, x1, y1, x2, y2, last_linked_immich_person_id, last_seen_at
+		FROM immich_face_anchors WHERE person_id = ? ORDER BY immich_asset_id, immich_face_id
+	`, personID).Scan(ctx, &anchors); err != nil {
+		return nil, nil, err
+	}
+	facesByID := map[uuid.UUID]immich.FaceSummary{}
+	seenAssets := map[uuid.UUID]struct{}{}
+	for _, anchor := range anchors {
+		if _, seen := seenAssets[anchor.AssetID]; seen {
+			continue
+		}
+		seenAssets[anchor.AssetID] = struct{}{}
+		faces, err := s.connector.Faces(ctx, anchor.AssetID)
+		if errors.Is(err, immich.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return nil, nil, ErrDependency
+		}
+		for _, face := range faces {
+			facesByID[face.SourceID] = face
+		}
+	}
+	candidate, conflicts, matched := evaluatePersonLink(previousID, present, anchors, facesByID)
+	if matched {
+		candidate = &previousID
+	}
+	return candidate, conflicts, nil
 }
 
 // RejectPerson preserves evidence while leaving the link in needs-review.
@@ -643,23 +724,60 @@ func (s *Service) ConfirmMedia(ctx context.Context, actor setup.CuratorSession, 
 			FROM media_repair_candidates WHERE id = ? AND state = 'pending' FOR UPDATE
 		`, candidateID).Scan(ctx, &mediaItemID, &candidateMediaItemID, &previousAssetID, &candidateAssetID)
 		if errors.Is(err, sql.ErrNoRows) {
+			var exists bool
+			if scanErr := tx.NewRaw(`SELECT EXISTS (SELECT 1 FROM media_repair_candidates WHERE id = ?)`, candidateID).Scan(ctx, &exists); scanErr != nil {
+				return scanErr
+			}
+			if exists {
+				return ErrAlreadyResolved
+			}
 			return ErrNotFound
 		}
-		if err != nil || candidateMediaItemID == uuid.Nil {
+		if err != nil {
+			return err
+		}
+		if candidateMediaItemID == uuid.Nil {
 			return ErrConflict
 		}
 		if _, err := tx.NewRaw(`SELECT id FROM media_items WHERE id IN (?, ?) ORDER BY id FOR UPDATE`, mediaItemID, candidateMediaItemID).Exec(ctx); err != nil {
 			return err
+		}
+		var previousChecksum, candidateChecksum sql.NullString
+		var previousAvailability, candidateAvailability string
+		var previousHasMembership, candidateHasMembership bool
+		if err := tx.NewRaw(`
+			SELECT previous.checksum, candidate.checksum, previous_item.availability, candidate_item.availability,
+				EXISTS (SELECT 1 FROM source_album_memberships WHERE media_item_id = previous_item.id),
+				EXISTS (SELECT 1 FROM source_album_memberships WHERE media_item_id = candidate_item.id)
+			FROM media_backings AS previous
+			JOIN media_items AS previous_item ON previous_item.id = previous.media_item_id
+			JOIN media_backings AS candidate ON candidate.media_item_id = ? AND candidate.immich_asset_id = ? AND candidate.active
+			JOIN media_items AS candidate_item ON candidate_item.id = candidate.media_item_id
+			WHERE previous.media_item_id = ? AND previous.immich_asset_id = ? AND previous.active
+		`, candidateMediaItemID, candidateAssetID, mediaItemID, previousAssetID).Scan(ctx,
+			&previousChecksum, &candidateChecksum, &previousAvailability, &candidateAvailability,
+			&previousHasMembership, &candidateHasMembership); errors.Is(err, sql.ErrNoRows) {
+			return ErrConflict
+		} else if err != nil {
+			return err
+		}
+		if !previousChecksum.Valid || !candidateChecksum.Valid || previousChecksum.String != candidateChecksum.String ||
+			previousAvailability != "source_missing" || candidateAvailability != "current" || previousHasMembership || !candidateHasMembership {
+			return ErrConflict
 		}
 		if err := execRepairExactlyOne(ctx, tx, `UPDATE media_backings SET active = false, ended_at = ? WHERE media_item_id = ? AND active AND immich_asset_id = ?`, now, mediaItemID, previousAssetID); err != nil {
 			return err
 		}
 		membershipResult, err := tx.NewRaw(`UPDATE source_album_memberships SET media_item_id = ? WHERE media_item_id = ?`, mediaItemID, candidateMediaItemID).Exec(ctx)
 		if err != nil {
-			return ErrConflict
-		}
-		if _, err := membershipResult.RowsAffected(); err != nil {
 			return err
+		}
+		memberships, err := membershipResult.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if memberships == 0 {
+			return ErrConflict
 		}
 		if err := execRepairExactlyOne(ctx, tx, `UPDATE media_backings SET media_item_id = ?, state = 'confirmed', confirmed_at = ? WHERE media_item_id = ? AND active AND immich_asset_id = ?`, mediaItemID, now, candidateMediaItemID, candidateAssetID); err != nil {
 			return err

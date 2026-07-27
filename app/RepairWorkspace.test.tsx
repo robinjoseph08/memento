@@ -105,6 +105,12 @@ test("shows private normalized Media evidence and confirms only after an explici
   renderWorkspace();
   expect(await screen.findByText("/private/old.jpg")).toBeInTheDocument();
   expect(screen.getByText("/private/moved/new.jpg")).toBeInTheDocument();
+  expect(
+    screen.getByText("33333333-3333-4333-8333-333333333333"),
+  ).toBeInTheDocument();
+  expect(
+    screen.getByText("44444444-4444-4444-8444-444444444444"),
+  ).toBeInTheDocument();
   expect(screen.getAllByText("abcd")).toHaveLength(2);
   expect(screen.getByText("1 related face anchor")).toBeInTheDocument();
   expect(screen.getByText("face-anchor-id")).toBeInTheDocument();
@@ -120,7 +126,9 @@ test("shows private normalized Media evidence and confirms only after an explici
     requests.filter((request) => request.init?.method === "POST"),
   ).toHaveLength(0);
 
-  fireEvent.click(screen.getByRole("button", { name: "Confirm repair" }));
+  fireEvent.click(
+    screen.getByRole("button", { name: "Confirm repair for new.jpg" }),
+  );
   await waitFor(() => {
     const confirmation = requests.find(
       (request) => request.init?.method === "POST",
@@ -132,6 +140,125 @@ test("shows private normalized Media evidence and confirms only after an explici
       "X-Memento-CSRF": "private-csrf",
     });
   });
+});
+
+test("shows conflicted Person evidence and permits explicit rejection without a replacement", async () => {
+  const requests: Array<{ path: string; init?: RequestInit }> = [];
+  vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+    const path = requestPath(input);
+    requests.push({ path, init });
+    if (path.startsWith("/api/people")) {
+      return Promise.resolve(jsonResponse({ people: [] }));
+    }
+    if (init?.method === "POST") {
+      return Promise.resolve(jsonResponse({ status: "rejected" }));
+    }
+    return Promise.resolve(
+      jsonResponse({
+        person_candidates: [
+          {
+            id: "55555555-5555-4555-8555-555555555555",
+            person_id: "66666666-6666-4666-8666-666666666666",
+            person_name: "Family member",
+            previous_immich_person_id: "77777777-7777-4777-8777-777777777777",
+            state: "pending",
+            face_anchors: [
+              {
+                face_id: "person-face-id",
+                asset_id: "person-asset-id",
+                checksum: "person-checksum",
+                image_width: 100,
+                image_height: 80,
+                x1: 1,
+                y1: 2,
+                x2: 20,
+                y2: 30,
+                last_immich_person_id: "77777777-7777-4777-8777-777777777777",
+              },
+            ],
+            conflicts: ["anchors_split_across_people"],
+            created_at: "2026-01-01T00:00:00Z",
+          },
+        ],
+        media_candidates: [],
+        unlinked_immich_people: [],
+      }),
+    );
+  });
+
+  renderWorkspace();
+  expect(await screen.findByText("Family member")).toBeInTheDocument();
+  expect(screen.getByText("person-face-id")).toBeInTheDocument();
+  expect(screen.getByText("anchors split across people")).toBeInTheDocument();
+  expect(
+    screen.queryByRole("button", { name: /Confirm repair for Family member/ }),
+  ).not.toBeInTheDocument();
+  fireEvent.click(
+    screen.getByRole("button", { name: "Reject repair for Family member" }),
+  );
+  await waitFor(() =>
+    expect(
+      requests.find((request) => request.init?.method === "POST")?.path,
+    ).toBe("/api/repairs/people/55555555-5555-4555-8555-555555555555/reject"),
+  );
+  expect(await screen.findByRole("status")).toHaveTextContent(
+    "Repair rejected.",
+  );
+});
+
+test("selects a current portal Person when People load after repair additions", async () => {
+  let resolvePeople: (response: Response) => void = () => undefined;
+  const peopleResponse = new Promise<Response>((resolve) => {
+    resolvePeople = resolve;
+  });
+  vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
+    const path = requestPath(input);
+    if (path.startsWith("/api/people")) {
+      return peopleResponse;
+    }
+    return Promise.resolve(
+      jsonResponse({
+        person_candidates: [],
+        media_candidates: [],
+        unlinked_immich_people: [
+          {
+            immich_person_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            name: "Late-loading cluster",
+            hidden: true,
+          },
+        ],
+      }),
+    );
+  });
+
+  renderWorkspace();
+  expect(await screen.findByText("Late-loading cluster")).toBeInTheDocument();
+  expect(
+    screen.getByText("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
+  ).toBeInTheDocument();
+  expect(screen.getByText("Hidden")).toBeInTheDocument();
+  expect(
+    screen.getByRole("button", { name: "Confirm Person link" }),
+  ).toBeDisabled();
+  resolvePeople(
+    jsonResponse({
+      people: [
+        {
+          id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          display_name: "Family member",
+          status: "current",
+        },
+      ],
+    }),
+  );
+  await waitFor(() =>
+    expect(
+      screen.getByRole("button", { name: "Confirm Person link" }),
+    ).toBeEnabled(),
+  );
+  expect(screen.getByLabelText("Portal Person")).toHaveValue(
+    "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  );
 });
 
 test("keeps new Immich People as additions until the Curator selects a portal Person", async () => {

@@ -262,6 +262,48 @@ func TestPeopleAndFacesNormalizePrivateRepairEvidence(t *testing.T) {
 	assert.Equal(t, 220, faces[0].Y2)
 }
 
+func TestPeopleAndFacesRejectCaseDriftAndMissingPersonFields(t *testing.T) {
+	assetID, faceID, personID := uuid.New(), uuid.New(), uuid.New()
+	t.Run("People response", func(t *testing.T) {
+		server := contractServer(t, func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(`{"People":[],"total":0,"hidden":0}`))
+		})
+		defer server.Close()
+		client, err := New(clientConfig(server.URL), server.Client())
+		require.NoError(t, err)
+		_, err = client.People(context.Background())
+		require.EqualError(t, err, "Immich returned an invalid response")
+	})
+
+	for name, person := range map[string]string{
+		"missing person":             "",
+		"case variant face":          `,"Person":null`,
+		"case variant nested person": `,"person":{"ID":"` + personID.String() + `"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := contractServer(t, func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(`[{"id":"` + faceID.String() + `","imageWidth":100,"imageHeight":80,"boundingBoxX1":1,"boundingBoxY1":2,"boundingBoxX2":20,"boundingBoxY2":30` + person + `}]`))
+			})
+			defer server.Close()
+			client, err := New(clientConfig(server.URL), server.Client())
+			require.NoError(t, err)
+			_, err = client.Faces(context.Background(), assetID)
+			require.EqualError(t, err, "Immich returned an invalid response")
+		})
+	}
+}
+
+func TestFacesIdentifyDeletedAssets(t *testing.T) {
+	server := contractServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+	defer server.Close()
+	client, err := New(clientConfig(server.URL), server.Client())
+	require.NoError(t, err)
+	_, err = client.Faces(context.Background(), uuid.New())
+	assert.ErrorIs(t, err, ErrNotFound)
+}
+
 func TestAlbumAssetsNormalizeChecksumForRepairWithoutForwardingBase64(t *testing.T) {
 	albumID, assetID := uuid.New(), uuid.New()
 	server := contractServer(t, func(w http.ResponseWriter, _ *http.Request) {

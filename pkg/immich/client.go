@@ -54,6 +54,8 @@ var (
 	errAlbumAssetsFailed  = safeError("Immich album membership lookup failed")
 	errPeopleFailed       = safeError("Immich people lookup failed")
 	errFacesFailed        = safeError("Immich face lookup failed")
+	// ErrNotFound identifies an Immich resource that disappeared between evidence reads.
+	ErrNotFound = safeError("Immich resource not found")
 )
 
 // IsConfigurationError reports whether validation failed because the operator
@@ -189,6 +191,30 @@ func (response *assetResponse) UnmarshalJSON(contents []byte) error {
 		return err
 	}
 	return json.Unmarshal(contents, (*exactAssetResponse)(response))
+}
+
+func (response *peopleResponse) UnmarshalJSON(contents []byte) error {
+	type exactPeopleResponse peopleResponse
+	if err := rejectCaseVariantFields(contents, "people", "total", "hidden"); err != nil {
+		return err
+	}
+	return json.Unmarshal(contents, (*exactPeopleResponse)(response))
+}
+
+func (response *personResponse) UnmarshalJSON(contents []byte) error {
+	type exactPersonResponse personResponse
+	if err := rejectCaseVariantFields(contents, "id", "name", "isHidden"); err != nil {
+		return err
+	}
+	return json.Unmarshal(contents, (*exactPersonResponse)(response))
+}
+
+func (response *faceResponse) UnmarshalJSON(contents []byte) error {
+	type exactFaceResponse faceResponse
+	if err := rejectCaseVariantFields(contents, "id", "imageWidth", "imageHeight", "boundingBoxX1", "boundingBoxY1", "boundingBoxX2", "boundingBoxY2", "person"); err != nil {
+		return err
+	}
+	return json.Unmarshal(contents, (*exactFaceResponse)(response))
 }
 
 // AlbumSummary is the normalized subset Memento retains from an owned album.
@@ -509,6 +535,9 @@ func (c *Client) doJSON(ctx context.Context, method, path string, query url.Valu
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxJSONResponse))
+		if response.StatusCode == http.StatusNotFound && path == "faces" {
+			return ErrNotFound
+		}
 		if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
 			return errInvalidCredentials
 		}
@@ -746,8 +775,14 @@ func optionalChecksum(value *string) (string, error) {
 }
 
 func nestedPersonID(raw json.RawMessage) (*uuid.UUID, error) {
-	if len(raw) == 0 || string(raw) == "null" {
+	if len(raw) == 0 {
+		return nil, errInvalidResponse
+	}
+	if string(raw) == "null" {
 		return nil, nil
+	}
+	if err := rejectCaseVariantFields(raw, "id"); err != nil {
+		return nil, errInvalidResponse
 	}
 	var person struct {
 		ID *string `json:"id"`

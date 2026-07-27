@@ -51,7 +51,7 @@ func init() {
 						confirmed_by_person_id uuid NOT NULL REFERENCES people(id) ON DELETE RESTRICT,
 						version bigint NOT NULL DEFAULT 1 CHECK (version > 0)
 					)`,
-					`CREATE INDEX immich_person_links_source_idx ON immich_person_links (immich_person_id)`,
+					`CREATE UNIQUE INDEX immich_person_links_source_idx ON immich_person_links (immich_person_id)`,
 					`CREATE INDEX immich_person_links_review_idx ON immich_person_links (state)`,
 					`CREATE TABLE immich_face_anchors (
 						id uuid PRIMARY KEY,
@@ -76,6 +76,7 @@ func init() {
 						candidate_immich_person_id uuid,
 						state text NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'rejected', 'confirmed')),
 						anchor_count integer NOT NULL DEFAULT 0 CHECK (anchor_count >= 0),
+						anchor_evidence jsonb NOT NULL DEFAULT '[]'::jsonb CHECK (jsonb_typeof(anchor_evidence) = 'array'),
 						conflict_evidence jsonb NOT NULL DEFAULT '[]'::jsonb CHECK (jsonb_typeof(conflict_evidence) = 'array'),
 						created_at timestamptz NOT NULL,
 						resolved_at timestamptz,
