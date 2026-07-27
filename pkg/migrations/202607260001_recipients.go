@@ -14,6 +14,7 @@ func init() {
 					`CREATE TABLE invitations (
 						id uuid PRIMARY KEY,
 						recipient_access_generation_id uuid NOT NULL REFERENCES recipient_access_generations(id) ON DELETE RESTRICT,
+						recipient_email_id uuid NOT NULL REFERENCES recipient_emails(id) ON DELETE RESTRICT,
 						token_hash bytea NOT NULL UNIQUE CHECK (octet_length(token_hash) = 32),
 						issued_at timestamptz NOT NULL,
 						expires_at timestamptz NOT NULL,

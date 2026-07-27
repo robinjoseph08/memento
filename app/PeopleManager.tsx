@@ -591,8 +591,13 @@ function RecipientControls({
               {invitation.status === "active" ? (
                 <div className="recipient-actions">
                   <button
-                    disabled={invitationAction.isPending}
+                    disabled={invitationAction.isPending || !invitation.sent_at}
                     onClick={() => invitationAction.mutate("remind")}
+                    title={
+                      invitation.sent_at
+                        ? undefined
+                        : "Wait for the initial Invitation delivery"
+                    }
                     type="button"
                   >
                     Send manual reminder

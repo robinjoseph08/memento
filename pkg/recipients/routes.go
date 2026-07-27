@@ -129,8 +129,11 @@ func (h *Handler) invitationAction(c echo.Context, action invitationAction) erro
 
 func (h *Handler) Inspect(c echo.Context) error {
 	response, err := h.service.Inspect(c.Request().Context(), c.Request().Header.Get("X-Memento-Invitation"))
-	if err != nil {
+	if errors.Is(err, ErrInvitationToken) {
 		return invitationTokenError()
+	}
+	if err != nil {
+		return err
 	}
 	return c.JSON(http.StatusOK, response)
 }
@@ -141,8 +144,11 @@ func (h *Handler) Accept(c echo.Context) error {
 		return invitationTokenError()
 	}
 	response, err := h.service.Accept(c.Request().Context(), request.Token)
-	if err != nil {
+	if errors.Is(err, ErrInvitationToken) {
 		return invitationTokenError()
+	}
+	if err != nil {
+		return err
 	}
 	return c.JSON(http.StatusOK, response)
 }
@@ -161,6 +167,8 @@ func recipientError(err error) error {
 		return errcodes.Conflict("Use the current Invitation or explicitly reissue it.")
 	case errors.Is(err, ErrInvitationNotFound), errors.Is(err, ErrInvitationNotLive):
 		return errcodes.Conflict("There is no live Invitation for this Pending Recipient.")
+	case errors.Is(err, ErrInvitationNotSent):
+		return errcodes.Conflict("Wait for the initial Invitation delivery before sending a reminder.")
 	case errors.Is(err, ErrInvitationState):
 		return errcodes.Conflict("This Recipient state does not permit Invitation changes.")
 	case errors.Is(err, emaildelivery.ErrNotConfigured):

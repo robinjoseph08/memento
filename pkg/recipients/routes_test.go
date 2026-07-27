@@ -4,9 +4,11 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/labstack/echo/v4"
+	"github.com/robinjoseph08/memento/pkg/errcodes"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -40,15 +42,29 @@ func TestInvitationRoutesUseSafeMethodsAndExplicitPolicies(t *testing.T) {
 	assert.Empty(t, expected)
 }
 
-func TestTokenHeadersPreventCachingAndReferrerLeakage(t *testing.T) {
+func TestRegisteredTokenRoutesPreventCachingAndReferrerLeakage(t *testing.T) {
 	e := echo.New()
-	e.GET("/token", tokenHeaders(func(c echo.Context) error {
-		return c.NoContent(http.StatusNoContent)
-	}))
-	request := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/token", nil)
-	response := httptest.NewRecorder()
-	e.ServeHTTP(response, request)
-	require.Equal(t, http.StatusNoContent, response.Code)
-	assert.Equal(t, "no-store", response.Header().Get("Cache-Control"))
-	assert.Equal(t, "no-referrer", response.Header().Get("Referrer-Policy"))
+	e.HTTPErrorHandler = errcodes.NewHandler().Handle
+	RegisterRoutes(e, NewHandler(New(nil, nil, "https://memento.example"), nil))
+	tests := []struct {
+		method string
+		path   string
+		body   string
+	}{
+		{http.MethodGet, "/api/auth/invitations/inspect", ""},
+		{http.MethodPost, "/api/auth/invitations/accept", `{"token":"invalid"}`},
+	}
+	for _, test := range tests {
+		request := httptest.NewRequestWithContext(context.Background(), test.method, test.path, strings.NewReader(test.body))
+		if test.body != "" {
+			request.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+		}
+		response := httptest.NewRecorder()
+		e.ServeHTTP(response, request)
+		require.Equal(t, http.StatusNotFound, response.Code)
+		assert.Equal(t, "no-store", response.Header().Get("Cache-Control"))
+		assert.Equal(t, "no-referrer", response.Header().Get("Referrer-Policy"))
+		assert.Contains(t, response.Body.String(), `"code":"not_found"`)
+		assert.NotContains(t, response.Body.String(), "Recipient")
+	}
 }

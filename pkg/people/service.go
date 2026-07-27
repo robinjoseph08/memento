@@ -427,6 +427,27 @@ func (s *Service) Archive(ctx context.Context, actor setup.CuratorSession, id uu
 		if count == 0 {
 			return staleOrNotFound(ctx, tx, id)
 		}
+		if _, err := tx.NewRaw(`
+			UPDATE invitations AS invitation SET revoked_at = ?
+			FROM recipient_access_generations AS access
+			WHERE invitation.recipient_access_generation_id = access.id AND access.person_id = ? AND access.is_current
+			  AND invitation.accepted_at IS NULL AND invitation.revoked_at IS NULL AND invitation.superseded_at IS NULL
+		`, now, id).Exec(ctx); err != nil {
+			return err
+		}
+		if _, err := tx.NewRaw(`
+			UPDATE recipient_emails AS email SET is_current = false, ended_at = ?
+			FROM recipient_access_generations AS access
+			WHERE email.recipient_access_generation_id = access.id AND access.person_id = ? AND access.is_current AND email.is_current
+		`, now, id).Exec(ctx); err != nil {
+			return err
+		}
+		if _, err := tx.NewRaw(`
+			UPDATE recipient_access_generations SET state = 'revoked', is_current = false, ended_at = ?, updated_at = ?
+			WHERE person_id = ? AND is_current
+		`, now, now, id).Exec(ctx); err != nil {
+			return err
+		}
 		if _, err := tx.NewRaw(`UPDATE sessions SET revoked_at = ? WHERE person_id = ? AND revoked_at IS NULL`, now, id).Exec(ctx); err != nil {
 			return err
 		}
@@ -643,6 +664,12 @@ func (s *Service) Merge(ctx context.Context, actor setup.CuratorSession, request
 			}
 			if request.ExpectedRecipientGeneration != resultingGeneration {
 				return ErrMergeStale
+			}
+			if _, err := tx.NewRaw(`
+				UPDATE invitations SET superseded_at = ?
+				WHERE recipient_access_generation_id = ? AND accepted_at IS NULL AND revoked_at IS NULL AND superseded_at IS NULL
+			`, now, source.CurrentAccess.ID).Exec(ctx); err != nil {
+				return err
 			}
 			var survivorEmailID uuid.UUID
 			var survivorEmail string

@@ -338,8 +338,12 @@ func (s *Service) deliveryObsolete(ctx context.Context, message delivery) (bool,
 	var live bool
 	err := s.db.NewRaw(`
 		SELECT EXISTS (
-			SELECT 1 FROM invitations
-			WHERE id = ? AND accepted_at IS NULL AND revoked_at IS NULL AND superseded_at IS NULL AND expires_at > now()
+			SELECT 1 FROM invitations AS invitation
+			JOIN recipient_access_generations AS access ON access.id = invitation.recipient_access_generation_id AND access.is_current
+			JOIN recipient_emails AS email ON email.id = invitation.recipient_email_id AND email.is_current
+			JOIN people AS person ON person.id = access.person_id AND person.archived_at IS NULL AND person.merged_at IS NULL
+			WHERE invitation.id = ? AND invitation.accepted_at IS NULL AND invitation.revoked_at IS NULL
+			  AND invitation.superseded_at IS NULL AND invitation.expires_at > now()
 		)
 	`, *message.InvitationID).Scan(ctx, &live)
 	return !live, err

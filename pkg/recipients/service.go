@@ -37,6 +37,7 @@ var (
 	ErrInvitationExists   = errors.New("a live Invitation already exists")
 	ErrInvitationNotFound = errors.New("Invitation not found")
 	ErrInvitationNotLive  = errors.New("Invitation is not live")
+	ErrInvitationNotSent  = errors.New("Invitation initial delivery has not completed")
 	ErrInvitationToken    = errors.New("Invitation is invalid")
 	ErrInvitationState    = errors.New("Recipient state does not permit this Invitation action")
 	errGenerateToken      = errors.New("generate Invitation token")
@@ -205,7 +206,10 @@ func getRecipient(ctx context.Context, db bun.IDB, personID uuid.UUID, now time.
 		SELECT id, issued_at, expires_at, sent_at, accepted_at, revoked_at, superseded_at,
 		       automatic_reminder_scheduled_at, automatic_reminded_at,
 		       last_manual_reminder_requested_at, last_manual_reminded_at, manual_reminder_count
-		FROM invitations WHERE recipient_access_generation_id = ? ORDER BY issued_at DESC, id DESC LIMIT 1
+		FROM invitations WHERE recipient_access_generation_id = ?
+		ORDER BY (accepted_at IS NULL AND revoked_at IS NULL AND superseded_at IS NULL) DESC,
+		         COALESCE(accepted_at, revoked_at, superseded_at, issued_at) DESC, issued_at DESC, id DESC
+		LIMIT 1
 	`, accessID).Scan(ctx, &row.ID, &row.IssuedAt, &row.ExpiresAt, &row.SentAt, &row.AcceptedAt, &row.RevokedAt, &row.SupersededAt,
 		&row.AutomaticReminderScheduledAt, &row.AutomaticRemindedAt, &row.LastManualReminderRequestedAt, &row.LastManualRemindedAt, &row.ManualReminderCount)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -273,15 +277,15 @@ func (s *Service) issue(ctx context.Context, actor setup.CuratorSession, personI
 	if _, err := io.ReadFull(s.random, token); err != nil {
 		return Recipient{}, errGenerateToken
 	}
-	now := s.now().UTC()
-	expiresAt := now.Add(invitationLifetime)
-	reminderAt := now.Add(reminderDelay)
 	var result Recipient
 	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 		current, err := lockPendingRecipient(ctx, tx, personID)
 		if err != nil {
 			return err
 		}
+		now := s.now().UTC()
+		expiresAt := now.Add(invitationLifetime)
+		reminderAt := now.Add(reminderDelay)
 		var liveCount, historyCount int
 		if err := tx.NewRaw(`SELECT count(*) FILTER (WHERE accepted_at IS NULL AND revoked_at IS NULL AND superseded_at IS NULL), count(*) FROM invitations WHERE recipient_access_generation_id = ?`, current.accessID).Scan(ctx, &liveCount, &historyCount); err != nil {
 			return err
@@ -302,9 +306,9 @@ func (s *Service) issue(ctx context.Context, actor setup.CuratorSession, personI
 		}
 		hash := sha256.Sum256(token)
 		if _, err := tx.NewRaw(`
-			INSERT INTO invitations (id, recipient_access_generation_id, token_hash, issued_at, expires_at, automatic_reminder_scheduled_at)
-			VALUES (?, ?, ?, ?, ?, ?)
-		`, invitationID, current.accessID, hash[:], now, expiresAt, reminderAt).Exec(ctx); err != nil {
+			INSERT INTO invitations (id, recipient_access_generation_id, recipient_email_id, token_hash, issued_at, expires_at, automatic_reminder_scheduled_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)
+		`, invitationID, current.accessID, current.emailID, hash[:], now, expiresAt, reminderAt).Exec(ctx); err != nil {
 			if strings.Contains(err.Error(), "invitations_one_live_generation_idx") {
 				return ErrInvitationExists
 			}
@@ -317,14 +321,15 @@ func (s *Service) issue(ctx context.Context, actor setup.CuratorSession, personI
 		rawToken := hex.EncodeToString(token)
 		link := s.publicURL + "/invitation?token=" + rawToken
 		invitationIDString := invitationID.String()
-		body := fmt.Sprintf("Hello %s,\n\n%s invited you to Memento, a private family photo and video archive. This personalized offer is only for your login email and can be used once. Open %s within 14 days, then explicitly accept and complete Onboarding before any Media becomes available. Do not forward this private link.", current.personName, curatorName, link)
+		expiry := expiresAt.Format(time.RFC1123)
+		body := fmt.Sprintf("Hello %s,\n\n%s invited you to Memento, a private family photo and video archive. This personalized offer is only for your login email and can be used once. Open %s before %s, then explicitly accept and complete Onboarding before any Media becomes available. Do not forward this private link.", current.personName, curatorName, link, expiry)
 		if _, _, err := s.delivery.QueueRequired(ctx, tx, emaildelivery.RequiredMessage{
 			Kind: emaildelivery.KindInvitationInitial, Recipient: current.email, Subject: curatorName + " invited you to Memento",
 			Body: body, DeliverBefore: &expiresAt, AvailableAt: &now, InvitationID: &invitationIDString,
 		}); err != nil {
 			return err
 		}
-		reminderBody := fmt.Sprintf("Hello %s,\n\nThis is the one automatic reminder that %s invited you to the private Memento family archive. Your single-use Invitation expires in seven days. Open %s and complete Onboarding before Media becomes available.", current.personName, curatorName, link)
+		reminderBody := fmt.Sprintf("Hello %s,\n\nThis is the one automatic reminder that %s invited you to the private Memento family archive. Your single-use Invitation expires at %s. Open %s and complete Onboarding before Media becomes available.", current.personName, curatorName, expiry, link)
 		if _, _, err := s.delivery.QueueRequired(ctx, tx, emaildelivery.RequiredMessage{
 			Kind: emaildelivery.KindInvitationAutomaticReminder, Recipient: current.email, Subject: "Your Memento Invitation expires in seven days",
 			Body: reminderBody, DeliverBefore: &expiresAt, AvailableAt: &reminderAt, InvitationID: &invitationIDString,
@@ -346,6 +351,7 @@ func (s *Service) issue(ctx context.Context, actor setup.CuratorSession, personI
 
 type lockedRecipient struct {
 	accessID   uuid.UUID
+	emailID    uuid.UUID
 	generation int
 	personName string
 	email      string
@@ -354,13 +360,13 @@ type lockedRecipient struct {
 func lockPendingRecipient(ctx context.Context, tx bun.Tx, personID uuid.UUID) (lockedRecipient, error) {
 	var result lockedRecipient
 	err := tx.NewRaw(`
-		SELECT access.id, access.generation, person.display_name, email.email
+		SELECT access.id, email.id, access.generation, person.display_name, email.email
 		FROM recipient_access_generations AS access
 		JOIN people AS person ON person.id = access.person_id AND person.archived_at IS NULL AND person.merged_at IS NULL
 		JOIN recipient_emails AS email ON email.recipient_access_generation_id = access.id AND email.is_current
 		WHERE access.person_id = ? AND access.is_current
 		FOR UPDATE OF access
-	`, personID).Scan(ctx, &result.accessID, &result.generation, &result.personName, &result.email)
+	`, personID).Scan(ctx, &result.accessID, &result.emailID, &result.generation, &result.personName, &result.email)
 	if errors.Is(err, sql.ErrNoRows) {
 		return lockedRecipient{}, ErrRecipientNotFound
 	}
@@ -395,15 +401,19 @@ func (s *Service) Revoke(ctx context.Context, actor setup.CuratorSession, person
 func (s *Service) Remind(ctx context.Context, actor setup.CuratorSession, personID uuid.UUID) (Recipient, error) {
 	return s.mutateLive(ctx, actor, personID, "invitation_manual_reminder_requested", func(ctx context.Context, tx bun.Tx, current lockedRecipient, invitationID uuid.UUID, now time.Time) error {
 		var expiresAt time.Time
-		if err := tx.NewRaw(`SELECT expires_at FROM invitations WHERE id = ?`, invitationID).Scan(ctx, &expiresAt); err != nil {
+		var sentAt *time.Time
+		if err := tx.NewRaw(`SELECT expires_at, sent_at FROM invitations WHERE id = ?`, invitationID).Scan(ctx, &expiresAt, &sentAt); err != nil {
 			return err
+		}
+		if sentAt == nil {
+			return ErrInvitationNotSent
 		}
 		curator, err := curatorName(ctx, tx, actor.PersonID)
 		if err != nil {
 			return err
 		}
 		invitationIDString := invitationID.String()
-		body := fmt.Sprintf("Hello %s,\n\n%s is reminding you about your Memento Invitation. Use the private link in your most recent Invitation email before it expires. The offer remains single-use and Onboarding is required before Media becomes available.", current.personName, curator)
+		body := fmt.Sprintf("Hello %s,\n\n%s is reminding you about your Memento Invitation. Use the private link in your most recent Invitation email before %s. The offer remains single-use and Onboarding is required before Media becomes available.", current.personName, curator, expiresAt.Format(time.RFC1123))
 		if _, _, err := s.delivery.QueueRequired(ctx, tx, emaildelivery.RequiredMessage{
 			Kind: emaildelivery.KindInvitationManualReminder, Recipient: current.email, Subject: "Reminder about your Memento Invitation",
 			Body: body, DeliverBefore: &expiresAt, AvailableAt: &now, InvitationID: &invitationIDString,
@@ -460,12 +470,12 @@ func (s *Service) Accept(ctx context.Context, token string) (AcceptResponse, err
 	if err != nil {
 		return AcceptResponse{}, ErrInvitationToken
 	}
-	now := s.now().UTC()
 	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 		row, expectedHash, err := lookupTokenIn(ctx, tx, decoded, true)
 		if err != nil {
 			return err
 		}
+		now := s.now().UTC()
 		actualHash := sha256.Sum256(decoded)
 		if subtle.ConstantTimeCompare(expectedHash, actualHash[:]) != 1 || row.acceptedAt != nil || row.revokedAt != nil || row.supersededAt != nil || !now.Before(row.expiresAt) || row.accessState != "pending" {
 			return ErrInvitationToken
@@ -526,7 +536,8 @@ func lookupTokenIn(ctx context.Context, db bun.IDB, decoded []byte, lock bool) (
 		       (SELECT display_name FROM people JOIN person_roles ON person_roles.person_id = people.id WHERE person_roles.role = 'curator')
 		FROM invitations AS invitation
 		JOIN recipient_access_generations AS access ON access.id = invitation.recipient_access_generation_id AND access.is_current
-		JOIN people AS person ON person.id = access.person_id
+		JOIN recipient_emails AS email ON email.id = invitation.recipient_email_id AND email.recipient_access_generation_id = access.id AND email.is_current
+		JOIN people AS person ON person.id = access.person_id AND person.archived_at IS NULL AND person.merged_at IS NULL
 		WHERE invitation.token_hash = ?`
 	if lock {
 		query += ` FOR UPDATE OF invitation, access`

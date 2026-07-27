@@ -416,6 +416,19 @@ function formatSourceDate(value: unknown) {
     : new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(date);
 }
 
+function formatInvitationExpiry(value: unknown) {
+  if (typeof value !== "string") {
+    return "an unknown time";
+  }
+  const date = new Date(value);
+  return Number.isNaN(date.valueOf())
+    ? "an unknown time"
+    : new Intl.DateTimeFormat(undefined, {
+        dateStyle: "medium",
+        timeStyle: "long",
+      }).format(date);
+}
+
 function SourceAlbumCard({
   album,
   csrfToken,
@@ -758,9 +771,9 @@ function InvitationLanding() {
             <p>
               Memento is a private family photo and video archive. This
               single-use offer expires{" "}
-              {formatSourceDate(invitation.data.expires_at)}. Accepting starts
-              Onboarding and does not sign you in or grant Media access by
-              itself.
+              {formatInvitationExpiry(invitation.data.expires_at)}. Accepting
+              starts Onboarding and does not sign you in or grant Media access
+              by itself.
             </p>
             <ErrorMessage error={accept.error} />
             <button

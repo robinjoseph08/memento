@@ -189,6 +189,85 @@ test("designates a Pending Recipient separately from sending an Invitation", asy
   });
 });
 
+test("wires every Invitation control to its exact mutation", async () => {
+  const alex = {
+    ...person("33333333-3333-3333-3333-333333333333", "Alex", "Alex"),
+    roles: ["recipient"],
+    current_recipient_access: {
+      id: "access-id",
+      generation: 1,
+      state: "pending",
+    },
+    current_login_email: "alex@example.com",
+  };
+  let status = "active";
+  const requests: Array<{ path: string; init?: RequestInit }> = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = requestPath(input);
+      requests.push({ path, init });
+      if (path.startsWith("/api/people?") && !init?.method) {
+        return Promise.resolve(jsonResponse({ people: [alex] }));
+      }
+      if (path === `/api/recipients/${alex.id}` && !init?.method) {
+        return Promise.resolve(
+          jsonResponse({
+            person_id: alex.id,
+            person_name: "Alex",
+            email: "alex@example.com",
+            access: alex.current_recipient_access,
+            invitation: {
+              id: "invitation-id",
+              status,
+              issued_at: "2026-07-27T12:00:00Z",
+              expires_at: "2026-08-10T12:00:00Z",
+              sent_at: "2026-07-27T12:01:00Z",
+              automatic_reminder_scheduled_at: "2026-08-03T12:00:00Z",
+              manual_reminder_count: 0,
+            },
+          }),
+        );
+      }
+      if (path.includes("/invitation/") && init?.method === "POST") {
+        if (path.endsWith("/revoke")) status = "revoked";
+        if (path.endsWith("/reissue")) status = "active";
+        return Promise.resolve(jsonResponse({ status }));
+      }
+      return Promise.reject(new Error(`Unexpected request: ${path}`));
+    }),
+  );
+
+  renderManager();
+  fireEvent.click(await screen.findByRole("button", { name: /^Alex/ }));
+  for (const control of [
+    ["Send manual reminder", "/remind"],
+    ["Reissue with new link", "/reissue"],
+    ["Revoke Invitation", "/revoke"],
+  ] as const) {
+    fireEvent.click(await screen.findByRole("button", { name: control[0] }));
+    await waitFor(() =>
+      expect(requests.some(({ path }) => path.endsWith(control[1]))).toBe(true),
+    );
+  }
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Reissue Invitation" }),
+  );
+  await waitFor(() =>
+    expect(
+      requests.filter(({ path }) => path.endsWith("/reissue")),
+    ).toHaveLength(2),
+  );
+  for (const request of requests.filter(({ path }) =>
+    path.includes("/invitation/"),
+  )) {
+    expect(request.init).toMatchObject({
+      method: "POST",
+      headers: { "X-Memento-CSRF": "csrf-token" },
+    });
+  }
+});
+
 test("previews and confirms the exact source, survivor, generation, email, and versions", async () => {
   const source = {
     ...person(
