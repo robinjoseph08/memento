@@ -89,9 +89,10 @@ func (connector *reconciliationConnector) setMembership(assets ...immich.AssetSu
 
 func reconciliationAsset(id uuid.UUID) immich.AssetSummary {
 	width, height := 1200, 800
+	localDateTime := "2026-01-01T10:00:00Z"
 	return immich.AssetSummary{
 		SourceID: id, MediaType: "image", Width: &width, Height: &height,
-		LocalDateTime: "2026-01-01T10:00:00Z",
+		LocalDateTime: &localDateTime,
 	}
 }
 
@@ -265,6 +266,21 @@ func TestReconciliationConsumesMoreThanOneThousandItemsAndDeduplicatesIdentifier
 	assert.Equal(t, 1002, additions)
 }
 
+func TestReconciliationPersistsUnknownCaptureDates(t *testing.T) {
+	asset := reconciliationAsset(uuid.New())
+	asset.LocalDateTime = nil
+	connector := &reconciliationConnector{summary: sourceAlbum(uuid.New(), "Unknown date", 1)}
+	connector.pages = map[int]immich.AssetPage{1: {Items: []immich.AssetSummary{asset}}}
+	service, sourceAlbumID := newReconciliationService(t, connector)
+
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	var localDateTime *string
+	require.NoError(t, service.db.NewRaw(`
+		SELECT local_date_time FROM media_items WHERE immich_asset_id = ?
+	`, asset.SourceID).Scan(context.Background(), &localDateTime))
+	assert.Nil(t, localDateTime)
+}
+
 func TestReconciliationIgnoresFailureAndInstabilityUntilTwoIdenticalValidatedRemovalPasses(t *testing.T) {
 	kept, removed := reconciliationAsset(uuid.New()), reconciliationAsset(uuid.New())
 	connector := &reconciliationConnector{summary: sourceAlbum(uuid.New(), "Stable album", 2), dependency: errors.New("private dependency")}
@@ -366,7 +382,8 @@ func TestAddThenRemoveBeforePublicationLeavesNoEditableResidue(t *testing.T) {
 func TestConflictingDuplicateAndNonAdvancingPagesAreUnstable(t *testing.T) {
 	asset := reconciliationAsset(uuid.New())
 	conflict := asset
-	conflict.LocalDateTime = "2026-01-02T10:00:00Z"
+	conflictingDateTime := "2026-01-02T10:00:00Z"
+	conflict.LocalDateTime = &conflictingDateTime
 	connector := &reconciliationConnector{summary: sourceAlbum(uuid.New(), "Invalid pages", 1)}
 	connector.pages = map[int]immich.AssetPage{1: {Items: []immich.AssetSummary{asset, conflict}}}
 	service, sourceAlbumID := newReconciliationService(t, connector)

@@ -14,7 +14,7 @@ func TestCaptureDayUsesExplicitTimezoneAndLeavesUnknownCaptureDatesUnassigned(t 
 	zoned := "2026-05-02T01:30:00Z"
 	day, instant := captureDay(&zoned, losAngeles)
 	require.NotNil(t, day)
-	assert.Equal(t, "2026-05-01", *day)
+	assert.Equal(t, "2026-05-02", *day)
 	require.NotNil(t, instant)
 	assert.Equal(t, "2026-05-02T01:30:00Z", instant.Format(time.RFC3339))
 

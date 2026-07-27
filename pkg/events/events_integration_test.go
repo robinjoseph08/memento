@@ -5,12 +5,17 @@ package events
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/robinjoseph08/memento/internal/testdb"
+	"github.com/robinjoseph08/memento/pkg/config"
 	"github.com/robinjoseph08/memento/pkg/migrations"
 	"github.com/robinjoseph08/memento/pkg/setup"
 	"github.com/stretchr/testify/assert"
@@ -19,11 +24,12 @@ import (
 )
 
 type draftFixture struct {
-	db      *bun.DB
-	service *Service
-	actor   setup.CuratorSession
-	sources map[string]uuid.UUID
-	media   map[string]uuid.UUID
+	db         *bun.DB
+	service    *Service
+	actor      setup.CuratorSession
+	credential string
+	sources    map[string]uuid.UUID
+	media      map[string]uuid.UUID
 }
 
 func newDraftFixture(t *testing.T) draftFixture {
@@ -36,23 +42,28 @@ func newDraftFixture(t *testing.T) draftFixture {
 	accessID := uuid.New()
 	sessionID := uuid.New()
 	credential := sha256.Sum256([]byte("draft-session"))
+	credentialHash := sha256.Sum256(credential[:])
 	_, err := db.NewRaw(`
-		INSERT INTO people (id, display_name, sort_name) VALUES (?, 'Curator', 'Curator');
+		UPDATE system_settings SET setup_complete = true WHERE id = 1;
+		INSERT INTO people (id, display_name, sort_name) VALUES (?, 'Recipient', 'Recipient');
+		INSERT INTO person_roles (person_id, role) VALUES (?, 'recipient');
 		INSERT INTO recipient_access_generations (
 			id, person_id, generation, state, is_current, onboarding_completed_at, created_at, updated_at
 		) VALUES (?, ?, 1, 'completed', true, ?, ?, ?);
 		INSERT INTO sessions (
 			id, credential_hash, person_id, recipient_access_generation_id, security_epoch,
 			session_type, idle_expires_at
-		) SELECT ?, ?, ?, ?, security_epoch, 'trusted', ? FROM system_settings WHERE id = 1
-	`, personID, accessID, personID, now, now, now,
-		sessionID, credential[:], personID, accessID, now.Add(time.Hour)).Exec(ctx)
+		) SELECT ?, ?, ?, ?, security_epoch, 'trusted', now() + interval '1 day'
+		FROM system_settings WHERE id = 1
+	`, personID, personID, accessID, personID, now, now, now,
+		sessionID, credentialHash[:], personID, accessID).Exec(ctx)
 	require.NoError(t, err)
 
 	fixture := draftFixture{
 		db: db, service: New(db), actor: setup.CuratorSession{PersonID: personID, SessionID: sessionID},
-		sources: map[string]uuid.UUID{"first": uuid.New(), "second": uuid.New(), "ignored": uuid.New()},
-		media:   map[string]uuid.UUID{"shared": uuid.New(), "first_only": uuid.New(), "second_only": uuid.New(), "unknown": uuid.New()},
+		credential: hex.EncodeToString(credential[:]),
+		sources:    map[string]uuid.UUID{"first": uuid.New(), "second": uuid.New(), "ignored": uuid.New()},
+		media:      map[string]uuid.UUID{"shared": uuid.New(), "first_only": uuid.New(), "second_only": uuid.New(), "unknown": uuid.New()},
 	}
 	fixture.service.now = func() time.Time { return now }
 	for name, sourceID := range fixture.sources {
@@ -121,9 +132,10 @@ func TestDraftsCombineAndDivideSourcesWhileReusingStableMediaIdentities(t *testi
 	assert.Len(t, combined.Sources, 2)
 	require.Len(t, combined.Moments, 2)
 	assert.Equal(t, "2026-05-01", combined.Moments[0].ProposedDay)
+	assert.Equal(t, "2026-05-02", combined.Moments[1].ProposedDay)
 	assert.Equal(t, "America/Los_Angeles", combined.Moments[0].GroupingTimezone)
-	assert.ElementsMatch(t, []string{fixture.media["shared"].String(), fixture.media["first_only"].String()}, mediaIDs(combined.Moments[0].MediaItems))
-	assert.Equal(t, []string{fixture.media["second_only"].String()}, mediaIDs(combined.Moments[1].MediaItems))
+	assert.Equal(t, []string{fixture.media["first_only"].String()}, mediaIDs(combined.Moments[0].MediaItems))
+	assert.ElementsMatch(t, []string{fixture.media["shared"].String(), fixture.media["second_only"].String()}, mediaIDs(combined.Moments[1].MediaItems))
 	assert.Equal(t, []string{fixture.media["unknown"].String()}, mediaIDs(combined.UnassignedMedia))
 
 	divided, err := fixture.service.CreateEvent(ctx, fixture.actor, CreateEventRequest{
@@ -134,8 +146,8 @@ func TestDraftsCombineAndDivideSourcesWhileReusingStableMediaIdentities(t *testi
 	require.NoError(t, err)
 	assert.NotEqual(t, combined.ID, divided.ID)
 	assert.Equal(t, "first source", divided.Title, "single-Source metadata initializes portal-owned presentation")
-	require.Len(t, divided.Moments, 1)
-	assert.ElementsMatch(t, []string{fixture.media["shared"].String(), fixture.media["first_only"].String()}, mediaIDs(divided.Moments[0].MediaItems))
+	require.Len(t, divided.Moments, 2)
+	assert.ElementsMatch(t, []string{fixture.media["shared"].String(), fixture.media["first_only"].String()}, allEventMediaIDs(divided))
 	assert.Empty(t, divided.UnassignedMedia, "unselected Source Media remains unpublished")
 
 	stableCombined, err := fixture.service.GetEvent(ctx, uuid.MustParse(combined.ID))
@@ -158,6 +170,45 @@ func TestDraftsCombineAndDivideSourcesWhileReusingStableMediaIdentities(t *testi
 		SELECT disposition FROM source_albums WHERE id IN (?, ?) ORDER BY id
 	`, fixture.sources["first"], fixture.sources["second"]).Scan(ctx, &dispositions))
 	assert.Equal(t, []string{"drafted", "drafted"}, dispositions)
+}
+
+func TestRecipientSessionsCannotSeeDraftRoutesBeforePublication(t *testing.T) {
+	fixture := newDraftFixture(t)
+	ctx := context.Background()
+	event, err := fixture.service.CreateEvent(ctx, fixture.actor, CreateEventRequest{
+		SourceAlbumIDs: []string{fixture.sources["first"].String()},
+		MediaItemIDs:   []string{fixture.media["first_only"].String()},
+		Timezone:       "UTC",
+	})
+	require.NoError(t, err)
+	looseItem, err := fixture.service.CreateLooseItem(ctx, fixture.actor, CreateLooseItemRequest{
+		MediaItemID: fixture.media["unknown"].String(), Timezone: "UTC",
+	})
+	require.NoError(t, err)
+
+	setupService := setup.New(fixture.db, nil, config.SecurityConfig{Secret: "recipient-visibility-test-secret"})
+	session, err := setupService.Session(ctx, fixture.credential)
+	require.NoError(t, err)
+	e := draftHTTP(fixture.service, setupService)
+	for _, test := range []struct{ method, path, body string }{
+		{http.MethodGet, "/api/events/" + event.ID, ""},
+		{http.MethodPost, "/api/events", `{}`},
+		{http.MethodGet, "/api/loose-items/" + looseItem.ID, ""},
+		{http.MethodPost, "/api/loose-items", `{}`},
+		{http.MethodGet, "/api/sources/" + fixture.sources["first"].String() + "/media-items", ""},
+	} {
+		request := httptest.NewRequestWithContext(ctx, test.method, test.path, strings.NewReader(test.body))
+		request.AddCookie(&http.Cookie{Name: setup.CookieName, Value: fixture.credential})
+		request.Header.Set(setup.CSRFHeader, session.CSRFToken)
+		if test.body != "" {
+			request.Header.Set("Content-Type", "application/json")
+		}
+		response := httptest.NewRecorder()
+		e.ServeHTTP(response, request)
+		assert.Equal(t, http.StatusNotFound, response.Code, "%s %s", test.method, test.path)
+		assert.NotContains(t, response.Body.String(), event.ID)
+		assert.NotContains(t, response.Body.String(), looseItem.ID)
+	}
 }
 
 func TestEventMetadataRemainsPortalOwnedWhileSourceChangesBecomeSuggestions(t *testing.T) {

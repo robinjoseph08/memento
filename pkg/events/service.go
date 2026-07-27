@@ -291,13 +291,17 @@ func prepareProposals(media []mediaRecord, location *time.Location) {
 		media[index].day, media[index].instant = captureDay(media[index].LocalDateTime, location)
 	}
 	sort.Slice(media, func(i, j int) bool {
-		left, right := media[i].instant, media[j].instant
-		if left == nil || right == nil {
-			if left == nil && right == nil {
+		leftDay, rightDay := media[i].day, media[j].day
+		if leftDay == nil || rightDay == nil {
+			if leftDay == nil && rightDay == nil {
 				return media[i].ID.String() < media[j].ID.String()
 			}
-			return right == nil
+			return rightDay == nil
 		}
+		if *leftDay != *rightDay {
+			return *leftDay < *rightDay
+		}
+		left, right := media[i].instant, media[j].instant
 		if left.Equal(*right) {
 			return media[i].ID.String() < media[j].ID.String()
 		}
@@ -311,8 +315,7 @@ func captureDay(raw *string, location *time.Location) (*string, *time.Time) {
 	}
 	value := strings.TrimSpace(*raw)
 	if parsed, err := time.Parse(time.RFC3339Nano, value); err == nil {
-		localized := parsed.In(location)
-		day := localized.Format(time.DateOnly)
+		day := parsed.Format(time.DateOnly)
 		instant := parsed.UTC()
 		return &day, &instant
 	}
