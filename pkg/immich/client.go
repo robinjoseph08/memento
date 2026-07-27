@@ -507,7 +507,7 @@ func (body *boundedReadCloser) Read(contents []byte) (int, error) {
 	if body.remaining == 0 {
 		var extra [1]byte
 		count, err := body.ReadCloser.Read(extra[:])
-		if count > 0 {
+		if count > 0 || (err != nil && !errors.Is(err, io.EOF)) {
 			return 0, errInvalidResponse
 		}
 		return 0, err
@@ -517,6 +517,9 @@ func (body *boundedReadCloser) Read(contents []byte) (int, error) {
 	}
 	count, err := body.ReadCloser.Read(contents)
 	body.remaining -= int64(count)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return count, errInvalidResponse
+	}
 	return count, err
 }
 

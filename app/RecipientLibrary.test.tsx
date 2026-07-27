@@ -56,6 +56,22 @@ test("lands on Photos with durable New for you and real-ratio authorized thumbna
       const path = requestPath(input);
       requests.push({ path, init });
       if (path.startsWith("/api/me/photos?")) {
+        if (path.includes("cursor=photos-next")) {
+          return json({
+            media: [
+              {
+                id: "media-2",
+                media_type: "video",
+                width: 900,
+                height: 1600,
+                local_date_time: "2026-07-27T13:00:00Z",
+                available: true,
+                thumbnail_url: "/api/me/media/media-2/thumbnail",
+              },
+            ],
+            next_cursor: null,
+          });
+        }
         return json({
           media: [
             {
@@ -68,7 +84,7 @@ test("lands on Photos with durable New for you and real-ratio authorized thumbna
               thumbnail_url: "/api/me/media/media-1/thumbnail",
             },
           ],
-          next_cursor: null,
+          next_cursor: "photos-next",
         });
       }
       if (path === "/api/me/new-for-you") {
@@ -127,6 +143,14 @@ test("lands on Photos with durable New for you and real-ratio authorized thumbna
   expect(newEvent.querySelector(".event-cover")).toHaveStyle({
     aspectRatio: "1600 / 900",
   });
+
+  fireEvent.click(screen.getByRole("button", { name: "Load more photos" }));
+  const appended = await screen.findByAltText("Authorized video");
+  expect(appended).toHaveAttribute("src", "/api/me/media/media-2/thumbnail");
+  expect(screen.getByAltText("Authorized photo")).toBeVisible();
+  expect(requests.some(({ path }) => path.includes("cursor=photos-next"))).toBe(
+    true,
+  );
 
   fireEvent.click(newEvent);
   await screen.findByRole("heading", { name: "Family weekend" });

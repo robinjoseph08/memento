@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -26,11 +27,19 @@ import (
 )
 
 type thumbnailStub struct {
-	assets []uuid.UUID
+	assets   []uuid.UUID
+	response immich.MediaResponse
+	err      error
 }
 
 func (stub *thumbnailStub) Thumbnail(_ context.Context, assetID uuid.UUID) (immich.MediaResponse, error) {
 	stub.assets = append(stub.assets, assetID)
+	if stub.err != nil {
+		return immich.MediaResponse{}, stub.err
+	}
+	if stub.response.Body != nil {
+		return stub.response, nil
+	}
 	return immich.MediaResponse{
 		Body: io.NopCloser(bytes.NewBufferString("thumbnail")), ContentType: "image/webp", ContentLength: 9,
 	}, nil
@@ -291,6 +300,49 @@ func TestEventsAndEventDetailHaveStableDuplicateFreePageBoundaries(t *testing.T)
 	assert.NotEqual(t, mediaIDs[0], mediaIDs[1], "Event Media do not repeat across page boundaries")
 }
 
+func TestEventDetailRetainsCuratorOrderAcrossMomentsAndHiddenPageBoundaries(t *testing.T) {
+	fixture := newLibraryFixture(t)
+	ctx := context.Background()
+	secondMoment, secondDraft, secondSnapshot := uuid.New(), uuid.New(), uuid.New()
+	_, err := fixture.db.NewRaw(`
+		INSERT INTO audience_snapshots
+			(id, target_kind, target_id, approved_by_person_id, approved_at, label)
+		VALUES (?, 'moment', ?, ?, now(), 'Shared');
+		INSERT INTO published_moments
+			(id, publication_id, draft_moment_id, audience_snapshot_id, position, title, proposed_day)
+		VALUES (?, ?, ?, ?, 1, 'Second Moment', '2026-07-28');
+		INSERT INTO published_media_placements
+			(published_moment_id, media_item_id, position, media_type, width, height, local_date_time)
+		SELECT ?, id, 0, media_type, width, height, local_date_time FROM media_items WHERE id = ?;
+		UPDATE current_published_placements SET position = position + 10 WHERE event_id = ?;
+		UPDATE current_published_placements SET position = 0 WHERE event_id = ? AND media_item_id = ?;
+		UPDATE current_published_placements SET position = 1 WHERE event_id = ? AND media_item_id = ?;
+		UPDATE current_published_placements
+		SET published_moment_id = ?, position = 2 WHERE event_id = ? AND media_item_id = ?
+	`, secondSnapshot, secondDraft, fixture.curator,
+		secondMoment, fixture.publications[0], secondDraft, secondSnapshot,
+		secondMoment, fixture.media[1], fixture.events[0],
+		fixture.events[0], fixture.media[0], fixture.events[0], fixture.media[2],
+		secondMoment, fixture.events[0], fixture.media[1]).Exec(ctx)
+	require.NoError(t, err)
+
+	var actual []string
+	cursor := ""
+	for {
+		page, pageErr := fixture.service.Event(ctx, fixture.actor, fixture.events[0], "1", cursor)
+		require.NoError(t, pageErr)
+		require.Len(t, page.Media, 1)
+		actual = append(actual, page.Media[0].ID)
+		if page.NextCursor == nil {
+			break
+		}
+		cursor = *page.NextCursor
+	}
+
+	assert.Equal(t, []string{fixture.media[0].String(), fixture.media[1].String()}, actual,
+		"authorized Media retain exact Curator order across Moments while the hidden placement stays omitted")
+}
+
 func TestFavoritesAndNewForYouRemainRecipientScopedAndDurable(t *testing.T) {
 	fixture := newLibraryFixture(t)
 	ctx := context.Background()
@@ -375,6 +427,74 @@ func TestValidUnauthorizedIdentifiersAreIndistinguishableFromMissingContent(t *t
 		})
 	}
 	assert.Empty(t, fixture.thumbnail.assets, "unauthorized and missing Media identifiers never reach Immich")
+}
+
+type failingThumbnailBody struct{}
+
+func (failingThumbnailBody) Read(contents []byte) (int, error) {
+	return copy(contents, "partial"), errors.New("read https://immich.internal/private?key=secret")
+}
+
+func (failingThumbnailBody) Close() error { return nil }
+
+func TestThumbnailRouteKeepsUpstreamFailuresSafeAndPrivate(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		configure  func(*thumbnailStub)
+		wantStatus int
+		wantBody   string
+	}{
+		{
+			name: "not found",
+			configure: func(stub *thumbnailStub) {
+				stub.err = immich.ErrNotFound
+			},
+			wantStatus: http.StatusNotFound,
+			wantBody:   `{"error":{"code":"not_found","message":"Content not found.","status_code":404}}`,
+		},
+		{
+			name: "upstream failure",
+			configure: func(stub *thumbnailStub) {
+				stub.err = errors.New("request https://immich.internal/private?key=secret")
+			},
+			wantStatus: http.StatusInternalServerError,
+			wantBody:   `{"error":{"code":"internal_server_error","message":"Internal Server Error","status_code":500}}`,
+		},
+		{
+			name: "streaming read failure",
+			configure: func(stub *thumbnailStub) {
+				stub.response = immich.MediaResponse{
+					Body: failingThumbnailBody{}, ContentType: "image/png", ContentLength: -1,
+				}
+			},
+			wantStatus: http.StatusOK,
+			wantBody:   "partial",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newLibraryFixture(t)
+			test.configure(fixture.thumbnail)
+			e := echo.New()
+			e.HTTPErrorHandler = errcodes.NewHandler().Handle
+			RegisterRoutes(e, NewHandler(fixture.service, &routeAuthorizer{actor: fixture.actor}))
+			request := httptest.NewRequestWithContext(context.Background(), http.MethodGet,
+				"/api/me/media/"+fixture.media[0].String()+"/thumbnail", nil)
+			request.AddCookie(&http.Cookie{Name: setup.CookieName, Value: "opaque"})
+			response := httptest.NewRecorder()
+
+			e.ServeHTTP(response, request)
+
+			assert.Equal(t, test.wantStatus, response.Code)
+			assert.Equal(t, "private, no-store", response.Header().Get(echo.HeaderCacheControl))
+			if test.wantStatus == http.StatusOK {
+				assert.Equal(t, test.wantBody, response.Body.String())
+			} else {
+				assert.JSONEq(t, test.wantBody, response.Body.String())
+			}
+			assert.NotContains(t, response.Body.String(), "immich.internal")
+			assert.NotContains(t, response.Body.String(), "secret")
+		})
+	}
 }
 
 func TestThumbnailRevalidatesEveryAuthorizationBoundaryBeforeImmich(t *testing.T) {
