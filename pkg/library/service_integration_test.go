@@ -5,12 +5,17 @@ package library
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/labstack/echo/v4"
 	"github.com/robinjoseph08/memento/internal/testdb"
+	"github.com/robinjoseph08/memento/pkg/errcodes"
 	"github.com/robinjoseph08/memento/pkg/immich"
 	"github.com/robinjoseph08/memento/pkg/migrations"
 	"github.com/robinjoseph08/memento/pkg/setup"
@@ -51,9 +56,9 @@ func newLibraryFixture(t *testing.T) libraryFixture {
 	db := testdb.Open(t)
 	require.NoError(t, migrations.Apply(ctx, db))
 	fixture := libraryFixture{
-		db: db, curator: uuid.New(), events: []uuid.UUID{uuid.New(), uuid.New()},
-		publications: []uuid.UUID{uuid.New(), uuid.New()}, moments: []uuid.UUID{uuid.New(), uuid.New()},
-		draftMoments: []uuid.UUID{uuid.New(), uuid.New()},
+		db: db, curator: uuid.New(), events: []uuid.UUID{uuid.New(), uuid.New(), uuid.New()},
+		publications: []uuid.UUID{uuid.New(), uuid.New(), uuid.New()}, moments: []uuid.UUID{uuid.New(), uuid.New(), uuid.New()},
+		draftMoments: []uuid.UUID{uuid.New(), uuid.New(), uuid.New()},
 		media:        []uuid.UUID{uuid.New(), uuid.New(), uuid.New()},
 		assets:       []uuid.UUID{uuid.New(), uuid.New(), uuid.New()}, thumbnail: &thumbnailStub{},
 	}
@@ -123,10 +128,12 @@ func newLibraryFixture(t *testing.T) libraryFixture {
 	fixture.place(t, 0, fixture.media[1], accessID, 1)
 	fixture.place(t, 0, fixture.media[2], fixture.hiddenAccessID, 2)
 	fixture.place(t, 1, fixture.media[0], accessID, 0)
+	fixture.place(t, 2, fixture.media[2], fixture.hiddenAccessID, 0)
 	_, err = db.NewRaw(`
 		INSERT INTO new_for_you_entries (recipient_access_generation_id, publication_id)
-		VALUES (?, ?), (?, ?), (?, ?)
-	`, accessID, fixture.publications[0], accessID, fixture.publications[1], fixture.hiddenAccessID, fixture.publications[0]).Exec(ctx)
+		VALUES (?, ?), (?, ?), (?, ?), (?, ?)
+	`, accessID, fixture.publications[0], accessID, fixture.publications[1],
+		fixture.hiddenAccessID, fixture.publications[0], fixture.hiddenAccessID, fixture.publications[2]).Exec(ctx)
 	require.NoError(t, err)
 	fixture.service = New(db, fixture.thumbnail)
 	return fixture
@@ -173,6 +180,10 @@ func TestRecipientLibraryPaginatesOnlyCurrentAuthorizedUnion(t *testing.T) {
 	assert.Equal(t, 1, events.Events[0].MediaCount)
 	assert.Equal(t, 2, events.Events[1].MediaCount)
 	assert.Equal(t, fixture.media[1].String(), events.Events[1].CoverMediaID)
+	require.NotNil(t, events.Events[1].CoverWidth)
+	require.NotNil(t, events.Events[1].CoverHeight)
+	assert.Equal(t, 1400, *events.Events[1].CoverWidth)
+	assert.Equal(t, 1000, *events.Events[1].CoverHeight)
 	detail, err := fixture.service.Event(ctx, fixture.actor, fixture.events[0], "10", "")
 	require.NoError(t, err)
 	assert.Equal(t, 2, detail.MediaCount)
@@ -181,7 +192,11 @@ func TestRecipientLibraryPaginatesOnlyCurrentAuthorizedUnion(t *testing.T) {
 
 	newForYou, err := fixture.service.NewForYou(ctx, fixture.actor)
 	require.NoError(t, err)
-	assert.Len(t, newForYou.Events, 2)
+	require.Len(t, newForYou.Events, 2)
+	require.NotNil(t, newForYou.Events[0].CoverWidth)
+	require.NotNil(t, newForYou.Events[0].CoverHeight)
+	assert.Equal(t, 1600, *newForYou.Events[0].CoverWidth)
+	assert.Equal(t, 900, *newForYou.Events[0].CoverHeight)
 	_, err = fixture.service.Photos(ctx, fixture.actor, "10", "guessed", false)
 	assert.ErrorIs(t, err, ErrInvalidCursor)
 }
@@ -205,6 +220,71 @@ func TestFavoritesAndNewForYouRemainRecipientScopedAndDurable(t *testing.T) {
 	assert.Equal(t, fixture.publications[1].String(), newForYou.Events[0].PublicationID)
 	err = fixture.service.MarkSeen(ctx, fixture.actor, fixture.publications[0])
 	assert.ErrorIs(t, err, ErrNotFound, "an already-seen Publication cannot be enumerated through mutation")
+}
+
+type libraryErrorSignature struct {
+	Code       string `json:"code"`
+	Message    string `json:"message"`
+	StatusCode int    `json:"status_code"`
+}
+
+func requestLibraryError(t *testing.T, fixture libraryFixture, method, path string) (int, string, libraryErrorSignature) {
+	t.Helper()
+	e := echo.New()
+	e.HTTPErrorHandler = errcodes.NewHandler().Handle
+	RegisterRoutes(e, NewHandler(fixture.service, &routeAuthorizer{actor: fixture.actor}))
+	request := httptest.NewRequestWithContext(context.Background(), method, path, nil)
+	request.AddCookie(&http.Cookie{Name: setup.CookieName, Value: "opaque"})
+	request.Header.Set(setup.CSRFHeader, "valid")
+	response := httptest.NewRecorder()
+	e.ServeHTTP(response, request)
+	var envelope struct {
+		Error libraryErrorSignature `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &envelope))
+	return response.Code, response.Header().Get(echo.HeaderCacheControl), envelope.Error
+}
+
+func TestValidUnauthorizedIdentifiersAreIndistinguishableFromMissingContent(t *testing.T) {
+	fixture := newLibraryFixture(t)
+	missingID := uuid.NewString()
+	for _, test := range []struct {
+		name             string
+		method           string
+		unauthorizedPath string
+		missingPath      string
+	}{
+		{
+			name: "Media", method: http.MethodGet,
+			unauthorizedPath: "/api/me/media/" + fixture.media[2].String() + "/thumbnail",
+			missingPath:      "/api/me/media/" + missingID + "/thumbnail",
+		},
+		{
+			name: "Event", method: http.MethodGet,
+			unauthorizedPath: "/api/me/events/" + fixture.events[2].String(),
+			missingPath:      "/api/me/events/" + missingID,
+		},
+		{
+			name: "Publication", method: http.MethodPost,
+			unauthorizedPath: "/api/me/new-for-you/" + fixture.publications[2].String() + "/seen",
+			missingPath:      "/api/me/new-for-you/" + missingID + "/seen",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			unauthorizedStatus, unauthorizedCache, unauthorizedError := requestLibraryError(
+				t, fixture, test.method, test.unauthorizedPath,
+			)
+			missingStatus, missingCache, missingError := requestLibraryError(
+				t, fixture, test.method, test.missingPath,
+			)
+			assert.Equal(t, http.StatusNotFound, unauthorizedStatus)
+			assert.Equal(t, missingStatus, unauthorizedStatus)
+			assert.Equal(t, missingError, unauthorizedError)
+			assert.Equal(t, "private, no-store", unauthorizedCache)
+			assert.Equal(t, missingCache, unauthorizedCache)
+		})
+	}
+	assert.Empty(t, fixture.thumbnail.assets, "unauthorized and missing Media identifiers never reach Immich")
 }
 
 func TestRecipientAuthorizationMatrixRevalidatesReuseWithdrawalAndAvailability(t *testing.T) {

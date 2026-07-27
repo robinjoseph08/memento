@@ -75,26 +75,41 @@ function EventCards({
 }) {
   return (
     <div aria-label="Authorized Events" className="event-gallery">
-      {events.map((event) => (
-        <button
-          className="event-card"
-          key={event.id}
-          onClick={() => onOpen(event)}
-          type="button"
-        >
-          <span className="event-cover">
-            {event.cover_available ? (
-              <img alt="" loading="lazy" src={event.thumbnail_url} />
-            ) : (
-              <span className="media-unavailable">Source unavailable</span>
-            )}
-          </span>
-          <strong>{event.title}</strong>
-          <span>
-            {event.media_count} {event.media_count === 1 ? "item" : "items"}
-          </span>
-        </button>
-      ))}
+      {events.map((event) => {
+        const ratio =
+          event.cover_width && event.cover_height
+            ? event.cover_width / event.cover_height
+            : 1;
+        return (
+          <button
+            className="event-card"
+            key={event.id}
+            onClick={() => onOpen(event)}
+            style={{ flexBasis: `${ratio * 11}rem`, flexGrow: ratio }}
+            type="button"
+          >
+            <span
+              className="event-cover"
+              style={{
+                aspectRatio:
+                  event.cover_width && event.cover_height
+                    ? `${event.cover_width} / ${event.cover_height}`
+                    : "1",
+              }}
+            >
+              {event.cover_available ? (
+                <img alt="" loading="lazy" src={event.thumbnail_url} />
+              ) : (
+                <span className="media-unavailable">Source unavailable</span>
+              )}
+            </span>
+            <strong>{event.title}</strong>
+            <span>
+              {event.media_count} {event.media_count === 1 ? "item" : "items"}
+            </span>
+          </button>
+        );
+      })}
     </div>
   );
 }

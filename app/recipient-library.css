@@ -119,13 +119,14 @@
 }
 
 .event-gallery {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(13rem, 1fr));
+  display: flex;
+  flex-wrap: wrap;
   gap: 1rem;
 }
 
 .event-card {
   display: grid;
+  min-width: 11rem;
   gap: 0.4rem;
   padding: 0;
   overflow: hidden;
@@ -147,7 +148,6 @@
 
 .event-cover {
   display: block;
-  aspect-ratio: 16 / 10;
   background: #1e293b;
 }
 

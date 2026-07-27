@@ -81,6 +81,8 @@ test("lands on Photos with durable New for you and real-ratio authorized thumbna
               description: "Authorized only",
               committed_at: "2026-07-27T12:00:00Z",
               cover_media_id: "media-1",
+              cover_width: 1600,
+              cover_height: 900,
               cover_available: true,
               thumbnail_url: "/api/me/media/media-1/thumbnail",
               media_count: 1,
@@ -117,8 +119,16 @@ test("lands on Photos with durable New for you and real-ratio authorized thumbna
   const image = await screen.findByAltText("Authorized photo");
   expect(image).toHaveAttribute("src", "/api/me/media/media-1/thumbnail");
   expect(image.closest("figure")).toHaveStyle({ aspectRatio: "1600 / 900" });
+  const newEvent = screen.getByRole("button", { name: /Family weekend/ });
+  expect(newEvent).toHaveStyle({
+    flexBasis: `${(1600 / 900) * 11}rem`,
+    flexGrow: 1600 / 900,
+  });
+  expect(newEvent.querySelector(".event-cover")).toHaveStyle({
+    aspectRatio: "1600 / 900",
+  });
 
-  fireEvent.click(screen.getByRole("button", { name: /Family weekend/ }));
+  fireEvent.click(newEvent);
   await screen.findByRole("heading", { name: "Family weekend" });
   await waitFor(() =>
     expect(
@@ -152,6 +162,8 @@ test("navigates Events and Favorites without exposing an unavailable aggregate",
               description: "",
               committed_at: "2026-07-27T12:00:00Z",
               cover_media_id: "media-1",
+              cover_width: 900,
+              cover_height: 1600,
               cover_available: true,
               thumbnail_url: "/api/me/media/media-1/thumbnail",
               media_count: 1,
@@ -168,6 +180,10 @@ test("navigates Events and Favorites without exposing an unavailable aggregate",
   await screen.findByRole("heading", { name: "Photos" });
   fireEvent.click(screen.getAllByRole("button", { name: "Events" })[0]);
   expect(await screen.findByText("1 item")).toBeVisible();
+  const event = screen.getByRole("button", { name: /One visible item/ });
+  expect(event.querySelector(".event-cover")).toHaveStyle({
+    aspectRatio: "900 / 1600",
+  });
   expect(screen.queryByText(/total/i)).not.toBeInTheDocument();
 
   fireEvent.click(screen.getAllByRole("button", { name: "Favorites" })[0]);

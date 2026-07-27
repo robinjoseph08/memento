@@ -51,6 +51,8 @@ type EventSummary struct {
 	Description    string    `json:"description"`
 	CommittedAt    time.Time `json:"committed_at"`
 	CoverMediaID   string    `json:"cover_media_id"`
+	CoverWidth     *int      `json:"cover_width" tstype:"number | null,required"`
+	CoverHeight    *int      `json:"cover_height" tstype:"number | null,required"`
 	CoverAvailable bool      `json:"cover_available"`
 	ThumbnailURL   string    `json:"thumbnail_url"`
 	MediaCount     int       `json:"media_count"`
@@ -291,11 +293,14 @@ func (s *Service) Events(ctx context.Context, actor setup.SessionActor, rawLimit
 		query := fmt.Sprintf(`WITH valid AS (%s), authorized_events AS (
 			SELECT valid.event_id, count(DISTINCT valid.media_item_id) AS media_count,
 			       (array_agg(valid.media_item_id ORDER BY valid.available DESC, valid.is_cover DESC, valid.position))[1] AS cover_media_id,
+			       (array_agg(valid.width ORDER BY valid.available DESC, valid.is_cover DESC, valid.position))[1] AS cover_width,
+			       (array_agg(valid.height ORDER BY valid.available DESC, valid.is_cover DESC, valid.position))[1] AS cover_height,
 			       (array_agg(valid.available ORDER BY valid.available DESC, valid.is_cover DESC, valid.position))[1] AS cover_available
 			FROM valid GROUP BY valid.event_id
 		)
 		SELECT current.event_id AS id, current.publication_id, current.title,
 		       current.description, current.committed_at, authorized.cover_media_id,
+		       authorized.cover_width, authorized.cover_height,
 		       authorized.cover_available, authorized.media_count
 		FROM authorized_events AS authorized
 		JOIN current_published_events AS current ON current.event_id = authorized.event_id
@@ -328,11 +333,14 @@ func (s *Service) NewForYou(ctx context.Context, actor setup.SessionActor) (NewF
 			SELECT valid.event_id, valid.publication_id,
 			       count(DISTINCT valid.media_item_id) AS media_count,
 			       (array_agg(valid.media_item_id ORDER BY valid.available DESC, valid.is_cover DESC, valid.position))[1] AS cover_media_id,
+			       (array_agg(valid.width ORDER BY valid.available DESC, valid.is_cover DESC, valid.position))[1] AS cover_width,
+			       (array_agg(valid.height ORDER BY valid.available DESC, valid.is_cover DESC, valid.position))[1] AS cover_height,
 			       (array_agg(valid.available ORDER BY valid.available DESC, valid.is_cover DESC, valid.position))[1] AS cover_available
 			FROM valid GROUP BY valid.event_id, valid.publication_id
 		)
 		SELECT current.event_id AS id, current.publication_id, current.title,
 		       current.description, current.committed_at, authorized.cover_media_id,
+		       authorized.cover_width, authorized.cover_height,
 		       authorized.cover_available, authorized.media_count
 		FROM new_for_you_entries AS entry
 		JOIN authorized_events AS authorized ON authorized.publication_id = entry.publication_id
