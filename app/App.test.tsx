@@ -103,16 +103,55 @@ test("opens an Invitation read-only and removes its token only after explicit ac
   ).toBe(false);
 
   fireEvent.click(screen.getByRole("button", { name: "Accept Invitation" }));
-  await waitFor(() => expect(window.location.search).toBe(""));
+  expect(window.location.search).toBe(`?token=${token}`);
   expect(screen.queryByText("Invitation accepted.")).not.toBeInTheDocument();
   resolveAcceptance(jsonResponse({ status: "onboarding" }));
   expect(await screen.findByText("Invitation accepted.")).toBeInTheDocument();
   expect(window.location.pathname).toBe("/");
+  expect(window.location.search).toBe("");
   expect(requests[1]).toMatchObject({
     path: "/api/auth/invitations/accept",
     init: { method: "POST" },
   });
   expect(JSON.parse(stringBody(requests[1].init?.body))).toEqual({ token });
+});
+
+test("keeps a failed Invitation token available for an explicit retry", async () => {
+  const token = "b".repeat(64);
+  window.history.replaceState(null, "", `/invitation?token=${token}`);
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) => {
+      const path = requestPath(input);
+      if (path === "/api/auth/invitations/inspect") {
+        return Promise.resolve(
+          jsonResponse({
+            recipient_name: "Alex",
+            curator_name: "Robin",
+            expires_at: "2026-08-10T12:00:00Z",
+          }),
+        );
+      }
+      if (path === "/api/auth/invitations/accept") {
+        return Promise.resolve(
+          jsonResponse({ error: { message: "Please retry." } }, 503),
+        );
+      }
+      return Promise.reject(new Error(`Unexpected request: ${path}`));
+    }),
+  );
+
+  renderApp();
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Accept Invitation" }),
+  );
+
+  expect(await screen.findByRole("alert")).toHaveTextContent("Please retry.");
+  expect(window.location.pathname).toBe("/invitation");
+  expect(window.location.search).toBe(`?token=${token}`);
+  expect(
+    screen.getByRole("button", { name: "Accept Invitation" }),
+  ).toBeEnabled();
 });
 
 test("restores, saves, and explicitly completes Recipient Onboarding", async () => {
@@ -162,7 +201,7 @@ test("restores, saves, and explicitly completes Recipient Onboarding", async () 
             email_previews_acknowledged: false,
             push_guidance_acknowledged: false,
             email_preference: "weekly",
-            session_type: "public",
+            session_type: "",
             csrf_token: oldCSRF,
           }),
         );
@@ -203,6 +242,12 @@ test("restores, saves, and explicitly completes Recipient Onboarding", async () 
     "weekly",
   );
   expect(screen.getByText(/Media, search, Comments, archives/)).toBeVisible();
+  expect(
+    screen.getByRole("radio", { name: /Trusted device, stays signed in/ }),
+  ).not.toBeChecked();
+  expect(
+    screen.getByRole("radio", { name: /Public computer, expires/ }),
+  ).not.toBeChecked();
   expect(
     screen.getByRole("heading", { name: "Your Interest list" }),
   ).toBeInTheDocument();

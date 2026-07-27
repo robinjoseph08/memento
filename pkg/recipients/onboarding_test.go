@@ -9,7 +9,7 @@ import (
 )
 
 func TestOnboardingRejectsInvalidOrIncompleteChoicesBeforePersistence(t *testing.T) {
-	service := New(nil, nil, "")
+	service := New(nil, nil, "", nil)
 	actor := setup.SessionActor{}
 
 	_, err := service.SaveOnboarding(context.Background(), actor, OnboardingRequest{
@@ -23,4 +23,11 @@ func TestOnboardingRejectsInvalidOrIncompleteChoicesBeforePersistence(t *testing
 		SessionType:     "trusted",
 	})
 	require.ErrorIs(t, err, ErrOnboardingChoices)
+
+	_, err = service.CompleteOnboarding(context.Background(), actor, OnboardingRequest{
+		PrivacyAcknowledged: true, EngagementAcknowledged: true,
+		InterestListAcknowledged: true, EmailPreviewsAcknowledged: true,
+		PushGuidanceAcknowledged: true, EmailPreference: "immediate",
+	})
+	require.ErrorIs(t, err, ErrOnboardingChoices, "completion requires an explicit browser choice")
 }

@@ -159,12 +159,11 @@ type Service struct {
 	random    io.Reader
 }
 
-func New(db *bun.DB, delivery *emaildelivery.Service, publicURL string, auth ...*setup.Service) *Service {
-	service := &Service{db: db, delivery: delivery, publicURL: strings.TrimRight(publicURL, "/"), now: time.Now, random: rand.Reader}
-	if len(auth) > 0 {
-		service.auth = auth[0]
+func New(db *bun.DB, delivery *emaildelivery.Service, publicURL string, auth *setup.Service) *Service {
+	return &Service{
+		db: db, delivery: delivery, auth: auth,
+		publicURL: strings.TrimRight(publicURL, "/"), now: time.Now, random: rand.Reader,
 	}
-	return service
 }
 
 func normalizeEmail(value string) (string, string, error) {
@@ -694,8 +693,9 @@ func (s *Service) SaveOnboarding(ctx context.Context, actor setup.SessionActor, 
 // CompleteOnboarding atomically records informed choices, completes the current
 // generation, and rotates the Session. It never creates historical delivery.
 func (s *Service) CompleteOnboarding(ctx context.Context, actor setup.SessionActor, request OnboardingRequest) (OnboardingCompleteResponse, error) {
-	if !validOnboardingSelections(request) || !request.PrivacyAcknowledged || !request.EngagementAcknowledged ||
-		!request.InterestListAcknowledged || !request.EmailPreviewsAcknowledged || !request.PushGuidanceAcknowledged {
+	if !validOnboardingSelections(request) || !validSessionType(request.SessionType) ||
+		!request.PrivacyAcknowledged || !request.EngagementAcknowledged || !request.InterestListAcknowledged ||
+		!request.EmailPreviewsAcknowledged || !request.PushGuidanceAcknowledged {
 		return OnboardingCompleteResponse{}, ErrOnboardingChoices
 	}
 	if s.auth == nil {
@@ -721,7 +721,7 @@ func (s *Service) CompleteOnboarding(ctx context.Context, actor setup.SessionAct
 			return err
 		}
 		now := s.now().UTC()
-		if _, err := tx.NewRaw(`INSERT INTO onboarding_choices (recipient_access_generation_id, privacy_acknowledged, engagement_acknowledged, interest_list_acknowledged, email_previews_acknowledged, push_guidance_acknowledged, email_preference, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, actor.AccessID, true, true, true, true, true, request.EmailPreference, now).Exec(ctx); err != nil {
+		if _, err := tx.NewRaw(`INSERT INTO onboarding_choices (recipient_access_generation_id, privacy_acknowledged, engagement_acknowledged, interest_list_acknowledged, email_previews_acknowledged, push_guidance_acknowledged, informed_choices_version, email_preference, completed_at) VALUES (?, ?, ?, ?, ?, ?, 2, ?, ?)`, actor.AccessID, true, true, true, true, true, request.EmailPreference, now).Exec(ctx); err != nil {
 			return err
 		}
 		if _, err := tx.NewRaw(`INSERT INTO notification_preferences (recipient_access_generation_id, email_preference, updated_at) VALUES (?, ?, ?) ON CONFLICT (recipient_access_generation_id) DO UPDATE SET email_preference = EXCLUDED.email_preference, updated_at = EXCLUDED.updated_at`, actor.AccessID, request.EmailPreference, now).Exec(ctx); err != nil {
@@ -753,7 +753,11 @@ func (s *Service) CompleteOnboarding(ctx context.Context, actor setup.SessionAct
 
 func validOnboardingSelections(request OnboardingRequest) bool {
 	return (request.EmailPreference == "immediate" || request.EmailPreference == "weekly" || request.EmailPreference == "none") &&
-		(request.SessionType == "trusted" || request.SessionType == "public")
+		(request.SessionType == "" || validSessionType(request.SessionType))
+}
+
+func validSessionType(sessionType string) bool {
+	return sessionType == "trusted" || sessionType == "public"
 }
 
 type tokenRow struct {

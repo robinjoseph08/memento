@@ -468,6 +468,9 @@ func TestResumableOnboardingPersistsInterestsAndAtomicallyUnlocksCurrentAccessWi
 	require.NoError(t, err)
 	actor, err := fixture.auth.AuthorizeOnboardingSession(context.Background(), accepted.session.Credential, accepted.session.CSRFToken, true)
 	require.NoError(t, err)
+	initial, err := fixture.service.Onboarding(context.Background(), actor, accepted.session.CSRFToken)
+	require.NoError(t, err)
+	assert.Empty(t, initial.SessionType, "acceptance must not choose a trusted browser for the Recipient")
 
 	partial := OnboardingRequest{
 		PrivacyAcknowledged: true, EmailPreference: "weekly", SessionType: "public",
@@ -547,9 +550,11 @@ func TestResumableOnboardingPersistsInterestsAndAtomicallyUnlocksCurrentAccessWi
 	require.Len(t, persistedInterest.Entries, 1)
 	assert.Equal(t, selectedID.String(), persistedInterest.Entries[0].Person.ID)
 	var informed, completedAt bool
-	require.NoError(t, fixture.db.NewRaw(`SELECT privacy_acknowledged AND engagement_acknowledged AND interest_list_acknowledged AND email_previews_acknowledged AND push_guidance_acknowledged, completed_at IS NOT NULL FROM onboarding_choices WHERE recipient_access_generation_id = ?`, actor.AccessID).Scan(context.Background(), &informed, &completedAt))
+	var informedVersion int
+	require.NoError(t, fixture.db.NewRaw(`SELECT privacy_acknowledged AND engagement_acknowledged AND interest_list_acknowledged AND email_previews_acknowledged AND push_guidance_acknowledged, completed_at IS NOT NULL, informed_choices_version FROM onboarding_choices WHERE recipient_access_generation_id = ?`, actor.AccessID).Scan(context.Background(), &informed, &completedAt, &informedVersion))
 	assert.True(t, informed)
 	assert.True(t, completedAt)
+	assert.Equal(t, 2, informedVersion)
 	var deliveriesAfter, outboxAfter, queuedReminder int
 	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM email_deliveries`).Scan(context.Background(), &deliveriesAfter))
 	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM outbox_events`).Scan(context.Background(), &outboxAfter))

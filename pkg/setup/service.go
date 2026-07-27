@@ -111,12 +111,7 @@ type challenge struct {
 	ConsumedAt            sql.NullTime
 }
 
-type completedSession struct {
-	Credential  string
-	CSRFToken   string
-	SessionType string
-	ExpiresAt   *time.Time
-}
+type completedSession = BrowserSession
 
 type authenticatedSession struct {
 	DisplayName string
@@ -149,6 +144,19 @@ type BrowserSession struct {
 	CSRFToken   string
 	SessionType string
 	ExpiresAt   *time.Time
+}
+
+func sessionExpirations(sessionType string, now time.Time) (*time.Time, *time.Time, error) {
+	switch sessionType {
+	case "trusted":
+		expiresAt := now.Add(trustedLifetime)
+		return &expiresAt, nil, nil
+	case "public":
+		expiresAt := now.Add(publicLifetime)
+		return nil, &expiresAt, nil
+	default:
+		return nil, nil, ErrSessionType
+	}
 }
 
 // Service coordinates setup state, required email, identity, and Session persistence.
@@ -372,12 +380,9 @@ func (s *Service) complete(ctx context.Context, request CompleteRequest) (comple
 			!now.Before(stored.VerificationExpiresAt.Time) {
 			return ErrInvalidToken
 		}
-		if request.SessionType == "trusted" {
-			expiry := now.Add(trustedLifetime)
-			idleExpiresAt = &expiry
-		} else {
-			expiry := now.Add(publicLifetime)
-			absoluteExpiresAt = &expiry
+		idleExpiresAt, absoluteExpiresAt, err = sessionExpirations(request.SessionType, now)
+		if err != nil {
+			return err
 		}
 		statements := []struct {
 			query string
@@ -387,7 +392,7 @@ func (s *Service) complete(ctx context.Context, request CompleteRequest) (comple
 			{`INSERT INTO person_roles (person_id, role, created_at) VALUES (?, 'curator', ?), (?, 'recipient', ?)`, []any{personID, now, personID, now}},
 			{`INSERT INTO recipient_access_generations (id, person_id, generation, state, is_current, onboarding_completed_at, created_at, updated_at) VALUES (?, ?, 1, 'completed', true, ?, ?, ?)`, []any{accessID, personID, now, now, now}},
 			{`INSERT INTO recipient_emails (id, recipient_access_generation_id, email, normalized_email, is_current, created_at) VALUES (?, ?, ?, ?, true, ?)`, []any{emailID, accessID, stored.Email, stored.Normalized, now}},
-			{`INSERT INTO onboarding_choices (recipient_access_generation_id, privacy_acknowledged, engagement_acknowledged, interest_list_acknowledged, email_previews_acknowledged, push_guidance_acknowledged, email_preference, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, []any{accessID, true, true, true, true, true, request.EmailPreference, now}},
+			{`INSERT INTO onboarding_choices (recipient_access_generation_id, privacy_acknowledged, engagement_acknowledged, interest_list_acknowledged, email_previews_acknowledged, push_guidance_acknowledged, informed_choices_version, email_preference, completed_at) VALUES (?, ?, ?, ?, ?, ?, 2, ?, ?)`, []any{accessID, true, true, true, true, true, request.EmailPreference, now}},
 			{`INSERT INTO notification_preferences (recipient_access_generation_id, email_preference, updated_at) VALUES (?, ?, ?)`, []any{accessID, request.EmailPreference, now}},
 			{`UPDATE login_challenges SET consumed_at = ? WHERE verification_token_hash = ?`, []any{now, tokenHash(verificationRaw)}},
 			{`INSERT INTO sessions (id, credential_hash, person_id, recipient_access_generation_id, security_epoch, session_type, created_at, last_activity_at, idle_expires_at, absolute_expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, []any{sessionID, tokenHash(credentialRaw), personID, accessID, securityEpoch, request.SessionType, now, now, idleExpiresAt, absoluteExpiresAt}},
@@ -488,8 +493,9 @@ func (s *Service) AuthorizeOnboardingSession(ctx context.Context, credential, cs
 
 // NewBrowserSessionIn creates a Session inside the caller's identity transaction.
 func (s *Service) NewBrowserSessionIn(ctx context.Context, tx bun.Tx, personID, accessID uuid.UUID, sessionType string, now time.Time) (BrowserSession, uuid.UUID, error) {
-	if sessionType != "trusted" && sessionType != "public" {
-		return BrowserSession{}, uuid.Nil, ErrSessionType
+	idleExpiresAt, absoluteExpiresAt, err := sessionExpirations(sessionType, now)
+	if err != nil {
+		return BrowserSession{}, uuid.Nil, err
 	}
 	sessionID, err := uuid.NewRandomFromReader(s.random)
 	if err != nil {
@@ -503,14 +509,6 @@ func (s *Service) NewBrowserSessionIn(ctx context.Context, tx bun.Tx, personID, 
 	if err := tx.NewRaw(`SELECT security_epoch FROM system_settings WHERE id = 1 AND setup_complete`).Scan(ctx, &securityEpoch); err != nil {
 		return BrowserSession{}, uuid.Nil, err
 	}
-	var idleExpiresAt, absoluteExpiresAt *time.Time
-	if sessionType == "trusted" {
-		expiry := now.Add(trustedLifetime)
-		idleExpiresAt = &expiry
-	} else {
-		expiry := now.Add(publicLifetime)
-		absoluteExpiresAt = &expiry
-	}
 	if _, err := tx.NewRaw(`INSERT INTO sessions (id, credential_hash, person_id, recipient_access_generation_id, security_epoch, session_type, created_at, last_activity_at, idle_expires_at, absolute_expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, sessionID, tokenHash(raw), personID, accessID, securityEpoch, sessionType, now, now, idleExpiresAt, absoluteExpiresAt).Exec(ctx); err != nil {
 		return BrowserSession{}, uuid.Nil, err
 	}
@@ -520,20 +518,13 @@ func (s *Service) NewBrowserSessionIn(ctx context.Context, tx bun.Tx, personID, 
 // RotateBrowserSessionIn rotates privilege-bound credentials and applies the
 // Recipient's informed device choice in the completion transaction.
 func (s *Service) RotateBrowserSessionIn(ctx context.Context, tx bun.Tx, actor SessionActor, sessionType string, now time.Time) (BrowserSession, error) {
-	if sessionType != "trusted" && sessionType != "public" {
-		return BrowserSession{}, ErrSessionType
+	idleExpiresAt, absoluteExpiresAt, err := sessionExpirations(sessionType, now)
+	if err != nil {
+		return BrowserSession{}, err
 	}
 	credential, raw, err := s.randomToken()
 	if err != nil {
 		return BrowserSession{}, err
-	}
-	var idleExpiresAt, absoluteExpiresAt *time.Time
-	if sessionType == "trusted" {
-		expiry := now.Add(trustedLifetime)
-		idleExpiresAt = &expiry
-	} else {
-		expiry := now.Add(publicLifetime)
-		absoluteExpiresAt = &expiry
 	}
 	result, err := tx.NewRaw(`UPDATE sessions SET credential_hash = ?, session_type = ?, last_activity_at = ?, idle_expires_at = ?, absolute_expires_at = ? WHERE id = ? AND person_id = ? AND recipient_access_generation_id = ? AND revoked_at IS NULL`, tokenHash(raw), sessionType, now, idleExpiresAt, absoluteExpiresAt, actor.SessionID, actor.PersonID, actor.AccessID).Exec(ctx)
 	if err != nil {

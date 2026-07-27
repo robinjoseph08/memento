@@ -197,7 +197,7 @@ func TestDraftMigrationRollbackRestoresRequiredCaptureDates(t *testing.T) {
 	assert.Equal(t, "NO", nullable)
 }
 
-func TestOnboardingMigrationBackfillsExistingInformedSetupAndAddsResumableProgress(t *testing.T) {
+func TestOnboardingMigrationPreservesLegacyAcknowledgmentsAndAddsResumableProgress(t *testing.T) {
 	db := testdb.Open(t)
 	ctx := context.Background()
 	priorMigrations := migrate.NewMigrations()
@@ -217,10 +217,17 @@ func TestOnboardingMigrationBackfillsExistingInformedSetupAndAddsResumableProgre
 	require.NoError(t, err)
 	require.NoError(t, Apply(ctx, db))
 	var previews, push bool
-	require.NoError(t, db.NewRaw(`SELECT email_previews_acknowledged, push_guidance_acknowledged FROM onboarding_choices WHERE recipient_access_generation_id = ?`, accessID).Scan(ctx, &previews, &push))
-	assert.True(t, previews)
-	assert.True(t, push)
-	_, err = db.ExecContext(ctx, `INSERT INTO onboarding_progress (recipient_access_generation_id, email_preference, session_type) VALUES (?, 'invalid', 'trusted')`, accessID)
+	var version int
+	require.NoError(t, db.NewRaw(`SELECT email_previews_acknowledged, push_guidance_acknowledged, informed_choices_version FROM onboarding_choices WHERE recipient_access_generation_id = ?`, accessID).Scan(ctx, &previews, &push, &version))
+	assert.False(t, previews, "the migration must not fabricate a disclosure acknowledgment")
+	assert.False(t, push, "the migration must not fabricate a disclosure acknowledgment")
+	assert.Equal(t, 1, version)
+	_, err = db.ExecContext(ctx, `INSERT INTO onboarding_progress (recipient_access_generation_id) VALUES (?)`, accessID)
+	require.NoError(t, err)
+	var sessionType string
+	require.NoError(t, db.NewRaw(`SELECT session_type FROM onboarding_progress WHERE recipient_access_generation_id = ?`, accessID).Scan(ctx, &sessionType))
+	assert.Empty(t, sessionType, "a Recipient must explicitly choose how to treat the browser")
+	_, err = db.ExecContext(ctx, `UPDATE onboarding_progress SET email_preference = 'invalid' WHERE recipient_access_generation_id = ?`, accessID)
 	require.Error(t, err, "resumable preferences must remain in the constrained domains")
 }
 

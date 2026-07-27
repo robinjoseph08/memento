@@ -14,12 +14,14 @@ func init() {
 					`ALTER TABLE onboarding_choices DROP CONSTRAINT onboarding_choices_check`,
 					`ALTER TABLE onboarding_choices ADD COLUMN email_previews_acknowledged boolean NOT NULL DEFAULT false`,
 					`ALTER TABLE onboarding_choices ADD COLUMN push_guidance_acknowledged boolean NOT NULL DEFAULT false`,
-					`UPDATE onboarding_choices SET email_previews_acknowledged = true, push_guidance_acknowledged = true`,
+					`ALTER TABLE onboarding_choices ADD COLUMN informed_choices_version integer NOT NULL DEFAULT 1`,
 					`ALTER TABLE onboarding_choices ALTER COLUMN email_previews_acknowledged DROP DEFAULT`,
 					`ALTER TABLE onboarding_choices ALTER COLUMN push_guidance_acknowledged DROP DEFAULT`,
+					`ALTER TABLE onboarding_choices ALTER COLUMN informed_choices_version DROP DEFAULT`,
 					`ALTER TABLE onboarding_choices ADD CONSTRAINT onboarding_choices_informed_check CHECK (
 						privacy_acknowledged AND engagement_acknowledged AND interest_list_acknowledged AND
-						email_previews_acknowledged AND push_guidance_acknowledged
+						((informed_choices_version = 1 AND NOT email_previews_acknowledged AND NOT push_guidance_acknowledged) OR
+						 (informed_choices_version = 2 AND email_previews_acknowledged AND push_guidance_acknowledged))
 					)`,
 					`CREATE TABLE onboarding_progress (
 						recipient_access_generation_id uuid PRIMARY KEY REFERENCES recipient_access_generations(id) ON DELETE RESTRICT,
@@ -29,7 +31,7 @@ func init() {
 						email_previews_acknowledged boolean NOT NULL DEFAULT false,
 						push_guidance_acknowledged boolean NOT NULL DEFAULT false,
 						email_preference text NOT NULL DEFAULT 'immediate' CHECK (email_preference IN ('immediate', 'weekly', 'none')),
-						session_type text NOT NULL DEFAULT 'trusted' CHECK (session_type IN ('trusted', 'public')),
+						session_type text NOT NULL DEFAULT '' CHECK (session_type IN ('', 'trusted', 'public')),
 						updated_at timestamptz NOT NULL DEFAULT now()
 					)`,
 				}
@@ -46,6 +48,7 @@ func init() {
 				statements := []string{
 					`DROP TABLE IF EXISTS onboarding_progress`,
 					`ALTER TABLE onboarding_choices DROP CONSTRAINT onboarding_choices_informed_check`,
+					`ALTER TABLE onboarding_choices DROP COLUMN informed_choices_version`,
 					`ALTER TABLE onboarding_choices DROP COLUMN push_guidance_acknowledged`,
 					`ALTER TABLE onboarding_choices DROP COLUMN email_previews_acknowledged`,
 					`ALTER TABLE onboarding_choices ADD CONSTRAINT onboarding_choices_check CHECK (

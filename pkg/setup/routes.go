@@ -116,7 +116,7 @@ func (h *Handler) Complete(c echo.Context) error {
 			return err
 		}
 	}
-	SetSessionCookie(c, BrowserSession(completed))
+	SetSessionCookie(c, completed)
 	return c.JSON(http.StatusCreated, CompleteResponse{Status: "complete", CSRFToken: completed.CSRFToken})
 }
 
@@ -157,7 +157,7 @@ func (h *Handler) Refresh(c echo.Context) error {
 			return err
 		}
 	}
-	SetSessionCookie(c, BrowserSession(refreshed))
+	SetSessionCookie(c, refreshed)
 	return c.NoContent(http.StatusNoContent)
 }
 

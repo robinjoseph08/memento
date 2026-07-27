@@ -384,8 +384,11 @@ function SetupFlow({
             <span>
               <strong>Private email previews</strong>
               Immediate email can include one authorized cover, while a weekly
-              digest can include up to three. Previews contain no tracking
-              pixels or public Media links.
+              digest can include up to three. Each embedded preview is a
+              permanent low-resolution mailbox copy that can be forwarded and
+              cannot be recalled after Withdrawal or Revocation. Messages
+              contain no tracking pixels, public Media links, hidden counts, or
+              hidden Moments.
             </span>
           </label>
           <label className="choice">
@@ -762,7 +765,7 @@ function RecipientOnboarding({
     push_guidance_acknowledged:
       progress.data?.push_guidance_acknowledged ?? false,
     email_preference: progress.data?.email_preference ?? "immediate",
-    session_type: progress.data?.session_type ?? "trusted",
+    session_type: progress.data?.session_type ?? "",
   };
   const save = useMutation({
     mutationFn: () =>
@@ -899,8 +902,11 @@ function RecipientOnboarding({
             <span>
               <strong>Private email previews</strong>
               Immediate messages can include one authorized cover and weekly
-              digests up to three. They have no tracking pixels or public Media
-              links.
+              digests up to three. Each embedded preview is a permanent
+              low-resolution mailbox copy that can be forwarded and cannot be
+              recalled after Withdrawal or Revocation. Messages contain no
+              tracking pixels, public Media links, hidden counts, or hidden
+              Moments.
             </span>
           </label>
           <label>
@@ -923,6 +929,7 @@ function RecipientOnboarding({
                 checked={draft.session_type === "trusted"}
                 name="recipient-session-type"
                 onChange={() => setDraft({ ...draft, session_type: "trusted" })}
+                required
                 type="radio"
               />
               Trusted device, stays signed in while active
@@ -932,6 +939,7 @@ function RecipientOnboarding({
                 checked={draft.session_type === "public"}
                 name="recipient-session-type"
                 onChange={() => setDraft({ ...draft, session_type: "public" })}
+                required
                 type="radio"
               />
               Public computer, expires within 12 hours
@@ -953,9 +961,11 @@ function RecipientOnboarding({
               <strong>Push is optional and device-specific</strong>
               {draft.session_type === "public"
                 ? " Public computers cannot enable push."
-                : pushSupported
-                  ? " This device can offer push later from Settings after an explicit action."
-                  : " This browser cannot offer push now. On iPhone or iPad, install Memento to the Home Screen first."}
+                : draft.session_type === "trusted"
+                  ? pushSupported
+                    ? " This device can offer push later from Settings after an explicit action."
+                    : " This browser cannot offer push now. On iPhone or iPad, install Memento to the Home Screen first."
+                  : " Choose how this browser should be treated to see its guidance."}
               Push can show limited authorized context on a lock screen and is
               independent of email and access.
             </span>
@@ -1155,10 +1165,10 @@ function InvitationLanding() {
         method: "POST",
         body: JSON.stringify({ token }),
       }),
-    onMutate: () => {
+    onSuccess: () => {
       window.history.replaceState({}, "", "/");
+      setAccepted(true);
     },
-    onSuccess: () => setAccepted(true),
   });
   const acceptedIdentity = useQuery({
     queryKey: ["accepted-invitation-session"],

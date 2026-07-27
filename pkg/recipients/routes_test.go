@@ -48,7 +48,7 @@ func TestRegisteredTokenRoutesPreventCachingAndReferrerLeakage(t *testing.T) {
 	e := echo.New()
 	e.HTTPErrorHandler = errcodes.NewHandler().Handle
 	auth := setup.New(nil, nil, config.SecurityConfig{})
-	RegisterRoutes(e, NewHandler(New(nil, nil, "https://memento.example"), auth))
+	RegisterRoutes(e, NewHandler(New(nil, nil, "https://memento.example", auth), auth))
 	tests := []struct {
 		method string
 		path   string
