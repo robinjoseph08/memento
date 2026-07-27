@@ -207,7 +207,11 @@ export function EventOrganizer({
       apiJSON<PreviewRecipientsResponse>(
         `/api/events/${selectedID}/preview-recipients`,
       ),
-    enabled: selectedID.length > 0 && currentDraft?.lifecycle === "published",
+    enabled:
+      selectedID.length > 0 &&
+      currentDraft !== undefined &&
+      currentDraft.moments.length > 0 &&
+      currentDraft.moments.every((moment) => moment.audience_complete),
     retry: false,
   });
   const preview = useQuery({
@@ -1151,7 +1155,11 @@ export function EventOrganizer({
                 <button
                   disabled={
                     !previewRecipientID ||
-                    (currentDraft.lifecycle !== "published" && !publish.data)
+                    saveState !== "saved" ||
+                    currentDraft.moments.length === 0 ||
+                    currentDraft.moments.some(
+                      (moment) => !moment.audience_complete,
+                    )
                   }
                   onClick={() => setPreviewOpen(true)}
                   type="button"

@@ -134,7 +134,8 @@ func init() {
 					`CREATE TABLE publication_preview_audit_events (
 						id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
 						event_id uuid NOT NULL REFERENCES events(id) ON DELETE RESTRICT,
-						publication_id uuid NOT NULL REFERENCES publications(id) ON DELETE RESTRICT,
+						publication_id uuid REFERENCES publications(id) ON DELETE RESTRICT,
+						editable_version bigint NOT NULL CHECK (editable_version > 0),
 						actor_person_id uuid NOT NULL REFERENCES people(id) ON DELETE RESTRICT,
 						recipient_person_id uuid NOT NULL REFERENCES people(id) ON DELETE RESTRICT,
 						recipient_access_generation_id uuid NOT NULL REFERENCES recipient_access_generations(id) ON DELETE RESTRICT,

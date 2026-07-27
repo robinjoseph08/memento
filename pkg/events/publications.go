@@ -450,13 +450,13 @@ func (s *Service) PublishEvent(ctx context.Context, actor setup.CuratorSession, 
 	return response, nil
 }
 
-// PreviewRecipients lists current non-Curator Recipient generations for a published Event, including Pending recipients.
+// PreviewRecipients lists current non-Curator Recipient generations for an editable Event, including Pending recipients.
 func (s *Service) PreviewRecipients(ctx context.Context, eventID uuid.UUID) (PreviewRecipientsResponse, error) {
-	var published bool
-	if err := s.db.NewRaw(`SELECT EXISTS (SELECT 1 FROM current_published_events WHERE event_id = ?)`, eventID).Scan(ctx, &published); err != nil {
+	var editable bool
+	if err := s.db.NewRaw(`SELECT EXISTS (SELECT 1 FROM events WHERE id = ? AND lifecycle IN ('draft', 'published'))`, eventID).Scan(ctx, &editable); err != nil {
 		return PreviewRecipientsResponse{}, err
 	}
-	if !published {
+	if !editable {
 		return PreviewRecipientsResponse{}, ErrNoPublication
 	}
 	response := PreviewRecipientsResponse{Recipients: make([]PreviewRecipient, 0)}
@@ -476,7 +476,7 @@ func (s *Service) PreviewRecipients(ctx context.Context, eventID uuid.UUID) (Pre
 	return response, nil
 }
 
-// PreviewEvent records Curator-only audit and renders through the Recipient projection.
+// PreviewEvent records Curator-only audit and renders the saved editable result through selected Recipient authorization.
 func (s *Service) PreviewEvent(ctx context.Context, actor setup.CuratorSession, eventID, recipientPersonID uuid.UUID) (PublishedEventView, error) {
 	var view PublishedEventView
 	err := s.db.RunInTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead}, func(ctx context.Context, tx bun.Tx) error {
@@ -490,22 +490,92 @@ func (s *Service) PreviewEvent(ctx context.Context, actor setup.CuratorSession, 
 			}
 			return err
 		}
+		var editableVersion int64
+		var publicationID *uuid.UUID
 		var err error
-		view, err = s.loadPublishedEvent(ctx, tx, eventID, accessID, true)
+		view, editableVersion, publicationID, err = loadEditablePreview(ctx, tx, eventID, accessID)
 		if err != nil {
 			return err
 		}
 		if _, err := tx.NewRaw(`
 			INSERT INTO publication_preview_audit_events (
-				event_id, publication_id, actor_person_id, recipient_person_id,
-				recipient_access_generation_id, created_at
-			) VALUES (?, ?, ?, ?, ?, ?)
-		`, eventID, uuid.MustParse(view.PublicationID), actor.PersonID, recipientPersonID, accessID, s.now().UTC()).Exec(ctx); err != nil {
+				event_id, publication_id, editable_version, actor_person_id,
+				recipient_person_id, recipient_access_generation_id, created_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?)
+		`, eventID, publicationID, editableVersion, actor.PersonID, recipientPersonID, accessID, s.now().UTC()).Exec(ctx); err != nil {
 			return err
 		}
 		return nil
 	})
 	return view, err
+}
+
+func loadEditablePreview(ctx context.Context, db bun.IDB, eventID, accessID uuid.UUID) (PublishedEventView, int64, *uuid.UUID, error) {
+	view := PublishedEventView{
+		EventID: eventID.String(), Media: make([]PublishedMedia, 0), Preview: true,
+		Capabilities: PreviewCapabilities{},
+	}
+	var title, description string
+	var editableVersion int64
+	var publicationID *uuid.UUID
+	err := db.NewRaw(`
+		SELECT title, description, version, current_publication_id
+		FROM events WHERE id = ? AND lifecycle IN ('draft', 'published')
+	`, eventID).Scan(ctx, &title, &description, &editableVersion, &publicationID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return PublishedEventView{}, 0, nil, ErrNoPublication
+	}
+	if err != nil {
+		return PublishedEventView{}, 0, nil, err
+	}
+	if publicationID != nil {
+		view.PublicationID = publicationID.String()
+	}
+	if err := db.NewRaw(`
+		SELECT media.id, media.media_type, media.width, media.height,
+		       media.local_date_time, media.availability = 'current' AS available
+		FROM draft_media_placements AS placement
+		JOIN draft_moments AS moment ON moment.id = placement.draft_moment_id
+		JOIN current_audience_snapshots AS snapshot
+		  ON snapshot.target_kind = 'moment' AND snapshot.target_id = moment.id
+		JOIN audience_snapshot_entries AS audience
+		  ON audience.snapshot_id = snapshot.snapshot_id
+		 AND audience.recipient_access_generation_id = ?
+		JOIN media_items AS media ON media.id = placement.media_item_id
+		WHERE placement.event_id = ?
+		ORDER BY placement.position
+	`, accessID, eventID).Scan(ctx, &view.Media); err != nil {
+		return PublishedEventView{}, 0, nil, fmt.Errorf("load editable preview media: %w", err)
+	}
+	view.MediaCount = len(view.Media)
+	if view.MediaCount == 0 {
+		return view, editableVersion, publicationID, nil
+	}
+	view.Authorized = true
+	view.Title = title
+	view.Description = description
+	var coverID uuid.UUID
+	if err := db.NewRaw(`
+		SELECT placement.media_item_id
+		FROM draft_media_placements AS placement
+		JOIN draft_moments AS moment ON moment.id = placement.draft_moment_id
+		JOIN current_audience_snapshots AS snapshot
+		  ON snapshot.target_kind = 'moment' AND snapshot.target_id = moment.id
+		JOIN audience_snapshot_entries AS audience
+		  ON audience.snapshot_id = snapshot.snapshot_id
+		 AND audience.recipient_access_generation_id = ?
+		JOIN media_items AS media ON media.id = placement.media_item_id
+		WHERE placement.event_id = ?
+		ORDER BY (media.availability = 'current') DESC,
+		         (moment.cover_media_item_id = placement.media_item_id) DESC,
+		         placement.position
+		LIMIT 1
+	`, accessID, eventID).Scan(ctx, &coverID); err != nil {
+		return PublishedEventView{}, 0, nil, fmt.Errorf("load editable preview cover: %w", err)
+	}
+	cover := coverID.String()
+	view.CoverMediaID = &cover
+	return view, editableVersion, publicationID, nil
 }
 
 // RecipientEvent renders current projections only for a completed current generation.
@@ -525,7 +595,7 @@ func (s *Service) RecipientEvent(ctx context.Context, actor setup.SessionActor, 
 			return ErrNoPublication
 		}
 		var err error
-		view, err = s.loadPublishedEvent(ctx, tx, eventID, actor.AccessID, false)
+		view, err = s.loadPublishedEvent(ctx, tx, eventID, actor.AccessID)
 		return err
 	})
 	return view, err
@@ -551,8 +621,8 @@ func (s *Service) HandlePublicationJob(ctx context.Context, job worker.Job) erro
 	return nil
 }
 
-func (s *Service) loadPublishedEvent(ctx context.Context, db bun.IDB, eventID, accessID uuid.UUID, preview bool) (PublishedEventView, error) {
-	view := PublishedEventView{EventID: eventID.String(), Media: make([]PublishedMedia, 0), Preview: preview}
+func (s *Service) loadPublishedEvent(ctx context.Context, db bun.IDB, eventID, accessID uuid.UUID) (PublishedEventView, error) {
+	view := PublishedEventView{EventID: eventID.String(), Media: make([]PublishedMedia, 0)}
 	var publicationID uuid.UUID
 	var coverID *uuid.UUID
 	err := db.NewRaw(`
@@ -567,19 +637,6 @@ func (s *Service) loadPublishedEvent(ctx context.Context, db bun.IDB, eventID, a
 		  )
 	`, accessID, eventID, accessID).Scan(ctx, &publicationID, &view.Title, &view.Description, &coverID)
 	if errors.Is(err, sql.ErrNoRows) {
-		if preview {
-			var currentPublication uuid.UUID
-			currentErr := db.NewRaw(`SELECT publication_id FROM current_published_events WHERE event_id = ?`, eventID).Scan(ctx, &currentPublication)
-			if errors.Is(currentErr, sql.ErrNoRows) {
-				return PublishedEventView{}, ErrNoPublication
-			}
-			if currentErr != nil {
-				return PublishedEventView{}, currentErr
-			}
-			view.PublicationID = currentPublication.String()
-			view.Capabilities = PreviewCapabilities{}
-			return view, nil
-		}
 		return PublishedEventView{}, ErrNoPublication
 	}
 	if err != nil {
@@ -612,10 +669,6 @@ func (s *Service) loadPublishedEvent(ctx context.Context, db bun.IDB, eventID, a
 		return PublishedEventView{}, fmt.Errorf("load filtered Event media: %w", err)
 	}
 	view.MediaCount = len(view.Media)
-	if preview {
-		view.Capabilities = PreviewCapabilities{}
-	} else {
-		view.Capabilities = PreviewCapabilities{Comments: true, Favorites: true, Settings: true, Downloads: true, RecordEngagement: true}
-	}
+	view.Capabilities = PreviewCapabilities{Comments: true, Favorites: true, Settings: true, Downloads: true, RecordEngagement: true}
 	return view, nil
 }

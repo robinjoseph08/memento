@@ -131,6 +131,49 @@ func (fixture publicationFixture) actorFor(name string) setup.SessionActor {
 	return setup.SessionActor{PersonID: fixture.people[name], AccessID: fixture.access[name], SessionID: uuid.New()}
 }
 
+func TestPreviewRendersSavedEditableResultBeforePublication(t *testing.T) {
+	fixture := newPublicationFixture(t)
+	ctx := context.Background()
+	previewRecipients, err := fixture.service.PreviewRecipients(ctx, fixture.event)
+	require.NoError(t, err)
+	assert.Len(t, previewRecipients.Recipients, 4)
+	firstPreview, err := fixture.service.PreviewEvent(ctx, fixture.actor, fixture.event, fixture.people["shared"])
+	require.NoError(t, err)
+	assert.True(t, firstPreview.Authorized)
+	assert.Empty(t, firstPreview.PublicationID)
+	assert.Equal(t, "Family weekend", firstPreview.Title)
+	require.Len(t, firstPreview.Media, 1)
+	assert.Equal(t, fixture.media[0].String(), firstPreview.Media[0].ID)
+
+	publication, err := fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, fixture.request())
+	require.NoError(t, err)
+	_, err = fixture.db.NewRaw(`
+		UPDATE events SET title = 'Proposed correction', version = 8 WHERE id = ?;
+		DELETE FROM audience_snapshot_entries
+		WHERE snapshot_id = (SELECT snapshot_id FROM current_audience_snapshots WHERE target_kind = 'moment' AND target_id = ?)
+		  AND recipient_access_generation_id = ?;
+		INSERT INTO audience_snapshot_entries (snapshot_id, recipient_person_id, recipient_access_generation_id)
+		SELECT snapshot_id, ?, ? FROM current_audience_snapshots WHERE target_kind = 'moment' AND target_id = ?
+	`, fixture.event, fixture.moments[0], fixture.access["shared"],
+		fixture.people["shared"], fixture.access["shared"], fixture.moments[1]).Exec(ctx)
+	require.NoError(t, err)
+
+	proposed, err := fixture.service.PreviewEvent(ctx, fixture.actor, fixture.event, fixture.people["shared"])
+	require.NoError(t, err)
+	assert.Equal(t, publication.ID, proposed.PublicationID, "audit context retains the current Publication identity")
+	assert.Equal(t, "Proposed correction", proposed.Title)
+	require.Len(t, proposed.Media, 1)
+	assert.Equal(t, fixture.media[1].String(), proposed.Media[0].ID)
+	current, err := fixture.service.RecipientEvent(ctx, fixture.actorFor("shared"), fixture.event)
+	require.NoError(t, err)
+	assert.Equal(t, "Family weekend", current.Title, "Recipients keep the prior projection until Publication")
+	require.Len(t, current.Media, 1)
+	assert.Equal(t, fixture.media[0].String(), current.Media[0].ID)
+	var versions []int64
+	require.NoError(t, fixture.db.NewRaw(`SELECT editable_version FROM publication_preview_audit_events WHERE event_id = ? ORDER BY id`, fixture.event).Scan(ctx, &versions))
+	assert.Equal(t, []int64{7, 8}, versions)
+}
+
 func TestPublicationBuildsImmutableHistoryAndFilteredCurrentProjections(t *testing.T) {
 	fixture := newPublicationFixture(t)
 	ctx := context.Background()
