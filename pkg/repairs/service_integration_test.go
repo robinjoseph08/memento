@@ -719,16 +719,31 @@ func TestMediaConfirmationPreservesPortalIdentityAndMovesBacking(t *testing.T) {
 	`, eventID, eventID, newMediaID, candidateLooseID, newMediaID)
 	require.NoError(t, err)
 	_, err = fixture.db.ExecContext(context.Background(), `
-		INSERT INTO draft_media_placements (event_id, media_item_id, position) VALUES (?, ?, 1);
-		INSERT INTO loose_items (id, media_item_id, grouping_timezone) VALUES (?, ?, 'UTC')
-	`, eventID, oldMediaID, stableLooseID, oldMediaID)
+		INSERT INTO draft_media_placements (event_id, media_item_id, position) VALUES (?, ?, 1)
+	`, eventID, oldMediaID)
 	require.NoError(t, err)
 	_, err = fixture.service.ConfirmMedia(context.Background(), fixture.actor, candidateID)
-	assert.ErrorIs(t, err, ErrConflict, "colliding draft references require explicit Curator cleanup")
+	assert.ErrorIs(t, err, ErrConflict, "colliding Event placements require explicit Curator cleanup")
+	var pendingState string
+	var retainedItems int
+	require.NoError(t, fixture.db.NewRaw(`SELECT state FROM media_repair_candidates WHERE id = ?`, candidateID).Scan(context.Background(), &pendingState))
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM media_items WHERE id IN (?, ?)`, oldMediaID, newMediaID).Scan(context.Background(), &retainedItems))
+	assert.Equal(t, "pending", pendingState)
+	assert.Equal(t, 2, retainedItems)
+	_, err = fixture.db.ExecContext(context.Background(), `DELETE FROM draft_media_placements WHERE event_id = ? AND media_item_id = ?`, eventID, oldMediaID)
+	require.NoError(t, err)
+
 	_, err = fixture.db.ExecContext(context.Background(), `
-		DELETE FROM draft_media_placements WHERE event_id = ? AND media_item_id = ?;
-		DELETE FROM loose_items WHERE id = ?
-	`, eventID, oldMediaID, stableLooseID)
+		INSERT INTO loose_items (id, media_item_id, grouping_timezone) VALUES (?, ?, 'UTC')
+	`, stableLooseID, oldMediaID)
+	require.NoError(t, err)
+	_, err = fixture.service.ConfirmMedia(context.Background(), fixture.actor, candidateID)
+	assert.ErrorIs(t, err, ErrConflict, "colliding Loose items require explicit Curator cleanup")
+	require.NoError(t, fixture.db.NewRaw(`SELECT state FROM media_repair_candidates WHERE id = ?`, candidateID).Scan(context.Background(), &pendingState))
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM media_items WHERE id IN (?, ?)`, oldMediaID, newMediaID).Scan(context.Background(), &retainedItems))
+	assert.Equal(t, "pending", pendingState)
+	assert.Equal(t, 2, retainedItems)
+	_, err = fixture.db.ExecContext(context.Background(), `DELETE FROM loose_items WHERE id = ?`, stableLooseID)
 	require.NoError(t, err)
 
 	listed, err := fixture.service.List(context.Background())
