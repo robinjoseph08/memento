@@ -732,7 +732,7 @@ func TestCuratorOrganizesMomentsWithOrderingCoversReadinessAndOptimisticVersions
 	}, organized.Moments[0].SourceDays)
 	assert.False(t, organized.Moments[0].AttendanceComplete, "organization cannot impersonate explicit Attendance confirmation")
 	assert.False(t, organized.Moments[0].AudienceComplete, "organization cannot impersonate explicit Audience approval")
-	assert.True(t, organized.FinalReviewComplete)
+	assert.False(t, organized.FinalReviewComplete, "organization changes require a new final review")
 
 	var accessID uuid.UUID
 	require.NoError(t, fixture.db.NewRaw(`SELECT id FROM recipient_access_generations WHERE person_id = ? AND is_current`, fixture.actor.PersonID).Scan(ctx, &accessID))
@@ -754,9 +754,33 @@ func TestCuratorOrganizesMomentsWithOrderingCoversReadinessAndOptimisticVersions
 		snapshotID, fixture.actor.PersonID, accessID,
 		mergedID, snapshotID).Exec(ctx)
 	require.NoError(t, err)
+	reorderedMedia := append([]string(nil), allAssigned...)
+	for left, right := 0, len(reorderedMedia)-1; left < right; left, right = left+1, right-1 {
+		reorderedMedia[left], reorderedMedia[right] = reorderedMedia[right], reorderedMedia[left]
+	}
+	reordered, err := fixture.service.OrganizeEvent(ctx, fixture.actor, uuid.MustParse(created.ID), OrganizeEventRequest{
+		Version: organized.Version,
+		Moments: []OrganizeMoment{{
+			ID: mergedID, Title: "The whole weekend", ProposedDay: organized.Moments[0].ProposedDay,
+			CoverMediaItemID: &cover, MediaItemIDs: reorderedMedia,
+		}},
+		UnassignedMediaIDs:  mediaIDs(organized.UnassignedMedia),
+		FinalReviewComplete: true,
+	})
+	require.NoError(t, err)
+	assert.False(t, reordered.FinalReviewComplete, "ordering changes require a new final review")
+	assert.True(t, reordered.Moments[0].AttendanceComplete, "ordering does not discard valid Attendance")
+	assert.True(t, reordered.Moments[0].AudienceComplete, "ordering does not discard a valid Audience")
+	var reorderedReviewVersion int64
+	var reorderedSnapshotID uuid.UUID
+	require.NoError(t, fixture.db.NewRaw(`SELECT review_version FROM draft_moments WHERE id = ?`, mergedID).Scan(ctx, &reorderedReviewVersion))
+	require.NoError(t, fixture.db.NewRaw(`SELECT snapshot_id FROM current_audience_snapshots WHERE target_kind = 'moment' AND target_id = ?`, mergedID).Scan(ctx, &reorderedSnapshotID))
+	assert.Equal(t, int64(7), reorderedReviewVersion)
+	assert.Equal(t, snapshotID, reorderedSnapshotID)
+
 	splitID := uuid.NewString()
 	split, err := fixture.service.OrganizeEvent(ctx, fixture.actor, uuid.MustParse(created.ID), OrganizeEventRequest{
-		Version: organized.Version,
+		Version: reordered.Version,
 		Moments: []OrganizeMoment{
 			{ID: mergedID, ProposedDay: organized.Moments[0].ProposedDay, MediaItemIDs: allAssigned[:1]},
 			{ID: splitID, ProposedDay: organized.Moments[0].ProposedDay, MediaItemIDs: allAssigned[1:]},
@@ -770,14 +794,14 @@ func TestCuratorOrganizesMomentsWithOrderingCoversReadinessAndOptimisticVersions
 		assert.Equal(t, "split_day", moment.ProposalKind)
 		assert.Equal(t, organized.Moments[0].SourceDays, moment.SourceDays)
 	}
-	assert.True(t, split.Moments[0].AttendanceComplete)
-	assert.True(t, split.Moments[0].AudienceComplete)
+	assert.False(t, split.Moments[0].AttendanceComplete, "changed Media membership invalidates retained Attendance")
+	assert.False(t, split.Moments[0].AudienceComplete, "changed Media membership invalidates retained Audience")
 	assert.False(t, split.Moments[1].AttendanceComplete)
 	assert.False(t, split.Moments[1].AudienceComplete)
 	var retainedReviewVersion, newReviewVersion int64
 	require.NoError(t, fixture.db.NewRaw(`SELECT review_version FROM draft_moments WHERE id = ?`, mergedID).Scan(ctx, &retainedReviewVersion))
 	require.NoError(t, fixture.db.NewRaw(`SELECT review_version FROM draft_moments WHERE id = ?`, splitID).Scan(ctx, &newReviewVersion))
-	assert.Equal(t, int64(7), retainedReviewVersion)
+	assert.Equal(t, int64(8), retainedReviewVersion)
 	assert.Equal(t, int64(1), newReviewVersion)
 	var attendanceRows, overrideRows, proposalRows, reasonRows, currentSnapshotRows int
 	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM attendance WHERE moment_id = ?`, mergedID).Scan(ctx, &attendanceRows))
@@ -785,14 +809,14 @@ func TestCuratorOrganizesMomentsWithOrderingCoversReadinessAndOptimisticVersions
 	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM audience_proposals WHERE target_kind = 'moment' AND target_id = ?`, mergedID).Scan(ctx, &proposalRows))
 	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM audience_reasons WHERE target_kind = 'moment' AND target_id = ?`, mergedID).Scan(ctx, &reasonRows))
 	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM current_audience_snapshots WHERE target_kind = 'moment' AND target_id = ? AND snapshot_id = ?`, mergedID, snapshotID).Scan(ctx, &currentSnapshotRows))
-	assert.Equal(t, 1, attendanceRows)
-	assert.Equal(t, 1, overrideRows)
-	assert.Equal(t, 1, proposalRows)
-	assert.Equal(t, 1, reasonRows)
-	assert.Equal(t, 1, currentSnapshotRows)
+	assert.Zero(t, attendanceRows)
+	assert.Zero(t, overrideRows)
+	assert.Zero(t, proposalRows)
+	assert.Zero(t, reasonRows)
+	assert.Zero(t, currentSnapshotRows)
 
 	_, err = fixture.service.OrganizeEvent(ctx, fixture.actor, uuid.MustParse(created.ID), OrganizeEventRequest{
-		Version: organized.Version,
+		Version: reordered.Version,
 		Moments: []OrganizeMoment{
 			{ID: mergedID, ProposedDay: split.Moments[0].ProposedDay, MediaItemIDs: mediaIDs(split.Moments[0].MediaItems)},
 			{ID: splitID, ProposedDay: split.Moments[1].ProposedDay, MediaItemIDs: mediaIDs(split.Moments[1].MediaItems)},

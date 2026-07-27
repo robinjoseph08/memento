@@ -126,8 +126,17 @@ func TestConfirmedAttendanceBuildsExplainedProposalWithoutTrustingAdvisoryInputs
 	}
 	assert.Equal(t, 1, suggested)
 	assert.Equal(t, 1, unmatched)
+	_, err = f.db.NewRaw(`UPDATE events SET final_review_complete = true WHERE id = (SELECT event_id FROM draft_moments WHERE id = ?)`, f.momentID).Exec(ctx)
+	require.NoError(t, err)
+	var eventVersionBefore int64
+	require.NoError(t, f.db.NewRaw(`SELECT version FROM events WHERE id = (SELECT event_id FROM draft_moments WHERE id = ?)`, f.momentID).Scan(ctx, &eventVersionBefore))
 	review, err := f.service.ConfirmAttendance(ctx, f.actor, f.momentID, before.Version, attendanceRequest(f.people["present"].String(), f.people["both"].String(), f.people["attended"].String(), f.people["attended2"].String()))
 	require.NoError(t, err)
+	var eventVersionAfter int64
+	var finalReviewComplete bool
+	require.NoError(t, f.db.NewRaw(`SELECT version, final_review_complete FROM events WHERE id = (SELECT event_id FROM draft_moments WHERE id = ?)`, f.momentID).Scan(ctx, &eventVersionAfter, &finalReviewComplete))
+	assert.Equal(t, eventVersionBefore+1, eventVersionAfter, "Audience work advances the editable Event version")
+	assert.False(t, finalReviewComplete, "Audience work invalidates final review")
 	byName := map[string]ProposalRecipient{}
 	for _, proposal := range review.Proposal {
 		byName[proposal.Recipient.DisplayName] = proposal

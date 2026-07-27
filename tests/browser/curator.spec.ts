@@ -37,6 +37,7 @@ function draft(version = 1): DraftEvent {
     grouping_timezone: "UTC",
     version,
     final_review_complete: false,
+    published_editable_version: null,
     sources: [],
     moments: [
       {
@@ -102,8 +103,9 @@ function eventFromRequest(
 async function mockCuratorAPI(
   page: Page,
   outcomes: Array<"failed" | "conflict" | "success"> = [],
+  initial = draft(),
 ) {
-  let persisted = draft();
+  let persisted = initial;
   const attempts: OrganizeEventRequest[] = [];
   let failureIndex = 0;
 
@@ -134,6 +136,7 @@ async function mockCuratorAPI(
           events: [
             {
               id: eventID,
+              lifecycle: persisted.lifecycle,
               title: persisted.title,
               version: persisted.version,
               moment_count: persisted.moments.length,
@@ -147,6 +150,68 @@ async function mockCuratorAPI(
     }
     if (path === `/api/events/${eventID}` && request.method() === "GET") {
       await route.fulfill({ json: persisted });
+      return;
+    }
+    if (
+      path === `/api/events/${eventID}/publications` &&
+      request.method() === "POST"
+    ) {
+      persisted = {
+        ...persisted,
+        lifecycle: "published",
+        published_editable_version: persisted.version,
+      };
+      await route.fulfill({
+        status: 201,
+        json: {
+          id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+          event_id: eventID,
+          revision: 1,
+          editable_version: persisted.version,
+          notify_recipients: true,
+          committed_at: "2026-05-03T00:00:00Z",
+        },
+      });
+      return;
+    }
+    if (path === `/api/events/${eventID}/preview-recipients`) {
+      await route.fulfill({
+        json: {
+          recipients: [
+            {
+              person_id: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+              access_id: "99999999-9999-4999-8999-999999999999",
+              name: "Alex",
+              access_state: "onboarding",
+            },
+          ],
+        },
+      });
+      return;
+    }
+    if (path === `/api/events/${eventID}/preview`) {
+      expect(request.method()).toBe("POST");
+      expect(request.headers()["x-memento-csrf"]).toBe(csrfToken);
+      await route.fulfill({
+        json: {
+          authorized: true,
+          event_id: eventID,
+          publication_id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+          title: "Family weekend",
+          description: "",
+          cover_media_id: items.first.id,
+          media_count: 1,
+          media: [{ ...items.first, available: true }],
+          preview: true,
+          capabilities: {
+            comments: false,
+            favorites: false,
+            settings: false,
+            downloads: false,
+            record_engagement: false,
+          },
+        },
+      });
       return;
     }
     const reviewMatch = path.match(
@@ -227,6 +292,58 @@ async function openEvent(page: Page) {
     page.getByRole("heading", { name: "Family weekend" }),
   ).toBeVisible();
 }
+
+test("@desktop @mobile publishes atomically and keeps Recipient preview read only", async ({
+  page,
+}) => {
+  const ready = draft();
+  ready.final_review_complete = true;
+  ready.unassigned_media = [];
+  ready.moments = ready.moments.map((moment) => ({
+    ...moment,
+    attendance_complete: true,
+    audience_complete: true,
+  }));
+  await mockCuratorAPI(page, [], ready);
+  await openEvent(page);
+  if ((page.viewportSize()?.width ?? 1280) <= 1024) {
+    await page.getByRole("button", { name: "Inspect", exact: true }).click();
+  }
+
+  await page
+    .getByLabel("Preview Recipient")
+    .selectOption("ffffffff-ffff-4fff-8fff-ffffffffffff");
+  await expect(
+    page.getByText(/Pending Recipient: cannot access yet/),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Preview as Recipient" }).click();
+  const preview = page.getByRole("region", {
+    name: "Read-only Recipient preview",
+  });
+  await expect(preview).toContainText("1 authorized Media items");
+  await expect(preview).toContainText(
+    "Preview activity is not recorded as Recipient engagement.",
+  );
+  for (const action of ["Comment", "Favorite", "Settings", "Download"]) {
+    await expect(preview.getByRole("button", { name: action })).toBeDisabled();
+  }
+
+  await page.getByRole("button", { name: "Publish Event" }).click();
+  await expect(
+    page.getByText("Published revision 1 atomically."),
+  ).toBeVisible();
+  await expect(preview).not.toBeVisible();
+
+  await page.reload();
+  await expect(page.getByText(/Published · 2 Moments/)).toBeVisible();
+  await page.getByRole("button", { name: /Family weekend/ }).click();
+  if ((page.viewportSize()?.width ?? 1280) <= 1024) {
+    await page.getByRole("button", { name: "Inspect", exact: true }).click();
+  }
+  await expect(
+    page.getByRole("button", { name: "Publish Event" }),
+  ).toBeDisabled();
+});
 
 test("@desktop organizes, orders, autosaves, and persists after reload", async ({
   page,

@@ -227,6 +227,9 @@ func (s *Service) ConfirmAttendance(ctx context.Context, actor setup.CuratorSess
 		if err := advanceTargetVersion(ctx, tx, t); err != nil {
 			return err
 		}
+		if err := invalidateEventReview(ctx, tx, t, now); err != nil {
+			return err
+		}
 		if err := appendPublicationAudit(ctx, tx, actor, t, "attendance_confirmed", map[string]any{"moment_id": momentID, "person_count": len(ids)}); err != nil {
 			return err
 		}
@@ -258,6 +261,9 @@ func (s *Service) Recalculate(ctx context.Context, actor setup.CuratorSession, k
 			return err
 		}
 		if err := advanceTargetVersion(ctx, tx, t); err != nil {
+			return err
+		}
+		if err := invalidateEventReview(ctx, tx, t, now); err != nil {
 			return err
 		}
 		if err := appendPublicationAudit(ctx, tx, actor, t, "audience_proposal_recalculated", map[string]any{"target_kind": t.kind, "target_id": t.id}); err != nil {
@@ -321,6 +327,9 @@ func (s *Service) SetOverride(ctx context.Context, actor setup.CuratorSession, k
 		if err := advanceTargetVersion(ctx, tx, t); err != nil {
 			return err
 		}
+		if err := invalidateEventReview(ctx, tx, t, now); err != nil {
+			return err
+		}
 		if err := appendPublicationAudit(ctx, tx, actor, t, "audience_override_changed", map[string]any{"target_kind": t.kind, "target_id": t.id, "recipient_person_id": recipientID, "state": request.State}); err != nil {
 			return err
 		}
@@ -382,6 +391,9 @@ func (s *Service) Approve(ctx context.Context, actor setup.CuratorSession, kind 
 			return err
 		}
 		if err := advanceTargetVersion(ctx, tx, t); err != nil {
+			return err
+		}
+		if err := invalidateEventReview(ctx, tx, t, now); err != nil {
 			return err
 		}
 		if err := appendPublicationAudit(ctx, tx, actor, t, "audience_approved", map[string]any{"target_kind": t.kind, "target_id": t.id, "snapshot_id": snapshotID, "recipient_count": count, "label": label}); err != nil {
@@ -591,6 +603,17 @@ func advanceTargetVersion(ctx context.Context, tx bun.Tx, t target) error {
 		query = `UPDATE loose_items SET review_version = review_version + 1 WHERE id = ?`
 	}
 	_, err := tx.NewRaw(query, t.id).Exec(ctx)
+	return err
+}
+
+func invalidateEventReview(ctx context.Context, tx bun.Tx, t target, now time.Time) error {
+	if t.kind != targetMoment {
+		return nil
+	}
+	_, err := tx.NewRaw(`
+		UPDATE events SET version = version + 1, final_review_complete = false, updated_at = ?
+		WHERE id = (SELECT event_id FROM draft_moments WHERE id = ?)
+	`, now, t.id).Exec(ctx)
 	return err
 }
 

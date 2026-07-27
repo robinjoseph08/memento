@@ -16,9 +16,10 @@ import (
 )
 
 type draftAuthorizer struct {
-	actor    setup.CuratorSession
-	err      error
-	mutation bool
+	actor        setup.CuratorSession
+	err          error
+	recipientErr error
+	mutation     bool
 }
 
 func (authorizer *draftAuthorizer) AuthorizeCurator(_ context.Context, _, _ string, mutation bool) (setup.CuratorSession, error) {
@@ -28,6 +29,10 @@ func (authorizer *draftAuthorizer) AuthorizeCurator(_ context.Context, _, _ stri
 
 func (authorizer *draftAuthorizer) ContextWithRequestMetadata(ctx context.Context, _ *http.Request) context.Context {
 	return ctx
+}
+
+func (authorizer *draftAuthorizer) AuthorizeSession(context.Context, string, string, bool) (setup.SessionActor, error) {
+	return setup.SessionActor{}, authorizer.recipientErr
 }
 
 func draftHTTP(service *Service, authorizer Authorizer) *echo.Echo {
@@ -62,6 +67,9 @@ func TestDraftRoutesAreInvisibleToRecipientsBeforePublication(t *testing.T) {
 		{http.MethodGet, "/api/events/11111111-1111-4111-8111-111111111111", ""},
 		{http.MethodPost, "/api/events", `{}`},
 		{http.MethodPut, "/api/events/11111111-1111-4111-8111-111111111111/organization", `{}`},
+		{http.MethodPost, "/api/events/11111111-1111-4111-8111-111111111111/publications", `{}`},
+		{http.MethodGet, "/api/events/11111111-1111-4111-8111-111111111111/preview-recipients", ""},
+		{http.MethodPost, "/api/events/11111111-1111-4111-8111-111111111111/preview?recipient_person_id=22222222-2222-4222-8222-222222222222", ""},
 		{http.MethodGet, "/api/loose-items/11111111-1111-4111-8111-111111111111", ""},
 		{http.MethodPost, "/api/loose-items", `{}`},
 		{http.MethodGet, "/api/sources/11111111-1111-4111-8111-111111111111/media-items", ""},
@@ -79,6 +87,8 @@ func TestDraftMutationsRequireCSRFBeforeBindingOrDatabaseAccess(t *testing.T) {
 	for _, test := range []struct{ method, path string }{
 		{http.MethodPost, "/api/events"},
 		{http.MethodPut, "/api/events/11111111-1111-4111-8111-111111111111/organization"},
+		{http.MethodPost, "/api/events/11111111-1111-4111-8111-111111111111/publications"},
+		{http.MethodPost, "/api/events/11111111-1111-4111-8111-111111111111/preview"},
 		{http.MethodPost, "/api/loose-items"},
 	} {
 		response := draftRequest(e, test.method, test.path, `{}`)
@@ -108,6 +118,37 @@ func TestDraftRequestValidationRejectsMissingFieldsBeforeServiceAccess(t *testin
 	}
 }
 
+func TestPublicationErrorsDescribeTheActualReadinessCheck(t *testing.T) {
+	for _, test := range []struct {
+		err     error
+		message string
+	}{
+		{ErrVersionConflict, "current editable version"},
+		{ErrPublicationNotReady, "approve every Moment Audience"},
+		{ErrAudienceNotCurrent, "Recipient's access changed"},
+		{ErrNoPublication, "Event not found"},
+	} {
+		mapped := publicationError(test.err)
+		require.Error(t, mapped)
+		assert.Contains(t, mapped.Error(), test.message)
+	}
+}
+
+func TestRecipientProjectionRequiresACompletedSessionBeforeServiceAccess(t *testing.T) {
+	authorizer := &draftAuthorizer{recipientErr: setup.ErrUnauthenticated}
+	e := draftHTTP(nil, authorizer)
+	response := draftRequest(e, http.MethodGet, "/api/me/events/11111111-1111-4111-8111-111111111111", "")
+	assert.Equal(t, http.StatusUnauthorized, response.Code)
+	assert.Contains(t, response.Body.String(), "valid Recipient Session")
+}
+
+func TestPreviewRequiresASelectedRecipientBeforeServiceAccess(t *testing.T) {
+	e := draftHTTP(nil, &draftAuthorizer{})
+	response := draftRequest(e, http.MethodPost, "/api/events/11111111-1111-4111-8111-111111111111/preview", "")
+	assert.Equal(t, http.StatusUnprocessableEntity, response.Code)
+	assert.Contains(t, response.Body.String(), "Choose a current Recipient")
+}
+
 func TestDraftErrorsDescribeEmptyAndOversizedSourceSelections(t *testing.T) {
 	for _, test := range []struct {
 		err     error
@@ -132,6 +173,10 @@ func TestDraftRoutesUseNoStoreAndStableNotFoundErrors(t *testing.T) {
 	}{
 		{http.MethodGet, "/api/events/not-an-id", ""},
 		{http.MethodPut, "/api/events/not-an-id/organization", `{}`},
+		{http.MethodPost, "/api/events/not-an-id/publications", `{}`},
+		{http.MethodGet, "/api/events/not-an-id/preview-recipients", ""},
+		{http.MethodPost, "/api/events/not-an-id/preview", ""},
+		{http.MethodGet, "/api/me/events/not-an-id", ""},
 		{http.MethodPost, "/api/events", `{}`},
 		{http.MethodGet, "/api/loose-items/not-an-id", ""},
 		{http.MethodPost, "/api/loose-items", `{}`},

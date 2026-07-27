@@ -578,6 +578,25 @@ func TestResumableOnboardingPersistsInterestsAndAtomicallyUnlocksCurrentAccessWi
 	_, err = fixture.db.ExecContext(context.Background(), `DROP TRIGGER reject_onboarding_completion ON recipient_access_generations; DROP FUNCTION reject_onboarding_completion()`)
 	require.NoError(t, err)
 
+	eventID, publicationID, mediaID := uuid.New(), uuid.New(), uuid.New()
+	_, err = fixture.db.NewRaw(`
+		INSERT INTO events (id, lifecycle, title, grouping_timezone, version, final_review_complete)
+		VALUES (?, 'published', 'Onboarding Event', 'UTC', 1, true);
+		INSERT INTO publications (
+			id, event_id, revision, editable_version, published_by_person_id,
+			notify_recipients, committed_at
+		) VALUES (?, ?, 1, 1, ?, true, ?);
+		INSERT INTO media_items (
+			id, immich_asset_id, media_type, local_date_time, first_seen_at, last_seen_at
+		) VALUES (?, gen_random_uuid(), 'image', '2026-07-27T10:00:00Z', ?, ?);
+		INSERT INTO current_audience_entitlements (
+			event_id, publication_id, recipient_person_id,
+			recipient_access_generation_id, media_item_id
+		) VALUES (?, ?, ?, ?, ?)
+	`, eventID, publicationID, eventID, fixture.actor.PersonID, fixture.now,
+		mediaID, fixture.now, fixture.now, eventID, publicationID, fixture.personID, actor.AccessID, mediaID).Exec(context.Background())
+	require.NoError(t, err)
+
 	var deliveriesBefore, outboxBefore int
 	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM email_deliveries`).Scan(context.Background(), &deliveriesBefore))
 	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM outbox_events`).Scan(context.Background(), &outboxBefore))
@@ -620,6 +639,11 @@ func TestResumableOnboardingPersistsInterestsAndAtomicallyUnlocksCurrentAccessWi
 	assert.Equal(t, deliveriesBefore, deliveriesAfter)
 	assert.Equal(t, outboxBefore, outboxAfter)
 	assert.Zero(t, queuedReminder)
+	var newForYouCount, publicationActivityCount int
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM new_for_you_entries WHERE recipient_access_generation_id = ? AND publication_id = ?`, actor.AccessID, publicationID).Scan(context.Background(), &newForYouCount))
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM publication_activity_items WHERE recipient_access_generation_id = ? AND publication_id = ?`, actor.AccessID, publicationID).Scan(context.Background(), &publicationActivityCount))
+	assert.Equal(t, 1, newForYouCount, "current preapproved Publication becomes New for you after Onboarding")
+	assert.Equal(t, 1, publicationActivityCount, "current preapproved Publication gains one activity item after Onboarding")
 }
 
 func TestRevocationExpiryAndReissueInvalidateOldTokens(t *testing.T) {

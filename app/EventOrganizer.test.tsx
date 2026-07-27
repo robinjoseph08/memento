@@ -47,6 +47,7 @@ function draft(version = 1): DraftEvent {
     grouping_timezone: "UTC",
     version,
     final_review_complete: false,
+    published_editable_version: null,
     sources: [],
     moments: [
       {
@@ -196,6 +197,66 @@ function stubOrganizerAPI(initial: DraftEvent) {
           ],
         });
       }
+      if (
+        path === `/api/events/${eventID}/publications` &&
+        init?.method === "POST"
+      ) {
+        expect(init.headers).toMatchObject({ "X-Memento-CSRF": csrfToken });
+        expect(JSON.parse(stringBody(init.body))).toEqual({
+          version: persisted.version,
+          notify_recipients: true,
+        });
+        persisted = {
+          ...persisted,
+          lifecycle: "published",
+          published_editable_version: persisted.version,
+        };
+        return response(
+          {
+            id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+            event_id: eventID,
+            revision: 1,
+            editable_version: persisted.version,
+            notify_recipients: true,
+            committed_at: "2026-05-03T00:00:00Z",
+          },
+          201,
+        );
+      }
+      if (path === `/api/events/${eventID}/preview-recipients`) {
+        return response({
+          recipients: [
+            {
+              person_id: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+              access_id: "99999999-9999-4999-8999-999999999999",
+              name: "Alex",
+              access_state: "onboarding",
+            },
+          ],
+        });
+      }
+      if (path.startsWith(`/api/events/${eventID}/preview?`)) {
+        expect(init?.method).toBe("POST");
+        expect(init?.headers).toMatchObject({ "X-Memento-CSRF": csrfToken });
+        return response({
+          authorized: true,
+          event_id: eventID,
+          publication_id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+          title: "Family weekend",
+          description: "",
+          cover_media_id: items.a.id,
+          media_count: 1,
+          media: [{ ...items.a, available: true }],
+          preview: true,
+          capabilities: {
+            comments: false,
+            favorites: false,
+            settings: false,
+            downloads: false,
+            record_engagement: false,
+          },
+        });
+      }
       if (path === `/api/events/${eventID}`) return response(persisted);
       const reviewMatch = path.match(
         /^\/api\/moments\/([^/]+)\/attendance-audience$/,
@@ -217,6 +278,8 @@ function stubOrganizerAPI(initial: DraftEvent) {
           moment.attendance_complete = true;
           moment.audience_complete = false;
         }
+        persisted.version += 1;
+        persisted.final_review_complete = false;
         review.version += 1;
         review.attendance_confirmed = true;
         review.audience_complete = false;
@@ -235,6 +298,8 @@ function stubOrganizerAPI(initial: DraftEvent) {
           (candidate) => candidate.id === approvalMatch[1],
         );
         if (moment) moment.audience_complete = true;
+        persisted.version += 1;
+        persisted.final_review_complete = false;
         review.version += 1;
         review.audience_complete = true;
         return response({
@@ -287,6 +352,60 @@ function renderOrganizer() {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+});
+
+test("publishes ready work and previews Recipient output read only", async () => {
+  const ready = organizedDraft();
+  ready.final_review_complete = true;
+  ready.moments = ready.moments.map((moment) => ({
+    ...moment,
+    attendance_complete: true,
+    audience_complete: true,
+  }));
+  stubOrganizerAPI(ready);
+  renderOrganizer();
+  fireEvent.click(
+    await screen.findByRole("button", { name: /Family weekend/ }),
+  );
+
+  const publish = await screen.findByRole("button", { name: "Publish Event" });
+  expect(publish).toBeEnabled();
+  fireEvent.click(publish);
+  expect(
+    await screen.findByText("Published revision 1 atomically."),
+  ).toBeInTheDocument();
+  expect(publish).toBeDisabled();
+
+  const recipient = await screen.findByLabelText("Preview Recipient");
+  fireEvent.change(recipient, {
+    target: { value: "ffffffff-ffff-4fff-8fff-ffffffffffff" },
+  });
+  expect(
+    screen.getByText(
+      "Pending Recipient: cannot access yet. Preview shows approved content after Onboarding.",
+    ),
+  ).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Preview as Recipient" }));
+  const preview = await screen.findByRole("region", {
+    name: "Read-only Recipient preview",
+  });
+  expect(
+    await screen.findByText("1 authorized Media items"),
+  ).toBeInTheDocument();
+  expect(preview).toHaveTextContent(
+    "Preview activity is not recorded as Recipient engagement.",
+  );
+  for (const action of ["Comment", "Favorite", "Settings", "Download"]) {
+    expect(
+      screen.getByRole("button", { name: action, hidden: true }),
+    ).toBeDisabled();
+  }
+  fireEvent.change(screen.getByLabelText("Title for Moment 1"), {
+    target: { value: "A new correction" },
+  });
+  expect(
+    screen.queryByRole("region", { name: "Read-only Recipient preview" }),
+  ).not.toBeInTheDocument();
 });
 
 test("organizes merged and split days with pointer and keyboard controls", async () => {
@@ -462,6 +581,59 @@ test("autosaves readiness and persists the complete organization after reload", 
       .map((cover) => (cover as HTMLSelectElement).value),
   ).toEqual([items.b.id, items.loose.id]);
 }, 15_000);
+
+test("rebases Audience version changes without discarding unsaved organization", async () => {
+  const saves = stubOrganizerAPI(draft());
+  renderOrganizer();
+  fireEvent.click(
+    await screen.findByRole("button", { name: /Family weekend/ }),
+  );
+  await screen.findByLabelText("Title for Moment 1");
+  fireEvent.click(
+    screen.getAllByRole("button", {
+      name: "Inspect Attendance and Audience",
+    })[0],
+  );
+  const confirm = await screen.findByRole("button", {
+    name: "Confirm Attendance",
+  });
+  fireEvent.change(screen.getByLabelText("Title for Moment 1"), {
+    target: { value: "Unsaved organization survives" },
+  });
+  fireEvent.click(confirm);
+
+  await waitFor(() => expect(saves.length).toBeGreaterThan(0));
+  expect(saves.at(-1)?.version).toBe(2);
+  expect(saves.at(-1)?.moments[0].title).toBe("Unsaved organization survives");
+  expect(screen.getByLabelText("Title for Moment 1")).toHaveValue(
+    "Unsaved organization survives",
+  );
+});
+
+test("stays saved when Audience review follows a completed autosave", async () => {
+  stubOrganizerAPI(draft());
+  renderOrganizer();
+  fireEvent.click(
+    await screen.findByRole("button", { name: /Family weekend/ }),
+  );
+  const title = await screen.findByLabelText("Title for Moment 1");
+  fireEvent.change(title, { target: { value: "Saved organization" } });
+  await screen.findByText("All changes saved");
+
+  const inspectButtons = screen.getAllByRole("button", {
+    name: "Inspect Attendance and Audience",
+  });
+  fireEvent.click(inspectButtons[0]);
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Confirm Attendance" }),
+  );
+
+  await waitFor(() => expect(inspectButtons[1]).toBeEnabled());
+  expect(screen.getByText("All changes saved")).toBeInTheDocument();
+  expect(screen.getByLabelText("Title for Moment 1")).toHaveValue(
+    "Saved organization",
+  );
+});
 
 test("mobile drill-down moves between Work, Event organization, and inspection", async () => {
   vi.stubGlobal(
