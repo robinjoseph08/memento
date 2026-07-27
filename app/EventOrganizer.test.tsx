@@ -122,31 +122,28 @@ function eventFromRequest(request: OrganizeEventRequest): DraftEvent {
   return existing;
 }
 
-function renderOrganizer() {
-  const client = new QueryClient({
-    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
-  });
-  return render(
-    <QueryClientProvider client={client}>
-      <EventOrganizer
-        session={{
-          display_name: "Robin",
-          session_type: "public",
-          csrf_token: csrfToken,
-          curator: true,
-        }}
-      />
-    </QueryClientProvider>,
-  );
+function organizedDraft(version = 1): DraftEvent {
+  const event = draft(version);
+  event.moments = [
+    {
+      ...event.moments[1],
+      proposed_day: "2026-05-01",
+      source_days: ["2026-05-01"],
+      cover_media_item_id: items.b.id,
+      media_items: [items.b],
+    },
+    {
+      ...event.moments[0],
+      cover_media_item_id: items.loose.id,
+      media_items: [items.c, items.a, items.loose],
+    },
+  ];
+  event.unassigned_media = [];
+  return event;
 }
 
-afterEach(() => {
-  cleanup();
-  vi.restoreAllMocks();
-});
-
-test("organizes merged and split days with pointer and keyboard controls, autosaves, and persists after reload", async () => {
-  let persisted = draft();
+function stubOrganizerAPI(initial: DraftEvent) {
+  let persisted = initial;
   const saves: OrganizeEventRequest[] = [];
   vi.stubGlobal(
     "fetch",
@@ -182,8 +179,36 @@ test("organizes merged and split days with pointer and keyboard controls, autosa
       throw new Error(`Unexpected request: ${path}`);
     }),
   );
+  return saves;
+}
 
-  const firstRender = renderOrganizer();
+function renderOrganizer() {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
+  return render(
+    <QueryClientProvider client={client}>
+      <EventOrganizer
+        session={{
+          display_name: "Robin",
+          session_type: "public",
+          csrf_token: csrfToken,
+          curator: true,
+        }}
+      />
+    </QueryClientProvider>,
+  );
+}
+
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
+
+test("organizes merged and split days with pointer and keyboard controls", async () => {
+  const saves = stubOrganizerAPI(draft());
+
+  renderOrganizer();
   fireEvent.click(
     await screen.findByRole(
       "button",
@@ -236,6 +261,43 @@ test("organizes merged and split days with pointer and keyboard controls, autosa
     screen.getByRole("button", { name: "Move Moment 2 earlier" }),
   );
 
+  await waitFor(() => expect(saves.length).toBeGreaterThan(0), contentionWait);
+  await waitFor(
+    () => expect(screen.getByText("All changes saved")).toBeInTheDocument(),
+    contentionWait,
+  );
+  const lastSave = saves.at(-1)!;
+  expect(lastSave.unassigned_media_ids).toEqual([]);
+  expect(lastSave.moments).toHaveLength(2);
+  expect(lastSave.moments[0].media_item_ids).toEqual([items.b.id]);
+  expect(lastSave.moments[0].cover_media_item_id).toBe(items.b.id);
+  expect(lastSave.moments[1].id).toBe(momentOneID);
+  expect(lastSave.moments[1].media_item_ids).toEqual([
+    items.c.id,
+    items.a.id,
+    items.loose.id,
+  ]);
+  expect(lastSave.moments[1].cover_media_item_id).toBe(items.loose.id);
+}, 15_000);
+
+test("autosaves readiness and persists the complete organization after reload", async () => {
+  const saves = stubOrganizerAPI(organizedDraft());
+
+  const firstRender = renderOrganizer();
+  fireEvent.click(
+    await screen.findByRole(
+      "button",
+      { name: /Family weekend/ },
+      contentionWait,
+    ),
+  );
+  expect(
+    await screen.findByRole(
+      "heading",
+      { name: "Family weekend" },
+      contentionWait,
+    ),
+  ).toBeInTheDocument();
   fireEvent.click(
     screen.getAllByRole("button", {
       name: "Inspect Attendance and Audience",
