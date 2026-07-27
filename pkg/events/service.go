@@ -331,16 +331,18 @@ func lockSources(ctx context.Context, tx bun.Tx, sourceIDs []uuid.UUID) (map[uui
 
 func selectMedia(ctx context.Context, tx bun.Tx, sourceIDs, selectedIDs []uuid.UUID) ([]mediaRecord, error) {
 	query := `
-		SELECT DISTINCT media.id, media.media_type, media.width, media.height, media.local_date_time
+		SELECT media.id, media.media_type, media.width, media.height, media.local_date_time
 		FROM media_items AS media
-		JOIN source_album_memberships AS membership ON membership.media_item_id = media.id
-		WHERE membership.source_album_id IN (?)`
+		WHERE EXISTS (
+			SELECT 1 FROM source_album_memberships AS membership
+			WHERE membership.media_item_id = media.id AND membership.source_album_id IN (?)
+		)`
 	args := []any{bun.List(sourceIDs)}
 	if len(selectedIDs) > 0 {
 		query += ` AND media.id IN (?)`
 		args = append(args, bun.List(selectedIDs))
 	}
-	query += ` LIMIT ?`
+	query += ` ORDER BY media.id LIMIT ? FOR NO KEY UPDATE OF media`
 	args = append(args, maxDraftMediaItems+1)
 	var media []mediaRecord
 	if err := tx.NewRaw(query, args...).Scan(ctx, &media); err != nil {

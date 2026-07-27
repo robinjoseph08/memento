@@ -4,6 +4,8 @@ package immich
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -50,6 +52,10 @@ var (
 	errInvalidCredentials = safeError("Immich API key is invalid")
 	errOwnedAlbumsFailed  = safeError("Immich album discovery failed")
 	errAlbumAssetsFailed  = safeError("Immich album membership lookup failed")
+	errPeopleFailed       = safeError("Immich people lookup failed")
+	errFacesFailed        = safeError("Immich face lookup failed")
+	// ErrNotFound identifies an Immich resource that disappeared between evidence reads.
+	ErrNotFound = safeError("Immich resource not found")
 )
 
 // IsConfigurationError reports whether validation failed because the operator
@@ -59,7 +65,8 @@ func IsConfigurationError(err error) bool {
 }
 
 // Client accesses only allowlisted Immich v3.0.3 read operations. It never
-// returns raw DTOs, source URLs, paths, owner IDs, library IDs, or face data.
+// returns raw DTOs, source URLs, owner IDs, or library IDs. Paths and face
+// anchors appear only in normalized server-side repair evidence.
 type Client struct {
 	baseURL       *url.URL
 	apiKey        string
@@ -102,11 +109,39 @@ type searchAssetsResponse struct {
 }
 
 type assetResponse struct {
-	ID            *string         `json:"id"`
-	Type          *string         `json:"type"`
-	Width         json.RawMessage `json:"width"`
-	Height        json.RawMessage `json:"height"`
-	LocalDateTime json.RawMessage `json:"localDateTime"`
+	ID               *string         `json:"id"`
+	Type             *string         `json:"type"`
+	Width            json.RawMessage `json:"width"`
+	Height           json.RawMessage `json:"height"`
+	LocalDateTime    json.RawMessage `json:"localDateTime"`
+	FileCreatedAt    *string         `json:"fileCreatedAt"`
+	Checksum         *string         `json:"checksum"`
+	OriginalFileName *string         `json:"originalFileName"`
+	OriginalPath     *string         `json:"originalPath"`
+}
+
+type peopleResponse struct {
+	People      *[]personResponse `json:"people"`
+	Total       *int              `json:"total"`
+	Hidden      *int              `json:"hidden"`
+	HasNextPage *bool             `json:"hasNextPage"`
+}
+
+type personResponse struct {
+	ID       *string `json:"id"`
+	Name     *string `json:"name"`
+	IsHidden *bool   `json:"isHidden"`
+}
+
+type faceResponse struct {
+	ID          *string         `json:"id"`
+	ImageWidth  *int            `json:"imageWidth"`
+	ImageHeight *int            `json:"imageHeight"`
+	X1          *int            `json:"boundingBoxX1"`
+	Y1          *int            `json:"boundingBoxY1"`
+	X2          *int            `json:"boundingBoxX2"`
+	Y2          *int            `json:"boundingBoxY2"`
+	Person      json.RawMessage `json:"person"`
 }
 
 func (response *versionResponse) UnmarshalJSON(contents []byte) error {
@@ -153,10 +188,34 @@ func (response *searchAssetsResponse) UnmarshalJSON(contents []byte) error {
 
 func (response *assetResponse) UnmarshalJSON(contents []byte) error {
 	type exactAssetResponse assetResponse
-	if err := rejectCaseVariantFields(contents, "id", "type", "width", "height", "localDateTime"); err != nil {
+	if err := rejectCaseVariantFields(contents, "id", "type", "width", "height", "localDateTime", "fileCreatedAt", "checksum", "originalFileName", "originalPath"); err != nil {
 		return err
 	}
 	return json.Unmarshal(contents, (*exactAssetResponse)(response))
+}
+
+func (response *peopleResponse) UnmarshalJSON(contents []byte) error {
+	type exactPeopleResponse peopleResponse
+	if err := rejectCaseVariantFields(contents, "people", "total", "hidden", "hasNextPage"); err != nil {
+		return err
+	}
+	return json.Unmarshal(contents, (*exactPeopleResponse)(response))
+}
+
+func (response *personResponse) UnmarshalJSON(contents []byte) error {
+	type exactPersonResponse personResponse
+	if err := rejectCaseVariantFields(contents, "id", "name", "isHidden"); err != nil {
+		return err
+	}
+	return json.Unmarshal(contents, (*exactPersonResponse)(response))
+}
+
+func (response *faceResponse) UnmarshalJSON(contents []byte) error {
+	type exactFaceResponse faceResponse
+	if err := rejectCaseVariantFields(contents, "id", "imageWidth", "imageHeight", "boundingBoxX1", "boundingBoxY1", "boundingBoxX2", "boundingBoxY2", "person"); err != nil {
+		return err
+	}
+	return json.Unmarshal(contents, (*exactFaceResponse)(response))
 }
 
 // AlbumSummary is the normalized subset Memento retains from an owned album.
@@ -172,13 +231,36 @@ type AlbumSummary struct {
 	LastModifiedAssetTimestamp *time.Time
 }
 
-// AssetSummary is the normalized, path-free subset returned by membership pagination.
+// AssetSummary is normalized server-side membership and private repair evidence.
 type AssetSummary struct {
 	SourceID      uuid.UUID
 	MediaType     string
 	Width         *int
 	Height        *int
 	LocalDateTime *string
+	CaptureAt     string
+	Checksum      string
+	Filename      string
+	OriginalPath  string
+}
+
+// PersonSummary is the private normalized identity evidence from Immich.
+type PersonSummary struct {
+	SourceID uuid.UUID
+	Name     string
+	Hidden   bool
+}
+
+// FaceSummary is a private repair anchor. It never grants access.
+type FaceSummary struct {
+	SourceID    uuid.UUID
+	PersonID    *uuid.UUID
+	ImageWidth  int
+	ImageHeight int
+	X1          int
+	Y1          int
+	X2          int
+	Y2          int
 }
 
 // AssetPage is one explicit entry point into Immich metadata pagination.
@@ -309,9 +391,24 @@ func (c *Client) AlbumAssetsPage(ctx context.Context, albumID uuid.UUID, page in
 		if err != nil || assetID == uuid.Nil || !validAssetType(*raw.Type) || widthErr != nil || heightErr != nil || localDateTimeErr != nil {
 			return AssetPage{}, errInvalidResponse
 		}
+		checksum, checksumErr := optionalChecksum(raw.Checksum)
+		captureAt := ""
+		if localDateTime != nil {
+			captureAt = *localDateTime
+		}
+		if raw.FileCreatedAt != nil && strings.TrimSpace(*raw.FileCreatedAt) != "" {
+			if _, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(*raw.FileCreatedAt)); err != nil {
+				return AssetPage{}, errInvalidResponse
+			}
+			captureAt = strings.TrimSpace(*raw.FileCreatedAt)
+		}
+		if checksumErr != nil {
+			return AssetPage{}, errInvalidResponse
+		}
 		result.Items = append(result.Items, AssetSummary{
 			SourceID: assetID, MediaType: strings.ToLower(*raw.Type), Width: width, Height: height,
-			LocalDateTime: localDateTime,
+			LocalDateTime: localDateTime, CaptureAt: truncate(captureAt, 64), Checksum: checksum,
+			Filename: truncate(optionalString(raw.OriginalFileName), 1024), OriginalPath: truncate(optionalString(raw.OriginalPath), 4096),
 		})
 	}
 	if string(response.Assets.NextPage) != "null" {
@@ -327,6 +424,80 @@ func (c *Client) AlbumAssetsPage(ctx context.Context, albumID uuid.UUID, page in
 	}
 	if result.NextPage != nil && len(result.Items) != assetPageSize {
 		return AssetPage{}, errInvalidResponse
+	}
+	return result, nil
+}
+
+// People returns every current Immich identity, including hidden clusters.
+func (c *Client) People(ctx context.Context) ([]PersonSummary, error) {
+	result := make([]PersonSummary, 0)
+	seen := map[uuid.UUID]struct{}{}
+	for page := 1; ; page++ {
+		var response peopleResponse
+		if err := c.getJSONQuery(ctx, "people", url.Values{
+			"withHidden": {"true"}, "page": {strconv.Itoa(page)}, "size": {strconv.Itoa(assetPageSize)},
+		}, &response, errPeopleFailed); err != nil {
+			return nil, err
+		}
+		if response.People == nil || response.Total == nil || response.Hidden == nil || response.HasNextPage == nil ||
+			*response.Total < 0 || *response.Hidden < 0 || *response.Hidden > *response.Total || len(*response.People) > assetPageSize {
+			return nil, errInvalidResponse
+		}
+		for _, raw := range *response.People {
+			if raw.ID == nil || raw.Name == nil || raw.IsHidden == nil {
+				return nil, errInvalidResponse
+			}
+			id, err := uuid.Parse(*raw.ID)
+			if err != nil || id == uuid.Nil {
+				return nil, errInvalidResponse
+			}
+			if _, duplicate := seen[id]; duplicate {
+				return nil, errInvalidResponse
+			}
+			seen[id] = struct{}{}
+			result = append(result, PersonSummary{SourceID: id, Name: truncate(strings.TrimSpace(*raw.Name), 240), Hidden: *raw.IsHidden})
+		}
+		if !*response.HasNextPage {
+			return result, nil
+		}
+		if len(*response.People) == 0 || page > max(1, *response.Total) {
+			return nil, errInvalidResponse
+		}
+	}
+}
+
+// Faces returns exact private anchors for one asset.
+func (c *Client) Faces(ctx context.Context, assetID uuid.UUID) ([]FaceSummary, error) {
+	if assetID == uuid.Nil {
+		return nil, errInvalidResponse
+	}
+	var response []faceResponse
+	if err := c.getJSONQuery(ctx, "faces", url.Values{"id": {assetID.String()}}, &response, errFacesFailed); err != nil {
+		return nil, err
+	}
+	if response == nil {
+		return nil, errInvalidResponse
+	}
+	result := make([]FaceSummary, 0, len(response))
+	seen := map[uuid.UUID]struct{}{}
+	for _, raw := range response {
+		if raw.ID == nil || raw.ImageWidth == nil || raw.ImageHeight == nil || raw.X1 == nil || raw.Y1 == nil || raw.X2 == nil || raw.Y2 == nil ||
+			*raw.ImageWidth < 0 || *raw.ImageHeight < 0 || *raw.X1 < 0 || *raw.Y1 < 0 || *raw.X2 < *raw.X1 || *raw.Y2 < *raw.Y1 {
+			return nil, errInvalidResponse
+		}
+		id, err := uuid.Parse(*raw.ID)
+		if err != nil || id == uuid.Nil {
+			return nil, errInvalidResponse
+		}
+		if _, duplicate := seen[id]; duplicate {
+			return nil, errInvalidResponse
+		}
+		seen[id] = struct{}{}
+		personID, err := nestedPersonID(raw.Person)
+		if err != nil {
+			return nil, errInvalidResponse
+		}
+		result = append(result, FaceSummary{SourceID: id, PersonID: personID, ImageWidth: *raw.ImageWidth, ImageHeight: *raw.ImageHeight, X1: *raw.X1, Y1: *raw.Y1, X2: *raw.X2, Y2: *raw.Y2})
 	}
 	return result, nil
 }
@@ -366,6 +537,9 @@ func (c *Client) doJSON(ctx context.Context, method, path string, query url.Valu
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxJSONResponse))
+		if response.StatusCode == http.StatusNotFound && path == "faces" {
+			return ErrNotFound
+		}
 		if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
 			return errInvalidCredentials
 		}
@@ -582,6 +756,47 @@ func requiredNullableLocalDateTime(raw json.RawMessage) (*string, error) {
 	}
 	value = truncate(value, 64)
 	return &value, nil
+}
+
+func optionalString(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return strings.TrimSpace(*value)
+}
+
+func optionalChecksum(value *string) (string, error) {
+	if value == nil || strings.TrimSpace(*value) == "" {
+		return "", nil
+	}
+	decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(*value))
+	if err != nil || len(decoded) != 20 {
+		return "", errInvalidResponse
+	}
+	return hex.EncodeToString(decoded), nil
+}
+
+func nestedPersonID(raw json.RawMessage) (*uuid.UUID, error) {
+	if len(raw) == 0 {
+		return nil, errInvalidResponse
+	}
+	if string(raw) == "null" {
+		return nil, nil
+	}
+	if err := rejectCaseVariantFields(raw, "id"); err != nil {
+		return nil, errInvalidResponse
+	}
+	var person struct {
+		ID *string `json:"id"`
+	}
+	if err := json.Unmarshal(raw, &person); err != nil || person.ID == nil {
+		return nil, errInvalidResponse
+	}
+	id, err := uuid.Parse(*person.ID)
+	if err != nil || id == uuid.Nil {
+		return nil, errInvalidResponse
+	}
+	return &id, nil
 }
 
 func requiredNullableDimension(raw json.RawMessage) (*int, error) {

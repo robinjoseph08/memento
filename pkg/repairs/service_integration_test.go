@@ -1,0 +1,897 @@
+//go:build integration
+
+package repairs
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/robinjoseph08/memento/internal/testdb"
+	"github.com/robinjoseph08/memento/pkg/events"
+	"github.com/robinjoseph08/memento/pkg/immich"
+	"github.com/robinjoseph08/memento/pkg/migrations"
+	"github.com/robinjoseph08/memento/pkg/people"
+	"github.com/robinjoseph08/memento/pkg/setup"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/uptrace/bun"
+)
+
+type identityConnector struct {
+	people      []immich.PersonSummary
+	faces       map[uuid.UUID][]immich.FaceSummary
+	faceErrs    map[uuid.UUID]error
+	faceCalls   []uuid.UUID
+	faceMu      sync.Mutex
+	faceStarted chan struct{}
+	releaseFace chan struct{}
+	err         error
+}
+
+func (connector *identityConnector) Check(context.Context) error { return connector.err }
+func (connector *identityConnector) People(context.Context) ([]immich.PersonSummary, error) {
+	return connector.people, connector.err
+}
+func (connector *identityConnector) Faces(_ context.Context, assetID uuid.UUID) ([]immich.FaceSummary, error) {
+	connector.faceMu.Lock()
+	started, release := connector.faceStarted, connector.releaseFace
+	connector.faceStarted = nil
+	connector.faceMu.Unlock()
+	if started != nil {
+		close(started)
+		<-release
+	}
+	connector.faceCalls = append(connector.faceCalls, assetID)
+	if err := connector.faceErrs[assetID]; err != nil {
+		return nil, err
+	}
+	return connector.faces[assetID], connector.err
+}
+
+type repairFixture struct {
+	service   *Service
+	db        *bun.DB
+	connector *identityConnector
+	actor     setup.CuratorSession
+	personID  uuid.UUID
+	assetIDs  []uuid.UUID
+	faceIDs   []uuid.UUID
+	oldID     uuid.UUID
+}
+
+func newRepairFixture(t *testing.T, anchorCount int) repairFixture {
+	t.Helper()
+	db := testdb.Open(t)
+	require.NoError(t, migrations.Apply(context.Background(), db))
+	actorID, personID := uuid.New(), uuid.New()
+	accessID, sessionID := uuid.New(), uuid.New()
+	_, err := db.ExecContext(context.Background(), `
+		INSERT INTO people (id, display_name, sort_name) VALUES (?, 'Curator', 'Curator'), (?, 'Family member', 'Family member');
+		INSERT INTO person_roles (person_id, role) VALUES (?, 'curator');
+		INSERT INTO recipient_access_generations (id, person_id, generation, state, is_current, onboarding_completed_at) VALUES (?, ?, 1, 'completed', true, now());
+		INSERT INTO sessions (id, credential_hash, person_id, recipient_access_generation_id, security_epoch, session_type, idle_expires_at)
+		VALUES (?, ?, ?, ?, ?, 'trusted', now() + interval '1 hour');
+	`, actorID, personID, actorID, accessID, actorID, sessionID, hashBytes("session"), actorID, accessID, hashBytes("epoch"))
+	require.NoError(t, err)
+	oldID := uuid.New()
+	connector := &identityConnector{people: []immich.PersonSummary{{SourceID: oldID, Name: "Immich member"}}, faces: map[uuid.UUID][]immich.FaceSummary{}, faceErrs: map[uuid.UUID]error{}}
+	assetIDs := make([]uuid.UUID, anchorCount)
+	faceIDs := make([]uuid.UUID, anchorCount)
+	for index := range anchorCount {
+		assetIDs[index], faceIDs[index] = uuid.New(), uuid.New()
+		mediaID, backingID := uuid.New(), uuid.New()
+		_, err := db.ExecContext(context.Background(), `
+			INSERT INTO media_items (id, immich_asset_id, media_type, local_date_time, first_seen_at, last_seen_at)
+			VALUES (?, ?, 'image', '2026-01-01T00:00:00Z', now(), now());
+			INSERT INTO media_backings (id, media_item_id, immich_asset_id, checksum, capture_at, filename, original_path, linked_at)
+			VALUES (?, ?, ?, ?, '2026-01-01T00:00:00Z', ?, ?, now());
+		`, mediaID, assetIDs[index], backingID, mediaID, assetIDs[index], checksum("shared"), "photo.jpg", "/private/photo.jpg")
+		require.NoError(t, err)
+		person := oldID
+		connector.faces[assetIDs[index]] = []immich.FaceSummary{{SourceID: faceIDs[index], PersonID: &person, ImageWidth: 100, ImageHeight: 80, X1: 1, Y1: 2, X2: 20, Y2: 30}}
+	}
+	service := New(db, connector)
+	service.now = func() time.Time { return time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC) }
+	actor := setup.CuratorSession{PersonID: actorID, SessionID: sessionID}
+	require.NoError(t, reconcile(service))
+	_, err = service.LinkPerson(context.Background(), actor, LinkPersonRequest{PersonID: personID.String(), ImmichPersonID: oldID.String()})
+	require.NoError(t, err)
+	return repairFixture{service: service, db: db, connector: connector, actor: actor, personID: personID, assetIDs: assetIDs, faceIDs: faceIDs, oldID: oldID}
+}
+
+func reconcile(service *Service) error {
+	_, err := service.ReconcilePeople(context.Background())
+	return err
+}
+
+func hashBytes(value string) []byte {
+	hash := sha256.Sum256([]byte(value))
+	return hash[:]
+}
+
+func checksum(value string) string { return hex.EncodeToString(hashBytes(value)[:20]) }
+
+func waitForRepairBlockedQuery(t *testing.T, db *bun.DB, blockerPID int, pattern string) {
+	t.Helper()
+	deadline := time.Now().Add(4 * time.Second)
+	for {
+		var waiting bool
+		err := db.NewRaw(`
+			SELECT EXISTS (
+				SELECT 1 FROM pg_stat_activity
+				WHERE datname = current_database() AND wait_event_type = 'Lock'
+				  AND ? = ANY(pg_blocking_pids(pid)) AND query LIKE ?
+			)
+		`, blockerPID, pattern).Scan(context.Background(), &waiting)
+		require.NoError(t, err)
+		if waiting {
+			return
+		}
+		if time.Now().After(deadline) {
+			require.FailNow(t, "expected query did not wait for the controlled lock", pattern)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func addAnchorBacking(t *testing.T, fixture repairFixture, linkedAt time.Time, active bool) uuid.UUID {
+	t.Helper()
+	mediaID, assetID := uuid.New(), uuid.New()
+	var endedAt *time.Time
+	if !active {
+		endedAt = &linkedAt
+	}
+	_, err := fixture.db.ExecContext(context.Background(), `
+		INSERT INTO media_items (id, immich_asset_id, media_type, local_date_time, first_seen_at, last_seen_at)
+		VALUES (?, ?, 'image', '2026-01-01T00:00:00Z', ?, ?);
+		INSERT INTO media_backings (id, media_item_id, immich_asset_id, checksum, linked_at, active, ended_at)
+		VALUES (gen_random_uuid(), ?, ?, ?, ?, ?, ?)
+	`, mediaID, assetID, linkedAt, linkedAt, mediaID, assetID, checksum(assetID.String()), linkedAt, active, endedAt)
+	require.NoError(t, err)
+	return assetID
+}
+
+func TestPersonMergeBecomesReviewAndSuppressesAttendanceUntilExplicitConfirmation(t *testing.T) {
+	fixture := newRepairFixture(t, 2)
+	destination := uuid.New()
+	fixture.connector.people = []immich.PersonSummary{{SourceID: destination, Name: "Merged destination"}}
+	for _, assetID := range fixture.assetIDs {
+		faces := fixture.connector.faces[assetID]
+		faces[0].PersonID = &destination
+		fixture.connector.faces[assetID] = faces
+	}
+
+	require.NoError(t, reconcile(fixture.service))
+	suggestions, err := fixture.service.SuggestionPersonIDs(context.Background(), []uuid.UUID{destination, fixture.oldID})
+	require.NoError(t, err)
+	assert.Empty(t, suggestions)
+	listed, err := fixture.service.List(context.Background())
+	require.NoError(t, err)
+	require.Len(t, listed.PersonCandidates, 1)
+	candidate := listed.PersonCandidates[0]
+	assert.Equal(t, destination.String(), candidate.CandidateImmichPersonID)
+	assert.Equal(t, "pending", candidate.State)
+	assert.Len(t, candidate.Anchors, 2)
+	assert.Contains(t, candidate.Conflicts, "immich_person_missing")
+
+	var recipientBefore string
+	require.NoError(t, fixture.db.NewRaw(`SELECT row_to_json(g)::text FROM recipient_access_generations AS g`).Scan(context.Background(), &recipientBefore))
+	candidateID := uuid.MustParse(candidate.ID)
+	fixture.connector.faceCalls = nil
+	_, err = fixture.service.ConfirmPerson(context.Background(), fixture.actor, candidateID)
+	require.NoError(t, err)
+	assert.Len(t, fixture.connector.faceCalls, len(fixture.assetIDs), "confirmation must store the exact anchors it validated")
+	suggestions, err = fixture.service.SuggestionPersonIDs(context.Background(), []uuid.UUID{destination})
+	require.NoError(t, err)
+	assert.Equal(t, []uuid.UUID{fixture.personID}, suggestions)
+	listed, err = fixture.service.List(context.Background())
+	require.NoError(t, err)
+	require.Len(t, listed.PersonCandidates, 1)
+	assert.Equal(t, "confirmed", listed.PersonCandidates[0].State)
+	assert.NotNil(t, listed.PersonCandidates[0].ResolvedAt)
+	assert.Len(t, listed.PersonCandidates[0].Anchors, 2)
+	_, err = fixture.service.ConfirmPerson(context.Background(), fixture.actor, candidateID)
+	assert.ErrorIs(t, err, ErrAlreadyResolved)
+
+	var recipientAfter string
+	require.NoError(t, fixture.db.NewRaw(`SELECT row_to_json(g)::text FROM recipient_access_generations AS g`).Scan(context.Background(), &recipientAfter))
+	assert.JSONEq(t, recipientBefore, recipientAfter)
+	// Audience tables arrive with publication work; repair confirmation deliberately has no write seam to them.
+}
+
+func TestPersonConfirmationRejectsChangedFaceEvidence(t *testing.T) {
+	fixture := newRepairFixture(t, 1)
+	replacement := uuid.New()
+	fixture.connector.people = []immich.PersonSummary{{SourceID: replacement, Name: "Replacement"}}
+	faces := fixture.connector.faces[fixture.assetIDs[0]]
+	faces[0].PersonID = &replacement
+	fixture.connector.faces[fixture.assetIDs[0]] = faces
+	require.NoError(t, reconcile(fixture.service))
+	listed, err := fixture.service.List(context.Background())
+	require.NoError(t, err)
+	require.Len(t, listed.PersonCandidates, 1)
+
+	other := uuid.New()
+	fixture.connector.people = append(fixture.connector.people, immich.PersonSummary{SourceID: other, Name: "Other"})
+	faces[0].PersonID = &other
+	fixture.connector.faces[fixture.assetIDs[0]] = faces
+	_, err = fixture.service.ConfirmPerson(context.Background(), fixture.actor, uuid.MustParse(listed.PersonCandidates[0].ID))
+	assert.ErrorIs(t, err, ErrConflict)
+	suggestions, err := fixture.service.SuggestionPersonIDs(context.Background(), []uuid.UUID{replacement, other})
+	require.NoError(t, err)
+	assert.Empty(t, suggestions)
+}
+
+func TestPersonConfirmationRevalidatesIdentityAfterAnchorEvaluation(t *testing.T) {
+	fixture := newRepairFixture(t, 1)
+	replacement := uuid.New()
+	fixture.connector.people = []immich.PersonSummary{{SourceID: replacement, Name: "Replacement"}}
+	faces := fixture.connector.faces[fixture.assetIDs[0]]
+	faces[0].PersonID = &replacement
+	fixture.connector.faces[fixture.assetIDs[0]] = faces
+	require.NoError(t, reconcile(fixture.service))
+	listed, err := fixture.service.List(context.Background())
+	require.NoError(t, err)
+	require.Len(t, listed.PersonCandidates, 1)
+	fixture.connector.faceStarted = make(chan struct{})
+	fixture.connector.releaseFace = make(chan struct{})
+	result := make(chan error, 1)
+	go func() {
+		_, confirmErr := fixture.service.ConfirmPerson(context.Background(), fixture.actor, uuid.MustParse(listed.PersonCandidates[0].ID))
+		result <- confirmErr
+	}()
+	select {
+	case <-fixture.connector.faceStarted:
+	case <-time.After(time.Second):
+		t.Fatal("Person evidence evaluation did not start")
+	}
+	fixture.connector.people = nil
+	close(fixture.connector.releaseFace)
+	assert.ErrorIs(t, <-result, ErrConflict)
+	var state string
+	require.NoError(t, fixture.db.NewRaw(`SELECT state FROM immich_person_links WHERE person_id = ?`, fixture.personID).Scan(context.Background(), &state))
+	assert.Equal(t, "needs_review", state)
+}
+
+func TestRecoveredPersonLinkStillRequiresExplicitConfirmation(t *testing.T) {
+	fixture := newRepairFixture(t, 0)
+	fixture.connector.people = nil
+	require.NoError(t, reconcile(fixture.service))
+
+	fixture.connector.people = []immich.PersonSummary{{SourceID: fixture.oldID, Name: "Immich member"}}
+	require.NoError(t, reconcile(fixture.service))
+	suggestions, err := fixture.service.SuggestionPersonIDs(context.Background(), []uuid.UUID{fixture.oldID})
+	require.NoError(t, err)
+	assert.Empty(t, suggestions)
+	listed, err := fixture.service.List(context.Background())
+	require.NoError(t, err)
+	require.Len(t, listed.PersonCandidates, 1)
+	candidate := listed.PersonCandidates[0]
+	assert.Equal(t, "pending", candidate.State)
+	assert.Equal(t, fixture.oldID.String(), candidate.CandidateImmichPersonID)
+
+	_, err = fixture.service.ConfirmPerson(context.Background(), fixture.actor, uuid.MustParse(candidate.ID))
+	require.NoError(t, err)
+	suggestions, err = fixture.service.SuggestionPersonIDs(context.Background(), []uuid.UUID{fixture.oldID})
+	require.NoError(t, err)
+	assert.Equal(t, []uuid.UUID{fixture.personID}, suggestions)
+}
+
+func TestInFlightReconciliationCannotUndoLaterPersonConfirmation(t *testing.T) {
+	fixture := newRepairFixture(t, 1)
+	replacement := uuid.New()
+	fixture.connector.people = append(fixture.connector.people, immich.PersonSummary{SourceID: replacement, Name: "Replacement"})
+	_, err := fixture.db.ExecContext(context.Background(), `
+		INSERT INTO immich_people_inventory (immich_person_id, name, first_seen_at, last_seen_at)
+		VALUES (?, 'Replacement', now(), now())
+	`, replacement)
+	require.NoError(t, err)
+	fixture.connector.faceStarted = make(chan struct{})
+	fixture.connector.releaseFace = make(chan struct{})
+	reconcileResult := make(chan error, 1)
+	go func() { reconcileResult <- reconcile(fixture.service) }()
+	<-fixture.connector.faceStarted
+
+	_, err = fixture.service.LinkPerson(context.Background(), fixture.actor, LinkPersonRequest{
+		PersonID: fixture.personID.String(), ImmichPersonID: replacement.String(),
+	})
+	require.NoError(t, err)
+	close(fixture.connector.releaseFace)
+	require.NoError(t, <-reconcileResult)
+
+	suggestions, err := fixture.service.SuggestionPersonIDs(context.Background(), []uuid.UUID{replacement})
+	require.NoError(t, err)
+	assert.Equal(t, []uuid.UUID{fixture.personID}, suggestions)
+	var state string
+	require.NoError(t, fixture.db.NewRaw(`SELECT state FROM immich_person_links WHERE person_id = ?`, fixture.personID).Scan(context.Background(), &state))
+	assert.Equal(t, "linked", state)
+}
+
+func TestPersonReconciliationLocksPeopleBeforeLinks(t *testing.T) {
+	fixture := newRepairFixture(t, 1)
+	replacement := uuid.New()
+	fixture.connector.people = []immich.PersonSummary{{SourceID: replacement, Name: "Replacement"}}
+	faces := fixture.connector.faces[fixture.assetIDs[0]]
+	faces[0].PersonID = &replacement
+	fixture.connector.faces[fixture.assetIDs[0]] = faces
+
+	personBlocker, err := fixture.db.BeginTx(context.Background(), nil)
+	require.NoError(t, err)
+	_, err = personBlocker.NewRaw(`SELECT id FROM people WHERE id = ? FOR UPDATE`, fixture.personID).Exec(context.Background())
+	require.NoError(t, err)
+	result := make(chan error, 1)
+	go func() { result <- reconcile(fixture.service) }()
+	select {
+	case reconcileErr := <-result:
+		t.Fatalf("reconciliation completed while the Person was locked: %v", reconcileErr)
+	case <-time.After(100 * time.Millisecond):
+	}
+	linkProbe, err := fixture.db.BeginTx(context.Background(), nil)
+	require.NoError(t, err)
+	_, err = linkProbe.NewRaw(`SELECT person_id FROM immich_person_links WHERE person_id = ? FOR UPDATE NOWAIT`, fixture.personID).Exec(context.Background())
+	require.NoError(t, err, "reconciliation must lock People before Person links")
+	require.NoError(t, linkProbe.Rollback())
+	require.NoError(t, personBlocker.Commit())
+	select {
+	case reconcileErr := <-result:
+		require.NoError(t, reconcileErr)
+	case <-time.After(time.Second):
+		t.Fatal("reconciliation did not complete after Person lock release")
+	}
+}
+
+func TestFaceReassignmentAndAnchorConflictRequireReview(t *testing.T) {
+	fixture := newRepairFixture(t, 2)
+	other := uuid.New()
+	fixture.connector.people = append(fixture.connector.people, immich.PersonSummary{SourceID: other, Name: "Other cluster"})
+	faces := fixture.connector.faces[fixture.assetIDs[0]]
+	faces[0].PersonID = &other
+	fixture.connector.faces[fixture.assetIDs[0]] = faces
+
+	require.NoError(t, reconcile(fixture.service))
+	listed, err := fixture.service.List(context.Background())
+	require.NoError(t, err)
+	require.Len(t, listed.PersonCandidates, 1)
+	candidate := listed.PersonCandidates[0]
+	assert.Empty(t, candidate.CandidateImmichPersonID)
+	assert.True(t, candidate.PreviousImmichPersonPresent)
+	assert.Contains(t, candidate.Conflicts, "anchors_split_across_people")
+	suggestions, err := fixture.service.SuggestionPersonIDs(context.Background(), []uuid.UUID{fixture.oldID, other})
+	require.NoError(t, err)
+	assert.Empty(t, suggestions)
+
+	_, err = fixture.service.ConfirmPerson(context.Background(), fixture.actor, uuid.MustParse(candidate.ID))
+	require.NoError(t, err)
+	suggestions, err = fixture.service.SuggestionPersonIDs(context.Background(), []uuid.UUID{fixture.oldID, other})
+	require.NoError(t, err)
+	assert.Equal(t, []uuid.UUID{fixture.personID}, suggestions)
+	var anchors int
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM immich_face_anchors WHERE person_id = ?`, fixture.personID).Scan(context.Background(), &anchors))
+	assert.Equal(t, 1, anchors, "confirmation keeps only anchors still assigned to the confirmed identity")
+}
+
+func TestDeletedAnchorAssetDoesNotBlockPersonReconciliation(t *testing.T) {
+	fixture := newRepairFixture(t, 1)
+	fixture.connector.faceErrs[fixture.assetIDs[0]] = immich.ErrNotFound
+
+	require.NoError(t, reconcile(fixture.service))
+	listed, err := fixture.service.List(context.Background())
+	require.NoError(t, err)
+	require.Len(t, listed.PersonCandidates, 1)
+	assert.Contains(t, listed.PersonCandidates[0].Conflicts, "face_anchor_missing")
+	suggestions, err := fixture.service.SuggestionPersonIDs(context.Background(), []uuid.UUID{fixture.oldID})
+	require.NoError(t, err)
+	assert.Empty(t, suggestions)
+}
+
+func TestRejectedRepairStaysRejectedAndCannotRestoreSuggestions(t *testing.T) {
+	fixture := newRepairFixture(t, 1)
+	replacement := uuid.New()
+	fixture.connector.people = []immich.PersonSummary{{SourceID: replacement, Name: "Replacement"}}
+	faces := fixture.connector.faces[fixture.assetIDs[0]]
+	faces[0].PersonID = &replacement
+	fixture.connector.faces[fixture.assetIDs[0]] = faces
+	require.NoError(t, reconcile(fixture.service))
+	listed, err := fixture.service.List(context.Background())
+	require.NoError(t, err)
+	candidateID := uuid.MustParse(listed.PersonCandidates[0].ID)
+	_, err = fixture.service.RejectPerson(context.Background(), fixture.actor, candidateID)
+	require.NoError(t, err)
+	require.NoError(t, reconcile(fixture.service))
+
+	listed, err = fixture.service.List(context.Background())
+	require.NoError(t, err)
+	require.Len(t, listed.PersonCandidates, 1)
+	assert.Equal(t, "rejected", listed.PersonCandidates[0].State)
+	suggestions, err := fixture.service.SuggestionPersonIDs(context.Background(), []uuid.UUID{replacement})
+	require.NoError(t, err)
+	assert.Empty(t, suggestions)
+}
+
+func TestPersonRejectionLocksPeopleBeforeCandidate(t *testing.T) {
+	fixture := newRepairFixture(t, 1)
+	replacement := uuid.New()
+	fixture.connector.people = []immich.PersonSummary{{SourceID: replacement, Name: "Replacement"}}
+	faces := fixture.connector.faces[fixture.assetIDs[0]]
+	faces[0].PersonID = &replacement
+	fixture.connector.faces[fixture.assetIDs[0]] = faces
+	require.NoError(t, reconcile(fixture.service))
+	listed, err := fixture.service.List(context.Background())
+	require.NoError(t, err)
+	require.Len(t, listed.PersonCandidates, 1)
+	candidateID := uuid.MustParse(listed.PersonCandidates[0].ID)
+
+	personBlocker, err := fixture.db.BeginTx(context.Background(), nil)
+	require.NoError(t, err)
+	_, err = personBlocker.NewRaw(`SELECT id FROM people WHERE id = ? FOR UPDATE`, fixture.actor.PersonID).Exec(context.Background())
+	require.NoError(t, err)
+	rejection := make(chan error, 1)
+	go func() {
+		_, rejectErr := fixture.service.RejectPerson(context.Background(), fixture.actor, candidateID)
+		rejection <- rejectErr
+	}()
+	select {
+	case rejectErr := <-rejection:
+		t.Fatalf("rejection completed while the actor Person was locked: %v", rejectErr)
+	case <-time.After(100 * time.Millisecond):
+	}
+	candidateProbe, err := fixture.db.BeginTx(context.Background(), nil)
+	require.NoError(t, err)
+	_, err = candidateProbe.NewRaw(`SELECT id FROM person_repair_candidates WHERE id = ? FOR UPDATE NOWAIT`, candidateID).Exec(context.Background())
+	require.NoError(t, err, "rejection must lock People before its candidate")
+	require.NoError(t, candidateProbe.Rollback())
+	require.NoError(t, personBlocker.Commit())
+	select {
+	case rejectErr := <-rejection:
+		require.NoError(t, rejectErr)
+	case <-time.After(time.Second):
+		t.Fatal("rejection did not complete after Person lock release")
+	}
+}
+
+func TestNewImmichPersonRemainsAdditionUntilCuratorLinksIt(t *testing.T) {
+	fixture := newRepairFixture(t, 0)
+	addition := uuid.New()
+	fixture.connector.people = append(fixture.connector.people, immich.PersonSummary{SourceID: addition, Name: "New identity"})
+	require.NoError(t, reconcile(fixture.service))
+	listed, err := fixture.service.List(context.Background())
+	require.NoError(t, err)
+	require.Len(t, listed.UnlinkedImmichPeople, 1)
+	assert.Equal(t, addition.String(), listed.UnlinkedImmichPeople[0].ImmichPersonID)
+	suggestions, err := fixture.service.SuggestionPersonIDs(context.Background(), []uuid.UUID{addition})
+	require.NoError(t, err)
+	assert.Empty(t, suggestions)
+
+	_, err = fixture.service.LinkPerson(context.Background(), fixture.actor, LinkPersonRequest{PersonID: fixture.personID.String(), ImmichPersonID: addition.String()})
+	require.NoError(t, err)
+	suggestions, err = fixture.service.SuggestionPersonIDs(context.Background(), []uuid.UUID{addition})
+	require.NoError(t, err)
+	assert.Equal(t, []uuid.UUID{fixture.personID}, suggestions)
+}
+
+func TestManualPersonLinkRejectsIdentityThatDisappearedAfterReconciliation(t *testing.T) {
+	fixture := newRepairFixture(t, 0)
+	addition := uuid.New()
+	fixture.connector.people = append(fixture.connector.people, immich.PersonSummary{SourceID: addition, Name: "Temporary identity"})
+	require.NoError(t, reconcile(fixture.service))
+
+	fixture.connector.people = []immich.PersonSummary{{SourceID: fixture.oldID, Name: "Immich member"}}
+	_, err := fixture.service.LinkPerson(context.Background(), fixture.actor, LinkPersonRequest{
+		PersonID: fixture.personID.String(), ImmichPersonID: addition.String(),
+	})
+	assert.ErrorIs(t, err, ErrConflict)
+	suggestions, err := fixture.service.SuggestionPersonIDs(context.Background(), []uuid.UUID{fixture.oldID, addition})
+	require.NoError(t, err)
+	assert.Equal(t, []uuid.UUID{fixture.personID}, suggestions)
+}
+
+func TestManualPersonLinkRevalidatesIdentityAfterAnchorCollection(t *testing.T) {
+	fixture := newRepairFixture(t, 1)
+	addition := uuid.New()
+	fixture.connector.people = append(fixture.connector.people, immich.PersonSummary{SourceID: addition, Name: "Temporary identity"})
+	faces := fixture.connector.faces[fixture.assetIDs[0]]
+	faces[0].PersonID = &addition
+	fixture.connector.faces[fixture.assetIDs[0]] = faces
+	require.NoError(t, reconcile(fixture.service))
+	fixture.connector.faceStarted = make(chan struct{})
+	fixture.connector.releaseFace = make(chan struct{})
+	result := make(chan error, 1)
+	go func() {
+		_, err := fixture.service.LinkPerson(context.Background(), fixture.actor, LinkPersonRequest{
+			PersonID: fixture.personID.String(), ImmichPersonID: addition.String(),
+		})
+		result <- err
+	}()
+	select {
+	case <-fixture.connector.faceStarted:
+	case <-time.After(time.Second):
+		t.Fatal("anchor collection did not start")
+	}
+	fixture.connector.people = []immich.PersonSummary{{SourceID: fixture.oldID, Name: "Immich member"}}
+	close(fixture.connector.releaseFace)
+	assert.ErrorIs(t, <-result, ErrConflict)
+	var linkedID uuid.UUID
+	require.NoError(t, fixture.db.NewRaw(`SELECT immich_person_id FROM immich_person_links WHERE person_id = ?`, fixture.personID).Scan(context.Background(), &linkedID))
+	assert.Equal(t, fixture.oldID, linkedID)
+}
+
+func TestManualPersonLinkCannotRecreateLinkAfterConcurrentArchive(t *testing.T) {
+	fixture := newRepairFixture(t, 0)
+	tx, err := fixture.db.BeginTx(context.Background(), nil)
+	require.NoError(t, err)
+	_, err = tx.ExecContext(context.Background(), `
+		UPDATE people SET archived_at = now() WHERE id = ?;
+		DELETE FROM immich_person_links WHERE person_id = ?
+	`, fixture.personID, fixture.personID)
+	require.NoError(t, err)
+
+	result := make(chan error, 1)
+	go func() {
+		_, linkErr := fixture.service.LinkPerson(context.Background(), fixture.actor, LinkPersonRequest{
+			PersonID: fixture.personID.String(), ImmichPersonID: fixture.oldID.String(),
+		})
+		result <- linkErr
+	}()
+	select {
+	case linkErr := <-result:
+		t.Fatalf("link completed before lifecycle transaction committed: %v", linkErr)
+	case <-time.After(100 * time.Millisecond):
+	}
+	require.NoError(t, tx.Commit())
+	select {
+	case linkErr := <-result:
+		assert.ErrorIs(t, linkErr, ErrInvalid)
+	case <-time.After(time.Second):
+		t.Fatal("link did not finish after lifecycle transaction committed")
+	}
+	var links int
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM immich_person_links WHERE person_id = ?`, fixture.personID).Scan(context.Background(), &links))
+	assert.Zero(t, links)
+}
+
+func TestManualPersonLinkDoesNotConfirmUnrelatedPendingProposal(t *testing.T) {
+	fixture := newRepairFixture(t, 1)
+	proposed, selected := uuid.New(), uuid.New()
+	fixture.connector.people = []immich.PersonSummary{{SourceID: proposed, Name: "Proposed"}, {SourceID: selected, Name: "Selected"}}
+	faces := fixture.connector.faces[fixture.assetIDs[0]]
+	faces[0].PersonID = &proposed
+	fixture.connector.faces[fixture.assetIDs[0]] = faces
+	require.NoError(t, reconcile(fixture.service))
+
+	_, err := fixture.service.LinkPerson(context.Background(), fixture.actor, LinkPersonRequest{PersonID: fixture.personID.String(), ImmichPersonID: selected.String()})
+	require.NoError(t, err)
+	var state string
+	require.NoError(t, fixture.db.NewRaw(`SELECT state FROM person_repair_candidates WHERE person_id = ? AND candidate_immich_person_id = ?`, fixture.personID, proposed).Scan(context.Background(), &state))
+	assert.Equal(t, "rejected", state)
+	suggestions, err := fixture.service.SuggestionPersonIDs(context.Background(), []uuid.UUID{proposed, selected})
+	require.NoError(t, err)
+	assert.Equal(t, []uuid.UUID{fixture.personID}, suggestions)
+}
+
+func TestImmichPersonCannotBeClaimedByTwoPortalPeople(t *testing.T) {
+	fixture := newRepairFixture(t, 0)
+	otherPersonID := uuid.New()
+	_, err := fixture.db.ExecContext(context.Background(), `
+		INSERT INTO people (id, display_name, sort_name) VALUES (?, 'Other Person', 'Other Person')
+	`, otherPersonID)
+	require.NoError(t, err)
+
+	_, err = fixture.service.LinkPerson(context.Background(), fixture.actor, LinkPersonRequest{
+		PersonID: otherPersonID.String(), ImmichPersonID: fixture.oldID.String(),
+	})
+	assert.ErrorIs(t, err, ErrConflict)
+	var linkedPersonID uuid.UUID
+	require.NoError(t, fixture.db.NewRaw(`SELECT person_id FROM immich_person_links WHERE immich_person_id = ?`, fixture.oldID).Scan(context.Background(), &linkedPersonID))
+	assert.Equal(t, fixture.personID, linkedPersonID)
+	_, err = fixture.db.ExecContext(context.Background(), `
+		INSERT INTO immich_person_links (
+			person_id, immich_person_id, state, last_seen_at, confirmed_at, confirmed_by_person_id
+		) VALUES (?, ?, 'linked', now(), now(), ?)
+	`, otherPersonID, fixture.oldID, fixture.actor.PersonID)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "immich_person_links_source_idx")
+}
+
+func TestArchivedPersonStopsSuggestionsAndReleasesImmichIdentity(t *testing.T) {
+	fixture := newRepairFixture(t, 0)
+	candidateID := uuid.New()
+	_, err := fixture.db.ExecContext(context.Background(), `
+		INSERT INTO person_repair_candidates (
+			id, person_id, previous_immich_person_id, candidate_immich_person_id, created_at
+		) VALUES (?, ?, ?, ?, now())
+	`, candidateID, fixture.personID, fixture.oldID, fixture.oldID)
+	require.NoError(t, err)
+	_, err = people.New(fixture.db).Archive(context.Background(), fixture.actor, fixture.personID, 1)
+	require.NoError(t, err)
+
+	suggestions, err := fixture.service.SuggestionPersonIDs(context.Background(), []uuid.UUID{fixture.oldID})
+	require.NoError(t, err)
+	assert.Empty(t, suggestions)
+	listed, err := fixture.service.List(context.Background())
+	require.NoError(t, err)
+	require.Len(t, listed.UnlinkedImmichPeople, 1)
+	assert.Equal(t, fixture.oldID.String(), listed.UnlinkedImmichPeople[0].ImmichPersonID)
+	var candidateState string
+	var resolvedBy uuid.UUID
+	require.NoError(t, fixture.db.NewRaw(`
+		SELECT state, resolved_by_person_id FROM person_repair_candidates WHERE id = ?
+	`, candidateID).Scan(context.Background(), &candidateState, &resolvedBy))
+	assert.Equal(t, "superseded", candidateState)
+	assert.Equal(t, fixture.actor.PersonID, resolvedBy)
+}
+
+func TestPersonAnchorCaptureUsesFiveOfFiftyNewestActiveBackings(t *testing.T) {
+	t.Run("stores at most five and replaces prior anchors", func(t *testing.T) {
+		fixture := newRepairFixture(t, 0)
+		base := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+		for index := range 6 {
+			assetID := addAnchorBacking(t, fixture, base.Add(time.Duration(index)*time.Hour), true)
+			personID := fixture.oldID
+			fixture.connector.faces[assetID] = []immich.FaceSummary{{SourceID: uuid.New(), PersonID: &personID}}
+		}
+		_, err := fixture.service.LinkPerson(context.Background(), fixture.actor, LinkPersonRequest{PersonID: fixture.personID.String(), ImmichPersonID: fixture.oldID.String()})
+		require.NoError(t, err)
+		var anchors int
+		require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM immich_face_anchors WHERE person_id = ?`, fixture.personID).Scan(context.Background(), &anchors))
+		assert.Equal(t, 5, anchors)
+
+		fixture.connector.faces = map[uuid.UUID][]immich.FaceSummary{}
+		_, err = fixture.service.LinkPerson(context.Background(), fixture.actor, LinkPersonRequest{PersonID: fixture.personID.String(), ImmichPersonID: fixture.oldID.String()})
+		require.NoError(t, err)
+		require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM immich_face_anchors WHERE person_id = ?`, fixture.personID).Scan(context.Background(), &anchors))
+		assert.Zero(t, anchors)
+	})
+
+	t.Run("reads only the fifty newest active backings", func(t *testing.T) {
+		fixture := newRepairFixture(t, 0)
+		base := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+		var oldestActive uuid.UUID
+		for index := range 51 {
+			assetID := addAnchorBacking(t, fixture, base.Add(time.Duration(index)*time.Hour), true)
+			if index == 0 {
+				oldestActive = assetID
+			}
+		}
+		inactive := addAnchorBacking(t, fixture, base.Add(100*time.Hour), false)
+		personID := fixture.oldID
+		fixture.connector.faces[oldestActive] = []immich.FaceSummary{{SourceID: uuid.New(), PersonID: &personID}}
+		fixture.connector.faces[inactive] = []immich.FaceSummary{{SourceID: uuid.New(), PersonID: &personID}}
+		fixture.connector.faceCalls = nil
+
+		_, err := fixture.service.LinkPerson(context.Background(), fixture.actor, LinkPersonRequest{PersonID: fixture.personID.String(), ImmichPersonID: fixture.oldID.String()})
+		require.NoError(t, err)
+		assert.Len(t, fixture.connector.faceCalls, 50)
+		assert.NotContains(t, fixture.connector.faceCalls, oldestActive)
+		assert.NotContains(t, fixture.connector.faceCalls, inactive)
+		var anchors int
+		require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM immich_face_anchors WHERE person_id = ?`, fixture.personID).Scan(context.Background(), &anchors))
+		assert.Zero(t, anchors)
+	})
+}
+
+func TestRejectedMediaRepairLeavesAddRemoveAndBackingUntouched(t *testing.T) {
+	fixture := newRepairFixture(t, 0)
+	oldMediaID, newMediaID := uuid.New(), uuid.New()
+	oldAssetID, newAssetID := uuid.New(), uuid.New()
+	candidateID := uuid.New()
+	_, err := fixture.db.ExecContext(context.Background(), `
+		INSERT INTO media_items (id, immich_asset_id, media_type, local_date_time, availability, first_seen_at, last_seen_at)
+		VALUES (?, ?, 'image', '2026-01-01T00:00:00Z', 'source_missing', now(), now()),
+		       (?, ?, 'image', '2026-01-01T00:00:00Z', 'current', now(), now());
+		INSERT INTO media_backings (id, media_item_id, immich_asset_id, checksum, linked_at)
+		VALUES (gen_random_uuid(), ?, ?, ?, now()), (gen_random_uuid(), ?, ?, ?, now());
+		INSERT INTO media_repair_candidates (id, media_item_id, candidate_media_item_id, previous_immich_asset_id, candidate_immich_asset_id, created_at)
+		VALUES (?, ?, ?, ?, ?, now());
+	`, oldMediaID, oldAssetID, newMediaID, newAssetID, oldMediaID, oldAssetID, checksum("same"), newMediaID, newAssetID, checksum("same"),
+		candidateID, oldMediaID, newMediaID, oldAssetID, newAssetID)
+	require.NoError(t, err)
+	_, err = fixture.service.RejectMedia(context.Background(), fixture.actor, candidateID)
+	require.NoError(t, err)
+	var state string
+	require.NoError(t, fixture.db.NewRaw(`SELECT state FROM media_repair_candidates WHERE id = ?`, candidateID).Scan(context.Background(), &state))
+	assert.Equal(t, "rejected", state)
+	var items, currentBackings int
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM media_items WHERE id IN (?, ?)`, oldMediaID, newMediaID).Scan(context.Background(), &items))
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM media_backings WHERE immich_asset_id IN (?, ?) AND active`, oldAssetID, newAssetID).Scan(context.Background(), &currentBackings))
+	assert.Equal(t, 2, items)
+	assert.Equal(t, 2, currentBackings)
+}
+
+func TestMediaConfirmationPreservesPortalIdentityAndMovesBacking(t *testing.T) {
+	fixture := newRepairFixture(t, 0)
+	oldMediaID, newMediaID := uuid.New(), uuid.New()
+	oldAssetID, newAssetID := uuid.New(), uuid.New()
+	oldBackingID, newBackingID, candidateID, sourceAlbumID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	_, err := fixture.db.ExecContext(context.Background(), `
+		INSERT INTO source_albums (
+			id, immich_album_id, name, asset_count, source_created_at, source_updated_at,
+			first_seen_at, last_seen_at, source_fingerprint, next_reconciliation_at
+		) VALUES (?, gen_random_uuid(), 'Repair album', 1, now(), now(), now(), now(), ?, now());
+		INSERT INTO media_items (id, immich_asset_id, media_type, local_date_time, availability, first_seen_at, last_seen_at)
+		VALUES (?, ?, 'image', '2026-01-01T00:00:00Z', 'source_missing', now(), now()),
+		       (?, ?, 'image', '2026-01-01T00:00:00Z', 'current', now(), now());
+		INSERT INTO media_backings (id, media_item_id, immich_asset_id, checksum, capture_at, filename, original_path, linked_at)
+		VALUES (?, ?, ?, ?, '2026-01-01T00:00:00Z', 'old.jpg', '/old/old.jpg', now()),
+		       (?, ?, ?, ?, '2026-01-01T00:00:00Z', 'new.jpg', '/moved/new.jpg', now());
+		INSERT INTO source_album_memberships (
+			source_album_id, immich_asset_id, media_item_id, first_seen_at, last_seen_at, source_fingerprint
+		) VALUES (?, ?, ?, now(), now(), ?);
+		INSERT INTO media_repair_candidates (
+			id, media_item_id, candidate_media_item_id, previous_immich_asset_id,
+			candidate_immich_asset_id, previous_evidence, candidate_evidence, created_at
+		) VALUES (
+			?, ?, ?, ?, ?,
+			jsonb_build_object('checksum', ?, 'capture', '2026-01-01T00:00:00Z', 'filename', 'old.jpg', 'path', '/old/old.jpg'),
+			jsonb_build_object('checksum', ?, 'capture', '2026-01-01T00:00:00Z', 'filename', 'new.jpg', 'path', '/moved/new.jpg'),
+			now()
+		);
+	`, sourceAlbumID, hashBytes("album"), oldMediaID, oldAssetID, newMediaID, newAssetID,
+		oldBackingID, oldMediaID, oldAssetID, checksum("same"), newBackingID, newMediaID, newAssetID, checksum("same"),
+		sourceAlbumID, newAssetID, newMediaID, hashBytes("membership"), candidateID, oldMediaID, newMediaID, oldAssetID, newAssetID,
+		checksum("same"), checksum("same"))
+	require.NoError(t, err)
+	eventID, candidateLooseID, stableLooseID := uuid.New(), uuid.New(), uuid.New()
+	_, err = fixture.db.ExecContext(context.Background(), `
+		INSERT INTO events (id, title, grouping_timezone) VALUES (?, 'Repair draft', 'UTC');
+		INSERT INTO draft_media_placements (event_id, media_item_id, position) VALUES (?, ?, 0);
+		INSERT INTO loose_items (id, media_item_id, grouping_timezone) VALUES (?, ?, 'UTC')
+	`, eventID, eventID, newMediaID, candidateLooseID, newMediaID)
+	require.NoError(t, err)
+	_, err = fixture.db.ExecContext(context.Background(), `
+		INSERT INTO draft_media_placements (event_id, media_item_id, position) VALUES (?, ?, 1)
+	`, eventID, oldMediaID)
+	require.NoError(t, err)
+	_, err = fixture.service.ConfirmMedia(context.Background(), fixture.actor, candidateID)
+	assert.ErrorIs(t, err, ErrConflict, "colliding Event placements require explicit Curator cleanup")
+	var pendingState string
+	var retainedItems int
+	require.NoError(t, fixture.db.NewRaw(`SELECT state FROM media_repair_candidates WHERE id = ?`, candidateID).Scan(context.Background(), &pendingState))
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM media_items WHERE id IN (?, ?)`, oldMediaID, newMediaID).Scan(context.Background(), &retainedItems))
+	assert.Equal(t, "pending", pendingState)
+	assert.Equal(t, 2, retainedItems)
+	_, err = fixture.db.ExecContext(context.Background(), `DELETE FROM draft_media_placements WHERE event_id = ? AND media_item_id = ?`, eventID, oldMediaID)
+	require.NoError(t, err)
+
+	_, err = fixture.db.ExecContext(context.Background(), `
+		INSERT INTO loose_items (id, media_item_id, grouping_timezone) VALUES (?, ?, 'UTC')
+	`, stableLooseID, oldMediaID)
+	require.NoError(t, err)
+	_, err = fixture.service.ConfirmMedia(context.Background(), fixture.actor, candidateID)
+	assert.ErrorIs(t, err, ErrConflict, "colliding Loose items require explicit Curator cleanup")
+	require.NoError(t, fixture.db.NewRaw(`SELECT state FROM media_repair_candidates WHERE id = ?`, candidateID).Scan(context.Background(), &pendingState))
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM media_items WHERE id IN (?, ?)`, oldMediaID, newMediaID).Scan(context.Background(), &retainedItems))
+	assert.Equal(t, "pending", pendingState)
+	assert.Equal(t, 2, retainedItems)
+	_, err = fixture.db.ExecContext(context.Background(), `DELETE FROM loose_items WHERE id = ?`, stableLooseID)
+	require.NoError(t, err)
+
+	listed, err := fixture.service.List(context.Background())
+	require.NoError(t, err)
+	require.Len(t, listed.MediaCandidates, 1)
+	assert.Equal(t, checksum("same"), listed.MediaCandidates[0].Previous.Checksum)
+	assert.Equal(t, "/moved/new.jpg", listed.MediaCandidates[0].Candidate.Path)
+
+	_, err = fixture.db.ExecContext(context.Background(), `UPDATE media_backings SET checksum = ? WHERE id = ?`, checksum("changed"), newBackingID)
+	require.NoError(t, err)
+	_, err = fixture.service.ConfirmMedia(context.Background(), fixture.actor, candidateID)
+	assert.ErrorIs(t, err, ErrConflict)
+	_, err = fixture.db.ExecContext(context.Background(), `UPDATE media_backings SET checksum = ? WHERE id = ?`, checksum("same"), newBackingID)
+	require.NoError(t, err)
+	competingMediaID, competingAssetID, competingCandidateID := uuid.New(), uuid.New(), uuid.New()
+	historyID, historicalCandidateAssetID := uuid.New(), uuid.New()
+	_, err = fixture.db.ExecContext(context.Background(), `
+		INSERT INTO media_items (id, immich_asset_id, media_type, local_date_time, availability, first_seen_at, last_seen_at)
+		VALUES (?, ?, 'image', '2026-01-01T00:00:00Z', 'source_missing', now(), now());
+		INSERT INTO media_backings (id, media_item_id, immich_asset_id, checksum, linked_at)
+		VALUES (gen_random_uuid(), ?, ?, ?, now());
+		INSERT INTO media_repair_candidates (
+			id, media_item_id, candidate_media_item_id, previous_immich_asset_id,
+			candidate_immich_asset_id, created_at
+		) VALUES (?, ?, ?, ?, ?, now());
+		INSERT INTO media_repair_candidates (
+			id, media_item_id, previous_immich_asset_id, candidate_immich_asset_id,
+			state, created_at, resolved_at, resolved_by_person_id
+		) VALUES (?, ?, ?, ?, 'rejected', now(), now(), ?);
+	`, competingMediaID, competingAssetID, competingMediaID, competingAssetID, checksum("same"),
+		competingCandidateID, competingMediaID, newMediaID, competingAssetID, newAssetID,
+		historyID, newMediaID, newAssetID, historicalCandidateAssetID, fixture.actor.PersonID)
+	require.NoError(t, err)
+	eventBlocker, err := fixture.db.BeginTx(context.Background(), nil)
+	require.NoError(t, err)
+	_, err = eventBlocker.ExecContext(context.Background(), `LOCK TABLE events IN ACCESS EXCLUSIVE MODE`)
+	require.NoError(t, err)
+	var eventBlockerPID int
+	require.NoError(t, eventBlocker.NewRaw(`SELECT pg_backend_pid()`).Scan(context.Background(), &eventBlockerPID))
+	concurrentEvent := make(chan error, 1)
+	go func() {
+		_, createErr := events.New(fixture.db).CreateEvent(context.Background(), fixture.actor, events.CreateEventRequest{
+			SourceAlbumIDs: []string{sourceAlbumID.String()}, MediaItemIDs: []string{newMediaID.String()},
+			Timezone: "UTC", Title: "Concurrent repair draft",
+		})
+		concurrentEvent <- createErr
+	}()
+	waitForRepairBlockedQuery(t, fixture.db, eventBlockerPID, `%INSERT INTO events%`)
+	confirmation := make(chan error, 1)
+	go func() {
+		_, confirmErr := fixture.service.ConfirmMedia(context.Background(), fixture.actor, candidateID)
+		confirmation <- confirmErr
+	}()
+	select {
+	case confirmErr := <-confirmation:
+		t.Fatalf("confirmation completed while Event creation held the candidate Media: %v", confirmErr)
+	case <-time.After(100 * time.Millisecond):
+	}
+	candidateProbe, err := fixture.db.BeginTx(context.Background(), nil)
+	require.NoError(t, err)
+	_, err = candidateProbe.NewRaw(`SELECT id FROM media_repair_candidates WHERE id = ? FOR UPDATE NOWAIT`, candidateID).Exec(context.Background())
+	require.NoError(t, err, "confirmation must wait for Media rows before locking its candidate")
+	require.NoError(t, candidateProbe.Rollback())
+	require.NoError(t, eventBlocker.Rollback())
+	select {
+	case createErr := <-concurrentEvent:
+		require.NoError(t, createErr)
+	case <-time.After(time.Second):
+		t.Fatal("Event creation did not complete after its table was released")
+	}
+	select {
+	case confirmErr := <-confirmation:
+		require.NoError(t, confirmErr)
+	case <-time.After(time.Second):
+		t.Fatal("confirmation did not complete after Event creation")
+	}
+	var actualAssetID uuid.UUID
+	var availability string
+	require.NoError(t, fixture.db.NewRaw(`SELECT immich_asset_id, availability FROM media_items WHERE id = ?`, oldMediaID).Scan(context.Background(), &actualAssetID, &availability))
+	assert.Equal(t, newAssetID, actualAssetID)
+	assert.Equal(t, "current", availability)
+	var candidateItemExists bool
+	require.NoError(t, fixture.db.NewRaw(`SELECT EXISTS (SELECT 1 FROM media_items WHERE id = ?)`, newMediaID).Scan(context.Background(), &candidateItemExists))
+	assert.False(t, candidateItemExists)
+	var activeBackingItem uuid.UUID
+	var backingState string
+	require.NoError(t, fixture.db.NewRaw(`SELECT media_item_id, state FROM media_backings WHERE immich_asset_id = ? AND active`, newAssetID).Scan(context.Background(), &activeBackingItem, &backingState))
+	assert.Equal(t, oldMediaID, activeBackingItem)
+	assert.Equal(t, "confirmed", backingState)
+	var membershipMediaID uuid.UUID
+	require.NoError(t, fixture.db.NewRaw(`SELECT media_item_id FROM source_album_memberships WHERE source_album_id = ? AND immich_asset_id = ?`, sourceAlbumID, newAssetID).Scan(context.Background(), &membershipMediaID))
+	assert.Equal(t, oldMediaID, membershipMediaID)
+	var placementMediaID, looseMediaID uuid.UUID
+	var looseVersion int64
+	require.NoError(t, fixture.db.NewRaw(`SELECT media_item_id FROM draft_media_placements WHERE event_id = ?`, eventID).Scan(context.Background(), &placementMediaID))
+	require.NoError(t, fixture.db.NewRaw(`SELECT media_item_id, version FROM loose_items WHERE id = ?`, candidateLooseID).Scan(context.Background(), &looseMediaID, &looseVersion))
+	assert.Equal(t, oldMediaID, placementMediaID)
+	assert.Equal(t, oldMediaID, looseMediaID)
+	assert.Equal(t, int64(2), looseVersion)
+	var candidateState string
+	var resolvedAt *time.Time
+	require.NoError(t, fixture.db.NewRaw(`SELECT state, resolved_at FROM media_repair_candidates WHERE id = ?`, candidateID).Scan(context.Background(), &candidateState, &resolvedAt))
+	assert.Equal(t, "confirmed", candidateState)
+	assert.NotNil(t, resolvedAt)
+	require.NoError(t, fixture.db.NewRaw(`SELECT state, resolved_at FROM media_repair_candidates WHERE id = ?`, competingCandidateID).Scan(context.Background(), &candidateState, &resolvedAt))
+	assert.Equal(t, "superseded", candidateState)
+	assert.NotNil(t, resolvedAt)
+	var historyMediaID uuid.UUID
+	require.NoError(t, fixture.db.NewRaw(`SELECT media_item_id FROM media_repair_candidates WHERE id = ?`, historyID).Scan(context.Background(), &historyMediaID))
+	assert.Equal(t, oldMediaID, historyMediaID, "resolved repair history follows the surviving portal Media identity")
+	_, err = fixture.db.ExecContext(context.Background(), `UPDATE media_backings SET filename = 'later.jpg', original_path = '/later/path.jpg' WHERE media_item_id = ?`, oldMediaID)
+	require.NoError(t, err)
+	listed, err = fixture.service.List(context.Background())
+	require.NoError(t, err)
+	var confirmedHistory *MediaCandidate
+	for index := range listed.MediaCandidates {
+		if listed.MediaCandidates[index].ID == candidateID.String() {
+			confirmedHistory = &listed.MediaCandidates[index]
+			break
+		}
+	}
+	require.NotNil(t, confirmedHistory)
+	assert.Equal(t, "old.jpg", confirmedHistory.Previous.Filename)
+	assert.Equal(t, "/moved/new.jpg", confirmedHistory.Candidate.Path)
+	_, err = fixture.service.ConfirmMedia(context.Background(), fixture.actor, candidateID)
+	assert.ErrorIs(t, err, ErrAlreadyResolved)
+}

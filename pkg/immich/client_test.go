@@ -187,7 +187,7 @@ func TestOwnedAlbumsRejectsMalformedOrDuplicateSummaries(t *testing.T) {
 	}
 }
 
-func TestAlbumAssetsPageUsesPinnedPaginationAndStripsSensitiveDTOFields(t *testing.T) {
+func TestAlbumAssetsPageUsesPinnedPaginationAndReturnsOnlyNormalizedRepairEvidence(t *testing.T) {
 	albumID, assetID := uuid.New(), uuid.New()
 	server := contractServer(t, func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, http.MethodPost, r.Method)
@@ -223,10 +223,124 @@ func TestAlbumAssetsPageUsesPinnedPaginationAndStripsSensitiveDTOFields(t *testi
 	require.NotNil(t, page.Items[0].LocalDateTime)
 	assert.Equal(t, "2026-01-01T10:00:00.000Z", *page.Items[0].LocalDateTime)
 	assert.Nil(t, page.NextPage)
+	assert.Equal(t, "/secret/source.jpg", page.Items[0].OriginalPath)
 	serialized, err := json.Marshal(page)
 	require.NoError(t, err)
-	assert.NotContains(t, string(serialized), "secret")
-	assert.NotContains(t, string(serialized), "face")
+	assert.NotContains(t, string(serialized), "secret-library")
+	assert.NotContains(t, string(serialized), "Private face")
+}
+
+func TestPeopleAndFacesNormalizePrivateRepairEvidence(t *testing.T) {
+	personID, assetID, faceID := uuid.New(), uuid.New(), uuid.New()
+	server := contractServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/people":
+			assert.Equal(t, "true", r.URL.Query().Get("withHidden"))
+			assert.Equal(t, "1", r.URL.Query().Get("page"))
+			_, _ = w.Write([]byte(`{"people":[{"id":"` + personID.String() + `","name":"  Family member  ","isHidden":true,"thumbnailPath":"private"}],"total":1,"hidden":1,"hasNextPage":false}`))
+		case "/api/faces":
+			assert.Equal(t, assetID.String(), r.URL.Query().Get("id"))
+			_, _ = w.Write([]byte(`[{"id":"` + faceID.String() + `","imageWidth":1200,"imageHeight":800,"boundingBoxX1":10,"boundingBoxY1":20,"boundingBoxX2":110,"boundingBoxY2":220,"person":{"id":"` + personID.String() + `","name":"private"}}]`))
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	defer server.Close()
+	client, err := New(clientConfig(server.URL), server.Client())
+	require.NoError(t, err)
+	people, err := client.People(context.Background())
+	require.NoError(t, err)
+	require.Len(t, people, 1)
+	assert.Equal(t, PersonSummary{SourceID: personID, Name: "Family member", Hidden: true}, people[0])
+	faces, err := client.Faces(context.Background(), assetID)
+	require.NoError(t, err)
+	require.Len(t, faces, 1)
+	assert.Equal(t, faceID, faces[0].SourceID)
+	require.NotNil(t, faces[0].PersonID)
+	assert.Equal(t, personID, *faces[0].PersonID)
+	assert.Equal(t, 10, faces[0].X1)
+	assert.Equal(t, 220, faces[0].Y2)
+}
+
+func TestPeoplePaginationUsesHasNextPageWhenTotalIncludesFilteredPeople(t *testing.T) {
+	firstID, secondID := uuid.New(), uuid.New()
+	server := contractServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Query().Get("page") {
+		case "1":
+			_, _ = w.Write([]byte(`{"people":[{"id":"` + firstID.String() + `","name":"First","isHidden":false}],"total":3,"hidden":1,"hasNextPage":true}`))
+		case "2":
+			_, _ = w.Write([]byte(`{"people":[{"id":"` + secondID.String() + `","name":"Second","isHidden":false}],"total":3,"hidden":1,"hasNextPage":false}`))
+		default:
+			http.Error(w, "unexpected page", http.StatusBadRequest)
+		}
+	})
+	defer server.Close()
+	client, err := New(clientConfig(server.URL), server.Client())
+	require.NoError(t, err)
+	people, err := client.People(context.Background())
+	require.NoError(t, err)
+	require.Len(t, people, 2)
+	assert.Equal(t, firstID, people[0].SourceID)
+	assert.Equal(t, secondID, people[1].SourceID)
+}
+
+func TestPeopleAndFacesRejectCaseDriftAndMissingPersonFields(t *testing.T) {
+	assetID, faceID, personID := uuid.New(), uuid.New(), uuid.New()
+	t.Run("People response", func(t *testing.T) {
+		server := contractServer(t, func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(`{"People":[],"total":0,"hidden":0}`))
+		})
+		defer server.Close()
+		client, err := New(clientConfig(server.URL), server.Client())
+		require.NoError(t, err)
+		_, err = client.People(context.Background())
+		require.EqualError(t, err, "Immich returned an invalid response")
+	})
+
+	for name, person := range map[string]string{
+		"missing person":             "",
+		"case variant face":          `,"Person":null`,
+		"case variant nested person": `,"person":{"ID":"` + personID.String() + `"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := contractServer(t, func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(`[{"id":"` + faceID.String() + `","imageWidth":100,"imageHeight":80,"boundingBoxX1":1,"boundingBoxY1":2,"boundingBoxX2":20,"boundingBoxY2":30` + person + `}]`))
+			})
+			defer server.Close()
+			client, err := New(clientConfig(server.URL), server.Client())
+			require.NoError(t, err)
+			_, err = client.Faces(context.Background(), assetID)
+			require.EqualError(t, err, "Immich returned an invalid response")
+		})
+	}
+}
+
+func TestFacesIdentifyDeletedAssets(t *testing.T) {
+	server := contractServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+	defer server.Close()
+	client, err := New(clientConfig(server.URL), server.Client())
+	require.NoError(t, err)
+	_, err = client.Faces(context.Background(), uuid.New())
+	assert.ErrorIs(t, err, ErrNotFound)
+}
+
+func TestAlbumAssetsNormalizeChecksumForRepairWithoutForwardingBase64(t *testing.T) {
+	albumID, assetID := uuid.New(), uuid.New()
+	server := contractServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"assets":{"count":1,"items":[{"id":"` + assetID.String() + `","type":"IMAGE","width":1,"height":1,"localDateTime":"2026-01-01T00:00:00Z","fileCreatedAt":"2025-12-31T23:00:00Z","checksum":"ERERERERERERERERERERERERERE=","originalFileName":" family.jpg ","originalPath":" /private/family.jpg "}],"nextPage":null,"total":1}}`))
+	})
+	defer server.Close()
+	client, err := New(clientConfig(server.URL), server.Client())
+	require.NoError(t, err)
+	page, err := client.AlbumAssetsPage(context.Background(), albumID, 1)
+	require.NoError(t, err)
+	require.Len(t, page.Items, 1)
+	assert.Equal(t, "1111111111111111111111111111111111111111", page.Items[0].Checksum)
+	assert.Equal(t, "2025-12-31T23:00:00Z", page.Items[0].CaptureAt)
+	assert.Equal(t, "family.jpg", page.Items[0].Filename)
+	assert.Equal(t, "/private/family.jpg", page.Items[0].OriginalPath)
 }
 
 func TestAlbumAssetsPagePreservesUnzonedAndUnknownCaptureDates(t *testing.T) {

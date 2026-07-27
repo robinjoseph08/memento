@@ -48,7 +48,7 @@ func TestSourceReconciliationMigrationBackfillsExistingAlbums(t *testing.T) {
 	db := testdb.Open(t)
 	ctx := context.Background()
 	allMigrations := collection.Sorted()
-	require.Greater(t, len(allMigrations), 1)
+	require.Greater(t, len(allMigrations), 2)
 	priorMigrations := migrate.NewMigrations()
 	foundSourceReconciliation := false
 	for _, migration := range allMigrations {

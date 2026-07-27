@@ -361,11 +361,20 @@ test("restores and refreshes a signed-in Trusted-device Session", async () => {
     if (path.startsWith("/api/sources?")) {
       return Promise.resolve(jsonResponse({ albums: [], next_cursor: null }));
     }
-    if (path.startsWith("/api/people?")) {
+    if (path.startsWith("/api/people")) {
       return Promise.resolve(jsonResponse({ people: [] }));
     }
     if (path.startsWith("/api/relationships?")) {
       return Promise.resolve(jsonResponse({ relationships: [] }));
+    }
+    if (path === "/api/repairs") {
+      return Promise.resolve(
+        jsonResponse({
+          person_candidates: [],
+          media_candidates: [],
+          unlinked_immich_people: [],
+        }),
+      );
     }
     return Promise.resolve(
       jsonResponse({
@@ -384,7 +393,7 @@ test("restores and refreshes a signed-in Trusted-device Session", async () => {
       "Setup is complete. You're signed in as Robin Joseph.",
     ),
   ).toBeInTheDocument();
-  expect(fetchMock).toHaveBeenCalledTimes(7);
+  expect(fetchMock).toHaveBeenCalledTimes(9);
   expect(fetchMock).toHaveBeenCalledWith(
     "/api/people?query=&include_archived=false",
     expect.objectContaining({ credentials: "same-origin" }),
@@ -447,8 +456,17 @@ test("validates Immich and supports private Source album ignore and restore tria
         version += 1;
         return Promise.resolve(jsonResponse(sourceAlbum(disposition)));
       }
-      if (path.startsWith("/api/people?")) {
+      if (path.startsWith("/api/people")) {
         return Promise.resolve(jsonResponse({ people: [] }));
+      }
+      if (path === "/api/repairs") {
+        return Promise.resolve(
+          jsonResponse({
+            person_candidates: [],
+            media_candidates: [],
+            unlinked_immich_people: [],
+          }),
+        );
       }
       if (path.startsWith("/api/sources?")) {
         const requestedDisposition = new URL(
@@ -569,6 +587,18 @@ test("loads the next opaque Source album cursor without replacing prior results"
       }
       if (path === "/api/session/refresh") {
         return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      if (path.startsWith("/api/people")) {
+        return Promise.resolve(jsonResponse({ people: [] }));
+      }
+      if (path === "/api/repairs") {
+        return Promise.resolve(
+          jsonResponse({
+            person_candidates: [],
+            media_candidates: [],
+            unlinked_immich_people: [],
+          }),
+        );
       }
       if (path.startsWith("/api/sources?")) {
         const requestedCursor = new URL(

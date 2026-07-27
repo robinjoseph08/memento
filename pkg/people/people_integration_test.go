@@ -350,10 +350,80 @@ func TestMergeRejectsStaleSourceAndSurvivorVersionsWithoutEffects(t *testing.T) 
 	}
 }
 
+func TestArchiveAndMergeUseOnePersonRepairLockOrder(t *testing.T) {
+	fixture := newPeopleFixture(t)
+	ctx := context.Background()
+	source := addPerson(t, fixture.db, "Source", "Source")
+	survivor := addPerson(t, fixture.db, "Survivor", "Survivor")
+	candidateID := uuid.New()
+	_, err := fixture.db.ExecContext(ctx, `
+		INSERT INTO person_repair_candidates (
+			id, person_id, previous_immich_person_id, candidate_immich_person_id, created_at
+		) VALUES (?, ?, ?, ?, now())
+	`, candidateID, source, uuid.New(), uuid.New())
+	require.NoError(t, err)
+	preview, err := fixture.service.PreviewMerge(ctx, fixture.actor, source, survivor)
+	require.NoError(t, err)
+
+	blocker, err := fixture.db.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	_, err = blocker.NewRaw(`SELECT id FROM person_repair_candidates WHERE id = ? FOR UPDATE`, candidateID).Exec(ctx)
+	require.NoError(t, err)
+	archiveResult := make(chan error, 1)
+	go func() {
+		_, archiveErr := fixture.service.Archive(ctx, fixture.actor, source, 1)
+		archiveResult <- archiveErr
+	}()
+	select {
+	case archiveErr := <-archiveResult:
+		t.Fatalf("archive completed while its repair candidate was locked: %v", archiveErr)
+	case <-time.After(100 * time.Millisecond):
+	}
+	mergeResult := make(chan error, 1)
+	go func() {
+		_, mergeErr := fixture.service.Merge(ctx, fixture.actor, MergeRequest{
+			SourcePersonID: source.String(), SurvivorPersonID: survivor.String(), SourceVersion: 1, SurvivorVersion: 1,
+			PreviewFingerprint: preview.PreviewFingerprint,
+		})
+		mergeResult <- mergeErr
+	}()
+	select {
+	case mergeErr := <-mergeResult:
+		t.Fatalf("merge completed while archive held the Person lock: %v", mergeErr)
+	case <-time.After(100 * time.Millisecond):
+	}
+	require.NoError(t, blocker.Commit())
+	select {
+	case archiveErr := <-archiveResult:
+		require.NoError(t, archiveErr)
+	case <-time.After(3 * time.Second):
+		t.Fatal("archive did not complete after candidate lock release")
+	}
+	select {
+	case mergeErr := <-mergeResult:
+		assert.ErrorIs(t, mergeErr, ErrMergeStale)
+	case <-time.After(3 * time.Second):
+		t.Fatal("merge did not complete after archive")
+	}
+}
+
 func TestMergeIntoCuratorPreservesCurrentSessionAndAuthority(t *testing.T) {
 	fixture := newPeopleFixture(t)
 	ctx := context.Background()
 	source := addPerson(t, fixture.db, "Duplicate Curator", "Curator, Duplicate")
+	immichPersonID, candidateID := uuid.New(), uuid.New()
+	_, err := fixture.db.ExecContext(ctx, `
+		INSERT INTO immich_people_inventory (immich_person_id, name, first_seen_at, last_seen_at)
+		VALUES (?, 'Merged identity', now(), now());
+		INSERT INTO immich_person_links (
+			person_id, immich_person_id, state, last_seen_at, confirmed_at, confirmed_by_person_id
+		) VALUES (?, ?, 'needs_review', now(), now(), ?);
+		INSERT INTO person_repair_candidates (
+			id, person_id, previous_immich_person_id, candidate_immich_person_id, created_at
+		) VALUES (?, ?, ?, ?, now())
+	`, immichPersonID, source, immichPersonID, fixture.actor.PersonID,
+		candidateID, source, immichPersonID, immichPersonID)
+	require.NoError(t, err)
 
 	preview, err := fixture.service.PreviewMerge(ctx, fixture.actor, source, fixture.actor.PersonID)
 	require.NoError(t, err)
@@ -370,6 +440,16 @@ func TestMergeIntoCuratorPreservesCurrentSessionAndAuthority(t *testing.T) {
 	var revoked bool
 	require.NoError(t, fixture.db.NewRaw(`SELECT revoked_at IS NOT NULL FROM sessions WHERE id = ?`, fixture.actor.SessionID).Scan(ctx, &revoked))
 	assert.False(t, revoked)
+	var linkedPersonID uuid.UUID
+	require.NoError(t, fixture.db.NewRaw(`SELECT person_id FROM immich_person_links WHERE immich_person_id = ?`, immichPersonID).Scan(ctx, &linkedPersonID))
+	assert.Equal(t, fixture.actor.PersonID, linkedPersonID)
+	var candidateState string
+	var resolvedBy uuid.UUID
+	require.NoError(t, fixture.db.NewRaw(`
+		SELECT state, resolved_by_person_id FROM person_repair_candidates WHERE id = ?
+	`, candidateID).Scan(ctx, &candidateState, &resolvedBy))
+	assert.Equal(t, "superseded", candidateState)
+	assert.Equal(t, fixture.actor.PersonID, resolvedBy)
 }
 
 func TestMergePreviewAndConfirmationEnforceAuthorityAndGenerationGates(t *testing.T) {
