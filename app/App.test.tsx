@@ -11,6 +11,8 @@ import { afterEach, expect, test, vi } from "vitest";
 
 import { App } from "./App";
 
+const contentionWait = { timeout: 5_000 };
+
 function renderApp() {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
@@ -624,31 +626,43 @@ test("validates Immich and supports private Source album ignore and restore tria
   }
 
   renderApp();
-  expect(await screen.findByText("Family trip")).toBeInTheDocument();
+  expect(
+    await screen.findByText("Family trip", {}, contentionWait),
+  ).toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "Connect and discover" }));
   expect(
-    await screen.findByText("Immich v3.0.3 connected. Found 1 owned album."),
+    await screen.findByText(
+      "Immich v3.0.3 connected. Found 1 owned album.",
+      {},
+      contentionWait,
+    ),
   ).toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "Inspect Family trip" }));
   expect(screen.getByText("A normalized summary")).toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "Reconcile now" }));
-  await vi.waitFor(() =>
-    expect(screen.getByRole("status")).toHaveTextContent(
-      "Queued reconciliation for Family trip.",
-    ),
+  await vi.waitFor(
+    () =>
+      expect(screen.getByRole("status")).toHaveTextContent(
+        "Queued reconciliation for Family trip.",
+      ),
+    contentionWait,
   );
   fireEvent.click(screen.getByRole("button", { name: "Ignore Source album" }));
-  await vi.waitFor(() =>
-    expect(screen.queryByText("Family trip")).not.toBeInTheDocument(),
+  await vi.waitFor(
+    () => expect(screen.queryByText("Family trip")).not.toBeInTheDocument(),
+    contentionWait,
   );
   expect(screen.getByRole("status")).toHaveTextContent("Ignored Family trip.");
   fireEvent.click(screen.getByRole("button", { name: "Ignored" }));
   expect(window.location.search).toBe("?source_view=ignored");
-  expect(await screen.findByText("Family trip")).toBeInTheDocument();
+  expect(
+    await screen.findByText("Family trip", {}, contentionWait),
+  ).toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "Inspect Family trip" }));
   fireEvent.click(screen.getByRole("button", { name: "Restore to inbox" }));
-  await vi.waitFor(() =>
-    expect(screen.queryByText("Family trip")).not.toBeInTheDocument(),
+  await vi.waitFor(
+    () => expect(screen.queryByText("Family trip")).not.toBeInTheDocument(),
+    contentionWait,
   );
 
   const mutations = requests.filter(({ init }) => init?.method === "POST");
@@ -664,9 +678,11 @@ test("validates Immich and supports private Source album ignore and restore tria
     "Restored Family trip to the Source album inbox.",
   );
   fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
-  expect(await screen.findByText("Setup is complete.")).toBeInTheDocument();
+  expect(
+    await screen.findByText("Setup is complete.", {}, contentionWait),
+  ).toBeInTheDocument();
   expect(screen.queryByText("Source albums")).not.toBeInTheDocument();
-});
+}, 15_000);
 
 test("loads the next opaque Source album cursor without replacing prior results", async () => {
   const cursor = "opaque/cursor+value";

@@ -19,6 +19,7 @@ const csrfToken = "c".repeat(64);
 const eventID = "11111111-1111-4111-8111-111111111111";
 const momentOneID = "22222222-2222-4222-8222-222222222222";
 const momentTwoID = "33333333-3333-4333-8333-333333333333";
+const contentionWait = { timeout: 5_000 };
 
 function media(id: string, mediaType: string): MediaItem {
   return {
@@ -184,10 +185,18 @@ test("organizes merged and split days with pointer and keyboard controls, autosa
 
   const firstRender = renderOrganizer();
   fireEvent.click(
-    await screen.findByRole("button", { name: /Family weekend/ }),
+    await screen.findByRole(
+      "button",
+      { name: /Family weekend/ },
+      contentionWait,
+    ),
   );
   expect(
-    await screen.findByRole("heading", { name: "Family weekend" }),
+    await screen.findByRole(
+      "heading",
+      { name: "Family weekend" },
+      contentionWait,
+    ),
   ).toBeInTheDocument();
   expect(screen.getByText("1 of 5 complete")).toBeInTheDocument();
   expect(
@@ -253,11 +262,10 @@ test("organizes merged and split days with pointer and keyboard controls, autosa
     screen.getByRole("heading", { name: "Readiness" }).closest("section"),
   ).toHaveTextContent("Next action: Ready to publish");
 
-  await waitFor(() => expect(saves.length).toBeGreaterThan(0), {
-    timeout: 3000,
-  });
-  await waitFor(() =>
-    expect(screen.getByText("All changes saved")).toBeInTheDocument(),
+  await waitFor(() => expect(saves.length).toBeGreaterThan(0), contentionWait);
+  await waitFor(
+    () => expect(screen.getByText("All changes saved")).toBeInTheDocument(),
+    contentionWait,
   );
   const lastSave = saves.at(-1)!;
   expect(lastSave.unassigned_media_ids).toEqual([]);
@@ -282,16 +290,22 @@ test("organizes merged and split days with pointer and keyboard controls, autosa
   firstRender.unmount();
   renderOrganizer();
   fireEvent.click(
-    await screen.findByRole("button", { name: /Family weekend/ }),
+    await screen.findByRole(
+      "button",
+      { name: /Family weekend/ },
+      contentionWait,
+    ),
   );
-  expect(await screen.findByLabelText("Final review complete")).toBeChecked();
+  expect(
+    await screen.findByLabelText("Final review complete", {}, contentionWait),
+  ).toBeChecked();
   expect(document.querySelector(".unassigned li")).toBeNull();
   expect(
     screen
       .getAllByLabelText("Cover")
       .map((cover) => (cover as HTMLSelectElement).value),
   ).toEqual([items.b.id, items.loose.id]);
-});
+}, 15_000);
 
 test("mobile drill-down moves between Work, Event organization, and inspection", async () => {
   vi.stubGlobal(
