@@ -86,8 +86,12 @@ func TestDirectRevocationInvalidatesGenerationSessionsAndPush(t *testing.T) {
 		raw := bytes.Repeat([]byte{byte(0x74 + i)}, 32)
 		hash := sha256.Sum256(raw)
 		sessionID := uuid.New()
-		_, err = fixture.db.NewRaw(`INSERT INTO sessions (id, credential_hash, person_id, recipient_access_generation_id, security_epoch, session_type, idle_expires_at, absolute_expires_at) VALUES (?, ?, ?, ?, ?, ?, CASE WHEN ? = 'trusted' THEN now() + interval '1 year' END, CASE WHEN ? = 'public' THEN now() + interval '12 hours' END); INSERT INTO push_subscriptions (id, session_id, person_id, endpoint_hash) VALUES (?, ?, ?, ?)`, sessionID, hash[:], fixture.personID, accessID, epoch, sessionType, sessionType, sessionType, uuid.New(), sessionID, fixture.personID, bytes.Repeat([]byte{byte(0x78 + i)}, 32)).Exec(context.Background())
+		_, err = fixture.db.NewRaw(`INSERT INTO sessions (id, credential_hash, person_id, recipient_access_generation_id, security_epoch, session_type, idle_expires_at, absolute_expires_at) VALUES (?, ?, ?, ?, ?, ?, CASE WHEN ? = 'trusted' THEN now() + interval '1 year' END, CASE WHEN ? = 'public' THEN now() + interval '12 hours' END)`, sessionID, hash[:], fixture.personID, accessID, epoch, sessionType, sessionType, sessionType).Exec(context.Background())
 		require.NoError(t, err)
+		if sessionType == "trusted" {
+			_, err = fixture.db.NewRaw(`INSERT INTO push_subscriptions (id, session_id, person_id, endpoint_hash) VALUES (?, ?, ?, ?)`, uuid.New(), sessionID, fixture.personID, bytes.Repeat([]byte{byte(0x78 + i)}, 32)).Exec(context.Background())
+			require.NoError(t, err)
+		}
 	}
 
 	_, err = fixture.service.RevokeAccess(context.Background(), fixture.actor, fixture.personID, accessID)

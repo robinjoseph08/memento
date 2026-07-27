@@ -125,6 +125,47 @@ func TestSignInHandlerEnforcesConfiguredRateLimit(t *testing.T) {
 	}
 }
 
+func TestIdentityDeliveryHandlersEnforceConfiguredRateLimits(t *testing.T) {
+	t.Run("email change", func(t *testing.T) {
+		f := newFixture(t)
+		e := sessionHTTP(t, f)
+		for attempt := 1; attempt <= f.service.security.SignInEmailLimit+1; attempt++ {
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/me/email-change/request", strings.NewReader(`{"new_email":"new@example.com"}`))
+			req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+			req.Header.Set(setup.CSRFHeader, f.csrf)
+			req.AddCookie(&http.Cookie{Name: setup.CookieName, Value: f.credential})
+			response := httptest.NewRecorder()
+			e.ServeHTTP(response, req)
+			if attempt <= f.service.security.SignInEmailLimit {
+				assert.Equal(t, http.StatusAccepted, response.Code)
+			} else {
+				assert.Equal(t, http.StatusTooManyRequests, response.Code)
+			}
+		}
+	})
+
+	t.Run("Curator recovery", func(t *testing.T) {
+		f := newFixture(t)
+		_, err := f.db.NewRaw(`INSERT INTO person_roles (person_id, role) VALUES (?, 'curator')`, f.personID).Exec(context.Background())
+		require.NoError(t, err)
+		e := sessionHTTP(t, f)
+		path := "/api/recipients/" + f.personID.String() + "/email-recovery/request"
+		for attempt := 1; attempt <= f.service.security.SignInEmailLimit+1; attempt++ {
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, path, strings.NewReader(`{"new_email":"recovered@example.com"}`))
+			req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+			req.Header.Set(setup.CSRFHeader, f.csrf)
+			req.AddCookie(&http.Cookie{Name: setup.CookieName, Value: f.credential})
+			response := httptest.NewRecorder()
+			e.ServeHTTP(response, req)
+			if attempt <= f.service.security.SignInEmailLimit {
+				assert.Equal(t, http.StatusConflict, response.Code)
+			} else {
+				assert.Equal(t, http.StatusTooManyRequests, response.Code)
+			}
+		}
+	})
+}
+
 func TestCuratorSessionAndRecoveryRoutesEnforceRoleAndCSRF(t *testing.T) {
 	f := newFixture(t)
 	e := sessionHTTP(t, f)

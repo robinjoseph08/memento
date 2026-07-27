@@ -207,23 +207,41 @@ func TestSignInStartDoesNotDeliverForIneligibleAccess(t *testing.T) {
 	}
 }
 
+func TestPushSubscriptionRequiresOwnedTrustedSession(t *testing.T) {
+	f := newFixture(t)
+	var epoch []byte
+	require.NoError(t, f.db.NewRaw(`SELECT security_epoch FROM system_settings WHERE id = 1`).Scan(context.Background(), &epoch))
+	publicID := uuid.New()
+	_, err := f.db.NewRaw(`INSERT INTO sessions (id, credential_hash, person_id, recipient_access_generation_id, security_epoch, session_type, absolute_expires_at) VALUES (?, ?, ?, ?, ?, 'public', ?)`, publicID, bytes.Repeat([]byte{0x64}, 32), f.personID, f.accessID, epoch, f.now.Add(12*time.Hour)).Exec(context.Background())
+	require.NoError(t, err)
+	_, err = f.db.NewRaw(`INSERT INTO push_subscriptions (id, session_id, person_id, endpoint_hash) VALUES (?, ?, ?, ?)`, uuid.New(), publicID, f.personID, bytes.Repeat([]byte{0x65}, 32)).Exec(context.Background())
+	require.Error(t, err, "Public-computer Sessions must not persist push subscriptions")
+	otherPersonID := uuid.New()
+	_, err = f.db.NewRaw(`INSERT INTO people (id, display_name, sort_name) VALUES (?, 'Other', 'other')`, otherPersonID).Exec(context.Background())
+	require.NoError(t, err)
+	_, err = f.db.NewRaw(`INSERT INTO push_subscriptions (id, session_id, person_id, endpoint_hash) VALUES (?, ?, ?, ?)`, uuid.New(), f.sessionID, otherPersonID, bytes.Repeat([]byte{0x66}, 32)).Exec(context.Background())
+	require.Error(t, err, "a push subscription Person must own the linked Session")
+}
+
 func TestSessionInspectionRenameRevocationAndSignOutAllDisablePush(t *testing.T) {
 	f := newFixture(t)
 	actor, err := f.auth.AuthorizeSession(context.Background(), f.credential, f.csrf, true)
 	require.NoError(t, err)
-	secondID := uuid.New()
-	raw := bytes.Repeat([]byte{0x66}, 32)
-	hash := sha256.Sum256(raw)
+	secondID, publicID := uuid.New(), uuid.New()
+	trustedRaw := bytes.Repeat([]byte{0x66}, 32)
+	trustedHash := sha256.Sum256(trustedRaw)
+	publicRaw := bytes.Repeat([]byte{0x67}, 32)
+	publicHash := sha256.Sum256(publicRaw)
 	var epoch []byte
 	require.NoError(t, f.db.NewRaw(`SELECT security_epoch FROM system_settings WHERE id = 1`).Scan(context.Background(), &epoch))
-	_, err = f.db.NewRaw(`INSERT INTO sessions (id, credential_hash, person_id, recipient_access_generation_id, security_epoch, session_type, absolute_expires_at) VALUES (?, ?, ?, ?, ?, 'public', ?); INSERT INTO push_subscriptions (id, session_id, person_id, endpoint_hash) VALUES (?, ?, ?, ?)`, secondID, hash[:], f.personID, f.accessID, epoch, f.now.Add(12*time.Hour), uuid.New(), secondID, f.personID, bytes.Repeat([]byte{0x77}, 32)).Exec(context.Background())
+	_, err = f.db.NewRaw(`INSERT INTO sessions (id, credential_hash, person_id, recipient_access_generation_id, security_epoch, session_type, idle_expires_at) VALUES (?, ?, ?, ?, ?, 'trusted', ?); INSERT INTO push_subscriptions (id, session_id, person_id, endpoint_hash) VALUES (?, ?, ?, ?); INSERT INTO sessions (id, credential_hash, person_id, recipient_access_generation_id, security_epoch, session_type, absolute_expires_at) VALUES (?, ?, ?, ?, ?, 'public', ?)`, secondID, trustedHash[:], f.personID, f.accessID, epoch, f.now.Add(365*24*time.Hour), uuid.New(), secondID, f.personID, bytes.Repeat([]byte{0x77}, 32), publicID, publicHash[:], f.personID, f.accessID, epoch, f.now.Add(12*time.Hour)).Exec(context.Background())
 	require.NoError(t, err)
 	list, err := f.service.ListSelf(context.Background(), actor)
 	require.NoError(t, err)
-	require.Len(t, list.Sessions, 2)
-	assert.True(t, list.Sessions[0].Current || list.Sessions[1].Current)
+	require.Len(t, list.Sessions, 3)
+	assert.True(t, list.Sessions[0].Current || list.Sessions[1].Current || list.Sessions[2].Current)
 	for _, item := range list.Sessions {
-		if item.ID == secondID.String() {
+		if item.ID == publicID.String() {
 			assert.Equal(t, "public", item.SessionType)
 			assert.Equal(t, "active", item.Status)
 			assert.False(t, item.PushAllowed)

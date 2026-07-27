@@ -205,7 +205,12 @@ func (h *Handler) StartEmailChange(c echo.Context) error {
 	if err := bindJSON(c, &request); err != nil {
 		return err
 	}
-	response, err := h.service.StartEmailChange(h.requestContext(c), actor, request)
+	ctx := h.requestContext(c)
+	metadata := setup.RequestMetadataFromContext(ctx)
+	if !h.limiter.allowIdentity("email-change", metadata.ClientIP, actor.AccessID.String(), request.NewEmail) {
+		return errcodes.TooManyRequests("Too many email-change requests. Try again later.")
+	}
+	response, err := h.service.StartEmailChange(ctx, actor, request)
 	if err != nil {
 		return identityError(err)
 	}
@@ -257,7 +262,12 @@ func (h *Handler) StartRecovery(c echo.Context) error {
 	if err := bindJSON(c, &request); err != nil {
 		return err
 	}
-	response, err := h.service.StartRecovery(h.requestContext(c), actor, personID, request)
+	ctx := h.requestContext(c)
+	metadata := setup.RequestMetadataFromContext(ctx)
+	if !h.limiter.allowIdentity("email-recovery", metadata.ClientIP, actor.PersonID.String(), request.NewEmail) {
+		return errcodes.TooManyRequests("Too many email-recovery requests. Try again later.")
+	}
+	response, err := h.service.StartRecovery(ctx, actor, personID, request)
 	if err != nil {
 		return identityError(err)
 	}

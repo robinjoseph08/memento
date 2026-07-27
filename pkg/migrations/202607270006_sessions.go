@@ -58,13 +58,16 @@ func init() {
 						created_at timestamptz NOT NULL DEFAULT now()
 					)`,
 					`CREATE INDEX curator_recovery_requests_active_idx ON curator_recovery_requests (person_id, expires_at DESC) WHERE consumed_at IS NULL`,
+					`ALTER TABLE sessions ADD CONSTRAINT sessions_push_identity_key UNIQUE (id, person_id, session_type)`,
 					`CREATE TABLE push_subscriptions (
 						id uuid PRIMARY KEY,
-						session_id uuid NOT NULL REFERENCES sessions(id) ON DELETE RESTRICT,
-						person_id uuid NOT NULL REFERENCES people(id) ON DELETE RESTRICT,
+						session_id uuid NOT NULL,
+						person_id uuid NOT NULL,
+						session_type text NOT NULL DEFAULT 'trusted' CHECK (session_type = 'trusted'),
 						endpoint_hash bytea NOT NULL UNIQUE CHECK (octet_length(endpoint_hash) = 32),
 						created_at timestamptz NOT NULL DEFAULT now(),
-						disabled_at timestamptz
+						disabled_at timestamptz,
+						FOREIGN KEY (session_id, person_id, session_type) REFERENCES sessions(id, person_id, session_type) ON DELETE RESTRICT
 					)`,
 					`CREATE INDEX push_subscriptions_session_active_idx ON push_subscriptions (session_id) WHERE disabled_at IS NULL`,
 					`ALTER TABLE email_deliveries DROP CONSTRAINT email_deliveries_kind_check`,
@@ -90,6 +93,7 @@ func init() {
 					`DELETE FROM outbox_events WHERE aggregate_kind = 'email_delivery' AND aggregate_id IN (SELECT public_id FROM email_deliveries WHERE kind IN ('sign_in_code', 'email_change_old_code', 'email_change_new_code', 'curator_recovery_code'))`,
 					`DELETE FROM delivery_problems WHERE email_delivery_id IN (SELECT id FROM email_deliveries WHERE kind IN ('sign_in_code', 'email_change_old_code', 'email_change_new_code', 'curator_recovery_code'))`,
 					`DROP TABLE IF EXISTS push_subscriptions`,
+					`ALTER TABLE sessions DROP CONSTRAINT sessions_push_identity_key`,
 					`DROP TABLE IF EXISTS curator_recovery_requests`,
 					`DROP TABLE IF EXISTS email_change_requests`,
 					`DROP TABLE IF EXISTS sign_in_challenges`,
