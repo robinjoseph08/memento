@@ -16,6 +16,7 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
 	"github.com/robinjoseph08/memento/pkg/binder"
+	"github.com/robinjoseph08/memento/pkg/family"
 	"github.com/robinjoseph08/memento/pkg/health"
 	"github.com/robinjoseph08/memento/pkg/people"
 	"github.com/stretchr/testify/assert"
@@ -58,13 +59,13 @@ func keys(values map[string]json.RawMessage) []string {
 
 func newServer(t *testing.T) *echo.Echo {
 	t.Helper()
-	e, err := New(new(health.Service), nil, nil, nil, nil)
+	e, err := New(new(health.Service), nil, nil, nil, nil, nil)
 	require.NoError(t, err)
 	return e
 }
 
 func TestServerRegistersPeopleRoutesWhenHandlerIsProvided(t *testing.T) {
-	e, err := New(new(health.Service), nil, nil, people.NewHandler(nil, nil), nil)
+	e, err := New(new(health.Service), nil, nil, people.NewHandler(nil, nil), nil, nil)
 	require.NoError(t, err)
 	routes := make(map[string]bool)
 	for _, route := range e.Routes() {
@@ -74,6 +75,22 @@ func TestServerRegistersPeopleRoutesWhenHandlerIsProvided(t *testing.T) {
 		"GET /api/people", "GET /api/people/:id", "POST /api/people",
 		"PATCH /api/people/:id", "POST /api/people/:id/archive",
 		"POST /api/people/merge-preview", "POST /api/people/merge",
+	} {
+		assert.True(t, routes[route], route)
+	}
+}
+
+func TestServerRegistersFamilyRoutesWhenHandlerIsProvided(t *testing.T) {
+	e, err := New(new(health.Service), nil, nil, nil, family.NewHandler(nil, nil), nil)
+	require.NoError(t, err)
+	routes := make(map[string]bool)
+	for _, route := range e.Routes() {
+		routes[route.Method+" "+route.Path] = true
+	}
+	for _, route := range []string{
+		"GET /api/family/relationships", "GET /api/family/branches/:person_id",
+		"POST /api/family/relationships", "PATCH /api/family/relationships/:id",
+		"POST /api/family/relationships/:id/archive",
 	} {
 		assert.True(t, routes[route], route)
 	}
