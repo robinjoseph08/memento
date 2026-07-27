@@ -111,14 +111,14 @@ func TestRecipientMigrationAppliesAfterExistingMigrationLedger(t *testing.T) {
 	assert.Equal(t, 1, after)
 }
 
-func TestVisibilityMigrationAppliesAfterDraftMigrationLedger(t *testing.T) {
+func TestVisibilityMigrationAppliesAfterIdentityRepairMigrationLedger(t *testing.T) {
 	db := testdb.Open(t)
 	ctx := context.Background()
 	allMigrations := collection.Sorted()
 	priorMigrations := migrate.NewMigrations()
 	foundVisibility := false
 	for _, migration := range allMigrations {
-		if migration.Name == "202607270002" {
+		if migration.Name == "202607270003" {
 			foundVisibility = true
 			break
 		}
