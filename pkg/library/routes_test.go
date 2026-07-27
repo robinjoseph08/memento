@@ -76,17 +76,20 @@ func TestLibraryMutationRequiresCSRFAndInvalidIDsAreNotFound(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, response.Code)
 }
 
-func TestLibraryCursorSupportsUndatedMediaAndRejectsTrailingData(t *testing.T) {
+func TestLibraryCursorSupportsUndatedMediaAndRejectsOtherKindsAndTrailingData(t *testing.T) {
 	id := uuid.NewString()
-	encoded := encodeCursor("", id)
+	encoded := encodeCursor(cursorKindMedia, "", id)
 	require.NotNil(t, encoded)
-	decoded, err := decodeCursor(*encoded)
+	decoded, err := decodeCursor(*encoded, cursorKindMedia)
 	require.NoError(t, err)
 	assert.Equal(t, id, decoded.ID)
 	assert.Empty(t, decoded.Sort)
 
-	trailing := base64.RawURLEncoding.EncodeToString([]byte(`{"s":"date","i":"` + id + `"} {}`))
-	_, err = decodeCursor(trailing)
+	_, err = decodeCursor(*encoded, cursorKindEvents)
+	require.ErrorIs(t, err, ErrInvalidCursor)
+
+	trailing := base64.RawURLEncoding.EncodeToString([]byte(`{"k":"media","s":"date","i":"` + id + `"} {}`))
+	_, err = decodeCursor(trailing, cursorKindMedia)
 	assert.ErrorIs(t, err, ErrInvalidCursor)
 }
 

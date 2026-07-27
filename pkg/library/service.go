@@ -91,9 +91,18 @@ func New(db *bun.DB, source thumbnailSource) *Service {
 	return &Service{db: db, immich: source}
 }
 
+type cursorKind string
+
+const (
+	cursorKindMedia      cursorKind = "media"
+	cursorKindEvents     cursorKind = "events"
+	cursorKindEventMedia cursorKind = "event_media"
+)
+
 type cursor struct {
-	Sort string `json:"s"`
-	ID   string `json:"i"`
+	Kind cursorKind `json:"k"`
+	Sort string     `json:"s"`
+	ID   string     `json:"i"`
 }
 
 func pageSize(raw string) (int, error) {
@@ -107,7 +116,7 @@ func pageSize(raw string) (int, error) {
 	return value, nil
 }
 
-func decodeCursor(raw string) (*cursor, error) {
+func decodeCursor(raw string, kind cursorKind) (*cursor, error) {
 	if raw == "" {
 		return nil, nil
 	}
@@ -125,14 +134,14 @@ func decodeCursor(raw string) (*cursor, error) {
 		return nil, ErrInvalidCursor
 	}
 	id, err := uuid.Parse(value.ID)
-	if err != nil || id == uuid.Nil {
+	if value.Kind != kind || err != nil || id == uuid.Nil {
 		return nil, ErrInvalidCursor
 	}
 	return &value, nil
 }
 
-func encodeCursor(sortValue, id string) *string {
-	contents, _ := json.Marshal(cursor{Sort: sortValue, ID: id})
+func encodeCursor(kind cursorKind, sortValue, id string) *string {
+	contents, _ := json.Marshal(cursor{Kind: kind, Sort: sortValue, ID: id})
 	value := base64.RawURLEncoding.EncodeToString(contents)
 	return &value
 }
@@ -198,7 +207,7 @@ func (s *Service) Photos(ctx context.Context, actor setup.SessionActor, rawLimit
 	if err != nil {
 		return MediaPage{}, err
 	}
-	position, err := decodeCursor(rawCursor)
+	position, err := decodeCursor(rawCursor, cursorKindMedia)
 	if err != nil {
 		return MediaPage{}, err
 	}
@@ -249,7 +258,7 @@ func (s *Service) Photos(ctx context.Context, actor setup.SessionActor, rawLimit
 		if last.LocalDateTime != nil {
 			sortValue = *last.LocalDateTime
 		}
-		response.NextCursor = encodeCursor(sortValue, last.ID)
+		response.NextCursor = encodeCursor(cursorKindMedia, sortValue, last.ID)
 		response.Media = response.Media[:limit]
 	}
 	return response, nil
@@ -260,7 +269,7 @@ func (s *Service) Events(ctx context.Context, actor setup.SessionActor, rawLimit
 	if err != nil {
 		return EventPage{}, err
 	}
-	position, err := decodeCursor(rawCursor)
+	position, err := decodeCursor(rawCursor, cursorKindEvents)
 	if err != nil {
 		return EventPage{}, err
 	}
@@ -303,7 +312,7 @@ func (s *Service) Events(ctx context.Context, actor setup.SessionActor, rawLimit
 	}
 	if len(response.Events) > limit {
 		last := response.Events[limit-1]
-		response.NextCursor = encodeCursor(last.CommittedAt.Format(time.RFC3339Nano), last.ID)
+		response.NextCursor = encodeCursor(cursorKindEvents, last.CommittedAt.Format(time.RFC3339Nano), last.ID)
 		response.Events = response.Events[:limit]
 	}
 	return response, nil
@@ -376,7 +385,7 @@ func (s *Service) Event(ctx context.Context, actor setup.SessionActor, eventID u
 	if err != nil {
 		return Event{}, err
 	}
-	position, err := decodeCursor(rawCursor)
+	position, err := decodeCursor(rawCursor, cursorKindEventMedia)
 	if err != nil {
 		return Event{}, err
 	}
@@ -429,7 +438,7 @@ func (s *Service) Event(ctx context.Context, actor setup.SessionActor, eventID u
 		for index, row := range rows {
 			if index == limit {
 				prior := rows[index-1]
-				response.NextCursor = encodeCursor(strconv.Itoa(prior.Position), prior.ID)
+				response.NextCursor = encodeCursor(cursorKindEventMedia, strconv.Itoa(prior.Position), prior.ID)
 				break
 			}
 			if row.Available {
