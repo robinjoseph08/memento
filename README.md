@@ -55,7 +55,7 @@ mise run types:generate
 
 Stopping `mise start` stops the Compose services while preserving PostgreSQL data in its named volume. Run `docker compose down --volumes` to reset that data. `MEMENTO_DEV_POSTGRES_PORT` and `MEMENTO_DEV_IMMICH_PORT` override the dependency ports. The individual `mise start:deps`, `mise start:air`, and `mise start:web` tasks remain available when only part of the environment is needed.
 
-Validate changes before pushing with the fast local gate:
+Use the fast local gate while iterating on changes:
 
 ```sh
 mise check:quiet
@@ -63,7 +63,7 @@ mise check:quiet
 
 `mise check:quiet` runs the worktree-safe `mise check` gate once, suppresses successful task output, and prints the original captured output when a task fails. The gate generates API types, runs Go and frontend linters and unit tests, and builds the frontend. `mise lint` runs golangci-lint, while `mise lint:js` runs ESLint, Prettier, and TypeScript checks in parallel.
 
-Run the complete suite used by CI when needed:
+Run the complete suite used by CI once as the final local gate immediately before pushing:
 
 ```sh
 mise ci:quiet
