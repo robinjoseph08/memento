@@ -29,6 +29,7 @@ import (
 	"github.com/robinjoseph08/memento/pkg/setup"
 	mementosmtp "github.com/robinjoseph08/memento/pkg/smtp"
 	"github.com/robinjoseph08/memento/pkg/sources"
+	"github.com/robinjoseph08/memento/pkg/suggestions"
 	"github.com/robinjoseph08/memento/pkg/visibility"
 	"github.com/robinjoseph08/memento/pkg/worker"
 )
@@ -109,14 +110,16 @@ func run() error {
 	healthService := health.New(db, immichClient, jobWorker, cfg.Database.HealthTimeout, cfg.Worker.HeartbeatMaxAge, deliveryHealth)
 	setupService := setup.New(db, emailService, cfg.Security)
 	setupHandler := setup.NewHandler(setupService)
-	peopleHandler := people.NewHandler(people.New(db), setupService)
+	peopleService := people.New(db)
+	peopleHandler := people.NewHandler(peopleService, setupService)
 	familyHandler := family.NewHandler(family.New(db), setupService)
 	visibilityHandler := visibility.NewHandler(visibility.New(db), setupService)
 	recipientHandler := recipients.NewHandler(recipients.New(db, emailService, cfg.HTTP.PublicURL, setupService), setupService, cfg.Security)
 	sourceHandler := sources.NewHandler(sourceService, setupService)
 	eventHandler := events.NewHandler(events.New(db), setupService)
 	repairHandler := repairs.NewHandler(repairs.New(db, immichClient), setupService)
-	e, err := server.New(healthService, emaildelivery.NewHandler(emailService), setupHandler, peopleHandler, familyHandler, visibilityHandler, recipientHandler, sourceHandler, eventHandler, repairHandler)
+	suggestionHandler := suggestions.NewHandler(suggestions.New(db, peopleService), setupService)
+	e, err := server.New(healthService, emaildelivery.NewHandler(emailService), setupHandler, peopleHandler, familyHandler, visibilityHandler, recipientHandler, sourceHandler, eventHandler, repairHandler, suggestionHandler)
 	if err != nil {
 		_ = db.Close()
 		log.Err(err).Error("HTTP server initialization failed")

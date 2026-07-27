@@ -163,6 +163,22 @@ func normalizePersonNames(displayName, sortName string) (string, string, error) 
 }
 
 func (s *Service) Create(ctx context.Context, actor setup.CuratorSession, request CreateRequest) (Person, error) {
+	var created Person
+	err := s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		var err error
+		created, err = s.CreateIn(ctx, tx, actor, request)
+		return err
+	})
+	if err != nil {
+		return Person{}, fmt.Errorf("create Person: %w", err)
+	}
+	return created, nil
+}
+
+// CreateIn creates and audits a Person inside a caller-owned transaction.
+// Cross-domain workflows use this seam when Person creation must commit atomically
+// with their own explicit Curator decision.
+func (s *Service) CreateIn(ctx context.Context, tx bun.Tx, actor setup.CuratorSession, request CreateRequest) (Person, error) {
 	displayName, sortName, err := normalizePersonNames(request.DisplayName, request.SortName)
 	if err != nil {
 		return Person{}, err
@@ -172,21 +188,13 @@ func (s *Service) Create(ctx context.Context, actor setup.CuratorSession, reques
 		return Person{}, err
 	}
 	now := s.now().UTC()
-	var created Person
-	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
-		if _, err := tx.NewRaw(`INSERT INTO people (id, display_name, sort_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`, id, displayName, sortName, now, now).Exec(ctx); err != nil {
-			return err
-		}
-		if err := appendAudit(ctx, tx, actor, &id, "person_created", map[string]any{"version": 1}); err != nil {
-			return err
-		}
-		created, err = getPerson(ctx, tx, id, false)
-		return err
-	})
-	if err != nil {
-		return Person{}, fmt.Errorf("create Person: %w", err)
+	if _, err := tx.NewRaw(`INSERT INTO people (id, display_name, sort_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`, id, displayName, sortName, now, now).Exec(ctx); err != nil {
+		return Person{}, err
 	}
-	return created, nil
+	if err := appendAudit(ctx, tx, actor, &id, "person_created", map[string]any{"version": 1}); err != nil {
+		return Person{}, err
+	}
+	return getPerson(ctx, tx, id, false)
 }
 
 type personListRow struct {
