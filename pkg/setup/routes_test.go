@@ -41,7 +41,7 @@ func TestSessionCookiesUseHostPrefixAndSecureScope(t *testing.T) {
 			e := echo.New()
 			response := httptest.NewRecorder()
 			echoContext := e.NewContext(httptest.NewRequestWithContext(context.Background(), "GET", "/", nil), response)
-			setSessionCookie(echoContext, completedSession{Credential: "opaque", SessionType: test.sessionType})
+			SetSessionCookie(echoContext, BrowserSession{Credential: "opaque", SessionType: test.sessionType})
 
 			cookies := response.Result().Cookies()
 			require.Len(t, cookies, 1)

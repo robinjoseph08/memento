@@ -136,12 +136,14 @@ func verifiedChallenge(t *testing.T, db *bun.DB, service *Service, name, email s
 
 func completionRequest(token, sessionType string) CompleteRequest {
 	return CompleteRequest{
-		VerificationToken:        token,
-		PrivacyAcknowledged:      true,
-		EngagementAcknowledged:   true,
-		InterestListAcknowledged: true,
-		EmailPreference:          "weekly",
-		SessionType:              sessionType,
+		VerificationToken:         token,
+		PrivacyAcknowledged:       true,
+		EngagementAcknowledged:    true,
+		InterestListAcknowledged:  true,
+		EmailPreviewsAcknowledged: true,
+		PushGuidanceAcknowledged:  true,
+		EmailPreference:           "weekly",
+		SessionType:               sessionType,
 	}
 }
 
@@ -341,7 +343,7 @@ func TestFinalSetupStoresCompletedIdentityChoicesAndOpaqueSession(t *testing.T) 
 	require.NoError(t, db.NewRaw(`SELECT count(*) FROM person_roles`).Scan(context.Background(), &roles))
 	require.NoError(t, db.NewRaw(`SELECT count(*) FROM recipient_access_generations WHERE state = 'completed' AND onboarding_completed_at IS NOT NULL`).Scan(context.Background(), &generations))
 	require.NoError(t, db.NewRaw(`SELECT count(*) FROM recipient_emails WHERE normalized_email = 'robin@example.com' AND is_current`).Scan(context.Background(), &emails))
-	require.NoError(t, db.NewRaw(`SELECT count(*) FROM onboarding_choices WHERE privacy_acknowledged AND engagement_acknowledged AND interest_list_acknowledged AND email_preference = 'weekly'`).Scan(context.Background(), &choices))
+	require.NoError(t, db.NewRaw(`SELECT count(*) FROM onboarding_choices WHERE privacy_acknowledged AND engagement_acknowledged AND interest_list_acknowledged AND email_previews_acknowledged AND push_guidance_acknowledged AND email_preference = 'weekly'`).Scan(context.Background(), &choices))
 	require.NoError(t, db.NewRaw(`SELECT count(*) FROM notification_preferences WHERE email_preference = 'weekly'`).Scan(context.Background(), &preferences))
 	require.NoError(t, db.NewRaw(`SELECT count(*) FROM sessions WHERE session_type = 'trusted' AND credential_hash IS NOT NULL`).Scan(context.Background(), &sessions))
 	assert.Equal(t, 1, people)
@@ -715,7 +717,7 @@ func TestSetupRateLimitsAreNonEnumeratingAcrossMutations(t *testing.T) {
 		},
 		{
 			name: "completion by IP", path: "/api/setup/complete",
-			body:  `{"verification_token":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","privacy_acknowledged":true,"engagement_acknowledged":true,"interest_list_acknowledged":true,"email_preference":"immediate","session_type":"trusted"}`,
+			body:  `{"verification_token":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","privacy_acknowledged":true,"engagement_acknowledged":true,"interest_list_acknowledged":true,"email_previews_acknowledged":true,"push_guidance_acknowledged":true,"email_preference":"immediate","session_type":"trusted"}`,
 			limit: func(service *Service) { service.security.SetupIPLimit = 1 },
 		},
 	}
@@ -780,7 +782,7 @@ func TestSetupClosureSurvivesNewServiceAndSafeGETsCreateNothing(t *testing.T) {
 func TestSetupCompletionRejectsInsecureNonLoopbackRequest(t *testing.T) {
 	db, service := newSetupService(t)
 	e := newSetupHTTP(t, service)
-	body := `{"verification_token":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","privacy_acknowledged":true,"engagement_acknowledged":true,"interest_list_acknowledged":true,"email_preference":"immediate","session_type":"trusted"}`
+	body := `{"verification_token":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","privacy_acknowledged":true,"engagement_acknowledged":true,"interest_list_acknowledged":true,"email_previews_acknowledged":true,"push_guidance_acknowledged":true,"email_preference":"immediate","session_type":"trusted"}`
 	request := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "http://memento.example/api/setup/complete", strings.NewReader(body))
 	request.RemoteAddr = "203.0.113.7:1234"
 	request.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)

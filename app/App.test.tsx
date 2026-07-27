@@ -107,12 +107,154 @@ test("opens an Invitation read-only and removes its token only after explicit ac
   expect(screen.queryByText("Invitation accepted.")).not.toBeInTheDocument();
   resolveAcceptance(jsonResponse({ status: "onboarding" }));
   expect(await screen.findByText("Invitation accepted.")).toBeInTheDocument();
-  expect(window.location.pathname).toBe("/invitation");
+  expect(window.location.pathname).toBe("/");
   expect(requests[1]).toMatchObject({
     path: "/api/auth/invitations/accept",
     init: { method: "POST" },
   });
   expect(JSON.parse(stringBody(requests[1].init?.body))).toEqual({ token });
+});
+
+test("restores, saves, and explicitly completes Recipient Onboarding", async () => {
+  const oldCSRF = "o".repeat(64);
+  const newCSRF = "n".repeat(64);
+  let completed = false;
+  const requests: Array<{ path: string; init?: RequestInit }> = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = requestPath(input);
+      requests.push({ path, init });
+      if (path === "/api/setup") {
+        return Promise.resolve(
+          jsonResponse({ error: { message: "Setup not found." } }, 404),
+        );
+      }
+      if (path === "/api/session") {
+        return Promise.resolve(
+          jsonResponse({
+            display_name: "Alex",
+            session_type: completed ? "trusted" : "public",
+            csrf_token: completed ? newCSRF : oldCSRF,
+            curator: false,
+            onboarding_required: !completed,
+          }),
+        );
+      }
+      if (path === "/api/onboarding" && init?.method === "PATCH") {
+        return Promise.resolve(
+          jsonResponse({
+            status: "onboarding",
+            recipient_name: "Alex",
+            ...JSON.parse(stringBody(init.body)),
+            csrf_token: oldCSRF,
+          }),
+        );
+      }
+      if (path === "/api/onboarding") {
+        return Promise.resolve(
+          jsonResponse({
+            status: "onboarding",
+            recipient_name: "Alex",
+            privacy_acknowledged: true,
+            engagement_acknowledged: false,
+            interest_list_acknowledged: false,
+            email_previews_acknowledged: false,
+            push_guidance_acknowledged: false,
+            email_preference: "weekly",
+            session_type: "public",
+            csrf_token: oldCSRF,
+          }),
+        );
+      }
+      if (path === "/api/onboarding/complete") {
+        completed = true;
+        return Promise.resolve(
+          jsonResponse({ status: "complete", csrf_token: newCSRF }),
+        );
+      }
+      if (path === "/api/me/interest-list") {
+        return Promise.resolve(
+          jsonResponse({
+            recipient: {
+              id: "11111111-1111-4111-8111-111111111111",
+              display_name: "Alex",
+              sort_name: "alex",
+            },
+            version: 0,
+            entries: [],
+            history: [],
+          }),
+        );
+      }
+      if (path.startsWith("/api/me/people?")) {
+        return Promise.resolve(jsonResponse({ people: [] }));
+      }
+      return Promise.reject(new Error(`Unexpected request: ${path}`));
+    }),
+  );
+
+  renderApp();
+  expect(
+    await screen.findByRole("heading", { name: "Welcome, Alex" }),
+  ).toBeInTheDocument();
+  expect(screen.getByLabelText(/Private individual access/)).toBeChecked();
+  expect(screen.getByLabelText("Publication and Comment email")).toHaveValue(
+    "weekly",
+  );
+  expect(screen.getByText(/Media, search, Comments, archives/)).toBeVisible();
+  expect(
+    screen.getByRole("heading", { name: "Your Interest list" }),
+  ).toBeInTheDocument();
+
+  fireEvent.click(screen.getByLabelText(/Curator-visible engagement/));
+  fireEvent.click(
+    screen.getByLabelText(/Interest choices suggest, never authorize/),
+  );
+  fireEvent.click(screen.getByLabelText(/Private email previews/));
+  fireEvent.click(
+    screen.getByLabelText(/Push is optional and device-specific/),
+  );
+  fireEvent.click(
+    screen.getByRole("radio", { name: /Trusted device, stays signed in/ }),
+  );
+  fireEvent.click(
+    screen.getByRole("button", { name: "Save and continue later" }),
+  );
+  expect(
+    await screen.findByText("Your Onboarding choices were saved."),
+  ).toBeInTheDocument();
+  const saveRequest = requests.find(
+    ({ path, init }) => path === "/api/onboarding" && init?.method === "PATCH",
+  );
+  expect(saveRequest?.init?.headers).toMatchObject({
+    "X-Memento-CSRF": oldCSRF,
+  });
+  expect(JSON.parse(stringBody(saveRequest?.init?.body))).toMatchObject({
+    privacy_acknowledged: true,
+    engagement_acknowledged: true,
+    interest_list_acknowledged: true,
+    email_previews_acknowledged: true,
+    push_guidance_acknowledged: true,
+    email_preference: "weekly",
+    session_type: "trusted",
+  });
+
+  fireEvent.click(screen.getByRole("button", { name: "Complete Onboarding" }));
+  await waitFor(() =>
+    expect(
+      screen.queryByRole("heading", { name: "Welcome, Alex" }),
+    ).not.toBeInTheDocument(),
+  );
+  const completeRequest = requests.find(
+    ({ path }) => path === "/api/onboarding/complete",
+  );
+  expect(completeRequest?.init?.headers).toMatchObject({
+    "X-Memento-CSRF": oldCSRF,
+  });
+  expect(requests.filter(({ path }) => path === "/api/session")).toHaveLength(
+    2,
+  );
 });
 
 test("shows an unavailable Invitation instead of waiting forever when the token is absent", async () => {
@@ -201,10 +343,14 @@ test("completes the first-browser setup workflow with explicit Onboarding choice
   fireEvent.click(screen.getByLabelText(/Private individual access/));
   fireEvent.click(screen.getByLabelText(/Curator-visible engagement/));
   fireEvent.click(screen.getByLabelText(/Interest list starts empty/));
+  fireEvent.click(screen.getByLabelText(/Private email previews/));
+  fireEvent.click(screen.getByLabelText(/Push is an optional device choice/));
   fireEvent.change(screen.getByLabelText("Publication and Comment email"), {
     target: { value: "weekly" },
   });
-  fireEvent.click(screen.getByLabelText(/Public computer/));
+  fireEvent.click(
+    screen.getByRole("radio", { name: /Public computer, expires/ }),
+  );
   fireEvent.click(screen.getByRole("button", { name: "Complete setup" }));
 
   expect(
@@ -226,6 +372,8 @@ test("completes the first-browser setup workflow with explicit Onboarding choice
     privacy_acknowledged: true,
     engagement_acknowledged: true,
     interest_list_acknowledged: true,
+    email_previews_acknowledged: true,
+    push_guidance_acknowledged: true,
     email_preference: "weekly",
     session_type: "public",
   });
@@ -317,6 +465,8 @@ test("does not claim sign-in until the Secure cookie restores a Session", async 
   fireEvent.click(await screen.findByLabelText(/Private individual access/));
   fireEvent.click(screen.getByLabelText(/Curator-visible engagement/));
   fireEvent.click(screen.getByLabelText(/Interest list starts empty/));
+  fireEvent.click(screen.getByLabelText(/Private email previews/));
+  fireEvent.click(screen.getByLabelText(/Push is an optional device choice/));
   fireEvent.click(screen.getByRole("button", { name: "Complete setup" }));
 
   expect(
@@ -816,6 +966,8 @@ test("announces a concurrent setup conflict without claiming success", async () 
   fireEvent.click(await screen.findByLabelText(/Private individual access/));
   fireEvent.click(screen.getByLabelText(/Curator-visible engagement/));
   fireEvent.click(screen.getByLabelText(/Interest list starts empty/));
+  fireEvent.click(screen.getByLabelText(/Private email previews/));
+  fireEvent.click(screen.getByLabelText(/Push is an optional device choice/));
   fireEvent.click(screen.getByRole("button", { name: "Complete setup" }));
 
   expect(

@@ -28,20 +28,22 @@ const (
 )
 
 var (
-	ErrPersonNotFound     = errors.New("person not found")
-	ErrPersonUnavailable  = errors.New("person cannot become a Pending Recipient")
-	ErrAlreadyRecipient   = errors.New("person already has current Recipient access")
-	ErrEmailInvalid       = errors.New("login email is invalid")
-	ErrEmailInUse         = errors.New("login email is already in use")
-	ErrRecipientNotFound  = errors.New("pending Recipient not found")
-	ErrInvitationExists   = errors.New("a live Invitation already exists")
-	ErrInvitationNotFound = errors.New("Invitation not found")
-	ErrInvitationNotLive  = errors.New("Invitation is not live")
-	ErrInvitationNotSent  = errors.New("Invitation initial delivery has not completed")
-	ErrInvitationStale    = errors.New("Invitation changed since it was inspected")
-	ErrInvitationToken    = errors.New("Invitation is invalid")
-	ErrInvitationState    = errors.New("Recipient state does not permit this Invitation action")
-	errGenerateToken      = errors.New("generate Invitation token")
+	ErrPersonNotFound        = errors.New("person not found")
+	ErrPersonUnavailable     = errors.New("person cannot become a Pending Recipient")
+	ErrAlreadyRecipient      = errors.New("person already has current Recipient access")
+	ErrEmailInvalid          = errors.New("login email is invalid")
+	ErrEmailInUse            = errors.New("login email is already in use")
+	ErrRecipientNotFound     = errors.New("pending Recipient not found")
+	ErrInvitationExists      = errors.New("a live Invitation already exists")
+	ErrInvitationNotFound    = errors.New("Invitation not found")
+	ErrInvitationNotLive     = errors.New("Invitation is not live")
+	ErrInvitationNotSent     = errors.New("Invitation initial delivery has not completed")
+	ErrInvitationStale       = errors.New("Invitation changed since it was inspected")
+	ErrInvitationToken       = errors.New("Invitation is invalid")
+	ErrInvitationState       = errors.New("Recipient state does not permit this Invitation action")
+	ErrOnboardingUnavailable = errors.New("Onboarding is not available")
+	ErrOnboardingChoices     = errors.New("Onboarding choices are incomplete")
+	errGenerateToken         = errors.New("generate Invitation token")
 )
 
 // DesignateRequest creates Recipient access without sending an Invitation.
@@ -110,21 +112,59 @@ type InspectResponse struct {
 	ExpiresAt     time.Time `json:"expires_at"`
 }
 
-// AcceptResponse confirms the explicit exchange without creating a Session.
+// AcceptResponse confirms the explicit exchange and restricted Onboarding Session.
 type AcceptResponse struct {
-	Status string `json:"status"`
+	Status  string `json:"status"`
+	session setup.BrowserSession
+}
+
+// OnboardingRequest is both a resumable draft and the explicit completion payload.
+type OnboardingRequest struct {
+	PrivacyAcknowledged       bool   `json:"privacy_acknowledged"`
+	EngagementAcknowledged    bool   `json:"engagement_acknowledged"`
+	InterestListAcknowledged  bool   `json:"interest_list_acknowledged"`
+	EmailPreviewsAcknowledged bool   `json:"email_previews_acknowledged"`
+	PushGuidanceAcknowledged  bool   `json:"push_guidance_acknowledged"`
+	EmailPreference           string `json:"email_preference" validate:"required,oneof=immediate weekly none"`
+	SessionType               string `json:"session_type" validate:"required,oneof=trusted public"`
+}
+
+// OnboardingResponse restores informed choices without exposing identity credentials.
+type OnboardingResponse struct {
+	Status                    string `json:"status"`
+	RecipientName             string `json:"recipient_name"`
+	PrivacyAcknowledged       bool   `json:"privacy_acknowledged"`
+	EngagementAcknowledged    bool   `json:"engagement_acknowledged"`
+	InterestListAcknowledged  bool   `json:"interest_list_acknowledged"`
+	EmailPreviewsAcknowledged bool   `json:"email_previews_acknowledged"`
+	PushGuidanceAcknowledged  bool   `json:"push_guidance_acknowledged"`
+	EmailPreference           string `json:"email_preference"`
+	SessionType               string `json:"session_type"`
+	CSRFToken                 string `json:"csrf_token"`
+}
+
+// OnboardingCompleteResponse confirms completion and the rotated CSRF token.
+type OnboardingCompleteResponse struct {
+	Status    string `json:"status"`
+	CSRFToken string `json:"csrf_token"`
+	session   setup.BrowserSession
 }
 
 type Service struct {
 	db        *bun.DB
 	delivery  *emaildelivery.Service
+	auth      *setup.Service
 	publicURL string
 	now       func() time.Time
 	random    io.Reader
 }
 
-func New(db *bun.DB, delivery *emaildelivery.Service, publicURL string) *Service {
-	return &Service{db: db, delivery: delivery, publicURL: strings.TrimRight(publicURL, "/"), now: time.Now, random: rand.Reader}
+func New(db *bun.DB, delivery *emaildelivery.Service, publicURL string, auth ...*setup.Service) *Service {
+	service := &Service{db: db, delivery: delivery, publicURL: strings.TrimRight(publicURL, "/"), now: time.Now, random: rand.Reader}
+	if len(auth) > 0 {
+		service.auth = auth[0]
+	}
+	return service
 }
 
 func normalizeEmail(value string) (string, string, error) {
@@ -532,12 +572,14 @@ func (s *Service) Inspect(ctx context.Context, token string) (InspectResponse, e
 	return InspectResponse{RecipientName: row.recipientName, CuratorName: row.curatorName, ExpiresAt: row.expiresAt}, nil
 }
 
-// Accept consumes a live token and starts resumable Onboarding. It does not create a Session.
+// Accept consumes a live token and atomically establishes a restricted,
+// resumable Onboarding Session. General Recipient authorization remains denied.
 func (s *Service) Accept(ctx context.Context, token string) (AcceptResponse, error) {
 	decoded, err := decodeToken(token)
-	if err != nil {
+	if err != nil || s.auth == nil {
 		return AcceptResponse{}, ErrInvitationToken
 	}
+	var response AcceptResponse
 	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 		row, expectedHash, err := lookupTokenIn(ctx, tx, decoded, true)
 		if err != nil {
@@ -562,11 +604,26 @@ func (s *Service) Accept(ctx context.Context, token string) (AcceptResponse, err
 		if affected, _ := result.RowsAffected(); affected != 1 {
 			return ErrInvitationToken
 		}
+		if _, err := tx.NewRaw(`INSERT INTO onboarding_progress (recipient_access_generation_id, updated_at) VALUES (?, ?) ON CONFLICT DO NOTHING`, row.accessID, now).Exec(ctx); err != nil {
+			return err
+		}
+		browserSession, sessionID, err := s.auth.NewBrowserSessionIn(ctx, tx, row.personID, row.accessID, "public", now)
+		if err != nil {
+			return err
+		}
+		// A consumed offer must not leave its scheduled Invitation reminder queued.
+		if _, err := tx.NewRaw(`UPDATE email_deliveries SET status = 'cancelled', body = '' WHERE invitation_id = ? AND kind = ? AND status = 'queued'`, row.invitationID, emaildelivery.KindInvitationAutomaticReminder).Exec(ctx); err != nil {
+			return err
+		}
+		if _, err := tx.NewRaw(`UPDATE outbox_events AS event SET delivered_at = ? FROM email_deliveries AS delivery WHERE event.aggregate_kind = 'email_delivery' AND event.aggregate_id = delivery.public_id AND delivery.invitation_id = ? AND delivery.kind = ? AND event.delivered_at IS NULL`, now, row.invitationID, emaildelivery.KindInvitationAutomaticReminder).Exec(ctx); err != nil {
+			return err
+		}
 		request := setup.RequestMetadataFromContext(ctx)
 		_, err = tx.NewRaw(`
-			INSERT INTO security_audit_events (subject_person_id, action, outcome, client_ip, user_agent, metadata)
-			VALUES (?, 'invitation_accepted', 'success', NULLIF(?, '')::inet, ?, ?::jsonb)
-		`, row.personID, request.ClientIP, request.UserAgent, fmt.Sprintf(`{"invitation_id":%q}`, row.invitationID.String())).Exec(ctx)
+			INSERT INTO security_audit_events (subject_person_id, action, outcome, client_ip, user_agent, session_id, metadata)
+			VALUES (?, 'invitation_accepted', 'success', NULLIF(?, '')::inet, ?, ?, ?::jsonb)
+		`, row.personID, request.ClientIP, request.UserAgent, sessionID, fmt.Sprintf(`{"invitation_id":%q}`, row.invitationID.String())).Exec(ctx)
+		response = AcceptResponse{Status: "onboarding", session: browserSession}
 		return err
 	})
 	if err != nil {
@@ -575,7 +632,128 @@ func (s *Service) Accept(ctx context.Context, token string) (AcceptResponse, err
 		}
 		return AcceptResponse{}, err
 	}
-	return AcceptResponse{Status: "onboarding"}, nil
+	return response, nil
+}
+
+// Onboarding returns the persisted draft for a verified Onboarding Session.
+func (s *Service) Onboarding(ctx context.Context, actor setup.SessionActor, csrfToken string) (OnboardingResponse, error) {
+	var response OnboardingResponse
+	err := s.db.NewRaw(`
+		SELECT person.display_name, progress.privacy_acknowledged, progress.engagement_acknowledged,
+		       progress.interest_list_acknowledged, progress.email_previews_acknowledged,
+		       progress.push_guidance_acknowledged, progress.email_preference, progress.session_type
+		FROM recipient_access_generations AS access
+		JOIN people AS person ON person.id = access.person_id
+		JOIN onboarding_progress AS progress ON progress.recipient_access_generation_id = access.id
+		WHERE access.id = ? AND access.person_id = ? AND access.is_current AND access.state = 'onboarding'
+	`, actor.AccessID, actor.PersonID).Scan(ctx, &response.RecipientName, &response.PrivacyAcknowledged,
+		&response.EngagementAcknowledged, &response.InterestListAcknowledged,
+		&response.EmailPreviewsAcknowledged, &response.PushGuidanceAcknowledged,
+		&response.EmailPreference, &response.SessionType)
+	if errors.Is(err, sql.ErrNoRows) {
+		return OnboardingResponse{}, ErrOnboardingUnavailable
+	}
+	if err != nil {
+		return OnboardingResponse{}, err
+	}
+	response.Status = "onboarding"
+	response.CSRFToken = csrfToken
+	return response, nil
+}
+
+// SaveOnboarding persists an incomplete draft without changing access.
+func (s *Service) SaveOnboarding(ctx context.Context, actor setup.SessionActor, request OnboardingRequest, csrfToken string) (OnboardingResponse, error) {
+	if !validOnboardingSelections(request) {
+		return OnboardingResponse{}, ErrOnboardingChoices
+	}
+	now := s.now().UTC()
+	result, err := s.db.NewRaw(`
+		UPDATE onboarding_progress AS progress
+		SET privacy_acknowledged = ?, engagement_acknowledged = ?, interest_list_acknowledged = ?,
+		    email_previews_acknowledged = ?, push_guidance_acknowledged = ?, email_preference = ?,
+		    session_type = ?, updated_at = ?
+		FROM recipient_access_generations AS access
+		WHERE progress.recipient_access_generation_id = ? AND access.id = progress.recipient_access_generation_id
+		  AND access.person_id = ? AND access.is_current AND access.state = 'onboarding'
+	`, request.PrivacyAcknowledged, request.EngagementAcknowledged, request.InterestListAcknowledged,
+		request.EmailPreviewsAcknowledged, request.PushGuidanceAcknowledged, request.EmailPreference,
+		request.SessionType, now, actor.AccessID, actor.PersonID).Exec(ctx)
+	if err != nil {
+		return OnboardingResponse{}, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return OnboardingResponse{}, err
+	}
+	if affected != 1 {
+		return OnboardingResponse{}, ErrOnboardingUnavailable
+	}
+	return s.Onboarding(ctx, actor, csrfToken)
+}
+
+// CompleteOnboarding atomically records informed choices, completes the current
+// generation, and rotates the Session. It never creates historical delivery.
+func (s *Service) CompleteOnboarding(ctx context.Context, actor setup.SessionActor, request OnboardingRequest) (OnboardingCompleteResponse, error) {
+	if !validOnboardingSelections(request) || !request.PrivacyAcknowledged || !request.EngagementAcknowledged ||
+		!request.InterestListAcknowledged || !request.EmailPreviewsAcknowledged || !request.PushGuidanceAcknowledged {
+		return OnboardingCompleteResponse{}, ErrOnboardingChoices
+	}
+	if s.auth == nil {
+		return OnboardingCompleteResponse{}, ErrOnboardingUnavailable
+	}
+	var response OnboardingCompleteResponse
+	err := s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		var state string
+		err := tx.NewRaw(`SELECT state FROM recipient_access_generations WHERE id = ? AND person_id = ? AND is_current FOR UPDATE`, actor.AccessID, actor.PersonID).Scan(ctx, &state)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrOnboardingUnavailable
+		}
+		if err != nil {
+			return err
+		}
+		if state != "onboarding" {
+			return ErrOnboardingUnavailable
+		}
+		if err := tx.NewRaw(`SELECT id FROM sessions WHERE id = ? AND person_id = ? AND recipient_access_generation_id = ? AND revoked_at IS NULL FOR UPDATE`, actor.SessionID, actor.PersonID, actor.AccessID).Scan(ctx, &actor.SessionID); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrOnboardingUnavailable
+			}
+			return err
+		}
+		now := s.now().UTC()
+		if _, err := tx.NewRaw(`INSERT INTO onboarding_choices (recipient_access_generation_id, privacy_acknowledged, engagement_acknowledged, interest_list_acknowledged, email_previews_acknowledged, push_guidance_acknowledged, email_preference, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, actor.AccessID, true, true, true, true, true, request.EmailPreference, now).Exec(ctx); err != nil {
+			return err
+		}
+		if _, err := tx.NewRaw(`INSERT INTO notification_preferences (recipient_access_generation_id, email_preference, updated_at) VALUES (?, ?, ?) ON CONFLICT (recipient_access_generation_id) DO UPDATE SET email_preference = EXCLUDED.email_preference, updated_at = EXCLUDED.updated_at`, actor.AccessID, request.EmailPreference, now).Exec(ctx); err != nil {
+			return err
+		}
+		result, err := tx.NewRaw(`UPDATE recipient_access_generations SET state = 'completed', onboarding_completed_at = ?, updated_at = ? WHERE id = ? AND state = 'onboarding' AND is_current`, now, now, actor.AccessID).Exec(ctx)
+		if err != nil {
+			return err
+		}
+		if affected, _ := result.RowsAffected(); affected != 1 {
+			return ErrOnboardingUnavailable
+		}
+		browserSession, err := s.auth.RotateBrowserSessionIn(ctx, tx, actor, request.SessionType, now)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.NewRaw(`DELETE FROM onboarding_progress WHERE recipient_access_generation_id = ?`, actor.AccessID).Exec(ctx); err != nil {
+			return err
+		}
+		requestMetadata := setup.RequestMetadataFromContext(ctx)
+		if _, err := tx.NewRaw(`INSERT INTO security_audit_events (actor_person_id, subject_person_id, action, outcome, client_ip, user_agent, session_id) VALUES (?, ?, 'onboarding_completed', 'success', NULLIF(?, '')::inet, ?, ?)`, actor.PersonID, actor.PersonID, requestMetadata.ClientIP, requestMetadata.UserAgent, actor.SessionID).Exec(ctx); err != nil {
+			return err
+		}
+		response = OnboardingCompleteResponse{Status: "complete", CSRFToken: browserSession.CSRFToken, session: browserSession}
+		return nil
+	})
+	return response, err
+}
+
+func validOnboardingSelections(request OnboardingRequest) bool {
+	return (request.EmailPreference == "immediate" || request.EmailPreference == "weekly" || request.EmailPreference == "none") &&
+		(request.SessionType == "trusted" || request.SessionType == "public")
 }
 
 type tokenRow struct {

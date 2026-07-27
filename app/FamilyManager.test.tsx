@@ -64,6 +64,7 @@ function renderManager() {
             session_type: "trusted",
             csrf_token: "csrf-token",
             curator: true,
+            onboarding_required: false,
           }}
         />
       </QueryClientProvider>,

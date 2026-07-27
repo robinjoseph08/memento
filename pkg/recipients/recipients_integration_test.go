@@ -29,6 +29,7 @@ import (
 	"github.com/robinjoseph08/memento/pkg/people"
 	"github.com/robinjoseph08/memento/pkg/setup"
 	mementosmtp "github.com/robinjoseph08/memento/pkg/smtp"
+	"github.com/robinjoseph08/memento/pkg/visibility"
 	"github.com/robinjoseph08/memento/pkg/worker"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -122,8 +123,8 @@ func newRecipientFixture(t *testing.T) recipientFixture {
 	sender := &acceptingSender{}
 	secret := "integration-security-secret-at-least-32-bytes"
 	delivery := emaildelivery.New(db, smtpConfig, sender, secret)
-	service := New(db, delivery, "https://memento.example")
 	auth := setup.New(db, delivery, config.SecurityConfig{Secret: secret})
+	service := New(db, delivery, "https://memento.example", auth)
 	credential := hex.EncodeToString(credentialRaw)
 	session, err := auth.Session(ctx, credential)
 	require.NoError(t, err)
@@ -232,6 +233,28 @@ func TestRecipientRoutesAttributeSecurityAuditRequests(t *testing.T) {
 	_, token := deterministicIssue(t, fixture, 0x35)
 	accepted := serveRecipient(fixture, e, "/api/auth/invitations/accept", `{"token":"`+token+`"}`, "")
 	require.Equal(t, http.StatusOK, accepted.Code, accepted.Body.String())
+	cookies := accepted.Result().Cookies()
+	require.Len(t, cookies, 1)
+	onboardingCookie := cookies[0]
+	assert.Equal(t, setup.CookieName, onboardingCookie.Name)
+	assert.True(t, onboardingCookie.Secure)
+	assert.True(t, onboardingCookie.HttpOnly)
+	assert.Zero(t, onboardingCookie.MaxAge, "acceptance starts with a non-persistent restricted Session")
+	onboardingSession, err := fixture.auth.Session(context.Background(), onboardingCookie.Value)
+	require.NoError(t, err)
+	assert.True(t, onboardingSession.OnboardingRequired)
+
+	readRequest := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/onboarding", nil)
+	readRequest.AddCookie(onboardingCookie)
+	readResponse := httptest.NewRecorder()
+	e.ServeHTTP(readResponse, readRequest)
+	require.Equal(t, http.StatusOK, readResponse.Code, readResponse.Body.String())
+	withoutCSRF := httptest.NewRequestWithContext(context.Background(), http.MethodPatch, "/api/onboarding", strings.NewReader(`{"email_preference":"weekly","session_type":"public"}`))
+	withoutCSRF.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	withoutCSRF.AddCookie(onboardingCookie)
+	denied := httptest.NewRecorder()
+	e.ServeHTTP(denied, withoutCSRF)
+	assert.Equal(t, http.StatusForbidden, denied.Code)
 
 	for _, action := range []string{"pending_recipient_designated", "invitation_accepted"} {
 		var clientIP, userAgent string
@@ -360,7 +383,7 @@ func TestSendPersistsOnlyTokenHashAndDurableInitialAndSevenDayReminder(t *testin
 	assert.Contains(t, message.Body, result.Invitation.ExpiresAt.Format(time.RFC1123))
 }
 
-func TestInspectIsReadOnlyAndAcceptIsSingleUseWithoutCreatingSession(t *testing.T) {
+func TestInspectIsReadOnlyAndAcceptIsSingleUseWithRestrictedOnboardingSession(t *testing.T) {
 	fixture := newRecipientFixture(t)
 	designate(t, fixture)
 	invitation, token := deterministicIssue(t, fixture, 0x37)
@@ -394,6 +417,7 @@ func TestInspectIsReadOnlyAndAcceptIsSingleUseWithoutCreatingSession(t *testing.
 	accepted, err := fixture.service.Accept(context.Background(), token)
 	require.NoError(t, err)
 	assert.Equal(t, "onboarding", accepted.Status)
+	require.NotEmpty(t, accepted.session.Credential)
 	_, err = fixture.service.Inspect(context.Background(), token)
 	assert.ErrorIs(t, err, ErrInvitationToken)
 	_, err = fixture.service.Accept(context.Background(), token)
@@ -405,7 +429,134 @@ func TestInspectIsReadOnlyAndAcceptIsSingleUseWithoutCreatingSession(t *testing.
 	assert.Equal(t, "accepted", current.Invitation.Status)
 	var sessions int
 	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM sessions WHERE person_id = ?`, fixture.personID).Scan(context.Background(), &sessions))
-	assert.Zero(t, sessions)
+	assert.Equal(t, 1, sessions)
+	restored, err := fixture.auth.Session(context.Background(), accepted.session.Credential)
+	require.NoError(t, err)
+	assert.True(t, restored.OnboardingRequired)
+	_, err = fixture.auth.AuthorizeSession(context.Background(), accepted.session.Credential, "", false)
+	assert.ErrorIs(t, err, setup.ErrUnauthenticated, "general Recipient policies stay blocked")
+	actor, err := fixture.auth.AuthorizeInterestSession(context.Background(), accepted.session.Credential, "", false)
+	require.NoError(t, err)
+	assert.Equal(t, fixture.personID, actor.PersonID)
+	var queuedReminder int
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM email_deliveries WHERE invitation_id = ? AND kind = ? AND status = 'queued'`, invitation.Invitation.ID, emaildelivery.KindInvitationAutomaticReminder).Scan(context.Background(), &queuedReminder))
+	assert.Zero(t, queuedReminder)
+}
+
+func TestAcceptanceSessionFailureLeavesTheInvitationLiveAndRetryable(t *testing.T) {
+	fixture := newRecipientFixture(t)
+	designate(t, fixture)
+	_, token := deterministicIssue(t, fixture, 0x66)
+	_, err := fixture.db.ExecContext(context.Background(), `CREATE FUNCTION reject_onboarding_session() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'session rejected'; END $$; CREATE TRIGGER reject_onboarding_session BEFORE INSERT ON sessions FOR EACH ROW EXECUTE FUNCTION reject_onboarding_session()`)
+	require.NoError(t, err)
+	_, err = fixture.service.Accept(context.Background(), token)
+	require.ErrorContains(t, err, "session rejected")
+	inspected, err := fixture.service.Inspect(context.Background(), token)
+	require.NoError(t, err)
+	assert.Equal(t, "Alex", inspected.RecipientName)
+	current, err := fixture.service.Get(context.Background(), fixture.personID)
+	require.NoError(t, err)
+	assert.Equal(t, "pending", current.Access.State)
+	assert.Equal(t, "active", current.Invitation.Status)
+}
+
+func TestResumableOnboardingPersistsInterestsAndAtomicallyUnlocksCurrentAccessWithoutDeliveryBacklog(t *testing.T) {
+	fixture := newRecipientFixture(t)
+	designate(t, fixture)
+	invitation, token := deterministicIssue(t, fixture, 0x67)
+	accepted, err := fixture.service.Accept(context.Background(), token)
+	require.NoError(t, err)
+	actor, err := fixture.auth.AuthorizeOnboardingSession(context.Background(), accepted.session.Credential, accepted.session.CSRFToken, true)
+	require.NoError(t, err)
+
+	partial := OnboardingRequest{
+		PrivacyAcknowledged: true, EmailPreference: "weekly", SessionType: "public",
+	}
+	saved, err := fixture.service.SaveOnboarding(context.Background(), actor, partial, accepted.session.CSRFToken)
+	require.NoError(t, err)
+	assert.True(t, saved.PrivacyAcknowledged)
+	assert.False(t, saved.EngagementAcknowledged)
+	assert.Equal(t, "weekly", saved.EmailPreference)
+
+	restoredSession, err := fixture.auth.Session(context.Background(), accepted.session.Credential)
+	require.NoError(t, err)
+	assert.True(t, restoredSession.OnboardingRequired)
+	restored, err := fixture.service.Onboarding(context.Background(), actor, restoredSession.CSRFToken)
+	require.NoError(t, err)
+	assert.Equal(t, saved, restored)
+
+	selectedID := uuid.New()
+	circleID := uuid.New()
+	_, err = fixture.db.NewRaw(`INSERT INTO people (id, display_name, sort_name) VALUES (?, 'Blair', 'blair'); INSERT INTO visibility_circles (id, name) VALUES (?, 'Onboarding family'); INSERT INTO visibility_circle_members (circle_id, person_id) VALUES (?, ?), (?, ?)`, selectedID, circleID, circleID, fixture.personID, circleID, selectedID).Exec(context.Background())
+	require.NoError(t, err)
+	interestService := visibility.New(fixture.db)
+	interest, err := interestService.MutateInterest(context.Background(), actor, fixture.personID, selectedID, true, 0)
+	require.NoError(t, err)
+	require.Len(t, interest.Entries, 1)
+	assert.Equal(t, selectedID.String(), interest.Entries[0].Person.ID)
+
+	_, err = fixture.service.CompleteOnboarding(context.Background(), actor, partial)
+	assert.ErrorIs(t, err, ErrOnboardingChoices)
+	_, err = fixture.auth.AuthorizeSession(context.Background(), accepted.session.Credential, "", false)
+	assert.ErrorIs(t, err, setup.ErrUnauthenticated)
+
+	completeRequest := OnboardingRequest{
+		PrivacyAcknowledged: true, EngagementAcknowledged: true,
+		InterestListAcknowledged: true, EmailPreviewsAcknowledged: true,
+		PushGuidanceAcknowledged: true, EmailPreference: "weekly", SessionType: "trusted",
+	}
+	_, err = fixture.db.ExecContext(context.Background(), `CREATE FUNCTION reject_onboarding_completion() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.state = 'completed' AND OLD.state = 'onboarding' THEN RAISE EXCEPTION 'completion rejected'; END IF; RETURN NEW; END $$; CREATE TRIGGER reject_onboarding_completion BEFORE UPDATE ON recipient_access_generations FOR EACH ROW EXECUTE FUNCTION reject_onboarding_completion()`)
+	require.NoError(t, err)
+	_, err = fixture.service.CompleteOnboarding(context.Background(), actor, completeRequest)
+	require.ErrorContains(t, err, "completion rejected")
+	var state string
+	var choices int
+	require.NoError(t, fixture.db.NewRaw(`SELECT state FROM recipient_access_generations WHERE id = ?`, actor.AccessID).Scan(context.Background(), &state))
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM onboarding_choices WHERE recipient_access_generation_id = ?`, actor.AccessID).Scan(context.Background(), &choices))
+	assert.Equal(t, "onboarding", state)
+	assert.Zero(t, choices, "all completion writes must roll back together")
+	_, err = fixture.auth.AuthorizeOnboardingSession(context.Background(), accepted.session.Credential, accepted.session.CSRFToken, true)
+	require.NoError(t, err, "the original restricted Session survives a rolled-back completion")
+	_, err = fixture.db.ExecContext(context.Background(), `DROP TRIGGER reject_onboarding_completion ON recipient_access_generations; DROP FUNCTION reject_onboarding_completion()`)
+	require.NoError(t, err)
+
+	var deliveriesBefore, outboxBefore int
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM email_deliveries`).Scan(context.Background(), &deliveriesBefore))
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM outbox_events`).Scan(context.Background(), &outboxBefore))
+	completed, err := fixture.service.CompleteOnboarding(context.Background(), actor, completeRequest)
+	require.NoError(t, err)
+	assert.Equal(t, "complete", completed.Status)
+	assert.NotEqual(t, accepted.session.CSRFToken, completed.CSRFToken)
+	_, err = fixture.auth.Session(context.Background(), accepted.session.Credential)
+	assert.ErrorIs(t, err, setup.ErrUnauthenticated, "completion rotates the credential")
+	currentSession, err := fixture.auth.Session(context.Background(), completed.session.Credential)
+	require.NoError(t, err)
+	assert.False(t, currentSession.OnboardingRequired)
+	assert.Equal(t, "trusted", currentSession.SessionType)
+	_, err = fixture.auth.AuthorizeSession(context.Background(), completed.session.Credential, completed.CSRFToken, false)
+	require.NoError(t, err, "completed access is immediately usable by current authorization policies")
+	_, err = fixture.auth.AuthorizeOnboardingSession(context.Background(), completed.session.Credential, completed.CSRFToken, false)
+	assert.ErrorIs(t, err, setup.ErrUnauthenticated)
+	_, err = fixture.service.Onboarding(context.Background(), actor, completed.CSRFToken)
+	assert.ErrorIs(t, err, ErrOnboardingUnavailable)
+
+	completedActor, err := fixture.auth.AuthorizeInterestSession(context.Background(), completed.session.Credential, "", false)
+	require.NoError(t, err)
+	persistedInterest, err := interestService.InterestList(context.Background(), completedActor, fixture.personID, visibility.HistoryPageRequest{})
+	require.NoError(t, err)
+	require.Len(t, persistedInterest.Entries, 1)
+	assert.Equal(t, selectedID.String(), persistedInterest.Entries[0].Person.ID)
+	var informed, completedAt bool
+	require.NoError(t, fixture.db.NewRaw(`SELECT privacy_acknowledged AND engagement_acknowledged AND interest_list_acknowledged AND email_previews_acknowledged AND push_guidance_acknowledged, completed_at IS NOT NULL FROM onboarding_choices WHERE recipient_access_generation_id = ?`, actor.AccessID).Scan(context.Background(), &informed, &completedAt))
+	assert.True(t, informed)
+	assert.True(t, completedAt)
+	var deliveriesAfter, outboxAfter, queuedReminder int
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM email_deliveries`).Scan(context.Background(), &deliveriesAfter))
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM outbox_events`).Scan(context.Background(), &outboxAfter))
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM email_deliveries WHERE invitation_id = ? AND kind = ? AND status = 'queued'`, invitation.Invitation.ID, emaildelivery.KindInvitationAutomaticReminder).Scan(context.Background(), &queuedReminder))
+	assert.Equal(t, deliveriesBefore, deliveriesAfter)
+	assert.Equal(t, outboxBefore, outboxAfter)
+	assert.Zero(t, queuedReminder)
 }
 
 func TestRevocationExpiryAndReissueInvalidateOldTokens(t *testing.T) {
@@ -795,10 +946,12 @@ func TestAcceptedSupersededAndExpiredInvitationsCancelDelivery(t *testing.T) {
 				_, err := fixture.db.NewRaw(`UPDATE invitations SET issued_at = now() - interval '15 days', expires_at = now() - interval '1 day', automatic_reminder_scheduled_at = now() - interval '8 days' WHERE id = ?`, invitation.Invitation.ID).Exec(context.Background())
 				require.NoError(t, err)
 			}
-			_, err := fixture.db.NewRaw(`UPDATE email_deliveries SET available_at = now() WHERE invitation_id = ? AND kind = ?`, invitation.Invitation.ID, emaildelivery.KindInvitationAutomaticReminder).Exec(context.Background())
-			require.NoError(t, err)
-			err = dispatchDelivery(t, fixture, invitation.Invitation.ID, emaildelivery.KindInvitationAutomaticReminder, "stale-"+terminal)
-			require.NoError(t, err)
+			if terminal != "accepted" {
+				_, err := fixture.db.NewRaw(`UPDATE email_deliveries SET available_at = now() WHERE invitation_id = ? AND kind = ?`, invitation.Invitation.ID, emaildelivery.KindInvitationAutomaticReminder).Exec(context.Background())
+				require.NoError(t, err)
+				err = dispatchDelivery(t, fixture, invitation.Invitation.ID, emaildelivery.KindInvitationAutomaticReminder, "stale-"+terminal)
+				require.NoError(t, err)
+			}
 			assert.Zero(t, fixture.sender.count())
 			assertDeliveryCancelled(t, fixture, invitation.Invitation.ID, emaildelivery.KindInvitationAutomaticReminder)
 		})

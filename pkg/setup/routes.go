@@ -116,7 +116,7 @@ func (h *Handler) Complete(c echo.Context) error {
 			return err
 		}
 	}
-	setSessionCookie(c, completed)
+	SetSessionCookie(c, BrowserSession(completed))
 	return c.JSON(http.StatusCreated, CompleteResponse{Status: "complete", CSRFToken: completed.CSRFToken})
 }
 
@@ -157,7 +157,7 @@ func (h *Handler) Refresh(c echo.Context) error {
 			return err
 		}
 	}
-	setSessionCookie(c, refreshed)
+	SetSessionCookie(c, BrowserSession(refreshed))
 	return c.NoContent(http.StatusNoContent)
 }
 
@@ -245,7 +245,8 @@ func sessionCredential(c echo.Context) (string, error) {
 	return cookie.Value, nil
 }
 
-func setSessionCookie(c echo.Context, session completedSession) {
+// SetSessionCookie applies an opaque BrowserSession without exposing it to JavaScript.
+func SetSessionCookie(c echo.Context, session BrowserSession) {
 	cookie := &http.Cookie{
 		Name:     CookieName,
 		Value:    session.Credential,

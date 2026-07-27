@@ -29,6 +29,9 @@ import type {
 import type {
   AcceptResponse,
   InspectResponse,
+  OnboardingCompleteResponse,
+  OnboardingRequest,
+  OnboardingResponse,
 } from "./types/generated/recipients";
 import type {
   Album as SourceAlbum,
@@ -139,6 +142,10 @@ function SetupFlow({
   const [engagementAcknowledged, setEngagementAcknowledged] = useState(false);
   const [interestListAcknowledged, setInterestListAcknowledged] =
     useState(false);
+  const [emailPreviewsAcknowledged, setEmailPreviewsAcknowledged] =
+    useState(false);
+  const [pushGuidanceAcknowledged, setPushGuidanceAcknowledged] =
+    useState(false);
   const [emailPreference, setEmailPreference] = useState("immediate");
   const [sessionType, setSessionType] = useState("trusted");
 
@@ -212,6 +219,8 @@ function SetupFlow({
       privacy_acknowledged: privacyAcknowledged,
       engagement_acknowledged: engagementAcknowledged,
       interest_list_acknowledged: interestListAcknowledged,
+      email_previews_acknowledged: emailPreviewsAcknowledged,
+      push_guidance_acknowledged: pushGuidanceAcknowledged,
       email_preference: emailPreference,
       session_type: sessionType,
     });
@@ -361,6 +370,38 @@ function SetupFlow({
               <strong>Interest list starts empty</strong>
               Choosing People later helps propose relevant photos but never
               grants access.
+            </span>
+          </label>
+          <label className="choice">
+            <input
+              checked={emailPreviewsAcknowledged}
+              onChange={(event) =>
+                setEmailPreviewsAcknowledged(event.target.checked)
+              }
+              required
+              type="checkbox"
+            />
+            <span>
+              <strong>Private email previews</strong>
+              Immediate email can include one authorized cover, while a weekly
+              digest can include up to three. Previews contain no tracking
+              pixels or public Media links.
+            </span>
+          </label>
+          <label className="choice">
+            <input
+              checked={pushGuidanceAcknowledged}
+              onChange={(event) =>
+                setPushGuidanceAcknowledged(event.target.checked)
+              }
+              required
+              type="checkbox"
+            />
+            <span>
+              <strong>Push is an optional device choice</strong>
+              Supported trusted devices can enable limited lock-screen context
+              later. Public computers cannot enable push, and Memento never
+              prompts on page load.
             </span>
           </label>
           <label>
@@ -696,11 +737,264 @@ function SourceWorkspace({
   );
 }
 
+function RecipientOnboarding({
+  session,
+  onComplete,
+  onSignOut,
+}: {
+  session: SessionResponse;
+  onComplete: (session: SessionResponse) => void;
+  onSignOut: () => void;
+}) {
+  const [editedDraft, setDraft] = useState<OnboardingRequest>();
+  const progress = useQuery({
+    queryKey: ["onboarding"],
+    queryFn: () => apiJSON<OnboardingResponse>("/api/onboarding"),
+    retry: false,
+  });
+  const draft: OnboardingRequest = editedDraft ?? {
+    privacy_acknowledged: progress.data?.privacy_acknowledged ?? false,
+    engagement_acknowledged: progress.data?.engagement_acknowledged ?? false,
+    interest_list_acknowledged:
+      progress.data?.interest_list_acknowledged ?? false,
+    email_previews_acknowledged:
+      progress.data?.email_previews_acknowledged ?? false,
+    push_guidance_acknowledged:
+      progress.data?.push_guidance_acknowledged ?? false,
+    email_preference: progress.data?.email_preference ?? "immediate",
+    session_type: progress.data?.session_type ?? "trusted",
+  };
+  const save = useMutation({
+    mutationFn: () =>
+      apiJSON<OnboardingResponse>("/api/onboarding", {
+        method: "PATCH",
+        headers: { "X-Memento-CSRF": session.csrf_token },
+        body: JSON.stringify(draft),
+      }),
+  });
+  const complete = useMutation({
+    mutationFn: async () => {
+      const response = await apiJSON<OnboardingCompleteResponse>(
+        "/api/onboarding/complete",
+        {
+          method: "POST",
+          headers: { "X-Memento-CSRF": session.csrf_token },
+          body: JSON.stringify(draft),
+        },
+      );
+      const completed = await apiJSON<SessionResponse>("/api/session");
+      if (
+        completed.onboarding_required ||
+        completed.csrf_token !== response.csrf_token
+      ) {
+        throw new APIError(
+          "The completed Session could not be confirmed.",
+          500,
+        );
+      }
+      return completed;
+    },
+    onSuccess: onComplete,
+  });
+  const pushSupported =
+    "serviceWorker" in navigator &&
+    "PushManager" in window &&
+    "Notification" in window;
+
+  if (progress.isPending) {
+    return <p aria-live="polite">Restoring your Onboarding choices…</p>;
+  }
+  if (progress.isError) {
+    return <ErrorMessage error={progress.error} />;
+  }
+  return (
+    <>
+      <section
+        aria-labelledby="recipient-onboarding-title"
+        className="shell-card setup-card"
+      >
+        <BrandHeader />
+        <p className="step-label">Verified private Invitation</p>
+        <h2 id="recipient-onboarding-title">
+          Welcome, {progress.data.recipient_name}
+        </h2>
+        <p className="form-intro">
+          Your choices and Interest list are resumable. Media, search, Comments,
+          archives, New for you, and optional delivery stay blocked until you
+          explicitly complete Onboarding.
+        </p>
+        <form
+          className="setup-form choices"
+          onSubmit={(event) => {
+            event.preventDefault();
+            complete.mutate();
+          }}
+        >
+          <label className="choice">
+            <input
+              checked={draft.privacy_acknowledged}
+              onChange={(event) =>
+                setDraft({
+                  ...draft,
+                  privacy_acknowledged: event.target.checked,
+                })
+              }
+              required
+              type="checkbox"
+            />
+            <span>
+              <strong>Private individual access</strong>
+              Your email and Session are personal. There are no public galleries
+              or reusable shared Media links.
+            </span>
+          </label>
+          <label className="choice">
+            <input
+              checked={draft.engagement_acknowledged}
+              onChange={(event) =>
+                setDraft({
+                  ...draft,
+                  engagement_acknowledged: event.target.checked,
+                })
+              }
+              required
+              type="checkbox"
+            />
+            <span>
+              <strong>Curator-visible engagement</strong>
+              Meaningful signed-in activity is visible to the Curator. Email
+              opens, prefetching, and incidental thumbnails are excluded.
+            </span>
+          </label>
+          <label className="choice">
+            <input
+              checked={draft.interest_list_acknowledged}
+              onChange={(event) =>
+                setDraft({
+                  ...draft,
+                  interest_list_acknowledged: event.target.checked,
+                })
+              }
+              required
+              type="checkbox"
+            />
+            <span>
+              <strong>Interest choices suggest, never authorize</strong>
+              Your explicit choices below help the Curator prepare Audience
+              proposals. The Curator still reviews all access.
+            </span>
+          </label>
+          <label className="choice">
+            <input
+              checked={draft.email_previews_acknowledged}
+              onChange={(event) =>
+                setDraft({
+                  ...draft,
+                  email_previews_acknowledged: event.target.checked,
+                })
+              }
+              required
+              type="checkbox"
+            />
+            <span>
+              <strong>Private email previews</strong>
+              Immediate messages can include one authorized cover and weekly
+              digests up to three. They have no tracking pixels or public Media
+              links.
+            </span>
+          </label>
+          <label>
+            Publication and Comment email
+            <select
+              onChange={(event) =>
+                setDraft({ ...draft, email_preference: event.target.value })
+              }
+              value={draft.email_preference}
+            >
+              <option value="immediate">Immediate</option>
+              <option value="weekly">Weekly digest</option>
+              <option value="none">None</option>
+            </select>
+          </label>
+          <fieldset>
+            <legend>This browser</legend>
+            <label className="radio-choice">
+              <input
+                checked={draft.session_type === "trusted"}
+                name="recipient-session-type"
+                onChange={() => setDraft({ ...draft, session_type: "trusted" })}
+                type="radio"
+              />
+              Trusted device, stays signed in while active
+            </label>
+            <label className="radio-choice">
+              <input
+                checked={draft.session_type === "public"}
+                name="recipient-session-type"
+                onChange={() => setDraft({ ...draft, session_type: "public" })}
+                type="radio"
+              />
+              Public computer, expires within 12 hours
+            </label>
+          </fieldset>
+          <label className="choice">
+            <input
+              checked={draft.push_guidance_acknowledged}
+              onChange={(event) =>
+                setDraft({
+                  ...draft,
+                  push_guidance_acknowledged: event.target.checked,
+                })
+              }
+              required
+              type="checkbox"
+            />
+            <span>
+              <strong>Push is optional and device-specific</strong>
+              {draft.session_type === "public"
+                ? " Public computers cannot enable push."
+                : pushSupported
+                  ? " This device can offer push later from Settings after an explicit action."
+                  : " This browser cannot offer push now. On iPhone or iPad, install Memento to the Home Screen first."}
+              Push can show limited authorized context on a lock screen and is
+              independent of email and access.
+            </span>
+          </label>
+          <ErrorMessage error={save.error ?? complete.error} />
+          {save.isSuccess ? (
+            <p aria-live="polite">Your Onboarding choices were saved.</p>
+          ) : null}
+          <div className="setup-secondary-actions">
+            <button
+              disabled={save.isPending || complete.isPending}
+              onClick={() => save.mutate()}
+              type="button"
+            >
+              {save.isPending ? "Saving…" : "Save and continue later"}
+            </button>
+            <button
+              disabled={save.isPending || complete.isPending}
+              type="submit"
+            >
+              {complete.isPending
+                ? "Completing Onboarding…"
+                : "Complete Onboarding"}
+            </button>
+          </div>
+        </form>
+      </section>
+      <RecipientVisibilityManager onSignOut={onSignOut} session={session} />
+    </>
+  );
+}
+
 function ReadyCard({
   session,
+  onComplete,
   onSignOut,
 }: {
   session?: SessionResponse;
+  onComplete: (session: SessionResponse) => void;
   onSignOut: () => void;
 }) {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -796,6 +1090,15 @@ function ReadyCard({
     );
   }
   if (session) {
+    if (session.onboarding_required) {
+      return (
+        <RecipientOnboarding
+          onComplete={onComplete}
+          onSignOut={onSignOut}
+          session={session}
+        />
+      );
+    }
     if (!session.curator) {
       return (
         <RecipientVisibilityManager onSignOut={onSignOut} session={session} />
@@ -836,6 +1139,7 @@ function InvitationLanding() {
   const [searchParams] = useSearchParams();
   const [token] = useState(() => searchParams.get("token") ?? "");
   const [accepted, setAccepted] = useState(false);
+  const [acceptedSession, setAcceptedSession] = useState<SessionResponse>();
   const invitation = useQuery({
     queryKey: ["invitation", token],
     queryFn: () =>
@@ -852,10 +1156,34 @@ function InvitationLanding() {
         body: JSON.stringify({ token }),
       }),
     onMutate: () => {
-      window.history.replaceState({}, "", "/invitation");
+      window.history.replaceState({}, "", "/");
     },
     onSuccess: () => setAccepted(true),
   });
+  const acceptedIdentity = useQuery({
+    queryKey: ["accepted-invitation-session"],
+    queryFn: () => apiJSON<SessionResponse>("/api/session"),
+    enabled: accepted,
+    retry: false,
+  });
+  const currentSession = accepted
+    ? (acceptedSession ?? acceptedIdentity.data)
+    : undefined;
+
+  if (currentSession) {
+    return (
+      <main>
+        <ReadyCard
+          onComplete={setAcceptedSession}
+          onSignOut={() => {
+            setAccepted(false);
+            setAcceptedSession(undefined);
+          }}
+          session={currentSession}
+        />
+      </main>
+    );
+  }
 
   return (
     <main>
@@ -872,6 +1200,10 @@ function InvitationLanding() {
               Your verified identity is ready for resumable Onboarding. No Media
               access is granted until Onboarding is complete.
             </p>
+            {acceptedIdentity.isPending ? (
+              <p aria-live="polite">Opening your Onboarding securely…</p>
+            ) : null}
+            <ErrorMessage error={acceptedIdentity.error} />
           </>
         ) : null}
         {!accepted && token && invitation.isPending ? (
@@ -892,8 +1224,8 @@ function InvitationLanding() {
               Memento is a private family photo and video archive. This
               single-use offer expires{" "}
               {formatInvitationExpiry(invitation.data.expires_at)}. Accepting
-              starts Onboarding and does not sign you in or grant Media access
-              by itself.
+              starts a verified Onboarding Session but does not grant Media
+              access by itself.
             </p>
             <ErrorMessage error={accept.error} />
             <button
@@ -927,7 +1259,11 @@ function MementoApp() {
   if (completedSession && !signedOut) {
     return (
       <main>
-        <ReadyCard onSignOut={signOut} session={completedSession} />
+        <ReadyCard
+          onComplete={setCompletedSession}
+          onSignOut={signOut}
+          session={completedSession}
+        />
       </main>
     );
   }
@@ -973,7 +1309,11 @@ function MementoApp() {
       : undefined;
   return (
     <main>
-      <ReadyCard onSignOut={signOut} session={session} />
+      <ReadyCard
+        onComplete={setCompletedSession}
+        onSignOut={signOut}
+        session={session}
+      />
     </main>
   );
 }

@@ -68,6 +68,7 @@ function renderManager() {
           session_type: "trusted",
           csrf_token: "csrf-token",
           curator: true,
+          onboarding_required: false,
         }}
       />
     </QueryClientProvider>,
@@ -324,6 +325,7 @@ test("lets a Recipient edit only their own discoverable Interest choices", async
           session_type: "trusted",
           csrf_token: "recipient-csrf",
           curator: false,
+          onboarding_required: false,
         }}
       />
     </QueryClientProvider>,

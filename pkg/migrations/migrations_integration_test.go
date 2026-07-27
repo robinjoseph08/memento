@@ -197,6 +197,33 @@ func TestDraftMigrationRollbackRestoresRequiredCaptureDates(t *testing.T) {
 	assert.Equal(t, "NO", nullable)
 }
 
+func TestOnboardingMigrationBackfillsExistingInformedSetupAndAddsResumableProgress(t *testing.T) {
+	db := testdb.Open(t)
+	ctx := context.Background()
+	priorMigrations := migrate.NewMigrations()
+	foundOnboarding := false
+	for _, migration := range collection.Sorted() {
+		if migration.Name == "202607270004" {
+			foundOnboarding = true
+			break
+		}
+		priorMigrations.Add(migration)
+	}
+	require.True(t, foundOnboarding)
+	require.NoError(t, applyCollection(ctx, db, priorMigrations))
+	const personID = "11111111-1111-4111-8111-111111111111"
+	const accessID = "22222222-2222-4222-8222-222222222222"
+	_, err := db.ExecContext(ctx, `INSERT INTO people (id, display_name, sort_name) VALUES (?, 'Existing Curator', 'existing curator'); INSERT INTO recipient_access_generations (id, person_id, generation, state, onboarding_completed_at) VALUES (?, ?, 1, 'completed', now()); INSERT INTO onboarding_choices (recipient_access_generation_id, privacy_acknowledged, engagement_acknowledged, interest_list_acknowledged, email_preference, completed_at) VALUES (?, true, true, true, 'immediate', now())`, personID, accessID, personID, accessID)
+	require.NoError(t, err)
+	require.NoError(t, Apply(ctx, db))
+	var previews, push bool
+	require.NoError(t, db.NewRaw(`SELECT email_previews_acknowledged, push_guidance_acknowledged FROM onboarding_choices WHERE recipient_access_generation_id = ?`, accessID).Scan(ctx, &previews, &push))
+	assert.True(t, previews)
+	assert.True(t, push)
+	_, err = db.ExecContext(ctx, `INSERT INTO onboarding_progress (recipient_access_generation_id, email_preference, session_type) VALUES (?, 'invalid', 'trusted')`, accessID)
+	require.Error(t, err, "resumable preferences must remain in the constrained domains")
+}
+
 func TestVisibilityInfrastructureEnforcesPrivacyStateConstraints(t *testing.T) {
 	db := testdb.Open(t)
 	ctx := context.Background()

@@ -54,12 +54,14 @@ func TestSetupFailsBeforePersistenceWhenSecureRandomnessIsUnavailable(t *testing
 	})
 	require.ErrorIs(t, err, errGenerateCredential)
 	_, err = service.complete(context.Background(), CompleteRequest{
-		VerificationToken:        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-		PrivacyAcknowledged:      true,
-		EngagementAcknowledged:   true,
-		InterestListAcknowledged: true,
-		EmailPreference:          "immediate",
-		SessionType:              "trusted",
+		VerificationToken:         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		PrivacyAcknowledged:       true,
+		EngagementAcknowledged:    true,
+		InterestListAcknowledged:  true,
+		EmailPreviewsAcknowledged: true,
+		PushGuidanceAcknowledged:  true,
+		EmailPreference:           "immediate",
+		SessionType:               "trusted",
 	})
 	require.ErrorIs(t, err, errGenerateCredential)
 }

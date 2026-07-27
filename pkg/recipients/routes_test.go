@@ -19,27 +19,27 @@ func TestInvitationRoutesUseSafeMethodsAndExplicitPolicies(t *testing.T) {
 	e := echo.New()
 	RegisterRoutes(e, NewHandler(nil, nil))
 
-	expected := map[string]struct {
-		method string
-		name   string
-	}{
-		"/api/recipients/:person_id":                    {http.MethodGet, curatorReadPolicy},
-		"/api/recipients/:person_id/designate":          {http.MethodPost, curatorMutationPolicy},
-		"/api/recipients/:person_id/invitation/send":    {http.MethodPost, curatorMutationPolicy},
-		"/api/recipients/:person_id/invitation/revoke":  {http.MethodPost, curatorMutationPolicy},
-		"/api/recipients/:person_id/invitation/reissue": {http.MethodPost, curatorMutationPolicy},
-		"/api/recipients/:person_id/invitation/remind":  {http.MethodPost, curatorMutationPolicy},
-		"/api/auth/invitations/inspect":                 {http.MethodGet, invitationInspectPolicy},
-		"/api/auth/invitations/accept":                  {http.MethodPost, invitationAcceptPolicy},
+	expected := map[string]string{
+		http.MethodGet + " /api/recipients/:person_id":                     curatorReadPolicy,
+		http.MethodPost + " /api/recipients/:person_id/designate":          curatorMutationPolicy,
+		http.MethodPost + " /api/recipients/:person_id/invitation/send":    curatorMutationPolicy,
+		http.MethodPost + " /api/recipients/:person_id/invitation/revoke":  curatorMutationPolicy,
+		http.MethodPost + " /api/recipients/:person_id/invitation/reissue": curatorMutationPolicy,
+		http.MethodPost + " /api/recipients/:person_id/invitation/remind":  curatorMutationPolicy,
+		http.MethodGet + " /api/auth/invitations/inspect":                  invitationInspectPolicy,
+		http.MethodPost + " /api/auth/invitations/accept":                  invitationAcceptPolicy,
+		http.MethodGet + " /api/onboarding":                                onboardingReadPolicy,
+		http.MethodPatch + " /api/onboarding":                              onboardingMutationPolicy,
+		http.MethodPost + " /api/onboarding/complete":                      onboardingMutationPolicy,
 	}
 	for _, route := range e.Routes() {
-		want, ok := expected[route.Path]
+		key := route.Method + " " + route.Path
+		want, ok := expected[key]
 		if !ok {
 			continue
 		}
-		assert.Equal(t, want.method, route.Method, route.Path)
-		assert.Equal(t, want.name, route.Name, route.Path)
-		delete(expected, route.Path)
+		assert.Equal(t, want, route.Name, key)
+		delete(expected, key)
 	}
 	assert.Empty(t, expected)
 }
