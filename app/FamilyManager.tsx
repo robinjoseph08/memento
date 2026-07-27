@@ -130,6 +130,8 @@ export function FamilyManager({ session }: { session: SessionResponse }) {
   const queryClient = useQueryClient();
   const [includeArchived, setIncludeArchived] = useState(false);
   const [selectedRelationshipID, setSelectedRelationshipID] = useState("");
+  const [selectedRelationshipVersion, setSelectedRelationshipVersion] =
+    useState<number>();
   const [relationshipType, setRelationshipType] = useState("parent_child");
   const [personAID, setPersonAID] = useState("");
   const [personBID, setPersonBID] = useState("");
@@ -156,6 +158,7 @@ export function FamilyManager({ session }: { session: SessionResponse }) {
 
   async function refreshFamily() {
     setSelectedRelationshipID("");
+    setSelectedRelationshipVersion(undefined);
     setRelationshipType("parent_child");
     setPersonAID("");
     setPersonBID("");
@@ -193,6 +196,7 @@ export function FamilyManager({ session }: { session: SessionResponse }) {
 
   function clearForm() {
     setSelectedRelationshipID("");
+    setSelectedRelationshipVersion(undefined);
     setRelationshipType("parent_child");
     setPersonAID("");
     setPersonBID("");
@@ -203,6 +207,7 @@ export function FamilyManager({ session }: { session: SessionResponse }) {
 
   function inspectRelationship(relationship: Relationship) {
     setSelectedRelationshipID(relationship.id);
+    setSelectedRelationshipVersion(relationship.version);
     setRelationshipType(relationship.relationship_type);
     setPersonAID(relationship.person_a.id);
     setPersonBID(relationship.person_b.id);
@@ -218,7 +223,9 @@ export function FamilyManager({ session }: { session: SessionResponse }) {
       person_a_id: personAID,
       person_b_id: personBID,
       partner_status: relationshipType === "partner" ? partnerStatus : "",
-      ...(selected ? { version: selected.version } : {}),
+      ...(selectedRelationshipVersion !== undefined
+        ? { version: selectedRelationshipVersion }
+        : {}),
     });
   }
 
@@ -373,7 +380,10 @@ export function FamilyManager({ session }: { session: SessionResponse }) {
                     `Archive this connection: ${relationshipLabel(selected)}?`,
                   )
                 ) {
-                  archiveRelationship.mutate(selected);
+                  archiveRelationship.mutate({
+                    ...selected,
+                    version: selectedRelationshipVersion ?? selected.version,
+                  });
                 }
               }}
               type="button"

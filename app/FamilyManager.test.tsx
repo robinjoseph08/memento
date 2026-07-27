@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -53,17 +54,20 @@ function renderManager() {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
-  return render(
-    <QueryClientProvider client={client}>
-      <FamilyManager
-        session={{
-          display_name: "Curator",
-          session_type: "trusted",
-          csrf_token: "csrf-token",
-        }}
-      />
-    </QueryClientProvider>,
-  );
+  return {
+    client,
+    ...render(
+      <QueryClientProvider client={client}>
+        <FamilyManager
+          session={{
+            display_name: "Curator",
+            session_type: "trusted",
+            csrf_token: "csrf-token",
+          }}
+        />
+      </QueryClientProvider>,
+    ),
+  };
 }
 
 afterEach(() => {
@@ -145,7 +149,7 @@ test("creates, edits, archives, and inspects relationship-annotated Family branc
     }),
   );
 
-  renderManager();
+  const { client } = renderManager();
   expect(screen.getAllByText(/never grants Recipient access/i)).toHaveLength(2);
   expect(
     screen.getByText(
@@ -185,6 +189,11 @@ test("creates, edits, archives, and inspects relationship-annotated Family branc
   );
 
   fireEvent.click(sibling);
+  relationships = [{ ...relationships[0], version: 9 }];
+  await act(() =>
+    client.invalidateQueries({ queryKey: ["family-relationships"] }),
+  );
+  expect(await screen.findByText("Active · version 9")).toBeInTheDocument();
   fireEvent.change(screen.getByLabelText("Connection type"), {
     target: { value: "partner" },
   });

@@ -702,7 +702,42 @@ func TestMergeRejectsConflictingPartnerStatuses(t *testing.T) {
 	require.ErrorIs(t, err, ErrFamilyPartnerConflict)
 }
 
-func TestMergeRejectsPeopleConnectedByParentChildPath(t *testing.T) {
+func TestMergeArchivesDirectParentChildConnectionBetweenMergedPeople(t *testing.T) {
+	for _, sourceIsParent := range []bool{true, false} {
+		t.Run(fmt.Sprintf("source_is_parent_%t", sourceIsParent), func(t *testing.T) {
+			fixture := newPeopleFixture(t)
+			ctx := context.Background()
+			source := addPerson(t, fixture.db, "Source", "Source")
+			survivor := addPerson(t, fixture.db, "Survivor", "Survivor")
+			personA, personB := source, survivor
+			if !sourceIsParent {
+				personA, personB = survivor, source
+			}
+			relationshipID := uuid.New()
+			_, err := fixture.db.NewRaw(`INSERT INTO family_relationships (id, relationship_type, person_a_id, person_b_id) VALUES (?, 'parent_child', ?, ?)`, relationshipID, personA, personB).Exec(ctx)
+			require.NoError(t, err)
+
+			preview, err := fixture.service.PreviewMerge(ctx, fixture.actor, source, survivor)
+			require.NoError(t, err)
+			assert.True(t, preview.CanMerge)
+			assert.Equal(t, 0, preview.References.FamilyRelationshipsMoved)
+			assert.Equal(t, 1, preview.References.FamilyRelationshipsArchived)
+
+			_, err = fixture.service.Merge(ctx, fixture.actor, MergeRequest{
+				SourcePersonID: source.String(), SurvivorPersonID: survivor.String(), SourceVersion: 1, SurvivorVersion: 1,
+				PreviewFingerprint: preview.PreviewFingerprint,
+			})
+			require.NoError(t, err)
+			var archived bool
+			var version int64
+			require.NoError(t, fixture.db.NewRaw(`SELECT archived_at IS NOT NULL, version FROM family_relationships WHERE id = ?`, relationshipID).Scan(ctx, &archived, &version))
+			assert.True(t, archived)
+			assert.Equal(t, int64(2), version)
+		})
+	}
+}
+
+func TestMergeRejectsPeopleConnectedByIndirectParentChildPath(t *testing.T) {
 	fixture := newPeopleFixture(t)
 	ctx := context.Background()
 	source := addPerson(t, fixture.db, "Ancestor source", "Ancestor source")

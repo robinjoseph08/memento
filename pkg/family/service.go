@@ -287,17 +287,17 @@ func LockGraph(ctx context.Context, tx bun.Tx) error {
 }
 
 // PreviewPersonMerge reports how Family references would move and whether the
-// selected identities are connected by an active parent-child path.
+// selected identities are connected by an active indirect parent-child path.
 func PreviewPersonMerge(ctx context.Context, db bun.IDB, sourceID, survivorID uuid.UUID) (PersonMergeEffects, error) {
 	if sourceID == survivorID {
 		return PersonMergeEffects{}, ErrInvalid
 	}
-	connected, err := parentPathExists(ctx, db, sourceID, survivorID)
+	connected, err := indirectParentPathExists(ctx, db, sourceID, survivorID)
 	if err != nil {
 		return PersonMergeEffects{}, err
 	}
 	if !connected {
-		connected, err = parentPathExists(ctx, db, survivorID, sourceID)
+		connected, err = indirectParentPathExists(ctx, db, survivorID, sourceID)
 		if err != nil {
 			return PersonMergeEffects{}, err
 		}
@@ -409,15 +409,15 @@ func samePartnerStatus(left, right *string) bool {
 	return left != nil && right != nil && *left == *right
 }
 
-func parentPathExists(ctx context.Context, db bun.IDB, ancestorID, descendantID uuid.UUID) (bool, error) {
+func indirectParentPathExists(ctx context.Context, db bun.IDB, ancestorID, descendantID uuid.UUID) (bool, error) {
 	var exists bool
-	err := db.NewRaw(`WITH RECURSIVE descendants(person_id) AS (
-		SELECT person_b_id FROM family_relationships WHERE relationship_type = 'parent_child' AND archived_at IS NULL AND person_a_id = ?
+	err := db.NewRaw(`WITH RECURSIVE descendants(person_id, depth) AS (
+		SELECT person_b_id, 1 FROM family_relationships WHERE relationship_type = 'parent_child' AND archived_at IS NULL AND person_a_id = ?
 		UNION
-		SELECT relationship.person_b_id FROM family_relationships AS relationship
+		SELECT relationship.person_b_id, descendants.depth + 1 FROM family_relationships AS relationship
 		JOIN descendants ON relationship.person_a_id = descendants.person_id
 		WHERE relationship.relationship_type = 'parent_child' AND relationship.archived_at IS NULL
-	) SELECT EXISTS (SELECT 1 FROM descendants WHERE person_id = ?)`, ancestorID, descendantID).Scan(ctx, &exists)
+	) SELECT EXISTS (SELECT 1 FROM descendants WHERE person_id = ? AND depth > 1)`, ancestorID, descendantID).Scan(ctx, &exists)
 	return exists, err
 }
 
