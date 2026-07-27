@@ -1,6 +1,7 @@
 package family
 
 import (
+	"context"
 	"errors"
 	"mime"
 	"net/http"
@@ -25,6 +26,10 @@ type Handler struct {
 
 func NewHandler(service *Service, auth *setup.Service) *Handler {
 	return &Handler{service: service, auth: auth}
+}
+
+func (h *Handler) requestContext(c echo.Context) context.Context {
+	return h.auth.ContextWithRequestMetadata(c.Request().Context(), c.Request())
 }
 
 func (h *Handler) authorize(c echo.Context, mutation bool) (setup.CuratorSession, error) {
@@ -91,7 +96,7 @@ func (h *Handler) Create(c echo.Context) error {
 	if err := bindJSON(c, &request); err != nil {
 		return err
 	}
-	relationship, err := h.service.Create(c.Request().Context(), actor, request)
+	relationship, err := h.service.Create(h.requestContext(c), actor, request)
 	if err != nil {
 		return familyError(err)
 	}
@@ -111,7 +116,7 @@ func (h *Handler) Update(c echo.Context) error {
 	if err := bindJSON(c, &request); err != nil {
 		return err
 	}
-	relationship, err := h.service.Update(c.Request().Context(), actor, id, request)
+	relationship, err := h.service.Update(h.requestContext(c), actor, id, request)
 	if err != nil {
 		return familyError(err)
 	}
@@ -131,7 +136,7 @@ func (h *Handler) Archive(c echo.Context) error {
 	if err := bindJSON(c, &request); err != nil {
 		return err
 	}
-	relationship, err := h.service.Archive(c.Request().Context(), actor, id, request.Version)
+	relationship, err := h.service.Archive(h.requestContext(c), actor, id, request.Version)
 	if err != nil {
 		return familyError(err)
 	}
@@ -176,15 +181,15 @@ func noStore(next echo.HandlerFunc) echo.HandlerFunc {
 
 // RegisterRoutes registers explicit Curator read and CSRF-protected mutation policies.
 func RegisterRoutes(e *echo.Echo, handler *Handler) {
-	group := e.Group("/api/family", noStore)
-	list := group.GET("/relationships", handler.List)
+	group := e.Group("/api/relationships", noStore)
+	list := group.GET("", handler.List)
 	list.Name = curatorReadPolicy
 	branch := group.GET("/branches/:person_id", handler.Branch)
 	branch.Name = curatorReadPolicy
-	create := group.POST("/relationships", handler.Create)
+	create := group.POST("", handler.Create)
 	create.Name = curatorMutationPolicy
-	update := group.PATCH("/relationships/:id", handler.Update)
+	update := group.PATCH("/:id", handler.Update)
 	update.Name = curatorMutationPolicy
-	archive := group.POST("/relationships/:id/archive", handler.Archive)
+	archive := group.POST("/:id/archive", handler.Archive)
 	archive.Name = curatorMutationPolicy
 }

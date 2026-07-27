@@ -85,10 +85,10 @@ test("creates, edits, archives, and inspects relationship-annotated Family branc
       if (path === "/api/people?query=&include_archived=false") {
         return jsonResponse({ people: [alex, blair] });
       }
-      if (path.startsWith("/api/family/relationships?")) {
+      if (path.startsWith("/api/relationships?")) {
         return jsonResponse({ relationships });
       }
-      if (path === "/api/family/relationships" && init?.method === "POST") {
+      if (path === "/api/relationships" && init?.method === "POST") {
         const request = JSON.parse(stringBody(init.body)) as {
           relationship_type: string;
           person_a_id: string;
@@ -108,8 +108,7 @@ test("creates, edits, archives, and inspects relationship-annotated Family branc
         return jsonResponse(created, 201);
       }
       if (
-        path ===
-          "/api/family/relationships/33333333-3333-3333-3333-333333333333" &&
+        path === "/api/relationships/33333333-3333-3333-3333-333333333333" &&
         init?.method === "PATCH"
       ) {
         const updated: Relationship = {
@@ -130,7 +129,7 @@ test("creates, edits, archives, and inspects relationship-annotated Family branc
         relationships = [];
         return jsonResponse(archived);
       }
-      if (path === `/api/family/branches/${alex.id}`) {
+      if (path === `/api/relationships/branches/${alex.id}`) {
         return jsonResponse({
           root: alex,
           members: [
@@ -173,7 +172,7 @@ test("creates, edits, archives, and inspects relationship-annotated Family branc
   );
   const createRequest = requests.find(
     ({ path, init }) =>
-      path === "/api/family/relationships" && init?.method === "POST",
+      path === "/api/relationships" && init?.method === "POST",
   );
   expect(JSON.parse(stringBody(createRequest?.init?.body))).toEqual({
     relationship_type: "sibling",
@@ -238,10 +237,10 @@ test("shows a rejected cycle without implying that the connection was saved", as
       if (path === "/api/people?query=&include_archived=false") {
         return jsonResponse({ people: [alex, blair] });
       }
-      if (path.startsWith("/api/family/relationships?")) {
+      if (path.startsWith("/api/relationships?")) {
         return jsonResponse({ relationships: [] });
       }
-      if (path === "/api/family/relationships" && init?.method === "POST") {
+      if (path === "/api/relationships" && init?.method === "POST") {
         return jsonResponse(
           {
             error: {

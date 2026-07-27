@@ -51,6 +51,7 @@ function personOption(person: Person) {
 export function FamilyManager({ session }: { session: SessionResponse }) {
   const queryClient = useQueryClient();
   const [includeArchived, setIncludeArchived] = useState(false);
+  const [peopleSearch, setPeopleSearch] = useState("");
   const [selectedRelationshipID, setSelectedRelationshipID] = useState("");
   const [relationshipType, setRelationshipType] = useState("parent_child");
   const [personAID, setPersonAID] = useState("");
@@ -59,21 +60,23 @@ export function FamilyManager({ session }: { session: SessionResponse }) {
   const [branchPersonID, setBranchPersonID] = useState("");
 
   const people = useQuery({
-    queryKey: ["family-people"],
+    queryKey: ["family-people", peopleSearch],
     queryFn: () =>
-      apiJSON<PeopleListResponse>("/api/people?query=&include_archived=false"),
+      apiJSON<PeopleListResponse>(
+        `/api/people?query=${encodeURIComponent(peopleSearch)}&include_archived=false`,
+      ),
   });
   const relationships = useQuery({
     queryKey: ["family-relationships", includeArchived],
     queryFn: () =>
       apiJSON<FamilyListResponse>(
-        `/api/family/relationships?include_archived=${includeArchived}`,
+        `/api/relationships?include_archived=${includeArchived}`,
       ),
   });
   const branch = useQuery({
     queryKey: ["family-branch", branchPersonID],
     queryFn: () =>
-      apiJSON<BranchResponse>(`/api/family/branches/${branchPersonID}`),
+      apiJSON<BranchResponse>(`/api/relationships/branches/${branchPersonID}`),
     enabled: branchPersonID !== "",
   });
 
@@ -96,12 +99,12 @@ export function FamilyManager({ session }: { session: SessionResponse }) {
   const saveRelationship = useMutation({
     mutationFn: (request: MutationRequest) =>
       selected
-        ? apiJSON<Relationship>(`/api/family/relationships/${selected.id}`, {
+        ? apiJSON<Relationship>(`/api/relationships/${selected.id}`, {
             method: "PATCH",
             headers: { "X-Memento-CSRF": session.csrf_token },
             body: JSON.stringify(request),
           })
-        : apiJSON<Relationship>("/api/family/relationships", {
+        : apiJSON<Relationship>("/api/relationships", {
             method: "POST",
             headers: { "X-Memento-CSRF": session.csrf_token },
             body: JSON.stringify(request),
@@ -110,14 +113,11 @@ export function FamilyManager({ session }: { session: SessionResponse }) {
   });
   const archiveRelationship = useMutation({
     mutationFn: (relationship: Relationship) =>
-      apiJSON<Relationship>(
-        `/api/family/relationships/${relationship.id}/archive`,
-        {
-          method: "POST",
-          headers: { "X-Memento-CSRF": session.csrf_token },
-          body: JSON.stringify({ version: relationship.version }),
-        },
-      ),
+      apiJSON<Relationship>(`/api/relationships/${relationship.id}/archive`, {
+        method: "POST",
+        headers: { "X-Memento-CSRF": session.csrf_token },
+        body: JSON.stringify({ version: relationship.version }),
+      }),
     onSuccess: refreshFamily,
   });
 
@@ -178,6 +178,19 @@ export function FamilyManager({ session }: { session: SessionResponse }) {
           qualifying connection reaches them.
         </p>
       </div>
+
+      <div className="people-toolbar">
+        <label>
+          Search People for relationship and branch selectors
+          <input
+            onChange={(event) => setPeopleSearch(event.target.value)}
+            placeholder="Name or sort name"
+            type="search"
+            value={peopleSearch}
+          />
+        </label>
+      </div>
+      <ErrorNotice error={people.error} />
 
       <div className="family-layout">
         <section aria-labelledby="connections-title" className="people-panel">

@@ -506,6 +506,67 @@ func TestMergeEmailResolutionCanKeepSourceEmail(t *testing.T) {
 	assert.Equal(t, 1, currentEmails, "only the unrelated Curator email remains current outside the transferred generation")
 }
 
+func TestMergePreviewsAndMovesFamilyRelationshipsAtomically(t *testing.T) {
+	fixture := newPeopleFixture(t)
+	ctx := context.Background()
+	source := addPerson(t, fixture.db, "Family source", "Family source")
+	survivor := addPerson(t, fixture.db, "Family survivor", "Family survivor")
+	sharedChild := addPerson(t, fixture.db, "Shared child", "Shared child")
+	otherChild := addPerson(t, fixture.db, "Other child", "Other child")
+	for _, endpoints := range [][2]uuid.UUID{{source, sharedChild}, {survivor, sharedChild}, {source, otherChild}} {
+		_, err := fixture.db.NewRaw(`INSERT INTO family_relationships (id, relationship_type, person_a_id, person_b_id) VALUES (?, 'parent_child', ?, ?)`, uuid.New(), endpoints[0], endpoints[1]).Exec(ctx)
+		require.NoError(t, err)
+	}
+
+	preview, err := fixture.service.PreviewMerge(ctx, fixture.actor, source, survivor)
+	require.NoError(t, err)
+	assert.True(t, preview.CanMerge)
+	assert.Equal(t, 2, preview.References.FamilyRelationshipsMoved)
+	assert.Equal(t, 1, preview.References.FamilyRelationshipsArchived)
+	_, err = fixture.service.Merge(ctx, fixture.actor, MergeRequest{
+		SourcePersonID: source.String(), SurvivorPersonID: survivor.String(), SourceVersion: 1, SurvivorVersion: 1,
+		PreviewFingerprint: preview.PreviewFingerprint,
+	})
+	require.NoError(t, err)
+
+	var sourceReferences, survivorActiveReferences, archivedDuplicates int
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM family_relationships WHERE person_a_id = ? OR person_b_id = ?`, source, source).Scan(ctx, &sourceReferences))
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM family_relationships WHERE person_a_id = ? AND archived_at IS NULL`, survivor).Scan(ctx, &survivorActiveReferences))
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM family_relationships WHERE person_a_id = ? AND person_b_id = ? AND archived_at IS NOT NULL`, survivor, sharedChild).Scan(ctx, &archivedDuplicates))
+	assert.Zero(t, sourceReferences)
+	assert.Equal(t, 2, survivorActiveReferences)
+	assert.Equal(t, 1, archivedDuplicates)
+	var auditMetadata string
+	require.NoError(t, fixture.db.NewRaw(`SELECT metadata::text FROM security_audit_events WHERE action = 'people_merged'`).Scan(ctx, &auditMetadata))
+	assert.Contains(t, auditMetadata, `"family_relationships_moved": 2`)
+	assert.Contains(t, auditMetadata, `"family_relationships_archived": 1`)
+}
+
+func TestMergeRejectsPeopleConnectedByParentChildPath(t *testing.T) {
+	fixture := newPeopleFixture(t)
+	ctx := context.Background()
+	source := addPerson(t, fixture.db, "Ancestor source", "Ancestor source")
+	middle := addPerson(t, fixture.db, "Middle", "Middle")
+	survivor := addPerson(t, fixture.db, "Descendant survivor", "Descendant survivor")
+	for _, endpoints := range [][2]uuid.UUID{{source, middle}, {middle, survivor}} {
+		_, err := fixture.db.NewRaw(`INSERT INTO family_relationships (id, relationship_type, person_a_id, person_b_id) VALUES (?, 'parent_child', ?, ?)`, uuid.New(), endpoints[0], endpoints[1]).Exec(ctx)
+		require.NoError(t, err)
+	}
+
+	preview, err := fixture.service.PreviewMerge(ctx, fixture.actor, source, survivor)
+	require.NoError(t, err)
+	assert.False(t, preview.CanMerge)
+	assert.Contains(t, preview.Blockers, "Resolve the parent-child path between these People before merging them.")
+	_, err = fixture.service.Merge(ctx, fixture.actor, MergeRequest{
+		SourcePersonID: source.String(), SurvivorPersonID: survivor.String(), SourceVersion: 1, SurvivorVersion: 1,
+		PreviewFingerprint: preview.PreviewFingerprint,
+	})
+	require.ErrorIs(t, err, ErrFamilyMergeCycle)
+	storedSource, getErr := fixture.service.Get(ctx, source)
+	require.NoError(t, getErr)
+	assert.Equal(t, "current", storedSource.Status)
+}
+
 func TestMergeLateAuditFailureRollsBackEveryEffect(t *testing.T) {
 	fixture := newPeopleFixture(t)
 	ctx := context.Background()

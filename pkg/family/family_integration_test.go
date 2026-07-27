@@ -3,8 +3,10 @@
 package family
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
+	"sync"
 	"testing"
 	"time"
 
@@ -218,6 +220,81 @@ func TestFamilyBranchTraversesDeepDescendantsWithMultipleParentsAndPartnersDeter
 	assert.NotContains(t, names, "Sibling")
 	assert.NotContains(t, names, "Sibling child")
 	assert.NotContains(t, names, "Archived connection")
+}
+
+func TestFamilySchemaEnforcesCanonicalPairsConstraintsAndIndexes(t *testing.T) {
+	fixture := newFamilyFixture(t)
+	ctx := context.Background()
+	a := addFamilyPerson(t, fixture.db, "A")
+	b := addFamilyPerson(t, fixture.db, "B")
+	lower, higher := a, b
+	if bytes.Compare(lower[:], higher[:]) > 0 {
+		lower, higher = higher, lower
+	}
+
+	_, err := fixture.db.NewRaw(`INSERT INTO family_relationships (id, relationship_type, person_a_id, person_b_id) VALUES (?, 'sibling', ?, ?)`, uuid.New(), higher, lower).Exec(ctx)
+	require.Error(t, err, "symmetric pairs must use canonical endpoint ordering")
+	_, err = fixture.db.NewRaw(`INSERT INTO family_relationships (id, relationship_type, person_a_id, person_b_id) VALUES (?, 'parent_child', ?, ?)`, uuid.New(), a, a).Exec(ctx)
+	require.Error(t, err, "self relationships must be rejected")
+	_, err = fixture.db.NewRaw(`INSERT INTO family_relationships (id, relationship_type, person_a_id, person_b_id) VALUES (?, 'sibling', ?, ?)`, uuid.New(), lower, higher).Exec(ctx)
+	require.NoError(t, err)
+	_, err = fixture.db.NewRaw(`INSERT INTO family_relationships (id, relationship_type, person_a_id, person_b_id) VALUES (?, 'sibling', ?, ?)`, uuid.New(), lower, higher).Exec(ctx)
+	require.Error(t, err, "active relationship pairs must be unique")
+	_, err = fixture.db.NewRaw(`INSERT INTO family_relationships (id, relationship_type, person_a_id, person_b_id) VALUES (?, 'parent_child', ?, ?)`, uuid.New(), uuid.New(), b).Exec(ctx)
+	require.Error(t, err, "relationship endpoints must reference People")
+
+	var indexes []string
+	require.NoError(t, fixture.db.NewRaw(`SELECT indexname FROM pg_indexes WHERE schemaname = current_schema() AND tablename = 'family_relationships' ORDER BY indexname`).Scan(ctx, &indexes))
+	assert.ElementsMatch(t, []string{
+		"family_relationships_active_a_idx", "family_relationships_active_b_idx",
+		"family_relationships_active_unique_idx", "family_relationships_current_partner_a_idx",
+		"family_relationships_current_partner_b_idx", "family_relationships_pkey",
+	}, indexes)
+}
+
+func TestConcurrentOpposingParentChildCreatesCannotIntroduceCycle(t *testing.T) {
+	fixture := newFamilyFixture(t)
+	ctx := context.Background()
+	a := addFamilyPerson(t, fixture.db, "A")
+	b := addFamilyPerson(t, fixture.db, "B")
+	_, err := fixture.db.ExecContext(ctx, `
+		CREATE FUNCTION delay_family_insert() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN PERFORM pg_sleep(0.2); RETURN NEW; END $$;
+		CREATE TRIGGER delay_family_insert BEFORE INSERT ON family_relationships
+		FOR EACH ROW EXECUTE FUNCTION delay_family_insert()`)
+	require.NoError(t, err)
+
+	requests := []MutationRequest{
+		{RelationshipType: "parent_child", PersonAID: a.String(), PersonBID: b.String()},
+		{RelationshipType: "parent_child", PersonAID: b.String(), PersonBID: a.String()},
+	}
+	errors := make([]error, len(requests))
+	start := make(chan struct{})
+	var ready sync.WaitGroup
+	var done sync.WaitGroup
+	ready.Add(len(requests))
+	done.Add(len(requests))
+	for index := range requests {
+		go func(index int) {
+			defer done.Done()
+			ready.Done()
+			<-start
+			_, errors[index] = fixture.service.Create(ctx, fixture.actor, requests[index])
+		}(index)
+	}
+	ready.Wait()
+	close(start)
+	done.Wait()
+
+	if errors[0] == nil {
+		require.ErrorIs(t, errors[1], ErrCycle)
+	} else {
+		require.NoError(t, errors[1])
+		require.ErrorIs(t, errors[0], ErrCycle)
+	}
+	var active int
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM family_relationships WHERE archived_at IS NULL`).Scan(ctx, &active))
+	assert.Equal(t, 1, active)
 }
 
 func TestFamilyMutationsRejectDuplicatesStaleVersionsAndUnavailablePeople(t *testing.T) {

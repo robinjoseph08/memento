@@ -1,6 +1,7 @@
 package people
 
 import (
+	"context"
 	"errors"
 	"mime"
 	"net/http"
@@ -25,6 +26,10 @@ type Handler struct {
 
 func NewHandler(service *Service, auth *setup.Service) *Handler {
 	return &Handler{service: service, auth: auth}
+}
+
+func (h *Handler) requestContext(c echo.Context) context.Context {
+	return h.auth.ContextWithRequestMetadata(c.Request().Context(), c.Request())
 }
 
 func (h *Handler) authorize(c echo.Context, mutation bool) (setup.CuratorSession, error) {
@@ -91,7 +96,7 @@ func (h *Handler) Create(c echo.Context) error {
 	if err := bindJSON(c, &request); err != nil {
 		return err
 	}
-	person, err := h.service.Create(c.Request().Context(), actor, request)
+	person, err := h.service.Create(h.requestContext(c), actor, request)
 	if err != nil {
 		return peopleError(err)
 	}
@@ -111,7 +116,7 @@ func (h *Handler) Update(c echo.Context) error {
 	if err := bindJSON(c, &request); err != nil {
 		return err
 	}
-	person, err := h.service.Update(c.Request().Context(), actor, id, request)
+	person, err := h.service.Update(h.requestContext(c), actor, id, request)
 	if err != nil {
 		return peopleError(err)
 	}
@@ -131,7 +136,7 @@ func (h *Handler) Archive(c echo.Context) error {
 	if err := bindJSON(c, &request); err != nil {
 		return err
 	}
-	person, err := h.service.Archive(c.Request().Context(), actor, id, request.Version)
+	person, err := h.service.Archive(h.requestContext(c), actor, id, request.Version)
 	if err != nil {
 		return peopleError(err)
 	}
@@ -152,7 +157,7 @@ func (h *Handler) PreviewMerge(c echo.Context) error {
 	if sourceErr != nil || survivorErr != nil {
 		return errcodes.ValidationError("Choose two valid People.")
 	}
-	preview, err := h.service.PreviewMerge(c.Request().Context(), actor, sourceID, survivorID)
+	preview, err := h.service.PreviewMerge(h.requestContext(c), actor, sourceID, survivorID)
 	if err != nil {
 		return peopleError(err)
 	}
@@ -168,7 +173,7 @@ func (h *Handler) Merge(c echo.Context) error {
 	if err := bindJSON(c, &request); err != nil {
 		return err
 	}
-	person, err := h.service.Merge(c.Request().Context(), actor, request)
+	person, err := h.service.Merge(h.requestContext(c), actor, request)
 	if err != nil {
 		return peopleError(err)
 	}
@@ -191,6 +196,8 @@ func peopleError(err error) error {
 		return errcodes.Conflict("Explicitly transfer the source current Recipient access generation.")
 	case errors.Is(err, ErrEmailResolutionNeeded):
 		return errcodes.Conflict("Choose which login email survives before merging.")
+	case errors.Is(err, ErrFamilyMergeCycle):
+		return errcodes.Conflict("Resolve the parent-child path between these People before merging them.")
 	case errors.Is(err, ErrInvalidPerson), errors.Is(err, ErrInvalidMerge):
 		return errcodes.ValidationError("Enter valid Person details.")
 	default:

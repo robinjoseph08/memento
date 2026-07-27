@@ -17,7 +17,8 @@ import (
 	"github.com/uptrace/bun"
 )
 
-type requestMetadata struct {
+// RequestMetadata is the trusted request attribution stored with security audits.
+type RequestMetadata struct {
 	ClientIP  string
 	UserAgent string
 }
@@ -25,7 +26,7 @@ type requestMetadata struct {
 type requestMetadataKey struct{}
 
 func withRequestMetadata(ctx context.Context, request *http.Request, trustedProxies []netip.Prefix) context.Context {
-	metadata := requestMetadata{ClientIP: clientIP(request, trustedProxies), UserAgent: request.UserAgent()}
+	metadata := RequestMetadata{ClientIP: clientIP(request, trustedProxies), UserAgent: request.UserAgent()}
 	userAgentRunes := []rune(metadata.UserAgent)
 	if len(userAgentRunes) > 512 {
 		metadata.UserAgent = string(userAgentRunes[:512])
@@ -33,9 +34,19 @@ func withRequestMetadata(ctx context.Context, request *http.Request, trustedProx
 	return context.WithValue(ctx, requestMetadataKey{}, metadata)
 }
 
-func metadataFromContext(ctx context.Context) requestMetadata {
-	metadata, _ := ctx.Value(requestMetadataKey{}).(requestMetadata)
+func metadataFromContext(ctx context.Context) RequestMetadata {
+	metadata, _ := ctx.Value(requestMetadataKey{}).(RequestMetadata)
 	return metadata
+}
+
+// ContextWithRequestMetadata records the trusted client address and bounded user agent.
+func (s *Service) ContextWithRequestMetadata(ctx context.Context, request *http.Request) context.Context {
+	return withRequestMetadata(ctx, request, s.security.TrustedProxyCIDRs)
+}
+
+// RequestMetadataFromContext returns request attribution prepared by ContextWithRequestMetadata.
+func RequestMetadataFromContext(ctx context.Context) RequestMetadata {
+	return metadataFromContext(ctx)
 }
 
 func clientIP(request *http.Request, trustedProxies []netip.Prefix) string {

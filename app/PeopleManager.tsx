@@ -492,6 +492,15 @@ function MergeConfirmation({
           historical attribution rows remain attached to their original Person.
         </li>
         <li>
+          {preview.affected_references.family_relationships_moved} Family
+          relationship references will move to the survivor.
+        </li>
+        <li>
+          {preview.affected_references.family_relationships_archived} active
+          Family relationships will be archived because they would become
+          duplicate or self-connections.
+        </li>
+        <li>
           Source roles:{" "}
           {preview.affected_references.source_roles.join(", ") || "None"}.
         </li>

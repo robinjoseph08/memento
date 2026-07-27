@@ -16,15 +16,15 @@ func TestRoutesDeclareExplicitCuratorPolicies(t *testing.T) {
 		policies[route.Method+" "+route.Path] = route.Name
 	}
 	for _, route := range []string{
-		"GET /api/family/relationships",
-		"GET /api/family/branches/:person_id",
+		"GET /api/relationships",
+		"GET /api/relationships/branches/:person_id",
 	} {
 		assert.Equal(t, curatorReadPolicy, policies[route], route)
 	}
 	for _, route := range []string{
-		"POST /api/family/relationships",
-		"PATCH /api/family/relationships/:id",
-		"POST /api/family/relationships/:id/archive",
+		"POST /api/relationships",
+		"PATCH /api/relationships/:id",
+		"POST /api/relationships/:id/archive",
 	} {
 		assert.Equal(t, curatorMutationPolicy, policies[route], route)
 	}

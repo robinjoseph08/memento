@@ -105,6 +105,8 @@ test("previews and confirms the exact source, survivor, generation, email, and v
       survivor_roles: [],
       recipient_role_will_transfer: true,
       resulting_recipient_generation: 4,
+      family_relationships_moved: 2,
+      family_relationships_archived: 1,
     },
     requires_generation_transfer: true,
     requires_email_resolution: true,
@@ -158,6 +160,10 @@ test("previews and confirms the exact source, survivor, generation, email, and v
   expect(
     await screen.findByText(/will become generation 4/, {}, contentionWait),
   ).toBeInTheDocument();
+  expect(
+    screen.getByText(/2 Family relationship references/),
+  ).toBeInTheDocument();
+  expect(screen.getByText(/1 active Family relationships/)).toBeInTheDocument();
   const confirm = screen.getByRole("button", { name: "Confirm audited merge" });
   expect(confirm).toBeDisabled();
   fireEvent.click(

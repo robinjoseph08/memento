@@ -222,7 +222,7 @@ func bindJSON(c echo.Context, target any) error {
 }
 
 func (h *Handler) requestContext(c echo.Context) context.Context {
-	return withRequestMetadata(c.Request().Context(), c.Request(), h.service.security.TrustedProxyCIDRs)
+	return h.service.ContextWithRequestMetadata(c.Request().Context(), c.Request())
 }
 
 func (h *Handler) clientIP(c echo.Context) string {

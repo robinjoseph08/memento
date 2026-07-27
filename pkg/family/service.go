@@ -21,6 +21,7 @@ var (
 	ErrInvalid           = errors.New("family relationship is invalid")
 	ErrDuplicate         = errors.New("family relationship already exists")
 	ErrCycle             = errors.New("parent-child relationship would create a cycle")
+	ErrMergeCycle        = errors.New("merging these People would collapse a parent-child path into a cycle")
 	ErrStale             = errors.New("family relationship was changed by another request")
 )
 
@@ -75,6 +76,12 @@ type BranchMember struct {
 type BranchResponse struct {
 	Root    Person         `json:"root"`
 	Members []BranchMember `json:"members"`
+}
+
+// PersonMergeEffects summarizes Family references affected by a Person merge.
+type PersonMergeEffects struct {
+	RelationshipsMoved    int
+	RelationshipsArchived int
 }
 
 // Service maintains the graph transactionally.
@@ -268,6 +275,123 @@ func (s *Service) Archive(ctx context.Context, actor setup.CuratorSession, id uu
 func lockFamilyGraph(ctx context.Context, tx bun.Tx) error {
 	_, err := tx.NewRaw(`SELECT pg_advisory_xact_lock(hashtextextended('memento:family-graph', 0))`).Exec(ctx)
 	return err
+}
+
+// LockGraph serializes Person merges with Family graph mutations.
+func LockGraph(ctx context.Context, tx bun.Tx) error {
+	return lockFamilyGraph(ctx, tx)
+}
+
+// PreviewPersonMerge reports how Family references would move and whether the
+// selected identities are connected by an active parent-child path.
+func PreviewPersonMerge(ctx context.Context, db bun.IDB, sourceID, survivorID uuid.UUID) (PersonMergeEffects, error) {
+	if sourceID == survivorID {
+		return PersonMergeEffects{}, ErrInvalid
+	}
+	connected, err := parentPathExists(ctx, db, sourceID, survivorID)
+	if err != nil {
+		return PersonMergeEffects{}, err
+	}
+	if !connected {
+		connected, err = parentPathExists(ctx, db, survivorID, sourceID)
+		if err != nil {
+			return PersonMergeEffects{}, err
+		}
+	}
+	rows := make([]relationshipRow, 0)
+	if err := db.NewRaw(`SELECT id, relationship_type, person_a_id, person_b_id, partner_status, version, created_at, updated_at, archived_at FROM family_relationships WHERE person_a_id = ? OR person_b_id = ? ORDER BY id`, sourceID, sourceID).Scan(ctx, &rows); err != nil {
+		return PersonMergeEffects{}, err
+	}
+	effects := PersonMergeEffects{}
+	for _, row := range rows {
+		personA, personB := mergedEndpoints(row, sourceID, survivorID)
+		if personA == personB {
+			if row.ArchivedAt == nil {
+				effects.RelationshipsArchived++
+			}
+			continue
+		}
+		duplicate, err := activeDuplicateExists(ctx, db, row.ID, row.Type, personA, personB)
+		if err != nil {
+			return PersonMergeEffects{}, err
+		}
+		if row.ArchivedAt == nil && duplicate {
+			effects.RelationshipsArchived++
+		}
+		effects.RelationshipsMoved++
+	}
+	if connected {
+		return effects, ErrMergeCycle
+	}
+	return effects, nil
+}
+
+// MergePersonReferences moves Family relationship endpoints to the survivor,
+// archiving active rows that would become self-connections or duplicates.
+func MergePersonReferences(ctx context.Context, tx bun.Tx, sourceID, survivorID uuid.UUID, now time.Time) (PersonMergeEffects, error) {
+	effects, err := PreviewPersonMerge(ctx, tx, sourceID, survivorID)
+	if err != nil {
+		return PersonMergeEffects{}, err
+	}
+	rows := make([]relationshipRow, 0)
+	if err := tx.NewRaw(`SELECT id, relationship_type, person_a_id, person_b_id, partner_status, version, created_at, updated_at, archived_at FROM family_relationships WHERE person_a_id = ? OR person_b_id = ? ORDER BY id FOR UPDATE`, sourceID, sourceID).Scan(ctx, &rows); err != nil {
+		return PersonMergeEffects{}, err
+	}
+	for _, row := range rows {
+		personA, personB := mergedEndpoints(row, sourceID, survivorID)
+		if personA == personB {
+			if row.ArchivedAt == nil {
+				if _, err := tx.NewRaw(`UPDATE family_relationships SET archived_at = ?, version = version + 1, updated_at = ? WHERE id = ?`, now, now, row.ID).Exec(ctx); err != nil {
+					return PersonMergeEffects{}, err
+				}
+			}
+			continue
+		}
+		duplicate, err := activeDuplicateExists(ctx, tx, row.ID, row.Type, personA, personB)
+		if err != nil {
+			return PersonMergeEffects{}, err
+		}
+		archivedAt := row.ArchivedAt
+		if row.ArchivedAt == nil && duplicate {
+			archivedAt = &now
+		}
+		if _, err := tx.NewRaw(`UPDATE family_relationships SET person_a_id = ?, person_b_id = ?, archived_at = ?, version = version + 1, updated_at = ? WHERE id = ?`, personA, personB, archivedAt, now, row.ID).Exec(ctx); err != nil {
+			return PersonMergeEffects{}, err
+		}
+	}
+	return effects, nil
+}
+
+func mergedEndpoints(row relationshipRow, sourceID, survivorID uuid.UUID) (uuid.UUID, uuid.UUID) {
+	personA, personB := row.PersonAID, row.PersonBID
+	if personA == sourceID {
+		personA = survivorID
+	}
+	if personB == sourceID {
+		personB = survivorID
+	}
+	if row.Type != "parent_child" && bytes.Compare(personA[:], personB[:]) > 0 {
+		personA, personB = personB, personA
+	}
+	return personA, personB
+}
+
+func activeDuplicateExists(ctx context.Context, db bun.IDB, excludedID uuid.UUID, relationshipType string, personA, personB uuid.UUID) (bool, error) {
+	var duplicate bool
+	err := db.NewRaw(`SELECT EXISTS (SELECT 1 FROM family_relationships WHERE relationship_type = ? AND person_a_id = ? AND person_b_id = ? AND archived_at IS NULL AND id <> ?)`, relationshipType, personA, personB, excludedID).Scan(ctx, &duplicate)
+	return duplicate, err
+}
+
+func parentPathExists(ctx context.Context, db bun.IDB, ancestorID, descendantID uuid.UUID) (bool, error) {
+	var exists bool
+	err := db.NewRaw(`WITH RECURSIVE descendants(person_id) AS (
+		SELECT person_b_id FROM family_relationships WHERE relationship_type = 'parent_child' AND archived_at IS NULL AND person_a_id = ?
+		UNION
+		SELECT relationship.person_b_id FROM family_relationships AS relationship
+		JOIN descendants ON relationship.person_a_id = descendants.person_id
+		WHERE relationship.relationship_type = 'parent_child' AND relationship.archived_at IS NULL
+	) SELECT EXISTS (SELECT 1 FROM descendants WHERE person_id = ?)`, ancestorID, descendantID).Scan(ctx, &exists)
+	return exists, err
 }
 
 func validateMutation(ctx context.Context, tx bun.Tx, excludedID uuid.UUID, request MutationRequest, personA, personB uuid.UUID) error {
@@ -526,6 +650,7 @@ func appendAudit(ctx context.Context, tx bun.Tx, actor setup.CuratorSession, sub
 	if err != nil {
 		return err
 	}
-	_, err = tx.NewRaw(`INSERT INTO security_audit_events (actor_person_id, subject_person_id, action, outcome, session_id, metadata) VALUES (?, ?, ?, 'success', ?, ?::jsonb)`, actor.PersonID, subject, action, actor.SessionID, string(encoded)).Exec(ctx)
+	request := setup.RequestMetadataFromContext(ctx)
+	_, err = tx.NewRaw(`INSERT INTO security_audit_events (actor_person_id, subject_person_id, action, outcome, client_ip, user_agent, session_id, metadata) VALUES (?, ?, ?, 'success', NULLIF(?, '')::inet, ?, ?, ?::jsonb)`, actor.PersonID, subject, action, request.ClientIP, request.UserAgent, actor.SessionID, string(encoded)).Exec(ctx)
 	return err
 }

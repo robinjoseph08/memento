@@ -88,9 +88,9 @@ func TestServerRegistersFamilyRoutesWhenHandlerIsProvided(t *testing.T) {
 		routes[route.Method+" "+route.Path] = true
 	}
 	for _, route := range []string{
-		"GET /api/family/relationships", "GET /api/family/branches/:person_id",
-		"POST /api/family/relationships", "PATCH /api/family/relationships/:id",
-		"POST /api/family/relationships/:id/archive",
+		"GET /api/relationships", "GET /api/relationships/branches/:person_id",
+		"POST /api/relationships", "PATCH /api/relationships/:id",
+		"POST /api/relationships/:id/archive",
 	} {
 		assert.True(t, routes[route], route)
 	}

@@ -283,7 +283,7 @@ test("restores and refreshes a signed-in Trusted-device Session", async () => {
     if (path.startsWith("/api/people?")) {
       return Promise.resolve(jsonResponse({ people: [] }));
     }
-    if (path.startsWith("/api/family/relationships?")) {
+    if (path.startsWith("/api/relationships?")) {
       return Promise.resolve(jsonResponse({ relationships: [] }));
     }
     return Promise.resolve(
@@ -309,7 +309,7 @@ test("restores and refreshes a signed-in Trusted-device Session", async () => {
     expect.objectContaining({ credentials: "same-origin" }),
   );
   expect(fetchMock).toHaveBeenCalledWith(
-    "/api/family/relationships?include_archived=false",
+    "/api/relationships?include_archived=false",
     expect.objectContaining({ credentials: "same-origin" }),
   );
   expect(fetchMock).toHaveBeenCalledWith(
