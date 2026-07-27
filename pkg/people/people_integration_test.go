@@ -354,14 +354,18 @@ func TestMergeIntoCuratorPreservesCurrentSessionAndAuthority(t *testing.T) {
 	fixture := newPeopleFixture(t)
 	ctx := context.Background()
 	source := addPerson(t, fixture.db, "Duplicate Curator", "Curator, Duplicate")
-	immichPersonID := uuid.New()
+	immichPersonID, candidateID := uuid.New(), uuid.New()
 	_, err := fixture.db.ExecContext(ctx, `
 		INSERT INTO immich_people_inventory (immich_person_id, name, first_seen_at, last_seen_at)
 		VALUES (?, 'Merged identity', now(), now());
 		INSERT INTO immich_person_links (
 			person_id, immich_person_id, state, last_seen_at, confirmed_at, confirmed_by_person_id
-		) VALUES (?, ?, 'linked', now(), now(), ?)
-	`, immichPersonID, source, immichPersonID, fixture.actor.PersonID)
+		) VALUES (?, ?, 'needs_review', now(), now(), ?);
+		INSERT INTO person_repair_candidates (
+			id, person_id, previous_immich_person_id, candidate_immich_person_id, created_at
+		) VALUES (?, ?, ?, ?, now())
+	`, immichPersonID, source, immichPersonID, fixture.actor.PersonID,
+		candidateID, source, immichPersonID, immichPersonID)
 	require.NoError(t, err)
 
 	preview, err := fixture.service.PreviewMerge(ctx, fixture.actor, source, fixture.actor.PersonID)
@@ -382,6 +386,13 @@ func TestMergeIntoCuratorPreservesCurrentSessionAndAuthority(t *testing.T) {
 	var linkedPersonID uuid.UUID
 	require.NoError(t, fixture.db.NewRaw(`SELECT person_id FROM immich_person_links WHERE immich_person_id = ?`, immichPersonID).Scan(ctx, &linkedPersonID))
 	assert.Equal(t, fixture.actor.PersonID, linkedPersonID)
+	var candidateState string
+	var resolvedBy uuid.UUID
+	require.NoError(t, fixture.db.NewRaw(`
+		SELECT state, resolved_by_person_id FROM person_repair_candidates WHERE id = ?
+	`, candidateID).Scan(ctx, &candidateState, &resolvedBy))
+	assert.Equal(t, "superseded", candidateState)
+	assert.Equal(t, fixture.actor.PersonID, resolvedBy)
 }
 
 func TestMergePreviewAndConfirmationEnforceAuthorityAndGenerationGates(t *testing.T) {

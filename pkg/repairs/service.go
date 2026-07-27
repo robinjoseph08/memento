@@ -489,7 +489,26 @@ func (s *Service) LinkPerson(ctx context.Context, actor setup.CuratorSession, re
 	if err != nil || immichPersonID == uuid.Nil {
 		return MutationResponse{}, ErrInvalid
 	}
+	if err := s.requireCurrentImmichPerson(ctx, immichPersonID); err != nil {
+		return MutationResponse{}, err
+	}
 	return s.linkPerson(ctx, actor, personID, immichPersonID, nil)
+}
+
+func (s *Service) requireCurrentImmichPerson(ctx context.Context, immichPersonID uuid.UUID) error {
+	if err := s.connector.Check(ctx); err != nil {
+		return ErrDependency
+	}
+	people, err := s.connector.People(ctx)
+	if err != nil {
+		return ErrDependency
+	}
+	for _, person := range people {
+		if person.SourceID == immichPersonID {
+			return nil
+		}
+	}
+	return ErrConflict
 }
 
 func (s *Service) linkPerson(ctx context.Context, actor setup.CuratorSession, personID, immichPersonID uuid.UUID, candidateID *uuid.UUID) (MutationResponse, error) {

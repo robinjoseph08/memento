@@ -345,6 +345,22 @@ func TestNewImmichPersonRemainsAdditionUntilCuratorLinksIt(t *testing.T) {
 	assert.Equal(t, []uuid.UUID{fixture.personID}, suggestions)
 }
 
+func TestManualPersonLinkRejectsIdentityThatDisappearedAfterReconciliation(t *testing.T) {
+	fixture := newRepairFixture(t, 0)
+	addition := uuid.New()
+	fixture.connector.people = append(fixture.connector.people, immich.PersonSummary{SourceID: addition, Name: "Temporary identity"})
+	require.NoError(t, reconcile(fixture.service))
+
+	fixture.connector.people = []immich.PersonSummary{{SourceID: fixture.oldID, Name: "Immich member"}}
+	_, err := fixture.service.LinkPerson(context.Background(), fixture.actor, LinkPersonRequest{
+		PersonID: fixture.personID.String(), ImmichPersonID: addition.String(),
+	})
+	assert.ErrorIs(t, err, ErrConflict)
+	suggestions, err := fixture.service.SuggestionPersonIDs(context.Background(), []uuid.UUID{fixture.oldID, addition})
+	require.NoError(t, err)
+	assert.Equal(t, []uuid.UUID{fixture.personID}, suggestions)
+}
+
 func TestManualPersonLinkDoesNotConfirmUnrelatedPendingProposal(t *testing.T) {
 	fixture := newRepairFixture(t, 1)
 	proposed, selected := uuid.New(), uuid.New()
@@ -390,7 +406,14 @@ func TestImmichPersonCannotBeClaimedByTwoPortalPeople(t *testing.T) {
 
 func TestArchivedPersonStopsSuggestionsAndReleasesImmichIdentity(t *testing.T) {
 	fixture := newRepairFixture(t, 0)
-	_, err := people.New(fixture.db).Archive(context.Background(), fixture.actor, fixture.personID, 1)
+	candidateID := uuid.New()
+	_, err := fixture.db.ExecContext(context.Background(), `
+		INSERT INTO person_repair_candidates (
+			id, person_id, previous_immich_person_id, candidate_immich_person_id, created_at
+		) VALUES (?, ?, ?, ?, now())
+	`, candidateID, fixture.personID, fixture.oldID, fixture.oldID)
+	require.NoError(t, err)
+	_, err = people.New(fixture.db).Archive(context.Background(), fixture.actor, fixture.personID, 1)
 	require.NoError(t, err)
 
 	suggestions, err := fixture.service.SuggestionPersonIDs(context.Background(), []uuid.UUID{fixture.oldID})
@@ -400,6 +423,13 @@ func TestArchivedPersonStopsSuggestionsAndReleasesImmichIdentity(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, listed.UnlinkedImmichPeople, 1)
 	assert.Equal(t, fixture.oldID.String(), listed.UnlinkedImmichPeople[0].ImmichPersonID)
+	var candidateState string
+	var resolvedBy uuid.UUID
+	require.NoError(t, fixture.db.NewRaw(`
+		SELECT state, resolved_by_person_id FROM person_repair_candidates WHERE id = ?
+	`, candidateID).Scan(context.Background(), &candidateState, &resolvedBy))
+	assert.Equal(t, "superseded", candidateState)
+	assert.Equal(t, fixture.actor.PersonID, resolvedBy)
 }
 
 func TestPersonAnchorCaptureUsesFiveOfFiftyNewestActiveBackings(t *testing.T) {

@@ -74,7 +74,7 @@ func init() {
 						person_id uuid NOT NULL REFERENCES people(id) ON DELETE RESTRICT,
 						previous_immich_person_id uuid NOT NULL,
 						candidate_immich_person_id uuid,
-						state text NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'rejected', 'confirmed')),
+						state text NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'rejected', 'confirmed', 'superseded')),
 						anchor_count integer NOT NULL DEFAULT 0 CHECK (anchor_count >= 0),
 						anchor_evidence jsonb NOT NULL DEFAULT '[]'::jsonb CHECK (jsonb_typeof(anchor_evidence) = 'array'),
 						conflict_evidence jsonb NOT NULL DEFAULT '[]'::jsonb CHECK (jsonb_typeof(conflict_evidence) = 'array'),
