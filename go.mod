@@ -43,6 +43,8 @@ require (
 	github.com/mattn/go-isatty v0.0.22 // indirect
 	github.com/mitchellh/copystructure v1.2.0 // indirect
 	github.com/mitchellh/reflectwalk v1.0.2 // indirect
+	github.com/oschwald/geoip2-golang v1.13.0 // indirect
+	github.com/oschwald/maxminddb-golang v1.13.0 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/puzpuzpuz/xsync/v3 v3.5.1 // indirect

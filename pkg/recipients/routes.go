@@ -133,6 +133,30 @@ func (h *Handler) Remind(c echo.Context) error {
 	return h.invitationAction(c, h.service.Remind)
 }
 
+func (h *Handler) Suspend(c echo.Context) error { return h.lifecycleAction(c, h.service.Suspend) }
+func (h *Handler) Restore(c echo.Context) error { return h.lifecycleAction(c, h.service.Restore) }
+func (h *Handler) RevokeAccess(c echo.Context) error {
+	return h.lifecycleAction(c, h.service.RevokeAccess)
+}
+
+type lifecycleAction func(context.Context, setup.CuratorSession, uuid.UUID) (Recipient, error)
+
+func (h *Handler) lifecycleAction(c echo.Context, action lifecycleAction) error {
+	actor, err := h.authorize(c, true)
+	if err != nil {
+		return err
+	}
+	id, err := personID(c)
+	if err != nil {
+		return err
+	}
+	response, err := action(h.requestContext(c), actor, id)
+	if err != nil {
+		return recipientError(err)
+	}
+	return c.JSON(http.StatusOK, response)
+}
+
 type invitationAction func(context.Context, setup.CuratorSession, uuid.UUID, uuid.UUID) (Recipient, error)
 
 func (h *Handler) invitationAction(c echo.Context, action invitationAction) error {
@@ -274,6 +298,10 @@ func recipientError(err error) error {
 		return errcodes.Conflict("Wait for the initial Invitation delivery before sending a reminder.")
 	case errors.Is(err, ErrInvitationState):
 		return errcodes.Conflict("This Recipient state does not permit Invitation changes.")
+	case errors.Is(err, ErrLifecycleState):
+		return errcodes.Conflict("This Recipient state does not permit that access change.")
+	case errors.Is(err, ErrCuratorLifecycle):
+		return errcodes.Conflict("The Curator Recipient cannot be suspended or revoked.")
 	case errors.Is(err, emaildelivery.ErrNotConfigured):
 		return errcodes.ServiceUnavailable("SMTP is not configured.")
 	default:
@@ -336,6 +364,12 @@ func RegisterRoutes(e *echo.Echo, handler *Handler) {
 	reissue.Name = curatorMutationPolicy
 	remind := group.POST("/:person_id/invitation/remind", handler.Remind)
 	remind.Name = curatorMutationPolicy
+	suspend := group.POST("/:person_id/suspend", handler.Suspend)
+	suspend.Name = curatorMutationPolicy
+	restore := group.POST("/:person_id/restore", handler.Restore)
+	restore.Name = curatorMutationPolicy
+	revokeAccess := group.POST("/:person_id/revoke", handler.RevokeAccess)
+	revokeAccess.Name = curatorMutationPolicy
 
 	tokens := e.Group("/api/auth/invitations", tokenHeaders)
 	inspect := tokens.GET("/inspect", handler.Inspect)

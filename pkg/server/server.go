@@ -18,6 +18,7 @@ import (
 	"github.com/robinjoseph08/memento/pkg/people"
 	"github.com/robinjoseph08/memento/pkg/recipients"
 	"github.com/robinjoseph08/memento/pkg/repairs"
+	"github.com/robinjoseph08/memento/pkg/sessions"
 	"github.com/robinjoseph08/memento/pkg/setup"
 	"github.com/robinjoseph08/memento/pkg/sources"
 	"github.com/robinjoseph08/memento/pkg/suggestions"
@@ -25,7 +26,7 @@ import (
 )
 
 // New constructs the HTTP application and delegates route ownership to handler packages.
-func New(healthService *health.Service, emailHandler *emaildelivery.Handler, setupHandler *setup.Handler, peopleHandler *people.Handler, familyHandler *family.Handler, visibilityHandler *visibility.Handler, recipientHandler *recipients.Handler, sourceHandler *sources.Handler, eventHandler *events.Handler, repairHandler *repairs.Handler, suggestionHandler *suggestions.Handler, audienceHandler *audiences.Handler) (*echo.Echo, error) {
+func New(healthService *health.Service, emailHandler *emaildelivery.Handler, setupHandler *setup.Handler, peopleHandler *people.Handler, familyHandler *family.Handler, visibilityHandler *visibility.Handler, recipientHandler *recipients.Handler, sourceHandler *sources.Handler, eventHandler *events.Handler, repairHandler *repairs.Handler, suggestionHandler *suggestions.Handler, audienceHandler *audiences.Handler, sessionHandlers ...*sessions.Handler) (*echo.Echo, error) {
 	e := echo.New()
 	requestBinder, err := binder.New()
 	if err != nil {
@@ -71,6 +72,9 @@ func New(healthService *health.Service, emailHandler *emaildelivery.Handler, set
 	}
 	if audienceHandler != nil {
 		audiences.RegisterRoutes(e, audienceHandler)
+	}
+	if len(sessionHandlers) > 0 && sessionHandlers[0] != nil {
+		sessions.RegisterRoutes(e, sessionHandlers[0])
 	}
 	e.HTTPErrorHandler = errcodes.NewHandler().Handle
 	return e, nil

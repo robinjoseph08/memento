@@ -35,6 +35,14 @@ import type {
   OnboardingResponse,
 } from "./types/generated/recipients";
 import type {
+  EmailChangeCompleteRequest,
+  EmailChangeResponse,
+  EmailChangeStartResponse,
+  ListResponse as SessionListResponse,
+  SignInStartResponse,
+  SignInVerifyRequest,
+} from "./types/generated/sessions";
+import type {
   Album as SourceAlbum,
   DiscoveryResponse,
   ListResponse as SourceListResponse,
@@ -122,6 +130,134 @@ function ErrorMessage({ error }: { error: Error | null }) {
     <p className="form-error" role="alert">
       {error.message}
     </p>
+  );
+}
+
+function SignInFlow({
+  onComplete,
+}: {
+  onComplete: (session: SessionResponse) => void;
+}) {
+  const [email, setEmail] = useState("");
+  const [challengeID, setChallengeID] = useState("");
+  const [code, setCode] = useState("");
+  const [sessionType, setSessionType] = useState("trusted");
+  const requestCode = useMutation({
+    mutationFn: () =>
+      apiJSON<SignInStartResponse>("/api/auth/sign-in/request", {
+        method: "POST",
+        body: JSON.stringify({ email }),
+      }),
+    onSuccess: (response) => setChallengeID(response.challenge_id),
+  });
+  const verify = useMutation({
+    mutationFn: (request: SignInVerifyRequest) =>
+      apiJSON("/api/auth/sign-in/verify", {
+        method: "POST",
+        body: JSON.stringify(request),
+      }),
+    onSuccess: async () => {
+      const session = await apiJSON<SessionResponse>("/api/session");
+      onComplete(session);
+    },
+  });
+  return (
+    <section aria-labelledby="sign-in-title" className="shell-card setup-card">
+      <BrandHeader />
+      <div className="setup-heading">
+        <p className="step-label">Private Recipient access</p>
+        <h2 id="sign-in-title">Sign in to Memento</h2>
+      </div>
+      <p className="lede">Setup is complete.</p>
+      {!challengeID ? (
+        <form
+          className="setup-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            requestCode.mutate();
+          }}
+        >
+          <p className="form-intro">
+            Enter your login email. Memento always returns the same response and
+            sends a code only when sign-in is available.
+          </p>
+          <label>
+            Login email
+            <input
+              autoComplete="email"
+              onChange={(event) => setEmail(event.target.value)}
+              required
+              type="email"
+              value={email}
+            />
+          </label>
+          <ErrorMessage error={requestCode.error} />
+          <button disabled={requestCode.isPending} type="submit">
+            {requestCode.isPending ? "Requesting…" : "Send sign-in code"}
+          </button>
+        </form>
+      ) : (
+        <form
+          className="setup-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            verify.mutate({
+              challenge_id: challengeID,
+              code,
+              session_type: sessionType,
+            });
+          }}
+        >
+          <p className="form-intro">
+            If sign-in is available, the eight-digit single-use code expires in
+            ten minutes.
+          </p>
+          <label>
+            Sign-in code
+            <input
+              autoComplete="one-time-code"
+              inputMode="numeric"
+              maxLength={8}
+              minLength={8}
+              onChange={(event) => setCode(event.target.value)}
+              pattern="[0-9]{8}"
+              required
+              value={code}
+            />
+          </label>
+          <fieldset>
+            <legend>This browser</legend>
+            <label className="radio-choice">
+              <input
+                checked={sessionType === "trusted"}
+                name="sign-in-session-type"
+                onChange={() => setSessionType("trusted")}
+                type="radio"
+              />
+              Trusted device, expires after one year of inactivity
+            </label>
+            <label className="radio-choice">
+              <input
+                checked={sessionType === "public"}
+                name="sign-in-session-type"
+                onChange={() => setSessionType("public")}
+                type="radio"
+              />
+              Public computer, browser-session cookie and at most 12 hours
+            </label>
+          </fieldset>
+          <ErrorMessage error={verify.error} />
+          <button disabled={verify.isPending} type="submit">
+            {verify.isPending ? "Signing in…" : "Verify and sign in"}
+          </button>
+          <div className="setup-secondary-actions">
+            <button onClick={() => setChallengeID("")} type="button">
+              Use another email
+            </button>
+          </div>
+        </form>
+      )}
+    </section>
   );
 }
 
@@ -1004,6 +1140,214 @@ function RecipientOnboarding({
   );
 }
 
+function PublicSessionBanner({ session }: { session: SessionResponse }) {
+  if (session.session_type !== "public") return null;
+  return (
+    <aside className="public-session-warning">
+      <strong>Public computer</strong>
+      <span>
+        Sign out when finished. Push is disabled, and downloaded originals or
+        archives remain on this computer after sign-out.
+      </span>
+    </aside>
+  );
+}
+
+function SessionManager({
+  session,
+  onSignedOut,
+}: {
+  session: SessionResponse;
+  onSignedOut: () => void;
+}) {
+  const queryClient = useQueryClient();
+  const [labels, setLabels] = useState<Record<string, string>>({});
+  const [newEmail, setNewEmail] = useState("");
+  const [emailChange, setEmailChange] = useState<EmailChangeStartResponse>();
+  const [oldCode, setOldCode] = useState("");
+  const [newCode, setNewCode] = useState("");
+  const sessions = useQuery({
+    queryKey: ["sessions"],
+    queryFn: () => apiJSON<SessionListResponse>("/api/sessions"),
+    retry: false,
+  });
+  const rename = useMutation({
+    mutationFn: ({ id, label }: { id: string; label: string }) =>
+      apiNoContent(`/api/sessions/${id}`, {
+        method: "PATCH",
+        headers: { "X-Memento-CSRF": session.csrf_token },
+        body: JSON.stringify({ label }),
+      }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["sessions"] }),
+  });
+  const revoke = useMutation({
+    mutationFn: (id: string) =>
+      apiNoContent(`/api/sessions/${id}`, {
+        method: "DELETE",
+        headers: { "X-Memento-CSRF": session.csrf_token },
+      }),
+    onSuccess: async (_, id) => {
+      if (sessions.data?.sessions.find((item) => item.id === id)?.current) {
+        onSignedOut();
+      } else {
+        await queryClient.invalidateQueries({ queryKey: ["sessions"] });
+      }
+    },
+  });
+  const signOutAll = useMutation({
+    mutationFn: () =>
+      apiNoContent("/api/sessions/sign-out-all", {
+        method: "POST",
+        headers: { "X-Memento-CSRF": session.csrf_token },
+      }),
+    onSuccess: onSignedOut,
+  });
+  const startEmailChange = useMutation({
+    mutationFn: () =>
+      apiJSON<EmailChangeStartResponse>("/api/me/email-change/request", {
+        method: "POST",
+        headers: { "X-Memento-CSRF": session.csrf_token },
+        body: JSON.stringify({ new_email: newEmail }),
+      }),
+    onSuccess: setEmailChange,
+  });
+  const completeEmailChange = useMutation({
+    mutationFn: (request: EmailChangeCompleteRequest) =>
+      apiJSON<EmailChangeResponse>("/api/me/email-change/complete", {
+        method: "POST",
+        headers: { "X-Memento-CSRF": session.csrf_token },
+        body: JSON.stringify(request),
+      }),
+    onSuccess: () => window.location.reload(),
+  });
+  return (
+    <details className="session-manager">
+      <summary>Sessions and login email</summary>
+      <p>
+        Inspect and revoke each browser separately. Approximate location appears
+        only when the operator configured a local GeoIP database.
+      </p>
+      {sessions.data?.sessions.map((item) => (
+        <article className="session-row" key={item.id}>
+          <div>
+            <strong>
+              {item.label || `${item.browser} on ${item.platform}`}
+              {item.current ? " (this browser)" : ""}
+            </strong>
+            <span>
+              {item.session_type === "public"
+                ? "Public computer"
+                : "Trusted device"}
+              {` · ${item.status} · last active ${formatSourceDate(item.last_activity_at)}`}
+              {item.location ? ` · ${item.location}` : ""}
+            </span>
+            {!item.push_allowed ? <span>Push unavailable</span> : null}
+          </div>
+          <label>
+            Session name
+            <input
+              onChange={(event) =>
+                setLabels((current) => ({
+                  ...current,
+                  [item.id]: event.target.value,
+                }))
+              }
+              value={labels[item.id] ?? item.label}
+            />
+          </label>
+          <button
+            disabled={rename.isPending || item.status !== "active"}
+            onClick={() =>
+              rename.mutate({
+                id: item.id,
+                label: labels[item.id] ?? item.label,
+              })
+            }
+            type="button"
+          >
+            Save name
+          </button>
+          <button
+            className="danger-button"
+            disabled={revoke.isPending || item.status !== "active"}
+            onClick={() => revoke.mutate(item.id)}
+            type="button"
+          >
+            {item.current ? "Sign out this browser" : "Revoke Session"}
+          </button>
+        </article>
+      ))}
+      <ErrorMessage error={sessions.error ?? rename.error ?? revoke.error} />
+      <button
+        className="danger-button"
+        disabled={signOutAll.isPending}
+        onClick={() => signOutAll.mutate()}
+        type="button"
+      >
+        Sign out all Sessions
+      </button>
+      <div className="email-change">
+        <h3>Change login email</h3>
+        {!emailChange ? (
+          <>
+            <label>
+              New login email
+              <input
+                onChange={(event) => setNewEmail(event.target.value)}
+                type="email"
+                value={newEmail}
+              />
+            </label>
+            <button
+              disabled={startEmailChange.isPending || !newEmail}
+              onClick={() => startEmailChange.mutate()}
+              type="button"
+            >
+              Send codes to both addresses
+            </button>
+          </>
+        ) : (
+          <>
+            <p>Enter the fresh code sent to each address.</p>
+            <label>
+              Current-address code
+              <input
+                inputMode="numeric"
+                onChange={(event) => setOldCode(event.target.value)}
+                value={oldCode}
+              />
+            </label>
+            <label>
+              New-address code
+              <input
+                inputMode="numeric"
+                onChange={(event) => setNewCode(event.target.value)}
+                value={newCode}
+              />
+            </label>
+            <button
+              disabled={completeEmailChange.isPending}
+              onClick={() =>
+                completeEmailChange.mutate({
+                  request_id: emailChange.request_id,
+                  old_code: oldCode,
+                  new_code: newCode,
+                })
+              }
+              type="button"
+            >
+              Confirm email change
+            </button>
+          </>
+        )}
+        <ErrorMessage
+          error={startEmailChange.error ?? completeEmailChange.error}
+        />
+      </div>
+    </details>
+  );
+}
+
 function ReadyCard({
   session,
   onComplete,
@@ -1055,6 +1399,8 @@ function ReadyCard({
   if (session?.curator && (draftsRequested || draftsDirty)) {
     return (
       <section className="draft-work-shell">
+        <PublicSessionBanner session={session} />
+        <SessionManager onSignedOut={onSignOut} session={session} />
         <div className="draft-work-actions">
           <button
             className="back-to-management"
@@ -1119,12 +1465,16 @@ function ReadyCard({
       return (
         <>
           <InvitationSuggestions session={session} />
+          <PublicSessionBanner session={session} />
+          <SessionManager onSignedOut={onSignOut} session={session} />
           <RecipientVisibilityManager onSignOut={onSignOut} session={session} />
         </>
       );
     }
     return (
       <>
+        <PublicSessionBanner session={session} />
+        <SessionManager onSignedOut={onSignOut} session={session} />
         <PeopleManager session={session} />
         <InvitationSuggestions session={session} />
         <FamilyManager session={session} />
@@ -1143,16 +1493,7 @@ function ReadyCard({
       </>
     );
   }
-  return (
-    <section aria-labelledby="memento-title" className="shell-card">
-      <BrandHeader />
-      <p className="lede">Setup is complete.</p>
-      <p aria-live="polite" className="status">
-        <span aria-hidden="true" className="status-dot" />
-        Sign in to manage Memento
-      </p>
-    </section>
-  );
+  return <SignInFlow onComplete={onComplete} />;
 }
 
 function InvitationLanding() {

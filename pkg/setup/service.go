@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"math/big"
+	"net"
 	"net/mail"
 	"strings"
 	"time"
@@ -167,6 +168,12 @@ type Service struct {
 	secret   []byte
 	now      func() time.Time
 	random   io.Reader
+	location LocationResolver
+}
+
+// LocationResolver resolves an address using operator-provided local data only.
+type LocationResolver interface {
+	Lookup(ip net.IP) string
 }
 
 func New(db *bun.DB, delivery *emaildelivery.Service, security config.SecurityConfig) *Service {
@@ -175,6 +182,9 @@ func New(db *bun.DB, delivery *emaildelivery.Service, security config.SecurityCo
 		now: time.Now, random: rand.Reader,
 	}
 }
+
+// SetLocationResolver enables optional Session location from a local database.
+func (s *Service) SetLocationResolver(resolver LocationResolver) { s.location = resolver }
 
 // Available reports only whether the public setup workflow still exists.
 func (s *Service) Available(ctx context.Context) (AvailabilityResponse, error) {
@@ -384,6 +394,7 @@ func (s *Service) complete(ctx context.Context, request CompleteRequest) (comple
 		if err != nil {
 			return err
 		}
+		browser, platform, clientIP, location := s.sessionMetadata(ctx)
 		statements := []struct {
 			query string
 			args  []any
@@ -395,7 +406,7 @@ func (s *Service) complete(ctx context.Context, request CompleteRequest) (comple
 			{`INSERT INTO onboarding_choices (recipient_access_generation_id, privacy_acknowledged, engagement_acknowledged, interest_list_acknowledged, email_previews_acknowledged, push_guidance_acknowledged, informed_choices_version, email_preference, completed_at) VALUES (?, ?, ?, ?, ?, ?, 2, ?, ?)`, []any{accessID, true, true, true, true, true, request.EmailPreference, now}},
 			{`INSERT INTO notification_preferences (recipient_access_generation_id, email_preference, updated_at) VALUES (?, ?, ?)`, []any{accessID, request.EmailPreference, now}},
 			{`UPDATE login_challenges SET consumed_at = ? WHERE verification_token_hash = ?`, []any{now, tokenHash(verificationRaw)}},
-			{`INSERT INTO sessions (id, credential_hash, person_id, recipient_access_generation_id, security_epoch, session_type, created_at, last_activity_at, idle_expires_at, absolute_expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, []any{sessionID, tokenHash(credentialRaw), personID, accessID, securityEpoch, request.SessionType, now, now, idleExpiresAt, absoluteExpiresAt}},
+			{`INSERT INTO sessions (id, credential_hash, person_id, recipient_access_generation_id, security_epoch, session_type, created_at, last_activity_at, idle_expires_at, absolute_expires_at, browser, platform, client_ip, location) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, '')::inet, NULLIF(?, ''))`, []any{sessionID, tokenHash(credentialRaw), personID, accessID, securityEpoch, request.SessionType, now, now, idleExpiresAt, absoluteExpiresAt, browser, platform, clientIP, location}},
 			{`UPDATE system_settings SET setup_complete = true, updated_at = ? WHERE id = 1 AND setup_complete = false`, []any{now}},
 		}
 		for _, statement := range statements {
@@ -509,7 +520,8 @@ func (s *Service) NewBrowserSessionIn(ctx context.Context, tx bun.Tx, personID, 
 	if err := tx.NewRaw(`SELECT security_epoch FROM system_settings WHERE id = 1 AND setup_complete`).Scan(ctx, &securityEpoch); err != nil {
 		return BrowserSession{}, uuid.Nil, err
 	}
-	if _, err := tx.NewRaw(`INSERT INTO sessions (id, credential_hash, person_id, recipient_access_generation_id, security_epoch, session_type, created_at, last_activity_at, idle_expires_at, absolute_expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, sessionID, tokenHash(raw), personID, accessID, securityEpoch, sessionType, now, now, idleExpiresAt, absoluteExpiresAt).Exec(ctx); err != nil {
+	browser, platform, clientIP, location := s.sessionMetadata(ctx)
+	if _, err := tx.NewRaw(`INSERT INTO sessions (id, credential_hash, person_id, recipient_access_generation_id, security_epoch, session_type, created_at, last_activity_at, idle_expires_at, absolute_expires_at, browser, platform, client_ip, location) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, '')::inet, NULLIF(?, ''))`, sessionID, tokenHash(raw), personID, accessID, securityEpoch, sessionType, now, now, idleExpiresAt, absoluteExpiresAt, browser, platform, clientIP, location).Exec(ctx); err != nil {
 		return BrowserSession{}, uuid.Nil, err
 	}
 	return BrowserSession{Credential: credential, CSRFToken: s.csrfToken(raw), SessionType: sessionType, ExpiresAt: idleExpiresAt}, sessionID, nil
@@ -671,6 +683,43 @@ func (s *Service) authenticateForStates(ctx context.Context, credential string, 
 		return authenticatedSession{}, err
 	}
 	return result, nil
+}
+
+func (s *Service) sessionMetadata(ctx context.Context) (browser, platform, clientIP, location string) {
+	metadata := metadataFromContext(ctx)
+	clientIP = metadata.ClientIP
+	browser, platform = describeUserAgent(metadata.UserAgent)
+	if s.location != nil {
+		location = s.location.Lookup(net.ParseIP(clientIP))
+	}
+	return browser, platform, clientIP, location
+}
+
+func describeUserAgent(value string) (string, string) {
+	browser, platform := "Unknown browser", "Unknown platform"
+	switch {
+	case strings.Contains(value, "Firefox/"):
+		browser = "Firefox"
+	case strings.Contains(value, "Edg/"):
+		browser = "Edge"
+	case strings.Contains(value, "Chrome/"):
+		browser = "Chrome"
+	case strings.Contains(value, "Safari/"):
+		browser = "Safari"
+	}
+	switch {
+	case strings.Contains(value, "iPhone"), strings.Contains(value, "iPad"):
+		platform = "iOS"
+	case strings.Contains(value, "Android"):
+		platform = "Android"
+	case strings.Contains(value, "Windows"):
+		platform = "Windows"
+	case strings.Contains(value, "Macintosh"):
+		platform = "macOS"
+	case strings.Contains(value, "Linux"):
+		platform = "Linux"
+	}
+	return browser, platform
 }
 
 func (s *Service) validCSRF(credential []byte, token string) bool {

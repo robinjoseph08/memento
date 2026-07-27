@@ -4,7 +4,7 @@
 
 Status: implementation-ready specification for the MVP.
 
-The Phase 1 deployable application foundation and first-browser Curator setup are implemented. Remaining Recipient workflows, restore validation, Recovery hold, and later product phases are not yet implemented.
+The deployable foundation, first-browser Curator setup, family administration, Invitation and Onboarding, passwordless sign-in, Session management, Recipient access lifecycle, and early curation workflows are implemented. Publication, protected Recipient Media, notifications, restore validation, Recovery hold, and later product phases are not yet implemented.
 
 The key words **MUST**, **MUST NOT**, **REQUIRED**, **SHOULD**, **SHOULD NOT**, and **MAY** are normative. They have their usual requirements-language meanings. Product terms such as Person, Recipient, Pending Recipient, Audience, Publication, and Staged update have the exact meanings in [`CONTEXT.md`](../CONTEXT.md).
 

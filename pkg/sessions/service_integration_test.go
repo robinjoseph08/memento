@@ -1,0 +1,202 @@
+//go:build integration
+
+package sessions
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/robinjoseph08/memento/internal/testdb"
+	"github.com/robinjoseph08/memento/pkg/config"
+	"github.com/robinjoseph08/memento/pkg/emaildelivery"
+	"github.com/robinjoseph08/memento/pkg/migrations"
+	"github.com/robinjoseph08/memento/pkg/setup"
+	"github.com/robinjoseph08/memento/pkg/smtp"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/uptrace/bun"
+)
+
+type discardSender struct{}
+
+func (discardSender) Send(context.Context, smtp.Message) error { return nil }
+
+type fixture struct {
+	db                            *bun.DB
+	service                       *Service
+	auth                          *setup.Service
+	delivery                      *emaildelivery.Service
+	personID, accessID, sessionID uuid.UUID
+	credential, csrf              string
+	now                           time.Time
+}
+
+func newFixture(t *testing.T) fixture {
+	t.Helper()
+	ctx := context.Background()
+	db := testdb.Open(t)
+	require.NoError(t, migrations.Apply(ctx, db))
+	personID, accessID, sessionID := uuid.New(), uuid.New(), uuid.New()
+	_, err := db.NewRaw(`INSERT INTO people (id, display_name, sort_name) VALUES (?, 'Alex', 'alex'); INSERT INTO person_roles (person_id, role) VALUES (?, 'recipient'); INSERT INTO recipient_access_generations (id, person_id, generation, state, is_current, onboarding_completed_at) VALUES (?, ?, 1, 'completed', true, now()); INSERT INTO recipient_emails (id, recipient_access_generation_id, email, normalized_email) VALUES (?, ?, 'alex@example.com', 'alex@example.com'); UPDATE system_settings SET setup_complete = true WHERE id = 1`, personID, personID, accessID, personID, uuid.New(), accessID).Exec(ctx)
+	require.NoError(t, err)
+	var epoch []byte
+	require.NoError(t, db.NewRaw(`SELECT security_epoch FROM system_settings WHERE id = 1`).Scan(ctx, &epoch))
+	raw := bytes.Repeat([]byte{0x11}, 32)
+	hash := sha256.Sum256(raw)
+	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
+	_, err = db.NewRaw(`INSERT INTO sessions (id, credential_hash, person_id, recipient_access_generation_id, security_epoch, session_type, created_at, last_activity_at, idle_expires_at, browser, platform) VALUES (?, ?, ?, ?, ?, 'trusted', ?, ?, ?, 'Firefox', 'Linux')`, sessionID, hash[:], personID, accessID, epoch, now, now, now.Add(365*24*time.Hour)).Exec(ctx)
+	require.NoError(t, err)
+	security := config.SecurityConfig{Secret: "sessions-integration-secret-at-least-32-bytes", SignInRateWindow: 15 * time.Minute, SignInEmailLimit: 3, SignInIPLimit: 10}
+	delivery := emaildelivery.New(db, config.SMTPConfig{Enabled: true, RetryWindow: time.Hour}, discardSender{}, security.Secret)
+	auth := setup.New(db, delivery, security)
+	credential := hex.EncodeToString(raw)
+	session, err := auth.Session(ctx, credential)
+	require.NoError(t, err)
+	service := New(db, delivery, auth, security)
+	service.now = func() time.Time { return now }
+	return fixture{db: db, service: service, auth: auth, delivery: delivery, personID: personID, accessID: accessID, sessionID: sessionID, credential: credential, csrf: session.CSRFToken, now: now}
+}
+
+func TestSignInStartIsNonEnumeratingAndStoresOnlyEligibleChallenge(t *testing.T) {
+	f := newFixture(t)
+	f.service.random = bytes.NewReader(bytes.Repeat([]byte{0x22}, 256))
+	known, err := f.service.RequestSignIn(context.Background(), SignInRequest{Email: "ALEX@example.com"})
+	require.NoError(t, err)
+	f.service.random = bytes.NewReader(bytes.Repeat([]byte{0x33}, 256))
+	unknown, err := f.service.RequestSignIn(context.Background(), SignInRequest{Email: "unknown@example.com"})
+	require.NoError(t, err)
+	assert.Equal(t, known.Status, unknown.Status)
+	assert.Len(t, known.ChallengeID, 64)
+	assert.Len(t, unknown.ChallengeID, 64)
+	var challenges, sessions int
+	require.NoError(t, f.db.NewRaw(`SELECT count(*) FROM sign_in_challenges`).Scan(context.Background(), &challenges))
+	require.NoError(t, f.db.NewRaw(`SELECT count(*) FROM sessions`).Scan(context.Background(), &sessions))
+	assert.Equal(t, 1, challenges)
+	assert.Equal(t, 1, sessions, "requesting and sending a code must not create a Session")
+	var body string
+	require.NoError(t, f.db.NewRaw(`SELECT body FROM email_deliveries WHERE kind = 'sign_in_code'`).Scan(context.Background(), &body))
+	assert.NotContains(t, body, "00000000")
+	assert.Contains(t, body, "v1:")
+}
+
+func insertChallenge(t *testing.T, f fixture, fill byte, code string) string {
+	t.Helper()
+	raw := bytes.Repeat([]byte{fill}, 32)
+	challengeID := hex.EncodeToString(raw)
+	expires := f.now.Add(10 * time.Minute)
+	require.NoError(t, f.db.RunInTx(context.Background(), nil, func(ctx context.Context, tx bun.Tx) error {
+		deliveryID, _, err := f.delivery.QueueRequired(ctx, tx, emaildelivery.RequiredMessage{Kind: emaildelivery.KindSignInCode, Recipient: "alex@example.com", Subject: "code", Body: "code", DeliverBefore: &expires})
+		if err != nil {
+			return err
+		}
+		_, err = tx.NewRaw(`INSERT INTO sign_in_challenges (id, challenge_hash, code_hash, recipient_access_generation_id, email_delivery_id, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, uuid.New(), digest(raw), f.service.codeHash("sign-in", raw, code), f.accessID, deliveryID, expires, f.now).Exec(ctx)
+		return err
+	}))
+	return challengeID
+}
+
+func TestSignInCodeIsEightDigitSingleUseAndCreatesPolicyBoundSessions(t *testing.T) {
+	for _, sessionType := range []string{"trusted", "public"} {
+		t.Run(sessionType, func(t *testing.T) {
+			f := newFixture(t)
+			challenge := insertChallenge(t, f, 0x44, "12345678")
+			result, err := f.service.VerifySignIn(context.Background(), SignInVerifyRequest{ChallengeID: challenge, Code: "12345678", SessionType: sessionType})
+			require.NoError(t, err)
+			assert.Len(t, result.session.Credential, 64)
+			_, err = f.service.VerifySignIn(context.Background(), SignInVerifyRequest{ChallengeID: challenge, Code: "12345678", SessionType: sessionType})
+			assert.ErrorIs(t, err, ErrInvalidCode)
+			var idle, absolute *time.Time
+			require.NoError(t, f.db.NewRaw(`SELECT idle_expires_at, absolute_expires_at FROM sessions WHERE id <> ?`, f.sessionID).Scan(context.Background(), &idle, &absolute))
+			if sessionType == "trusted" {
+				require.NotNil(t, idle)
+				assert.Equal(t, f.now.Add(365*24*time.Hour), idle.UTC())
+				assert.Nil(t, absolute)
+			} else {
+				assert.Nil(t, idle)
+				require.NotNil(t, absolute)
+				assert.Equal(t, f.now.Add(12*time.Hour), absolute.UTC())
+			}
+		})
+	}
+}
+
+func TestFiveFailedSignInAttemptsConsumeTheChallengeBudget(t *testing.T) {
+	f := newFixture(t)
+	challenge := insertChallenge(t, f, 0x45, "12345678")
+	for range 5 {
+		_, err := f.service.VerifySignIn(context.Background(), SignInVerifyRequest{ChallengeID: challenge, Code: "87654321", SessionType: "trusted"})
+		assert.ErrorIs(t, err, ErrInvalidCode)
+	}
+	_, err := f.service.VerifySignIn(context.Background(), SignInVerifyRequest{ChallengeID: challenge, Code: "12345678", SessionType: "trusted"})
+	assert.ErrorIs(t, err, ErrInvalidCode)
+	var attempts int
+	require.NoError(t, f.db.NewRaw(`SELECT attempts FROM sign_in_challenges`).Scan(context.Background(), &attempts))
+	assert.Equal(t, 5, attempts)
+}
+
+func TestSessionInspectionRenameRevocationAndSignOutAllDisablePush(t *testing.T) {
+	f := newFixture(t)
+	actor, err := f.auth.AuthorizeSession(context.Background(), f.credential, f.csrf, true)
+	require.NoError(t, err)
+	secondID := uuid.New()
+	raw := bytes.Repeat([]byte{0x66}, 32)
+	hash := sha256.Sum256(raw)
+	var epoch []byte
+	require.NoError(t, f.db.NewRaw(`SELECT security_epoch FROM system_settings WHERE id = 1`).Scan(context.Background(), &epoch))
+	_, err = f.db.NewRaw(`INSERT INTO sessions (id, credential_hash, person_id, recipient_access_generation_id, security_epoch, session_type, absolute_expires_at) VALUES (?, ?, ?, ?, ?, 'public', ?); INSERT INTO push_subscriptions (id, session_id, person_id, endpoint_hash) VALUES (?, ?, ?, ?)`, secondID, hash[:], f.personID, f.accessID, epoch, f.now.Add(12*time.Hour), uuid.New(), f.sessionID, f.personID, bytes.Repeat([]byte{0x77}, 32)).Exec(context.Background())
+	require.NoError(t, err)
+	list, err := f.service.ListSelf(context.Background(), actor)
+	require.NoError(t, err)
+	require.Len(t, list.Sessions, 2)
+	assert.True(t, list.Sessions[0].Current || list.Sessions[1].Current)
+	require.NoError(t, f.service.Rename(context.Background(), actor, secondID, RenameRequest{Label: "Shared laptop"}))
+	current, err := f.service.Revoke(context.Background(), actor, secondID)
+	require.NoError(t, err)
+	assert.False(t, current)
+	require.NoError(t, f.service.SignOutAll(context.Background(), actor))
+	var activeSessions, activePush int
+	require.NoError(t, f.db.NewRaw(`SELECT count(*) FROM sessions WHERE revoked_at IS NULL`).Scan(context.Background(), &activeSessions))
+	require.NoError(t, f.db.NewRaw(`SELECT count(*) FROM push_subscriptions WHERE disabled_at IS NULL`).Scan(context.Background(), &activePush))
+	assert.Zero(t, activeSessions)
+	assert.Zero(t, activePush)
+}
+
+func TestEmailChangeStartQueuesFreshProofsToBothAddresses(t *testing.T) {
+	f := newFixture(t)
+	actor, err := f.auth.AuthorizeSession(context.Background(), f.credential, f.csrf, true)
+	require.NoError(t, err)
+	response, err := f.service.StartEmailChange(context.Background(), actor, EmailChangeRequest{NewEmail: "new@example.com"})
+	require.NoError(t, err)
+	assert.NotEmpty(t, response.RequestID)
+	assert.Equal(t, f.now.Add(codeLifetime), response.ExpiresAt)
+	var recipients, encrypted int
+	require.NoError(t, f.db.NewRaw(`SELECT count(DISTINCT recipient), count(*) FILTER (WHERE body LIKE 'v1:%') FROM email_deliveries WHERE kind IN ('email_change_old_code', 'email_change_new_code')`).Scan(context.Background(), &recipients, &encrypted))
+	assert.Equal(t, 2, recipients)
+	assert.Equal(t, 2, encrypted)
+}
+
+func TestSignedInEmailChangeRequiresBothCodesAndPreservesIdentity(t *testing.T) {
+	f := newFixture(t)
+	actor, err := f.auth.AuthorizeSession(context.Background(), f.credential, f.csrf, true)
+	require.NoError(t, err)
+	requestID := uuid.New()
+	oldCode, newCode := "11112222", "33334444"
+	_, err = f.db.NewRaw(`INSERT INTO email_change_requests (id, person_id, recipient_access_generation_id, session_id, old_email, new_email, new_normalized_email, old_code_hash, new_code_hash, expires_at) VALUES (?, ?, ?, ?, 'alex@example.com', 'new@example.com', 'new@example.com', ?, ?, ?)`, requestID, f.personID, f.accessID, f.sessionID, f.service.codeHash("email-change-old", requestID[:], oldCode), f.service.codeHash("email-change-new", requestID[:], newCode), f.now.Add(10*time.Minute)).Exec(context.Background())
+	require.NoError(t, err)
+	_, err = f.service.CompleteEmailChange(context.Background(), actor, EmailChangeCompleteRequest{RequestID: requestID.String(), OldCode: oldCode, NewCode: "00000000"})
+	assert.ErrorIs(t, err, ErrInvalidCode)
+	result, err := f.service.CompleteEmailChange(context.Background(), actor, EmailChangeCompleteRequest{RequestID: requestID.String(), OldCode: oldCode, NewCode: newCode})
+	require.NoError(t, err)
+	assert.NotEqual(t, f.csrf, result.CSRFToken)
+	var personID, accessID uuid.UUID
+	var email string
+	require.NoError(t, f.db.NewRaw(`SELECT access.person_id, email.recipient_access_generation_id, email.normalized_email FROM recipient_emails AS email JOIN recipient_access_generations AS access ON access.id = email.recipient_access_generation_id WHERE email.is_current`).Scan(context.Background(), &personID, &accessID, &email))
+	assert.Equal(t, f.personID, personID)
+	assert.Equal(t, f.accessID, accessID)
+	assert.Equal(t, "new@example.com", email)
+}
