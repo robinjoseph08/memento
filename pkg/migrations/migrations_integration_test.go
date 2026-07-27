@@ -53,18 +53,28 @@ func TestApplyWaitsForMigrationLockBeyondDriverReadTimeout(t *testing.T) {
 
 	_, err = holder.ExecContext(context.Background(), `SELECT pg_advisory_lock(hashtextextended(current_database() || ':memento:migrations', 0))`)
 	require.NoError(t, err)
-	unlock := make(chan error, 1)
+
+	const driverReadTimeout = 50 * time.Millisecond
+	waiter := testdb.Clone(t, db, pgdriver.WithReadTimeout(driverReadTimeout))
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	result := make(chan error, 1)
 	go func() {
-		time.Sleep(200 * time.Millisecond)
-		_, unlockErr := holder.ExecContext(context.Background(), `SELECT pg_advisory_unlock(hashtextextended(current_database() || ':memento:migrations', 0))`)
-		unlock <- unlockErr
+		result <- Apply(ctx, waiter)
 	}()
 
-	waiter := testdb.Clone(t, db, pgdriver.WithReadTimeout(50*time.Millisecond))
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	require.NoError(t, Apply(ctx, waiter))
-	require.NoError(t, <-unlock)
+	require.Eventually(t, func() bool {
+		return waiter.Stats().InUse == 1
+	}, time.Second, 5*time.Millisecond, "migration waiter never opened its lock connection; stats: %+v", waiter.Stats())
+	select {
+	case applyErr := <-result:
+		require.Failf(t, "migration waiter returned while lock was held", "error: %v", applyErr)
+	case <-time.After(4 * driverReadTimeout):
+	}
+
+	_, err = holder.ExecContext(context.Background(), `SELECT pg_advisory_unlock(hashtextextended(current_database() || ':memento:migrations', 0))`)
+	require.NoError(t, err)
+	require.NoError(t, <-result)
 	require.NoError(t, Current(ctx, db))
 }
 

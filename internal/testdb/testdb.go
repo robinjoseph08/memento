@@ -65,10 +65,10 @@ func Clone(t *testing.T, source *bun.DB, options ...pgdriver.Option) *bun.DB {
 	parsed.RawQuery = query.Encode()
 	connectorOptions := append([]pgdriver.Option{pgdriver.WithDSN(parsed.String())}, options...)
 	clone := bun.NewDB(sql.OpenDB(pgdriver.NewConnector(connectorOptions...)), pgdialect.New())
-	requirePing(t, clone)
 	t.Cleanup(func() {
 		_ = clone.Close()
 	})
+	requirePing(t, clone)
 	return clone
 }
 
