@@ -167,6 +167,7 @@ export function EventOrganizer({
   const [activePane, setActivePane] = useState<Pane>("work");
   const [saveState, setSaveState] = useState<SaveState>("saved");
   const [conflictRecoveryError, setConflictRecoveryError] = useState("");
+  const [conflictRecoveryPending, setConflictRecoveryPending] = useState(false);
   const [revision, setRevision] = useState(0);
   const revisionRef = useRef(0);
   const latestDraftRef = useRef<DraftEvent | undefined>(undefined);
@@ -243,14 +244,14 @@ export function EventOrganizer({
   useEffect(() => {
     const dirty = saveState !== "saved";
     onDirtyChange?.(dirty);
-    onSavingChange?.(saveState === "saving");
+    onSavingChange?.(saveState === "saving" || conflictRecoveryPending);
     const preventDirtyUnload = (event: BeforeUnloadEvent) => {
       if (!dirty) return;
       event.preventDefault();
     };
     window.addEventListener("beforeunload", preventDirtyUnload);
     return () => window.removeEventListener("beforeunload", preventDirtyUnload);
-  }, [onDirtyChange, onSavingChange, saveState]);
+  }, [conflictRecoveryPending, onDirtyChange, onSavingChange, saveState]);
 
   useEffect(() => {
     const panes = {
@@ -460,45 +461,55 @@ export function EventOrganizer({
 
   async function loadNewerVersion() {
     setConflictRecoveryError("");
-    const result = await eventQuery.refetch();
-    if (!result.isSuccess || !result.data) {
-      setConflictRecoveryError(
-        result.error?.message ?? "The newer Event could not be loaded.",
-      );
-      return;
+    setConflictRecoveryPending(true);
+    try {
+      const result = await eventQuery.refetch();
+      if (!result.isSuccess || !result.data) {
+        setConflictRecoveryError(
+          result.error?.message ?? "The newer Event could not be loaded.",
+        );
+        return;
+      }
+      const next = cloneEvent(result.data);
+      latestDraftRef.current = next;
+      localDuringConflict.current = undefined;
+      save.reset();
+      setDraft(next);
+      setRevision(0);
+      setSaveState("saved");
+    } finally {
+      setConflictRecoveryPending(false);
     }
-    const next = cloneEvent(result.data);
-    latestDraftRef.current = next;
-    localDuringConflict.current = undefined;
-    save.reset();
-    setDraft(next);
-    setRevision(0);
-    setSaveState("saved");
   }
 
   async function keepMyChanges() {
-    const latest = latestDraftRef.current;
-    const local =
-      latest?.id === selectedID ? latest : localDuringConflict.current;
-    if (!local) return;
     setConflictRecoveryError("");
-    const result = await eventQuery.refetch();
-    if (!result.isSuccess || !result.data) {
-      setConflictRecoveryError(
-        result.error?.message ?? "The newer Event could not be loaded.",
-      );
-      return;
+    setConflictRecoveryPending(true);
+    try {
+      const result = await eventQuery.refetch();
+      if (!result.isSuccess || !result.data) {
+        setConflictRecoveryError(
+          result.error?.message ?? "The newer Event could not be loaded.",
+        );
+        return;
+      }
+      const latest = latestDraftRef.current;
+      const local =
+        latest?.id === selectedID ? latest : localDuringConflict.current;
+      if (!local) return;
+      const next = cloneEvent(local);
+      next.version = result.data.version;
+      const nextRevision = revisionRef.current + 1;
+      revisionRef.current = nextRevision;
+      latestDraftRef.current = next;
+      setDraft(next);
+      localDuringConflict.current = undefined;
+      save.reset();
+      setSaveState("unsaved");
+      setRevision(nextRevision);
+    } finally {
+      setConflictRecoveryPending(false);
     }
-    const next = cloneEvent(local);
-    next.version = result.data.version;
-    const nextRevision = revisionRef.current + 1;
-    revisionRef.current = nextRevision;
-    latestDraftRef.current = next;
-    setDraft(next);
-    localDuringConflict.current = undefined;
-    save.reset();
-    setSaveState("unsaved");
-    setRevision(nextRevision);
   }
 
   const inspected =
@@ -561,10 +572,18 @@ export function EventOrganizer({
           {conflictRecoveryError ? (
             <p className="form-error">{conflictRecoveryError}</p>
           ) : null}
-          <button onClick={() => void loadNewerVersion()} type="button">
+          <button
+            disabled={conflictRecoveryPending}
+            onClick={() => void loadNewerVersion()}
+            type="button"
+          >
             Load newer version
           </button>
-          <button onClick={() => void keepMyChanges()} type="button">
+          <button
+            disabled={conflictRecoveryPending}
+            onClick={() => void keepMyChanges()}
+            type="button"
+          >
             Replace newer version with my changes
           </button>
         </div>
@@ -586,7 +605,11 @@ export function EventOrganizer({
           </button>
         </div>
       ) : null}
-      <div className="curator-split" data-active-pane={activePane}>
+      <fieldset
+        className="curator-split"
+        data-active-pane={activePane}
+        disabled={conflictRecoveryPending}
+      >
         <aside
           className="work-pane"
           id="work-pane"
@@ -617,6 +640,7 @@ export function EventOrganizer({
                     )
                       return;
                     selectedIDRef.current = event.id;
+                    save.reset();
                     latestDraftRef.current = undefined;
                     localDuringConflict.current = undefined;
                     setDraft(undefined);
@@ -627,6 +651,7 @@ export function EventOrganizer({
                     setRevision(0);
                     setSaveState("saved");
                     setConflictRecoveryError("");
+                    setConflictRecoveryPending(false);
                     setSelectedID(event.id);
                     setActivePane("organize");
                   }}
@@ -909,7 +934,7 @@ export function EventOrganizer({
           ) : null}
           <p className="visually-hidden">{allMedia.length} total Media items</p>
         </aside>
-      </div>
+      </fieldset>
     </section>
   );
 }

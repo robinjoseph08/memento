@@ -538,6 +538,78 @@ test("keeps a conflict recoverable when loading the newer version fails", async 
   expect(screen.getByText("All changes saved")).toBeInTheDocument();
 });
 
+test("blocks edits while conflict replacement loads the newer version", async () => {
+  let initialLoad = true;
+  let resolveRefetch: ((value: Response) => void) | undefined;
+  const putBodies: OrganizeEventRequest[] = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = pathOf(input);
+      if (path === "/api/events" && !init?.method)
+        return response({
+          events: [
+            {
+              id: eventID,
+              title: "Family weekend",
+              version: 1,
+              moment_count: 2,
+              unassigned_count: 1,
+              updated_at: "2026-05-03T00:00:00Z",
+            },
+          ],
+        });
+      if (path === `/api/events/${eventID}`) {
+        if (initialLoad) {
+          initialLoad = false;
+          return response(draft());
+        }
+        return new Promise<Response>((resolve) => {
+          resolveRefetch = resolve;
+        });
+      }
+      if (path === `/api/events/${eventID}/organization`) {
+        const request = JSON.parse(
+          stringBody(init?.body),
+        ) as OrganizeEventRequest;
+        putBodies.push(request);
+        if (putBodies.length === 1)
+          return response(
+            { error: { message: "This Event changed in another browser." } },
+            409,
+          );
+        return response(eventFromRequest(request));
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    }),
+  );
+
+  renderOrganizer();
+  fireEvent.click(
+    await screen.findByRole("button", { name: /Family weekend/ }),
+  );
+  fireEvent.change(await screen.findByLabelText("Title for Moment 1"), {
+    target: { value: "My local title" },
+  });
+  await screen.findByText("Save conflict");
+  fireEvent.click(
+    screen.getByRole("button", {
+      name: "Replace newer version with my changes",
+    }),
+  );
+  expect(screen.getByLabelText("Title for Moment 1")).toBeDisabled();
+  expect(
+    screen.getByRole("button", {
+      name: "Replace newer version with my changes",
+    }),
+  ).toBeDisabled();
+
+  resolveRefetch?.(response(draft(2)));
+  await waitFor(() => expect(putBodies).toHaveLength(2), { timeout: 3000 });
+  expect(putBodies[1].moments[0].title).toBe("My local title");
+  expect(await screen.findByText("All changes saved")).toBeInTheDocument();
+});
+
 test("preserves edits made while an autosave is in flight", async () => {
   let resolveFirstSave: ((value: Response) => void) | undefined;
   const putBodies: OrganizeEventRequest[] = [];
@@ -863,6 +935,63 @@ test("does not silently discard a draft when navigating between Events", async (
   expect(screen.getByLabelText("Title for Moment 1")).toHaveValue(
     "Not saved yet",
   );
+});
+
+test("clears a failed autosave after confirmed Event navigation", async () => {
+  const secondID = "44444444-4444-4444-8444-444444444444";
+  const second = { ...draft(), id: secondID, title: "Summer picnic" };
+  vi.spyOn(window, "confirm").mockReturnValue(true);
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = pathOf(input);
+      if (path === "/api/events" && !init?.method)
+        return response({
+          events: [
+            {
+              id: eventID,
+              title: "Family weekend",
+              version: 1,
+              moment_count: 2,
+              unassigned_count: 1,
+              updated_at: "2026-05-03T00:00:00Z",
+            },
+            {
+              id: secondID,
+              title: second.title,
+              version: 1,
+              moment_count: 2,
+              unassigned_count: 1,
+              updated_at: "2026-05-03T00:00:00Z",
+            },
+          ],
+        });
+      if (path === `/api/events/${eventID}`) return response(draft());
+      if (path === `/api/events/${secondID}`) return response(second);
+      if (path === `/api/events/${eventID}/organization`)
+        return response(
+          { error: { message: "Autosave is temporarily unavailable." } },
+          503,
+        );
+      throw new Error(`Unexpected request: ${path}`);
+    }),
+  );
+
+  renderOrganizer();
+  fireEvent.click(
+    await screen.findByRole("button", { name: /Family weekend/ }),
+  );
+  fireEvent.change(await screen.findByLabelText("Title for Moment 1"), {
+    target: { value: "Failed title" },
+  });
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "Autosave is temporarily unavailable.",
+  );
+  fireEvent.click(screen.getByRole("button", { name: /Summer picnic/ }));
+  expect(
+    await screen.findByRole("heading", { name: "Summer picnic" }),
+  ).toBeInTheDocument();
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 });
 
 test("reports and retries a selected Event load failure", async () => {

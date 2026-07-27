@@ -867,6 +867,13 @@ func TestMediaConfirmationPreservesPortalIdentityAndMovesBacking(t *testing.T) {
 	assert.Equal(t, oldMediaID, placementMediaID)
 	assert.Equal(t, oldMediaID, looseMediaID)
 	assert.Equal(t, int64(2), looseVersion)
+	var eventVersion int64
+	require.NoError(t, fixture.db.NewRaw(`SELECT version FROM events WHERE id = ?`, eventID).Scan(context.Background(), &eventVersion))
+	assert.Equal(t, int64(2), eventVersion)
+	_, err = events.New(fixture.db).OrganizeEvent(context.Background(), fixture.actor, eventID, events.OrganizeEventRequest{
+		Version: 1, UnassignedMediaIDs: []string{newMediaID.String()},
+	})
+	assert.ErrorIs(t, err, events.ErrVersionConflict, "repair must make an open organization snapshot stale before validating its retired Media ID")
 	var candidateState string
 	var resolvedAt *time.Time
 	require.NoError(t, fixture.db.NewRaw(`SELECT state, resolved_at FROM media_repair_candidates WHERE id = ?`, candidateID).Scan(context.Background(), &candidateState, &resolvedAt))

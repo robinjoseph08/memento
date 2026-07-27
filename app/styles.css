@@ -1218,11 +1218,15 @@ h1 {
 
 .curator-split {
   display: grid;
+  min-width: 0;
+  min-height: 42rem;
+  margin: 0;
+  padding: 0;
+  border: 0;
   grid-template-columns: minmax(14rem, 0.75fr) minmax(28rem, 2fr) minmax(
       15rem,
       0.85fr
     );
-  min-height: 42rem;
 }
 
 .work-pane,
