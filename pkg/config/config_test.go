@@ -33,6 +33,8 @@ func TestLoadUsesDefaultsAndEnvironment(t *testing.T) {
 	assert.Equal(t, 15*time.Minute, cfg.Security.SetupRateWindow)
 	assert.Equal(t, 3, cfg.Security.SetupEmailLimit)
 	assert.Equal(t, 20, cfg.Security.SetupIPLimit)
+	assert.Equal(t, 15*time.Minute, cfg.Security.InvitationAcceptRateWindow)
+	assert.Equal(t, 20, cfg.Security.InvitationAcceptIPLimit)
 	assert.Equal(t, 10*time.Minute, cfg.Sources.ReconciliationInterval)
 	require.Len(t, cfg.Security.TrustedProxyCIDRs, 2)
 	assert.Equal(t, "127.0.0.0/8", cfg.Security.TrustedProxyCIDRs[0].String())
@@ -200,6 +202,8 @@ func TestValidateRejectsUnsafeValues(t *testing.T) {
 		{"setup rate window", func(c *Config) { c.Security.SetupRateWindow = 0 }, "setup rate limits must be positive"},
 		{"setup email limit", func(c *Config) { c.Security.SetupEmailLimit = 0 }, "setup rate limits must be positive"},
 		{"setup IP limit", func(c *Config) { c.Security.SetupIPLimit = 0 }, "setup rate limits must be positive"},
+		{"Invitation acceptance rate window", func(c *Config) { c.Security.InvitationAcceptRateWindow = 0 }, "Invitation acceptance rate limits must be positive"},
+		{"Invitation acceptance IP limit", func(c *Config) { c.Security.InvitationAcceptIPLimit = 0 }, "Invitation acceptance rate limits must be positive"},
 		{"heartbeat", func(c *Config) { c.Worker.HeartbeatMaxAge = c.Worker.HeartbeatInterval }, "heartbeat_max_age"},
 		{"poll lease", func(c *Config) { c.Worker.LeaseDuration = c.Worker.PollInterval }, "lease_duration"},
 		{"heartbeat lease", func(c *Config) { c.Worker.LeaseDuration = c.Worker.HeartbeatInterval }, "heartbeat_interval"},

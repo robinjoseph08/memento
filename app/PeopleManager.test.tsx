@@ -263,7 +263,11 @@ test("wires every Invitation control to its exact mutation", async () => {
   )) {
     expect(request.init).toMatchObject({
       method: "POST",
-      headers: { "X-Memento-CSRF": "csrf-token" },
+      headers: {
+        "Content-Type": "application/json",
+        "X-Memento-CSRF": "csrf-token",
+      },
+      body: JSON.stringify({ invitation_id: "invitation-id" }),
     });
   }
 });

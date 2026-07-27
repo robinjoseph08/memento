@@ -333,15 +333,61 @@ func (s *Service) Handle(ctx context.Context, job worker.Job) error {
 }
 
 func (s *Service) handleInvitationAttempt(ctx context.Context, job worker.Job, message delivery, retryStartedAt time.Time) error {
-	var outcome error
+	ready, err := s.prepareInvitationAttempt(ctx, job, message)
+	if err != nil || !ready {
+		return err
+	}
+
+	sendErr := s.sender.Send(ctx, smtp.Message{
+		ID: message.PublicID, To: message.Recipient, Subject: message.Subject, Body: message.Body,
+	})
+	if sendErr == nil {
+		return s.recordSent(ctx, job, message)
+	}
+	failure := &smtp.DeliveryError{Diagnostic: "smtp_unavailable", Temporary: true}
+	if !errors.As(sendErr, &failure) {
+		failure = &smtp.DeliveryError{Diagnostic: "smtp_unavailable", Temporary: true}
+	}
+	if !failure.Temporary {
+		if err := s.recordFailure(ctx, job, message.ID, failure.Diagnostic); err != nil {
+			return err
+		}
+		return worker.Permanent(failure.Diagnostic)
+	}
+	delay := s.retryDelay(message.Attempts)
+	remaining := s.cfg.RetryWindow - time.Since(retryStartedAt)
+	if remaining <= 0 {
+		if err := s.recordFailure(ctx, job, message.ID, "retry_window_exhausted"); err != nil {
+			return err
+		}
+		return worker.Permanent("retry_window_exhausted")
+	}
+	if delay > remaining {
+		delay = remaining
+	}
+	updated, err := s.db.NewRaw(`
+		UPDATE email_deliveries SET last_safe_error = ?, next_retry_at = clock_timestamp() + (? * interval '1 microsecond'), updated_at = clock_timestamp()
+		WHERE id = ? AND status = 'queued' AND EXISTS (
+			SELECT 1 FROM jobs WHERE id = ? AND status = 'running' AND lease_owner = ? AND lease_expires_at > clock_timestamp()
+		)
+	`, failure.Diagnostic, delay.Microseconds(), message.ID, job.ID, job.LeaseOwner).Exec(ctx)
+	if err != nil {
+		return err
+	}
+	if affected, _ := updated.RowsAffected(); affected != 1 {
+		return errDeliveryLeaseLost
+	}
+	return worker.RetryAfter(delay, failure.Diagnostic)
+}
+
+// prepareInvitationAttempt commits eligibility and lease checks before SMTP work.
+func (s *Service) prepareInvitationAttempt(ctx context.Context, job worker.Job, message delivery) (bool, error) {
+	ready := false
 	err := s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 		var invitationID string
 		if err := tx.NewRaw(`SELECT id FROM invitations WHERE id = ? FOR UPDATE`, *message.InvitationID).Scan(ctx, &invitationID); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
-				if err := s.recordCancellationIn(ctx, tx, job, message.ID); err != nil {
-					return err
-				}
-				return nil
+				return s.recordCancellationIn(ctx, tx, job, message.ID)
 			}
 			return err
 		}
@@ -350,10 +396,7 @@ func (s *Service) handleInvitationAttempt(ctx context.Context, job worker.Job, m
 			return err
 		}
 		if obsolete {
-			if err := s.recordCancellationIn(ctx, tx, job, message.ID); err != nil {
-				return err
-			}
-			return nil
+			return s.recordCancellationIn(ctx, tx, job, message.ID)
 		}
 		updated, err := tx.NewRaw(`
 			UPDATE email_deliveries SET attempts = attempts + 1, updated_at = clock_timestamp()
@@ -367,54 +410,10 @@ func (s *Service) handleInvitationAttempt(ctx context.Context, job worker.Job, m
 		if affected, _ := updated.RowsAffected(); affected != 1 {
 			return errDeliveryLeaseLost
 		}
-		sendErr := s.sender.Send(ctx, smtp.Message{
-			ID: message.PublicID, To: message.Recipient, Subject: message.Subject, Body: message.Body,
-		})
-		if sendErr == nil {
-			return s.recordSentIn(ctx, tx, job, message)
-		}
-		failure := &smtp.DeliveryError{Diagnostic: "smtp_unavailable", Temporary: true}
-		if !errors.As(sendErr, &failure) {
-			failure = &smtp.DeliveryError{Diagnostic: "smtp_unavailable", Temporary: true}
-		}
-		if !failure.Temporary {
-			if err := s.recordFailureIn(ctx, tx, job, message.ID, failure.Diagnostic); err != nil {
-				return err
-			}
-			outcome = worker.Permanent(failure.Diagnostic)
-			return nil
-		}
-		delay := s.retryDelay(message.Attempts)
-		remaining := s.cfg.RetryWindow - time.Since(retryStartedAt)
-		if remaining <= 0 {
-			if err := s.recordFailureIn(ctx, tx, job, message.ID, "retry_window_exhausted"); err != nil {
-				return err
-			}
-			outcome = worker.Permanent("retry_window_exhausted")
-			return nil
-		}
-		if delay > remaining {
-			delay = remaining
-		}
-		updated, err = tx.NewRaw(`
-			UPDATE email_deliveries SET last_safe_error = ?, next_retry_at = clock_timestamp() + (? * interval '1 microsecond'), updated_at = clock_timestamp()
-			WHERE id = ? AND status = 'queued' AND EXISTS (
-				SELECT 1 FROM jobs WHERE id = ? AND status = 'running' AND lease_owner = ? AND lease_expires_at > clock_timestamp()
-			)
-		`, failure.Diagnostic, delay.Microseconds(), message.ID, job.ID, job.LeaseOwner).Exec(ctx)
-		if err != nil {
-			return err
-		}
-		if affected, _ := updated.RowsAffected(); affected != 1 {
-			return errDeliveryLeaseLost
-		}
-		outcome = worker.RetryAfter(delay, failure.Diagnostic)
+		ready = true
 		return nil
 	})
-	if err != nil {
-		return err
-	}
-	return outcome
+	return ready, err
 }
 
 func invitationKind(kind string) bool {

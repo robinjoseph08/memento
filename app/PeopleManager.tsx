@@ -10,7 +10,11 @@ import type {
   Person,
   UpdateRequest,
 } from "./types/generated/people";
-import type { DesignateRequest, Recipient } from "./types/generated/recipients";
+import type {
+  DesignateRequest,
+  InvitationActionRequest,
+  Recipient,
+} from "./types/generated/recipients";
 import type { SessionResponse } from "./types/generated/setup";
 
 function ErrorNotice({ error }: { error: Error | null }) {
@@ -507,11 +511,25 @@ function RecipientControls({
     onSuccess: refresh,
   });
   const invitationAction = useMutation({
-    mutationFn: (action: "send" | "revoke" | "reissue" | "remind") =>
-      apiJSON<Recipient>(`/api/recipients/${person.id}/invitation/${action}`, {
-        method: "POST",
-        headers: { "X-Memento-CSRF": session.csrf_token },
-      }),
+    mutationFn: ({
+      action,
+      invitationID,
+    }: {
+      action: "send" | "revoke" | "reissue" | "remind";
+      invitationID?: string;
+    }) => {
+      const request: InvitationActionRequest | undefined = invitationID
+        ? { invitation_id: invitationID }
+        : undefined;
+      return apiJSON<Recipient>(
+        `/api/recipients/${person.id}/invitation/${action}`,
+        {
+          method: "POST",
+          headers: { "X-Memento-CSRF": session.csrf_token },
+          body: request ? JSON.stringify(request) : undefined,
+        },
+      );
+    },
     onSuccess: refresh,
   });
 
@@ -558,7 +576,7 @@ function RecipientControls({
           {!invitation && current.access.state === "pending" ? (
             <button
               disabled={invitationAction.isPending}
-              onClick={() => invitationAction.mutate("send")}
+              onClick={() => invitationAction.mutate({ action: "send" })}
               type="button"
             >
               Create and send Invitation
@@ -592,7 +610,12 @@ function RecipientControls({
                 <div className="recipient-actions">
                   <button
                     disabled={invitationAction.isPending || !invitation.sent_at}
-                    onClick={() => invitationAction.mutate("remind")}
+                    onClick={() =>
+                      invitationAction.mutate({
+                        action: "remind",
+                        invitationID: invitation.id,
+                      })
+                    }
                     title={
                       invitation.sent_at
                         ? undefined
@@ -604,7 +627,12 @@ function RecipientControls({
                   </button>
                   <button
                     disabled={invitationAction.isPending}
-                    onClick={() => invitationAction.mutate("reissue")}
+                    onClick={() =>
+                      invitationAction.mutate({
+                        action: "reissue",
+                        invitationID: invitation.id,
+                      })
+                    }
                     type="button"
                   >
                     Reissue with new link
@@ -612,7 +640,12 @@ function RecipientControls({
                   <button
                     className="danger-button"
                     disabled={invitationAction.isPending}
-                    onClick={() => invitationAction.mutate("revoke")}
+                    onClick={() =>
+                      invitationAction.mutate({
+                        action: "revoke",
+                        invitationID: invitation.id,
+                      })
+                    }
                     type="button"
                   >
                     Revoke Invitation
@@ -625,7 +658,12 @@ function RecipientControls({
               current.access.state === "pending" ? (
                 <button
                   disabled={invitationAction.isPending}
-                  onClick={() => invitationAction.mutate("reissue")}
+                  onClick={() =>
+                    invitationAction.mutate({
+                      action: "reissue",
+                      invitationID: invitation.id,
+                    })
+                  }
                   type="button"
                 >
                   Reissue Invitation

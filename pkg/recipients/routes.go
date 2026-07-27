@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
+	"github.com/robinjoseph08/memento/pkg/config"
 	"github.com/robinjoseph08/memento/pkg/emaildelivery"
 	"github.com/robinjoseph08/memento/pkg/errcodes"
 	"github.com/robinjoseph08/memento/pkg/setup"
@@ -23,10 +24,15 @@ const (
 type Handler struct {
 	service *Service
 	auth    *setup.Service
+	limiter *acceptanceLimiter
 }
 
-func NewHandler(service *Service, auth *setup.Service) *Handler {
-	return &Handler{service: service, auth: auth}
+func NewHandler(service *Service, auth *setup.Service, security ...config.SecurityConfig) *Handler {
+	handler := &Handler{service: service, auth: auth}
+	if len(security) != 0 {
+		handler.limiter = newAcceptanceLimiter(security[0])
+	}
+	return handler
 }
 
 func (h *Handler) requestContext(c echo.Context) context.Context {
@@ -167,7 +173,11 @@ func (h *Handler) Accept(c echo.Context) error {
 	if err := bindJSON(c, &request); err != nil {
 		return invitationTokenError()
 	}
-	response, err := h.service.Accept(h.requestContext(c), request.Token)
+	ctx := h.requestContext(c)
+	if h.limiter != nil && !h.limiter.allow(setup.RequestMetadataFromContext(ctx).ClientIP, request.Token) {
+		return errcodes.TooManyRequests("Too many Invitation attempts. Try again later.")
+	}
+	response, err := h.service.Accept(ctx, request.Token)
 	if errors.Is(err, ErrInvitationToken) {
 		return invitationTokenError()
 	}

@@ -57,11 +57,13 @@ type SourcesConfig struct {
 }
 
 type SecurityConfig struct {
-	Secret            string
-	SetupRateWindow   time.Duration
-	SetupEmailLimit   int
-	SetupIPLimit      int
-	TrustedProxyCIDRs []netip.Prefix
+	Secret                     string
+	SetupRateWindow            time.Duration
+	SetupEmailLimit            int
+	SetupIPLimit               int
+	InvitationAcceptRateWindow time.Duration
+	InvitationAcceptIPLimit    int
+	TrustedProxyCIDRs          []netip.Prefix
 }
 
 type SMTPConfig struct {
@@ -112,11 +114,13 @@ type rawConfig struct {
 		ReconciliationInterval string `koanf:"reconciliation_interval"`
 	} `koanf:"sources"`
 	Security struct {
-		Secret            string `koanf:"secret"`
-		SetupRateWindow   string `koanf:"setup_rate_window"`
-		SetupEmailLimit   int    `koanf:"setup_email_limit"`
-		SetupIPLimit      int    `koanf:"setup_ip_limit"`
-		TrustedProxyCIDRs string `koanf:"trusted_proxy_cidrs"`
+		Secret                     string `koanf:"secret"`
+		SetupRateWindow            string `koanf:"setup_rate_window"`
+		SetupEmailLimit            int    `koanf:"setup_email_limit"`
+		SetupIPLimit               int    `koanf:"setup_ip_limit"`
+		InvitationAcceptRateWindow string `koanf:"invitation_accept_rate_window"`
+		InvitationAcceptIPLimit    int    `koanf:"invitation_accept_ip_limit"`
+		TrustedProxyCIDRs          string `koanf:"trusted_proxy_cidrs"`
 	} `koanf:"security"`
 	SMTP struct {
 		Enabled             bool   `koanf:"enabled"`
@@ -163,6 +167,7 @@ var (
 	errReconciliationInterval   = errors.New("sources.reconciliation_interval must be positive")
 	errSecuritySecretRequired   = errors.New("security.secret must contain at least 32 bytes")
 	errSetupRateLimits          = errors.New("security setup rate limits must be positive")
+	errInvitationRateLimits     = errors.New("security Invitation acceptance rate limits must be positive")
 	errTrustedProxyCIDR         = errors.New("security.trusted_proxy_cidrs must contain valid CIDR prefixes")
 	errSMTPHostRequired         = errors.New("smtp.host is required when SMTP is enabled")
 	errSMTPPortInvalid          = errors.New("smtp.port must be between 1 and 65535")
@@ -181,31 +186,33 @@ var (
 )
 
 var defaults = map[string]any{
-	"http.address":                    "127.0.0.1:8081",
-	"http.shutdown_timeout":           "8s",
-	"database.name":                   "memento",
-	"database.max_open_conns":         10,
-	"database.health_timeout":         "2s",
-	"immich.health_timeout":           "2s",
-	"sources.reconciliation_interval": "10m",
-	"security.setup_rate_window":      "15m",
-	"security.setup_email_limit":      3,
-	"security.setup_ip_limit":         20,
-	"security.trusted_proxy_cidrs":    "127.0.0.0/8,::1/128",
-	"smtp.enabled":                    false,
-	"smtp.port":                       587,
-	"smtp.mode":                       "starttls",
-	"smtp.timeout":                    "10s",
-	"smtp.retry_base":                 "30s",
-	"smtp.retry_max":                  "1h",
-	"smtp.retry_window":               "24h",
-	"worker.poll_interval":            "1s",
-	"worker.heartbeat_interval":       "2s",
-	"worker.heartbeat_max_age":        "10s",
-	"worker.lease_duration":           "30s",
-	"worker.drain_timeout":            "5s",
-	"worker.retry_base":               "1s",
-	"worker.retry_max":                "1h",
+	"http.address":                           "127.0.0.1:8081",
+	"http.shutdown_timeout":                  "8s",
+	"database.name":                          "memento",
+	"database.max_open_conns":                10,
+	"database.health_timeout":                "2s",
+	"immich.health_timeout":                  "2s",
+	"sources.reconciliation_interval":        "10m",
+	"security.setup_rate_window":             "15m",
+	"security.setup_email_limit":             3,
+	"security.setup_ip_limit":                20,
+	"security.invitation_accept_rate_window": "15m",
+	"security.invitation_accept_ip_limit":    20,
+	"security.trusted_proxy_cidrs":           "127.0.0.0/8,::1/128",
+	"smtp.enabled":                           false,
+	"smtp.port":                              587,
+	"smtp.mode":                              "starttls",
+	"smtp.timeout":                           "10s",
+	"smtp.retry_base":                        "30s",
+	"smtp.retry_max":                         "1h",
+	"smtp.retry_window":                      "24h",
+	"worker.poll_interval":                   "1s",
+	"worker.heartbeat_interval":              "2s",
+	"worker.heartbeat_max_age":               "10s",
+	"worker.lease_duration":                  "30s",
+	"worker.drain_timeout":                   "5s",
+	"worker.retry_base":                      "1s",
+	"worker.retry_max":                       "1h",
 }
 
 // Load reads defaults, an optional YAML file, environment variables, and secret files in that order.
@@ -255,43 +262,45 @@ func Load(path string) (Config, error) {
 
 func envKey(key string) string {
 	known := map[string]string{
-		"MEMENTO_HTTP_ADDRESS":                    "http.address",
-		"MEMENTO_HTTP_PUBLIC_URL":                 "http.public_url",
-		"MEMENTO_HTTP_SHUTDOWN_TIMEOUT":           "http.shutdown_timeout",
-		"MEMENTO_DATABASE_URL":                    "database.url",
-		"MEMENTO_DATABASE_NAME":                   "database.name",
-		"MEMENTO_DATABASE_MAX_OPEN_CONNS":         "database.max_open_conns",
-		"MEMENTO_DATABASE_HEALTH_TIMEOUT":         "database.health_timeout",
-		"MEMENTO_IMMICH_URL":                      "immich.url",
-		"MEMENTO_IMMICH_API_KEY":                  "immich.api_key",
-		"MEMENTO_IMMICH_HEALTH_TIMEOUT":           "immich.health_timeout",
-		"MEMENTO_SOURCES_RECONCILIATION_INTERVAL": "sources.reconciliation_interval",
-		"MEMENTO_SECURITY_SECRET":                 "security.secret",
-		"MEMENTO_SECURITY_SETUP_RATE_WINDOW":      "security.setup_rate_window",
-		"MEMENTO_SECURITY_SETUP_EMAIL_LIMIT":      "security.setup_email_limit",
-		"MEMENTO_SECURITY_SETUP_IP_LIMIT":         "security.setup_ip_limit",
-		"MEMENTO_SECURITY_TRUSTED_PROXY_CIDRS":    "security.trusted_proxy_cidrs",
-		"MEMENTO_SMTP_ENABLED":                    "smtp.enabled",
-		"MEMENTO_SMTP_HOST":                       "smtp.host",
-		"MEMENTO_SMTP_PORT":                       "smtp.port",
-		"MEMENTO_SMTP_MODE":                       "smtp.mode",
-		"MEMENTO_SMTP_SERVER_NAME":                "smtp.server_name",
-		"MEMENTO_SMTP_USERNAME":                   "smtp.username",
-		"MEMENTO_SMTP_PASSWORD":                   "smtp.password",
-		"MEMENTO_SMTP_FROM_ADDRESS":               "smtp.from_address",
-		"MEMENTO_SMTP_TEST_RECIPIENT":             "smtp.test_recipient",
-		"MEMENTO_SMTP_INSECURE_DEVELOPMENT":       "smtp.insecure_development",
-		"MEMENTO_SMTP_TIMEOUT":                    "smtp.timeout",
-		"MEMENTO_SMTP_RETRY_BASE":                 "smtp.retry_base",
-		"MEMENTO_SMTP_RETRY_MAX":                  "smtp.retry_max",
-		"MEMENTO_SMTP_RETRY_WINDOW":               "smtp.retry_window",
-		"MEMENTO_WORKER_POLL_INTERVAL":            "worker.poll_interval",
-		"MEMENTO_WORKER_HEARTBEAT_INTERVAL":       "worker.heartbeat_interval",
-		"MEMENTO_WORKER_HEARTBEAT_MAX_AGE":        "worker.heartbeat_max_age",
-		"MEMENTO_WORKER_LEASE_DURATION":           "worker.lease_duration",
-		"MEMENTO_WORKER_DRAIN_TIMEOUT":            "worker.drain_timeout",
-		"MEMENTO_WORKER_RETRY_BASE":               "worker.retry_base",
-		"MEMENTO_WORKER_RETRY_MAX":                "worker.retry_max",
+		"MEMENTO_HTTP_ADDRESS":                           "http.address",
+		"MEMENTO_HTTP_PUBLIC_URL":                        "http.public_url",
+		"MEMENTO_HTTP_SHUTDOWN_TIMEOUT":                  "http.shutdown_timeout",
+		"MEMENTO_DATABASE_URL":                           "database.url",
+		"MEMENTO_DATABASE_NAME":                          "database.name",
+		"MEMENTO_DATABASE_MAX_OPEN_CONNS":                "database.max_open_conns",
+		"MEMENTO_DATABASE_HEALTH_TIMEOUT":                "database.health_timeout",
+		"MEMENTO_IMMICH_URL":                             "immich.url",
+		"MEMENTO_IMMICH_API_KEY":                         "immich.api_key",
+		"MEMENTO_IMMICH_HEALTH_TIMEOUT":                  "immich.health_timeout",
+		"MEMENTO_SOURCES_RECONCILIATION_INTERVAL":        "sources.reconciliation_interval",
+		"MEMENTO_SECURITY_SECRET":                        "security.secret",
+		"MEMENTO_SECURITY_SETUP_RATE_WINDOW":             "security.setup_rate_window",
+		"MEMENTO_SECURITY_SETUP_EMAIL_LIMIT":             "security.setup_email_limit",
+		"MEMENTO_SECURITY_SETUP_IP_LIMIT":                "security.setup_ip_limit",
+		"MEMENTO_SECURITY_INVITATION_ACCEPT_RATE_WINDOW": "security.invitation_accept_rate_window",
+		"MEMENTO_SECURITY_INVITATION_ACCEPT_IP_LIMIT":    "security.invitation_accept_ip_limit",
+		"MEMENTO_SECURITY_TRUSTED_PROXY_CIDRS":           "security.trusted_proxy_cidrs",
+		"MEMENTO_SMTP_ENABLED":                           "smtp.enabled",
+		"MEMENTO_SMTP_HOST":                              "smtp.host",
+		"MEMENTO_SMTP_PORT":                              "smtp.port",
+		"MEMENTO_SMTP_MODE":                              "smtp.mode",
+		"MEMENTO_SMTP_SERVER_NAME":                       "smtp.server_name",
+		"MEMENTO_SMTP_USERNAME":                          "smtp.username",
+		"MEMENTO_SMTP_PASSWORD":                          "smtp.password",
+		"MEMENTO_SMTP_FROM_ADDRESS":                      "smtp.from_address",
+		"MEMENTO_SMTP_TEST_RECIPIENT":                    "smtp.test_recipient",
+		"MEMENTO_SMTP_INSECURE_DEVELOPMENT":              "smtp.insecure_development",
+		"MEMENTO_SMTP_TIMEOUT":                           "smtp.timeout",
+		"MEMENTO_SMTP_RETRY_BASE":                        "smtp.retry_base",
+		"MEMENTO_SMTP_RETRY_MAX":                         "smtp.retry_max",
+		"MEMENTO_SMTP_RETRY_WINDOW":                      "smtp.retry_window",
+		"MEMENTO_WORKER_POLL_INTERVAL":                   "worker.poll_interval",
+		"MEMENTO_WORKER_HEARTBEAT_INTERVAL":              "worker.heartbeat_interval",
+		"MEMENTO_WORKER_HEARTBEAT_MAX_AGE":               "worker.heartbeat_max_age",
+		"MEMENTO_WORKER_LEASE_DURATION":                  "worker.lease_duration",
+		"MEMENTO_WORKER_DRAIN_TIMEOUT":                   "worker.drain_timeout",
+		"MEMENTO_WORKER_RETRY_BASE":                      "worker.retry_base",
+		"MEMENTO_WORKER_RETRY_MAX":                       "worker.retry_max",
 	}
 	if transformed, ok := known[key]; ok {
 		return transformed
@@ -330,6 +339,7 @@ func parse(raw rawConfig) (Config, error) {
 	cfg.Security.Secret = raw.Security.Secret
 	cfg.Security.SetupEmailLimit = raw.Security.SetupEmailLimit
 	cfg.Security.SetupIPLimit = raw.Security.SetupIPLimit
+	cfg.Security.InvitationAcceptIPLimit = raw.Security.InvitationAcceptIPLimit
 	var err error
 	cfg.Security.TrustedProxyCIDRs, err = cidrPrefixes(raw.Security.TrustedProxyCIDRs)
 	if err != nil {
@@ -359,6 +369,9 @@ func parse(raw rawConfig) (Config, error) {
 		return Config{}, err
 	}
 	if cfg.Security.SetupRateWindow, err = duration("security.setup_rate_window", raw.Security.SetupRateWindow); err != nil {
+		return Config{}, err
+	}
+	if cfg.Security.InvitationAcceptRateWindow, err = duration("security.invitation_accept_rate_window", raw.Security.InvitationAcceptRateWindow); err != nil {
 		return Config{}, err
 	}
 	if cfg.SMTP.Timeout, err = duration("smtp.timeout", raw.SMTP.Timeout); err != nil {
@@ -472,6 +485,9 @@ func (c Config) Validate() error {
 	}
 	if c.Security.SetupRateWindow <= 0 || c.Security.SetupEmailLimit <= 0 || c.Security.SetupIPLimit <= 0 {
 		return errSetupRateLimits
+	}
+	if c.Security.InvitationAcceptRateWindow <= 0 || c.Security.InvitationAcceptIPLimit <= 0 {
+		return errInvitationRateLimits
 	}
 	if err := c.SMTP.Validate(); err != nil {
 		return err

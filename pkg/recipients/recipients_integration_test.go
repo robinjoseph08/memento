@@ -518,11 +518,11 @@ func TestAllInvitationDeliveryKindsCompleteAndRecordResults(t *testing.T) {
 	assert.Zero(t, uncleared)
 }
 
-func TestRevocationWaitsForInFlightInvitationDelivery(t *testing.T) {
+func TestInvitationDeliveryCommitsBeforeSMTP(t *testing.T) {
 	fixture := newRecipientFixture(t)
 	designate(t, fixture)
 	invitation, _ := deterministicIssue(t, fixture, 0x47)
-	job := claimDelivery(t, fixture, invitation.Invitation.ID, emaildelivery.KindInvitationInitial, "serialized-revocation")
+	job := claimDelivery(t, fixture, invitation.Invitation.ID, emaildelivery.KindInvitationInitial, "committed-before-smtp")
 
 	blocking := &blockingSender{started: make(chan struct{}), release: make(chan struct{})}
 	secret := "integration-security-secret-at-least-32-bytes"
@@ -537,24 +537,21 @@ func TestRevocationWaitsForInFlightInvitationDelivery(t *testing.T) {
 	case <-ctx.Done():
 		require.FailNow(t, "SMTP delivery did not start", ctx.Err())
 	}
-	var deliveryPID int
-	require.NoError(t, fixture.db.NewRaw(`
-		SELECT pid FROM pg_stat_activity
-		WHERE datname = current_database() AND state = 'idle in transaction'
-		  AND query LIKE '%UPDATE email_deliveries SET attempts = attempts + 1%'
-		ORDER BY query_start DESC LIMIT 1
-	`).Scan(ctx, &deliveryPID))
 
 	revoked := make(chan error, 1)
 	go func() {
 		_, err := fixture.service.Revoke(ctx, fixture.actor, fixture.personID, uuid.MustParse(invitation.Invitation.ID))
 		revoked <- err
 	}()
-	waitForBlockedQuery(t, ctx, fixture.db, deliveryPID, `%SELECT id FROM invitations WHERE recipient_access_generation_id%FOR UPDATE%`)
+	select {
+	case err := <-revoked:
+		require.NoError(t, err, "revocation must not wait on external SMTP work")
+	case <-time.After(2 * time.Second):
+		require.FailNow(t, "revocation was blocked by SMTP delivery")
+	}
 
 	close(blocking.release)
 	require.NoError(t, <-delivered)
-	require.NoError(t, <-revoked)
 	var sentAt, revokedAt *time.Time
 	require.NoError(t, fixture.db.NewRaw(`SELECT sent_at, revoked_at FROM invitations WHERE id = ?`, invitation.Invitation.ID).Scan(ctx, &sentAt, &revokedAt))
 	require.NotNil(t, sentAt)

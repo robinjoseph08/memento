@@ -108,7 +108,7 @@ func run() error {
 	setupHandler := setup.NewHandler(setupService)
 	peopleHandler := people.NewHandler(people.New(db), setupService)
 	familyHandler := family.NewHandler(family.New(db), setupService)
-	recipientHandler := recipients.NewHandler(recipients.New(db, emailService, cfg.HTTP.PublicURL), setupService)
+	recipientHandler := recipients.NewHandler(recipients.New(db, emailService, cfg.HTTP.PublicURL), setupService, cfg.Security)
 	sourceHandler := sources.NewHandler(sourceService, setupService)
 	e, err := server.New(healthService, emaildelivery.NewHandler(emailService), setupHandler, peopleHandler, familyHandler, recipientHandler, sourceHandler)
 	if err != nil {
