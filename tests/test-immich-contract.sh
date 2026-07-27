@@ -31,5 +31,8 @@ if [ "$ready" != true ]; then
   exit 1
 fi
 
-MEMENTO_TEST_IMMICH_URL="http://127.0.0.1:$port" \
-  go test -count=1 -tags=immichcontract ./pkg/immich
+if ! MEMENTO_TEST_IMMICH_URL="http://127.0.0.1:$port" \
+  go test -count=1 -tags=immichcontract ./pkg/immich; then
+  docker compose --project-name "$project" --file "$compose_file" logs server database redis >&2
+  exit 1
+fi
