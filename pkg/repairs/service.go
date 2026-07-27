@@ -227,7 +227,7 @@ func (s *Service) ReconcilePeople(ctx context.Context) (MutationResponse, error)
 		if _, err := tx.NewRaw(`
 			SELECT person.id FROM people AS person
 			JOIN immich_person_links AS link ON link.person_id = person.id
-			ORDER BY person.id FOR UPDATE OF person
+			ORDER BY person.id FOR NO KEY UPDATE OF person
 		`).Exec(ctx); err != nil {
 			return err
 		}
@@ -532,7 +532,7 @@ func (s *Service) linkPerson(ctx context.Context, actor setup.CuratorSession, pe
 func (s *Service) linkPersonWithAnchors(ctx context.Context, actor setup.CuratorSession, personID, immichPersonID uuid.UUID, candidateID *uuid.UUID, anchors []collectedAnchor) (MutationResponse, error) {
 	now := s.now().UTC()
 	err := s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
-		if _, err := tx.NewRaw(`SELECT id FROM people WHERE id IN (?, ?) ORDER BY id FOR UPDATE`, personID, actor.PersonID).Exec(ctx); err != nil {
+		if _, err := tx.NewRaw(`SELECT id FROM people WHERE id IN (?, ?) ORDER BY id FOR NO KEY UPDATE`, personID, actor.PersonID).Exec(ctx); err != nil {
 			return err
 		}
 		var current bool
@@ -936,7 +936,7 @@ func (s *Service) resolveCandidate(ctx context.Context, actor setup.CuratorSessi
 			} else if err != nil {
 				return err
 			}
-			if _, err := tx.NewRaw(`SELECT id FROM people WHERE id IN (?, ?) ORDER BY id FOR UPDATE`, subjectPersonID, actor.PersonID).Exec(ctx); err != nil {
+			if _, err := tx.NewRaw(`SELECT id FROM people WHERE id IN (?, ?) ORDER BY id FOR NO KEY UPDATE`, subjectPersonID, actor.PersonID).Exec(ctx); err != nil {
 				return err
 			}
 		}

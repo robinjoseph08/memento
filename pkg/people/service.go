@@ -422,9 +422,6 @@ func (s *Service) Archive(ctx context.Context, actor setup.CuratorSession, id uu
 		if curator {
 			return ErrCuratorMustSurvive
 		}
-		if _, err := tx.NewRaw(`SELECT id FROM people WHERE id IN (?, ?) ORDER BY id FOR UPDATE`, id, actor.PersonID).Exec(ctx); err != nil {
-			return err
-		}
 		for _, lock := range []string{
 			`SELECT person_id FROM immich_person_links WHERE person_id = ? FOR UPDATE`,
 			`SELECT id FROM immich_face_anchors WHERE person_id = ? ORDER BY id FOR UPDATE`,
