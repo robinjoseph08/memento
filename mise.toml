@@ -161,7 +161,7 @@ description = "Run fast validation checks before pushing"
 depends = ["lint", "lint:js", "types:generate", "test", "build"]
 
 [tasks."check:quiet"]
-description = "Run the fast validation gate with output only on failure"
+description = "Show wrapper summaries for the fast validation gate and task output only on failure"
 run = "./scripts/run-mise-quiet.sh check"
 
 [tasks.ci]
@@ -178,5 +178,5 @@ depends = [
 ]
 
 [tasks."ci:quiet"]
-description = "Run the complete CI gate with output only on failure"
+description = "Show wrapper summaries for the complete CI gate and task output only on failure"
 run = "./scripts/run-mise-quiet.sh ci"

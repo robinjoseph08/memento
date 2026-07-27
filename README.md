@@ -69,7 +69,7 @@ Run the complete suite used by CI once as the final local gate immediately befor
 mise ci:quiet
 ```
 
-`mise ci:quiet` similarly runs `mise ci` once and emits its captured output only on failure. The complete gate includes `mise check`, then adds Go race detection, browser tests, isolated PostgreSQL integration tests, the Immich contract, development Compose validation, Caddy validation, and the production topology test. Docker-backed tests use unique names, images, and dynamic local ports so concurrent worktrees do not share test resources.
+`mise ci:quiet` similarly runs `mise ci` once and emits its captured output only on failure. The complete gate includes `mise check`, then adds Go race detection, browser tests, isolated PostgreSQL integration tests, the Immich contract, development Compose validation, Caddy validation, and the production topology test. Docker-backed tests isolate concurrent worktrees with unique Compose project or container names, a unique built Memento image tag where applicable, and dynamic local ports. They may share pinned immutable fixture images such as Caddy.
 
 The integration task provisions an isolated PostgreSQL 17 database and removes it when the tests finish. It does not connect to an existing PostgreSQL server unless `MEMENTO_TEST_DATABASE_URL` is explicitly set. Set that variable to use an explicitly managed integration database instead of the disposable container.
 

@@ -122,6 +122,18 @@ if compose exec --no-TTY immich wget -q -O /dev/null http://memento:8091/api/hea
   exit 1
 fi
 
+compose stop immich
+ready_code=$(curl --silent --output "$ready_body" --write-out '%{http_code}' "$base_url/api/health/ready")
+[ "$ready_code" = 503 ]
+grep -q '"immich":"unavailable"' "$ready_body"
+if grep -Eq 'test-only-key|test-only-security-secret|postgresql://|http://immich|test-only-password' "$ready_body"; then
+  printf 'readiness exposed private dependency configuration\n' >&2
+  exit 1
+fi
+live_code=$(curl --silent --output "$temporary/live.json" --write-out '%{http_code}' "$base_url/api/health/live")
+[ "$live_code" = 200 ]
+grep -qx '{"status":"live"}' "$temporary/live.json"
+
 started=$(date +%s)
 docker kill --signal TERM "$container" >/dev/null
 for _ in $(seq 1 12); do
