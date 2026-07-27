@@ -23,6 +23,7 @@ import type {
   Album as SourceAlbum,
   DiscoveryResponse,
   ListResponse as SourceListResponse,
+  ReconciliationResponse,
 } from "./types/generated/sources";
 
 type BootstrapState =
@@ -421,7 +422,7 @@ function SourceAlbumCard({
 }) {
   const queryClient = useQueryClient();
   const [inspecting, setInspecting] = useState(false);
-  const mutation = useMutation({
+  const triageMutation = useMutation({
     mutationFn: () =>
       apiJSON<SourceAlbum>(
         `/api/sources/${album.id}/${album.disposition === "ignored" ? "restore" : "ignore"}`,
@@ -440,6 +441,16 @@ function SourceAlbumCard({
           : `Ignored ${album.name}.`,
       );
       await queryClient.invalidateQueries({ queryKey: ["sources"] });
+    },
+  });
+  const reconciliation = useMutation({
+    mutationFn: () =>
+      apiJSON<ReconciliationResponse>(`/api/sources/${album.id}/reconcile`, {
+        method: "POST",
+        headers: { "X-Memento-CSRF": csrfToken },
+      }),
+    onSuccess: () => {
+      onTriaged(`Queued reconciliation for ${album.name}.`);
     },
   });
   const detailsID = `source-album-${album.id}-details`;
@@ -476,19 +487,29 @@ function SourceAlbumCard({
               <dd>{formatSourceDate(album.last_seen_at)}</dd>
             </div>
           </dl>
-          <ErrorMessage error={mutation.error} />
-          <button
-            className="source-primary-action"
-            disabled={mutation.isPending}
-            onClick={() => mutation.mutate()}
-            type="button"
-          >
-            {mutation.isPending
-              ? "Saving…"
-              : album.disposition === "ignored"
-                ? "Restore to inbox"
-                : "Ignore Source album"}
-          </button>
+          <ErrorMessage error={reconciliation.error ?? triageMutation.error} />
+          <div className="source-details-actions">
+            <button
+              className="source-reconcile-action"
+              disabled={reconciliation.isPending || triageMutation.isPending}
+              onClick={() => reconciliation.mutate()}
+              type="button"
+            >
+              {reconciliation.isPending ? "Queueing…" : "Reconcile now"}
+            </button>
+            <button
+              className="source-primary-action"
+              disabled={triageMutation.isPending || reconciliation.isPending}
+              onClick={() => triageMutation.mutate()}
+              type="button"
+            >
+              {triageMutation.isPending
+                ? "Saving…"
+                : album.disposition === "ignored"
+                  ? "Restore to inbox"
+                  : "Ignore Source album"}
+            </button>
+          </div>
         </div>
       ) : null}
     </article>

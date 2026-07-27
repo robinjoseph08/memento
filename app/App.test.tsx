@@ -344,6 +344,9 @@ test("validates Immich and supports private Source album ignore and restore tria
       if (path === "/api/session/logout") {
         return Promise.resolve(new Response(null, { status: 204 }));
       }
+      if (path === `/api/sources/${sourceID}/reconcile`) {
+        return Promise.resolve(jsonResponse({ status: "queued" }, 202));
+      }
       if (path === `/api/sources/${sourceID}/ignore`) {
         expect(init?.headers).toMatchObject({ "If-Match": `"${version}"` });
         disposition = "ignored";
@@ -404,6 +407,12 @@ test("validates Immich and supports private Source album ignore and restore tria
   ).toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "Inspect Family trip" }));
   expect(screen.getByText("A normalized summary")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Reconcile now" }));
+  await vi.waitFor(() =>
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Queued reconciliation for Family trip.",
+    ),
+  );
   fireEvent.click(screen.getByRole("button", { name: "Ignore Source album" }));
   await vi.waitFor(() =>
     expect(screen.queryByText("Family trip")).not.toBeInTheDocument(),
@@ -419,7 +428,7 @@ test("validates Immich and supports private Source album ignore and restore tria
   );
 
   const mutations = requests.filter(({ init }) => init?.method === "POST");
-  expect(mutations).toHaveLength(3);
+  expect(mutations).toHaveLength(4);
   for (const mutation of mutations) {
     expect(mutation.init?.headers).toMatchObject({
       "X-Memento-CSRF": csrfToken,

@@ -31,6 +31,7 @@ func TestLoadUsesDefaultsAndEnvironment(t *testing.T) {
 	assert.Equal(t, 15*time.Minute, cfg.Security.SetupRateWindow)
 	assert.Equal(t, 3, cfg.Security.SetupEmailLimit)
 	assert.Equal(t, 20, cfg.Security.SetupIPLimit)
+	assert.Equal(t, 10*time.Minute, cfg.Sources.ReconciliationInterval)
 	require.Len(t, cfg.Security.TrustedProxyCIDRs, 2)
 	assert.Equal(t, "127.0.0.0/8", cfg.Security.TrustedProxyCIDRs[0].String())
 }
@@ -188,6 +189,7 @@ func TestValidateRejectsUnsafeValues(t *testing.T) {
 		{"Immich URL", func(c *Config) { c.Immich.URL = "" }, "immich.url is required"},
 		{"Immich credentials", func(c *Config) { c.Immich.URL = "https://user:pass@immich.example" }, "without credentials"},
 		{"Immich key", func(c *Config) { c.Immich.APIKey = "" }, "immich.api_key is required"},
+		{"reconciliation interval", func(c *Config) { c.Sources.ReconciliationInterval = 0 }, "sources.reconciliation_interval"},
 		{"security secret", func(c *Config) { c.Security.Secret = "short" }, "security.secret must contain at least 32 bytes"},
 		{"setup rate window", func(c *Config) { c.Security.SetupRateWindow = 0 }, "setup rate limits must be positive"},
 		{"setup email limit", func(c *Config) { c.Security.SetupEmailLimit = 0 }, "setup rate limits must be positive"},

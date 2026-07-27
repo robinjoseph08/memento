@@ -166,6 +166,7 @@ func TestOwnedAlbumsRejectsMalformedOrDuplicateSummaries(t *testing.T) {
 		{"invalid ID", `[{"id":"private",` + validFields + `}]`},
 		{"invalid timestamp", `[{"id":"` + id + `","albumName":"Album","description":"","assetCount":0,"createdAt":"private-path","updatedAt":"2026-01-01T00:00:00Z"}]`},
 		{"negative count", `[{"id":"` + id + `","albumName":"Album","description":"","assetCount":-1,"createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"}]`},
+		{"unstorable count", `[{"id":"` + id + `","albumName":"Album","description":"","assetCount":2147483648,"createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"}]`},
 		{"duplicate ID", `[` + validAlbum + `,` + validAlbum + `]`},
 		{"duplicate ID member", `[{"id":"` + uuid.NewString() + `","id":"` + id + `",` + validFields + `}]`},
 		{"case-colliding ID member", `[{"id":"private","ID":"` + id + `",` + validFields + `}]`},
@@ -226,6 +227,79 @@ func TestAlbumAssetsPageUsesPinnedPaginationAndStripsSensitiveDTOFields(t *testi
 	assert.NotContains(t, string(serialized), "face")
 }
 
+func TestAlbumSummaryUsesPinnedDetailContract(t *testing.T) {
+	albumID := uuid.New()
+	server := contractServer(t, func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/api/albums/"+albumID.String(), r.URL.Path)
+		_, _ = w.Write([]byte(`{"id":"` + albumID.String() + `","albumName":"Album","description":"","assetCount":0,"createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"}`))
+	})
+	defer server.Close()
+	client, err := New(clientConfig(server.URL), server.Client())
+	require.NoError(t, err)
+	album, err := client.Album(context.Background(), albumID)
+	require.NoError(t, err)
+	assert.Equal(t, albumID, album.SourceID)
+
+	_, err = client.Album(context.Background(), uuid.Nil)
+	require.EqualError(t, err, "Immich returned an invalid response")
+}
+
+func TestAlbumSummaryRejectsMismatchedIdentity(t *testing.T) {
+	requestedID := uuid.New()
+	server := contractServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"id":"` + uuid.NewString() + `","albumName":"Album","description":"","assetCount":0,"createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"}`))
+	})
+	defer server.Close()
+	client, err := New(clientConfig(server.URL), server.Client())
+	require.NoError(t, err)
+	_, err = client.Album(context.Background(), requestedID)
+	require.EqualError(t, err, "Immich returned an invalid response")
+}
+
+func TestAlbumAssetsPaginationContractContinuesBeyondOneThousand(t *testing.T) {
+	albumID := uuid.New()
+	items := make([]map[string]any, assetPageSize)
+	for index := range items {
+		items[index] = map[string]any{
+			"id": uuid.NewString(), "type": "IMAGE", "width": nil, "height": nil,
+			"localDateTime": "2026-01-01T10:00:00Z",
+		}
+	}
+	firstPayload, err := json.Marshal(map[string]any{"assets": map[string]any{
+		"count": assetPageSize, "items": items, "nextPage": "2", "total": assetPageSize,
+	}})
+	require.NoError(t, err)
+	lastID := uuid.New()
+	secondPayload := []byte(`{"assets":{"count":1,"items":[{"id":"` + lastID.String() + `","type":"IMAGE","width":null,"height":null,"localDateTime":"2026-01-01T10:00:00Z"}],"nextPage":null,"total":1}}`)
+	var requested []int
+	server := contractServer(t, func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Page int `json:"page"`
+		}
+		if !assert.NoError(t, json.NewDecoder(r.Body).Decode(&request)) {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		requested = append(requested, request.Page)
+		if request.Page == 1 {
+			_, _ = w.Write(firstPayload)
+			return
+		}
+		_, _ = w.Write(secondPayload)
+	})
+	defer server.Close()
+	client, err := New(clientConfig(server.URL), server.Client())
+	require.NoError(t, err)
+	first, err := client.AlbumAssetsPage(context.Background(), albumID, 1)
+	require.NoError(t, err)
+	require.NotNil(t, first.NextPage)
+	second, err := client.AlbumAssetsPage(context.Background(), albumID, *first.NextPage)
+	require.NoError(t, err)
+	assert.Len(t, first.Items, 1000)
+	assert.Equal(t, lastID, second.Items[0].SourceID)
+	assert.Equal(t, []int{1, 2}, requested)
+}
+
 func TestAlbumAssetsPageAcceptsOnlyFullNonterminalPages(t *testing.T) {
 	albumID := uuid.New()
 	items := make([]map[string]any, assetPageSize)
@@ -254,6 +328,22 @@ func TestAlbumAssetsPageAcceptsOnlyFullNonterminalPages(t *testing.T) {
 	assert.Equal(t, 2, *page.NextPage)
 }
 
+func TestAlbumAssetsPagePreservesDuplicateIdentifiersForSnapshotDeduplication(t *testing.T) {
+	albumID := uuid.New()
+	assetID := uuid.NewString()
+	asset := `{"id":"` + assetID + `","type":"IMAGE","width":1200,"height":800,"localDateTime":"2026-01-01T10:00:00Z"}`
+	server := contractServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"assets":{"count":2,"items":[` + asset + `,` + asset + `],"nextPage":null,"total":2}}`))
+	})
+	defer server.Close()
+	client, err := New(clientConfig(server.URL), server.Client())
+	require.NoError(t, err)
+	page, err := client.AlbumAssetsPage(context.Background(), albumID, 1)
+	require.NoError(t, err)
+	require.Len(t, page.Items, 2)
+	assert.Equal(t, page.Items[0], page.Items[1])
+}
+
 func TestAlbumAssetsPageRejectsInvalidEntryPointsAndResponses(t *testing.T) {
 	client, err := New(clientConfig("https://immich.internal"), nil)
 	require.NoError(t, err)
@@ -280,11 +370,12 @@ func TestAlbumAssetsPageRejectsInvalidEntryPointsAndResponses(t *testing.T) {
 		"null total":                  `{"assets":{"count":0,"items":[],"nextPage":null,"total":null}}`,
 		"mismatched total":            `{"assets":{"count":0,"items":[],"nextPage":null,"total":1}}`,
 		"underfilled continuation":    `{"assets":{"count":1,"items":[` + validAsset + `],"nextPage":"2","total":1}}`,
-		"duplicate asset":             `{"assets":{"count":2,"items":[` + validAsset + `,` + validAsset + `],"nextPage":null,"total":2}}`,
 		"bad asset":                   `{"assets":{"count":1,"items":[{"id":"private",` + validAssetFields + `}],"nextPage":null,"total":1}}`,
 		"bad type":                    `{"assets":{"count":1,"items":[{"id":"` + uuid.NewString() + `","type":"PRIVATE","width":1200,"height":800,"localDateTime":"2026-01-01T10:00:00Z"}],"nextPage":null,"total":1}}`,
+		"unsupported audio":           `{"assets":{"count":1,"items":[{"id":"` + uuid.NewString() + `","type":"AUDIO","width":1200,"height":800,"localDateTime":"2026-01-01T10:00:00Z"}],"nextPage":null,"total":1}}`,
 		"missing width":               `{"assets":{"count":1,"items":[{"id":"` + uuid.NewString() + `","type":"IMAGE","height":800,"localDateTime":"2026-01-01T10:00:00Z"}],"nextPage":null,"total":1}}`,
 		"missing height":              `{"assets":{"count":1,"items":[{"id":"` + uuid.NewString() + `","type":"IMAGE","width":1200,"localDateTime":"2026-01-01T10:00:00Z"}],"nextPage":null,"total":1}}`,
+		"unstorable width":            `{"assets":{"count":1,"items":[{"id":"` + uuid.NewString() + `","type":"IMAGE","width":2147483648,"height":800,"localDateTime":"2026-01-01T10:00:00Z"}],"nextPage":null,"total":1}}`,
 		"missing local date time":     `{"assets":{"count":1,"items":[{"id":"` + uuid.NewString() + `","type":"IMAGE","width":1200,"height":800}],"nextPage":null,"total":1}}`,
 		"null local date time":        `{"assets":{"count":1,"items":[{"id":"` + uuid.NewString() + `","type":"IMAGE","width":1200,"height":800,"localDateTime":null}],"nextPage":null,"total":1}}`,
 		"bad local date time":         `{"assets":{"count":1,"items":[{"id":"` + uuid.NewString() + `","type":"IMAGE","width":1200,"height":800,"localDateTime":"yesterday"}],"nextPage":null,"total":1}}`,
@@ -309,6 +400,7 @@ func TestClientReturnsSafeFailClosedDependencyErrors(t *testing.T) {
 	}{
 		{"validation", func(client *Client) error { return client.Check(context.Background()) }, "Immich validation failed"},
 		{"discovery", func(client *Client) error { _, err := client.OwnedAlbums(context.Background()); return err }, "Immich album discovery failed"},
+		{"album summary", func(client *Client) error { _, err := client.Album(context.Background(), uuid.New()); return err }, "Immich album discovery failed"},
 		{"membership", func(client *Client) error {
 			_, err := client.AlbumAssetsPage(context.Background(), uuid.New(), 1)
 			return err

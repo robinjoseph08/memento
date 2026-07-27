@@ -20,9 +20,10 @@ import (
 )
 
 const (
-	maxJSONResponse  = 10 << 20
-	supportedVersion = "3.0.3"
-	assetPageSize    = 1000
+	maxJSONResponse    = 10 << 20
+	supportedVersion   = "3.0.3"
+	assetPageSize      = 1000
+	maxDatabaseInteger = 1<<31 - 1
 )
 
 var requiredPermissions = []string{
@@ -255,6 +256,22 @@ func (c *Client) OwnedAlbums(ctx context.Context) ([]AlbumSummary, error) {
 	return albums, nil
 }
 
+// Album retrieves one normalized owned-album summary for stability checks.
+func (c *Client) Album(ctx context.Context, albumID uuid.UUID) (AlbumSummary, error) {
+	if albumID == uuid.Nil {
+		return AlbumSummary{}, errInvalidResponse
+	}
+	var response albumResponse
+	if err := c.getJSON(ctx, "albums/"+albumID.String(), &response, errOwnedAlbumsFailed); err != nil {
+		return AlbumSummary{}, err
+	}
+	album, err := normalizeAlbum(response)
+	if err != nil || album.SourceID != albumID {
+		return AlbumSummary{}, errInvalidResponse
+	}
+	return album, nil
+}
+
 // AlbumAssetsPage reads one bounded page of complete album membership metadata.
 // Callers begin at page 1 and follow NextPage until nil.
 func (c *Client) AlbumAssetsPage(ctx context.Context, albumID uuid.UUID, page int) (AssetPage, error) {
@@ -281,7 +298,6 @@ func (c *Client) AlbumAssetsPage(ctx context.Context, albumID uuid.UUID, page in
 		return AssetPage{}, errInvalidResponse
 	}
 	result := AssetPage{Items: make([]AssetSummary, 0, len(*response.Assets.Items))}
-	seen := make(map[uuid.UUID]struct{}, len(*response.Assets.Items))
 	for _, raw := range *response.Assets.Items {
 		if raw.ID == nil || raw.Type == nil || raw.LocalDateTime == nil {
 			return AssetPage{}, errInvalidResponse
@@ -294,10 +310,6 @@ func (c *Client) AlbumAssetsPage(ctx context.Context, albumID uuid.UUID, page in
 		if err != nil || assetID == uuid.Nil || !validAssetType(*raw.Type) || widthErr != nil || heightErr != nil || timeErr != nil {
 			return AssetPage{}, errInvalidResponse
 		}
-		if _, duplicate := seen[assetID]; duplicate {
-			return AssetPage{}, errInvalidResponse
-		}
-		seen[assetID] = struct{}{}
 		result.Items = append(result.Items, AssetSummary{
 			SourceID: assetID, MediaType: strings.ToLower(*raw.Type), Width: width, Height: height,
 			LocalDateTime: truncate(localDateTime, 64),
@@ -480,7 +492,7 @@ func normalizeAlbum(raw albumResponse) (AlbumSummary, error) {
 		return AlbumSummary{}, errInvalidResponse
 	}
 	id, err := uuid.Parse(*raw.ID)
-	if err != nil || id == uuid.Nil || *raw.AssetCount < 0 {
+	if err != nil || id == uuid.Nil || *raw.AssetCount < 0 || *raw.AssetCount > maxDatabaseInteger {
 		return AlbumSummary{}, errInvalidResponse
 	}
 	createdAt, err := time.Parse(time.RFC3339, *raw.CreatedAt)
@@ -538,7 +550,7 @@ func truncate(value string, maximum int) string {
 }
 
 func validAssetType(value string) bool {
-	return value == "IMAGE" || value == "VIDEO" || value == "AUDIO" || value == "OTHER"
+	return value == "IMAGE" || value == "VIDEO"
 }
 
 func requiredNullableDimension(raw json.RawMessage) (*int, error) {
@@ -549,7 +561,7 @@ func requiredNullableDimension(raw json.RawMessage) (*int, error) {
 		return nil, nil
 	}
 	var value int
-	if err := json.Unmarshal(raw, &value); err != nil || value < 0 {
+	if err := json.Unmarshal(raw, &value); err != nil || value < 0 || value > maxDatabaseInteger {
 		return nil, errInvalidResponse
 	}
 	return &value, nil

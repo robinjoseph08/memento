@@ -44,6 +44,7 @@ type handlerFailure struct {
 	diagnostic string
 	retryAfter time.Duration
 	permanent  bool
+	reschedule bool
 }
 
 func (e *handlerFailure) Error() string { return e.diagnostic }
@@ -56,6 +57,12 @@ func RetryAfter(delay time.Duration, diagnostic string) error {
 // Permanent returns a secret-safe terminal result for a handler.
 func Permanent(diagnostic string) error {
 	return &handlerFailure{diagnostic: diagnostic, permanent: true}
+}
+
+// RescheduleAfter completes recurring work and makes the same durable job due
+// again without counting the normal schedule as a failed attempt.
+func RescheduleAfter(delay time.Duration) error {
+	return &handlerFailure{retryAfter: delay, reschedule: true}
 }
 
 // Option configures optional worker infrastructure.
@@ -167,7 +174,9 @@ func (w *Worker) claimAndRun(ctx context.Context) {
 			}
 		} else {
 			var failure *handlerFailure
-			if errors.As(handlerErr, &failure) && failure.permanent {
+			if errors.As(handlerErr, &failure) && failure.reschedule {
+				_ = w.reschedule(finalizeCtx, job.ID, failure.retryAfter)
+			} else if errors.As(handlerErr, &failure) && failure.permanent {
 				_ = w.fail(finalizeCtx, job.ID, failure.diagnostic)
 			} else {
 				delay := w.retryDelay(job.Attempts)
@@ -278,7 +287,8 @@ func (w *Worker) retry(ctx context.Context, id int64, delay time.Duration, diagn
 	result, err := w.db.NewRaw(`
 		UPDATE jobs
 		SET status = 'pending', attempts = attempts + 1,
-			available_at = now() + (? * interval '1 microsecond'), last_safe_error = ?,
+			available_at = CASE WHEN rerun_requested THEN now() ELSE now() + (? * interval '1 microsecond') END,
+			last_safe_error = ?, rerun_requested = false,
 			lease_owner = NULL, lease_expires_at = NULL, updated_at = now()
 		WHERE id = ? AND status = 'running' AND lease_owner = ? AND lease_expires_at > now()
 	`, delay.Microseconds(), diagnostic, id, w.owner).Exec(ctx)
@@ -287,6 +297,24 @@ func (w *Worker) retry(ctx context.Context, id int64, delay time.Duration, diagn
 	}
 	if affected, _ := result.RowsAffected(); affected != 1 {
 		return fmt.Errorf("retry job: %w", errLeaseOwnershipLost)
+	}
+	return nil
+}
+
+func (w *Worker) reschedule(ctx context.Context, id int64, delay time.Duration) error {
+	result, err := w.db.NewRaw(`
+		UPDATE jobs
+		SET status = 'pending', attempts = 0,
+			available_at = CASE WHEN rerun_requested THEN now() ELSE now() + (? * interval '1 microsecond') END,
+			last_safe_error = NULL, rerun_requested = false,
+			lease_owner = NULL, lease_expires_at = NULL, updated_at = now()
+		WHERE id = ? AND status = 'running' AND lease_owner = ? AND lease_expires_at > now()
+	`, delay.Microseconds(), id, w.owner).Exec(ctx)
+	if err != nil {
+		return fmt.Errorf("reschedule job: %w", err)
+	}
+	if affected, _ := result.RowsAffected(); affected != 1 {
+		return fmt.Errorf("reschedule job: %w", errLeaseOwnershipLost)
 	}
 	return nil
 }

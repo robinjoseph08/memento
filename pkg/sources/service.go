@@ -1,4 +1,4 @@
-// Package sources owns the private Source album inventory and triage lifecycle.
+// Package sources owns private Source album discovery, triage, and reconciliation.
 package sources
 
 import (
@@ -23,12 +23,15 @@ var (
 	ErrStaleVersion         = errors.New("source album version is stale")
 	ErrInvalidConfiguration = errors.New("immich configuration is invalid")
 	ErrDependency           = errors.New("immich dependency unavailable")
+	ErrUnstable             = errors.New("source album scan was unstable")
 )
 
-// Connector is the narrow, normalized Immich boundary used by discovery.
+// Connector is the narrow, normalized Immich boundary used by Source workflows.
 type Connector interface {
 	Check(ctx context.Context) error
 	OwnedAlbums(ctx context.Context) ([]immich.AlbumSummary, error)
+	Album(ctx context.Context, id uuid.UUID) (immich.AlbumSummary, error)
+	AlbumAssetsPage(ctx context.Context, albumID uuid.UUID, page int) (immich.AssetPage, error)
 }
 
 // Album is the allowlisted Source album representation exposed only to the Curator.
@@ -60,15 +63,19 @@ type DiscoveryResponse struct {
 	DiscoveredCount int    `json:"discovered_count"`
 }
 
-// Service validates Immich and persists a private source-only inventory.
+// Service validates Immich and persists private editable Source state.
 type Service struct {
-	db        *bun.DB
-	connector Connector
-	now       func() time.Time
+	db                     *bun.DB
+	connector              Connector
+	now                    func() time.Time
+	reconciliationInterval time.Duration
 }
 
-func New(db *bun.DB, connector Connector) *Service {
-	return &Service{db: db, connector: connector, now: time.Now}
+func New(db *bun.DB, connector Connector, reconciliationInterval time.Duration) *Service {
+	return &Service{
+		db: db, connector: connector, now: time.Now,
+		reconciliationInterval: reconciliationInterval,
+	}
 }
 
 // Discover validates the connection, then serializes snapshot retrieval and
@@ -139,6 +146,13 @@ func (s *Service) Discover(ctx context.Context) (DiscoveryResponse, error) {
 				album.CreatedAt, album.UpdatedAt, album.StartDate, album.EndDate,
 				album.LastModifiedAssetTimestamp, now, now, fingerprint[:], now, now).Exec(ctx); err != nil {
 				return fmt.Errorf("upsert Source album: %w", err)
+			}
+			var sourceAlbumID uuid.UUID
+			if err := tx.NewRaw(`SELECT id FROM source_albums WHERE immich_album_id = ?`, album.SourceID).Scan(ctx, &sourceAlbumID); err != nil {
+				return fmt.Errorf("read Source album identity: %w", err)
+			}
+			if err := enqueueReconciliation(ctx, tx, sourceAlbumID, now); err != nil {
+				return err
 			}
 		}
 		return nil

@@ -81,6 +81,10 @@ func TestImmichV303LiveContract(t *testing.T) {
 	assert.Equal(t, "Normalized description", albums[0].Description)
 	assert.Zero(t, albums[0].AssetCount)
 
+	album, err := client.Album(ctx, albumID)
+	require.NoError(t, err)
+	assert.Equal(t, albums[0], album)
+
 	page, err := client.AlbumAssetsPage(ctx, albumID, 1)
 	require.NoError(t, err)
 	assert.Empty(t, page.Items)

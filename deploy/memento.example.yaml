@@ -14,6 +14,10 @@ immich:
   url: http://immich:2283
   health_timeout: 2s
 
+sources:
+  # Stable Source album membership is reconciled by the durable worker.
+  reconciliation_interval: 10m
+
 # Generate at least 32 random bytes and keep this stable across restarts.
 security:
   setup_rate_window: 15m

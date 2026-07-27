@@ -4,6 +4,7 @@ package worker
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -181,6 +182,137 @@ func TestExpiredLeaseIsReclaimedAndCompleted(t *testing.T) {
 	}, time.Second, 10*time.Millisecond)
 }
 
+func TestRecurringJobReschedulesWithoutRecordingFailure(t *testing.T) {
+	db := testdb.Open(t)
+	require.NoError(t, migrations.Apply(context.Background(), db))
+	var id int64
+	require.NoError(t, db.NewRaw(`INSERT INTO jobs (kind) VALUES ('recurring') RETURNING id`).Scan(context.Background(), &id))
+	ran := make(chan struct{})
+	jobWorker, err := New(db, testConfig(), "recurring-owner", map[string]Handler{
+		"recurring": func(context.Context, Job) error {
+			close(ran)
+			return RescheduleAfter(time.Hour)
+		},
+	})
+	require.NoError(t, err)
+	jobWorker.Start(context.Background())
+	select {
+	case <-ran:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not run recurring job")
+	}
+	require.Eventually(t, func() bool {
+		var status string
+		var attempts int
+		var diagnostic *string
+		err := db.NewRaw(`SELECT status, attempts, last_safe_error FROM jobs WHERE id = ?`, id).Scan(context.Background(), &status, &attempts, &diagnostic)
+		return err == nil && status == "pending" && attempts == 0 && diagnostic == nil
+	}, time.Second, 10*time.Millisecond)
+	jobWorker.StopClaims()
+	require.NoError(t, jobWorker.Drain(context.Background()))
+}
+
+func TestRecurringJobHonorsRerunRequestedDuringActiveLease(t *testing.T) {
+	db := testdb.Open(t)
+	require.NoError(t, migrations.Apply(context.Background(), db))
+	var id int64
+	require.NoError(t, db.NewRaw(`
+		INSERT INTO jobs (kind, status, lease_owner, lease_expires_at, rerun_requested)
+		VALUES ('recurring', 'running', 'recurring-owner', now() + interval '1 hour', true)
+		RETURNING id
+	`).Scan(context.Background(), &id))
+	jobWorker, err := New(db, testConfig(), "recurring-owner", nil)
+	require.NoError(t, err)
+	require.NoError(t, jobWorker.reschedule(context.Background(), id, time.Hour))
+
+	var status string
+	var attempts int
+	var rerunRequested bool
+	var immediatelyAvailable bool
+	require.NoError(t, db.NewRaw(`
+		SELECT status, attempts, rerun_requested, available_at <= now()
+		FROM jobs WHERE id = ?
+	`, id).Scan(context.Background(), &status, &attempts, &rerunRequested, &immediatelyAvailable))
+	assert.Equal(t, "pending", status)
+	assert.Zero(t, attempts)
+	assert.False(t, rerunRequested)
+	assert.True(t, immediatelyAvailable)
+}
+
+func TestRetryHonorsRerunRequestedDuringActiveLease(t *testing.T) {
+	db := testdb.Open(t)
+	require.NoError(t, migrations.Apply(context.Background(), db))
+	var id int64
+	require.NoError(t, db.NewRaw(`
+		INSERT INTO jobs (kind, status, lease_owner, lease_expires_at, rerun_requested)
+		VALUES ('retrying', 'running', 'retry-owner', now() + interval '1 hour', true)
+		RETURNING id
+	`).Scan(context.Background(), &id))
+	jobWorker, err := New(db, testConfig(), "retry-owner", nil)
+	require.NoError(t, err)
+	require.NoError(t, jobWorker.retry(context.Background(), id, time.Hour, "handler_unavailable"))
+
+	var status, diagnostic string
+	var attempts int
+	var rerunRequested bool
+	var immediatelyAvailable bool
+	require.NoError(t, db.NewRaw(`
+		SELECT status, attempts, last_safe_error, rerun_requested, available_at <= now()
+		FROM jobs WHERE id = ?
+	`, id).Scan(context.Background(), &status, &attempts, &diagnostic, &rerunRequested, &immediatelyAvailable))
+	assert.Equal(t, "pending", status)
+	assert.Equal(t, 1, attempts)
+	assert.Equal(t, "handler_unavailable", diagnostic)
+	assert.False(t, rerunRequested)
+	assert.True(t, immediatelyAvailable)
+}
+
+func TestWorkerKeepsDependencyConcurrencyBoundedToOne(t *testing.T) {
+	db := testdb.Open(t)
+	require.NoError(t, migrations.Apply(context.Background(), db))
+	_, err := db.NewRaw(`INSERT INTO jobs (kind) VALUES ('bounded'), ('bounded')`).Exec(context.Background())
+	require.NoError(t, err)
+	started := make(chan struct{}, 2)
+	release := make(chan struct{})
+	var active, maximum atomic.Int32
+	jobWorker, err := New(db, testConfig(), "bounded-owner", map[string]Handler{
+		"bounded": func(context.Context, Job) error {
+			current := active.Add(1)
+			for {
+				observed := maximum.Load()
+				if current <= observed || maximum.CompareAndSwap(observed, current) {
+					break
+				}
+			}
+			started <- struct{}{}
+			<-release
+			active.Add(-1)
+			return nil
+		},
+	})
+	require.NoError(t, err)
+	jobWorker.Start(context.Background())
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not start first bounded job")
+	}
+	select {
+	case <-started:
+		t.Fatal("worker started a second dependency call concurrently")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	require.Eventually(t, func() bool {
+		var completed int
+		err := db.NewRaw(`SELECT count(*) FROM jobs WHERE kind = 'bounded' AND status = 'completed'`).Scan(context.Background(), &completed)
+		return err == nil && completed == 2
+	}, time.Second, 10*time.Millisecond)
+	assert.Equal(t, int32(1), maximum.Load())
+	jobWorker.StopClaims()
+	require.NoError(t, jobWorker.Drain(context.Background()))
+}
+
 func TestCompletionRequiresLeaseOwnership(t *testing.T) {
 	db := testdb.Open(t)
 	require.NoError(t, migrations.Apply(context.Background(), db))
@@ -192,4 +324,5 @@ func TestCompletionRequiresLeaseOwnership(t *testing.T) {
 	jobWorker, err := New(db, testConfig(), "this-owner", nil)
 	require.NoError(t, err)
 	assert.EqualError(t, jobWorker.complete(context.Background(), id), "complete job: lease ownership lost")
+	assert.EqualError(t, jobWorker.reschedule(context.Background(), id, time.Minute), "reschedule job: lease ownership lost")
 }

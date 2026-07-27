@@ -101,6 +101,24 @@ func (h *Handler) Restore(c echo.Context) error {
 	return h.mutateDisposition(c, h.service.Restore)
 }
 
+func (h *Handler) Reconcile(c echo.Context) error {
+	if err := h.authorize(c, true); err != nil {
+		return err
+	}
+	id, err := sourceID(c)
+	if err != nil {
+		return err
+	}
+	response, err := h.service.QueueReconciliation(c.Request().Context(), id)
+	if errors.Is(err, ErrNotFound) {
+		return errcodes.NotFound("Source album")
+	}
+	if err != nil {
+		return err
+	}
+	return c.JSON(http.StatusAccepted, response)
+}
+
 func (h *Handler) mutateDisposition(c echo.Context, mutate func(context.Context, uuid.UUID, int64) (Album, error)) error {
 	if err := h.authorize(c, true); err != nil {
 		return err
@@ -196,6 +214,8 @@ func RegisterRoutes(e *echo.Echo, handler *Handler) {
 	ignore.Name = curatorMutationPolicy
 	restore := group.POST("/:id/restore", handler.Restore)
 	restore.Name = curatorMutationPolicy
+	reconcile := group.POST("/:id/reconcile", handler.Reconcile)
+	reconcile.Name = curatorMutationPolicy
 }
 
 func noStore(next echo.HandlerFunc) echo.HandlerFunc {
