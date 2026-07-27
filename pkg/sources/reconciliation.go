@@ -580,7 +580,9 @@ func fingerprintAsset(asset immich.AssetSummary) [32]byte {
 }
 
 func sameAsset(left, right immich.AssetSummary) bool {
-	if left.SourceID != right.SourceID || left.MediaType != right.MediaType || !sameOptionalString(left.LocalDateTime, right.LocalDateTime) {
+	if left.SourceID != right.SourceID || left.MediaType != right.MediaType ||
+		!sameOptionalString(left.LocalDateTime, right.LocalDateTime) || left.CaptureAt != right.CaptureAt ||
+		left.Checksum != right.Checksum || left.Filename != right.Filename || left.OriginalPath != right.OriginalPath {
 		return false
 	}
 	return sameOptionalInt(left.Width, right.Width) && sameOptionalInt(left.Height, right.Height)

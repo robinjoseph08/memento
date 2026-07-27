@@ -158,8 +158,10 @@ func TestPersonMergeBecomesReviewAndSuppressesAttendanceUntilExplicitConfirmatio
 	var recipientBefore string
 	require.NoError(t, fixture.db.NewRaw(`SELECT row_to_json(g)::text FROM recipient_access_generations AS g`).Scan(context.Background(), &recipientBefore))
 	candidateID := uuid.MustParse(candidate.ID)
+	fixture.connector.faceCalls = nil
 	_, err = fixture.service.ConfirmPerson(context.Background(), fixture.actor, candidateID)
 	require.NoError(t, err)
+	assert.Len(t, fixture.connector.faceCalls, len(fixture.assetIDs), "confirmation must store the exact anchors it validated")
 	suggestions, err = fixture.service.SuggestionPersonIDs(context.Background(), []uuid.UUID{destination})
 	require.NoError(t, err)
 	assert.Equal(t, []uuid.UUID{fixture.personID}, suggestions)

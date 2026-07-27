@@ -579,6 +579,30 @@ func TestAmbiguousChecksumCandidatesExposeConflictEvidence(t *testing.T) {
 	assert.Equal(t, 2, conflicted)
 }
 
+func TestDuplicateAssetsWithChangedRepairEvidenceAreUnstable(t *testing.T) {
+	for _, field := range []string{"checksum", "path"} {
+		t.Run(field, func(t *testing.T) {
+			asset := repairableReconciliationAsset(uuid.New(), "/library/original.jpg")
+			conflict := asset
+			if field == "checksum" {
+				conflict.Checksum = "2222222222222222222222222222222222222222"
+			} else {
+				conflict.OriginalPath = "/library/changed.jpg"
+			}
+			next := 2
+			connector := &reconciliationConnector{summary: sourceAlbum(uuid.New(), "Conflicting evidence", 1)}
+			connector.pages = map[int]immich.AssetPage{
+				1: {Items: []immich.AssetSummary{asset}, NextPage: &next},
+				2: {Items: []immich.AssetSummary{conflict}},
+			}
+			service, sourceAlbumID := newReconciliationService(t, connector)
+
+			require.ErrorIs(t, service.Reconcile(context.Background(), sourceAlbumID), ErrUnstable)
+			assertTableCount(t, service, "source_album_memberships", 0)
+		})
+	}
+}
+
 func TestConflictingDuplicateAndNonAdvancingPagesAreUnstable(t *testing.T) {
 	asset := reconciliationAsset(uuid.New())
 	conflict := asset

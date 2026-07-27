@@ -490,8 +490,12 @@ func (s *Service) linkPerson(ctx context.Context, actor setup.CuratorSession, pe
 	if err != nil {
 		return MutationResponse{}, err
 	}
+	return s.linkPersonWithAnchors(ctx, actor, personID, immichPersonID, candidateID, anchors)
+}
+
+func (s *Service) linkPersonWithAnchors(ctx context.Context, actor setup.CuratorSession, personID, immichPersonID uuid.UUID, candidateID *uuid.UUID, anchors []collectedAnchor) (MutationResponse, error) {
 	now := s.now().UTC()
-	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+	err := s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 		if candidateID != nil {
 			var lockedID uuid.UUID
 			err := tx.NewRaw(`
@@ -644,23 +648,23 @@ func (s *Service) ConfirmPerson(ctx context.Context, actor setup.CuratorSession,
 	if err := json.Unmarshal(encodedConflicts, &expectedConflicts); err != nil {
 		return MutationResponse{}, err
 	}
-	currentCandidate, currentConflicts, err := s.currentPersonEvaluation(ctx, personID, previousID)
+	currentCandidate, currentConflicts, currentAnchors, err := s.currentPersonEvaluation(ctx, personID, previousID)
 	if err != nil {
 		return MutationResponse{}, err
 	}
 	if currentCandidate == nil || *currentCandidate != replacement.UUID || !slices.Equal(currentConflicts, expectedConflicts) {
 		return MutationResponse{}, ErrConflict
 	}
-	return s.linkPerson(ctx, actor, personID, replacement.UUID, &candidateID)
+	return s.linkPersonWithAnchors(ctx, actor, personID, replacement.UUID, &candidateID, currentAnchors)
 }
 
-func (s *Service) currentPersonEvaluation(ctx context.Context, personID, previousID uuid.UUID) (*uuid.UUID, []string, error) {
+func (s *Service) currentPersonEvaluation(ctx context.Context, personID, previousID uuid.UUID) (*uuid.UUID, []string, []collectedAnchor, error) {
 	if err := s.connector.Check(ctx); err != nil {
-		return nil, nil, ErrDependency
+		return nil, nil, nil, ErrDependency
 	}
 	people, err := s.connector.People(ctx)
 	if err != nil {
-		return nil, nil, ErrDependency
+		return nil, nil, nil, ErrDependency
 	}
 	present := make(map[uuid.UUID]immich.PersonSummary, len(people))
 	for _, person := range people {
@@ -672,7 +676,7 @@ func (s *Service) currentPersonEvaluation(ctx context.Context, personID, previou
 			image_width, image_height, x1, y1, x2, y2, last_linked_immich_person_id, last_seen_at
 		FROM immich_face_anchors WHERE person_id = ? ORDER BY immich_asset_id, immich_face_id
 	`, personID).Scan(ctx, &anchors); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	facesByID := map[uuid.UUID]immich.FaceSummary{}
 	seenAssets := map[uuid.UUID]struct{}{}
@@ -686,7 +690,7 @@ func (s *Service) currentPersonEvaluation(ctx context.Context, personID, previou
 			continue
 		}
 		if err != nil {
-			return nil, nil, ErrDependency
+			return nil, nil, nil, ErrDependency
 		}
 		for _, face := range faces {
 			facesByID[face.SourceID] = face
@@ -696,7 +700,17 @@ func (s *Service) currentPersonEvaluation(ctx context.Context, personID, previou
 	if matched {
 		candidate = &previousID
 	}
-	return candidate, conflicts, nil
+	currentAnchors := make([]collectedAnchor, 0, len(anchors))
+	if candidate != nil {
+		for _, anchor := range anchors {
+			face, found := facesByID[anchor.FaceID]
+			if !found || face.PersonID == nil || *face.PersonID != *candidate {
+				continue
+			}
+			currentAnchors = append(currentAnchors, collectedAnchor{AssetID: anchor.AssetID, Checksum: anchor.Checksum.String, Face: face})
+		}
+	}
+	return candidate, conflicts, currentAnchors, nil
 }
 
 // RejectPerson preserves evidence while leaving the link in needs-review.
