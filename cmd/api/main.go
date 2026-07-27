@@ -95,7 +95,8 @@ func run() error {
 	}
 	emailService := emaildelivery.New(db, cfg.SMTP, emailSender, cfg.Security.Secret)
 	sourceService := sources.New(db, immichClient, cfg.Sources.ReconciliationInterval)
-	handlers := jobHandlers(sourceService, emailService, cfg.SMTP.Enabled)
+	eventService := events.New(db)
+	handlers := jobHandlers(sourceService, eventService, emailService, cfg.SMTP.Enabled)
 
 	owner, err := leaseOwner()
 	if err != nil {
@@ -128,7 +129,7 @@ func run() error {
 	visibilityHandler := visibility.NewHandler(visibility.New(db), setupService)
 	recipientHandler := recipients.NewHandler(recipients.New(db, emailService, cfg.HTTP.PublicURL, setupService), setupService, cfg.Security)
 	sourceHandler := sources.NewHandler(sourceService, setupService)
-	eventHandler := events.NewHandler(events.New(db), setupService)
+	eventHandler := events.NewHandler(eventService, setupService)
 	repairHandler := repairs.NewHandler(repairs.New(db, immichClient), setupService)
 	suggestionHandler := suggestions.NewHandler(suggestions.New(db, peopleService), setupService)
 	audienceHandler := audiences.NewHandler(audiences.New(db, immichClient), setupService)
@@ -178,9 +179,10 @@ func run() error {
 	return nil
 }
 
-func jobHandlers(sourceService *sources.Service, emailService *emaildelivery.Service, smtpEnabled bool) map[string]worker.Handler {
+func jobHandlers(sourceService *sources.Service, eventService *events.Service, emailService *emaildelivery.Service, smtpEnabled bool) map[string]worker.Handler {
 	handlers := map[string]worker.Handler{
 		sources.ReconciliationJobKind: sourceService.HandleReconciliationJob,
+		events.PublicationJobKind:     eventService.HandlePublicationJob,
 	}
 	if smtpEnabled {
 		handlers[emaildelivery.JobKind] = emailService.Handle

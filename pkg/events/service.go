@@ -1,4 +1,4 @@
-// Package events owns private Event, Moment, and Loose item drafts.
+// Package events owns Event drafts, atomic Publication, and current Recipient projections.
 package events
 
 import (
@@ -155,10 +155,11 @@ type SourceMediaResponse struct {
 	MediaItems []MediaItem `json:"media_items"`
 }
 
-// Service persists private drafts without contacting or mutating Immich.
+// Service persists editable and published Event state without mutating Immich.
 type Service struct {
-	db  *bun.DB
-	now func() time.Time
+	db                  *bun.DB
+	now                 func() time.Time
+	failPublicationStep func(PublicationStep) error
 }
 
 func New(db *bun.DB) *Service {
@@ -546,7 +547,7 @@ func (s *Service) OrganizeEvent(ctx context.Context, actor setup.CuratorSession,
 	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 		var currentVersion int64
 		var timezone string
-		err := tx.NewRaw(`SELECT version, grouping_timezone FROM events WHERE id = ? AND lifecycle = 'draft' FOR UPDATE`, id).Scan(ctx, &currentVersion, &timezone)
+		err := tx.NewRaw(`SELECT version, grouping_timezone FROM events WHERE id = ? AND lifecycle IN ('draft', 'published') FOR UPDATE`, id).Scan(ctx, &currentVersion, &timezone)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrNotFound
 		}

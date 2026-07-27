@@ -196,6 +196,60 @@ function stubOrganizerAPI(initial: DraftEvent) {
           ],
         });
       }
+      if (
+        path === `/api/events/${eventID}/publications` &&
+        init?.method === "POST"
+      ) {
+        expect(init.headers).toMatchObject({ "X-Memento-CSRF": csrfToken });
+        expect(JSON.parse(stringBody(init.body))).toEqual({
+          version: persisted.version,
+          notify_recipients: true,
+        });
+        persisted = { ...persisted, lifecycle: "published" };
+        return response(
+          {
+            id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+            event_id: eventID,
+            revision: 1,
+            editable_version: persisted.version,
+            notify_recipients: true,
+            committed_at: "2026-05-03T00:00:00Z",
+          },
+          201,
+        );
+      }
+      if (path === `/api/events/${eventID}/preview-recipients`) {
+        return response({
+          recipients: [
+            {
+              person_id: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+              access_id: "99999999-9999-4999-8999-999999999999",
+              name: "Alex",
+              access_state: "pending",
+            },
+          ],
+        });
+      }
+      if (path.startsWith(`/api/events/${eventID}/preview?`)) {
+        return response({
+          authorized: true,
+          event_id: eventID,
+          publication_id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+          title: "Family weekend",
+          description: "",
+          cover_media_id: items.a.id,
+          media_count: 1,
+          media: [{ ...items.a, available: true }],
+          preview: true,
+          capabilities: {
+            comments: false,
+            favorites: false,
+            settings: false,
+            downloads: false,
+            record_engagement: false,
+          },
+        });
+      }
       if (path === `/api/events/${eventID}`) return response(persisted);
       const reviewMatch = path.match(
         /^\/api\/moments\/([^/]+)\/attendance-audience$/,
@@ -287,6 +341,48 @@ function renderOrganizer() {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+});
+
+test("publishes ready work and previews Recipient output read only", async () => {
+  const ready = organizedDraft();
+  ready.final_review_complete = true;
+  ready.moments = ready.moments.map((moment) => ({
+    ...moment,
+    attendance_complete: true,
+    audience_complete: true,
+  }));
+  stubOrganizerAPI(ready);
+  renderOrganizer();
+  fireEvent.click(
+    await screen.findByRole("button", { name: /Family weekend/ }),
+  );
+
+  const publish = await screen.findByRole("button", { name: "Publish Event" });
+  expect(publish).toBeEnabled();
+  fireEvent.click(publish);
+  expect(
+    await screen.findByText("Published revision 1 atomically."),
+  ).toBeInTheDocument();
+
+  const recipient = await screen.findByLabelText("Preview Recipient");
+  fireEvent.change(recipient, {
+    target: { value: "ffffffff-ffff-4fff-8fff-ffffffffffff" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Preview as Recipient" }));
+  const preview = await screen.findByRole("region", {
+    name: "Read-only Recipient preview",
+  });
+  expect(
+    await screen.findByText("1 authorized Media items"),
+  ).toBeInTheDocument();
+  expect(preview).toHaveTextContent(
+    "Preview activity is not recorded as Recipient engagement.",
+  );
+  for (const action of ["Comment", "Favorite", "Settings", "Download"]) {
+    expect(
+      screen.getByRole("button", { name: action, hidden: true }),
+    ).toBeDisabled();
+  }
 });
 
 test("organizes merged and split days with pointer and keyboard controls", async () => {

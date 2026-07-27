@@ -1494,6 +1494,49 @@ h1 {
   border-top: 1px solid #334155;
 }
 
+.publication-actions,
+.recipient-preview {
+  display: grid;
+  gap: 0.65rem;
+  margin-top: 1rem;
+  padding: 0.8rem;
+  border: 1px solid #334155;
+  border-radius: 0.75rem;
+}
+
+.publication-actions > label {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.publication-actions > label:first-of-type {
+  display: flex;
+  align-items: center;
+}
+
+.recipient-preview {
+  background: rgb(2 6 23 / 60%);
+}
+
+.recipient-preview header,
+.recipient-preview div {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0.4rem;
+}
+
+.recipient-preview ol,
+.recipient-preview p,
+.recipient-preview h5 {
+  margin: 0;
+}
+
+.curator-workspace button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 .conflict {
   padding: 1rem;
   border-bottom: 1px solid #f87171;
@@ -1522,8 +1565,14 @@ h1 {
   .organize-pane,
   .readiness,
   .moment-card,
-  .final-review {
+  .final-review,
+  .publication-actions,
+  .recipient-preview {
     border-color: #bae6fd;
+  }
+
+  .recipient-preview {
+    background: #f0f9ff;
   }
 
   .back-to-management,

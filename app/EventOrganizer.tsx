@@ -9,6 +9,9 @@ import type {
   MediaItem,
   Moment,
   OrganizeEventRequest,
+  PreviewRecipientsResponse,
+  PublicationResponse,
+  PublishedEventView,
 } from "./types/generated/events";
 import type { SessionResponse } from "./types/generated/setup";
 
@@ -168,6 +171,9 @@ export function EventOrganizer({
   const [conflictRecoveryError, setConflictRecoveryError] = useState("");
   const [conflictRecoveryPending, setConflictRecoveryPending] = useState(false);
   const [revision, setRevision] = useState(0);
+  const [notifyRecipients, setNotifyRecipients] = useState(true);
+  const [previewRecipientID, setPreviewRecipientID] = useState("");
+  const [previewOpen, setPreviewOpen] = useState(false);
   const revisionRef = useRef(0);
   const latestDraftRef = useRef<DraftEvent | undefined>(undefined);
   const selectedIDRef = useRef("");
@@ -194,6 +200,45 @@ export function EventOrganizer({
       : eventQuery.data?.id === selectedID
         ? eventQuery.data
         : undefined;
+
+  const previewRecipients = useQuery({
+    queryKey: ["preview-recipients", selectedID],
+    queryFn: () =>
+      apiJSON<PreviewRecipientsResponse>(
+        `/api/events/${selectedID}/preview-recipients`,
+      ),
+    enabled: selectedID.length > 0 && currentDraft?.lifecycle === "published",
+    retry: false,
+  });
+  const preview = useQuery({
+    queryKey: ["event-preview", selectedID, previewRecipientID],
+    queryFn: () =>
+      apiJSON<PublishedEventView>(
+        `/api/events/${selectedID}/preview?recipient_person_id=${encodeURIComponent(previewRecipientID)}`,
+      ),
+    enabled:
+      previewOpen && selectedID.length > 0 && previewRecipientID.length > 0,
+    retry: false,
+  });
+  const publish = useMutation({
+    mutationFn: (event: DraftEvent) =>
+      apiJSON<PublicationResponse>(`/api/events/${event.id}/publications`, {
+        method: "POST",
+        headers: { "X-Memento-CSRF": session.csrf_token },
+        body: JSON.stringify({
+          version: event.version,
+          notify_recipients: notifyRecipients,
+        }),
+      }),
+    onSuccess: () => {
+      setPreviewOpen(false);
+      setDraft((current) =>
+        current ? { ...current, lifecycle: "published" } : current,
+      );
+      void queryClient.invalidateQueries({ queryKey: ["event", selectedID] });
+      void queryClient.invalidateQueries({ queryKey: ["events"] });
+    },
+  });
 
   const save = useMutation({
     mutationFn: ({ event }: SaveAttempt) =>
@@ -663,6 +708,10 @@ export function EventOrganizer({
                     setSaveState("saved");
                     setConflictRecoveryError("");
                     setConflictRecoveryPending(false);
+                    setNotifyRecipients(true);
+                    setPreviewRecipientID("");
+                    setPreviewOpen(false);
+                    publish.reset();
                     setSelectedID(event.id);
                     setActivePane("organize");
                   }}
@@ -931,18 +980,143 @@ export function EventOrganizer({
             </>
           )}
           {currentDraft ? (
-            <label className="inspection-check final-review">
-              <input
-                checked={currentDraft.final_review_complete}
-                onChange={(event) =>
-                  change((next) => {
-                    next.final_review_complete = event.target.checked;
-                  })
-                }
-                type="checkbox"
-              />
-              Final review complete
-            </label>
+            <>
+              <label className="inspection-check final-review">
+                <input
+                  checked={currentDraft.final_review_complete}
+                  onChange={(event) =>
+                    change((next) => {
+                      next.final_review_complete = event.target.checked;
+                    })
+                  }
+                  type="checkbox"
+                />
+                Final review complete
+              </label>
+              <section
+                aria-labelledby="publication-actions-title"
+                className="publication-actions"
+              >
+                <h4 id="publication-actions-title">Publication</h4>
+                <label>
+                  <input
+                    checked={notifyRecipients}
+                    onChange={(event) =>
+                      setNotifyRecipients(event.target.checked)
+                    }
+                    type="checkbox"
+                  />
+                  Notify recipients
+                </label>
+                <button
+                  disabled={
+                    saveState !== "saved" ||
+                    publish.isPending ||
+                    currentDraft.unassigned_media.length > 0 ||
+                    currentDraft.moments.length === 0 ||
+                    currentDraft.moments.some(
+                      (moment) => !moment.audience_complete,
+                    ) ||
+                    !currentDraft.final_review_complete
+                  }
+                  onClick={() => publish.mutate(currentDraft)}
+                  type="button"
+                >
+                  {publish.isPending ? "Publishing…" : "Publish Event"}
+                </button>
+                {publish.isError ? (
+                  <p className="form-error" role="alert">
+                    {publish.error.message}
+                  </p>
+                ) : null}
+                {publish.data ? (
+                  <p role="status">
+                    Published revision {publish.data.revision} atomically.
+                  </p>
+                ) : null}
+                <label>
+                  Preview Recipient
+                  <select
+                    onChange={(event) => {
+                      setPreviewRecipientID(event.target.value);
+                      setPreviewOpen(false);
+                    }}
+                    value={previewRecipientID}
+                  >
+                    <option value="">Choose a Recipient</option>
+                    {previewRecipients.data?.recipients.map((recipient) => (
+                      <option
+                        key={recipient.access_id}
+                        value={recipient.person_id}
+                      >
+                        {recipient.name} ({recipient.access_state})
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <button
+                  disabled={
+                    !previewRecipientID ||
+                    (currentDraft.lifecycle !== "published" && !publish.data)
+                  }
+                  onClick={() => setPreviewOpen(true)}
+                  type="button"
+                >
+                  Preview as Recipient
+                </button>
+                {previewOpen ? (
+                  <section
+                    aria-label="Read-only Recipient preview"
+                    className="recipient-preview"
+                  >
+                    <header>
+                      <strong>Preview as Recipient</strong>
+                      <span>Read only</span>
+                    </header>
+                    {preview.isPending ? <p>Loading preview…</p> : null}
+                    {preview.isError ? (
+                      <p className="form-error" role="alert">
+                        {preview.error.message}
+                      </p>
+                    ) : null}
+                    {preview.data && !preview.data.authorized ? (
+                      <p>Nothing is shared with this Recipient.</p>
+                    ) : null}
+                    {preview.data?.authorized ? (
+                      <>
+                        <h5>{preview.data.title}</h5>
+                        <p>{preview.data.media_count} authorized Media items</p>
+                        <ol>
+                          {preview.data.media.map((item) => (
+                            <li key={item.id}>
+                              {item.media_type}
+                              {item.available ? "" : " (unavailable)"}
+                            </li>
+                          ))}
+                        </ol>
+                      </>
+                    ) : null}
+                    <div aria-label="Disabled Recipient interactions">
+                      <button disabled type="button">
+                        Comment
+                      </button>
+                      <button disabled type="button">
+                        Favorite
+                      </button>
+                      <button disabled type="button">
+                        Settings
+                      </button>
+                      <button disabled type="button">
+                        Download
+                      </button>
+                    </div>
+                    <p>
+                      Preview activity is not recorded as Recipient engagement.
+                    </p>
+                  </section>
+                ) : null}
+              </section>
+            </>
           ) : null}
           <p className="visually-hidden">{allMedia.length} total Media items</p>
         </aside>

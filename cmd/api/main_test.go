@@ -4,16 +4,19 @@ import (
 	"testing"
 
 	"github.com/robinjoseph08/memento/pkg/emaildelivery"
+	"github.com/robinjoseph08/memento/pkg/events"
 	"github.com/robinjoseph08/memento/pkg/sources"
 	"github.com/stretchr/testify/assert"
 )
 
-func TestJobHandlersAlwaysRegistersSourceReconciliation(t *testing.T) {
-	handlers := jobHandlers(&sources.Service{}, &emaildelivery.Service{}, false)
+func TestJobHandlersAlwaysRegistersDomainHandlers(t *testing.T) {
+	handlers := jobHandlers(&sources.Service{}, &events.Service{}, &emaildelivery.Service{}, false)
 	assert.Contains(t, handlers, sources.ReconciliationJobKind)
+	assert.Contains(t, handlers, events.PublicationJobKind)
 	assert.NotContains(t, handlers, emaildelivery.JobKind)
 
-	handlers = jobHandlers(&sources.Service{}, &emaildelivery.Service{}, true)
+	handlers = jobHandlers(&sources.Service{}, &events.Service{}, &emaildelivery.Service{}, true)
 	assert.Contains(t, handlers, sources.ReconciliationJobKind)
+	assert.Contains(t, handlers, events.PublicationJobKind)
 	assert.Contains(t, handlers, emaildelivery.JobKind)
 }

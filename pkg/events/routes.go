@@ -22,14 +22,23 @@ type Authorizer interface {
 	ContextWithRequestMetadata(ctx context.Context, request *http.Request) context.Context
 }
 
-// Handler exposes only private Curator drafting routes.
+type recipientAuthorizer interface {
+	AuthorizeSession(ctx context.Context, credential, csrfToken string, mutation bool) (setup.SessionActor, error)
+}
+
+// Handler exposes Curator Event workflows and separately authorized Recipient projections.
 type Handler struct {
-	service    *Service
-	authorizer Authorizer
+	service         *Service
+	authorizer      Authorizer
+	recipientAccess recipientAuthorizer
 }
 
 func NewHandler(service *Service, authorizer Authorizer) *Handler {
-	return &Handler{service: service, authorizer: authorizer}
+	handler := &Handler{service: service, authorizer: authorizer}
+	if access, ok := authorizer.(recipientAuthorizer); ok {
+		handler.recipientAccess = access
+	}
+	return handler
 }
 
 func (h *Handler) requestContext(c echo.Context) context.Context {
@@ -96,6 +105,87 @@ func (h *Handler) OrganizeEvent(c echo.Context) error {
 		return mapped
 	}
 	return c.JSON(http.StatusOK, event)
+}
+
+func (h *Handler) PublishEvent(c echo.Context) error {
+	actor, err := h.authorize(c, true)
+	if err != nil {
+		return err
+	}
+	id, err := routeID(c.Param("id"), "Event")
+	if err != nil {
+		return err
+	}
+	var request PublishEventRequest
+	if err := c.Bind(&request); err != nil {
+		return err
+	}
+	publication, err := h.service.PublishEvent(h.requestContext(c), actor, id, request)
+	if mapped := publicationError(err); mapped != nil {
+		return mapped
+	}
+	return c.JSON(http.StatusCreated, publication)
+}
+
+func (h *Handler) PreviewRecipients(c echo.Context) error {
+	if _, err := h.authorize(c, false); err != nil {
+		return err
+	}
+	eventID, err := routeID(c.Param("id"), "Event")
+	if err != nil {
+		return err
+	}
+	response, err := h.service.PreviewRecipients(c.Request().Context(), eventID)
+	if mapped := publicationError(err); mapped != nil {
+		return mapped
+	}
+	return c.JSON(http.StatusOK, response)
+}
+
+func (h *Handler) PreviewEvent(c echo.Context) error {
+	actor, err := h.authorize(c, false)
+	if err != nil {
+		return err
+	}
+	eventID, err := routeID(c.Param("id"), "Event")
+	if err != nil {
+		return err
+	}
+	recipientID, err := uuid.Parse(c.QueryParam("recipient_person_id"))
+	if err != nil || recipientID == uuid.Nil {
+		return errcodes.ValidationError("Choose a current Recipient to preview.")
+	}
+	view, err := h.service.PreviewEvent(h.requestContext(c), actor, eventID, recipientID)
+	if mapped := publicationError(err); mapped != nil {
+		return mapped
+	}
+	return c.JSON(http.StatusOK, view)
+}
+
+func (h *Handler) RecipientEvent(c echo.Context) error {
+	if h.recipientAccess == nil {
+		return errcodes.NotFound("Page")
+	}
+	cookie, err := c.Cookie(setup.CookieName)
+	if err != nil || cookie.Value == "" {
+		return errcodes.Unauthorized("A valid Recipient Session is required.")
+	}
+	actor, err := h.recipientAccess.AuthorizeSession(c.Request().Context(), cookie.Value, "", false)
+	if errors.Is(err, setup.ErrUnauthenticated) {
+		return errcodes.Unauthorized("A valid Recipient Session is required.")
+	}
+	if err != nil {
+		return err
+	}
+	id, err := routeID(c.Param("id"), "Event")
+	if err != nil {
+		return err
+	}
+	view, err := h.service.RecipientEvent(c.Request().Context(), actor, id)
+	if mapped := publicationError(err); mapped != nil {
+		return mapped
+	}
+	return c.JSON(http.StatusOK, view)
 }
 
 func (h *Handler) SourceMedia(c echo.Context) error {
@@ -170,6 +260,23 @@ func (h *Handler) authorize(c echo.Context, mutation bool) (setup.CuratorSession
 	}
 }
 
+func publicationError(err error) error {
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, ErrNotFound), errors.Is(err, ErrNoPublication):
+		return errcodes.NotFound("Event")
+	case errors.Is(err, ErrVersionConflict):
+		return errcodes.Conflict("This Event changed in another browser. Reload and review the current editable version before publishing.")
+	case errors.Is(err, ErrPublicationNotReady):
+		return errcodes.Conflict("Finish Media organization, approve every Moment Audience, and complete final review before publishing.")
+	case errors.Is(err, ErrAudienceNotCurrent):
+		return errcodes.Conflict("A Recipient's access changed. Recalculate and approve every affected Audience before publishing.")
+	default:
+		return err
+	}
+}
+
 func draftError(err error, resource string) error {
 	switch {
 	case err == nil:
@@ -203,7 +310,7 @@ func routeID(value, resource string) (uuid.UUID, error) {
 	return id, nil
 }
 
-// RegisterRoutes registers private, no-store Curator draft routes.
+// RegisterRoutes registers no-store Curator workflows and Recipient projections.
 func RegisterRoutes(e *echo.Echo, handler *Handler) {
 	events := e.Group("/api/events", noStore)
 	createEvent := events.POST("", handler.CreateEvent)
@@ -214,6 +321,15 @@ func RegisterRoutes(e *echo.Echo, handler *Handler) {
 	getEvent.Name = curatorReadPolicy
 	organizeEvent := events.PUT("/:id/organization", handler.OrganizeEvent)
 	organizeEvent.Name = curatorMutationPolicy
+	publishEvent := events.POST("/:id/publications", handler.PublishEvent)
+	publishEvent.Name = curatorMutationPolicy
+	previewRecipients := events.GET("/:id/preview-recipients", handler.PreviewRecipients)
+	previewRecipients.Name = curatorReadPolicy
+	previewEvent := events.GET("/:id/preview", handler.PreviewEvent)
+	previewEvent.Name = curatorReadPolicy
+
+	recipientEvent := e.GET("/api/me/events/:id", handler.RecipientEvent, noStore)
+	recipientEvent.Name = "policy:recipient"
 
 	looseItems := e.Group("/api/loose-items", noStore)
 	createLoose := looseItems.POST("", handler.CreateLooseItem)
