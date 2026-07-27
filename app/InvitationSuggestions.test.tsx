@@ -117,6 +117,47 @@ describe("InvitationSuggestions", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("refreshes stale controls when a competing Curator resolution wins", async () => {
+    let suggestion = {
+      id: "11111111-1111-4111-8111-111111111111",
+      name: "Taylor Existing",
+      email: "taylor@example.com",
+      relationship_context: "Cousin",
+      spoke_with_person: true,
+      status: "submitted",
+      submitted_at: "2026-07-27T12:00:00Z",
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const path = requestPath(input);
+        if (path.endsWith("/withdraw")) {
+          suggestion = { ...suggestion, status: "rejected" };
+          return Promise.resolve(
+            response(
+              {
+                error: {
+                  message:
+                    "This Invitation suggestion is no longer Submitted. Refresh before trying again.",
+                },
+              },
+              409,
+            ),
+          );
+        }
+        return Promise.resolve(response({ suggestions: [suggestion] }));
+      }),
+    );
+
+    renderSuggestions();
+    fireEvent.click(await screen.findByRole("button", { name: "Withdraw" }));
+
+    await screen.findByText("Rejected");
+    expect(
+      screen.queryByRole("button", { name: "Withdraw" }),
+    ).not.toBeInTheDocument();
+  });
+
   it("lets the Curator explicitly match an existing Person without presenting access as automatic", async () => {
     const acceptedBodies: unknown[] = [];
     vi.stubGlobal(
@@ -187,9 +228,15 @@ describe("InvitationSuggestions", () => {
         /Acceptance does not designate Recipient access or send an Invitation/,
       ),
     ).toBeInTheDocument();
-    fireEvent.click(
-      screen.getByRole("button", { name: "Match Person and accept" }),
-    );
+    const acceptButton = screen.getByRole("button", {
+      name: "Match Person and accept",
+    });
+    expect(acceptButton).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Match an existing Person"), {
+      target: { value: "22222222-2222-4222-8222-222222222222" },
+    });
+    expect(acceptButton).toBeEnabled();
+    fireEvent.click(acceptButton);
     await waitFor(() => expect(acceptedBodies).toHaveLength(1));
     expect(acceptedBodies[0]).toEqual({
       person_id: "22222222-2222-4222-8222-222222222222",

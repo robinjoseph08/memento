@@ -77,7 +77,7 @@ function RequesterSuggestions({ session }: { session: SessionResponse }) {
           headers: { "X-Memento-CSRF": session.csrf_token },
         },
       ),
-    onSuccess: async () => {
+    onSettled: async () => {
       await Promise.all([
         queryClient.invalidateQueries({
           queryKey: ["invitation-suggestions", "requester"],
@@ -219,9 +219,7 @@ function CuratorSuggestionCard({
   people: PeopleListResponse["people"];
 }) {
   const queryClient = useQueryClient();
-  const [personID, setPersonID] = useState(
-    suggestion.matching_people[0]?.person_id ?? "",
-  );
+  const [personID, setPersonID] = useState("");
   const [newName, setNewName] = useState(suggestion.name);
   const [newSortName, setNewSortName] = useState("");
   const refresh = async () => {
@@ -242,7 +240,7 @@ function CuratorSuggestionCard({
           body: JSON.stringify(request),
         },
       ),
-    onSuccess: refresh,
+    onSettled: refresh,
   });
   const reject = useMutation({
     mutationFn: () =>
@@ -253,7 +251,7 @@ function CuratorSuggestionCard({
           headers: { "X-Memento-CSRF": session.csrf_token },
         },
       ),
-    onSuccess: refresh,
+    onSettled: refresh,
   });
   const pending = accept.isPending || reject.isPending;
   return (

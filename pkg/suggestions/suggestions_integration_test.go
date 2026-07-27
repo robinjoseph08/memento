@@ -232,6 +232,45 @@ func TestAcceptWithNewPersonAndRejectAreExplicitAndDoNotDesignateRecipientAccess
 	assert.Equal(t, 4, curatorActivity)
 }
 
+func TestPersonMergeMovesSuggestionOwnershipAndMatchWithoutRewritingAttribution(t *testing.T) {
+	fixture := newSuggestionFixture(t)
+	ctx := context.Background()
+	submitted := submitSuggestion(t, fixture, fixture.requester, "Alex Requester", "alex@example.com")
+	_, err := fixture.service.AcceptExisting(ctx, fixture.curator, uuid.MustParse(submitted.ID), fixture.requester.PersonID)
+	require.NoError(t, err)
+
+	survivorID := uuid.New()
+	_, err = fixture.db.NewRaw(`INSERT INTO people (id, display_name, sort_name) VALUES (?, 'Alex Survivor', 'Survivor, Alex')`, survivorID).Exec(ctx)
+	require.NoError(t, err)
+	peopleService := people.New(fixture.db)
+	preview, err := peopleService.PreviewMerge(ctx, fixture.curator, fixture.requester.PersonID, survivorID)
+	require.NoError(t, err)
+	require.True(t, preview.RequiresGenerationTransfer)
+	_, err = peopleService.Merge(ctx, fixture.curator, people.MergeRequest{
+		SourcePersonID: fixture.requester.PersonID.String(), SurvivorPersonID: survivorID.String(),
+		SourceVersion: 1, SurvivorVersion: 1, TransferCurrentAccessGeneration: true,
+		ExpectedRecipientGeneration: preview.References.ResultingRecipientGeneration,
+		PreviewFingerprint:          preview.PreviewFingerprint,
+	})
+	require.NoError(t, err)
+
+	mergedActor := fixture.requester
+	mergedActor.PersonID = survivorID
+	history, err := fixture.service.ListRequester(ctx, mergedActor)
+	require.NoError(t, err)
+	require.Len(t, history.Suggestions, 1)
+	assert.Equal(t, "accepted", history.Suggestions[0].Status)
+	var requesterID, matchedID uuid.UUID
+	require.NoError(t, fixture.db.NewRaw(`SELECT requester_person_id, matched_person_id FROM invitation_suggestions WHERE id = ?`, submitted.ID).Scan(ctx, &requesterID, &matchedID))
+	assert.Equal(t, survivorID, requesterID)
+	assert.Equal(t, survivorID, matchedID)
+	var movedActivity, attributedAudits int
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM recipient_activity_items WHERE invitation_suggestion_id = ? AND recipient_person_id = ?`, submitted.ID, survivorID).Scan(ctx, &movedActivity))
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM security_audit_events WHERE metadata->>'invitation_suggestion_id' = ? AND subject_person_id = ?`, submitted.ID, fixture.requester.PersonID).Scan(ctx, &attributedAudits))
+	assert.Equal(t, 2, movedActivity)
+	assert.Equal(t, 2, attributedAudits, "historical audit attribution remains attached to the original Person")
+}
+
 func TestWithdrawalAndCuratorResolutionSerializeWithOneWinner(t *testing.T) {
 	fixture := newSuggestionFixture(t)
 	submitted := submitSuggestion(t, fixture, fixture.requester, "Race Relative", "race@example.com")
