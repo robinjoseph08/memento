@@ -35,6 +35,7 @@ func libraryHTTP(authorizer *routeAuthorizer) *echo.Echo {
 }
 
 func TestLibraryRoutesRequireACompletedRecipientSessionWithoutIdentifierHints(t *testing.T) {
+	requestedID := uuid.NewString()
 	for _, test := range []struct {
 		name   string
 		path   string
@@ -42,7 +43,7 @@ func TestLibraryRoutesRequireACompletedRecipientSessionWithoutIdentifierHints(t 
 		err    error
 	}{
 		{name: "missing cookie", path: "/api/me/photos"},
-		{name: "invalid session", path: "/api/me/media/" + uuid.NewString() + "/thumbnail", cookie: true, err: setup.ErrUnauthenticated},
+		{name: "invalid session", path: "/api/me/media/" + requestedID + "/thumbnail", cookie: true, err: setup.ErrUnauthenticated},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			authorizer := &routeAuthorizer{err: test.err}
@@ -54,7 +55,7 @@ func TestLibraryRoutesRequireACompletedRecipientSessionWithoutIdentifierHints(t 
 			libraryHTTP(authorizer).ServeHTTP(response, request)
 			assert.Equal(t, http.StatusUnauthorized, response.Code)
 			assert.Equal(t, "private, no-store", response.Header().Get(echo.HeaderCacheControl))
-			assert.NotContains(t, response.Body.String(), uuid.NewString())
+			assert.NotContains(t, response.Body.String(), requestedID)
 		})
 	}
 }

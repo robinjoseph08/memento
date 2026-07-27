@@ -26,6 +26,15 @@ function json(value: unknown) {
   );
 }
 
+function apiError(message: string) {
+  return Promise.resolve(
+    new Response(JSON.stringify({ error: { message } }), {
+      status: 503,
+      headers: { "Content-Type": "application/json" },
+    }),
+  );
+}
+
 function requestPath(input: RequestInfo | URL) {
   if (typeof input === "string") return input;
   if (input instanceof URL) return input.href;
@@ -132,7 +141,7 @@ test("lands on Photos with durable New for you and real-ratio authorized thumbna
   expect(
     await screen.findByRole("heading", { name: "New for you" }),
   ).toBeVisible();
-  const image = await screen.findByAltText("Authorized photo");
+  const image = await screen.findByAltText("Photo 1 from July 2026");
   expect(image).toHaveAttribute("src", "/api/me/media/media-1/thumbnail");
   expect(image.closest("figure")).toHaveStyle({ aspectRatio: "1600 / 900" });
   const newEvent = screen.getByRole("button", { name: /Family weekend/ });
@@ -145,9 +154,9 @@ test("lands on Photos with durable New for you and real-ratio authorized thumbna
   });
 
   fireEvent.click(screen.getByRole("button", { name: "Load more photos" }));
-  const appended = await screen.findByAltText("Authorized video");
+  const appended = await screen.findByAltText("Video 2 from July 2026");
   expect(appended).toHaveAttribute("src", "/api/me/media/media-2/thumbnail");
-  expect(screen.getByAltText("Authorized photo")).toBeVisible();
+  expect(screen.getByAltText("Photo 1 from July 2026")).toBeVisible();
   expect(requests.some(({ path }) => path.includes("cursor=photos-next"))).toBe(
     true,
   );
@@ -214,5 +223,39 @@ test("navigates Events and Favorites without exposing an unavailable aggregate",
   expect(
     await screen.findByText("Favorites aren't shared with other recipients."),
   ).toBeVisible();
-  expect(await screen.findByText("No authorized Favorites yet.")).toBeVisible();
+  expect(await screen.findByText("No Favorites yet.")).toBeVisible();
+});
+
+test("does not claim a library is empty when its request fails", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) => {
+      const path = requestPath(input);
+      if (path.startsWith("/api/me/photos?")) {
+        return apiError("Photos are temporarily unavailable.");
+      }
+      if (path === "/api/me/new-for-you") return json({ events: [] });
+      if (path.startsWith("/api/me/events?")) {
+        return apiError("Events are temporarily unavailable.");
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    }),
+  );
+
+  renderLibrary();
+
+  expect(
+    await screen.findByText("Photos are temporarily unavailable."),
+  ).toBeVisible();
+  expect(
+    screen.queryByText("No photos are available."),
+  ).not.toBeInTheDocument();
+
+  fireEvent.click(screen.getAllByRole("button", { name: "Events" })[0]);
+  expect(
+    await screen.findByText("Events are temporarily unavailable."),
+  ).toBeVisible();
+  expect(
+    screen.queryByText("No Events are available."),
+  ).not.toBeInTheDocument();
 });

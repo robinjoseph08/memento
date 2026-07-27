@@ -134,8 +134,8 @@ test("@desktop Recipient lands on Photos and sees only filtered Event totals", a
   await expect(page.getByText("hidden", { exact: false })).toHaveCount(0);
 
   await page.getByRole("button", { name: "Load more photos" }).click();
-  await expect(page.getByAltText("Authorized video")).toBeVisible();
-  await expect(page.getByAltText("Authorized photo")).toBeVisible();
+  await expect(page.getByAltText("Video 2 from July 2026")).toBeVisible();
+  await expect(page.getByAltText("Photo 1 from July 2026")).toBeVisible();
 
   await page
     .locator(".library-rail")
@@ -153,7 +153,7 @@ test("@mobile complete thumbnails and compact navigation do not expose inaccessi
   await recipientAPI(page);
   await page.goto("/");
 
-  const thumbnail = page.getByAltText("Authorized photo");
+  const thumbnail = page.getByAltText("Photo 1 from July 2026");
   await expect(thumbnail).toBeVisible();
   await expect(thumbnail).toHaveCSS("object-fit", "contain");
   await expect(page.locator(".mobile-library-nav")).toBeVisible();

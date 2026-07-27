@@ -29,10 +29,18 @@ function mediaLabel(media: Media) {
   }).format(parsed);
 }
 
+function mediaAlt(item: Media, index: number) {
+  const kind = item.media_type === "video" ? "Video" : "Photo";
+  const date = mediaLabel(item);
+  return date === "Date unavailable"
+    ? `${kind} ${index + 1}, date unavailable`
+    : `${kind} ${index + 1} from ${date}`;
+}
+
 function Gallery({ media }: { media: Media[] }) {
   return (
-    <div aria-label="Authorized media" className="justified-gallery">
-      {media.map((item) => (
+    <div aria-label="Media gallery" className="justified-gallery">
+      {media.map((item, index) => (
         <figure
           className="gallery-item"
           key={item.id}
@@ -46,11 +54,7 @@ function Gallery({ media }: { media: Media[] }) {
         >
           {item.available ? (
             <img
-              alt={
-                item.media_type === "video"
-                  ? "Authorized video"
-                  : "Authorized photo"
-              }
+              alt={mediaAlt(item, index)}
               loading="lazy"
               src={item.thumbnail_url}
             />
@@ -74,7 +78,7 @@ function EventCards({
   onOpen: (event: EventSummary) => void;
 }) {
   return (
-    <div aria-label="Authorized Events" className="event-gallery">
+    <div aria-label="Event gallery" className="event-gallery">
       {events.map((event) => {
         const ratio =
           event.cover_width && event.cover_height
@@ -275,7 +279,9 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
               <>
                 <LibraryError error={events.error} />
                 <EventCards events={eventItems} onOpen={openEvent} />
-                {!events.isPending && eventItems.length === 0 ? (
+                {!events.isPending &&
+                !events.error &&
+                eventItems.length === 0 ? (
                   <p className="library-empty">No Events are available.</p>
                 ) : null}
                 {events.hasNextPage ? (
@@ -331,10 +337,10 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
                       />
                     </section>
                   ))}
-                  {!photos.isPending && media.length === 0 ? (
+                  {!photos.isPending && !photos.error && media.length === 0 ? (
                     <p className="library-empty">
                       {destination === "favorites"
-                        ? "No authorized Favorites yet."
+                        ? "No Favorites yet."
                         : "No photos are available."}
                     </p>
                   ) : null}
