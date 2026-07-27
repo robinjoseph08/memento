@@ -96,15 +96,18 @@ func New(db *bun.DB, source thumbnailSource) *Service {
 type cursorKind string
 
 const (
-	cursorKindMedia      cursorKind = "media"
+	cursorKindPhotos     cursorKind = "photos"
+	cursorKindFavorites  cursorKind = "favorites"
 	cursorKindEvents     cursorKind = "events"
 	cursorKindEventMedia cursorKind = "event_media"
 )
 
 type cursor struct {
-	Kind cursorKind `json:"k"`
-	Sort string     `json:"s"`
-	ID   string     `json:"i"`
+	Kind          cursorKind `json:"k"`
+	Sort          string     `json:"s"`
+	ID            string     `json:"i"`
+	ResourceID    string     `json:"r,omitempty"`
+	PublicationID string     `json:"p,omitempty"`
 }
 
 func pageSize(raw string) (int, error) {
@@ -139,13 +142,30 @@ func decodeCursor(raw string, kind cursorKind) (*cursor, error) {
 	if value.Kind != kind || err != nil || id == uuid.Nil {
 		return nil, ErrInvalidCursor
 	}
+	switch kind {
+	case cursorKindPhotos, cursorKindFavorites:
+		if value.ResourceID != "" || value.PublicationID != "" {
+			return nil, ErrInvalidCursor
+		}
+	case cursorKindEvents:
+		publicationID, publicationErr := uuid.Parse(value.PublicationID)
+		if publicationErr != nil || publicationID == uuid.Nil || value.ResourceID != "" {
+			return nil, ErrInvalidCursor
+		}
+	case cursorKindEventMedia:
+		resourceID, resourceErr := uuid.Parse(value.ResourceID)
+		publicationID, publicationErr := uuid.Parse(value.PublicationID)
+		if resourceErr != nil || resourceID == uuid.Nil || publicationErr != nil || publicationID == uuid.Nil || value.Sort != "" {
+			return nil, ErrInvalidCursor
+		}
+	}
 	return &value, nil
 }
 
-func encodeCursor(kind cursorKind, sortValue, id string) *string {
-	contents, _ := json.Marshal(cursor{Kind: kind, Sort: sortValue, ID: id})
-	value := base64.RawURLEncoding.EncodeToString(contents)
-	return &value
+func encodeCursor(value cursor) *string {
+	contents, _ := json.Marshal(value)
+	encoded := base64.RawURLEncoding.EncodeToString(contents)
+	return &encoded
 }
 
 const validPlacements = `
@@ -209,7 +229,11 @@ func (s *Service) Photos(ctx context.Context, actor setup.SessionActor, rawLimit
 	if err != nil {
 		return MediaPage{}, err
 	}
-	position, err := decodeCursor(rawCursor, cursorKindMedia)
+	kind := cursorKindPhotos
+	if favorites {
+		kind = cursorKindFavorites
+	}
+	position, err := decodeCursor(rawCursor, kind)
 	if err != nil {
 		return MediaPage{}, err
 	}
@@ -260,7 +284,7 @@ func (s *Service) Photos(ctx context.Context, actor setup.SessionActor, rawLimit
 		if last.LocalDateTime != nil {
 			sortValue = *last.LocalDateTime
 		}
-		response.NextCursor = encodeCursor(cursorKindMedia, sortValue, last.ID)
+		response.NextCursor = encodeCursor(cursor{Kind: kind, Sort: sortValue, ID: last.ID})
 		response.Media = response.Media[:limit]
 	}
 	return response, nil
@@ -284,6 +308,20 @@ func (s *Service) Events(ctx context.Context, actor setup.SessionActor, rawLimit
 		args := []any{actor.AccessID}
 		if position != nil {
 			if _, err := time.Parse(time.RFC3339Nano, position.Sort); err != nil {
+				return ErrInvalidCursor
+			}
+			var current bool
+			if err := tx.NewRaw(fmt.Sprintf(`WITH valid AS (%s)
+				SELECT EXISTS (
+					SELECT 1 FROM valid
+					JOIN current_published_events AS current
+					  ON current.event_id = valid.event_id AND current.publication_id = valid.publication_id
+					WHERE current.event_id = ? AND current.publication_id = ?
+					  AND current.committed_at = ?::timestamptz
+				)`, validPlacements), actor.AccessID, position.ID, position.PublicationID, position.Sort).Scan(ctx, &current); err != nil {
+				return err
+			}
+			if !current {
 				return ErrInvalidCursor
 			}
 			filter = `WHERE (current.committed_at, current.event_id) < (?::timestamptz, ?::uuid)`
@@ -317,7 +355,10 @@ func (s *Service) Events(ctx context.Context, actor setup.SessionActor, rawLimit
 	}
 	if len(response.Events) > limit {
 		last := response.Events[limit-1]
-		response.NextCursor = encodeCursor(cursorKindEvents, last.CommittedAt.Format(time.RFC3339Nano), last.ID)
+		response.NextCursor = encodeCursor(cursor{
+			Kind: cursorKindEvents, Sort: last.CommittedAt.Format(time.RFC3339Nano),
+			ID: last.ID, PublicationID: last.PublicationID,
+		})
 		response.Events = response.Events[:limit]
 	}
 	return response, nil
@@ -397,6 +438,9 @@ func (s *Service) Event(ctx context.Context, actor setup.SessionActor, eventID u
 	if err != nil {
 		return Event{}, err
 	}
+	if position != nil && position.ResourceID != eventID.String() {
+		return Event{}, ErrInvalidCursor
+	}
 	var response Event
 	err = s.db.RunInTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true}, func(ctx context.Context, tx bun.Tx) error {
 		if err := ensureActor(ctx, tx, actor); err != nil {
@@ -422,12 +466,25 @@ func (s *Service) Event(ctx context.Context, actor setup.SessionActor, eventID u
 		filter := `WHERE valid.event_id = ?`
 		args := []any{actor.AccessID, eventID}
 		if position != nil {
-			order, parseErr := strconv.Atoi(position.Sort)
-			if parseErr != nil || order < 0 {
+			if position.PublicationID != response.PublicationID {
 				return ErrInvalidCursor
 			}
-			filter += ` AND (valid.position, valid.media_item_id) > (?, ?::uuid)`
-			args = append(args, order, position.ID)
+			var current bool
+			if err := tx.NewRaw(fmt.Sprintf(`WITH valid AS (%s)
+				SELECT EXISTS (
+					SELECT 1 FROM valid WHERE valid.event_id = ? AND valid.publication_id = ?
+					  AND valid.media_item_id = ?
+				)`, validPlacements), actor.AccessID, eventID, response.PublicationID, position.ID).Scan(ctx, &current); err != nil {
+				return err
+			}
+			if !current {
+				return ErrInvalidCursor
+			}
+			filter += ` AND (valid.position, valid.media_item_id) > (
+				SELECT cursor.position, cursor.media_item_id FROM valid AS cursor
+				WHERE cursor.event_id = ? AND cursor.publication_id = ? AND cursor.media_item_id = ?
+			)`
+			args = append(args, eventID, response.PublicationID, position.ID)
 		}
 		args = append(args, limit+1)
 		query := fmt.Sprintf(`WITH valid AS (%s)
@@ -446,7 +503,10 @@ func (s *Service) Event(ctx context.Context, actor setup.SessionActor, eventID u
 		for index, row := range rows {
 			if index == limit {
 				prior := rows[index-1]
-				response.NextCursor = encodeCursor(cursorKindEventMedia, strconv.Itoa(prior.Position), prior.ID)
+				response.NextCursor = encodeCursor(cursor{
+					Kind: cursorKindEventMedia, ID: prior.ID,
+					ResourceID: eventID.String(), PublicationID: response.PublicationID,
+				})
 				break
 			}
 			if row.Available {

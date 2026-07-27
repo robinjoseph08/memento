@@ -201,6 +201,57 @@ func TestRecipientLibraryPaginatesOnlyCurrentAuthorizedUnion(t *testing.T) {
 	assert.ErrorIs(t, err, ErrInvalidCursor)
 }
 
+func TestLibraryCursorsAreScopedAndEventPaginationDoesNotExposeHiddenPositions(t *testing.T) {
+	fixture := newLibraryFixture(t)
+	ctx := context.Background()
+
+	photos, err := fixture.service.Photos(ctx, fixture.actor, "1", "", false)
+	require.NoError(t, err)
+	require.NotNil(t, photos.NextCursor)
+	_, err = fixture.service.Photos(ctx, fixture.actor, "1", *photos.NextCursor, true)
+	assert.ErrorIs(t, err, ErrInvalidCursor, "Photos cursors cannot paginate Favorites")
+
+	events, err := fixture.service.Events(ctx, fixture.actor, "1", "")
+	require.NoError(t, err)
+	require.NotNil(t, events.NextCursor)
+	staleEventCursor := encodeCursor(cursor{
+		Kind: cursorKindEvents, Sort: events.Events[0].CommittedAt.Format(time.RFC3339Nano),
+		ID: events.Events[0].ID, PublicationID: uuid.NewString(),
+	})
+	_, err = fixture.service.Events(ctx, fixture.actor, "1", *staleEventCursor)
+	assert.ErrorIs(t, err, ErrInvalidCursor, "Events cursors are bound to the current Publication")
+
+	_, err = fixture.db.NewRaw(`
+		UPDATE current_published_placements SET position = position + 10 WHERE event_id = ?;
+		UPDATE current_published_placements SET position = 0 WHERE event_id = ? AND media_item_id = ?;
+		UPDATE current_published_placements SET position = 1 WHERE event_id = ? AND media_item_id = ?;
+		UPDATE current_published_placements SET position = 2 WHERE event_id = ? AND media_item_id = ?
+	`, fixture.events[0], fixture.events[0], fixture.media[0], fixture.events[0], fixture.media[2], fixture.events[0], fixture.media[1]).Exec(ctx)
+	require.NoError(t, err)
+	first, err := fixture.service.Event(ctx, fixture.actor, fixture.events[0], "1", "")
+	require.NoError(t, err)
+	require.Len(t, first.Media, 1)
+	assert.Equal(t, fixture.media[0].String(), first.Media[0].ID)
+	require.NotNil(t, first.NextCursor)
+	position, err := decodeCursor(*first.NextCursor, cursorKindEventMedia)
+	require.NoError(t, err)
+	assert.Empty(t, position.Sort, "the hidden source ordinal between authorized Media is not disclosed")
+	second, err := fixture.service.Event(ctx, fixture.actor, fixture.events[0], "1", *first.NextCursor)
+	require.NoError(t, err)
+	require.Len(t, second.Media, 1)
+	assert.Equal(t, fixture.media[1].String(), second.Media[0].ID)
+	assert.Nil(t, second.NextCursor)
+
+	_, err = fixture.service.Event(ctx, fixture.actor, fixture.events[1], "1", *first.NextCursor)
+	assert.ErrorIs(t, err, ErrInvalidCursor, "Event cursors cannot cross resource boundaries")
+	staleDetailCursor := encodeCursor(cursor{
+		Kind: cursorKindEventMedia, ID: first.Media[0].ID,
+		ResourceID: fixture.events[0].String(), PublicationID: uuid.NewString(),
+	})
+	_, err = fixture.service.Event(ctx, fixture.actor, fixture.events[0], "1", *staleDetailCursor)
+	assert.ErrorIs(t, err, ErrInvalidCursor, "Event cursors are bound to the current Publication")
+}
+
 func TestFavoritesAndNewForYouRemainRecipientScopedAndDurable(t *testing.T) {
 	fixture := newLibraryFixture(t)
 	ctx := context.Background()

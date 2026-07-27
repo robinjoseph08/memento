@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -672,6 +673,37 @@ func TestThumbnailStreamsOnlyImageResponsesWithoutFollowingRedirects(t *testing.
 		_, err = client.Thumbnail(context.Background(), assetID)
 		require.EqualError(t, err, "Immich validation failed")
 		assert.False(t, redirected)
+	})
+
+	t.Run("oversized declared body", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "image/jpeg")
+			w.Header().Set("Content-Length", strconv.FormatInt(maxThumbnailResponse+1, 10))
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer server.Close()
+		client, err := New(clientConfig(server.URL), server.Client())
+		require.NoError(t, err)
+		_, err = client.Thumbnail(context.Background(), assetID)
+		assert.EqualError(t, err, "Immich returned an invalid response")
+	})
+
+	t.Run("oversized chunked body", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "image/jpeg")
+			w.WriteHeader(http.StatusOK)
+			w.(http.Flusher).Flush()
+			_, _ = io.Copy(w, strings.NewReader(strings.Repeat("x", maxThumbnailResponse+1)))
+		}))
+		defer server.Close()
+		client, err := New(clientConfig(server.URL), server.Client())
+		require.NoError(t, err)
+		response, err := client.Thumbnail(context.Background(), assetID)
+		require.NoError(t, err)
+		contents, err := io.ReadAll(response.Body)
+		require.EqualError(t, err, "Immich returned an invalid response")
+		assert.Len(t, contents, maxThumbnailResponse)
+		require.NoError(t, response.Body.Close())
 	})
 
 	for _, contentType := range []string{"application/json", "image/svg+xml"} {

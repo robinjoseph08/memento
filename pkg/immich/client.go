@@ -23,10 +23,11 @@ import (
 )
 
 const (
-	maxJSONResponse    = 10 << 20
-	supportedVersion   = "3.0.3"
-	assetPageSize      = 1000
-	maxDatabaseInteger = 1<<31 - 1
+	maxJSONResponse      = 10 << 20
+	maxThumbnailResponse = 20 << 20
+	supportedVersion     = "3.0.3"
+	assetPageSize        = 1000
+	maxDatabaseInteger   = 1<<31 - 1
 )
 
 var requiredPermissions = []string{
@@ -472,13 +473,14 @@ func (c *Client) Thumbnail(ctx context.Context, assetID uuid.UUID) (MediaRespons
 		return MediaResponse{}, errRequestFailed
 	}
 	contentType, _, err := mime.ParseMediaType(response.Header.Get("Content-Type"))
-	if err != nil || !allowedThumbnailType(contentType) {
+	if err != nil || !allowedThumbnailType(contentType) || response.ContentLength > maxThumbnailResponse {
 		_ = response.Body.Close()
 		cancel()
 		return MediaResponse{}, errInvalidResponse
 	}
+	body := &cancelReadCloser{ReadCloser: response.Body, cancel: cancel}
 	return MediaResponse{
-		Body:        &cancelReadCloser{ReadCloser: response.Body, cancel: cancel},
+		Body:        &boundedReadCloser{ReadCloser: body, remaining: maxThumbnailResponse},
 		ContentType: contentType, ContentLength: response.ContentLength,
 		ETag: response.Header.Get("ETag"),
 	}, nil
@@ -491,6 +493,31 @@ func allowedThumbnailType(contentType string) bool {
 	default:
 		return false
 	}
+}
+
+type boundedReadCloser struct {
+	io.ReadCloser
+	remaining int64
+}
+
+func (body *boundedReadCloser) Read(contents []byte) (int, error) {
+	if len(contents) == 0 {
+		return 0, nil
+	}
+	if body.remaining == 0 {
+		var extra [1]byte
+		count, err := body.ReadCloser.Read(extra[:])
+		if count > 0 {
+			return 0, errInvalidResponse
+		}
+		return 0, err
+	}
+	if int64(len(contents)) > body.remaining {
+		contents = contents[:body.remaining]
+	}
+	count, err := body.ReadCloser.Read(contents)
+	body.remaining -= int64(count)
+	return count, err
 }
 
 type cancelReadCloser struct {

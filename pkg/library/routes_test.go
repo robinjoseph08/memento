@@ -76,20 +76,42 @@ func TestLibraryMutationRequiresCSRFAndInvalidIDsAreNotFound(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, response.Code)
 }
 
-func TestLibraryCursorSupportsUndatedMediaAndRejectsOtherKindsAndTrailingData(t *testing.T) {
+func TestLibraryCursorSupportsUndatedMediaAndRejectsOtherCollectionsAndTrailingData(t *testing.T) {
 	id := uuid.NewString()
-	encoded := encodeCursor(cursorKindMedia, "", id)
+	encoded := encodeCursor(cursor{Kind: cursorKindPhotos, ID: id})
 	require.NotNil(t, encoded)
-	decoded, err := decodeCursor(*encoded, cursorKindMedia)
+	decoded, err := decodeCursor(*encoded, cursorKindPhotos)
 	require.NoError(t, err)
 	assert.Equal(t, id, decoded.ID)
 	assert.Empty(t, decoded.Sort)
 
-	_, err = decodeCursor(*encoded, cursorKindEvents)
+	_, err = decodeCursor(*encoded, cursorKindFavorites)
 	require.ErrorIs(t, err, ErrInvalidCursor)
 
-	trailing := base64.RawURLEncoding.EncodeToString([]byte(`{"k":"media","s":"date","i":"` + id + `"} {}`))
-	_, err = decodeCursor(trailing, cursorKindMedia)
+	trailing := base64.RawURLEncoding.EncodeToString([]byte(`{"k":"photos","s":"date","i":"` + id + `"} {}`))
+	_, err = decodeCursor(trailing, cursorKindPhotos)
+	assert.ErrorIs(t, err, ErrInvalidCursor)
+}
+
+func TestEventMediaCursorCarriesOnlyAuthorizedResourceAndPublicationContext(t *testing.T) {
+	mediaID, eventID, publicationID := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	encoded := encodeCursor(cursor{
+		Kind: cursorKindEventMedia, ID: mediaID,
+		ResourceID: eventID, PublicationID: publicationID,
+	})
+	require.NotNil(t, encoded)
+	decoded, err := decodeCursor(*encoded, cursorKindEventMedia)
+	require.NoError(t, err)
+	assert.Equal(t, mediaID, decoded.ID)
+	assert.Equal(t, eventID, decoded.ResourceID)
+	assert.Equal(t, publicationID, decoded.PublicationID)
+	assert.Empty(t, decoded.Sort, "Event pagination must not expose source placement ordinals")
+
+	withOrdinal := encodeCursor(cursor{
+		Kind: cursorKindEventMedia, Sort: "17", ID: mediaID,
+		ResourceID: eventID, PublicationID: publicationID,
+	})
+	_, err = decodeCursor(*withOrdinal, cursorKindEventMedia)
 	assert.ErrorIs(t, err, ErrInvalidCursor)
 }
 
