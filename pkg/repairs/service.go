@@ -224,6 +224,13 @@ func (s *Service) ReconcilePeople(ctx context.Context) (MutationResponse, error)
 			}
 		}
 
+		if _, err := tx.NewRaw(`
+			SELECT person.id FROM people AS person
+			JOIN immich_person_links AS link ON link.person_id = person.id
+			ORDER BY person.id FOR UPDATE OF person
+		`).Exec(ctx); err != nil {
+			return err
+		}
 		var links []linkRow
 		if err := tx.NewRaw(`SELECT person_id, immich_person_id, state, version FROM immich_person_links ORDER BY person_id FOR UPDATE`).Scan(ctx, &links); err != nil {
 			return err

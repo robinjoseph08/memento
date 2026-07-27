@@ -288,6 +288,39 @@ func TestInFlightReconciliationCannotUndoLaterPersonConfirmation(t *testing.T) {
 	assert.Equal(t, "linked", state)
 }
 
+func TestPersonReconciliationLocksPeopleBeforeLinks(t *testing.T) {
+	fixture := newRepairFixture(t, 1)
+	replacement := uuid.New()
+	fixture.connector.people = []immich.PersonSummary{{SourceID: replacement, Name: "Replacement"}}
+	faces := fixture.connector.faces[fixture.assetIDs[0]]
+	faces[0].PersonID = &replacement
+	fixture.connector.faces[fixture.assetIDs[0]] = faces
+
+	personBlocker, err := fixture.db.BeginTx(context.Background(), nil)
+	require.NoError(t, err)
+	_, err = personBlocker.NewRaw(`SELECT id FROM people WHERE id = ? FOR UPDATE`, fixture.personID).Exec(context.Background())
+	require.NoError(t, err)
+	result := make(chan error, 1)
+	go func() { result <- reconcile(fixture.service) }()
+	select {
+	case reconcileErr := <-result:
+		t.Fatalf("reconciliation completed while the Person was locked: %v", reconcileErr)
+	case <-time.After(100 * time.Millisecond):
+	}
+	linkProbe, err := fixture.db.BeginTx(context.Background(), nil)
+	require.NoError(t, err)
+	_, err = linkProbe.NewRaw(`SELECT person_id FROM immich_person_links WHERE person_id = ? FOR UPDATE NOWAIT`, fixture.personID).Exec(context.Background())
+	require.NoError(t, err, "reconciliation must lock People before Person links")
+	require.NoError(t, linkProbe.Rollback())
+	require.NoError(t, personBlocker.Commit())
+	select {
+	case reconcileErr := <-result:
+		require.NoError(t, reconcileErr)
+	case <-time.After(time.Second):
+		t.Fatal("reconciliation did not complete after Person lock release")
+	}
+}
+
 func TestFaceReassignmentAndAnchorConflictRequireReview(t *testing.T) {
 	fixture := newRepairFixture(t, 2)
 	other := uuid.New()
