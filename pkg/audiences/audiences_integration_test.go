@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -268,6 +269,76 @@ func TestMomentApprovalRequiresConfirmedAttendanceAndChangesRequireReapproval(t 
 	require.NoError(t, err)
 	assert.False(t, changed.AudienceComplete)
 	assert.NotNil(t, changed.ApprovedAudience, "the immutable previous approval remains available for history")
+}
+
+func TestRecalculationKeepsProposalAndReasonsConsistentDuringInterestChange(t *testing.T) {
+	f := newAudienceFixture(t)
+	ctx := context.Background()
+	_, err := f.db.NewRaw(`DELETE FROM interest_list_entries WHERE recipient_person_id = ?`, f.people["both"]).Exec(ctx)
+	require.NoError(t, err)
+	review, err := f.service.ConfirmAttendance(ctx, f.actor, f.momentID, 1, attendanceRequest(f.people["attended"].String()))
+	require.NoError(t, err)
+	require.Equal(t, []string{"interested"}, reasonKinds(findProposal(t, review, "interested")))
+
+	const advisoryKey = 360037
+	connection, err := f.db.DB.Conn(ctx)
+	require.NoError(t, err)
+	defer connection.Close()
+	_, err = connection.ExecContext(ctx, `SELECT pg_advisory_lock($1)`, advisoryKey)
+	require.NoError(t, err)
+	defer func() { _, _ = connection.ExecContext(ctx, `SELECT pg_advisory_unlock($1)`, advisoryKey) }()
+	_, err = f.db.ExecContext(ctx, fmt.Sprintf(`
+		CREATE FUNCTION pause_audience_proposal_insert() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN
+			PERFORM pg_advisory_xact_lock(%d);
+			RETURN NULL;
+		END $$;
+		CREATE TRIGGER pause_audience_proposal_insert AFTER INSERT ON audience_proposals
+		FOR EACH STATEMENT EXECUTE FUNCTION pause_audience_proposal_insert()
+	`, advisoryKey))
+	require.NoError(t, err)
+
+	recalculated := make(chan Review, 1)
+	recalculationErrors := make(chan error, 1)
+	go func() {
+		result, err := f.service.Recalculate(ctx, f.actor, targetMoment, f.momentID, review.Version)
+		recalculated <- result
+		recalculationErrors <- err
+	}()
+	require.Eventually(t, func() bool {
+		var waiters int
+		err := f.db.NewRaw(`SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND objid = ? AND NOT granted`, advisoryKey).Scan(ctx, &waiters)
+		return err == nil && waiters > 0
+	}, 3*time.Second, 20*time.Millisecond)
+
+	_, err = f.db.NewRaw(`DELETE FROM interest_list_entries WHERE recipient_person_id = ? AND selected_person_id = ?`, f.people["interested"], f.people["attended"]).Exec(ctx)
+	require.NoError(t, err)
+	_, err = connection.ExecContext(ctx, `SELECT pg_advisory_unlock($1)`, advisoryKey)
+	require.NoError(t, err)
+	require.NoError(t, <-recalculationErrors)
+	result := <-recalculated
+	proposal := findProposal(t, result, "interested")
+	assert.True(t, proposal.Included)
+	assert.Equal(t, []string{"interested"}, reasonKinds(proposal))
+
+	approved, err := f.service.Approve(ctx, f.actor, targetMoment, f.momentID, result.Version)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"interested"}, personNames(approved.Audience.Recipients))
+}
+
+func TestApprovalRejectsIncludedProposalWithoutDisplayedReason(t *testing.T) {
+	f := newAudienceFixture(t)
+	ctx := context.Background()
+	review, err := f.service.ConfirmAttendance(ctx, f.actor, f.momentID, 1, attendanceRequest())
+	require.NoError(t, err)
+	_, err = f.db.NewRaw(`INSERT INTO audience_proposals (target_kind, target_id, recipient_person_id, recipient_access_generation_id, included, recalculated_at) VALUES ('moment', ?, ?, ?, true, now())`, f.momentID, f.people["manual"], f.access["manual"]).Exec(ctx)
+	require.NoError(t, err)
+
+	_, err = f.service.Approve(ctx, f.actor, targetMoment, f.momentID, review.Version)
+	assert.ErrorIs(t, err, ErrProposalStale)
+	var snapshots int
+	require.NoError(t, f.db.NewRaw(`SELECT count(*) FROM audience_snapshots WHERE target_kind = 'moment' AND target_id = ?`, f.momentID).Scan(ctx, &snapshots))
+	assert.Zero(t, snapshots)
 }
 
 func TestApprovalRejectsProposalWhenRecipientEligibilityChanged(t *testing.T) {

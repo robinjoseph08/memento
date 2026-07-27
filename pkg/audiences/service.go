@@ -23,7 +23,7 @@ var (
 	ErrPersonUnavailable     = errors.New("attendance Person is unavailable")
 	ErrRecipientIneligible   = errors.New("audience override Recipient is ineligible")
 	ErrAttendanceUnconfirmed = errors.New("attendance must be confirmed before audience approval")
-	ErrProposalStale         = errors.New("audience proposal contains an ineligible Recipient")
+	ErrProposalStale         = errors.New("audience proposal is stale or incomplete")
 	ErrStale                 = errors.New("audience review version is stale")
 )
 
@@ -438,6 +438,12 @@ func lockEligibleProposalRecipients(ctx context.Context, tx bun.Tx, t target) (i
 				WHERE curator_role.person_id = proposal.recipient_person_id
 					AND curator_role.role = 'curator'
 			)
+			AND EXISTS (
+				SELECT 1 FROM audience_reasons AS reason
+				WHERE reason.target_kind = proposal.target_kind
+					AND reason.target_id = proposal.target_id
+					AND reason.recipient_person_id = proposal.recipient_person_id
+			)
 	`, t.kind, t.id).Scan(ctx, &eligible); err != nil {
 		return 0, err
 	}
@@ -542,39 +548,55 @@ func recalculate(ctx context.Context, tx bun.Tx, t target, now time.Time) error 
 		attendanceFilter = `attended.moment_id = ?`
 		args = append(args, t.id)
 	}
-	query := `WITH eligible AS (
+	query := `WITH eligible AS MATERIALIZED (
 		SELECT access.person_id, access.id AS generation_id
 		FROM recipient_access_generations AS access
 		JOIN person_roles AS recipient_role ON recipient_role.person_id = access.person_id AND recipient_role.role = 'recipient'
 		JOIN people AS person ON person.id = access.person_id AND person.archived_at IS NULL AND person.merged_at IS NULL
 		WHERE access.is_current AND access.state IN ('pending', 'onboarding', 'completed')
 		AND NOT EXISTS (SELECT 1 FROM person_roles AS curator WHERE curator.person_id = access.person_id AND curator.role = 'curator')
+	), automatic_reasons AS MATERIALIZED (
+		SELECT eligible.person_id, 'present'::text AS kind, eligible.person_id AS matching_person_id
+		FROM eligible JOIN attendance AS attended ON attended.person_id = eligible.person_id
+		WHERE ` + attendanceFilter + `
+		UNION ALL
+		SELECT eligible.person_id, 'interested'::text AS kind, interest.selected_person_id AS matching_person_id
+		FROM eligible
+		JOIN interest_list_entries AS interest ON interest.recipient_person_id = eligible.person_id AND interest.state = 'active'
+		JOIN attendance AS attended ON attended.person_id = interest.selected_person_id
+		WHERE ` + attendanceFilter + `
 	), automatic AS (
-		SELECT eligible.person_id FROM eligible JOIN attendance AS attended ON attended.person_id = eligible.person_id WHERE ` + attendanceFilter + `
-		UNION
-		SELECT eligible.person_id FROM eligible JOIN interest_list_entries AS interest ON interest.recipient_person_id = eligible.person_id AND interest.state = 'active' JOIN attendance AS attended ON attended.person_id = interest.selected_person_id WHERE ` + attendanceFilter + `
+		SELECT DISTINCT person_id FROM automatic_reasons
 	), candidate AS (
-		SELECT person_id FROM automatic UNION SELECT override_row.recipient_person_id FROM audience_overrides AS override_row JOIN eligible ON eligible.person_id = override_row.recipient_person_id WHERE override_row.target_kind = ? AND override_row.target_id = ?
+		SELECT person_id FROM automatic
+		UNION
+		SELECT override_row.recipient_person_id
+		FROM audience_overrides AS override_row
+		JOIN eligible ON eligible.person_id = override_row.recipient_person_id
+		WHERE override_row.target_kind = ? AND override_row.target_id = ?
+	), inserted_proposals AS (
+		INSERT INTO audience_proposals (target_kind, target_id, recipient_person_id, recipient_access_generation_id, included, recalculated_at)
+		SELECT ?::text, ?::uuid, candidate.person_id, eligible.generation_id,
+			CASE override_row.state WHEN 'included' THEN true WHEN 'excluded' THEN false ELSE true END, ?
+		FROM candidate
+		JOIN eligible ON eligible.person_id = candidate.person_id
+		LEFT JOIN audience_overrides AS override_row ON override_row.target_kind = ? AND override_row.target_id = ? AND override_row.recipient_person_id = candidate.person_id
+		RETURNING target_kind, target_id, recipient_person_id
 	)
-	INSERT INTO audience_proposals (target_kind, target_id, recipient_person_id, recipient_access_generation_id, included, recalculated_at)
-	SELECT ?::text, ?::uuid, candidate.person_id, eligible.generation_id,
-		CASE override_row.state WHEN 'included' THEN true WHEN 'excluded' THEN false ELSE true END, ?
-	FROM candidate JOIN eligible ON eligible.person_id = candidate.person_id
-	LEFT JOIN audience_overrides AS override_row ON override_row.target_kind = ? AND override_row.target_id = ? AND override_row.recipient_person_id = candidate.person_id`
-	args = append(args, args...)
-	args = append(args, t.kind, t.id, t.kind, t.id, now, t.kind, t.id)
-	if _, err := tx.NewRaw(query, args...).Exec(ctx); err != nil {
-		return err
-	}
+	INSERT INTO audience_reasons (target_kind, target_id, recipient_person_id, kind, matching_person_id)
+	SELECT proposal.target_kind, proposal.target_id, proposal.recipient_person_id, reason.kind, reason.matching_person_id
+	FROM inserted_proposals AS proposal
+	JOIN automatic_reasons AS reason ON reason.person_id = proposal.recipient_person_id
+	UNION ALL
+	SELECT proposal.target_kind, proposal.target_id, proposal.recipient_person_id,
+		CASE override_row.state WHEN 'included' THEN 'manually_included' ELSE 'manually_excluded' END, NULL
+	FROM inserted_proposals AS proposal
+	JOIN audience_overrides AS override_row ON override_row.target_kind = proposal.target_kind AND override_row.target_id = proposal.target_id AND override_row.recipient_person_id = proposal.recipient_person_id`
 	if t.kind == targetMoment {
-		if _, err := tx.NewRaw(`INSERT INTO audience_reasons (target_kind, target_id, recipient_person_id, kind, matching_person_id)
-			SELECT ?::text, ?::uuid, proposal.recipient_person_id, 'present', proposal.recipient_person_id FROM audience_proposals AS proposal JOIN attendance AS attended ON attended.moment_id = ? AND attended.person_id = proposal.recipient_person_id WHERE proposal.target_kind = ? AND proposal.target_id = ?
-			UNION ALL
-			SELECT ?::text, ?::uuid, proposal.recipient_person_id, 'interested', interest.selected_person_id FROM audience_proposals AS proposal JOIN interest_list_entries AS interest ON interest.recipient_person_id = proposal.recipient_person_id AND interest.state = 'active' JOIN attendance AS attended ON attended.moment_id = ? AND attended.person_id = interest.selected_person_id WHERE proposal.target_kind = ? AND proposal.target_id = ?`, t.kind, t.id, t.id, t.kind, t.id, t.kind, t.id, t.id, t.kind, t.id).Exec(ctx); err != nil {
-			return err
-		}
+		args = append(args, t.id)
 	}
-	_, err := tx.NewRaw(`INSERT INTO audience_reasons (target_kind, target_id, recipient_person_id, kind, matching_person_id) SELECT proposal.target_kind, proposal.target_id, proposal.recipient_person_id, CASE override_row.state WHEN 'included' THEN 'manually_included' ELSE 'manually_excluded' END, NULL FROM audience_proposals AS proposal JOIN audience_overrides AS override_row ON override_row.target_kind = proposal.target_kind AND override_row.target_id = proposal.target_id AND override_row.recipient_person_id = proposal.recipient_person_id WHERE proposal.target_kind = ? AND proposal.target_id = ?`, t.kind, t.id).Exec(ctx)
+	args = append(args, t.kind, t.id, t.kind, t.id, now, t.kind, t.id)
+	_, err := tx.NewRaw(query, args...).Exec(ctx)
 	return err
 }
 
