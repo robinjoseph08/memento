@@ -22,6 +22,7 @@ var (
 	ErrInvalid             = errors.New("audience request is invalid")
 	ErrPersonUnavailable   = errors.New("attendance Person is unavailable")
 	ErrRecipientIneligible = errors.New("audience override Recipient is ineligible")
+	ErrStale               = errors.New("audience review version is stale")
 )
 
 const (
@@ -79,6 +80,7 @@ type ApprovedAudience struct {
 type Review struct {
 	TargetKind            string              `json:"target_kind"`
 	TargetID              string              `json:"target_id"`
+	Version               int64               `json:"version"`
 	People                []Person            `json:"people"`
 	EligibleRecipients    []Person            `json:"eligible_recipients"`
 	Attendance            []Person            `json:"attendance"`
@@ -102,6 +104,7 @@ type OverrideRequest struct {
 // ApprovalResponse returns the immutable snapshot selected as current.
 type ApprovalResponse struct {
 	Audience ApprovedAudience `json:"audience"`
+	Version  int64            `json:"version"`
 }
 
 type Service struct {
@@ -140,6 +143,13 @@ func (s *Service) ReviewLooseItem(ctx context.Context, id uuid.UUID) (Review, er
 
 func (s *Service) review(ctx context.Context, target target) (Review, error) {
 	response := Review{TargetKind: target.kind, TargetID: target.id.String(), People: []Person{}, EligibleRecipients: []Person{}, Attendance: []Person{}, FaceEvidence: []FaceEvidence{}, Proposal: []ProposalRecipient{}}
+	versionQuery := `SELECT review_version FROM draft_moments WHERE id = ?`
+	if target.kind == targetLoose {
+		versionQuery = `SELECT review_version FROM loose_items WHERE id = ?`
+	}
+	if err := s.db.NewRaw(versionQuery, target.id).Scan(ctx, &response.Version); err != nil {
+		return Review{}, err
+	}
 	if err := s.db.NewRaw(`SELECT id, display_name, sort_name FROM people WHERE archived_at IS NULL AND merged_at IS NULL ORDER BY memento_normalize_person_name(sort_name), id`).Scan(ctx, &response.People); err != nil {
 		return Review{}, err
 	}
@@ -164,7 +174,7 @@ func (s *Service) review(ctx context.Context, target target) (Review, error) {
 	return response, nil
 }
 
-func (s *Service) ConfirmAttendance(ctx context.Context, actor setup.CuratorSession, momentID uuid.UUID, request AttendanceRequest) (Review, error) {
+func (s *Service) ConfirmAttendance(ctx context.Context, actor setup.CuratorSession, momentID uuid.UUID, version int64, request AttendanceRequest) (Review, error) {
 	ids, err := parseIDs(request.PersonIDs)
 	if err != nil {
 		return Review{}, err
@@ -172,7 +182,7 @@ func (s *Service) ConfirmAttendance(ctx context.Context, actor setup.CuratorSess
 	now := s.now().UTC()
 	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 		t := target{targetMoment, momentID}
-		if err := lockTarget(ctx, tx, t); err != nil {
+		if err := lockTarget(ctx, tx, t, version); err != nil {
 			return err
 		}
 		if len(ids) > 0 {
@@ -198,7 +208,10 @@ func (s *Service) ConfirmAttendance(ctx context.Context, actor setup.CuratorSess
 		if err := recalculate(ctx, tx, t, now); err != nil {
 			return err
 		}
-		return appendAudit(ctx, tx, actor, "attendance_confirmed", map[string]any{"moment_id": momentID, "person_count": len(ids)})
+		if err := advanceTargetVersion(ctx, tx, t); err != nil {
+			return err
+		}
+		return appendPublicationAudit(ctx, tx, actor, t, "attendance_confirmed", map[string]any{"moment_id": momentID, "person_count": len(ids)})
 	})
 	if err != nil {
 		return Review{}, err
@@ -206,20 +219,23 @@ func (s *Service) ConfirmAttendance(ctx context.Context, actor setup.CuratorSess
 	return s.ReviewMoment(ctx, momentID)
 }
 
-func (s *Service) Recalculate(ctx context.Context, actor setup.CuratorSession, kind string, id uuid.UUID) (Review, error) {
+func (s *Service) Recalculate(ctx context.Context, actor setup.CuratorSession, kind string, id uuid.UUID, version int64) (Review, error) {
 	t, err := validTarget(kind, id)
 	if err != nil {
 		return Review{}, err
 	}
 	now := s.now().UTC()
 	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
-		if err := lockTarget(ctx, tx, t); err != nil {
+		if err := lockTarget(ctx, tx, t, version); err != nil {
 			return err
 		}
 		if err := recalculate(ctx, tx, t, now); err != nil {
 			return err
 		}
-		return appendAudit(ctx, tx, actor, "audience_proposal_recalculated", map[string]any{"target_kind": t.kind, "target_id": t.id})
+		if err := advanceTargetVersion(ctx, tx, t); err != nil {
+			return err
+		}
+		return appendPublicationAudit(ctx, tx, actor, t, "audience_proposal_recalculated", map[string]any{"target_kind": t.kind, "target_id": t.id})
 	})
 	if err != nil {
 		return Review{}, err
@@ -230,7 +246,7 @@ func (s *Service) Recalculate(ctx context.Context, actor setup.CuratorSession, k
 	return s.ReviewLooseItem(ctx, id)
 }
 
-func (s *Service) SetOverride(ctx context.Context, actor setup.CuratorSession, kind string, id uuid.UUID, request OverrideRequest) (Review, error) {
+func (s *Service) SetOverride(ctx context.Context, actor setup.CuratorSession, kind string, id uuid.UUID, version int64, request OverrideRequest) (Review, error) {
 	t, err := validTarget(kind, id)
 	if err != nil {
 		return Review{}, err
@@ -241,7 +257,7 @@ func (s *Service) SetOverride(ctx context.Context, actor setup.CuratorSession, k
 	}
 	now := s.now().UTC()
 	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
-		if err := lockTarget(ctx, tx, t); err != nil {
+		if err := lockTarget(ctx, tx, t, version); err != nil {
 			return err
 		}
 		var eligible bool
@@ -261,7 +277,10 @@ func (s *Service) SetOverride(ctx context.Context, actor setup.CuratorSession, k
 		if err := recalculate(ctx, tx, t, now); err != nil {
 			return err
 		}
-		return appendAudit(ctx, tx, actor, "audience_override_changed", map[string]any{"target_kind": t.kind, "target_id": t.id, "recipient_person_id": recipientID, "state": request.State})
+		if err := advanceTargetVersion(ctx, tx, t); err != nil {
+			return err
+		}
+		return appendPublicationAudit(ctx, tx, actor, t, "audience_override_changed", map[string]any{"target_kind": t.kind, "target_id": t.id, "recipient_person_id": recipientID, "state": request.State})
 	})
 	if err != nil {
 		return Review{}, err
@@ -272,14 +291,14 @@ func (s *Service) SetOverride(ctx context.Context, actor setup.CuratorSession, k
 	return s.ReviewLooseItem(ctx, id)
 }
 
-func (s *Service) Approve(ctx context.Context, actor setup.CuratorSession, kind string, id uuid.UUID) (ApprovalResponse, error) {
+func (s *Service) Approve(ctx context.Context, actor setup.CuratorSession, kind string, id uuid.UUID, version int64) (ApprovalResponse, error) {
 	t, err := validTarget(kind, id)
 	if err != nil {
 		return ApprovalResponse{}, err
 	}
 	now, snapshotID := s.now().UTC(), uuid.New()
 	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
-		if err := lockTarget(ctx, tx, t); err != nil {
+		if err := lockTarget(ctx, tx, t, version); err != nil {
 			return err
 		}
 		var count int
@@ -307,7 +326,10 @@ func (s *Service) Approve(ctx context.Context, actor setup.CuratorSession, kind 
 		if err != nil {
 			return err
 		}
-		return appendAudit(ctx, tx, actor, "audience_approved", map[string]any{"target_kind": t.kind, "target_id": t.id, "snapshot_id": snapshotID, "recipient_count": count, "label": label})
+		if err := advanceTargetVersion(ctx, tx, t); err != nil {
+			return err
+		}
+		return appendPublicationAudit(ctx, tx, actor, t, "audience_approved", map[string]any{"target_kind": t.kind, "target_id": t.id, "snapshot_id": snapshotID, "recipient_count": count, "label": label})
 	})
 	if err != nil {
 		return ApprovalResponse{}, err
@@ -316,7 +338,7 @@ func (s *Service) Approve(ctx context.Context, actor setup.CuratorSession, kind 
 	if err != nil {
 		return ApprovalResponse{}, err
 	}
-	return ApprovalResponse{Audience: *approved}, nil
+	return ApprovalResponse{Audience: *approved, Version: version + 1}, nil
 }
 
 func validTarget(kind string, id uuid.UUID) (target, error) {
@@ -341,18 +363,33 @@ func requireTarget(ctx context.Context, db bun.IDB, t target) error {
 	return nil
 }
 
-func lockTarget(ctx context.Context, tx bun.Tx, t target) error {
-	query := `SELECT id FROM draft_moments WHERE id = ? FOR UPDATE`
-	if t.kind == targetLoose {
-		query = `SELECT id FROM loose_items WHERE id = ? FOR UPDATE`
+func lockTarget(ctx context.Context, tx bun.Tx, t target, expectedVersion int64) error {
+	if expectedVersion < 1 {
+		return ErrInvalid
 	}
-	var id uuid.UUID
-	if err := tx.NewRaw(query, t.id).Scan(ctx, &id); errors.Is(err, sql.ErrNoRows) {
+	query := `SELECT review_version FROM draft_moments WHERE id = ? FOR UPDATE`
+	if t.kind == targetLoose {
+		query = `SELECT review_version FROM loose_items WHERE id = ? FOR UPDATE`
+	}
+	var currentVersion int64
+	if err := tx.NewRaw(query, t.id).Scan(ctx, &currentVersion); errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
 	} else if err != nil {
 		return err
 	}
+	if currentVersion != expectedVersion {
+		return ErrStale
+	}
 	return nil
+}
+
+func advanceTargetVersion(ctx context.Context, tx bun.Tx, t target) error {
+	query := `UPDATE draft_moments SET review_version = review_version + 1 WHERE id = ?`
+	if t.kind == targetLoose {
+		query = `UPDATE loose_items SET review_version = review_version + 1 WHERE id = ?`
+	}
+	_, err := tx.NewRaw(query, t.id).Exec(ctx)
+	return err
 }
 
 func parseIDs(raw []string) ([]uuid.UUID, error) {
@@ -500,12 +537,17 @@ func (s *Service) faceEvidence(ctx context.Context, momentID uuid.UUID) ([]FaceE
 	return result, true
 }
 
-func appendAudit(ctx context.Context, tx bun.Tx, actor setup.CuratorSession, action string, metadata map[string]any) error {
+func appendPublicationAudit(ctx context.Context, tx bun.Tx, actor setup.CuratorSession, t target, action string, metadata map[string]any) error {
 	encoded, err := json.Marshal(metadata)
 	if err != nil {
 		return err
 	}
-	request := setup.RequestMetadataFromContext(ctx)
-	_, err = tx.NewRaw(`INSERT INTO security_audit_events (actor_person_id, action, outcome, client_ip, user_agent, session_id, metadata) VALUES (?, ?, 'success', NULLIF(?, '')::inet, ?, ?, ?::jsonb)`, actor.PersonID, action, request.ClientIP, request.UserAgent, actor.SessionID, string(encoded)).Exec(ctx)
+	var eventID uuid.NullUUID
+	if t.kind == targetMoment {
+		if err := tx.NewRaw(`SELECT event_id FROM draft_moments WHERE id = ?`, t.id).Scan(ctx, &eventID); err != nil {
+			return err
+		}
+	}
+	_, err = tx.NewRaw(`INSERT INTO publication_audit_events (event_id, target_kind, target_id, actor_person_id, action, metadata) VALUES (?, ?, ?, ?, ?, ?::jsonb)`, eventID, t.kind, t.id, actor.PersonID, action, string(encoded)).Exec(ctx)
 	return err
 }

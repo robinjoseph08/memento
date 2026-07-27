@@ -25,7 +25,7 @@ import (
 )
 
 // New constructs the HTTP application and delegates route ownership to handler packages.
-func New(healthService *health.Service, emailHandler *emaildelivery.Handler, setupHandler *setup.Handler, peopleHandler *people.Handler, familyHandler *family.Handler, visibilityHandler *visibility.Handler, recipientHandler *recipients.Handler, sourceHandler *sources.Handler, eventHandler *events.Handler, repairHandler *repairs.Handler, suggestionHandler *suggestions.Handler, audienceHandlers ...*audiences.Handler) (*echo.Echo, error) {
+func New(healthService *health.Service, emailHandler *emaildelivery.Handler, setupHandler *setup.Handler, peopleHandler *people.Handler, familyHandler *family.Handler, visibilityHandler *visibility.Handler, recipientHandler *recipients.Handler, sourceHandler *sources.Handler, eventHandler *events.Handler, repairHandler *repairs.Handler, suggestionHandler *suggestions.Handler, audienceHandler *audiences.Handler) (*echo.Echo, error) {
 	e := echo.New()
 	requestBinder, err := binder.New()
 	if err != nil {
@@ -69,8 +69,8 @@ func New(healthService *health.Service, emailHandler *emaildelivery.Handler, set
 	if suggestionHandler != nil {
 		suggestions.RegisterRoutes(e, suggestionHandler)
 	}
-	if len(audienceHandlers) > 0 && audienceHandlers[0] != nil {
-		audiences.RegisterRoutes(e, audienceHandlers[0])
+	if audienceHandler != nil {
+		audiences.RegisterRoutes(e, audienceHandler)
 	}
 	e.HTTPErrorHandler = errcodes.NewHandler().Handle
 	return e, nil

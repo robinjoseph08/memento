@@ -733,6 +733,8 @@ func TestCuratorOrganizesMomentsWithOrderingCoversReadinessAndOptimisticVersions
 	assert.False(t, organized.Moments[0].AudienceComplete, "organization cannot impersonate explicit Audience approval")
 	assert.True(t, organized.FinalReviewComplete)
 
+	_, err = fixture.db.NewRaw(`UPDATE draft_moments SET attendance_complete = true, audience_complete = true, review_version = 7 WHERE id = ?`, mergedID).Exec(ctx)
+	require.NoError(t, err)
 	splitID := uuid.NewString()
 	split, err := fixture.service.OrganizeEvent(ctx, fixture.actor, uuid.MustParse(created.ID), OrganizeEventRequest{
 		Version: organized.Version,
@@ -749,6 +751,15 @@ func TestCuratorOrganizesMomentsWithOrderingCoversReadinessAndOptimisticVersions
 		assert.Equal(t, "split_day", moment.ProposalKind)
 		assert.Equal(t, organized.Moments[0].SourceDays, moment.SourceDays)
 	}
+	assert.True(t, split.Moments[0].AttendanceComplete)
+	assert.True(t, split.Moments[0].AudienceComplete)
+	assert.False(t, split.Moments[1].AttendanceComplete)
+	assert.False(t, split.Moments[1].AudienceComplete)
+	var retainedReviewVersion, newReviewVersion int64
+	require.NoError(t, fixture.db.NewRaw(`SELECT review_version FROM draft_moments WHERE id = ?`, mergedID).Scan(ctx, &retainedReviewVersion))
+	require.NoError(t, fixture.db.NewRaw(`SELECT review_version FROM draft_moments WHERE id = ?`, splitID).Scan(ctx, &newReviewVersion))
+	assert.Equal(t, int64(7), retainedReviewVersion)
+	assert.Equal(t, int64(1), newReviewVersion)
 
 	_, err = fixture.service.OrganizeEvent(ctx, fixture.actor, uuid.MustParse(created.ID), OrganizeEventRequest{
 		Version: organized.Version,

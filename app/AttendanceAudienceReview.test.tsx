@@ -20,6 +20,7 @@ function review(): Review {
   return {
     target_kind: "moment",
     target_id: momentID,
+    version: 1,
     people: [{ id: attendeeID, display_name: "Alex", sort_name: "Alex" }],
     eligible_recipients: [
       { id: recipientID, display_name: "Bailey", sort_name: "Bailey" },
@@ -159,7 +160,10 @@ test("requires explicit Attendance confirmation and shows advisory face evidence
   fireEvent.click(screen.getByRole("button", { name: "Confirm Attendance" }));
   await waitFor(() => expect(onAttendance).toHaveBeenCalledOnce());
   const request = requests.find(({ path }) => path.endsWith("/attendance"));
-  expect(request?.init?.headers).toMatchObject({ "X-Memento-CSRF": csrfToken });
+  expect(request?.init?.headers).toMatchObject({
+    "If-Match": "1",
+    "X-Memento-CSRF": csrfToken,
+  });
   expect(JSON.parse(request?.init?.body as string)).toEqual({
     person_ids: [attendeeID],
   });
@@ -177,6 +181,7 @@ test("retains explained manual overrides and explicitly approves a snapshot", as
         overrideBodies.push(JSON.parse(init?.body as string));
         current = {
           ...current,
+          version: current.version + 1,
           proposal: [
             {
               ...current.proposal[0],
@@ -192,6 +197,7 @@ test("retains explained manual overrides and explicitly approves a snapshot", as
       }
       if (path.endsWith("/audience/approve"))
         return response({
+          version: 3,
           audience: {
             id: "77777777-7777-4777-8777-777777777777",
             label: "Curator only",

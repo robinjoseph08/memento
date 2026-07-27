@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strconv"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
@@ -66,7 +68,11 @@ func (h *Handler) ConfirmAttendance(c echo.Context) error {
 	if err := c.Bind(&request); err != nil {
 		return err
 	}
-	response, err := h.service.ConfirmAttendance(h.authorizer.ContextWithRequestMetadata(c.Request().Context(), c.Request()), actor, id, request)
+	version, err := audienceVersion(c)
+	if err != nil {
+		return err
+	}
+	response, err := h.service.ConfirmAttendance(h.authorizer.ContextWithRequestMetadata(c.Request().Context(), c.Request()), actor, id, version, request)
 	if mapped := audienceError(err); mapped != nil {
 		return mapped
 	}
@@ -84,7 +90,11 @@ func (h *Handler) recalculate(c echo.Context, kind string) error {
 	if err != nil {
 		return err
 	}
-	response, err := h.service.Recalculate(h.authorizer.ContextWithRequestMetadata(c.Request().Context(), c.Request()), actor, kind, id)
+	version, err := audienceVersion(c)
+	if err != nil {
+		return err
+	}
+	response, err := h.service.Recalculate(h.authorizer.ContextWithRequestMetadata(c.Request().Context(), c.Request()), actor, kind, id, version)
 	if mapped := audienceError(err); mapped != nil {
 		return mapped
 	}
@@ -106,7 +116,11 @@ func (h *Handler) override(c echo.Context, kind string) error {
 	if err := c.Bind(&request); err != nil {
 		return err
 	}
-	response, err := h.service.SetOverride(h.authorizer.ContextWithRequestMetadata(c.Request().Context(), c.Request()), actor, kind, id, request)
+	version, err := audienceVersion(c)
+	if err != nil {
+		return err
+	}
+	response, err := h.service.SetOverride(h.authorizer.ContextWithRequestMetadata(c.Request().Context(), c.Request()), actor, kind, id, version, request)
 	if mapped := audienceError(err); mapped != nil {
 		return mapped
 	}
@@ -124,7 +138,11 @@ func (h *Handler) approve(c echo.Context, kind string) error {
 	if err != nil {
 		return err
 	}
-	response, err := h.service.Approve(h.authorizer.ContextWithRequestMetadata(c.Request().Context(), c.Request()), actor, kind, id)
+	version, err := audienceVersion(c)
+	if err != nil {
+		return err
+	}
+	response, err := h.service.Approve(h.authorizer.ContextWithRequestMetadata(c.Request().Context(), c.Request()), actor, kind, id, version)
 	if mapped := audienceError(err); mapped != nil {
 		return mapped
 	}
@@ -171,9 +189,23 @@ func audienceError(err error) error {
 		return errcodes.Conflict("Every confirmed attendee must be a current Person.")
 	case errors.Is(err, ErrRecipientIneligible):
 		return errcodes.Conflict("Manual Audience overrides require an Eligible Recipient who is not the Curator.")
+	case errors.Is(err, ErrStale):
+		return errcodes.Conflict("This Attendance and Audience review changed in another browser. Reload before making another change.")
 	default:
 		return err
 	}
+}
+
+func audienceVersion(c echo.Context) (int64, error) {
+	raw := strings.TrimSpace(c.Request().Header.Get("If-Match"))
+	if len(raw) >= 2 && raw[0] == '"' && raw[len(raw)-1] == '"' {
+		raw = raw[1 : len(raw)-1]
+	}
+	version, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || version < 1 {
+		return 0, errcodes.ValidationError("If-Match must contain the current Attendance and Audience review version.")
+	}
+	return version, nil
 }
 
 func RegisterRoutes(e *echo.Echo, handler *Handler) {

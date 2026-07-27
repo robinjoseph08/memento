@@ -44,6 +44,7 @@ func audienceRequest(e *echo.Echo, method, path, body string) *httptest.Response
 	request := httptest.NewRequestWithContext(context.Background(), method, path, strings.NewReader(body))
 	request.AddCookie(&http.Cookie{Name: setup.CookieName, Value: "session"})
 	request.Header.Set(setup.CSRFHeader, "csrf")
+	request.Header.Set("If-Match", "1")
 	if body != "" {
 		request.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
 	}
@@ -95,4 +96,13 @@ func TestAudienceRoutesValidateBodiesAndUseNoStore(t *testing.T) {
 	response = audienceRequest(e, http.MethodGet, "/api/moments/not-an-id/attendance-audience", "")
 	assert.Equal(t, http.StatusNotFound, response.Code)
 	assert.Contains(t, response.Body.String(), "Audience review not found")
+
+	request := httptest.NewRequestWithContext(context.Background(), http.MethodPut, "/api/moments/"+id+"/attendance", strings.NewReader(`{"person_ids":[]}`))
+	request.AddCookie(&http.Cookie{Name: setup.CookieName, Value: "session"})
+	request.Header.Set(setup.CSRFHeader, "csrf")
+	request.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	missingVersion := httptest.NewRecorder()
+	e.ServeHTTP(missingVersion, request)
+	assert.Equal(t, http.StatusUnprocessableEntity, missingVersion.Code)
+	assert.Contains(t, missingVersion.Body.String(), "If-Match")
 }

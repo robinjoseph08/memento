@@ -45,7 +45,10 @@ export function AttendanceAudienceReview({
     mutationFn: () =>
       apiJSON<Review>(`/api/moments/${momentID}/attendance`, {
         method: "PUT",
-        headers: { "X-Memento-CSRF": csrfToken },
+        headers: {
+          "If-Match": String(review.data?.version ?? 0),
+          "X-Memento-CSRF": csrfToken,
+        },
         body: JSON.stringify({
           person_ids: [...attendance],
         } satisfies AttendanceRequest),
@@ -59,7 +62,10 @@ export function AttendanceAudienceReview({
     mutationFn: (request: OverrideRequest) =>
       apiJSON<Review>(`/api/moments/${momentID}/audience/override`, {
         method: "PUT",
-        headers: { "X-Memento-CSRF": csrfToken },
+        headers: {
+          "If-Match": String(review.data?.version ?? 0),
+          "X-Memento-CSRF": csrfToken,
+        },
         body: JSON.stringify(request),
       }),
     onSuccess: (result) => queryClient.setQueryData(queryKey, result),
@@ -68,7 +74,10 @@ export function AttendanceAudienceReview({
     mutationFn: () =>
       apiJSON<Review>(`/api/moments/${momentID}/audience/recalculate`, {
         method: "POST",
-        headers: { "X-Memento-CSRF": csrfToken },
+        headers: {
+          "If-Match": String(review.data?.version ?? 0),
+          "X-Memento-CSRF": csrfToken,
+        },
       }),
     onSuccess: (result) => queryClient.setQueryData(queryKey, result),
   });
@@ -76,11 +85,20 @@ export function AttendanceAudienceReview({
     mutationFn: () =>
       apiJSON<ApprovalResponse>(`/api/moments/${momentID}/audience/approve`, {
         method: "POST",
-        headers: { "X-Memento-CSRF": csrfToken },
+        headers: {
+          "If-Match": String(review.data?.version ?? 0),
+          "X-Memento-CSRF": csrfToken,
+        },
       }),
     onSuccess: (result) => {
       queryClient.setQueryData<Review>(queryKey, (current) =>
-        current ? { ...current, approved_audience: result.audience } : current,
+        current
+          ? {
+              ...current,
+              approved_audience: result.audience,
+              version: result.version,
+            }
+          : current,
       );
       onAudienceApproved();
     },

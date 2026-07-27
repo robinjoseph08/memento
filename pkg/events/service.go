@@ -194,6 +194,7 @@ type draftMomentRow struct {
 	CoverMediaItemID   *uuid.UUID `json:"cover_media_item_id,omitempty"`
 	AttendanceComplete bool       `json:"attendance_complete,omitempty"`
 	AudienceComplete   bool       `json:"audience_complete,omitempty"`
+	ReviewVersion      int64      `json:"review_version,omitempty"`
 }
 
 type draftPlacementRow struct {
@@ -332,17 +333,18 @@ func insertDraftMoments(ctx context.Context, tx bun.Tx, eventID uuid.UUID, timez
 	_, err = tx.NewRaw(`
 		INSERT INTO draft_moments (
 			id, event_id, position, proposed_day, grouping_timezone, source_days,
-			proposal_kind, title, cover_media_item_id, attendance_complete, audience_complete
+			proposal_kind, title, cover_media_item_id, attendance_complete, audience_complete,
+			review_version
 		)
 		SELECT incoming.id, ?, incoming.position, incoming.proposed_day::date, ?,
 			COALESCE(incoming.source_days, '{}'::date[]),
 			COALESCE(incoming.proposal_kind, 'manual'), COALESCE(incoming.title, ''),
 			incoming.cover_media_item_id, COALESCE(incoming.attendance_complete, false),
-			COALESCE(incoming.audience_complete, false)
+			COALESCE(incoming.audience_complete, false), COALESCE(incoming.review_version, 1)
 		FROM jsonb_to_recordset(?::jsonb) AS incoming(
 			id uuid, position integer, proposed_day text, source_days date[],
 			proposal_kind text, title text, cover_media_item_id uuid,
-			attendance_complete boolean, audience_complete boolean
+			attendance_complete boolean, audience_complete boolean, review_version bigint
 		)
 	`, eventID, timezone, string(payload)).Exec(ctx)
 	return err
@@ -570,9 +572,10 @@ func (s *Service) OrganizeEvent(ctx context.Context, actor setup.CuratorSession,
 			ID                 uuid.UUID
 			AttendanceComplete bool
 			AudienceComplete   bool
+			ReviewVersion      int64
 		}
 		var priorReviews []reviewState
-		if err := tx.NewRaw(`SELECT id, attendance_complete, audience_complete FROM draft_moments WHERE event_id = ? ORDER BY id`, id).Scan(ctx, &priorReviews); err != nil {
+		if err := tx.NewRaw(`SELECT id, attendance_complete, audience_complete, review_version FROM draft_moments WHERE event_id = ? ORDER BY id`, id).Scan(ctx, &priorReviews); err != nil {
 			return err
 		}
 		priorByID := make(map[uuid.UUID]reviewState, len(priorReviews))
@@ -583,9 +586,11 @@ func (s *Service) OrganizeEvent(ctx context.Context, actor setup.CuratorSession,
 			if prior, exists := priorByID[momentRows[index].ID]; exists {
 				momentRows[index].AttendanceComplete = prior.AttendanceComplete
 				momentRows[index].AudienceComplete = prior.AudienceComplete
+				momentRows[index].ReviewVersion = prior.ReviewVersion
 			} else {
 				momentRows[index].AttendanceComplete = false
 				momentRows[index].AudienceComplete = false
+				momentRows[index].ReviewVersion = 1
 			}
 		}
 		if err := applyMomentProvenance(ctx, tx, id, momentRows, placements); err != nil {
