@@ -361,6 +361,70 @@ func TestManualPersonLinkRejectsIdentityThatDisappearedAfterReconciliation(t *te
 	assert.Equal(t, []uuid.UUID{fixture.personID}, suggestions)
 }
 
+func TestManualPersonLinkRevalidatesIdentityAfterAnchorCollection(t *testing.T) {
+	fixture := newRepairFixture(t, 1)
+	addition := uuid.New()
+	fixture.connector.people = append(fixture.connector.people, immich.PersonSummary{SourceID: addition, Name: "Temporary identity"})
+	faces := fixture.connector.faces[fixture.assetIDs[0]]
+	faces[0].PersonID = &addition
+	fixture.connector.faces[fixture.assetIDs[0]] = faces
+	require.NoError(t, reconcile(fixture.service))
+	fixture.connector.faceStarted = make(chan struct{})
+	fixture.connector.releaseFace = make(chan struct{})
+	result := make(chan error, 1)
+	go func() {
+		_, err := fixture.service.LinkPerson(context.Background(), fixture.actor, LinkPersonRequest{
+			PersonID: fixture.personID.String(), ImmichPersonID: addition.String(),
+		})
+		result <- err
+	}()
+	select {
+	case <-fixture.connector.faceStarted:
+	case <-time.After(time.Second):
+		t.Fatal("anchor collection did not start")
+	}
+	fixture.connector.people = []immich.PersonSummary{{SourceID: fixture.oldID, Name: "Immich member"}}
+	close(fixture.connector.releaseFace)
+	assert.ErrorIs(t, <-result, ErrConflict)
+	var linkedID uuid.UUID
+	require.NoError(t, fixture.db.NewRaw(`SELECT immich_person_id FROM immich_person_links WHERE person_id = ?`, fixture.personID).Scan(context.Background(), &linkedID))
+	assert.Equal(t, fixture.oldID, linkedID)
+}
+
+func TestManualPersonLinkCannotRecreateLinkAfterConcurrentArchive(t *testing.T) {
+	fixture := newRepairFixture(t, 0)
+	tx, err := fixture.db.BeginTx(context.Background(), nil)
+	require.NoError(t, err)
+	_, err = tx.ExecContext(context.Background(), `
+		UPDATE people SET archived_at = now() WHERE id = ?;
+		DELETE FROM immich_person_links WHERE person_id = ?
+	`, fixture.personID, fixture.personID)
+	require.NoError(t, err)
+
+	result := make(chan error, 1)
+	go func() {
+		_, linkErr := fixture.service.LinkPerson(context.Background(), fixture.actor, LinkPersonRequest{
+			PersonID: fixture.personID.String(), ImmichPersonID: fixture.oldID.String(),
+		})
+		result <- linkErr
+	}()
+	select {
+	case linkErr := <-result:
+		t.Fatalf("link completed before lifecycle transaction committed: %v", linkErr)
+	case <-time.After(100 * time.Millisecond):
+	}
+	require.NoError(t, tx.Commit())
+	select {
+	case linkErr := <-result:
+		assert.ErrorIs(t, linkErr, ErrInvalid)
+	case <-time.After(time.Second):
+		t.Fatal("link did not finish after lifecycle transaction committed")
+	}
+	var links int
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM immich_person_links WHERE person_id = ?`, fixture.personID).Scan(context.Background(), &links))
+	assert.Zero(t, links)
+}
+
 func TestManualPersonLinkDoesNotConfirmUnrelatedPendingProposal(t *testing.T) {
 	fixture := newRepairFixture(t, 1)
 	proposed, selected := uuid.New(), uuid.New()

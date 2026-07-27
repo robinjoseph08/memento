@@ -516,12 +516,34 @@ func (s *Service) linkPerson(ctx context.Context, actor setup.CuratorSession, pe
 	if err != nil {
 		return MutationResponse{}, err
 	}
+	if err := s.requireCurrentImmichPerson(ctx, immichPersonID); err != nil {
+		return MutationResponse{}, err
+	}
 	return s.linkPersonWithAnchors(ctx, actor, personID, immichPersonID, candidateID, anchors)
 }
 
 func (s *Service) linkPersonWithAnchors(ctx context.Context, actor setup.CuratorSession, personID, immichPersonID uuid.UUID, candidateID *uuid.UUID, anchors []collectedAnchor) (MutationResponse, error) {
 	now := s.now().UTC()
 	err := s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		var lockedPersonID uuid.UUID
+		if err := tx.NewRaw(`
+			SELECT id FROM people
+			WHERE id = ? AND archived_at IS NULL AND merged_at IS NULL
+			FOR UPDATE
+		`, personID).Scan(ctx, &lockedPersonID); errors.Is(err, sql.ErrNoRows) {
+			return ErrInvalid
+		} else if err != nil {
+			return err
+		}
+		if _, err := tx.NewRaw(`
+			SELECT person_id FROM immich_person_links
+			WHERE person_id = ? ORDER BY person_id FOR UPDATE
+		`, personID).Exec(ctx); err != nil {
+			return err
+		}
+		if _, err := tx.NewRaw(`SELECT id FROM immich_face_anchors WHERE person_id = ? ORDER BY id FOR UPDATE`, personID).Exec(ctx); err != nil {
+			return err
+		}
 		if candidateID != nil {
 			var lockedID uuid.UUID
 			err := tx.NewRaw(`
@@ -535,14 +557,13 @@ func (s *Service) linkPersonWithAnchors(ctx context.Context, actor setup.Curator
 			if err != nil {
 				return err
 			}
-		}
-		var current, present, claimed bool
-		if err := tx.NewRaw(`SELECT EXISTS (SELECT 1 FROM people WHERE id = ? AND archived_at IS NULL AND merged_at IS NULL)`, personID).Scan(ctx, &current); err != nil {
+		} else if _, err := tx.NewRaw(`
+			SELECT id FROM person_repair_candidates
+			WHERE person_id = ? AND state = 'pending' ORDER BY id FOR UPDATE
+		`, personID).Exec(ctx); err != nil {
 			return err
 		}
-		if !current {
-			return ErrInvalid
-		}
+		var present, claimed bool
 		if err := tx.NewRaw(`SELECT EXISTS (SELECT 1 FROM immich_people_inventory WHERE immich_person_id = ? AND present)`, immichPersonID).Scan(ctx, &present); err != nil {
 			return err
 		}

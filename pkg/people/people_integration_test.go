@@ -350,6 +350,63 @@ func TestMergeRejectsStaleSourceAndSurvivorVersionsWithoutEffects(t *testing.T) 
 	}
 }
 
+func TestArchiveAndMergeUseOnePersonRepairLockOrder(t *testing.T) {
+	fixture := newPeopleFixture(t)
+	ctx := context.Background()
+	source := addPerson(t, fixture.db, "Source", "Source")
+	survivor := addPerson(t, fixture.db, "Survivor", "Survivor")
+	candidateID := uuid.New()
+	_, err := fixture.db.ExecContext(ctx, `
+		INSERT INTO person_repair_candidates (
+			id, person_id, previous_immich_person_id, candidate_immich_person_id, created_at
+		) VALUES (?, ?, ?, ?, now())
+	`, candidateID, source, uuid.New(), uuid.New())
+	require.NoError(t, err)
+	preview, err := fixture.service.PreviewMerge(ctx, fixture.actor, source, survivor)
+	require.NoError(t, err)
+
+	blocker, err := fixture.db.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	_, err = blocker.NewRaw(`SELECT id FROM person_repair_candidates WHERE id = ? FOR UPDATE`, candidateID).Exec(ctx)
+	require.NoError(t, err)
+	archiveResult := make(chan error, 1)
+	go func() {
+		_, archiveErr := fixture.service.Archive(ctx, fixture.actor, source, 1)
+		archiveResult <- archiveErr
+	}()
+	select {
+	case archiveErr := <-archiveResult:
+		t.Fatalf("archive completed while its repair candidate was locked: %v", archiveErr)
+	case <-time.After(100 * time.Millisecond):
+	}
+	mergeResult := make(chan error, 1)
+	go func() {
+		_, mergeErr := fixture.service.Merge(ctx, fixture.actor, MergeRequest{
+			SourcePersonID: source.String(), SurvivorPersonID: survivor.String(), SourceVersion: 1, SurvivorVersion: 1,
+			PreviewFingerprint: preview.PreviewFingerprint,
+		})
+		mergeResult <- mergeErr
+	}()
+	select {
+	case mergeErr := <-mergeResult:
+		t.Fatalf("merge completed while archive held the Person lock: %v", mergeErr)
+	case <-time.After(100 * time.Millisecond):
+	}
+	require.NoError(t, blocker.Commit())
+	select {
+	case archiveErr := <-archiveResult:
+		require.NoError(t, archiveErr)
+	case <-time.After(3 * time.Second):
+		t.Fatal("archive did not complete after candidate lock release")
+	}
+	select {
+	case mergeErr := <-mergeResult:
+		assert.ErrorIs(t, mergeErr, ErrMergeStale)
+	case <-time.After(3 * time.Second):
+		t.Fatal("merge did not complete after archive")
+	}
+}
+
 func TestMergeIntoCuratorPreservesCurrentSessionAndAuthority(t *testing.T) {
 	fixture := newPeopleFixture(t)
 	ctx := context.Background()

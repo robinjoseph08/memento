@@ -422,8 +422,15 @@ func (s *Service) Archive(ctx context.Context, actor setup.CuratorSession, id uu
 		if curator {
 			return ErrCuratorMustSurvive
 		}
-		if _, err := tx.NewRaw(`SELECT id FROM person_repair_candidates WHERE person_id = ? AND state = 'pending' ORDER BY id FOR UPDATE`, id).Exec(ctx); err != nil {
-			return err
+		for _, lock := range []string{
+			`SELECT id FROM people WHERE id = ? FOR UPDATE`,
+			`SELECT person_id FROM immich_person_links WHERE person_id = ? FOR UPDATE`,
+			`SELECT id FROM immich_face_anchors WHERE person_id = ? ORDER BY id FOR UPDATE`,
+			`SELECT id FROM person_repair_candidates WHERE person_id = ? AND state = 'pending' ORDER BY id FOR UPDATE`,
+		} {
+			if _, err := tx.NewRaw(lock, id).Exec(ctx); err != nil {
+				return err
+			}
 		}
 		result, err := tx.NewRaw(`UPDATE people SET archived_at = ?, version = version + 1, updated_at = ? WHERE id = ? AND version = ? AND archived_at IS NULL AND merged_at IS NULL`, now, now, id, version).Exec(ctx)
 		if err != nil {
