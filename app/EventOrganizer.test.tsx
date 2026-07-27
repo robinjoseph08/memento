@@ -132,6 +132,7 @@ function renderOrganizer() {
           display_name: "Robin",
           session_type: "public",
           csrf_token: csrfToken,
+          curator: true,
         }}
       />
     </QueryClientProvider>,

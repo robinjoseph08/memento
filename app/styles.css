@@ -1539,7 +1539,9 @@ h1 {
   .organize-pane > header {
     grid-template-columns: 1fr;
   }
+}
 
+@media (max-width: 54rem) {
   .people-shell,
   .family-shell,
   .visibility-shell {

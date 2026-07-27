@@ -742,7 +742,7 @@ function ReadyCard({
     return () => window.removeEventListener("popstate", protectDraftHistory);
   }, [draftsDirty, draftsSaving, setSearchParams]);
 
-  if (session && (draftsRequested || draftsDirty)) {
+  if (session?.curator && (draftsRequested || draftsDirty)) {
     return (
       <section className="draft-work-shell">
         <div className="draft-work-actions">

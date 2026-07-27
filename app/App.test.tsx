@@ -423,6 +423,7 @@ test("restores and refreshes a signed-in Trusted-device Session", async () => {
 
 test("routes a non-Curator Session only to Recipient Interest self-service", async () => {
   const requests: string[] = [];
+  window.history.replaceState(null, "", "/?workspace=drafts");
   vi.stubGlobal(
     "fetch",
     vi.fn((input: RequestInfo | URL) => {
@@ -500,6 +501,7 @@ test("keeps sign-out available from the draft organization workspace", async () 
             display_name: "Robin Joseph",
             session_type: "public",
             csrf_token: csrfToken,
+            curator: true,
           }),
         );
       if (path === "/api/events")
