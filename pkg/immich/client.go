@@ -121,9 +121,10 @@ type assetResponse struct {
 }
 
 type peopleResponse struct {
-	People *[]personResponse `json:"people"`
-	Total  *int              `json:"total"`
-	Hidden *int              `json:"hidden"`
+	People      *[]personResponse `json:"people"`
+	Total       *int              `json:"total"`
+	Hidden      *int              `json:"hidden"`
+	HasNextPage *bool             `json:"hasNextPage"`
 }
 
 type personResponse struct {
@@ -195,7 +196,7 @@ func (response *assetResponse) UnmarshalJSON(contents []byte) error {
 
 func (response *peopleResponse) UnmarshalJSON(contents []byte) error {
 	type exactPeopleResponse peopleResponse
-	if err := rejectCaseVariantFields(contents, "people", "total", "hidden"); err != nil {
+	if err := rejectCaseVariantFields(contents, "people", "total", "hidden", "hasNextPage"); err != nil {
 		return err
 	}
 	return json.Unmarshal(contents, (*exactPeopleResponse)(response))
@@ -438,7 +439,8 @@ func (c *Client) People(ctx context.Context) ([]PersonSummary, error) {
 		}, &response, errPeopleFailed); err != nil {
 			return nil, err
 		}
-		if response.People == nil || response.Total == nil || response.Hidden == nil || *response.Total < 0 || *response.Hidden < 0 || *response.Hidden > *response.Total || len(*response.People) > assetPageSize {
+		if response.People == nil || response.Total == nil || response.Hidden == nil || response.HasNextPage == nil ||
+			*response.Total < 0 || *response.Hidden < 0 || *response.Hidden > *response.Total || len(*response.People) > assetPageSize {
 			return nil, errInvalidResponse
 		}
 		for _, raw := range *response.People {
@@ -455,10 +457,10 @@ func (c *Client) People(ctx context.Context) ([]PersonSummary, error) {
 			seen[id] = struct{}{}
 			result = append(result, PersonSummary{SourceID: id, Name: truncate(strings.TrimSpace(*raw.Name), 240), Hidden: *raw.IsHidden})
 		}
-		if len(result) == *response.Total {
+		if !*response.HasNextPage {
 			return result, nil
 		}
-		if len(result) > *response.Total || len(*response.People) != assetPageSize || page > max(1, *response.Total) {
+		if len(*response.People) == 0 || page > max(1, *response.Total) {
 			return nil, errInvalidResponse
 		}
 	}

@@ -155,6 +155,19 @@ func New(db *bun.DB, connector Connector) *Service {
 // ReconcilePeople records additions and removals, then marks broken links for review.
 // It never confirms a replacement or changes Attendance, Audience, or Recipient state.
 func (s *Service) ReconcilePeople(ctx context.Context) (MutationResponse, error) {
+	type linkRow struct {
+		PersonID, ImmichPersonID uuid.UUID
+		State                    string
+		Version                  int64
+	}
+	var observedLinks []linkRow
+	if err := s.db.NewRaw(`SELECT person_id, immich_person_id, state, version FROM immich_person_links ORDER BY person_id`).Scan(ctx, &observedLinks); err != nil {
+		return MutationResponse{}, err
+	}
+	observedVersions := make(map[uuid.UUID]int64, len(observedLinks))
+	for _, link := range observedLinks {
+		observedVersions[link.PersonID] = link.Version
+	}
 	if err := s.connector.Check(ctx); err != nil {
 		return MutationResponse{}, ErrDependency
 	}
@@ -210,12 +223,8 @@ func (s *Service) ReconcilePeople(ctx context.Context) (MutationResponse, error)
 			}
 		}
 
-		type linkRow struct {
-			PersonID, ImmichPersonID uuid.UUID
-			State                    string
-		}
 		var links []linkRow
-		if err := tx.NewRaw(`SELECT person_id, immich_person_id, state FROM immich_person_links ORDER BY person_id FOR UPDATE`).Scan(ctx, &links); err != nil {
+		if err := tx.NewRaw(`SELECT person_id, immich_person_id, state, version FROM immich_person_links ORDER BY person_id FOR UPDATE`).Scan(ctx, &links); err != nil {
 			return err
 		}
 		anchorsByPerson := map[uuid.UUID][]anchorRow{}
@@ -223,6 +232,9 @@ func (s *Service) ReconcilePeople(ctx context.Context) (MutationResponse, error)
 			anchorsByPerson[anchor.PersonID] = append(anchorsByPerson[anchor.PersonID], anchor)
 		}
 		for _, link := range links {
+			if observedVersion, observed := observedVersions[link.PersonID]; !observed || observedVersion != link.Version {
+				continue
+			}
 			personAnchors := anchorsByPerson[link.PersonID]
 			encodedAnchors, err := json.Marshal(faceAnchorEvidence(personAnchors))
 			if err != nil {

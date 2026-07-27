@@ -237,7 +237,7 @@ func TestPeopleAndFacesNormalizePrivateRepairEvidence(t *testing.T) {
 		case "/api/people":
 			assert.Equal(t, "true", r.URL.Query().Get("withHidden"))
 			assert.Equal(t, "1", r.URL.Query().Get("page"))
-			_, _ = w.Write([]byte(`{"people":[{"id":"` + personID.String() + `","name":"  Family member  ","isHidden":true,"thumbnailPath":"private"}],"total":1,"hidden":1}`))
+			_, _ = w.Write([]byte(`{"people":[{"id":"` + personID.String() + `","name":"  Family member  ","isHidden":true,"thumbnailPath":"private"}],"total":1,"hidden":1,"hasNextPage":false}`))
 		case "/api/faces":
 			assert.Equal(t, assetID.String(), r.URL.Query().Get("id"))
 			_, _ = w.Write([]byte(`[{"id":"` + faceID.String() + `","imageWidth":1200,"imageHeight":800,"boundingBoxX1":10,"boundingBoxY1":20,"boundingBoxX2":110,"boundingBoxY2":220,"person":{"id":"` + personID.String() + `","name":"private"}}]`))
@@ -260,6 +260,28 @@ func TestPeopleAndFacesNormalizePrivateRepairEvidence(t *testing.T) {
 	assert.Equal(t, personID, *faces[0].PersonID)
 	assert.Equal(t, 10, faces[0].X1)
 	assert.Equal(t, 220, faces[0].Y2)
+}
+
+func TestPeoplePaginationUsesHasNextPageWhenTotalIncludesFilteredPeople(t *testing.T) {
+	firstID, secondID := uuid.New(), uuid.New()
+	server := contractServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Query().Get("page") {
+		case "1":
+			_, _ = w.Write([]byte(`{"people":[{"id":"` + firstID.String() + `","name":"First","isHidden":false}],"total":3,"hidden":1,"hasNextPage":true}`))
+		case "2":
+			_, _ = w.Write([]byte(`{"people":[{"id":"` + secondID.String() + `","name":"Second","isHidden":false}],"total":3,"hidden":1,"hasNextPage":false}`))
+		default:
+			http.Error(w, "unexpected page", http.StatusBadRequest)
+		}
+	})
+	defer server.Close()
+	client, err := New(clientConfig(server.URL), server.Client())
+	require.NoError(t, err)
+	people, err := client.People(context.Background())
+	require.NoError(t, err)
+	require.Len(t, people, 2)
+	assert.Equal(t, firstID, people[0].SourceID)
+	assert.Equal(t, secondID, people[1].SourceID)
 }
 
 func TestPeopleAndFacesRejectCaseDriftAndMissingPersonFields(t *testing.T) {

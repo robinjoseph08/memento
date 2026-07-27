@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"sync"
 	"testing"
 	"time"
 
@@ -21,11 +22,14 @@ import (
 )
 
 type identityConnector struct {
-	people    []immich.PersonSummary
-	faces     map[uuid.UUID][]immich.FaceSummary
-	faceErrs  map[uuid.UUID]error
-	faceCalls []uuid.UUID
-	err       error
+	people      []immich.PersonSummary
+	faces       map[uuid.UUID][]immich.FaceSummary
+	faceErrs    map[uuid.UUID]error
+	faceCalls   []uuid.UUID
+	faceMu      sync.Mutex
+	faceStarted chan struct{}
+	releaseFace chan struct{}
+	err         error
 }
 
 func (connector *identityConnector) Check(context.Context) error { return connector.err }
@@ -33,6 +37,14 @@ func (connector *identityConnector) People(context.Context) ([]immich.PersonSumm
 	return connector.people, connector.err
 }
 func (connector *identityConnector) Faces(_ context.Context, assetID uuid.UUID) ([]immich.FaceSummary, error) {
+	connector.faceMu.Lock()
+	started, release := connector.faceStarted, connector.releaseFace
+	connector.faceStarted = nil
+	connector.faceMu.Unlock()
+	if started != nil {
+		close(started)
+		<-release
+	}
 	connector.faceCalls = append(connector.faceCalls, assetID)
 	if err := connector.faceErrs[assetID]; err != nil {
 		return nil, err
@@ -211,6 +223,36 @@ func TestRecoveredPersonLinkStillRequiresExplicitConfirmation(t *testing.T) {
 	suggestions, err = fixture.service.SuggestionPersonIDs(context.Background(), []uuid.UUID{fixture.oldID})
 	require.NoError(t, err)
 	assert.Equal(t, []uuid.UUID{fixture.personID}, suggestions)
+}
+
+func TestInFlightReconciliationCannotUndoLaterPersonConfirmation(t *testing.T) {
+	fixture := newRepairFixture(t, 1)
+	replacement := uuid.New()
+	fixture.connector.people = append(fixture.connector.people, immich.PersonSummary{SourceID: replacement, Name: "Replacement"})
+	_, err := fixture.db.ExecContext(context.Background(), `
+		INSERT INTO immich_people_inventory (immich_person_id, name, first_seen_at, last_seen_at)
+		VALUES (?, 'Replacement', now(), now())
+	`, replacement)
+	require.NoError(t, err)
+	fixture.connector.faceStarted = make(chan struct{})
+	fixture.connector.releaseFace = make(chan struct{})
+	reconcileResult := make(chan error, 1)
+	go func() { reconcileResult <- reconcile(fixture.service) }()
+	<-fixture.connector.faceStarted
+
+	_, err = fixture.service.LinkPerson(context.Background(), fixture.actor, LinkPersonRequest{
+		PersonID: fixture.personID.String(), ImmichPersonID: replacement.String(),
+	})
+	require.NoError(t, err)
+	close(fixture.connector.releaseFace)
+	require.NoError(t, <-reconcileResult)
+
+	suggestions, err := fixture.service.SuggestionPersonIDs(context.Background(), []uuid.UUID{replacement})
+	require.NoError(t, err)
+	assert.Equal(t, []uuid.UUID{fixture.personID}, suggestions)
+	var state string
+	require.NoError(t, fixture.db.NewRaw(`SELECT state FROM immich_person_links WHERE person_id = ?`, fixture.personID).Scan(context.Background(), &state))
+	assert.Equal(t, "linked", state)
 }
 
 func TestFaceReassignmentAndAnchorConflictRequireReview(t *testing.T) {
