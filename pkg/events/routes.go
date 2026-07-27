@@ -52,6 +52,17 @@ func (h *Handler) CreateEvent(c echo.Context) error {
 	return c.JSON(http.StatusCreated, event)
 }
 
+func (h *Handler) ListEvents(c echo.Context) error {
+	if _, err := h.authorize(c, false); err != nil {
+		return err
+	}
+	response, err := h.service.ListEvents(c.Request().Context())
+	if err != nil {
+		return err
+	}
+	return c.JSON(http.StatusOK, response)
+}
+
 func (h *Handler) GetEvent(c echo.Context) error {
 	if _, err := h.authorize(c, false); err != nil {
 		return err
@@ -61,6 +72,26 @@ func (h *Handler) GetEvent(c echo.Context) error {
 		return err
 	}
 	event, err := h.service.GetEvent(c.Request().Context(), id)
+	if mapped := draftError(err, "Event"); mapped != nil {
+		return mapped
+	}
+	return c.JSON(http.StatusOK, event)
+}
+
+func (h *Handler) OrganizeEvent(c echo.Context) error {
+	actor, err := h.authorize(c, true)
+	if err != nil {
+		return err
+	}
+	id, err := routeID(c.Param("id"), "Event")
+	if err != nil {
+		return err
+	}
+	var request OrganizeEventRequest
+	if err := c.Bind(&request); err != nil {
+		return err
+	}
+	event, err := h.service.OrganizeEvent(h.requestContext(c), actor, id, request)
 	if mapped := draftError(err, "Event"); mapped != nil {
 		return mapped
 	}
@@ -146,7 +177,9 @@ func draftError(err error, resource string) error {
 	case errors.Is(err, ErrNotFound):
 		return errcodes.NotFound(resource)
 	case errors.Is(err, ErrInvalid):
-		return errcodes.ValidationError("Draft fields must be valid and within their limits.")
+		return errcodes.ValidationError("Draft fields must be valid, include every Media item exactly once, and use a cover from its Moment.")
+	case errors.Is(err, ErrVersionConflict):
+		return errcodes.Conflict("This Event changed in another browser. Review the newer version before saving again.")
 	case errors.Is(err, ErrSourceUnavailable):
 		return errcodes.Conflict("Every Source album must be available and not ignored.")
 	case errors.Is(err, ErrSourceTooLarge):
@@ -175,8 +208,12 @@ func RegisterRoutes(e *echo.Echo, handler *Handler) {
 	events := e.Group("/api/events", noStore)
 	createEvent := events.POST("", handler.CreateEvent)
 	createEvent.Name = curatorMutationPolicy
+	listEvents := events.GET("", handler.ListEvents)
+	listEvents.Name = curatorReadPolicy
 	getEvent := events.GET("/:id", handler.GetEvent)
 	getEvent.Name = curatorReadPolicy
+	organizeEvent := events.PUT("/:id/organization", handler.OrganizeEvent)
+	organizeEvent.Name = curatorMutationPolicy
 
 	looseItems := e.Group("/api/loose-items", noStore)
 	createLoose := looseItems.POST("", handler.CreateLooseItem)

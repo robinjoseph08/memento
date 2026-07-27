@@ -698,6 +698,137 @@ func TestDraftLookupsAndLooseItemValidationFailClosed(t *testing.T) {
 	assert.Zero(t, count)
 }
 
+func TestCuratorOrganizesMomentsWithOrderingCoversReadinessAndOptimisticVersions(t *testing.T) {
+	fixture := newDraftFixture(t)
+	ctx := context.Background()
+	created, err := fixture.service.CreateEvent(ctx, fixture.actor, CreateEventRequest{
+		SourceAlbumIDs: []string{fixture.sources["first"].String(), fixture.sources["second"].String()},
+		Timezone:       "UTC",
+	})
+	require.NoError(t, err)
+	require.Len(t, created.Moments, 2)
+
+	mergedID := created.Moments[0].ID
+	allAssigned := append(mediaIDs(created.Moments[1].MediaItems), mediaIDs(created.Moments[0].MediaItems)...)
+	cover := allAssigned[len(allAssigned)-1]
+	organized, err := fixture.service.OrganizeEvent(ctx, fixture.actor, uuid.MustParse(created.ID), OrganizeEventRequest{
+		Version: created.Version,
+		Moments: []OrganizeMoment{{
+			ID: mergedID, Title: "The whole weekend", ProposedDay: created.Moments[0].ProposedDay,
+			CoverMediaItemID: &cover, AttendanceComplete: true, AudienceComplete: true,
+			MediaItemIDs: allAssigned,
+		}},
+		UnassignedMediaIDs:  mediaIDs(created.UnassignedMedia),
+		FinalReviewComplete: true,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, created.Version+1, organized.Version)
+	require.Len(t, organized.Moments, 1, "same and adjacent day proposals can be merged")
+	assert.Equal(t, allAssigned, mediaIDs(organized.Moments[0].MediaItems), "manual Media ordering is stable")
+	assert.Equal(t, cover, *organized.Moments[0].CoverMediaItemID)
+	assert.True(t, organized.Moments[0].AttendanceComplete)
+	assert.True(t, organized.Moments[0].AudienceComplete)
+	assert.True(t, organized.FinalReviewComplete)
+
+	splitID := uuid.NewString()
+	split, err := fixture.service.OrganizeEvent(ctx, fixture.actor, uuid.MustParse(created.ID), OrganizeEventRequest{
+		Version: organized.Version,
+		Moments: []OrganizeMoment{
+			{ID: mergedID, ProposedDay: organized.Moments[0].ProposedDay, MediaItemIDs: allAssigned[:1]},
+			{ID: splitID, ProposedDay: organized.Moments[0].ProposedDay, MediaItemIDs: allAssigned[1:]},
+		},
+		UnassignedMediaIDs: mediaIDs(organized.UnassignedMedia),
+	})
+	require.NoError(t, err)
+	require.Len(t, split.Moments, 2, "one local day can be split into separate Moments")
+	assert.Equal(t, organized.Moments[0].ProposedDay, split.Moments[1].ProposedDay)
+
+	_, err = fixture.service.OrganizeEvent(ctx, fixture.actor, uuid.MustParse(created.ID), OrganizeEventRequest{
+		Version: organized.Version,
+		Moments: []OrganizeMoment{
+			{ID: mergedID, ProposedDay: split.Moments[0].ProposedDay, MediaItemIDs: mediaIDs(split.Moments[0].MediaItems)},
+			{ID: splitID, ProposedDay: split.Moments[1].ProposedDay, MediaItemIDs: mediaIDs(split.Moments[1].MediaItems)},
+		},
+		UnassignedMediaIDs: mediaIDs(split.UnassignedMedia),
+	})
+	require.ErrorIs(t, err, ErrVersionConflict, "a stale autosave never overwrites newer organization")
+
+	reloaded, err := fixture.service.GetEvent(ctx, uuid.MustParse(created.ID))
+	require.NoError(t, err)
+	assert.Equal(t, split.Version, reloaded.Version)
+	assert.Equal(t, mediaIDs(split.Moments[1].MediaItems), mediaIDs(reloaded.Moments[1].MediaItems))
+	list, err := fixture.service.ListEvents(ctx)
+	require.NoError(t, err)
+	require.Len(t, list.Events, 1)
+	assert.Equal(t, 2, list.Events[0].MomentCount)
+	assert.Equal(t, 1, list.Events[0].UnassignedCount)
+}
+
+func TestOrganizationAuditFailureRollsBackTheCompleteSnapshot(t *testing.T) {
+	fixture := newDraftFixture(t)
+	ctx := context.Background()
+	created, err := fixture.service.CreateEvent(ctx, fixture.actor, CreateEventRequest{
+		SourceAlbumIDs: []string{fixture.sources["first"].String()}, Timezone: "UTC",
+	})
+	require.NoError(t, err)
+	_, err = fixture.db.ExecContext(ctx, `
+		CREATE FUNCTION reject_organization_audit() RETURNS trigger LANGUAGE plpgsql AS $$
+			BEGIN
+				IF NEW.action = 'event_draft_organized' THEN
+					RAISE EXCEPTION 'rejected organization audit';
+				END IF;
+				RETURN NEW;
+			END $$;
+		CREATE TRIGGER reject_organization_audit BEFORE INSERT ON security_audit_events
+			FOR EACH ROW EXECUTE FUNCTION reject_organization_audit()`)
+	require.NoError(t, err)
+
+	mediaIDs := allEventMediaIDs(created)
+	_, err = fixture.service.OrganizeEvent(ctx, fixture.actor, uuid.MustParse(created.ID), OrganizeEventRequest{
+		Version: created.Version,
+		Moments: []OrganizeMoment{{
+			ID: created.Moments[0].ID, ProposedDay: created.Moments[0].ProposedDay,
+			MediaItemIDs: mediaIDs,
+		}},
+	})
+	require.ErrorContains(t, err, "rejected organization audit")
+	reloaded, err := fixture.service.GetEvent(ctx, uuid.MustParse(created.ID))
+	require.NoError(t, err)
+	assert.Equal(t, created.Version, reloaded.Version)
+	assert.Equal(t, allEventMediaIDs(created), allEventMediaIDs(reloaded))
+	assert.Equal(t, len(created.Moments), len(reloaded.Moments))
+}
+
+func TestOrganizingRejectsInvalidCoversAndMissingOrDuplicateMedia(t *testing.T) {
+	fixture := newDraftFixture(t)
+	ctx := context.Background()
+	created, err := fixture.service.CreateEvent(ctx, fixture.actor, CreateEventRequest{
+		SourceAlbumIDs: []string{fixture.sources["first"].String()}, Timezone: "UTC",
+	})
+	require.NoError(t, err)
+	assigned := mediaIDs(created.Moments[0].MediaItems)
+	foreignCover := fixture.media["unknown"].String()
+	_, err = fixture.service.OrganizeEvent(ctx, fixture.actor, uuid.MustParse(created.ID), OrganizeEventRequest{
+		Version: created.Version,
+		Moments: []OrganizeMoment{{
+			ID: created.Moments[0].ID, ProposedDay: created.Moments[0].ProposedDay,
+			CoverMediaItemID: &foreignCover, MediaItemIDs: assigned,
+		}},
+		UnassignedMediaIDs: mediaIDs(created.UnassignedMedia),
+	})
+	require.ErrorIs(t, err, ErrInvalid)
+
+	_, err = fixture.service.OrganizeEvent(ctx, fixture.actor, uuid.MustParse(created.ID), OrganizeEventRequest{
+		Version: created.Version,
+		Moments: []OrganizeMoment{{
+			ID: created.Moments[0].ID, ProposedDay: created.Moments[0].ProposedDay,
+			MediaItemIDs: append(assigned, assigned[0]),
+		}},
+		UnassignedMediaIDs: mediaIDs(created.UnassignedMedia),
+	})
+	require.ErrorIs(t, err, ErrInvalid)
+}
+
 func mediaIDs(media []MediaItem) []string {
 	result := make([]string, 0, len(media))
 	for _, item := range media {

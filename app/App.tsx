@@ -8,6 +8,7 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useSearchParams } from "react-router-dom";
 
 import { APIError, apiJSON, apiNoContent } from "./api";
+import { EventOrganizer } from "./EventOrganizer";
 import { FamilyManager } from "./FamilyManager";
 import { PeopleManager } from "./PeopleManager";
 import { RepairWorkspace } from "./RepairWorkspace";
@@ -608,6 +609,19 @@ function SourceWorkspace({
         </div>
         <div className="source-header-actions">
           <button
+            className="source-organize"
+            onClick={() => {
+              setSearchParams((current) => {
+                const next = new URLSearchParams(current);
+                next.set("workspace", "drafts");
+                return next;
+              });
+            }}
+            type="button"
+          >
+            Organize drafts
+          </button>
+          <button
             className="source-connect"
             disabled={discover.isPending}
             onClick={() => discover.mutate()}
@@ -694,6 +708,27 @@ function ReadyCard({
   session?: SessionResponse;
   onSignOut: () => void;
 }) {
+  const [searchParams, setSearchParams] = useSearchParams();
+  if (session && searchParams.get("workspace") === "drafts") {
+    return (
+      <section className="draft-work-shell">
+        <button
+          className="back-to-management"
+          onClick={() => {
+            setSearchParams((current) => {
+              const next = new URLSearchParams(current);
+              next.delete("workspace");
+              return next;
+            });
+          }}
+          type="button"
+        >
+          Back to Curator management
+        </button>
+        <EventOrganizer session={session} />
+      </section>
+    );
+  }
   if (session) {
     if (!session.curator) {
       return (

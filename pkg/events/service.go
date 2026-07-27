@@ -32,6 +32,7 @@ var (
 	ErrSourceTooLarge    = errors.New("source album has too many media items")
 	ErrMediaUnavailable  = errors.New("media item is unavailable for drafting")
 	ErrNoMediaAvailable  = errors.New("no media items are available for drafting")
+	ErrVersionConflict   = errors.New("draft version is stale")
 	errUnknownMoment     = errors.New("draft placement references unknown Moment")
 )
 
@@ -63,10 +64,47 @@ type MediaItem struct {
 
 // Moment is an initial local-day proposal. Recipients never receive this draft type.
 type Moment struct {
-	ID               string      `json:"id"`
-	ProposedDay      string      `json:"proposed_day"`
-	GroupingTimezone string      `json:"grouping_timezone"`
-	MediaItems       []MediaItem `json:"media_items"`
+	ID                 string      `json:"id"`
+	Title              string      `json:"title"`
+	ProposedDay        string      `json:"proposed_day"`
+	GroupingTimezone   string      `json:"grouping_timezone"`
+	CoverMediaItemID   *string     `json:"cover_media_item_id" tstype:"string | null,required"`
+	AttendanceComplete bool        `json:"attendance_complete"`
+	AudienceComplete   bool        `json:"audience_complete"`
+	MediaItems         []MediaItem `json:"media_items"`
+}
+
+// OrganizeMoment is one complete Moment snapshot submitted by the Curator workspace.
+type OrganizeMoment struct {
+	ID                 string   `json:"id" validate:"required"`
+	Title              string   `json:"title,omitempty" validate:"max=240" mod:"trim"`
+	ProposedDay        string   `json:"proposed_day" validate:"required"`
+	CoverMediaItemID   *string  `json:"cover_media_item_id" tstype:"string | null,required"`
+	AttendanceComplete bool     `json:"attendance_complete"`
+	AudienceComplete   bool     `json:"audience_complete"`
+	MediaItemIDs       []string `json:"media_item_ids" validate:"required,min=1,max=100000"`
+}
+
+// OrganizeEventRequest atomically replaces draft organization at an expected version.
+type OrganizeEventRequest struct {
+	Version             int64            `json:"version" validate:"required,min=1"`
+	Moments             []OrganizeMoment `json:"moments" validate:"max=100000,dive"`
+	UnassignedMediaIDs  []string         `json:"unassigned_media_ids" validate:"max=100000"`
+	FinalReviewComplete bool             `json:"final_review_complete"`
+}
+
+// EventSummary supports Curator work navigation without loading every Media item.
+type EventSummary struct {
+	ID              string    `json:"id"`
+	Title           string    `json:"title"`
+	Version         int64     `json:"version"`
+	MomentCount     int       `json:"moment_count"`
+	UnassignedCount int       `json:"unassigned_count"`
+	UpdatedAt       time.Time `json:"updated_at"`
+}
+
+type EventListResponse struct {
+	Events []EventSummary `json:"events"`
 }
 
 // SourceMetadataSuggestion reports current Source metadata without changing Event metadata.
@@ -83,17 +121,18 @@ type EventSource struct {
 
 // Event is a portal-owned private draft.
 type Event struct {
-	ID               string        `json:"id"`
-	Lifecycle        string        `json:"lifecycle"`
-	Title            string        `json:"title"`
-	Description      string        `json:"description"`
-	GroupingTimezone string        `json:"grouping_timezone"`
-	Version          int64         `json:"version"`
-	Sources          []EventSource `json:"sources"`
-	Moments          []Moment      `json:"moments"`
-	UnassignedMedia  []MediaItem   `json:"unassigned_media"`
-	CreatedAt        time.Time     `json:"created_at"`
-	UpdatedAt        time.Time     `json:"updated_at"`
+	ID                  string        `json:"id"`
+	Lifecycle           string        `json:"lifecycle"`
+	Title               string        `json:"title"`
+	Description         string        `json:"description"`
+	GroupingTimezone    string        `json:"grouping_timezone"`
+	Version             int64         `json:"version"`
+	FinalReviewComplete bool          `json:"final_review_complete"`
+	Sources             []EventSource `json:"sources"`
+	Moments             []Moment      `json:"moments"`
+	UnassignedMedia     []MediaItem   `json:"unassigned_media"`
+	CreatedAt           time.Time     `json:"created_at"`
+	UpdatedAt           time.Time     `json:"updated_at"`
 }
 
 // LooseItem is a private independently publishable Media draft.
@@ -145,9 +184,13 @@ type mediaRecord struct {
 }
 
 type draftMomentRow struct {
-	ID          uuid.UUID `json:"id"`
-	Position    int       `json:"position"`
-	ProposedDay string    `json:"proposed_day"`
+	ID                 uuid.UUID  `json:"id"`
+	Position           int        `json:"position"`
+	ProposedDay        string     `json:"proposed_day"`
+	Title              string     `json:"title,omitempty"`
+	CoverMediaItemID   *uuid.UUID `json:"cover_media_item_id,omitempty"`
+	AttendanceComplete bool       `json:"attendance_complete,omitempty"`
+	AudienceComplete   bool       `json:"audience_complete,omitempty"`
 }
 
 type draftPlacementRow struct {
@@ -283,9 +326,17 @@ func insertDraftMoments(ctx context.Context, tx bun.Tx, eventID uuid.UUID, timez
 		return err
 	}
 	_, err = tx.NewRaw(`
-		INSERT INTO draft_moments (id, event_id, position, proposed_day, grouping_timezone)
-		SELECT incoming.id, ?, incoming.position, incoming.proposed_day::date, ?
-		FROM jsonb_to_recordset(?::jsonb) AS incoming(id uuid, position integer, proposed_day text)
+		INSERT INTO draft_moments (
+			id, event_id, position, proposed_day, grouping_timezone, title,
+			cover_media_item_id, attendance_complete, audience_complete
+		)
+		SELECT incoming.id, ?, incoming.position, incoming.proposed_day::date, ?,
+			COALESCE(incoming.title, ''), incoming.cover_media_item_id,
+			COALESCE(incoming.attendance_complete, false), COALESCE(incoming.audience_complete, false)
+		FROM jsonb_to_recordset(?::jsonb) AS incoming(
+			id uuid, position integer, proposed_day text, title text,
+			cover_media_item_id uuid, attendance_complete boolean, audience_complete boolean
+		)
 	`, eventID, timezone, string(payload)).Exec(ctx)
 	return err
 }
@@ -400,6 +451,147 @@ func captureDay(raw *string, location *time.Location) (*string, *time.Time) {
 	return nil, nil
 }
 
+// ListEvents returns private draft work ordered by recent activity.
+func (s *Service) ListEvents(ctx context.Context) (EventListResponse, error) {
+	result := EventListResponse{Events: make([]EventSummary, 0)}
+	err := s.db.NewRaw(`
+		SELECT event.id, event.title, event.version,
+			count(DISTINCT moment.id)::integer AS moment_count,
+			count(DISTINCT placement.media_item_id) FILTER (WHERE placement.draft_moment_id IS NULL)::integer AS unassigned_count,
+			event.updated_at
+		FROM events AS event
+		LEFT JOIN draft_moments AS moment ON moment.event_id = event.id
+		LEFT JOIN draft_media_placements AS placement ON placement.event_id = event.id
+		WHERE event.lifecycle = 'draft'
+		GROUP BY event.id
+		ORDER BY event.updated_at DESC, event.id
+	`).Scan(ctx, &result.Events)
+	return result, err
+}
+
+// OrganizeEvent atomically saves one complete organization snapshot.
+func (s *Service) OrganizeEvent(ctx context.Context, actor setup.CuratorSession, id uuid.UUID, request OrganizeEventRequest) (Event, error) {
+	if request.Version < 1 || len(request.Moments) > maxDraftMediaItems || len(request.UnassignedMediaIDs) > maxDraftMediaItems {
+		return Event{}, ErrInvalid
+	}
+	momentRows := make([]draftMomentRow, 0, len(request.Moments))
+	placements := make([]draftPlacementRow, 0)
+	seenMoments := make(map[uuid.UUID]struct{}, len(request.Moments))
+	seenMedia := make(map[uuid.UUID]struct{})
+	for position, moment := range request.Moments {
+		momentID, err := uuid.Parse(moment.ID)
+		if err != nil || momentID == uuid.Nil {
+			return Event{}, ErrInvalid
+		}
+		if _, duplicate := seenMoments[momentID]; duplicate {
+			return Event{}, ErrInvalid
+		}
+		seenMoments[momentID] = struct{}{}
+		if _, err := time.Parse(time.DateOnly, moment.ProposedDay); err != nil || utf8.RuneCountInString(strings.TrimSpace(moment.Title)) > 240 {
+			return Event{}, ErrInvalid
+		}
+		mediaIDs, err := parseUniqueIDs(moment.MediaItemIDs)
+		if err != nil || len(mediaIDs) == 0 {
+			return Event{}, ErrInvalid
+		}
+		var coverID *uuid.UUID
+		if moment.CoverMediaItemID != nil {
+			parsed, err := uuid.Parse(*moment.CoverMediaItemID)
+			if err != nil || parsed == uuid.Nil || !containsUUID(mediaIDs, parsed) {
+				return Event{}, ErrInvalid
+			}
+			coverID = &parsed
+		}
+		momentRows = append(momentRows, draftMomentRow{
+			ID: momentID, Position: position, ProposedDay: moment.ProposedDay,
+			Title: strings.TrimSpace(moment.Title), CoverMediaItemID: coverID,
+			AttendanceComplete: moment.AttendanceComplete, AudienceComplete: moment.AudienceComplete,
+		})
+		for _, mediaID := range mediaIDs {
+			if _, duplicate := seenMedia[mediaID]; duplicate {
+				return Event{}, ErrInvalid
+			}
+			seenMedia[mediaID] = struct{}{}
+			momentCopy := momentID
+			placements = append(placements, draftPlacementRow{MediaItemID: mediaID, DraftMomentID: &momentCopy, Position: len(placements)})
+		}
+	}
+	unassigned, err := parseUniqueIDs(request.UnassignedMediaIDs)
+	if err != nil {
+		return Event{}, ErrInvalid
+	}
+	for _, mediaID := range unassigned {
+		if _, duplicate := seenMedia[mediaID]; duplicate {
+			return Event{}, ErrInvalid
+		}
+		seenMedia[mediaID] = struct{}{}
+		placements = append(placements, draftPlacementRow{MediaItemID: mediaID, Position: len(placements)})
+	}
+
+	now := s.now().UTC()
+	var organized Event
+	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		var currentVersion int64
+		var timezone string
+		err := tx.NewRaw(`SELECT version, grouping_timezone FROM events WHERE id = ? AND lifecycle = 'draft' FOR UPDATE`, id).Scan(ctx, &currentVersion, &timezone)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if currentVersion != request.Version {
+			return ErrVersionConflict
+		}
+		var persisted []uuid.UUID
+		if err := tx.NewRaw(`SELECT media_item_id FROM draft_media_placements WHERE event_id = ? ORDER BY media_item_id`, id).Scan(ctx, &persisted); err != nil {
+			return err
+		}
+		if len(persisted) != len(seenMedia) {
+			return ErrInvalid
+		}
+		for _, mediaID := range persisted {
+			if _, exists := seenMedia[mediaID]; !exists {
+				return ErrInvalid
+			}
+		}
+		if _, err := tx.NewRaw(`DELETE FROM draft_media_placements WHERE event_id = ?`, id).Exec(ctx); err != nil {
+			return err
+		}
+		if _, err := tx.NewRaw(`DELETE FROM draft_moments WHERE event_id = ?`, id).Exec(ctx); err != nil {
+			return err
+		}
+		if err := insertDraftMoments(ctx, tx, id, timezone, momentRows); err != nil {
+			return err
+		}
+		if err := insertDraftPlacements(ctx, tx, id, now, placements); err != nil {
+			return err
+		}
+		if _, err := tx.NewRaw(`
+			UPDATE events SET final_review_complete = ?, version = version + 1, updated_at = ? WHERE id = ?
+		`, request.FinalReviewComplete, now, id).Exec(ctx); err != nil {
+			return err
+		}
+		if err := appendDraftAudit(ctx, tx, actor, "event_draft_organized", map[string]any{
+			"event_id": id.String(), "prior_version": currentVersion, "moment_count": len(momentRows),
+		}); err != nil {
+			return err
+		}
+		organized, err = getEvent(ctx, tx, id)
+		return err
+	})
+	return organized, err
+}
+
+func containsUUID(values []uuid.UUID, target uuid.UUID) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
 // GetEvent returns one Curator-only draft and computes optional Source suggestions.
 func (s *Service) GetEvent(ctx context.Context, id uuid.UUID) (Event, error) {
 	return getEvent(ctx, s.db, id)
@@ -408,10 +600,12 @@ func (s *Service) GetEvent(ctx context.Context, id uuid.UUID) (Event, error) {
 func getEvent(ctx context.Context, db bun.IDB, id uuid.UUID) (Event, error) {
 	var event Event
 	err := db.NewRaw(`
-		SELECT id, lifecycle, title, description, grouping_timezone, version, created_at, updated_at
+		SELECT id, lifecycle, title, description, grouping_timezone, version,
+			final_review_complete, created_at, updated_at
 		FROM events WHERE id = ?
 	`, id).Scan(ctx, &event.ID, &event.Lifecycle, &event.Title, &event.Description,
-		&event.GroupingTimezone, &event.Version, &event.CreatedAt, &event.UpdatedAt)
+		&event.GroupingTimezone, &event.Version, &event.FinalReviewComplete,
+		&event.CreatedAt, &event.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Event{}, ErrNotFound
 	}
@@ -450,7 +644,8 @@ func getEvent(ctx context.Context, db bun.IDB, id uuid.UUID) (Event, error) {
 
 	event.Moments = make([]Moment, 0)
 	momentRows, err := db.QueryContext(ctx, `
-		SELECT id, proposed_day::text, grouping_timezone
+		SELECT id, title, proposed_day::text, grouping_timezone,
+			cover_media_item_id::text, attendance_complete, audience_complete
 		FROM draft_moments WHERE event_id = ? ORDER BY position
 	`, id)
 	if err != nil {
@@ -458,7 +653,9 @@ func getEvent(ctx context.Context, db bun.IDB, id uuid.UUID) (Event, error) {
 	}
 	for momentRows.Next() {
 		var moment Moment
-		if err := momentRows.Scan(&moment.ID, &moment.ProposedDay, &moment.GroupingTimezone); err != nil {
+		if err := momentRows.Scan(&moment.ID, &moment.Title, &moment.ProposedDay,
+			&moment.GroupingTimezone, &moment.CoverMediaItemID,
+			&moment.AttendanceComplete, &moment.AudienceComplete); err != nil {
 			_ = momentRows.Close()
 			return Event{}, err
 		}
