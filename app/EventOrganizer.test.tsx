@@ -153,6 +153,9 @@ function emptyReview(momentID: string) {
   return {
     target_kind: "moment",
     target_id: momentID,
+    version: 1,
+    attendance_confirmed: false,
+    audience_complete: false,
     people: [],
     eligible_recipients: [],
     attendance: [],
@@ -166,6 +169,15 @@ function emptyReview(momentID: string) {
 function stubOrganizerAPI(initial: DraftEvent) {
   let persisted = initial;
   const saves: OrganizeEventRequest[] = [];
+  const reviews = new Map<string, ReturnType<typeof emptyReview>>();
+  const reviewFor = (momentID: string) => {
+    let current = reviews.get(momentID);
+    if (!current) {
+      current = emptyReview(momentID);
+      reviews.set(momentID, current);
+    }
+    return current;
+  };
   vi.stubGlobal(
     "fetch",
     vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
@@ -188,26 +200,45 @@ function stubOrganizerAPI(initial: DraftEvent) {
       const reviewMatch = path.match(
         /^\/api\/moments\/([^/]+)\/attendance-audience$/,
       );
-      if (reviewMatch) return response(emptyReview(reviewMatch[1]));
+      if (reviewMatch) return response(reviewFor(reviewMatch[1]));
       const attendanceMatch = path.match(
         /^\/api\/moments\/([^/]+)\/attendance$/,
       );
       if (attendanceMatch && init?.method === "PUT") {
+        const review = reviewFor(attendanceMatch[1]);
+        expect(init.headers).toMatchObject({
+          "If-Match": String(review.version),
+          "X-Memento-CSRF": csrfToken,
+        });
         const moment = persisted.moments.find(
           (candidate) => candidate.id === attendanceMatch[1],
         );
-        if (moment) moment.attendance_complete = true;
-        return response(emptyReview(attendanceMatch[1]));
+        if (moment) {
+          moment.attendance_complete = true;
+          moment.audience_complete = false;
+        }
+        review.version += 1;
+        review.attendance_confirmed = true;
+        review.audience_complete = false;
+        return response(review);
       }
       const approvalMatch = path.match(
         /^\/api\/moments\/([^/]+)\/audience\/approve$/,
       );
       if (approvalMatch && init?.method === "POST") {
+        const review = reviewFor(approvalMatch[1]);
+        expect(init.headers).toMatchObject({
+          "If-Match": String(review.version),
+          "X-Memento-CSRF": csrfToken,
+        });
         const moment = persisted.moments.find(
           (candidate) => candidate.id === approvalMatch[1],
         );
         if (moment) moment.audience_complete = true;
+        review.version += 1;
+        review.audience_complete = true;
         return response({
+          version: review.version,
           audience: {
             id: crypto.randomUUID(),
             label: "Curator only",

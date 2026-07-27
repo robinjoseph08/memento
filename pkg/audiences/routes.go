@@ -189,6 +189,8 @@ func audienceError(err error) error {
 		return errcodes.Conflict("Every confirmed attendee must be a current Person.")
 	case errors.Is(err, ErrRecipientIneligible):
 		return errcodes.Conflict("Manual Audience overrides require an Eligible Recipient who is not the Curator.")
+	case errors.Is(err, ErrAttendanceUnconfirmed):
+		return errcodes.Conflict("Confirm Attendance before approving this Moment's Audience.")
 	case errors.Is(err, ErrStale):
 		return errcodes.Conflict("This Attendance and Audience review changed in another browser. Reload before making another change.")
 	default:

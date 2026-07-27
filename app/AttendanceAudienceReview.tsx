@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
-import { apiJSON } from "./api";
+import { APIError, apiJSON } from "./api";
 import type {
   ApprovalResponse,
   AttendanceRequest,
@@ -20,11 +20,13 @@ export function AttendanceAudienceReview({
   momentID,
   csrfToken,
   onAttendanceConfirmed,
+  onAudienceChanged,
   onAudienceApproved,
 }: {
   momentID: string;
   csrfToken: string;
   onAttendanceConfirmed: () => void;
+  onAudienceChanged: () => void;
   onAudienceApproved: () => void;
 }) {
   const queryClient = useQueryClient();
@@ -68,7 +70,10 @@ export function AttendanceAudienceReview({
         },
         body: JSON.stringify(request),
       }),
-    onSuccess: (result) => queryClient.setQueryData(queryKey, result),
+    onSuccess: (result) => {
+      queryClient.setQueryData(queryKey, result);
+      onAudienceChanged();
+    },
   });
   const recalculate = useMutation({
     mutationFn: () =>
@@ -79,7 +84,10 @@ export function AttendanceAudienceReview({
           "X-Memento-CSRF": csrfToken,
         },
       }),
-    onSuccess: (result) => queryClient.setQueryData(queryKey, result),
+    onSuccess: (result) => {
+      queryClient.setQueryData(queryKey, result);
+      onAudienceChanged();
+    },
   });
   const approve = useMutation({
     mutationFn: () =>
@@ -96,6 +104,7 @@ export function AttendanceAudienceReview({
           ? {
               ...current,
               approved_audience: result.audience,
+              audience_complete: true,
               version: result.version,
             }
           : current,
@@ -111,6 +120,18 @@ export function AttendanceAudienceReview({
     recalculate.error,
     approve.error,
   ].filter((error): error is Error => error instanceof Error);
+  const hasConflict = errors.some(
+    (error) => error instanceof APIError && error.status === 409,
+  );
+
+  function loadLatestReview() {
+    setAttendanceOverride(undefined);
+    confirmAttendance.reset();
+    override.reset();
+    recalculate.reset();
+    approve.reset();
+    void review.refetch();
+  }
 
   if (review.isPending) return <p>Loading Attendance and Audience…</p>;
   if (review.isError || !review.data)
@@ -132,9 +153,14 @@ export function AttendanceAudienceReview({
   return (
     <div className="attendance-audience-review">
       {errors.length > 0 ? (
-        <p className="form-error" role="alert">
-          {errors.at(-1)?.message}
-        </p>
+        <div className="form-error" role="alert">
+          <p>{errors.at(-1)?.message}</p>
+          {hasConflict ? (
+            <button onClick={loadLatestReview} type="button">
+              Load latest review
+            </button>
+          ) : null}
+        </div>
       ) : null}
       <section aria-labelledby="face-evidence-title">
         <h4 id="face-evidence-title">Advisory face evidence</h4>
@@ -223,6 +249,22 @@ export function AttendanceAudienceReview({
                     </li>
                   ))}
                 </ul>
+                {proposal.reasons.some((reason) =>
+                  reason.kind.startsWith("manually_"),
+                ) ? (
+                  <button
+                    disabled={busy}
+                    onClick={() =>
+                      override.mutate({
+                        recipient_person_id: proposal.recipient.id,
+                        state: "automatic",
+                      })
+                    }
+                    type="button"
+                  >
+                    Use automatic proposal for {proposal.recipient.display_name}
+                  </button>
+                ) : null}
               </li>
             ))}
           </ul>
@@ -265,7 +307,7 @@ export function AttendanceAudienceReview({
             Recalculate proposal
           </button>
           <button
-            disabled={busy}
+            disabled={busy || !review.data.attendance_confirmed}
             onClick={() => approve.mutate()}
             type="button"
           >
@@ -274,12 +316,22 @@ export function AttendanceAudienceReview({
               : "Approve Curator only"}
           </button>
         </div>
+        {!review.data.attendance_confirmed ? (
+          <p>Confirm Attendance before approving this Audience.</p>
+        ) : null}
         {review.data.approved_audience ? (
           <p>
-            <strong>Approved snapshot:</strong>{" "}
+            <strong>
+              {review.data.audience_complete
+                ? "Approved snapshot:"
+                : "Previous approved snapshot:"}
+            </strong>{" "}
             {review.data.approved_audience.label} (
             {review.data.approved_audience.recipients.length} Recipients). It
             will not recalculate later.
+            {!review.data.audience_complete
+              ? " Review and approve the current proposal."
+              : ""}
           </p>
         ) : (
           <p>No Audience approved yet.</p>

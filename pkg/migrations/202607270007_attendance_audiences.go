@@ -12,6 +12,7 @@ func init() {
 			return db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 				statements := []string{
 					`ALTER TABLE draft_moments ADD COLUMN review_version bigint NOT NULL DEFAULT 1 CHECK (review_version > 0)`,
+					`UPDATE draft_moments SET attendance_complete = false, audience_complete = false`,
 					`CREATE TABLE attendance (
 						moment_id uuid NOT NULL,
 						person_id uuid NOT NULL REFERENCES people(id) ON DELETE RESTRICT,

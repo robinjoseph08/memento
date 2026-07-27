@@ -206,6 +206,9 @@ export function EventOrganizer({
     onSuccess: (saved, attempted) => {
       queryClient.setQueryData(["event", saved.id], saved);
       void queryClient.invalidateQueries({ queryKey: ["events"] });
+      void queryClient.invalidateQueries({
+        queryKey: ["attendance-audience"],
+      });
       if (selectedIDRef.current !== saved.id) return;
 
       const latest = latestDraftRef.current;
@@ -291,6 +294,15 @@ export function EventOrganizer({
     setDraft(next);
     setSaveState("unsaved");
     setRevision(nextRevision);
+  }
+
+  function reflectReview(mutator: (next: DraftEvent) => void) {
+    if (!currentDraft) return;
+    const next = cloneEvent(currentDraft);
+    mutator(next);
+    latestDraftRef.current = next;
+    queryClient.setQueryData(["event", next.id], next);
+    setDraft(next);
   }
 
   function locateMedia(event: DraftEvent, id: string) {
@@ -855,6 +867,7 @@ export function EventOrganizer({
                         Merge with previous Moment
                       </button>
                       <button
+                        disabled={saveState !== "saved"}
                         onClick={() => {
                           setInspectedMomentID(moment.id);
                           setActivePane("inspect");
@@ -887,15 +900,26 @@ export function EventOrganizer({
                 csrfToken={session.csrf_token}
                 momentID={inspected.id}
                 onAttendanceConfirmed={() =>
-                  change((next) => {
+                  reflectReview((next) => {
                     const moment = next.moments.find(
                       (candidate) => candidate.id === inspected.id,
                     );
-                    if (moment) moment.attendance_complete = true;
+                    if (moment) {
+                      moment.attendance_complete = true;
+                      moment.audience_complete = false;
+                    }
+                  })
+                }
+                onAudienceChanged={() =>
+                  reflectReview((next) => {
+                    const moment = next.moments.find(
+                      (candidate) => candidate.id === inspected.id,
+                    );
+                    if (moment) moment.audience_complete = false;
                   })
                 }
                 onAudienceApproved={() =>
-                  change((next) => {
+                  reflectReview((next) => {
                     const moment = next.moments.find(
                       (candidate) => candidate.id === inspected.id,
                     );

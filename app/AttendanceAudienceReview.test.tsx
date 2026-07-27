@@ -21,6 +21,8 @@ function review(): Review {
     target_kind: "moment",
     target_id: momentID,
     version: 1,
+    attendance_confirmed: false,
+    audience_complete: false,
     people: [{ id: attendeeID, display_name: "Alex", sort_name: "Alex" }],
     eligible_recipients: [
       { id: recipientID, display_name: "Bailey", sort_name: "Bailey" },
@@ -112,6 +114,7 @@ function renderReview(onAttendance = vi.fn(), onAudience = vi.fn()) {
         csrfToken={csrfToken}
         momentID={momentID}
         onAttendanceConfirmed={onAttendance}
+        onAudienceChanged={() => undefined}
         onAudienceApproved={onAudience}
       />
     </QueryClientProvider>,
@@ -134,6 +137,8 @@ test("requires explicit Attendance confirmation and shows advisory face evidence
       if (path.endsWith("/attendance-audience")) return response(review());
       if (path.endsWith("/attendance") && init?.method === "PUT") {
         const result = review();
+        result.version = 2;
+        result.attendance_confirmed = true;
         result.attendance = result.people;
         return response(result);
       }
@@ -171,6 +176,7 @@ test("requires explicit Attendance confirmation and shows advisory face evidence
 
 test("retains explained manual overrides and explicitly approves a snapshot", async () => {
   let current = review();
+  current.attendance_confirmed = true;
   const overrideBodies: unknown[] = [];
   vi.stubGlobal(
     "fetch",
@@ -178,26 +184,33 @@ test("retains explained manual overrides and explicitly approves a snapshot", as
       const path = pathOf(input);
       if (path.endsWith("/attendance-audience")) return response(current);
       if (path.endsWith("/audience/override")) {
-        overrideBodies.push(JSON.parse(init?.body as string));
+        const request = JSON.parse(init?.body as string) as {
+          recipient_person_id: string;
+          state: string;
+        };
+        overrideBodies.push(request);
         current = {
           ...current,
           version: current.version + 1,
-          proposal: [
-            {
-              ...current.proposal[0],
-              included: false,
-              reasons: [
-                ...current.proposal[0].reasons,
-                { kind: "manually_excluded", matching_person: null },
-              ],
-            },
-          ],
+          proposal:
+            request.state === "automatic"
+              ? []
+              : [
+                  {
+                    ...current.proposal[0],
+                    included: false,
+                    reasons: [
+                      ...current.proposal[0].reasons,
+                      { kind: "manually_excluded", matching_person: null },
+                    ],
+                  },
+                ],
         };
         return response(current);
       }
       if (path.endsWith("/audience/approve"))
         return response({
-          version: 3,
+          version: current.version + 1,
           audience: {
             id: "77777777-7777-4777-8777-777777777777",
             label: "Curator only",
@@ -216,10 +229,56 @@ test("retains explained manual overrides and explicitly approves a snapshot", as
   expect(overrideBodies).toEqual([
     { recipient_person_id: recipientID, state: "excluded" },
   ]);
+  fireEvent.click(
+    screen.getByRole("button", {
+      name: "Use automatic proposal for Bailey",
+    }),
+  );
+  expect(
+    await screen.findByText("No Recipients proposed."),
+  ).toBeInTheDocument();
+  expect(overrideBodies).toEqual([
+    { recipient_person_id: recipientID, state: "excluded" },
+    { recipient_person_id: recipientID, state: "automatic" },
+  ]);
   fireEvent.click(screen.getByRole("button", { name: "Approve Curator only" }));
   const approvedLabel = await screen.findByText(/Approved snapshot:/);
   expect(approvedLabel.closest("p")).toHaveTextContent(
     "Curator only (0 Recipients). It will not recalculate later.",
   );
   expect(onAudience).toHaveBeenCalledOnce();
+});
+
+test("reloads the latest review after an optimistic conflict", async () => {
+  let reads = 0;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = pathOf(input);
+      if (path.endsWith("/attendance-audience")) {
+        reads += 1;
+        const latest = review();
+        latest.version = reads;
+        return response(latest);
+      }
+      if (path.endsWith("/attendance") && init?.method === "PUT") {
+        return response(
+          { error: { message: "This review changed in another browser." } },
+          409,
+        );
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    }),
+  );
+  renderReview();
+  await screen.findByRole("checkbox", { name: "Alex" });
+  fireEvent.click(screen.getByRole("button", { name: "Confirm Attendance" }));
+  expect(
+    await screen.findByText("This review changed in another browser."),
+  ).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Load latest review" }));
+  await waitFor(() => expect(reads).toBe(2));
+  expect(
+    screen.queryByText("This review changed in another browser."),
+  ).not.toBeInTheDocument();
 });

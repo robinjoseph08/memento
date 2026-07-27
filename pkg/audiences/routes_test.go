@@ -59,9 +59,13 @@ func TestAudienceRoutesAreInvisibleOutsideCuratorSessions(t *testing.T) {
 	for _, request := range []struct{ method, path, body string }{
 		{http.MethodGet, "/api/moments/" + id + "/attendance-audience", ""},
 		{http.MethodPut, "/api/moments/" + id + "/attendance", `{"person_ids":[]}`},
+		{http.MethodPost, "/api/moments/" + id + "/audience/recalculate", ""},
 		{http.MethodPut, "/api/moments/" + id + "/audience/override", `{"recipient_person_id":"` + id + `","state":"included"}`},
 		{http.MethodPost, "/api/moments/" + id + "/audience/approve", ""},
 		{http.MethodGet, "/api/loose-items/" + id + "/attendance-audience", ""},
+		{http.MethodPost, "/api/loose-items/" + id + "/audience/recalculate", ""},
+		{http.MethodPut, "/api/loose-items/" + id + "/audience/override", `{"recipient_person_id":"` + id + `","state":"included"}`},
+		{http.MethodPost, "/api/loose-items/" + id + "/audience/approve", ""},
 	} {
 		response := audienceRequest(e, request.method, request.path, request.body)
 		assert.Equal(t, http.StatusNotFound, response.Code)
@@ -75,8 +79,11 @@ func TestAudienceMutationsRequireCSRFBeforeBindingOrServiceAccess(t *testing.T) 
 	id := "11111111-1111-4111-8111-111111111111"
 	for _, request := range []struct{ method, path string }{
 		{http.MethodPut, "/api/moments/" + id + "/attendance"},
+		{http.MethodPost, "/api/moments/" + id + "/audience/recalculate"},
 		{http.MethodPut, "/api/moments/" + id + "/audience/override"},
 		{http.MethodPost, "/api/moments/" + id + "/audience/approve"},
+		{http.MethodPost, "/api/loose-items/" + id + "/audience/recalculate"},
+		{http.MethodPut, "/api/loose-items/" + id + "/audience/override"},
 		{http.MethodPost, "/api/loose-items/" + id + "/audience/approve"},
 	} {
 		response := audienceRequest(e, request.method, request.path, `{}`)
@@ -89,6 +96,11 @@ func TestAudienceMutationsRequireCSRFBeforeBindingOrServiceAccess(t *testing.T) 
 func TestAudienceRoutesValidateBodiesAndUseNoStore(t *testing.T) {
 	e := audienceHTTP(&audienceAuthorizer{})
 	id := "11111111-1111-4111-8111-111111111111"
+	for _, body := range []string{`{}`, `{"person_ids":null}`} {
+		response := audienceRequest(e, http.MethodPut, "/api/moments/"+id+"/attendance", body)
+		assert.Equal(t, http.StatusUnprocessableEntity, response.Code)
+		assert.Contains(t, response.Body.String(), "person_ids")
+	}
 	response := audienceRequest(e, http.MethodPut, "/api/moments/"+id+"/audience/override", `{}`)
 	require.Equal(t, http.StatusUnprocessableEntity, response.Code)
 	assert.Contains(t, response.Body.String(), "recipient_person_id")

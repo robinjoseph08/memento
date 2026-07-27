@@ -18,11 +18,12 @@ import (
 )
 
 var (
-	ErrNotFound            = errors.New("audience target not found")
-	ErrInvalid             = errors.New("audience request is invalid")
-	ErrPersonUnavailable   = errors.New("attendance Person is unavailable")
-	ErrRecipientIneligible = errors.New("audience override Recipient is ineligible")
-	ErrStale               = errors.New("audience review version is stale")
+	ErrNotFound              = errors.New("audience target not found")
+	ErrInvalid               = errors.New("audience request is invalid")
+	ErrPersonUnavailable     = errors.New("attendance Person is unavailable")
+	ErrRecipientIneligible   = errors.New("audience override Recipient is ineligible")
+	ErrAttendanceUnconfirmed = errors.New("attendance must be confirmed before audience approval")
+	ErrStale                 = errors.New("audience review version is stale")
 )
 
 const (
@@ -81,6 +82,8 @@ type Review struct {
 	TargetKind            string              `json:"target_kind"`
 	TargetID              string              `json:"target_id"`
 	Version               int64               `json:"version"`
+	AttendanceConfirmed   bool                `json:"attendance_confirmed"`
+	AudienceComplete      bool                `json:"audience_complete"`
 	People                []Person            `json:"people"`
 	EligibleRecipients    []Person            `json:"eligible_recipients"`
 	Attendance            []Person            `json:"attendance"`
@@ -92,7 +95,7 @@ type Review struct {
 
 // AttendanceRequest explicitly replaces confirmed Attendance for one Moment.
 type AttendanceRequest struct {
-	PersonIDs []string `json:"person_ids" validate:"max=100000"`
+	PersonIDs *[]string `json:"person_ids" validate:"required,max=100000" tstype:"string[],required"`
 }
 
 // OverrideRequest sets or clears one manual proposal override.
@@ -126,7 +129,7 @@ func (s *Service) ReviewMoment(ctx context.Context, id uuid.UUID) (Review, error
 	if err := requireTarget(ctx, s.db, target{targetMoment, id}); err != nil {
 		return Review{}, err
 	}
-	review, err := s.review(ctx, target{targetMoment, id})
+	review, err := s.review(ctx, s.db, target{targetMoment, id})
 	if err != nil {
 		return Review{}, err
 	}
@@ -138,35 +141,35 @@ func (s *Service) ReviewLooseItem(ctx context.Context, id uuid.UUID) (Review, er
 	if err := requireTarget(ctx, s.db, target{targetLoose, id}); err != nil {
 		return Review{}, err
 	}
-	return s.review(ctx, target{targetLoose, id})
+	return s.review(ctx, s.db, target{targetLoose, id})
 }
 
-func (s *Service) review(ctx context.Context, target target) (Review, error) {
+func (s *Service) review(ctx context.Context, db bun.IDB, target target) (Review, error) {
 	response := Review{TargetKind: target.kind, TargetID: target.id.String(), People: []Person{}, EligibleRecipients: []Person{}, Attendance: []Person{}, FaceEvidence: []FaceEvidence{}, Proposal: []ProposalRecipient{}}
-	versionQuery := `SELECT review_version FROM draft_moments WHERE id = ?`
+	stateQuery := `SELECT review_version, attendance_complete, audience_complete FROM draft_moments WHERE id = ?`
 	if target.kind == targetLoose {
-		versionQuery = `SELECT review_version FROM loose_items WHERE id = ?`
+		stateQuery = `SELECT review_version, true, audience_complete FROM loose_items WHERE id = ?`
 	}
-	if err := s.db.NewRaw(versionQuery, target.id).Scan(ctx, &response.Version); err != nil {
+	if err := db.NewRaw(stateQuery, target.id).Scan(ctx, &response.Version, &response.AttendanceConfirmed, &response.AudienceComplete); err != nil {
 		return Review{}, err
 	}
-	if err := s.db.NewRaw(`SELECT id, display_name, sort_name FROM people WHERE archived_at IS NULL AND merged_at IS NULL ORDER BY memento_normalize_person_name(sort_name), id`).Scan(ctx, &response.People); err != nil {
+	if err := db.NewRaw(`SELECT id, display_name, sort_name FROM people WHERE archived_at IS NULL AND merged_at IS NULL ORDER BY memento_normalize_person_name(sort_name), id`).Scan(ctx, &response.People); err != nil {
 		return Review{}, err
 	}
-	if err := s.db.NewRaw(`SELECT person.id, person.display_name, person.sort_name FROM recipient_access_generations AS access JOIN person_roles AS role ON role.person_id = access.person_id AND role.role = 'recipient' JOIN people AS person ON person.id = access.person_id AND person.archived_at IS NULL AND person.merged_at IS NULL WHERE access.is_current AND access.state IN ('pending', 'onboarding', 'completed') AND NOT EXISTS (SELECT 1 FROM person_roles AS curator WHERE curator.person_id = access.person_id AND curator.role = 'curator') ORDER BY memento_normalize_person_name(person.sort_name), person.id`).Scan(ctx, &response.EligibleRecipients); err != nil {
+	if err := db.NewRaw(`SELECT person.id, person.display_name, person.sort_name FROM recipient_access_generations AS access JOIN person_roles AS role ON role.person_id = access.person_id AND role.role = 'recipient' JOIN people AS person ON person.id = access.person_id AND person.archived_at IS NULL AND person.merged_at IS NULL WHERE access.is_current AND access.state IN ('pending', 'onboarding', 'completed') AND NOT EXISTS (SELECT 1 FROM person_roles AS curator WHERE curator.person_id = access.person_id AND curator.role = 'curator') ORDER BY memento_normalize_person_name(person.sort_name), person.id`).Scan(ctx, &response.EligibleRecipients); err != nil {
 		return Review{}, err
 	}
 	if target.kind == targetMoment {
-		if err := s.db.NewRaw(`SELECT person.id, person.display_name, person.sort_name FROM attendance AS attended JOIN people AS person ON person.id = attended.person_id WHERE attended.moment_id = ? ORDER BY memento_normalize_person_name(person.sort_name), person.id`, target.id).Scan(ctx, &response.Attendance); err != nil {
+		if err := db.NewRaw(`SELECT person.id, person.display_name, person.sort_name FROM attendance AS attended JOIN people AS person ON person.id = attended.person_id AND person.archived_at IS NULL AND person.merged_at IS NULL WHERE attended.moment_id = ? ORDER BY memento_normalize_person_name(person.sort_name), person.id`, target.id).Scan(ctx, &response.Attendance); err != nil {
 			return Review{}, err
 		}
 	}
-	proposals, err := loadProposals(ctx, s.db, target)
+	proposals, err := loadProposals(ctx, db, target)
 	if err != nil {
 		return Review{}, err
 	}
 	response.Proposal = proposals
-	approved, err := loadApproved(ctx, s.db, target)
+	approved, err := loadApproved(ctx, db, target)
 	if err != nil {
 		return Review{}, err
 	}
@@ -175,22 +178,26 @@ func (s *Service) review(ctx context.Context, target target) (Review, error) {
 }
 
 func (s *Service) ConfirmAttendance(ctx context.Context, actor setup.CuratorSession, momentID uuid.UUID, version int64, request AttendanceRequest) (Review, error) {
-	ids, err := parseIDs(request.PersonIDs)
+	if request.PersonIDs == nil {
+		return Review{}, ErrInvalid
+	}
+	ids, err := parseIDs(*request.PersonIDs)
 	if err != nil {
 		return Review{}, err
 	}
 	now := s.now().UTC()
+	var response Review
 	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 		t := target{targetMoment, momentID}
 		if err := lockTarget(ctx, tx, t, version); err != nil {
 			return err
 		}
 		if len(ids) > 0 {
-			var count int
-			if err := tx.NewRaw(`SELECT count(*) FROM people WHERE id IN (?) AND archived_at IS NULL AND merged_at IS NULL`, bun.List(ids)).Scan(ctx, &count); err != nil {
+			var available []uuid.UUID
+			if err := tx.NewRaw(`SELECT id FROM people WHERE id IN (?) AND archived_at IS NULL AND merged_at IS NULL FOR SHARE`, bun.List(ids)).Scan(ctx, &available); err != nil {
 				return err
 			}
-			if count != len(ids) {
+			if len(available) != len(ids) {
 				return ErrPersonUnavailable
 			}
 		}
@@ -202,7 +209,7 @@ func (s *Service) ConfirmAttendance(ctx context.Context, actor setup.CuratorSess
 				return err
 			}
 		}
-		if _, err := tx.NewRaw(`UPDATE draft_moments SET attendance_complete = true WHERE id = ?`, momentID).Exec(ctx); err != nil {
+		if _, err := tx.NewRaw(`UPDATE draft_moments SET attendance_complete = true, audience_complete = false WHERE id = ?`, momentID).Exec(ctx); err != nil {
 			return err
 		}
 		if err := recalculate(ctx, tx, t, now); err != nil {
@@ -211,12 +218,17 @@ func (s *Service) ConfirmAttendance(ctx context.Context, actor setup.CuratorSess
 		if err := advanceTargetVersion(ctx, tx, t); err != nil {
 			return err
 		}
-		return appendPublicationAudit(ctx, tx, actor, t, "attendance_confirmed", map[string]any{"moment_id": momentID, "person_count": len(ids)})
+		if err := appendPublicationAudit(ctx, tx, actor, t, "attendance_confirmed", map[string]any{"moment_id": momentID, "person_count": len(ids)}); err != nil {
+			return err
+		}
+		response, err = s.review(ctx, tx, t)
+		return err
 	})
 	if err != nil {
 		return Review{}, err
 	}
-	return s.ReviewMoment(ctx, momentID)
+	response.FaceEvidence, response.FaceEvidenceAvailable = s.faceEvidence(ctx, momentID)
+	return response, nil
 }
 
 func (s *Service) Recalculate(ctx context.Context, actor setup.CuratorSession, kind string, id uuid.UUID, version int64) (Review, error) {
@@ -225,6 +237,7 @@ func (s *Service) Recalculate(ctx context.Context, actor setup.CuratorSession, k
 		return Review{}, err
 	}
 	now := s.now().UTC()
+	var response Review
 	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 		if err := lockTarget(ctx, tx, t, version); err != nil {
 			return err
@@ -232,18 +245,25 @@ func (s *Service) Recalculate(ctx context.Context, actor setup.CuratorSession, k
 		if err := recalculate(ctx, tx, t, now); err != nil {
 			return err
 		}
+		if err := markAudienceIncomplete(ctx, tx, t); err != nil {
+			return err
+		}
 		if err := advanceTargetVersion(ctx, tx, t); err != nil {
 			return err
 		}
-		return appendPublicationAudit(ctx, tx, actor, t, "audience_proposal_recalculated", map[string]any{"target_kind": t.kind, "target_id": t.id})
+		if err := appendPublicationAudit(ctx, tx, actor, t, "audience_proposal_recalculated", map[string]any{"target_kind": t.kind, "target_id": t.id}); err != nil {
+			return err
+		}
+		response, err = s.review(ctx, tx, t)
+		return err
 	})
 	if err != nil {
 		return Review{}, err
 	}
 	if t.kind == targetMoment {
-		return s.ReviewMoment(ctx, id)
+		response.FaceEvidence, response.FaceEvidenceAvailable = s.faceEvidence(ctx, id)
 	}
-	return s.ReviewLooseItem(ctx, id)
+	return response, nil
 }
 
 func (s *Service) SetOverride(ctx context.Context, actor setup.CuratorSession, kind string, id uuid.UUID, version int64, request OverrideRequest) (Review, error) {
@@ -256,6 +276,7 @@ func (s *Service) SetOverride(ctx context.Context, actor setup.CuratorSession, k
 		return Review{}, ErrInvalid
 	}
 	now := s.now().UTC()
+	var response Review
 	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 		if err := lockTarget(ctx, tx, t, version); err != nil {
 			return err
@@ -277,18 +298,25 @@ func (s *Service) SetOverride(ctx context.Context, actor setup.CuratorSession, k
 		if err := recalculate(ctx, tx, t, now); err != nil {
 			return err
 		}
+		if err := markAudienceIncomplete(ctx, tx, t); err != nil {
+			return err
+		}
 		if err := advanceTargetVersion(ctx, tx, t); err != nil {
 			return err
 		}
-		return appendPublicationAudit(ctx, tx, actor, t, "audience_override_changed", map[string]any{"target_kind": t.kind, "target_id": t.id, "recipient_person_id": recipientID, "state": request.State})
+		if err := appendPublicationAudit(ctx, tx, actor, t, "audience_override_changed", map[string]any{"target_kind": t.kind, "target_id": t.id, "recipient_person_id": recipientID, "state": request.State}); err != nil {
+			return err
+		}
+		response, err = s.review(ctx, tx, t)
+		return err
 	})
 	if err != nil {
 		return Review{}, err
 	}
 	if t.kind == targetMoment {
-		return s.ReviewMoment(ctx, id)
+		response.FaceEvidence, response.FaceEvidenceAvailable = s.faceEvidence(ctx, id)
 	}
-	return s.ReviewLooseItem(ctx, id)
+	return response, nil
 }
 
 func (s *Service) Approve(ctx context.Context, actor setup.CuratorSession, kind string, id uuid.UUID, version int64) (ApprovalResponse, error) {
@@ -297,9 +325,19 @@ func (s *Service) Approve(ctx context.Context, actor setup.CuratorSession, kind 
 		return ApprovalResponse{}, err
 	}
 	now, snapshotID := s.now().UTC(), uuid.New()
+	var response ApprovalResponse
 	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 		if err := lockTarget(ctx, tx, t, version); err != nil {
 			return err
+		}
+		if t.kind == targetMoment {
+			var attendanceConfirmed bool
+			if err := tx.NewRaw(`SELECT attendance_complete FROM draft_moments WHERE id = ?`, t.id).Scan(ctx, &attendanceConfirmed); err != nil {
+				return err
+			}
+			if !attendanceConfirmed {
+				return ErrAttendanceUnconfirmed
+			}
 		}
 		var count int
 		if err := tx.NewRaw(`SELECT count(*) FROM audience_proposals WHERE target_kind = ? AND target_id = ? AND included`, t.kind, t.id).Scan(ctx, &count); err != nil {
@@ -329,16 +367,17 @@ func (s *Service) Approve(ctx context.Context, actor setup.CuratorSession, kind 
 		if err := advanceTargetVersion(ctx, tx, t); err != nil {
 			return err
 		}
-		return appendPublicationAudit(ctx, tx, actor, t, "audience_approved", map[string]any{"target_kind": t.kind, "target_id": t.id, "snapshot_id": snapshotID, "recipient_count": count, "label": label})
+		if err := appendPublicationAudit(ctx, tx, actor, t, "audience_approved", map[string]any{"target_kind": t.kind, "target_id": t.id, "snapshot_id": snapshotID, "recipient_count": count, "label": label}); err != nil {
+			return err
+		}
+		approved, err := loadApproved(ctx, tx, t)
+		if err != nil {
+			return err
+		}
+		response = ApprovalResponse{Audience: *approved, Version: version + 1}
+		return nil
 	})
-	if err != nil {
-		return ApprovalResponse{}, err
-	}
-	approved, err := loadApproved(ctx, s.db, t)
-	if err != nil {
-		return ApprovalResponse{}, err
-	}
-	return ApprovalResponse{Audience: *approved, Version: version + 1}, nil
+	return response, err
 }
 
 func validTarget(kind string, id uuid.UUID) (target, error) {
@@ -368,7 +407,18 @@ func lockTarget(ctx context.Context, tx bun.Tx, t target, expectedVersion int64)
 		return ErrInvalid
 	}
 	query := `SELECT review_version FROM draft_moments WHERE id = ? FOR UPDATE`
-	if t.kind == targetLoose {
+	if t.kind == targetMoment {
+		var eventID uuid.UUID
+		if err := tx.NewRaw(`SELECT event_id FROM draft_moments WHERE id = ?`, t.id).Scan(ctx, &eventID); errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		} else if err != nil {
+			return err
+		}
+		var lockedEventID uuid.UUID
+		if err := tx.NewRaw(`SELECT id FROM events WHERE id = ? FOR UPDATE`, eventID).Scan(ctx, &lockedEventID); err != nil {
+			return err
+		}
+	} else {
 		query = `SELECT review_version FROM loose_items WHERE id = ? FOR UPDATE`
 	}
 	var currentVersion int64
@@ -387,6 +437,15 @@ func advanceTargetVersion(ctx context.Context, tx bun.Tx, t target) error {
 	query := `UPDATE draft_moments SET review_version = review_version + 1 WHERE id = ?`
 	if t.kind == targetLoose {
 		query = `UPDATE loose_items SET review_version = review_version + 1 WHERE id = ?`
+	}
+	_, err := tx.NewRaw(query, t.id).Exec(ctx)
+	return err
+}
+
+func markAudienceIncomplete(ctx context.Context, tx bun.Tx, t target) error {
+	query := `UPDATE draft_moments SET audience_complete = false WHERE id = ?`
+	if t.kind == targetLoose {
+		query = `UPDATE loose_items SET audience_complete = false WHERE id = ?`
 	}
 	_, err := tx.NewRaw(query, t.id).Exec(ctx)
 	return err
@@ -521,8 +580,12 @@ func (s *Service) faceEvidence(ctx context.Context, momentID uuid.UUID) ([]FaceE
 			if face.PersonID != nil {
 				var person Person
 				err := s.db.NewRaw(`SELECT person.id, person.display_name, person.sort_name FROM immich_person_links AS link JOIN people AS person ON person.id = link.person_id WHERE link.immich_person_id = ? AND link.state = 'linked' AND person.archived_at IS NULL AND person.merged_at IS NULL`, *face.PersonID).Scan(ctx, &person.ID, &person.DisplayName, &person.SortName)
-				if err == nil {
+				switch {
+				case err == nil:
 					evidence.SuggestedPerson = &person
+				case errors.Is(err, sql.ErrNoRows):
+				default:
+					return []FaceEvidence{}, false
 				}
 			}
 			result = append(result, evidence)

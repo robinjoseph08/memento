@@ -32,12 +32,13 @@ func (connector faceConnector) Faces(_ context.Context, id uuid.UUID) ([]immich.
 }
 
 type audienceFixture struct {
-	db                                  *bun.DB
-	actor                               setup.CuratorSession
-	momentID, looseID, mediaID, assetID uuid.UUID
-	people                              map[string]uuid.UUID
-	access                              map[string]uuid.UUID
-	service                             *Service
+	db                                     *bun.DB
+	actor                                  setup.CuratorSession
+	momentID, looseID, mediaID, assetID    uuid.UUID
+	immichPersonID, knownFace, unknownFace uuid.UUID
+	people                                 map[string]uuid.UUID
+	access                                 map[string]uuid.UUID
+	service                                *Service
 }
 
 func newAudienceFixture(t *testing.T) audienceFixture {
@@ -46,7 +47,7 @@ func newAudienceFixture(t *testing.T) audienceFixture {
 	db := testdb.Open(t)
 	require.NoError(t, migrations.Apply(ctx, db))
 	f := audienceFixture{db: db, actor: setup.CuratorSession{PersonID: uuid.New(), SessionID: uuid.New()}, momentID: uuid.New(), looseID: uuid.New(), mediaID: uuid.New(), assetID: uuid.New(), people: map[string]uuid.UUID{}, access: map[string]uuid.UUID{}}
-	for _, name := range []string{"present", "interested", "both", "manual", "suspended", "attended", "relationship"} {
+	for _, name := range []string{"present", "interested", "both", "manual", "suspended", "attended", "attended2", "relationship"} {
 		f.people[name] = uuid.New()
 	}
 	_, err := db.NewRaw(`INSERT INTO people (id, display_name, sort_name) VALUES (?, 'Curator', 'Curator')`, f.actor.PersonID).Exec(ctx)
@@ -63,14 +64,14 @@ func newAudienceFixture(t *testing.T) audienceFixture {
 		_, err = db.NewRaw(`INSERT INTO people (id, display_name, sort_name) VALUES (?, ?, ?); INSERT INTO person_roles (person_id, role) VALUES (?, 'recipient'); INSERT INTO recipient_access_generations (id, person_id, generation, state, onboarding_completed_at) VALUES (?, ?, 1, ?, CASE WHEN ? = 'completed' THEN now() ELSE NULL END)`, id, name, name, id, accessID, id, state, state).Exec(ctx)
 		require.NoError(t, err)
 	}
-	for _, name := range []string{"attended", "relationship"} {
+	for _, name := range []string{"attended", "attended2", "relationship"} {
 		_, err = db.NewRaw(`INSERT INTO people (id, display_name, sort_name) VALUES (?, ?, ?)`, f.people[name], name, name).Exec(ctx)
 		require.NoError(t, err)
 	}
 	curatorAccess := uuid.New()
 	_, err = db.NewRaw(`INSERT INTO recipient_access_generations (id, person_id, generation, state, onboarding_completed_at) VALUES (?, ?, 1, 'completed', now()); INSERT INTO sessions (id, credential_hash, person_id, recipient_access_generation_id, security_epoch, session_type, idle_expires_at) SELECT ?, decode(repeat('12', 32), 'hex'), ?, ?, security_epoch, 'trusted', now() + interval '1 day' FROM system_settings WHERE id = 1`, curatorAccess, f.actor.PersonID, f.actor.SessionID, f.actor.PersonID, curatorAccess).Exec(ctx)
 	require.NoError(t, err)
-	_, err = db.NewRaw(`INSERT INTO interest_list_entries (recipient_person_id, selected_person_id, state, chosen_at, updated_at) VALUES (?, ?, 'active', now(), now()), (?, ?, 'active', now(), now())`, f.people["interested"], f.people["attended"], f.people["both"], f.people["attended"]).Exec(ctx)
+	_, err = db.NewRaw(`INSERT INTO interest_list_entries (recipient_person_id, selected_person_id, state, chosen_at, updated_at) VALUES (?, ?, 'active', now(), now()), (?, ?, 'active', now(), now()), (?, ?, 'active', now(), now())`, f.people["interested"], f.people["attended"], f.people["both"], f.people["attended"], f.people["both"], f.people["attended2"]).Exec(ctx)
 	require.NoError(t, err)
 	// Relationships and Visibility circles are intentionally present but do not participate in proposal calculation.
 	circle := uuid.New()
@@ -81,13 +82,17 @@ func newAudienceFixture(t *testing.T) audienceFixture {
 	require.NoError(t, err)
 	_, err = db.NewRaw(`INSERT INTO media_backings (id, media_item_id, immich_asset_id, state, linked_at, confirmed_at) VALUES (?, ?, ?, 'confirmed', now(), now())`, uuid.New(), f.mediaID, f.assetID).Exec(ctx)
 	require.NoError(t, err)
-	immichPersonID := uuid.New()
-	_, err = db.NewRaw(`INSERT INTO immich_person_links (person_id, immich_person_id, state, confirmed_at, confirmed_by_person_id) VALUES (?, ?, 'linked', now(), ?)`, f.people["attended"], immichPersonID, f.actor.PersonID).Exec(ctx)
+	f.immichPersonID = uuid.New()
+	_, err = db.NewRaw(`INSERT INTO immich_person_links (person_id, immich_person_id, state, confirmed_at, confirmed_by_person_id) VALUES (?, ?, 'linked', now(), ?)`, f.people["attended"], f.immichPersonID, f.actor.PersonID).Exec(ctx)
 	require.NoError(t, err)
-	knownFace, unknownFace := uuid.New(), uuid.New()
-	f.service = New(db, faceConnector{faces: map[uuid.UUID][]immich.FaceSummary{f.assetID: {{SourceID: knownFace, PersonID: &immichPersonID, ImageWidth: 100, ImageHeight: 80, X1: 1, Y1: 2, X2: 20, Y2: 30}, {SourceID: unknownFace, ImageWidth: 100, ImageHeight: 80, X1: 3, Y1: 4, X2: 25, Y2: 35}}}})
+	f.knownFace, f.unknownFace = uuid.New(), uuid.New()
+	f.service = New(db, faceConnector{faces: map[uuid.UUID][]immich.FaceSummary{f.assetID: {{SourceID: f.knownFace, PersonID: &f.immichPersonID, ImageWidth: 100, ImageHeight: 80, X1: 1, Y1: 2, X2: 20, Y2: 30}, {SourceID: f.unknownFace, ImageWidth: 100, ImageHeight: 80, X1: 3, Y1: 4, X2: 25, Y2: 35}}}})
 	f.service.now = func() time.Time { return time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC) }
 	return f
+}
+
+func attendanceRequest(ids ...string) AttendanceRequest {
+	return AttendanceRequest{PersonIDs: &ids}
 }
 
 func TestConfirmedAttendanceBuildsExplainedProposalWithoutTrustingAdvisoryInputs(t *testing.T) {
@@ -99,6 +104,15 @@ func TestConfirmedAttendanceBuildsExplainedProposalWithoutTrustingAdvisoryInputs
 	encoded, err := json.Marshal(before)
 	require.NoError(t, err)
 	assert.NotContains(t, string(encoded), f.assetID.String(), "Curator evidence uses portal Media and opaque evidence identities")
+	assert.NotContains(t, string(encoded), f.immichPersonID.String())
+	assert.NotContains(t, string(encoded), f.knownFace.String())
+	assert.NotContains(t, string(encoded), f.unknownFace.String())
+	for _, evidence := range before.FaceEvidence {
+		assert.Regexp(t, `^[0-9a-f]{64}$`, evidence.EvidenceID)
+	}
+	again, err := f.service.ReviewMoment(ctx, f.momentID)
+	require.NoError(t, err)
+	assert.Equal(t, []string{before.FaceEvidence[0].EvidenceID, before.FaceEvidence[1].EvidenceID}, []string{again.FaceEvidence[0].EvidenceID, again.FaceEvidence[1].EvidenceID})
 	assert.Empty(t, before.Attendance)
 	assert.Empty(t, before.Proposal)
 	var suggested, unmatched int
@@ -111,7 +125,7 @@ func TestConfirmedAttendanceBuildsExplainedProposalWithoutTrustingAdvisoryInputs
 	}
 	assert.Equal(t, 1, suggested)
 	assert.Equal(t, 1, unmatched)
-	review, err := f.service.ConfirmAttendance(ctx, f.actor, f.momentID, before.Version, AttendanceRequest{PersonIDs: []string{f.people["present"].String(), f.people["both"].String(), f.people["attended"].String()}})
+	review, err := f.service.ConfirmAttendance(ctx, f.actor, f.momentID, before.Version, attendanceRequest(f.people["present"].String(), f.people["both"].String(), f.people["attended"].String(), f.people["attended2"].String()))
 	require.NoError(t, err)
 	byName := map[string]ProposalRecipient{}
 	for _, proposal := range review.Proposal {
@@ -119,10 +133,8 @@ func TestConfirmedAttendanceBuildsExplainedProposalWithoutTrustingAdvisoryInputs
 	}
 	assert.ElementsMatch(t, []string{"present", "interested", "both"}, mapKeys(byName))
 	assert.True(t, byName["present"].Included)
-	assert.Len(t, byName["both"].Reasons, 2)
-	assert.Equal(t, "present", byName["both"].Reasons[0].Kind)
-	assert.Equal(t, "interested", byName["both"].Reasons[1].Kind)
-	assert.Equal(t, f.people["attended"].String(), byName["both"].Reasons[1].MatchingPerson.ID)
+	assert.Equal(t, []string{"present", "interested", "interested"}, reasonKinds(byName["both"]))
+	assert.ElementsMatch(t, []string{f.people["attended"].String(), f.people["attended2"].String()}, []string{byName["both"].Reasons[1].MatchingPerson.ID, byName["both"].Reasons[2].MatchingPerson.ID})
 	assert.NotContains(t, byName, "Curator")
 	assert.NotContains(t, byName, "suspended")
 	assert.NotContains(t, byName, "manual")
@@ -132,8 +144,11 @@ func TestConfirmedAttendanceBuildsExplainedProposalWithoutTrustingAdvisoryInputs
 func TestOverridesSurviveRecalculationAndApprovedSnapshotsStayFixed(t *testing.T) {
 	f := newAudienceFixture(t)
 	ctx := context.Background()
-	review, err := f.service.ConfirmAttendance(ctx, f.actor, f.momentID, 1, AttendanceRequest{PersonIDs: []string{f.people["present"].String(), f.people["attended"].String()}})
+	review, err := f.service.ConfirmAttendance(ctx, f.actor, f.momentID, 1, attendanceRequest(f.people["present"].String(), f.people["attended"].String()))
 	require.NoError(t, err)
+	review, err = f.service.SetOverride(ctx, f.actor, targetMoment, f.momentID, review.Version, OverrideRequest{RecipientPersonID: f.people["interested"].String(), State: "included"})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"interested", "manually_included"}, reasonKinds(findProposal(t, review, "interested")))
 	review, err = f.service.SetOverride(ctx, f.actor, targetMoment, f.momentID, review.Version, OverrideRequest{RecipientPersonID: f.people["present"].String(), State: "excluded"})
 	require.NoError(t, err)
 	review, err = f.service.SetOverride(ctx, f.actor, targetMoment, f.momentID, review.Version, OverrideRequest{RecipientPersonID: f.people["manual"].String(), State: "included"})
@@ -144,7 +159,7 @@ func TestOverridesSurviveRecalculationAndApprovedSnapshotsStayFixed(t *testing.T
 	require.NoError(t, err)
 	assert.Equal(t, "Shared", approved.Audience.Label)
 	assert.ElementsMatch(t, []string{"both", "interested", "manual"}, personNames(approved.Audience.Recipients))
-	review, err = f.service.ConfirmAttendance(ctx, f.actor, f.momentID, approved.Version, AttendanceRequest{PersonIDs: []string{f.people["both"].String()}})
+	review, err = f.service.ConfirmAttendance(ctx, f.actor, f.momentID, approved.Version, attendanceRequest(f.people["both"].String()))
 	require.NoError(t, err)
 	recalculated, err := f.service.Recalculate(ctx, f.actor, targetMoment, f.momentID, review.Version)
 	require.NoError(t, err)
@@ -160,7 +175,7 @@ func TestOverridesSurviveRecalculationAndApprovedSnapshotsStayFixed(t *testing.T
 func TestMomentAndLooseItemCanApproveExplicitlyEmptyCuratorOnlyAudiences(t *testing.T) {
 	f := newAudienceFixture(t)
 	ctx := context.Background()
-	review, err := f.service.ConfirmAttendance(ctx, f.actor, f.momentID, 1, AttendanceRequest{})
+	review, err := f.service.ConfirmAttendance(ctx, f.actor, f.momentID, 1, attendanceRequest())
 	require.NoError(t, err)
 	moment, err := f.service.Approve(ctx, f.actor, targetMoment, f.momentID, review.Version)
 	require.NoError(t, err)
@@ -182,9 +197,9 @@ func TestMomentAndLooseItemCanApproveExplicitlyEmptyCuratorOnlyAudiences(t *test
 func TestAttendanceAndOverrideFailuresLeaveReviewStateUnchanged(t *testing.T) {
 	f := newAudienceFixture(t)
 	ctx := context.Background()
-	_, err := f.service.ConfirmAttendance(ctx, f.actor, f.momentID, 1, AttendanceRequest{PersonIDs: []string{f.people["present"].String(), f.people["present"].String()}})
+	_, err := f.service.ConfirmAttendance(ctx, f.actor, f.momentID, 1, attendanceRequest(f.people["present"].String(), f.people["present"].String()))
 	assert.ErrorIs(t, err, ErrInvalid)
-	_, err = f.service.ConfirmAttendance(ctx, f.actor, f.momentID, 1, AttendanceRequest{PersonIDs: []string{uuid.NewString()}})
+	_, err = f.service.ConfirmAttendance(ctx, f.actor, f.momentID, 1, attendanceRequest(uuid.NewString()))
 	assert.ErrorIs(t, err, ErrPersonUnavailable)
 	_, err = f.service.SetOverride(ctx, f.actor, targetMoment, f.momentID, 1, OverrideRequest{RecipientPersonID: f.people["suspended"].String(), State: "included"})
 	assert.ErrorIs(t, err, ErrRecipientIneligible)
@@ -197,12 +212,42 @@ func TestAttendanceAndOverrideFailuresLeaveReviewStateUnchanged(t *testing.T) {
 	assert.Nil(t, review.ApprovedAudience)
 }
 
+func TestConcurrentSameVersionMutationsChooseExactlyOneWinner(t *testing.T) {
+	f := newAudienceFixture(t)
+	ctx := context.Background()
+	blocker, err := f.db.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	var version int64
+	require.NoError(t, blocker.NewRaw(`SELECT review_version FROM draft_moments WHERE id = ? FOR UPDATE`, f.momentID).Scan(ctx, &version))
+
+	resultErrors := make(chan error, 2)
+	for _, person := range []uuid.UUID{f.people["present"], f.people["both"]} {
+		person := person
+		go func() {
+			_, err := f.service.ConfirmAttendance(ctx, f.actor, f.momentID, version, attendanceRequest(person.String()))
+			resultErrors <- err
+		}()
+	}
+	time.Sleep(100 * time.Millisecond)
+	assert.Empty(t, resultErrors, "both mutations must wait for the target row lock")
+	require.NoError(t, blocker.Commit())
+	first, second := <-resultErrors, <-resultErrors
+	assert.True(t, (first == nil && errors.Is(second, ErrStale)) || (second == nil && errors.Is(first, ErrStale)))
+	review, err := f.service.ReviewMoment(ctx, f.momentID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), review.Version)
+	assert.Len(t, review.Attendance, 1)
+	var audits int
+	require.NoError(t, f.db.NewRaw(`SELECT count(*) FROM publication_audit_events WHERE action = 'attendance_confirmed' AND target_id = ?`, f.momentID).Scan(ctx, &audits))
+	assert.Equal(t, 1, audits)
+}
+
 func TestStaleReviewMutationsCannotReplaceNewerCuratorDecisions(t *testing.T) {
 	f := newAudienceFixture(t)
 	ctx := context.Background()
-	current, err := f.service.ConfirmAttendance(ctx, f.actor, f.momentID, 1, AttendanceRequest{PersonIDs: []string{f.people["present"].String()}})
+	current, err := f.service.ConfirmAttendance(ctx, f.actor, f.momentID, 1, attendanceRequest(f.people["present"].String()))
 	require.NoError(t, err)
-	_, err = f.service.ConfirmAttendance(ctx, f.actor, f.momentID, 1, AttendanceRequest{PersonIDs: []string{f.people["both"].String()}})
+	_, err = f.service.ConfirmAttendance(ctx, f.actor, f.momentID, 1, attendanceRequest(f.people["both"].String()))
 	assert.ErrorIs(t, err, ErrStale)
 	reloaded, err := f.service.ReviewMoment(ctx, f.momentID)
 	require.NoError(t, err)
@@ -210,18 +255,98 @@ func TestStaleReviewMutationsCannotReplaceNewerCuratorDecisions(t *testing.T) {
 	assert.Equal(t, []string{"present"}, personNames(reloaded.Attendance))
 }
 
+func TestMomentApprovalRequiresConfirmedAttendanceAndChangesRequireReapproval(t *testing.T) {
+	f := newAudienceFixture(t)
+	ctx := context.Background()
+	_, err := f.service.Approve(ctx, f.actor, targetMoment, f.momentID, 1)
+	assert.ErrorIs(t, err, ErrAttendanceUnconfirmed)
+	review, err := f.service.ConfirmAttendance(ctx, f.actor, f.momentID, 1, attendanceRequest())
+	require.NoError(t, err)
+	approved, err := f.service.Approve(ctx, f.actor, targetMoment, f.momentID, review.Version)
+	require.NoError(t, err)
+	changed, err := f.service.ConfirmAttendance(ctx, f.actor, f.momentID, approved.Version, attendanceRequest(f.people["present"].String()))
+	require.NoError(t, err)
+	assert.False(t, changed.AudienceComplete)
+	assert.NotNil(t, changed.ApprovedAudience, "the immutable previous approval remains available for history")
+}
+
+func TestArchivedAttendeesCanBeRemovedFromAttendance(t *testing.T) {
+	f := newAudienceFixture(t)
+	ctx := context.Background()
+	review, err := f.service.ConfirmAttendance(ctx, f.actor, f.momentID, 1, attendanceRequest(f.people["present"].String()))
+	require.NoError(t, err)
+	_, err = f.db.NewRaw(`UPDATE people SET archived_at = now() WHERE id = ?`, f.people["present"]).Exec(ctx)
+	require.NoError(t, err)
+	reloaded, err := f.service.ReviewMoment(ctx, f.momentID)
+	require.NoError(t, err)
+	assert.Empty(t, reloaded.Attendance)
+	cleared, err := f.service.ConfirmAttendance(ctx, f.actor, f.momentID, review.Version, attendanceRequest())
+	require.NoError(t, err)
+	assert.Empty(t, cleared.Attendance)
+}
+
 func TestAudienceChangesUsePublicationAuditHistory(t *testing.T) {
 	f := newAudienceFixture(t)
 	ctx := context.Background()
-	review, err := f.service.ConfirmAttendance(ctx, f.actor, f.momentID, 1, AttendanceRequest{})
+	review, err := f.service.ConfirmAttendance(ctx, f.actor, f.momentID, 1, attendanceRequest())
 	require.NoError(t, err)
 	_, err = f.service.Approve(ctx, f.actor, targetMoment, f.momentID, review.Version)
 	require.NoError(t, err)
-	var publicationAudits, securityAudits int
-	require.NoError(t, f.db.NewRaw(`SELECT count(*) FROM publication_audit_events WHERE target_kind = 'moment' AND target_id = ?`, f.momentID).Scan(ctx, &publicationAudits))
+	type auditRow struct {
+		EventID, TargetID, ActorID uuid.UUID
+		Action                     string
+		Metadata                   map[string]any
+	}
+	var publicationAudits []auditRow
+	require.NoError(t, f.db.NewRaw(`SELECT event_id, target_id, actor_person_id AS actor_id, action, metadata FROM publication_audit_events WHERE target_kind = 'moment' AND target_id = ? ORDER BY id`, f.momentID).Scan(ctx, &publicationAudits))
+	require.Len(t, publicationAudits, 2)
+	assert.Equal(t, []string{"attendance_confirmed", "audience_approved"}, []string{publicationAudits[0].Action, publicationAudits[1].Action})
+	for _, audit := range publicationAudits {
+		assert.Equal(t, f.momentID, audit.TargetID)
+		assert.Equal(t, f.actor.PersonID, audit.ActorID)
+		assert.NotEqual(t, uuid.Nil, audit.EventID)
+		assert.NotEmpty(t, audit.Metadata)
+	}
+	var securityAudits int
 	require.NoError(t, f.db.NewRaw(`SELECT count(*) FROM security_audit_events WHERE action IN ('attendance_confirmed', 'audience_approved')`).Scan(ctx, &securityAudits))
-	assert.Equal(t, 2, publicationAudits)
 	assert.Zero(t, securityAudits)
+}
+
+func TestLooseItemSharedAudienceAndRepeatedApprovalsRemainImmutable(t *testing.T) {
+	f := newAudienceFixture(t)
+	ctx := context.Background()
+	review, err := f.service.SetOverride(ctx, f.actor, targetLoose, f.looseID, 1, OverrideRequest{RecipientPersonID: f.people["manual"].String(), State: "included"})
+	require.NoError(t, err)
+	review, err = f.service.Recalculate(ctx, f.actor, targetLoose, f.looseID, review.Version)
+	require.NoError(t, err)
+	first, err := f.service.Approve(ctx, f.actor, targetLoose, f.looseID, review.Version)
+	require.NoError(t, err)
+	assert.Equal(t, "Shared", first.Audience.Label)
+	assert.Equal(t, []string{"manual"}, personNames(first.Audience.Recipients))
+
+	review, err = f.service.SetOverride(ctx, f.actor, targetLoose, f.looseID, first.Version, OverrideRequest{RecipientPersonID: f.people["manual"].String(), State: "excluded"})
+	require.NoError(t, err)
+	second, err := f.service.Approve(ctx, f.actor, targetLoose, f.looseID, review.Version)
+	require.NoError(t, err)
+	assert.NotEqual(t, first.Audience.ID, second.Audience.ID)
+	assert.Equal(t, "Curator only", second.Audience.Label)
+	var firstEntries, secondEntries int
+	require.NoError(t, f.db.NewRaw(`SELECT count(*) FROM audience_snapshot_entries WHERE snapshot_id = ?`, first.Audience.ID).Scan(ctx, &firstEntries))
+	require.NoError(t, f.db.NewRaw(`SELECT count(*) FROM audience_snapshot_entries WHERE snapshot_id = ?`, second.Audience.ID).Scan(ctx, &secondEntries))
+	assert.Equal(t, 1, firstEntries)
+	assert.Zero(t, secondEntries)
+}
+
+func TestFacePersonLookupFailureMarksEvidenceUnavailable(t *testing.T) {
+	f := newAudienceFixture(t)
+	require.NoError(t, f.db.RunInTx(context.Background(), nil, func(ctx context.Context, tx bun.Tx) error {
+		_, err := tx.ExecContext(ctx, `DROP TABLE immich_person_links CASCADE`)
+		return err
+	}))
+	review, err := f.service.ReviewMoment(context.Background(), f.momentID)
+	require.NoError(t, err)
+	assert.False(t, review.FaceEvidenceAvailable)
+	assert.Empty(t, review.FaceEvidence)
 }
 
 func TestFaceEvidenceFailureDoesNotTurnSuggestionsIntoAttendance(t *testing.T) {

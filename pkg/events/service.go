@@ -575,7 +575,7 @@ func (s *Service) OrganizeEvent(ctx context.Context, actor setup.CuratorSession,
 			ReviewVersion      int64
 		}
 		var priorReviews []reviewState
-		if err := tx.NewRaw(`SELECT id, attendance_complete, audience_complete, review_version FROM draft_moments WHERE event_id = ? ORDER BY id`, id).Scan(ctx, &priorReviews); err != nil {
+		if err := tx.NewRaw(`SELECT id, attendance_complete, audience_complete, review_version FROM draft_moments WHERE event_id = ? ORDER BY id FOR UPDATE`, id).Scan(ctx, &priorReviews); err != nil {
 			return err
 		}
 		priorByID := make(map[uuid.UUID]reviewState, len(priorReviews))

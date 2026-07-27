@@ -157,6 +157,9 @@ async function mockCuratorAPI(
         json: {
           target_kind: "moment",
           target_id: reviewMatch[1],
+          version: 1,
+          attendance_confirmed: false,
+          audience_complete: false,
           people: [],
           eligible_recipients: [],
           attendance: [],
