@@ -166,17 +166,15 @@ func (s *Service) PublishEvent(ctx context.Context, actor setup.CuratorSession, 
 		var momentCount, unassignedCount, incompleteCount int
 		if err := tx.NewRaw(`
 			SELECT
-				count(DISTINCT moment.id),
-				count(DISTINCT placement.media_item_id) FILTER (WHERE placement.draft_moment_id IS NULL),
-				count(DISTINCT moment.id) FILTER (
-					WHERE NOT moment.audience_complete OR snapshot.snapshot_id IS NULL
-				)
-			FROM draft_moments AS moment
-			LEFT JOIN draft_media_placements AS placement ON placement.event_id = moment.event_id
-			LEFT JOIN current_audience_snapshots AS snapshot
-			  ON snapshot.target_kind = 'moment' AND snapshot.target_id = moment.id
-			WHERE moment.event_id = ?
-		`, eventID).Scan(ctx, &momentCount, &unassignedCount, &incompleteCount); err != nil {
+				(SELECT count(*) FROM draft_moments WHERE event_id = ?),
+				(SELECT count(*) FROM draft_media_placements WHERE event_id = ? AND draft_moment_id IS NULL),
+				(SELECT count(*)
+				 FROM draft_moments AS moment
+				 LEFT JOIN current_audience_snapshots AS snapshot
+				   ON snapshot.target_kind = 'moment' AND snapshot.target_id = moment.id
+				 WHERE moment.event_id = ?
+				   AND (NOT moment.audience_complete OR snapshot.snapshot_id IS NULL))
+		`, eventID, eventID, eventID).Scan(ctx, &momentCount, &unassignedCount, &incompleteCount); err != nil {
 			return err
 		}
 		if momentCount == 0 || unassignedCount != 0 || incompleteCount != 0 || !finalReview {
@@ -264,11 +262,16 @@ func (s *Service) PublishEvent(ctx context.Context, actor setup.CuratorSession, 
 		}
 
 		if _, err := tx.NewRaw(`
-			INSERT INTO published_media_placements (published_moment_id, media_item_id, position)
-			SELECT published.id, placement.media_item_id, placement.position
+			INSERT INTO published_media_placements (
+				published_moment_id, media_item_id, position,
+				media_type, width, height, local_date_time
+			)
+			SELECT published.id, placement.media_item_id, placement.position,
+			       media.media_type, media.width, media.height, media.local_date_time
 			FROM published_moments AS published
 			JOIN draft_media_placements AS placement
 			  ON placement.draft_moment_id = published.draft_moment_id
+			JOIN media_items AS media ON media.id = placement.media_item_id
 			WHERE published.publication_id = ?
 		`, publicationID).Exec(ctx); err != nil {
 			return err
@@ -353,10 +356,14 @@ func (s *Service) PublishEvent(ctx context.Context, actor setup.CuratorSession, 
 			)
 			SELECT entitlement.event_id, entitlement.publication_id,
 			       entitlement.recipient_access_generation_id, entitlement.media_item_id,
-			       concat_ws(' ', current.title, current.description, media.local_date_time)
+			       concat_ws(' ', current.title, current.description, published.local_date_time)
 			FROM current_audience_entitlements AS entitlement
 			JOIN current_published_events AS current ON current.event_id = entitlement.event_id
-			JOIN media_items AS media ON media.id = entitlement.media_item_id
+			JOIN current_published_placements AS placement
+			  ON placement.event_id = entitlement.event_id AND placement.media_item_id = entitlement.media_item_id
+			JOIN published_media_placements AS published
+			  ON published.published_moment_id = placement.published_moment_id
+			 AND published.media_item_id = placement.media_item_id
 			WHERE entitlement.event_id = ?
 		`, eventID).Exec(ctx); err != nil {
 			return err
@@ -588,13 +595,16 @@ func (s *Service) loadPublishedEvent(ctx context.Context, db bun.IDB, eventID, a
 		s.recipientReadBoundary()
 	}
 	if err := db.NewRaw(`
-		SELECT media.id, media.media_type, media.width, media.height, media.local_date_time,
-		       media.availability = 'current' AS available
+		SELECT media.id, published.media_type, published.width, published.height,
+		       published.local_date_time, media.availability = 'current' AS available
 		FROM current_published_placements AS placement
 		JOIN current_audience_entitlements AS entitlement
 		  ON entitlement.event_id = placement.event_id
 		 AND entitlement.media_item_id = placement.media_item_id
 		 AND entitlement.recipient_access_generation_id = ?
+		JOIN published_media_placements AS published
+		  ON published.published_moment_id = placement.published_moment_id
+		 AND published.media_item_id = placement.media_item_id
 		JOIN media_items AS media ON media.id = placement.media_item_id
 		WHERE placement.event_id = ?
 		ORDER BY placement.position

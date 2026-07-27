@@ -182,7 +182,7 @@ async function mockCuratorAPI(
               person_id: "ffffffff-ffff-4fff-8fff-ffffffffffff",
               access_id: "99999999-9999-4999-8999-999999999999",
               name: "Alex",
-              access_state: "pending",
+              access_state: "onboarding",
             },
           ],
         },
@@ -190,6 +190,8 @@ async function mockCuratorAPI(
       return;
     }
     if (path === `/api/events/${eventID}/preview`) {
+      expect(request.method()).toBe("POST");
+      expect(request.headers()["x-memento-csrf"]).toBe(csrfToken);
       await route.fulfill({
         json: {
           authorized: true,

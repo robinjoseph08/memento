@@ -50,6 +50,10 @@ func init() {
 						published_moment_id uuid NOT NULL REFERENCES published_moments(id) ON DELETE RESTRICT,
 						media_item_id uuid NOT NULL REFERENCES media_items(id) ON DELETE RESTRICT,
 						position integer NOT NULL CHECK (position >= 0),
+						media_type text NOT NULL CHECK (media_type IN ('image', 'video')),
+						width integer CHECK (width IS NULL OR width >= 0),
+						height integer CHECK (height IS NULL OR height >= 0),
+						local_date_time text NOT NULL CHECK (local_date_time <> '' AND char_length(local_date_time) <= 64),
 						PRIMARY KEY (published_moment_id, media_item_id),
 						UNIQUE (published_moment_id, position)
 					)`,

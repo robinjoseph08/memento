@@ -143,7 +143,7 @@ func (h *Handler) PreviewRecipients(c echo.Context) error {
 }
 
 func (h *Handler) PreviewEvent(c echo.Context) error {
-	actor, err := h.authorize(c, false)
+	actor, err := h.authorize(c, true)
 	if err != nil {
 		return err
 	}
@@ -325,8 +325,8 @@ func RegisterRoutes(e *echo.Echo, handler *Handler) {
 	publishEvent.Name = curatorMutationPolicy
 	previewRecipients := events.GET("/:id/preview-recipients", handler.PreviewRecipients)
 	previewRecipients.Name = curatorReadPolicy
-	previewEvent := events.GET("/:id/preview", handler.PreviewEvent)
-	previewEvent.Name = curatorReadPolicy
+	previewEvent := events.POST("/:id/preview", handler.PreviewEvent)
+	previewEvent.Name = curatorMutationPolicy
 
 	recipientEvent := e.GET("/api/me/events/:id", handler.RecipientEvent, noStore)
 	recipientEvent.Name = "policy:recipient"

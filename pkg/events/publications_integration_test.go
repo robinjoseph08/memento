@@ -279,6 +279,45 @@ func TestPublicationBuildsImmutableHistoryAndFilteredCurrentProjections(t *testi
 	assert.Equal(t, []uuid.UUID{fixture.people["hidden"]}, secondAudience)
 }
 
+func TestPublishedCapturePresentationChangesOnlyWithANewPublication(t *testing.T) {
+	fixture := newPublicationFixture(t)
+	ctx := context.Background()
+	_, err := fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, fixture.request())
+	require.NoError(t, err)
+	_, err = fixture.db.NewRaw(`
+		UPDATE media_items
+		SET media_type = 'video', width = 1920, height = 1080,
+		    local_date_time = '2030-01-02T03:04:05Z'
+		WHERE id = ?;
+		UPDATE events SET version = 8 WHERE id = ?
+	`, fixture.media[0], fixture.event).Exec(ctx)
+	require.NoError(t, err)
+
+	prior, err := fixture.service.RecipientEvent(ctx, fixture.actorFor("shared"), fixture.event)
+	require.NoError(t, err)
+	require.Len(t, prior.Media, 1)
+	assert.Equal(t, "image", prior.Media[0].MediaType)
+	require.NotNil(t, prior.Media[0].Width)
+	require.NotNil(t, prior.Media[0].Height)
+	require.NotNil(t, prior.Media[0].LocalDateTime)
+	assert.Equal(t, 1200, *prior.Media[0].Width)
+	assert.Equal(t, 800, *prior.Media[0].Height)
+	assert.Equal(t, "2026-07-27T10:00:00Z", *prior.Media[0].LocalDateTime)
+
+	_, err = fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, PublishEventRequest{Version: 8})
+	require.NoError(t, err)
+	current, err := fixture.service.RecipientEvent(ctx, fixture.actorFor("shared"), fixture.event)
+	require.NoError(t, err)
+	require.Len(t, current.Media, 1)
+	assert.Equal(t, "video", current.Media[0].MediaType)
+	require.NotNil(t, current.Media[0].Width)
+	require.NotNil(t, current.Media[0].Height)
+	require.NotNil(t, current.Media[0].LocalDateTime)
+	assert.Equal(t, 1920, *current.Media[0].Width)
+	assert.Equal(t, 1080, *current.Media[0].Height)
+	assert.Equal(t, "2030-01-02T03:04:05Z", *current.Media[0].LocalDateTime)
+}
+
 func TestPublicationPersistsNotificationChoiceAndSelectsASafeAvailableCover(t *testing.T) {
 	fixture := newPublicationFixture(t)
 	ctx := context.Background()

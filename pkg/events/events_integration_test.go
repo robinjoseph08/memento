@@ -754,9 +754,33 @@ func TestCuratorOrganizesMomentsWithOrderingCoversReadinessAndOptimisticVersions
 		snapshotID, fixture.actor.PersonID, accessID,
 		mergedID, snapshotID).Exec(ctx)
 	require.NoError(t, err)
+	reorderedMedia := append([]string(nil), allAssigned...)
+	for left, right := 0, len(reorderedMedia)-1; left < right; left, right = left+1, right-1 {
+		reorderedMedia[left], reorderedMedia[right] = reorderedMedia[right], reorderedMedia[left]
+	}
+	reordered, err := fixture.service.OrganizeEvent(ctx, fixture.actor, uuid.MustParse(created.ID), OrganizeEventRequest{
+		Version: organized.Version,
+		Moments: []OrganizeMoment{{
+			ID: mergedID, Title: "The whole weekend", ProposedDay: organized.Moments[0].ProposedDay,
+			CoverMediaItemID: &cover, MediaItemIDs: reorderedMedia,
+		}},
+		UnassignedMediaIDs:  mediaIDs(organized.UnassignedMedia),
+		FinalReviewComplete: true,
+	})
+	require.NoError(t, err)
+	assert.False(t, reordered.FinalReviewComplete, "ordering changes require a new final review")
+	assert.True(t, reordered.Moments[0].AttendanceComplete, "ordering does not discard valid Attendance")
+	assert.True(t, reordered.Moments[0].AudienceComplete, "ordering does not discard a valid Audience")
+	var reorderedReviewVersion int64
+	var reorderedSnapshotID uuid.UUID
+	require.NoError(t, fixture.db.NewRaw(`SELECT review_version FROM draft_moments WHERE id = ?`, mergedID).Scan(ctx, &reorderedReviewVersion))
+	require.NoError(t, fixture.db.NewRaw(`SELECT snapshot_id FROM current_audience_snapshots WHERE target_kind = 'moment' AND target_id = ?`, mergedID).Scan(ctx, &reorderedSnapshotID))
+	assert.Equal(t, int64(7), reorderedReviewVersion)
+	assert.Equal(t, snapshotID, reorderedSnapshotID)
+
 	splitID := uuid.NewString()
 	split, err := fixture.service.OrganizeEvent(ctx, fixture.actor, uuid.MustParse(created.ID), OrganizeEventRequest{
-		Version: organized.Version,
+		Version: reordered.Version,
 		Moments: []OrganizeMoment{
 			{ID: mergedID, ProposedDay: organized.Moments[0].ProposedDay, MediaItemIDs: allAssigned[:1]},
 			{ID: splitID, ProposedDay: organized.Moments[0].ProposedDay, MediaItemIDs: allAssigned[1:]},
@@ -792,7 +816,7 @@ func TestCuratorOrganizesMomentsWithOrderingCoversReadinessAndOptimisticVersions
 	assert.Zero(t, currentSnapshotRows)
 
 	_, err = fixture.service.OrganizeEvent(ctx, fixture.actor, uuid.MustParse(created.ID), OrganizeEventRequest{
-		Version: organized.Version,
+		Version: reordered.Version,
 		Moments: []OrganizeMoment{
 			{ID: mergedID, ProposedDay: split.Moments[0].ProposedDay, MediaItemIDs: mediaIDs(split.Moments[0].MediaItems)},
 			{ID: splitID, ProposedDay: split.Moments[1].ProposedDay, MediaItemIDs: mediaIDs(split.Moments[1].MediaItems)},

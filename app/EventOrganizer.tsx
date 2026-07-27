@@ -215,6 +215,10 @@ export function EventOrganizer({
     queryFn: () =>
       apiJSON<PublishedEventView>(
         `/api/events/${selectedID}/preview?recipient_person_id=${encodeURIComponent(previewRecipientID)}`,
+        {
+          method: "POST",
+          headers: { "X-Memento-CSRF": session.csrf_token },
+        },
       ),
     enabled:
       previewOpen && selectedID.length > 0 && previewRecipientID.length > 0,
@@ -1104,9 +1108,11 @@ export function EventOrganizer({
                 {previewRecipients.data?.recipients.length === 0 ? (
                   <p>No current Recipients available for preview.</p>
                 ) : null}
-                {previewRecipients.data?.recipients.find(
-                  (recipient) => recipient.person_id === previewRecipientID,
-                )?.access_state === "pending" ? (
+                {previewRecipients.data?.recipients.some(
+                  (recipient) =>
+                    recipient.person_id === previewRecipientID &&
+                    recipient.access_state !== "completed",
+                ) ? (
                   <p>
                     Pending Recipient: cannot access yet. Preview shows approved
                     content after Onboarding.

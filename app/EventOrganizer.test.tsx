@@ -230,12 +230,14 @@ function stubOrganizerAPI(initial: DraftEvent) {
               person_id: "ffffffff-ffff-4fff-8fff-ffffffffffff",
               access_id: "99999999-9999-4999-8999-999999999999",
               name: "Alex",
-              access_state: "pending",
+              access_state: "onboarding",
             },
           ],
         });
       }
       if (path.startsWith(`/api/events/${eventID}/preview?`)) {
+        expect(init?.method).toBe("POST");
+        expect(init?.headers).toMatchObject({ "X-Memento-CSRF": csrfToken });
         return response({
           authorized: true,
           event_id: eventID,

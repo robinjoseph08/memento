@@ -626,7 +626,7 @@ func (s *Service) OrganizeEvent(ctx context.Context, actor setup.CuratorSession,
 		invalidatedReviews := make(map[uuid.UUID]struct{})
 		for index := range momentRows {
 			prior, exists := priorByID[momentRows[index].ID]
-			if exists && uuidSlicesEqual(priorMediaByMoment[momentRows[index].ID], nextMediaByMoment[momentRows[index].ID]) {
+			if exists && sameUUIDMembers(priorMediaByMoment[momentRows[index].ID], nextMediaByMoment[momentRows[index].ID]) {
 				momentRows[index].AttendanceComplete = prior.AttendanceComplete
 				momentRows[index].AudienceComplete = prior.AudienceComplete
 				momentRows[index].ReviewVersion = prior.ReviewVersion
@@ -716,12 +716,16 @@ func uuidPointersEqual(left, right *uuid.UUID) bool {
 	return *left == *right
 }
 
-func uuidSlicesEqual(left, right []uuid.UUID) bool {
+func sameUUIDMembers(left, right []uuid.UUID) bool {
 	if len(left) != len(right) {
 		return false
 	}
-	for index := range left {
-		if left[index] != right[index] {
+	members := make(map[uuid.UUID]struct{}, len(left))
+	for _, id := range left {
+		members[id] = struct{}{}
+	}
+	for _, id := range right {
+		if _, exists := members[id]; !exists {
 			return false
 		}
 	}

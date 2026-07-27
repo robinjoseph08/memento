@@ -69,7 +69,7 @@ func TestDraftRoutesAreInvisibleToRecipientsBeforePublication(t *testing.T) {
 		{http.MethodPut, "/api/events/11111111-1111-4111-8111-111111111111/organization", `{}`},
 		{http.MethodPost, "/api/events/11111111-1111-4111-8111-111111111111/publications", `{}`},
 		{http.MethodGet, "/api/events/11111111-1111-4111-8111-111111111111/preview-recipients", ""},
-		{http.MethodGet, "/api/events/11111111-1111-4111-8111-111111111111/preview?recipient_person_id=22222222-2222-4222-8222-222222222222", ""},
+		{http.MethodPost, "/api/events/11111111-1111-4111-8111-111111111111/preview?recipient_person_id=22222222-2222-4222-8222-222222222222", ""},
 		{http.MethodGet, "/api/loose-items/11111111-1111-4111-8111-111111111111", ""},
 		{http.MethodPost, "/api/loose-items", `{}`},
 		{http.MethodGet, "/api/sources/11111111-1111-4111-8111-111111111111/media-items", ""},
@@ -88,6 +88,7 @@ func TestDraftMutationsRequireCSRFBeforeBindingOrDatabaseAccess(t *testing.T) {
 		{http.MethodPost, "/api/events"},
 		{http.MethodPut, "/api/events/11111111-1111-4111-8111-111111111111/organization"},
 		{http.MethodPost, "/api/events/11111111-1111-4111-8111-111111111111/publications"},
+		{http.MethodPost, "/api/events/11111111-1111-4111-8111-111111111111/preview"},
 		{http.MethodPost, "/api/loose-items"},
 	} {
 		response := draftRequest(e, test.method, test.path, `{}`)
@@ -143,7 +144,7 @@ func TestRecipientProjectionRequiresACompletedSessionBeforeServiceAccess(t *test
 
 func TestPreviewRequiresASelectedRecipientBeforeServiceAccess(t *testing.T) {
 	e := draftHTTP(nil, &draftAuthorizer{})
-	response := draftRequest(e, http.MethodGet, "/api/events/11111111-1111-4111-8111-111111111111/preview", "")
+	response := draftRequest(e, http.MethodPost, "/api/events/11111111-1111-4111-8111-111111111111/preview", "")
 	assert.Equal(t, http.StatusUnprocessableEntity, response.Code)
 	assert.Contains(t, response.Body.String(), "Choose a current Recipient")
 }
@@ -174,7 +175,7 @@ func TestDraftRoutesUseNoStoreAndStableNotFoundErrors(t *testing.T) {
 		{http.MethodPut, "/api/events/not-an-id/organization", `{}`},
 		{http.MethodPost, "/api/events/not-an-id/publications", `{}`},
 		{http.MethodGet, "/api/events/not-an-id/preview-recipients", ""},
-		{http.MethodGet, "/api/events/not-an-id/preview", ""},
+		{http.MethodPost, "/api/events/not-an-id/preview", ""},
 		{http.MethodGet, "/api/me/events/not-an-id", ""},
 		{http.MethodPost, "/api/events", `{}`},
 		{http.MethodGet, "/api/loose-items/not-an-id", ""},
