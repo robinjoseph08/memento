@@ -564,13 +564,14 @@ func requiredNullableLocalDateTime(raw json.RawMessage) (*string, error) {
 		return nil, errInvalidResponse
 	}
 	value = strings.TrimSpace(value)
-	if _, err := time.Parse(time.RFC3339Nano, value); err != nil {
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil || parsed.Year() <= 0 {
 		valid := false
 		for _, layout := range []string{
 			"2006-01-02T15:04:05.999999999", "2006-01-02T15:04:05",
 			"2006-01-02 15:04:05.999999999", "2006-01-02 15:04:05",
 		} {
-			if _, parseErr := time.Parse(layout, value); parseErr == nil {
+			if candidate, parseErr := time.Parse(layout, value); parseErr == nil && candidate.Year() > 0 {
 				valid = true
 				break
 			}

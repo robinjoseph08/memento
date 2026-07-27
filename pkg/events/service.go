@@ -20,13 +20,19 @@ import (
 	"github.com/uptrace/bun"
 )
 
-const maxDraftMediaItems = 100000
+const (
+	maxDraftSourceAlbums = 100
+	maxDraftMediaItems   = 100000
+)
 
 var (
 	ErrNotFound          = errors.New("draft not found")
 	ErrInvalid           = errors.New("draft request is invalid")
 	ErrSourceUnavailable = errors.New("source album is unavailable for drafting")
+	ErrSourceTooLarge    = errors.New("source album has too many media items")
 	ErrMediaUnavailable  = errors.New("media item is unavailable for drafting")
+	ErrNoMediaAvailable  = errors.New("no media items are available for drafting")
+	errUnknownMoment     = errors.New("draft placement references unknown Moment")
 )
 
 // CreateEventRequest initializes one portal-owned Event from selected Source material.
@@ -157,7 +163,7 @@ func (s *Service) CreateEvent(ctx context.Context, actor setup.CuratorSession, r
 		return Event{}, ErrInvalid
 	}
 	sourceIDs, err := parseUniqueIDs(request.SourceAlbumIDs)
-	if err != nil || len(sourceIDs) == 0 {
+	if err != nil || len(sourceIDs) == 0 || len(sourceIDs) > maxDraftSourceAlbums {
 		return Event{}, ErrInvalid
 	}
 	if len(request.MediaItemIDs) > maxDraftMediaItems {
@@ -181,7 +187,7 @@ func (s *Service) CreateEvent(ctx context.Context, actor setup.CuratorSession, r
 			return err
 		}
 		if len(media) == 0 {
-			return ErrMediaUnavailable
+			return ErrNoMediaAvailable
 		}
 		prepareProposals(media, location)
 
@@ -377,13 +383,13 @@ func captureDay(raw *string, location *time.Location) (*string, *time.Time) {
 		return nil, nil
 	}
 	value := strings.TrimSpace(*raw)
-	if parsed, err := time.Parse(time.RFC3339Nano, value); err == nil {
+	if parsed, err := time.Parse(time.RFC3339Nano, value); err == nil && parsed.Year() > 0 {
 		day := parsed.Format(time.DateOnly)
 		instant := parsed.UTC()
 		return &day, &instant
 	}
 	for _, layout := range []string{"2006-01-02T15:04:05.999999999", "2006-01-02T15:04:05", "2006-01-02 15:04:05.999999999", "2006-01-02 15:04:05"} {
-		if parsed, err := time.ParseInLocation(layout, value, location); err == nil {
+		if parsed, err := time.ParseInLocation(layout, value, location); err == nil && parsed.Year() > 0 {
 			day := parsed.Format(time.DateOnly)
 			instant := parsed.UTC()
 			return &day, &instant
@@ -462,41 +468,56 @@ func getEvent(ctx context.Context, db bun.IDB, id uuid.UUID) (Event, error) {
 	if err := momentRows.Err(); err != nil {
 		return Event{}, err
 	}
-	for index := range event.Moments {
-		event.Moments[index].MediaItems, err = eventMedia(ctx, db, id, uuid.MustParse(event.Moments[index].ID), false)
-		if err != nil {
-			return Event{}, err
-		}
-	}
-	event.UnassignedMedia, err = eventMedia(ctx, db, id, uuid.Nil, true)
+	event.Moments, event.UnassignedMedia, err = loadEventMedia(ctx, db, id, event.Moments)
 	if err != nil {
 		return Event{}, err
 	}
 	return event, nil
 }
 
-func eventMedia(ctx context.Context, db bun.IDB, eventID, momentID uuid.UUID, unassigned bool) ([]MediaItem, error) {
-	query := `
-		SELECT media.id, media.media_type, media.width, media.height, media.local_date_time
+func loadEventMedia(ctx context.Context, db bun.IDB, eventID uuid.UUID, moments []Moment) ([]Moment, []MediaItem, error) {
+	momentIndexes := make(map[string]int, len(moments))
+	for index := range moments {
+		moments[index].MediaItems = make([]MediaItem, 0)
+		momentIndexes[moments[index].ID] = index
+	}
+	unassigned := make([]MediaItem, 0)
+	rows, err := db.QueryContext(ctx, `
+		SELECT placement.draft_moment_id::text, media.id, media.media_type,
+			media.width, media.height, media.local_date_time
 		FROM draft_media_placements AS placement
 		JOIN media_items AS media ON media.id = placement.media_item_id
-		WHERE placement.event_id = ?`
-	args := []any{eventID}
-	if unassigned {
-		query += ` AND placement.draft_moment_id IS NULL`
-	} else {
-		query += ` AND placement.draft_moment_id = ?`
-		args = append(args, momentID)
+		WHERE placement.event_id = ?
+		ORDER BY placement.position
+	`, eventID)
+	if err != nil {
+		return nil, nil, err
 	}
-	query += ` ORDER BY placement.position`
-	var media []MediaItem
-	if err := db.NewRaw(query, args...).Scan(ctx, &media); err != nil {
-		return nil, err
+	for rows.Next() {
+		var momentID sql.NullString
+		var media MediaItem
+		if err := rows.Scan(&momentID, &media.ID, &media.MediaType, &media.Width, &media.Height, &media.LocalDateTime); err != nil {
+			_ = rows.Close()
+			return nil, nil, err
+		}
+		if !momentID.Valid {
+			unassigned = append(unassigned, media)
+			continue
+		}
+		index, exists := momentIndexes[momentID.String]
+		if !exists {
+			_ = rows.Close()
+			return nil, nil, fmt.Errorf("%w: %s", errUnknownMoment, momentID.String)
+		}
+		moments[index].MediaItems = append(moments[index].MediaItems, media)
 	}
-	if media == nil {
-		media = make([]MediaItem, 0)
+	if err := rows.Close(); err != nil {
+		return nil, nil, err
 	}
-	return media, nil
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+	return moments, unassigned, nil
 }
 
 // SourceMedia lists stable portal Media IDs without exposing Immich identifiers.
@@ -527,7 +548,7 @@ func (s *Service) SourceMedia(ctx context.Context, sourceID uuid.UUID) (SourceMe
 		return SourceMediaResponse{}, err
 	}
 	if len(media) > maxDraftMediaItems {
-		return SourceMediaResponse{}, ErrInvalid
+		return SourceMediaResponse{}, ErrSourceTooLarge
 	}
 	if media == nil {
 		media = make([]MediaItem, 0)

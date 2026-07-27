@@ -111,6 +111,30 @@ func TestRecipientMigrationAppliesAfterExistingMigrationLedger(t *testing.T) {
 	assert.Equal(t, 1, after)
 }
 
+func TestDraftMigrationRollbackRestoresRequiredCaptureDates(t *testing.T) {
+	db := testdb.Open(t)
+	ctx := context.Background()
+	priorMigrations := migrate.NewMigrations()
+	for _, migration := range collection.Sorted() {
+		if migration.Name == "202607270001" {
+			break
+		}
+		priorMigrations.Add(migration)
+	}
+	require.NoError(t, applyCollection(ctx, db, priorMigrations))
+	require.NoError(t, Apply(ctx, db))
+
+	migrator := migrate.NewMigrator(db, collection, migrate.WithMarkAppliedOnSuccess(true))
+	_, err := migrator.Rollback(ctx)
+	require.NoError(t, err)
+	var nullable string
+	require.NoError(t, db.NewRaw(`
+		SELECT is_nullable FROM information_schema.columns
+		WHERE table_schema = current_schema() AND table_name = 'media_items' AND column_name = 'local_date_time'
+	`).Scan(ctx, &nullable))
+	assert.Equal(t, "NO", nullable)
+}
+
 func TestEmailDeliveryInfrastructureEnforcesDurableState(t *testing.T) {
 	db := testdb.Open(t)
 	ctx := context.Background()

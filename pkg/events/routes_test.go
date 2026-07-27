@@ -102,10 +102,38 @@ func TestDraftRequestValidationRejectsMissingFieldsBeforeServiceAccess(t *testin
 	}
 }
 
+func TestDraftErrorsDescribeEmptyAndOversizedSourceSelections(t *testing.T) {
+	for _, test := range []struct {
+		err     error
+		message string
+	}{
+		{ErrNoMediaAvailable, "Select at least one available Media item"},
+		{ErrSourceTooLarge, "too many Media items to list"},
+	} {
+		mapped := draftError(test.err, "Source album")
+		require.Error(t, mapped)
+		assert.Contains(t, mapped.Error(), test.message)
+	}
+}
+
 func TestDraftRoutesUseNoStoreAndStableNotFoundErrors(t *testing.T) {
 	e := draftHTTP(new(Service), &draftAuthorizer{})
+	for _, test := range []struct {
+		method string
+		path   string
+		body   string
+	}{
+		{http.MethodGet, "/api/events/not-an-id", ""},
+		{http.MethodPost, "/api/events", `{}`},
+		{http.MethodGet, "/api/loose-items/not-an-id", ""},
+		{http.MethodPost, "/api/loose-items", `{}`},
+		{http.MethodGet, "/api/sources/not-an-id/media-items", ""},
+	} {
+		response := draftRequest(e, test.method, test.path, test.body)
+		assert.Equal(t, "no-store", response.Header().Get(echo.HeaderCacheControl), "%s %s", test.method, test.path)
+	}
+
 	response := draftRequest(e, http.MethodGet, "/api/events/not-an-id", "")
 	assert.Equal(t, http.StatusNotFound, response.Code)
-	assert.Equal(t, "no-store", response.Header().Get(echo.HeaderCacheControl))
 	assert.Contains(t, response.Body.String(), "Event not found")
 }

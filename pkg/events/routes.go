@@ -149,6 +149,10 @@ func draftError(err error, resource string) error {
 		return errcodes.ValidationError("Draft fields must be valid and within their limits.")
 	case errors.Is(err, ErrSourceUnavailable):
 		return errcodes.Conflict("Every Source album must be available and not ignored.")
+	case errors.Is(err, ErrSourceTooLarge):
+		return errcodes.Conflict("The Source album has too many Media items to list for drafting.")
+	case errors.Is(err, ErrNoMediaAvailable):
+		return errcodes.Conflict("Select at least one available Media item from the selected Source albums.")
 	case errors.Is(err, ErrMediaUnavailable) && resource == "Loose item":
 		return errcodes.Conflict("The selected Media item is unavailable.")
 	case errors.Is(err, ErrMediaUnavailable):

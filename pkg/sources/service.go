@@ -42,8 +42,8 @@ type Album struct {
 	AssetCount      int        `json:"asset_count"`
 	SourceCreatedAt time.Time  `json:"source_created_at"`
 	SourceUpdatedAt time.Time  `json:"source_updated_at"`
-	StartAt         *time.Time `json:"start_at"`
-	EndAt           *time.Time `json:"end_at"`
+	StartAt         *time.Time `json:"start_at" tstype:"string | null,required"`
+	EndAt           *time.Time `json:"end_at" tstype:"string | null,required"`
 	Disposition     string     `json:"disposition"`
 	Version         int64      `json:"version"`
 	FirstSeenAt     time.Time  `json:"first_seen_at"`
@@ -54,7 +54,7 @@ type Album struct {
 // ListResponse is generated to TypeScript by Tygo.
 type ListResponse struct {
 	Albums     []Album `json:"albums"`
-	NextCursor *string `json:"next_cursor"`
+	NextCursor *string `json:"next_cursor" tstype:"string | null,required"`
 }
 
 // DiscoveryResponse is generated to TypeScript by Tygo.

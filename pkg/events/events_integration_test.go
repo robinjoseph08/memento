@@ -6,15 +6,18 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/labstack/echo/v4"
 	"github.com/robinjoseph08/memento/internal/testdb"
 	"github.com/robinjoseph08/memento/pkg/config"
 	"github.com/robinjoseph08/memento/pkg/migrations"
@@ -31,7 +34,19 @@ type draftFixture struct {
 	credential string
 	sources    map[string]uuid.UUID
 	media      map[string]uuid.UUID
+	immich     map[string]uuid.UUID
 }
+
+type draftQueryCounter struct {
+	count atomic.Int64
+}
+
+func (counter *draftQueryCounter) BeforeQuery(ctx context.Context, _ *bun.QueryEvent) context.Context {
+	counter.count.Add(1)
+	return ctx
+}
+
+func (*draftQueryCounter) AfterQuery(context.Context, *bun.QueryEvent) {}
 
 func newDraftFixture(t *testing.T) draftFixture {
 	t.Helper()
@@ -63,8 +78,9 @@ func newDraftFixture(t *testing.T) draftFixture {
 	fixture := draftFixture{
 		db: db, service: New(db), actor: setup.CuratorSession{PersonID: personID, SessionID: sessionID},
 		credential: hex.EncodeToString(credential[:]),
-		sources:    map[string]uuid.UUID{"first": uuid.New(), "second": uuid.New(), "ignored": uuid.New()},
+		sources:    map[string]uuid.UUID{"first": uuid.New(), "second": uuid.New(), "empty": uuid.New(), "ignored": uuid.New()},
 		media:      map[string]uuid.UUID{"shared": uuid.New(), "first_only": uuid.New(), "second_only": uuid.New(), "unknown": uuid.New()},
+		immich:     make(map[string]uuid.UUID),
 	}
 	fixture.service.now = func() time.Time { return now }
 	for name, sourceID := range fixture.sources {
@@ -74,13 +90,15 @@ func newDraftFixture(t *testing.T) draftFixture {
 			disposition = "ignored"
 			ignoredAt = now
 		}
+		immichID := uuid.New()
+		fixture.immich["source:"+name] = immichID
 		_, err := db.NewRaw(`
 			INSERT INTO source_albums (
 				id, immich_album_id, name, description, asset_count, source_created_at,
 				source_updated_at, disposition, ignored_at, first_seen_at, last_seen_at,
 				source_fingerprint, next_reconciliation_at
 			) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, decode(repeat('00', 32), 'hex'), ?)
-		`, sourceID, uuid.New(), name+" source", name+" description", now, now,
+		`, sourceID, immichID, name+" source", name+" description", now, now,
 			disposition, ignoredAt, now, now, now).Exec(ctx)
 		require.NoError(t, err)
 	}
@@ -97,6 +115,7 @@ func (fixture draftFixture) addMedia(t *testing.T, name, capture string, sourceN
 	ctx := context.Background()
 	mediaID := fixture.media[name]
 	immichID := uuid.New()
+	fixture.immich["media:"+name] = immichID
 	var captureValue any
 	if capture != "" {
 		captureValue = capture
@@ -130,7 +149,14 @@ func TestDraftsCombineAndDivideSourcesWhileReusingStableMediaIdentities(t *testi
 	require.NoError(t, err)
 	assert.Equal(t, "draft", combined.Lifecycle)
 	assert.Equal(t, "Combined family days", combined.Title)
-	assert.Len(t, combined.Sources, 2)
+	require.Len(t, combined.Sources, 2)
+	assert.Equal(t, fixture.sources["first"].String(), combined.Sources[0].ID)
+	assert.Equal(t, fixture.sources["second"].String(), combined.Sources[1].ID)
+	encoded, err := json.Marshal(combined)
+	require.NoError(t, err)
+	for _, immichID := range fixture.immich {
+		assert.NotContains(t, string(encoded), immichID.String(), "draft responses must not expose Immich provenance IDs")
+	}
 	require.Len(t, combined.Moments, 2)
 	assert.Equal(t, "2026-05-01", combined.Moments[0].ProposedDay)
 	assert.Equal(t, "2026-05-02", combined.Moments[1].ProposedDay)
@@ -173,6 +199,30 @@ func TestDraftsCombineAndDivideSourcesWhileReusingStableMediaIdentities(t *testi
 	assert.Equal(t, []string{"drafted", "drafted"}, dispositions)
 }
 
+func TestEventProposalOrderingUsesTheRequestedTimezoneForUnzonedTimestamps(t *testing.T) {
+	fixture := newDraftFixture(t)
+	ctx := context.Background()
+	fixture.media["zoned_order"] = uuid.New()
+	fixture.media["unzoned_order"] = uuid.New()
+	fixture.addMedia(t, "zoned_order", "2026-05-02T04:00:00Z", "first")
+	fixture.addMedia(t, "unzoned_order", "2026-05-02T01:00:00", "first")
+	selected := []string{fixture.media["zoned_order"].String(), fixture.media["unzoned_order"].String()}
+
+	utc, err := fixture.service.CreateEvent(ctx, fixture.actor, CreateEventRequest{
+		SourceAlbumIDs: []string{fixture.sources["first"].String()}, MediaItemIDs: selected, Timezone: "UTC",
+	})
+	require.NoError(t, err)
+	require.Len(t, utc.Moments, 1)
+	assert.Equal(t, []string{fixture.media["unzoned_order"].String(), fixture.media["zoned_order"].String()}, mediaIDs(utc.Moments[0].MediaItems))
+
+	losAngeles, err := fixture.service.CreateEvent(ctx, fixture.actor, CreateEventRequest{
+		SourceAlbumIDs: []string{fixture.sources["first"].String()}, MediaItemIDs: selected, Timezone: "America/Los_Angeles",
+	})
+	require.NoError(t, err)
+	require.Len(t, losAngeles.Moments, 1)
+	assert.Equal(t, []string{fixture.media["zoned_order"].String(), fixture.media["unzoned_order"].String()}, mediaIDs(losAngeles.Moments[0].MediaItems))
+}
+
 func TestConcurrentEventReadsDoNotStarveTheConnectionPool(t *testing.T) {
 	fixture := newDraftFixture(t)
 	ctx := context.Background()
@@ -200,6 +250,23 @@ func TestConcurrentEventReadsDoNotStarveTheConnectionPool(t *testing.T) {
 			t.Fatal("concurrent Event reads starved the database connection pool")
 		}
 	}
+}
+
+func TestEventReadsLoadAllMomentMediaWithOnePlacementQuery(t *testing.T) {
+	fixture := newDraftFixture(t)
+	ctx := context.Background()
+	event, err := fixture.service.CreateEvent(ctx, fixture.actor, CreateEventRequest{
+		SourceAlbumIDs: []string{fixture.sources["first"].String(), fixture.sources["second"].String()},
+		Timezone:       "UTC",
+	})
+	require.NoError(t, err)
+
+	counter := new(draftQueryCounter)
+	fixture.db.AddQueryHook(counter)
+	loaded, err := fixture.service.GetEvent(ctx, uuid.MustParse(event.ID))
+	require.NoError(t, err)
+	assert.Len(t, loaded.Moments, 2)
+	assert.LessOrEqual(t, counter.count.Load(), int64(4), "Event reads must not issue one query per Moment")
 }
 
 func TestSourceMediaListsOnlySelectableStableMediaIdentities(t *testing.T) {
@@ -282,13 +349,44 @@ func TestDraftRoutesRecordRequestAttributionAndReportLooseItemCreationStatus(t *
 		return response
 	}
 
+	get := func(path string) *httptest.ResponseRecorder {
+		request := httptest.NewRequestWithContext(ctx, http.MethodGet, path, nil)
+		request.AddCookie(&http.Cookie{Name: setup.CookieName, Value: fixture.credential})
+		response := httptest.NewRecorder()
+		e.ServeHTTP(response, request)
+		return response
+	}
 	eventResponse := post("/api/events", fmt.Sprintf(
 		`{"source_album_ids":[%q],"media_item_ids":[%q],"timezone":"UTC"}`,
 		fixture.sources["first"], fixture.media["first_only"],
 	))
-	assert.Equal(t, http.StatusCreated, eventResponse.Code)
+	require.Equal(t, http.StatusCreated, eventResponse.Code)
+	var createdEvent Event
+	require.NoError(t, json.Unmarshal(eventResponse.Body.Bytes(), &createdEvent))
+	assert.NotEmpty(t, createdEvent.ID)
+	require.Len(t, createdEvent.Moments, 1)
+	require.Len(t, createdEvent.Moments[0].MediaItems, 1)
+	assert.Equal(t, fixture.media["first_only"].String(), createdEvent.Moments[0].MediaItems[0].ID)
+	eventGet := get("/api/events/" + createdEvent.ID)
+	require.Equal(t, http.StatusOK, eventGet.Code)
+	var retrievedEvent Event
+	require.NoError(t, json.Unmarshal(eventGet.Body.Bytes(), &retrievedEvent))
+	assert.Equal(t, createdEvent.ID, retrievedEvent.ID)
+	assert.Equal(t, allEventMediaIDs(createdEvent), allEventMediaIDs(retrievedEvent))
+
 	looseBody := fmt.Sprintf(`{"media_item_id":%q,"timezone":"UTC"}`, fixture.media["unknown"])
-	assert.Equal(t, http.StatusCreated, post("/api/loose-items", looseBody).Code)
+	looseResponse := post("/api/loose-items", looseBody)
+	require.Equal(t, http.StatusCreated, looseResponse.Code)
+	var createdLoose LooseItem
+	require.NoError(t, json.Unmarshal(looseResponse.Body.Bytes(), &createdLoose))
+	assert.NotEmpty(t, createdLoose.ID)
+	assert.Equal(t, fixture.media["unknown"].String(), createdLoose.MediaItem.ID)
+	looseGet := get("/api/loose-items/" + createdLoose.ID)
+	require.Equal(t, http.StatusOK, looseGet.Code)
+	var retrievedLoose LooseItem
+	require.NoError(t, json.Unmarshal(looseGet.Body.Bytes(), &retrievedLoose))
+	assert.Equal(t, createdLoose.ID, retrievedLoose.ID)
+	assert.Equal(t, createdLoose.MediaItem.ID, retrievedLoose.MediaItem.ID)
 	assert.Equal(t, http.StatusOK, post("/api/loose-items", looseBody).Code)
 
 	var audits []struct {
@@ -306,6 +404,43 @@ func TestDraftRoutesRecordRequestAttributionAndReportLooseItemCreationStatus(t *
 	}
 }
 
+func TestDraftRoutesMapSemanticServiceErrors(t *testing.T) {
+	fixture := newDraftFixture(t)
+	ctx := context.Background()
+	_, err := fixture.db.NewRaw(`INSERT INTO person_roles (person_id, role) VALUES (?, 'curator')`, fixture.actor.PersonID).Exec(ctx)
+	require.NoError(t, err)
+	setupService := setup.New(fixture.db, nil, config.SecurityConfig{Secret: "draft-route-errors-test-secret"})
+	session, err := setupService.Session(ctx, fixture.credential)
+	require.NoError(t, err)
+	e := draftHTTP(fixture.service, setupService)
+	for _, test := range []struct {
+		method  string
+		path    string
+		body    string
+		status  int
+		code    string
+		message string
+	}{
+		{http.MethodGet, "/api/events/" + uuid.NewString(), "", http.StatusNotFound, `"code":"not_found"`, "Event not found"},
+		{http.MethodGet, "/api/sources/" + fixture.sources["ignored"].String() + "/media-items", "", http.StatusConflict, `"code":"conflict"`, "available and not ignored"},
+		{http.MethodPost, "/api/events", fmt.Sprintf(`{"source_album_ids":[%q],"timezone":"UTC"}`, fixture.sources["empty"]), http.StatusConflict, `"code":"conflict"`, "Select at least one available Media item"},
+		{http.MethodPost, "/api/events", fmt.Sprintf(`{"source_album_ids":[%q],"timezone":"Mars/Olympus"}`, fixture.sources["first"]), http.StatusUnprocessableEntity, `"code":"validation_error"`, "Draft fields must be valid"},
+		{http.MethodPost, "/api/loose-items", fmt.Sprintf(`{"media_item_id":%q,"timezone":"UTC"}`, uuid.New()), http.StatusConflict, `"code":"conflict"`, "selected Media item is unavailable"},
+	} {
+		request := httptest.NewRequestWithContext(ctx, test.method, test.path, strings.NewReader(test.body))
+		request.AddCookie(&http.Cookie{Name: setup.CookieName, Value: fixture.credential})
+		request.Header.Set(setup.CSRFHeader, session.CSRFToken)
+		if test.body != "" {
+			request.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+		}
+		response := httptest.NewRecorder()
+		e.ServeHTTP(response, request)
+		assert.Equal(t, test.status, response.Code, "%s %s: %s", test.method, test.path, response.Body.String())
+		assert.Contains(t, response.Body.String(), test.code)
+		assert.Contains(t, response.Body.String(), test.message)
+	}
+}
+
 func TestEventMetadataRemainsPortalOwnedWhileSourceChangesBecomeSuggestions(t *testing.T) {
 	fixture := newDraftFixture(t)
 	ctx := context.Background()
@@ -318,18 +453,27 @@ func TestEventMetadataRemainsPortalOwnedWhileSourceChangesBecomeSuggestions(t *t
 	require.Len(t, event.Sources, 1)
 	assert.Nil(t, event.Sources[0].MetadataSuggestion)
 
+	_, err = fixture.db.NewRaw(`UPDATE source_albums SET name = 'Later Immich title' WHERE id = ?`, fixture.sources["first"]).Exec(ctx)
+	require.NoError(t, err)
+	nameChanged, err := fixture.service.GetEvent(ctx, uuid.MustParse(event.ID))
+	require.NoError(t, err)
+	assert.Equal(t, "first source", nameChanged.Title)
+	assert.Equal(t, "first description", nameChanged.Description)
+	require.NotNil(t, nameChanged.Sources[0].MetadataSuggestion)
+	assert.Equal(t, "Later Immich title", nameChanged.Sources[0].MetadataSuggestion.Name)
+	assert.Equal(t, "first description", nameChanged.Sources[0].MetadataSuggestion.Description)
+
 	_, err = fixture.db.NewRaw(`
-		UPDATE source_albums SET name = 'Later Immich title', description = 'Later Immich description'
-		WHERE id = ?
+		UPDATE source_albums SET name = 'first source', description = 'Later Immich description' WHERE id = ?
 	`, fixture.sources["first"]).Exec(ctx)
 	require.NoError(t, err)
-	updated, err := fixture.service.GetEvent(ctx, uuid.MustParse(event.ID))
+	descriptionChanged, err := fixture.service.GetEvent(ctx, uuid.MustParse(event.ID))
 	require.NoError(t, err)
-	assert.Equal(t, "first source", updated.Title)
-	assert.Equal(t, "first description", updated.Description)
-	require.NotNil(t, updated.Sources[0].MetadataSuggestion)
-	assert.Equal(t, "Later Immich title", updated.Sources[0].MetadataSuggestion.Name)
-	assert.Equal(t, "Later Immich description", updated.Sources[0].MetadataSuggestion.Description)
+	assert.Equal(t, "first source", descriptionChanged.Title)
+	assert.Equal(t, "first description", descriptionChanged.Description)
+	require.NotNil(t, descriptionChanged.Sources[0].MetadataSuggestion)
+	assert.Equal(t, "first source", descriptionChanged.Sources[0].MetadataSuggestion.Name)
+	assert.Equal(t, "Later Immich description", descriptionChanged.Sources[0].MetadataSuggestion.Description)
 }
 
 func TestLooseItemsReuseMediaIdentityAndKeepUnknownDatesUnassigned(t *testing.T) {
@@ -352,6 +496,40 @@ func TestLooseItemsReuseMediaIdentityAndKeepUnknownDatesUnassigned(t *testing.T)
 	assert.Equal(t, created.ID, retried.ID)
 	assert.Equal(t, "A loose photo", retried.Title)
 	assert.Equal(t, "Pacific/Auckland", retried.GroupingTimezone)
+
+	var looseRows, auditRows int
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM loose_items`).Scan(ctx, &looseRows))
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM security_audit_events WHERE action = 'loose_item_draft_created'`).Scan(ctx, &auditRows))
+	assert.Equal(t, 1, looseRows)
+	assert.Equal(t, 1, auditRows)
+}
+
+func TestConcurrentLooseItemCreationReturnsOneStableIdentity(t *testing.T) {
+	fixture := newDraftFixture(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	type result struct {
+		item     LooseItem
+		inserted bool
+		err      error
+	}
+	start := make(chan struct{})
+	results := make(chan result, 2)
+	for range 2 {
+		go func() {
+			<-start
+			item, inserted, err := fixture.service.CreateLooseItem(ctx, fixture.actor, CreateLooseItemRequest{
+				MediaItemID: fixture.media["first_only"].String(), Timezone: "UTC",
+			})
+			results <- result{item: item, inserted: inserted, err: err}
+		}()
+	}
+	close(start)
+	first, second := <-results, <-results
+	require.NoError(t, first.err)
+	require.NoError(t, second.err)
+	assert.Equal(t, first.item.ID, second.item.ID)
+	assert.NotEqual(t, first.inserted, second.inserted)
 
 	var looseRows, auditRows int
 	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM loose_items`).Scan(ctx, &looseRows))
@@ -385,6 +563,27 @@ func TestDraftMetadataLimitsCountUnicodeCharacters(t *testing.T) {
 	assert.Equal(t, description, looseItem.Description)
 }
 
+func TestDraftingTreatsPersistedYearZeroCaptureDatesAsUnknown(t *testing.T) {
+	fixture := newDraftFixture(t)
+	ctx := context.Background()
+	_, err := fixture.db.NewRaw(`UPDATE media_items SET local_date_time = '0000-01-01T00:00:00Z' WHERE id = ?`, fixture.media["first_only"]).Exec(ctx)
+	require.NoError(t, err)
+	event, err := fixture.service.CreateEvent(ctx, fixture.actor, CreateEventRequest{
+		SourceAlbumIDs: []string{fixture.sources["first"].String()},
+		MediaItemIDs:   []string{fixture.media["first_only"].String()},
+		Timezone:       "UTC",
+	})
+	require.NoError(t, err)
+	assert.Empty(t, event.Moments)
+	assert.Equal(t, []string{fixture.media["first_only"].String()}, mediaIDs(event.UnassignedMedia))
+
+	loose, _, err := fixture.service.CreateLooseItem(ctx, fixture.actor, CreateLooseItemRequest{
+		MediaItemID: fixture.media["first_only"].String(), Timezone: "UTC",
+	})
+	require.NoError(t, err)
+	assert.Nil(t, loose.ProposedDay)
+}
+
 func TestInvalidDraftInputsRollBackWithoutCreatingPrivateState(t *testing.T) {
 	fixture := newDraftFixture(t)
 	ctx := context.Background()
@@ -398,6 +597,7 @@ func TestInvalidDraftInputsRollBackWithoutCreatingPrivateState(t *testing.T) {
 		{"Media outside selection", CreateEventRequest{SourceAlbumIDs: []string{fixture.sources["first"].String()}, MediaItemIDs: []string{fixture.media["second_only"].String()}, Timezone: "UTC"}, ErrMediaUnavailable},
 		{"missing Source", CreateEventRequest{SourceAlbumIDs: []string{uuid.NewString()}, Timezone: "UTC"}, ErrSourceUnavailable},
 		{"duplicate Source", CreateEventRequest{SourceAlbumIDs: []string{fixture.sources["first"].String(), fixture.sources["first"].String()}, Timezone: "UTC"}, ErrInvalid},
+		{"Source without Media", CreateEventRequest{SourceAlbumIDs: []string{fixture.sources["empty"].String()}, Timezone: "UTC"}, ErrNoMediaAvailable},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

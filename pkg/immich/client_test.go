@@ -399,6 +399,8 @@ func TestAlbumAssetsPageRejectsInvalidEntryPointsAndResponses(t *testing.T) {
 		"unstorable width":            `{"assets":{"count":1,"items":[{"id":"` + uuid.NewString() + `","type":"IMAGE","width":2147483648,"height":800,"localDateTime":"2026-01-01T10:00:00Z"}],"nextPage":null,"total":1}}`,
 		"missing local date time":     `{"assets":{"count":1,"items":[{"id":"` + uuid.NewString() + `","type":"IMAGE","width":1200,"height":800}],"nextPage":null,"total":1}}`,
 		"bad local date time":         `{"assets":{"count":1,"items":[{"id":"` + uuid.NewString() + `","type":"IMAGE","width":1200,"height":800,"localDateTime":"yesterday"}],"nextPage":null,"total":1}}`,
+		"zoned year zero":             `{"assets":{"count":1,"items":[{"id":"` + uuid.NewString() + `","type":"IMAGE","width":1200,"height":800,"localDateTime":"0000-01-01T00:00:00Z"}],"nextPage":null,"total":1}}`,
+		"unzoned year zero":           `{"assets":{"count":1,"items":[{"id":"` + uuid.NewString() + `","type":"IMAGE","width":1200,"height":800,"localDateTime":"0000-01-01T00:00:00"}],"nextPage":null,"total":1}}`,
 		"skipped next page":           `{"assets":{"count":0,"items":[],"nextPage":"3","total":0}}`,
 	} {
 		t.Run(name, func(t *testing.T) {

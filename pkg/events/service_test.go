@@ -4,6 +4,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/robinjoseph08/memento/pkg/setup"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -25,13 +27,26 @@ func TestCaptureDayUsesExplicitTimezoneAndLeavesUnknownCaptureDatesUnassigned(t 
 	require.NotNil(t, instant)
 	assert.Equal(t, "2026-05-02T05:30:00Z", instant.Format(time.RFC3339))
 
-	unknown := "not-a-capture-date"
-	day, instant = captureDay(&unknown, losAngeles)
-	assert.Nil(t, day)
-	assert.Nil(t, instant)
+	for _, unknown := range []string{"not-a-capture-date", "0000-01-01T00:00:00Z", "0000-01-01T00:00:00"} {
+		day, instant = captureDay(&unknown, losAngeles)
+		assert.Nil(t, day)
+		assert.Nil(t, instant)
+	}
 	day, instant = captureDay(nil, losAngeles)
 	assert.Nil(t, day)
 	assert.Nil(t, instant)
+}
+
+func TestCreateEventRejectsTooManySourcesBeforeDatabaseAccess(t *testing.T) {
+	sourceIDs := make([]string, maxDraftSourceAlbums+1)
+	for index := range sourceIDs {
+		sourceIDs[index] = uuid.NewString()
+	}
+	_, err := new(Service).CreateEvent(t.Context(), setup.CuratorSession{}, CreateEventRequest{
+		SourceAlbumIDs: sourceIDs,
+		Timezone:       "UTC",
+	})
+	require.ErrorIs(t, err, ErrInvalid)
 }
 
 func TestParseUniqueIDsRejectsMalformedAndDuplicatePortalIdentities(t *testing.T) {
