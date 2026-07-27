@@ -71,7 +71,7 @@ grep -qi '^Cache-Control: no-store' "$temporary/setup-headers"
 curl --fail --silent --dump-header "$temporary/invitation-headers" --output "$temporary/invitation.html" \
   "$base_url/invitation?token=test"
 grep -q '<title>Memento</title>' "$temporary/invitation.html"
-grep -qi '^Referrer-Policy: no-referrer' "$temporary/invitation-headers"
+grep -qi "$(printf '^Referrer-Policy: no-referrer\r$')" "$temporary/invitation-headers"
 grep -qi '^Cache-Control: no-store' "$temporary/invitation-headers"
 
 compose up --no-build --detach --no-deps front

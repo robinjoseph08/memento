@@ -14,21 +14,34 @@ child_pid=
 cleanup() {
   rm -rf "$temporary"
 }
-forward_signal() {
-  signal=$1
-  status=$2
-  if [ -n "$child_pid" ] && kill -0 "$child_pid" 2>/dev/null; then
-    kill -"$signal" "$child_pid" 2>/dev/null || true
-    wait "$child_pid" 2>/dev/null || true
+shutdown_child() {
+  [ -n "$child_pid" ] || return
+
+  if kill -0 "$child_pid" 2>/dev/null; then
+    kill -TERM "$child_pid" 2>/dev/null || true
+    remaining=20
+    while [ "$remaining" -gt 0 ] && kill -0 "$child_pid" 2>/dev/null; do
+      sleep 0.05
+      remaining=$((remaining - 1))
+    done
+    if kill -0 "$child_pid" 2>/dev/null; then
+      kill -KILL "$child_pid" 2>/dev/null || true
+    fi
   fi
+  wait "$child_pid" 2>/dev/null || true
   child_pid=
+}
+forward_signal() {
+  status=$1
+  shutdown_child
   exit "$status"
 }
 trap cleanup EXIT
 # POSIX shells may start asynchronous children with SIGINT ignored. Translate
-# an interrupt to TERM for the Mise child, while preserving exit 130 here.
-trap 'forward_signal TERM 130' INT
-trap 'forward_signal TERM 143' TERM
+# an interrupt to TERM for the direct Mise child, while preserving exit 130
+# here. Mise remains responsible for stopping its own task descendants.
+trap 'forward_signal 130' INT
+trap 'forward_signal 143' TERM
 
 printf 'Running %s...\n' "$task"
 "$mise_bin" run "$task" >"$output" 2>&1 &
