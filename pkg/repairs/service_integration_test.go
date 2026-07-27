@@ -13,6 +13,7 @@ import (
 	"github.com/robinjoseph08/memento/internal/testdb"
 	"github.com/robinjoseph08/memento/pkg/immich"
 	"github.com/robinjoseph08/memento/pkg/migrations"
+	"github.com/robinjoseph08/memento/pkg/people"
 	"github.com/robinjoseph08/memento/pkg/setup"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -332,6 +333,20 @@ func TestImmichPersonCannotBeClaimedByTwoPortalPeople(t *testing.T) {
 	assert.ErrorContains(t, err, "immich_person_links_source_idx")
 }
 
+func TestArchivedPersonStopsSuggestionsAndReleasesImmichIdentity(t *testing.T) {
+	fixture := newRepairFixture(t, 0)
+	_, err := people.New(fixture.db).Archive(context.Background(), fixture.actor, fixture.personID, 1)
+	require.NoError(t, err)
+
+	suggestions, err := fixture.service.SuggestionPersonIDs(context.Background(), []uuid.UUID{fixture.oldID})
+	require.NoError(t, err)
+	assert.Empty(t, suggestions)
+	listed, err := fixture.service.List(context.Background())
+	require.NoError(t, err)
+	require.Len(t, listed.UnlinkedImmichPeople, 1)
+	assert.Equal(t, fixture.oldID.String(), listed.UnlinkedImmichPeople[0].ImmichPersonID)
+}
+
 func TestPersonAnchorCaptureUsesFiveOfFiftyNewestActiveBackings(t *testing.T) {
 	t.Run("stores at most five and replaces prior anchors", func(t *testing.T) {
 		fixture := newRepairFixture(t, 0)
@@ -428,11 +443,19 @@ func TestMediaConfirmationPreservesPortalIdentityAndMovesBacking(t *testing.T) {
 		INSERT INTO source_album_memberships (
 			source_album_id, immich_asset_id, media_item_id, first_seen_at, last_seen_at, source_fingerprint
 		) VALUES (?, ?, ?, now(), now(), ?);
-		INSERT INTO media_repair_candidates (id, media_item_id, candidate_media_item_id, previous_immich_asset_id, candidate_immich_asset_id, created_at)
-		VALUES (?, ?, ?, ?, ?, now());
+		INSERT INTO media_repair_candidates (
+			id, media_item_id, candidate_media_item_id, previous_immich_asset_id,
+			candidate_immich_asset_id, previous_evidence, candidate_evidence, created_at
+		) VALUES (
+			?, ?, ?, ?, ?,
+			jsonb_build_object('checksum', ?, 'capture', '2026-01-01T00:00:00Z', 'filename', 'old.jpg', 'path', '/old/old.jpg'),
+			jsonb_build_object('checksum', ?, 'capture', '2026-01-01T00:00:00Z', 'filename', 'new.jpg', 'path', '/moved/new.jpg'),
+			now()
+		);
 	`, sourceAlbumID, hashBytes("album"), oldMediaID, oldAssetID, newMediaID, newAssetID,
 		oldBackingID, oldMediaID, oldAssetID, checksum("same"), newBackingID, newMediaID, newAssetID, checksum("same"),
-		sourceAlbumID, newAssetID, newMediaID, hashBytes("membership"), candidateID, oldMediaID, newMediaID, oldAssetID, newAssetID)
+		sourceAlbumID, newAssetID, newMediaID, hashBytes("membership"), candidateID, oldMediaID, newMediaID, oldAssetID, newAssetID,
+		checksum("same"), checksum("same"))
 	require.NoError(t, err)
 
 	listed, err := fixture.service.List(context.Background())
@@ -446,6 +469,19 @@ func TestMediaConfirmationPreservesPortalIdentityAndMovesBacking(t *testing.T) {
 	_, err = fixture.service.ConfirmMedia(context.Background(), fixture.actor, candidateID)
 	assert.ErrorIs(t, err, ErrConflict)
 	_, err = fixture.db.ExecContext(context.Background(), `UPDATE media_backings SET checksum = ? WHERE id = ?`, checksum("same"), newBackingID)
+	require.NoError(t, err)
+	competingMediaID, competingAssetID, competingCandidateID := uuid.New(), uuid.New(), uuid.New()
+	_, err = fixture.db.ExecContext(context.Background(), `
+		INSERT INTO media_items (id, immich_asset_id, media_type, local_date_time, availability, first_seen_at, last_seen_at)
+		VALUES (?, ?, 'image', '2026-01-01T00:00:00Z', 'source_missing', now(), now());
+		INSERT INTO media_backings (id, media_item_id, immich_asset_id, checksum, linked_at)
+		VALUES (gen_random_uuid(), ?, ?, ?, now());
+		INSERT INTO media_repair_candidates (
+			id, media_item_id, candidate_media_item_id, previous_immich_asset_id,
+			candidate_immich_asset_id, created_at
+		) VALUES (?, ?, ?, ?, ?, now());
+	`, competingMediaID, competingAssetID, competingMediaID, competingAssetID, checksum("same"),
+		competingCandidateID, competingMediaID, newMediaID, competingAssetID, newAssetID)
 	require.NoError(t, err)
 	_, err = fixture.service.ConfirmMedia(context.Background(), fixture.actor, candidateID)
 	require.NoError(t, err)
@@ -470,6 +506,23 @@ func TestMediaConfirmationPreservesPortalIdentityAndMovesBacking(t *testing.T) {
 	require.NoError(t, fixture.db.NewRaw(`SELECT state, resolved_at FROM media_repair_candidates WHERE id = ?`, candidateID).Scan(context.Background(), &candidateState, &resolvedAt))
 	assert.Equal(t, "confirmed", candidateState)
 	assert.NotNil(t, resolvedAt)
+	require.NoError(t, fixture.db.NewRaw(`SELECT state, resolved_at FROM media_repair_candidates WHERE id = ?`, competingCandidateID).Scan(context.Background(), &candidateState, &resolvedAt))
+	assert.Equal(t, "superseded", candidateState)
+	assert.NotNil(t, resolvedAt)
+	_, err = fixture.db.ExecContext(context.Background(), `UPDATE media_backings SET filename = 'later.jpg', original_path = '/later/path.jpg' WHERE media_item_id = ?`, oldMediaID)
+	require.NoError(t, err)
+	listed, err = fixture.service.List(context.Background())
+	require.NoError(t, err)
+	var confirmedHistory *MediaCandidate
+	for index := range listed.MediaCandidates {
+		if listed.MediaCandidates[index].ID == candidateID.String() {
+			confirmedHistory = &listed.MediaCandidates[index]
+			break
+		}
+	}
+	require.NotNil(t, confirmedHistory)
+	assert.Equal(t, "old.jpg", confirmedHistory.Previous.Filename)
+	assert.Equal(t, "/moved/new.jpg", confirmedHistory.Candidate.Path)
 	_, err = fixture.service.ConfirmMedia(context.Background(), fixture.actor, candidateID)
 	assert.ErrorIs(t, err, ErrAlreadyResolved)
 }

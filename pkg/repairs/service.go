@@ -423,58 +423,36 @@ func (s *Service) listMediaCandidates(ctx context.Context, response *ListRespons
 	type row struct {
 		ID, MediaItemID, PreviousID, CandidateID uuid.UUID
 		State                                    string
-		Conflicts                                json.RawMessage
+		Previous, Candidate, Anchors, Conflicts  json.RawMessage
 		CreatedAt                                time.Time
 		ResolvedAt                               *time.Time
-		PreviousChecksum, PreviousCapture        sql.NullString
-		PreviousFilename, PreviousPath           string
-		CandidateChecksum, CandidateCapture      sql.NullString
-		CandidateFilename, CandidatePath         string
 	}
 	var rows []row
 	if err := s.db.NewRaw(`
-		SELECT candidate.id, candidate.media_item_id, candidate.previous_immich_asset_id AS previous_id,
-			candidate.candidate_immich_asset_id AS candidate_id, candidate.state,
-			candidate.conflict_evidence AS conflicts, candidate.created_at, candidate.resolved_at,
-			previous.checksum AS previous_checksum, previous.capture_at AS previous_capture,
-			previous.filename AS previous_filename, previous.original_path AS previous_path,
-			replacement.checksum AS candidate_checksum, replacement.capture_at AS candidate_capture,
-			replacement.filename AS candidate_filename, replacement.original_path AS candidate_path
-		FROM media_repair_candidates AS candidate
-		JOIN media_backings AS previous ON previous.media_item_id = candidate.media_item_id
-			AND previous.immich_asset_id = candidate.previous_immich_asset_id
-		JOIN media_backings AS replacement ON replacement.immich_asset_id = candidate.candidate_immich_asset_id
-		ORDER BY (candidate.state = 'pending') DESC, candidate.created_at DESC, candidate.id
+		SELECT id, media_item_id, previous_immich_asset_id AS previous_id,
+			candidate_immich_asset_id AS candidate_id, state,
+			previous_evidence AS previous, candidate_evidence AS candidate,
+			face_anchor_evidence AS anchors, conflict_evidence AS conflicts,
+			created_at, resolved_at
+		FROM media_repair_candidates
+		ORDER BY (state = 'pending') DESC, created_at DESC, id
 	`).Scan(ctx, &rows); err != nil {
 		return err
 	}
 	for _, raw := range rows {
 		candidate := MediaCandidate{ID: raw.ID.String(), MediaItemID: raw.MediaItemID.String(), PreviousImmichAssetID: raw.PreviousID.String(),
 			CandidateImmichAssetID: raw.CandidateID.String(), State: raw.State, Conflicts: []string{}, FaceAnchors: []FaceAnchorEvidence{},
-			CreatedAt: raw.CreatedAt, ResolvedAt: raw.ResolvedAt,
-			Previous: Evidence{Filename: raw.PreviousFilename, Path: raw.PreviousPath}, Candidate: Evidence{Filename: raw.CandidateFilename, Path: raw.CandidatePath}}
-		if raw.PreviousChecksum.Valid {
-			candidate.Previous.Checksum = raw.PreviousChecksum.String
-		}
-		if raw.PreviousCapture.Valid {
-			candidate.Previous.Capture = raw.PreviousCapture.String
-		}
-		if raw.CandidateChecksum.Valid {
-			candidate.Candidate.Checksum = raw.CandidateChecksum.String
-		}
-		if raw.CandidateCapture.Valid {
-			candidate.Candidate.Capture = raw.CandidateCapture.String
-		}
-		if err := json.Unmarshal(raw.Conflicts, &candidate.Conflicts); err != nil {
+			CreatedAt: raw.CreatedAt, ResolvedAt: raw.ResolvedAt}
+		if err := json.Unmarshal(raw.Previous, &candidate.Previous); err != nil {
 			return err
 		}
-		if err := s.db.NewRaw(`
-			SELECT immich_face_id::text AS face_id, immich_asset_id::text AS asset_id,
-				COALESCE(asset_checksum, '') AS checksum, image_width, image_height, x1, y1, x2, y2,
-				COALESCE(last_linked_immich_person_id::text, '') AS last_person_id
-			FROM immich_face_anchors WHERE immich_asset_id IN (?, ?)
-			ORDER BY immich_asset_id, immich_face_id LIMIT 24
-		`, raw.PreviousID, raw.CandidateID).Scan(ctx, &candidate.FaceAnchors); err != nil {
+		if err := json.Unmarshal(raw.Candidate, &candidate.Candidate); err != nil {
+			return err
+		}
+		if err := json.Unmarshal(raw.Anchors, &candidate.FaceAnchors); err != nil {
+			return err
+		}
+		if err := json.Unmarshal(raw.Conflicts, &candidate.Conflicts); err != nil {
 			return err
 		}
 		response.MediaCandidates = append(response.MediaCandidates, candidate)
@@ -785,6 +763,14 @@ func (s *Service) ConfirmMedia(ctx context.Context, actor setup.CuratorSession, 
 		if err := execRepairExactlyOne(ctx, tx, `UPDATE media_repair_candidates SET state = 'confirmed', resolved_at = ?, resolved_by_person_id = ?, candidate_media_item_id = NULL WHERE id = ? AND state = 'pending'`, now, actor.PersonID, candidateID); err != nil {
 			return err
 		}
+		if _, err := tx.NewRaw(`
+			UPDATE media_repair_candidates
+			SET state = 'superseded', resolved_at = ?, resolved_by_person_id = ?, candidate_media_item_id = NULL
+			WHERE id <> ? AND state = 'pending'
+			  AND (media_item_id = ? OR candidate_media_item_id = ?)
+		`, now, actor.PersonID, candidateID, mediaItemID, candidateMediaItemID).Exec(ctx); err != nil {
+			return err
+		}
 		if err := execRepairExactlyOne(ctx, tx, `DELETE FROM media_items WHERE id = ?`, candidateMediaItemID); err != nil {
 			return err
 		}
@@ -862,8 +848,11 @@ func (s *Service) SuggestionPersonIDs(ctx context.Context, immichPersonIDs []uui
 	}
 	var result []uuid.UUID
 	if err := s.db.NewRaw(`
-		SELECT person_id FROM immich_person_links
-		WHERE state = 'linked' AND immich_person_id IN (?) ORDER BY person_id
+		SELECT link.person_id FROM immich_person_links AS link
+		JOIN people AS person ON person.id = link.person_id
+		WHERE link.state = 'linked' AND link.immich_person_id IN (?)
+		  AND person.archived_at IS NULL AND person.merged_at IS NULL
+		ORDER BY link.person_id
 	`, bun.List(immichPersonIDs)).Scan(ctx, &result); err != nil {
 		return nil, err
 	}

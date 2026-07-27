@@ -459,6 +459,12 @@ func (s *Service) Archive(ctx context.Context, actor setup.CuratorSession, id uu
 				return err
 			}
 		}
+		if _, err := tx.NewRaw(`DELETE FROM immich_face_anchors WHERE person_id = ?`, id).Exec(ctx); err != nil {
+			return err
+		}
+		if _, err := tx.NewRaw(`DELETE FROM immich_person_links WHERE person_id = ?`, id).Exec(ctx); err != nil {
+			return err
+		}
 		if _, err := tx.NewRaw(`UPDATE sessions SET revoked_at = ? WHERE person_id = ? AND revoked_at IS NULL`, now, id).Exec(ctx); err != nil {
 			return err
 		}
@@ -628,6 +634,8 @@ func (s *Service) Merge(ctx context.Context, actor setup.CuratorSession, request
 			`SELECT id FROM recipient_access_generations WHERE person_id IN (?, ?) ORDER BY id FOR UPDATE`,
 			`SELECT email.id FROM recipient_emails AS email JOIN recipient_access_generations AS access ON access.id = email.recipient_access_generation_id WHERE access.person_id IN (?, ?) ORDER BY email.id FOR UPDATE OF email`,
 			`SELECT id FROM sessions WHERE person_id IN (?, ?) ORDER BY id FOR UPDATE`,
+			`SELECT person_id FROM immich_person_links WHERE person_id IN (?, ?) ORDER BY person_id FOR UPDATE`,
+			`SELECT id FROM immich_face_anchors WHERE person_id IN (?, ?) ORDER BY id FOR UPDATE`,
 		} {
 			if _, err := tx.NewRaw(lock, sourceID, survivorID).Exec(ctx); err != nil {
 				return err
@@ -717,6 +725,25 @@ func (s *Service) Merge(ctx context.Context, actor setup.CuratorSession, request
 				if err := execExactlyOne(ctx, tx, `DELETE FROM person_roles WHERE person_id = ? AND role = 'recipient'`, sourceID); err != nil {
 					return err
 				}
+			}
+		}
+		var survivorHasImmichLink bool
+		if err := tx.NewRaw(`SELECT EXISTS (SELECT 1 FROM immich_person_links WHERE person_id = ?)`, survivorID).Scan(ctx, &survivorHasImmichLink); err != nil {
+			return err
+		}
+		if survivorHasImmichLink {
+			if _, err := tx.NewRaw(`DELETE FROM immich_face_anchors WHERE person_id = ?`, sourceID).Exec(ctx); err != nil {
+				return err
+			}
+			if _, err := tx.NewRaw(`DELETE FROM immich_person_links WHERE person_id = ?`, sourceID).Exec(ctx); err != nil {
+				return err
+			}
+		} else {
+			if _, err := tx.NewRaw(`UPDATE immich_person_links SET person_id = ?, version = version + 1 WHERE person_id = ?`, survivorID, sourceID).Exec(ctx); err != nil {
+				return err
+			}
+			if _, err := tx.NewRaw(`UPDATE immich_face_anchors SET person_id = ? WHERE person_id = ?`, survivorID, sourceID).Exec(ctx); err != nil {
+				return err
 			}
 		}
 		sessionQuery := `UPDATE sessions SET revoked_at = ? WHERE person_id IN (?, ?) AND revoked_at IS NULL`

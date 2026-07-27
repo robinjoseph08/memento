@@ -354,6 +354,15 @@ func TestMergeIntoCuratorPreservesCurrentSessionAndAuthority(t *testing.T) {
 	fixture := newPeopleFixture(t)
 	ctx := context.Background()
 	source := addPerson(t, fixture.db, "Duplicate Curator", "Curator, Duplicate")
+	immichPersonID := uuid.New()
+	_, err := fixture.db.ExecContext(ctx, `
+		INSERT INTO immich_people_inventory (immich_person_id, name, first_seen_at, last_seen_at)
+		VALUES (?, 'Merged identity', now(), now());
+		INSERT INTO immich_person_links (
+			person_id, immich_person_id, state, last_seen_at, confirmed_at, confirmed_by_person_id
+		) VALUES (?, ?, 'linked', now(), now(), ?)
+	`, immichPersonID, source, immichPersonID, fixture.actor.PersonID)
+	require.NoError(t, err)
 
 	preview, err := fixture.service.PreviewMerge(ctx, fixture.actor, source, fixture.actor.PersonID)
 	require.NoError(t, err)
@@ -370,6 +379,9 @@ func TestMergeIntoCuratorPreservesCurrentSessionAndAuthority(t *testing.T) {
 	var revoked bool
 	require.NoError(t, fixture.db.NewRaw(`SELECT revoked_at IS NOT NULL FROM sessions WHERE id = ?`, fixture.actor.SessionID).Scan(ctx, &revoked))
 	assert.False(t, revoked)
+	var linkedPersonID uuid.UUID
+	require.NoError(t, fixture.db.NewRaw(`SELECT person_id FROM immich_person_links WHERE immich_person_id = ?`, immichPersonID).Scan(ctx, &linkedPersonID))
+	assert.Equal(t, fixture.actor.PersonID, linkedPersonID)
 }
 
 func TestMergePreviewAndConfirmationEnforceAuthorityAndGenerationGates(t *testing.T) {

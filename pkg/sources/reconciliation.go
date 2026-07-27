@@ -436,10 +436,30 @@ func proposeMediaRepairs(ctx context.Context, tx bun.Tx, now time.Time) error {
 	_, err := tx.NewRaw(`
 		INSERT INTO media_repair_candidates (
 			id, media_item_id, candidate_media_item_id, previous_immich_asset_id,
-			candidate_immich_asset_id, conflict_evidence, created_at
+			candidate_immich_asset_id, previous_evidence, candidate_evidence,
+			face_anchor_evidence, conflict_evidence, created_at
 		)
 		SELECT gen_random_uuid(), missing.media_item_id, addition.media_item_id,
 			missing.immich_asset_id, addition.immich_asset_id,
+			jsonb_build_object(
+				'checksum', missing.checksum, 'capture', missing.capture_at,
+				'filename', missing.filename, 'path', missing.original_path
+			),
+			jsonb_build_object(
+				'checksum', addition.checksum, 'capture', addition.capture_at,
+				'filename', addition.filename, 'path', addition.original_path
+			),
+			COALESCE((
+				SELECT jsonb_agg(jsonb_build_object(
+					'face_id', anchor.immich_face_id, 'asset_id', anchor.immich_asset_id,
+					'checksum', anchor.asset_checksum, 'image_width', anchor.image_width,
+					'image_height', anchor.image_height, 'x1', anchor.x1, 'y1', anchor.y1,
+					'x2', anchor.x2, 'y2', anchor.y2,
+					'last_immich_person_id', anchor.last_linked_immich_person_id
+				) ORDER BY anchor.immich_asset_id, anchor.immich_face_id)
+				FROM immich_face_anchors AS anchor
+				WHERE anchor.immich_asset_id IN (missing.immich_asset_id, addition.immich_asset_id)
+			), '[]'::jsonb),
 			CASE WHEN count(*) OVER (PARTITION BY missing.checksum) > 1
 				THEN jsonb_build_array('checksum_matches_multiple_media') ELSE '[]'::jsonb END,
 			?
@@ -457,6 +477,9 @@ func proposeMediaRepairs(ctx context.Context, tx bun.Tx, now time.Time) error {
 		  )
 		ON CONFLICT (media_item_id, candidate_immich_asset_id) WHERE state = 'pending' DO UPDATE SET
 			candidate_media_item_id = EXCLUDED.candidate_media_item_id,
+			previous_evidence = EXCLUDED.previous_evidence,
+			candidate_evidence = EXCLUDED.candidate_evidence,
+			face_anchor_evidence = EXCLUDED.face_anchor_evidence,
 			conflict_evidence = EXCLUDED.conflict_evidence
 	`, now).Exec(ctx)
 	return err
