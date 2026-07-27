@@ -29,6 +29,7 @@ func TestCuratorRecoveryStartQueuesOnlyANewMailboxProof(t *testing.T) {
 
 func TestCuratorRecoveryChangesOnlyEmailAndRevokesAllSessions(t *testing.T) {
 	f := newFixture(t)
+	oldAddressChallenge := insertChallenge(t, f, 0x54, "13572468")
 	curatorID := uuid.New()
 	_, err := f.db.NewRaw(`INSERT INTO people (id, display_name, sort_name) VALUES (?, 'Robin', 'robin'); INSERT INTO person_roles (person_id, role) VALUES (?, 'curator'); INSERT INTO onboarding_choices (recipient_access_generation_id, privacy_acknowledged, engagement_acknowledged, interest_list_acknowledged, email_previews_acknowledged, push_guidance_acknowledged, informed_choices_version, email_preference, completed_at) VALUES (?, true, true, true, true, true, 2, 'weekly', now()); INSERT INTO notification_preferences (recipient_access_generation_id, email_preference) VALUES (?, 'weekly')`, curatorID, curatorID, f.accessID, f.accessID).Exec(context.Background())
 	require.NoError(t, err)
@@ -56,4 +57,6 @@ func TestCuratorRecoveryChangesOnlyEmailAndRevokesAllSessions(t *testing.T) {
 	require.NoError(t, f.db.NewRaw(`SELECT count(*) FROM push_subscriptions WHERE person_id = ? AND disabled_at IS NULL`, f.personID).Scan(context.Background(), &activePush))
 	assert.Zero(t, activeSessions)
 	assert.Zero(t, activePush)
+	_, err = f.service.VerifySignIn(context.Background(), SignInVerifyRequest{ChallengeID: oldAddressChallenge, Code: "13572468", SessionType: "trusted"})
+	assert.ErrorIs(t, err, ErrInvalidCode, "recovery must invalidate codes sent to the unavailable mailbox")
 }

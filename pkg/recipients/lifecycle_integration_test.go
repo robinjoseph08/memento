@@ -6,9 +6,11 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/robinjoseph08/memento/pkg/setup"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -57,4 +59,11 @@ func TestSuspensionRevocationAndReinvitationPreserveAndIsolateGenerations(t *tes
 	var generations int
 	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM recipient_access_generations WHERE person_id = ?`, fixture.personID).Scan(context.Background(), &generations))
 	assert.Equal(t, 2, generations, "old authorization history must remain but cannot match the new generation")
+
+	oldGenerationRaw := bytes.Repeat([]byte{0x73}, 32)
+	oldGenerationHash := sha256.Sum256(oldGenerationRaw)
+	_, err = fixture.db.NewRaw(`INSERT INTO sessions (id, credential_hash, person_id, recipient_access_generation_id, security_epoch, session_type, idle_expires_at) VALUES (?, ?, ?, ?, ?, 'trusted', now() + interval '1 year')`, uuid.New(), oldGenerationHash[:], fixture.personID, first.Access.ID, epoch).Exec(context.Background())
+	require.NoError(t, err)
+	_, err = fixture.auth.AuthorizeSession(context.Background(), hex.EncodeToString(oldGenerationRaw), "", false)
+	assert.ErrorIs(t, err, setup.ErrUnauthenticated, "a Session bound to an ended generation cannot authorize after reinvitation")
 }

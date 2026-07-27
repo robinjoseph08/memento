@@ -634,6 +634,24 @@ func TestExpiredEpochAndAccessInvalidSessionsAcrossRoutes(t *testing.T) {
 	}
 }
 
+func TestLogoutDisablesTheCurrentSessionPushSubscription(t *testing.T) {
+	db, service := newSetupService(t)
+	verified := verifiedChallenge(t, db, service, "Push Person", "push@example.com")
+	completed, err := service.complete(context.Background(), completionRequest(verified.VerificationToken, "trusted"))
+	require.NoError(t, err)
+	var sessionID, personID uuid.UUID
+	require.NoError(t, db.NewRaw(`SELECT id, person_id FROM sessions`).Scan(context.Background(), &sessionID, &personID))
+	_, err = db.NewRaw(`INSERT INTO push_subscriptions (id, session_id, person_id, endpoint_hash) VALUES (?, ?, ?, ?)`, uuid.New(), sessionID, personID, bytes.Repeat([]byte{0x52}, 32)).Exec(context.Background())
+	require.NoError(t, err)
+
+	require.NoError(t, service.Logout(context.Background(), completed.Credential, completed.CSRFToken))
+	var sessionRevoked, pushDisabled bool
+	require.NoError(t, db.NewRaw(`SELECT revoked_at IS NOT NULL FROM sessions WHERE id = ?`, sessionID).Scan(context.Background(), &sessionRevoked))
+	require.NoError(t, db.NewRaw(`SELECT disabled_at IS NOT NULL FROM push_subscriptions WHERE session_id = ?`, sessionID).Scan(context.Background(), &pushDisabled))
+	assert.True(t, sessionRevoked)
+	assert.True(t, pushDisabled)
+}
+
 func TestSessionBoundCSRFCannotCrossSessions(t *testing.T) {
 	db, service := newSetupService(t)
 	verified := verifiedChallenge(t, db, service, "CSRF Person", "csrf@example.com")

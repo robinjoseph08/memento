@@ -625,6 +625,9 @@ func (s *Service) Logout(ctx context.Context, credential, csrfToken string) erro
 		if affected != 1 {
 			return ErrUnauthenticated
 		}
+		if _, err := tx.NewRaw(`UPDATE push_subscriptions SET disabled_at = ? WHERE session_id = ? AND disabled_at IS NULL`, now, authenticated.SessionID).Exec(ctx); err != nil {
+			return err
+		}
 		return s.appendAudit(
 			ctx, tx, "session_signed_out", "success",
 			&authenticated.PersonID, &authenticated.PersonID, &authenticated.SessionID,

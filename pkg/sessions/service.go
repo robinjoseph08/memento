@@ -466,6 +466,9 @@ func (s *Service) CompleteEmailChange(ctx context.Context, actor setup.SessionAc
 		if _, err := tx.NewRaw(`INSERT INTO recipient_emails (id, recipient_access_generation_id, email, normalized_email, is_current, created_at) VALUES (?, ?, ?, ?, true, ?)`, uuid.New(), actor.AccessID, newEmail, normalized, now).Exec(ctx); err != nil {
 			return err
 		}
+		if _, err := tx.NewRaw(`UPDATE sign_in_challenges SET consumed_at = ? WHERE recipient_access_generation_id = ? AND consumed_at IS NULL`, now, actor.AccessID).Exec(ctx); err != nil {
+			return err
+		}
 		if _, err := tx.NewRaw(`UPDATE sessions SET revoked_at = ? WHERE person_id = ? AND id <> ? AND revoked_at IS NULL`, now, actor.PersonID, actor.SessionID).Exec(ctx); err != nil {
 			return err
 		}
@@ -589,6 +592,9 @@ func (s *Service) CompleteRecovery(ctx context.Context, actor setup.CuratorSessi
 			return err
 		}
 		if _, err := tx.NewRaw(`INSERT INTO recipient_emails (id, recipient_access_generation_id, email, normalized_email, is_current, created_at) VALUES (?, ?, ?, ?, true, ?)`, uuid.New(), accessID, email, normalized, now).Exec(ctx); err != nil {
+			return err
+		}
+		if _, err := tx.NewRaw(`UPDATE sign_in_challenges SET consumed_at = ? WHERE recipient_access_generation_id = ? AND consumed_at IS NULL`, now, accessID).Exec(ctx); err != nil {
 			return err
 		}
 		if _, err := tx.NewRaw(`UPDATE sessions SET revoked_at = ? WHERE person_id = ? AND revoked_at IS NULL`, now, personID).Exec(ctx); err != nil {
