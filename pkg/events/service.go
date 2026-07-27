@@ -78,13 +78,11 @@ type Moment struct {
 
 // OrganizeMoment is one complete Moment snapshot submitted by the Curator workspace.
 type OrganizeMoment struct {
-	ID                 string   `json:"id" validate:"required"`
-	Title              string   `json:"title,omitempty" validate:"max=240" mod:"trim"`
-	ProposedDay        string   `json:"proposed_day" validate:"required"`
-	CoverMediaItemID   *string  `json:"cover_media_item_id" tstype:"string | null,required"`
-	AttendanceComplete bool     `json:"attendance_complete"`
-	AudienceComplete   bool     `json:"audience_complete"`
-	MediaItemIDs       []string `json:"media_item_ids" validate:"required,min=1,max=100000"`
+	ID               string   `json:"id" validate:"required"`
+	Title            string   `json:"title,omitempty" validate:"max=240" mod:"trim"`
+	ProposedDay      string   `json:"proposed_day" validate:"required"`
+	CoverMediaItemID *string  `json:"cover_media_item_id" tstype:"string | null,required"`
+	MediaItemIDs     []string `json:"media_item_ids" validate:"required,min=1,max=100000"`
 }
 
 // OrganizeEventRequest atomically replaces draft organization at an expected version.
@@ -146,6 +144,7 @@ type LooseItem struct {
 	GroupingTimezone string    `json:"grouping_timezone"`
 	ProposedDay      *string   `json:"proposed_day" tstype:"string | null,required"`
 	Version          int64     `json:"version"`
+	AudienceComplete bool      `json:"audience_complete"`
 	MediaItem        MediaItem `json:"media_item"`
 	CreatedAt        time.Time `json:"created_at"`
 	UpdatedAt        time.Time `json:"updated_at"`
@@ -518,7 +517,6 @@ func (s *Service) OrganizeEvent(ctx context.Context, actor setup.CuratorSession,
 		momentRows = append(momentRows, draftMomentRow{
 			ID: momentID, Position: position, ProposedDay: moment.ProposedDay,
 			Title: strings.TrimSpace(moment.Title), CoverMediaItemID: coverID,
-			AttendanceComplete: moment.AttendanceComplete, AudienceComplete: moment.AudienceComplete,
 		})
 		for _, mediaID := range mediaIDs {
 			if _, duplicate := seenMedia[mediaID]; duplicate {
@@ -568,8 +566,45 @@ func (s *Service) OrganizeEvent(ctx context.Context, actor setup.CuratorSession,
 				return ErrInvalid
 			}
 		}
+		type reviewState struct {
+			ID                 uuid.UUID
+			AttendanceComplete bool
+			AudienceComplete   bool
+		}
+		var priorReviews []reviewState
+		if err := tx.NewRaw(`SELECT id, attendance_complete, audience_complete FROM draft_moments WHERE event_id = ? ORDER BY id`, id).Scan(ctx, &priorReviews); err != nil {
+			return err
+		}
+		priorByID := make(map[uuid.UUID]reviewState, len(priorReviews))
+		for _, prior := range priorReviews {
+			priorByID[prior.ID] = prior
+		}
+		for index := range momentRows {
+			if prior, exists := priorByID[momentRows[index].ID]; exists {
+				momentRows[index].AttendanceComplete = prior.AttendanceComplete
+				momentRows[index].AudienceComplete = prior.AudienceComplete
+			} else {
+				momentRows[index].AttendanceComplete = false
+				momentRows[index].AudienceComplete = false
+			}
+		}
 		if err := applyMomentProvenance(ctx, tx, id, momentRows, placements); err != nil {
 			return err
+		}
+		for _, prior := range priorReviews {
+			if _, retained := seenMoments[prior.ID]; retained {
+				continue
+			}
+			for _, statement := range []string{
+				`DELETE FROM attendance WHERE moment_id = ?`,
+				`DELETE FROM audience_proposals WHERE target_kind = 'moment' AND target_id = ?`,
+				`DELETE FROM audience_overrides WHERE target_kind = 'moment' AND target_id = ?`,
+				`DELETE FROM current_audience_snapshots WHERE target_kind = 'moment' AND target_id = ?`,
+			} {
+				if _, err := tx.NewRaw(statement, prior.ID).Exec(ctx); err != nil {
+					return err
+				}
+			}
 		}
 		if _, err := tx.NewRaw(`DELETE FROM draft_media_placements WHERE event_id = ?`, id).Exec(ctx); err != nil {
 			return err
@@ -961,13 +996,13 @@ func getLooseItem(ctx context.Context, db bun.IDB, id uuid.UUID) (LooseItem, err
 	var item LooseItem
 	err := db.NewRaw(`
 		SELECT loose.id, loose.lifecycle, loose.title, loose.description, loose.grouping_timezone,
-			loose.proposed_day::text, loose.version, loose.created_at, loose.updated_at,
+			loose.proposed_day::text, loose.version, loose.audience_complete, loose.created_at, loose.updated_at,
 			media.id, media.media_type, media.width, media.height, media.local_date_time
 		FROM loose_items AS loose
 		JOIN media_items AS media ON media.id = loose.media_item_id
 		WHERE loose.id = ?
 	`, id).Scan(ctx, &item.ID, &item.Lifecycle, &item.Title, &item.Description, &item.GroupingTimezone,
-		&item.ProposedDay, &item.Version, &item.CreatedAt, &item.UpdatedAt,
+		&item.ProposedDay, &item.Version, &item.AudienceComplete, &item.CreatedAt, &item.UpdatedAt,
 		&item.MediaItem.ID, &item.MediaItem.MediaType, &item.MediaItem.Width,
 		&item.MediaItem.Height, &item.MediaItem.LocalDateTime)
 	if errors.Is(err, sql.ErrNoRows) {

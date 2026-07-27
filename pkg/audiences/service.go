@@ -1,0 +1,511 @@
+// Package audiences owns Curator-confirmed Attendance, explained proposals, and reviewed Audience snapshots.
+package audiences
+
+import (
+	"context"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"sort"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/robinjoseph08/memento/pkg/immich"
+	"github.com/robinjoseph08/memento/pkg/setup"
+	"github.com/uptrace/bun"
+)
+
+var (
+	ErrNotFound            = errors.New("audience target not found")
+	ErrInvalid             = errors.New("audience request is invalid")
+	ErrPersonUnavailable   = errors.New("attendance Person is unavailable")
+	ErrRecipientIneligible = errors.New("audience override Recipient is ineligible")
+)
+
+const (
+	targetMoment = "moment"
+	targetLoose  = "loose_item"
+)
+
+// Connector is the narrow boundary for Curator-only advisory face evidence.
+type Connector interface {
+	Faces(ctx context.Context, assetID uuid.UUID) ([]immich.FaceSummary, error)
+}
+
+// Person omits Recipient state and all Immich identity data.
+type Person struct {
+	ID          string `json:"id"`
+	DisplayName string `json:"display_name"`
+	SortName    string `json:"sort_name"`
+}
+
+// FaceEvidence is private advisory evidence for one detected face on portal Media.
+type FaceEvidence struct {
+	MediaItemID     string  `json:"media_item_id"`
+	EvidenceID      string  `json:"evidence_id"`
+	ImageWidth      int     `json:"image_width"`
+	ImageHeight     int     `json:"image_height"`
+	X1              int     `json:"x1"`
+	Y1              int     `json:"y1"`
+	X2              int     `json:"x2"`
+	Y2              int     `json:"y2"`
+	SuggestedPerson *Person `json:"suggested_person" tstype:"Person | null,required"`
+}
+
+// Reason preserves one applicable proposal basis and its matching Person.
+type Reason struct {
+	Kind           string  `json:"kind"`
+	MatchingPerson *Person `json:"matching_person" tstype:"Person | null,required"`
+}
+
+// ProposalRecipient is an Eligible Recipient retained for Curator review.
+type ProposalRecipient struct {
+	Recipient Person   `json:"recipient"`
+	Included  bool     `json:"included"`
+	Reasons   []Reason `json:"reasons"`
+}
+
+// ApprovedAudience describes the current reviewed snapshot, including an empty one.
+type ApprovedAudience struct {
+	ID         string    `json:"id"`
+	Label      string    `json:"label"`
+	Recipients []Person  `json:"recipients"`
+	ApprovedAt time.Time `json:"approved_at"`
+}
+
+// Review is Curator-only Attendance evidence and Audience state.
+type Review struct {
+	TargetKind            string              `json:"target_kind"`
+	TargetID              string              `json:"target_id"`
+	People                []Person            `json:"people"`
+	EligibleRecipients    []Person            `json:"eligible_recipients"`
+	Attendance            []Person            `json:"attendance"`
+	FaceEvidence          []FaceEvidence      `json:"face_evidence"`
+	FaceEvidenceAvailable bool                `json:"face_evidence_available"`
+	Proposal              []ProposalRecipient `json:"proposal"`
+	ApprovedAudience      *ApprovedAudience   `json:"approved_audience" tstype:"ApprovedAudience | null,required"`
+}
+
+// AttendanceRequest explicitly replaces confirmed Attendance for one Moment.
+type AttendanceRequest struct {
+	PersonIDs []string `json:"person_ids" validate:"max=100000"`
+}
+
+// OverrideRequest sets or clears one manual proposal override.
+type OverrideRequest struct {
+	RecipientPersonID string `json:"recipient_person_id" validate:"required,uuid"`
+	State             string `json:"state" validate:"required,oneof=automatic included excluded"`
+}
+
+// ApprovalResponse returns the immutable snapshot selected as current.
+type ApprovalResponse struct {
+	Audience ApprovedAudience `json:"audience"`
+}
+
+type Service struct {
+	db        *bun.DB
+	connector Connector
+	now       func() time.Time
+}
+
+func New(db *bun.DB, connector Connector) *Service {
+	return &Service{db: db, connector: connector, now: time.Now}
+}
+
+type target struct {
+	kind string
+	id   uuid.UUID
+}
+
+func (s *Service) ReviewMoment(ctx context.Context, id uuid.UUID) (Review, error) {
+	if err := requireTarget(ctx, s.db, target{targetMoment, id}); err != nil {
+		return Review{}, err
+	}
+	review, err := s.review(ctx, target{targetMoment, id})
+	if err != nil {
+		return Review{}, err
+	}
+	review.FaceEvidence, review.FaceEvidenceAvailable = s.faceEvidence(ctx, id)
+	return review, nil
+}
+
+func (s *Service) ReviewLooseItem(ctx context.Context, id uuid.UUID) (Review, error) {
+	if err := requireTarget(ctx, s.db, target{targetLoose, id}); err != nil {
+		return Review{}, err
+	}
+	return s.review(ctx, target{targetLoose, id})
+}
+
+func (s *Service) review(ctx context.Context, target target) (Review, error) {
+	response := Review{TargetKind: target.kind, TargetID: target.id.String(), People: []Person{}, EligibleRecipients: []Person{}, Attendance: []Person{}, FaceEvidence: []FaceEvidence{}, Proposal: []ProposalRecipient{}}
+	if err := s.db.NewRaw(`SELECT id, display_name, sort_name FROM people WHERE archived_at IS NULL AND merged_at IS NULL ORDER BY memento_normalize_person_name(sort_name), id`).Scan(ctx, &response.People); err != nil {
+		return Review{}, err
+	}
+	if err := s.db.NewRaw(`SELECT person.id, person.display_name, person.sort_name FROM recipient_access_generations AS access JOIN person_roles AS role ON role.person_id = access.person_id AND role.role = 'recipient' JOIN people AS person ON person.id = access.person_id AND person.archived_at IS NULL AND person.merged_at IS NULL WHERE access.is_current AND access.state IN ('pending', 'onboarding', 'completed') AND NOT EXISTS (SELECT 1 FROM person_roles AS curator WHERE curator.person_id = access.person_id AND curator.role = 'curator') ORDER BY memento_normalize_person_name(person.sort_name), person.id`).Scan(ctx, &response.EligibleRecipients); err != nil {
+		return Review{}, err
+	}
+	if target.kind == targetMoment {
+		if err := s.db.NewRaw(`SELECT person.id, person.display_name, person.sort_name FROM attendance AS attended JOIN people AS person ON person.id = attended.person_id WHERE attended.moment_id = ? ORDER BY memento_normalize_person_name(person.sort_name), person.id`, target.id).Scan(ctx, &response.Attendance); err != nil {
+			return Review{}, err
+		}
+	}
+	proposals, err := loadProposals(ctx, s.db, target)
+	if err != nil {
+		return Review{}, err
+	}
+	response.Proposal = proposals
+	approved, err := loadApproved(ctx, s.db, target)
+	if err != nil {
+		return Review{}, err
+	}
+	response.ApprovedAudience = approved
+	return response, nil
+}
+
+func (s *Service) ConfirmAttendance(ctx context.Context, actor setup.CuratorSession, momentID uuid.UUID, request AttendanceRequest) (Review, error) {
+	ids, err := parseIDs(request.PersonIDs)
+	if err != nil {
+		return Review{}, err
+	}
+	now := s.now().UTC()
+	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		t := target{targetMoment, momentID}
+		if err := lockTarget(ctx, tx, t); err != nil {
+			return err
+		}
+		if len(ids) > 0 {
+			var count int
+			if err := tx.NewRaw(`SELECT count(*) FROM people WHERE id IN (?) AND archived_at IS NULL AND merged_at IS NULL`, bun.List(ids)).Scan(ctx, &count); err != nil {
+				return err
+			}
+			if count != len(ids) {
+				return ErrPersonUnavailable
+			}
+		}
+		if _, err := tx.NewRaw(`DELETE FROM attendance WHERE moment_id = ?`, momentID).Exec(ctx); err != nil {
+			return err
+		}
+		for _, id := range ids {
+			if _, err := tx.NewRaw(`INSERT INTO attendance (moment_id, person_id, source, confirmed_by_person_id, confirmed_at) VALUES (?, ?, 'manual', ?, ?)`, momentID, id, actor.PersonID, now).Exec(ctx); err != nil {
+				return err
+			}
+		}
+		if _, err := tx.NewRaw(`UPDATE draft_moments SET attendance_complete = true WHERE id = ?`, momentID).Exec(ctx); err != nil {
+			return err
+		}
+		if err := recalculate(ctx, tx, t, now); err != nil {
+			return err
+		}
+		return appendAudit(ctx, tx, actor, "attendance_confirmed", map[string]any{"moment_id": momentID, "person_count": len(ids)})
+	})
+	if err != nil {
+		return Review{}, err
+	}
+	return s.ReviewMoment(ctx, momentID)
+}
+
+func (s *Service) Recalculate(ctx context.Context, actor setup.CuratorSession, kind string, id uuid.UUID) (Review, error) {
+	t, err := validTarget(kind, id)
+	if err != nil {
+		return Review{}, err
+	}
+	now := s.now().UTC()
+	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if err := lockTarget(ctx, tx, t); err != nil {
+			return err
+		}
+		if err := recalculate(ctx, tx, t, now); err != nil {
+			return err
+		}
+		return appendAudit(ctx, tx, actor, "audience_proposal_recalculated", map[string]any{"target_kind": t.kind, "target_id": t.id})
+	})
+	if err != nil {
+		return Review{}, err
+	}
+	if t.kind == targetMoment {
+		return s.ReviewMoment(ctx, id)
+	}
+	return s.ReviewLooseItem(ctx, id)
+}
+
+func (s *Service) SetOverride(ctx context.Context, actor setup.CuratorSession, kind string, id uuid.UUID, request OverrideRequest) (Review, error) {
+	t, err := validTarget(kind, id)
+	if err != nil {
+		return Review{}, err
+	}
+	recipientID, err := uuid.Parse(request.RecipientPersonID)
+	if err != nil || recipientID == uuid.Nil || (request.State != "automatic" && request.State != "included" && request.State != "excluded") {
+		return Review{}, ErrInvalid
+	}
+	now := s.now().UTC()
+	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if err := lockTarget(ctx, tx, t); err != nil {
+			return err
+		}
+		var eligible bool
+		if err := tx.NewRaw(`SELECT EXISTS (SELECT 1 FROM recipient_access_generations AS access JOIN person_roles AS role ON role.person_id = access.person_id AND role.role = 'recipient' JOIN people AS person ON person.id = access.person_id AND person.archived_at IS NULL AND person.merged_at IS NULL WHERE access.person_id = ? AND access.is_current AND access.state IN ('pending', 'onboarding', 'completed') AND NOT EXISTS (SELECT 1 FROM person_roles AS curator WHERE curator.person_id = access.person_id AND curator.role = 'curator'))`, recipientID).Scan(ctx, &eligible); err != nil {
+			return err
+		}
+		if !eligible {
+			return ErrRecipientIneligible
+		}
+		if request.State == "automatic" {
+			if _, err := tx.NewRaw(`DELETE FROM audience_overrides WHERE target_kind = ? AND target_id = ? AND recipient_person_id = ?`, t.kind, t.id, recipientID).Exec(ctx); err != nil {
+				return err
+			}
+		} else if _, err := tx.NewRaw(`INSERT INTO audience_overrides (target_kind, target_id, recipient_person_id, state, updated_by_person_id, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (target_kind, target_id, recipient_person_id) DO UPDATE SET state = EXCLUDED.state, updated_by_person_id = EXCLUDED.updated_by_person_id, updated_at = EXCLUDED.updated_at`, t.kind, t.id, recipientID, request.State, actor.PersonID, now).Exec(ctx); err != nil {
+			return err
+		}
+		if err := recalculate(ctx, tx, t, now); err != nil {
+			return err
+		}
+		return appendAudit(ctx, tx, actor, "audience_override_changed", map[string]any{"target_kind": t.kind, "target_id": t.id, "recipient_person_id": recipientID, "state": request.State})
+	})
+	if err != nil {
+		return Review{}, err
+	}
+	if t.kind == targetMoment {
+		return s.ReviewMoment(ctx, id)
+	}
+	return s.ReviewLooseItem(ctx, id)
+}
+
+func (s *Service) Approve(ctx context.Context, actor setup.CuratorSession, kind string, id uuid.UUID) (ApprovalResponse, error) {
+	t, err := validTarget(kind, id)
+	if err != nil {
+		return ApprovalResponse{}, err
+	}
+	now, snapshotID := s.now().UTC(), uuid.New()
+	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if err := lockTarget(ctx, tx, t); err != nil {
+			return err
+		}
+		var count int
+		if err := tx.NewRaw(`SELECT count(*) FROM audience_proposals WHERE target_kind = ? AND target_id = ? AND included`, t.kind, t.id).Scan(ctx, &count); err != nil {
+			return err
+		}
+		label := "Shared"
+		if count == 0 {
+			label = "Curator only"
+		}
+		if _, err := tx.NewRaw(`INSERT INTO audience_snapshots (id, target_kind, target_id, approved_by_person_id, approved_at, label) VALUES (?, ?, ?, ?, ?, ?)`, snapshotID, t.kind, t.id, actor.PersonID, now, label).Exec(ctx); err != nil {
+			return err
+		}
+		if _, err := tx.NewRaw(`INSERT INTO audience_snapshot_entries (snapshot_id, recipient_person_id, recipient_access_generation_id) SELECT ?, recipient_person_id, recipient_access_generation_id FROM audience_proposals WHERE target_kind = ? AND target_id = ? AND included`, snapshotID, t.kind, t.id).Exec(ctx); err != nil {
+			return err
+		}
+		if _, err := tx.NewRaw(`INSERT INTO current_audience_snapshots (target_kind, target_id, snapshot_id) VALUES (?, ?, ?) ON CONFLICT (target_kind, target_id) DO UPDATE SET snapshot_id = EXCLUDED.snapshot_id`, t.kind, t.id, snapshotID).Exec(ctx); err != nil {
+			return err
+		}
+		if t.kind == targetMoment {
+			_, err = tx.NewRaw(`UPDATE draft_moments SET audience_complete = true WHERE id = ?`, t.id).Exec(ctx)
+		} else {
+			_, err = tx.NewRaw(`UPDATE loose_items SET audience_complete = true WHERE id = ?`, t.id).Exec(ctx)
+		}
+		if err != nil {
+			return err
+		}
+		return appendAudit(ctx, tx, actor, "audience_approved", map[string]any{"target_kind": t.kind, "target_id": t.id, "snapshot_id": snapshotID, "recipient_count": count, "label": label})
+	})
+	if err != nil {
+		return ApprovalResponse{}, err
+	}
+	approved, err := loadApproved(ctx, s.db, t)
+	if err != nil {
+		return ApprovalResponse{}, err
+	}
+	return ApprovalResponse{Audience: *approved}, nil
+}
+
+func validTarget(kind string, id uuid.UUID) (target, error) {
+	if id == uuid.Nil || (kind != targetMoment && kind != targetLoose) {
+		return target{}, ErrInvalid
+	}
+	return target{kind, id}, nil
+}
+
+func requireTarget(ctx context.Context, db bun.IDB, t target) error {
+	query := `SELECT EXISTS (SELECT 1 FROM draft_moments WHERE id = ?)`
+	if t.kind == targetLoose {
+		query = `SELECT EXISTS (SELECT 1 FROM loose_items WHERE id = ?)`
+	}
+	var exists bool
+	if err := db.NewRaw(query, t.id).Scan(ctx, &exists); err != nil {
+		return err
+	}
+	if !exists {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func lockTarget(ctx context.Context, tx bun.Tx, t target) error {
+	query := `SELECT id FROM draft_moments WHERE id = ? FOR UPDATE`
+	if t.kind == targetLoose {
+		query = `SELECT id FROM loose_items WHERE id = ? FOR UPDATE`
+	}
+	var id uuid.UUID
+	if err := tx.NewRaw(query, t.id).Scan(ctx, &id); errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	} else if err != nil {
+		return err
+	}
+	return nil
+}
+
+func parseIDs(raw []string) ([]uuid.UUID, error) {
+	result := make([]uuid.UUID, 0, len(raw))
+	seen := map[uuid.UUID]bool{}
+	for _, value := range raw {
+		id, err := uuid.Parse(value)
+		if err != nil || id == uuid.Nil || seen[id] {
+			return nil, ErrInvalid
+		}
+		seen[id] = true
+		result = append(result, id)
+	}
+	return result, nil
+}
+
+func recalculate(ctx context.Context, tx bun.Tx, t target, now time.Time) error {
+	if _, err := tx.NewRaw(`DELETE FROM audience_proposals WHERE target_kind = ? AND target_id = ?`, t.kind, t.id).Exec(ctx); err != nil {
+		return err
+	}
+	attendanceFilter := `false`
+	args := []any{}
+	if t.kind == targetMoment {
+		attendanceFilter = `attended.moment_id = ?`
+		args = append(args, t.id)
+	}
+	query := `WITH eligible AS (
+		SELECT access.person_id, access.id AS generation_id
+		FROM recipient_access_generations AS access
+		JOIN person_roles AS recipient_role ON recipient_role.person_id = access.person_id AND recipient_role.role = 'recipient'
+		JOIN people AS person ON person.id = access.person_id AND person.archived_at IS NULL AND person.merged_at IS NULL
+		WHERE access.is_current AND access.state IN ('pending', 'onboarding', 'completed')
+		AND NOT EXISTS (SELECT 1 FROM person_roles AS curator WHERE curator.person_id = access.person_id AND curator.role = 'curator')
+	), automatic AS (
+		SELECT eligible.person_id FROM eligible JOIN attendance AS attended ON attended.person_id = eligible.person_id WHERE ` + attendanceFilter + `
+		UNION
+		SELECT eligible.person_id FROM eligible JOIN interest_list_entries AS interest ON interest.recipient_person_id = eligible.person_id AND interest.state = 'active' JOIN attendance AS attended ON attended.person_id = interest.selected_person_id WHERE ` + attendanceFilter + `
+	), candidate AS (
+		SELECT person_id FROM automatic UNION SELECT override_row.recipient_person_id FROM audience_overrides AS override_row JOIN eligible ON eligible.person_id = override_row.recipient_person_id WHERE override_row.target_kind = ? AND override_row.target_id = ?
+	)
+	INSERT INTO audience_proposals (target_kind, target_id, recipient_person_id, recipient_access_generation_id, included, recalculated_at)
+	SELECT ?::text, ?::uuid, candidate.person_id, eligible.generation_id,
+		CASE override_row.state WHEN 'included' THEN true WHEN 'excluded' THEN false ELSE true END, ?
+	FROM candidate JOIN eligible ON eligible.person_id = candidate.person_id
+	LEFT JOIN audience_overrides AS override_row ON override_row.target_kind = ? AND override_row.target_id = ? AND override_row.recipient_person_id = candidate.person_id`
+	args = append(args, args...)
+	args = append(args, t.kind, t.id, t.kind, t.id, now, t.kind, t.id)
+	if _, err := tx.NewRaw(query, args...).Exec(ctx); err != nil {
+		return err
+	}
+	if t.kind == targetMoment {
+		if _, err := tx.NewRaw(`INSERT INTO audience_reasons (target_kind, target_id, recipient_person_id, kind, matching_person_id)
+			SELECT ?::text, ?::uuid, proposal.recipient_person_id, 'present', proposal.recipient_person_id FROM audience_proposals AS proposal JOIN attendance AS attended ON attended.moment_id = ? AND attended.person_id = proposal.recipient_person_id WHERE proposal.target_kind = ? AND proposal.target_id = ?
+			UNION ALL
+			SELECT ?::text, ?::uuid, proposal.recipient_person_id, 'interested', interest.selected_person_id FROM audience_proposals AS proposal JOIN interest_list_entries AS interest ON interest.recipient_person_id = proposal.recipient_person_id AND interest.state = 'active' JOIN attendance AS attended ON attended.moment_id = ? AND attended.person_id = interest.selected_person_id WHERE proposal.target_kind = ? AND proposal.target_id = ?`, t.kind, t.id, t.id, t.kind, t.id, t.kind, t.id, t.id, t.kind, t.id).Exec(ctx); err != nil {
+			return err
+		}
+	}
+	_, err := tx.NewRaw(`INSERT INTO audience_reasons (target_kind, target_id, recipient_person_id, kind, matching_person_id) SELECT proposal.target_kind, proposal.target_id, proposal.recipient_person_id, CASE override_row.state WHEN 'included' THEN 'manually_included' ELSE 'manually_excluded' END, NULL FROM audience_proposals AS proposal JOIN audience_overrides AS override_row ON override_row.target_kind = proposal.target_kind AND override_row.target_id = proposal.target_id AND override_row.recipient_person_id = proposal.recipient_person_id WHERE proposal.target_kind = ? AND proposal.target_id = ?`, t.kind, t.id).Exec(ctx)
+	return err
+}
+
+func loadProposals(ctx context.Context, db bun.IDB, t target) ([]ProposalRecipient, error) {
+	type row struct {
+		RecipientID                  uuid.UUID
+		RecipientName, RecipientSort string
+		Included                     bool
+		Kind                         string
+		MatchingID                   uuid.NullUUID
+		MatchingName, MatchingSort   sql.NullString
+	}
+	rows := []row{}
+	if err := db.NewRaw(`SELECT proposal.recipient_person_id AS recipient_id, recipient.display_name AS recipient_name, recipient.sort_name AS recipient_sort, proposal.included, reason.kind, matching.id AS matching_id, matching.display_name AS matching_name, matching.sort_name AS matching_sort FROM audience_proposals AS proposal JOIN people AS recipient ON recipient.id = proposal.recipient_person_id JOIN audience_reasons AS reason ON reason.target_kind = proposal.target_kind AND reason.target_id = proposal.target_id AND reason.recipient_person_id = proposal.recipient_person_id LEFT JOIN people AS matching ON matching.id = reason.matching_person_id WHERE proposal.target_kind = ? AND proposal.target_id = ? ORDER BY memento_normalize_person_name(recipient.sort_name), recipient.id, CASE reason.kind WHEN 'present' THEN 0 WHEN 'interested' THEN 1 WHEN 'manually_included' THEN 2 ELSE 3 END, memento_normalize_person_name(matching.sort_name), matching.id`, t.kind, t.id).Scan(ctx, &rows); err != nil {
+		return nil, err
+	}
+	result := []ProposalRecipient{}
+	indexes := map[uuid.UUID]int{}
+	for _, row := range rows {
+		i, ok := indexes[row.RecipientID]
+		if !ok {
+			i = len(result)
+			indexes[row.RecipientID] = i
+			result = append(result, ProposalRecipient{Recipient: Person{row.RecipientID.String(), row.RecipientName, row.RecipientSort}, Included: row.Included, Reasons: []Reason{}})
+		}
+		reason := Reason{Kind: row.Kind}
+		if row.MatchingID.Valid {
+			person := Person{row.MatchingID.UUID.String(), row.MatchingName.String, row.MatchingSort.String}
+			reason.MatchingPerson = &person
+		}
+		result[i].Reasons = append(result[i].Reasons, reason)
+	}
+	return result, nil
+}
+
+func loadApproved(ctx context.Context, db bun.IDB, t target) (*ApprovedAudience, error) {
+	var result ApprovedAudience
+	err := db.NewRaw(`SELECT snapshot.id, snapshot.label, snapshot.approved_at FROM current_audience_snapshots AS current JOIN audience_snapshots AS snapshot ON snapshot.id = current.snapshot_id WHERE current.target_kind = ? AND current.target_id = ?`, t.kind, t.id).Scan(ctx, &result.ID, &result.Label, &result.ApprovedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	result.Recipients = []Person{}
+	if err := db.NewRaw(`SELECT person.id, person.display_name, person.sort_name FROM audience_snapshot_entries AS entry JOIN people AS person ON person.id = entry.recipient_person_id WHERE entry.snapshot_id = ? ORDER BY memento_normalize_person_name(person.sort_name), person.id`, result.ID).Scan(ctx, &result.Recipients); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+func (s *Service) faceEvidence(ctx context.Context, momentID uuid.UUID) ([]FaceEvidence, bool) {
+	if s.connector == nil {
+		return []FaceEvidence{}, false
+	}
+	type backing struct{ MediaID, AssetID uuid.UUID }
+	backings := []backing{}
+	if err := s.db.NewRaw(`SELECT placement.media_item_id AS media_id, backing.immich_asset_id AS asset_id FROM draft_media_placements AS placement JOIN media_backings AS backing ON backing.media_item_id = placement.media_item_id AND backing.active WHERE placement.draft_moment_id = ? ORDER BY placement.position`, momentID).Scan(ctx, &backings); err != nil {
+		return []FaceEvidence{}, false
+	}
+	result := []FaceEvidence{}
+	for _, backing := range backings {
+		faces, err := s.connector.Faces(ctx, backing.AssetID)
+		if err != nil {
+			return []FaceEvidence{}, false
+		}
+		for _, face := range faces {
+			digest := sha256.Sum256([]byte(backing.MediaID.String() + ":" + face.SourceID.String()))
+			evidence := FaceEvidence{MediaItemID: backing.MediaID.String(), EvidenceID: hex.EncodeToString(digest[:]), ImageWidth: face.ImageWidth, ImageHeight: face.ImageHeight, X1: face.X1, Y1: face.Y1, X2: face.X2, Y2: face.Y2}
+			if face.PersonID != nil {
+				var person Person
+				err := s.db.NewRaw(`SELECT person.id, person.display_name, person.sort_name FROM immich_person_links AS link JOIN people AS person ON person.id = link.person_id WHERE link.immich_person_id = ? AND link.state = 'linked' AND person.archived_at IS NULL AND person.merged_at IS NULL`, *face.PersonID).Scan(ctx, &person.ID, &person.DisplayName, &person.SortName)
+				if err == nil {
+					evidence.SuggestedPerson = &person
+				}
+			}
+			result = append(result, evidence)
+		}
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].MediaItemID != result[j].MediaItemID {
+			return result[i].MediaItemID < result[j].MediaItemID
+		}
+		return result[i].EvidenceID < result[j].EvidenceID
+	})
+	return result, true
+}
+
+func appendAudit(ctx context.Context, tx bun.Tx, actor setup.CuratorSession, action string, metadata map[string]any) error {
+	encoded, err := json.Marshal(metadata)
+	if err != nil {
+		return err
+	}
+	request := setup.RequestMetadataFromContext(ctx)
+	_, err = tx.NewRaw(`INSERT INTO security_audit_events (actor_person_id, action, outcome, client_ip, user_agent, session_id, metadata) VALUES (?, ?, 'success', NULLIF(?, '')::inet, ?, ?, ?::jsonb)`, actor.PersonID, action, request.ClientIP, request.UserAgent, actor.SessionID, string(encoded)).Exec(ctx)
+	return err
+}

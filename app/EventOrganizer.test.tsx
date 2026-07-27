@@ -100,8 +100,14 @@ function stringBody(body: BodyInit | null | undefined) {
   return body;
 }
 
-function eventFromRequest(request: OrganizeEventRequest): DraftEvent {
+function eventFromRequest(
+  request: OrganizeEventRequest,
+  baseline = draft(request.version),
+): DraftEvent {
   const byID = new Map(Object.values(items).map((item) => [item.id, item]));
+  const priorMoments = new Map(
+    baseline.moments.map((moment) => [moment.id, moment]),
+  );
   const existing = draft(request.version + 1);
   existing.final_review_complete = request.final_review_complete;
   existing.moments = request.moments.map((moment) => ({
@@ -112,8 +118,9 @@ function eventFromRequest(request: OrganizeEventRequest): DraftEvent {
     source_days: [moment.proposed_day],
     proposal_kind: "local_day",
     cover_media_item_id: moment.cover_media_item_id,
-    attendance_complete: moment.attendance_complete,
-    audience_complete: moment.audience_complete,
+    attendance_complete:
+      priorMoments.get(moment.id)?.attendance_complete ?? false,
+    audience_complete: priorMoments.get(moment.id)?.audience_complete ?? false,
     media_items: moment.media_item_ids.map((id) => byID.get(id)!),
   }));
   existing.unassigned_media = request.unassigned_media_ids.map((id) =>
@@ -142,6 +149,20 @@ function organizedDraft(version = 1): DraftEvent {
   return event;
 }
 
+function emptyReview(momentID: string) {
+  return {
+    target_kind: "moment",
+    target_id: momentID,
+    people: [],
+    eligible_recipients: [],
+    attendance: [],
+    face_evidence: [],
+    face_evidence_available: true,
+    proposal: [],
+    approved_audience: null,
+  };
+}
+
 function stubOrganizerAPI(initial: DraftEvent) {
   let persisted = initial;
   const saves: OrganizeEventRequest[] = [];
@@ -164,6 +185,37 @@ function stubOrganizerAPI(initial: DraftEvent) {
         });
       }
       if (path === `/api/events/${eventID}`) return response(persisted);
+      const reviewMatch = path.match(
+        /^\/api\/moments\/([^/]+)\/attendance-audience$/,
+      );
+      if (reviewMatch) return response(emptyReview(reviewMatch[1]));
+      const attendanceMatch = path.match(
+        /^\/api\/moments\/([^/]+)\/attendance$/,
+      );
+      if (attendanceMatch && init?.method === "PUT") {
+        const moment = persisted.moments.find(
+          (candidate) => candidate.id === attendanceMatch[1],
+        );
+        if (moment) moment.attendance_complete = true;
+        return response(emptyReview(attendanceMatch[1]));
+      }
+      const approvalMatch = path.match(
+        /^\/api\/moments\/([^/]+)\/audience\/approve$/,
+      );
+      if (approvalMatch && init?.method === "POST") {
+        const moment = persisted.moments.find(
+          (candidate) => candidate.id === approvalMatch[1],
+        );
+        if (moment) moment.audience_complete = true;
+        return response({
+          audience: {
+            id: crypto.randomUUID(),
+            label: "Curator only",
+            recipients: [],
+            approved_at: "2026-05-03T00:00:00Z",
+          },
+        });
+      }
       if (
         path === `/api/events/${eventID}/organization` &&
         init?.method === "PUT"
@@ -173,7 +225,7 @@ function stubOrganizerAPI(initial: DraftEvent) {
           stringBody(init.body),
         ) as OrganizeEventRequest;
         saves.push(request);
-        persisted = eventFromRequest(request);
+        persisted = eventFromRequest(request, persisted);
         return response(persisted);
       }
       throw new Error(`Unexpected request: ${path}`);
@@ -308,16 +360,30 @@ test("autosaves readiness and persists the complete organization after reload", 
     screen.getByRole("button", { name: "Inspect", pressed: true }),
   ).toBeInTheDocument();
   expect(document.querySelector(".inspect-pane")).toHaveFocus();
-  fireEvent.click(screen.getByLabelText("Attendance reviewed"));
-  fireEvent.click(screen.getByLabelText(/Audience reviewed/));
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Confirm Attendance" }),
+  );
+  const firstApproval = await screen.findByRole("button", {
+    name: "Approve Curator only",
+  });
+  await waitFor(() => expect(firstApproval).toBeEnabled());
+  fireEvent.click(firstApproval);
+  await screen.findByText(/Approved snapshot:/);
   fireEvent.click(screen.getByRole("button", { name: "Event" }));
   fireEvent.click(
     screen.getAllByRole("button", {
       name: "Inspect Attendance and Audience",
     })[1],
   );
-  fireEvent.click(screen.getByLabelText("Attendance reviewed"));
-  fireEvent.click(screen.getByLabelText(/Audience reviewed/));
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Confirm Attendance" }),
+  );
+  const secondApproval = await screen.findByRole("button", {
+    name: "Approve Curator only",
+  });
+  await waitFor(() => expect(secondApproval).toBeEnabled());
+  fireEvent.click(secondApproval);
+  await screen.findByText(/Approved snapshot:/);
   fireEvent.click(screen.getByLabelText("Final review complete"));
 
   expect(screen.getByText("5 of 5 complete")).toBeInTheDocument();
@@ -342,12 +408,8 @@ test("autosaves readiness and persists the complete organization after reload", 
     items.loose.id,
   ]);
   expect(lastSave.moments[1].cover_media_item_id).toBe(items.loose.id);
-  expect(lastSave.moments.every((moment) => moment.attendance_complete)).toBe(
-    true,
-  );
-  expect(lastSave.moments.every((moment) => moment.audience_complete)).toBe(
-    true,
-  );
+  expect(lastSave.moments[0]).not.toHaveProperty("attendance_complete");
+  expect(lastSave.moments[0]).not.toHaveProperty("audience_complete");
   expect(lastSave.final_review_complete).toBe(true);
 
   firstRender.unmount();
@@ -389,6 +451,8 @@ test("mobile drill-down moves between Work, Event organization, and inspection",
           ],
         });
       if (path === `/api/events/${eventID}`) return response(draft());
+      if (path === `/api/moments/${momentOneID}/attendance-audience`)
+        return response(emptyReview(momentOneID));
       throw new Error(`Unexpected request: ${path}`);
     }),
   );
@@ -416,7 +480,9 @@ test("mobile drill-down moves between Work, Event organization, and inspection",
     screen.getByRole("button", { name: "Inspect", pressed: true }),
   ).toHaveAttribute("aria-controls", "inspect-pane");
   expect(document.querySelector(".inspect-pane")).toHaveFocus();
-  expect(screen.getByLabelText("Attendance reviewed")).toBeInTheDocument();
+  expect(
+    await screen.findByRole("button", { name: "Confirm Attendance" }),
+  ).toBeInTheDocument();
 });
 
 test("recovers an ordinary failed autosave with an explicit retry", async () => {

@@ -715,8 +715,7 @@ func TestCuratorOrganizesMomentsWithOrderingCoversReadinessAndOptimisticVersions
 		Version: created.Version,
 		Moments: []OrganizeMoment{{
 			ID: mergedID, Title: "The whole weekend", ProposedDay: created.Moments[0].ProposedDay,
-			CoverMediaItemID: &cover, AttendanceComplete: true, AudienceComplete: true,
-			MediaItemIDs: allAssigned,
+			CoverMediaItemID: &cover, MediaItemIDs: allAssigned,
 		}},
 		UnassignedMediaIDs:  mediaIDs(created.UnassignedMedia),
 		FinalReviewComplete: true,
@@ -730,8 +729,8 @@ func TestCuratorOrganizesMomentsWithOrderingCoversReadinessAndOptimisticVersions
 	assert.ElementsMatch(t, []string{
 		created.Moments[0].ProposedDay, created.Moments[1].ProposedDay,
 	}, organized.Moments[0].SourceDays)
-	assert.True(t, organized.Moments[0].AttendanceComplete)
-	assert.True(t, organized.Moments[0].AudienceComplete)
+	assert.False(t, organized.Moments[0].AttendanceComplete, "organization cannot impersonate explicit Attendance confirmation")
+	assert.False(t, organized.Moments[0].AudienceComplete, "organization cannot impersonate explicit Audience approval")
 	assert.True(t, organized.FinalReviewComplete)
 
 	splitID := uuid.NewString()

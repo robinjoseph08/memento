@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/robinjoseph08/golib/logger"
+	"github.com/robinjoseph08/memento/pkg/audiences"
 	"github.com/robinjoseph08/memento/pkg/config"
 	"github.com/robinjoseph08/memento/pkg/database"
 	"github.com/robinjoseph08/memento/pkg/emaildelivery"
@@ -119,7 +120,8 @@ func run() error {
 	eventHandler := events.NewHandler(events.New(db), setupService)
 	repairHandler := repairs.NewHandler(repairs.New(db, immichClient), setupService)
 	suggestionHandler := suggestions.NewHandler(suggestions.New(db, peopleService), setupService)
-	e, err := server.New(healthService, emaildelivery.NewHandler(emailService), setupHandler, peopleHandler, familyHandler, visibilityHandler, recipientHandler, sourceHandler, eventHandler, repairHandler, suggestionHandler)
+	audienceHandler := audiences.NewHandler(audiences.New(db, immichClient), setupService)
+	e, err := server.New(healthService, emaildelivery.NewHandler(emailService), setupHandler, peopleHandler, familyHandler, visibilityHandler, recipientHandler, sourceHandler, eventHandler, repairHandler, suggestionHandler, audienceHandler)
 	if err != nil {
 		_ = db.Close()
 		log.Err(err).Error("HTTP server initialization failed")
