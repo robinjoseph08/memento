@@ -21,6 +21,10 @@ import type {
   VerifyCodeResponse,
 } from "./types/generated/setup";
 import type {
+  AcceptResponse,
+  InspectResponse,
+} from "./types/generated/recipients";
+import type {
   Album as SourceAlbum,
   DiscoveryResponse,
   ListResponse as SourceListResponse,
@@ -695,7 +699,85 @@ function ReadyCard({
   );
 }
 
-export function App() {
+function InvitationLanding() {
+  const [searchParams] = useSearchParams();
+  const token = searchParams.get("token") ?? "";
+  const [accepted, setAccepted] = useState(false);
+  const invitation = useQuery({
+    queryKey: ["invitation", token],
+    queryFn: () =>
+      apiJSON<InspectResponse>("/api/auth/invitations/inspect", {
+        headers: { "X-Memento-Invitation": token },
+      }),
+    enabled: token.length > 0,
+    retry: false,
+  });
+  const accept = useMutation({
+    mutationFn: () =>
+      apiJSON<AcceptResponse>("/api/auth/invitations/accept", {
+        method: "POST",
+        body: JSON.stringify({ token }),
+      }),
+    onSuccess: () => {
+      window.history.replaceState({}, "", "/invitation");
+      setAccepted(true);
+    },
+  });
+
+  return (
+    <main>
+      <section
+        aria-labelledby="invitation-title"
+        className="shell-card invitation-card"
+      >
+        <BrandHeader />
+        <h2 id="invitation-title">Private Invitation</h2>
+        {accepted ? (
+          <>
+            <p className="lede">Invitation accepted.</p>
+            <p>
+              Your verified identity is ready for resumable Onboarding. No Media
+              access is granted until Onboarding is complete.
+            </p>
+          </>
+        ) : null}
+        {!accepted && invitation.isPending ? (
+          <p aria-live="polite">Checking this Invitation securely…</p>
+        ) : null}
+        {!accepted && invitation.isError ? (
+          <p className="form-error" role="alert">
+            This Invitation is invalid or no longer available.
+          </p>
+        ) : null}
+        {!accepted && invitation.data ? (
+          <>
+            <p className="lede">
+              {invitation.data.curator_name} invited{" "}
+              {invitation.data.recipient_name} to Memento.
+            </p>
+            <p>
+              Memento is a private family photo and video archive. This
+              single-use offer expires{" "}
+              {formatSourceDate(invitation.data.expires_at)}. Accepting starts
+              Onboarding and does not sign you in or grant Media access by
+              itself.
+            </p>
+            <ErrorMessage error={accept.error} />
+            <button
+              disabled={accept.isPending}
+              onClick={() => accept.mutate()}
+              type="button"
+            >
+              {accept.isPending ? "Accepting…" : "Accept Invitation"}
+            </button>
+          </>
+        ) : null}
+      </section>
+    </main>
+  );
+}
+
+function MementoApp() {
   const [completedSession, setCompletedSession] = useState<SessionResponse>();
   const [signedOut, setSignedOut] = useState(false);
   const bootstrap = useQuery({
@@ -760,5 +842,13 @@ export function App() {
     <main>
       <ReadyCard onSignOut={signOut} session={session} />
     </main>
+  );
+}
+
+export function App() {
+  return window.location.pathname === "/invitation" ? (
+    <InvitationLanding />
+  ) : (
+    <MementoApp />
   );
 }

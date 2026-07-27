@@ -48,6 +48,59 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+test("opens an Invitation read-only and removes its token only after explicit acceptance", async () => {
+  const token = "a".repeat(64);
+  window.history.replaceState(null, "", `/invitation?token=${token}`);
+  const requests: Array<{ path: string; init?: RequestInit }> = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = requestPath(input);
+      requests.push({ path, init });
+      if (path === "/api/auth/invitations/inspect" && !init?.method) {
+        return Promise.resolve(
+          jsonResponse({
+            recipient_name: "Alex",
+            curator_name: "Robin",
+            expires_at: "2026-08-10T12:00:00Z",
+          }),
+        );
+      }
+      if (path === "/api/auth/invitations/accept") {
+        return Promise.resolve(jsonResponse({ status: "onboarding" }));
+      }
+      return Promise.reject(new Error(`Unexpected request: ${path}`));
+    }),
+  );
+
+  renderApp();
+  await screen.findByRole("button", { name: "Accept Invitation" });
+  expect(screen.getByText(/invited/, { selector: ".lede" })).toHaveTextContent(
+    "Robin invited Alex to Memento.",
+  );
+  expect(window.location.search).toBe(`?token=${token}`);
+  expect(requests).toHaveLength(1);
+  expect(requests[0]).toMatchObject({
+    path: "/api/auth/invitations/inspect",
+    init: { headers: { "X-Memento-Invitation": token } },
+  });
+  expect(
+    requests.some(
+      ({ path }) => path === "/api/setup" || path === "/api/session",
+    ),
+  ).toBe(false);
+
+  fireEvent.click(screen.getByRole("button", { name: "Accept Invitation" }));
+  expect(await screen.findByText("Invitation accepted.")).toBeInTheDocument();
+  expect(window.location.pathname).toBe("/invitation");
+  expect(window.location.search).toBe("");
+  expect(requests[1]).toMatchObject({
+    path: "/api/auth/invitations/accept",
+    init: { method: "POST" },
+  });
+  expect(JSON.parse(stringBody(requests[1].init?.body))).toEqual({ token });
+});
+
 test("completes the first-browser setup workflow with explicit Onboarding choices", async () => {
   const requests: Array<{ path: string; init?: RequestInit }> = [];
   vi.stubGlobal(

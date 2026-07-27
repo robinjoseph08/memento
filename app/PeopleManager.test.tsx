@@ -77,6 +77,118 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+test("designates a Pending Recipient separately from sending an Invitation", async () => {
+  const alex = person("33333333-3333-3333-3333-333333333333", "Alex", "Alex");
+  const access = { id: "access-id", generation: 1, state: "pending" };
+  let designated = false;
+  let invitationSent = false;
+  const requests: Array<{ path: string; init?: RequestInit }> = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = requestPath(input);
+      requests.push({ path, init });
+      if (path.startsWith("/api/people?") && !init?.method) {
+        return Promise.resolve(
+          jsonResponse({
+            people: [
+              designated
+                ? {
+                    ...alex,
+                    roles: ["recipient"],
+                    current_recipient_access: access,
+                    current_login_email: "alex@example.com",
+                  }
+                : alex,
+            ],
+          }),
+        );
+      }
+      if (path.endsWith("/designate")) {
+        designated = true;
+        return Promise.resolve(
+          jsonResponse(
+            {
+              person_id: alex.id,
+              person_name: "Alex",
+              email: "alex@example.com",
+              access,
+            },
+            201,
+          ),
+        );
+      }
+      if (path === `/api/recipients/${alex.id}`) {
+        return Promise.resolve(
+          jsonResponse({
+            person_id: alex.id,
+            person_name: "Alex",
+            email: "alex@example.com",
+            access,
+            ...(invitationSent
+              ? {
+                  invitation: {
+                    id: "invitation-id",
+                    status: "active",
+                    issued_at: "2026-07-27T12:00:00Z",
+                    expires_at: "2026-08-10T12:00:00Z",
+                    automatic_reminder_scheduled_at: "2026-08-03T12:00:00Z",
+                    manual_reminder_count: 0,
+                  },
+                }
+              : {}),
+          }),
+        );
+      }
+      if (path.endsWith("/invitation/send")) {
+        invitationSent = true;
+        return Promise.resolve(jsonResponse({ status: "active" }));
+      }
+      return Promise.reject(new Error(`Unexpected request: ${path}`));
+    }),
+  );
+
+  renderManager();
+  fireEvent.click(await screen.findByRole("button", { name: /^Alex/ }));
+  fireEvent.change(screen.getByLabelText("Login email"), {
+    target: { value: "alex@example.com" },
+  });
+  fireEvent.click(
+    screen.getByRole("button", { name: "Designate Pending Recipient" }),
+  );
+
+  const send = await screen.findByRole("button", {
+    name: "Create and send Invitation",
+  });
+  const designateRequest = requests.find(({ path }) =>
+    path.endsWith("/designate"),
+  );
+  expect(JSON.parse(stringBody(designateRequest?.init?.body))).toEqual({
+    email: "alex@example.com",
+  });
+  expect(designateRequest?.init?.headers).toEqual(
+    expect.objectContaining({ "X-Memento-CSRF": "csrf-token" }),
+  );
+  expect(requests.some(({ path }) => path.endsWith("/invitation/send"))).toBe(
+    false,
+  );
+
+  fireEvent.click(send);
+  const revoke = await screen.findByRole("button", {
+    name: "Revoke Invitation",
+  });
+  expect(revoke.closest(".invitation-status")).toHaveTextContent(
+    "Invitation: active",
+  );
+  const sendRequest = requests.find(({ path }) =>
+    path.endsWith("/invitation/send"),
+  );
+  expect(sendRequest?.init).toMatchObject({
+    method: "POST",
+    headers: { "X-Memento-CSRF": "csrf-token" },
+  });
+});
+
 test("previews and confirms the exact source, survivor, generation, email, and versions", async () => {
   const source = {
     ...person(
