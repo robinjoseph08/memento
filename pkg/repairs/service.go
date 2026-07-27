@@ -847,6 +847,9 @@ func (s *Service) ConfirmMedia(ctx context.Context, actor setup.CuratorSession, 
 			previousAvailability != "source_missing" || candidateAvailability != "current" || previousHasMembership || !candidateHasMembership {
 			return ErrConflict
 		}
+		if err := relinkDraftMediaReferences(ctx, tx, mediaItemID, candidateMediaID, now); err != nil {
+			return err
+		}
 		if err := execRepairExactlyOne(ctx, tx, `UPDATE media_backings SET active = false, ended_at = ? WHERE media_item_id = ? AND active AND immich_asset_id = ?`, now, mediaItemID, previousAssetID); err != nil {
 			return err
 		}
@@ -887,6 +890,38 @@ func (s *Service) ConfirmMedia(ctx context.Context, actor setup.CuratorSession, 
 		return MutationResponse{}, err
 	}
 	return MutationResponse{Status: "confirmed"}, nil
+}
+
+func relinkDraftMediaReferences(ctx context.Context, tx bun.Tx, stableMediaID, candidateMediaID uuid.UUID, now time.Time) error {
+	var eventCollision, looseCollision bool
+	if err := tx.NewRaw(`
+		SELECT EXISTS (
+			SELECT 1 FROM draft_media_placements AS candidate
+			JOIN draft_media_placements AS stable ON stable.event_id = candidate.event_id
+			WHERE candidate.media_item_id = ? AND stable.media_item_id = ?
+		)
+	`, candidateMediaID, stableMediaID).Scan(ctx, &eventCollision); err != nil {
+		return err
+	}
+	if err := tx.NewRaw(`
+		SELECT count(DISTINCT media_item_id) = 2
+		FROM loose_items WHERE media_item_id IN (?, ?)
+	`, stableMediaID, candidateMediaID).Scan(ctx, &looseCollision); err != nil {
+		return err
+	}
+	if eventCollision || looseCollision {
+		return ErrConflict
+	}
+	if _, err := tx.NewRaw(`UPDATE draft_media_placements SET media_item_id = ? WHERE media_item_id = ?`, stableMediaID, candidateMediaID).Exec(ctx); err != nil {
+		return err
+	}
+	if _, err := tx.NewRaw(`
+		UPDATE loose_items SET media_item_id = ?, version = version + 1, updated_at = ?
+		WHERE media_item_id = ?
+	`, stableMediaID, now, candidateMediaID).Exec(ctx); err != nil {
+		return err
+	}
+	return nil
 }
 
 func mediaCandidateMissingError(ctx context.Context, tx bun.Tx, candidateID uuid.UUID) error {

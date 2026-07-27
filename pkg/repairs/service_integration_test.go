@@ -711,6 +711,25 @@ func TestMediaConfirmationPreservesPortalIdentityAndMovesBacking(t *testing.T) {
 		sourceAlbumID, newAssetID, newMediaID, hashBytes("membership"), candidateID, oldMediaID, newMediaID, oldAssetID, newAssetID,
 		checksum("same"), checksum("same"))
 	require.NoError(t, err)
+	eventID, candidateLooseID, stableLooseID := uuid.New(), uuid.New(), uuid.New()
+	_, err = fixture.db.ExecContext(context.Background(), `
+		INSERT INTO events (id, title, grouping_timezone) VALUES (?, 'Repair draft', 'UTC');
+		INSERT INTO draft_media_placements (event_id, media_item_id, position) VALUES (?, ?, 0);
+		INSERT INTO loose_items (id, media_item_id, grouping_timezone) VALUES (?, ?, 'UTC')
+	`, eventID, eventID, newMediaID, candidateLooseID, newMediaID)
+	require.NoError(t, err)
+	_, err = fixture.db.ExecContext(context.Background(), `
+		INSERT INTO draft_media_placements (event_id, media_item_id, position) VALUES (?, ?, 1);
+		INSERT INTO loose_items (id, media_item_id, grouping_timezone) VALUES (?, ?, 'UTC')
+	`, eventID, oldMediaID, stableLooseID, oldMediaID)
+	require.NoError(t, err)
+	_, err = fixture.service.ConfirmMedia(context.Background(), fixture.actor, candidateID)
+	assert.ErrorIs(t, err, ErrConflict, "colliding draft references require explicit Curator cleanup")
+	_, err = fixture.db.ExecContext(context.Background(), `
+		DELETE FROM draft_media_placements WHERE event_id = ? AND media_item_id = ?;
+		DELETE FROM loose_items WHERE id = ?
+	`, eventID, oldMediaID, stableLooseID)
+	require.NoError(t, err)
 
 	listed, err := fixture.service.List(context.Background())
 	require.NoError(t, err)
@@ -779,6 +798,13 @@ func TestMediaConfirmationPreservesPortalIdentityAndMovesBacking(t *testing.T) {
 	var membershipMediaID uuid.UUID
 	require.NoError(t, fixture.db.NewRaw(`SELECT media_item_id FROM source_album_memberships WHERE source_album_id = ? AND immich_asset_id = ?`, sourceAlbumID, newAssetID).Scan(context.Background(), &membershipMediaID))
 	assert.Equal(t, oldMediaID, membershipMediaID)
+	var placementMediaID, looseMediaID uuid.UUID
+	var looseVersion int64
+	require.NoError(t, fixture.db.NewRaw(`SELECT media_item_id FROM draft_media_placements WHERE event_id = ?`, eventID).Scan(context.Background(), &placementMediaID))
+	require.NoError(t, fixture.db.NewRaw(`SELECT media_item_id, version FROM loose_items WHERE id = ?`, candidateLooseID).Scan(context.Background(), &looseMediaID, &looseVersion))
+	assert.Equal(t, oldMediaID, placementMediaID)
+	assert.Equal(t, oldMediaID, looseMediaID)
+	assert.Equal(t, int64(2), looseVersion)
 	var candidateState string
 	var resolvedAt *time.Time
 	require.NoError(t, fixture.db.NewRaw(`SELECT state, resolved_at FROM media_repair_candidates WHERE id = ?`, candidateID).Scan(context.Background(), &candidateState, &resolvedAt))
