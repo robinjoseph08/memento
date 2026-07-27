@@ -788,6 +788,18 @@ function MergeConfirmation({
           duplicate or self-connections.
         </li>
         <li>
+          {preview.affected_references.visibility_memberships_moved} Visibility
+          circle memberships will move to the survivor.
+        </li>
+        <li>
+          {preview.affected_references.interest_entries_moved} current Interest
+          choices will move or reconcile against the survivor.
+        </li>
+        <li>
+          {preview.affected_references.interest_history_owners_moved} retained
+          Interest history owner references will move to the survivor.
+        </li>
+        <li>
           Source roles:{" "}
           {preview.affected_references.source_roles.join(", ") || "None"}.
         </li>

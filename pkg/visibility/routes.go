@@ -157,6 +157,9 @@ func (h *Handler) SetMembership(c echo.Context) error {
 	if err := bindJSON(c, &request); err != nil {
 		return err
 	}
+	if request.Included == nil {
+		return errcodes.ValidationError("included is required.")
+	}
 	circle, err := h.service.SetMembership(h.requestContext(c), actor, circleID, personID, request)
 	if err != nil {
 		return visibilityError(err)
@@ -193,7 +196,11 @@ func (h *Handler) CuratorInterestList(c echo.Context) error {
 	if err != nil {
 		return errcodes.NotFound("Recipient")
 	}
-	response, err := h.service.InterestList(c.Request().Context(), actor, recipientID)
+	page, err := historyPage(c)
+	if err != nil {
+		return err
+	}
+	response, err := h.service.InterestList(c.Request().Context(), actor, recipientID, page)
 	if err != nil {
 		return visibilityError(err)
 	}
@@ -229,7 +236,11 @@ func (h *Handler) InterestListSelf(c echo.Context) error {
 	if err != nil {
 		return err
 	}
-	response, err := h.service.InterestList(c.Request().Context(), actor, actor.PersonID)
+	page, err := historyPage(c)
+	if err != nil {
+		return err
+	}
+	response, err := h.service.InterestList(c.Request().Context(), actor, actor.PersonID, page)
 	if err != nil {
 		return visibilityError(err)
 	}
@@ -257,7 +268,10 @@ func (h *Handler) mutateInterest(c echo.Context, actor setup.SessionActor, recip
 	if err := bindJSON(c, &request); err != nil {
 		return err
 	}
-	response, err := h.service.MutateInterest(h.requestContext(c), actor, recipientID, selectedID, request.Selected)
+	if request.Selected == nil {
+		return errcodes.ValidationError("selected is required.")
+	}
+	response, err := h.service.MutateInterest(h.requestContext(c), actor, recipientID, selectedID, *request.Selected)
 	if err != nil {
 		return visibilityError(err)
 	}
@@ -270,6 +284,18 @@ func discoveryPage(c echo.Context) (DiscoveryPageRequest, error) {
 		limit, err := strconv.Atoi(value)
 		if err != nil || limit < 1 || limit > 200 {
 			return DiscoveryPageRequest{}, errcodes.ValidationError("limit must be between 1 and 200.")
+		}
+		page.Limit = limit
+	}
+	return page, nil
+}
+
+func historyPage(c echo.Context) (HistoryPageRequest, error) {
+	page := HistoryPageRequest{Cursor: c.QueryParam("history_cursor"), Limit: 50}
+	if value := c.QueryParam("history_limit"); value != "" {
+		limit, err := strconv.Atoi(value)
+		if err != nil || limit < 1 || limit > 200 {
+			return HistoryPageRequest{}, errcodes.ValidationError("history_limit must be between 1 and 200.")
 		}
 		page.Limit = limit
 	}
@@ -296,8 +322,10 @@ func visibilityError(err error) error {
 		return errcodes.Conflict("An active Visibility circle already uses that name.")
 	case errors.Is(err, ErrStale):
 		return errcodes.Conflict("This Visibility circle changed after it was loaded. Reload and try again.")
+	case errors.Is(err, ErrInvalidCursor):
+		return errcodes.ValidationError("The People or Interest history cursor is invalid. Reload and try again.")
 	case errors.Is(err, ErrInvalid):
-		return errcodes.ValidationError("Enter a Visibility circle name of 120 characters or fewer and a current version.")
+		return errcodes.ValidationError("Enter valid Visibility fields and a current version.")
 	default:
 		return err
 	}

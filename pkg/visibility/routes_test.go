@@ -92,6 +92,21 @@ func TestEveryVisibilityAndInterestMutationRequiresCSRF(t *testing.T) {
 	}
 }
 
+func TestMutationBodiesRequireExplicitBooleanIntent(t *testing.T) {
+	authorizer := &fakeAuthorizer{actor: setup.SessionActor{Curator: true}}
+	for _, test := range []struct {
+		path string
+		body string
+	}{
+		{"/api/visibility-circles/11111111-1111-4111-8111-111111111111/members/22222222-2222-4222-8222-222222222222", `{"version":1}`},
+		{"/api/interest-lists/11111111-1111-4111-8111-111111111111/people/22222222-2222-4222-8222-222222222222", `{}`},
+	} {
+		response := visibilityRequest(visibilityHTTP(authorizer), http.MethodPut, test.path, "session", "csrf", test.body)
+		assert.Equal(t, http.StatusUnprocessableEntity, response.Code)
+		assert.Contains(t, response.Body.String(), "required")
+	}
+}
+
 func TestVisibilityRoutePoliciesCannotBeMistakenForContentAuthority(t *testing.T) {
 	e := visibilityHTTP(&fakeAuthorizer{})
 	policies := map[string]bool{}

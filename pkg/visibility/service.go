@@ -3,8 +3,10 @@ package visibility
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -26,6 +28,7 @@ var (
 	ErrSelfSelection     = errors.New("recipient cannot select their own Person")
 	ErrNotDiscoverable   = errors.New("person is not discoverable")
 	ErrInvalid           = errors.New("visibility request is invalid")
+	ErrInvalidCursor     = errors.New("visibility cursor is invalid")
 	ErrDuplicateName     = errors.New("visibility circle name already exists")
 	ErrStale             = errors.New("visibility circle was changed by another request")
 )
@@ -73,7 +76,7 @@ type CircleVersionRequest struct {
 
 // MembershipRequest changes one direct circle membership.
 type MembershipRequest struct {
-	Included bool  `json:"included"`
+	Included *bool `json:"included" validate:"required"`
 	Version  int64 `json:"version" validate:"required,min=1"`
 }
 
@@ -115,14 +118,26 @@ type InterestHistory struct {
 
 // InterestListResponse is visible only to its Recipient or the Curator.
 type InterestListResponse struct {
-	Recipient Person            `json:"recipient"`
-	Entries   []InterestEntry   `json:"entries"`
-	History   []InterestHistory `json:"history"`
+	Recipient         Person            `json:"recipient"`
+	Entries           []InterestEntry   `json:"entries"`
+	History           []InterestHistory `json:"history"`
+	HistoryNextCursor *string           `json:"history_next_cursor,omitempty"`
+}
+
+// HistoryPageRequest selects one retained Interest history page.
+type HistoryPageRequest struct {
+	Cursor string
+	Limit  int
+}
+
+type historyCursor struct {
+	CreatedAt time.Time `json:"created_at"`
+	ID        int64     `json:"id"`
 }
 
 // InterestMutationRequest explicitly selects or deselects one Person.
 type InterestMutationRequest struct {
-	Selected bool `json:"selected"`
+	Selected *bool `json:"selected" validate:"required"`
 }
 
 // ProposalRecipient explains why one Eligible Recipient is proposed for Attendance.
@@ -169,6 +184,11 @@ func normalizeCircleName(value string) (string, error) {
 func lockVisibility(ctx context.Context, tx bun.Tx) error {
 	_, err := tx.NewRaw(`SELECT pg_advisory_xact_lock(hashtextextended('memento:visibility', 0))`).Exec(ctx)
 	return err
+}
+
+// LockReferences serializes Person merges with Visibility and Interest mutations.
+func LockReferences(ctx context.Context, tx bun.Tx) error {
+	return lockVisibility(ctx, tx)
 }
 
 func (s *Service) CreateCircle(ctx context.Context, actor setup.SessionActor, request CircleRequest) (Circle, error) {
@@ -295,7 +315,7 @@ func (s *Service) SetMembership(ctx context.Context, actor setup.SessionActor, c
 	if !actor.Curator {
 		return Circle{}, ErrNotAuthorized
 	}
-	if request.Version < 1 {
+	if request.Included == nil || request.Version < 1 {
 		return Circle{}, ErrInvalid
 	}
 	var circle Circle
@@ -314,7 +334,7 @@ func (s *Service) SetMembership(ctx context.Context, actor setup.SessionActor, c
 			return err
 		}
 		now := s.now().UTC()
-		if request.Included {
+		if *request.Included {
 			_, err = tx.NewRaw(`INSERT INTO visibility_circle_members (circle_id, person_id, created_at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING`, circleID, personID, now).Exec(ctx)
 		} else {
 			_, err = tx.NewRaw(`DELETE FROM visibility_circle_members WHERE circle_id = ? AND person_id = ?`, circleID, personID).Exec(ctx)
@@ -329,13 +349,13 @@ func (s *Service) SetMembership(ctx context.Context, actor setup.SessionActor, c
 		if err := requireOne(result); err != nil {
 			return err
 		}
-		if !request.Included {
+		if !*request.Included {
 			if err := reconcileEligibility(ctx, tx, actor, now); err != nil {
 				return err
 			}
 		}
 		action := "visibility_circle_member_removed"
-		if request.Included {
+		if *request.Included {
 			action = "visibility_circle_member_added"
 		}
 		if err := appendAudit(ctx, tx, actor, personID, action, map[string]any{"circle_id": circleID}); err != nil {
@@ -419,7 +439,7 @@ func (s *Service) Discover(ctx context.Context, actor setup.SessionActor, recipi
 	}
 	cursor, hasCursor, err := decodeDiscoveryCursor(page.Cursor)
 	if err != nil {
-		return DiscoveryResponse{}, ErrInvalid
+		return DiscoveryResponse{}, ErrInvalidCursor
 	}
 	type discoveryRow struct {
 		personRow
@@ -470,7 +490,7 @@ func decodeDiscoveryCursor(value string) (discoveryCursor, bool, error) {
 	}
 	var cursor discoveryCursor
 	if err := json.Unmarshal(encoded, &cursor); err != nil || cursor.SortKey == "" || cursor.ID == uuid.Nil {
-		return discoveryCursor{}, false, ErrInvalid
+		return discoveryCursor{}, false, ErrInvalidCursor
 	}
 	return cursor, true, nil
 }
@@ -487,6 +507,12 @@ func (s *Service) relationshipAnnotations(ctx context.Context, recipientID uuid.
 	annotations := map[uuid.UUID]*RelationshipAnnotation{}
 	familyService := family.New(s.db)
 	branch, err := familyService.Branch(ctx, recipientID)
+	if errors.Is(err, family.ErrPersonNotFound) {
+		return nil, ErrPersonNotFound
+	}
+	if errors.Is(err, family.ErrPersonUnavailable) {
+		return nil, ErrPersonUnavailable
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -535,12 +561,22 @@ func (s *Service) relationshipAnnotations(ctx context.Context, recipientID uuid.
 	return annotations, nil
 }
 
-func (s *Service) InterestList(ctx context.Context, actor setup.SessionActor, recipientID uuid.UUID) (InterestListResponse, error) {
+func (s *Service) InterestList(ctx context.Context, actor setup.SessionActor, recipientID uuid.UUID, page HistoryPageRequest) (InterestListResponse, error) {
 	if !actor.Curator && actor.PersonID != recipientID {
 		return InterestListResponse{}, ErrNotAuthorized
 	}
 	if err := requireRecipient(ctx, s.db, recipientID); err != nil {
 		return InterestListResponse{}, err
+	}
+	if page.Limit == 0 {
+		page.Limit = 50
+	}
+	if page.Limit < 1 || page.Limit > 200 {
+		return InterestListResponse{}, ErrInvalid
+	}
+	cursor, hasCursor, err := decodeHistoryCursor(page.Cursor)
+	if err != nil {
+		return InterestListResponse{}, ErrInvalidCursor
 	}
 	recipient, err := loadPerson(ctx, s.db, recipientID)
 	if err != nil {
@@ -574,13 +610,45 @@ func (s *Service) InterestList(ctx context.Context, actor setup.SessionActor, re
 		CreatedAt        time.Time `bun:"created_at"`
 	}
 	history := make([]historyRow, 0)
-	if err := s.db.NewRaw(`SELECT history.id, selected.id AS selected_id, selected.display_name AS selected_name, selected.sort_name AS selected_sort_name, actor.id AS actor_id, actor.display_name AS actor_name, actor.sort_name AS actor_sort_name, history.action, history.result, history.reason, history.created_at FROM interest_list_history AS history JOIN people AS selected ON selected.id = history.selected_person_id JOIN people AS actor ON actor.id = history.actor_person_id WHERE history.recipient_person_id = ? ORDER BY history.created_at DESC, history.id DESC`, recipientID).Scan(ctx, &history); err != nil {
+	if err := s.db.NewRaw(`SELECT history.id, selected.id AS selected_id, selected.display_name AS selected_name, selected.sort_name AS selected_sort_name, actor.id AS actor_id, actor.display_name AS actor_name, actor.sort_name AS actor_sort_name, history.action, history.result, history.reason, history.created_at FROM interest_list_history AS history JOIN people AS selected ON selected.id = history.selected_person_id JOIN people AS actor ON actor.id = history.actor_person_id WHERE history.recipient_person_id = ? AND (NOT ? OR (history.created_at, history.id) < (?, ?)) ORDER BY history.created_at DESC, history.id DESC LIMIT ?`, recipientID, hasCursor, cursor.CreatedAt, cursor.ID, page.Limit+1).Scan(ctx, &history); err != nil {
 		return InterestListResponse{}, err
+	}
+	if len(history) > page.Limit {
+		last := history[page.Limit-1]
+		next, err := encodeHistoryCursor(historyCursor{CreatedAt: last.CreatedAt, ID: last.ID})
+		if err != nil {
+			return InterestListResponse{}, err
+		}
+		response.HistoryNextCursor = &next
+		history = history[:page.Limit]
 	}
 	for _, item := range history {
 		response.History = append(response.History, InterestHistory{ID: item.ID, Person: Person{ID: item.SelectedID.String(), DisplayName: item.SelectedName, SortName: item.SelectedSortName}, Actor: Person{ID: item.ActorID.String(), DisplayName: item.ActorName, SortName: item.ActorSortName}, Action: item.Action, Result: item.Result, Reason: item.Reason, CreatedAt: item.CreatedAt})
 	}
 	return response, nil
+}
+
+func decodeHistoryCursor(value string) (historyCursor, bool, error) {
+	if value == "" {
+		return historyCursor{}, false, nil
+	}
+	encoded, err := base64.RawURLEncoding.DecodeString(value)
+	if err != nil {
+		return historyCursor{}, false, err
+	}
+	var cursor historyCursor
+	if err := json.Unmarshal(encoded, &cursor); err != nil || cursor.CreatedAt.IsZero() || cursor.ID < 1 {
+		return historyCursor{}, false, ErrInvalidCursor
+	}
+	return cursor, true, nil
+}
+
+func encodeHistoryCursor(cursor historyCursor) (string, error) {
+	encoded, err := json.Marshal(cursor)
+	if err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(encoded), nil
 }
 
 func (s *Service) MutateInterest(ctx context.Context, actor setup.SessionActor, recipientID, selectedID uuid.UUID, selected bool) (InterestListResponse, error) {
@@ -649,7 +717,7 @@ func (s *Service) MutateInterest(ctx context.Context, actor setup.SessionActor, 
 	if err != nil {
 		return InterestListResponse{}, err
 	}
-	return s.InterestList(ctx, actor, recipientID)
+	return s.InterestList(ctx, actor, recipientID, HistoryPageRequest{})
 }
 
 func sharedCircle(ctx context.Context, db bun.IDB, recipientID, selectedID uuid.UUID) (bool, error) {
@@ -703,8 +771,81 @@ func ArchivePersonReferences(ctx context.Context, tx bun.Tx, personID uuid.UUID,
 	return reconcileEligibility(ctx, tx, actor, now)
 }
 
+// PersonMergeEffects summarizes Visibility and Interest references affected by a Person merge.
+type PersonMergeEffects struct {
+	CircleMembershipsMoved     int
+	InterestEntriesMoved       int
+	InterestHistoryOwnersMoved int
+	ReferenceFingerprint       string
+}
+
+// PreviewPersonMerge reports every current Visibility and Interest reference affected by a merge.
+func PreviewPersonMerge(ctx context.Context, db bun.IDB, sourceID, survivorID uuid.UUID) (PersonMergeEffects, error) {
+	type circleReference struct {
+		CircleID  uuid.UUID `bun:"circle_id"`
+		PersonID  uuid.UUID `bun:"person_id"`
+		CreatedAt time.Time `bun:"created_at"`
+	}
+	type entryReference struct {
+		RecipientID uuid.UUID `bun:"recipient_person_id"`
+		SelectedID  uuid.UUID `bun:"selected_person_id"`
+		State       string    `bun:"state"`
+		ChosenAt    time.Time `bun:"chosen_at"`
+		UpdatedAt   time.Time `bun:"updated_at"`
+	}
+	type historyReference struct {
+		ID          int64     `bun:"id"`
+		RecipientID uuid.UUID `bun:"recipient_person_id"`
+		SelectedID  uuid.UUID `bun:"selected_person_id"`
+		ActorID     uuid.UUID `bun:"actor_person_id"`
+		Action      string    `bun:"action"`
+		Result      string    `bun:"result"`
+		Reason      string    `bun:"reason"`
+		CreatedAt   time.Time `bun:"created_at"`
+	}
+	circles := make([]circleReference, 0)
+	if err := db.NewRaw(`SELECT circle_id, person_id, created_at FROM visibility_circle_members WHERE person_id IN (?, ?) ORDER BY circle_id, person_id`, sourceID, survivorID).Scan(ctx, &circles); err != nil {
+		return PersonMergeEffects{}, err
+	}
+	entries := make([]entryReference, 0)
+	if err := db.NewRaw(`SELECT recipient_person_id, selected_person_id, state, chosen_at, updated_at FROM interest_list_entries WHERE recipient_person_id IN (?, ?) OR selected_person_id IN (?, ?) ORDER BY recipient_person_id, selected_person_id`, sourceID, survivorID, sourceID, survivorID).Scan(ctx, &entries); err != nil {
+		return PersonMergeEffects{}, err
+	}
+	history := make([]historyReference, 0)
+	if err := db.NewRaw(`SELECT id, recipient_person_id, selected_person_id, actor_person_id, action, result, reason, created_at FROM interest_list_history WHERE recipient_person_id IN (?, ?) ORDER BY id`, sourceID, survivorID).Scan(ctx, &history); err != nil {
+		return PersonMergeEffects{}, err
+	}
+	effects := PersonMergeEffects{}
+	for _, reference := range circles {
+		if reference.PersonID == sourceID {
+			effects.CircleMembershipsMoved++
+		}
+	}
+	for _, reference := range entries {
+		if reference.RecipientID == sourceID || reference.SelectedID == sourceID {
+			effects.InterestEntriesMoved++
+		}
+	}
+	for _, reference := range history {
+		if reference.RecipientID == sourceID {
+			effects.InterestHistoryOwnersMoved++
+		}
+	}
+	encoded, err := json.Marshal(struct {
+		Circles []circleReference  `json:"circles"`
+		Entries []entryReference   `json:"entries"`
+		History []historyReference `json:"history"`
+	}{Circles: circles, Entries: entries, History: history})
+	if err != nil {
+		return PersonMergeEffects{}, err
+	}
+	digest := sha256.Sum256(encoded)
+	effects.ReferenceFingerprint = hex.EncodeToString(digest[:])
+	return effects, nil
+}
+
 // MergePersonReferences moves current Visibility and Interest references to a surviving Person.
-// Historical rows keep their original People so actor attribution remains distinguishable.
+// Historical selected People and actors keep their original identities for attribution.
 func MergePersonReferences(ctx context.Context, tx bun.Tx, sourceID, survivorID uuid.UUID, actor setup.SessionActor, now time.Time) error {
 	if sourceID == survivorID {
 		return ErrInvalid

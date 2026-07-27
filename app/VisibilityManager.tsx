@@ -60,6 +60,112 @@ async function discoverAll(path: string): Promise<DiscoveryResponse> {
   return { people };
 }
 
+function historyPageURL(path: string, cursor: string) {
+  const query = new URLSearchParams({
+    history_cursor: cursor,
+    history_limit: "50",
+  });
+  return `${path}?${query}`;
+}
+
+function InterestChoice({
+  person,
+  entry,
+  currentlyDiscoverable,
+  pending,
+  onChange,
+}: {
+  person: Person;
+  entry?: InterestListResponse["entries"][number];
+  currentlyDiscoverable: boolean;
+  pending: boolean;
+  onChange: (selected: boolean) => void;
+}) {
+  const active = entry?.state === "active";
+  const inactive = entry?.state === "ineligible";
+  const status = inactive
+    ? currentlyDiscoverable
+      ? "Inactive after visibility loss. Select again to restore."
+      : "Inactive because this Person is no longer discoverable."
+    : active
+      ? "Selected explicitly"
+      : "Not selected";
+  const content = (
+    <>
+      <input
+        aria-label={person.display_name}
+        checked={active}
+        disabled={pending || (inactive && !currentlyDiscoverable)}
+        onChange={(event) => onChange(event.target.checked)}
+        type="checkbox"
+      />
+      <span>
+        <strong>{person.display_name}</strong>
+        {person.relationship ? (
+          <small>{formatRelationship(person)}</small>
+        ) : null}
+        <small className="interest-choice-status">{status}</small>
+      </span>
+    </>
+  );
+  if (inactive) {
+    return (
+      <div className="choice">
+        {content}
+        <button
+          disabled={pending}
+          onClick={() => onChange(false)}
+          type="button"
+        >
+          Remove retained choice
+        </button>
+      </div>
+    );
+  }
+  return <label className="choice">{content}</label>;
+}
+
+function InterestHistory({
+  interest,
+  pending,
+  onLoadMore,
+}: {
+  interest: InterestListResponse;
+  pending: boolean;
+  onLoadMore: (cursor: string) => void;
+}) {
+  return (
+    <details>
+      <summary>Interest list audit history</summary>
+      {interest.history.length ? (
+        <ol className="interest-history">
+          {interest.history.map((history) => (
+            <li key={history.id}>
+              <strong>{history.person.display_name}</strong>{" "}
+              {formatHistoryAction(history.action, history.result)} by{" "}
+              {history.actor.display_name}{" "}
+              <time dateTime={history.created_at}>
+                {new Date(history.created_at).toLocaleString()}
+              </time>
+            </li>
+          ))}
+        </ol>
+      ) : (
+        <p>No Interest list changes yet.</p>
+      )}
+      {interest.history_next_cursor ? (
+        <button
+          disabled={pending}
+          onClick={() => onLoadMore(interest.history_next_cursor!)}
+          type="button"
+        >
+          {pending ? "Loading history…" : "Load older history"}
+        </button>
+      ) : null}
+    </details>
+  );
+}
+
 export function RecipientVisibilityManager({
   session,
   onSignOut,
@@ -99,6 +205,24 @@ export function RecipientVisibilityManager({
       queryClient.setQueryData(["recipient-interest-list"], response);
     },
   });
+  const loadHistory = useMutation({
+    mutationFn: (cursor: string) =>
+      apiJSON<InterestListResponse>(
+        historyPageURL("/api/me/interest-list", cursor),
+      ),
+    onSuccess: (page) => {
+      queryClient.setQueryData<InterestListResponse>(
+        ["recipient-interest-list"],
+        (current) =>
+          current
+            ? {
+                ...page,
+                history: [...current.history, ...page.history],
+              }
+            : page,
+      );
+    },
+  });
 
   return (
     <section
@@ -110,8 +234,9 @@ export function RecipientVisibilityManager({
           <p className="eyebrow">PRIVATE DISCOVERY</p>
           <h2 id="recipient-interest-title">Your Interest list</h2>
           <p>
-            Choose discoverable People whose Attendance should suggest Media for
-            you. Choices prepare proposals and never grant access.
+            Choose discoverable People to help the Curator suggest relevant
+            Event photos for you, including Events you did not attend. Every
+            proposal is reviewed, and choices never grant access.
           </p>
         </div>
         <div className="header-actions">
@@ -122,7 +247,12 @@ export function RecipientVisibilityManager({
         </div>
       </header>
       <ErrorNotice
-        error={interest.error ?? discoverable.error ?? mutateInterest.error}
+        error={
+          interest.error ??
+          discoverable.error ??
+          mutateInterest.error ??
+          loadHistory.error
+        }
       />
       {interest.isPending || discoverable.isPending ? (
         <p>Loading your private Interest list…</p>
@@ -135,60 +265,30 @@ export function RecipientVisibilityManager({
                 const entry = interest.data.entries.find(
                   (candidate) => candidate.person.id === person.id,
                 );
-                const active = entry?.state === "active";
-                const currentlyDiscoverable = discoverable.data.people.some(
-                  (candidate) => candidate.id === person.id,
-                );
                 return (
-                  <label className="choice" key={person.id}>
-                    <input
-                      checked={active}
-                      disabled={
-                        mutateInterest.isPending ||
-                        (!active && !currentlyDiscoverable)
-                      }
-                      onChange={(event) =>
-                        mutateInterest.mutate({
-                          person,
-                          selected: event.target.checked,
-                        })
-                      }
-                      type="checkbox"
-                    />
-                    <span>
-                      <strong>{person.display_name}</strong>
-                      {person.relationship ? (
-                        <small>{formatRelationship(person)}</small>
-                      ) : null}
-                      {entry?.state === "ineligible"
-                        ? currentlyDiscoverable
-                          ? "Inactive after visibility loss. Select again to restore."
-                          : "Inactive because this Person is no longer discoverable."
-                        : "Explicit Interest choice"}
-                    </span>
-                  </label>
+                  <InterestChoice
+                    currentlyDiscoverable={discoverable.data.people.some(
+                      (candidate) => candidate.id === person.id,
+                    )}
+                    entry={entry}
+                    key={person.id}
+                    onChange={(selected) =>
+                      mutateInterest.mutate({ person, selected })
+                    }
+                    pending={mutateInterest.isPending}
+                    person={person}
+                  />
                 );
               })}
             </div>
           ) : (
             <p>No People are discoverable through shared circles.</p>
           )}
-          <details>
-            <summary>Your Interest list history</summary>
-            {interest.data.history.length ? (
-              <ol className="interest-history">
-                {interest.data.history.map((history) => (
-                  <li key={history.id}>
-                    <strong>{history.person.display_name}</strong>{" "}
-                    {formatHistoryAction(history.action, history.result)} by{" "}
-                    {history.actor.display_name}
-                  </li>
-                ))}
-              </ol>
-            ) : (
-              <p>No Interest list changes yet.</p>
-            )}
-          </details>
+          <InterestHistory
+            interest={interest.data}
+            onLoadMore={(cursor) => loadHistory.mutate(cursor)}
+            pending={loadHistory.isPending}
+          />
         </div>
       ) : null}
     </section>
@@ -198,7 +298,7 @@ export function RecipientVisibilityManager({
 export function VisibilityManager({ session }: { session: SessionResponse }) {
   const queryClient = useQueryClient();
   const [circleName, setCircleName] = useState("");
-  const [editingCircle, setEditingCircle] = useState<Circle>();
+  const [editingCircleID, setEditingCircleID] = useState("");
   const [mobileCircleID, setMobileCircleID] = useState("");
   const [memberFilter, setMemberFilter] = useState("");
   const [recipientID, setRecipientID] = useState("");
@@ -230,6 +330,9 @@ export function VisibilityManager({ session }: { session: SessionResponse }) {
 
   const currentPeople = people.data?.people ?? [];
   const activeCircles = circles.data?.circles ?? [];
+  const editingCircle = activeCircles.find(
+    (circle) => circle.id === editingCircleID,
+  );
   const recipients = currentPeople.filter((person) =>
     person.roles.includes("recipient"),
   );
@@ -273,7 +376,7 @@ export function VisibilityManager({ session }: { session: SessionResponse }) {
           }),
     onSuccess: async (circle) => {
       setCircleName("");
-      setEditingCircle(undefined);
+      setEditingCircleID("");
       setMobileCircleID(circle.id);
       await queryClient.invalidateQueries({
         queryKey: ["visibility-circles"],
@@ -289,7 +392,7 @@ export function VisibilityManager({ session }: { session: SessionResponse }) {
       }),
     onSuccess: async () => {
       setCircleName("");
-      setEditingCircle(undefined);
+      setEditingCircleID("");
       setMobileCircleID("");
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["visibility-circles"] }),
@@ -329,19 +432,51 @@ export function VisibilityManager({ session }: { session: SessionResponse }) {
     },
   });
   const mutateInterest = useMutation({
-    mutationFn: ({ person, selected }: { person: Person; selected: boolean }) =>
+    mutationFn: ({
+      recipientID: mutationRecipientID,
+      person,
+      selected,
+    }: {
+      recipientID: string;
+      person: Person;
+      selected: boolean;
+    }) =>
       apiJSON<InterestListResponse>(
-        `/api/interest-lists/${recipientID}/people/${person.id}`,
+        `/api/interest-lists/${mutationRecipientID}/people/${person.id}`,
         {
           method: "PUT",
           headers: { "X-Memento-CSRF": session.csrf_token },
           body: JSON.stringify({ selected }),
         },
       ),
-    onSuccess: (response) => {
+    onSuccess: (response, variables) => {
       queryClient.setQueryData(
-        ["curator-interest-list", recipientID],
+        ["curator-interest-list", variables.recipientID],
         response,
+      );
+    },
+  });
+  const loadHistory = useMutation({
+    mutationFn: ({
+      recipientID: historyRecipientID,
+      cursor,
+    }: {
+      recipientID: string;
+      cursor: string;
+    }) =>
+      apiJSON<InterestListResponse>(
+        historyPageURL(`/api/interest-lists/${historyRecipientID}`, cursor),
+      ),
+    onSuccess: (page, variables) => {
+      queryClient.setQueryData<InterestListResponse>(
+        ["curator-interest-list", variables.recipientID],
+        (current) =>
+          current
+            ? {
+                ...page,
+                history: [...current.history, ...page.history],
+              }
+            : page,
       );
     },
   });
@@ -352,7 +487,7 @@ export function VisibilityManager({ session }: { session: SessionResponse }) {
   }
 
   function startEditing(circle: Circle) {
-    setEditingCircle(circle);
+    setEditingCircleID(circle.id);
     setCircleName(circle.name);
     saveCircle.reset();
     archiveCircle.reset();
@@ -396,14 +531,18 @@ export function VisibilityManager({ session }: { session: SessionResponse }) {
               />
             </label>
             <div className="visibility-actions">
-              <button disabled={saveCircle.isPending} type="submit">
+              <button
+                disabled={saveCircle.isPending || membership.isPending}
+                type="submit"
+              >
                 {editingCircle ? "Save circle" : "Create circle"}
               </button>
               {editingCircle ? (
                 <>
                   <button
+                    disabled={membership.isPending}
                     onClick={() => {
-                      setEditingCircle(undefined);
+                      setEditingCircleID("");
                       setCircleName("");
                     }}
                     type="button"
@@ -412,7 +551,7 @@ export function VisibilityManager({ session }: { session: SessionResponse }) {
                   </button>
                   <button
                     className="danger-button"
-                    disabled={archiveCircle.isPending}
+                    disabled={archiveCircle.isPending || membership.isPending}
                     onClick={() => {
                       if (
                         window.confirm(
@@ -464,7 +603,9 @@ export function VisibilityManager({ session }: { session: SessionResponse }) {
           <ErrorNotice
             error={people.error ?? circles.error ?? membership.error}
           />
-          {activeCircles.length ? (
+          {circles.isPending || people.isPending ? (
+            <p>Loading Visibility circles and People…</p>
+          ) : activeCircles.length ? (
             <>
               <div className="visibility-matrix-wrap">
                 <table className="visibility-matrix">
@@ -552,9 +693,9 @@ export function VisibilityManager({ session }: { session: SessionResponse }) {
                 </div>
               </div>
             </>
-          ) : (
+          ) : circles.isSuccess && people.isSuccess ? (
             <p>Create a circle before assigning membership.</p>
-          )}
+          ) : null}
         </section>
 
         <section
@@ -570,6 +711,7 @@ export function VisibilityManager({ session }: { session: SessionResponse }) {
           <label>
             Recipient
             <select
+              disabled={mutateInterest.isPending || loadHistory.isPending}
               onChange={(event) => setRecipientID(event.target.value)}
               value={recipientID}
             >
@@ -582,69 +724,47 @@ export function VisibilityManager({ session }: { session: SessionResponse }) {
             </select>
           </label>
           <ErrorNotice
-            error={interest.error ?? discoverable.error ?? mutateInterest.error}
+            error={
+              interest.error ??
+              discoverable.error ??
+              mutateInterest.error ??
+              loadHistory.error
+            }
           />
           {recipientID && interest.isSuccess && discoverable.isSuccess ? (
             <div className="interest-editor">
               <h4>Discoverable People</h4>
               {interestChoices.length ? (
                 <div className="interest-choices">
-                  {interestChoices.map((person) => {
-                    const entry = interestEntry(person.id);
-                    const active = entry?.state === "active";
-                    const currentlyDiscoverable = discoverable.data.people.some(
-                      (choice) => choice.id === person.id,
-                    );
-                    return (
-                      <label className="choice" key={person.id}>
-                        <input
-                          checked={active}
-                          disabled={
-                            mutateInterest.isPending ||
-                            (!active && !currentlyDiscoverable)
-                          }
-                          onChange={(event) =>
-                            mutateInterest.mutate({
-                              person,
-                              selected: event.target.checked,
-                            })
-                          }
-                          type="checkbox"
-                        />
-                        <span>
-                          <strong>{person.display_name}</strong>
-                          {person.relationship ? (
-                            <small>{formatRelationship(person)}</small>
-                          ) : null}
-                          {entry?.state === "ineligible"
-                            ? currentlyDiscoverable
-                              ? "Inactive after visibility loss. Select again to restore."
-                              : "Inactive because this Person is no longer discoverable."
-                            : "Explicit Interest choice"}
-                        </span>
-                      </label>
-                    );
-                  })}
+                  {interestChoices.map((person) => (
+                    <InterestChoice
+                      currentlyDiscoverable={discoverable.data.people.some(
+                        (choice) => choice.id === person.id,
+                      )}
+                      entry={interestEntry(person.id)}
+                      key={person.id}
+                      onChange={(selected) =>
+                        mutateInterest.mutate({
+                          recipientID,
+                          person,
+                          selected,
+                        })
+                      }
+                      pending={mutateInterest.isPending}
+                      person={person}
+                    />
+                  ))}
                 </div>
               ) : (
                 <p>No People are discoverable through shared circles.</p>
               )}
-              <details>
-                <summary>Interest list audit history</summary>
-                {interest.data.history.length ? (
-                  <ol className="interest-history">
-                    {interest.data.history.map((history) => (
-                      <li key={history.id}>
-                        <strong>{history.person.display_name}</strong>{" "}
-                        {formatHistoryAction(history.action, history.result)} by{" "}
-                        {history.actor.display_name}
-                      </li>
-                    ))}
-                  </ol>
-                ) : (
-                  <p>No Interest list changes yet.</p>
-                )}
-              </details>
+              <InterestHistory
+                interest={interest.data}
+                onLoadMore={(cursor) =>
+                  loadHistory.mutate({ cursor, recipientID })
+                }
+                pending={loadHistory.isPending}
+              />
             </div>
           ) : null}
         </section>

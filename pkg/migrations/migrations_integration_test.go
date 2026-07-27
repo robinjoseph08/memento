@@ -111,6 +111,32 @@ func TestRecipientMigrationAppliesAfterExistingMigrationLedger(t *testing.T) {
 	assert.Equal(t, 1, after)
 }
 
+func TestVisibilityMigrationAppliesAfterDraftMigrationLedger(t *testing.T) {
+	db := testdb.Open(t)
+	ctx := context.Background()
+	allMigrations := collection.Sorted()
+	priorMigrations := migrate.NewMigrations()
+	foundVisibility := false
+	for _, migration := range allMigrations {
+		if migration.Name == "202607270002" {
+			foundVisibility = true
+			break
+		}
+		priorMigrations.Add(migration)
+	}
+	require.True(t, foundVisibility)
+	require.NoError(t, applyCollection(ctx, db, priorMigrations))
+
+	var before int
+	require.NoError(t, db.NewRaw(`SELECT count(*) FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = 'visibility_circles'`).Scan(ctx, &before))
+	assert.Zero(t, before)
+	require.NoError(t, Apply(ctx, db))
+	require.NoError(t, Current(ctx, db))
+	var after int
+	require.NoError(t, db.NewRaw(`SELECT count(*) FROM information_schema.tables WHERE table_schema = current_schema() AND table_name IN ('visibility_circles', 'visibility_circle_members', 'interest_list_entries', 'interest_list_history')`).Scan(ctx, &after))
+	assert.Equal(t, 4, after)
+}
+
 func TestDraftMigrationRollbackRestoresRequiredCaptureDates(t *testing.T) {
 	db := testdb.Open(t)
 	ctx := context.Background()
@@ -146,6 +172,27 @@ func TestDraftMigrationRollbackRestoresRequiredCaptureDates(t *testing.T) {
 		WHERE table_schema = current_schema() AND table_name = 'media_items' AND column_name = 'local_date_time'
 	`).Scan(ctx, &nullable))
 	assert.Equal(t, "NO", nullable)
+}
+
+func TestVisibilityInfrastructureEnforcesPrivacyStateConstraints(t *testing.T) {
+	db := testdb.Open(t)
+	ctx := context.Background()
+	require.NoError(t, Apply(ctx, db))
+	const first = "11111111-1111-4111-8111-111111111111"
+	const second = "22222222-2222-4222-8222-222222222222"
+	const circle = "33333333-3333-4333-8333-333333333333"
+	_, err := db.ExecContext(ctx, `INSERT INTO people (id, display_name, sort_name) VALUES (?, 'First', 'First'), (?, 'Second', 'Second'); INSERT INTO visibility_circles (id, name) VALUES (?, 'Family')`, first, second, circle)
+	require.NoError(t, err)
+	_, err = db.ExecContext(ctx, `INSERT INTO visibility_circles (id, name) VALUES ('44444444-4444-4444-8444-444444444444', 'family')`)
+	require.Error(t, err, "active circle names must be case-insensitively unique")
+	_, err = db.ExecContext(ctx, `INSERT INTO interest_list_entries (recipient_person_id, selected_person_id, state, chosen_at, updated_at) VALUES (?, ?, 'active', now(), now())`, first, first)
+	require.Error(t, err, "a Recipient must not select their own Person")
+	_, err = db.ExecContext(ctx, `INSERT INTO interest_list_entries (recipient_person_id, selected_person_id, state, chosen_at, updated_at) VALUES (?, ?, 'unknown', now(), now())`, first, second)
+	require.Error(t, err, "Interest state must use a constrained domain value")
+	_, err = db.ExecContext(ctx, `INSERT INTO visibility_circle_members (circle_id, person_id) VALUES (?, ?)`, circle, second)
+	require.NoError(t, err)
+	_, err = db.ExecContext(ctx, `DELETE FROM people WHERE id = ?`, second)
+	require.Error(t, err, "Visibility references must restrict Person deletion")
 }
 
 func TestEmailDeliveryInfrastructureEnforcesDurableState(t *testing.T) {

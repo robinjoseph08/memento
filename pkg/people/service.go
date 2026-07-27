@@ -94,16 +94,20 @@ type MergePreviewRequest struct {
 
 // ReferenceEffects summarizes references affected or deliberately retained by a merge.
 type ReferenceEffects struct {
-	CurrentRecipientGenerationID string   `json:"current_recipient_generation_id,omitempty"`
-	SessionsInvalidated          int      `json:"sessions_invalidated"`
-	HistoricalAuditRowsPreserved int      `json:"historical_audit_rows_preserved"`
-	SourceRoles                  []string `json:"source_roles"`
-	SurvivorRoles                []string `json:"survivor_roles"`
-	RecipientRoleWillTransfer    bool     `json:"recipient_role_will_transfer"`
-	ResultingRecipientGeneration int      `json:"resulting_recipient_generation,omitempty"`
-	FamilyRelationshipsMoved     int      `json:"family_relationships_moved"`
-	FamilyRelationshipsArchived  int      `json:"family_relationships_archived"`
-	FamilyReferenceFingerprint   string   `json:"family_reference_fingerprint"`
+	CurrentRecipientGenerationID   string   `json:"current_recipient_generation_id,omitempty"`
+	SessionsInvalidated            int      `json:"sessions_invalidated"`
+	HistoricalAuditRowsPreserved   int      `json:"historical_audit_rows_preserved"`
+	SourceRoles                    []string `json:"source_roles"`
+	SurvivorRoles                  []string `json:"survivor_roles"`
+	RecipientRoleWillTransfer      bool     `json:"recipient_role_will_transfer"`
+	ResultingRecipientGeneration   int      `json:"resulting_recipient_generation,omitempty"`
+	FamilyRelationshipsMoved       int      `json:"family_relationships_moved"`
+	FamilyRelationshipsArchived    int      `json:"family_relationships_archived"`
+	FamilyReferenceFingerprint     string   `json:"family_reference_fingerprint"`
+	VisibilityMembershipsMoved     int      `json:"visibility_memberships_moved"`
+	InterestEntriesMoved           int      `json:"interest_entries_moved"`
+	InterestHistoryOwnersMoved     int      `json:"interest_history_owners_moved"`
+	VisibilityReferenceFingerprint string   `json:"visibility_reference_fingerprint"`
 }
 
 // MergePreview is generated to TypeScript by Tygo.
@@ -573,6 +577,14 @@ func previewMerge(ctx context.Context, db bun.IDB, actor setup.CuratorSession, s
 	preview.References.FamilyRelationshipsMoved = familyEffects.RelationshipsMoved
 	preview.References.FamilyRelationshipsArchived = familyEffects.RelationshipsArchived
 	preview.References.FamilyReferenceFingerprint = familyEffects.ReferenceFingerprint
+	visibilityEffects, err := visibility.PreviewPersonMerge(ctx, db, sourceID, survivorID)
+	if err != nil {
+		return MergePreview{}, err
+	}
+	preview.References.VisibilityMembershipsMoved = visibilityEffects.CircleMembershipsMoved
+	preview.References.InterestEntriesMoved = visibilityEffects.InterestEntriesMoved
+	preview.References.InterestHistoryOwnersMoved = visibilityEffects.InterestHistoryOwnersMoved
+	preview.References.VisibilityReferenceFingerprint = visibilityEffects.ReferenceFingerprint
 	if errors.Is(familyErr, family.ErrMergeCycle) {
 		preview.CanMerge = false
 		preview.Blockers = append(preview.Blockers, "Resolve the parent-child path between these People before merging them.")
@@ -662,6 +674,9 @@ func (s *Service) Merge(ctx context.Context, actor setup.CuratorSession, request
 			if _, err := tx.NewRaw(lock, sourceID, survivorID).Exec(ctx); err != nil {
 				return err
 			}
+		}
+		if err := visibility.LockReferences(ctx, tx); err != nil {
+			return err
 		}
 		currentPreview, err := previewMerge(ctx, tx, actor, sourceID, survivorID, false)
 		if err != nil {

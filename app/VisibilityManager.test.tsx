@@ -148,6 +148,19 @@ test("manages overlapping circle membership with a desktop matrix and mobile fil
         );
         return jsonResponse(circles.find((circle) => path.includes(circle.id)));
       }
+      if (path.includes(circles[0].id) && init?.method === "PATCH") {
+        const body = stringBody(init.body);
+        circles = circles.map((circle, index) =>
+          index === 0
+            ? {
+                ...circle,
+                name: String(body.name),
+                version: circle.version + 1,
+              }
+            : circle,
+        );
+        return jsonResponse(circles[0]);
+      }
       throw new Error(`Unexpected request: ${path}`);
     }),
   );
@@ -184,6 +197,20 @@ test("manages overlapping circle membership with a desktop matrix and mobile fil
     within(filteredMembers!).queryByText("Curator"),
   ).not.toBeInTheDocument();
 
+  fireEvent.click(screen.getByRole("button", { name: "Edit Family" }));
+  fireEvent.change(screen.getByLabelText("Circle name"), {
+    target: { value: "Updated Family" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Save circle" }));
+  expect(
+    await screen.findByRole("button", { name: "Edit Updated Family" }),
+  ).toBeInTheDocument();
+  const updateRequest = requests.find(({ init }) => init?.method === "PATCH");
+  expect(stringBody(updateRequest?.init?.body)).toEqual({
+    name: "Updated Family",
+    version: 2,
+  });
+
   fireEvent.change(screen.getByLabelText("New circle name"), {
     target: { value: "Grandparents" },
   });
@@ -212,6 +239,12 @@ test("lets a Recipient edit only their own discoverable Interest choices", async
     sort_name: "Alex",
     relationship: { connection_type: "sibling", generation: 0 },
   };
+  const blair = {
+    id: "44444444-4444-4444-8444-444444444444",
+    display_name: "Blair",
+    sort_name: "Blair",
+  };
+  const nextCursor = "opaque/cursor+value";
   let interest: InterestListResponse = {
     recipient,
     entries: [],
@@ -224,7 +257,12 @@ test("lets a Recipient edit only their own discoverable Interest choices", async
       const path = requestPath(input);
       requests.push({ path, init });
       if (path.startsWith("/api/me/people?")) {
-        return jsonResponse({ people: [alex] });
+        const cursor = new URL(path, "https://memento.test").searchParams.get(
+          "cursor",
+        );
+        return cursor === nextCursor
+          ? jsonResponse({ people: [blair] })
+          : jsonResponse({ people: [alex], next_cursor: nextCursor });
       }
       if (path === "/api/me/interest-list") {
         return jsonResponse(interest);
@@ -279,7 +317,13 @@ test("lets a Recipient edit only their own discoverable Interest choices", async
   );
 
   const alexChoice = await screen.findByRole("checkbox", { name: /Alex/ });
+  expect(await screen.findByRole("checkbox", { name: /Blair/ })).toBeVisible();
   expect(screen.getByText("sibling")).toBeInTheDocument();
+  expect(
+    requests.some((request) =>
+      request.path.includes("cursor=opaque%2Fcursor%2Bvalue"),
+    ),
+  ).toBe(true);
   fireEvent.click(alexChoice);
   await waitFor(() => expect(alexChoice).toBeChecked());
   const mutation = requests.find(({ init }) => init?.method === "PUT");

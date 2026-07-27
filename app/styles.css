@@ -1025,6 +1025,14 @@ h1 {
   font-size: 0.85rem;
 }
 
+.interest-choices .choice small {
+  display: block;
+}
+
+.interest-choice-status {
+  margin-top: 0.15rem;
+}
+
 .visibility-matrix-wrap {
   max-width: 100%;
   overflow-x: auto;

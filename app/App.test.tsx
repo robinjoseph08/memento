@@ -417,6 +417,66 @@ test("restores and refreshes a signed-in Trusted-device Session", async () => {
   );
 });
 
+test("routes a non-Curator Session only to Recipient Interest self-service", async () => {
+  const requests: string[] = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) => {
+      const path = requestPath(input);
+      requests.push(path);
+      if (path === "/api/setup") {
+        return Promise.resolve(
+          jsonResponse({ error: { message: "Setup not found." } }, 404),
+        );
+      }
+      if (path === "/api/session") {
+        return Promise.resolve(
+          jsonResponse({
+            display_name: "Recipient",
+            session_type: "trusted",
+            csrf_token: "c".repeat(64),
+            curator: false,
+          }),
+        );
+      }
+      if (path === "/api/session/refresh") {
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      if (path === "/api/me/interest-list") {
+        return Promise.resolve(
+          jsonResponse({
+            recipient: {
+              id: "11111111-1111-4111-8111-111111111111",
+              display_name: "Recipient",
+              sort_name: "Recipient",
+            },
+            entries: [],
+            history: [],
+          }),
+        );
+      }
+      if (path.startsWith("/api/me/people?")) {
+        return Promise.resolve(jsonResponse({ people: [] }));
+      }
+      return Promise.reject(new Error(`Unexpected request: ${path}`));
+    }),
+  );
+
+  renderApp();
+  expect(
+    await screen.findByRole("heading", { name: "Your Interest list" }),
+  ).toBeInTheDocument();
+  expect(screen.queryByText("Source albums")).not.toBeInTheDocument();
+  expect(requests.some((path) => path.startsWith("/api/people?"))).toBe(false);
+  expect(requests.some((path) => path.startsWith("/api/relationships?"))).toBe(
+    false,
+  );
+  expect(
+    requests.some((path) => path.startsWith("/api/visibility-circles?")),
+  ).toBe(false);
+  expect(requests.some((path) => path.startsWith("/api/sources?"))).toBe(false);
+});
+
 test("validates Immich and supports private Source album ignore and restore triage", async () => {
   const csrfToken = "c".repeat(64);
   const sourceID = "11111111-1111-4111-8111-111111111111";
