@@ -94,6 +94,7 @@ type SessionResponse struct {
 	DisplayName string `json:"display_name"`
 	SessionType string `json:"session_type"`
 	CSRFToken   string `json:"csrf_token"`
+	Curator     bool   `json:"curator"`
 }
 
 type challenge struct {
@@ -120,6 +121,13 @@ type authenticatedSession struct {
 	Credential  []byte
 	PersonID    uuid.UUID
 	SessionID   uuid.UUID
+}
+
+// SessionActor identifies an authenticated action without exposing a browser credential.
+type SessionActor struct {
+	PersonID  uuid.UUID
+	SessionID uuid.UUID
+	Curator   bool
 }
 
 // CuratorSession identifies an authenticated Curator action without exposing a browser credential.
@@ -404,32 +412,46 @@ func (s *Service) Session(ctx context.Context, credential string) (SessionRespon
 	if err != nil {
 		return SessionResponse{}, err
 	}
+	var curator bool
+	if err := s.db.NewRaw(`SELECT EXISTS (SELECT 1 FROM person_roles WHERE person_id = ? AND role = 'curator')`, authenticated.PersonID).Scan(ctx, &curator); err != nil {
+		return SessionResponse{}, err
+	}
 	return SessionResponse{
 		DisplayName: authenticated.DisplayName,
 		SessionType: authenticated.SessionType,
 		CSRFToken:   s.csrfToken(authenticated.Credential),
+		Curator:     curator,
 	}, nil
 }
 
-// AuthorizeCurator verifies a current Session, the sole Curator role, and CSRF for mutations.
-func (s *Service) AuthorizeCurator(ctx context.Context, credential, csrfToken string, mutation bool) (CuratorSession, error) {
+// AuthorizeSession verifies a current Recipient Session and CSRF for mutations.
+func (s *Service) AuthorizeSession(ctx context.Context, credential, csrfToken string, mutation bool) (SessionActor, error) {
 	authenticated, err := s.authenticate(ctx, credential)
 	if err != nil {
-		return CuratorSession{}, err
+		return SessionActor{}, err
 	}
 	if mutation && !s.validCSRF(authenticated.Credential, csrfToken) {
-		return CuratorSession{}, ErrCSRF
+		return SessionActor{}, ErrCSRF
 	}
 	var curator bool
 	if err := s.db.NewRaw(`SELECT EXISTS (
 		SELECT 1 FROM person_roles WHERE person_id = ? AND role = 'curator'
 	)`, authenticated.PersonID).Scan(ctx, &curator); err != nil {
+		return SessionActor{}, err
+	}
+	return SessionActor{PersonID: authenticated.PersonID, SessionID: authenticated.SessionID, Curator: curator}, nil
+}
+
+// AuthorizeCurator verifies a current Session, the sole Curator role, and CSRF for mutations.
+func (s *Service) AuthorizeCurator(ctx context.Context, credential, csrfToken string, mutation bool) (CuratorSession, error) {
+	actor, err := s.AuthorizeSession(ctx, credential, csrfToken, mutation)
+	if err != nil {
 		return CuratorSession{}, err
 	}
-	if !curator {
+	if !actor.Curator {
 		return CuratorSession{}, ErrNotCurator
 	}
-	return CuratorSession{PersonID: authenticated.PersonID, SessionID: authenticated.SessionID}, nil
+	return CuratorSession{PersonID: actor.PersonID, SessionID: actor.SessionID}, nil
 }
 
 // refresh extends a Trusted-device Session after a Session-bound CSRF check.

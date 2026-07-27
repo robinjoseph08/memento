@@ -22,6 +22,10 @@ packages:
     output_path: "app/types/generated/family.ts"
     fallback_type: unknown
     preserve_comments: none
+  - path: "github.com/robinjoseph08/memento/pkg/visibility"
+    output_path: "app/types/generated/visibility.ts"
+    fallback_type: unknown
+    preserve_comments: none
   - path: "github.com/robinjoseph08/memento/pkg/recipients"
     output_path: "app/types/generated/recipients.ts"
     fallback_type: unknown

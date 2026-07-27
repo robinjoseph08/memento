@@ -67,6 +67,10 @@ export function PeopleManager({ session }: { session: SessionResponse }) {
       queryClient.invalidateQueries({ queryKey: ["family-people"] }),
       queryClient.invalidateQueries({ queryKey: ["family-relationships"] }),
       queryClient.invalidateQueries({ queryKey: ["family-branch"] }),
+      queryClient.invalidateQueries({ queryKey: ["visibility-people"] }),
+      queryClient.invalidateQueries({ queryKey: ["visibility-circles"] }),
+      queryClient.invalidateQueries({ queryKey: ["curator-interest-list"] }),
+      queryClient.invalidateQueries({ queryKey: ["curator-discoverable"] }),
     ]);
   }
 
@@ -249,7 +253,7 @@ export function PeopleManager({ session }: { session: SessionResponse }) {
               onArchive={() => {
                 if (
                   window.confirm(
-                    `Archive ${selected.display_name}? This cannot be undone and revokes all unrevoked Session records for this Person.`,
+                    `Archive ${selected.display_name}? This cannot be undone, revokes all unrevoked Session records, removes the Person from Visibility circles, and may deactivate Interest choices.`,
                   )
                 ) {
                   archivePerson.mutate(selected);
@@ -786,6 +790,19 @@ function MergeConfirmation({
           {preview.affected_references.family_relationships_archived} active
           Family relationships will be archived because they would become
           duplicate or self-connections.
+        </li>
+        <li>
+          {preview.affected_references.visibility_memberships_moved} Visibility
+          circle memberships will move to the survivor.
+        </li>
+        <li>
+          {preview.affected_references.interest_entries_moved} current Interest
+          choices will move or reconcile against the survivor.
+        </li>
+        <li>
+          {preview.affected_references.interest_history_owners_retained}{" "}
+          Interest history owner references will remain attributed to the source
+          Person.
         </li>
         <li>
           Source roles:{" "}

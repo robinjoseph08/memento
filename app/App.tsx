@@ -11,6 +11,10 @@ import { APIError, apiJSON, apiNoContent } from "./api";
 import { FamilyManager } from "./FamilyManager";
 import { PeopleManager } from "./PeopleManager";
 import { RepairWorkspace } from "./RepairWorkspace";
+import {
+  RecipientVisibilityManager,
+  VisibilityManager,
+} from "./VisibilityManager";
 import type {
   AvailabilityResponse,
   CompleteRequest,
@@ -691,10 +695,16 @@ function ReadyCard({
   onSignOut: () => void;
 }) {
   if (session) {
+    if (!session.curator) {
+      return (
+        <RecipientVisibilityManager onSignOut={onSignOut} session={session} />
+      );
+    }
     return (
       <>
         <PeopleManager session={session} />
         <FamilyManager session={session} />
+        <VisibilityManager session={session} />
         <section className="shell-card curator-card">
           <SourceWorkspace onSignOut={onSignOut} session={session} />
         </section>

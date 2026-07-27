@@ -163,6 +163,7 @@ test("completes the first-browser setup workflow with explicit Onboarding choice
             display_name: "Robin Joseph",
             session_type: "public",
             csrf_token: "c".repeat(64),
+            curator: true,
           }),
         );
       }
@@ -376,11 +377,15 @@ test("restores and refreshes a signed-in Trusted-device Session", async () => {
         }),
       );
     }
+    if (path.startsWith("/api/visibility-circles?")) {
+      return Promise.resolve(jsonResponse({ circles: [] }));
+    }
     return Promise.resolve(
       jsonResponse({
         display_name: "Robin Joseph",
         session_type: "trusted",
         csrf_token: "c".repeat(64),
+        curator: true,
       }),
     );
   });
@@ -393,7 +398,7 @@ test("restores and refreshes a signed-in Trusted-device Session", async () => {
       "Setup is complete. You're signed in as Robin Joseph.",
     ),
   ).toBeInTheDocument();
-  expect(fetchMock).toHaveBeenCalledTimes(9);
+  expect(fetchMock).toHaveBeenCalledTimes(11);
   expect(fetchMock).toHaveBeenCalledWith(
     "/api/people?query=&include_archived=false",
     expect.objectContaining({ credentials: "same-origin" }),
@@ -403,9 +408,77 @@ test("restores and refreshes a signed-in Trusted-device Session", async () => {
     expect.objectContaining({ credentials: "same-origin" }),
   );
   expect(fetchMock).toHaveBeenCalledWith(
+    "/api/visibility-circles?include_archived=false",
+    expect.objectContaining({ credentials: "same-origin" }),
+  );
+  expect(fetchMock).toHaveBeenCalledWith(
     "/api/sources?disposition=unreviewed&limit=50",
     expect.objectContaining({ credentials: "same-origin" }),
   );
+  expect(fetchMock).toHaveBeenCalledWith(
+    "/api/repairs",
+    expect.objectContaining({ credentials: "same-origin" }),
+  );
+});
+
+test("routes a non-Curator Session only to Recipient Interest self-service", async () => {
+  const requests: string[] = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) => {
+      const path = requestPath(input);
+      requests.push(path);
+      if (path === "/api/setup") {
+        return Promise.resolve(
+          jsonResponse({ error: { message: "Setup not found." } }, 404),
+        );
+      }
+      if (path === "/api/session") {
+        return Promise.resolve(
+          jsonResponse({
+            display_name: "Recipient",
+            session_type: "trusted",
+            csrf_token: "c".repeat(64),
+            curator: false,
+          }),
+        );
+      }
+      if (path === "/api/session/refresh") {
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      if (path === "/api/me/interest-list") {
+        return Promise.resolve(
+          jsonResponse({
+            recipient: {
+              id: "11111111-1111-4111-8111-111111111111",
+              display_name: "Recipient",
+              sort_name: "Recipient",
+            },
+            entries: [],
+            history: [],
+          }),
+        );
+      }
+      if (path.startsWith("/api/me/people?")) {
+        return Promise.resolve(jsonResponse({ people: [] }));
+      }
+      return Promise.reject(new Error(`Unexpected request: ${path}`));
+    }),
+  );
+
+  renderApp();
+  expect(
+    await screen.findByRole("heading", { name: "Your Interest list" }),
+  ).toBeInTheDocument();
+  expect(screen.queryByText("Source albums")).not.toBeInTheDocument();
+  expect(requests.some((path) => path.startsWith("/api/people?"))).toBe(false);
+  expect(requests.some((path) => path.startsWith("/api/relationships?"))).toBe(
+    false,
+  );
+  expect(
+    requests.some((path) => path.startsWith("/api/visibility-circles?")),
+  ).toBe(false);
+  expect(requests.some((path) => path.startsWith("/api/sources?"))).toBe(false);
 });
 
 test("validates Immich and supports private Source album ignore and restore triage", async () => {
@@ -430,6 +503,7 @@ test("validates Immich and supports private Source album ignore and restore tria
             display_name: "Robin Joseph",
             session_type: "public",
             csrf_token: csrfToken,
+            curator: true,
           }),
         );
       }
@@ -582,6 +656,7 @@ test("loads the next opaque Source album cursor without replacing prior results"
             display_name: "Robin Joseph",
             session_type: "trusted",
             csrf_token: "c".repeat(64),
+            curator: true,
           }),
         );
       }

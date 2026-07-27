@@ -22,6 +22,7 @@ import (
 	"github.com/robinjoseph08/memento/pkg/config"
 	"github.com/robinjoseph08/memento/pkg/migrations"
 	"github.com/robinjoseph08/memento/pkg/setup"
+	visibilitypkg "github.com/robinjoseph08/memento/pkg/visibility"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/uptrace/bun"
@@ -301,6 +302,21 @@ func TestRecipientSessionsCannotSeeDraftRoutesBeforePublication(t *testing.T) {
 	looseItem, _, err := fixture.service.CreateLooseItem(ctx, fixture.actor, CreateLooseItemRequest{
 		MediaItemID: fixture.media["unknown"].String(), Timezone: "UTC",
 	})
+	require.NoError(t, err)
+
+	attendee := uuid.New()
+	_, err = fixture.db.NewRaw(`INSERT INTO people (id, display_name, sort_name) VALUES (?, 'Attendee', 'Attendee')`, attendee).Exec(ctx)
+	require.NoError(t, err)
+	visibilityService := visibilitypkg.New(fixture.db)
+	visibilityActor := setup.SessionActor{PersonID: fixture.actor.PersonID, SessionID: fixture.actor.SessionID, Curator: true}
+	circle, err := visibilityService.CreateCircle(ctx, visibilityActor, visibilitypkg.CircleRequest{Name: "Must not authorize drafts"})
+	require.NoError(t, err)
+	included := true
+	for _, personID := range []uuid.UUID{fixture.actor.PersonID, attendee} {
+		circle, err = visibilityService.SetMembership(ctx, visibilityActor, uuid.MustParse(circle.ID), personID, visibilitypkg.MembershipRequest{Included: &included, Version: circle.Version})
+		require.NoError(t, err)
+	}
+	_, err = visibilityService.MutateInterest(ctx, visibilityActor, fixture.actor.PersonID, attendee, true)
 	require.NoError(t, err)
 
 	setupService := setup.New(fixture.db, nil, config.SecurityConfig{Secret: "recipient-visibility-test-secret"})

@@ -930,6 +930,192 @@ h1 {
   }
 }
 
+.visibility-shell {
+  width: min(100%, 78rem);
+  margin-top: 2rem;
+  padding: clamp(1.25rem, 4vw, 3rem);
+  border: 1px solid rgb(125 211 252 / 15%);
+  border-radius: 2rem;
+  background: rgb(15 23 42 / 88%);
+  box-shadow: 0 2rem 6rem rgb(0 0 0 / 35%);
+}
+
+.visibility-header h2 {
+  margin: 0.4rem 0;
+  font-size: clamp(2rem, 6vw, 3.5rem);
+}
+
+.visibility-header p:last-child,
+.visibility-membership-panel > p,
+.visibility-interest-panel > p {
+  color: #94a3b8;
+  line-height: 1.55;
+}
+
+.visibility-layout {
+  display: grid;
+  grid-template-columns: minmax(15rem, 0.7fr) minmax(0, 1.3fr);
+  gap: 1rem;
+  margin-top: 1.5rem;
+}
+
+.visibility-interest-panel {
+  grid-column: 1 / -1;
+}
+
+.visibility-circle-form,
+.visibility-circle-form label,
+.visibility-mobile-list,
+.visibility-mobile-list > label,
+.visibility-interest-panel > label {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.visibility-shell input:not([type="checkbox"]),
+.visibility-shell select {
+  width: 100%;
+  min-height: 2.75rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid #334155;
+  border-radius: 0.7rem;
+  background: #020617;
+  color: #e0f2fe;
+}
+
+.visibility-shell button {
+  min-height: 2.5rem;
+  padding: 0.6rem 0.8rem;
+  border: 1px solid #0284c7;
+  border-radius: 0.65rem;
+  background: #075985;
+  color: white;
+}
+
+.visibility-shell button:disabled,
+.visibility-shell input:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.visibility-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.visibility-circle-list,
+.interest-choices,
+.interest-editor {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.visibility-circle-list > button {
+  display: grid;
+  width: 100%;
+  background: rgb(15 23 42 / 70%);
+  text-align: left;
+}
+
+.visibility-circle-list > button span,
+.interest-history,
+.interest-choices .choice span {
+  color: #94a3b8;
+  font-size: 0.85rem;
+}
+
+.interest-choices .choice small {
+  display: block;
+}
+
+.interest-choice-status {
+  margin-top: 0.15rem;
+}
+
+.visibility-matrix-wrap {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.visibility-matrix {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.visibility-matrix th,
+.visibility-matrix td {
+  padding: 0.65rem;
+  border-bottom: 1px solid rgb(125 211 252 / 15%);
+  text-align: center;
+}
+
+.visibility-matrix th:first-child {
+  position: sticky;
+  left: 0;
+  min-width: 10rem;
+  background: #07101f;
+  text-align: left;
+}
+
+.visibility-matrix input,
+.visibility-filtered-members input,
+.interest-choices input {
+  width: 1.15rem;
+  height: 1.15rem;
+  accent-color: #0ea5e9;
+}
+
+.visibility-mobile-list {
+  display: none;
+}
+
+.visibility-filtered-members {
+  display: grid;
+  max-height: 24rem;
+  overflow-y: auto;
+  gap: 0.5rem;
+}
+
+.interest-editor h4 {
+  margin: 0.5rem 0 0;
+}
+
+.interest-history {
+  display: grid;
+  gap: 0.4rem;
+  margin-bottom: 0;
+}
+
+@media (prefers-color-scheme: light) {
+  .visibility-shell {
+    border-color: rgb(3 105 161 / 15%);
+    background: rgb(255 255 255 / 90%);
+    box-shadow: 0 2rem 6rem rgb(2 132 199 / 12%);
+  }
+
+  .visibility-header p:last-child,
+  .visibility-membership-panel > p,
+  .visibility-interest-panel > p,
+  .visibility-circle-list > button span,
+  .interest-history,
+  .interest-choices .choice span {
+    color: #475569;
+  }
+
+  .visibility-shell input:not([type="checkbox"]),
+  .visibility-shell select,
+  .visibility-circle-list > button {
+    border-color: #bae6fd;
+    background: white;
+    color: #0c4a6e;
+  }
+
+  .visibility-matrix th:first-child {
+    background: #f0f9ff;
+  }
+}
+
 .recipient-controls {
   border-top: 1px solid var(--border);
   display: grid;
@@ -968,7 +1154,8 @@ h1 {
   }
 
   .people-shell,
-  .family-shell {
+  .family-shell,
+  .visibility-shell {
     min-height: 100vh;
     margin-top: 0;
     border: 0;
@@ -996,12 +1183,22 @@ h1 {
 
   .family-explainer,
   .family-layout,
+  .visibility-layout,
   .branch-results ul {
     grid-template-columns: 1fr;
   }
 
-  .branch-panel {
+  .branch-panel,
+  .visibility-interest-panel {
     grid-column: auto;
+  }
+
+  .visibility-matrix-wrap {
+    display: none;
+  }
+
+  .visibility-mobile-list {
+    display: grid;
   }
 }
 

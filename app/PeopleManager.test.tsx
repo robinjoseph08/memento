@@ -5,6 +5,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 
@@ -50,6 +51,7 @@ function renderManager() {
             display_name: "Curator",
             session_type: "trusted",
             csrf_token: "csrf-token",
+            curator: true,
           }}
         />
       </QueryClientProvider>,
@@ -75,6 +77,59 @@ function person(id: string, displayName: string, sortName: string): Person {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+});
+
+test("discloses archive effects and invalidates Visibility caches", async () => {
+  const alex = person("33333333-3333-3333-3333-333333333333", "Alex", "Alex");
+  let archived = false;
+  const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = requestPath(input);
+      if (path.startsWith("/api/people?") && !init?.method) {
+        return Promise.resolve(
+          jsonResponse({ people: archived ? [] : [alex] }),
+        );
+      }
+      if (path === `/api/people/${alex.id}/archive`) {
+        archived = true;
+        return Promise.resolve(
+          jsonResponse({
+            ...alex,
+            status: "archived",
+            version: 2,
+            archived_at: "2026-01-02T00:00:00Z",
+          }),
+        );
+      }
+      return Promise.reject(new Error(`Unexpected request: ${path}`));
+    }),
+  );
+
+  const { client } = renderManager();
+  const visibilityKeys = [
+    ["visibility-people"],
+    ["visibility-circles"],
+    ["curator-interest-list", alex.id],
+    ["curator-discoverable", alex.id],
+  ] as const;
+  for (const key of visibilityKeys) client.setQueryData(key, { cached: true });
+  const directory = await screen.findByLabelText("People directory");
+  fireEvent.click(
+    await within(directory).findByRole("button", { name: /Alex/ }),
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Archive Person" }));
+
+  await waitFor(() => expect(archived).toBe(true));
+  expect(confirm).toHaveBeenCalledWith(
+    expect.stringMatching(
+      /removes the Person from Visibility circles, and may deactivate Interest choices/,
+    ),
+  );
+  for (const key of visibilityKeys) {
+    expect(client.getQueryState(key)?.isInvalidated).toBe(true);
+  }
 });
 
 test("designates a Pending Recipient separately from sending an Invitation", async () => {
@@ -360,6 +415,10 @@ test("previews and confirms the exact source, survivor, generation, email, and v
       family_relationships_moved: 2,
       family_relationships_archived: 1,
       family_reference_fingerprint: "a".repeat(64),
+      visibility_memberships_moved: 1,
+      interest_entries_moved: 1,
+      interest_history_owners_retained: 0,
+      visibility_reference_fingerprint: "b".repeat(64),
     },
     requires_generation_transfer: true,
     requires_email_resolution: true,
@@ -393,12 +452,17 @@ test("previews and confirms the exact source, survivor, generation, email, and v
   );
 
   const { client } = renderManager();
-  const familyKeys = [
+  const relatedQueryKeys = [
     ["family-people", ""],
     ["family-relationships", false],
     ["family-branch", source.id],
+    ["visibility-people"],
+    ["visibility-circles"],
+    ["curator-interest-list", source.id],
+    ["curator-discoverable", source.id],
   ] as const;
-  for (const key of familyKeys) client.setQueryData(key, { cached: true });
+  for (const key of relatedQueryKeys)
+    client.setQueryData(key, { cached: true });
   await screen.findAllByRole("option", { name: /11111111/ }, contentionWait);
   const sourceSelect = screen.getByLabelText("Source Person");
   const survivorSelect = screen.getByLabelText("Survivor Person");
@@ -469,7 +533,7 @@ test("previews and confirms the exact source, survivor, generation, email, and v
   expect(mergeRequest?.init?.headers).toEqual(
     expect.objectContaining({ "X-Memento-CSRF": "csrf-token" }),
   );
-  for (const key of familyKeys) {
+  for (const key of relatedQueryKeys) {
     expect(client.getQueryState(key)?.isInvalidated).toBe(true);
   }
 }, 15_000);

@@ -504,6 +504,7 @@ func TestSecureCookiesAndSessionBoundCSRF(t *testing.T) {
 	assert.Equal(t, "Cookie Person", session.DisplayName)
 	assert.Equal(t, "public", session.SessionType)
 	assert.Equal(t, completed.CSRFToken, session.CSRFToken)
+	assert.True(t, session.Curator)
 
 	withoutCSRF := performJSON(e, http.MethodPost, "/api/session/logout", "", nil, cookie)
 	assert.Equal(t, http.StatusForbidden, withoutCSRF.Code)
@@ -672,6 +673,11 @@ func TestAuthorizeCuratorRequiresCurrentRoleAndSessionBoundCSRFForMutations(t *t
 	completed, err := service.complete(context.Background(), completionRequest(verified.VerificationToken, "trusted"))
 	require.NoError(t, err)
 
+	actor, err := service.AuthorizeSession(context.Background(), completed.Credential, "", false)
+	require.NoError(t, err)
+	assert.True(t, actor.Curator)
+	_, err = service.AuthorizeSession(context.Background(), completed.Credential, "wrong", true)
+	require.ErrorIs(t, err, ErrCSRF)
 	_, err = service.AuthorizeCurator(context.Background(), completed.Credential, "", false)
 	require.NoError(t, err)
 	_, err = service.AuthorizeCurator(context.Background(), completed.Credential, completed.CSRFToken, true)
@@ -683,6 +689,9 @@ func TestAuthorizeCuratorRequiresCurrentRoleAndSessionBoundCSRFForMutations(t *t
 
 	_, err = db.ExecContext(context.Background(), `DELETE FROM person_roles WHERE role = 'curator'`)
 	require.NoError(t, err)
+	actor, err = service.AuthorizeSession(context.Background(), completed.Credential, "", false)
+	require.NoError(t, err)
+	assert.False(t, actor.Curator)
 	_, err = service.AuthorizeCurator(context.Background(), completed.Credential, "", false)
 	require.ErrorIs(t, err, ErrNotCurator)
 }

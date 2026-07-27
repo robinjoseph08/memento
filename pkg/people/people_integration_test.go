@@ -24,6 +24,7 @@ import (
 	familypkg "github.com/robinjoseph08/memento/pkg/family"
 	"github.com/robinjoseph08/memento/pkg/migrations"
 	"github.com/robinjoseph08/memento/pkg/setup"
+	visibilitypkg "github.com/robinjoseph08/memento/pkg/visibility"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/uptrace/bun"
@@ -518,7 +519,7 @@ func TestMergeRejectsChangedResultingGenerationAfterPreview(t *testing.T) {
 }
 
 func TestMergeRejectsReferenceChangesAfterPreview(t *testing.T) {
-	for _, changedReference := range []string{"email", "current generation"} {
+	for _, changedReference := range []string{"email", "current generation", "visibility membership", "Interest entry"} {
 		t.Run(changedReference, func(t *testing.T) {
 			fixture := newPeopleFixture(t)
 			ctx := context.Background()
@@ -527,13 +528,29 @@ func TestMergeRejectsReferenceChangesAfterPreview(t *testing.T) {
 			sourceAccess := addAccess(t, fixture.db, source, true, "source@example.com")
 			preview, err := fixture.service.PreviewMerge(ctx, fixture.actor, source, survivor)
 			require.NoError(t, err)
-			if changedReference == "email" {
+			switch changedReference {
+			case "email":
 				_, err = fixture.db.NewRaw(`UPDATE recipient_emails SET email = 'changed@example.com', normalized_email = 'changed@example.com' WHERE recipient_access_generation_id = ? AND is_current`, sourceAccess).Exec(ctx)
 				require.NoError(t, err)
-			} else {
+			case "current generation":
 				_, err = fixture.db.NewRaw(`UPDATE recipient_access_generations SET is_current = false WHERE id = ?`, sourceAccess).Exec(ctx)
 				require.NoError(t, err)
 				sourceAccess = addAccess(t, fixture.db, source, true, "replacement@example.com")
+			case "visibility membership", "Interest entry":
+				visibilityService := visibilitypkg.New(fixture.db)
+				visibilityActor := setup.SessionActor{PersonID: fixture.actor.PersonID, SessionID: fixture.actor.SessionID, Curator: true}
+				circle, createErr := visibilityService.CreateCircle(ctx, visibilityActor, visibilitypkg.CircleRequest{Name: "Changed after preview"})
+				require.NoError(t, createErr)
+				included := true
+				circle, createErr = visibilityService.SetMembership(ctx, visibilityActor, uuid.MustParse(circle.ID), source, visibilitypkg.MembershipRequest{Included: &included, Version: circle.Version})
+				require.NoError(t, createErr)
+				if changedReference == "Interest entry" {
+					selected := addPerson(t, fixture.db, "Selected", "Selected")
+					_, createErr = visibilityService.SetMembership(ctx, visibilityActor, uuid.MustParse(circle.ID), selected, visibilitypkg.MembershipRequest{Included: &included, Version: circle.Version})
+					require.NoError(t, createErr)
+					_, createErr = visibilityService.MutateInterest(ctx, visibilityActor, source, selected, true)
+					require.NoError(t, createErr)
+				}
 			}
 
 			_, err = fixture.service.Merge(ctx, fixture.actor, MergeRequest{
@@ -550,6 +567,70 @@ func TestMergeRejectsReferenceChangesAfterPreview(t *testing.T) {
 			assert.Zero(t, mergeAudits)
 		})
 	}
+}
+
+func TestPersonLifecycleOperationsApplyVisibilityAndInterestEffects(t *testing.T) {
+	t.Run("archive", func(t *testing.T) {
+		fixture := newPeopleFixture(t)
+		ctx := context.Background()
+		selected := addPerson(t, fixture.db, "Selected", "Selected")
+		visibilityService := visibilitypkg.New(fixture.db)
+		actor := setup.SessionActor{PersonID: fixture.actor.PersonID, SessionID: fixture.actor.SessionID, Curator: true}
+		circle, err := visibilityService.CreateCircle(ctx, actor, visibilitypkg.CircleRequest{Name: "Family"})
+		require.NoError(t, err)
+		included := true
+		circle, err = visibilityService.SetMembership(ctx, actor, uuid.MustParse(circle.ID), fixture.actor.PersonID, visibilitypkg.MembershipRequest{Included: &included, Version: circle.Version})
+		require.NoError(t, err)
+		_, err = visibilityService.SetMembership(ctx, actor, uuid.MustParse(circle.ID), selected, visibilitypkg.MembershipRequest{Included: &included, Version: circle.Version})
+		require.NoError(t, err)
+		_, err = visibilityService.MutateInterest(ctx, actor, fixture.actor.PersonID, selected, true)
+		require.NoError(t, err)
+
+		_, err = fixture.service.Archive(ctx, fixture.actor, selected, 1)
+		require.NoError(t, err)
+		list, err := visibilityService.InterestList(ctx, actor, fixture.actor.PersonID, visibilitypkg.HistoryPageRequest{})
+		require.NoError(t, err)
+		require.Len(t, list.Entries, 1)
+		assert.Equal(t, "ineligible", list.Entries[0].State)
+		assert.Equal(t, "deactivated", list.History[0].Action)
+		var memberships int
+		require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM visibility_circle_members WHERE person_id = ?`, selected).Scan(ctx, &memberships))
+		assert.Zero(t, memberships)
+	})
+
+	t.Run("merge", func(t *testing.T) {
+		fixture := newPeopleFixture(t)
+		ctx := context.Background()
+		source := addPerson(t, fixture.db, "Source", "Source")
+		survivor := addPerson(t, fixture.db, "Survivor", "Survivor")
+		visibilityService := visibilitypkg.New(fixture.db)
+		actor := setup.SessionActor{PersonID: fixture.actor.PersonID, SessionID: fixture.actor.SessionID, Curator: true}
+		circle, err := visibilityService.CreateCircle(ctx, actor, visibilitypkg.CircleRequest{Name: "Family"})
+		require.NoError(t, err)
+		included := true
+		for _, personID := range []uuid.UUID{fixture.actor.PersonID, source, survivor} {
+			circle, err = visibilityService.SetMembership(ctx, actor, uuid.MustParse(circle.ID), personID, visibilitypkg.MembershipRequest{Included: &included, Version: circle.Version})
+			require.NoError(t, err)
+		}
+		_, err = visibilityService.MutateInterest(ctx, actor, fixture.actor.PersonID, source, true)
+		require.NoError(t, err)
+		preview, err := fixture.service.PreviewMerge(ctx, fixture.actor, source, survivor)
+		require.NoError(t, err)
+		assert.Equal(t, 1, preview.References.VisibilityMembershipsMoved)
+		assert.Equal(t, 1, preview.References.InterestEntriesMoved)
+		assert.Len(t, preview.References.VisibilityReferenceFingerprint, 64)
+
+		_, err = fixture.service.Merge(ctx, fixture.actor, MergeRequest{
+			SourcePersonID: source.String(), SurvivorPersonID: survivor.String(), SourceVersion: 1,
+			SurvivorVersion: 1, PreviewFingerprint: preview.PreviewFingerprint,
+		})
+		require.NoError(t, err)
+		list, err := visibilityService.InterestList(ctx, actor, fixture.actor.PersonID, visibilitypkg.HistoryPageRequest{})
+		require.NoError(t, err)
+		require.Len(t, list.Entries, 1)
+		assert.Equal(t, survivor.String(), list.Entries[0].Person.ID)
+		assert.Equal(t, "moved", list.History[0].Action)
+	})
 }
 
 func TestMergeRejectsArchivedSurvivorBeforeTransferringAccess(t *testing.T) {
