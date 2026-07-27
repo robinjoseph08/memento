@@ -296,19 +296,21 @@ func (s *Service) SetOverride(ctx context.Context, actor setup.CuratorSession, k
 		} else if err != nil {
 			return err
 		}
-		var eligible bool
-		if err := tx.NewRaw(`SELECT EXISTS (SELECT 1 FROM recipient_access_generations AS access JOIN person_roles AS role ON role.person_id = access.person_id AND role.role = 'recipient' JOIN people AS person ON person.id = access.person_id AND person.archived_at IS NULL AND person.merged_at IS NULL WHERE access.person_id = ? AND access.is_current AND access.state IN ('pending', 'onboarding', 'completed') AND NOT EXISTS (SELECT 1 FROM person_roles AS curator WHERE curator.person_id = access.person_id AND curator.role = 'curator'))`, recipientID).Scan(ctx, &eligible); err != nil {
-			return err
-		}
-		if !eligible {
-			return ErrRecipientIneligible
-		}
 		if request.State == "automatic" {
 			if _, err := tx.NewRaw(`DELETE FROM audience_overrides WHERE target_kind = ? AND target_id = ? AND recipient_person_id = ?`, t.kind, t.id, recipientID).Exec(ctx); err != nil {
 				return err
 			}
-		} else if _, err := tx.NewRaw(`INSERT INTO audience_overrides (target_kind, target_id, recipient_person_id, state, updated_by_person_id, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (target_kind, target_id, recipient_person_id) DO UPDATE SET state = EXCLUDED.state, updated_by_person_id = EXCLUDED.updated_by_person_id, updated_at = EXCLUDED.updated_at`, t.kind, t.id, recipientID, request.State, actor.PersonID, now).Exec(ctx); err != nil {
-			return err
+		} else {
+			var eligible bool
+			if err := tx.NewRaw(`SELECT EXISTS (SELECT 1 FROM recipient_access_generations AS access JOIN person_roles AS role ON role.person_id = access.person_id AND role.role = 'recipient' JOIN people AS person ON person.id = access.person_id AND person.archived_at IS NULL AND person.merged_at IS NULL WHERE access.person_id = ? AND access.is_current AND access.state IN ('pending', 'onboarding', 'completed') AND NOT EXISTS (SELECT 1 FROM person_roles AS curator WHERE curator.person_id = access.person_id AND curator.role = 'curator'))`, recipientID).Scan(ctx, &eligible); err != nil {
+				return err
+			}
+			if !eligible {
+				return ErrRecipientIneligible
+			}
+			if _, err := tx.NewRaw(`INSERT INTO audience_overrides (target_kind, target_id, recipient_person_id, state, updated_by_person_id, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (target_kind, target_id, recipient_person_id) DO UPDATE SET state = EXCLUDED.state, updated_by_person_id = EXCLUDED.updated_by_person_id, updated_at = EXCLUDED.updated_at`, t.kind, t.id, recipientID, request.State, actor.PersonID, now).Exec(ctx); err != nil {
+				return err
+			}
 		}
 		if err := recalculate(ctx, tx, t, now); err != nil {
 			return err
@@ -459,6 +461,19 @@ func lockEligibleProposalRecipients(ctx context.Context, tx bun.Tx, t target) (i
 				AND proposal.target_id = override_row.target_id
 				AND proposal.recipient_person_id = override_row.recipient_person_id
 			WHERE override_row.target_kind = ? AND override_row.target_id = ?
+				AND EXISTS (
+					SELECT 1
+					FROM recipient_access_generations AS access
+					JOIN person_roles AS recipient_role ON recipient_role.person_id = access.person_id AND recipient_role.role = 'recipient'
+					JOIN people AS person ON person.id = access.person_id AND person.archived_at IS NULL AND person.merged_at IS NULL
+					WHERE access.person_id = override_row.recipient_person_id
+						AND access.is_current
+						AND access.state IN ('pending', 'onboarding', 'completed')
+						AND NOT EXISTS (
+							SELECT 1 FROM person_roles AS curator_role
+							WHERE curator_role.person_id = access.person_id AND curator_role.role = 'curator'
+						)
+				)
 				AND (
 					proposal.recipient_person_id IS NULL
 					OR proposal.included <> (override_row.state = 'included')

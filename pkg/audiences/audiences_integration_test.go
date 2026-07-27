@@ -341,6 +341,28 @@ func TestApprovalRejectsIncludedProposalWithoutDisplayedReason(t *testing.T) {
 	assert.Zero(t, snapshots)
 }
 
+func TestIneligibleOverrideDoesNotBlockApprovalAndCanBeCleared(t *testing.T) {
+	f := newAudienceFixture(t)
+	ctx := context.Background()
+	review, err := f.service.SetOverride(ctx, f.actor, targetLoose, f.looseID, 1, OverrideRequest{RecipientPersonID: f.people["manual"].String(), State: "included"})
+	require.NoError(t, err)
+	_, err = f.db.NewRaw(`UPDATE people SET archived_at = now() WHERE id = ?`, f.people["manual"]).Exec(ctx)
+	require.NoError(t, err)
+	review, err = f.service.Recalculate(ctx, f.actor, targetLoose, f.looseID, review.Version)
+	require.NoError(t, err)
+	assert.Empty(t, review.Proposal)
+	approved, err := f.service.Approve(ctx, f.actor, targetLoose, f.looseID, review.Version)
+	require.NoError(t, err)
+	assert.Equal(t, "Curator only", approved.Audience.Label)
+
+	review, err = f.service.SetOverride(ctx, f.actor, targetLoose, f.looseID, approved.Version, OverrideRequest{RecipientPersonID: f.people["manual"].String(), State: "automatic"})
+	require.NoError(t, err)
+	assert.Empty(t, review.Proposal)
+	var overrides int
+	require.NoError(t, f.db.NewRaw(`SELECT count(*) FROM audience_overrides WHERE target_kind = 'loose_item' AND target_id = ?`, f.looseID).Scan(ctx, &overrides))
+	assert.Zero(t, overrides)
+}
+
 func TestApprovalRejectsProposalWhenRecipientEligibilityChanged(t *testing.T) {
 	f := newAudienceFixture(t)
 	ctx := context.Background()
