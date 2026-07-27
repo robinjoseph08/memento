@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -633,4 +634,57 @@ func TestNewRejectsInvalidURLWithoutEchoingIt(t *testing.T) {
 	_, err := New(cfg, nil)
 	require.EqualError(t, err, "parse Immich URL")
 	assert.NotContains(t, err.Error(), "secret")
+}
+
+func TestThumbnailStreamsOnlyImageResponsesWithoutFollowingRedirects(t *testing.T) {
+	assetID := uuid.New()
+	t.Run("image", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, "/api/assets/"+assetID.String()+"/thumbnail", r.URL.Path)
+			assert.Equal(t, "secret-key", r.Header.Get("x-api-key"))
+			w.Header().Set("Content-Type", "image/webp")
+			w.Header().Set("ETag", `"safe"`)
+			_, _ = w.Write([]byte("thumbnail"))
+		}))
+		defer server.Close()
+		client, err := New(clientConfig(server.URL), server.Client())
+		require.NoError(t, err)
+		response, err := client.Thumbnail(context.Background(), assetID)
+		require.NoError(t, err)
+		contents, err := io.ReadAll(response.Body)
+		require.NoError(t, err)
+		require.NoError(t, response.Body.Close())
+		assert.Equal(t, "thumbnail", string(contents))
+		assert.Equal(t, "image/webp", response.ContentType)
+		assert.Equal(t, `"safe"`, response.ETag)
+	})
+
+	t.Run("redirect", func(t *testing.T) {
+		redirected := false
+		target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { redirected = true }))
+		defer target.Close()
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, target.URL, http.StatusFound)
+		}))
+		defer server.Close()
+		client, err := New(clientConfig(server.URL), server.Client())
+		require.NoError(t, err)
+		_, err = client.Thumbnail(context.Background(), assetID)
+		require.EqualError(t, err, "Immich validation failed")
+		assert.False(t, redirected)
+	})
+
+	for _, contentType := range []string{"application/json", "image/svg+xml"} {
+		t.Run("unsafe "+contentType, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", contentType)
+				_, _ = w.Write([]byte(`{"private":"metadata"}`))
+			}))
+			defer server.Close()
+			client, err := New(clientConfig(server.URL), server.Client())
+			require.NoError(t, err)
+			_, err = client.Thumbnail(context.Background(), assetID)
+			assert.EqualError(t, err, "Immich returned an invalid response")
+		})
+	}
 }

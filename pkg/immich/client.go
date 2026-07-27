@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -269,6 +270,15 @@ type AssetPage struct {
 	NextPage *int
 }
 
+// MediaResponse is a bounded, allowlisted Immich media response. Callers must
+// close Body after streaming it to an already-authorized client.
+type MediaResponse struct {
+	Body          io.ReadCloser
+	ContentType   string
+	ContentLength int64
+	ETag          string
+}
+
 // New returns a least-privilege server-side client.
 func New(cfg config.ImmichConfig, httpClient *http.Client) (*Client, error) {
 	baseURL, err := url.Parse(cfg.URL)
@@ -426,6 +436,72 @@ func (c *Client) AlbumAssetsPage(ctx context.Context, albumID uuid.UUID, page in
 		return AssetPage{}, errInvalidResponse
 	}
 	return result, nil
+}
+
+// Thumbnail opens a thumbnail only after the caller has resolved an authorized
+// Immich asset identity. Redirects remain disabled so credentials cannot cross
+// the configured origin.
+func (c *Client) Thumbnail(ctx context.Context, assetID uuid.UUID) (MediaResponse, error) {
+	if assetID == uuid.Nil {
+		return MediaResponse{}, errInvalidResponse
+	}
+	requestCtx, cancel := context.WithTimeout(ctx, c.healthTimeout)
+	endpoint := c.baseURL.JoinPath("api", "assets", assetID.String(), "thumbnail")
+	req, err := http.NewRequestWithContext(requestCtx, http.MethodGet, endpoint.String(), nil)
+	if err != nil {
+		cancel()
+		return MediaResponse{}, errCreateRequest
+	}
+	req.Header.Set("Accept", "image/avif,image/webp,image/*")
+	req.Header.Set("x-api-key", c.apiKey)
+	response, err := c.httpClient.Do(req)
+	if err != nil {
+		cancel()
+		return MediaResponse{}, errUnreachable
+	}
+	if response.StatusCode != http.StatusOK {
+		defer response.Body.Close()
+		defer cancel()
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxJSONResponse))
+		if response.StatusCode == http.StatusNotFound {
+			return MediaResponse{}, ErrNotFound
+		}
+		if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
+			return MediaResponse{}, errInvalidCredentials
+		}
+		return MediaResponse{}, errRequestFailed
+	}
+	contentType, _, err := mime.ParseMediaType(response.Header.Get("Content-Type"))
+	if err != nil || !allowedThumbnailType(contentType) {
+		_ = response.Body.Close()
+		cancel()
+		return MediaResponse{}, errInvalidResponse
+	}
+	return MediaResponse{
+		Body:        &cancelReadCloser{ReadCloser: response.Body, cancel: cancel},
+		ContentType: contentType, ContentLength: response.ContentLength,
+		ETag: response.Header.Get("ETag"),
+	}, nil
+}
+
+func allowedThumbnailType(contentType string) bool {
+	switch contentType {
+	case "image/avif", "image/gif", "image/jpeg", "image/png", "image/webp":
+		return true
+	default:
+		return false
+	}
+}
+
+type cancelReadCloser struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (body *cancelReadCloser) Close() error {
+	err := body.ReadCloser.Close()
+	body.cancel()
+	return err
 }
 
 // People returns every current Immich identity, including hidden clusters.

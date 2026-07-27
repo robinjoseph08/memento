@@ -835,7 +835,7 @@ test("restores and refreshes a signed-in Trusted-device Session", async () => {
   );
 });
 
-test("routes a non-Curator Session only to Recipient Interest self-service", async () => {
+test("routes a non-Curator Session to the Recipient library and self-service tools", async () => {
   const requests: string[] = [];
   window.history.replaceState(null, "", "/?workspace=drafts");
   vi.stubGlobal(
@@ -861,6 +861,15 @@ test("routes a non-Curator Session only to Recipient Interest self-service", asy
       if (path === "/api/session/refresh") {
         return Promise.resolve(new Response(null, { status: 204 }));
       }
+      if (path.startsWith("/api/me/photos?")) {
+        return Promise.resolve(jsonResponse({ media: [], next_cursor: null }));
+      }
+      if (path === "/api/me/new-for-you") {
+        return Promise.resolve(jsonResponse({ events: [] }));
+      }
+      if (path === "/api/sessions") {
+        return Promise.resolve(jsonResponse({ sessions: [] }));
+      }
       if (path === "/api/me/interest-list") {
         return Promise.resolve(
           jsonResponse({
@@ -885,6 +894,9 @@ test("routes a non-Curator Session only to Recipient Interest self-service", asy
   );
 
   renderApp();
+  expect(
+    await screen.findByRole("heading", { name: "Photos" }),
+  ).toBeInTheDocument();
   expect(
     await screen.findByRole("heading", { name: "Your Interest list" }),
   ).toBeInTheDocument();

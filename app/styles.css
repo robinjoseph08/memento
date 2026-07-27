@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "./recipient-library.css";
 
 .public-session-warning {
   position: sticky;
