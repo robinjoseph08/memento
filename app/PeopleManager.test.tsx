@@ -41,17 +41,20 @@ function renderManager() {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
-  return render(
-    <QueryClientProvider client={client}>
-      <PeopleManager
-        session={{
-          display_name: "Curator",
-          session_type: "trusted",
-          csrf_token: "csrf-token",
-        }}
-      />
-    </QueryClientProvider>,
-  );
+  return {
+    client,
+    ...render(
+      <QueryClientProvider client={client}>
+        <PeopleManager
+          session={{
+            display_name: "Curator",
+            session_type: "trusted",
+            csrf_token: "csrf-token",
+          }}
+        />
+      </QueryClientProvider>,
+    ),
+  };
 }
 
 function person(id: string, displayName: string, sortName: string): Person {
@@ -105,6 +108,9 @@ test("previews and confirms the exact source, survivor, generation, email, and v
       survivor_roles: [],
       recipient_role_will_transfer: true,
       resulting_recipient_generation: 4,
+      family_relationships_moved: 2,
+      family_relationships_archived: 1,
+      family_reference_fingerprint: "a".repeat(64),
     },
     requires_generation_transfer: true,
     requires_email_resolution: true,
@@ -137,7 +143,13 @@ test("previews and confirms the exact source, survivor, generation, email, and v
     }),
   );
 
-  renderManager();
+  const { client } = renderManager();
+  const familyKeys = [
+    ["family-people", ""],
+    ["family-relationships", false],
+    ["family-branch", source.id],
+  ] as const;
+  for (const key of familyKeys) client.setQueryData(key, { cached: true });
   await screen.findAllByRole("option", { name: /11111111/ }, contentionWait);
   const sourceSelect = screen.getByLabelText("Source Person");
   const survivorSelect = screen.getByLabelText("Survivor Person");
@@ -158,6 +170,10 @@ test("previews and confirms the exact source, survivor, generation, email, and v
   expect(
     await screen.findByText(/will become generation 4/, {}, contentionWait),
   ).toBeInTheDocument();
+  expect(
+    screen.getByText(/2 Family relationship references/),
+  ).toBeInTheDocument();
+  expect(screen.getByText(/1 active Family relationships/)).toBeInTheDocument();
   const confirm = screen.getByRole("button", { name: "Confirm audited merge" });
   expect(confirm).toBeDisabled();
   fireEvent.click(
@@ -204,4 +220,7 @@ test("previews and confirms the exact source, survivor, generation, email, and v
   expect(mergeRequest?.init?.headers).toEqual(
     expect.objectContaining({ "X-Memento-CSRF": "csrf-token" }),
   );
+  for (const key of familyKeys) {
+    expect(client.getQueryState(key)?.isInvalidated).toBe(true);
+  }
 }, 15_000);

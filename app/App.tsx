@@ -8,6 +8,7 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useSearchParams } from "react-router-dom";
 
 import { APIError, apiJSON, apiNoContent } from "./api";
+import { FamilyManager } from "./FamilyManager";
 import { PeopleManager } from "./PeopleManager";
 import type {
   AvailabilityResponse,
@@ -675,6 +676,7 @@ function ReadyCard({
     return (
       <>
         <PeopleManager session={session} />
+        <FamilyManager session={session} />
         <section className="shell-card curator-card">
           <SourceWorkspace onSignOut={onSignOut} session={session} />
         </section>

@@ -21,6 +21,7 @@ import (
 	"github.com/robinjoseph08/memento/pkg/binder"
 	"github.com/robinjoseph08/memento/pkg/config"
 	"github.com/robinjoseph08/memento/pkg/errcodes"
+	familypkg "github.com/robinjoseph08/memento/pkg/family"
 	"github.com/robinjoseph08/memento/pkg/migrations"
 	"github.com/robinjoseph08/memento/pkg/setup"
 	"github.com/stretchr/testify/assert"
@@ -126,6 +127,7 @@ func servePeople(e *echo.Echo, method, path, credential, csrf string, body any) 
 		encoded, _ = json.Marshal(body)
 	}
 	request := httptest.NewRequest(method, path, bytes.NewReader(encoded))
+	request.Header.Set("User-Agent", "memento-integration-test")
 	if body != nil {
 		request.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
 	}
@@ -232,6 +234,54 @@ func TestPeopleRoutesEnforceCuratorCSRFAndPreserveMergeDirection(t *testing.T) {
 	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &preview))
 	assert.Equal(t, source.String(), preview.Source.ID)
 	assert.Equal(t, survivor.String(), preview.Survivor.ID)
+	child := addPerson(t, fixture.db, "Newly related child", "Newly related child")
+	_, err = fixture.db.NewRaw(`INSERT INTO family_relationships (id, relationship_type, person_a_id, person_b_id) VALUES (?, 'parent_child', ?, ?)`, uuid.New(), source, child).Exec(ctx)
+	require.NoError(t, err)
+	staleMerge := servePeople(e, http.MethodPost, "/api/people/merge", curatorCredential, curatorSession.CSRFToken, MergeRequest{
+		SourcePersonID: source.String(), SurvivorPersonID: survivor.String(), SourceVersion: preview.Source.Version, SurvivorVersion: preview.Survivor.Version,
+		PreviewFingerprint: preview.PreviewFingerprint,
+	})
+	assert.Equal(t, http.StatusConflict, staleMerge.Code)
+	assert.Contains(t, staleMerge.Body.String(), "A Person or affected reference changed")
+}
+
+func TestFamilyRoutesEnforceCuratorAuthorizationCSRFAndErrorMapping(t *testing.T) {
+	fixture := newPeopleFixture(t)
+	ctx := context.Background()
+	_, err := fixture.db.NewRaw(`UPDATE system_settings SET setup_complete = true WHERE id = 1`).Exec(ctx)
+	require.NoError(t, err)
+	var curatorAccess uuid.UUID
+	require.NoError(t, fixture.db.NewRaw(`SELECT id FROM recipient_access_generations WHERE person_id = ? AND is_current`, fixture.actor.PersonID).Scan(ctx, &curatorAccess))
+	curatorCredential := addBrowserSession(t, fixture.db, fixture.actor.PersonID, curatorAccess, "family-curator-browser-session")
+	nonCurator := addPerson(t, fixture.db, "Recipient", "Recipient")
+	nonCuratorAccess := addAccess(t, fixture.db, nonCurator, true, "family-recipient@example.com")
+	nonCuratorCredential := addBrowserSession(t, fixture.db, nonCurator, nonCuratorAccess, "family-recipient-browser-session")
+	auth := setup.New(fixture.db, nil, config.SecurityConfig{Secret: "family-route-test-secret-32-bytes"})
+	curatorSession, err := auth.Session(ctx, curatorCredential)
+	require.NoError(t, err)
+	e := echo.New()
+	requestBinder, err := binder.New()
+	require.NoError(t, err)
+	e.Binder = requestBinder
+	e.HTTPErrorHandler = errcodes.NewHandler().Handle
+	familypkg.RegisterRoutes(e, familypkg.NewHandler(familypkg.New(fixture.db), auth))
+
+	unauthorized := servePeople(e, http.MethodGet, "/api/relationships", "", "", nil)
+	assert.Equal(t, http.StatusUnauthorized, unauthorized.Code)
+	assert.Equal(t, "no-store", unauthorized.Header().Get(echo.HeaderCacheControl))
+	assert.Equal(t, http.StatusNotFound, servePeople(e, http.MethodGet, "/api/relationships", nonCuratorCredential, "", nil).Code)
+	request := familypkg.MutationRequest{RelationshipType: "parent_child", PersonAID: fixture.actor.PersonID.String(), PersonBID: nonCurator.String()}
+	assert.Equal(t, http.StatusForbidden, servePeople(e, http.MethodPost, "/api/relationships", curatorCredential, "", request).Code)
+	assert.Equal(t, http.StatusForbidden, servePeople(e, http.MethodPost, "/api/relationships", curatorCredential, "invalid", request).Code)
+	created := servePeople(e, http.MethodPost, "/api/relationships", curatorCredential, curatorSession.CSRFToken, request)
+	require.Equal(t, http.StatusCreated, created.Code, created.Body.String())
+	cycle := servePeople(e, http.MethodPost, "/api/relationships", curatorCredential, curatorSession.CSRFToken, familypkg.MutationRequest{RelationshipType: "parent_child", PersonAID: nonCurator.String(), PersonBID: fixture.actor.PersonID.String()})
+	assert.Equal(t, http.StatusConflict, cycle.Code)
+	assert.Contains(t, cycle.Body.String(), "would create a cycle")
+	var clientIP, userAgent string
+	require.NoError(t, fixture.db.NewRaw(`SELECT client_ip::text, user_agent FROM security_audit_events WHERE action = 'family_relationship_created'`).Scan(ctx, &clientIP, &userAgent))
+	assert.Equal(t, "192.0.2.1/32", clientIP)
+	assert.Equal(t, "memento-integration-test", userAgent)
 }
 
 func TestPeopleUpdatesRejectStaleVersionsWithoutLostUpdates(t *testing.T) {
@@ -506,6 +556,212 @@ func TestMergeEmailResolutionCanKeepSourceEmail(t *testing.T) {
 	assert.Equal(t, 1, currentEmails, "only the unrelated Curator email remains current outside the transferred generation")
 }
 
+func TestMergePreviewsAndMovesEveryFamilyRelationshipEndpointAtomically(t *testing.T) {
+	fixture := newPeopleFixture(t)
+	ctx := context.Background()
+	source := addPerson(t, fixture.db, "Family source", "Family source")
+	survivor := addPerson(t, fixture.db, "Family survivor", "Family survivor")
+	sharedChild := addPerson(t, fixture.db, "Shared child", "Shared child")
+	otherChild := addPerson(t, fixture.db, "Other child", "Other child")
+	parent := addPerson(t, fixture.db, "Parent", "Parent")
+	sibling := addPerson(t, fixture.db, "Sibling", "Sibling")
+	partner := addPerson(t, fixture.db, "Partner", "Partner")
+	formerPartner := addPerson(t, fixture.db, "Former partner", "Former partner")
+	for _, endpoints := range [][2]uuid.UUID{{source, sharedChild}, {survivor, sharedChild}, {source, otherChild}, {parent, source}} {
+		_, err := fixture.db.NewRaw(`INSERT INTO family_relationships (id, relationship_type, person_a_id, person_b_id) VALUES (?, 'parent_child', ?, ?)`, uuid.New(), endpoints[0], endpoints[1]).Exec(ctx)
+		require.NoError(t, err)
+	}
+	for _, relationship := range []struct {
+		person           uuid.UUID
+		relationshipType string
+		partnerStatus    any
+		archived         bool
+	}{
+		{person: sibling, relationshipType: "sibling"},
+		{person: partner, relationshipType: "partner", partnerStatus: "current"},
+		{person: formerPartner, relationshipType: "partner", partnerStatus: "former", archived: true},
+	} {
+		personA, personB := source, relationship.person
+		if bytes.Compare(personA[:], personB[:]) > 0 {
+			personA, personB = personB, personA
+		}
+		_, err := fixture.db.NewRaw(`INSERT INTO family_relationships (id, relationship_type, person_a_id, person_b_id, partner_status, archived_at) VALUES (?, ?, ?, ?, ?, CASE WHEN ? THEN now() END)`, uuid.New(), relationship.relationshipType, personA, personB, relationship.partnerStatus, relationship.archived).Exec(ctx)
+		require.NoError(t, err)
+	}
+
+	preview, err := fixture.service.PreviewMerge(ctx, fixture.actor, source, survivor)
+	require.NoError(t, err)
+	assert.True(t, preview.CanMerge)
+	assert.Equal(t, 6, preview.References.FamilyRelationshipsMoved)
+	assert.Equal(t, 1, preview.References.FamilyRelationshipsArchived)
+	assert.Len(t, preview.References.FamilyReferenceFingerprint, 64)
+	_, err = fixture.service.Merge(ctx, fixture.actor, MergeRequest{
+		SourcePersonID: source.String(), SurvivorPersonID: survivor.String(), SourceVersion: 1, SurvivorVersion: 1,
+		PreviewFingerprint: preview.PreviewFingerprint,
+	})
+	require.NoError(t, err)
+
+	var sourceReferences, survivorActiveReferences, archivedDuplicates int
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM family_relationships WHERE person_a_id = ? OR person_b_id = ?`, source, source).Scan(ctx, &sourceReferences))
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM family_relationships WHERE (person_a_id = ? OR person_b_id = ?) AND archived_at IS NULL`, survivor, survivor).Scan(ctx, &survivorActiveReferences))
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM family_relationships WHERE person_a_id = ? AND person_b_id = ? AND archived_at IS NOT NULL`, survivor, sharedChild).Scan(ctx, &archivedDuplicates))
+	assert.Zero(t, sourceReferences)
+	assert.Equal(t, 5, survivorActiveReferences)
+	assert.Equal(t, 1, archivedDuplicates)
+	var auditMetadata string
+	require.NoError(t, fixture.db.NewRaw(`SELECT metadata::text FROM security_audit_events WHERE action = 'people_merged'`).Scan(ctx, &auditMetadata))
+	assert.Contains(t, auditMetadata, `"family_relationships_moved": 6`)
+	assert.Contains(t, auditMetadata, `"family_relationships_archived": 1`)
+}
+
+func TestFamilyMutationAndPersonMergeUseOneDeadlockFreeLockOrder(t *testing.T) {
+	fixture := newPeopleFixture(t)
+	ctx := context.Background()
+	source := addPerson(t, fixture.db, "Source", "Source")
+	survivor := addPerson(t, fixture.db, "Survivor", "Survivor")
+	child := addPerson(t, fixture.db, "Child", "Child")
+	preview, err := fixture.service.PreviewMerge(ctx, fixture.actor, source, survivor)
+	require.NoError(t, err)
+	_, err = fixture.db.ExecContext(ctx, `
+		CREATE FUNCTION delay_merge_racing_family_insert() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN PERFORM pg_sleep(0.3); RETURN NEW; END $$;
+		CREATE TRIGGER delay_merge_racing_family_insert BEFORE INSERT ON family_relationships
+		FOR EACH ROW EXECUTE FUNCTION delay_merge_racing_family_insert()`)
+	require.NoError(t, err)
+
+	createResult := make(chan error, 1)
+	go func() {
+		_, createErr := familypkg.New(fixture.db).Create(ctx, fixture.actor, familypkg.MutationRequest{
+			RelationshipType: "parent_child", PersonAID: source.String(), PersonBID: child.String(),
+		})
+		createResult <- createErr
+	}()
+	time.Sleep(100 * time.Millisecond)
+	_, mergeErr := fixture.service.Merge(ctx, fixture.actor, MergeRequest{
+		SourcePersonID: source.String(), SurvivorPersonID: survivor.String(), SourceVersion: 1, SurvivorVersion: 1,
+		PreviewFingerprint: preview.PreviewFingerprint,
+	})
+	require.NoError(t, <-createResult)
+	require.ErrorIs(t, mergeErr, ErrStale)
+}
+
+func TestMergeRejectsStaleFamilyRelationshipPreview(t *testing.T) {
+	fixture := newPeopleFixture(t)
+	ctx := context.Background()
+	source := addPerson(t, fixture.db, "Source", "Source")
+	survivor := addPerson(t, fixture.db, "Survivor", "Survivor")
+	firstParent := addPerson(t, fixture.db, "First parent", "First parent")
+	secondParent := addPerson(t, fixture.db, "Second parent", "Second parent")
+	relationshipID := uuid.New()
+	_, err := fixture.db.NewRaw(`INSERT INTO family_relationships (id, relationship_type, person_a_id, person_b_id) VALUES (?, 'parent_child', ?, ?)`, relationshipID, firstParent, source).Exec(ctx)
+	require.NoError(t, err)
+	preview, err := fixture.service.PreviewMerge(ctx, fixture.actor, source, survivor)
+	require.NoError(t, err)
+	_, err = fixture.db.NewRaw(`UPDATE family_relationships SET person_a_id = ?, version = version + 1 WHERE id = ?`, secondParent, relationshipID).Exec(ctx)
+	require.NoError(t, err)
+
+	_, err = fixture.service.Merge(ctx, fixture.actor, MergeRequest{
+		SourcePersonID: source.String(), SurvivorPersonID: survivor.String(), SourceVersion: 1, SurvivorVersion: 1,
+		PreviewFingerprint: preview.PreviewFingerprint,
+	})
+	require.ErrorIs(t, err, ErrMergeStale)
+	storedSource, getErr := fixture.service.Get(ctx, source)
+	require.NoError(t, getErr)
+	assert.Equal(t, "current", storedSource.Status)
+}
+
+func TestMergeRejectsConflictingPartnerStatuses(t *testing.T) {
+	fixture := newPeopleFixture(t)
+	ctx := context.Background()
+	source := addPerson(t, fixture.db, "Source", "Source")
+	survivor := addPerson(t, fixture.db, "Survivor", "Survivor")
+	partner := addPerson(t, fixture.db, "Partner", "Partner")
+	for _, relationship := range []struct {
+		person uuid.UUID
+		status string
+	}{
+		{person: source, status: "current"},
+		{person: survivor, status: "former"},
+	} {
+		personA, personB := relationship.person, partner
+		if bytes.Compare(personA[:], personB[:]) > 0 {
+			personA, personB = personB, personA
+		}
+		_, err := fixture.db.NewRaw(`INSERT INTO family_relationships (id, relationship_type, person_a_id, person_b_id, partner_status) VALUES (?, 'partner', ?, ?, ?)`, uuid.New(), personA, personB, relationship.status).Exec(ctx)
+		require.NoError(t, err)
+	}
+
+	preview, err := fixture.service.PreviewMerge(ctx, fixture.actor, source, survivor)
+	require.NoError(t, err)
+	assert.False(t, preview.CanMerge)
+	assert.Contains(t, preview.Blockers, "Resolve conflicting current and former partner relationships before merging these People.")
+	_, err = fixture.service.Merge(ctx, fixture.actor, MergeRequest{
+		SourcePersonID: source.String(), SurvivorPersonID: survivor.String(), SourceVersion: 1, SurvivorVersion: 1,
+		PreviewFingerprint: preview.PreviewFingerprint,
+	})
+	require.ErrorIs(t, err, ErrFamilyPartnerConflict)
+}
+
+func TestMergeArchivesDirectParentChildConnectionBetweenMergedPeople(t *testing.T) {
+	for _, sourceIsParent := range []bool{true, false} {
+		t.Run(fmt.Sprintf("source_is_parent_%t", sourceIsParent), func(t *testing.T) {
+			fixture := newPeopleFixture(t)
+			ctx := context.Background()
+			source := addPerson(t, fixture.db, "Source", "Source")
+			survivor := addPerson(t, fixture.db, "Survivor", "Survivor")
+			personA, personB := source, survivor
+			if !sourceIsParent {
+				personA, personB = survivor, source
+			}
+			relationshipID := uuid.New()
+			_, err := fixture.db.NewRaw(`INSERT INTO family_relationships (id, relationship_type, person_a_id, person_b_id) VALUES (?, 'parent_child', ?, ?)`, relationshipID, personA, personB).Exec(ctx)
+			require.NoError(t, err)
+
+			preview, err := fixture.service.PreviewMerge(ctx, fixture.actor, source, survivor)
+			require.NoError(t, err)
+			assert.True(t, preview.CanMerge)
+			assert.Equal(t, 0, preview.References.FamilyRelationshipsMoved)
+			assert.Equal(t, 1, preview.References.FamilyRelationshipsArchived)
+
+			_, err = fixture.service.Merge(ctx, fixture.actor, MergeRequest{
+				SourcePersonID: source.String(), SurvivorPersonID: survivor.String(), SourceVersion: 1, SurvivorVersion: 1,
+				PreviewFingerprint: preview.PreviewFingerprint,
+			})
+			require.NoError(t, err)
+			var archived bool
+			var version int64
+			require.NoError(t, fixture.db.NewRaw(`SELECT archived_at IS NOT NULL, version FROM family_relationships WHERE id = ?`, relationshipID).Scan(ctx, &archived, &version))
+			assert.True(t, archived)
+			assert.Equal(t, int64(2), version)
+		})
+	}
+}
+
+func TestMergeRejectsPeopleConnectedByIndirectParentChildPath(t *testing.T) {
+	fixture := newPeopleFixture(t)
+	ctx := context.Background()
+	source := addPerson(t, fixture.db, "Ancestor source", "Ancestor source")
+	middle := addPerson(t, fixture.db, "Middle", "Middle")
+	survivor := addPerson(t, fixture.db, "Descendant survivor", "Descendant survivor")
+	for _, endpoints := range [][2]uuid.UUID{{source, middle}, {middle, survivor}} {
+		_, err := fixture.db.NewRaw(`INSERT INTO family_relationships (id, relationship_type, person_a_id, person_b_id) VALUES (?, 'parent_child', ?, ?)`, uuid.New(), endpoints[0], endpoints[1]).Exec(ctx)
+		require.NoError(t, err)
+	}
+
+	preview, err := fixture.service.PreviewMerge(ctx, fixture.actor, source, survivor)
+	require.NoError(t, err)
+	assert.False(t, preview.CanMerge)
+	assert.Contains(t, preview.Blockers, "Resolve the parent-child path between these People before merging them.")
+	_, err = fixture.service.Merge(ctx, fixture.actor, MergeRequest{
+		SourcePersonID: source.String(), SurvivorPersonID: survivor.String(), SourceVersion: 1, SurvivorVersion: 1,
+		PreviewFingerprint: preview.PreviewFingerprint,
+	})
+	require.ErrorIs(t, err, ErrFamilyMergeCycle)
+	storedSource, getErr := fixture.service.Get(ctx, source)
+	require.NoError(t, getErr)
+	assert.Equal(t, "current", storedSource.Status)
+}
+
 func TestMergeLateAuditFailureRollsBackEveryEffect(t *testing.T) {
 	fixture := newPeopleFixture(t)
 	ctx := context.Background()
@@ -513,6 +769,10 @@ func TestMergeLateAuditFailureRollsBackEveryEffect(t *testing.T) {
 	survivor := addPerson(t, fixture.db, "Rollback survivor", "Rollback survivor")
 	sourceAccess := addAccess(t, fixture.db, source, true, "rollback@example.com")
 	sessionID := addSession(t, fixture.db, source, sourceAccess)
+	child := addPerson(t, fixture.db, "Rollback child", "Rollback child")
+	relationshipID := uuid.New()
+	_, err := fixture.db.NewRaw(`INSERT INTO family_relationships (id, relationship_type, person_a_id, person_b_id) VALUES (?, 'parent_child', ?, ?)`, relationshipID, source, child).Exec(ctx)
+	require.NoError(t, err)
 	preview, err := fixture.service.PreviewMerge(ctx, fixture.actor, source, survivor)
 	require.NoError(t, err)
 	_, err = fixture.db.ExecContext(ctx, `CREATE FUNCTION reject_people_merge_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.action = 'people_merged' THEN RAISE EXCEPTION 'late merge failure'; END IF; RETURN NEW; END $$; CREATE TRIGGER reject_people_merge_audit BEFORE INSERT ON security_audit_events FOR EACH ROW EXECUTE FUNCTION reject_people_merge_audit()`)
@@ -530,4 +790,9 @@ func TestMergeLateAuditFailureRollsBackEveryEffect(t *testing.T) {
 	var revoked bool
 	require.NoError(t, fixture.db.NewRaw(`SELECT revoked_at IS NOT NULL FROM sessions WHERE id = ?`, sessionID).Scan(ctx, &revoked))
 	assert.False(t, revoked)
+	var relationshipParent uuid.UUID
+	var relationshipVersion int64
+	require.NoError(t, fixture.db.NewRaw(`SELECT person_a_id, version FROM family_relationships WHERE id = ?`, relationshipID).Scan(ctx, &relationshipParent, &relationshipVersion))
+	assert.Equal(t, source, relationshipParent)
+	assert.Equal(t, int64(1), relationshipVersion)
 }

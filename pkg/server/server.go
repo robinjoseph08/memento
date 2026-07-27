@@ -11,6 +11,7 @@ import (
 	"github.com/robinjoseph08/memento/pkg/binder"
 	"github.com/robinjoseph08/memento/pkg/emaildelivery"
 	"github.com/robinjoseph08/memento/pkg/errcodes"
+	"github.com/robinjoseph08/memento/pkg/family"
 	"github.com/robinjoseph08/memento/pkg/health"
 	"github.com/robinjoseph08/memento/pkg/people"
 	"github.com/robinjoseph08/memento/pkg/setup"
@@ -18,7 +19,7 @@ import (
 )
 
 // New constructs the HTTP application and delegates route ownership to handler packages.
-func New(healthService *health.Service, emailHandler *emaildelivery.Handler, setupHandler *setup.Handler, peopleHandler *people.Handler, sourceHandler *sources.Handler) (*echo.Echo, error) {
+func New(healthService *health.Service, emailHandler *emaildelivery.Handler, setupHandler *setup.Handler, peopleHandler *people.Handler, familyHandler *family.Handler, sourceHandler *sources.Handler) (*echo.Echo, error) {
 	e := echo.New()
 	requestBinder, err := binder.New()
 	if err != nil {
@@ -40,6 +41,9 @@ func New(healthService *health.Service, emailHandler *emaildelivery.Handler, set
 	}
 	if peopleHandler != nil {
 		people.RegisterRoutes(e, peopleHandler)
+	}
+	if familyHandler != nil {
+		family.RegisterRoutes(e, familyHandler)
 	}
 	if sourceHandler != nil {
 		sources.RegisterRoutes(e, sourceHandler)

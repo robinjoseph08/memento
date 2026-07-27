@@ -50,9 +50,15 @@ func TestSourceReconciliationMigrationBackfillsExistingAlbums(t *testing.T) {
 	allMigrations := collection.Sorted()
 	require.Greater(t, len(allMigrations), 1)
 	priorMigrations := migrate.NewMigrations()
-	for _, migration := range allMigrations[:len(allMigrations)-1] {
+	foundSourceReconciliation := false
+	for _, migration := range allMigrations {
+		if migration.Name == "202607260001" {
+			foundSourceReconciliation = true
+			continue
+		}
 		priorMigrations.Add(migration)
 	}
+	require.True(t, foundSourceReconciliation)
 	require.NoError(t, applyCollection(ctx, db, priorMigrations))
 
 	const sourceAlbumID = "11111111-1111-4111-8111-111111111111"

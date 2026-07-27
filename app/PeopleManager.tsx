@@ -55,7 +55,12 @@ export function PeopleManager({ session }: { session: SessionResponse }) {
   );
 
   async function refreshPeople() {
-    await queryClient.invalidateQueries({ queryKey: ["people"] });
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["people"] }),
+      queryClient.invalidateQueries({ queryKey: ["family-people"] }),
+      queryClient.invalidateQueries({ queryKey: ["family-relationships"] }),
+      queryClient.invalidateQueries({ queryKey: ["family-branch"] }),
+    ]);
   }
 
   function clearMergeSelection() {
@@ -490,6 +495,15 @@ function MergeConfirmation({
         <li>
           {preview.affected_references.historical_audit_rows_preserved}{" "}
           historical attribution rows remain attached to their original Person.
+        </li>
+        <li>
+          {preview.affected_references.family_relationships_moved} Family
+          relationship references will move to the survivor.
+        </li>
+        <li>
+          {preview.affected_references.family_relationships_archived} active
+          Family relationships will be archived because they would become
+          duplicate or self-connections.
         </li>
         <li>
           Source roles:{" "}

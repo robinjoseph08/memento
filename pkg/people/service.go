@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/google/uuid"
+	"github.com/robinjoseph08/memento/pkg/family"
 	"github.com/robinjoseph08/memento/pkg/setup"
 	"github.com/uptrace/bun"
 )
@@ -24,11 +25,14 @@ var (
 	ErrNotFound                 = errors.New("Person not found")
 	ErrInvalidPerson            = errors.New("Person details are invalid")
 	ErrStale                    = errors.New("Person was changed by another request")
+	ErrMergeStale               = fmt.Errorf("merge preview is stale: %w", ErrStale)
 	ErrCuratorMustSurvive       = errors.New("the Curator Person must survive the merge")
 	ErrSurvivorMustBeCurrent    = errors.New("the survivor Person must be current")
 	ErrTwoCurrentGenerations    = errors.New("both People have current Recipient access generations")
 	ErrGenerationTransferNeeded = errors.New("the source current Recipient access generation requires explicit transfer")
 	ErrEmailResolutionNeeded    = errors.New("the login email conflict requires explicit resolution")
+	ErrFamilyMergeCycle         = errors.New("the People are connected by a parent-child path")
+	ErrFamilyPartnerConflict    = errors.New("the People have conflicting current and former partner relationships")
 	ErrInvalidMerge             = errors.New("Person merge is invalid")
 )
 
@@ -96,6 +100,9 @@ type ReferenceEffects struct {
 	SurvivorRoles                []string `json:"survivor_roles"`
 	RecipientRoleWillTransfer    bool     `json:"recipient_role_will_transfer"`
 	ResultingRecipientGeneration int      `json:"resulting_recipient_generation,omitempty"`
+	FamilyRelationshipsMoved     int      `json:"family_relationships_moved"`
+	FamilyRelationshipsArchived  int      `json:"family_relationships_archived"`
+	FamilyReferenceFingerprint   string   `json:"family_reference_fingerprint"`
 }
 
 // MergePreview is generated to TypeScript by Tygo.
@@ -499,6 +506,22 @@ func previewMerge(ctx context.Context, db bun.IDB, actor setup.CuratorSession, s
 		SurvivorRoles:                survivor.Roles,
 		RecipientRoleWillTransfer:    source.CurrentAccess != nil && contains(source.Roles, "recipient"),
 	}
+	familyEffects, familyErr := family.PreviewPersonMerge(ctx, db, sourceID, survivorID)
+	knownFamilyConflict := errors.Is(familyErr, family.ErrMergeCycle) || errors.Is(familyErr, family.ErrMergePartnerConflict)
+	if familyErr != nil && !knownFamilyConflict {
+		return MergePreview{}, familyErr
+	}
+	preview.References.FamilyRelationshipsMoved = familyEffects.RelationshipsMoved
+	preview.References.FamilyRelationshipsArchived = familyEffects.RelationshipsArchived
+	preview.References.FamilyReferenceFingerprint = familyEffects.ReferenceFingerprint
+	if errors.Is(familyErr, family.ErrMergeCycle) {
+		preview.CanMerge = false
+		preview.Blockers = append(preview.Blockers, "Resolve the parent-child path between these People before merging them.")
+	}
+	if errors.Is(familyErr, family.ErrMergePartnerConflict) {
+		preview.CanMerge = false
+		preview.Blockers = append(preview.Blockers, "Resolve conflicting current and former partner relationships before merging these People.")
+	}
 	preview.SessionsWillBeInvalidated = sessionsInvalidated > 0
 	if survivor.Status != "current" {
 		preview.CanMerge = false
@@ -561,7 +584,10 @@ func (s *Service) Merge(ctx context.Context, actor setup.CuratorSession, request
 	now := s.now().UTC()
 	var merged Person
 	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
-		// Parent locks serialize child inserts, then stable child-row locks protect every evaluated merge input.
+		if err := family.LockGraph(ctx, tx); err != nil {
+			return err
+		}
+		// The graph lock precedes stable parent and child-row locks across Family mutations and Person merges.
 		for _, lock := range []string{
 			`SELECT id FROM people WHERE id IN (?, ?) ORDER BY id FOR UPDATE`,
 			`SELECT person_id FROM person_roles WHERE person_id IN (?, ?) ORDER BY person_id, role FOR UPDATE`,
@@ -578,12 +604,12 @@ func (s *Service) Merge(ctx context.Context, actor setup.CuratorSession, request
 			return err
 		}
 		if request.PreviewFingerprint != currentPreview.PreviewFingerprint {
-			return ErrStale
+			return ErrMergeStale
 		}
 		source := currentPreview.Source
 		survivor := currentPreview.Survivor
 		if source.Version != request.SourceVersion || survivor.Version != request.SurvivorVersion {
-			return ErrStale
+			return ErrMergeStale
 		}
 		if source.Status == "merged" || survivor.Status == "merged" {
 			return ErrInvalidMerge
@@ -597,6 +623,16 @@ func (s *Service) Merge(ctx context.Context, actor setup.CuratorSession, request
 		if source.CurrentAccess != nil && survivor.CurrentAccess != nil {
 			return ErrTwoCurrentGenerations
 		}
+		familyEffects, err := family.MergePersonReferences(ctx, tx, sourceID, survivorID, now)
+		if errors.Is(err, family.ErrMergeCycle) {
+			return ErrFamilyMergeCycle
+		}
+		if errors.Is(err, family.ErrMergePartnerConflict) {
+			return ErrFamilyPartnerConflict
+		}
+		if err != nil {
+			return err
+		}
 		resultingGeneration := 0
 		if source.CurrentAccess != nil {
 			if !request.TransferCurrentAccessGeneration {
@@ -606,7 +642,7 @@ func (s *Service) Merge(ctx context.Context, actor setup.CuratorSession, request
 				return err
 			}
 			if request.ExpectedRecipientGeneration != resultingGeneration {
-				return ErrStale
+				return ErrMergeStale
 			}
 			var survivorEmailID uuid.UUID
 			var survivorEmail string
@@ -662,6 +698,8 @@ func (s *Service) Merge(ctx context.Context, actor setup.CuratorSession, request
 			"survivor_person_id": survivorID.String(), "source_version": request.SourceVersion,
 			"survivor_version": request.SurvivorVersion, "generation_transferred": source.CurrentAccess != nil,
 			"resulting_recipient_generation": resultingGeneration, "email_resolution": request.EmailResolution,
+			"family_relationships_moved":    familyEffects.RelationshipsMoved,
+			"family_relationships_archived": familyEffects.RelationshipsArchived,
 		}
 		if err := appendAudit(ctx, tx, actor, &sourceID, "people_merged", metadata); err != nil {
 			return err
@@ -695,6 +733,7 @@ func appendAudit(ctx context.Context, tx bun.Tx, actor setup.CuratorSession, sub
 	if err != nil {
 		return err
 	}
-	_, err = tx.NewRaw(`INSERT INTO security_audit_events (actor_person_id, subject_person_id, action, outcome, session_id, metadata) VALUES (?, ?, ?, 'success', ?, ?::jsonb)`, actor.PersonID, subject, action, actor.SessionID, string(encoded)).Exec(ctx)
+	request := setup.RequestMetadataFromContext(ctx)
+	_, err = tx.NewRaw(`INSERT INTO security_audit_events (actor_person_id, subject_person_id, action, outcome, client_ip, user_agent, session_id, metadata) VALUES (?, ?, ?, 'success', NULLIF(?, '')::inet, ?, ?, ?::jsonb)`, actor.PersonID, subject, action, request.ClientIP, request.UserAgent, actor.SessionID, string(encoded)).Exec(ctx)
 	return err
 }

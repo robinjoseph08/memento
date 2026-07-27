@@ -283,6 +283,9 @@ test("restores and refreshes a signed-in Trusted-device Session", async () => {
     if (path.startsWith("/api/people?")) {
       return Promise.resolve(jsonResponse({ people: [] }));
     }
+    if (path.startsWith("/api/relationships?")) {
+      return Promise.resolve(jsonResponse({ relationships: [] }));
+    }
     return Promise.resolve(
       jsonResponse({
         display_name: "Robin Joseph",
@@ -300,9 +303,13 @@ test("restores and refreshes a signed-in Trusted-device Session", async () => {
       "Setup is complete. You're signed in as Robin Joseph.",
     ),
   ).toBeInTheDocument();
-  expect(fetchMock).toHaveBeenCalledTimes(5);
+  expect(fetchMock).toHaveBeenCalledTimes(7);
   expect(fetchMock).toHaveBeenCalledWith(
     "/api/people?query=&include_archived=false",
+    expect.objectContaining({ credentials: "same-origin" }),
+  );
+  expect(fetchMock).toHaveBeenCalledWith(
+    "/api/relationships?include_archived=false",
     expect.objectContaining({ credentials: "same-origin" }),
   );
   expect(fetchMock).toHaveBeenCalledWith(
