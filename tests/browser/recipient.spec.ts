@@ -55,8 +55,11 @@ async function recipientAPI(page: Page) {
       });
     } else if (path === media.thumbnail_url) {
       await route.fulfill({
-        contentType: "image/svg+xml",
-        body: '<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900"><rect width="1600" height="900" fill="#38bdf8"/></svg>',
+        contentType: "image/png",
+        body: Buffer.from(
+          "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+          "base64",
+        ),
       });
     } else if (path.endsWith("/seen")) {
       await route.fulfill({ status: 204, body: "" });

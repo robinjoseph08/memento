@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 	"time"
 
@@ -252,6 +253,44 @@ func TestLibraryCursorsAreScopedAndEventPaginationDoesNotExposeHiddenPositions(t
 	assert.ErrorIs(t, err, ErrInvalidCursor, "Event cursors are bound to the current Publication")
 }
 
+func TestEventsAndEventDetailHaveStableDuplicateFreePageBoundaries(t *testing.T) {
+	fixture := newLibraryFixture(t)
+	ctx := context.Background()
+	equalCommittedAt := time.Date(2030, time.January, 2, 3, 4, 5, 0, time.UTC)
+	_, err := fixture.db.NewRaw(`
+		UPDATE current_published_events SET committed_at = ? WHERE event_id IN (?, ?)
+	`, equalCommittedAt, fixture.events[0], fixture.events[1]).Exec(ctx)
+	require.NoError(t, err)
+
+	firstEvents, err := fixture.service.Events(ctx, fixture.actor, "1", "")
+	require.NoError(t, err)
+	require.Len(t, firstEvents.Events, 1)
+	require.NotNil(t, firstEvents.NextCursor)
+	secondEvents, err := fixture.service.Events(ctx, fixture.actor, "1", *firstEvents.NextCursor)
+	require.NoError(t, err)
+	require.Len(t, secondEvents.Events, 1)
+	assert.Nil(t, secondEvents.NextCursor)
+	eventIDs := []string{firstEvents.Events[0].ID, secondEvents.Events[0].ID}
+	expectedEventIDs := []string{fixture.events[0].String(), fixture.events[1].String()}
+	slices.Sort(expectedEventIDs)
+	slices.Reverse(expectedEventIDs)
+	assert.Equal(t, expectedEventIDs, eventIDs, "equal commit times use Event ID as a stable descending tie breaker")
+	assert.NotEqual(t, eventIDs[0], eventIDs[1], "Events do not repeat across page boundaries")
+
+	firstMedia, err := fixture.service.Event(ctx, fixture.actor, fixture.events[0], "1", "")
+	require.NoError(t, err)
+	require.Len(t, firstMedia.Media, 1)
+	require.NotNil(t, firstMedia.NextCursor)
+	secondMedia, err := fixture.service.Event(ctx, fixture.actor, fixture.events[0], "1", *firstMedia.NextCursor)
+	require.NoError(t, err)
+	require.Len(t, secondMedia.Media, 1)
+	assert.Nil(t, secondMedia.NextCursor)
+	mediaIDs := []string{firstMedia.Media[0].ID, secondMedia.Media[0].ID}
+	expectedMediaIDs := []string{fixture.media[0].String(), fixture.media[1].String()}
+	assert.Equal(t, expectedMediaIDs, mediaIDs, "Event Media retain their current placement order across pages")
+	assert.NotEqual(t, mediaIDs[0], mediaIDs[1], "Event Media do not repeat across page boundaries")
+}
+
 func TestFavoritesAndNewForYouRemainRecipientScopedAndDurable(t *testing.T) {
 	fixture := newLibraryFixture(t)
 	ctx := context.Background()
@@ -336,6 +375,84 @@ func TestValidUnauthorizedIdentifiersAreIndistinguishableFromMissingContent(t *t
 		})
 	}
 	assert.Empty(t, fixture.thumbnail.assets, "unauthorized and missing Media identifiers never reach Immich")
+}
+
+func TestThumbnailRevalidatesEveryAuthorizationBoundaryBeforeImmich(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		deny   func(context.Context, libraryFixture) error
+		reason string
+	}{
+		{
+			name: "revoked Session",
+			deny: func(ctx context.Context, fixture libraryFixture) error {
+				_, err := fixture.db.NewRaw(`UPDATE sessions SET revoked_at = now() WHERE id = ?`, fixture.actor.SessionID).Exec(ctx)
+				return err
+			},
+			reason: "a revoked Session cannot authorize a thumbnail",
+		},
+		{
+			name: "expired Session",
+			deny: func(ctx context.Context, fixture libraryFixture) error {
+				_, err := fixture.db.NewRaw(`UPDATE sessions SET idle_expires_at = now() - interval '1 second' WHERE id = ?`, fixture.actor.SessionID).Exec(ctx)
+				return err
+			},
+			reason: "an expired Session cannot authorize a thumbnail",
+		},
+		{
+			name: "stale security epoch",
+			deny: func(ctx context.Context, fixture libraryFixture) error {
+				_, err := fixture.db.NewRaw(`UPDATE system_settings SET security_epoch = decode(repeat('99', 32), 'hex') WHERE id = 1`).Exec(ctx)
+				return err
+			},
+			reason: "a Session from a stale security epoch cannot authorize a thumbnail",
+		},
+		{
+			name: "non-current access generation",
+			deny: func(ctx context.Context, fixture libraryFixture) error {
+				_, err := fixture.db.NewRaw(`UPDATE recipient_access_generations SET is_current = false WHERE id = ?`, fixture.actor.AccessID).Exec(ctx)
+				return err
+			},
+			reason: "a non-current access generation cannot authorize a thumbnail",
+		},
+		{
+			name: "suspended access generation",
+			deny: func(ctx context.Context, fixture libraryFixture) error {
+				_, err := fixture.db.NewRaw(`UPDATE recipient_access_generations SET state = 'suspended' WHERE id = ?`, fixture.actor.AccessID).Exec(ctx)
+				return err
+			},
+			reason: "a suspended access generation cannot authorize a thumbnail",
+		},
+		{
+			name: "missing Audience entitlement",
+			deny: func(ctx context.Context, fixture libraryFixture) error {
+				_, err := fixture.db.NewRaw(`DELETE FROM current_audience_entitlements
+					WHERE recipient_access_generation_id = ? AND media_item_id = ?`, fixture.actor.AccessID, fixture.media[0]).Exec(ctx)
+				return err
+			},
+			reason: "Media without a current Audience entitlement cannot authorize a thumbnail",
+		},
+		{
+			name: "withdrawn Media",
+			deny: func(ctx context.Context, fixture libraryFixture) error {
+				_, err := fixture.db.NewRaw(`INSERT INTO content_withdrawals
+					(id, target_kind, target_id, withdrawn_by_person_id, withdrawn_at)
+					VALUES (gen_random_uuid(), 'media', ?, ?, now())`, fixture.media[0], fixture.curator).Exec(ctx)
+				return err
+			},
+			reason: "withdrawn Media cannot authorize a thumbnail",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newLibraryFixture(t)
+			ctx := context.Background()
+			require.NoError(t, test.deny(ctx, fixture))
+
+			_, err := fixture.service.Thumbnail(ctx, fixture.actor, fixture.media[0])
+			assert.ErrorIs(t, err, ErrNotFound, test.reason)
+			assert.Empty(t, fixture.thumbnail.assets, "a denied thumbnail request never reaches Immich")
+		})
+	}
 }
 
 func TestRecipientAuthorizationMatrixRevalidatesReuseWithdrawalAndAvailability(t *testing.T) {
