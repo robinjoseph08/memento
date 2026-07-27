@@ -20,9 +20,10 @@ import (
 )
 
 const (
-	maxJSONResponse  = 10 << 20
-	supportedVersion = "3.0.3"
-	assetPageSize    = 1000
+	maxJSONResponse    = 10 << 20
+	supportedVersion   = "3.0.3"
+	assetPageSize      = 1000
+	maxDatabaseInteger = 1<<31 - 1
 )
 
 var requiredPermissions = []string{
@@ -491,7 +492,7 @@ func normalizeAlbum(raw albumResponse) (AlbumSummary, error) {
 		return AlbumSummary{}, errInvalidResponse
 	}
 	id, err := uuid.Parse(*raw.ID)
-	if err != nil || id == uuid.Nil || *raw.AssetCount < 0 {
+	if err != nil || id == uuid.Nil || *raw.AssetCount < 0 || *raw.AssetCount > maxDatabaseInteger {
 		return AlbumSummary{}, errInvalidResponse
 	}
 	createdAt, err := time.Parse(time.RFC3339, *raw.CreatedAt)
@@ -560,7 +561,7 @@ func requiredNullableDimension(raw json.RawMessage) (*int, error) {
 		return nil, nil
 	}
 	var value int
-	if err := json.Unmarshal(raw, &value); err != nil || value < 0 {
+	if err := json.Unmarshal(raw, &value); err != nil || value < 0 || value > maxDatabaseInteger {
 		return nil, errInvalidResponse
 	}
 	return &value, nil

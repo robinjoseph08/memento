@@ -69,6 +69,7 @@ func enqueueReconciliation(ctx context.Context, tx bun.Tx, sourceAlbumID uuid.UU
 			status = CASE WHEN jobs.status IN ('completed', 'failed') THEN 'pending' ELSE jobs.status END,
 			available_at = CASE WHEN jobs.status = 'running' THEN jobs.available_at ELSE LEAST(jobs.available_at, EXCLUDED.available_at) END,
 			attempts = CASE WHEN jobs.status IN ('completed', 'failed') THEN 0 ELSE jobs.attempts END,
+			payload = EXCLUDED.payload,
 			last_safe_error = CASE WHEN jobs.status IN ('completed', 'failed') THEN NULL ELSE jobs.last_safe_error END,
 			rerun_requested = jobs.status = 'running', updated_at = now()
 	`, ReconciliationJobKind, string(payload), "source-reconcile:"+sourceAlbumID.String(), availableAt).Exec(ctx)
@@ -95,7 +96,8 @@ func (s *Service) HandleReconciliationJob(ctx context.Context, job worker.Job) e
 }
 
 // Reconcile validates a complete candidate membership before changing private
-// editable source state. Failed and unstable scans commit only run diagnostics.
+// editable source state. Failed and unstable scans commit diagnostics and
+// scheduling metadata, but never membership or validated removal evidence.
 func (s *Service) Reconcile(ctx context.Context, sourceAlbumID uuid.UUID) error {
 	now := s.now().UTC()
 	var outcome error
@@ -143,6 +145,10 @@ func (s *Service) Reconcile(ctx context.Context, sourceAlbumID uuid.UUID) error 
 
 func (s *Service) readSnapshot(ctx context.Context, albumID uuid.UUID) (reconciliationSnapshot, error) {
 	var snapshot reconciliationSnapshot
+	if err := s.connector.Check(ctx); err != nil {
+		snapshot.diagnostic = "dependency_unavailable"
+		return snapshot, ErrDependency
+	}
 	before, err := s.connector.Album(ctx, albumID)
 	if err != nil {
 		snapshot.diagnostic = "dependency_unavailable"
@@ -154,7 +160,7 @@ func (s *Service) readSnapshot(ctx context.Context, albumID uuid.UUID) (reconcil
 		return snapshot, err
 	}
 
-	assets := make(map[uuid.UUID]immich.AssetSummary, before.AssetCount)
+	assets := make(map[uuid.UUID]immich.AssetSummary)
 	pageNumber := 1
 	pagesRead := 0
 	for {

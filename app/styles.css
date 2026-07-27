@@ -331,6 +331,7 @@ h1 {
 .source-connect,
 .source-sign-out,
 .source-primary-action,
+.source-reconcile-action,
 .source-load-more,
 .source-tabs button,
 .source-album-summary button {
@@ -359,7 +360,8 @@ h1 {
 
 .source-connect:disabled,
 .source-sign-out:disabled,
-.source-primary-action:disabled {
+.source-primary-action:disabled,
+.source-reconcile-action:disabled {
   cursor: wait;
   opacity: 0.65;
 }
@@ -450,6 +452,12 @@ h1 {
 
 .source-details > p {
   white-space: pre-wrap;
+}
+
+.source-details-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
 }
 
 .source-details dl {

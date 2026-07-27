@@ -87,12 +87,7 @@ func run() error {
 	}
 	emailService := emaildelivery.New(db, cfg.SMTP, emailSender, cfg.Security.Secret)
 	sourceService := sources.New(db, immichClient, cfg.Sources.ReconciliationInterval)
-	handlers := map[string]worker.Handler{
-		sources.ReconciliationJobKind: sourceService.HandleReconciliationJob,
-	}
-	if cfg.SMTP.Enabled {
-		handlers[emaildelivery.JobKind] = emailService.Handle
-	}
+	handlers := jobHandlers(sourceService, emailService, cfg.SMTP.Enabled)
 
 	owner, err := leaseOwner()
 	if err != nil {
@@ -154,6 +149,16 @@ func run() error {
 	}
 	log.Info("shutdown complete")
 	return nil
+}
+
+func jobHandlers(sourceService *sources.Service, emailService *emaildelivery.Service, smtpEnabled bool) map[string]worker.Handler {
+	handlers := map[string]worker.Handler{
+		sources.ReconciliationJobKind: sourceService.HandleReconciliationJob,
+	}
+	if smtpEnabled {
+		handlers[emaildelivery.JobKind] = emailService.Handle
+	}
+	return handlers
 }
 
 func leaseOwner() (string, error) {

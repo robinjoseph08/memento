@@ -11,6 +11,7 @@ import (
 	"github.com/robinjoseph08/memento/internal/testdb"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/uptrace/bun/migrate"
 )
 
 func TestApplyFromEmptyDatabaseUnderConcurrentLock(t *testing.T) {
@@ -41,6 +42,41 @@ func TestApplyFromEmptyDatabaseUnderConcurrentLock(t *testing.T) {
 	require.NoError(t, db.NewRaw(`SELECT count(*) FROM jobs`).Scan(ctx, &jobsCount))
 	assert.Equal(t, 1, settingsCount)
 	assert.Zero(t, jobsCount)
+}
+
+func TestSourceReconciliationMigrationBackfillsExistingAlbums(t *testing.T) {
+	db := testdb.Open(t)
+	ctx := context.Background()
+	allMigrations := collection.Sorted()
+	require.Greater(t, len(allMigrations), 1)
+	priorMigrations := migrate.NewMigrations()
+	for _, migration := range allMigrations[:len(allMigrations)-1] {
+		priorMigrations.Add(migration)
+	}
+	require.NoError(t, applyCollection(ctx, db, priorMigrations))
+
+	const sourceAlbumID = "11111111-1111-4111-8111-111111111111"
+	_, err := db.ExecContext(ctx, `
+		INSERT INTO source_albums (
+			id, immich_album_id, name, asset_count, source_created_at, source_updated_at,
+			first_seen_at, last_seen_at, source_fingerprint, next_reconciliation_at
+		) VALUES (
+			?, '22222222-2222-4222-8222-222222222222', 'Existing album', 0, now(), now(),
+			now(), now(), decode(repeat('00', 32), 'hex'), now()
+		)
+	`, sourceAlbumID)
+	require.NoError(t, err)
+	require.NoError(t, Apply(ctx, db))
+
+	var jobs int
+	var payloadSourceID string
+	require.NoError(t, db.NewRaw(`
+		SELECT count(*), max(payload->>'source_album_id')
+		FROM jobs WHERE kind = 'reconcile_source_album'
+		  AND idempotency_key = 'source-reconcile:' || ?
+	`, sourceAlbumID).Scan(ctx, &jobs, &payloadSourceID))
+	assert.Equal(t, 1, jobs)
+	assert.Equal(t, sourceAlbumID, payloadSourceID)
 }
 
 func TestEmailDeliveryInfrastructureEnforcesDurableState(t *testing.T) {
