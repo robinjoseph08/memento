@@ -213,6 +213,13 @@ test("creates, edits, archives, and inspects relationship-annotated Family branc
       expect(requests.some(({ path }) => path.endsWith("/archive"))).toBe(true),
     contentionWait,
   );
+  const archiveRequest = requests.find(({ path }) => path.endsWith("/archive"));
+  expect(JSON.parse(stringBody(archiveRequest?.init?.body))).toEqual({
+    version: 2,
+  });
+  expect(archiveRequest?.init?.headers).toEqual(
+    expect.objectContaining({ "X-Memento-CSRF": "csrf-token" }),
+  );
 
   fireEvent.change(screen.getByLabelText("Branch root"), {
     target: { value: alex.id },
@@ -225,6 +232,73 @@ test("creates, edits, archives, and inspects relationship-annotated Family branc
     ),
   ).toBeInTheDocument();
   expect(screen.getByText("Alex's Family branch")).toBeInTheDocument();
+}, 15_000);
+
+test("searches relationship endpoints independently and preserves selected People", async () => {
+  const alex = person("11111111-1111-1111-1111-111111111111", "Alex");
+  const blair = person("22222222-2222-2222-2222-222222222222", "Blair");
+  const requests: string[] = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) => {
+      const path = requestPath(input);
+      requests.push(path);
+      if (path.startsWith("/api/people?")) {
+        const query = new URL(path, "http://memento.test").searchParams.get(
+          "query",
+        );
+        if (query === "Alex & Á") return jsonResponse({ people: [alex] });
+        if (query === "Blair") return jsonResponse({ people: [blair] });
+        return jsonResponse({ people: [alex, blair] });
+      }
+      if (path.startsWith("/api/relationships?")) {
+        return jsonResponse({ relationships: [] });
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    }),
+  );
+
+  renderManager();
+  await screen.findAllByRole("option", { name: "Alex (Alex)" }, contentionWait);
+  fireEvent.change(screen.getByLabelText("Search Parent"), {
+    target: { value: "Alex & Á" },
+  });
+  await waitFor(
+    () =>
+      expect(requests).toContain(
+        "/api/people?query=Alex%20%26%20%C3%81&include_archived=false",
+      ),
+    contentionWait,
+  );
+  await waitFor(
+    () =>
+      expect(
+        Array.from(
+          screen.getByLabelText<HTMLSelectElement>("Parent").options,
+        ).some((option) => option.value === alex.id),
+      ).toBe(true),
+    contentionWait,
+  );
+  fireEvent.change(screen.getByLabelText("Parent"), {
+    target: { value: alex.id },
+  });
+  fireEvent.change(screen.getByLabelText("Search Child"), {
+    target: { value: "Blair" },
+  });
+  await waitFor(
+    () =>
+      expect(
+        Array.from(
+          screen.getByLabelText<HTMLSelectElement>("Child").options,
+        ).some((option) => option.value === blair.id),
+      ).toBe(true),
+    contentionWait,
+  );
+  fireEvent.change(screen.getByLabelText("Child"), {
+    target: { value: blair.id },
+  });
+  expect(screen.getByLabelText("Parent")).toHaveValue(alex.id);
+  expect(screen.getByLabelText("Child")).toHaveValue(blair.id);
 }, 15_000);
 
 test("shows a rejected cycle without implying that the connection was saved", async () => {
@@ -269,6 +343,6 @@ test("shows a rejected cycle without implying that the connection was saved", as
     await screen.findByRole("alert", {}, contentionWait),
   ).toHaveTextContent(/would create a cycle.*was not changed/i);
   expect(
-    screen.getByText("No Family relationships recorded."),
+    screen.getByText("No active Family relationships."),
   ).toBeInTheDocument();
 });

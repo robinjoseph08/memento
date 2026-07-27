@@ -102,6 +102,12 @@ people_code=$(curl --insecure --silent --output "$temporary/front-people.json" -
   "$front_url/api/people")
 [ "$people_code" = 401 ]
 grep -q 'A valid Session is required' "$temporary/front-people.json"
+relationships_code=$(curl --insecure --silent --dump-header "$temporary/front-relationships-headers" \
+  --output "$temporary/front-relationships.json" --write-out '%{http_code}' \
+  "$front_url/api/relationships")
+[ "$relationships_code" = 401 ]
+grep -q 'A valid Session is required' "$temporary/front-relationships.json"
+grep -qi '^Cache-Control: no-store' "$temporary/front-relationships-headers"
 front_complete_code=$(curl --insecure --silent --output "$temporary/front-complete.json" --write-out '%{http_code}' \
   --header 'Content-Type: application/json' \
   --data '{"verification_token":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","privacy_acknowledged":true,"engagement_acknowledged":true,"interest_list_acknowledged":true,"email_preference":"immediate","session_type":"trusted"}' \

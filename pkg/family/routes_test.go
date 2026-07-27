@@ -45,6 +45,17 @@ func TestNormalizeRejectsInvalidConnections(t *testing.T) {
 	}
 }
 
+func TestSortBranchUsesPersonIDAsDeterministicFinalTieBreaker(t *testing.T) {
+	lower := BranchMember{Person: Person{ID: "00000000-0000-0000-0000-000000000001", DisplayName: "Same", SortName: "Same"}, ConnectionType: "descendant", Generation: 1}
+	higher := BranchMember{Person: Person{ID: "ffffffff-ffff-ffff-ffff-ffffffffffff", DisplayName: "Same", SortName: "Same"}, ConnectionType: "descendant", Generation: 1}
+	first := []BranchMember{higher, lower}
+	second := []BranchMember{lower, higher}
+	sortBranch(first)
+	sortBranch(second)
+	assert.Equal(t, first, second)
+	assert.Equal(t, lower.Person.ID, first[0].Person.ID)
+}
+
 func TestNormalizeCanonicalizesSymmetricConnectionsButPreservesParentDirection(t *testing.T) {
 	higher := "ffffffff-ffff-ffff-ffff-ffffffffffff"
 	lower := "00000000-0000-0000-0000-000000000001"

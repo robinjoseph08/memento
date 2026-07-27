@@ -222,6 +222,58 @@ func TestFamilyBranchTraversesDeepDescendantsWithMultipleParentsAndPartnersDeter
 	assert.NotContains(t, names, "Archived connection")
 }
 
+func TestFamilyMutationAuditFailuresRollBackGraphChanges(t *testing.T) {
+	t.Run("create", func(t *testing.T) {
+		fixture := newFamilyFixture(t)
+		a := addFamilyPerson(t, fixture.db, "A")
+		b := addFamilyPerson(t, fixture.db, "B")
+		installRejectFamilyAudit(t, fixture.db)
+		_, err := fixture.service.Create(context.Background(), fixture.actor, MutationRequest{RelationshipType: "sibling", PersonAID: a.String(), PersonBID: b.String()})
+		require.ErrorContains(t, err, "rejected Family audit")
+		var relationships int
+		require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM family_relationships`).Scan(context.Background(), &relationships))
+		assert.Zero(t, relationships)
+	})
+
+	for _, mutation := range []string{"update", "archive"} {
+		t.Run(mutation, func(t *testing.T) {
+			fixture := newFamilyFixture(t)
+			ctx := context.Background()
+			a := addFamilyPerson(t, fixture.db, "A")
+			b := addFamilyPerson(t, fixture.db, "B")
+			relationship := createFamilyRelationship(t, fixture, "sibling", a, b, "")
+			installRejectFamilyAudit(t, fixture.db)
+			var err error
+			if mutation == "update" {
+				_, err = fixture.service.Update(ctx, fixture.actor, uuid.MustParse(relationship.ID), MutationRequest{RelationshipType: "partner", PersonAID: a.String(), PersonBID: b.String(), PartnerStatus: "former", Version: relationship.Version})
+			} else {
+				_, err = fixture.service.Archive(ctx, fixture.actor, uuid.MustParse(relationship.ID), relationship.Version)
+			}
+			require.ErrorContains(t, err, "rejected Family audit")
+			stored, getErr := getRelationship(ctx, fixture.db, uuid.MustParse(relationship.ID), false)
+			require.NoError(t, getErr)
+			assert.Equal(t, "sibling", stored.Type)
+			assert.Equal(t, int64(1), stored.Version)
+			assert.Nil(t, stored.ArchivedAt)
+		})
+	}
+}
+
+func installRejectFamilyAudit(t *testing.T, db *bun.DB) {
+	t.Helper()
+	_, err := db.ExecContext(context.Background(), `
+		CREATE FUNCTION reject_family_audit() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN
+			IF NEW.action LIKE 'family_relationship_%' THEN
+				RAISE EXCEPTION 'rejected Family audit';
+			END IF;
+			RETURN NEW;
+		END $$;
+		CREATE TRIGGER reject_family_audit BEFORE INSERT ON security_audit_events
+		FOR EACH ROW EXECUTE FUNCTION reject_family_audit()`)
+	require.NoError(t, err)
+}
+
 func TestFamilySchemaEnforcesCanonicalPairsConstraintsAndIndexes(t *testing.T) {
 	fixture := newFamilyFixture(t)
 	ctx := context.Background()
@@ -236,10 +288,15 @@ func TestFamilySchemaEnforcesCanonicalPairsConstraintsAndIndexes(t *testing.T) {
 	require.Error(t, err, "symmetric pairs must use canonical endpoint ordering")
 	_, err = fixture.db.NewRaw(`INSERT INTO family_relationships (id, relationship_type, person_a_id, person_b_id) VALUES (?, 'parent_child', ?, ?)`, uuid.New(), a, a).Exec(ctx)
 	require.Error(t, err, "self relationships must be rejected")
-	_, err = fixture.db.NewRaw(`INSERT INTO family_relationships (id, relationship_type, person_a_id, person_b_id) VALUES (?, 'sibling', ?, ?)`, uuid.New(), lower, higher).Exec(ctx)
+	activeID := uuid.New()
+	_, err = fixture.db.NewRaw(`INSERT INTO family_relationships (id, relationship_type, person_a_id, person_b_id) VALUES (?, 'sibling', ?, ?)`, activeID, lower, higher).Exec(ctx)
 	require.NoError(t, err)
 	_, err = fixture.db.NewRaw(`INSERT INTO family_relationships (id, relationship_type, person_a_id, person_b_id) VALUES (?, 'sibling', ?, ?)`, uuid.New(), lower, higher).Exec(ctx)
 	require.Error(t, err, "active relationship pairs must be unique")
+	_, err = fixture.db.NewRaw(`UPDATE family_relationships SET archived_at = now() WHERE id = ?`, activeID).Exec(ctx)
+	require.NoError(t, err)
+	_, err = fixture.db.NewRaw(`INSERT INTO family_relationships (id, relationship_type, person_a_id, person_b_id) VALUES (?, 'sibling', ?, ?)`, uuid.New(), lower, higher).Exec(ctx)
+	require.NoError(t, err, "an archived relationship must not prevent recreating the same active pair")
 	_, err = fixture.db.NewRaw(`INSERT INTO family_relationships (id, relationship_type, person_a_id, person_b_id) VALUES (?, 'parent_child', ?, ?)`, uuid.New(), uuid.New(), b).Exec(ctx)
 	require.Error(t, err, "relationship endpoints must reference People")
 

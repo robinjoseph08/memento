@@ -198,6 +198,8 @@ func peopleError(err error) error {
 		return errcodes.Conflict("Choose which login email survives before merging.")
 	case errors.Is(err, ErrFamilyMergeCycle):
 		return errcodes.Conflict("Resolve the parent-child path between these People before merging them.")
+	case errors.Is(err, ErrFamilyPartnerConflict):
+		return errcodes.Conflict("Resolve conflicting current and former partner relationships before merging these People.")
 	case errors.Is(err, ErrInvalidPerson), errors.Is(err, ErrInvalidMerge):
 		return errcodes.ValidationError("Enter valid Person details.")
 	default:

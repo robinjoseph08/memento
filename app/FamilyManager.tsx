@@ -44,14 +44,91 @@ function connectionLabel(connection: string, generation: number) {
   }
 }
 
-function personOption(person: Person) {
+type PersonOption = Pick<
+  Person,
+  "id" | "display_name" | "sort_name" | "status"
+>;
+
+function personOption(person: PersonOption) {
   return `${person.display_name} (${person.sort_name})`;
+}
+
+function PersonPicker({
+  label,
+  value,
+  onChange,
+  disabled = false,
+  required = false,
+  selectedPerson,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  disabled?: boolean;
+  required?: boolean;
+  selectedPerson?: PersonOption;
+}) {
+  const [search, setSearch] = useState("");
+  const [rememberedPerson, setRememberedPerson] = useState<PersonOption>();
+  const people = useQuery({
+    queryKey: ["family-people", search],
+    queryFn: () =>
+      apiJSON<PeopleListResponse>(
+        `/api/people?query=${encodeURIComponent(search)}&include_archived=false`,
+      ),
+  });
+  const options: PersonOption[] = [...(people.data?.people ?? [])];
+  for (const person of [selectedPerson, rememberedPerson]) {
+    if (
+      person?.status === "current" &&
+      !options.some((option) => option.id === person.id)
+    ) {
+      options.push(person);
+    }
+  }
+
+  return (
+    <div className="family-person-picker">
+      <label>
+        Search {label}
+        <input
+          disabled={disabled}
+          onChange={(event) => setSearch(event.target.value)}
+          placeholder="Name or sort name"
+          type="search"
+          value={search}
+        />
+      </label>
+      <label>
+        {label}
+        <select
+          disabled={disabled}
+          onChange={(event) => {
+            const nextValue = event.target.value;
+            setRememberedPerson(
+              options.find((person) => person.id === nextValue),
+            );
+            onChange(nextValue);
+          }}
+          required={required}
+          value={value}
+        >
+          <option value="">Choose a Person</option>
+          {options.map((person) => (
+            <option key={person.id} value={person.id}>
+              {personOption(person)}
+            </option>
+          ))}
+        </select>
+      </label>
+      <ErrorNotice error={people.error} />
+    </div>
+  );
 }
 
 export function FamilyManager({ session }: { session: SessionResponse }) {
   const queryClient = useQueryClient();
   const [includeArchived, setIncludeArchived] = useState(false);
-  const [peopleSearch, setPeopleSearch] = useState("");
   const [selectedRelationshipID, setSelectedRelationshipID] = useState("");
   const [relationshipType, setRelationshipType] = useState("parent_child");
   const [personAID, setPersonAID] = useState("");
@@ -59,13 +136,6 @@ export function FamilyManager({ session }: { session: SessionResponse }) {
   const [partnerStatus, setPartnerStatus] = useState("current");
   const [branchPersonID, setBranchPersonID] = useState("");
 
-  const people = useQuery({
-    queryKey: ["family-people", peopleSearch],
-    queryFn: () =>
-      apiJSON<PeopleListResponse>(
-        `/api/people?query=${encodeURIComponent(peopleSearch)}&include_archived=false`,
-      ),
-  });
   const relationships = useQuery({
     queryKey: ["family-relationships", includeArchived],
     queryFn: () =>
@@ -128,6 +198,7 @@ export function FamilyManager({ session }: { session: SessionResponse }) {
     setPersonBID("");
     setPartnerStatus("current");
     saveRelationship.reset();
+    archiveRelationship.reset();
   }
 
   function inspectRelationship(relationship: Relationship) {
@@ -137,6 +208,7 @@ export function FamilyManager({ session }: { session: SessionResponse }) {
     setPersonBID(relationship.person_b.id);
     setPartnerStatus(relationship.partner_status || "current");
     saveRelationship.reset();
+    archiveRelationship.reset();
   }
 
   function submitRelationship(event: FormEvent<HTMLFormElement>) {
@@ -149,10 +221,6 @@ export function FamilyManager({ session }: { session: SessionResponse }) {
       ...(selected ? { version: selected.version } : {}),
     });
   }
-
-  const currentPeople = people.data?.people.filter(
-    (person) => person.status === "current",
-  );
 
   return (
     <section aria-labelledby="family-title" className="family-shell">
@@ -178,19 +246,6 @@ export function FamilyManager({ session }: { session: SessionResponse }) {
           qualifying connection reaches them.
         </p>
       </div>
-
-      <div className="people-toolbar">
-        <label>
-          Search People for relationship and branch selectors
-          <input
-            onChange={(event) => setPeopleSearch(event.target.value)}
-            placeholder="Name or sort name"
-            type="search"
-            value={peopleSearch}
-          />
-        </label>
-      </div>
-      <ErrorNotice error={people.error} />
 
       <div className="family-layout">
         <section aria-labelledby="connections-title" className="people-panel">
@@ -231,14 +286,24 @@ export function FamilyManager({ session }: { session: SessionResponse }) {
             ))}
             {relationships.isSuccess &&
             relationships.data.relationships.length === 0 ? (
-              <p>No Family relationships recorded.</p>
+              <p>
+                {includeArchived
+                  ? "No Family relationships recorded."
+                  : "No active Family relationships."}
+              </p>
             ) : null}
           </div>
         </section>
 
         <form className="people-panel" onSubmit={submitRelationship}>
           <div className="family-panel-heading">
-            <h3>{selected ? "Edit connection" : "Create connection"}</h3>
+            <h3>
+              {selected?.archived_at
+                ? "Archived connection"
+                : selected
+                  ? "Edit connection"
+                  : "Create connection"}
+            </h3>
             {selected ? (
               <button onClick={clearForm} type="button">
                 Create another
@@ -257,38 +322,26 @@ export function FamilyManager({ session }: { session: SessionResponse }) {
               <option value="partner">Partner</option>
             </select>
           </label>
-          <label>
-            {relationshipType === "parent_child" ? "Parent" : "First Person"}
-            <select
-              disabled={Boolean(selected?.archived_at)}
-              onChange={(event) => setPersonAID(event.target.value)}
-              required
-              value={personAID}
-            >
-              <option value="">Choose a Person</option>
-              {currentPeople?.map((person) => (
-                <option key={person.id} value={person.id}>
-                  {personOption(person)}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            {relationshipType === "parent_child" ? "Child" : "Second Person"}
-            <select
-              disabled={Boolean(selected?.archived_at)}
-              onChange={(event) => setPersonBID(event.target.value)}
-              required
-              value={personBID}
-            >
-              <option value="">Choose a Person</option>
-              {currentPeople?.map((person) => (
-                <option key={person.id} value={person.id}>
-                  {personOption(person)}
-                </option>
-              ))}
-            </select>
-          </label>
+          <PersonPicker
+            disabled={Boolean(selected?.archived_at)}
+            label={
+              relationshipType === "parent_child" ? "Parent" : "First Person"
+            }
+            onChange={setPersonAID}
+            required
+            selectedPerson={selected?.person_a}
+            value={personAID}
+          />
+          <PersonPicker
+            disabled={Boolean(selected?.archived_at)}
+            label={
+              relationshipType === "parent_child" ? "Child" : "Second Person"
+            }
+            onChange={setPersonBID}
+            required
+            selectedPerson={selected?.person_b}
+            value={personBID}
+          />
           {relationshipType === "partner" ? (
             <label>
               Partner connection
@@ -340,20 +393,12 @@ export function FamilyManager({ session }: { session: SessionResponse }) {
             current partners through every generation. It does not add anyone to
             an Interest list and never grants Recipient access.
           </p>
-          <label>
-            Branch root
-            <select
-              onChange={(event) => setBranchPersonID(event.target.value)}
-              value={branchPersonID}
-            >
-              <option value="">Choose a Person</option>
-              {currentPeople?.map((person) => (
-                <option key={person.id} value={person.id}>
-                  {personOption(person)}
-                </option>
-              ))}
-            </select>
-          </label>
+          <PersonPicker
+            label="Branch root"
+            onChange={setBranchPersonID}
+            selectedPerson={branch.data?.root}
+            value={branchPersonID}
+          />
           <ErrorNotice error={branch.error} />
           {branch.isSuccess ? (
             <div className="branch-results" aria-live="polite">

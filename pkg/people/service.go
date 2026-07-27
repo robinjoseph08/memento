@@ -31,6 +31,7 @@ var (
 	ErrGenerationTransferNeeded = errors.New("the source current Recipient access generation requires explicit transfer")
 	ErrEmailResolutionNeeded    = errors.New("the login email conflict requires explicit resolution")
 	ErrFamilyMergeCycle         = errors.New("the People are connected by a parent-child path")
+	ErrFamilyPartnerConflict    = errors.New("the People have conflicting current and former partner relationships")
 	ErrInvalidMerge             = errors.New("Person merge is invalid")
 )
 
@@ -100,6 +101,7 @@ type ReferenceEffects struct {
 	ResultingRecipientGeneration int      `json:"resulting_recipient_generation,omitempty"`
 	FamilyRelationshipsMoved     int      `json:"family_relationships_moved"`
 	FamilyRelationshipsArchived  int      `json:"family_relationships_archived"`
+	FamilyReferenceFingerprint   string   `json:"family_reference_fingerprint"`
 }
 
 // MergePreview is generated to TypeScript by Tygo.
@@ -504,14 +506,20 @@ func previewMerge(ctx context.Context, db bun.IDB, actor setup.CuratorSession, s
 		RecipientRoleWillTransfer:    source.CurrentAccess != nil && contains(source.Roles, "recipient"),
 	}
 	familyEffects, familyErr := family.PreviewPersonMerge(ctx, db, sourceID, survivorID)
-	if familyErr != nil && !errors.Is(familyErr, family.ErrMergeCycle) {
+	knownFamilyConflict := errors.Is(familyErr, family.ErrMergeCycle) || errors.Is(familyErr, family.ErrMergePartnerConflict)
+	if familyErr != nil && !knownFamilyConflict {
 		return MergePreview{}, familyErr
 	}
 	preview.References.FamilyRelationshipsMoved = familyEffects.RelationshipsMoved
 	preview.References.FamilyRelationshipsArchived = familyEffects.RelationshipsArchived
+	preview.References.FamilyReferenceFingerprint = familyEffects.ReferenceFingerprint
 	if errors.Is(familyErr, family.ErrMergeCycle) {
 		preview.CanMerge = false
 		preview.Blockers = append(preview.Blockers, "Resolve the parent-child path between these People before merging them.")
+	}
+	if errors.Is(familyErr, family.ErrMergePartnerConflict) {
+		preview.CanMerge = false
+		preview.Blockers = append(preview.Blockers, "Resolve conflicting current and former partner relationships before merging these People.")
 	}
 	preview.SessionsWillBeInvalidated = sessionsInvalidated > 0
 	if survivor.Status != "current" {
@@ -575,7 +583,10 @@ func (s *Service) Merge(ctx context.Context, actor setup.CuratorSession, request
 	now := s.now().UTC()
 	var merged Person
 	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
-		// Parent locks serialize child inserts, then stable child-row locks protect every evaluated merge input.
+		if err := family.LockGraph(ctx, tx); err != nil {
+			return err
+		}
+		// The graph lock precedes stable parent and child-row locks across Family mutations and Person merges.
 		for _, lock := range []string{
 			`SELECT id FROM people WHERE id IN (?, ?) ORDER BY id FOR UPDATE`,
 			`SELECT person_id FROM person_roles WHERE person_id IN (?, ?) ORDER BY person_id, role FOR UPDATE`,
@@ -586,9 +597,6 @@ func (s *Service) Merge(ctx context.Context, actor setup.CuratorSession, request
 			if _, err := tx.NewRaw(lock, sourceID, survivorID).Exec(ctx); err != nil {
 				return err
 			}
-		}
-		if err := family.LockGraph(ctx, tx); err != nil {
-			return err
 		}
 		currentPreview, err := previewMerge(ctx, tx, actor, sourceID, survivorID, true)
 		if err != nil {
@@ -617,6 +625,9 @@ func (s *Service) Merge(ctx context.Context, actor setup.CuratorSession, request
 		familyEffects, err := family.MergePersonReferences(ctx, tx, sourceID, survivorID, now)
 		if errors.Is(err, family.ErrMergeCycle) {
 			return ErrFamilyMergeCycle
+		}
+		if errors.Is(err, family.ErrMergePartnerConflict) {
+			return ErrFamilyPartnerConflict
 		}
 		if err != nil {
 			return err

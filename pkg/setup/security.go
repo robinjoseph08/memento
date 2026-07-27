@@ -17,7 +17,7 @@ import (
 	"github.com/uptrace/bun"
 )
 
-// RequestMetadata is the trusted request attribution stored with security audits.
+// RequestMetadata is request attribution stored with security audits.
 type RequestMetadata struct {
 	ClientIP  string
 	UserAgent string

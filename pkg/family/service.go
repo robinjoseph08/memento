@@ -4,7 +4,9 @@ package family
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"time"
@@ -15,14 +17,15 @@ import (
 )
 
 var (
-	ErrNotFound          = errors.New("family relationship not found")
-	ErrPersonNotFound    = errors.New("person not found")
-	ErrPersonUnavailable = errors.New("family relationships require current People")
-	ErrInvalid           = errors.New("family relationship is invalid")
-	ErrDuplicate         = errors.New("family relationship already exists")
-	ErrCycle             = errors.New("parent-child relationship would create a cycle")
-	ErrMergeCycle        = errors.New("merging these People would collapse a parent-child path into a cycle")
-	ErrStale             = errors.New("family relationship was changed by another request")
+	ErrNotFound             = errors.New("family relationship not found")
+	ErrPersonNotFound       = errors.New("person not found")
+	ErrPersonUnavailable    = errors.New("family relationships require current People")
+	ErrInvalid              = errors.New("family relationship is invalid")
+	ErrDuplicate            = errors.New("family relationship already exists")
+	ErrCycle                = errors.New("parent-child relationship would create a cycle")
+	ErrMergeCycle           = errors.New("merging these People would collapse a parent-child path into a cycle")
+	ErrMergePartnerConflict = errors.New("merging these People would collapse current and former partner relationships")
+	ErrStale                = errors.New("family relationship was changed by another request")
 )
 
 // Person identifies one endpoint without implying access.
@@ -82,6 +85,7 @@ type BranchResponse struct {
 type PersonMergeEffects struct {
 	RelationshipsMoved    int
 	RelationshipsArchived int
+	ReferenceFingerprint  string
 }
 
 // Service maintains the graph transactionally.
@@ -299,11 +303,20 @@ func PreviewPersonMerge(ctx context.Context, db bun.IDB, sourceID, survivorID uu
 		}
 	}
 	rows := make([]relationshipRow, 0)
-	if err := db.NewRaw(`SELECT id, relationship_type, person_a_id, person_b_id, partner_status, version, created_at, updated_at, archived_at FROM family_relationships WHERE person_a_id = ? OR person_b_id = ? ORDER BY id`, sourceID, sourceID).Scan(ctx, &rows); err != nil {
+	if err := db.NewRaw(`SELECT id, relationship_type, person_a_id, person_b_id, partner_status, version, created_at, updated_at, archived_at FROM family_relationships WHERE person_a_id IN (?, ?) OR person_b_id IN (?, ?) ORDER BY id`, sourceID, survivorID, sourceID, survivorID).Scan(ctx, &rows); err != nil {
 		return PersonMergeEffects{}, err
 	}
-	effects := PersonMergeEffects{}
+	encoded, err := json.Marshal(rows)
+	if err != nil {
+		return PersonMergeEffects{}, err
+	}
+	digest := sha256.Sum256(encoded)
+	effects := PersonMergeEffects{ReferenceFingerprint: hex.EncodeToString(digest[:])}
+	partnerConflict := false
 	for _, row := range rows {
+		if row.PersonAID != sourceID && row.PersonBID != sourceID {
+			continue
+		}
 		personA, personB := mergedEndpoints(row, sourceID, survivorID)
 		if personA == personB {
 			if row.ArchivedAt == nil {
@@ -311,19 +324,26 @@ func PreviewPersonMerge(ctx context.Context, db bun.IDB, sourceID, survivorID uu
 			}
 			continue
 		}
-		duplicate, err := activeDuplicateExists(ctx, db, row.ID, row.Type, personA, personB)
+		duplicate, duplicateExists, err := activeDuplicate(ctx, db, row.ID, row.Type, personA, personB)
 		if err != nil {
 			return PersonMergeEffects{}, err
 		}
-		if row.ArchivedAt == nil && duplicate {
+		if row.ArchivedAt == nil && duplicateExists {
 			effects.RelationshipsArchived++
+			if row.Type == "partner" && !samePartnerStatus(row.PartnerStatus, duplicate.PartnerStatus) {
+				partnerConflict = true
+			}
 		}
 		effects.RelationshipsMoved++
 	}
+	var conflicts []error
 	if connected {
-		return effects, ErrMergeCycle
+		conflicts = append(conflicts, ErrMergeCycle)
 	}
-	return effects, nil
+	if partnerConflict {
+		conflicts = append(conflicts, ErrMergePartnerConflict)
+	}
+	return effects, errors.Join(conflicts...)
 }
 
 // MergePersonReferences moves Family relationship endpoints to the survivor,
@@ -347,12 +367,12 @@ func MergePersonReferences(ctx context.Context, tx bun.Tx, sourceID, survivorID 
 			}
 			continue
 		}
-		duplicate, err := activeDuplicateExists(ctx, tx, row.ID, row.Type, personA, personB)
+		_, duplicateExists, err := activeDuplicate(ctx, tx, row.ID, row.Type, personA, personB)
 		if err != nil {
 			return PersonMergeEffects{}, err
 		}
 		archivedAt := row.ArchivedAt
-		if row.ArchivedAt == nil && duplicate {
+		if row.ArchivedAt == nil && duplicateExists {
 			archivedAt = &now
 		}
 		if _, err := tx.NewRaw(`UPDATE family_relationships SET person_a_id = ?, person_b_id = ?, archived_at = ?, version = version + 1, updated_at = ? WHERE id = ?`, personA, personB, archivedAt, now, row.ID).Exec(ctx); err != nil {
@@ -376,10 +396,17 @@ func mergedEndpoints(row relationshipRow, sourceID, survivorID uuid.UUID) (uuid.
 	return personA, personB
 }
 
-func activeDuplicateExists(ctx context.Context, db bun.IDB, excludedID uuid.UUID, relationshipType string, personA, personB uuid.UUID) (bool, error) {
-	var duplicate bool
-	err := db.NewRaw(`SELECT EXISTS (SELECT 1 FROM family_relationships WHERE relationship_type = ? AND person_a_id = ? AND person_b_id = ? AND archived_at IS NULL AND id <> ?)`, relationshipType, personA, personB, excludedID).Scan(ctx, &duplicate)
-	return duplicate, err
+func activeDuplicate(ctx context.Context, db bun.IDB, excludedID uuid.UUID, relationshipType string, personA, personB uuid.UUID) (relationshipRow, bool, error) {
+	var duplicate relationshipRow
+	err := db.NewRaw(`SELECT id, relationship_type, person_a_id, person_b_id, partner_status, version, created_at, updated_at, archived_at FROM family_relationships WHERE relationship_type = ? AND person_a_id = ? AND person_b_id = ? AND archived_at IS NULL AND id <> ? ORDER BY id LIMIT 1`, relationshipType, personA, personB, excludedID).Scan(ctx, &duplicate)
+	if errors.Is(err, sql.ErrNoRows) {
+		return relationshipRow{}, false, nil
+	}
+	return duplicate, err == nil, err
+}
+
+func samePartnerStatus(left, right *string) bool {
+	return left != nil && right != nil && *left == *right
 }
 
 func parentPathExists(ctx context.Context, db bun.IDB, ancestorID, descendantID uuid.UUID) (bool, error) {

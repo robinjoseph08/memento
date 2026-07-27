@@ -158,7 +158,7 @@ func familyError(err error) error {
 	case errors.Is(err, ErrCycle):
 		return errcodes.Conflict("That parent-child connection would create a cycle. The Family graph was not changed.")
 	case errors.Is(err, ErrInvalid):
-		return errcodes.ValidationError("Choose two different People and a valid connection type.")
+		return errcodes.ValidationError("Choose two different People, a valid connection type, and a current or former status for partner connections.")
 	default:
 		return err
 	}
