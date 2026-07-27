@@ -818,14 +818,14 @@ func TestPersonMergeMovesAttendanceAndOverridesWithoutRewritingApprovedSnapshots
 	ctx := context.Background()
 	source := addPerson(t, fixture.db, "Source Recipient", "Source Recipient")
 	survivor := addPerson(t, fixture.db, "Survivor", "Survivor")
-	addAccess(t, fixture.db, source, true, "source-audience@example.com")
-	eventID, momentID, mediaID, assetID, looseID := uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	sourceAccess := addAccess(t, fixture.db, source, true, "source-audience@example.com")
+	eventID, momentID, mediaID, assetID, conflictMediaID, conflictAssetID, looseID, conflictLooseID := uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New()
 	_, err := fixture.db.NewRaw(`
 		INSERT INTO events (id, title, grouping_timezone) VALUES (?, 'Audience merge', 'UTC');
 		INSERT INTO draft_moments (id, event_id, position, proposed_day, grouping_timezone, source_days) VALUES (?, ?, 0, '2026-01-01', 'UTC', ARRAY['2026-01-01'::date]);
-		INSERT INTO media_items (id, immich_asset_id, media_type, first_seen_at, last_seen_at) VALUES (?, ?, 'image', now(), now());
-		INSERT INTO loose_items (id, media_item_id, grouping_timezone) VALUES (?, ?, 'UTC')
-	`, eventID, momentID, eventID, mediaID, assetID, looseID, mediaID).Exec(ctx)
+		INSERT INTO media_items (id, immich_asset_id, media_type, first_seen_at, last_seen_at) VALUES (?, ?, 'image', now(), now()), (?, ?, 'image', now(), now());
+		INSERT INTO loose_items (id, media_item_id, grouping_timezone) VALUES (?, ?, 'UTC'), (?, ?, 'UTC')
+	`, eventID, momentID, eventID, mediaID, assetID, conflictMediaID, conflictAssetID, looseID, mediaID, conflictLooseID, conflictMediaID).Exec(ctx)
 	require.NoError(t, err)
 
 	audienceService := audiencespkg.New(fixture.db, nil)
@@ -840,11 +840,28 @@ func TestPersonMergeMovesAttendanceAndOverridesWithoutRewritingApprovedSnapshots
 	require.NoError(t, err)
 	require.Len(t, firstApproval.Audience.Recipients, 1)
 	assert.Equal(t, source.String(), firstApproval.Audience.Recipients[0].ID)
+	conflictTime := time.Now().UTC()
+	_, err = fixture.db.NewRaw(`
+		INSERT INTO audience_overrides (target_kind, target_id, recipient_person_id, state, updated_by_person_id, updated_at) VALUES
+			('loose_item', ?, ?, 'included', ?, ?),
+			('loose_item', ?, ?, 'excluded', ?, ?);
+		INSERT INTO audience_proposals (target_kind, target_id, recipient_person_id, recipient_access_generation_id, included, recalculated_at) VALUES
+			('loose_item', ?, ?, ?, true, ?),
+			('loose_item', ?, ?, ?, false, ?);
+		INSERT INTO audience_reasons (target_kind, target_id, recipient_person_id, kind) VALUES
+			('loose_item', ?, ?, 'manually_included'),
+			('loose_item', ?, ?, 'manually_excluded')
+	`, conflictLooseID, survivor, fixture.actor.PersonID, conflictTime,
+		conflictLooseID, source, fixture.actor.PersonID, conflictTime.Add(time.Second),
+		conflictLooseID, survivor, sourceAccess, conflictTime,
+		conflictLooseID, source, sourceAccess, conflictTime,
+		conflictLooseID, survivor, conflictLooseID, source).Exec(ctx)
+	require.NoError(t, err)
 
 	preview, err := fixture.service.PreviewMerge(ctx, fixture.actor, source, survivor)
 	require.NoError(t, err)
 	assert.Equal(t, 1, preview.References.AttendanceEntriesMoved)
-	assert.Equal(t, 1, preview.References.AudienceOverridesMoved)
+	assert.Equal(t, 2, preview.References.AudienceOverridesMoved)
 	assert.Equal(t, 1, preview.References.AudienceReasonsMoved)
 	assert.Len(t, preview.References.AudienceReferenceFingerprint, 64)
 	_, err = fixture.service.Merge(ctx, fixture.actor, MergeRequest{
@@ -853,6 +870,15 @@ func TestPersonMergeMovesAttendanceAndOverridesWithoutRewritingApprovedSnapshots
 		PreviewFingerprint: preview.PreviewFingerprint,
 	})
 	require.NoError(t, err)
+	_, err = audienceService.Approve(ctx, fixture.actor, "loose_item", conflictLooseID, 1)
+	assert.ErrorIs(t, err, audiencespkg.ErrProposalStale, "approval must reject a proposal that disagrees with the merged override")
+	conflictReview, err := audienceService.Recalculate(ctx, fixture.actor, "loose_item", conflictLooseID, 1)
+	require.NoError(t, err)
+	require.Len(t, conflictReview.Proposal, 1)
+	assert.False(t, conflictReview.Proposal[0].Included)
+	conflictApproval, err := audienceService.Approve(ctx, fixture.actor, "loose_item", conflictLooseID, conflictReview.Version)
+	require.NoError(t, err)
+	assert.Equal(t, "Curator only", conflictApproval.Audience.Label)
 
 	momentReview, err = audienceService.Recalculate(ctx, fixture.actor, "moment", momentID, momentReview.Version)
 	require.NoError(t, err)

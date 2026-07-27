@@ -409,26 +409,76 @@ func lockEligibleProposalRecipients(ctx context.Context, tx bun.Tx, t target) (i
 	`, t.kind, t.id).Scan(ctx, &included); err != nil {
 		return 0, err
 	}
-	if len(included) == 0 {
-		return 0, nil
+	var referencedRecipientIDs []uuid.UUID
+	if err := tx.NewRaw(`
+		SELECT recipient_person_id
+		FROM audience_proposals
+		WHERE target_kind = ? AND target_id = ?
+		UNION
+		SELECT recipient_person_id
+		FROM audience_overrides
+		WHERE target_kind = ? AND target_id = ?
+		ORDER BY recipient_person_id
+	`, t.kind, t.id, t.kind, t.id).Scan(ctx, &referencedRecipientIDs); err != nil {
+		return 0, err
 	}
-	recipientIDs := make([]uuid.UUID, 0, len(included))
+	includedRecipientIDs := make([]uuid.UUID, 0, len(included))
 	accessIDs := make([]uuid.UUID, 0, len(included))
 	for _, proposal := range included {
-		recipientIDs = append(recipientIDs, proposal.RecipientID)
+		includedRecipientIDs = append(includedRecipientIDs, proposal.RecipientID)
 		accessIDs = append(accessIDs, proposal.AccessID)
 	}
-	for _, lock := range []struct {
+	type recipientLock struct {
 		query string
 		ids   []uuid.UUID
-	}{
-		{`SELECT id FROM people WHERE id IN (?) ORDER BY id FOR SHARE`, recipientIDs},
-		{`SELECT person_id FROM person_roles WHERE person_id IN (?) ORDER BY person_id, role FOR SHARE`, recipientIDs},
-		{`SELECT id FROM recipient_access_generations WHERE id IN (?) ORDER BY id FOR SHARE`, accessIDs},
-	} {
-		if _, err := tx.NewRaw(lock.query, bun.List(lock.ids)).Exec(ctx); err != nil {
-			return 0, err
+	}
+	locks := []recipientLock{{`SELECT id FROM people WHERE id IN (?) ORDER BY id FOR SHARE`, referencedRecipientIDs}}
+	if len(included) > 0 {
+		locks = append(locks,
+			recipientLock{`SELECT person_id FROM person_roles WHERE person_id IN (?) ORDER BY person_id, role FOR SHARE`, includedRecipientIDs},
+			recipientLock{`SELECT id FROM recipient_access_generations WHERE id IN (?) ORDER BY id FOR SHARE`, accessIDs},
+		)
+	}
+	for _, lock := range locks {
+		if len(lock.ids) > 0 {
+			if _, err := tx.NewRaw(lock.query, bun.List(lock.ids)).Exec(ctx); err != nil {
+				return 0, err
+			}
 		}
+	}
+	if err := lockAudienceReferences(ctx, tx); err != nil {
+		return 0, err
+	}
+	var overridesConsistent bool
+	if err := tx.NewRaw(`
+		SELECT NOT EXISTS (
+			SELECT 1
+			FROM audience_overrides AS override_row
+			LEFT JOIN audience_proposals AS proposal
+				ON proposal.target_kind = override_row.target_kind
+				AND proposal.target_id = override_row.target_id
+				AND proposal.recipient_person_id = override_row.recipient_person_id
+			WHERE override_row.target_kind = ? AND override_row.target_id = ?
+				AND (
+					proposal.recipient_person_id IS NULL
+					OR proposal.included <> (override_row.state = 'included')
+					OR NOT EXISTS (
+						SELECT 1 FROM audience_reasons AS reason
+						WHERE reason.target_kind = override_row.target_kind
+							AND reason.target_id = override_row.target_id
+							AND reason.recipient_person_id = override_row.recipient_person_id
+							AND reason.kind = CASE override_row.state WHEN 'included' THEN 'manually_included' ELSE 'manually_excluded' END
+					)
+				)
+		)
+	`, t.kind, t.id).Scan(ctx, &overridesConsistent); err != nil {
+		return 0, err
+	}
+	if !overridesConsistent {
+		return 0, ErrProposalStale
+	}
+	if len(included) == 0 {
+		return 0, nil
 	}
 	var eligible []uuid.UUID
 	if err := tx.NewRaw(`
