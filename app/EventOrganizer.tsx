@@ -13,6 +13,7 @@ import type { SessionResponse } from "./types/generated/setup";
 
 type Pane = "work" | "organize" | "inspect";
 type SaveState = "saved" | "saving" | "unsaved" | "conflict";
+type SaveAttempt = { event: DraftEvent; revision: number };
 
 function mediaLabel(item: MediaItem) {
   if (!item.local_date_time) return `Undated ${item.media_type}`;
@@ -153,10 +154,14 @@ export function EventOrganizer({ session }: { session: SessionResponse }) {
   const [draft, setDraft] = useState<DraftEvent>();
   const [selectedMedia, setSelectedMedia] = useState<Set<string>>(new Set());
   const [destination, setDestination] = useState("unassigned");
+  const [newMomentDay, setNewMomentDay] = useState("");
   const [inspectedMomentID, setInspectedMomentID] = useState("");
   const [activePane, setActivePane] = useState<Pane>("work");
   const [saveState, setSaveState] = useState<SaveState>("saved");
   const [revision, setRevision] = useState(0);
+  const revisionRef = useRef(0);
+  const latestDraftRef = useRef<DraftEvent | undefined>(undefined);
+  const selectedIDRef = useRef("");
   const localDuringConflict = useRef<DraftEvent | undefined>(undefined);
 
   const work = useQuery({
@@ -171,26 +176,49 @@ export function EventOrganizer({ session }: { session: SessionResponse }) {
     retry: false,
   });
 
-  const currentDraft = draft ?? eventQuery.data;
+  const currentDraft =
+    draft?.id === selectedID
+      ? draft
+      : eventQuery.data?.id === selectedID
+        ? eventQuery.data
+        : undefined;
 
   const save = useMutation({
-    mutationFn: (event: DraftEvent) =>
+    mutationFn: ({ event }: SaveAttempt) =>
       apiJSON<DraftEvent>(`/api/events/${event.id}/organization`, {
         method: "PUT",
         headers: { "X-Memento-CSRF": session.csrf_token },
         body: JSON.stringify(organizationRequest(event)),
       }),
     onMutate: () => setSaveState("saving"),
-    onSuccess: (saved) => {
-      setDraft(cloneEvent(saved));
-      setSaveState("saved");
-      setRevision(0);
+    onSuccess: (saved, attempted) => {
       queryClient.setQueryData(["event", saved.id], saved);
       void queryClient.invalidateQueries({ queryKey: ["events"] });
+      if (selectedIDRef.current !== saved.id) return;
+
+      const latest = latestDraftRef.current;
+      if (latest?.id === saved.id && revisionRef.current > attempted.revision) {
+        const rebased = cloneEvent(latest);
+        rebased.version = saved.version;
+        latestDraftRef.current = rebased;
+        setDraft(rebased);
+        setSaveState("unsaved");
+        return;
+      }
+
+      const next = cloneEvent(saved);
+      latestDraftRef.current = next;
+      setDraft(next);
+      setSaveState("saved");
+      setRevision(0);
     },
     onError: (error, attempted) => {
+      if (selectedIDRef.current !== attempted.event.id) return;
       if (error instanceof APIError && error.status === 409) {
-        localDuringConflict.current = attempted;
+        const latest = latestDraftRef.current;
+        localDuringConflict.current = cloneEvent(
+          latest?.id === attempted.event.id ? latest : attempted.event,
+        );
         setSaveState("conflict");
       } else {
         setSaveState("unsaved");
@@ -200,21 +228,34 @@ export function EventOrganizer({ session }: { session: SessionResponse }) {
 
   const saveDraft = save.mutate;
   useEffect(() => {
-    if (!currentDraft || revision === 0 || saveState === "conflict") return;
+    if (
+      !currentDraft ||
+      revision === 0 ||
+      saveState === "conflict" ||
+      save.isPending
+    )
+      return;
     const timer = window.setTimeout(
-      () => saveDraft(cloneEvent(currentDraft)),
+      () =>
+        saveDraft({
+          event: cloneEvent(currentDraft),
+          revision: revisionRef.current,
+        }),
       450,
     );
     return () => window.clearTimeout(timer);
-  }, [currentDraft, revision, saveState, saveDraft]);
+  }, [currentDraft, revision, saveState, save.isPending, saveDraft]);
 
   function change(mutator: (next: DraftEvent) => void) {
     if (!currentDraft) return;
     const next = cloneEvent(currentDraft);
     mutator(next);
+    const nextRevision = revisionRef.current + 1;
+    revisionRef.current = nextRevision;
+    latestDraftRef.current = next;
     setDraft(next);
     setSaveState("unsaved");
-    setRevision((value) => value + 1);
+    setRevision(nextRevision);
   }
 
   function locateMedia(event: DraftEvent, id: string) {
@@ -265,6 +306,42 @@ export function EventOrganizer({ session }: { session: SessionResponse }) {
       }
     });
     setSelectedMedia(new Set());
+  }
+
+  function createMomentFromSelected() {
+    if (!currentDraft || selectedMedia.size === 0 || !newMomentDay) return;
+    const id = crypto.randomUUID();
+    change((next) => {
+      const moving: MediaItem[] = [];
+      for (const mediaID of selectedMedia) {
+        const located = locateMedia(next, mediaID);
+        if (located.index >= 0)
+          moving.push(...located.items.splice(located.index, 1));
+      }
+      for (const moment of next.moments) {
+        if (
+          moment.cover_media_item_id &&
+          !moment.media_items.some(
+            (item) => item.id === moment.cover_media_item_id,
+          )
+        ) {
+          moment.cover_media_item_id = null;
+        }
+      }
+      next.moments.push({
+        id,
+        title: "",
+        proposed_day: newMomentDay,
+        grouping_timezone: next.grouping_timezone,
+        cover_media_item_id: null,
+        attendance_complete: false,
+        audience_complete: false,
+        media_items: moving,
+      });
+    });
+    setSelectedMedia(new Set());
+    setDestination(id);
+    setInspectedMomentID(id);
   }
 
   function splitMoment(moment: Moment) {
@@ -328,22 +405,30 @@ export function EventOrganizer({ session }: { session: SessionResponse }) {
     localDuringConflict.current = undefined;
     const result = await eventQuery.refetch();
     if (result.data) {
-      setDraft(cloneEvent(result.data));
+      const next = cloneEvent(result.data);
+      latestDraftRef.current = next;
+      setDraft(next);
       setRevision(0);
       setSaveState("saved");
     }
   }
 
   async function keepMyChanges() {
-    const local = localDuringConflict.current;
+    const latest = latestDraftRef.current;
+    const local =
+      latest?.id === selectedID ? latest : localDuringConflict.current;
     if (!local) return;
     const result = await eventQuery.refetch();
     if (!result.data) return;
-    local.version = result.data.version;
-    setDraft(cloneEvent(local));
+    const next = cloneEvent(local);
+    next.version = result.data.version;
+    const nextRevision = revisionRef.current + 1;
+    revisionRef.current = nextRevision;
+    latestDraftRef.current = next;
+    setDraft(next);
     localDuringConflict.current = undefined;
     setSaveState("unsaved");
-    setRevision((value) => value + 1);
+    setRevision(nextRevision);
   }
 
   const inspected =
@@ -410,7 +495,11 @@ export function EventOrganizer({ session }: { session: SessionResponse }) {
           <button
             disabled={!currentDraft || save.isPending}
             onClick={() => {
-              if (currentDraft) save.mutate(cloneEvent(currentDraft));
+              if (currentDraft)
+                save.mutate({
+                  event: cloneEvent(currentDraft),
+                  revision: revisionRef.current,
+                });
             }}
             type="button"
           >
@@ -434,6 +523,16 @@ export function EventOrganizer({ session }: { session: SessionResponse }) {
                 <button
                   aria-current={selectedID === event.id ? "page" : undefined}
                   onClick={() => {
+                    selectedIDRef.current = event.id;
+                    latestDraftRef.current = undefined;
+                    localDuringConflict.current = undefined;
+                    setDraft(undefined);
+                    setSelectedMedia(new Set());
+                    setDestination("unassigned");
+                    setNewMomentDay("");
+                    setInspectedMomentID("");
+                    setRevision(0);
+                    setSaveState("saved");
                     setSelectedID(event.id);
                     setActivePane("organize");
                   }}
@@ -467,27 +566,46 @@ export function EventOrganizer({ session }: { session: SessionResponse }) {
                 <Checklist event={currentDraft} />
               </header>
               <div className="move-toolbar">
-                <label>
-                  Move selected to
-                  <select
-                    onChange={(event) => setDestination(event.target.value)}
-                    value={destination}
+                <div className="move-control">
+                  <label>
+                    Move selected to
+                    <select
+                      onChange={(event) => setDestination(event.target.value)}
+                      value={destination}
+                    >
+                      <option value="unassigned">Unassigned Media</option>
+                      {currentDraft.moments.map((moment, index) => (
+                        <option key={moment.id} value={moment.id}>
+                          {moment.title || `Moment ${index + 1}`}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <button
+                    disabled={selectedMedia.size === 0}
+                    onClick={() => moveSelected()}
+                    type="button"
                   >
-                    <option value="unassigned">Unassigned Media</option>
-                    {currentDraft.moments.map((moment, index) => (
-                      <option key={moment.id} value={moment.id}>
-                        {moment.title || `Moment ${index + 1}`}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <button
-                  disabled={selectedMedia.size === 0}
-                  onClick={() => moveSelected()}
-                  type="button"
-                >
-                  Move selected Media
-                </button>
+                    Move selected Media
+                  </button>
+                </div>
+                <div className="move-control">
+                  <label>
+                    New Moment day
+                    <input
+                      onChange={(event) => setNewMomentDay(event.target.value)}
+                      type="date"
+                      value={newMomentDay}
+                    />
+                  </label>
+                  <button
+                    disabled={selectedMedia.size === 0 || !newMomentDay}
+                    onClick={createMomentFromSelected}
+                    type="button"
+                  >
+                    Create Moment from selected Media
+                  </button>
+                </div>
               </div>
               <section className="moment-card unassigned">
                 <h4>Unassigned Media</h4>

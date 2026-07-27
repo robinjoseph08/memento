@@ -1320,6 +1320,13 @@ h1 {
   background: rgb(2 6 23 / 60%);
 }
 
+.move-control {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 0.5rem;
+}
+
 .move-toolbar label,
 .moment-card > label {
   display: grid;
@@ -1327,6 +1334,7 @@ h1 {
 }
 
 .curator-workspace select,
+.curator-workspace input[type="date"],
 .curator-workspace input[type="text"] {
   padding: 0.45rem;
   border: 1px solid #475569;
@@ -1445,6 +1453,7 @@ h1 {
   }
 
   .curator-workspace select,
+  .curator-workspace input[type="date"],
   .curator-workspace input[type="text"],
   .move-toolbar,
   .media-row {

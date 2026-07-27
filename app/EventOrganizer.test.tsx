@@ -401,3 +401,169 @@ test("keeps stale autosaves recoverable without silently overwriting newer work"
   expect(putBodies[1].moments[0].title).toBe("My local title");
   expect(await screen.findByText("All changes saved")).toBeInTheDocument();
 });
+
+test("preserves edits made while an autosave is in flight", async () => {
+  let resolveFirstSave: ((value: Response) => void) | undefined;
+  const putBodies: OrganizeEventRequest[] = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = pathOf(input);
+      if (path === "/api/events" && !init?.method)
+        return response({
+          events: [
+            {
+              id: eventID,
+              title: "Family weekend",
+              version: 1,
+              moment_count: 2,
+              unassigned_count: 1,
+              updated_at: "2026-05-03T00:00:00Z",
+            },
+          ],
+        });
+      if (path === `/api/events/${eventID}`) return response(draft());
+      if (path === `/api/events/${eventID}/organization`) {
+        const request = JSON.parse(
+          stringBody(init?.body),
+        ) as OrganizeEventRequest;
+        putBodies.push(request);
+        if (putBodies.length === 1)
+          return new Promise<Response>((resolve) => {
+            resolveFirstSave = resolve;
+          });
+        return response(eventFromRequest(request));
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    }),
+  );
+
+  renderOrganizer();
+  fireEvent.click(
+    await screen.findByRole("button", { name: /Family weekend/ }),
+  );
+  const title = await screen.findByLabelText("Title for Moment 1");
+  fireEvent.change(title, { target: { value: "First edit" } });
+  await waitFor(() => expect(putBodies).toHaveLength(1), { timeout: 3000 });
+  fireEvent.change(title, { target: { value: "Later edit" } });
+  resolveFirstSave?.(response(eventFromRequest(putBodies[0])));
+
+  await waitFor(() => expect(putBodies).toHaveLength(2), { timeout: 3000 });
+  expect(putBodies[1].version).toBe(2);
+  expect(putBodies[1].moments[0].title).toBe("Later edit");
+  expect(await screen.findByText("All changes saved")).toBeInTheDocument();
+});
+
+test("creates the first Moment from selected undated Media", async () => {
+  const undated = {
+    ...draft(),
+    moments: [],
+    unassigned_media: [items.a, items.b],
+  };
+  const saves: OrganizeEventRequest[] = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = pathOf(input);
+      if (path === "/api/events" && !init?.method)
+        return response({
+          events: [
+            {
+              id: eventID,
+              title: undated.title,
+              version: 1,
+              moment_count: 0,
+              unassigned_count: 2,
+              updated_at: undated.updated_at,
+            },
+          ],
+        });
+      if (path === `/api/events/${eventID}`) return response(undated);
+      if (path === `/api/events/${eventID}/organization`) {
+        const request = JSON.parse(
+          stringBody(init?.body),
+        ) as OrganizeEventRequest;
+        saves.push(request);
+        return response(eventFromRequest(request));
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    }),
+  );
+
+  renderOrganizer();
+  fireEvent.click(
+    await screen.findByRole("button", { name: /Family weekend/ }),
+  );
+  fireEvent.click(await screen.findByRole("checkbox", { name: /first photo/ }));
+  fireEvent.change(screen.getByLabelText("New Moment day"), {
+    target: { value: "2026-05-04" },
+  });
+  fireEvent.click(
+    screen.getByRole("button", {
+      name: "Create Moment from selected Media",
+    }),
+  );
+
+  await waitFor(() => expect(saves).toHaveLength(1), { timeout: 3000 });
+  expect(saves[0].moments).toHaveLength(1);
+  expect(saves[0].moments[0].proposed_day).toBe("2026-05-04");
+  expect(saves[0].moments[0].media_item_ids).toEqual([items.a.id]);
+  expect(saves[0].unassigned_media_ids).toEqual([items.b.id]);
+});
+
+test("loads the selected Event instead of retaining the previous draft", async () => {
+  const secondID = "44444444-4444-4444-8444-444444444444";
+  const first = draft();
+  const second = { ...draft(), id: secondID, title: "Summer picnic" };
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = pathOf(input);
+      if (path === "/api/events" && !init?.method)
+        return response({
+          events: [
+            {
+              id: first.id,
+              title: first.title,
+              version: first.version,
+              moment_count: 2,
+              unassigned_count: 1,
+              updated_at: first.updated_at,
+            },
+            {
+              id: second.id,
+              title: second.title,
+              version: second.version,
+              moment_count: 2,
+              unassigned_count: 1,
+              updated_at: second.updated_at,
+            },
+          ],
+        });
+      if (path === `/api/events/${first.id}`) return response(first);
+      if (path === `/api/events/${second.id}`) return response(second);
+      if (path === `/api/events/${first.id}/organization`) {
+        const request = JSON.parse(
+          stringBody(init?.body),
+        ) as OrganizeEventRequest;
+        return response(eventFromRequest(request));
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    }),
+  );
+
+  renderOrganizer();
+  fireEvent.click(
+    await screen.findByRole("button", { name: /Family weekend/ }),
+  );
+  fireEvent.change(await screen.findByLabelText("Title for Moment 1"), {
+    target: { value: "Saved first Event" },
+  });
+  expect(await screen.findByText("All changes saved")).toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole("button", { name: /Summer picnic/ }));
+  expect(
+    await screen.findByRole("heading", { name: "Summer picnic" }),
+  ).toBeInTheDocument();
+  expect(screen.getByLabelText("Title for Moment 1")).toHaveValue("Friday");
+});
