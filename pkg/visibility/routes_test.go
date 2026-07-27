@@ -11,7 +11,6 @@ import (
 	"github.com/robinjoseph08/memento/pkg/errcodes"
 	"github.com/robinjoseph08/memento/pkg/setup"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 type fakeAuthorizer struct {
@@ -109,18 +108,27 @@ func TestMutationBodiesRequireExplicitBooleanIntent(t *testing.T) {
 
 func TestVisibilityRoutePoliciesCannotBeMistakenForContentAuthority(t *testing.T) {
 	e := visibilityHTTP(&fakeAuthorizer{})
-	policies := map[string]bool{}
-	for _, route := range e.Routes() {
-		policies[route.Name] = true
-		assert.NotContains(t, route.Name, "media")
-		assert.NotContains(t, route.Name, "search")
-		assert.NotContains(t, route.Name, "comment")
-		assert.NotContains(t, route.Name, "archive_download")
-		assert.NotContains(t, route.Name, "notification")
+	expected := map[string]string{
+		"GET /api/visibility-circles":                             curatorReadPolicy,
+		"POST /api/visibility-circles":                            curatorMutationPolicy,
+		"PATCH /api/visibility-circles/:id":                       curatorMutationPolicy,
+		"POST /api/visibility-circles/:id/archive":                curatorMutationPolicy,
+		"PUT /api/visibility-circles/:id/members/:person_id":      curatorMutationPolicy,
+		"GET /api/interest-lists/:recipient_id/discoverable":      curatorReadPolicy,
+		"GET /api/interest-lists/:recipient_id":                   curatorReadPolicy,
+		"PUT /api/interest-lists/:recipient_id/people/:person_id": curatorMutationPolicy,
+		"GET /api/me/people":                                      recipientDiscoveryPolicy,
+		"GET /api/me/interest-list":                               recipientInterestPolicy,
+		"PUT /api/me/interest-list/:person_id":                    recipientMutationPolicy,
 	}
-	require.True(t, policies[curatorReadPolicy])
-	require.True(t, policies[curatorMutationPolicy])
-	require.True(t, policies[recipientDiscoveryPolicy])
-	require.True(t, policies[recipientInterestPolicy])
-	require.True(t, policies[recipientMutationPolicy])
+	for _, route := range e.Routes() {
+		key := route.Method + " " + route.Path
+		policy, ok := expected[key]
+		if !ok {
+			continue
+		}
+		assert.Equal(t, policy, route.Name, key)
+		delete(expected, key)
+	}
+	assert.Empty(t, expected, "every Visibility route must have an explicit non-content policy")
 }

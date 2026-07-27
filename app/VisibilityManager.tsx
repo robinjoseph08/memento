@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState, type FormEvent } from "react";
 
-import { apiJSON } from "./api";
+import { apiJSON, apiNoContent } from "./api";
 import type {
   ListResponse as PeopleListResponse,
   Person as CuratorPerson,
@@ -219,12 +219,21 @@ export function RecipientVisibilityManager({
         (current) =>
           current
             ? {
-                ...page,
+                ...current,
                 history: [...current.history, ...page.history],
+                history_next_cursor: page.history_next_cursor,
               }
             : page,
       );
     },
+  });
+  const signOut = useMutation({
+    mutationFn: () =>
+      apiNoContent("/api/session/logout", {
+        method: "POST",
+        headers: { "X-Memento-CSRF": session.csrf_token },
+      }),
+    onSuccess: onSignOut,
   });
 
   return (
@@ -244,8 +253,12 @@ export function RecipientVisibilityManager({
         </div>
         <div className="header-actions">
           <span>Signed in as {session.display_name}</span>
-          <button onClick={onSignOut} type="button">
-            Sign out
+          <button
+            disabled={signOut.isPending}
+            onClick={() => signOut.mutate()}
+            type="button"
+          >
+            {signOut.isPending ? "Signing out…" : "Sign out"}
           </button>
         </div>
       </header>
@@ -254,7 +267,8 @@ export function RecipientVisibilityManager({
           interest.error ??
           discoverable.error ??
           mutateInterest.error ??
-          loadHistory.error
+          loadHistory.error ??
+          signOut.error
         }
       />
       {interest.isPending || discoverable.isPending ? (
@@ -336,8 +350,9 @@ export function VisibilityManager({ session }: { session: SessionResponse }) {
   const editingCircle = activeCircles.find(
     (circle) => circle.id === editingCircleID,
   );
-  const recipients = currentPeople.filter((person) =>
-    person.roles.includes("recipient"),
+  const recipients = currentPeople.filter(
+    (person) =>
+      person.roles.includes("recipient") && !person.roles.includes("curator"),
   );
   const mobileCircle =
     activeCircles.find((circle) => circle.id === mobileCircleID) ??
@@ -479,8 +494,9 @@ export function VisibilityManager({ session }: { session: SessionResponse }) {
         (current) =>
           current
             ? {
-                ...page,
+                ...current,
                 history: [...current.history, ...page.history],
+                history_next_cursor: page.history_next_cursor,
               }
             : page,
       );
@@ -739,7 +755,7 @@ export function VisibilityManager({ session }: { session: SessionResponse }) {
           />
           {recipientID && interest.isSuccess && discoverable.isSuccess ? (
             <div className="interest-editor">
-              <h4>Discoverable People</h4>
+              <h4>Interest choices</h4>
               {interestChoices.length ? (
                 <div className="interest-choices">
                   {interestChoices.map((person) => (

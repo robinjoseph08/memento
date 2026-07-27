@@ -253,7 +253,7 @@ export function PeopleManager({ session }: { session: SessionResponse }) {
               onArchive={() => {
                 if (
                   window.confirm(
-                    `Archive ${selected.display_name}? This cannot be undone and revokes all unrevoked Session records for this Person.`,
+                    `Archive ${selected.display_name}? This cannot be undone, revokes all unrevoked Session records, removes the Person from Visibility circles, and may deactivate Interest choices.`,
                   )
                 ) {
                   archivePerson.mutate(selected);

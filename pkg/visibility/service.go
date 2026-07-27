@@ -76,7 +76,7 @@ type CircleVersionRequest struct {
 
 // MembershipRequest changes one direct circle membership.
 type MembershipRequest struct {
-	Included *bool `json:"included" validate:"required"`
+	Included *bool `json:"included" validate:"required" tstype:"boolean,required"`
 	Version  int64 `json:"version" validate:"required,min=1"`
 }
 
@@ -138,7 +138,7 @@ type historyCursor struct {
 
 // InterestMutationRequest explicitly selects or deselects one Person.
 type InterestMutationRequest struct {
-	Selected *bool `json:"selected" validate:"required"`
+	Selected *bool `json:"selected" validate:"required" tstype:"boolean,required"`
 	Version  int64 `json:"version" validate:"min=0"`
 }
 
@@ -564,10 +564,20 @@ func (s *Service) relationshipAnnotations(ctx context.Context, recipientID uuid.
 }
 
 func (s *Service) InterestList(ctx context.Context, actor setup.SessionActor, recipientID uuid.UUID, page HistoryPageRequest) (InterestListResponse, error) {
+	var response InterestListResponse
+	err := s.db.RunInTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true}, func(ctx context.Context, tx bun.Tx) error {
+		var err error
+		response, err = interestListSnapshot(ctx, tx, actor, recipientID, page)
+		return err
+	})
+	return response, err
+}
+
+func interestListSnapshot(ctx context.Context, db bun.IDB, actor setup.SessionActor, recipientID uuid.UUID, page HistoryPageRequest) (InterestListResponse, error) {
 	if !actor.Curator && actor.PersonID != recipientID {
 		return InterestListResponse{}, ErrNotAuthorized
 	}
-	if err := requireRecipient(ctx, s.db, recipientID); err != nil {
+	if err := requireRecipient(ctx, db, recipientID); err != nil {
 		return InterestListResponse{}, err
 	}
 	if page.Limit == 0 {
@@ -580,12 +590,12 @@ func (s *Service) InterestList(ctx context.Context, actor setup.SessionActor, re
 	if err != nil {
 		return InterestListResponse{}, ErrInvalidCursor
 	}
-	recipient, err := loadPerson(ctx, s.db, recipientID)
+	recipient, err := loadPerson(ctx, db, recipientID)
 	if err != nil {
 		return InterestListResponse{}, err
 	}
 	response := InterestListResponse{Recipient: recipient, Entries: []InterestEntry{}, History: []InterestHistory{}}
-	if response.Version, err = interestListVersion(ctx, s.db, recipientID); err != nil {
+	if response.Version, err = interestListVersion(ctx, db, recipientID); err != nil {
 		return InterestListResponse{}, err
 	}
 	type entryRow struct {
@@ -595,7 +605,7 @@ func (s *Service) InterestList(ctx context.Context, actor setup.SessionActor, re
 		UpdatedAt time.Time `bun:"updated_at"`
 	}
 	entries := make([]entryRow, 0)
-	if err := s.db.NewRaw(`SELECT person.id, person.display_name, person.sort_name, entry.state, entry.chosen_at, entry.updated_at FROM interest_list_entries AS entry JOIN people AS person ON person.id = entry.selected_person_id WHERE entry.recipient_person_id = ? ORDER BY (entry.state <> 'active'), memento_normalize_person_name(person.sort_name), person.id`, recipientID).Scan(ctx, &entries); err != nil {
+	if err := db.NewRaw(`SELECT person.id, person.display_name, person.sort_name, entry.state, entry.chosen_at, entry.updated_at FROM interest_list_entries AS entry JOIN people AS person ON person.id = entry.selected_person_id WHERE entry.recipient_person_id = ? ORDER BY (entry.state <> 'active'), memento_normalize_person_name(person.sort_name), person.id`, recipientID).Scan(ctx, &entries); err != nil {
 		return InterestListResponse{}, err
 	}
 	for _, entry := range entries {
@@ -615,7 +625,7 @@ func (s *Service) InterestList(ctx context.Context, actor setup.SessionActor, re
 		CreatedAt        time.Time `bun:"created_at"`
 	}
 	history := make([]historyRow, 0)
-	if err := s.db.NewRaw(`SELECT history.id, selected.id AS selected_id, selected.display_name AS selected_name, selected.sort_name AS selected_sort_name, actor.id AS actor_id, actor.display_name AS actor_name, actor.sort_name AS actor_sort_name, history.action, history.result, history.reason, history.created_at FROM interest_list_history AS history JOIN people AS selected ON selected.id = history.selected_person_id JOIN people AS actor ON actor.id = history.actor_person_id WHERE history.recipient_person_id = ? AND (NOT ? OR (history.created_at, history.id) < (?, ?)) ORDER BY history.created_at DESC, history.id DESC LIMIT ?`, recipientID, hasCursor, cursor.CreatedAt, cursor.ID, page.Limit+1).Scan(ctx, &history); err != nil {
+	if err := db.NewRaw(`SELECT history.id, selected.id AS selected_id, selected.display_name AS selected_name, selected.sort_name AS selected_sort_name, actor.id AS actor_id, actor.display_name AS actor_name, actor.sort_name AS actor_sort_name, history.action, history.result, history.reason, history.created_at FROM interest_list_history AS history JOIN people AS selected ON selected.id = history.selected_person_id JOIN people AS actor ON actor.id = history.actor_person_id WHERE history.recipient_person_id = ? AND (NOT ? OR (history.created_at, history.id) < (?, ?)) ORDER BY history.created_at DESC, history.id DESC LIMIT ?`, recipientID, hasCursor, cursor.CreatedAt, cursor.ID, page.Limit+1).Scan(ctx, &history); err != nil {
 		return InterestListResponse{}, err
 	}
 	if len(history) > page.Limit {

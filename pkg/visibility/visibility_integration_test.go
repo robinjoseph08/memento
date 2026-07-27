@@ -372,6 +372,47 @@ func TestInterestMutationsRejectAStaleListVersion(t *testing.T) {
 	assert.Greater(t, removed.Version, chosen.Version)
 }
 
+func TestConcurrentInterestMutationsFromOneVersionAllowOneWinner(t *testing.T) {
+	fixture := newVisibilityFixture(t)
+	ctx := context.Background()
+	recipient := addVisibilityPerson(t, fixture.db, "Recipient", true)
+	first := addVisibilityPerson(t, fixture.db, "First", false)
+	second := addVisibilityPerson(t, fixture.db, "Second", false)
+	createCircleWithMembers(t, fixture, "Family", recipient, first, second)
+
+	start := make(chan struct{})
+	mutationErrors := make(chan error, 2)
+	var wg sync.WaitGroup
+	for _, selected := range []uuid.UUID{first, second} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, err := fixture.service.MutateInterest(ctx, fixture.actor, recipient, selected, true, 0)
+			mutationErrors <- err
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(mutationErrors)
+	var successes, stale int
+	for err := range mutationErrors {
+		if err == nil {
+			successes++
+		} else if errors.Is(err, ErrStale) {
+			stale++
+		} else {
+			require.NoError(t, err)
+		}
+	}
+	assert.Equal(t, 1, successes)
+	assert.Equal(t, 1, stale)
+	stored, err := fixture.service.InterestList(ctx, fixture.actor, recipient, HistoryPageRequest{})
+	require.NoError(t, err)
+	assert.Len(t, stored.Entries, 1)
+	assert.Len(t, stored.History, 1)
+}
+
 func TestRecipientAndCuratorProposalRulesDoNotTreatVisibilityAsAuthority(t *testing.T) {
 	fixture := newVisibilityFixture(t)
 	ctx := context.Background()
@@ -414,6 +455,22 @@ func TestRecipientAndCuratorProposalRulesDoNotTreatVisibilityAsAuthority(t *test
 	var recipientSessions int
 	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM sessions WHERE person_id IN (?, ?)`, pending, suspended).Scan(ctx, &recipientSessions))
 	assert.Zero(t, recipientSessions, "Visibility and Interest mutations do not create Sessions")
+}
+
+func TestProposalsRequireOneCurrentEligibleAccessGeneration(t *testing.T) {
+	fixture := newVisibilityFixture(t)
+	ctx := context.Background()
+	expired := addVisibilityPerson(t, fixture.db, "Expired", true)
+	renewed := addVisibilityPerson(t, fixture.db, "Renewed", true)
+	completedAt := time.Now().UTC()
+	_, err := fixture.db.NewRaw(`INSERT INTO recipient_access_generations (id, person_id, generation, state, is_current, onboarding_completed_at) VALUES (?, ?, 1, 'completed', false, ?), (?, ?, 1, 'completed', false, ?), (?, ?, 2, 'pending', true, NULL)`, uuid.New(), expired, completedAt, uuid.New(), renewed, completedAt, uuid.New(), renewed).Exec(ctx)
+	require.NoError(t, err)
+
+	proposals, err := fixture.service.ProposeRecipients(ctx, fixture.actor, []uuid.UUID{expired, renewed})
+	require.NoError(t, err)
+	require.Len(t, proposals, 1)
+	assert.Equal(t, renewed.String(), proposals[0].Recipient.ID)
+	assert.Equal(t, []string{"present"}, proposals[0].Reasons)
 }
 
 func TestPersonLifecycleChangesDeactivateOrMoveInterestReferencesWithoutLosingHistory(t *testing.T) {
@@ -613,6 +670,8 @@ func TestMergingAnInterestListOwnerKeepsHistoryAttributedToTheSource(t *testing.
 	createCircleWithMembers(t, fixture, "Family", source, survivor, selected)
 	_, err := fixture.service.MutateInterest(ctx, fixture.actor, source, selected, true)
 	require.NoError(t, err)
+	var historyBefore string
+	require.NoError(t, fixture.db.NewRaw(`SELECT row_to_json(history)::text FROM interest_list_history AS history WHERE recipient_person_id = ?`, source).Scan(ctx, &historyBefore))
 
 	now := time.Now().UTC()
 	require.NoError(t, fixture.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
@@ -628,6 +687,9 @@ func TestMergingAnInterestListOwnerKeepsHistoryAttributedToTheSource(t *testing.
 	var sourceHistory int
 	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM interest_list_history WHERE recipient_person_id = ?`, source).Scan(ctx, &sourceHistory))
 	assert.Equal(t, 1, sourceHistory, "append-only history remains attributed to the merged source Person")
+	var historyAfter string
+	require.NoError(t, fixture.db.NewRaw(`SELECT row_to_json(history)::text FROM interest_list_history AS history WHERE recipient_person_id = ?`, source).Scan(ctx, &historyAfter))
+	assert.JSONEq(t, historyBefore, historyAfter, "the merge must not rewrite prior owner, selected Person, or actor identities")
 }
 
 func TestCircleAuditFailureRollsBackTheMutation(t *testing.T) {

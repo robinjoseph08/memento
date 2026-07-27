@@ -250,7 +250,12 @@ test("lets a Recipient edit only their own discoverable Interest choices", async
     version: 0,
     entries: [],
     history: [],
+    history_next_cursor: "older-history",
   };
+  let resolveOlderHistory: (response: Response) => void = () => undefined;
+  const olderHistory = new Promise<Response>((resolve) => {
+    resolveOlderHistory = resolve;
+  });
   const requests: Array<{ path: string; init?: RequestInit }> = [];
   vi.stubGlobal(
     "fetch",
@@ -267,6 +272,12 @@ test("lets a Recipient edit only their own discoverable Interest choices", async
       }
       if (path === "/api/me/interest-list") {
         return jsonResponse(interest);
+      }
+      if (path.startsWith("/api/me/interest-list?")) {
+        return olderHistory;
+      }
+      if (path === "/api/session/logout" && init?.method === "POST") {
+        return new Response(null, { status: 204 });
       }
       if (
         path === `/api/me/interest-list/${alex.id}` &&
@@ -326,8 +337,23 @@ test("lets a Recipient edit only their own discoverable Interest choices", async
       request.path.includes("cursor=opaque%2Fcursor%2Bvalue"),
     ),
   ).toBe(true);
+  fireEvent.click(screen.getByRole("button", { name: "Load older history" }));
   fireEvent.click(alexChoice);
   await waitFor(() => expect(alexChoice).toBeChecked());
+  resolveOlderHistory(
+    jsonResponse({
+      recipient,
+      version: 0,
+      entries: [],
+      history: [],
+    }),
+  );
+  await waitFor(() =>
+    expect(
+      screen.queryByRole("button", { name: "Load older history" }),
+    ).not.toBeInTheDocument(),
+  );
+  expect(alexChoice).toBeChecked();
   const mutation = requests.find(({ init }) => init?.method === "PUT");
   expect(mutation?.path).toBe(`/api/me/interest-list/${alex.id}`);
   expect(stringBody(mutation?.init?.body)).toEqual({
@@ -338,7 +364,18 @@ test("lets a Recipient edit only their own discoverable Interest choices", async
     expect.objectContaining({ "X-Memento-CSRF": "recipient-csrf" }),
   );
   fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
-  expect(onSignOut).toHaveBeenCalledOnce();
+  await waitFor(() => expect(onSignOut).toHaveBeenCalledOnce());
+  expect(requests).toContainEqual(
+    expect.objectContaining({
+      path: "/api/session/logout",
+      init: expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({
+          "X-Memento-CSRF": "recipient-csrf",
+        }),
+      }),
+    }),
+  );
 });
 
 test("edits an empty Interest list on a Recipient's behalf and shows attributed history", async () => {
@@ -358,7 +395,12 @@ test("edits an empty Interest list on a Recipient's behalf and shows attributed 
     version: 0,
     entries: [],
     history: [],
+    history_next_cursor: "older-history",
   };
+  let resolveOlderHistory: (response: Response) => void = () => undefined;
+  const olderHistory = new Promise<Response>((resolve) => {
+    resolveOlderHistory = resolve;
+  });
   const requests: Array<{ path: string; init?: RequestInit }> = [];
   vi.stubGlobal(
     "fetch",
@@ -373,6 +415,9 @@ test("edits an empty Interest list on a Recipient's behalf and shows attributed 
       }
       if (path === `/api/interest-lists/${recipient.id}`) {
         return jsonResponse(interest);
+      }
+      if (path.startsWith(`/api/interest-lists/${recipient.id}?`)) {
+        return olderHistory;
       }
       if (
         path.startsWith(`/api/interest-lists/${recipient.id}/discoverable?`)
@@ -422,10 +467,32 @@ test("edits an empty Interest list on a Recipient's behalf and shows attributed 
   ).toBeInTheDocument();
   const alexChoice = screen.getByRole("checkbox", { name: /Alex/ });
   expect(alexChoice).not.toBeChecked();
+  fireEvent.click(screen.getByRole("button", { name: "Load older history" }));
   fireEvent.click(alexChoice);
   await waitFor(() => expect(alexChoice).toBeChecked());
   fireEvent.click(screen.getByText("Interest list audit history"));
   expect(await screen.findByText(/selected by Curator/)).toBeInTheDocument();
+  resolveOlderHistory(
+    jsonResponse({
+      recipient,
+      version: 0,
+      entries: [],
+      history: [],
+    }),
+  );
+  await waitFor(() =>
+    expect(
+      screen.queryByRole("button", { name: "Load older history" }),
+    ).not.toBeInTheDocument(),
+  );
+  expect(alexChoice).toBeChecked();
+  expect(screen.getByText(/selected by Curator/)).toBeInTheDocument();
+  expect(
+    screen.queryByRole("option", { name: "Curator" }),
+  ).not.toBeInTheDocument();
+  expect(
+    screen.getByRole("heading", { name: "Interest choices" }),
+  ).toBeInTheDocument();
 
   const mutation = requests.find(({ init }) => init?.method === "PUT");
   expect(stringBody(mutation?.init?.body)).toEqual({

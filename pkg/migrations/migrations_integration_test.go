@@ -137,6 +137,29 @@ func TestVisibilityMigrationAppliesAfterIdentityRepairMigrationLedger(t *testing
 	assert.Equal(t, 4, after)
 }
 
+func TestVisibilityMigrationRollbackPreservesIdentityRepairSchema(t *testing.T) {
+	db := testdb.Open(t)
+	ctx := context.Background()
+	priorMigrations := migrate.NewMigrations()
+	for _, migration := range collection.Sorted() {
+		if migration.Name == "202607270003" {
+			break
+		}
+		priorMigrations.Add(migration)
+	}
+	require.NoError(t, applyCollection(ctx, db, priorMigrations))
+	require.NoError(t, Apply(ctx, db))
+
+	migrator := migrate.NewMigrator(db, collection, migrate.WithMarkAppliedOnSuccess(true))
+	_, err := migrator.Rollback(ctx)
+	require.NoError(t, err)
+	var visibilityTables, repairTables int
+	require.NoError(t, db.NewRaw(`SELECT count(*) FROM information_schema.tables WHERE table_schema = current_schema() AND table_name IN ('visibility_circles', 'visibility_circle_members', 'interest_list_entries', 'interest_list_history')`).Scan(ctx, &visibilityTables))
+	require.NoError(t, db.NewRaw(`SELECT count(*) FROM information_schema.tables WHERE table_schema = current_schema() AND table_name IN ('media_backings', 'immich_people_inventory', 'immich_person_links', 'immich_face_anchors', 'person_repair_candidates', 'media_repair_candidates')`).Scan(ctx, &repairTables))
+	assert.Zero(t, visibilityTables)
+	assert.Equal(t, 6, repairTables)
+}
+
 func TestDraftMigrationRollbackRestoresRequiredCaptureDates(t *testing.T) {
 	db := testdb.Open(t)
 	ctx := context.Background()
