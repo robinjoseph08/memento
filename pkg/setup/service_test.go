@@ -40,6 +40,30 @@ func TestSetupRejectsInvalidInputBeforePersistence(t *testing.T) {
 	validToken := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	_, err = service.complete(context.Background(), CompleteRequest{VerificationToken: validToken})
 	require.ErrorIs(t, err, ErrInvalidChoices)
+
+	acknowledgments := []struct {
+		name  string
+		clear func(*CompleteRequest)
+	}{
+		{"private access", func(request *CompleteRequest) { request.PrivacyAcknowledged = false }},
+		{"engagement", func(request *CompleteRequest) { request.EngagementAcknowledged = false }},
+		{"Interest list", func(request *CompleteRequest) { request.InterestListAcknowledged = false }},
+		{"email previews", func(request *CompleteRequest) { request.EmailPreviewsAcknowledged = false }},
+		{"push guidance", func(request *CompleteRequest) { request.PushGuidanceAcknowledged = false }},
+	}
+	for _, acknowledgment := range acknowledgments {
+		t.Run(acknowledgment.name, func(t *testing.T) {
+			request := CompleteRequest{
+				VerificationToken:   validToken,
+				PrivacyAcknowledged: true, EngagementAcknowledged: true,
+				InterestListAcknowledged: true, EmailPreviewsAcknowledged: true,
+				PushGuidanceAcknowledged: true, EmailPreference: "immediate", SessionType: "trusted",
+			}
+			acknowledgment.clear(&request)
+			_, err := service.complete(context.Background(), request)
+			require.ErrorIs(t, err, ErrInvalidChoices)
+		})
+	}
 }
 
 func TestSetupFailsBeforePersistenceWhenSecureRandomnessIsUnavailable(t *testing.T) {
@@ -54,12 +78,14 @@ func TestSetupFailsBeforePersistenceWhenSecureRandomnessIsUnavailable(t *testing
 	})
 	require.ErrorIs(t, err, errGenerateCredential)
 	_, err = service.complete(context.Background(), CompleteRequest{
-		VerificationToken:        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-		PrivacyAcknowledged:      true,
-		EngagementAcknowledged:   true,
-		InterestListAcknowledged: true,
-		EmailPreference:          "immediate",
-		SessionType:              "trusted",
+		VerificationToken:         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		PrivacyAcknowledged:       true,
+		EngagementAcknowledged:    true,
+		InterestListAcknowledged:  true,
+		EmailPreviewsAcknowledged: true,
+		PushGuidanceAcknowledged:  true,
+		EmailPreference:           "immediate",
+		SessionType:               "trusted",
 	})
 	require.ErrorIs(t, err, errGenerateCredential)
 }

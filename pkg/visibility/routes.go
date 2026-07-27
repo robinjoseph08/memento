@@ -24,6 +24,7 @@ const (
 // Authorizer authenticates both Curator and Recipient sessions.
 type Authorizer interface {
 	AuthorizeSession(ctx context.Context, credential, csrfToken string, mutation bool) (setup.SessionActor, error)
+	AuthorizeInterestSession(ctx context.Context, credential, csrfToken string, mutation bool) (setup.SessionActor, error)
 }
 
 type Handler struct {
@@ -35,7 +36,7 @@ func NewHandler(service *Service, authorizer Authorizer) *Handler {
 	return &Handler{service: service, authorizer: authorizer}
 }
 
-func (h *Handler) authorize(c echo.Context, mutation, curatorOnly bool) (setup.SessionActor, error) {
+func (h *Handler) authorize(c echo.Context, mutation bool) (setup.SessionActor, error) {
 	cookie, err := c.Cookie(setup.CookieName)
 	if err != nil || cookie.Value == "" {
 		return setup.SessionActor{}, errcodes.Unauthorized("A valid Session is required.")
@@ -51,8 +52,27 @@ func (h *Handler) authorize(c echo.Context, mutation, curatorOnly bool) (setup.S
 			return setup.SessionActor{}, err
 		}
 	}
-	if curatorOnly && !actor.Curator {
+	if !actor.Curator {
 		return setup.SessionActor{}, errcodes.NotFound("Page")
+	}
+	return actor, nil
+}
+
+func (h *Handler) authorizeInterest(c echo.Context, mutation bool) (setup.SessionActor, error) {
+	cookie, err := c.Cookie(setup.CookieName)
+	if err != nil || cookie.Value == "" {
+		return setup.SessionActor{}, errcodes.Unauthorized("A valid Session is required.")
+	}
+	actor, err := h.authorizer.AuthorizeInterestSession(c.Request().Context(), cookie.Value, c.Request().Header.Get(setup.CSRFHeader), mutation)
+	if err != nil {
+		switch {
+		case errors.Is(err, setup.ErrUnauthenticated):
+			return setup.SessionActor{}, errcodes.Unauthorized("A valid Session is required.")
+		case errors.Is(err, setup.ErrCSRF):
+			return setup.SessionActor{}, errcodes.Forbidden("Changing an Interest list without a valid CSRF token")
+		default:
+			return setup.SessionActor{}, err
+		}
 	}
 	return actor, nil
 }
@@ -65,7 +85,7 @@ func (h *Handler) requestContext(c echo.Context) context.Context {
 }
 
 func (h *Handler) ListCircles(c echo.Context) error {
-	actor, err := h.authorize(c, false, true)
+	actor, err := h.authorize(c, false)
 	if err != nil {
 		return err
 	}
@@ -85,7 +105,7 @@ func (h *Handler) ListCircles(c echo.Context) error {
 }
 
 func (h *Handler) CreateCircle(c echo.Context) error {
-	actor, err := h.authorize(c, true, true)
+	actor, err := h.authorize(c, true)
 	if err != nil {
 		return err
 	}
@@ -101,7 +121,7 @@ func (h *Handler) CreateCircle(c echo.Context) error {
 }
 
 func (h *Handler) UpdateCircle(c echo.Context) error {
-	actor, err := h.authorize(c, true, true)
+	actor, err := h.authorize(c, true)
 	if err != nil {
 		return err
 	}
@@ -121,7 +141,7 @@ func (h *Handler) UpdateCircle(c echo.Context) error {
 }
 
 func (h *Handler) ArchiveCircle(c echo.Context) error {
-	actor, err := h.authorize(c, true, true)
+	actor, err := h.authorize(c, true)
 	if err != nil {
 		return err
 	}
@@ -141,7 +161,7 @@ func (h *Handler) ArchiveCircle(c echo.Context) error {
 }
 
 func (h *Handler) SetMembership(c echo.Context) error {
-	actor, err := h.authorize(c, true, true)
+	actor, err := h.authorize(c, true)
 	if err != nil {
 		return err
 	}
@@ -168,7 +188,7 @@ func (h *Handler) SetMembership(c echo.Context) error {
 }
 
 func (h *Handler) CuratorDiscover(c echo.Context) error {
-	actor, err := h.authorize(c, false, true)
+	actor, err := h.authorize(c, false)
 	if err != nil {
 		return err
 	}
@@ -188,7 +208,7 @@ func (h *Handler) CuratorDiscover(c echo.Context) error {
 }
 
 func (h *Handler) CuratorInterestList(c echo.Context) error {
-	actor, err := h.authorize(c, false, true)
+	actor, err := h.authorize(c, false)
 	if err != nil {
 		return err
 	}
@@ -208,7 +228,7 @@ func (h *Handler) CuratorInterestList(c echo.Context) error {
 }
 
 func (h *Handler) CuratorMutateInterest(c echo.Context) error {
-	actor, err := h.authorize(c, true, true)
+	actor, err := h.authorize(c, true)
 	if err != nil {
 		return err
 	}
@@ -216,7 +236,7 @@ func (h *Handler) CuratorMutateInterest(c echo.Context) error {
 }
 
 func (h *Handler) DiscoverSelf(c echo.Context) error {
-	actor, err := h.authorize(c, false, false)
+	actor, err := h.authorizeInterest(c, false)
 	if err != nil {
 		return err
 	}
@@ -232,7 +252,7 @@ func (h *Handler) DiscoverSelf(c echo.Context) error {
 }
 
 func (h *Handler) InterestListSelf(c echo.Context) error {
-	actor, err := h.authorize(c, false, false)
+	actor, err := h.authorizeInterest(c, false)
 	if err != nil {
 		return err
 	}
@@ -248,7 +268,7 @@ func (h *Handler) InterestListSelf(c echo.Context) error {
 }
 
 func (h *Handler) MutateInterestSelf(c echo.Context) error {
-	actor, err := h.authorize(c, true, false)
+	actor, err := h.authorizeInterest(c, true)
 	if err != nil {
 		return err
 	}

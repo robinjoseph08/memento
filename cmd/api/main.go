@@ -112,7 +112,7 @@ func run() error {
 	peopleHandler := people.NewHandler(people.New(db), setupService)
 	familyHandler := family.NewHandler(family.New(db), setupService)
 	visibilityHandler := visibility.NewHandler(visibility.New(db), setupService)
-	recipientHandler := recipients.NewHandler(recipients.New(db, emailService, cfg.HTTP.PublicURL), setupService, cfg.Security)
+	recipientHandler := recipients.NewHandler(recipients.New(db, emailService, cfg.HTTP.PublicURL, setupService), setupService, cfg.Security)
 	sourceHandler := sources.NewHandler(sourceService, setupService)
 	eventHandler := events.NewHandler(events.New(db), setupService)
 	repairHandler := repairs.NewHandler(repairs.New(db, immichClient), setupService)

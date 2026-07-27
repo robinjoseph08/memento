@@ -15,10 +15,12 @@ import (
 )
 
 const (
-	curatorReadPolicy       = "policy:curator"
-	curatorMutationPolicy   = "policy:curator_csrf"
-	invitationInspectPolicy = "policy:token_inspect"
-	invitationAcceptPolicy  = "policy:token_exchange"
+	curatorReadPolicy        = "policy:curator"
+	curatorMutationPolicy    = "policy:curator_csrf"
+	invitationInspectPolicy  = "policy:token_inspect"
+	invitationAcceptPolicy   = "policy:token_exchange"
+	onboardingReadPolicy     = "policy:onboarding_session"
+	onboardingMutationPolicy = "policy:onboarding_session_csrf"
 )
 
 type Handler struct {
@@ -184,6 +186,71 @@ func (h *Handler) Accept(c echo.Context) error {
 	if err != nil {
 		return err
 	}
+	setup.SetSessionCookie(c, response.session)
+	return c.JSON(http.StatusOK, response)
+}
+
+func (h *Handler) authorizeOnboarding(c echo.Context, mutation bool) (setup.SessionActor, error) {
+	cookie, err := c.Cookie(setup.CookieName)
+	if err != nil || cookie.Value == "" {
+		return setup.SessionActor{}, errcodes.Unauthorized("A verified Onboarding Session is required.")
+	}
+	actor, err := h.auth.AuthorizeOnboardingSession(c.Request().Context(), cookie.Value, c.Request().Header.Get(setup.CSRFHeader), mutation)
+	if err != nil {
+		switch {
+		case errors.Is(err, setup.ErrUnauthenticated):
+			return setup.SessionActor{}, errcodes.Unauthorized("A verified Onboarding Session is required.")
+		case errors.Is(err, setup.ErrCSRF):
+			return setup.SessionActor{}, errcodes.Forbidden("Changing Onboarding without a valid CSRF token")
+		default:
+			return setup.SessionActor{}, err
+		}
+	}
+	return actor, nil
+}
+
+func (h *Handler) Onboarding(c echo.Context) error {
+	actor, err := h.authorizeOnboarding(c, false)
+	if err != nil {
+		return err
+	}
+	response, err := h.service.Onboarding(c.Request().Context(), actor, c.Request().Header.Get(setup.CSRFHeader))
+	if err != nil {
+		return onboardingError(err)
+	}
+	return c.JSON(http.StatusOK, response)
+}
+
+func (h *Handler) SaveOnboarding(c echo.Context) error {
+	actor, err := h.authorizeOnboarding(c, true)
+	if err != nil {
+		return err
+	}
+	var request OnboardingRequest
+	if err := bindJSON(c, &request); err != nil {
+		return err
+	}
+	response, err := h.service.SaveOnboarding(h.requestContext(c), actor, request, c.Request().Header.Get(setup.CSRFHeader))
+	if err != nil {
+		return onboardingError(err)
+	}
+	return c.JSON(http.StatusOK, response)
+}
+
+func (h *Handler) CompleteOnboarding(c echo.Context) error {
+	actor, err := h.authorizeOnboarding(c, true)
+	if err != nil {
+		return err
+	}
+	var request OnboardingRequest
+	if err := bindJSON(c, &request); err != nil {
+		return err
+	}
+	response, err := h.service.CompleteOnboarding(h.requestContext(c), actor, request)
+	if err != nil {
+		return onboardingError(err)
+	}
+	setup.SetSessionCookie(c, response.session)
 	return c.JSON(http.StatusOK, response)
 }
 
@@ -216,6 +283,19 @@ func recipientError(err error) error {
 
 func invitationTokenError() error {
 	return errcodes.NotFound("Invitation")
+}
+
+func onboardingError(err error) error {
+	switch {
+	case errors.Is(err, ErrOnboardingUnavailable):
+		return errcodes.Conflict("Onboarding is no longer available for this Recipient generation.")
+	case errors.Is(err, ErrOnboardingChoices):
+		return errcodes.ValidationError("Choose valid Onboarding preferences and acknowledge every disclosure before completing.")
+	case errors.Is(err, setup.ErrUnauthenticated):
+		return errcodes.Unauthorized("A verified Onboarding Session is required.")
+	default:
+		return err
+	}
 }
 
 func bindJSON(c echo.Context, target any) error {
@@ -262,4 +342,12 @@ func RegisterRoutes(e *echo.Echo, handler *Handler) {
 	inspect.Name = invitationInspectPolicy
 	accept := tokens.POST("/accept", handler.Accept)
 	accept.Name = invitationAcceptPolicy
+
+	onboarding := e.Group("/api/onboarding", noStore)
+	read := onboarding.GET("", handler.Onboarding)
+	read.Name = onboardingReadPolicy
+	save := onboarding.PATCH("", handler.SaveOnboarding)
+	save.Name = onboardingMutationPolicy
+	complete := onboarding.POST("/complete", handler.CompleteOnboarding)
+	complete.Name = onboardingMutationPolicy
 }

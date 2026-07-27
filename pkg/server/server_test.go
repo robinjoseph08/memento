@@ -130,6 +130,7 @@ func TestServerRegistersRecipientRoutesWhenHandlerIsProvided(t *testing.T) {
 		"POST /api/recipients/:person_id/invitation/send", "POST /api/recipients/:person_id/invitation/revoke",
 		"POST /api/recipients/:person_id/invitation/reissue", "POST /api/recipients/:person_id/invitation/remind",
 		"GET /api/auth/invitations/inspect", "POST /api/auth/invitations/accept",
+		"GET /api/onboarding", "PATCH /api/onboarding", "POST /api/onboarding/complete",
 	} {
 		assert.True(t, routes[route], route)
 	}

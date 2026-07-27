@@ -147,7 +147,7 @@ grep -q 'A valid Session is required' "$temporary/front-visibility.json"
 grep -qi '^Cache-Control: no-store' "$temporary/front-visibility-headers"
 front_complete_code=$(curl --insecure --silent --output "$temporary/front-complete.json" --write-out '%{http_code}' \
   --header 'Content-Type: application/json' \
-  --data '{"verification_token":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","privacy_acknowledged":true,"engagement_acknowledged":true,"interest_list_acknowledged":true,"email_preference":"immediate","session_type":"trusted"}' \
+  --data '{"verification_token":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","privacy_acknowledged":true,"engagement_acknowledged":true,"interest_list_acknowledged":true,"email_previews_acknowledged":true,"push_guidance_acknowledged":true,"email_preference":"immediate","session_type":"trusted"}' \
   "$front_url/api/setup/complete")
 [ "$front_complete_code" = 400 ]
 grep -q 'Setup verification is invalid or expired' "$temporary/front-complete.json"
@@ -159,7 +159,7 @@ fi
 compose exec --no-TTY postgres psql --username memento_app --dbname memento --tuples-only --command \
   "SELECT count(*) FROM pg_extension WHERE extname IN ('unaccent', 'pg_trgm');" | grep -Eq '^[[:space:]]*2[[:space:]]*$'
 compose exec --no-TTY postgres psql --username memento_app --dbname memento --tuples-only --command \
-  "SELECT count(*) FROM bun_migrations;" | grep -Eq '^[[:space:]]*12[[:space:]]*$'
+  "SELECT count(*) FROM bun_migrations;" | grep -Eq '^[[:space:]]*13[[:space:]]*$'
 compose exec --no-TTY postgres psql --username postgres --dbname postgres --tuples-only --command \
   "SELECT rolsuper FROM pg_roles WHERE rolname = 'memento_app';" | grep -Eq '^[[:space:]]*f[[:space:]]*$'
 compose exec --no-TTY memento sh -c "ps | grep -q '[m]emento' && ps | grep -q '[c]addy'"

@@ -75,12 +75,14 @@ type VerifyCodeResponse struct {
 
 // CompleteRequest is generated to TypeScript by Tygo.
 type CompleteRequest struct {
-	VerificationToken        string `json:"verification_token" validate:"required,len=64,hexadecimal"`
-	PrivacyAcknowledged      bool   `json:"privacy_acknowledged" validate:"required"`
-	EngagementAcknowledged   bool   `json:"engagement_acknowledged" validate:"required"`
-	InterestListAcknowledged bool   `json:"interest_list_acknowledged" validate:"required"`
-	EmailPreference          string `json:"email_preference" validate:"required,oneof=immediate weekly none"`
-	SessionType              string `json:"session_type" validate:"required,oneof=trusted public"`
+	VerificationToken         string `json:"verification_token" validate:"required,len=64,hexadecimal"`
+	PrivacyAcknowledged       bool   `json:"privacy_acknowledged" validate:"required"`
+	EngagementAcknowledged    bool   `json:"engagement_acknowledged" validate:"required"`
+	InterestListAcknowledged  bool   `json:"interest_list_acknowledged" validate:"required"`
+	EmailPreviewsAcknowledged bool   `json:"email_previews_acknowledged" validate:"required"`
+	PushGuidanceAcknowledged  bool   `json:"push_guidance_acknowledged" validate:"required"`
+	EmailPreference           string `json:"email_preference" validate:"required,oneof=immediate weekly none"`
+	SessionType               string `json:"session_type" validate:"required,oneof=trusted public"`
 }
 
 // CompleteResponse is generated to TypeScript by Tygo.
@@ -91,10 +93,11 @@ type CompleteResponse struct {
 
 // SessionResponse is generated to TypeScript by Tygo.
 type SessionResponse struct {
-	DisplayName string `json:"display_name"`
-	SessionType string `json:"session_type"`
-	CSRFToken   string `json:"csrf_token"`
-	Curator     bool   `json:"curator"`
+	DisplayName        string `json:"display_name"`
+	SessionType        string `json:"session_type"`
+	CSRFToken          string `json:"csrf_token"`
+	Curator            bool   `json:"curator"`
+	OnboardingRequired bool   `json:"onboarding_required"`
 }
 
 type challenge struct {
@@ -108,24 +111,22 @@ type challenge struct {
 	ConsumedAt            sql.NullTime
 }
 
-type completedSession struct {
-	Credential  string
-	CSRFToken   string
-	SessionType string
-	ExpiresAt   *time.Time
-}
+type completedSession = BrowserSession
 
 type authenticatedSession struct {
 	DisplayName string
 	SessionType string
+	AccessState string
 	Credential  []byte
 	PersonID    uuid.UUID
+	AccessID    uuid.UUID
 	SessionID   uuid.UUID
 }
 
 // SessionActor identifies an authenticated action without exposing a browser credential.
 type SessionActor struct {
 	PersonID  uuid.UUID
+	AccessID  uuid.UUID
 	SessionID uuid.UUID
 	Curator   bool
 }
@@ -134,6 +135,28 @@ type SessionActor struct {
 type CuratorSession struct {
 	PersonID  uuid.UUID
 	SessionID uuid.UUID
+}
+
+// BrowserSession contains a newly issued opaque browser credential.
+// Callers must place it only in Memento's protected Session cookie.
+type BrowserSession struct {
+	Credential  string
+	CSRFToken   string
+	SessionType string
+	ExpiresAt   *time.Time
+}
+
+func sessionExpirations(sessionType string, now time.Time) (*time.Time, *time.Time, error) {
+	switch sessionType {
+	case "trusted":
+		expiresAt := now.Add(trustedLifetime)
+		return &expiresAt, nil, nil
+	case "public":
+		expiresAt := now.Add(publicLifetime)
+		return nil, &expiresAt, nil
+	default:
+		return nil, nil, ErrSessionType
+	}
 }
 
 // Service coordinates setup state, required email, identity, and Session persistence.
@@ -295,6 +318,7 @@ func (s *Service) complete(ctx context.Context, request CompleteRequest) (comple
 		return completedSession{}, ErrInvalidToken
 	}
 	if !request.PrivacyAcknowledged || !request.EngagementAcknowledged || !request.InterestListAcknowledged ||
+		!request.EmailPreviewsAcknowledged || !request.PushGuidanceAcknowledged ||
 		(request.EmailPreference != "immediate" && request.EmailPreference != "weekly" && request.EmailPreference != "none") ||
 		(request.SessionType != "trusted" && request.SessionType != "public") {
 		return completedSession{}, ErrInvalidChoices
@@ -356,12 +380,9 @@ func (s *Service) complete(ctx context.Context, request CompleteRequest) (comple
 			!now.Before(stored.VerificationExpiresAt.Time) {
 			return ErrInvalidToken
 		}
-		if request.SessionType == "trusted" {
-			expiry := now.Add(trustedLifetime)
-			idleExpiresAt = &expiry
-		} else {
-			expiry := now.Add(publicLifetime)
-			absoluteExpiresAt = &expiry
+		idleExpiresAt, absoluteExpiresAt, err = sessionExpirations(request.SessionType, now)
+		if err != nil {
+			return err
 		}
 		statements := []struct {
 			query string
@@ -371,7 +392,7 @@ func (s *Service) complete(ctx context.Context, request CompleteRequest) (comple
 			{`INSERT INTO person_roles (person_id, role, created_at) VALUES (?, 'curator', ?), (?, 'recipient', ?)`, []any{personID, now, personID, now}},
 			{`INSERT INTO recipient_access_generations (id, person_id, generation, state, is_current, onboarding_completed_at, created_at, updated_at) VALUES (?, ?, 1, 'completed', true, ?, ?, ?)`, []any{accessID, personID, now, now, now}},
 			{`INSERT INTO recipient_emails (id, recipient_access_generation_id, email, normalized_email, is_current, created_at) VALUES (?, ?, ?, ?, true, ?)`, []any{emailID, accessID, stored.Email, stored.Normalized, now}},
-			{`INSERT INTO onboarding_choices (recipient_access_generation_id, privacy_acknowledged, engagement_acknowledged, interest_list_acknowledged, email_preference, completed_at) VALUES (?, ?, ?, ?, ?, ?)`, []any{accessID, true, true, true, request.EmailPreference, now}},
+			{`INSERT INTO onboarding_choices (recipient_access_generation_id, privacy_acknowledged, engagement_acknowledged, interest_list_acknowledged, email_previews_acknowledged, push_guidance_acknowledged, informed_choices_version, email_preference, completed_at) VALUES (?, ?, ?, ?, ?, ?, 2, ?, ?)`, []any{accessID, true, true, true, true, true, request.EmailPreference, now}},
 			{`INSERT INTO notification_preferences (recipient_access_generation_id, email_preference, updated_at) VALUES (?, ?, ?)`, []any{accessID, request.EmailPreference, now}},
 			{`UPDATE login_challenges SET consumed_at = ? WHERE verification_token_hash = ?`, []any{now, tokenHash(verificationRaw)}},
 			{`INSERT INTO sessions (id, credential_hash, person_id, recipient_access_generation_id, security_epoch, session_type, created_at, last_activity_at, idle_expires_at, absolute_expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, []any{sessionID, tokenHash(credentialRaw), personID, accessID, securityEpoch, request.SessionType, now, now, idleExpiresAt, absoluteExpiresAt}},
@@ -408,7 +429,7 @@ func (s *Service) complete(ctx context.Context, request CompleteRequest) (comple
 
 // Session returns safe browser state without mutating Session activity.
 func (s *Service) Session(ctx context.Context, credential string) (SessionResponse, error) {
-	authenticated, err := s.authenticate(ctx, credential)
+	authenticated, err := s.authenticateForStates(ctx, credential, "completed", "onboarding")
 	if err != nil {
 		return SessionResponse{}, err
 	}
@@ -417,10 +438,9 @@ func (s *Service) Session(ctx context.Context, credential string) (SessionRespon
 		return SessionResponse{}, err
 	}
 	return SessionResponse{
-		DisplayName: authenticated.DisplayName,
-		SessionType: authenticated.SessionType,
-		CSRFToken:   s.csrfToken(authenticated.Credential),
-		Curator:     curator,
+		DisplayName: authenticated.DisplayName, SessionType: authenticated.SessionType,
+		CSRFToken: s.csrfToken(authenticated.Credential), Curator: curator,
+		OnboardingRequired: authenticated.AccessState == "onboarding",
 	}, nil
 }
 
@@ -439,7 +459,85 @@ func (s *Service) AuthorizeSession(ctx context.Context, credential, csrfToken st
 	)`, authenticated.PersonID).Scan(ctx, &curator); err != nil {
 		return SessionActor{}, err
 	}
-	return SessionActor{PersonID: authenticated.PersonID, SessionID: authenticated.SessionID, Curator: curator}, nil
+	return SessionActor{PersonID: authenticated.PersonID, AccessID: authenticated.AccessID, SessionID: authenticated.SessionID, Curator: curator}, nil
+}
+
+// AuthorizeInterestSession allows Interest-list self-service during Onboarding while
+// keeping every general Recipient policy restricted to completed access.
+func (s *Service) AuthorizeInterestSession(ctx context.Context, credential, csrfToken string, mutation bool) (SessionActor, error) {
+	authenticated, err := s.authenticateForStates(ctx, credential, "completed", "onboarding")
+	if err != nil {
+		return SessionActor{}, err
+	}
+	if mutation && !s.validCSRF(authenticated.Credential, csrfToken) {
+		return SessionActor{}, ErrCSRF
+	}
+	var curator bool
+	if err := s.db.NewRaw(`SELECT EXISTS (SELECT 1 FROM person_roles WHERE person_id = ? AND role = 'curator')`, authenticated.PersonID).Scan(ctx, &curator); err != nil {
+		return SessionActor{}, err
+	}
+	return SessionActor{PersonID: authenticated.PersonID, AccessID: authenticated.AccessID, SessionID: authenticated.SessionID, Curator: curator}, nil
+}
+
+// AuthorizeOnboardingSession permits only a current Onboarding generation.
+func (s *Service) AuthorizeOnboardingSession(ctx context.Context, credential, csrfToken string, mutation bool) (SessionActor, error) {
+	authenticated, err := s.authenticateForStates(ctx, credential, "onboarding")
+	if err != nil {
+		return SessionActor{}, err
+	}
+	if mutation && !s.validCSRF(authenticated.Credential, csrfToken) {
+		return SessionActor{}, ErrCSRF
+	}
+	return SessionActor{PersonID: authenticated.PersonID, AccessID: authenticated.AccessID, SessionID: authenticated.SessionID}, nil
+}
+
+// NewBrowserSessionIn creates a Session inside the caller's identity transaction.
+func (s *Service) NewBrowserSessionIn(ctx context.Context, tx bun.Tx, personID, accessID uuid.UUID, sessionType string, now time.Time) (BrowserSession, uuid.UUID, error) {
+	idleExpiresAt, absoluteExpiresAt, err := sessionExpirations(sessionType, now)
+	if err != nil {
+		return BrowserSession{}, uuid.Nil, err
+	}
+	sessionID, err := uuid.NewRandomFromReader(s.random)
+	if err != nil {
+		return BrowserSession{}, uuid.Nil, errGenerateCredential
+	}
+	credential, raw, err := s.randomToken()
+	if err != nil {
+		return BrowserSession{}, uuid.Nil, err
+	}
+	var securityEpoch []byte
+	if err := tx.NewRaw(`SELECT security_epoch FROM system_settings WHERE id = 1 AND setup_complete`).Scan(ctx, &securityEpoch); err != nil {
+		return BrowserSession{}, uuid.Nil, err
+	}
+	if _, err := tx.NewRaw(`INSERT INTO sessions (id, credential_hash, person_id, recipient_access_generation_id, security_epoch, session_type, created_at, last_activity_at, idle_expires_at, absolute_expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, sessionID, tokenHash(raw), personID, accessID, securityEpoch, sessionType, now, now, idleExpiresAt, absoluteExpiresAt).Exec(ctx); err != nil {
+		return BrowserSession{}, uuid.Nil, err
+	}
+	return BrowserSession{Credential: credential, CSRFToken: s.csrfToken(raw), SessionType: sessionType, ExpiresAt: idleExpiresAt}, sessionID, nil
+}
+
+// RotateBrowserSessionIn rotates privilege-bound credentials and applies the
+// Recipient's informed device choice in the completion transaction.
+func (s *Service) RotateBrowserSessionIn(ctx context.Context, tx bun.Tx, actor SessionActor, sessionType string, now time.Time) (BrowserSession, error) {
+	idleExpiresAt, absoluteExpiresAt, err := sessionExpirations(sessionType, now)
+	if err != nil {
+		return BrowserSession{}, err
+	}
+	credential, raw, err := s.randomToken()
+	if err != nil {
+		return BrowserSession{}, err
+	}
+	result, err := tx.NewRaw(`UPDATE sessions SET credential_hash = ?, session_type = ?, last_activity_at = ?, idle_expires_at = ?, absolute_expires_at = ? WHERE id = ? AND person_id = ? AND recipient_access_generation_id = ? AND revoked_at IS NULL`, tokenHash(raw), sessionType, now, idleExpiresAt, absoluteExpiresAt, actor.SessionID, actor.PersonID, actor.AccessID).Exec(ctx)
+	if err != nil {
+		return BrowserSession{}, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return BrowserSession{}, err
+	}
+	if affected != 1 {
+		return BrowserSession{}, ErrUnauthenticated
+	}
+	return BrowserSession{Credential: credential, CSRFToken: s.csrfToken(raw), SessionType: sessionType, ExpiresAt: idleExpiresAt}, nil
 }
 
 // AuthorizeCurator verifies a current Session, the sole Curator role, and CSRF for mutations.
@@ -495,7 +593,7 @@ func (s *Service) refresh(ctx context.Context, credential, csrfToken string) (co
 
 // Logout revokes the current Session after a Session-bound CSRF check.
 func (s *Service) Logout(ctx context.Context, credential, csrfToken string) error {
-	authenticated, err := s.authenticate(ctx, credential)
+	authenticated, err := s.authenticateForStates(ctx, credential, "completed", "onboarding")
 	if err != nil {
 		return err
 	}
@@ -523,22 +621,37 @@ func (s *Service) Logout(ctx context.Context, credential, csrfToken string) erro
 }
 
 func (s *Service) authenticate(ctx context.Context, credential string) (authenticatedSession, error) {
+	return s.authenticateForStates(ctx, credential, "completed")
+}
+
+func (s *Service) authenticateForStates(ctx context.Context, credential string, states ...string) (authenticatedSession, error) {
 	credentialRaw, err := decodeToken(credential)
 	if err != nil {
 		return authenticatedSession{}, ErrUnauthenticated
+	}
+	allowCompleted, allowOnboarding := false, false
+	for _, state := range states {
+		switch state {
+		case "completed":
+			allowCompleted = true
+		case "onboarding":
+			allowOnboarding = true
+		default:
+			return authenticatedSession{}, ErrUnauthenticated
+		}
 	}
 	var result authenticatedSession
 	result.Credential = credentialRaw
 	now := s.now().UTC()
 	err = s.db.NewRaw(`
-		SELECT person.display_name, session.session_type, person.id, session.id
+		SELECT person.display_name, session.session_type, access.state, person.id, access.id, session.id
 		FROM sessions AS session
-		JOIN people AS person ON person.id = session.person_id AND person.archived_at IS NULL
+		JOIN people AS person ON person.id = session.person_id AND person.archived_at IS NULL AND person.merged_at IS NULL
 		JOIN recipient_access_generations AS access
 		  ON access.id = session.recipient_access_generation_id
 		 AND access.person_id = session.person_id
 		 AND access.is_current = true
-		 AND access.state = 'completed'
+		 AND ((? AND access.state = 'completed') OR (? AND access.state = 'onboarding'))
 		JOIN system_settings AS settings
 		  ON settings.id = 1
 		 AND settings.setup_complete = true
@@ -547,8 +660,9 @@ func (s *Service) authenticate(ctx context.Context, credential string) (authenti
 		  AND session.revoked_at IS NULL
 		  AND ((session.session_type = 'trusted' AND session.idle_expires_at > ?)
 		    OR (session.session_type = 'public' AND session.absolute_expires_at > ?))
-	`, tokenHash(credentialRaw), now, now).Scan(
-		ctx, &result.DisplayName, &result.SessionType, &result.PersonID, &result.SessionID,
+	`, allowCompleted, allowOnboarding, tokenHash(credentialRaw), now, now).Scan(
+		ctx, &result.DisplayName, &result.SessionType, &result.AccessState,
+		&result.PersonID, &result.AccessID, &result.SessionID,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return authenticatedSession{}, ErrUnauthenticated

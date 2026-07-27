@@ -24,6 +24,11 @@ func (authorizer *fakeAuthorizer) AuthorizeSession(_ context.Context, _, _ strin
 	return authorizer.actor, authorizer.err
 }
 
+func (authorizer *fakeAuthorizer) AuthorizeInterestSession(_ context.Context, _, _ string, mutation bool) (setup.SessionActor, error) {
+	authorizer.mutation = mutation
+	return authorizer.actor, authorizer.err
+}
+
 func visibilityHTTP(authorizer Authorizer) *echo.Echo {
 	e := echo.New()
 	RegisterRoutes(e, NewHandler(nil, authorizer))

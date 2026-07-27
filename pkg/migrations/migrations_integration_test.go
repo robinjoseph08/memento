@@ -197,6 +197,40 @@ func TestDraftMigrationRollbackRestoresRequiredCaptureDates(t *testing.T) {
 	assert.Equal(t, "NO", nullable)
 }
 
+func TestOnboardingMigrationPreservesLegacyAcknowledgmentsAndAddsResumableProgress(t *testing.T) {
+	db := testdb.Open(t)
+	ctx := context.Background()
+	priorMigrations := migrate.NewMigrations()
+	foundOnboarding := false
+	for _, migration := range collection.Sorted() {
+		if migration.Name == "202607270005" {
+			foundOnboarding = true
+			break
+		}
+		priorMigrations.Add(migration)
+	}
+	require.True(t, foundOnboarding)
+	require.NoError(t, applyCollection(ctx, db, priorMigrations))
+	const personID = "11111111-1111-4111-8111-111111111111"
+	const accessID = "22222222-2222-4222-8222-222222222222"
+	_, err := db.ExecContext(ctx, `INSERT INTO people (id, display_name, sort_name) VALUES (?, 'Existing Curator', 'existing curator'); INSERT INTO recipient_access_generations (id, person_id, generation, state, onboarding_completed_at) VALUES (?, ?, 1, 'completed', now()); INSERT INTO onboarding_choices (recipient_access_generation_id, privacy_acknowledged, engagement_acknowledged, interest_list_acknowledged, email_preference, completed_at) VALUES (?, true, true, true, 'immediate', now())`, personID, accessID, personID, accessID)
+	require.NoError(t, err)
+	require.NoError(t, Apply(ctx, db))
+	var previews, push bool
+	var version int
+	require.NoError(t, db.NewRaw(`SELECT email_previews_acknowledged, push_guidance_acknowledged, informed_choices_version FROM onboarding_choices WHERE recipient_access_generation_id = ?`, accessID).Scan(ctx, &previews, &push, &version))
+	assert.False(t, previews, "the migration must not fabricate a disclosure acknowledgment")
+	assert.False(t, push, "the migration must not fabricate a disclosure acknowledgment")
+	assert.Equal(t, 1, version)
+	_, err = db.ExecContext(ctx, `INSERT INTO onboarding_progress (recipient_access_generation_id) VALUES (?)`, accessID)
+	require.NoError(t, err)
+	var sessionType string
+	require.NoError(t, db.NewRaw(`SELECT session_type FROM onboarding_progress WHERE recipient_access_generation_id = ?`, accessID).Scan(ctx, &sessionType))
+	assert.Empty(t, sessionType, "a Recipient must explicitly choose how to treat the browser")
+	_, err = db.ExecContext(ctx, `UPDATE onboarding_progress SET email_preference = 'invalid' WHERE recipient_access_generation_id = ?`, accessID)
+	require.Error(t, err, "resumable preferences must remain in the constrained domains")
+}
+
 func TestVisibilityInfrastructureEnforcesPrivacyStateConstraints(t *testing.T) {
 	db := testdb.Open(t)
 	ctx := context.Background()
