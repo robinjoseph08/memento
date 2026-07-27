@@ -226,6 +226,79 @@ func TestAlbumAssetsPageUsesPinnedPaginationAndStripsSensitiveDTOFields(t *testi
 	assert.NotContains(t, string(serialized), "face")
 }
 
+func TestAlbumSummaryUsesPinnedDetailContract(t *testing.T) {
+	albumID := uuid.New()
+	server := contractServer(t, func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/api/albums/"+albumID.String(), r.URL.Path)
+		_, _ = w.Write([]byte(`{"id":"` + albumID.String() + `","albumName":"Album","description":"","assetCount":0,"createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"}`))
+	})
+	defer server.Close()
+	client, err := New(clientConfig(server.URL), server.Client())
+	require.NoError(t, err)
+	album, err := client.Album(context.Background(), albumID)
+	require.NoError(t, err)
+	assert.Equal(t, albumID, album.SourceID)
+
+	_, err = client.Album(context.Background(), uuid.Nil)
+	require.EqualError(t, err, "Immich returned an invalid response")
+}
+
+func TestAlbumSummaryRejectsMismatchedIdentity(t *testing.T) {
+	requestedID := uuid.New()
+	server := contractServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"id":"` + uuid.NewString() + `","albumName":"Album","description":"","assetCount":0,"createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"}`))
+	})
+	defer server.Close()
+	client, err := New(clientConfig(server.URL), server.Client())
+	require.NoError(t, err)
+	_, err = client.Album(context.Background(), requestedID)
+	require.EqualError(t, err, "Immich returned an invalid response")
+}
+
+func TestAlbumAssetsPaginationContractContinuesBeyondOneThousand(t *testing.T) {
+	albumID := uuid.New()
+	items := make([]map[string]any, assetPageSize)
+	for index := range items {
+		items[index] = map[string]any{
+			"id": uuid.NewString(), "type": "IMAGE", "width": nil, "height": nil,
+			"localDateTime": "2026-01-01T10:00:00Z",
+		}
+	}
+	firstPayload, err := json.Marshal(map[string]any{"assets": map[string]any{
+		"count": assetPageSize, "items": items, "nextPage": "2", "total": assetPageSize,
+	}})
+	require.NoError(t, err)
+	lastID := uuid.New()
+	secondPayload := []byte(`{"assets":{"count":1,"items":[{"id":"` + lastID.String() + `","type":"IMAGE","width":null,"height":null,"localDateTime":"2026-01-01T10:00:00Z"}],"nextPage":null,"total":1}}`)
+	var requested []int
+	server := contractServer(t, func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Page int `json:"page"`
+		}
+		if !assert.NoError(t, json.NewDecoder(r.Body).Decode(&request)) {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		requested = append(requested, request.Page)
+		if request.Page == 1 {
+			_, _ = w.Write(firstPayload)
+			return
+		}
+		_, _ = w.Write(secondPayload)
+	})
+	defer server.Close()
+	client, err := New(clientConfig(server.URL), server.Client())
+	require.NoError(t, err)
+	first, err := client.AlbumAssetsPage(context.Background(), albumID, 1)
+	require.NoError(t, err)
+	require.NotNil(t, first.NextPage)
+	second, err := client.AlbumAssetsPage(context.Background(), albumID, *first.NextPage)
+	require.NoError(t, err)
+	assert.Len(t, first.Items, 1000)
+	assert.Equal(t, lastID, second.Items[0].SourceID)
+	assert.Equal(t, []int{1, 2}, requested)
+}
+
 func TestAlbumAssetsPageAcceptsOnlyFullNonterminalPages(t *testing.T) {
 	albumID := uuid.New()
 	items := make([]map[string]any, assetPageSize)
@@ -309,6 +382,7 @@ func TestClientReturnsSafeFailClosedDependencyErrors(t *testing.T) {
 	}{
 		{"validation", func(client *Client) error { return client.Check(context.Background()) }, "Immich validation failed"},
 		{"discovery", func(client *Client) error { _, err := client.OwnedAlbums(context.Background()); return err }, "Immich album discovery failed"},
+		{"album summary", func(client *Client) error { _, err := client.Album(context.Background(), uuid.New()); return err }, "Immich album discovery failed"},
 		{"membership", func(client *Client) error {
 			_, err := client.AlbumAssetsPage(context.Background(), uuid.New(), 1)
 			return err

@@ -86,7 +86,10 @@ func run() error {
 		}
 	}
 	emailService := emaildelivery.New(db, cfg.SMTP, emailSender, cfg.Security.Secret)
-	handlers := map[string]worker.Handler{}
+	sourceService := sources.New(db, immichClient, cfg.Sources.ReconciliationInterval)
+	handlers := map[string]worker.Handler{
+		sources.ReconciliationJobKind: sourceService.HandleReconciliationJob,
+	}
 	if cfg.SMTP.Enabled {
 		handlers[emaildelivery.JobKind] = emailService.Handle
 	}
@@ -107,7 +110,7 @@ func run() error {
 	setupService := setup.New(db, emailService, cfg.Security)
 	setupHandler := setup.NewHandler(setupService)
 	peopleHandler := people.NewHandler(people.New(db), setupService)
-	sourceHandler := sources.NewHandler(sources.New(db, immichClient), setupService)
+	sourceHandler := sources.NewHandler(sourceService, setupService)
 	e, err := server.New(healthService, emaildelivery.NewHandler(emailService), setupHandler, peopleHandler, sourceHandler)
 	if err != nil {
 		_ = db.Close()

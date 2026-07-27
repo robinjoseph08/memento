@@ -8,10 +8,12 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 	"github.com/robinjoseph08/memento/pkg/errcodes"
 	"github.com/robinjoseph08/memento/pkg/immich"
 	"github.com/robinjoseph08/memento/pkg/setup"
+	"github.com/robinjoseph08/memento/pkg/worker"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -35,6 +37,12 @@ type failingConnector struct{}
 func (failingConnector) Check(context.Context) error { return errors.New("private URL and API key") }
 func (failingConnector) OwnedAlbums(context.Context) ([]immich.AlbumSummary, error) {
 	panic("owned album discovery must not run after failed validation")
+}
+func (failingConnector) Album(context.Context, uuid.UUID) (immich.AlbumSummary, error) {
+	return immich.AlbumSummary{}, errors.New("private URL and API key")
+}
+func (failingConnector) AlbumAssetsPage(context.Context, uuid.UUID, int) (immich.AssetPage, error) {
+	return immich.AssetPage{}, errors.New("private URL and API key")
 }
 
 func sourceHTTP(service *Service, authorizer Authorizer) *echo.Echo {
@@ -72,6 +80,7 @@ func TestSourceRoutesRequireCuratorSessionBeforeAccessingService(t *testing.T) {
 		{http.MethodPost, "/api/sources/discover"},
 		{http.MethodPost, "/api/sources/not-an-id/ignore"},
 		{http.MethodPost, "/api/sources/not-an-id/restore"},
+		{http.MethodPost, "/api/sources/not-an-id/reconcile"},
 	} {
 		response := sourceRequest(e, test.method, test.path, "", "")
 		assert.Equal(t, http.StatusUnauthorized, response.Code, "%s %s", test.method, test.path)
@@ -84,6 +93,7 @@ func TestSourceMutationsRequireSessionBoundCSRF(t *testing.T) {
 		"/api/sources/discover",
 		"/api/sources/11111111-1111-4111-8111-111111111111/ignore",
 		"/api/sources/11111111-1111-4111-8111-111111111111/restore",
+		"/api/sources/11111111-1111-4111-8111-111111111111/reconcile",
 	} {
 		t.Run(path, func(t *testing.T) {
 			authorizer := &fakeAuthorizer{err: setup.ErrCSRF}
@@ -106,6 +116,11 @@ func TestSourceReadsDoNotRequireCSRFButStillRequireCuratorRole(t *testing.T) {
 	assert.Equal(t, http.StatusUnauthorized, response.Code)
 	assert.False(t, authorizer.mutation)
 	assert.NotContains(t, response.Body.String(), "recipient-session")
+
+	authorizer.err = setup.ErrNotCurator
+	response = sourceRequest(e, http.MethodGet, "/api/sources", "recipient-session", "")
+	assert.Equal(t, http.StatusNotFound, response.Code)
+	assert.NotContains(t, response.Body.String(), "Source")
 }
 
 func TestDiscoveryDependencyFailureReturnsOnlySafeDiagnostics(t *testing.T) {
@@ -133,6 +148,12 @@ func TestSourceListRejectsInvalidPaginationBeforeDatabaseAccess(t *testing.T) {
 		assert.Equal(t, http.StatusUnprocessableEntity, response.Code)
 		assert.Contains(t, response.Body.String(), message)
 	}
+}
+
+func TestReconciliationJobsRejectInvalidPayloadPermanently(t *testing.T) {
+	service := &Service{}
+	err := service.HandleReconciliationJob(context.Background(), worker.Job{Payload: []byte(`{"source_album_id":"not-an-id"}`)})
+	require.EqualError(t, err, "invalid_source_reconciliation_payload")
 }
 
 func TestSourceTriageRequiresOptimisticVersion(t *testing.T) {

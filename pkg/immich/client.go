@@ -255,6 +255,22 @@ func (c *Client) OwnedAlbums(ctx context.Context) ([]AlbumSummary, error) {
 	return albums, nil
 }
 
+// Album retrieves one normalized owned-album summary for stability checks.
+func (c *Client) Album(ctx context.Context, albumID uuid.UUID) (AlbumSummary, error) {
+	if albumID == uuid.Nil {
+		return AlbumSummary{}, errInvalidResponse
+	}
+	var response albumResponse
+	if err := c.getJSON(ctx, "albums/"+albumID.String(), &response, errOwnedAlbumsFailed); err != nil {
+		return AlbumSummary{}, err
+	}
+	album, err := normalizeAlbum(response)
+	if err != nil || album.SourceID != albumID {
+		return AlbumSummary{}, errInvalidResponse
+	}
+	return album, nil
+}
+
 // AlbumAssetsPage reads one bounded page of complete album membership metadata.
 // Callers begin at page 1 and follow NextPage until nil.
 func (c *Client) AlbumAssetsPage(ctx context.Context, albumID uuid.UUID, page int) (AssetPage, error) {

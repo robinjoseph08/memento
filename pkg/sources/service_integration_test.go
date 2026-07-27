@@ -32,6 +32,15 @@ func (connector *fakeConnector) Check(context.Context) error { return connector.
 func (connector *fakeConnector) OwnedAlbums(context.Context) ([]immich.AlbumSummary, error) {
 	return connector.albums, connector.listErr
 }
+func (connector *fakeConnector) Album(context.Context, uuid.UUID) (immich.AlbumSummary, error) {
+	if len(connector.albums) == 0 {
+		return immich.AlbumSummary{}, connector.listErr
+	}
+	return connector.albums[0], connector.listErr
+}
+func (connector *fakeConnector) AlbumAssetsPage(context.Context, uuid.UUID, int) (immich.AssetPage, error) {
+	return immich.AssetPage{}, connector.listErr
+}
 
 func sourceAlbum(id uuid.UUID, name string, count int) immich.AlbumSummary {
 	created := time.Date(2025, 1, 2, 3, 4, 5, 0, time.UTC)
@@ -201,6 +210,15 @@ func TestAuthenticatedSourceRoutesWireDiscoveryInspectionAndTriage(t *testing.T)
 	require.Equal(t, http.StatusOK, detail.Code)
 	assert.NotContains(t, detail.Body.String(), "immich_album_id")
 
+	for range 2 {
+		queued := sourceRequest(e, http.MethodPost, "/api/sources/"+id+"/reconcile", "session", "csrf")
+		require.Equal(t, http.StatusAccepted, queued.Code)
+		assert.JSONEq(t, `{"status":"queued"}`, queued.Body.String())
+	}
+	var reconciliationJobs int
+	require.NoError(t, service.db.NewRaw(`SELECT count(*) FROM jobs WHERE kind = ?`, ReconciliationJobKind).Scan(context.Background(), &reconciliationJobs))
+	assert.Equal(t, 1, reconciliationJobs, "repeated Curator actions must coalesce into one bounded job")
+
 	ignored := sourceVersionedRequest(e, http.MethodPost, "/api/sources/"+id+"/ignore", "session", "csrf", fmt.Sprint(version))
 	require.Equal(t, http.StatusOK, ignored.Code)
 	var ignoredAlbum Album
@@ -233,6 +251,12 @@ type serializedConnector struct {
 }
 
 func (connector *serializedConnector) Check(context.Context) error { return nil }
+func (connector *serializedConnector) Album(context.Context, uuid.UUID) (immich.AlbumSummary, error) {
+	return immich.AlbumSummary{}, nil
+}
+func (connector *serializedConnector) AlbumAssetsPage(context.Context, uuid.UUID, int) (immich.AssetPage, error) {
+	return immich.AssetPage{}, nil
+}
 
 func (connector *serializedConnector) OwnedAlbums(context.Context) ([]immich.AlbumSummary, error) {
 	connector.mu.Lock()
@@ -314,6 +338,9 @@ func TestSourceInventoryListPaginationAndNotFoundTransitions(t *testing.T) {
 	require.ErrorIs(t, err, ErrNotFound)
 	_, err = service.Ignore(context.Background(), uuid.New(), 1)
 	require.ErrorIs(t, err, ErrNotFound)
+	_, err = service.QueueReconciliation(context.Background(), uuid.New())
+	require.ErrorIs(t, err, ErrNotFound)
+	require.ErrorIs(t, service.Reconcile(context.Background(), uuid.New()), ErrNotFound)
 }
 
 func discover(service *Service) error {
