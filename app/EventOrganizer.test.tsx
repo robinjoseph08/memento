@@ -604,6 +604,31 @@ test("rebases Audience version changes without discarding unsaved organization",
   );
 });
 
+test("stays saved when Audience review follows a completed autosave", async () => {
+  stubOrganizerAPI(draft());
+  renderOrganizer();
+  fireEvent.click(
+    await screen.findByRole("button", { name: /Family weekend/ }),
+  );
+  const title = await screen.findByLabelText("Title for Moment 1");
+  fireEvent.change(title, { target: { value: "Saved organization" } });
+  await screen.findByText("All changes saved");
+
+  const inspectButtons = screen.getAllByRole("button", {
+    name: "Inspect Attendance and Audience",
+  });
+  fireEvent.click(inspectButtons[0]);
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Confirm Attendance" }),
+  );
+
+  await waitFor(() => expect(inspectButtons[1]).toBeEnabled());
+  expect(screen.getByText("All changes saved")).toBeInTheDocument();
+  expect(screen.getByLabelText("Title for Moment 1")).toHaveValue(
+    "Saved organization",
+  );
+});
+
 test("mobile drill-down moves between Work, Event organization, and inspection", async () => {
   vi.stubGlobal(
     "fetch",

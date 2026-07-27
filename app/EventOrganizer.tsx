@@ -363,6 +363,7 @@ export function EventOrganizer({
     setDraft(next);
     const eventID = next.id;
     const localRevision = revisionRef.current;
+    const preserveOrganization = saveState !== "saved";
     void apiJSON<DraftEvent>(`/api/events/${eventID}`)
       .then((current) => {
         if (
@@ -373,7 +374,7 @@ export function EventOrganizer({
           return;
         }
         const latest = latestDraftRef.current;
-        if (localRevision > 0 && latest?.id === eventID) {
+        if (preserveOrganization && latest?.id === eventID) {
           const reviewByMoment = new Map(
             current.moments.map((moment) => [moment.id, moment]),
           );
