@@ -614,7 +614,7 @@ func (s *Service) Accept(ctx context.Context, token string) (AcceptResponse, err
 		if _, err := tx.NewRaw(`UPDATE email_deliveries SET status = 'cancelled', body = '' WHERE invitation_id = ? AND kind = ? AND status = 'queued'`, row.invitationID, emaildelivery.KindInvitationAutomaticReminder).Exec(ctx); err != nil {
 			return err
 		}
-		if _, err := tx.NewRaw(`UPDATE outbox_events AS event SET delivered_at = ? FROM email_deliveries AS delivery WHERE event.aggregate_kind = 'email_delivery' AND event.aggregate_id = delivery.public_id AND delivery.invitation_id = ? AND delivery.kind = ? AND event.delivered_at IS NULL`, now, row.invitationID, emaildelivery.KindInvitationAutomaticReminder).Exec(ctx); err != nil {
+		if _, err := tx.NewRaw(`UPDATE outbox_events AS event SET delivered_at = ?, lease_owner = NULL, lease_expires_at = NULL FROM email_deliveries AS delivery WHERE event.aggregate_kind = 'email_delivery' AND event.aggregate_id = delivery.public_id AND delivery.invitation_id = ? AND delivery.kind = ? AND event.delivered_at IS NULL`, now, row.invitationID, emaildelivery.KindInvitationAutomaticReminder).Exec(ctx); err != nil {
 			return err
 		}
 		request := setup.RequestMetadataFromContext(ctx)

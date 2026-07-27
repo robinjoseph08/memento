@@ -463,6 +463,8 @@ func TestInspectIsReadOnlyAndAcceptIsSingleUseWithRestrictedOnboardingSession(t 
 	require.NoError(t, err)
 	assert.Equal(t, before, *afterInspect.Invitation)
 	assert.Equal(t, beforeInspect, snapshot(), "inspection must not mutate hidden state")
+	_, err = fixture.db.NewRaw(`UPDATE outbox_events AS event SET lease_owner = 'interrupted-worker', lease_expires_at = ? FROM email_deliveries AS delivery WHERE event.aggregate_id = delivery.public_id AND delivery.invitation_id = ? AND delivery.kind = ? AND event.delivered_at IS NULL`, fixture.now.Add(30*time.Second), invitation.Invitation.ID, emaildelivery.KindInvitationAutomaticReminder).Exec(context.Background())
+	require.NoError(t, err)
 
 	accepted, err := fixture.service.Accept(context.Background(), token)
 	require.NoError(t, err)
@@ -488,11 +490,12 @@ func TestInspectIsReadOnlyAndAcceptIsSingleUseWithRestrictedOnboardingSession(t 
 	actor, err := fixture.auth.AuthorizeInterestSession(context.Background(), accepted.session.Credential, "", false)
 	require.NoError(t, err)
 	assert.Equal(t, fixture.personID, actor.PersonID)
-	var queuedReminder, undeliveredReminderEvent int
+	var queuedReminder, undeliveredReminderEvent, leasedReminderEvent int
 	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM email_deliveries WHERE invitation_id = ? AND kind = ? AND status = 'queued'`, invitation.Invitation.ID, emaildelivery.KindInvitationAutomaticReminder).Scan(context.Background(), &queuedReminder))
-	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM outbox_events AS event JOIN email_deliveries AS delivery ON delivery.public_id = event.aggregate_id WHERE delivery.invitation_id = ? AND delivery.kind = ? AND event.delivered_at IS NULL`, invitation.Invitation.ID, emaildelivery.KindInvitationAutomaticReminder).Scan(context.Background(), &undeliveredReminderEvent))
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FILTER (WHERE event.delivered_at IS NULL), count(*) FILTER (WHERE event.lease_owner IS NOT NULL OR event.lease_expires_at IS NOT NULL) FROM outbox_events AS event JOIN email_deliveries AS delivery ON delivery.public_id = event.aggregate_id WHERE delivery.invitation_id = ? AND delivery.kind = ?`, invitation.Invitation.ID, emaildelivery.KindInvitationAutomaticReminder).Scan(context.Background(), &undeliveredReminderEvent, &leasedReminderEvent))
 	assert.Zero(t, queuedReminder)
 	assert.Zero(t, undeliveredReminderEvent, "acceptance must retire the reminder's outbox event")
+	assert.Zero(t, leasedReminderEvent, "retiring a leased reminder must clear its lease")
 }
 
 func TestAcceptanceSessionFailureLeavesTheInvitationLiveAndRetryable(t *testing.T) {
