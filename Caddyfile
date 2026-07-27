@@ -20,6 +20,9 @@
 		-Server
 	}
 
+	@invitation path /invitation
+	header @invitation Cache-Control "no-store"
+
 	request_body {
 		max_size 10MB
 	}

@@ -57,6 +57,7 @@ export MEMENTO_DATABASE_URL=${MEMENTO_DATABASE_URL:-"postgresql://memento_app:de
 export MEMENTO_IMMICH_URL=${MEMENTO_IMMICH_URL:-"http://127.0.0.1:$immich_port"}
 export MEMENTO_IMMICH_API_KEY=${MEMENTO_IMMICH_API_KEY:-development-only-key}
 export MEMENTO_SECURITY_SECRET=${MEMENTO_SECURITY_SECRET:-development-only-security-secret-32-bytes}
+export MEMENTO_HTTP_PUBLIC_URL=${MEMENTO_HTTP_PUBLIC_URL:-http://localhost:5173}
 air
 '''
 

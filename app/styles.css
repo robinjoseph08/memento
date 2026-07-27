@@ -930,6 +930,37 @@ h1 {
   }
 }
 
+.recipient-controls {
+  border-top: 1px solid var(--border);
+  display: grid;
+  gap: 0.75rem;
+  margin-top: 1rem;
+  padding-top: 1rem;
+}
+
+.recipient-controls h3,
+.recipient-controls p {
+  margin: 0;
+}
+
+.invitation-status {
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  display: grid;
+  gap: 0.75rem;
+  padding: 1rem;
+}
+
+.recipient-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+}
+
+.invitation-card {
+  max-width: 42rem;
+}
+
 @media (max-width: 54rem) {
   main {
     display: block;

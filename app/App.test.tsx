@@ -1,5 +1,11 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { BrowserRouter } from "react-router-dom";
 import { afterEach, expect, test, vi } from "vitest";
 
@@ -46,6 +52,81 @@ afterEach(() => {
   cleanup();
   window.history.replaceState(null, "", "/");
   vi.restoreAllMocks();
+});
+
+test("opens an Invitation read-only and removes its token only after explicit acceptance", async () => {
+  const token = "a".repeat(64);
+  window.history.replaceState(null, "", `/invitation?token=${token}`);
+  const requests: Array<{ path: string; init?: RequestInit }> = [];
+  let resolveAcceptance: (response: Response) => void = () => undefined;
+  const acceptance = new Promise<Response>((resolve) => {
+    resolveAcceptance = resolve;
+  });
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = requestPath(input);
+      requests.push({ path, init });
+      if (path === "/api/auth/invitations/inspect" && !init?.method) {
+        return Promise.resolve(
+          jsonResponse({
+            recipient_name: "Alex",
+            curator_name: "Robin",
+            expires_at: "2026-08-10T12:00:00Z",
+          }),
+        );
+      }
+      if (path === "/api/auth/invitations/accept") {
+        return acceptance;
+      }
+      return Promise.reject(new Error(`Unexpected request: ${path}`));
+    }),
+  );
+
+  renderApp();
+  await screen.findByRole("button", { name: "Accept Invitation" });
+  expect(screen.getByText(/invited/, { selector: ".lede" })).toHaveTextContent(
+    "Robin invited Alex to Memento.",
+  );
+  expect(window.location.search).toBe(`?token=${token}`);
+  expect(requests).toHaveLength(1);
+  expect(requests[0]).toMatchObject({
+    path: "/api/auth/invitations/inspect",
+    init: { headers: { "X-Memento-Invitation": token } },
+  });
+  expect(
+    requests.some(
+      ({ path }) => path === "/api/setup" || path === "/api/session",
+    ),
+  ).toBe(false);
+
+  fireEvent.click(screen.getByRole("button", { name: "Accept Invitation" }));
+  await waitFor(() => expect(window.location.search).toBe(""));
+  expect(screen.queryByText("Invitation accepted.")).not.toBeInTheDocument();
+  resolveAcceptance(jsonResponse({ status: "onboarding" }));
+  expect(await screen.findByText("Invitation accepted.")).toBeInTheDocument();
+  expect(window.location.pathname).toBe("/invitation");
+  expect(requests[1]).toMatchObject({
+    path: "/api/auth/invitations/accept",
+    init: { method: "POST" },
+  });
+  expect(JSON.parse(stringBody(requests[1].init?.body))).toEqual({ token });
+});
+
+test("shows an unavailable Invitation instead of waiting forever when the token is absent", async () => {
+  window.history.replaceState(null, "", "/invitation");
+  const fetchMock = vi.fn();
+  vi.stubGlobal("fetch", fetchMock);
+
+  renderApp();
+
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "This Invitation is invalid or no longer available.",
+  );
+  expect(
+    screen.queryByText(/Checking this Invitation/),
+  ).not.toBeInTheDocument();
+  expect(fetchMock).not.toHaveBeenCalled();
 });
 
 test("completes the first-browser setup workflow with explicit Onboarding choices", async () => {

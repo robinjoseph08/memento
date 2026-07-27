@@ -12,6 +12,7 @@ import (
 
 func setRequiredEnvironment(t *testing.T) {
 	t.Helper()
+	t.Setenv("MEMENTO_HTTP_PUBLIC_URL", "https://memento.example")
 	t.Setenv("MEMENTO_DATABASE_URL", "postgresql://memento:secret@db:5432/memento?sslmode=require")
 	t.Setenv("MEMENTO_IMMICH_URL", "https://immich.internal")
 	t.Setenv("MEMENTO_IMMICH_API_KEY", "private-key")
@@ -26,17 +27,21 @@ func TestLoadUsesDefaultsAndEnvironment(t *testing.T) {
 	cfg, err := Load("")
 	require.NoError(t, err)
 	assert.Equal(t, "127.0.0.1:8081", cfg.HTTP.Address)
+	assert.Equal(t, "https://memento.example", cfg.HTTP.PublicURL)
 	assert.Equal(t, 7*time.Second, cfg.HTTP.ShutdownTimeout)
 	assert.Equal(t, 4, cfg.Database.MaxOpenConns)
 	assert.Equal(t, 15*time.Minute, cfg.Security.SetupRateWindow)
 	assert.Equal(t, 3, cfg.Security.SetupEmailLimit)
 	assert.Equal(t, 20, cfg.Security.SetupIPLimit)
+	assert.Equal(t, 15*time.Minute, cfg.Security.InvitationAcceptRateWindow)
+	assert.Equal(t, 20, cfg.Security.InvitationAcceptIPLimit)
 	assert.Equal(t, 10*time.Minute, cfg.Sources.ReconciliationInterval)
 	require.Len(t, cfg.Security.TrustedProxyCIDRs, 2)
 	assert.Equal(t, "127.0.0.0/8", cfg.Security.TrustedProxyCIDRs[0].String())
 }
 
 func TestLoadPrecedenceIncludesYAMLAndSecretFiles(t *testing.T) {
+	t.Setenv("MEMENTO_HTTP_PUBLIC_URL", "https://memento.example")
 	t.Setenv("MEMENTO_DATABASE_URL", "postgresql://memento:env@db:5432/memento")
 	t.Setenv("MEMENTO_IMMICH_URL", "https://environment.example")
 	t.Setenv("MEMENTO_SECURITY_SECRET", "test-only-security-secret-32-bytes")
@@ -180,6 +185,12 @@ func TestValidateRejectsUnsafeValues(t *testing.T) {
 		want string
 	}{
 		{"HTTP address", func(c *Config) { c.HTTP.Address = "" }, "http.address is required"},
+		{"HTTP public URL missing", func(c *Config) { c.HTTP.PublicURL = "" }, "http.public_url is required"},
+		{"HTTP public URL relative", func(c *Config) { c.HTTP.PublicURL = "/memento" }, "HTTPS origin"},
+		{"HTTP public URL insecure", func(c *Config) { c.HTTP.PublicURL = "http://memento.example" }, "HTTP loopback origin"},
+		{"HTTP public URL oversized port", func(c *Config) { c.HTTP.PublicURL = "https://memento.example:99999" }, "HTTPS origin"},
+		{"HTTP public URL empty port", func(c *Config) { c.HTTP.PublicURL = "https://memento.example:" }, "HTTPS origin"},
+		{"HTTP public URL credentials", func(c *Config) { c.HTTP.PublicURL = "https://user:pass@memento.example" }, "without credentials"},
 		{"database URL", func(c *Config) { c.Database.URL = "" }, "database.url is required"},
 		{"database name", func(c *Config) { c.Database.Name = "" }, "database.name is required"},
 		{"connection count", func(c *Config) { c.Database.MaxOpenConns = 1 }, "database.max_open_conns must be at least 2"},
@@ -194,6 +205,8 @@ func TestValidateRejectsUnsafeValues(t *testing.T) {
 		{"setup rate window", func(c *Config) { c.Security.SetupRateWindow = 0 }, "setup rate limits must be positive"},
 		{"setup email limit", func(c *Config) { c.Security.SetupEmailLimit = 0 }, "setup rate limits must be positive"},
 		{"setup IP limit", func(c *Config) { c.Security.SetupIPLimit = 0 }, "setup rate limits must be positive"},
+		{"Invitation acceptance rate window", func(c *Config) { c.Security.InvitationAcceptRateWindow = 0 }, "Invitation acceptance rate limits must be positive"},
+		{"Invitation acceptance IP limit", func(c *Config) { c.Security.InvitationAcceptIPLimit = 0 }, "Invitation acceptance rate limits must be positive"},
 		{"heartbeat", func(c *Config) { c.Worker.HeartbeatMaxAge = c.Worker.HeartbeatInterval }, "heartbeat_max_age"},
 		{"poll lease", func(c *Config) { c.Worker.LeaseDuration = c.Worker.PollInterval }, "lease_duration"},
 		{"heartbeat lease", func(c *Config) { c.Worker.LeaseDuration = c.Worker.HeartbeatInterval }, "heartbeat_interval"},

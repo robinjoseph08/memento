@@ -3,6 +3,8 @@
 # MEMENTO_*_FILE setting.
 http:
   address: "127.0.0.1:8081"
+  # Public origin used for personalized Invitation links in email.
+  public_url: "https://memento.example.com"
   shutdown_timeout: 8s
 
 database:
@@ -23,6 +25,8 @@ security:
   setup_rate_window: 15m
   setup_email_limit: 3
   setup_ip_limit: 20
+  invitation_accept_rate_window: 15m
+  invitation_accept_ip_limit: 20
   # Forwarded client IPs are accepted only from these explicit proxy networks.
   trusted_proxy_cidrs: "127.0.0.0/8,::1/128"
 

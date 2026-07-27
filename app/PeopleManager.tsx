@@ -10,6 +10,13 @@ import type {
   Person,
   UpdateRequest,
 } from "./types/generated/people";
+import type {
+  DeliveryStatus,
+  DesignateRequest,
+  Invitation,
+  InvitationActionRequest,
+  Recipient,
+} from "./types/generated/recipients";
 import type { SessionResponse } from "./types/generated/setup";
 
 function ErrorNotice({ error }: { error: Error | null }) {
@@ -252,6 +259,7 @@ export function PeopleManager({ session }: { session: SessionResponse }) {
                 updatePerson.mutate({ id: selected.id, request })
               }
               person={selected}
+              session={session}
               updateError={updatePerson.error}
             />
           ) : (
@@ -360,8 +368,10 @@ function PersonDetail({
   updateError,
   archiveError,
   archivePending,
+  session,
 }: {
   person: Person;
+  session: SessionResponse;
   onUpdate: (request: UpdateRequest) => void;
   onArchive: () => void;
   updateError: Error | null;
@@ -450,7 +460,279 @@ function PersonDetail({
           Archive Person
         </button>
       ) : null}
+      {person.status === "current" && !person.roles.includes("curator") ? (
+        <RecipientControls person={person} session={session} />
+      ) : null}
     </form>
+  );
+}
+
+function formatInvitationDate(value: unknown) {
+  if (typeof value !== "string") {
+    return "Not yet";
+  }
+  const date = new Date(value);
+  return Number.isNaN(date.valueOf())
+    ? "Unknown"
+    : new Intl.DateTimeFormat(undefined, {
+        dateStyle: "medium",
+        timeStyle: "short",
+      }).format(date);
+}
+
+function deliveryFailureLabel(value: string) {
+  return value.replaceAll("_", " ");
+}
+
+function deliveryStatusLabel(
+  delivery: DeliveryStatus | undefined,
+  sentAt?: unknown,
+) {
+  if (sentAt) {
+    return `Sent ${formatInvitationDate(sentAt)}`;
+  }
+  if (!delivery) {
+    return "Status unavailable";
+  }
+  switch (delivery.status) {
+    case "queued":
+      if (delivery.attempts > 0) {
+        return delivery.next_retry_at
+          ? `Retrying after ${formatInvitationDate(delivery.next_retry_at)}`
+          : "Retrying";
+      }
+      return "Pending";
+    case "failed":
+      return delivery.failure
+        ? `Failed (${deliveryFailureLabel(delivery.failure)})`
+        : "Failed";
+    case "cancelled":
+      return "Cancelled";
+    case "sent":
+      return "Sent";
+    default:
+      return "Status unavailable";
+  }
+}
+
+function automaticReminderLabel(invitation: Invitation) {
+  if (invitation.automatic_reminded_at) {
+    return deliveryStatusLabel(
+      invitation.automatic_reminder_delivery,
+      invitation.automatic_reminded_at,
+    );
+  }
+  if (invitation.status !== "active") {
+    return `Will not be sent because the Invitation is ${invitation.status}`;
+  }
+  if (
+    invitation.automatic_reminder_delivery?.status === "queued" &&
+    invitation.automatic_reminder_delivery.attempts === 0
+  ) {
+    return `Scheduled ${formatInvitationDate(invitation.automatic_reminder_scheduled_at)}`;
+  }
+  return deliveryStatusLabel(invitation.automatic_reminder_delivery);
+}
+
+function RecipientControls({
+  person,
+  session,
+}: {
+  person: Person;
+  session: SessionResponse;
+}) {
+  const queryClient = useQueryClient();
+  const [email, setEmail] = useState("");
+  const recipient = useQuery({
+    queryKey: ["recipient", person.id],
+    queryFn: () => apiJSON<Recipient>(`/api/recipients/${person.id}`),
+    enabled: Boolean(person.current_recipient_access),
+    retry: false,
+  });
+
+  async function refresh() {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["recipient", person.id] }),
+      queryClient.invalidateQueries({ queryKey: ["people"] }),
+    ]);
+  }
+
+  const designate = useMutation({
+    mutationFn: (request: DesignateRequest) =>
+      apiJSON<Recipient>(`/api/recipients/${person.id}/designate`, {
+        method: "POST",
+        headers: { "X-Memento-CSRF": session.csrf_token },
+        body: JSON.stringify(request),
+      }),
+    onSuccess: refresh,
+  });
+  const invitationAction = useMutation({
+    mutationFn: ({
+      action,
+      invitationID,
+    }: {
+      action: "send" | "revoke" | "reissue" | "remind";
+      invitationID?: string;
+    }) => {
+      const request: InvitationActionRequest | undefined = invitationID
+        ? { invitation_id: invitationID }
+        : undefined;
+      return apiJSON<Recipient>(
+        `/api/recipients/${person.id}/invitation/${action}`,
+        {
+          method: "POST",
+          headers: { "X-Memento-CSRF": session.csrf_token },
+          body: request ? JSON.stringify(request) : undefined,
+        },
+      );
+    },
+    onSuccess: refresh,
+  });
+
+  const current = recipient.data;
+  const invitation = current?.invitation;
+  const error = designate.error ?? invitationAction.error ?? recipient.error;
+  return (
+    <section
+      className="recipient-controls"
+      aria-labelledby={`recipient-${person.id}`}
+    >
+      <h3 id={`recipient-${person.id}`}>Recipient access</h3>
+      {!person.current_recipient_access ? (
+        <>
+          <p>
+            Designation creates Pending Recipient access without sending email
+            or granting Media access.
+          </p>
+          <label>
+            Login email
+            <input
+              autoComplete="email"
+              maxLength={320}
+              onChange={(event) => setEmail(event.target.value)}
+              type="email"
+              value={email}
+            />
+          </label>
+          <button
+            disabled={designate.isPending || !email}
+            onClick={() => designate.mutate({ email })}
+            type="button"
+          >
+            Designate Pending Recipient
+          </button>
+        </>
+      ) : null}
+      {current ? (
+        <>
+          <p>
+            Generation {current.access.generation}, {current.access.state}.
+            Login email: {current.email}.
+          </p>
+          {!invitation && current.access.state === "pending" ? (
+            <button
+              disabled={invitationAction.isPending}
+              onClick={() => invitationAction.mutate({ action: "send" })}
+              type="button"
+            >
+              Create and send Invitation
+            </button>
+          ) : null}
+          {invitation ? (
+            <div className="invitation-status">
+              <p>
+                <strong>Invitation:</strong> {invitation.status}. Issued{" "}
+                {formatInvitationDate(invitation.issued_at)}; expires{" "}
+                {formatInvitationDate(invitation.expires_at)}.
+              </p>
+              <p>
+                Initial delivery:{" "}
+                {deliveryStatusLabel(
+                  invitation.initial_delivery,
+                  invitation.sent_at,
+                )}
+                . Automatic reminder: {automaticReminderLabel(invitation)}.
+              </p>
+              {invitation.manual_reminder_count > 0 ? (
+                <p>
+                  Manual reminders requested: {invitation.manual_reminder_count}
+                  . Latest delivery:{" "}
+                  {deliveryStatusLabel(
+                    invitation.last_manual_reminder_delivery,
+                    invitation.last_manual_reminded_at,
+                  )}
+                  .
+                </p>
+              ) : null}
+              {invitation.status === "active" ? (
+                <div className="recipient-actions">
+                  <button
+                    disabled={invitationAction.isPending || !invitation.sent_at}
+                    onClick={() =>
+                      invitationAction.mutate({
+                        action: "remind",
+                        invitationID: invitation.id,
+                      })
+                    }
+                    title={
+                      invitation.sent_at
+                        ? undefined
+                        : "Wait for the initial Invitation delivery"
+                    }
+                    type="button"
+                  >
+                    Send manual reminder
+                  </button>
+                  <button
+                    disabled={invitationAction.isPending}
+                    onClick={() =>
+                      invitationAction.mutate({
+                        action: "reissue",
+                        invitationID: invitation.id,
+                      })
+                    }
+                    type="button"
+                  >
+                    Reissue with new link
+                  </button>
+                  <button
+                    className="danger-button"
+                    disabled={invitationAction.isPending}
+                    onClick={() =>
+                      invitationAction.mutate({
+                        action: "revoke",
+                        invitationID: invitation.id,
+                      })
+                    }
+                    type="button"
+                  >
+                    Revoke Invitation
+                  </button>
+                </div>
+              ) : null}
+              {(invitation.status === "revoked" ||
+                invitation.status === "expired" ||
+                invitation.status === "superseded") &&
+              current.access.state === "pending" ? (
+                <button
+                  disabled={invitationAction.isPending}
+                  onClick={() =>
+                    invitationAction.mutate({
+                      action: "reissue",
+                      invitationID: invitation.id,
+                    })
+                  }
+                  type="button"
+                >
+                  Reissue Invitation
+                </button>
+              ) : null}
+            </div>
+          ) : null}
+        </>
+      ) : null}
+      <ErrorNotice error={error} />
+    </section>
   );
 }
 

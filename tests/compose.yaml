@@ -37,6 +37,8 @@ services:
       MEMENTO_IMMICH_URL: http://immich:3001
       MEMENTO_IMMICH_API_KEY: test-only-key
       MEMENTO_SECURITY_SECRET: test-only-security-secret-32-bytes
+      MEMENTO_SECURITY_INVITATION_ACCEPT_IP_LIMIT: 2
+      MEMENTO_HTTP_PUBLIC_URL: http://localhost:8080
       MEMENTO_CADDY_TRUSTED_PROXY_CIDRS: private_ranges
       MEMENTO_HTTP_ADDRESS: 127.0.0.1:8091
       MEMENTO_HTTP_SHUTDOWN_TIMEOUT: 8s

@@ -77,6 +77,255 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+test("designates a Pending Recipient separately from sending an Invitation", async () => {
+  const alex = person("33333333-3333-3333-3333-333333333333", "Alex", "Alex");
+  const access = { id: "access-id", generation: 1, state: "pending" };
+  let designated = false;
+  let invitationSent = false;
+  const requests: Array<{ path: string; init?: RequestInit }> = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = requestPath(input);
+      requests.push({ path, init });
+      if (path.startsWith("/api/people?") && !init?.method) {
+        return Promise.resolve(
+          jsonResponse({
+            people: [
+              designated
+                ? {
+                    ...alex,
+                    roles: ["recipient"],
+                    current_recipient_access: access,
+                    current_login_email: "alex@example.com",
+                  }
+                : alex,
+            ],
+          }),
+        );
+      }
+      if (path.endsWith("/designate")) {
+        designated = true;
+        return Promise.resolve(
+          jsonResponse(
+            {
+              person_id: alex.id,
+              person_name: "Alex",
+              email: "alex@example.com",
+              access,
+            },
+            201,
+          ),
+        );
+      }
+      if (path === `/api/recipients/${alex.id}`) {
+        return Promise.resolve(
+          jsonResponse({
+            person_id: alex.id,
+            person_name: "Alex",
+            email: "alex@example.com",
+            access,
+            ...(invitationSent
+              ? {
+                  invitation: {
+                    id: "invitation-id",
+                    status: "active",
+                    issued_at: "2026-07-27T12:00:00Z",
+                    expires_at: "2026-08-10T12:00:00Z",
+                    automatic_reminder_scheduled_at: "2026-08-03T12:00:00Z",
+                    manual_reminder_count: 0,
+                    initial_delivery: {
+                      status: "failed",
+                      attempts: 1,
+                      failure: "recipient_rejected",
+                    },
+                    automatic_reminder_delivery: {
+                      status: "queued",
+                      attempts: 0,
+                    },
+                  },
+                }
+              : {}),
+          }),
+        );
+      }
+      if (path.endsWith("/invitation/send")) {
+        invitationSent = true;
+        return Promise.resolve(jsonResponse({ status: "active" }));
+      }
+      return Promise.reject(new Error(`Unexpected request: ${path}`));
+    }),
+  );
+
+  renderManager();
+  fireEvent.click(
+    await screen.findByRole("button", { name: /^Alex/ }, contentionWait),
+  );
+  fireEvent.change(screen.getByLabelText("Login email"), {
+    target: { value: "alex@example.com" },
+  });
+  fireEvent.click(
+    screen.getByRole("button", { name: "Designate Pending Recipient" }),
+  );
+
+  const send = await screen.findByRole(
+    "button",
+    { name: "Create and send Invitation" },
+    contentionWait,
+  );
+  const designateRequest = requests.find(({ path }) =>
+    path.endsWith("/designate"),
+  );
+  expect(JSON.parse(stringBody(designateRequest?.init?.body))).toEqual({
+    email: "alex@example.com",
+  });
+  expect(designateRequest?.init?.headers).toEqual(
+    expect.objectContaining({ "X-Memento-CSRF": "csrf-token" }),
+  );
+  expect(requests.some(({ path }) => path.endsWith("/invitation/send"))).toBe(
+    false,
+  );
+
+  fireEvent.click(send);
+  const revoke = await screen.findByRole(
+    "button",
+    { name: "Revoke Invitation" },
+    contentionWait,
+  );
+  expect(revoke.closest(".invitation-status")).toHaveTextContent(
+    "Invitation: active",
+  );
+  expect(revoke.closest(".invitation-status")).toHaveTextContent(
+    "Initial delivery: Failed (recipient rejected)",
+  );
+  expect(revoke.closest(".invitation-status")).toHaveTextContent(
+    "Automatic reminder: Scheduled",
+  );
+  const sendRequest = requests.find(({ path }) =>
+    path.endsWith("/invitation/send"),
+  );
+  expect(sendRequest?.init).toMatchObject({
+    method: "POST",
+    headers: { "X-Memento-CSRF": "csrf-token" },
+  });
+});
+
+test("wires every Invitation control to its exact mutation", async () => {
+  const alex = {
+    ...person("33333333-3333-3333-3333-333333333333", "Alex", "Alex"),
+    roles: ["recipient"],
+    current_recipient_access: {
+      id: "access-id",
+      generation: 1,
+      state: "pending",
+    },
+    current_login_email: "alex@example.com",
+  };
+  let status = "active";
+  let invitationID = "invitation-id";
+  const requests: Array<{ path: string; init?: RequestInit }> = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = requestPath(input);
+      requests.push({ path, init });
+      if (path.startsWith("/api/people?") && !init?.method) {
+        return Promise.resolve(jsonResponse({ people: [alex] }));
+      }
+      if (path === `/api/recipients/${alex.id}` && !init?.method) {
+        return Promise.resolve(
+          jsonResponse({
+            person_id: alex.id,
+            person_name: "Alex",
+            email: "alex@example.com",
+            access: alex.current_recipient_access,
+            invitation: {
+              id: invitationID,
+              status,
+              issued_at: "2026-07-27T12:00:00Z",
+              expires_at: "2026-08-10T12:00:00Z",
+              sent_at: "2026-07-27T12:01:00Z",
+              automatic_reminder_scheduled_at: "2026-08-03T12:00:00Z",
+              manual_reminder_count: 0,
+            },
+          }),
+        );
+      }
+      if (path.includes("/invitation/") && init?.method === "POST") {
+        if (path.endsWith("/revoke")) status = "revoked";
+        if (path.endsWith("/reissue")) {
+          status = "active";
+          invitationID = "replacement-id";
+        }
+        return Promise.resolve(jsonResponse({ status }));
+      }
+      return Promise.reject(new Error(`Unexpected request: ${path}`));
+    }),
+  );
+
+  renderManager();
+  fireEvent.click(
+    await screen.findByRole("button", { name: /^Alex/ }, contentionWait),
+  );
+  for (const control of [
+    ["Send manual reminder", "/remind"],
+    ["Reissue with new link", "/reissue"],
+    ["Revoke Invitation", "/revoke"],
+  ] as const) {
+    fireEvent.click(
+      await screen.findByRole("button", { name: control[0] }, contentionWait),
+    );
+    await waitFor(
+      () =>
+        expect(requests.some(({ path }) => path.endsWith(control[1]))).toBe(
+          true,
+        ),
+      contentionWait,
+    );
+  }
+  fireEvent.click(
+    await screen.findByRole(
+      "button",
+      { name: "Reissue Invitation" },
+      contentionWait,
+    ),
+  );
+  await waitFor(
+    () =>
+      expect(
+        requests.filter(({ path }) => path.endsWith("/reissue")),
+      ).toHaveLength(2),
+    contentionWait,
+  );
+  const actionRequests = requests.filter(({ path }) =>
+    path.includes("/invitation/"),
+  );
+  for (const request of actionRequests) {
+    expect(request.init).toMatchObject({
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Memento-CSRF": "csrf-token",
+      },
+    });
+  }
+  expect(
+    actionRequests.find(({ path }) => path.endsWith("/remind"))?.init?.body,
+  ).toBe(JSON.stringify({ invitation_id: "invitation-id" }));
+  expect(
+    actionRequests.find(({ path }) => path.endsWith("/revoke"))?.init?.body,
+  ).toBe(JSON.stringify({ invitation_id: "replacement-id" }));
+  const reissues = actionRequests.filter(({ path }) =>
+    path.endsWith("/reissue"),
+  );
+  expect(reissues[0]?.init?.body).toBe(
+    JSON.stringify({ invitation_id: "invitation-id" }),
+  );
+  expect(reissues[1]?.init?.body).toBe(
+    JSON.stringify({ invitation_id: "replacement-id" }),
+  );
+});
+
 test("previews and confirms the exact source, survivor, generation, email, and versions", async () => {
   const source = {
     ...person(

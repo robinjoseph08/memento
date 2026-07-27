@@ -83,6 +83,22 @@ func addAccess(t *testing.T, db *bun.DB, personID uuid.UUID, current bool, email
 	return accessID
 }
 
+func addInvitation(t *testing.T, db *bun.DB, accessID uuid.UUID) uuid.UUID {
+	t.Helper()
+	ctx := context.Background()
+	var emailID uuid.UUID
+	require.NoError(t, db.NewRaw(`SELECT id FROM recipient_emails WHERE recipient_access_generation_id = ? AND is_current`, accessID).Scan(ctx, &emailID))
+	invitationID := uuid.New()
+	now := time.Now().UTC()
+	token := sha256.Sum256(invitationID[:])
+	_, err := db.NewRaw(`
+		INSERT INTO invitations (id, recipient_access_generation_id, recipient_email_id, token_hash, issued_at, expires_at, automatic_reminder_scheduled_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, invitationID, accessID, emailID, token[:], now, now.Add(14*24*time.Hour), now.Add(7*24*time.Hour)).Exec(ctx)
+	require.NoError(t, err)
+	return invitationID
+}
+
 func addSession(t *testing.T, db *bun.DB, personID, accessID uuid.UUID) uuid.UUID {
 	t.Helper()
 	ctx := context.Background()
@@ -376,6 +392,27 @@ func TestMergePreviewAndConfirmationEnforceAuthorityAndGenerationGates(t *testin
 	assert.Contains(t, curatorPreview.Blockers, "The Curator Person must be the survivor.")
 	_, err = fixture.service.Merge(ctx, fixture.actor, MergeRequest{SourcePersonID: fixture.actor.PersonID.String(), SurvivorPersonID: survivor.String(), SourceVersion: 1, SurvivorVersion: 1, PreviewFingerprint: curatorPreview.PreviewFingerprint})
 	require.ErrorIs(t, err, ErrCuratorMustSurvive)
+}
+
+func TestMergeSupersedesInvitationBeforeTransferringAccess(t *testing.T) {
+	fixture := newPeopleFixture(t)
+	ctx := context.Background()
+	source := addPerson(t, fixture.db, "Source", "Source")
+	survivor := addPerson(t, fixture.db, "Survivor", "Survivor")
+	sourceAccess := addAccess(t, fixture.db, source, true, "source@example.com")
+	invitationID := addInvitation(t, fixture.db, sourceAccess)
+	preview, err := fixture.service.PreviewMerge(ctx, fixture.actor, source, survivor)
+	require.NoError(t, err)
+	merged, err := fixture.service.Merge(ctx, fixture.actor, MergeRequest{
+		SourcePersonID: source.String(), SurvivorPersonID: survivor.String(), SourceVersion: 1, SurvivorVersion: 1,
+		TransferCurrentAccessGeneration: true, ExpectedRecipientGeneration: preview.References.ResultingRecipientGeneration,
+		PreviewFingerprint: preview.PreviewFingerprint,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, survivor.String(), merged.ID)
+	var superseded bool
+	require.NoError(t, fixture.db.NewRaw(`SELECT superseded_at IS NOT NULL FROM invitations WHERE id = ?`, invitationID).Scan(ctx, &superseded))
+	assert.True(t, superseded)
 }
 
 func TestMergeRejectsChangedResultingGenerationAfterPreview(t *testing.T) {

@@ -19,6 +19,7 @@ import (
 	"github.com/robinjoseph08/memento/pkg/family"
 	"github.com/robinjoseph08/memento/pkg/health"
 	"github.com/robinjoseph08/memento/pkg/people"
+	"github.com/robinjoseph08/memento/pkg/recipients"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -59,13 +60,13 @@ func keys(values map[string]json.RawMessage) []string {
 
 func newServer(t *testing.T) *echo.Echo {
 	t.Helper()
-	e, err := New(new(health.Service), nil, nil, nil, nil, nil)
+	e, err := New(new(health.Service), nil, nil, nil, nil, nil, nil)
 	require.NoError(t, err)
 	return e
 }
 
 func TestServerRegistersPeopleRoutesWhenHandlerIsProvided(t *testing.T) {
-	e, err := New(new(health.Service), nil, nil, people.NewHandler(nil, nil), nil, nil)
+	e, err := New(new(health.Service), nil, nil, people.NewHandler(nil, nil), nil, nil, nil)
 	require.NoError(t, err)
 	routes := make(map[string]bool)
 	for _, route := range e.Routes() {
@@ -81,7 +82,7 @@ func TestServerRegistersPeopleRoutesWhenHandlerIsProvided(t *testing.T) {
 }
 
 func TestServerRegistersFamilyRoutesWhenHandlerIsProvided(t *testing.T) {
-	e, err := New(new(health.Service), nil, nil, nil, family.NewHandler(nil, nil), nil)
+	e, err := New(new(health.Service), nil, nil, nil, family.NewHandler(nil, nil), nil, nil)
 	require.NoError(t, err)
 	routes := make(map[string]bool)
 	for _, route := range e.Routes() {
@@ -91,6 +92,23 @@ func TestServerRegistersFamilyRoutesWhenHandlerIsProvided(t *testing.T) {
 		"GET /api/relationships", "GET /api/relationships/branches/:person_id",
 		"POST /api/relationships", "PATCH /api/relationships/:id",
 		"POST /api/relationships/:id/archive",
+	} {
+		assert.True(t, routes[route], route)
+	}
+}
+
+func TestServerRegistersRecipientRoutesWhenHandlerIsProvided(t *testing.T) {
+	e, err := New(new(health.Service), nil, nil, nil, nil, recipients.NewHandler(nil, nil), nil)
+	require.NoError(t, err)
+	routes := make(map[string]bool)
+	for _, route := range e.Routes() {
+		routes[route.Method+" "+route.Path] = true
+	}
+	for _, route := range []string{
+		"GET /api/recipients/:person_id", "POST /api/recipients/:person_id/designate",
+		"POST /api/recipients/:person_id/invitation/send", "POST /api/recipients/:person_id/invitation/revoke",
+		"POST /api/recipients/:person_id/invitation/reissue", "POST /api/recipients/:person_id/invitation/remind",
+		"GET /api/auth/invitations/inspect", "POST /api/auth/invitations/accept",
 	} {
 		assert.True(t, routes[route], route)
 	}
