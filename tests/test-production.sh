@@ -22,12 +22,15 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-compose up --build --detach --wait --wait-timeout 90 postgres immich
+# Build directly so Compose cannot delegate image export to its flaky Bake subprocess.
+docker build --file "$root/tests/fixtures/Dockerfile.immich" \
+  --tag "$project-immich:latest" "$root/tests/fixtures"
+compose up --no-build --detach --wait --wait-timeout 90 postgres immich
 compose exec --no-TTY postgres \
   psql --username postgres --dbname postgres --set ON_ERROR_STOP=1 \
   < "$root/tests/fixtures/init-database.sql" >/dev/null
-compose build memento
-compose up --detach --wait --wait-timeout 90 memento
+docker build --tag "memento:$image_tag" "$root"
+compose up --no-build --detach --wait --wait-timeout 90 memento
 endpoint=$(compose port memento 8080 | head -n 1)
 [ -n "$endpoint" ] || {
   compose logs
@@ -106,7 +109,9 @@ if grep -qi '^Server:' "$temporary/headers"; then
   exit 1
 fi
 
-compose up --build --detach --no-deps front
+docker build --file "$root/tests/fixtures/Dockerfile.front" \
+  --tag "$project-front:latest" "$root/tests/fixtures"
+compose up --no-build --detach --no-deps front
 front_endpoint=$(compose port front 8443 | head -n 1)
 [ -n "$front_endpoint" ] || {
   compose logs front

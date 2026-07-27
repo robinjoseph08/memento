@@ -96,7 +96,6 @@ func newRepairFixture(t *testing.T, anchorCount int) repairFixture {
 		connector.faces[assetIDs[index]] = []immich.FaceSummary{{SourceID: faceIDs[index], PersonID: &person, ImageWidth: 100, ImageHeight: 80, X1: 1, Y1: 2, X2: 20, Y2: 30}}
 	}
 	service := New(db, connector)
-	service.now = func() time.Time { return time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC) }
 	actor := setup.CuratorSession{PersonID: actorID, SessionID: sessionID}
 	require.NoError(t, reconcile(service))
 	_, err = service.LinkPerson(context.Background(), actor, LinkPersonRequest{PersonID: personID.String(), ImmichPersonID: oldID.String()})

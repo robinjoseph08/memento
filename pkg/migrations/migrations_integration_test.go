@@ -11,6 +11,7 @@ import (
 	"github.com/robinjoseph08/memento/internal/testdb"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/uptrace/bun/driver/pgdriver"
 	"github.com/uptrace/bun/migrate"
 )
 
@@ -42,6 +43,47 @@ func TestApplyFromEmptyDatabaseUnderConcurrentLock(t *testing.T) {
 	require.NoError(t, db.NewRaw(`SELECT count(*) FROM jobs`).Scan(ctx, &jobsCount))
 	assert.Equal(t, 1, settingsCount)
 	assert.Zero(t, jobsCount)
+}
+
+func TestApplyWaitsForMigrationLockBeyondDriverReadTimeout(t *testing.T) {
+	db := testdb.Open(t)
+	holder, err := db.DB.Conn(context.Background())
+	require.NoError(t, err)
+	defer holder.Close()
+
+	_, err = holder.ExecContext(context.Background(), `SELECT pg_advisory_lock(hashtextextended(current_database() || ':memento:migrations', 0))`)
+	require.NoError(t, err)
+	unlock := make(chan error, 1)
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		_, unlockErr := holder.ExecContext(context.Background(), `SELECT pg_advisory_unlock(hashtextextended(current_database() || ':memento:migrations', 0))`)
+		unlock <- unlockErr
+	}()
+
+	waiter := testdb.Clone(t, db, pgdriver.WithReadTimeout(50*time.Millisecond))
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	require.NoError(t, Apply(ctx, waiter))
+	require.NoError(t, <-unlock)
+	require.NoError(t, Current(ctx, db))
+}
+
+func TestApplyStopsWaitingForMigrationLockWhenContextExpires(t *testing.T) {
+	db := testdb.Open(t)
+	holder, err := db.DB.Conn(context.Background())
+	require.NoError(t, err)
+	defer holder.Close()
+
+	_, err = holder.ExecContext(context.Background(), `SELECT pg_advisory_lock(hashtextextended(current_database() || ':memento:migrations', 0))`)
+	require.NoError(t, err)
+	defer func() {
+		_, unlockErr := holder.ExecContext(context.Background(), `SELECT pg_advisory_unlock(hashtextextended(current_database() || ':memento:migrations', 0))`)
+		require.NoError(t, unlockErr)
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 75*time.Millisecond)
+	defer cancel()
+	require.ErrorIs(t, Apply(ctx, db), context.DeadlineExceeded)
 }
 
 func TestSourceReconciliationMigrationBackfillsExistingAlbums(t *testing.T) {

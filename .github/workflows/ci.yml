@@ -13,9 +13,36 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  validate:
+  suite:
+    name: ${{ matrix.name }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Go lint
+            task: lint
+          - name: Frontend lint
+            task: lint:js
+          - name: Unit tests
+            task: test
+          - name: Frontend build
+            task: build
+          - name: Race tests
+            task: test:race
+          - name: Browser tests
+            task: test:browser
+          - name: PostgreSQL integration tests
+            task: test:integration
+          - name: Immich contract
+            task: test:immich-contract
+          - name: Compose validation
+            task: compose:validate
+          - name: Caddy validation
+            task: caddy:validate
+          - name: Production topology
+            task: test:production
 
     steps:
       - name: Check out repository
@@ -28,5 +55,16 @@ jobs:
           install: true
           cache: true
 
-      - name: Run validation
-        run: mise run ci
+      - name: Run ${{ matrix.name }}
+        run: mise run ${{ matrix.task }}
+
+  validate:
+    name: validate
+    if: ${{ always() }}
+    needs: suite
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require every validation task to pass
+        env:
+          SUITE_RESULT: ${{ needs.suite.result }}
+        run: test "$SUITE_RESULT" = success
