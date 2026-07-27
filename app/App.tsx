@@ -1650,6 +1650,7 @@ function InvitationLanding() {
 }
 
 function MementoApp() {
+  const queryClient = useQueryClient();
   const [completedSession, setCompletedSession] = useState<SessionResponse>();
   const [signedOut, setSignedOut] = useState(false);
   const bootstrap = useQuery({
@@ -1658,7 +1659,15 @@ function MementoApp() {
     retry: false,
   });
 
+  const completeSession = (session: SessionResponse) => {
+    setSignedOut(false);
+    setCompletedSession(session);
+  };
+
   const signOut = () => {
+    queryClient.removeQueries({
+      predicate: (query) => query.queryKey[0] !== "bootstrap",
+    });
     setCompletedSession(undefined);
     setSignedOut(true);
   };
@@ -1667,7 +1676,7 @@ function MementoApp() {
     return (
       <main>
         <ReadyCard
-          onComplete={setCompletedSession}
+          onComplete={completeSession}
           onSignOut={signOut}
           session={completedSession}
         />
@@ -1705,7 +1714,7 @@ function MementoApp() {
   if (bootstrap.data.kind === "available") {
     return (
       <main>
-        <SetupFlow onComplete={setCompletedSession} />
+        <SetupFlow onComplete={completeSession} />
       </main>
     );
   }
@@ -1717,7 +1726,7 @@ function MementoApp() {
   return (
     <main>
       <ReadyCard
-        onComplete={setCompletedSession}
+        onComplete={completeSession}
         onSignOut={signOut}
         session={session}
       />

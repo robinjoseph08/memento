@@ -67,6 +67,10 @@ test("signs in with an eight-digit code and keeps Public-computer warnings promi
       }
       if (path.startsWith("/api/sessions/") && init?.method === "PATCH")
         return Promise.resolve(new Response(null, { status: 204 }));
+      if (path.startsWith("/api/sessions/") && init?.method === "DELETE") {
+        signedIn = false;
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
       if (path === "/api/sessions")
         return Promise.resolve(
           json({
@@ -152,6 +156,24 @@ test("signs in with an eight-digit code and keeps Public-computer warnings promi
     code: "12345678",
     session_type: "public",
   });
+
+  fireEvent.click(
+    screen.getByRole("button", { name: "Sign out Firefox on Linux" }),
+  );
+  fireEvent.change(await screen.findByLabelText("Login email"), {
+    target: { value: "alex@example.com" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Send sign-in code" }));
+  fireEvent.change(await screen.findByLabelText("Sign-in code"), {
+    target: { value: "12345678" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Verify and sign in" }));
+  expect(
+    await screen.findByText("Public computer", { selector: "strong" }),
+  ).toBeVisible();
+  expect(
+    requests.filter(({ path }) => path === "/api/auth/sign-in/verify"),
+  ).toHaveLength(2);
 });
 
 test("retries Session bootstrap without reusing an accepted sign-in code", async () => {

@@ -292,6 +292,24 @@ func TestSessionMutationsCannotCrossRecipientBoundary(t *testing.T) {
 	assert.True(t, active)
 }
 
+func TestEmailChangeConsumesSiblingRequestsFromThePreviousAddress(t *testing.T) {
+	f := newFixture(t)
+	actor, err := f.auth.AuthorizeSession(context.Background(), f.credential, f.csrf, true)
+	require.NoError(t, err)
+	firstID, staleID := uuid.New(), uuid.New()
+	firstOld, firstNew := "11112222", "33334444"
+	staleOld, staleNew := "55556666", "77778888"
+	_, err = f.db.NewRaw(`INSERT INTO email_change_requests (id, person_id, recipient_access_generation_id, session_id, old_email, new_email, new_normalized_email, old_code_hash, new_code_hash, expires_at) VALUES (?, ?, ?, ?, 'alex@example.com', 'first@example.com', 'first@example.com', ?, ?, ?), (?, ?, ?, ?, 'alex@example.com', 'stale@example.com', 'stale@example.com', ?, ?, ?)`, firstID, f.personID, f.accessID, f.sessionID, f.service.codeHash("email-change-old", firstID[:], firstOld), f.service.codeHash("email-change-new", firstID[:], firstNew), f.now.Add(codeLifetime), staleID, f.personID, f.accessID, f.sessionID, f.service.codeHash("email-change-old", staleID[:], staleOld), f.service.codeHash("email-change-new", staleID[:], staleNew), f.now.Add(codeLifetime)).Exec(context.Background())
+	require.NoError(t, err)
+	_, err = f.service.CompleteEmailChange(context.Background(), actor, EmailChangeCompleteRequest{RequestID: firstID.String(), OldCode: firstOld, NewCode: firstNew})
+	require.NoError(t, err)
+	_, err = f.service.CompleteEmailChange(context.Background(), actor, EmailChangeCompleteRequest{RequestID: staleID.String(), OldCode: staleOld, NewCode: staleNew})
+	assert.ErrorIs(t, err, ErrChangeNotFound)
+	var email string
+	require.NoError(t, f.db.NewRaw(`SELECT normalized_email FROM recipient_emails WHERE recipient_access_generation_id = ? AND is_current`, f.accessID).Scan(context.Background(), &email))
+	assert.Equal(t, "first@example.com", email)
+}
+
 func TestEmailChangeProofExpiresAtBoundary(t *testing.T) {
 	f := newFixture(t)
 	actor, err := f.auth.AuthorizeSession(context.Background(), f.credential, f.csrf, true)
@@ -358,7 +376,7 @@ func TestSignedInEmailChangeRequiresBothCodesAndPreservesIdentity(t *testing.T) 
 	assert.True(t, siblingRevoked)
 	assert.True(t, siblingPushDisabled)
 	_, err = f.service.CompleteEmailChange(context.Background(), actor, EmailChangeCompleteRequest{RequestID: requestID.String(), OldCode: oldCode, NewCode: newCode})
-	assert.ErrorIs(t, err, ErrInvalidCode, "email-change proofs must be single-use")
+	assert.ErrorIs(t, err, ErrChangeNotFound, "email-change proofs must be single-use")
 	_, err = f.service.VerifySignIn(context.Background(), SignInVerifyRequest{ChallengeID: oldAddressChallenge, Code: "87654321", SessionType: "trusted"})
 	assert.ErrorIs(t, err, ErrInvalidCode, "changing email must invalidate codes sent to the old mailbox")
 }

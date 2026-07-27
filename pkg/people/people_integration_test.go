@@ -115,6 +115,15 @@ func addSession(t *testing.T, db *bun.DB, personID, accessID uuid.UUID) uuid.UUI
 	return id
 }
 
+func addPushSubscription(t *testing.T, db *bun.DB, personID, sessionID uuid.UUID) uuid.UUID {
+	t.Helper()
+	id := uuid.New()
+	endpointHash := sha256.Sum256(id[:])
+	_, err := db.NewRaw(`INSERT INTO push_subscriptions (id, session_id, person_id, endpoint_hash) VALUES (?, ?, ?, ?)`, id, sessionID, personID, endpointHash[:]).Exec(context.Background())
+	require.NoError(t, err)
+	return id
+}
+
 func addBrowserSession(t *testing.T, db *bun.DB, personID, accessID uuid.UUID, seed string) string {
 	t.Helper()
 	ctx := context.Background()
@@ -409,10 +418,32 @@ func TestArchiveAndMergeUseOnePersonRepairLockOrder(t *testing.T) {
 	}
 }
 
+func TestArchiveDisablesPushLinkedToRevokedSessions(t *testing.T) {
+	fixture := newPeopleFixture(t)
+	ctx := context.Background()
+	personID := addPerson(t, fixture.db, "Archived Recipient", "Archived Recipient")
+	accessID := addAccess(t, fixture.db, personID, true, "archived@example.com")
+	sessionID := addSession(t, fixture.db, personID, accessID)
+	pushID := addPushSubscription(t, fixture.db, personID, sessionID)
+
+	_, err := fixture.service.Archive(ctx, fixture.actor, personID, 1)
+	require.NoError(t, err)
+	var sessionRevoked, pushDisabled bool
+	require.NoError(t, fixture.db.NewRaw(`SELECT revoked_at IS NOT NULL FROM sessions WHERE id = ?`, sessionID).Scan(ctx, &sessionRevoked))
+	require.NoError(t, fixture.db.NewRaw(`SELECT disabled_at IS NOT NULL FROM push_subscriptions WHERE id = ?`, pushID).Scan(ctx, &pushDisabled))
+	assert.True(t, sessionRevoked)
+	assert.True(t, pushDisabled)
+}
+
 func TestMergeIntoCuratorPreservesCurrentSessionAndAuthority(t *testing.T) {
 	fixture := newPeopleFixture(t)
 	ctx := context.Background()
 	source := addPerson(t, fixture.db, "Duplicate Curator", "Curator, Duplicate")
+	var curatorAccessID uuid.UUID
+	require.NoError(t, fixture.db.NewRaw(`SELECT recipient_access_generation_id FROM sessions WHERE id = ?`, fixture.actor.SessionID).Scan(ctx, &curatorAccessID))
+	otherSessionID := addSession(t, fixture.db, fixture.actor.PersonID, curatorAccessID)
+	retainedPushID := addPushSubscription(t, fixture.db, fixture.actor.PersonID, fixture.actor.SessionID)
+	revokedPushID := addPushSubscription(t, fixture.db, fixture.actor.PersonID, otherSessionID)
 	immichPersonID, candidateID := uuid.New(), uuid.New()
 	_, err := fixture.db.ExecContext(ctx, `
 		INSERT INTO immich_people_inventory (immich_person_id, name, first_seen_at, last_seen_at)
@@ -431,7 +462,7 @@ func TestMergeIntoCuratorPreservesCurrentSessionAndAuthority(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, preview.CanMerge)
 	assert.True(t, preview.CurrentCuratorSessionKept)
-	assert.Zero(t, preview.References.SessionsInvalidated)
+	assert.Equal(t, 1, preview.References.SessionsInvalidated)
 	merged, err := fixture.service.Merge(ctx, fixture.actor, MergeRequest{
 		SourcePersonID: source.String(), SurvivorPersonID: fixture.actor.PersonID.String(), SourceVersion: 1, SurvivorVersion: 1,
 		PreviewFingerprint: preview.PreviewFingerprint,
@@ -442,6 +473,13 @@ func TestMergeIntoCuratorPreservesCurrentSessionAndAuthority(t *testing.T) {
 	var revoked bool
 	require.NoError(t, fixture.db.NewRaw(`SELECT revoked_at IS NOT NULL FROM sessions WHERE id = ?`, fixture.actor.SessionID).Scan(ctx, &revoked))
 	assert.False(t, revoked)
+	var otherRevoked, retainedPushActive, revokedPushDisabled bool
+	require.NoError(t, fixture.db.NewRaw(`SELECT revoked_at IS NOT NULL FROM sessions WHERE id = ?`, otherSessionID).Scan(ctx, &otherRevoked))
+	require.NoError(t, fixture.db.NewRaw(`SELECT disabled_at IS NULL FROM push_subscriptions WHERE id = ?`, retainedPushID).Scan(ctx, &retainedPushActive))
+	require.NoError(t, fixture.db.NewRaw(`SELECT disabled_at IS NOT NULL FROM push_subscriptions WHERE id = ?`, revokedPushID).Scan(ctx, &revokedPushDisabled))
+	assert.True(t, otherRevoked)
+	assert.True(t, retainedPushActive)
+	assert.True(t, revokedPushDisabled)
 	var linkedPersonID uuid.UUID
 	require.NoError(t, fixture.db.NewRaw(`SELECT person_id FROM immich_person_links WHERE immich_person_id = ?`, immichPersonID).Scan(ctx, &linkedPersonID))
 	assert.Equal(t, fixture.actor.PersonID, linkedPersonID)

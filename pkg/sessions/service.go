@@ -437,7 +437,18 @@ func (s *Service) CompleteEmailChange(ctx context.Context, actor setup.SessionAc
 		var attempts int
 		var expiresAt time.Time
 		var consumedAt *time.Time
-		err := tx.NewRaw(`SELECT old_code_hash, new_code_hash, new_email, new_normalized_email, attempts, expires_at, consumed_at FROM email_change_requests WHERE id = ? AND person_id = ? AND recipient_access_generation_id = ? AND session_id = ? FOR UPDATE`, requestID, actor.PersonID, actor.AccessID, actor.SessionID).Scan(ctx, &oldHash, &newHash, &newEmail, &normalized, &attempts, &expiresAt, &consumedAt)
+		err := tx.NewRaw(`
+			SELECT request.old_code_hash, request.new_code_hash, request.new_email, request.new_normalized_email,
+			       request.attempts, request.expires_at, request.consumed_at
+			FROM email_change_requests AS request
+			JOIN recipient_emails AS current_email
+			  ON current_email.recipient_access_generation_id = request.recipient_access_generation_id
+			 AND current_email.is_current
+			 AND current_email.normalized_email = lower(request.old_email)
+			WHERE request.id = ? AND request.person_id = ?
+			  AND request.recipient_access_generation_id = ? AND request.session_id = ?
+			FOR UPDATE OF request, current_email
+		`, requestID, actor.PersonID, actor.AccessID, actor.SessionID).Scan(ctx, &oldHash, &newHash, &newEmail, &normalized, &attempts, &expiresAt, &consumedAt)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrChangeNotFound
 		}
@@ -483,7 +494,7 @@ func (s *Service) CompleteEmailChange(ctx context.Context, actor setup.SessionAc
 		if err != nil {
 			return err
 		}
-		if _, err = tx.NewRaw(`UPDATE email_change_requests SET consumed_at = ? WHERE id = ?`, now, requestID).Exec(ctx); err != nil {
+		if _, err = tx.NewRaw(`UPDATE email_change_requests SET consumed_at = ? WHERE recipient_access_generation_id = ? AND consumed_at IS NULL`, now, actor.AccessID).Exec(ctx); err != nil {
 			return err
 		}
 		if err = appendAudit(ctx, tx, actor, actor.PersonID, "recipient_email_changed", nil); err != nil {

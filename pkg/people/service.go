@@ -506,6 +506,9 @@ func (s *Service) Archive(ctx context.Context, actor setup.CuratorSession, id uu
 		if _, err := tx.NewRaw(`UPDATE sessions SET revoked_at = ? WHERE person_id = ? AND revoked_at IS NULL`, now, id).Exec(ctx); err != nil {
 			return err
 		}
+		if _, err := tx.NewRaw(`UPDATE push_subscriptions AS push SET disabled_at = ? WHERE push.disabled_at IS NULL AND EXISTS (SELECT 1 FROM sessions AS session WHERE session.id = push.session_id AND session.person_id = ?)`, now, id).Exec(ctx); err != nil {
+			return err
+		}
 		if err := appendAudit(ctx, tx, actor, &id, "person_archived", map[string]any{"previous_version": version}); err != nil {
 			return err
 		}
@@ -879,6 +882,16 @@ func (s *Service) Merge(ctx context.Context, actor setup.CuratorSession, request
 			sessionArgs = append(sessionArgs, actor.SessionID)
 		}
 		if _, err := tx.NewRaw(sessionQuery, sessionArgs...).Exec(ctx); err != nil {
+			return err
+		}
+		pushQuery := `UPDATE push_subscriptions AS push SET disabled_at = ? WHERE push.disabled_at IS NULL AND EXISTS (SELECT 1 FROM sessions AS session WHERE session.id = push.session_id AND session.person_id IN (?, ?)`
+		pushArgs := []any{now, sourceID, survivorID}
+		if actor.PersonID == survivorID {
+			pushQuery += ` AND session.id <> ?`
+			pushArgs = append(pushArgs, actor.SessionID)
+		}
+		pushQuery += `)`
+		if _, err := tx.NewRaw(pushQuery, pushArgs...).Exec(ctx); err != nil {
 			return err
 		}
 		if err := execExactlyOne(ctx, tx, `UPDATE people SET archived_at = COALESCE(archived_at, ?), merged_at = ?, merged_into_person_id = ?, version = version + 1, updated_at = ? WHERE id = ? AND version = ?`, now, now, survivorID, now, sourceID, request.SourceVersion); err != nil {
