@@ -290,6 +290,8 @@ func (s *Service) applyValidatedSnapshot(
 		if _, err := tx.NewRaw(`
 			DELETE FROM media_items AS media
 			WHERE NOT EXISTS (SELECT 1 FROM source_album_memberships WHERE media_item_id = media.id)
+			  AND NOT EXISTS (SELECT 1 FROM draft_media_placements WHERE media_item_id = media.id)
+			  AND NOT EXISTS (SELECT 1 FROM loose_items WHERE media_item_id = media.id)
 		`).Exec(ctx); err != nil {
 			return 0, 0, 0, err
 		}

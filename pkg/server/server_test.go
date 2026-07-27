@@ -16,6 +16,7 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
 	"github.com/robinjoseph08/memento/pkg/binder"
+	"github.com/robinjoseph08/memento/pkg/events"
 	"github.com/robinjoseph08/memento/pkg/family"
 	"github.com/robinjoseph08/memento/pkg/health"
 	"github.com/robinjoseph08/memento/pkg/people"
@@ -60,13 +61,13 @@ func keys(values map[string]json.RawMessage) []string {
 
 func newServer(t *testing.T) *echo.Echo {
 	t.Helper()
-	e, err := New(new(health.Service), nil, nil, nil, nil, nil, nil)
+	e, err := New(new(health.Service), nil, nil, nil, nil, nil, nil, nil)
 	require.NoError(t, err)
 	return e
 }
 
 func TestServerRegistersPeopleRoutesWhenHandlerIsProvided(t *testing.T) {
-	e, err := New(new(health.Service), nil, nil, people.NewHandler(nil, nil), nil, nil, nil)
+	e, err := New(new(health.Service), nil, nil, people.NewHandler(nil, nil), nil, nil, nil, nil)
 	require.NoError(t, err)
 	routes := make(map[string]bool)
 	for _, route := range e.Routes() {
@@ -82,7 +83,7 @@ func TestServerRegistersPeopleRoutesWhenHandlerIsProvided(t *testing.T) {
 }
 
 func TestServerRegistersFamilyRoutesWhenHandlerIsProvided(t *testing.T) {
-	e, err := New(new(health.Service), nil, nil, nil, family.NewHandler(nil, nil), nil, nil)
+	e, err := New(new(health.Service), nil, nil, nil, family.NewHandler(nil, nil), nil, nil, nil)
 	require.NoError(t, err)
 	routes := make(map[string]bool)
 	for _, route := range e.Routes() {
@@ -98,7 +99,7 @@ func TestServerRegistersFamilyRoutesWhenHandlerIsProvided(t *testing.T) {
 }
 
 func TestServerRegistersRecipientRoutesWhenHandlerIsProvided(t *testing.T) {
-	e, err := New(new(health.Service), nil, nil, nil, nil, recipients.NewHandler(nil, nil), nil)
+	e, err := New(new(health.Service), nil, nil, nil, nil, recipients.NewHandler(nil, nil), nil, nil)
 	require.NoError(t, err)
 	routes := make(map[string]bool)
 	for _, route := range e.Routes() {
@@ -109,6 +110,21 @@ func TestServerRegistersRecipientRoutesWhenHandlerIsProvided(t *testing.T) {
 		"POST /api/recipients/:person_id/invitation/send", "POST /api/recipients/:person_id/invitation/revoke",
 		"POST /api/recipients/:person_id/invitation/reissue", "POST /api/recipients/:person_id/invitation/remind",
 		"GET /api/auth/invitations/inspect", "POST /api/auth/invitations/accept",
+	} {
+		assert.True(t, routes[route], route)
+	}
+}
+
+func TestServerRegistersDraftRoutesWhenHandlerIsProvided(t *testing.T) {
+	e, err := New(new(health.Service), nil, nil, nil, nil, nil, nil, events.NewHandler(nil, nil))
+	require.NoError(t, err)
+	routes := make(map[string]bool)
+	for _, route := range e.Routes() {
+		routes[route.Method+" "+route.Path] = true
+	}
+	for _, route := range []string{
+		"POST /api/events", "GET /api/events/:id", "POST /api/loose-items",
+		"GET /api/loose-items/:id", "GET /api/sources/:id/media-items",
 	} {
 		assert.True(t, routes[route], route)
 	}

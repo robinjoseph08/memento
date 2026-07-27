@@ -15,6 +15,7 @@ import (
 	"github.com/robinjoseph08/memento/pkg/config"
 	"github.com/robinjoseph08/memento/pkg/database"
 	"github.com/robinjoseph08/memento/pkg/emaildelivery"
+	"github.com/robinjoseph08/memento/pkg/events"
 	"github.com/robinjoseph08/memento/pkg/family"
 	"github.com/robinjoseph08/memento/pkg/health"
 	"github.com/robinjoseph08/memento/pkg/immich"
@@ -110,7 +111,8 @@ func run() error {
 	familyHandler := family.NewHandler(family.New(db), setupService)
 	recipientHandler := recipients.NewHandler(recipients.New(db, emailService, cfg.HTTP.PublicURL), setupService, cfg.Security)
 	sourceHandler := sources.NewHandler(sourceService, setupService)
-	e, err := server.New(healthService, emaildelivery.NewHandler(emailService), setupHandler, peopleHandler, familyHandler, recipientHandler, sourceHandler)
+	eventHandler := events.NewHandler(events.New(db), setupService)
+	e, err := server.New(healthService, emaildelivery.NewHandler(emailService), setupHandler, peopleHandler, familyHandler, recipientHandler, sourceHandler, eventHandler)
 	if err != nil {
 		_ = db.Close()
 		log.Err(err).Error("HTTP server initialization failed")

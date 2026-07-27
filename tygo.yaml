@@ -27,3 +27,7 @@ packages:
     output_path: "app/types/generated/sources.ts"
     fallback_type: unknown
     preserve_comments: none
+  - path: "github.com/robinjoseph08/memento/pkg/events"
+    output_path: "app/types/generated/events.ts"
+    fallback_type: unknown
+    preserve_comments: none

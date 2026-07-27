@@ -54,7 +54,7 @@ func TestSourceReconciliationMigrationBackfillsExistingAlbums(t *testing.T) {
 	for _, migration := range allMigrations {
 		if migration.Name == "202607260001" {
 			foundSourceReconciliation = true
-			continue
+			break
 		}
 		priorMigrations.Add(migration)
 	}
@@ -94,7 +94,7 @@ func TestRecipientMigrationAppliesAfterExistingMigrationLedger(t *testing.T) {
 	for _, migration := range allMigrations {
 		if migration.Name == "202607260003" {
 			foundRecipients = true
-			continue
+			break
 		}
 		priorMigrations.Add(migration)
 	}
