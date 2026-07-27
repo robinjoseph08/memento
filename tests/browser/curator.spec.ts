@@ -1,0 +1,344 @@
+import { expect, test, type Page } from "@playwright/test";
+
+import type {
+  Event as DraftEvent,
+  MediaItem,
+  OrganizeEventRequest,
+} from "../../app/types/generated/events";
+
+const csrfToken = "c".repeat(64);
+const eventID = "11111111-1111-4111-8111-111111111111";
+const momentOneID = "22222222-2222-4222-8222-222222222222";
+const momentTwoID = "33333333-3333-4333-8333-333333333333";
+
+function media(id: string, mediaType: string): MediaItem {
+  return {
+    id,
+    media_type: mediaType,
+    width: 1200,
+    height: 800,
+    local_date_time: null,
+  };
+}
+
+const items = {
+  first: media("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "first photo"),
+  second: media("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "second photo"),
+  third: media("cccccccc-cccc-4ccc-8ccc-cccccccccccc", "third photo"),
+  loose: media("dddddddd-dddd-4ddd-8ddd-dddddddddddd", "loose photo"),
+};
+
+function draft(version = 1): DraftEvent {
+  return {
+    id: eventID,
+    lifecycle: "draft",
+    title: "Family weekend",
+    description: "",
+    grouping_timezone: "UTC",
+    version,
+    final_review_complete: false,
+    sources: [],
+    moments: [
+      {
+        id: momentOneID,
+        title: "Friday",
+        proposed_day: "2026-05-01",
+        grouping_timezone: "UTC",
+        source_days: ["2026-05-01"],
+        proposal_kind: "local_day",
+        cover_media_item_id: items.first.id,
+        attendance_complete: false,
+        audience_complete: false,
+        media_items: [items.first],
+      },
+      {
+        id: momentTwoID,
+        title: "Saturday",
+        proposed_day: "2026-05-02",
+        grouping_timezone: "UTC",
+        source_days: ["2026-05-02"],
+        proposal_kind: "local_day",
+        cover_media_item_id: items.second.id,
+        attendance_complete: false,
+        audience_complete: false,
+        media_items: [items.second, items.third],
+      },
+    ],
+    unassigned_media: [items.loose],
+    created_at: "2026-05-03T00:00:00Z",
+    updated_at: "2026-05-03T00:00:00Z",
+  };
+}
+
+function eventFromRequest(request: OrganizeEventRequest): DraftEvent {
+  const byID = new Map(Object.values(items).map((item) => [item.id, item]));
+  const next = draft(request.version + 1);
+  next.final_review_complete = request.final_review_complete;
+  next.moments = request.moments.map((moment) => ({
+    id: moment.id,
+    title: moment.title ?? "",
+    proposed_day: moment.proposed_day,
+    grouping_timezone: "UTC",
+    source_days: [moment.proposed_day],
+    proposal_kind: "local_day",
+    cover_media_item_id: moment.cover_media_item_id,
+    attendance_complete: moment.attendance_complete,
+    audience_complete: moment.audience_complete,
+    media_items: moment.media_item_ids.map((id) => byID.get(id)!),
+  }));
+  next.unassigned_media = request.unassigned_media_ids.map((id) =>
+    byID.get(id)!,
+  );
+  return next;
+}
+
+async function mockCuratorAPI(
+  page: Page,
+  outcomes: Array<"failed" | "conflict" | "success"> = [],
+) {
+  let persisted = draft();
+  const attempts: OrganizeEventRequest[] = [];
+  let failureIndex = 0;
+
+  await page.route("**/api/**", async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path === "/api/setup") {
+      await route.fulfill({
+        status: 404,
+        json: { error: { message: "Setup not found." } },
+      });
+      return;
+    }
+    if (path === "/api/session") {
+      await route.fulfill({
+        json: {
+          display_name: "Robin",
+          session_type: "public",
+          csrf_token: csrfToken,
+          curator: true,
+        },
+      });
+      return;
+    }
+    if (path === "/api/events" && request.method() === "GET") {
+      await route.fulfill({
+        json: {
+          events: [
+            {
+              id: eventID,
+              title: persisted.title,
+              version: persisted.version,
+              moment_count: persisted.moments.length,
+              unassigned_count: persisted.unassigned_media.length,
+              updated_at: persisted.updated_at,
+            },
+          ],
+        },
+      });
+      return;
+    }
+    if (path === `/api/events/${eventID}` && request.method() === "GET") {
+      await route.fulfill({ json: persisted });
+      return;
+    }
+    if (
+      path === `/api/events/${eventID}/organization` &&
+      request.method() === "PUT"
+    ) {
+      const body = request.postDataJSON() as OrganizeEventRequest;
+      attempts.push(body);
+      const outcome = outcomes[failureIndex];
+      failureIndex += 1;
+      if (outcome === "failed") {
+        await route.fulfill({
+          status: 503,
+          json: { error: { message: "Autosave is temporarily unavailable." } },
+        });
+        return;
+      }
+      if (outcome === "conflict") {
+        persisted = {
+          ...persisted,
+          version: persisted.version + 1,
+          title: "Newer server work",
+        };
+        await route.fulfill({
+          status: 409,
+          json: {
+            error: { message: "This Event changed in another browser." },
+          },
+        });
+        return;
+      }
+      persisted = eventFromRequest(body);
+      await route.fulfill({ json: persisted });
+      return;
+    }
+    if (path === "/api/session/logout" && request.method() === "POST") {
+      await route.fulfill({ status: 204 });
+      return;
+    }
+    await route.fulfill({
+      status: 500,
+      json: { error: { message: `Unexpected request: ${path}` } },
+    });
+  });
+
+  return {
+    attempts,
+    persisted: () => persisted,
+  };
+}
+
+async function openEvent(page: Page) {
+  await page.goto("/?workspace=drafts");
+  await page.getByRole("button", { name: /Family weekend/ }).click();
+  await expect(
+    page.getByRole("heading", { name: "Family weekend" }),
+  ).toBeVisible();
+}
+
+test("@desktop organizes, orders, autosaves, and persists after reload", async ({
+  page,
+}) => {
+  const server = await mockCuratorAPI(page);
+  await openEvent(page);
+
+  await expect(
+    page.getByRole("navigation", { name: "Mobile workspace panes" }),
+  ).toBeHidden();
+  const workBox = await page.locator(".work-pane").boundingBox();
+  const eventBox = await page.locator(".organize-pane").boundingBox();
+  const inspectBox = await page.locator(".inspect-pane").boundingBox();
+  expect(workBox).not.toBeNull();
+  expect(eventBox).not.toBeNull();
+  expect(inspectBox).not.toBeNull();
+  expect(workBox!.x).toBeLessThan(eventBox!.x);
+  expect(eventBox!.x).toBeLessThan(inspectBox!.x);
+
+  await page
+    .getByRole("button", { name: "Merge with previous Moment" })
+    .nth(1)
+    .click();
+  await expect(page.locator(".moment-list .moment-card")).toHaveCount(1);
+
+  await page.getByRole("checkbox", { name: /second photo/ }).check();
+  await page
+    .getByRole("button", { name: "Split selected into new Moment" })
+    .click();
+  await expect(page.locator(".moment-list .moment-card")).toHaveCount(2);
+  const placementLabels = page.locator(".moment-list .moment-card > header p");
+  await expect(placementLabels.nth(0)).toContainText("2026-05-01");
+  await expect(placementLabels.nth(1)).toContainText("2026-05-01");
+
+  const third = page.getByRole("checkbox", { name: /third photo/ });
+  await third.focus();
+  await expect(third).toBeFocused();
+  await third.press("Alt+ArrowUp");
+
+  await page.getByRole("checkbox", { name: /loose photo/ }).check();
+  await page.getByLabel("Move selected to").selectOption({ label: "Friday" });
+  await page.getByRole("button", { name: "Move selected Media" }).click();
+  const covers = page.getByLabel("Cover");
+  await covers.nth(0).selectOption(items.loose.id);
+  await covers.nth(1).selectOption(items.second.id);
+  await page.getByRole("button", { name: "Move Moment 2 earlier" }).click();
+
+  await expect(page.getByText("All changes saved")).toBeVisible();
+  await expect.poll(() => server.attempts.length).toBeGreaterThan(0);
+  await expect
+    .poll(() => server.persisted().moments[0].media_items[0].id)
+    .toBe(items.second.id);
+  expect(
+    server.persisted().moments[1].media_items.map((item) => item.id),
+  ).toEqual([items.third.id, items.first.id, items.loose.id]);
+
+  await page.reload();
+  await page.getByRole("button", { name: /Family weekend/ }).click();
+  await expect(page.locator(".moment-list .moment-card")).toHaveCount(2);
+  await expect(page.getByLabel("Cover").nth(0)).toHaveValue(items.second.id);
+  await expect(page.getByLabel("Cover").nth(1)).toHaveValue(items.loose.id);
+});
+
+test("@mobile drills down without clipping and manually populates a Moment", async ({
+  page,
+}) => {
+  const server = await mockCuratorAPI(page);
+  await page.goto("/?workspace=drafts");
+
+  const paneNavigation = page.getByRole("navigation", {
+    name: "Mobile workspace panes",
+  });
+  await expect(paneNavigation).toBeVisible();
+  await expect(page.locator(".work-pane")).toBeVisible();
+  await expect(page.locator(".organize-pane")).toBeHidden();
+  await page.getByRole("button", { name: /Family weekend/ }).click();
+  await expect(
+    page.getByRole("button", { name: "Event", pressed: true }),
+  ).toBeVisible();
+  await expect(page.locator(".work-pane")).toBeHidden();
+  await expect(page.locator(".organize-pane")).toBeVisible();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+    )
+    .toBe(true);
+
+  await page.getByRole("checkbox", { name: /loose photo/ }).check();
+  await page.getByLabel("New Moment day").fill("2026-05-03");
+  await page
+    .getByRole("button", { name: "Create Moment from selected Media" })
+    .click();
+  await expect(page.locator(".moment-list .moment-card")).toHaveCount(3);
+  await expect(page.locator(".moment-list .moment-card").last()).toContainText(
+    "2026-05-03",
+  );
+
+  await page
+    .getByRole("button", { name: "Inspect Attendance and Audience" })
+    .last()
+    .click();
+  await expect(
+    page.getByRole("button", { name: "Inspect", pressed: true }),
+  ).toBeVisible();
+  await expect(page.locator(".organize-pane")).toBeHidden();
+  await expect(page.locator(".inspect-pane")).toBeVisible();
+  await expect(page.locator(".inspect-pane")).toBeFocused();
+  await expect(page.getByLabel("Attendance reviewed")).toBeVisible();
+
+  await expect(page.getByText("All changes saved")).toBeVisible();
+  await expect.poll(() => server.persisted().moments.length).toBe(3);
+});
+
+test("@desktop recovers failed autosaves and stale conflicts", async ({
+  page,
+}) => {
+  const server = await mockCuratorAPI(page, ["failed", "success", "conflict"]);
+  await openEvent(page);
+
+  const title = page.getByLabel("Title for Moment 1");
+  await title.fill("Recovered title");
+  await expect(page.getByRole("alert")).toContainText(
+    "Autosave is temporarily unavailable.",
+  );
+  await title.fill("Latest recovered title");
+  await page.getByRole("button", { name: "Retry autosave" }).click();
+  await expect(page.getByText("All changes saved")).toBeVisible();
+  expect(server.attempts[0].moments[0].title).toBe("Recovered title");
+  expect(server.attempts[1].moments[0].title).toBe("Latest recovered title");
+
+  await title.fill("My local conflict title");
+  await expect(page.getByRole("alert")).toContainText(
+    "Your edits have not overwritten the newer version.",
+  );
+  await page
+    .getByRole("button", { name: "Replace newer version with my changes" })
+    .click();
+  await expect(page.getByText("All changes saved")).toBeVisible();
+  expect(server.attempts[2].version).toBe(2);
+  expect(server.attempts[3].version).toBe(3);
+  expect(server.attempts[3].moments[0].title).toBe("My local conflict title");
+});

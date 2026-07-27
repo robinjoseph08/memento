@@ -8,6 +8,7 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useSearchParams } from "react-router-dom";
 
 import { APIError, apiJSON, apiNoContent } from "./api";
+import { EventOrganizer } from "./EventOrganizer";
 import { FamilyManager } from "./FamilyManager";
 import { PeopleManager } from "./PeopleManager";
 import { RepairWorkspace } from "./RepairWorkspace";
@@ -542,9 +543,13 @@ function SourceAlbumCard({
 function SourceWorkspace({
   session,
   onSignOut,
+  signOutError,
+  signOutPending,
 }: {
   session: SessionResponse;
   onSignOut: () => void;
+  signOutError: Error | null;
+  signOutPending: boolean;
 }) {
   const queryClient = useQueryClient();
   const [triageStatus, setTriageStatus] = useState("");
@@ -586,15 +591,6 @@ function SourceWorkspace({
       await queryClient.invalidateQueries({ queryKey: ["sources"] });
     },
   });
-  const signOut = useMutation({
-    mutationFn: () =>
-      apiNoContent("/api/session/logout", {
-        method: "POST",
-        headers: { "X-Memento-CSRF": session.csrf_token },
-      }),
-    onSuccess: onSignOut,
-  });
-
   return (
     <section aria-labelledby="sources-title" className="source-workspace">
       <header className="source-header">
@@ -608,6 +604,19 @@ function SourceWorkspace({
         </div>
         <div className="source-header-actions">
           <button
+            className="source-organize"
+            onClick={() => {
+              setSearchParams((current) => {
+                const next = new URLSearchParams(current);
+                next.set("workspace", "drafts");
+                return next;
+              });
+            }}
+            type="button"
+          >
+            Organize drafts
+          </button>
+          <button
             className="source-connect"
             disabled={discover.isPending}
             onClick={() => discover.mutate()}
@@ -617,11 +626,11 @@ function SourceWorkspace({
           </button>
           <button
             className="source-sign-out"
-            disabled={signOut.isPending}
-            onClick={() => signOut.mutate()}
+            disabled={signOutPending}
+            onClick={onSignOut}
             type="button"
           >
-            {signOut.isPending ? "Signing out…" : "Sign out"}
+            {signOutPending ? "Signing out…" : "Sign out"}
           </button>
         </div>
       </header>
@@ -632,7 +641,7 @@ function SourceWorkspace({
         </p>
       ) : null}
       <ErrorMessage error={discover.error} />
-      <ErrorMessage error={signOut.error} />
+      <ErrorMessage error={signOutError} />
       <div aria-label="Source album views" className="source-tabs" role="group">
         <button
           aria-pressed={disposition === "unreviewed"}
@@ -694,6 +703,98 @@ function ReadyCard({
   session?: SessionResponse;
   onSignOut: () => void;
 }) {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [draftsDirty, setDraftsDirty] = useState(false);
+  const [draftsSaving, setDraftsSaving] = useState(false);
+  const draftsRequested = searchParams.get("workspace") === "drafts";
+  const signOut = useMutation({
+    mutationFn: () => {
+      if (!session) throw new Error("A Session is required to sign out.");
+      return apiNoContent("/api/session/logout", {
+        method: "POST",
+        headers: { "X-Memento-CSRF": session.csrf_token },
+      });
+    },
+    onSuccess: onSignOut,
+  });
+
+  useEffect(() => {
+    const restoreDraftLocation = () =>
+      setSearchParams(
+        (current) => {
+          const next = new URLSearchParams(current);
+          next.set("workspace", "drafts");
+          return next;
+        },
+        { replace: true },
+      );
+    const protectDraftHistory = () => {
+      if (!draftsDirty) return;
+      if (draftsSaving) {
+        restoreDraftLocation();
+        return;
+      }
+      if (window.confirm("Discard changes that have not finished saving?"))
+        setDraftsDirty(false);
+      else restoreDraftLocation();
+    };
+    window.addEventListener("popstate", protectDraftHistory);
+    return () => window.removeEventListener("popstate", protectDraftHistory);
+  }, [draftsDirty, draftsSaving, setSearchParams]);
+
+  if (session?.curator && (draftsRequested || draftsDirty)) {
+    return (
+      <section className="draft-work-shell">
+        <div className="draft-work-actions">
+          <button
+            className="back-to-management"
+            onClick={() => {
+              if (
+                draftsDirty &&
+                !window.confirm(
+                  "Discard changes that have not finished saving?",
+                )
+              )
+                return;
+              setDraftsDirty(false);
+              setSearchParams((current) => {
+                const next = new URLSearchParams(current);
+                next.delete("workspace");
+                return next;
+              });
+            }}
+            disabled={draftsSaving}
+            type="button"
+          >
+            Back to Curator management
+          </button>
+          <button
+            className="source-sign-out"
+            disabled={signOut.isPending}
+            onClick={() => {
+              if (
+                draftsDirty &&
+                !window.confirm(
+                  "Discard changes that have not finished saving and sign out?",
+                )
+              )
+                return;
+              signOut.mutate();
+            }}
+            type="button"
+          >
+            {signOut.isPending ? "Signing out…" : "Sign out"}
+          </button>
+        </div>
+        <ErrorMessage error={signOut.error} />
+        <EventOrganizer
+          onDirtyChange={setDraftsDirty}
+          onSavingChange={setDraftsSaving}
+          session={session}
+        />
+      </section>
+    );
+  }
   if (session) {
     if (!session.curator) {
       return (
@@ -706,7 +807,12 @@ function ReadyCard({
         <FamilyManager session={session} />
         <VisibilityManager session={session} />
         <section className="shell-card curator-card">
-          <SourceWorkspace onSignOut={onSignOut} session={session} />
+          <SourceWorkspace
+            onSignOut={() => signOut.mutate()}
+            session={session}
+            signOutError={signOut.error}
+            signOutPending={signOut.isPending}
+          />
         </section>
         <section className="shell-card curator-card">
           <RepairWorkspace csrfToken={session.csrf_token} />

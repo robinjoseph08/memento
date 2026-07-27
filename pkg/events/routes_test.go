@@ -58,8 +58,10 @@ func TestDraftRoutesAreInvisibleToRecipientsBeforePublication(t *testing.T) {
 	authorizer := &draftAuthorizer{err: setup.ErrNotCurator}
 	e := draftHTTP(nil, authorizer)
 	for _, test := range []struct{ method, path, body string }{
+		{http.MethodGet, "/api/events", ""},
 		{http.MethodGet, "/api/events/11111111-1111-4111-8111-111111111111", ""},
 		{http.MethodPost, "/api/events", `{}`},
+		{http.MethodPut, "/api/events/11111111-1111-4111-8111-111111111111/organization", `{}`},
 		{http.MethodGet, "/api/loose-items/11111111-1111-4111-8111-111111111111", ""},
 		{http.MethodPost, "/api/loose-items", `{}`},
 		{http.MethodGet, "/api/sources/11111111-1111-4111-8111-111111111111/media-items", ""},
@@ -74,8 +76,12 @@ func TestDraftRoutesAreInvisibleToRecipientsBeforePublication(t *testing.T) {
 func TestDraftMutationsRequireCSRFBeforeBindingOrDatabaseAccess(t *testing.T) {
 	authorizer := &draftAuthorizer{err: setup.ErrCSRF}
 	e := draftHTTP(nil, authorizer)
-	for _, path := range []string{"/api/events", "/api/loose-items"} {
-		response := draftRequest(e, http.MethodPost, path, `{}`)
+	for _, test := range []struct{ method, path string }{
+		{http.MethodPost, "/api/events"},
+		{http.MethodPut, "/api/events/11111111-1111-4111-8111-111111111111/organization"},
+		{http.MethodPost, "/api/loose-items"},
+	} {
+		response := draftRequest(e, test.method, test.path, `{}`)
 		assert.Equal(t, http.StatusForbidden, response.Code)
 		assert.True(t, authorizer.mutation)
 		assert.Contains(t, response.Body.String(), "valid CSRF token")
@@ -109,6 +115,7 @@ func TestDraftErrorsDescribeEmptyAndOversizedSourceSelections(t *testing.T) {
 	}{
 		{ErrNoMediaAvailable, "Select at least one available Media item"},
 		{ErrSourceTooLarge, "too many Media items to list"},
+		{ErrVersionConflict, "changed in another browser"},
 	} {
 		mapped := draftError(test.err, "Source album")
 		require.Error(t, mapped)
@@ -124,6 +131,7 @@ func TestDraftRoutesUseNoStoreAndStableNotFoundErrors(t *testing.T) {
 		body   string
 	}{
 		{http.MethodGet, "/api/events/not-an-id", ""},
+		{http.MethodPut, "/api/events/not-an-id/organization", `{}`},
 		{http.MethodPost, "/api/events", `{}`},
 		{http.MethodGet, "/api/loose-items/not-an-id", ""},
 		{http.MethodPost, "/api/loose-items", `{}`},
