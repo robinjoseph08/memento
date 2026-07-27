@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/google/uuid"
+	"github.com/robinjoseph08/memento/pkg/audiences"
 	"github.com/robinjoseph08/memento/pkg/family"
 	"github.com/robinjoseph08/memento/pkg/setup"
 	"github.com/robinjoseph08/memento/pkg/visibility"
@@ -108,6 +109,10 @@ type ReferenceEffects struct {
 	InterestEntriesMoved           int      `json:"interest_entries_moved"`
 	InterestHistoryOwnersRetained  int      `json:"interest_history_owners_retained"`
 	VisibilityReferenceFingerprint string   `json:"visibility_reference_fingerprint"`
+	AttendanceEntriesMoved         int      `json:"attendance_entries_moved"`
+	AudienceOverridesMoved         int      `json:"audience_overrides_moved"`
+	AudienceReasonsMoved           int      `json:"audience_reasons_moved"`
+	AudienceReferenceFingerprint   string   `json:"audience_reference_fingerprint"`
 }
 
 // MergePreview is generated to TypeScript by Tygo.
@@ -619,6 +624,14 @@ func previewMerge(ctx context.Context, db bun.IDB, actor setup.CuratorSession, s
 	preview.References.InterestEntriesMoved = visibilityEffects.InterestEntriesMoved
 	preview.References.InterestHistoryOwnersRetained = visibilityEffects.InterestHistoryOwnersRetained
 	preview.References.VisibilityReferenceFingerprint = visibilityEffects.ReferenceFingerprint
+	audienceEffects, err := audiences.PreviewPersonMerge(ctx, db, sourceID, survivorID)
+	if err != nil {
+		return MergePreview{}, err
+	}
+	preview.References.AttendanceEntriesMoved = audienceEffects.AttendanceEntriesMoved
+	preview.References.AudienceOverridesMoved = audienceEffects.AudienceOverridesMoved
+	preview.References.AudienceReasonsMoved = audienceEffects.AudienceReasonsMoved
+	preview.References.AudienceReferenceFingerprint = audienceEffects.ReferenceFingerprint
 	if errors.Is(familyErr, family.ErrMergeCycle) {
 		preview.CanMerge = false
 		preview.Blockers = append(preview.Blockers, "Resolve the parent-child path between these People before merging them.")
@@ -724,6 +737,9 @@ func (s *Service) Merge(ctx context.Context, actor setup.CuratorSession, request
 		if err := visibility.LockReferences(ctx, tx); err != nil {
 			return err
 		}
+		if err := audiences.LockReferences(ctx, tx, sourceID, survivorID); err != nil {
+			return err
+		}
 		currentPreview, err := previewMerge(ctx, tx, actor, sourceID, survivorID, false)
 		if err != nil {
 			return err
@@ -760,6 +776,10 @@ func (s *Service) Merge(ctx context.Context, actor setup.CuratorSession, request
 		}
 		visibilityActor := setup.SessionActor{PersonID: actor.PersonID, SessionID: actor.SessionID, Curator: true}
 		if err := visibility.MergePersonReferences(ctx, tx, sourceID, survivorID, visibilityActor, now); err != nil {
+			return err
+		}
+		audienceEffects, err := audiences.MergePersonReferences(ctx, tx, sourceID, survivorID)
+		if err != nil {
 			return err
 		}
 		if _, err := tx.NewRaw(`
@@ -873,6 +893,9 @@ func (s *Service) Merge(ctx context.Context, actor setup.CuratorSession, request
 			"resulting_recipient_generation": resultingGeneration, "email_resolution": request.EmailResolution,
 			"family_relationships_moved":    familyEffects.RelationshipsMoved,
 			"family_relationships_archived": familyEffects.RelationshipsArchived,
+			"attendance_entries_moved":      audienceEffects.AttendanceEntriesMoved,
+			"audience_overrides_moved":      audienceEffects.AudienceOverridesMoved,
+			"audience_reasons_moved":        audienceEffects.AudienceReasonsMoved,
 		}
 		if err := appendAudit(ctx, tx, actor, &sourceID, "people_merged", metadata); err != nil {
 			return err

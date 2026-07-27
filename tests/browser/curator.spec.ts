@@ -70,8 +70,14 @@ function draft(version = 1): DraftEvent {
   };
 }
 
-function eventFromRequest(request: OrganizeEventRequest): DraftEvent {
+function eventFromRequest(
+  request: OrganizeEventRequest,
+  baseline = draft(request.version),
+): DraftEvent {
   const byID = new Map(Object.values(items).map((item) => [item.id, item]));
+  const priorMoments = new Map(
+    baseline.moments.map((moment) => [moment.id, moment]),
+  );
   const next = draft(request.version + 1);
   next.final_review_complete = request.final_review_complete;
   next.moments = request.moments.map((moment) => ({
@@ -82,8 +88,9 @@ function eventFromRequest(request: OrganizeEventRequest): DraftEvent {
     source_days: [moment.proposed_day],
     proposal_kind: "local_day",
     cover_media_item_id: moment.cover_media_item_id,
-    attendance_complete: moment.attendance_complete,
-    audience_complete: moment.audience_complete,
+    attendance_complete:
+      priorMoments.get(moment.id)?.attendance_complete ?? false,
+    audience_complete: priorMoments.get(moment.id)?.audience_complete ?? false,
     media_items: moment.media_item_ids.map((id) => byID.get(id)!),
   }));
   next.unassigned_media = request.unassigned_media_ids.map((id) =>
@@ -142,6 +149,28 @@ async function mockCuratorAPI(
       await route.fulfill({ json: persisted });
       return;
     }
+    const reviewMatch = path.match(
+      /^\/api\/moments\/([^/]+)\/attendance-audience$/,
+    );
+    if (reviewMatch) {
+      await route.fulfill({
+        json: {
+          target_kind: "moment",
+          target_id: reviewMatch[1],
+          version: 1,
+          attendance_confirmed: false,
+          audience_complete: false,
+          people: [],
+          eligible_recipients: [],
+          attendance: [],
+          face_evidence: [],
+          face_evidence_available: true,
+          proposal: [],
+          approved_audience: null,
+        },
+      });
+      return;
+    }
     if (
       path === `/api/events/${eventID}/organization` &&
       request.method() === "PUT"
@@ -171,7 +200,7 @@ async function mockCuratorAPI(
         });
         return;
       }
-      persisted = eventFromRequest(body);
+      persisted = eventFromRequest(body, persisted);
       await route.fulfill({ json: persisted });
       return;
     }
@@ -307,7 +336,9 @@ test("@mobile drills down without clipping and manually populates a Moment", asy
   await expect(page.locator(".organize-pane")).toBeHidden();
   await expect(page.locator(".inspect-pane")).toBeVisible();
   await expect(page.locator(".inspect-pane")).toBeFocused();
-  await expect(page.getByLabel("Attendance reviewed")).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Confirm Attendance" }),
+  ).toBeVisible();
 
   await expect(page.getByText("All changes saved")).toBeVisible();
   await expect.poll(() => server.persisted().moments.length).toBe(3);

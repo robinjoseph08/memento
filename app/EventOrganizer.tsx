@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { APIError, apiJSON } from "./api";
+import { AttendanceAudienceReview } from "./AttendanceAudienceReview";
 import type {
   Event as DraftEvent,
   EventListResponse,
@@ -35,8 +36,6 @@ function organizationRequest(event: DraftEvent): OrganizeEventRequest {
       title: moment.title,
       proposed_day: moment.proposed_day,
       cover_media_item_id: moment.cover_media_item_id,
-      attendance_complete: moment.attendance_complete,
-      audience_complete: moment.audience_complete,
       media_item_ids: moment.media_items.map((item) => item.id),
     })),
     unassigned_media_ids: event.unassigned_media.map((item) => item.id),
@@ -207,6 +206,9 @@ export function EventOrganizer({
     onSuccess: (saved, attempted) => {
       queryClient.setQueryData(["event", saved.id], saved);
       void queryClient.invalidateQueries({ queryKey: ["events"] });
+      void queryClient.invalidateQueries({
+        queryKey: ["attendance-audience"],
+      });
       if (selectedIDRef.current !== saved.id) return;
 
       const latest = latestDraftRef.current;
@@ -292,6 +294,15 @@ export function EventOrganizer({
     setDraft(next);
     setSaveState("unsaved");
     setRevision(nextRevision);
+  }
+
+  function reflectReview(mutator: (next: DraftEvent) => void) {
+    if (!currentDraft) return;
+    const next = cloneEvent(currentDraft);
+    mutator(next);
+    latestDraftRef.current = next;
+    queryClient.setQueryData(["event", next.id], next);
+    setDraft(next);
   }
 
   function locateMedia(event: DraftEvent, id: string) {
@@ -512,9 +523,9 @@ export function EventOrganizer({
     }
   }
 
-  const inspected =
-    currentDraft?.moments.find((moment) => moment.id === inspectedMomentID) ??
-    currentDraft?.moments[0];
+  const inspected = currentDraft?.moments.find(
+    (moment) => moment.id === inspectedMomentID,
+  );
   const allMedia = useMemo(
     () =>
       currentDraft
@@ -856,6 +867,7 @@ export function EventOrganizer({
                         Merge with previous Moment
                       </button>
                       <button
+                        disabled={saveState !== "saved"}
                         onClick={() => {
                           setInspectedMomentID(moment.id);
                           setActivePane("inspect");
@@ -883,38 +895,38 @@ export function EventOrganizer({
           ) : (
             <>
               <p>{inspected.title || inspected.proposed_day}</p>
-              <label className="inspection-check">
-                <input
-                  checked={inspected.attendance_complete}
-                  onChange={(event) =>
-                    change((next) => {
-                      const moment = next.moments.find(
-                        (candidate) => candidate.id === inspected.id,
-                      );
-                      if (moment)
-                        moment.attendance_complete = event.target.checked;
-                    })
-                  }
-                  type="checkbox"
-                />
-                Attendance reviewed
-              </label>
-              <label className="inspection-check">
-                <input
-                  checked={inspected.audience_complete}
-                  onChange={(event) =>
-                    change((next) => {
-                      const moment = next.moments.find(
-                        (candidate) => candidate.id === inspected.id,
-                      );
-                      if (moment)
-                        moment.audience_complete = event.target.checked;
-                    })
-                  }
-                  type="checkbox"
-                />
-                Audience reviewed, including empty Audience
-              </label>
+              <AttendanceAudienceReview
+                key={inspected.id}
+                csrfToken={session.csrf_token}
+                momentID={inspected.id}
+                onAttendanceConfirmed={() =>
+                  reflectReview((next) => {
+                    const moment = next.moments.find(
+                      (candidate) => candidate.id === inspected.id,
+                    );
+                    if (moment) {
+                      moment.attendance_complete = true;
+                      moment.audience_complete = false;
+                    }
+                  })
+                }
+                onAudienceChanged={() =>
+                  reflectReview((next) => {
+                    const moment = next.moments.find(
+                      (candidate) => candidate.id === inspected.id,
+                    );
+                    if (moment) moment.audience_complete = false;
+                  })
+                }
+                onAudienceApproved={() =>
+                  reflectReview((next) => {
+                    const moment = next.moments.find(
+                      (candidate) => candidate.id === inspected.id,
+                    );
+                    if (moment) moment.audience_complete = true;
+                  })
+                }
+              />
               <p>{inspected.media_items.length} Media items in this Moment.</p>
             </>
           )}

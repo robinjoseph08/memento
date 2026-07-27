@@ -19,6 +19,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 	"github.com/robinjoseph08/memento/internal/testdb"
+	audiencespkg "github.com/robinjoseph08/memento/pkg/audiences"
 	"github.com/robinjoseph08/memento/pkg/config"
 	"github.com/robinjoseph08/memento/pkg/migrations"
 	"github.com/robinjoseph08/memento/pkg/setup"
@@ -715,8 +716,7 @@ func TestCuratorOrganizesMomentsWithOrderingCoversReadinessAndOptimisticVersions
 		Version: created.Version,
 		Moments: []OrganizeMoment{{
 			ID: mergedID, Title: "The whole weekend", ProposedDay: created.Moments[0].ProposedDay,
-			CoverMediaItemID: &cover, AttendanceComplete: true, AudienceComplete: true,
-			MediaItemIDs: allAssigned,
+			CoverMediaItemID: &cover, MediaItemIDs: allAssigned,
 		}},
 		UnassignedMediaIDs:  mediaIDs(created.UnassignedMedia),
 		FinalReviewComplete: true,
@@ -730,10 +730,30 @@ func TestCuratorOrganizesMomentsWithOrderingCoversReadinessAndOptimisticVersions
 	assert.ElementsMatch(t, []string{
 		created.Moments[0].ProposedDay, created.Moments[1].ProposedDay,
 	}, organized.Moments[0].SourceDays)
-	assert.True(t, organized.Moments[0].AttendanceComplete)
-	assert.True(t, organized.Moments[0].AudienceComplete)
+	assert.False(t, organized.Moments[0].AttendanceComplete, "organization cannot impersonate explicit Attendance confirmation")
+	assert.False(t, organized.Moments[0].AudienceComplete, "organization cannot impersonate explicit Audience approval")
 	assert.True(t, organized.FinalReviewComplete)
 
+	var accessID uuid.UUID
+	require.NoError(t, fixture.db.NewRaw(`SELECT id FROM recipient_access_generations WHERE person_id = ? AND is_current`, fixture.actor.PersonID).Scan(ctx, &accessID))
+	snapshotID := uuid.New()
+	_, err = fixture.db.NewRaw(`
+		UPDATE draft_moments SET attendance_complete = true, audience_complete = true, review_version = 7 WHERE id = ?;
+		INSERT INTO attendance (moment_id, person_id, source, confirmed_by_person_id, confirmed_at) VALUES (?, ?, 'manual', ?, now());
+		INSERT INTO audience_overrides (target_kind, target_id, recipient_person_id, state, updated_by_person_id, updated_at) VALUES ('moment', ?, ?, 'included', ?, now());
+		INSERT INTO audience_proposals (target_kind, target_id, recipient_person_id, recipient_access_generation_id, included, recalculated_at) VALUES ('moment', ?, ?, ?, true, now());
+		INSERT INTO audience_reasons (target_kind, target_id, recipient_person_id, kind) VALUES ('moment', ?, ?, 'manually_included');
+		INSERT INTO audience_snapshots (id, target_kind, target_id, approved_by_person_id, approved_at, label) VALUES (?, 'moment', ?, ?, now(), 'Shared');
+		INSERT INTO audience_snapshot_entries (snapshot_id, recipient_person_id, recipient_access_generation_id) VALUES (?, ?, ?);
+		INSERT INTO current_audience_snapshots (target_kind, target_id, snapshot_id) VALUES ('moment', ?, ?)
+	`, mergedID, mergedID, fixture.actor.PersonID, fixture.actor.PersonID,
+		mergedID, fixture.actor.PersonID, fixture.actor.PersonID,
+		mergedID, fixture.actor.PersonID, accessID,
+		mergedID, fixture.actor.PersonID,
+		snapshotID, mergedID, fixture.actor.PersonID,
+		snapshotID, fixture.actor.PersonID, accessID,
+		mergedID, snapshotID).Exec(ctx)
+	require.NoError(t, err)
 	splitID := uuid.NewString()
 	split, err := fixture.service.OrganizeEvent(ctx, fixture.actor, uuid.MustParse(created.ID), OrganizeEventRequest{
 		Version: organized.Version,
@@ -750,6 +770,26 @@ func TestCuratorOrganizesMomentsWithOrderingCoversReadinessAndOptimisticVersions
 		assert.Equal(t, "split_day", moment.ProposalKind)
 		assert.Equal(t, organized.Moments[0].SourceDays, moment.SourceDays)
 	}
+	assert.True(t, split.Moments[0].AttendanceComplete)
+	assert.True(t, split.Moments[0].AudienceComplete)
+	assert.False(t, split.Moments[1].AttendanceComplete)
+	assert.False(t, split.Moments[1].AudienceComplete)
+	var retainedReviewVersion, newReviewVersion int64
+	require.NoError(t, fixture.db.NewRaw(`SELECT review_version FROM draft_moments WHERE id = ?`, mergedID).Scan(ctx, &retainedReviewVersion))
+	require.NoError(t, fixture.db.NewRaw(`SELECT review_version FROM draft_moments WHERE id = ?`, splitID).Scan(ctx, &newReviewVersion))
+	assert.Equal(t, int64(7), retainedReviewVersion)
+	assert.Equal(t, int64(1), newReviewVersion)
+	var attendanceRows, overrideRows, proposalRows, reasonRows, currentSnapshotRows int
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM attendance WHERE moment_id = ?`, mergedID).Scan(ctx, &attendanceRows))
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM audience_overrides WHERE target_kind = 'moment' AND target_id = ?`, mergedID).Scan(ctx, &overrideRows))
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM audience_proposals WHERE target_kind = 'moment' AND target_id = ?`, mergedID).Scan(ctx, &proposalRows))
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM audience_reasons WHERE target_kind = 'moment' AND target_id = ?`, mergedID).Scan(ctx, &reasonRows))
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM current_audience_snapshots WHERE target_kind = 'moment' AND target_id = ? AND snapshot_id = ?`, mergedID, snapshotID).Scan(ctx, &currentSnapshotRows))
+	assert.Equal(t, 1, attendanceRows)
+	assert.Equal(t, 1, overrideRows)
+	assert.Equal(t, 1, proposalRows)
+	assert.Equal(t, 1, reasonRows)
+	assert.Equal(t, 1, currentSnapshotRows)
 
 	_, err = fixture.service.OrganizeEvent(ctx, fixture.actor, uuid.MustParse(created.ID), OrganizeEventRequest{
 		Version: organized.Version,
@@ -770,6 +810,75 @@ func TestCuratorOrganizesMomentsWithOrderingCoversReadinessAndOptimisticVersions
 	require.Len(t, list.Events, 1)
 	assert.Equal(t, 2, list.Events[0].MomentCount)
 	assert.Equal(t, 1, list.Events[0].UnassignedCount)
+}
+
+func TestOrganizationAndAttendanceMutationsSerializeWithoutLosingReviewState(t *testing.T) {
+	fixture := newDraftFixture(t)
+	ctx := context.Background()
+	created, err := fixture.service.CreateEvent(ctx, fixture.actor, CreateEventRequest{
+		SourceAlbumIDs: []string{fixture.sources["first"].String()}, Timezone: "UTC",
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, created.Moments)
+	moment := created.Moments[0]
+
+	const advisoryKey = 360036
+	connection, err := fixture.db.DB.Conn(ctx)
+	require.NoError(t, err)
+	defer connection.Close()
+	_, err = connection.ExecContext(ctx, `SELECT pg_advisory_lock($1)`, advisoryKey)
+	require.NoError(t, err)
+	defer func() { _, _ = connection.ExecContext(ctx, `SELECT pg_advisory_unlock($1)`, advisoryKey) }()
+	_, err = fixture.db.ExecContext(ctx, fmt.Sprintf(`
+		CREATE FUNCTION pause_moment_replacement() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN
+			PERFORM pg_advisory_xact_lock(%d);
+			RETURN OLD;
+		END $$;
+		CREATE TRIGGER pause_moment_replacement BEFORE DELETE ON draft_moments
+		FOR EACH ROW EXECUTE FUNCTION pause_moment_replacement()
+	`, advisoryKey))
+	require.NoError(t, err)
+
+	organizationResult := make(chan error, 1)
+	go func() {
+		moments := make([]OrganizeMoment, 0, len(created.Moments))
+		for _, existing := range created.Moments {
+			moments = append(moments, OrganizeMoment{ID: existing.ID, ProposedDay: existing.ProposedDay, CoverMediaItemID: existing.CoverMediaItemID, MediaItemIDs: mediaIDs(existing.MediaItems)})
+		}
+		_, err := fixture.service.OrganizeEvent(ctx, fixture.actor, uuid.MustParse(created.ID), OrganizeEventRequest{Version: created.Version, Moments: moments, UnassignedMediaIDs: mediaIDs(created.UnassignedMedia)})
+		organizationResult <- err
+	}()
+	require.Eventually(t, func() bool {
+		var waiters int
+		err := fixture.db.NewRaw(`SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND objid = ? AND NOT granted`, advisoryKey).Scan(ctx, &waiters)
+		return err == nil && waiters > 0
+	}, 3*time.Second, 20*time.Millisecond)
+
+	audienceService := audiencespkg.New(fixture.db, nil)
+	attendanceResult := make(chan error, 1)
+	go func() {
+		ids := []string{fixture.actor.PersonID.String()}
+		_, err := audienceService.ConfirmAttendance(ctx, fixture.actor, uuid.MustParse(moment.ID), 1, audiencespkg.AttendanceRequest{PersonIDs: &ids})
+		attendanceResult <- err
+	}()
+	assert.Never(t, func() bool { return len(attendanceResult) > 0 }, 100*time.Millisecond, 10*time.Millisecond, "Attendance must wait for the in-flight Event replacement")
+	_, err = connection.ExecContext(ctx, `SELECT pg_advisory_unlock($1)`, advisoryKey)
+	require.NoError(t, err)
+	require.NoError(t, <-organizationResult)
+	require.NoError(t, <-attendanceResult)
+
+	review, err := audienceService.ReviewMoment(ctx, uuid.MustParse(moment.ID))
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), review.Version)
+	assert.True(t, review.AttendanceConfirmed)
+	assert.Equal(t, []string{"Recipient"}, func() []string {
+		names := make([]string, 0, len(review.Attendance))
+		for _, person := range review.Attendance {
+			names = append(names, person.DisplayName)
+		}
+		return names
+	}())
 }
 
 func TestOrganizationAuditFailureRollsBackTheCompleteSnapshot(t *testing.T) {

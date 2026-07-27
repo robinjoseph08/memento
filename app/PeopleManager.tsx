@@ -805,6 +805,18 @@ function MergeConfirmation({
           Person.
         </li>
         <li>
+          {preview.affected_references.attendance_entries_moved} confirmed
+          Attendance entries will move to the survivor.
+        </li>
+        <li>
+          {preview.affected_references.audience_overrides_moved} manual Audience
+          overrides will move to the survivor.
+        </li>
+        <li>
+          {preview.affected_references.audience_reasons_moved} proposal reasons
+          will reference the survivor.
+        </li>
+        <li>
           Source roles:{" "}
           {preview.affected_references.source_roles.join(", ") || "None"}.
         </li>

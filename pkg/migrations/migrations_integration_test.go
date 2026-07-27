@@ -231,6 +231,55 @@ func TestOnboardingMigrationPreservesLegacyAcknowledgmentsAndAddsResumableProgre
 	require.Error(t, err, "resumable preferences must remain in the constrained domains")
 }
 
+func TestAttendanceAudienceMigrationResetsLegacyReviewFlagsAndBackfillsVersions(t *testing.T) {
+	db := testdb.Open(t)
+	ctx := context.Background()
+	priorMigrations := migrate.NewMigrations()
+	foundAudienceMigration := false
+	for _, migration := range collection.Sorted() {
+		if migration.Name == "202607270007" {
+			foundAudienceMigration = true
+			break
+		}
+		priorMigrations.Add(migration)
+	}
+	require.True(t, foundAudienceMigration)
+	require.NoError(t, applyCollection(ctx, db, priorMigrations))
+	const eventID = "11111111-1111-4111-8111-111111111111"
+	const momentID = "22222222-2222-4222-8222-222222222222"
+	const mediaID = "33333333-3333-4333-8333-333333333333"
+	const assetID = "44444444-4444-4444-8444-444444444444"
+	const looseID = "55555555-5555-4555-8555-555555555555"
+	_, err := db.ExecContext(ctx, `
+		INSERT INTO events (id, title, grouping_timezone) VALUES (?, 'Existing Event', 'UTC');
+		INSERT INTO draft_moments (id, event_id, position, proposed_day, grouping_timezone, attendance_complete, audience_complete) VALUES (?, ?, 0, '2026-01-01', 'UTC', true, true);
+		INSERT INTO media_items (id, immich_asset_id, media_type, first_seen_at, last_seen_at) VALUES (?, ?, 'image', now(), now());
+		INSERT INTO loose_items (id, media_item_id, grouping_timezone) VALUES (?, ?, 'UTC')
+	`, eventID, momentID, eventID, mediaID, assetID, looseID, mediaID)
+	require.NoError(t, err)
+	require.NoError(t, Apply(ctx, db))
+
+	var attendanceComplete, audienceComplete bool
+	var momentVersion, looseVersion int64
+	require.NoError(t, db.NewRaw(`SELECT attendance_complete, audience_complete, review_version FROM draft_moments WHERE id = ?`, momentID).Scan(ctx, &attendanceComplete, &audienceComplete, &momentVersion))
+	require.NoError(t, db.NewRaw(`SELECT review_version FROM loose_items WHERE id = ?`, looseID).Scan(ctx, &looseVersion))
+	assert.False(t, attendanceComplete)
+	assert.False(t, audienceComplete)
+	assert.Equal(t, int64(1), momentVersion)
+	assert.Equal(t, int64(1), looseVersion)
+
+	migrator := migrate.NewMigrator(db, collection, migrate.WithMarkAppliedOnSuccess(true))
+	_, err = migrator.Rollback(ctx)
+	require.NoError(t, err)
+	var eventRows, looseRows, audienceTables int
+	require.NoError(t, db.NewRaw(`SELECT count(*) FROM events WHERE id = ?`, eventID).Scan(ctx, &eventRows))
+	require.NoError(t, db.NewRaw(`SELECT count(*) FROM loose_items WHERE id = ?`, looseID).Scan(ctx, &looseRows))
+	require.NoError(t, db.NewRaw(`SELECT count(*) FROM information_schema.tables WHERE table_schema = current_schema() AND table_name IN ('attendance', 'audience_proposals', 'audience_reasons', 'audience_overrides', 'audience_snapshots', 'audience_snapshot_entries', 'current_audience_snapshots', 'publication_audit_events')`).Scan(ctx, &audienceTables))
+	assert.Equal(t, 1, eventRows)
+	assert.Equal(t, 1, looseRows)
+	assert.Zero(t, audienceTables)
+}
+
 func TestVisibilityInfrastructureEnforcesPrivacyStateConstraints(t *testing.T) {
 	db := testdb.Open(t)
 	ctx := context.Background()

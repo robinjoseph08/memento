@@ -15,6 +15,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
+	"github.com/robinjoseph08/memento/pkg/audiences"
 	"github.com/robinjoseph08/memento/pkg/binder"
 	"github.com/robinjoseph08/memento/pkg/events"
 	"github.com/robinjoseph08/memento/pkg/family"
@@ -64,13 +65,13 @@ func keys(values map[string]json.RawMessage) []string {
 
 func newServer(t *testing.T) *echo.Echo {
 	t.Helper()
-	e, err := New(new(health.Service), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	e, err := New(new(health.Service), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	require.NoError(t, err)
 	return e
 }
 
 func TestServerRegistersPeopleRoutesWhenHandlerIsProvided(t *testing.T) {
-	e, err := New(new(health.Service), nil, nil, people.NewHandler(nil, nil), nil, nil, nil, nil, nil, nil, nil)
+	e, err := New(new(health.Service), nil, nil, people.NewHandler(nil, nil), nil, nil, nil, nil, nil, nil, nil, nil)
 	require.NoError(t, err)
 	routes := make(map[string]bool)
 	for _, route := range e.Routes() {
@@ -86,7 +87,7 @@ func TestServerRegistersPeopleRoutesWhenHandlerIsProvided(t *testing.T) {
 }
 
 func TestServerRegistersFamilyRoutesWhenHandlerIsProvided(t *testing.T) {
-	e, err := New(new(health.Service), nil, nil, nil, family.NewHandler(nil, nil), nil, nil, nil, nil, nil, nil)
+	e, err := New(new(health.Service), nil, nil, nil, family.NewHandler(nil, nil), nil, nil, nil, nil, nil, nil, nil)
 	require.NoError(t, err)
 	routes := make(map[string]bool)
 	for _, route := range e.Routes() {
@@ -102,7 +103,7 @@ func TestServerRegistersFamilyRoutesWhenHandlerIsProvided(t *testing.T) {
 }
 
 func TestServerRegistersVisibilityRoutesWhenHandlerIsProvided(t *testing.T) {
-	e, err := New(new(health.Service), nil, nil, nil, nil, visibility.NewHandler(nil, nil), nil, nil, nil, nil, nil)
+	e, err := New(new(health.Service), nil, nil, nil, nil, visibility.NewHandler(nil, nil), nil, nil, nil, nil, nil, nil)
 	require.NoError(t, err)
 	routes := make(map[string]bool)
 	for _, route := range e.Routes() {
@@ -120,7 +121,7 @@ func TestServerRegistersVisibilityRoutesWhenHandlerIsProvided(t *testing.T) {
 }
 
 func TestServerRegistersRecipientRoutesWhenHandlerIsProvided(t *testing.T) {
-	e, err := New(new(health.Service), nil, nil, nil, nil, nil, recipients.NewHandler(nil, nil), nil, nil, nil, nil)
+	e, err := New(new(health.Service), nil, nil, nil, nil, nil, recipients.NewHandler(nil, nil), nil, nil, nil, nil, nil)
 	require.NoError(t, err)
 	routes := make(map[string]bool)
 	for _, route := range e.Routes() {
@@ -138,7 +139,7 @@ func TestServerRegistersRecipientRoutesWhenHandlerIsProvided(t *testing.T) {
 }
 
 func TestServerRegistersSuggestionRoutesWhenHandlerIsProvided(t *testing.T) {
-	e, err := New(new(health.Service), nil, nil, nil, nil, nil, nil, nil, nil, nil, suggestions.NewHandler(nil, nil))
+	e, err := New(new(health.Service), nil, nil, nil, nil, nil, nil, nil, nil, nil, suggestions.NewHandler(nil, nil), nil)
 	require.NoError(t, err)
 	routes := make(map[string]bool)
 	for _, route := range e.Routes() {
@@ -154,7 +155,7 @@ func TestServerRegistersSuggestionRoutesWhenHandlerIsProvided(t *testing.T) {
 }
 
 func TestServerRegistersDraftRoutesWhenHandlerIsProvided(t *testing.T) {
-	e, err := New(new(health.Service), nil, nil, nil, nil, nil, nil, nil, events.NewHandler(nil, nil), nil, nil)
+	e, err := New(new(health.Service), nil, nil, nil, nil, nil, nil, nil, events.NewHandler(nil, nil), nil, nil, nil)
 	require.NoError(t, err)
 	routes := make(map[string]bool)
 	for _, route := range e.Routes() {
@@ -168,8 +169,26 @@ func TestServerRegistersDraftRoutesWhenHandlerIsProvided(t *testing.T) {
 	}
 }
 
+func TestServerRegistersAudienceRoutesWhenHandlerIsProvided(t *testing.T) {
+	e, err := New(new(health.Service), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, audiences.NewHandler(nil, nil))
+	require.NoError(t, err)
+	routes := make(map[string]bool)
+	for _, route := range e.Routes() {
+		routes[route.Method+" "+route.Path] = true
+	}
+	for _, route := range []string{
+		"GET /api/moments/:id/attendance-audience", "PUT /api/moments/:id/attendance",
+		"POST /api/moments/:id/audience/recalculate", "PUT /api/moments/:id/audience/override",
+		"POST /api/moments/:id/audience/approve", "GET /api/loose-items/:id/attendance-audience",
+		"POST /api/loose-items/:id/audience/recalculate", "PUT /api/loose-items/:id/audience/override",
+		"POST /api/loose-items/:id/audience/approve",
+	} {
+		assert.True(t, routes[route], route)
+	}
+}
+
 func TestServerRegistersCuratorRepairRoutesWhenHandlerIsProvided(t *testing.T) {
-	e, err := New(new(health.Service), nil, nil, nil, nil, nil, nil, nil, nil, repairs.NewHandler(nil, nil), nil)
+	e, err := New(new(health.Service), nil, nil, nil, nil, nil, nil, nil, nil, repairs.NewHandler(nil, nil), nil, nil)
 	require.NoError(t, err)
 	routes := make(map[string]bool)
 	for _, route := range e.Routes() {
