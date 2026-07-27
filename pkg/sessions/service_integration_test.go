@@ -274,6 +274,21 @@ func TestSessionMutationsCannotCrossRecipientBoundary(t *testing.T) {
 	assert.True(t, active)
 }
 
+func TestEmailChangeProofExpiresAtBoundary(t *testing.T) {
+	f := newFixture(t)
+	actor, err := f.auth.AuthorizeSession(context.Background(), f.credential, f.csrf, true)
+	require.NoError(t, err)
+	requestID := uuid.New()
+	oldCode, newCode := "11112222", "33334444"
+	_, err = f.db.NewRaw(`INSERT INTO email_change_requests (id, person_id, recipient_access_generation_id, session_id, old_email, new_email, new_normalized_email, old_code_hash, new_code_hash, expires_at) VALUES (?, ?, ?, ?, 'alex@example.com', 'new@example.com', 'new@example.com', ?, ?, ?)`, requestID, f.personID, f.accessID, f.sessionID, f.service.codeHash("email-change-old", requestID[:], oldCode), f.service.codeHash("email-change-new", requestID[:], newCode), f.now).Exec(context.Background())
+	require.NoError(t, err)
+	_, err = f.service.CompleteEmailChange(context.Background(), actor, EmailChangeCompleteRequest{RequestID: requestID.String(), OldCode: oldCode, NewCode: newCode})
+	assert.ErrorIs(t, err, ErrInvalidCode)
+	var email string
+	require.NoError(t, f.db.NewRaw(`SELECT normalized_email FROM recipient_emails WHERE recipient_access_generation_id = ? AND is_current`, f.accessID).Scan(context.Background(), &email))
+	assert.Equal(t, "alex@example.com", email)
+}
+
 func TestEmailChangeStartQueuesFreshProofsToBothAddresses(t *testing.T) {
 	f := newFixture(t)
 	actor, err := f.auth.AuthorizeSession(context.Background(), f.credential, f.csrf, true)

@@ -27,6 +27,22 @@ func TestCuratorRecoveryStartQueuesOnlyANewMailboxProof(t *testing.T) {
 	assert.Equal(t, 1, encrypted)
 }
 
+func TestRecoveryProofExpiresAtBoundary(t *testing.T) {
+	f := newFixture(t)
+	curatorID := uuid.New()
+	_, err := f.db.NewRaw(`INSERT INTO people (id, display_name, sort_name) VALUES (?, 'Robin', 'robin'); INSERT INTO person_roles (person_id, role) VALUES (?, 'curator')`, curatorID, curatorID).Exec(context.Background())
+	require.NoError(t, err)
+	recoveryID := uuid.New()
+	code := "24681357"
+	_, err = f.db.NewRaw(`INSERT INTO curator_recovery_requests (id, person_id, recipient_access_generation_id, new_email, new_normalized_email, code_hash, expires_at, created_by_person_id) VALUES (?, ?, ?, 'recovered@example.com', 'recovered@example.com', ?, ?, ?)`, recoveryID, f.personID, f.accessID, f.service.codeHash("recovery", recoveryID[:], code), f.now, curatorID).Exec(context.Background())
+	require.NoError(t, err)
+	err = f.service.CompleteRecovery(context.Background(), setup.CuratorSession{PersonID: curatorID, SessionID: f.sessionID}, f.personID, RecoveryCompleteRequest{RecoveryID: recoveryID.String(), Code: code})
+	assert.ErrorIs(t, err, ErrInvalidCode)
+	var email string
+	require.NoError(t, f.db.NewRaw(`SELECT normalized_email FROM recipient_emails WHERE recipient_access_generation_id = ? AND is_current`, f.accessID).Scan(context.Background(), &email))
+	assert.Equal(t, "alex@example.com", email)
+}
+
 func TestCuratorRecoveryChangesOnlyEmailAndRevokesAllSessions(t *testing.T) {
 	f := newFixture(t)
 	oldAddressChallenge := insertChallenge(t, f, 0x54, "13572468")

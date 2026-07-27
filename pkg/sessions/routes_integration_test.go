@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 	"github.com/robinjoseph08/memento/pkg/binder"
 	"github.com/robinjoseph08/memento/pkg/errcodes"
@@ -78,6 +79,33 @@ func TestSignInVerificationSetsProtectedPublicSessionCookie(t *testing.T) {
 	assert.Equal(t, "public", session.SessionType)
 
 	assert.Equal(t, http.StatusBadRequest, verify().Code)
+}
+
+func TestEmailChangeCompletionReplacesTheSessionCookie(t *testing.T) {
+	f := newFixture(t)
+	e := sessionHTTP(t, f)
+	requestID := uuid.New()
+	oldCode, newCode := "11112222", "33334444"
+	_, err := f.db.NewRaw(`INSERT INTO email_change_requests (id, person_id, recipient_access_generation_id, session_id, old_email, new_email, new_normalized_email, old_code_hash, new_code_hash, expires_at) VALUES (?, ?, ?, ?, 'alex@example.com', 'new@example.com', 'new@example.com', ?, ?, ?)`, requestID, f.personID, f.accessID, f.sessionID, f.service.codeHash("email-change-old", requestID[:], oldCode), f.service.codeHash("email-change-new", requestID[:], newCode), f.now.Add(codeLifetime)).Exec(context.Background())
+	require.NoError(t, err)
+	body := `{"request_id":"` + requestID.String() + `","old_code":"` + oldCode + `","new_code":"` + newCode + `"}`
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/me/email-change/complete", strings.NewReader(body))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	req.Header.Set(setup.CSRFHeader, f.csrf)
+	req.AddCookie(&http.Cookie{Name: setup.CookieName, Value: f.credential})
+	response := httptest.NewRecorder()
+	e.ServeHTTP(response, req)
+	require.Equal(t, http.StatusOK, response.Code)
+	cookies := response.Result().Cookies()
+	require.Len(t, cookies, 1)
+	assert.NotEqual(t, f.credential, cookies[0].Value)
+	assert.True(t, cookies[0].Secure)
+	assert.True(t, cookies[0].HttpOnly)
+	session, err := f.auth.Session(context.Background(), cookies[0].Value)
+	require.NoError(t, err)
+	assert.Equal(t, "trusted", session.SessionType)
+	_, err = f.auth.Session(context.Background(), f.credential)
+	assert.ErrorIs(t, err, setup.ErrUnauthenticated)
 }
 
 func TestSignInHandlerEnforcesConfiguredRateLimit(t *testing.T) {
