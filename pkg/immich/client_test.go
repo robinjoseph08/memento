@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -572,6 +574,20 @@ func (failingTransport) RoundTrip(*http.Request) (*http.Response, error) {
 	return nil, errors.New("dial http://private.internal?key=secret")
 }
 
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (roundTrip roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return roundTrip(request)
+}
+
+type failingReadCloser struct{}
+
+func (failingReadCloser) Read([]byte) (int, error) {
+	return 0, errors.New("read https://immich.internal/private?key=secret")
+}
+
+func (failingReadCloser) Close() error { return nil }
+
 func TestClientRejectsRedirectsWithoutForwardingAPIKey(t *testing.T) {
 	targetRequests := make(chan *http.Request, 1)
 	target := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
@@ -633,4 +649,147 @@ func TestNewRejectsInvalidURLWithoutEchoingIt(t *testing.T) {
 	_, err := New(cfg, nil)
 	require.EqualError(t, err, "parse Immich URL")
 	assert.NotContains(t, err.Error(), "secret")
+}
+
+func TestThumbnailMapsUpstreamStatusesTimeoutsAndReadFailuresToSafeErrors(t *testing.T) {
+	assetID := uuid.New()
+	for _, test := range []struct {
+		status int
+		want   string
+	}{
+		{status: http.StatusUnauthorized, want: "Immich API key is invalid"},
+		{status: http.StatusForbidden, want: "Immich API key is invalid"},
+		{status: http.StatusNotFound, want: "Immich resource not found"},
+		{status: http.StatusInternalServerError, want: "Immich validation failed"},
+	} {
+		t.Run(http.StatusText(test.status), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(test.status)
+				_, _ = w.Write([]byte(`{"private":"response"}`))
+			}))
+			defer server.Close()
+			client, err := New(clientConfig(server.URL), server.Client())
+			require.NoError(t, err)
+
+			_, err = client.Thumbnail(context.Background(), assetID)
+			require.EqualError(t, err, test.want)
+		})
+	}
+
+	t.Run("timeout", func(t *testing.T) {
+		transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			<-request.Context().Done()
+			return nil, request.Context().Err()
+		})
+		cfg := clientConfig("https://immich.internal")
+		cfg.HealthTimeout = time.Millisecond
+		client, err := New(cfg, &http.Client{Transport: transport})
+		require.NoError(t, err)
+
+		_, err = client.Thumbnail(context.Background(), assetID)
+		require.EqualError(t, err, "Immich is unreachable")
+	})
+
+	t.Run("streaming read failure", func(t *testing.T) {
+		transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"image/jpeg"}},
+				Body:       failingReadCloser{},
+				Request:    request,
+			}, nil
+		})
+		client, err := New(clientConfig("https://immich.internal"), &http.Client{Transport: transport})
+		require.NoError(t, err)
+		response, err := client.Thumbnail(context.Background(), assetID)
+		require.NoError(t, err)
+
+		_, err = io.ReadAll(response.Body)
+		require.EqualError(t, err, "Immich returned an invalid response")
+		require.NoError(t, response.Body.Close())
+	})
+}
+
+func TestThumbnailStreamsOnlyImageResponsesWithoutFollowingRedirects(t *testing.T) {
+	assetID := uuid.New()
+	t.Run("image", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, "/api/assets/"+assetID.String()+"/thumbnail", r.URL.Path)
+			assert.Equal(t, "secret-key", r.Header.Get("x-api-key"))
+			w.Header().Set("Content-Type", "image/webp")
+			w.Header().Set("ETag", `"safe"`)
+			_, _ = w.Write([]byte("thumbnail"))
+		}))
+		defer server.Close()
+		client, err := New(clientConfig(server.URL), server.Client())
+		require.NoError(t, err)
+		response, err := client.Thumbnail(context.Background(), assetID)
+		require.NoError(t, err)
+		contents, err := io.ReadAll(response.Body)
+		require.NoError(t, err)
+		require.NoError(t, response.Body.Close())
+		assert.Equal(t, "thumbnail", string(contents))
+		assert.Equal(t, "image/webp", response.ContentType)
+		assert.Equal(t, `"safe"`, response.ETag)
+	})
+
+	t.Run("redirect", func(t *testing.T) {
+		redirected := false
+		target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { redirected = true }))
+		defer target.Close()
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, target.URL, http.StatusFound)
+		}))
+		defer server.Close()
+		client, err := New(clientConfig(server.URL), server.Client())
+		require.NoError(t, err)
+		_, err = client.Thumbnail(context.Background(), assetID)
+		require.EqualError(t, err, "Immich validation failed")
+		assert.False(t, redirected)
+	})
+
+	t.Run("oversized declared body", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "image/jpeg")
+			w.Header().Set("Content-Length", strconv.FormatInt(maxThumbnailResponse+1, 10))
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer server.Close()
+		client, err := New(clientConfig(server.URL), server.Client())
+		require.NoError(t, err)
+		_, err = client.Thumbnail(context.Background(), assetID)
+		assert.EqualError(t, err, "Immich returned an invalid response")
+	})
+
+	t.Run("oversized chunked body", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "image/jpeg")
+			w.WriteHeader(http.StatusOK)
+			w.(http.Flusher).Flush()
+			_, _ = io.Copy(w, strings.NewReader(strings.Repeat("x", maxThumbnailResponse+1)))
+		}))
+		defer server.Close()
+		client, err := New(clientConfig(server.URL), server.Client())
+		require.NoError(t, err)
+		response, err := client.Thumbnail(context.Background(), assetID)
+		require.NoError(t, err)
+		contents, err := io.ReadAll(response.Body)
+		require.EqualError(t, err, "Immich returned an invalid response")
+		assert.Len(t, contents, maxThumbnailResponse)
+		require.NoError(t, response.Body.Close())
+	})
+
+	for _, contentType := range []string{"application/json", "image/svg+xml"} {
+		t.Run("unsafe "+contentType, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", contentType)
+				_, _ = w.Write([]byte(`{"private":"metadata"}`))
+			}))
+			defer server.Close()
+			client, err := New(clientConfig(server.URL), server.Client())
+			require.NoError(t, err)
+			_, err = client.Thumbnail(context.Background(), assetID)
+			assert.EqualError(t, err, "Immich returned an invalid response")
+		})
+	}
 }

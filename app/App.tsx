@@ -13,6 +13,7 @@ import { FamilyManager } from "./FamilyManager";
 import { InvitationSuggestions } from "./InvitationSuggestions";
 import { PeopleManager } from "./PeopleManager";
 import { RepairWorkspace } from "./RepairWorkspace";
+import { RecipientLibrary } from "./RecipientLibrary";
 import {
   RecipientVisibilityManager,
   VisibilityManager,
@@ -1495,10 +1496,17 @@ function ReadyCard({
     if (!session.curator) {
       return (
         <>
-          <InvitationSuggestions session={session} />
           <PublicSessionBanner session={session} />
-          <SessionManager onSignedOut={onSignOut} session={session} />
-          <RecipientVisibilityManager onSignOut={onSignOut} session={session} />
+          <RecipientLibrary session={session} />
+          <details className="recipient-account-tools" open>
+            <summary>Account and family settings</summary>
+            <InvitationSuggestions session={session} />
+            <SessionManager onSignedOut={onSignOut} session={session} />
+            <RecipientVisibilityManager
+              onSignOut={onSignOut}
+              session={session}
+            />
+          </details>
         </>
       );
     }

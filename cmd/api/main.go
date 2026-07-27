@@ -20,6 +20,7 @@ import (
 	"github.com/robinjoseph08/memento/pkg/family"
 	"github.com/robinjoseph08/memento/pkg/health"
 	"github.com/robinjoseph08/memento/pkg/immich"
+	"github.com/robinjoseph08/memento/pkg/library"
 	"github.com/robinjoseph08/memento/pkg/lifecycle"
 	"github.com/robinjoseph08/memento/pkg/migrations"
 	"github.com/robinjoseph08/memento/pkg/outbox"
@@ -134,12 +135,14 @@ func run() error {
 	suggestionHandler := suggestions.NewHandler(suggestions.New(db, peopleService), setupService)
 	audienceHandler := audiences.NewHandler(audiences.New(db, immichClient), setupService)
 	sessionHandler := sessions.NewHandler(sessions.New(db, emailService, setupService, cfg.Security), setupService)
+	libraryHandler := library.NewHandler(library.New(db, immichClient), setupService)
 	e, err := server.New(healthService, emaildelivery.NewHandler(emailService), setupHandler, peopleHandler, familyHandler, visibilityHandler, recipientHandler, sourceHandler, eventHandler, repairHandler, suggestionHandler, audienceHandler, sessionHandler)
 	if err != nil {
 		_ = db.Close()
 		log.Err(err).Error("HTTP server initialization failed")
 		return err
 	}
+	library.RegisterRoutes(e, libraryHandler)
 
 	workCtx, cancelWork := context.WithCancel(context.Background())
 	defer cancelWork()
