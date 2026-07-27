@@ -9,6 +9,11 @@ node = "24.18.0"
 hide = true
 run = "pnpm install --frozen-lockfile"
 
+[tasks."dependencies:browsers"]
+hide = true
+depends = ["dependencies:install"]
+run = "./tests/install-playwright.sh"
+
 [tasks."types:generate"]
 description = "Generate ignored TypeScript API types from Go wire types"
 run = "go tool tygo generate"
@@ -109,6 +114,11 @@ run = ["go test ./...", "pnpm test"]
 description = "Run Go unit tests with the race detector"
 run = "go test -race ./..."
 
+[tasks."test:browser"]
+description = "Run desktop and mobile browser tests"
+depends = ["dependencies:browsers", "types:generate"]
+run = "pnpm test:browser"
+
 [tasks.build]
 description = "Build the frontend"
 depends = ["dependencies:install", "types:generate"]
@@ -149,6 +159,7 @@ description = "Run the complete CI validation suite"
 depends = [
   "check",
   "test:race",
+  "test:browser",
   "test:integration",
   "test:immich-contract",
   "compose:validate",

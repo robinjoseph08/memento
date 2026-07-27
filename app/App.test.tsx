@@ -481,6 +481,48 @@ test("routes a non-Curator Session only to Recipient Interest self-service", asy
   expect(requests.some((path) => path.startsWith("/api/sources?"))).toBe(false);
 });
 
+test("keeps sign-out available from the draft organization workspace", async () => {
+  const csrfToken = "c".repeat(64);
+  const requests: Array<{ path: string; init?: RequestInit }> = [];
+  window.history.replaceState(null, "", "/?workspace=drafts");
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = requestPath(input);
+      requests.push({ path, init });
+      if (path === "/api/setup")
+        return Promise.resolve(
+          jsonResponse({ error: { message: "Setup not found." } }, 404),
+        );
+      if (path === "/api/session")
+        return Promise.resolve(
+          jsonResponse({
+            display_name: "Robin Joseph",
+            session_type: "public",
+            csrf_token: csrfToken,
+          }),
+        );
+      if (path === "/api/events")
+        return Promise.resolve(jsonResponse({ events: [] }));
+      if (path === "/api/session/logout")
+        return Promise.resolve(new Response(null, { status: 204 }));
+      return Promise.reject(new Error(`Unexpected request: ${path}`));
+    }),
+  );
+
+  renderApp();
+  expect(
+    await screen.findByRole("heading", { name: "Organize drafts" }),
+  ).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+  expect(await screen.findByText("Setup is complete.")).toBeInTheDocument();
+  const logout = requests.find(({ path }) => path === "/api/session/logout");
+  expect(logout?.init).toMatchObject({
+    method: "POST",
+    headers: { "X-Memento-CSRF": csrfToken },
+  });
+});
+
 test("validates Immich and supports private Source album ignore and restore triage", async () => {
   const csrfToken = "c".repeat(64);
   const sourceID = "11111111-1111-4111-8111-111111111111";

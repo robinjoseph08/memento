@@ -903,9 +903,11 @@ func relinkDraftMediaReferences(ctx context.Context, tx bun.Tx, stableMediaID, c
 		SELECT id FROM events
 		WHERE id IN (
 			SELECT event_id FROM draft_media_placements WHERE media_item_id = ?
+			UNION
+			SELECT event_id FROM draft_moments WHERE cover_media_item_id = ?
 		)
 		ORDER BY id FOR UPDATE
-	`, candidateMediaID).Scan(ctx, &affectedEventIDs); err != nil {
+	`, candidateMediaID, candidateMediaID).Scan(ctx, &affectedEventIDs); err != nil {
 		return err
 	}
 	var eventCollision, looseCollision bool
@@ -928,6 +930,9 @@ func relinkDraftMediaReferences(ctx context.Context, tx bun.Tx, stableMediaID, c
 		return ErrConflict
 	}
 	if _, err := tx.NewRaw(`UPDATE draft_media_placements SET media_item_id = ? WHERE media_item_id = ?`, stableMediaID, candidateMediaID).Exec(ctx); err != nil {
+		return err
+	}
+	if _, err := tx.NewRaw(`UPDATE draft_moments SET cover_media_item_id = ? WHERE cover_media_item_id = ?`, stableMediaID, candidateMediaID).Exec(ctx); err != nil {
 		return err
 	}
 	if len(affectedEventIDs) > 0 {

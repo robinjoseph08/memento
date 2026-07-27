@@ -1155,6 +1155,13 @@ h1 {
   min-height: calc(100vh - 4rem);
 }
 
+.draft-work-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
 .back-to-management,
 .curator-workspace button,
 .curator-workspace select,
@@ -1477,8 +1484,12 @@ h1 {
     min-height: 100vh;
   }
 
+  .draft-work-actions {
+    padding: 0.75rem;
+  }
+
   .back-to-management {
-    margin: 0.75rem;
+    margin: 0;
   }
 
   .curator-workspace {
