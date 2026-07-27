@@ -55,21 +55,21 @@ mise run types:generate
 
 Stopping `mise start` stops the Compose services while preserving PostgreSQL data in its named volume. Run `docker compose down --volumes` to reset that data. `MEMENTO_DEV_POSTGRES_PORT` and `MEMENTO_DEV_IMMICH_PORT` override the dependency ports. The individual `mise start:deps`, `mise start:air`, and `mise start:web` tasks remain available when only part of the environment is needed.
 
-Validate changes before pushing with the fast local gate:
+Use the fast local gate while iterating on changes:
 
 ```sh
-mise check
+mise check:quiet
 ```
 
-`mise check` is safe to run concurrently from multiple worktrees. It generates API types, runs Go and frontend linters and unit tests, and builds the frontend. `mise lint` runs golangci-lint, while `mise lint:js` runs ESLint, Prettier, and TypeScript checks in parallel.
+`mise check:quiet` runs the worktree-safe `mise check` gate once, suppresses successful task output, and prints the original captured output when a task fails. The gate generates API types, runs Go and frontend linters and unit tests, and builds the frontend. `mise lint` runs golangci-lint, while `mise lint:js` runs ESLint, Prettier, and TypeScript checks in parallel.
 
-Run the complete suite used by CI when needed:
+Run the complete suite used by CI once as the final local gate immediately before pushing:
 
 ```sh
-mise ci
+mise ci:quiet
 ```
 
-`mise ci` includes `mise check`, then adds Go race detection, isolated PostgreSQL integration tests, development Compose validation, Caddy validation, and the production topology test. Docker-backed tests use unique names, images, and dynamic local ports so concurrent worktrees do not share test resources.
+`mise ci:quiet` similarly runs `mise ci` once and emits its captured output only on failure. The complete gate includes `mise check`, then adds Go race detection, browser tests, isolated PostgreSQL integration tests, the Immich contract, development Compose validation, Caddy validation, and the production topology test. Docker-backed tests isolate concurrent worktrees with unique Compose project or container names, a unique built Memento image tag where applicable, and dynamic local ports. They may share pinned immutable fixture images such as Caddy.
 
 The integration task provisions an isolated PostgreSQL 17 database and removes it when the tests finish. It does not connect to an existing PostgreSQL server unless `MEMENTO_TEST_DATABASE_URL` is explicitly set. Set that variable to use an explicitly managed integration database instead of the disposable container.
 

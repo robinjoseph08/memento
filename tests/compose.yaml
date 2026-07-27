@@ -14,9 +14,7 @@ services:
       - /var/lib/postgresql/data
 
   immich:
-    build:
-      context: ./fixtures
-      dockerfile: Dockerfile.immich
+    image: caddy:2.10.2-alpine
     command:
       [
         "caddy",
@@ -26,6 +24,8 @@ services:
         "--adapter",
         "caddyfile",
       ]
+    volumes:
+      - ./fixtures/immich.Caddyfile:/etc/caddy/Caddyfile:ro
 
   memento:
     image: "memento:${MEMENTO_TEST_IMAGE_TAG:-test}"
@@ -52,9 +52,9 @@ services:
     stop_grace_period: 10s
 
   front:
-    build:
-      context: ./fixtures
-      dockerfile: Dockerfile.front
+    image: caddy:2.10.2-alpine
+    volumes:
+      - ./fixtures/front.Caddyfile:/etc/caddy/Caddyfile:ro
     depends_on:
       memento:
         condition: service_started

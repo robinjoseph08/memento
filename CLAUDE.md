@@ -25,9 +25,9 @@ Each commit should be in the format of `[{Category}] {Change description}`
 
 ## Validation
 
-Run `mise check` to validate changes before pushing them. It is the fast, worktree-safe local gate for linting, generated types, unit tests, and the frontend build.
+During implementation and review-fix rounds, run the targeted tests for the changed behavior followed by `mise check:quiet`. It runs the fast, worktree-safe `mise check` gate for linting, generated types, unit tests, and the frontend build. Successful task output is suppressed; a failure prints the failed-task summary and the original captured output. Do not rerun the gate with grep or other filters to rediscover the failure.
 
-Run `mise ci` when the complete CI-equivalent suite is needed. It adds race detection, isolated PostgreSQL integration tests, development Compose validation, Caddy validation, and the production topology test.
+After implementation and review have converged, run `mise ci:quiet` once as the final local gate immediately before pushing. It runs `mise ci`, which adds race detection, browser tests, isolated PostgreSQL integration tests, the Immich contract, development Compose validation, Caddy validation, and the production topology test. If this final gate finds a defect, return to targeted tests and `mise check:quiet` while fixing it, then repeat the final gate only after the changes stabilize.
 
 Use `mise start` to run the root Docker Compose dependencies, the Go API with Air hot reload, and the Vite frontend together. Compose runs in the foreground and stops its services when the task exits. Air regenerates Tygo types before rebuilding the API.
 

@@ -12,7 +12,13 @@ run = "pnpm install --frozen-lockfile"
 [tasks."dependencies:browsers"]
 hide = true
 depends = ["dependencies:install"]
-run = "./tests/install-playwright.sh"
+run = '''
+if [ "$(uname -s)" = Linux ]; then
+  pnpm exec playwright install --with-deps chromium firefox
+else
+  pnpm exec playwright install chromium firefox
+fi
+'''
 
 [tasks."types:generate"]
 description = "Generate ignored TypeScript API types from Go wire types"
@@ -154,6 +160,10 @@ run = "./tests/test-production.sh"
 description = "Run fast validation checks before pushing"
 depends = ["lint", "lint:js", "types:generate", "test", "build"]
 
+[tasks."check:quiet"]
+description = "Show wrapper summaries for the fast validation gate and task output only on failure"
+run = "./scripts/run-mise-quiet.sh check"
+
 [tasks.ci]
 description = "Run the complete CI validation suite"
 depends = [
@@ -166,3 +176,7 @@ depends = [
   "caddy:validate",
   "test:production",
 ]
+
+[tasks."ci:quiet"]
+description = "Show wrapper summaries for the complete CI gate and task output only on failure"
+run = "./scripts/run-mise-quiet.sh ci"
