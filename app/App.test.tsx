@@ -376,6 +376,9 @@ test("restores and refreshes a signed-in Trusted-device Session", async () => {
         }),
       );
     }
+    if (path.startsWith("/api/visibility-circles?")) {
+      return Promise.resolve(jsonResponse({ circles: [] }));
+    }
     return Promise.resolve(
       jsonResponse({
         display_name: "Robin Joseph",
@@ -400,6 +403,10 @@ test("restores and refreshes a signed-in Trusted-device Session", async () => {
   );
   expect(fetchMock).toHaveBeenCalledWith(
     "/api/relationships?include_archived=false",
+    expect.objectContaining({ credentials: "same-origin" }),
+  );
+  expect(fetchMock).toHaveBeenCalledWith(
+    "/api/visibility-circles?include_archived=false",
     expect.objectContaining({ credentials: "same-origin" }),
   );
   expect(fetchMock).toHaveBeenCalledWith(

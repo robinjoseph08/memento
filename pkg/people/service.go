@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/robinjoseph08/memento/pkg/family"
 	"github.com/robinjoseph08/memento/pkg/setup"
+	"github.com/robinjoseph08/memento/pkg/visibility"
 	"github.com/uptrace/bun"
 )
 
@@ -442,6 +443,10 @@ func (s *Service) Archive(ctx context.Context, actor setup.CuratorSession, id uu
 		if count == 0 {
 			return staleOrNotFound(ctx, tx, id)
 		}
+		visibilityActor := setup.SessionActor{PersonID: actor.PersonID, SessionID: actor.SessionID, Curator: true}
+		if err := visibility.ArchivePersonReferences(ctx, tx, id, visibilityActor, now); err != nil {
+			return err
+		}
 		var accessID uuid.UUID
 		accessErr := tx.NewRaw(`SELECT id FROM recipient_access_generations WHERE person_id = ? AND is_current FOR UPDATE`, id).Scan(ctx, &accessID)
 		if accessErr != nil && !errors.Is(accessErr, sql.ErrNoRows) {
@@ -690,6 +695,10 @@ func (s *Service) Merge(ctx context.Context, actor setup.CuratorSession, request
 			return ErrFamilyPartnerConflict
 		}
 		if err != nil {
+			return err
+		}
+		visibilityActor := setup.SessionActor{PersonID: actor.PersonID, SessionID: actor.SessionID, Curator: true}
+		if err := visibility.MergePersonReferences(ctx, tx, sourceID, survivorID, visibilityActor, now); err != nil {
 			return err
 		}
 		resultingGeneration := 0

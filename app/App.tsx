@@ -11,6 +11,7 @@ import { APIError, apiJSON, apiNoContent } from "./api";
 import { FamilyManager } from "./FamilyManager";
 import { PeopleManager } from "./PeopleManager";
 import { RepairWorkspace } from "./RepairWorkspace";
+import { VisibilityManager } from "./VisibilityManager";
 import type {
   AvailabilityResponse,
   CompleteRequest,
@@ -695,6 +696,7 @@ function ReadyCard({
       <>
         <PeopleManager session={session} />
         <FamilyManager session={session} />
+        <VisibilityManager session={session} />
         <section className="shell-card curator-card">
           <SourceWorkspace onSignOut={onSignOut} session={session} />
         </section>
