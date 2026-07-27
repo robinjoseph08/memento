@@ -874,8 +874,13 @@ func (s *Service) ConfirmMedia(ctx context.Context, actor setup.CuratorSession, 
 			UPDATE media_repair_candidates
 			SET state = 'superseded', resolved_at = ?, resolved_by_person_id = ?, candidate_media_item_id = NULL
 			WHERE id <> ? AND state = 'pending'
-			  AND (media_item_id = ? OR candidate_media_item_id = ?)
-		`, now, actor.PersonID, candidateID, mediaItemID, candidateMediaID).Exec(ctx); err != nil {
+			  AND (media_item_id IN (?, ?) OR candidate_media_item_id IN (?, ?))
+		`, now, actor.PersonID, candidateID, mediaItemID, candidateMediaID, mediaItemID, candidateMediaID).Exec(ctx); err != nil {
+			return err
+		}
+		if _, err := tx.NewRaw(`
+			UPDATE media_repair_candidates SET media_item_id = ? WHERE media_item_id = ?
+		`, mediaItemID, candidateMediaID).Exec(ctx); err != nil {
 			return err
 		}
 		if err := execRepairExactlyOne(ctx, tx, `DELETE FROM media_items WHERE id = ?`, candidateMediaID); err != nil {

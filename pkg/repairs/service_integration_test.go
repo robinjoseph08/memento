@@ -783,6 +783,7 @@ func TestMediaConfirmationPreservesPortalIdentityAndMovesBacking(t *testing.T) {
 	_, err = fixture.db.ExecContext(context.Background(), `UPDATE media_backings SET checksum = ? WHERE id = ?`, checksum("same"), newBackingID)
 	require.NoError(t, err)
 	competingMediaID, competingAssetID, competingCandidateID := uuid.New(), uuid.New(), uuid.New()
+	historyID, historicalCandidateAssetID := uuid.New(), uuid.New()
 	_, err = fixture.db.ExecContext(context.Background(), `
 		INSERT INTO media_items (id, immich_asset_id, media_type, local_date_time, availability, first_seen_at, last_seen_at)
 		VALUES (?, ?, 'image', '2026-01-01T00:00:00Z', 'source_missing', now(), now());
@@ -792,8 +793,13 @@ func TestMediaConfirmationPreservesPortalIdentityAndMovesBacking(t *testing.T) {
 			id, media_item_id, candidate_media_item_id, previous_immich_asset_id,
 			candidate_immich_asset_id, created_at
 		) VALUES (?, ?, ?, ?, ?, now());
+		INSERT INTO media_repair_candidates (
+			id, media_item_id, previous_immich_asset_id, candidate_immich_asset_id,
+			state, created_at, resolved_at, resolved_by_person_id
+		) VALUES (?, ?, ?, ?, 'rejected', now(), now(), ?);
 	`, competingMediaID, competingAssetID, competingMediaID, competingAssetID, checksum("same"),
-		competingCandidateID, competingMediaID, newMediaID, competingAssetID, newAssetID)
+		competingCandidateID, competingMediaID, newMediaID, competingAssetID, newAssetID,
+		historyID, newMediaID, newAssetID, historicalCandidateAssetID, fixture.actor.PersonID)
 	require.NoError(t, err)
 	eventBlocker, err := fixture.db.BeginTx(context.Background(), nil)
 	require.NoError(t, err)
@@ -869,6 +875,9 @@ func TestMediaConfirmationPreservesPortalIdentityAndMovesBacking(t *testing.T) {
 	require.NoError(t, fixture.db.NewRaw(`SELECT state, resolved_at FROM media_repair_candidates WHERE id = ?`, competingCandidateID).Scan(context.Background(), &candidateState, &resolvedAt))
 	assert.Equal(t, "superseded", candidateState)
 	assert.NotNil(t, resolvedAt)
+	var historyMediaID uuid.UUID
+	require.NoError(t, fixture.db.NewRaw(`SELECT media_item_id FROM media_repair_candidates WHERE id = ?`, historyID).Scan(context.Background(), &historyMediaID))
+	assert.Equal(t, oldMediaID, historyMediaID, "resolved repair history follows the surviving portal Media identity")
 	_, err = fixture.db.ExecContext(context.Background(), `UPDATE media_backings SET filename = 'later.jpg', original_path = '/later/path.jpg' WHERE media_item_id = ?`, oldMediaID)
 	require.NoError(t, err)
 	listed, err = fixture.service.List(context.Background())
