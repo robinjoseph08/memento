@@ -163,6 +163,22 @@ func normalizePersonNames(displayName, sortName string) (string, string, error) 
 }
 
 func (s *Service) Create(ctx context.Context, actor setup.CuratorSession, request CreateRequest) (Person, error) {
+	var created Person
+	err := s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		var err error
+		created, err = s.CreateIn(ctx, tx, actor, request)
+		return err
+	})
+	if err != nil {
+		return Person{}, fmt.Errorf("create Person: %w", err)
+	}
+	return created, nil
+}
+
+// CreateIn creates and audits a Person inside a caller-owned transaction.
+// Cross-domain workflows use this seam when Person creation must commit atomically
+// with their own explicit Curator decision.
+func (s *Service) CreateIn(ctx context.Context, tx bun.Tx, actor setup.CuratorSession, request CreateRequest) (Person, error) {
 	displayName, sortName, err := normalizePersonNames(request.DisplayName, request.SortName)
 	if err != nil {
 		return Person{}, err
@@ -172,21 +188,13 @@ func (s *Service) Create(ctx context.Context, actor setup.CuratorSession, reques
 		return Person{}, err
 	}
 	now := s.now().UTC()
-	var created Person
-	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
-		if _, err := tx.NewRaw(`INSERT INTO people (id, display_name, sort_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`, id, displayName, sortName, now, now).Exec(ctx); err != nil {
-			return err
-		}
-		if err := appendAudit(ctx, tx, actor, &id, "person_created", map[string]any{"version": 1}); err != nil {
-			return err
-		}
-		created, err = getPerson(ctx, tx, id, false)
-		return err
-	})
-	if err != nil {
-		return Person{}, fmt.Errorf("create Person: %w", err)
+	if _, err := tx.NewRaw(`INSERT INTO people (id, display_name, sort_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`, id, displayName, sortName, now, now).Exec(ctx); err != nil {
+		return Person{}, err
 	}
-	return created, nil
+	if err := appendAudit(ctx, tx, actor, &id, "person_created", map[string]any{"version": 1}); err != nil {
+		return Person{}, err
+	}
+	return getPerson(ctx, tx, id, false)
 }
 
 type personListRow struct {
@@ -529,6 +537,32 @@ func (s *Service) PreviewMerge(ctx context.Context, actor setup.CuratorSession, 
 	return preview, err
 }
 
+func invitationSuggestionReferenceFingerprint(ctx context.Context, db bun.IDB, sourceID, survivorID uuid.UUID) (string, error) {
+	references := make([]struct {
+		Kind        string
+		ReferenceID string
+	}, 0)
+	if err := db.NewRaw(`
+		SELECT 'requester' AS kind, id::text AS reference_id
+		FROM invitation_suggestions WHERE requester_person_id IN (?, ?)
+		UNION ALL
+		SELECT 'match' AS kind, id::text AS reference_id
+		FROM invitation_suggestions WHERE matched_person_id IN (?, ?)
+		UNION ALL
+		SELECT 'recipient_activity' AS kind, id::text AS reference_id
+		FROM recipient_activity_items WHERE recipient_person_id IN (?, ?)
+		ORDER BY kind, reference_id
+	`, sourceID, survivorID, sourceID, survivorID, sourceID, survivorID).Scan(ctx, &references); err != nil {
+		return "", err
+	}
+	encoded, err := json.Marshal(references)
+	if err != nil {
+		return "", err
+	}
+	fingerprint := sha256.Sum256(encoded)
+	return hex.EncodeToString(fingerprint[:]), nil
+}
+
 func previewMerge(ctx context.Context, db bun.IDB, actor setup.CuratorSession, sourceID, survivorID uuid.UUID, lockPeople bool) (MergePreview, error) {
 	source, err := getPerson(ctx, db, sourceID, lockPeople)
 	if err != nil {
@@ -621,10 +655,15 @@ func previewMerge(ctx context.Context, db bun.IDB, actor setup.CuratorSession, s
 		preview.SurvivorEmail = survivorEmail
 		preview.RequiresEmailResolution = survivorEmail != "" && source.CurrentLoginEmail != "" && !strings.EqualFold(survivorEmail, source.CurrentLoginEmail)
 	}
+	suggestionReferenceFingerprint, err := invitationSuggestionReferenceFingerprint(ctx, db, sourceID, survivorID)
+	if err != nil {
+		return MergePreview{}, err
+	}
 	encoded, err := json.Marshal(preview)
 	if err != nil {
 		return MergePreview{}, err
 	}
+	encoded = append(encoded, suggestionReferenceFingerprint...)
 	fingerprint := sha256.Sum256(encoded)
 	preview.PreviewFingerprint = hex.EncodeToString(fingerprint[:])
 	return preview, nil
@@ -675,6 +714,13 @@ func (s *Service) Merge(ctx context.Context, actor setup.CuratorSession, request
 				return err
 			}
 		}
+		if _, err := tx.NewRaw(`
+			SELECT id FROM invitation_suggestions
+			WHERE requester_person_id IN (?, ?) OR matched_person_id IN (?, ?)
+			ORDER BY id FOR UPDATE
+		`, sourceID, survivorID, sourceID, survivorID).Exec(ctx); err != nil {
+			return err
+		}
 		if err := visibility.LockReferences(ctx, tx); err != nil {
 			return err
 		}
@@ -714,6 +760,18 @@ func (s *Service) Merge(ctx context.Context, actor setup.CuratorSession, request
 		}
 		visibilityActor := setup.SessionActor{PersonID: actor.PersonID, SessionID: actor.SessionID, Curator: true}
 		if err := visibility.MergePersonReferences(ctx, tx, sourceID, survivorID, visibilityActor, now); err != nil {
+			return err
+		}
+		if _, err := tx.NewRaw(`
+			UPDATE invitation_suggestions
+			SET requester_person_id = CASE WHEN requester_person_id = ? THEN ? ELSE requester_person_id END,
+			    matched_person_id = CASE WHEN matched_person_id = ? THEN ? ELSE matched_person_id END,
+			    updated_at = ?
+			WHERE requester_person_id = ? OR matched_person_id = ?
+		`, sourceID, survivorID, sourceID, survivorID, now, sourceID, sourceID).Exec(ctx); err != nil {
+			return err
+		}
+		if _, err := tx.NewRaw(`UPDATE recipient_activity_items SET recipient_person_id = ? WHERE recipient_person_id = ?`, survivorID, sourceID).Exec(ctx); err != nil {
 			return err
 		}
 		resultingGeneration := 0

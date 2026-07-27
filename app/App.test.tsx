@@ -773,6 +773,12 @@ test("restores and refreshes a signed-in Trusted-device Session", async () => {
     if (path.startsWith("/api/people")) {
       return Promise.resolve(jsonResponse({ people: [] }));
     }
+    if (path === "/api/invitation-suggestions") {
+      return Promise.resolve(jsonResponse({ suggestions: [] }));
+    }
+    if (path === "/api/invitation-suggestions/curator") {
+      return Promise.resolve(jsonResponse({ suggestions: [] }));
+    }
     if (path.startsWith("/api/relationships?")) {
       return Promise.resolve(jsonResponse({ relationships: [] }));
     }
@@ -806,7 +812,7 @@ test("restores and refreshes a signed-in Trusted-device Session", async () => {
       "Setup is complete. You're signed in as Robin Joseph.",
     ),
   ).toBeInTheDocument();
-  expect(fetchMock).toHaveBeenCalledTimes(11);
+  expect(fetchMock).toHaveBeenCalledTimes(13);
   expect(fetchMock).toHaveBeenCalledWith(
     "/api/people?query=&include_archived=false",
     expect.objectContaining({ credentials: "same-origin" }),
@@ -870,6 +876,9 @@ test("routes a non-Curator Session only to Recipient Interest self-service", asy
       }
       if (path.startsWith("/api/me/people?")) {
         return Promise.resolve(jsonResponse({ people: [] }));
+      }
+      if (path === "/api/invitation-suggestions") {
+        return Promise.resolve(jsonResponse({ suggestions: [] }));
       }
       return Promise.reject(new Error(`Unexpected request: ${path}`));
     }),

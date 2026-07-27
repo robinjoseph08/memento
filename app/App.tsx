@@ -10,6 +10,7 @@ import { useSearchParams } from "react-router-dom";
 import { APIError, apiJSON, apiNoContent } from "./api";
 import { EventOrganizer } from "./EventOrganizer";
 import { FamilyManager } from "./FamilyManager";
+import { InvitationSuggestions } from "./InvitationSuggestions";
 import { PeopleManager } from "./PeopleManager";
 import { RepairWorkspace } from "./RepairWorkspace";
 import {
@@ -1116,12 +1117,16 @@ function ReadyCard({
     }
     if (!session.curator) {
       return (
-        <RecipientVisibilityManager onSignOut={onSignOut} session={session} />
+        <>
+          <InvitationSuggestions session={session} />
+          <RecipientVisibilityManager onSignOut={onSignOut} session={session} />
+        </>
       );
     }
     return (
       <>
         <PeopleManager session={session} />
+        <InvitationSuggestions session={session} />
         <FamilyManager session={session} />
         <VisibilityManager session={session} />
         <section className="shell-card curator-card">

@@ -336,3 +336,28 @@ func TestSetupConsistentRejectsMissingOrMismatchedState(t *testing.T) {
 		assert.EqualError(t, SetupConsistent(ctx, db), "system settings singleton is inconsistent")
 	})
 }
+
+func TestInvitationSuggestionInfrastructureEnforcesDecisionAndActivityState(t *testing.T) {
+	db := testdb.Open(t)
+	ctx := context.Background()
+	require.NoError(t, Apply(ctx, db))
+	const requester = "11111111-1111-4111-8111-111111111111"
+	const access = "22222222-2222-4222-8222-222222222222"
+	const session = "33333333-3333-4333-8333-333333333333"
+	const suggestion = "44444444-4444-4444-8444-444444444444"
+	_, err := db.ExecContext(ctx, `
+		INSERT INTO people (id, display_name, sort_name) VALUES (?, 'Requester', 'Requester');
+		INSERT INTO recipient_access_generations (id, person_id, generation, state, onboarding_completed_at) VALUES (?, ?, 1, 'completed', now());
+		INSERT INTO sessions (id, credential_hash, person_id, recipient_access_generation_id, security_epoch, session_type, idle_expires_at)
+		SELECT ?, decode(repeat('11', 32), 'hex'), ?, ?, security_epoch, 'trusted', now() + interval '1 hour' FROM system_settings;
+		INSERT INTO invitation_suggestions (id, requester_person_id, requester_access_generation_id, requester_session_id, name, email, normalized_email, relationship_context, spoke_with_person)
+		VALUES (?, ?, ?, ?, 'Relative', 'relative@example.com', 'relative@example.com', 'Cousin', false)
+	`, requester, access, requester, session, requester, access, suggestion, requester, access, session)
+	require.NoError(t, err)
+	_, err = db.ExecContext(ctx, `UPDATE invitation_suggestions SET status = 'accepted', resolved_at = now(), resolved_by_person_id = ? WHERE id = ?`, requester, suggestion)
+	require.Error(t, err, "accepted suggestions require an explicit matched Person")
+	_, err = db.ExecContext(ctx, `UPDATE invitation_suggestions SET withdrawn_at = now(), status = 'rejected', resolved_at = now(), resolved_by_person_id = ? WHERE id = ?`, requester, suggestion)
+	require.Error(t, err, "withdrawal and Curator resolution cannot coexist")
+	_, err = db.ExecContext(ctx, `INSERT INTO recipient_activity_items (recipient_person_id, actor_person_id, invitation_suggestion_id, action) VALUES (?, ?, ?, 'unknown')`, requester, requester, suggestion)
+	require.Error(t, err, "activity actions use a constrained durable domain")
+}

@@ -22,6 +22,7 @@ import (
 	"github.com/robinjoseph08/memento/pkg/people"
 	"github.com/robinjoseph08/memento/pkg/recipients"
 	"github.com/robinjoseph08/memento/pkg/repairs"
+	"github.com/robinjoseph08/memento/pkg/suggestions"
 	"github.com/robinjoseph08/memento/pkg/visibility"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -63,13 +64,13 @@ func keys(values map[string]json.RawMessage) []string {
 
 func newServer(t *testing.T) *echo.Echo {
 	t.Helper()
-	e, err := New(new(health.Service), nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	e, err := New(new(health.Service), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	require.NoError(t, err)
 	return e
 }
 
 func TestServerRegistersPeopleRoutesWhenHandlerIsProvided(t *testing.T) {
-	e, err := New(new(health.Service), nil, nil, people.NewHandler(nil, nil), nil, nil, nil, nil, nil, nil)
+	e, err := New(new(health.Service), nil, nil, people.NewHandler(nil, nil), nil, nil, nil, nil, nil, nil, nil)
 	require.NoError(t, err)
 	routes := make(map[string]bool)
 	for _, route := range e.Routes() {
@@ -85,7 +86,7 @@ func TestServerRegistersPeopleRoutesWhenHandlerIsProvided(t *testing.T) {
 }
 
 func TestServerRegistersFamilyRoutesWhenHandlerIsProvided(t *testing.T) {
-	e, err := New(new(health.Service), nil, nil, nil, family.NewHandler(nil, nil), nil, nil, nil, nil, nil)
+	e, err := New(new(health.Service), nil, nil, nil, family.NewHandler(nil, nil), nil, nil, nil, nil, nil, nil)
 	require.NoError(t, err)
 	routes := make(map[string]bool)
 	for _, route := range e.Routes() {
@@ -101,7 +102,7 @@ func TestServerRegistersFamilyRoutesWhenHandlerIsProvided(t *testing.T) {
 }
 
 func TestServerRegistersVisibilityRoutesWhenHandlerIsProvided(t *testing.T) {
-	e, err := New(new(health.Service), nil, nil, nil, nil, visibility.NewHandler(nil, nil), nil, nil, nil, nil)
+	e, err := New(new(health.Service), nil, nil, nil, nil, visibility.NewHandler(nil, nil), nil, nil, nil, nil, nil)
 	require.NoError(t, err)
 	routes := make(map[string]bool)
 	for _, route := range e.Routes() {
@@ -119,7 +120,7 @@ func TestServerRegistersVisibilityRoutesWhenHandlerIsProvided(t *testing.T) {
 }
 
 func TestServerRegistersRecipientRoutesWhenHandlerIsProvided(t *testing.T) {
-	e, err := New(new(health.Service), nil, nil, nil, nil, nil, recipients.NewHandler(nil, nil), nil, nil, nil)
+	e, err := New(new(health.Service), nil, nil, nil, nil, nil, recipients.NewHandler(nil, nil), nil, nil, nil, nil)
 	require.NoError(t, err)
 	routes := make(map[string]bool)
 	for _, route := range e.Routes() {
@@ -136,8 +137,24 @@ func TestServerRegistersRecipientRoutesWhenHandlerIsProvided(t *testing.T) {
 	}
 }
 
+func TestServerRegistersSuggestionRoutesWhenHandlerIsProvided(t *testing.T) {
+	e, err := New(new(health.Service), nil, nil, nil, nil, nil, nil, nil, nil, nil, suggestions.NewHandler(nil, nil))
+	require.NoError(t, err)
+	routes := make(map[string]bool)
+	for _, route := range e.Routes() {
+		routes[route.Method+" "+route.Path] = true
+	}
+	for _, route := range []string{
+		"GET /api/invitation-suggestions", "POST /api/invitation-suggestions",
+		"POST /api/invitation-suggestions/:id/withdraw", "GET /api/invitation-suggestions/curator",
+		"POST /api/invitation-suggestions/curator/:id/reject", "POST /api/invitation-suggestions/curator/:id/accept",
+	} {
+		assert.True(t, routes[route], route)
+	}
+}
+
 func TestServerRegistersDraftRoutesWhenHandlerIsProvided(t *testing.T) {
-	e, err := New(new(health.Service), nil, nil, nil, nil, nil, nil, nil, events.NewHandler(nil, nil), nil)
+	e, err := New(new(health.Service), nil, nil, nil, nil, nil, nil, nil, events.NewHandler(nil, nil), nil, nil)
 	require.NoError(t, err)
 	routes := make(map[string]bool)
 	for _, route := range e.Routes() {
@@ -152,7 +169,7 @@ func TestServerRegistersDraftRoutesWhenHandlerIsProvided(t *testing.T) {
 }
 
 func TestServerRegistersCuratorRepairRoutesWhenHandlerIsProvided(t *testing.T) {
-	e, err := New(new(health.Service), nil, nil, nil, nil, nil, nil, nil, nil, repairs.NewHandler(nil, nil))
+	e, err := New(new(health.Service), nil, nil, nil, nil, nil, nil, nil, nil, repairs.NewHandler(nil, nil), nil)
 	require.NoError(t, err)
 	routes := make(map[string]bool)
 	for _, route := range e.Routes() {
