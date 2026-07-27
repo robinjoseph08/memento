@@ -343,6 +343,25 @@ func TestEmailChangeProofExpiresAtBoundary(t *testing.T) {
 	assert.Equal(t, "alex@example.com", email)
 }
 
+func TestEmailChangeDoesNotExtendPublicSessionAbsoluteLifetime(t *testing.T) {
+	f := newFixture(t)
+	originalExpiry := f.now.Add(12 * time.Hour)
+	_, err := f.db.NewRaw(`UPDATE sessions SET session_type = 'public', idle_expires_at = NULL, absolute_expires_at = ? WHERE id = ?`, originalExpiry, f.sessionID).Exec(context.Background())
+	require.NoError(t, err)
+	requestID := uuid.New()
+	oldCode, newCode := "11112222", "33334444"
+	_, err = f.db.NewRaw(`INSERT INTO email_change_requests (id, person_id, recipient_access_generation_id, session_id, old_email, new_email, new_normalized_email, old_code_hash, new_code_hash, expires_at) VALUES (?, ?, ?, ?, 'alex@example.com', 'new@example.com', 'new@example.com', ?, ?, ?)`, requestID, f.personID, f.accessID, f.sessionID, f.service.codeHash("email-change-old", requestID[:], oldCode), f.service.codeHash("email-change-new", requestID[:], newCode), originalExpiry).Exec(context.Background())
+	require.NoError(t, err)
+	f.service.now = func() time.Time { return f.now.Add(11 * time.Hour) }
+	actor := setup.SessionActor{PersonID: f.personID, AccessID: f.accessID, SessionID: f.sessionID}
+
+	_, err = f.service.CompleteEmailChange(context.Background(), actor, EmailChangeCompleteRequest{RequestID: requestID.String(), OldCode: oldCode, NewCode: newCode})
+	require.NoError(t, err)
+	var rotatedExpiry time.Time
+	require.NoError(t, f.db.NewRaw(`SELECT absolute_expires_at FROM sessions WHERE id = ?`, f.sessionID).Scan(context.Background(), &rotatedExpiry))
+	assert.Equal(t, originalExpiry, rotatedExpiry.UTC())
+}
+
 func TestEmailChangeStartQueuesFreshProofsToBothAddresses(t *testing.T) {
 	f := newFixture(t)
 	actor, err := f.auth.AuthorizeSession(context.Background(), f.credential, f.csrf, true)

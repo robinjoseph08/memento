@@ -538,7 +538,7 @@ func (s *Service) RotateBrowserSessionIn(ctx context.Context, tx bun.Tx, actor S
 	if err != nil {
 		return BrowserSession{}, err
 	}
-	result, err := tx.NewRaw(`UPDATE sessions SET credential_hash = ?, session_type = ?, last_activity_at = ?, idle_expires_at = ?, absolute_expires_at = ? WHERE id = ? AND person_id = ? AND recipient_access_generation_id = ? AND revoked_at IS NULL`, tokenHash(raw), sessionType, now, idleExpiresAt, absoluteExpiresAt, actor.SessionID, actor.PersonID, actor.AccessID).Exec(ctx)
+	result, err := tx.NewRaw(`UPDATE sessions SET credential_hash = ?, session_type = ?, last_activity_at = ?, idle_expires_at = ?, absolute_expires_at = CASE WHEN session_type = 'public' AND ? = 'public' THEN LEAST(absolute_expires_at, ?) ELSE ? END WHERE id = ? AND person_id = ? AND recipient_access_generation_id = ? AND revoked_at IS NULL`, tokenHash(raw), sessionType, now, idleExpiresAt, sessionType, absoluteExpiresAt, absoluteExpiresAt, actor.SessionID, actor.PersonID, actor.AccessID).Exec(ctx)
 	if err != nil {
 		return BrowserSession{}, err
 	}
