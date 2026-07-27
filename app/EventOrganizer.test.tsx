@@ -47,6 +47,7 @@ function draft(version = 1): DraftEvent {
     grouping_timezone: "UTC",
     version,
     final_review_complete: false,
+    published_editable_version: null,
     sources: [],
     moments: [
       {
@@ -205,7 +206,11 @@ function stubOrganizerAPI(initial: DraftEvent) {
           version: persisted.version,
           notify_recipients: true,
         });
-        persisted = { ...persisted, lifecycle: "published" };
+        persisted = {
+          ...persisted,
+          lifecycle: "published",
+          published_editable_version: persisted.version,
+        };
         return response(
           {
             id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
@@ -363,11 +368,17 @@ test("publishes ready work and previews Recipient output read only", async () =>
   expect(
     await screen.findByText("Published revision 1 atomically."),
   ).toBeInTheDocument();
+  expect(publish).toBeDisabled();
 
   const recipient = await screen.findByLabelText("Preview Recipient");
   fireEvent.change(recipient, {
     target: { value: "ffffffff-ffff-4fff-8fff-ffffffffffff" },
   });
+  expect(
+    screen.getByText(
+      "Pending Recipient: cannot access yet. Preview shows approved content after Onboarding.",
+    ),
+  ).toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "Preview as Recipient" }));
   const preview = await screen.findByRole("region", {
     name: "Read-only Recipient preview",

@@ -151,6 +151,18 @@ func (s *Service) PublishEvent(ctx context.Context, actor setup.CuratorSession, 
 		if request.Version != version {
 			return ErrVersionConflict
 		}
+		if lifecycle != "draft" && lifecycle != "published" {
+			return ErrPublicationNotReady
+		}
+		if priorID != nil {
+			var priorEditableVersion int64
+			if err := tx.NewRaw(`SELECT editable_version FROM publications WHERE id = ?`, *priorID).Scan(ctx, &priorEditableVersion); err != nil {
+				return err
+			}
+			if priorEditableVersion == version {
+				return ErrPublicationNotReady
+			}
+		}
 		var momentCount, unassignedCount, incompleteCount int
 		if err := tx.NewRaw(`
 			SELECT
@@ -472,7 +484,7 @@ func (s *Service) PreviewEvent(ctx context.Context, actor setup.CuratorSession, 
 			return err
 		}
 		var err error
-		view, err = loadPublishedEvent(ctx, tx, eventID, accessID, true)
+		view, err = s.loadPublishedEvent(ctx, tx, eventID, accessID, true)
 		if err != nil {
 			return err
 		}
@@ -506,7 +518,7 @@ func (s *Service) RecipientEvent(ctx context.Context, actor setup.SessionActor, 
 			return ErrNoPublication
 		}
 		var err error
-		view, err = loadPublishedEvent(ctx, tx, eventID, actor.AccessID, false)
+		view, err = s.loadPublishedEvent(ctx, tx, eventID, actor.AccessID, false)
 		return err
 	})
 	return view, err
@@ -532,7 +544,7 @@ func (s *Service) HandlePublicationJob(ctx context.Context, job worker.Job) erro
 	return nil
 }
 
-func loadPublishedEvent(ctx context.Context, db bun.IDB, eventID, accessID uuid.UUID, preview bool) (PublishedEventView, error) {
+func (s *Service) loadPublishedEvent(ctx context.Context, db bun.IDB, eventID, accessID uuid.UUID, preview bool) (PublishedEventView, error) {
 	view := PublishedEventView{EventID: eventID.String(), Media: make([]PublishedMedia, 0), Preview: preview}
 	var publicationID uuid.UUID
 	var coverID *uuid.UUID
@@ -550,8 +562,12 @@ func loadPublishedEvent(ctx context.Context, db bun.IDB, eventID, accessID uuid.
 	if errors.Is(err, sql.ErrNoRows) {
 		if preview {
 			var currentPublication uuid.UUID
-			if currentErr := db.NewRaw(`SELECT publication_id FROM current_published_events WHERE event_id = ?`, eventID).Scan(ctx, &currentPublication); currentErr != nil {
+			currentErr := db.NewRaw(`SELECT publication_id FROM current_published_events WHERE event_id = ?`, eventID).Scan(ctx, &currentPublication)
+			if errors.Is(currentErr, sql.ErrNoRows) {
 				return PublishedEventView{}, ErrNoPublication
+			}
+			if currentErr != nil {
+				return PublishedEventView{}, currentErr
 			}
 			view.PublicationID = currentPublication.String()
 			view.Capabilities = PreviewCapabilities{}
@@ -567,6 +583,9 @@ func loadPublishedEvent(ctx context.Context, db bun.IDB, eventID, accessID uuid.
 	if coverID != nil {
 		value := coverID.String()
 		view.CoverMediaID = &value
+	}
+	if s.recipientReadBoundary != nil {
+		s.recipientReadBoundary()
 	}
 	if err := db.NewRaw(`
 		SELECT media.id, media.media_type, media.width, media.height, media.local_date_time,

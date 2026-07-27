@@ -230,12 +230,20 @@ export function EventOrganizer({
           notify_recipients: notifyRecipients,
         }),
       }),
-    onSuccess: () => {
+    onSuccess: (publication, publishedEvent) => {
       setPreviewOpen(false);
       setDraft((current) =>
-        current ? { ...current, lifecycle: "published" } : current,
+        current?.id === publishedEvent.id
+          ? {
+              ...current,
+              lifecycle: "published",
+              published_editable_version: publication.editable_version,
+            }
+          : current,
       );
-      void queryClient.invalidateQueries({ queryKey: ["event", selectedID] });
+      void queryClient.invalidateQueries({
+        queryKey: ["event", publishedEvent.id],
+      });
       void queryClient.invalidateQueries({ queryKey: ["events"] });
     },
   });
@@ -345,9 +353,26 @@ export function EventOrganizer({
     if (!currentDraft) return;
     const next = cloneEvent(currentDraft);
     mutator(next);
+    next.final_review_complete = false;
     latestDraftRef.current = next;
     queryClient.setQueryData(["event", next.id], next);
     setDraft(next);
+    const eventID = next.id;
+    const localRevision = revisionRef.current;
+    void apiJSON<DraftEvent>(`/api/events/${eventID}`)
+      .then((current) => {
+        queryClient.setQueryData(["event", eventID], current);
+        if (
+          selectedIDRef.current === eventID &&
+          revisionRef.current === localRevision
+        ) {
+          latestDraftRef.current = current;
+          setDraft(current);
+        }
+      })
+      .catch(() =>
+        queryClient.invalidateQueries({ queryKey: ["event", eventID] }),
+      );
   }
 
   function locateMedia(event: DraftEvent, id: string) {
@@ -685,7 +710,10 @@ export function EventOrganizer({
               <li key={event.id}>
                 <button
                   aria-current={selectedID === event.id ? "page" : undefined}
-                  disabled={event.id !== selectedID && save.isPending}
+                  disabled={
+                    event.id !== selectedID &&
+                    (save.isPending || publish.isPending)
+                  }
                   onClick={() => {
                     if (event.id === selectedID) return;
                     if (
@@ -1007,12 +1035,15 @@ export function EventOrganizer({
                     }
                     type="checkbox"
                   />
-                  Notify recipients
+                  Include notification intent
                 </label>
                 <button
                   disabled={
                     saveState !== "saved" ||
                     publish.isPending ||
+                    (publish.data?.editable_version ??
+                      currentDraft.published_editable_version) ===
+                      currentDraft.version ||
                     currentDraft.unassigned_media.length > 0 ||
                     currentDraft.moments.length === 0 ||
                     currentDraft.moments.some(
@@ -1038,6 +1069,7 @@ export function EventOrganizer({
                 <label>
                   Preview Recipient
                   <select
+                    disabled={previewRecipients.isPending}
                     onChange={(event) => {
                       setPreviewRecipientID(event.target.value);
                       setPreviewOpen(false);
@@ -1055,6 +1087,31 @@ export function EventOrganizer({
                     ))}
                   </select>
                 </label>
+                {previewRecipients.isPending ? (
+                  <p>Loading preview Recipients…</p>
+                ) : null}
+                {previewRecipients.isError ? (
+                  <div className="form-error" role="alert">
+                    <p>{previewRecipients.error.message}</p>
+                    <button
+                      onClick={() => void previewRecipients.refetch()}
+                      type="button"
+                    >
+                      Retry Recipient list
+                    </button>
+                  </div>
+                ) : null}
+                {previewRecipients.data?.recipients.length === 0 ? (
+                  <p>No current Recipients available for preview.</p>
+                ) : null}
+                {previewRecipients.data?.recipients.find(
+                  (recipient) => recipient.person_id === previewRecipientID,
+                )?.access_state === "pending" ? (
+                  <p>
+                    Pending Recipient: cannot access yet. Preview shows approved
+                    content after Onboarding.
+                  </p>
+                ) : null}
                 <button
                   disabled={
                     !previewRecipientID ||

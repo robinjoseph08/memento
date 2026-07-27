@@ -122,18 +122,19 @@ type EventSource struct {
 
 // Event is a portal-owned private draft.
 type Event struct {
-	ID                  string        `json:"id"`
-	Lifecycle           string        `json:"lifecycle"`
-	Title               string        `json:"title"`
-	Description         string        `json:"description"`
-	GroupingTimezone    string        `json:"grouping_timezone"`
-	Version             int64         `json:"version"`
-	FinalReviewComplete bool          `json:"final_review_complete"`
-	Sources             []EventSource `json:"sources"`
-	Moments             []Moment      `json:"moments"`
-	UnassignedMedia     []MediaItem   `json:"unassigned_media"`
-	CreatedAt           time.Time     `json:"created_at"`
-	UpdatedAt           time.Time     `json:"updated_at"`
+	ID                       string        `json:"id"`
+	Lifecycle                string        `json:"lifecycle"`
+	Title                    string        `json:"title"`
+	Description              string        `json:"description"`
+	GroupingTimezone         string        `json:"grouping_timezone"`
+	Version                  int64         `json:"version"`
+	FinalReviewComplete      bool          `json:"final_review_complete"`
+	PublishedEditableVersion *int64        `json:"published_editable_version" tstype:"number | null,required"`
+	Sources                  []EventSource `json:"sources"`
+	Moments                  []Moment      `json:"moments"`
+	UnassignedMedia          []MediaItem   `json:"unassigned_media"`
+	CreatedAt                time.Time     `json:"created_at"`
+	UpdatedAt                time.Time     `json:"updated_at"`
 }
 
 // LooseItem is a private independently publishable Media draft.
@@ -158,9 +159,10 @@ type SourceMediaResponse struct {
 
 // Service persists editable and published Event state without mutating Immich.
 type Service struct {
-	db                  *bun.DB
-	now                 func() time.Time
-	failPublicationStep func(PublicationStep) error
+	db                    *bun.DB
+	now                   func() time.Time
+	failPublicationStep   func(PublicationStep) error
+	recipientReadBoundary func()
 }
 
 func New(db *bun.DB) *Service {
@@ -203,6 +205,20 @@ type draftPlacementRow struct {
 	MediaItemID   uuid.UUID  `json:"media_item_id"`
 	DraftMomentID *uuid.UUID `json:"draft_moment_id"`
 	Position      int        `json:"position"`
+}
+
+type priorMomentState struct {
+	ID               uuid.UUID
+	Position         int
+	Title            string
+	ProposedDay      string
+	CoverMediaItemID *uuid.UUID
+}
+
+type priorPlacementState struct {
+	MediaItemID   uuid.UUID
+	DraftMomentID *uuid.UUID
+	Position      int
 }
 
 // CreateEvent creates stable Event and Moment identities in one transaction.
@@ -558,16 +574,39 @@ func (s *Service) OrganizeEvent(ctx context.Context, actor setup.CuratorSession,
 		if currentVersion != request.Version {
 			return ErrVersionConflict
 		}
-		var persisted []uuid.UUID
-		if err := tx.NewRaw(`SELECT media_item_id FROM draft_media_placements WHERE event_id = ? ORDER BY media_item_id`, id).Scan(ctx, &persisted); err != nil {
+		var priorMoments []priorMomentState
+		if err := tx.NewRaw(`
+			SELECT id, position, title, proposed_day::text, cover_media_item_id
+			FROM draft_moments WHERE event_id = ? ORDER BY position
+		`, id).Scan(ctx, &priorMoments); err != nil {
 			return err
 		}
-		if len(persisted) != len(seenMedia) {
+		var priorPlacements []priorPlacementState
+		if err := tx.NewRaw(`
+			SELECT media_item_id, draft_moment_id, position
+			FROM draft_media_placements WHERE event_id = ? ORDER BY position
+		`, id).Scan(ctx, &priorPlacements); err != nil {
+			return err
+		}
+		if len(priorPlacements) != len(seenMedia) {
 			return ErrInvalid
 		}
-		for _, mediaID := range persisted {
-			if _, exists := seenMedia[mediaID]; !exists {
+		for _, placement := range priorPlacements {
+			if _, exists := seenMedia[placement.MediaItemID]; !exists {
 				return ErrInvalid
+			}
+		}
+		organizationChanged := !sameOrganization(priorMoments, priorPlacements, momentRows, placements)
+		priorMediaByMoment := make(map[uuid.UUID][]uuid.UUID)
+		for _, placement := range priorPlacements {
+			if placement.DraftMomentID != nil {
+				priorMediaByMoment[*placement.DraftMomentID] = append(priorMediaByMoment[*placement.DraftMomentID], placement.MediaItemID)
+			}
+		}
+		nextMediaByMoment := make(map[uuid.UUID][]uuid.UUID)
+		for _, placement := range placements {
+			if placement.DraftMomentID != nil {
+				nextMediaByMoment[*placement.DraftMomentID] = append(nextMediaByMoment[*placement.DraftMomentID], placement.MediaItemID)
 			}
 		}
 		type reviewState struct {
@@ -584,22 +623,31 @@ func (s *Service) OrganizeEvent(ctx context.Context, actor setup.CuratorSession,
 		for _, prior := range priorReviews {
 			priorByID[prior.ID] = prior
 		}
+		invalidatedReviews := make(map[uuid.UUID]struct{})
 		for index := range momentRows {
-			if prior, exists := priorByID[momentRows[index].ID]; exists {
+			prior, exists := priorByID[momentRows[index].ID]
+			if exists && uuidSlicesEqual(priorMediaByMoment[momentRows[index].ID], nextMediaByMoment[momentRows[index].ID]) {
 				momentRows[index].AttendanceComplete = prior.AttendanceComplete
 				momentRows[index].AudienceComplete = prior.AudienceComplete
 				momentRows[index].ReviewVersion = prior.ReviewVersion
 			} else {
 				momentRows[index].AttendanceComplete = false
 				momentRows[index].AudienceComplete = false
-				momentRows[index].ReviewVersion = 1
+				if exists {
+					momentRows[index].ReviewVersion = prior.ReviewVersion + 1
+					invalidatedReviews[momentRows[index].ID] = struct{}{}
+				} else {
+					momentRows[index].ReviewVersion = 1
+				}
 			}
 		}
 		if err := applyMomentProvenance(ctx, tx, id, momentRows, placements); err != nil {
 			return err
 		}
 		for _, prior := range priorReviews {
-			if _, retained := seenMoments[prior.ID]; retained {
+			_, retained := seenMoments[prior.ID]
+			_, invalidated := invalidatedReviews[prior.ID]
+			if retained && !invalidated {
 				continue
 			}
 			for _, statement := range []string{
@@ -625,9 +673,10 @@ func (s *Service) OrganizeEvent(ctx context.Context, actor setup.CuratorSession,
 		if err := insertDraftPlacements(ctx, tx, id, now, placements); err != nil {
 			return err
 		}
+		finalReviewComplete := request.FinalReviewComplete && !organizationChanged
 		if _, err := tx.NewRaw(`
 			UPDATE events SET final_review_complete = ?, version = version + 1, updated_at = ? WHERE id = ?
-		`, request.FinalReviewComplete, now, id).Exec(ctx); err != nil {
+		`, finalReviewComplete, now, id).Exec(ctx); err != nil {
 			return err
 		}
 		if err := appendDraftAudit(ctx, tx, actor, "event_draft_organized", map[string]any{
@@ -639,6 +688,44 @@ func (s *Service) OrganizeEvent(ctx context.Context, actor setup.CuratorSession,
 		return err
 	})
 	return organized, err
+}
+
+func sameOrganization(priorMoments []priorMomentState, priorPlacements []priorPlacementState, moments []draftMomentRow, placements []draftPlacementRow) bool {
+	if len(priorMoments) != len(moments) || len(priorPlacements) != len(placements) {
+		return false
+	}
+	for index, prior := range priorMoments {
+		next := moments[index]
+		if prior.ID != next.ID || prior.Position != next.Position || prior.Title != next.Title || prior.ProposedDay != next.ProposedDay || !uuidPointersEqual(prior.CoverMediaItemID, next.CoverMediaItemID) {
+			return false
+		}
+	}
+	for index, prior := range priorPlacements {
+		next := placements[index]
+		if prior.MediaItemID != next.MediaItemID || prior.Position != next.Position || !uuidPointersEqual(prior.DraftMomentID, next.DraftMomentID) {
+			return false
+		}
+	}
+	return true
+}
+
+func uuidPointersEqual(left, right *uuid.UUID) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
+}
+
+func uuidSlicesEqual(left, right []uuid.UUID) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func containsUUID(values []uuid.UUID, target uuid.UUID) bool {
@@ -771,12 +858,15 @@ func (s *Service) GetEvent(ctx context.Context, id uuid.UUID) (Event, error) {
 func getEvent(ctx context.Context, db bun.IDB, id uuid.UUID) (Event, error) {
 	var event Event
 	err := db.NewRaw(`
-		SELECT id, lifecycle, title, description, grouping_timezone, version,
-			final_review_complete, created_at, updated_at
-		FROM events WHERE id = ?
+		SELECT event.id, event.lifecycle, event.title, event.description,
+			event.grouping_timezone, event.version, event.final_review_complete,
+			publication.editable_version, event.created_at, event.updated_at
+		FROM events AS event
+		LEFT JOIN publications AS publication ON publication.id = event.current_publication_id
+		WHERE event.id = ?
 	`, id).Scan(ctx, &event.ID, &event.Lifecycle, &event.Title, &event.Description,
 		&event.GroupingTimezone, &event.Version, &event.FinalReviewComplete,
-		&event.CreatedAt, &event.UpdatedAt)
+		&event.PublishedEditableVersion, &event.CreatedAt, &event.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Event{}, ErrNotFound
 	}

@@ -250,7 +250,7 @@ func (h *Handler) authorize(c echo.Context, mutation bool) (setup.CuratorSession
 	case errors.Is(err, setup.ErrUnauthenticated):
 		return setup.CuratorSession{}, errcodes.Unauthorized("A valid Curator Session is required.")
 	case errors.Is(err, setup.ErrCSRF):
-		return setup.CuratorSession{}, errcodes.Forbidden("Changing drafts without a valid CSRF token")
+		return setup.CuratorSession{}, errcodes.Forbidden("This action requires a valid CSRF token")
 	case errors.Is(err, setup.ErrNotCurator):
 		return setup.CuratorSession{}, errcodes.NotFound("Page")
 	case err != nil:

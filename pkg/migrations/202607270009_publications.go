@@ -21,6 +21,7 @@ func init() {
 						notify_recipients boolean NOT NULL,
 						committed_at timestamptz NOT NULL,
 						UNIQUE (event_id, revision),
+						UNIQUE (event_id, editable_version),
 						CHECK ((revision = 1) = (prior_publication_id IS NULL))
 					)`,
 					`CREATE INDEX publications_committed_idx ON publications (committed_at DESC, id)`,

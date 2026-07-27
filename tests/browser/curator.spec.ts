@@ -37,6 +37,7 @@ function draft(version = 1): DraftEvent {
     grouping_timezone: "UTC",
     version,
     final_review_complete: false,
+    published_editable_version: null,
     sources: [],
     moments: [
       {
@@ -155,7 +156,11 @@ async function mockCuratorAPI(
       path === `/api/events/${eventID}/publications` &&
       request.method() === "POST"
     ) {
-      persisted = { ...persisted, lifecycle: "published" };
+      persisted = {
+        ...persisted,
+        lifecycle: "published",
+        published_editable_version: persisted.version,
+      };
       await route.fulfill({
         status: 201,
         json: {
@@ -314,9 +319,15 @@ test("@desktop @mobile publishes atomically and keeps Recipient preview read onl
   if ((page.viewportSize()?.width ?? 1280) <= 1024) {
     await page.getByRole("button", { name: "Inspect", exact: true }).click();
   }
+  await expect(
+    page.getByRole("button", { name: "Publish Event" }),
+  ).toBeDisabled();
   await page
     .getByLabel("Preview Recipient")
     .selectOption("ffffffff-ffff-4fff-8fff-ffffffffffff");
+  await expect(
+    page.getByText(/Pending Recipient: cannot access yet/),
+  ).toBeVisible();
   await page.getByRole("button", { name: "Preview as Recipient" }).click();
   const preview = page.getByRole("region", {
     name: "Read-only Recipient preview",
