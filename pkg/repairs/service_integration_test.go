@@ -269,11 +269,22 @@ func TestFaceReassignmentAndAnchorConflictRequireReview(t *testing.T) {
 	listed, err := fixture.service.List(context.Background())
 	require.NoError(t, err)
 	require.Len(t, listed.PersonCandidates, 1)
-	assert.Empty(t, listed.PersonCandidates[0].CandidateImmichPersonID)
-	assert.Contains(t, listed.PersonCandidates[0].Conflicts, "anchors_split_across_people")
+	candidate := listed.PersonCandidates[0]
+	assert.Empty(t, candidate.CandidateImmichPersonID)
+	assert.True(t, candidate.PreviousImmichPersonPresent)
+	assert.Contains(t, candidate.Conflicts, "anchors_split_across_people")
 	suggestions, err := fixture.service.SuggestionPersonIDs(context.Background(), []uuid.UUID{fixture.oldID, other})
 	require.NoError(t, err)
 	assert.Empty(t, suggestions)
+
+	_, err = fixture.service.ConfirmPerson(context.Background(), fixture.actor, uuid.MustParse(candidate.ID))
+	require.NoError(t, err)
+	suggestions, err = fixture.service.SuggestionPersonIDs(context.Background(), []uuid.UUID{fixture.oldID, other})
+	require.NoError(t, err)
+	assert.Equal(t, []uuid.UUID{fixture.personID}, suggestions)
+	var anchors int
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM immich_face_anchors WHERE person_id = ?`, fixture.personID).Scan(context.Background(), &anchors))
+	assert.Equal(t, 1, anchors, "confirmation keeps only anchors still assigned to the confirmed identity")
 }
 
 func TestDeletedAnchorAssetDoesNotBlockPersonReconciliation(t *testing.T) {

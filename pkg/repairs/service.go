@@ -56,17 +56,18 @@ type FaceAnchorEvidence struct {
 
 // PersonCandidate is a private proposed replacement for one confirmed portal Person link.
 type PersonCandidate struct {
-	ID                        string               `json:"id"`
-	PersonID                  string               `json:"person_id"`
-	PersonName                string               `json:"person_name"`
-	PreviousImmichPersonID    string               `json:"previous_immich_person_id"`
-	CandidateImmichPersonID   string               `json:"candidate_immich_person_id,omitempty"`
-	CandidateImmichPersonName string               `json:"candidate_immich_person_name,omitempty"`
-	State                     string               `json:"state"`
-	Anchors                   []FaceAnchorEvidence `json:"face_anchors"`
-	Conflicts                 []string             `json:"conflicts"`
-	CreatedAt                 time.Time            `json:"created_at"`
-	ResolvedAt                *time.Time           `json:"resolved_at,omitempty"`
+	ID                          string               `json:"id"`
+	PersonID                    string               `json:"person_id"`
+	PersonName                  string               `json:"person_name"`
+	PreviousImmichPersonID      string               `json:"previous_immich_person_id"`
+	PreviousImmichPersonPresent bool                 `json:"previous_immich_person_present"`
+	CandidateImmichPersonID     string               `json:"candidate_immich_person_id,omitempty"`
+	CandidateImmichPersonName   string               `json:"candidate_immich_person_name,omitempty"`
+	State                       string               `json:"state"`
+	Anchors                     []FaceAnchorEvidence `json:"face_anchors"`
+	Conflicts                   []string             `json:"conflicts"`
+	CreatedAt                   time.Time            `json:"created_at"`
+	ResolvedAt                  *time.Time           `json:"resolved_at,omitempty"`
 }
 
 // MediaCandidate is a private proposal to preserve one portal Media identity with a new backing.
@@ -394,6 +395,7 @@ func (s *Service) listPersonCandidates(ctx context.Context, response *ListRespon
 		ID, PersonID, PreviousID         uuid.UUID
 		CandidateID                      uuid.NullUUID
 		PersonName, CandidateName, State string
+		PreviousPresent                  bool
 		Anchors, Conflicts               json.RawMessage
 		CreatedAt                        time.Time
 		ResolvedAt                       *time.Time
@@ -404,6 +406,10 @@ func (s *Service) listPersonCandidates(ctx context.Context, response *ListRespon
 			candidate.previous_immich_person_id AS previous_id,
 			candidate.candidate_immich_person_id AS candidate_id,
 			COALESCE(inventory.name, '') AS candidate_name, candidate.state,
+			EXISTS (
+				SELECT 1 FROM immich_people_inventory AS previous
+				WHERE previous.immich_person_id = candidate.previous_immich_person_id AND previous.present
+			) AS previous_present,
 			candidate.anchor_evidence AS anchors, candidate.conflict_evidence AS conflicts,
 			candidate.created_at, candidate.resolved_at
 		FROM person_repair_candidates AS candidate
@@ -415,8 +421,9 @@ func (s *Service) listPersonCandidates(ctx context.Context, response *ListRespon
 	}
 	for _, raw := range rows {
 		candidate := PersonCandidate{ID: raw.ID.String(), PersonID: raw.PersonID.String(), PersonName: raw.PersonName,
-			PreviousImmichPersonID: raw.PreviousID.String(), CandidateImmichPersonName: raw.CandidateName,
-			State: raw.State, Conflicts: []string{}, Anchors: []FaceAnchorEvidence{}, CreatedAt: raw.CreatedAt, ResolvedAt: raw.ResolvedAt}
+			PreviousImmichPersonID: raw.PreviousID.String(), PreviousImmichPersonPresent: raw.PreviousPresent,
+			CandidateImmichPersonName: raw.CandidateName, State: raw.State, Conflicts: []string{},
+			Anchors: []FaceAnchorEvidence{}, CreatedAt: raw.CreatedAt, ResolvedAt: raw.ResolvedAt}
 		if raw.CandidateID.Valid {
 			candidate.CandidateImmichPersonID = raw.CandidateID.UUID.String()
 		}
@@ -500,9 +507,9 @@ func (s *Service) linkPersonWithAnchors(ctx context.Context, actor setup.Curator
 			var lockedID uuid.UUID
 			err := tx.NewRaw(`
 				SELECT id FROM person_repair_candidates
-				WHERE id = ? AND person_id = ? AND candidate_immich_person_id = ? AND state = 'pending'
+				WHERE id = ? AND person_id = ? AND state = 'pending'
 				FOR UPDATE
-			`, *candidateID, personID, immichPersonID).Scan(ctx, &lockedID)
+			`, *candidateID, personID).Scan(ctx, &lockedID)
 			if errors.Is(err, sql.ErrNoRows) {
 				return ErrConflict
 			}
@@ -641,30 +648,36 @@ func (s *Service) ConfirmPerson(ctx context.Context, actor setup.CuratorSession,
 	} else if err != nil {
 		return MutationResponse{}, err
 	}
-	if !replacement.Valid {
-		return MutationResponse{}, ErrConflict
-	}
 	var expectedConflicts []string
 	if err := json.Unmarshal(encodedConflicts, &expectedConflicts); err != nil {
 		return MutationResponse{}, err
 	}
-	currentCandidate, currentConflicts, currentAnchors, err := s.currentPersonEvaluation(ctx, personID, previousID)
+	currentCandidate, currentConflicts, currentAnchors, previousPresent, err := s.currentPersonEvaluation(ctx, personID, previousID)
 	if err != nil {
 		return MutationResponse{}, err
 	}
-	if currentCandidate == nil || *currentCandidate != replacement.UUID || !slices.Equal(currentConflicts, expectedConflicts) {
+	if !slices.Equal(currentConflicts, expectedConflicts) {
 		return MutationResponse{}, ErrConflict
 	}
-	return s.linkPersonWithAnchors(ctx, actor, personID, replacement.UUID, &candidateID, currentAnchors)
+	targetID := previousID
+	if replacement.Valid {
+		targetID = replacement.UUID
+		if currentCandidate == nil || *currentCandidate != targetID {
+			return MutationResponse{}, ErrConflict
+		}
+	} else if currentCandidate != nil || !previousPresent {
+		return MutationResponse{}, ErrConflict
+	}
+	return s.linkPersonWithAnchors(ctx, actor, personID, targetID, &candidateID, currentAnchors)
 }
 
-func (s *Service) currentPersonEvaluation(ctx context.Context, personID, previousID uuid.UUID) (*uuid.UUID, []string, []collectedAnchor, error) {
+func (s *Service) currentPersonEvaluation(ctx context.Context, personID, previousID uuid.UUID) (*uuid.UUID, []string, []collectedAnchor, bool, error) {
 	if err := s.connector.Check(ctx); err != nil {
-		return nil, nil, nil, ErrDependency
+		return nil, nil, nil, false, ErrDependency
 	}
 	people, err := s.connector.People(ctx)
 	if err != nil {
-		return nil, nil, nil, ErrDependency
+		return nil, nil, nil, false, ErrDependency
 	}
 	present := make(map[uuid.UUID]immich.PersonSummary, len(people))
 	for _, person := range people {
@@ -676,7 +689,7 @@ func (s *Service) currentPersonEvaluation(ctx context.Context, personID, previou
 			image_width, image_height, x1, y1, x2, y2, last_linked_immich_person_id, last_seen_at
 		FROM immich_face_anchors WHERE person_id = ? ORDER BY immich_asset_id, immich_face_id
 	`, personID).Scan(ctx, &anchors); err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, false, err
 	}
 	facesByID := map[uuid.UUID]immich.FaceSummary{}
 	seenAssets := map[uuid.UUID]struct{}{}
@@ -690,7 +703,7 @@ func (s *Service) currentPersonEvaluation(ctx context.Context, personID, previou
 			continue
 		}
 		if err != nil {
-			return nil, nil, nil, ErrDependency
+			return nil, nil, nil, false, ErrDependency
 		}
 		for _, face := range faces {
 			facesByID[face.SourceID] = face
@@ -700,17 +713,20 @@ func (s *Service) currentPersonEvaluation(ctx context.Context, personID, previou
 	if matched {
 		candidate = &previousID
 	}
-	currentAnchors := make([]collectedAnchor, 0, len(anchors))
+	anchorPersonID := previousID
 	if candidate != nil {
-		for _, anchor := range anchors {
-			face, found := facesByID[anchor.FaceID]
-			if !found || face.PersonID == nil || *face.PersonID != *candidate {
-				continue
-			}
-			currentAnchors = append(currentAnchors, collectedAnchor{AssetID: anchor.AssetID, Checksum: anchor.Checksum.String, Face: face})
-		}
+		anchorPersonID = *candidate
 	}
-	return candidate, conflicts, currentAnchors, nil
+	currentAnchors := make([]collectedAnchor, 0, len(anchors))
+	for _, anchor := range anchors {
+		face, found := facesByID[anchor.FaceID]
+		if !found || face.PersonID == nil || *face.PersonID != anchorPersonID {
+			continue
+		}
+		currentAnchors = append(currentAnchors, collectedAnchor{AssetID: anchor.AssetID, Checksum: anchor.Checksum.String, Face: face})
+	}
+	_, previousPresent := present[previousID]
+	return candidate, conflicts, currentAnchors, previousPresent, nil
 }
 
 // RejectPerson preserves evidence while leaving the link in needs-review.

@@ -268,6 +268,9 @@ func (s *Service) applyValidatedSnapshot(
 			return 0, 0, 0, err
 		}
 	}
+	if err := supersedeInvalidMediaRepairs(ctx, tx, now); err != nil {
+		return 0, 0, 0, err
+	}
 
 	removals := 0
 	if stablePasses >= 2 {
@@ -429,6 +432,29 @@ func upsertMediaItemBatch(ctx context.Context, tx bun.Tx, sourceAlbumID uuid.UUI
 			last_seen_at = EXCLUDED.last_seen_at,
 			source_fingerprint = EXCLUDED.source_fingerprint
 	`, sourceAlbumID, now, now, string(payload)).Exec(ctx)
+	return err
+}
+
+func supersedeInvalidMediaRepairs(ctx context.Context, tx bun.Tx, now time.Time) error {
+	_, err := tx.NewRaw(`
+		UPDATE media_repair_candidates AS repair
+		SET state = 'superseded', resolved_at = ?, candidate_media_item_id = NULL
+		WHERE repair.state = 'pending'
+		  AND NOT EXISTS (
+			SELECT 1
+			FROM media_backings AS previous
+			JOIN media_items AS previous_item ON previous_item.id = previous.media_item_id
+			JOIN media_backings AS candidate ON candidate.media_item_id = repair.candidate_media_item_id
+				AND candidate.immich_asset_id = repair.candidate_immich_asset_id AND candidate.active
+			JOIN media_items AS candidate_item ON candidate_item.id = candidate.media_item_id
+			WHERE previous.media_item_id = repair.media_item_id
+			  AND previous.immich_asset_id = repair.previous_immich_asset_id AND previous.active
+			  AND previous.checksum IS NOT NULL AND previous.checksum = candidate.checksum
+			  AND previous_item.availability = 'source_missing' AND candidate_item.availability = 'current'
+			  AND NOT EXISTS (SELECT 1 FROM source_album_memberships WHERE media_item_id = previous_item.id)
+			  AND EXISTS (SELECT 1 FROM source_album_memberships WHERE media_item_id = candidate_item.id)
+		  )
+	`, now).Exec(ctx)
 	return err
 }
 

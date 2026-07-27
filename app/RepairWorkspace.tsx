@@ -27,12 +27,14 @@ function CandidateActions({
   candidateID,
   candidateLabel,
   canConfirm = true,
+  confirmText = "Confirm repair",
   csrfToken,
 }: {
   kind: "people" | "media";
   candidateID: string;
   candidateLabel: string;
   canConfirm?: boolean;
+  confirmText?: string;
   csrfToken: string;
 }) {
   const queryClient = useQueryClient();
@@ -80,7 +82,7 @@ function CandidateActions({
           >
             {resolve.isPending && action === "confirm"
               ? "Confirming…"
-              : "Confirm repair"}
+              : confirmText}
           </button>
         ) : null}
         <button
@@ -198,7 +200,15 @@ function PersonRepair({
         <CandidateActions
           candidateID={candidate.id}
           candidateLabel={candidate.person_name}
-          canConfirm={Boolean(candidate.candidate_immich_person_id)}
+          canConfirm={
+            Boolean(candidate.candidate_immich_person_id) ||
+            candidate.previous_immich_person_present
+          }
+          confirmText={
+            candidate.candidate_immich_person_id
+              ? "Confirm repair"
+              : "Confirm current link"
+          }
           csrfToken={csrfToken}
           kind="people"
         />

@@ -142,7 +142,7 @@ test("shows private normalized Media evidence and confirms only after an explici
   });
 });
 
-test("shows conflicted Person evidence and permits explicit rejection without a replacement", async () => {
+test("shows conflicted Person evidence and permits confirming the current link", async () => {
   const requests: Array<{ path: string; init?: RequestInit }> = [];
   vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
     const path = requestPath(input);
@@ -151,7 +151,7 @@ test("shows conflicted Person evidence and permits explicit rejection without a 
       return Promise.resolve(jsonResponse({ people: [] }));
     }
     if (init?.method === "POST") {
-      return Promise.resolve(jsonResponse({ status: "rejected" }));
+      return Promise.resolve(jsonResponse({ status: "confirmed" }));
     }
     return Promise.resolve(
       jsonResponse({
@@ -161,6 +161,7 @@ test("shows conflicted Person evidence and permits explicit rejection without a 
             person_id: "66666666-6666-4666-8666-666666666666",
             person_name: "Family member",
             previous_immich_person_id: "77777777-7777-4777-8777-777777777777",
+            previous_immich_person_present: true,
             state: "pending",
             face_anchors: [
               {
@@ -190,19 +191,18 @@ test("shows conflicted Person evidence and permits explicit rejection without a 
   expect(await screen.findByText("Family member")).toBeInTheDocument();
   expect(screen.getByText("person-face-id")).toBeInTheDocument();
   expect(screen.getByText("anchors split across people")).toBeInTheDocument();
-  expect(
-    screen.queryByRole("button", { name: /Confirm repair for Family member/ }),
-  ).not.toBeInTheDocument();
-  fireEvent.click(
-    screen.getByRole("button", { name: "Reject repair for Family member" }),
-  );
+  const confirmation = screen.getByRole("button", {
+    name: "Confirm repair for Family member",
+  });
+  expect(confirmation).toHaveTextContent("Confirm current link");
+  fireEvent.click(confirmation);
   await waitFor(() =>
     expect(
       requests.find((request) => request.init?.method === "POST")?.path,
-    ).toBe("/api/repairs/people/55555555-5555-4555-8555-555555555555/reject"),
+    ).toBe("/api/repairs/people/55555555-5555-4555-8555-555555555555/confirm"),
   );
   expect(await screen.findByRole("status")).toHaveTextContent(
-    "Repair rejected.",
+    "Repair confirmed.",
   );
 });
 

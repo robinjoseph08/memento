@@ -541,6 +541,29 @@ func TestRejectedMediaRepairIsNotProposedAgain(t *testing.T) {
 	assert.Zero(t, pendingCount)
 }
 
+func TestPendingMediaRepairIsSupersededWhenPreviousAssetReturns(t *testing.T) {
+	oldAsset := repairableReconciliationAsset(uuid.New(), "/library/old/family.jpg")
+	connector := &reconciliationConnector{summary: sourceAlbum(uuid.New(), "Reversed repair album", 1)}
+	connector.pages = map[int]immich.AssetPage{1: {Items: []immich.AssetSummary{oldAsset}}}
+	service, sourceAlbumID := newReconciliationService(t, connector)
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+
+	replacement := repairableReconciliationAsset(uuid.New(), "/library/new/family.jpg")
+	connector.setMembership(replacement)
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+
+	connector.setMembership(oldAsset)
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	var state string
+	var candidateMediaItemID uuid.NullUUID
+	require.NoError(t, service.db.NewRaw(`
+		SELECT state, candidate_media_item_id FROM media_repair_candidates
+	`).Scan(context.Background(), &state, &candidateMediaItemID))
+	assert.Equal(t, "superseded", state)
+	assert.False(t, candidateMediaItemID.Valid)
+}
+
 func TestMediaRepairRequiresExactChecksumDespiteMatchingMetadata(t *testing.T) {
 	oldAsset := repairableReconciliationAsset(uuid.New(), "/library/old/family.jpg")
 	connector := &reconciliationConnector{summary: sourceAlbum(uuid.New(), "Exact checksum album", 1)}
