@@ -325,7 +325,7 @@ func (s *Service) issue(ctx context.Context, actor setup.CuratorSession, personI
 		body := fmt.Sprintf("Hello %s,\n\n%s invited you to Memento, a private family photo and video archive. This personalized offer is only for your login email and can be used once. Open %s before %s, then explicitly accept and complete Onboarding before any Media becomes available. Do not forward this private link.", current.personName, curatorName, link, expiry)
 		if _, _, err := s.delivery.QueueRequired(ctx, tx, emaildelivery.RequiredMessage{
 			Kind: emaildelivery.KindInvitationInitial, Recipient: current.email, Subject: curatorName + " invited you to Memento",
-			Body: body, DeliverBefore: &expiresAt, AvailableAt: &now, InvitationID: &invitationIDString,
+			Body: body, DeliverBefore: &expiresAt, InvitationID: &invitationIDString,
 		}); err != nil {
 			return err
 		}
@@ -416,7 +416,7 @@ func (s *Service) Remind(ctx context.Context, actor setup.CuratorSession, person
 		body := fmt.Sprintf("Hello %s,\n\n%s is reminding you about your Memento Invitation. Use the private link in your most recent Invitation email before %s. The offer remains single-use and Onboarding is required before Media becomes available.", current.personName, curator, expiresAt.Format(time.RFC1123))
 		if _, _, err := s.delivery.QueueRequired(ctx, tx, emaildelivery.RequiredMessage{
 			Kind: emaildelivery.KindInvitationManualReminder, Recipient: current.email, Subject: "Reminder about your Memento Invitation",
-			Body: body, DeliverBefore: &expiresAt, AvailableAt: &now, InvitationID: &invitationIDString,
+			Body: body, DeliverBefore: &expiresAt, InvitationID: &invitationIDString,
 		}); err != nil {
 			return err
 		}
@@ -428,13 +428,13 @@ func (s *Service) Remind(ctx context.Context, actor setup.CuratorSession, person
 type liveMutation func(context.Context, bun.Tx, lockedRecipient, uuid.UUID, time.Time) error
 
 func (s *Service) mutateLive(ctx context.Context, actor setup.CuratorSession, personID uuid.UUID, action string, mutation liveMutation) (Recipient, error) {
-	now := s.now().UTC()
 	var response Recipient
 	err := s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 		current, err := lockPendingRecipient(ctx, tx, personID)
 		if err != nil {
 			return err
 		}
+		now := s.now().UTC()
 		var invitationID uuid.UUID
 		err = tx.NewRaw(`SELECT id FROM invitations WHERE recipient_access_generation_id = ? AND accepted_at IS NULL AND revoked_at IS NULL AND superseded_at IS NULL AND expires_at > ? FOR UPDATE`, current.accessID, now).Scan(ctx, &invitationID)
 		if errors.Is(err, sql.ErrNoRows) {

@@ -101,6 +101,22 @@ test("opens an Invitation read-only and removes its token only after explicit ac
   expect(JSON.parse(stringBody(requests[1].init?.body))).toEqual({ token });
 });
 
+test("shows an unavailable Invitation instead of waiting forever when the token is absent", async () => {
+  window.history.replaceState(null, "", "/invitation");
+  const fetchMock = vi.fn();
+  vi.stubGlobal("fetch", fetchMock);
+
+  renderApp();
+
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "This Invitation is invalid or no longer available.",
+  );
+  expect(
+    screen.queryByText(/Checking this Invitation/),
+  ).not.toBeInTheDocument();
+  expect(fetchMock).not.toHaveBeenCalled();
+});
+
 test("completes the first-browser setup workflow with explicit Onboarding choices", async () => {
   const requests: Array<{ path: string; init?: RequestInit }> = [];
   vi.stubGlobal(

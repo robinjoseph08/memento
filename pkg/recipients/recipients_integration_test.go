@@ -238,7 +238,7 @@ func TestSendPersistsOnlyTokenHashAndDurableInitialAndSevenDayReminder(t *testin
 	require.NoError(t, fixture.db.NewRaw(`SELECT kind, recipient, available_at, body FROM email_deliveries WHERE invitation_id = ? ORDER BY available_at`, result.Invitation.ID).Scan(context.Background(), &rows))
 	require.Len(t, rows, 2)
 	assert.Equal(t, emaildelivery.KindInvitationInitial, rows[0].Kind)
-	assert.WithinDuration(t, fixture.now, rows[0].AvailableAt, time.Millisecond)
+	assert.WithinDuration(t, time.Now().UTC(), rows[0].AvailableAt, 5*time.Second)
 	assert.Equal(t, emaildelivery.KindInvitationAutomaticReminder, rows[1].Kind)
 	assert.Equal(t, fixture.now.Add(7*24*time.Hour), rows[1].AvailableAt)
 	for _, row := range rows {
@@ -387,11 +387,15 @@ func dispatchDelivery(t *testing.T, fixture recipientFixture, invitationID, kind
 	t.Helper()
 	ctx := context.Background()
 	_, err := fixture.db.NewRaw(`
-		UPDATE outbox_events AS event
-		SET available_at = CASE WHEN delivery.kind = ? THEN now() ELSE now() + interval '1 day' END
+		UPDATE outbox_events SET available_at = now() + interval '1 day'
+		WHERE aggregate_kind = 'email_delivery' AND delivered_at IS NULL
+	`).Exec(ctx)
+	require.NoError(t, err)
+	_, err = fixture.db.NewRaw(`
+		UPDATE outbox_events AS event SET available_at = now()
 		FROM email_deliveries AS delivery
-		WHERE event.aggregate_id = delivery.public_id AND delivery.invitation_id = ? AND event.delivered_at IS NULL
-	`, kind, invitationID).Exec(ctx)
+		WHERE event.aggregate_id = delivery.public_id AND delivery.invitation_id = ? AND delivery.kind = ? AND event.delivered_at IS NULL
+	`, invitationID, kind).Exec(ctx)
 	require.NoError(t, err)
 	dispatched, err := outbox.New(fixture.db).Dispatch(ctx, owner, time.Minute)
 	require.NoError(t, err)

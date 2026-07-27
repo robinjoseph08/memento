@@ -156,8 +156,12 @@ func (s *Service) QueueRequired(ctx context.Context, tx bun.Tx, message Required
 	if err != nil {
 		return 0, "", err
 	}
-	availableAt := time.Now().UTC()
-	if message.AvailableAt != nil {
+	var availableAt time.Time
+	if message.AvailableAt == nil {
+		if err := tx.NewRaw(`SELECT now()`).Scan(ctx, &availableAt); err != nil {
+			return 0, "", err
+		}
+	} else {
 		availableAt = message.AvailableAt.UTC()
 	}
 	var id int64

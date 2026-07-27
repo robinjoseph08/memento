@@ -754,10 +754,10 @@ function InvitationLanding() {
             </p>
           </>
         ) : null}
-        {!accepted && invitation.isPending ? (
+        {!accepted && token && invitation.isPending ? (
           <p aria-live="polite">Checking this Invitation securely…</p>
         ) : null}
-        {!accepted && invitation.isError ? (
+        {!accepted && (!token || invitation.isError) ? (
           <p className="form-error" role="alert">
             This Invitation is invalid or no longer available.
           </p>
