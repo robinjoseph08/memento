@@ -270,6 +270,26 @@ func TestMomentApprovalRequiresConfirmedAttendanceAndChangesRequireReapproval(t 
 	assert.NotNil(t, changed.ApprovedAudience, "the immutable previous approval remains available for history")
 }
 
+func TestApprovalRejectsProposalWhenRecipientEligibilityChanged(t *testing.T) {
+	f := newAudienceFixture(t)
+	ctx := context.Background()
+	review, err := f.service.ConfirmAttendance(ctx, f.actor, f.momentID, 1, attendanceRequest(f.people["present"].String()))
+	require.NoError(t, err)
+	_, err = f.db.NewRaw(`UPDATE people SET archived_at = now() WHERE id = ?`, f.people["present"]).Exec(ctx)
+	require.NoError(t, err)
+	_, err = f.service.Approve(ctx, f.actor, targetMoment, f.momentID, review.Version)
+	assert.ErrorIs(t, err, ErrProposalStale)
+	var snapshots, approvalAudits int
+	require.NoError(t, f.db.NewRaw(`SELECT count(*) FROM audience_snapshots WHERE target_kind = 'moment' AND target_id = ?`, f.momentID).Scan(ctx, &snapshots))
+	require.NoError(t, f.db.NewRaw(`SELECT count(*) FROM publication_audit_events WHERE action = 'audience_approved' AND target_id = ?`, f.momentID).Scan(ctx, &approvalAudits))
+	assert.Zero(t, snapshots)
+	assert.Zero(t, approvalAudits)
+	reloaded, err := f.service.ReviewMoment(ctx, f.momentID)
+	require.NoError(t, err)
+	assert.Equal(t, review.Version, reloaded.Version)
+	assert.False(t, reloaded.AudienceComplete)
+}
+
 func TestArchivedAttendeesCanBeRemovedFromAttendance(t *testing.T) {
 	f := newAudienceFixture(t)
 	ctx := context.Background()

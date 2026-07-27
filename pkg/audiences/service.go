@@ -23,6 +23,7 @@ var (
 	ErrPersonUnavailable     = errors.New("attendance Person is unavailable")
 	ErrRecipientIneligible   = errors.New("audience override Recipient is ineligible")
 	ErrAttendanceUnconfirmed = errors.New("attendance must be confirmed before audience approval")
+	ErrProposalStale         = errors.New("audience proposal contains an ineligible Recipient")
 	ErrStale                 = errors.New("audience review version is stale")
 )
 
@@ -339,8 +340,8 @@ func (s *Service) Approve(ctx context.Context, actor setup.CuratorSession, kind 
 				return ErrAttendanceUnconfirmed
 			}
 		}
-		var count int
-		if err := tx.NewRaw(`SELECT count(*) FROM audience_proposals WHERE target_kind = ? AND target_id = ? AND included`, t.kind, t.id).Scan(ctx, &count); err != nil {
+		count, err := lockEligibleProposalRecipients(ctx, tx, t)
+		if err != nil {
 			return err
 		}
 		label := "Shared"
@@ -378,6 +379,43 @@ func (s *Service) Approve(ctx context.Context, actor setup.CuratorSession, kind 
 		return nil
 	})
 	return response, err
+}
+
+func lockEligibleProposalRecipients(ctx context.Context, tx bun.Tx, t target) (int, error) {
+	var includedCount int
+	if err := tx.NewRaw(`SELECT count(*) FROM audience_proposals WHERE target_kind = ? AND target_id = ? AND included`, t.kind, t.id).Scan(ctx, &includedCount); err != nil {
+		return 0, err
+	}
+	var eligible []uuid.UUID
+	if err := tx.NewRaw(`
+		SELECT proposal.recipient_person_id
+		FROM audience_proposals AS proposal
+		JOIN recipient_access_generations AS access
+			ON access.id = proposal.recipient_access_generation_id
+			AND access.person_id = proposal.recipient_person_id
+			AND access.is_current
+			AND access.state IN ('pending', 'onboarding', 'completed')
+		JOIN people AS person
+			ON person.id = proposal.recipient_person_id
+			AND person.archived_at IS NULL
+			AND person.merged_at IS NULL
+		JOIN person_roles AS recipient_role
+			ON recipient_role.person_id = proposal.recipient_person_id
+			AND recipient_role.role = 'recipient'
+		WHERE proposal.target_kind = ? AND proposal.target_id = ? AND proposal.included
+			AND NOT EXISTS (
+				SELECT 1 FROM person_roles AS curator_role
+				WHERE curator_role.person_id = proposal.recipient_person_id
+					AND curator_role.role = 'curator'
+			)
+		FOR SHARE OF access, person, recipient_role
+	`, t.kind, t.id).Scan(ctx, &eligible); err != nil {
+		return 0, err
+	}
+	if len(eligible) != includedCount {
+		return 0, ErrProposalStale
+	}
+	return includedCount, nil
 }
 
 func validTarget(kind string, id uuid.UUID) (target, error) {
