@@ -365,16 +365,10 @@ test("lets a Recipient edit only their own discoverable Interest choices", async
   );
   fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
   await waitFor(() => expect(onSignOut).toHaveBeenCalledOnce());
-  expect(requests).toContainEqual(
-    expect.objectContaining({
-      path: "/api/session/logout",
-      init: expect.objectContaining({
-        method: "POST",
-        headers: expect.objectContaining({
-          "X-Memento-CSRF": "recipient-csrf",
-        }),
-      }),
-    }),
+  const logout = requests.find(({ path }) => path === "/api/session/logout");
+  expect(logout?.init?.method).toBe("POST");
+  expect(logout?.init?.headers).toEqual(
+    expect.objectContaining({ "X-Memento-CSRF": "recipient-csrf" }),
   );
 });
 
