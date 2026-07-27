@@ -85,8 +85,19 @@ func applyCollection(ctx context.Context, db *bun.DB, migrations *migrate.Migrat
 		return fmt.Errorf("open migration lock connection: %w", err)
 	}
 	defer lockConnection.Close()
-	if _, err := lockConnection.ExecContext(ctx, `SELECT pg_advisory_lock(hashtextextended(current_database() || ':memento:migrations', 0))`); err != nil {
-		return fmt.Errorf("lock migrations: %w", err)
+	for {
+		var acquired bool
+		if err := lockConnection.QueryRowContext(ctx, `SELECT pg_try_advisory_lock(hashtextextended(current_database() || ':memento:migrations', 0))`).Scan(&acquired); err != nil {
+			return fmt.Errorf("lock migrations: %w", err)
+		}
+		if acquired {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("lock migrations: %w", ctx.Err())
+		case <-time.After(25 * time.Millisecond):
+		}
 	}
 	defer func() {
 		unlockCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

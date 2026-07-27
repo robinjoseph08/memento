@@ -3,11 +3,14 @@ set -eu
 
 root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 compose_file="$root/tests/fixtures/immich-contract.compose.yaml"
-project_base="memento-immich-contract-$(date +%s)-$$"
-project="$project_base-1"
+project="memento-immich-contract-$(date +%s)-$$"
+
+compose() {
+  docker compose --project-name "$project" --file "$compose_file" "$@"
+}
 
 cleanup() {
-  docker compose --project-name "$project" --file "$compose_file" down --volumes >/dev/null 2>&1 || true
+  compose down --volumes >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 trap 'exit 130' INT
@@ -23,38 +26,30 @@ wait_for_server() {
   return 1
 }
 
-attempt=1
-while [ "$attempt" -le 2 ]; do
-  docker compose --project-name "$project" --file "$compose_file" up --detach --quiet-pull
-  endpoint=$(docker compose --project-name "$project" --file "$compose_file" port server 2283)
-  base_url="http://127.0.0.1:${endpoint##*:}"
+fail_with_logs() {
+  compose logs server database redis >&2
+  echo "$1" >&2
+  exit 1
+}
 
-  ready=false
-  if wait_for_server "$base_url"; then
-    # The initial connection can cache Immich's custom PostgreSQL types before
-    # fresh-database migrations create them. Restart after migration so enum
-    # arrays use the right type on the second connection.
-    docker compose --project-name "$project" --file "$compose_file" restart server
-    endpoint=$(docker compose --project-name "$project" --file "$compose_file" port server 2283)
-    base_url="http://127.0.0.1:${endpoint##*:}"
-    if wait_for_server "$base_url"; then
-      ready=true
-    fi
-  fi
+compose up --detach --quiet-pull
+endpoint=$(compose port server 2283)
+base_url="http://127.0.0.1:${endpoint##*:}"
+wait_for_server "$base_url" || fail_with_logs "Immich v3.0.3 did not finish its initial bootstrap"
 
-  if [ "$ready" = true ] && MEMENTO_TEST_IMMICH_URL="$base_url" \
-    go test -count=1 -tags=immichcontract ./pkg/immich; then
-    exit 0
-  fi
+# The initial connection caches PostgreSQL array types before fresh-database
+# migrations create them. Verify the enum exists, then restart so the API
+# process loads the complete type map instead of serializing arrays as scalars.
+compose exec --no-TTY database \
+  psql --username postgres --dbname immich --tuples-only \
+    --command "SELECT to_regtype('album_user_role_enum[]') IS NOT NULL;" \
+  | grep -Eq '^[[:space:]]*t[[:space:]]*$' \
+  || fail_with_logs "Immich v3.0.3 did not create its album role array type"
+compose restart server
+endpoint=$(compose port server 2283)
+base_url="http://127.0.0.1:${endpoint##*:}"
+wait_for_server "$base_url" || fail_with_logs "Immich v3.0.3 did not become ready after its planned restart"
 
-  docker compose --project-name "$project" --file "$compose_file" logs server database redis >&2
-  cleanup
-  if [ "$attempt" -eq 2 ]; then
-    echo "Immich v3.0.3 contract failed twice" >&2
-    exit 1
-  fi
-
-  echo "Immich v3.0.3 fixture failed during fresh bootstrap; retrying once" >&2
-  attempt=$((attempt + 1))
-  project="$project_base-$attempt"
-done
+if ! MEMENTO_TEST_IMMICH_URL="$base_url" go test -count=1 -tags=immichcontract ./pkg/immich; then
+  fail_with_logs "Immich v3.0.3 contract failed after deterministic bootstrap"
+fi

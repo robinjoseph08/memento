@@ -48,6 +48,30 @@ func Open(t *testing.T) *bun.DB {
 	return db
 }
 
+// Clone opens another pool in the source database schema with driver options
+// that are specific to the behavior under test.
+func Clone(t *testing.T, source *bun.DB, options ...pgdriver.Option) *bun.DB {
+	t.Helper()
+	var schema string
+	if err := source.NewRaw(`SELECT current_schema()`).Scan(context.Background(), &schema); err != nil {
+		t.Fatalf("read test schema: %v", err)
+	}
+	parsed, err := url.Parse(os.Getenv("MEMENTO_TEST_DATABASE_URL"))
+	if err != nil {
+		t.Fatalf("parse test database URL: %v", err)
+	}
+	query := parsed.Query()
+	query.Set("search_path", schema)
+	parsed.RawQuery = query.Encode()
+	connectorOptions := append([]pgdriver.Option{pgdriver.WithDSN(parsed.String())}, options...)
+	clone := bun.NewDB(sql.OpenDB(pgdriver.NewConnector(connectorOptions...)), pgdialect.New())
+	t.Cleanup(func() {
+		_ = clone.Close()
+	})
+	requirePing(t, clone)
+	return clone
+}
+
 func requirePing(t *testing.T, db *bun.DB) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

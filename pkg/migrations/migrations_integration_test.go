@@ -4,6 +4,7 @@ package migrations
 
 import (
 	"context"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/robinjoseph08/memento/internal/testdb"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/uptrace/bun/driver/pgdriver"
 	"github.com/uptrace/bun/migrate"
 )
 
@@ -42,6 +44,69 @@ func TestApplyFromEmptyDatabaseUnderConcurrentLock(t *testing.T) {
 	require.NoError(t, db.NewRaw(`SELECT count(*) FROM jobs`).Scan(ctx, &jobsCount))
 	assert.Equal(t, 1, settingsCount)
 	assert.Zero(t, jobsCount)
+}
+
+func TestApplyWaitsForMigrationLockBeyondDriverReadTimeout(t *testing.T) {
+	db := testdb.Open(t)
+	holder, err := db.DB.Conn(context.Background())
+	require.NoError(t, err)
+	defer holder.Close()
+
+	_, err = holder.ExecContext(context.Background(), `SELECT pg_advisory_lock(hashtextextended(current_database() || ':memento:migrations', 0))`)
+	require.NoError(t, err)
+
+	const driverReadTimeout = 50 * time.Millisecond
+	waiterApplicationName := "memento-migration-lock-test-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	waiter := testdb.Clone(t, db,
+		pgdriver.WithApplicationName(waiterApplicationName),
+		pgdriver.WithReadTimeout(driverReadTimeout),
+	)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	result := make(chan error, 1)
+	go func() {
+		result <- Apply(ctx, waiter)
+	}()
+
+	var observedAttempt bool
+	require.Eventually(t, func() bool {
+		queryErr := db.NewRaw(`
+			SELECT EXISTS (
+				SELECT 1 FROM pg_stat_activity
+				WHERE application_name = ?
+					AND query LIKE '%pg_try_advisory_lock%'
+			)
+		`, waiterApplicationName).Scan(context.Background(), &observedAttempt)
+		return queryErr == nil && observedAttempt
+	}, time.Second, 5*time.Millisecond, "migration waiter never attempted the advisory lock")
+	select {
+	case applyErr := <-result:
+		require.Failf(t, "migration waiter returned while lock was held", "error: %v", applyErr)
+	case <-time.After(4 * driverReadTimeout):
+	}
+
+	_, err = holder.ExecContext(context.Background(), `SELECT pg_advisory_unlock(hashtextextended(current_database() || ':memento:migrations', 0))`)
+	require.NoError(t, err)
+	require.NoError(t, <-result)
+	require.NoError(t, Current(ctx, db))
+}
+
+func TestApplyStopsWaitingForMigrationLockWhenContextExpires(t *testing.T) {
+	db := testdb.Open(t)
+	holder, err := db.DB.Conn(context.Background())
+	require.NoError(t, err)
+	defer holder.Close()
+
+	_, err = holder.ExecContext(context.Background(), `SELECT pg_advisory_lock(hashtextextended(current_database() || ':memento:migrations', 0))`)
+	require.NoError(t, err)
+	defer func() {
+		_, unlockErr := holder.ExecContext(context.Background(), `SELECT pg_advisory_unlock(hashtextextended(current_database() || ':memento:migrations', 0))`)
+		require.NoError(t, unlockErr)
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 75*time.Millisecond)
+	defer cancel()
+	require.ErrorIs(t, Apply(ctx, db), context.DeadlineExceeded)
 }
 
 func TestSourceReconciliationMigrationBackfillsExistingAlbums(t *testing.T) {
