@@ -4,6 +4,7 @@ package migrations
 
 import (
 	"context"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -55,7 +56,11 @@ func TestApplyWaitsForMigrationLockBeyondDriverReadTimeout(t *testing.T) {
 	require.NoError(t, err)
 
 	const driverReadTimeout = 50 * time.Millisecond
-	waiter := testdb.Clone(t, db, pgdriver.WithReadTimeout(driverReadTimeout))
+	waiterApplicationName := "memento-migration-lock-test-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	waiter := testdb.Clone(t, db,
+		pgdriver.WithApplicationName(waiterApplicationName),
+		pgdriver.WithReadTimeout(driverReadTimeout),
+	)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	result := make(chan error, 1)
@@ -63,9 +68,17 @@ func TestApplyWaitsForMigrationLockBeyondDriverReadTimeout(t *testing.T) {
 		result <- Apply(ctx, waiter)
 	}()
 
+	var observedAttempt bool
 	require.Eventually(t, func() bool {
-		return waiter.Stats().InUse == 1
-	}, time.Second, 5*time.Millisecond, "migration waiter never opened its lock connection; stats: %+v", waiter.Stats())
+		queryErr := db.NewRaw(`
+			SELECT EXISTS (
+				SELECT 1 FROM pg_stat_activity
+				WHERE application_name = ?
+					AND query LIKE '%pg_try_advisory_lock%'
+			)
+		`, waiterApplicationName).Scan(context.Background(), &observedAttempt)
+		return queryErr == nil && observedAttempt
+	}, time.Second, 5*time.Millisecond, "migration waiter never attempted the advisory lock")
 	select {
 	case applyErr := <-result:
 		require.Failf(t, "migration waiter returned while lock was held", "error: %v", applyErr)
