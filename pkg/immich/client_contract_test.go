@@ -93,6 +93,10 @@ func TestImmichV303LiveContract(t *testing.T) {
 	assert.Empty(t, page.Items)
 	assert.Nil(t, page.NextPage)
 
+	contractDELETE(t, ctx, httpClient, baseURL+"/api/albums/"+albumID.String(), login.AccessToken, http.StatusNoContent)
+	_, err = client.Album(ctx, albumID)
+	assert.ErrorIs(t, err, ErrNotFound, "a real deleted album must reach reconciliation as missing evidence")
+
 	people, err := client.People(ctx)
 	require.NoError(t, err)
 	assert.Empty(t, people)
@@ -232,6 +236,19 @@ func contractReadMedia(t *testing.T, response MediaResponse) []byte {
 	require.NoError(t, err)
 	require.NoError(t, response.Body.Close())
 	return contents
+}
+
+func contractDELETE(t *testing.T, ctx context.Context, client *http.Client, endpoint, bearer string, wantStatus int) {
+	t.Helper()
+	request, err := http.NewRequestWithContext(ctx, http.MethodDelete, endpoint, nil)
+	require.NoError(t, err)
+	request.Header.Set("Authorization", "Bearer "+bearer)
+	response, err := client.Do(request)
+	require.NoError(t, err)
+	defer response.Body.Close()
+	contents, err := io.ReadAll(io.LimitReader(response.Body, 4096))
+	require.NoError(t, err)
+	require.Equal(t, wantStatus, response.StatusCode, "%s: %q", endpoint, contents)
 }
 
 func contractPOST(

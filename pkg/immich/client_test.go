@@ -519,6 +519,29 @@ func TestAlbumSummaryUsesPinnedDetailContract(t *testing.T) {
 	require.EqualError(t, err, "Immich returned an invalid response")
 }
 
+func TestAlbumAndMembership404sIdentifyMissingSourceAlbum(t *testing.T) {
+	albumID := uuid.New()
+	server := contractServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/albums/" + albumID.String():
+			assert.Equal(t, http.MethodGet, r.Method)
+		case "/api/search/metadata":
+			assert.Equal(t, http.MethodPost, r.Method)
+		default:
+			t.Fatalf("unexpected request %s", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+	defer server.Close()
+	client, err := New(clientConfig(server.URL), server.Client())
+	require.NoError(t, err)
+
+	_, err = client.Album(context.Background(), albumID)
+	assert.ErrorIs(t, err, ErrNotFound)
+	_, err = client.AlbumAssetsPage(context.Background(), albumID, 1)
+	assert.ErrorIs(t, err, ErrNotFound)
+}
+
 func TestAlbumSummaryRejectsMismatchedIdentity(t *testing.T) {
 	requestedID := uuid.New()
 	server := contractServer(t, func(w http.ResponseWriter, _ *http.Request) {
@@ -670,17 +693,18 @@ func TestAlbumAssetsPageRejectsInvalidEntryPointsAndResponses(t *testing.T) {
 
 func TestClientReturnsSafeFailClosedDependencyErrors(t *testing.T) {
 	operations := []struct {
-		name string
-		run  func(*Client) error
-		want string
+		name         string
+		run          func(*Client) error
+		want         string
+		notFoundWant string
 	}{
-		{"validation", func(client *Client) error { return client.Check(context.Background()) }, "Immich validation failed"},
-		{"discovery", func(client *Client) error { _, err := client.OwnedAlbums(context.Background()); return err }, "Immich album discovery failed"},
-		{"album summary", func(client *Client) error { _, err := client.Album(context.Background(), uuid.New()); return err }, "Immich album discovery failed"},
+		{"validation", func(client *Client) error { return client.Check(context.Background()) }, "Immich validation failed", ""},
+		{"discovery", func(client *Client) error { _, err := client.OwnedAlbums(context.Background()); return err }, "Immich album discovery failed", ""},
+		{"album summary", func(client *Client) error { _, err := client.Album(context.Background(), uuid.New()); return err }, "Immich album discovery failed", ErrNotFound.Error()},
 		{"membership", func(client *Client) error {
 			_, err := client.AlbumAssetsPage(context.Background(), uuid.New(), 1)
 			return err
-		}, "Immich album membership lookup failed"},
+		}, "Immich album membership lookup failed", ErrNotFound.Error()},
 	}
 	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusTooManyRequests, http.StatusServiceUnavailable} {
 		for _, operation := range operations {
@@ -697,7 +721,11 @@ func TestClientReturnsSafeFailClosedDependencyErrors(t *testing.T) {
 					require.EqualError(t, err, "Immich API key is invalid")
 					assert.True(t, IsConfigurationError(err))
 				} else {
-					require.EqualError(t, err, operation.want)
+					want := operation.want
+					if status == http.StatusNotFound && operation.notFoundWant != "" {
+						want = operation.notFoundWant
+					}
+					require.EqualError(t, err, want)
 					assert.False(t, IsConfigurationError(err))
 				}
 				assert.NotContains(t, err.Error(), "private")

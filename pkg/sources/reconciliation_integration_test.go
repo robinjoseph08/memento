@@ -5,7 +5,10 @@ package sources
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -42,6 +45,7 @@ type reconciliationConnector struct {
 	assetExistsErr error
 	servedAssets   map[uuid.UUID]bool
 	thumbnailCalls []uuid.UUID
+	thumbnailErr   error
 }
 
 func (connector *reconciliationConnector) Check(context.Context) error {
@@ -104,6 +108,9 @@ func (connector *reconciliationConnector) Thumbnail(_ context.Context, assetID u
 	connector.mu.Lock()
 	defer connector.mu.Unlock()
 	connector.thumbnailCalls = append(connector.thumbnailCalls, assetID)
+	if connector.thumbnailErr != nil {
+		return immich.MediaResponse{}, connector.thumbnailErr
+	}
 	return testMediaResponse("thumbnail", "image/webp"), nil
 }
 
@@ -129,6 +136,12 @@ func (connector *reconciliationConnector) requestedThumbnails() []uuid.UUID {
 	connector.mu.Lock()
 	defer connector.mu.Unlock()
 	return append([]uuid.UUID(nil), connector.thumbnailCalls...)
+}
+
+func (connector *reconciliationConnector) setThumbnailError(err error) {
+	connector.mu.Lock()
+	defer connector.mu.Unlock()
+	connector.thumbnailErr = err
 }
 
 func (connector *reconciliationConnector) setAssetExists(assetID uuid.UUID, exists bool) {
@@ -289,6 +302,48 @@ func authorizeSourceRecipient(t *testing.T, service *Service, fixture *stagedSou
 		recipientPersonID, recipientAccessID, fixture.publicationID, fixture.momentID,
 		fixture.eventID, fixture.publicationID, recipientPersonID, recipientAccessID, fixture.mediaID).Exec(context.Background())
 	require.NoError(t, err)
+}
+
+type exactSourceAudience struct {
+	DraftSnapshots      string
+	PublishedEntries    string
+	CurrentEntitlements string
+}
+
+func loadExactSourceAudience(t *testing.T, service *Service, fixture stagedSourceEvent) exactSourceAudience {
+	t.Helper()
+	ctx := context.Background()
+	var state exactSourceAudience
+	require.NoError(t, service.db.NewRaw(`
+		SELECT COALESCE(jsonb_agg(to_jsonb(audience) ORDER BY audience.snapshot_id, audience.recipient_person_id, audience.recipient_access_generation_id), '[]'::jsonb)::text
+		FROM (
+			SELECT entry.snapshot_id, entry.recipient_person_id, entry.recipient_access_generation_id
+			FROM audience_snapshot_entries AS entry
+			JOIN current_audience_snapshots AS current ON current.snapshot_id = entry.snapshot_id
+			WHERE current.target_kind = 'moment' AND current.target_id = ?
+		) AS audience
+	`, fixture.momentID).Scan(ctx, &state.DraftSnapshots))
+	require.NoError(t, service.db.NewRaw(`
+		SELECT COALESCE(jsonb_agg(to_jsonb(audience) ORDER BY audience.published_moment_id, audience.recipient_person_id, audience.recipient_access_generation_id), '[]'::jsonb)::text
+		FROM (
+			SELECT entry.published_moment_id, entry.recipient_person_id, entry.recipient_access_generation_id
+			FROM audience_entries AS entry
+			JOIN published_moments AS moment ON moment.id = entry.published_moment_id
+			WHERE moment.publication_id = ?
+		) AS audience
+	`, fixture.publicationID).Scan(ctx, &state.PublishedEntries))
+	require.NoError(t, service.db.NewRaw(`
+		SELECT COALESCE(jsonb_agg(to_jsonb(entitlement) ORDER BY entitlement.event_id, entitlement.publication_id, entitlement.recipient_person_id, entitlement.recipient_access_generation_id, entitlement.media_item_id), '[]'::jsonb)::text
+		FROM (
+			SELECT event_id, publication_id, recipient_person_id, recipient_access_generation_id, media_item_id
+			FROM current_audience_entitlements
+			WHERE event_id = ? AND media_item_id = ?
+		) AS entitlement
+	`, fixture.eventID, fixture.mediaID).Scan(ctx, &state.CurrentEntitlements))
+	require.NotEqual(t, "[]", state.DraftSnapshots)
+	require.NotEqual(t, "[]", state.PublishedEntries)
+	require.NotEqual(t, "[]", state.CurrentEntitlements)
+	return state
 }
 
 func reconciliationWorkerConfig() config.WorkerConfig {
@@ -1039,6 +1094,61 @@ func TestPublishedPartialSourceRemovalThenReappearanceRestoresPlacementAndClears
 	assert.Zero(t, reviewRestorationRows)
 }
 
+func TestProductionClientAlbumAndMembership404sMarkSourceMissing(t *testing.T) {
+	albumID := uuid.New()
+	albumBody := fmt.Sprintf(`{"id":"%s","albumName":"Production album","description":"","assetCount":0,"createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"}`, albumID)
+	var albumMissing, membershipMissing atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/server/version":
+			_, _ = w.Write([]byte(`{"major":3,"minor":0,"patch":3,"prerelease":null}`))
+		case "/api/api-keys/me":
+			_, _ = w.Write([]byte(`{"permissions":["album.read","asset.download","asset.read","asset.view","face.read","person.read"]}`))
+		case "/api/albums":
+			assert.Equal(t, "true", r.URL.Query().Get("isOwned"))
+			_, _ = fmt.Fprintf(w, "[%s]", albumBody)
+		case "/api/albums/" + albumID.String():
+			if albumMissing.Load() {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			_, _ = w.Write([]byte(albumBody))
+		case "/api/search/metadata":
+			if membershipMissing.Load() {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			_, _ = w.Write([]byte(`{"assets":{"count":0,"items":[],"nextPage":null,"total":0}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	client, err := immich.New(config.ImmichConfig{URL: server.URL, APIKey: "secret", HealthTimeout: time.Second}, server.Client())
+	require.NoError(t, err)
+	service, sourceAlbumID := newReconciliationService(t, client)
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+
+	membershipMissing.Store(true)
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	album, err := service.Get(context.Background(), sourceAlbumID)
+	require.NoError(t, err)
+	assert.True(t, album.SourceMissing, "a production membership 404 is missing album evidence")
+
+	membershipMissing.Store(false)
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	albumMissing.Store(true)
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	album, err = service.Get(context.Background(), sourceAlbumID)
+	require.NoError(t, err)
+	assert.True(t, album.SourceMissing, "a production album summary 404 is missing album evidence")
+	problems, err := repairs.New(service.db, nil).List(context.Background())
+	require.NoError(t, err)
+	require.Len(t, problems.SourceProblems, 1)
+	assert.Equal(t, "source_album", problems.SourceProblems[0].Kind)
+}
+
 func TestMissingAlbumBecomesCuratorVisibleWithoutChangingPublishedMedia(t *testing.T) {
 	original := repairableReconciliationAsset(uuid.New(), "/library/tracked/family.jpg")
 	connector := &reconciliationConnector{summary: sourceAlbum(uuid.New(), "Missing album", 1)}
@@ -1046,6 +1156,8 @@ func TestMissingAlbumBecomesCuratorVisibleWithoutChangingPublishedMedia(t *testi
 	service, sourceAlbumID := newReconciliationService(t, connector)
 	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
 	fixture := publishSourceEventFixture(t, service, sourceAlbumID, original.SourceID)
+	authorizeSourceRecipient(t, service, &fixture)
+	audienceBefore := loadExactSourceAudience(t, service, fixture)
 
 	connector.albumCalls = 0
 	connector.albumErrAt = 1
@@ -1062,6 +1174,7 @@ func TestMissingAlbumBecomesCuratorVisibleWithoutChangingPublishedMedia(t *testi
 	assert.Equal(t, "current", availability, "a missing album does not prove its independently served assets are missing")
 	assert.Equal(t, 1, memberships)
 	assert.Equal(t, 1, placements, "published history must not be silently removed")
+	assert.Equal(t, audienceBefore, loadExactSourceAudience(t, service, fixture), "a missing album must preserve every Audience and entitlement row")
 	problems, err := repairs.New(service.db, nil).List(context.Background())
 	require.NoError(t, err)
 	require.NotEmpty(t, problems.SourceProblems)
@@ -1086,6 +1199,8 @@ func TestConfirmedDeletedPublishedMediaBecomesUnavailable(t *testing.T) {
 	service, sourceAlbumID := newReconciliationService(t, connector)
 	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
 	fixture := publishSourceEventFixture(t, service, sourceAlbumID, original.SourceID)
+	authorizeSourceRecipient(t, service, &fixture)
+	audienceBefore := loadExactSourceAudience(t, service, fixture)
 
 	connector.setMembership()
 	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
@@ -1104,6 +1219,33 @@ func TestConfirmedDeletedPublishedMediaBecomesUnavailable(t *testing.T) {
 	var currentPlacement bool
 	require.NoError(t, service.db.NewRaw(`SELECT EXISTS (SELECT 1 FROM current_published_placements WHERE event_id = ? AND media_item_id = ?)`, fixture.eventID, fixture.mediaID).Scan(context.Background(), &currentPlacement))
 	assert.True(t, currentPlacement, "the unavailable published listing remains until correction")
+	assert.Equal(t, audienceBefore, loadExactSourceAudience(t, service, fixture), "missing Media must preserve every Audience and entitlement row")
+}
+
+func TestDelivery404CannotBeClearedByAlbumMetadata(t *testing.T) {
+	original := repairableReconciliationAsset(uuid.New(), "/library/still-listed/family.jpg")
+	connector := &reconciliationConnector{summary: sourceAlbum(uuid.New(), "Still listed source", 1)}
+	connector.pages = map[int]immich.AssetPage{1: {Items: []immich.AssetSummary{original}}}
+	service, sourceAlbumID := newReconciliationService(t, connector)
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	fixture := publishSourceEventFixture(t, service, sourceAlbumID, original.SourceID)
+	authorizeSourceRecipient(t, service, &fixture)
+	audienceBefore := loadExactSourceAudience(t, service, fixture)
+	mediaService := library.New(service.db, connector)
+
+	connector.setThumbnailError(immich.ErrNotFound)
+	_, err := mediaService.Thumbnail(context.Background(), fixture.recipient, fixture.mediaID, immich.MediaRequest{})
+	assert.ErrorIs(t, err, library.ErrNotFound)
+	connector.setThumbnailError(nil)
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+
+	var availability string
+	require.NoError(t, service.db.NewRaw(`SELECT availability FROM media_items WHERE id = ?`, fixture.mediaID).Scan(context.Background(), &availability))
+	assert.Equal(t, "source_missing", availability, "album membership metadata cannot prove delivery is safe")
+	_, err = mediaService.Thumbnail(context.Background(), fixture.recipient, fixture.mediaID, immich.MediaRequest{})
+	assert.ErrorIs(t, err, library.ErrNotFound)
+	assert.Equal(t, []uuid.UUID{original.SourceID}, connector.requestedThumbnails(), "fail-closed Media cannot reach Immich again")
+	assert.Equal(t, audienceBefore, loadExactSourceAudience(t, service, fixture), "delivery failure and reconciliation must preserve every Audience and entitlement row")
 }
 
 func TestNewSourceMediaFollowsOnlyEventsConfiguredForFutureMedia(t *testing.T) {

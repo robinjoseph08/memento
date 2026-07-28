@@ -156,6 +156,43 @@ test("shows private normalized Media evidence and confirms only after an explici
   });
 });
 
+test("explains that a missing published album does not block current Media", async () => {
+  vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
+    if (requestPath(input).startsWith("/api/people")) {
+      return Promise.resolve(jsonResponse({ people: [] }));
+    }
+    return Promise.resolve(
+      jsonResponse({
+        source_problems: [
+          {
+            kind: "source_album",
+            id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            label: "Family album",
+            priority: "critical",
+            published: true,
+            missing_since: "2026-01-01T00:00:00Z",
+            candidate_count: 0,
+          },
+        ],
+        person_candidates: [],
+        unlinked_immich_people: [],
+        media_candidates: [],
+      }),
+    );
+  });
+
+  renderWorkspace();
+  expect(await screen.findByText("Source album missing")).toBeInTheDocument();
+  expect(
+    screen.getByText(
+      /Media items remain available unless their own backing is missing/,
+    ),
+  ).toBeInTheDocument();
+  expect(
+    screen.queryByText(/Media delivery is blocked/),
+  ).not.toBeInTheDocument();
+});
+
 test("shows conflicted Person evidence and permits confirming the current link", async () => {
   const requests: Array<{ path: string; init?: RequestInit }> = [];
   vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {

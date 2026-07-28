@@ -1214,9 +1214,40 @@ func TestSlowRepresentationOpeningDoesNotExhaustMinimumConnectionPool(t *testing
 	}
 }
 
+type exactLibraryAudience struct {
+	PublishedEntries    string
+	CurrentEntitlements string
+}
+
+func loadExactLibraryAudience(t *testing.T, fixture libraryFixture, mediaID uuid.UUID) exactLibraryAudience {
+	t.Helper()
+	ctx := context.Background()
+	var state exactLibraryAudience
+	require.NoError(t, fixture.db.NewRaw(`
+		SELECT COALESCE(jsonb_agg(to_jsonb(audience) ORDER BY audience.published_moment_id, audience.recipient_person_id, audience.recipient_access_generation_id), '[]'::jsonb)::text
+		FROM (
+			SELECT DISTINCT entry.published_moment_id, entry.recipient_person_id, entry.recipient_access_generation_id
+			FROM audience_entries AS entry
+			JOIN current_published_placements AS placement ON placement.published_moment_id = entry.published_moment_id
+			WHERE placement.media_item_id = ?
+		) AS audience
+	`, mediaID).Scan(ctx, &state.PublishedEntries))
+	require.NoError(t, fixture.db.NewRaw(`
+		SELECT COALESCE(jsonb_agg(to_jsonb(entitlement) ORDER BY entitlement.event_id, entitlement.publication_id, entitlement.recipient_person_id, entitlement.recipient_access_generation_id, entitlement.media_item_id), '[]'::jsonb)::text
+		FROM (
+			SELECT event_id, publication_id, recipient_person_id, recipient_access_generation_id, media_item_id
+			FROM current_audience_entitlements WHERE media_item_id = ?
+		) AS entitlement
+	`, mediaID).Scan(ctx, &state.CurrentEntitlements))
+	require.NotEqual(t, "[]", state.PublishedEntries)
+	require.NotEqual(t, "[]", state.CurrentEntitlements)
+	return state
+}
+
 func TestUpstreamMissingResponseFailsEveryRepresentationClosedWithoutRemovingHistory(t *testing.T) {
 	fixture := newLibraryFixture(t)
 	ctx := context.Background()
+	audienceBefore := loadExactLibraryAudience(t, fixture, fixture.media[0])
 	fixture.thumbnail.err = immich.ErrNotFound
 
 	_, err := fixture.service.Thumbnail(ctx, fixture.actor, fixture.media[0], immich.MediaRequest{})
@@ -1254,11 +1285,10 @@ func TestUpstreamMissingResponseFailsEveryRepresentationClosedWithoutRemovingHis
 		assert.ErrorIs(t, err, ErrNotFound)
 	}
 	assert.Len(t, fixture.thumbnail.assets, 1, "once missing is observed no derivative or original can reach Immich")
-	var placements, entitlements int
+	var placements int
 	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM current_published_placements WHERE media_item_id = ?`, fixture.media[0]).Scan(ctx, &placements))
-	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM current_audience_entitlements WHERE media_item_id = ?`, fixture.media[0]).Scan(ctx, &entitlements))
 	assert.Positive(t, placements)
-	assert.Positive(t, entitlements, "Source missing must not change the current Audience")
+	assert.Equal(t, audienceBefore, loadExactLibraryAudience(t, fixture, fixture.media[0]), "Source missing must preserve every relevant Audience and entitlement row")
 }
 
 func TestMalformedOrUnauthorizedUpstreamFailureDoesNotInventSourceMissing(t *testing.T) {

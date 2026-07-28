@@ -1202,7 +1202,8 @@ func (c *Client) doJSONStatus(ctx context.Context, method, path string, query ur
 	defer response.Body.Close()
 	if response.StatusCode != expectedStatus {
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxJSONResponse))
-		if response.StatusCode == http.StatusNotFound && (path == "faces" || strings.HasPrefix(path, "assets/")) {
+		if response.StatusCode == http.StatusNotFound && (path == "faces" || path == "search/metadata" ||
+			strings.HasPrefix(path, "assets/") || strings.HasPrefix(path, "albums/")) {
 			return ErrNotFound
 		}
 		if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {

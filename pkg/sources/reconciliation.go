@@ -751,6 +751,8 @@ func upsertMediaItemBatch(ctx context.Context, tx bun.Tx, sourceAlbumID uuid.UUI
 	`, string(payload)).Scan(ctx, &metadataChangedMediaIDs); err != nil {
 		return nil, err
 	}
+	// Album membership proves metadata presence, not that derivatives or original
+	// bytes are serveable. Only an explicit confirmed relink may clear source_missing.
 	if _, err := tx.NewRaw(`
 		INSERT INTO media_items (
 			id, immich_asset_id, media_type, width, height, local_date_time, first_seen_at, last_seen_at, updated_at
@@ -759,7 +761,7 @@ func upsertMediaItemBatch(ctx context.Context, tx bun.Tx, sourceAlbumID uuid.UUI
 		FROM `+incoming+`
 		ON CONFLICT (immich_asset_id) DO UPDATE SET
 			media_type = EXCLUDED.media_type, width = EXCLUDED.width, height = EXCLUDED.height,
-			local_date_time = EXCLUDED.local_date_time, availability = 'current', last_seen_at = EXCLUDED.last_seen_at,
+			local_date_time = EXCLUDED.local_date_time, last_seen_at = EXCLUDED.last_seen_at,
 			updated_at = EXCLUDED.updated_at
 	`, now, now, now, string(payload)).Exec(ctx); err != nil {
 		return nil, err

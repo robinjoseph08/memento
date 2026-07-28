@@ -174,7 +174,9 @@ function SourceProblemCard({ problem }: { problem: SourceProblem }) {
       <h3>{problem.label}</h3>
       <p>
         {problem.priority === "critical"
-          ? "This published Source problem has the highest priority. Its listing and Audience remain unchanged, but Media delivery is blocked."
+          ? mediaProblem
+            ? "This published Media problem has the highest priority. Its listing and Audience remain unchanged, but Media delivery is blocked."
+            : "This published Source album problem has the highest priority. Published Media listings and Audiences remain unchanged. Media items remain available unless their own backing is missing."
           : "This Source problem needs Curator review. No backing or authorization changes automatically."}
       </p>
       {mediaProblem ? (

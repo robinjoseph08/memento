@@ -888,11 +888,28 @@ func TestMediaConfirmationPreservesPortalIdentityAndMovesBacking(t *testing.T) {
 		commentID, oldMediaID, fixture.actor.PersonID, fixture.accessID,
 		eventID, oldMediaID, momentID)
 	require.NoError(t, err)
+	var candidateEntitlementBefore string
+	require.NoError(t, fixture.db.NewRaw(`
+		SELECT to_jsonb(entitlement)::text FROM (
+			SELECT event_id, publication_id, recipient_person_id, recipient_access_generation_id, media_item_id
+			FROM current_audience_entitlements
+			WHERE event_id = ? AND recipient_access_generation_id = ? AND media_item_id = ?
+		) AS entitlement
+	`, eventID, fixture.accessID, newMediaID).Scan(context.Background(), &candidateEntitlementBefore))
+	require.NotEmpty(t, candidateEntitlementBefore)
 	_, err = fixture.service.ConfirmMedia(context.Background(), fixture.actor, candidateID)
 	assert.ErrorIs(t, err, ErrConflict, "a candidate's current authorization must never transfer to the stable Media identity")
-	var pendingAfterAuthorizationConflict string
+	var pendingAfterAuthorizationConflict, candidateEntitlementAfter string
 	require.NoError(t, fixture.db.NewRaw(`SELECT state FROM media_repair_candidates WHERE id = ?`, candidateID).Scan(context.Background(), &pendingAfterAuthorizationConflict))
+	require.NoError(t, fixture.db.NewRaw(`
+		SELECT to_jsonb(entitlement)::text FROM (
+			SELECT event_id, publication_id, recipient_person_id, recipient_access_generation_id, media_item_id
+			FROM current_audience_entitlements
+			WHERE event_id = ? AND recipient_access_generation_id = ? AND media_item_id = ?
+		) AS entitlement
+	`, eventID, fixture.accessID, newMediaID).Scan(context.Background(), &candidateEntitlementAfter))
 	assert.Equal(t, "pending", pendingAfterAuthorizationConflict)
+	assert.Equal(t, candidateEntitlementBefore, candidateEntitlementAfter, "authorization conflict must leave the candidate entitlement present and unchanged")
 	_, err = fixture.db.ExecContext(context.Background(), `
 		DELETE FROM current_audience_entitlements
 		WHERE event_id = ? AND recipient_access_generation_id = ? AND media_item_id = ?
