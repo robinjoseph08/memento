@@ -142,6 +142,37 @@ function organizationRequest(event: DraftEvent): OrganizeEventRequest {
   };
 }
 
+const stagedLabels: Record<string, string> = {
+  addition: "Additions",
+  removal: "Removals",
+  move: "Moves and ordering",
+  metadata: "Metadata edits",
+  moment_structure: "Moment structure",
+  access: "Access changes",
+};
+
+function StagedUpdateReview({ event }: { event: DraftEvent }) {
+  if (!event.staged_update) return null;
+  return (
+    <section aria-labelledby="staged-review-title" className="staged-review">
+      <div>
+        <p className="step-label">Private until Publication</p>
+        <h4 id="staged-review-title">Staged update review</h4>
+        <p>The organization below is the complete resulting Event.</p>
+      </div>
+      <ul aria-label="Net change summary">
+        {event.staged_update.changes.map((change) => (
+          <li key={change.kind}>
+            <strong>{stagedLabels[change.kind] ?? change.kind}</strong>
+            <span>{change.count}</span>
+            <small>{change.detail}</small>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
 function Checklist({ event }: { event: DraftEvent }) {
   const checks = [
     { label: "Media organization", done: event.unassigned_media.length === 0 },
@@ -202,15 +233,17 @@ function MediaRow({
   selected,
   onSelect,
   onMove,
+  stagedKind,
 }: {
   item: MediaItem;
   selected: boolean;
   onSelect: () => void;
   onMove: (direction: -1 | 1) => void;
+  stagedKind?: string;
 }) {
   return (
     <li
-      className="media-row"
+      className={`media-row${stagedKind ? ` staged-${stagedKind}` : ""}`}
       onKeyDown={(event) => {
         if (event.altKey && event.key === "ArrowUp") {
           event.preventDefault();
@@ -299,6 +332,23 @@ export function EventOrganizer({
       : eventQuery.data?.id === selectedID
         ? eventQuery.data
         : undefined;
+  const stagedMediaKinds = useMemo(() => {
+    const kinds = new Map<string, string>();
+    for (const change of currentDraft?.staged_update?.changes ?? []) {
+      for (const mediaID of change.media_item_ids)
+        kinds.set(mediaID, change.kind);
+    }
+    return kinds;
+  }, [currentDraft?.staged_update]);
+  const stagedMomentKinds = useMemo(() => {
+    const kinds = new Map<string, string[]>();
+    for (const change of currentDraft?.staged_update?.changes ?? []) {
+      for (const momentID of change.moment_ids) {
+        kinds.set(momentID, [...(kinds.get(momentID) ?? []), change.kind]);
+      }
+    }
+    return kinds;
+  }, [currentDraft?.staged_update]);
 
   const previewRecipients = useQuery({
     queryKey: ["preview-recipients", selectedID],
@@ -351,6 +401,7 @@ export function EventOrganizer({
               lifecycle: "published",
               published_editable_version: publication.editable_version,
               published_attendance_recovery_required: false,
+              staged_update: null,
             }
           : current,
       );
@@ -948,8 +999,12 @@ export function EventOrganizer({
                 >
                   <strong>{event.title}</strong>
                   <span>
-                    {event.lifecycle === "published" ? "Published" : "Draft"} ·{" "}
-                    {event.moment_count} Moments · {event.unassigned_count}{" "}
+                    {event.has_staged_update
+                      ? "Staged update"
+                      : event.lifecycle === "published"
+                        ? "Published"
+                        : "Draft"}{" "}
+                    · {event.moment_count} Moments · {event.unassigned_count}{" "}
                     unassigned
                   </span>
                 </button>
@@ -996,6 +1051,7 @@ export function EventOrganizer({
                 }
                 placeholder="Paris, Jardin du Luxembourg"
               />
+              <StagedUpdateReview event={currentDraft} />
               <div className="move-toolbar">
                 <div className="move-control">
                   <label>
@@ -1060,13 +1116,17 @@ export function EventOrganizer({
                         })
                       }
                       selected={selectedMedia.has(item.id)}
+                      stagedKind={stagedMediaKinds.get(item.id)}
                     />
                   ))}
                 </ul>
               </section>
               <div className="moment-list">
                 {currentDraft.moments.map((moment, index) => (
-                  <article className="moment-card" key={moment.id}>
+                  <article
+                    className={`moment-card ${(stagedMomentKinds.get(moment.id) ?? []).map((kind) => `staged-${kind}`).join(" ")}`}
+                    key={moment.id}
+                  >
                     <header>
                       <div>
                         <p>
@@ -1150,6 +1210,7 @@ export function EventOrganizer({
                             })
                           }
                           selected={selectedMedia.has(item.id)}
+                          stagedKind={stagedMediaKinds.get(item.id)}
                         />
                       ))}
                     </ul>
@@ -1383,6 +1444,8 @@ export function EventOrganizer({
                   disabled={
                     saveState !== "saved" ||
                     publish.isPending ||
+                    (currentDraft.lifecycle === "published" &&
+                      currentDraft.staged_update === null) ||
                     (publish.data?.editable_version ??
                       currentDraft.published_editable_version) ===
                       currentDraft.version ||

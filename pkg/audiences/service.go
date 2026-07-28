@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/robinjoseph08/memento/pkg/immich"
 	"github.com/robinjoseph08/memento/pkg/setup"
+	"github.com/robinjoseph08/memento/pkg/staging"
 	"github.com/uptrace/bun"
 )
 
@@ -611,10 +612,15 @@ func invalidateEventReview(ctx context.Context, tx bun.Tx, t target, now time.Ti
 	if t.kind != targetMoment {
 		return nil
 	}
-	_, err := tx.NewRaw(`
+	var eventID uuid.UUID
+	if err := tx.NewRaw(`
 		UPDATE events SET version = version + 1, final_review_complete = false, updated_at = ?
 		WHERE id = (SELECT event_id FROM draft_moments WHERE id = ?)
-	`, now, t.id).Exec(ctx)
+		RETURNING id
+	`, now, t.id).Scan(ctx, &eventID); err != nil {
+		return err
+	}
+	_, err := staging.Refresh(ctx, tx, eventID, now)
 	return err
 }
 

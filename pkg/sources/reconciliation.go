@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/robinjoseph08/memento/pkg/immich"
+	"github.com/robinjoseph08/memento/pkg/staging"
 	"github.com/robinjoseph08/memento/pkg/worker"
 	"github.com/uptrace/bun"
 )
@@ -247,17 +248,19 @@ func (s *Service) applyValidatedSnapshot(
 	if err != nil {
 		return 0, 0, 0, err
 	}
-	var additions int
+	var addedAssetIDs []uuid.UUID
 	if err := tx.NewRaw(`
-		SELECT count(*)
+		SELECT incoming.id::uuid
 		FROM jsonb_array_elements_text(?::jsonb) AS incoming(id)
 		WHERE NOT EXISTS (
 			SELECT 1 FROM source_album_memberships
 			WHERE source_album_id = ? AND immich_asset_id = incoming.id::uuid
 		)
-	`, string(encodedIDs), sourceAlbumID).Scan(ctx, &additions); err != nil {
+		ORDER BY incoming.id::uuid
+	`, string(encodedIDs), sourceAlbumID).Scan(ctx, &addedAssetIDs); err != nil {
 		return 0, 0, 0, err
 	}
+	additions := len(addedAssetIDs)
 	for start := 0; start < len(assetIDs); start += 1000 {
 		end := min(start+1000, len(assetIDs))
 		batch := make([]immich.AssetSummary, 0, end-start)
@@ -272,8 +275,27 @@ func (s *Service) applyValidatedSnapshot(
 		return 0, 0, 0, err
 	}
 
+	var addedMediaIDs []uuid.UUID
+	if len(addedAssetIDs) > 0 {
+		if err := tx.NewRaw(`SELECT id FROM media_items WHERE immich_asset_id IN (?) ORDER BY id`, bun.List(addedAssetIDs)).Scan(ctx, &addedMediaIDs); err != nil {
+			return 0, 0, 0, err
+		}
+	}
 	removals := 0
+	var removedMediaIDs []uuid.UUID
 	if stablePasses >= 2 {
+		if err := tx.NewRaw(`
+			SELECT membership.media_item_id
+			FROM source_album_memberships AS membership
+			WHERE membership.source_album_id = ?
+			  AND NOT EXISTS (
+				SELECT 1 FROM jsonb_array_elements_text(?::jsonb) AS candidate(id)
+				WHERE candidate.id::uuid = membership.immich_asset_id
+			  )
+			ORDER BY membership.media_item_id
+		`, sourceAlbumID, string(encodedIDs)).Scan(ctx, &removedMediaIDs); err != nil {
+			return 0, 0, 0, err
+		}
 		result, err := tx.NewRaw(`
 			DELETE FROM source_album_memberships AS membership
 			WHERE source_album_id = ?
@@ -325,6 +347,9 @@ func (s *Service) applyValidatedSnapshot(
 			return 0, 0, 0, err
 		}
 	}
+	if err := syncEditableEvents(ctx, tx, sourceAlbumID, addedMediaIDs, removedMediaIDs, now); err != nil {
+		return 0, 0, 0, err
+	}
 
 	summaryFingerprint, err := albumFingerprint(snapshot.after)
 	if err != nil {
@@ -345,6 +370,162 @@ func (s *Service) applyValidatedSnapshot(
 		return 0, 0, 0, err
 	}
 	return stablePasses, additions, removals, nil
+}
+
+func syncEditableEvents(
+	ctx context.Context,
+	tx bun.Tx,
+	sourceAlbumID uuid.UUID,
+	addedMediaIDs, removedMediaIDs []uuid.UUID,
+	now time.Time,
+) error {
+	if len(addedMediaIDs) == 0 && len(removedMediaIDs) == 0 {
+		return nil
+	}
+	var eventIDs []uuid.UUID
+	if err := tx.NewRaw(`
+		SELECT event.id
+		FROM event_sources AS source
+		JOIN events AS event ON event.id = source.event_id
+		WHERE source.source_album_id = ? AND event.lifecycle IN ('draft', 'published')
+		ORDER BY event.id
+	`, sourceAlbumID).Scan(ctx, &eventIDs); err != nil {
+		return err
+	}
+	for _, eventID := range eventIDs {
+		var lockedEventID uuid.UUID
+		if err := tx.NewRaw(`SELECT id FROM events WHERE id = ? FOR UPDATE`, eventID).Scan(ctx, &lockedEventID); err != nil {
+			return err
+		}
+		changed := false
+		for _, mediaID := range addedMediaIDs {
+			var exists bool
+			if err := tx.NewRaw(`SELECT EXISTS (SELECT 1 FROM draft_media_placements WHERE event_id = ? AND media_item_id = ?)`, eventID, mediaID).Scan(ctx, &exists); err != nil {
+				return err
+			}
+			if exists {
+				continue
+			}
+			var momentID *uuid.UUID
+			var position int
+			var wasCover bool
+			err := tx.NewRaw(`
+				SELECT draft_moment_id, position, was_cover
+				FROM staged_source_removals WHERE event_id = ? AND media_item_id = ?
+			`, eventID, mediaID).Scan(ctx, &momentID, &position, &wasCover)
+			if errors.Is(err, sql.ErrNoRows) {
+				momentID = nil
+				if err := tx.NewRaw(`SELECT COALESCE(max(position), -1) + 1 FROM draft_media_placements WHERE event_id = ?`, eventID).Scan(ctx, &position); err != nil {
+					return err
+				}
+			} else if err != nil {
+				return err
+			} else {
+				var occupied bool
+				if err := tx.NewRaw(`SELECT EXISTS (SELECT 1 FROM draft_media_placements WHERE event_id = ? AND position = ?)`, eventID, position).Scan(ctx, &occupied); err != nil {
+					return err
+				}
+				if occupied {
+					if err := tx.NewRaw(`SELECT COALESCE(max(position), -1) + 1 FROM draft_media_placements WHERE event_id = ?`, eventID).Scan(ctx, &position); err != nil {
+						return err
+					}
+				}
+				if momentID != nil {
+					var retained bool
+					if err := tx.NewRaw(`SELECT EXISTS (SELECT 1 FROM draft_moments WHERE event_id = ? AND id = ?)`, eventID, *momentID).Scan(ctx, &retained); err != nil {
+						return err
+					}
+					if !retained {
+						momentID = nil
+					}
+				}
+			}
+			if _, err := tx.NewRaw(`
+				INSERT INTO draft_media_placements (event_id, media_item_id, draft_moment_id, position, created_at)
+				VALUES (?, ?, ?, ?, ?)
+			`, eventID, mediaID, momentID, position, now).Exec(ctx); err != nil {
+				return err
+			}
+			if wasCover && momentID != nil {
+				if _, err := tx.NewRaw(`UPDATE draft_moments SET cover_media_item_id = ? WHERE id = ? AND cover_media_item_id IS NULL`, mediaID, *momentID).Exec(ctx); err != nil {
+					return err
+				}
+			}
+			if _, err := tx.NewRaw(`DELETE FROM staged_source_removals WHERE event_id = ? AND media_item_id = ?`, eventID, mediaID).Exec(ctx); err != nil {
+				return err
+			}
+			changed = true
+		}
+		for _, mediaID := range removedMediaIDs {
+			var retainedByLinkedSource bool
+			if err := tx.NewRaw(`
+				SELECT EXISTS (
+					SELECT 1 FROM event_sources AS source
+					JOIN source_album_memberships AS membership ON membership.source_album_id = source.source_album_id
+					WHERE source.event_id = ? AND membership.media_item_id = ?
+				)
+			`, eventID, mediaID).Scan(ctx, &retainedByLinkedSource); err != nil {
+				return err
+			}
+			if retainedByLinkedSource {
+				continue
+			}
+			var momentID *uuid.UUID
+			var position int
+			err := tx.NewRaw(`
+				SELECT draft_moment_id, position FROM draft_media_placements
+				WHERE event_id = ? AND media_item_id = ?
+			`, eventID, mediaID).Scan(ctx, &momentID, &position)
+			if errors.Is(err, sql.ErrNoRows) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			wasCover := false
+			if momentID != nil {
+				if err := tx.NewRaw(`SELECT cover_media_item_id = ? FROM draft_moments WHERE id = ?`, mediaID, *momentID).Scan(ctx, &wasCover); err != nil {
+					return err
+				}
+			}
+			var wasPublished bool
+			if err := tx.NewRaw(`SELECT EXISTS (SELECT 1 FROM current_published_placements WHERE event_id = ? AND media_item_id = ?)`, eventID, mediaID).Scan(ctx, &wasPublished); err != nil {
+				return err
+			}
+			if wasPublished {
+				if _, err := tx.NewRaw(`
+					INSERT INTO staged_source_removals (
+						event_id, media_item_id, draft_moment_id, position, was_cover, created_at
+					) VALUES (?, ?, ?, ?, ?, ?)
+					ON CONFLICT (event_id, media_item_id) DO NOTHING
+				`, eventID, mediaID, momentID, position, wasCover, now).Exec(ctx); err != nil {
+					return err
+				}
+			}
+			if wasCover {
+				if _, err := tx.NewRaw(`UPDATE draft_moments SET cover_media_item_id = NULL WHERE id = ?`, *momentID).Exec(ctx); err != nil {
+					return err
+				}
+			}
+			if _, err := tx.NewRaw(`DELETE FROM draft_media_placements WHERE event_id = ? AND media_item_id = ?`, eventID, mediaID).Exec(ctx); err != nil {
+				return err
+			}
+			changed = true
+		}
+		if !changed {
+			continue
+		}
+		if _, err := tx.NewRaw(`
+			UPDATE events SET version = version + 1, final_review_complete = false, updated_at = ?
+			WHERE id = ?
+		`, now, eventID).Exec(ctx); err != nil {
+			return err
+		}
+		if _, err := staging.Refresh(ctx, tx, lockedEventID, now); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 type databaseMediaItem struct {

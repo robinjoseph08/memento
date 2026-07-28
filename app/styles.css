@@ -1566,6 +1566,44 @@ h1 {
   font-size: 0.8rem;
 }
 
+.staged-review {
+  display: grid;
+  grid-template-columns: minmax(12rem, 1fr) minmax(16rem, 2fr);
+  gap: 1rem;
+  margin-top: 1rem;
+  padding: 0.8rem;
+  border: 1px solid #38bdf8;
+  border-radius: 0.75rem;
+  background: rgb(14 165 233 / 10%);
+}
+
+.staged-review h4,
+.staged-review p {
+  margin: 0;
+}
+
+.staged-review ul {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr));
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.staged-review li {
+  display: grid;
+  padding: 0.45rem;
+  border-radius: 0.5rem;
+  background: rgb(2 6 23 / 45%);
+}
+
+.staged-review li span {
+  color: #7dd3fc;
+  font-size: 1.1rem;
+  font-weight: 700;
+}
+
 .move-toolbar,
 .moment-card > header,
 .moment-actions,
@@ -1637,6 +1675,15 @@ h1 {
   padding: 0.45rem;
   border-radius: 0.5rem;
   background: rgb(15 23 42 / 80%);
+}
+
+.media-row.staged-addition,
+.media-row.staged-move,
+.moment-card.staged-metadata,
+.moment-card.staged-moment_structure,
+.moment-card.staged-access {
+  border: 1px solid #38bdf8;
+  box-shadow: inset 0.2rem 0 #38bdf8;
 }
 
 .media-row label {

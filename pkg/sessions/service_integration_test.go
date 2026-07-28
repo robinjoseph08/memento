@@ -49,7 +49,7 @@ func newFixture(t *testing.T) fixture {
 	require.NoError(t, db.NewRaw(`SELECT security_epoch FROM system_settings WHERE id = 1`).Scan(ctx, &epoch))
 	raw := bytes.Repeat([]byte{0x11}, 32)
 	hash := sha256.Sum256(raw)
-	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
+	now := time.Now().UTC().Truncate(time.Second)
 	_, err = db.NewRaw(`INSERT INTO sessions (id, credential_hash, person_id, recipient_access_generation_id, security_epoch, session_type, created_at, last_activity_at, idle_expires_at, browser, platform) VALUES (?, ?, ?, ?, ?, 'trusted', ?, ?, ?, 'Firefox', 'Linux')`, sessionID, hash[:], personID, accessID, epoch, now, now, now.Add(365*24*time.Hour)).Exec(ctx)
 	require.NoError(t, err)
 	security := config.SecurityConfig{Secret: "sessions-integration-secret-at-least-32-bytes", SignInRateWindow: 15 * time.Minute, SignInEmailLimit: 3, SignInIPLimit: 10}

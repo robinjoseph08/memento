@@ -41,6 +41,7 @@ function draft(version = 1): DraftEvent {
     final_review_complete: false,
     published_editable_version: null,
     published_attendance_recovery_required: false,
+    staged_update: null,
     sources: [],
     moments: [
       {
@@ -182,6 +183,7 @@ async function mockCuratorAPI(
               version: persisted.version,
               moment_count: persisted.moments.length,
               unassigned_count: persisted.unassigned_media.length,
+              has_staged_update: persisted.staged_update !== null,
               updated_at: persisted.updated_at,
             },
           ],
@@ -241,6 +243,7 @@ async function mockCuratorAPI(
         ...persisted,
         lifecycle: "published",
         published_editable_version: persisted.version,
+        staged_update: null,
       };
       await route.fulfill({
         status: 201,

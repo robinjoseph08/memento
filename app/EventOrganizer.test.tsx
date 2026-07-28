@@ -50,6 +50,7 @@ function draft(version = 1): DraftEvent {
     final_review_complete: false,
     published_editable_version: null,
     published_attendance_recovery_required: false,
+    staged_update: null,
     sources: [],
     moments: [
       {
@@ -231,6 +232,8 @@ function stubOrganizerAPI(initial: DraftEvent) {
               version: persisted.version,
               moment_count: persisted.moments.length,
               unassigned_count: persisted.unassigned_media.length,
+              has_staged_update: persisted.staged_update !== null,
+              lifecycle: persisted.lifecycle,
               updated_at: persisted.updated_at,
             },
           ],
@@ -250,6 +253,7 @@ function stubOrganizerAPI(initial: DraftEvent) {
           lifecycle: "published",
           published_editable_version: persisted.version,
           published_attendance_recovery_required: false,
+          staged_update: null,
         };
         return response(
           {
@@ -431,6 +435,73 @@ function renderOrganizer() {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+});
+
+test("shows the resulting Event with highlighted Staged net changes", async () => {
+  const staged = organizedDraft(8);
+  staged.lifecycle = "published";
+  staged.published_editable_version = 7;
+  staged.staged_update = {
+    id: "12121212-1212-4212-8212-121212121212",
+    base_publication_id: "13131313-1313-4313-8313-131313131313",
+    updated_at: "2026-05-03T01:00:00Z",
+    changes: [
+      {
+        kind: "addition",
+        count: 1,
+        media_item_ids: [items.b.id],
+        moment_ids: [],
+        detail: "Media added",
+      },
+      {
+        kind: "removal",
+        count: 2,
+        media_item_ids: [items.c.id, items.loose.id],
+        moment_ids: [],
+        detail: "Media removed",
+      },
+      {
+        kind: "metadata",
+        count: 1,
+        media_item_ids: [],
+        moment_ids: [momentOneID],
+        detail: "Event or Moment metadata edited",
+      },
+      {
+        kind: "access",
+        count: 1,
+        media_item_ids: [],
+        moment_ids: [momentOneID],
+        detail: "Audience access changed",
+      },
+    ],
+  };
+  stubOrganizerAPI(staged);
+  renderOrganizer();
+
+  const workItem = await screen.findByRole("button", {
+    name: /Family weekend/,
+  });
+  expect(workItem).toHaveTextContent("Staged update");
+  fireEvent.click(workItem);
+
+  const review = await screen.findByRole("region", {
+    name: "Staged update review",
+  });
+  expect(review).toHaveTextContent("complete resulting Event");
+  expect(review).toHaveTextContent("Additions1");
+  expect(review).toHaveTextContent("Removals2");
+  expect(review).toHaveTextContent("Metadata edits1");
+  expect(review).toHaveTextContent("Access changes1");
+  expect(document.querySelectorAll(".media-row.staged-addition")).toHaveLength(
+    1,
+  );
+  expect(
+    document.querySelectorAll(".moment-card.staged-metadata"),
+  ).toHaveLength(1);
+  expect(document.querySelectorAll(".moment-card.staged-access")).toHaveLength(
+    1,
+  );
 });
 
 test("publishes ready work and previews Recipient output read only", async () => {

@@ -514,7 +514,7 @@ func TestFailureAtEveryPublicationBoundaryRollsBackEverything(t *testing.T) {
 		PublicationStepLocked, PublicationStepValidated, PublicationStepHistory,
 		PublicationStepMetadata, PublicationStepPlacements, PublicationStepAudiences,
 		PublicationStepEntitlements, PublicationStepActivity, PublicationStepAudit,
-		PublicationStepOutbox,
+		PublicationStepOutbox, PublicationStepStaged,
 	}
 	publicationTables := []string{
 		"publications", "published_event_revisions", "published_moments",
@@ -576,6 +576,124 @@ func TestFailureAtEveryPublicationBoundaryRollsBackEverything(t *testing.T) {
 		assert.Equal(t, priorState, snapshotTables(replacementTables), "failed replacement preserves all history and projections at %s", failedStep)
 	}
 	fixture.service.failPublicationStep = nil
+}
+
+func TestStagedUpdateCoalescesConcurrentEditsRetriesAndCancellation(t *testing.T) {
+	fixture := newPublicationFixture(t)
+	ctx := context.Background()
+	_, err := fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, fixture.request())
+	require.NoError(t, err)
+
+	start := make(chan struct{})
+	errorsByEdit := make(chan error, 2)
+	for _, title := range []string{"Concurrent title A", "Concurrent title B"} {
+		title := title
+		go func() {
+			<-start
+			errorsByEdit <- fixture.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+				if _, err := tx.NewRaw(`UPDATE events SET title = ?, version = version + 1 WHERE id = ?`, title, fixture.event).Exec(ctx); err != nil {
+					return err
+				}
+				_, err := refreshStagedUpdate(ctx, tx, fixture.event, fixture.service.now().UTC())
+				return err
+			})
+		}()
+	}
+	close(start)
+	require.NoError(t, <-errorsByEdit)
+	require.NoError(t, <-errorsByEdit)
+
+	var stagedID uuid.UUID
+	var stagedCount int
+	require.NoError(t, fixture.db.NewRaw(`SELECT id FROM staged_updates WHERE event_id = ?`, fixture.event).Scan(ctx, &stagedID))
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM staged_updates WHERE event_id = ?`, fixture.event).Scan(ctx, &stagedCount))
+	assert.Equal(t, 1, stagedCount, "concurrent edits retain one mutable Staged update")
+	require.NoError(t, fixture.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		_, err := refreshStagedUpdate(ctx, tx, fixture.event, fixture.service.now().UTC())
+		return err
+	}))
+	var retriedID uuid.UUID
+	require.NoError(t, fixture.db.NewRaw(`SELECT id FROM staged_updates WHERE event_id = ?`, fixture.event).Scan(ctx, &retriedID))
+	assert.Equal(t, stagedID, retriedID, "retry coalesces into the same mutable update")
+
+	require.NoError(t, fixture.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if _, err := tx.NewRaw(`UPDATE events SET title = 'Family weekend', version = version + 1 WHERE id = ?`, fixture.event).Exec(ctx); err != nil {
+			return err
+		}
+		update, err := refreshStagedUpdate(ctx, tx, fixture.event, fixture.service.now().UTC())
+		require.Nil(t, update)
+		return err
+	}))
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM staged_updates WHERE event_id = ?`, fixture.event).Scan(ctx, &stagedCount))
+	assert.Zero(t, stagedCount, "cancelled changes leave no Staged work residue")
+}
+
+func TestNoNewMediaCorrectionIsQuietAndClearsStageAtomically(t *testing.T) {
+	fixture := newPublicationFixture(t)
+	ctx := context.Background()
+	_, err := fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, fixture.request())
+	require.NoError(t, err)
+	require.NoError(t, fixture.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if _, err := tx.NewRaw(`UPDATE events SET title = 'Quiet correction', version = 8, final_review_complete = true WHERE id = ?`, fixture.event).Exec(ctx); err != nil {
+			return err
+		}
+		_, err := refreshStagedUpdate(ctx, tx, fixture.event, fixture.service.now().UTC())
+		return err
+	}))
+
+	second, err := fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, PublishEventRequest{Version: 8})
+	require.NoError(t, err)
+	var stagedCount, secondActivity, newForYou int
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM staged_updates WHERE event_id = ?`, fixture.event).Scan(ctx, &stagedCount))
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM publication_activity_items WHERE publication_id = ?`, second.ID).Scan(ctx, &secondActivity))
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM new_for_you_entries`).Scan(ctx, &newForYou))
+	assert.Zero(t, stagedCount)
+	assert.Zero(t, secondActivity, "a correction that grants no new Media creates no Recipient activity")
+	assert.Zero(t, newForYou, "a quiet correction does not become New for you")
+}
+
+func TestFailedPublicationPreservesPriorProjectionAndStagedUpdate(t *testing.T) {
+	fixture := newPublicationFixture(t)
+	ctx := context.Background()
+	_, err := fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, fixture.request())
+	require.NoError(t, err)
+	require.NoError(t, fixture.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if _, err := tx.NewRaw(`UPDATE events SET title = 'Rollback candidate', version = 8, final_review_complete = true WHERE id = ?`, fixture.event).Exec(ctx); err != nil {
+			return err
+		}
+		_, err := refreshStagedUpdate(ctx, tx, fixture.event, fixture.service.now().UTC())
+		return err
+	}))
+	var stagedID uuid.UUID
+	require.NoError(t, fixture.db.NewRaw(`SELECT id FROM staged_updates WHERE event_id = ?`, fixture.event).Scan(ctx, &stagedID))
+
+	injected := errors.New("fail while clearing Staged update")
+	fixture.service.failPublicationStep = func(step PublicationStep) error {
+		if step == PublicationStepStaged {
+			return injected
+		}
+		return nil
+	}
+	_, err = fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, PublishEventRequest{Version: 8})
+	require.ErrorIs(t, err, injected)
+	var retainedID uuid.UUID
+	var publications, outbox int
+	require.NoError(t, fixture.db.NewRaw(`SELECT id FROM staged_updates WHERE event_id = ?`, fixture.event).Scan(ctx, &retainedID))
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM publications`).Scan(ctx, &publications))
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM outbox_events`).Scan(ctx, &outbox))
+	assert.Equal(t, stagedID, retainedID)
+	assert.Equal(t, 1, publications)
+	assert.Equal(t, 1, outbox)
+	prior, err := fixture.service.RecipientEvent(ctx, fixture.actorFor("shared"), fixture.event)
+	require.NoError(t, err)
+	assert.Equal(t, "Family weekend", prior.Title)
+
+	fixture.service.failPublicationStep = nil
+	_, err = fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, PublishEventRequest{Version: 8})
+	require.NoError(t, err)
+	var stagedCount int
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM staged_updates WHERE event_id = ?`, fixture.event).Scan(ctx, &stagedCount))
+	assert.Zero(t, stagedCount)
 }
 
 func TestPublicationLocksReviewedAudienceAndAccessGenerationsUntilCommit(t *testing.T) {

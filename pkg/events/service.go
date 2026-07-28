@@ -107,6 +107,7 @@ type EventSummary struct {
 	Version         int64     `json:"version"`
 	MomentCount     int       `json:"moment_count"`
 	UnassignedCount int       `json:"unassigned_count"`
+	HasStagedUpdate bool      `json:"has_staged_update"`
 	UpdatedAt       time.Time `json:"updated_at"`
 }
 
@@ -138,6 +139,7 @@ type Event struct {
 	FinalReviewComplete                 bool               `json:"final_review_complete"`
 	PublishedEditableVersion            *int64             `json:"published_editable_version" tstype:"number | null,required"`
 	PublishedAttendanceRecoveryRequired bool               `json:"published_attendance_recovery_required"`
+	StagedUpdate                        *StagedUpdate      `json:"staged_update" tstype:"StagedUpdate | null,required"`
 	Sources                             []EventSource      `json:"sources"`
 	Moments                             []Moment           `json:"moments"`
 	UnassignedMedia                     []MediaItem        `json:"unassigned_media"`
@@ -501,6 +503,7 @@ func (s *Service) ListEvents(ctx context.Context) (EventListResponse, error) {
 		SELECT event.id, event.lifecycle, event.title, event.version,
 			COALESCE(moment.moment_count, 0)::integer AS moment_count,
 			COALESCE(placement.unassigned_count, 0)::integer AS unassigned_count,
+			(event.current_staged_update_id IS NOT NULL) AS has_staged_update,
 			event.updated_at
 		FROM events AS event
 		LEFT JOIN (
@@ -719,6 +722,9 @@ func (s *Service) OrganizeEvent(ctx context.Context, actor setup.CuratorSession,
 		}); err != nil {
 			return err
 		}
+		if _, err := refreshStagedUpdate(ctx, tx, id, now); err != nil {
+			return err
+		}
 		organized, err = getEvent(ctx, tx, id)
 		return err
 	})
@@ -918,6 +924,9 @@ func (s *Service) GetEvent(ctx context.Context, id uuid.UUID) (Event, error) {
 func getEvent(ctx context.Context, db bun.IDB, id uuid.UUID) (Event, error) {
 	var event Event
 	var placeLabelsJSON, withdrawalTargetsJSON, withdrawalsJSON string
+	var stagedID, stagedPublicationID *uuid.UUID
+	var stagedChanges []byte
+	var stagedUpdatedAt *time.Time
 	err := db.NewRaw(`
 		SELECT event.id, event.lifecycle, event.title, event.description,
 			event.grouping_timezone, event.version, event.final_review_complete,
@@ -989,16 +998,19 @@ func getEvent(ctx context.Context, db bun.IDB, id uuid.UUID) (Event, error) {
 						placement.event_id, moment.draft_moment_id, placement.media_item_id
 					)
 				)
-			), '[]'::jsonb)::text
+			), '[]'::jsonb)::text,
+			staged.id, staged.base_publication_id, staged.net_changes, staged.updated_at
 		FROM events AS event
 		LEFT JOIN publications AS publication ON publication.id = event.current_publication_id
 		LEFT JOIN current_published_events AS current ON current.publication_id = publication.id
+		LEFT JOIN staged_updates AS staged ON staged.id = event.current_staged_update_id
 		WHERE event.id = ?
 	`, id).Scan(ctx, &event.ID, &event.Lifecycle, &event.Title, &event.Description,
 		&event.GroupingTimezone, &event.Version, &event.FinalReviewComplete,
 		&event.PublishedEditableVersion, &event.PublishedAttendanceRecoveryRequired,
 		&event.CreatedAt, &event.UpdatedAt,
-		&placeLabelsJSON, &withdrawalsJSON, &withdrawalTargetsJSON)
+		&placeLabelsJSON, &withdrawalsJSON, &withdrawalTargetsJSON,
+		&stagedID, &stagedPublicationID, &stagedChanges, &stagedUpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Event{}, ErrNotFound
 	}
@@ -1083,6 +1095,16 @@ func getEvent(ctx context.Context, db bun.IDB, id uuid.UUID) (Event, error) {
 	event.Moments, event.UnassignedMedia, err = loadEventMedia(ctx, db, id, event.Moments)
 	if err != nil {
 		return Event{}, err
+	}
+	if stagedID != nil && stagedPublicationID != nil && stagedUpdatedAt != nil {
+		changes := make([]StagedChange, 0)
+		if err := json.Unmarshal(stagedChanges, &changes); err != nil {
+			return Event{}, err
+		}
+		event.StagedUpdate = &StagedUpdate{
+			ID: stagedID.String(), BasePublicationID: stagedPublicationID.String(),
+			Changes: changes, UpdatedAt: *stagedUpdatedAt,
+		}
 	}
 	return event, nil
 }

@@ -13,9 +13,11 @@ import (
 	"github.com/google/uuid"
 	"github.com/robinjoseph08/memento/pkg/config"
 	"github.com/robinjoseph08/memento/pkg/immich"
+	"github.com/robinjoseph08/memento/pkg/staging"
 	"github.com/robinjoseph08/memento/pkg/worker"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/uptrace/bun"
 )
 
 type reconciliationConnector struct {
@@ -115,6 +117,65 @@ func newReconciliationService(t *testing.T, connector Connector) (*Service, uuid
 	require.NoError(t, err)
 	require.Len(t, listed.Albums, 1)
 	return service, uuid.MustParse(listed.Albums[0].ID)
+}
+
+type stagedSourceEvent struct {
+	eventID, momentID, mediaID, publicationID uuid.UUID
+}
+
+func publishSourceEventFixture(t *testing.T, service *Service, sourceAlbumID uuid.UUID, assetID uuid.UUID) stagedSourceEvent {
+	t.Helper()
+	ctx := context.Background()
+	fixture := stagedSourceEvent{eventID: uuid.New(), momentID: uuid.New(), publicationID: uuid.New()}
+	curatorID, snapshotID, publishedMomentID := uuid.New(), uuid.New(), uuid.New()
+	require.NoError(t, service.db.NewRaw(`SELECT id FROM media_items WHERE immich_asset_id = ?`, assetID).Scan(ctx, &fixture.mediaID))
+	_, err := service.db.NewRaw(`
+		INSERT INTO people (id, display_name, sort_name) VALUES (?, 'Source Curator', 'source curator');
+		INSERT INTO person_roles (person_id, role) VALUES (?, 'curator');
+		INSERT INTO events (
+			id, lifecycle, title, grouping_timezone, version, final_review_complete, created_at, updated_at
+		) VALUES (?, 'published', 'Source Event', 'UTC', 1, true, ?, ?);
+		INSERT INTO event_sources (
+			event_id, source_album_id, source_order, initialized_name, initialized_description, initialized_at
+		) SELECT ?, id, 0, name, description, ? FROM source_albums WHERE id = ?;
+		INSERT INTO draft_moments (
+			id, event_id, position, proposed_day, grouping_timezone, source_days, title,
+			cover_media_item_id, attendance_complete, audience_complete
+		) VALUES (?, ?, 0, '2026-01-01', 'UTC', ARRAY['2026-01-01'::date], 'Source Moment', ?, true, true);
+		INSERT INTO draft_media_placements (event_id, media_item_id, draft_moment_id, position, created_at)
+		VALUES (?, ?, ?, 0, ?);
+		INSERT INTO audience_snapshots (id, target_kind, target_id, approved_by_person_id, approved_at, label)
+		VALUES (?, 'moment', ?, ?, ?, 'Curator only');
+		INSERT INTO current_audience_snapshots (target_kind, target_id, snapshot_id)
+		VALUES ('moment', ?, ?);
+		INSERT INTO publications (
+			id, event_id, revision, editable_version, published_by_person_id, notify_recipients, committed_at
+		) VALUES (?, ?, 1, 1, ?, true, ?);
+		INSERT INTO published_event_revisions (
+			publication_id, event_id, title, description, grouping_timezone, created_at
+		) VALUES (?, ?, 'Source Event', '', 'UTC', ?);
+		INSERT INTO published_moments (
+			id, publication_id, draft_moment_id, audience_snapshot_id, position, title, proposed_day, cover_media_item_id
+		) VALUES (?, ?, ?, ?, 0, 'Source Moment', '2026-01-01', ?);
+		INSERT INTO published_media_placements (
+			published_moment_id, media_item_id, position, media_type, width, height, local_date_time
+		) SELECT ?, id, 0, media_type, width, height, local_date_time FROM media_items WHERE id = ?;
+		INSERT INTO current_published_events (
+			event_id, publication_id, title, description, grouping_timezone, committed_at
+		) VALUES (?, ?, 'Source Event', '', 'UTC', ?);
+		INSERT INTO current_published_placements (
+			event_id, publication_id, published_moment_id, media_item_id, position
+		) VALUES (?, ?, ?, ?, 0);
+		UPDATE events SET current_publication_id = ? WHERE id = ?
+	`, curatorID, curatorID, fixture.eventID, service.now(), service.now(), fixture.eventID, service.now(), sourceAlbumID,
+		fixture.momentID, fixture.eventID, fixture.mediaID, fixture.eventID, fixture.mediaID, fixture.momentID, service.now(),
+		snapshotID, fixture.momentID, curatorID, service.now(), fixture.momentID, snapshotID,
+		fixture.publicationID, fixture.eventID, curatorID, service.now(), fixture.publicationID, fixture.eventID, service.now(),
+		publishedMomentID, fixture.publicationID, fixture.momentID, snapshotID, fixture.mediaID,
+		publishedMomentID, fixture.mediaID, fixture.eventID, fixture.publicationID, service.now(),
+		fixture.eventID, fixture.publicationID, publishedMomentID, fixture.mediaID, fixture.publicationID, fixture.eventID).Exec(ctx)
+	require.NoError(t, err)
+	return fixture
 }
 
 func reconciliationWorkerConfig() config.WorkerConfig {
@@ -392,6 +453,115 @@ func TestDifferingValidatedPassResetsRemovalEvidence(t *testing.T) {
 	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
 	assertRemovalEvidence(t, service, sourceAlbumID, 1)
 	assertTableCount(t, service, "source_album_memberships", 2)
+}
+
+func TestPublishedSourceChangesCoalesceAcrossRetriesConcurrentEditsAndCancellation(t *testing.T) {
+	original, added := reconciliationAsset(uuid.New()), reconciliationAsset(uuid.New())
+	connector := &reconciliationConnector{summary: sourceAlbum(uuid.New(), "Published source", 1)}
+	connector.pages = map[int]immich.AssetPage{1: {Items: []immich.AssetSummary{original}}}
+	service, sourceAlbumID := newReconciliationService(t, connector)
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	fixture := publishSourceEventFixture(t, service, sourceAlbumID, original.SourceID)
+
+	connector.setMembership(original, added)
+	start := make(chan struct{})
+	errorsByEdit := make(chan error, 2)
+	go func() {
+		<-start
+		errorsByEdit <- service.Reconcile(context.Background(), sourceAlbumID)
+	}()
+	go func() {
+		<-start
+		errorsByEdit <- service.db.RunInTx(context.Background(), nil, func(ctx context.Context, tx bun.Tx) error {
+			if _, err := tx.NewRaw(`UPDATE events SET title = 'Concurrent correction', version = version + 1 WHERE id = ?`, fixture.eventID).Exec(ctx); err != nil {
+				return err
+			}
+			_, err := staging.Refresh(ctx, tx, fixture.eventID, service.now().UTC())
+			return err
+		})
+	}()
+	close(start)
+	require.NoError(t, <-errorsByEdit)
+	require.NoError(t, <-errorsByEdit)
+
+	update, err := staging.Load(context.Background(), service.db, fixture.eventID)
+	require.NoError(t, err)
+	require.NotNil(t, update)
+	assert.Len(t, update.Changes, 2)
+	firstStagedID := update.ID
+	var stagedRows int
+	require.NoError(t, service.db.NewRaw(`SELECT count(*) FROM staged_updates WHERE event_id = ?`, fixture.eventID).Scan(context.Background(), &stagedRows))
+	assert.Equal(t, 1, stagedRows)
+
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	retried, err := staging.Load(context.Background(), service.db, fixture.eventID)
+	require.NoError(t, err)
+	require.NotNil(t, retried)
+	assert.Equal(t, firstStagedID, retried.ID, "reconciliation retry retains one mutable Staged update")
+
+	require.NoError(t, service.db.RunInTx(context.Background(), nil, func(ctx context.Context, tx bun.Tx) error {
+		if _, err := tx.NewRaw(`UPDATE events SET title = 'Source Event', version = version + 1 WHERE id = ?`, fixture.eventID).Exec(ctx); err != nil {
+			return err
+		}
+		_, err := staging.Refresh(ctx, tx, fixture.eventID, service.now().UTC())
+		return err
+	}))
+	connector.setMembership(original)
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	cancelled, err := staging.Load(context.Background(), service.db, fixture.eventID)
+	require.NoError(t, err)
+	assert.Nil(t, cancelled, "an addition removed before Publication leaves no Staged update")
+	var addedPlacement bool
+	require.NoError(t, service.db.NewRaw(`SELECT EXISTS (SELECT 1 FROM draft_media_placements WHERE event_id = ? AND media_item_id = (SELECT id FROM media_items WHERE immich_asset_id = ?))`, fixture.eventID, added.SourceID).Scan(context.Background(), &addedPlacement))
+	assert.False(t, addedPlacement)
+}
+
+func TestPublishedSourceRemovalStaysPrivateWhileMediaRemainsAvailable(t *testing.T) {
+	original := reconciliationAsset(uuid.New())
+	connector := &reconciliationConnector{summary: sourceAlbum(uuid.New(), "Removal source", 1)}
+	connector.pages = map[int]immich.AssetPage{1: {Items: []immich.AssetSummary{original}}}
+	service, sourceAlbumID := newReconciliationService(t, connector)
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	fixture := publishSourceEventFixture(t, service, sourceAlbumID, original.SourceID)
+
+	otherSourceID := uuid.New()
+	_, err := service.db.NewRaw(`
+		INSERT INTO source_albums (
+			id, immich_album_id, name, asset_count, source_created_at, source_updated_at,
+			disposition, first_seen_at, last_seen_at, source_fingerprint, next_reconciliation_at
+		) VALUES (?, ?, 'Other source', 1, ?, ?, 'drafted', ?, ?, decode(repeat('11', 32), 'hex'), ?);
+		INSERT INTO source_album_memberships (
+			source_album_id, immich_asset_id, media_item_id, first_seen_at, last_seen_at, source_fingerprint
+		) VALUES (?, ?, ?, ?, ?, decode(repeat('22', 32), 'hex'))
+	`, otherSourceID, uuid.New(), service.now(), service.now(), service.now(), service.now(), service.now(),
+		otherSourceID, original.SourceID, fixture.mediaID, service.now(), service.now()).Exec(context.Background())
+	require.NoError(t, err)
+
+	connector.setMembership()
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	var availability string
+	var editablePlacement, currentPlacement, historicalPlacement bool
+	require.NoError(t, service.db.NewRaw(`SELECT availability FROM media_items WHERE id = ?`, fixture.mediaID).Scan(context.Background(), &availability))
+	require.NoError(t, service.db.NewRaw(`SELECT EXISTS (SELECT 1 FROM draft_media_placements WHERE event_id = ? AND media_item_id = ?)`, fixture.eventID, fixture.mediaID).Scan(context.Background(), &editablePlacement))
+	require.NoError(t, service.db.NewRaw(`SELECT EXISTS (SELECT 1 FROM current_published_placements WHERE event_id = ? AND media_item_id = ?)`, fixture.eventID, fixture.mediaID).Scan(context.Background(), &currentPlacement))
+	require.NoError(t, service.db.NewRaw(`SELECT EXISTS (SELECT 1 FROM published_media_placements WHERE media_item_id = ?)`, fixture.mediaID).Scan(context.Background(), &historicalPlacement))
+	assert.Equal(t, "current", availability)
+	assert.False(t, editablePlacement, "the source removal changes only the private editable result")
+	assert.True(t, currentPlacement, "Recipients retain the prior projection until Publication")
+	assert.True(t, historicalPlacement)
+	update, err := staging.Load(context.Background(), service.db, fixture.eventID)
+	require.NoError(t, err)
+	require.NotNil(t, update)
+	var removalFound bool
+	for _, change := range update.Changes {
+		if change.Kind == "removal" {
+			removalFound = true
+			assert.Equal(t, []string{fixture.mediaID.String()}, change.MediaItemIDs)
+		}
+	}
+	assert.True(t, removalFound)
 }
 
 func TestAddThenRemoveBeforePublicationLeavesNoEditableResidue(t *testing.T) {
