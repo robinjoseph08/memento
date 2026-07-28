@@ -1069,6 +1069,124 @@ func TestNoNewMediaCorrectionIsQuietAndClearsStageAtomically(t *testing.T) {
 	assert.Zero(t, newForYou, "a quiet correction does not become New for you")
 }
 
+func TestPublicationInvalidatesAnotherEventsChangedStagedAccessImpact(t *testing.T) {
+	fixture := newPublicationFixture(t)
+	ctx := context.Background()
+	_, err := fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, fixture.request())
+	require.NoError(t, err)
+
+	secondEvent, secondMoment, secondSnapshot := uuid.New(), uuid.New(), uuid.New()
+	_, err = fixture.db.NewRaw(`
+		INSERT INTO events (
+			id, lifecycle, title, description, grouping_timezone, version,
+			final_review_complete, created_at, updated_at
+		) VALUES (?, 'draft', 'Overlapping Event', '', 'UTC', 7, true, ?, ?);
+		INSERT INTO draft_moments (
+			id, event_id, position, proposed_day, grouping_timezone, source_days,
+			title, cover_media_item_id, attendance_complete, audience_complete
+		) VALUES (?, ?, 0, '2026-07-27', 'UTC', ARRAY['2026-07-27'::date],
+			'Overlap', ?, true, true);
+		INSERT INTO draft_media_placements (
+			event_id, media_item_id, draft_moment_id, position, created_at
+		) VALUES (?, ?, ?, 0, ?);
+		INSERT INTO audience_snapshots (
+			id, target_kind, target_id, approved_by_person_id, approved_at, label
+		) VALUES (?, 'moment', ?, ?, ?, 'Shared');
+		INSERT INTO audience_snapshot_entries (
+			snapshot_id, recipient_person_id, recipient_access_generation_id
+		) VALUES (?, ?, ?);
+		INSERT INTO current_audience_snapshots (target_kind, target_id, snapshot_id)
+		VALUES ('moment', ?, ?)
+	`, secondEvent, fixture.service.now(), fixture.service.now(), secondMoment, secondEvent,
+		fixture.media[0], secondEvent, fixture.media[0], secondMoment, fixture.service.now(),
+		secondSnapshot, secondMoment, fixture.actor.PersonID, fixture.service.now(), secondSnapshot,
+		fixture.people["shared"], fixture.access["shared"], secondMoment, secondSnapshot).Exec(ctx)
+	require.NoError(t, err)
+	_, err = fixture.service.PublishEvent(ctx, fixture.actor, secondEvent, fixture.request())
+	require.NoError(t, err)
+
+	firstReplacementSnapshot := uuid.New()
+	var firstUpdate *staging.Update
+	require.NoError(t, fixture.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if _, updateErr := tx.NewRaw(`
+			INSERT INTO audience_snapshots (
+				id, target_kind, target_id, approved_by_person_id, approved_at, label
+			) VALUES (?, 'moment', ?, ?, ?, 'Shared');
+			INSERT INTO audience_snapshot_entries (
+				snapshot_id, recipient_person_id, recipient_access_generation_id
+			) VALUES (?, ?, ?);
+			UPDATE current_audience_snapshots SET snapshot_id = ?
+			WHERE target_kind = 'moment' AND target_id = ?;
+			UPDATE events SET version = 8, final_review_complete = true WHERE id = ?
+		`, firstReplacementSnapshot, fixture.moments[0], fixture.actor.PersonID, fixture.service.now(),
+			firstReplacementSnapshot, fixture.people["pending"], fixture.access["pending"],
+			firstReplacementSnapshot, fixture.moments[0], fixture.event).Exec(ctx); updateErr != nil {
+			return updateErr
+		}
+		var refreshErr error
+		firstUpdate, refreshErr = staging.Refresh(ctx, tx, fixture.event, fixture.service.now().UTC())
+		return refreshErr
+	}))
+	require.NotNil(t, firstUpdate)
+	var priorAccess staging.Change
+	for _, change := range firstUpdate.Changes {
+		if change.Kind == staging.ChangeKindAccess {
+			priorAccess = change
+		}
+	}
+	assert.Equal(t, staging.ChangeKindAccess, priorAccess.Kind)
+	assert.Zero(t, priorAccess.Count, "the overlapping Publication initially masks the shared Recipient revocation")
+	assert.Empty(t, priorAccess.RecipientAccess)
+
+	secondReplacementSnapshot := uuid.New()
+	require.NoError(t, fixture.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if _, updateErr := tx.NewRaw(`
+			INSERT INTO audience_snapshots (
+				id, target_kind, target_id, approved_by_person_id, approved_at, label
+			) VALUES (?, 'moment', ?, ?, ?, 'Curator only');
+			UPDATE current_audience_snapshots SET snapshot_id = ?
+			WHERE target_kind = 'moment' AND target_id = ?;
+			UPDATE events SET version = 8, final_review_complete = true WHERE id = ?
+		`, secondReplacementSnapshot, secondMoment, fixture.actor.PersonID, fixture.service.now(),
+			secondReplacementSnapshot, secondMoment, secondEvent).Exec(ctx); updateErr != nil {
+			return updateErr
+		}
+		update, refreshErr := staging.Refresh(ctx, tx, secondEvent, fixture.service.now().UTC())
+		require.NotNil(t, update)
+		return refreshErr
+	}))
+	_, err = fixture.service.PublishEvent(ctx, fixture.actor, secondEvent, PublishEventRequest{Version: 8})
+	require.NoError(t, err)
+
+	dependent, err := staging.Load(ctx, fixture.db, fixture.event)
+	require.NoError(t, err)
+	require.NotNil(t, dependent)
+	var changedAccess staging.Change
+	for _, change := range dependent.Changes {
+		if change.Kind == staging.ChangeKindAccess {
+			changedAccess = change
+		}
+	}
+	require.Equal(t, staging.ChangeKindAccess, changedAccess.Kind)
+	assert.Equal(t, 1, changedAccess.Count)
+	require.Len(t, changedAccess.RecipientAccess, 1)
+	assert.Equal(t, fixture.people["shared"].String(), changedAccess.RecipientAccess[0].RecipientPersonID)
+	assert.Zero(t, changedAccess.RecipientAccess[0].GrantedMediaCount)
+	assert.Equal(t, 1, changedAccess.RecipientAccess[0].RevokedMediaCount)
+
+	var dependentVersion int64
+	var dependentFinalReview bool
+	require.NoError(t, fixture.db.NewRaw(`
+		SELECT version, final_review_complete FROM events WHERE id = ?
+	`, fixture.event).Scan(ctx, &dependentVersion, &dependentFinalReview))
+	assert.Equal(t, int64(9), dependentVersion)
+	assert.False(t, dependentFinalReview)
+	_, err = fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, PublishEventRequest{Version: 8})
+	assert.ErrorIs(t, err, ErrVersionConflict, "the reviewed version became stale when another Publication changed its access impact")
+	_, err = fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, PublishEventRequest{Version: 9})
+	assert.ErrorIs(t, err, ErrPublicationNotReady, "the changed access impact requires fresh final review")
+}
+
 func TestNoNewMediaStructuralAndAccessCorrectionsAreQuiet(t *testing.T) {
 	tests := []struct {
 		name   string

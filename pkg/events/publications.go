@@ -130,9 +130,14 @@ func (s *Service) PublishEvent(ctx context.Context, actor setup.CuratorSession, 
 	now := s.now().UTC()
 	var response PublicationResponse
 	err := s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		// Every Publication can change the global entitlement union summarized by
+		// another Staged Event. Serialize that replacement before locking one Event
+		// so dependent versions can be invalidated without cross-Event deadlocks.
+		if err := staging.LockAccessSummaryInputs(ctx, tx); err != nil {
+			return err
+		}
 		// Publications share this lock while Withdrawal takes it exclusively. Taking
-		// it before Event locks gives Withdrawal one stable placement set without
-		// serializing Publications for independent Events.
+		// it before Event locks gives Withdrawal one stable placement set.
 		if err := placementlock.Acquire(ctx, tx, placementlock.Shared); err != nil {
 			return err
 		}
@@ -381,6 +386,9 @@ func (s *Service) PublishEvent(ctx context.Context, actor setup.CuratorSession, 
 			JOIN published_moments AS moment ON moment.id = audience.published_moment_id
 			WHERE moment.publication_id = ?
 		`, eventID, publicationID, publicationID).Exec(ctx); err != nil {
+			return err
+		}
+		if err := staging.RefreshDependentAccessUpdates(ctx, tx, eventID, now); err != nil {
 			return err
 		}
 		if _, err := tx.NewRaw(`

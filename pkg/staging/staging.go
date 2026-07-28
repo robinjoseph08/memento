@@ -144,6 +144,78 @@ func Refresh(ctx context.Context, tx bun.Tx, eventID uuid.UUID, now time.Time) (
 	return &Update{ID: stagedID.String(), BasePublicationID: publicationID.String(), Changes: changes, UpdatedAt: now}, nil
 }
 
+// LockAccessSummaryInputs serializes Publications that replace the global
+// Recipient-Media entitlement inputs used by every Staged access summary. It
+// must be acquired before locking an individual Event.
+func LockAccessSummaryInputs(ctx context.Context, tx bun.Tx) error {
+	_, err := tx.NewRaw(`SELECT pg_advisory_xact_lock(hashtextextended('events:staged-access-summary-inputs', 0))`).Exec(ctx)
+	return err
+}
+
+// RefreshDependentAccessUpdates refreshes other Staged Events after a
+// Publication replaces current entitlements. A changed access impact is new
+// review information, so the dependent Event receives a new version and loses
+// final-review approval in the same transaction.
+func RefreshDependentAccessUpdates(ctx context.Context, tx bun.Tx, publishedEventID uuid.UUID, now time.Time) error {
+	type candidate struct {
+		EventID    uuid.UUID `bun:"event_id"`
+		NetChanges []byte    `bun:"net_changes"`
+	}
+	var candidates []candidate
+	if err := tx.NewRaw(`
+		SELECT staged.event_id, staged.net_changes
+		FROM staged_updates AS staged
+		JOIN events AS event ON event.id = staged.event_id
+		WHERE staged.event_id <> ?
+		ORDER BY staged.event_id
+		FOR UPDATE OF event, staged
+	`, publishedEventID).Scan(ctx, &candidates); err != nil {
+		return err
+	}
+	for _, candidate := range candidates {
+		var priorChanges []Change
+		if err := json.Unmarshal(candidate.NetChanges, &priorChanges); err != nil {
+			return err
+		}
+		priorAccess, err := accessChangeFingerprint(priorChanges)
+		if err != nil {
+			return err
+		}
+		update, err := Refresh(ctx, tx, candidate.EventID, now)
+		if err != nil {
+			return err
+		}
+		if update == nil {
+			continue
+		}
+		currentAccess, err := accessChangeFingerprint(update.Changes)
+		if err != nil {
+			return err
+		}
+		if priorAccess == currentAccess {
+			continue
+		}
+		if _, err := tx.NewRaw(`
+			UPDATE events SET version = version + 1, final_review_complete = false, updated_at = ?
+			WHERE id = ?
+		`, now, candidate.EventID).Exec(ctx); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func accessChangeFingerprint(changes []Change) (string, error) {
+	for _, change := range changes {
+		if change.Kind != ChangeKindAccess {
+			continue
+		}
+		encoded, err := json.Marshal(change)
+		return string(encoded), err
+	}
+	return "", nil
+}
+
 // InvalidateEvent records an externally-applied editable change and refreshes
 // its coalesced update in the same transaction.
 func InvalidateEvent(ctx context.Context, tx bun.Tx, eventID uuid.UUID, now time.Time) (*Update, error) {
