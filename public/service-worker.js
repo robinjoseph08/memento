@@ -19,6 +19,13 @@ function isCacheable(response) {
   return response.ok && response.type !== "opaque";
 }
 
+function isHTMLResponse(response) {
+  const contentType = response.headers.get("Content-Type") ?? "";
+  return (
+    isCacheable(response) && /^text\/html(?:;|$)/i.test(contentType.trim())
+  );
+}
+
 function isPublicAsset(request, url) {
   return (
     url.origin === self.location.origin &&
@@ -79,7 +86,7 @@ async function refreshPublicAsset(request) {
 async function refreshShell(request) {
   try {
     const response = await fetch(request);
-    if (isCacheable(response)) {
+    if (isHTMLResponse(response)) {
       const cache = await caches.open(CACHE_NAME);
       await cache.put(SHELL_URL, response.clone());
     }

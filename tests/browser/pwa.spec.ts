@@ -65,7 +65,7 @@ async function emptyRecipientAPI(page: Page) {
   });
 }
 
-test("@desktop manifest, stable identity, standalone shell, and cache privacy", async ({
+test("@desktop manifest, browser installability, scoped restart, and cache privacy", async ({
   browserName,
   page,
   request,
@@ -127,22 +127,14 @@ test("@desktop manifest, stable identity, standalone shell, and cache privacy", 
   await expect(
     page.getByRole("button", { name: "Use dark theme" }),
   ).toBeVisible();
-  await page.evaluate(() => {
-    window.dispatchEvent(
-      new CustomEvent("memento-pwa-update", {
-        detail: () => {
-          document.documentElement.dataset.updateAccepted = "true";
-        },
-      }),
-    );
-  });
-  await page.getByRole("button", { name: "Update and restart" }).click();
-  await expect(page.locator("html")).toHaveAttribute(
-    "data-update-accepted",
-    "true",
-  );
 
   if (browserName === "chromium") {
+    const cdp = await page.context().newCDPSession(page);
+    const { installabilityErrors } = await cdp.send(
+      "Page.getInstallabilityErrors",
+    );
+    expect(installabilityErrors).toEqual([]);
+
     const workerState = await page.evaluate(async () => {
       const registration = await navigator.serviceWorker.ready;
       await registration.update();
@@ -168,6 +160,29 @@ test("@desktop manifest, stable identity, standalone shell, and cache privacy", 
     expect(
       cachedURLs.every((url) => !new URL(url).pathname.startsWith("/api")),
     ).toBe(true);
+
+    await page.evaluate(() =>
+      navigator.serviceWorker.register(
+        "/service-worker.js?browser-update=second",
+        { scope: "/" },
+      ),
+    );
+    await expect(page.getByText("A Memento update is ready.")).toBeVisible();
+
+    const restarted = page.waitForEvent("framenavigated", {
+      predicate: (frame) => frame === page.mainFrame(),
+    });
+    await page.getByRole("button", { name: "Update and restart" }).click();
+    await restarted;
+
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () => navigator.serviceWorker.controller?.scriptURL ?? "",
+        ),
+      )
+      .toContain("/service-worker.js?browser-update=second");
+    await expect(page.getByRole("heading", { name: "Photos" })).toBeVisible();
   }
 
   const applicationOrigin = new URL(page.url()).origin;
@@ -176,7 +191,7 @@ test("@desktop manifest, stable identity, standalone shell, and cache privacy", 
   ).toBe(true);
 });
 
-test("@mobile installed-size navigation and theme control remain usable", async ({
+test("@mobile compact navigation and theme control remain usable", async ({
   page,
 }) => {
   await emptyRecipientAPI(page);

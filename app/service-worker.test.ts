@@ -125,9 +125,11 @@ test("standalone navigation falls back to the cached shell without storing its U
   expect(worker.cache.put).not.toHaveBeenCalled();
 });
 
-test("successful token-bearing navigation refreshes only the stable shell key", async () => {
+test("successful token-bearing HTML navigation refreshes only the stable shell key", async () => {
   const worker = await loadWorker();
-  const response = new Response("fresh shell");
+  const response = new Response("fresh shell", {
+    headers: { "Content-Type": "text/html; charset=utf-8" },
+  });
   worker.fetchMock.mockResolvedValue(response);
   const navigation = {
     method: "GET",
@@ -144,6 +146,25 @@ test("successful token-bearing navigation refreshes only the stable shell key", 
   expect(JSON.stringify(worker.cache.put.mock.calls)).not.toContain(
     "private-token",
   );
+});
+
+test("non-HTML navigation never replaces the cached application shell", async () => {
+  const worker = await loadWorker();
+  const response = new Response("download", {
+    headers: { "Content-Type": "application/octet-stream" },
+  });
+  worker.fetchMock.mockResolvedValue(response);
+  const navigation = {
+    method: "GET",
+    mode: "navigate",
+    url: "https://memento.example/export",
+  } as Request;
+  const probe = fetchEvent(navigation);
+
+  worker.listeners.get("fetch")!(probe.event);
+
+  await expect(probe.response()).resolves.toBe(response);
+  expect(worker.cache.put).not.toHaveBeenCalled();
 });
 
 test("service worker falls back only to a cached public asset", async () => {
