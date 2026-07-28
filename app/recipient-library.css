@@ -55,6 +55,54 @@
   font-size: clamp(2.25rem, 6vw, 4rem);
 }
 
+.recipient-search {
+  display: grid;
+  gap: 2rem;
+}
+
+.search-form {
+  display: grid;
+  grid-template-columns: minmax(16rem, 2fr) repeat(2, minmax(9rem, 1fr)) auto;
+  gap: 0.8rem;
+  align-items: end;
+  padding: 1rem;
+  border: 1px solid #1e293b;
+  border-radius: 1rem;
+  background: #0f172a;
+}
+
+.search-form label {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.search-form input,
+.search-form select {
+  width: 100%;
+}
+
+.search-summary {
+  margin: 0;
+  color: #cbd5e1;
+}
+
+.search-people {
+  display: grid;
+  gap: 0.5rem;
+  padding-left: 1.25rem;
+}
+
+.place-label-editor {
+  display: grid;
+  gap: 0.35rem;
+  margin-bottom: 1rem;
+}
+
+.place-label-editor span {
+  color: #94a3b8;
+  font-size: 0.85rem;
+}
+
 .library-heading p,
 .library-heading span,
 .event-card span {
@@ -357,6 +405,10 @@
 }
 
 @media (max-width: 700px) {
+  .search-form {
+    grid-template-columns: 1fr;
+  }
+
   main:has(.recipient-library) {
     display: block;
     padding: 0;

@@ -154,6 +154,127 @@ func TestSourceReconciliationMigrationBackfillsExistingAlbums(t *testing.T) {
 	assert.Equal(t, sourceAlbumID, payloadSourceID)
 }
 
+func TestSearchMigrationPreservesExistingPublishedDocumentsAndIndexes(t *testing.T) {
+	db := testdb.Open(t)
+	ctx := context.Background()
+	priorMigrations := migrate.NewMigrations()
+	foundSearch := false
+	for _, migration := range collection.Sorted() {
+		if migration.Name == "202607280002" {
+			foundSearch = true
+			break
+		}
+		priorMigrations.Add(migration)
+	}
+	require.True(t, foundSearch)
+	require.NoError(t, applyCollection(ctx, db, priorMigrations))
+
+	_, err := db.ExecContext(ctx, `
+		INSERT INTO people (id, display_name, sort_name)
+		VALUES ('11111111-1111-4111-8111-111111111111', 'Existing Recipient', 'existing recipient');
+		INSERT INTO recipient_access_generations (
+			id, person_id, generation, state, onboarding_completed_at
+		) VALUES (
+			'22222222-2222-4222-8222-222222222222',
+			'11111111-1111-4111-8111-111111111111', 1, 'completed', now()
+		);
+		INSERT INTO events (id, lifecycle, title, grouping_timezone)
+		VALUES ('33333333-3333-4333-8333-333333333333', 'published', 'Legacy Event', 'UTC');
+		INSERT INTO media_items (
+			id, immich_asset_id, media_type, local_date_time, first_seen_at, last_seen_at
+		) VALUES (
+			'44444444-4444-4444-8444-444444444444',
+			'55555555-5555-4555-8555-555555555555', 'image',
+			'2026-07-27T10:30:00', now(), now()
+		);
+		INSERT INTO publications (
+			id, event_id, revision, editable_version, published_by_person_id,
+			notify_recipients, committed_at
+		) VALUES (
+			'66666666-6666-4666-8666-666666666666',
+			'33333333-3333-4333-8333-333333333333', 1, 1,
+			'11111111-1111-4111-8111-111111111111', false, now()
+		);
+		UPDATE events SET current_publication_id = '66666666-6666-4666-8666-666666666666'
+		WHERE id = '33333333-3333-4333-8333-333333333333';
+		INSERT INTO audience_snapshots (
+			id, target_kind, target_id, approved_by_person_id, approved_at, label
+		) VALUES (
+			'77777777-7777-4777-8777-777777777777', 'moment',
+			'99999999-9999-4999-8999-999999999999',
+			'11111111-1111-4111-8111-111111111111', now(), 'Shared'
+		);
+		INSERT INTO published_moments (
+			id, publication_id, draft_moment_id, audience_snapshot_id,
+			position, title, proposed_day
+		) VALUES (
+			'88888888-8888-4888-8888-888888888888',
+			'66666666-6666-4666-8666-666666666666',
+			'99999999-9999-4999-8999-999999999999',
+			'77777777-7777-4777-8777-777777777777', 0, '', '2026-07-27'
+		);
+		INSERT INTO published_media_placements (
+			published_moment_id, media_item_id, position, media_type,
+			width, height, local_date_time
+		) VALUES (
+			'88888888-8888-4888-8888-888888888888',
+			'44444444-4444-4444-8444-444444444444', 0, 'image',
+			1200, 800, '2026-07-27T10:30:00'
+		);
+		INSERT INTO current_published_events (
+			event_id, publication_id, title, description, grouping_timezone, committed_at
+		) VALUES (
+			'33333333-3333-4333-8333-333333333333',
+			'66666666-6666-4666-8666-666666666666', 'Legacy Event', '', 'UTC', now()
+		);
+		INSERT INTO current_published_placements (
+			event_id, publication_id, published_moment_id, media_item_id, position
+		) VALUES (
+			'33333333-3333-4333-8333-333333333333',
+			'66666666-6666-4666-8666-666666666666',
+			'88888888-8888-4888-8888-888888888888',
+			'44444444-4444-4444-8444-444444444444', 0
+		);
+		INSERT INTO published_search_documents (
+			event_id, publication_id, recipient_access_generation_id,
+			media_item_id, search_text
+		) VALUES (
+			'33333333-3333-4333-8333-333333333333',
+			'66666666-6666-4666-8666-666666666666',
+			'22222222-2222-4222-8222-222222222222',
+			'44444444-4444-4444-8444-444444444444', 'Café legacy'
+		)
+	`)
+	require.NoError(t, err)
+	require.NoError(t, Apply(ctx, db))
+
+	var captureDate, normalized string
+	var vectorIndex, trigramIndex bool
+	require.NoError(t, db.NewRaw(`
+		SELECT capture_date::text, normalized_search_text,
+		       to_regclass('published_search_documents_vector_idx') IS NOT NULL,
+		       to_regclass('published_search_documents_trigram_idx') IS NOT NULL
+		FROM published_search_documents
+	`).Scan(ctx, &captureDate, &normalized, &vectorIndex, &trigramIndex))
+	assert.Equal(t, "2026-07-27", captureDate)
+	assert.Equal(t, "cafe legacy", normalized)
+	assert.True(t, vectorIndex)
+	assert.True(t, trigramIndex)
+
+	migrator := migrate.NewMigrator(db, collection, migrate.WithMarkAppliedOnSuccess(true))
+	_, err = migrator.Rollback(ctx)
+	require.NoError(t, err)
+	var searchText string
+	require.NoError(t, db.NewRaw(`SELECT search_text FROM published_search_documents`).Scan(ctx, &searchText))
+	assert.Equal(t, "Café legacy", searchText)
+	require.NoError(t, db.NewRaw(`
+		SELECT to_regclass('published_search_documents_vector_idx') IS NOT NULL,
+		       to_regclass('published_search_documents_trigram_idx') IS NOT NULL
+	`).Scan(ctx, &vectorIndex, &trigramIndex))
+	assert.True(t, vectorIndex)
+	assert.False(t, trigramIndex)
+}
+
 func TestRecipientMigrationAppliesAfterExistingMigrationLedger(t *testing.T) {
 	db := testdb.Open(t)
 	ctx := context.Background()

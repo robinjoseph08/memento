@@ -35,6 +35,7 @@ function draft(version = 1): DraftEvent {
     lifecycle: "draft",
     title: "Family weekend",
     description: "",
+    place_labels: [],
     grouping_timezone: "UTC",
     version,
     final_review_complete: false,
@@ -44,6 +45,7 @@ function draft(version = 1): DraftEvent {
       {
         id: momentOneID,
         title: "Friday",
+        place_labels: [],
         proposed_day: "2026-05-01",
         grouping_timezone: "UTC",
         source_days: ["2026-05-01"],
@@ -56,6 +58,7 @@ function draft(version = 1): DraftEvent {
       {
         id: momentTwoID,
         title: "Saturday",
+        place_labels: [],
         proposed_day: "2026-05-02",
         grouping_timezone: "UTC",
         source_days: ["2026-05-02"],
@@ -115,9 +118,11 @@ function eventFromRequest(
   );
   const next = draft(request.version + 1);
   next.final_review_complete = request.final_review_complete;
+  next.place_labels = request.place_labels;
   next.moments = request.moments.map((moment) => ({
     id: moment.id,
     title: moment.title ?? "",
+    place_labels: moment.place_labels,
     proposed_day: moment.proposed_day,
     grouping_timezone: "UTC",
     source_days: [moment.proposed_day],

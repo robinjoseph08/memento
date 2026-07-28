@@ -44,6 +44,7 @@ function draft(version = 1): DraftEvent {
     lifecycle: "draft",
     title: "Family weekend",
     description: "",
+    place_labels: [],
     grouping_timezone: "UTC",
     version,
     final_review_complete: false,
@@ -53,6 +54,7 @@ function draft(version = 1): DraftEvent {
       {
         id: momentOneID,
         title: "Friday",
+        place_labels: [],
         proposed_day: "2026-05-01",
         grouping_timezone: "UTC",
         source_days: ["2026-05-01"],
@@ -65,6 +67,7 @@ function draft(version = 1): DraftEvent {
       {
         id: momentTwoID,
         title: "Saturday",
+        place_labels: [],
         proposed_day: "2026-05-02",
         grouping_timezone: "UTC",
         source_days: ["2026-05-02"],
@@ -144,9 +147,11 @@ function eventFromRequest(
   );
   const existing = draft(request.version + 1);
   existing.final_review_complete = request.final_review_complete;
+  existing.place_labels = request.place_labels;
   existing.moments = request.moments.map((moment) => ({
     id: moment.id,
     title: moment.title ?? "",
+    place_labels: moment.place_labels,
     proposed_day: moment.proposed_day,
     grouping_timezone: "UTC",
     source_days: [moment.proposed_day],
@@ -524,6 +529,29 @@ test("withdraws a currently published target even when the staged draft differs"
   expect(confirm).toHaveBeenCalledWith(
     "Withdraw Recipient access immediately? Identity and history will be preserved.",
   );
+});
+
+test("autosaves Event and Moment Place labels for later Publication", async () => {
+  const saves = stubOrganizerAPI(draft());
+  renderOrganizer();
+  fireEvent.click(
+    await screen.findByRole("button", { name: /Family weekend/ }),
+  );
+
+  fireEvent.change(await screen.findByLabelText("Event Place labels"), {
+    target: { value: "São Paulo, Jardin Central" },
+  });
+  fireEvent.change(screen.getByLabelText("Place labels for Moment 1"), {
+    target: { value: "Café terrace" },
+  });
+
+  await waitFor(() => expect(saves.length).toBeGreaterThan(0), contentionWait);
+  await waitFor(
+    () => expect(screen.getByText("All changes saved")).toBeInTheDocument(),
+    contentionWait,
+  );
+  expect(saves.at(-1)?.place_labels).toEqual(["São Paulo", "Jardin Central"]);
+  expect(saves.at(-1)?.moments[0].place_labels).toEqual(["Café terrace"]);
 });
 
 test("organizes merged and split days with pointer and keyboard controls", async () => {

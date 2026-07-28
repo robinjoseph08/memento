@@ -28,6 +28,7 @@ import (
 	"github.com/robinjoseph08/memento/pkg/people"
 	"github.com/robinjoseph08/memento/pkg/recipients"
 	"github.com/robinjoseph08/memento/pkg/repairs"
+	"github.com/robinjoseph08/memento/pkg/search"
 	"github.com/robinjoseph08/memento/pkg/server"
 	"github.com/robinjoseph08/memento/pkg/sessions"
 	"github.com/robinjoseph08/memento/pkg/setup"
@@ -139,6 +140,7 @@ func run() error {
 	sessionHandler := sessions.NewHandler(sessions.New(db, emailService, setupService, cfg.Security), setupService)
 	libraryHandler := library.NewHandler(library.New(db, immichClient), setupService)
 	archiveHandler := archives.NewHandler(archiveService, setupService)
+	searchHandler := search.NewHandler(search.New(db), setupService)
 	e, err := server.New(healthService, emaildelivery.NewHandler(emailService), setupHandler, peopleHandler, familyHandler, visibilityHandler, recipientHandler, sourceHandler, eventHandler, repairHandler, suggestionHandler, audienceHandler, sessionHandler)
 	if err != nil {
 		_ = db.Close()
@@ -147,6 +149,7 @@ func run() error {
 	}
 	library.RegisterRoutes(e, libraryHandler)
 	archives.RegisterRoutes(e, archiveHandler)
+	search.RegisterRoutes(e, searchHandler)
 
 	workCtx, cancelWork := context.WithCancel(context.Background())
 	defer cancelWork()

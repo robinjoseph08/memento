@@ -36,9 +36,11 @@ function cloneEvent(event: DraftEvent): DraftEvent {
 function organizationRequest(event: DraftEvent): OrganizeEventRequest {
   return {
     version: event.version,
+    place_labels: event.place_labels,
     moments: event.moments.map((moment) => ({
       id: moment.id,
       title: moment.title,
+      place_labels: moment.place_labels,
       proposed_day: moment.proposed_day,
       cover_media_item_id: moment.cover_media_item_id,
       media_item_ids: moment.media_items.map((item) => item.id),
@@ -539,6 +541,7 @@ export function EventOrganizer({
       next.moments.push({
         id,
         title: "",
+        place_labels: [],
         proposed_day: newMomentDay,
         grouping_timezone: next.grouping_timezone,
         source_days: [],
@@ -577,6 +580,7 @@ export function EventOrganizer({
       next.moments.splice(index + 1, 0, {
         id,
         title: "",
+        place_labels: [...source.place_labels],
         proposed_day: source.proposed_day,
         grouping_timezone: source.grouping_timezone,
         source_days: source.source_days,
@@ -873,6 +877,26 @@ export function EventOrganizer({
                 </div>
                 <Checklist event={currentDraft} />
               </header>
+              <label className="place-label-editor">
+                Event Place labels
+                <input
+                  aria-label="Event Place labels"
+                  onChange={(event) =>
+                    change((next) => {
+                      next.place_labels = event.target.value
+                        .split(",")
+                        .map((label) => label.trim())
+                        .filter(Boolean);
+                    })
+                  }
+                  placeholder="Paris, Jardin du Luxembourg"
+                  value={currentDraft.place_labels.join(", ")}
+                />
+                <span>
+                  Comma-separated labels become Recipient-visible only after
+                  Publication.
+                </span>
+              </label>
               <div className="move-toolbar">
                 <div className="move-control">
                   <label>
@@ -953,6 +977,20 @@ export function EventOrganizer({
                           }
                           placeholder={`Moment ${index + 1}`}
                           value={moment.title}
+                        />
+                        <input
+                          aria-label={`Place labels for Moment ${index + 1}`}
+                          onChange={(event) =>
+                            change((next) => {
+                              next.moments[index].place_labels =
+                                event.target.value
+                                  .split(",")
+                                  .map((label) => label.trim())
+                                  .filter(Boolean);
+                            })
+                          }
+                          placeholder="Place labels, comma-separated"
+                          value={moment.place_labels.join(", ")}
                         />
                       </div>
                       <div className="row-actions">

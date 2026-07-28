@@ -645,6 +645,107 @@ test("navigates Events and Favorites without exposing an unavailable aggregate",
   expect(await screen.findByText("No Favorites yet.")).toBeVisible();
 });
 
+test("keeps private search text in a POST body and renders safe grouped results", async () => {
+  const requests: Array<{ path: string; init?: RequestInit }> = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = requestPath(input);
+      requests.push({ path, init });
+      if (path.startsWith("/api/me/photos?")) {
+        return json({ media: [], next_cursor: null });
+      }
+      if (path === "/api/me/new-for-you") return json({ events: [] });
+      if (path === "/api/search") {
+        return json({
+          events: [
+            {
+              id: "event-search",
+              title: "Café Reunion",
+              description: "",
+              media_count: 1,
+              date_start: "2026-07-27",
+              date_end: "2026-07-27",
+              cover_media_id: "media-search",
+              cover_width: 1200,
+              cover_height: 800,
+              cover_available: true,
+              thumbnail_url: "/api/me/media/media-search/thumbnail",
+            },
+          ],
+          shared: [],
+          photos: [
+            {
+              id: "media-search",
+              media_type: "image",
+              width: 1200,
+              height: 800,
+              local_date_time: "2026-07-27T10:00:00Z",
+              available: true,
+              thumbnail_url: "/api/me/media/media-search/thumbnail",
+              preview_url: "/api/me/media/media-search/preview",
+              video_url: "",
+              original_url: "/api/me/media/media-search/original",
+            },
+          ],
+          people: [
+            {
+              person_id: "person-search",
+              person_name: "José Alvarez",
+              event_id: "event-search",
+              event_title: "Café Reunion",
+            },
+          ],
+          total_events: 1,
+          total_photos: 1,
+          has_more: false,
+        });
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    }),
+  );
+
+  renderLibrary();
+  fireEvent.click(screen.getAllByRole("button", { name: "Search" })[0]);
+  fireEvent.change(
+    screen.getByRole("searchbox", {
+      name: "Search published Events, Places, and People",
+    }),
+    { target: { value: "José café" } },
+  );
+  fireEvent.change(screen.getByLabelText("Date filter"), {
+    target: { value: "month" },
+  });
+  fireEvent.change(screen.getByLabelText("Month"), {
+    target: { value: "2026-07" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Run search" }));
+
+  expect(await screen.findByText("José Alvarez")).toBeVisible();
+  expect(screen.getByText(/attended part of Café Reunion/)).toBeVisible();
+  expect(screen.getByText("1 matching photo in 1 Event.")).toBeVisible();
+  const searchRequest = requests.find(
+    (request) => request.path === "/api/search",
+  );
+  expect(searchRequest?.init?.method).toBe("POST");
+  expect(searchRequest?.path).not.toContain("José");
+  expect(JSON.parse(searchRequest?.init?.body as string)).toEqual({
+    query: "José café",
+    date: { kind: "month", month: "2026-07" },
+  });
+
+  fireEvent.change(
+    screen.getByRole("searchbox", {
+      name: "Search published Events, Places, and People",
+    }),
+    { target: { value: "new private search" } },
+  );
+  expect(screen.queryByText("José Alvarez")).not.toBeInTheDocument();
+  expect(
+    screen.queryByText("1 matching photo in 1 Event."),
+  ).not.toBeInTheDocument();
+});
+
 test("does not claim a library is empty when its request fails", async () => {
   vi.stubGlobal(
     "fetch",
