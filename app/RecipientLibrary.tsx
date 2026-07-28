@@ -30,6 +30,44 @@ type Destination = "photos" | "events" | "favorites" | "search";
 type SearchDateKind = "" | "year" | "month" | "date" | "range";
 type OpenedEvent = Pick<EventSummary, "id" | "title" | "publication_id">;
 
+const libraryDestinations: ReadonlyArray<{
+  destination: Destination;
+  label: string;
+}> = [
+  { destination: "photos", label: "Photos" },
+  { destination: "events", label: "Events" },
+  { destination: "favorites", label: "Favorites" },
+  { destination: "search", label: "Search" },
+];
+
+function LibraryNavigation({
+  className,
+  current,
+  showBrand = false,
+  onNavigate,
+}: {
+  className: string;
+  current?: Destination;
+  showBrand?: boolean;
+  onNavigate: (destination: Destination) => void;
+}) {
+  return (
+    <nav aria-label="Library navigation" className={className}>
+      {showBrand ? <div className="library-brand">Memento</div> : null}
+      {libraryDestinations.map((item) => (
+        <button
+          aria-current={current === item.destination ? "page" : undefined}
+          key={item.destination}
+          onClick={() => onNavigate(item.destination)}
+          type="button"
+        >
+          {item.label}
+        </button>
+      ))}
+    </nav>
+  );
+}
+
 function searchDateKind(value: string): SearchDateKind {
   return value === "year" ||
     value === "month" ||
@@ -536,6 +574,14 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
     });
   }
 
+  function navigateTo(destination: Destination) {
+    setArchivePlan(undefined);
+    setSelectionEnabled(false);
+    setSelectedMedia(new Set());
+    setOpenedEvent(undefined);
+    setDestination(destination);
+  }
+
   function submitSearch(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     let date: DateFilter | null = null;
@@ -573,29 +619,12 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
 
   return (
     <section aria-label="Recipient library" className="recipient-library">
-      <nav aria-label="Library navigation" className="library-rail">
-        <div className="library-brand">Memento</div>
-        {(["photos", "events", "favorites", "search"] as Destination[]).map(
-          (item) => (
-            <button
-              aria-current={
-                !openedEvent && destination === item ? "page" : undefined
-              }
-              key={item}
-              onClick={() => {
-                setArchivePlan(undefined);
-                setSelectionEnabled(false);
-                setSelectedMedia(new Set());
-                setOpenedEvent(undefined);
-                setDestination(item);
-              }}
-              type="button"
-            >
-              {item[0].toUpperCase() + item.slice(1)}
-            </button>
-          ),
-        )}
-      </nav>
+      <LibraryNavigation
+        className="library-rail"
+        current={openedEvent ? undefined : destination}
+        onNavigate={navigateTo}
+        showBrand
+      />
       <div className="library-content">
         {openedEvent ? (
           <>
@@ -691,7 +720,7 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
               <div className="recipient-search">
                 <form className="search-form" onSubmit={submitSearch}>
                   <label>
-                    Search published Events, Places, and People
+                    Search published Events, Place labels, and People
                     <input
                       autoComplete="off"
                       maxLength={200}
@@ -1053,28 +1082,11 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
           publicComputer={session.session_type === "public"}
         />
       ) : null}
-      <nav aria-label="Library navigation" className="mobile-library-nav">
-        {(["photos", "events", "favorites", "search"] as Destination[]).map(
-          (item) => (
-            <button
-              aria-current={
-                !openedEvent && destination === item ? "page" : undefined
-              }
-              key={item}
-              onClick={() => {
-                setArchivePlan(undefined);
-                setSelectionEnabled(false);
-                setSelectedMedia(new Set());
-                setOpenedEvent(undefined);
-                setDestination(item);
-              }}
-              type="button"
-            >
-              {item[0].toUpperCase() + item.slice(1)}
-            </button>
-          ),
-        )}
-      </nav>
+      <LibraryNavigation
+        className="mobile-library-nav"
+        current={openedEvent ? undefined : destination}
+        onNavigate={navigateTo}
+      />
     </section>
   );
 }

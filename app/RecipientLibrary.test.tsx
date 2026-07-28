@@ -173,6 +173,11 @@ test("lands on Photos with durable New for you and real-ratio authorized thumbna
   expect(
     screen.getAllByRole("navigation", { name: "Library navigation" }),
   ).toHaveLength(2);
+  for (const destination of ["Photos", "Events", "Favorites", "Search"]) {
+    expect(screen.getAllByRole("button", { name: destination })).toHaveLength(
+      2,
+    );
+  }
   expect(
     await screen.findByRole("heading", { name: "New for you" }),
   ).toBeVisible();
@@ -709,7 +714,7 @@ test("keeps private search text in a POST body and renders safe grouped results"
   fireEvent.click(screen.getAllByRole("button", { name: "Search" })[0]);
   fireEvent.change(
     screen.getByRole("searchbox", {
-      name: "Search published Events, Places, and People",
+      name: "Search published Events, Place labels, and People",
     }),
     { target: { value: "José café" } },
   );
@@ -736,7 +741,7 @@ test("keeps private search text in a POST body and renders safe grouped results"
 
   fireEvent.change(
     screen.getByRole("searchbox", {
-      name: "Search published Events, Places, and People",
+      name: "Search published Events, Place labels, and People",
     }),
     { target: { value: "new private search" } },
   );
