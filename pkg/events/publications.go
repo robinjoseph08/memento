@@ -206,16 +206,19 @@ func (s *Service) PublishEvent(ctx context.Context, actor setup.CuratorSession, 
 			return err
 		}
 
-		var revision int64
+		var revision, contentRevision int64
 		if err := tx.NewRaw(`SELECT COALESCE(max(revision), 0) + 1 FROM publications WHERE event_id = ?`, eventID).Scan(ctx, &revision); err != nil {
+			return err
+		}
+		if err := tx.NewRaw(`UPDATE system_settings SET content_revision = content_revision + 1 WHERE id = 1 RETURNING content_revision`).Scan(ctx, &contentRevision); err != nil {
 			return err
 		}
 		if _, err := tx.NewRaw(`
 			INSERT INTO publications (
 				id, event_id, revision, editable_version, prior_publication_id,
-				published_by_person_id, notify_recipients, committed_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-		`, publicationID, eventID, revision, version, priorID, actor.PersonID, notify, now).Exec(ctx); err != nil {
+				published_by_person_id, notify_recipients, committed_at, content_revision
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, publicationID, eventID, revision, version, priorID, actor.PersonID, notify, now, contentRevision).Exec(ctx); err != nil {
 			return err
 		}
 		if _, err := tx.NewRaw(`
@@ -620,6 +623,35 @@ func (s *Service) HandlePublicationJob(ctx context.Context, job worker.Job) erro
 	}
 	if !exists {
 		return worker.Permanent("unknown_publication")
+	}
+	var deliverable bool
+	if err := s.db.NewRaw(`SELECT EXISTS (
+		SELECT 1 FROM current_published_events AS current
+		WHERE current.event_id = ? AND current.publication_id = ?
+		  AND NOT EXISTS (
+			SELECT 1 FROM content_withdrawals
+			WHERE restored_at IS NULL AND target_kind = 'event' AND target_id = current.event_id
+		  )
+		  AND NOT EXISTS (
+			SELECT 1 FROM content_withdrawals AS withdrawal
+			JOIN published_moments AS moment
+			  ON moment.publication_id = current.publication_id
+			 AND moment.draft_moment_id = withdrawal.target_id
+			WHERE withdrawal.restored_at IS NULL AND withdrawal.target_kind = 'moment'
+		  )
+		  AND NOT EXISTS (
+			SELECT 1 FROM content_withdrawals AS withdrawal
+			JOIN published_moments AS moment ON moment.publication_id = current.publication_id
+			JOIN published_media_placements AS placement
+			  ON placement.published_moment_id = moment.id
+			 AND placement.media_item_id = withdrawal.target_id
+			WHERE withdrawal.restored_at IS NULL AND withdrawal.target_kind = 'media'
+		  )
+	)`, payload.EventID, payload.PublicationID).Scan(ctx, &deliverable); err != nil {
+		return err
+	}
+	if !deliverable {
+		return worker.Permanent("publication_withdrawn")
 	}
 	return nil
 }

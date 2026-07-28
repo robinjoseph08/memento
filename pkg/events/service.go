@@ -882,10 +882,15 @@ func getEvent(ctx context.Context, db bun.IDB, id uuid.UUID) (Event, error) {
 				JOIN people AS person ON person.id = withdrawal.withdrawn_by_person_id
 				WHERE (withdrawal.target_kind = 'event' AND withdrawal.target_id = event.id)
 				   OR (withdrawal.target_kind = 'moment' AND EXISTS (
-					SELECT 1 FROM draft_moments WHERE event_id = event.id AND id = withdrawal.target_id
+					SELECT 1 FROM published_moments AS moment
+					JOIN publications AS history ON history.id = moment.publication_id
+					WHERE history.event_id = event.id AND moment.draft_moment_id = withdrawal.target_id
 				   ))
 				   OR (withdrawal.target_kind = 'media' AND EXISTS (
-					SELECT 1 FROM draft_media_placements WHERE event_id = event.id AND media_item_id = withdrawal.target_id
+					SELECT 1 FROM published_media_placements AS placement
+					JOIN published_moments AS moment ON moment.id = placement.published_moment_id
+					JOIN publications AS history ON history.id = moment.publication_id
+					WHERE history.event_id = event.id AND placement.media_item_id = withdrawal.target_id
 				   ))
 			), '[]'::jsonb)::text
 		FROM events AS event

@@ -89,11 +89,11 @@ func (s *Service) Withdraw(ctx context.Context, actor setup.CuratorSession, requ
 			return ErrNotFound
 		}
 
-		if err := tx.NewRaw(`WITH selected AS (
-			SELECT placement.event_id, placement.media_item_id, moment.draft_moment_id
+		selectedPlacements := `SELECT placement.event_id, placement.media_item_id, moment.draft_moment_id
 			FROM current_published_placements AS placement
 			JOIN published_moments AS moment ON moment.id = placement.published_moment_id
-			WHERE `+targetFilter+`
+			WHERE ` + targetFilter
+		if err := tx.NewRaw(`WITH selected AS (`+selectedPlacements+`
 		), visible AS (
 			SELECT selected.event_id, selected.media_item_id, entitlement.recipient_access_generation_id
 			FROM selected
@@ -110,6 +110,15 @@ func (s *Service) Withdraw(ctx context.Context, actor setup.CuratorSession, requ
 		       count(DISTINCT media_item_id)::integer, count(DISTINCT event_id)::integer
 		FROM visible`, kind, targetID, kind, targetID, kind, targetID).Scan(ctx,
 			&result.AffectedRecipientCount, &result.AffectedMediaCount, &result.AffectedEventCount); err != nil {
+			return err
+		}
+		var affectedAccessIDs []uuid.UUID
+		if err := tx.NewRaw(`WITH selected AS (`+selectedPlacements+`)
+			SELECT DISTINCT entitlement.recipient_access_generation_id
+			FROM selected
+			JOIN current_audience_entitlements AS entitlement
+			  ON entitlement.event_id = selected.event_id AND entitlement.media_item_id = selected.media_item_id
+			ORDER BY entitlement.recipient_access_generation_id`, kind, targetID, kind, targetID, kind, targetID).Scan(ctx, &affectedAccessIDs); err != nil {
 			return err
 		}
 
@@ -149,11 +158,79 @@ func (s *Service) Withdraw(ctx context.Context, actor setup.CuratorSession, requ
 			return ErrNotFound
 		}
 
-		if _, err := tx.NewRaw(`INSERT INTO content_withdrawals (
-			id, target_kind, target_id, reason, withdrawn_by_person_id, withdrawn_at
-		) VALUES (?, ?, ?, ?, ?, ?)`, withdrawalID, kind, targetID, reason, actor.PersonID, now).Exec(ctx); err != nil {
+		var contentRevision int64
+		if err := tx.NewRaw(`UPDATE system_settings SET content_revision = content_revision + 1 WHERE id = 1 RETURNING content_revision`).Scan(ctx, &contentRevision); err != nil {
 			return err
 		}
+		if _, err := tx.NewRaw(`INSERT INTO content_withdrawals (
+			id, target_kind, target_id, reason, withdrawn_by_person_id, withdrawn_at, content_revision
+		) VALUES (?, ?, ?, ?, ?, ?, ?)`, withdrawalID, kind, targetID, reason, actor.PersonID, now, contentRevision).Exec(ctx); err != nil {
+			return err
+		}
+
+		for _, statement := range []string{
+			`WITH selected AS (` + selectedPlacements + `)
+			 DELETE FROM published_search_documents AS document USING selected
+			 WHERE document.event_id = selected.event_id AND document.media_item_id = selected.media_item_id`,
+			`WITH selected AS (` + selectedPlacements + `)
+			 DELETE FROM current_audience_entitlements AS entitlement USING selected
+			 WHERE entitlement.event_id = selected.event_id AND entitlement.media_item_id = selected.media_item_id`,
+		} {
+			if _, err := tx.NewRaw(statement, kind, targetID, kind, targetID, kind, targetID).Exec(ctx); err != nil {
+				return err
+			}
+		}
+		if _, err := tx.NewRaw(`DELETE FROM current_recipient_event_covers WHERE event_id IN (?)`, bun.List(eventIDs)).Exec(ctx); err != nil {
+			return err
+		}
+		if _, err := tx.NewRaw(`INSERT INTO current_recipient_event_covers (
+			event_id, recipient_access_generation_id, media_item_id
+		)
+		SELECT DISTINCT ON (entitlement.event_id, entitlement.recipient_access_generation_id)
+		       entitlement.event_id, entitlement.recipient_access_generation_id, entitlement.media_item_id
+		FROM current_audience_entitlements AS entitlement
+		JOIN current_published_placements AS placement
+		  ON placement.event_id = entitlement.event_id AND placement.media_item_id = entitlement.media_item_id
+		JOIN media_items AS media ON media.id = entitlement.media_item_id
+		JOIN published_moments AS moment ON moment.id = placement.published_moment_id
+		WHERE entitlement.event_id IN (?)
+		ORDER BY entitlement.event_id, entitlement.recipient_access_generation_id,
+		         (media.availability = 'current') DESC,
+		         (moment.cover_media_item_id = entitlement.media_item_id) DESC,
+		         placement.position`, bun.List(eventIDs)).Exec(ctx); err != nil {
+			return err
+		}
+		if len(affectedAccessIDs) > 0 {
+			for _, statement := range []string{
+				`DELETE FROM new_for_you_entries AS entry USING publications AS publication
+				 WHERE entry.publication_id = publication.id AND publication.event_id IN (?)
+				   AND entry.recipient_access_generation_id IN (?)`,
+				`DELETE FROM publication_activity_items AS activity USING publications AS publication
+				 WHERE activity.publication_id = publication.id AND publication.event_id IN (?)
+				   AND activity.recipient_access_generation_id IN (?)`,
+			} {
+				if _, err := tx.NewRaw(statement, bun.List(eventIDs), bun.List(affectedAccessIDs)).Exec(ctx); err != nil {
+					return err
+				}
+			}
+		}
+		eventIDStrings := make([]string, len(eventIDs))
+		for index, eventID := range eventIDs {
+			eventIDStrings[index] = eventID.String()
+		}
+		if _, err := tx.NewRaw(`UPDATE outbox_events
+			SET delivered_at = ?, lease_owner = NULL, lease_expires_at = NULL
+			WHERE kind = 'publication_committed' AND aggregate_kind = 'event_publication'
+			  AND aggregate_id IN (?) AND delivered_at IS NULL`, now, bun.List(eventIDStrings)).Exec(ctx); err != nil {
+			return err
+		}
+		if _, err := tx.NewRaw(`UPDATE jobs
+			SET status = 'failed', last_safe_error = 'publication_withdrawn', updated_at = ?
+			WHERE kind = 'publication_committed' AND status = 'pending'
+			  AND payload->>'event_id' IN (?)`, now, bun.List(eventIDStrings)).Exec(ctx); err != nil {
+			return err
+		}
+
 		if _, err := tx.NewRaw(`DELETE FROM current_audience_snapshots WHERE target_kind = 'moment' AND target_id IN (?)`, bun.List(momentIDs)).Exec(ctx); err != nil {
 			return err
 		}
@@ -218,10 +295,9 @@ func restoreEligibleWithdrawals(ctx context.Context, tx bun.Tx, eventID, publica
 				)
 				AND NOT EXISTS (
 					SELECT 1 FROM current_published_placements AS placement
-					JOIN current_published_events AS current
-					  ON current.event_id = placement.event_id AND current.publication_id = placement.publication_id
+					JOIN publications AS publication ON publication.id = placement.publication_id
 					WHERE placement.media_item_id = withdrawal.target_id
-					  AND current.committed_at <= withdrawal.withdrawn_at
+					  AND publication.content_revision <= withdrawal.content_revision
 				)
 			)
 		)
