@@ -682,7 +682,6 @@ test("keeps private search text in a POST body and renders safe grouped results"
               thumbnail_url: "/api/me/media/media-search/thumbnail",
             },
           ],
-          shared: [],
           photos: [
             {
               id: "media-search",

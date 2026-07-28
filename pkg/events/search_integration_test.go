@@ -248,10 +248,212 @@ func TestSearchUsesOnlyAuthorizedCurrentPublicationAndDiscoverableAttendance(t *
 	assertSafeEmptySearchResponse(t, withdrawnResult, "Withdrawal must remove every search observable")
 }
 
+func TestSearchDateFiltersEnforceInclusiveUpperAndLowerBounds(t *testing.T) {
+	fixture := newPublicationFixture(t)
+	ctx := context.Background()
+	_, err := fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, fixture.request())
+	require.NoError(t, err)
+	actor := createSearchSession(t, fixture)
+	service := searchdomain.New(fixture.db)
+
+	var publicationID, publishedMomentID uuid.UUID
+	err = fixture.db.NewRaw(`
+		SELECT event.current_publication_id, moment.id
+		FROM events AS event
+		JOIN published_moments AS moment ON moment.publication_id = event.current_publication_id
+		WHERE event.id = ? AND moment.draft_moment_id = ?
+	`, fixture.event, fixture.moments[0]).Scan(ctx, &publicationID, &publishedMomentID)
+	require.NoError(t, err)
+
+	mediaByBoundary := map[string]uuid.UUID{"existing": fixture.media[0]}
+	for position, boundary := range []struct {
+		name string
+		date string
+	}{
+		{name: "before year", date: "2025-12-31"},
+		{name: "year start", date: "2026-01-01"},
+		{name: "before month", date: "2026-06-30"},
+		{name: "month start", date: "2026-07-01"},
+		{name: "before range", date: "2026-07-19"},
+		{name: "range start", date: "2026-07-20"},
+		{name: "range end", date: "2026-07-29"},
+		{name: "after range", date: "2026-07-30"},
+		{name: "month end", date: "2026-07-31"},
+		{name: "after month", date: "2026-08-01"},
+		{name: "year end", date: "2026-12-31"},
+		{name: "after year", date: "2027-01-01"},
+	} {
+		mediaID := uuid.New()
+		mediaByBoundary[boundary.name] = mediaID
+		_, err = fixture.db.NewRaw(`
+			INSERT INTO media_items (
+				id, immich_asset_id, media_type, width, height, local_date_time,
+				first_seen_at, last_seen_at
+			) VALUES (?, ?, 'image', 1200, 800, ?::date + time '10:00:00', now(), now());
+			INSERT INTO published_media_placements (
+				published_moment_id, media_item_id, position, media_type, width, height, local_date_time
+			) VALUES (?, ?, ?, 'image', 1200, 800, ?::date + time '10:00:00');
+			INSERT INTO current_published_placements (
+				event_id, publication_id, published_moment_id, media_item_id, position
+			) VALUES (?, ?, ?, ?, ?);
+			INSERT INTO current_audience_entitlements (
+				event_id, publication_id, recipient_person_id, recipient_access_generation_id, media_item_id
+			) VALUES (?, ?, ?, ?, ?);
+			INSERT INTO published_search_documents (
+				event_id, publication_id, recipient_access_generation_id, media_item_id, search_text, capture_date
+			) VALUES (?, ?, ?, ?, 'date boundary', ?::date)
+		`, mediaID, uuid.New(), boundary.date,
+			publishedMomentID, mediaID, position+10, boundary.date,
+			fixture.event, publicationID, publishedMomentID, mediaID, position+10,
+			fixture.event, publicationID, actor.PersonID, actor.AccessID, mediaID,
+			fixture.event, publicationID, actor.AccessID, mediaID, boundary.date).Exec(ctx)
+		require.NoError(t, err, boundary.name)
+	}
+
+	boundaryIDs := func(names ...string) []string {
+		ids := make([]string, 0, len(names))
+		for _, name := range names {
+			ids = append(ids, mediaByBoundary[name].String())
+		}
+		return ids
+	}
+	year := 2026
+	month, rangeStart, rangeEnd := "2026-07", "2026-07-20", "2026-07-29"
+	for _, test := range []struct {
+		name     string
+		filter   searchdomain.DateFilter
+		expected []string
+		start    string
+		end      string
+	}{
+		{
+			name: "year", filter: searchdomain.DateFilter{Kind: "year", Year: &year},
+			expected: boundaryIDs("year start", "before month", "month start", "before range", "range start", "existing", "range end", "after range", "month end", "after month", "year end"),
+			start:    "2026-01-01", end: "2026-12-31",
+		},
+		{
+			name: "month", filter: searchdomain.DateFilter{Kind: "month", Month: &month},
+			expected: boundaryIDs("month start", "before range", "range start", "existing", "range end", "after range", "month end"),
+			start:    "2026-07-01", end: "2026-07-31",
+		},
+		{
+			name: "range", filter: searchdomain.DateFilter{Kind: "range", StartDate: &rangeStart, EndDate: &rangeEnd},
+			expected: boundaryIDs("range start", "existing", "range end"),
+			start:    "2026-07-20", end: "2026-07-29",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			result, searchErr := service.Search(ctx, actor, searchdomain.Request{Date: &test.filter})
+			require.NoError(t, searchErr)
+			assert.Equal(t, 1, result.TotalEvents)
+			assert.Equal(t, len(test.expected), result.TotalPhotos)
+			assert.False(t, result.HasMore)
+			require.Len(t, result.Events, 1)
+			assert.Equal(t, fixture.event.String(), result.Events[0].ID)
+			assert.Equal(t, len(test.expected), result.Events[0].MediaCount)
+			require.NotNil(t, result.Events[0].DateStart)
+			require.NotNil(t, result.Events[0].DateEnd)
+			assert.Equal(t, test.start, *result.Events[0].DateStart)
+			assert.Equal(t, test.end, *result.Events[0].DateEnd)
+			require.Len(t, result.Photos, len(test.expected))
+			actualIDs := make([]string, 0, len(result.Photos))
+			for _, photo := range result.Photos {
+				actualIDs = append(actualIDs, photo.ID)
+			}
+			assert.ElementsMatch(t, test.expected, actualIDs)
+		})
+	}
+}
+
+func TestSearchTransactionReauthorizesSessionAtAccessStateBoundaries(t *testing.T) {
+	fixture := newPublicationFixture(t)
+	ctx := context.Background()
+	_, err := fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, fixture.request())
+	require.NoError(t, err)
+	actor := createSearchSession(t, fixture)
+	service := searchdomain.New(fixture.db)
+	baseline, err := service.Search(ctx, actor, searchdomain.Request{Query: "Family"})
+	require.NoError(t, err)
+	assert.Equal(t, 1, baseline.TotalEvents)
+
+	replacementAccessID := uuid.New()
+	for _, test := range []struct {
+		name           string
+		invalidate     string
+		invalidateArgs []any
+		restore        string
+		restoreArgs    []any
+	}{
+		{
+			name:           "suspension",
+			invalidate:     `UPDATE recipient_access_generations SET state = 'suspended' WHERE id = ?`,
+			invalidateArgs: []any{actor.AccessID},
+			restore:        `UPDATE recipient_access_generations SET state = 'completed' WHERE id = ?`,
+			restoreArgs:    []any{actor.AccessID},
+		},
+		{
+			name:           "Session revocation",
+			invalidate:     `UPDATE sessions SET revoked_at = now() WHERE id = ?`,
+			invalidateArgs: []any{actor.SessionID},
+			restore:        `UPDATE sessions SET revoked_at = NULL WHERE id = ?`,
+			restoreArgs:    []any{actor.SessionID},
+		},
+		{
+			name: "access generation replacement",
+			invalidate: `
+				UPDATE recipient_access_generations SET is_current = false WHERE id = ?;
+				INSERT INTO recipient_access_generations (
+					id, person_id, generation, state, is_current, onboarding_completed_at, created_at, updated_at
+				) VALUES (?, ?, 2, 'completed', true, now(), now(), now())
+			`,
+			invalidateArgs: []any{actor.AccessID, replacementAccessID, actor.PersonID},
+			restore: `
+				DELETE FROM recipient_access_generations WHERE id = ?;
+				UPDATE recipient_access_generations SET is_current = true WHERE id = ?
+			`,
+			restoreArgs: []any{replacementAccessID, actor.AccessID},
+		},
+		{
+			name:           "Session expiry",
+			invalidate:     `UPDATE sessions SET idle_expires_at = now() - interval '1 second' WHERE id = ?`,
+			invalidateArgs: []any{actor.SessionID},
+			restore:        `UPDATE sessions SET idle_expires_at = now() + interval '1 hour' WHERE id = ?`,
+			restoreArgs:    []any{actor.SessionID},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, mutationErr := fixture.db.NewRaw(test.invalidate, test.invalidateArgs...).Exec(ctx)
+			require.NoError(t, mutationErr)
+			t.Cleanup(func() {
+				_, cleanupErr := fixture.db.NewRaw(test.restore, test.restoreArgs...).Exec(context.Background())
+				require.NoError(t, cleanupErr)
+			})
+
+			result, searchErr := service.Search(ctx, actor, searchdomain.Request{Query: "Family"})
+			assert.ErrorIs(t, searchErr, searchdomain.ErrNotFound)
+			assert.Equal(t, searchdomain.Response{}, result, "denial must return no search response")
+		})
+	}
+}
+
+func createSearchSession(t *testing.T, fixture publicationFixture) setup.SessionActor {
+	t.Helper()
+	actor := fixture.actorFor("shared")
+	credentialHash := sha256.Sum256([]byte(actor.SessionID.String()))
+	_, err := fixture.db.NewRaw(`
+		INSERT INTO sessions (
+			id, credential_hash, person_id, recipient_access_generation_id,
+			security_epoch, session_type, idle_expires_at
+		) SELECT ?, ?, ?, ?, security_epoch, 'trusted', now() + interval '1 hour'
+		  FROM system_settings WHERE id = 1
+	`, actor.SessionID, credentialHash[:], actor.PersonID, actor.AccessID).Exec(context.Background())
+	require.NoError(t, err)
+	return actor
+}
+
 func assertSafeEmptySearchResponse(t *testing.T, result searchdomain.Response, message string) {
 	t.Helper()
 	assert.Empty(t, result.Events, message)
-	assert.Empty(t, result.Shared, message)
 	assert.Empty(t, result.Photos, message)
 	assert.Empty(t, result.People, message)
 	assert.Zero(t, result.TotalEvents, message)

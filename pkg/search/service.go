@@ -81,10 +81,9 @@ type PersonAttendanceResult struct {
 	EventTitle string `json:"event_title"`
 }
 
-// Response groups Events and Shared content separately and deduplicates global Photos.
+// Response groups matching Media by Event and deduplicates global Photos.
 type Response struct {
 	Events      []EventResult            `json:"events"`
-	Shared      []Media                  `json:"shared"`
 	Photos      []Media                  `json:"photos"`
 	People      []PersonAttendanceResult `json:"people"`
 	TotalEvents int                      `json:"total_events"`
@@ -329,8 +328,8 @@ func (s *Service) Search(ctx context.Context, actor setup.SessionActor, request 
 		return Response{}, err
 	}
 	response := Response{
-		Events: make([]EventResult, 0), Shared: make([]Media, 0),
-		Photos: make([]Media, 0), People: make([]PersonAttendanceResult, 0),
+		Events: make([]EventResult, 0), Photos: make([]Media, 0),
+		People: make([]PersonAttendanceResult, 0),
 	}
 	err = s.db.RunInTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true}, func(ctx context.Context, tx bun.Tx) error {
 		if _, err := tx.ExecContext(ctx, `SET LOCAL statement_timeout = '`+searchStatementTimeout+`'`); err != nil {
