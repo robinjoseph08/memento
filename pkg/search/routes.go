@@ -14,6 +14,8 @@ type Authorizer interface {
 	AuthorizeSession(ctx context.Context, credential, csrfToken string, mutation bool) (setup.SessionActor, error)
 }
 
+const invalidRequestMessage = "Enter search text or choose one complete year, month, date, or date range."
+
 type Handler struct {
 	service    *Service
 	authorizer Authorizer
@@ -37,12 +39,16 @@ func (h *Handler) Search(c echo.Context) error {
 	}
 	var request Request
 	if err := c.Bind(&request); err != nil {
+		var httpError *echo.HTTPError
+		if errors.As(err, &httpError) && errors.Is(httpError.Internal, ErrInvalidRequest) {
+			return errcodes.ValidationError(invalidRequestMessage)
+		}
 		return err
 	}
 	response, err := h.service.Search(c.Request().Context(), actor, request)
 	switch {
 	case errors.Is(err, ErrInvalidRequest):
-		return errcodes.ValidationError("Enter search text or choose one complete year, month, date, or date range.")
+		return errcodes.ValidationError(invalidRequestMessage)
 	case errors.Is(err, ErrNotFound):
 		return errcodes.NotFound("Search")
 	case err != nil:

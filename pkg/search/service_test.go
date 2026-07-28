@@ -1,6 +1,7 @@
 package search
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -45,6 +46,18 @@ func TestParseRequestRejectsIncompleteAmbiguousAndReversedFilters(t *testing.T) 
 		{Date: &DateFilter{Kind: "range", StartDate: &start, EndDate: &end}},
 	} {
 		_, _, err := parseRequest(request)
+		assert.ErrorIs(t, err, ErrInvalidRequest)
+	}
+}
+
+func TestDateFilterRejectsInvalidVariantsAtTheJSONBoundary(t *testing.T) {
+	for _, body := range []string{
+		`{"date":{"kind":"year"}}`,
+		`{"date":{"kind":"year","year":2026,"month":"2026-07"}}`,
+		`{"date":{"kind":"range","start_date":"2026-07-29","end_date":"2026-07-20"}}`,
+	} {
+		var request Request
+		err := json.Unmarshal([]byte(body), &request)
 		assert.ErrorIs(t, err, ErrInvalidRequest)
 	}
 }

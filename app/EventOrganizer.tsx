@@ -33,6 +33,13 @@ function cloneEvent(event: DraftEvent): DraftEvent {
   return structuredClone(event);
 }
 
+function parsePlaceLabels(value: string) {
+  return value
+    .split(",")
+    .map((label) => label.trim())
+    .filter(Boolean);
+}
+
 function organizationRequest(event: DraftEvent): OrganizeEventRequest {
   return {
     version: event.version,
@@ -883,10 +890,7 @@ export function EventOrganizer({
                   aria-label="Event Place labels"
                   onChange={(event) =>
                     change((next) => {
-                      next.place_labels = event.target.value
-                        .split(",")
-                        .map((label) => label.trim())
-                        .filter(Boolean);
+                      next.place_labels = parsePlaceLabels(event.target.value);
                     })
                   }
                   placeholder="Paris, Jardin du Luxembourg"
@@ -983,10 +987,7 @@ export function EventOrganizer({
                           onChange={(event) =>
                             change((next) => {
                               next.moments[index].place_labels =
-                                event.target.value
-                                  .split(",")
-                                  .map((label) => label.trim())
-                                  .filter(Boolean);
+                                parsePlaceLabels(event.target.value);
                             })
                           }
                           placeholder="Place labels, comma-separated"

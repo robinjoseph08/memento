@@ -539,10 +539,10 @@ test("autosaves Event and Moment Place labels for later Publication", async () =
   );
 
   fireEvent.change(await screen.findByLabelText("Event Place labels"), {
-    target: { value: "São Paulo, Jardin Central" },
+    target: { value: " São Paulo, , Jardin Central, " },
   });
   fireEvent.change(screen.getByLabelText("Place labels for Moment 1"), {
-    target: { value: "Café terrace" },
+    target: { value: " Café terrace, , River Walk, " },
   });
 
   await waitFor(() => expect(saves.length).toBeGreaterThan(0), contentionWait);
@@ -551,7 +551,10 @@ test("autosaves Event and Moment Place labels for later Publication", async () =
     contentionWait,
   );
   expect(saves.at(-1)?.place_labels).toEqual(["São Paulo", "Jardin Central"]);
-  expect(saves.at(-1)?.moments[0].place_labels).toEqual(["Café terrace"]);
+  expect(saves.at(-1)?.moments[0].place_labels).toEqual([
+    "Café terrace",
+    "River Walk",
+  ]);
 });
 
 test("organizes merged and split days with pointer and keyboard controls", async () => {

@@ -26,6 +26,16 @@ func searchHTTP(authorizer routeAuthorizer) *echo.Echo {
 	return e
 }
 
+func TestSearchRouteRejectsInvalidDateVariantsAsValidationErrors(t *testing.T) {
+	request := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/search", strings.NewReader(`{"date":{"kind":"year","year":2026,"month":"2026-07"}}`))
+	request.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	request.AddCookie(&http.Cookie{Name: setup.CookieName, Value: "opaque"})
+	response := httptest.NewRecorder()
+	searchHTTP(routeAuthorizer{}).ServeHTTP(response, request)
+	assert.Equal(t, http.StatusUnprocessableEntity, response.Code)
+	assert.Contains(t, response.Body.String(), invalidRequestMessage)
+}
+
 func TestSearchRouteUsesAPOSTBodyAndRequiresARecipientSession(t *testing.T) {
 	request := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/search", strings.NewReader(`{"query":"private words"}`))
 	request.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)

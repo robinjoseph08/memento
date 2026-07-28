@@ -20,7 +20,6 @@ import type {
   NewForYouResponse,
 } from "./types/generated/library";
 import type {
-  DateFilter,
   Request as SearchRequest,
   Response as SearchResponse,
 } from "./types/generated/search";
@@ -28,6 +27,7 @@ import type { SessionResponse } from "./types/generated/setup";
 
 type Destination = "photos" | "events" | "favorites" | "search";
 type SearchDateKind = "" | "year" | "month" | "date" | "range";
+type SearchDateFilter = NonNullable<SearchRequest["date"]>;
 type OpenedEvent = Pick<EventSummary, "id" | "title" | "publication_id">;
 
 const libraryDestinations: ReadonlyArray<{
@@ -584,7 +584,7 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
 
   function submitSearch(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    let date: DateFilter | null = null;
+    let date: SearchDateFilter | null = null;
     if (dateKind === "year") {
       date = { kind: "year", year: Number(searchYear) };
     } else if (dateKind === "month") {

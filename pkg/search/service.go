@@ -4,6 +4,7 @@ package search
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -36,10 +37,25 @@ type DateFilter struct {
 	EndDate   *string `json:"end_date,omitempty" tstype:"string | null"`
 }
 
+// UnmarshalJSON validates the discriminated date variant before it enters the service.
+func (filter *DateFilter) UnmarshalJSON(data []byte) error {
+	type wireDateFilter DateFilter
+	var decoded wireDateFilter
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	validated := DateFilter(decoded)
+	if _, err := parseDateFilter(validated); err != nil {
+		return err
+	}
+	*filter = validated
+	return nil
+}
+
 // Request keeps private free text in a POST body and transient browser state.
 type Request struct {
 	Query string      `json:"query,omitempty" validate:"max=200" mod:"trim"`
-	Date  *DateFilter `json:"date,omitempty" tstype:"DateFilter | null"`
+	Date  *DateFilter `json:"date,omitempty" tstype:"({ kind: 'year'; year: number } | { kind: 'month'; month: string } | { kind: 'date'; date: string } | { kind: 'range'; start_date: string; end_date: string }) | null"`
 }
 
 // Media is a path-free, authorized search result.
