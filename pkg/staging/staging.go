@@ -342,7 +342,14 @@ func summarizeStagedUpdate(ctx context.Context, db bun.IDB, eventID, publication
 	`, eventID, publicationID, publicationID).Scan(ctx, &accessMoments); err != nil {
 		return nil, err
 	}
-	var recipientAccess []RecipientAccessChange
+	type accessPairChange struct {
+		RecipientPersonID uuid.UUID `bun:"recipient_person_id"`
+		RecipientName     string    `bun:"recipient_name"`
+		MediaItemID       uuid.UUID `bun:"media_item_id"`
+		Granted           int       `bun:"granted"`
+		Revoked           int       `bun:"revoked"`
+	}
+	var accessPairs []accessPairChange
 	if err := db.NewRaw(`
 		WITH editable_event AS (
 			SELECT DISTINCT entry.recipient_access_generation_id AS access_id,
@@ -363,6 +370,7 @@ func summarizeStagedUpdate(ctx context.Context, db bun.IDB, eventID, publication
 			SELECT access_id, media_item_id FROM editable_event
 		), changed AS (
 			SELECT COALESCE(after_global.access_id, before_global.access_id) AS access_id,
+				COALESCE(after_global.media_item_id, before_global.media_item_id) AS media_item_id,
 				(after_global.media_item_id IS NOT NULL AND before_global.media_item_id IS NULL)::integer AS granted,
 				(before_global.media_item_id IS NOT NULL AND after_global.media_item_id IS NULL)::integer AS revoked
 			FROM after_global
@@ -370,15 +378,52 @@ func summarizeStagedUpdate(ctx context.Context, db bun.IDB, eventID, publication
 			WHERE after_global.media_item_id IS NULL OR before_global.media_item_id IS NULL
 		)
 		SELECT person.id AS recipient_person_id, person.display_name AS recipient_name,
-			sum(changed.granted)::integer AS granted_media_count,
-			sum(changed.revoked)::integer AS revoked_media_count
+			changed.media_item_id, changed.granted, changed.revoked
 		FROM changed
 		JOIN recipient_access_generations AS access ON access.id = changed.access_id
 		JOIN people AS person ON person.id = access.person_id
-		GROUP BY person.id, person.display_name, person.sort_name
-		ORDER BY person.sort_name, person.id
-	`, eventID, eventID).Scan(ctx, &recipientAccess); err != nil {
+		ORDER BY person.sort_name, person.id, changed.media_item_id
+	`, eventID, eventID).Scan(ctx, &accessPairs); err != nil {
 		return nil, err
+	}
+	accessMediaSet := make(map[uuid.UUID]bool)
+	recipientAccess := make([]RecipientAccessChange, 0)
+	recipientIndex := make(map[uuid.UUID]int)
+	for _, pair := range accessPairs {
+		accessMediaSet[pair.MediaItemID] = true
+		index, exists := recipientIndex[pair.RecipientPersonID]
+		if !exists {
+			index = len(recipientAccess)
+			recipientIndex[pair.RecipientPersonID] = index
+			recipientAccess = append(recipientAccess, RecipientAccessChange{
+				RecipientPersonID: pair.RecipientPersonID.String(),
+				RecipientName:     pair.RecipientName,
+			})
+		}
+		recipientAccess[index].GrantedMediaCount += pair.Granted
+		recipientAccess[index].RevokedMediaCount += pair.Revoked
+	}
+	accessMedia := make([]string, 0, len(accessMediaSet))
+	seenAccessMedia := make(map[uuid.UUID]bool, len(accessMediaSet))
+	for _, placements := range [][]stagedPlacement{published, draft} {
+		for _, placement := range placements {
+			if accessMediaSet[placement.MediaItemID] && !seenAccessMedia[placement.MediaItemID] {
+				accessMedia = append(accessMedia, placement.MediaItemID.String())
+				seenAccessMedia[placement.MediaItemID] = true
+			}
+		}
+	}
+	seenAccessMoments := make(map[uuid.UUID]bool, len(accessMoments))
+	for _, momentID := range accessMoments {
+		seenAccessMoments[momentID] = true
+	}
+	for _, placements := range [][]stagedPlacement{published, draft} {
+		for _, placement := range placements {
+			if accessMediaSet[placement.MediaItemID] && placement.MomentID != uuid.Nil && !seenAccessMoments[placement.MomentID] {
+				accessMoments = append(accessMoments, placement.MomentID)
+				seenAccessMoments[placement.MomentID] = true
+			}
+		}
 	}
 
 	changes := make([]Change, 0, 6)
@@ -429,7 +474,7 @@ func summarizeStagedUpdate(ctx context.Context, db bun.IDB, eventID, publication
 		})
 	}
 	appendMomentChange(ChangeKindMomentStructure, "Moment structure or ordering changed", structureMoments, 0)
-	if len(accessMoments) > 0 {
+	if len(accessMoments) > 0 || len(recipientAccess) > 0 {
 		momentIDs := make([]string, 0, len(accessMoments))
 		for _, id := range accessMoments {
 			momentIDs = append(momentIDs, id.String())
@@ -439,7 +484,7 @@ func summarizeStagedUpdate(ctx context.Context, db bun.IDB, eventID, publication
 			detail = "Global Recipient Media access granted or revoked"
 		}
 		changes = append(changes, Change{
-			Kind: ChangeKindAccess, Count: len(recipientAccess), MediaItemIDs: []string{},
+			Kind: ChangeKindAccess, Count: len(recipientAccess), MediaItemIDs: accessMedia,
 			MomentIDs: momentIDs, RecipientAccess: recipientAccess, Detail: detail,
 		})
 	}

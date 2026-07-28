@@ -763,6 +763,13 @@ func TestStagedUpdateCoalescesConcurrentEditsRetriesAndCancellation(t *testing.T
 	ctx := context.Background()
 	_, err := fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, fixture.request())
 	require.NoError(t, err)
+	assertListedStaged := func(expected bool, phase string) {
+		t.Helper()
+		work, listErr := fixture.service.ListEvents(ctx)
+		require.NoError(t, listErr)
+		require.Len(t, work.Events, 1)
+		assert.Equal(t, expected, work.Events[0].HasStagedUpdate, phase)
+	}
 
 	concurrentCtx, cancelConcurrent := context.WithTimeout(ctx, 10*time.Second)
 	defer cancelConcurrent()
@@ -803,6 +810,7 @@ func TestStagedUpdateCoalescesConcurrentEditsRetriesAndCancellation(t *testing.T
 	var retriedID uuid.UUID
 	require.NoError(t, fixture.db.NewRaw(`SELECT id FROM staged_updates WHERE event_id = ?`, fixture.event).Scan(ctx, &retriedID))
 	assert.Equal(t, stagedID, retriedID, "retry coalesces into the same mutable update")
+	assertListedStaged(true, "coalesced edits appear as Staged in the Event list")
 
 	require.NoError(t, fixture.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 		if _, err := tx.NewRaw(`UPDATE events SET title = 'Family weekend', version = version + 1 WHERE id = ?`, fixture.event).Exec(ctx); err != nil {
@@ -814,6 +822,23 @@ func TestStagedUpdateCoalescesConcurrentEditsRetriesAndCancellation(t *testing.T
 	}))
 	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM staged_updates WHERE event_id = ?`, fixture.event).Scan(ctx, &stagedCount))
 	assert.Zero(t, stagedCount, "cancelled changes leave no Staged work residue")
+	assertListedStaged(false, "cancellation clears the Staged marker from the Event list")
+
+	var publishVersion int64
+	require.NoError(t, fixture.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if err := tx.NewRaw(`
+			UPDATE events SET title = 'Published correction', version = version + 1
+			WHERE id = ? RETURNING version
+		`, fixture.event).Scan(ctx, &publishVersion); err != nil {
+			return err
+		}
+		_, refreshErr := refreshStagedUpdate(ctx, tx, fixture.event, fixture.service.now().UTC())
+		return refreshErr
+	}))
+	assertListedStaged(true, "the replacement remains Staged before Publication")
+	_, err = fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, PublishEventRequest{Version: publishVersion})
+	require.NoError(t, err)
+	assertListedStaged(false, "successful Publication clears the Staged marker from the Event list")
 }
 
 func TestStagedRemovalDoesNotReportCompactedRetainedMediaAsMoved(t *testing.T) {
@@ -954,6 +979,38 @@ func TestNoNewMediaStructuralAndAccessCorrectionsAreQuiet(t *testing.T) {
 	}
 }
 
+func TestStagedMoveAcrossAudiencesIdentifiesAffectedMediaAndMoments(t *testing.T) {
+	fixture := newPublicationFixture(t)
+	ctx := context.Background()
+	_, err := fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, fixture.request())
+	require.NoError(t, err)
+
+	var update *staging.Update
+	require.NoError(t, fixture.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if _, updateErr := tx.NewRaw(`
+			UPDATE draft_media_placements SET draft_moment_id = ?
+			WHERE event_id = ? AND media_item_id = ?
+		`, fixture.moments[1], fixture.event, fixture.media[0]).Exec(ctx); updateErr != nil {
+			return updateErr
+		}
+		var refreshErr error
+		update, refreshErr = staging.Refresh(ctx, tx, fixture.event, fixture.service.now().UTC())
+		return refreshErr
+	}))
+	require.NotNil(t, update)
+	var access *staging.Change
+	for index := range update.Changes {
+		if update.Changes[index].Kind == staging.ChangeKindAccess {
+			access = &update.Changes[index]
+			break
+		}
+	}
+	require.NotNil(t, access, "moving Media between different unchanged Audiences changes access")
+	assert.Equal(t, []string{fixture.media[0].String()}, access.MediaItemIDs)
+	assert.Equal(t, []string{fixture.moments[0].String(), fixture.moments[1].String()}, access.MomentIDs)
+	assert.Equal(t, 3, access.Count, "two prior Recipients lose access and one destination Recipient gains it")
+}
+
 func TestStagedCompositeSummaryReportsExactBackendNetChanges(t *testing.T) {
 	fixture := newPublicationFixture(t)
 	ctx := context.Background()
@@ -1001,7 +1058,7 @@ func TestStagedCompositeSummaryReportsExactBackendNetChanges(t *testing.T) {
 
 	access := changes[staging.ChangeKindAccess]
 	assert.Equal(t, 2, access.Count)
-	assert.Empty(t, access.MediaItemIDs)
+	assert.Equal(t, []string{fixture.media[0].String(), fixture.media[2].String()}, access.MediaItemIDs)
 	assert.Equal(t, []string{fixture.moments[0].String(), fixture.moments[2].String()}, access.MomentIDs)
 	require.Len(t, access.RecipientAccess, 2)
 	accessByPerson := make(map[string]staging.RecipientAccessChange, len(access.RecipientAccess))

@@ -537,8 +537,8 @@ test("shows the resulting Event with highlighted Staged net changes", async () =
       {
         kind: "access",
         count: 2,
-        media_item_ids: [],
-        moment_ids: [momentOneID],
+        media_item_ids: [items.a.id],
+        moment_ids: [momentOneID, momentTwoID],
         recipient_access: [
           {
             recipient_person_id: "55555555-5555-4555-8555-555555555555",
@@ -607,14 +607,20 @@ test("shows the resulting Event with highlighted Staged net changes", async () =
     document.querySelectorAll(".moment-card.staged-metadata"),
   ).toHaveLength(1);
   expect(document.querySelectorAll(".moment-card.staged-access")).toHaveLength(
-    1,
+    2,
   );
   expect(
-    document.querySelectorAll(".media-row.staged-move.staged-metadata"),
+    document.querySelectorAll(
+      ".media-row.staged-move.staged-metadata.staged-access",
+    ),
   ).toHaveLength(1);
   expect(
-    screen.getByLabelText("Staged changes: Moves and ordering, Metadata edits"),
-  ).toHaveTextContent("Staged: Moves and ordering, Metadata edits");
+    screen.getByLabelText(
+      "Staged changes: Moves and ordering, Metadata edits, Access changes",
+    ),
+  ).toHaveTextContent(
+    "Staged: Moves and ordering, Metadata edits, Access changes",
+  );
   expect(
     screen.getByLabelText("Staged changes: Metadata edits, Access changes"),
   ).toBeVisible();
