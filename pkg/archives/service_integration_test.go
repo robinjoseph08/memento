@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"errors"
 	"io"
 	"net/url"
 	"slices"
@@ -101,6 +102,46 @@ func (stub *archiveStub) Archive(ctx context.Context, ids []uuid.UUID) (immich.A
 		contents = buffer.Bytes()
 	}
 	return immich.ArchiveResponse{Body: io.NopCloser(bytes.NewReader(contents)), ContentLength: -1}, nil
+}
+
+type simultaneousArchiveSource struct {
+	part       immich.ArchivePart
+	payload    []byte
+	bothOpened chan struct{}
+	release    <-chan struct{}
+	mu         sync.Mutex
+	opened     int
+}
+
+func (source *simultaneousArchiveSource) ArchiveInfo(_ context.Context, _ []uuid.UUID) ([]immich.ArchivePart, error) {
+	return []immich.ArchivePart{source.part}, nil
+}
+
+func (source *simultaneousArchiveSource) Archive(ctx context.Context, _ []uuid.UUID) (immich.ArchiveResponse, error) {
+	source.mu.Lock()
+	source.opened++
+	if source.opened == 2 {
+		close(source.bothOpened)
+	}
+	source.mu.Unlock()
+	select {
+	case <-source.release:
+		return immich.ArchiveResponse{Body: io.NopCloser(bytes.NewReader(source.payload)), ContentLength: -1}, nil
+	case <-ctx.Done():
+		return immich.ArchiveResponse{}, ctx.Err()
+	}
+}
+
+func singleEntryArchive(t *testing.T, size int) []byte {
+	t.Helper()
+	var buffer bytes.Buffer
+	writer := zip.NewWriter(&buffer)
+	entry, err := writer.Create("Immich source.jpg")
+	require.NoError(t, err)
+	_, err = entry.Write(bytes.Repeat([]byte{'x'}, size))
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+	return buffer.Bytes()
 }
 
 type archiveFixture struct {
@@ -265,6 +306,65 @@ func TestPlansCompleteEventAndRejectsIncompleteSubset(t *testing.T) {
 	_, err = fixture.service.Plan(context.Background(), fixture.actor, PlanRequest{Scope: "subset", MediaIDs: []string{fixture.media[0].String(), fixture.media[2].String()}})
 	assert.ErrorIs(t, err, ErrInvalidSelection)
 	assert.Len(t, source.infoCalls, 1, "the complete selection is authorized before Immich is contacted")
+}
+
+func TestCleanupExpiredPlansCascadesAndRetainsActivePlans(t *testing.T) {
+	source := &archiveStub{}
+	fixture := newArchiveFixture(t, source)
+	source.planned = []immich.ArchivePart{{
+		Size: 12, AssetIDs: []uuid.UUID{fixture.assets[0]}, CompanionOf: map[uuid.UUID]uuid.UUID{},
+	}}
+	now := time.Now().UTC().Truncate(time.Second)
+	fixture.service.now = func() time.Time { return now }
+	_, err := fixture.service.Plan(context.Background(), fixture.actor, PlanRequest{
+		Scope: "subset", MediaIDs: []string{fixture.media[0].String()},
+	})
+	require.NoError(t, err)
+
+	now = now.Add(planLifetime)
+	_, err = fixture.service.Plan(context.Background(), fixture.actor, PlanRequest{
+		Scope: "subset", MediaIDs: []string{fixture.media[0].String()},
+	})
+	require.NoError(t, err)
+	deleted, err := fixture.service.cleanupExpiredPlans(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), deleted)
+
+	for _, table := range []string{"archive_plans", "archive_parts", "archive_part_items"} {
+		var count int
+		require.NoError(t, fixture.db.NewRaw("SELECT count(*) FROM "+table).Scan(context.Background(), &count))
+		assert.Equal(t, 1, count, "%s should retain only the active plan's records", table)
+	}
+	var jobs int
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM jobs
+		WHERE kind = ? AND idempotency_key = 'archive-plans-cleanup'`, CleanupJobKind).Scan(context.Background(), &jobs))
+	assert.Equal(t, 1, jobs, "the durable cleanup job should be seeded once")
+}
+
+func TestCleanupExpiredPlansBoundsEachPass(t *testing.T) {
+	fixture := newArchiveFixture(t, &archiveStub{})
+	now := time.Now().UTC().Truncate(time.Second)
+	fixture.service.now = func() time.Time { return now }
+	_, err := fixture.db.NewRaw(`INSERT INTO archive_plans
+		(id, token_hash, recipient_person_id, recipient_access_generation_id, session_id,
+		 scope, name, item_count, total_size, created_at, expires_at)
+		SELECT gen_random_uuid(), decode(md5('expired-a-' || sequence) || md5('expired-b-' || sequence), 'hex'),
+		       ?, ?, ?, 'subset', 'Expired', 1, 1, ?::timestamptz - interval '30 minutes',
+		       ?::timestamptz - interval '15 minutes'
+		FROM generate_series(1, ?) AS sequence`, fixture.actor.PersonID, fixture.actor.AccessID,
+		fixture.actor.SessionID, now, now, cleanupBatchSize+1).Exec(context.Background())
+	require.NoError(t, err)
+
+	deleted, err := fixture.service.cleanupExpiredPlans(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, int64(cleanupBatchSize), deleted)
+	var remaining int
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM archive_plans`).Scan(context.Background(), &remaining))
+	assert.Equal(t, 1, remaining)
+
+	deleted, err = fixture.service.cleanupExpiredPlans(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), deleted)
 }
 
 func TestPartsAreSessionBoundExpiringAndIndividuallySingleUse(t *testing.T) {
@@ -506,6 +606,87 @@ func TestPartReauthorizesAfterOpeningTheUpstreamStream(t *testing.T) {
 	}
 }
 
+func TestPartFinalActorAuthorizationWaitsForConcurrentAccessLoss(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		change func(context.Context, bun.Tx, archiveFixture) error
+	}{
+		{name: "suspension", change: func(ctx context.Context, tx bun.Tx, fixture archiveFixture) error {
+			_, err := tx.NewRaw(`UPDATE recipient_access_generations SET state = 'suspended' WHERE id = ?`,
+				fixture.actor.AccessID).Exec(ctx)
+			return err
+		}},
+		{name: "Session revocation", change: func(ctx context.Context, tx bun.Tx, fixture archiveFixture) error {
+			_, err := tx.NewRaw(`UPDATE sessions SET revoked_at = now() WHERE id = ?`, fixture.actor.SessionID).Exec(ctx)
+			return err
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			release := make(chan struct{})
+			source := &archiveStub{archiveStarted: make(chan struct{}), releaseArchive: release}
+			fixture := newArchiveFixture(t, source)
+			source.planned = []immich.ArchivePart{{
+				Size: 12, AssetIDs: []uuid.UUID{fixture.assets[0]}, CompanionOf: map[uuid.UUID]uuid.UUID{},
+			}}
+			plan, err := fixture.service.Plan(context.Background(), fixture.actor, PlanRequest{
+				Scope: "subset", MediaIDs: []string{fixture.media[0].String()},
+			})
+			require.NoError(t, err)
+
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			result := make(chan error, 1)
+			go func() {
+				stream, streamErr := fixture.service.StreamPart(ctx, fixture.actor,
+					tokenFromURL(plan.Parts[0].DownloadURL), 1)
+				if stream.Body != nil {
+					_ = stream.Body.Close()
+				}
+				result <- streamErr
+			}()
+			select {
+			case <-source.archiveStarted:
+			case <-ctx.Done():
+				t.Fatalf("upstream archive did not open before deadline: %v", ctx.Err())
+			}
+
+			accessLoss, err := fixture.db.BeginTx(ctx, &sql.TxOptions{})
+			require.NoError(t, err)
+			defer func() { _ = accessLoss.Rollback() }()
+			require.NoError(t, test.change(ctx, accessLoss, fixture))
+			close(release)
+
+			for {
+				var waiting bool
+				err = fixture.db.NewRaw(`SELECT EXISTS (
+					SELECT 1 FROM pg_locks AS lock
+					JOIN pg_stat_activity AS activity ON activity.pid = lock.pid
+					WHERE NOT lock.granted AND activity.datname = current_database()
+				)`).Scan(ctx, &waiting)
+				require.NoError(t, err)
+				if waiting {
+					break
+				}
+				select {
+				case streamErr := <-result:
+					t.Fatalf("archive final actor authorization did not wait for %s: %v", test.name, streamErr)
+				case <-ctx.Done():
+					t.Fatalf("archive did not wait on the actor row lock: %v", ctx.Err())
+				case <-time.After(10 * time.Millisecond):
+				}
+			}
+
+			require.NoError(t, accessLoss.Commit())
+			select {
+			case streamErr := <-result:
+				assert.ErrorIs(t, streamErr, ErrNotFound)
+			case <-ctx.Done():
+				t.Fatalf("archive did not reauthorize after %s committed: %v", test.name, ctx.Err())
+			}
+		})
+	}
+}
+
 func TestPartFinalAuthorizationWaitsForConcurrentPublication(t *testing.T) {
 	source := &archiveStub{}
 	fixture := newArchiveFixture(t, source)
@@ -565,6 +746,68 @@ func TestPartFinalAuthorizationWaitsForConcurrentPublication(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatalf("archive did not reauthorize after Publication committed: %v", ctx.Err())
 	}
+}
+
+func TestConcurrentPartDeliveryAllowsExactlyOneStream(t *testing.T) {
+	release := make(chan struct{})
+	assetID := uuid.New()
+	source := &simultaneousArchiveSource{
+		part: immich.ArchivePart{
+			Size: 12, AssetIDs: []uuid.UUID{assetID}, CompanionOf: map[uuid.UUID]uuid.UUID{},
+		},
+		payload: singleEntryArchive(t, 12), bothOpened: make(chan struct{}), release: release,
+	}
+	fixture := newArchiveFixture(t, nil)
+	source.part.AssetIDs[0] = fixture.assets[0]
+	fixture.service = New(fixture.db, source)
+	plan, err := fixture.service.Plan(context.Background(), fixture.actor, PlanRequest{
+		Scope: "subset", MediaIDs: []string{fixture.media[0].String()},
+	})
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	type deliveryResult struct {
+		stream Stream
+		err    error
+	}
+	start := make(chan struct{})
+	results := make(chan deliveryResult, 2)
+	for range 2 {
+		go func() {
+			<-start
+			stream, streamErr := fixture.service.StreamPart(ctx, fixture.actor,
+				tokenFromURL(plan.Parts[0].DownloadURL), 1)
+			results <- deliveryResult{stream: stream, err: streamErr}
+		}()
+	}
+	close(start)
+	select {
+	case <-source.bothOpened:
+	case <-ctx.Done():
+		t.Fatalf("both simultaneous deliveries did not open upstream before deadline: %v", ctx.Err())
+	}
+	close(release)
+
+	succeeded, rejected := 0, 0
+	for range 2 {
+		select {
+		case result := <-results:
+			switch {
+			case result.err == nil:
+				succeeded++
+				require.NoError(t, result.stream.Body.Close())
+			case errors.Is(result.err, ErrNotFound):
+				rejected++
+			default:
+				t.Fatalf("unexpected simultaneous delivery result: %v", result.err)
+			}
+		case <-ctx.Done():
+			t.Fatalf("simultaneous deliveries did not finish before deadline: %v", ctx.Err())
+		}
+	}
+	assert.Equal(t, 1, succeeded)
+	assert.Equal(t, 1, rejected)
 }
 
 func TestPartRevalidatesCurrentLivePhotoCompanion(t *testing.T) {

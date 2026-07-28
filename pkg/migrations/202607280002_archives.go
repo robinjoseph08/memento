@@ -55,6 +55,9 @@ func init() {
 						UNIQUE (archive_part_id, immich_asset_id)
 					)`,
 					`CREATE INDEX archive_part_items_media_idx ON archive_part_items (media_item_id)`,
+					`INSERT INTO jobs (kind, idempotency_key)
+					 VALUES ('cleanup_archive_plans', 'archive-plans-cleanup')
+					 ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING`,
 				} {
 					if _, err := tx.ExecContext(ctx, statement); err != nil {
 						return err
@@ -66,6 +69,7 @@ func init() {
 		func(ctx context.Context, db *bun.DB) error {
 			return db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 				for _, statement := range []string{
+					`DELETE FROM jobs WHERE kind = 'cleanup_archive_plans' AND idempotency_key = 'archive-plans-cleanup'`,
 					`DROP TABLE archive_part_items`,
 					`DROP TABLE archive_parts`,
 					`DROP TABLE archive_plans`,

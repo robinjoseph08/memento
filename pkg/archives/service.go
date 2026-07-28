@@ -24,11 +24,15 @@ import (
 	"github.com/robinjoseph08/memento/internal/placementlock"
 	"github.com/robinjoseph08/memento/pkg/immich"
 	"github.com/robinjoseph08/memento/pkg/setup"
+	"github.com/robinjoseph08/memento/pkg/worker"
 	"github.com/uptrace/bun"
 )
 
 const (
+	CleanupJobKind      = "cleanup_archive_plans"
 	planLifetime        = 15 * time.Minute
+	cleanupInterval     = time.Hour
+	cleanupBatchSize    = 100
 	maximumSelection    = 1000
 	maximumArchiveParts = 1000
 )
@@ -79,6 +83,35 @@ type Service struct {
 
 func New(db *bun.DB, source archiveSource) *Service {
 	return &Service{db: db, source: source, now: time.Now}
+}
+
+// HandleCleanupJob removes expired plans in bounded passes. A full pass is
+// immediately continued so a backlog converges without one long transaction.
+func (s *Service) HandleCleanupJob(ctx context.Context, _ worker.Job) error {
+	deleted, err := s.cleanupExpiredPlans(ctx)
+	if err != nil {
+		return err
+	}
+	if deleted == cleanupBatchSize {
+		return worker.RescheduleAfter(0)
+	}
+	return worker.RescheduleAfter(cleanupInterval)
+}
+
+func (s *Service) cleanupExpiredPlans(ctx context.Context) (int64, error) {
+	result, err := s.db.NewRaw(`WITH expired AS (
+		SELECT id FROM archive_plans
+		WHERE expires_at <= ?
+		ORDER BY expires_at, id
+		FOR UPDATE SKIP LOCKED
+		LIMIT ?
+	)
+	DELETE FROM archive_plans AS plan USING expired
+	WHERE plan.id = expired.id`, s.now().UTC(), cleanupBatchSize).Exec(ctx)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 type candidate struct {
