@@ -1066,6 +1066,108 @@ func TestRepresentationClosesOpenedBodyWhenActorInvalidatesBeforeHandoff(t *test
 	}
 }
 
+func TestRepresentationLocksResolvedMediaAndBackingThroughFinalHandoff(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate string
+	}{
+		{name: "availability mutation", mutate: `UPDATE media_items SET availability = 'source_missing' WHERE id = ?`},
+		{name: "active backing mutation", mutate: `UPDATE media_backings SET active = false, ended_at = now() WHERE media_item_id = ? AND active`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newLibraryFixture(t)
+			ctx := context.Background()
+			handoffLocked := make(chan struct{})
+			releaseHandoff := make(chan struct{})
+			service := New(fixture.db, fixture.thumbnail)
+			service.representationHandoffLocked = func() {
+				close(handoffLocked)
+				<-releaseHandoff
+			}
+			type representationResult struct {
+				response immich.MediaResponse
+				err      error
+			}
+			opened := make(chan representationResult, 1)
+			go func() {
+				response, err := service.Thumbnail(ctx, fixture.actor, fixture.media[0], immich.MediaRequest{})
+				opened <- representationResult{response: response, err: err}
+			}()
+			select {
+			case <-handoffLocked:
+			case <-time.After(5 * time.Second):
+				t.Fatal("representation did not lock its resolved Media handoff")
+			}
+
+			writerPID := make(chan int, 1)
+			mutated := make(chan error, 1)
+			go func() {
+				tx, err := fixture.db.BeginTx(ctx, nil)
+				if err != nil {
+					mutated <- err
+					return
+				}
+				defer func() { _ = tx.Rollback() }()
+				var pid int
+				if err := tx.NewRaw(`SELECT pg_backend_pid()`).Scan(ctx, &pid); err != nil {
+					mutated <- err
+					return
+				}
+				writerPID <- pid
+				if _, err := tx.NewRaw(test.mutate, fixture.media[0]).Exec(ctx); err != nil {
+					mutated <- err
+					return
+				}
+				mutated <- tx.Commit()
+			}()
+			var pid int
+			select {
+			case pid = <-writerPID:
+			case err := <-mutated:
+				require.NoError(t, err)
+				t.Fatal("Media lifecycle mutation completed before the final handoff released its row locks")
+			case <-time.After(5 * time.Second):
+				t.Fatal("Media lifecycle writer did not start")
+			}
+			waitForLibraryLockWait(t, fixture.db, pid)
+			close(releaseHandoff)
+
+			select {
+			case result := <-opened:
+				require.NoError(t, result.err)
+				require.NotNil(t, result.response.Body)
+				require.NoError(t, result.response.Body.Close())
+			case <-time.After(5 * time.Second):
+				t.Fatal("representation did not complete its final handoff")
+			}
+			select {
+			case err := <-mutated:
+				require.NoError(t, err)
+			case <-time.After(5 * time.Second):
+				t.Fatal("Media lifecycle mutation did not resume after the representation handoff")
+			}
+			assert.Equal(t, []uuid.UUID{fixture.assets[0]}, fixture.thumbnail.assets)
+		})
+	}
+}
+
+func waitForLibraryLockWait(t *testing.T, db *bun.DB, pid int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	lastWait := ""
+	for time.Now().Before(deadline) {
+		if err := db.NewRaw(`SELECT COALESCE(wait_event_type, '') || ':' || COALESCE(wait_event, '')
+			FROM pg_stat_activity WHERE pid = ?`, pid).Scan(context.Background(), &lastWait); err != nil {
+			t.Fatalf("inspect Media lifecycle writer wait: %v", err)
+		}
+		if strings.HasPrefix(lastWait, "Lock:") {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("Media lifecycle writer did not wait on the representation row locks; last wait was %q", lastWait)
+}
+
 func TestSlowRepresentationOpeningDoesNotExhaustMinimumConnectionPool(t *testing.T) {
 	fixture := newLibraryFixture(t)
 	fixture.db.SetMaxOpenConns(2)

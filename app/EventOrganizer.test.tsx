@@ -514,7 +514,7 @@ test("withdraws a currently published target even when the staged draft differs"
 
   expect(
     await screen.findByText(
-      "Access withdrawn for 2 Recipients across 3 Media items. No external notification was sent.",
+      "Access withdrawn for 2 Recipients across 3 Media items. Withdrawal created no new external notification. A delivery already handed off before it committed may still arrive.",
     ),
   ).toBeInTheDocument();
   const history = await screen.findByText(/Privacy request by Robin/);

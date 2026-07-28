@@ -1509,10 +1509,18 @@ func TestMediaRestoresWhenTheFinalFreshPublicationRemovesItsStalePlacement(t *te
 	require.NoError(t, err)
 	secondEvent, secondMoment, second := publishReusedMediaInSecondEvent(t, fixture)
 
+	_, err = fixture.db.NewRaw(`
+		DELETE FROM draft_media_placements WHERE event_id = ? AND media_item_id = ?;
+		UPDATE draft_moments SET cover_media_item_id = NULL WHERE id = ?
+	`, secondEvent, fixture.media[0], secondMoment).Exec(ctx)
+	require.NoError(t, err)
 	withdrawal, err := fixture.service.Withdraw(ctx, fixture.actor, WithdrawRequest{
 		TargetKind: WithdrawalTargetMedia, TargetID: fixture.media[0].String(), Reason: "Review every current placement",
 	})
 	require.NoError(t, err)
+	var secondAudienceComplete bool
+	require.NoError(t, fixture.db.NewRaw(`SELECT audience_complete FROM draft_moments WHERE id = ?`, secondMoment).Scan(ctx, &secondAudienceComplete))
+	assert.False(t, secondAudienceComplete, "Withdrawal must invalidate the published placement review after Media was staged out")
 
 	reviewMomentForFreshPublication(t, fixture, fixture.event, fixture.moments[0], first.ID)
 	freshRetained, err := fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, PublishEventRequest{Version: 8})
@@ -1521,13 +1529,10 @@ func TestMediaRestoresWhenTheFinalFreshPublicationRemovesItsStalePlacement(t *te
 	require.NoError(t, fixture.db.NewRaw(`SELECT restored_at IS NULL FROM content_withdrawals WHERE id = ?`, withdrawal.ID).Scan(ctx, &active))
 	assert.True(t, active, "the stale second placement must continue to hold Withdrawal active")
 
-	_, err = fixture.db.NewRaw(`
-		DELETE FROM draft_media_placements WHERE event_id = ? AND media_item_id = ?;
-		UPDATE draft_moments SET cover_media_item_id = NULL WHERE id = ?
-	`, secondEvent, fixture.media[0], secondMoment).Exec(ctx)
+	_, err = fixture.db.NewRaw(`UPDATE events SET final_review_complete = true WHERE id = ?`, secondEvent).Exec(ctx)
 	require.NoError(t, err)
 	_, err = fixture.service.PublishEvent(ctx, fixture.actor, secondEvent, PublishEventRequest{Version: 8})
-	assert.ErrorIs(t, err, ErrPublicationNotReady, "removing Media must not bypass the fresh Audience requirement")
+	assert.ErrorIs(t, err, ErrPublicationNotReady, "staging Media removal before Withdrawal must not preserve the older Audience review")
 
 	reviewMomentForFreshPublication(t, fixture, secondEvent, secondMoment, second.ID)
 	finalPublication, err := fixture.service.PublishEvent(ctx, fixture.actor, secondEvent, PublishEventRequest{Version: 8})

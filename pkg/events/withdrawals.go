@@ -232,17 +232,33 @@ func (s *Service) Withdraw(ctx context.Context, actor setup.CuratorSession, requ
 		var momentIDs []uuid.UUID
 		switch kind {
 		case WithdrawalTargetEvent:
-			if err := tx.NewRaw(`SELECT id FROM draft_moments WHERE event_id = ? ORDER BY id FOR UPDATE`, targetID).Scan(ctx, &momentIDs); err != nil {
+			if err := tx.NewRaw(`SELECT id FROM draft_moments WHERE event_id = ?
+				UNION
+				SELECT published.draft_moment_id
+				FROM current_published_placements AS placement
+				JOIN published_moments AS published ON published.id = placement.published_moment_id
+				WHERE placement.event_id = ?
+				ORDER BY 1`, targetID, targetID).Scan(ctx, &momentIDs); err != nil {
 				return err
 			}
 		case WithdrawalTargetMoment:
-			if err := tx.NewRaw(`SELECT id FROM draft_moments WHERE id = ? FOR UPDATE`, targetID).Scan(ctx, &momentIDs); err != nil {
+			momentIDs = []uuid.UUID{targetID}
+		case WithdrawalTargetMedia:
+			if err := tx.NewRaw(`SELECT moment.id
+				FROM draft_media_placements AS placement
+				JOIN draft_moments AS moment ON moment.id = placement.draft_moment_id
+				WHERE placement.media_item_id = ?
+				UNION
+				SELECT published.draft_moment_id
+				FROM current_published_placements AS placement
+				JOIN published_moments AS published ON published.id = placement.published_moment_id
+				WHERE placement.media_item_id = ?
+				ORDER BY 1`, targetID, targetID).Scan(ctx, &momentIDs); err != nil {
 				return err
 			}
-		case WithdrawalTargetMedia:
-			if err := tx.NewRaw(`SELECT moment.id FROM draft_media_placements AS placement
-				JOIN draft_moments AS moment ON moment.id = placement.draft_moment_id
-				WHERE placement.media_item_id = ? ORDER BY moment.id FOR UPDATE OF moment`, targetID).Scan(ctx, &momentIDs); err != nil {
+		}
+		if len(momentIDs) > 0 {
+			if _, err := tx.NewRaw(`SELECT id FROM draft_moments WHERE id IN (?) ORDER BY id FOR UPDATE`, bun.List(momentIDs)).Exec(ctx); err != nil {
 				return err
 			}
 		}

@@ -1191,8 +1191,10 @@ export function EventOrganizer({
                     <p role="status">
                       Access withdrawn for{" "}
                       {withdraw.data.affected_recipient_count} Recipients across{" "}
-                      {withdraw.data.affected_media_count} Media items. No
-                      external notification was sent.
+                      {withdraw.data.affected_media_count} Media items.
+                      Withdrawal created no new external notification. A
+                      delivery already handed off before it committed may still
+                      arrive.
                     </p>
                   ) : null}
                   {currentDraft.withdrawals.length > 0 ? (

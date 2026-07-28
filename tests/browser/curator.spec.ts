@@ -455,7 +455,7 @@ for (const target of [
     await page.getByRole("button", { name: "Withdraw access" }).click();
     await expect(
       page.getByText(
-        `Access withdrawn for ${target.recipients} Recipients across ${target.media} Media items. No external notification was sent.`,
+        `Access withdrawn for ${target.recipients} Recipients across ${target.media} Media items. Withdrawal created no new external notification. A delivery already handed off before it committed may still arrive.`,
       ),
     ).toBeVisible();
     expect(confirmation).toBe(
