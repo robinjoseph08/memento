@@ -487,7 +487,7 @@ func (c *Client) media(ctx context.Context, assetID uuid.UUID, path []string, qu
 	endpointParts := append([]string{"api", "assets", assetID.String()}, path...)
 	endpoint := c.baseURL.JoinPath(endpointParts...)
 	endpoint.RawQuery = query.Encode()
-	response, err := c.doMediaRequest(requestCtx, endpoint, accept, request)
+	response, err := c.doMediaRequest(requestCtx, endpoint, accept, request, original)
 	if !headerTimer.Stop() {
 		if response != nil {
 			_ = response.Body.Close()
@@ -527,7 +527,7 @@ func (c *Client) media(ctx context.Context, assetID uuid.UUID, path []string, qu
 	return result, nil
 }
 
-func (c *Client) doMediaRequest(ctx context.Context, endpoint *url.URL, accept string, validators MediaRequest) (*http.Response, error) {
+func (c *Client) doMediaRequest(ctx context.Context, endpoint *url.URL, accept string, validators MediaRequest, preserveEncoding bool) (*http.Response, error) {
 	current := endpoint
 	for redirects := 0; ; redirects++ {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, current.String(), nil)
@@ -535,6 +535,9 @@ func (c *Client) doMediaRequest(ctx context.Context, endpoint *url.URL, accept s
 			return nil, errCreateRequest
 		}
 		req.Header.Set("Accept", accept)
+		if preserveEncoding {
+			req.Header.Set("Accept-Encoding", "identity")
+		}
 		req.Header.Set("x-api-key", c.apiKey)
 		setMediaRequestHeaders(req.Header, validators)
 		response, err := c.httpClient.Do(req)
@@ -606,7 +609,8 @@ func parseContentRange(value string) (length int64, unsatisfied, valid bool) {
 
 func normalizeMediaResponse(response *http.Response, bounded, original bool) (MediaResponse, error) {
 	result := MediaResponse{StatusCode: response.StatusCode, ContentLength: response.ContentLength}
-	if response.ContentLength < -1 || (bounded && response.ContentLength > maxThumbnailResponse) {
+	if response.ContentLength < -1 || (bounded && response.ContentLength > maxThumbnailResponse) ||
+		(original && response.Header.Get("Content-Encoding") != "") {
 		return MediaResponse{}, errInvalidResponse
 	}
 	result.ETag = response.Header.Get("ETag")

@@ -8,8 +8,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -93,6 +95,122 @@ func TestImmichV303LiveContract(t *testing.T) {
 	people, err := client.People(ctx)
 	require.NoError(t, err)
 	assert.Empty(t, people)
+
+	imagePath := filepath.Join("testdata", "contract.jpg")
+	videoPath := filepath.Join("testdata", "contract.mp4")
+	imageBytes, err := os.ReadFile(imagePath)
+	require.NoError(t, err)
+	imageID := contractUpload(t, ctx, httpClient, baseURL, login.AccessToken, imagePath)
+	videoID := contractUpload(t, ctx, httpClient, baseURL, login.AccessToken, videoPath)
+
+	thumbnail := contractAwaitMedia(t, func() (MediaResponse, error) {
+		return client.Thumbnail(ctx, imageID)
+	})
+	assert.Equal(t, http.StatusOK, thumbnail.StatusCode)
+	assert.NotEmpty(t, contractReadMedia(t, thumbnail))
+
+	preview := contractAwaitMedia(t, func() (MediaResponse, error) {
+		return client.Preview(ctx, imageID, MediaRequest{})
+	})
+	assert.Equal(t, http.StatusOK, preview.StatusCode)
+	assert.NotEmpty(t, contractReadMedia(t, preview))
+
+	original := contractAwaitMedia(t, func() (MediaResponse, error) {
+		return client.Original(ctx, imageID, MediaRequest{})
+	})
+	assert.Equal(t, http.StatusOK, original.StatusCode)
+	assert.Equal(t, imageBytes, contractReadMedia(t, original), "the live original contract preserves every uploaded byte")
+	require.NotEmpty(t, original.ETag)
+
+	notModified := contractAwaitMedia(t, func() (MediaResponse, error) {
+		return client.Original(ctx, imageID, MediaRequest{IfNoneMatch: original.ETag})
+	})
+	assert.Equal(t, http.StatusNotModified, notModified.StatusCode)
+	assert.Empty(t, contractReadMedia(t, notModified))
+
+	originalRange := contractAwaitMedia(t, func() (MediaResponse, error) {
+		return client.Original(ctx, imageID, MediaRequest{Range: "bytes=0-7"})
+	})
+	assert.Equal(t, http.StatusPartialContent, originalRange.StatusCode)
+	assert.Equal(t, imageBytes[:8], contractReadMedia(t, originalRange))
+
+	videoRange := contractAwaitMedia(t, func() (MediaResponse, error) {
+		return client.Video(ctx, videoID, MediaRequest{Range: "bytes=0-7"})
+	})
+	assert.Equal(t, http.StatusPartialContent, videoRange.StatusCode)
+	assert.Equal(t, int64(8), videoRange.ContentLength)
+	assert.Len(t, contractReadMedia(t, videoRange), 8)
+
+	fullVideo := contractAwaitMedia(t, func() (MediaResponse, error) {
+		return client.Video(ctx, videoID, MediaRequest{Range: "bytes=0-7", IfRange: `"stale"`})
+	})
+	assert.Equal(t, http.StatusOK, fullVideo.StatusCode)
+	assert.Empty(t, fullVideo.ContentRange)
+	assert.Greater(t, len(contractReadMedia(t, fullVideo)), 8, "an If-Range mismatch returns the complete playback representation")
+}
+
+func contractUpload(t *testing.T, ctx context.Context, client *http.Client, baseURL, bearer, path string) uuid.UUID {
+	t.Helper()
+	contents, err := os.ReadFile(path)
+	require.NoError(t, err)
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	require.NoError(t, writer.WriteField("fileCreatedAt", "2026-07-27T12:00:00.000Z"))
+	require.NoError(t, writer.WriteField("fileModifiedAt", "2026-07-27T12:00:00.000Z"))
+	require.NoError(t, writer.WriteField("filename", filepath.Base(path)))
+	part, err := writer.CreateFormFile("assetData", filepath.Base(path))
+	require.NoError(t, err)
+	_, err = part.Write(contents)
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/api/assets", &body)
+	require.NoError(t, err)
+	request.Header.Set("Authorization", "Bearer "+bearer)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	response, err := client.Do(request)
+	require.NoError(t, err)
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusCreated {
+		responseBody, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
+		require.Equal(t, http.StatusCreated, response.StatusCode, "upload %s: %q", path, responseBody)
+	}
+	var uploaded struct {
+		ID     string `json:"id"`
+		Status string `json:"status"`
+	}
+	require.NoError(t, json.NewDecoder(response.Body).Decode(&uploaded))
+	assert.Equal(t, "created", uploaded.Status)
+	id, err := uuid.Parse(uploaded.ID)
+	require.NoError(t, err)
+	return id
+}
+
+func contractAwaitMedia(t *testing.T, load func() (MediaResponse, error)) MediaResponse {
+	t.Helper()
+	deadline := time.Now().Add(90 * time.Second)
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+	var lastErr error
+	for {
+		response, err := load()
+		if err == nil {
+			return response
+		}
+		lastErr = err
+		if time.Now().After(deadline) {
+			require.NoError(t, lastErr, "media did not become available before the contract deadline")
+		}
+		<-ticker.C
+	}
+}
+
+func contractReadMedia(t *testing.T, response MediaResponse) []byte {
+	t.Helper()
+	contents, err := io.ReadAll(response.Body)
+	require.NoError(t, err)
+	require.NoError(t, response.Body.Close())
+	return contents
 }
 
 func contractPOST(

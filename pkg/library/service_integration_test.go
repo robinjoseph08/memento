@@ -609,6 +609,35 @@ func TestVideoAndOriginalRoutesStreamSafeHeadersWithBoundedMemory(t *testing.T) 
 		assert.Equal(t, immich.MediaRequest{Range: "bytes=0-262143", IfRange: `"video"`}, fixture.thumbnail.requests[0])
 	})
 
+	t.Run("If-Range mismatch returns full video", func(t *testing.T) {
+		fixture := newLibraryFixture(t)
+		_, err := fixture.db.NewRaw(`
+			UPDATE media_items SET media_type = 'video' WHERE id = ?;
+			UPDATE published_media_placements SET media_type = 'video' WHERE media_item_id = ?
+		`, fixture.media[0], fixture.media[0]).Exec(context.Background())
+		require.NoError(t, err)
+		fixture.thumbnail.response = immich.MediaResponse{
+			Body: io.NopCloser(strings.NewReader("complete-video")), StatusCode: http.StatusOK,
+			ContentType: "video/mp4", ContentLength: int64(len("complete-video")), AcceptRanges: "bytes", ETag: `"current"`,
+		}
+		e := echo.New()
+		e.HTTPErrorHandler = errcodes.NewHandler().Handle
+		RegisterRoutes(e, NewHandler(fixture.service, &routeAuthorizer{actor: fixture.actor}))
+		request := httptest.NewRequestWithContext(context.Background(), http.MethodGet,
+			"/api/me/media/"+fixture.media[0].String()+"/video", nil)
+		request.AddCookie(&http.Cookie{Name: setup.CookieName, Value: "opaque"})
+		request.Header.Set("Range", "bytes=0-3")
+		request.Header.Set("If-Range", `"stale"`)
+		response := httptest.NewRecorder()
+
+		e.ServeHTTP(response, request)
+
+		assert.Equal(t, http.StatusOK, response.Code)
+		assert.Equal(t, "complete-video", response.Body.String())
+		assert.Empty(t, response.Header().Get("Content-Range"))
+		assert.Equal(t, immich.MediaRequest{Range: "bytes=0-3", IfRange: `"stale"`}, fixture.thumbnail.requests[0])
+	})
+
 	t.Run("unchanged original", func(t *testing.T) {
 		fixture := newLibraryFixture(t)
 		original := []byte{0, 1, 2, 0xff, 'E', 'X', 'I', 'F'}
@@ -640,11 +669,12 @@ func TestVideoAndOriginalRoutesStreamSafeHeadersWithBoundedMemory(t *testing.T) 
 func TestConditionalAndFailedMediaStreamsRemainPrivateAndSafe(t *testing.T) {
 	for _, test := range []struct {
 		name       string
+		request    immich.MediaRequest
 		status     int
 		rangeValue string
 	}{
-		{name: "not modified", status: http.StatusNotModified},
-		{name: "unsatisfied range", status: http.StatusRequestedRangeNotSatisfiable, rangeValue: "bytes */12"},
+		{name: "not modified", request: immich.MediaRequest{IfNoneMatch: `"current"`}, status: http.StatusNotModified},
+		{name: "unsatisfied range", request: immich.MediaRequest{Range: "bytes=99-100"}, status: http.StatusRequestedRangeNotSatisfiable, rangeValue: "bytes */12"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			fixture := newLibraryFixture(t)
@@ -658,6 +688,8 @@ func TestConditionalAndFailedMediaStreamsRemainPrivateAndSafe(t *testing.T) {
 			request := httptest.NewRequestWithContext(context.Background(), http.MethodGet,
 				"/api/me/media/"+fixture.media[0].String()+"/original", nil)
 			request.AddCookie(&http.Cookie{Name: setup.CookieName, Value: "opaque"})
+			request.Header.Set("Range", test.request.Range)
+			request.Header.Set("If-None-Match", test.request.IfNoneMatch)
 			response := httptest.NewRecorder()
 
 			e.ServeHTTP(response, request)
@@ -666,8 +698,38 @@ func TestConditionalAndFailedMediaStreamsRemainPrivateAndSafe(t *testing.T) {
 			assert.Empty(t, response.Body.String())
 			assert.Equal(t, "private, no-cache", response.Header().Get(echo.HeaderCacheControl))
 			assert.Equal(t, test.rangeValue, response.Header().Get("Content-Range"))
+			assert.Equal(t, test.request, fixture.thumbnail.requests[0])
 		})
 	}
+
+	t.Run("interrupted original is observable without leaking the upstream error", func(t *testing.T) {
+		fixture := newLibraryFixture(t)
+		fixture.thumbnail.response = immich.MediaResponse{
+			Body: failingThumbnailBody{}, StatusCode: http.StatusOK,
+			ContentType: "application/octet-stream", ContentLength: 64,
+		}
+		e := echo.New()
+		e.HTTPErrorHandler = errcodes.NewHandler().Handle
+		RegisterRoutes(e, NewHandler(fixture.service, &routeAuthorizer{actor: fixture.actor}))
+		server := httptest.NewServer(e)
+		defer server.Close()
+		request, err := http.NewRequestWithContext(context.Background(), http.MethodGet,
+			server.URL+"/api/me/media/"+fixture.media[0].String()+"/original", nil)
+		require.NoError(t, err)
+		request.AddCookie(&http.Cookie{Name: setup.CookieName, Value: "opaque"})
+
+		response, err := server.Client().Do(request)
+		require.NoError(t, err)
+		contents, readErr := io.ReadAll(response.Body)
+		require.NoError(t, response.Body.Close())
+
+		assert.Equal(t, http.StatusOK, response.StatusCode)
+		assert.Equal(t, "private, no-cache", response.Header.Get(echo.HeaderCacheControl))
+		assert.Equal(t, "partial", string(contents))
+		require.Error(t, readErr, "the route-level HTTP response exposes the interrupted stream")
+		assert.NotContains(t, readErr.Error(), "immich.internal")
+		assert.NotContains(t, string(contents), "secret")
+	})
 }
 
 func TestMediaRepresentationsRevalidateEveryAuthorizationBoundaryBeforeImmich(t *testing.T) {

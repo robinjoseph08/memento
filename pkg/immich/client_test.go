@@ -779,17 +779,21 @@ func TestVideoAndOriginalStreamRangesValidatorsAndUnchangedBytes(t *testing.T) {
 		switch r.URL.Path {
 		case "/api/assets/" + assetID.String() + "/video/playback":
 			assert.Equal(t, "bytes=4-7", r.Header.Get("Range"))
-			assert.Equal(t, `"video-v1"`, r.Header.Get("If-Range"))
 			w.Header().Set("Content-Type", "video/mp4")
-			w.Header().Set("Content-Range", "bytes 4-7/20")
 			w.Header().Set("Accept-Ranges", "bytes")
 			w.Header().Set("ETag", `"video-v1"`)
 			w.Header().Set("Last-Modified", "Mon, 27 Jul 2026 12:00:00 GMT")
 			w.Header().Set("X-Immich-Path", "/private/video.mp4")
+			if r.Header.Get("If-Range") != `"video-v1"` {
+				_, _ = w.Write([]byte("0123456789abcdefghij"))
+				return
+			}
+			w.Header().Set("Content-Range", "bytes 4-7/20")
 			w.WriteHeader(http.StatusPartialContent)
 			_, _ = w.Write([]byte("5678"))
 		case "/api/assets/" + assetID.String() + "/original":
 			assert.Equal(t, `"original-v1"`, r.Header.Get("If-None-Match"))
+			assert.Equal(t, "identity", r.Header.Get("Accept-Encoding"))
 			w.Header().Set("Content-Type", "image/jpeg")
 			w.Header().Set("Content-Length", strconv.Itoa(len(original)))
 			_, _ = w.Write(original)
@@ -812,6 +816,15 @@ func TestVideoAndOriginalStreamRangesValidatorsAndUnchangedBytes(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, video.Body.Close())
 	assert.Equal(t, []byte("5678"), videoBytes)
+
+	fullVideo, err := client.Video(context.Background(), assetID, MediaRequest{Range: "bytes=4-7", IfRange: `"stale"`})
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, fullVideo.StatusCode)
+	assert.Empty(t, fullVideo.ContentRange)
+	fullVideoBytes, err := io.ReadAll(fullVideo.Body)
+	require.NoError(t, err)
+	require.NoError(t, fullVideo.Body.Close())
+	assert.Equal(t, []byte("0123456789abcdefghij"), fullVideoBytes, "an If-Range mismatch falls back to the complete representation")
 
 	download, err := client.Original(context.Background(), assetID, MediaRequest{IfNoneMatch: `"original-v1"`})
 	require.NoError(t, err)
@@ -852,14 +865,17 @@ func TestMediaConditionalAndUnsatisfiedRangesReturnSafeEmptyResponses(t *testing
 	assetID := uuid.New()
 	for _, test := range []struct {
 		name         string
+		request      MediaRequest
 		status       int
 		contentRange string
 	}{
-		{name: "not modified", status: http.StatusNotModified},
-		{name: "range unsatisfied", status: http.StatusRequestedRangeNotSatisfiable, contentRange: "bytes */12"},
+		{name: "not modified", request: MediaRequest{IfNoneMatch: `"current"`}, status: http.StatusNotModified},
+		{name: "range unsatisfied", request: MediaRequest{Range: "bytes=99-100"}, status: http.StatusRequestedRangeNotSatisfiable, contentRange: "bytes */12"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				assert.Equal(t, test.request.Range, r.Header.Get("Range"))
+				assert.Equal(t, test.request.IfNoneMatch, r.Header.Get("If-None-Match"))
 				w.Header().Set("ETag", `"current"`)
 				if test.contentRange != "" {
 					w.Header().Set("Content-Range", test.contentRange)
@@ -870,7 +886,7 @@ func TestMediaConditionalAndUnsatisfiedRangesReturnSafeEmptyResponses(t *testing
 			defer server.Close()
 			client, err := New(clientConfig(server.URL), server.Client())
 			require.NoError(t, err)
-			response, err := client.Original(context.Background(), assetID, MediaRequest{Range: "bytes=99-100"})
+			response, err := client.Original(context.Background(), assetID, test.request)
 			require.NoError(t, err)
 			assert.Equal(t, test.status, response.StatusCode)
 			assert.Equal(t, int64(-1), response.ContentLength)
@@ -897,6 +913,7 @@ func TestMediaRepresentationsRejectInvalidEntryPointsStatusesAndHeaders(t *testi
 		{name: "dependency unavailable", status: http.StatusServiceUnavailable, want: "Immich validation failed"},
 		{name: "video with image body", status: http.StatusOK, headers: http.Header{"Content-Type": {"image/jpeg"}}, want: "Immich returned an invalid response"},
 		{name: "original SVG", status: http.StatusOK, original: true, headers: http.Header{"Content-Type": {"image/svg+xml"}}, want: "Immich returned an invalid response"},
+		{name: "encoded original", status: http.StatusOK, original: true, headers: http.Header{"Content-Type": {"image/jpeg"}, "Content-Encoding": {"gzip"}}, want: "Immich returned an invalid response"},
 		{name: "partial without content range", status: http.StatusPartialContent, headers: http.Header{"Content-Type": {"video/mp4"}}, want: "Immich returned an invalid response"},
 		{name: "partial with reversed range", status: http.StatusPartialContent, headers: http.Header{"Content-Type": {"video/mp4"}, "Content-Range": {"bytes 7-4/20"}}, want: "Immich returned an invalid response"},
 		{name: "partial with mismatched length", status: http.StatusPartialContent, headers: http.Header{"Content-Type": {"video/mp4"}, "Content-Range": {"bytes 4-7/20"}, "Content-Length": {"3"}}, want: "Immich returned an invalid response"},
