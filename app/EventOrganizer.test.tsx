@@ -1295,7 +1295,11 @@ test("publishes ready work and previews Recipient output read only", async () =>
   stubOrganizerAPI(ready);
   renderOrganizer();
   fireEvent.click(
-    await screen.findByRole("button", { name: /Family weekend/ }),
+    await screen.findByRole(
+      "button",
+      { name: /Family weekend/ },
+      contentionWait,
+    ),
   );
 
   const publish = await screen.findByRole("button", { name: "Publish Event" });
