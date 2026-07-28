@@ -4,7 +4,7 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { apiJSON, apiNoContent } from "./api";
 import type {
@@ -140,20 +140,73 @@ function MediaViewer({
   publicComputer: boolean;
   onClose: () => void;
 }) {
+  const dialogRef = useRef<HTMLDialogElement>(null);
+
   useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    const viewerDialog: HTMLDialogElement = dialog;
+
+    function containFocus(event: KeyboardEvent) {
+      if (event.key !== "Tab") return;
+      const focusable = viewerDialog.querySelectorAll<HTMLElement>(
+        'a[href], button:not([disabled]), video[controls], [tabindex]:not([tabindex="-1"])',
+      );
+      const first = focusable.item(0);
+      const last = focusable.item(focusable.length - 1);
+      if (!first || !last) return;
+
+      const active = document.activeElement;
+      if (
+        event.shiftKey &&
+        (active === first || !viewerDialog.contains(active))
+      ) {
+        event.preventDefault();
+        last.focus();
+      } else if (
+        !event.shiftKey &&
+        (active === last || !viewerDialog.contains(active))
+      ) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+
+    document.addEventListener("keydown", containFocus, true);
+    if (typeof viewerDialog.showModal === "function") {
+      if (!viewerDialog.open) viewerDialog.showModal();
+      return () => document.removeEventListener("keydown", containFocus, true);
+    }
+
+    if (!viewerDialog.open) viewerDialog.setAttribute("open", "");
     function closeOnEscape(event: KeyboardEvent) {
-      if (event.key === "Escape") onClose();
+      if (event.key === "Escape") {
+        viewerDialog.dispatchEvent(new Event("close"));
+      }
     }
     document.addEventListener("keydown", closeOnEscape);
-    return () => document.removeEventListener("keydown", closeOnEscape);
-  }, [onClose]);
+    return () => {
+      document.removeEventListener("keydown", containFocus, true);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, []);
+
+  function closeViewer() {
+    const dialog = dialogRef.current;
+    if (dialog && typeof dialog.close === "function") {
+      dialog.close();
+    } else {
+      onClose();
+    }
+  }
 
   return (
-    <div
+    <dialog
       aria-label="Media viewer"
       aria-modal="true"
       className="media-viewer"
-      role="dialog"
+      onClose={onClose}
+      ref={dialogRef}
     >
       <div className="viewer-media">
         {media.media_type === "video" ? (
@@ -170,7 +223,7 @@ function MediaViewer({
         )}
       </div>
       <aside className="viewer-details">
-        <button autoFocus onClick={onClose} type="button">
+        <button autoFocus onClick={closeViewer} type="button">
           Close viewer
         </button>
         <h2>{media.media_type === "video" ? "Video" : "Photo"}</h2>
@@ -193,7 +246,7 @@ function MediaViewer({
           Download original
         </a>
       </aside>
-    </div>
+    </dialog>
   );
 }
 
@@ -210,6 +263,7 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
   const [destination, setDestination] = useState<Destination>("photos");
   const [openedEvent, setOpenedEvent] = useState<EventSummary>();
   const [openedMedia, setOpenedMedia] = useState<Media>();
+  const mediaOpener = useRef<HTMLElement | null>(null);
   const endpoint = destination === "favorites" ? "favorites" : "photos";
   const photos = useInfiniteQuery({
     queryKey: ["recipient-library", session.csrf_token, endpoint],
@@ -280,6 +334,22 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
     if (isNew) seen.mutate(summary.publication_id);
   }
 
+  function openMedia(item: Media) {
+    mediaOpener.current =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    setOpenedMedia(item);
+  }
+
+  function closeMedia() {
+    const opener = mediaOpener.current;
+    setOpenedMedia(undefined);
+    requestAnimationFrame(() => {
+      if (opener?.isConnected) opener.focus();
+    });
+  }
+
   return (
     <section aria-label="Recipient library" className="recipient-library">
       <nav aria-label="Library navigation" className="library-rail">
@@ -323,7 +393,7 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
               ) : null}
             </header>
             <LibraryError error={event.error} />
-            <Gallery media={eventMedia} onOpen={setOpenedMedia} />
+            <Gallery media={eventMedia} onOpen={openMedia} />
             {event.hasNextPage ? (
               <button
                 disabled={event.isFetchingNextPage}
@@ -417,7 +487,7 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
                         media={media.filter(
                           (item) => mediaLabel(item) === date,
                         )}
-                        onOpen={setOpenedMedia}
+                        onOpen={openMedia}
                       />
                     </section>
                   ))}
@@ -448,7 +518,7 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
       {openedMedia ? (
         <MediaViewer
           media={openedMedia}
-          onClose={() => setOpenedMedia(undefined)}
+          onClose={closeMedia}
           publicComputer={session.session_type === "public"}
         />
       ) : null}

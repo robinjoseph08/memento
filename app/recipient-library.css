@@ -117,6 +117,13 @@
   z-index: 50;
   inset: 0;
   display: grid;
+  width: 100%;
+  max-width: none;
+  height: 100%;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
   grid-template-columns: minmax(0, 1fr) minmax(16rem, 22rem);
   background: rgb(2 6 23 / 98%);
 }

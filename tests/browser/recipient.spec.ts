@@ -143,20 +143,46 @@ test("@desktop Recipient lands on Photos and sees only filtered Event totals", a
   await page.getByRole("button", { name: "Load more photos" }).click();
   await expect(page.getByAltText("Video 2 from July 2026")).toBeVisible();
   await expect(page.getByAltText("Photo 1 from July 2026")).toBeVisible();
-  await page
-    .getByRole("button", { name: "Open Photo 1 from July 2026" })
-    .click();
-  await expect(
-    page.getByRole("dialog", { name: "Media viewer" }),
-  ).toBeVisible();
+  const opener = page.getByRole("button", {
+    name: "Open Photo 1 from July 2026",
+  });
+  await opener.click();
+  const viewer = page.getByRole("dialog", { name: "Media viewer" });
+  const closeViewer = page.getByRole("button", { name: "Close viewer" });
+  const downloadOriginal = page.getByRole("link", {
+    name: "Download original",
+  });
+  await expect(viewer).toBeVisible();
+  await expect(viewer).toHaveAttribute("aria-modal", "true");
+  await expect(closeViewer).toBeFocused();
   await expect(page.getByAltText("Selected photo preview")).toHaveAttribute(
     "src",
     media.preview_url,
   );
-  await expect(
-    page.getByRole("link", { name: "Download original" }),
-  ).toHaveAttribute("href", media.original_url);
-  await page.getByRole("button", { name: "Close viewer" }).click();
+  await expect(downloadOriginal).toHaveAttribute("href", media.original_url);
+
+  await page
+    .locator(".library-rail")
+    .getByRole("button", { name: "Events" })
+    .evaluate((button: HTMLButtonElement) => button.focus());
+  await expect(closeViewer).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(downloadOriginal).toBeFocused();
+  for (const key of ["Tab", "Tab", "Shift+Tab", "Shift+Tab"]) {
+    await page.keyboard.press(key);
+    const focus = await viewer.evaluate((dialog) => ({
+      inside: dialog.contains(document.activeElement),
+      active:
+        document.activeElement?.getAttribute("aria-label") ??
+        document.activeElement?.tagName ??
+        "none",
+    }));
+    expect(focus.inside, `${key} focused ${focus.active}`).toBe(true);
+  }
+
+  await closeViewer.click();
+  await expect(viewer).toBeHidden();
+  await expect(opener).toBeFocused();
 
   await page
     .locator(".library-rail")
