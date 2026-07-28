@@ -105,6 +105,18 @@ func snapshotWithdrawalState(t *testing.T, fixture publicationFixture, tables []
 	return state
 }
 
+func snapshotWithdrawalRows(t *testing.T, fixture publicationFixture, query string, args ...any) string {
+	t.Helper()
+	var serialized string
+	require.NoError(t, fixture.db.NewRaw(`
+		SELECT COALESCE(
+			jsonb_agg(to_jsonb(row_value) ORDER BY to_jsonb(row_value)::text),
+			'[]'::jsonb
+		)::text FROM (`+query+`) AS row_value
+	`, args...).Scan(context.Background(), &serialized))
+	return serialized
+}
+
 func reviewForFreshPublication(t *testing.T, fixture publicationFixture, priorPublicationID string, reviews []int) {
 	t.Helper()
 	ctx := context.Background()
@@ -163,8 +175,37 @@ func TestWithdrawalImmediatelyDeniesOnlyThePublishedTargetAndPreservesHistory(t 
 			require.Equal(t, http.StatusOK, draftRequest(recipientHTTP, http.MethodGet, openedPath, "").Code)
 			_, err = fixture.db.NewRaw(`INSERT INTO favorites (recipient_person_id, media_item_id) VALUES (?, ?)`, fixture.people["shared"], fixture.media[0]).Exec(ctx)
 			require.NoError(t, err)
-			var outboxBefore int
-			require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM outbox_events`).Scan(ctx, &outboxBefore))
+			_, err = fixture.db.NewRaw(`
+				INSERT INTO outbox_events (
+					kind, aggregate_kind, aggregate_id, aggregate_version, payload, available_at, created_at
+				) SELECT kind, aggregate_kind, aggregate_id, 99, payload, available_at, created_at
+				  FROM outbox_events WHERE aggregate_id = ?;
+				INSERT INTO outbox_events (
+					kind, aggregate_kind, aggregate_id, aggregate_version, payload, available_at, created_at
+				) VALUES ('unrelated_delivery', 'test', ?, 1, '{}'::jsonb, now(), now());
+				INSERT INTO jobs (kind, payload) VALUES
+					('publication_committed', ?::jsonb),
+					('unrelated_job', '{}'::jsonb)
+			`, fixture.event.String(), uuid.NewString(), fmt.Sprintf(
+				`{"event_id":%q,"publication_id":%q}`,
+				fixture.event.String(), publication.ID,
+			)).Exec(ctx)
+			require.NoError(t, err)
+
+			preservedHistoryTables := []string{
+				"publications", "published_event_revisions", "published_moments",
+				"published_media_placements", "audience_entries",
+				"current_published_placements", "favorites",
+			}
+			preservedHistoryBefore := snapshotWithdrawalState(t, fixture, preservedHistoryTables)
+			var priorAuditMaxID int64
+			require.NoError(t, fixture.db.NewRaw(`SELECT COALESCE(max(id), 0) FROM publication_audit_events`).Scan(ctx, &priorAuditMaxID))
+			priorAuditBefore := snapshotWithdrawalRows(t, fixture,
+				`SELECT * FROM publication_audit_events WHERE id <= ?`, priorAuditMaxID)
+			var outboxBefore, jobsBefore int
+			require.NoError(t, fixture.db.NewRaw(`SELECT
+				(SELECT count(*) FROM outbox_events), (SELECT count(*) FROM jobs)
+			`).Scan(ctx, &outboxBefore, &jobsBefore))
 
 			withdrawal, err := fixture.service.Withdraw(ctx, fixture.actor, WithdrawRequest{
 				TargetKind: test.kind, TargetID: test.target(fixture).String(), Reason: "Requested by the family",
@@ -192,21 +233,47 @@ func TestWithdrawalImmediatelyDeniesOnlyThePublishedTargetAndPreservesHistory(t 
 			assert.Equal(t, guessedResponse.Code, openedResponse.Code, "withdrawn and guessed routes must be indistinguishable")
 			assert.Equal(t, guessedResponse.Body.String(), openedResponse.Body.String())
 
-			var incomplete, snapshots, publications, audienceEntries, favorites, outboxAfter, pendingOutbox int
+			assert.Equal(t, preservedHistoryBefore,
+				snapshotWithdrawalState(t, fixture, preservedHistoryTables),
+				"Withdrawal must preserve immutable Publication history, current placements, and Favorites while Recipient projections change")
+			assert.Equal(t, priorAuditBefore, snapshotWithdrawalRows(t, fixture,
+				`SELECT * FROM publication_audit_events WHERE id <= ?`, priorAuditMaxID),
+				"Withdrawal must append to rather than alter prior audit history")
+
+			var incomplete, snapshots int
 			require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM draft_moments WHERE event_id = ? AND NOT audience_complete`, fixture.event).Scan(ctx, &incomplete))
 			require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM current_audience_snapshots AS current JOIN draft_moments AS moment ON moment.id = current.target_id WHERE current.target_kind = 'moment' AND moment.event_id = ?`, fixture.event).Scan(ctx, &snapshots))
-			require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM publications WHERE event_id = ?`, fixture.event).Scan(ctx, &publications))
-			require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM audience_entries AS audience JOIN published_moments AS moment ON moment.id = audience.published_moment_id WHERE moment.publication_id = ?`, publication.ID).Scan(ctx, &audienceEntries))
-			require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM favorites WHERE recipient_person_id = ? AND media_item_id = ?`, fixture.people["shared"], fixture.media[0]).Scan(ctx, &favorites))
-			require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM outbox_events`).Scan(ctx, &outboxAfter))
-			require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM outbox_events WHERE delivered_at IS NULL`).Scan(ctx, &pendingOutbox))
 			assert.Equal(t, test.invalidatedReview, incomplete)
 			assert.Equal(t, len(fixture.moments)-test.invalidatedReview, snapshots)
-			assert.Equal(t, 1, publications)
-			assert.Equal(t, 3, audienceEntries)
-			assert.Equal(t, 1, favorites)
-			assert.Equal(t, outboxBefore, outboxAfter, "Withdrawal must preserve optional delivery history")
-			assert.Zero(t, pendingOutbox, "Withdrawal must retire pending optional delivery")
+
+			var outboxAfter, jobsAfter, deliverableOutbox, queuedPublicationJobs int
+			var failedPublicationJobs, unrelatedOutbox, unrelatedJobs int
+			require.NoError(t, fixture.db.NewRaw(`SELECT
+				(SELECT count(*) FROM outbox_events),
+				(SELECT count(*) FROM jobs),
+				(SELECT count(*) FROM outbox_events
+				 WHERE kind = 'publication_committed' AND aggregate_kind = 'event_publication'
+				   AND aggregate_id = ? AND delivered_at IS NULL),
+				(SELECT count(*) FROM jobs
+				 WHERE kind = 'publication_committed' AND payload->>'event_id' = ?
+				   AND status IN ('pending', 'running')),
+				(SELECT count(*) FROM jobs
+				 WHERE kind = 'publication_committed' AND payload->>'event_id' = ?
+				   AND status = 'failed' AND last_safe_error = 'publication_withdrawn'),
+				(SELECT count(*) FROM outbox_events
+				 WHERE kind = 'unrelated_delivery' AND delivered_at IS NULL),
+				(SELECT count(*) FROM jobs
+				 WHERE kind = 'unrelated_job' AND status = 'pending')
+			`, fixture.event.String(), fixture.event.String(), fixture.event.String()).Scan(ctx,
+				&outboxAfter, &jobsAfter, &deliverableOutbox, &queuedPublicationJobs,
+				&failedPublicationJobs, &unrelatedOutbox, &unrelatedJobs))
+			assert.Equal(t, outboxBefore, outboxAfter, "Withdrawal must not create or erase outbox history")
+			assert.Equal(t, jobsBefore, jobsAfter, "Withdrawal must not enqueue a direct job")
+			assert.Zero(t, deliverableOutbox, "every queued Publication outbox record for the target must be retired")
+			assert.Zero(t, queuedPublicationJobs, "every directly queued Publication job for the target must be retired")
+			assert.Equal(t, 1, failedPublicationJobs)
+			assert.Equal(t, 1, unrelatedOutbox, "unrelated outbox delivery must remain claimable")
+			assert.Equal(t, 1, unrelatedJobs, "unrelated queued work must remain pending")
 			for _, table := range []string{"current_audience_entitlements", "current_recipient_event_covers", "published_search_documents", "new_for_you_entries", "publication_activity_items"} {
 				var count int
 				require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM `+table).Scan(ctx, &count), table)
