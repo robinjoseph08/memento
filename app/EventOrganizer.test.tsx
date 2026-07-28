@@ -19,6 +19,7 @@ const csrfToken = "c".repeat(64);
 const eventID = "11111111-1111-4111-8111-111111111111";
 const momentOneID = "22222222-2222-4222-8222-222222222222";
 const momentTwoID = "33333333-3333-4333-8333-333333333333";
+const deletedMomentID = "44444444-4444-4444-8444-444444444444";
 const contentionWait = { timeout: 5_000 };
 
 function media(id: string, mediaType: string): MediaItem {
@@ -458,7 +459,33 @@ test("shows the resulting Event with highlighted Staged net changes", async () =
         count: 2,
         media_item_ids: [items.c.id, items.loose.id],
         moment_ids: [],
+        removed_media: [
+          {
+            id: items.c.id,
+            media_type: items.c.media_type,
+            local_date_time: items.c.local_date_time,
+          },
+          {
+            id: items.loose.id,
+            media_type: items.loose.media_type,
+            local_date_time: items.loose.local_date_time,
+          },
+        ],
         detail: "Media removed",
+      },
+      {
+        kind: "moment_structure",
+        count: 1,
+        media_item_ids: [],
+        moment_ids: [deletedMomentID],
+        deleted_moments: [
+          {
+            id: deletedMomentID,
+            title: "Sunday breakfast",
+            proposed_day: "2026-05-03",
+          },
+        ],
+        detail: "Moment structure or ordering changed",
       },
       {
         kind: "metadata",
@@ -491,8 +518,16 @@ test("shows the resulting Event with highlighted Staged net changes", async () =
   expect(review).toHaveTextContent("complete resulting Event");
   expect(review).toHaveTextContent("Additions1");
   expect(review).toHaveTextContent("Removals2");
+  expect(review).toHaveTextContent("Moment structure1");
   expect(review).toHaveTextContent("Metadata edits1");
   expect(review).toHaveTextContent("Access changes1");
+  expect(review).toHaveTextContent("Removed from the resulting Event");
+  expect(review).toHaveTextContent("Undated third photo");
+  expect(review).toHaveTextContent(items.c.id);
+  expect(review).toHaveTextContent("Deleted Moment");
+  expect(review).toHaveTextContent("Sunday breakfast");
+  expect(review).toHaveTextContent(deletedMomentID);
+  expect(review.querySelectorAll(".staged-removal")).toHaveLength(3);
   expect(document.querySelectorAll(".media-row.staged-addition")).toHaveLength(
     1,
   );

@@ -13,13 +13,29 @@ import (
 	"github.com/uptrace/bun"
 )
 
+// RemovedMedia identifies a published Media item absent from the resulting Event.
+type RemovedMedia struct {
+	ID            string  `json:"id"`
+	MediaType     string  `json:"media_type"`
+	LocalDateTime *string `json:"local_date_time"`
+}
+
+// DeletedMoment identifies published structure absent from the resulting Event.
+type DeletedMoment struct {
+	ID          string `json:"id"`
+	Title       string `json:"title"`
+	ProposedDay string `json:"proposed_day"`
+}
+
 // Change is one category in the coalesced difference from the current Publication.
 type Change struct {
-	Kind         string   `json:"kind"`
-	Count        int      `json:"count"`
-	MediaItemIDs []string `json:"media_item_ids"`
-	MomentIDs    []string `json:"moment_ids"`
-	Detail       string   `json:"detail"`
+	Kind           string          `json:"kind"`
+	Count          int             `json:"count"`
+	MediaItemIDs   []string        `json:"media_item_ids"`
+	MomentIDs      []string        `json:"moment_ids"`
+	RemovedMedia   []RemovedMedia  `json:"removed_media,omitempty"`
+	DeletedMoments []DeletedMoment `json:"deleted_moments,omitempty"`
+	Detail         string          `json:"detail"`
 }
 
 // Update is the one private net update for a published Event.
@@ -134,6 +150,20 @@ func summarizeStagedUpdate(ctx context.Context, db bun.IDB, eventID, publication
 			removals = append(removals, placement.MediaItemID.String())
 		}
 	}
+	var removedMedia []RemovedMedia
+	if err := db.NewRaw(`
+		SELECT placement.media_item_id AS id, placement.media_type, placement.local_date_time
+		FROM published_media_placements AS placement
+		JOIN published_moments AS moment ON moment.id = placement.published_moment_id
+		WHERE moment.publication_id = ?
+		  AND NOT EXISTS (
+			SELECT 1 FROM draft_media_placements AS editable
+			WHERE editable.event_id = ? AND editable.media_item_id = placement.media_item_id
+		  )
+		ORDER BY moment.position, placement.position, placement.media_item_id
+	`, publicationID, eventID).Scan(ctx, &removedMedia); err != nil {
+		return nil, err
+	}
 
 	var eventMetadataChanged bool
 	if err := db.NewRaw(`
@@ -187,6 +217,19 @@ func summarizeStagedUpdate(ctx context.Context, db bun.IDB, eventID, publication
 	`, eventID, publicationID).Scan(ctx, &structureMoments); err != nil {
 		return nil, err
 	}
+	var deletedMoments []DeletedMoment
+	if err := db.NewRaw(`
+		SELECT published.draft_moment_id AS id, published.title, published.proposed_day::text AS proposed_day
+		FROM published_moments AS published
+		WHERE published.publication_id = ?
+		  AND NOT EXISTS (
+			SELECT 1 FROM draft_moments AS editable
+			WHERE editable.event_id = ? AND editable.id = published.draft_moment_id
+		  )
+		ORDER BY published.position, published.draft_moment_id
+	`, publicationID, eventID).Scan(ctx, &deletedMoments); err != nil {
+		return nil, err
+	}
 	var accessMoments []uuid.UUID
 	if err := db.NewRaw(`
 		SELECT moment.id
@@ -218,9 +261,14 @@ func summarizeStagedUpdate(ctx context.Context, db bun.IDB, eventID, publication
 
 	changes := make([]Change, 0, 6)
 	appendMediaChange := func(kind, detail string, ids []string) {
-		if len(ids) > 0 {
-			changes = append(changes, Change{Kind: kind, Count: len(ids), MediaItemIDs: ids, MomentIDs: []string{}, Detail: detail})
+		if len(ids) == 0 {
+			return
 		}
+		change := Change{Kind: kind, Count: len(ids), MediaItemIDs: ids, MomentIDs: []string{}, Detail: detail}
+		if kind == "removal" {
+			change.RemovedMedia = removedMedia
+		}
+		changes = append(changes, change)
 	}
 	appendMomentChange := func(kind, detail string, ids []uuid.UUID, extra int) {
 		if len(ids)+extra == 0 {
@@ -230,7 +278,11 @@ func summarizeStagedUpdate(ctx context.Context, db bun.IDB, eventID, publication
 		for _, id := range ids {
 			momentIDs = append(momentIDs, id.String())
 		}
-		changes = append(changes, Change{Kind: kind, Count: len(ids) + extra, MediaItemIDs: []string{}, MomentIDs: momentIDs, Detail: detail})
+		change := Change{Kind: kind, Count: len(ids) + extra, MediaItemIDs: []string{}, MomentIDs: momentIDs, Detail: detail}
+		if kind == "moment_structure" {
+			change.DeletedMoments = deletedMoments
+		}
+		changes = append(changes, change)
 	}
 	appendMediaChange("addition", "Media added", additions)
 	appendMediaChange("removal", "Media removed", removals)

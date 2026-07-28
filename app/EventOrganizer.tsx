@@ -21,7 +21,7 @@ type Pane = "work" | "organize" | "inspect";
 type SaveState = "saved" | "saving" | "unsaved" | "failed" | "conflict";
 type SaveAttempt = { event: DraftEvent; revision: number };
 
-function mediaLabel(item: MediaItem) {
+function mediaLabel(item: Pick<MediaItem, "media_type" | "local_date_time">) {
   if (!item.local_date_time) return `Undated ${item.media_type}`;
   const parsed = new Date(item.local_date_time);
   return Number.isNaN(parsed.valueOf())
@@ -153,12 +153,42 @@ const stagedLabels: Record<string, string> = {
 
 function StagedUpdateReview({ event }: { event: DraftEvent }) {
   if (!event.staged_update) return null;
+  const removedMedia = event.staged_update.changes.flatMap(
+    (change) => change.removed_media ?? [],
+  );
+  const deletedMoments = event.staged_update.changes.flatMap(
+    (change) => change.deleted_moments ?? [],
+  );
   return (
     <section aria-labelledby="staged-review-title" className="staged-review">
       <div>
         <p className="step-label">Private until Publication</p>
         <h4 id="staged-review-title">Staged update review</h4>
         <p>The organization below is the complete resulting Event.</p>
+        {removedMedia.length > 0 || deletedMoments.length > 0 ? (
+          <section
+            aria-labelledby="removed-items-title"
+            className="staged-removed"
+          >
+            <h5 id="removed-items-title">Removed from the resulting Event</h5>
+            <ul>
+              {removedMedia.map((item) => (
+                <li className="staged-removal" key={`media-${item.id}`}>
+                  <strong>Removed Media</strong>
+                  <span>{mediaLabel(item)}</span>
+                  <code>{item.id}</code>
+                </li>
+              ))}
+              {deletedMoments.map((moment) => (
+                <li className="staged-removal" key={`moment-${moment.id}`}>
+                  <strong>Deleted Moment</strong>
+                  <span>{moment.title || moment.proposed_day}</span>
+                  <code>{moment.id}</code>
+                </li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
       </div>
       <ul aria-label="Net change summary">
         {event.staged_update.changes.map((change) => (

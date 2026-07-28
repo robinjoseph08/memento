@@ -1582,7 +1582,7 @@ h1 {
   margin: 0;
 }
 
-.staged-review ul {
+.staged-review > ul {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr));
   gap: 0.5rem;
@@ -1591,17 +1591,48 @@ h1 {
   list-style: none;
 }
 
-.staged-review li {
+.staged-review > ul > li {
   display: grid;
   padding: 0.45rem;
   border-radius: 0.5rem;
   background: rgb(2 6 23 / 45%);
 }
 
-.staged-review li span {
+.staged-review > ul > li span {
   color: #7dd3fc;
   font-size: 1.1rem;
   font-weight: 700;
+}
+
+.staged-removed {
+  margin-top: 0.75rem;
+}
+
+.staged-removed h5 {
+  margin: 0;
+}
+
+.staged-removed ul {
+  display: grid;
+  gap: 0.45rem;
+  margin: 0.45rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.staged-removal {
+  display: grid;
+  gap: 0.15rem;
+  padding: 0.45rem;
+  border: 1px solid #fb7185;
+  border-radius: 0.5rem;
+  background: rgb(136 19 55 / 18%);
+}
+
+.staged-removal code {
+  overflow-wrap: anywhere;
+  color: #fda4af;
+  font-size: 0.72rem;
 }
 
 .move-toolbar,

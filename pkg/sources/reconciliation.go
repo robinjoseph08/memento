@@ -261,15 +261,18 @@ func (s *Service) applyValidatedSnapshot(
 		return 0, 0, 0, err
 	}
 	additions := len(addedAssetIDs)
+	metadataChangedMediaIDs := make([]uuid.UUID, 0)
 	for start := 0; start < len(assetIDs); start += 1000 {
 		end := min(start+1000, len(assetIDs))
 		batch := make([]immich.AssetSummary, 0, end-start)
 		for _, assetID := range assetIDs[start:end] {
 			batch = append(batch, snapshot.assets[assetID])
 		}
-		if err := upsertMediaItemBatch(ctx, tx, sourceAlbumID, batch, now); err != nil {
+		changedMediaIDs, err := upsertMediaItemBatch(ctx, tx, sourceAlbumID, batch, now)
+		if err != nil {
 			return 0, 0, 0, err
 		}
+		metadataChangedMediaIDs = append(metadataChangedMediaIDs, changedMediaIDs...)
 	}
 	if err := supersedeInvalidMediaRepairs(ctx, tx, now); err != nil {
 		return 0, 0, 0, err
@@ -316,6 +319,7 @@ func (s *Service) applyValidatedSnapshot(
 			UPDATE media_items AS media SET availability = 'source_missing', updated_at = ?
 			WHERE availability = 'current'
 			  AND NOT EXISTS (SELECT 1 FROM source_album_memberships WHERE media_item_id = media.id)
+			  AND NOT EXISTS (SELECT 1 FROM current_published_placements WHERE media_item_id = media.id)
 		`, now).Exec(ctx); err != nil {
 			return 0, 0, 0, err
 		}
@@ -347,7 +351,7 @@ func (s *Service) applyValidatedSnapshot(
 			return 0, 0, 0, err
 		}
 	}
-	if err := syncEditableEvents(ctx, tx, sourceAlbumID, addedMediaIDs, removedMediaIDs, now); err != nil {
+	if err := syncEditableEvents(ctx, tx, sourceAlbumID, addedMediaIDs, removedMediaIDs, metadataChangedMediaIDs, now); err != nil {
 		return 0, 0, 0, err
 	}
 
@@ -376,28 +380,77 @@ func syncEditableEvents(
 	ctx context.Context,
 	tx bun.Tx,
 	sourceAlbumID uuid.UUID,
-	addedMediaIDs, removedMediaIDs []uuid.UUID,
+	addedMediaIDs, removedMediaIDs, metadataChangedMediaIDs []uuid.UUID,
 	now time.Time,
 ) error {
-	if len(addedMediaIDs) == 0 && len(removedMediaIDs) == 0 {
+	if len(addedMediaIDs) == 0 && len(removedMediaIDs) == 0 && len(metadataChangedMediaIDs) == 0 {
 		return nil
 	}
-	var eventIDs []uuid.UUID
-	if err := tx.NewRaw(`
-		SELECT event.id
-		FROM event_sources AS source
-		JOIN events AS event ON event.id = source.event_id
-		WHERE source.source_album_id = ? AND event.lifecycle IN ('draft', 'published')
-		ORDER BY event.id
-	`, sourceAlbumID).Scan(ctx, &eventIDs); err != nil {
+	encodedMetadataIDs, err := json.Marshal(metadataChangedMediaIDs)
+	if err != nil {
 		return err
 	}
-	for _, eventID := range eventIDs {
+	type editableEvent struct {
+		ID           uuid.UUID `bun:"id"`
+		LinkedSource bool      `bun:"linked_source"`
+	}
+	var events []editableEvent
+	if err := tx.NewRaw(`
+		SELECT event.id,
+		       EXISTS (
+			   SELECT 1 FROM event_sources AS source
+			   WHERE source.event_id = event.id AND source.source_album_id = ?
+		       ) AS linked_source
+		FROM events AS event
+		WHERE event.lifecycle IN ('draft', 'published')
+		  AND (
+			EXISTS (
+				SELECT 1 FROM event_sources AS source
+				WHERE source.event_id = event.id AND source.source_album_id = ?
+			)
+			OR EXISTS (
+				SELECT 1 FROM draft_media_placements AS placement
+				JOIN jsonb_array_elements_text(?::jsonb) AS changed(id)
+				  ON changed.id::uuid = placement.media_item_id
+				WHERE placement.event_id = event.id
+			)
+		  )
+		ORDER BY event.id
+	`, sourceAlbumID, sourceAlbumID, string(encodedMetadataIDs)).Scan(ctx, &events); err != nil {
+		return err
+	}
+	for _, event := range events {
+		eventID := event.ID
 		var lockedEventID uuid.UUID
 		if err := tx.NewRaw(`SELECT id FROM events WHERE id = ? FOR UPDATE`, eventID).Scan(ctx, &lockedEventID); err != nil {
 			return err
 		}
 		changed := false
+		if len(metadataChangedMediaIDs) > 0 {
+			if err := tx.NewRaw(`
+				SELECT EXISTS (
+					SELECT 1 FROM draft_media_placements
+					WHERE event_id = ? AND media_item_id IN (?)
+				)
+			`, eventID, bun.List(metadataChangedMediaIDs)).Scan(ctx, &changed); err != nil {
+				return err
+			}
+		}
+		if !event.LinkedSource {
+			if !changed {
+				continue
+			}
+			if _, err := tx.NewRaw(`
+				UPDATE events SET version = version + 1, final_review_complete = false, updated_at = ?
+				WHERE id = ?
+			`, now, eventID).Exec(ctx); err != nil {
+				return err
+			}
+			if _, err := staging.Refresh(ctx, tx, lockedEventID, now); err != nil {
+				return err
+			}
+			continue
+		}
 		for _, mediaID := range addedMediaIDs {
 			var exists bool
 			if err := tx.NewRaw(`SELECT EXISTS (SELECT 1 FROM draft_media_placements WHERE event_id = ? AND media_item_id = ?)`, eventID, mediaID).Scan(ctx, &exists); err != nil {
@@ -543,19 +596,19 @@ type databaseMediaItem struct {
 	SourceFingerprint string    `json:"source_fingerprint"`
 }
 
-func upsertMediaItemBatch(ctx context.Context, tx bun.Tx, sourceAlbumID uuid.UUID, assets []immich.AssetSummary, now time.Time) error {
+func upsertMediaItemBatch(ctx context.Context, tx bun.Tx, sourceAlbumID uuid.UUID, assets []immich.AssetSummary, now time.Time) ([]uuid.UUID, error) {
 	if len(assets) == 0 {
-		return nil
+		return nil, nil
 	}
 	rows := make([]databaseMediaItem, 0, len(assets))
 	for _, asset := range assets {
 		portalID, err := uuid.NewRandom()
 		if err != nil {
-			return err
+			return nil, err
 		}
 		backingID, err := uuid.NewRandom()
 		if err != nil {
-			return err
+			return nil, err
 		}
 		fingerprint := fingerprintAsset(asset)
 		rows = append(rows, databaseMediaItem{
@@ -567,13 +620,24 @@ func upsertMediaItemBatch(ctx context.Context, tx bun.Tx, sourceAlbumID uuid.UUI
 	}
 	payload, err := json.Marshal(rows)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	incoming := `jsonb_to_recordset(?::jsonb) AS incoming(
 		portal_id uuid, backing_id uuid, immich_asset_id uuid, media_type text, width integer,
 		height integer, local_date_time text, capture_at text, checksum text,
 		filename text, original_path text, source_fingerprint text
 	)`
+	var metadataChangedMediaIDs []uuid.UUID
+	if err := tx.NewRaw(`
+		SELECT media.id
+		FROM `+incoming+`
+		JOIN media_items AS media ON media.immich_asset_id = incoming.immich_asset_id
+		WHERE (media.media_type, media.width, media.height, media.local_date_time)
+		      IS DISTINCT FROM (incoming.media_type, incoming.width, incoming.height, incoming.local_date_time)
+		ORDER BY media.id
+	`, string(payload)).Scan(ctx, &metadataChangedMediaIDs); err != nil {
+		return nil, err
+	}
 	if _, err := tx.NewRaw(`
 		INSERT INTO media_items (
 			id, immich_asset_id, media_type, width, height, local_date_time, first_seen_at, last_seen_at, updated_at
@@ -585,7 +649,7 @@ func upsertMediaItemBatch(ctx context.Context, tx bun.Tx, sourceAlbumID uuid.UUI
 			local_date_time = EXCLUDED.local_date_time, availability = 'current', last_seen_at = EXCLUDED.last_seen_at,
 			updated_at = EXCLUDED.updated_at
 	`, now, now, now, string(payload)).Exec(ctx); err != nil {
-		return err
+		return nil, err
 	}
 	if _, err := tx.NewRaw(`
 		INSERT INTO media_backings (
@@ -599,7 +663,7 @@ func upsertMediaItemBatch(ctx context.Context, tx bun.Tx, sourceAlbumID uuid.UUI
 			checksum = EXCLUDED.checksum, capture_at = EXCLUDED.capture_at,
 			filename = EXCLUDED.filename, original_path = EXCLUDED.original_path
 	`, now, string(payload)).Exec(ctx); err != nil {
-		return err
+		return nil, err
 	}
 	_, err = tx.NewRaw(`
 		INSERT INTO source_album_memberships (
@@ -613,7 +677,7 @@ func upsertMediaItemBatch(ctx context.Context, tx bun.Tx, sourceAlbumID uuid.UUI
 			last_seen_at = EXCLUDED.last_seen_at,
 			source_fingerprint = EXCLUDED.source_fingerprint
 	`, sourceAlbumID, now, now, string(payload)).Exec(ctx)
-	return err
+	return metadataChangedMediaIDs, err
 }
 
 func supersedeInvalidMediaRepairs(ctx context.Context, tx bun.Tx, now time.Time) error {

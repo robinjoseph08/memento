@@ -364,18 +364,22 @@ func TestReconciliationPersistsZonedUnzonedAndUnknownCaptureDates(t *testing.T) 
 	}
 }
 
-func TestReconciliationPersistsLaterSourceMetadata(t *testing.T) {
+func TestReconciliationCoalescesExistingMediaMetadataChangesIntoPublishedEvent(t *testing.T) {
 	asset := reconciliationAsset(uuid.New())
 	connector := &reconciliationConnector{summary: sourceAlbum(uuid.New(), "Initial name", 1)}
 	connector.pages = map[int]immich.AssetPage{1: {Items: []immich.AssetSummary{asset}}}
 	service, sourceAlbumID := newReconciliationService(t, connector)
 	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	fixture := publishSourceEventFixture(t, service, sourceAlbumID, asset.SourceID)
 
+	changed := asset
+	changedWidth := 1600
+	changed.Width = &changedWidth
+	changedLocalDateTime := "2026-01-02T11:00:00Z"
+	changed.LocalDateTime = &changedLocalDateTime
 	connector.summary.Name = "Later Immich name"
 	connector.summary.Description = "Later Immich description"
-	connector.summary.UpdatedAt = connector.summary.UpdatedAt.Add(time.Minute)
-	connector.summary.LastModifiedAssetTimestamp = &connector.summary.UpdatedAt
-	connector.albumCalls = 0
+	connector.setMembership(changed)
 	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
 
 	var name, description string
@@ -384,6 +388,19 @@ func TestReconciliationPersistsLaterSourceMetadata(t *testing.T) {
 	`, sourceAlbumID).Scan(context.Background(), &name, &description))
 	assert.Equal(t, "Later Immich name", name)
 	assert.Equal(t, "Later Immich description", description)
+	var version int64
+	var finalReview bool
+	require.NoError(t, service.db.NewRaw(`
+		SELECT version, final_review_complete FROM events WHERE id = ?
+	`, fixture.eventID).Scan(context.Background(), &version, &finalReview))
+	assert.EqualValues(t, 2, version)
+	assert.False(t, finalReview)
+	update, err := staging.Load(context.Background(), service.db, fixture.eventID)
+	require.NoError(t, err)
+	require.NotNil(t, update)
+	require.Len(t, update.Changes, 1)
+	assert.Equal(t, "metadata", update.Changes[0].Kind)
+	assert.Equal(t, []string{fixture.mediaID.String()}, update.Changes[0].MediaItemIDs)
 }
 
 func TestReconciliationIgnoresFailureAndInstabilityUntilTwoIdenticalValidatedRemovalPasses(t *testing.T) {
@@ -517,7 +534,7 @@ func TestPublishedSourceChangesCoalesceAcrossRetriesConcurrentEditsAndCancellati
 	assert.False(t, addedPlacement)
 }
 
-func TestPublishedSourceRemovalStaysPrivateWhileMediaRemainsAvailable(t *testing.T) {
+func TestFinalPublishedSourceRemovalStaysPrivateWhileMediaRemainsAvailable(t *testing.T) {
 	original := reconciliationAsset(uuid.New())
 	connector := &reconciliationConnector{summary: sourceAlbum(uuid.New(), "Removal source", 1)}
 	connector.pages = map[int]immich.AssetPage{1: {Items: []immich.AssetSummary{original}}}
@@ -525,32 +542,29 @@ func TestPublishedSourceRemovalStaysPrivateWhileMediaRemainsAvailable(t *testing
 	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
 	fixture := publishSourceEventFixture(t, service, sourceAlbumID, original.SourceID)
 
-	otherSourceID := uuid.New()
-	_, err := service.db.NewRaw(`
-		INSERT INTO source_albums (
-			id, immich_album_id, name, asset_count, source_created_at, source_updated_at,
-			disposition, first_seen_at, last_seen_at, source_fingerprint, next_reconciliation_at
-		) VALUES (?, ?, 'Other source', 1, ?, ?, 'drafted', ?, ?, decode(repeat('11', 32), 'hex'), ?);
-		INSERT INTO source_album_memberships (
-			source_album_id, immich_asset_id, media_item_id, first_seen_at, last_seen_at, source_fingerprint
-		) VALUES (?, ?, ?, ?, ?, decode(repeat('22', 32), 'hex'))
-	`, otherSourceID, uuid.New(), service.now(), service.now(), service.now(), service.now(), service.now(),
-		otherSourceID, original.SourceID, fixture.mediaID, service.now(), service.now()).Exec(context.Background())
-	require.NoError(t, err)
-
 	connector.setMembership()
 	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
 	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	var memberships int
 	var availability string
 	var editablePlacement, currentPlacement, historicalPlacement bool
+	require.NoError(t, service.db.NewRaw(`SELECT count(*) FROM source_album_memberships WHERE media_item_id = ?`, fixture.mediaID).Scan(context.Background(), &memberships))
 	require.NoError(t, service.db.NewRaw(`SELECT availability FROM media_items WHERE id = ?`, fixture.mediaID).Scan(context.Background(), &availability))
 	require.NoError(t, service.db.NewRaw(`SELECT EXISTS (SELECT 1 FROM draft_media_placements WHERE event_id = ? AND media_item_id = ?)`, fixture.eventID, fixture.mediaID).Scan(context.Background(), &editablePlacement))
 	require.NoError(t, service.db.NewRaw(`SELECT EXISTS (SELECT 1 FROM current_published_placements WHERE event_id = ? AND media_item_id = ?)`, fixture.eventID, fixture.mediaID).Scan(context.Background(), &currentPlacement))
 	require.NoError(t, service.db.NewRaw(`SELECT EXISTS (SELECT 1 FROM published_media_placements WHERE media_item_id = ?)`, fixture.mediaID).Scan(context.Background(), &historicalPlacement))
+	assert.Zero(t, memberships, "the test exercises removal from the final Source album membership")
 	assert.Equal(t, "current", availability)
 	assert.False(t, editablePlacement, "the source removal changes only the private editable result")
 	assert.True(t, currentPlacement, "Recipients retain the prior projection until Publication")
 	assert.True(t, historicalPlacement)
+	require.NoError(t, service.db.RunInTx(context.Background(), nil, func(ctx context.Context, tx bun.Tx) error {
+		if _, err := tx.NewRaw(`DELETE FROM draft_moments WHERE id = ?`, fixture.momentID).Exec(ctx); err != nil {
+			return err
+		}
+		_, err := staging.Refresh(ctx, tx, fixture.eventID, service.now().UTC())
+		return err
+	}))
 	update, err := staging.Load(context.Background(), service.db, fixture.eventID)
 	require.NoError(t, err)
 	require.NotNil(t, update)
@@ -559,9 +573,23 @@ func TestPublishedSourceRemovalStaysPrivateWhileMediaRemainsAvailable(t *testing
 		if change.Kind == "removal" {
 			removalFound = true
 			assert.Equal(t, []string{fixture.mediaID.String()}, change.MediaItemIDs)
+			require.Len(t, change.RemovedMedia, 1)
+			assert.Equal(t, fixture.mediaID.String(), change.RemovedMedia[0].ID)
+			assert.Equal(t, "image", change.RemovedMedia[0].MediaType)
 		}
 	}
 	assert.True(t, removalFound)
+	var deletedMomentFound bool
+	for _, change := range update.Changes {
+		if change.Kind == "moment_structure" {
+			deletedMomentFound = true
+			require.Len(t, change.DeletedMoments, 1)
+			assert.Equal(t, fixture.momentID.String(), change.DeletedMoments[0].ID)
+			assert.Equal(t, "Source Moment", change.DeletedMoments[0].Title)
+			assert.Equal(t, "2026-01-01", change.DeletedMoments[0].ProposedDay)
+		}
+	}
+	assert.True(t, deletedMomentFound)
 }
 
 func TestAddThenRemoveBeforePublicationLeavesNoEditableResidue(t *testing.T) {
