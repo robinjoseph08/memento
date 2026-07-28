@@ -252,6 +252,77 @@ func TestSearchUsesOnlyAuthorizedCurrentPublicationAndDiscoverableAttendance(t *
 	assertSafeEmptySearchResponse(t, withdrawnResult, "Withdrawal must remove every search observable")
 }
 
+func TestSearchCapsDistinctPeopleAfterStableDeduplication(t *testing.T) {
+	fixture := newPublicationFixture(t)
+	ctx := context.Background()
+	actor := createSearchSession(t, fixture)
+	circleID := uuid.New()
+
+	_, err := fixture.db.NewRaw(`
+		INSERT INTO visibility_circles (id, name) VALUES (?, 'Bounded search circle');
+		INSERT INTO visibility_circle_members (circle_id, person_id) VALUES (?, ?);
+		INSERT INTO audience_snapshot_entries (
+			snapshot_id, recipient_person_id, recipient_access_generation_id
+		)
+		SELECT snapshot_id, ?, ?
+		FROM current_audience_snapshots
+		WHERE target_kind = 'moment' AND target_id = ?
+	`, circleID, circleID, actor.PersonID, actor.PersonID, actor.AccessID, fixture.moments[1]).Exec(ctx)
+	require.NoError(t, err)
+
+	peopleRows := make([]string, 0, 101)
+	peopleArgs := make([]any, 0, 303)
+	attendanceRows := make([]string, 0, 202)
+	attendanceArgs := make([]any, 0, 606)
+	membershipRows := make([]string, 0, 101)
+	membershipArgs := make([]any, 0, 202)
+	for index := range 101 {
+		personID := uuid.New()
+		name := fmt.Sprintf("BoundedPerson %03d", index)
+		peopleRows = append(peopleRows, "(?, ?, ?)")
+		peopleArgs = append(peopleArgs, personID, name, strings.ToLower(name))
+		attendanceRows = append(attendanceRows,
+			"(?, ?, 'manual', ?, now())",
+			"(?, ?, 'manual', ?, now())",
+		)
+		attendanceArgs = append(attendanceArgs,
+			fixture.moments[0], personID, fixture.actor.PersonID,
+			fixture.moments[1], personID, fixture.actor.PersonID,
+		)
+		membershipRows = append(membershipRows, "(?, ?)")
+		membershipArgs = append(membershipArgs, circleID, personID)
+	}
+	_, err = fixture.db.NewRaw(`INSERT INTO people (id, display_name, sort_name) VALUES `+strings.Join(peopleRows, ","), peopleArgs...).Exec(ctx)
+	require.NoError(t, err)
+	_, err = fixture.db.NewRaw(`
+		INSERT INTO attendance (moment_id, person_id, source, confirmed_by_person_id, confirmed_at)
+		VALUES `+strings.Join(attendanceRows, ","), attendanceArgs...).Exec(ctx)
+	require.NoError(t, err)
+	_, err = fixture.db.NewRaw(`INSERT INTO visibility_circle_members (circle_id, person_id) VALUES `+strings.Join(membershipRows, ","), membershipArgs...).Exec(ctx)
+	require.NoError(t, err)
+
+	_, err = fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, fixture.request())
+	require.NoError(t, err)
+	service := searchdomain.New(fixture.db)
+
+	first, err := service.Search(ctx, actor, searchdomain.Request{Query: "BoundedPerson"})
+	require.NoError(t, err)
+	second, err := service.Search(ctx, actor, searchdomain.Request{Query: "BoundedPerson"})
+	require.NoError(t, err)
+
+	assert.True(t, first.HasMore)
+	require.Len(t, first.People, 100)
+	assert.Equal(t, first.People, second.People, "the bounded first page must be stable")
+	assert.Equal(t, first.HasMore, second.HasMore)
+	seen := make(map[string]struct{}, len(first.People))
+	for index, person := range first.People {
+		assert.Equal(t, fmt.Sprintf("BoundedPerson %03d", index), person.PersonName)
+		assert.Equal(t, fixture.event.String(), person.EventID)
+		seen[person.PersonID] = struct{}{}
+	}
+	assert.Len(t, seen, 100, "repeated authorized Attendance must be deduplicated before the limit")
+}
+
 func TestPersonMergeMovesOnlyCurrentPublishedAttendanceAndPreservesSearchMatches(t *testing.T) {
 	fixture := newPublicationFixture(t)
 	ctx := context.Background()

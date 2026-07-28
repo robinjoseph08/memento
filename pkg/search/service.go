@@ -26,6 +26,7 @@ const (
 
 var (
 	ErrInvalidRequest = errors.New("invalid search request")
+	ErrTooManyTerms   = fmt.Errorf("%w: too many unique search terms", ErrInvalidRequest)
 	ErrNotFound       = errors.New("search unavailable")
 )
 
@@ -108,7 +109,7 @@ func parseRequest(request Request) ([]string, *bounds, error) {
 	}
 	terms := tokenize(query)
 	if len(terms) > maxSearchTerms {
-		return nil, nil, ErrInvalidRequest
+		return nil, nil, ErrTooManyTerms
 	}
 	var dateBounds *bounds
 	if request.Date != nil {

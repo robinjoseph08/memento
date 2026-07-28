@@ -94,6 +94,7 @@ func TestParseRequestBoundsUniqueTermsWithoutPenalizingDuplicates(t *testing.T) 
 	assert.Equal(t, []string{"café"}, terms)
 
 	_, _, err = parseRequest(Request{Query: allowed + " m"})
+	require.ErrorIs(t, err, ErrTooManyTerms)
 	assert.ErrorIs(t, err, ErrInvalidRequest)
 }
 

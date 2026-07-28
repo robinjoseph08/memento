@@ -14,7 +14,10 @@ type Authorizer interface {
 	AuthorizeSession(ctx context.Context, credential, csrfToken string, mutation bool) (setup.SessionActor, error)
 }
 
-const invalidRequestMessage = "Enter search text or choose one complete year, month, date, or date range."
+const (
+	invalidRequestMessage = "Enter search text or choose one complete year, month, date, or date range."
+	tooManyTermsMessage   = "Use 12 or fewer unique search terms."
+)
 
 type Handler struct {
 	service    *Service
@@ -43,7 +46,7 @@ func (h *Handler) Search(c echo.Context) error {
 		return err
 	}
 	if _, _, err := parseRequest(request); err != nil {
-		return errcodes.ValidationError(invalidRequestMessage)
+		return searchValidationError(err)
 	}
 	if !h.limiter.allow(actor.AccessID) {
 		return errcodes.TooManyRequests("Too many searches. Try again later.")
@@ -51,13 +54,20 @@ func (h *Handler) Search(c echo.Context) error {
 	response, err := h.service.Search(c.Request().Context(), actor, request)
 	switch {
 	case errors.Is(err, ErrInvalidRequest):
-		return errcodes.ValidationError(invalidRequestMessage)
+		return searchValidationError(err)
 	case errors.Is(err, ErrNotFound):
 		return errcodes.NotFound("Search")
 	case err != nil:
 		return err
 	}
 	return c.JSON(http.StatusOK, response)
+}
+
+func searchValidationError(err error) error {
+	if errors.Is(err, ErrTooManyTerms) {
+		return errcodes.ValidationError(tooManyTermsMessage)
+	}
+	return errcodes.ValidationError(invalidRequestMessage)
 }
 
 func noStore(next echo.HandlerFunc) echo.HandlerFunc {

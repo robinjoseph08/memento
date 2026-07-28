@@ -754,6 +754,52 @@ test("keeps private search text in a POST body and renders safe grouped results"
   ).not.toBeInTheDocument();
 });
 
+test("shows safe bounded-term search guidance without echoing the query in the error", async () => {
+  const privateQuery =
+    "private01 private02 private03 private04 private05 private06 private07 private08 private09 private10 private11 private12 private13";
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) => {
+      const path = requestPath(input);
+      if (path.startsWith("/api/me/photos?")) {
+        return json({ media: [], next_cursor: null });
+      }
+      if (path === "/api/me/new-for-you") return json({ events: [] });
+      if (path === "/api/search") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              error: { message: "Use 12 or fewer unique search terms." },
+            }),
+            {
+              status: 422,
+              headers: { "Content-Type": "application/json" },
+            },
+          ),
+        );
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    }),
+  );
+
+  renderLibrary();
+  fireEvent.click(screen.getByRole("button", { name: "Search library" }));
+  fireEvent.change(
+    screen.getByRole("searchbox", {
+      name: "Search published Events, Place labels, and People",
+    }),
+    { target: { value: privateQuery } },
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Run search" }));
+
+  const alert = await screen.findByRole("alert");
+  expect(alert).toHaveTextContent("Use 12 or fewer unique search terms.");
+  expect(alert).not.toHaveTextContent(privateQuery);
+  expect(alert).not.toHaveTextContent(
+    "Enter search text or choose one complete year, month, date, or date range.",
+  );
+});
+
 test("does not claim a library is empty when its request fails", async () => {
   vi.stubGlobal(
     "fetch",

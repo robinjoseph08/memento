@@ -57,6 +57,47 @@ func TestSearchRouteRejectsInvalidDateVariantsWithTheProductionBinder(t *testing
 	}
 }
 
+func TestSearchRouteAuthorizesBeforeProductionBindingAndDateValidation(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		body string
+	}{
+		{name: "malformed JSON", body: `{"query":`},
+		{name: "incomplete date", body: `{"date":{"kind":"year"}}`},
+		{name: "ambiguous date", body: `{"date":{"kind":"year","year":2026,"month":"2026-07"}}`},
+		{name: "reversed date range", body: `{"date":{"kind":"range","start_date":"2026-07-29","end_date":"2026-07-20"}}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/search", strings.NewReader(test.body))
+			request.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+			request.AddCookie(&http.Cookie{Name: setup.CookieName, Value: "invalid-session"})
+			response := httptest.NewRecorder()
+
+			searchHTTP(routeAuthorizer{err: setup.ErrUnauthenticated}).ServeHTTP(response, request)
+
+			assert.Equal(t, http.StatusUnauthorized, response.Code)
+			assert.Contains(t, response.Body.String(), "A valid Recipient Session is required.")
+			assert.NotContains(t, response.Body.String(), "malformed_payload")
+			assert.NotContains(t, response.Body.String(), invalidRequestMessage)
+		})
+	}
+}
+
+func TestSearchRouteReturnsSafeSpecificGuidanceForTooManyUniqueTerms(t *testing.T) {
+	query := "private01 private02 private03 private04 private05 private06 private07 private08 private09 private10 private11 private12 private13"
+	request := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/search", strings.NewReader(`{"query":"`+query+`"}`))
+	request.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	request.AddCookie(&http.Cookie{Name: setup.CookieName, Value: "opaque"})
+	response := httptest.NewRecorder()
+
+	searchHTTP(routeAuthorizer{}).ServeHTTP(response, request)
+
+	assert.Equal(t, http.StatusUnprocessableEntity, response.Code)
+	assert.Contains(t, response.Body.String(), tooManyTermsMessage)
+	assert.NotContains(t, response.Body.String(), query)
+	assert.NotContains(t, response.Body.String(), invalidRequestMessage)
+}
+
 func TestSearchRouteRateLimitsAnAuthenticatedAccessGeneration(t *testing.T) {
 	authorizer := routeAuthorizer{actor: setup.SessionActor{AccessID: uuid.MustParse("10000000-0000-0000-0000-000000000001")}}
 	handler := NewHandler(nil, authorizer)
