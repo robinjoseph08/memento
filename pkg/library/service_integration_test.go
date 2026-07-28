@@ -792,6 +792,35 @@ func TestConditionalAndFailedMediaStreamsRemainPrivateAndSafe(t *testing.T) {
 	})
 }
 
+func TestMediaRepresentationSelectsOnlyActiveBackingAndFailsClosedForVideo(t *testing.T) {
+	t.Run("active backing", func(t *testing.T) {
+		fixture := newLibraryFixture(t)
+		activeAssetID := uuid.New()
+		_, err := fixture.db.NewRaw(`
+			UPDATE media_backings SET active = false, ended_at = now()
+			WHERE media_item_id = ? AND active;
+			INSERT INTO media_backings (id, media_item_id, immich_asset_id, linked_at)
+			VALUES (gen_random_uuid(), ?, ?, now())
+		`, fixture.media[0], fixture.media[0], activeAssetID).Exec(context.Background())
+		require.NoError(t, err)
+
+		response, err := fixture.service.Original(context.Background(), fixture.actor, fixture.media[0], immich.MediaRequest{})
+		require.NoError(t, err)
+		require.NoError(t, response.Body.Close())
+		assert.Equal(t, []uuid.UUID{activeAssetID}, fixture.thumbnail.assets,
+			"historical and denormalized asset identifiers cannot reach Immich")
+	})
+
+	t.Run("video representation for image", func(t *testing.T) {
+		fixture := newLibraryFixture(t)
+
+		_, err := fixture.service.Video(context.Background(), fixture.actor, fixture.media[0], immich.MediaRequest{})
+
+		assert.ErrorIs(t, err, ErrNotFound)
+		assert.Empty(t, fixture.thumbnail.assets, "an image cannot reach Immich video playback")
+	})
+}
+
 func TestMediaRepresentationsRevalidateEveryAuthorizationBoundaryBeforeImmich(t *testing.T) {
 	for _, test := range []struct {
 		name   string

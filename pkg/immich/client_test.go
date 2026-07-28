@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -769,6 +770,62 @@ func TestMediaRepresentationsFollowOnlySameOriginRedirectsWithCredentials(t *tes
 	_, err = client.Preview(context.Background(), assetID, MediaRequest{})
 	require.EqualError(t, err, "Immich validation failed")
 	assert.False(t, credentialTargetCalled, "credential-bearing redirects are rejected before a second request")
+}
+
+func TestMediaRepresentationEnforcesTheSameOriginRedirectBudget(t *testing.T) {
+	assetID := uuid.New()
+	for _, test := range []struct {
+		name              string
+		requiredRedirects int
+		wantSuccess       bool
+	}{
+		{name: "five redirects succeed", requiredRedirects: maxMediaRedirects, wantSuccess: true},
+		{name: "sixth redirect is rejected", requiredRedirects: maxMediaRedirects + 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			requestCount := 0
+			terminalReached := false
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requestCount++
+				assert.Equal(t, "secret-key", r.Header.Get("x-api-key"))
+				assert.Equal(t, `"redirect-budget"`, r.Header.Get("If-None-Match"))
+				hop := 0
+				if r.URL.Path != "/api/assets/"+assetID.String()+"/thumbnail" {
+					var err error
+					hop, err = strconv.Atoi(strings.TrimPrefix(r.URL.Path, "/hop/"))
+					if err != nil {
+						t.Errorf("unexpected redirect path %q: %v", r.URL.Path, err)
+						http.Error(w, "unexpected path", http.StatusNotFound)
+						return
+					}
+				}
+				if hop == test.requiredRedirects {
+					terminalReached = true
+					w.Header().Set("Content-Type", "image/jpeg")
+					_, _ = w.Write([]byte("preview"))
+					return
+				}
+				http.Redirect(w, r, fmt.Sprintf("/hop/%d", hop+1), http.StatusTemporaryRedirect)
+			}))
+			defer server.Close()
+			client, err := New(clientConfig(server.URL), server.Client())
+			require.NoError(t, err)
+
+			response, err := client.Preview(context.Background(), assetID, MediaRequest{IfNoneMatch: `"redirect-budget"`})
+			if test.wantSuccess {
+				require.NoError(t, err)
+				contents, readErr := io.ReadAll(response.Body)
+				require.NoError(t, readErr)
+				require.NoError(t, response.Body.Close())
+				assert.Equal(t, "preview", string(contents))
+				assert.True(t, terminalReached)
+			} else {
+				require.EqualError(t, err, "Immich validation failed")
+				assert.False(t, terminalReached)
+			}
+			assert.Equal(t, maxMediaRedirects+1, requestCount)
+		})
+	}
 }
 
 func TestVideoAndOriginalStreamRangesValidatorsAndUnchangedBytes(t *testing.T) {

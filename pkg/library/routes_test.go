@@ -119,6 +119,29 @@ func TestEventMediaCursorCarriesOnlyAuthorizedResourceAndPublicationContext(t *t
 	assert.ErrorIs(t, err, ErrInvalidCursor)
 }
 
+func TestOriginalDispositionUsesAUsableExtensionForEveryAllowedFormatFamily(t *testing.T) {
+	id := uuid.New()
+	for _, test := range []struct {
+		contentType string
+		extension   string
+	}{
+		{contentType: "image/avif", extension: ".avif"},
+		{contentType: "image/gif", extension: ".gif"},
+		{contentType: "image/heic", extension: ".heic"},
+		{contentType: "image/tiff", extension: ".tiff"},
+		{contentType: "video/quicktime", extension: ".mov"},
+		{contentType: "video/webm", extension: ".webm"},
+		{contentType: "application/octet-stream", extension: ".bin"},
+		{contentType: "image/vnd.camera.raw", extension: ".bin"},
+		{contentType: "video/vnd.camera.raw", extension: ".bin"},
+	} {
+		t.Run(test.contentType, func(t *testing.T) {
+			assert.Equal(t, "attachment; filename=memento-"+id.String()+test.extension,
+				originalDisposition(id, test.contentType))
+		})
+	}
+}
+
 func TestLibraryErrorMappingKeepsCursorAndContentFailuresDistinct(t *testing.T) {
 	validation := libraryError(ErrInvalidCursor)
 	notFound := libraryError(ErrNotFound)

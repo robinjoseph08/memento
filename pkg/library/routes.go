@@ -224,16 +224,26 @@ func immichMediaRequest(header http.Header) immich.MediaRequest {
 }
 
 func originalDisposition(id uuid.UUID, contentType string) string {
-	extension := ""
-	switch contentType {
-	case "image/jpeg":
-		extension = ".jpg"
-	case "image/png":
-		extension = ".png"
-	case "image/webp":
-		extension = ".webp"
-	case "video/mp4":
-		extension = ".mp4"
+	extension := map[string]string{
+		"application/octet-stream": ".bin",
+		"image/avif":               ".avif",
+		"image/bmp":                ".bmp",
+		"image/gif":                ".gif",
+		"image/heic":               ".heic",
+		"image/heif":               ".heif",
+		"image/jpeg":               ".jpg",
+		"image/png":                ".png",
+		"image/tiff":               ".tiff",
+		"image/webp":               ".webp",
+		"video/mp4":                ".mp4",
+		"video/mpeg":               ".mpeg",
+		"video/quicktime":          ".mov",
+		"video/webm":               ".webm",
+		"video/x-matroska":         ".mkv",
+		"video/x-msvideo":          ".avi",
+	}[contentType]
+	if extension == "" {
+		extension = ".bin"
 	}
 	return mime.FormatMediaType("attachment", map[string]string{"filename": fmt.Sprintf("memento-%s%s", id, extension)})
 }
