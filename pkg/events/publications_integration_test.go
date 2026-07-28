@@ -874,6 +874,148 @@ func TestNoNewMediaCorrectionIsQuietAndClearsStageAtomically(t *testing.T) {
 	assert.Zero(t, newForYou, "a quiet correction does not become New for you")
 }
 
+func TestNoNewMediaStructuralAndAccessCorrectionsAreQuiet(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(context.Context, bun.Tx, publicationFixture) error
+	}{
+		{
+			name: "removal",
+			mutate: func(ctx context.Context, tx bun.Tx, fixture publicationFixture) error {
+				_, err := tx.NewRaw(`
+					UPDATE draft_moments SET cover_media_item_id = NULL WHERE id = ?;
+					DELETE FROM draft_media_placements WHERE event_id = ? AND media_item_id = ?
+				`, fixture.moments[0], fixture.event, fixture.media[0]).Exec(ctx)
+				return err
+			},
+		},
+		{
+			name: "reorder",
+			mutate: func(ctx context.Context, tx bun.Tx, fixture publicationFixture) error {
+				_, err := tx.NewRaw(`
+					UPDATE draft_moments SET position = position + 10 WHERE event_id = ?;
+					UPDATE draft_moments SET position = CASE id WHEN ? THEN 2 WHEN ? THEN 1 ELSE 0 END
+					WHERE event_id = ?
+				`, fixture.event, fixture.moments[0], fixture.moments[1], fixture.event).Exec(ctx)
+				return err
+			},
+		},
+		{
+			name: "relink",
+			mutate: func(ctx context.Context, tx bun.Tx, fixture publicationFixture) error {
+				_, err := tx.NewRaw(`
+					UPDATE draft_moments SET cover_media_item_id = NULL WHERE id = ?;
+					UPDATE draft_media_placements SET draft_moment_id = ?
+					WHERE event_id = ? AND media_item_id = ?
+				`, fixture.moments[0], fixture.moments[2], fixture.event, fixture.media[0]).Exec(ctx)
+				return err
+			},
+		},
+		{
+			name: "access revocation",
+			mutate: func(ctx context.Context, tx bun.Tx, fixture publicationFixture) error {
+				_, err := tx.NewRaw(`
+					DELETE FROM audience_snapshot_entries
+					WHERE snapshot_id = (
+						SELECT snapshot_id FROM current_audience_snapshots
+						WHERE target_kind = 'moment' AND target_id = ?
+					) AND recipient_access_generation_id = ?
+				`, fixture.moments[0], fixture.access["shared"]).Exec(ctx)
+				return err
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newPublicationFixture(t)
+			ctx := context.Background()
+			_, err := fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, fixture.request())
+			require.NoError(t, err)
+			require.NoError(t, fixture.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+				if err := test.mutate(ctx, tx, fixture); err != nil {
+					return err
+				}
+				if _, err := tx.NewRaw(`UPDATE events SET version = 8, final_review_complete = true WHERE id = ?`, fixture.event).Exec(ctx); err != nil {
+					return err
+				}
+				update, err := refreshStagedUpdate(ctx, tx, fixture.event, fixture.service.now().UTC())
+				require.NotNil(t, update, "the correction must exercise replacement Publication")
+				return err
+			}))
+
+			second, err := fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, PublishEventRequest{Version: 8})
+			require.NoError(t, err)
+			var activityRows, newForYouRows int
+			require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM publication_activity_items WHERE publication_id = ?`, second.ID).Scan(ctx, &activityRows))
+			require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM new_for_you_entries WHERE publication_id = ?`, second.ID).Scan(ctx, &newForYouRows))
+			assert.Zero(t, activityRows, "a correction with no globally new Media creates no Recipient activity")
+			assert.Zero(t, newForYouRows, "a correction with no globally new Media creates no New for you entry")
+		})
+	}
+}
+
+func TestStagedCompositeSummaryReportsExactBackendNetChanges(t *testing.T) {
+	fixture := newPublicationFixture(t)
+	ctx := context.Background()
+	first, err := fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, fixture.request())
+	require.NoError(t, err)
+
+	var update *staging.Update
+	require.NoError(t, fixture.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if _, err := tx.NewRaw(`
+			UPDATE events SET title = 'Composite correction', description = 'Corrected description',
+				grouping_timezone = 'America/New_York', version = 8 WHERE id = ?;
+			UPDATE draft_moments SET title = 'Corrected Moment', proposed_day = '2026-08-01' WHERE id = ?;
+			UPDATE media_items SET width = 1600 WHERE id = ?;
+			DELETE FROM audience_snapshot_entries
+			WHERE snapshot_id = (
+				SELECT snapshot_id FROM current_audience_snapshots
+				WHERE target_kind = 'moment' AND target_id = ?
+			) AND recipient_access_generation_id = ?;
+			INSERT INTO audience_snapshot_entries (
+				snapshot_id, recipient_person_id, recipient_access_generation_id
+			) SELECT snapshot_id, ?, ? FROM current_audience_snapshots
+			WHERE target_kind = 'moment' AND target_id = ?
+		`, fixture.event, fixture.moments[0], fixture.media[0],
+			fixture.moments[0], fixture.access["shared"],
+			fixture.people["none"], fixture.access["none"], fixture.moments[2]).Exec(ctx); err != nil {
+			return err
+		}
+		var refreshErr error
+		update, refreshErr = staging.Refresh(ctx, tx, fixture.event, fixture.service.now().UTC())
+		return refreshErr
+	}))
+	require.NotNil(t, update)
+	assert.Equal(t, first.ID, update.BasePublicationID)
+	require.Len(t, update.Changes, 2, "the composite result contains exact metadata and access categories")
+	changes := make(map[staging.ChangeKind]staging.Change, len(update.Changes))
+	for _, change := range update.Changes {
+		changes[change.Kind] = change
+	}
+
+	metadata := changes[staging.ChangeKindMetadata]
+	assert.Equal(t, 3, metadata.Count, "one Event, one Moment, and one Media metadata record changed")
+	assert.Equal(t, []string{fixture.media[0].String()}, metadata.MediaItemIDs)
+	assert.Equal(t, []string{fixture.moments[0].String()}, metadata.MomentIDs)
+	assert.Equal(t, []string{"title", "description", "grouping_timezone"}, metadata.EventMetadataFields)
+
+	access := changes[staging.ChangeKindAccess]
+	assert.Equal(t, 2, access.Count)
+	assert.Empty(t, access.MediaItemIDs)
+	assert.Equal(t, []string{fixture.moments[0].String(), fixture.moments[2].String()}, access.MomentIDs)
+	require.Len(t, access.RecipientAccess, 2)
+	accessByPerson := make(map[string]staging.RecipientAccessChange, len(access.RecipientAccess))
+	for _, recipient := range access.RecipientAccess {
+		accessByPerson[recipient.RecipientPersonID] = recipient
+	}
+	assert.Equal(t, staging.RecipientAccessChange{
+		RecipientPersonID: fixture.people["none"].String(), RecipientName: "none", GrantedMediaCount: 1,
+	}, accessByPerson[fixture.people["none"].String()])
+	assert.Equal(t, staging.RecipientAccessChange{
+		RecipientPersonID: fixture.people["shared"].String(), RecipientName: "shared", RevokedMediaCount: 1,
+	}, accessByPerson[fixture.people["shared"].String()])
+}
+
 func TestFailedPublicationPreservesPriorProjectionAndStagedUpdate(t *testing.T) {
 	fixture := newPublicationFixture(t)
 	ctx := context.Background()

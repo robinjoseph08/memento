@@ -38,6 +38,7 @@ type reconciliationConnector struct {
 	pageErrAt      int
 	dependency     error
 	checkErr       error
+	assetExistsErr error
 	servedAssets   map[uuid.UUID]bool
 	thumbnailCalls []uuid.UUID
 }
@@ -82,6 +83,9 @@ func (connector *reconciliationConnector) AlbumAssetsPage(_ context.Context, alb
 func (connector *reconciliationConnector) AssetExists(_ context.Context, assetID uuid.UUID) (bool, error) {
 	connector.mu.Lock()
 	defer connector.mu.Unlock()
+	if connector.assetExistsErr != nil {
+		return false, connector.assetExistsErr
+	}
 	if exists, configured := connector.servedAssets[assetID]; configured {
 		return exists, nil
 	}
@@ -133,6 +137,12 @@ func (connector *reconciliationConnector) setAssetExists(assetID uuid.UUID, exis
 		connector.servedAssets = make(map[uuid.UUID]bool)
 	}
 	connector.servedAssets[assetID] = exists
+}
+
+func (connector *reconciliationConnector) setAssetExistsError(err error) {
+	connector.mu.Lock()
+	defer connector.mu.Unlock()
+	connector.assetExistsErr = err
 }
 
 func (connector *reconciliationConnector) setMembership(assets ...immich.AssetSummary) {
@@ -642,6 +652,118 @@ func TestPublishedSourceChangesCoalesceAcrossRetriesConcurrentEditsAndCancellati
 	var addedPlacement bool
 	require.NoError(t, service.db.NewRaw(`SELECT EXISTS (SELECT 1 FROM draft_media_placements WHERE event_id = ? AND media_item_id = (SELECT id FROM media_items WHERE immich_asset_id = ?))`, fixture.eventID, added.SourceID).Scan(context.Background(), &addedPlacement))
 	assert.False(t, addedPlacement)
+}
+
+func TestAssetExistsDependencyFailurePreservesPublishedAndEditableState(t *testing.T) {
+	original := reconciliationAsset(uuid.New())
+	connector := &reconciliationConnector{summary: sourceAlbum(uuid.New(), "Dependency source", 1)}
+	connector.pages = map[int]immich.AssetPage{1: {Items: []immich.AssetSummary{original}}}
+	service, sourceAlbumID := newReconciliationService(t, connector)
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	fixture := publishSourceEventFixture(t, service, sourceAlbumID, original.SourceID)
+	authorizeSourceRecipient(t, service, &fixture)
+	connector.setAssetExists(original.SourceID, true)
+	_, err := service.db.NewRaw(`
+		UPDATE events SET title = 'Existing private correction', version = 2,
+			final_review_complete = false WHERE id = ?;
+		UPDATE draft_moments SET review_version = 7 WHERE id = ?;
+		INSERT INTO attendance (moment_id, person_id, source, confirmed_by_person_id, confirmed_at)
+		VALUES (?, ?, 'manual', ?, now());
+		INSERT INTO audience_overrides (
+			target_kind, target_id, recipient_person_id, state, updated_by_person_id, updated_at
+		) VALUES ('moment', ?, ?, 'included', ?, now());
+		INSERT INTO audience_proposals (
+			target_kind, target_id, recipient_person_id,
+			recipient_access_generation_id, included, recalculated_at
+		) VALUES ('moment', ?, ?, ?, true, now());
+		INSERT INTO audience_reasons (target_kind, target_id, recipient_person_id, kind)
+		VALUES ('moment', ?, ?, 'manually_included')
+	`, fixture.eventID, fixture.momentID,
+		fixture.momentID, fixture.recipient.PersonID, fixture.curator.PersonID,
+		fixture.momentID, fixture.recipient.PersonID, fixture.curator.PersonID,
+		fixture.momentID, fixture.recipient.PersonID, fixture.recipient.AccessID,
+		fixture.momentID, fixture.recipient.PersonID).Exec(context.Background())
+	require.NoError(t, err)
+	require.NoError(t, service.db.RunInTx(context.Background(), nil, func(ctx context.Context, tx bun.Tx) error {
+		_, refreshErr := staging.Refresh(ctx, tx, fixture.eventID, service.now().UTC())
+		return refreshErr
+	}))
+
+	connector.setMembership()
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID), "the first validated absence only records removal evidence")
+
+	type preservedState struct {
+		Memberships, ReviewVersion                             int
+		Availability, EditableTitle, CurrentTitle, StagedID    string
+		EditablePlacement, CurrentPlacement, FinalReview       bool
+		AttendanceComplete, AudienceComplete, CurrentSnapshot  bool
+		AttendanceRows, ProposalRows, OverrideRows, ReasonRows int
+		EditableMediaIDs, CurrentMediaIDs, StagedKinds         []string
+	}
+	readState := func() preservedState {
+		t.Helper()
+		var state preservedState
+		require.NoError(t, service.db.NewRaw(`SELECT count(*) FROM source_album_memberships WHERE source_album_id = ? AND media_item_id = ?`, sourceAlbumID, fixture.mediaID).Scan(context.Background(), &state.Memberships))
+		require.NoError(t, service.db.NewRaw(`SELECT availability FROM media_items WHERE id = ?`, fixture.mediaID).Scan(context.Background(), &state.Availability))
+		require.NoError(t, service.db.NewRaw(`SELECT EXISTS (SELECT 1 FROM draft_media_placements WHERE event_id = ? AND media_item_id = ?)`, fixture.eventID, fixture.mediaID).Scan(context.Background(), &state.EditablePlacement))
+		require.NoError(t, service.db.NewRaw(`SELECT EXISTS (SELECT 1 FROM current_published_placements WHERE event_id = ? AND media_item_id = ?)`, fixture.eventID, fixture.mediaID).Scan(context.Background(), &state.CurrentPlacement))
+		require.NoError(t, service.db.NewRaw(`
+			SELECT attendance_complete, audience_complete, review_version,
+				EXISTS (SELECT 1 FROM current_audience_snapshots WHERE target_kind = 'moment' AND target_id = ?)
+			FROM draft_moments WHERE id = ?
+		`, fixture.momentID, fixture.momentID).Scan(context.Background(), &state.AttendanceComplete, &state.AudienceComplete, &state.ReviewVersion, &state.CurrentSnapshot))
+		require.NoError(t, service.db.NewRaw(`SELECT count(*) FROM attendance WHERE moment_id = ?`, fixture.momentID).Scan(context.Background(), &state.AttendanceRows))
+		require.NoError(t, service.db.NewRaw(`SELECT count(*) FROM audience_proposals WHERE target_kind = 'moment' AND target_id = ?`, fixture.momentID).Scan(context.Background(), &state.ProposalRows))
+		require.NoError(t, service.db.NewRaw(`SELECT count(*) FROM audience_overrides WHERE target_kind = 'moment' AND target_id = ?`, fixture.momentID).Scan(context.Background(), &state.OverrideRows))
+		require.NoError(t, service.db.NewRaw(`SELECT count(*) FROM audience_reasons WHERE target_kind = 'moment' AND target_id = ?`, fixture.momentID).Scan(context.Background(), &state.ReasonRows))
+
+		eventService := events.New(service.db)
+		editable, editableErr := eventService.GetEvent(context.Background(), fixture.eventID)
+		require.NoError(t, editableErr)
+		state.EditableTitle = editable.Title
+		state.FinalReview = editable.FinalReviewComplete
+		for _, moment := range editable.Moments {
+			for _, media := range moment.MediaItems {
+				state.EditableMediaIDs = append(state.EditableMediaIDs, media.ID)
+			}
+		}
+		require.NotNil(t, editable.StagedUpdate)
+		state.StagedID = editable.StagedUpdate.ID
+		for _, change := range editable.StagedUpdate.Changes {
+			state.StagedKinds = append(state.StagedKinds, string(change.Kind))
+		}
+		current, currentErr := eventService.RecipientEvent(context.Background(), fixture.recipient, fixture.eventID)
+		require.NoError(t, currentErr)
+		state.CurrentTitle = current.Title
+		for _, media := range current.Media {
+			state.CurrentMediaIDs = append(state.CurrentMediaIDs, media.ID)
+		}
+		return state
+	}
+
+	before := readState()
+	assert.Equal(t, 1, before.Memberships)
+	assert.Equal(t, "current", before.Availability)
+	assert.True(t, before.EditablePlacement)
+	assert.True(t, before.CurrentPlacement)
+	assert.Equal(t, "Existing private correction", before.EditableTitle)
+	assert.Equal(t, "Source Event", before.CurrentTitle)
+	assert.Equal(t, []string{fixture.mediaID.String()}, before.EditableMediaIDs)
+	assert.Equal(t, []string{fixture.mediaID.String()}, before.CurrentMediaIDs)
+	assert.False(t, before.FinalReview)
+	assert.True(t, before.AttendanceComplete)
+	assert.True(t, before.AudienceComplete)
+	assert.Equal(t, 7, before.ReviewVersion)
+	assert.True(t, before.CurrentSnapshot)
+	assert.Equal(t, []int{1, 1, 1, 1}, []int{before.AttendanceRows, before.ProposalRows, before.OverrideRows, before.ReasonRows})
+	assert.Equal(t, []string{string(staging.ChangeKindMetadata)}, before.StagedKinds)
+
+	injected := errors.New("private AssetExists dependency detail")
+	connector.setAssetExistsError(injected)
+	err = service.Reconcile(context.Background(), sourceAlbumID)
+	require.ErrorIs(t, err, ErrDependency)
+	assert.NotContains(t, err.Error(), injected.Error(), "dependency failures expose only the safe Source classification")
+	assert.Equal(t, before, readState(), "AssetExists failure must roll back membership, projections, review evidence, and existing Staged work")
 }
 
 func TestFinalPublishedSourceRemovalStaysPrivateWhileMediaRemainsAvailable(t *testing.T) {
