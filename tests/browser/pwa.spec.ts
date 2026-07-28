@@ -170,10 +170,9 @@ test("@desktop manifest, stable identity, standalone shell, and cache privacy", 
     ).toBe(true);
   }
 
+  const applicationOrigin = new URL(page.url()).origin;
   expect(
-    runtimeRequests.every(
-      (url) => new URL(url).origin === "http://127.0.0.1:4173",
-    ),
+    runtimeRequests.every((url) => new URL(url).origin === applicationOrigin),
   ).toBe(true);
 });
 
