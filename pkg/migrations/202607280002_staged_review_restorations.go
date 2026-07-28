@@ -19,6 +19,7 @@ func init() {
 					moment_state jsonb NOT NULL,
 					review_context jsonb NOT NULL,
 					current_snapshot_id uuid REFERENCES audience_snapshots(id) ON DELETE RESTRICT,
+					superseded boolean NOT NULL DEFAULT false,
 					created_at timestamptz NOT NULL,
 					PRIMARY KEY (event_id, draft_moment_id)
 				)

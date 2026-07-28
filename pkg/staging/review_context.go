@@ -73,15 +73,15 @@ func LoadMomentState(ctx context.Context, db bun.IDB, eventID, momentID, publica
 // no fresh review work has replaced the invalidated state.
 func RestoreMomentReviewIfPublishedResult(ctx context.Context, tx bun.Tx, eventID, momentID uuid.UUID) (bool, error) {
 	var publicationID uuid.UUID
-	var attendanceComplete, audienceComplete bool
+	var attendanceComplete, audienceComplete, superseded bool
 	var reviewContext []byte
 	var snapshotID *uuid.UUID
 	err := tx.NewRaw(`
 		SELECT base_publication_id, attendance_complete, audience_complete,
-			review_context, current_snapshot_id
+			review_context, current_snapshot_id, superseded
 		FROM staged_moment_review_restorations
 		WHERE event_id = ? AND draft_moment_id = ? FOR UPDATE
-	`, eventID, momentID).Scan(ctx, &publicationID, &attendanceComplete, &audienceComplete, &reviewContext, &snapshotID)
+	`, eventID, momentID).Scan(ctx, &publicationID, &attendanceComplete, &audienceComplete, &reviewContext, &snapshotID, &superseded)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -97,6 +97,9 @@ func RestoreMomentReviewIfPublishedResult(ctx context.Context, tx bun.Tx, eventI
 		if err := discardMomentReview(ctx, tx, eventID, momentID); err != nil {
 			return false, err
 		}
+		return false, nil
+	}
+	if superseded {
 		return false, nil
 	}
 
@@ -195,10 +198,14 @@ func RestoreMomentReviewIfPublishedResult(ctx context.Context, tx bun.Tx, eventI
 	return true, nil
 }
 
-// DiscardMomentReviewRestoration removes preserved evidence when the Curator
-// starts a fresh review for the changed Moment.
-func DiscardMomentReviewRestoration(ctx context.Context, tx bun.Tx, momentID uuid.UUID) error {
-	_, err := tx.NewRaw(`DELETE FROM staged_moment_review_restorations WHERE draft_moment_id = ?`, momentID).Exec(ctx)
+// SupersedeMomentReviewRestoration prevents preserved evidence from being
+// restored or replaced after the Curator starts a fresh review. The marker is
+// retained until the private change completely cancels or is published.
+func SupersedeMomentReviewRestoration(ctx context.Context, tx bun.Tx, momentID uuid.UUID) error {
+	_, err := tx.NewRaw(`
+		UPDATE staged_moment_review_restorations SET superseded = true
+		WHERE draft_moment_id = ?
+	`, momentID).Exec(ctx)
 	return err
 }
 

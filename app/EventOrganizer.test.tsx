@@ -709,7 +709,7 @@ test("publishes ready work and previews Recipient output read only", async () =>
   );
 
   const publish = await screen.findByRole("button", { name: "Publish Event" });
-  expect(screen.getByText("5 of 5 complete")).toBeInTheDocument();
+  expect(screen.getByText("6 of 6 complete")).toBeInTheDocument();
   expect(
     screen.getByRole("heading", { name: "Readiness" }).closest("section"),
   ).toHaveTextContent("Next action: Ready to publish");
@@ -971,7 +971,7 @@ test("organizes merged and split days with pointer and keyboard controls", async
       contentionWait,
     ),
   ).toBeInTheDocument();
-  expect(screen.getByText("1 of 5 complete")).toBeInTheDocument();
+  expect(screen.getByText("2 of 6 complete")).toBeInTheDocument();
   expect(
     screen.getByRole("heading", { name: "Readiness" }).closest("section"),
   ).toHaveTextContent("Next action: Media organization");
@@ -1066,6 +1066,11 @@ test("blocks invalid Event metadata until title and timezone are valid", async (
   const initial = organizedDraft();
   initial.lifecycle = "published";
   initial.published_editable_version = initial.version - 1;
+  initial.final_review_complete = true;
+  for (const moment of initial.moments) {
+    moment.attendance_complete = true;
+    moment.audience_complete = true;
+  }
   initial.staged_update = {
     id: "12121212-1212-4212-8212-121212121212",
     base_publication_id: "13131313-1313-4313-8313-131313131313",
@@ -1114,6 +1119,10 @@ test("blocks invalid Event metadata until title and timezone are valid", async (
   ).toHaveTextContent(
     "Fix the Event detail validation errors before this review can be saved or published.",
   );
+  expect(screen.getByText("5 of 6 complete")).toBeInTheDocument();
+  expect(
+    screen.getByRole("heading", { name: "Readiness" }).closest("section"),
+  ).toHaveTextContent("Next action: Event details");
 
   await act(async () => vi.advanceTimersByTimeAsync(500));
   expect(saves).toHaveLength(0);
@@ -1184,7 +1193,7 @@ test("autosaves readiness and persists the complete organization after reload", 
   await screen.findByText(/Approved snapshot:/);
   fireEvent.click(screen.getByLabelText("Final review complete"));
 
-  expect(screen.getByText("5 of 5 complete")).toBeInTheDocument();
+  expect(screen.getByText("6 of 6 complete")).toBeInTheDocument();
   expect(
     screen.getByRole("heading", { name: "Readiness" }).closest("section"),
   ).toHaveTextContent("Next action: Ready to publish");

@@ -825,13 +825,15 @@ func (s *Service) RestorePublishedMedia(ctx context.Context, actor setup.Curator
 		}
 
 		var momentID uuid.UUID
+		var publishedCoverID *uuid.UUID
 		var publishedMediaPosition, publishedMomentPosition int
 		if err := tx.NewRaw(`
-			SELECT moment.draft_moment_id, placement.position, moment.position
+			SELECT moment.draft_moment_id, moment.cover_media_item_id,
+				placement.position, moment.position
 			FROM published_moments AS moment
 			JOIN published_media_placements AS placement ON placement.published_moment_id = moment.id
 			WHERE moment.publication_id = ? AND placement.media_item_id = ?
-		`, *publicationID, mediaID).Scan(ctx, &momentID, &publishedMediaPosition, &publishedMomentPosition); err != nil {
+		`, *publicationID, mediaID).Scan(ctx, &momentID, &publishedCoverID, &publishedMediaPosition, &publishedMomentPosition); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return ErrInvalid
 			}
@@ -874,12 +876,13 @@ func (s *Service) RestorePublishedMedia(ctx context.Context, actor setup.Curator
 				)
 				SELECT item.id, item.event_id, ?, item.proposed_day, item.grouping_timezone,
 					item.proposal_kind, item.created_at, item.source_days, item.title,
-					item.cover_media_item_id, false, NOT true, item.review_version + 1
+					CASE WHEN item.cover_media_item_id = ? THEN ?::uuid ELSE NULL END,
+					false, NOT true, item.review_version + 1
 				FROM jsonb_to_record(?::jsonb) AS item(
 					id uuid, event_id uuid, proposed_day date, grouping_timezone text,
 					proposal_kind text, created_at timestamptz, source_days date[], title text,
 					cover_media_item_id uuid, review_version bigint)
-			`, maxDraftMediaItems*3, string(momentState)).Exec(ctx); err != nil {
+			`, maxDraftMediaItems*3, mediaID, mediaID, string(momentState)).Exec(ctx); err != nil {
 				return err
 			}
 			insertAt := publishedMomentPosition
@@ -918,6 +921,14 @@ func (s *Service) RestorePublishedMedia(ctx context.Context, actor setup.Curator
 		placementIDs[insertAt] = mediaID
 		for position, orderedID := range placementIDs {
 			if _, err := tx.NewRaw(`UPDATE draft_media_placements SET position = ? WHERE event_id = ? AND media_item_id = ?`, position, id, orderedID).Exec(ctx); err != nil {
+				return err
+			}
+		}
+		if publishedCoverID != nil && *publishedCoverID == mediaID {
+			if _, err := tx.NewRaw(`
+				UPDATE draft_moments SET cover_media_item_id = ?
+				WHERE event_id = ? AND id = ? AND cover_media_item_id IS NULL
+			`, mediaID, id, momentID).Exec(ctx); err != nil {
 				return err
 			}
 		}

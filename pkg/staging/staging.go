@@ -156,13 +156,16 @@ func InvalidateEvent(ctx context.Context, tx bun.Tx, eventID uuid.UUID, now time
 	return Refresh(ctx, tx, eventID, now)
 }
 
-// Clear removes an Event's coalesced update after successful Publication.
+// Clear removes an Event's coalesced update after complete cancellation or
+// successful Publication, including restoration context owned by that update.
 func Clear(ctx context.Context, tx bun.Tx, eventID uuid.UUID) error {
 	if _, err := tx.NewRaw(`UPDATE events SET current_staged_update_id = NULL WHERE id = ?`, eventID).Exec(ctx); err != nil {
 		return err
 	}
-	_, err := tx.NewRaw(`DELETE FROM staged_updates WHERE event_id = ?`, eventID).Exec(ctx)
-	return err
+	if _, err := tx.NewRaw(`DELETE FROM staged_updates WHERE event_id = ?`, eventID).Exec(ctx); err != nil {
+		return err
+	}
+	return ClearMomentReviewRestorations(ctx, tx, eventID)
 }
 
 func summarizeStagedUpdate(ctx context.Context, db bun.IDB, eventID, publicationID uuid.UUID) ([]Change, error) {

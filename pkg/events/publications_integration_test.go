@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/robinjoseph08/memento/internal/testdb"
+	"github.com/robinjoseph08/memento/pkg/audiences"
 	"github.com/robinjoseph08/memento/pkg/migrations"
 	"github.com/robinjoseph08/memento/pkg/setup"
 	"github.com/robinjoseph08/memento/pkg/staging"
@@ -636,6 +637,112 @@ func TestCuratorCanRestoreAutosavedPublishedMediaRemoval(t *testing.T) {
 	assert.Equal(t, 1, proposalRows)
 	assert.Equal(t, 1, reasonRows)
 	assert.Zero(t, restorationRows)
+}
+
+func TestPublishedMediaRestorationPreservesValidOrderAfterFreshReview(t *testing.T) {
+	fixture := newPublicationFixture(t)
+	ctx := context.Background()
+	baselinePersonID, freshPersonID := uuid.New(), uuid.New()
+	_, err := fixture.db.NewRaw(`
+		INSERT INTO people (id, display_name, sort_name)
+		VALUES (?, 'Baseline witness', 'baseline witness'), (?, 'Fresh witness', 'fresh witness');
+		UPDATE draft_media_placements SET draft_moment_id = ?
+		WHERE event_id = ? AND media_item_id = ?;
+		DELETE FROM draft_moments WHERE id = ?;
+		DELETE FROM audience_snapshot_entries
+		WHERE snapshot_id = (
+			SELECT snapshot_id FROM current_audience_snapshots
+			WHERE target_kind = 'moment' AND target_id = ?
+		);
+		INSERT INTO attendance (moment_id, person_id, source, confirmed_by_person_id, confirmed_at)
+		VALUES (?, ?, 'manual', ?, now())
+	`, baselinePersonID, freshPersonID,
+		fixture.moments[0], fixture.event, fixture.media[1], fixture.moments[1], fixture.moments[0],
+		fixture.moments[0], baselinePersonID, fixture.actor.PersonID).Exec(ctx)
+	require.NoError(t, err)
+	_, err = fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, fixture.request())
+	require.NoError(t, err)
+
+	sourceID := uuid.New()
+	_, err = fixture.db.NewRaw(`
+		INSERT INTO source_albums (
+			id, immich_album_id, name, description, asset_count, source_created_at,
+			source_updated_at, disposition, first_seen_at, last_seen_at,
+			source_fingerprint, next_reconciliation_at
+		) VALUES (?, ?, 'Published source', '', 2, now(), now(), 'drafted', now(), now(), decode(repeat('00', 32), 'hex'), now());
+		INSERT INTO event_sources (
+			event_id, source_album_id, source_order, initialized_name,
+			initialized_description, initialized_at
+		) VALUES (?, ?, 0, 'Published source', '', now());
+		INSERT INTO source_album_memberships (
+			source_album_id, immich_asset_id, media_item_id, first_seen_at,
+			last_seen_at, source_fingerprint
+		) SELECT ?, immich_asset_id, id, now(), now(), decode(repeat('11', 32), 'hex')
+		  FROM media_items WHERE id IN (?, ?)
+	`, sourceID, uuid.New(), fixture.event, sourceID, sourceID, fixture.media[0], fixture.media[1]).Exec(ctx)
+	require.NoError(t, err)
+
+	nonCover, thirdCover := fixture.media[1].String(), fixture.media[2].String()
+	firstRemoval, err := fixture.service.OrganizeEvent(ctx, fixture.actor, fixture.event, OrganizeEventRequest{
+		Version: 7,
+		Moments: []OrganizeMoment{
+			{ID: fixture.moments[0].String(), Title: "Moment", ProposedDay: "2026-07-27", CoverMediaItemID: &nonCover, MediaItemIDs: []string{nonCover}},
+			{ID: fixture.moments[2].String(), Title: "Moment", ProposedDay: "2026-07-29", CoverMediaItemID: &thirdCover, MediaItemIDs: []string{fixture.media[2].String()}},
+		},
+	})
+	require.NoError(t, err)
+
+	var reviewVersion int64
+	require.NoError(t, fixture.db.NewRaw(`SELECT review_version FROM draft_moments WHERE id = ?`, fixture.moments[0]).Scan(ctx, &reviewVersion))
+	freshAttendance := []string{freshPersonID.String()}
+	audienceService := audiences.New(fixture.db, nil)
+	_, err = audienceService.ConfirmAttendance(ctx, fixture.actor, fixture.moments[0], reviewVersion, audiences.AttendanceRequest{PersonIDs: &freshAttendance})
+	require.NoError(t, err)
+	var superseded bool
+	require.NoError(t, fixture.db.NewRaw(`
+		SELECT superseded FROM staged_moment_review_restorations
+		WHERE event_id = ? AND draft_moment_id = ?
+	`, fixture.event, fixture.moments[0]).Scan(ctx, &superseded))
+	assert.True(t, superseded, "fresh review keeps a no-restore marker for the published baseline")
+
+	freshEvent, err := fixture.service.GetEvent(ctx, fixture.event)
+	require.NoError(t, err)
+	secondRemoval, err := fixture.service.OrganizeEvent(ctx, fixture.actor, fixture.event, OrganizeEventRequest{
+		Version: freshEvent.Version,
+		Moments: []OrganizeMoment{
+			{ID: fixture.moments[2].String(), Title: "Moment", ProposedDay: "2026-07-29", CoverMediaItemID: &thirdCover, MediaItemIDs: []string{fixture.media[2].String()}},
+		},
+	})
+	require.NoError(t, err)
+	assert.Greater(t, secondRemoval.Version, firstRemoval.Version)
+
+	partial, err := fixture.service.RestorePublishedMedia(ctx, fixture.actor, fixture.event, RestorePublishedMediaRequest{
+		Version: secondRemoval.Version, MediaItemID: fixture.media[1].String(),
+	})
+	require.NoError(t, err)
+	require.Len(t, partial.Moments, 2)
+	assert.Equal(t, fixture.moments[0].String(), partial.Moments[0].ID)
+	assert.Equal(t, fixture.media[1].String(), partial.Moments[0].MediaItems[0].ID)
+	assert.Nil(t, partial.Moments[0].CoverMediaItemID, "restoring a non-cover cannot reference the still-removed published cover")
+	var restorationRows int
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM staged_moment_review_restorations WHERE event_id = ? AND superseded`, fixture.event).Scan(ctx, &restorationRows))
+	assert.Equal(t, 1, restorationRows, "partial restoration retains the no-restore marker")
+
+	cancelled, err := fixture.service.RestorePublishedMedia(ctx, fixture.actor, fixture.event, RestorePublishedMediaRequest{
+		Version: partial.Version, MediaItemID: fixture.media[0].String(),
+	})
+	require.NoError(t, err)
+	require.Len(t, cancelled.Moments, 2)
+	require.NotNil(t, cancelled.Moments[0].CoverMediaItemID)
+	assert.Equal(t, fixture.media[0].String(), *cancelled.Moments[0].CoverMediaItemID)
+	assert.Nil(t, cancelled.StagedUpdate, "restoring both Media items completely cancels the organization change")
+	var baselineRows, freshRows int
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM attendance WHERE moment_id = ? AND person_id = ?`, fixture.moments[0], baselinePersonID).Scan(ctx, &baselineRows))
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM attendance WHERE moment_id = ? AND person_id = ?`, fixture.moments[0], freshPersonID).Scan(ctx, &freshRows))
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM staged_moment_review_restorations WHERE event_id = ?`, fixture.event).Scan(ctx, &restorationRows))
+	assert.Zero(t, baselineRows, "superseded published review evidence is not restored")
+	assert.Zero(t, freshRows, "intermediate review evidence is not captured and restored")
+	assert.Zero(t, restorationRows, "complete cancellation clears the no-restore marker")
 }
 
 func TestOrganizationChangesInvalidateReviewedAudienceAndFinalReview(t *testing.T) {

@@ -374,8 +374,15 @@ function validGroupingTimezone(value: string) {
   }
 }
 
-function Checklist({ event }: { event: DraftEvent }) {
+function Checklist({
+  event,
+  metadataValid,
+}: {
+  event: DraftEvent;
+  metadataValid: boolean;
+}) {
   const checks = [
+    { label: "Event details", done: metadataValid },
     { label: "Media organization", done: event.unassigned_media.length === 0 },
     {
       label: "Moments",
@@ -1319,7 +1326,10 @@ export function EventOrganizer({
                   <p className="step-label">Active Event</p>
                   <h3>{currentDraft.title}</h3>
                 </div>
-                <Checklist event={currentDraft} />
+                <Checklist
+                  event={currentDraft}
+                  metadataValid={eventMetadataValid}
+                />
               </header>
               <PlaceLabelEditor
                 ariaLabel="Event Place labels"

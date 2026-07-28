@@ -203,7 +203,7 @@ func (s *Service) ConfirmAttendance(ctx context.Context, actor setup.CuratorSess
 		if err := lockTarget(ctx, tx, t, version); err != nil {
 			return err
 		}
-		if err := discardStagedReviewRestoration(ctx, tx, t); err != nil {
+		if err := supersedeStagedReviewRestoration(ctx, tx, t); err != nil {
 			return err
 		}
 		if len(ids) > 0 {
@@ -259,7 +259,7 @@ func (s *Service) Recalculate(ctx context.Context, actor setup.CuratorSession, k
 		if err := lockTarget(ctx, tx, t, version); err != nil {
 			return err
 		}
-		if err := discardStagedReviewRestoration(ctx, tx, t); err != nil {
+		if err := supersedeStagedReviewRestoration(ctx, tx, t); err != nil {
 			return err
 		}
 		if err := recalculate(ctx, tx, t, now); err != nil {
@@ -304,7 +304,7 @@ func (s *Service) SetOverride(ctx context.Context, actor setup.CuratorSession, k
 		if err := lockTarget(ctx, tx, t, version); err != nil {
 			return err
 		}
-		if err := discardStagedReviewRestoration(ctx, tx, t); err != nil {
+		if err := supersedeStagedReviewRestoration(ctx, tx, t); err != nil {
 			return err
 		}
 		var lockedRecipient uuid.UUID
@@ -367,7 +367,7 @@ func (s *Service) Approve(ctx context.Context, actor setup.CuratorSession, kind 
 		if err := lockTarget(ctx, tx, t, version); err != nil {
 			return err
 		}
-		if err := discardStagedReviewRestoration(ctx, tx, t); err != nil {
+		if err := supersedeStagedReviewRestoration(ctx, tx, t); err != nil {
 			return err
 		}
 		if t.kind == targetMoment {
@@ -423,11 +423,11 @@ func (s *Service) Approve(ctx context.Context, actor setup.CuratorSession, kind 
 	return response, err
 }
 
-func discardStagedReviewRestoration(ctx context.Context, tx bun.Tx, t target) error {
+func supersedeStagedReviewRestoration(ctx context.Context, tx bun.Tx, t target) error {
 	if t.kind != targetMoment {
 		return nil
 	}
-	return staging.DiscardMomentReviewRestoration(ctx, tx, t.id)
+	return staging.SupersedeMomentReviewRestoration(ctx, tx, t.id)
 }
 
 func lockEligibleProposalRecipients(ctx context.Context, tx bun.Tx, t target) (int, error) {
