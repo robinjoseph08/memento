@@ -531,20 +531,38 @@ test("withdraws a currently published target even when the staged draft differs"
   );
 });
 
-test("autosaves Event and Moment Place labels for later Publication", async () => {
+test("preserves raw Place-label editing and autosaves parsed labels on blur", async () => {
   const saves = stubOrganizerAPI(draft());
   renderOrganizer();
   fireEvent.click(
     await screen.findByRole("button", { name: /Family weekend/ }),
   );
 
-  fireEvent.change(await screen.findByLabelText("Event Place labels"), {
+  const eventLabels = await screen.findByLabelText("Event Place labels");
+  fireEvent.focus(eventLabels);
+  fireEvent.change(eventLabels, { target: { value: "São" } });
+  fireEvent.change(eventLabels, { target: { value: "São " } });
+  expect(eventLabels).toHaveValue("São ");
+  expect(saves).toHaveLength(0);
+  fireEvent.change(eventLabels, {
     target: { value: " São Paulo, , Jardin Central, " },
   });
-  fireEvent.change(screen.getByLabelText("Place labels for Moment 1"), {
+  expect(eventLabels).toHaveValue(" São Paulo, , Jardin Central, ");
+  fireEvent.blur(eventLabels);
+
+  const momentLabels = screen.getByLabelText("Place labels for Moment 1");
+  fireEvent.focus(momentLabels);
+  fireEvent.change(momentLabels, {
     target: { value: " Café terrace, , River Walk, " },
   });
+  expect(momentLabels).toHaveValue(" Café terrace, , River Walk, ");
+  fireEvent.blur(momentLabels);
 
+  expect(
+    screen.getAllByText(
+      "Up to 20 comma-separated labels, 120 characters each. Labels become searchable after Publication.",
+    ),
+  ).toHaveLength(3);
   await waitFor(() => expect(saves.length).toBeGreaterThan(0), contentionWait);
   await waitFor(
     () => expect(screen.getByText("All changes saved")).toBeInTheDocument(),
@@ -555,6 +573,40 @@ test("autosaves Event and Moment Place labels for later Publication", async () =
     "Café terrace",
     "River Walk",
   ]);
+});
+
+test("rejects Place-label count and length limits before autosave", async () => {
+  const saves = stubOrganizerAPI(draft());
+  renderOrganizer();
+  fireEvent.click(
+    await screen.findByRole("button", { name: /Family weekend/ }),
+  );
+
+  const labels = await screen.findByLabelText("Event Place labels");
+  const tooMany = Array.from(
+    { length: 21 },
+    (_, index) => `Place ${index + 1}`,
+  ).join(", ");
+  fireEvent.change(labels, { target: { value: tooMany } });
+  fireEvent.blur(labels);
+  expect(screen.getByRole("alert")).toHaveTextContent(
+    "Use no more than 20 Place labels.",
+  );
+  expect(saves).toHaveLength(0);
+
+  fireEvent.focus(labels);
+  fireEvent.change(labels, { target: { value: "é".repeat(121) } });
+  fireEvent.blur(labels);
+  expect(screen.getByRole("alert")).toHaveTextContent(
+    "Each Place label must be 120 characters or fewer.",
+  );
+  expect(saves).toHaveLength(0);
+
+  fireEvent.focus(labels);
+  fireEvent.change(labels, { target: { value: "é".repeat(120) } });
+  fireEvent.blur(labels);
+  await waitFor(() => expect(saves).toHaveLength(1), contentionWait);
+  expect(saves[0].place_labels).toEqual(["é".repeat(120)]);
 });
 
 test("organizes merged and split days with pointer and keyboard controls", async () => {

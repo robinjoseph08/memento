@@ -28,14 +28,15 @@ const (
 )
 
 var (
-	ErrNotFound          = errors.New("draft not found")
-	ErrInvalid           = errors.New("draft request is invalid")
-	ErrSourceUnavailable = errors.New("source album is unavailable for drafting")
-	ErrSourceTooLarge    = errors.New("source album has too many media items")
-	ErrMediaUnavailable  = errors.New("media item is unavailable for drafting")
-	ErrNoMediaAvailable  = errors.New("no media items are available for drafting")
-	ErrVersionConflict   = errors.New("draft version is stale")
-	errUnknownMoment     = errors.New("draft placement references unknown Moment")
+	ErrNotFound           = errors.New("draft not found")
+	ErrInvalid            = errors.New("draft request is invalid")
+	ErrPlaceLabelsInvalid = errors.New("place labels are invalid")
+	ErrSourceUnavailable  = errors.New("source album is unavailable for drafting")
+	ErrSourceTooLarge     = errors.New("source album has too many media items")
+	ErrMediaUnavailable   = errors.New("media item is unavailable for drafting")
+	ErrNoMediaAvailable   = errors.New("no media items are available for drafting")
+	ErrVersionConflict    = errors.New("draft version is stale")
+	errUnknownMoment      = errors.New("draft placement references unknown Moment")
 )
 
 // CreateEventRequest initializes one portal-owned Event from selected Source material.
@@ -534,7 +535,10 @@ func (s *Service) OrganizeEvent(ctx context.Context, actor setup.CuratorSession,
 		}
 		seenMoments[momentID] = struct{}{}
 		placeLabels, valid := normalizePlaceLabels(moment.PlaceLabels)
-		if _, err := time.Parse(time.DateOnly, moment.ProposedDay); err != nil || utf8.RuneCountInString(strings.TrimSpace(moment.Title)) > 240 || !valid {
+		if !valid {
+			return Event{}, ErrPlaceLabelsInvalid
+		}
+		if _, err := time.Parse(time.DateOnly, moment.ProposedDay); err != nil || utf8.RuneCountInString(strings.TrimSpace(moment.Title)) > 240 {
 			return Event{}, ErrInvalid
 		}
 		mediaIDs, err := parseUniqueIDs(moment.MediaItemIDs)
@@ -576,7 +580,7 @@ func (s *Service) OrganizeEvent(ctx context.Context, actor setup.CuratorSession,
 
 	eventPlaceLabels, valid := normalizePlaceLabels(request.PlaceLabels)
 	if !valid {
-		return Event{}, ErrInvalid
+		return Event{}, ErrPlaceLabelsInvalid
 	}
 
 	now := s.now().UTC()

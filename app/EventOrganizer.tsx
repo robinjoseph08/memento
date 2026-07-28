@@ -33,11 +33,83 @@ function cloneEvent(event: DraftEvent): DraftEvent {
   return structuredClone(event);
 }
 
+const maxPlaceLabels = 20;
+const maxPlaceLabelLength = 120;
+
 function parsePlaceLabels(value: string) {
   return value
     .split(",")
     .map((label) => label.trim())
     .filter(Boolean);
+}
+
+function validatePlaceLabels(labels: string[]) {
+  if (labels.length > maxPlaceLabels)
+    return `Use no more than ${maxPlaceLabels} Place labels.`;
+  if (labels.some((label) => Array.from(label).length > maxPlaceLabelLength))
+    return `Each Place label must be ${maxPlaceLabelLength} characters or fewer.`;
+  return "";
+}
+
+function PlaceLabelEditor({
+  ariaLabel,
+  labels,
+  onCommit,
+  placeholder,
+}: {
+  ariaLabel: string;
+  labels: string[];
+  onCommit: (labels: string[]) => void;
+  placeholder: string;
+}) {
+  const [raw, setRaw] = useState(labels.join(", "));
+  const [error, setError] = useState("");
+  const focused = useRef(false);
+
+  useEffect(() => {
+    if (!focused.current) setRaw(labels.join(", "));
+  }, [labels]);
+
+  return (
+    <label className="place-label-editor">
+      {ariaLabel}
+      <input
+        aria-label={ariaLabel}
+        aria-invalid={error ? "true" : undefined}
+        onBlur={() => {
+          focused.current = false;
+          const parsed = parsePlaceLabels(raw);
+          const validationError = validatePlaceLabels(parsed);
+          setError(validationError);
+          if (validationError) return;
+          setRaw(parsed.join(", "));
+          if (
+            parsed.length !== labels.length ||
+            parsed.some((label, index) => label !== labels[index])
+          )
+            onCommit(parsed);
+        }}
+        onChange={(event) => {
+          setRaw(event.target.value);
+          setError("");
+        }}
+        onFocus={() => {
+          focused.current = true;
+        }}
+        placeholder={placeholder}
+        value={raw}
+      />
+      <span>
+        Up to {maxPlaceLabels} comma-separated labels, {maxPlaceLabelLength}{" "}
+        characters each. Labels become searchable after Publication.
+      </span>
+      {error ? (
+        <span className="form-error" role="alert">
+          {error}
+        </span>
+      ) : null}
+    </label>
+  );
 }
 
 function organizationRequest(event: DraftEvent): OrganizeEventRequest {
@@ -884,23 +956,17 @@ export function EventOrganizer({
                 </div>
                 <Checklist event={currentDraft} />
               </header>
-              <label className="place-label-editor">
-                Event Place labels
-                <input
-                  aria-label="Event Place labels"
-                  onChange={(event) =>
-                    change((next) => {
-                      next.place_labels = parsePlaceLabels(event.target.value);
-                    })
-                  }
-                  placeholder="Paris, Jardin du Luxembourg"
-                  value={currentDraft.place_labels.join(", ")}
-                />
-                <span>
-                  Comma-separated labels become Recipient-visible only after
-                  Publication.
-                </span>
-              </label>
+              <PlaceLabelEditor
+                ariaLabel="Event Place labels"
+                key={`event-place-labels-${currentDraft.id}`}
+                labels={currentDraft.place_labels}
+                onCommit={(labels) =>
+                  change((next) => {
+                    next.place_labels = labels;
+                  })
+                }
+                placeholder="Paris, Jardin du Luxembourg"
+              />
               <div className="move-toolbar">
                 <div className="move-control">
                   <label>
@@ -982,16 +1048,19 @@ export function EventOrganizer({
                           placeholder={`Moment ${index + 1}`}
                           value={moment.title}
                         />
-                        <input
-                          aria-label={`Place labels for Moment ${index + 1}`}
-                          onChange={(event) =>
+                        <PlaceLabelEditor
+                          ariaLabel={`Place labels for Moment ${index + 1}`}
+                          key={`moment-place-labels-${moment.id}`}
+                          labels={moment.place_labels}
+                          onCommit={(labels) =>
                             change((next) => {
-                              next.moments[index].place_labels =
-                                parsePlaceLabels(event.target.value);
+                              const target = next.moments.find(
+                                (candidate) => candidate.id === moment.id,
+                              );
+                              if (target) target.place_labels = labels;
                             })
                           }
                           placeholder="Place labels, comma-separated"
-                          value={moment.place_labels.join(", ")}
                         />
                       </div>
                       <div className="row-actions">

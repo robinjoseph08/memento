@@ -316,6 +316,8 @@ func draftError(err error, resource string) error {
 		return nil
 	case errors.Is(err, ErrNotFound):
 		return errcodes.NotFound(resource)
+	case errors.Is(err, ErrPlaceLabelsInvalid):
+		return errcodes.ValidationError("Use no more than 20 Place labels, with 1 to 120 characters in each label.")
 	case errors.Is(err, ErrInvalid):
 		return errcodes.ValidationError("Draft fields must be valid, include every Media item exactly once, and use a cover from its Moment.")
 	case errors.Is(err, ErrVersionConflict):
