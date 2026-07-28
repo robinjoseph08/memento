@@ -924,11 +924,16 @@ func getEvent(ctx context.Context, db bun.IDB, id uuid.UUID) (Event, error) {
 					 AND published.media_item_id = placement.media_item_id
 					WHERE placement.event_id = event.id AND placement.publication_id = publication.id
 				) AS target
-				WHERE NOT EXISTS (
-					SELECT 1 FROM content_withdrawals AS active
-					WHERE active.target_kind = target.target_kind
-					  AND active.target_id = target.target_id
-					  AND active.restored_at IS NULL
+				WHERE EXISTS (
+					SELECT 1 FROM current_published_placements AS placement
+					JOIN published_moments AS moment ON moment.id = placement.published_moment_id
+					WHERE (
+						(target.target_kind = 'event' AND placement.event_id = target.target_id)
+						OR (target.target_kind = 'moment' AND moment.draft_moment_id = target.target_id)
+						OR (target.target_kind = 'media' AND placement.media_item_id = target.target_id)
+					) AND NOT content_is_withdrawn(
+						placement.event_id, moment.draft_moment_id, placement.media_item_id
+					)
 				)
 			), '[]'::jsonb)::text
 		FROM events AS event

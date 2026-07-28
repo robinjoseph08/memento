@@ -189,6 +189,19 @@ func (s *Service) Withdraw(ctx context.Context, actor setup.CuratorSession, requ
 		}
 		eventIDs = currentEventIDs
 
+		var hasVisiblePlacement bool
+		if err := tx.NewRaw(`SELECT EXISTS (
+			SELECT 1 FROM (`+selectedPlacements+`) AS selected
+			WHERE NOT content_is_withdrawn(
+				selected.event_id, selected.draft_moment_id, selected.media_item_id
+			)
+		)`, targetID).Scan(ctx, &hasVisiblePlacement); err != nil {
+			return err
+		}
+		if !hasVisiblePlacement {
+			return ErrAlreadyWithdrawn
+		}
+
 		if err := tx.NewRaw(`WITH selected AS (`+selectedPlacements+`
 		), visible AS (
 			SELECT selected.event_id, selected.media_item_id, entitlement.recipient_access_generation_id
@@ -397,7 +410,7 @@ func restoreEligibleWithdrawals(ctx context.Context, tx bun.Tx, eventID, publica
 			OR (withdrawal.target_kind = 'media'
 				AND EXISTS (
 					SELECT 1 FROM current_published_placements
-					WHERE event_id = ? AND publication_id = ? AND media_item_id = withdrawal.target_id
+					WHERE media_item_id = withdrawal.target_id
 				)
 				AND NOT EXISTS (
 					SELECT 1 FROM current_published_placements AS placement
@@ -408,7 +421,7 @@ func restoreEligibleWithdrawals(ctx context.Context, tx bun.Tx, eventID, publica
 			)
 		)
 		RETURNING withdrawal.id, withdrawal.target_kind, withdrawal.target_id`, publicationID, now,
-		eventID, eventID, eventID, publicationID).Scan(ctx, &restored); err != nil {
+		eventID, eventID).Scan(ctx, &restored); err != nil {
 		return err
 	}
 	for _, withdrawal := range restored {

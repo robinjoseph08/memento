@@ -214,6 +214,57 @@ func reviewForFreshPublication(t *testing.T, fixture publicationFixture, priorPu
 	require.NoError(t, err)
 }
 
+func publishReusedMediaInSecondEvent(t *testing.T, fixture publicationFixture) (uuid.UUID, uuid.UUID, PublicationResponse) {
+	t.Helper()
+	ctx := context.Background()
+	secondEvent, secondMoment, secondSnapshot := uuid.New(), uuid.New(), uuid.New()
+	_, err := fixture.db.NewRaw(`
+		INSERT INTO events (
+			id, lifecycle, title, description, grouping_timezone, version,
+			final_review_complete, created_at, updated_at
+		) VALUES (?, 'draft', 'Second Event', '', 'UTC', 7, true, ?, ?);
+		INSERT INTO draft_moments (
+			id, event_id, position, proposed_day, grouping_timezone, source_days,
+			title, cover_media_item_id, attendance_complete, audience_complete
+		) VALUES (?, ?, 0, '2026-07-27', 'UTC', ARRAY['2026-07-27'::date], 'Shared Media', ?, true, true);
+		INSERT INTO draft_media_placements (event_id, media_item_id, draft_moment_id, position, created_at)
+		VALUES (?, ?, ?, 0, ?);
+		INSERT INTO audience_snapshots (id, target_kind, target_id, approved_by_person_id, approved_at, label)
+		VALUES (?, 'moment', ?, ?, ?, 'Shared');
+		INSERT INTO audience_snapshot_entries (snapshot_id, recipient_person_id, recipient_access_generation_id)
+		VALUES (?, ?, ?);
+		INSERT INTO current_audience_snapshots (target_kind, target_id, snapshot_id)
+		VALUES ('moment', ?, ?)
+	`, secondEvent, fixture.service.now(), fixture.service.now(), secondMoment, secondEvent, fixture.media[0],
+		secondEvent, fixture.media[0], secondMoment, fixture.service.now(), secondSnapshot, secondMoment,
+		fixture.actor.PersonID, fixture.service.now(), secondSnapshot, fixture.people["shared"], fixture.access["shared"],
+		secondMoment, secondSnapshot).Exec(ctx)
+	require.NoError(t, err)
+	publication, err := fixture.service.PublishEvent(ctx, fixture.actor, secondEvent, fixture.request())
+	require.NoError(t, err)
+	return secondEvent, secondMoment, publication
+}
+
+func reviewMomentForFreshPublication(t *testing.T, fixture publicationFixture, eventID, momentID uuid.UUID, priorPublicationID string) {
+	t.Helper()
+	snapshotID := uuid.New()
+	_, err := fixture.db.NewRaw(`
+		INSERT INTO audience_snapshots (id, target_kind, target_id, approved_by_person_id, approved_at, label)
+		VALUES (?, 'moment', ?, ?, ?, 'Shared');
+		INSERT INTO audience_snapshot_entries (snapshot_id, recipient_person_id, recipient_access_generation_id)
+		SELECT ?, entry.recipient_person_id, entry.recipient_access_generation_id
+		FROM audience_entries AS entry
+		JOIN published_moments AS moment ON moment.id = entry.published_moment_id
+		WHERE moment.publication_id = ? AND moment.draft_moment_id = ?;
+		INSERT INTO current_audience_snapshots (target_kind, target_id, snapshot_id)
+		VALUES ('moment', ?, ?);
+		UPDATE draft_moments SET audience_complete = true WHERE id = ?;
+		UPDATE events SET final_review_complete = true WHERE id = ?
+	`, snapshotID, momentID, fixture.actor.PersonID, fixture.service.now(), snapshotID,
+		priorPublicationID, momentID, momentID, snapshotID, momentID, eventID).Exec(context.Background())
+	require.NoError(t, err)
+}
+
 func TestWithdrawalImmediatelyDeniesOnlyThePublishedTargetAndPreservesHistory(t *testing.T) {
 	for _, test := range []struct {
 		name               string
@@ -364,6 +415,108 @@ func TestWithdrawalImmediatelyDeniesOnlyThePublishedTargetAndPreservesHistory(t 
 			assert.Equal(t, "Requested by the family", event.Withdrawals[0].Reason)
 		})
 	}
+}
+
+func TestAncestorWithdrawalHidesAndRejectsFullyCoveredNestedTargets(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		kind      WithdrawalTargetKind
+		target    func(publicationFixture) uuid.UUID
+		nested    []func(publicationFixture) WithdrawRequest
+		hidden    []func(publicationFixture) string
+		remaining int
+	}{
+		{
+			name: "Event", kind: WithdrawalTargetEvent,
+			target: func(f publicationFixture) uuid.UUID { return f.event },
+			nested: []func(publicationFixture) WithdrawRequest{
+				func(f publicationFixture) WithdrawRequest {
+					return WithdrawRequest{TargetKind: WithdrawalTargetMoment, TargetID: f.moments[0].String(), Reason: "Nested Moment"}
+				},
+				func(f publicationFixture) WithdrawRequest {
+					return WithdrawRequest{TargetKind: WithdrawalTargetMedia, TargetID: f.media[0].String(), Reason: "Nested Media"}
+				},
+			},
+			hidden: []func(publicationFixture) string{
+				func(f publicationFixture) string { return "event:" + f.event.String() },
+				func(f publicationFixture) string { return "moment:" + f.moments[0].String() },
+				func(f publicationFixture) string { return "media:" + f.media[0].String() },
+			},
+		},
+		{
+			name: "Moment", kind: WithdrawalTargetMoment,
+			target: func(f publicationFixture) uuid.UUID { return f.moments[0] },
+			nested: []func(publicationFixture) WithdrawRequest{
+				func(f publicationFixture) WithdrawRequest {
+					return WithdrawRequest{TargetKind: WithdrawalTargetMedia, TargetID: f.media[0].String(), Reason: "Nested Media"}
+				},
+			},
+			hidden: []func(publicationFixture) string{
+				func(f publicationFixture) string { return "moment:" + f.moments[0].String() },
+				func(f publicationFixture) string { return "media:" + f.media[0].String() },
+			},
+			remaining: 5,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newPublicationFixture(t)
+			ctx := context.Background()
+			_, err := fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, fixture.request())
+			require.NoError(t, err)
+			_, err = fixture.service.Withdraw(ctx, fixture.actor, WithdrawRequest{
+				TargetKind: test.kind, TargetID: test.target(fixture).String(), Reason: "Ancestor privacy request",
+			})
+			require.NoError(t, err)
+
+			event, err := fixture.service.GetEvent(ctx, fixture.event)
+			require.NoError(t, err)
+			targets := make(map[string]struct{}, len(event.WithdrawalTargets))
+			for _, target := range event.WithdrawalTargets {
+				targets[string(target.TargetKind)+":"+target.TargetID] = struct{}{}
+			}
+			for _, hidden := range test.hidden {
+				assert.NotContains(t, targets, hidden(fixture))
+			}
+			assert.Len(t, targets, test.remaining)
+
+			tables := []string{"system_settings", "events", "draft_moments", "current_audience_snapshots", "content_withdrawals", "publication_audit_events"}
+			prior := snapshotWithdrawalState(t, fixture, tables)
+			for _, nested := range test.nested {
+				_, err = fixture.service.Withdraw(ctx, fixture.actor, nested(fixture))
+				assert.ErrorIs(t, err, ErrAlreadyWithdrawn)
+				assert.Equal(t, prior, snapshotWithdrawalState(t, fixture, tables), "nested rejection must not write durable history or invalidate reviews")
+			}
+		})
+	}
+}
+
+func TestMomentWithdrawalKeepsReusedMediaAvailableWhenAnotherPlacementIsVisible(t *testing.T) {
+	fixture := newPublicationFixture(t)
+	ctx := context.Background()
+	_, err := fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, fixture.request())
+	require.NoError(t, err)
+	secondEvent, _, _ := publishReusedMediaInSecondEvent(t, fixture)
+
+	_, err = fixture.service.Withdraw(ctx, fixture.actor, WithdrawRequest{
+		TargetKind: WithdrawalTargetMoment, TargetID: fixture.moments[0].String(), Reason: "Withdraw one placement",
+	})
+	require.NoError(t, err)
+	event, err := fixture.service.GetEvent(ctx, fixture.event)
+	require.NoError(t, err)
+	targets := make(map[string]struct{}, len(event.WithdrawalTargets))
+	for _, target := range event.WithdrawalTargets {
+		targets[string(target.TargetKind)+":"+target.TargetID] = struct{}{}
+	}
+	assert.NotContains(t, targets, "moment:"+fixture.moments[0].String())
+	assert.Contains(t, targets, "media:"+fixture.media[0].String(), "reused Media remains withdrawable while another placement is visible")
+
+	withdrawal, err := fixture.service.Withdraw(ctx, fixture.actor, WithdrawRequest{
+		TargetKind: WithdrawalTargetMedia, TargetID: fixture.media[0].String(), Reason: "Withdraw the remaining placement",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 1, withdrawal.AffectedEventCount)
+	_, err = fixture.service.RecipientEvent(ctx, fixture.actorFor("shared"), secondEvent)
+	assert.ErrorIs(t, err, ErrNoPublication)
 }
 
 func TestPartialWithdrawalPreservesEventProjectionsForRecipientsWithAnotherEntitlement(t *testing.T) {
@@ -1347,6 +1500,50 @@ func TestMediaRestorationUsesTransactionalContentRevisions(t *testing.T) {
 	assert.False(t, active)
 	_, err = fixture.service.RecipientEvent(ctx, fixture.actorFor("shared"), fixture.event)
 	require.NoError(t, err)
+}
+
+func TestMediaRestoresWhenTheFinalFreshPublicationRemovesItsStalePlacement(t *testing.T) {
+	fixture := newPublicationFixture(t)
+	ctx := context.Background()
+	first, err := fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, fixture.request())
+	require.NoError(t, err)
+	secondEvent, secondMoment, second := publishReusedMediaInSecondEvent(t, fixture)
+
+	withdrawal, err := fixture.service.Withdraw(ctx, fixture.actor, WithdrawRequest{
+		TargetKind: WithdrawalTargetMedia, TargetID: fixture.media[0].String(), Reason: "Review every current placement",
+	})
+	require.NoError(t, err)
+
+	reviewMomentForFreshPublication(t, fixture, fixture.event, fixture.moments[0], first.ID)
+	freshRetained, err := fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, PublishEventRequest{Version: 8})
+	require.NoError(t, err)
+	var active bool
+	require.NoError(t, fixture.db.NewRaw(`SELECT restored_at IS NULL FROM content_withdrawals WHERE id = ?`, withdrawal.ID).Scan(ctx, &active))
+	assert.True(t, active, "the stale second placement must continue to hold Withdrawal active")
+
+	_, err = fixture.db.NewRaw(`
+		DELETE FROM draft_media_placements WHERE event_id = ? AND media_item_id = ?;
+		UPDATE draft_moments SET cover_media_item_id = NULL WHERE id = ?
+	`, secondEvent, fixture.media[0], secondMoment).Exec(ctx)
+	require.NoError(t, err)
+	_, err = fixture.service.PublishEvent(ctx, fixture.actor, secondEvent, PublishEventRequest{Version: 8})
+	assert.ErrorIs(t, err, ErrPublicationNotReady, "removing Media must not bypass the fresh Audience requirement")
+
+	reviewMomentForFreshPublication(t, fixture, secondEvent, secondMoment, second.ID)
+	finalPublication, err := fixture.service.PublishEvent(ctx, fixture.actor, secondEvent, PublishEventRequest{Version: 8})
+	require.NoError(t, err)
+	var restoredBy uuid.UUID
+	require.NoError(t, fixture.db.NewRaw(`SELECT restored_by_publication_id, restored_at IS NULL
+		FROM content_withdrawals WHERE id = ?`, withdrawal.ID).Scan(ctx, &restoredBy, &active))
+	assert.False(t, active)
+	assert.Equal(t, uuid.MustParse(finalPublication.ID), restoredBy,
+		"the final superseding Publication restores Media even when it removes its own placement")
+
+	view, err := fixture.service.RecipientEvent(ctx, fixture.actorFor("shared"), fixture.event)
+	require.NoError(t, err)
+	assert.Equal(t, freshRetained.ID, view.PublicationID)
+	require.Len(t, view.Media, 1)
+	assert.Equal(t, fixture.media[0].String(), view.Media[0].ID)
 }
 
 func TestCuratorCanInspectWithdrawalHistoryAfterDraftIdentityRemoval(t *testing.T) {
