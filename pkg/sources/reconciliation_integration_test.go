@@ -618,6 +618,73 @@ func TestFinalPublishedSourceRemovalStaysPrivateWhileMediaRemainsAvailable(t *te
 	assert.True(t, deletedMomentFound)
 }
 
+func TestPublishedSourceRemovalThenReappearanceRestoresPlacementAndClearsStaging(t *testing.T) {
+	original := reconciliationAsset(uuid.New())
+	connector := &reconciliationConnector{summary: sourceAlbum(uuid.New(), "Restored source", 1)}
+	connector.pages = map[int]immich.AssetPage{1: {Items: []immich.AssetSummary{original}}}
+	service, sourceAlbumID := newReconciliationService(t, connector)
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	fixture := publishSourceEventFixture(t, service, sourceAlbumID, original.SourceID)
+	connector.setAssetExists(original.SourceID, true)
+	const originalPosition = 4
+	_, err := service.db.NewRaw(`
+		UPDATE draft_media_placements SET position = ? WHERE event_id = ? AND media_item_id = ?;
+		UPDATE published_media_placements SET position = ?
+		WHERE published_moment_id IN (SELECT id FROM published_moments WHERE publication_id = ?)
+		  AND media_item_id = ?;
+		UPDATE current_published_placements SET position = ? WHERE event_id = ? AND media_item_id = ?
+	`, originalPosition, fixture.eventID, fixture.mediaID,
+		originalPosition, fixture.publicationID, fixture.mediaID,
+		originalPosition, fixture.eventID, fixture.mediaID).Exec(context.Background())
+	require.NoError(t, err)
+
+	connector.setMembership()
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	var storedMomentID *uuid.UUID
+	var storedPosition int
+	var storedCover bool
+	require.NoError(t, service.db.NewRaw(`
+		SELECT draft_moment_id, position, was_cover FROM staged_source_removals
+		WHERE event_id = ? AND media_item_id = ?
+	`, fixture.eventID, fixture.mediaID).Scan(context.Background(), &storedMomentID, &storedPosition, &storedCover))
+	require.NotNil(t, storedMomentID)
+	assert.Equal(t, fixture.momentID, *storedMomentID)
+	assert.Equal(t, originalPosition, storedPosition)
+	assert.True(t, storedCover)
+	removed, err := staging.Load(context.Background(), service.db, fixture.eventID)
+	require.NoError(t, err)
+	require.NotNil(t, removed)
+	require.Len(t, removed.Changes, 2)
+
+	connector.setMembership(original)
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	var restoredMomentID *uuid.UUID
+	var restoredPosition int
+	require.NoError(t, service.db.NewRaw(`
+		SELECT draft_moment_id, position FROM draft_media_placements
+		WHERE event_id = ? AND media_item_id = ?
+	`, fixture.eventID, fixture.mediaID).Scan(context.Background(), &restoredMomentID, &restoredPosition))
+	require.NotNil(t, restoredMomentID)
+	assert.Equal(t, fixture.momentID, *restoredMomentID)
+	assert.Equal(t, originalPosition, restoredPosition)
+	var restoredCoverID *uuid.UUID
+	require.NoError(t, service.db.NewRaw(`SELECT cover_media_item_id FROM draft_moments WHERE id = ?`, fixture.momentID).Scan(context.Background(), &restoredCoverID))
+	require.NotNil(t, restoredCoverID)
+	assert.Equal(t, fixture.mediaID, *restoredCoverID)
+	var restorationRows, stagedRows int
+	require.NoError(t, service.db.NewRaw(`SELECT count(*) FROM staged_source_removals WHERE event_id = ?`, fixture.eventID).Scan(context.Background(), &restorationRows))
+	require.NoError(t, service.db.NewRaw(`SELECT count(*) FROM staged_updates WHERE event_id = ?`, fixture.eventID).Scan(context.Background(), &stagedRows))
+	assert.Zero(t, restorationRows)
+	assert.Zero(t, stagedRows)
+	var stagedPointer *uuid.UUID
+	require.NoError(t, service.db.NewRaw(`SELECT current_staged_update_id FROM events WHERE id = ?`, fixture.eventID).Scan(context.Background(), &stagedPointer))
+	assert.Nil(t, stagedPointer)
+	cancelled, err := staging.Load(context.Background(), service.db, fixture.eventID)
+	require.NoError(t, err)
+	assert.Nil(t, cancelled, "restoring the exact published result leaves no empty Staged work")
+}
+
 func TestConfirmedDeletedPublishedMediaBecomesUnavailable(t *testing.T) {
 	original := repairableReconciliationAsset(uuid.New(), "/library/deleted/family.jpg")
 	connector := &reconciliationConnector{summary: sourceAlbum(uuid.New(), "Deleted source", 1)}

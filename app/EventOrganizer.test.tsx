@@ -474,6 +474,13 @@ test("shows the resulting Event with highlighted Staged net changes", async () =
         detail: "Media removed",
       },
       {
+        kind: "move",
+        count: 1,
+        media_item_ids: [items.a.id],
+        moment_ids: [],
+        detail: "Media moved or reordered",
+      },
+      {
         kind: "moment_structure",
         count: 1,
         media_item_ids: [],
@@ -489,8 +496,8 @@ test("shows the resulting Event with highlighted Staged net changes", async () =
       },
       {
         kind: "metadata",
-        count: 1,
-        media_item_ids: [],
+        count: 2,
+        media_item_ids: [items.a.id],
         moment_ids: [momentOneID],
         detail: "Event or Moment metadata edited",
       },
@@ -518,8 +525,9 @@ test("shows the resulting Event with highlighted Staged net changes", async () =
   expect(review).toHaveTextContent("complete resulting Event");
   expect(review).toHaveTextContent("Additions1");
   expect(review).toHaveTextContent("Removals2");
+  expect(review).toHaveTextContent("Moves and ordering1");
   expect(review).toHaveTextContent("Moment structure1");
-  expect(review).toHaveTextContent("Metadata edits1");
+  expect(review).toHaveTextContent("Metadata edits2");
   expect(review).toHaveTextContent("Access changes1");
   expect(review).toHaveTextContent("Removed from the resulting Event");
   expect(review).toHaveTextContent("Undated third photo");
@@ -537,6 +545,15 @@ test("shows the resulting Event with highlighted Staged net changes", async () =
   expect(document.querySelectorAll(".moment-card.staged-access")).toHaveLength(
     1,
   );
+  expect(
+    document.querySelectorAll(".media-row.staged-move.staged-metadata"),
+  ).toHaveLength(1);
+  expect(
+    screen.getByLabelText("Staged changes: Moves and ordering, Metadata edits"),
+  ).toHaveTextContent("Staged: Moves and ordering, Metadata edits");
+  expect(
+    screen.getByLabelText("Staged changes: Metadata edits, Access changes"),
+  ).toBeVisible();
 });
 
 test("publishes ready work and previews Recipient output read only", async () => {

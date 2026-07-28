@@ -259,22 +259,35 @@ function Checklist({ event }: { event: DraftEvent }) {
   );
 }
 
+function StagedChangeLabels({ kinds }: { kinds: StagedChange["kind"][] }) {
+  if (kinds.length === 0) return null;
+  const labels = kinds.map((kind) => stagedLabels[kind]);
+  return (
+    <span
+      aria-label={`Staged changes: ${labels.join(", ")}`}
+      className="staged-change-label"
+    >
+      Staged: {labels.join(", ")}
+    </span>
+  );
+}
+
 function MediaRow({
   item,
   selected,
   onSelect,
   onMove,
-  stagedKind,
+  stagedKinds,
 }: {
   item: MediaItem;
   selected: boolean;
   onSelect: () => void;
   onMove: (direction: -1 | 1) => void;
-  stagedKind?: StagedChange["kind"];
+  stagedKinds: StagedChange["kind"][];
 }) {
   return (
     <li
-      className={`media-row${stagedKind ? ` staged-${stagedKind}` : ""}`}
+      className={`media-row ${stagedKinds.map((kind) => `staged-${kind}`).join(" ")}`.trim()}
       onKeyDown={(event) => {
         if (event.altKey && event.key === "ArrowUp") {
           event.preventDefault();
@@ -289,6 +302,7 @@ function MediaRow({
       <label>
         <input checked={selected} onChange={onSelect} type="checkbox" />
         <span>{mediaLabel(item)}</span>
+        <StagedChangeLabels kinds={stagedKinds} />
       </label>
       <span className="row-actions">
         <button
@@ -364,10 +378,11 @@ export function EventOrganizer({
         ? eventQuery.data
         : undefined;
   const stagedMediaKinds = useMemo(() => {
-    const kinds = new Map<string, StagedChange["kind"]>();
+    const kinds = new Map<string, StagedChange["kind"][]>();
     for (const change of currentDraft?.staged_update?.changes ?? []) {
-      for (const mediaID of change.media_item_ids)
-        kinds.set(mediaID, change.kind);
+      for (const mediaID of change.media_item_ids) {
+        kinds.set(mediaID, [...(kinds.get(mediaID) ?? []), change.kind]);
+      }
     }
     return kinds;
   }, [currentDraft?.staged_update]);
@@ -1147,7 +1162,7 @@ export function EventOrganizer({
                         })
                       }
                       selected={selectedMedia.has(item.id)}
-                      stagedKind={stagedMediaKinds.get(item.id)}
+                      stagedKinds={stagedMediaKinds.get(item.id) ?? []}
                     />
                   ))}
                 </ul>
@@ -1163,6 +1178,9 @@ export function EventOrganizer({
                         <p>
                           Moment {index + 1} · {moment.proposed_day}
                         </p>
+                        <StagedChangeLabels
+                          kinds={stagedMomentKinds.get(moment.id) ?? []}
+                        />
                         <input
                           aria-label={`Title for Moment ${index + 1}`}
                           onChange={(event) =>
@@ -1241,7 +1259,7 @@ export function EventOrganizer({
                             })
                           }
                           selected={selectedMedia.has(item.id)}
-                          stagedKind={stagedMediaKinds.get(item.id)}
+                          stagedKinds={stagedMediaKinds.get(item.id) ?? []}
                         />
                       ))}
                     </ul>
