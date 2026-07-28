@@ -203,6 +203,9 @@ func (s *Service) ConfirmAttendance(ctx context.Context, actor setup.CuratorSess
 		if err := lockTarget(ctx, tx, t, version); err != nil {
 			return err
 		}
+		if err := discardStagedReviewRestoration(ctx, tx, t); err != nil {
+			return err
+		}
 		if len(ids) > 0 {
 			var available []uuid.UUID
 			if err := tx.NewRaw(`SELECT id FROM people WHERE id IN (?) AND archived_at IS NULL AND merged_at IS NULL FOR SHARE`, bun.List(ids)).Scan(ctx, &available); err != nil {
@@ -256,6 +259,9 @@ func (s *Service) Recalculate(ctx context.Context, actor setup.CuratorSession, k
 		if err := lockTarget(ctx, tx, t, version); err != nil {
 			return err
 		}
+		if err := discardStagedReviewRestoration(ctx, tx, t); err != nil {
+			return err
+		}
 		if err := recalculate(ctx, tx, t, now); err != nil {
 			return err
 		}
@@ -296,6 +302,9 @@ func (s *Service) SetOverride(ctx context.Context, actor setup.CuratorSession, k
 	var response Review
 	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 		if err := lockTarget(ctx, tx, t, version); err != nil {
+			return err
+		}
+		if err := discardStagedReviewRestoration(ctx, tx, t); err != nil {
 			return err
 		}
 		var lockedRecipient uuid.UUID
@@ -358,6 +367,9 @@ func (s *Service) Approve(ctx context.Context, actor setup.CuratorSession, kind 
 		if err := lockTarget(ctx, tx, t, version); err != nil {
 			return err
 		}
+		if err := discardStagedReviewRestoration(ctx, tx, t); err != nil {
+			return err
+		}
 		if t.kind == targetMoment {
 			var attendanceConfirmed bool
 			if err := tx.NewRaw(`SELECT attendance_complete FROM draft_moments WHERE id = ?`, t.id).Scan(ctx, &attendanceConfirmed); err != nil {
@@ -409,6 +421,13 @@ func (s *Service) Approve(ctx context.Context, actor setup.CuratorSession, kind 
 		return nil
 	})
 	return response, err
+}
+
+func discardStagedReviewRestoration(ctx context.Context, tx bun.Tx, t target) error {
+	if t.kind != targetMoment {
+		return nil
+	}
+	return staging.DiscardMomentReviewRestoration(ctx, tx, t.id)
 }
 
 func lockEligibleProposalRecipients(ctx context.Context, tx bun.Tx, t target) (int, error) {

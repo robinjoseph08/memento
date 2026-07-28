@@ -18,6 +18,7 @@ type RemovedMedia struct {
 	ID            string  `json:"id"`
 	MediaType     string  `json:"media_type"`
 	LocalDateTime *string `json:"local_date_time"`
+	Restorable    bool    `json:"restorable"`
 }
 
 // DeletedMoment identifies published structure absent from the resulting Event.
@@ -203,7 +204,16 @@ func summarizeStagedUpdate(ctx context.Context, db bun.IDB, eventID, publication
 	moves := meaningfulMoves(draft, published)
 	var removedMedia []RemovedMedia
 	if err := db.NewRaw(`
-		SELECT placement.media_item_id AS id, placement.media_type, placement.local_date_time
+		SELECT placement.media_item_id AS id, placement.media_type, placement.local_date_time,
+			EXISTS (
+				SELECT 1
+				FROM event_sources AS source
+				JOIN source_album_memberships AS membership
+				  ON membership.source_album_id = source.source_album_id
+				JOIN media_items AS media ON media.id = membership.media_item_id
+				WHERE source.event_id = ? AND membership.media_item_id = placement.media_item_id
+				  AND media.availability = 'current'
+			) AS restorable
 		FROM published_media_placements AS placement
 		JOIN published_moments AS moment ON moment.id = placement.published_moment_id
 		WHERE moment.publication_id = ?
@@ -212,7 +222,7 @@ func summarizeStagedUpdate(ctx context.Context, db bun.IDB, eventID, publication
 			WHERE editable.event_id = ? AND editable.media_item_id = placement.media_item_id
 		  )
 		ORDER BY moment.position, placement.position, placement.media_item_id
-	`, publicationID, eventID).Scan(ctx, &removedMedia); err != nil {
+	`, eventID, publicationID, eventID).Scan(ctx, &removedMedia); err != nil {
 		return nil, err
 	}
 
@@ -334,7 +344,7 @@ func summarizeStagedUpdate(ctx context.Context, db bun.IDB, eventID, publication
 	}
 	var recipientAccess []RecipientAccessChange
 	if err := db.NewRaw(`
-		WITH editable AS (
+		WITH editable_event AS (
 			SELECT DISTINCT entry.recipient_access_generation_id AS access_id,
 				placement.media_item_id
 			FROM draft_moments AS moment
@@ -343,20 +353,21 @@ func summarizeStagedUpdate(ctx context.Context, db bun.IDB, eventID, publication
 			JOIN audience_snapshot_entries AS entry ON entry.snapshot_id = snapshot.snapshot_id
 			JOIN draft_media_placements AS placement ON placement.draft_moment_id = moment.id
 			WHERE moment.event_id = ?
-		), published AS (
-			SELECT DISTINCT audience.recipient_access_generation_id AS access_id,
-				placement.media_item_id
-			FROM published_moments AS moment
-			JOIN audience_entries AS audience ON audience.published_moment_id = moment.id
-			JOIN published_media_placements AS placement ON placement.published_moment_id = moment.id
-			WHERE moment.publication_id = ?
+		), before_global AS (
+			SELECT DISTINCT recipient_access_generation_id AS access_id, media_item_id
+			FROM current_audience_entitlements
+		), after_global AS (
+			SELECT DISTINCT recipient_access_generation_id AS access_id, media_item_id
+			FROM current_audience_entitlements WHERE event_id <> ?
+			UNION
+			SELECT access_id, media_item_id FROM editable_event
 		), changed AS (
-			SELECT COALESCE(editable.access_id, published.access_id) AS access_id,
-				(editable.media_item_id IS NOT NULL AND published.media_item_id IS NULL)::integer AS granted,
-				(published.media_item_id IS NOT NULL AND editable.media_item_id IS NULL)::integer AS revoked
-			FROM editable
-			FULL JOIN published USING (access_id, media_item_id)
-			WHERE editable.media_item_id IS NULL OR published.media_item_id IS NULL
+			SELECT COALESCE(after_global.access_id, before_global.access_id) AS access_id,
+				(after_global.media_item_id IS NOT NULL AND before_global.media_item_id IS NULL)::integer AS granted,
+				(before_global.media_item_id IS NOT NULL AND after_global.media_item_id IS NULL)::integer AS revoked
+			FROM after_global
+			FULL JOIN before_global USING (access_id, media_item_id)
+			WHERE after_global.media_item_id IS NULL OR before_global.media_item_id IS NULL
 		)
 		SELECT person.id AS recipient_person_id, person.display_name AS recipient_name,
 			sum(changed.granted)::integer AS granted_media_count,
@@ -366,7 +377,7 @@ func summarizeStagedUpdate(ctx context.Context, db bun.IDB, eventID, publication
 		JOIN people AS person ON person.id = access.person_id
 		GROUP BY person.id, person.display_name, person.sort_name
 		ORDER BY person.sort_name, person.id
-	`, eventID, publicationID).Scan(ctx, &recipientAccess); err != nil {
+	`, eventID, eventID).Scan(ctx, &recipientAccess); err != nil {
 		return nil, err
 	}
 
@@ -418,15 +429,18 @@ func summarizeStagedUpdate(ctx context.Context, db bun.IDB, eventID, publication
 		})
 	}
 	appendMomentChange(ChangeKindMomentStructure, "Moment structure or ordering changed", structureMoments, 0)
-	if len(recipientAccess) > 0 {
+	if len(accessMoments) > 0 {
 		momentIDs := make([]string, 0, len(accessMoments))
 		for _, id := range accessMoments {
 			momentIDs = append(momentIDs, id.String())
 		}
+		detail := "Moment Audience changed without changing global Recipient Media access"
+		if len(recipientAccess) > 0 {
+			detail = "Global Recipient Media access granted or revoked"
+		}
 		changes = append(changes, Change{
 			Kind: ChangeKindAccess, Count: len(recipientAccess), MediaItemIDs: []string{},
-			MomentIDs: momentIDs, RecipientAccess: recipientAccess,
-			Detail: "Recipient Media access granted or revoked",
+			MomentIDs: momentIDs, RecipientAccess: recipientAccess, Detail: detail,
 		})
 	}
 	return changes, nil

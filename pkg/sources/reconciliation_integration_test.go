@@ -770,21 +770,41 @@ func TestPublishedPartialSourceRemovalThenReappearanceRestoresPlacementAndClears
 	service, sourceAlbumID := newReconciliationService(t, connector)
 	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
 	fixture := publishSourceEventFixture(t, service, sourceAlbumID, original.SourceID)
+	authorizeSourceRecipient(t, service, &fixture)
 	connector.setAssetExists(original.SourceID, true)
 	const originalPosition = 4
+	var originalSnapshotID uuid.UUID
+	require.NoError(t, service.db.NewRaw(`
+		SELECT snapshot_id FROM current_audience_snapshots
+		WHERE target_kind = 'moment' AND target_id = ?
+	`, fixture.momentID).Scan(context.Background(), &originalSnapshotID))
 	_, err := service.db.NewRaw(`
+		INSERT INTO attendance (moment_id, person_id, source, confirmed_by_person_id, confirmed_at)
+		VALUES (?, ?, 'manual', ?, now());
+		INSERT INTO audience_overrides (
+			target_kind, target_id, recipient_person_id, state, updated_by_person_id, updated_at
+		) VALUES ('moment', ?, ?, 'included', ?, now());
+		INSERT INTO audience_proposals (
+			target_kind, target_id, recipient_person_id, recipient_access_generation_id, included, recalculated_at
+		) VALUES ('moment', ?, ?, ?, true, now());
+		INSERT INTO audience_reasons (target_kind, target_id, recipient_person_id, kind)
+		VALUES ('moment', ?, ?, 'manually_included');
+		UPDATE draft_moments SET review_version = 7 WHERE id = ?;
 		UPDATE event_sources SET include_future_media = false WHERE event_id = ? AND source_album_id = ?;
 		UPDATE draft_media_placements SET position = ? WHERE event_id = ? AND media_item_id = ?;
 		UPDATE published_media_placements SET position = ?
 		WHERE published_moment_id IN (SELECT id FROM published_moments WHERE publication_id = ?)
 		  AND media_item_id = ?;
 		UPDATE current_published_placements SET position = ? WHERE event_id = ? AND media_item_id = ?
-	`, fixture.eventID, sourceAlbumID,
+	`, fixture.momentID, fixture.recipient.PersonID, fixture.curator.PersonID,
+		fixture.momentID, fixture.recipient.PersonID, fixture.curator.PersonID,
+		fixture.momentID, fixture.recipient.PersonID, fixture.recipient.AccessID,
+		fixture.momentID, fixture.recipient.PersonID, fixture.momentID,
+		fixture.eventID, sourceAlbumID,
 		originalPosition, fixture.eventID, fixture.mediaID,
 		originalPosition, fixture.publicationID, fixture.mediaID,
 		originalPosition, fixture.eventID, fixture.mediaID).Exec(context.Background())
 	require.NoError(t, err)
-
 	connector.setMembership()
 	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
 	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
@@ -802,7 +822,9 @@ func TestPublishedPartialSourceRemovalThenReappearanceRestoresPlacementAndClears
 	removed, err := staging.Load(context.Background(), service.db, fixture.eventID)
 	require.NoError(t, err)
 	require.NotNil(t, removed)
-	require.Len(t, removed.Changes, 2)
+	require.Len(t, removed.Changes, 3)
+	assert.Equal(t, staging.ChangeKindAccess, removed.Changes[2].Kind)
+	assert.Equal(t, 1, removed.Changes[2].RecipientAccess[0].RevokedMediaCount)
 
 	connector.setMembership(original, future)
 	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
@@ -835,6 +857,26 @@ func TestPublishedPartialSourceRemovalThenReappearanceRestoresPlacementAndClears
 	cancelled, err := staging.Load(context.Background(), service.db, fixture.eventID)
 	require.NoError(t, err)
 	assert.Nil(t, cancelled, "restoring the exact published result leaves no empty Staged work")
+	var attendanceComplete, audienceComplete bool
+	var reviewVersion int64
+	var restoredSnapshotID uuid.UUID
+	var attendanceRows, overrideRows, proposalRows, reasonRows, reviewRestorationRows int
+	require.NoError(t, service.db.NewRaw(`SELECT attendance_complete, audience_complete, review_version FROM draft_moments WHERE id = ?`, fixture.momentID).Scan(context.Background(), &attendanceComplete, &audienceComplete, &reviewVersion))
+	require.NoError(t, service.db.NewRaw(`SELECT snapshot_id FROM current_audience_snapshots WHERE target_kind = 'moment' AND target_id = ?`, fixture.momentID).Scan(context.Background(), &restoredSnapshotID))
+	require.NoError(t, service.db.NewRaw(`SELECT count(*) FROM attendance WHERE moment_id = ?`, fixture.momentID).Scan(context.Background(), &attendanceRows))
+	require.NoError(t, service.db.NewRaw(`SELECT count(*) FROM audience_overrides WHERE target_kind = 'moment' AND target_id = ?`, fixture.momentID).Scan(context.Background(), &overrideRows))
+	require.NoError(t, service.db.NewRaw(`SELECT count(*) FROM audience_proposals WHERE target_kind = 'moment' AND target_id = ?`, fixture.momentID).Scan(context.Background(), &proposalRows))
+	require.NoError(t, service.db.NewRaw(`SELECT count(*) FROM audience_reasons WHERE target_kind = 'moment' AND target_id = ?`, fixture.momentID).Scan(context.Background(), &reasonRows))
+	require.NoError(t, service.db.NewRaw(`SELECT count(*) FROM staged_moment_review_restorations WHERE event_id = ?`, fixture.eventID).Scan(context.Background(), &reviewRestorationRows))
+	assert.True(t, attendanceComplete)
+	assert.True(t, audienceComplete)
+	assert.Equal(t, int64(8), reviewVersion, "restoration keeps the invalidation version so stale clients remain stale")
+	assert.Equal(t, originalSnapshotID, restoredSnapshotID)
+	assert.Equal(t, 1, attendanceRows)
+	assert.Equal(t, 1, overrideRows)
+	assert.Equal(t, 1, proposalRows)
+	assert.Equal(t, 1, reasonRows)
+	assert.Zero(t, reviewRestorationRows)
 }
 
 func TestConfirmedDeletedPublishedMediaBecomesUnavailable(t *testing.T) {

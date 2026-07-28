@@ -539,6 +539,105 @@ func TestCuratorCanStageEventMetadataAndMediaRemovalCorrections(t *testing.T) {
 	assert.ErrorIs(t, err, ErrPublicationNotReady, "Curator corrections require a fresh final review")
 }
 
+func TestCuratorCanRestoreAutosavedPublishedMediaRemoval(t *testing.T) {
+	fixture := newPublicationFixture(t)
+	ctx := context.Background()
+	_, err := fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, fixture.request())
+	require.NoError(t, err)
+
+	sourceID := uuid.New()
+	_, err = fixture.db.NewRaw(`
+		INSERT INTO source_albums (
+			id, immich_album_id, name, description, asset_count, source_created_at,
+			source_updated_at, disposition, first_seen_at, last_seen_at,
+			source_fingerprint, next_reconciliation_at
+		) VALUES (?, ?, 'Published source', '', 1, now(), now(), 'drafted', now(), now(), decode(repeat('00', 32), 'hex'), now());
+		INSERT INTO event_sources (
+			event_id, source_album_id, source_order, initialized_name,
+			initialized_description, initialized_at
+		) VALUES (?, ?, 0, 'Published source', '', now());
+		INSERT INTO source_album_memberships (
+			source_album_id, immich_asset_id, media_item_id, first_seen_at,
+			last_seen_at, source_fingerprint
+		) SELECT ?, immich_asset_id, id, now(), now(), decode(repeat('11', 32), 'hex')
+		  FROM media_items WHERE id = ?
+	`, sourceID, uuid.New(), fixture.event, sourceID, sourceID, fixture.media[0]).Exec(ctx)
+	require.NoError(t, err)
+
+	var originalSnapshotID uuid.UUID
+	require.NoError(t, fixture.db.NewRaw(`
+		SELECT snapshot_id FROM current_audience_snapshots
+		WHERE target_kind = 'moment' AND target_id = ?
+	`, fixture.moments[0]).Scan(ctx, &originalSnapshotID))
+	_, err = fixture.db.NewRaw(`
+		INSERT INTO attendance (moment_id, person_id, source, confirmed_by_person_id, confirmed_at)
+		VALUES (?, ?, 'manual', ?, now());
+		INSERT INTO audience_overrides (
+			target_kind, target_id, recipient_person_id, state, updated_by_person_id, updated_at
+		) VALUES ('moment', ?, ?, 'included', ?, now());
+		INSERT INTO audience_proposals (
+			target_kind, target_id, recipient_person_id, recipient_access_generation_id, included, recalculated_at
+		) VALUES ('moment', ?, ?, ?, true, now());
+		INSERT INTO audience_reasons (target_kind, target_id, recipient_person_id, kind)
+		VALUES ('moment', ?, ?, 'manually_included')
+	`, fixture.moments[0], fixture.people["shared"], fixture.actor.PersonID,
+		fixture.moments[0], fixture.people["shared"], fixture.actor.PersonID,
+		fixture.moments[0], fixture.people["shared"], fixture.access["shared"],
+		fixture.moments[0], fixture.people["shared"]).Exec(ctx)
+	require.NoError(t, err)
+
+	secondCover, thirdCover := fixture.media[1].String(), fixture.media[2].String()
+	removed, err := fixture.service.OrganizeEvent(ctx, fixture.actor, fixture.event, OrganizeEventRequest{
+		Version: 7,
+		Moments: []OrganizeMoment{
+			{ID: fixture.moments[1].String(), Title: "Moment", ProposedDay: "2026-07-28", CoverMediaItemID: &secondCover, MediaItemIDs: []string{fixture.media[1].String()}},
+			{ID: fixture.moments[2].String(), Title: "Moment", ProposedDay: "2026-07-29", CoverMediaItemID: &thirdCover, MediaItemIDs: []string{fixture.media[2].String()}},
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, removed.StagedUpdate)
+
+	_, err = fixture.db.NewRaw(`DELETE FROM source_album_memberships WHERE source_album_id = ? AND media_item_id = ?`, sourceID, fixture.media[0]).Exec(ctx)
+	require.NoError(t, err)
+	_, err = fixture.service.RestorePublishedMedia(ctx, fixture.actor, fixture.event, RestorePublishedMediaRequest{
+		Version: removed.Version, MediaItemID: fixture.media[0].String(),
+	})
+	assert.ErrorIs(t, err, ErrMediaUnavailable, "restoration requires the published identity to remain in an Event-linked Source")
+	_, err = fixture.db.NewRaw(`
+		INSERT INTO source_album_memberships (
+			source_album_id, immich_asset_id, media_item_id, first_seen_at,
+			last_seen_at, source_fingerprint
+		) SELECT ?, immich_asset_id, id, now(), now(), decode(repeat('11', 32), 'hex')
+		  FROM media_items WHERE id = ?
+	`, sourceID, fixture.media[0]).Exec(ctx)
+	require.NoError(t, err)
+
+	restored, err := fixture.service.RestorePublishedMedia(ctx, fixture.actor, fixture.event, RestorePublishedMediaRequest{
+		Version: removed.Version, MediaItemID: fixture.media[0].String(),
+	})
+	require.NoError(t, err)
+	assert.Nil(t, restored.StagedUpdate, "restoring the published result cancels the private removal")
+	require.Len(t, restored.Moments, 3)
+	assert.Equal(t, fixture.moments[0].String(), restored.Moments[0].ID)
+	assert.Equal(t, fixture.media[0].String(), restored.Moments[0].MediaItems[0].ID)
+	assert.True(t, restored.Moments[0].AttendanceComplete)
+	assert.True(t, restored.Moments[0].AudienceComplete)
+	var restoredSnapshotID uuid.UUID
+	var attendanceRows, overrideRows, proposalRows, reasonRows, restorationRows int
+	require.NoError(t, fixture.db.NewRaw(`SELECT snapshot_id FROM current_audience_snapshots WHERE target_kind = 'moment' AND target_id = ?`, fixture.moments[0]).Scan(ctx, &restoredSnapshotID))
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM attendance WHERE moment_id = ?`, fixture.moments[0]).Scan(ctx, &attendanceRows))
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM audience_overrides WHERE target_kind = 'moment' AND target_id = ?`, fixture.moments[0]).Scan(ctx, &overrideRows))
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM audience_proposals WHERE target_kind = 'moment' AND target_id = ?`, fixture.moments[0]).Scan(ctx, &proposalRows))
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM audience_reasons WHERE target_kind = 'moment' AND target_id = ?`, fixture.moments[0]).Scan(ctx, &reasonRows))
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM staged_moment_review_restorations WHERE event_id = ?`, fixture.event).Scan(ctx, &restorationRows))
+	assert.Equal(t, originalSnapshotID, restoredSnapshotID)
+	assert.Equal(t, 1, attendanceRows)
+	assert.Equal(t, 1, overrideRows)
+	assert.Equal(t, 1, proposalRows)
+	assert.Equal(t, 1, reasonRows)
+	assert.Zero(t, restorationRows)
+}
+
 func TestOrganizationChangesInvalidateReviewedAudienceAndFinalReview(t *testing.T) {
 	fixture := newPublicationFixture(t)
 	ctx := context.Background()

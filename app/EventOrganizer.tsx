@@ -155,7 +155,19 @@ const stagedLabels: Record<StagedChange["kind"], string> = {
   access: "Access changes",
 };
 
-function StagedUpdateReview({ event }: { event: DraftEvent }) {
+function StagedUpdateReview({
+  event,
+  onRestoreMedia,
+  restoringMediaID,
+  restoreDisabled,
+  restoreError,
+}: {
+  event: DraftEvent;
+  onRestoreMedia: (mediaID: string) => void;
+  restoringMediaID?: string;
+  restoreDisabled: boolean;
+  restoreError?: string;
+}) {
   if (!event.staged_update) return null;
   const removedMedia = event.staged_update.changes.flatMap(
     (change) => change.removed_media ?? [],
@@ -231,6 +243,24 @@ function StagedUpdateReview({ event }: { event: DraftEvent }) {
                   <strong>Removed Media</strong>
                   <span>{mediaLabel(item)}</span>
                   <code>{item.id}</code>
+                  {item.restorable ? (
+                    <button
+                      disabled={
+                        restoreDisabled || restoringMediaID !== undefined
+                      }
+                      onClick={() => onRestoreMedia(item.id)}
+                      type="button"
+                    >
+                      {restoringMediaID === item.id
+                        ? "Restoring…"
+                        : "Restore removed Media"}
+                    </button>
+                  ) : (
+                    <small>
+                      Restore unavailable because the Source no longer contains
+                      this Media.
+                    </small>
+                  )}
                 </li>
               ))}
               {deletedMoments.map((moment) => (
@@ -241,6 +271,11 @@ function StagedUpdateReview({ event }: { event: DraftEvent }) {
                 </li>
               ))}
             </ul>
+            {restoreError ? (
+              <p className="form-error" role="alert">
+                {restoreError}
+              </p>
+            ) : null}
           </section>
         ) : null}
       </div>
@@ -511,6 +546,35 @@ export function EventOrganizer({
       previewOpen && selectedID.length > 0 && previewRecipientID.length > 0,
     retry: false,
   });
+  const restorePublishedMedia = useMutation({
+    mutationFn: ({ event, mediaID }: { event: DraftEvent; mediaID: string }) =>
+      apiJSON<DraftEvent>(
+        `/api/events/${event.id}/published-media-restorations`,
+        {
+          method: "POST",
+          headers: { "X-Memento-CSRF": session.csrf_token },
+          body: JSON.stringify({
+            version: event.version,
+            media_item_id: mediaID,
+          }),
+        },
+      ),
+    onSuccess: (restored) => {
+      const next = cloneEvent(restored);
+      latestDraftRef.current = next;
+      queryClient.setQueryData(["event", restored.id], next);
+      setDraft(next);
+      setSaveState("saved");
+      revisionRef.current = 0;
+      setRevision(0);
+      setPreviewOpen(false);
+      void queryClient.invalidateQueries({ queryKey: ["events"] });
+      void queryClient.invalidateQueries({
+        queryKey: ["attendance-audience"],
+      });
+    },
+  });
+
   const publish = useMutation({
     mutationFn: (event: DraftEvent) =>
       apiJSON<PublicationResponse>(`/api/events/${event.id}/publications`, {
@@ -1194,7 +1258,19 @@ export function EventOrganizer({
                 }
                 placeholder="Paris, Jardin du Luxembourg"
               />
-              <StagedUpdateReview event={currentDraft} />
+              <StagedUpdateReview
+                event={currentDraft}
+                onRestoreMedia={(mediaID) =>
+                  restorePublishedMedia.mutate({ event: currentDraft, mediaID })
+                }
+                restoreDisabled={saveState !== "saved"}
+                restoreError={restorePublishedMedia.error?.message}
+                restoringMediaID={
+                  restorePublishedMedia.isPending
+                    ? restorePublishedMedia.variables?.mediaID
+                    : undefined
+                }
+              />
               <section
                 aria-labelledby="event-details-title"
                 className="event-details-editor"

@@ -103,6 +103,12 @@ type OrganizeEventRequest struct {
 	FinalReviewComplete bool             `json:"final_review_complete"`
 }
 
+// RestorePublishedMediaRequest cancels one safe Media omission at an expected version.
+type RestorePublishedMediaRequest struct {
+	Version     int64  `json:"version" validate:"required,min=1"`
+	MediaItemID string `json:"media_item_id" validate:"required"`
+}
+
 // EventSummary supports Curator work navigation without loading every Media item.
 type EventSummary struct {
 	ID              string    `json:"id"`
@@ -709,6 +715,16 @@ func (s *Service) OrganizeEvent(ctx context.Context, actor setup.CuratorSession,
 				}
 			}
 		}
+		for _, prior := range priorReviews {
+			_, retained := seenMoments[prior.ID]
+			_, invalidated := invalidatedReviews[prior.ID]
+			if retained && !invalidated {
+				continue
+			}
+			if err := staging.PreserveMomentReview(ctx, tx, id, prior.ID, now); err != nil {
+				return err
+			}
+		}
 		if err := applyMomentProvenance(ctx, tx, id, momentRows, placements); err != nil {
 			return err
 		}
@@ -761,6 +777,165 @@ func (s *Service) OrganizeEvent(ctx context.Context, actor setup.CuratorSession,
 		return err
 	})
 	return organized, err
+}
+
+// RestorePublishedMedia restores an omitted current-published Media item only
+// when its stable identity is still present in an Event-linked Source.
+func (s *Service) RestorePublishedMedia(ctx context.Context, actor setup.CuratorSession, id uuid.UUID, request RestorePublishedMediaRequest) (Event, error) {
+	mediaID, err := uuid.Parse(request.MediaItemID)
+	if request.Version < 1 || err != nil || mediaID == uuid.Nil {
+		return Event{}, ErrInvalid
+	}
+	now := s.now().UTC()
+	var restored Event
+	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		var currentVersion int64
+		var lifecycle string
+		var publicationID *uuid.UUID
+		if err := tx.NewRaw(`
+			SELECT version, lifecycle, current_publication_id FROM events WHERE id = ? FOR UPDATE
+		`, id).Scan(ctx, &currentVersion, &lifecycle, &publicationID); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrNotFound
+			}
+			return err
+		}
+		if currentVersion != request.Version {
+			return ErrVersionConflict
+		}
+		if lifecycle != "published" || publicationID == nil {
+			return ErrInvalid
+		}
+		var sourceCurrent bool
+		if err := tx.NewRaw(`
+			SELECT EXISTS (
+				SELECT 1
+				FROM event_sources AS source
+				JOIN source_album_memberships AS membership
+				  ON membership.source_album_id = source.source_album_id
+				JOIN media_items AS media ON media.id = membership.media_item_id
+				WHERE source.event_id = ? AND membership.media_item_id = ?
+				  AND media.availability = 'current'
+			)
+		`, id, mediaID).Scan(ctx, &sourceCurrent); err != nil {
+			return err
+		}
+		if !sourceCurrent {
+			return ErrMediaUnavailable
+		}
+
+		var momentID uuid.UUID
+		var publishedMediaPosition, publishedMomentPosition int
+		if err := tx.NewRaw(`
+			SELECT moment.draft_moment_id, placement.position, moment.position
+			FROM published_moments AS moment
+			JOIN published_media_placements AS placement ON placement.published_moment_id = moment.id
+			WHERE moment.publication_id = ? AND placement.media_item_id = ?
+		`, *publicationID, mediaID).Scan(ctx, &momentID, &publishedMediaPosition, &publishedMomentPosition); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrInvalid
+			}
+			return err
+		}
+		var alreadyEditable bool
+		if err := tx.NewRaw(`
+			SELECT EXISTS (SELECT 1 FROM draft_media_placements WHERE event_id = ? AND media_item_id = ?)
+		`, id, mediaID).Scan(ctx, &alreadyEditable); err != nil {
+			return err
+		}
+		if alreadyEditable {
+			return ErrInvalid
+		}
+		momentState, err := staging.LoadMomentState(ctx, tx, id, momentID, *publicationID)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrInvalid
+			}
+			return err
+		}
+
+		var momentExists bool
+		if err := tx.NewRaw(`SELECT EXISTS (SELECT 1 FROM draft_moments WHERE event_id = ? AND id = ?)`, id, momentID).Scan(ctx, &momentExists); err != nil {
+			return err
+		}
+		if !momentExists {
+			var momentIDs []uuid.UUID
+			if err := tx.NewRaw(`SELECT id FROM draft_moments WHERE event_id = ? ORDER BY position, id`, id).Scan(ctx, &momentIDs); err != nil {
+				return err
+			}
+			if _, err := tx.NewRaw(`UPDATE draft_moments SET position = position + ? WHERE event_id = ?`, maxDraftMediaItems+1, id).Exec(ctx); err != nil {
+				return err
+			}
+			if _, err := tx.NewRaw(`
+				INSERT INTO draft_moments (
+					id, event_id, position, proposed_day, grouping_timezone, proposal_kind,
+					created_at, source_days, title, cover_media_item_id,
+					attendance_complete, audience_complete, review_version
+				)
+				SELECT item.id, item.event_id, ?, item.proposed_day, item.grouping_timezone,
+					item.proposal_kind, item.created_at, item.source_days, item.title,
+					item.cover_media_item_id, false, NOT true, item.review_version + 1
+				FROM jsonb_to_record(?::jsonb) AS item(
+					id uuid, event_id uuid, proposed_day date, grouping_timezone text,
+					proposal_kind text, created_at timestamptz, source_days date[], title text,
+					cover_media_item_id uuid, review_version bigint)
+			`, maxDraftMediaItems*3, string(momentState)).Exec(ctx); err != nil {
+				return err
+			}
+			insertAt := publishedMomentPosition
+			if insertAt > len(momentIDs) {
+				insertAt = len(momentIDs)
+			}
+			momentIDs = append(momentIDs, uuid.Nil)
+			copy(momentIDs[insertAt+1:], momentIDs[insertAt:])
+			momentIDs[insertAt] = momentID
+			for position, orderedID := range momentIDs {
+				if _, err := tx.NewRaw(`UPDATE draft_moments SET position = ? WHERE event_id = ? AND id = ?`, position, id, orderedID).Exec(ctx); err != nil {
+					return err
+				}
+			}
+		}
+
+		var placementIDs []uuid.UUID
+		if err := tx.NewRaw(`SELECT media_item_id FROM draft_media_placements WHERE event_id = ? ORDER BY position, media_item_id`, id).Scan(ctx, &placementIDs); err != nil {
+			return err
+		}
+		if _, err := tx.NewRaw(`UPDATE draft_media_placements SET position = position + ? WHERE event_id = ?`, maxDraftMediaItems+1, id).Exec(ctx); err != nil {
+			return err
+		}
+		if _, err := tx.NewRaw(`
+			INSERT INTO draft_media_placements (event_id, media_item_id, draft_moment_id, position, created_at)
+			VALUES (?, ?, ?, ?, ?)
+		`, id, mediaID, momentID, maxDraftMediaItems*3, now).Exec(ctx); err != nil {
+			return err
+		}
+		insertAt := publishedMediaPosition
+		if insertAt > len(placementIDs) {
+			insertAt = len(placementIDs)
+		}
+		placementIDs = append(placementIDs, uuid.Nil)
+		copy(placementIDs[insertAt+1:], placementIDs[insertAt:])
+		placementIDs[insertAt] = mediaID
+		for position, orderedID := range placementIDs {
+			if _, err := tx.NewRaw(`UPDATE draft_media_placements SET position = ? WHERE event_id = ? AND media_item_id = ?`, position, id, orderedID).Exec(ctx); err != nil {
+				return err
+			}
+		}
+		if _, err := staging.RestoreMomentReviewIfPublishedResult(ctx, tx, id, momentID); err != nil {
+			return err
+		}
+		if _, err := staging.InvalidateEvent(ctx, tx, id, now); err != nil {
+			return err
+		}
+		if err := appendDraftAudit(ctx, tx, actor, "event_published_media_restored", map[string]any{
+			"event_id": id.String(), "media_item_id": mediaID.String(), "base_publication_id": publicationID.String(),
+		}); err != nil {
+			return err
+		}
+		restored, err = getEvent(ctx, tx, id)
+		return err
+	})
+	return restored, err
 }
 
 func sameOrganization(priorMoments []priorMomentState, priorPlacements []priorPlacementState, moments []draftMomentRow, placements []draftPlacementRow) bool {

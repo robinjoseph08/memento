@@ -12,6 +12,7 @@ import (
 	"github.com/robinjoseph08/memento/internal/placementlock"
 	"github.com/robinjoseph08/memento/pkg/audiences"
 	"github.com/robinjoseph08/memento/pkg/setup"
+	"github.com/robinjoseph08/memento/pkg/staging"
 	"github.com/robinjoseph08/memento/pkg/worker"
 	"github.com/uptrace/bun"
 	"github.com/uptrace/bun/dialect/pgdialect"
@@ -511,6 +512,9 @@ func (s *Service) PublishEvent(ctx context.Context, actor setup.CuratorSession, 
 			return err
 		}
 		if _, err := tx.NewRaw(`DELETE FROM staged_source_removals WHERE event_id = ?`, eventID).Exec(ctx); err != nil {
+			return err
+		}
+		if err := staging.ClearMomentReviewRestorations(ctx, tx, eventID); err != nil {
 			return err
 		}
 		if err := s.publicationBoundary(PublicationStepStaged); err != nil {

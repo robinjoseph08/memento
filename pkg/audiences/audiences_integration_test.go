@@ -238,6 +238,24 @@ func TestPublishedEventAudienceChangeStaysPrivateAndCancelsWhenRestored(t *testi
 		publicationID, eventID).Exec(ctx)
 	require.NoError(t, err)
 
+	otherEventID, otherPublicationID := uuid.New(), uuid.New()
+	_, err = f.db.NewRaw(`
+		INSERT INTO events (id, lifecycle, title, grouping_timezone, created_at, updated_at)
+		VALUES (?, 'published', 'Overlapping Event', 'UTC', now(), now());
+		INSERT INTO publications (
+			id, event_id, revision, editable_version, published_by_person_id,
+			notify_recipients, committed_at
+		) VALUES (?, ?, 1, 1, ?, false, now());
+		UPDATE events SET current_publication_id = ? WHERE id = ?;
+		INSERT INTO current_audience_entitlements (
+			event_id, publication_id, recipient_person_id,
+			recipient_access_generation_id, media_item_id
+		) VALUES (?, ?, ?, ?, ?)
+	`, otherEventID, otherPublicationID, otherEventID, f.actor.PersonID,
+		otherPublicationID, otherEventID, otherEventID, otherPublicationID,
+		f.people["present"], f.access["present"], f.mediaID).Exec(ctx)
+	require.NoError(t, err)
+
 	review, err = f.service.SetOverride(ctx, f.actor, targetMoment, f.momentID, original.Version, OverrideRequest{RecipientPersonID: f.people["present"].String(), State: "excluded"})
 	require.NoError(t, err)
 	review, err = f.service.SetOverride(ctx, f.actor, targetMoment, f.momentID, review.Version, OverrideRequest{RecipientPersonID: f.people["manual"].String(), State: "included"})
@@ -251,9 +269,9 @@ func TestPublishedEventAudienceChangeStaysPrivateAndCancelsWhenRestored(t *testi
 	require.NotNil(t, update)
 	require.Len(t, update.Changes, 1)
 	assert.Equal(t, staging.ChangeKindAccess, update.Changes[0].Kind)
-	assert.Equal(t, 2, update.Changes[0].Count)
+	assert.Equal(t, 1, update.Changes[0].Count)
 	assert.Equal(t, []string{f.momentID.String()}, update.Changes[0].MomentIDs)
-	require.Len(t, update.Changes[0].RecipientAccess, 2)
+	require.Len(t, update.Changes[0].RecipientAccess, 1)
 	accessByPerson := make(map[string]staging.RecipientAccessChange)
 	for _, access := range update.Changes[0].RecipientAccess {
 		accessByPerson[access.RecipientPersonID] = access
@@ -262,10 +280,28 @@ func TestPublishedEventAudienceChangeStaysPrivateAndCancelsWhenRestored(t *testi
 		RecipientPersonID: f.people["manual"].String(), RecipientName: "manual",
 		GrantedMediaCount: 1,
 	}, accessByPerson[f.people["manual"].String()])
-	assert.Equal(t, staging.RecipientAccessChange{
-		RecipientPersonID: f.people["present"].String(), RecipientName: "present",
-		RevokedMediaCount: 1,
-	}, accessByPerson[f.people["present"].String()])
+	_, reportedRevocation := accessByPerson[f.people["present"].String()]
+	assert.False(t, reportedRevocation, "another current Event preserves the Recipient's global Media entitlement")
+
+	_, err = f.db.NewRaw(`
+		INSERT INTO current_audience_entitlements (
+			event_id, publication_id, recipient_person_id,
+			recipient_access_generation_id, media_item_id
+		) VALUES (?, ?, ?, ?, ?)
+	`, otherEventID, otherPublicationID, f.people["manual"], f.access["manual"], f.mediaID).Exec(ctx)
+	require.NoError(t, err)
+	require.NoError(t, f.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		_, err := staging.Refresh(ctx, tx, eventID, time.Now().UTC())
+		return err
+	}))
+	globallyUnchanged, err := staging.Load(ctx, f.db, eventID)
+	require.NoError(t, err)
+	require.NotNil(t, globallyUnchanged, "the Event-specific Audience change remains Staged")
+	require.Len(t, globallyUnchanged.Changes, 1)
+	assert.Zero(t, globallyUnchanged.Changes[0].Count)
+	assert.Empty(t, globallyUnchanged.Changes[0].RecipientAccess)
+	assert.Contains(t, globallyUnchanged.Changes[0].Detail, "without changing global")
+
 	var stagedRows int
 	require.NoError(t, f.db.NewRaw(`SELECT count(*) FROM staged_updates WHERE event_id = ?`, eventID).Scan(ctx, &stagedRows))
 	assert.Equal(t, 1, stagedRows)

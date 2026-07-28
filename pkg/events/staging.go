@@ -14,6 +14,7 @@ type StagedRemovedMedia struct {
 	ID            string  `json:"id"`
 	MediaType     string  `json:"media_type"`
 	LocalDateTime *string `json:"local_date_time" tstype:"string | null,required"`
+	Restorable    bool    `json:"restorable"`
 }
 
 // StagedDeletedMoment identifies published structure absent from the resulting Event.
@@ -62,6 +63,7 @@ func stagedUpdateFromDomain(update *staging.Update) *StagedUpdate {
 		for _, item := range change.RemovedMedia {
 			removedMedia = append(removedMedia, StagedRemovedMedia{
 				ID: item.ID, MediaType: item.MediaType, LocalDateTime: item.LocalDateTime,
+				Restorable: item.Restorable,
 			})
 		}
 		deletedMoments := make([]StagedDeletedMoment, 0, len(change.DeletedMoments))

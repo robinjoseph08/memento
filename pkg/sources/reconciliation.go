@@ -462,6 +462,7 @@ func syncEditableEvents(
 		}
 		changed := false
 		changedMomentIDs := make(map[uuid.UUID]struct{})
+		restoredMomentReviews := make(map[uuid.UUID]struct{})
 		if len(metadataChangedMediaIDs) > 0 {
 			if err := tx.NewRaw(`
 				SELECT EXISTS (
@@ -543,6 +544,15 @@ func syncEditableEvents(
 			if _, err := tx.NewRaw(`DELETE FROM staged_source_removals WHERE event_id = ? AND media_item_id = ?`, eventID, mediaID).Exec(ctx); err != nil {
 				return err
 			}
+			if momentID != nil {
+				restored, err := staging.RestoreMomentReviewIfPublishedResult(ctx, tx, eventID, *momentID)
+				if err != nil {
+					return err
+				}
+				if restored {
+					restoredMomentReviews[*momentID] = struct{}{}
+				}
+			}
 			changed = true
 		}
 		for _, mediaID := range removedMediaIDs {
@@ -582,6 +592,11 @@ func syncEditableEvents(
 				return err
 			}
 			if wasPublished {
+				if momentID != nil {
+					if err := staging.PreserveMomentReview(ctx, tx, eventID, *momentID, now); err != nil {
+						return err
+					}
+				}
 				if _, err := tx.NewRaw(`
 					INSERT INTO staged_source_removals (
 						event_id, media_item_id, draft_moment_id, position, was_cover, created_at
@@ -608,6 +623,9 @@ func syncEditableEvents(
 			continue
 		}
 		for momentID := range changedMomentIDs {
+			if _, restored := restoredMomentReviews[momentID]; restored {
+				continue
+			}
 			if err := invalidateSourceChangedMomentReview(ctx, tx, momentID); err != nil {
 				return err
 			}

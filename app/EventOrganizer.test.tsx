@@ -346,6 +346,28 @@ function stubOrganizerAPI(initial: DraftEvent) {
         };
         return response(persisted.withdrawals[0], 201);
       }
+      if (
+        path === `/api/events/${eventID}/published-media-restorations` &&
+        init?.method === "POST"
+      ) {
+        expect(init.headers).toMatchObject({ "X-Memento-CSRF": csrfToken });
+        const request = JSON.parse(stringBody(init.body)) as {
+          version: number;
+          media_item_id: string;
+        };
+        expect(request.version).toBe(persisted.version);
+        const restored = Object.values(items).find(
+          (item) => item.id === request.media_item_id,
+        );
+        if (!restored) throw new Error("Unknown restored Media fixture");
+        persisted = {
+          ...persisted,
+          version: persisted.version + 1,
+          staged_update: null,
+          unassigned_media: [...persisted.unassigned_media, restored],
+        };
+        return response(persisted);
+      }
       if (path === `/api/events/${eventID}`) return response(persisted);
       const reviewMatch = path.match(
         /^\/api\/moments\/([^/]+)\/attendance-audience$/,
@@ -472,11 +494,13 @@ test("shows the resulting Event with highlighted Staged net changes", async () =
             id: items.c.id,
             media_type: items.c.media_type,
             local_date_time: items.c.local_date_time,
+            restorable: true,
           },
           {
             id: items.loose.id,
             media_type: items.loose.media_type,
             local_date_time: items.loose.local_date_time,
+            restorable: false,
           },
         ],
         detail: "Media removed",
@@ -594,6 +618,56 @@ test("shows the resulting Event with highlighted Staged net changes", async () =
   expect(
     screen.getByLabelText("Staged changes: Metadata edits, Access changes"),
   ).toBeVisible();
+});
+
+test("restores an autosaved published Media removal from Staged review", async () => {
+  const staged = organizedDraft(8);
+  staged.lifecycle = "published";
+  staged.published_editable_version = 7;
+  staged.moments[1].media_items = staged.moments[1].media_items.filter(
+    (item) => item.id !== items.loose.id,
+  );
+  staged.staged_update = {
+    id: "12121212-1212-4212-8212-121212121212",
+    base_publication_id: "13131313-1313-4313-8313-131313131313",
+    updated_at: "2026-05-03T01:00:00Z",
+    changes: [
+      {
+        kind: "removal",
+        count: 1,
+        media_item_ids: [items.loose.id],
+        moment_ids: [],
+        removed_media: [
+          {
+            id: items.loose.id,
+            media_type: items.loose.media_type,
+            local_date_time: items.loose.local_date_time,
+            restorable: true,
+          },
+        ],
+        detail: "Media removed",
+      },
+    ],
+  };
+  stubOrganizerAPI(staged);
+  renderOrganizer();
+  fireEvent.click(
+    await screen.findByRole("button", { name: /Family weekend/ }),
+  );
+
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Restore removed Media" }),
+  );
+
+  await waitFor(() =>
+    expect(
+      screen.queryByRole("region", { name: "Staged update review" }),
+    ).not.toBeInTheDocument(),
+  );
+  expect(
+    screen.getByRole("checkbox", { name: /loose photo/ }),
+  ).toBeInTheDocument();
+  expect(screen.getByText("All changes saved")).toBeInTheDocument();
 });
 
 test("publishes ready work and previews Recipient output read only", async () => {
