@@ -31,6 +31,7 @@ type OrganizerAPIOptions = {
   restoreMomentID?: string;
   restoreAsCover?: boolean;
   restoreConflictOnce?: boolean;
+  restoreConflictGate?: Promise<void>;
   restoreVersions?: number[];
   publicationRefetchGate?: Promise<void>;
   withdrawalGate?: Promise<void>;
@@ -404,9 +405,10 @@ function stubOrganizerAPI(
             ...persisted,
             version: persisted.version + 1,
             title: "Newer server Event",
+            description: "Newer server description",
           };
           restorationConflictReturned = true;
-          return response(
+          const conflict = response(
             {
               error: {
                 message:
@@ -415,6 +417,9 @@ function stubOrganizerAPI(
             },
             409,
           );
+          return options.restoreConflictGate
+            ? options.restoreConflictGate.then(() => conflict)
+            : conflict;
         }
         if (restorationConflictReturned && !restorationRefetched) {
           throw new Error("Restoration retried before loading the newer Event");
@@ -834,10 +839,11 @@ test("restores an autosaved published Media removal from Staged review", async (
   expect(screen.getByText("All changes saved")).toBeInTheDocument();
 });
 
-test("loads the newer Event before retrying a restoration conflict", async () => {
+test("rebases pending local edits before retrying a restoration conflict", async () => {
   const staged = organizedDraft(8);
   staged.lifecycle = "published";
   staged.published_editable_version = 7;
+  staged.moments[1].cover_media_item_id = items.a.id;
   staged.moments[1].media_items = staged.moments[1].media_items.filter(
     (item) => item.id !== items.loose.id,
   );
@@ -863,8 +869,13 @@ test("loads the newer Event before retrying a restoration conflict", async () =>
       },
     ],
   };
+  const conflictGate = deferred();
   const restoreVersions: number[] = [];
-  stubOrganizerAPI(staged, { restoreConflictOnce: true, restoreVersions });
+  const saves = stubOrganizerAPI(staged, {
+    restoreConflictOnce: true,
+    restoreConflictGate: conflictGate.promise,
+    restoreVersions,
+  });
   renderOrganizer();
   fireEvent.click(
     await screen.findByRole("button", { name: /Family weekend/ }),
@@ -874,10 +885,35 @@ test("loads the newer Event before retrying a restoration conflict", async () =>
     await screen.findByRole("button", { name: "Restore removed Media" }),
   );
   expect(
+    await screen.findByRole("button", { name: "Restoring…" }),
+  ).toBeDisabled();
+  fireEvent.change(screen.getByLabelText("Event title"), {
+    target: { value: "Edited during conflict recovery" },
+  });
+  fireEvent.change(screen.getAllByLabelText("Cover")[1], {
+    target: { value: items.c.id },
+  });
+  const eventLabels = screen.getByLabelText("Event Place labels");
+  fireEvent.change(eventLabels, {
+    target: { value: "Conflict Event Place" },
+  });
+  fireEvent.blur(eventLabels);
+  const momentLabels = screen.getByLabelText("Place labels for Moment 2");
+  fireEvent.change(momentLabels, {
+    target: { value: "Conflict Moment Place" },
+  });
+  fireEvent.blur(momentLabels);
+  fireEvent.click(
+    screen.getByRole("button", { name: "Move Undated first photo earlier" }),
+  );
+
+  act(() => conflictGate.resolve());
+  expect(
     await screen.findByText(
       "This Event changed in another browser. Load the newer Event before retrying this restoration.",
     ),
   ).toBeInTheDocument();
+  expect(saves).toHaveLength(0);
 
   fireEvent.click(
     screen.getByRole("button", {
@@ -891,9 +927,24 @@ test("loads the newer Event before retrying a restoration conflict", async () =>
     ).not.toBeInTheDocument(),
   );
   expect(restoreVersions).toEqual([8, 9]);
-  expect(
-    screen.getByRole("heading", { name: "Newer server Event" }),
-  ).toBeInTheDocument();
+  expect(screen.getByLabelText("Event title")).toHaveValue(
+    "Edited during conflict recovery",
+  );
+  await waitFor(() => expect(saves).toHaveLength(1), contentionWait);
+  expect(saves[0]).toMatchObject({
+    version: 10,
+    title: "Edited during conflict recovery",
+    description: "Newer server description",
+    place_labels: ["Conflict Event Place"],
+    unassigned_media_ids: [items.loose.id],
+  });
+  expect(saves[0].moments.find((moment) => moment.id === momentOneID)).toEqual(
+    expect.objectContaining({
+      cover_media_item_id: items.c.id,
+      media_item_ids: [items.a.id, items.c.id],
+      place_labels: ["Conflict Moment Place"],
+    }),
+  );
   expect(screen.getByText("All changes saved")).toBeInTheDocument();
 });
 
@@ -1294,6 +1345,43 @@ test("publishes ready work and previews Recipient output read only", async () =>
   expect(
     screen.queryByRole("region", { name: "Read-only Recipient preview" }),
   ).not.toBeInTheDocument();
+  expect(readiness).toHaveTextContent("Next action: Ready to publish");
+  expect(readiness).not.toHaveTextContent("Published and up to date");
+});
+
+test("does not call an invalid unsaved correction published and up to date", async () => {
+  const published = organizedDraft();
+  published.lifecycle = "published";
+  published.published_editable_version = published.version;
+  published.final_review_complete = true;
+  published.moments = published.moments.map((moment) => ({
+    ...moment,
+    attendance_complete: true,
+    audience_complete: true,
+  }));
+  stubOrganizerAPI(published);
+  renderOrganizer();
+  fireEvent.click(
+    await screen.findByRole("button", { name: /Family weekend/ }),
+  );
+
+  const readiness = (
+    await screen.findByRole("heading", { name: "Readiness" })
+  ).closest("section")!;
+  expect(readiness).toHaveTextContent(
+    "Publication status: Published and up to date",
+  );
+
+  fireEvent.change(screen.getByLabelText("Event title"), {
+    target: { value: " " },
+  });
+
+  expect(screen.getByText("Event title is required.")).toBeInTheDocument();
+  expect(
+    screen.getByText("Fix validation errors before autosave"),
+  ).toBeVisible();
+  expect(readiness).toHaveTextContent("Next action: Event details");
+  expect(readiness).not.toHaveTextContent("Published and up to date");
 });
 
 test("requires a replacement Publication when legacy Attendance cannot be reconstructed", async () => {

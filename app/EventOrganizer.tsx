@@ -569,9 +569,11 @@ function validGroupingTimezone(value: string) {
 
 function Checklist({
   event,
+  hasUnsavedChanges,
   metadataValid,
 }: {
   event: DraftEvent;
+  hasUnsavedChanges: boolean;
   metadataValid: boolean;
 }) {
   const checks = [
@@ -599,7 +601,9 @@ function Checklist({
   ];
   const complete = checks.filter((check) => check.done).length;
   const currentPublication =
-    event.lifecycle === "published" && event.staged_update === null;
+    event.lifecycle === "published" &&
+    event.staged_update === null &&
+    !hasUnsavedChanges;
   const next = checks.find((check) => !check.done)?.label ?? "Ready to publish";
   return (
     <section aria-labelledby="readiness-title" className="readiness">
@@ -873,6 +877,10 @@ export function EventOrganizer({
     },
   });
 
+  const restoreConflict =
+    restorePublishedMedia.error instanceof APIError &&
+    restorePublishedMedia.error.status === 409;
+
   const publish = useMutation({
     mutationFn: ({ event }: PublishAttempt) =>
       apiJSON<PublicationResponse>(`/api/events/${event.id}/publications`, {
@@ -1069,6 +1077,8 @@ export function EventOrganizer({
       saveState === "failed" ||
       save.isPending ||
       restorePublishedMedia.isPending ||
+      restoreConflict ||
+      restoreRecoveryPending ||
       publish.isPending ||
       withdraw.isPending ||
       !eventMetadataValid
@@ -1090,6 +1100,8 @@ export function EventOrganizer({
     saveState,
     save.isPending,
     restorePublishedMedia.isPending,
+    restoreConflict,
+    restoreRecoveryPending,
     publish.isPending,
     withdraw.isPending,
     saveDraft,
@@ -1383,17 +1395,27 @@ export function EventOrganizer({
         );
         return;
       }
-      const next = cloneEvent(result.data);
+      const authoritative = cloneEvent(result.data);
+      const latest = latestDraftRef.current;
+      const hasNewerOrganization =
+        latest?.id === authoritative.id &&
+        revisionRef.current > attempted.revision;
+      const next = hasNewerOrganization
+        ? rebaseOrganization(attempted.event, latest, authoritative)
+        : authoritative;
       queryClient.setQueryData(["event", next.id], next);
       latestDraftRef.current = next;
       setDraft(next);
-      revisionRef.current = 0;
-      setRevision(0);
-      setSaveState("saved");
-      const remainsRestorable = next.staged_update?.changes.some((change) =>
-        change.removed_media?.some(
-          (item) => item.id === mediaID && item.restorable,
-        ),
+      setSaveState(hasNewerOrganization ? "unsaved" : "saved");
+      if (!hasNewerOrganization) {
+        revisionRef.current = 0;
+        setRevision(0);
+      }
+      const remainsRestorable = authoritative.staged_update?.changes.some(
+        (change) =>
+          change.removed_media?.some(
+            (item) => item.id === mediaID && item.restorable,
+          ),
       );
       restorePublishedMedia.reset();
       if (!remainsRestorable) {
@@ -1402,7 +1424,11 @@ export function EventOrganizer({
         );
         return;
       }
-      restorePublishedMedia.mutate({ event: next, mediaID, revision: 0 });
+      restorePublishedMedia.mutate({
+        event: authoritative,
+        mediaID,
+        revision: attempted.revision,
+      });
     } finally {
       setRestoreRecoveryPending(false);
     }
@@ -1671,6 +1697,7 @@ export function EventOrganizer({
                 </div>
                 <Checklist
                   event={currentDraft}
+                  hasUnsavedChanges={saveState !== "saved"}
                   metadataValid={eventMetadataValid}
                 />
               </header>
@@ -1702,10 +1729,7 @@ export function EventOrganizer({
                     ? undefined
                     : restorePublishedMedia.error?.message)
                 }
-                restoreConflict={
-                  restorePublishedMedia.error instanceof APIError &&
-                  restorePublishedMedia.error.status === 409
-                }
+                restoreConflict={restoreConflict}
                 restoreRecoveryPending={restoreRecoveryPending}
                 onRecoverRestore={() => void reloadAndRetryRestoration()}
                 metadataValid={eventMetadataValid}
