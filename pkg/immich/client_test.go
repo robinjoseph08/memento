@@ -275,6 +275,29 @@ func TestOwnedAlbumsRejectsMalformedOrDuplicateSummaries(t *testing.T) {
 	}
 }
 
+func TestAssetExistsDistinguishesPresentAndDeletedAssets(t *testing.T) {
+	assetID := uuid.New()
+	server := contractServer(t, func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/api/assets/"+assetID.String(), r.URL.Path)
+		_, _ = w.Write([]byte(`{"id":"` + assetID.String() + `"}`))
+	})
+	defer server.Close()
+	client, err := New(clientConfig(server.URL), server.Client())
+	require.NoError(t, err)
+
+	exists, err := client.AssetExists(context.Background(), assetID)
+	require.NoError(t, err)
+	assert.True(t, exists)
+
+	missingServer := contractServer(t, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNotFound) })
+	defer missingServer.Close()
+	client, err = New(clientConfig(missingServer.URL), missingServer.Client())
+	require.NoError(t, err)
+	exists, err = client.AssetExists(context.Background(), assetID)
+	require.NoError(t, err)
+	assert.False(t, exists)
+}
+
 func TestAlbumAssetsPageUsesPinnedPaginationAndReturnsOnlyNormalizedRepairEvidence(t *testing.T) {
 	albumID, assetID := uuid.New(), uuid.New()
 	server := contractServer(t, func(w http.ResponseWriter, r *http.Request) {

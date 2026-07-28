@@ -287,8 +287,13 @@ func (s *Service) applyValidatedSnapshot(
 	removals := 0
 	var removedMediaIDs []uuid.UUID
 	if stablePasses >= 2 {
+		type removedMembership struct {
+			MediaItemID   uuid.UUID `bun:"media_item_id"`
+			ImmichAssetID uuid.UUID `bun:"immich_asset_id"`
+		}
+		var removedMemberships []removedMembership
 		if err := tx.NewRaw(`
-			SELECT membership.media_item_id
+			SELECT membership.media_item_id, membership.immich_asset_id
 			FROM source_album_memberships AS membership
 			WHERE membership.source_album_id = ?
 			  AND NOT EXISTS (
@@ -296,8 +301,31 @@ func (s *Service) applyValidatedSnapshot(
 				WHERE candidate.id::uuid = membership.immich_asset_id
 			  )
 			ORDER BY membership.media_item_id
-		`, sourceAlbumID, string(encodedIDs)).Scan(ctx, &removedMediaIDs); err != nil {
+		`, sourceAlbumID, string(encodedIDs)).Scan(ctx, &removedMemberships); err != nil {
 			return 0, 0, 0, err
+		}
+		confirmedMissingMediaIDs := make([]uuid.UUID, 0)
+		for _, membership := range removedMemberships {
+			removedMediaIDs = append(removedMediaIDs, membership.MediaItemID)
+			var retainedByAnotherSource bool
+			if err := tx.NewRaw(`
+				SELECT EXISTS (
+					SELECT 1 FROM source_album_memberships
+					WHERE media_item_id = ? AND source_album_id <> ?
+				)
+			`, membership.MediaItemID, sourceAlbumID).Scan(ctx, &retainedByAnotherSource); err != nil {
+				return 0, 0, 0, err
+			}
+			if retainedByAnotherSource {
+				continue
+			}
+			exists, err := s.connector.AssetExists(ctx, membership.ImmichAssetID)
+			if err != nil {
+				return 0, 0, 0, fmt.Errorf("confirm removed Immich asset: %w", ErrDependency)
+			}
+			if !exists {
+				confirmedMissingMediaIDs = append(confirmedMissingMediaIDs, membership.MediaItemID)
+			}
 		}
 		result, err := tx.NewRaw(`
 			DELETE FROM source_album_memberships AS membership
@@ -315,13 +343,14 @@ func (s *Service) applyValidatedSnapshot(
 			return 0, 0, 0, err
 		}
 		removals = int(removed)
-		if _, err := tx.NewRaw(`
-			UPDATE media_items AS media SET availability = 'source_missing', updated_at = ?
-			WHERE availability = 'current'
-			  AND NOT EXISTS (SELECT 1 FROM source_album_memberships WHERE media_item_id = media.id)
-			  AND NOT EXISTS (SELECT 1 FROM current_published_placements WHERE media_item_id = media.id)
-		`, now).Exec(ctx); err != nil {
-			return 0, 0, 0, err
+		if len(confirmedMissingMediaIDs) > 0 {
+			if _, err := tx.NewRaw(`
+				UPDATE media_items AS media SET availability = 'source_missing', updated_at = ?
+				WHERE availability = 'current' AND id IN (?)
+				  AND NOT EXISTS (SELECT 1 FROM source_album_memberships WHERE media_item_id = media.id)
+			`, now, bun.List(confirmedMissingMediaIDs)).Exec(ctx); err != nil {
+				return 0, 0, 0, err
+			}
 		}
 		if err := proposeMediaRepairs(ctx, tx, now); err != nil {
 			return 0, 0, 0, err
@@ -391,8 +420,9 @@ func syncEditableEvents(
 		return err
 	}
 	type editableEvent struct {
-		ID           uuid.UUID `bun:"id"`
-		LinkedSource bool      `bun:"linked_source"`
+		ID                 uuid.UUID `bun:"id"`
+		LinkedSource       bool      `bun:"linked_source"`
+		IncludeFutureMedia bool      `bun:"include_future_media"`
 	}
 	var events []editableEvent
 	if err := tx.NewRaw(`
@@ -400,7 +430,12 @@ func syncEditableEvents(
 		       EXISTS (
 			   SELECT 1 FROM event_sources AS source
 			   WHERE source.event_id = event.id AND source.source_album_id = ?
-		       ) AS linked_source
+		       ) AS linked_source,
+		       EXISTS (
+			   SELECT 1 FROM event_sources AS source
+			   WHERE source.event_id = event.id AND source.source_album_id = ?
+			     AND source.include_future_media
+		       ) AS include_future_media
 		FROM events AS event
 		WHERE event.lifecycle IN ('draft', 'published')
 		  AND (
@@ -416,7 +451,7 @@ func syncEditableEvents(
 			)
 		  )
 		ORDER BY event.id
-	`, sourceAlbumID, sourceAlbumID, string(encodedMetadataIDs)).Scan(ctx, &events); err != nil {
+	`, sourceAlbumID, sourceAlbumID, sourceAlbumID, string(encodedMetadataIDs)).Scan(ctx, &events); err != nil {
 		return err
 	}
 	for _, event := range events {
@@ -445,7 +480,11 @@ func syncEditableEvents(
 			}
 			continue
 		}
-		for _, mediaID := range addedMediaIDs {
+		eventAddedMediaIDs := addedMediaIDs
+		if !event.IncludeFutureMedia {
+			eventAddedMediaIDs = nil
+		}
+		for _, mediaID := range eventAddedMediaIDs {
 			var exists bool
 			if err := tx.NewRaw(`SELECT EXISTS (SELECT 1 FROM draft_media_placements WHERE event_id = ? AND media_item_id = ?)`, eventID, mediaID).Scan(ctx, &exists); err != nil {
 				return err

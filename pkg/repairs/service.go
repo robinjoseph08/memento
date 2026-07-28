@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/robinjoseph08/memento/pkg/immich"
 	"github.com/robinjoseph08/memento/pkg/setup"
+	"github.com/robinjoseph08/memento/pkg/staging"
 	"github.com/uptrace/bun"
 )
 
@@ -937,9 +938,15 @@ func relinkDraftMediaReferences(ctx context.Context, tx bun.Tx, stableMediaID, c
 	}
 	if len(affectedEventIDs) > 0 {
 		if _, err := tx.NewRaw(`
-			UPDATE events SET version = version + 1, updated_at = ? WHERE id IN (?)
-		`, now, bun.List(affectedEventIDs)).Exec(ctx); err != nil {
+			DELETE FROM staged_source_removals
+			WHERE event_id IN (?) AND media_item_id IN (?, ?)
+		`, bun.List(affectedEventIDs), stableMediaID, candidateMediaID).Exec(ctx); err != nil {
 			return err
+		}
+		for _, eventID := range affectedEventIDs {
+			if _, err := staging.InvalidateEvent(ctx, tx, eventID, now); err != nil {
+				return err
+			}
 		}
 	}
 	if _, err := tx.NewRaw(`

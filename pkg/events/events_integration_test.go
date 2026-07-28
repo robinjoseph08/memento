@@ -384,6 +384,9 @@ func TestDraftRoutesRecordRequestAttributionAndReportLooseItemCreationStatus(t *
 	require.Len(t, createdEvent.Moments, 1)
 	require.Len(t, createdEvent.Moments[0].MediaItems, 1)
 	assert.Equal(t, fixture.media["first_only"].String(), createdEvent.Moments[0].MediaItems[0].ID)
+	var includeFutureMedia bool
+	require.NoError(t, fixture.db.NewRaw(`SELECT include_future_media FROM event_sources WHERE event_id = ?`, createdEvent.ID).Scan(ctx, &includeFutureMedia))
+	assert.False(t, includeFutureMedia, "an explicit Media subset remains divided from future Source additions")
 	eventGet := get("/api/events/" + createdEvent.ID)
 	require.Equal(t, http.StatusOK, eventGet.Code)
 	var retrievedEvent Event

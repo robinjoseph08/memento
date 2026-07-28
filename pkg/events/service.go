@@ -291,14 +291,15 @@ func (s *Service) CreateEvent(ctx context.Context, actor setup.CuratorSession, r
 		`, eventID, title, description, location.String(), now, now).Exec(ctx); err != nil {
 			return err
 		}
+		includeFutureMedia := len(selectedIDs) == 0
 		for position, sourceID := range sourceIDs {
 			source := sources[sourceID]
 			if _, err := tx.NewRaw(`
 				INSERT INTO event_sources (
 					event_id, source_album_id, source_order, initialized_name,
-					initialized_description, initialized_at
-				) VALUES (?, ?, ?, ?, ?, ?)
-			`, eventID, sourceID, position, source.Name, source.Description, now).Exec(ctx); err != nil {
+					initialized_description, initialized_at, include_future_media
+				) VALUES (?, ?, ?, ?, ?, ?, ?)
+			`, eventID, sourceID, position, source.Name, source.Description, now, includeFutureMedia).Exec(ctx); err != nil {
 				return err
 			}
 		}

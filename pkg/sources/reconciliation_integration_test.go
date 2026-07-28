@@ -33,6 +33,7 @@ type reconciliationConnector struct {
 	pageErrAt    int
 	dependency   error
 	checkErr     error
+	servedAssets map[uuid.UUID]bool
 }
 
 func (connector *reconciliationConnector) Check(context.Context) error {
@@ -71,6 +72,30 @@ func (connector *reconciliationConnector) AlbumAssetsPage(_ context.Context, alb
 		return immich.AssetPage{}, connector.dependency
 	}
 	return connector.pages[page], nil
+}
+func (connector *reconciliationConnector) AssetExists(_ context.Context, assetID uuid.UUID) (bool, error) {
+	connector.mu.Lock()
+	defer connector.mu.Unlock()
+	if exists, configured := connector.servedAssets[assetID]; configured {
+		return exists, nil
+	}
+	for _, page := range connector.pages {
+		for _, asset := range page.Items {
+			if asset.SourceID == assetID {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
+func (connector *reconciliationConnector) setAssetExists(assetID uuid.UUID, exists bool) {
+	connector.mu.Lock()
+	defer connector.mu.Unlock()
+	if connector.servedAssets == nil {
+		connector.servedAssets = make(map[uuid.UUID]bool)
+	}
+	connector.servedAssets[assetID] = exists
 }
 
 func (connector *reconciliationConnector) setMembership(assets ...immich.AssetSummary) {
@@ -399,7 +424,7 @@ func TestReconciliationCoalescesExistingMediaMetadataChangesIntoPublishedEvent(t
 	require.NoError(t, err)
 	require.NotNil(t, update)
 	require.Len(t, update.Changes, 1)
-	assert.Equal(t, "metadata", update.Changes[0].Kind)
+	assert.Equal(t, staging.ChangeKindMetadata, update.Changes[0].Kind)
 	assert.Equal(t, []string{fixture.mediaID.String()}, update.Changes[0].MediaItemIDs)
 }
 
@@ -541,6 +566,7 @@ func TestFinalPublishedSourceRemovalStaysPrivateWhileMediaRemainsAvailable(t *te
 	service, sourceAlbumID := newReconciliationService(t, connector)
 	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
 	fixture := publishSourceEventFixture(t, service, sourceAlbumID, original.SourceID)
+	connector.setAssetExists(original.SourceID, true)
 
 	connector.setMembership()
 	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
@@ -590,6 +616,59 @@ func TestFinalPublishedSourceRemovalStaysPrivateWhileMediaRemainsAvailable(t *te
 		}
 	}
 	assert.True(t, deletedMomentFound)
+}
+
+func TestConfirmedDeletedPublishedMediaBecomesUnavailable(t *testing.T) {
+	original := repairableReconciliationAsset(uuid.New(), "/library/deleted/family.jpg")
+	connector := &reconciliationConnector{summary: sourceAlbum(uuid.New(), "Deleted source", 1)}
+	connector.pages = map[int]immich.AssetPage{1: {Items: []immich.AssetSummary{original}}}
+	service, sourceAlbumID := newReconciliationService(t, connector)
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	fixture := publishSourceEventFixture(t, service, sourceAlbumID, original.SourceID)
+
+	connector.setMembership()
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+
+	var availability string
+	require.NoError(t, service.db.NewRaw(`SELECT availability FROM media_items WHERE id = ?`, fixture.mediaID).Scan(context.Background(), &availability))
+	assert.Equal(t, "source_missing", availability, "a confirmed missing Immich asset stops published delivery immediately")
+	var currentPlacement bool
+	require.NoError(t, service.db.NewRaw(`SELECT EXISTS (SELECT 1 FROM current_published_placements WHERE event_id = ? AND media_item_id = ?)`, fixture.eventID, fixture.mediaID).Scan(context.Background(), &currentPlacement))
+	assert.True(t, currentPlacement, "the unavailable published listing remains until correction")
+}
+
+func TestNewSourceMediaFollowsOnlyEventsConfiguredForFutureMedia(t *testing.T) {
+	original, added := reconciliationAsset(uuid.New()), reconciliationAsset(uuid.New())
+	connector := &reconciliationConnector{summary: sourceAlbum(uuid.New(), "Divided source", 1)}
+	connector.pages = map[int]immich.AssetPage{1: {Items: []immich.AssetSummary{original}}}
+	service, sourceAlbumID := newReconciliationService(t, connector)
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	following := publishSourceEventFixture(t, service, sourceAlbumID, original.SourceID)
+
+	partialEventID := uuid.New()
+	_, err := service.db.NewRaw(`
+		INSERT INTO events (id, title, grouping_timezone, created_at, updated_at)
+		VALUES (?, 'Partial Event', 'UTC', ?, ?);
+		INSERT INTO event_sources (
+			event_id, source_album_id, source_order, initialized_name,
+			initialized_description, initialized_at, include_future_media
+		) SELECT ?, id, 0, name, description, ?, false FROM source_albums WHERE id = ?;
+		INSERT INTO draft_media_placements (event_id, media_item_id, position, created_at)
+		VALUES (?, ?, 0, ?)
+	`, partialEventID, service.now(), service.now(), partialEventID, service.now(), sourceAlbumID,
+		partialEventID, following.mediaID, service.now()).Exec(context.Background())
+	require.NoError(t, err)
+
+	connector.setMembership(original, added)
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	var addedMediaID uuid.UUID
+	require.NoError(t, service.db.NewRaw(`SELECT id FROM media_items WHERE immich_asset_id = ?`, added.SourceID).Scan(context.Background(), &addedMediaID))
+	var followingHasAddition, partialHasAddition bool
+	require.NoError(t, service.db.NewRaw(`SELECT EXISTS (SELECT 1 FROM draft_media_placements WHERE event_id = ? AND media_item_id = ?)`, following.eventID, addedMediaID).Scan(context.Background(), &followingHasAddition))
+	require.NoError(t, service.db.NewRaw(`SELECT EXISTS (SELECT 1 FROM draft_media_placements WHERE event_id = ? AND media_item_id = ?)`, partialEventID, addedMediaID).Scan(context.Background(), &partialHasAddition))
+	assert.True(t, followingHasAddition)
+	assert.False(t, partialHasAddition, "an explicitly divided Source selection does not receive unrelated future Media")
 }
 
 func TestAddThenRemoveBeforePublicationLeavesNoEditableResidue(t *testing.T) {
@@ -866,6 +945,9 @@ func (connector *blockingReconciliationConnector) Album(context.Context, uuid.UU
 }
 func (connector *blockingReconciliationConnector) AlbumAssetsPage(context.Context, uuid.UUID, int) (immich.AssetPage, error) {
 	return immich.AssetPage{}, nil
+}
+func (connector *blockingReconciliationConnector) AssetExists(context.Context, uuid.UUID) (bool, error) {
+	return true, nil
 }
 
 func TestReconciliationSerializesDependencyScansPerSourceAlbum(t *testing.T) {
