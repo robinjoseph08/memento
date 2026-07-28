@@ -5,6 +5,7 @@ package events
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -1586,6 +1587,95 @@ func TestMediaRestorationUsesTransactionalContentRevisions(t *testing.T) {
 	assert.False(t, active)
 	_, err = fixture.service.RecipientEvent(ctx, fixture.actorFor("shared"), fixture.event)
 	require.NoError(t, err)
+}
+
+func TestPendingWithdrawalPublicationReadinessIsAuthoritativeForNoStagedSharedMedia(t *testing.T) {
+	fixture := newPublicationFixture(t)
+	ctx := context.Background()
+	first, err := fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, fixture.request())
+	require.NoError(t, err)
+
+	secondEvent, secondMoment, secondSnapshot := uuid.New(), uuid.New(), uuid.New()
+	_, err = fixture.db.NewRaw(`
+		INSERT INTO events (
+			id, lifecycle, title, description, grouping_timezone, version,
+			final_review_complete, created_at, updated_at
+		) VALUES (?, 'draft', 'Second quiet Event', '', 'UTC', 7, true, ?, ?);
+		INSERT INTO draft_moments (
+			id, event_id, position, proposed_day, grouping_timezone, source_days,
+			title, cover_media_item_id, attendance_complete, audience_complete
+		) VALUES (?, ?, 0, '2026-07-27', 'UTC', ARRAY['2026-07-27'::date],
+			'Quiet shared Media', ?, true, true);
+		INSERT INTO draft_media_placements (event_id, media_item_id, draft_moment_id, position, created_at)
+		VALUES (?, ?, ?, 0, ?);
+		INSERT INTO audience_snapshots (id, target_kind, target_id, approved_by_person_id, approved_at, label)
+		VALUES (?, 'moment', ?, ?, ?, 'Curator only');
+		INSERT INTO current_audience_snapshots (target_kind, target_id, snapshot_id)
+		VALUES ('moment', ?, ?)
+	`, secondEvent, fixture.service.now(), fixture.service.now(), secondMoment, secondEvent,
+		fixture.media[2], secondEvent, fixture.media[2], secondMoment, fixture.service.now(),
+		secondSnapshot, secondMoment, fixture.actor.PersonID, fixture.service.now(), secondMoment, secondSnapshot).Exec(ctx)
+	require.NoError(t, err)
+	second, err := fixture.service.PublishEvent(ctx, fixture.actor, secondEvent, fixture.request())
+	require.NoError(t, err)
+
+	withdrawal, err := fixture.service.Withdraw(ctx, fixture.actor, WithdrawRequest{
+		TargetKind: WithdrawalTargetMedia, TargetID: fixture.media[2].String(), Reason: "Review each quiet placement",
+	})
+	require.NoError(t, err)
+
+	refreshReviewedEvent := func(eventID, momentID uuid.UUID, publicationID string) {
+		reviewMomentForFreshPublication(t, fixture, eventID, momentID, publicationID)
+		require.NoError(t, fixture.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+			update, refreshErr := refreshStagedUpdate(ctx, tx, eventID, fixture.service.now().UTC())
+			require.Nil(t, update, "unchanged Audience review leaves no Staged update")
+			return refreshErr
+		}))
+	}
+	readAPIReadiness := func(eventID uuid.UUID, expected bool) {
+		response := draftRequest(draftHTTP(fixture.service, &draftAuthorizer{actor: fixture.actor}), http.MethodGet,
+			"/api/events/"+eventID.String(), "")
+		require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+		var body map[string]json.RawMessage
+		require.NoError(t, json.Unmarshal(response.Body.Bytes(), &body))
+		assert.JSONEq(t, "null", string(body["staged_update"]))
+		var pending bool
+		require.NoError(t, json.Unmarshal(body["pending_withdrawal_publication"], &pending))
+		assert.Equal(t, expected, pending)
+	}
+
+	refreshReviewedEvent(fixture.event, fixture.moments[2], first.ID)
+	pendingFirst, err := fixture.service.GetEvent(ctx, fixture.event)
+	require.NoError(t, err)
+	assert.Nil(t, pendingFirst.StagedUpdate)
+	assert.True(t, pendingFirst.PendingWithdrawalPublication)
+	readAPIReadiness(fixture.event, true)
+	_, err = fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, PublishEventRequest{Version: 8})
+	require.NoError(t, err)
+
+	freshFirst, err := fixture.service.GetEvent(ctx, fixture.event)
+	require.NoError(t, err)
+	assert.Nil(t, freshFirst.StagedUpdate)
+	assert.False(t, freshFirst.PendingWithdrawalPublication,
+		"active shared-Media Withdrawal history does not mark an already-fresh Event pending")
+	require.Len(t, freshFirst.Withdrawals, 1)
+	assert.Nil(t, freshFirst.Withdrawals[0].RestoredAt)
+	readAPIReadiness(fixture.event, false)
+
+	refreshReviewedEvent(secondEvent, secondMoment, second.ID)
+	pendingSecond, err := fixture.service.GetEvent(ctx, secondEvent)
+	require.NoError(t, err)
+	assert.Nil(t, pendingSecond.StagedUpdate)
+	assert.True(t, pendingSecond.PendingWithdrawalPublication,
+		"only the Event whose shared-Media placement is stale remains pending")
+	readAPIReadiness(secondEvent, true)
+	_, err = fixture.service.PublishEvent(ctx, fixture.actor, secondEvent, PublishEventRequest{Version: 8})
+	require.NoError(t, err)
+
+	var active bool
+	require.NoError(t, fixture.db.NewRaw(`SELECT restored_at IS NULL FROM content_withdrawals WHERE id = ?`, withdrawal.ID).Scan(ctx, &active))
+	assert.False(t, active)
+	readAPIReadiness(secondEvent, false)
 }
 
 func TestMediaRestoresWhenTheFinalFreshPublicationRemovesItsStalePlacement(t *testing.T) {

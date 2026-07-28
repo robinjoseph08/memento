@@ -157,6 +157,10 @@ type Event struct {
 	Withdrawals                         []Withdrawal       `json:"withdrawals"`
 	CreatedAt                           time.Time          `json:"created_at"`
 	UpdatedAt                           time.Time          `json:"updated_at"`
+
+	// PendingWithdrawalPublication is server-authoritative because active Withdrawal
+	// history alone cannot identify which shared-Media placements are still stale.
+	PendingWithdrawalPublication bool `json:"pending_withdrawal_publication"`
 }
 
 // LooseItem is a private independently publishable Media draft.
@@ -1202,6 +1206,7 @@ func getEvent(ctx context.Context, db bun.IDB, id uuid.UUID) (Event, error) {
 			event.grouping_timezone, event.version, event.final_review_complete,
 			publication.editable_version,
 			publication.id IS NOT NULL AND NOT COALESCE(current.attendance_projection_ready, false),
+			`+pendingWithdrawalPublicationSQL+`,
 			event.created_at, event.updated_at, to_json(event.place_labels)::text,
 			COALESCE((
 				SELECT jsonb_agg(jsonb_build_object(
@@ -1275,10 +1280,10 @@ func getEvent(ctx context.Context, db bun.IDB, id uuid.UUID) (Event, error) {
 		LEFT JOIN current_published_events AS current ON current.publication_id = publication.id
 		LEFT JOIN staged_updates AS staged ON staged.id = event.current_staged_update_id
 		WHERE event.id = ?
-	`, id).Scan(ctx, &event.ID, &event.Lifecycle, &event.Title, &event.Description,
+	`, id, id, id, id).Scan(ctx, &event.ID, &event.Lifecycle, &event.Title, &event.Description,
 		&event.GroupingTimezone, &event.Version, &event.FinalReviewComplete,
 		&event.PublishedEditableVersion, &event.PublishedAttendanceRecoveryRequired,
-		&event.CreatedAt, &event.UpdatedAt,
+		&event.PendingWithdrawalPublication, &event.CreatedAt, &event.UpdatedAt,
 		&placeLabelsJSON, &withdrawalsJSON, &withdrawalTargetsJSON,
 		&stagedID, &stagedPublicationID, &stagedChanges, &stagedUpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {

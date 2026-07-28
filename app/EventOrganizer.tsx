@@ -603,8 +603,13 @@ function Checklist({
   const currentPublication =
     event.lifecycle === "published" &&
     event.staged_update === null &&
+    !event.pending_withdrawal_publication &&
     !hasUnsavedChanges;
-  const next = checks.find((check) => !check.done)?.label ?? "Ready to publish";
+  const next =
+    checks.find((check) => !check.done)?.label ??
+    (event.pending_withdrawal_publication
+      ? "Publish pending Withdrawal restoration"
+      : "Ready to publish");
   return (
     <section aria-labelledby="readiness-title" className="readiness">
       <h3 id="readiness-title">Readiness</h3>
@@ -904,6 +909,7 @@ export function EventOrganizer({
           patched.lifecycle = "published";
           patched.published_editable_version = publication.editable_version;
           patched.published_attendance_recovery_required = false;
+          patched.pending_withdrawal_publication = false;
           patched.staged_update = null;
           latestDraftRef.current = patched;
           setDraft(patched);
@@ -2225,7 +2231,8 @@ export function EventOrganizer({
                     saveState !== "saved" ||
                     publish.isPending ||
                     (currentDraft.lifecycle === "published" &&
-                      currentDraft.staged_update === null) ||
+                      currentDraft.staged_update === null &&
+                      !currentDraft.pending_withdrawal_publication) ||
                     (publish.data?.editable_version ??
                       currentDraft.published_editable_version) ===
                       currentDraft.version ||

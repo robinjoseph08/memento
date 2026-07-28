@@ -74,6 +74,7 @@ function draft(version = 1): DraftEvent {
     final_review_complete: false,
     published_editable_version: null,
     published_attendance_recovery_required: false,
+    pending_withdrawal_publication: false,
     staged_update: null,
     sources: [],
     moments: [
@@ -289,6 +290,7 @@ function stubOrganizerAPI(
           lifecycle: "published",
           published_editable_version: persisted.version,
           published_attendance_recovery_required: false,
+          pending_withdrawal_publication: false,
           staged_update: null,
           withdrawals: persisted.withdrawals.map((withdrawal) =>
             withdrawal.restored_at
@@ -1347,6 +1349,59 @@ test("publishes ready work and previews Recipient output read only", async () =>
   ).not.toBeInTheDocument();
   expect(readiness).toHaveTextContent("Next action: Ready to publish");
   expect(readiness).not.toHaveTextContent("Published and up to date");
+});
+
+test("enables only the server-authorized no-Staged Withdrawal Publication", async () => {
+  const pending = organizedDraft(2);
+  pending.lifecycle = "published";
+  pending.published_editable_version = 1;
+  pending.pending_withdrawal_publication = true;
+  pending.final_review_complete = true;
+  pending.moments = pending.moments.map((moment) => ({
+    ...moment,
+    attendance_complete: true,
+    audience_complete: true,
+  }));
+  stubOrganizerAPI(pending);
+  renderOrganizer();
+  fireEvent.click(
+    await screen.findByRole("button", { name: /Family weekend/ }),
+  );
+
+  const readiness = (
+    await screen.findByRole("heading", { name: "Readiness" })
+  ).closest("section")!;
+  expect(readiness).toHaveTextContent(
+    "Next action: Publish pending Withdrawal restoration",
+  );
+  expect(readiness).not.toHaveTextContent("Published and up to date");
+  expect(screen.getByRole("button", { name: "Publish Event" })).toBeEnabled();
+});
+
+test("keeps a nonpending published Event with no Staged update disabled", async () => {
+  const current = organizedDraft(2);
+  current.lifecycle = "published";
+  current.published_editable_version = 1;
+  current.final_review_complete = true;
+  current.moments = current.moments.map((moment) => ({
+    ...moment,
+    attendance_complete: true,
+    audience_complete: true,
+  }));
+  stubOrganizerAPI(current);
+  renderOrganizer();
+  fireEvent.click(
+    await screen.findByRole("button", { name: /Family weekend/ }),
+  );
+
+  const readiness = (
+    await screen.findByRole("heading", { name: "Readiness" })
+  ).closest("section")!;
+  expect(readiness).toHaveTextContent(
+    "Publication status: Published and up to date",
+  );
+  expect(readiness).not.toHaveTextContent("pending Withdrawal restoration");
+  expect(screen.getByRole("button", { name: "Publish Event" })).toBeDisabled();
 });
 
 test("does not call an invalid unsaved correction published and up to date", async () => {
