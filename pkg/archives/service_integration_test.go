@@ -3,8 +3,10 @@
 package archives
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
+	"database/sql"
 	"io"
 	"net/url"
 	"slices"
@@ -13,6 +15,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/robinjoseph08/memento/internal/placementlock"
 	"github.com/robinjoseph08/memento/internal/testdb"
 	"github.com/robinjoseph08/memento/pkg/immich"
 	"github.com/robinjoseph08/memento/pkg/migrations"
@@ -23,14 +26,15 @@ import (
 )
 
 type archiveStub struct {
-	planned              []immich.ArchivePart
-	companions           map[uuid.UUID]uuid.UUID
-	archiveCalls         [][]uuid.UUID
-	infoCalls            [][]uuid.UUID
-	archiveStarted       chan struct{}
-	releaseArchive       <-chan struct{}
-	archiveContentLength *int64
-	archiveOnce          sync.Once
+	planned        []immich.ArchivePart
+	companions     map[uuid.UUID]uuid.UUID
+	archiveCalls   [][]uuid.UUID
+	infoCalls      [][]uuid.UUID
+	archiveStarted chan struct{}
+	releaseArchive <-chan struct{}
+	archivePayload []byte
+	archiveNames   map[uuid.UUID]string
+	archiveOnce    sync.Once
 }
 
 func (stub *archiveStub) ArchiveInfo(_ context.Context, ids []uuid.UUID) ([]immich.ArchivePart, error) {
@@ -61,11 +65,42 @@ func (stub *archiveStub) Archive(ctx context.Context, ids []uuid.UUID) (immich.A
 			return immich.ArchiveResponse{}, ctx.Err()
 		}
 	}
-	contentLength := int64(-1)
-	if stub.archiveContentLength != nil {
-		contentLength = *stub.archiveContentLength
+	contents := stub.archivePayload
+	if contents == nil {
+		var buffer bytes.Buffer
+		archive := zip.NewWriter(&buffer)
+		rawSize := int64(len(ids) * 10)
+		for _, part := range stub.planned {
+			if slices.Equal(part.AssetIDs, ids) {
+				rawSize = part.Size
+				break
+			}
+		}
+		remaining := rawSize
+		for index, id := range ids {
+			entrySize := remaining
+			if entriesLeft := int64(len(ids) - index); entriesLeft > 1 {
+				entrySize = remaining / entriesLeft
+			}
+			remaining -= entrySize
+			name := stub.archiveNames[id]
+			if name == "" {
+				name = "Immich source " + id.String() + ".jpg"
+			}
+			entry, err := archive.Create(name)
+			if err != nil {
+				return immich.ArchiveResponse{}, err
+			}
+			if _, err := entry.Write(bytes.Repeat([]byte{'x'}, int(entrySize))); err != nil {
+				return immich.ArchiveResponse{}, err
+			}
+		}
+		if err := archive.Close(); err != nil {
+			return immich.ArchiveResponse{}, err
+		}
+		contents = buffer.Bytes()
 	}
-	return immich.ArchiveResponse{Body: io.NopCloser(bytes.NewBufferString("archive")), ContentLength: contentLength}, nil
+	return immich.ArchiveResponse{Body: io.NopCloser(bytes.NewReader(contents)), ContentLength: -1}, nil
 }
 
 type archiveFixture struct {
@@ -233,7 +268,7 @@ func TestPlansCompleteEventAndRejectsIncompleteSubset(t *testing.T) {
 }
 
 func TestPartsAreSessionBoundExpiringAndIndividuallySingleUse(t *testing.T) {
-	source := &archiveStub{}
+	source := &archiveStub{archiveNames: make(map[uuid.UUID]string)}
 	fixture := newArchiveFixture(t, source)
 	source.planned = []immich.ArchivePart{
 		{Size: 12, AssetIDs: []uuid.UUID{fixture.assets[0]}, CompanionOf: map[uuid.UUID]uuid.UUID{}},
@@ -241,6 +276,7 @@ func TestPartsAreSessionBoundExpiringAndIndividuallySingleUse(t *testing.T) {
 	}
 	now := time.Now().UTC().Truncate(time.Second)
 	fixture.service.now = func() time.Time { return now }
+	source.archiveNames[fixture.assets[0]] = "../../private/source-library-name.JPG"
 	plan, err := fixture.service.Plan(context.Background(), fixture.actor, PlanRequest{Scope: "event", EventID: stringPointer(fixture.event.String())})
 	require.NoError(t, err)
 	token := tokenFromURL(plan.Parts[0].DownloadURL)
@@ -262,9 +298,19 @@ func TestPartsAreSessionBoundExpiringAndIndividuallySingleUse(t *testing.T) {
 	contents, err := io.ReadAll(stream.Body)
 	require.NoError(t, err)
 	require.NoError(t, stream.Body.Close())
-	assert.Equal(t, "archive", string(contents))
-	assert.Equal(t, int64(12), stream.ContentLength)
+	assert.Equal(t, int64(len(contents)), stream.ContentLength)
 	assert.Equal(t, "Family-Weekend-part-1-of-2.zip", stream.Filename)
+	archive, err := zip.NewReader(bytes.NewReader(contents), int64(len(contents)))
+	require.NoError(t, err)
+	require.Len(t, archive.File, 1)
+	assert.Equal(t, "Family-Weekend/0001-media.jpg", archive.File[0].Name)
+	assert.NotContains(t, archive.File[0].Name, "source-library-name")
+	entry, err := archive.File[0].Open()
+	require.NoError(t, err)
+	entryContents, err := io.ReadAll(entry)
+	require.NoError(t, err)
+	require.NoError(t, entry.Close())
+	assert.Len(t, entryContents, 12)
 	require.Len(t, source.archiveCalls, 1)
 	assert.Equal(t, []uuid.UUID{fixture.assets[0]}, source.archiveCalls[0])
 	_, err = fixture.service.StreamPart(context.Background(), fixture.actor, token, 1)
@@ -284,7 +330,7 @@ func TestPartsAreSessionBoundExpiringAndIndividuallySingleUse(t *testing.T) {
 	assert.ErrorIs(t, err, ErrNotFound)
 }
 
-func TestPartRejectsArchiveSizeDriftWithoutConsumingPart(t *testing.T) {
+func TestPartRejectsMalformedArchiveWithoutConsumingPart(t *testing.T) {
 	source := &archiveStub{}
 	fixture := newArchiveFixture(t, source)
 	source.planned = []immich.ArchivePart{{
@@ -296,12 +342,11 @@ func TestPartRejectsArchiveSizeDriftWithoutConsumingPart(t *testing.T) {
 	require.NoError(t, err)
 	token := tokenFromURL(plan.Parts[0].DownloadURL)
 
-	driftedSize := int64(13)
-	source.archiveContentLength = &driftedSize
+	source.archivePayload = []byte("not a ZIP")
 	_, err = fixture.service.StreamPart(context.Background(), fixture.actor, token, 1)
 	assert.ErrorIs(t, err, ErrUnavailable)
 
-	source.archiveContentLength = nil
+	source.archivePayload = nil
 	stream, err := fixture.service.StreamPart(context.Background(), fixture.actor, token, 1)
 	require.NoError(t, err)
 	require.NoError(t, stream.Body.Close())
@@ -458,6 +503,67 @@ func TestPartReauthorizesAfterOpeningTheUpstreamStream(t *testing.T) {
 		assert.ErrorIs(t, streamErr, ErrNotFound)
 	case <-ctx.Done():
 		t.Fatalf("final archive authorization did not finish before deadline: %v", ctx.Err())
+	}
+}
+
+func TestPartFinalAuthorizationWaitsForConcurrentPublication(t *testing.T) {
+	source := &archiveStub{}
+	fixture := newArchiveFixture(t, source)
+	source.planned = []immich.ArchivePart{{
+		Size: 12, AssetIDs: []uuid.UUID{fixture.assets[0]}, CompanionOf: map[uuid.UUID]uuid.UUID{},
+	}}
+	plan, err := fixture.service.Plan(context.Background(), fixture.actor, PlanRequest{
+		Scope: "subset", MediaIDs: []string{fixture.media[0].String()},
+	})
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	publication, err := fixture.db.BeginTx(ctx, &sql.TxOptions{})
+	require.NoError(t, err)
+	defer func() { _ = publication.Rollback() }()
+	require.NoError(t, placementlock.Acquire(ctx, publication, placementlock.Shared))
+	_, err = publication.NewRaw(`DELETE FROM current_audience_entitlements
+		WHERE recipient_access_generation_id = ? AND media_item_id = ?`,
+		fixture.actor.AccessID, fixture.media[0]).Exec(ctx)
+	require.NoError(t, err)
+
+	result := make(chan error, 1)
+	go func() {
+		stream, streamErr := fixture.service.StreamPart(ctx, fixture.actor,
+			tokenFromURL(plan.Parts[0].DownloadURL), 1)
+		if stream.Body != nil {
+			_ = stream.Body.Close()
+		}
+		result <- streamErr
+	}()
+
+	for {
+		var waiting bool
+		err = fixture.db.NewRaw(`SELECT EXISTS (
+			SELECT 1 FROM pg_locks
+			WHERE locktype = 'advisory' AND NOT granted
+			  AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+		)`).Scan(ctx, &waiting)
+		require.NoError(t, err)
+		if waiting {
+			break
+		}
+		select {
+		case streamErr := <-result:
+			t.Fatalf("archive final authorization did not wait for Publication: %v", streamErr)
+		case <-ctx.Done():
+			t.Fatalf("archive did not wait on the Publication placement lock: %v", ctx.Err())
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	require.NoError(t, publication.Commit())
+	select {
+	case streamErr := <-result:
+		assert.ErrorIs(t, streamErr, ErrNotFound)
+	case <-ctx.Done():
+		t.Fatalf("archive did not reauthorize after Publication committed: %v", ctx.Err())
 	}
 }
 

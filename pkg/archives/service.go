@@ -2,6 +2,7 @@
 package archives
 
 import (
+	"archive/zip"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -10,6 +11,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
+	"os"
+	"path"
 	"regexp"
 	"slices"
 	"strings"
@@ -465,12 +469,15 @@ func (s *Service) StreamPart(ctx context.Context, actor setup.SessionActor, rawT
 		}
 		return Stream{}, ErrUnavailable
 	}
-	if opened.ContentLength >= 0 && opened.ContentLength != part.Size {
-		_ = opened.Body.Close()
+	safeBody, safeSize, err := rewriteArchive(ctx, opened.Body, part.Size, part.Items)
+	if err != nil {
 		return Stream{}, ErrUnavailable
 	}
 	err = s.db.RunInTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted}, func(ctx context.Context, tx bun.Tx) error {
-		if err := placementlock.Acquire(ctx, tx, placementlock.Shared); err != nil {
+		// Publication uses the shared placement lock while replacing current
+		// entitlements. Taking it exclusively makes the final authorization either
+		// precede that replacement or observe it after commit.
+		if err := placementlock.Acquire(ctx, tx, placementlock.Exclusive); err != nil {
 			return err
 		}
 		if err := lockActor(ctx, tx, actor); err != nil {
@@ -503,11 +510,165 @@ func (s *Service) StreamPart(ctx context.Context, actor setup.SessionActor, rawT
 		return nil
 	})
 	if err != nil {
-		_ = opened.Body.Close()
+		_ = safeBody.Close()
 		return Stream{}, err
 	}
-	return Stream{Body: opened.Body, ContentLength: part.Size,
+	return Stream{Body: safeBody, ContentLength: safeSize,
 		Filename: partFilename(part.Name, part.PartNumber, part.PartCount)}, nil
+}
+
+var safeArchiveExtensions = map[string]struct{}{
+	".avif": {}, ".avi": {}, ".bin": {}, ".bmp": {}, ".dng": {}, ".gif": {},
+	".heic": {}, ".heif": {}, ".jpeg": {}, ".jpg": {}, ".mkv": {}, ".mov": {},
+	".mp4": {}, ".mpeg": {}, ".png": {}, ".tif": {}, ".tiff": {}, ".webm": {}, ".webp": {},
+}
+
+func safeArchiveExtension(name string) string {
+	extension := strings.ToLower(path.Ext(strings.ReplaceAll(name, `\\`, "/")))
+	if _, safe := safeArchiveExtensions[extension]; safe {
+		return extension
+	}
+	return ".bin"
+}
+
+type contextReader struct {
+	ctx    context.Context
+	reader io.Reader
+}
+
+func (reader contextReader) Read(contents []byte) (int, error) {
+	select {
+	case <-reader.ctx.Done():
+		return 0, reader.ctx.Err()
+	default:
+		return reader.reader.Read(contents)
+	}
+}
+
+func anonymousArchiveFile(prefix string) (*os.File, error) {
+	file, err := os.CreateTemp("", prefix)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.Remove(file.Name()); err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	return file, nil
+}
+
+func rewriteArchive(ctx context.Context, upstream io.ReadCloser, rawSize int64, items []plannedItem) (io.ReadCloser, int64, error) {
+	upstreamClosed := false
+	defer func() {
+		if !upstreamClosed {
+			_ = upstream.Close()
+		}
+	}()
+	if rawSize < 0 || len(items) == 0 {
+		return nil, 0, ErrUnavailable
+	}
+
+	input, err := anonymousArchiveFile("memento-archive-input-*")
+	if err != nil {
+		return nil, 0, err
+	}
+	defer input.Close()
+	overhead := int64(len(items))*4096 + 1<<20
+	maximumInput := rawSize + overhead
+	if maximumInput < rawSize {
+		maximumInput = int64(^uint64(0) >> 1)
+	}
+	copyLimit := maximumInput
+	if copyLimit < int64(^uint64(0)>>1) {
+		copyLimit++
+	}
+	copied, copyErr := io.Copy(input, contextReader{ctx: ctx, reader: io.LimitReader(upstream, copyLimit)})
+	closeErr := upstream.Close()
+	upstreamClosed = true
+	if copyErr != nil || closeErr != nil || copied > maximumInput {
+		if copyErr != nil {
+			return nil, 0, copyErr
+		}
+		if closeErr != nil {
+			return nil, 0, closeErr
+		}
+		return nil, 0, ErrUnavailable
+	}
+	archive, err := zip.NewReader(input, copied)
+	if err != nil || len(archive.File) != len(items) {
+		return nil, 0, ErrUnavailable
+	}
+	var uncompressed uint64
+	for _, file := range archive.File {
+		uncompressed += file.UncompressedSize64
+		if uncompressed > uint64(rawSize) {
+			return nil, 0, ErrUnavailable
+		}
+	}
+	if uncompressed != uint64(rawSize) {
+		return nil, 0, ErrUnavailable
+	}
+
+	output, err := anonymousArchiveFile("memento-archive-output-*")
+	if err != nil {
+		return nil, 0, err
+	}
+	keepOutput := false
+	defer func() {
+		if !keepOutput {
+			_ = output.Close()
+		}
+	}()
+	writer := zip.NewWriter(output)
+	itemsByPosition := make(map[int]plannedItem, len(items))
+	for index, item := range items {
+		itemsByPosition[index] = item
+	}
+	for index, file := range archive.File {
+		item, found := itemsByPosition[index]
+		if !found || file.UncompressedSize64 > uint64(math.MaxInt64) {
+			_ = writer.Close()
+			return nil, 0, ErrUnavailable
+		}
+		entry, createErr := writer.CreateHeader(&zip.FileHeader{
+			Name: item.EntryName + safeArchiveExtension(file.Name), Method: zip.Deflate,
+		})
+		if createErr != nil {
+			_ = writer.Close()
+			return nil, 0, createErr
+		}
+		contents, openErr := file.Open()
+		if openErr != nil {
+			_ = writer.Close()
+			return nil, 0, openErr
+		}
+		entryLimit := int64(file.UncompressedSize64) // #nosec G115 -- bounded by MaxInt64 above.
+		copiedEntry, copyErr := io.Copy(entry, contextReader{ctx: ctx,
+			reader: io.LimitReader(contents, entryLimit+1)})
+		closeErr := contents.Close()
+		if copyErr != nil || closeErr != nil || copiedEntry != entryLimit {
+			_ = writer.Close()
+			if copyErr != nil {
+				return nil, 0, copyErr
+			}
+			if closeErr != nil {
+				return nil, 0, closeErr
+			}
+			return nil, 0, ErrUnavailable
+		}
+	}
+	if err := writer.Close(); err != nil {
+		return nil, 0, err
+	}
+	outputSize, err := output.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return nil, 0, err
+	}
+	if _, err := output.Seek(0, io.SeekStart); err != nil {
+		return nil, 0, err
+	}
+	keepOutput = true
+	return output, outputSize, nil
 }
 
 func authorizeItems(ctx context.Context, db bun.IDB, actor setup.SessionActor, items []plannedItem, lock bool) error {

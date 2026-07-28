@@ -111,6 +111,27 @@ func TestArchiveInfoRejectsUnexpectedExpansionAndMalformedParts(t *testing.T) {
 	require.EqualError(t, err, "Immich returned an invalid response")
 }
 
+func TestArchiveInfoRejectsOmittedCurrentLivePhotoCompanion(t *testing.T) {
+	primary, companion := uuid.New(), uuid.New()
+	server := contractServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/assets/" + primary.String():
+			_, _ = w.Write([]byte(`{"id":"` + primary.String() + `","livePhotoVideoId":"` + companion.String() + `"}`))
+		case "/api/download/info":
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"totalSize":10,"archives":[{"size":10,"assetIds":["` + primary.String() + `"]}]}`))
+		default:
+			t.Fatalf("unexpected request %s", r.URL.Path)
+		}
+	})
+	defer server.Close()
+	client, err := New(clientConfig(server.URL), server.Client())
+	require.NoError(t, err)
+
+	_, err = client.ArchiveInfo(context.Background(), []uuid.UUID{primary})
+	require.EqualError(t, err, "Immich returned an invalid response")
+}
+
 func TestCheckValidatesVersionAPIKeyAndExactLeastPrivilegePermissions(t *testing.T) {
 	server := contractServer(t, func(w http.ResponseWriter, r *http.Request) {
 		assert.True(t, validContract(w, r), "unexpected request %s", r.URL.Path)

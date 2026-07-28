@@ -991,6 +991,11 @@ func (c *Client) ArchiveInfo(ctx context.Context, assetIDs []uuid.UUID) ([]Archi
 			return nil, errInvalidResponse
 		}
 	}
+	for companion := range companions {
+		if _, included := seen[companion]; !included {
+			return nil, errInvalidResponse
+		}
+	}
 	if total != *response.TotalSize {
 		return nil, errInvalidResponse
 	}
