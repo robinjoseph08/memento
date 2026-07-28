@@ -6,6 +6,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 
@@ -909,6 +910,140 @@ test("does not claim a library is empty when its request fails", async () => {
   ).not.toBeInTheDocument();
 });
 
+test("paginates Comments chronologically and uses explicit mute eligibility", async () => {
+  const cursor = "comments/cursor+1";
+  const commentRequests: string[] = [];
+  let resolveNextPage: (response: Response) => void = () => undefined;
+  const firstComment = {
+    id: "comment-older",
+    media_item_id: "media-1",
+    author_person_id: "blair",
+    author_name: "Blair",
+    body: "First chronological Comment",
+    state: "active",
+    version: 1,
+    created_at: "2026-07-28T11:00:00Z",
+    edited_at: null,
+    moderated_at: null,
+    moderator_name: null,
+    authored_by_me: false,
+    can_edit: false,
+    can_delete: false,
+    can_moderate: false,
+  };
+  const secondComment = {
+    ...firstComment,
+    id: "comment-newer",
+    author_person_id: "alex",
+    author_name: "Alex",
+    body: "Second chronological Comment",
+    created_at: "2026-07-28T12:00:00Z",
+    authored_by_me: true,
+    can_edit: true,
+    can_delete: true,
+  };
+
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) => {
+      const path = requestPath(input);
+      if (path.startsWith("/api/me/photos?")) {
+        return json({
+          media: [
+            {
+              id: "media-1",
+              media_type: "image",
+              width: 1600,
+              height: 900,
+              local_date_time: "2026-07-28T12:00:00Z",
+              available: true,
+              thumbnail_url: "/api/me/media/media-1/thumbnail",
+              preview_url: "/api/me/media/media-1/preview",
+              video_url: "",
+              original_url: "/api/me/media/media-1/original",
+            },
+          ],
+          next_cursor: null,
+        });
+      }
+      if (path === "/api/me/new-for-you") return json({ events: [] });
+      if (path === "/api/favorites/media-1") {
+        return json({ media_item_id: "media-1", favorite: false });
+      }
+      if (path.startsWith("/api/comments/media/media-1?")) {
+        commentRequests.push(path);
+        const pageCursor = new URL(
+          path,
+          "http://memento.test",
+        ).searchParams.get("cursor");
+        if (pageCursor === cursor) {
+          return new Promise<Response>((resolve) => {
+            resolveNextPage = resolve;
+          });
+        }
+        return json({
+          comments: [firstComment],
+          can_mute: true,
+          muted: false,
+          next_cursor: cursor,
+        });
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    }),
+  );
+
+  renderLibrary();
+  fireEvent.click(
+    await screen.findByRole("button", {
+      name: "Open Photo 1 from July 2026",
+    }),
+  );
+
+  expect(await screen.findByText(firstComment.body)).toBeVisible();
+  expect(
+    screen.getByRole("checkbox", {
+      name: "Mute future Comment notifications",
+    }),
+  ).toBeEnabled();
+  const loadMore = screen.getByRole("button", { name: "Load more Comments" });
+  expect(loadMore).toBeEnabled();
+  fireEvent.click(loadMore);
+  expect(
+    await screen.findByRole("button", { name: "Loading…" }),
+  ).toBeDisabled();
+  expect(commentRequests).toHaveLength(2);
+  expect(
+    new URL(commentRequests[1], "http://memento.test").searchParams.get(
+      "cursor",
+    ),
+  ).toBe(cursor);
+
+  act(() => {
+    resolveNextPage(
+      new Response(
+        JSON.stringify({
+          comments: [secondComment],
+          can_mute: true,
+          muted: false,
+          next_cursor: null,
+        }),
+        { headers: { "Content-Type": "application/json" } },
+      ),
+    );
+  });
+
+  expect(await screen.findByText(secondComment.body)).toBeVisible();
+  const renderedComments = document.querySelectorAll(".comment-list > li");
+  expect(renderedComments).toHaveLength(2);
+  expect(renderedComments[0]).toHaveTextContent(firstComment.body);
+  expect(renderedComments[1]).toHaveTextContent(secondComment.body);
+  expect(screen.getAllByText(firstComment.body)).toHaveLength(1);
+  expect(screen.getAllByText(secondComment.body)).toHaveLength(1);
+  expect(
+    screen.queryByRole("button", { name: "Load more Comments" }),
+  ).not.toBeInTheDocument();
+});
+
 test("favorites, comments, and mute controls stay in the private Media viewer", async () => {
   const requests: Array<{ path: string; init?: RequestInit }> = [];
   let isFavorite = false;
@@ -981,7 +1116,18 @@ test("favorites, comments, and mute controls stay in the private Media viewer", 
           return json(comments[0]);
         }
         if (init?.method === "DELETE") {
-          comments = comments.filter((comment) => comment.id !== "comment-1");
+          comments = comments.map((comment) =>
+            comment.id === "comment-1"
+              ? {
+                  ...comment,
+                  body: "",
+                  state: "deleted",
+                  version: comment.version + 1,
+                  can_edit: false,
+                  can_delete: false,
+                }
+              : comment,
+          );
           return Promise.resolve(new Response(null, { status: 204 }));
         }
       }
@@ -1002,7 +1148,7 @@ test("favorites, comments, and mute controls stay in the private Media viewer", 
           ];
           return json(comments[1]);
         }
-        return json({ comments, muted, next_cursor: null });
+        return json({ comments, can_mute: true, muted, next_cursor: null });
       }
       throw new Error(`Unexpected request: ${path}`);
     }),
@@ -1051,9 +1197,26 @@ test("favorites, comments, and mute controls stay in the private Media viewer", 
   );
 
   fireEvent.click(screen.getAllByRole("button", { name: "Delete" })[0]);
-  await waitFor(() =>
-    expect(screen.queryByText("An edited memory")).not.toBeInTheDocument(),
-  );
+  expect(await screen.findByText("Comment deleted.")).toBeVisible();
+  expect(screen.queryByText("An edited memory")).not.toBeInTheDocument();
+  const renderedComments = document.querySelectorAll(".comment-list > li");
+  expect(renderedComments).toHaveLength(2);
+  expect(
+    within(renderedComments[0] as HTMLElement).getByText("Comment deleted."),
+  ).toBeVisible();
+  expect(
+    within(renderedComments[0] as HTMLElement).queryByRole("button", {
+      name: "Edit",
+    }),
+  ).not.toBeInTheDocument();
+  expect(
+    within(renderedComments[0] as HTMLElement).queryByRole("button", {
+      name: "Delete",
+    }),
+  ).not.toBeInTheDocument();
+  expect(
+    within(renderedComments[1] as HTMLElement).getByText("Another memory"),
+  ).toBeVisible();
 
   const editRequest = requests.find(
     ({ path, init }) =>

@@ -485,7 +485,7 @@ function MediaViewer({
                 checked={comments.data?.pages[0]?.muted ?? false}
                 disabled={
                   muteComments.isPending ||
-                  !commentItems.some((comment) => comment.authored_by_me)
+                  !(comments.data?.pages[0]?.can_mute ?? false)
                 }
                 onChange={(event) => muteComments.mutate(event.target.checked)}
                 type="checkbox"

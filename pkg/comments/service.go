@@ -55,6 +55,7 @@ type Comment struct {
 
 type ListResponse struct {
 	Comments   []Comment `json:"comments"`
+	CanMute    bool      `json:"can_mute"`
 	Muted      bool      `json:"muted"`
 	NextCursor *string   `json:"next_cursor" tstype:"string | null,required"`
 }
@@ -140,8 +141,11 @@ func (s *Service) List(ctx context.Context, actor setup.SessionActor, mediaID uu
 		}
 		if err := tx.NewRaw(`SELECT EXISTS (
 			SELECT 1 FROM comment_subscriptions
+			WHERE media_item_id = ? AND recipient_access_generation_id = ?
+		), EXISTS (
+			SELECT 1 FROM comment_subscriptions
 			WHERE media_item_id = ? AND recipient_access_generation_id = ? AND muted
-		)`, mediaID, actor.AccessID).Scan(ctx, &response.Muted); err != nil {
+		)`, mediaID, actor.AccessID, mediaID, actor.AccessID).Scan(ctx, &response.CanMute, &response.Muted); err != nil {
 			return err
 		}
 		filter := ""
