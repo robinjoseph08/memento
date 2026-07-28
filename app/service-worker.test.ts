@@ -4,29 +4,50 @@ import vm from "node:vm";
 
 import { expect, test, vi } from "vitest";
 
+type ExtendableEvent = {
+  data?: unknown;
+  waitUntil(response: Promise<unknown>): void;
+};
+
 type FetchEvent = {
   request: Request;
   respondWith(response: Promise<Response>): void;
 };
 
-type FetchHandler = (event: FetchEvent) => void;
+type WorkerHandler = (event: ExtendableEvent & FetchEvent) => void;
 
-async function loadFetchHandler() {
-  const listeners = new Map<string, (event: never) => void>();
+async function loadWorker() {
+  const listeners = new Map<string, WorkerHandler>();
   const cache = {
-    addAll: vi.fn(() => Promise.resolve()),
-    put: vi.fn(() => Promise.resolve()),
+    add: vi.fn((path: string) => {
+      void path;
+      return Promise.resolve();
+    }),
+    addAll: vi.fn((paths: string[]) => {
+      void paths;
+      return Promise.resolve();
+    }),
+    match: vi.fn((request: RequestInfo | URL) => {
+      void request;
+      return Promise.resolve(undefined as Response | undefined);
+    }),
+    put: vi.fn((request: RequestInfo | URL, response: Response) => {
+      void request;
+      void response;
+      return Promise.resolve();
+    }),
   };
   const caches = {
     delete: vi.fn(() => Promise.resolve(true)),
     keys: vi.fn(() => Promise.resolve([] as string[])),
-    match: vi.fn(() => Promise.resolve(undefined as Response | undefined)),
     open: vi.fn(() => Promise.resolve(cache)),
   };
   const fetchMock = vi.fn<typeof fetch>();
   const self = {
     location: { origin: "https://memento.example" },
-    addEventListener(type: string, handler: (event: never) => void) {
+    clients: { claim: vi.fn(() => Promise.resolve()) },
+    skipWaiting: vi.fn(() => Promise.resolve()),
+    addEventListener(type: string, handler: WorkerHandler) {
       listeners.set(type, handler);
     },
   };
@@ -35,46 +56,220 @@ async function loadFetchHandler() {
     "utf8",
   );
   vm.runInNewContext(source, { caches, fetch: fetchMock, self, URL });
+  return { cache, caches, fetchMock, listeners, self };
+}
+
+function fetchEvent(request: Request) {
+  let responsePromise: Promise<Response> | undefined;
   return {
-    cache,
-    caches,
-    fetchMock,
-    handler: listeners.get("fetch") as FetchHandler,
+    event: {
+      request,
+      respondWith(response: Promise<Response>) {
+        responsePromise = response;
+      },
+    } as FetchEvent & ExtendableEvent,
+    response: () => responsePromise,
   };
 }
 
-test("service worker never handles protected API requests", async () => {
-  const worker = await loadFetchHandler();
-  const respondWith = vi.fn();
+test.each([
+  "https://memento.example/api/session",
+  "https://memento.example/api/me/photos?limit=40",
+  "https://memento.example/api/me/media/private/thumbnail",
+  "https://immich.example/api/assets/private",
+])("service worker never handles protected request %s", async (url) => {
+  const worker = await loadWorker();
+  const probe = fetchEvent(new Request(url));
 
-  worker.handler({
-    request: new Request("https://memento.example/api/media/private"),
-    respondWith,
-  });
+  worker.listeners.get("fetch")!(probe.event);
 
-  expect(respondWith).not.toHaveBeenCalled();
+  expect(probe.response()).toBeUndefined();
   expect(worker.fetchMock).not.toHaveBeenCalled();
   expect(worker.caches.open).not.toHaveBeenCalled();
 });
 
-test("service worker refreshes public shell assets before using cached copies", async () => {
-  const worker = await loadFetchHandler();
+test("service worker refreshes public build assets before using cached copies", async () => {
+  const worker = await loadWorker();
   const oldResponse = new Response("old shell");
   const newResponse = new Response("new shell");
-  worker.caches.match.mockResolvedValue(oldResponse);
+  worker.cache.match.mockResolvedValue(oldResponse);
   worker.fetchMock.mockResolvedValue(newResponse);
-  let responsePromise: Promise<Response> | undefined;
+  const probe = fetchEvent(
+    new Request("https://memento.example/assets/app.js"),
+  );
 
-  worker.handler({
+  worker.listeners.get("fetch")!(probe.event);
+
+  await expect(probe.response()).resolves.toBe(newResponse);
+  expect(worker.fetchMock).toHaveBeenCalledOnce();
+  expect(worker.cache.match).not.toHaveBeenCalled();
+  expect(worker.cache.put).toHaveBeenCalledOnce();
+});
+
+test("standalone navigation falls back to the cached shell without storing its URL", async () => {
+  const worker = await loadWorker();
+  const cached = new Response("cached shell");
+  worker.fetchMock.mockRejectedValue(new TypeError("offline"));
+  worker.cache.match.mockResolvedValue(cached);
+  const navigation = {
+    method: "GET",
+    mode: "navigate",
+    url: "https://memento.example/photos?from=home-screen",
+  } as Request;
+  const probe = fetchEvent(navigation);
+
+  worker.listeners.get("fetch")!(probe.event);
+
+  await expect(probe.response()).resolves.toBe(cached);
+  expect(worker.cache.match).toHaveBeenCalledWith("/");
+  expect(worker.cache.put).not.toHaveBeenCalled();
+});
+
+test("successful token-bearing navigation refreshes only the stable shell key", async () => {
+  const worker = await loadWorker();
+  const response = new Response("fresh shell");
+  worker.fetchMock.mockResolvedValue(response);
+  const navigation = {
+    method: "GET",
+    mode: "navigate",
+    url: "https://memento.example/invitation?token=private-token",
+  } as Request;
+  const probe = fetchEvent(navigation);
+
+  worker.listeners.get("fetch")!(probe.event);
+  await expect(probe.response()).resolves.toBe(response);
+
+  expect(worker.cache.put).toHaveBeenCalledOnce();
+  expect(worker.cache.put.mock.calls[0][0]).toBe("/");
+  expect(JSON.stringify(worker.cache.put.mock.calls)).not.toContain(
+    "private-token",
+  );
+});
+
+test("service worker falls back only to a cached public asset", async () => {
+  const worker = await loadWorker();
+  const cached = new Response("cached asset");
+  worker.fetchMock.mockRejectedValue(new TypeError("offline"));
+  worker.cache.match.mockResolvedValue(cached);
+  const probe = fetchEvent(new Request("https://memento.example/icon.svg"));
+
+  worker.listeners.get("fetch")!(probe.event);
+
+  await expect(probe.response()).resolves.toBe(cached);
+  expect(worker.cache.match).toHaveBeenCalledOnce();
+  expect(worker.cache.put).not.toHaveBeenCalled();
+});
+
+test("service worker reports an unavailable uncached public asset", async () => {
+  const worker = await loadWorker();
+  worker.fetchMock.mockRejectedValue(new TypeError("offline"));
+  const probe = fetchEvent(new Request("https://memento.example/icon.svg"));
+
+  worker.listeners.get("fetch")!(probe.event);
+
+  await expect(probe.response()).rejects.toThrow("offline");
+});
+
+test("install preloads only the public shell and selected Memento icons", async () => {
+  const worker = await loadWorker();
+  let work: Promise<unknown> | undefined;
+
+  worker.listeners.get("install")!({
     request: new Request("https://memento.example/"),
-    respondWith(response) {
-      responsePromise = response;
+    respondWith: vi.fn(),
+    waitUntil(promise) {
+      work = promise;
     },
   });
+  await work;
 
-  expect(responsePromise).toBeDefined();
-  await expect(responsePromise).resolves.toBe(newResponse);
-  expect(worker.fetchMock).toHaveBeenCalledOnce();
-  expect(worker.caches.match).not.toHaveBeenCalled();
-  expect(worker.cache.put).toHaveBeenCalledOnce();
+  expect(worker.cache.addAll).toHaveBeenCalledOnce();
+  const paths = worker.cache.addAll.mock.calls[0][0];
+  expect(paths).toContain("/");
+  expect(paths).toContain("/icon-512.png");
+  expect(paths.every((path) => !path.startsWith("/api"))).toBe(true);
+  expect(worker.self.skipWaiting).not.toHaveBeenCalled();
+});
+
+test("install discovers hashed scripts, styles, and self-hosted fonts", async () => {
+  const worker = await loadWorker();
+  worker.cache.match.mockImplementation((path: RequestInfo | URL) => {
+    if (path === "/") {
+      return Promise.resolve(
+        new Response(
+          '<link href="/assets/app-123.css"><script src="/assets/app-456.js">',
+          { headers: { "Content-Type": "text/html" } },
+        ),
+      );
+    }
+    if (path === "/assets/app-123.css") {
+      return Promise.resolve(
+        new Response('@font-face{src:url("/assets/dm-sans-789.woff2")}', {
+          headers: { "Content-Type": "text/css" },
+        }),
+      );
+    }
+    return Promise.resolve(
+      new Response("asset", {
+        headers: { "Content-Type": "application/octet-stream" },
+      }),
+    );
+  });
+  let work: Promise<unknown> | undefined;
+
+  worker.listeners.get("install")!({
+    request: new Request("https://memento.example/"),
+    respondWith: vi.fn(),
+    waitUntil(promise) {
+      work = promise;
+    },
+  });
+  await work;
+
+  expect(worker.cache.add).toHaveBeenCalledWith("/assets/app-123.css");
+  expect(worker.cache.add).toHaveBeenCalledWith("/assets/app-456.js");
+  expect(worker.cache.add).toHaveBeenCalledWith("/assets/dm-sans-789.woff2");
+  expect(
+    worker.cache.add.mock.calls.every(([path]) => path.startsWith("/assets/")),
+  ).toBe(true);
+});
+
+test("activation replaces only Memento shell caches and claims open clients", async () => {
+  const worker = await loadWorker();
+  worker.caches.keys.mockResolvedValue([
+    "memento-shell-v4",
+    "memento-shell-v5",
+    "another-application-cache",
+  ]);
+  let work: Promise<unknown> | undefined;
+
+  worker.listeners.get("activate")!({
+    request: new Request("https://memento.example/"),
+    respondWith: vi.fn(),
+    waitUntil(promise) {
+      work = promise;
+    },
+  });
+  await work;
+
+  expect(worker.caches.delete).toHaveBeenCalledOnce();
+  expect(worker.caches.delete).toHaveBeenCalledWith("memento-shell-v4");
+  expect(worker.self.clients.claim).toHaveBeenCalledOnce();
+});
+
+test("an explicit update message activates a waiting worker", async () => {
+  const worker = await loadWorker();
+  let work: Promise<unknown> | undefined;
+
+  worker.listeners.get("message")!({
+    data: { type: "SKIP_WAITING" },
+    request: new Request("https://memento.example/"),
+    respondWith: vi.fn(),
+    waitUntil(promise) {
+      work = promise;
+    },
+  });
+  await work;
+
+  expect(worker.self.skipWaiting).toHaveBeenCalledOnce();
 });

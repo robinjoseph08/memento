@@ -731,6 +731,44 @@ test("does not claim sign-in until the Secure cookie restores a Session", async 
   expect(screen.queryByText(/You're signed in/)).not.toBeInTheDocument();
 });
 
+test("distinguishes a reachable empty library from bootstrap failure and retries", async () => {
+  let networkAvailable = false;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) => {
+      const path = requestPath(input);
+      if (!networkAvailable) {
+        return Promise.reject(new TypeError("network unavailable"));
+      }
+      if (path === "/api/setup") {
+        return Promise.resolve(
+          jsonResponse({ error: { message: "Setup not found." } }, 404),
+        );
+      }
+      if (path === "/api/session") {
+        return Promise.resolve(
+          jsonResponse({ error: { message: "Sign in required." } }, 401),
+        );
+      }
+      return Promise.reject(new Error(`Unexpected request: ${path}`));
+    }),
+  );
+
+  renderApp();
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "Memento cannot reach the server. Your authorized library has not been reported as empty.",
+  );
+  expect(
+    screen.queryByText("No photos are available."),
+  ).not.toBeInTheDocument();
+
+  networkAvailable = true;
+  fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+  expect(
+    await screen.findByRole("heading", { name: "Sign in to Memento" }),
+  ).toBeInTheDocument();
+});
+
 test("safe bootstrap GETs show permanent closure without starting setup", async () => {
   const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     expect(init?.method).toBeUndefined();

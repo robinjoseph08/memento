@@ -13,8 +13,10 @@ import { EventOrganizer } from "./EventOrganizer";
 import { FamilyManager } from "./FamilyManager";
 import { InvitationSuggestions } from "./InvitationSuggestions";
 import { PeopleManager } from "./PeopleManager";
+import { OfflineNotice, PWAUpdatePrompt, ThemeToggle } from "./PWAControls";
 import { RepairWorkspace } from "./RepairWorkspace";
 import { RecipientLibrary } from "./RecipientLibrary";
+import { useOnlineStatus } from "./useOnlineStatus";
 import {
   RecipientVisibilityManager,
   VisibilityManager,
@@ -1393,6 +1395,7 @@ function ReadyCard({
   const [searchParams, setSearchParams] = useSearchParams();
   const [draftsDirty, setDraftsDirty] = useState(false);
   const [draftsSaving, setDraftsSaving] = useState(false);
+  const online = useOnlineStatus();
   const draftsRequested = searchParams.get("workspace") === "drafts";
   const signOut = useMutation({
     mutationFn: () => {
@@ -1428,6 +1431,15 @@ function ReadyCard({
     window.addEventListener("popstate", protectDraftHistory);
     return () => window.removeEventListener("popstate", protectDraftHistory);
   }, [draftsDirty, draftsSaving, setSearchParams]);
+
+  if (session && !online) {
+    return (
+      <div className="offline-shell">
+        <ThemeToggle />
+        <OfflineNotice />
+      </div>
+    );
+  }
 
   if (session?.curator && (draftsRequested || draftsDirty)) {
     return (
@@ -1661,6 +1673,7 @@ function InvitationLanding() {
 
 function MementoApp() {
   const queryClient = useQueryClient();
+  const online = useOnlineStatus();
   const [completedSession, setCompletedSession] = useState<SessionResponse>();
   const [signedOut, setSignedOut] = useState(false);
   const bootstrap = useQuery({
@@ -1711,12 +1724,20 @@ function MementoApp() {
   if (bootstrap.isError) {
     return (
       <main>
-        <section aria-labelledby="memento-title" className="shell-card">
-          <BrandHeader />
-          <p className="lede" role="alert">
-            Memento is unavailable.
-          </p>
-        </section>
+        {online ? (
+          <section aria-labelledby="memento-title" className="shell-card">
+            <BrandHeader />
+            <p className="lede" role="alert">
+              Memento cannot reach the server. Your authorized library has not
+              been reported as empty.
+            </p>
+            <button onClick={() => void bootstrap.refetch()} type="button">
+              Try again
+            </button>
+          </section>
+        ) : (
+          <OfflineNotice />
+        )}
       </main>
     );
   }
@@ -1745,9 +1766,14 @@ function MementoApp() {
 }
 
 export function App() {
-  return window.location.pathname === "/invitation" ? (
-    <InvitationLanding />
-  ) : (
-    <MementoApp />
+  return (
+    <>
+      <PWAUpdatePrompt />
+      {window.location.pathname === "/invitation" ? (
+        <InvitationLanding />
+      ) : (
+        <MementoApp />
+      )}
+    </>
   );
 }

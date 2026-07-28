@@ -7,6 +7,7 @@ import {
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 
 import { APIError, apiJSON, apiNoContent, apiResponse } from "./api";
+import { ThemeToggle } from "./PWAControls";
 import type {
   PlanRequest as ArchivePlanRequest,
   PlanResponse as ArchivePlanResponse,
@@ -1006,6 +1007,9 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
         showSearch={false}
       />
       <div className="library-content">
+        <div className="app-preferences">
+          <ThemeToggle />
+        </div>
         {openedEvent ? (
           <>
             <button

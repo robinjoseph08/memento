@@ -9,7 +9,10 @@ import { createRoot } from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
 
 import { App } from "./App";
+import { initializeTheme, registerServiceWorker } from "./pwa";
 import "./styles.css";
+
+initializeTheme();
 
 const queryClient = new QueryClient();
 const root = document.getElementById("root");
@@ -28,8 +31,4 @@ createRoot(root).render(
   </StrictMode>,
 );
 
-if ("serviceWorker" in navigator && window.isSecureContext) {
-  window.addEventListener("load", () => {
-    void navigator.serviceWorker.register("/service-worker.js");
-  });
-}
+registerServiceWorker();

@@ -575,7 +575,7 @@
   }
 }
 
-@media (prefers-color-scheme: light) {
+:root[data-theme="light"] {
   .recipient-library {
     border-color: #cbd5e1;
     background: #f8fafc;
