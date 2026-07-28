@@ -320,23 +320,27 @@ func summarizeStagedUpdate(ctx context.Context, db bun.IDB, eventID, publication
 		return nil, err
 	}
 
-	var titleChanged, descriptionChanged, timezoneChanged bool
+	var titleChanged, descriptionChanged, placeLabelsChanged, timezoneChanged bool
 	if err := db.NewRaw(`
 		SELECT editable.title IS DISTINCT FROM published.title,
 		       editable.description IS DISTINCT FROM published.description,
+		       editable.place_labels IS DISTINCT FROM published.place_labels,
 		       editable.grouping_timezone IS DISTINCT FROM published.grouping_timezone
 		FROM events AS editable
 		JOIN published_event_revisions AS published ON published.publication_id = ?
 		WHERE editable.id = ?
-	`, publicationID, eventID).Scan(ctx, &titleChanged, &descriptionChanged, &timezoneChanged); err != nil {
+	`, publicationID, eventID).Scan(ctx, &titleChanged, &descriptionChanged, &placeLabelsChanged, &timezoneChanged); err != nil {
 		return nil, err
 	}
-	eventMetadataFields := make([]string, 0, 3)
+	eventMetadataFields := make([]string, 0, 4)
 	if titleChanged {
 		eventMetadataFields = append(eventMetadataFields, "title")
 	}
 	if descriptionChanged {
 		eventMetadataFields = append(eventMetadataFields, "description")
+	}
+	if placeLabelsChanged {
+		eventMetadataFields = append(eventMetadataFields, "place_labels")
 	}
 	if timezoneChanged {
 		eventMetadataFields = append(eventMetadataFields, "grouping_timezone")
@@ -365,8 +369,8 @@ func summarizeStagedUpdate(ctx context.Context, db bun.IDB, eventID, publication
 		JOIN published_moments AS published
 		  ON published.publication_id = ? AND published.draft_moment_id = editable.id
 		WHERE editable.event_id = ?
-		  AND (editable.title, editable.proposed_day, editable.cover_media_item_id)
-		      IS DISTINCT FROM (published.title, published.proposed_day, published.cover_media_item_id)
+		  AND (editable.title, editable.place_labels, editable.proposed_day, editable.cover_media_item_id)
+		      IS DISTINCT FROM (published.title, published.place_labels, published.proposed_day, published.cover_media_item_id)
 		ORDER BY editable.position, editable.id
 	`, publicationID, eventID).Scan(ctx, &metadataMoments); err != nil {
 		return nil, err

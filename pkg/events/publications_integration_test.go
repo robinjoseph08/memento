@@ -555,10 +555,76 @@ func TestCuratorCanStageEventMetadataAndMediaRemovalCorrections(t *testing.T) {
 	assert.ErrorIs(t, err, ErrPublicationNotReady, "Curator corrections require a fresh final review")
 }
 
-func TestCuratorCanRestoreAutosavedPublishedMediaRemoval(t *testing.T) {
+func TestPlaceLabelOnlyCorrectionsRemainStagedAndPublishExactly(t *testing.T) {
 	fixture := newPublicationFixture(t)
 	ctx := context.Background()
 	_, err := fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, fixture.request())
+	require.NoError(t, err)
+
+	base, err := fixture.service.GetEvent(ctx, fixture.event)
+	require.NoError(t, err)
+	requestFor := func(event Event, finalReview bool) OrganizeEventRequest {
+		moments := make([]OrganizeMoment, 0, len(event.Moments))
+		for index, moment := range event.Moments {
+			labels := moment.PlaceLabels
+			if index == 0 {
+				labels = []string{"Breakfast room", "Harbor view"}
+			}
+			mediaIDs := make([]string, 0, len(moment.MediaItems))
+			for _, item := range moment.MediaItems {
+				mediaIDs = append(mediaIDs, item.ID)
+			}
+			moments = append(moments, OrganizeMoment{
+				ID: moment.ID, Title: moment.Title, PlaceLabels: labels,
+				ProposedDay: moment.ProposedDay, CoverMediaItemID: moment.CoverMediaItemID,
+				MediaItemIDs: mediaIDs,
+			})
+		}
+		return OrganizeEventRequest{
+			Version: event.Version, PlaceLabels: []string{"Coastal overlook"},
+			Moments: moments, FinalReviewComplete: finalReview,
+		}
+	}
+
+	corrected, err := fixture.service.OrganizeEvent(ctx, fixture.actor, fixture.event, requestFor(base, true))
+	require.NoError(t, err)
+	assert.False(t, corrected.FinalReviewComplete)
+	require.NotNil(t, corrected.StagedUpdate, "label-only corrections remain publishable Staged work")
+	require.Len(t, corrected.StagedUpdate.Changes, 1)
+	metadata := corrected.StagedUpdate.Changes[0]
+	assert.Equal(t, staging.ChangeKindMetadata, metadata.Kind)
+	assert.Equal(t, 2, metadata.Count, "one Event and one Moment have label metadata changes")
+	assert.Equal(t, []string{"place_labels"}, metadata.EventMetadataFields)
+	assert.Equal(t, []string{fixture.moments[0].String()}, metadata.MomentIDs)
+
+	reviewed, err := fixture.service.OrganizeEvent(ctx, fixture.actor, fixture.event, requestFor(corrected, true))
+	require.NoError(t, err)
+	assert.True(t, reviewed.FinalReviewComplete)
+	publication, err := fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, PublishEventRequest{Version: reviewed.Version})
+	require.NoError(t, err)
+
+	var eventLabelsExact, momentLabelsExact bool
+	require.NoError(t, fixture.db.NewRaw(`
+		SELECT current.place_labels = ARRAY['Coastal overlook']::text[],
+		       moment.place_labels = ARRAY['Breakfast room', 'Harbor view']::text[]
+		FROM current_published_events AS current
+		JOIN published_moments AS moment
+		  ON moment.publication_id = current.publication_id AND moment.draft_moment_id = ?
+		WHERE current.event_id = ? AND current.publication_id = ?
+	`, fixture.moments[0], fixture.event, publication.ID).Scan(ctx, &eventLabelsExact, &momentLabelsExact))
+	assert.True(t, eventLabelsExact)
+	assert.True(t, momentLabelsExact)
+	published, err := fixture.service.GetEvent(ctx, fixture.event)
+	require.NoError(t, err)
+	assert.Nil(t, published.StagedUpdate)
+}
+
+func TestCuratorCanRestoreAutosavedPublishedMediaRemoval(t *testing.T) {
+	fixture := newPublicationFixture(t)
+	ctx := context.Background()
+	_, err := fixture.db.NewRaw(`UPDATE draft_moments SET place_labels = ARRAY['Garden terrace', 'Harbor view'] WHERE id = ?`, fixture.moments[0]).Exec(ctx)
+	require.NoError(t, err)
+	_, err = fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, fixture.request())
 	require.NoError(t, err)
 
 	sourceID := uuid.New()
@@ -636,6 +702,7 @@ func TestCuratorCanRestoreAutosavedPublishedMediaRemoval(t *testing.T) {
 	require.Len(t, restored.Moments, 3)
 	assert.Equal(t, fixture.moments[0].String(), restored.Moments[0].ID)
 	assert.Equal(t, fixture.media[0].String(), restored.Moments[0].MediaItems[0].ID)
+	assert.Equal(t, []string{"Garden terrace", "Harbor view"}, restored.Moments[0].PlaceLabels)
 	assert.True(t, restored.Moments[0].AttendanceComplete)
 	assert.True(t, restored.Moments[0].AudienceComplete)
 	var restoredSnapshotID uuid.UUID

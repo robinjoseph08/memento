@@ -156,6 +156,13 @@ function sameIDs(left: { id: string }[], right: { id: string }[]) {
   );
 }
 
+function sameStrings(left: string[], right: string[]) {
+  return (
+    left.length === right.length &&
+    left.every((value, index) => value === right[index])
+  );
+}
+
 function insertByServerOrder<T extends { id: string }>(
   items: T[],
   item: T,
@@ -196,6 +203,8 @@ function rebaseOrganization(
   if (local.title !== base.title) rebased.title = local.title;
   if (local.description !== base.description)
     rebased.description = local.description;
+  if (!sameStrings(local.place_labels, base.place_labels))
+    rebased.place_labels = cloneEvent(local.place_labels);
   if (local.grouping_timezone !== base.grouping_timezone)
     rebased.grouping_timezone = local.grouping_timezone;
   if (local.final_review_complete !== base.final_review_complete)
@@ -236,6 +245,8 @@ function rebaseOrganization(
     const merged = cloneEvent(serverMoment);
     if (localMoment.title !== baseMoment.title)
       merged.title = localMoment.title;
+    if (!sameStrings(localMoment.place_labels, baseMoment.place_labels))
+      merged.place_labels = cloneEvent(localMoment.place_labels);
     if (localMoment.proposed_day !== baseMoment.proposed_day)
       merged.proposed_day = localMoment.proposed_day;
     if (localMoment.cover_media_item_id !== baseMoment.cover_media_item_id)
@@ -363,7 +374,7 @@ function StagedUpdateReview({
     ),
   );
   const metadataLabel = (
-    field: "title" | "description" | "grouping_timezone",
+    field: "title" | "description" | "place_labels" | "grouping_timezone",
   ) =>
     changedEventMetadata.has(field) ? (
       <span className="staged-change-label">Staged: Metadata edits</span>
@@ -408,6 +419,20 @@ function StagedUpdateReview({
             >
               <dt>Description {metadataLabel("description")}</dt>
               <dd>{event.description || "No description"}</dd>
+            </div>
+            <div
+              className={
+                changedEventMetadata.has("place_labels")
+                  ? "staged-metadata"
+                  : ""
+              }
+            >
+              <dt>Place labels {metadataLabel("place_labels")}</dt>
+              <dd>
+                {event.place_labels.length > 0
+                  ? event.place_labels.join(", ")
+                  : "No Place labels"}
+              </dd>
             </div>
             <div
               className={

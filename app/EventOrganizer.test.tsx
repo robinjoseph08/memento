@@ -528,7 +528,11 @@ test("shows the resulting Event with highlighted Staged net changes", async () =
   staged.lifecycle = "published";
   staged.title = "Corrected family weekend";
   staged.description = "The complete corrected description";
+  staged.place_labels = ["Coastal overlook", "Garden terrace"];
   staged.grouping_timezone = "America/New_York";
+  staged.moments.find((moment) => moment.id === momentOneID)!.place_labels = [
+    "Breakfast room",
+  ];
   staged.published_editable_version = 7;
   staged.staged_update = {
     id: "12121212-1212-4212-8212-121212121212",
@@ -589,7 +593,12 @@ test("shows the resulting Event with highlighted Staged net changes", async () =
         count: 3,
         media_item_ids: [items.a.id],
         moment_ids: [momentOneID],
-        event_metadata_fields: ["title", "description", "grouping_timezone"],
+        event_metadata_fields: [
+          "title",
+          "description",
+          "place_labels",
+          "grouping_timezone",
+        ],
         detail: "Event, Moment, or Media metadata edited",
       },
       {
@@ -635,11 +644,15 @@ test("shows the resulting Event with highlighted Staged net changes", async () =
   });
   expect(eventMetadata).toHaveTextContent("Corrected family weekend");
   expect(eventMetadata).toHaveTextContent("The complete corrected description");
+  expect(eventMetadata).toHaveTextContent("Coastal overlook, Garden terrace");
   expect(eventMetadata).toHaveTextContent("America/New_York");
-  expect(eventMetadata.querySelectorAll(".staged-metadata")).toHaveLength(3);
+  expect(eventMetadata.querySelectorAll(".staged-metadata")).toHaveLength(4);
   expect(
     within(eventMetadata).getAllByText("Staged: Metadata edits"),
-  ).toHaveLength(3);
+  ).toHaveLength(4);
+  expect(screen.getByLabelText("Place labels for Moment 2")).toHaveValue(
+    "Breakfast room",
+  );
   const netChangeSummary = within(review).getByRole("list", {
     name: "Net change summary",
   });
@@ -801,6 +814,16 @@ test("rebases edits made while published Media restoration is pending", async ()
   fireEvent.change(screen.getAllByLabelText("Cover")[1], {
     target: { value: items.c.id },
   });
+  const eventLabels = screen.getByLabelText("Event Place labels");
+  fireEvent.change(eventLabels, {
+    target: { value: "Restoration Event Place" },
+  });
+  fireEvent.blur(eventLabels);
+  const momentLabels = screen.getByLabelText("Place labels for Moment 2");
+  fireEvent.change(momentLabels, {
+    target: { value: "Restoration Moment Place" },
+  });
+  fireEvent.blur(momentLabels);
   expect(title).toHaveValue("Edited during restoration");
 
   act(() => gate.resolve());
@@ -814,12 +837,14 @@ test("rebases edits made while published Media restoration is pending", async ()
   expect(saves[0]).toMatchObject({
     version: 9,
     title: "Edited during restoration",
+    place_labels: ["Restoration Event Place"],
   });
   const restoredMoment = saves[0].moments.find(
     (moment) => moment.id === momentOneID,
   );
   expect(restoredMoment?.cover_media_item_id).toBe(items.c.id);
   expect(restoredMoment?.media_item_ids).toContain(items.loose.id);
+  expect(restoredMoment?.place_labels).toEqual(["Restoration Moment Place"]);
 });
 
 test("keeps restored Media when its Moment is merged during a delayed restoration", async () => {
@@ -1037,6 +1062,16 @@ test("refreshes Publication state while preserving edits made during refetch", a
   ).toBeDisabled();
   const title = screen.getByLabelText("Event title");
   fireEvent.change(title, { target: { value: "Follow-up correction" } });
+  const eventLabels = screen.getByLabelText("Event Place labels");
+  fireEvent.change(eventLabels, {
+    target: { value: "Publication Event Place" },
+  });
+  fireEvent.blur(eventLabels);
+  const momentLabels = screen.getByLabelText("Place labels for Moment 1");
+  fireEvent.change(momentLabels, {
+    target: { value: "Publication Moment Place" },
+  });
+  fireEvent.blur(momentLabels);
   act(() => gate.resolve());
 
   const history = await screen.findByText(/Privacy request by Robin/);
@@ -1046,7 +1081,11 @@ test("refreshes Publication state while preserving edits made during refetch", a
   expect(saves[0]).toMatchObject({
     version: 8,
     title: "Follow-up correction",
+    place_labels: ["Publication Event Place"],
   });
+  expect(saves[0].moments[0].place_labels).toEqual([
+    "Publication Moment Place",
+  ]);
   expect(history).toBeVisible();
 });
 
@@ -1335,6 +1374,16 @@ test("rebases organization edits made while Withdrawal is pending", async () => 
   fireEvent.change(screen.getAllByLabelText("Cover")[1], {
     target: { value: items.a.id },
   });
+  const eventLabels = screen.getByLabelText("Event Place labels");
+  fireEvent.change(eventLabels, {
+    target: { value: "Withdrawal Event Place" },
+  });
+  fireEvent.blur(eventLabels);
+  const momentLabels = screen.getByLabelText("Place labels for Moment 2");
+  fireEvent.change(momentLabels, {
+    target: { value: "Withdrawal Moment Place" },
+  });
+  fireEvent.blur(momentLabels);
 
   act(() => gate.resolve());
   const history = await screen.findByText(/Privacy request by Robin/);
@@ -1344,11 +1393,13 @@ test("rebases organization edits made while Withdrawal is pending", async () => 
   expect(saves[0]).toMatchObject({
     version: 2,
     title: "Edited during Withdrawal",
+    place_labels: ["Withdrawal Event Place"],
   });
-  expect(
-    saves[0].moments.find((moment) => moment.id === momentOneID)
-      ?.cover_media_item_id,
-  ).toBe(items.a.id);
+  const withdrawnMoment = saves[0].moments.find(
+    (moment) => moment.id === momentOneID,
+  );
+  expect(withdrawnMoment?.cover_media_item_id).toBe(items.a.id);
+  expect(withdrawnMoment?.place_labels).toEqual(["Withdrawal Moment Place"]);
 });
 
 test("organizes merged and split days with pointer and keyboard controls", async () => {

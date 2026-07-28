@@ -884,17 +884,17 @@ func (s *Service) RestorePublishedMedia(ctx context.Context, actor setup.Curator
 			if _, err := tx.NewRaw(`
 				INSERT INTO draft_moments (
 					id, event_id, position, proposed_day, grouping_timezone, proposal_kind,
-					created_at, source_days, title, cover_media_item_id,
+					created_at, source_days, title, place_labels, cover_media_item_id,
 					attendance_complete, audience_complete, review_version
 				)
 				SELECT item.id, item.event_id, ?, item.proposed_day, item.grouping_timezone,
-					item.proposal_kind, item.created_at, item.source_days, item.title,
+					item.proposal_kind, item.created_at, item.source_days, item.title, item.place_labels,
 					CASE WHEN item.cover_media_item_id = ? THEN ?::uuid ELSE NULL END,
 					false, NOT true, item.review_version + 1
 				FROM jsonb_to_record(?::jsonb) AS item(
 					id uuid, event_id uuid, proposed_day date, grouping_timezone text,
 					proposal_kind text, created_at timestamptz, source_days date[], title text,
-					cover_media_item_id uuid, review_version bigint)
+					place_labels text[], cover_media_item_id uuid, review_version bigint)
 			`, maxDraftMediaItems*3, mediaID, mediaID, string(momentState)).Exec(ctx); err != nil {
 				return err
 			}
