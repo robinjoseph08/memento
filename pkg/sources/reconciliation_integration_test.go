@@ -583,15 +583,17 @@ func TestPublishedSourceChangesCoalesceAcrossRetriesConcurrentEditsAndCancellati
 	fixture := publishSourceEventFixture(t, service, sourceAlbumID, original.SourceID)
 
 	connector.setMembership(original, added)
+	concurrentCtx, cancelConcurrent := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelConcurrent()
 	start := make(chan struct{})
 	errorsByEdit := make(chan error, 2)
 	go func() {
 		<-start
-		errorsByEdit <- service.Reconcile(context.Background(), sourceAlbumID)
+		errorsByEdit <- service.Reconcile(concurrentCtx, sourceAlbumID)
 	}()
 	go func() {
 		<-start
-		errorsByEdit <- service.db.RunInTx(context.Background(), nil, func(ctx context.Context, tx bun.Tx) error {
+		errorsByEdit <- service.db.RunInTx(concurrentCtx, nil, func(ctx context.Context, tx bun.Tx) error {
 			if _, err := tx.NewRaw(`UPDATE events SET title = 'Concurrent correction', version = version + 1 WHERE id = ?`, fixture.eventID).Exec(ctx); err != nil {
 				return err
 			}
@@ -600,8 +602,14 @@ func TestPublishedSourceChangesCoalesceAcrossRetriesConcurrentEditsAndCancellati
 		})
 	}()
 	close(start)
-	require.NoError(t, <-errorsByEdit)
-	require.NoError(t, <-errorsByEdit)
+	for completed := 0; completed < cap(errorsByEdit); completed++ {
+		select {
+		case editErr := <-errorsByEdit:
+			require.NoErrorf(t, editErr, "concurrent Source edit %d/%d failed; database stats: %+v", completed+1, cap(errorsByEdit), service.db.Stats())
+		case <-concurrentCtx.Done():
+			t.Fatalf("concurrent Source edits completed %d/%d operations before timeout: %v; database stats: %+v", completed, cap(errorsByEdit), concurrentCtx.Err(), service.db.Stats())
+		}
+	}
 
 	update, err := staging.Load(context.Background(), service.db, fixture.eventID)
 	require.NoError(t, err)

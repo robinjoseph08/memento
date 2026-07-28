@@ -665,13 +665,15 @@ func TestStagedUpdateCoalescesConcurrentEditsRetriesAndCancellation(t *testing.T
 	_, err := fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, fixture.request())
 	require.NoError(t, err)
 
+	concurrentCtx, cancelConcurrent := context.WithTimeout(ctx, 10*time.Second)
+	defer cancelConcurrent()
 	start := make(chan struct{})
 	errorsByEdit := make(chan error, 2)
 	for _, title := range []string{"Concurrent title A", "Concurrent title B"} {
 		title := title
 		go func() {
 			<-start
-			errorsByEdit <- fixture.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+			errorsByEdit <- fixture.db.RunInTx(concurrentCtx, nil, func(ctx context.Context, tx bun.Tx) error {
 				if _, err := tx.NewRaw(`UPDATE events SET title = ?, version = version + 1 WHERE id = ?`, title, fixture.event).Exec(ctx); err != nil {
 					return err
 				}
@@ -681,8 +683,14 @@ func TestStagedUpdateCoalescesConcurrentEditsRetriesAndCancellation(t *testing.T
 		}()
 	}
 	close(start)
-	require.NoError(t, <-errorsByEdit)
-	require.NoError(t, <-errorsByEdit)
+	for completed := 0; completed < cap(errorsByEdit); completed++ {
+		select {
+		case editErr := <-errorsByEdit:
+			require.NoErrorf(t, editErr, "concurrent Staged edit %d/%d failed; database stats: %+v", completed+1, cap(errorsByEdit), fixture.db.Stats())
+		case <-concurrentCtx.Done():
+			t.Fatalf("concurrent Staged edits completed %d/%d operations before timeout: %v; database stats: %+v", completed, cap(errorsByEdit), concurrentCtx.Err(), fixture.db.Stats())
+		}
+	}
 
 	var stagedID uuid.UUID
 	var stagedCount int
