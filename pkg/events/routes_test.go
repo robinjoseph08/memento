@@ -143,6 +143,7 @@ func TestWithdrawalErrorsDescribeCurrentTargetsAndEveryRequiredRestorationPublic
 	}{
 		{ErrWithdrawalInvalid, "currently published"},
 		{ErrAlreadyWithdrawn, "every Event"},
+		{ErrVersionConflict, "published placement changed"},
 		{ErrNotFound, "Currently published content not found"},
 	} {
 		mapped := withdrawalError(test.err)

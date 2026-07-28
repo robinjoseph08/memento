@@ -32,6 +32,7 @@ const (
 type WithdrawalStep string
 
 const (
+	WithdrawalStepTargeted    WithdrawalStep = "targeted"
 	WithdrawalStepLocked      WithdrawalStep = "locked"
 	WithdrawalStepRecorded    WithdrawalStep = "recorded"
 	WithdrawalStepProjections WithdrawalStep = "projections"
@@ -134,21 +135,53 @@ func (s *Service) Withdraw(ctx context.Context, actor setup.CuratorSession, requ
 		}
 
 		targetFilter := kind.placementPredicate()
-		var exists bool
-		if err := tx.NewRaw(`SELECT EXISTS (
-			SELECT 1 FROM current_published_placements AS placement
-			JOIN published_moments AS moment ON moment.id = placement.published_moment_id
-			WHERE `+targetFilter+`)`, targetID).Scan(ctx, &exists); err != nil {
-			return err
-		}
-		if !exists {
-			return ErrNotFound
-		}
-
 		selectedPlacements := `SELECT placement.event_id, placement.media_item_id, moment.draft_moment_id
 			FROM current_published_placements AS placement
 			JOIN published_moments AS moment ON moment.id = placement.published_moment_id
 			WHERE ` + targetFilter
+
+		var eventIDs []uuid.UUID
+		if err := tx.NewRaw(`SELECT DISTINCT placement.event_id
+			FROM current_published_placements AS placement
+			JOIN published_moments AS moment ON moment.id = placement.published_moment_id
+			WHERE `+targetFilter+` ORDER BY placement.event_id`, targetID).Scan(ctx, &eventIDs); err != nil {
+			return err
+		}
+		if len(eventIDs) == 0 {
+			return ErrNotFound
+		}
+		if err := s.withdrawalBoundary(WithdrawalStepTargeted); err != nil {
+			return err
+		}
+		var lockedEventIDs []uuid.UUID
+		if err := tx.NewRaw(`SELECT id FROM events WHERE id IN (?) ORDER BY id FOR UPDATE`, bun.List(eventIDs)).Scan(ctx, &lockedEventIDs); err != nil {
+			return err
+		}
+		if len(lockedEventIDs) != len(eventIDs) {
+			return ErrNotFound
+		}
+
+		var currentEventIDs []uuid.UUID
+		if err := tx.NewRaw(`SELECT DISTINCT placement.event_id
+			FROM current_published_placements AS placement
+			JOIN published_moments AS moment ON moment.id = placement.published_moment_id
+			WHERE `+targetFilter+` ORDER BY placement.event_id`, targetID).Scan(ctx, &currentEventIDs); err != nil {
+			return err
+		}
+		if len(currentEventIDs) == 0 {
+			return ErrNotFound
+		}
+		lockedEvents := make(map[uuid.UUID]struct{}, len(lockedEventIDs))
+		for _, eventID := range lockedEventIDs {
+			lockedEvents[eventID] = struct{}{}
+		}
+		for _, eventID := range currentEventIDs {
+			if _, locked := lockedEvents[eventID]; !locked {
+				return ErrVersionConflict
+			}
+		}
+		eventIDs = currentEventIDs
+
 		if err := tx.NewRaw(`WITH selected AS (`+selectedPlacements+`
 		), visible AS (
 			SELECT selected.event_id, selected.media_item_id, entitlement.recipient_access_generation_id
@@ -176,21 +209,6 @@ func (s *Service) Withdraw(ctx context.Context, actor setup.CuratorSession, requ
 			return err
 		}
 
-		var eventIDs []uuid.UUID
-		if err := tx.NewRaw(`SELECT DISTINCT placement.event_id
-			FROM current_published_placements AS placement
-			JOIN published_moments AS moment ON moment.id = placement.published_moment_id
-			WHERE `+targetFilter+` ORDER BY placement.event_id`, targetID).Scan(ctx, &eventIDs); err != nil {
-			return err
-		}
-		var lockedEventIDs []uuid.UUID
-		if err := tx.NewRaw(`SELECT id FROM events WHERE id IN (?) ORDER BY id FOR UPDATE`, bun.List(eventIDs)).Scan(ctx, &lockedEventIDs); err != nil {
-			return err
-		}
-		if len(lockedEventIDs) != len(eventIDs) {
-			return ErrNotFound
-		}
-
 		var momentIDs []uuid.UUID
 		switch kind {
 		case WithdrawalTargetEvent:
@@ -207,9 +225,6 @@ func (s *Service) Withdraw(ctx context.Context, actor setup.CuratorSession, requ
 				WHERE placement.media_item_id = ? ORDER BY moment.id FOR UPDATE OF moment`, targetID).Scan(ctx, &momentIDs); err != nil {
 				return err
 			}
-		}
-		if len(eventIDs) == 0 {
-			return ErrNotFound
 		}
 		if err := s.withdrawalBoundary(WithdrawalStepLocked); err != nil {
 			return err
@@ -267,10 +282,20 @@ func (s *Service) Withdraw(ctx context.Context, actor setup.CuratorSession, requ
 			for _, statement := range []string{
 				`DELETE FROM new_for_you_entries AS entry USING publications AS publication
 				 WHERE entry.publication_id = publication.id AND publication.event_id IN (?)
-				   AND entry.recipient_access_generation_id IN (?)`,
+				   AND entry.recipient_access_generation_id IN (?)
+				   AND NOT EXISTS (
+					SELECT 1 FROM current_audience_entitlements AS remaining
+					WHERE remaining.event_id = publication.event_id
+					  AND remaining.recipient_access_generation_id = entry.recipient_access_generation_id
+				   )`,
 				`DELETE FROM publication_activity_items AS activity USING publications AS publication
 				 WHERE activity.publication_id = publication.id AND publication.event_id IN (?)
-				   AND activity.recipient_access_generation_id IN (?)`,
+				   AND activity.recipient_access_generation_id IN (?)
+				   AND NOT EXISTS (
+					SELECT 1 FROM current_audience_entitlements AS remaining
+					WHERE remaining.event_id = publication.event_id
+					  AND remaining.recipient_access_generation_id = activity.recipient_access_generation_id
+				   )`,
 			} {
 				if _, err := tx.NewRaw(statement, bun.List(eventIDs), bun.List(affectedAccessIDs)).Exec(ctx); err != nil {
 					return err

@@ -294,6 +294,62 @@ func TestWithdrawalImmediatelyDeniesOnlyThePublishedTargetAndPreservesHistory(t 
 	}
 }
 
+func TestPartialWithdrawalPreservesEventProjectionsForRecipientsWithAnotherEntitlement(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		kind WithdrawalTargetKind
+	}{
+		{name: "Moment", kind: WithdrawalTargetMoment},
+		{name: "Media", kind: WithdrawalTargetMedia},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newPublicationFixture(t)
+			ctx := context.Background()
+			_, err := fixture.db.NewRaw(`
+				INSERT INTO audience_snapshot_entries (
+					snapshot_id, recipient_person_id, recipient_access_generation_id
+				)
+				SELECT snapshot_id, ?, ? FROM current_audience_snapshots
+				WHERE target_kind = 'moment' AND target_id = ?
+			`, fixture.people["shared"], fixture.access["shared"], fixture.moments[1]).Exec(ctx)
+			require.NoError(t, err)
+			publication, err := fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, fixture.request())
+			require.NoError(t, err)
+
+			newForYouBefore := snapshotWithdrawalRows(t, fixture,
+				`SELECT * FROM new_for_you_entries
+				 WHERE recipient_access_generation_id = ? AND publication_id = ?`,
+				fixture.access["shared"], publication.ID)
+			activityBefore := snapshotWithdrawalRows(t, fixture,
+				`SELECT * FROM publication_activity_items
+				 WHERE recipient_access_generation_id = ? AND publication_id = ?`,
+				fixture.access["shared"], publication.ID)
+
+			targetID := fixture.media[0]
+			if test.kind == WithdrawalTargetMoment {
+				targetID = fixture.moments[0]
+			}
+			_, err = fixture.service.Withdraw(ctx, fixture.actor, WithdrawRequest{
+				TargetKind: test.kind, TargetID: targetID.String(), Reason: "Preserve remaining access",
+			})
+			require.NoError(t, err)
+
+			assert.Equal(t, newForYouBefore, snapshotWithdrawalRows(t, fixture,
+				`SELECT * FROM new_for_you_entries
+				 WHERE recipient_access_generation_id = ? AND publication_id = ?`,
+				fixture.access["shared"], publication.ID))
+			assert.Equal(t, activityBefore, snapshotWithdrawalRows(t, fixture,
+				`SELECT * FROM publication_activity_items
+				 WHERE recipient_access_generation_id = ? AND publication_id = ?`,
+				fixture.access["shared"], publication.ID))
+			view, err := fixture.service.RecipientEvent(ctx, fixture.actorFor("shared"), fixture.event)
+			require.NoError(t, err)
+			require.Len(t, view.Media, 1)
+			assert.Equal(t, fixture.media[1].String(), view.Media[0].ID)
+		})
+	}
+}
+
 func TestEveryImplementedRecipientContentRouteEnforcesEveryWithdrawalKind(t *testing.T) {
 	for _, test := range withdrawalTestCases() {
 		t.Run(test.name, func(t *testing.T) {
@@ -371,7 +427,7 @@ func TestEveryImplementedRecipientContentRouteEnforcesEveryWithdrawalKind(t *tes
 
 func TestFailureAtEveryWithdrawalBoundaryRollsBackEveryMutation(t *testing.T) {
 	steps := []WithdrawalStep{
-		WithdrawalStepLocked, WithdrawalStepRecorded, WithdrawalStepProjections,
+		WithdrawalStepTargeted, WithdrawalStepLocked, WithdrawalStepRecorded, WithdrawalStepProjections,
 		WithdrawalStepActivity, WithdrawalStepDelivery, WithdrawalStepReviews, WithdrawalStepAudit,
 	}
 	tables := []string{
@@ -452,6 +508,116 @@ func TestConcurrentRecipientReadSeesCompletePriorAccessUntilWithdrawalCommits(t 
 			fixture.service.failWithdrawalStep = nil
 			_, err = fixture.service.RecipientEvent(ctx, fixture.actorFor("shared"), fixture.event)
 			assert.ErrorIs(t, err, ErrNoPublication, "committed Withdrawal must deny the same read")
+		})
+	}
+}
+
+func TestConcurrentPublicationRemovalIsRevalidatedAfterWithdrawalLocksTheEvent(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		kind   WithdrawalTargetKind
+		target func(publicationFixture) uuid.UUID
+		stage  func(context.Context, publicationFixture) error
+	}{
+		{
+			name: "Moment", kind: WithdrawalTargetMoment,
+			target: func(f publicationFixture) uuid.UUID { return f.moments[0] },
+			stage: func(ctx context.Context, f publicationFixture) error {
+				_, err := f.db.NewRaw(`
+					DELETE FROM draft_media_placements WHERE draft_moment_id = ?;
+					DELETE FROM draft_moments WHERE id = ?;
+					UPDATE events SET version = 8 WHERE id = ?
+				`, f.moments[0], f.moments[0], f.event).Exec(ctx)
+				return err
+			},
+		},
+		{
+			name: "Media", kind: WithdrawalTargetMedia,
+			target: func(f publicationFixture) uuid.UUID { return f.media[0] },
+			stage: func(ctx context.Context, f publicationFixture) error {
+				_, err := f.db.NewRaw(`
+					DELETE FROM draft_media_placements WHERE event_id = ? AND media_item_id = ?;
+					UPDATE events SET version = 8 WHERE id = ?
+				`, f.event, f.media[0], f.event).Exec(ctx)
+				return err
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newPublicationFixture(t)
+			ctx := context.Background()
+			_, err := fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, fixture.request())
+			require.NoError(t, err)
+			require.NoError(t, test.stage(ctx, fixture))
+
+			publicationReached := make(chan struct{})
+			releasePublication := make(chan struct{})
+			var releasePublicationOnce sync.Once
+			defer releasePublicationOnce.Do(func() { close(releasePublication) })
+			fixture.service.failPublicationStep = func(step PublicationStep) error {
+				if step == PublicationStepPlacements {
+					close(publicationReached)
+					<-releasePublication
+				}
+				return nil
+			}
+			published := make(chan error, 1)
+			go func() {
+				_, publishErr := fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, PublishEventRequest{Version: 8})
+				published <- publishErr
+			}()
+			select {
+			case <-publicationReached:
+			case <-time.After(5 * time.Second):
+				t.Fatal("Publication did not reach the placement boundary")
+			}
+
+			withdrawalTargeted := make(chan struct{})
+			fixture.service.failWithdrawalStep = func(step WithdrawalStep) error {
+				if step == WithdrawalStepTargeted {
+					close(withdrawalTargeted)
+				}
+				return nil
+			}
+			withdrawn := make(chan error, 1)
+			go func() {
+				_, withdrawErr := fixture.service.Withdraw(ctx, fixture.actor, WithdrawRequest{
+					TargetKind: test.kind, TargetID: test.target(fixture).String(), Reason: "Concurrent removal",
+				})
+				withdrawn <- withdrawErr
+			}()
+			select {
+			case <-withdrawalTargeted:
+			case <-time.After(5 * time.Second):
+				t.Fatal("Withdrawal did not discover the previously published target")
+			}
+			releasePublicationOnce.Do(func() { close(releasePublication) })
+
+			select {
+			case publishErr := <-published:
+				require.NoError(t, publishErr)
+			case <-time.After(5 * time.Second):
+				t.Fatal("Publication did not commit after release")
+			}
+			select {
+			case withdrawErr := <-withdrawn:
+				assert.ErrorIs(t, withdrawErr, ErrNotFound)
+			case <-time.After(5 * time.Second):
+				t.Fatal("Withdrawal did not finish after Publication committed")
+			}
+			fixture.service.failPublicationStep = nil
+			fixture.service.failWithdrawalStep = nil
+
+			var withdrawals, withdrawalAudits int
+			var version int64
+			require.NoError(t, fixture.db.NewRaw(`SELECT
+				(SELECT count(*) FROM content_withdrawals),
+				(SELECT count(*) FROM publication_audit_events WHERE action = 'content_withdrawn'),
+				(SELECT version FROM events WHERE id = ?)
+			`, fixture.event).Scan(ctx, &withdrawals, &withdrawalAudits, &version))
+			assert.Zero(t, withdrawals)
+			assert.Zero(t, withdrawalAudits)
+			assert.Equal(t, int64(8), version, "rejected Withdrawal must not alter the published draft")
 		})
 	}
 }

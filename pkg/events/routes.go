@@ -301,6 +301,8 @@ func withdrawalError(err error) error {
 		return errcodes.ValidationError("Choose a currently published Event, Moment, or Media item and provide a reason up to 1000 characters.")
 	case errors.Is(err, ErrAlreadyWithdrawn):
 		return errcodes.Conflict("This content is already withdrawn. Restoration requires newly reviewed Audiences and a fresh Publication for every Event where it is currently placed.")
+	case errors.Is(err, ErrVersionConflict):
+		return errcodes.Conflict("The published placement changed while Withdrawal was starting. Review the current targets and try again.")
 	case errors.Is(err, ErrNotFound):
 		return errcodes.NotFound("Currently published content")
 	default:
