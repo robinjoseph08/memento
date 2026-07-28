@@ -48,7 +48,7 @@ func favoriteError(err error) error {
 	case err == nil:
 		return nil
 	case errors.Is(err, ErrNotFound):
-		return errcodes.NotFound("Favorite")
+		return errcodes.NotFoundMessage("This Media is unavailable.")
 	case errors.Is(err, ErrNotCurator):
 		return errcodes.Forbidden("Curator authority is required")
 	case errors.Is(err, ErrInvalidCursor):
@@ -61,7 +61,10 @@ func favoriteError(err error) error {
 func parseID(c echo.Context, parameter string) (uuid.UUID, error) {
 	id, err := uuid.Parse(c.Param(parameter))
 	if err != nil || id == uuid.Nil {
-		return uuid.Nil, errcodes.NotFound("Favorite")
+		if parameter == "recipient_id" {
+			return uuid.Nil, errcodes.NotFound("Recipient")
+		}
+		return uuid.Nil, errcodes.NotFoundMessage("This Media is unavailable.")
 	}
 	return id, nil
 }
@@ -124,6 +127,9 @@ func (h *Handler) CuratorList(c echo.Context) error {
 		page.Limit = limit
 	}
 	response, err := h.service.CuratorList(c.Request().Context(), actor, id, page)
+	if errors.Is(err, ErrNotFound) {
+		return errcodes.NotFound("Recipient")
+	}
 	if mapped := favoriteError(err); mapped != nil {
 		return mapped
 	}

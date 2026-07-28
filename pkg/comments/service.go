@@ -75,7 +75,7 @@ type BodyRequest struct {
 }
 
 type MuteRequest struct {
-	Muted *bool `json:"muted" validate:"required" tstype:"boolean | null"`
+	Muted *bool `json:"muted" validate:"required" tstype:"boolean,required"`
 }
 
 type ModerateRequest struct {

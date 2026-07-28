@@ -6,7 +6,7 @@ import {
 } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 
-import { apiJSON, apiNoContent, apiResponse } from "./api";
+import { APIError, apiJSON, apiNoContent, apiResponse } from "./api";
 import type {
   PlanRequest as ArchivePlanRequest,
   PlanResponse as ArchivePlanResponse,
@@ -103,6 +103,10 @@ function mediaAlt(item: Media, index: number) {
   return date === "Date unavailable"
     ? `${kind} ${index + 1}, date unavailable`
     : `${kind} ${index + 1} from ${date}`;
+}
+
+function isUnavailableResponse(error: unknown) {
+  return error instanceof APIError && error.status === 404;
 }
 
 function Gallery({
@@ -230,6 +234,7 @@ function MediaViewer({
     undefined,
   );
   const [commentBody, setCommentBody] = useState("");
+  const [mediaUnavailable, setMediaUnavailable] = useState(false);
   const favorite = useQuery({
     queryKey: ["favorite", session.csrf_token, media.id],
     queryFn: () => apiJSON<FavoriteState>(`/api/favorites/${media.id}`),
@@ -250,6 +255,33 @@ function MediaViewer({
   });
   const commentItems =
     comments.data?.pages.flatMap((page) => page.comments) ?? [];
+  const unavailableMedia =
+    mediaUnavailable ||
+    isUnavailableResponse(favorite.error) ||
+    isUnavailableResponse(comments.error);
+
+  function markMediaUnavailable(error: unknown) {
+    if (!isUnavailableResponse(error)) return;
+    setMediaUnavailable(true);
+    void queryClient.invalidateQueries({ queryKey: ["recipient-library"] });
+  }
+
+  async function verifyMediaAfterUnavailableComment(error: unknown) {
+    if (!isUnavailableResponse(error)) return;
+    try {
+      const state = await apiJSON<FavoriteState>(`/api/favorites/${media.id}`);
+      queryClient.setQueryData(
+        ["favorite", session.csrf_token, media.id],
+        state,
+      );
+      await queryClient.invalidateQueries({
+        queryKey: ["comments", session.csrf_token, media.id],
+      });
+    } catch (recheckError) {
+      markMediaUnavailable(recheckError);
+    }
+  }
+
   const toggleFavorite = useMutation({
     mutationFn: (next: boolean) =>
       apiJSON<FavoriteState>(`/api/favorites/${media.id}`, {
@@ -263,6 +295,7 @@ function MediaViewer({
       );
       await queryClient.invalidateQueries({ queryKey: ["recipient-library"] });
     },
+    onError: (error) => markMediaUnavailable(error),
   });
   const createComment = useMutation({
     mutationFn: () => {
@@ -287,6 +320,7 @@ function MediaViewer({
         queryKey: ["comments", session.csrf_token, media.id],
       });
     },
+    onError: (error) => markMediaUnavailable(error),
   });
   const editComment = useMutation({
     mutationFn: ({
@@ -310,6 +344,7 @@ function MediaViewer({
       queryClient.invalidateQueries({
         queryKey: ["comments", session.csrf_token, media.id],
       }),
+    onError: (error) => void verifyMediaAfterUnavailableComment(error),
   });
   const deleteComment = useMutation({
     mutationFn: ({ id, version }: { id: string; version: number }) =>
@@ -324,6 +359,7 @@ function MediaViewer({
       queryClient.invalidateQueries({
         queryKey: ["comments", session.csrf_token, media.id],
       }),
+    onError: (error) => void verifyMediaAfterUnavailableComment(error),
   });
   const moderateComment = useMutation({
     mutationFn: ({
@@ -347,6 +383,7 @@ function MediaViewer({
       queryClient.invalidateQueries({
         queryKey: ["comments", session.csrf_token, media.id],
       }),
+    onError: (error) => void verifyMediaAfterUnavailableComment(error),
   });
   const muteComments = useMutation({
     mutationFn: (muted: boolean) =>
@@ -359,6 +396,7 @@ function MediaViewer({
       queryClient.invalidateQueries({
         queryKey: ["comments", session.csrf_token, media.id],
       }),
+    onError: (error) => void verifyMediaAfterUnavailableComment(error),
   });
 
   useEffect(() => {
@@ -456,26 +494,53 @@ function MediaViewer({
               : "Unavailable"}
           </dd>
         </dl>
+        {unavailableMedia ? (
+          <div className="viewer-unavailable">
+            <p className="form-error" role="alert">
+              This Media is no longer available in your Library. Interaction
+              history remains private and may return if access is restored.
+            </p>
+            <button
+              onClick={() => {
+                void queryClient.invalidateQueries({
+                  queryKey: ["recipient-library"],
+                });
+                closeViewer();
+              }}
+              type="button"
+            >
+              Return to Library
+            </button>
+          </div>
+        ) : null}
         {session.session_type === "public" ? (
           <p className="viewer-download-warning">
             This original will remain on this public computer after sign-out.
           </p>
         ) : null}
-        <a className="viewer-download" download href={media.original_url}>
-          Download original
-        </a>
+        {unavailableMedia ? null : (
+          <a className="viewer-download" download href={media.original_url}>
+            Download original
+          </a>
+        )}
         <section aria-labelledby="favorite-title" className="viewer-favorite">
           <h3 id="favorite-title">Favorite</h3>
           <button
             aria-pressed={favorite.data?.favorite ?? false}
-            disabled={favorite.isPending || toggleFavorite.isPending}
+            disabled={
+              unavailableMedia || favorite.isPending || toggleFavorite.isPending
+            }
             onClick={() => toggleFavorite.mutate(!favorite.data?.favorite)}
             type="button"
           >
             {favorite.data?.favorite ? "Remove Favorite" : "Add Favorite"}
           </button>
           <p>Favorites aren&apos;t shared with other recipients.</p>
-          <LibraryError error={favorite.error ?? toggleFavorite.error} />
+          <LibraryError
+            error={
+              unavailableMedia ? null : (favorite.error ?? toggleFavorite.error)
+            }
+          />
         </section>
         <section aria-labelledby="comments-title" className="viewer-comments">
           <div className="viewer-comments-heading">
@@ -484,6 +549,7 @@ function MediaViewer({
               <input
                 checked={comments.data?.pages[0]?.muted ?? false}
                 disabled={
+                  unavailableMedia ||
                   muteComments.isPending ||
                   !(comments.data?.pages[0]?.can_mute ?? false)
                 }
@@ -495,12 +561,14 @@ function MediaViewer({
           </div>
           <LibraryError
             error={
-              comments.error ??
-              createComment.error ??
-              editComment.error ??
-              deleteComment.error ??
-              moderateComment.error ??
-              muteComments.error
+              unavailableMedia
+                ? null
+                : (comments.error ??
+                  createComment.error ??
+                  editComment.error ??
+                  deleteComment.error ??
+                  moderateComment.error ??
+                  muteComments.error)
             }
           />
           <ol className="comment-list">
@@ -528,7 +596,7 @@ function MediaViewer({
                 <div className="comment-actions">
                   {comment.can_edit ? (
                     <button
-                      disabled={editComment.isPending}
+                      disabled={unavailableMedia || editComment.isPending}
                       onClick={() => {
                         const body = window.prompt(
                           "Edit Comment",
@@ -548,13 +616,19 @@ function MediaViewer({
                   ) : null}
                   {comment.can_delete ? (
                     <button
-                      disabled={deleteComment.isPending}
-                      onClick={() =>
-                        deleteComment.mutate({
-                          id: comment.id,
-                          version: comment.version,
-                        })
-                      }
+                      disabled={unavailableMedia || deleteComment.isPending}
+                      onClick={() => {
+                        if (
+                          window.confirm(
+                            "Delete this Comment? This cannot be undone.",
+                          )
+                        ) {
+                          deleteComment.mutate({
+                            id: comment.id,
+                            version: comment.version,
+                          });
+                        }
+                      }}
                       type="button"
                     >
                       Delete
@@ -562,7 +636,7 @@ function MediaViewer({
                   ) : null}
                   {comment.can_moderate ? (
                     <button
-                      disabled={moderateComment.isPending}
+                      disabled={unavailableMedia || moderateComment.isPending}
                       onClick={() => {
                         const reason = window.prompt("Moderation reason");
                         if (reason?.trim())
@@ -583,7 +657,7 @@ function MediaViewer({
           </ol>
           {comments.hasNextPage ? (
             <button
-              disabled={comments.isFetchingNextPage}
+              disabled={unavailableMedia || comments.isFetchingNextPage}
               onClick={() => void comments.fetchNextPage()}
               type="button"
             >
@@ -600,6 +674,7 @@ function MediaViewer({
             <label>
               Add a Comment
               <textarea
+                disabled={unavailableMedia}
                 maxLength={2000}
                 onChange={(event) => {
                   const body = event.target.value;
@@ -612,7 +687,11 @@ function MediaViewer({
               />
             </label>
             <button
-              disabled={createComment.isPending || !commentBody.trim()}
+              disabled={
+                unavailableMedia ||
+                createComment.isPending ||
+                !commentBody.trim()
+              }
               type="submit"
             >
               {createComment.isPending ? "Posting…" : "Post Comment"}

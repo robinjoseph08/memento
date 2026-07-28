@@ -48,7 +48,7 @@ func interactionError(err error) error {
 	case err == nil:
 		return nil
 	case errors.Is(err, ErrNotFound), errors.Is(err, ErrInvalidMute):
-		return errcodes.NotFound("Comment")
+		return errcodes.NotFoundMessage("Comments for this Media are unavailable.")
 	case errors.Is(err, ErrInvalidBody):
 		return errcodes.ValidationError("Use non-empty Comment text up to 2,000 characters and a moderation reason up to 500 characters.")
 	case errors.Is(err, ErrNotCurator):
@@ -67,7 +67,7 @@ func interactionError(err error) error {
 func mediaID(c echo.Context) (uuid.UUID, error) {
 	id, err := uuid.Parse(c.Param("media_id"))
 	if err != nil || id == uuid.Nil {
-		return uuid.Nil, errcodes.NotFound("Comment")
+		return uuid.Nil, errcodes.NotFoundMessage("Comments for this Media are unavailable.")
 	}
 	return id, nil
 }
@@ -75,7 +75,7 @@ func mediaID(c echo.Context) (uuid.UUID, error) {
 func commentID(c echo.Context) (uuid.UUID, error) {
 	id, err := uuid.Parse(c.Param("comment_id"))
 	if err != nil || id == uuid.Nil {
-		return uuid.Nil, errcodes.NotFound("Comment")
+		return uuid.Nil, errcodes.NotFoundMessage("Comments for this Media are unavailable.")
 	}
 	return id, nil
 }

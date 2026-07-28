@@ -28,10 +28,10 @@ function json(value: unknown) {
   );
 }
 
-function apiError(message: string) {
+function apiError(message: string, status = 503) {
   return Promise.resolve(
     new Response(JSON.stringify({ error: { message } }), {
-      status: 503,
+      status,
       headers: { "Content-Type": "application/json" },
     }),
   );
@@ -1196,6 +1196,22 @@ test("favorites, comments, and mute controls stay in the private Media viewer", 
     ).toBeChecked(),
   );
 
+  const confirmDelete = vi
+    .spyOn(window, "confirm")
+    .mockReturnValueOnce(false)
+    .mockReturnValueOnce(true);
+  fireEvent.click(screen.getAllByRole("button", { name: "Delete" })[0]);
+  expect(confirmDelete).toHaveBeenCalledWith(
+    "Delete this Comment? This cannot be undone.",
+  );
+  expect(
+    requests.some(
+      ({ path, init }) =>
+        path === "/api/comments/comment-1" && init?.method === "DELETE",
+    ),
+  ).toBe(false);
+  expect(screen.getByText("An edited memory")).toBeVisible();
+
   fireEvent.click(screen.getAllByRole("button", { name: "Delete" })[0]);
   expect(await screen.findByText("Comment deleted.")).toBeVisible();
   expect(screen.queryByText("An edited memory")).not.toBeInTheDocument();
@@ -1277,4 +1293,105 @@ test("favorites, comments, and mute controls stay in the private Media viewer", 
     method: "PUT",
     headers: { "X-Memento-CSRF": session.csrf_token },
   });
+});
+
+test("disables stale interaction controls and returns to the Library after Media access loss", async () => {
+  let accessLost = false;
+  const comment = {
+    id: "comment-1",
+    media_item_id: "media-1",
+    author_person_id: "alex",
+    author_name: "Alex",
+    body: "A retained Comment",
+    state: "active",
+    version: 1,
+    created_at: "2026-07-28T12:00:00Z",
+    edited_at: null,
+    moderated_at: null,
+    moderator_name: null,
+    authored_by_me: true,
+    can_edit: true,
+    can_delete: true,
+    can_moderate: false,
+  };
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = requestPath(input);
+      if (path.startsWith("/api/me/photos?")) {
+        return json({
+          media: accessLost
+            ? []
+            : [
+                {
+                  id: "media-1",
+                  media_type: "image",
+                  width: 1600,
+                  height: 900,
+                  local_date_time: "2026-07-28T12:00:00Z",
+                  available: true,
+                  thumbnail_url: "/api/me/media/media-1/thumbnail",
+                  preview_url: "/api/me/media/media-1/preview",
+                  video_url: "",
+                  original_url: "/api/me/media/media-1/original",
+                },
+              ],
+          next_cursor: null,
+        });
+      }
+      if (path === "/api/me/new-for-you") return json({ events: [] });
+      if (path === "/api/favorites/media-1") {
+        return accessLost
+          ? apiError("This Media is unavailable.", 404)
+          : json({ media_item_id: "media-1", favorite: false });
+      }
+      if (path === "/api/comments/comment-1" && init?.method === "PATCH") {
+        accessLost = true;
+        return apiError("Comments for this Media are unavailable.", 404);
+      }
+      if (path.startsWith("/api/comments/media/media-1?")) {
+        return json({
+          comments: [comment],
+          can_mute: true,
+          muted: false,
+          next_cursor: null,
+        });
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    }),
+  );
+
+  renderLibrary();
+  fireEvent.click(
+    await screen.findByRole("button", {
+      name: "Open Photo 1 from July 2026",
+    }),
+  );
+  expect(await screen.findByText(comment.body)).toBeVisible();
+
+  vi.spyOn(window, "prompt").mockReturnValueOnce("A changed Comment");
+  fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "This Media is no longer available in your Library.",
+  );
+  expect(screen.getByRole("button", { name: "Add Favorite" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Edit" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Delete" })).toBeDisabled();
+  expect(
+    screen.getByRole("checkbox", {
+      name: "Mute future Comment notifications",
+    }),
+  ).toBeDisabled();
+  expect(screen.getByLabelText("Add a Comment")).toBeDisabled();
+  expect(
+    screen.queryByRole("link", { name: "Download original" }),
+  ).not.toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole("button", { name: "Return to Library" }));
+  await waitFor(() =>
+    expect(
+      screen.queryByRole("dialog", { name: "Media viewer" }),
+    ).not.toBeInTheDocument(),
+  );
+  expect(await screen.findByText("No photos are available.")).toBeVisible();
 });
