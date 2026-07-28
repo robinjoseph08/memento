@@ -132,6 +132,27 @@ type SessionActor struct {
 	Curator   bool
 }
 
+// CurrentRecipientSession verifies the full persisted lifecycle of a Recipient Session.
+// Callers map a false result to their own privacy-safe domain error.
+func CurrentRecipientSession(ctx context.Context, db bun.IDB, actor SessionActor) (bool, error) {
+	var current bool
+	err := db.NewRaw(`SELECT EXISTS (
+		SELECT 1 FROM sessions AS session
+		JOIN people AS person
+		  ON person.id = session.person_id AND person.archived_at IS NULL AND person.merged_at IS NULL
+		JOIN recipient_access_generations AS access
+		  ON access.id = session.recipient_access_generation_id
+		 AND access.person_id = session.person_id AND access.is_current AND access.state = 'completed'
+		JOIN system_settings AS settings
+		  ON settings.id = 1 AND settings.setup_complete AND settings.security_epoch = session.security_epoch
+		WHERE session.id = ? AND session.person_id = ? AND session.recipient_access_generation_id = ?
+		  AND session.revoked_at IS NULL
+		  AND ((session.session_type = 'trusted' AND session.idle_expires_at > now())
+		    OR (session.session_type = 'public' AND session.absolute_expires_at > now()))
+	)`, actor.SessionID, actor.PersonID, actor.AccessID).Scan(ctx, &current)
+	return current, err
+}
+
 // CuratorSession identifies an authenticated Curator action without exposing a browser credential.
 type CuratorSession struct {
 	PersonID  uuid.UUID

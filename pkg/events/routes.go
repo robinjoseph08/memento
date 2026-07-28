@@ -100,6 +100,9 @@ func (h *Handler) OrganizeEvent(c echo.Context) error {
 	if err := c.Bind(&request); err != nil {
 		return err
 	}
+	if !organizationPlaceLabelsValid(request) {
+		return draftError(ErrPlaceLabelsInvalid, "Event")
+	}
 	event, err := h.service.OrganizeEvent(h.requestContext(c), actor, id, request)
 	if mapped := draftError(err, "Event"); mapped != nil {
 		return mapped
@@ -310,12 +313,26 @@ func withdrawalError(err error) error {
 	}
 }
 
+func organizationPlaceLabelsValid(request OrganizeEventRequest) bool {
+	if _, valid := normalizePlaceLabels(request.PlaceLabels); !valid {
+		return false
+	}
+	for _, moment := range request.Moments {
+		if _, valid := normalizePlaceLabels(moment.PlaceLabels); !valid {
+			return false
+		}
+	}
+	return true
+}
+
 func draftError(err error, resource string) error {
 	switch {
 	case err == nil:
 		return nil
 	case errors.Is(err, ErrNotFound):
 		return errcodes.NotFound(resource)
+	case errors.Is(err, ErrPlaceLabelsInvalid):
+		return errcodes.ValidationError("Use no more than 20 Place labels, with 1 to 120 characters in each label.")
 	case errors.Is(err, ErrInvalid):
 		return errcodes.ValidationError("Draft fields must be valid, include every Media item exactly once, and use a cover from its Moment.")
 	case errors.Is(err, ErrVersionConflict):

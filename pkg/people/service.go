@@ -95,24 +95,25 @@ type MergePreviewRequest struct {
 
 // ReferenceEffects summarizes references affected or deliberately retained by a merge.
 type ReferenceEffects struct {
-	CurrentRecipientGenerationID   string   `json:"current_recipient_generation_id,omitempty"`
-	SessionsInvalidated            int      `json:"sessions_invalidated"`
-	HistoricalAuditRowsPreserved   int      `json:"historical_audit_rows_preserved"`
-	SourceRoles                    []string `json:"source_roles"`
-	SurvivorRoles                  []string `json:"survivor_roles"`
-	RecipientRoleWillTransfer      bool     `json:"recipient_role_will_transfer"`
-	ResultingRecipientGeneration   int      `json:"resulting_recipient_generation,omitempty"`
-	FamilyRelationshipsMoved       int      `json:"family_relationships_moved"`
-	FamilyRelationshipsArchived    int      `json:"family_relationships_archived"`
-	FamilyReferenceFingerprint     string   `json:"family_reference_fingerprint"`
-	VisibilityMembershipsMoved     int      `json:"visibility_memberships_moved"`
-	InterestEntriesMoved           int      `json:"interest_entries_moved"`
-	InterestHistoryOwnersRetained  int      `json:"interest_history_owners_retained"`
-	VisibilityReferenceFingerprint string   `json:"visibility_reference_fingerprint"`
-	AttendanceEntriesMoved         int      `json:"attendance_entries_moved"`
-	AudienceOverridesMoved         int      `json:"audience_overrides_moved"`
-	AudienceReasonsMoved           int      `json:"audience_reasons_moved"`
-	AudienceReferenceFingerprint   string   `json:"audience_reference_fingerprint"`
+	CurrentRecipientGenerationID           string   `json:"current_recipient_generation_id,omitempty"`
+	SessionsInvalidated                    int      `json:"sessions_invalidated"`
+	HistoricalAuditRowsPreserved           int      `json:"historical_audit_rows_preserved"`
+	SourceRoles                            []string `json:"source_roles"`
+	SurvivorRoles                          []string `json:"survivor_roles"`
+	RecipientRoleWillTransfer              bool     `json:"recipient_role_will_transfer"`
+	ResultingRecipientGeneration           int      `json:"resulting_recipient_generation,omitempty"`
+	FamilyRelationshipsMoved               int      `json:"family_relationships_moved"`
+	FamilyRelationshipsArchived            int      `json:"family_relationships_archived"`
+	FamilyReferenceFingerprint             string   `json:"family_reference_fingerprint"`
+	VisibilityMembershipsMoved             int      `json:"visibility_memberships_moved"`
+	InterestEntriesMoved                   int      `json:"interest_entries_moved"`
+	InterestHistoryOwnersRetained          int      `json:"interest_history_owners_retained"`
+	VisibilityReferenceFingerprint         string   `json:"visibility_reference_fingerprint"`
+	AttendanceEntriesMoved                 int      `json:"attendance_entries_moved"`
+	CurrentPublishedAttendanceEntriesMoved int      `json:"current_published_attendance_entries_moved"`
+	AudienceOverridesMoved                 int      `json:"audience_overrides_moved"`
+	AudienceReasonsMoved                   int      `json:"audience_reasons_moved"`
+	AudienceReferenceFingerprint           string   `json:"audience_reference_fingerprint"`
 }
 
 // MergePreview is generated to TypeScript by Tygo.
@@ -632,6 +633,7 @@ func previewMerge(ctx context.Context, db bun.IDB, actor setup.CuratorSession, s
 		return MergePreview{}, err
 	}
 	preview.References.AttendanceEntriesMoved = audienceEffects.AttendanceEntriesMoved
+	preview.References.CurrentPublishedAttendanceEntriesMoved = audienceEffects.CurrentPublishedAttendanceEntriesMoved
 	preview.References.AudienceOverridesMoved = audienceEffects.AudienceOverridesMoved
 	preview.References.AudienceReasonsMoved = audienceEffects.AudienceReasonsMoved
 	preview.References.AudienceReferenceFingerprint = audienceEffects.ReferenceFingerprint
@@ -904,11 +906,12 @@ func (s *Service) Merge(ctx context.Context, actor setup.CuratorSession, request
 			"survivor_person_id": survivorID.String(), "source_version": request.SourceVersion,
 			"survivor_version": request.SurvivorVersion, "generation_transferred": source.CurrentAccess != nil,
 			"resulting_recipient_generation": resultingGeneration, "email_resolution": request.EmailResolution,
-			"family_relationships_moved":    familyEffects.RelationshipsMoved,
-			"family_relationships_archived": familyEffects.RelationshipsArchived,
-			"attendance_entries_moved":      audienceEffects.AttendanceEntriesMoved,
-			"audience_overrides_moved":      audienceEffects.AudienceOverridesMoved,
-			"audience_reasons_moved":        audienceEffects.AudienceReasonsMoved,
+			"family_relationships_moved":                 familyEffects.RelationshipsMoved,
+			"family_relationships_archived":              familyEffects.RelationshipsArchived,
+			"attendance_entries_moved":                   audienceEffects.AttendanceEntriesMoved,
+			"current_published_attendance_entries_moved": audienceEffects.CurrentPublishedAttendanceEntriesMoved,
+			"audience_overrides_moved":                   audienceEffects.AudienceOverridesMoved,
+			"audience_reasons_moved":                     audienceEffects.AudienceReasonsMoved,
 		}
 		if err := appendAudit(ctx, tx, actor, &sourceID, "people_merged", metadata); err != nil {
 			return err

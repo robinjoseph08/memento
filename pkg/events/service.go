@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -18,6 +19,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/robinjoseph08/memento/pkg/setup"
 	"github.com/uptrace/bun"
+	"github.com/uptrace/bun/dialect/pgdialect"
 )
 
 const (
@@ -26,14 +28,15 @@ const (
 )
 
 var (
-	ErrNotFound          = errors.New("draft not found")
-	ErrInvalid           = errors.New("draft request is invalid")
-	ErrSourceUnavailable = errors.New("source album is unavailable for drafting")
-	ErrSourceTooLarge    = errors.New("source album has too many media items")
-	ErrMediaUnavailable  = errors.New("media item is unavailable for drafting")
-	ErrNoMediaAvailable  = errors.New("no media items are available for drafting")
-	ErrVersionConflict   = errors.New("draft version is stale")
-	errUnknownMoment     = errors.New("draft placement references unknown Moment")
+	ErrNotFound           = errors.New("draft not found")
+	ErrInvalid            = errors.New("draft request is invalid")
+	ErrPlaceLabelsInvalid = errors.New("place labels are invalid")
+	ErrSourceUnavailable  = errors.New("source album is unavailable for drafting")
+	ErrSourceTooLarge     = errors.New("source album has too many media items")
+	ErrMediaUnavailable   = errors.New("media item is unavailable for drafting")
+	ErrNoMediaAvailable   = errors.New("no media items are available for drafting")
+	ErrVersionConflict    = errors.New("draft version is stale")
+	errUnknownMoment      = errors.New("draft placement references unknown Moment")
 )
 
 // CreateEventRequest initializes one portal-owned Event from selected Source material.
@@ -66,6 +69,7 @@ type MediaItem struct {
 type Moment struct {
 	ID                 string      `json:"id"`
 	Title              string      `json:"title"`
+	PlaceLabels        []string    `json:"place_labels"`
 	ProposedDay        string      `json:"proposed_day"`
 	GroupingTimezone   string      `json:"grouping_timezone"`
 	SourceDays         []string    `json:"source_days"`
@@ -80,6 +84,7 @@ type Moment struct {
 type OrganizeMoment struct {
 	ID               string   `json:"id" validate:"required"`
 	Title            string   `json:"title,omitempty" validate:"max=240" mod:"trim"`
+	PlaceLabels      []string `json:"place_labels"`
 	ProposedDay      string   `json:"proposed_day" validate:"required"`
 	CoverMediaItemID *string  `json:"cover_media_item_id" tstype:"string | null,required"`
 	MediaItemIDs     []string `json:"media_item_ids" validate:"required,min=1,max=100000"`
@@ -88,6 +93,7 @@ type OrganizeMoment struct {
 // OrganizeEventRequest atomically replaces draft organization at an expected version.
 type OrganizeEventRequest struct {
 	Version             int64            `json:"version" validate:"required,min=1"`
+	PlaceLabels         []string         `json:"place_labels"`
 	Moments             []OrganizeMoment `json:"moments" validate:"max=100000,dive"`
 	UnassignedMediaIDs  []string         `json:"unassigned_media_ids" validate:"max=100000"`
 	FinalReviewComplete bool             `json:"final_review_complete"`
@@ -122,21 +128,23 @@ type EventSource struct {
 
 // Event is a portal-owned private draft.
 type Event struct {
-	ID                       string             `json:"id"`
-	Lifecycle                string             `json:"lifecycle"`
-	Title                    string             `json:"title"`
-	Description              string             `json:"description"`
-	GroupingTimezone         string             `json:"grouping_timezone"`
-	Version                  int64              `json:"version"`
-	FinalReviewComplete      bool               `json:"final_review_complete"`
-	PublishedEditableVersion *int64             `json:"published_editable_version" tstype:"number | null,required"`
-	Sources                  []EventSource      `json:"sources"`
-	Moments                  []Moment           `json:"moments"`
-	UnassignedMedia          []MediaItem        `json:"unassigned_media"`
-	WithdrawalTargets        []WithdrawalTarget `json:"withdrawal_targets"`
-	Withdrawals              []Withdrawal       `json:"withdrawals"`
-	CreatedAt                time.Time          `json:"created_at"`
-	UpdatedAt                time.Time          `json:"updated_at"`
+	ID                                  string             `json:"id"`
+	Lifecycle                           string             `json:"lifecycle"`
+	Title                               string             `json:"title"`
+	Description                         string             `json:"description"`
+	PlaceLabels                         []string           `json:"place_labels"`
+	GroupingTimezone                    string             `json:"grouping_timezone"`
+	Version                             int64              `json:"version"`
+	FinalReviewComplete                 bool               `json:"final_review_complete"`
+	PublishedEditableVersion            *int64             `json:"published_editable_version" tstype:"number | null,required"`
+	PublishedAttendanceRecoveryRequired bool               `json:"published_attendance_recovery_required"`
+	Sources                             []EventSource      `json:"sources"`
+	Moments                             []Moment           `json:"moments"`
+	UnassignedMedia                     []MediaItem        `json:"unassigned_media"`
+	WithdrawalTargets                   []WithdrawalTarget `json:"withdrawal_targets"`
+	Withdrawals                         []Withdrawal       `json:"withdrawals"`
+	CreatedAt                           time.Time          `json:"created_at"`
+	UpdatedAt                           time.Time          `json:"updated_at"`
 }
 
 // LooseItem is a private independently publishable Media draft.
@@ -199,6 +207,7 @@ type draftMomentRow struct {
 	SourceDays         []string   `json:"source_days,omitempty"`
 	ProposalKind       string     `json:"proposal_kind,omitempty"`
 	Title              string     `json:"title,omitempty"`
+	PlaceLabels        []string   `json:"place_labels,omitempty"`
 	CoverMediaItemID   *uuid.UUID `json:"cover_media_item_id,omitempty"`
 	AttendanceComplete bool       `json:"attendance_complete,omitempty"`
 	AudienceComplete   bool       `json:"audience_complete,omitempty"`
@@ -215,6 +224,8 @@ type priorMomentState struct {
 	ID               uuid.UUID
 	Position         int
 	Title            string
+	PlaceLabels      []string
+	PlaceLabelsJSON  string `bun:"place_labels_json"`
 	ProposedDay      string
 	CoverMediaItemID *uuid.UUID
 }
@@ -355,17 +366,18 @@ func insertDraftMoments(ctx context.Context, tx bun.Tx, eventID uuid.UUID, timez
 	_, err = tx.NewRaw(`
 		INSERT INTO draft_moments (
 			id, event_id, position, proposed_day, grouping_timezone, source_days,
-			proposal_kind, title, cover_media_item_id, attendance_complete, audience_complete,
+			proposal_kind, title, place_labels, cover_media_item_id, attendance_complete, audience_complete,
 			review_version
 		)
 		SELECT incoming.id, ?, incoming.position, incoming.proposed_day::date, ?,
 			COALESCE(incoming.source_days, '{}'::date[]),
 			COALESCE(incoming.proposal_kind, 'manual'), COALESCE(incoming.title, ''),
-			incoming.cover_media_item_id, COALESCE(incoming.attendance_complete, false),
+			COALESCE(incoming.place_labels, '{}'::text[]), incoming.cover_media_item_id,
+			COALESCE(incoming.attendance_complete, false),
 			COALESCE(incoming.audience_complete, false), COALESCE(incoming.review_version, 1)
 		FROM jsonb_to_recordset(?::jsonb) AS incoming(
 			id uuid, position integer, proposed_day text, source_days date[],
-			proposal_kind text, title text, cover_media_item_id uuid,
+			proposal_kind text, title text, place_labels text[], cover_media_item_id uuid,
 			attendance_complete boolean, audience_complete boolean, review_version bigint
 		)
 	`, eventID, timezone, string(payload)).Exec(ctx)
@@ -523,6 +535,10 @@ func (s *Service) OrganizeEvent(ctx context.Context, actor setup.CuratorSession,
 			return Event{}, ErrInvalid
 		}
 		seenMoments[momentID] = struct{}{}
+		placeLabels, valid := normalizePlaceLabels(moment.PlaceLabels)
+		if !valid {
+			return Event{}, ErrPlaceLabelsInvalid
+		}
 		if _, err := time.Parse(time.DateOnly, moment.ProposedDay); err != nil || utf8.RuneCountInString(strings.TrimSpace(moment.Title)) > 240 {
 			return Event{}, ErrInvalid
 		}
@@ -540,7 +556,7 @@ func (s *Service) OrganizeEvent(ctx context.Context, actor setup.CuratorSession,
 		}
 		momentRows = append(momentRows, draftMomentRow{
 			ID: momentID, Position: position, ProposedDay: moment.ProposedDay,
-			Title: strings.TrimSpace(moment.Title), CoverMediaItemID: coverID,
+			Title: strings.TrimSpace(moment.Title), PlaceLabels: placeLabels, CoverMediaItemID: coverID,
 		})
 		for _, mediaID := range mediaIDs {
 			if _, duplicate := seenMedia[mediaID]; duplicate {
@@ -563,12 +579,17 @@ func (s *Service) OrganizeEvent(ctx context.Context, actor setup.CuratorSession,
 		placements = append(placements, draftPlacementRow{MediaItemID: mediaID, Position: len(placements)})
 	}
 
+	eventPlaceLabels, valid := normalizePlaceLabels(request.PlaceLabels)
+	if !valid {
+		return Event{}, ErrPlaceLabelsInvalid
+	}
+
 	now := s.now().UTC()
 	var organized Event
 	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 		var currentVersion int64
-		var timezone string
-		err := tx.NewRaw(`SELECT version, grouping_timezone FROM events WHERE id = ? AND lifecycle IN ('draft', 'published') FOR UPDATE`, id).Scan(ctx, &currentVersion, &timezone)
+		var timezone, priorEventPlaceLabelsJSON string
+		err := tx.NewRaw(`SELECT version, grouping_timezone, to_json(place_labels)::text FROM events WHERE id = ? AND lifecycle IN ('draft', 'published') FOR UPDATE`, id).Scan(ctx, &currentVersion, &timezone, &priorEventPlaceLabelsJSON)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrNotFound
 		}
@@ -578,12 +599,22 @@ func (s *Service) OrganizeEvent(ctx context.Context, actor setup.CuratorSession,
 		if currentVersion != request.Version {
 			return ErrVersionConflict
 		}
+		var priorEventPlaceLabels []string
+		if err := json.Unmarshal([]byte(priorEventPlaceLabelsJSON), &priorEventPlaceLabels); err != nil {
+			return err
+		}
 		var priorMoments []priorMomentState
 		if err := tx.NewRaw(`
-			SELECT id, position, title, proposed_day::text, cover_media_item_id
+			SELECT id, position, title, to_json(place_labels)::text AS place_labels_json,
+			       proposed_day::text, cover_media_item_id
 			FROM draft_moments WHERE event_id = ? ORDER BY position
 		`, id).Scan(ctx, &priorMoments); err != nil {
 			return err
+		}
+		for index := range priorMoments {
+			if err := json.Unmarshal([]byte(priorMoments[index].PlaceLabelsJSON), &priorMoments[index].PlaceLabels); err != nil {
+				return err
+			}
 		}
 		var priorPlacements []priorPlacementState
 		if err := tx.NewRaw(`
@@ -600,7 +631,7 @@ func (s *Service) OrganizeEvent(ctx context.Context, actor setup.CuratorSession,
 				return ErrInvalid
 			}
 		}
-		organizationChanged := !sameOrganization(priorMoments, priorPlacements, momentRows, placements)
+		organizationChanged := !slices.Equal(priorEventPlaceLabels, eventPlaceLabels) || !sameOrganization(priorMoments, priorPlacements, momentRows, placements)
 		priorMediaByMoment := make(map[uuid.UUID][]uuid.UUID)
 		for _, placement := range priorPlacements {
 			if placement.DraftMomentID != nil {
@@ -679,8 +710,8 @@ func (s *Service) OrganizeEvent(ctx context.Context, actor setup.CuratorSession,
 		}
 		finalReviewComplete := request.FinalReviewComplete && !organizationChanged
 		if _, err := tx.NewRaw(`
-			UPDATE events SET final_review_complete = ?, version = version + 1, updated_at = ? WHERE id = ?
-		`, finalReviewComplete, now, id).Exec(ctx); err != nil {
+			UPDATE events SET place_labels = ?, final_review_complete = ?, version = version + 1, updated_at = ? WHERE id = ?
+		`, pgdialect.Array(eventPlaceLabels), finalReviewComplete, now, id).Exec(ctx); err != nil {
 			return err
 		}
 		if err := appendDraftAudit(ctx, tx, actor, "event_draft_organized", map[string]any{
@@ -700,7 +731,7 @@ func sameOrganization(priorMoments []priorMomentState, priorPlacements []priorPl
 	}
 	for index, prior := range priorMoments {
 		next := moments[index]
-		if prior.ID != next.ID || prior.Position != next.Position || prior.Title != next.Title || prior.ProposedDay != next.ProposedDay || !uuidPointersEqual(prior.CoverMediaItemID, next.CoverMediaItemID) {
+		if prior.ID != next.ID || prior.Position != next.Position || prior.Title != next.Title || !slices.Equal(prior.PlaceLabels, next.PlaceLabels) || prior.ProposedDay != next.ProposedDay || !uuidPointersEqual(prior.CoverMediaItemID, next.CoverMediaItemID) {
 			return false
 		}
 	}
@@ -743,6 +774,27 @@ func containsUUID(values []uuid.UUID, target uuid.UUID) bool {
 		}
 	}
 	return false
+}
+
+func normalizePlaceLabels(values []string) ([]string, bool) {
+	if len(values) > 20 {
+		return nil, false
+	}
+	result := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		label := strings.TrimSpace(value)
+		key := strings.ToLower(label)
+		if label == "" || utf8.RuneCountInString(label) > 120 {
+			return nil, false
+		}
+		if _, duplicate := seen[key]; duplicate {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, label)
+	}
+	return result, true
 }
 
 func applyMomentProvenance(ctx context.Context, tx bun.Tx, eventID uuid.UUID, moments []draftMomentRow, placements []draftPlacementRow) error {
@@ -865,11 +917,13 @@ func (s *Service) GetEvent(ctx context.Context, id uuid.UUID) (Event, error) {
 
 func getEvent(ctx context.Context, db bun.IDB, id uuid.UUID) (Event, error) {
 	var event Event
-	var withdrawalTargetsJSON, withdrawalsJSON string
+	var placeLabelsJSON, withdrawalTargetsJSON, withdrawalsJSON string
 	err := db.NewRaw(`
 		SELECT event.id, event.lifecycle, event.title, event.description,
 			event.grouping_timezone, event.version, event.final_review_complete,
-			publication.editable_version, event.created_at, event.updated_at,
+			publication.editable_version,
+			publication.id IS NOT NULL AND NOT COALESCE(current.attendance_projection_ready, false),
+			event.created_at, event.updated_at, to_json(event.place_labels)::text,
 			COALESCE((
 				SELECT jsonb_agg(jsonb_build_object(
 					'id', withdrawal.id, 'target_kind', withdrawal.target_kind,
@@ -938,15 +992,20 @@ func getEvent(ctx context.Context, db bun.IDB, id uuid.UUID) (Event, error) {
 			), '[]'::jsonb)::text
 		FROM events AS event
 		LEFT JOIN publications AS publication ON publication.id = event.current_publication_id
+		LEFT JOIN current_published_events AS current ON current.publication_id = publication.id
 		WHERE event.id = ?
 	`, id).Scan(ctx, &event.ID, &event.Lifecycle, &event.Title, &event.Description,
 		&event.GroupingTimezone, &event.Version, &event.FinalReviewComplete,
-		&event.PublishedEditableVersion, &event.CreatedAt, &event.UpdatedAt,
-		&withdrawalsJSON, &withdrawalTargetsJSON)
+		&event.PublishedEditableVersion, &event.PublishedAttendanceRecoveryRequired,
+		&event.CreatedAt, &event.UpdatedAt,
+		&placeLabelsJSON, &withdrawalsJSON, &withdrawalTargetsJSON)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Event{}, ErrNotFound
 	}
 	if err != nil {
+		return Event{}, err
+	}
+	if err := json.Unmarshal([]byte(placeLabelsJSON), &event.PlaceLabels); err != nil {
 		return Event{}, err
 	}
 	if err := json.Unmarshal([]byte(withdrawalsJSON), &event.Withdrawals); err != nil {
@@ -987,7 +1046,7 @@ func getEvent(ctx context.Context, db bun.IDB, id uuid.UUID) (Event, error) {
 
 	event.Moments = make([]Moment, 0)
 	momentRows, err := db.QueryContext(ctx, `
-		SELECT id, title, proposed_day::text, grouping_timezone,
+		SELECT id, title, to_json(place_labels)::text, proposed_day::text, grouping_timezone,
 			to_json(source_days)::text, proposal_kind, cover_media_item_id::text,
 			attendance_complete, audience_complete
 		FROM draft_moments WHERE event_id = ? ORDER BY position
@@ -997,11 +1056,15 @@ func getEvent(ctx context.Context, db bun.IDB, id uuid.UUID) (Event, error) {
 	}
 	for momentRows.Next() {
 		var moment Moment
-		var sourceDaysJSON string
-		if err := momentRows.Scan(&moment.ID, &moment.Title, &moment.ProposedDay,
+		var placeLabelsJSON, sourceDaysJSON string
+		if err := momentRows.Scan(&moment.ID, &moment.Title, &placeLabelsJSON, &moment.ProposedDay,
 			&moment.GroupingTimezone, &sourceDaysJSON, &moment.ProposalKind,
 			&moment.CoverMediaItemID, &moment.AttendanceComplete,
 			&moment.AudienceComplete); err != nil {
+			_ = momentRows.Close()
+			return Event{}, err
+		}
+		if err := json.Unmarshal([]byte(placeLabelsJSON), &moment.PlaceLabels); err != nil {
 			_ = momentRows.Close()
 			return Event{}, err
 		}

@@ -709,7 +709,7 @@ MVP provides one authenticated Recipient search across Photos and Events from th
 - Dates support year, month, exact date, and explicit range. A Media item matches its capture date, and an Event matches its current published date range.
 - Text matching is case-insensitive and diacritic-insensitive with token and prefix matching plus modest typo tolerance for longer terms. Use PostgreSQL `unaccent`, text search, and `pg_trgm`.
 - Person matching is limited to People discoverable through current shared Visibility circles and returns only authorized Moments with confirmed Attendance. Results may say a Person attended but MUST NOT imply they appear in every result.
-- Results group by Event plus Shared separately. Global Photos results deduplicate a Media item; Event-specific reuse remains visible in each authorized Event.
+- MVP results group matching Media by Event, and global Photos results deduplicate a Media item. Event-specific reuse remains visible in each authorized Event. A separate Shared group is reserved for a future published Loose-item state and is not part of the current API.
 - Authorization filters candidates before matching, ranking, grouping, faceting, covers, previews, or counts.
 - Every total, span, cover, preview, and count includes authorized Media only. Never show partial totals, hidden facets, gaps, Moment boundaries, original totals, or unavailable-result hints.
 - Unpublished and Staged data is absent. Publication changes search and access in one transaction. Withdrawal and entitlement loss remove results immediately.

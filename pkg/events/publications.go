@@ -10,9 +10,11 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/robinjoseph08/memento/internal/placementlock"
+	"github.com/robinjoseph08/memento/pkg/audiences"
 	"github.com/robinjoseph08/memento/pkg/setup"
 	"github.com/robinjoseph08/memento/pkg/worker"
 	"github.com/uptrace/bun"
+	"github.com/uptrace/bun/dialect/pgdialect"
 )
 
 const PublicationJobKind = "publication_committed"
@@ -132,15 +134,16 @@ func (s *Service) PublishEvent(ctx context.Context, actor setup.CuratorSession, 
 		if err := placementlock.Acquire(ctx, tx, placementlock.Shared); err != nil {
 			return err
 		}
-		var title, description, timezone, lifecycle string
+		var title, description, timezone, lifecycle, eventPlaceLabelsJSON string
+		var eventPlaceLabels []string
 		var version int64
 		var finalReview bool
 		var priorID *uuid.UUID
 		if err := tx.NewRaw(`
-			SELECT title, description, grouping_timezone, lifecycle, version,
+			SELECT title, description, grouping_timezone, lifecycle, to_json(place_labels)::text, version,
 			       final_review_complete, current_publication_id
 			FROM events WHERE id = ? FOR UPDATE
-		`, eventID).Scan(ctx, &title, &description, &timezone, &lifecycle, &version, &finalReview, &priorID); err != nil {
+		`, eventID).Scan(ctx, &title, &description, &timezone, &lifecycle, &eventPlaceLabelsJSON, &version, &finalReview, &priorID); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return ErrNotFound
 			}
@@ -161,6 +164,9 @@ func (s *Service) PublishEvent(ctx context.Context, actor setup.CuratorSession, 
 			return err
 		}
 		if err := s.publicationBoundary(PublicationStepLocked); err != nil {
+			return err
+		}
+		if err := json.Unmarshal([]byte(eventPlaceLabelsJSON), &eventPlaceLabels); err != nil {
 			return err
 		}
 		if request.Version != version {
@@ -217,6 +223,11 @@ func (s *Service) PublishEvent(ctx context.Context, actor setup.CuratorSession, 
 				return ErrAudienceNotCurrent
 			}
 		}
+		// Person merge locks access generations before taking this lock exclusively.
+		// Keep the same order so Publication and merge cannot wait on each other.
+		if err := audiences.LockPublishedAttendanceProjection(ctx, tx); err != nil {
+			return err
+		}
 		if err := s.publicationBoundary(PublicationStepValidated); err != nil {
 			return err
 		}
@@ -238,23 +249,32 @@ func (s *Service) PublishEvent(ctx context.Context, actor setup.CuratorSession, 
 		}
 		if _, err := tx.NewRaw(`
 			INSERT INTO published_event_revisions (
-				publication_id, event_id, title, description, grouping_timezone, created_at
-			) VALUES (?, ?, ?, ?, ?, ?)
-		`, publicationID, eventID, title, description, timezone, now).Exec(ctx); err != nil {
+				publication_id, event_id, title, description, grouping_timezone, place_labels, created_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?)
+		`, publicationID, eventID, title, description, timezone, pgdialect.Array(eventPlaceLabels), now).Exec(ctx); err != nil {
 			return err
 		}
 		if _, err := tx.NewRaw(`
 			INSERT INTO published_moments (
 				id, publication_id, draft_moment_id, audience_snapshot_id,
-				position, title, proposed_day, cover_media_item_id
+				position, title, place_labels, proposed_day, cover_media_item_id
 			)
 			SELECT gen_random_uuid(), ?, moment.id, snapshot.snapshot_id,
-			       moment.position, moment.title, moment.proposed_day, moment.cover_media_item_id
+			       moment.position, moment.title, moment.place_labels, moment.proposed_day, moment.cover_media_item_id
 			FROM draft_moments AS moment
 			JOIN current_audience_snapshots AS snapshot
 			  ON snapshot.target_kind = 'moment' AND snapshot.target_id = moment.id
 			WHERE moment.event_id = ? ORDER BY moment.position
 		`, publicationID, eventID).Exec(ctx); err != nil {
+			return err
+		}
+		if _, err := tx.NewRaw(`
+			INSERT INTO published_attendance (published_moment_id, person_id)
+			SELECT published.id, attendance.person_id
+			FROM published_moments AS published
+			JOIN attendance ON attendance.moment_id = published.draft_moment_id
+			WHERE published.publication_id = ?
+		`, publicationID).Exec(ctx); err != nil {
 			return err
 		}
 		if err := s.publicationBoundary(PublicationStepHistory); err != nil {
@@ -263,13 +283,16 @@ func (s *Service) PublishEvent(ctx context.Context, actor setup.CuratorSession, 
 
 		if _, err := tx.NewRaw(`
 			INSERT INTO current_published_events (
-				event_id, publication_id, title, description, grouping_timezone, committed_at
-			) VALUES (?, ?, ?, ?, ?, ?)
+				event_id, publication_id, title, description, grouping_timezone, place_labels,
+				attendance_projection_ready, committed_at
+			) VALUES (?, ?, ?, ?, ?, ?, true, ?)
 			ON CONFLICT (event_id) DO UPDATE SET
 				publication_id = EXCLUDED.publication_id, title = EXCLUDED.title,
 				description = EXCLUDED.description, grouping_timezone = EXCLUDED.grouping_timezone,
+				place_labels = EXCLUDED.place_labels,
+				attendance_projection_ready = EXCLUDED.attendance_projection_ready,
 				committed_at = EXCLUDED.committed_at
-		`, eventID, publicationID, title, description, timezone, now).Exec(ctx); err != nil {
+		`, eventID, publicationID, title, description, timezone, pgdialect.Array(eventPlaceLabels), now).Exec(ctx); err != nil {
 			return err
 		}
 		if _, err := tx.NewRaw(`UPDATE events SET lifecycle = 'published', current_publication_id = ?, updated_at = ? WHERE id = ?`, publicationID, now, eventID).Exec(ctx); err != nil {
@@ -370,11 +393,14 @@ func (s *Service) PublishEvent(ctx context.Context, actor setup.CuratorSession, 
 		}
 		if _, err := tx.NewRaw(`
 			INSERT INTO published_search_documents (
-				event_id, publication_id, recipient_access_generation_id, media_item_id, search_text
+				event_id, publication_id, recipient_access_generation_id, media_item_id,
+				search_text, capture_date, place_text
 			)
 			SELECT entitlement.event_id, entitlement.publication_id,
 			       entitlement.recipient_access_generation_id, entitlement.media_item_id,
-			       concat_ws(' ', current.title, current.description, published.local_date_time)
+			       concat_ws(' ', current.title, current.description),
+			       memento_local_capture_date(published.local_date_time),
+			       array_to_string(current.place_labels || moment.place_labels, ' ')
 			FROM current_audience_entitlements AS entitlement
 			JOIN current_published_events AS current ON current.event_id = entitlement.event_id
 			JOIN current_published_placements AS placement
@@ -382,6 +408,7 @@ func (s *Service) PublishEvent(ctx context.Context, actor setup.CuratorSession, 
 			JOIN published_media_placements AS published
 			  ON published.published_moment_id = placement.published_moment_id
 			 AND published.media_item_id = placement.media_item_id
+			JOIN published_moments AS moment ON moment.id = placement.published_moment_id
 			WHERE entitlement.event_id = ?
 		`, eventID).Exec(ctx); err != nil {
 			return err

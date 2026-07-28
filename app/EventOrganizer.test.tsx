@@ -44,15 +44,18 @@ function draft(version = 1): DraftEvent {
     lifecycle: "draft",
     title: "Family weekend",
     description: "",
+    place_labels: [],
     grouping_timezone: "UTC",
     version,
     final_review_complete: false,
     published_editable_version: null,
+    published_attendance_recovery_required: false,
     sources: [],
     moments: [
       {
         id: momentOneID,
         title: "Friday",
+        place_labels: [],
         proposed_day: "2026-05-01",
         grouping_timezone: "UTC",
         source_days: ["2026-05-01"],
@@ -65,6 +68,7 @@ function draft(version = 1): DraftEvent {
       {
         id: momentTwoID,
         title: "Saturday",
+        place_labels: [],
         proposed_day: "2026-05-02",
         grouping_timezone: "UTC",
         source_days: ["2026-05-02"],
@@ -144,9 +148,11 @@ function eventFromRequest(
   );
   const existing = draft(request.version + 1);
   existing.final_review_complete = request.final_review_complete;
+  existing.place_labels = request.place_labels;
   existing.moments = request.moments.map((moment) => ({
     id: moment.id,
     title: moment.title ?? "",
+    place_labels: moment.place_labels,
     proposed_day: moment.proposed_day,
     grouping_timezone: "UTC",
     source_days: [moment.proposed_day],
@@ -243,6 +249,7 @@ function stubOrganizerAPI(initial: DraftEvent) {
           ...persisted,
           lifecycle: "published",
           published_editable_version: persisted.version,
+          published_attendance_recovery_required: false,
         };
         return response(
           {
@@ -480,6 +487,22 @@ test("publishes ready work and previews Recipient output read only", async () =>
   ).not.toBeInTheDocument();
 });
 
+test("requires a replacement Publication when legacy Attendance cannot be reconstructed", async () => {
+  const recovery = organizedDraft(2);
+  recovery.lifecycle = "published";
+  recovery.published_editable_version = 1;
+  recovery.published_attendance_recovery_required = true;
+  stubOrganizerAPI(recovery);
+  renderOrganizer();
+  fireEvent.click(
+    await screen.findByRole("button", { name: /Family weekend/ }),
+  );
+
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "Person search is unavailable for this existing Publication because its Attendance cannot be reconstructed safely. Review and publish the Event again to restore it.",
+  );
+});
+
 test("withdraws a currently published target even when the staged draft differs", async () => {
   const published = organizedDraft();
   published.lifecycle = "published";
@@ -524,6 +547,145 @@ test("withdraws a currently published target even when the staged draft differs"
   expect(confirm).toHaveBeenCalledWith(
     "Withdraw Recipient access immediately? Identity and history will be preserved.",
   );
+});
+
+test("preserves raw Place-label editing and autosaves parsed labels on blur", async () => {
+  const saves = stubOrganizerAPI(draft());
+  renderOrganizer();
+  fireEvent.click(
+    await screen.findByRole("button", { name: /Family weekend/ }),
+  );
+
+  const eventLabels = await screen.findByLabelText("Event Place labels");
+  fireEvent.focus(eventLabels);
+  fireEvent.change(eventLabels, { target: { value: "São" } });
+  fireEvent.change(eventLabels, { target: { value: "São " } });
+  expect(eventLabels).toHaveValue("São ");
+  expect(saves).toHaveLength(0);
+  fireEvent.change(eventLabels, {
+    target: { value: " São Paulo, , Jardin Central, " },
+  });
+  expect(eventLabels).toHaveValue(" São Paulo, , Jardin Central, ");
+  fireEvent.blur(eventLabels);
+
+  const momentLabels = screen.getByLabelText("Place labels for Moment 1");
+  fireEvent.focus(momentLabels);
+  fireEvent.change(momentLabels, {
+    target: { value: " Café terrace, , River Walk, " },
+  });
+  expect(momentLabels).toHaveValue(" Café terrace, , River Walk, ");
+  fireEvent.blur(momentLabels);
+
+  expect(
+    screen.getAllByText(
+      "Up to 20 comma-separated labels, 120 characters each. Labels become searchable after Publication.",
+    ),
+  ).toHaveLength(3);
+  await waitFor(() => expect(saves.length).toBeGreaterThan(0), contentionWait);
+  await waitFor(
+    () => expect(screen.getByText("All changes saved")).toBeInTheDocument(),
+    contentionWait,
+  );
+  expect(saves.at(-1)?.place_labels).toEqual(["São Paulo", "Jardin Central"]);
+  expect(saves.at(-1)?.moments[0].place_labels).toEqual([
+    "Café terrace",
+    "River Walk",
+  ]);
+});
+
+test("rejects Place-label count and length limits before autosave", async () => {
+  const saves = stubOrganizerAPI(draft());
+  renderOrganizer();
+  fireEvent.click(
+    await screen.findByRole("button", { name: /Family weekend/ }),
+  );
+
+  const labels = await screen.findByLabelText("Event Place labels");
+  const tooMany = Array.from(
+    { length: 21 },
+    (_, index) => `Place ${index + 1}`,
+  ).join(", ");
+  fireEvent.change(labels, { target: { value: tooMany } });
+  fireEvent.blur(labels);
+  expect(screen.getByRole("alert")).toHaveTextContent(
+    "Use no more than 20 Place labels.",
+  );
+  expect(saves).toHaveLength(0);
+
+  fireEvent.focus(labels);
+  fireEvent.change(labels, { target: { value: "é".repeat(121) } });
+  fireEvent.blur(labels);
+  expect(screen.getByRole("alert")).toHaveTextContent(
+    "Each Place label must be 120 characters or fewer.",
+  );
+  expect(saves).toHaveLength(0);
+
+  fireEvent.focus(labels);
+  fireEvent.change(labels, { target: { value: "é".repeat(120) } });
+  fireEvent.blur(labels);
+  await waitFor(() => expect(saves).toHaveLength(1), contentionWait);
+  expect(saves[0].place_labels).toEqual(["é".repeat(120)]);
+});
+
+test("merges and deduplicates Moment Place labels", async () => {
+  const initial = draft();
+  initial.moments[0].place_labels = ["Garden", "Café"];
+  initial.moments[1].place_labels = ["garden", "River Walk"];
+  const saves = stubOrganizerAPI(initial);
+
+  renderOrganizer();
+  fireEvent.click(
+    await screen.findByRole("button", { name: /Family weekend/ }),
+  );
+  await screen.findByRole(
+    "heading",
+    { name: "Family weekend" },
+    contentionWait,
+  );
+  fireEvent.click(
+    screen.getAllByRole("button", { name: "Merge with previous Moment" })[1],
+  );
+
+  await waitFor(() =>
+    expect(screen.getByLabelText("Place labels for Moment 1")).toHaveValue(
+      "Garden, Café, River Walk",
+    ),
+  );
+  await waitFor(() => expect(saves).toHaveLength(1), contentionWait);
+  expect(saves[0].moments[0].place_labels).toEqual([
+    "Garden",
+    "Café",
+    "River Walk",
+  ]);
+});
+
+test("blocks a Moment merge that would exceed the Place-label limit", async () => {
+  const initial = draft();
+  initial.moments[0].place_labels = Array.from(
+    { length: 20 },
+    (_, index) => `Place ${index + 1}`,
+  );
+  initial.moments[1].place_labels = ["Overflow Place"];
+  const saves = stubOrganizerAPI(initial);
+
+  renderOrganizer();
+  fireEvent.click(
+    await screen.findByRole("button", { name: /Family weekend/ }),
+  );
+  await screen.findByRole(
+    "heading",
+    { name: "Family weekend" },
+    contentionWait,
+  );
+  fireEvent.click(
+    screen.getAllByRole("button", { name: "Merge with previous Moment" })[1],
+  );
+
+  expect(screen.getByRole("alert")).toHaveTextContent(
+    "Use no more than 20 Place labels. Remove Place labels before merging these Moments.",
+  );
+  expect(screen.getAllByText(/Moment \d ·/)).toHaveLength(2);
+  expect(saves).toHaveLength(0);
 });
 
 test("organizes merged and split days with pointer and keyboard controls", async () => {

@@ -1,10 +1,12 @@
 package events
 
 import (
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/robinjoseph08/memento/pkg/errcodes"
 	"github.com/robinjoseph08/memento/pkg/setup"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -58,4 +60,30 @@ func TestParseUniqueIDsRejectsMalformedAndDuplicatePortalIdentities(t *testing.T
 	ids, err := parseUniqueIDs(nil)
 	require.NoError(t, err)
 	assert.Empty(t, ids)
+}
+
+func TestPlaceLabelLimitsUseRuneLengthAndMapToAccurateGuidance(t *testing.T) {
+	labels := make([]string, 21)
+	for index := range labels {
+		labels[index] = uuid.NewString()
+	}
+	_, valid := normalizePlaceLabels(labels)
+	assert.False(t, valid)
+
+	_, valid = normalizePlaceLabels([]string{strings.Repeat("é", 121)})
+	assert.False(t, valid)
+	accepted, valid := normalizePlaceLabels([]string{strings.Repeat("é", 120)})
+	assert.True(t, valid)
+	assert.Equal(t, []string{strings.Repeat("é", 120)}, accepted)
+
+	accepted, valid = normalizePlaceLabels([]string{" Garden ", "garden", "Café"})
+	assert.True(t, valid)
+	assert.Equal(t, []string{"Garden", "Café"}, accepted,
+		"Moment merges can preserve the ordered union without duplicate labels")
+
+	mapped := draftError(ErrPlaceLabelsInvalid, "Event")
+	var coded *errcodes.Error
+	require.ErrorAs(t, mapped, &coded)
+	assert.Equal(t, "validation_error", coded.Code)
+	assert.Equal(t, "Use no more than 20 Place labels, with 1 to 120 characters in each label.", coded.Message)
 }

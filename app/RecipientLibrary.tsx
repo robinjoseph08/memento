@@ -4,7 +4,7 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 
 import { apiJSON, apiNoContent, apiResponse } from "./api";
 import type {
@@ -19,9 +19,68 @@ import type {
   MediaPage,
   NewForYouResponse,
 } from "./types/generated/library";
+import type {
+  Request as SearchRequest,
+  Response as SearchResponse,
+} from "./types/generated/search";
 import type { SessionResponse } from "./types/generated/setup";
 
-type Destination = "photos" | "events" | "favorites";
+type Destination = "photos" | "events" | "favorites" | "search";
+type SearchDateKind = "" | "year" | "month" | "date" | "range";
+type SearchDateFilter = NonNullable<SearchRequest["date"]>;
+type OpenedEvent = Pick<EventSummary, "id" | "title" | "publication_id">;
+
+const libraryDestinations: ReadonlyArray<{
+  destination: Destination;
+  label: string;
+}> = [
+  { destination: "photos", label: "Photos" },
+  { destination: "events", label: "Events" },
+  { destination: "favorites", label: "Favorites" },
+  { destination: "search", label: "Search" },
+];
+
+function LibraryNavigation({
+  className,
+  current,
+  showBrand = false,
+  showSearch = true,
+  onNavigate,
+}: {
+  className: string;
+  current?: Destination;
+  showBrand?: boolean;
+  showSearch?: boolean;
+  onNavigate: (destination: Destination) => void;
+}) {
+  const destinations = showSearch
+    ? libraryDestinations
+    : libraryDestinations.filter((item) => item.destination !== "search");
+  return (
+    <nav aria-label="Library navigation" className={className}>
+      {showBrand ? <div className="library-brand">Memento</div> : null}
+      {destinations.map((item) => (
+        <button
+          aria-current={current === item.destination ? "page" : undefined}
+          key={item.destination}
+          onClick={() => onNavigate(item.destination)}
+          type="button"
+        >
+          {item.label}
+        </button>
+      ))}
+    </nav>
+  );
+}
+
+function searchDateKind(value: string): SearchDateKind {
+  return value === "year" ||
+    value === "month" ||
+    value === "date" ||
+    value === "range"
+    ? value
+    : "";
+}
 
 function mediaLabel(media: Media) {
   if (!media.local_date_time) return "Date unavailable";
@@ -392,11 +451,18 @@ function LibraryError({ error }: { error: Error | null }) {
 export function RecipientLibrary({ session }: { session: SessionResponse }) {
   const queryClient = useQueryClient();
   const [destination, setDestination] = useState<Destination>("photos");
-  const [openedEvent, setOpenedEvent] = useState<EventSummary>();
+  const [openedEvent, setOpenedEvent] = useState<OpenedEvent>();
   const [openedMedia, setOpenedMedia] = useState<Media>();
   const [selectionEnabled, setSelectionEnabled] = useState(false);
   const [selectedMedia, setSelectedMedia] = useState<Set<string>>(new Set());
   const [archivePlan, setArchivePlan] = useState<ArchivePlanResponse>();
+  const [searchText, setSearchText] = useState("");
+  const [dateKind, setDateKind] = useState<SearchDateKind>("");
+  const [searchYear, setSearchYear] = useState("");
+  const [searchMonth, setSearchMonth] = useState("");
+  const [searchDate, setSearchDate] = useState("");
+  const [searchStart, setSearchStart] = useState("");
+  const [searchEnd, setSearchEnd] = useState("");
   const mediaOpener = useRef<HTMLElement | null>(null);
   const endpoint = destination === "favorites" ? "favorites" : "photos";
   const photos = useInfiniteQuery({
@@ -408,7 +474,8 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
     },
     initialPageParam: "",
     getNextPageParam: (page) => page.next_cursor ?? undefined,
-    enabled: destination !== "events" && !openedEvent,
+    enabled:
+      destination !== "events" && destination !== "search" && !openedEvent,
     retry: false,
   });
   const events = useInfiniteQuery({
@@ -452,6 +519,13 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
         body: JSON.stringify(request),
       }),
     onSuccess: (plan) => setArchivePlan(plan),
+  });
+  const search = useMutation({
+    mutationFn: (request: SearchRequest) =>
+      apiJSON<SearchResponse>("/api/search", {
+        method: "POST",
+        body: JSON.stringify(request),
+      }),
   });
   const seen = useMutation({
     mutationFn: (publicationID: string) =>
@@ -505,6 +579,33 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
     });
   }
 
+  function navigateTo(destination: Destination) {
+    setArchivePlan(undefined);
+    setSelectionEnabled(false);
+    setSelectedMedia(new Set());
+    setOpenedEvent(undefined);
+    setDestination(destination);
+  }
+
+  function submitSearch(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    let date: SearchDateFilter | null = null;
+    if (dateKind === "year") {
+      date = { kind: "year", year: Number(searchYear) };
+    } else if (dateKind === "month") {
+      date = { kind: "month", month: searchMonth };
+    } else if (dateKind === "date") {
+      date = { kind: "date", date: searchDate };
+    } else if (dateKind === "range") {
+      date = {
+        kind: "range",
+        start_date: searchStart,
+        end_date: searchEnd,
+      };
+    }
+    search.mutate({ query: searchText, date });
+  }
+
   function openMedia(item: Media) {
     mediaOpener.current =
       document.activeElement instanceof HTMLElement
@@ -523,27 +624,13 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
 
   return (
     <section aria-label="Recipient library" className="recipient-library">
-      <nav aria-label="Library navigation" className="library-rail">
-        <div className="library-brand">Memento</div>
-        {(["photos", "events", "favorites"] as Destination[]).map((item) => (
-          <button
-            aria-current={
-              !openedEvent && destination === item ? "page" : undefined
-            }
-            key={item}
-            onClick={() => {
-              setArchivePlan(undefined);
-              setSelectionEnabled(false);
-              setSelectedMedia(new Set());
-              setOpenedEvent(undefined);
-              setDestination(item);
-            }}
-            type="button"
-          >
-            {item[0].toUpperCase() + item.slice(1)}
-          </button>
-        ))}
-      </nav>
+      <LibraryNavigation
+        className="library-rail"
+        current={openedEvent ? undefined : destination}
+        onNavigate={navigateTo}
+        showBrand
+        showSearch={false}
+      />
       <div className="library-content">
         {openedEvent ? (
           <>
@@ -555,7 +642,12 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
               }}
               type="button"
             >
-              Back to {destination === "photos" ? "Photos" : "Events"}
+              Back to{" "}
+              {destination === "photos"
+                ? "Photos"
+                : destination === "search"
+                  ? "Search"
+                  : "Events"}
             </button>
             <header className="library-heading">
               <h1>{event.data?.pages[0]?.title ?? openedEvent.title}</h1>
@@ -583,6 +675,14 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
                   sign-out.
                 </p>
               ) : null}
+              <button
+                aria-label="Search library"
+                className="desktop-search-action"
+                onClick={() => navigateTo("search")}
+                type="button"
+              >
+                Search
+              </button>
             </header>
             <LibraryError error={event.error ?? archive.error} />
             {archivePlan ? (
@@ -614,6 +714,15 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
               {destination === "favorites" ? (
                 <p>Favorites aren&apos;t shared with other recipients.</p>
               ) : null}
+              <button
+                aria-current={destination === "search" ? "page" : undefined}
+                aria-label="Search library"
+                className="desktop-search-action"
+                onClick={() => navigateTo("search")}
+                type="button"
+              >
+                Search
+              </button>
             </header>
             {destination === "photos" ? (
               <LibraryError error={newForYou.error ?? seen.error} />
@@ -630,7 +739,227 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
                 />
               </section>
             ) : null}
-            {destination === "events" ? (
+            {destination === "search" ? (
+              <div className="recipient-search">
+                <form className="search-form" onSubmit={submitSearch}>
+                  <label>
+                    Search published Events, Place labels, and People
+                    <input
+                      autoComplete="off"
+                      maxLength={200}
+                      disabled={search.isPending}
+                      onChange={(event) => {
+                        search.reset();
+                        setSearchText(event.target.value);
+                      }}
+                      placeholder="Family picnic"
+                      type="search"
+                      value={searchText}
+                    />
+                  </label>
+                  <label>
+                    Date filter
+                    <select
+                      disabled={search.isPending}
+                      onChange={(event) => {
+                        search.reset();
+                        setDateKind(searchDateKind(event.target.value));
+                      }}
+                      value={dateKind}
+                    >
+                      <option value="">No date filter</option>
+                      <option value="year">Year</option>
+                      <option value="month">Month</option>
+                      <option value="date">Exact date</option>
+                      <option value="range">Date range</option>
+                    </select>
+                  </label>
+                  {dateKind === "year" ? (
+                    <label>
+                      Year
+                      <input
+                        max={9999}
+                        min={1}
+                        disabled={search.isPending}
+                        onChange={(event) => {
+                          search.reset();
+                          setSearchYear(event.target.value);
+                        }}
+                        required
+                        type="number"
+                        value={searchYear}
+                      />
+                    </label>
+                  ) : null}
+                  {dateKind === "month" ? (
+                    <label>
+                      Month
+                      <input
+                        disabled={search.isPending}
+                        onChange={(event) => {
+                          search.reset();
+                          setSearchMonth(event.target.value);
+                        }}
+                        required
+                        type="month"
+                        value={searchMonth}
+                      />
+                    </label>
+                  ) : null}
+                  {dateKind === "date" ? (
+                    <label>
+                      Date
+                      <input
+                        disabled={search.isPending}
+                        onChange={(event) => {
+                          search.reset();
+                          setSearchDate(event.target.value);
+                        }}
+                        required
+                        type="date"
+                        value={searchDate}
+                      />
+                    </label>
+                  ) : null}
+                  {dateKind === "range" ? (
+                    <>
+                      <label>
+                        Start date
+                        <input
+                          disabled={search.isPending}
+                          onChange={(event) => {
+                            search.reset();
+                            setSearchStart(event.target.value);
+                          }}
+                          required
+                          type="date"
+                          value={searchStart}
+                        />
+                      </label>
+                      <label>
+                        End date
+                        <input
+                          min={searchStart}
+                          disabled={search.isPending}
+                          onChange={(event) => {
+                            search.reset();
+                            setSearchEnd(event.target.value);
+                          }}
+                          required
+                          type="date"
+                          value={searchEnd}
+                        />
+                      </label>
+                    </>
+                  ) : null}
+                  <button
+                    aria-label="Run search"
+                    disabled={
+                      search.isPending || (!searchText.trim() && !dateKind)
+                    }
+                    type="submit"
+                  >
+                    {search.isPending ? "Searching…" : "Search"}
+                  </button>
+                </form>
+                <LibraryError error={search.error} />
+                {search.data ? (
+                  <p aria-live="polite" className="search-summary">
+                    {search.data.total_photos} matching{" "}
+                    {search.data.total_photos === 1 ? "photo" : "photos"}.{" "}
+                    {search.data.total_events} matching{" "}
+                    {search.data.total_events === 1 ? "Event" : "Events"}.
+                    {search.data.has_more
+                      ? " Refine the search to see fewer results."
+                      : ""}
+                  </p>
+                ) : null}
+                {search.data?.people.length ? (
+                  <section aria-labelledby="search-people-title">
+                    <h2 id="search-people-title">People</h2>
+                    <ul className="search-people">
+                      {search.data.people.map((person) => (
+                        <li key={`${person.person_id}-${person.event_id}`}>
+                          <strong>{person.person_name}</strong> attended part of{" "}
+                          {person.event_title}.
+                        </li>
+                      ))}
+                    </ul>
+                  </section>
+                ) : null}
+                {search.data?.events.length ? (
+                  <section aria-labelledby="search-events-title">
+                    <h2 id="search-events-title">Events</h2>
+                    <div className="event-gallery">
+                      {search.data.events.map((event) => {
+                        const ratio =
+                          event.cover_width && event.cover_height
+                            ? event.cover_width / event.cover_height
+                            : 1;
+                        return (
+                          <button
+                            className="event-card"
+                            key={event.id}
+                            onClick={() =>
+                              setOpenedEvent({
+                                id: event.id,
+                                title: event.title,
+                                publication_id: "",
+                              })
+                            }
+                            style={{
+                              flexBasis: `${ratio * 11}rem`,
+                              flexGrow: ratio,
+                            }}
+                            type="button"
+                          >
+                            <span
+                              className="event-cover"
+                              style={{
+                                aspectRatio:
+                                  event.cover_width && event.cover_height
+                                    ? `${event.cover_width} / ${event.cover_height}`
+                                    : "1",
+                              }}
+                            >
+                              {event.cover_available ? (
+                                <img
+                                  alt=""
+                                  loading="lazy"
+                                  src={event.thumbnail_url}
+                                />
+                              ) : (
+                                <span className="media-unavailable">
+                                  Source unavailable
+                                </span>
+                              )}
+                            </span>
+                            <strong>{event.title}</strong>
+                            <span>
+                              {event.media_count} matching{" "}
+                              {event.media_count === 1 ? "item" : "items"}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </section>
+                ) : null}
+                {search.data?.photos.length ? (
+                  <section aria-labelledby="search-photos-title">
+                    <h2 id="search-photos-title">Photos</h2>
+                    <Gallery media={search.data.photos} onOpen={openMedia} />
+                  </section>
+                ) : null}
+                {search.data &&
+                search.data.total_events === 0 &&
+                search.data.total_photos === 0 ? (
+                  <p className="library-empty">
+                    Nothing in your shared collection matched.
+                  </p>
+                ) : null}
+              </div>
+            ) : destination === "events" ? (
               <>
                 <LibraryError error={events.error} />
                 <EventCards events={eventItems} onOpen={openEvent} />
@@ -776,26 +1105,11 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
           publicComputer={session.session_type === "public"}
         />
       ) : null}
-      <nav aria-label="Library navigation" className="mobile-library-nav">
-        {(["photos", "events", "favorites"] as Destination[]).map((item) => (
-          <button
-            aria-current={
-              !openedEvent && destination === item ? "page" : undefined
-            }
-            key={item}
-            onClick={() => {
-              setArchivePlan(undefined);
-              setSelectionEnabled(false);
-              setSelectedMedia(new Set());
-              setOpenedEvent(undefined);
-              setDestination(item);
-            }}
-            type="button"
-          >
-            {item[0].toUpperCase() + item.slice(1)}
-          </button>
-        ))}
-      </nav>
+      <LibraryNavigation
+        className="mobile-library-nav"
+        current={openedEvent ? undefined : destination}
+        onNavigate={navigateTo}
+      />
     </section>
   );
 }

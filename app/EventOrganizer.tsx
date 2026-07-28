@@ -33,12 +33,106 @@ function cloneEvent(event: DraftEvent): DraftEvent {
   return structuredClone(event);
 }
 
+const maxPlaceLabels = 20;
+const maxPlaceLabelLength = 120;
+
+function parsePlaceLabels(value: string) {
+  return value
+    .split(",")
+    .map((label) => label.trim())
+    .filter(Boolean);
+}
+
+function validatePlaceLabels(labels: string[]) {
+  if (labels.length > maxPlaceLabels)
+    return `Use no more than ${maxPlaceLabels} Place labels.`;
+  if (labels.some((label) => Array.from(label).length > maxPlaceLabelLength))
+    return `Each Place label must be ${maxPlaceLabelLength} characters or fewer.`;
+  return "";
+}
+
+function mergePlaceLabels(...groups: string[][]) {
+  const labels: string[] = [];
+  const seen = new Set<string>();
+  for (const value of groups.flat()) {
+    const label = value.trim();
+    const key = label.toLowerCase();
+    if (!label || seen.has(key)) continue;
+    seen.add(key);
+    labels.push(label);
+  }
+  return labels;
+}
+
+function PlaceLabelEditor({
+  ariaLabel,
+  labels,
+  onCommit,
+  placeholder,
+}: {
+  ariaLabel: string;
+  labels: string[];
+  onCommit: (labels: string[]) => void;
+  placeholder: string;
+}) {
+  const [raw, setRaw] = useState(labels.join(", "));
+  const [error, setError] = useState("");
+  const focused = useRef(false);
+
+  useEffect(() => {
+    if (!focused.current) setRaw(labels.join(", "));
+  }, [labels]);
+
+  return (
+    <label className="place-label-editor">
+      {ariaLabel}
+      <input
+        aria-label={ariaLabel}
+        aria-invalid={error ? "true" : undefined}
+        onBlur={() => {
+          focused.current = false;
+          const parsed = parsePlaceLabels(raw);
+          const validationError = validatePlaceLabels(parsed);
+          setError(validationError);
+          if (validationError) return;
+          setRaw(parsed.join(", "));
+          if (
+            parsed.length !== labels.length ||
+            parsed.some((label, index) => label !== labels[index])
+          )
+            onCommit(parsed);
+        }}
+        onChange={(event) => {
+          setRaw(event.target.value);
+          setError("");
+        }}
+        onFocus={() => {
+          focused.current = true;
+        }}
+        placeholder={placeholder}
+        value={raw}
+      />
+      <span>
+        Up to {maxPlaceLabels} comma-separated labels, {maxPlaceLabelLength}{" "}
+        characters each. Labels become searchable after Publication.
+      </span>
+      {error ? (
+        <span className="form-error" role="alert">
+          {error}
+        </span>
+      ) : null}
+    </label>
+  );
+}
+
 function organizationRequest(event: DraftEvent): OrganizeEventRequest {
   return {
     version: event.version,
+    place_labels: event.place_labels,
     moments: event.moments.map((moment) => ({
       id: moment.id,
       title: moment.title,
+      place_labels: moment.place_labels,
       proposed_day: moment.proposed_day,
       cover_media_item_id: moment.cover_media_item_id,
       media_item_ids: moment.media_items.map((item) => item.id),
@@ -172,6 +266,7 @@ export function EventOrganizer({
   const [saveState, setSaveState] = useState<SaveState>("saved");
   const [conflictRecoveryError, setConflictRecoveryError] = useState("");
   const [conflictRecoveryPending, setConflictRecoveryPending] = useState(false);
+  const [mergeError, setMergeError] = useState("");
   const [revision, setRevision] = useState(0);
   const [notifyRecipients, setNotifyRecipients] = useState(true);
   const [previewRecipientID, setPreviewRecipientID] = useState("");
@@ -255,6 +350,7 @@ export function EventOrganizer({
               ...current,
               lifecycle: "published",
               published_editable_version: publication.editable_version,
+              published_attendance_recovery_required: false,
             }
           : current,
       );
@@ -539,6 +635,7 @@ export function EventOrganizer({
       next.moments.push({
         id,
         title: "",
+        place_labels: [],
         proposed_day: newMomentDay,
         grouping_timezone: next.grouping_timezone,
         source_days: [],
@@ -577,6 +674,7 @@ export function EventOrganizer({
       next.moments.splice(index + 1, 0, {
         id,
         title: "",
+        place_labels: [...source.place_labels],
         proposed_day: source.proposed_day,
         grouping_timezone: source.grouping_timezone,
         source_days: source.source_days,
@@ -593,16 +691,29 @@ export function EventOrganizer({
 
   function mergeWithPrevious(index: number) {
     if (!currentDraft || index < 1) return;
-    const previousID = currentDraft.moments[index - 1].id;
-    const removedID = currentDraft.moments[index].id;
+    const previousMoment = currentDraft.moments[index - 1];
+    const removedMoment = currentDraft.moments[index];
+    const placeLabels = mergePlaceLabels(
+      previousMoment.place_labels,
+      removedMoment.place_labels,
+    );
+    const validationError = validatePlaceLabels(placeLabels);
+    if (validationError) {
+      setMergeError(
+        `${validationError} Remove Place labels before merging these Moments.`,
+      );
+      return;
+    }
+    setMergeError("");
     change((next) => {
       const previous = next.moments[index - 1];
       const removed = next.moments[index];
+      previous.place_labels = placeLabels;
       previous.media_items.push(...removed.media_items);
       next.moments.splice(index, 1);
     });
-    if (destination === removedID) setDestination(previousID);
-    setInspectedMomentID(previousID);
+    if (destination === removedMoment.id) setDestination(previousMoment.id);
+    setInspectedMomentID(previousMoment.id);
   }
 
   function reorderMoment(index: number, direction: -1 | 1) {
@@ -822,6 +933,7 @@ export function EventOrganizer({
                     setSaveState("saved");
                     setConflictRecoveryError("");
                     setConflictRecoveryPending(false);
+                    setMergeError("");
                     setNotifyRecipients(true);
                     setPreviewRecipientID("");
                     setPreviewOpen(false);
@@ -873,6 +985,17 @@ export function EventOrganizer({
                 </div>
                 <Checklist event={currentDraft} />
               </header>
+              <PlaceLabelEditor
+                ariaLabel="Event Place labels"
+                key={`event-place-labels-${currentDraft.id}`}
+                labels={currentDraft.place_labels}
+                onCommit={(labels) =>
+                  change((next) => {
+                    next.place_labels = labels;
+                  })
+                }
+                placeholder="Paris, Jardin du Luxembourg"
+              />
               <div className="move-toolbar">
                 <div className="move-control">
                   <label>
@@ -915,6 +1038,11 @@ export function EventOrganizer({
                   </button>
                 </div>
               </div>
+              {mergeError ? (
+                <p className="form-error" role="alert">
+                  {mergeError}
+                </p>
+              ) : null}
               <section className="moment-card unassigned">
                 <h4>Unassigned Media</h4>
                 <ul>
@@ -953,6 +1081,20 @@ export function EventOrganizer({
                           }
                           placeholder={`Moment ${index + 1}`}
                           value={moment.title}
+                        />
+                        <PlaceLabelEditor
+                          ariaLabel={`Place labels for Moment ${index + 1}`}
+                          key={`moment-place-labels-${moment.id}`}
+                          labels={moment.place_labels}
+                          onCommit={(labels) =>
+                            change((next) => {
+                              const target = next.moments.find(
+                                (candidate) => candidate.id === moment.id,
+                              );
+                              if (target) target.place_labels = labels;
+                            })
+                          }
+                          placeholder="Place labels, comma-separated"
                         />
                       </div>
                       <div className="row-actions">
@@ -1220,6 +1362,13 @@ export function EventOrganizer({
                 className="publication-actions"
               >
                 <h4 id="publication-actions-title">Publication</h4>
+                {currentDraft.published_attendance_recovery_required ? (
+                  <p className="form-error" role="alert">
+                    Person search is unavailable for this existing Publication
+                    because its Attendance cannot be reconstructed safely.
+                    Review and publish the Event again to restore it.
+                  </p>
+                ) : null}
                 <label>
                   <input
                     checked={notifyRecipients}
