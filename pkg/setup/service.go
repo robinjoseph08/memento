@@ -171,16 +171,32 @@ type Service struct {
 	location LocationResolver
 }
 
+// Option configures a Service dependency.
+type Option func(*Service)
+
+// WithClock configures the time source used for expiration checks and writes.
+func WithClock(now func() time.Time) Option {
+	return func(service *Service) {
+		if now != nil {
+			service.now = now
+		}
+	}
+}
+
 // LocationResolver resolves an address using operator-provided local data only.
 type LocationResolver interface {
 	Lookup(ip net.IP) string
 }
 
-func New(db *bun.DB, delivery *emaildelivery.Service, security config.SecurityConfig) *Service {
-	return &Service{
+func New(db *bun.DB, delivery *emaildelivery.Service, security config.SecurityConfig, options ...Option) *Service {
+	service := &Service{
 		db: db, delivery: delivery, security: security, secret: []byte(security.Secret),
 		now: time.Now, random: rand.Reader,
 	}
+	for _, option := range options {
+		option(service)
+	}
+	return service
 }
 
 // SetLocationResolver enables optional Session location from a local database.

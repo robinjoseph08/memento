@@ -98,6 +98,7 @@ type recipientFixture struct {
 func newRecipientFixture(t *testing.T) recipientFixture {
 	t.Helper()
 	ctx := context.Background()
+	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
 	db := testdb.Open(t)
 	require.NoError(t, migrations.Apply(ctx, db))
 	curatorID := uuid.New()
@@ -116,19 +117,18 @@ func newRecipientFixture(t *testing.T) recipientFixture {
 	sessionID := uuid.New()
 	credentialRaw := bytes.Repeat([]byte{0x11}, 32)
 	credentialHash := sha256.Sum256(credentialRaw)
-	_, err = db.NewRaw(`INSERT INTO sessions (id, credential_hash, person_id, recipient_access_generation_id, security_epoch, session_type, idle_expires_at) VALUES (?, ?, ?, ?, ?, 'trusted', now() + interval '1 hour')`, sessionID, credentialHash[:], curatorID, accessID, epoch).Exec(ctx)
+	_, err = db.NewRaw(`INSERT INTO sessions (id, credential_hash, person_id, recipient_access_generation_id, security_epoch, session_type, idle_expires_at) VALUES (?, ?, ?, ?, ?, 'trusted', ?)`, sessionID, credentialHash[:], curatorID, accessID, epoch, now.Add(time.Hour)).Exec(ctx)
 	require.NoError(t, err)
 
 	smtpConfig := config.SMTPConfig{Enabled: true, RetryBase: time.Second, RetryMax: time.Minute, RetryWindow: 24 * time.Hour}
 	sender := &acceptingSender{}
 	secret := "integration-security-secret-at-least-32-bytes"
 	delivery := emaildelivery.New(db, smtpConfig, sender, secret)
-	auth := setup.New(db, delivery, config.SecurityConfig{Secret: secret})
+	auth := setup.New(db, delivery, config.SecurityConfig{Secret: secret}, setup.WithClock(func() time.Time { return now }))
 	service := New(db, delivery, "https://memento.example", auth)
 	credential := hex.EncodeToString(credentialRaw)
 	session, err := auth.Session(ctx, credential)
 	require.NoError(t, err)
-	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
 	service.now = func() time.Time { return now }
 	return recipientFixture{db: db, service: service, delivery: delivery, sender: sender, actor: setup.CuratorSession{PersonID: curatorID, SessionID: sessionID}, auth: auth, credential: credential, csrf: session.CSRFToken, personID: personID, now: now}
 }
