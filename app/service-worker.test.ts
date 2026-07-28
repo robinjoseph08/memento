@@ -19,14 +19,6 @@ type WorkerHandler = (event: ExtendableEvent & FetchEvent) => void;
 async function loadWorker() {
   const listeners = new Map<string, WorkerHandler>();
   const cache = {
-    add: vi.fn((request: RequestInfo | URL) => {
-      void request;
-      return Promise.resolve();
-    }),
-    addAll: vi.fn((requests: Array<RequestInfo | URL>) => {
-      void requests;
-      return Promise.resolve();
-    }),
     match: vi.fn((request: RequestInfo | URL, options?: CacheQueryOptions) => {
       void request;
       void options;
@@ -79,6 +71,35 @@ function fetchEvent(request: Request) {
   };
 }
 
+function publicResponse(path: string, body = "public asset") {
+  let contentType = "application/octet-stream";
+  if (path === "/") contentType = "text/html";
+  else if (path === "/manifest.webmanifest")
+    contentType = "application/manifest+json";
+  else if (path.endsWith(".css")) contentType = "text/css";
+  else if (path.endsWith(".ico")) contentType = "image/x-icon";
+  else if (path.endsWith(".js")) contentType = "text/javascript";
+  else if (path.endsWith(".png")) contentType = "image/png";
+  else if (path.endsWith(".svg")) contentType = "image/svg+xml";
+  else if (path.endsWith(".woff")) contentType = "font/woff";
+  else if (path.endsWith(".woff2")) contentType = "font/woff2";
+  return new Response(body, { headers: { "Content-Type": contentType } });
+}
+
+function mockPublicInstall(
+  worker: Awaited<ReturnType<typeof loadWorker>>,
+  overrides: Record<string, Response> = {},
+) {
+  worker.fetchMock.mockImplementation((request) => {
+    const path = new URL(
+      typeof request === "string" || request instanceof URL
+        ? request.toString()
+        : request.url,
+    ).pathname;
+    return Promise.resolve(overrides[path] ?? publicResponse(path));
+  });
+}
+
 test.each([
   "https://memento.example/api/session",
   "https://memento.example/api/me/photos?limit=40",
@@ -100,8 +121,8 @@ test.each([
 
 test("service worker refreshes public build assets before using cached copies", async () => {
   const worker = await loadWorker();
-  const oldResponse = new Response("old shell");
-  const newResponse = new Response("new shell");
+  const oldResponse = publicResponse("/assets/app.js", "old shell");
+  const newResponse = publicResponse("/assets/app.js", "new shell");
   worker.cache.match.mockResolvedValue(oldResponse);
   worker.fetchMock.mockResolvedValue(newResponse);
   const probe = fetchEvent(
@@ -112,8 +133,68 @@ test("service worker refreshes public build assets before using cached copies", 
 
   await expect(probe.response()).resolves.toBe(newResponse);
   expect(worker.fetchMock).toHaveBeenCalledOnce();
-  expect(worker.cache.match).not.toHaveBeenCalled();
-  expect(worker.cache.put).toHaveBeenCalledOnce();
+  expect(worker.cache.match).toHaveBeenCalledWith("/assets/app.js", {
+    ignoreVary: true,
+  });
+  expect(worker.cache.put).toHaveBeenCalledWith(
+    "/assets/app.js",
+    expect.any(Response),
+  );
+});
+
+test.each([
+  "https://memento.example/icon.svg?recipient=alex",
+  "https://memento.example/assets/app.js?token=private",
+])("service worker rejects query-bearing public asset %s", async (url) => {
+  const worker = await loadWorker();
+  const probe = fetchEvent(new Request(url));
+
+  worker.listeners.get("fetch")!(probe.event);
+
+  expect(probe.response()).toBeUndefined();
+  expect(worker.fetchMock).not.toHaveBeenCalled();
+  expect(worker.caches.open).not.toHaveBeenCalled();
+});
+
+test("service worker does not cache an undiscovered build asset", async () => {
+  const worker = await loadWorker();
+  const response = publicResponse("/assets/private-export.js");
+  worker.fetchMock.mockResolvedValue(response);
+  const probe = fetchEvent(
+    new Request("https://memento.example/assets/private-export.js"),
+  );
+
+  worker.listeners.get("fetch")!(probe.event);
+
+  await expect(probe.response()).resolves.toBe(response);
+  expect(worker.cache.put).not.toHaveBeenCalled();
+});
+
+test.each([
+  {
+    name: "no-store response",
+    response: new Response("icon", {
+      headers: {
+        "Cache-Control": "public, No-Store",
+        "Content-Type": "image/svg+xml",
+      },
+    }),
+  },
+  {
+    name: "mismatched content type",
+    response: new Response("<html>fallback</html>", {
+      headers: { "Content-Type": "text/html" },
+    }),
+  },
+])("service worker does not cache a $name", async ({ response }) => {
+  const worker = await loadWorker();
+  worker.fetchMock.mockResolvedValue(response);
+  const probe = fetchEvent(new Request("https://memento.example/icon.svg"));
+
+  worker.listeners.get("fetch")!(probe.event);
+
+  await expect(probe.response()).resolves.toBe(response);
+  expect(worker.cache.put).not.toHaveBeenCalled();
 });
 
 test("standalone navigation falls back to the cached shell without storing its URL", async () => {
@@ -228,6 +309,7 @@ test("service worker reports an unavailable uncached public asset", async () => 
 
 test("install preloads only the public shell and selected Memento icons", async () => {
   const worker = await loadWorker();
+  mockPublicInstall(worker);
   let work: Promise<unknown> | undefined;
 
   worker.listeners.get("install")!({
@@ -239,39 +321,29 @@ test("install preloads only the public shell and selected Memento icons", async 
   });
   await work;
 
-  expect(worker.cache.addAll).toHaveBeenCalledOnce();
-  const requests = worker.cache.addAll.mock.calls[0][0] as Request[];
+  const requests = worker.fetchMock.mock.calls.map(
+    ([request]) => request as Request,
+  );
   const paths = requests.map((request) => new URL(request.url).pathname);
   expect(paths).toContain("/");
   expect(paths).toContain("/icon-512.png");
   expect(paths.every((path) => !path.startsWith("/api"))).toBe(true);
   expect(requests.every((request) => request.cache === "reload")).toBe(true);
+  expect(worker.cache.put).toHaveBeenCalledTimes(paths.length);
   expect(worker.self.skipWaiting).not.toHaveBeenCalled();
 });
 
 test("install discovers hashed scripts, styles, and self-hosted fonts", async () => {
   const worker = await loadWorker();
-  worker.cache.match.mockImplementation((path: RequestInfo | URL) => {
-    if (path === "/") {
-      return Promise.resolve(
-        new Response(
-          '<link href="/assets/app-123.css"><script src="/assets/app-456.js">',
-          { headers: { "Content-Type": "text/html" } },
-        ),
-      );
-    }
-    if (path === "/assets/app-123.css") {
-      return Promise.resolve(
-        new Response('@font-face{src:url("/assets/dm-sans-789.woff2")}', {
-          headers: { "Content-Type": "text/css" },
-        }),
-      );
-    }
-    return Promise.resolve(
-      new Response("asset", {
-        headers: { "Content-Type": "application/octet-stream" },
-      }),
-    );
+  mockPublicInstall(worker, {
+    "/": publicResponse(
+      "/",
+      '<link href="/assets/app-123.css"><script src="/assets/app-456.js">',
+    ),
+    "/assets/app-123.css": publicResponse(
+      "/assets/app-123.css",
+      '@font-face{src:url("/assets/dm-sans-789.woff2")}',
+    ),
   });
   let work: Promise<unknown> | undefined;
 
@@ -284,22 +356,107 @@ test("install discovers hashed scripts, styles, and self-hosted fonts", async ()
   });
   await work;
 
-  const added = worker.cache.add.mock.calls.map(
+  const fetched = worker.fetchMock.mock.calls.map(
     ([request]) => request as Request,
   );
-  expect(added.map((request) => new URL(request.url).pathname)).toEqual([
-    "/assets/app-123.css",
-    "/assets/app-456.js",
-    "/assets/dm-sans-789.woff2",
-  ]);
-  expect(added.every((request) => request.cache === "reload")).toBe(true);
+  const fetchedPaths = fetched.map((request) => new URL(request.url).pathname);
+  expect(fetchedPaths).toEqual(
+    expect.arrayContaining([
+      "/assets/app-123.css",
+      "/assets/app-456.js",
+      "/assets/dm-sans-789.woff2",
+    ]),
+  );
+  expect(fetched.every((request) => request.cache === "reload")).toBe(true);
+  const cachedPaths = worker.cache.put.mock.calls.map(([path]) => path);
+  expect(cachedPaths).toEqual(
+    expect.arrayContaining([
+      "/assets/app-123.css",
+      "/assets/app-456.js",
+      "/assets/dm-sans-789.woff2",
+    ]),
+  );
+});
+
+test.each([
+  {
+    name: "SPA HTML for JavaScript",
+    response: new Response("<html>fallback</html>", {
+      headers: { "Content-Type": "text/html" },
+    }),
+  },
+  {
+    name: "an unsuccessful stylesheet response",
+    response: new Response("missing", {
+      status: 404,
+      headers: { "Content-Type": "text/css" },
+    }),
+  },
+  {
+    name: "a no-store build response",
+    response: new Response("private build", {
+      headers: {
+        "Cache-Control": "private, no-store",
+        "Content-Type": "text/javascript",
+      },
+    }),
+  },
+])(
+  "install rejects $name without committing a false-ready cache",
+  async ({ response }) => {
+    const worker = await loadWorker();
+    mockPublicInstall(worker, {
+      "/": publicResponse(
+        "/",
+        '<script src="/assets/app-456.js"></script><link href="/assets/app-123.css">',
+      ),
+      "/assets/app-456.js": response,
+      "/assets/app-123.css": response,
+    });
+    let work: Promise<unknown> | undefined;
+
+    worker.listeners.get("install")!({
+      request: new Request("https://memento.example/"),
+      respondWith: vi.fn(),
+      waitUntil(promise) {
+        work = promise;
+      },
+    });
+
+    await expect(work).rejects.toThrow(
+      "refusing invalid public asset response",
+    );
+    expect(worker.cache.put).not.toHaveBeenCalled();
+  },
+);
+
+test("install rejects query-bearing discovered assets", async () => {
+  const worker = await loadWorker();
+  mockPublicInstall(worker, {
+    "/": publicResponse(
+      "/",
+      '<script src="/assets/app-456.js?token=private"></script>',
+    ),
+  });
+  let work: Promise<unknown> | undefined;
+
+  worker.listeners.get("install")!({
+    request: new Request("https://memento.example/"),
+    respondWith: vi.fn(),
+    waitUntil(promise) {
+      work = promise;
+    },
+  });
+
+  await expect(work).rejects.toThrow("refusing noncanonical public asset");
+  expect(worker.cache.put).not.toHaveBeenCalled();
 });
 
 test("activation replaces only Memento shell caches and claims open clients", async () => {
   const worker = await loadWorker();
   worker.caches.keys.mockResolvedValue([
-    "memento-shell-v5",
     "memento-shell-v6",
+    "memento-shell-v7",
     "another-application-cache",
   ]);
   let work: Promise<unknown> | undefined;
@@ -314,7 +471,7 @@ test("activation replaces only Memento shell caches and claims open clients", as
   await work;
 
   expect(worker.caches.delete).toHaveBeenCalledOnce();
-  expect(worker.caches.delete).toHaveBeenCalledWith("memento-shell-v5");
+  expect(worker.caches.delete).toHaveBeenCalledWith("memento-shell-v6");
   expect(worker.self.clients.claim).toHaveBeenCalledOnce();
 });
 

@@ -326,6 +326,48 @@ test("@desktop manifest, browser installability, scoped restart, and cache priva
       await Promise.all(paths.map((path) => fetch(path)));
     }, protectedPaths);
 
+    const rejectedCachePaths = {
+      mismatched: "/assets/missing-production.js",
+      query: "/icon.svg?recipient=alex",
+      undiscovered: "/assets/private-export.js",
+    };
+    await page.route(/\/icon\.svg\?recipient=alex$/, (route) =>
+      route.fulfill({ body: "<svg></svg>", contentType: "image/svg+xml" }),
+    );
+    await page.route(`**${rejectedCachePaths.undiscovered}`, (route) =>
+      route.fulfill({
+        body: "export default 'private';",
+        contentType: "text/javascript",
+      }),
+    );
+    const admission = await page.evaluate(async (paths) => {
+      const cacheName = (await caches.keys()).find((name) =>
+        name.startsWith("memento-shell-"),
+      );
+      if (!cacheName) throw new Error("Memento shell cache is missing");
+      const cache = await caches.open(cacheName);
+      await cache.put(
+        paths.mismatched,
+        new Response("known JavaScript", {
+          headers: { "Content-Type": "text/javascript" },
+        }),
+      );
+      const [mismatched] = await Promise.all([
+        fetch(paths.mismatched, { cache: "reload" }),
+        fetch(paths.query, { cache: "reload" }),
+        fetch(paths.undiscovered, { cache: "reload" }),
+      ]);
+      const result = {
+        mismatchedCache: await (await cache.match(paths.mismatched))?.text(),
+        mismatchedType: mismatched.headers.get("Content-Type"),
+      };
+      await cache.delete(paths.mismatched);
+      return result;
+    }, rejectedCachePaths);
+
+    expect(admission.mismatchedType).toMatch(/^text\/html(?:;|$)/);
+    expect(admission.mismatchedCache).toBe("known JavaScript");
+
     const cacheEntries = await cachedURLs(page);
     const cachePaths = cacheEntries.map((url) => new URL(url).pathname);
     expect(cachePaths).toContain("/");
@@ -352,6 +394,11 @@ test("@desktop manifest, browser installability, scoped restart, and cache priva
       }),
     ).toBe(true);
     expect(cachePaths).toEqual(expect.not.arrayContaining(protectedPaths));
+    expect(cachePaths).not.toContain(rejectedCachePaths.mismatched);
+    expect(cachePaths).not.toContain(rejectedCachePaths.undiscovered);
+    expect(cacheEntries).not.toContain(
+      new URL(rejectedCachePaths.query, page.url()).href,
+    );
 
     await page.evaluate(() =>
       navigator.serviceWorker.register(
