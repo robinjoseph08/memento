@@ -117,7 +117,7 @@ func snapshotWithdrawalRows(t *testing.T, fixture publicationFixture, query stri
 	return serialized
 }
 
-func waitForAdvisoryLockWaiter(t *testing.T, fixture publicationFixture, mode string) {
+func waitForAdvisoryLockWaiter(t *testing.T, fixture publicationFixture, lockKey, mode string) {
 	t.Helper()
 	deadline := time.NewTimer(5 * time.Second)
 	poll := time.NewTicker(10 * time.Millisecond)
@@ -125,17 +125,23 @@ func waitForAdvisoryLockWaiter(t *testing.T, fixture publicationFixture, mode st
 	defer poll.Stop()
 	lastWaiting := 0
 	for {
-		require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM pg_locks
-			WHERE locktype = 'advisory'
-			  AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
-			  AND mode = ? AND NOT granted`, mode).Scan(context.Background(), &lastWaiting))
+		require.NoError(t, fixture.db.NewRaw(`WITH expected_lock AS (
+			SELECT hashtextextended(?, 0) AS key
+		)
+		SELECT count(*) FROM pg_locks, expected_lock
+		WHERE locktype = 'advisory'
+		  AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+		  AND classid::bigint = ((expected_lock.key >> 32) & 4294967295::bigint)
+		  AND objid::bigint = (expected_lock.key & 4294967295::bigint)
+		  AND objsubid = 1
+		  AND mode = ? AND NOT granted`, lockKey, mode).Scan(context.Background(), &lastWaiting))
 		if lastWaiting > 0 {
 			return
 		}
 		select {
 		case <-poll.C:
 		case <-deadline.C:
-			t.Fatalf("transaction did not wait for the %s advisory lock; last waiting lock count: %d", mode, lastWaiting)
+			t.Fatalf("transaction did not wait for the %s advisory lock with key %q; last waiting lock count: %d", mode, lockKey, lastWaiting)
 		}
 	}
 }
@@ -602,7 +608,7 @@ func TestConcurrentPublicationRemovalIsRevalidatedAfterWithdrawalLocksTheEvent(t
 				})
 				withdrawn <- withdrawErr
 			}()
-			waitForAdvisoryLockWaiter(t, fixture, "ExclusiveLock")
+			waitForAdvisoryLockWaiter(t, fixture, currentPublishedPlacementsLockKey, "ExclusiveLock")
 			releasePublicationOnce.Do(func() { close(releasePublication) })
 
 			select {
@@ -698,7 +704,7 @@ func TestConcurrentMediaPlacementGrowthWaitsForWithdrawalSnapshot(t *testing.T) 
 		published <- publishErr
 	}()
 
-	waitForAdvisoryLockWaiter(t, fixture, "ShareLock")
+	waitForAdvisoryLockWaiter(t, fixture, currentPublishedPlacementsLockKey, "ShareLock")
 
 	releaseOnce.Do(func() { close(releaseWithdrawal) })
 	var result withdrawalResult
