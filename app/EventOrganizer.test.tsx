@@ -530,11 +530,11 @@ test("shows the resulting Event with highlighted Staged net changes", async () =
       },
       {
         kind: "metadata",
-        count: 2,
+        count: 3,
         media_item_ids: [items.a.id],
         moment_ids: [momentOneID],
         event_metadata_fields: ["title", "description", "grouping_timezone"],
-        detail: "Event or Moment metadata edited",
+        detail: "Event, Moment, or Media metadata edited",
       },
       {
         kind: "access",
@@ -584,12 +584,27 @@ test("shows the resulting Event with highlighted Staged net changes", async () =
   expect(
     within(eventMetadata).getAllByText("Staged: Metadata edits"),
   ).toHaveLength(3);
-  expect(review).toHaveTextContent("Additions1");
-  expect(review).toHaveTextContent("Removals2");
-  expect(review).toHaveTextContent("Moves and ordering1");
-  expect(review).toHaveTextContent("Moment structure1");
-  expect(review).toHaveTextContent("Metadata edits2");
-  expect(review).toHaveTextContent("Access changes2");
+  const netChangeSummary = within(review).getByRole("list", {
+    name: "Net change summary",
+  });
+  expect(
+    within(netChangeSummary).getByText("Additions").closest("li"),
+  ).toHaveTextContent("1 Media item");
+  expect(
+    within(netChangeSummary).getByText("Removals").closest("li"),
+  ).toHaveTextContent("2 Media items");
+  expect(
+    within(netChangeSummary).getByText("Moves and ordering").closest("li"),
+  ).toHaveTextContent("1 Media item");
+  expect(
+    within(netChangeSummary).getByText("Moment structure").closest("li"),
+  ).toHaveTextContent("1 Moment");
+  expect(
+    within(netChangeSummary).getByText("Metadata edits").closest("li"),
+  ).toHaveTextContent("1 Event, 1 Moment, and 1 Media item");
+  expect(
+    within(netChangeSummary).getByText("Access changes").closest("li"),
+  ).toHaveTextContent("2 Recipients");
   const recipientAccess = within(review).getByRole("list", {
     name: "Recipient access changes",
   });

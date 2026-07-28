@@ -155,6 +155,43 @@ const stagedLabels: Record<StagedChange["kind"], string> = {
   access: "Access changes",
 };
 
+function countedNoun(count: number, singular: string, plural = `${singular}s`) {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function joinCountParts(parts: string[]) {
+  if (parts.length < 2) return parts[0];
+  if (parts.length === 2) return `${parts[0]} and ${parts[1]}`;
+  return `${parts.slice(0, -1).join(", ")}, and ${parts.at(-1)}`;
+}
+
+function stagedCountLabel(change: StagedChange) {
+  switch (change.kind) {
+    case "addition":
+    case "removal":
+    case "move":
+      return countedNoun(change.count, "Media item");
+    case "moment_structure":
+      return countedNoun(change.count, "Moment");
+    case "access":
+      return countedNoun(change.count, "Recipient");
+    case "metadata": {
+      const parts = [
+        change.event_metadata_fields?.length ? "1 Event" : undefined,
+        change.moment_ids.length
+          ? countedNoun(change.moment_ids.length, "Moment")
+          : undefined,
+        change.media_item_ids.length
+          ? countedNoun(change.media_item_ids.length, "Media item")
+          : undefined,
+      ].filter((part): part is string => part !== undefined);
+      return (
+        joinCountParts(parts) ?? countedNoun(change.count, "affected item")
+      );
+    }
+  }
+}
+
 function StagedUpdateReview({
   event,
   onRestoreMedia,
@@ -293,7 +330,7 @@ function StagedUpdateReview({
         {event.staged_update.changes.map((change) => (
           <li key={change.kind}>
             <strong>{stagedLabels[change.kind]}</strong>
-            <span>{change.count}</span>
+            <span>{stagedCountLabel(change)}</span>
             <small>{change.detail}</small>
             {change.kind === "access" && change.recipient_access?.length ? (
               <ul
