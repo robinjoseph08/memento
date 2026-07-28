@@ -267,10 +267,21 @@ function MediaViewer({
     },
   });
   const editComment = useMutation({
-    mutationFn: ({ id, body }: { id: string; body: string }) =>
+    mutationFn: ({
+      id,
+      body,
+      version,
+    }: {
+      id: string;
+      body: string;
+      version: number;
+    }) =>
       apiJSON<MediaComment>(`/api/comments/${id}`, {
         method: "PATCH",
-        headers: { "X-Memento-CSRF": session.csrf_token },
+        headers: {
+          "If-Match": String(version),
+          "X-Memento-CSRF": session.csrf_token,
+        },
         body: JSON.stringify({ body }),
       }),
     onSuccess: () =>
@@ -279,10 +290,13 @@ function MediaViewer({
       }),
   });
   const deleteComment = useMutation({
-    mutationFn: (id: string) =>
+    mutationFn: ({ id, version }: { id: string; version: number }) =>
       apiNoContent(`/api/comments/${id}`, {
         method: "DELETE",
-        headers: { "X-Memento-CSRF": session.csrf_token },
+        headers: {
+          "If-Match": String(version),
+          "X-Memento-CSRF": session.csrf_token,
+        },
       }),
     onSuccess: () =>
       queryClient.invalidateQueries({
@@ -290,10 +304,21 @@ function MediaViewer({
       }),
   });
   const moderateComment = useMutation({
-    mutationFn: ({ id, reason }: { id: string; reason: string }) =>
+    mutationFn: ({
+      id,
+      reason,
+      version,
+    }: {
+      id: string;
+      reason: string;
+      version: number;
+    }) =>
       apiNoContent(`/api/comments/${id}/moderate`, {
         method: "POST",
-        headers: { "X-Memento-CSRF": session.csrf_token },
+        headers: {
+          "If-Match": String(version),
+          "X-Memento-CSRF": session.csrf_token,
+        },
         body: JSON.stringify({ reason }),
       }),
     onSuccess: () =>
@@ -490,7 +515,11 @@ function MediaViewer({
                           comment.body,
                         );
                         if (body?.trim())
-                          editComment.mutate({ id: comment.id, body });
+                          editComment.mutate({
+                            id: comment.id,
+                            body,
+                            version: comment.version,
+                          });
                       }}
                       type="button"
                     >
@@ -500,7 +529,12 @@ function MediaViewer({
                   {comment.can_delete ? (
                     <button
                       disabled={deleteComment.isPending}
-                      onClick={() => deleteComment.mutate(comment.id)}
+                      onClick={() =>
+                        deleteComment.mutate({
+                          id: comment.id,
+                          version: comment.version,
+                        })
+                      }
                       type="button"
                     >
                       Delete
@@ -512,7 +546,11 @@ function MediaViewer({
                       onClick={() => {
                         const reason = window.prompt("Moderation reason");
                         if (reason?.trim())
-                          moderateComment.mutate({ id: comment.id, reason });
+                          moderateComment.mutate({
+                            id: comment.id,
+                            reason,
+                            version: comment.version,
+                          });
                       }}
                       type="button"
                     >

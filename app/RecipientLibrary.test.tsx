@@ -921,6 +921,7 @@ test("favorites, comments, and mute controls stay in the private Media viewer", 
       author_name: "Alex",
       body: "A private memory",
       state: "active",
+      version: 1,
       created_at: "2026-07-28T12:00:00Z",
       edited_at: null,
       moderated_at: null,
@@ -968,6 +969,21 @@ test("favorites, comments, and mute controls stay in the private Media viewer", 
         muted = request.muted;
         return Promise.resolve(new Response(null, { status: 204 }));
       }
+      if (path === "/api/comments/comment-1") {
+        if (init?.method === "PATCH") {
+          const request = JSON.parse(stringBody(init.body)) as { body: string };
+          comments[0] = {
+            ...comments[0],
+            body: request.body,
+            version: comments[0].version + 1,
+          };
+          return json(comments[0]);
+        }
+        if (init?.method === "DELETE") {
+          comments = comments.filter((comment) => comment.id !== "comment-1");
+          return Promise.resolve(new Response(null, { status: 204 }));
+        }
+      }
       if (path === "/api/comments/media/media-1") {
         if (init?.method === "POST") {
           const request = JSON.parse(stringBody(init.body)) as { body: string };
@@ -999,6 +1015,11 @@ test("favorites, comments, and mute controls stay in the private Media viewer", 
   expect(
     screen.getByText("Favorites aren't shared with other recipients."),
   ).toBeVisible();
+
+  vi.spyOn(window, "prompt").mockReturnValueOnce("An edited memory");
+  fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+  expect(await screen.findByText("An edited memory")).toBeVisible();
+
   fireEvent.click(screen.getByRole("button", { name: "Add Favorite" }));
   expect(
     await screen.findByRole("button", { name: "Remove Favorite" }),
@@ -1022,6 +1043,34 @@ test("favorites, comments, and mute controls stay in the private Media viewer", 
       }),
     ).toBeChecked(),
   );
+
+  fireEvent.click(screen.getAllByRole("button", { name: "Delete" })[0]);
+  await waitFor(() =>
+    expect(screen.queryByText("An edited memory")).not.toBeInTheDocument(),
+  );
+
+  const editRequest = requests.find(
+    ({ path, init }) =>
+      path === "/api/comments/comment-1" && init?.method === "PATCH",
+  );
+  expect(editRequest?.init).toMatchObject({
+    method: "PATCH",
+    headers: {
+      "If-Match": "1",
+      "X-Memento-CSRF": session.csrf_token,
+    },
+  });
+  const deleteRequest = requests.find(
+    ({ path, init }) =>
+      path === "/api/comments/comment-1" && init?.method === "DELETE",
+  );
+  expect(deleteRequest?.init).toMatchObject({
+    method: "DELETE",
+    headers: {
+      "If-Match": "2",
+      "X-Memento-CSRF": session.csrf_token,
+    },
+  });
   const favoriteRequest = requests.find(
     ({ path, init }) =>
       path === "/api/favorites/media-1" && init?.method === "PUT",

@@ -22,10 +22,12 @@ import (
 const CommentJobKind = "comment_activity_created"
 
 var (
-	ErrNotFound    = errors.New("comment not found")
-	ErrInvalidBody = errors.New("comment body is invalid")
-	ErrInvalidMute = errors.New("comment subscription not found")
-	ErrNotCurator  = errors.New("curator authority is required")
+	ErrNotFound             = errors.New("comment not found")
+	ErrInvalidBody          = errors.New("comment body is invalid")
+	ErrInvalidMute          = errors.New("comment subscription not found")
+	ErrNotCurator           = errors.New("curator authority is required")
+	ErrVersionConflict      = errors.New("comment version is stale")
+	ErrHandoffNotConfigured = errors.New("comment activity handoff is not configured")
 )
 
 type Comment struct {
@@ -35,6 +37,7 @@ type Comment struct {
 	AuthorName     string     `json:"author_name"`
 	Body           string     `json:"body"`
 	State          string     `json:"state"`
+	Version        int64      `json:"version"`
 	CreatedAt      time.Time  `json:"created_at"`
 	EditedAt       *time.Time `json:"edited_at" tstype:"string | null,required"`
 	ModeratedAt    *time.Time `json:"moderated_at" tstype:"string | null,required"`
@@ -107,7 +110,7 @@ func (s *Service) List(ctx context.Context, actor setup.SessionActor, mediaID uu
 			return err
 		}
 		return tx.NewRaw(`SELECT comment.id, comment.media_item_id, comment.author_person_id,
-			author.display_name AS author_name, comment.body, comment.state, comment.created_at,
+			author.display_name AS author_name, comment.body, comment.state, comment.version, comment.created_at,
 			comment.edited_at, comment.moderated_at, moderator.display_name AS moderator_name
 			FROM comments AS comment
 			JOIN people AS author ON author.id = comment.author_person_id
@@ -197,7 +200,7 @@ func (s *Service) Create(ctx context.Context, actor setup.SessionActor, mediaID 
 	return prepared[0], nil
 }
 
-func (s *Service) Edit(ctx context.Context, actor setup.SessionActor, commentID uuid.UUID, request BodyRequest) (Comment, error) {
+func (s *Service) Edit(ctx context.Context, actor setup.SessionActor, commentID uuid.UUID, version int64, request BodyRequest) (Comment, error) {
 	body, err := normalizeBody(request.Body, 2000)
 	if err != nil {
 		return Comment{}, err
@@ -212,14 +215,14 @@ func (s *Service) Edit(ctx context.Context, actor setup.SessionActor, commentID 
 		if err := mediaaccess.Require(ctx, tx, actor, mediaID); err != nil {
 			return err
 		}
-		updated, err := tx.NewRaw(`UPDATE comments SET body = ?, edited_at = ?, updated_at = ?
-			WHERE id = ? AND author_person_id = ? AND state = 'active'`, body, now, now, commentID, actor.PersonID).Exec(ctx)
+		updated, err := tx.NewRaw(`UPDATE comments SET body = ?, edited_at = ?, version = version + 1, updated_at = ?
+			WHERE id = ? AND author_person_id = ? AND state = 'active' AND version = ?`, body, now, now, commentID, actor.PersonID, version).Exec(ctx)
 		if err != nil {
 			return err
 		}
 		count, _ := updated.RowsAffected()
 		if count != 1 {
-			return ErrNotFound
+			return mutationConflict(ctx, tx, commentID, actor.PersonID)
 		}
 		return loadComment(ctx, tx, commentID, &result)
 	})
@@ -231,7 +234,7 @@ func (s *Service) Edit(ctx context.Context, actor setup.SessionActor, commentID 
 	return prepared[0], nil
 }
 
-func (s *Service) Delete(ctx context.Context, actor setup.SessionActor, commentID uuid.UUID) error {
+func (s *Service) Delete(ctx context.Context, actor setup.SessionActor, commentID uuid.UUID, version int64) error {
 	now := s.now().UTC()
 	return mapAccessError(s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 		var mediaID uuid.UUID
@@ -241,14 +244,14 @@ func (s *Service) Delete(ctx context.Context, actor setup.SessionActor, commentI
 		if err := mediaaccess.Require(ctx, tx, actor, mediaID); err != nil {
 			return err
 		}
-		result, err := tx.NewRaw(`UPDATE comments SET state = 'deleted', deleted_at = ?, updated_at = ?
-			WHERE id = ? AND author_person_id = ? AND state = 'active'`, now, now, commentID, actor.PersonID).Exec(ctx)
+		result, err := tx.NewRaw(`UPDATE comments SET state = 'deleted', deleted_at = ?, version = version + 1, updated_at = ?
+			WHERE id = ? AND author_person_id = ? AND state = 'active' AND version = ?`, now, now, commentID, actor.PersonID, version).Exec(ctx)
 		if err != nil {
 			return err
 		}
 		count, _ := result.RowsAffected()
 		if count != 1 {
-			return ErrNotFound
+			return mutationConflict(ctx, tx, commentID, actor.PersonID)
 		}
 		return nil
 	}))
@@ -273,7 +276,7 @@ func (s *Service) SetMuted(ctx context.Context, actor setup.SessionActor, mediaI
 	}))
 }
 
-func (s *Service) Moderate(ctx context.Context, actor setup.SessionActor, commentID uuid.UUID, request ModerateRequest) error {
+func (s *Service) Moderate(ctx context.Context, actor setup.SessionActor, commentID uuid.UUID, version int64, request ModerateRequest) error {
 	reason, err := normalizeBody(request.Reason, 500)
 	if err != nil {
 		return err
@@ -284,8 +287,12 @@ func (s *Service) Moderate(ctx context.Context, actor setup.SessionActor, commen
 	now := s.now().UTC()
 	return s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 		var priorState, priorBody string
-		if err := tx.NewRaw(`SELECT state, body FROM comments WHERE id = ? AND state <> 'moderated' FOR UPDATE`, commentID).Scan(ctx, &priorState, &priorBody); err != nil {
+		var currentVersion int64
+		if err := tx.NewRaw(`SELECT state, body, version FROM comments WHERE id = ? AND state <> 'moderated' FOR UPDATE`, commentID).Scan(ctx, &priorState, &priorBody, &currentVersion); err != nil {
 			return notFound(err)
+		}
+		if version != currentVersion {
+			return ErrVersionConflict
 		}
 		var curator bool
 		if err := tx.NewRaw(`SELECT EXISTS (SELECT 1 FROM person_roles WHERE person_id = ? AND role = 'curator')`, actor.PersonID).Scan(ctx, &curator); err != nil {
@@ -300,7 +307,7 @@ func (s *Service) Moderate(ctx context.Context, actor setup.SessionActor, commen
 			return err
 		}
 		_, err := tx.NewRaw(`UPDATE comments SET state = 'moderated', deleted_at = NULL,
-			moderated_at = ?, moderated_by_person_id = ?, updated_at = ? WHERE id = ?`, now, actor.PersonID, now, commentID).Exec(ctx)
+			moderated_at = ?, moderated_by_person_id = ?, version = version + 1, updated_at = ? WHERE id = ? AND version = ?`, now, actor.PersonID, now, commentID, version).Exec(ctx)
 		return err
 	})
 }
@@ -378,10 +385,11 @@ func (s *Service) HandleCommentJob(ctx context.Context, job worker.Job) error {
 			_, err = tx.NewRaw(`UPDATE comment_activity_items SET suppressed_at = ? WHERE id = ?`, now, payload.ActivityID).Exec(ctx)
 			return err
 		}
-		if s.handoff != nil {
-			if err := s.handoff(ctx, accessID, commentID); err != nil {
-				return fmt.Errorf("handoff Comment activity: %w", err)
-			}
+		if s.handoff == nil {
+			return ErrHandoffNotConfigured
+		}
+		if err := s.handoff(ctx, accessID, commentID); err != nil {
+			return fmt.Errorf("handoff Comment activity: %w", err)
 		}
 		_, err = tx.NewRaw(`UPDATE comment_activity_items SET dispatched_at = ? WHERE id = ?`, now, payload.ActivityID).Exec(ctx)
 		return err
@@ -390,7 +398,7 @@ func (s *Service) HandleCommentJob(ctx context.Context, job worker.Job) error {
 
 func loadComment(ctx context.Context, db bun.IDB, id uuid.UUID, result *Comment) error {
 	return db.NewRaw(`SELECT comment.id, comment.media_item_id, comment.author_person_id,
-		author.display_name AS author_name, comment.body, comment.state, comment.created_at,
+		author.display_name AS author_name, comment.body, comment.state, comment.version, comment.created_at,
 		comment.edited_at, comment.moderated_at, moderator.display_name AS moderator_name
 		FROM comments AS comment JOIN people AS author ON author.id = comment.author_person_id
 		LEFT JOIN people AS moderator ON moderator.id = comment.moderated_by_person_id
@@ -408,6 +416,19 @@ func prepareComments(comments []Comment, actor setup.SessionActor) {
 			comment.Body = ""
 		}
 	}
+}
+
+func mutationConflict(ctx context.Context, db bun.IDB, commentID, authorID uuid.UUID) error {
+	var mutable bool
+	if err := db.NewRaw(`SELECT EXISTS (
+		SELECT 1 FROM comments WHERE id = ? AND author_person_id = ? AND state = 'active'
+	)`, commentID, authorID).Scan(ctx, &mutable); err != nil {
+		return err
+	}
+	if mutable {
+		return ErrVersionConflict
+	}
+	return ErrNotFound
 }
 
 func notFound(err error) error {

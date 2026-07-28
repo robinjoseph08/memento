@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/robinjoseph08/golib/logger"
+	"github.com/robinjoseph08/memento/pkg/activity"
 	"github.com/robinjoseph08/memento/pkg/archives"
 	"github.com/robinjoseph08/memento/pkg/audiences"
 	"github.com/robinjoseph08/memento/pkg/comments"
@@ -102,7 +103,9 @@ func run() error {
 	sourceService := sources.New(db, immichClient, cfg.Sources.ReconciliationInterval)
 	eventService := events.New(db)
 	archiveService := archives.New(db, immichClient)
+	interactionActivity := activity.New(db)
 	commentService := comments.New(db)
+	commentService.SetHandoff(interactionActivity.RecordComment)
 	handlers := jobHandlers(sourceService, eventService, archiveService, commentService, emailService, cfg.SMTP.Enabled)
 
 	owner, err := leaseOwner()
@@ -145,7 +148,7 @@ func run() error {
 	archiveHandler := archives.NewHandler(archiveService, setupService)
 	searchHandler := search.NewHandler(search.New(db), setupService)
 	commentHandler := comments.NewHandler(commentService, setupService)
-	favoriteHandler := favorites.NewHandler(favorites.New(db), setupService)
+	favoriteHandler := favorites.NewHandler(favorites.New(db, interactionActivity), setupService)
 	e, err := server.New(healthService, emaildelivery.NewHandler(emailService), setupHandler, peopleHandler, familyHandler, visibilityHandler, recipientHandler, sourceHandler, eventHandler, repairHandler, suggestionHandler, audienceHandler, sessionHandler)
 	if err != nil {
 		_ = db.Close()

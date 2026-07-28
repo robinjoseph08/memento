@@ -66,6 +66,21 @@ func TestCommentValidationAndAuthorizationErrorsAreSafe(t *testing.T) {
 	assert.NotContains(t, response.Body.String(), "CSRF token is invalid")
 }
 
+func TestCommentMutationContractRequiresCurrentVersion(t *testing.T) {
+	e := echo.New()
+	request := httptest.NewRequestWithContext(context.Background(), http.MethodPatch, "/api/comments/id", nil)
+	request.Header.Set("If-Match", "7")
+	version, err := commentVersion(e.NewContext(request, httptest.NewRecorder()))
+	require.NoError(t, err)
+	assert.Equal(t, int64(7), version)
+
+	request.Header.Del("If-Match")
+	_, err = commentVersion(e.NewContext(request, httptest.NewRecorder()))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "current Comment version")
+	assert.Contains(t, interactionError(ErrVersionConflict).Error(), "changed in another browser")
+}
+
 func TestCommentJobRejectsInvalidPayloadWithoutDatabaseAccess(t *testing.T) {
 	service := &Service{}
 	err := service.HandleCommentJob(context.Background(), worker.Job{Payload: []byte(`{"activity_id":0}`)})

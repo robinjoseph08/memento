@@ -15,8 +15,9 @@ import (
 )
 
 var (
-	ErrNotFound   = errors.New("favorite not found")
-	ErrNotCurator = errors.New("curator authority is required")
+	ErrNotFound              = errors.New("favorite not found")
+	ErrNotCurator            = errors.New("curator authority is required")
+	ErrActivityNotConfigured = errors.New("favorite Curator activity is not configured")
 )
 
 type State struct {
@@ -29,12 +30,19 @@ type CuratorListResponse struct {
 	MediaItemIDs      []string `json:"media_item_ids"`
 }
 
-type Service struct {
-	db  *bun.DB
-	now func() time.Time
+type CuratorActivity interface {
+	RecordFavorite(ctx context.Context, tx bun.Tx, recipientID, mediaID uuid.UUID, action string, createdAt time.Time) error
 }
 
-func New(db *bun.DB) *Service { return &Service{db: db, now: time.Now} }
+type Service struct {
+	db       *bun.DB
+	now      func() time.Time
+	activity CuratorActivity
+}
+
+func New(db *bun.DB, activity CuratorActivity) *Service {
+	return &Service{db: db, now: time.Now, activity: activity}
+}
 
 func (s *Service) Get(ctx context.Context, actor setup.SessionActor, mediaID uuid.UUID) (State, error) {
 	if err := mediaaccess.Require(ctx, s.db, actor, mediaID); err != nil {
@@ -78,10 +86,10 @@ func (s *Service) Set(ctx context.Context, actor setup.SessionActor, mediaID uui
 		if favorite {
 			action = "added"
 		}
-		_, err = tx.NewRaw(`INSERT INTO favorite_curator_activity_items
-			(recipient_person_id, media_item_id, action, created_at) VALUES (?, ?, ?, ?)`,
-			actor.PersonID, mediaID, action, now).Exec(ctx)
-		return err
+		if s.activity == nil {
+			return ErrActivityNotConfigured
+		}
+		return s.activity.RecordFavorite(ctx, tx, actor.PersonID, mediaID, action, now)
 	})
 	if err != nil {
 		return State{}, mapAccessError(err)

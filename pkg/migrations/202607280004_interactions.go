@@ -18,6 +18,7 @@ func init() {
 						author_access_generation_id uuid NOT NULL REFERENCES recipient_access_generations(id) ON DELETE RESTRICT,
 						body text NOT NULL CHECK (char_length(body) BETWEEN 1 AND 2000),
 						state text NOT NULL DEFAULT 'active' CHECK (state IN ('active', 'deleted', 'moderated')),
+						version bigint NOT NULL DEFAULT 1 CHECK (version > 0),
 						created_at timestamptz NOT NULL DEFAULT now(),
 						updated_at timestamptz NOT NULL DEFAULT now(),
 						edited_at timestamptz,
@@ -63,16 +64,26 @@ func init() {
 					)`,
 					`CREATE INDEX comment_activity_recipient_idx ON comment_activity_items (recipient_access_generation_id, created_at DESC, id DESC)`,
 					`CREATE INDEX favorites_media_idx ON favorites (media_item_id, recipient_person_id) WHERE is_current`,
-					`CREATE TABLE favorite_curator_activity_items (
+					`CREATE TABLE interaction_activity_items (
 						id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-						recipient_person_id uuid NOT NULL REFERENCES people(id) ON DELETE RESTRICT,
+						kind text NOT NULL CHECK (kind IN ('comment', 'favorite')),
+						recipient_access_generation_id uuid REFERENCES recipient_access_generations(id) ON DELETE RESTRICT,
+						actor_person_id uuid NOT NULL REFERENCES people(id) ON DELETE RESTRICT,
 						media_item_id uuid NOT NULL REFERENCES media_items(id) ON DELETE RESTRICT,
-						action text NOT NULL CHECK (action IN ('added', 'removed')),
+						comment_id uuid REFERENCES comments(id) ON DELETE RESTRICT,
+						favorite_recipient_person_id uuid REFERENCES people(id) ON DELETE RESTRICT,
+						action text NOT NULL CHECK (action IN ('comment_created', 'favorite_added', 'favorite_removed')),
 						read_at timestamptz,
-						created_at timestamptz NOT NULL DEFAULT now()
+						created_at timestamptz NOT NULL DEFAULT now(),
+						CHECK (
+							(kind = 'comment' AND recipient_access_generation_id IS NOT NULL AND comment_id IS NOT NULL AND favorite_recipient_person_id IS NULL AND action = 'comment_created') OR
+							(kind = 'favorite' AND recipient_access_generation_id IS NULL AND comment_id IS NULL AND favorite_recipient_person_id IS NOT NULL AND action IN ('favorite_added', 'favorite_removed'))
+						)
 					)`,
-					`CREATE INDEX favorite_curator_activity_time_idx ON favorite_curator_activity_items (created_at DESC, id DESC)`,
-					`CREATE INDEX favorite_curator_activity_unread_idx ON favorite_curator_activity_items (created_at, id) WHERE read_at IS NULL`,
+					`CREATE UNIQUE INDEX interaction_comment_recipient_idx ON interaction_activity_items (comment_id, recipient_access_generation_id) WHERE kind = 'comment'`,
+					`CREATE INDEX interaction_recipient_time_idx ON interaction_activity_items (recipient_access_generation_id, created_at DESC, id DESC) WHERE recipient_access_generation_id IS NOT NULL`,
+					`CREATE INDEX interaction_curator_time_idx ON interaction_activity_items (created_at DESC, id DESC)`,
+					`CREATE INDEX interaction_curator_unread_idx ON interaction_activity_items (created_at, id) WHERE read_at IS NULL`,
 				} {
 					if _, err := tx.ExecContext(ctx, statement); err != nil {
 						return err
@@ -84,12 +95,12 @@ func init() {
 		func(ctx context.Context, db *bun.DB) error {
 			return db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 				for _, statement := range []string{
-					`DROP TABLE favorite_curator_activity_items`,
-					`DROP INDEX favorites_media_idx`,
-					`DROP TABLE comment_activity_items`,
-					`DROP TABLE comment_subscriptions`,
-					`DROP TABLE comment_moderation_history`,
-					`DROP TABLE comments`,
+					`DROP TABLE IF EXISTS interaction_activity_items`,
+					`DROP INDEX IF EXISTS favorites_media_idx`,
+					`DROP TABLE IF EXISTS comment_activity_items`,
+					`DROP TABLE IF EXISTS comment_subscriptions`,
+					`DROP TABLE IF EXISTS comment_moderation_history`,
+					`DROP TABLE IF EXISTS comments`,
 				} {
 					if _, err := tx.ExecContext(ctx, statement); err != nil {
 						return err

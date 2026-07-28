@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strconv"
 
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
@@ -52,6 +53,8 @@ func interactionError(err error) error {
 		return errcodes.ValidationError("Use non-empty Comment text up to 2,000 characters and a moderation reason up to 500 characters.")
 	case errors.Is(err, ErrNotCurator):
 		return errcodes.Forbidden("Curator authority is required")
+	case errors.Is(err, ErrVersionConflict):
+		return errcodes.Conflict("This Comment changed in another browser. Reload the current Comment before changing it again.")
 	default:
 		return err
 	}
@@ -71,6 +74,14 @@ func commentID(c echo.Context) (uuid.UUID, error) {
 		return uuid.Nil, errcodes.NotFound("Comment")
 	}
 	return id, nil
+}
+
+func commentVersion(c echo.Context) (int64, error) {
+	version, err := strconv.ParseInt(c.Request().Header.Get("If-Match"), 10, 64)
+	if err != nil || version < 1 {
+		return 0, errcodes.ValidationError("If-Match must contain the current Comment version.")
+	}
+	return version, nil
 }
 
 func (h *Handler) List(c echo.Context) error {
@@ -118,11 +129,15 @@ func (h *Handler) Edit(c echo.Context) error {
 	if err != nil {
 		return err
 	}
+	version, err := commentVersion(c)
+	if err != nil {
+		return err
+	}
 	var request BodyRequest
 	if err := c.Bind(&request); err != nil {
 		return err
 	}
-	response, err := h.service.Edit(c.Request().Context(), actor, id, request)
+	response, err := h.service.Edit(c.Request().Context(), actor, id, version, request)
 	if mapped := interactionError(err); mapped != nil {
 		return mapped
 	}
@@ -138,7 +153,11 @@ func (h *Handler) Delete(c echo.Context) error {
 	if err != nil {
 		return err
 	}
-	if mapped := interactionError(h.service.Delete(c.Request().Context(), actor, id)); mapped != nil {
+	version, err := commentVersion(c)
+	if err != nil {
+		return err
+	}
+	if mapped := interactionError(h.service.Delete(c.Request().Context(), actor, id, version)); mapped != nil {
 		return mapped
 	}
 	return c.NoContent(http.StatusNoContent)
@@ -175,11 +194,15 @@ func (h *Handler) Moderate(c echo.Context) error {
 	if err != nil {
 		return err
 	}
+	version, err := commentVersion(c)
+	if err != nil {
+		return err
+	}
 	var request ModerateRequest
 	if err := c.Bind(&request); err != nil {
 		return err
 	}
-	if mapped := interactionError(h.service.Moderate(c.Request().Context(), actor, id, request)); mapped != nil {
+	if mapped := interactionError(h.service.Moderate(c.Request().Context(), actor, id, version, request)); mapped != nil {
 		return mapped
 	}
 	return c.NoContent(http.StatusNoContent)
