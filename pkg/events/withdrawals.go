@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/google/uuid"
+	"github.com/robinjoseph08/memento/internal/placementlock"
 	"github.com/robinjoseph08/memento/pkg/setup"
 	"github.com/uptrace/bun"
 )
@@ -129,7 +130,7 @@ func (s *Service) Withdraw(ctx context.Context, actor setup.CuratorSession, requ
 		// Exclude Publication placement changes from discovery through commit. A
 		// Publication already in flight completes first; later Publications wait
 		// and observe the committed Withdrawal.
-		if err := lockCurrentPublishedPlacements(ctx, tx, false); err != nil {
+		if err := placementlock.Acquire(ctx, tx, placementlock.Exclusive); err != nil {
 			return err
 		}
 		var active bool

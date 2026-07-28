@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/robinjoseph08/memento/internal/placementlock"
 	"github.com/robinjoseph08/memento/pkg/immich"
 	"github.com/robinjoseph08/memento/pkg/setup"
 	"github.com/uptrace/bun"
@@ -556,12 +557,20 @@ func (s *Service) Representation(ctx context.Context, actor setup.SessionActor, 
 	if s.immich == nil {
 		return immich.MediaResponse{}, ErrNotFound
 	}
-	var assetID uuid.UUID
-	var mediaType string
-	err := s.db.RunInTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true}, func(ctx context.Context, tx bun.Tx) error {
+	var response immich.MediaResponse
+	err := s.db.RunInTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted, ReadOnly: true}, func(ctx context.Context, tx bun.Tx) error {
+		// Withdrawal holds this lock exclusively through commit. Read committed
+		// ensures a waiter authorizes against that commit rather than an older
+		// transaction snapshot. Keep shared access until Immich opens the response,
+		// then let the already-open stream finish.
+		if err := placementlock.Acquire(ctx, tx, placementlock.Shared); err != nil {
+			return err
+		}
 		if err := ensureActor(ctx, tx, actor); err != nil {
 			return err
 		}
+		var assetID uuid.UUID
+		var mediaType string
 		query := fmt.Sprintf(`WITH valid AS (%s)
 			SELECT backing.immich_asset_id, valid.media_type FROM valid
 			JOIN media_backings AS backing ON backing.media_item_id = valid.media_item_id AND backing.active
@@ -575,26 +584,29 @@ func (s *Service) Representation(ctx context.Context, actor setup.SessionActor, 
 		if kind == representationVideo && mediaType != "video" {
 			return ErrNotFound
 		}
-		return nil
+		var err error
+		switch kind {
+		case representationThumbnail:
+			response, err = s.immich.Thumbnail(ctx, assetID, request)
+		case representationPreview:
+			response, err = s.immich.Preview(ctx, assetID, request)
+		case representationVideo:
+			response, err = s.immich.Video(ctx, assetID, request)
+		case representationOriginal:
+			response, err = s.immich.Original(ctx, assetID, request)
+		default:
+			return ErrNotFound
+		}
+		if errors.Is(err, immich.ErrNotFound) {
+			return ErrNotFound
+		}
+		return err
 	})
 	if err != nil {
+		if response.Body != nil {
+			_ = response.Body.Close()
+		}
 		return immich.MediaResponse{}, err
 	}
-	var response immich.MediaResponse
-	switch kind {
-	case representationThumbnail:
-		response, err = s.immich.Thumbnail(ctx, assetID, request)
-	case representationPreview:
-		response, err = s.immich.Preview(ctx, assetID, request)
-	case representationVideo:
-		response, err = s.immich.Video(ctx, assetID, request)
-	case representationOriginal:
-		response, err = s.immich.Original(ctx, assetID, request)
-	default:
-		return immich.MediaResponse{}, ErrNotFound
-	}
-	if errors.Is(err, immich.ErrNotFound) {
-		return immich.MediaResponse{}, ErrNotFound
-	}
-	return response, err
+	return response, nil
 }

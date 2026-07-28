@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
+	"github.com/robinjoseph08/memento/internal/placementlock"
 	"github.com/robinjoseph08/memento/pkg/errcodes"
 	"github.com/robinjoseph08/memento/pkg/immich"
 	"github.com/robinjoseph08/memento/pkg/library"
@@ -33,27 +34,69 @@ func (authorizer withdrawalRecipientAuthorizer) AuthorizeSession(context.Context
 	return authorizer.actor, nil
 }
 
-type withdrawalThumbnailSource struct {
-	mu     sync.Mutex
-	assets []uuid.UUID
+type withdrawalMediaCall struct {
+	representation string
+	assetID        uuid.UUID
+	request        immich.MediaRequest
 }
 
-func (source *withdrawalThumbnailSource) Thumbnail(_ context.Context, assetID uuid.UUID) (immich.MediaResponse, error) {
+type withdrawalMediaSource struct {
+	mu             sync.Mutex
+	calls          []withdrawalMediaCall
+	openingStarted chan struct{}
+	releaseOpening <-chan struct{}
+	openingOnce    sync.Once
+}
+
+func (source *withdrawalMediaSource) Thumbnail(ctx context.Context, assetID uuid.UUID, request immich.MediaRequest) (immich.MediaResponse, error) {
+	return source.media(ctx, assetID, "thumbnail", request)
+}
+
+func (source *withdrawalMediaSource) Preview(ctx context.Context, assetID uuid.UUID, request immich.MediaRequest) (immich.MediaResponse, error) {
+	return source.media(ctx, assetID, "preview", request)
+}
+
+func (source *withdrawalMediaSource) Video(ctx context.Context, assetID uuid.UUID, request immich.MediaRequest) (immich.MediaResponse, error) {
+	return source.media(ctx, assetID, "video", request)
+}
+
+func (source *withdrawalMediaSource) Original(ctx context.Context, assetID uuid.UUID, request immich.MediaRequest) (immich.MediaResponse, error) {
+	return source.media(ctx, assetID, "original", request)
+}
+
+func (source *withdrawalMediaSource) media(ctx context.Context, assetID uuid.UUID, representation string, request immich.MediaRequest) (immich.MediaResponse, error) {
 	source.mu.Lock()
-	source.assets = append(source.assets, assetID)
+	source.calls = append(source.calls, withdrawalMediaCall{
+		representation: representation, assetID: assetID, request: request,
+	})
 	source.mu.Unlock()
+	if source.openingStarted != nil {
+		source.openingOnce.Do(func() { close(source.openingStarted) })
+	}
+	if source.releaseOpening != nil {
+		select {
+		case <-source.releaseOpening:
+		case <-ctx.Done():
+			return immich.MediaResponse{}, ctx.Err()
+		}
+	}
 	return immich.MediaResponse{
-		Body: io.NopCloser(bytes.NewBufferString("thumbnail")), ContentType: "image/webp", ContentLength: 9,
+		Body: io.NopCloser(bytes.NewBufferString(representation)), ContentType: "application/octet-stream",
+		ContentLength: int64(len(representation)),
 	}, nil
 }
 
-func (source *withdrawalThumbnailSource) callCount() int {
+func (source *withdrawalMediaSource) snapshotCalls() []withdrawalMediaCall {
 	source.mu.Lock()
 	defer source.mu.Unlock()
-	return len(source.assets)
+	return append([]withdrawalMediaCall(nil), source.calls...)
 }
 
-func withdrawalRecipientHTTP(fixture publicationFixture, actor setup.SessionActor, source *withdrawalThumbnailSource) *echo.Echo {
+func (source *withdrawalMediaSource) callCount() int {
+	return len(source.snapshotCalls())
+}
+
+func withdrawalRecipientHTTP(fixture publicationFixture, actor setup.SessionActor, source *withdrawalMediaSource) *echo.Echo {
 	e := echo.New()
 	e.HTTPErrorHandler = errcodes.NewHandler().Handle
 	service := library.New(fixture.db, nil)
@@ -384,6 +427,8 @@ func TestEveryImplementedRecipientContentRouteEnforcesEveryWithdrawalKind(t *tes
 		t.Run(test.name, func(t *testing.T) {
 			fixture := newPublicationFixture(t)
 			ctx := context.Background()
+			_, err := fixture.db.NewRaw(`UPDATE media_items SET media_type = 'video' WHERE id = ?`, fixture.media[0]).Exec(ctx)
+			require.NoError(t, err)
 			publication, err := fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, fixture.request())
 			require.NoError(t, err)
 			recipientActor := fixture.actorFor("shared")
@@ -394,8 +439,8 @@ func TestEveryImplementedRecipientContentRouteEnforcesEveryWithdrawalKind(t *tes
 				SELECT gen_random_uuid(), id, immich_asset_id, now() FROM media_items WHERE id = ?
 			`, fixture.people["shared"], fixture.media[0], fixture.media[0]).Exec(ctx)
 			require.NoError(t, err)
-			thumbnail := &withdrawalThumbnailSource{}
-			recipientHTTP := withdrawalRecipientHTTP(fixture, recipientActor, thumbnail)
+			mediaSource := &withdrawalMediaSource{}
+			recipientHTTP := withdrawalRecipientHTTP(fixture, recipientActor, mediaSource)
 			var routes []string
 			for _, route := range recipientHTTP.Routes() {
 				if route.Method != echo.RouteNotFound {
@@ -405,17 +450,22 @@ func TestEveryImplementedRecipientContentRouteEnforcesEveryWithdrawalKind(t *tes
 			assert.ElementsMatch(t, []string{
 				"GET /api/me/photos", "GET /api/me/favorites", "GET /api/me/events",
 				"GET /api/me/events/:id", "GET /api/me/new-for-you",
-				"POST /api/me/new-for-you/:publication_id/seen", "GET /api/me/media/:id/thumbnail",
+				"POST /api/me/new-for-you/:publication_id/seen",
+				"GET /api/me/media/:id/thumbnail", "GET /api/me/media/:id/preview",
+				"GET /api/me/media/:id/video", "GET /api/me/media/:id/original",
 			}, routes, "the matrix must be updated whenever an implemented Recipient content surface changes")
 
 			for _, path := range []string{
 				"/api/me/photos", "/api/me/favorites", "/api/me/events",
 				"/api/me/events/" + fixture.event.String(), "/api/me/new-for-you",
-				"/api/me/media/" + fixture.media[0].String() + "/thumbnail",
 			} {
 				assert.Equal(t, http.StatusOK, draftRequest(recipientHTTP, http.MethodGet, path, "").Code, "pre-open %s", path)
 			}
-			require.Equal(t, 1, thumbnail.callCount())
+			for _, representation := range []string{"thumbnail", "preview", "video", "original"} {
+				path := "/api/me/media/" + fixture.media[0].String() + "/" + representation
+				assert.Equal(t, http.StatusOK, draftRequest(recipientHTTP, http.MethodGet, path, "").Code, "pre-open %s", path)
+			}
+			require.Equal(t, 4, mediaSource.callCount())
 
 			_, err = fixture.service.Withdraw(ctx, fixture.actor, WithdrawRequest{
 				TargetKind: test.kind, TargetID: test.target(fixture).String(), Reason: "Route matrix",
@@ -444,12 +494,169 @@ func TestEveryImplementedRecipientContentRouteEnforcesEveryWithdrawalKind(t *tes
 			assert.Equal(t, guessedSeen.Code, openedSeen.Code)
 			assert.Equal(t, guessedSeen.Body.String(), openedSeen.Body.String())
 
-			openedThumbnail := draftRequest(recipientHTTP, http.MethodGet, "/api/me/media/"+fixture.media[0].String()+"/thumbnail", "")
-			guessedThumbnail := draftRequest(recipientHTTP, http.MethodGet, "/api/me/media/"+uuid.NewString()+"/thumbnail", "")
-			assert.Equal(t, http.StatusNotFound, openedThumbnail.Code)
-			assert.Equal(t, guessedThumbnail.Code, openedThumbnail.Code)
-			assert.Equal(t, guessedThumbnail.Body.String(), openedThumbnail.Body.String())
-			assert.Equal(t, 1, thumbnail.callCount(), "denied and guessed thumbnails must not reach Immich")
+			for _, representation := range []string{"thumbnail", "preview", "video", "original"} {
+				opened := draftRequest(recipientHTTP, http.MethodGet,
+					"/api/me/media/"+fixture.media[0].String()+"/"+representation, "")
+				guessed := draftRequest(recipientHTTP, http.MethodGet,
+					"/api/me/media/"+uuid.NewString()+"/"+representation, "")
+				assert.Equal(t, http.StatusNotFound, opened.Code, representation)
+				assert.Equal(t, guessed.Code, opened.Code, representation)
+				assert.Equal(t, guessed.Body.String(), opened.Body.String(), representation)
+			}
+			assert.Equal(t, 4, mediaSource.callCount(), "denied and guessed representations must not reach Immich")
+		})
+	}
+}
+
+func TestRepresentationOpeningAndWithdrawalCommitHaveOneAuthorizationOrder(t *testing.T) {
+	type representationResult struct {
+		response immich.MediaResponse
+		err      error
+	}
+	representations := []struct {
+		name string
+		load func(context.Context, *library.Service, setup.SessionActor, uuid.UUID) (immich.MediaResponse, error)
+	}{
+		{name: "thumbnail", load: func(ctx context.Context, service *library.Service, actor setup.SessionActor, mediaID uuid.UUID) (immich.MediaResponse, error) {
+			return service.Thumbnail(ctx, actor, mediaID, immich.MediaRequest{})
+		}},
+		{name: "preview", load: func(ctx context.Context, service *library.Service, actor setup.SessionActor, mediaID uuid.UUID) (immich.MediaResponse, error) {
+			return service.Preview(ctx, actor, mediaID, immich.MediaRequest{})
+		}},
+		{name: "video", load: func(ctx context.Context, service *library.Service, actor setup.SessionActor, mediaID uuid.UUID) (immich.MediaResponse, error) {
+			return service.Video(ctx, actor, mediaID, immich.MediaRequest{})
+		}},
+		{name: "original", load: func(ctx context.Context, service *library.Service, actor setup.SessionActor, mediaID uuid.UUID) (immich.MediaResponse, error) {
+			return service.Original(ctx, actor, mediaID, immich.MediaRequest{})
+		}},
+	}
+	prepare := func(t *testing.T) (publicationFixture, setup.SessionActor) {
+		t.Helper()
+		fixture := newPublicationFixture(t)
+		ctx := context.Background()
+		_, err := fixture.db.NewRaw(`UPDATE media_items SET media_type = 'video' WHERE id = ?`, fixture.media[0]).Exec(ctx)
+		require.NoError(t, err)
+		_, err = fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, fixture.request())
+		require.NoError(t, err)
+		recipientActor := fixture.actorFor("shared")
+		createWithdrawalRecipientSession(t, fixture, recipientActor)
+		_, err = fixture.db.NewRaw(`
+			INSERT INTO media_backings (id, media_item_id, immich_asset_id, linked_at)
+			SELECT gen_random_uuid(), id, immich_asset_id, now() FROM media_items WHERE id = ?
+		`, fixture.media[0]).Exec(ctx)
+		require.NoError(t, err)
+		return fixture, recipientActor
+	}
+
+	for _, representation := range representations {
+		t.Run(representation.name+" opening first", func(t *testing.T) {
+			fixture, recipientActor := prepare(t)
+			ctx := context.Background()
+			openingStarted := make(chan struct{})
+			releaseOpening := make(chan struct{})
+			var releaseOnce sync.Once
+			defer releaseOnce.Do(func() { close(releaseOpening) })
+			source := &withdrawalMediaSource{
+				openingStarted: openingStarted,
+				releaseOpening: releaseOpening,
+			}
+			service := library.New(fixture.db, source)
+			opened := make(chan representationResult, 1)
+			go func() {
+				response, openErr := representation.load(ctx, service, recipientActor, fixture.media[0])
+				opened <- representationResult{response: response, err: openErr}
+			}()
+			select {
+			case <-openingStarted:
+			case <-time.After(5 * time.Second):
+				t.Fatal("representation did not start opening")
+			}
+
+			withdrawn := make(chan error, 1)
+			go func() {
+				_, withdrawErr := fixture.service.Withdraw(ctx, fixture.actor, WithdrawRequest{
+					TargetKind: WithdrawalTargetMedia,
+					TargetID:   fixture.media[0].String(),
+					Reason:     "Coordinate stream opening",
+				})
+				withdrawn <- withdrawErr
+			}()
+			waitForAdvisoryLockWaiter(t, fixture, placementlock.Key, "ExclusiveLock")
+			releaseOnce.Do(func() { close(releaseOpening) })
+
+			var result representationResult
+			select {
+			case result = <-opened:
+				require.NoError(t, result.err)
+			case <-time.After(5 * time.Second):
+				t.Fatal("representation did not finish opening")
+			}
+			select {
+			case withdrawErr := <-withdrawn:
+				require.NoError(t, withdrawErr)
+			case <-time.After(5 * time.Second):
+				t.Fatal("Withdrawal did not commit after representation opening")
+			}
+			contents, err := io.ReadAll(result.response.Body)
+			require.NoError(t, err)
+			require.NoError(t, result.response.Body.Close())
+			assert.Equal(t, representation.name, string(contents), "a response opened before Withdrawal may finish streaming")
+		})
+
+		t.Run(representation.name+" Withdrawal first", func(t *testing.T) {
+			fixture, recipientActor := prepare(t)
+			ctx := context.Background()
+			withdrawalLocked := make(chan struct{})
+			releaseWithdrawal := make(chan struct{})
+			var releaseOnce sync.Once
+			defer releaseOnce.Do(func() { close(releaseWithdrawal) })
+			fixture.service.failWithdrawalStep = func(step WithdrawalStep) error {
+				if step == WithdrawalStepLocked {
+					close(withdrawalLocked)
+					<-releaseWithdrawal
+				}
+				return nil
+			}
+			withdrawn := make(chan error, 1)
+			go func() {
+				_, withdrawErr := fixture.service.Withdraw(ctx, fixture.actor, WithdrawRequest{
+					TargetKind: WithdrawalTargetMedia,
+					TargetID:   fixture.media[0].String(),
+					Reason:     "Commit before stream opening",
+				})
+				withdrawn <- withdrawErr
+			}()
+			select {
+			case <-withdrawalLocked:
+			case <-time.After(5 * time.Second):
+				t.Fatal("Withdrawal did not acquire its placement snapshot")
+			}
+
+			source := &withdrawalMediaSource{}
+			service := library.New(fixture.db, source)
+			opened := make(chan representationResult, 1)
+			go func() {
+				response, openErr := representation.load(ctx, service, recipientActor, fixture.media[0])
+				opened <- representationResult{response: response, err: openErr}
+			}()
+			waitForAdvisoryLockWaiter(t, fixture, placementlock.Key, "ShareLock")
+			assert.Zero(t, source.callCount(), "Immich cannot open while Withdrawal is committing")
+			releaseOnce.Do(func() { close(releaseWithdrawal) })
+
+			select {
+			case withdrawErr := <-withdrawn:
+				require.NoError(t, withdrawErr)
+			case <-time.After(5 * time.Second):
+				t.Fatal("Withdrawal did not commit after release")
+			}
+			select {
+			case result := <-opened:
+				assert.ErrorIs(t, result.err, library.ErrNotFound)
+			case <-time.After(5 * time.Second):
+				t.Fatal("representation did not revalidate after Withdrawal committed")
+			}
+			fixture.service.failWithdrawalStep = nil
+			assert.Zero(t, source.callCount(), "a representation denied after Withdrawal cannot reach Immich")
 		})
 	}
 }
@@ -608,7 +815,7 @@ func TestConcurrentPublicationRemovalIsRevalidatedAfterWithdrawalLocksTheEvent(t
 				})
 				withdrawn <- withdrawErr
 			}()
-			waitForAdvisoryLockWaiter(t, fixture, currentPublishedPlacementsLockKey, "ExclusiveLock")
+			waitForAdvisoryLockWaiter(t, fixture, placementlock.Key, "ExclusiveLock")
 			releasePublicationOnce.Do(func() { close(releasePublication) })
 
 			select {
@@ -704,7 +911,7 @@ func TestConcurrentMediaPlacementGrowthWaitsForWithdrawalSnapshot(t *testing.T) 
 		published <- publishErr
 	}()
 
-	waitForAdvisoryLockWaiter(t, fixture, currentPublishedPlacementsLockKey, "ShareLock")
+	waitForAdvisoryLockWaiter(t, fixture, placementlock.Key, "ShareLock")
 
 	releaseOnce.Do(func() { close(releaseWithdrawal) })
 	var result withdrawalResult
