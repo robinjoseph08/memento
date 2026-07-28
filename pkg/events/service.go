@@ -166,6 +166,7 @@ type Service struct {
 	failPublicationStep   func(PublicationStep) error
 	failWithdrawalStep    func(WithdrawalStep) error
 	recipientReadBoundary func()
+	publicationHandoff    PublicationHandoff
 }
 
 func New(db *bun.DB) *Service {

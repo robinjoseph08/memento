@@ -224,6 +224,31 @@ func ensureActor(ctx context.Context, db bun.IDB, actor setup.SessionActor) erro
 	return nil
 }
 
+// lockActorForOpening orders the final response handoff against every persisted
+// actor invalidation. The order matches lifecycle writers: singleton settings,
+// Person, access generation, then Session.
+func lockActorForOpening(ctx context.Context, tx bun.Tx, actor setup.SessionActor) error {
+	locks := []struct {
+		query string
+		args  []any
+	}{
+		{`SELECT id FROM system_settings WHERE id = 1 FOR SHARE`, nil},
+		{`SELECT id FROM people WHERE id = ? FOR SHARE`, []any{actor.PersonID}},
+		{`SELECT id FROM recipient_access_generations WHERE id = ? FOR SHARE`, []any{actor.AccessID}},
+		{`SELECT id FROM sessions WHERE id = ? FOR SHARE`, []any{actor.SessionID}},
+	}
+	for _, lock := range locks {
+		var id any
+		if err := tx.NewRaw(lock.query, lock.args...).Scan(ctx, &id); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrNotFound
+			}
+			return err
+		}
+	}
+	return ensureActor(ctx, tx, actor)
+}
+
 func (s *Service) Photos(ctx context.Context, actor setup.SessionActor, rawLimit, rawCursor string, favorites bool) (MediaPage, error) {
 	limit, err := pageSize(rawLimit)
 	if err != nil {
@@ -557,17 +582,9 @@ func (s *Service) Representation(ctx context.Context, actor setup.SessionActor, 
 	if s.immich == nil {
 		return immich.MediaResponse{}, ErrNotFound
 	}
-	var response immich.MediaResponse
-	err := s.db.RunInTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted, ReadOnly: true}, func(ctx context.Context, tx bun.Tx) error {
-		// Withdrawal holds this lock exclusively through commit. Read committed
-		// ensures a waiter authorizes against that commit rather than an older
-		// transaction snapshot. Keep shared access until Immich opens the response,
-		// then let the already-open stream finish.
-		if err := placementlock.Acquire(ctx, tx, placementlock.Shared); err != nil {
-			return err
-		}
-		if err := ensureActor(ctx, tx, actor); err != nil {
-			return err
+	resolve := func(ctx context.Context, db bun.IDB) (uuid.UUID, string, error) {
+		if err := ensureActor(ctx, db, actor); err != nil {
+			return uuid.Nil, "", err
 		}
 		var assetID uuid.UUID
 		var mediaType string
@@ -575,32 +592,65 @@ func (s *Service) Representation(ctx context.Context, actor setup.SessionActor, 
 			SELECT backing.immich_asset_id, valid.media_type FROM valid
 			JOIN media_backings AS backing ON backing.media_item_id = valid.media_item_id AND backing.active
 			WHERE valid.media_item_id = ? AND valid.available LIMIT 1`, validPlacements)
-		if err := tx.NewRaw(query, actor.AccessID, mediaID).Scan(ctx, &assetID, &mediaType); err != nil {
+		if err := db.NewRaw(query, actor.AccessID, mediaID).Scan(ctx, &assetID, &mediaType); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
-				return ErrNotFound
+				return uuid.Nil, "", ErrNotFound
 			}
-			return err
+			return uuid.Nil, "", err
 		}
 		if kind == representationVideo && mediaType != "video" {
+			return uuid.Nil, "", ErrNotFound
+		}
+		return assetID, mediaType, nil
+	}
+
+	// Resolve a candidate without holding a transaction across potentially slow
+	// Immich headers. Nothing from this first check is returned to the Recipient.
+	assetID, mediaType, err := resolve(ctx, s.db)
+	if err != nil {
+		return immich.MediaResponse{}, err
+	}
+	var response immich.MediaResponse
+	switch kind {
+	case representationThumbnail:
+		response, err = s.immich.Thumbnail(ctx, assetID, request)
+	case representationPreview:
+		response, err = s.immich.Preview(ctx, assetID, request)
+	case representationVideo:
+		response, err = s.immich.Video(ctx, assetID, request)
+	case representationOriginal:
+		response, err = s.immich.Original(ctx, assetID, request)
+	default:
+		return immich.MediaResponse{}, ErrNotFound
+	}
+	if errors.Is(err, immich.ErrNotFound) {
+		err = ErrNotFound
+	}
+	if err != nil {
+		if response.Body != nil {
+			_ = response.Body.Close()
+		}
+		return immich.MediaResponse{}, err
+	}
+
+	// Immediately before handing the opened body to the caller, order against
+	// Withdrawal and every actor invalidation, then revalidate the exact backing.
+	// Placement comes first because Publication also takes it before access rows.
+	err = s.db.RunInTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted}, func(ctx context.Context, tx bun.Tx) error {
+		if err := placementlock.Acquire(ctx, tx, placementlock.Shared); err != nil {
+			return err
+		}
+		if err := lockActorForOpening(ctx, tx, actor); err != nil {
+			return err
+		}
+		currentAssetID, currentMediaType, err := resolve(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if currentAssetID != assetID || currentMediaType != mediaType {
 			return ErrNotFound
 		}
-		var err error
-		switch kind {
-		case representationThumbnail:
-			response, err = s.immich.Thumbnail(ctx, assetID, request)
-		case representationPreview:
-			response, err = s.immich.Preview(ctx, assetID, request)
-		case representationVideo:
-			response, err = s.immich.Video(ctx, assetID, request)
-		case representationOriginal:
-			response, err = s.immich.Original(ctx, assetID, request)
-		default:
-			return ErrNotFound
-		}
-		if errors.Is(err, immich.ErrNotFound) {
-			return ErrNotFound
-		}
-		return err
+		return nil
 	})
 	if err != nil {
 		if response.Body != nil {

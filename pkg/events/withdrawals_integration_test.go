@@ -508,7 +508,7 @@ func TestEveryImplementedRecipientContentRouteEnforcesEveryWithdrawalKind(t *tes
 	}
 }
 
-func TestRepresentationOpeningAndWithdrawalCommitHaveOneAuthorizationOrder(t *testing.T) {
+func TestRepresentationHandoffRevalidatesWithdrawalAfterSlowUpstreamOpening(t *testing.T) {
 	type representationResult struct {
 		response immich.MediaResponse
 		err      error
@@ -572,35 +572,22 @@ func TestRepresentationOpeningAndWithdrawalCommitHaveOneAuthorizationOrder(t *te
 				t.Fatal("representation did not start opening")
 			}
 
-			withdrawn := make(chan error, 1)
-			go func() {
-				_, withdrawErr := fixture.service.Withdraw(ctx, fixture.actor, WithdrawRequest{
-					TargetKind: WithdrawalTargetMedia,
-					TargetID:   fixture.media[0].String(),
-					Reason:     "Coordinate stream opening",
-				})
-				withdrawn <- withdrawErr
-			}()
-			waitForAdvisoryLockWaiter(t, fixture, placementlock.Key, "ExclusiveLock")
+			_, err := fixture.service.Withdraw(ctx, fixture.actor, WithdrawRequest{
+				TargetKind: WithdrawalTargetMedia,
+				TargetID:   fixture.media[0].String(),
+				Reason:     "Commit during upstream opening",
+			})
+			require.NoError(t, err, "slow upstream opening must not block Withdrawal")
 			releaseOnce.Do(func() { close(releaseOpening) })
 
-			var result representationResult
 			select {
-			case result = <-opened:
-				require.NoError(t, result.err)
+			case result := <-opened:
+				assert.ErrorIs(t, result.err, library.ErrNotFound)
+				assert.Nil(t, result.response.Body)
 			case <-time.After(5 * time.Second):
-				t.Fatal("representation did not finish opening")
+				t.Fatal("representation did not revalidate after Withdrawal committed")
 			}
-			select {
-			case withdrawErr := <-withdrawn:
-				require.NoError(t, withdrawErr)
-			case <-time.After(5 * time.Second):
-				t.Fatal("Withdrawal did not commit after representation opening")
-			}
-			contents, err := io.ReadAll(result.response.Body)
-			require.NoError(t, err)
-			require.NoError(t, result.response.Body.Close())
-			assert.Equal(t, representation.name, string(contents), "a response opened before Withdrawal may finish streaming")
+			assert.Equal(t, 1, source.callCount(), "the unreturned upstream body was opened then denied")
 		})
 
 		t.Run(representation.name+" Withdrawal first", func(t *testing.T) {
@@ -632,15 +619,23 @@ func TestRepresentationOpeningAndWithdrawalCommitHaveOneAuthorizationOrder(t *te
 				t.Fatal("Withdrawal did not acquire its placement snapshot")
 			}
 
-			source := &withdrawalMediaSource{}
+			openingStarted := make(chan struct{})
+			releaseOpening := make(chan struct{})
+			var openingOnce sync.Once
+			defer openingOnce.Do(func() { close(releaseOpening) })
+			source := &withdrawalMediaSource{openingStarted: openingStarted, releaseOpening: releaseOpening}
 			service := library.New(fixture.db, source)
 			opened := make(chan representationResult, 1)
 			go func() {
 				response, openErr := representation.load(ctx, service, recipientActor, fixture.media[0])
 				opened <- representationResult{response: response, err: openErr}
 			}()
-			waitForAdvisoryLockWaiter(t, fixture, placementlock.Key, "ShareLock")
-			assert.Zero(t, source.callCount(), "Immich cannot open while Withdrawal is committing")
+			select {
+			case <-openingStarted:
+			case <-time.After(5 * time.Second):
+				t.Fatal("representation did not begin upstream opening")
+			}
+			assert.Equal(t, 1, source.callCount())
 			releaseOnce.Do(func() { close(releaseWithdrawal) })
 
 			select {
@@ -649,6 +644,7 @@ func TestRepresentationOpeningAndWithdrawalCommitHaveOneAuthorizationOrder(t *te
 			case <-time.After(5 * time.Second):
 				t.Fatal("Withdrawal did not commit after release")
 			}
+			openingOnce.Do(func() { close(releaseOpening) })
 			select {
 			case result := <-opened:
 				assert.ErrorIs(t, result.err, library.ErrNotFound)
@@ -656,8 +652,63 @@ func TestRepresentationOpeningAndWithdrawalCommitHaveOneAuthorizationOrder(t *te
 				t.Fatal("representation did not revalidate after Withdrawal committed")
 			}
 			fixture.service.failWithdrawalStep = nil
-			assert.Zero(t, source.callCount(), "a representation denied after Withdrawal cannot reach Immich")
+			assert.Equal(t, 1, source.callCount(), "no response is handed off after Withdrawal commits")
 		})
+	}
+}
+
+func TestSlowRepresentationOpeningsDoNotStarveWithdrawalAtMinimumPoolSize(t *testing.T) {
+	fixture := newPublicationFixture(t)
+	ctx := context.Background()
+	_, err := fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, fixture.request())
+	require.NoError(t, err)
+	recipientActor := fixture.actorFor("shared")
+	createWithdrawalRecipientSession(t, fixture, recipientActor)
+	_, err = fixture.db.NewRaw(`
+		INSERT INTO media_backings (id, media_item_id, immich_asset_id, linked_at)
+		SELECT gen_random_uuid(), id, immich_asset_id, now() FROM media_items WHERE id = ?
+	`, fixture.media[0]).Exec(ctx)
+	require.NoError(t, err)
+	fixture.db.SetMaxOpenConns(2)
+	fixture.db.SetMaxIdleConns(2)
+
+	releaseOpening := make(chan struct{})
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(releaseOpening) })
+	results := make(chan error, 2)
+	for range 2 {
+		openingStarted := make(chan struct{})
+		source := &withdrawalMediaSource{openingStarted: openingStarted, releaseOpening: releaseOpening}
+		service := library.New(fixture.db, source)
+		go func() {
+			response, openErr := service.Thumbnail(ctx, recipientActor, fixture.media[0], immich.MediaRequest{})
+			if response.Body != nil {
+				_ = response.Body.Close()
+			}
+			results <- openErr
+		}()
+		select {
+		case <-openingStarted:
+		case <-time.After(5 * time.Second):
+			t.Fatal("slow upstream opening did not start")
+		}
+	}
+
+	withdrawCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	_, err = fixture.service.Withdraw(withdrawCtx, fixture.actor, WithdrawRequest{
+		TargetKind: WithdrawalTargetMedia, TargetID: fixture.media[0].String(),
+		Reason: "Withdrawal must retain a database connection",
+	})
+	require.NoError(t, err, "two slow requests must not retain the two supported pooled connections")
+	releaseOnce.Do(func() { close(releaseOpening) })
+	for range 2 {
+		select {
+		case openErr := <-results:
+			assert.ErrorIs(t, openErr, library.ErrNotFound)
+		case <-time.After(5 * time.Second):
+			t.Fatal("representation did not revalidate the committed Withdrawal")
+		}
 	}
 }
 
@@ -1082,6 +1133,120 @@ func TestWithdrawalCannotBeToggledAndRestoresEveryTargetOnlyThroughFreshReviewed
 			var restoredAudit int
 			require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM publication_audit_events WHERE event_id = ? AND action = 'content_restored_by_publication'`, fixture.event).Scan(ctx, &restoredAudit))
 			assert.Equal(t, 1, restoredAudit)
+		})
+	}
+}
+
+func TestWithdrawalAndRunningOptionalDeliveryHaveOneExternalHandoffOrder(t *testing.T) {
+	jobFor := func(fixture publicationFixture, publication PublicationResponse) worker.Job {
+		return worker.Job{Payload: []byte(`{"event_id":"` + fixture.event.String() + `","publication_id":"` + publication.ID + `","notify_recipients":true}`)}
+	}
+	for _, test := range withdrawalTestCases() {
+		t.Run(test.name+" handoff first", func(t *testing.T) {
+			fixture := newPublicationFixture(t)
+			ctx := context.Background()
+			publication, err := fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, fixture.request())
+			require.NoError(t, err)
+			handoffStarted := make(chan struct{})
+			releaseHandoff := make(chan struct{})
+			fixture.service.SetPublicationHandoff(func(context.Context, uuid.UUID, uuid.UUID) error {
+				close(handoffStarted)
+				<-releaseHandoff
+				return nil
+			})
+			handled := make(chan error, 1)
+			go func() { handled <- fixture.service.HandlePublicationJob(ctx, jobFor(fixture, publication)) }()
+			select {
+			case <-handoffStarted:
+			case <-time.After(5 * time.Second):
+				t.Fatal("optional delivery did not reach its external handoff")
+			}
+
+			withdrawn := make(chan error, 1)
+			go func() {
+				_, withdrawErr := fixture.service.Withdraw(ctx, fixture.actor, WithdrawRequest{
+					TargetKind: test.kind, TargetID: test.target(fixture).String(), Reason: "Stop running delivery",
+				})
+				withdrawn <- withdrawErr
+			}()
+			waitForAdvisoryLockWaiter(t, fixture, placementlock.Key, "ExclusiveLock")
+			select {
+			case err := <-withdrawn:
+				t.Fatalf("Withdrawal committed during external handoff: %v", err)
+			default:
+			}
+			close(releaseHandoff)
+			select {
+			case err := <-handled:
+				require.NoError(t, err)
+			case <-time.After(5 * time.Second):
+				t.Fatal("optional delivery did not finish")
+			}
+			select {
+			case err := <-withdrawn:
+				require.NoError(t, err)
+			case <-time.After(5 * time.Second):
+				t.Fatal("Withdrawal did not commit after external handoff")
+			}
+		})
+
+		t.Run(test.name+" Withdrawal first", func(t *testing.T) {
+			fixture := newPublicationFixture(t)
+			ctx := context.Background()
+			publication, err := fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, fixture.request())
+			require.NoError(t, err)
+			withdrawalLocked := make(chan struct{})
+			releaseWithdrawal := make(chan struct{})
+			fixture.service.failWithdrawalStep = func(step WithdrawalStep) error {
+				if step == WithdrawalStepLocked {
+					close(withdrawalLocked)
+					<-releaseWithdrawal
+				}
+				return nil
+			}
+			handoffStarted := make(chan struct{}, 1)
+			fixture.service.SetPublicationHandoff(func(context.Context, uuid.UUID, uuid.UUID) error {
+				handoffStarted <- struct{}{}
+				return nil
+			})
+			withdrawn := make(chan error, 1)
+			go func() {
+				_, withdrawErr := fixture.service.Withdraw(ctx, fixture.actor, WithdrawRequest{
+					TargetKind: test.kind, TargetID: test.target(fixture).String(), Reason: "Commit before delivery",
+				})
+				withdrawn <- withdrawErr
+			}()
+			select {
+			case <-withdrawalLocked:
+			case <-time.After(5 * time.Second):
+				t.Fatal("Withdrawal did not acquire its authorization lock")
+			}
+			handled := make(chan error, 1)
+			go func() { handled <- fixture.service.HandlePublicationJob(ctx, jobFor(fixture, publication)) }()
+			waitForAdvisoryLockWaiter(t, fixture, placementlock.Key, "ShareLock")
+			select {
+			case <-handoffStarted:
+				t.Fatal("external send began before Withdrawal committed")
+			default:
+			}
+			close(releaseWithdrawal)
+			select {
+			case err := <-withdrawn:
+				require.NoError(t, err)
+			case <-time.After(5 * time.Second):
+				t.Fatal("Withdrawal did not commit")
+			}
+			select {
+			case err := <-handled:
+				require.EqualError(t, err, "publication_withdrawn")
+			case <-time.After(5 * time.Second):
+				t.Fatal("optional delivery did not revalidate after Withdrawal")
+			}
+			select {
+			case <-handoffStarted:
+				t.Fatal("external send began after Withdrawal committed")
+			default:
+			}
 		})
 	}
 }

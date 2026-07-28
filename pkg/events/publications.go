@@ -17,6 +17,14 @@ import (
 
 const PublicationJobKind = "publication_committed"
 
+// PublicationHandoff performs the final channel-specific external delivery.
+type PublicationHandoff func(context.Context, uuid.UUID, uuid.UUID) error
+
+// SetPublicationHandoff installs optional delivery inside the Withdrawal ordering boundary.
+func (s *Service) SetPublicationHandoff(handoff PublicationHandoff) {
+	s.publicationHandoff = handoff
+}
+
 var (
 	ErrPublicationNotReady = errors.New("Event is not ready for Publication")
 	ErrAudienceNotCurrent  = errors.New("an Audience contains an ineligible access generation")
@@ -614,41 +622,63 @@ func (s *Service) RecipientEvent(ctx context.Context, actor setup.SessionActor, 
 	return view, err
 }
 
-// HandlePublicationJob validates the durable handoff before acknowledging it.
-// Channel-specific delivery is intentionally downstream of this privacy transaction.
+// HandlePublicationJob orders the final optional-delivery handoff against
+// Withdrawal. A handoff already in progress finishes before Withdrawal commits;
+// one that starts after commit observes the Withdrawal and fails closed.
 func (s *Service) HandlePublicationJob(ctx context.Context, job worker.Job) error {
 	var payload struct {
-		EventID       uuid.UUID `json:"event_id"`
-		PublicationID uuid.UUID `json:"publication_id"`
+		EventID          uuid.UUID `json:"event_id"`
+		PublicationID    uuid.UUID `json:"publication_id"`
+		NotifyRecipients bool      `json:"notify_recipients"`
 	}
 	if err := json.Unmarshal(job.Payload, &payload); err != nil || payload.EventID == uuid.Nil || payload.PublicationID == uuid.Nil {
 		return worker.Permanent("invalid_publication_payload")
 	}
-	var exists bool
-	if err := s.db.NewRaw(`SELECT EXISTS (SELECT 1 FROM publications WHERE id = ? AND event_id = ?)`, payload.PublicationID, payload.EventID).Scan(ctx, &exists); err != nil {
-		return err
-	}
-	if !exists {
-		return worker.Permanent("unknown_publication")
-	}
-	var deliverable bool
-	if err := s.db.NewRaw(`SELECT EXISTS (
-		SELECT 1 FROM current_published_events AS current
-		WHERE current.event_id = ? AND current.publication_id = ?
-		  AND NOT EXISTS (
-			SELECT 1 FROM current_published_placements AS placement
-			JOIN published_moments AS moment ON moment.id = placement.published_moment_id
-			WHERE placement.event_id = current.event_id
-			  AND placement.publication_id = current.publication_id
-			  AND content_is_withdrawn(
-				placement.event_id, moment.draft_moment_id, placement.media_item_id
+	result := ""
+	err := s.db.RunInTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted, ReadOnly: true}, func(ctx context.Context, tx bun.Tx) error {
+		// Withdrawal takes this lock exclusively through commit. Keep shared access
+		// through the final external handoff, not merely through eligibility checks.
+		if err := placementlock.Acquire(ctx, tx, placementlock.Shared); err != nil {
+			return err
+		}
+		var exists bool
+		if err := tx.NewRaw(`SELECT EXISTS (SELECT 1 FROM publications WHERE id = ? AND event_id = ?)`, payload.PublicationID, payload.EventID).Scan(ctx, &exists); err != nil {
+			return err
+		}
+		if !exists {
+			result = "unknown_publication"
+			return nil
+		}
+		var deliverable bool
+		if err := tx.NewRaw(`SELECT EXISTS (
+			SELECT 1 FROM current_published_events AS current
+			WHERE current.event_id = ? AND current.publication_id = ?
+			  AND NOT EXISTS (
+				SELECT 1 FROM current_published_placements AS placement
+				JOIN published_moments AS moment ON moment.id = placement.published_moment_id
+				WHERE placement.event_id = current.event_id
+				  AND placement.publication_id = current.publication_id
+				  AND content_is_withdrawn(
+					placement.event_id, moment.draft_moment_id, placement.media_item_id
+				  )
 			  )
-		  )
-	)`, payload.EventID, payload.PublicationID).Scan(ctx, &deliverable); err != nil {
+		)`, payload.EventID, payload.PublicationID).Scan(ctx, &deliverable); err != nil {
+			return err
+		}
+		if !deliverable {
+			result = "publication_withdrawn"
+			return nil
+		}
+		if payload.NotifyRecipients && s.publicationHandoff != nil {
+			return s.publicationHandoff(ctx, payload.EventID, payload.PublicationID)
+		}
+		return nil
+	})
+	if err != nil {
 		return err
 	}
-	if !deliverable {
-		return worker.Permanent("publication_withdrawn")
+	if result != "" {
+		return worker.Permanent(result)
 	}
 	return nil
 }
