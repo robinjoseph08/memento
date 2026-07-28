@@ -613,14 +613,10 @@ func invalidateEventReview(ctx context.Context, tx bun.Tx, t target, now time.Ti
 		return nil
 	}
 	var eventID uuid.UUID
-	if err := tx.NewRaw(`
-		UPDATE events SET version = version + 1, final_review_complete = false, updated_at = ?
-		WHERE id = (SELECT event_id FROM draft_moments WHERE id = ?)
-		RETURNING id
-	`, now, t.id).Scan(ctx, &eventID); err != nil {
+	if err := tx.NewRaw(`SELECT event_id FROM draft_moments WHERE id = ?`, t.id).Scan(ctx, &eventID); err != nil {
 		return err
 	}
-	_, err := staging.Refresh(ctx, tx, eventID, now)
+	_, err := staging.InvalidateEvent(ctx, tx, eventID, now)
 	return err
 }
 

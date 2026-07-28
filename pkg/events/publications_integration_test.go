@@ -131,6 +131,21 @@ func (fixture publicationFixture) actorFor(name string) setup.SessionActor {
 	return setup.SessionActor{PersonID: fixture.people[name], AccessID: fixture.access[name], SessionID: uuid.New()}
 }
 
+func assertRecipientPublicationSurfacesMatch(t *testing.T, fixture publicationFixture, publicationID string) {
+	t.Helper()
+	var mismatches int
+	require.NoError(t, fixture.db.NewRaw(`
+		SELECT count(*)
+		FROM new_for_you_entries AS entry
+		FULL OUTER JOIN publication_activity_items AS activity
+		  ON activity.publication_id = entry.publication_id
+		 AND activity.recipient_access_generation_id = entry.recipient_access_generation_id
+		WHERE COALESCE(entry.publication_id, activity.publication_id) = ?
+		  AND (entry.recipient_access_generation_id IS NULL OR activity.recipient_access_generation_id IS NULL)
+	`, publicationID).Scan(context.Background(), &mismatches))
+	assert.Zero(t, mismatches, "New for you and Recipient activity use the same qualifying set")
+}
+
 func TestPreviewRendersSavedEditableResultBeforePublication(t *testing.T) {
 	fixture := newPublicationFixture(t)
 	ctx := context.Background()
@@ -181,6 +196,7 @@ func TestPublicationBuildsImmutableHistoryAndFilteredCurrentProjections(t *testi
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), publication.Revision)
 	assert.True(t, publication.NotifyRecipients, "notifications default on")
+	assertRecipientPublicationSurfacesMatch(t, fixture, publication.ID)
 	require.NoError(t, fixture.service.HandlePublicationJob(ctx, worker.Job{Payload: []byte(`{"event_id":"` + fixture.event.String() + `","publication_id":"` + publication.ID + `"}`)}))
 	unknownJob := worker.Job{Payload: []byte(`{"event_id":"` + fixture.event.String() + `","publication_id":"` + uuid.NewString() + `"}`)}
 	require.EqualError(t, fixture.service.HandlePublicationJob(ctx, unknownJob), "unknown_publication")
@@ -280,6 +296,7 @@ func TestPublicationBuildsImmutableHistoryAndFilteredCurrentProjections(t *testi
 	second, err := fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, PublishEventRequest{Version: 8})
 	require.NoError(t, err)
 	assert.Equal(t, int64(2), second.Revision)
+	assertRecipientPublicationSurfacesMatch(t, fixture, second.ID)
 	var historicalTitles []string
 	require.NoError(t, fixture.db.NewRaw(`SELECT title FROM published_event_revisions ORDER BY created_at, publication_id`).Scan(ctx, &historicalTitles))
 	assert.ElementsMatch(t, []string{"Family weekend", "Corrected weekend"}, historicalTitles)

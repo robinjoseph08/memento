@@ -440,13 +440,7 @@ func syncEditableEvents(
 			if !changed {
 				continue
 			}
-			if _, err := tx.NewRaw(`
-				UPDATE events SET version = version + 1, final_review_complete = false, updated_at = ?
-				WHERE id = ?
-			`, now, eventID).Exec(ctx); err != nil {
-				return err
-			}
-			if _, err := staging.Refresh(ctx, tx, lockedEventID, now); err != nil {
+			if _, err := staging.InvalidateEvent(ctx, tx, lockedEventID, now); err != nil {
 				return err
 			}
 			continue
@@ -568,13 +562,7 @@ func syncEditableEvents(
 		if !changed {
 			continue
 		}
-		if _, err := tx.NewRaw(`
-			UPDATE events SET version = version + 1, final_review_complete = false, updated_at = ?
-			WHERE id = ?
-		`, now, eventID).Exec(ctx); err != nil {
-			return err
-		}
-		if _, err := staging.Refresh(ctx, tx, lockedEventID, now); err != nil {
+		if _, err := staging.InvalidateEvent(ctx, tx, lockedEventID, now); err != nil {
 			return err
 		}
 	}

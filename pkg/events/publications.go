@@ -437,49 +437,34 @@ func (s *Service) PublishEvent(ctx context.Context, actor setup.CuratorSession, 
 			}
 		}
 		if _, err := tx.NewRaw(`
-			INSERT INTO new_for_you_entries (recipient_access_generation_id, publication_id)
-			SELECT DISTINCT entitlement.recipient_access_generation_id, ?::uuid
-			FROM current_audience_entitlements AS entitlement
-			JOIN recipient_access_generations AS access
-			  ON access.id = entitlement.recipient_access_generation_id
-			WHERE entitlement.event_id = ? AND access.is_current AND access.state = 'completed'
-			  AND (?::uuid IS NULL OR EXISTS (
-				SELECT 1 FROM current_audience_entitlements AS candidate
-				WHERE candidate.event_id = entitlement.event_id
-				  AND candidate.recipient_access_generation_id = entitlement.recipient_access_generation_id
-				  AND NOT EXISTS (
-					SELECT 1 FROM audience_entries AS prior_audience
-					JOIN published_moments AS prior_moment ON prior_moment.id = prior_audience.published_moment_id
-					JOIN published_media_placements AS prior_placement ON prior_placement.published_moment_id = prior_moment.id
-					WHERE prior_moment.publication_id = ?::uuid
-					  AND prior_audience.recipient_access_generation_id = candidate.recipient_access_generation_id
-					  AND prior_placement.media_item_id = candidate.media_item_id
-				  )
-			  ))
-		`, publicationID, eventID, priorID, priorID).Exec(ctx); err != nil {
-			return err
-		}
-		if _, err := tx.NewRaw(`
+			WITH qualifying_recipients AS MATERIALIZED (
+				SELECT DISTINCT entitlement.recipient_access_generation_id
+				FROM current_audience_entitlements AS entitlement
+				JOIN recipient_access_generations AS access
+				  ON access.id = entitlement.recipient_access_generation_id
+				WHERE entitlement.event_id = ? AND access.is_current AND access.state = 'completed'
+				  AND (?::uuid IS NULL OR EXISTS (
+					SELECT 1 FROM current_audience_entitlements AS candidate
+					WHERE candidate.event_id = entitlement.event_id
+					  AND candidate.recipient_access_generation_id = entitlement.recipient_access_generation_id
+					  AND NOT EXISTS (
+						SELECT 1 FROM audience_entries AS prior_audience
+						JOIN published_moments AS prior_moment ON prior_moment.id = prior_audience.published_moment_id
+						JOIN published_media_placements AS prior_placement ON prior_placement.published_moment_id = prior_moment.id
+						WHERE prior_moment.publication_id = ?::uuid
+						  AND prior_audience.recipient_access_generation_id = candidate.recipient_access_generation_id
+						  AND prior_placement.media_item_id = candidate.media_item_id
+					  )
+				  ))
+			), inserted_new_for_you AS (
+				INSERT INTO new_for_you_entries (recipient_access_generation_id, publication_id)
+				SELECT recipient_access_generation_id, ?::uuid FROM qualifying_recipients
+				RETURNING recipient_access_generation_id
+			)
 			INSERT INTO publication_activity_items (publication_id, recipient_access_generation_id, created_at)
-			SELECT DISTINCT ?::uuid, entitlement.recipient_access_generation_id, ?::timestamptz
-			FROM current_audience_entitlements AS entitlement
-			JOIN recipient_access_generations AS access
-			  ON access.id = entitlement.recipient_access_generation_id
-			WHERE entitlement.event_id = ? AND access.is_current AND access.state = 'completed'
-			  AND (?::uuid IS NULL OR EXISTS (
-				SELECT 1 FROM current_audience_entitlements AS candidate
-				WHERE candidate.event_id = entitlement.event_id
-				  AND candidate.recipient_access_generation_id = entitlement.recipient_access_generation_id
-				  AND NOT EXISTS (
-					SELECT 1 FROM audience_entries AS prior_audience
-					JOIN published_moments AS prior_moment ON prior_moment.id = prior_audience.published_moment_id
-					JOIN published_media_placements AS prior_placement ON prior_placement.published_moment_id = prior_moment.id
-					WHERE prior_moment.publication_id = ?::uuid
-					  AND prior_audience.recipient_access_generation_id = candidate.recipient_access_generation_id
-					  AND prior_placement.media_item_id = candidate.media_item_id
-				  )
-			  ))
-		`, publicationID, now, eventID, priorID, priorID).Exec(ctx); err != nil {
+			SELECT ?::uuid, recipient_access_generation_id, ?::timestamptz
+			FROM qualifying_recipients
+		`, eventID, priorID, priorID, publicationID, publicationID, now).Exec(ctx); err != nil {
 			return err
 		}
 		if _, err := tx.NewRaw(`INSERT INTO publication_curator_activity_items (publication_id, actor_person_id, created_at) VALUES (?, ?, ?)`, publicationID, actor.PersonID, now).Exec(ctx); err != nil {

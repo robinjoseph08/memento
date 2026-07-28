@@ -102,6 +102,18 @@ func Refresh(ctx context.Context, tx bun.Tx, eventID uuid.UUID, now time.Time) (
 	return &Update{ID: stagedID.String(), BasePublicationID: publicationID.String(), Changes: changes, UpdatedAt: now}, nil
 }
 
+// InvalidateEvent records an externally-applied editable change and refreshes
+// its coalesced update in the same transaction.
+func InvalidateEvent(ctx context.Context, tx bun.Tx, eventID uuid.UUID, now time.Time) (*Update, error) {
+	if _, err := tx.NewRaw(`
+		UPDATE events SET version = version + 1, final_review_complete = false, updated_at = ?
+		WHERE id = ?
+	`, now, eventID).Exec(ctx); err != nil {
+		return nil, err
+	}
+	return Refresh(ctx, tx, eventID, now)
+}
+
 // Clear removes an Event's coalesced update after successful Publication.
 func Clear(ctx context.Context, tx bun.Tx, eventID uuid.UUID) error {
 	if _, err := tx.NewRaw(`UPDATE events SET current_staged_update_id = NULL WHERE id = ?`, eventID).Exec(ctx); err != nil {

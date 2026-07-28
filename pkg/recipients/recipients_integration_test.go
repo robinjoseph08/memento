@@ -98,7 +98,7 @@ type recipientFixture struct {
 func newRecipientFixture(t *testing.T) recipientFixture {
 	t.Helper()
 	ctx := context.Background()
-	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
+	now := time.Date(2100, 1, 2, 3, 4, 5, 0, time.UTC)
 	db := testdb.Open(t)
 	require.NoError(t, migrations.Apply(ctx, db))
 	curatorID := uuid.New()
