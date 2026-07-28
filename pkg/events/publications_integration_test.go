@@ -671,6 +671,40 @@ func TestStagedUpdateCoalescesConcurrentEditsRetriesAndCancellation(t *testing.T
 	assert.Zero(t, stagedCount, "cancelled changes leave no Staged work residue")
 }
 
+func TestStagedRemovalDoesNotReportCompactedRetainedMediaAsMoved(t *testing.T) {
+	fixture := newPublicationFixture(t)
+	ctx := context.Background()
+	_, err := fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, fixture.request())
+	require.NoError(t, err)
+
+	var update *StagedUpdate
+	require.NoError(t, fixture.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if _, err := tx.NewRaw(`
+			DELETE FROM draft_media_placements WHERE event_id = ? AND media_item_id = ?;
+			UPDATE draft_media_placements SET position = position - 1
+			WHERE event_id = ? AND position > 0
+		`, fixture.event, fixture.media[0], fixture.event).Exec(ctx); err != nil {
+			return err
+		}
+		var err error
+		update, err = refreshStagedUpdate(ctx, tx, fixture.event, fixture.service.now().UTC())
+		return err
+	}))
+	require.NotNil(t, update)
+	var removal *StagedChange
+	for index := range update.Changes {
+		change := &update.Changes[index]
+		if change.Kind == "move" {
+			t.Fatalf("position compaction reported retained Media as moved: %#v", change.MediaItemIDs)
+		}
+		if change.Kind == "removal" {
+			removal = change
+		}
+	}
+	require.NotNil(t, removal)
+	assert.Equal(t, []string{fixture.media[0].String()}, removal.MediaItemIDs)
+}
+
 func TestNoNewMediaCorrectionIsQuietAndClearsStageAtomically(t *testing.T) {
 	fixture := newPublicationFixture(t)
 	ctx := context.Background()

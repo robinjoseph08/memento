@@ -180,13 +180,10 @@ func summarizeStagedUpdate(ctx context.Context, db bun.IDB, eventID, publication
 	for _, placement := range published {
 		publishedByMedia[placement.MediaItemID] = placement
 	}
-	additions, removals, moves := make([]string, 0), make([]string, 0), make([]string, 0)
+	additions, removals := make([]string, 0), make([]string, 0)
 	for _, placement := range draft {
-		prior, exists := publishedByMedia[placement.MediaItemID]
-		if !exists {
+		if _, exists := publishedByMedia[placement.MediaItemID]; !exists {
 			additions = append(additions, placement.MediaItemID.String())
-		} else if prior.MomentID != placement.MomentID || prior.Position != placement.Position {
-			moves = append(moves, placement.MediaItemID.String())
 		}
 	}
 	for _, placement := range published {
@@ -194,6 +191,7 @@ func summarizeStagedUpdate(ctx context.Context, db bun.IDB, eventID, publication
 			removals = append(removals, placement.MediaItemID.String())
 		}
 	}
+	moves := meaningfulMoves(draft, published)
 	var removedMedia []RemovedMedia
 	if err := db.NewRaw(`
 		SELECT placement.media_item_id AS id, placement.media_type, placement.local_date_time
@@ -363,6 +361,53 @@ func summarizeStagedUpdate(ctx context.Context, db bun.IDB, eventID, publication
 	appendMomentChange(ChangeKindMomentStructure, "Moment structure or ordering changed", structureMoments, 0)
 	appendMomentChange(ChangeKindAccess, "Audience access changed", accessMoments, 0)
 	return changes, nil
+}
+
+func meaningfulMoves(draft, published []stagedPlacement) []string {
+	draftByMedia := make(map[uuid.UUID]stagedPlacement, len(draft))
+	publishedByMedia := make(map[uuid.UUID]stagedPlacement, len(published))
+	for _, placement := range draft {
+		draftByMedia[placement.MediaItemID] = placement
+	}
+	for _, placement := range published {
+		publishedByMedia[placement.MediaItemID] = placement
+	}
+
+	moved := make(map[uuid.UUID]bool)
+	draftRanks := make(map[uuid.UUID]int)
+	publishedRanks := make(map[uuid.UUID]int)
+	nextRank := make(map[uuid.UUID]int)
+	for _, placement := range draft {
+		prior, retained := publishedByMedia[placement.MediaItemID]
+		if !retained {
+			continue
+		}
+		if prior.MomentID != placement.MomentID {
+			moved[placement.MediaItemID] = true
+			continue
+		}
+		draftRanks[placement.MediaItemID] = nextRank[placement.MomentID]
+		nextRank[placement.MomentID]++
+	}
+	clear(nextRank)
+	for _, placement := range published {
+		next, retained := draftByMedia[placement.MediaItemID]
+		if !retained || next.MomentID != placement.MomentID {
+			continue
+		}
+		publishedRanks[placement.MediaItemID] = nextRank[placement.MomentID]
+		nextRank[placement.MomentID]++
+	}
+
+	moves := make([]string, 0, len(moved))
+	for _, placement := range draft {
+		if moved[placement.MediaItemID] || draftRanks[placement.MediaItemID] != publishedRanks[placement.MediaItemID] {
+			if _, retained := publishedByMedia[placement.MediaItemID]; retained {
+				moves = append(moves, placement.MediaItemID.String())
+			}
+		}
+	}
+	return moves
 }
 
 // Load returns the stored coalesced update without changing editable state.

@@ -560,6 +560,36 @@ test("@desktop organizes, orders, autosaves, and persists after reload", async (
   await expect(page.getByLabel("Cover").nth(1)).toHaveValue(items.loose.id);
 });
 
+test("@mobile Staged review fits the narrow Event pane", async ({ page }) => {
+  const staged = draft();
+  staged.lifecycle = "published";
+  staged.published_editable_version = staged.version;
+  staged.staged_update = {
+    id: "12121212-1212-4212-8212-121212121212",
+    base_publication_id: "13131313-1313-4313-8313-131313131313",
+    updated_at: "2026-05-03T01:00:00Z",
+    changes: [
+      {
+        kind: "addition",
+        count: 1,
+        media_item_ids: [items.first.id],
+        moment_ids: [],
+        detail: "Media added",
+      },
+    ],
+  };
+  await mockCuratorAPI(page, [], staged);
+  await openEvent(page);
+
+  const review = page.getByRole("region", { name: "Staged update review" });
+  await expect(review).toBeVisible();
+  await expect
+    .poll(() =>
+      review.evaluate((element) => element.scrollWidth <= element.clientWidth),
+    )
+    .toBe(true);
+});
+
 test("@mobile drills down without clipping and manually populates a Moment", async ({
   page,
 }) => {

@@ -1577,6 +1577,10 @@ h1 {
   background: rgb(14 165 233 / 10%);
 }
 
+.staged-review > * {
+  min-width: 0;
+}
+
 .staged-review h4,
 .staged-review p {
   margin: 0;
@@ -1966,8 +1970,9 @@ h1 {
     max-height: none;
   }
 
-  .organize-pane > header {
-    grid-template-columns: 1fr;
+  .organize-pane > header,
+  .staged-review {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
