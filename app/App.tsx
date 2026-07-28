@@ -3,8 +3,15 @@ import {
   useMutation,
   useQuery,
   useQueryClient,
+  type QueryClient,
 } from "@tanstack/react-query";
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type FormEvent,
+} from "react";
 import { useSearchParams } from "react-router-dom";
 
 import { APIError, apiJSON, apiNoContent } from "./api";
@@ -13,8 +20,11 @@ import { EventOrganizer } from "./EventOrganizer";
 import { FamilyManager } from "./FamilyManager";
 import { InvitationSuggestions } from "./InvitationSuggestions";
 import { PeopleManager } from "./PeopleManager";
+import { OfflineNotice, PWAUpdatePrompt, ThemeToggle } from "./PWAControls";
+import { PWA_RESTART_GUARD_EVENT, type PWARestartGuardDetail } from "./pwa";
 import { RepairWorkspace } from "./RepairWorkspace";
 import { RecipientLibrary } from "./RecipientLibrary";
+import { useOnlineStatus } from "./useOnlineStatus";
 import {
   RecipientVisibilityManager,
   VisibilityManager,
@@ -55,6 +65,12 @@ type BootstrapState =
   | { kind: "available" }
   | { kind: "session"; session: SessionResponse }
   | { kind: "closed" };
+
+function removeProtectedQueries(queryClient: QueryClient) {
+  queryClient.removeQueries({
+    predicate: (query) => query.queryKey[0] !== "bootstrap",
+  });
+}
 
 async function fetchBootstrap(): Promise<BootstrapState> {
   try {
@@ -1385,14 +1401,17 @@ function ReadyCard({
   session,
   onComplete,
   onSignOut,
+  online,
 }: {
   session?: SessionResponse;
   onComplete: (session: SessionResponse) => void;
   onSignOut: () => void;
+  online: boolean;
 }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const [draftsDirty, setDraftsDirty] = useState(false);
   const [draftsSaving, setDraftsSaving] = useState(false);
+  const [preserveDraftOffline, setPreserveDraftOffline] = useState(false);
   const draftsRequested = searchParams.get("workspace") === "drafts";
   const signOut = useMutation({
     mutationFn: () => {
@@ -1428,6 +1447,68 @@ function ReadyCard({
     window.addEventListener("popstate", protectDraftHistory);
     return () => window.removeEventListener("popstate", protectDraftHistory);
   }, [draftsDirty, draftsSaving, setSearchParams]);
+
+  useEffect(() => {
+    const protectDraftOnOffline = () => {
+      if (!draftsDirty) {
+        setPreserveDraftOffline(false);
+        return;
+      }
+      if (
+        draftsSaving ||
+        !window.confirm(
+          "Discard changes that have not finished saving and go offline?",
+        )
+      ) {
+        setPreserveDraftOffline(true);
+        return;
+      }
+      setDraftsDirty(false);
+      setPreserveDraftOffline(false);
+    };
+    const resetOfflineProtection = () => setPreserveDraftOffline(false);
+    const protectDraftOnRestart = (event: Event) => {
+      if (!draftsDirty) return;
+      const restartEvent = event as CustomEvent<PWARestartGuardDetail>;
+      if (draftsSaving) {
+        restartEvent.detail.blockedBy = "saving";
+        event.preventDefault();
+        return;
+      }
+      if (
+        !window.confirm(
+          "Discard changes that have not finished saving and update Memento?",
+        )
+      ) {
+        restartEvent.detail.blockedBy = "dirty";
+        event.preventDefault();
+        return;
+      }
+      setDraftsDirty(false);
+    };
+    window.addEventListener("offline", protectDraftOnOffline);
+    window.addEventListener("online", resetOfflineProtection);
+    window.addEventListener(PWA_RESTART_GUARD_EVENT, protectDraftOnRestart);
+    return () => {
+      window.removeEventListener("offline", protectDraftOnOffline);
+      window.removeEventListener("online", resetOfflineProtection);
+      window.removeEventListener(
+        PWA_RESTART_GUARD_EVENT,
+        protectDraftOnRestart,
+      );
+    };
+  }, [draftsDirty, draftsSaving]);
+
+  const keepDirtyDraftOpenOffline =
+    session?.curator && !online && draftsDirty && preserveDraftOffline;
+  if (session && !online && !keepDirtyDraftOpenOffline) {
+    return (
+      <div className="offline-shell">
+        <ThemeToggle />
+        <OfflineNotice />
+      </div>
+    );
+  }
 
   if (session?.curator && (draftsRequested || draftsDirty)) {
     return (
@@ -1476,6 +1557,12 @@ function ReadyCard({
           </button>
         </div>
         <ErrorMessage error={signOut.error} />
+        {!online ? (
+          <p className="form-error" role="alert">
+            Memento is offline. Reconnect before leaving while these changes
+            remain unsaved.
+          </p>
+        ) : null}
         <EventOrganizer
           onDirtyChange={setDraftsDirty}
           onSavingChange={setDraftsSaving}
@@ -1538,11 +1625,11 @@ function ReadyCard({
 }
 
 function InvitationLanding() {
+  const queryClient = useQueryClient();
+  const online = useOnlineStatus();
   const [searchParams] = useSearchParams();
-  const [token] = useState(() => searchParams.get("token") ?? "");
+  const [token, setToken] = useState(() => searchParams.get("token") ?? "");
   const [accepted, setAccepted] = useState(false);
-  const [acceptedSession, setAcceptedSession] = useState<SessionResponse>();
-  const [exitedInvitation, setExitedInvitation] = useState(false);
   const invitation = useQuery({
     queryKey: ["invitation", token],
     queryFn: () =>
@@ -1560,36 +1647,50 @@ function InvitationLanding() {
       }),
     onSuccess: () => {
       window.history.replaceState({}, "", "/");
+      removeProtectedQueries(queryClient);
+      setToken("");
       setAccepted(true);
     },
   });
   const acceptedIdentity = useQuery({
     queryKey: ["accepted-invitation-session"],
     queryFn: () => apiJSON<SessionResponse>("/api/session"),
-    enabled: accepted,
+    enabled: accepted && online,
     retry: 2,
     retryDelay: 0,
   });
-  const currentSession = accepted
-    ? (acceptedSession ?? acceptedIdentity.data)
-    : undefined;
 
-  if (exitedInvitation) {
-    return <MementoApp />;
-  }
+  useEffect(() => {
+    if (!accepted || online) return;
+    void queryClient.cancelQueries({
+      predicate: (query) => query.queryKey[0] !== "bootstrap",
+    });
+    removeProtectedQueries(queryClient);
+  }, [accepted, online, queryClient]);
+
+  const currentSession = accepted && online ? acceptedIdentity.data : undefined;
+  const acceptedSessionRevoked =
+    acceptedIdentity.error instanceof APIError &&
+    acceptedIdentity.error.status === 401;
+  const invalidInvitation =
+    !token ||
+    (invitation.error instanceof APIError && invitation.error.status === 404);
+  const inspectionUnavailable =
+    Boolean(token) && invitation.isError && !invalidInvitation;
 
   if (currentSession) {
+    return <MementoApp initialSession={currentSession} />;
+  }
+  if (acceptedSessionRevoked) {
+    return <MementoApp />;
+  }
+  if (accepted && !online) {
     return (
       <main>
-        <ReadyCard
-          onComplete={setAcceptedSession}
-          onSignOut={() => {
-            setAccepted(false);
-            setAcceptedSession(undefined);
-            setExitedInvitation(true);
-          }}
-          session={currentSession}
-        />
+        <div className="offline-shell">
+          <ThemeToggle />
+          <OfflineNotice />
+        </div>
       </main>
     );
   }
@@ -1626,10 +1727,21 @@ function InvitationLanding() {
         {!accepted && token && invitation.isPending ? (
           <p aria-live="polite">Checking this Invitation securely…</p>
         ) : null}
-        {!accepted && (!token || invitation.isError) ? (
+        {!accepted && invalidInvitation ? (
           <p className="form-error" role="alert">
             This Invitation is invalid or no longer available.
           </p>
+        ) : null}
+        {!accepted && inspectionUnavailable ? (
+          <>
+            <p className="form-error" role="alert">
+              Memento could not check this Invitation. Check your connection and
+              try again.
+            </p>
+            <button onClick={() => void invitation.refetch()} type="button">
+              Try again
+            </button>
+          </>
         ) : null}
         {!accepted && invitation.data ? (
           <>
@@ -1659,15 +1771,70 @@ function InvitationLanding() {
   );
 }
 
-function MementoApp() {
+function MementoApp({
+  initialSession,
+}: {
+  initialSession?: SessionResponse;
+} = {}) {
   const queryClient = useQueryClient();
-  const [completedSession, setCompletedSession] = useState<SessionResponse>();
+  const online = useOnlineStatus();
+  const [completedSession, setCompletedSession] = useState<
+    SessionResponse | undefined
+  >(initialSession);
   const [signedOut, setSignedOut] = useState(false);
   const bootstrap = useQuery({
     queryKey: ["bootstrap"],
     queryFn: fetchBootstrap,
+    enabled: !initialSession || signedOut,
     retry: false,
   });
+  const clearProtectedData = useCallback(() => {
+    removeProtectedQueries(queryClient);
+    queryClient.getMutationCache().clear();
+  }, [queryClient]);
+  const revokeLocalSession = useCallback(() => {
+    clearProtectedData();
+    setCompletedSession(undefined);
+    setSignedOut(true);
+  }, [clearProtectedData]);
+
+  useEffect(() => {
+    if (!online || bootstrap.data?.kind === "closed") {
+      clearProtectedData();
+    }
+  }, [bootstrap.data, clearProtectedData, online]);
+
+  useEffect(
+    () =>
+      queryClient.getQueryCache().subscribe((event) => {
+        if (event.type !== "updated") return;
+        const queryKey = event.query.queryKey as readonly unknown[];
+        if (
+          queryKey[0] === "bootstrap" ||
+          !(event.query.state.error instanceof APIError) ||
+          event.query.state.error.status !== 401
+        ) {
+          return;
+        }
+        revokeLocalSession();
+      }),
+    [queryClient, revokeLocalSession],
+  );
+
+  useEffect(
+    () =>
+      queryClient.getMutationCache().subscribe((event) => {
+        if (
+          event.type !== "updated" ||
+          !(event.mutation.state.error instanceof APIError) ||
+          event.mutation.state.error.status !== 401
+        ) {
+          return;
+        }
+        revokeLocalSession();
+      }),
+    [queryClient, revokeLocalSession],
+  );
 
   const completeSession = (session: SessionResponse) => {
     setSignedOut(false);
@@ -1675,9 +1842,7 @@ function MementoApp() {
   };
 
   const signOut = () => {
-    queryClient.removeQueries({
-      predicate: (query) => query.queryKey[0] !== "bootstrap",
-    });
+    clearProtectedData();
     setCompletedSession(undefined);
     setSignedOut(true);
   };
@@ -1688,6 +1853,7 @@ function MementoApp() {
         <ReadyCard
           onComplete={completeSession}
           onSignOut={signOut}
+          online={online}
           session={completedSession}
         />
       </main>
@@ -1711,12 +1877,20 @@ function MementoApp() {
   if (bootstrap.isError) {
     return (
       <main>
-        <section aria-labelledby="memento-title" className="shell-card">
-          <BrandHeader />
-          <p className="lede" role="alert">
-            Memento is unavailable.
-          </p>
-        </section>
+        {online ? (
+          <section aria-labelledby="memento-title" className="shell-card">
+            <BrandHeader />
+            <p className="lede" role="alert">
+              Memento could not verify access to your authorized library. It has
+              not been reported as empty.
+            </p>
+            <button onClick={() => void bootstrap.refetch()} type="button">
+              Try again
+            </button>
+          </section>
+        ) : (
+          <OfflineNotice />
+        )}
       </main>
     );
   }
@@ -1738,6 +1912,7 @@ function MementoApp() {
       <ReadyCard
         onComplete={completeSession}
         onSignOut={signOut}
+        online={online}
         session={session}
       />
     </main>
@@ -1745,9 +1920,14 @@ function MementoApp() {
 }
 
 export function App() {
-  return window.location.pathname === "/invitation" ? (
-    <InvitationLanding />
-  ) : (
-    <MementoApp />
+  return (
+    <>
+      <PWAUpdatePrompt />
+      {window.location.pathname === "/invitation" ? (
+        <InvitationLanding />
+      ) : (
+        <MementoApp />
+      )}
+    </>
   );
 }
