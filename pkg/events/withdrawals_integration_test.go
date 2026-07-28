@@ -117,6 +117,29 @@ func snapshotWithdrawalRows(t *testing.T, fixture publicationFixture, query stri
 	return serialized
 }
 
+func waitForAdvisoryLockWaiter(t *testing.T, fixture publicationFixture, mode string) {
+	t.Helper()
+	deadline := time.NewTimer(5 * time.Second)
+	poll := time.NewTicker(10 * time.Millisecond)
+	defer deadline.Stop()
+	defer poll.Stop()
+	lastWaiting := 0
+	for {
+		require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM pg_locks
+			WHERE locktype = 'advisory'
+			  AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+			  AND mode = ? AND NOT granted`, mode).Scan(context.Background(), &lastWaiting))
+		if lastWaiting > 0 {
+			return
+		}
+		select {
+		case <-poll.C:
+		case <-deadline.C:
+			t.Fatalf("transaction did not wait for the %s advisory lock; last waiting lock count: %d", mode, lastWaiting)
+		}
+	}
+}
+
 func reviewForFreshPublication(t *testing.T, fixture publicationFixture, priorPublicationID string, reviews []int) {
 	t.Helper()
 	ctx := context.Background()
@@ -572,13 +595,6 @@ func TestConcurrentPublicationRemovalIsRevalidatedAfterWithdrawalLocksTheEvent(t
 				t.Fatal("Publication did not reach the placement boundary")
 			}
 
-			withdrawalTargeted := make(chan struct{})
-			fixture.service.failWithdrawalStep = func(step WithdrawalStep) error {
-				if step == WithdrawalStepTargeted {
-					close(withdrawalTargeted)
-				}
-				return nil
-			}
 			withdrawn := make(chan error, 1)
 			go func() {
 				_, withdrawErr := fixture.service.Withdraw(ctx, fixture.actor, WithdrawRequest{
@@ -586,11 +602,7 @@ func TestConcurrentPublicationRemovalIsRevalidatedAfterWithdrawalLocksTheEvent(t
 				})
 				withdrawn <- withdrawErr
 			}()
-			select {
-			case <-withdrawalTargeted:
-			case <-time.After(5 * time.Second):
-				t.Fatal("Withdrawal did not discover the previously published target")
-			}
+			waitForAdvisoryLockWaiter(t, fixture, "ExclusiveLock")
 			releasePublicationOnce.Do(func() { close(releasePublication) })
 
 			select {
@@ -620,6 +632,125 @@ func TestConcurrentPublicationRemovalIsRevalidatedAfterWithdrawalLocksTheEvent(t
 			assert.Equal(t, int64(8), version, "rejected Withdrawal must not alter the published draft")
 		})
 	}
+}
+
+func TestConcurrentMediaPlacementGrowthWaitsForWithdrawalSnapshot(t *testing.T) {
+	fixture := newPublicationFixture(t)
+	ctx := context.Background()
+	_, err := fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, fixture.request())
+	require.NoError(t, err)
+
+	secondEvent, secondMoment, secondSnapshot := uuid.New(), uuid.New(), uuid.New()
+	_, err = fixture.db.NewRaw(`
+		INSERT INTO events (
+			id, lifecycle, title, description, grouping_timezone, version,
+			final_review_complete, created_at, updated_at
+		) VALUES (?, 'draft', 'Second Event', '', 'UTC', 7, true, ?, ?);
+		INSERT INTO draft_moments (
+			id, event_id, position, proposed_day, grouping_timezone, source_days,
+			title, cover_media_item_id, attendance_complete, audience_complete
+		) VALUES (?, ?, 0, '2026-07-27', 'UTC', ARRAY['2026-07-27'::date], 'Shared Media', ?, true, true);
+		INSERT INTO draft_media_placements (event_id, media_item_id, draft_moment_id, position, created_at)
+		VALUES (?, ?, ?, 0, ?);
+		INSERT INTO audience_snapshots (id, target_kind, target_id, approved_by_person_id, approved_at, label)
+		VALUES (?, 'moment', ?, ?, ?, 'Shared');
+		INSERT INTO audience_snapshot_entries (snapshot_id, recipient_person_id, recipient_access_generation_id)
+		VALUES (?, ?, ?);
+		INSERT INTO current_audience_snapshots (target_kind, target_id, snapshot_id)
+		VALUES ('moment', ?, ?)
+	`, secondEvent, fixture.service.now(), fixture.service.now(), secondMoment, secondEvent, fixture.media[0],
+		secondEvent, fixture.media[0], secondMoment, fixture.service.now(), secondSnapshot, secondMoment,
+		fixture.actor.PersonID, fixture.service.now(), secondSnapshot, fixture.people["shared"], fixture.access["shared"],
+		secondMoment, secondSnapshot).Exec(ctx)
+	require.NoError(t, err)
+
+	withdrawalLocked := make(chan struct{})
+	releaseWithdrawal := make(chan struct{})
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(releaseWithdrawal) })
+	fixture.service.failWithdrawalStep = func(step WithdrawalStep) error {
+		if step == WithdrawalStepLocked {
+			close(withdrawalLocked)
+			<-releaseWithdrawal
+		}
+		return nil
+	}
+	type withdrawalResult struct {
+		withdrawal Withdrawal
+		err        error
+	}
+	withdrawn := make(chan withdrawalResult, 1)
+	go func() {
+		withdrawal, withdrawErr := fixture.service.Withdraw(ctx, fixture.actor, WithdrawRequest{
+			TargetKind: WithdrawalTargetMedia, TargetID: fixture.media[0].String(), Reason: "Stable placement snapshot",
+		})
+		withdrawn <- withdrawalResult{withdrawal: withdrawal, err: withdrawErr}
+	}()
+	select {
+	case <-withdrawalLocked:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Withdrawal did not finish locked placement revalidation")
+	}
+
+	published := make(chan error, 1)
+	go func() {
+		_, publishErr := fixture.service.PublishEvent(ctx, fixture.actor, secondEvent, fixture.request())
+		published <- publishErr
+	}()
+
+	waitForAdvisoryLockWaiter(t, fixture, "ShareLock")
+
+	releaseOnce.Do(func() { close(releaseWithdrawal) })
+	var result withdrawalResult
+	select {
+	case result = <-withdrawn:
+		require.NoError(t, result.err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Withdrawal did not commit after release")
+	}
+	select {
+	case publishErr := <-published:
+		assert.ErrorIs(t, publishErr, ErrPublicationNotReady, "the waiting Publication must observe Withdrawal review invalidation")
+	case <-time.After(5 * time.Second):
+		t.Fatal("Publication did not resume after Withdrawal committed")
+	}
+	fixture.service.failWithdrawalStep = nil
+
+	var secondCurrentPlacements int
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM current_published_placements WHERE event_id = ?`, secondEvent).Scan(ctx, &secondCurrentPlacements))
+	assert.Zero(t, secondCurrentPlacements, "the rejected concurrent Publication must not mutate current placements")
+	freshSnapshot := uuid.New()
+	_, err = fixture.db.NewRaw(`
+		INSERT INTO audience_snapshots (id, target_kind, target_id, approved_by_person_id, approved_at, label)
+		VALUES (?, 'moment', ?, ?, ?, 'Shared');
+		INSERT INTO audience_snapshot_entries (snapshot_id, recipient_person_id, recipient_access_generation_id)
+		VALUES (?, ?, ?);
+		INSERT INTO current_audience_snapshots (target_kind, target_id, snapshot_id)
+		VALUES ('moment', ?, ?);
+		UPDATE draft_moments SET audience_complete = true WHERE id = ?
+	`, freshSnapshot, secondMoment, fixture.actor.PersonID, fixture.service.now(), freshSnapshot,
+		fixture.people["shared"], fixture.access["shared"], secondMoment, freshSnapshot, secondMoment).Exec(ctx)
+	require.NoError(t, err)
+	_, err = fixture.service.PublishEvent(ctx, fixture.actor, secondEvent, fixture.request())
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, result.withdrawal.AffectedEventCount)
+	var placementEvents, firstAudits, secondAudits int
+	var active bool
+	require.NoError(t, fixture.db.NewRaw(`SELECT
+		(SELECT count(DISTINCT event_id) FROM current_published_placements WHERE media_item_id = ?),
+		(SELECT count(*) FROM publication_audit_events WHERE event_id = ? AND action = 'content_withdrawn'),
+		(SELECT count(*) FROM publication_audit_events WHERE event_id = ? AND action = 'content_withdrawn'),
+		(SELECT restored_at IS NULL FROM content_withdrawals
+		 WHERE target_kind = 'media' AND target_id = ?)
+	`, fixture.media[0], fixture.event, secondEvent, fixture.media[0]).Scan(ctx,
+		&placementEvents, &firstAudits, &secondAudits, &active))
+	assert.Equal(t, 2, placementEvents, "the waiting Publication may add the placement after Withdrawal commits")
+	assert.Equal(t, 1, firstAudits)
+	assert.Zero(t, secondAudits, "Withdrawal audit scope must match its locked placement snapshot")
+	assert.True(t, active, "a later placement must remain covered by the active Media Withdrawal")
+	_, err = fixture.service.RecipientEvent(ctx, fixture.actorFor("shared"), secondEvent)
+	assert.ErrorIs(t, err, ErrNoPublication)
 }
 
 func TestFailedFreshPublicationKeepsEveryWithdrawalActiveAndRollsBackRestoration(t *testing.T) {

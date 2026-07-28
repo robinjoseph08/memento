@@ -126,6 +126,12 @@ func (s *Service) Withdraw(ctx context.Context, actor setup.CuratorSession, requ
 		if _, err := tx.NewRaw(`SELECT pg_advisory_xact_lock(hashtextextended(? || ':' || ?, 0))`, kind, targetID.String()).Exec(ctx); err != nil {
 			return err
 		}
+		// Exclude Publication placement changes from discovery through commit. A
+		// Publication already in flight completes first; later Publications wait
+		// and observe the committed Withdrawal.
+		if err := lockCurrentPublishedPlacements(ctx, tx, false); err != nil {
+			return err
+		}
 		var active bool
 		if err := tx.NewRaw(`SELECT EXISTS (SELECT 1 FROM content_withdrawals WHERE target_kind = ? AND target_id = ? AND restored_at IS NULL)`, kind, targetID).Scan(ctx, &active); err != nil {
 			return err

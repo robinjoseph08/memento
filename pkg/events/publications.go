@@ -14,7 +14,10 @@ import (
 	"github.com/uptrace/bun"
 )
 
-const PublicationJobKind = "publication_committed"
+const (
+	PublicationJobKind                = "publication_committed"
+	currentPublishedPlacementsLockKey = "events:current_published_placements"
+)
 
 var (
 	ErrPublicationNotReady = errors.New("Event is not ready for Publication")
@@ -107,6 +110,15 @@ func (s *Service) publicationBoundary(step PublicationStep) error {
 	return s.failPublicationStep(step)
 }
 
+func lockCurrentPublishedPlacements(ctx context.Context, tx bun.Tx, shared bool) error {
+	query := `SELECT pg_advisory_xact_lock(hashtextextended(?, 0))`
+	if shared {
+		query = `SELECT pg_advisory_xact_lock_shared(hashtextextended(?, 0))`
+	}
+	_, err := tx.NewRaw(query, currentPublishedPlacementsLockKey).Exec(ctx)
+	return err
+}
+
 // PublishEvent atomically appends history and replaces every Recipient projection.
 func (s *Service) PublishEvent(ctx context.Context, actor setup.CuratorSession, eventID uuid.UUID, request PublishEventRequest) (PublicationResponse, error) {
 	notify := true
@@ -117,6 +129,12 @@ func (s *Service) PublishEvent(ctx context.Context, actor setup.CuratorSession, 
 	now := s.now().UTC()
 	var response PublicationResponse
 	err := s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		// Publications share this lock while Withdrawal takes it exclusively. Taking
+		// it before Event locks gives Withdrawal one stable placement set without
+		// serializing Publications for independent Events.
+		if err := lockCurrentPublishedPlacements(ctx, tx, true); err != nil {
+			return err
+		}
 		var title, description, timezone, lifecycle string
 		var version int64
 		var finalReview bool
