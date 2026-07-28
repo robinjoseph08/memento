@@ -39,6 +39,8 @@ func init() {
 						PRIMARY KEY (published_moment_id, person_id)
 					)`,
 					`CREATE INDEX published_attendance_person_idx ON published_attendance (person_id, published_moment_id)`,
+					`ALTER TABLE current_published_events
+					 ADD COLUMN attendance_projection_ready boolean NOT NULL DEFAULT false`,
 					`INSERT INTO published_attendance (published_moment_id, person_id)
 					 SELECT published.id, attendance.person_id
 					 FROM published_moments AS published
@@ -47,11 +49,16 @@ func init() {
 					 JOIN events AS event
 					   ON event.id = publication.event_id
 					  AND event.current_publication_id = publication.id
-					 JOIN audience_snapshots AS approved
-					   ON approved.id = published.audience_snapshot_id
+					  AND event.version = publication.editable_version
 					 JOIN attendance
-					   ON attendance.moment_id = published.draft_moment_id
-					  AND attendance.confirmed_at <= approved.approved_at`,
+					   ON attendance.moment_id = published.draft_moment_id`,
+					`UPDATE current_published_events AS current
+					 SET attendance_projection_ready = true
+					 FROM publications AS publication, events AS event
+					 WHERE publication.id = current.publication_id
+					   AND event.id = current.event_id
+					   AND event.current_publication_id = publication.id
+					   AND event.version = publication.editable_version`,
 					`ALTER TABLE published_search_documents DROP COLUMN search_vector`,
 					`ALTER TABLE published_search_documents
 						ADD COLUMN capture_date date,
@@ -90,6 +97,7 @@ func init() {
 					`ALTER TABLE published_search_documents DROP COLUMN normalized_search_text, DROP COLUMN place_text, DROP COLUMN capture_date`,
 					`ALTER TABLE published_search_documents ADD COLUMN search_vector tsvector GENERATED ALWAYS AS (to_tsvector('simple', search_text)) STORED`,
 					`CREATE INDEX published_search_documents_vector_idx ON published_search_documents USING gin (search_vector)`,
+					`ALTER TABLE current_published_events DROP COLUMN attendance_projection_ready`,
 					`DROP INDEX published_attendance_person_idx`,
 					`DROP TABLE published_attendance`,
 					`ALTER TABLE published_moments DROP COLUMN place_labels`,

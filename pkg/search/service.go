@@ -253,6 +253,9 @@ const discoverablePerson = `
 	SELECT person.id, person.display_name,
 	       memento_normalize_search_text(person.display_name) AS normalized_name
 	FROM published_attendance AS attendance
+	JOIN current_published_events AS current
+	  ON current.publication_id = authorized.publication_id
+	 AND current.attendance_projection_ready
 	JOIN people AS person
 	  ON person.id = attendance.person_id
 	 AND person.archived_at IS NULL AND person.merged_at IS NULL

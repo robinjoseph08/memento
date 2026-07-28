@@ -49,6 +49,7 @@ function draft(version = 1): DraftEvent {
     version,
     final_review_complete: false,
     published_editable_version: null,
+    published_attendance_recovery_required: false,
     sources: [],
     moments: [
       {
@@ -248,6 +249,7 @@ function stubOrganizerAPI(initial: DraftEvent) {
           ...persisted,
           lifecycle: "published",
           published_editable_version: persisted.version,
+          published_attendance_recovery_required: false,
         };
         return response(
           {
@@ -483,6 +485,22 @@ test("publishes ready work and previews Recipient output read only", async () =>
   expect(
     screen.queryByRole("region", { name: "Read-only Recipient preview" }),
   ).not.toBeInTheDocument();
+});
+
+test("requires a replacement Publication when legacy Attendance cannot be reconstructed", async () => {
+  const recovery = organizedDraft(2);
+  recovery.lifecycle = "published";
+  recovery.published_editable_version = 1;
+  recovery.published_attendance_recovery_required = true;
+  stubOrganizerAPI(recovery);
+  renderOrganizer();
+  fireEvent.click(
+    await screen.findByRole("button", { name: /Family weekend/ }),
+  );
+
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "Person search is unavailable for this existing Publication because its Attendance cannot be reconstructed safely. Review and publish the Event again to restore it.",
+  );
 });
 
 test("withdraws a currently published target even when the staged draft differs", async () => {

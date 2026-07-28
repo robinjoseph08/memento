@@ -40,6 +40,7 @@ function draft(version = 1): DraftEvent {
     version,
     final_review_complete: false,
     published_editable_version: null,
+    published_attendance_recovery_required: false,
     sources: [],
     moments: [
       {

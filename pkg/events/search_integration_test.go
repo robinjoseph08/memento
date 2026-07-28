@@ -7,10 +7,13 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
@@ -356,6 +359,181 @@ func TestPersonMergeMovesOnlyCurrentPublishedAttendanceAndPreservesSearchMatches
 		assert.Zero(t, currentSource)
 		assert.Equal(t, 1, currentSurvivor, "current projection transfer must deduplicate Attendance")
 		assert.Equal(t, 1, historicalSource, "historical Publication Attendance remains immutable")
+	}
+}
+
+func TestConcurrentPublicationAndPersonMergePreserveCurrentAndHistoricalAttendance(t *testing.T) {
+	type publicationResult struct {
+		publication PublicationResponse
+		err         error
+	}
+	receivePublication := func(t *testing.T, results <-chan publicationResult) PublicationResponse {
+		t.Helper()
+		select {
+		case result := <-results:
+			require.NoError(t, result.err)
+			return result.publication
+		case <-time.After(5 * time.Second):
+			t.Fatal("Publication did not finish before the concurrency deadline")
+			return PublicationResponse{}
+		}
+	}
+	receiveMerge := func(t *testing.T, results <-chan error) {
+		t.Helper()
+		select {
+		case err := <-results:
+			require.NoError(t, err)
+		case <-time.After(5 * time.Second):
+			t.Fatal("Person merge did not finish before the concurrency deadline")
+		}
+	}
+	waitForSignal := func(t *testing.T, signal <-chan struct{}, operation string) {
+		t.Helper()
+		select {
+		case <-signal:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s did not reach the expected transaction boundary", operation)
+		}
+	}
+
+	for _, test := range []struct {
+		name             string
+		publicationFirst bool
+	}{
+		{name: "Publication commits first", publicationFirst: true},
+		{name: "Person merge commits first", publicationFirst: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newPublicationFixture(t)
+			ctx := context.Background()
+			sourceID, survivorID := uuid.New(), uuid.New()
+			_, err := fixture.db.NewRaw(`
+				INSERT INTO people (id, display_name, sort_name) VALUES
+					(?, 'Concurrent Source', 'concurrent source'),
+					(?, 'Concurrent Survivor', 'concurrent survivor');
+				INSERT INTO attendance (moment_id, person_id, source, confirmed_by_person_id, confirmed_at)
+				VALUES (?, ?, 'manual', ?, now())
+			`, sourceID, survivorID, fixture.moments[0], sourceID, fixture.actor.PersonID).Exec(ctx)
+			require.NoError(t, err)
+
+			first, err := fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, fixture.request())
+			require.NoError(t, err)
+			_, err = fixture.db.NewRaw(`UPDATE events SET version = 8 WHERE id = ?`, fixture.event).Exec(ctx)
+			require.NoError(t, err)
+			second, err := fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, PublishEventRequest{Version: 8})
+			require.NoError(t, err)
+			_, err = fixture.db.NewRaw(`UPDATE events SET version = 9 WHERE id = ?`, fixture.event).Exec(ctx)
+			require.NoError(t, err)
+
+			peopleService := peopledomain.New(fixture.db)
+			preview, err := peopleService.PreviewMerge(ctx, fixture.actor, sourceID, survivorID)
+			require.NoError(t, err)
+			mergeRequest := peopledomain.MergeRequest{
+				SourcePersonID: sourceID.String(), SurvivorPersonID: survivorID.String(),
+				SourceVersion: 1, SurvivorVersion: 1, PreviewFingerprint: preview.PreviewFingerprint,
+			}
+			mergeResults := make(chan error, 1)
+			publicationResults := make(chan publicationResult, 1)
+
+			if test.publicationFirst {
+				publicationReached := make(chan struct{})
+				releasePublication := make(chan struct{})
+				var releaseOnce sync.Once
+				defer releaseOnce.Do(func() { close(releasePublication) })
+				fixture.service.failPublicationStep = func(step PublicationStep) error {
+					if step != PublicationStepValidated {
+						return nil
+					}
+					close(publicationReached)
+					select {
+					case <-releasePublication:
+						return nil
+					case <-time.After(5 * time.Second):
+						return fmt.Errorf("timed out holding Publication at the validated boundary")
+					}
+				}
+				go func() {
+					publication, publishErr := fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, PublishEventRequest{Version: 9})
+					publicationResults <- publicationResult{publication: publication, err: publishErr}
+				}()
+				waitForSignal(t, publicationReached, "Publication")
+				go func() {
+					_, mergeErr := peopleService.Merge(ctx, fixture.actor, mergeRequest)
+					mergeResults <- mergeErr
+				}()
+				waitForAdvisoryLockWaiter(t, fixture, "memento:audiences", "ExclusiveLock")
+				releaseOnce.Do(func() { close(releasePublication) })
+			} else {
+				const mergePauseKey = "memento:test:person-merge"
+				holder, connectionErr := fixture.db.DB.Conn(ctx)
+				require.NoError(t, connectionErr)
+				defer holder.Close()
+				_, err = holder.ExecContext(ctx, `SELECT pg_advisory_lock(hashtextextended($1, 0))`, mergePauseKey)
+				require.NoError(t, err)
+				unlocked := false
+				defer func() {
+					if !unlocked {
+						_, _ = holder.ExecContext(ctx, `SELECT pg_advisory_unlock(hashtextextended($1, 0))`, mergePauseKey)
+					}
+				}()
+				_, err = fixture.db.ExecContext(ctx, fmt.Sprintf(`
+					CREATE FUNCTION pause_concurrent_person_merge() RETURNS trigger LANGUAGE plpgsql AS $$
+					BEGIN
+						PERFORM pg_advisory_xact_lock(hashtextextended('%s', 0));
+						RETURN NEW;
+					END $$;
+					CREATE TRIGGER pause_concurrent_person_merge
+					BEFORE UPDATE ON people FOR EACH ROW
+					WHEN (OLD.id = '%s'::uuid)
+					EXECUTE FUNCTION pause_concurrent_person_merge()
+				`, mergePauseKey, sourceID))
+				require.NoError(t, err)
+				go func() {
+					_, mergeErr := peopleService.Merge(ctx, fixture.actor, mergeRequest)
+					mergeResults <- mergeErr
+				}()
+				waitForAdvisoryLockWaiter(t, fixture, mergePauseKey, "ExclusiveLock")
+				go func() {
+					publication, publishErr := fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, PublishEventRequest{Version: 9})
+					publicationResults <- publicationResult{publication: publication, err: publishErr}
+				}()
+				waitForAdvisoryLockWaiter(t, fixture, "memento:audiences", "ShareLock")
+				_, err = holder.ExecContext(ctx, `SELECT pg_advisory_unlock(hashtextextended($1, 0))`, mergePauseKey)
+				require.NoError(t, err)
+				unlocked = true
+			}
+
+			third := receivePublication(t, publicationResults)
+			receiveMerge(t, mergeResults)
+			fixture.service.failPublicationStep = nil
+
+			attendanceCounts := func(publicationID string) (source, survivor int) {
+				t.Helper()
+				require.NoError(t, fixture.db.NewRaw(`
+					SELECT
+						count(*) FILTER (WHERE attendance.person_id = ?),
+						count(*) FILTER (WHERE attendance.person_id = ?)
+					FROM published_attendance AS attendance
+					JOIN published_moments AS moment ON moment.id = attendance.published_moment_id
+					WHERE moment.publication_id = ?
+				`, sourceID, survivorID, publicationID).Scan(ctx, &source, &survivor))
+				return source, survivor
+			}
+			firstSource, firstSurvivor := attendanceCounts(first.ID)
+			assert.Equal(t, 1, firstSource, "already historical Publication Attendance must remain attached to the source")
+			assert.Zero(t, firstSurvivor)
+			secondSource, secondSurvivor := attendanceCounts(second.ID)
+			if test.publicationFirst {
+				assert.Equal(t, 1, secondSource, "Publication made historical before merge must remain immutable")
+				assert.Zero(t, secondSurvivor)
+			} else {
+				assert.Zero(t, secondSource)
+				assert.Equal(t, 1, secondSurvivor, "merge transfers the row while its Publication is current")
+			}
+			currentSource, currentSurvivor := attendanceCounts(third.ID)
+			assert.Zero(t, currentSource, "current projection must not retain the merged source")
+			assert.Equal(t, 1, currentSurvivor, "current projection must contain only the survivor")
+		})
 	}
 }
 

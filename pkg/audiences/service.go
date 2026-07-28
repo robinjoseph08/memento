@@ -838,7 +838,7 @@ func PreviewPersonMerge(ctx context.Context, db bun.IDB, sourceID, survivorID uu
 		ConfirmedAt                       time.Time
 	}
 	type publishedAttendanceReference struct {
-		PublishedMomentID, PersonID uuid.UUID
+		EventID, DraftMomentID, PersonID uuid.UUID
 	}
 	type overrideReference struct {
 		TargetKind            string
@@ -858,12 +858,12 @@ func PreviewPersonMerge(ctx context.Context, db bun.IDB, sourceID, survivorID uu
 	}
 	publishedAttendance := make([]publishedAttendanceReference, 0)
 	if err := db.NewRaw(`
-		SELECT attendance.published_moment_id, attendance.person_id
+		SELECT current.event_id, moment.draft_moment_id, attendance.person_id
 		FROM published_attendance AS attendance
 		JOIN published_moments AS moment ON moment.id = attendance.published_moment_id
 		JOIN current_published_events AS current ON current.publication_id = moment.publication_id
 		WHERE attendance.person_id IN (?, ?)
-		ORDER BY attendance.published_moment_id, attendance.person_id
+		ORDER BY current.event_id, moment.draft_moment_id, attendance.person_id
 	`, sourceID, survivorID).Scan(ctx, &publishedAttendance); err != nil {
 		return PersonMergeEffects{}, err
 	}

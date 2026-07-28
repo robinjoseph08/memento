@@ -336,6 +336,7 @@ export function EventOrganizer({
               ...current,
               lifecycle: "published",
               published_editable_version: publication.editable_version,
+              published_attendance_recovery_required: false,
             }
           : current,
       );
@@ -1328,6 +1329,13 @@ export function EventOrganizer({
                 className="publication-actions"
               >
                 <h4 id="publication-actions-title">Publication</h4>
+                {currentDraft.published_attendance_recovery_required ? (
+                  <p className="form-error" role="alert">
+                    Person search is unavailable for this existing Publication
+                    because its Attendance cannot be reconstructed safely.
+                    Review and publish the Event again to restore it.
+                  </p>
+                ) : null}
                 <label>
                   <input
                     checked={notifyRecipients}

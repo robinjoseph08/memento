@@ -128,22 +128,23 @@ type EventSource struct {
 
 // Event is a portal-owned private draft.
 type Event struct {
-	ID                       string             `json:"id"`
-	Lifecycle                string             `json:"lifecycle"`
-	Title                    string             `json:"title"`
-	Description              string             `json:"description"`
-	PlaceLabels              []string           `json:"place_labels"`
-	GroupingTimezone         string             `json:"grouping_timezone"`
-	Version                  int64              `json:"version"`
-	FinalReviewComplete      bool               `json:"final_review_complete"`
-	PublishedEditableVersion *int64             `json:"published_editable_version" tstype:"number | null,required"`
-	Sources                  []EventSource      `json:"sources"`
-	Moments                  []Moment           `json:"moments"`
-	UnassignedMedia          []MediaItem        `json:"unassigned_media"`
-	WithdrawalTargets        []WithdrawalTarget `json:"withdrawal_targets"`
-	Withdrawals              []Withdrawal       `json:"withdrawals"`
-	CreatedAt                time.Time          `json:"created_at"`
-	UpdatedAt                time.Time          `json:"updated_at"`
+	ID                                  string             `json:"id"`
+	Lifecycle                           string             `json:"lifecycle"`
+	Title                               string             `json:"title"`
+	Description                         string             `json:"description"`
+	PlaceLabels                         []string           `json:"place_labels"`
+	GroupingTimezone                    string             `json:"grouping_timezone"`
+	Version                             int64              `json:"version"`
+	FinalReviewComplete                 bool               `json:"final_review_complete"`
+	PublishedEditableVersion            *int64             `json:"published_editable_version" tstype:"number | null,required"`
+	PublishedAttendanceRecoveryRequired bool               `json:"published_attendance_recovery_required"`
+	Sources                             []EventSource      `json:"sources"`
+	Moments                             []Moment           `json:"moments"`
+	UnassignedMedia                     []MediaItem        `json:"unassigned_media"`
+	WithdrawalTargets                   []WithdrawalTarget `json:"withdrawal_targets"`
+	Withdrawals                         []Withdrawal       `json:"withdrawals"`
+	CreatedAt                           time.Time          `json:"created_at"`
+	UpdatedAt                           time.Time          `json:"updated_at"`
 }
 
 // LooseItem is a private independently publishable Media draft.
@@ -920,8 +921,9 @@ func getEvent(ctx context.Context, db bun.IDB, id uuid.UUID) (Event, error) {
 	err := db.NewRaw(`
 		SELECT event.id, event.lifecycle, event.title, event.description,
 			event.grouping_timezone, event.version, event.final_review_complete,
-			publication.editable_version, event.created_at, event.updated_at,
-			to_json(event.place_labels)::text,
+			publication.editable_version,
+			publication.id IS NOT NULL AND NOT COALESCE(current.attendance_projection_ready, false),
+			event.created_at, event.updated_at, to_json(event.place_labels)::text,
 			COALESCE((
 				SELECT jsonb_agg(jsonb_build_object(
 					'id', withdrawal.id, 'target_kind', withdrawal.target_kind,
@@ -990,10 +992,12 @@ func getEvent(ctx context.Context, db bun.IDB, id uuid.UUID) (Event, error) {
 			), '[]'::jsonb)::text
 		FROM events AS event
 		LEFT JOIN publications AS publication ON publication.id = event.current_publication_id
+		LEFT JOIN current_published_events AS current ON current.publication_id = publication.id
 		WHERE event.id = ?
 	`, id).Scan(ctx, &event.ID, &event.Lifecycle, &event.Title, &event.Description,
 		&event.GroupingTimezone, &event.Version, &event.FinalReviewComplete,
-		&event.PublishedEditableVersion, &event.CreatedAt, &event.UpdatedAt,
+		&event.PublishedEditableVersion, &event.PublishedAttendanceRecoveryRequired,
+		&event.CreatedAt, &event.UpdatedAt,
 		&placeLabelsJSON, &withdrawalsJSON, &withdrawalTargetsJSON)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Event{}, ErrNotFound

@@ -149,9 +149,6 @@ func (s *Service) PublishEvent(ctx context.Context, actor setup.CuratorSession, 
 			}
 			return err
 		}
-		if err := audiences.LockPublishedAttendanceProjection(ctx, tx); err != nil {
-			return err
-		}
 		var curator bool
 		if err := tx.NewRaw(`SELECT EXISTS (SELECT 1 FROM person_roles WHERE person_id = ? AND role = 'curator')`, actor.PersonID).Scan(ctx, &curator); err != nil {
 			return err
@@ -226,6 +223,11 @@ func (s *Service) PublishEvent(ctx context.Context, actor setup.CuratorSession, 
 				return ErrAudienceNotCurrent
 			}
 		}
+		// Person merge locks access generations before taking this lock exclusively.
+		// Keep the same order so Publication and merge cannot wait on each other.
+		if err := audiences.LockPublishedAttendanceProjection(ctx, tx); err != nil {
+			return err
+		}
 		if err := s.publicationBoundary(PublicationStepValidated); err != nil {
 			return err
 		}
@@ -281,12 +283,15 @@ func (s *Service) PublishEvent(ctx context.Context, actor setup.CuratorSession, 
 
 		if _, err := tx.NewRaw(`
 			INSERT INTO current_published_events (
-				event_id, publication_id, title, description, grouping_timezone, place_labels, committed_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?)
+				event_id, publication_id, title, description, grouping_timezone, place_labels,
+				attendance_projection_ready, committed_at
+			) VALUES (?, ?, ?, ?, ?, ?, true, ?)
 			ON CONFLICT (event_id) DO UPDATE SET
 				publication_id = EXCLUDED.publication_id, title = EXCLUDED.title,
 				description = EXCLUDED.description, grouping_timezone = EXCLUDED.grouping_timezone,
-				place_labels = EXCLUDED.place_labels, committed_at = EXCLUDED.committed_at
+				place_labels = EXCLUDED.place_labels,
+				attendance_projection_ready = EXCLUDED.attendance_projection_ready,
+				committed_at = EXCLUDED.committed_at
 		`, eventID, publicationID, title, description, timezone, pgdialect.Array(eventPlaceLabels), now).Exec(ctx); err != nil {
 			return err
 		}
