@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/robinjoseph08/memento/internal/placementlock"
 	"github.com/robinjoseph08/memento/pkg/immich"
 	"github.com/robinjoseph08/memento/pkg/setup"
 	"github.com/uptrace/bun"
@@ -91,8 +92,9 @@ type mediaSource interface {
 }
 
 type Service struct {
-	db     *bun.DB
-	immich mediaSource
+	db                          *bun.DB
+	immich                      mediaSource
+	representationHandoffLocked func()
 }
 
 func New(db *bun.DB, source mediaSource) *Service {
@@ -194,15 +196,8 @@ const validPlacements = `
 	 AND published.media_item_id = placement.media_item_id
 	JOIN published_moments AS moment ON moment.id = placement.published_moment_id
 	JOIN media_items AS media ON media.id = placement.media_item_id
-	WHERE NOT EXISTS (
-		SELECT 1 FROM content_withdrawals
-		WHERE restored_at IS NULL AND target_kind = 'event' AND target_id = placement.event_id
-	) AND NOT EXISTS (
-		SELECT 1 FROM content_withdrawals
-		WHERE restored_at IS NULL AND target_kind = 'moment' AND target_id = moment.draft_moment_id
-	) AND NOT EXISTS (
-		SELECT 1 FROM content_withdrawals
-		WHERE restored_at IS NULL AND target_kind = 'media' AND target_id = placement.media_item_id
+	WHERE NOT content_is_withdrawn(
+		placement.event_id, moment.draft_moment_id, placement.media_item_id
 	)
 `
 
@@ -228,6 +223,31 @@ func ensureActor(ctx context.Context, db bun.IDB, actor setup.SessionActor) erro
 		return ErrNotFound
 	}
 	return nil
+}
+
+// lockActorForOpening orders the final response handoff against every persisted
+// actor invalidation. The order matches lifecycle writers: singleton settings,
+// Person, access generation, then Session.
+func lockActorForOpening(ctx context.Context, tx bun.Tx, actor setup.SessionActor) error {
+	locks := []struct {
+		query string
+		args  []any
+	}{
+		{`SELECT id FROM system_settings WHERE id = 1 FOR SHARE`, nil},
+		{`SELECT id FROM people WHERE id = ? FOR SHARE`, []any{actor.PersonID}},
+		{`SELECT id FROM recipient_access_generations WHERE id = ? FOR SHARE`, []any{actor.AccessID}},
+		{`SELECT id FROM sessions WHERE id = ? FOR SHARE`, []any{actor.SessionID}},
+	}
+	for _, lock := range locks {
+		var id any
+		if err := tx.NewRaw(lock.query, lock.args...).Scan(ctx, &id); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrNotFound
+			}
+			return err
+		}
+	}
+	return ensureActor(ctx, tx, actor)
 }
 
 func (s *Service) Photos(ctx context.Context, actor setup.SessionActor, rawLimit, rawCursor string, favorites bool) (MediaPage, error) {
@@ -563,45 +583,105 @@ func (s *Service) Representation(ctx context.Context, actor setup.SessionActor, 
 	if s.immich == nil {
 		return immich.MediaResponse{}, ErrNotFound
 	}
-	var assetID uuid.UUID
-	var mediaType string
-	err := s.db.RunInTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true}, func(ctx context.Context, tx bun.Tx) error {
-		if err := ensureActor(ctx, tx, actor); err != nil {
-			return err
+	type candidate struct {
+		BackingID uuid.UUID
+		AssetID   uuid.UUID
+		MediaType string
+	}
+	resolve := func(ctx context.Context, db bun.IDB) (candidate, error) {
+		if err := ensureActor(ctx, db, actor); err != nil {
+			return candidate{}, err
 		}
+		var resolved candidate
 		query := fmt.Sprintf(`WITH valid AS (%s)
-			SELECT backing.immich_asset_id, valid.media_type FROM valid
+			SELECT backing.id, backing.immich_asset_id, valid.media_type FROM valid
 			JOIN media_backings AS backing ON backing.media_item_id = valid.media_item_id AND backing.active
 			WHERE valid.media_item_id = ? AND valid.available LIMIT 1`, validPlacements)
-		if err := tx.NewRaw(query, actor.AccessID, mediaID).Scan(ctx, &assetID, &mediaType); err != nil {
+		if err := db.NewRaw(query, actor.AccessID, mediaID).Scan(ctx, &resolved.BackingID, &resolved.AssetID, &resolved.MediaType); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
-				return ErrNotFound
+				return candidate{}, ErrNotFound
 			}
-			return err
+			return candidate{}, err
 		}
-		if kind == representationVideo && mediaType != "video" {
-			return ErrNotFound
+		if kind == representationVideo && resolved.MediaType != "video" {
+			return candidate{}, ErrNotFound
 		}
-		return nil
-	})
+		return resolved, nil
+	}
+
+	// Resolve a candidate without holding a transaction across potentially slow
+	// Immich headers. Nothing from this first check is returned to the Recipient.
+	resolved, err := resolve(ctx, s.db)
 	if err != nil {
 		return immich.MediaResponse{}, err
 	}
 	var response immich.MediaResponse
 	switch kind {
 	case representationThumbnail:
-		response, err = s.immich.Thumbnail(ctx, assetID, request)
+		response, err = s.immich.Thumbnail(ctx, resolved.AssetID, request)
 	case representationPreview:
-		response, err = s.immich.Preview(ctx, assetID, request)
+		response, err = s.immich.Preview(ctx, resolved.AssetID, request)
 	case representationVideo:
-		response, err = s.immich.Video(ctx, assetID, request)
+		response, err = s.immich.Video(ctx, resolved.AssetID, request)
 	case representationOriginal:
-		response, err = s.immich.Original(ctx, assetID, request)
+		response, err = s.immich.Original(ctx, resolved.AssetID, request)
 	default:
 		return immich.MediaResponse{}, ErrNotFound
 	}
 	if errors.Is(err, immich.ErrNotFound) {
-		return immich.MediaResponse{}, ErrNotFound
+		err = ErrNotFound
 	}
-	return response, err
+	if err != nil {
+		if response.Body != nil {
+			_ = response.Body.Close()
+		}
+		return immich.MediaResponse{}, err
+	}
+
+	// Immediately before handing the opened body to the caller, order against
+	// Withdrawal and every actor invalidation, then lock the Media identity before
+	// its active backing in the same order as lifecycle writers. Placement comes
+	// first because Publication also takes it before access rows.
+	err = s.db.RunInTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted}, func(ctx context.Context, tx bun.Tx) error {
+		if err := placementlock.Acquire(ctx, tx, placementlock.Shared); err != nil {
+			return err
+		}
+		if err := lockActorForOpening(ctx, tx, actor); err != nil {
+			return err
+		}
+		var lockedMediaID uuid.UUID
+		if err := tx.NewRaw(`SELECT id FROM media_items WHERE id = ? FOR SHARE`, mediaID).Scan(ctx, &lockedMediaID); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrNotFound
+			}
+			return err
+		}
+		var lockedBackingID uuid.UUID
+		if err := tx.NewRaw(`SELECT id FROM media_backings
+			WHERE id = ? AND media_item_id = ? AND immich_asset_id = ? AND active
+			FOR SHARE`, resolved.BackingID, mediaID, resolved.AssetID).Scan(ctx, &lockedBackingID); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrNotFound
+			}
+			return err
+		}
+		current, err := resolve(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if current != resolved {
+			return ErrNotFound
+		}
+		if s.representationHandoffLocked != nil {
+			s.representationHandoffLocked()
+		}
+		return nil
+	})
+	if err != nil {
+		if response.Body != nil {
+			_ = response.Body.Close()
+		}
+		return immich.MediaResponse{}, err
+	}
+	return response, nil
 }

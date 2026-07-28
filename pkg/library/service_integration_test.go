@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -66,6 +67,55 @@ func (stub *thumbnailStub) media(assetID uuid.UUID, representation string, reque
 		Body: io.NopCloser(bytes.NewBufferString(representation)), StatusCode: http.StatusOK,
 		ContentType: "image/webp", ContentLength: int64(len(representation)),
 	}, nil
+}
+
+type observedRepresentationBody struct {
+	io.Reader
+	closed chan struct{}
+	once   sync.Once
+}
+
+func (body *observedRepresentationBody) Close() error {
+	body.once.Do(func() { close(body.closed) })
+	return nil
+}
+
+type blockingRepresentationSource struct {
+	started chan struct{}
+	release chan struct{}
+	bodies  chan *observedRepresentationBody
+}
+
+func (source *blockingRepresentationSource) Thumbnail(ctx context.Context, _ uuid.UUID, _ immich.MediaRequest) (immich.MediaResponse, error) {
+	return source.open(ctx, "thumbnail")
+}
+
+func (source *blockingRepresentationSource) Preview(ctx context.Context, _ uuid.UUID, _ immich.MediaRequest) (immich.MediaResponse, error) {
+	return source.open(ctx, "preview")
+}
+
+func (source *blockingRepresentationSource) Video(ctx context.Context, _ uuid.UUID, _ immich.MediaRequest) (immich.MediaResponse, error) {
+	return source.open(ctx, "video")
+}
+
+func (source *blockingRepresentationSource) Original(ctx context.Context, _ uuid.UUID, _ immich.MediaRequest) (immich.MediaResponse, error) {
+	return source.open(ctx, "original")
+}
+
+func (source *blockingRepresentationSource) open(ctx context.Context, contents string) (immich.MediaResponse, error) {
+	select {
+	case source.started <- struct{}{}:
+	case <-ctx.Done():
+		return immich.MediaResponse{}, ctx.Err()
+	}
+	select {
+	case <-source.release:
+	case <-ctx.Done():
+		return immich.MediaResponse{}, ctx.Err()
+	}
+	body := &observedRepresentationBody{Reader: strings.NewReader(contents), closed: make(chan struct{})}
+	source.bodies <- body
+	return immich.MediaResponse{Body: body, StatusCode: http.StatusOK, ContentType: "image/webp"}, nil
 }
 
 type libraryFixture struct {
@@ -927,6 +977,240 @@ func TestMediaRepresentationsRevalidateEveryAuthorizationBoundaryBeforeImmich(t 
 			}
 			assert.Empty(t, fixture.thumbnail.assets, "a denied representation request never reaches Immich")
 		})
+	}
+}
+
+func TestRepresentationClosesOpenedBodyWhenActorInvalidatesBeforeHandoff(t *testing.T) {
+	tests := []struct {
+		name           string
+		representation string
+		invalidate     string
+	}{
+		{name: "Session revocation", representation: "thumbnail", invalidate: `UPDATE sessions SET revoked_at = now() WHERE id = ?`},
+		{name: "Person archive", representation: "preview", invalidate: `UPDATE people SET archived_at = now() WHERE id = ?`},
+		{name: "access suspension", representation: "video", invalidate: `UPDATE recipient_access_generations SET state = 'suspended' WHERE id = ?`},
+		{name: "access revocation", representation: "original", invalidate: `UPDATE recipient_access_generations SET state = 'revoked', is_current = false, ended_at = now() WHERE id = ?`},
+		{name: "generation invalidation", representation: "thumbnail", invalidate: `UPDATE recipient_access_generations SET is_current = false WHERE id = ?`},
+		{name: "security epoch change", representation: "preview", invalidate: `UPDATE system_settings SET security_epoch = decode(repeat('99', 32), 'hex') WHERE id = ?`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newLibraryFixture(t)
+			ctx := context.Background()
+			if test.representation == "video" {
+				_, err := fixture.db.NewRaw(`
+					UPDATE media_items SET media_type = 'video' WHERE id = ?;
+					UPDATE published_media_placements SET media_type = 'video' WHERE media_item_id = ?
+				`, fixture.media[0], fixture.media[0]).Exec(ctx)
+				require.NoError(t, err)
+			}
+			source := &blockingRepresentationSource{
+				started: make(chan struct{}, 1), release: make(chan struct{}),
+				bodies: make(chan *observedRepresentationBody, 1),
+			}
+			service := New(fixture.db, source)
+			result := make(chan error, 1)
+			go func() {
+				var response immich.MediaResponse
+				var err error
+				switch test.representation {
+				case "thumbnail":
+					response, err = service.Thumbnail(ctx, fixture.actor, fixture.media[0], immich.MediaRequest{})
+				case "preview":
+					response, err = service.Preview(ctx, fixture.actor, fixture.media[0], immich.MediaRequest{})
+				case "video":
+					response, err = service.Video(ctx, fixture.actor, fixture.media[0], immich.MediaRequest{})
+				case "original":
+					response, err = service.Original(ctx, fixture.actor, fixture.media[0], immich.MediaRequest{})
+				}
+				if response.Body != nil {
+					_ = response.Body.Close()
+				}
+				result <- err
+			}()
+			select {
+			case <-source.started:
+			case <-time.After(5 * time.Second):
+				t.Fatal("Immich response did not begin opening")
+			}
+			argument := any(fixture.actor.AccessID)
+			switch test.name {
+			case "Session revocation":
+				argument = fixture.actor.SessionID
+			case "Person archive":
+				argument = fixture.actor.PersonID
+			case "security epoch change":
+				argument = 1
+			}
+			_, err := fixture.db.NewRaw(test.invalidate, argument).Exec(ctx)
+			require.NoError(t, err, "invalidation must commit while Immich is slow")
+			close(source.release)
+			var body *observedRepresentationBody
+			select {
+			case body = <-source.bodies:
+			case <-time.After(5 * time.Second):
+				t.Fatal("Immich did not return its opened body")
+			}
+			select {
+			case err := <-result:
+				assert.ErrorIs(t, err, ErrNotFound)
+			case <-time.After(5 * time.Second):
+				t.Fatal("representation did not finish final authorization")
+			}
+			select {
+			case <-body.closed:
+			case <-time.After(5 * time.Second):
+				t.Fatal("denied opened body was not closed")
+			}
+		})
+	}
+}
+
+func TestRepresentationLocksResolvedMediaAndBackingThroughFinalHandoff(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate string
+	}{
+		{name: "availability mutation", mutate: `UPDATE media_items SET availability = 'source_missing' WHERE id = ?`},
+		{name: "active backing mutation", mutate: `UPDATE media_backings SET active = false, ended_at = now() WHERE media_item_id = ? AND active`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newLibraryFixture(t)
+			ctx := context.Background()
+			handoffLocked := make(chan struct{})
+			releaseHandoff := make(chan struct{})
+			service := New(fixture.db, fixture.thumbnail)
+			service.representationHandoffLocked = func() {
+				close(handoffLocked)
+				<-releaseHandoff
+			}
+			type representationResult struct {
+				response immich.MediaResponse
+				err      error
+			}
+			opened := make(chan representationResult, 1)
+			go func() {
+				response, err := service.Thumbnail(ctx, fixture.actor, fixture.media[0], immich.MediaRequest{})
+				opened <- representationResult{response: response, err: err}
+			}()
+			select {
+			case <-handoffLocked:
+			case <-time.After(5 * time.Second):
+				t.Fatal("representation did not lock its resolved Media handoff")
+			}
+
+			writerPID := make(chan int, 1)
+			mutated := make(chan error, 1)
+			go func() {
+				tx, err := fixture.db.BeginTx(ctx, nil)
+				if err != nil {
+					mutated <- err
+					return
+				}
+				defer func() { _ = tx.Rollback() }()
+				var pid int
+				if err := tx.NewRaw(`SELECT pg_backend_pid()`).Scan(ctx, &pid); err != nil {
+					mutated <- err
+					return
+				}
+				writerPID <- pid
+				if _, err := tx.NewRaw(test.mutate, fixture.media[0]).Exec(ctx); err != nil {
+					mutated <- err
+					return
+				}
+				mutated <- tx.Commit()
+			}()
+			var pid int
+			select {
+			case pid = <-writerPID:
+			case err := <-mutated:
+				require.NoError(t, err)
+				t.Fatal("Media lifecycle mutation completed before the final handoff released its row locks")
+			case <-time.After(5 * time.Second):
+				t.Fatal("Media lifecycle writer did not start")
+			}
+			waitForLibraryLockWait(t, fixture.db, pid)
+			close(releaseHandoff)
+
+			select {
+			case result := <-opened:
+				require.NoError(t, result.err)
+				require.NotNil(t, result.response.Body)
+				require.NoError(t, result.response.Body.Close())
+			case <-time.After(5 * time.Second):
+				t.Fatal("representation did not complete its final handoff")
+			}
+			select {
+			case err := <-mutated:
+				require.NoError(t, err)
+			case <-time.After(5 * time.Second):
+				t.Fatal("Media lifecycle mutation did not resume after the representation handoff")
+			}
+			assert.Equal(t, []uuid.UUID{fixture.assets[0]}, fixture.thumbnail.assets)
+		})
+	}
+}
+
+func waitForLibraryLockWait(t *testing.T, db *bun.DB, pid int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	lastWait := ""
+	for time.Now().Before(deadline) {
+		if err := db.NewRaw(`SELECT COALESCE(wait_event_type, '') || ':' || COALESCE(wait_event, '')
+			FROM pg_stat_activity WHERE pid = ?`, pid).Scan(context.Background(), &lastWait); err != nil {
+			t.Fatalf("inspect Media lifecycle writer wait: %v", err)
+		}
+		if strings.HasPrefix(lastWait, "Lock:") {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("Media lifecycle writer did not wait on the representation row locks; last wait was %q", lastWait)
+}
+
+func TestSlowRepresentationOpeningDoesNotExhaustMinimumConnectionPool(t *testing.T) {
+	fixture := newLibraryFixture(t)
+	fixture.db.SetMaxOpenConns(2)
+	fixture.db.SetMaxIdleConns(2)
+	source := &blockingRepresentationSource{
+		started: make(chan struct{}, 2), release: make(chan struct{}),
+		bodies: make(chan *observedRepresentationBody, 2),
+	}
+	service := New(fixture.db, source)
+	type result struct {
+		response immich.MediaResponse
+		err      error
+	}
+	results := make(chan result, 2)
+	for range 2 {
+		go func() {
+			response, err := service.Thumbnail(context.Background(), fixture.actor, fixture.media[0], immich.MediaRequest{})
+			results <- result{response: response, err: err}
+		}()
+	}
+	for range 2 {
+		select {
+		case <-source.started:
+		case <-time.After(5 * time.Second):
+			t.Fatal("slow Immich opening did not start")
+		}
+	}
+
+	queryCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	var one int
+	require.NoError(t, fixture.db.NewRaw(`SELECT 1`).Scan(queryCtx, &one),
+		"slow upstream headers must not retain either pooled connection")
+	assert.Equal(t, 1, one)
+	close(source.release)
+	for range 2 {
+		select {
+		case opened := <-results:
+			require.NoError(t, opened.err)
+			require.NoError(t, opened.response.Body.Close())
+		case <-time.After(5 * time.Second):
+			t.Fatal("representation did not finish after upstream release")
+		}
 	}
 }
 

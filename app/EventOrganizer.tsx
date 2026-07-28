@@ -12,6 +12,8 @@ import type {
   PreviewRecipientsResponse,
   PublicationResponse,
   PublishedEventView,
+  Withdrawal,
+  WithdrawalTarget,
 } from "./types/generated/events";
 import type { SessionResponse } from "./types/generated/setup";
 
@@ -174,6 +176,8 @@ export function EventOrganizer({
   const [notifyRecipients, setNotifyRecipients] = useState(true);
   const [previewRecipientID, setPreviewRecipientID] = useState("");
   const [previewOpen, setPreviewOpen] = useState(false);
+  const [withdrawTarget, setWithdrawTarget] = useState<WithdrawalTarget>();
+  const [withdrawReason, setWithdrawReason] = useState("");
   const revisionRef = useRef(0);
   const latestDraftRef = useRef<DraftEvent | undefined>(undefined);
   const selectedIDRef = useRef("");
@@ -258,6 +262,33 @@ export function EventOrganizer({
         queryKey: ["event", publishedEvent.id],
       });
       void queryClient.invalidateQueries({ queryKey: ["events"] });
+    },
+  });
+
+  const withdraw = useMutation({
+    mutationFn: (target: WithdrawalTarget) =>
+      apiJSON<Withdrawal>("/api/withdrawals", {
+        method: "POST",
+        headers: { "X-Memento-CSRF": session.csrf_token },
+        body: JSON.stringify({
+          target_kind: target.target_kind,
+          target_id: target.target_id,
+          reason: withdrawReason,
+        }),
+      }),
+    onSuccess: () => {
+      setWithdrawTarget(undefined);
+      setWithdrawReason("");
+      setPreviewOpen(false);
+      void queryClient.invalidateQueries({ queryKey: ["events"] });
+      void queryClient.invalidateQueries({ queryKey: ["event"] });
+      void eventQuery.refetch().then((result) => {
+        if (!result.data) return;
+        latestDraftRef.current = result.data;
+        setDraft(result.data);
+        setRevision(0);
+        setSaveState("saved");
+      });
     },
   });
 
@@ -651,6 +682,16 @@ export function EventOrganizer({
         : [],
     [currentDraft],
   );
+  const withdrawalTargets = currentDraft?.withdrawal_targets ?? [];
+  const selectedWithdrawTarget =
+    withdrawTarget &&
+    withdrawalTargets.some(
+      (target) =>
+        target.target_kind === withdrawTarget.target_kind &&
+        target.target_id === withdrawTarget.target_id,
+    )
+      ? withdrawTarget
+      : withdrawalTargets[0];
 
   return (
     <section aria-labelledby="curator-work-title" className="curator-workspace">
@@ -785,6 +826,9 @@ export function EventOrganizer({
                     setPreviewRecipientID("");
                     setPreviewOpen(false);
                     publish.reset();
+                    withdraw.reset();
+                    setWithdrawTarget(undefined);
+                    setWithdrawReason("");
                     setSelectedID(event.id);
                     setActivePane("organize");
                   }}
@@ -1067,6 +1111,110 @@ export function EventOrganizer({
                 />
                 Final review complete
               </label>
+              {currentDraft.lifecycle === "published" ? (
+                <section
+                  aria-labelledby="withdrawal-actions-title"
+                  className="publication-actions withdrawal-actions"
+                >
+                  <h4 id="withdrawal-actions-title">Withdraw access</h4>
+                  <p>
+                    Withdrawal takes effect immediately. Restoration is not a
+                    toggle and requires newly reviewed Audiences plus a fresh
+                    Publication for every Event where the identity is currently
+                    placed. Reused Media may require several Publications.
+                  </p>
+                  <label>
+                    Currently published target
+                    <select
+                      disabled={withdrawalTargets.length === 0}
+                      onChange={(event) => {
+                        setWithdrawTarget(
+                          withdrawalTargets.find(
+                            (target) => target.target_id === event.target.value,
+                          ),
+                        );
+                        withdraw.reset();
+                      }}
+                      value={selectedWithdrawTarget?.target_id ?? ""}
+                    >
+                      {withdrawalTargets.length === 0 ? (
+                        <option value="">No targets available</option>
+                      ) : null}
+                      {withdrawalTargets.map((target) => (
+                        <option
+                          key={`${target.target_kind}:${target.target_id}`}
+                          value={target.target_id}
+                        >
+                          {target.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Attributable reason
+                    <textarea
+                      maxLength={1000}
+                      onChange={(event) =>
+                        setWithdrawReason(event.target.value)
+                      }
+                      required
+                      value={withdrawReason}
+                    />
+                  </label>
+                  <button
+                    disabled={
+                      saveState !== "saved" ||
+                      withdraw.isPending ||
+                      !selectedWithdrawTarget ||
+                      !withdrawReason.trim()
+                    }
+                    onClick={() => {
+                      if (
+                        selectedWithdrawTarget &&
+                        window.confirm(
+                          "Withdraw Recipient access immediately? Identity and history will be preserved.",
+                        )
+                      ) {
+                        withdraw.mutate(selectedWithdrawTarget);
+                      }
+                    }}
+                    type="button"
+                  >
+                    {withdraw.isPending ? "Withdrawing…" : "Withdraw access"}
+                  </button>
+                  {withdraw.isError ? (
+                    <p className="form-error" role="alert">
+                      {withdraw.error.message}
+                    </p>
+                  ) : null}
+                  {withdraw.data ? (
+                    <p role="status">
+                      Access withdrawn for{" "}
+                      {withdraw.data.affected_recipient_count} Recipients across{" "}
+                      {withdraw.data.affected_media_count} Media items.
+                      Withdrawal created no new external notification. A
+                      delivery already handed off before it committed may still
+                      arrive.
+                    </p>
+                  ) : null}
+                  {currentDraft.withdrawals.length > 0 ? (
+                    <div>
+                      <h5>Withdrawal history</h5>
+                      <ul>
+                        {currentDraft.withdrawals.map((item) => (
+                          <li key={item.id}>
+                            <strong>{item.target_kind}</strong>: {item.reason}{" "}
+                            by {item.withdrawn_by_name}.{" "}
+                            {item.restored_at
+                              ? "Restored by a later Publication."
+                              : "Access remains withdrawn."}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+                </section>
+              ) : null}
               <section
                 aria-labelledby="publication-actions-title"
                 className="publication-actions"

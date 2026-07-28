@@ -4,6 +4,7 @@ import type {
   Event as DraftEvent,
   MediaItem,
   OrganizeEventRequest,
+  WithdrawRequest,
 } from "../../app/types/generated/events";
 
 const csrfToken = "c".repeat(64);
@@ -66,6 +67,39 @@ function draft(version = 1): DraftEvent {
       },
     ],
     unassigned_media: [items.loose],
+    withdrawal_targets: [
+      {
+        target_kind: "event",
+        target_id: eventID,
+        label: "Event: Family weekend",
+      },
+      {
+        target_kind: "moment",
+        target_id: momentOneID,
+        label: "Moment: Friday",
+      },
+      {
+        target_kind: "moment",
+        target_id: momentTwoID,
+        label: "Moment: Saturday",
+      },
+      {
+        target_kind: "media",
+        target_id: items.first.id,
+        label: "Media: first photo",
+      },
+      {
+        target_kind: "media",
+        target_id: items.second.id,
+        label: "Media: second photo",
+      },
+      {
+        target_kind: "media",
+        target_id: items.third.id,
+        label: "Media: third photo",
+      },
+    ],
+    withdrawals: [],
     created_at: "2026-05-03T00:00:00Z",
     updated_at: "2026-05-03T00:00:00Z",
   };
@@ -107,6 +141,7 @@ async function mockCuratorAPI(
 ) {
   let persisted = initial;
   const attempts: OrganizeEventRequest[] = [];
+  const withdrawalRequests: WithdrawRequest[] = [];
   let failureIndex = 0;
 
   await page.route("**/api/**", async (route) => {
@@ -150,6 +185,46 @@ async function mockCuratorAPI(
     }
     if (path === `/api/events/${eventID}` && request.method() === "GET") {
       await route.fulfill({ json: persisted });
+      return;
+    }
+    if (path === "/api/withdrawals" && request.method() === "POST") {
+      const body = request.postDataJSON() as WithdrawRequest;
+      withdrawalRequests.push(body);
+      const affected =
+        body.target_kind === "event"
+          ? { recipients: 2, media: 3 }
+          : { recipients: 1, media: 1 };
+      persisted = {
+        ...persisted,
+        version: persisted.version + 1,
+        final_review_complete: false,
+        moments: persisted.moments.map((moment) => ({
+          ...moment,
+          audience_complete: false,
+        })),
+        withdrawal_targets: persisted.withdrawal_targets.filter(
+          (target) =>
+            target.target_kind !== body.target_kind ||
+            target.target_id !== body.target_id,
+        ),
+        withdrawals: [
+          ...persisted.withdrawals,
+          {
+            id: `${persisted.withdrawals.length + 7}7777777-7777-4777-8777-777777777777`,
+            target_kind: body.target_kind,
+            target_id: body.target_id,
+            reason: body.reason,
+            withdrawn_by_name: "Robin",
+            withdrawn_at: "2026-05-03T00:00:00Z",
+            restored_by_publication_id: null,
+            restored_at: null,
+            affected_recipient_count: affected.recipients,
+            affected_media_count: affected.media,
+            affected_event_count: 1,
+          },
+        ],
+      };
+      await route.fulfill({ status: 201, json: persisted.withdrawals[0] });
       return;
     }
     if (
@@ -281,6 +356,7 @@ async function mockCuratorAPI(
 
   return {
     attempts,
+    withdrawalRequests,
     persisted: () => persisted,
   };
 }
@@ -344,6 +420,74 @@ test("@desktop @mobile publishes atomically and keeps Recipient preview read onl
     page.getByRole("button", { name: "Publish Event" }),
   ).toBeDisabled();
 });
+
+for (const target of [
+  { name: "Event", id: eventID, recipients: 2, media: 3 },
+  { name: "Moment", id: momentOneID, recipients: 1, media: 1 },
+  { name: "Media", id: items.first.id, recipients: 1, media: 1 },
+]) {
+  test(`@desktop @mobile withdraws published access for ${target.name} with persistent confirmation`, async ({
+    page,
+  }) => {
+    const published = draft();
+    published.lifecycle = "published";
+    published.published_editable_version = published.version;
+    published.final_review_complete = true;
+    published.unassigned_media = [];
+    published.moments = published.moments.map((moment) => ({
+      ...moment,
+      attendance_complete: true,
+      audience_complete: true,
+    }));
+    const server = await mockCuratorAPI(page, [], published);
+    let confirmation = "";
+    page.once("dialog", async (dialog) => {
+      confirmation = dialog.message();
+      await dialog.accept();
+    });
+    await openEvent(page);
+    if ((page.viewportSize()?.width ?? 1280) <= 1024) {
+      await page.getByRole("button", { name: "Inspect", exact: true }).click();
+    }
+
+    await page.getByLabel("Currently published target").selectOption(target.id);
+    await page.getByLabel("Attributable reason").fill("Privacy request");
+    await page.getByRole("button", { name: "Withdraw access" }).click();
+    await expect(
+      page.getByText(
+        `Access withdrawn for ${target.recipients} Recipients across ${target.media} Media items. Withdrawal created no new external notification. A delivery already handed off before it committed may still arrive.`,
+      ),
+    ).toBeVisible();
+    expect(confirmation).toBe(
+      "Withdraw Recipient access immediately? Identity and history will be preserved.",
+    );
+    expect(server.withdrawalRequests).toEqual([
+      {
+        target_kind: target.name.toLowerCase(),
+        target_id: target.id,
+        reason: "Privacy request",
+      },
+    ]);
+    await expect(page.getByText(/Privacy request by Robin/)).toContainText(
+      "Access remains withdrawn.",
+    );
+    await expect(
+      page.getByRole("button", { name: "Publish Event" }),
+    ).toBeDisabled();
+
+    await page.reload();
+    await page.getByRole("button", { name: /Family weekend/ }).click();
+    if ((page.viewportSize()?.width ?? 1280) <= 1024) {
+      await page.getByRole("button", { name: "Inspect", exact: true }).click();
+    }
+    await expect(page.getByText(/Privacy request by Robin/)).toContainText(
+      "Access remains withdrawn.",
+    );
+    await expect(
+      page.getByRole("button", { name: "Publish Event" }),
+    ).toBeDisabled();
+  });
+}
 
 test("@desktop organizes, orders, autosaves, and persists after reload", async ({
   page,

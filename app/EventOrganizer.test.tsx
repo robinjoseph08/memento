@@ -76,6 +76,39 @@ function draft(version = 1): DraftEvent {
       },
     ],
     unassigned_media: [items.loose],
+    withdrawal_targets: [
+      {
+        target_kind: "event",
+        target_id: eventID,
+        label: "Event: Family weekend",
+      },
+      {
+        target_kind: "moment",
+        target_id: momentOneID,
+        label: "Moment: Friday",
+      },
+      {
+        target_kind: "moment",
+        target_id: momentTwoID,
+        label: "Moment: Saturday",
+      },
+      {
+        target_kind: "media",
+        target_id: items.a.id,
+        label: "Media: first photo",
+      },
+      {
+        target_kind: "media",
+        target_id: items.b.id,
+        label: "Media: second photo",
+      },
+      {
+        target_kind: "media",
+        target_id: items.c.id,
+        label: "Media: third photo",
+      },
+    ],
+    withdrawals: [],
     created_at: "2026-05-03T00:00:00Z",
     updated_at: "2026-05-03T00:00:00Z",
   };
@@ -257,6 +290,45 @@ function stubOrganizerAPI(initial: DraftEvent) {
           },
         });
       }
+      if (path === "/api/withdrawals" && init?.method === "POST") {
+        expect(init.headers).toMatchObject({ "X-Memento-CSRF": csrfToken });
+        const request = JSON.parse(stringBody(init.body)) as {
+          target_kind: string;
+          target_id: string;
+          reason: string;
+        };
+        expect(request.reason).toBe("Privacy request");
+        persisted = {
+          ...persisted,
+          version: persisted.version + 1,
+          final_review_complete: false,
+          moments: persisted.moments.map((moment) => ({
+            ...moment,
+            audience_complete: false,
+          })),
+          withdrawal_targets: persisted.withdrawal_targets.filter(
+            (target) =>
+              target.target_kind !== request.target_kind ||
+              target.target_id !== request.target_id,
+          ),
+          withdrawals: [
+            {
+              id: "77777777-7777-4777-8777-777777777777",
+              target_kind: request.target_kind,
+              target_id: request.target_id,
+              reason: request.reason,
+              withdrawn_by_name: "Robin",
+              withdrawn_at: "2026-05-03T00:00:00Z",
+              restored_by_publication_id: null,
+              restored_at: null,
+              affected_recipient_count: 2,
+              affected_media_count: 3,
+              affected_event_count: 1,
+            },
+          ],
+        };
+        return response(persisted.withdrawals[0], 201);
+      }
       if (path === `/api/events/${eventID}`) return response(persisted);
       const reviewMatch = path.match(
         /^\/api\/moments\/([^/]+)\/attendance-audience$/,
@@ -406,6 +478,52 @@ test("publishes ready work and previews Recipient output read only", async () =>
   expect(
     screen.queryByRole("region", { name: "Read-only Recipient preview" }),
   ).not.toBeInTheDocument();
+});
+
+test("withdraws a currently published target even when the staged draft differs", async () => {
+  const published = organizedDraft();
+  published.lifecycle = "published";
+  published.final_review_complete = true;
+  published.published_editable_version = published.version;
+  published.moments = published.moments
+    .filter((moment) => moment.id !== momentOneID)
+    .map((moment) => ({
+      ...moment,
+      attendance_complete: true,
+      audience_complete: true,
+      media_items: [...moment.media_items, items.loose],
+    }));
+  stubOrganizerAPI(published);
+  const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+  renderOrganizer();
+  fireEvent.click(
+    await screen.findByRole("button", { name: /Family weekend/ }),
+  );
+
+  const target = await screen.findByLabelText("Currently published target");
+  expect(target).toHaveTextContent("Moment: Friday");
+  expect(target).not.toHaveTextContent("loose photo");
+  fireEvent.change(target, { target: { value: momentOneID } });
+  expect(
+    screen.getByText(/Reused Media may require several Publications/),
+  ).toBeInTheDocument();
+  fireEvent.change(screen.getByLabelText("Attributable reason"), {
+    target: { value: "Privacy request" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Withdraw access" }));
+
+  expect(
+    await screen.findByText(
+      "Access withdrawn for 2 Recipients across 3 Media items. Withdrawal created no new external notification. A delivery already handed off before it committed may still arrive.",
+    ),
+  ).toBeInTheDocument();
+  const history = await screen.findByText(/Privacy request by Robin/);
+  expect(history).toHaveTextContent("moment: Privacy request");
+  expect(history).toHaveTextContent("Access remains withdrawn.");
+  expect(screen.getByRole("button", { name: "Publish Event" })).toBeDisabled();
+  expect(confirm).toHaveBeenCalledWith(
+    "Withdraw Recipient access immediately? Identity and history will be preserved.",
+  );
 });
 
 test("organizes merged and split days with pointer and keyboard controls", async () => {

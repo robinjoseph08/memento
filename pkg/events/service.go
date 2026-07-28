@@ -122,19 +122,21 @@ type EventSource struct {
 
 // Event is a portal-owned private draft.
 type Event struct {
-	ID                       string        `json:"id"`
-	Lifecycle                string        `json:"lifecycle"`
-	Title                    string        `json:"title"`
-	Description              string        `json:"description"`
-	GroupingTimezone         string        `json:"grouping_timezone"`
-	Version                  int64         `json:"version"`
-	FinalReviewComplete      bool          `json:"final_review_complete"`
-	PublishedEditableVersion *int64        `json:"published_editable_version" tstype:"number | null,required"`
-	Sources                  []EventSource `json:"sources"`
-	Moments                  []Moment      `json:"moments"`
-	UnassignedMedia          []MediaItem   `json:"unassigned_media"`
-	CreatedAt                time.Time     `json:"created_at"`
-	UpdatedAt                time.Time     `json:"updated_at"`
+	ID                       string             `json:"id"`
+	Lifecycle                string             `json:"lifecycle"`
+	Title                    string             `json:"title"`
+	Description              string             `json:"description"`
+	GroupingTimezone         string             `json:"grouping_timezone"`
+	Version                  int64              `json:"version"`
+	FinalReviewComplete      bool               `json:"final_review_complete"`
+	PublishedEditableVersion *int64             `json:"published_editable_version" tstype:"number | null,required"`
+	Sources                  []EventSource      `json:"sources"`
+	Moments                  []Moment           `json:"moments"`
+	UnassignedMedia          []MediaItem        `json:"unassigned_media"`
+	WithdrawalTargets        []WithdrawalTarget `json:"withdrawal_targets"`
+	Withdrawals              []Withdrawal       `json:"withdrawals"`
+	CreatedAt                time.Time          `json:"created_at"`
+	UpdatedAt                time.Time          `json:"updated_at"`
 }
 
 // LooseItem is a private independently publishable Media draft.
@@ -162,7 +164,9 @@ type Service struct {
 	db                    *bun.DB
 	now                   func() time.Time
 	failPublicationStep   func(PublicationStep) error
+	failWithdrawalStep    func(WithdrawalStep) error
 	recipientReadBoundary func()
+	publicationHandoff    PublicationHandoff
 }
 
 func New(db *bun.DB) *Service {
@@ -861,20 +865,94 @@ func (s *Service) GetEvent(ctx context.Context, id uuid.UUID) (Event, error) {
 
 func getEvent(ctx context.Context, db bun.IDB, id uuid.UUID) (Event, error) {
 	var event Event
+	var withdrawalTargetsJSON, withdrawalsJSON string
 	err := db.NewRaw(`
 		SELECT event.id, event.lifecycle, event.title, event.description,
 			event.grouping_timezone, event.version, event.final_review_complete,
-			publication.editable_version, event.created_at, event.updated_at
+			publication.editable_version, event.created_at, event.updated_at,
+			COALESCE((
+				SELECT jsonb_agg(jsonb_build_object(
+					'id', withdrawal.id, 'target_kind', withdrawal.target_kind,
+					'target_id', withdrawal.target_id, 'reason', withdrawal.reason,
+					'withdrawn_by_name', person.display_name,
+					'withdrawn_at', withdrawal.withdrawn_at,
+					'restored_by_publication_id', withdrawal.restored_by_publication_id,
+					'restored_at', withdrawal.restored_at,
+					'affected_recipient_count', 0, 'affected_media_count', 0,
+					'affected_event_count', 0
+				) ORDER BY withdrawal.withdrawn_at DESC, withdrawal.id)
+				FROM content_withdrawals AS withdrawal
+				JOIN people AS person ON person.id = withdrawal.withdrawn_by_person_id
+				WHERE (withdrawal.target_kind = 'event' AND withdrawal.target_id = event.id)
+				   OR (withdrawal.target_kind = 'moment' AND EXISTS (
+					SELECT 1 FROM published_moments AS moment
+					JOIN publications AS history ON history.id = moment.publication_id
+					WHERE history.event_id = event.id AND moment.draft_moment_id = withdrawal.target_id
+				   ))
+				   OR (withdrawal.target_kind = 'media' AND EXISTS (
+					SELECT 1 FROM published_media_placements AS placement
+					JOIN published_moments AS moment ON moment.id = placement.published_moment_id
+					JOIN publications AS history ON history.id = moment.publication_id
+					WHERE history.event_id = event.id AND placement.media_item_id = withdrawal.target_id
+				   ))
+			), '[]'::jsonb)::text,
+			COALESCE((
+				SELECT jsonb_agg(jsonb_build_object(
+					'target_kind', target.target_kind,
+					'target_id', target.target_id,
+					'label', target.label
+				) ORDER BY target.kind_order, target.target_order, target.target_id)
+				FROM (
+					SELECT 0 AS kind_order, 0 AS target_order, 'event'::text AS target_kind,
+					       event.id AS target_id, 'Event: ' || revision.title AS label
+					FROM published_event_revisions AS revision
+					WHERE revision.publication_id = publication.id
+					UNION ALL
+					SELECT 1, moment.position, 'moment', moment.draft_moment_id,
+					       'Moment: ' || COALESCE(NULLIF(moment.title, ''), 'Moment ' || (moment.position + 1)::text)
+					FROM published_moments AS moment
+					WHERE moment.publication_id = publication.id
+					UNION ALL
+					SELECT 2, placement.position, 'media', placement.media_item_id,
+					       'Media: ' || CASE
+					           WHEN published.local_date_time IS NULL THEN 'Undated ' || published.media_type
+					           ELSE published.local_date_time || ' ' || published.media_type
+					       END
+					FROM current_published_placements AS placement
+					JOIN published_media_placements AS published
+					  ON published.published_moment_id = placement.published_moment_id
+					 AND published.media_item_id = placement.media_item_id
+					WHERE placement.event_id = event.id AND placement.publication_id = publication.id
+				) AS target
+				WHERE EXISTS (
+					SELECT 1 FROM current_published_placements AS placement
+					JOIN published_moments AS moment ON moment.id = placement.published_moment_id
+					WHERE (
+						(target.target_kind = 'event' AND placement.event_id = target.target_id)
+						OR (target.target_kind = 'moment' AND moment.draft_moment_id = target.target_id)
+						OR (target.target_kind = 'media' AND placement.media_item_id = target.target_id)
+					) AND NOT content_is_withdrawn(
+						placement.event_id, moment.draft_moment_id, placement.media_item_id
+					)
+				)
+			), '[]'::jsonb)::text
 		FROM events AS event
 		LEFT JOIN publications AS publication ON publication.id = event.current_publication_id
 		WHERE event.id = ?
 	`, id).Scan(ctx, &event.ID, &event.Lifecycle, &event.Title, &event.Description,
 		&event.GroupingTimezone, &event.Version, &event.FinalReviewComplete,
-		&event.PublishedEditableVersion, &event.CreatedAt, &event.UpdatedAt)
+		&event.PublishedEditableVersion, &event.CreatedAt, &event.UpdatedAt,
+		&withdrawalsJSON, &withdrawalTargetsJSON)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Event{}, ErrNotFound
 	}
 	if err != nil {
+		return Event{}, err
+	}
+	if err := json.Unmarshal([]byte(withdrawalsJSON), &event.Withdrawals); err != nil {
+		return Event{}, err
+	}
+	if err := json.Unmarshal([]byte(withdrawalTargetsJSON), &event.WithdrawalTargets); err != nil {
 		return Event{}, err
 	}
 	event.Sources = make([]EventSource, 0)

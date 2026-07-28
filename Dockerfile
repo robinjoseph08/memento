@@ -4,6 +4,7 @@ FROM golang:1.26.5-alpine3.23 AS go-base
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
+COPY internal ./internal
 COPY pkg ./pkg
 
 FROM go-base AS typegen

@@ -9,12 +9,21 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/robinjoseph08/memento/internal/placementlock"
 	"github.com/robinjoseph08/memento/pkg/setup"
 	"github.com/robinjoseph08/memento/pkg/worker"
 	"github.com/uptrace/bun"
 )
 
 const PublicationJobKind = "publication_committed"
+
+// PublicationHandoff performs the final channel-specific external delivery.
+type PublicationHandoff func(context.Context, uuid.UUID, uuid.UUID) error
+
+// SetPublicationHandoff installs optional delivery inside the Withdrawal ordering boundary.
+func (s *Service) SetPublicationHandoff(handoff PublicationHandoff) {
+	s.publicationHandoff = handoff
+}
 
 var (
 	ErrPublicationNotReady = errors.New("Event is not ready for Publication")
@@ -117,6 +126,12 @@ func (s *Service) PublishEvent(ctx context.Context, actor setup.CuratorSession, 
 	now := s.now().UTC()
 	var response PublicationResponse
 	err := s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		// Publications share this lock while Withdrawal takes it exclusively. Taking
+		// it before Event locks gives Withdrawal one stable placement set without
+		// serializing Publications for independent Events.
+		if err := placementlock.Acquire(ctx, tx, placementlock.Shared); err != nil {
+			return err
+		}
 		var title, description, timezone, lifecycle string
 		var version int64
 		var finalReview bool
@@ -206,16 +221,19 @@ func (s *Service) PublishEvent(ctx context.Context, actor setup.CuratorSession, 
 			return err
 		}
 
-		var revision int64
+		var revision, contentRevision int64
 		if err := tx.NewRaw(`SELECT COALESCE(max(revision), 0) + 1 FROM publications WHERE event_id = ?`, eventID).Scan(ctx, &revision); err != nil {
+			return err
+		}
+		if err := tx.NewRaw(`UPDATE system_settings SET content_revision = content_revision + 1 WHERE id = 1 RETURNING content_revision`).Scan(ctx, &contentRevision); err != nil {
 			return err
 		}
 		if _, err := tx.NewRaw(`
 			INSERT INTO publications (
 				id, event_id, revision, editable_version, prior_publication_id,
-				published_by_person_id, notify_recipients, committed_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-		`, publicationID, eventID, revision, version, priorID, actor.PersonID, notify, now).Exec(ctx); err != nil {
+				published_by_person_id, notify_recipients, committed_at, content_revision
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, publicationID, eventID, revision, version, priorID, actor.PersonID, notify, now, contentRevision).Exec(ctx); err != nil {
 			return err
 		}
 		if _, err := tx.NewRaw(`
@@ -366,6 +384,9 @@ func (s *Service) PublishEvent(ctx context.Context, actor setup.CuratorSession, 
 			 AND published.media_item_id = placement.media_item_id
 			WHERE entitlement.event_id = ?
 		`, eventID).Exec(ctx); err != nil {
+			return err
+		}
+		if err := restoreEligibleWithdrawals(ctx, tx, eventID, publicationID, now, actor); err != nil {
 			return err
 		}
 		if err := s.publicationBoundary(PublicationStepEntitlements); err != nil {
@@ -601,22 +622,63 @@ func (s *Service) RecipientEvent(ctx context.Context, actor setup.SessionActor, 
 	return view, err
 }
 
-// HandlePublicationJob validates the durable handoff before acknowledging it.
-// Channel-specific delivery is intentionally downstream of this privacy transaction.
+// HandlePublicationJob orders the final optional-delivery handoff against
+// Withdrawal. A handoff already in progress finishes before Withdrawal commits;
+// one that starts after commit observes the Withdrawal and fails closed.
 func (s *Service) HandlePublicationJob(ctx context.Context, job worker.Job) error {
 	var payload struct {
-		EventID       uuid.UUID `json:"event_id"`
-		PublicationID uuid.UUID `json:"publication_id"`
+		EventID          uuid.UUID `json:"event_id"`
+		PublicationID    uuid.UUID `json:"publication_id"`
+		NotifyRecipients bool      `json:"notify_recipients"`
 	}
 	if err := json.Unmarshal(job.Payload, &payload); err != nil || payload.EventID == uuid.Nil || payload.PublicationID == uuid.Nil {
 		return worker.Permanent("invalid_publication_payload")
 	}
-	var exists bool
-	if err := s.db.NewRaw(`SELECT EXISTS (SELECT 1 FROM publications WHERE id = ? AND event_id = ?)`, payload.PublicationID, payload.EventID).Scan(ctx, &exists); err != nil {
+	result := ""
+	err := s.db.RunInTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted, ReadOnly: true}, func(ctx context.Context, tx bun.Tx) error {
+		// Withdrawal takes this lock exclusively through commit. Keep shared access
+		// through the final external handoff, not merely through eligibility checks.
+		if err := placementlock.Acquire(ctx, tx, placementlock.Shared); err != nil {
+			return err
+		}
+		var exists bool
+		if err := tx.NewRaw(`SELECT EXISTS (SELECT 1 FROM publications WHERE id = ? AND event_id = ?)`, payload.PublicationID, payload.EventID).Scan(ctx, &exists); err != nil {
+			return err
+		}
+		if !exists {
+			result = "unknown_publication"
+			return nil
+		}
+		var deliverable bool
+		if err := tx.NewRaw(`SELECT EXISTS (
+			SELECT 1 FROM current_published_events AS current
+			WHERE current.event_id = ? AND current.publication_id = ?
+			  AND NOT EXISTS (
+				SELECT 1 FROM current_published_placements AS placement
+				JOIN published_moments AS moment ON moment.id = placement.published_moment_id
+				WHERE placement.event_id = current.event_id
+				  AND placement.publication_id = current.publication_id
+				  AND content_is_withdrawn(
+					placement.event_id, moment.draft_moment_id, placement.media_item_id
+				  )
+			  )
+		)`, payload.EventID, payload.PublicationID).Scan(ctx, &deliverable); err != nil {
+			return err
+		}
+		if !deliverable {
+			result = "publication_withdrawn"
+			return nil
+		}
+		if payload.NotifyRecipients && s.publicationHandoff != nil {
+			return s.publicationHandoff(ctx, payload.EventID, payload.PublicationID)
+		}
+		return nil
+	})
+	if err != nil {
 		return err
 	}
-	if !exists {
-		return worker.Permanent("unknown_publication")
+	if result != "" {
+		return worker.Permanent(result)
 	}
 	return nil
 }
@@ -632,8 +694,14 @@ func (s *Service) loadPublishedEvent(ctx context.Context, db bun.IDB, eventID, a
 		  ON cover.event_id = current.event_id AND cover.recipient_access_generation_id = ?
 		WHERE current.event_id = ?
 		  AND EXISTS (
-			SELECT 1 FROM current_audience_entitlements
-			WHERE event_id = current.event_id AND recipient_access_generation_id = ?
+			SELECT 1 FROM current_audience_entitlements AS entitlement
+			JOIN current_published_placements AS placement
+			  ON placement.event_id = entitlement.event_id AND placement.media_item_id = entitlement.media_item_id
+			JOIN published_moments AS moment ON moment.id = placement.published_moment_id
+			WHERE entitlement.event_id = current.event_id AND entitlement.recipient_access_generation_id = ?
+			  AND NOT content_is_withdrawn(
+				placement.event_id, moment.draft_moment_id, placement.media_item_id
+			  )
 		  )
 	`, accessID, eventID, accessID).Scan(ctx, &publicationID, &view.Title, &view.Description, &coverID)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -662,13 +730,33 @@ func (s *Service) loadPublishedEvent(ctx context.Context, db bun.IDB, eventID, a
 		JOIN published_media_placements AS published
 		  ON published.published_moment_id = placement.published_moment_id
 		 AND published.media_item_id = placement.media_item_id
+		JOIN published_moments AS moment ON moment.id = placement.published_moment_id
 		JOIN media_items AS media ON media.id = placement.media_item_id
 		WHERE placement.event_id = ?
+		  AND NOT content_is_withdrawn(
+			placement.event_id, moment.draft_moment_id, placement.media_item_id
+		  )
 		ORDER BY placement.position
 	`, accessID, eventID).Scan(ctx, &view.Media); err != nil {
 		return PublishedEventView{}, fmt.Errorf("load filtered Event media: %w", err)
 	}
 	view.MediaCount = len(view.Media)
+	if view.MediaCount == 0 {
+		return PublishedEventView{}, ErrNoPublication
+	}
+	if view.CoverMediaID != nil {
+		coverVisible := false
+		for _, item := range view.Media {
+			if item.ID == *view.CoverMediaID {
+				coverVisible = true
+				break
+			}
+		}
+		if !coverVisible {
+			cover := view.Media[0].ID
+			view.CoverMediaID = &cover
+		}
+	}
 	view.Capabilities = PreviewCapabilities{Comments: true, Favorites: true, Settings: true, Downloads: true, RecordEngagement: true}
 	return view, nil
 }

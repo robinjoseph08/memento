@@ -70,6 +70,7 @@ func TestDraftRoutesAreInvisibleToRecipientsBeforePublication(t *testing.T) {
 		{http.MethodPost, "/api/events/11111111-1111-4111-8111-111111111111/publications", `{}`},
 		{http.MethodGet, "/api/events/11111111-1111-4111-8111-111111111111/preview-recipients", ""},
 		{http.MethodPost, "/api/events/11111111-1111-4111-8111-111111111111/preview?recipient_person_id=22222222-2222-4222-8222-222222222222", ""},
+		{http.MethodPost, "/api/withdrawals", `{}`},
 		{http.MethodGet, "/api/loose-items/11111111-1111-4111-8111-111111111111", ""},
 		{http.MethodPost, "/api/loose-items", `{}`},
 		{http.MethodGet, "/api/sources/11111111-1111-4111-8111-111111111111/media-items", ""},
@@ -89,6 +90,7 @@ func TestDraftMutationsRequireCSRFBeforeBindingOrDatabaseAccess(t *testing.T) {
 		{http.MethodPut, "/api/events/11111111-1111-4111-8111-111111111111/organization"},
 		{http.MethodPost, "/api/events/11111111-1111-4111-8111-111111111111/publications"},
 		{http.MethodPost, "/api/events/11111111-1111-4111-8111-111111111111/preview"},
+		{http.MethodPost, "/api/withdrawals"},
 		{http.MethodPost, "/api/loose-items"},
 	} {
 		response := draftRequest(e, test.method, test.path, `{}`)
@@ -129,6 +131,22 @@ func TestPublicationErrorsDescribeTheActualReadinessCheck(t *testing.T) {
 		{ErrNoPublication, "Event not found"},
 	} {
 		mapped := publicationError(test.err)
+		require.Error(t, mapped)
+		assert.Contains(t, mapped.Error(), test.message)
+	}
+}
+
+func TestWithdrawalErrorsDescribeCurrentTargetsAndEveryRequiredRestorationPublication(t *testing.T) {
+	for _, test := range []struct {
+		err     error
+		message string
+	}{
+		{ErrWithdrawalInvalid, "currently published"},
+		{ErrAlreadyWithdrawn, "every Event"},
+		{ErrVersionConflict, "published placement changed"},
+		{ErrNotFound, "Currently published content not found"},
+	} {
+		mapped := withdrawalError(test.err)
 		require.Error(t, mapped)
 		assert.Contains(t, mapped.Error(), test.message)
 	}
@@ -176,6 +194,7 @@ func TestDraftRoutesUseNoStoreAndStableNotFoundErrors(t *testing.T) {
 		{http.MethodPost, "/api/events/not-an-id/publications", `{}`},
 		{http.MethodGet, "/api/events/not-an-id/preview-recipients", ""},
 		{http.MethodPost, "/api/events/not-an-id/preview", ""},
+		{http.MethodPost, "/api/withdrawals", `{}`},
 		{http.MethodGet, "/api/me/events/not-an-id", ""},
 		{http.MethodPost, "/api/events", `{}`},
 		{http.MethodGet, "/api/loose-items/not-an-id", ""},
