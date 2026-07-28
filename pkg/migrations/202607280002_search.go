@@ -39,6 +39,19 @@ func init() {
 						PRIMARY KEY (published_moment_id, person_id)
 					)`,
 					`CREATE INDEX published_attendance_person_idx ON published_attendance (person_id, published_moment_id)`,
+					`INSERT INTO published_attendance (published_moment_id, person_id)
+					 SELECT published.id, attendance.person_id
+					 FROM published_moments AS published
+					 JOIN publications AS publication
+					   ON publication.id = published.publication_id
+					 JOIN events AS event
+					   ON event.id = publication.event_id
+					  AND event.current_publication_id = publication.id
+					 JOIN audience_snapshots AS approved
+					   ON approved.id = published.audience_snapshot_id
+					 JOIN attendance
+					   ON attendance.moment_id = published.draft_moment_id
+					  AND attendance.confirmed_at <= approved.approved_at`,
 					`ALTER TABLE published_search_documents DROP COLUMN search_vector`,
 					`ALTER TABLE published_search_documents
 						ADD COLUMN capture_date date,

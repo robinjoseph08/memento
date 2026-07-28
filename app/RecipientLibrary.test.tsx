@@ -170,14 +170,18 @@ test("lands on Photos with durable New for you and real-ratio authorized thumbna
   renderLibrary();
 
   expect(await screen.findByRole("heading", { name: "Photos" })).toBeVisible();
-  expect(
-    screen.getAllByRole("navigation", { name: "Library navigation" }),
-  ).toHaveLength(2);
-  for (const destination of ["Photos", "Events", "Favorites", "Search"]) {
+  const navigation = screen.getAllByRole("navigation", {
+    name: "Library navigation",
+  });
+  expect(navigation).toHaveLength(2);
+  for (const destination of ["Photos", "Events", "Favorites"]) {
     expect(screen.getAllByRole("button", { name: destination })).toHaveLength(
       2,
     );
   }
+  expect(navigation[0]).not.toHaveTextContent("Search");
+  expect(screen.getAllByRole("button", { name: "Search" })).toHaveLength(1);
+  expect(screen.getByRole("button", { name: "Search library" })).toBeVisible();
   expect(
     await screen.findByRole("heading", { name: "New for you" }),
   ).toBeVisible();
@@ -711,7 +715,7 @@ test("keeps private search text in a POST body and renders safe grouped results"
   );
 
   renderLibrary();
-  fireEvent.click(screen.getAllByRole("button", { name: "Search" })[0]);
+  fireEvent.click(screen.getByRole("button", { name: "Search library" }));
   fireEvent.change(
     screen.getByRole("searchbox", {
       name: "Search published Events, Place labels, and People",

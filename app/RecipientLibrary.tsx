@@ -44,17 +44,22 @@ function LibraryNavigation({
   className,
   current,
   showBrand = false,
+  showSearch = true,
   onNavigate,
 }: {
   className: string;
   current?: Destination;
   showBrand?: boolean;
+  showSearch?: boolean;
   onNavigate: (destination: Destination) => void;
 }) {
+  const destinations = showSearch
+    ? libraryDestinations
+    : libraryDestinations.filter((item) => item.destination !== "search");
   return (
     <nav aria-label="Library navigation" className={className}>
       {showBrand ? <div className="library-brand">Memento</div> : null}
-      {libraryDestinations.map((item) => (
+      {destinations.map((item) => (
         <button
           aria-current={current === item.destination ? "page" : undefined}
           key={item.destination}
@@ -624,6 +629,7 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
         current={openedEvent ? undefined : destination}
         onNavigate={navigateTo}
         showBrand
+        showSearch={false}
       />
       <div className="library-content">
         {openedEvent ? (
@@ -669,6 +675,14 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
                   sign-out.
                 </p>
               ) : null}
+              <button
+                aria-label="Search library"
+                className="desktop-search-action"
+                onClick={() => navigateTo("search")}
+                type="button"
+              >
+                Search
+              </button>
             </header>
             <LibraryError error={event.error ?? archive.error} />
             {archivePlan ? (
@@ -700,6 +714,15 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
               {destination === "favorites" ? (
                 <p>Favorites aren&apos;t shared with other recipients.</p>
               ) : null}
+              <button
+                aria-current={destination === "search" ? "page" : undefined}
+                aria-label="Search library"
+                className="desktop-search-action"
+                onClick={() => navigateTo("search")}
+                type="button"
+              >
+                Search
+              </button>
             </header>
             {destination === "photos" ? (
               <LibraryError error={newForYou.error ?? seen.error} />

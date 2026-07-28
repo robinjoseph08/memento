@@ -227,6 +227,9 @@ const authorizedDocuments = `
 	  AND NOT content_is_withdrawn(placement.event_id, moment.draft_moment_id, placement.media_item_id)
 `
 
+const documentTypoPredicate = `(memento_normalize_search_text(?) OPERATOR(public.<<%) authorized.normalized_search_text
+	AND public.strict_word_similarity(memento_normalize_search_text(?), authorized.normalized_search_text) >= 0.3)`
+
 const discoverablePerson = `
 	SELECT person.id, person.display_name,
 	       memento_normalize_search_text(person.display_name) AS normalized_name
@@ -255,8 +258,8 @@ func matchingCTE(actor setup.SessionActor, terms []string, dateBounds *bounds) (
 		predicate := `(authorized.search_vector @@ to_tsquery('simple', memento_normalize_search_text(?) || ':*')`
 		args = append(args, term)
 		if long {
-			predicate += ` OR public.strict_word_similarity(memento_normalize_search_text(?), authorized.normalized_search_text) >= 0.3`
-			args = append(args, term)
+			predicate += ` OR ` + documentTypoPredicate
+			args = append(args, term, term)
 		}
 		predicate += ` OR EXISTS (` + discoverablePerson + ` AND (` + personTermPredicate(long, "memento_normalize_search_text(person.display_name)") + `)))`
 		args = append(args, actor.PersonID, actor.PersonID, term)
@@ -322,6 +325,11 @@ func (s *Service) Search(ctx context.Context, actor setup.SessionActor, request 
 	}
 	err = s.db.RunInTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true}, func(ctx context.Context, tx bun.Tx) error {
 		if err := ensureActor(ctx, tx, actor); err != nil {
+			return err
+		}
+		// Keep the indexable strict-word operator as a conservative prefilter,
+		// then retain the stable 0.3 application threshold in the exact check.
+		if _, err := tx.ExecContext(ctx, `SET LOCAL pg_trgm.strict_word_similarity_threshold = 0.2`); err != nil {
 			return err
 		}
 		cte, args := matchingCTE(actor, terms, dateBounds)

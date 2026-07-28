@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/robinjoseph08/memento/pkg/setup"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -64,4 +65,12 @@ func TestDateFilterRejectsInvalidVariantsAtTheJSONBoundary(t *testing.T) {
 
 func TestTokenizeKeepsUnicodeWordsForDatabaseUnaccentNormalization(t *testing.T) {
 	assert.Equal(t, []string{"café", "são", "2026"}, tokenize(" CAFÉ, São / 2026 "))
+}
+
+func TestLongTermDocumentMatchingUsesAnIndexableConservativeTypoPrefilter(t *testing.T) {
+	query, args := matchingCTE(setup.SessionActor{}, []string{"reunoin"}, nil)
+
+	assert.Contains(t, query, "memento_normalize_search_text(?) OPERATOR(public.<<%) authorized.normalized_search_text")
+	assert.Contains(t, query, "strict_word_similarity(memento_normalize_search_text(?), authorized.normalized_search_text) >= 0.3")
+	assert.Len(t, args, 8)
 }

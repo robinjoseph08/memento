@@ -5,6 +5,7 @@ package migrations
 import (
 	"context"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -170,8 +171,10 @@ func TestSearchMigrationPreservesExistingPublishedDocumentsAndIndexes(t *testing
 	require.NoError(t, applyCollection(ctx, db, priorMigrations))
 
 	_, err := db.ExecContext(ctx, `
-		INSERT INTO people (id, display_name, sort_name)
-		VALUES ('11111111-1111-4111-8111-111111111111', 'Existing Recipient', 'existing recipient');
+		INSERT INTO people (id, display_name, sort_name) VALUES
+			('11111111-1111-4111-8111-111111111111', 'Existing Recipient', 'existing recipient'),
+			('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'Published Attendee', 'published attendee'),
+			('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'Staged Attendee', 'staged attendee');
 		INSERT INTO recipient_access_generations (
 			id, person_id, generation, state, onboarding_completed_at
 		) VALUES (
@@ -193,7 +196,7 @@ func TestSearchMigrationPreservesExistingPublishedDocumentsAndIndexes(t *testing
 		) VALUES (
 			'66666666-6666-4666-8666-666666666666',
 			'33333333-3333-4333-8333-333333333333', 1, 1,
-			'11111111-1111-4111-8111-111111111111', false, now()
+			'11111111-1111-4111-8111-111111111111', false, '2026-07-27T12:00:00Z'
 		);
 		UPDATE events SET current_publication_id = '66666666-6666-4666-8666-666666666666'
 		WHERE id = '33333333-3333-4333-8333-333333333333';
@@ -202,7 +205,7 @@ func TestSearchMigrationPreservesExistingPublishedDocumentsAndIndexes(t *testing
 		) VALUES (
 			'77777777-7777-4777-8777-777777777777', 'moment',
 			'99999999-9999-4999-8999-999999999999',
-			'11111111-1111-4111-8111-111111111111', now(), 'Shared'
+			'11111111-1111-4111-8111-111111111111', '2026-07-27T11:00:00Z', 'Shared'
 		);
 		INSERT INTO published_moments (
 			id, publication_id, draft_moment_id, audience_snapshot_id,
@@ -213,6 +216,15 @@ func TestSearchMigrationPreservesExistingPublishedDocumentsAndIndexes(t *testing
 			'99999999-9999-4999-8999-999999999999',
 			'77777777-7777-4777-8777-777777777777', 0, '', '2026-07-27'
 		);
+		INSERT INTO attendance (
+			moment_id, person_id, source, confirmed_by_person_id, confirmed_at
+		) VALUES
+			('99999999-9999-4999-8999-999999999999',
+			 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'manual',
+			 '11111111-1111-4111-8111-111111111111', '2026-07-27T10:00:00Z'),
+			('99999999-9999-4999-8999-999999999999',
+			 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'manual',
+			 '11111111-1111-4111-8111-111111111111', '2026-07-27T13:00:00Z');
 		INSERT INTO published_media_placements (
 			published_moment_id, media_item_id, position, media_type,
 			width, height, local_date_time
@@ -260,6 +272,23 @@ func TestSearchMigrationPreservesExistingPublishedDocumentsAndIndexes(t *testing
 	assert.Equal(t, "cafe legacy", normalized)
 	assert.True(t, vectorIndex)
 	assert.True(t, trigramIndex)
+
+	var publishedAttendees []string
+	require.NoError(t, db.NewRaw(`
+		SELECT person_id::text FROM published_attendance ORDER BY person_id
+	`).Scan(ctx, &publishedAttendees))
+	assert.Equal(t, []string{"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}, publishedAttendees,
+		"upgrade backfill keeps approved Attendance and excludes later Staged Attendance")
+
+	_, err = db.ExecContext(ctx, `SET enable_seqscan = off`)
+	require.NoError(t, err)
+	var plan []string
+	require.NoError(t, db.NewRaw(`
+		EXPLAIN (COSTS OFF)
+		SELECT event_id FROM published_search_documents
+		WHERE 'legaci'::text OPERATOR(public.<<%) normalized_search_text
+	`).Scan(ctx, &plan))
+	assert.Contains(t, strings.Join(plan, "\n"), "published_search_documents_trigram_idx")
 
 	migrator := migrate.NewMigrator(db, collection, migrate.WithMarkAppliedOnSuccess(true))
 	_, err = migrator.Rollback(ctx)

@@ -47,7 +47,15 @@
 }
 
 .library-heading {
+  position: relative;
   margin-bottom: 1.5rem;
+  padding-right: 7rem;
+}
+
+.desktop-search-action {
+  position: absolute;
+  top: 0;
+  right: 0;
 }
 
 .library-heading h1 {
@@ -423,8 +431,13 @@
   }
 
   .library-rail,
-  .date-rail {
+  .date-rail,
+  .desktop-search-action {
     display: none;
+  }
+
+  .library-heading {
+    padding-right: 0;
   }
 
   .mobile-library-nav {
