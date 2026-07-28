@@ -41,13 +41,13 @@ function requestPath(input: RequestInfo | URL) {
   return input.url;
 }
 
-function renderLibrary() {
+function renderLibrary(librarySession = session) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
   render(
     <QueryClientProvider client={client}>
-      <RecipientLibrary session={session} />
+      <RecipientLibrary session={librarySession} />
     </QueryClientProvider>,
   );
 }
@@ -130,7 +130,20 @@ test("lands on Photos with durable New for you and real-ratio authorized thumbna
           committed_at: "2026-07-27T12:00:00Z",
           cover_media_id: "media-1",
           media_count: 1,
-          media: [],
+          media: [
+            {
+              id: "event-media-1",
+              media_type: "image",
+              width: 1200,
+              height: 800,
+              local_date_time: "2026-07-26T12:00:00Z",
+              available: true,
+              thumbnail_url: "/api/me/media/event-media-1/thumbnail",
+              preview_url: "/api/me/media/event-media-1/preview",
+              video_url: "",
+              original_url: "/api/me/media/event-media-1/original",
+            },
+          ],
           next_cursor: null,
         });
       }
@@ -166,6 +179,11 @@ test("lands on Photos with durable New for you and real-ratio authorized thumbna
   expect(
     screen.getByRole("link", { name: "Download original" }),
   ).toHaveAttribute("href", "/api/me/media/media-1/original");
+  expect(
+    screen.queryByText(
+      "This original will remain on this public computer after sign-out.",
+    ),
+  ).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "Close viewer" }));
   expect(
     screen.queryByRole("dialog", { name: "Media viewer" }),
@@ -200,6 +218,21 @@ test("lands on Photos with durable New for you and real-ratio authorized thumbna
   await screen.findByRole("heading", { name: "Family weekend" });
   expect(await screen.findByText("1 item")).toBeVisible();
   expect(screen.queryByText("1 items")).not.toBeInTheDocument();
+  const eventThumbnail = await screen.findByAltText("Photo 1 from July 2026");
+  expect(eventThumbnail).toHaveAttribute(
+    "src",
+    "/api/me/media/event-media-1/thumbnail",
+  );
+  fireEvent.click(
+    screen.getByRole("button", { name: "Open Photo 1 from July 2026" }),
+  );
+  expect(screen.getByAltText("Selected photo preview")).toHaveAttribute(
+    "src",
+    "/api/me/media/event-media-1/preview",
+  );
+  expect(
+    screen.getByRole("link", { name: "Download original" }),
+  ).toHaveAttribute("href", "/api/me/media/event-media-1/original");
   await waitFor(() =>
     expect(
       requests.find(({ path }) => path.endsWith("publication-1/seen"))?.init,
@@ -208,6 +241,49 @@ test("lands on Photos with durable New for you and real-ratio authorized thumbna
       headers: { "X-Memento-CSRF": session.csrf_token },
     }),
   );
+});
+
+test("shows the original download warning only for public computers", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) => {
+      const path = requestPath(input);
+      if (path.startsWith("/api/me/photos?")) {
+        return json({
+          media: [
+            {
+              id: "media-1",
+              media_type: "image",
+              width: 1600,
+              height: 900,
+              local_date_time: "2026-07-27T12:00:00Z",
+              available: true,
+              thumbnail_url: "/api/me/media/media-1/thumbnail",
+              preview_url: "/api/me/media/media-1/preview",
+              video_url: "",
+              original_url: "/api/me/media/media-1/original",
+            },
+          ],
+          next_cursor: null,
+        });
+      }
+      if (path === "/api/me/new-for-you") return json({ events: [] });
+      throw new Error(`Unexpected request: ${path}`);
+    }),
+  );
+
+  renderLibrary({ ...session, session_type: "public" });
+  fireEvent.click(
+    await screen.findByRole("button", {
+      name: "Open Photo 1 from July 2026",
+    }),
+  );
+
+  expect(
+    screen.getByText(
+      "This original will remain on this public computer after sign-out.",
+    ),
+  ).toBeVisible();
 });
 
 test("navigates Events and Favorites without exposing an unavailable aggregate", async () => {

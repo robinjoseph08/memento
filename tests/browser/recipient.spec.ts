@@ -166,6 +166,20 @@ test("@desktop Recipient lands on Photos and sees only filtered Event totals", a
   await page.getByRole("button", { name: /Family weekend/ }).click();
   await expect(page.getByText("1 item")).toBeVisible();
   await expect(page.getByText(/Moment/)).toHaveCount(0);
+  await expect(page.getByAltText("Photo 1 from July 2026")).toHaveAttribute(
+    "src",
+    media.thumbnail_url,
+  );
+  await page
+    .getByRole("button", { name: "Open Photo 1 from July 2026" })
+    .click();
+  await expect(page.getByAltText("Selected photo preview")).toHaveAttribute(
+    "src",
+    media.preview_url,
+  );
+  await expect(
+    page.getByRole("link", { name: "Download original" }),
+  ).toHaveAttribute("href", media.original_url);
 });
 
 test("@mobile complete thumbnails and compact navigation do not expose inaccessible totals", async ({
@@ -181,6 +195,41 @@ test("@mobile complete thumbnails and compact navigation do not expose inaccessi
   await expect(page.locator(".library-rail")).toBeHidden();
   await expect(page.getByLabel("Jump to date")).toBeVisible();
   await expect(page.getByText(/total/i)).toHaveCount(0);
+
+  await page
+    .getByRole("button", { name: "Open Photo 1 from July 2026" })
+    .click();
+  const viewer = page.getByRole("dialog", { name: "Media viewer" });
+  await expect(viewer).toBeVisible();
+  await expect(viewer).toHaveCSS("overflow-y", "auto");
+  expect(
+    await viewer.evaluate(
+      (element) => element.scrollWidth <= element.clientWidth,
+    ),
+  ).toBe(true);
+
+  const download = page.getByRole("link", { name: "Download original" });
+  await download.scrollIntoViewIfNeeded();
+  await expect(download).toBeVisible();
+  await expect(download).toHaveAttribute("href", media.original_url);
+  const downloadBox = await download.boundingBox();
+  const viewport = page.viewportSize();
+  expect(downloadBox).not.toBeNull();
+  expect(viewport).not.toBeNull();
+  expect(downloadBox!.x).toBeGreaterThanOrEqual(0);
+  expect(downloadBox!.x + downloadBox!.width).toBeLessThanOrEqual(
+    viewport!.width,
+  );
+  expect(downloadBox!.y).toBeGreaterThanOrEqual(0);
+  expect(downloadBox!.y + downloadBox!.height).toBeLessThanOrEqual(
+    viewport!.height,
+  );
+
+  const close = page.getByRole("button", { name: "Close viewer" });
+  await close.scrollIntoViewIfNeeded();
+  await expect(close).toBeVisible();
+  await close.click();
+  await expect(viewer).toBeHidden();
 
   await page
     .locator(".mobile-library-nav")
