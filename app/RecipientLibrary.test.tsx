@@ -6,6 +6,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 
@@ -27,10 +28,10 @@ function json(value: unknown) {
   );
 }
 
-function apiError(message: string) {
+function apiError(message: string, status = 503) {
   return Promise.resolve(
     new Response(JSON.stringify({ error: { message } }), {
-      status: 503,
+      status,
       headers: { "Content-Type": "application/json" },
     }),
   );
@@ -51,6 +52,11 @@ function archiveRequest(init?: RequestInit) {
     event_id: string | null;
     media_ids: string[];
   };
+}
+
+function stringBody(body: BodyInit | null | undefined) {
+  if (typeof body !== "string") throw new Error("Expected a JSON body.");
+  return body;
 }
 
 function renderLibrary(librarySession = session) {
@@ -162,6 +168,12 @@ test("lands on Photos with durable New for you and real-ratio authorized thumbna
       }
       if (path === "/api/me/new-for-you/publication-1/seen") {
         return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      if (path.startsWith("/api/favorites/")) {
+        return json({ media_item_id: path.split("/").at(-1), favorite: false });
+      }
+      if (path.startsWith("/api/comments/media/")) {
+        return json({ comments: [], muted: false });
       }
       throw new Error(`Unexpected request: ${path}`);
     }),
@@ -290,6 +302,12 @@ test("shows the original download warning only for public computers", async () =
         });
       }
       if (path === "/api/me/new-for-you") return json({ events: [] });
+      if (path.startsWith("/api/favorites/")) {
+        return json({ media_item_id: "media-1", favorite: false });
+      }
+      if (path.startsWith("/api/comments/media/")) {
+        return json({ comments: [], muted: false });
+      }
       throw new Error(`Unexpected request: ${path}`);
     }),
   );
@@ -890,4 +908,490 @@ test("does not claim a library is empty when its request fails", async () => {
   expect(
     screen.queryByText("No Events are available."),
   ).not.toBeInTheDocument();
+});
+
+test("paginates Comments chronologically and uses explicit mute eligibility", async () => {
+  const cursor = "comments/cursor+1";
+  const commentRequests: string[] = [];
+  let resolveNextPage: (response: Response) => void = () => undefined;
+  const firstComment = {
+    id: "comment-older",
+    media_item_id: "media-1",
+    author_person_id: "blair",
+    author_name: "Blair",
+    body: "First chronological Comment",
+    state: "active",
+    version: 1,
+    created_at: "2026-07-28T11:00:00Z",
+    edited_at: null,
+    moderated_at: null,
+    moderator_name: null,
+    authored_by_me: false,
+    can_edit: false,
+    can_delete: false,
+    can_moderate: false,
+  };
+  const secondComment = {
+    ...firstComment,
+    id: "comment-newer",
+    author_person_id: "alex",
+    author_name: "Alex",
+    body: "Second chronological Comment",
+    created_at: "2026-07-28T12:00:00Z",
+    authored_by_me: true,
+    can_edit: true,
+    can_delete: true,
+  };
+
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) => {
+      const path = requestPath(input);
+      if (path.startsWith("/api/me/photos?")) {
+        return json({
+          media: [
+            {
+              id: "media-1",
+              media_type: "image",
+              width: 1600,
+              height: 900,
+              local_date_time: "2026-07-28T12:00:00Z",
+              available: true,
+              thumbnail_url: "/api/me/media/media-1/thumbnail",
+              preview_url: "/api/me/media/media-1/preview",
+              video_url: "",
+              original_url: "/api/me/media/media-1/original",
+            },
+          ],
+          next_cursor: null,
+        });
+      }
+      if (path === "/api/me/new-for-you") return json({ events: [] });
+      if (path === "/api/favorites/media-1") {
+        return json({ media_item_id: "media-1", favorite: false });
+      }
+      if (path.startsWith("/api/comments/media/media-1?")) {
+        commentRequests.push(path);
+        const pageCursor = new URL(
+          path,
+          "http://memento.test",
+        ).searchParams.get("cursor");
+        if (pageCursor === cursor) {
+          return new Promise<Response>((resolve) => {
+            resolveNextPage = resolve;
+          });
+        }
+        return json({
+          comments: [firstComment],
+          can_mute: true,
+          muted: false,
+          next_cursor: cursor,
+        });
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    }),
+  );
+
+  renderLibrary();
+  fireEvent.click(
+    await screen.findByRole("button", {
+      name: "Open Photo 1 from July 2026",
+    }),
+  );
+
+  expect(await screen.findByText(firstComment.body)).toBeVisible();
+  expect(
+    screen.getByRole("checkbox", {
+      name: "Mute future Comment notifications",
+    }),
+  ).toBeEnabled();
+  const loadMore = screen.getByRole("button", { name: "Load more Comments" });
+  expect(loadMore).toBeEnabled();
+  fireEvent.click(loadMore);
+  expect(
+    await screen.findByRole("button", { name: "Loading…" }),
+  ).toBeDisabled();
+  expect(commentRequests).toHaveLength(2);
+  expect(
+    new URL(commentRequests[1], "http://memento.test").searchParams.get(
+      "cursor",
+    ),
+  ).toBe(cursor);
+
+  act(() => {
+    resolveNextPage(
+      new Response(
+        JSON.stringify({
+          comments: [secondComment],
+          can_mute: true,
+          muted: false,
+          next_cursor: null,
+        }),
+        { headers: { "Content-Type": "application/json" } },
+      ),
+    );
+  });
+
+  expect(await screen.findByText(secondComment.body)).toBeVisible();
+  const renderedComments = document.querySelectorAll(".comment-list > li");
+  expect(renderedComments).toHaveLength(2);
+  expect(renderedComments[0]).toHaveTextContent(firstComment.body);
+  expect(renderedComments[1]).toHaveTextContent(secondComment.body);
+  expect(screen.getAllByText(firstComment.body)).toHaveLength(1);
+  expect(screen.getAllByText(secondComment.body)).toHaveLength(1);
+  expect(
+    screen.queryByRole("button", { name: "Load more Comments" }),
+  ).not.toBeInTheDocument();
+});
+
+test("favorites, comments, and mute controls stay in the private Media viewer", async () => {
+  const requests: Array<{ path: string; init?: RequestInit }> = [];
+  let isFavorite = false;
+  let muted = false;
+  let commentAttempts = 0;
+  let comments = [
+    {
+      id: "comment-1",
+      media_item_id: "media-1",
+      author_person_id: "alex",
+      author_name: "Alex",
+      body: "A private memory",
+      state: "active",
+      version: 1,
+      created_at: "2026-07-28T12:00:00Z",
+      edited_at: null,
+      moderated_at: null,
+      moderator_name: null,
+      authored_by_me: true,
+      can_edit: true,
+      can_delete: true,
+      can_moderate: false,
+    },
+  ];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = requestPath(input);
+      requests.push({ path, init });
+      if (path.startsWith("/api/me/photos?")) {
+        return json({
+          media: [
+            {
+              id: "media-1",
+              media_type: "image",
+              width: 1600,
+              height: 900,
+              local_date_time: "2026-07-28T12:00:00Z",
+              available: true,
+              thumbnail_url: "/api/me/media/media-1/thumbnail",
+              preview_url: "/api/me/media/media-1/preview",
+              video_url: "",
+              original_url: "/api/me/media/media-1/original",
+            },
+          ],
+          next_cursor: null,
+        });
+      }
+      if (path === "/api/me/new-for-you") return json({ events: [] });
+      if (path === "/api/favorites/media-1") {
+        if (init?.method === "PUT") isFavorite = true;
+        if (init?.method === "DELETE") isFavorite = false;
+        return json({ media_item_id: "media-1", favorite: isFavorite });
+      }
+      if (path === "/api/comments/media/media-1/mute") {
+        const request = JSON.parse(stringBody(init?.body)) as {
+          muted: boolean;
+        };
+        muted = request.muted;
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      if (path === "/api/comments/comment-1") {
+        if (init?.method === "PATCH") {
+          const request = JSON.parse(stringBody(init.body)) as { body: string };
+          comments[0] = {
+            ...comments[0],
+            body: request.body,
+            version: comments[0].version + 1,
+          };
+          return json(comments[0]);
+        }
+        if (init?.method === "DELETE") {
+          comments = comments.map((comment) =>
+            comment.id === "comment-1"
+              ? {
+                  ...comment,
+                  body: "",
+                  state: "deleted",
+                  version: comment.version + 1,
+                  can_edit: false,
+                  can_delete: false,
+                }
+              : comment,
+          );
+          return Promise.resolve(new Response(null, { status: 204 }));
+        }
+      }
+      if (path.startsWith("/api/comments/media/media-1")) {
+        if (init?.method === "POST") {
+          commentAttempts += 1;
+          if (commentAttempts === 1)
+            return Promise.reject(new Error("Connection lost"));
+          const request = JSON.parse(stringBody(init.body)) as { body: string };
+          comments = [
+            ...comments,
+            {
+              ...comments[0],
+              id: "comment-2",
+              body: request.body,
+              created_at: "2026-07-28T12:01:00Z",
+            },
+          ];
+          return json(comments[1]);
+        }
+        return json({ comments, can_mute: true, muted, next_cursor: null });
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    }),
+  );
+
+  renderLibrary();
+  fireEvent.click(
+    await screen.findByRole("button", {
+      name: "Open Photo 1 from July 2026",
+    }),
+  );
+
+  expect(await screen.findByText("A private memory")).toBeVisible();
+  expect(
+    screen.getByText("Favorites aren't shared with other recipients."),
+  ).toBeVisible();
+
+  vi.spyOn(window, "prompt").mockReturnValueOnce("An edited memory");
+  fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+  expect(await screen.findByText("An edited memory")).toBeVisible();
+
+  fireEvent.click(screen.getByRole("button", { name: "Add Favorite" }));
+  expect(
+    await screen.findByRole("button", { name: "Remove Favorite" }),
+  ).toHaveAttribute("aria-pressed", "true");
+
+  fireEvent.change(screen.getByLabelText("Add a Comment"), {
+    target: { value: "Another memory" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Post Comment" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("Connection lost");
+  fireEvent.click(screen.getByRole("button", { name: "Post Comment" }));
+  expect(await screen.findByText("Another memory")).toBeVisible();
+
+  fireEvent.click(
+    screen.getByRole("checkbox", {
+      name: "Mute future Comment notifications",
+    }),
+  );
+  await waitFor(() =>
+    expect(
+      screen.getByRole("checkbox", {
+        name: "Mute future Comment notifications",
+      }),
+    ).toBeChecked(),
+  );
+
+  const confirmDelete = vi
+    .spyOn(window, "confirm")
+    .mockReturnValueOnce(false)
+    .mockReturnValueOnce(true);
+  fireEvent.click(screen.getAllByRole("button", { name: "Delete" })[0]);
+  expect(confirmDelete).toHaveBeenCalledWith(
+    "Delete this Comment? This cannot be undone.",
+  );
+  expect(
+    requests.some(
+      ({ path, init }) =>
+        path === "/api/comments/comment-1" && init?.method === "DELETE",
+    ),
+  ).toBe(false);
+  expect(screen.getByText("An edited memory")).toBeVisible();
+
+  fireEvent.click(screen.getAllByRole("button", { name: "Delete" })[0]);
+  expect(await screen.findByText("Comment deleted.")).toBeVisible();
+  expect(screen.queryByText("An edited memory")).not.toBeInTheDocument();
+  const renderedComments = document.querySelectorAll(".comment-list > li");
+  expect(renderedComments).toHaveLength(2);
+  expect(
+    within(renderedComments[0] as HTMLElement).getByText("Comment deleted."),
+  ).toBeVisible();
+  expect(
+    within(renderedComments[0] as HTMLElement).queryByRole("button", {
+      name: "Edit",
+    }),
+  ).not.toBeInTheDocument();
+  expect(
+    within(renderedComments[0] as HTMLElement).queryByRole("button", {
+      name: "Delete",
+    }),
+  ).not.toBeInTheDocument();
+  expect(
+    within(renderedComments[1] as HTMLElement).getByText("Another memory"),
+  ).toBeVisible();
+
+  const editRequest = requests.find(
+    ({ path, init }) =>
+      path === "/api/comments/comment-1" && init?.method === "PATCH",
+  );
+  expect(editRequest?.init).toMatchObject({
+    method: "PATCH",
+    headers: {
+      "If-Match": "1",
+      "X-Memento-CSRF": session.csrf_token,
+    },
+  });
+  const deleteRequest = requests.find(
+    ({ path, init }) =>
+      path === "/api/comments/comment-1" && init?.method === "DELETE",
+  );
+  expect(deleteRequest?.init).toMatchObject({
+    method: "DELETE",
+    headers: {
+      "If-Match": "2",
+      "X-Memento-CSRF": session.csrf_token,
+    },
+  });
+  const favoriteRequest = requests.find(
+    ({ path, init }) =>
+      path === "/api/favorites/media-1" && init?.method === "PUT",
+  );
+  expect(favoriteRequest?.init).toMatchObject({
+    method: "PUT",
+    headers: { "X-Memento-CSRF": session.csrf_token },
+  });
+  const commentRequests = requests.filter(
+    ({ path, init }) =>
+      path === "/api/comments/media/media-1" && init?.method === "POST",
+  );
+  expect(commentRequests).toHaveLength(2);
+  expect(commentRequests[0]?.init?.method).toBe("POST");
+  const firstCommentHeaders = commentRequests[0]?.init?.headers as Record<
+    string,
+    string
+  >;
+  const secondCommentHeaders = commentRequests[1]?.init?.headers as Record<
+    string,
+    string
+  >;
+  expect(firstCommentHeaders["X-Memento-CSRF"]).toBe(session.csrf_token);
+  expect(firstCommentHeaders["Idempotency-Key"]).toMatch(
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+  );
+  expect(secondCommentHeaders["Idempotency-Key"]).toBe(
+    firstCommentHeaders["Idempotency-Key"],
+  );
+  const muteRequest = requests.find(
+    ({ path, init }) =>
+      path === "/api/comments/media/media-1/mute" && init?.method === "PUT",
+  );
+  expect(muteRequest?.init).toMatchObject({
+    method: "PUT",
+    headers: { "X-Memento-CSRF": session.csrf_token },
+  });
+});
+
+test("disables stale interaction controls and returns to the Library after Media access loss", async () => {
+  let accessLost = false;
+  const comment = {
+    id: "comment-1",
+    media_item_id: "media-1",
+    author_person_id: "alex",
+    author_name: "Alex",
+    body: "A retained Comment",
+    state: "active",
+    version: 1,
+    created_at: "2026-07-28T12:00:00Z",
+    edited_at: null,
+    moderated_at: null,
+    moderator_name: null,
+    authored_by_me: true,
+    can_edit: true,
+    can_delete: true,
+    can_moderate: false,
+  };
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = requestPath(input);
+      if (path.startsWith("/api/me/photos?")) {
+        return json({
+          media: accessLost
+            ? []
+            : [
+                {
+                  id: "media-1",
+                  media_type: "image",
+                  width: 1600,
+                  height: 900,
+                  local_date_time: "2026-07-28T12:00:00Z",
+                  available: true,
+                  thumbnail_url: "/api/me/media/media-1/thumbnail",
+                  preview_url: "/api/me/media/media-1/preview",
+                  video_url: "",
+                  original_url: "/api/me/media/media-1/original",
+                },
+              ],
+          next_cursor: null,
+        });
+      }
+      if (path === "/api/me/new-for-you") return json({ events: [] });
+      if (path === "/api/favorites/media-1") {
+        return accessLost
+          ? apiError("This Media is unavailable.", 404)
+          : json({ media_item_id: "media-1", favorite: false });
+      }
+      if (path === "/api/comments/comment-1" && init?.method === "PATCH") {
+        accessLost = true;
+        return apiError("Comments for this Media are unavailable.", 404);
+      }
+      if (path.startsWith("/api/comments/media/media-1?")) {
+        return json({
+          comments: [comment],
+          can_mute: true,
+          muted: false,
+          next_cursor: null,
+        });
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    }),
+  );
+
+  renderLibrary();
+  fireEvent.click(
+    await screen.findByRole("button", {
+      name: "Open Photo 1 from July 2026",
+    }),
+  );
+  expect(await screen.findByText(comment.body)).toBeVisible();
+
+  vi.spyOn(window, "prompt").mockReturnValueOnce("A changed Comment");
+  fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "This Media is no longer available in your Library.",
+  );
+  expect(screen.getByRole("button", { name: "Add Favorite" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Edit" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Delete" })).toBeDisabled();
+  expect(
+    screen.getByRole("checkbox", {
+      name: "Mute future Comment notifications",
+    }),
+  ).toBeDisabled();
+  expect(screen.getByLabelText("Add a Comment")).toBeDisabled();
+  expect(
+    screen.queryByRole("link", { name: "Download original" }),
+  ).not.toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole("button", { name: "Return to Library" }));
+  await waitFor(() =>
+    expect(
+      screen.queryByRole("dialog", { name: "Media viewer" }),
+    ).not.toBeInTheDocument(),
+  );
+  expect(await screen.findByText("No photos are available.")).toBeVisible();
 });

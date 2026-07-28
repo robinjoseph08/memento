@@ -112,6 +112,25 @@ async function recipientAPI(
           "base64",
         ),
       });
+    } else if (
+      path === `/api/favorites/${media.id}` &&
+      request.method() === "GET"
+    ) {
+      await route.fulfill({
+        json: { media_item_id: media.id, favorite: false },
+      });
+    } else if (
+      path === `/api/comments/media/${media.id}` &&
+      request.method() === "GET"
+    ) {
+      await route.fulfill({
+        json: {
+          comments: [],
+          can_mute: false,
+          muted: false,
+          next_cursor: null,
+        },
+      });
     } else if (path === "/api/me/archives" && request.method() === "POST") {
       const payload = request.postDataJSON() as { scope: string };
       await route.fulfill({
@@ -228,6 +247,15 @@ test("@desktop Recipient lands on Photos and sees only filtered Event totals", a
     media.preview_url,
   );
   await expect(downloadOriginal).toHaveAttribute("href", media.original_url);
+  await expect(
+    page.getByRole("button", { name: "Add Favorite" }),
+  ).toBeEnabled();
+  await expect(
+    page.getByRole("textbox", { name: "Add a Comment" }),
+  ).toBeEnabled();
+  await expect(
+    page.getByText("This Media is no longer available in your Library."),
+  ).toHaveCount(0);
 
   await page
     .locator(".library-rail")
@@ -345,6 +373,12 @@ test("@mobile complete thumbnails and compact navigation do not expose inaccessi
   await download.scrollIntoViewIfNeeded();
   await expect(download).toBeVisible();
   await expect(download).toHaveAttribute("href", media.original_url);
+  await expect(
+    page.getByRole("button", { name: "Add Favorite" }),
+  ).toBeEnabled();
+  await expect(
+    page.getByText("This Media is no longer available in your Library."),
+  ).toHaveCount(0);
   const downloadBox = await download.boundingBox();
   const viewport = page.viewportSize();
   expect(downloadBox).not.toBeNull();

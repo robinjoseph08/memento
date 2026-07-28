@@ -63,6 +63,22 @@ func TestLibraryRoutesRequireACompletedRecipientSessionWithoutIdentifierHints(t 
 	}
 }
 
+func TestCuratorMediaRoutesUseCuratorPolicy(t *testing.T) {
+	e := libraryHTTP(&routeAuthorizer{})
+	routes := map[string]string{}
+	for _, route := range e.Routes() {
+		routes[route.Method+" "+route.Path] = route.Name
+	}
+	for _, path := range []string{
+		"GET /api/curator/media/:id",
+		"GET /api/curator/media/:id/thumbnail",
+		"GET /api/curator/media/:id/preview",
+		"GET /api/curator/media/:id/video",
+	} {
+		assert.Equal(t, "policy:curator", routes[path], path)
+	}
+}
+
 func TestLibraryMutationRequiresCSRFAndInvalidIDsAreNotFound(t *testing.T) {
 	authorizer := &routeAuthorizer{actor: setup.SessionActor{PersonID: uuid.New(), AccessID: uuid.New()}, err: setup.ErrCSRF}
 	request := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/me/new-for-you/"+uuid.NewString()+"/seen", nil)

@@ -8,6 +8,7 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useSearchParams } from "react-router-dom";
 
 import { APIError, apiJSON, apiNoContent } from "./api";
+import { CuratorInteractions } from "./CuratorInteractions";
 import { EventOrganizer } from "./EventOrganizer";
 import { FamilyManager } from "./FamilyManager";
 import { InvitationSuggestions } from "./InvitationSuggestions";
@@ -1518,6 +1519,7 @@ function ReadyCard({
         <InvitationSuggestions session={session} />
         <FamilyManager session={session} />
         <VisibilityManager session={session} />
+        <CuratorInteractions session={session} />
         <section className="shell-card curator-card">
           <SourceWorkspace
             onSignOut={() => signOut.mutate()}

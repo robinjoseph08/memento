@@ -85,6 +85,11 @@ func NotFound(resource string) error {
 	return &Error{HTTPCode: http.StatusNotFound, Message: resource + " not found.", Code: "not_found", FieldErrors: nil}
 }
 
+// NotFoundMessage returns a 404 error with a privacy-safe unavailable-resource message.
+func NotFoundMessage(message string) error {
+	return &Error{HTTPCode: http.StatusNotFound, Message: message, Code: "not_found", FieldErrors: nil}
+}
+
 // Conflict returns a 409 error with the given safe message.
 func Conflict(message string) error {
 	return &Error{HTTPCode: http.StatusConflict, Message: message, Code: "conflict", FieldErrors: nil}

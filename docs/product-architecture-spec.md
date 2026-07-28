@@ -4,7 +4,7 @@
 
 Status: implementation-ready specification for the MVP.
 
-The deployable foundation, first-browser Curator setup, family administration, Invitation and Onboarding, passwordless sign-in, Session management, Recipient access lifecycle, early curation workflows, atomic Event Publication, immediate Event, Moment, and Media Withdrawal with restoration through fresh Publications, the authorization-filtered Recipient library, responsive Media viewer, protected thumbnail, preview, video, and original streaming, and Session-bound Event and subset archive delivery are implemented. Notification delivery, restore validation, Recovery hold, and later product phases are not yet implemented.
+The deployable foundation, first-browser Curator setup, family administration, Invitation and Onboarding, passwordless sign-in, Session management, Recipient access lifecycle, early curation workflows, atomic Event Publication, immediate Event, Moment, and Media Withdrawal with restoration through fresh Publications, the authorization-filtered Recipient library, responsive Media viewer, protected thumbnail, preview, video, and original streaming, Session-bound Event and subset archive delivery, item-level Comments and moderation, Comment subscriptions and mutes, and private Favorites are implemented. External notification channels, restore validation, Recovery hold, and later product phases are not yet implemented.
 
 The key words **MUST**, **MUST NOT**, **REQUIRED**, **SHOULD**, **SHOULD NOT**, and **MAY** are normative. They have their usual requirements-language meanings. Product terms such as Person, Recipient, Pending Recipient, Audience, Publication, and Staged update have the exact meanings in [`CONTEXT.md`](../CONTEXT.md).
 
@@ -401,7 +401,7 @@ All timestamps MUST use `timestamptz`. Durable domain identities SHOULD use UUID
 
 | Records | Required constraints and indexes |
 | --- | --- |
-| `comments` | Media item, author Person, body, created, edited, deleted or moderated state. Index Media/time and author/time. Authorization is evaluated at read time. |
+| `comments` | Media item, author Person and Recipient generation, retry idempotency key, body, optimistic version, created, edited, deleted or moderated state. Index Media/time and author/time, and uniquely constrain each generation and idempotency key. Authorization is evaluated at read time, creation retries return the original Comment only when the request matches, and every edit, delete, or moderation compares the current version. |
 | `comment_moderation_history` | Append-only old/new state and actor. Index Comment/time. |
 | `comment_subscriptions` | Unique Media item and Recipient generation after that Recipient Comments; includes mute state. Access alone and Favorite do not create it. |
 | `favorites` | Unique Recipient Person and Media item, current state and timestamps. Index Recipient current favorites and Media item for Curator view. No recipient aggregate index is exposed. |
@@ -540,6 +540,7 @@ All application JSON and protected Media routes are under `/api`. Stable portal 
 | `/api/publications` and `/api/withdrawals` | final review, publish, history, immediate Withdrawal, restoration staging |
 | `/api/library` | Recipient Photos timeline, Events, New for you, collection statistics, seen state |
 | `/api/media` | Recipient metadata, authorized thumbnail, preview, playback, and original streams |
+| `/api/curator/media` | Curator-only moderation metadata, thumbnail, preview, and playback independently of Audience membership |
 | `/api/me/archives` | Recipient plan, inspect safe summary, and single-use part streams |
 | `/api/comments` | create, edit, delete, moderate, mute, list authorized item Comments |
 | `/api/favorites` | Recipient toggle and list, Curator per-Recipient view |

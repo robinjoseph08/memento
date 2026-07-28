@@ -48,6 +48,21 @@ type MediaPage struct {
 	NextCursor *string `json:"next_cursor" tstype:"string | null,required"`
 }
 
+// CuratorMedia exposes moderation context without Immich identifiers, paths, or Audience details.
+type CuratorMedia struct {
+	ID            string   `json:"id"`
+	MediaType     string   `json:"media_type"`
+	Width         *int     `json:"width" tstype:"number | null,required"`
+	Height        *int     `json:"height" tstype:"number | null,required"`
+	LocalDateTime *string  `json:"local_date_time" tstype:"string | null,required"`
+	Available     bool     `json:"available"`
+	Filename      string   `json:"filename"`
+	EventTitles   []string `json:"event_titles"`
+	ThumbnailURL  string   `json:"thumbnail_url"`
+	PreviewURL    string   `json:"preview_url"`
+	VideoURL      string   `json:"video_url"`
+}
+
 type EventSummary struct {
 	ID             string    `json:"id"`
 	PublicationID  string    `json:"publication_id"`
@@ -541,6 +556,63 @@ func setMediaURLs(media *Media) {
 	}
 }
 
+func ensureCuratorActor(ctx context.Context, db bun.IDB, actor setup.SessionActor) error {
+	if !actor.Curator {
+		return ErrNotFound
+	}
+	if err := ensureActor(ctx, db, actor); err != nil {
+		return err
+	}
+	var curator bool
+	if err := db.NewRaw(`SELECT EXISTS (
+		SELECT 1 FROM person_roles WHERE person_id = ? AND role = 'curator'
+	)`, actor.PersonID).Scan(ctx, &curator); err != nil {
+		return err
+	}
+	if !curator {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// CuratorMediaContext returns portal-owned moderation context independently of Audiences.
+func (s *Service) CuratorMediaContext(ctx context.Context, actor setup.SessionActor, mediaID uuid.UUID) (CuratorMedia, error) {
+	if err := ensureCuratorActor(ctx, s.db, actor); err != nil {
+		return CuratorMedia{}, err
+	}
+	var media CuratorMedia
+	err := s.db.NewRaw(`SELECT media.id, media.media_type, media.width, media.height,
+		media.local_date_time, media.availability = 'current' AS available,
+		COALESCE(backing.filename, '') AS filename
+		FROM media_items AS media
+		LEFT JOIN media_backings AS backing ON backing.media_item_id = media.id AND backing.active
+		WHERE media.id = ?`, mediaID).Scan(ctx, &media.ID, &media.MediaType, &media.Width,
+		&media.Height, &media.LocalDateTime, &media.Available, &media.Filename)
+	if errors.Is(err, sql.ErrNoRows) {
+		return CuratorMedia{}, ErrNotFound
+	}
+	if err != nil {
+		return CuratorMedia{}, err
+	}
+	media.EventTitles = make([]string, 0)
+	if err := s.db.NewRaw(`SELECT DISTINCT current.title
+		FROM current_published_placements AS placement
+		JOIN current_published_events AS current
+		  ON current.event_id = placement.event_id AND current.publication_id = placement.publication_id
+		WHERE placement.media_item_id = ? ORDER BY current.title`, mediaID).Scan(ctx, &media.EventTitles); err != nil {
+		return CuratorMedia{}, err
+	}
+	if media.Available {
+		base := "/api/curator/media/" + media.ID
+		media.ThumbnailURL = base + "/thumbnail"
+		media.PreviewURL = base + "/preview"
+		if media.MediaType == "video" {
+			media.VideoURL = base + "/video"
+		}
+	}
+	return media, nil
+}
+
 type representation int
 
 const (
@@ -564,6 +636,104 @@ func (s *Service) Video(ctx context.Context, actor setup.SessionActor, mediaID u
 
 func (s *Service) Original(ctx context.Context, actor setup.SessionActor, mediaID uuid.UUID, request immich.MediaRequest) (immich.MediaResponse, error) {
 	return s.Representation(ctx, actor, mediaID, representationOriginal, request)
+}
+
+// CuratorRepresentation serves moderation media independently of Recipient Audiences.
+func (s *Service) CuratorRepresentation(ctx context.Context, actor setup.SessionActor, mediaID uuid.UUID, kind representation, request immich.MediaRequest) (immich.MediaResponse, error) {
+	if s.immich == nil {
+		return immich.MediaResponse{}, ErrNotFound
+	}
+	type candidate struct {
+		BackingID uuid.UUID
+		AssetID   uuid.UUID
+		MediaType string
+	}
+	resolve := func(ctx context.Context, db bun.IDB) (candidate, error) {
+		if err := ensureCuratorActor(ctx, db, actor); err != nil {
+			return candidate{}, err
+		}
+		var resolved candidate
+		if err := db.NewRaw(`SELECT backing.id, backing.immich_asset_id, media.media_type
+			FROM media_items AS media
+			JOIN media_backings AS backing ON backing.media_item_id = media.id AND backing.active
+			WHERE media.id = ? AND media.availability = 'current'`, mediaID).Scan(
+			ctx, &resolved.BackingID, &resolved.AssetID, &resolved.MediaType); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return candidate{}, ErrNotFound
+			}
+			return candidate{}, err
+		}
+		if kind == representationVideo && resolved.MediaType != "video" {
+			return candidate{}, ErrNotFound
+		}
+		return resolved, nil
+	}
+
+	resolved, err := resolve(ctx, s.db)
+	if err != nil {
+		return immich.MediaResponse{}, err
+	}
+	response, err := s.openRepresentation(ctx, resolved.AssetID, kind, request)
+	if errors.Is(err, immich.ErrNotFound) {
+		err = ErrNotFound
+	}
+	if err != nil {
+		if response.Body != nil {
+			_ = response.Body.Close()
+		}
+		return immich.MediaResponse{}, err
+	}
+	err = s.db.RunInTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted}, func(ctx context.Context, tx bun.Tx) error {
+		if err := lockActorForOpening(ctx, tx, actor); err != nil {
+			return err
+		}
+		var lockedMediaID uuid.UUID
+		if err := tx.NewRaw(`SELECT id FROM media_items WHERE id = ? FOR SHARE`, mediaID).Scan(ctx, &lockedMediaID); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrNotFound
+			}
+			return err
+		}
+		var lockedBackingID uuid.UUID
+		if err := tx.NewRaw(`SELECT id FROM media_backings
+			WHERE id = ? AND media_item_id = ? AND immich_asset_id = ? AND active
+			FOR SHARE`, resolved.BackingID, mediaID, resolved.AssetID).Scan(ctx, &lockedBackingID); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrNotFound
+			}
+			return err
+		}
+		current, err := resolve(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if current != resolved {
+			return ErrNotFound
+		}
+		return nil
+	})
+	if err != nil {
+		if response.Body != nil {
+			_ = response.Body.Close()
+		}
+		return immich.MediaResponse{}, err
+	}
+	return response, nil
+}
+
+func (s *Service) openRepresentation(ctx context.Context, assetID uuid.UUID, kind representation, request immich.MediaRequest) (immich.MediaResponse, error) {
+	switch kind {
+	case representationThumbnail:
+		return s.immich.Thumbnail(ctx, assetID, request)
+	case representationPreview:
+		return s.immich.Preview(ctx, assetID, request)
+	case representationVideo:
+		return s.immich.Video(ctx, assetID, request)
+	case representationOriginal:
+		return s.immich.Original(ctx, assetID, request)
+	default:
+		return immich.MediaResponse{}, ErrNotFound
+	}
 }
 
 func (s *Service) Representation(ctx context.Context, actor setup.SessionActor, mediaID uuid.UUID, kind representation, request immich.MediaRequest) (immich.MediaResponse, error) {
@@ -602,19 +772,7 @@ func (s *Service) Representation(ctx context.Context, actor setup.SessionActor, 
 	if err != nil {
 		return immich.MediaResponse{}, err
 	}
-	var response immich.MediaResponse
-	switch kind {
-	case representationThumbnail:
-		response, err = s.immich.Thumbnail(ctx, resolved.AssetID, request)
-	case representationPreview:
-		response, err = s.immich.Preview(ctx, resolved.AssetID, request)
-	case representationVideo:
-		response, err = s.immich.Video(ctx, resolved.AssetID, request)
-	case representationOriginal:
-		response, err = s.immich.Original(ctx, resolved.AssetID, request)
-	default:
-		return immich.MediaResponse{}, ErrNotFound
-	}
+	response, err := s.openRepresentation(ctx, resolved.AssetID, kind, request)
 	if errors.Is(err, immich.ErrNotFound) {
 		err = ErrNotFound
 	}

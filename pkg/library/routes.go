@@ -47,6 +47,17 @@ func (h *Handler) authorize(c echo.Context, mutation bool) (setup.SessionActor, 
 	}
 }
 
+func (h *Handler) authorizeCurator(c echo.Context) (setup.SessionActor, error) {
+	actor, err := h.authorize(c, false)
+	if err != nil {
+		return setup.SessionActor{}, err
+	}
+	if !actor.Curator {
+		return setup.SessionActor{}, errcodes.NotFound("Page")
+	}
+	return actor, nil
+}
+
 func libraryError(err error) error {
 	switch {
 	case err == nil:
@@ -139,6 +150,34 @@ func (h *Handler) MarkSeen(c echo.Context) error {
 	return c.NoContent(http.StatusNoContent)
 }
 
+func (h *Handler) CuratorMedia(c echo.Context) error {
+	actor, err := h.authorizeCurator(c)
+	if err != nil {
+		return err
+	}
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil || id == uuid.Nil {
+		return errcodes.NotFound("Media")
+	}
+	response, err := h.service.CuratorMediaContext(c.Request().Context(), actor, id)
+	if mapped := libraryError(err); mapped != nil {
+		return mapped
+	}
+	return c.JSON(http.StatusOK, response)
+}
+
+func (h *Handler) CuratorThumbnail(c echo.Context) error {
+	return h.streamCuratorRepresentation(c, representationThumbnail)
+}
+
+func (h *Handler) CuratorPreview(c echo.Context) error {
+	return h.streamCuratorRepresentation(c, representationPreview)
+}
+
+func (h *Handler) CuratorVideo(c echo.Context) error {
+	return h.streamCuratorRepresentation(c, representationVideo)
+}
+
 func (h *Handler) Thumbnail(c echo.Context) error {
 	return h.streamRepresentation(c, representationThumbnail)
 }
@@ -181,6 +220,26 @@ func (h *Handler) streamRepresentation(c echo.Context, kind representation) erro
 	if mapped := libraryError(err); mapped != nil {
 		return mapped
 	}
+	return streamMediaResponse(c, id, kind, response)
+}
+
+func (h *Handler) streamCuratorRepresentation(c echo.Context, kind representation) error {
+	actor, err := h.authorizeCurator(c)
+	if err != nil {
+		return err
+	}
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil || id == uuid.Nil {
+		return errcodes.NotFound("Media")
+	}
+	response, err := h.service.CuratorRepresentation(c.Request().Context(), actor, id, kind, immichMediaRequest(c.Request().Header))
+	if mapped := libraryError(err); mapped != nil {
+		return mapped
+	}
+	return streamMediaResponse(c, id, kind, response)
+}
+
+func streamMediaResponse(c echo.Context, id uuid.UUID, kind representation, response immich.MediaResponse) error {
 	if response.Body != nil {
 		defer response.Body.Close()
 	}
@@ -212,7 +271,7 @@ func (h *Handler) streamRepresentation(c echo.Context, kind representation) erro
 		return nil
 	}
 	buffer := make([]byte, 32<<10)
-	_, err = io.CopyBuffer(c.Response(), response.Body, buffer)
+	_, err := io.CopyBuffer(c.Response(), response.Body, buffer)
 	return err
 }
 
@@ -277,4 +336,14 @@ func RegisterRoutes(e *echo.Echo, handler *Handler) {
 	video.Name = "policy:recipient_content"
 	original := me.GET("/media/:id/original", handler.Original)
 	original.Name = "policy:recipient_content"
+
+	curatorMedia := e.Group("/api/curator/media", noStore)
+	context := curatorMedia.GET("/:id", handler.CuratorMedia)
+	context.Name = "policy:curator"
+	curatorThumbnail := curatorMedia.GET("/:id/thumbnail", handler.CuratorThumbnail)
+	curatorThumbnail.Name = "policy:curator"
+	curatorPreview := curatorMedia.GET("/:id/preview", handler.CuratorPreview)
+	curatorPreview.Name = "policy:curator"
+	curatorVideo := curatorMedia.GET("/:id/video", handler.CuratorVideo)
+	curatorVideo.Name = "policy:curator"
 }
