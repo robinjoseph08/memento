@@ -430,6 +430,32 @@ type restoredWithdrawal struct {
 	TargetID   uuid.UUID
 }
 
+// hasPendingWithdrawalPublication reports whether an otherwise unchanged Event
+// still needs a Publication to restore content or advance a stale Media placement.
+func hasPendingWithdrawalPublication(ctx context.Context, tx bun.Tx, eventID uuid.UUID) (bool, error) {
+	var pending bool
+	err := tx.NewRaw(`SELECT EXISTS (
+		SELECT 1
+		FROM content_withdrawals AS withdrawal
+		WHERE withdrawal.restored_at IS NULL AND (
+			(withdrawal.target_kind = 'event' AND withdrawal.target_id = ?)
+			OR (withdrawal.target_kind = 'moment' AND EXISTS (
+				SELECT 1 FROM draft_moments
+				WHERE event_id = ? AND id = withdrawal.target_id
+			))
+			OR (withdrawal.target_kind = 'media' AND EXISTS (
+				SELECT 1
+				FROM current_published_placements AS placement
+				JOIN publications AS publication ON publication.id = placement.publication_id
+				WHERE placement.event_id = ?
+				  AND placement.media_item_id = withdrawal.target_id
+				  AND publication.content_revision <= withdrawal.content_revision
+			))
+		)
+	)`, eventID, eventID, eventID).Scan(ctx, &pending)
+	return pending, err
+}
+
 // restoreEligibleWithdrawals is called only inside a successful Publication transaction.
 // A reused Media identity stays withdrawn until every current placement has a post-Withdrawal Publication.
 func restoreEligibleWithdrawals(ctx context.Context, tx bun.Tx, eventID, publicationID uuid.UUID, now time.Time, actor setup.CuratorSession) error {

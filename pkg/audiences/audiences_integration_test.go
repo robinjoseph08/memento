@@ -239,6 +239,7 @@ func TestPublishedEventAudienceChangeStaysPrivateAndCancelsWhenRestored(t *testi
 	require.NoError(t, err)
 
 	otherEventID, otherPublicationID := uuid.New(), uuid.New()
+	otherMomentID, otherPublishedMomentID, otherSnapshotID := uuid.New(), uuid.New(), uuid.New()
 	_, err = f.db.NewRaw(`
 		INSERT INTO events (id, lifecycle, title, grouping_timezone, created_at, updated_at)
 		VALUES (?, 'published', 'Overlapping Event', 'UTC', now(), now());
@@ -246,14 +247,39 @@ func TestPublishedEventAudienceChangeStaysPrivateAndCancelsWhenRestored(t *testi
 			id, event_id, revision, editable_version, published_by_person_id,
 			notify_recipients, committed_at
 		) VALUES (?, ?, 1, 1, ?, false, now());
+		INSERT INTO published_event_revisions (
+			publication_id, event_id, title, description, grouping_timezone, created_at
+		) VALUES (?, ?, 'Overlapping Event', '', 'UTC', now());
+		INSERT INTO audience_snapshots (
+			id, target_kind, target_id, approved_by_person_id, approved_at, label
+		) VALUES (?, 'moment', ?, ?, now(), 'Shared');
+		INSERT INTO audience_snapshot_entries (
+			snapshot_id, recipient_person_id, recipient_access_generation_id
+		) VALUES (?, ?, ?);
+		INSERT INTO published_moments (
+			id, publication_id, draft_moment_id, audience_snapshot_id, position, title, proposed_day
+		) VALUES (?, ?, ?, ?, 0, 'Overlap', '2026-07-28');
+		INSERT INTO published_media_placements (
+			published_moment_id, media_item_id, position, media_type, width, height, local_date_time
+		) SELECT ?, id, 0, media_type, width, height, local_date_time FROM media_items WHERE id = ?;
 		UPDATE events SET current_publication_id = ? WHERE id = ?;
+		INSERT INTO current_published_events (
+			event_id, publication_id, title, description, grouping_timezone, committed_at
+		) VALUES (?, ?, 'Overlapping Event', '', 'UTC', now());
+		INSERT INTO current_published_placements (
+			event_id, publication_id, published_moment_id, media_item_id, position
+		) VALUES (?, ?, ?, ?, 0);
 		INSERT INTO current_audience_entitlements (
 			event_id, publication_id, recipient_person_id,
 			recipient_access_generation_id, media_item_id
 		) VALUES (?, ?, ?, ?, ?)
 	`, otherEventID, otherPublicationID, otherEventID, f.actor.PersonID,
-		otherPublicationID, otherEventID, otherEventID, otherPublicationID,
-		f.people["present"], f.access["present"], f.mediaID).Exec(ctx)
+		otherPublicationID, otherEventID, otherSnapshotID, otherMomentID, f.actor.PersonID,
+		otherSnapshotID, f.people["present"], f.access["present"],
+		otherPublishedMomentID, otherPublicationID, otherMomentID, otherSnapshotID,
+		otherPublishedMomentID, f.mediaID, otherPublicationID, otherEventID,
+		otherEventID, otherPublicationID, otherEventID, otherPublicationID, otherPublishedMomentID, f.mediaID,
+		otherEventID, otherPublicationID, f.people["present"], f.access["present"], f.mediaID).Exec(ctx)
 	require.NoError(t, err)
 
 	review, err = f.service.SetOverride(ctx, f.actor, targetMoment, f.momentID, original.Version, OverrideRequest{RecipientPersonID: f.people["present"].String(), State: "excluded"})
@@ -284,11 +310,15 @@ func TestPublishedEventAudienceChangeStaysPrivateAndCancelsWhenRestored(t *testi
 	assert.False(t, reportedRevocation, "another current Event preserves the Recipient's global Media entitlement")
 
 	_, err = f.db.NewRaw(`
+		INSERT INTO audience_entries (
+			published_moment_id, recipient_person_id, recipient_access_generation_id
+		) VALUES (?, ?, ?);
 		INSERT INTO current_audience_entitlements (
 			event_id, publication_id, recipient_person_id,
 			recipient_access_generation_id, media_item_id
 		) VALUES (?, ?, ?, ?, ?)
-	`, otherEventID, otherPublicationID, f.people["manual"], f.access["manual"], f.mediaID).Exec(ctx)
+	`, otherPublishedMomentID, f.people["manual"], f.access["manual"],
+		otherEventID, otherPublicationID, f.people["manual"], f.access["manual"], f.mediaID).Exec(ctx)
 	require.NoError(t, err)
 	require.NoError(t, f.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 		_, err := staging.Refresh(ctx, tx, eventID, time.Now().UTC())

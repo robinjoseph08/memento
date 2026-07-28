@@ -536,7 +536,7 @@ func TestWithdrawalAndRestorationRefreshDependentEffectiveAccess(t *testing.T) {
 		if _, updateErr := tx.NewRaw(`
 			INSERT INTO audience_snapshots (
 				id, target_kind, target_id, approved_by_person_id, approved_at, label
-			) VALUES (?, 'moment', ?, ?, ?, 'Pending only');
+			) VALUES (?, 'moment', ?, ?, ?, 'Shared');
 			INSERT INTO audience_snapshot_entries (
 				snapshot_id, recipient_person_id, recipient_access_generation_id
 			) VALUES (?, ?, ?);
@@ -544,7 +544,7 @@ func TestWithdrawalAndRestorationRefreshDependentEffectiveAccess(t *testing.T) {
 			WHERE target_kind = 'moment' AND target_id = ?;
 			UPDATE events SET version = 8, final_review_complete = true WHERE id = ?
 		`, firstReplacementSnapshot, fixture.moments[0], fixture.actor.PersonID, fixture.service.now(),
-			firstReplacementSnapshot, fixture.people["pending"], fixture.access["pending"],
+			firstReplacementSnapshot, fixture.people["none"], fixture.access["none"],
 			firstReplacementSnapshot, fixture.moments[0], fixture.event).Exec(ctx); updateErr != nil {
 			return updateErr
 		}
@@ -571,7 +571,7 @@ func TestWithdrawalAndRestorationRefreshDependentEffectiveAccess(t *testing.T) {
 		return nil
 	}
 	prior := accessByPerson()
-	assert.Contains(t, prior, fixture.people["pending"].String())
+	assert.Contains(t, prior, fixture.people["none"].String())
 	assert.NotContains(t, prior, fixture.people["shared"].String(), "the overlapping Event initially preserves shared access")
 
 	withdrawal, err := fixture.service.Withdraw(ctx, fixture.actor, WithdrawRequest{
@@ -579,7 +579,7 @@ func TestWithdrawalAndRestorationRefreshDependentEffectiveAccess(t *testing.T) {
 	})
 	require.NoError(t, err)
 	withdrawn := accessByPerson()
-	assert.Equal(t, 1, withdrawn[fixture.people["pending"].String()].GrantedMediaCount)
+	assert.Equal(t, 1, withdrawn[fixture.people["none"].String()].GrantedMediaCount)
 	assert.Equal(t, 1, withdrawn[fixture.people["shared"].String()].RevokedMediaCount)
 	var version int64
 	var finalReview bool
@@ -594,7 +594,7 @@ func TestWithdrawalAndRestorationRefreshDependentEffectiveAccess(t *testing.T) {
 	require.NoError(t, err)
 
 	restored := accessByPerson()
-	assert.Contains(t, restored, fixture.people["pending"].String())
+	assert.Contains(t, restored, fixture.people["none"].String())
 	assert.NotContains(t, restored, fixture.people["shared"].String(), "restored effective access masks the proposed revocation again")
 	require.NoError(t, fixture.db.NewRaw(`SELECT version, final_review_complete FROM events WHERE id = ?`, fixture.event).Scan(ctx, &version, &finalReview))
 	assert.Equal(t, int64(10), version)
@@ -1105,7 +1105,7 @@ func TestConcurrentPublicationRemovalIsRevalidatedAfterWithdrawalLocksTheEvent(t
 				})
 				withdrawn <- withdrawErr
 			}()
-			waitForAdvisoryLockWaiter(t, fixture, placementlock.Key, "ExclusiveLock")
+			waitForAdvisoryLockWaiter(t, fixture, staging.AccessSummaryLockKey, "ExclusiveLock")
 			releasePublicationOnce.Do(func() { close(releasePublication) })
 
 			select {
@@ -1201,7 +1201,7 @@ func TestConcurrentMediaPlacementGrowthWaitsForWithdrawalSnapshot(t *testing.T) 
 		published <- publishErr
 	}()
 
-	waitForAdvisoryLockWaiter(t, fixture, placementlock.Key, "ShareLock")
+	waitForAdvisoryLockWaiter(t, fixture, staging.AccessSummaryLockKey, "ExclusiveLock")
 
 	releaseOnce.Do(func() { close(releaseWithdrawal) })
 	var result withdrawalResult

@@ -1418,15 +1418,16 @@ func TestFirstStagedInsertSerializesWithEntitlementReplacement(t *testing.T) {
 	_, err = firstInsert.NewRaw(`
 		INSERT INTO audience_snapshots (
 			id, target_kind, target_id, approved_by_person_id, approved_at, label
-		) VALUES (?, 'moment', ?, ?, ?, 'Pending only');
+		) VALUES (?, 'moment', ?, ?, ?, 'Shared');
 		INSERT INTO audience_snapshot_entries (
 			snapshot_id, recipient_person_id, recipient_access_generation_id
-		) VALUES (?, ?, ?);
+		) VALUES (?, ?, ?), (?, ?, ?);
 		UPDATE current_audience_snapshots SET snapshot_id = ?
 		WHERE target_kind = 'moment' AND target_id = ?;
 		UPDATE events SET version = 8, final_review_complete = true WHERE id = ?
 	`, firstReplacementSnapshot, fixture.moments[0], fixture.actor.PersonID, fixture.service.now(),
 		firstReplacementSnapshot, fixture.people["pending"], fixture.access["pending"],
+		firstReplacementSnapshot, fixture.people["none"], fixture.access["none"],
 		firstReplacementSnapshot, fixture.moments[0], fixture.event).Exec(ctx)
 	require.NoError(t, err)
 	firstUpdate, err := staging.Refresh(ctx, firstInsert, fixture.event, fixture.service.now().UTC())

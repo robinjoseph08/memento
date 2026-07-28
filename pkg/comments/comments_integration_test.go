@@ -128,6 +128,9 @@ func newInteractionFixture(t *testing.T) interactionFixture {
 		INSERT INTO current_published_events
 			(event_id, publication_id, title, description, grouping_timezone, committed_at)
 		VALUES (?, ?, 'Shared Event', '', 'UTC', ?);
+		INSERT INTO published_event_revisions
+			(publication_id, event_id, title, description, grouping_timezone, created_at)
+		VALUES (?, ?, 'Shared Event', '', 'UTC', ?);
 		INSERT INTO audience_snapshots
 			(id, target_kind, target_id, approved_by_person_id, approved_at, label)
 		VALUES (?, 'moment', ?, ?, ?, 'Shared');
@@ -140,10 +143,23 @@ func newInteractionFixture(t *testing.T) interactionFixture {
 	`, fixture.people["curator"], fixture.event, now, now,
 		fixture.publication, fixture.event, fixture.people["curator"], now,
 		fixture.publication, fixture.event, fixture.event, fixture.publication, now,
+		fixture.publication, fixture.event, now,
 		snapshot, fixture.moment, fixture.people["curator"], now, fixture.media, now, now,
 		now, fixture.media).Exec(ctx)
 	require.NoError(t, err)
 	_, err = db.NewRaw(`
+		INSERT INTO draft_moments
+			(id, event_id, position, proposed_day, grouping_timezone, source_days,
+			 title, cover_media_item_id, attendance_complete, audience_complete)
+		VALUES (?, ?, 0, '2026-07-28', 'UTC', ARRAY['2026-07-28'::date], '', ?, true, true);
+		INSERT INTO draft_media_placements
+			(event_id, media_item_id, draft_moment_id, position, created_at)
+		VALUES (?, ?, ?, 0, ?);
+		INSERT INTO current_audience_snapshots (target_kind, target_id, snapshot_id)
+		VALUES ('moment', ?, ?);
+		INSERT INTO audience_snapshot_entries
+			(snapshot_id, recipient_person_id, recipient_access_generation_id)
+		VALUES (?, ?, ?), (?, ?, ?);
 		INSERT INTO published_moments
 			(id, publication_id, draft_moment_id, audience_snapshot_id, position, title, proposed_day)
 		VALUES (?, ?, ?, ?, 0, '', '2026-07-28');
@@ -153,7 +169,11 @@ func newInteractionFixture(t *testing.T) interactionFixture {
 		INSERT INTO current_published_placements
 			(event_id, publication_id, published_moment_id, media_item_id, position)
 		VALUES (?, ?, ?, ?, 0)
-	`, fixture.moment, fixture.publication, fixture.moment, snapshot,
+	`, fixture.moment, fixture.event, fixture.media,
+		fixture.event, fixture.media, fixture.moment, now, fixture.moment, snapshot,
+		snapshot, fixture.people["alex"], fixture.access["alex"],
+		snapshot, fixture.people["blair"], fixture.access["blair"],
+		fixture.moment, fixture.publication, fixture.moment, snapshot,
 		fixture.moment, fixture.media, fixture.event, fixture.publication, fixture.moment, fixture.media).Exec(ctx)
 	require.NoError(t, err)
 	fixture.grant(t, "alex")

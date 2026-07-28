@@ -540,7 +540,9 @@ test("@desktop organizes, orders, autosaves, and persists after reload", async (
 
   await page.getByRole("checkbox", { name: /loose photo/ }).check();
   await page.getByLabel("Move selected to").selectOption({ label: "Friday" });
-  await page.getByRole("button", { name: "Move selected Media" }).click();
+  await page
+    .getByRole("button", { name: "Move selected Media", exact: true })
+    .click();
   const covers = page.getByLabel("Cover");
   await covers.nth(0).selectOption(items.loose.id);
   await covers.nth(1).selectOption(items.second.id);

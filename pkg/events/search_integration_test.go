@@ -353,7 +353,7 @@ func TestPersonMergeMovesOnlyCurrentPublishedAttendanceAndPreservesSearchMatches
 
 	first, err := fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, fixture.request())
 	require.NoError(t, err)
-	_, err = fixture.db.NewRaw(`UPDATE events SET version = 8 WHERE id = ?`, fixture.event).Exec(ctx)
+	_, err = fixture.db.NewRaw(`UPDATE events SET title = 'Second publication', version = 8 WHERE id = ?`, fixture.event).Exec(ctx)
 	require.NoError(t, err)
 	second, err := fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, PublishEventRequest{Version: 8})
 	require.NoError(t, err)
@@ -489,11 +489,11 @@ func TestConcurrentPublicationAndPersonMergePreserveCurrentAndHistoricalAttendan
 
 			first, err := fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, fixture.request())
 			require.NoError(t, err)
-			_, err = fixture.db.NewRaw(`UPDATE events SET version = 8 WHERE id = ?`, fixture.event).Exec(ctx)
+			_, err = fixture.db.NewRaw(`UPDATE events SET title = 'Second publication', version = 8 WHERE id = ?`, fixture.event).Exec(ctx)
 			require.NoError(t, err)
 			second, err := fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, PublishEventRequest{Version: 8})
 			require.NoError(t, err)
-			_, err = fixture.db.NewRaw(`UPDATE events SET version = 9 WHERE id = ?`, fixture.event).Exec(ctx)
+			_, err = fixture.db.NewRaw(`UPDATE events SET title = 'Third publication', version = 9 WHERE id = ?`, fixture.event).Exec(ctx)
 			require.NoError(t, err)
 
 			peopleService := peopledomain.New(fixture.db)

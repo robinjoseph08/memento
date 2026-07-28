@@ -187,7 +187,13 @@ func (s *Service) PublishEvent(ctx context.Context, actor setup.CuratorSession, 
 			return err
 		}
 		if lifecycle == "published" && staged == nil {
-			return ErrPublicationNotReady
+			pendingWithdrawal, pendingErr := hasPendingWithdrawalPublication(ctx, tx, eventID)
+			if pendingErr != nil {
+				return pendingErr
+			}
+			if !pendingWithdrawal {
+				return ErrPublicationNotReady
+			}
 		}
 		if priorID != nil {
 			var priorEditableVersion int64
