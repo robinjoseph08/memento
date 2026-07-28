@@ -861,6 +861,8 @@ test("keeps restored Media when its Moment is merged during a delayed restoratio
   const staged = organizedDraft(8);
   staged.lifecycle = "published";
   staged.published_editable_version = 7;
+  staged.moments[0].place_labels = ["Harbor overlook", "Shared table"];
+  staged.moments[1].place_labels = ["shared table", "Garden terrace"];
   staged.moments[1].media_items = staged.moments[1].media_items.filter(
     (item) => item.id !== items.loose.id,
   );
@@ -937,6 +939,7 @@ test("keeps restored Media when its Moment is merged during a delayed restoratio
   expect(saves[0].moments[0]).toMatchObject({
     id: momentTwoID,
     media_item_ids: [items.b.id, items.c.id, items.a.id],
+    place_labels: ["Harbor overlook", "Shared table", "Garden terrace"],
   });
 });
 

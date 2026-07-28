@@ -563,12 +563,12 @@ func TestPlaceLabelOnlyCorrectionsRemainStagedAndPublishExactly(t *testing.T) {
 
 	base, err := fixture.service.GetEvent(ctx, fixture.event)
 	require.NoError(t, err)
-	requestFor := func(event Event, finalReview bool) OrganizeEventRequest {
+	requestFor := func(event Event, eventLabels, firstMomentLabels []string, finalReview bool) OrganizeEventRequest {
 		moments := make([]OrganizeMoment, 0, len(event.Moments))
 		for index, moment := range event.Moments {
 			labels := moment.PlaceLabels
 			if index == 0 {
-				labels = []string{"Breakfast room", "Harbor view"}
+				labels = firstMomentLabels
 			}
 			mediaIDs := make([]string, 0, len(moment.MediaItems))
 			for _, item := range moment.MediaItems {
@@ -581,12 +581,14 @@ func TestPlaceLabelOnlyCorrectionsRemainStagedAndPublishExactly(t *testing.T) {
 			})
 		}
 		return OrganizeEventRequest{
-			Version: event.Version, PlaceLabels: []string{"Coastal overlook"},
+			Version: event.Version, PlaceLabels: eventLabels,
 			Moments: moments, FinalReviewComplete: finalReview,
 		}
 	}
+	correctedEventLabels := []string{"Coastal overlook"}
+	correctedMomentLabels := []string{"Breakfast room", "Harbor view"}
 
-	corrected, err := fixture.service.OrganizeEvent(ctx, fixture.actor, fixture.event, requestFor(base, true))
+	corrected, err := fixture.service.OrganizeEvent(ctx, fixture.actor, fixture.event, requestFor(base, correctedEventLabels, correctedMomentLabels, true))
 	require.NoError(t, err)
 	assert.False(t, corrected.FinalReviewComplete)
 	require.NotNil(t, corrected.StagedUpdate, "label-only corrections remain publishable Staged work")
@@ -596,8 +598,35 @@ func TestPlaceLabelOnlyCorrectionsRemainStagedAndPublishExactly(t *testing.T) {
 	assert.Equal(t, 2, metadata.Count, "one Event and one Moment have label metadata changes")
 	assert.Equal(t, []string{"place_labels"}, metadata.EventMetadataFields)
 	assert.Equal(t, []string{fixture.moments[0].String()}, metadata.MomentIDs)
+	var stagedRows int
+	var stagedPointerMatches bool
+	require.NoError(t, fixture.db.NewRaw(`
+		SELECT count(*), COALESCE(bool_and(event.current_staged_update_id = staged.id), false)
+		FROM staged_updates AS staged
+		JOIN events AS event ON event.id = staged.event_id
+		WHERE staged.event_id = ?
+	`, fixture.event).Scan(ctx, &stagedRows, &stagedPointerMatches))
+	assert.Equal(t, 1, stagedRows)
+	assert.True(t, stagedPointerMatches)
 
-	reviewed, err := fixture.service.OrganizeEvent(ctx, fixture.actor, fixture.event, requestFor(corrected, true))
+	cancelled, err := fixture.service.OrganizeEvent(ctx, fixture.actor, fixture.event, requestFor(corrected, base.PlaceLabels, base.Moments[0].PlaceLabels, false))
+	require.NoError(t, err)
+	assert.Equal(t, base.PlaceLabels, cancelled.PlaceLabels)
+	assert.Equal(t, base.Moments[0].PlaceLabels, cancelled.Moments[0].PlaceLabels)
+	assert.Nil(t, cancelled.StagedUpdate, "restoring exact published Event and Moment labels cancels the Staged update")
+	var remainingStagedRows int
+	var stagedPointerCleared bool
+	require.NoError(t, fixture.db.NewRaw(`
+		SELECT (SELECT count(*) FROM staged_updates WHERE event_id = ?),
+		       current_staged_update_id IS NULL
+		FROM events WHERE id = ?
+	`, fixture.event, fixture.event).Scan(ctx, &remainingStagedRows, &stagedPointerCleared))
+	assert.Zero(t, remainingStagedRows)
+	assert.True(t, stagedPointerCleared)
+
+	reapplied, err := fixture.service.OrganizeEvent(ctx, fixture.actor, fixture.event, requestFor(cancelled, correctedEventLabels, correctedMomentLabels, false))
+	require.NoError(t, err)
+	reviewed, err := fixture.service.OrganizeEvent(ctx, fixture.actor, fixture.event, requestFor(reapplied, correctedEventLabels, correctedMomentLabels, true))
 	require.NoError(t, err)
 	assert.True(t, reviewed.FinalReviewComplete)
 	publication, err := fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, PublishEventRequest{Version: reviewed.Version})
@@ -719,6 +748,39 @@ func TestCuratorCanRestoreAutosavedPublishedMediaRemoval(t *testing.T) {
 	assert.Equal(t, 1, proposalRows)
 	assert.Equal(t, 1, reasonRows)
 	assert.Zero(t, restorationRows)
+
+	mergedCover := fixture.media[1].String()
+	merged, err := fixture.service.OrganizeEvent(ctx, fixture.actor, fixture.event, OrganizeEventRequest{
+		Version: restored.Version,
+		Moments: []OrganizeMoment{{
+			ID: fixture.moments[1].String(), Title: "Merged Moment", ProposedDay: "2026-07-28",
+			PlaceLabels: []string{"Harbor view", "Garden terrace"}, CoverMediaItemID: &mergedCover,
+			MediaItemIDs: []string{fixture.media[1].String(), fixture.media[2].String()},
+		}},
+		UnassignedMediaIDs: []string{fixture.media[0].String()},
+	})
+	require.NoError(t, err, "the delayed local merge persists after restoration recreated the deleted Moment")
+	require.Len(t, merged.Moments, 1)
+	assert.Equal(t, fixture.moments[1].String(), merged.Moments[0].ID)
+	assert.Equal(t, []string{"Harbor view", "Garden terrace"}, merged.Moments[0].PlaceLabels)
+	require.Len(t, merged.Moments[0].MediaItems, 2)
+	assert.Equal(t, fixture.media[1].String(), merged.Moments[0].MediaItems[0].ID)
+	assert.Equal(t, fixture.media[2].String(), merged.Moments[0].MediaItems[1].ID)
+	require.Len(t, merged.UnassignedMedia, 1)
+	assert.Equal(t, fixture.media[0].String(), merged.UnassignedMedia[0].ID)
+	require.NotNil(t, merged.StagedUpdate)
+
+	persisted, err := fixture.service.GetEvent(ctx, fixture.event)
+	require.NoError(t, err)
+	require.Len(t, persisted.Moments, 1)
+	assert.Equal(t, fixture.moments[1].String(), persisted.Moments[0].ID)
+	require.Len(t, persisted.UnassignedMedia, 1)
+	assert.Equal(t, fixture.media[0].String(), persisted.UnassignedMedia[0].ID)
+	var recreatedMomentRows int
+	require.NoError(t, fixture.db.NewRaw(`
+		SELECT count(*) FROM draft_moments WHERE event_id = ? AND id = ?
+	`, fixture.event, fixture.moments[0]).Scan(ctx, &recreatedMomentRows))
+	assert.Zero(t, recreatedMomentRows)
 }
 
 func TestPublishedMediaRestorationCancelsInReversePublishedOrder(t *testing.T) {
