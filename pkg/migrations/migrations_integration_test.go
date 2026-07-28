@@ -161,7 +161,7 @@ func TestSearchMigrationPreservesExistingPublishedDocumentsAndIndexes(t *testing
 	priorMigrations := migrate.NewMigrations()
 	foundSearch := false
 	for _, migration := range collection.Sorted() {
-		if migration.Name == "202607280002" {
+		if migration.Name == "202607280003" {
 			foundSearch = true
 			break
 		}
