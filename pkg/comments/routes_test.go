@@ -35,6 +35,7 @@ func TestRegisterRoutesExposesCommentPolicies(t *testing.T) {
 	}
 	assert.Equal(t, "policy:recipient_content", routes["GET /api/comments/media/:media_id"])
 	assert.Equal(t, "policy:recipient_content_csrf", routes["POST /api/comments/media/:media_id"])
+	assert.Equal(t, "policy:curator", routes["GET /api/comments/curator"])
 	assert.Equal(t, "policy:recipient_content_csrf", routes["PATCH /api/comments/:comment_id"])
 	assert.Equal(t, "policy:recipient_content_csrf", routes["DELETE /api/comments/:comment_id"])
 	assert.Equal(t, "policy:recipient_content_csrf", routes["PUT /api/comments/media/:media_id/mute"])
@@ -79,6 +80,28 @@ func TestCommentMutationContractRequiresCurrentVersion(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "current Comment version")
 	assert.Contains(t, interactionError(ErrVersionConflict).Error(), "changed in another browser")
+}
+
+func TestCommentListAndCreationContractsRequireBoundedPagesAndRetryKeys(t *testing.T) {
+	e := echo.New()
+	request := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/comments/curator?limit=100&cursor=opaque", nil)
+	page, err := commentPage(e.NewContext(request, httptest.NewRecorder()))
+	require.NoError(t, err)
+	assert.Equal(t, PageRequest{Cursor: "opaque", Limit: 100}, page)
+
+	request = httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/comments/curator?limit=101", nil)
+	_, err = commentPage(e.NewContext(request, httptest.NewRecorder()))
+	require.Error(t, err)
+
+	key := "11111111-1111-4111-8111-111111111111"
+	request = httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/comments/media/id", nil)
+	request.Header.Set("Idempotency-Key", key)
+	parsed, err := idempotencyKey(e.NewContext(request, httptest.NewRecorder()))
+	require.NoError(t, err)
+	assert.Equal(t, key, parsed.String())
+	request.Header.Del("Idempotency-Key")
+	_, err = idempotencyKey(e.NewContext(request, httptest.NewRecorder()))
+	require.Error(t, err)
 }
 
 func TestCommentJobRejectsInvalidPayloadWithoutDatabaseAccess(t *testing.T) {

@@ -2,11 +2,14 @@
 package comments
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 	"time"
@@ -27,6 +30,8 @@ var (
 	ErrInvalidMute          = errors.New("comment subscription not found")
 	ErrNotCurator           = errors.New("curator authority is required")
 	ErrVersionConflict      = errors.New("comment version is stale")
+	ErrInvalidCursor        = errors.New("comment cursor is invalid")
+	ErrIdempotencyConflict  = errors.New("comment idempotency key was reused for another request")
 	ErrHandoffNotConfigured = errors.New("comment activity handoff is not configured")
 )
 
@@ -49,8 +54,19 @@ type Comment struct {
 }
 
 type ListResponse struct {
-	Comments []Comment `json:"comments"`
-	Muted    bool      `json:"muted"`
+	Comments   []Comment `json:"comments"`
+	Muted      bool      `json:"muted"`
+	NextCursor *string   `json:"next_cursor" tstype:"string | null,required"`
+}
+
+type CuratorListResponse struct {
+	Comments   []Comment `json:"comments"`
+	NextCursor *string   `json:"next_cursor" tstype:"string | null,required"`
+}
+
+type PageRequest struct {
+	Cursor string `json:"-"`
+	Limit  int    `json:"-"`
 }
 
 type BodyRequest struct {
@@ -66,6 +82,7 @@ type ModerateRequest struct {
 }
 
 type ModerationHistory struct {
+	ID         int64     `json:"-"`
 	PriorState string    `json:"prior_state"`
 	PriorBody  string    `json:"prior_body"`
 	Reason     string    `json:"reason"`
@@ -74,7 +91,16 @@ type ModerationHistory struct {
 }
 
 type HistoryResponse struct {
-	History []ModerationHistory `json:"history"`
+	History    []ModerationHistory `json:"history"`
+	NextCursor *string             `json:"next_cursor" tstype:"string | null,required"`
+}
+
+type pageCursor struct {
+	Kind       string    `json:"k"`
+	ResourceID string    `json:"r,omitempty"`
+	CreatedAt  time.Time `json:"t"`
+	UUID       uuid.UUID `json:"u,omitempty"`
+	Sequence   int64     `json:"s,omitempty"`
 }
 
 type Handoff func(context.Context, uuid.UUID, uuid.UUID) error
@@ -97,9 +123,18 @@ func normalizeBody(body string, maximum int) (string, error) {
 	return body, nil
 }
 
-func (s *Service) List(ctx context.Context, actor setup.SessionActor, mediaID uuid.UUID) (ListResponse, error) {
+func (s *Service) List(ctx context.Context, actor setup.SessionActor, mediaID uuid.UUID, pages ...PageRequest) (ListResponse, error) {
+	page := PageRequest{}
+	if len(pages) > 0 {
+		page = pages[0]
+	}
+	page = normalizedPage(page)
+	cursor, err := decodePageCursor(page.Cursor, "thread", mediaID.String())
+	if err != nil {
+		return ListResponse{}, err
+	}
 	response := ListResponse{Comments: make([]Comment, 0)}
-	err := s.db.RunInTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true}, func(ctx context.Context, tx bun.Tx) error {
+	err = s.db.RunInTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true}, func(ctx context.Context, tx bun.Tx) error {
 		if err := mediaaccess.Require(ctx, tx, actor, mediaID); err != nil {
 			return err
 		}
@@ -109,23 +144,80 @@ func (s *Service) List(ctx context.Context, actor setup.SessionActor, mediaID uu
 		)`, mediaID, actor.AccessID).Scan(ctx, &response.Muted); err != nil {
 			return err
 		}
+		filter := ""
+		args := []any{mediaID}
+		if cursor != nil {
+			filter = ` AND (comment.created_at, comment.id) > (?, ?)`
+			args = append(args, cursor.CreatedAt, cursor.UUID)
+		}
+		args = append(args, page.Limit+1)
 		return tx.NewRaw(`SELECT comment.id, comment.media_item_id, comment.author_person_id,
 			author.display_name AS author_name, comment.body, comment.state, comment.version, comment.created_at,
 			comment.edited_at, comment.moderated_at, moderator.display_name AS moderator_name
 			FROM comments AS comment
 			JOIN people AS author ON author.id = comment.author_person_id
 			LEFT JOIN people AS moderator ON moderator.id = comment.moderated_by_person_id
-			WHERE comment.media_item_id = ?
-			ORDER BY comment.created_at, comment.id`, mediaID).Scan(ctx, &response.Comments)
+			WHERE comment.media_item_id = ?`+filter+`
+			ORDER BY comment.created_at, comment.id LIMIT ?`, args...).Scan(ctx, &response.Comments)
 	})
 	if err != nil {
 		return ListResponse{}, mapAccessError(err)
+	}
+	if len(response.Comments) > page.Limit {
+		last := response.Comments[page.Limit-1]
+		response.NextCursor = encodePageCursor(pageCursor{Kind: "thread", ResourceID: mediaID.String(), CreatedAt: last.CreatedAt, UUID: uuid.MustParse(last.ID)})
+		response.Comments = response.Comments[:page.Limit]
 	}
 	prepareComments(response.Comments, actor)
 	return response, nil
 }
 
-func (s *Service) Create(ctx context.Context, actor setup.SessionActor, mediaID uuid.UUID, request BodyRequest) (Comment, error) {
+func (s *Service) CuratorList(ctx context.Context, actor setup.SessionActor, page PageRequest) (CuratorListResponse, error) {
+	if !actor.Curator {
+		return CuratorListResponse{}, ErrNotCurator
+	}
+	page = normalizedPage(page)
+	cursor, err := decodePageCursor(page.Cursor, "curator", "")
+	if err != nil {
+		return CuratorListResponse{}, err
+	}
+	response := CuratorListResponse{Comments: make([]Comment, 0)}
+	err = s.db.RunInTx(ctx, &sql.TxOptions{ReadOnly: true}, func(ctx context.Context, tx bun.Tx) error {
+		var curator bool
+		if err := tx.NewRaw(`SELECT EXISTS (SELECT 1 FROM person_roles WHERE person_id = ? AND role = 'curator')`, actor.PersonID).Scan(ctx, &curator); err != nil {
+			return err
+		}
+		if !curator {
+			return ErrNotCurator
+		}
+		filter := ""
+		args := make([]any, 0, 3)
+		if cursor != nil {
+			filter = `WHERE (comment.created_at, comment.id) < (?, ?)`
+			args = append(args, cursor.CreatedAt, cursor.UUID)
+		}
+		args = append(args, page.Limit+1)
+		return tx.NewRaw(`SELECT comment.id, comment.media_item_id, comment.author_person_id,
+			author.display_name AS author_name, comment.body, comment.state, comment.version, comment.created_at,
+			comment.edited_at, comment.moderated_at, moderator.display_name AS moderator_name
+			FROM comments AS comment
+			JOIN people AS author ON author.id = comment.author_person_id
+			LEFT JOIN people AS moderator ON moderator.id = comment.moderated_by_person_id
+			`+filter+` ORDER BY comment.created_at DESC, comment.id DESC LIMIT ?`, args...).Scan(ctx, &response.Comments)
+	})
+	if err != nil {
+		return CuratorListResponse{}, err
+	}
+	if len(response.Comments) > page.Limit {
+		last := response.Comments[page.Limit-1]
+		response.NextCursor = encodePageCursor(pageCursor{Kind: "curator", CreatedAt: last.CreatedAt, UUID: uuid.MustParse(last.ID)})
+		response.Comments = response.Comments[:page.Limit]
+	}
+	prepareComments(response.Comments, actor)
+	return response, nil
+}
+
+func (s *Service) Create(ctx context.Context, actor setup.SessionActor, mediaID, idempotencyKey uuid.UUID, request BodyRequest) (Comment, error) {
 	body, err := normalizeBody(request.Body, 2000)
 	if err != nil {
 		return Comment{}, err
@@ -140,10 +232,24 @@ func (s *Service) Create(ctx context.Context, actor setup.SessionActor, mediaID 
 		if err := mediaaccess.Require(ctx, tx, actor, mediaID); err != nil {
 			return err
 		}
-		if _, err := tx.NewRaw(`INSERT INTO comments
-			(id, media_item_id, author_person_id, author_access_generation_id, body, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?)`, commentID, mediaID, actor.PersonID, actor.AccessID, body, now, now).Exec(ctx); err != nil {
+		inserted, err := tx.NewRaw(`INSERT INTO comments
+			(id, media_item_id, author_person_id, author_access_generation_id, idempotency_key, body, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT (author_access_generation_id, idempotency_key) DO NOTHING`, commentID, mediaID, actor.PersonID, actor.AccessID, idempotencyKey, body, now, now).Exec(ctx)
+		if err != nil {
 			return err
+		}
+		if affected, _ := inserted.RowsAffected(); affected == 0 {
+			var existingMediaID, existingID uuid.UUID
+			var existingBody string
+			if err := tx.NewRaw(`SELECT id, media_item_id, body FROM comments
+				WHERE author_access_generation_id = ? AND idempotency_key = ?`, actor.AccessID, idempotencyKey).Scan(ctx, &existingID, &existingMediaID, &existingBody); err != nil {
+				return err
+			}
+			if existingMediaID != mediaID || existingBody != body {
+				return ErrIdempotencyConflict
+			}
+			return loadComment(ctx, tx, existingID, &result)
 		}
 		if _, err := tx.NewRaw(`INSERT INTO comment_subscriptions
 			(media_item_id, recipient_access_generation_id, created_at, updated_at)
@@ -312,12 +418,21 @@ func (s *Service) Moderate(ctx context.Context, actor setup.SessionActor, commen
 	})
 }
 
-func (s *Service) ModerationHistory(ctx context.Context, actor setup.SessionActor, commentID uuid.UUID) (HistoryResponse, error) {
+func (s *Service) ModerationHistory(ctx context.Context, actor setup.SessionActor, commentID uuid.UUID, pages ...PageRequest) (HistoryResponse, error) {
 	if !actor.Curator {
 		return HistoryResponse{}, ErrNotCurator
 	}
+	page := PageRequest{}
+	if len(pages) > 0 {
+		page = pages[0]
+	}
+	page = normalizedPage(page)
+	cursor, err := decodePageCursor(page.Cursor, "history", commentID.String())
+	if err != nil {
+		return HistoryResponse{}, err
+	}
 	response := HistoryResponse{History: make([]ModerationHistory, 0)}
-	err := s.db.RunInTx(ctx, &sql.TxOptions{ReadOnly: true}, func(ctx context.Context, tx bun.Tx) error {
+	err = s.db.RunInTx(ctx, &sql.TxOptions{ReadOnly: true}, func(ctx context.Context, tx bun.Tx) error {
 		var curator bool
 		if err := tx.NewRaw(`SELECT EXISTS (SELECT 1 FROM person_roles WHERE person_id = ? AND role = 'curator')`, actor.PersonID).Scan(ctx, &curator); err != nil {
 			return err
@@ -332,13 +447,28 @@ func (s *Service) ModerationHistory(ctx context.Context, actor setup.SessionActo
 		if !exists {
 			return ErrNotFound
 		}
-		return tx.NewRaw(`SELECT history.prior_state, history.prior_body, history.reason,
+		filter := ""
+		args := []any{commentID}
+		if cursor != nil {
+			filter = ` AND (history.created_at, history.id) > (?, ?)`
+			args = append(args, cursor.CreatedAt, cursor.Sequence)
+		}
+		args = append(args, page.Limit+1)
+		return tx.NewRaw(`SELECT history.id, history.prior_state, history.prior_body, history.reason,
 			actor.display_name AS actor_name, history.created_at
 			FROM comment_moderation_history AS history
 			JOIN people AS actor ON actor.id = history.actor_person_id
-			WHERE history.comment_id = ? ORDER BY history.created_at, history.id`, commentID).Scan(ctx, &response.History)
+			WHERE history.comment_id = ?`+filter+` ORDER BY history.created_at, history.id LIMIT ?`, args...).Scan(ctx, &response.History)
 	})
-	return response, err
+	if err != nil {
+		return HistoryResponse{}, err
+	}
+	if len(response.History) > page.Limit {
+		last := response.History[page.Limit-1]
+		response.NextCursor = encodePageCursor(pageCursor{Kind: "history", ResourceID: commentID.String(), CreatedAt: last.CreatedAt, Sequence: last.ID})
+		response.History = response.History[:page.Limit]
+	}
+	return response, nil
 }
 
 func (s *Service) HandleCommentJob(ctx context.Context, job worker.Job) error {
@@ -436,6 +566,50 @@ func notFound(err error) error {
 		return ErrNotFound
 	}
 	return err
+}
+
+func normalizedPage(page PageRequest) PageRequest {
+	if page.Limit <= 0 {
+		page.Limit = 50
+	}
+	return page
+}
+
+func encodePageCursor(cursor pageCursor) *string {
+	contents, _ := json.Marshal(cursor)
+	encoded := base64.RawURLEncoding.EncodeToString(contents)
+	return &encoded
+}
+
+func decodePageCursor(raw, kind, resourceID string) (*pageCursor, error) {
+	if raw == "" {
+		return nil, nil
+	}
+	contents, err := base64.RawURLEncoding.DecodeString(raw)
+	if err != nil {
+		return nil, ErrInvalidCursor
+	}
+	decoder := json.NewDecoder(bytes.NewReader(contents))
+	decoder.DisallowUnknownFields()
+	var cursor pageCursor
+	if err := decoder.Decode(&cursor); err != nil {
+		return nil, ErrInvalidCursor
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return nil, ErrInvalidCursor
+	}
+	if cursor.Kind != kind || cursor.ResourceID != resourceID || cursor.CreatedAt.IsZero() {
+		return nil, ErrInvalidCursor
+	}
+	if kind == "history" {
+		if cursor.Sequence < 1 || cursor.UUID != uuid.Nil {
+			return nil, ErrInvalidCursor
+		}
+	} else if cursor.UUID == uuid.Nil || cursor.Sequence != 0 {
+		return nil, ErrInvalidCursor
+	}
+	cursor.CreatedAt = cursor.CreatedAt.UTC()
+	return &cursor, nil
 }
 
 func mapAccessError(err error) error {

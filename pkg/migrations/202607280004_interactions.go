@@ -16,6 +16,7 @@ func init() {
 						media_item_id uuid NOT NULL REFERENCES media_items(id) ON DELETE RESTRICT,
 						author_person_id uuid NOT NULL REFERENCES people(id) ON DELETE RESTRICT,
 						author_access_generation_id uuid NOT NULL REFERENCES recipient_access_generations(id) ON DELETE RESTRICT,
+						idempotency_key uuid NOT NULL,
 						body text NOT NULL CHECK (char_length(body) BETWEEN 1 AND 2000),
 						state text NOT NULL DEFAULT 'active' CHECK (state IN ('active', 'deleted', 'moderated')),
 						version bigint NOT NULL DEFAULT 1 CHECK (version > 0),
@@ -33,6 +34,7 @@ func init() {
 					)`,
 					`CREATE INDEX comments_media_time_idx ON comments (media_item_id, created_at, id)`,
 					`CREATE INDEX comments_author_time_idx ON comments (author_person_id, created_at DESC, id DESC)`,
+					`CREATE UNIQUE INDEX comments_author_idempotency_idx ON comments (author_access_generation_id, idempotency_key)`,
 					`CREATE TABLE comment_moderation_history (
 						id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
 						comment_id uuid NOT NULL REFERENCES comments(id) ON DELETE RESTRICT,

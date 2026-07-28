@@ -6,6 +6,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -142,10 +144,10 @@ func TestCommentsAuthorizeChronologyOwnershipAndModerationHistory(t *testing.T) 
 
 	err := fixture.comments.SetMuted(ctx, fixture.actors["alex"], fixture.media, true)
 	require.ErrorIs(t, err, ErrInvalidMute, "access alone does not create a Comment subscription")
-	alexComment, err := fixture.comments.Create(ctx, fixture.actors["alex"], fixture.media, BodyRequest{Body: " First "})
+	alexComment, err := fixture.comments.Create(ctx, fixture.actors["alex"], fixture.media, uuid.New(), BodyRequest{Body: " First "})
 	require.NoError(t, err)
 	assert.True(t, alexComment.AuthoredByMe)
-	blairComment, err := fixture.comments.Create(ctx, fixture.actors["blair"], fixture.media, BodyRequest{Body: "Second"})
+	blairComment, err := fixture.comments.Create(ctx, fixture.actors["blair"], fixture.media, uuid.New(), BodyRequest{Body: "Second"})
 	require.NoError(t, err)
 
 	listed, err := fixture.comments.List(ctx, fixture.actors["alex"], fixture.media)
@@ -187,14 +189,14 @@ func TestCommentsAuthorizeChronologyOwnershipAndModerationHistory(t *testing.T) 
 
 	_, err = fixture.comments.List(ctx, fixture.actors["casey"], fixture.media)
 	require.ErrorIs(t, err, ErrNotFound)
-	_, err = fixture.comments.Create(ctx, fixture.actors["casey"], fixture.media, BodyRequest{Body: "guessed"})
+	_, err = fixture.comments.Create(ctx, fixture.actors["casey"], fixture.media, uuid.New(), BodyRequest{Body: "guessed"})
 	require.ErrorIs(t, err, ErrNotFound)
 }
 
 func TestConcurrentAndStaleCommentMutationsCannotOverwriteNewerState(t *testing.T) {
 	fixture := newInteractionFixture(t)
 	ctx := context.Background()
-	created, err := fixture.comments.Create(ctx, fixture.actors["alex"], fixture.media, BodyRequest{Body: "Original"})
+	created, err := fixture.comments.Create(ctx, fixture.actors["alex"], fixture.media, uuid.New(), BodyRequest{Body: "Original"})
 	require.NoError(t, err)
 	commentID := uuid.MustParse(created.ID)
 
@@ -245,7 +247,7 @@ func TestConcurrentAndStaleCommentMutationsCannotOverwriteNewerState(t *testing.
 func TestCommentSubscriptionsMuteSelfSuppressionAndNoBacklog(t *testing.T) {
 	fixture := newInteractionFixture(t)
 	ctx := context.Background()
-	alexFirst, err := fixture.comments.Create(ctx, fixture.actors["alex"], fixture.media, BodyRequest{Body: "Alex subscribes"})
+	alexFirst, err := fixture.comments.Create(ctx, fixture.actors["alex"], fixture.media, uuid.New(), BodyRequest{Body: "Alex subscribes"})
 	require.NoError(t, err)
 
 	var activityCount int
@@ -253,7 +255,7 @@ func TestCommentSubscriptionsMuteSelfSuppressionAndNoBacklog(t *testing.T) {
 		WHERE comment_id = ? AND recipient_access_generation_id = ?`, alexFirst.ID, fixture.access["alex"]).Scan(ctx, &activityCount))
 	assert.Zero(t, activityCount, "an author is never notified for their own Comment")
 
-	blairFirst, err := fixture.comments.Create(ctx, fixture.actors["blair"], fixture.media, BodyRequest{Body: "Blair activity"})
+	blairFirst, err := fixture.comments.Create(ctx, fixture.actors["blair"], fixture.media, uuid.New(), BodyRequest{Body: "Blair activity"})
 	require.NoError(t, err)
 	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM comment_activity_items
 		WHERE comment_id = ? AND recipient_access_generation_id = ?`, blairFirst.ID, fixture.access["blair"]).Scan(ctx, &activityCount))
@@ -274,7 +276,7 @@ func TestCommentSubscriptionsMuteSelfSuppressionAndNoBacklog(t *testing.T) {
 	assert.Equal(t, before, activityCount, "edits and deletions create no activity")
 
 	require.NoError(t, fixture.comments.SetMuted(ctx, fixture.actors["alex"], fixture.media, true))
-	mutedComment, err := fixture.comments.Create(ctx, fixture.actors["blair"], fixture.media, BodyRequest{Body: "Muted activity"})
+	mutedComment, err := fixture.comments.Create(ctx, fixture.actors["blair"], fixture.media, uuid.New(), BodyRequest{Body: "Muted activity"})
 	require.NoError(t, err)
 	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM comment_activity_items
 		WHERE comment_id = ? AND recipient_access_generation_id = ?`, mutedComment.ID, fixture.access["alex"]).Scan(ctx, &activityCount))
@@ -284,7 +286,7 @@ func TestCommentSubscriptionsMuteSelfSuppressionAndNoBacklog(t *testing.T) {
 	fixture.removeGrant(t, "alex")
 	_, err = fixture.comments.List(ctx, fixture.actors["alex"], fixture.media)
 	require.ErrorIs(t, err, ErrNotFound)
-	lostAccessComment, err := fixture.comments.Create(ctx, fixture.actors["blair"], fixture.media, BodyRequest{Body: "While access is lost"})
+	lostAccessComment, err := fixture.comments.Create(ctx, fixture.actors["blair"], fixture.media, uuid.New(), BodyRequest{Body: "While access is lost"})
 	require.NoError(t, err)
 	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM comment_activity_items
 		WHERE comment_id = ? AND recipient_access_generation_id = ?`, lostAccessComment.ID, fixture.access["alex"]).Scan(ctx, &activityCount))
@@ -306,9 +308,9 @@ func TestCommentSubscriptionsMuteSelfSuppressionAndNoBacklog(t *testing.T) {
 func TestCommentHandoffReauthorizesAndWithdrawalAndRevocationDenyImmediately(t *testing.T) {
 	fixture := newInteractionFixture(t)
 	ctx := context.Background()
-	_, err := fixture.comments.Create(ctx, fixture.actors["alex"], fixture.media, BodyRequest{Body: "Subscribe"})
+	_, err := fixture.comments.Create(ctx, fixture.actors["alex"], fixture.media, uuid.New(), BodyRequest{Body: "Subscribe"})
 	require.NoError(t, err)
-	notificationComment, err := fixture.comments.Create(ctx, fixture.actors["blair"], fixture.media, BodyRequest{Body: "Notify"})
+	notificationComment, err := fixture.comments.Create(ctx, fixture.actors["blair"], fixture.media, uuid.New(), BodyRequest{Body: "Notify"})
 	require.NoError(t, err)
 	var curatorPayloadText string
 	require.NoError(t, fixture.db.NewRaw(`SELECT outbox.payload::text FROM outbox_events AS outbox
@@ -353,7 +355,7 @@ func TestCommentHandoffReauthorizesAndWithdrawalAndRevocationDenyImmediately(t *
 		notificationComment.ID, fixture.access["alex"]).Scan(ctx, &integrated))
 	assert.Equal(t, 1, integrated, "a subscribed Recipient receives integrated Comment activity")
 
-	withdrawnComment, err := fixture.comments.Create(ctx, fixture.actors["blair"], fixture.media, BodyRequest{Body: "Suppress after Withdrawal"})
+	withdrawnComment, err := fixture.comments.Create(ctx, fixture.actors["blair"], fixture.media, uuid.New(), BodyRequest{Body: "Suppress after Withdrawal"})
 	require.NoError(t, err)
 	require.NoError(t, fixture.db.NewRaw(`SELECT outbox.payload::text FROM outbox_events AS outbox
 		JOIN comment_activity_items AS activity ON outbox.aggregate_id = activity.id::text
@@ -383,6 +385,112 @@ func TestCommentHandoffReauthorizesAndWithdrawalAndRevocationDenyImmediately(t *
 	var persisted int
 	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM comments WHERE media_item_id = ?`, fixture.media).Scan(ctx, &persisted))
 	assert.Equal(t, 3, persisted)
+}
+
+func TestCommentListsPaginateDeterministicallyAndCreationIsIdempotent(t *testing.T) {
+	fixture := newInteractionFixture(t)
+	ctx := context.Background()
+	createdAt := time.Date(2026, 7, 28, 14, 0, 0, 0, time.UTC)
+	fixture.comments.now = func() time.Time { return createdAt }
+
+	key := uuid.New()
+	first, err := fixture.comments.Create(ctx, fixture.actors["alex"], fixture.media, key, BodyRequest{Body: "Retry safely"})
+	require.NoError(t, err)
+	retried, err := fixture.comments.Create(ctx, fixture.actors["alex"], fixture.media, key, BodyRequest{Body: "Retry safely"})
+	require.NoError(t, err)
+	assert.Equal(t, first.ID, retried.ID)
+	_, err = fixture.comments.Create(ctx, fixture.actors["alex"], fixture.media, key, BodyRequest{Body: "Different request"})
+	require.ErrorIs(t, err, ErrIdempotencyConflict)
+
+	for _, body := range []string{"Second", "Third"} {
+		_, err = fixture.comments.Create(ctx, fixture.actors["blair"], fixture.media, uuid.New(), BodyRequest{Body: body})
+		require.NoError(t, err)
+	}
+	var commentCount int
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM comments WHERE media_item_id = ?`, fixture.media).Scan(ctx, &commentCount))
+	assert.Equal(t, 3, commentCount, "a replay creates no duplicate Comment")
+
+	var threadIDs []string
+	cursor := ""
+	for {
+		page, pageErr := fixture.comments.List(ctx, fixture.actors["alex"], fixture.media, PageRequest{Cursor: cursor, Limit: 1})
+		require.NoError(t, pageErr)
+		require.Len(t, page.Comments, 1)
+		threadIDs = append(threadIDs, page.Comments[0].ID)
+		if page.NextCursor == nil {
+			break
+		}
+		cursor = *page.NextCursor
+	}
+	expectedThreadIDs := append([]string(nil), threadIDs...)
+	sort.Strings(expectedThreadIDs)
+	assert.Equal(t, expectedThreadIDs, threadIDs)
+	assert.Len(t, threadIDs, 3)
+	_, err = fixture.comments.List(ctx, fixture.actors["alex"], fixture.media, PageRequest{Cursor: "not-a-cursor", Limit: 1})
+	require.ErrorIs(t, err, ErrInvalidCursor)
+
+	curatorPage, err := fixture.comments.CuratorList(ctx, fixture.actors["curator"], PageRequest{Limit: 2})
+	require.NoError(t, err)
+	require.Len(t, curatorPage.Comments, 2)
+	require.NotNil(t, curatorPage.NextCursor)
+	older, err := fixture.comments.CuratorList(ctx, fixture.actors["curator"], PageRequest{Cursor: *curatorPage.NextCursor, Limit: 2})
+	require.NoError(t, err)
+	require.Len(t, older.Comments, 1)
+	assert.Nil(t, older.NextCursor)
+	_, err = fixture.comments.CuratorList(ctx, fixture.actors["blair"], PageRequest{})
+	require.ErrorIs(t, err, ErrNotCurator)
+
+	commentID := uuid.MustParse(first.ID)
+	for index := 0; index < 3; index++ {
+		_, err = fixture.db.NewRaw(`INSERT INTO comment_moderation_history
+			(comment_id, actor_person_id, prior_state, prior_body, reason, created_at)
+			VALUES (?, ?, 'active', 'Retry safely', ?, ?)`, commentID, fixture.people["curator"], fmt.Sprintf("reason-%d", index), createdAt).Exec(ctx)
+		require.NoError(t, err)
+	}
+	history, err := fixture.comments.ModerationHistory(ctx, fixture.actors["curator"], commentID, PageRequest{Limit: 2})
+	require.NoError(t, err)
+	require.Len(t, history.History, 2)
+	require.NotNil(t, history.NextCursor)
+	remainingHistory, err := fixture.comments.ModerationHistory(ctx, fixture.actors["curator"], commentID, PageRequest{Cursor: *history.NextCursor, Limit: 2})
+	require.NoError(t, err)
+	require.Len(t, remainingHistory.History, 1)
+	assert.Nil(t, remainingHistory.NextCursor)
+}
+
+func TestCuratorFavoriteListPaginatesWithoutCrossRecipientDisclosure(t *testing.T) {
+	fixture := newInteractionFixture(t)
+	ctx := context.Background()
+	updatedAt := time.Date(2026, 7, 28, 15, 0, 0, 0, time.UTC)
+	mediaIDs := []uuid.UUID{uuid.New(), uuid.New(), uuid.New()}
+	for _, mediaID := range mediaIDs {
+		_, err := fixture.db.NewRaw(`INSERT INTO media_items
+			(id, immich_asset_id, media_type, availability, first_seen_at, last_seen_at)
+			VALUES (?, gen_random_uuid(), 'image', 'current', ?, ?);
+			INSERT INTO favorites (recipient_person_id, media_item_id, is_current, created_at, updated_at)
+			VALUES (?, ?, true, ?, ?)`, mediaID, updatedAt, updatedAt, fixture.people["alex"], mediaID, updatedAt, updatedAt).Exec(ctx)
+		require.NoError(t, err)
+	}
+	_, err := fixture.db.NewRaw(`INSERT INTO favorites
+		(recipient_person_id, media_item_id, is_current, created_at, updated_at)
+		VALUES (?, ?, true, ?, ?)`, fixture.people["blair"], mediaIDs[0], updatedAt, updatedAt).Exec(ctx)
+	require.NoError(t, err)
+
+	var listed []string
+	cursor := ""
+	for {
+		page, pageErr := fixture.favorites.CuratorList(ctx, fixture.actors["curator"], fixture.people["alex"], favorites.PageRequest{Cursor: cursor, Limit: 1})
+		require.NoError(t, pageErr)
+		require.Len(t, page.MediaItemIDs, 1)
+		listed = append(listed, page.MediaItemIDs[0])
+		if page.NextCursor == nil {
+			break
+		}
+		cursor = *page.NextCursor
+	}
+	assert.Len(t, listed, 3)
+	assert.NotContains(t, listed, fixture.media.String(), "only the selected Recipient's current Favorites are returned")
+	_, err = fixture.favorites.CuratorList(ctx, fixture.actors["curator"], fixture.people["blair"], favorites.PageRequest{Cursor: cursor, Limit: 1})
+	require.ErrorIs(t, err, favorites.ErrInvalidCursor, "a cursor is bound to one Recipient")
 }
 
 func TestFavoritesRemainPrivateAndPersistAcrossAccessLoss(t *testing.T) {

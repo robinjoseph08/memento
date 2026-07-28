@@ -55,6 +55,10 @@ func interactionError(err error) error {
 		return errcodes.Forbidden("Curator authority is required")
 	case errors.Is(err, ErrVersionConflict):
 		return errcodes.Conflict("This Comment changed in another browser. Reload the current Comment before changing it again.")
+	case errors.Is(err, ErrIdempotencyConflict):
+		return errcodes.Conflict("This Comment retry key was already used for another request. Reload the thread before posting again.")
+	case errors.Is(err, ErrInvalidCursor):
+		return errcodes.ValidationError("Use a valid Comment cursor and a limit from 1 to 100.")
 	default:
 		return err
 	}
@@ -84,6 +88,26 @@ func commentVersion(c echo.Context) (int64, error) {
 	return version, nil
 }
 
+func commentPage(c echo.Context) (PageRequest, error) {
+	page := PageRequest{Cursor: c.QueryParam("cursor"), Limit: 50}
+	if raw := c.QueryParam("limit"); raw != "" {
+		limit, err := strconv.Atoi(raw)
+		if err != nil || limit < 1 || limit > 100 {
+			return PageRequest{}, errcodes.ValidationError("Use a valid Comment cursor and a limit from 1 to 100.")
+		}
+		page.Limit = limit
+	}
+	return page, nil
+}
+
+func idempotencyKey(c echo.Context) (uuid.UUID, error) {
+	key, err := uuid.Parse(c.Request().Header.Get("Idempotency-Key"))
+	if err != nil || key == uuid.Nil {
+		return uuid.Nil, errcodes.ValidationError("Idempotency-Key must contain a UUID for this Comment submission.")
+	}
+	return key, nil
+}
+
 func (h *Handler) List(c echo.Context) error {
 	actor, err := h.authorize(c, false)
 	if err != nil {
@@ -93,7 +117,11 @@ func (h *Handler) List(c echo.Context) error {
 	if err != nil {
 		return err
 	}
-	response, err := h.service.List(c.Request().Context(), actor, id)
+	page, err := commentPage(c)
+	if err != nil {
+		return err
+	}
+	response, err := h.service.List(c.Request().Context(), actor, id, page)
 	if mapped := interactionError(err); mapped != nil {
 		return mapped
 	}
@@ -109,11 +137,15 @@ func (h *Handler) Create(c echo.Context) error {
 	if err != nil {
 		return err
 	}
+	key, err := idempotencyKey(c)
+	if err != nil {
+		return err
+	}
 	var request BodyRequest
 	if err := c.Bind(&request); err != nil {
 		return err
 	}
-	response, err := h.service.Create(c.Request().Context(), actor, id, request)
+	response, err := h.service.Create(c.Request().Context(), actor, id, key, request)
 	if mapped := interactionError(err); mapped != nil {
 		return mapped
 	}
@@ -208,6 +240,22 @@ func (h *Handler) Moderate(c echo.Context) error {
 	return c.NoContent(http.StatusNoContent)
 }
 
+func (h *Handler) CuratorList(c echo.Context) error {
+	actor, err := h.authorize(c, false)
+	if err != nil {
+		return err
+	}
+	page, err := commentPage(c)
+	if err != nil {
+		return err
+	}
+	response, err := h.service.CuratorList(c.Request().Context(), actor, page)
+	if mapped := interactionError(err); mapped != nil {
+		return mapped
+	}
+	return c.JSON(http.StatusOK, response)
+}
+
 func (h *Handler) ModerationHistory(c echo.Context) error {
 	actor, err := h.authorize(c, false)
 	if err != nil {
@@ -217,7 +265,11 @@ func (h *Handler) ModerationHistory(c echo.Context) error {
 	if err != nil {
 		return err
 	}
-	response, err := h.service.ModerationHistory(c.Request().Context(), actor, id)
+	page, err := commentPage(c)
+	if err != nil {
+		return err
+	}
+	response, err := h.service.ModerationHistory(c.Request().Context(), actor, id, page)
 	if mapped := interactionError(err); mapped != nil {
 		return mapped
 	}
@@ -237,6 +289,8 @@ func RegisterRoutes(e *echo.Echo, handler *Handler) {
 	list.Name = "policy:recipient_content"
 	create := group.POST("/media/:media_id", handler.Create)
 	create.Name = "policy:recipient_content_csrf"
+	curator := group.GET("/curator", handler.CuratorList)
+	curator.Name = "policy:curator"
 	edit := group.PATCH("/:comment_id", handler.Edit)
 	edit.Name = "policy:recipient_content_csrf"
 	remove := group.DELETE("/:comment_id", handler.Delete)

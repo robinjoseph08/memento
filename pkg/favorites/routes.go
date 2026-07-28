@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strconv"
 
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
@@ -50,6 +51,8 @@ func favoriteError(err error) error {
 		return errcodes.NotFound("Favorite")
 	case errors.Is(err, ErrNotCurator):
 		return errcodes.Forbidden("Curator authority is required")
+	case errors.Is(err, ErrInvalidCursor):
+		return errcodes.ValidationError("Use a valid Favorite cursor and a limit from 1 to 100.")
 	default:
 		return err
 	}
@@ -112,7 +115,15 @@ func (h *Handler) CuratorList(c echo.Context) error {
 	if err != nil {
 		return err
 	}
-	response, err := h.service.CuratorList(c.Request().Context(), actor, id)
+	page := PageRequest{Cursor: c.QueryParam("cursor"), Limit: 50}
+	if raw := c.QueryParam("limit"); raw != "" {
+		limit, parseErr := strconv.Atoi(raw)
+		if parseErr != nil || limit < 1 || limit > 100 {
+			return errcodes.ValidationError("Use a valid Favorite cursor and a limit from 1 to 100.")
+		}
+		page.Limit = limit
+	}
+	response, err := h.service.CuratorList(c.Request().Context(), actor, id, page)
 	if mapped := favoriteError(err); mapped != nil {
 		return mapped
 	}

@@ -226,18 +226,30 @@ function MediaViewer({
 }) {
   const queryClient = useQueryClient();
   const dialogRef = useRef<HTMLDialogElement>(null);
+  const commentRetry = useRef<{ body: string; key: string } | undefined>(
+    undefined,
+  );
   const [commentBody, setCommentBody] = useState("");
   const favorite = useQuery({
     queryKey: ["favorite", session.csrf_token, media.id],
     queryFn: () => apiJSON<FavoriteState>(`/api/favorites/${media.id}`),
     retry: false,
   });
-  const comments = useQuery({
+  const comments = useInfiniteQuery({
     queryKey: ["comments", session.csrf_token, media.id],
-    queryFn: () =>
-      apiJSON<CommentListResponse>(`/api/comments/media/${media.id}`),
+    queryFn: ({ pageParam }) => {
+      const params = new URLSearchParams({ limit: "50" });
+      if (pageParam) params.set("cursor", pageParam);
+      return apiJSON<CommentListResponse>(
+        `/api/comments/media/${media.id}?${params.toString()}`,
+      );
+    },
+    initialPageParam: "",
+    getNextPageParam: (page) => page.next_cursor ?? undefined,
     retry: false,
   });
+  const commentItems =
+    comments.data?.pages.flatMap((page) => page.comments) ?? [];
   const toggleFavorite = useMutation({
     mutationFn: (next: boolean) =>
       apiJSON<FavoriteState>(`/api/favorites/${media.id}`, {
@@ -253,13 +265,23 @@ function MediaViewer({
     },
   });
   const createComment = useMutation({
-    mutationFn: () =>
-      apiJSON<MediaComment>(`/api/comments/media/${media.id}`, {
+    mutationFn: () => {
+      const submission =
+        commentRetry.current?.body === commentBody
+          ? commentRetry.current
+          : { body: commentBody, key: crypto.randomUUID() };
+      commentRetry.current = submission;
+      return apiJSON<MediaComment>(`/api/comments/media/${media.id}`, {
         method: "POST",
-        headers: { "X-Memento-CSRF": session.csrf_token },
-        body: JSON.stringify({ body: commentBody }),
-      }),
+        headers: {
+          "Idempotency-Key": submission.key,
+          "X-Memento-CSRF": session.csrf_token,
+        },
+        body: JSON.stringify({ body: submission.body }),
+      });
+    },
     onSuccess: async () => {
+      commentRetry.current = undefined;
       setCommentBody("");
       await queryClient.invalidateQueries({
         queryKey: ["comments", session.csrf_token, media.id],
@@ -460,12 +482,10 @@ function MediaViewer({
             <h3 id="comments-title">Comments</h3>
             <label>
               <input
-                checked={comments.data?.muted ?? false}
+                checked={comments.data?.pages[0]?.muted ?? false}
                 disabled={
                   muteComments.isPending ||
-                  !comments.data?.comments.some(
-                    (comment) => comment.authored_by_me,
-                  )
+                  !commentItems.some((comment) => comment.authored_by_me)
                 }
                 onChange={(event) => muteComments.mutate(event.target.checked)}
                 type="checkbox"
@@ -484,7 +504,7 @@ function MediaViewer({
             }
           />
           <ol className="comment-list">
-            {comments.data?.comments.map((comment) => (
+            {commentItems.map((comment) => (
               <li key={comment.id}>
                 <div>
                   <strong>{comment.author_name}</strong>
@@ -561,6 +581,15 @@ function MediaViewer({
               </li>
             ))}
           </ol>
+          {comments.hasNextPage ? (
+            <button
+              disabled={comments.isFetchingNextPage}
+              onClick={() => void comments.fetchNextPage()}
+              type="button"
+            >
+              {comments.isFetchingNextPage ? "Loading…" : "Load more Comments"}
+            </button>
+          ) : null}
           <form
             className="comment-form"
             onSubmit={(event: FormEvent<HTMLFormElement>) => {
@@ -572,7 +601,12 @@ function MediaViewer({
               Add a Comment
               <textarea
                 maxLength={2000}
-                onChange={(event) => setCommentBody(event.target.value)}
+                onChange={(event) => {
+                  const body = event.target.value;
+                  if (commentRetry.current?.body !== body)
+                    commentRetry.current = undefined;
+                  setCommentBody(body);
+                }}
                 required
                 value={commentBody}
               />

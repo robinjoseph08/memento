@@ -401,7 +401,7 @@ All timestamps MUST use `timestamptz`. Durable domain identities SHOULD use UUID
 
 | Records | Required constraints and indexes |
 | --- | --- |
-| `comments` | Media item, author Person, body, optimistic version, created, edited, deleted or moderated state. Index Media/time and author/time. Authorization is evaluated at read time, and every edit, delete, or moderation compares the current version. |
+| `comments` | Media item, author Person and Recipient generation, retry idempotency key, body, optimistic version, created, edited, deleted or moderated state. Index Media/time and author/time, and uniquely constrain each generation and idempotency key. Authorization is evaluated at read time, creation retries return the original Comment only when the request matches, and every edit, delete, or moderation compares the current version. |
 | `comment_moderation_history` | Append-only old/new state and actor. Index Comment/time. |
 | `comment_subscriptions` | Unique Media item and Recipient generation after that Recipient Comments; includes mute state. Access alone and Favorite do not create it. |
 | `favorites` | Unique Recipient Person and Media item, current state and timestamps. Index Recipient current favorites and Media item for Curator view. No recipient aggregate index is exposed. |

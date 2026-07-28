@@ -913,6 +913,7 @@ test("favorites, comments, and mute controls stay in the private Media viewer", 
   const requests: Array<{ path: string; init?: RequestInit }> = [];
   let isFavorite = false;
   let muted = false;
+  let commentAttempts = 0;
   let comments = [
     {
       id: "comment-1",
@@ -984,8 +985,11 @@ test("favorites, comments, and mute controls stay in the private Media viewer", 
           return Promise.resolve(new Response(null, { status: 204 }));
         }
       }
-      if (path === "/api/comments/media/media-1") {
+      if (path.startsWith("/api/comments/media/media-1")) {
         if (init?.method === "POST") {
+          commentAttempts += 1;
+          if (commentAttempts === 1)
+            return Promise.reject(new Error("Connection lost"));
           const request = JSON.parse(stringBody(init.body)) as { body: string };
           comments = [
             ...comments,
@@ -998,7 +1002,7 @@ test("favorites, comments, and mute controls stay in the private Media viewer", 
           ];
           return json(comments[1]);
         }
-        return json({ comments, muted });
+        return json({ comments, muted, next_cursor: null });
       }
       throw new Error(`Unexpected request: ${path}`);
     }),
@@ -1028,6 +1032,8 @@ test("favorites, comments, and mute controls stay in the private Media viewer", 
   fireEvent.change(screen.getByLabelText("Add a Comment"), {
     target: { value: "Another memory" },
   });
+  fireEvent.click(screen.getByRole("button", { name: "Post Comment" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("Connection lost");
   fireEvent.click(screen.getByRole("button", { name: "Post Comment" }));
   expect(await screen.findByText("Another memory")).toBeVisible();
 
@@ -1079,14 +1085,27 @@ test("favorites, comments, and mute controls stay in the private Media viewer", 
     method: "PUT",
     headers: { "X-Memento-CSRF": session.csrf_token },
   });
-  const commentRequest = requests.find(
+  const commentRequests = requests.filter(
     ({ path, init }) =>
       path === "/api/comments/media/media-1" && init?.method === "POST",
   );
-  expect(commentRequest?.init).toMatchObject({
-    method: "POST",
-    headers: { "X-Memento-CSRF": session.csrf_token },
-  });
+  expect(commentRequests).toHaveLength(2);
+  expect(commentRequests[0]?.init?.method).toBe("POST");
+  const firstCommentHeaders = commentRequests[0]?.init?.headers as Record<
+    string,
+    string
+  >;
+  const secondCommentHeaders = commentRequests[1]?.init?.headers as Record<
+    string,
+    string
+  >;
+  expect(firstCommentHeaders["X-Memento-CSRF"]).toBe(session.csrf_token);
+  expect(firstCommentHeaders["Idempotency-Key"]).toMatch(
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+  );
+  expect(secondCommentHeaders["Idempotency-Key"]).toBe(
+    firstCommentHeaders["Idempotency-Key"],
+  );
   const muteRequest = requests.find(
     ({ path, init }) =>
       path === "/api/comments/media/media-1/mute" && init?.method === "PUT",

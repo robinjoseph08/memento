@@ -2,9 +2,13 @@
 package favorites
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
+	"io"
 	"time"
 
 	"github.com/google/uuid"
@@ -17,6 +21,7 @@ import (
 var (
 	ErrNotFound              = errors.New("favorite not found")
 	ErrNotCurator            = errors.New("curator authority is required")
+	ErrInvalidCursor         = errors.New("favorite cursor is invalid")
 	ErrActivityNotConfigured = errors.New("favorite Curator activity is not configured")
 )
 
@@ -28,6 +33,18 @@ type State struct {
 type CuratorListResponse struct {
 	RecipientPersonID string   `json:"recipient_person_id"`
 	MediaItemIDs      []string `json:"media_item_ids"`
+	NextCursor        *string  `json:"next_cursor" tstype:"string | null,required"`
+}
+
+type PageRequest struct {
+	Cursor string `json:"-"`
+	Limit  int    `json:"-"`
+}
+
+type curatorCursor struct {
+	RecipientID uuid.UUID `json:"r"`
+	UpdatedAt   time.Time `json:"t"`
+	MediaID     uuid.UUID `json:"m"`
 }
 
 type CuratorActivity interface {
@@ -97,12 +114,27 @@ func (s *Service) Set(ctx context.Context, actor setup.SessionActor, mediaID uui
 	return State{MediaItemID: mediaID.String(), Favorite: favorite}, nil
 }
 
-func (s *Service) CuratorList(ctx context.Context, actor setup.SessionActor, recipientID uuid.UUID) (CuratorListResponse, error) {
+func (s *Service) CuratorList(ctx context.Context, actor setup.SessionActor, recipientID uuid.UUID, pages ...PageRequest) (CuratorListResponse, error) {
 	if !actor.Curator {
 		return CuratorListResponse{}, ErrNotCurator
 	}
+	page := PageRequest{}
+	if len(pages) > 0 {
+		page = pages[0]
+	}
+	if page.Limit <= 0 {
+		page.Limit = 50
+	}
+	cursor, err := decodeCuratorCursor(page.Cursor, recipientID)
+	if err != nil {
+		return CuratorListResponse{}, err
+	}
 	response := CuratorListResponse{RecipientPersonID: recipientID.String(), MediaItemIDs: make([]string, 0)}
-	err := s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+	var rows []struct {
+		MediaID   uuid.UUID `bun:"media_item_id"`
+		UpdatedAt time.Time `bun:"updated_at"`
+	}
+	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 		var curator, recipient bool
 		if err := tx.NewRaw(`SELECT
 			EXISTS (SELECT 1 FROM person_roles WHERE person_id = ? AND role = 'curator'),
@@ -115,10 +147,59 @@ func (s *Service) CuratorList(ctx context.Context, actor setup.SessionActor, rec
 		if !recipient {
 			return ErrNotFound
 		}
-		return tx.NewRaw(`SELECT media_item_id FROM favorites
-			WHERE recipient_person_id = ? AND is_current ORDER BY updated_at DESC, media_item_id`, recipientID).Scan(ctx, &response.MediaItemIDs)
+		filter := ""
+		args := []any{recipientID}
+		if cursor != nil {
+			filter = ` AND (updated_at, media_item_id) < (?, ?)`
+			args = append(args, cursor.UpdatedAt, cursor.MediaID)
+		}
+		args = append(args, page.Limit+1)
+		return tx.NewRaw(`SELECT media_item_id, updated_at FROM favorites
+			WHERE recipient_person_id = ? AND is_current`+filter+`
+			ORDER BY updated_at DESC, media_item_id DESC LIMIT ?`, args...).Scan(ctx, &rows)
 	})
-	return response, err
+	if err != nil {
+		return CuratorListResponse{}, err
+	}
+	if len(rows) > page.Limit {
+		last := rows[page.Limit-1]
+		response.NextCursor = encodeCuratorCursor(curatorCursor{RecipientID: recipientID, UpdatedAt: last.UpdatedAt, MediaID: last.MediaID})
+		rows = rows[:page.Limit]
+	}
+	for _, row := range rows {
+		response.MediaItemIDs = append(response.MediaItemIDs, row.MediaID.String())
+	}
+	return response, nil
+}
+
+func encodeCuratorCursor(cursor curatorCursor) *string {
+	contents, _ := json.Marshal(cursor)
+	encoded := base64.RawURLEncoding.EncodeToString(contents)
+	return &encoded
+}
+
+func decodeCuratorCursor(raw string, recipientID uuid.UUID) (*curatorCursor, error) {
+	if raw == "" {
+		return nil, nil
+	}
+	contents, err := base64.RawURLEncoding.DecodeString(raw)
+	if err != nil {
+		return nil, ErrInvalidCursor
+	}
+	decoder := json.NewDecoder(bytes.NewReader(contents))
+	decoder.DisallowUnknownFields()
+	var cursor curatorCursor
+	if err := decoder.Decode(&cursor); err != nil {
+		return nil, ErrInvalidCursor
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return nil, ErrInvalidCursor
+	}
+	if cursor.RecipientID != recipientID || cursor.UpdatedAt.IsZero() || cursor.MediaID == uuid.Nil {
+		return nil, ErrInvalidCursor
+	}
+	cursor.UpdatedAt = cursor.UpdatedAt.UTC()
+	return &cursor, nil
 }
 
 func mapAccessError(err error) error {
