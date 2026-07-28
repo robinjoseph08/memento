@@ -3,9 +3,11 @@ package mediaaccess
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 
 	"github.com/google/uuid"
+	"github.com/robinjoseph08/memento/internal/placementlock"
 	"github.com/robinjoseph08/memento/pkg/setup"
 	"github.com/uptrace/bun"
 )
@@ -50,6 +52,56 @@ func Require(ctx context.Context, db bun.IDB, actor setup.SessionActor, mediaID 
 	}
 	if !authorized {
 		return ErrNotFound
+	}
+	return nil
+}
+
+// RequireForMutation protects a successful authorization through transaction commit.
+// Its lock order matches Media delivery and lifecycle writers: current placements,
+// singleton settings, Person, access generation, then Session.
+func RequireForMutation(ctx context.Context, tx bun.Tx, actor setup.SessionActor, mediaID uuid.UUID) error {
+	if err := placementlock.Acquire(ctx, tx, placementlock.Shared); err != nil {
+		return err
+	}
+	locks := []struct {
+		query string
+		args  []any
+	}{
+		{`SELECT id FROM system_settings WHERE id = 1 FOR SHARE`, nil},
+		{`SELECT id FROM people WHERE id = ? FOR SHARE`, []any{actor.PersonID}},
+		{`SELECT id FROM recipient_access_generations WHERE id = ? FOR SHARE`, []any{actor.AccessID}},
+		{`SELECT id FROM sessions WHERE id = ? FOR SHARE`, []any{actor.SessionID}},
+	}
+	for _, lock := range locks {
+		var id any
+		if err := tx.NewRaw(lock.query, lock.args...).Scan(ctx, &id); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrNotFound
+			}
+			return err
+		}
+	}
+	return Require(ctx, tx, actor, mediaID)
+}
+
+// LockGenerationForCommit orders a generation-scoped write against Person and
+// Recipient lifecycle transitions. The caller must first hold the placement lock.
+func LockGenerationForCommit(ctx context.Context, tx bun.Tx, accessID uuid.UUID) error {
+	var personID uuid.UUID
+	if err := tx.NewRaw(`SELECT person.id FROM people AS person
+		JOIN recipient_access_generations AS access ON access.person_id = person.id
+		WHERE access.id = ? FOR SHARE OF person`, accessID).Scan(ctx, &personID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return err
+	}
+	var lockedAccessID uuid.UUID
+	if err := tx.NewRaw(`SELECT id FROM recipient_access_generations WHERE id = ? FOR SHARE`, accessID).Scan(ctx, &lockedAccessID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return err
 	}
 	return nil
 }

@@ -13,10 +13,13 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/robinjoseph08/memento/internal/placementlock"
 	"github.com/robinjoseph08/memento/internal/testdb"
 	"github.com/robinjoseph08/memento/pkg/activity"
+	"github.com/robinjoseph08/memento/pkg/events"
 	"github.com/robinjoseph08/memento/pkg/favorites"
 	"github.com/robinjoseph08/memento/pkg/migrations"
+	"github.com/robinjoseph08/memento/pkg/recipients"
 	"github.com/robinjoseph08/memento/pkg/setup"
 	"github.com/robinjoseph08/memento/pkg/worker"
 	"github.com/stretchr/testify/assert"
@@ -130,6 +133,55 @@ func (fixture interactionFixture) removeGrant(t *testing.T, name string) {
 		WHERE event_id = ? AND recipient_access_generation_id = ? AND media_item_id = ?`,
 		fixture.event, fixture.access[name], fixture.media).Exec(context.Background())
 	require.NoError(t, err)
+}
+
+func waitForBlockedQueries(t *testing.T, db *bun.DB, pattern string, minimum int) {
+	t.Helper()
+	deadline := time.NewTimer(5 * time.Second)
+	poll := time.NewTicker(10 * time.Millisecond)
+	defer deadline.Stop()
+	defer poll.Stop()
+	lastWaiting := 0
+	for {
+		require.NoError(t, db.NewRaw(`SELECT count(*) FROM pg_stat_activity
+			WHERE datname = current_database() AND wait_event_type = 'Lock' AND query LIKE ?`, pattern).Scan(context.Background(), &lastWaiting))
+		if lastWaiting >= minimum {
+			return
+		}
+		select {
+		case <-poll.C:
+		case <-deadline.C:
+			t.Fatalf("queries did not reach the controlled lock; pattern %q, wanted %d, last waiting count %d", pattern, minimum, lastWaiting)
+		}
+	}
+}
+
+func waitForInteractionAdvisoryLock(t *testing.T, db *bun.DB, mode string) {
+	t.Helper()
+	deadline := time.NewTimer(5 * time.Second)
+	poll := time.NewTicker(10 * time.Millisecond)
+	defer deadline.Stop()
+	defer poll.Stop()
+	lastWaiting := 0
+	for {
+		require.NoError(t, db.NewRaw(`WITH expected_lock AS (
+			SELECT hashtextextended(?, 0) AS key
+		)
+		SELECT count(*) FROM pg_locks, expected_lock
+		WHERE locktype = 'advisory'
+		  AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+		  AND classid::bigint = ((expected_lock.key >> 32) & 4294967295::bigint)
+		  AND objid::bigint = (expected_lock.key & 4294967295::bigint)
+		  AND objsubid = 1 AND mode = ? AND NOT granted`, placementlock.Key, mode).Scan(context.Background(), &lastWaiting))
+		if lastWaiting > 0 {
+			return
+		}
+		select {
+		case <-poll.C:
+		case <-deadline.C:
+			t.Fatalf("transaction did not wait for the %s interaction placement lock; last waiting count %d", mode, lastWaiting)
+		}
+	}
 }
 
 func TestCommentsAuthorizeChronologyOwnershipAndModerationHistory(t *testing.T) {
@@ -321,7 +373,7 @@ func TestCommentHandoffReauthorizesAndWithdrawalAndRevocationDenyImmediately(t *
 	require.ErrorIs(t, fixture.comments.HandleCommentJob(ctx, worker.Job{Payload: json.RawMessage(curatorPayloadText)}), ErrHandoffNotConfigured)
 
 	handoffFailure := errors.New("handoff unavailable")
-	fixture.comments.SetHandoff(func(context.Context, uuid.UUID, uuid.UUID) error { return handoffFailure })
+	fixture.comments.SetHandoff(func(context.Context, bun.Tx, uuid.UUID, uuid.UUID) error { return handoffFailure })
 	require.ErrorIs(t, fixture.comments.HandleCommentJob(ctx, worker.Job{Payload: json.RawMessage(curatorPayloadText)}), handoffFailure)
 	var terminal bool
 	require.NoError(t, fixture.db.NewRaw(`SELECT dispatched_at IS NOT NULL OR suppressed_at IS NOT NULL
@@ -331,9 +383,9 @@ func TestCommentHandoffReauthorizesAndWithdrawalAndRevocationDenyImmediately(t *
 
 	var deliveredAccess, deliveredComment uuid.UUID
 	activityService := activity.New(fixture.db)
-	fixture.comments.SetHandoff(func(ctx context.Context, accessID, commentID uuid.UUID) error {
+	fixture.comments.SetHandoff(func(ctx context.Context, tx bun.Tx, accessID, commentID uuid.UUID) error {
 		deliveredAccess, deliveredComment = accessID, commentID
-		return activityService.RecordComment(ctx, accessID, commentID)
+		return activityService.RecordComment(ctx, tx, accessID, commentID)
 	})
 	require.NoError(t, fixture.comments.HandleCommentJob(ctx, worker.Job{Payload: json.RawMessage(curatorPayloadText)}))
 	assert.Equal(t, fixture.access["curator"], deliveredAccess)
@@ -533,4 +585,204 @@ func TestFavoritesRemainPrivateAndPersistAcrossAccessLoss(t *testing.T) {
 	require.NoError(t, fixture.db.NewRaw(`SELECT action FROM interaction_activity_items
 		WHERE kind = 'favorite' AND favorite_recipient_person_id = ? AND media_item_id = ? ORDER BY id`, fixture.people["alex"], fixture.media).Scan(ctx, &actions))
 	assert.Equal(t, []string{"favorite_added", "favorite_removed"}, actions, "Favorite activity records only state changes in the shared interaction feed")
+}
+
+func TestInteractionMutationsSerializeBeforeWithdrawalAndRevocation(t *testing.T) {
+	t.Run("Comment edit before Withdrawal", func(t *testing.T) {
+		fixture := newInteractionFixture(t)
+		ctx := context.Background()
+		created, err := fixture.comments.Create(ctx, fixture.actors["alex"], fixture.media, uuid.New(), BodyRequest{Body: "Original"})
+		require.NoError(t, err)
+
+		blocker, err := fixture.db.BeginTx(ctx, nil)
+		require.NoError(t, err)
+		defer func() { _ = blocker.Rollback() }()
+		_, err = blocker.NewRaw(`SELECT id FROM comments WHERE id = ? FOR UPDATE`, created.ID).Exec(ctx)
+		require.NoError(t, err)
+
+		edited := make(chan error, 1)
+		go func() {
+			_, editErr := fixture.comments.Edit(ctx, fixture.actors["alex"], uuid.MustParse(created.ID), created.Version, BodyRequest{Body: "Committed before Withdrawal"})
+			edited <- editErr
+		}()
+		waitForBlockedQueries(t, fixture.db, `%UPDATE comments SET body%`, 1)
+
+		withdrawn := make(chan error, 1)
+		go func() {
+			_, withdrawErr := events.New(fixture.db).Withdraw(ctx,
+				setup.CuratorSession{PersonID: fixture.people["curator"], SessionID: fixture.actors["curator"].SessionID},
+				events.WithdrawRequest{TargetKind: events.WithdrawalTargetMedia, TargetID: fixture.media.String(), Reason: "Race test"})
+			withdrawn <- withdrawErr
+		}()
+		waitForInteractionAdvisoryLock(t, fixture.db, "ExclusiveLock")
+
+		require.NoError(t, blocker.Commit())
+		require.NoError(t, <-edited)
+		require.NoError(t, <-withdrawn)
+		_, err = fixture.comments.Edit(ctx, fixture.actors["alex"], uuid.MustParse(created.ID), created.Version+1, BodyRequest{Body: "Too late"})
+		require.ErrorIs(t, err, ErrNotFound)
+		var body string
+		require.NoError(t, fixture.db.NewRaw(`SELECT body FROM comments WHERE id = ?`, created.ID).Scan(ctx, &body))
+		assert.Equal(t, "Committed before Withdrawal", body)
+	})
+
+	t.Run("Favorite transition before Revocation", func(t *testing.T) {
+		fixture := newInteractionFixture(t)
+		ctx := context.Background()
+		_, err := fixture.db.NewRaw(`INSERT INTO favorites
+			(recipient_person_id, media_item_id, is_current, created_at, updated_at)
+			VALUES (?, ?, false, now(), now())`, fixture.people["alex"], fixture.media).Exec(ctx)
+		require.NoError(t, err)
+
+		blocker, err := fixture.db.BeginTx(ctx, nil)
+		require.NoError(t, err)
+		defer func() { _ = blocker.Rollback() }()
+		_, err = blocker.NewRaw(`SELECT recipient_person_id FROM favorites
+			WHERE recipient_person_id = ? AND media_item_id = ? FOR UPDATE`, fixture.people["alex"], fixture.media).Exec(ctx)
+		require.NoError(t, err)
+
+		favorited := make(chan error, 1)
+		go func() {
+			_, favoriteErr := fixture.favorites.Set(ctx, fixture.actors["alex"], fixture.media, true)
+			favorited <- favoriteErr
+		}()
+		waitForBlockedQueries(t, fixture.db, `%INSERT INTO favorites%`, 1)
+
+		revoked := make(chan error, 1)
+		go func() {
+			_, revokeErr := recipients.New(fixture.db, nil, "", nil).RevokeAccess(ctx,
+				setup.CuratorSession{PersonID: fixture.people["curator"], SessionID: fixture.actors["curator"].SessionID},
+				fixture.people["alex"], fixture.access["alex"])
+			revoked <- revokeErr
+		}()
+		waitForBlockedQueries(t, fixture.db, `%SELECT id FROM people WHERE id IN%FOR NO KEY UPDATE%`, 1)
+
+		require.NoError(t, blocker.Commit())
+		require.NoError(t, <-favorited)
+		require.NoError(t, <-revoked)
+		_, err = fixture.favorites.Set(ctx, fixture.actors["alex"], fixture.media, false)
+		require.ErrorIs(t, err, favorites.ErrNotFound)
+		var retained bool
+		require.NoError(t, fixture.db.NewRaw(`SELECT is_current FROM favorites
+			WHERE recipient_person_id = ? AND media_item_id = ?`, fixture.people["alex"], fixture.media).Scan(ctx, &retained))
+		assert.True(t, retained)
+	})
+}
+
+func TestCommentActivityRecordingSerializesWithEligibilityChanges(t *testing.T) {
+	for _, conflict := range []string{"mute", "delete", "moderate", "Withdrawal", "Revocation"} {
+		t.Run(conflict, func(t *testing.T) {
+			fixture := newInteractionFixture(t)
+			ctx := context.Background()
+			_, err := fixture.comments.Create(ctx, fixture.actors["alex"], fixture.media, uuid.New(), BodyRequest{Body: "Subscribe"})
+			require.NoError(t, err)
+			created, err := fixture.comments.Create(ctx, fixture.actors["blair"], fixture.media, uuid.New(), BodyRequest{Body: "Pending activity"})
+			require.NoError(t, err)
+			var payloadText string
+			require.NoError(t, fixture.db.NewRaw(`SELECT outbox.payload::text FROM outbox_events AS outbox
+				JOIN comment_activity_items AS pending ON outbox.aggregate_id = pending.id::text
+				WHERE outbox.kind = ? AND pending.comment_id = ? AND pending.recipient_access_generation_id = ?`,
+				CommentJobKind, created.ID, fixture.access["alex"]).Scan(ctx, &payloadText))
+
+			handoffStarted := make(chan struct{})
+			releaseHandoff := make(chan struct{})
+			var releaseOnce sync.Once
+			defer releaseOnce.Do(func() { close(releaseHandoff) })
+			activityService := activity.New(fixture.db)
+			fixture.comments.SetHandoff(func(ctx context.Context, tx bun.Tx, accessID, commentID uuid.UUID) error {
+				close(handoffStarted)
+				<-releaseHandoff
+				return activityService.RecordComment(ctx, tx, accessID, commentID)
+			})
+			handled := make(chan error, 1)
+			go func() {
+				handled <- fixture.comments.HandleCommentJob(ctx, worker.Job{Payload: json.RawMessage(payloadText)})
+			}()
+			<-handoffStarted
+
+			changed := make(chan error, 1)
+			switch conflict {
+			case "mute":
+				go func() { changed <- fixture.comments.SetMuted(ctx, fixture.actors["alex"], fixture.media, true) }()
+				waitForBlockedQueries(t, fixture.db, `%UPDATE comment_subscriptions SET muted%`, 1)
+			case "delete":
+				go func() {
+					changed <- fixture.comments.Delete(ctx, fixture.actors["blair"], uuid.MustParse(created.ID), created.Version)
+				}()
+				waitForBlockedQueries(t, fixture.db, `%UPDATE comments SET state = 'deleted'%`, 1)
+			case "moderate":
+				go func() {
+					changed <- fixture.comments.Moderate(ctx, fixture.actors["curator"], uuid.MustParse(created.ID), created.Version,
+						ModerateRequest{Reason: "Race test"})
+				}()
+				waitForBlockedQueries(t, fixture.db, `%SELECT state, body, version FROM comments%FOR UPDATE%`, 1)
+			case "Withdrawal":
+				go func() {
+					_, changeErr := events.New(fixture.db).Withdraw(ctx,
+						setup.CuratorSession{PersonID: fixture.people["curator"], SessionID: fixture.actors["curator"].SessionID},
+						events.WithdrawRequest{TargetKind: events.WithdrawalTargetMedia, TargetID: fixture.media.String(), Reason: "Race test"})
+					changed <- changeErr
+				}()
+				waitForInteractionAdvisoryLock(t, fixture.db, "ExclusiveLock")
+			case "Revocation":
+				go func() {
+					_, changeErr := recipients.New(fixture.db, nil, "", nil).RevokeAccess(ctx,
+						setup.CuratorSession{PersonID: fixture.people["curator"], SessionID: fixture.actors["curator"].SessionID},
+						fixture.people["alex"], fixture.access["alex"])
+					changed <- changeErr
+				}()
+				waitForBlockedQueries(t, fixture.db, `%SELECT id FROM people WHERE id IN%FOR NO KEY UPDATE%`, 1)
+			}
+
+			releaseOnce.Do(func() { close(releaseHandoff) })
+			require.NoError(t, <-handled)
+			require.NoError(t, <-changed)
+			var activityCount int
+			require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM interaction_activity_items
+				WHERE kind = 'comment' AND comment_id = ? AND recipient_access_generation_id = ?`,
+				created.ID, fixture.access["alex"]).Scan(ctx, &activityCount))
+			assert.Equal(t, 1, activityCount, "activity commits before the conflicting eligibility change")
+		})
+	}
+}
+
+func TestConcurrentIdenticalFavoriteRequestsRecordOneTransition(t *testing.T) {
+	fixture := newInteractionFixture(t)
+	ctx := context.Background()
+	_, err := fixture.db.NewRaw(`INSERT INTO favorites
+		(recipient_person_id, media_item_id, is_current, created_at, updated_at)
+		VALUES (?, ?, false, now(), now())`, fixture.people["alex"], fixture.media).Exec(ctx)
+	require.NoError(t, err)
+
+	run := func(favorite bool, queryPattern string) {
+		blocker, beginErr := fixture.db.BeginTx(ctx, nil)
+		require.NoError(t, beginErr)
+		defer func() { _ = blocker.Rollback() }()
+		_, lockErr := blocker.NewRaw(`SELECT recipient_person_id FROM favorites
+			WHERE recipient_person_id = ? AND media_item_id = ? FOR UPDATE`, fixture.people["alex"], fixture.media).Exec(ctx)
+		require.NoError(t, lockErr)
+
+		start := make(chan struct{})
+		results := make(chan error, 2)
+		for index := 0; index < 2; index++ {
+			go func() {
+				<-start
+				_, setErr := fixture.favorites.Set(ctx, fixture.actors["alex"], fixture.media, favorite)
+				results <- setErr
+			}()
+		}
+		close(start)
+		waitForBlockedQueries(t, fixture.db, queryPattern, 2)
+		require.NoError(t, blocker.Commit())
+		require.NoError(t, <-results)
+		require.NoError(t, <-results)
+	}
+
+	run(true, `%INSERT INTO favorites%`)
+	run(false, `%UPDATE favorites SET is_current = false%`)
+	var actions []string
+	require.NoError(t, fixture.db.NewRaw(`SELECT action FROM interaction_activity_items
+		WHERE kind = 'favorite' AND favorite_recipient_person_id = ? AND media_item_id = ? ORDER BY id`,
+		fixture.people["alex"], fixture.media).Scan(ctx, &actions))
+	assert.Equal(t, []string{"favorite_added", "favorite_removed"}, actions)
 }

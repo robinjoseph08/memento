@@ -103,7 +103,7 @@ type pageCursor struct {
 	Sequence   int64     `json:"s,omitempty"`
 }
 
-type Handoff func(context.Context, uuid.UUID, uuid.UUID) error
+type Handoff func(context.Context, bun.Tx, uuid.UUID, uuid.UUID) error
 
 type Service struct {
 	db      *bun.DB
@@ -226,10 +226,7 @@ func (s *Service) Create(ctx context.Context, actor setup.SessionActor, mediaID,
 	now := s.now().UTC()
 	var result Comment
 	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
-		if err := placementlock.Acquire(ctx, tx, placementlock.Shared); err != nil {
-			return err
-		}
-		if err := mediaaccess.Require(ctx, tx, actor, mediaID); err != nil {
+		if err := mediaaccess.RequireForMutation(ctx, tx, actor, mediaID); err != nil {
 			return err
 		}
 		inserted, err := tx.NewRaw(`INSERT INTO comments
@@ -318,7 +315,7 @@ func (s *Service) Edit(ctx context.Context, actor setup.SessionActor, commentID 
 		if err := tx.NewRaw(`SELECT media_item_id FROM comments WHERE id = ?`, commentID).Scan(ctx, &mediaID); err != nil {
 			return notFound(err)
 		}
-		if err := mediaaccess.Require(ctx, tx, actor, mediaID); err != nil {
+		if err := mediaaccess.RequireForMutation(ctx, tx, actor, mediaID); err != nil {
 			return err
 		}
 		updated, err := tx.NewRaw(`UPDATE comments SET body = ?, edited_at = ?, version = version + 1, updated_at = ?
@@ -347,7 +344,7 @@ func (s *Service) Delete(ctx context.Context, actor setup.SessionActor, commentI
 		if err := tx.NewRaw(`SELECT media_item_id FROM comments WHERE id = ?`, commentID).Scan(ctx, &mediaID); err != nil {
 			return notFound(err)
 		}
-		if err := mediaaccess.Require(ctx, tx, actor, mediaID); err != nil {
+		if err := mediaaccess.RequireForMutation(ctx, tx, actor, mediaID); err != nil {
 			return err
 		}
 		result, err := tx.NewRaw(`UPDATE comments SET state = 'deleted', deleted_at = ?, version = version + 1, updated_at = ?
@@ -366,7 +363,7 @@ func (s *Service) Delete(ctx context.Context, actor setup.SessionActor, commentI
 func (s *Service) SetMuted(ctx context.Context, actor setup.SessionActor, mediaID uuid.UUID, muted bool) error {
 	now := s.now().UTC()
 	return mapAccessError(s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
-		if err := mediaaccess.Require(ctx, tx, actor, mediaID); err != nil {
+		if err := mediaaccess.RequireForMutation(ctx, tx, actor, mediaID); err != nil {
 			return err
 		}
 		result, err := tx.NewRaw(`UPDATE comment_subscriptions SET muted = ?, updated_at = ?
@@ -479,19 +476,28 @@ func (s *Service) HandleCommentJob(ctx context.Context, job worker.Job) error {
 		return worker.Permanent("invalid_comment_activity_payload")
 	}
 	return s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if err := placementlock.Acquire(ctx, tx, placementlock.Shared); err != nil {
+			return err
+		}
 		var accessID, mediaID, commentID uuid.UUID
-		var commentState string
 		var dispatchedAt, suppressedAt *time.Time
 		err := tx.NewRaw(`SELECT activity.recipient_access_generation_id, comment.media_item_id,
-			comment.id, comment.state, activity.dispatched_at, activity.suppressed_at
+			comment.id, activity.dispatched_at, activity.suppressed_at
 			FROM comment_activity_items AS activity
 			JOIN comments AS comment ON comment.id = activity.comment_id
 			WHERE activity.id = ? FOR UPDATE OF activity`, payload.ActivityID).Scan(ctx,
-			&accessID, &mediaID, &commentID, &commentState, &dispatchedAt, &suppressedAt)
+			&accessID, &mediaID, &commentID, &dispatchedAt, &suppressedAt)
 		if errors.Is(err, sql.ErrNoRows) {
 			return worker.Permanent("comment_activity_missing")
 		}
 		if err != nil || dispatchedAt != nil || suppressedAt != nil {
+			return err
+		}
+		if err := mediaaccess.LockGenerationForCommit(ctx, tx, accessID); err != nil {
+			return err
+		}
+		var commentState string
+		if err := tx.NewRaw(`SELECT state FROM comments WHERE id = ? FOR SHARE`, commentID).Scan(ctx, &commentState); err != nil {
 			return err
 		}
 		var muted bool
@@ -502,7 +508,8 @@ func (s *Service) HandleCommentJob(ctx context.Context, job worker.Job) error {
 				WHERE access.id = ?
 			) THEN false
 			ELSE COALESCE((SELECT subscription.muted FROM comment_subscriptions AS subscription
-				WHERE subscription.media_item_id = ? AND subscription.recipient_access_generation_id = ?), true)
+				WHERE subscription.media_item_id = ? AND subscription.recipient_access_generation_id = ?
+				FOR SHARE), true)
 			END`, accessID, mediaID, accessID).Scan(ctx, &muted); err != nil {
 			return err
 		}
@@ -518,7 +525,7 @@ func (s *Service) HandleCommentJob(ctx context.Context, job worker.Job) error {
 		if s.handoff == nil {
 			return ErrHandoffNotConfigured
 		}
-		if err := s.handoff(ctx, accessID, commentID); err != nil {
+		if err := s.handoff(ctx, tx, accessID, commentID); err != nil {
 			return fmt.Errorf("handoff Comment activity: %w", err)
 		}
 		_, err = tx.NewRaw(`UPDATE comment_activity_items SET dispatched_at = ? WHERE id = ?`, now, payload.ActivityID).Exec(ctx)

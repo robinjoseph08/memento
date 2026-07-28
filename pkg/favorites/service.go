@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/robinjoseph08/memento/internal/placementlock"
 	"github.com/robinjoseph08/memento/pkg/mediaaccess"
 	"github.com/robinjoseph08/memento/pkg/setup"
 	"github.com/uptrace/bun"
@@ -76,28 +75,31 @@ func (s *Service) Get(ctx context.Context, actor setup.SessionActor, mediaID uui
 func (s *Service) Set(ctx context.Context, actor setup.SessionActor, mediaID uuid.UUID, favorite bool) (State, error) {
 	now := s.now().UTC()
 	err := s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
-		if err := placementlock.Acquire(ctx, tx, placementlock.Shared); err != nil {
+		if err := mediaaccess.RequireForMutation(ctx, tx, actor, mediaID); err != nil {
 			return err
 		}
-		if err := mediaaccess.Require(ctx, tx, actor, mediaID); err != nil {
+		var result sql.Result
+		var err error
+		if favorite {
+			result, err = tx.NewRaw(`INSERT INTO favorites
+				(recipient_person_id, media_item_id, is_current, created_at, updated_at)
+				VALUES (?, ?, true, ?, ?)
+				ON CONFLICT (recipient_person_id, media_item_id) DO UPDATE
+				SET is_current = true, updated_at = EXCLUDED.updated_at
+				WHERE NOT favorites.is_current`, actor.PersonID, mediaID, now, now).Exec(ctx)
+		} else {
+			result, err = tx.NewRaw(`UPDATE favorites SET is_current = false, updated_at = ?
+				WHERE recipient_person_id = ? AND media_item_id = ? AND is_current`, now, actor.PersonID, mediaID).Exec(ctx)
+		}
+		if err != nil {
 			return err
 		}
-		var current bool
-		err := tx.NewRaw(`SELECT is_current FROM favorites
-			WHERE recipient_person_id = ? AND media_item_id = ?`, actor.PersonID, mediaID).Scan(ctx, &current)
-		absent := errors.Is(err, sql.ErrNoRows)
-		if err != nil && !absent {
+		changed, err := result.RowsAffected()
+		if err != nil {
 			return err
 		}
-		if (absent && !favorite) || (!absent && current == favorite) {
+		if changed == 0 {
 			return nil
-		}
-		if _, err := tx.NewRaw(`INSERT INTO favorites
-			(recipient_person_id, media_item_id, is_current, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?)
-			ON CONFLICT (recipient_person_id, media_item_id) DO UPDATE
-			SET is_current = EXCLUDED.is_current, updated_at = EXCLUDED.updated_at`, actor.PersonID, mediaID, favorite, now, now).Exec(ctx); err != nil {
-			return err
 		}
 		action := "removed"
 		if favorite {
