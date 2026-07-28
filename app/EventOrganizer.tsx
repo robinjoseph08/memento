@@ -21,6 +21,8 @@ import type { SessionResponse } from "./types/generated/setup";
 type Pane = "work" | "organize" | "inspect";
 type SaveState = "saved" | "saving" | "unsaved" | "failed" | "conflict";
 type SaveAttempt = { event: DraftEvent; revision: number };
+type RestoreAttempt = SaveAttempt & { mediaID: string };
+type PublishAttempt = SaveAttempt;
 
 function mediaLabel(item: Pick<MediaItem, "media_type" | "local_date_time">) {
   if (!item.local_date_time) return `Undated ${item.media_type}`;
@@ -144,6 +146,98 @@ function organizationRequest(event: DraftEvent): OrganizeEventRequest {
     unassigned_media_ids: event.unassigned_media.map((item) => item.id),
     final_review_complete: event.final_review_complete,
   };
+}
+
+function rebaseOrganization(local: DraftEvent, server: DraftEvent) {
+  const rebased = cloneEvent(server);
+  rebased.title = local.title;
+  rebased.description = local.description;
+  rebased.grouping_timezone = local.grouping_timezone;
+  rebased.moments = cloneEvent(local).moments;
+  rebased.unassigned_media = cloneEvent(local).unassigned_media;
+  rebased.final_review_complete = local.final_review_complete;
+  return rebased;
+}
+
+function insertByServerOrder(
+  items: MediaItem[],
+  item: MediaItem,
+  serverItems: MediaItem[],
+) {
+  const restoredIndex = serverItems.findIndex(
+    (candidate) => candidate.id === item.id,
+  );
+  const successor = serverItems
+    .slice(restoredIndex + 1)
+    .find((candidate) => items.some((current) => current.id === candidate.id));
+  const insertionIndex = successor
+    ? items.findIndex((current) => current.id === successor.id)
+    : items.length;
+  items.splice(insertionIndex, 0, item);
+}
+
+function rebaseRestoredMedia(
+  local: DraftEvent,
+  restored: DraftEvent,
+  mediaID: string,
+) {
+  const rebased = rebaseOrganization(local, restored);
+  for (const moment of rebased.moments) {
+    moment.media_items = moment.media_items.filter(
+      (item) => item.id !== mediaID,
+    );
+  }
+  rebased.unassigned_media = rebased.unassigned_media.filter(
+    (item) => item.id !== mediaID,
+  );
+
+  const restoredUnassigned = restored.unassigned_media.find(
+    (item) => item.id === mediaID,
+  );
+  if (restoredUnassigned) {
+    insertByServerOrder(
+      rebased.unassigned_media,
+      restoredUnassigned,
+      restored.unassigned_media,
+    );
+    return rebased;
+  }
+
+  const serverMomentIndex = restored.moments.findIndex((moment) =>
+    moment.media_items.some((item) => item.id === mediaID),
+  );
+  if (serverMomentIndex < 0) return rebased;
+  const serverMoment = restored.moments[serverMomentIndex];
+  const restoredItem = serverMoment.media_items.find(
+    (item) => item.id === mediaID,
+  )!;
+  let target = rebased.moments.find((moment) => moment.id === serverMoment.id);
+  if (!target) {
+    target = cloneEvent(restored).moments[serverMomentIndex];
+    target.media_items = [];
+    target.cover_media_item_id =
+      serverMoment.cover_media_item_id === mediaID ? mediaID : null;
+    const successor = restored.moments
+      .slice(serverMomentIndex + 1)
+      .find((moment) =>
+        rebased.moments.some((current) => current.id === moment.id),
+      );
+    const insertionIndex = successor
+      ? rebased.moments.findIndex((moment) => moment.id === successor.id)
+      : rebased.moments.length;
+    rebased.moments.splice(insertionIndex, 0, target);
+  }
+  target.attendance_complete = serverMoment.attendance_complete;
+  target.audience_complete = serverMoment.audience_complete;
+  if (serverMoment.cover_media_item_id === mediaID) {
+    target.cover_media_item_id = mediaID;
+  }
+  insertByServerOrder(
+    target.media_items,
+    restoredItem,
+    serverMoment.media_items,
+  );
+  return rebased;
 }
 
 const stagedLabels: Record<StagedChange["kind"], string> = {
@@ -618,7 +712,7 @@ export function EventOrganizer({
     retry: false,
   });
   const restorePublishedMedia = useMutation({
-    mutationFn: ({ event, mediaID }: { event: DraftEvent; mediaID: string }) =>
+    mutationFn: ({ event, mediaID }: RestoreAttempt) =>
       apiJSON<DraftEvent>(
         `/api/events/${event.id}/published-media-restorations`,
         {
@@ -630,14 +724,22 @@ export function EventOrganizer({
           }),
         },
       ),
-    onSuccess: (restored) => {
-      const next = cloneEvent(restored);
+    onSuccess: (restored, attempted) => {
+      queryClient.setQueryData(["event", restored.id], restored);
+      if (selectedIDRef.current !== restored.id) return;
+      const latest = latestDraftRef.current;
+      const hasNewerEdits =
+        latest?.id === restored.id && revisionRef.current > attempted.revision;
+      const next = hasNewerEdits
+        ? rebaseRestoredMedia(latest, restored, attempted.mediaID)
+        : cloneEvent(restored);
       latestDraftRef.current = next;
-      queryClient.setQueryData(["event", restored.id], next);
       setDraft(next);
-      setSaveState("saved");
-      revisionRef.current = 0;
-      setRevision(0);
+      setSaveState(hasNewerEdits ? "unsaved" : "saved");
+      if (!hasNewerEdits) {
+        revisionRef.current = 0;
+        setRevision(0);
+      }
       setPreviewOpen(false);
       void queryClient.invalidateQueries({ queryKey: ["events"] });
       void queryClient.invalidateQueries({
@@ -647,7 +749,7 @@ export function EventOrganizer({
   });
 
   const publish = useMutation({
-    mutationFn: (event: DraftEvent) =>
+    mutationFn: ({ event }: PublishAttempt) =>
       apiJSON<PublicationResponse>(`/api/events/${event.id}/publications`, {
         method: "POST",
         headers: { "X-Memento-CSRF": session.csrf_token },
@@ -656,23 +758,49 @@ export function EventOrganizer({
           notify_recipients: notifyRecipients,
         }),
       }),
-    onSuccess: (publication, publishedEvent) => {
+    onSuccess: async (publication, attempted) => {
       setPreviewOpen(false);
-      setDraft((current) =>
-        current?.id === publishedEvent.id
-          ? {
-              ...current,
-              lifecycle: "published",
-              published_editable_version: publication.editable_version,
-              published_attendance_recovery_required: false,
-              staged_update: null,
-            }
-          : current,
-      );
-      void queryClient.invalidateQueries({
-        queryKey: ["event", publishedEvent.id],
-      });
+      const publishedEvent = attempted.event;
+      let server: DraftEvent;
+      try {
+        server = await apiJSON<DraftEvent>(`/api/events/${publishedEvent.id}`);
+      } catch {
+        const latest = latestDraftRef.current;
+        if (latest?.id === publishedEvent.id) {
+          const patched = cloneEvent(latest);
+          patched.lifecycle = "published";
+          patched.published_editable_version = publication.editable_version;
+          patched.published_attendance_recovery_required = false;
+          patched.staged_update = null;
+          latestDraftRef.current = patched;
+          setDraft(patched);
+        }
+        void queryClient.invalidateQueries({
+          queryKey: ["event", publishedEvent.id],
+        });
+        void queryClient.invalidateQueries({ queryKey: ["events"] });
+        return;
+      }
+      queryClient.setQueryData(["event", server.id], server);
+      if (selectedIDRef.current === server.id) {
+        const latest = latestDraftRef.current;
+        const hasNewerEdits =
+          latest?.id === server.id && revisionRef.current > attempted.revision;
+        const next = hasNewerEdits
+          ? rebaseOrganization(latest, server)
+          : cloneEvent(server);
+        latestDraftRef.current = next;
+        setDraft(next);
+        setSaveState(hasNewerEdits ? "unsaved" : "saved");
+        if (!hasNewerEdits) {
+          revisionRef.current = 0;
+          setRevision(0);
+        }
+      }
       void queryClient.invalidateQueries({ queryKey: ["events"] });
+      void queryClient.invalidateQueries({
+        queryKey: ["attendance-audience"],
+      });
     },
   });
 
@@ -779,6 +907,8 @@ export function EventOrganizer({
       saveState === "conflict" ||
       saveState === "failed" ||
       save.isPending ||
+      restorePublishedMedia.isPending ||
+      publish.isPending ||
       !eventMetadataValid
     )
       return;
@@ -797,6 +927,8 @@ export function EventOrganizer({
     revision,
     saveState,
     save.isPending,
+    restorePublishedMedia.isPending,
+    publish.isPending,
     saveDraft,
   ]);
 
@@ -1345,7 +1477,11 @@ export function EventOrganizer({
               <StagedUpdateReview
                 event={currentDraft}
                 onRestoreMedia={(mediaID) =>
-                  restorePublishedMedia.mutate({ event: currentDraft, mediaID })
+                  restorePublishedMedia.mutate({
+                    event: currentDraft,
+                    mediaID,
+                    revision: revisionRef.current,
+                  })
                 }
                 restoreDisabled={saveState !== "saved"}
                 restoreError={restorePublishedMedia.error?.message}
@@ -1849,7 +1985,12 @@ export function EventOrganizer({
                     ) ||
                     !currentDraft.final_review_complete
                   }
-                  onClick={() => publish.mutate(currentDraft)}
+                  onClick={() =>
+                    publish.mutate({
+                      event: currentDraft,
+                      revision: revisionRef.current,
+                    })
+                  }
                   type="button"
                 >
                   {publish.isPending ? "Publishing…" : "Publish Event"}

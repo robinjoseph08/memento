@@ -24,6 +24,19 @@ const momentTwoID = "33333333-3333-4333-8333-333333333333";
 const deletedMomentID = "44444444-4444-4444-8444-444444444444";
 const contentionWait = { timeout: 5_000 };
 
+type OrganizerAPIOptions = {
+  restoreGate?: Promise<void>;
+  publicationRefetchGate?: Promise<void>;
+};
+
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((complete) => {
+    resolve = complete;
+  });
+  return { promise, resolve };
+}
+
 function media(id: string, mediaType: string): MediaItem {
   return {
     id,
@@ -150,7 +163,8 @@ function eventFromRequest(
   const priorMoments = new Map(
     baseline.moments.map((moment) => [moment.id, moment]),
   );
-  const existing = draft(request.version + 1);
+  const existing = structuredClone(baseline);
+  existing.version = request.version + 1;
   existing.title = request.title ?? baseline.title;
   existing.description = request.description ?? baseline.description;
   existing.grouping_timezone =
@@ -214,8 +228,12 @@ function emptyReview(momentID: string) {
   };
 }
 
-function stubOrganizerAPI(initial: DraftEvent) {
+function stubOrganizerAPI(
+  initial: DraftEvent,
+  options: OrganizerAPIOptions = {},
+) {
   let persisted = initial;
+  let publicationCommitted = false;
   const saves: OrganizeEventRequest[] = [];
   const reviews = new Map<string, ReturnType<typeof emptyReview>>();
   const reviewFor = (momentID: string) => {
@@ -255,16 +273,27 @@ function stubOrganizerAPI(initial: DraftEvent) {
           version: persisted.version,
           notify_recipients: true,
         });
+        const publicationID = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
         persisted = {
           ...persisted,
           lifecycle: "published",
           published_editable_version: persisted.version,
           published_attendance_recovery_required: false,
           staged_update: null,
+          withdrawals: persisted.withdrawals.map((withdrawal) =>
+            withdrawal.restored_at
+              ? withdrawal
+              : {
+                  ...withdrawal,
+                  restored_by_publication_id: publicationID,
+                  restored_at: "2026-05-03T02:00:00Z",
+                },
+          ),
         };
+        publicationCommitted = true;
         return response(
           {
-            id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+            id: publicationID,
             event_id: eventID,
             revision: 1,
             editable_version: persisted.version,
@@ -357,19 +386,29 @@ function stubOrganizerAPI(initial: DraftEvent) {
           media_item_id: string;
         };
         expect(request.version).toBe(persisted.version);
-        const restored = Object.values(items).find(
-          (item) => item.id === request.media_item_id,
-        );
-        if (!restored) throw new Error("Unknown restored Media fixture");
-        persisted = {
-          ...persisted,
-          version: persisted.version + 1,
-          staged_update: null,
-          unassigned_media: [...persisted.unassigned_media, restored],
+        const completeRestoration = () => {
+          const restored = Object.values(items).find(
+            (item) => item.id === request.media_item_id,
+          );
+          if (!restored) throw new Error("Unknown restored Media fixture");
+          persisted = {
+            ...persisted,
+            version: persisted.version + 1,
+            staged_update: null,
+            unassigned_media: [...persisted.unassigned_media, restored],
+          };
+          return response(persisted);
         };
+        return options.restoreGate
+          ? options.restoreGate.then(completeRestoration)
+          : completeRestoration();
+      }
+      if (path === `/api/events/${eventID}`) {
+        if (publicationCommitted && options.publicationRefetchGate) {
+          return options.publicationRefetchGate.then(() => response(persisted));
+        }
         return response(persisted);
       }
-      if (path === `/api/events/${eventID}`) return response(persisted);
       const reviewMatch = path.match(
         /^\/api\/moments\/([^/]+)\/attendance-audience$/,
       );
@@ -691,6 +730,134 @@ test("restores an autosaved published Media removal from Staged review", async (
     screen.getByRole("checkbox", { name: /loose photo/ }),
   ).toBeInTheDocument();
   expect(screen.getByText("All changes saved")).toBeInTheDocument();
+});
+
+test("rebases edits made while published Media restoration is pending", async () => {
+  const staged = organizedDraft(8);
+  staged.lifecycle = "published";
+  staged.published_editable_version = 7;
+  staged.moments[1].media_items = staged.moments[1].media_items.filter(
+    (item) => item.id !== items.loose.id,
+  );
+  staged.staged_update = {
+    id: "12121212-1212-4212-8212-121212121212",
+    base_publication_id: "13131313-1313-4313-8313-131313131313",
+    updated_at: "2026-05-03T01:00:00Z",
+    changes: [
+      {
+        kind: "removal",
+        count: 1,
+        media_item_ids: [items.loose.id],
+        moment_ids: [],
+        removed_media: [
+          {
+            id: items.loose.id,
+            media_type: items.loose.media_type,
+            local_date_time: items.loose.local_date_time,
+            restorable: true,
+          },
+        ],
+        detail: "Media removed",
+      },
+    ],
+  };
+  const gate = deferred();
+  const saves = stubOrganizerAPI(staged, { restoreGate: gate.promise });
+  renderOrganizer();
+  fireEvent.click(
+    await screen.findByRole("button", { name: /Family weekend/ }),
+  );
+
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Restore removed Media" }),
+  );
+  expect(
+    await screen.findByRole("button", { name: "Restoring…" }),
+  ).toBeDisabled();
+  const title = screen.getByLabelText("Event title");
+  fireEvent.change(title, { target: { value: "Edited during restoration" } });
+  expect(title).toHaveValue("Edited during restoration");
+
+  act(() => gate.resolve());
+  await waitFor(() =>
+    expect(
+      screen.getByRole("checkbox", { name: /loose photo/ }),
+    ).toBeInTheDocument(),
+  );
+  expect(title).toHaveValue("Edited during restoration");
+  await waitFor(() => expect(saves).toHaveLength(1), contentionWait);
+  expect(saves[0]).toMatchObject({
+    version: 9,
+    title: "Edited during restoration",
+  });
+});
+
+test("refreshes Publication state while preserving edits made during refetch", async () => {
+  const ready = organizedDraft(8);
+  ready.lifecycle = "published";
+  ready.published_editable_version = 7;
+  ready.final_review_complete = true;
+  ready.moments = ready.moments.map((moment) => ({
+    ...moment,
+    attendance_complete: true,
+    audience_complete: true,
+  }));
+  ready.staged_update = {
+    id: "12121212-1212-4212-8212-121212121212",
+    base_publication_id: "13131313-1313-4313-8313-131313131313",
+    updated_at: "2026-05-03T01:00:00Z",
+    changes: [
+      {
+        kind: "metadata",
+        count: 1,
+        media_item_ids: [],
+        moment_ids: [],
+        event_metadata_fields: ["title"],
+        detail: "Event metadata changed",
+      },
+    ],
+  };
+  ready.withdrawals = [
+    {
+      id: "77777777-7777-4777-8777-777777777777",
+      target_kind: "media",
+      target_id: items.a.id,
+      reason: "Privacy request",
+      withdrawn_by_name: "Robin",
+      withdrawn_at: "2026-05-03T00:00:00Z",
+      restored_by_publication_id: null,
+      restored_at: null,
+      affected_recipient_count: 1,
+      affected_media_count: 1,
+      affected_event_count: 1,
+    },
+  ];
+  const gate = deferred();
+  const saves = stubOrganizerAPI(ready, {
+    publicationRefetchGate: gate.promise,
+  });
+  renderOrganizer();
+  fireEvent.click(
+    await screen.findByRole("button", { name: /Family weekend/ }),
+  );
+
+  fireEvent.click(await screen.findByRole("button", { name: "Publish Event" }));
+  expect(
+    await screen.findByRole("button", { name: "Publishing…" }),
+  ).toBeDisabled();
+  const title = screen.getByLabelText("Event title");
+  fireEvent.change(title, { target: { value: "Follow-up correction" } });
+  act(() => gate.resolve());
+
+  const history = await screen.findByText(/Privacy request by Robin/);
+  expect(history).toHaveTextContent("Restored by a later Publication.");
+  expect(title).toHaveValue("Follow-up correction");
+  await waitFor(() => expect(saves).toHaveLength(1), contentionWait);
+  expect(saves[0]).toMatchObject({
+    version: 8,
+    title: "Follow-up correction",
+  });
+  expect(history).toBeVisible();
 });
 
 test("publishes ready work and previews Recipient output read only", async () => {

@@ -738,7 +738,13 @@ func (s *Service) HandlePublicationJob(ctx context.Context, job worker.Job) erro
 			result = "publication_withdrawn"
 			return nil
 		}
-		if payload.NotifyRecipients && s.publicationHandoff != nil {
+		var hasRecipientActivity bool
+		if err := tx.NewRaw(`SELECT EXISTS (
+			SELECT 1 FROM publication_activity_items WHERE publication_id = ?
+		)`, payload.PublicationID).Scan(ctx, &hasRecipientActivity); err != nil {
+			return err
+		}
+		if payload.NotifyRecipients && hasRecipientActivity && s.publicationHandoff != nil {
 			return s.publicationHandoff(ctx, payload.EventID, payload.PublicationID)
 		}
 		return nil

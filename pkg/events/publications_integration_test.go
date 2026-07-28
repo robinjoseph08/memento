@@ -129,6 +129,21 @@ func (fixture publicationFixture) request() PublishEventRequest {
 	return PublishEventRequest{Version: 7}
 }
 
+func assertPublicationHandoffSkipped(t *testing.T, fixture publicationFixture, publication PublicationResponse) {
+	t.Helper()
+	calls := 0
+	fixture.service.SetPublicationHandoff(func(context.Context, uuid.UUID, uuid.UUID) error {
+		calls++
+		return nil
+	})
+	job := worker.Job{Payload: []byte(fmt.Sprintf(
+		`{"event_id":%q,"publication_id":%q,"notify_recipients":true}`,
+		fixture.event.String(), publication.ID,
+	))}
+	require.NoError(t, fixture.service.HandlePublicationJob(context.Background(), job))
+	assert.Zero(t, calls, "a Publication with no newly granted Media skips external handoff")
+}
+
 func (fixture publicationFixture) actorFor(name string) setup.SessionActor {
 	return setup.SessionActor{PersonID: fixture.people[name], AccessID: fixture.access[name], SessionID: uuid.New()}
 }
@@ -1067,6 +1082,7 @@ func TestNoNewMediaCorrectionIsQuietAndClearsStageAtomically(t *testing.T) {
 	assert.Zero(t, stagedCount)
 	assert.Zero(t, secondActivity, "a correction that grants no new Media creates no Recipient activity")
 	assert.Zero(t, newForYou, "a quiet correction does not become New for you")
+	assertPublicationHandoffSkipped(t, fixture, second)
 }
 
 func TestPublicationInvalidatesAnotherEventsChangedStagedAccessImpact(t *testing.T) {
@@ -1352,6 +1368,7 @@ func TestNoNewMediaStructuralAndAccessCorrectionsAreQuiet(t *testing.T) {
 			require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM new_for_you_entries WHERE publication_id = ?`, second.ID).Scan(ctx, &newForYouRows))
 			assert.Zero(t, activityRows, "a correction with no globally new Media creates no Recipient activity")
 			assert.Zero(t, newForYouRows, "a correction with no globally new Media creates no New for you entry")
+			assertPublicationHandoffSkipped(t, fixture, second)
 		})
 	}
 }
