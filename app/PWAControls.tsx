@@ -9,14 +9,12 @@ import {
 } from "./pwa";
 
 export function ThemeToggle() {
-  const [theme, setTheme] = useState<Theme>(() =>
-    readTheme(window.localStorage),
-  );
+  const [theme, setTheme] = useState<Theme>(() => readTheme());
   const nextTheme = theme === "dark" ? "light" : "dark";
 
   useEffect(() => {
     applyTheme(theme, document);
-    saveTheme(theme, window.localStorage);
+    saveTheme(theme);
   }, [theme]);
 
   return (

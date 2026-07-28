@@ -8,9 +8,19 @@ const THEME_COLORS: Record<Theme, string> = {
   light: "#f0f9ff",
 };
 
-export function readTheme(storage: Pick<Storage, "getItem">): Theme {
+function browserThemeStorage(): Storage | undefined {
   try {
-    return storage.getItem(THEME_STORAGE_KEY) === "light" ? "light" : "dark";
+    return window.localStorage;
+  } catch {
+    return undefined;
+  }
+}
+
+export function readTheme(
+  storage: Pick<Storage, "getItem"> | undefined = browserThemeStorage(),
+): Theme {
+  try {
+    return storage?.getItem(THEME_STORAGE_KEY) === "light" ? "light" : "dark";
   } catch {
     return "dark";
   }
@@ -24,21 +34,26 @@ export function applyTheme(theme: Theme, document: Document) {
     ?.setAttribute("content", THEME_COLORS[theme]);
 }
 
-export function saveTheme(theme: Theme, storage: Pick<Storage, "setItem">) {
+export function saveTheme(
+  theme: Theme,
+  storage: Pick<Storage, "setItem"> | undefined = browserThemeStorage(),
+) {
   try {
-    storage.setItem(THEME_STORAGE_KEY, theme);
+    storage?.setItem(THEME_STORAGE_KEY, theme);
   } catch {
     // A blocked storage preference must not prevent Memento from opening.
   }
 }
 
 export function initializeTheme() {
-  const theme = readTheme(window.localStorage);
+  const theme = readTheme();
   applyTheme(theme, document);
   return theme;
 }
 
-export function registerServiceWorker() {
+export function registerServiceWorker(
+  reload: () => void = () => window.location.reload(),
+) {
   if (!("serviceWorker" in navigator) || !window.isSecureContext) return;
 
   window.addEventListener("load", () => {
@@ -47,9 +62,22 @@ export function registerServiceWorker() {
       .then((registration) => {
         let updateAccepted = false;
         let reloading = false;
+        const restart = () => {
+          if (reloading) return;
+          reloading = true;
+          reload();
+        };
         const announceUpdate = (worker: ServiceWorker) => {
           const acceptUpdate = () => {
             updateAccepted = true;
+            if (
+              worker.state === "activated" ||
+              registration.active === worker ||
+              navigator.serviceWorker.controller === worker
+            ) {
+              restart();
+              return;
+            }
             worker.postMessage({ type: "SKIP_WAITING" });
           };
           window.dispatchEvent(
@@ -72,9 +100,8 @@ export function registerServiceWorker() {
           });
         });
         navigator.serviceWorker.addEventListener("controllerchange", () => {
-          if (!updateAccepted || reloading) return;
-          reloading = true;
-          window.location.reload();
+          if (!updateAccepted) return;
+          restart();
         });
       })
       .catch(() => {

@@ -4,7 +4,13 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type FormEvent,
+} from "react";
 import { useSearchParams } from "react-router-dom";
 
 import { APIError, apiJSON, apiNoContent } from "./api";
@@ -1681,6 +1687,36 @@ function MementoApp() {
     queryFn: fetchBootstrap,
     retry: false,
   });
+  const clearProtectedQueries = useCallback(() => {
+    queryClient.removeQueries({
+      predicate: (query) => query.queryKey[0] !== "bootstrap",
+    });
+  }, [queryClient]);
+
+  useEffect(() => {
+    if (!online || bootstrap.data?.kind === "closed") {
+      clearProtectedQueries();
+    }
+  }, [bootstrap.data, clearProtectedQueries, online]);
+
+  useEffect(
+    () =>
+      queryClient.getQueryCache().subscribe((event) => {
+        if (event.type !== "updated") return;
+        const queryKey = event.query.queryKey as readonly unknown[];
+        if (
+          queryKey[0] === "bootstrap" ||
+          !(event.query.state.error instanceof APIError) ||
+          event.query.state.error.status !== 401
+        ) {
+          return;
+        }
+        clearProtectedQueries();
+        setCompletedSession(undefined);
+        setSignedOut(true);
+      }),
+    [clearProtectedQueries, queryClient],
+  );
 
   const completeSession = (session: SessionResponse) => {
     setSignedOut(false);
@@ -1688,9 +1724,7 @@ function MementoApp() {
   };
 
   const signOut = () => {
-    queryClient.removeQueries({
-      predicate: (query) => query.queryKey[0] !== "bootstrap",
-    });
+    clearProtectedQueries();
     setCompletedSession(undefined);
     setSignedOut(true);
   };
