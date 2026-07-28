@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/robinjoseph08/memento/pkg/immich"
+	"github.com/robinjoseph08/memento/pkg/staging"
 	"github.com/robinjoseph08/memento/pkg/worker"
 	"github.com/uptrace/bun"
 )
@@ -101,7 +102,11 @@ func (s *Service) HandleReconciliationJob(ctx context.Context, job worker.Job) e
 func (s *Service) Reconcile(ctx context.Context, sourceAlbumID uuid.UUID) error {
 	now := s.now().UTC()
 	var outcome error
+	var rolledBackFailure *reconciliationSnapshot
 	err := s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if err := staging.LockAccessSummaryRefresh(ctx, tx); err != nil {
+			return err
+		}
 		var immichAlbumID uuid.UUID
 		if err := tx.NewRaw(`SELECT immich_album_id FROM source_albums WHERE id = ? FOR UPDATE`, sourceAlbumID).Scan(ctx, &immichAlbumID); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
@@ -117,15 +122,15 @@ func (s *Service) Reconcile(ctx context.Context, sourceAlbumID uuid.UUID) error 
 			if errors.Is(snapshotErr, ErrDependency) {
 				status = "failed"
 			}
-			if err := recordReconciliationRun(ctx, tx, sourceAlbumID, now, status, snapshot); err != nil {
-				return err
-			}
-			_, err := tx.NewRaw(`UPDATE source_albums SET next_reconciliation_at = ?, updated_at = ? WHERE id = ?`, now, now, sourceAlbumID).Exec(ctx)
-			return err
+			return recordFailedReconciliation(ctx, tx, sourceAlbumID, now, status, snapshot)
 		}
 
 		stablePasses, additions, removals, err := s.applyValidatedSnapshot(ctx, tx, sourceAlbumID, snapshot, now)
 		if err != nil {
+			if errors.Is(err, ErrDependency) {
+				snapshot.diagnostic = "dependency_unavailable"
+				rolledBackFailure = &snapshot
+			}
 			return err
 		}
 		snapshot.diagnostic = ""
@@ -138,6 +143,21 @@ func (s *Service) Reconcile(ctx context.Context, sourceAlbumID uuid.UUID) error 
 		return ErrNotFound
 	}
 	if err != nil {
+		if rolledBackFailure != nil {
+			recordErr := s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+				var lockedSourceAlbumID uuid.UUID
+				if err := tx.NewRaw(`SELECT id FROM source_albums WHERE id = ? FOR UPDATE`, sourceAlbumID).Scan(ctx, &lockedSourceAlbumID); err != nil {
+					if errors.Is(err, sql.ErrNoRows) {
+						return ErrNotFound
+					}
+					return err
+				}
+				return recordFailedReconciliation(ctx, tx, sourceAlbumID, now, "failed", *rolledBackFailure)
+			})
+			if recordErr != nil {
+				return fmt.Errorf("record failed Source reconciliation: %w", recordErr)
+			}
+		}
 		return fmt.Errorf("reconcile Source album: %w", err)
 	}
 	return outcome
@@ -247,33 +267,85 @@ func (s *Service) applyValidatedSnapshot(
 	if err != nil {
 		return 0, 0, 0, err
 	}
-	var additions int
+	var addedAssetIDs []uuid.UUID
 	if err := tx.NewRaw(`
-		SELECT count(*)
+		SELECT incoming.id::uuid
 		FROM jsonb_array_elements_text(?::jsonb) AS incoming(id)
 		WHERE NOT EXISTS (
 			SELECT 1 FROM source_album_memberships
 			WHERE source_album_id = ? AND immich_asset_id = incoming.id::uuid
 		)
-	`, string(encodedIDs), sourceAlbumID).Scan(ctx, &additions); err != nil {
+		ORDER BY incoming.id::uuid
+	`, string(encodedIDs), sourceAlbumID).Scan(ctx, &addedAssetIDs); err != nil {
 		return 0, 0, 0, err
 	}
+	additions := len(addedAssetIDs)
+	metadataChangedMediaIDs := make([]uuid.UUID, 0)
 	for start := 0; start < len(assetIDs); start += 1000 {
 		end := min(start+1000, len(assetIDs))
 		batch := make([]immich.AssetSummary, 0, end-start)
 		for _, assetID := range assetIDs[start:end] {
 			batch = append(batch, snapshot.assets[assetID])
 		}
-		if err := upsertMediaItemBatch(ctx, tx, sourceAlbumID, batch, now); err != nil {
+		changedMediaIDs, err := upsertMediaItemBatch(ctx, tx, sourceAlbumID, batch, now)
+		if err != nil {
 			return 0, 0, 0, err
 		}
+		metadataChangedMediaIDs = append(metadataChangedMediaIDs, changedMediaIDs...)
 	}
 	if err := supersedeInvalidMediaRepairs(ctx, tx, now); err != nil {
 		return 0, 0, 0, err
 	}
 
+	var addedMediaIDs []uuid.UUID
+	if len(addedAssetIDs) > 0 {
+		if err := tx.NewRaw(`SELECT id FROM media_items WHERE immich_asset_id IN (?) ORDER BY id`, bun.List(addedAssetIDs)).Scan(ctx, &addedMediaIDs); err != nil {
+			return 0, 0, 0, err
+		}
+	}
 	removals := 0
+	var removedMediaIDs []uuid.UUID
 	if stablePasses >= 2 {
+		type removedMembership struct {
+			MediaItemID   uuid.UUID `bun:"media_item_id"`
+			ImmichAssetID uuid.UUID `bun:"immich_asset_id"`
+		}
+		var removedMemberships []removedMembership
+		if err := tx.NewRaw(`
+			SELECT membership.media_item_id, membership.immich_asset_id
+			FROM source_album_memberships AS membership
+			WHERE membership.source_album_id = ?
+			  AND NOT EXISTS (
+				SELECT 1 FROM jsonb_array_elements_text(?::jsonb) AS candidate(id)
+				WHERE candidate.id::uuid = membership.immich_asset_id
+			  )
+			ORDER BY membership.media_item_id
+		`, sourceAlbumID, string(encodedIDs)).Scan(ctx, &removedMemberships); err != nil {
+			return 0, 0, 0, err
+		}
+		confirmedMissingMediaIDs := make([]uuid.UUID, 0)
+		for _, membership := range removedMemberships {
+			removedMediaIDs = append(removedMediaIDs, membership.MediaItemID)
+			var retainedByAnotherSource bool
+			if err := tx.NewRaw(`
+				SELECT EXISTS (
+					SELECT 1 FROM source_album_memberships
+					WHERE media_item_id = ? AND source_album_id <> ?
+				)
+			`, membership.MediaItemID, sourceAlbumID).Scan(ctx, &retainedByAnotherSource); err != nil {
+				return 0, 0, 0, err
+			}
+			if retainedByAnotherSource {
+				continue
+			}
+			exists, err := s.connector.AssetExists(ctx, membership.ImmichAssetID)
+			if err != nil {
+				return 0, 0, 0, fmt.Errorf("confirm removed Immich asset: %w", ErrDependency)
+			}
+			if !exists {
+				confirmedMissingMediaIDs = append(confirmedMissingMediaIDs, membership.MediaItemID)
+			}
+		}
 		result, err := tx.NewRaw(`
 			DELETE FROM source_album_memberships AS membership
 			WHERE source_album_id = ?
@@ -290,12 +362,14 @@ func (s *Service) applyValidatedSnapshot(
 			return 0, 0, 0, err
 		}
 		removals = int(removed)
-		if _, err := tx.NewRaw(`
-			UPDATE media_items AS media SET availability = 'source_missing', updated_at = ?
-			WHERE availability = 'current'
-			  AND NOT EXISTS (SELECT 1 FROM source_album_memberships WHERE media_item_id = media.id)
-		`, now).Exec(ctx); err != nil {
-			return 0, 0, 0, err
+		if len(confirmedMissingMediaIDs) > 0 {
+			if _, err := tx.NewRaw(`
+				UPDATE media_items AS media SET availability = 'source_missing', updated_at = ?
+				WHERE availability = 'current' AND id IN (?)
+				  AND NOT EXISTS (SELECT 1 FROM source_album_memberships WHERE media_item_id = media.id)
+			`, now, bun.List(confirmedMissingMediaIDs)).Exec(ctx); err != nil {
+				return 0, 0, 0, err
+			}
 		}
 		if err := proposeMediaRepairs(ctx, tx, now); err != nil {
 			return 0, 0, 0, err
@@ -325,6 +399,9 @@ func (s *Service) applyValidatedSnapshot(
 			return 0, 0, 0, err
 		}
 	}
+	if err := syncEditableEvents(ctx, tx, sourceAlbumID, addedMediaIDs, removedMediaIDs, metadataChangedMediaIDs, now); err != nil {
+		return 0, 0, 0, err
+	}
 
 	summaryFingerprint, err := albumFingerprint(snapshot.after)
 	if err != nil {
@@ -347,6 +424,260 @@ func (s *Service) applyValidatedSnapshot(
 	return stablePasses, additions, removals, nil
 }
 
+func syncEditableEvents(
+	ctx context.Context,
+	tx bun.Tx,
+	sourceAlbumID uuid.UUID,
+	addedMediaIDs, removedMediaIDs, metadataChangedMediaIDs []uuid.UUID,
+	now time.Time,
+) error {
+	if len(addedMediaIDs) == 0 && len(removedMediaIDs) == 0 && len(metadataChangedMediaIDs) == 0 {
+		return nil
+	}
+	encodedMetadataIDs, err := json.Marshal(metadataChangedMediaIDs)
+	if err != nil {
+		return err
+	}
+	type editableEvent struct {
+		ID                 uuid.UUID `bun:"id"`
+		LinkedSource       bool      `bun:"linked_source"`
+		IncludeFutureMedia bool      `bun:"include_future_media"`
+	}
+	var events []editableEvent
+	if err := tx.NewRaw(`
+		SELECT event.id,
+		       EXISTS (
+			   SELECT 1 FROM event_sources AS source
+			   WHERE source.event_id = event.id AND source.source_album_id = ?
+		       ) AS linked_source,
+		       EXISTS (
+			   SELECT 1 FROM event_sources AS source
+			   WHERE source.event_id = event.id AND source.source_album_id = ?
+			     AND source.include_future_media
+		       ) AS include_future_media
+		FROM events AS event
+		WHERE event.lifecycle IN ('draft', 'published')
+		  AND (
+			EXISTS (
+				SELECT 1 FROM event_sources AS source
+				WHERE source.event_id = event.id AND source.source_album_id = ?
+			)
+			OR EXISTS (
+				SELECT 1 FROM draft_media_placements AS placement
+				JOIN jsonb_array_elements_text(?::jsonb) AS changed(id)
+				  ON changed.id::uuid = placement.media_item_id
+				WHERE placement.event_id = event.id
+			)
+		  )
+		ORDER BY event.id
+	`, sourceAlbumID, sourceAlbumID, sourceAlbumID, string(encodedMetadataIDs)).Scan(ctx, &events); err != nil {
+		return err
+	}
+	for _, event := range events {
+		eventID := event.ID
+		var lockedEventID uuid.UUID
+		if err := tx.NewRaw(`SELECT id FROM events WHERE id = ? FOR UPDATE`, eventID).Scan(ctx, &lockedEventID); err != nil {
+			return err
+		}
+		changed := false
+		changedMomentIDs := make(map[uuid.UUID]struct{})
+		restoredMomentReviews := make(map[uuid.UUID]struct{})
+		if len(metadataChangedMediaIDs) > 0 {
+			if err := tx.NewRaw(`
+				SELECT EXISTS (
+					SELECT 1 FROM draft_media_placements
+					WHERE event_id = ? AND media_item_id IN (?)
+				)
+			`, eventID, bun.List(metadataChangedMediaIDs)).Scan(ctx, &changed); err != nil {
+				return err
+			}
+		}
+		if !event.LinkedSource {
+			if !changed {
+				continue
+			}
+			if _, err := staging.InvalidateEvent(ctx, tx, lockedEventID, now); err != nil {
+				return err
+			}
+			continue
+		}
+		for _, mediaID := range addedMediaIDs {
+			var exists bool
+			if err := tx.NewRaw(`SELECT EXISTS (SELECT 1 FROM draft_media_placements WHERE event_id = ? AND media_item_id = ?)`, eventID, mediaID).Scan(ctx, &exists); err != nil {
+				return err
+			}
+			if exists {
+				continue
+			}
+			var momentID *uuid.UUID
+			var position int
+			var wasCover bool
+			err := tx.NewRaw(`
+				SELECT draft_moment_id, position, was_cover
+				FROM staged_source_removals WHERE event_id = ? AND media_item_id = ?
+			`, eventID, mediaID).Scan(ctx, &momentID, &position, &wasCover)
+			if errors.Is(err, sql.ErrNoRows) {
+				if !event.IncludeFutureMedia {
+					continue
+				}
+				momentID = nil
+				if err := tx.NewRaw(`SELECT COALESCE(max(position), -1) + 1 FROM draft_media_placements WHERE event_id = ?`, eventID).Scan(ctx, &position); err != nil {
+					return err
+				}
+			} else if err != nil {
+				return err
+			} else {
+				var occupied bool
+				if err := tx.NewRaw(`SELECT EXISTS (SELECT 1 FROM draft_media_placements WHERE event_id = ? AND position = ?)`, eventID, position).Scan(ctx, &occupied); err != nil {
+					return err
+				}
+				if occupied {
+					if err := tx.NewRaw(`SELECT COALESCE(max(position), -1) + 1 FROM draft_media_placements WHERE event_id = ?`, eventID).Scan(ctx, &position); err != nil {
+						return err
+					}
+				}
+				if momentID != nil {
+					var retained bool
+					if err := tx.NewRaw(`SELECT EXISTS (SELECT 1 FROM draft_moments WHERE event_id = ? AND id = ?)`, eventID, *momentID).Scan(ctx, &retained); err != nil {
+						return err
+					}
+					if !retained {
+						momentID = nil
+					}
+				}
+			}
+			if _, err := tx.NewRaw(`
+				INSERT INTO draft_media_placements (event_id, media_item_id, draft_moment_id, position, created_at)
+				VALUES (?, ?, ?, ?, ?)
+			`, eventID, mediaID, momentID, position, now).Exec(ctx); err != nil {
+				return err
+			}
+			if momentID != nil {
+				changedMomentIDs[*momentID] = struct{}{}
+			}
+			if wasCover && momentID != nil {
+				if _, err := tx.NewRaw(`UPDATE draft_moments SET cover_media_item_id = ? WHERE id = ? AND cover_media_item_id IS NULL`, mediaID, *momentID).Exec(ctx); err != nil {
+					return err
+				}
+			}
+			if _, err := tx.NewRaw(`DELETE FROM staged_source_removals WHERE event_id = ? AND media_item_id = ?`, eventID, mediaID).Exec(ctx); err != nil {
+				return err
+			}
+			if momentID != nil {
+				restored, err := staging.RestoreMomentReviewIfPublishedResult(ctx, tx, eventID, *momentID)
+				if err != nil {
+					return err
+				}
+				if restored {
+					restoredMomentReviews[*momentID] = struct{}{}
+				}
+			}
+			changed = true
+		}
+		for _, mediaID := range removedMediaIDs {
+			var retainedByLinkedSource bool
+			if err := tx.NewRaw(`
+				SELECT EXISTS (
+					SELECT 1 FROM event_sources AS source
+					JOIN source_album_memberships AS membership ON membership.source_album_id = source.source_album_id
+					WHERE source.event_id = ? AND membership.media_item_id = ?
+				)
+			`, eventID, mediaID).Scan(ctx, &retainedByLinkedSource); err != nil {
+				return err
+			}
+			if retainedByLinkedSource {
+				continue
+			}
+			var momentID *uuid.UUID
+			var position int
+			err := tx.NewRaw(`
+				SELECT draft_moment_id, position FROM draft_media_placements
+				WHERE event_id = ? AND media_item_id = ?
+			`, eventID, mediaID).Scan(ctx, &momentID, &position)
+			if errors.Is(err, sql.ErrNoRows) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			wasCover := false
+			if momentID != nil {
+				if err := tx.NewRaw(`SELECT cover_media_item_id = ? FROM draft_moments WHERE id = ?`, mediaID, *momentID).Scan(ctx, &wasCover); err != nil {
+					return err
+				}
+			}
+			var wasPublished bool
+			if err := tx.NewRaw(`SELECT EXISTS (SELECT 1 FROM current_published_placements WHERE event_id = ? AND media_item_id = ?)`, eventID, mediaID).Scan(ctx, &wasPublished); err != nil {
+				return err
+			}
+			if wasPublished {
+				if momentID != nil {
+					if err := staging.PreserveMomentReview(ctx, tx, eventID, *momentID, now); err != nil {
+						return err
+					}
+				}
+				if _, err := tx.NewRaw(`
+					INSERT INTO staged_source_removals (
+						event_id, media_item_id, draft_moment_id, position, was_cover, created_at
+					) VALUES (?, ?, ?, ?, ?, ?)
+					ON CONFLICT (event_id, media_item_id) DO NOTHING
+				`, eventID, mediaID, momentID, position, wasCover, now).Exec(ctx); err != nil {
+					return err
+				}
+			}
+			if wasCover {
+				if _, err := tx.NewRaw(`UPDATE draft_moments SET cover_media_item_id = NULL WHERE id = ?`, *momentID).Exec(ctx); err != nil {
+					return err
+				}
+			}
+			if _, err := tx.NewRaw(`DELETE FROM draft_media_placements WHERE event_id = ? AND media_item_id = ?`, eventID, mediaID).Exec(ctx); err != nil {
+				return err
+			}
+			if momentID != nil {
+				changedMomentIDs[*momentID] = struct{}{}
+			}
+			changed = true
+		}
+		if !changed {
+			continue
+		}
+		for momentID := range changedMomentIDs {
+			if _, restored := restoredMomentReviews[momentID]; restored {
+				continue
+			}
+			if err := invalidateSourceChangedMomentReview(ctx, tx, momentID); err != nil {
+				return err
+			}
+		}
+		if _, err := staging.InvalidateEvent(ctx, tx, lockedEventID, now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func invalidateSourceChangedMomentReview(ctx context.Context, tx bun.Tx, momentID uuid.UUID) error {
+	if _, err := tx.NewRaw(`
+		UPDATE draft_moments
+		SET attendance_complete = false, audience_complete = false,
+			review_version = review_version + 1
+		WHERE id = ?
+	`, momentID).Exec(ctx); err != nil {
+		return err
+	}
+	for _, statement := range []string{
+		`DELETE FROM attendance WHERE moment_id = ?`,
+		`DELETE FROM audience_proposals WHERE target_kind = 'moment' AND target_id = ?`,
+		`DELETE FROM audience_overrides WHERE target_kind = 'moment' AND target_id = ?`,
+		`DELETE FROM current_audience_snapshots WHERE target_kind = 'moment' AND target_id = ?`,
+	} {
+		if _, err := tx.NewRaw(statement, momentID).Exec(ctx); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 type databaseMediaItem struct {
 	PortalID          uuid.UUID `json:"portal_id"`
 	BackingID         uuid.UUID `json:"backing_id"`
@@ -362,19 +693,19 @@ type databaseMediaItem struct {
 	SourceFingerprint string    `json:"source_fingerprint"`
 }
 
-func upsertMediaItemBatch(ctx context.Context, tx bun.Tx, sourceAlbumID uuid.UUID, assets []immich.AssetSummary, now time.Time) error {
+func upsertMediaItemBatch(ctx context.Context, tx bun.Tx, sourceAlbumID uuid.UUID, assets []immich.AssetSummary, now time.Time) ([]uuid.UUID, error) {
 	if len(assets) == 0 {
-		return nil
+		return nil, nil
 	}
 	rows := make([]databaseMediaItem, 0, len(assets))
 	for _, asset := range assets {
 		portalID, err := uuid.NewRandom()
 		if err != nil {
-			return err
+			return nil, err
 		}
 		backingID, err := uuid.NewRandom()
 		if err != nil {
-			return err
+			return nil, err
 		}
 		fingerprint := fingerprintAsset(asset)
 		rows = append(rows, databaseMediaItem{
@@ -386,13 +717,24 @@ func upsertMediaItemBatch(ctx context.Context, tx bun.Tx, sourceAlbumID uuid.UUI
 	}
 	payload, err := json.Marshal(rows)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	incoming := `jsonb_to_recordset(?::jsonb) AS incoming(
 		portal_id uuid, backing_id uuid, immich_asset_id uuid, media_type text, width integer,
 		height integer, local_date_time text, capture_at text, checksum text,
 		filename text, original_path text, source_fingerprint text
 	)`
+	var metadataChangedMediaIDs []uuid.UUID
+	if err := tx.NewRaw(`
+		SELECT media.id
+		FROM `+incoming+`
+		JOIN media_items AS media ON media.immich_asset_id = incoming.immich_asset_id
+		WHERE (media.media_type, media.width, media.height, media.local_date_time)
+		      IS DISTINCT FROM (incoming.media_type, incoming.width, incoming.height, incoming.local_date_time)
+		ORDER BY media.id
+	`, string(payload)).Scan(ctx, &metadataChangedMediaIDs); err != nil {
+		return nil, err
+	}
 	if _, err := tx.NewRaw(`
 		INSERT INTO media_items (
 			id, immich_asset_id, media_type, width, height, local_date_time, first_seen_at, last_seen_at, updated_at
@@ -404,7 +746,7 @@ func upsertMediaItemBatch(ctx context.Context, tx bun.Tx, sourceAlbumID uuid.UUI
 			local_date_time = EXCLUDED.local_date_time, availability = 'current', last_seen_at = EXCLUDED.last_seen_at,
 			updated_at = EXCLUDED.updated_at
 	`, now, now, now, string(payload)).Exec(ctx); err != nil {
-		return err
+		return nil, err
 	}
 	if _, err := tx.NewRaw(`
 		INSERT INTO media_backings (
@@ -418,7 +760,7 @@ func upsertMediaItemBatch(ctx context.Context, tx bun.Tx, sourceAlbumID uuid.UUI
 			checksum = EXCLUDED.checksum, capture_at = EXCLUDED.capture_at,
 			filename = EXCLUDED.filename, original_path = EXCLUDED.original_path
 	`, now, string(payload)).Exec(ctx); err != nil {
-		return err
+		return nil, err
 	}
 	_, err = tx.NewRaw(`
 		INSERT INTO source_album_memberships (
@@ -432,7 +774,7 @@ func upsertMediaItemBatch(ctx context.Context, tx bun.Tx, sourceAlbumID uuid.UUI
 			last_seen_at = EXCLUDED.last_seen_at,
 			source_fingerprint = EXCLUDED.source_fingerprint
 	`, sourceAlbumID, now, now, string(payload)).Exec(ctx)
-	return err
+	return metadataChangedMediaIDs, err
 }
 
 func supersedeInvalidMediaRepairs(ctx context.Context, tx bun.Tx, now time.Time) error {
@@ -508,6 +850,21 @@ func proposeMediaRepairs(ctx context.Context, tx bun.Tx, now time.Time) error {
 			face_anchor_evidence = EXCLUDED.face_anchor_evidence,
 			conflict_evidence = EXCLUDED.conflict_evidence
 	`, now).Exec(ctx)
+	return err
+}
+
+func recordFailedReconciliation(
+	ctx context.Context,
+	tx bun.Tx,
+	sourceAlbumID uuid.UUID,
+	now time.Time,
+	status string,
+	snapshot reconciliationSnapshot,
+) error {
+	if err := recordReconciliationRun(ctx, tx, sourceAlbumID, now, status, snapshot); err != nil {
+		return err
+	}
+	_, err := tx.NewRaw(`UPDATE source_albums SET next_reconciliation_at = ?, updated_at = ? WHERE id = ?`, now, now, sourceAlbumID).Exec(ctx)
 	return err
 }
 

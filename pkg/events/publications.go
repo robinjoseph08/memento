@@ -12,6 +12,7 @@ import (
 	"github.com/robinjoseph08/memento/internal/placementlock"
 	"github.com/robinjoseph08/memento/pkg/audiences"
 	"github.com/robinjoseph08/memento/pkg/setup"
+	"github.com/robinjoseph08/memento/pkg/staging"
 	"github.com/robinjoseph08/memento/pkg/worker"
 	"github.com/uptrace/bun"
 	"github.com/uptrace/bun/dialect/pgdialect"
@@ -47,6 +48,7 @@ const (
 	PublicationStepActivity     PublicationStep = "activity"
 	PublicationStepAudit        PublicationStep = "audit"
 	PublicationStepOutbox       PublicationStep = "outbox"
+	PublicationStepStaged       PublicationStep = "staged"
 )
 
 // PublishEventRequest protects Publication from an older editable browser state.
@@ -128,9 +130,14 @@ func (s *Service) PublishEvent(ctx context.Context, actor setup.CuratorSession, 
 	now := s.now().UTC()
 	var response PublicationResponse
 	err := s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		// Every Publication can change the global entitlement union summarized by
+		// another Staged Event. Serialize that replacement before locking one Event
+		// so dependent versions can be invalidated without cross-Event deadlocks.
+		if err := staging.LockAccessSummaryReplacement(ctx, tx); err != nil {
+			return err
+		}
 		// Publications share this lock while Withdrawal takes it exclusively. Taking
-		// it before Event locks gives Withdrawal one stable placement set without
-		// serializing Publications for independent Events.
+		// it before Event locks gives Withdrawal one stable placement set.
 		if err := placementlock.Acquire(ctx, tx, placementlock.Shared); err != nil {
 			return err
 		}
@@ -174,6 +181,19 @@ func (s *Service) PublishEvent(ctx context.Context, actor setup.CuratorSession, 
 		}
 		if lifecycle != "draft" && lifecycle != "published" {
 			return ErrPublicationNotReady
+		}
+		staged, err := refreshStagedUpdate(ctx, tx, eventID, now)
+		if err != nil {
+			return err
+		}
+		if lifecycle == "published" && staged == nil {
+			pendingWithdrawal, pendingErr := hasPendingWithdrawalPublication(ctx, tx, eventID)
+			if pendingErr != nil {
+				return pendingErr
+			}
+			if !pendingWithdrawal {
+				return ErrPublicationNotReady
+			}
 		}
 		if priorID != nil {
 			var priorEditableVersion int64
@@ -226,6 +246,39 @@ func (s *Service) PublishEvent(ctx context.Context, actor setup.CuratorSession, 
 		// Person merge locks access generations before taking this lock exclusively.
 		// Keep the same order so Publication and merge cannot wait on each other.
 		if err := audiences.LockPublishedAttendanceProjection(ctx, tx); err != nil {
+			return err
+		}
+		type effectiveEntitlement struct {
+			AccessID    uuid.UUID `bun:"access_id"`
+			MediaItemID uuid.UUID `bun:"media_item_id"`
+		}
+		var priorEffectiveEntitlements []effectiveEntitlement
+		if err := tx.NewRaw(`
+			SELECT DISTINCT entitlement.recipient_access_generation_id AS access_id,
+			       entitlement.media_item_id
+			FROM current_audience_entitlements AS entitlement
+			JOIN current_published_placements AS placement
+			  ON placement.event_id = entitlement.event_id
+			 AND placement.media_item_id = entitlement.media_item_id
+			JOIN published_moments AS moment ON moment.id = placement.published_moment_id
+			WHERE NOT content_is_withdrawn(
+				placement.event_id, moment.draft_moment_id, placement.media_item_id
+			)
+			  AND EXISTS (
+				SELECT 1
+				FROM draft_moments AS candidate_moment
+				JOIN current_audience_snapshots AS candidate_snapshot
+				  ON candidate_snapshot.target_kind = 'moment'
+				 AND candidate_snapshot.target_id = candidate_moment.id
+				JOIN audience_snapshot_entries AS candidate_audience
+				  ON candidate_audience.snapshot_id = candidate_snapshot.snapshot_id
+				JOIN draft_media_placements AS candidate_placement
+				  ON candidate_placement.draft_moment_id = candidate_moment.id
+				WHERE candidate_moment.event_id = ?
+				  AND candidate_audience.recipient_access_generation_id = entitlement.recipient_access_generation_id
+				  AND candidate_placement.media_item_id = entitlement.media_item_id
+			  )
+		`, eventID).Scan(ctx, &priorEffectiveEntitlements); err != nil {
 			return err
 		}
 		if err := s.publicationBoundary(PublicationStepValidated); err != nil {
@@ -416,6 +469,11 @@ func (s *Service) PublishEvent(ctx context.Context, actor setup.CuratorSession, 
 		if err := restoreEligibleWithdrawals(ctx, tx, eventID, publicationID, now, actor); err != nil {
 			return err
 		}
+		// Withdrawal restoration changes which nominal entitlement rows are
+		// effective. Refresh dependents only after that state is final.
+		if err := staging.RefreshDependentAccessUpdates(ctx, tx, eventID, now); err != nil {
+			return err
+		}
 		if err := s.publicationBoundary(PublicationStepEntitlements); err != nil {
 			return err
 		}
@@ -428,24 +486,43 @@ func (s *Service) PublishEvent(ctx context.Context, actor setup.CuratorSession, 
 				return err
 			}
 		}
-		if _, err := tx.NewRaw(`
-			INSERT INTO new_for_you_entries (recipient_access_generation_id, publication_id)
-			SELECT DISTINCT entitlement.recipient_access_generation_id, ?::uuid
-			FROM current_audience_entitlements AS entitlement
-			JOIN recipient_access_generations AS access
-			  ON access.id = entitlement.recipient_access_generation_id
-			WHERE entitlement.event_id = ? AND access.is_current AND access.state = 'completed'
-		`, publicationID, eventID).Exec(ctx); err != nil {
-			return err
+		priorAccessIDs := make([]uuid.UUID, len(priorEffectiveEntitlements))
+		priorMediaIDs := make([]uuid.UUID, len(priorEffectiveEntitlements))
+		for index, entitlement := range priorEffectiveEntitlements {
+			priorAccessIDs[index] = entitlement.AccessID
+			priorMediaIDs[index] = entitlement.MediaItemID
 		}
 		if _, err := tx.NewRaw(`
+			WITH prior_effective_entitlements AS MATERIALIZED (
+				SELECT * FROM unnest(?::uuid[], ?::uuid[]) AS prior(access_id, media_item_id)
+			), qualifying_recipients AS MATERIALIZED (
+				SELECT DISTINCT candidate.recipient_access_generation_id
+				FROM current_audience_entitlements AS candidate
+				JOIN recipient_access_generations AS access
+				  ON access.id = candidate.recipient_access_generation_id
+				JOIN current_published_placements AS placement
+				  ON placement.event_id = candidate.event_id
+				 AND placement.media_item_id = candidate.media_item_id
+				JOIN published_moments AS moment ON moment.id = placement.published_moment_id
+				WHERE candidate.event_id = ? AND access.is_current AND access.state = 'completed'
+				  AND NOT content_is_withdrawn(
+					placement.event_id, moment.draft_moment_id, placement.media_item_id
+				  )
+				  AND NOT EXISTS (
+					SELECT 1 FROM prior_effective_entitlements AS prior
+					WHERE prior.access_id = candidate.recipient_access_generation_id
+					  AND prior.media_item_id = candidate.media_item_id
+				  )
+			), inserted_new_for_you AS (
+				INSERT INTO new_for_you_entries (recipient_access_generation_id, publication_id)
+				SELECT recipient_access_generation_id, ?::uuid FROM qualifying_recipients
+				RETURNING recipient_access_generation_id
+			)
 			INSERT INTO publication_activity_items (publication_id, recipient_access_generation_id, created_at)
-			SELECT DISTINCT ?::uuid, entitlement.recipient_access_generation_id, ?::timestamptz
-			FROM current_audience_entitlements AS entitlement
-			JOIN recipient_access_generations AS access
-			  ON access.id = entitlement.recipient_access_generation_id
-			WHERE entitlement.event_id = ? AND access.is_current AND access.state = 'completed'
-		`, publicationID, now, eventID).Exec(ctx); err != nil {
+			SELECT ?::uuid, recipient_access_generation_id, ?::timestamptz
+			FROM qualifying_recipients
+		`, pgdialect.Array(priorAccessIDs), pgdialect.Array(priorMediaIDs), eventID,
+			publicationID, publicationID, now).Exec(ctx); err != nil {
 			return err
 		}
 		if _, err := tx.NewRaw(`INSERT INTO publication_curator_activity_items (publication_id, actor_person_id, created_at) VALUES (?, ?, ?)`, publicationID, actor.PersonID, now).Exec(ctx); err != nil {
@@ -486,6 +563,18 @@ func (s *Service) PublishEvent(ctx context.Context, actor setup.CuratorSession, 
 			return err
 		}
 		if err := s.publicationBoundary(PublicationStepOutbox); err != nil {
+			return err
+		}
+		if err := clearStagedUpdate(ctx, tx, eventID); err != nil {
+			return err
+		}
+		if _, err := tx.NewRaw(`DELETE FROM staged_source_removals WHERE event_id = ?`, eventID).Exec(ctx); err != nil {
+			return err
+		}
+		if err := staging.ClearMomentReviewRestorations(ctx, tx, eventID); err != nil {
+			return err
+		}
+		if err := s.publicationBoundary(PublicationStepStaged); err != nil {
 			return err
 		}
 
@@ -696,7 +785,13 @@ func (s *Service) HandlePublicationJob(ctx context.Context, job worker.Job) erro
 			result = "publication_withdrawn"
 			return nil
 		}
-		if payload.NotifyRecipients && s.publicationHandoff != nil {
+		var hasRecipientActivity bool
+		if err := tx.NewRaw(`SELECT EXISTS (
+			SELECT 1 FROM publication_activity_items WHERE publication_id = ?
+		)`, payload.PublicationID).Scan(ctx, &hasRecipientActivity); err != nil {
+			return err
+		}
+		if payload.NotifyRecipients && hasRecipientActivity && s.publicationHandoff != nil {
 			return s.publicationHandoff(ctx, payload.EventID, payload.PublicationID)
 		}
 		return nil

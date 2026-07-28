@@ -5,6 +5,7 @@ package events
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -21,9 +22,11 @@ import (
 	"github.com/robinjoseph08/memento/pkg/library"
 	"github.com/robinjoseph08/memento/pkg/outbox"
 	"github.com/robinjoseph08/memento/pkg/setup"
+	"github.com/robinjoseph08/memento/pkg/staging"
 	"github.com/robinjoseph08/memento/pkg/worker"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/uptrace/bun"
 )
 
 type withdrawalRecipientAuthorizer struct {
@@ -517,6 +520,89 @@ func TestMomentWithdrawalKeepsReusedMediaAvailableWhenAnotherPlacementIsVisible(
 	assert.Equal(t, 1, withdrawal.AffectedEventCount)
 	_, err = fixture.service.RecipientEvent(ctx, fixture.actorFor("shared"), secondEvent)
 	assert.ErrorIs(t, err, ErrNoPublication)
+}
+
+func TestWithdrawalAndRestorationRefreshDependentEffectiveAccess(t *testing.T) {
+	fixture := newPublicationFixture(t)
+	ctx := context.Background()
+	_, err := fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, fixture.request())
+	require.NoError(t, err)
+	secondEvent, secondMoment, secondPublication := publishReusedMediaInSecondEvent(t, fixture)
+
+	firstReplacementSnapshot := uuid.New()
+	require.NoError(t, fixture.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if err := staging.LockAccessSummaryRefresh(ctx, tx); err != nil {
+			return err
+		}
+		if _, updateErr := tx.NewRaw(`
+			INSERT INTO audience_snapshots (
+				id, target_kind, target_id, approved_by_person_id, approved_at, label
+			) VALUES (?, 'moment', ?, ?, ?, 'Shared');
+			INSERT INTO audience_snapshot_entries (
+				snapshot_id, recipient_person_id, recipient_access_generation_id
+			) VALUES (?, ?, ?);
+			UPDATE current_audience_snapshots SET snapshot_id = ?
+			WHERE target_kind = 'moment' AND target_id = ?;
+			UPDATE events SET version = 8, final_review_complete = true WHERE id = ?
+		`, firstReplacementSnapshot, fixture.moments[0], fixture.actor.PersonID, fixture.service.now(),
+			firstReplacementSnapshot, fixture.people["none"], fixture.access["none"],
+			firstReplacementSnapshot, fixture.moments[0], fixture.event).Exec(ctx); updateErr != nil {
+			return updateErr
+		}
+		_, refreshErr := staging.Refresh(ctx, tx, fixture.event, fixture.service.now().UTC())
+		return refreshErr
+	}))
+
+	accessByPerson := func() map[string]staging.RecipientAccessChange {
+		t.Helper()
+		update, loadErr := staging.Load(ctx, fixture.db, fixture.event)
+		require.NoError(t, loadErr)
+		require.NotNil(t, update)
+		for _, change := range update.Changes {
+			if change.Kind != staging.ChangeKindAccess {
+				continue
+			}
+			result := make(map[string]staging.RecipientAccessChange, len(change.RecipientAccess))
+			for _, recipient := range change.RecipientAccess {
+				result[recipient.RecipientPersonID] = recipient
+			}
+			return result
+		}
+		t.Fatal("Staged update has no access change")
+		return nil
+	}
+	prior := accessByPerson()
+	assert.Contains(t, prior, fixture.people["none"].String())
+	assert.NotContains(t, prior, fixture.people["shared"].String(), "the overlapping Event initially preserves shared access")
+
+	withdrawal, err := fixture.service.Withdraw(ctx, fixture.actor, WithdrawRequest{
+		TargetKind: WithdrawalTargetEvent, TargetID: secondEvent.String(), Reason: "Refresh global access",
+	})
+	require.NoError(t, err)
+	withdrawn := accessByPerson()
+	assert.Equal(t, 1, withdrawn[fixture.people["none"].String()].GrantedMediaCount)
+	assert.Equal(t, 1, withdrawn[fixture.people["shared"].String()].RevokedMediaCount)
+	var version int64
+	var finalReview bool
+	require.NoError(t, fixture.db.NewRaw(`SELECT version, final_review_complete FROM events WHERE id = ?`, fixture.event).Scan(ctx, &version, &finalReview))
+	assert.Equal(t, int64(9), version)
+	assert.False(t, finalReview, "Withdrawal changed the dependent access review")
+
+	_, err = fixture.db.NewRaw(`UPDATE events SET final_review_complete = true WHERE id = ?`, fixture.event).Exec(ctx)
+	require.NoError(t, err)
+	reviewMomentForFreshPublication(t, fixture, secondEvent, secondMoment, secondPublication.ID)
+	restoredPublication, err := fixture.service.PublishEvent(ctx, fixture.actor, secondEvent, PublishEventRequest{Version: 8})
+	require.NoError(t, err)
+
+	restored := accessByPerson()
+	assert.Contains(t, restored, fixture.people["none"].String())
+	assert.NotContains(t, restored, fixture.people["shared"].String(), "restored effective access masks the proposed revocation again")
+	require.NoError(t, fixture.db.NewRaw(`SELECT version, final_review_complete FROM events WHERE id = ?`, fixture.event).Scan(ctx, &version, &finalReview))
+	assert.Equal(t, int64(10), version)
+	assert.False(t, finalReview, "restoration changed the dependent access review after final Withdrawal state")
+	var restoredBy uuid.UUID
+	require.NoError(t, fixture.db.NewRaw(`SELECT restored_by_publication_id FROM content_withdrawals WHERE id = ?`, withdrawal.ID).Scan(ctx, &restoredBy))
+	assert.Equal(t, uuid.MustParse(restoredPublication.ID), restoredBy)
 }
 
 func TestPartialWithdrawalPreservesEventProjectionsForRecipientsWithAnotherEntitlement(t *testing.T) {
@@ -1020,7 +1106,7 @@ func TestConcurrentPublicationRemovalIsRevalidatedAfterWithdrawalLocksTheEvent(t
 				})
 				withdrawn <- withdrawErr
 			}()
-			waitForAdvisoryLockWaiter(t, fixture, placementlock.Key, "ExclusiveLock")
+			waitForAdvisoryLockWaiter(t, fixture, staging.AccessSummaryLockKey, "ExclusiveLock")
 			releasePublicationOnce.Do(func() { close(releasePublication) })
 
 			select {
@@ -1116,7 +1202,7 @@ func TestConcurrentMediaPlacementGrowthWaitsForWithdrawalSnapshot(t *testing.T) 
 		published <- publishErr
 	}()
 
-	waitForAdvisoryLockWaiter(t, fixture, placementlock.Key, "ShareLock")
+	waitForAdvisoryLockWaiter(t, fixture, staging.AccessSummaryLockKey, "ExclusiveLock")
 
 	releaseOnce.Do(func() { close(releaseWithdrawal) })
 	var result withdrawalResult
@@ -1501,6 +1587,95 @@ func TestMediaRestorationUsesTransactionalContentRevisions(t *testing.T) {
 	assert.False(t, active)
 	_, err = fixture.service.RecipientEvent(ctx, fixture.actorFor("shared"), fixture.event)
 	require.NoError(t, err)
+}
+
+func TestPendingWithdrawalPublicationReadinessIsAuthoritativeForNoStagedSharedMedia(t *testing.T) {
+	fixture := newPublicationFixture(t)
+	ctx := context.Background()
+	first, err := fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, fixture.request())
+	require.NoError(t, err)
+
+	secondEvent, secondMoment, secondSnapshot := uuid.New(), uuid.New(), uuid.New()
+	_, err = fixture.db.NewRaw(`
+		INSERT INTO events (
+			id, lifecycle, title, description, grouping_timezone, version,
+			final_review_complete, created_at, updated_at
+		) VALUES (?, 'draft', 'Second quiet Event', '', 'UTC', 7, true, ?, ?);
+		INSERT INTO draft_moments (
+			id, event_id, position, proposed_day, grouping_timezone, source_days,
+			title, cover_media_item_id, attendance_complete, audience_complete
+		) VALUES (?, ?, 0, '2026-07-27', 'UTC', ARRAY['2026-07-27'::date],
+			'Quiet shared Media', ?, true, true);
+		INSERT INTO draft_media_placements (event_id, media_item_id, draft_moment_id, position, created_at)
+		VALUES (?, ?, ?, 0, ?);
+		INSERT INTO audience_snapshots (id, target_kind, target_id, approved_by_person_id, approved_at, label)
+		VALUES (?, 'moment', ?, ?, ?, 'Curator only');
+		INSERT INTO current_audience_snapshots (target_kind, target_id, snapshot_id)
+		VALUES ('moment', ?, ?)
+	`, secondEvent, fixture.service.now(), fixture.service.now(), secondMoment, secondEvent,
+		fixture.media[2], secondEvent, fixture.media[2], secondMoment, fixture.service.now(),
+		secondSnapshot, secondMoment, fixture.actor.PersonID, fixture.service.now(), secondMoment, secondSnapshot).Exec(ctx)
+	require.NoError(t, err)
+	second, err := fixture.service.PublishEvent(ctx, fixture.actor, secondEvent, fixture.request())
+	require.NoError(t, err)
+
+	withdrawal, err := fixture.service.Withdraw(ctx, fixture.actor, WithdrawRequest{
+		TargetKind: WithdrawalTargetMedia, TargetID: fixture.media[2].String(), Reason: "Review each quiet placement",
+	})
+	require.NoError(t, err)
+
+	refreshReviewedEvent := func(eventID, momentID uuid.UUID, publicationID string) {
+		reviewMomentForFreshPublication(t, fixture, eventID, momentID, publicationID)
+		require.NoError(t, fixture.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+			update, refreshErr := refreshStagedUpdate(ctx, tx, eventID, fixture.service.now().UTC())
+			require.Nil(t, update, "unchanged Audience review leaves no Staged update")
+			return refreshErr
+		}))
+	}
+	readAPIReadiness := func(eventID uuid.UUID, expected bool) {
+		response := draftRequest(draftHTTP(fixture.service, &draftAuthorizer{actor: fixture.actor}), http.MethodGet,
+			"/api/events/"+eventID.String(), "")
+		require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+		var body map[string]json.RawMessage
+		require.NoError(t, json.Unmarshal(response.Body.Bytes(), &body))
+		assert.JSONEq(t, "null", string(body["staged_update"]))
+		var pending bool
+		require.NoError(t, json.Unmarshal(body["pending_withdrawal_publication"], &pending))
+		assert.Equal(t, expected, pending)
+	}
+
+	refreshReviewedEvent(fixture.event, fixture.moments[2], first.ID)
+	pendingFirst, err := fixture.service.GetEvent(ctx, fixture.event)
+	require.NoError(t, err)
+	assert.Nil(t, pendingFirst.StagedUpdate)
+	assert.True(t, pendingFirst.PendingWithdrawalPublication)
+	readAPIReadiness(fixture.event, true)
+	_, err = fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, PublishEventRequest{Version: 8})
+	require.NoError(t, err)
+
+	freshFirst, err := fixture.service.GetEvent(ctx, fixture.event)
+	require.NoError(t, err)
+	assert.Nil(t, freshFirst.StagedUpdate)
+	assert.False(t, freshFirst.PendingWithdrawalPublication,
+		"active shared-Media Withdrawal history does not mark an already-fresh Event pending")
+	require.Len(t, freshFirst.Withdrawals, 1)
+	assert.Nil(t, freshFirst.Withdrawals[0].RestoredAt)
+	readAPIReadiness(fixture.event, false)
+
+	refreshReviewedEvent(secondEvent, secondMoment, second.ID)
+	pendingSecond, err := fixture.service.GetEvent(ctx, secondEvent)
+	require.NoError(t, err)
+	assert.Nil(t, pendingSecond.StagedUpdate)
+	assert.True(t, pendingSecond.PendingWithdrawalPublication,
+		"only the Event whose shared-Media placement is stale remains pending")
+	readAPIReadiness(secondEvent, true)
+	_, err = fixture.service.PublishEvent(ctx, fixture.actor, secondEvent, PublishEventRequest{Version: 8})
+	require.NoError(t, err)
+
+	var active bool
+	require.NoError(t, fixture.db.NewRaw(`SELECT restored_at IS NULL FROM content_withdrawals WHERE id = ?`, withdrawal.ID).Scan(ctx, &active))
+	assert.False(t, active)
+	readAPIReadiness(secondEvent, false)
 }
 
 func TestMediaRestoresWhenTheFinalFreshPublicationRemovesItsStalePlacement(t *testing.T) {

@@ -11,6 +11,7 @@ const csrfToken = "c".repeat(64);
 const eventID = "11111111-1111-4111-8111-111111111111";
 const momentOneID = "22222222-2222-4222-8222-222222222222";
 const momentTwoID = "33333333-3333-4333-8333-333333333333";
+const deletedMomentID = "44444444-4444-4444-8444-444444444444";
 
 function media(id: string, mediaType: string): MediaItem {
   return {
@@ -27,6 +28,7 @@ const items = {
   second: media("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "second photo"),
   third: media("cccccccc-cccc-4ccc-8ccc-cccccccccccc", "third photo"),
   loose: media("dddddddd-dddd-4ddd-8ddd-dddddddddddd", "loose photo"),
+  removed: media("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", "removed photo"),
 };
 
 function draft(version = 1): DraftEvent {
@@ -41,6 +43,8 @@ function draft(version = 1): DraftEvent {
     final_review_complete: false,
     published_editable_version: null,
     published_attendance_recovery_required: false,
+    pending_withdrawal_publication: false,
+    staged_update: null,
     sources: [],
     moments: [
       {
@@ -182,6 +186,7 @@ async function mockCuratorAPI(
               version: persisted.version,
               moment_count: persisted.moments.length,
               unassigned_count: persisted.unassigned_media.length,
+              has_staged_update: persisted.staged_update !== null,
               updated_at: persisted.updated_at,
             },
           ],
@@ -241,6 +246,7 @@ async function mockCuratorAPI(
         ...persisted,
         lifecycle: "published",
         published_editable_version: persisted.version,
+        staged_update: null,
       };
       await route.fulfill({
         status: 201,
@@ -369,9 +375,9 @@ async function mockCuratorAPI(
 
 async function openEvent(page: Page) {
   await page.goto("/?workspace=drafts");
-  await page.getByRole("button", { name: /Family weekend/ }).click();
+  await page.getByRole("button", { name: /family weekend/i }).click();
   await expect(
-    page.getByRole("heading", { name: "Family weekend" }),
+    page.getByRole("heading", { name: /family weekend/i }),
   ).toBeVisible();
 }
 
@@ -535,7 +541,9 @@ test("@desktop organizes, orders, autosaves, and persists after reload", async (
 
   await page.getByRole("checkbox", { name: /loose photo/ }).check();
   await page.getByLabel("Move selected to").selectOption({ label: "Friday" });
-  await page.getByRole("button", { name: "Move selected Media" }).click();
+  await page
+    .getByRole("button", { name: "Move selected Media", exact: true })
+    .click();
   const covers = page.getByLabel("Cover");
   await covers.nth(0).selectOption(items.loose.id);
   await covers.nth(1).selectOption(items.second.id);
@@ -555,6 +563,154 @@ test("@desktop organizes, orders, autosaves, and persists after reload", async (
   await expect(page.locator(".moment-list .moment-card")).toHaveCount(2);
   await expect(page.getByLabel("Cover").nth(0)).toHaveValue(items.second.id);
   await expect(page.getByLabel("Cover").nth(1)).toHaveValue(items.loose.id);
+});
+
+test("@mobile Staged review fits every change category in the page", async ({
+  page,
+}) => {
+  const staged = draft();
+  staged.lifecycle = "published";
+  staged.title = "Corrected family weekend";
+  staged.description = "The complete corrected description";
+  staged.place_labels = ["Coastal overlook", "Garden terrace"];
+  staged.grouping_timezone = "America/New_York";
+  staged.moments[0].place_labels = ["Breakfast room", "Harbor view"];
+  staged.published_editable_version = staged.version;
+  staged.staged_update = {
+    id: "12121212-1212-4212-8212-121212121212",
+    base_publication_id: "13131313-1313-4313-8313-131313131313",
+    updated_at: "2026-05-03T01:00:00Z",
+    changes: [
+      {
+        kind: "addition",
+        count: 1,
+        media_item_ids: [items.first.id],
+        moment_ids: [],
+        detail: "Media added",
+      },
+      {
+        kind: "removal",
+        count: 1,
+        media_item_ids: [items.removed.id],
+        moment_ids: [],
+        removed_media: [
+          {
+            id: items.removed.id,
+            media_type: items.removed.media_type,
+            local_date_time: items.removed.local_date_time,
+            restorable: false,
+          },
+        ],
+        detail: "Media removed",
+      },
+      {
+        kind: "move",
+        count: 1,
+        media_item_ids: [items.second.id],
+        moment_ids: [],
+        detail: "Media moved or reordered",
+      },
+      {
+        kind: "metadata",
+        count: 4,
+        media_item_ids: [items.third.id],
+        moment_ids: [momentOneID],
+        event_metadata_fields: [
+          "title",
+          "description",
+          "place_labels",
+          "grouping_timezone",
+        ],
+        detail: "Event, Moment, or Media metadata edited",
+      },
+      {
+        kind: "moment_structure",
+        count: 1,
+        media_item_ids: [],
+        moment_ids: [momentTwoID, deletedMomentID],
+        deleted_moments: [
+          {
+            id: deletedMomentID,
+            title: "Sunday breakfast",
+            proposed_day: "2026-05-03",
+          },
+        ],
+        detail: "Moment structure or ordering changed",
+      },
+      {
+        kind: "access",
+        count: 1,
+        media_item_ids: [items.second.id],
+        moment_ids: [momentOneID, momentTwoID],
+        recipient_access: [
+          {
+            recipient_person_id: "55555555-5555-4555-8555-555555555555",
+            recipient_name: "Alex",
+            granted_media_count: 2,
+            revoked_media_count: 1,
+          },
+        ],
+        detail: "Global Recipient Media access granted or revoked",
+      },
+    ],
+  };
+  await mockCuratorAPI(page, [], staged);
+  await openEvent(page);
+
+  const review = page.getByRole("region", { name: "Staged update review" });
+  await expect(review).toBeVisible();
+  const eventMetadata = review.locator(".staged-event-metadata");
+  await expect(eventMetadata).toContainText("Coastal overlook, Garden terrace");
+  await expect(eventMetadata.locator(".staged-metadata")).toHaveCount(4);
+  await expect(eventMetadata.getByText("Staged: Metadata edits")).toHaveCount(
+    4,
+  );
+  await expect(page.getByLabel("Place labels for Moment 1")).toHaveValue(
+    "Breakfast room, Harbor view",
+  );
+  await expect(
+    page.locator(".moment-card").filter({
+      has: page.getByLabel("Place labels for Moment 1"),
+    }),
+  ).toHaveClass(/staged-metadata/);
+  const summary = review.getByRole("list", { name: "Net change summary" });
+  await expect(summary.locator(":scope > li")).toHaveCount(6);
+  for (const detail of [
+    "Media added",
+    "Media removed",
+    "Media moved or reordered",
+    "Event, Moment, or Media metadata edited",
+    "Moment structure or ordering changed",
+    "Global Recipient Media access granted or revoked",
+  ]) {
+    await expect(summary).toContainText(detail);
+  }
+  await expect(review).toContainText("Removed Media");
+  await expect(review).toContainText("Sunday breakfast");
+  await expect(review).toContainText("Alex");
+  await expect(review).toContainText("2 Media granted");
+  await expect(review).toContainText("1 Media revoked");
+  await expect(
+    page.getByLabel("Staged changes: Moves and ordering, Access changes"),
+  ).toBeVisible();
+  await expect(
+    page.getByLabel("Staged changes: Metadata edits, Access changes"),
+  ).toBeVisible();
+  await expect(
+    page.getByLabel("Staged changes: Moment structure, Access changes"),
+  ).toBeVisible();
+  await expect
+    .poll(() =>
+      review.evaluate((element) => element.scrollWidth <= element.clientWidth),
+    )
+    .toBe(true);
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+    )
+    .toBe(true);
 });
 
 test("@mobile drills down without clipping and manually populates a Moment", async ({

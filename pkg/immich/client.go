@@ -56,6 +56,7 @@ var (
 	errInvalidCredentials = safeError("Immich API key is invalid")
 	errOwnedAlbumsFailed  = safeError("Immich album discovery failed")
 	errAlbumAssetsFailed  = safeError("Immich album membership lookup failed")
+	errAssetFailed        = safeError("Immich asset lookup failed")
 	errPeopleFailed       = safeError("Immich people lookup failed")
 	errFacesFailed        = safeError("Immich face lookup failed")
 	errArchiveFailed      = safeError("Immich archive request failed")
@@ -493,6 +494,29 @@ func (c *Client) AlbumAssetsPage(ctx context.Context, albumID uuid.UUID, page in
 		return AssetPage{}, errInvalidResponse
 	}
 	return result, nil
+}
+
+// AssetExists distinguishes an album-only removal from an Immich asset that
+// can no longer back a portal Media item.
+func (c *Client) AssetExists(ctx context.Context, assetID uuid.UUID) (bool, error) {
+	if assetID == uuid.Nil {
+		return false, errInvalidResponse
+	}
+	var response assetResponse
+	if err := c.getJSON(ctx, "assets/"+assetID.String(), &response, errAssetFailed); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	if response.ID == nil {
+		return false, errInvalidResponse
+	}
+	responseID, err := uuid.Parse(*response.ID)
+	if err != nil || responseID != assetID {
+		return false, errInvalidResponse
+	}
+	return true, nil
 }
 
 // Thumbnail opens a bounded thumbnail after the caller resolves authorization.
@@ -1178,7 +1202,7 @@ func (c *Client) doJSONStatus(ctx context.Context, method, path string, query ur
 	defer response.Body.Close()
 	if response.StatusCode != expectedStatus {
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxJSONResponse))
-		if response.StatusCode == http.StatusNotFound && path == "faces" {
+		if response.StatusCode == http.StatusNotFound && (path == "faces" || strings.HasPrefix(path, "assets/")) {
 			return ErrNotFound
 		}
 		if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {

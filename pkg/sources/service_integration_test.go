@@ -41,6 +41,9 @@ func (connector *fakeConnector) Album(context.Context, uuid.UUID) (immich.AlbumS
 func (connector *fakeConnector) AlbumAssetsPage(context.Context, uuid.UUID, int) (immich.AssetPage, error) {
 	return immich.AssetPage{}, connector.listErr
 }
+func (connector *fakeConnector) AssetExists(context.Context, uuid.UUID) (bool, error) {
+	return true, connector.listErr
+}
 
 func sourceAlbum(id uuid.UUID, name string, count int) immich.AlbumSummary {
 	created := time.Date(2025, 1, 2, 3, 4, 5, 0, time.UTC)
@@ -256,6 +259,9 @@ func (connector *serializedConnector) Album(context.Context, uuid.UUID) (immich.
 }
 func (connector *serializedConnector) AlbumAssetsPage(context.Context, uuid.UUID, int) (immich.AssetPage, error) {
 	return immich.AssetPage{}, nil
+}
+func (connector *serializedConnector) AssetExists(context.Context, uuid.UUID) (bool, error) {
+	return true, nil
 }
 
 func (connector *serializedConnector) OwnedAlbums(context.Context) ([]immich.AlbumSummary, error) {

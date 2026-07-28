@@ -17,6 +17,7 @@ import (
 	"github.com/robinjoseph08/memento/pkg/migrations"
 	"github.com/robinjoseph08/memento/pkg/people"
 	"github.com/robinjoseph08/memento/pkg/setup"
+	"github.com/robinjoseph08/memento/pkg/staging"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/uptrace/bun"
@@ -784,6 +785,106 @@ func TestMediaConfirmationPreservesPortalIdentityAndMovesBacking(t *testing.T) {
 	assert.ErrorIs(t, err, ErrConflict)
 	_, err = fixture.db.ExecContext(context.Background(), `UPDATE media_backings SET checksum = ? WHERE id = ?`, checksum("same"), newBackingID)
 	require.NoError(t, err)
+
+	publicationID, publishedMomentID, audienceSnapshotID := uuid.New(), uuid.New(), uuid.New()
+	_, err = fixture.db.ExecContext(context.Background(), `
+		INSERT INTO audience_snapshots (id, target_kind, target_id, approved_by_person_id, approved_at, label)
+		VALUES (?, 'moment', ?, ?, now(), 'Curator only');
+		INSERT INTO current_audience_snapshots (target_kind, target_id, snapshot_id)
+		VALUES ('moment', ?, ?);
+		INSERT INTO publications (
+			id, event_id, revision, editable_version, published_by_person_id, notify_recipients, committed_at
+		) VALUES (?, ?, 1, 1, ?, false, now());
+		INSERT INTO published_event_revisions (
+			publication_id, event_id, title, description, grouping_timezone, created_at
+		) VALUES (?, ?, 'Repair draft', '', 'UTC', now());
+		INSERT INTO published_moments (
+			id, publication_id, draft_moment_id, audience_snapshot_id, position,
+			title, proposed_day, cover_media_item_id
+		) VALUES (?, ?, ?, ?, 0, '', '2026-01-01', ?);
+		INSERT INTO published_media_placements (
+			published_moment_id, media_item_id, position, media_type, local_date_time
+		) VALUES (?, ?, 0, 'image', '2026-01-01T00:00:00Z');
+		INSERT INTO current_published_events (
+			event_id, publication_id, title, description, grouping_timezone, committed_at
+		) VALUES (?, ?, 'Repair draft', '', 'UTC', now());
+		INSERT INTO current_published_placements (
+			event_id, publication_id, published_moment_id, media_item_id, position
+		) VALUES (?, ?, ?, ?, 0);
+		UPDATE events SET lifecycle = 'published', current_publication_id = ? WHERE id = ?;
+		INSERT INTO staged_source_removals (
+			event_id, media_item_id, draft_moment_id, position, was_cover, created_at
+		) VALUES (?, ?, ?, 0, true, now())
+	`, audienceSnapshotID, momentID, fixture.actor.PersonID, momentID, audienceSnapshotID,
+		publicationID, eventID, fixture.actor.PersonID, publicationID, eventID,
+		publishedMomentID, publicationID, momentID, audienceSnapshotID, oldMediaID,
+		publishedMomentID, oldMediaID, eventID, publicationID,
+		eventID, publicationID, publishedMomentID, oldMediaID, publicationID, eventID,
+		eventID, oldMediaID, momentID)
+	require.NoError(t, err)
+	require.NoError(t, fixture.db.RunInTx(context.Background(), nil, func(ctx context.Context, tx bun.Tx) error {
+		_, refreshErr := staging.Refresh(ctx, tx, eventID, time.Now().UTC())
+		return refreshErr
+	}))
+	beforeRepair, err := staging.Load(context.Background(), fixture.db, eventID)
+	require.NoError(t, err)
+	require.NotNil(t, beforeRepair, "the candidate identity initially appears as staged add/remove work")
+
+	partialEventID, partialMomentID := uuid.New(), uuid.New()
+	partialPublicationID, partialPublishedMomentID, partialAudienceSnapshotID := uuid.New(), uuid.New(), uuid.New()
+	_, err = fixture.db.ExecContext(context.Background(), `
+		INSERT INTO events (id, title, grouping_timezone, lifecycle)
+		VALUES (?, 'Partial repair Event', 'UTC', 'published');
+		INSERT INTO event_sources (
+			event_id, source_album_id, source_order, initialized_name,
+			initialized_description, initialized_at, include_future_media
+		) VALUES (?, ?, 0, 'Repair album', '', now(), false);
+		INSERT INTO draft_moments (
+			id, event_id, position, proposed_day, grouping_timezone
+		) VALUES (?, ?, 0, '2026-01-01', 'UTC');
+		INSERT INTO audience_snapshots (id, target_kind, target_id, approved_by_person_id, approved_at, label)
+		VALUES (?, 'moment', ?, ?, now(), 'Curator only');
+		INSERT INTO current_audience_snapshots (target_kind, target_id, snapshot_id)
+		VALUES ('moment', ?, ?);
+		INSERT INTO publications (
+			id, event_id, revision, editable_version, published_by_person_id, notify_recipients, committed_at
+		) VALUES (?, ?, 1, 1, ?, false, now());
+		INSERT INTO published_event_revisions (
+			publication_id, event_id, title, description, grouping_timezone, created_at
+		) VALUES (?, ?, 'Partial repair Event', '', 'UTC', now());
+		INSERT INTO published_moments (
+			id, publication_id, draft_moment_id, audience_snapshot_id, position,
+			title, proposed_day, cover_media_item_id
+		) VALUES (?, ?, ?, ?, 0, '', '2026-01-01', ?);
+		INSERT INTO published_media_placements (
+			published_moment_id, media_item_id, position, media_type, local_date_time
+		) VALUES (?, ?, 7, 'image', '2026-01-01T00:00:00Z');
+		INSERT INTO current_published_events (
+			event_id, publication_id, title, description, grouping_timezone, committed_at
+		) VALUES (?, ?, 'Partial repair Event', '', 'UTC', now());
+		INSERT INTO current_published_placements (
+			event_id, publication_id, published_moment_id, media_item_id, position
+		) VALUES (?, ?, ?, ?, 7);
+		UPDATE events SET current_publication_id = ? WHERE id = ?;
+		INSERT INTO staged_source_removals (
+			event_id, media_item_id, draft_moment_id, position, was_cover, created_at
+		) VALUES (?, ?, ?, 7, true, now())
+	`, partialEventID, partialEventID, sourceAlbumID, partialMomentID, partialEventID,
+		partialAudienceSnapshotID, partialMomentID, fixture.actor.PersonID, partialMomentID, partialAudienceSnapshotID,
+		partialPublicationID, partialEventID, fixture.actor.PersonID, partialPublicationID, partialEventID,
+		partialPublishedMomentID, partialPublicationID, partialMomentID, partialAudienceSnapshotID, oldMediaID,
+		partialPublishedMomentID, oldMediaID, partialEventID, partialPublicationID,
+		partialEventID, partialPublicationID, partialPublishedMomentID, oldMediaID,
+		partialPublicationID, partialEventID, partialEventID, oldMediaID, partialMomentID)
+	require.NoError(t, err)
+	require.NoError(t, fixture.db.RunInTx(context.Background(), nil, func(ctx context.Context, tx bun.Tx) error {
+		_, refreshErr := staging.Refresh(ctx, tx, partialEventID, time.Now().UTC())
+		return refreshErr
+	}))
+	partialBeforeRepair, err := staging.Load(context.Background(), fixture.db, partialEventID)
+	require.NoError(t, err)
+	require.NotNil(t, partialBeforeRepair, "the partial-source Event starts with only stable-Media removal state")
+
 	competingMediaID, competingAssetID, competingCandidateID := uuid.New(), uuid.New(), uuid.New()
 	historyID, historicalCandidateAssetID := uuid.New(), uuid.New()
 	_, err = fixture.db.ExecContext(context.Background(), `
@@ -854,6 +955,32 @@ func TestMediaConfirmationPreservesPortalIdentityAndMovesBacking(t *testing.T) {
 	var candidateItemExists bool
 	require.NoError(t, fixture.db.NewRaw(`SELECT EXISTS (SELECT 1 FROM media_items WHERE id = ?)`, newMediaID).Scan(context.Background(), &candidateItemExists))
 	assert.False(t, candidateItemExists)
+	afterRepair, err := staging.Load(context.Background(), fixture.db, eventID)
+	require.NoError(t, err)
+	assert.Nil(t, afterRepair, "confirmed identity relink refreshes and cancels stale staged add/remove work")
+	var restorationRows int
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM staged_source_removals WHERE event_id = ?`, eventID).Scan(context.Background(), &restorationRows))
+	assert.Zero(t, restorationRows, "the restored stable identity leaves no source-removal residue")
+	partialAfterRepair, err := staging.Load(context.Background(), fixture.db, partialEventID)
+	require.NoError(t, err)
+	assert.Nil(t, partialAfterRepair, "repair restores a previously selected partial-source Media without staging a future addition")
+	var partialRestorationRows int
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM staged_source_removals WHERE event_id = ?`, partialEventID).Scan(context.Background(), &partialRestorationRows))
+	assert.Zero(t, partialRestorationRows)
+	var partialPlacementMediaID uuid.UUID
+	var partialPlacementMomentID *uuid.UUID
+	var partialPlacementPosition int
+	require.NoError(t, fixture.db.NewRaw(`
+		SELECT media_item_id, draft_moment_id, position FROM draft_media_placements WHERE event_id = ?
+	`, partialEventID).Scan(context.Background(), &partialPlacementMediaID, &partialPlacementMomentID, &partialPlacementPosition))
+	assert.Equal(t, oldMediaID, partialPlacementMediaID)
+	require.NotNil(t, partialPlacementMomentID)
+	assert.Equal(t, partialMomentID, *partialPlacementMomentID)
+	assert.Equal(t, 7, partialPlacementPosition)
+	var partialCoverMediaID *uuid.UUID
+	require.NoError(t, fixture.db.NewRaw(`SELECT cover_media_item_id FROM draft_moments WHERE id = ?`, partialMomentID).Scan(context.Background(), &partialCoverMediaID))
+	require.NotNil(t, partialCoverMediaID)
+	assert.Equal(t, oldMediaID, *partialCoverMediaID)
 	var activeBackingItem uuid.UUID
 	var backingState string
 	require.NoError(t, fixture.db.NewRaw(`SELECT media_item_id, state FROM media_backings WHERE immich_asset_id = ? AND active`, newAssetID).Scan(context.Background(), &activeBackingItem, &backingState))

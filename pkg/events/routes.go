@@ -126,6 +126,26 @@ func (h *Handler) Withdraw(c echo.Context) error {
 	return c.JSON(http.StatusCreated, withdrawal)
 }
 
+func (h *Handler) RestorePublishedMedia(c echo.Context) error {
+	actor, err := h.authorize(c, true)
+	if err != nil {
+		return err
+	}
+	id, err := routeID(c.Param("id"), "Event")
+	if err != nil {
+		return err
+	}
+	var request RestorePublishedMediaRequest
+	if err := c.Bind(&request); err != nil {
+		return err
+	}
+	event, err := h.service.RestorePublishedMedia(h.requestContext(c), actor, id, request)
+	if mapped := draftError(err, "Event"); mapped != nil {
+		return mapped
+	}
+	return c.JSON(http.StatusOK, event)
+}
+
 func (h *Handler) PublishEvent(c echo.Context) error {
 	actor, err := h.authorize(c, true)
 	if err != nil {
@@ -334,7 +354,7 @@ func draftError(err error, resource string) error {
 	case errors.Is(err, ErrPlaceLabelsInvalid):
 		return errcodes.ValidationError("Use no more than 20 Place labels, with 1 to 120 characters in each label.")
 	case errors.Is(err, ErrInvalid):
-		return errcodes.ValidationError("Draft fields must be valid, include every Media item exactly once, and use a cover from its Moment.")
+		return errcodes.ValidationError("Draft fields must be valid, include at least one Media item with no duplicates, and use only covers from their Moments.")
 	case errors.Is(err, ErrVersionConflict):
 		return errcodes.Conflict("This Event changed in another browser. Review the newer version before saving again.")
 	case errors.Is(err, ErrSourceUnavailable):
@@ -371,6 +391,8 @@ func RegisterRoutes(e *echo.Echo, handler *Handler) {
 	getEvent.Name = curatorReadPolicy
 	organizeEvent := events.PUT("/:id/organization", handler.OrganizeEvent)
 	organizeEvent.Name = curatorMutationPolicy
+	restorePublishedMedia := events.POST("/:id/published-media-restorations", handler.RestorePublishedMedia)
+	restorePublishedMedia.Name = curatorMutationPolicy
 	publishEvent := events.POST("/:id/publications", handler.PublishEvent)
 	publishEvent.Name = curatorMutationPolicy
 	previewRecipients := events.GET("/:id/preview-recipients", handler.PreviewRecipients)

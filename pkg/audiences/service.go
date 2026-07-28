@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/robinjoseph08/memento/pkg/immich"
 	"github.com/robinjoseph08/memento/pkg/setup"
+	"github.com/robinjoseph08/memento/pkg/staging"
 	"github.com/uptrace/bun"
 )
 
@@ -198,8 +199,14 @@ func (s *Service) ConfirmAttendance(ctx context.Context, actor setup.CuratorSess
 	now := s.now().UTC()
 	var response Review
 	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if err := staging.LockAccessSummaryRefresh(ctx, tx); err != nil {
+			return err
+		}
 		t := target{targetMoment, momentID}
 		if err := lockTarget(ctx, tx, t, version); err != nil {
+			return err
+		}
+		if err := supersedeStagedReviewRestoration(ctx, tx, t); err != nil {
 			return err
 		}
 		if len(ids) > 0 {
@@ -252,7 +259,13 @@ func (s *Service) Recalculate(ctx context.Context, actor setup.CuratorSession, k
 	now := s.now().UTC()
 	var response Review
 	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if err := staging.LockAccessSummaryRefresh(ctx, tx); err != nil {
+			return err
+		}
 		if err := lockTarget(ctx, tx, t, version); err != nil {
+			return err
+		}
+		if err := supersedeStagedReviewRestoration(ctx, tx, t); err != nil {
 			return err
 		}
 		if err := recalculate(ctx, tx, t, now); err != nil {
@@ -294,7 +307,13 @@ func (s *Service) SetOverride(ctx context.Context, actor setup.CuratorSession, k
 	now := s.now().UTC()
 	var response Review
 	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if err := staging.LockAccessSummaryRefresh(ctx, tx); err != nil {
+			return err
+		}
 		if err := lockTarget(ctx, tx, t, version); err != nil {
+			return err
+		}
+		if err := supersedeStagedReviewRestoration(ctx, tx, t); err != nil {
 			return err
 		}
 		var lockedRecipient uuid.UUID
@@ -354,7 +373,13 @@ func (s *Service) Approve(ctx context.Context, actor setup.CuratorSession, kind 
 	now, snapshotID := s.now().UTC(), uuid.New()
 	var response ApprovalResponse
 	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if err := staging.LockAccessSummaryRefresh(ctx, tx); err != nil {
+			return err
+		}
 		if err := lockTarget(ctx, tx, t, version); err != nil {
+			return err
+		}
+		if err := supersedeStagedReviewRestoration(ctx, tx, t); err != nil {
 			return err
 		}
 		if t.kind == targetMoment {
@@ -408,6 +433,13 @@ func (s *Service) Approve(ctx context.Context, actor setup.CuratorSession, kind 
 		return nil
 	})
 	return response, err
+}
+
+func supersedeStagedReviewRestoration(ctx context.Context, tx bun.Tx, t target) error {
+	if t.kind != targetMoment {
+		return nil
+	}
+	return staging.SupersedeMomentReviewRestoration(ctx, tx, t.id)
 }
 
 func lockEligibleProposalRecipients(ctx context.Context, tx bun.Tx, t target) (int, error) {
@@ -611,10 +643,11 @@ func invalidateEventReview(ctx context.Context, tx bun.Tx, t target, now time.Ti
 	if t.kind != targetMoment {
 		return nil
 	}
-	_, err := tx.NewRaw(`
-		UPDATE events SET version = version + 1, final_review_complete = false, updated_at = ?
-		WHERE id = (SELECT event_id FROM draft_moments WHERE id = ?)
-	`, now, t.id).Exec(ctx)
+	var eventID uuid.UUID
+	if err := tx.NewRaw(`SELECT event_id FROM draft_moments WHERE id = ?`, t.id).Scan(ctx, &eventID); err != nil {
+		return err
+	}
+	_, err := staging.InvalidateEvent(ctx, tx, eventID, now)
 	return err
 }
 

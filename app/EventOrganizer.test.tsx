@@ -1,10 +1,12 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 
@@ -19,7 +21,29 @@ const csrfToken = "c".repeat(64);
 const eventID = "11111111-1111-4111-8111-111111111111";
 const momentOneID = "22222222-2222-4222-8222-222222222222";
 const momentTwoID = "33333333-3333-4333-8333-333333333333";
+const deletedMomentID = "44444444-4444-4444-8444-444444444444";
 const contentionWait = { timeout: 5_000 };
+
+type OrganizerAPIOptions = {
+  attendanceGate?: Promise<void>;
+  organizationGate?: Promise<void>;
+  restoreGate?: Promise<void>;
+  restoreMomentID?: string;
+  restoreAsCover?: boolean;
+  restoreConflictOnce?: boolean;
+  restoreConflictGate?: Promise<void>;
+  restoreVersions?: number[];
+  publicationRefetchGate?: Promise<void>;
+  withdrawalGate?: Promise<void>;
+};
+
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((complete) => {
+    resolve = complete;
+  });
+  return { promise, resolve };
+}
 
 function media(id: string, mediaType: string): MediaItem {
   return {
@@ -50,6 +74,8 @@ function draft(version = 1): DraftEvent {
     final_review_complete: false,
     published_editable_version: null,
     published_attendance_recovery_required: false,
+    pending_withdrawal_publication: false,
+    staged_update: null,
     sources: [],
     moments: [
       {
@@ -146,7 +172,12 @@ function eventFromRequest(
   const priorMoments = new Map(
     baseline.moments.map((moment) => [moment.id, moment]),
   );
-  const existing = draft(request.version + 1);
+  const existing = structuredClone(baseline);
+  existing.version = request.version + 1;
+  existing.title = request.title ?? baseline.title;
+  existing.description = request.description ?? baseline.description;
+  existing.grouping_timezone =
+    request.grouping_timezone ?? baseline.grouping_timezone;
   existing.final_review_complete = request.final_review_complete;
   existing.place_labels = request.place_labels;
   existing.moments = request.moments.map((moment) => ({
@@ -206,8 +237,14 @@ function emptyReview(momentID: string) {
   };
 }
 
-function stubOrganizerAPI(initial: DraftEvent) {
+function stubOrganizerAPI(
+  initial: DraftEvent,
+  options: OrganizerAPIOptions = {},
+) {
   let persisted = initial;
+  let publicationCommitted = false;
+  let restorationConflictReturned = false;
+  let restorationRefetched = false;
   const saves: OrganizeEventRequest[] = [];
   const reviews = new Map<string, ReturnType<typeof emptyReview>>();
   const reviewFor = (momentID: string) => {
@@ -231,6 +268,8 @@ function stubOrganizerAPI(initial: DraftEvent) {
               version: persisted.version,
               moment_count: persisted.moments.length,
               unassigned_count: persisted.unassigned_media.length,
+              has_staged_update: persisted.staged_update !== null,
+              lifecycle: persisted.lifecycle,
               updated_at: persisted.updated_at,
             },
           ],
@@ -245,15 +284,28 @@ function stubOrganizerAPI(initial: DraftEvent) {
           version: persisted.version,
           notify_recipients: true,
         });
+        const publicationID = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
         persisted = {
           ...persisted,
           lifecycle: "published",
           published_editable_version: persisted.version,
           published_attendance_recovery_required: false,
+          pending_withdrawal_publication: false,
+          staged_update: null,
+          withdrawals: persisted.withdrawals.map((withdrawal) =>
+            withdrawal.restored_at
+              ? withdrawal
+              : {
+                  ...withdrawal,
+                  restored_by_publication_id: publicationID,
+                  restored_at: "2026-05-03T02:00:00Z",
+                },
+          ),
         };
+        publicationCommitted = true;
         return response(
           {
-            id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+            id: publicationID,
             event_id: eventID,
             revision: 1,
             editable_version: persisted.version,
@@ -334,9 +386,81 @@ function stubOrganizerAPI(initial: DraftEvent) {
             },
           ],
         };
-        return response(persisted.withdrawals[0], 201);
+        const withdrawal = structuredClone(persisted.withdrawals[0]);
+        return options.withdrawalGate
+          ? options.withdrawalGate.then(() => response(withdrawal, 201))
+          : response(withdrawal, 201);
       }
-      if (path === `/api/events/${eventID}`) return response(persisted);
+      if (
+        path === `/api/events/${eventID}/published-media-restorations` &&
+        init?.method === "POST"
+      ) {
+        expect(init.headers).toMatchObject({ "X-Memento-CSRF": csrfToken });
+        const request = JSON.parse(stringBody(init.body)) as {
+          version: number;
+          media_item_id: string;
+        };
+        options.restoreVersions?.push(request.version);
+        expect(request.version).toBe(persisted.version);
+        if (options.restoreConflictOnce && !restorationConflictReturned) {
+          persisted = {
+            ...persisted,
+            version: persisted.version + 1,
+            title: "Newer server Event",
+            description: "Newer server description",
+          };
+          restorationConflictReturned = true;
+          const conflict = response(
+            {
+              error: {
+                message:
+                  "This Event changed in another browser. Review the newer version before saving again.",
+              },
+            },
+            409,
+          );
+          return options.restoreConflictGate
+            ? options.restoreConflictGate.then(() => conflict)
+            : conflict;
+        }
+        if (restorationConflictReturned && !restorationRefetched) {
+          throw new Error("Restoration retried before loading the newer Event");
+        }
+        const restored = Object.values(items).find(
+          (item) => item.id === request.media_item_id,
+        );
+        if (!restored) throw new Error("Unknown restored Media fixture");
+        persisted = {
+          ...persisted,
+          version: persisted.version + 1,
+          staged_update: null,
+          moments: persisted.moments.map((moment) =>
+            moment.id === options.restoreMomentID
+              ? {
+                  ...moment,
+                  cover_media_item_id: options.restoreAsCover
+                    ? restored.id
+                    : moment.cover_media_item_id,
+                  media_items: [...moment.media_items, restored],
+                }
+              : moment,
+          ),
+          unassigned_media: options.restoreMomentID
+            ? persisted.unassigned_media
+            : [...persisted.unassigned_media, restored],
+        };
+        const restoration = structuredClone(persisted);
+        return options.restoreGate
+          ? options.restoreGate.then(() => response(restoration))
+          : response(restoration);
+      }
+      if (path === `/api/events/${eventID}`) {
+        if (restorationConflictReturned) restorationRefetched = true;
+        if (publicationCommitted && options.publicationRefetchGate) {
+          return options.publicationRefetchGate.then(() => response(persisted));
+        }
+        return response(persisted);
+      }
       const reviewMatch = path.match(
         /^\/api\/moments\/([^/]+)\/attendance-audience$/,
       );
@@ -350,19 +474,24 @@ function stubOrganizerAPI(initial: DraftEvent) {
           "If-Match": String(review.version),
           "X-Memento-CSRF": csrfToken,
         });
-        const moment = persisted.moments.find(
-          (candidate) => candidate.id === attendanceMatch[1],
-        );
-        if (moment) {
-          moment.attendance_complete = true;
-          moment.audience_complete = false;
-        }
-        persisted.version += 1;
-        persisted.final_review_complete = false;
-        review.version += 1;
-        review.attendance_confirmed = true;
-        review.audience_complete = false;
-        return response(review);
+        const confirm = () => {
+          const moment = persisted.moments.find(
+            (candidate) => candidate.id === attendanceMatch[1],
+          );
+          if (moment) {
+            moment.attendance_complete = true;
+            moment.audience_complete = false;
+          }
+          persisted.version += 1;
+          persisted.final_review_complete = false;
+          review.version += 1;
+          review.attendance_confirmed = true;
+          review.audience_complete = false;
+          return response(review);
+        };
+        return options.attendanceGate
+          ? options.attendanceGate.then(confirm)
+          : confirm();
       }
       const approvalMatch = path.match(
         /^\/api\/moments\/([^/]+)\/audience\/approve$/,
@@ -401,7 +530,10 @@ function stubOrganizerAPI(initial: DraftEvent) {
         ) as OrganizeEventRequest;
         saves.push(request);
         persisted = eventFromRequest(request, persisted);
-        return response(persisted);
+        const saved = structuredClone(persisted);
+        return options.organizationGate
+          ? options.organizationGate.then(() => response(saved))
+          : response(saved);
       }
       throw new Error(`Unexpected request: ${path}`);
     }),
@@ -430,7 +562,725 @@ function renderOrganizer() {
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.restoreAllMocks();
+});
+
+test("shows the resulting Event with highlighted Staged net changes", async () => {
+  const staged = organizedDraft(8);
+  staged.lifecycle = "published";
+  staged.title = "Corrected family weekend";
+  staged.description = "The complete corrected description";
+  staged.place_labels = ["Coastal overlook", "Garden terrace"];
+  staged.grouping_timezone = "America/New_York";
+  staged.moments.find((moment) => moment.id === momentOneID)!.place_labels = [
+    "Breakfast room",
+  ];
+  staged.published_editable_version = 7;
+  staged.staged_update = {
+    id: "12121212-1212-4212-8212-121212121212",
+    base_publication_id: "13131313-1313-4313-8313-131313131313",
+    updated_at: "2026-05-03T01:00:00Z",
+    changes: [
+      {
+        kind: "addition",
+        count: 1,
+        media_item_ids: [items.b.id],
+        moment_ids: [],
+        detail: "Media added",
+      },
+      {
+        kind: "removal",
+        count: 2,
+        media_item_ids: [items.c.id, items.loose.id],
+        moment_ids: [],
+        removed_media: [
+          {
+            id: items.c.id,
+            media_type: items.c.media_type,
+            local_date_time: items.c.local_date_time,
+            restorable: true,
+          },
+          {
+            id: items.loose.id,
+            media_type: items.loose.media_type,
+            local_date_time: items.loose.local_date_time,
+            restorable: false,
+          },
+        ],
+        detail: "Media removed",
+      },
+      {
+        kind: "move",
+        count: 1,
+        media_item_ids: [items.a.id],
+        moment_ids: [],
+        detail: "Media moved or reordered",
+      },
+      {
+        kind: "moment_structure",
+        count: 1,
+        media_item_ids: [],
+        moment_ids: [deletedMomentID],
+        deleted_moments: [
+          {
+            id: deletedMomentID,
+            title: "Sunday breakfast",
+            proposed_day: "2026-05-03",
+          },
+        ],
+        detail: "Moment structure or ordering changed",
+      },
+      {
+        kind: "metadata",
+        count: 3,
+        media_item_ids: [items.a.id],
+        moment_ids: [momentOneID],
+        event_metadata_fields: [
+          "title",
+          "description",
+          "place_labels",
+          "grouping_timezone",
+        ],
+        detail: "Event, Moment, or Media metadata edited",
+      },
+      {
+        kind: "access",
+        count: 2,
+        media_item_ids: [items.a.id],
+        moment_ids: [momentOneID, momentTwoID],
+        recipient_access: [
+          {
+            recipient_person_id: "55555555-5555-4555-8555-555555555555",
+            recipient_name: "Alex",
+            granted_media_count: 2,
+            revoked_media_count: 0,
+          },
+          {
+            recipient_person_id: "66666666-6666-4666-8666-666666666666",
+            recipient_name: "Jamie",
+            granted_media_count: 0,
+            revoked_media_count: 1,
+          },
+        ],
+        detail: "Recipient Media access granted or revoked",
+      },
+    ],
+  };
+  stubOrganizerAPI(staged);
+  renderOrganizer();
+
+  const workItem = await screen.findByRole("button", {
+    name: /Corrected family weekend/,
+  });
+  expect(workItem).toHaveTextContent("Staged update");
+  fireEvent.click(workItem);
+
+  const review = await screen.findByRole("region", {
+    name: "Staged update review",
+  });
+  expect(review).toHaveTextContent(
+    "Event details and organization that will replace the current Publication",
+  );
+  const eventMetadata = within(review).getByRole("region", {
+    name: "Event details that will publish",
+  });
+  expect(eventMetadata).toHaveTextContent("Corrected family weekend");
+  expect(eventMetadata).toHaveTextContent("The complete corrected description");
+  expect(eventMetadata).toHaveTextContent("Coastal overlook, Garden terrace");
+  expect(eventMetadata).toHaveTextContent("America/New_York");
+  expect(eventMetadata.querySelectorAll(".staged-metadata")).toHaveLength(4);
+  expect(
+    within(eventMetadata).getAllByText("Staged: Metadata edits"),
+  ).toHaveLength(4);
+  expect(screen.getByLabelText("Place labels for Moment 2")).toHaveValue(
+    "Breakfast room",
+  );
+  const netChangeSummary = within(review).getByRole("list", {
+    name: "Net change summary",
+  });
+  expect(
+    within(netChangeSummary).getByText("Additions").closest("li"),
+  ).toHaveTextContent("1 Media item");
+  expect(
+    within(netChangeSummary).getByText("Removals").closest("li"),
+  ).toHaveTextContent("2 Media items");
+  expect(
+    within(netChangeSummary).getByText("Moves and ordering").closest("li"),
+  ).toHaveTextContent("1 Media item");
+  expect(
+    within(netChangeSummary).getByText("Moment structure").closest("li"),
+  ).toHaveTextContent("1 Moment");
+  expect(
+    within(netChangeSummary).getByText("Metadata edits").closest("li"),
+  ).toHaveTextContent("1 Event, 1 Moment, and 1 Media item");
+  expect(
+    within(netChangeSummary).getByText("Access changes").closest("li"),
+  ).toHaveTextContent("2 Recipients");
+  const recipientAccess = within(review).getByRole("list", {
+    name: "Recipient access changes",
+  });
+  expect(recipientAccess).toHaveTextContent("Alex2 Media granted");
+  expect(recipientAccess).toHaveTextContent("Jamie1 Media revoked");
+  expect(review).toHaveTextContent("Removed from the resulting Event");
+  expect(review).toHaveTextContent("Undated third photo");
+  expect(review).toHaveTextContent(items.c.id);
+  expect(review).toHaveTextContent("Deleted Moment");
+  expect(review).toHaveTextContent("Sunday breakfast");
+  expect(review).toHaveTextContent(deletedMomentID);
+  expect(review.querySelectorAll(".staged-removal")).toHaveLength(3);
+  expect(document.querySelectorAll(".media-row.staged-addition")).toHaveLength(
+    1,
+  );
+  expect(
+    document.querySelectorAll(".moment-card.staged-metadata"),
+  ).toHaveLength(1);
+  expect(document.querySelectorAll(".moment-card.staged-access")).toHaveLength(
+    2,
+  );
+  expect(
+    document.querySelectorAll(
+      ".media-row.staged-move.staged-metadata.staged-access",
+    ),
+  ).toHaveLength(1);
+  expect(
+    screen.getByLabelText(
+      "Staged changes: Moves and ordering, Metadata edits, Access changes",
+    ),
+  ).toHaveTextContent(
+    "Staged: Moves and ordering, Metadata edits, Access changes",
+  );
+  expect(
+    screen.getByLabelText("Staged changes: Metadata edits, Access changes"),
+  ).toBeVisible();
+});
+
+test("summarizes a masked Audience change by its affected Moments", async () => {
+  const staged = organizedDraft(8);
+  staged.lifecycle = "published";
+  staged.published_editable_version = 7;
+  staged.staged_update = {
+    id: "12121212-1212-4212-8212-121212121212",
+    base_publication_id: "13131313-1313-4313-8313-131313131313",
+    updated_at: "2026-05-03T01:00:00Z",
+    changes: [
+      {
+        kind: "access",
+        count: 0,
+        media_item_ids: [],
+        moment_ids: [momentOneID, momentTwoID],
+        detail:
+          "Moment Audience changed without changing global Recipient Media access",
+      },
+    ],
+  };
+  stubOrganizerAPI(staged);
+  renderOrganizer();
+
+  fireEvent.click(
+    await screen.findByRole("button", { name: /Family weekend/ }),
+  );
+
+  const review = await screen.findByRole("region", {
+    name: "Staged update review",
+  });
+  const accessSummary = within(review)
+    .getByText("Access changes")
+    .closest("li");
+  expect(accessSummary).toHaveTextContent("2 Moments");
+  expect(accessSummary).not.toHaveTextContent("0 Recipients");
+});
+
+test("restores an autosaved published Media removal from Staged review", async () => {
+  const staged = organizedDraft(8);
+  staged.lifecycle = "published";
+  staged.published_editable_version = 7;
+  staged.moments[1].media_items = staged.moments[1].media_items.filter(
+    (item) => item.id !== items.loose.id,
+  );
+  staged.staged_update = {
+    id: "12121212-1212-4212-8212-121212121212",
+    base_publication_id: "13131313-1313-4313-8313-131313131313",
+    updated_at: "2026-05-03T01:00:00Z",
+    changes: [
+      {
+        kind: "removal",
+        count: 1,
+        media_item_ids: [items.loose.id],
+        moment_ids: [],
+        removed_media: [
+          {
+            id: items.loose.id,
+            media_type: items.loose.media_type,
+            local_date_time: items.loose.local_date_time,
+            restorable: true,
+          },
+        ],
+        detail: "Media removed",
+      },
+    ],
+  };
+  stubOrganizerAPI(staged);
+  renderOrganizer();
+  fireEvent.click(
+    await screen.findByRole("button", { name: /Family weekend/ }),
+  );
+
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Restore removed Media" }),
+  );
+
+  await waitFor(() =>
+    expect(
+      screen.queryByRole("region", { name: "Staged update review" }),
+    ).not.toBeInTheDocument(),
+  );
+  expect(
+    screen.getByRole("checkbox", { name: /loose photo/ }),
+  ).toBeInTheDocument();
+  expect(screen.getByText("All changes saved")).toBeInTheDocument();
+});
+
+test("rebases pending local edits before retrying a restoration conflict", async () => {
+  const staged = organizedDraft(8);
+  staged.lifecycle = "published";
+  staged.published_editable_version = 7;
+  staged.moments[1].cover_media_item_id = items.a.id;
+  staged.moments[1].media_items = staged.moments[1].media_items.filter(
+    (item) => item.id !== items.loose.id,
+  );
+  staged.staged_update = {
+    id: "12121212-1212-4212-8212-121212121212",
+    base_publication_id: "13131313-1313-4313-8313-131313131313",
+    updated_at: "2026-05-03T01:00:00Z",
+    changes: [
+      {
+        kind: "removal",
+        count: 1,
+        media_item_ids: [items.loose.id],
+        moment_ids: [],
+        removed_media: [
+          {
+            id: items.loose.id,
+            media_type: items.loose.media_type,
+            local_date_time: items.loose.local_date_time,
+            restorable: true,
+          },
+        ],
+        detail: "Media removed",
+      },
+    ],
+  };
+  const conflictGate = deferred();
+  const restoreVersions: number[] = [];
+  const saves = stubOrganizerAPI(staged, {
+    restoreConflictOnce: true,
+    restoreConflictGate: conflictGate.promise,
+    restoreVersions,
+  });
+  renderOrganizer();
+  fireEvent.click(
+    await screen.findByRole("button", { name: /Family weekend/ }),
+  );
+
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Restore removed Media" }),
+  );
+  expect(
+    await screen.findByRole("button", { name: "Restoring…" }),
+  ).toBeDisabled();
+  fireEvent.change(screen.getByLabelText("Event title"), {
+    target: { value: "Edited during conflict recovery" },
+  });
+  fireEvent.change(screen.getAllByLabelText("Cover")[1], {
+    target: { value: items.c.id },
+  });
+  const eventLabels = screen.getByLabelText("Event Place labels");
+  fireEvent.change(eventLabels, {
+    target: { value: "Conflict Event Place" },
+  });
+  fireEvent.blur(eventLabels);
+  const momentLabels = screen.getByLabelText("Place labels for Moment 2");
+  fireEvent.change(momentLabels, {
+    target: { value: "Conflict Moment Place" },
+  });
+  fireEvent.blur(momentLabels);
+  fireEvent.click(
+    screen.getByRole("button", { name: "Move Undated first photo earlier" }),
+  );
+
+  act(() => conflictGate.resolve());
+  expect(
+    await screen.findByText(
+      "This Event changed in another browser. Load the newer Event before retrying this restoration.",
+    ),
+  ).toBeInTheDocument();
+  expect(saves).toHaveLength(0);
+
+  fireEvent.click(
+    screen.getByRole("button", {
+      name: "Load newer Event and retry restoration",
+    }),
+  );
+
+  await waitFor(() =>
+    expect(
+      screen.queryByRole("region", { name: "Staged update review" }),
+    ).not.toBeInTheDocument(),
+  );
+  expect(restoreVersions).toEqual([8, 9]);
+  expect(screen.getByLabelText("Event title")).toHaveValue(
+    "Edited during conflict recovery",
+  );
+  await waitFor(() => expect(saves).toHaveLength(1), contentionWait);
+  expect(saves[0]).toMatchObject({
+    version: 10,
+    title: "Edited during conflict recovery",
+    description: "Newer server description",
+    place_labels: ["Conflict Event Place"],
+    unassigned_media_ids: [items.loose.id],
+  });
+  expect(saves[0].moments.find((moment) => moment.id === momentOneID)).toEqual(
+    expect.objectContaining({
+      cover_media_item_id: items.c.id,
+      media_item_ids: [items.a.id, items.c.id],
+      place_labels: ["Conflict Moment Place"],
+    }),
+  );
+  expect(screen.getByText("All changes saved")).toBeInTheDocument();
+});
+
+test("rebases edits made while published Media restoration is pending", async () => {
+  const staged = organizedDraft(8);
+  staged.lifecycle = "published";
+  staged.published_editable_version = 7;
+  staged.moments[1].media_items = staged.moments[1].media_items.filter(
+    (item) => item.id !== items.loose.id,
+  );
+  staged.staged_update = {
+    id: "12121212-1212-4212-8212-121212121212",
+    base_publication_id: "13131313-1313-4313-8313-131313131313",
+    updated_at: "2026-05-03T01:00:00Z",
+    changes: [
+      {
+        kind: "removal",
+        count: 1,
+        media_item_ids: [items.loose.id],
+        moment_ids: [],
+        removed_media: [
+          {
+            id: items.loose.id,
+            media_type: items.loose.media_type,
+            local_date_time: items.loose.local_date_time,
+            restorable: true,
+          },
+        ],
+        detail: "Media removed",
+      },
+    ],
+  };
+  staged.moments[1].cover_media_item_id = items.a.id;
+  const gate = deferred();
+  const saves = stubOrganizerAPI(staged, {
+    restoreGate: gate.promise,
+    restoreMomentID: momentOneID,
+    restoreAsCover: true,
+  });
+  renderOrganizer();
+  fireEvent.click(
+    await screen.findByRole("button", { name: /Family weekend/ }),
+  );
+
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Restore removed Media" }),
+  );
+  expect(
+    await screen.findByRole("button", { name: "Restoring…" }),
+  ).toBeDisabled();
+  const title = screen.getByLabelText("Event title");
+  fireEvent.change(title, { target: { value: "Edited during restoration" } });
+  fireEvent.change(screen.getAllByLabelText("Cover")[1], {
+    target: { value: items.c.id },
+  });
+  const eventLabels = screen.getByLabelText("Event Place labels");
+  fireEvent.change(eventLabels, {
+    target: { value: "Restoration Event Place" },
+  });
+  fireEvent.blur(eventLabels);
+  const momentLabels = screen.getByLabelText("Place labels for Moment 2");
+  fireEvent.change(momentLabels, {
+    target: { value: "Restoration Moment Place" },
+  });
+  fireEvent.blur(momentLabels);
+  expect(title).toHaveValue("Edited during restoration");
+
+  act(() => gate.resolve());
+  await waitFor(() =>
+    expect(
+      screen.getByRole("checkbox", { name: /loose photo/ }),
+    ).toBeInTheDocument(),
+  );
+  expect(title).toHaveValue("Edited during restoration");
+  await waitFor(() => expect(saves).toHaveLength(1), contentionWait);
+  expect(saves[0]).toMatchObject({
+    version: 9,
+    title: "Edited during restoration",
+    place_labels: ["Restoration Event Place"],
+  });
+  const restoredMoment = saves[0].moments.find(
+    (moment) => moment.id === momentOneID,
+  );
+  expect(restoredMoment?.cover_media_item_id).toBe(items.c.id);
+  expect(restoredMoment?.media_item_ids).toContain(items.loose.id);
+  expect(restoredMoment?.place_labels).toEqual(["Restoration Moment Place"]);
+});
+
+test("keeps restored Media when its Moment is merged during a delayed restoration", async () => {
+  const staged = organizedDraft(8);
+  staged.lifecycle = "published";
+  staged.published_editable_version = 7;
+  staged.moments[0].place_labels = ["Harbor overlook", "Shared table"];
+  staged.moments[1].place_labels = ["shared table", "Garden terrace"];
+  staged.moments[1].media_items = staged.moments[1].media_items.filter(
+    (item) => item.id !== items.loose.id,
+  );
+  staged.staged_update = {
+    id: "12121212-1212-4212-8212-121212121212",
+    base_publication_id: "13131313-1313-4313-8313-131313131313",
+    updated_at: "2026-05-03T01:00:00Z",
+    changes: [
+      {
+        kind: "removal",
+        count: 1,
+        media_item_ids: [items.loose.id],
+        moment_ids: [momentOneID],
+        removed_media: [
+          {
+            id: items.loose.id,
+            media_type: items.loose.media_type,
+            local_date_time: items.loose.local_date_time,
+            restorable: true,
+          },
+        ],
+        detail: "Media removed",
+      },
+    ],
+  };
+  const gate = deferred();
+  const saves = stubOrganizerAPI(staged, {
+    restoreGate: gate.promise,
+    restoreMomentID: momentOneID,
+    restoreAsCover: true,
+  });
+  renderOrganizer();
+  fireEvent.click(
+    await screen.findByRole("button", { name: /Family weekend/ }),
+  );
+
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Restore removed Media" }),
+  );
+  expect(
+    await screen.findByRole("button", { name: "Restoring…" }),
+  ).toBeDisabled();
+  fireEvent.change(screen.getByLabelText("Event title"), {
+    target: { value: "Merged during restoration" },
+  });
+  fireEvent.click(
+    screen.getAllByRole("button", { name: "Merge with previous Moment" })[1],
+  );
+  expect(screen.getAllByLabelText(/^Title for Moment/)).toHaveLength(1);
+
+  act(() => gate.resolve());
+
+  const unassigned = screen
+    .getByRole("heading", { name: "Unassigned Media" })
+    .closest("section")!;
+  await waitFor(() =>
+    expect(
+      within(unassigned).getByRole("checkbox", { name: /loose photo/ }),
+    ).toBeInTheDocument(),
+  );
+  expect(screen.getByRole("status")).toHaveTextContent(
+    "Restored Media was moved to Unassigned Media because its original Moment was removed while restoration was pending. Choose it in Unassigned Media, move it to a Moment, then review the Event before Publication.",
+  );
+  const momentTitles = screen.getAllByLabelText(/^Title for Moment/);
+  expect(momentTitles).toHaveLength(1);
+  expect(momentTitles[0]).toHaveValue("Saturday");
+  expect(screen.getByLabelText("Event title")).toHaveValue(
+    "Merged during restoration",
+  );
+  await waitFor(() => expect(saves).toHaveLength(1), contentionWait);
+  expect(saves[0]).toMatchObject({
+    version: 9,
+    title: "Merged during restoration",
+    unassigned_media_ids: [items.loose.id],
+  });
+  expect(saves[0].moments).toHaveLength(1);
+  expect(saves[0].moments[0]).toMatchObject({
+    id: momentTwoID,
+    media_item_ids: [items.b.id, items.c.id, items.a.id],
+    place_labels: ["Harbor overlook", "Shared table", "Garden terrace"],
+  });
+});
+
+test("rebases review completed while published Media restoration is pending", async () => {
+  const staged = organizedDraft(8);
+  staged.lifecycle = "published";
+  staged.published_editable_version = 7;
+  staged.moments[0].attendance_complete = true;
+  staged.moments[1].cover_media_item_id = items.a.id;
+  staged.moments[1].media_items = staged.moments[1].media_items.filter(
+    (item) => item.id !== items.loose.id,
+  );
+  staged.staged_update = {
+    id: "12121212-1212-4212-8212-121212121212",
+    base_publication_id: "13131313-1313-4313-8313-131313131313",
+    updated_at: "2026-05-03T01:00:00Z",
+    changes: [
+      {
+        kind: "removal",
+        count: 1,
+        media_item_ids: [items.loose.id],
+        moment_ids: [momentOneID],
+        removed_media: [
+          {
+            id: items.loose.id,
+            media_type: items.loose.media_type,
+            local_date_time: items.loose.local_date_time,
+            restorable: true,
+          },
+        ],
+        detail: "Media removed",
+      },
+    ],
+  };
+  const gate = deferred();
+  stubOrganizerAPI(staged, {
+    restoreGate: gate.promise,
+    restoreMomentID: momentOneID,
+    restoreAsCover: true,
+  });
+  renderOrganizer();
+  fireEvent.click(
+    await screen.findByRole("button", { name: /Family weekend/ }),
+  );
+  fireEvent.click(
+    (
+      await screen.findAllByRole("button", {
+        name: "Inspect Attendance and Audience",
+      })
+    )[1],
+  );
+  const confirmAttendance = await screen.findByRole("button", {
+    name: "Confirm Attendance",
+  });
+
+  fireEvent.click(
+    screen.getByRole("button", { name: "Restore removed Media" }),
+  );
+  fireEvent.click(confirmAttendance);
+  await waitFor(() =>
+    expect(
+      screen.getByRole("button", { name: "Approve Curator only" }),
+    ).toBeEnabled(),
+  );
+  act(() => gate.resolve());
+
+  await waitFor(() =>
+    expect(
+      screen.getByRole("checkbox", { name: /loose photo/ }),
+    ).toBeInTheDocument(),
+  );
+  const readiness = screen
+    .getByRole("heading", { name: "Readiness" })
+    .closest("section")!;
+  expect(
+    within(readiness).getByText("Attendance").closest("li"),
+  ).toHaveTextContent("✓ Attendance");
+  expect(screen.getByText("All changes saved")).toBeInTheDocument();
+});
+
+test("refreshes Publication state while preserving edits made during refetch", async () => {
+  const ready = organizedDraft(8);
+  ready.lifecycle = "published";
+  ready.published_editable_version = 7;
+  ready.final_review_complete = true;
+  ready.moments = ready.moments.map((moment) => ({
+    ...moment,
+    attendance_complete: true,
+    audience_complete: true,
+  }));
+  ready.staged_update = {
+    id: "12121212-1212-4212-8212-121212121212",
+    base_publication_id: "13131313-1313-4313-8313-131313131313",
+    updated_at: "2026-05-03T01:00:00Z",
+    changes: [
+      {
+        kind: "metadata",
+        count: 1,
+        media_item_ids: [],
+        moment_ids: [],
+        event_metadata_fields: ["title"],
+        detail: "Event metadata changed",
+      },
+    ],
+  };
+  ready.withdrawals = [
+    {
+      id: "77777777-7777-4777-8777-777777777777",
+      target_kind: "media",
+      target_id: items.a.id,
+      reason: "Privacy request",
+      withdrawn_by_name: "Robin",
+      withdrawn_at: "2026-05-03T00:00:00Z",
+      restored_by_publication_id: null,
+      restored_at: null,
+      affected_recipient_count: 1,
+      affected_media_count: 1,
+      affected_event_count: 1,
+    },
+  ];
+  const gate = deferred();
+  const saves = stubOrganizerAPI(ready, {
+    publicationRefetchGate: gate.promise,
+  });
+  renderOrganizer();
+  fireEvent.click(
+    await screen.findByRole("button", { name: /Family weekend/ }),
+  );
+
+  fireEvent.click(await screen.findByRole("button", { name: "Publish Event" }));
+  expect(
+    await screen.findByRole("button", { name: "Publishing…" }),
+  ).toBeDisabled();
+  const title = screen.getByLabelText("Event title");
+  fireEvent.change(title, { target: { value: "Follow-up correction" } });
+  const eventLabels = screen.getByLabelText("Event Place labels");
+  fireEvent.change(eventLabels, {
+    target: { value: "Publication Event Place" },
+  });
+  fireEvent.blur(eventLabels);
+  const momentLabels = screen.getByLabelText("Place labels for Moment 1");
+  fireEvent.change(momentLabels, {
+    target: { value: "Publication Moment Place" },
+  });
+  fireEvent.blur(momentLabels);
+  act(() => gate.resolve());
+
+  const history = await screen.findByText(/Privacy request by Robin/);
+  expect(history).toHaveTextContent("Restored by a later Publication.");
+  expect(title).toHaveValue("Follow-up correction");
+  await waitFor(() => expect(saves).toHaveLength(1), contentionWait);
+  expect(saves[0]).toMatchObject({
+    version: 8,
+    title: "Follow-up correction",
+    place_labels: ["Publication Event Place"],
+  });
+  expect(saves[0].moments[0].place_labels).toEqual([
+    "Publication Moment Place",
+  ]);
+  expect(history).toBeVisible();
 });
 
 test("publishes ready work and previews Recipient output read only", async () => {
@@ -438,6 +1288,7 @@ test("publishes ready work and previews Recipient output read only", async () =>
   ready.final_review_complete = true;
   ready.moments = ready.moments.map((moment) => ({
     ...moment,
+    cover_media_item_id: null,
     attendance_complete: true,
     audience_complete: true,
   }));
@@ -448,12 +1299,23 @@ test("publishes ready work and previews Recipient output read only", async () =>
   );
 
   const publish = await screen.findByRole("button", { name: "Publish Event" });
+  expect(screen.getByText("6 of 6 complete")).toBeInTheDocument();
+  const readiness = screen
+    .getByRole("heading", { name: "Readiness" })
+    .closest("section")!;
+  expect(readiness).toHaveTextContent("Next action: Ready to publish");
   expect(publish).toBeEnabled();
   fireEvent.click(publish);
   expect(
     await screen.findByText("Published revision 1 atomically."),
   ).toBeInTheDocument();
   expect(publish).toBeDisabled();
+  await waitFor(() =>
+    expect(readiness).toHaveTextContent(
+      "Publication status: Published and up to date",
+    ),
+  );
+  expect(readiness).not.toHaveTextContent("Next action: Ready to publish");
 
   const recipient = await screen.findByLabelText("Preview Recipient");
   fireEvent.change(recipient, {
@@ -485,6 +1347,96 @@ test("publishes ready work and previews Recipient output read only", async () =>
   expect(
     screen.queryByRole("region", { name: "Read-only Recipient preview" }),
   ).not.toBeInTheDocument();
+  expect(readiness).toHaveTextContent("Next action: Ready to publish");
+  expect(readiness).not.toHaveTextContent("Published and up to date");
+});
+
+test("enables only the server-authorized no-Staged Withdrawal Publication", async () => {
+  const pending = organizedDraft(2);
+  pending.lifecycle = "published";
+  pending.published_editable_version = 1;
+  pending.pending_withdrawal_publication = true;
+  pending.final_review_complete = true;
+  pending.moments = pending.moments.map((moment) => ({
+    ...moment,
+    attendance_complete: true,
+    audience_complete: true,
+  }));
+  stubOrganizerAPI(pending);
+  renderOrganizer();
+  fireEvent.click(
+    await screen.findByRole("button", { name: /Family weekend/ }),
+  );
+
+  const readiness = (
+    await screen.findByRole("heading", { name: "Readiness" })
+  ).closest("section")!;
+  expect(readiness).toHaveTextContent(
+    "Next action: Publish pending Withdrawal restoration",
+  );
+  expect(readiness).not.toHaveTextContent("Published and up to date");
+  expect(screen.getByRole("button", { name: "Publish Event" })).toBeEnabled();
+});
+
+test("keeps a nonpending published Event with no Staged update disabled", async () => {
+  const current = organizedDraft(2);
+  current.lifecycle = "published";
+  current.published_editable_version = 1;
+  current.final_review_complete = true;
+  current.moments = current.moments.map((moment) => ({
+    ...moment,
+    attendance_complete: true,
+    audience_complete: true,
+  }));
+  stubOrganizerAPI(current);
+  renderOrganizer();
+  fireEvent.click(
+    await screen.findByRole("button", { name: /Family weekend/ }),
+  );
+
+  const readiness = (
+    await screen.findByRole("heading", { name: "Readiness" })
+  ).closest("section")!;
+  expect(readiness).toHaveTextContent(
+    "Publication status: Published and up to date",
+  );
+  expect(readiness).not.toHaveTextContent("pending Withdrawal restoration");
+  expect(screen.getByRole("button", { name: "Publish Event" })).toBeDisabled();
+});
+
+test("does not call an invalid unsaved correction published and up to date", async () => {
+  const published = organizedDraft();
+  published.lifecycle = "published";
+  published.published_editable_version = published.version;
+  published.final_review_complete = true;
+  published.moments = published.moments.map((moment) => ({
+    ...moment,
+    attendance_complete: true,
+    audience_complete: true,
+  }));
+  stubOrganizerAPI(published);
+  renderOrganizer();
+  fireEvent.click(
+    await screen.findByRole("button", { name: /Family weekend/ }),
+  );
+
+  const readiness = (
+    await screen.findByRole("heading", { name: "Readiness" })
+  ).closest("section")!;
+  expect(readiness).toHaveTextContent(
+    "Publication status: Published and up to date",
+  );
+
+  fireEvent.change(screen.getByLabelText("Event title"), {
+    target: { value: " " },
+  });
+
+  expect(screen.getByText("Event title is required.")).toBeInTheDocument();
+  expect(
+    screen.getByText("Fix validation errors before autosave"),
+  ).toBeVisible();
+  expect(readiness).toHaveTextContent("Next action: Event details");
+  expect(readiness).not.toHaveTextContent("Published and up to date");
 });
 
 test("requires a replacement Publication when legacy Attendance cannot be reconstructed", async () => {
@@ -688,6 +1640,59 @@ test("blocks a Moment merge that would exceed the Place-label limit", async () =
   expect(saves).toHaveLength(0);
 });
 
+test("rebases organization edits made while Withdrawal is pending", async () => {
+  const published = organizedDraft();
+  published.lifecycle = "published";
+  published.final_review_complete = true;
+  published.published_editable_version = published.version;
+  const gate = deferred();
+  const saves = stubOrganizerAPI(published, { withdrawalGate: gate.promise });
+  vi.spyOn(window, "confirm").mockReturnValue(true);
+  renderOrganizer();
+  fireEvent.click(
+    await screen.findByRole("button", { name: /Family weekend/ }),
+  );
+
+  fireEvent.change(await screen.findByLabelText("Attributable reason"), {
+    target: { value: "Privacy request" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Withdraw access" }));
+  expect(
+    await screen.findByRole("button", { name: "Withdrawing…" }),
+  ).toBeDisabled();
+  const title = screen.getByLabelText("Event title");
+  fireEvent.change(title, { target: { value: "Edited during Withdrawal" } });
+  fireEvent.change(screen.getAllByLabelText("Cover")[1], {
+    target: { value: items.a.id },
+  });
+  const eventLabels = screen.getByLabelText("Event Place labels");
+  fireEvent.change(eventLabels, {
+    target: { value: "Withdrawal Event Place" },
+  });
+  fireEvent.blur(eventLabels);
+  const momentLabels = screen.getByLabelText("Place labels for Moment 2");
+  fireEvent.change(momentLabels, {
+    target: { value: "Withdrawal Moment Place" },
+  });
+  fireEvent.blur(momentLabels);
+
+  act(() => gate.resolve());
+  const history = await screen.findByText(/Privacy request by Robin/);
+  expect(history).toHaveTextContent("Access remains withdrawn.");
+  expect(title).toHaveValue("Edited during Withdrawal");
+  await waitFor(() => expect(saves).toHaveLength(1), contentionWait);
+  expect(saves[0]).toMatchObject({
+    version: 2,
+    title: "Edited during Withdrawal",
+    place_labels: ["Withdrawal Event Place"],
+  });
+  const withdrawnMoment = saves[0].moments.find(
+    (moment) => moment.id === momentOneID,
+  );
+  expect(withdrawnMoment?.cover_media_item_id).toBe(items.a.id);
+  expect(withdrawnMoment?.place_labels).toEqual(["Withdrawal Moment Place"]);
+});
+
 test("organizes merged and split days with pointer and keyboard controls", async () => {
   const saves = stubOrganizerAPI(draft());
 
@@ -706,7 +1711,7 @@ test("organizes merged and split days with pointer and keyboard controls", async
       contentionWait,
     ),
   ).toBeInTheDocument();
-  expect(screen.getByText("1 of 5 complete")).toBeInTheDocument();
+  expect(screen.getByText("2 of 6 complete")).toBeInTheDocument();
   expect(
     screen.getByRole("heading", { name: "Readiness" }).closest("section"),
   ).toHaveTextContent("Next action: Media organization");
@@ -763,6 +1768,118 @@ test("organizes merged and split days with pointer and keyboard controls", async
   expect(lastSave.moments[1].cover_media_item_id).toBe(items.loose.id);
 }, 15_000);
 
+test("autosaves Curator Event metadata and Media removal corrections", async () => {
+  const initial = organizedDraft();
+  const saves = stubOrganizerAPI(initial);
+  renderOrganizer();
+  fireEvent.click(
+    await screen.findByRole("button", { name: /Family weekend/ }),
+  );
+
+  fireEvent.change(await screen.findByLabelText("Event title"), {
+    target: { value: "Corrected family weekend" },
+  });
+  fireEvent.change(screen.getByLabelText("Event description"), {
+    target: { value: "A corrected description" },
+  });
+  fireEvent.change(screen.getByLabelText("Grouping timezone"), {
+    target: { value: "America/New_York" },
+  });
+  fireEvent.click(screen.getByRole("checkbox", { name: /second photo/ }));
+  fireEvent.click(
+    screen.getByRole("button", { name: "Remove selected Media" }),
+  );
+
+  await waitFor(() => expect(saves.length).toBeGreaterThan(0), contentionWait);
+  await screen.findByText("All changes saved", {}, contentionWait);
+  const saved = saves.at(-1)!;
+  expect(saved.title).toBe("Corrected family weekend");
+  expect(saved.description).toBe("A corrected description");
+  expect(saved.grouping_timezone).toBe("America/New_York");
+  expect(
+    saved.moments.flatMap((moment) => moment.media_item_ids),
+  ).not.toContain(items.b.id);
+  expect(screen.queryByRole("checkbox", { name: /second photo/ })).toBeNull();
+});
+
+test("blocks invalid Event metadata until title and timezone are valid", async () => {
+  const initial = organizedDraft();
+  initial.lifecycle = "published";
+  initial.published_editable_version = initial.version - 1;
+  initial.final_review_complete = true;
+  for (const moment of initial.moments) {
+    moment.attendance_complete = true;
+    moment.audience_complete = true;
+  }
+  initial.staged_update = {
+    id: "12121212-1212-4212-8212-121212121212",
+    base_publication_id: "13131313-1313-4313-8313-131313131313",
+    updated_at: "2026-05-03T01:00:00Z",
+    changes: [
+      {
+        kind: "metadata",
+        count: 1,
+        media_item_ids: [],
+        moment_ids: [],
+        event_metadata_fields: ["description"],
+        detail: "Event metadata edited",
+      },
+    ],
+  };
+  const saves = stubOrganizerAPI(initial);
+  renderOrganizer();
+  fireEvent.click(
+    await screen.findByRole("button", { name: /Family weekend/ }),
+  );
+
+  const title = await screen.findByLabelText("Event title");
+  const timezone = screen.getByLabelText("Grouping timezone");
+  expect(title).toBeRequired();
+  expect(timezone).toBeRequired();
+
+  vi.useFakeTimers();
+  fireEvent.change(title, { target: { value: "   " } });
+  fireEvent.change(timezone, { target: { value: "Mars/Olympus" } });
+
+  expect(title).toHaveAttribute("aria-invalid", "true");
+  expect(timezone).toHaveAttribute("aria-invalid", "true");
+  expect(screen.getByText("Event title is required.")).toBeInTheDocument();
+  expect(
+    screen.getByText(
+      "Enter a valid IANA timezone, such as America/New_York or UTC.",
+    ),
+  ).toBeInTheDocument();
+  expect(
+    screen.getByText("Fix validation errors before autosave"),
+  ).toBeInTheDocument();
+  expect(
+    screen.getByRole("region", {
+      name: "Event details not ready to publish",
+    }),
+  ).toHaveTextContent(
+    "Fix the Event detail validation errors before this review can be saved or published.",
+  );
+  expect(screen.getByText("5 of 6 complete")).toBeInTheDocument();
+  expect(
+    screen.getByRole("heading", { name: "Readiness" }).closest("section"),
+  ).toHaveTextContent("Next action: Event details");
+
+  await act(async () => vi.advanceTimersByTimeAsync(500));
+  expect(saves).toHaveLength(0);
+
+  fireEvent.change(title, { target: { value: "Valid corrected title" } });
+  await act(async () => vi.advanceTimersByTimeAsync(500));
+  expect(saves).toHaveLength(0);
+
+  fireEvent.change(timezone, { target: { value: "America/New_York" } });
+  await act(async () => vi.advanceTimersByTimeAsync(500));
+  expect(saves).toHaveLength(1);
+  vi.useRealTimers();
+  expect(await screen.findByText("All changes saved")).toBeInTheDocument();
+  expect(saves[0].title).toBe("Valid corrected title");
+  expect(saves[0].grouping_timezone).toBe("America/New_York");
+});
+
 test("autosaves readiness and persists the complete organization after reload", async () => {
   const saves = stubOrganizerAPI(organizedDraft());
 
@@ -816,7 +1933,7 @@ test("autosaves readiness and persists the complete organization after reload", 
   await screen.findByText(/Approved snapshot:/);
   fireEvent.click(screen.getByLabelText("Final review complete"));
 
-  expect(screen.getByText("5 of 5 complete")).toBeInTheDocument();
+  expect(screen.getByText("6 of 6 complete")).toBeInTheDocument();
   expect(
     screen.getByRole("heading", { name: "Readiness" }).closest("section"),
   ).toHaveTextContent("Next action: Ready to publish");
@@ -887,6 +2004,54 @@ test("rebases Audience version changes without discarding unsaved organization",
   expect(saves.at(-1)?.moments[0].title).toBe("Unsaved organization survives");
   expect(screen.getByLabelText("Title for Moment 1")).toHaveValue(
     "Unsaved organization survives",
+  );
+});
+
+test("keeps newer authoritative review state after a delayed autosave response", async () => {
+  const attendanceGate = deferred();
+  const organizationGate = deferred();
+  const initial = draft();
+  initial.moments[1].attendance_complete = true;
+  stubOrganizerAPI(initial, {
+    attendanceGate: attendanceGate.promise,
+    organizationGate: organizationGate.promise,
+  });
+  renderOrganizer();
+  fireEvent.click(
+    await screen.findByRole("button", { name: /Family weekend/ }),
+  );
+  await screen.findByLabelText("Title for Moment 1");
+  fireEvent.click(
+    screen.getAllByRole("button", {
+      name: "Inspect Attendance and Audience",
+    })[0],
+  );
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Confirm Attendance" }),
+  );
+  fireEvent.change(await screen.findByLabelText("Title for Moment 1"), {
+    target: { value: "Saving while review completes" },
+  });
+  await screen.findByText("Saving…");
+
+  act(() => attendanceGate.resolve());
+  await screen.findByRole("button", { name: "Approve Curator only" });
+  const readiness = screen
+    .getByRole("heading", { name: "Readiness" })
+    .closest("section")!;
+  await waitFor(() =>
+    expect(
+      within(readiness).getByText("Attendance").closest("li"),
+    ).toHaveTextContent("✓ Attendance"),
+  );
+
+  act(() => organizationGate.resolve());
+  await screen.findByText("All changes saved");
+  expect(
+    within(readiness).getByText("Attendance").closest("li"),
+  ).toHaveTextContent("✓ Attendance");
+  expect(screen.getByLabelText("Title for Moment 1")).toHaveValue(
+    "Saving while review completes",
   );
 });
 

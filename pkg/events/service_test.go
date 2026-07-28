@@ -39,6 +39,21 @@ func TestCaptureDayUsesExplicitTimezoneAndLeavesUnknownCaptureDatesUnassigned(t 
 	assert.Nil(t, instant)
 }
 
+func TestRestoredPlacementInsertAtUsesPublishedSuccessorWithoutReorderingEditableMedia(t *testing.T) {
+	targetMoment, nextMoment := uuid.New(), uuid.New()
+	addition, publishedSuccessor, laterMedia := uuid.New(), uuid.New(), uuid.New()
+	targetPosition, nextPosition, successorPosition := 1, 2, 2
+	placements := []editablePlacementOrder{
+		{MediaItemID: addition, DraftMomentID: &targetMoment, MomentPosition: &targetPosition},
+		{MediaItemID: publishedSuccessor, DraftMomentID: &targetMoment, PublishedPosition: &successorPosition, MomentPosition: &targetPosition},
+		{MediaItemID: laterMedia, DraftMomentID: &nextMoment, MomentPosition: &nextPosition},
+	}
+
+	assert.Equal(t, 1, restoredPlacementInsertAt(placements, targetMoment, targetPosition, 1), "restoration stays after an editable addition and before its published successor")
+	assert.Equal(t, 2, restoredPlacementInsertAt(placements, targetMoment, targetPosition, 3), "restoration without a successor stays after the target Moment's editable order")
+	assert.Equal(t, 0, restoredPlacementInsertAt(placements[2:], targetMoment, targetPosition, 0), "an empty restored Moment precedes the next editable Moment")
+}
+
 func TestCreateEventRejectsTooManySourcesBeforeDatabaseAccess(t *testing.T) {
 	sourceIDs := make([]string, maxDraftSourceAlbums+1)
 	for index := range sourceIDs {

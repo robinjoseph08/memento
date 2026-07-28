@@ -384,6 +384,9 @@ func TestDraftRoutesRecordRequestAttributionAndReportLooseItemCreationStatus(t *
 	require.Len(t, createdEvent.Moments, 1)
 	require.Len(t, createdEvent.Moments[0].MediaItems, 1)
 	assert.Equal(t, fixture.media["first_only"].String(), createdEvent.Moments[0].MediaItems[0].ID)
+	var includeFutureMedia bool
+	require.NoError(t, fixture.db.NewRaw(`SELECT include_future_media FROM event_sources WHERE event_id = ?`, createdEvent.ID).Scan(ctx, &includeFutureMedia))
+	assert.False(t, includeFutureMedia, "an explicit Media subset remains divided from future Source additions")
 	eventGet := get("/api/events/" + createdEvent.ID)
 	require.Equal(t, http.StatusOK, eventGet.Code)
 	var retrievedEvent Event
@@ -940,7 +943,7 @@ func TestOrganizationAuditFailureRollsBackTheCompleteSnapshot(t *testing.T) {
 	assert.Equal(t, len(created.Moments), len(reloaded.Moments))
 }
 
-func TestOrganizingRejectsInvalidCoversAndMissingOrDuplicateMedia(t *testing.T) {
+func TestOrganizingRejectsInvalidCoversAndDuplicateOrUnknownMedia(t *testing.T) {
 	fixture := newDraftFixture(t)
 	ctx := context.Background()
 	created, err := fixture.service.CreateEvent(ctx, fixture.actor, CreateEventRequest{
@@ -969,16 +972,6 @@ func TestOrganizingRejectsInvalidCoversAndMissingOrDuplicateMedia(t *testing.T) 
 	})
 	require.ErrorIs(t, err, ErrInvalid)
 
-	_, err = fixture.service.OrganizeEvent(ctx, fixture.actor, uuid.MustParse(created.ID), OrganizeEventRequest{
-		Version: created.Version,
-		Moments: []OrganizeMoment{{
-			ID: created.Moments[0].ID, ProposedDay: created.Moments[0].ProposedDay,
-			MediaItemIDs: assigned[:len(assigned)-1],
-		}},
-		UnassignedMediaIDs: mediaIDs(created.UnassignedMedia),
-	})
-	require.ErrorIs(t, err, ErrInvalid, "an omitted Media item must not delete its placement")
-
 	replaced := append([]string(nil), assigned...)
 	replaced[0] = uuid.NewString()
 	_, err = fixture.service.OrganizeEvent(ctx, fixture.actor, uuid.MustParse(created.ID), OrganizeEventRequest{
@@ -1005,8 +998,13 @@ func TestOrganizationRouteBindsPersistsAndRejectsAStaleSnapshot(t *testing.T) {
 	})
 	require.NoError(t, err)
 
+	title, description, timezone := "Corrected through HTTP", "Curator correction", "America/New_York"
+	unassigned := mediaIDs(created.UnassignedMedia)
+	require.NotEmpty(t, unassigned)
+	removedMediaID := unassigned[len(unassigned)-1]
 	request := OrganizeEventRequest{
-		Version: created.Version, UnassignedMediaIDs: mediaIDs(created.UnassignedMedia),
+		Version: created.Version, Title: &title, Description: &description,
+		GroupingTimezone: &timezone, UnassignedMediaIDs: unassigned[:len(unassigned)-1],
 	}
 	for _, moment := range created.Moments {
 		request.Moments = append(request.Moments, OrganizeMoment{
@@ -1023,6 +1021,10 @@ func TestOrganizationRouteBindsPersistsAndRejectsAStaleSnapshot(t *testing.T) {
 	var organized Event
 	require.NoError(t, json.Unmarshal(put.Body.Bytes(), &organized))
 	assert.Equal(t, created.Version+1, organized.Version)
+	assert.Equal(t, title, organized.Title)
+	assert.Equal(t, description, organized.Description)
+	assert.Equal(t, timezone, organized.GroupingTimezone)
+	assert.NotContains(t, allEventMediaIDs(organized), removedMediaID)
 	assert.Equal(t, "Through HTTP", organized.Moments[0].Title)
 
 	get := draftRequest(e, http.MethodGet, "/api/events/"+created.ID, "")

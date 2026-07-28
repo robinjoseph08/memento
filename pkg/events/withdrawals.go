@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/robinjoseph08/memento/internal/placementlock"
 	"github.com/robinjoseph08/memento/pkg/setup"
+	"github.com/robinjoseph08/memento/pkg/staging"
 	"github.com/uptrace/bun"
 )
 
@@ -123,6 +124,12 @@ func (s *Service) Withdraw(ctx context.Context, actor setup.CuratorSession, requ
 		}
 		if !curator {
 			return setup.ErrNotCurator
+		}
+		// Withdrawal changes the global effective-entitlement union. Take the
+		// replacement lock before target, placement, or Event locks so ordinary
+		// Staged refreshes cannot be missed or deadlock dependent scanning.
+		if err := staging.LockAccessSummaryReplacement(ctx, tx); err != nil {
+			return err
 		}
 		if _, err := tx.NewRaw(`SELECT pg_advisory_xact_lock(hashtextextended(? || ':' || ?, 0))`, kind, targetID.String()).Exec(ctx); err != nil {
 			return err
@@ -372,6 +379,17 @@ func (s *Service) Withdraw(ctx context.Context, actor setup.CuratorSession, requ
 		if _, err := tx.NewRaw(`UPDATE events SET final_review_complete = false, version = version + 1, updated_at = ? WHERE id IN (?)`, now, bun.List(eventIDs)).Exec(ctx); err != nil {
 			return err
 		}
+		// The affected Events already received a new version for Withdrawal review.
+		// Refresh them first, then invalidate any other Staged Event whose effective
+		// access impact changed when the entitlement rows were removed.
+		for _, eventID := range eventIDs {
+			if _, err := staging.Refresh(ctx, tx, eventID, now); err != nil {
+				return err
+			}
+		}
+		if err := staging.RefreshDependentAccessUpdates(ctx, tx, uuid.Nil, now); err != nil {
+			return err
+		}
 		if err := s.withdrawalBoundary(WithdrawalStepReviews); err != nil {
 			return err
 		}
@@ -410,6 +428,34 @@ type restoredWithdrawal struct {
 	ID         uuid.UUID
 	TargetKind WithdrawalTargetKind
 	TargetID   uuid.UUID
+}
+
+const pendingWithdrawalPublicationSQL = `EXISTS (
+	SELECT 1
+	FROM content_withdrawals AS withdrawal
+	WHERE withdrawal.restored_at IS NULL AND (
+		(withdrawal.target_kind = 'event' AND withdrawal.target_id = ?)
+		OR (withdrawal.target_kind = 'moment' AND EXISTS (
+			SELECT 1 FROM draft_moments
+			WHERE event_id = ? AND id = withdrawal.target_id
+		))
+		OR (withdrawal.target_kind = 'media' AND EXISTS (
+			SELECT 1
+			FROM current_published_placements AS placement
+			JOIN publications AS publication ON publication.id = placement.publication_id
+			WHERE placement.event_id = ?
+			  AND placement.media_item_id = withdrawal.target_id
+			  AND publication.content_revision <= withdrawal.content_revision
+		))
+	)
+)`
+
+// hasPendingWithdrawalPublication reports whether an otherwise unchanged Event
+// still needs a Publication to restore content or advance a stale Media placement.
+func hasPendingWithdrawalPublication(ctx context.Context, db bun.IDB, eventID uuid.UUID) (bool, error) {
+	var pending bool
+	err := db.NewRaw(`SELECT `+pendingWithdrawalPublicationSQL, eventID, eventID, eventID).Scan(ctx, &pending)
+	return pending, err
 }
 
 // restoreEligibleWithdrawals is called only inside a successful Publication transaction.

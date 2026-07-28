@@ -18,6 +18,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/robinjoseph08/memento/pkg/setup"
+	"github.com/robinjoseph08/memento/pkg/staging"
 	"github.com/uptrace/bun"
 	"github.com/uptrace/bun/dialect/pgdialect"
 )
@@ -93,10 +94,19 @@ type OrganizeMoment struct {
 // OrganizeEventRequest atomically replaces draft organization at an expected version.
 type OrganizeEventRequest struct {
 	Version             int64            `json:"version" validate:"required,min=1"`
+	Title               *string          `json:"title" tstype:"string"`
+	Description         *string          `json:"description" tstype:"string"`
 	PlaceLabels         []string         `json:"place_labels"`
+	GroupingTimezone    *string          `json:"grouping_timezone" tstype:"string"`
 	Moments             []OrganizeMoment `json:"moments" validate:"max=100000,dive"`
 	UnassignedMediaIDs  []string         `json:"unassigned_media_ids" validate:"max=100000"`
 	FinalReviewComplete bool             `json:"final_review_complete"`
+}
+
+// RestorePublishedMediaRequest cancels one safe Media omission at an expected version.
+type RestorePublishedMediaRequest struct {
+	Version     int64  `json:"version" validate:"required,min=1"`
+	MediaItemID string `json:"media_item_id" validate:"required"`
 }
 
 // EventSummary supports Curator work navigation without loading every Media item.
@@ -107,6 +117,7 @@ type EventSummary struct {
 	Version         int64     `json:"version"`
 	MomentCount     int       `json:"moment_count"`
 	UnassignedCount int       `json:"unassigned_count"`
+	HasStagedUpdate bool      `json:"has_staged_update"`
 	UpdatedAt       time.Time `json:"updated_at"`
 }
 
@@ -138,6 +149,7 @@ type Event struct {
 	FinalReviewComplete                 bool               `json:"final_review_complete"`
 	PublishedEditableVersion            *int64             `json:"published_editable_version" tstype:"number | null,required"`
 	PublishedAttendanceRecoveryRequired bool               `json:"published_attendance_recovery_required"`
+	StagedUpdate                        *StagedUpdate      `json:"staged_update" tstype:"StagedUpdate | null,required"`
 	Sources                             []EventSource      `json:"sources"`
 	Moments                             []Moment           `json:"moments"`
 	UnassignedMedia                     []MediaItem        `json:"unassigned_media"`
@@ -145,6 +157,10 @@ type Event struct {
 	Withdrawals                         []Withdrawal       `json:"withdrawals"`
 	CreatedAt                           time.Time          `json:"created_at"`
 	UpdatedAt                           time.Time          `json:"updated_at"`
+
+	// PendingWithdrawalPublication is server-authoritative because active Withdrawal
+	// history alone cannot identify which shared-Media placements are still stale.
+	PendingWithdrawalPublication bool `json:"pending_withdrawal_publication"`
 }
 
 // LooseItem is a private independently publishable Media draft.
@@ -220,6 +236,13 @@ type draftPlacementRow struct {
 	Position      int        `json:"position"`
 }
 
+type editablePlacementOrder struct {
+	MediaItemID       uuid.UUID  `bun:"media_item_id"`
+	DraftMomentID     *uuid.UUID `bun:"draft_moment_id"`
+	PublishedPosition *int       `bun:"published_position"`
+	MomentPosition    *int       `bun:"moment_position"`
+}
+
 type priorMomentState struct {
 	ID               uuid.UUID
 	Position         int
@@ -288,14 +311,15 @@ func (s *Service) CreateEvent(ctx context.Context, actor setup.CuratorSession, r
 		`, eventID, title, description, location.String(), now, now).Exec(ctx); err != nil {
 			return err
 		}
+		includeFutureMedia := len(selectedIDs) == 0
 		for position, sourceID := range sourceIDs {
 			source := sources[sourceID]
 			if _, err := tx.NewRaw(`
 				INSERT INTO event_sources (
 					event_id, source_album_id, source_order, initialized_name,
-					initialized_description, initialized_at
-				) VALUES (?, ?, ?, ?, ?, ?)
-			`, eventID, sourceID, position, source.Name, source.Description, now).Exec(ctx); err != nil {
+					initialized_description, initialized_at, include_future_media
+				) VALUES (?, ?, ?, ?, ?, ?, ?)
+			`, eventID, sourceID, position, source.Name, source.Description, now, includeFutureMedia).Exec(ctx); err != nil {
 				return err
 			}
 		}
@@ -501,6 +525,7 @@ func (s *Service) ListEvents(ctx context.Context) (EventListResponse, error) {
 		SELECT event.id, event.lifecycle, event.title, event.version,
 			COALESCE(moment.moment_count, 0)::integer AS moment_count,
 			COALESCE(placement.unassigned_count, 0)::integer AS unassigned_count,
+			(event.current_staged_update_id IS NOT NULL) AS has_staged_update,
 			event.updated_at
 		FROM events AS event
 		LEFT JOIN (
@@ -579,6 +604,9 @@ func (s *Service) OrganizeEvent(ctx context.Context, actor setup.CuratorSession,
 		placements = append(placements, draftPlacementRow{MediaItemID: mediaID, Position: len(placements)})
 	}
 
+	if len(seenMedia) == 0 {
+		return Event{}, ErrNoMediaAvailable
+	}
 	eventPlaceLabels, valid := normalizePlaceLabels(request.PlaceLabels)
 	if !valid {
 		return Event{}, ErrPlaceLabelsInvalid
@@ -587,9 +615,12 @@ func (s *Service) OrganizeEvent(ctx context.Context, actor setup.CuratorSession,
 	now := s.now().UTC()
 	var organized Event
 	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if err := staging.LockAccessSummaryRefresh(ctx, tx); err != nil {
+			return err
+		}
 		var currentVersion int64
-		var timezone, priorEventPlaceLabelsJSON string
-		err := tx.NewRaw(`SELECT version, grouping_timezone, to_json(place_labels)::text FROM events WHERE id = ? AND lifecycle IN ('draft', 'published') FOR UPDATE`, id).Scan(ctx, &currentVersion, &timezone, &priorEventPlaceLabelsJSON)
+		var title, description, timezone, priorEventPlaceLabelsJSON string
+		err := tx.NewRaw(`SELECT version, title, description, grouping_timezone, to_json(place_labels)::text FROM events WHERE id = ? AND lifecycle IN ('draft', 'published') FOR UPDATE`, id).Scan(ctx, &currentVersion, &title, &description, &timezone, &priorEventPlaceLabelsJSON)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrNotFound
 		}
@@ -603,6 +634,24 @@ func (s *Service) OrganizeEvent(ctx context.Context, actor setup.CuratorSession,
 		if err := json.Unmarshal([]byte(priorEventPlaceLabelsJSON), &priorEventPlaceLabels); err != nil {
 			return err
 		}
+		nextTitle, nextDescription, nextTimezone := title, description, timezone
+		if request.Title != nil {
+			nextTitle = strings.TrimSpace(*request.Title)
+		}
+		if request.Description != nil {
+			nextDescription = strings.TrimSpace(*request.Description)
+		}
+		if request.GroupingTimezone != nil {
+			location, err := draftLocation(*request.GroupingTimezone)
+			if err != nil {
+				return ErrInvalid
+			}
+			nextTimezone = location.String()
+		}
+		if nextTitle == "" || utf8.RuneCountInString(nextTitle) > 240 || utf8.RuneCountInString(nextDescription) > 2000 {
+			return ErrInvalid
+		}
+		metadataChanged := title != nextTitle || description != nextDescription || timezone != nextTimezone
 		var priorMoments []priorMomentState
 		if err := tx.NewRaw(`
 			SELECT id, position, title, to_json(place_labels)::text AS place_labels_json,
@@ -623,11 +672,15 @@ func (s *Service) OrganizeEvent(ctx context.Context, actor setup.CuratorSession,
 		`, id).Scan(ctx, &priorPlacements); err != nil {
 			return err
 		}
-		if len(priorPlacements) != len(seenMedia) {
+		if len(seenMedia) > len(priorPlacements) {
 			return ErrInvalid
 		}
+		priorMedia := make(map[uuid.UUID]struct{}, len(priorPlacements))
 		for _, placement := range priorPlacements {
-			if _, exists := seenMedia[placement.MediaItemID]; !exists {
+			priorMedia[placement.MediaItemID] = struct{}{}
+		}
+		for mediaID := range seenMedia {
+			if _, exists := priorMedia[mediaID]; !exists {
 				return ErrInvalid
 			}
 		}
@@ -676,6 +729,16 @@ func (s *Service) OrganizeEvent(ctx context.Context, actor setup.CuratorSession,
 				}
 			}
 		}
+		for _, prior := range priorReviews {
+			_, retained := seenMoments[prior.ID]
+			_, invalidated := invalidatedReviews[prior.ID]
+			if retained && !invalidated {
+				continue
+			}
+			if err := staging.PreserveMomentReview(ctx, tx, id, prior.ID, now); err != nil {
+				return err
+			}
+		}
 		if err := applyMomentProvenance(ctx, tx, id, momentRows, placements); err != nil {
 			return err
 		}
@@ -702,27 +765,244 @@ func (s *Service) OrganizeEvent(ctx context.Context, actor setup.CuratorSession,
 		if _, err := tx.NewRaw(`DELETE FROM draft_moments WHERE event_id = ?`, id).Exec(ctx); err != nil {
 			return err
 		}
-		if err := insertDraftMoments(ctx, tx, id, timezone, momentRows); err != nil {
+		if err := insertDraftMoments(ctx, tx, id, nextTimezone, momentRows); err != nil {
 			return err
 		}
 		if err := insertDraftPlacements(ctx, tx, id, now, placements); err != nil {
 			return err
 		}
-		finalReviewComplete := request.FinalReviewComplete && !organizationChanged
+		finalReviewComplete := request.FinalReviewComplete && !organizationChanged && !metadataChanged
 		if _, err := tx.NewRaw(`
-			UPDATE events SET place_labels = ?, final_review_complete = ?, version = version + 1, updated_at = ? WHERE id = ?
-		`, pgdialect.Array(eventPlaceLabels), finalReviewComplete, now, id).Exec(ctx); err != nil {
+			UPDATE events SET title = ?, description = ?, place_labels = ?, grouping_timezone = ?,
+				final_review_complete = ?, version = version + 1, updated_at = ? WHERE id = ?
+		`, nextTitle, nextDescription, pgdialect.Array(eventPlaceLabels), nextTimezone, finalReviewComplete, now, id).Exec(ctx); err != nil {
 			return err
 		}
 		if err := appendDraftAudit(ctx, tx, actor, "event_draft_organized", map[string]any{
 			"event_id": id.String(), "prior_version": currentVersion, "moment_count": len(momentRows),
+			"removed_media_count": len(priorPlacements) - len(placements), "metadata_changed": metadataChanged,
 		}); err != nil {
+			return err
+		}
+		if _, err := refreshStagedUpdate(ctx, tx, id, now); err != nil {
 			return err
 		}
 		organized, err = getEvent(ctx, tx, id)
 		return err
 	})
 	return organized, err
+}
+
+// RestorePublishedMedia restores an omitted current-published Media item only
+// when its stable identity is still present in an Event-linked Source.
+func (s *Service) RestorePublishedMedia(ctx context.Context, actor setup.CuratorSession, id uuid.UUID, request RestorePublishedMediaRequest) (Event, error) {
+	mediaID, err := uuid.Parse(request.MediaItemID)
+	if request.Version < 1 || err != nil || mediaID == uuid.Nil {
+		return Event{}, ErrInvalid
+	}
+	now := s.now().UTC()
+	var restored Event
+	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if err := staging.LockAccessSummaryRefresh(ctx, tx); err != nil {
+			return err
+		}
+		var currentVersion int64
+		var lifecycle string
+		var publicationID *uuid.UUID
+		if err := tx.NewRaw(`
+			SELECT version, lifecycle, current_publication_id FROM events WHERE id = ? FOR UPDATE
+		`, id).Scan(ctx, &currentVersion, &lifecycle, &publicationID); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrNotFound
+			}
+			return err
+		}
+		if currentVersion != request.Version {
+			return ErrVersionConflict
+		}
+		if lifecycle != "published" || publicationID == nil {
+			return ErrInvalid
+		}
+		var sourceCurrent bool
+		if err := tx.NewRaw(`
+			SELECT EXISTS (
+				SELECT 1
+				FROM event_sources AS source
+				JOIN source_album_memberships AS membership
+				  ON membership.source_album_id = source.source_album_id
+				JOIN media_items AS media ON media.id = membership.media_item_id
+				WHERE source.event_id = ? AND membership.media_item_id = ?
+				  AND media.availability = 'current'
+			)
+		`, id, mediaID).Scan(ctx, &sourceCurrent); err != nil {
+			return err
+		}
+		if !sourceCurrent {
+			return ErrMediaUnavailable
+		}
+
+		var momentID uuid.UUID
+		var publishedCoverID *uuid.UUID
+		var publishedMediaPosition, publishedMomentPosition int
+		if err := tx.NewRaw(`
+			SELECT moment.draft_moment_id, moment.cover_media_item_id,
+				placement.position, moment.position
+			FROM published_moments AS moment
+			JOIN published_media_placements AS placement ON placement.published_moment_id = moment.id
+			WHERE moment.publication_id = ? AND placement.media_item_id = ?
+		`, *publicationID, mediaID).Scan(ctx, &momentID, &publishedCoverID, &publishedMediaPosition, &publishedMomentPosition); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrInvalid
+			}
+			return err
+		}
+		var alreadyEditable bool
+		if err := tx.NewRaw(`
+			SELECT EXISTS (SELECT 1 FROM draft_media_placements WHERE event_id = ? AND media_item_id = ?)
+		`, id, mediaID).Scan(ctx, &alreadyEditable); err != nil {
+			return err
+		}
+		if alreadyEditable {
+			return ErrInvalid
+		}
+		momentState, err := staging.LoadMomentState(ctx, tx, id, momentID, *publicationID)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrInvalid
+			}
+			return err
+		}
+
+		var momentExists bool
+		if err := tx.NewRaw(`SELECT EXISTS (SELECT 1 FROM draft_moments WHERE event_id = ? AND id = ?)`, id, momentID).Scan(ctx, &momentExists); err != nil {
+			return err
+		}
+		if !momentExists {
+			var momentIDs []uuid.UUID
+			if err := tx.NewRaw(`SELECT id FROM draft_moments WHERE event_id = ? ORDER BY position, id`, id).Scan(ctx, &momentIDs); err != nil {
+				return err
+			}
+			if _, err := tx.NewRaw(`UPDATE draft_moments SET position = position + ? WHERE event_id = ?`, maxDraftMediaItems+1, id).Exec(ctx); err != nil {
+				return err
+			}
+			if _, err := tx.NewRaw(`
+				INSERT INTO draft_moments (
+					id, event_id, position, proposed_day, grouping_timezone, proposal_kind,
+					created_at, source_days, title, place_labels, cover_media_item_id,
+					attendance_complete, audience_complete, review_version
+				)
+				SELECT item.id, item.event_id, ?, item.proposed_day, item.grouping_timezone,
+					item.proposal_kind, item.created_at, item.source_days, item.title, item.place_labels,
+					CASE WHEN item.cover_media_item_id = ? THEN ?::uuid ELSE NULL END,
+					false, NOT true, item.review_version + 1
+				FROM jsonb_to_record(?::jsonb) AS item(
+					id uuid, event_id uuid, proposed_day date, grouping_timezone text,
+					proposal_kind text, created_at timestamptz, source_days date[], title text,
+					place_labels text[], cover_media_item_id uuid, review_version bigint)
+			`, maxDraftMediaItems*3, mediaID, mediaID, string(momentState)).Exec(ctx); err != nil {
+				return err
+			}
+			insertAt := publishedMomentPosition
+			if insertAt > len(momentIDs) {
+				insertAt = len(momentIDs)
+			}
+			momentIDs = append(momentIDs, uuid.Nil)
+			copy(momentIDs[insertAt+1:], momentIDs[insertAt:])
+			momentIDs[insertAt] = momentID
+			for position, orderedID := range momentIDs {
+				if _, err := tx.NewRaw(`UPDATE draft_moments SET position = ? WHERE event_id = ? AND id = ?`, position, id, orderedID).Exec(ctx); err != nil {
+					return err
+				}
+			}
+		}
+
+		var momentPosition int
+		if err := tx.NewRaw(`SELECT position FROM draft_moments WHERE event_id = ? AND id = ?`, id, momentID).Scan(ctx, &momentPosition); err != nil {
+			return err
+		}
+		var placementOrder []editablePlacementOrder
+		if err := tx.NewRaw(`
+			SELECT editable.media_item_id, editable.draft_moment_id,
+				published.position AS published_position, moment.position AS moment_position
+			FROM draft_media_placements AS editable
+			LEFT JOIN draft_moments AS moment
+			  ON moment.event_id = editable.event_id AND moment.id = editable.draft_moment_id
+			LEFT JOIN published_moments AS published_moment
+			  ON published_moment.publication_id = ? AND published_moment.draft_moment_id = editable.draft_moment_id
+			LEFT JOIN published_media_placements AS published
+			  ON published.published_moment_id = published_moment.id AND published.media_item_id = editable.media_item_id
+			WHERE editable.event_id = ?
+			ORDER BY editable.position, editable.media_item_id
+		`, *publicationID, id).Scan(ctx, &placementOrder); err != nil {
+			return err
+		}
+		if _, err := tx.NewRaw(`UPDATE draft_media_placements SET position = position + ? WHERE event_id = ?`, maxDraftMediaItems+1, id).Exec(ctx); err != nil {
+			return err
+		}
+		if _, err := tx.NewRaw(`
+			INSERT INTO draft_media_placements (event_id, media_item_id, draft_moment_id, position, created_at)
+			VALUES (?, ?, ?, ?, ?)
+		`, id, mediaID, momentID, maxDraftMediaItems*3, now).Exec(ctx); err != nil {
+			return err
+		}
+		insertAt := restoredPlacementInsertAt(placementOrder, momentID, momentPosition, publishedMediaPosition)
+		placementIDs := make([]uuid.UUID, 0, len(placementOrder)+1)
+		for _, placement := range placementOrder {
+			placementIDs = append(placementIDs, placement.MediaItemID)
+		}
+		placementIDs = append(placementIDs, uuid.Nil)
+		copy(placementIDs[insertAt+1:], placementIDs[insertAt:])
+		placementIDs[insertAt] = mediaID
+		for position, orderedID := range placementIDs {
+			if _, err := tx.NewRaw(`UPDATE draft_media_placements SET position = ? WHERE event_id = ? AND media_item_id = ?`, position, id, orderedID).Exec(ctx); err != nil {
+				return err
+			}
+		}
+		if publishedCoverID != nil && *publishedCoverID == mediaID {
+			if _, err := tx.NewRaw(`
+				UPDATE draft_moments SET cover_media_item_id = ?
+				WHERE event_id = ? AND id = ? AND cover_media_item_id IS NULL
+			`, mediaID, id, momentID).Exec(ctx); err != nil {
+				return err
+			}
+		}
+		if _, err := staging.RestoreMomentReviewIfPublishedResult(ctx, tx, id, momentID); err != nil {
+			return err
+		}
+		if _, err := staging.InvalidateEvent(ctx, tx, id, now); err != nil {
+			return err
+		}
+		if err := appendDraftAudit(ctx, tx, actor, "event_published_media_restored", map[string]any{
+			"event_id": id.String(), "media_item_id": mediaID.String(), "base_publication_id": publicationID.String(),
+		}); err != nil {
+			return err
+		}
+		restored, err = getEvent(ctx, tx, id)
+		return err
+	})
+	return restored, err
+}
+
+func restoredPlacementInsertAt(placements []editablePlacementOrder, momentID uuid.UUID, momentPosition, publishedPosition int) int {
+	lastInMoment := -1
+	for index, placement := range placements {
+		if placement.DraftMomentID == nil || *placement.DraftMomentID != momentID {
+			continue
+		}
+		lastInMoment = index
+		if placement.PublishedPosition != nil && *placement.PublishedPosition > publishedPosition {
+			return index
+		}
+	}
+	if lastInMoment >= 0 {
+		return lastInMoment + 1
+	}
+	for index, placement := range placements {
+		if placement.MomentPosition == nil || *placement.MomentPosition > momentPosition {
+			return index
+		}
+	}
+	return len(placements)
 }
 
 func sameOrganization(priorMoments []priorMomentState, priorPlacements []priorPlacementState, moments []draftMomentRow, placements []draftPlacementRow) bool {
@@ -918,11 +1198,15 @@ func (s *Service) GetEvent(ctx context.Context, id uuid.UUID) (Event, error) {
 func getEvent(ctx context.Context, db bun.IDB, id uuid.UUID) (Event, error) {
 	var event Event
 	var placeLabelsJSON, withdrawalTargetsJSON, withdrawalsJSON string
+	var stagedID, stagedPublicationID *uuid.UUID
+	var stagedChanges []byte
+	var stagedUpdatedAt *time.Time
 	err := db.NewRaw(`
 		SELECT event.id, event.lifecycle, event.title, event.description,
 			event.grouping_timezone, event.version, event.final_review_complete,
 			publication.editable_version,
 			publication.id IS NOT NULL AND NOT COALESCE(current.attendance_projection_ready, false),
+			`+pendingWithdrawalPublicationSQL+`,
 			event.created_at, event.updated_at, to_json(event.place_labels)::text,
 			COALESCE((
 				SELECT jsonb_agg(jsonb_build_object(
@@ -989,16 +1273,19 @@ func getEvent(ctx context.Context, db bun.IDB, id uuid.UUID) (Event, error) {
 						placement.event_id, moment.draft_moment_id, placement.media_item_id
 					)
 				)
-			), '[]'::jsonb)::text
+			), '[]'::jsonb)::text,
+			staged.id, staged.base_publication_id, staged.net_changes, staged.updated_at
 		FROM events AS event
 		LEFT JOIN publications AS publication ON publication.id = event.current_publication_id
 		LEFT JOIN current_published_events AS current ON current.publication_id = publication.id
+		LEFT JOIN staged_updates AS staged ON staged.id = event.current_staged_update_id
 		WHERE event.id = ?
-	`, id).Scan(ctx, &event.ID, &event.Lifecycle, &event.Title, &event.Description,
+	`, id, id, id, id).Scan(ctx, &event.ID, &event.Lifecycle, &event.Title, &event.Description,
 		&event.GroupingTimezone, &event.Version, &event.FinalReviewComplete,
 		&event.PublishedEditableVersion, &event.PublishedAttendanceRecoveryRequired,
-		&event.CreatedAt, &event.UpdatedAt,
-		&placeLabelsJSON, &withdrawalsJSON, &withdrawalTargetsJSON)
+		&event.PendingWithdrawalPublication, &event.CreatedAt, &event.UpdatedAt,
+		&placeLabelsJSON, &withdrawalsJSON, &withdrawalTargetsJSON,
+		&stagedID, &stagedPublicationID, &stagedChanges, &stagedUpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Event{}, ErrNotFound
 	}
@@ -1083,6 +1370,16 @@ func getEvent(ctx context.Context, db bun.IDB, id uuid.UUID) (Event, error) {
 	event.Moments, event.UnassignedMedia, err = loadEventMedia(ctx, db, id, event.Moments)
 	if err != nil {
 		return Event{}, err
+	}
+	if stagedID != nil && stagedPublicationID != nil && stagedUpdatedAt != nil {
+		changes := make([]staging.Change, 0)
+		if err := json.Unmarshal(stagedChanges, &changes); err != nil {
+			return Event{}, err
+		}
+		event.StagedUpdate = stagedUpdateFromDomain(&staging.Update{
+			ID: stagedID.String(), BasePublicationID: stagedPublicationID.String(),
+			Changes: changes, UpdatedAt: *stagedUpdatedAt,
+		})
 	}
 	return event, nil
 }

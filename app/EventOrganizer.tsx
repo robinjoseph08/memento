@@ -12,6 +12,7 @@ import type {
   PreviewRecipientsResponse,
   PublicationResponse,
   PublishedEventView,
+  StagedChange,
   Withdrawal,
   WithdrawalTarget,
 } from "./types/generated/events";
@@ -20,8 +21,11 @@ import type { SessionResponse } from "./types/generated/setup";
 type Pane = "work" | "organize" | "inspect";
 type SaveState = "saved" | "saving" | "unsaved" | "failed" | "conflict";
 type SaveAttempt = { event: DraftEvent; revision: number };
+type RestoreAttempt = SaveAttempt & { mediaID: string };
+type PublishAttempt = SaveAttempt;
+type WithdrawalAttempt = SaveAttempt & { target: WithdrawalTarget };
 
-function mediaLabel(item: MediaItem) {
+function mediaLabel(item: Pick<MediaItem, "media_type" | "local_date_time">) {
   if (!item.local_date_time) return `Undated ${item.media_type}`;
   const parsed = new Date(item.local_date_time);
   return Number.isNaN(parsed.valueOf())
@@ -29,8 +33,8 @@ function mediaLabel(item: MediaItem) {
     : `${item.media_type}, ${new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(parsed)}`;
 }
 
-function cloneEvent(event: DraftEvent): DraftEvent {
-  return structuredClone(event);
+function cloneEvent<T>(value: T): T {
+  return structuredClone(value);
 }
 
 const maxPlaceLabels = 20;
@@ -128,7 +132,10 @@ function PlaceLabelEditor({
 function organizationRequest(event: DraftEvent): OrganizeEventRequest {
   return {
     version: event.version,
+    title: event.title,
+    description: event.description,
     place_labels: event.place_labels,
+    grouping_timezone: event.grouping_timezone,
     moments: event.moments.map((moment) => ({
       id: moment.id,
       title: moment.title,
@@ -142,18 +149,441 @@ function organizationRequest(event: DraftEvent): OrganizeEventRequest {
   };
 }
 
-function Checklist({ event }: { event: DraftEvent }) {
+function sameIDs(left: { id: string }[], right: { id: string }[]) {
+  return (
+    left.length === right.length &&
+    left.every((item, index) => item.id === right[index].id)
+  );
+}
+
+function sameStrings(left: string[], right: string[]) {
+  return (
+    left.length === right.length &&
+    left.every((value, index) => value === right[index])
+  );
+}
+
+function insertByServerOrder<T extends { id: string }>(
+  items: T[],
+  item: T,
+  serverItems: T[],
+) {
+  const serverIndex = serverItems.findIndex(
+    (candidate) => candidate.id === item.id,
+  );
+  const successor = serverItems
+    .slice(serverIndex + 1)
+    .find((candidate) => items.some((current) => current.id === candidate.id));
+  const insertionIndex = successor
+    ? items.findIndex((current) => current.id === successor.id)
+    : items.length;
+  items.splice(insertionIndex, 0, cloneEvent(item));
+}
+
+function eventMediaIDs(event: DraftEvent) {
+  return new Set(
+    event.moments
+      .flatMap((moment) => moment.media_items)
+      .concat(event.unassigned_media)
+      .map((item) => item.id),
+  );
+}
+
+function rebaseOrganization(
+  base: DraftEvent,
+  local: DraftEvent,
+  serverResponse: DraftEvent,
+) {
+  // A separately persisted review can finish after the requested mutation but
+  // before its response arrives. In that case the local snapshot is the newer
+  // authoritative server state, not merely an optimistic edit.
+  const server =
+    local.version > serverResponse.version ? local : serverResponse;
+  const rebased = cloneEvent(server);
+  if (local.title !== base.title) rebased.title = local.title;
+  if (local.description !== base.description)
+    rebased.description = local.description;
+  if (!sameStrings(local.place_labels, base.place_labels))
+    rebased.place_labels = cloneEvent(local.place_labels);
+  if (local.grouping_timezone !== base.grouping_timezone)
+    rebased.grouping_timezone = local.grouping_timezone;
+  if (local.final_review_complete !== base.final_review_complete)
+    rebased.final_review_complete = local.final_review_complete;
+
+  const baseMoments = new Map(
+    base.moments.map((moment) => [moment.id, moment]),
+  );
+  const localMoments = new Map(
+    local.moments.map((moment) => [moment.id, moment]),
+  );
+  const serverMoments = new Map(
+    server.moments.map((moment) => [moment.id, moment]),
+  );
+  const baseMedia = eventMediaIDs(base);
+  const localMedia = eventMediaIDs(local);
+
+  let momentOrder = server.moments.map((moment) => moment.id);
+  if (!sameIDs(local.moments, base.moments)) {
+    momentOrder = local.moments.map((moment) => moment.id);
+    for (const serverMoment of server.moments) {
+      if (baseMoments.has(serverMoment.id) || localMoments.has(serverMoment.id))
+        continue;
+      const ordered = momentOrder.map((id) => ({ id }));
+      insertByServerOrder(ordered, { id: serverMoment.id }, server.moments);
+      momentOrder = ordered.map((item) => item.id);
+    }
+  }
+
+  rebased.moments = momentOrder.flatMap((momentID) => {
+    const baseMoment = baseMoments.get(momentID);
+    const localMoment = localMoments.get(momentID);
+    const serverMoment = serverMoments.get(momentID);
+    if (!localMoment) return serverMoment ? [cloneEvent(serverMoment)] : [];
+    if (!baseMoment) return [cloneEvent(localMoment)];
+    if (!serverMoment) return [];
+
+    const merged = cloneEvent(serverMoment);
+    if (localMoment.title !== baseMoment.title)
+      merged.title = localMoment.title;
+    if (!sameStrings(localMoment.place_labels, baseMoment.place_labels))
+      merged.place_labels = cloneEvent(localMoment.place_labels);
+    if (localMoment.proposed_day !== baseMoment.proposed_day)
+      merged.proposed_day = localMoment.proposed_day;
+    if (localMoment.cover_media_item_id !== baseMoment.cover_media_item_id)
+      merged.cover_media_item_id = localMoment.cover_media_item_id;
+    if (localMoment.attendance_complete !== baseMoment.attendance_complete)
+      merged.attendance_complete = localMoment.attendance_complete;
+    if (localMoment.audience_complete !== baseMoment.audience_complete)
+      merged.audience_complete = localMoment.audience_complete;
+
+    if (!sameIDs(localMoment.media_items, baseMoment.media_items)) {
+      merged.media_items = cloneEvent(localMoment.media_items);
+      for (const serverItem of serverMoment.media_items) {
+        if (baseMedia.has(serverItem.id) || localMedia.has(serverItem.id))
+          continue;
+        insertByServerOrder(
+          merged.media_items,
+          serverItem,
+          serverMoment.media_items,
+        );
+      }
+    }
+    return [merged];
+  });
+
+  if (!sameIDs(local.unassigned_media, base.unassigned_media)) {
+    rebased.unassigned_media = cloneEvent(local.unassigned_media);
+    for (const serverItem of server.unassigned_media) {
+      if (baseMedia.has(serverItem.id) || localMedia.has(serverItem.id))
+        continue;
+      insertByServerOrder(
+        rebased.unassigned_media,
+        serverItem,
+        server.unassigned_media,
+      );
+    }
+  }
+
+  // A local merge or removal can delete the Moment where the server placed
+  // newly restored Media. Preserve the local Moment deletion, but keep every
+  // authoritative addition available for the Curator to place again.
+  const rebasedMedia = eventMediaIDs(rebased);
+  const serverMedia = server.moments
+    .flatMap((moment) => moment.media_items)
+    .concat(server.unassigned_media);
+  for (const serverItem of serverMedia) {
+    if (baseMedia.has(serverItem.id) || rebasedMedia.has(serverItem.id))
+      continue;
+    rebased.unassigned_media.push(cloneEvent(serverItem));
+    rebasedMedia.add(serverItem.id);
+  }
+  return rebased;
+}
+
+const stagedLabels: Record<StagedChange["kind"], string> = {
+  addition: "Additions",
+  removal: "Removals",
+  move: "Moves and ordering",
+  metadata: "Metadata edits",
+  moment_structure: "Moment structure",
+  access: "Access changes",
+};
+
+function countedNoun(count: number, singular: string, plural = `${singular}s`) {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function joinCountParts(parts: string[]) {
+  if (parts.length < 2) return parts[0];
+  if (parts.length === 2) return `${parts[0]} and ${parts[1]}`;
+  return `${parts.slice(0, -1).join(", ")}, and ${parts.at(-1)}`;
+}
+
+function stagedCountLabel(change: StagedChange) {
+  switch (change.kind) {
+    case "addition":
+    case "removal":
+    case "move":
+      return countedNoun(change.count, "Media item");
+    case "moment_structure":
+      return countedNoun(change.count, "Moment");
+    case "access":
+      return change.recipient_access?.length
+        ? countedNoun(change.count, "Recipient")
+        : countedNoun(change.moment_ids.length, "Moment");
+    case "metadata": {
+      const parts = [
+        change.event_metadata_fields?.length ? "1 Event" : undefined,
+        change.moment_ids.length
+          ? countedNoun(change.moment_ids.length, "Moment")
+          : undefined,
+        change.media_item_ids.length
+          ? countedNoun(change.media_item_ids.length, "Media item")
+          : undefined,
+      ].filter((part): part is string => part !== undefined);
+      return (
+        joinCountParts(parts) ?? countedNoun(change.count, "affected item")
+      );
+    }
+  }
+}
+
+function StagedUpdateReview({
+  event,
+  onRestoreMedia,
+  restoringMediaID,
+  restoreDisabled,
+  restoreError,
+  restoreConflict,
+  restoreRecoveryPending,
+  onRecoverRestore,
+  metadataValid,
+}: {
+  event: DraftEvent;
+  onRestoreMedia: (mediaID: string) => void;
+  restoringMediaID?: string;
+  restoreDisabled: boolean;
+  restoreError?: string;
+  restoreConflict: boolean;
+  restoreRecoveryPending: boolean;
+  onRecoverRestore: () => void;
+  metadataValid: boolean;
+}) {
+  if (!event.staged_update) return null;
+  const removedMedia = event.staged_update.changes.flatMap(
+    (change) => change.removed_media ?? [],
+  );
+  const deletedMoments = event.staged_update.changes.flatMap(
+    (change) => change.deleted_moments ?? [],
+  );
+  const changedEventMetadata = new Set(
+    event.staged_update.changes.flatMap(
+      (change) => change.event_metadata_fields ?? [],
+    ),
+  );
+  const metadataLabel = (
+    field: "title" | "description" | "place_labels" | "grouping_timezone",
+  ) =>
+    changedEventMetadata.has(field) ? (
+      <span className="staged-change-label">Staged: Metadata edits</span>
+    ) : null;
+  return (
+    <section aria-labelledby="staged-review-title" className="staged-review">
+      <div>
+        <p className="step-label">Private until Publication</p>
+        <h4 id="staged-review-title">Staged update review</h4>
+        <p>
+          Review the Event details and organization that will replace the
+          current Publication.
+        </p>
+        <section
+          aria-labelledby="staged-event-metadata-title"
+          className="staged-event-metadata"
+        >
+          <h5 id="staged-event-metadata-title">
+            {metadataValid
+              ? "Event details that will publish"
+              : "Event details not ready to publish"}
+          </h5>
+          {!metadataValid ? (
+            <p className="form-error" role="alert">
+              Fix the Event detail validation errors before this review can be
+              saved or published.
+            </p>
+          ) : null}
+          <dl>
+            <div
+              className={
+                changedEventMetadata.has("title") ? "staged-metadata" : ""
+              }
+            >
+              <dt>Title {metadataLabel("title")}</dt>
+              <dd>{event.title || "Untitled Event"}</dd>
+            </div>
+            <div
+              className={
+                changedEventMetadata.has("description") ? "staged-metadata" : ""
+              }
+            >
+              <dt>Description {metadataLabel("description")}</dt>
+              <dd>{event.description || "No description"}</dd>
+            </div>
+            <div
+              className={
+                changedEventMetadata.has("place_labels")
+                  ? "staged-metadata"
+                  : ""
+              }
+            >
+              <dt>Place labels {metadataLabel("place_labels")}</dt>
+              <dd>
+                {event.place_labels.length > 0
+                  ? event.place_labels.join(", ")
+                  : "No Place labels"}
+              </dd>
+            </div>
+            <div
+              className={
+                changedEventMetadata.has("grouping_timezone")
+                  ? "staged-metadata"
+                  : ""
+              }
+            >
+              <dt>Grouping timezone {metadataLabel("grouping_timezone")}</dt>
+              <dd>{event.grouping_timezone}</dd>
+            </div>
+          </dl>
+        </section>
+        {removedMedia.length > 0 || deletedMoments.length > 0 ? (
+          <section
+            aria-labelledby="removed-items-title"
+            className="staged-removed"
+          >
+            <h5 id="removed-items-title">Removed from the resulting Event</h5>
+            <ul>
+              {removedMedia.map((item) => (
+                <li className="staged-removal" key={`media-${item.id}`}>
+                  <strong>Removed Media</strong>
+                  <span>{mediaLabel(item)}</span>
+                  <code>{item.id}</code>
+                  {item.restorable ? (
+                    <button
+                      disabled={
+                        restoreDisabled || restoringMediaID !== undefined
+                      }
+                      onClick={() => onRestoreMedia(item.id)}
+                      type="button"
+                    >
+                      {restoringMediaID === item.id
+                        ? "Restoring…"
+                        : "Restore removed Media"}
+                    </button>
+                  ) : (
+                    <small>
+                      Restore unavailable because the Source no longer contains
+                      this Media.
+                    </small>
+                  )}
+                </li>
+              ))}
+              {deletedMoments.map((moment) => (
+                <li className="staged-removal" key={`moment-${moment.id}`}>
+                  <strong>Deleted Moment</strong>
+                  <span>{moment.title || moment.proposed_day}</span>
+                  <code>{moment.id}</code>
+                </li>
+              ))}
+            </ul>
+            {restoreConflict ? (
+              <div className="form-error">
+                <p role="alert">
+                  This Event changed in another browser. Load the newer Event
+                  before retrying this restoration.
+                </p>
+                <button
+                  disabled={restoreRecoveryPending}
+                  onClick={onRecoverRestore}
+                  type="button"
+                >
+                  {restoreRecoveryPending
+                    ? "Loading newer Event…"
+                    : "Load newer Event and retry restoration"}
+                </button>
+                {restoreError ? <p role="alert">{restoreError}</p> : null}
+              </div>
+            ) : restoreError ? (
+              <p className="form-error" role="alert">
+                {restoreError}
+              </p>
+            ) : null}
+          </section>
+        ) : null}
+      </div>
+      <ul aria-label="Net change summary">
+        {event.staged_update.changes.map((change) => (
+          <li key={change.kind}>
+            <strong>{stagedLabels[change.kind]}</strong>
+            <span>{stagedCountLabel(change)}</span>
+            <small>{change.detail}</small>
+            {change.kind === "access" && change.recipient_access?.length ? (
+              <ul
+                aria-label="Recipient access changes"
+                className="recipient-access-changes"
+              >
+                {change.recipient_access.map((access) => (
+                  <li key={access.recipient_person_id}>
+                    <strong>{access.recipient_name}</strong>
+                    <span>
+                      {access.granted_media_count > 0
+                        ? `${access.granted_media_count} Media granted`
+                        : ""}
+                      {access.granted_media_count > 0 &&
+                      access.revoked_media_count > 0
+                        ? ", "
+                        : ""}
+                      {access.revoked_media_count > 0
+                        ? `${access.revoked_media_count} Media revoked`
+                        : ""}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+function validGroupingTimezone(value: string) {
+  const timezone = value.trim();
+  if (!timezone || timezone === "Local") return false;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: timezone }).format();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function Checklist({
+  event,
+  hasUnsavedChanges,
+  metadataValid,
+}: {
+  event: DraftEvent;
+  hasUnsavedChanges: boolean;
+  metadataValid: boolean;
+}) {
   const checks = [
+    { label: "Event details", done: metadataValid },
     { label: "Media organization", done: event.unassigned_media.length === 0 },
     {
       label: "Moments",
       done:
         event.moments.length > 0 &&
-        event.moments.every(
-          (moment) =>
-            moment.media_items.length > 0 &&
-            moment.cover_media_item_id !== null,
-        ),
+        event.moments.every((moment) => moment.media_items.length > 0),
     },
     {
       label: "Attendance",
@@ -170,7 +600,16 @@ function Checklist({ event }: { event: DraftEvent }) {
     { label: "Final review", done: event.final_review_complete },
   ];
   const complete = checks.filter((check) => check.done).length;
-  const next = checks.find((check) => !check.done)?.label ?? "Ready to publish";
+  const currentPublication =
+    event.lifecycle === "published" &&
+    event.staged_update === null &&
+    !event.pending_withdrawal_publication &&
+    !hasUnsavedChanges;
+  const next =
+    checks.find((check) => !check.done)?.label ??
+    (event.pending_withdrawal_publication
+      ? "Publish pending Withdrawal restoration"
+      : "Ready to publish");
   return (
     <section aria-labelledby="readiness-title" className="readiness">
       <h3 id="readiness-title">Readiness</h3>
@@ -191,9 +630,25 @@ function Checklist({ event }: { event: DraftEvent }) {
         ))}
       </ul>
       <p>
-        <strong>Next action:</strong> {next}
+        <strong>
+          {currentPublication ? "Publication status:" : "Next action:"}
+        </strong>{" "}
+        {currentPublication ? "Published and up to date" : next}
       </p>
     </section>
+  );
+}
+
+function StagedChangeLabels({ kinds }: { kinds: StagedChange["kind"][] }) {
+  if (kinds.length === 0) return null;
+  const labels = kinds.map((kind) => stagedLabels[kind]);
+  return (
+    <span
+      aria-label={`Staged changes: ${labels.join(", ")}`}
+      className="staged-change-label"
+    >
+      Staged: {labels.join(", ")}
+    </span>
   );
 }
 
@@ -202,15 +657,17 @@ function MediaRow({
   selected,
   onSelect,
   onMove,
+  stagedKinds,
 }: {
   item: MediaItem;
   selected: boolean;
   onSelect: () => void;
   onMove: (direction: -1 | 1) => void;
+  stagedKinds: StagedChange["kind"][];
 }) {
   return (
     <li
-      className="media-row"
+      className={`media-row ${stagedKinds.map((kind) => `staged-${kind}`).join(" ")}`.trim()}
       onKeyDown={(event) => {
         if (event.altKey && event.key === "ArrowUp") {
           event.preventDefault();
@@ -225,6 +682,7 @@ function MediaRow({
       <label>
         <input checked={selected} onChange={onSelect} type="checkbox" />
         <span>{mediaLabel(item)}</span>
+        <StagedChangeLabels kinds={stagedKinds} />
       </label>
       <span className="row-actions">
         <button
@@ -266,6 +724,9 @@ export function EventOrganizer({
   const [saveState, setSaveState] = useState<SaveState>("saved");
   const [conflictRecoveryError, setConflictRecoveryError] = useState("");
   const [conflictRecoveryPending, setConflictRecoveryPending] = useState(false);
+  const [restoreRecoveryError, setRestoreRecoveryError] = useState("");
+  const [restoreRecoveryPending, setRestoreRecoveryPending] = useState(false);
+  const [restoreStatus, setRestoreStatus] = useState("");
   const [mergeError, setMergeError] = useState("");
   const [revision, setRevision] = useState(0);
   const [notifyRecipients, setNotifyRecipients] = useState(true);
@@ -299,6 +760,40 @@ export function EventOrganizer({
       : eventQuery.data?.id === selectedID
         ? eventQuery.data
         : undefined;
+  const titleValidationError =
+    currentDraft && currentDraft.title.trim() === ""
+      ? "Event title is required."
+      : "";
+  const timezoneValidationError =
+    currentDraft && !validGroupingTimezone(currentDraft.grouping_timezone)
+      ? "Enter a valid IANA timezone, such as America/New_York or UTC."
+      : "";
+  const eventMetadataValid =
+    titleValidationError === "" && timezoneValidationError === "";
+  const stagedMediaKinds = useMemo(() => {
+    const kinds = new Map<string, StagedChange["kind"][]>();
+    for (const change of currentDraft?.staged_update?.changes ?? []) {
+      for (const mediaID of change.media_item_ids) {
+        kinds.set(mediaID, [...(kinds.get(mediaID) ?? []), change.kind]);
+      }
+    }
+    return kinds;
+  }, [currentDraft?.staged_update]);
+  const stagedMomentKinds = useMemo(() => {
+    const kinds = new Map<string, StagedChange["kind"][]>();
+    for (const change of currentDraft?.staged_update?.changes ?? []) {
+      for (const momentID of change.moment_ids) {
+        kinds.set(momentID, [...(kinds.get(momentID) ?? []), change.kind]);
+      }
+    }
+    return kinds;
+  }, [currentDraft?.staged_update]);
+  const allMedia = currentDraft
+    ? [
+        ...currentDraft.moments.flatMap((moment) => moment.media_items),
+        ...currentDraft.unassigned_media,
+      ]
+    : [];
 
   const previewRecipients = useQuery({
     queryKey: ["preview-recipients", selectedID],
@@ -332,8 +827,67 @@ export function EventOrganizer({
       previewOpen && selectedID.length > 0 && previewRecipientID.length > 0,
     retry: false,
   });
+  const restorePublishedMedia = useMutation({
+    mutationFn: ({ event, mediaID }: RestoreAttempt) =>
+      apiJSON<DraftEvent>(
+        `/api/events/${event.id}/published-media-restorations`,
+        {
+          method: "POST",
+          headers: { "X-Memento-CSRF": session.csrf_token },
+          body: JSON.stringify({
+            version: event.version,
+            media_item_id: mediaID,
+          }),
+        },
+      ),
+    onMutate: () => setRestoreStatus(""),
+    onSuccess: (restored, attempted) => {
+      setRestoreRecoveryError("");
+      if (selectedIDRef.current !== restored.id) {
+        queryClient.setQueryData(["event", restored.id], restored);
+        return;
+      }
+      const latest = latestDraftRef.current;
+      const hasNewerOrganization = revisionRef.current > attempted.revision;
+      const next =
+        latest?.id === restored.id
+          ? rebaseOrganization(attempted.event, latest, restored)
+          : cloneEvent(restored);
+      const originalMoment = restored.moments.find((moment) =>
+        moment.media_items.some((item) => item.id === attempted.mediaID),
+      );
+      const relocatedToUnassigned =
+        originalMoment !== undefined &&
+        latest?.id === restored.id &&
+        !latest.moments.some((moment) => moment.id === originalMoment.id) &&
+        next.unassigned_media.some((item) => item.id === attempted.mediaID);
+      queryClient.setQueryData(["event", restored.id], next);
+      latestDraftRef.current = next;
+      setDraft(next);
+      setSaveState(hasNewerOrganization ? "unsaved" : "saved");
+      if (!hasNewerOrganization) {
+        revisionRef.current = 0;
+        setRevision(0);
+      }
+      if (relocatedToUnassigned) {
+        setRestoreStatus(
+          "Restored Media was moved to Unassigned Media because its original Moment was removed while restoration was pending. Choose it in Unassigned Media, move it to a Moment, then review the Event before Publication.",
+        );
+      }
+      setPreviewOpen(false);
+      void queryClient.invalidateQueries({ queryKey: ["events"] });
+      void queryClient.invalidateQueries({
+        queryKey: ["attendance-audience"],
+      });
+    },
+  });
+
+  const restoreConflict =
+    restorePublishedMedia.error instanceof APIError &&
+    restorePublishedMedia.error.status === 409;
+
   const publish = useMutation({
-    mutationFn: (event: DraftEvent) =>
+    mutationFn: ({ event }: PublishAttempt) =>
       apiJSON<PublicationResponse>(`/api/events/${event.id}/publications`, {
         method: "POST",
         headers: { "X-Memento-CSRF": session.csrf_token },
@@ -342,27 +896,55 @@ export function EventOrganizer({
           notify_recipients: notifyRecipients,
         }),
       }),
-    onSuccess: (publication, publishedEvent) => {
+    onSuccess: async (publication, attempted) => {
       setPreviewOpen(false);
-      setDraft((current) =>
-        current?.id === publishedEvent.id
-          ? {
-              ...current,
-              lifecycle: "published",
-              published_editable_version: publication.editable_version,
-              published_attendance_recovery_required: false,
-            }
-          : current,
-      );
-      void queryClient.invalidateQueries({
-        queryKey: ["event", publishedEvent.id],
-      });
+      const publishedEvent = attempted.event;
+      let server: DraftEvent;
+      try {
+        server = await apiJSON<DraftEvent>(`/api/events/${publishedEvent.id}`);
+      } catch {
+        const latest = latestDraftRef.current;
+        if (latest?.id === publishedEvent.id) {
+          const patched = cloneEvent(latest);
+          patched.lifecycle = "published";
+          patched.published_editable_version = publication.editable_version;
+          patched.published_attendance_recovery_required = false;
+          patched.pending_withdrawal_publication = false;
+          patched.staged_update = null;
+          latestDraftRef.current = patched;
+          setDraft(patched);
+        }
+        void queryClient.invalidateQueries({
+          queryKey: ["event", publishedEvent.id],
+        });
+        void queryClient.invalidateQueries({ queryKey: ["events"] });
+        return;
+      }
+      queryClient.setQueryData(["event", server.id], server);
+      if (selectedIDRef.current === server.id) {
+        const latest = latestDraftRef.current;
+        const hasNewerEdits =
+          latest?.id === server.id && revisionRef.current > attempted.revision;
+        const next = hasNewerEdits
+          ? rebaseOrganization(attempted.event, latest, server)
+          : cloneEvent(server);
+        latestDraftRef.current = next;
+        setDraft(next);
+        setSaveState(hasNewerEdits ? "unsaved" : "saved");
+        if (!hasNewerEdits) {
+          revisionRef.current = 0;
+          setRevision(0);
+        }
+      }
       void queryClient.invalidateQueries({ queryKey: ["events"] });
+      void queryClient.invalidateQueries({
+        queryKey: ["attendance-audience"],
+      });
     },
   });
 
   const withdraw = useMutation({
-    mutationFn: (target: WithdrawalTarget) =>
+    mutationFn: ({ target }: WithdrawalAttempt) =>
       apiJSON<Withdrawal>("/api/withdrawals", {
         method: "POST",
         headers: { "X-Memento-CSRF": session.csrf_token },
@@ -372,18 +954,40 @@ export function EventOrganizer({
           reason: withdrawReason,
         }),
       }),
-    onSuccess: () => {
+    onSuccess: async (_withdrawal, attempted) => {
       setWithdrawTarget(undefined);
       setWithdrawReason("");
       setPreviewOpen(false);
       void queryClient.invalidateQueries({ queryKey: ["events"] });
-      void queryClient.invalidateQueries({ queryKey: ["event"] });
-      void eventQuery.refetch().then((result) => {
-        if (!result.data) return;
-        latestDraftRef.current = result.data;
-        setDraft(result.data);
+      let server: DraftEvent;
+      try {
+        server = await apiJSON<DraftEvent>(`/api/events/${attempted.event.id}`);
+      } catch {
+        void queryClient.invalidateQueries({
+          queryKey: ["event", attempted.event.id],
+        });
+        return;
+      }
+      if (selectedIDRef.current !== server.id) {
+        queryClient.setQueryData(["event", server.id], server);
+        return;
+      }
+      const latest = latestDraftRef.current;
+      const hasNewerOrganization = revisionRef.current > attempted.revision;
+      const next =
+        latest?.id === server.id
+          ? rebaseOrganization(attempted.event, latest, server)
+          : cloneEvent(server);
+      queryClient.setQueryData(["event", server.id], next);
+      latestDraftRef.current = next;
+      setDraft(next);
+      setSaveState(hasNewerOrganization ? "unsaved" : "saved");
+      if (!hasNewerOrganization) {
+        revisionRef.current = 0;
         setRevision(0);
-        setSaveState("saved");
+      }
+      void queryClient.invalidateQueries({
+        queryKey: ["attendance-audience"],
       });
     },
   });
@@ -397,27 +1001,41 @@ export function EventOrganizer({
       }),
     onMutate: () => setSaveState("saving"),
     onSuccess: (saved, attempted) => {
-      queryClient.setQueryData(["event", saved.id], saved);
       void queryClient.invalidateQueries({ queryKey: ["events"] });
       void queryClient.invalidateQueries({
         queryKey: ["attendance-audience"],
       });
-      if (selectedIDRef.current !== saved.id) return;
+      if (selectedIDRef.current !== saved.id) {
+        queryClient.setQueryData(["event", saved.id], saved);
+        return;
+      }
 
       const latest = latestDraftRef.current;
-      if (latest?.id === saved.id && revisionRef.current > attempted.revision) {
-        const rebased = cloneEvent(latest);
-        rebased.version = saved.version;
+      const hasNewerEdits = revisionRef.current > attempted.revision;
+      const hasNewerAuthoritativeState =
+        latest?.id === saved.id && latest.version > saved.version;
+      if (
+        latest?.id === saved.id &&
+        (hasNewerEdits || hasNewerAuthoritativeState)
+      ) {
+        const rebased = rebaseOrganization(attempted.event, latest, saved);
+        queryClient.setQueryData(["event", saved.id], rebased);
         latestDraftRef.current = rebased;
         setDraft(rebased);
-        setSaveState("unsaved");
+        setSaveState(hasNewerEdits ? "unsaved" : "saved");
+        if (!hasNewerEdits) {
+          revisionRef.current = 0;
+          setRevision(0);
+        }
         return;
       }
 
       const next = cloneEvent(saved);
+      queryClient.setQueryData(["event", saved.id], next);
       latestDraftRef.current = next;
       setDraft(next);
       setSaveState("saved");
+      revisionRef.current = 0;
       setRevision(0);
     },
     onError: (error, attempted) => {
@@ -463,7 +1081,13 @@ export function EventOrganizer({
       revision === 0 ||
       saveState === "conflict" ||
       saveState === "failed" ||
-      save.isPending
+      save.isPending ||
+      restorePublishedMedia.isPending ||
+      restoreConflict ||
+      restoreRecoveryPending ||
+      publish.isPending ||
+      withdraw.isPending ||
+      !eventMetadataValid
     )
       return;
     const timer = window.setTimeout(
@@ -475,7 +1099,19 @@ export function EventOrganizer({
       450,
     );
     return () => window.clearTimeout(timer);
-  }, [currentDraft, revision, saveState, save.isPending, saveDraft]);
+  }, [
+    currentDraft,
+    eventMetadataValid,
+    revision,
+    saveState,
+    save.isPending,
+    restorePublishedMedia.isPending,
+    restoreConflict,
+    restoreRecoveryPending,
+    publish.isPending,
+    withdraw.isPending,
+    saveDraft,
+  ]);
 
   function change(mutator: (next: DraftEvent) => void) {
     if (!currentDraft) return;
@@ -614,6 +1250,30 @@ export function EventOrganizer({
     setSelectedMedia(new Set());
   }
 
+  function removeSelectedMedia() {
+    if (
+      !currentDraft ||
+      selectedMedia.size === 0 ||
+      selectedMedia.size >= allMedia.length
+    )
+      return;
+    change((next) => {
+      takeSelectedMedia(next);
+      next.moments = next.moments.filter(
+        (moment) => moment.media_items.length > 0,
+      );
+      for (const moment of next.moments) {
+        if (
+          moment.cover_media_item_id &&
+          selectedMedia.has(moment.cover_media_item_id)
+        ) {
+          moment.cover_media_item_id = null;
+        }
+      }
+    });
+    setSelectedMedia(new Set());
+  }
+
   function createMomentFromSelected() {
     if (!currentDraft || selectedMedia.size === 0 || !newMomentDay) return;
     const id = crypto.randomUUID();
@@ -727,6 +1387,59 @@ export function EventOrganizer({
     });
   }
 
+  async function reloadAndRetryRestoration() {
+    const attempted = restorePublishedMedia.variables;
+    if (!attempted) return;
+    const mediaID = attempted.mediaID;
+    setRestoreRecoveryError("");
+    setRestoreRecoveryPending(true);
+    try {
+      const result = await eventQuery.refetch();
+      if (!result.isSuccess || !result.data) {
+        setRestoreRecoveryError(
+          result.error?.message ?? "The newer Event could not be loaded.",
+        );
+        return;
+      }
+      const authoritative = cloneEvent(result.data);
+      const latest = latestDraftRef.current;
+      const hasNewerOrganization =
+        latest?.id === authoritative.id &&
+        revisionRef.current > attempted.revision;
+      const next = hasNewerOrganization
+        ? rebaseOrganization(attempted.event, latest, authoritative)
+        : authoritative;
+      queryClient.setQueryData(["event", next.id], next);
+      latestDraftRef.current = next;
+      setDraft(next);
+      setSaveState(hasNewerOrganization ? "unsaved" : "saved");
+      if (!hasNewerOrganization) {
+        revisionRef.current = 0;
+        setRevision(0);
+      }
+      const remainsRestorable = authoritative.staged_update?.changes.some(
+        (change) =>
+          change.removed_media?.some(
+            (item) => item.id === mediaID && item.restorable,
+          ),
+      );
+      restorePublishedMedia.reset();
+      if (!remainsRestorable) {
+        setRestoreRecoveryError(
+          "The newer Event no longer offers this restoration. Review its current Staged update.",
+        );
+        return;
+      }
+      restorePublishedMedia.mutate({
+        event: authoritative,
+        mediaID,
+        revision: attempted.revision,
+      });
+    } finally {
+      setRestoreRecoveryPending(false);
+    }
+  }
+
   async function loadNewerVersion() {
     setConflictRecoveryError("");
     setConflictRecoveryPending(true);
@@ -783,16 +1496,6 @@ export function EventOrganizer({
   const inspected = currentDraft?.moments.find(
     (moment) => moment.id === inspectedMomentID,
   );
-  const allMedia = useMemo(
-    () =>
-      currentDraft
-        ? [
-            ...currentDraft.moments.flatMap((moment) => moment.media_items),
-            ...currentDraft.unassigned_media,
-          ]
-        : [],
-    [currentDraft],
-  );
   const withdrawalTargets = currentDraft?.withdrawal_targets ?? [];
   const selectedWithdrawTarget =
     withdrawTarget &&
@@ -812,17 +1515,24 @@ export function EventOrganizer({
           <h2 id="curator-work-title">Organize drafts</h2>
         </div>
         <p aria-live="polite" className={`save-state ${saveState}`}>
-          {saveState === "saved"
-            ? "All changes saved"
-            : saveState === "saving"
-              ? "Saving…"
-              : saveState === "conflict"
-                ? "Save conflict"
-                : saveState === "failed"
-                  ? "Autosave failed"
-                  : "Changes not saved yet"}
+          {saveState === "conflict"
+            ? "Save conflict"
+            : !eventMetadataValid
+              ? "Fix validation errors before autosave"
+              : saveState === "saved"
+                ? "All changes saved"
+                : saveState === "saving"
+                  ? "Saving…"
+                  : saveState === "failed"
+                    ? "Autosave failed"
+                    : "Changes not saved yet"}
         </p>
       </header>
+      {restoreStatus ? (
+        <p aria-live="polite" role="status">
+          {restoreStatus}
+        </p>
+      ) : null}
       <nav aria-label="Mobile workspace panes" className="mobile-pane-nav">
         {(["work", "organize", "inspect"] as Pane[]).map((pane) => (
           <button
@@ -858,7 +1568,7 @@ export function EventOrganizer({
             Load newer version
           </button>
           <button
-            disabled={conflictRecoveryPending}
+            disabled={conflictRecoveryPending || !eventMetadataValid}
             onClick={() => void keepMyChanges()}
             type="button"
           >
@@ -869,7 +1579,7 @@ export function EventOrganizer({
         <div className="form-error" role="alert">
           <p>{save.error.message}</p>
           <button
-            disabled={!currentDraft || save.isPending}
+            disabled={!currentDraft || save.isPending || !eventMetadataValid}
             onClick={() => {
               if (currentDraft)
                 save.mutate({
@@ -933,6 +1643,10 @@ export function EventOrganizer({
                     setSaveState("saved");
                     setConflictRecoveryError("");
                     setConflictRecoveryPending(false);
+                    setRestoreRecoveryError("");
+                    setRestoreRecoveryPending(false);
+                    setRestoreStatus("");
+                    restorePublishedMedia.reset();
                     setMergeError("");
                     setNotifyRecipients(true);
                     setPreviewRecipientID("");
@@ -948,8 +1662,12 @@ export function EventOrganizer({
                 >
                   <strong>{event.title}</strong>
                   <span>
-                    {event.lifecycle === "published" ? "Published" : "Draft"} ·{" "}
-                    {event.moment_count} Moments · {event.unassigned_count}{" "}
+                    {event.has_staged_update
+                      ? "Staged update"
+                      : event.lifecycle === "published"
+                        ? "Published"
+                        : "Draft"}{" "}
+                    · {event.moment_count} Moments · {event.unassigned_count}{" "}
                     unassigned
                   </span>
                 </button>
@@ -983,7 +1701,11 @@ export function EventOrganizer({
                   <p className="step-label">Active Event</p>
                   <h3>{currentDraft.title}</h3>
                 </div>
-                <Checklist event={currentDraft} />
+                <Checklist
+                  event={currentDraft}
+                  hasUnsavedChanges={saveState !== "saved"}
+                  metadataValid={eventMetadataValid}
+                />
               </header>
               <PlaceLabelEditor
                 ariaLabel="Event Place labels"
@@ -996,6 +1718,108 @@ export function EventOrganizer({
                 }
                 placeholder="Paris, Jardin du Luxembourg"
               />
+              <StagedUpdateReview
+                event={currentDraft}
+                onRestoreMedia={(mediaID) =>
+                  restorePublishedMedia.mutate({
+                    event: currentDraft,
+                    mediaID,
+                    revision: revisionRef.current,
+                  })
+                }
+                restoreDisabled={saveState !== "saved"}
+                restoreError={
+                  restoreRecoveryError ||
+                  (restorePublishedMedia.error instanceof APIError &&
+                  restorePublishedMedia.error.status === 409
+                    ? undefined
+                    : restorePublishedMedia.error?.message)
+                }
+                restoreConflict={restoreConflict}
+                restoreRecoveryPending={restoreRecoveryPending}
+                onRecoverRestore={() => void reloadAndRetryRestoration()}
+                metadataValid={eventMetadataValid}
+                restoringMediaID={
+                  restorePublishedMedia.isPending
+                    ? restorePublishedMedia.variables?.mediaID
+                    : undefined
+                }
+              />
+              <section
+                aria-labelledby="event-details-title"
+                className="event-details-editor"
+              >
+                <h4 id="event-details-title">Event details</h4>
+                <label>
+                  Event title
+                  <input
+                    aria-describedby={
+                      titleValidationError ? "event-title-error" : undefined
+                    }
+                    aria-invalid={titleValidationError !== ""}
+                    maxLength={240}
+                    onChange={(event) =>
+                      change((next) => {
+                        next.title = event.target.value;
+                      })
+                    }
+                    required
+                    type="text"
+                    value={currentDraft.title}
+                  />
+                  {titleValidationError ? (
+                    <small
+                      className="form-field-error"
+                      id="event-title-error"
+                      role="alert"
+                    >
+                      {titleValidationError}
+                    </small>
+                  ) : null}
+                </label>
+                <label>
+                  Event description
+                  <textarea
+                    maxLength={2000}
+                    onChange={(event) =>
+                      change((next) => {
+                        next.description = event.target.value;
+                      })
+                    }
+                    value={currentDraft.description}
+                  />
+                </label>
+                <label>
+                  Grouping timezone
+                  <input
+                    aria-describedby={
+                      timezoneValidationError
+                        ? "grouping-timezone-error"
+                        : undefined
+                    }
+                    aria-invalid={timezoneValidationError !== ""}
+                    maxLength={100}
+                    onChange={(event) =>
+                      change((next) => {
+                        next.grouping_timezone = event.target.value;
+                      })
+                    }
+                    required
+                    spellCheck={false}
+                    type="text"
+                    value={currentDraft.grouping_timezone}
+                  />
+                  {timezoneValidationError ? (
+                    <small
+                      className="form-field-error"
+                      id="grouping-timezone-error"
+                      role="alert"
+                    >
+                      {timezoneValidationError}
+                    </small>
+                  ) : null}
+                </label>
+              </section>
               <div className="move-toolbar">
                 <div className="move-control">
                   <label>
@@ -1018,6 +1842,16 @@ export function EventOrganizer({
                     type="button"
                   >
                     Move selected Media
+                  </button>
+                  <button
+                    disabled={
+                      selectedMedia.size === 0 ||
+                      selectedMedia.size >= allMedia.length
+                    }
+                    onClick={removeSelectedMedia}
+                    type="button"
+                  >
+                    Remove selected Media
                   </button>
                 </div>
                 <div className="move-control">
@@ -1060,18 +1894,25 @@ export function EventOrganizer({
                         })
                       }
                       selected={selectedMedia.has(item.id)}
+                      stagedKinds={stagedMediaKinds.get(item.id) ?? []}
                     />
                   ))}
                 </ul>
               </section>
               <div className="moment-list">
                 {currentDraft.moments.map((moment, index) => (
-                  <article className="moment-card" key={moment.id}>
+                  <article
+                    className={`moment-card ${(stagedMomentKinds.get(moment.id) ?? []).map((kind) => `staged-${kind}`).join(" ")}`}
+                    key={moment.id}
+                  >
                     <header>
                       <div>
                         <p>
                           Moment {index + 1} · {moment.proposed_day}
                         </p>
+                        <StagedChangeLabels
+                          kinds={stagedMomentKinds.get(moment.id) ?? []}
+                        />
                         <input
                           aria-label={`Title for Moment ${index + 1}`}
                           onChange={(event) =>
@@ -1115,8 +1956,9 @@ export function EventOrganizer({
                       </div>
                     </header>
                     <label>
-                      Cover
+                      Cover (optional)
                       <select
+                        aria-label="Cover"
                         onChange={(event) =>
                           change((next) => {
                             next.moments[index].cover_media_item_id =
@@ -1125,7 +1967,7 @@ export function EventOrganizer({
                         }
                         value={moment.cover_media_item_id ?? ""}
                       >
-                        <option value="">Choose a cover</option>
+                        <option value="">No cover selected</option>
                         {moment.media_items.map((item) => (
                           <option key={item.id} value={item.id}>
                             {mediaLabel(item)}
@@ -1150,6 +1992,7 @@ export function EventOrganizer({
                             })
                           }
                           selected={selectedMedia.has(item.id)}
+                          stagedKinds={stagedMediaKinds.get(item.id) ?? []}
                         />
                       ))}
                     </ul>
@@ -1317,7 +2160,11 @@ export function EventOrganizer({
                           "Withdraw Recipient access immediately? Identity and history will be preserved.",
                         )
                       ) {
-                        withdraw.mutate(selectedWithdrawTarget);
+                        withdraw.mutate({
+                          target: selectedWithdrawTarget,
+                          event: cloneEvent(currentDraft),
+                          revision: revisionRef.current,
+                        });
                       }
                     }}
                     type="button"
@@ -1383,6 +2230,9 @@ export function EventOrganizer({
                   disabled={
                     saveState !== "saved" ||
                     publish.isPending ||
+                    (currentDraft.lifecycle === "published" &&
+                      currentDraft.staged_update === null &&
+                      !currentDraft.pending_withdrawal_publication) ||
                     (publish.data?.editable_version ??
                       currentDraft.published_editable_version) ===
                       currentDraft.version ||
@@ -1393,7 +2243,12 @@ export function EventOrganizer({
                     ) ||
                     !currentDraft.final_review_complete
                   }
-                  onClick={() => publish.mutate(currentDraft)}
+                  onClick={() =>
+                    publish.mutate({
+                      event: currentDraft,
+                      revision: revisionRef.current,
+                    })
+                  }
                   type="button"
                 >
                   {publish.isPending ? "Publishing…" : "Publish Event"}

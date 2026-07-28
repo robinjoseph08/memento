@@ -45,6 +45,9 @@ func (failingConnector) Album(context.Context, uuid.UUID) (immich.AlbumSummary, 
 func (failingConnector) AlbumAssetsPage(context.Context, uuid.UUID, int) (immich.AssetPage, error) {
 	return immich.AssetPage{}, errors.New("private URL and API key")
 }
+func (failingConnector) AssetExists(context.Context, uuid.UUID) (bool, error) {
+	return false, errors.New("private URL and API key")
+}
 
 func sourceHTTP(service *Service, authorizer Authorizer) *echo.Echo {
 	e := echo.New()

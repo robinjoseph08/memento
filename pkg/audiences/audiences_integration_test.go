@@ -15,6 +15,7 @@ import (
 	"github.com/robinjoseph08/memento/pkg/immich"
 	"github.com/robinjoseph08/memento/pkg/migrations"
 	"github.com/robinjoseph08/memento/pkg/setup"
+	"github.com/robinjoseph08/memento/pkg/staging"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/uptrace/bun"
@@ -180,6 +181,185 @@ func TestOverridesSurviveRecalculationAndApprovedSnapshotsStayFixed(t *testing.T
 	require.NoError(t, f.db.NewRaw(`SELECT event.lifecycle, media.availability FROM draft_moments AS moment JOIN events AS event ON event.id = moment.event_id JOIN draft_media_placements AS placement ON placement.draft_moment_id = moment.id JOIN media_items AS media ON media.id = placement.media_item_id WHERE moment.id = ?`, f.momentID).Scan(ctx, &lifecycle, &availability))
 	assert.Equal(t, "draft", lifecycle)
 	assert.Equal(t, "current", availability, "Attendance, proposal inputs, and approved draft snapshots do not publish or authorize Media")
+}
+
+func TestPublishedEventAudienceChangeStaysPrivateAndCancelsWhenRestored(t *testing.T) {
+	f := newAudienceFixture(t)
+	ctx := context.Background()
+
+	review, err := f.service.ConfirmAttendance(ctx, f.actor, f.momentID, 1, attendanceRequest(f.people["present"].String()))
+	require.NoError(t, err)
+	original, err := f.service.Approve(ctx, f.actor, targetMoment, f.momentID, review.Version)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"present"}, personNames(original.Audience.Recipients))
+
+	var eventID uuid.UUID
+	require.NoError(t, f.db.NewRaw(`SELECT event_id FROM draft_moments WHERE id = ?`, f.momentID).Scan(ctx, &eventID))
+	publicationID, publishedMomentID := uuid.New(), uuid.New()
+	originalSnapshotID := uuid.MustParse(original.Audience.ID)
+	_, err = f.db.NewRaw(`
+		INSERT INTO publications (
+			id, event_id, revision, editable_version, published_by_person_id,
+			notify_recipients, committed_at
+		) VALUES (?, ?, 1, ?, ?, true, now());
+		INSERT INTO published_event_revisions (
+			publication_id, event_id, title, description, grouping_timezone, created_at
+		) SELECT ?, id, title, description, grouping_timezone, now() FROM events WHERE id = ?;
+		INSERT INTO published_moments (
+			id, publication_id, draft_moment_id, audience_snapshot_id, position,
+			title, proposed_day, cover_media_item_id
+		) SELECT ?, ?, id, ?, position, title, proposed_day, cover_media_item_id
+		  FROM draft_moments WHERE id = ?;
+		INSERT INTO published_media_placements (
+			published_moment_id, media_item_id, position, media_type, width, height, local_date_time
+		) SELECT ?, media.id, placement.position, media.media_type, media.width, media.height, media.local_date_time
+		  FROM draft_media_placements AS placement
+		  JOIN media_items AS media ON media.id = placement.media_item_id
+		  WHERE placement.event_id = ? AND placement.media_item_id = ?;
+		INSERT INTO audience_entries (
+			published_moment_id, recipient_person_id, recipient_access_generation_id
+		) VALUES (?, ?, ?);
+		INSERT INTO current_published_events (
+			event_id, publication_id, title, description, grouping_timezone, committed_at
+		) SELECT id, ?, title, description, grouping_timezone, now() FROM events WHERE id = ?;
+		INSERT INTO current_published_placements (
+			event_id, publication_id, published_moment_id, media_item_id, position
+		) VALUES (?, ?, ?, ?, 0);
+		INSERT INTO current_audience_entitlements (
+			event_id, publication_id, recipient_person_id,
+			recipient_access_generation_id, media_item_id
+		) VALUES (?, ?, ?, ?, ?);
+		UPDATE events SET lifecycle = 'published', current_publication_id = ? WHERE id = ?
+	`, publicationID, eventID, original.Version, f.actor.PersonID,
+		publicationID, eventID, publishedMomentID, publicationID, originalSnapshotID, f.momentID,
+		publishedMomentID, eventID, f.mediaID, publishedMomentID, f.people["present"], f.access["present"],
+		publicationID, eventID, eventID, publicationID, publishedMomentID, f.mediaID,
+		eventID, publicationID, f.people["present"], f.access["present"], f.mediaID,
+		publicationID, eventID).Exec(ctx)
+	require.NoError(t, err)
+
+	otherEventID, otherPublicationID := uuid.New(), uuid.New()
+	otherMomentID, otherPublishedMomentID, otherSnapshotID := uuid.New(), uuid.New(), uuid.New()
+	_, err = f.db.NewRaw(`
+		INSERT INTO events (id, lifecycle, title, grouping_timezone, created_at, updated_at)
+		VALUES (?, 'published', 'Overlapping Event', 'UTC', now(), now());
+		INSERT INTO publications (
+			id, event_id, revision, editable_version, published_by_person_id,
+			notify_recipients, committed_at
+		) VALUES (?, ?, 1, 1, ?, false, now());
+		INSERT INTO published_event_revisions (
+			publication_id, event_id, title, description, grouping_timezone, created_at
+		) VALUES (?, ?, 'Overlapping Event', '', 'UTC', now());
+		INSERT INTO audience_snapshots (
+			id, target_kind, target_id, approved_by_person_id, approved_at, label
+		) VALUES (?, 'moment', ?, ?, now(), 'Shared');
+		INSERT INTO audience_snapshot_entries (
+			snapshot_id, recipient_person_id, recipient_access_generation_id
+		) VALUES (?, ?, ?);
+		INSERT INTO published_moments (
+			id, publication_id, draft_moment_id, audience_snapshot_id, position, title, proposed_day
+		) VALUES (?, ?, ?, ?, 0, 'Overlap', '2026-07-28');
+		INSERT INTO published_media_placements (
+			published_moment_id, media_item_id, position, media_type, width, height, local_date_time
+		) SELECT ?, id, 0, media_type, width, height, local_date_time FROM media_items WHERE id = ?;
+		UPDATE events SET current_publication_id = ? WHERE id = ?;
+		INSERT INTO current_published_events (
+			event_id, publication_id, title, description, grouping_timezone, committed_at
+		) VALUES (?, ?, 'Overlapping Event', '', 'UTC', now());
+		INSERT INTO current_published_placements (
+			event_id, publication_id, published_moment_id, media_item_id, position
+		) VALUES (?, ?, ?, ?, 0);
+		INSERT INTO current_audience_entitlements (
+			event_id, publication_id, recipient_person_id,
+			recipient_access_generation_id, media_item_id
+		) VALUES (?, ?, ?, ?, ?)
+	`, otherEventID, otherPublicationID, otherEventID, f.actor.PersonID,
+		otherPublicationID, otherEventID, otherSnapshotID, otherMomentID, f.actor.PersonID,
+		otherSnapshotID, f.people["present"], f.access["present"],
+		otherPublishedMomentID, otherPublicationID, otherMomentID, otherSnapshotID,
+		otherPublishedMomentID, f.mediaID, otherPublicationID, otherEventID,
+		otherEventID, otherPublicationID, otherEventID, otherPublicationID, otherPublishedMomentID, f.mediaID,
+		otherEventID, otherPublicationID, f.people["present"], f.access["present"], f.mediaID).Exec(ctx)
+	require.NoError(t, err)
+
+	review, err = f.service.SetOverride(ctx, f.actor, targetMoment, f.momentID, original.Version, OverrideRequest{RecipientPersonID: f.people["present"].String(), State: "excluded"})
+	require.NoError(t, err)
+	review, err = f.service.SetOverride(ctx, f.actor, targetMoment, f.momentID, review.Version, OverrideRequest{RecipientPersonID: f.people["manual"].String(), State: "included"})
+	require.NoError(t, err)
+	changed, err := f.service.Approve(ctx, f.actor, targetMoment, f.momentID, review.Version)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"manual"}, personNames(changed.Audience.Recipients))
+
+	update, err := staging.Load(ctx, f.db, eventID)
+	require.NoError(t, err)
+	require.NotNil(t, update)
+	require.Len(t, update.Changes, 1)
+	assert.Equal(t, staging.ChangeKindAccess, update.Changes[0].Kind)
+	assert.Equal(t, 1, update.Changes[0].Count)
+	assert.Equal(t, []string{f.momentID.String()}, update.Changes[0].MomentIDs)
+	require.Len(t, update.Changes[0].RecipientAccess, 1)
+	accessByPerson := make(map[string]staging.RecipientAccessChange)
+	for _, access := range update.Changes[0].RecipientAccess {
+		accessByPerson[access.RecipientPersonID] = access
+	}
+	assert.Equal(t, staging.RecipientAccessChange{
+		RecipientPersonID: f.people["manual"].String(), RecipientName: "manual",
+		GrantedMediaCount: 1,
+	}, accessByPerson[f.people["manual"].String()])
+	_, reportedRevocation := accessByPerson[f.people["present"].String()]
+	assert.False(t, reportedRevocation, "another current Event preserves the Recipient's global Media entitlement")
+
+	_, err = f.db.NewRaw(`
+		INSERT INTO audience_entries (
+			published_moment_id, recipient_person_id, recipient_access_generation_id
+		) VALUES (?, ?, ?);
+		INSERT INTO current_audience_entitlements (
+			event_id, publication_id, recipient_person_id,
+			recipient_access_generation_id, media_item_id
+		) VALUES (?, ?, ?, ?, ?)
+	`, otherPublishedMomentID, f.people["manual"], f.access["manual"],
+		otherEventID, otherPublicationID, f.people["manual"], f.access["manual"], f.mediaID).Exec(ctx)
+	require.NoError(t, err)
+	require.NoError(t, f.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		_, err := staging.Refresh(ctx, tx, eventID, time.Now().UTC())
+		return err
+	}))
+	globallyUnchanged, err := staging.Load(ctx, f.db, eventID)
+	require.NoError(t, err)
+	require.NotNil(t, globallyUnchanged, "the Event-specific Audience change remains Staged")
+	require.Len(t, globallyUnchanged.Changes, 1)
+	assert.Zero(t, globallyUnchanged.Changes[0].Count)
+	assert.Empty(t, globallyUnchanged.Changes[0].RecipientAccess)
+	assert.Contains(t, globallyUnchanged.Changes[0].Detail, "without changing global")
+
+	var stagedRows int
+	require.NoError(t, f.db.NewRaw(`SELECT count(*) FROM staged_updates WHERE event_id = ?`, eventID).Scan(ctx, &stagedRows))
+	assert.Equal(t, 1, stagedRows)
+	var oldPublished, oldCurrent, newPublished, newCurrent bool
+	require.NoError(t, f.db.NewRaw(`SELECT EXISTS (SELECT 1 FROM audience_entries WHERE published_moment_id = ? AND recipient_access_generation_id = ?)`, publishedMomentID, f.access["present"]).Scan(ctx, &oldPublished))
+	require.NoError(t, f.db.NewRaw(`SELECT EXISTS (SELECT 1 FROM current_audience_entitlements WHERE event_id = ? AND recipient_access_generation_id = ?)`, eventID, f.access["present"]).Scan(ctx, &oldCurrent))
+	require.NoError(t, f.db.NewRaw(`SELECT EXISTS (SELECT 1 FROM audience_entries WHERE published_moment_id = ? AND recipient_access_generation_id = ?)`, publishedMomentID, f.access["manual"]).Scan(ctx, &newPublished))
+	require.NoError(t, f.db.NewRaw(`SELECT EXISTS (SELECT 1 FROM current_audience_entitlements WHERE event_id = ? AND recipient_access_generation_id = ?)`, eventID, f.access["manual"]).Scan(ctx, &newCurrent))
+	assert.True(t, oldPublished)
+	assert.True(t, oldCurrent, "the old Audience remains active until Publication")
+	assert.False(t, newPublished)
+	assert.False(t, newCurrent, "the replacement Audience remains private until Publication")
+
+	review, err = f.service.SetOverride(ctx, f.actor, targetMoment, f.momentID, changed.Version, OverrideRequest{RecipientPersonID: f.people["present"].String(), State: "automatic"})
+	require.NoError(t, err)
+	review, err = f.service.SetOverride(ctx, f.actor, targetMoment, f.momentID, review.Version, OverrideRequest{RecipientPersonID: f.people["manual"].String(), State: "automatic"})
+	require.NoError(t, err)
+	restored, err := f.service.Approve(ctx, f.actor, targetMoment, f.momentID, review.Version)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"present"}, personNames(restored.Audience.Recipients))
+	cancelled, err := staging.Load(ctx, f.db, eventID)
+	require.NoError(t, err)
+	assert.Nil(t, cancelled)
+	var stagedPointer *uuid.UUID
+	require.NoError(t, f.db.NewRaw(`SELECT current_staged_update_id FROM events WHERE id = ?`, eventID).Scan(ctx, &stagedPointer))
+	assert.Nil(t, stagedPointer)
+	require.NoError(t, f.db.NewRaw(`SELECT count(*) FROM staged_updates WHERE event_id = ?`, eventID).Scan(ctx, &stagedRows))
+	assert.Zero(t, stagedRows, "restoring the published Audience removes empty Staged work")
 }
 
 func TestMomentAndLooseItemCanApproveExplicitlyEmptyCuratorOnlyAudiences(t *testing.T) {

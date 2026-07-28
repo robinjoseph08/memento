@@ -32,6 +32,7 @@ type Connector interface {
 	OwnedAlbums(ctx context.Context) ([]immich.AlbumSummary, error)
 	Album(ctx context.Context, id uuid.UUID) (immich.AlbumSummary, error)
 	AlbumAssetsPage(ctx context.Context, albumID uuid.UUID, page int) (immich.AssetPage, error)
+	AssetExists(ctx context.Context, assetID uuid.UUID) (bool, error)
 }
 
 // Album is the allowlisted Source album representation exposed only to the Curator.
