@@ -26,7 +26,10 @@ const contentionWait = { timeout: 5_000 };
 
 type OrganizerAPIOptions = {
   restoreGate?: Promise<void>;
+  restoreMomentID?: string;
+  restoreAsCover?: boolean;
   publicationRefetchGate?: Promise<void>;
+  withdrawalGate?: Promise<void>;
 };
 
 function deferred() {
@@ -374,7 +377,10 @@ function stubOrganizerAPI(
             },
           ],
         };
-        return response(persisted.withdrawals[0], 201);
+        const withdrawal = structuredClone(persisted.withdrawals[0]);
+        return options.withdrawalGate
+          ? options.withdrawalGate.then(() => response(withdrawal, 201))
+          : response(withdrawal, 201);
       }
       if (
         path === `/api/events/${eventID}/published-media-restorations` &&
@@ -386,22 +392,33 @@ function stubOrganizerAPI(
           media_item_id: string;
         };
         expect(request.version).toBe(persisted.version);
-        const completeRestoration = () => {
-          const restored = Object.values(items).find(
-            (item) => item.id === request.media_item_id,
-          );
-          if (!restored) throw new Error("Unknown restored Media fixture");
-          persisted = {
-            ...persisted,
-            version: persisted.version + 1,
-            staged_update: null,
-            unassigned_media: [...persisted.unassigned_media, restored],
-          };
-          return response(persisted);
+        const restored = Object.values(items).find(
+          (item) => item.id === request.media_item_id,
+        );
+        if (!restored) throw new Error("Unknown restored Media fixture");
+        persisted = {
+          ...persisted,
+          version: persisted.version + 1,
+          staged_update: null,
+          moments: persisted.moments.map((moment) =>
+            moment.id === options.restoreMomentID
+              ? {
+                  ...moment,
+                  cover_media_item_id: options.restoreAsCover
+                    ? restored.id
+                    : moment.cover_media_item_id,
+                  media_items: [...moment.media_items, restored],
+                }
+              : moment,
+          ),
+          unassigned_media: options.restoreMomentID
+            ? persisted.unassigned_media
+            : [...persisted.unassigned_media, restored],
         };
+        const restoration = structuredClone(persisted);
         return options.restoreGate
-          ? options.restoreGate.then(completeRestoration)
-          : completeRestoration();
+          ? options.restoreGate.then(() => response(restoration))
+          : response(restoration);
       }
       if (path === `/api/events/${eventID}`) {
         if (publicationCommitted && options.publicationRefetchGate) {
@@ -761,8 +778,13 @@ test("rebases edits made while published Media restoration is pending", async ()
       },
     ],
   };
+  staged.moments[1].cover_media_item_id = items.a.id;
   const gate = deferred();
-  const saves = stubOrganizerAPI(staged, { restoreGate: gate.promise });
+  const saves = stubOrganizerAPI(staged, {
+    restoreGate: gate.promise,
+    restoreMomentID: momentOneID,
+    restoreAsCover: true,
+  });
   renderOrganizer();
   fireEvent.click(
     await screen.findByRole("button", { name: /Family weekend/ }),
@@ -776,6 +798,9 @@ test("rebases edits made while published Media restoration is pending", async ()
   ).toBeDisabled();
   const title = screen.getByLabelText("Event title");
   fireEvent.change(title, { target: { value: "Edited during restoration" } });
+  fireEvent.change(screen.getAllByLabelText("Cover")[1], {
+    target: { value: items.c.id },
+  });
   expect(title).toHaveValue("Edited during restoration");
 
   act(() => gate.resolve());
@@ -790,6 +815,171 @@ test("rebases edits made while published Media restoration is pending", async ()
     version: 9,
     title: "Edited during restoration",
   });
+  const restoredMoment = saves[0].moments.find(
+    (moment) => moment.id === momentOneID,
+  );
+  expect(restoredMoment?.cover_media_item_id).toBe(items.c.id);
+  expect(restoredMoment?.media_item_ids).toContain(items.loose.id);
+});
+
+test("keeps restored Media when its Moment is merged during a delayed restoration", async () => {
+  const staged = organizedDraft(8);
+  staged.lifecycle = "published";
+  staged.published_editable_version = 7;
+  staged.moments[1].media_items = staged.moments[1].media_items.filter(
+    (item) => item.id !== items.loose.id,
+  );
+  staged.staged_update = {
+    id: "12121212-1212-4212-8212-121212121212",
+    base_publication_id: "13131313-1313-4313-8313-131313131313",
+    updated_at: "2026-05-03T01:00:00Z",
+    changes: [
+      {
+        kind: "removal",
+        count: 1,
+        media_item_ids: [items.loose.id],
+        moment_ids: [momentOneID],
+        removed_media: [
+          {
+            id: items.loose.id,
+            media_type: items.loose.media_type,
+            local_date_time: items.loose.local_date_time,
+            restorable: true,
+          },
+        ],
+        detail: "Media removed",
+      },
+    ],
+  };
+  const gate = deferred();
+  const saves = stubOrganizerAPI(staged, {
+    restoreGate: gate.promise,
+    restoreMomentID: momentOneID,
+    restoreAsCover: true,
+  });
+  renderOrganizer();
+  fireEvent.click(
+    await screen.findByRole("button", { name: /Family weekend/ }),
+  );
+
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Restore removed Media" }),
+  );
+  expect(
+    await screen.findByRole("button", { name: "Restoring…" }),
+  ).toBeDisabled();
+  fireEvent.change(screen.getByLabelText("Event title"), {
+    target: { value: "Merged during restoration" },
+  });
+  fireEvent.click(
+    screen.getAllByRole("button", { name: "Merge with previous Moment" })[1],
+  );
+  expect(screen.getAllByLabelText(/^Title for Moment/)).toHaveLength(1);
+
+  act(() => gate.resolve());
+
+  const unassigned = screen
+    .getByRole("heading", { name: "Unassigned Media" })
+    .closest("section")!;
+  await waitFor(() =>
+    expect(
+      within(unassigned).getByRole("checkbox", { name: /loose photo/ }),
+    ).toBeInTheDocument(),
+  );
+  const momentTitles = screen.getAllByLabelText(/^Title for Moment/);
+  expect(momentTitles).toHaveLength(1);
+  expect(momentTitles[0]).toHaveValue("Saturday");
+  expect(screen.getByLabelText("Event title")).toHaveValue(
+    "Merged during restoration",
+  );
+  await waitFor(() => expect(saves).toHaveLength(1), contentionWait);
+  expect(saves[0]).toMatchObject({
+    version: 9,
+    title: "Merged during restoration",
+    unassigned_media_ids: [items.loose.id],
+  });
+  expect(saves[0].moments).toHaveLength(1);
+  expect(saves[0].moments[0]).toMatchObject({
+    id: momentTwoID,
+    media_item_ids: [items.b.id, items.c.id, items.a.id],
+  });
+});
+
+test("rebases review completed while published Media restoration is pending", async () => {
+  const staged = organizedDraft(8);
+  staged.lifecycle = "published";
+  staged.published_editable_version = 7;
+  staged.moments[0].attendance_complete = true;
+  staged.moments[1].cover_media_item_id = items.a.id;
+  staged.moments[1].media_items = staged.moments[1].media_items.filter(
+    (item) => item.id !== items.loose.id,
+  );
+  staged.staged_update = {
+    id: "12121212-1212-4212-8212-121212121212",
+    base_publication_id: "13131313-1313-4313-8313-131313131313",
+    updated_at: "2026-05-03T01:00:00Z",
+    changes: [
+      {
+        kind: "removal",
+        count: 1,
+        media_item_ids: [items.loose.id],
+        moment_ids: [momentOneID],
+        removed_media: [
+          {
+            id: items.loose.id,
+            media_type: items.loose.media_type,
+            local_date_time: items.loose.local_date_time,
+            restorable: true,
+          },
+        ],
+        detail: "Media removed",
+      },
+    ],
+  };
+  const gate = deferred();
+  stubOrganizerAPI(staged, {
+    restoreGate: gate.promise,
+    restoreMomentID: momentOneID,
+    restoreAsCover: true,
+  });
+  renderOrganizer();
+  fireEvent.click(
+    await screen.findByRole("button", { name: /Family weekend/ }),
+  );
+  fireEvent.click(
+    (
+      await screen.findAllByRole("button", {
+        name: "Inspect Attendance and Audience",
+      })
+    )[1],
+  );
+  const confirmAttendance = await screen.findByRole("button", {
+    name: "Confirm Attendance",
+  });
+
+  fireEvent.click(
+    screen.getByRole("button", { name: "Restore removed Media" }),
+  );
+  fireEvent.click(confirmAttendance);
+  await waitFor(() =>
+    expect(
+      screen.getByRole("button", { name: "Approve Curator only" }),
+    ).toBeEnabled(),
+  );
+  act(() => gate.resolve());
+
+  await waitFor(() =>
+    expect(
+      screen.getByRole("checkbox", { name: /loose photo/ }),
+    ).toBeInTheDocument(),
+  );
+  const readiness = screen
+    .getByRole("heading", { name: "Readiness" })
+    .closest("section")!;
+  expect(
+    within(readiness).getByText("Attendance").closest("li"),
+  ).toHaveTextContent("✓ Attendance");
+  expect(screen.getByText("All changes saved")).toBeInTheDocument();
 });
 
 test("refreshes Publication state while preserving edits made during refetch", async () => {

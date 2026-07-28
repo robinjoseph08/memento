@@ -272,6 +272,20 @@ function rebaseOrganization(
       );
     }
   }
+
+  // A local merge or removal can delete the Moment where the server placed
+  // newly restored Media. Preserve the local Moment deletion, but keep every
+  // authoritative addition available for the Curator to place again.
+  const rebasedMedia = eventMediaIDs(rebased);
+  const serverMedia = server.moments
+    .flatMap((moment) => moment.media_items)
+    .concat(server.unassigned_media);
+  for (const serverItem of serverMedia) {
+    if (baseMedia.has(serverItem.id) || rebasedMedia.has(serverItem.id))
+      continue;
+    rebased.unassigned_media.push(cloneEvent(serverItem));
+    rebasedMedia.add(serverItem.id);
+  }
   return rebased;
 }
 
