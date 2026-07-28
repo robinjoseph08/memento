@@ -710,6 +710,242 @@ func TestThumbnailMapsUpstreamStatusesTimeoutsAndReadFailuresToSafeErrors(t *tes
 	})
 }
 
+func TestMediaRepresentationsFollowOnlySameOriginRedirectsWithCredentials(t *testing.T) {
+	assetID := uuid.New()
+	var redirected bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "secret-key", r.Header.Get("x-api-key"))
+		assert.Empty(t, r.Header.Get("Authorization"))
+		assert.Empty(t, r.Header.Get("Cookie"))
+		if r.URL.Path == "/api/assets/"+assetID.String()+"/thumbnail" {
+			assert.Equal(t, "preview", r.URL.Query().Get("size"))
+			http.Redirect(w, r, "/generated/preview", http.StatusTemporaryRedirect)
+			return
+		}
+		assert.Equal(t, "/generated/preview", r.URL.Path)
+		redirected = true
+		assert.Equal(t, `"preview"`, r.Header.Get("If-None-Match"))
+		w.Header().Set("Content-Type", "image/jpeg")
+		_, _ = w.Write([]byte("preview"))
+	}))
+	defer server.Close()
+	client, err := New(clientConfig(server.URL), server.Client())
+	require.NoError(t, err)
+	response, err := client.Preview(context.Background(), assetID, MediaRequest{IfNoneMatch: `"preview"`})
+	require.NoError(t, err)
+	contents, err := io.ReadAll(response.Body)
+	require.NoError(t, err)
+	require.NoError(t, response.Body.Close())
+	assert.True(t, redirected)
+	assert.Equal(t, "preview", string(contents))
+
+	targetCalled := false
+	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { targetCalled = true }))
+	defer target.Close()
+	crossOrigin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "secret-key", r.Header.Get("x-api-key"))
+		http.Redirect(w, r, target.URL+"/private", http.StatusFound)
+	}))
+	defer crossOrigin.Close()
+	client, err = New(clientConfig(crossOrigin.URL), crossOrigin.Client())
+	require.NoError(t, err)
+	_, err = client.Original(context.Background(), assetID, MediaRequest{})
+	require.EqualError(t, err, "Immich validation failed")
+	assert.False(t, targetCalled, "an unapproved origin is never contacted")
+
+	credentialTargetCalled := false
+	var credentialServer *httptest.Server
+	credentialServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/credential-target" {
+			credentialTargetCalled = true
+			return
+		}
+		location := strings.Replace(credentialServer.URL, "://", "://user@", 1) + "/credential-target"
+		http.Redirect(w, r, location, http.StatusFound)
+	}))
+	defer credentialServer.Close()
+	client, err = New(clientConfig(credentialServer.URL), credentialServer.Client())
+	require.NoError(t, err)
+	_, err = client.Preview(context.Background(), assetID, MediaRequest{})
+	require.EqualError(t, err, "Immich validation failed")
+	assert.False(t, credentialTargetCalled, "credential-bearing redirects are rejected before a second request")
+}
+
+func TestVideoAndOriginalStreamRangesValidatorsAndUnchangedBytes(t *testing.T) {
+	assetID := uuid.New()
+	original := []byte{0, 1, 2, 0xff, 'E', 'X', 'I', 'F'}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "secret-key", r.Header.Get("x-api-key"))
+		switch r.URL.Path {
+		case "/api/assets/" + assetID.String() + "/video/playback":
+			assert.Equal(t, "bytes=4-7", r.Header.Get("Range"))
+			assert.Equal(t, `"video-v1"`, r.Header.Get("If-Range"))
+			w.Header().Set("Content-Type", "video/mp4")
+			w.Header().Set("Content-Range", "bytes 4-7/20")
+			w.Header().Set("Accept-Ranges", "bytes")
+			w.Header().Set("ETag", `"video-v1"`)
+			w.Header().Set("Last-Modified", "Mon, 27 Jul 2026 12:00:00 GMT")
+			w.Header().Set("X-Immich-Path", "/private/video.mp4")
+			w.WriteHeader(http.StatusPartialContent)
+			_, _ = w.Write([]byte("5678"))
+		case "/api/assets/" + assetID.String() + "/original":
+			assert.Equal(t, `"original-v1"`, r.Header.Get("If-None-Match"))
+			w.Header().Set("Content-Type", "image/jpeg")
+			w.Header().Set("Content-Length", strconv.Itoa(len(original)))
+			_, _ = w.Write(original)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	client, err := New(clientConfig(server.URL), server.Client())
+	require.NoError(t, err)
+
+	video, err := client.Video(context.Background(), assetID, MediaRequest{Range: "bytes=4-7", IfRange: `"video-v1"`})
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusPartialContent, video.StatusCode)
+	assert.Equal(t, "bytes 4-7/20", video.ContentRange)
+	assert.Equal(t, "bytes", video.AcceptRanges)
+	assert.Equal(t, `"video-v1"`, video.ETag)
+	assert.Equal(t, "Mon, 27 Jul 2026 12:00:00 GMT", video.LastModified)
+	videoBytes, err := io.ReadAll(video.Body)
+	require.NoError(t, err)
+	require.NoError(t, video.Body.Close())
+	assert.Equal(t, []byte("5678"), videoBytes)
+
+	download, err := client.Original(context.Background(), assetID, MediaRequest{IfNoneMatch: `"original-v1"`})
+	require.NoError(t, err)
+	downloaded, err := io.ReadAll(download.Body)
+	require.NoError(t, err)
+	require.NoError(t, download.Body.Close())
+	assert.Equal(t, original, downloaded, "original bytes are never decoded or transformed")
+	assert.Equal(t, int64(len(original)), download.ContentLength)
+}
+
+func TestOriginalRequestTimeoutEndsAfterHeadersWhileStreamRemainsCancelable(t *testing.T) {
+	assetID := uuid.New()
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Length", "2")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("a"))
+		w.(http.Flusher).Flush()
+		<-release
+		_, _ = w.Write([]byte("b"))
+	}))
+	defer server.Close()
+	cfg := clientConfig(server.URL)
+	cfg.HealthTimeout = time.Second
+	client, err := New(cfg, server.Client())
+	require.NoError(t, err)
+	response, err := client.Original(context.Background(), assetID, MediaRequest{})
+	require.NoError(t, err)
+	close(release)
+	contents, err := io.ReadAll(response.Body)
+	require.NoError(t, err)
+	require.NoError(t, response.Body.Close())
+	assert.Equal(t, []byte("ab"), contents)
+}
+
+func TestMediaConditionalAndUnsatisfiedRangesReturnSafeEmptyResponses(t *testing.T) {
+	assetID := uuid.New()
+	for _, test := range []struct {
+		name         string
+		status       int
+		contentRange string
+	}{
+		{name: "not modified", status: http.StatusNotModified},
+		{name: "range unsatisfied", status: http.StatusRequestedRangeNotSatisfiable, contentRange: "bytes */12"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("ETag", `"current"`)
+				if test.contentRange != "" {
+					w.Header().Set("Content-Range", test.contentRange)
+				}
+				w.WriteHeader(test.status)
+				_, _ = w.Write([]byte(`{"private":"must not be forwarded"}`))
+			}))
+			defer server.Close()
+			client, err := New(clientConfig(server.URL), server.Client())
+			require.NoError(t, err)
+			response, err := client.Original(context.Background(), assetID, MediaRequest{Range: "bytes=99-100"})
+			require.NoError(t, err)
+			assert.Equal(t, test.status, response.StatusCode)
+			assert.Equal(t, int64(-1), response.ContentLength)
+			require.NoError(t, response.Body.Close())
+		})
+	}
+}
+
+func TestMediaRepresentationsRejectInvalidEntryPointsStatusesAndHeaders(t *testing.T) {
+	client, err := New(clientConfig("https://immich.internal"), nil)
+	require.NoError(t, err)
+	_, err = client.Original(context.Background(), uuid.Nil, MediaRequest{})
+	require.EqualError(t, err, "Immich returned an invalid response")
+
+	assetID := uuid.New()
+	for _, test := range []struct {
+		name     string
+		status   int
+		headers  http.Header
+		original bool
+		want     string
+	}{
+		{name: "missing resource", status: http.StatusNotFound, want: "Immich resource not found"},
+		{name: "dependency unavailable", status: http.StatusServiceUnavailable, want: "Immich validation failed"},
+		{name: "video with image body", status: http.StatusOK, headers: http.Header{"Content-Type": {"image/jpeg"}}, want: "Immich returned an invalid response"},
+		{name: "original SVG", status: http.StatusOK, original: true, headers: http.Header{"Content-Type": {"image/svg+xml"}}, want: "Immich returned an invalid response"},
+		{name: "partial without content range", status: http.StatusPartialContent, headers: http.Header{"Content-Type": {"video/mp4"}}, want: "Immich returned an invalid response"},
+		{name: "partial with reversed range", status: http.StatusPartialContent, headers: http.Header{"Content-Type": {"video/mp4"}, "Content-Range": {"bytes 7-4/20"}}, want: "Immich returned an invalid response"},
+		{name: "partial with mismatched length", status: http.StatusPartialContent, headers: http.Header{"Content-Type": {"video/mp4"}, "Content-Range": {"bytes 4-7/20"}, "Content-Length": {"3"}}, want: "Immich returned an invalid response"},
+		{name: "unsatisfied without total", status: http.StatusRequestedRangeNotSatisfiable, want: "Immich returned an invalid response"},
+		{name: "unsafe range unit", status: http.StatusOK, headers: http.Header{"Content-Type": {"video/mp4"}, "Accept-Ranges": {"items"}}, want: "Immich returned an invalid response"},
+		{name: "invalid last modified", status: http.StatusOK, headers: http.Header{"Content-Type": {"video/mp4"}, "Last-Modified": {"private timestamp"}}, want: "Immich returned an invalid response"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				for name, values := range test.headers {
+					for _, value := range values {
+						w.Header().Add(name, value)
+					}
+				}
+				w.WriteHeader(test.status)
+				_, _ = w.Write([]byte("abc"))
+			}))
+			defer server.Close()
+			client, err := New(clientConfig(server.URL), server.Client())
+			require.NoError(t, err)
+			if test.original {
+				_, err = client.Original(context.Background(), assetID, MediaRequest{})
+			} else {
+				_, err = client.Video(context.Background(), assetID, MediaRequest{})
+			}
+			require.EqualError(t, err, test.want)
+		})
+	}
+}
+
+func TestOriginalInterruptedStreamReturnsOnlySafeError(t *testing.T) {
+	transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode:    http.StatusOK,
+			ContentLength: -1,
+			Header:        http.Header{"Content-Type": []string{"application/octet-stream"}},
+			Body:          failingReadCloser{},
+			Request:       request,
+		}, nil
+	})
+	client, err := New(clientConfig("https://immich.internal"), &http.Client{Transport: transport})
+	require.NoError(t, err)
+	response, err := client.Original(context.Background(), uuid.New(), MediaRequest{})
+	require.NoError(t, err)
+	_, err = io.ReadAll(response.Body)
+	require.EqualError(t, err, "Immich returned an invalid response")
+	require.NoError(t, response.Body.Close())
+}
+
 func TestThumbnailStreamsOnlyImageResponsesWithoutFollowingRedirects(t *testing.T) {
 	assetID := uuid.New()
 	t.Run("image", func(t *testing.T) {

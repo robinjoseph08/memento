@@ -8,6 +8,9 @@ const media = {
   local_date_time: "2026-07-27T12:00:00Z",
   available: true,
   thumbnail_url: "/api/me/media/11111111-1111-4111-8111-111111111111/thumbnail",
+  preview_url: "/api/me/media/11111111-1111-4111-8111-111111111111/preview",
+  video_url: "",
+  original_url: "/api/me/media/11111111-1111-4111-8111-111111111111/original",
 };
 
 const secondMedia = {
@@ -18,6 +21,9 @@ const secondMedia = {
   height: 1600,
   local_date_time: "2026-07-27T13:00:00Z",
   thumbnail_url: "/api/me/media/44444444-4444-4444-8444-444444444444/thumbnail",
+  preview_url: "/api/me/media/44444444-4444-4444-8444-444444444444/preview",
+  video_url: "/api/me/media/44444444-4444-4444-8444-444444444444/video",
+  original_url: "/api/me/media/44444444-4444-4444-8444-444444444444/original",
 };
 
 const event = {
@@ -80,6 +86,7 @@ async function recipientAPI(page: Page) {
       });
     } else if (
       path === media.thumbnail_url ||
+      path === media.preview_url ||
       path === secondMedia.thumbnail_url
     ) {
       await route.fulfill({
@@ -136,6 +143,20 @@ test("@desktop Recipient lands on Photos and sees only filtered Event totals", a
   await page.getByRole("button", { name: "Load more photos" }).click();
   await expect(page.getByAltText("Video 2 from July 2026")).toBeVisible();
   await expect(page.getByAltText("Photo 1 from July 2026")).toBeVisible();
+  await page
+    .getByRole("button", { name: "Open Photo 1 from July 2026" })
+    .click();
+  await expect(
+    page.getByRole("dialog", { name: "Media viewer" }),
+  ).toBeVisible();
+  await expect(page.getByAltText("Selected photo preview")).toHaveAttribute(
+    "src",
+    media.preview_url,
+  );
+  await expect(
+    page.getByRole("link", { name: "Download original" }),
+  ).toHaveAttribute("href", media.original_url);
+  await page.getByRole("button", { name: "Close viewer" }).click();
 
   await page
     .locator(".library-rail")

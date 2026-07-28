@@ -4,7 +4,7 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { apiJSON, apiNoContent } from "./api";
 import type {
@@ -37,7 +37,13 @@ function mediaAlt(item: Media, index: number) {
     : `${kind} ${index + 1} from ${date}`;
 }
 
-function Gallery({ media }: { media: Media[] }) {
+function Gallery({
+  media,
+  onOpen,
+}: {
+  media: Media[];
+  onOpen: (media: Media) => void;
+}) {
   return (
     <div aria-label="Media gallery" className="justified-gallery">
       {media.map((item, index) => (
@@ -53,11 +59,18 @@ function Gallery({ media }: { media: Media[] }) {
           }}
         >
           {item.available ? (
-            <img
-              alt={mediaAlt(item, index)}
-              loading="lazy"
-              src={item.thumbnail_url}
-            />
+            <button
+              aria-label={`Open ${mediaAlt(item, index)}`}
+              className="viewer-trigger"
+              onClick={() => onOpen(item)}
+              type="button"
+            >
+              <img
+                alt={mediaAlt(item, index)}
+                loading="lazy"
+                src={item.thumbnail_url}
+              />
+            </button>
           ) : (
             <span className="media-unavailable">Source unavailable</span>
           )}
@@ -118,6 +131,72 @@ function EventCards({
   );
 }
 
+function MediaViewer({
+  media,
+  publicComputer,
+  onClose,
+}: {
+  media: Media;
+  publicComputer: boolean;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") onClose();
+    }
+    document.addEventListener("keydown", closeOnEscape);
+    return () => document.removeEventListener("keydown", closeOnEscape);
+  }, [onClose]);
+
+  return (
+    <div
+      aria-label="Media viewer"
+      aria-modal="true"
+      className="media-viewer"
+      role="dialog"
+    >
+      <div className="viewer-media">
+        {media.media_type === "video" ? (
+          <video
+            aria-label="Video preview"
+            controls
+            playsInline
+            poster={media.thumbnail_url}
+            preload="metadata"
+            src={media.video_url}
+          />
+        ) : (
+          <img alt="Selected photo preview" src={media.preview_url} />
+        )}
+      </div>
+      <aside className="viewer-details">
+        <button autoFocus onClick={onClose} type="button">
+          Close viewer
+        </button>
+        <h2>{media.media_type === "video" ? "Video" : "Photo"}</h2>
+        <dl>
+          <dt>Date</dt>
+          <dd>{mediaLabel(media)}</dd>
+          <dt>Dimensions</dt>
+          <dd>
+            {media.width && media.height
+              ? `${media.width} × ${media.height}`
+              : "Unavailable"}
+          </dd>
+        </dl>
+        {publicComputer ? (
+          <p className="viewer-download-warning">
+            This original will remain on this public computer after sign-out.
+          </p>
+        ) : null}
+        <a className="viewer-download" download href={media.original_url}>
+          Download original
+        </a>
+      </aside>
+    </div>
+  );
+}
+
 function LibraryError({ error }: { error: Error | null }) {
   return error ? (
     <p className="form-error" role="alert">
@@ -130,6 +209,7 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
   const queryClient = useQueryClient();
   const [destination, setDestination] = useState<Destination>("photos");
   const [openedEvent, setOpenedEvent] = useState<EventSummary>();
+  const [openedMedia, setOpenedMedia] = useState<Media>();
   const endpoint = destination === "favorites" ? "favorites" : "photos";
   const photos = useInfiniteQuery({
     queryKey: ["recipient-library", session.csrf_token, endpoint],
@@ -192,7 +272,7 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
     [photos.data],
   );
   const eventItems = events.data?.pages.flatMap((page) => page.events) ?? [];
-  const openedMedia = event.data?.pages.flatMap((page) => page.media) ?? [];
+  const eventMedia = event.data?.pages.flatMap((page) => page.media) ?? [];
   const dates = useMemo(() => [...new Set(media.map(mediaLabel))], [media]);
 
   function openEvent(summary: EventSummary, isNew = false) {
@@ -243,7 +323,7 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
               ) : null}
             </header>
             <LibraryError error={event.error} />
-            <Gallery media={openedMedia} />
+            <Gallery media={eventMedia} onOpen={setOpenedMedia} />
             {event.hasNextPage ? (
               <button
                 disabled={event.isFetchingNextPage}
@@ -337,6 +417,7 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
                         media={media.filter(
                           (item) => mediaLabel(item) === date,
                         )}
+                        onOpen={setOpenedMedia}
                       />
                     </section>
                   ))}
@@ -364,6 +445,13 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
           </>
         )}
       </div>
+      {openedMedia ? (
+        <MediaViewer
+          media={openedMedia}
+          onClose={() => setOpenedMedia(undefined)}
+          publicComputer={session.session_type === "public"}
+        />
+      ) : null}
       <nav aria-label="Library navigation" className="mobile-library-nav">
         {(["photos", "events", "favorites"] as Destination[]).map((item) => (
           <button

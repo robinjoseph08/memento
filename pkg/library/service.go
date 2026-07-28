@@ -37,6 +37,9 @@ type Media struct {
 	LocalDateTime *string `json:"local_date_time" tstype:"string | null,required"`
 	Available     bool    `json:"available"`
 	ThumbnailURL  string  `json:"thumbnail_url"`
+	PreviewURL    string  `json:"preview_url"`
+	VideoURL      string  `json:"video_url"`
+	OriginalURL   string  `json:"original_url"`
 }
 
 type MediaPage struct {
@@ -80,16 +83,19 @@ type Event struct {
 	NextCursor     *string   `json:"next_cursor" tstype:"string | null,required"`
 }
 
-type thumbnailSource interface {
+type mediaSource interface {
 	Thumbnail(ctx context.Context, assetID uuid.UUID) (immich.MediaResponse, error)
+	Preview(ctx context.Context, assetID uuid.UUID, request immich.MediaRequest) (immich.MediaResponse, error)
+	Video(ctx context.Context, assetID uuid.UUID, request immich.MediaRequest) (immich.MediaResponse, error)
+	Original(ctx context.Context, assetID uuid.UUID, request immich.MediaRequest) (immich.MediaResponse, error)
 }
 
 type Service struct {
 	db     *bun.DB
-	immich thumbnailSource
+	immich mediaSource
 }
 
-func New(db *bun.DB, source thumbnailSource) *Service {
+func New(db *bun.DB, source mediaSource) *Service {
 	return &Service{db: db, immich: source}
 }
 
@@ -274,9 +280,7 @@ func (s *Service) Photos(ctx context.Context, actor setup.SessionActor, rawLimit
 		return MediaPage{}, err
 	}
 	for index := range response.Media {
-		if response.Media[index].Available {
-			response.Media[index].ThumbnailURL = "/api/me/media/" + response.Media[index].ID + "/thumbnail"
-		}
+		setMediaURLs(&response.Media[index])
 	}
 	if len(response.Media) > limit {
 		last := response.Media[limit-1]
@@ -509,9 +513,7 @@ func (s *Service) Event(ctx context.Context, actor setup.SessionActor, eventID u
 				})
 				break
 			}
-			if row.Available {
-				row.ThumbnailURL = "/api/me/media/" + row.ID + "/thumbnail"
-			}
+			setMediaURLs(&row.Media)
 			response.Media = append(response.Media, row.Media)
 		}
 		return nil
@@ -519,31 +521,85 @@ func (s *Service) Event(ctx context.Context, actor setup.SessionActor, eventID u
 	return response, err
 }
 
+func setMediaURLs(media *Media) {
+	if !media.Available {
+		return
+	}
+	base := "/api/me/media/" + media.ID
+	media.ThumbnailURL = base + "/thumbnail"
+	media.PreviewURL = base + "/preview"
+	media.OriginalURL = base + "/original"
+	if media.MediaType == "video" {
+		media.VideoURL = base + "/video"
+	}
+}
+
+type representation int
+
+const (
+	representationThumbnail representation = iota
+	representationPreview
+	representationVideo
+	representationOriginal
+)
+
 func (s *Service) Thumbnail(ctx context.Context, actor setup.SessionActor, mediaID uuid.UUID) (immich.MediaResponse, error) {
+	return s.Representation(ctx, actor, mediaID, representationThumbnail, immich.MediaRequest{})
+}
+
+func (s *Service) Preview(ctx context.Context, actor setup.SessionActor, mediaID uuid.UUID, request immich.MediaRequest) (immich.MediaResponse, error) {
+	return s.Representation(ctx, actor, mediaID, representationPreview, request)
+}
+
+func (s *Service) Video(ctx context.Context, actor setup.SessionActor, mediaID uuid.UUID, request immich.MediaRequest) (immich.MediaResponse, error) {
+	return s.Representation(ctx, actor, mediaID, representationVideo, request)
+}
+
+func (s *Service) Original(ctx context.Context, actor setup.SessionActor, mediaID uuid.UUID, request immich.MediaRequest) (immich.MediaResponse, error) {
+	return s.Representation(ctx, actor, mediaID, representationOriginal, request)
+}
+
+func (s *Service) Representation(ctx context.Context, actor setup.SessionActor, mediaID uuid.UUID, kind representation, request immich.MediaRequest) (immich.MediaResponse, error) {
 	if s.immich == nil {
 		return immich.MediaResponse{}, ErrNotFound
 	}
 	var assetID uuid.UUID
+	var mediaType string
 	err := s.db.RunInTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true}, func(ctx context.Context, tx bun.Tx) error {
 		if err := ensureActor(ctx, tx, actor); err != nil {
 			return err
 		}
 		query := fmt.Sprintf(`WITH valid AS (%s)
-			SELECT backing.immich_asset_id FROM valid
+			SELECT backing.immich_asset_id, valid.media_type FROM valid
 			JOIN media_backings AS backing ON backing.media_item_id = valid.media_item_id AND backing.active
 			WHERE valid.media_item_id = ? AND valid.available LIMIT 1`, validPlacements)
-		if err := tx.NewRaw(query, actor.AccessID, mediaID).Scan(ctx, &assetID); err != nil {
+		if err := tx.NewRaw(query, actor.AccessID, mediaID).Scan(ctx, &assetID, &mediaType); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return ErrNotFound
 			}
 			return err
+		}
+		if kind == representationVideo && mediaType != "video" {
+			return ErrNotFound
 		}
 		return nil
 	})
 	if err != nil {
 		return immich.MediaResponse{}, err
 	}
-	response, err := s.immich.Thumbnail(ctx, assetID)
+	var response immich.MediaResponse
+	switch kind {
+	case representationThumbnail:
+		response, err = s.immich.Thumbnail(ctx, assetID)
+	case representationPreview:
+		response, err = s.immich.Preview(ctx, assetID, request)
+	case representationVideo:
+		response, err = s.immich.Video(ctx, assetID, request)
+	case representationOriginal:
+		response, err = s.immich.Original(ctx, assetID, request)
+	default:
+		return immich.MediaResponse{}, ErrNotFound
+	}
 	if errors.Is(err, immich.ErrNotFound) {
 		return immich.MediaResponse{}, ErrNotFound
 	}

@@ -76,6 +76,9 @@ test("lands on Photos with durable New for you and real-ratio authorized thumbna
                 local_date_time: "2026-07-27T13:00:00Z",
                 available: true,
                 thumbnail_url: "/api/me/media/media-2/thumbnail",
+                preview_url: "/api/me/media/media-2/preview",
+                video_url: "/api/me/media/media-2/video",
+                original_url: "/api/me/media/media-2/original",
               },
             ],
             next_cursor: null,
@@ -91,6 +94,9 @@ test("lands on Photos with durable New for you and real-ratio authorized thumbna
               local_date_time: "2026-07-27T12:00:00Z",
               available: true,
               thumbnail_url: "/api/me/media/media-1/thumbnail",
+              preview_url: "/api/me/media/media-1/preview",
+              video_url: "",
+              original_url: "/api/me/media/media-1/original",
             },
           ],
           next_cursor: "photos-next",
@@ -147,6 +153,23 @@ test("lands on Photos with durable New for you and real-ratio authorized thumbna
   const image = await screen.findByAltText("Photo 1 from July 2026");
   expect(image).toHaveAttribute("src", "/api/me/media/media-1/thumbnail");
   expect(image.closest("figure")).toHaveStyle({ aspectRatio: "1600 / 900" });
+  fireEvent.click(
+    screen.getByRole("button", { name: "Open Photo 1 from July 2026" }),
+  );
+  expect(
+    await screen.findByRole("dialog", { name: "Media viewer" }),
+  ).toBeVisible();
+  expect(screen.getByAltText("Selected photo preview")).toHaveAttribute(
+    "src",
+    "/api/me/media/media-1/preview",
+  );
+  expect(
+    screen.getByRole("link", { name: "Download original" }),
+  ).toHaveAttribute("href", "/api/me/media/media-1/original");
+  fireEvent.click(screen.getByRole("button", { name: "Close viewer" }));
+  expect(
+    screen.queryByRole("dialog", { name: "Media viewer" }),
+  ).not.toBeInTheDocument();
   const newEvent = screen.getByRole("button", { name: /Family weekend/ });
   expect(newEvent).toHaveStyle({
     flexBasis: `${(1600 / 900) * 11}rem`,
@@ -160,6 +183,15 @@ test("lands on Photos with durable New for you and real-ratio authorized thumbna
   const appended = await screen.findByAltText("Video 2 from July 2026");
   expect(appended).toHaveAttribute("src", "/api/me/media/media-2/thumbnail");
   expect(screen.getByAltText("Photo 1 from July 2026")).toBeVisible();
+  fireEvent.click(
+    screen.getByRole("button", { name: "Open Video 2 from July 2026" }),
+  );
+  expect(screen.getByLabelText("Video preview")).toHaveAttribute(
+    "src",
+    "/api/me/media/media-2/video",
+  );
+  fireEvent.keyDown(document, { key: "Escape" });
+  expect(screen.queryByLabelText("Video preview")).not.toBeInTheDocument();
   expect(requests.some(({ path }) => path.includes("cursor=photos-next"))).toBe(
     true,
   );

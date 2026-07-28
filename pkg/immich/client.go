@@ -13,6 +13,7 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -25,6 +26,7 @@ import (
 const (
 	maxJSONResponse      = 10 << 20
 	maxThumbnailResponse = 20 << 20
+	maxMediaRedirects    = 5
 	supportedVersion     = "3.0.3"
 	assetPageSize        = 1000
 	maxDatabaseInteger   = 1<<31 - 1
@@ -271,13 +273,26 @@ type AssetPage struct {
 	NextPage *int
 }
 
-// MediaResponse is a bounded, allowlisted Immich media response. Callers must
-// close Body after streaming it to an already-authorized client.
+// MediaRequest contains the safe browser validators Memento may pass to Immich.
+type MediaRequest struct {
+	Range           string
+	IfRange         string
+	IfNoneMatch     string
+	IfModifiedSince string
+}
+
+// MediaResponse is an allowlisted Immich media response. Callers must close
+// Body after streaming it to an already-authorized client. Derivatives are
+// size-bounded; video and originals remain streaming and use bounded buffers.
 type MediaResponse struct {
 	Body          io.ReadCloser
+	StatusCode    int
 	ContentType   string
 	ContentLength int64
+	ContentRange  string
+	AcceptRanges  string
 	ETag          string
+	LastModified  string
 }
 
 // New returns a least-privilege server-side client.
@@ -439,51 +454,208 @@ func (c *Client) AlbumAssetsPage(ctx context.Context, albumID uuid.UUID, page in
 	return result, nil
 }
 
-// Thumbnail opens a thumbnail only after the caller has resolved an authorized
-// Immich asset identity. Redirects remain disabled so credentials cannot cross
-// the configured origin.
+// Thumbnail opens a bounded thumbnail after the caller resolves authorization.
 func (c *Client) Thumbnail(ctx context.Context, assetID uuid.UUID) (MediaResponse, error) {
+	return c.derivative(ctx, assetID, "thumbnail", MediaRequest{})
+}
+
+// Preview opens a bounded viewer-sized image derivative.
+func (c *Client) Preview(ctx context.Context, assetID uuid.UUID, request MediaRequest) (MediaResponse, error) {
+	return c.derivative(ctx, assetID, "preview", request)
+}
+
+// Video streams Immich's playback representation with browser range validators.
+func (c *Client) Video(ctx context.Context, assetID uuid.UUID, request MediaRequest) (MediaResponse, error) {
+	return c.media(ctx, assetID, []string{"video", "playback"}, nil, "video/*", request, false, false)
+}
+
+// Original streams the exact bytes of the current Immich original.
+func (c *Client) Original(ctx context.Context, assetID uuid.UUID, request MediaRequest) (MediaResponse, error) {
+	return c.media(ctx, assetID, []string{"original"}, nil, "image/*,video/*,application/octet-stream", request, false, true)
+}
+
+func (c *Client) derivative(ctx context.Context, assetID uuid.UUID, size string, request MediaRequest) (MediaResponse, error) {
+	return c.media(ctx, assetID, []string{"thumbnail"}, url.Values{"size": {size}}, "image/avif,image/webp,image/*", request, true, false)
+}
+
+func (c *Client) media(ctx context.Context, assetID uuid.UUID, path []string, query url.Values, accept string, request MediaRequest, bounded, original bool) (MediaResponse, error) {
 	if assetID == uuid.Nil {
 		return MediaResponse{}, errInvalidResponse
 	}
-	requestCtx, cancel := context.WithTimeout(ctx, c.healthTimeout)
-	endpoint := c.baseURL.JoinPath("api", "assets", assetID.String(), "thumbnail")
-	req, err := http.NewRequestWithContext(requestCtx, http.MethodGet, endpoint.String(), nil)
-	if err != nil {
-		cancel()
-		return MediaResponse{}, errCreateRequest
-	}
-	req.Header.Set("Accept", "image/avif,image/webp,image/*")
-	req.Header.Set("x-api-key", c.apiKey)
-	response, err := c.httpClient.Do(req)
-	if err != nil {
+	requestCtx, cancel := context.WithCancel(ctx)
+	headerTimer := time.AfterFunc(c.healthTimeout, cancel)
+	endpointParts := append([]string{"api", "assets", assetID.String()}, path...)
+	endpoint := c.baseURL.JoinPath(endpointParts...)
+	endpoint.RawQuery = query.Encode()
+	response, err := c.doMediaRequest(requestCtx, endpoint, accept, request)
+	if !headerTimer.Stop() {
+		if response != nil {
+			_ = response.Body.Close()
+		}
 		cancel()
 		return MediaResponse{}, errUnreachable
 	}
-	if response.StatusCode != http.StatusOK {
+	if err != nil {
+		cancel()
+		return MediaResponse{}, err
+	}
+	if response.StatusCode != http.StatusOK && response.StatusCode != http.StatusPartialContent && response.StatusCode != http.StatusNotModified && response.StatusCode != http.StatusRequestedRangeNotSatisfiable {
 		defer response.Body.Close()
 		defer cancel()
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxJSONResponse))
-		if response.StatusCode == http.StatusNotFound {
+		switch response.StatusCode {
+		case http.StatusNotFound:
 			return MediaResponse{}, ErrNotFound
-		}
-		if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
+		case http.StatusUnauthorized, http.StatusForbidden:
 			return MediaResponse{}, errInvalidCredentials
+		default:
+			return MediaResponse{}, errRequestFailed
 		}
-		return MediaResponse{}, errRequestFailed
 	}
-	contentType, _, err := mime.ParseMediaType(response.Header.Get("Content-Type"))
-	if err != nil || !allowedThumbnailType(contentType) || response.ContentLength > maxThumbnailResponse {
+
+	result, err := normalizeMediaResponse(response, bounded, original)
+	if err != nil {
 		_ = response.Body.Close()
 		cancel()
-		return MediaResponse{}, errInvalidResponse
+		return MediaResponse{}, err
 	}
 	body := &cancelReadCloser{ReadCloser: response.Body, cancel: cancel}
-	return MediaResponse{
-		Body:        &boundedReadCloser{ReadCloser: body, remaining: maxThumbnailResponse},
-		ContentType: contentType, ContentLength: response.ContentLength,
-		ETag: response.Header.Get("ETag"),
-	}, nil
+	result.Body = &safeReadCloser{ReadCloser: body}
+	if bounded && result.StatusCode != http.StatusNotModified && result.StatusCode != http.StatusRequestedRangeNotSatisfiable {
+		result.Body = &boundedReadCloser{ReadCloser: body, remaining: maxThumbnailResponse}
+	}
+	return result, nil
+}
+
+func (c *Client) doMediaRequest(ctx context.Context, endpoint *url.URL, accept string, validators MediaRequest) (*http.Response, error) {
+	current := endpoint
+	for redirects := 0; ; redirects++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, current.String(), nil)
+		if err != nil {
+			return nil, errCreateRequest
+		}
+		req.Header.Set("Accept", accept)
+		req.Header.Set("x-api-key", c.apiKey)
+		setMediaRequestHeaders(req.Header, validators)
+		response, err := c.httpClient.Do(req)
+		if err != nil {
+			return nil, errUnreachable
+		}
+		if response.StatusCode < http.StatusMultipleChoices || response.StatusCode > http.StatusPermanentRedirect || response.StatusCode == http.StatusNotModified {
+			return response, nil
+		}
+		location, err := response.Location()
+		_ = response.Body.Close()
+		if err != nil || redirects >= maxMediaRedirects || !sameOrigin(c.baseURL, location) {
+			return nil, errRequestFailed
+		}
+		current = location
+	}
+}
+
+func setMediaRequestHeaders(header http.Header, request MediaRequest) {
+	for name, value := range map[string]string{
+		"Range": request.Range, "If-Range": request.IfRange,
+		"If-None-Match": request.IfNoneMatch, "If-Modified-Since": request.IfModifiedSince,
+	} {
+		if value != "" {
+			header.Set(name, value)
+		}
+	}
+}
+
+func sameOrigin(base, target *url.URL) bool {
+	return target != nil && target.User == nil && (target.Scheme == "http" || target.Scheme == "https") &&
+		strings.EqualFold(base.Scheme, target.Scheme) && strings.EqualFold(base.Hostname(), target.Hostname()) &&
+		effectivePort(base) == effectivePort(target)
+}
+
+func effectivePort(endpoint *url.URL) string {
+	if endpoint.Port() != "" {
+		return endpoint.Port()
+	}
+	if endpoint.Scheme == "https" {
+		return "443"
+	}
+	return "80"
+}
+
+var contentRangePattern = regexp.MustCompile(`^bytes (?:[0-9]+-[0-9]+/[0-9]+|\*/[0-9]+)$`)
+
+func parseContentRange(value string) (length int64, unsatisfied, valid bool) {
+	if !contentRangePattern.MatchString(value) {
+		return 0, false, false
+	}
+	value = strings.TrimPrefix(value, "bytes ")
+	parts := strings.Split(value, "/")
+	total, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil || total < 0 {
+		return 0, false, false
+	}
+	if parts[0] == "*" {
+		return 0, true, true
+	}
+	bounds := strings.Split(parts[0], "-")
+	start, startErr := strconv.ParseInt(bounds[0], 10, 64)
+	end, endErr := strconv.ParseInt(bounds[1], 10, 64)
+	if startErr != nil || endErr != nil || start < 0 || start > end || end >= total {
+		return 0, false, false
+	}
+	return end - start + 1, false, true
+}
+
+func normalizeMediaResponse(response *http.Response, bounded, original bool) (MediaResponse, error) {
+	result := MediaResponse{StatusCode: response.StatusCode, ContentLength: response.ContentLength}
+	if response.ContentLength < -1 || (bounded && response.ContentLength > maxThumbnailResponse) {
+		return MediaResponse{}, errInvalidResponse
+	}
+	result.ETag = response.Header.Get("ETag")
+	if modified := response.Header.Get("Last-Modified"); modified != "" {
+		parsed, err := http.ParseTime(modified)
+		if err != nil {
+			return MediaResponse{}, errInvalidResponse
+		}
+		result.LastModified = parsed.UTC().Format(http.TimeFormat)
+	}
+	if ranges := response.Header.Get("Accept-Ranges"); ranges == "bytes" {
+		result.AcceptRanges = ranges
+	} else if ranges != "" {
+		return MediaResponse{}, errInvalidResponse
+	}
+	rangeLength, rangeUnsatisfied, rangeValid := parseContentRange(response.Header.Get("Content-Range"))
+	if response.Header.Get("Content-Range") != "" {
+		if !rangeValid || (response.StatusCode != http.StatusPartialContent && response.StatusCode != http.StatusRequestedRangeNotSatisfiable) {
+			return MediaResponse{}, errInvalidResponse
+		}
+		result.ContentRange = response.Header.Get("Content-Range")
+	}
+	if response.StatusCode == http.StatusPartialContent && (!rangeValid || rangeUnsatisfied || (response.ContentLength >= 0 && response.ContentLength != rangeLength)) {
+		return MediaResponse{}, errInvalidResponse
+	}
+	if response.StatusCode == http.StatusRequestedRangeNotSatisfiable && (!rangeValid || !rangeUnsatisfied) {
+		return MediaResponse{}, errInvalidResponse
+	}
+	if response.StatusCode == http.StatusNotModified || response.StatusCode == http.StatusRequestedRangeNotSatisfiable {
+		result.ContentLength = -1
+		return result, nil
+	}
+	contentType, _, err := mime.ParseMediaType(response.Header.Get("Content-Type"))
+	if err != nil || !allowedMediaType(contentType, bounded, original) {
+		return MediaResponse{}, errInvalidResponse
+	}
+	result.ContentType = contentType
+	return result, nil
+}
+
+func allowedMediaType(contentType string, derivative, original bool) bool {
+	if derivative {
+		return allowedThumbnailType(contentType)
+	}
+	if !original {
+		return strings.HasPrefix(contentType, "video/")
+	}
+	return (strings.HasPrefix(contentType, "image/") && contentType != "image/svg+xml") ||
+		strings.HasPrefix(contentType, "video/") || contentType == "application/octet-stream"
 }
 
 func allowedThumbnailType(contentType string) bool {
@@ -517,6 +689,18 @@ func (body *boundedReadCloser) Read(contents []byte) (int, error) {
 	}
 	count, err := body.ReadCloser.Read(contents)
 	body.remaining -= int64(count)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return count, errInvalidResponse
+	}
+	return count, err
+}
+
+type safeReadCloser struct {
+	io.ReadCloser
+}
+
+func (body *safeReadCloser) Read(contents []byte) (int, error) {
+	count, err := body.ReadCloser.Read(contents)
 	if err != nil && !errors.Is(err, io.EOF) {
 		return count, errInvalidResponse
 	}

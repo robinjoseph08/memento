@@ -43,7 +43,10 @@ func TestLibraryRoutesRequireACompletedRecipientSessionWithoutIdentifierHints(t 
 		err    error
 	}{
 		{name: "missing cookie", path: "/api/me/photos"},
-		{name: "invalid session", path: "/api/me/media/" + requestedID + "/thumbnail", cookie: true, err: setup.ErrUnauthenticated},
+		{name: "invalid thumbnail session", path: "/api/me/media/" + requestedID + "/thumbnail", cookie: true, err: setup.ErrUnauthenticated},
+		{name: "invalid preview session", path: "/api/me/media/" + requestedID + "/preview", cookie: true, err: setup.ErrUnauthenticated},
+		{name: "invalid video session", path: "/api/me/media/" + requestedID + "/video", cookie: true, err: setup.ErrUnauthenticated},
+		{name: "invalid original session", path: "/api/me/media/" + requestedID + "/original", cookie: true, err: setup.ErrUnauthenticated},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			authorizer := &routeAuthorizer{err: test.err}
