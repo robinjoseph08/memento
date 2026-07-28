@@ -12,6 +12,7 @@ import type {
   PreviewRecipientsResponse,
   PublicationResponse,
   PublishedEventView,
+  Withdrawal,
 } from "./types/generated/events";
 import type { SessionResponse } from "./types/generated/setup";
 
@@ -174,6 +175,8 @@ export function EventOrganizer({
   const [notifyRecipients, setNotifyRecipients] = useState(true);
   const [previewRecipientID, setPreviewRecipientID] = useState("");
   const [previewOpen, setPreviewOpen] = useState(false);
+  const [withdrawTarget, setWithdrawTarget] = useState("");
+  const [withdrawReason, setWithdrawReason] = useState("");
   const revisionRef = useRef(0);
   const latestDraftRef = useRef<DraftEvent | undefined>(undefined);
   const selectedIDRef = useRef("");
@@ -258,6 +261,32 @@ export function EventOrganizer({
         queryKey: ["event", publishedEvent.id],
       });
       void queryClient.invalidateQueries({ queryKey: ["events"] });
+    },
+  });
+
+  const withdraw = useMutation({
+    mutationFn: ({ kind, id }: { kind: string; id: string }) =>
+      apiJSON<Withdrawal>("/api/withdrawals", {
+        method: "POST",
+        headers: { "X-Memento-CSRF": session.csrf_token },
+        body: JSON.stringify({
+          target_kind: kind,
+          target_id: id,
+          reason: withdrawReason,
+        }),
+      }),
+    onSuccess: () => {
+      setWithdrawReason("");
+      setPreviewOpen(false);
+      void queryClient.invalidateQueries({ queryKey: ["events"] });
+      void queryClient.invalidateQueries({ queryKey: ["event"] });
+      void eventQuery.refetch().then((result) => {
+        if (!result.data) return;
+        latestDraftRef.current = result.data;
+        setDraft(result.data);
+        setRevision(0);
+        setSaveState("saved");
+      });
     },
   });
 
@@ -785,6 +814,9 @@ export function EventOrganizer({
                     setPreviewRecipientID("");
                     setPreviewOpen(false);
                     publish.reset();
+                    withdraw.reset();
+                    setWithdrawTarget(`event:${event.id}`);
+                    setWithdrawReason("");
                     setSelectedID(event.id);
                     setActivePane("organize");
                   }}
@@ -1067,6 +1099,116 @@ export function EventOrganizer({
                 />
                 Final review complete
               </label>
+              {currentDraft.lifecycle === "published" ? (
+                <section
+                  aria-labelledby="withdrawal-actions-title"
+                  className="publication-actions withdrawal-actions"
+                >
+                  <h4 id="withdrawal-actions-title">Withdraw access</h4>
+                  <p>
+                    Withdrawal takes effect immediately. Restoration is not a
+                    toggle and requires newly reviewed Audiences in a fresh
+                    Publication.
+                  </p>
+                  <label>
+                    Published target
+                    <select
+                      onChange={(event) => {
+                        setWithdrawTarget(event.target.value);
+                        withdraw.reset();
+                      }}
+                      value={withdrawTarget}
+                    >
+                      <option value={`event:${currentDraft.id}`}>
+                        Event: {currentDraft.title}
+                      </option>
+                      {currentDraft.moments.map((moment, index) => (
+                        <option
+                          key={`moment:${moment.id}`}
+                          value={`moment:${moment.id}`}
+                        >
+                          Moment: {moment.title || `Moment ${index + 1}`}
+                        </option>
+                      ))}
+                      {Array.from(
+                        new Map(
+                          currentDraft.moments
+                            .flatMap((moment) => moment.media_items)
+                            .map((item) => [item.id, item]),
+                        ).values(),
+                      ).map((item) => (
+                        <option
+                          key={`media:${item.id}`}
+                          value={`media:${item.id}`}
+                        >
+                          Media: {mediaLabel(item)}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Attributable reason
+                    <textarea
+                      maxLength={1000}
+                      onChange={(event) =>
+                        setWithdrawReason(event.target.value)
+                      }
+                      required
+                      value={withdrawReason}
+                    />
+                  </label>
+                  <button
+                    disabled={
+                      saveState !== "saved" ||
+                      withdraw.isPending ||
+                      !withdrawTarget ||
+                      !withdrawReason.trim()
+                    }
+                    onClick={() => {
+                      const [kind, id] = withdrawTarget.split(":");
+                      if (
+                        window.confirm(
+                          "Withdraw Recipient access immediately? Identity and history will be preserved.",
+                        )
+                      ) {
+                        withdraw.mutate({ kind, id });
+                      }
+                    }}
+                    type="button"
+                  >
+                    {withdraw.isPending ? "Withdrawing…" : "Withdraw access"}
+                  </button>
+                  {withdraw.isError ? (
+                    <p className="form-error" role="alert">
+                      {withdraw.error.message}
+                    </p>
+                  ) : null}
+                  {withdraw.data ? (
+                    <p role="status">
+                      Access withdrawn for{" "}
+                      {withdraw.data.affected_recipient_count} Recipients across{" "}
+                      {withdraw.data.affected_media_count} Media items. No
+                      external notification was sent.
+                    </p>
+                  ) : null}
+                  {currentDraft.withdrawals.length > 0 ? (
+                    <div>
+                      <h5>Withdrawal history</h5>
+                      <ul>
+                        {currentDraft.withdrawals.map((item) => (
+                          <li key={item.id}>
+                            <strong>{item.target_kind}</strong>: {item.reason}{" "}
+                            by {item.withdrawn_by_name}.{" "}
+                            {item.restored_at
+                              ? "Restored by a later Publication."
+                              : "Access remains withdrawn."}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+                </section>
+              ) : null}
               <section
                 aria-labelledby="publication-actions-title"
                 className="publication-actions"

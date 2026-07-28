@@ -4,7 +4,7 @@
 
 Status: implementation-ready specification for the MVP.
 
-The deployable foundation, first-browser Curator setup, family administration, Invitation and Onboarding, passwordless sign-in, Session management, Recipient access lifecycle, early curation workflows, atomic Event Publication, the authorization-filtered Recipient library, responsive Media viewer, and protected thumbnail, preview, video, and original streaming are implemented. Archive delivery, notification delivery, restore validation, Recovery hold, and later product phases are not yet implemented.
+The deployable foundation, first-browser Curator setup, family administration, Invitation and Onboarding, passwordless sign-in, Session management, Recipient access lifecycle, early curation workflows, atomic Event Publication, immediate Event, Moment, and Media Withdrawal with restoration through fresh Publications, the authorization-filtered Recipient library, responsive Media viewer, and protected thumbnail, preview, video, and original streaming are implemented. Archive delivery, notification delivery, restore validation, Recovery hold, and later product phases are not yet implemented.
 
 The key words **MUST**, **MUST NOT**, **REQUIRED**, **SHOULD**, **SHOULD NOT**, and **MAY** are normative. They have their usual requirements-language meanings. Product terms such as Person, Recipient, Pending Recipient, Audience, Publication, and Staged update have the exact meanings in [`CONTEXT.md`](../CONTEXT.md).
 
@@ -394,7 +394,7 @@ All timestamps MUST use `timestamptz`. Durable domain identities SHOULD use UUID
 | `audience_entries` | Immutable Publication Moment or Loose item, Recipient Person, and access generation. Unique content target and Recipient generation. Index Recipient generation to target and target to Recipient. Empty Audience is represented by approved target metadata with zero entries. |
 | `current_published_events`, `current_published_placements`, `current_audience_entitlements` | Transactionally replaced projection of the latest non-withdrawn revision. Unique projection keys. Covering indexes begin with Recipient generation for authorization and with Event plus order for rendering. Media entitlement is the distinct union of current authorized placements. |
 | `loose_items` and `published_loose_item_revisions` | Stable identity and the same draft, Audience, Publication, projection, and Withdrawal rules as Event content. |
-| `withdrawals` | Append-only target, scope, Curator, reason, time, and superseding Publication if restored. Index currently withdrawn targets. |
+| `content_withdrawals` | Append-only target, scope, Curator, reason, time, and superseding Publication if restored. Index currently withdrawn targets. |
 | `publication_audit_events` | Append-only draft, approval, Publication, Audience change, correction, Withdrawal, and relink events. Index Event/time, target/time, actor/time. |
 
 ### Interactions, notifications, and activity

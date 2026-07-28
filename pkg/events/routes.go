@@ -107,6 +107,22 @@ func (h *Handler) OrganizeEvent(c echo.Context) error {
 	return c.JSON(http.StatusOK, event)
 }
 
+func (h *Handler) Withdraw(c echo.Context) error {
+	actor, err := h.authorize(c, true)
+	if err != nil {
+		return err
+	}
+	var request WithdrawRequest
+	if err := c.Bind(&request); err != nil {
+		return err
+	}
+	withdrawal, err := h.service.Withdraw(h.requestContext(c), actor, request)
+	if mapped := withdrawalError(err); mapped != nil {
+		return mapped
+	}
+	return c.JSON(http.StatusCreated, withdrawal)
+}
+
 func (h *Handler) PublishEvent(c echo.Context) error {
 	actor, err := h.authorize(c, true)
 	if err != nil {
@@ -277,6 +293,21 @@ func publicationError(err error) error {
 	}
 }
 
+func withdrawalError(err error) error {
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, ErrWithdrawalInvalid):
+		return errcodes.ValidationError("Choose a published Event, Moment, or Media item and provide a reason up to 1000 characters.")
+	case errors.Is(err, ErrAlreadyWithdrawn):
+		return errcodes.Conflict("This content is already withdrawn. Restoration requires a fresh Publication with newly reviewed Audiences.")
+	case errors.Is(err, ErrNotFound):
+		return errcodes.NotFound("Published content")
+	default:
+		return err
+	}
+}
+
 func draftError(err error, resource string) error {
 	switch {
 	case err == nil:
@@ -327,6 +358,9 @@ func RegisterRoutes(e *echo.Echo, handler *Handler) {
 	previewRecipients.Name = curatorReadPolicy
 	previewEvent := events.POST("/:id/preview", handler.PreviewEvent)
 	previewEvent.Name = curatorMutationPolicy
+
+	withdrawal := e.POST("/api/withdrawals", handler.Withdraw, noStore)
+	withdrawal.Name = curatorMutationPolicy
 
 	recipientEvent := e.GET("/api/me/events/:id", handler.RecipientEvent, noStore)
 	recipientEvent.Name = "policy:recipient"

@@ -66,6 +66,7 @@ function draft(version = 1): DraftEvent {
       },
     ],
     unassigned_media: [items.loose],
+    withdrawals: [],
     created_at: "2026-05-03T00:00:00Z",
     updated_at: "2026-05-03T00:00:00Z",
   };
@@ -150,6 +151,39 @@ async function mockCuratorAPI(
     }
     if (path === `/api/events/${eventID}` && request.method() === "GET") {
       await route.fulfill({ json: persisted });
+      return;
+    }
+    if (path === "/api/withdrawals" && request.method() === "POST") {
+      const body = request.postDataJSON() as {
+        target_kind: string;
+        target_id: string;
+        reason: string;
+      };
+      persisted = {
+        ...persisted,
+        version: persisted.version + 1,
+        final_review_complete: false,
+        moments: persisted.moments.map((moment) => ({
+          ...moment,
+          audience_complete: false,
+        })),
+        withdrawals: [
+          {
+            id: "77777777-7777-4777-8777-777777777777",
+            target_kind: body.target_kind,
+            target_id: body.target_id,
+            reason: body.reason,
+            withdrawn_by_name: "Robin",
+            withdrawn_at: "2026-05-03T00:00:00Z",
+            restored_by_publication_id: null,
+            restored_at: null,
+            affected_recipient_count: 2,
+            affected_media_count: 3,
+            affected_event_count: 1,
+          },
+        ],
+      };
+      await route.fulfill({ status: 201, json: persisted.withdrawals[0] });
       return;
     }
     if (
@@ -340,6 +374,41 @@ test("@desktop @mobile publishes atomically and keeps Recipient preview read onl
   if ((page.viewportSize()?.width ?? 1280) <= 1024) {
     await page.getByRole("button", { name: "Inspect", exact: true }).click();
   }
+  await expect(
+    page.getByRole("button", { name: "Publish Event" }),
+  ).toBeDisabled();
+});
+
+test("@desktop @mobile withdraws published access immediately and requires Publication to restore", async ({
+  page,
+}) => {
+  const published = draft();
+  published.lifecycle = "published";
+  published.published_editable_version = published.version;
+  published.final_review_complete = true;
+  published.unassigned_media = [];
+  published.moments = published.moments.map((moment) => ({
+    ...moment,
+    attendance_complete: true,
+    audience_complete: true,
+  }));
+  await mockCuratorAPI(page, [], published);
+  page.on("dialog", (dialog) => dialog.accept());
+  await openEvent(page);
+  if ((page.viewportSize()?.width ?? 1280) <= 1024) {
+    await page.getByRole("button", { name: "Inspect", exact: true }).click();
+  }
+
+  await page.getByLabel("Attributable reason").fill("Privacy request");
+  await page.getByRole("button", { name: "Withdraw access" }).click();
+  await expect(
+    page.getByText(
+      "Access withdrawn for 2 Recipients across 3 Media items. No external notification was sent.",
+    ),
+  ).toBeVisible();
+  await expect(page.getByText(/Privacy request by Robin/)).toContainText(
+    "Access remains withdrawn.",
+  );
   await expect(
     page.getByRole("button", { name: "Publish Event" }),
   ).toBeDisabled();

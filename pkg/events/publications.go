@@ -368,6 +368,9 @@ func (s *Service) PublishEvent(ctx context.Context, actor setup.CuratorSession, 
 		`, eventID).Exec(ctx); err != nil {
 			return err
 		}
+		if err := restoreEligibleWithdrawals(ctx, tx, eventID, publicationID, now, actor); err != nil {
+			return err
+		}
 		if err := s.publicationBoundary(PublicationStepEntitlements); err != nil {
 			return err
 		}
@@ -632,8 +635,23 @@ func (s *Service) loadPublishedEvent(ctx context.Context, db bun.IDB, eventID, a
 		  ON cover.event_id = current.event_id AND cover.recipient_access_generation_id = ?
 		WHERE current.event_id = ?
 		  AND EXISTS (
-			SELECT 1 FROM current_audience_entitlements
-			WHERE event_id = current.event_id AND recipient_access_generation_id = ?
+			SELECT 1 FROM current_audience_entitlements AS entitlement
+			JOIN current_published_placements AS placement
+			  ON placement.event_id = entitlement.event_id AND placement.media_item_id = entitlement.media_item_id
+			JOIN published_moments AS moment ON moment.id = placement.published_moment_id
+			WHERE entitlement.event_id = current.event_id AND entitlement.recipient_access_generation_id = ?
+			  AND NOT EXISTS (
+				SELECT 1 FROM content_withdrawals
+				WHERE restored_at IS NULL AND target_kind = 'moment' AND target_id = moment.draft_moment_id
+			  )
+			  AND NOT EXISTS (
+				SELECT 1 FROM content_withdrawals
+				WHERE restored_at IS NULL AND target_kind = 'media' AND target_id = placement.media_item_id
+			  )
+		  )
+		  AND NOT EXISTS (
+			SELECT 1 FROM content_withdrawals
+			WHERE restored_at IS NULL AND target_kind = 'event' AND target_id = current.event_id
 		  )
 	`, accessID, eventID, accessID).Scan(ctx, &publicationID, &view.Title, &view.Description, &coverID)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -662,13 +680,38 @@ func (s *Service) loadPublishedEvent(ctx context.Context, db bun.IDB, eventID, a
 		JOIN published_media_placements AS published
 		  ON published.published_moment_id = placement.published_moment_id
 		 AND published.media_item_id = placement.media_item_id
+		JOIN published_moments AS moment ON moment.id = placement.published_moment_id
 		JOIN media_items AS media ON media.id = placement.media_item_id
 		WHERE placement.event_id = ?
+		  AND NOT EXISTS (
+			SELECT 1 FROM content_withdrawals
+			WHERE restored_at IS NULL AND target_kind = 'moment' AND target_id = moment.draft_moment_id
+		  )
+		  AND NOT EXISTS (
+			SELECT 1 FROM content_withdrawals
+			WHERE restored_at IS NULL AND target_kind = 'media' AND target_id = placement.media_item_id
+		  )
 		ORDER BY placement.position
 	`, accessID, eventID).Scan(ctx, &view.Media); err != nil {
 		return PublishedEventView{}, fmt.Errorf("load filtered Event media: %w", err)
 	}
 	view.MediaCount = len(view.Media)
+	if view.MediaCount == 0 {
+		return PublishedEventView{}, ErrNoPublication
+	}
+	if view.CoverMediaID != nil {
+		coverVisible := false
+		for _, item := range view.Media {
+			if item.ID == *view.CoverMediaID {
+				coverVisible = true
+				break
+			}
+		}
+		if !coverVisible {
+			cover := view.Media[0].ID
+			view.CoverMediaID = &cover
+		}
+	}
 	view.Capabilities = PreviewCapabilities{Comments: true, Favorites: true, Settings: true, Downloads: true, RecordEngagement: true}
 	return view, nil
 }

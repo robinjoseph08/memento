@@ -183,7 +183,7 @@ func TestServerRegistersDraftRoutesWhenHandlerIsProvided(t *testing.T) {
 	for _, route := range []string{
 		"POST /api/events", "GET /api/events/:id", "POST /api/events/:id/publications",
 		"GET /api/events/:id/preview-recipients", "POST /api/events/:id/preview",
-		"GET /api/me/events/:id", "POST /api/loose-items", "GET /api/loose-items/:id",
+		"POST /api/withdrawals", "GET /api/me/events/:id", "POST /api/loose-items", "GET /api/loose-items/:id",
 		"GET /api/sources/:id/media-items",
 	} {
 		assert.True(t, routes[route], route)

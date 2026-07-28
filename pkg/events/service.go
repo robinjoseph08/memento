@@ -133,6 +133,7 @@ type Event struct {
 	Sources                  []EventSource `json:"sources"`
 	Moments                  []Moment      `json:"moments"`
 	UnassignedMedia          []MediaItem   `json:"unassigned_media"`
+	Withdrawals              []Withdrawal  `json:"withdrawals"`
 	CreatedAt                time.Time     `json:"created_at"`
 	UpdatedAt                time.Time     `json:"updated_at"`
 }
@@ -861,20 +862,45 @@ func (s *Service) GetEvent(ctx context.Context, id uuid.UUID) (Event, error) {
 
 func getEvent(ctx context.Context, db bun.IDB, id uuid.UUID) (Event, error) {
 	var event Event
+	var withdrawalsJSON string
 	err := db.NewRaw(`
 		SELECT event.id, event.lifecycle, event.title, event.description,
 			event.grouping_timezone, event.version, event.final_review_complete,
-			publication.editable_version, event.created_at, event.updated_at
+			publication.editable_version, event.created_at, event.updated_at,
+			COALESCE((
+				SELECT jsonb_agg(jsonb_build_object(
+					'id', withdrawal.id, 'target_kind', withdrawal.target_kind,
+					'target_id', withdrawal.target_id, 'reason', withdrawal.reason,
+					'withdrawn_by_name', person.display_name,
+					'withdrawn_at', withdrawal.withdrawn_at,
+					'restored_by_publication_id', withdrawal.restored_by_publication_id,
+					'restored_at', withdrawal.restored_at,
+					'affected_recipient_count', 0, 'affected_media_count', 0,
+					'affected_event_count', 0
+				) ORDER BY withdrawal.withdrawn_at DESC, withdrawal.id)
+				FROM content_withdrawals AS withdrawal
+				JOIN people AS person ON person.id = withdrawal.withdrawn_by_person_id
+				WHERE (withdrawal.target_kind = 'event' AND withdrawal.target_id = event.id)
+				   OR (withdrawal.target_kind = 'moment' AND EXISTS (
+					SELECT 1 FROM draft_moments WHERE event_id = event.id AND id = withdrawal.target_id
+				   ))
+				   OR (withdrawal.target_kind = 'media' AND EXISTS (
+					SELECT 1 FROM draft_media_placements WHERE event_id = event.id AND media_item_id = withdrawal.target_id
+				   ))
+			), '[]'::jsonb)::text
 		FROM events AS event
 		LEFT JOIN publications AS publication ON publication.id = event.current_publication_id
 		WHERE event.id = ?
 	`, id).Scan(ctx, &event.ID, &event.Lifecycle, &event.Title, &event.Description,
 		&event.GroupingTimezone, &event.Version, &event.FinalReviewComplete,
-		&event.PublishedEditableVersion, &event.CreatedAt, &event.UpdatedAt)
+		&event.PublishedEditableVersion, &event.CreatedAt, &event.UpdatedAt, &withdrawalsJSON)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Event{}, ErrNotFound
 	}
 	if err != nil {
+		return Event{}, err
+	}
+	if err := json.Unmarshal([]byte(withdrawalsJSON), &event.Withdrawals); err != nil {
 		return Event{}, err
 	}
 	event.Sources = make([]EventSource, 0)
