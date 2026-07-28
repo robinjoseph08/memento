@@ -866,8 +866,8 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
                 {search.data ? (
                   <p aria-live="polite" className="search-summary">
                     {search.data.total_photos} matching{" "}
-                    {search.data.total_photos === 1 ? "photo" : "photos"} in{" "}
-                    {search.data.total_events}{" "}
+                    {search.data.total_photos === 1 ? "photo" : "photos"}.{" "}
+                    {search.data.total_events} matching{" "}
                     {search.data.total_events === 1 ? "Event" : "Events"}.
                     {search.data.has_more
                       ? " Refine the search to see fewer results."

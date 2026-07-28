@@ -627,6 +627,67 @@ test("rejects Place-label count and length limits before autosave", async () => 
   expect(saves[0].place_labels).toEqual(["é".repeat(120)]);
 });
 
+test("merges and deduplicates Moment Place labels", async () => {
+  const initial = draft();
+  initial.moments[0].place_labels = ["Garden", "Café"];
+  initial.moments[1].place_labels = ["garden", "River Walk"];
+  const saves = stubOrganizerAPI(initial);
+
+  renderOrganizer();
+  fireEvent.click(
+    await screen.findByRole("button", { name: /Family weekend/ }),
+  );
+  await screen.findByRole(
+    "heading",
+    { name: "Family weekend" },
+    contentionWait,
+  );
+  fireEvent.click(
+    screen.getAllByRole("button", { name: "Merge with previous Moment" })[1],
+  );
+
+  await waitFor(() =>
+    expect(screen.getByLabelText("Place labels for Moment 1")).toHaveValue(
+      "Garden, Café, River Walk",
+    ),
+  );
+  await waitFor(() => expect(saves).toHaveLength(1), contentionWait);
+  expect(saves[0].moments[0].place_labels).toEqual([
+    "Garden",
+    "Café",
+    "River Walk",
+  ]);
+});
+
+test("blocks a Moment merge that would exceed the Place-label limit", async () => {
+  const initial = draft();
+  initial.moments[0].place_labels = Array.from(
+    { length: 20 },
+    (_, index) => `Place ${index + 1}`,
+  );
+  initial.moments[1].place_labels = ["Overflow Place"];
+  const saves = stubOrganizerAPI(initial);
+
+  renderOrganizer();
+  fireEvent.click(
+    await screen.findByRole("button", { name: /Family weekend/ }),
+  );
+  await screen.findByRole(
+    "heading",
+    { name: "Family weekend" },
+    contentionWait,
+  );
+  fireEvent.click(
+    screen.getAllByRole("button", { name: "Merge with previous Moment" })[1],
+  );
+
+  expect(screen.getByRole("alert")).toHaveTextContent(
+    "Use no more than 20 Place labels. Remove Place labels before merging these Moments.",
+  );
+  expect(screen.getAllByText(/Moment \d ·/)).toHaveLength(2);
+  expect(saves).toHaveLength(0);
+});
+
 test("organizes merged and split days with pointer and keyboard controls", async () => {
   const saves = stubOrganizerAPI(draft());
 

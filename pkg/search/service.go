@@ -60,7 +60,8 @@ type Media struct {
 	OriginalURL   string  `json:"original_url"`
 }
 
-// EventResult contains totals, spans, and a cover computed only from matching authorized Media.
+// EventResult contains authorized totals and spans. Its cover prefers matching
+// authorized Media, then falls back to authorized Event Media for a range-only match.
 type EventResult struct {
 	ID             string  `json:"id"`
 	Title          string  `json:"title"`

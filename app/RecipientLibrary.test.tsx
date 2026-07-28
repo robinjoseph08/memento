@@ -731,7 +731,7 @@ test("keeps private search text in a POST body and renders safe grouped results"
 
   expect(await screen.findByText("José Alvarez")).toBeVisible();
   expect(screen.getByText(/attended part of Café Reunion/)).toBeVisible();
-  expect(screen.getByText("1 matching photo in 1 Event.")).toBeVisible();
+  expect(screen.getByText("1 matching photo. 1 matching Event.")).toBeVisible();
   const searchRequest = requests.find(
     (request) => request.path === "/api/search",
   );
@@ -750,7 +750,65 @@ test("keeps private search text in a POST body and renders safe grouped results"
   );
   expect(screen.queryByText("José Alvarez")).not.toBeInTheDocument();
   expect(
-    screen.queryByText("1 matching photo in 1 Event."),
+    screen.queryByText("1 matching photo. 1 matching Event."),
+  ).not.toBeInTheDocument();
+});
+
+test("presents independent photo and Event totals for a range-only Event match", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) => {
+      const path = requestPath(input);
+      if (path.startsWith("/api/me/photos?")) {
+        return json({ media: [], next_cursor: null });
+      }
+      if (path === "/api/me/new-for-you") return json({ events: [] });
+      if (path === "/api/search") {
+        return json({
+          events: [
+            {
+              id: "event-range-match",
+              title: "Summer holiday",
+              description: "",
+              media_count: 0,
+              date_start: null,
+              date_end: null,
+              cover_media_id: "authorized-cover",
+              cover_width: 1200,
+              cover_height: 800,
+              cover_available: true,
+              thumbnail_url: "/api/me/media/authorized-cover/thumbnail",
+            },
+          ],
+          photos: [],
+          people: [],
+          total_events: 1,
+          total_photos: 0,
+          has_more: false,
+        });
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    }),
+  );
+
+  renderLibrary();
+  fireEvent.click(screen.getByRole("button", { name: "Search library" }));
+  fireEvent.change(screen.getByLabelText("Date filter"), {
+    target: { value: "date" },
+  });
+  fireEvent.change(screen.getByLabelText("Date"), {
+    target: { value: "2026-07-25" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Run search" }));
+
+  expect(
+    await screen.findByText("0 matching photos. 1 matching Event."),
+  ).toBeVisible();
+  expect(
+    screen.getByRole("button", { name: /Summer holiday/ }),
+  ).toHaveTextContent("0 matching items");
+  expect(
+    screen.queryByText("Nothing in your shared collection matched."),
   ).not.toBeInTheDocument();
 });
 

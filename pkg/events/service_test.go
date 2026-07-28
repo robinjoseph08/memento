@@ -76,6 +76,11 @@ func TestPlaceLabelLimitsUseRuneLengthAndMapToAccurateGuidance(t *testing.T) {
 	assert.True(t, valid)
 	assert.Equal(t, []string{strings.Repeat("é", 120)}, accepted)
 
+	accepted, valid = normalizePlaceLabels([]string{" Garden ", "garden", "Café"})
+	assert.True(t, valid)
+	assert.Equal(t, []string{"Garden", "Café"}, accepted,
+		"Moment merges can preserve the ordered union without duplicate labels")
+
 	mapped := draftError(ErrPlaceLabelsInvalid, "Event")
 	var coded *errcodes.Error
 	require.ErrorAs(t, mapped, &coded)

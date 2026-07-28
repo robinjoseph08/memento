@@ -51,6 +51,19 @@ function validatePlaceLabels(labels: string[]) {
   return "";
 }
 
+function mergePlaceLabels(...groups: string[][]) {
+  const labels: string[] = [];
+  const seen = new Set<string>();
+  for (const value of groups.flat()) {
+    const label = value.trim();
+    const key = label.toLowerCase();
+    if (!label || seen.has(key)) continue;
+    seen.add(key);
+    labels.push(label);
+  }
+  return labels;
+}
+
 function PlaceLabelEditor({
   ariaLabel,
   labels,
@@ -253,6 +266,7 @@ export function EventOrganizer({
   const [saveState, setSaveState] = useState<SaveState>("saved");
   const [conflictRecoveryError, setConflictRecoveryError] = useState("");
   const [conflictRecoveryPending, setConflictRecoveryPending] = useState(false);
+  const [mergeError, setMergeError] = useState("");
   const [revision, setRevision] = useState(0);
   const [notifyRecipients, setNotifyRecipients] = useState(true);
   const [previewRecipientID, setPreviewRecipientID] = useState("");
@@ -677,16 +691,29 @@ export function EventOrganizer({
 
   function mergeWithPrevious(index: number) {
     if (!currentDraft || index < 1) return;
-    const previousID = currentDraft.moments[index - 1].id;
-    const removedID = currentDraft.moments[index].id;
+    const previousMoment = currentDraft.moments[index - 1];
+    const removedMoment = currentDraft.moments[index];
+    const placeLabels = mergePlaceLabels(
+      previousMoment.place_labels,
+      removedMoment.place_labels,
+    );
+    const validationError = validatePlaceLabels(placeLabels);
+    if (validationError) {
+      setMergeError(
+        `${validationError} Remove Place labels before merging these Moments.`,
+      );
+      return;
+    }
+    setMergeError("");
     change((next) => {
       const previous = next.moments[index - 1];
       const removed = next.moments[index];
+      previous.place_labels = placeLabels;
       previous.media_items.push(...removed.media_items);
       next.moments.splice(index, 1);
     });
-    if (destination === removedID) setDestination(previousID);
-    setInspectedMomentID(previousID);
+    if (destination === removedMoment.id) setDestination(previousMoment.id);
+    setInspectedMomentID(previousMoment.id);
   }
 
   function reorderMoment(index: number, direction: -1 | 1) {
@@ -906,6 +933,7 @@ export function EventOrganizer({
                     setSaveState("saved");
                     setConflictRecoveryError("");
                     setConflictRecoveryPending(false);
+                    setMergeError("");
                     setNotifyRecipients(true);
                     setPreviewRecipientID("");
                     setPreviewOpen(false);
@@ -1010,6 +1038,11 @@ export function EventOrganizer({
                   </button>
                 </div>
               </div>
+              {mergeError ? (
+                <p className="form-error" role="alert">
+                  {mergeError}
+                </p>
+              ) : null}
               <section className="moment-card unassigned">
                 <h4>Unassigned Media</h4>
                 <ul>
