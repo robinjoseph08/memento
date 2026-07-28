@@ -232,6 +232,13 @@ type draftPlacementRow struct {
 	Position      int        `json:"position"`
 }
 
+type editablePlacementOrder struct {
+	MediaItemID       uuid.UUID  `bun:"media_item_id"`
+	DraftMomentID     *uuid.UUID `bun:"draft_moment_id"`
+	PublishedPosition *int       `bun:"published_position"`
+	MomentPosition    *int       `bun:"moment_position"`
+}
+
 type priorMomentState struct {
 	ID               uuid.UUID
 	Position         int
@@ -899,8 +906,24 @@ func (s *Service) RestorePublishedMedia(ctx context.Context, actor setup.Curator
 			}
 		}
 
-		var placementIDs []uuid.UUID
-		if err := tx.NewRaw(`SELECT media_item_id FROM draft_media_placements WHERE event_id = ? ORDER BY position, media_item_id`, id).Scan(ctx, &placementIDs); err != nil {
+		var momentPosition int
+		if err := tx.NewRaw(`SELECT position FROM draft_moments WHERE event_id = ? AND id = ?`, id, momentID).Scan(ctx, &momentPosition); err != nil {
+			return err
+		}
+		var placementOrder []editablePlacementOrder
+		if err := tx.NewRaw(`
+			SELECT editable.media_item_id, editable.draft_moment_id,
+				published.position AS published_position, moment.position AS moment_position
+			FROM draft_media_placements AS editable
+			LEFT JOIN draft_moments AS moment
+			  ON moment.event_id = editable.event_id AND moment.id = editable.draft_moment_id
+			LEFT JOIN published_moments AS published_moment
+			  ON published_moment.publication_id = ? AND published_moment.draft_moment_id = editable.draft_moment_id
+			LEFT JOIN published_media_placements AS published
+			  ON published.published_moment_id = published_moment.id AND published.media_item_id = editable.media_item_id
+			WHERE editable.event_id = ?
+			ORDER BY editable.position, editable.media_item_id
+		`, *publicationID, id).Scan(ctx, &placementOrder); err != nil {
 			return err
 		}
 		if _, err := tx.NewRaw(`UPDATE draft_media_placements SET position = position + ? WHERE event_id = ?`, maxDraftMediaItems+1, id).Exec(ctx); err != nil {
@@ -912,9 +935,10 @@ func (s *Service) RestorePublishedMedia(ctx context.Context, actor setup.Curator
 		`, id, mediaID, momentID, maxDraftMediaItems*3, now).Exec(ctx); err != nil {
 			return err
 		}
-		insertAt := publishedMediaPosition
-		if insertAt > len(placementIDs) {
-			insertAt = len(placementIDs)
+		insertAt := restoredPlacementInsertAt(placementOrder, momentID, momentPosition, publishedMediaPosition)
+		placementIDs := make([]uuid.UUID, 0, len(placementOrder)+1)
+		for _, placement := range placementOrder {
+			placementIDs = append(placementIDs, placement.MediaItemID)
 		}
 		placementIDs = append(placementIDs, uuid.Nil)
 		copy(placementIDs[insertAt+1:], placementIDs[insertAt:])
@@ -947,6 +971,28 @@ func (s *Service) RestorePublishedMedia(ctx context.Context, actor setup.Curator
 		return err
 	})
 	return restored, err
+}
+
+func restoredPlacementInsertAt(placements []editablePlacementOrder, momentID uuid.UUID, momentPosition, publishedPosition int) int {
+	lastInMoment := -1
+	for index, placement := range placements {
+		if placement.DraftMomentID == nil || *placement.DraftMomentID != momentID {
+			continue
+		}
+		lastInMoment = index
+		if placement.PublishedPosition != nil && *placement.PublishedPosition > publishedPosition {
+			return index
+		}
+	}
+	if lastInMoment >= 0 {
+		return lastInMoment + 1
+	}
+	for index, placement := range placements {
+		if placement.MomentPosition == nil || *placement.MomentPosition > momentPosition {
+			return index
+		}
+	}
+	return len(placements)
 }
 
 func sameOrganization(priorMoments []priorMomentState, priorPlacements []priorPlacementState, moments []draftMomentRow, placements []draftPlacementRow) bool {

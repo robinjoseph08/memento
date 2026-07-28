@@ -639,6 +639,69 @@ func TestCuratorCanRestoreAutosavedPublishedMediaRemoval(t *testing.T) {
 	assert.Zero(t, restorationRows)
 }
 
+func TestPublishedMediaRestorationCancelsInReversePublishedOrder(t *testing.T) {
+	fixture := newPublicationFixture(t)
+	ctx := context.Background()
+	_, err := fixture.db.NewRaw(`
+		UPDATE draft_media_placements SET draft_moment_id = ? WHERE event_id = ?;
+		UPDATE draft_moments SET cover_media_item_id = ? WHERE id = ?;
+		DELETE FROM draft_moments WHERE event_id = ? AND id <> ?
+	`, fixture.moments[0], fixture.event, fixture.media[2], fixture.moments[0], fixture.event, fixture.moments[0]).Exec(ctx)
+	require.NoError(t, err)
+	_, err = fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, fixture.request())
+	require.NoError(t, err)
+
+	sourceID := uuid.New()
+	_, err = fixture.db.NewRaw(`
+		INSERT INTO source_albums (
+			id, immich_album_id, name, description, asset_count, source_created_at,
+			source_updated_at, disposition, first_seen_at, last_seen_at,
+			source_fingerprint, next_reconciliation_at
+		) VALUES (?, ?, 'Published source', '', 3, now(), now(), 'drafted', now(), now(), decode(repeat('00', 32), 'hex'), now());
+		INSERT INTO event_sources (
+			event_id, source_album_id, source_order, initialized_name,
+			initialized_description, initialized_at
+		) VALUES (?, ?, 0, 'Published source', '', now());
+		INSERT INTO source_album_memberships (
+			source_album_id, immich_asset_id, media_item_id, first_seen_at,
+			last_seen_at, source_fingerprint
+		) SELECT ?, immich_asset_id, id, now(), now(), decode(repeat('11', 32), 'hex')
+		  FROM media_items WHERE id IN (?, ?, ?)
+	`, sourceID, uuid.New(), fixture.event, sourceID, sourceID, fixture.media[0], fixture.media[1], fixture.media[2]).Exec(ctx)
+	require.NoError(t, err)
+
+	cover := fixture.media[2].String()
+	removed, err := fixture.service.OrganizeEvent(ctx, fixture.actor, fixture.event, OrganizeEventRequest{
+		Version: 7,
+		Moments: []OrganizeMoment{{
+			ID: fixture.moments[0].String(), Title: "Moment", ProposedDay: "2026-07-27",
+			CoverMediaItemID: &cover, MediaItemIDs: []string{fixture.media[2].String()},
+		}},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, removed.StagedUpdate)
+
+	partial, err := fixture.service.RestorePublishedMedia(ctx, fixture.actor, fixture.event, RestorePublishedMediaRequest{
+		Version: removed.Version, MediaItemID: fixture.media[1].String(),
+	})
+	require.NoError(t, err)
+	require.Len(t, partial.Moments, 1)
+	require.Len(t, partial.Moments[0].MediaItems, 2)
+	assert.Equal(t, fixture.media[1].String(), partial.Moments[0].MediaItems[0].ID)
+	assert.Equal(t, fixture.media[2].String(), partial.Moments[0].MediaItems[1].ID)
+
+	cancelled, err := fixture.service.RestorePublishedMedia(ctx, fixture.actor, fixture.event, RestorePublishedMediaRequest{
+		Version: partial.Version, MediaItemID: fixture.media[0].String(),
+	})
+	require.NoError(t, err)
+	require.Len(t, cancelled.Moments, 1)
+	require.Len(t, cancelled.Moments[0].MediaItems, 3)
+	for index, media := range cancelled.Moments[0].MediaItems {
+		assert.Equal(t, fixture.media[index].String(), media.ID)
+	}
+	assert.Nil(t, cancelled.StagedUpdate, "reverse-order restoration exactly cancels the private removals")
+}
+
 func TestPublishedMediaRestorationPreservesValidOrderAfterFreshReview(t *testing.T) {
 	fixture := newPublicationFixture(t)
 	ctx := context.Background()
