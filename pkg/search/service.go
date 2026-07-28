@@ -13,6 +13,7 @@ import (
 
 	"github.com/robinjoseph08/memento/pkg/setup"
 	"github.com/uptrace/bun"
+	"golang.org/x/text/unicode/norm"
 )
 
 const (
@@ -140,13 +141,23 @@ func tokenize(value string) []string {
 		if !containsWordCharacter {
 			continue
 		}
-		if _, duplicate := seen[candidate]; duplicate {
+		key := normalizedTermKey(candidate)
+		if _, duplicate := seen[key]; duplicate {
 			continue
 		}
-		seen[candidate] = struct{}{}
+		seen[key] = struct{}{}
 		terms = append(terms, candidate)
 	}
 	return terms
+}
+
+func normalizedTermKey(value string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.Is(unicode.Mn, r) {
+			return -1
+		}
+		return unicode.ToLower(r)
+	}, norm.NFD.String(value))
 }
 
 func parseDateFilter(filter DateFilter) (bounds, error) {
@@ -210,7 +221,7 @@ const authorizedDocuments = `
 	SELECT document.event_id, document.publication_id, document.media_item_id,
 	       document.search_vector, document.normalized_search_text, document.capture_date,
 	       current.title, current.description, current.committed_at,
-	       placement.published_moment_id, placement.position,
+	       placement.published_moment_id, moment.proposed_day AS event_day, placement.position,
 	       published.media_type, published.width, published.height, published.local_date_time,
 	       media.availability = 'current' AS available
 	FROM published_search_documents AS document
@@ -260,7 +271,7 @@ const discoverablePerson = `
 
 func matchingCTE(actor setup.SessionActor, terms []string, dateBounds *bounds) (string, []any) {
 	args := []any{actor.AccessID}
-	predicates := make([]string, 0, len(terms)+1)
+	textPredicates := make([]string, 0, len(terms))
 	for _, term := range terms {
 		long := utf8.RuneCountInString(term) >= 5
 		predicate := `(authorized.search_vector @@ to_tsquery('simple', memento_normalize_search_text(?) || ':*')`
@@ -274,18 +285,34 @@ func matchingCTE(actor setup.SessionActor, terms []string, dateBounds *bounds) (
 		if long {
 			args = append(args, term)
 		}
-		predicates = append(predicates, predicate)
+		textPredicates = append(textPredicates, predicate)
 	}
+	textWhere := "TRUE"
+	if len(textPredicates) > 0 {
+		textWhere = strings.Join(textPredicates, " AND ")
+	}
+	cte := `WITH authorized AS (` + authorizedDocuments + `), text_matched AS (
+		SELECT authorized.* FROM authorized WHERE ` + textWhere + `
+	), authorized_event_ranges AS (
+		SELECT event_id, min(event_day) AS date_start, max(event_day) AS date_end
+		FROM authorized GROUP BY event_id
+	), matched AS (
+		SELECT text_matched.* FROM text_matched`
 	if dateBounds != nil {
-		predicates = append(predicates, `authorized.capture_date BETWEEN ?::date AND ?::date`)
+		cte += ` WHERE text_matched.capture_date BETWEEN ?::date AND ?::date`
 		args = append(args, dateBounds.start.Format(time.DateOnly), dateBounds.end.Format(time.DateOnly))
 	}
-	where := "TRUE"
-	if len(predicates) > 0 {
-		where = strings.Join(predicates, " AND ")
+	cte += `
+	), matching_events AS (
+		SELECT DISTINCT text_matched.event_id
+		FROM text_matched
+		JOIN authorized_event_ranges AS event_range ON event_range.event_id = text_matched.event_id`
+	if dateBounds != nil {
+		cte += `
+		WHERE event_range.date_start <= ?::date AND event_range.date_end >= ?::date`
+		args = append(args, dateBounds.end.Format(time.DateOnly), dateBounds.start.Format(time.DateOnly))
 	}
-	return `WITH authorized AS (` + authorizedDocuments + `), matched AS (
-		SELECT authorized.* FROM authorized WHERE ` + where + `
+	return cte + `
 	)`, args
 }
 
@@ -321,6 +348,11 @@ func ensureActor(ctx context.Context, db bun.IDB, actor setup.SessionActor) erro
 	return nil
 }
 
+func setSearchStatementTimeout(ctx context.Context, tx bun.Tx) error {
+	_, err := tx.ExecContext(ctx, `SET LOCAL statement_timeout = '`+searchStatementTimeout+`'`)
+	return err
+}
+
 // Search returns only current authorized candidates and computes every observable value from that set.
 func (s *Service) Search(ctx context.Context, actor setup.SessionActor, request Request) (Response, error) {
 	terms, dateBounds, err := parseRequest(request)
@@ -332,7 +364,7 @@ func (s *Service) Search(ctx context.Context, actor setup.SessionActor, request 
 		People: make([]PersonAttendanceResult, 0),
 	}
 	err = s.db.RunInTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true}, func(ctx context.Context, tx bun.Tx) error {
-		if _, err := tx.ExecContext(ctx, `SET LOCAL statement_timeout = '`+searchStatementTimeout+`'`); err != nil {
+		if err := setSearchStatementTimeout(ctx, tx); err != nil {
 			return err
 		}
 		if err := ensureActor(ctx, tx, actor); err != nil {
@@ -345,16 +377,21 @@ func (s *Service) Search(ctx context.Context, actor setup.SessionActor, request 
 		}
 		cte, args := matchingCTE(actor, terms, dateBounds)
 		eventQuery := cte + `, ranked_events AS (
-			SELECT matched.event_id, matched.title, matched.description,
+			SELECT candidate.event_id, candidate.title, candidate.description,
 			       count(DISTINCT matched.media_item_id)::integer AS media_count,
 			       min(matched.capture_date)::text AS date_start,
 			       max(matched.capture_date)::text AS date_end,
-			       (array_agg(matched.media_item_id ORDER BY matched.available DESC, matched.position, matched.media_item_id))[1] AS cover_media_id,
-			       (array_agg(matched.width ORDER BY matched.available DESC, matched.position, matched.media_item_id))[1] AS cover_width,
-			       (array_agg(matched.height ORDER BY matched.available DESC, matched.position, matched.media_item_id))[1] AS cover_height,
-			       (array_agg(matched.available ORDER BY matched.available DESC, matched.position, matched.media_item_id))[1] AS cover_available,
-			       max(matched.committed_at) AS committed_at
-			FROM matched GROUP BY matched.event_id, matched.title, matched.description
+			       (array_agg(candidate.media_item_id ORDER BY (matched.media_item_id IS NOT NULL) DESC, candidate.available DESC, candidate.position, candidate.media_item_id))[1] AS cover_media_id,
+			       (array_agg(candidate.width ORDER BY (matched.media_item_id IS NOT NULL) DESC, candidate.available DESC, candidate.position, candidate.media_item_id))[1] AS cover_width,
+			       (array_agg(candidate.height ORDER BY (matched.media_item_id IS NOT NULL) DESC, candidate.available DESC, candidate.position, candidate.media_item_id))[1] AS cover_height,
+			       (array_agg(candidate.available ORDER BY (matched.media_item_id IS NOT NULL) DESC, candidate.available DESC, candidate.position, candidate.media_item_id))[1] AS cover_available,
+			       max(candidate.committed_at) AS committed_at
+			FROM text_matched AS candidate
+			JOIN matching_events ON matching_events.event_id = candidate.event_id
+			LEFT JOIN matched ON matched.event_id = candidate.event_id
+			 AND matched.publication_id = candidate.publication_id
+			 AND matched.media_item_id = candidate.media_item_id
+			GROUP BY candidate.event_id, candidate.title, candidate.description
 		)
 		SELECT event_id AS id, title, description, media_count, date_start, date_end,
 		       cover_media_id, cover_width, cover_height, cover_available, committed_at,

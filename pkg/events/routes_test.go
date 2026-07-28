@@ -2,6 +2,7 @@ package events
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -117,6 +118,35 @@ func TestDraftRequestValidationRejectsMissingFieldsBeforeServiceAccess(t *testin
 		response := draftRequest(e, http.MethodPost, test.path, test.body)
 		require.Equal(t, http.StatusUnprocessableEntity, response.Code)
 		assert.Contains(t, response.Body.String(), test.field)
+	}
+}
+
+func TestOrganizeRouteMapsEventAndMomentPlaceLabelCountsToAccurateGuidance(t *testing.T) {
+	labels := make([]string, 21)
+	for index := range labels {
+		labels[index] = "Place " + string(rune('A'+index))
+	}
+	for _, test := range []struct {
+		name string
+		body map[string]any
+	}{
+		{name: "Event labels", body: map[string]any{"version": 1, "place_labels": labels}},
+		{name: "Moment labels", body: map[string]any{
+			"version": 1,
+			"moments": []map[string]any{{
+				"id": "22222222-2222-4222-8222-222222222222", "proposed_day": "2026-07-28",
+				"media_item_ids": []string{"33333333-3333-4333-8333-333333333333"}, "place_labels": labels,
+			}},
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			body, err := json.Marshal(test.body)
+			require.NoError(t, err)
+			response := draftRequest(draftHTTP(nil, &draftAuthorizer{}), http.MethodPut,
+				"/api/events/11111111-1111-4111-8111-111111111111/organization", string(body))
+			require.Equal(t, http.StatusUnprocessableEntity, response.Code)
+			assert.Contains(t, response.Body.String(), "Use no more than 20 Place labels, with 1 to 120 characters in each label.")
+		})
 	}
 }
 

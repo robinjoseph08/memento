@@ -365,6 +365,52 @@ func TestSearchDateFiltersEnforceInclusiveUpperAndLowerBounds(t *testing.T) {
 	}
 }
 
+func TestSearchDateMatchesAuthorizedPublishedEventRangeWithoutMatchingPhotoCaptureDates(t *testing.T) {
+	fixture := newPublicationFixture(t)
+	ctx := context.Background()
+	_, err := fixture.db.NewRaw(`
+		UPDATE draft_moments SET proposed_day = '2026-07-20' WHERE id = ?;
+		UPDATE draft_moments SET proposed_day = '2026-07-30' WHERE id = ?;
+		UPDATE draft_moments SET proposed_day = '2026-08-15' WHERE id = ?;
+		UPDATE media_items SET local_date_time = '2026-07-19T10:00:00Z' WHERE id = ?;
+		UPDATE media_items SET local_date_time = '2026-07-31T10:00:00Z' WHERE id = ?;
+		INSERT INTO audience_snapshot_entries (
+			snapshot_id, recipient_person_id, recipient_access_generation_id
+		)
+		SELECT snapshot_id, ?, ? FROM current_audience_snapshots
+		WHERE target_kind = 'moment' AND target_id = ?
+	`, fixture.moments[0], fixture.moments[1], fixture.moments[2], fixture.media[0], fixture.media[1],
+		fixture.people["shared"], fixture.access["shared"], fixture.moments[1]).Exec(ctx)
+	require.NoError(t, err)
+	_, err = fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, fixture.request())
+	require.NoError(t, err)
+	actor := createSearchSession(t, fixture)
+	service := searchdomain.New(fixture.db)
+
+	inside := "2026-07-25"
+	result, err := service.Search(ctx, actor, searchdomain.Request{
+		Date: &searchdomain.DateFilter{Kind: "date", Date: &inside},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 1, result.TotalEvents)
+	assert.Zero(t, result.TotalPhotos, "Photos match only their capture dates")
+	assert.Empty(t, result.Photos)
+	require.Len(t, result.Events, 1)
+	assert.Equal(t, fixture.event.String(), result.Events[0].ID)
+	assert.Zero(t, result.Events[0].MediaCount, "the Event range match must not invent an in-filter Media match")
+	assert.Nil(t, result.Events[0].DateStart)
+	assert.Nil(t, result.Events[0].DateEnd)
+	assert.Contains(t, []string{fixture.media[0].String(), fixture.media[1].String()}, result.Events[0].CoverMediaID)
+
+	hiddenOnly := "2026-08-15"
+	hiddenResult, err := service.Search(ctx, actor, searchdomain.Request{
+		Date: &searchdomain.DateFilter{Kind: "date", Date: &hiddenOnly},
+	})
+	require.NoError(t, err)
+	assertSafeEmptySearchResponse(t, hiddenResult,
+		"an unauthorized published Moment must not extend the observable Event date range")
+}
+
 func TestSearchTransactionReauthorizesSessionAtAccessStateBoundaries(t *testing.T) {
 	fixture := newPublicationFixture(t)
 	ctx := context.Background()

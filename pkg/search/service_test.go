@@ -65,8 +65,9 @@ func TestDateFilterRejectsInvalidVariantsAfterJSONDecoding(t *testing.T) {
 	}
 }
 
-func TestTokenizeKeepsUniqueUnicodeWordsAndDiscardsMarkOnlyTerms(t *testing.T) {
-	assert.Equal(t, []string{"café", "são", "2026"}, tokenize(" CAFÉ, café São / 2026 "))
+func TestTokenizeKeepsDiacriticNormalizedUniqueUnicodeWordsAndDiscardsMarkOnlyTerms(t *testing.T) {
+	assert.Equal(t, []string{"café", "são", "2026"}, tokenize(" CAFÉ, cafe café São sao / 2026 "))
+	assert.Equal(t, []string{"café"}, tokenize("café cafe cafe\u0301"))
 	assert.Empty(t, tokenize("\u0301 \u0308"))
 
 	_, _, err := parseRequest(Request{Query: "\u0301"})
@@ -87,6 +88,10 @@ func TestParseRequestBoundsUniqueTermsWithoutPenalizingDuplicates(t *testing.T) 
 	terms, _, err = parseRequest(Request{Query: strings.Repeat("a ", 100)})
 	require.NoError(t, err)
 	assert.Equal(t, []string{"a"}, terms)
+
+	terms, _, err = parseRequest(Request{Query: strings.Repeat("café cafe ", 20)})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"café"}, terms)
 
 	_, _, err = parseRequest(Request{Query: allowed + " m"})
 	assert.ErrorIs(t, err, ErrInvalidRequest)

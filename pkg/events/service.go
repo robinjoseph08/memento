@@ -84,7 +84,7 @@ type Moment struct {
 type OrganizeMoment struct {
 	ID               string   `json:"id" validate:"required"`
 	Title            string   `json:"title,omitempty" validate:"max=240" mod:"trim"`
-	PlaceLabels      []string `json:"place_labels" validate:"max=20"`
+	PlaceLabels      []string `json:"place_labels"`
 	ProposedDay      string   `json:"proposed_day" validate:"required"`
 	CoverMediaItemID *string  `json:"cover_media_item_id" tstype:"string | null,required"`
 	MediaItemIDs     []string `json:"media_item_ids" validate:"required,min=1,max=100000"`
@@ -93,7 +93,7 @@ type OrganizeMoment struct {
 // OrganizeEventRequest atomically replaces draft organization at an expected version.
 type OrganizeEventRequest struct {
 	Version             int64            `json:"version" validate:"required,min=1"`
-	PlaceLabels         []string         `json:"place_labels" validate:"max=20"`
+	PlaceLabels         []string         `json:"place_labels"`
 	Moments             []OrganizeMoment `json:"moments" validate:"max=100000,dive"`
 	UnassignedMediaIDs  []string         `json:"unassigned_media_ids" validate:"max=100000"`
 	FinalReviewComplete bool             `json:"final_review_complete"`

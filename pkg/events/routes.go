@@ -100,6 +100,9 @@ func (h *Handler) OrganizeEvent(c echo.Context) error {
 	if err := c.Bind(&request); err != nil {
 		return err
 	}
+	if !organizationPlaceLabelsValid(request) {
+		return draftError(ErrPlaceLabelsInvalid, "Event")
+	}
 	event, err := h.service.OrganizeEvent(h.requestContext(c), actor, id, request)
 	if mapped := draftError(err, "Event"); mapped != nil {
 		return mapped
@@ -308,6 +311,18 @@ func withdrawalError(err error) error {
 	default:
 		return err
 	}
+}
+
+func organizationPlaceLabelsValid(request OrganizeEventRequest) bool {
+	if _, valid := normalizePlaceLabels(request.PlaceLabels); !valid {
+		return false
+	}
+	for _, moment := range request.Moments {
+		if _, valid := normalizePlaceLabels(moment.PlaceLabels); !valid {
+			return false
+		}
+	}
+	return true
 }
 
 func draftError(err error, resource string) error {
