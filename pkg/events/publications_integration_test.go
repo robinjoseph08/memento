@@ -1152,6 +1152,51 @@ func TestNoNewMediaCorrectionIsQuietAndClearsStageAtomically(t *testing.T) {
 	assertPublicationHandoffSkipped(t, fixture, second)
 }
 
+func TestPublicationActivityRequiresGloballyNewEffectiveMedia(t *testing.T) {
+	for _, test := range []struct {
+		name            string
+		withdrawOverlap bool
+		expectedAccess  []string
+	}{
+		{name: "effective overlap stays quiet", expectedAccess: []string{"hidden"}},
+		{name: "withdrawn overlap qualifies", withdrawOverlap: true, expectedAccess: []string{"shared", "hidden"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newPublicationFixture(t)
+			ctx := context.Background()
+			secondEvent, _, _ := publishReusedMediaInSecondEvent(t, fixture)
+			if test.withdrawOverlap {
+				_, err := fixture.service.Withdraw(ctx, fixture.actor, WithdrawRequest{
+					TargetKind: WithdrawalTargetEvent,
+					TargetID:   secondEvent.String(),
+					Reason:     "Prior overlap is no longer effective",
+				})
+				require.NoError(t, err)
+			}
+
+			publication, err := fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, fixture.request())
+			require.NoError(t, err)
+			var activityAccess, newForYouAccess []uuid.UUID
+			require.NoError(t, fixture.db.NewRaw(`
+				SELECT recipient_access_generation_id
+				FROM publication_activity_items
+				WHERE publication_id = ? ORDER BY recipient_access_generation_id
+			`, publication.ID).Scan(ctx, &activityAccess))
+			require.NoError(t, fixture.db.NewRaw(`
+				SELECT recipient_access_generation_id
+				FROM new_for_you_entries
+				WHERE publication_id = ? ORDER BY recipient_access_generation_id
+			`, publication.ID).Scan(ctx, &newForYouAccess))
+			expectedAccess := make([]uuid.UUID, len(test.expectedAccess))
+			for index, name := range test.expectedAccess {
+				expectedAccess[index] = fixture.access[name]
+			}
+			assert.ElementsMatch(t, expectedAccess, activityAccess)
+			assert.Equal(t, activityAccess, newForYouAccess)
+		})
+	}
+}
+
 func TestPublicationInvalidatesAnotherEventsChangedStagedAccessImpact(t *testing.T) {
 	fixture := newPublicationFixture(t)
 	ctx := context.Background()

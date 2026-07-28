@@ -939,27 +939,41 @@ export function EventOrganizer({
       }),
     onMutate: () => setSaveState("saving"),
     onSuccess: (saved, attempted) => {
-      queryClient.setQueryData(["event", saved.id], saved);
       void queryClient.invalidateQueries({ queryKey: ["events"] });
       void queryClient.invalidateQueries({
         queryKey: ["attendance-audience"],
       });
-      if (selectedIDRef.current !== saved.id) return;
+      if (selectedIDRef.current !== saved.id) {
+        queryClient.setQueryData(["event", saved.id], saved);
+        return;
+      }
 
       const latest = latestDraftRef.current;
-      if (latest?.id === saved.id && revisionRef.current > attempted.revision) {
-        const rebased = cloneEvent(latest);
-        rebased.version = saved.version;
+      const hasNewerEdits = revisionRef.current > attempted.revision;
+      const hasNewerAuthoritativeState =
+        latest?.id === saved.id && latest.version > saved.version;
+      if (
+        latest?.id === saved.id &&
+        (hasNewerEdits || hasNewerAuthoritativeState)
+      ) {
+        const rebased = rebaseOrganization(attempted.event, latest, saved);
+        queryClient.setQueryData(["event", saved.id], rebased);
         latestDraftRef.current = rebased;
         setDraft(rebased);
-        setSaveState("unsaved");
+        setSaveState(hasNewerEdits ? "unsaved" : "saved");
+        if (!hasNewerEdits) {
+          revisionRef.current = 0;
+          setRevision(0);
+        }
         return;
       }
 
       const next = cloneEvent(saved);
+      queryClient.setQueryData(["event", saved.id], next);
       latestDraftRef.current = next;
       setDraft(next);
       setSaveState("saved");
+      revisionRef.current = 0;
       setRevision(0);
     },
     onError: (error, attempted) => {

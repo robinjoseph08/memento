@@ -25,6 +25,8 @@ const deletedMomentID = "44444444-4444-4444-8444-444444444444";
 const contentionWait = { timeout: 5_000 };
 
 type OrganizerAPIOptions = {
+  attendanceGate?: Promise<void>;
+  organizationGate?: Promise<void>;
   restoreGate?: Promise<void>;
   restoreMomentID?: string;
   restoreAsCover?: boolean;
@@ -439,19 +441,24 @@ function stubOrganizerAPI(
           "If-Match": String(review.version),
           "X-Memento-CSRF": csrfToken,
         });
-        const moment = persisted.moments.find(
-          (candidate) => candidate.id === attendanceMatch[1],
-        );
-        if (moment) {
-          moment.attendance_complete = true;
-          moment.audience_complete = false;
-        }
-        persisted.version += 1;
-        persisted.final_review_complete = false;
-        review.version += 1;
-        review.attendance_confirmed = true;
-        review.audience_complete = false;
-        return response(review);
+        const confirm = () => {
+          const moment = persisted.moments.find(
+            (candidate) => candidate.id === attendanceMatch[1],
+          );
+          if (moment) {
+            moment.attendance_complete = true;
+            moment.audience_complete = false;
+          }
+          persisted.version += 1;
+          persisted.final_review_complete = false;
+          review.version += 1;
+          review.attendance_confirmed = true;
+          review.audience_complete = false;
+          return response(review);
+        };
+        return options.attendanceGate
+          ? options.attendanceGate.then(confirm)
+          : confirm();
       }
       const approvalMatch = path.match(
         /^\/api\/moments\/([^/]+)\/audience\/approve$/,
@@ -490,7 +497,10 @@ function stubOrganizerAPI(
         ) as OrganizeEventRequest;
         saves.push(request);
         persisted = eventFromRequest(request, persisted);
-        return response(persisted);
+        const saved = structuredClone(persisted);
+        return options.organizationGate
+          ? options.organizationGate.then(() => response(saved))
+          : response(saved);
       }
       throw new Error(`Unexpected request: ${path}`);
     }),
@@ -1713,6 +1723,54 @@ test("rebases Audience version changes without discarding unsaved organization",
   expect(saves.at(-1)?.moments[0].title).toBe("Unsaved organization survives");
   expect(screen.getByLabelText("Title for Moment 1")).toHaveValue(
     "Unsaved organization survives",
+  );
+});
+
+test("keeps newer authoritative review state after a delayed autosave response", async () => {
+  const attendanceGate = deferred();
+  const organizationGate = deferred();
+  const initial = draft();
+  initial.moments[1].attendance_complete = true;
+  stubOrganizerAPI(initial, {
+    attendanceGate: attendanceGate.promise,
+    organizationGate: organizationGate.promise,
+  });
+  renderOrganizer();
+  fireEvent.click(
+    await screen.findByRole("button", { name: /Family weekend/ }),
+  );
+  await screen.findByLabelText("Title for Moment 1");
+  fireEvent.click(
+    screen.getAllByRole("button", {
+      name: "Inspect Attendance and Audience",
+    })[0],
+  );
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Confirm Attendance" }),
+  );
+  fireEvent.change(await screen.findByLabelText("Title for Moment 1"), {
+    target: { value: "Saving while review completes" },
+  });
+  await screen.findByText("Saving…");
+
+  act(() => attendanceGate.resolve());
+  await screen.findByRole("button", { name: "Approve Curator only" });
+  const readiness = screen
+    .getByRole("heading", { name: "Readiness" })
+    .closest("section")!;
+  await waitFor(() =>
+    expect(
+      within(readiness).getByText("Attendance").closest("li"),
+    ).toHaveTextContent("✓ Attendance"),
+  );
+
+  act(() => organizationGate.resolve());
+  await screen.findByText("All changes saved");
+  expect(
+    within(readiness).getByText("Attendance").closest("li"),
+  ).toHaveTextContent("✓ Attendance");
+  expect(screen.getByLabelText("Title for Moment 1")).toHaveValue(
+    "Saving while review completes",
   );
 });
 

@@ -242,6 +242,39 @@ func (s *Service) PublishEvent(ctx context.Context, actor setup.CuratorSession, 
 		if err := audiences.LockPublishedAttendanceProjection(ctx, tx); err != nil {
 			return err
 		}
+		type effectiveEntitlement struct {
+			AccessID    uuid.UUID `bun:"access_id"`
+			MediaItemID uuid.UUID `bun:"media_item_id"`
+		}
+		var priorEffectiveEntitlements []effectiveEntitlement
+		if err := tx.NewRaw(`
+			SELECT DISTINCT entitlement.recipient_access_generation_id AS access_id,
+			       entitlement.media_item_id
+			FROM current_audience_entitlements AS entitlement
+			JOIN current_published_placements AS placement
+			  ON placement.event_id = entitlement.event_id
+			 AND placement.media_item_id = entitlement.media_item_id
+			JOIN published_moments AS moment ON moment.id = placement.published_moment_id
+			WHERE NOT content_is_withdrawn(
+				placement.event_id, moment.draft_moment_id, placement.media_item_id
+			)
+			  AND EXISTS (
+				SELECT 1
+				FROM draft_moments AS candidate_moment
+				JOIN current_audience_snapshots AS candidate_snapshot
+				  ON candidate_snapshot.target_kind = 'moment'
+				 AND candidate_snapshot.target_id = candidate_moment.id
+				JOIN audience_snapshot_entries AS candidate_audience
+				  ON candidate_audience.snapshot_id = candidate_snapshot.snapshot_id
+				JOIN draft_media_placements AS candidate_placement
+				  ON candidate_placement.draft_moment_id = candidate_moment.id
+				WHERE candidate_moment.event_id = ?
+				  AND candidate_audience.recipient_access_generation_id = entitlement.recipient_access_generation_id
+				  AND candidate_placement.media_item_id = entitlement.media_item_id
+			  )
+		`, eventID).Scan(ctx, &priorEffectiveEntitlements); err != nil {
+			return err
+		}
 		if err := s.publicationBoundary(PublicationStepValidated); err != nil {
 			return err
 		}
@@ -447,26 +480,33 @@ func (s *Service) PublishEvent(ctx context.Context, actor setup.CuratorSession, 
 				return err
 			}
 		}
+		priorAccessIDs := make([]uuid.UUID, len(priorEffectiveEntitlements))
+		priorMediaIDs := make([]uuid.UUID, len(priorEffectiveEntitlements))
+		for index, entitlement := range priorEffectiveEntitlements {
+			priorAccessIDs[index] = entitlement.AccessID
+			priorMediaIDs[index] = entitlement.MediaItemID
+		}
 		if _, err := tx.NewRaw(`
-			WITH qualifying_recipients AS MATERIALIZED (
-				SELECT DISTINCT entitlement.recipient_access_generation_id
-				FROM current_audience_entitlements AS entitlement
+			WITH prior_effective_entitlements AS MATERIALIZED (
+				SELECT * FROM unnest(?::uuid[], ?::uuid[]) AS prior(access_id, media_item_id)
+			), qualifying_recipients AS MATERIALIZED (
+				SELECT DISTINCT candidate.recipient_access_generation_id
+				FROM current_audience_entitlements AS candidate
 				JOIN recipient_access_generations AS access
-				  ON access.id = entitlement.recipient_access_generation_id
-				WHERE entitlement.event_id = ? AND access.is_current AND access.state = 'completed'
-				  AND (?::uuid IS NULL OR EXISTS (
-					SELECT 1 FROM current_audience_entitlements AS candidate
-					WHERE candidate.event_id = entitlement.event_id
-					  AND candidate.recipient_access_generation_id = entitlement.recipient_access_generation_id
-					  AND NOT EXISTS (
-						SELECT 1 FROM audience_entries AS prior_audience
-						JOIN published_moments AS prior_moment ON prior_moment.id = prior_audience.published_moment_id
-						JOIN published_media_placements AS prior_placement ON prior_placement.published_moment_id = prior_moment.id
-						WHERE prior_moment.publication_id = ?::uuid
-						  AND prior_audience.recipient_access_generation_id = candidate.recipient_access_generation_id
-						  AND prior_placement.media_item_id = candidate.media_item_id
-					  )
-				  ))
+				  ON access.id = candidate.recipient_access_generation_id
+				JOIN current_published_placements AS placement
+				  ON placement.event_id = candidate.event_id
+				 AND placement.media_item_id = candidate.media_item_id
+				JOIN published_moments AS moment ON moment.id = placement.published_moment_id
+				WHERE candidate.event_id = ? AND access.is_current AND access.state = 'completed'
+				  AND NOT content_is_withdrawn(
+					placement.event_id, moment.draft_moment_id, placement.media_item_id
+				  )
+				  AND NOT EXISTS (
+					SELECT 1 FROM prior_effective_entitlements AS prior
+					WHERE prior.access_id = candidate.recipient_access_generation_id
+					  AND prior.media_item_id = candidate.media_item_id
+				  )
 			), inserted_new_for_you AS (
 				INSERT INTO new_for_you_entries (recipient_access_generation_id, publication_id)
 				SELECT recipient_access_generation_id, ?::uuid FROM qualifying_recipients
@@ -475,7 +515,8 @@ func (s *Service) PublishEvent(ctx context.Context, actor setup.CuratorSession, 
 			INSERT INTO publication_activity_items (publication_id, recipient_access_generation_id, created_at)
 			SELECT ?::uuid, recipient_access_generation_id, ?::timestamptz
 			FROM qualifying_recipients
-		`, eventID, priorID, priorID, publicationID, publicationID, now).Exec(ctx); err != nil {
+		`, pgdialect.Array(priorAccessIDs), pgdialect.Array(priorMediaIDs), eventID,
+			publicationID, publicationID, now).Exec(ctx); err != nil {
 			return err
 		}
 		if _, err := tx.NewRaw(`INSERT INTO publication_curator_activity_items (publication_id, actor_person_id, created_at) VALUES (?, ?, ?)`, publicationID, actor.PersonID, now).Exec(ctx); err != nil {

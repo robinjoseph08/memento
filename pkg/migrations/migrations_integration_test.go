@@ -114,6 +114,51 @@ func TestApplyStopsWaitingForMigrationLockWhenContextExpires(t *testing.T) {
 	require.ErrorIs(t, Apply(ctx, db), context.DeadlineExceeded)
 }
 
+func TestStagedUpdateMigrationsApplyAfterExistingJuly28Ledger(t *testing.T) {
+	db := testdb.Open(t)
+	ctx := context.Background()
+	priorMigrations := migrate.NewMigrations()
+	foundSourceRouting := false
+	for _, migration := range collection.Sorted() {
+		if migration.Name == "202607280005" {
+			foundSourceRouting = true
+			break
+		}
+		priorMigrations.Add(migration)
+	}
+	require.True(t, foundSourceRouting)
+	require.NoError(t, applyCollection(ctx, db, priorMigrations))
+
+	var sourceRoutingColumns, restorationTables int
+	require.NoError(t, db.NewRaw(`
+		SELECT count(*) FROM information_schema.columns
+		WHERE table_schema = current_schema() AND table_name = 'event_sources'
+		  AND column_name = 'include_future_media'
+	`).Scan(ctx, &sourceRoutingColumns))
+	require.NoError(t, db.NewRaw(`
+		SELECT count(*) FROM information_schema.tables
+		WHERE table_schema = current_schema()
+		  AND table_name = 'staged_moment_review_restorations'
+	`).Scan(ctx, &restorationTables))
+	assert.Zero(t, sourceRoutingColumns)
+	assert.Zero(t, restorationTables)
+
+	require.NoError(t, Apply(ctx, db))
+	require.NoError(t, Current(ctx, db))
+	require.NoError(t, db.NewRaw(`
+		SELECT count(*) FROM information_schema.columns
+		WHERE table_schema = current_schema() AND table_name = 'event_sources'
+		  AND column_name = 'include_future_media'
+	`).Scan(ctx, &sourceRoutingColumns))
+	require.NoError(t, db.NewRaw(`
+		SELECT count(*) FROM information_schema.tables
+		WHERE table_schema = current_schema()
+		  AND table_name = 'staged_moment_review_restorations'
+	`).Scan(ctx, &restorationTables))
+	assert.Equal(t, 1, sourceRoutingColumns)
+	assert.Equal(t, 1, restorationTables)
+}
+
 func TestSourceReconciliationMigrationBackfillsExistingAlbums(t *testing.T) {
 	db := testdb.Open(t)
 	ctx := context.Background()
