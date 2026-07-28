@@ -163,7 +163,12 @@ async function refreshPublicAsset(request) {
 async function refreshShell(request) {
   try {
     const response = await fetch(request);
-    if (isHTMLResponse(response)) {
+    const url = new URL(request.url);
+    if (
+      url.pathname === SHELL_URL &&
+      url.search === "" &&
+      isHTMLResponse(response)
+    ) {
       const cache = await caches.open(CACHE_NAME);
       await cache.put(SHELL_URL, response.clone());
     }

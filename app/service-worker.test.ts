@@ -216,7 +216,29 @@ test("standalone navigation falls back to the cached shell without storing its U
   expect(worker.cache.put).not.toHaveBeenCalled();
 });
 
-test("successful token-bearing HTML navigation refreshes only the stable shell key", async () => {
+test.each([
+  "https://memento.example/invitation?token=private-token",
+  "https://memento.example/protected-media/private-report",
+])("noncanonical HTML navigation %s cannot replace the shell", async (url) => {
+  const worker = await loadWorker();
+  const response = new Response("private HTML", {
+    headers: { "Content-Type": "text/html; charset=utf-8" },
+  });
+  worker.fetchMock.mockResolvedValue(response);
+  const navigation = {
+    method: "GET",
+    mode: "navigate",
+    url,
+  } as Request;
+  const probe = fetchEvent(navigation);
+
+  worker.listeners.get("fetch")!(probe.event);
+  await expect(probe.response()).resolves.toBe(response);
+
+  expect(worker.cache.put).not.toHaveBeenCalled();
+});
+
+test("canonical root HTML navigation refreshes the stable shell key", async () => {
   const worker = await loadWorker();
   const response = new Response("fresh shell", {
     headers: { "Content-Type": "text/html; charset=utf-8" },
@@ -225,7 +247,7 @@ test("successful token-bearing HTML navigation refreshes only the stable shell k
   const navigation = {
     method: "GET",
     mode: "navigate",
-    url: "https://memento.example/invitation?token=private-token",
+    url: "https://memento.example/",
   } as Request;
   const probe = fetchEvent(navigation);
 
@@ -234,9 +256,6 @@ test("successful token-bearing HTML navigation refreshes only the stable shell k
 
   expect(worker.cache.put).toHaveBeenCalledOnce();
   expect(worker.cache.put.mock.calls[0][0]).toBe("/");
-  expect(JSON.stringify(worker.cache.put.mock.calls)).not.toContain(
-    "private-token",
-  );
 });
 
 test("no-store HTML navigation does not replace the cached application shell", async () => {

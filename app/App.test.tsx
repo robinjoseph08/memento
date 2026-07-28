@@ -122,6 +122,65 @@ test("opens an Invitation read-only and removes its token only after explicit ac
   expect(JSON.parse(stringBody(requests[1].init?.body))).toEqual({ token });
 });
 
+test("clears accepted Invitation data offline before Session confirmation", async () => {
+  const token = "f".repeat(64);
+  let sessionRequested = false;
+  window.history.replaceState(null, "", `/invitation?token=${token}`);
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) => {
+      const path = requestPath(input);
+      if (path === "/api/auth/invitations/inspect") {
+        return Promise.resolve(
+          jsonResponse({
+            recipient_name: "Alex",
+            curator_name: "Robin",
+            expires_at: "2026-08-10T12:00:00Z",
+          }),
+        );
+      }
+      if (path === "/api/auth/invitations/accept") {
+        return Promise.resolve(jsonResponse({ status: "onboarding" }));
+      }
+      if (path === "/api/session") {
+        sessionRequested = true;
+        return new Promise<Response>(() => undefined);
+      }
+      return Promise.reject(new Error(`Unexpected request: ${path}`));
+    }),
+  );
+
+  const { client } = renderApp();
+  client.setQueryData(["recipient-library", "prior-session", "photos"], {
+    media: [{ id: "private-photo" }],
+  });
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Accept Invitation" }),
+  );
+
+  expect(await screen.findByText("Invitation accepted.")).toBeInTheDocument();
+  await vi.waitFor(() => expect(sessionRequested).toBe(true));
+  expect(client.getQueryState(["accepted-invitation-session"])).toBeDefined();
+  expect(
+    client
+      .getQueryCache()
+      .getAll()
+      .some((query) => JSON.stringify(query.queryKey).includes(token)),
+  ).toBe(false);
+  expect(
+    client.getQueryData(["recipient-library", "prior-session", "photos"]),
+  ).toBeUndefined();
+
+  fireEvent.offline(window);
+
+  expect(
+    await screen.findByRole("heading", { name: "Memento is offline" }),
+  ).toBeInTheDocument();
+  expect(client.getQueryData(["accepted-invitation-session"])).toBeUndefined();
+  expect(screen.queryByText(/Robin invited Alex/)).not.toBeInTheDocument();
+  fireEvent.online(window);
+});
+
 test("keeps a failed Invitation token available for an explicit retry", async () => {
   const token = "b".repeat(64);
   window.history.replaceState(null, "", `/invitation?token=${token}`);
@@ -964,6 +1023,52 @@ test("clears protected query data offline and after Session revocation", async (
   expect(
     client.getQueryData(["recipient-library", csrfToken, "photos"]),
   ).toBeUndefined();
+});
+
+test("clears protected data and Session after an authenticated mutation returns 401", async () => {
+  const csrfToken = "m".repeat(64);
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) => {
+      const path = requestPath(input);
+      if (path === "/api/setup") {
+        return Promise.resolve(
+          jsonResponse({ error: { message: "Setup not found." } }, 404),
+        );
+      }
+      if (path === "/api/session") {
+        return Promise.resolve(
+          jsonResponse({
+            display_name: "Recipient",
+            session_type: "public",
+            csrf_token: csrfToken,
+            curator: false,
+            onboarding_required: false,
+          }),
+        );
+      }
+      if (path === "/api/session/logout") {
+        return Promise.resolve(
+          jsonResponse({ error: { message: "Sign in required." } }, 401),
+        );
+      }
+      return new Promise<Response>(() => undefined);
+    }),
+  );
+
+  const { client } = renderApp();
+  await screen.findByRole("button", { name: "Sign out" });
+  client.setQueryData(["protected-marker", csrfToken], {
+    title: "private content",
+  });
+
+  fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+
+  expect(
+    await screen.findByRole("heading", { name: "Sign in to Memento" }),
+  ).toBeInTheDocument();
+  expect(client.getQueryData(["protected-marker", csrfToken])).toBeUndefined();
+  expect(client.getMutationCache().getAll()).toHaveLength(0);
 });
 
 test("clears accepted-Invitation private data offline and after Session revocation", async () => {

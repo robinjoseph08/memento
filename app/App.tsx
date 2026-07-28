@@ -3,6 +3,7 @@ import {
   useMutation,
   useQuery,
   useQueryClient,
+  type QueryClient,
 } from "@tanstack/react-query";
 import {
   useCallback,
@@ -63,6 +64,12 @@ type BootstrapState =
   | { kind: "available" }
   | { kind: "session"; session: SessionResponse }
   | { kind: "closed" };
+
+function removeProtectedQueries(queryClient: QueryClient) {
+  queryClient.removeQueries({
+    predicate: (query) => query.queryKey[0] !== "bootstrap",
+  });
+}
 
 async function fetchBootstrap(): Promise<BootstrapState> {
   try {
@@ -1557,10 +1564,11 @@ function ReadyCard({
 }
 
 function InvitationLanding() {
+  const queryClient = useQueryClient();
+  const online = useOnlineStatus();
   const [searchParams] = useSearchParams();
-  const [token] = useState(() => searchParams.get("token") ?? "");
+  const [token, setToken] = useState(() => searchParams.get("token") ?? "");
   const [accepted, setAccepted] = useState(false);
-  const [acceptedSession, setAcceptedSession] = useState<SessionResponse>();
   const invitation = useQuery({
     queryKey: ["invitation", token],
     queryFn: () =>
@@ -1578,23 +1586,31 @@ function InvitationLanding() {
       }),
     onSuccess: () => {
       window.history.replaceState({}, "", "/");
+      removeProtectedQueries(queryClient);
+      setToken("");
       setAccepted(true);
     },
   });
   const acceptedIdentity = useQuery({
     queryKey: ["accepted-invitation-session"],
-    queryFn: async () => {
-      const identity = await apiJSON<SessionResponse>("/api/session");
-      setAcceptedSession(identity);
-      return identity;
-    },
-    enabled: accepted,
+    queryFn: () => apiJSON<SessionResponse>("/api/session"),
+    enabled: accepted && online,
     retry: 2,
     retryDelay: 0,
   });
-  const currentSession = accepted
-    ? (acceptedSession ?? acceptedIdentity.data)
-    : undefined;
+
+  useEffect(() => {
+    if (!accepted || online) return;
+    void queryClient.cancelQueries({
+      predicate: (query) => query.queryKey[0] !== "bootstrap",
+    });
+    removeProtectedQueries(queryClient);
+  }, [accepted, online, queryClient]);
+
+  const currentSession = accepted && online ? acceptedIdentity.data : undefined;
+  const acceptedSessionRevoked =
+    acceptedIdentity.error instanceof APIError &&
+    acceptedIdentity.error.status === 401;
   const invalidInvitation =
     !token ||
     (invitation.error instanceof APIError && invitation.error.status === 404);
@@ -1603,6 +1619,19 @@ function InvitationLanding() {
 
   if (currentSession) {
     return <MementoApp initialSession={currentSession} />;
+  }
+  if (acceptedSessionRevoked) {
+    return <MementoApp />;
+  }
+  if (accepted && !online) {
+    return (
+      <main>
+        <div className="offline-shell">
+          <ThemeToggle />
+          <OfflineNotice />
+        </div>
+      </main>
+    );
   }
 
   return (
@@ -1698,17 +1727,21 @@ function MementoApp({
     enabled: !initialSession || signedOut,
     retry: false,
   });
-  const clearProtectedQueries = useCallback(() => {
-    queryClient.removeQueries({
-      predicate: (query) => query.queryKey[0] !== "bootstrap",
-    });
+  const clearProtectedData = useCallback(() => {
+    removeProtectedQueries(queryClient);
+    queryClient.getMutationCache().clear();
   }, [queryClient]);
+  const revokeLocalSession = useCallback(() => {
+    clearProtectedData();
+    setCompletedSession(undefined);
+    setSignedOut(true);
+  }, [clearProtectedData]);
 
   useEffect(() => {
     if (!online || bootstrap.data?.kind === "closed") {
-      clearProtectedQueries();
+      clearProtectedData();
     }
-  }, [bootstrap.data, clearProtectedQueries, online]);
+  }, [bootstrap.data, clearProtectedData, online]);
 
   useEffect(
     () =>
@@ -1722,11 +1755,24 @@ function MementoApp({
         ) {
           return;
         }
-        clearProtectedQueries();
-        setCompletedSession(undefined);
-        setSignedOut(true);
+        revokeLocalSession();
       }),
-    [clearProtectedQueries, queryClient],
+    [queryClient, revokeLocalSession],
+  );
+
+  useEffect(
+    () =>
+      queryClient.getMutationCache().subscribe((event) => {
+        if (
+          event.type !== "updated" ||
+          !(event.mutation.state.error instanceof APIError) ||
+          event.mutation.state.error.status !== 401
+        ) {
+          return;
+        }
+        revokeLocalSession();
+      }),
+    [queryClient, revokeLocalSession],
   );
 
   const completeSession = (session: SessionResponse) => {
@@ -1735,7 +1781,7 @@ function MementoApp({
   };
 
   const signOut = () => {
-    clearProtectedQueries();
+    clearProtectedData();
     setCompletedSession(undefined);
     setSignedOut(true);
   };

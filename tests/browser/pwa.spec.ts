@@ -448,6 +448,70 @@ test("@desktop manifest, browser installability, scoped restart, and cache priva
   }
 });
 
+test("@desktop protected HTML navigation cannot replace the public shell cache", async ({
+  browserName,
+  context,
+  page,
+}) => {
+  test.skip(
+    browserName !== "chromium",
+    "Chromium exposes service-worker response attribution",
+  );
+  await recipientAPI(page);
+  await page.goto("/");
+  await expect
+    .poll(() =>
+      page.evaluate(async () => {
+        await navigator.serviceWorker.ready;
+        return navigator.serviceWorker.controller?.state ?? "";
+      }),
+    )
+    .toBe("activated");
+
+  const readCachedShell = () =>
+    page.evaluate(async () => {
+      const cacheName = (await caches.keys()).find((name) =>
+        name.startsWith("memento-shell-"),
+      );
+      if (!cacheName) throw new Error("Memento shell cache is missing");
+      return (await (await caches.open(cacheName)).match("/"))?.text();
+    });
+  const shellBefore = await readCachedShell();
+  expect(shellBefore).toBeTruthy();
+
+  const protectedPath = "/protected-media/private-report";
+  const navigationEvidence: Array<{
+    navigation: boolean;
+    serviceWorker: boolean;
+  }> = [];
+  await context.route(`**${protectedPath}`, (route) => {
+    const request = route.request();
+    navigationEvidence.push({
+      navigation: request.isNavigationRequest(),
+      serviceWorker: Boolean(request.serviceWorker()),
+    });
+    return route.fulfill({
+      body: "<!doctype html><title>Private report</title><p>private navigation marker</p>",
+      contentType: "text/html",
+      headers: { "Cache-Control": "private" },
+    });
+  });
+
+  const navigation = await page.goto(protectedPath, {
+    waitUntil: "domcontentloaded",
+  });
+
+  expect(navigation?.fromServiceWorker()).toBe(true);
+  expect(navigation?.request().isNavigationRequest()).toBe(true);
+  await expect(page.getByText("private navigation marker")).toBeVisible();
+  expect(navigationEvidence).toContainEqual({
+    navigation: false,
+    serviceWorker: true,
+  });
+  expect(await readCachedShell()).toBe(shellBefore);
+  expect(await readCachedShell()).not.toContain("private navigation marker");
+});
+
 test("@mobile compact navigation and theme control remain usable", async ({
   page,
 }) => {
