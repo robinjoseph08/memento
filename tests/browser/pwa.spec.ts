@@ -8,6 +8,8 @@ import {
   type Request,
 } from "@playwright/test";
 
+import { startProductionRevisions } from "./support/pwa-production-revisions";
+
 test.use({ serviceWorkers: "allow" });
 
 const session = {
@@ -194,12 +196,6 @@ test("@desktop manifest, browser installability, scoped restart, and cache priva
   request,
 }) => {
   const runtimeObservation = observeRuntimeRequests(context);
-  await page.addInitScript((updateEvent) => {
-    window.addEventListener(updateEvent, () => {
-      const count = Number(sessionStorage.getItem(updateEvent) ?? "0");
-      sessionStorage.setItem(updateEvent, String(count + 1));
-    });
-  }, "memento-pwa-update");
   await recipientAPI(page);
 
   const manifestResponse = await request.get("/manifest.webmanifest");
@@ -341,7 +337,8 @@ test("@desktop manifest, browser installability, scoped restart, and cache priva
       );
     }
     await page.evaluate(async (paths) => {
-      await Promise.all(paths.map((path) => fetch(path)));
+      const responses = await Promise.all(paths.map((path) => fetch(path)));
+      await Promise.all(responses.map((response) => response.arrayBuffer()));
     }, protectedPaths);
 
     const rejectedCachePaths = {
@@ -417,77 +414,6 @@ test("@desktop manifest, browser installability, scoped restart, and cache priva
     expect(cacheEntries).not.toContain(
       new URL(rejectedCachePaths.query, page.url()).href,
     );
-
-    const initialCacheNames = await page.evaluate(() => caches.keys());
-    const initialCacheName = initialCacheNames.find((name) =>
-      name.startsWith("memento-shell-"),
-    );
-    expect(initialCacheName).toBeTruthy();
-    await context.addCookies([
-      {
-        name: "memento-worker-revision",
-        value: "second",
-        url: new URL("/", page.url()).href,
-      },
-    ]);
-    const workerUpdateRequests: string[] = [];
-    context.on("request", (networkRequest) => {
-      if (new URL(networkRequest.url()).pathname === "/service-worker.js") {
-        workerUpdateRequests.push(networkRequest.url());
-      }
-    });
-
-    await page.evaluate(async () => {
-      const registration = await navigator.serviceWorker.ready;
-      await registration.update();
-    });
-    await expect(page.getByText("A Memento update is ready.")).toBeVisible();
-    expect(
-      await page.evaluate(() => sessionStorage.getItem("memento-pwa-update")),
-    ).toBe("1");
-    expect(workerUpdateRequests.length).toBeGreaterThan(0);
-    expect(
-      workerUpdateRequests.every(
-        (url) =>
-          url === new URL("/service-worker.js", page.url()).href &&
-          new URL(url).search === "",
-      ),
-    ).toBe(true);
-
-    const restarted = page.waitForEvent("framenavigated", {
-      predicate: (frame) => frame === page.mainFrame(),
-    });
-    await page.getByRole("button", { name: "Update and restart" }).click();
-    await restarted;
-
-    await expect
-      .poll(() =>
-        page.evaluate(
-          () => navigator.serviceWorker.controller?.scriptURL ?? "",
-        ),
-      )
-      .toBe(new URL("/service-worker.js", page.url()).href);
-    await expect
-      .poll(() => page.evaluate(() => caches.keys()))
-      .toEqual(["memento-shell-v7-browser-revision"]);
-    expect(await page.evaluate(() => caches.keys())).not.toContain(
-      initialCacheName,
-    );
-    await expect(page.getByRole("heading", { name: "Photos" })).toBeVisible();
-
-    const stableRevision = await page.evaluate(async () => {
-      const registration = await navigator.serviceWorker.ready;
-      await registration.update();
-      return {
-        active: registration.active?.state,
-        waiting: registration.waiting?.state ?? null,
-      };
-    });
-    expect(stableRevision).toEqual({ active: "activated", waiting: null });
-    expect(
-      await page.evaluate(() => sessionStorage.getItem("memento-pwa-update")),
-    ).toBe("1");
-    await expect(page.getByText("A Memento update is ready.")).toHaveCount(0);
   }
 
   await runtimeObservation.waitForQuiescence(page);
@@ -511,6 +437,146 @@ test("@desktop manifest, browser installability, scoped restart, and cache priva
         networkRequest.serviceWorker(),
       ),
     ).toBe(true);
+  }
+});
+
+test("@desktop production graph revisions update at the stable worker URL once", async ({
+  browser,
+  browserName,
+}) => {
+  test.skip(browserName !== "chromium", "Chromium runs the update lifecycle");
+
+  const deployment = await startProductionRevisions();
+  const context = await browser.newContext({ serviceWorkers: "allow" });
+  const page = await context.newPage();
+  try {
+    expect(deployment.first.workerDigest).not.toBe(
+      deployment.second.workerDigest,
+    );
+    expect(deployment.first.workerRevision).not.toBe(
+      deployment.second.workerRevision,
+    );
+    expect(deployment.first.graphPaths).not.toEqual(
+      deployment.second.graphPaths,
+    );
+
+    await page.addInitScript((updateEvent) => {
+      window.addEventListener(updateEvent, () => {
+        const count = Number(sessionStorage.getItem(updateEvent) ?? "0");
+        sessionStorage.setItem(updateEvent, String(count + 1));
+      });
+    }, "memento-pwa-update");
+    await recipientAPI(page);
+    await page.goto(`${deployment.origin}/photos`);
+    await expect(page.getByRole("heading", { name: "Photos" })).toBeVisible();
+    await expect
+      .poll(() =>
+        page.evaluate(async () => {
+          await navigator.serviceWorker.ready;
+          return navigator.serviceWorker.controller?.state ?? "";
+        }),
+      )
+      .toBe("activated");
+
+    const workerURL = `${deployment.origin}/service-worker.js`;
+    const firstWorkerResponse = await context.request.get(workerURL);
+    expect(firstWorkerResponse.ok()).toBe(true);
+    expect(
+      createHash("sha256")
+        .update(await firstWorkerResponse.body())
+        .digest("hex"),
+    ).toBe(deployment.first.workerDigest);
+    const firstCacheName = `memento-shell-${deployment.first.workerRevision}`;
+    await expect
+      .poll(() => page.evaluate(() => caches.keys()))
+      .toEqual([firstCacheName]);
+
+    const firstOnlyGraphPaths = deployment.first.graphPaths.filter(
+      (path) => !deployment.second.graphPaths.includes(path),
+    );
+    const secondOnlyGraphPaths = deployment.second.graphPaths.filter(
+      (path) => !deployment.first.graphPaths.includes(path),
+    );
+    expect(firstOnlyGraphPaths).not.toEqual([]);
+    expect(secondOnlyGraphPaths).not.toEqual([]);
+
+    deployment.activateSecond();
+    const secondWorkerResponse = await context.request.get(workerURL);
+    expect(secondWorkerResponse.ok()).toBe(true);
+    expect(
+      createHash("sha256")
+        .update(await secondWorkerResponse.body())
+        .digest("hex"),
+    ).toBe(deployment.second.workerDigest);
+
+    const workerUpdateRequests: string[] = [];
+    context.on("request", (networkRequest) => {
+      if (new URL(networkRequest.url()).pathname === "/service-worker.js") {
+        workerUpdateRequests.push(networkRequest.url());
+      }
+    });
+    await page.evaluate(async () => {
+      const registration = await navigator.serviceWorker.ready;
+      await registration.update();
+    });
+
+    await expect(page.getByText("A Memento update is ready.")).toBeVisible();
+    expect(
+      await page.evaluate(() => sessionStorage.getItem("memento-pwa-update")),
+    ).toBe("1");
+    expect(workerUpdateRequests.length).toBeGreaterThan(0);
+    expect(workerUpdateRequests.every((url) => url === workerURL)).toBe(true);
+
+    const restarted = page.waitForEvent("framenavigated", {
+      predicate: (frame) => frame === page.mainFrame(),
+    });
+    await page.getByRole("button", { name: "Update and restart" }).click();
+    await restarted;
+
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () => navigator.serviceWorker.controller?.scriptURL ?? "",
+        ),
+      )
+      .toBe(workerURL);
+    const secondCacheName = `memento-shell-${deployment.second.workerRevision}`;
+    await expect
+      .poll(() => page.evaluate(() => caches.keys()))
+      .toEqual([secondCacheName]);
+    expect(await page.evaluate(() => caches.keys())).not.toContain(
+      firstCacheName,
+    );
+    const revisedCachePaths = (await cachedURLs(page)).map(
+      (url) => new URL(url).pathname,
+    );
+    expect(revisedCachePaths).toEqual(
+      expect.arrayContaining(deployment.second.graphPaths),
+    );
+    expect(revisedCachePaths).toEqual(
+      expect.not.arrayContaining(firstOnlyGraphPaths),
+    );
+    expect(revisedCachePaths).toEqual(
+      expect.arrayContaining(secondOnlyGraphPaths),
+    );
+    await expect(page.getByRole("heading", { name: "Photos" })).toBeVisible();
+
+    const stableRevision = await page.evaluate(async () => {
+      const registration = await navigator.serviceWorker.ready;
+      await registration.update();
+      return {
+        active: registration.active?.state,
+        waiting: registration.waiting?.state ?? null,
+      };
+    });
+    expect(stableRevision).toEqual({ active: "activated", waiting: null });
+    expect(
+      await page.evaluate(() => sessionStorage.getItem("memento-pwa-update")),
+    ).toBe("1");
+    await expect(page.getByText("A Memento update is ready.")).toHaveCount(0);
+  } finally {
+    await context.close();
+    await deployment.close();
   }
 });
 

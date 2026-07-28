@@ -474,8 +474,8 @@ test("install rejects query-bearing discovered assets", async () => {
 test("activation replaces only Memento shell caches and claims open clients", async () => {
   const worker = await loadWorker();
   worker.caches.keys.mockResolvedValue([
-    "memento-shell-v6",
-    "memento-shell-v7",
+    "memento-shell-prior-revision",
+    "memento-shell-__MEMENTO_BUILD_REVISION__",
     "another-application-cache",
   ]);
   let work: Promise<unknown> | undefined;
@@ -490,7 +490,9 @@ test("activation replaces only Memento shell caches and claims open clients", as
   await work;
 
   expect(worker.caches.delete).toHaveBeenCalledOnce();
-  expect(worker.caches.delete).toHaveBeenCalledWith("memento-shell-v6");
+  expect(worker.caches.delete).toHaveBeenCalledWith(
+    "memento-shell-prior-revision",
+  );
   expect(worker.self.clients.claim).toHaveBeenCalledOnce();
 });
 

@@ -1,7 +1,8 @@
 /* global caches, fetch, Request, self, URL */
 
 const CACHE_PREFIX = "memento-shell-";
-const CACHE_NAME = `${CACHE_PREFIX}v7`;
+const BUILD_REVISION = "__MEMENTO_BUILD_REVISION__";
+const CACHE_NAME = `${CACHE_PREFIX}${BUILD_REVISION}`;
 const SHELL_URL = "/";
 const PUBLIC_PATHS = new Set([
   SHELL_URL,

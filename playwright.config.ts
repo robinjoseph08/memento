@@ -38,7 +38,7 @@ export default defineConfig({
   ],
   webServer: {
     command:
-      "pnpm build && MEMENTO_PWA_REVISION_TEST=1 pnpm exec vite preview --host 127.0.0.1 --port 4173 --strictPort",
+      "pnpm build && pnpm exec vite preview --host 127.0.0.1 --port 4173 --strictPort",
     url: "http://127.0.0.1:4173",
     reuseExistingServer: false,
   },
