@@ -671,7 +671,7 @@ func TestThumbnailMapsUpstreamStatusesTimeoutsAndReadFailuresToSafeErrors(t *tes
 			client, err := New(clientConfig(server.URL), server.Client())
 			require.NoError(t, err)
 
-			_, err = client.Thumbnail(context.Background(), assetID)
+			_, err = client.Thumbnail(context.Background(), assetID, MediaRequest{})
 			require.EqualError(t, err, test.want)
 		})
 	}
@@ -686,7 +686,7 @@ func TestThumbnailMapsUpstreamStatusesTimeoutsAndReadFailuresToSafeErrors(t *tes
 		client, err := New(cfg, &http.Client{Transport: transport})
 		require.NoError(t, err)
 
-		_, err = client.Thumbnail(context.Background(), assetID)
+		_, err = client.Thumbnail(context.Background(), assetID, MediaRequest{})
 		require.EqualError(t, err, "Immich is unreachable")
 	})
 
@@ -701,7 +701,7 @@ func TestThumbnailMapsUpstreamStatusesTimeoutsAndReadFailuresToSafeErrors(t *tes
 		})
 		client, err := New(clientConfig("https://immich.internal"), &http.Client{Transport: transport})
 		require.NoError(t, err)
-		response, err := client.Thumbnail(context.Background(), assetID)
+		response, err := client.Thumbnail(context.Background(), assetID, MediaRequest{})
 		require.NoError(t, err)
 
 		_, err = io.ReadAll(response.Body)
@@ -1036,7 +1036,7 @@ func TestThumbnailStreamsOnlyImageResponsesWithoutFollowingRedirects(t *testing.
 		defer server.Close()
 		client, err := New(clientConfig(server.URL), server.Client())
 		require.NoError(t, err)
-		response, err := client.Thumbnail(context.Background(), assetID)
+		response, err := client.Thumbnail(context.Background(), assetID, MediaRequest{})
 		require.NoError(t, err)
 		contents, err := io.ReadAll(response.Body)
 		require.NoError(t, err)
@@ -1044,6 +1044,22 @@ func TestThumbnailStreamsOnlyImageResponsesWithoutFollowingRedirects(t *testing.
 		assert.Equal(t, "thumbnail", string(contents))
 		assert.Equal(t, "image/webp", response.ContentType)
 		assert.Equal(t, `"safe"`, response.ETag)
+	})
+
+	t.Run("not modified", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, `"thumbnail-v1"`, r.Header.Get("If-None-Match"))
+			w.Header().Set("ETag", `"thumbnail-v1"`)
+			w.WriteHeader(http.StatusNotModified)
+		}))
+		defer server.Close()
+		client, err := New(clientConfig(server.URL), server.Client())
+		require.NoError(t, err)
+		response, err := client.Thumbnail(context.Background(), assetID, MediaRequest{IfNoneMatch: `"thumbnail-v1"`})
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusNotModified, response.StatusCode)
+		assert.Equal(t, `"thumbnail-v1"`, response.ETag)
+		require.NoError(t, response.Body.Close())
 	})
 
 	t.Run("redirect", func(t *testing.T) {
@@ -1056,7 +1072,7 @@ func TestThumbnailStreamsOnlyImageResponsesWithoutFollowingRedirects(t *testing.
 		defer server.Close()
 		client, err := New(clientConfig(server.URL), server.Client())
 		require.NoError(t, err)
-		_, err = client.Thumbnail(context.Background(), assetID)
+		_, err = client.Thumbnail(context.Background(), assetID, MediaRequest{})
 		require.EqualError(t, err, "Immich validation failed")
 		assert.False(t, redirected)
 	})
@@ -1070,7 +1086,7 @@ func TestThumbnailStreamsOnlyImageResponsesWithoutFollowingRedirects(t *testing.
 		defer server.Close()
 		client, err := New(clientConfig(server.URL), server.Client())
 		require.NoError(t, err)
-		_, err = client.Thumbnail(context.Background(), assetID)
+		_, err = client.Thumbnail(context.Background(), assetID, MediaRequest{})
 		assert.EqualError(t, err, "Immich returned an invalid response")
 	})
 
@@ -1084,7 +1100,7 @@ func TestThumbnailStreamsOnlyImageResponsesWithoutFollowingRedirects(t *testing.
 		defer server.Close()
 		client, err := New(clientConfig(server.URL), server.Client())
 		require.NoError(t, err)
-		response, err := client.Thumbnail(context.Background(), assetID)
+		response, err := client.Thumbnail(context.Background(), assetID, MediaRequest{})
 		require.NoError(t, err)
 		contents, err := io.ReadAll(response.Body)
 		require.EqualError(t, err, "Immich returned an invalid response")
@@ -1101,7 +1117,7 @@ func TestThumbnailStreamsOnlyImageResponsesWithoutFollowingRedirects(t *testing.
 			defer server.Close()
 			client, err := New(clientConfig(server.URL), server.Client())
 			require.NoError(t, err)
-			_, err = client.Thumbnail(context.Background(), assetID)
+			_, err = client.Thumbnail(context.Background(), assetID, MediaRequest{})
 			assert.EqualError(t, err, "Immich returned an invalid response")
 		})
 	}

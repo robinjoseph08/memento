@@ -104,7 +104,7 @@ func TestImmichV303LiveContract(t *testing.T) {
 	videoID := contractUpload(t, ctx, httpClient, baseURL, login.AccessToken, videoPath)
 
 	thumbnail := contractAwaitMedia(t, func() (MediaResponse, error) {
-		return client.Thumbnail(ctx, imageID)
+		return client.Thumbnail(ctx, imageID, MediaRequest{})
 	})
 	assert.Equal(t, http.StatusOK, thumbnail.StatusCode)
 	assert.NotEmpty(t, contractReadMedia(t, thumbnail))

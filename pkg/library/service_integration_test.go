@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -35,8 +36,8 @@ type thumbnailStub struct {
 	err             error
 }
 
-func (stub *thumbnailStub) Thumbnail(_ context.Context, assetID uuid.UUID) (immich.MediaResponse, error) {
-	return stub.media(assetID, "thumbnail", immich.MediaRequest{})
+func (stub *thumbnailStub) Thumbnail(_ context.Context, assetID uuid.UUID, request immich.MediaRequest) (immich.MediaResponse, error) {
+	return stub.media(assetID, "thumbnail", request)
 }
 
 func (stub *thumbnailStub) Preview(_ context.Context, assetID uuid.UUID, request immich.MediaRequest) (immich.MediaResponse, error) {
@@ -571,6 +572,60 @@ func TestThumbnailRouteKeepsUpstreamFailuresSafeAndPrivate(t *testing.T) {
 	}
 }
 
+func TestThumbnailAndPreviewRoutesForwardValidatorsAndDispatch(t *testing.T) {
+	t.Run("thumbnail revalidation", func(t *testing.T) {
+		fixture := newLibraryFixture(t)
+		fixture.thumbnail.response = immich.MediaResponse{
+			Body: io.NopCloser(strings.NewReader("private upstream response")), StatusCode: http.StatusNotModified,
+			ContentLength: -1, ETag: `"thumbnail-v1"`,
+		}
+		e := echo.New()
+		e.HTTPErrorHandler = errcodes.NewHandler().Handle
+		RegisterRoutes(e, NewHandler(fixture.service, &routeAuthorizer{actor: fixture.actor}))
+		request := httptest.NewRequestWithContext(context.Background(), http.MethodGet,
+			"/api/me/media/"+fixture.media[0].String()+"/thumbnail", nil)
+		request.AddCookie(&http.Cookie{Name: setup.CookieName, Value: "opaque"})
+		request.Header.Set("If-None-Match", `"thumbnail-v1"`)
+		response := httptest.NewRecorder()
+
+		e.ServeHTTP(response, request)
+
+		assert.Equal(t, http.StatusNotModified, response.Code)
+		assert.Empty(t, response.Body.String())
+		assert.Equal(t, "private, no-cache", response.Header().Get(echo.HeaderCacheControl))
+		assert.Equal(t, `"thumbnail-v1"`, response.Header().Get("ETag"))
+		assert.Equal(t, []string{"thumbnail"}, fixture.thumbnail.representations)
+		assert.Equal(t, immich.MediaRequest{IfNoneMatch: `"thumbnail-v1"`}, fixture.thumbnail.requests[0])
+	})
+
+	t.Run("successful preview with If-Modified-Since", func(t *testing.T) {
+		fixture := newLibraryFixture(t)
+		lastModified := "Mon, 27 Jul 2026 12:00:00 GMT"
+		ifModifiedSince := "Sun, 26 Jul 2026 12:00:00 GMT"
+		fixture.thumbnail.response = immich.MediaResponse{
+			Body: io.NopCloser(strings.NewReader("preview")), StatusCode: http.StatusOK,
+			ContentType: "image/jpeg", ContentLength: int64(len("preview")), LastModified: lastModified,
+		}
+		e := echo.New()
+		e.HTTPErrorHandler = errcodes.NewHandler().Handle
+		RegisterRoutes(e, NewHandler(fixture.service, &routeAuthorizer{actor: fixture.actor}))
+		request := httptest.NewRequestWithContext(context.Background(), http.MethodGet,
+			"/api/me/media/"+fixture.media[0].String()+"/preview", nil)
+		request.AddCookie(&http.Cookie{Name: setup.CookieName, Value: "opaque"})
+		request.Header.Set("If-Modified-Since", ifModifiedSince)
+		response := httptest.NewRecorder()
+
+		e.ServeHTTP(response, request)
+
+		assert.Equal(t, http.StatusOK, response.Code)
+		assert.Equal(t, "preview", response.Body.String())
+		assert.Equal(t, strconv.Itoa(len("preview")), response.Header().Get(echo.HeaderContentLength))
+		assert.Equal(t, lastModified, response.Header().Get("Last-Modified"))
+		assert.Equal(t, []string{"preview"}, fixture.thumbnail.representations)
+		assert.Equal(t, immich.MediaRequest{IfModifiedSince: ifModifiedSince}, fixture.thumbnail.requests[0])
+	})
+}
+
 func TestVideoAndOriginalRoutesStreamSafeHeadersWithBoundedMemory(t *testing.T) {
 	t.Run("partial video", func(t *testing.T) {
 		fixture := newLibraryFixture(t)
@@ -602,6 +657,9 @@ func TestVideoAndOriginalRoutesStreamSafeHeadersWithBoundedMemory(t *testing.T) 
 		assert.Equal(t, "bytes 0-262143/1048576", response.Header().Get("Content-Range"))
 		assert.Equal(t, "bytes", response.Header().Get("Accept-Ranges"))
 		assert.Equal(t, `"video"`, response.Header().Get("ETag"))
+		assert.Equal(t, strconv.Itoa(256<<10), response.Header().Get(echo.HeaderContentLength))
+		assert.Equal(t, "Mon, 27 Jul 2026 12:00:00 GMT", response.Header().Get("Last-Modified"))
+		assert.Empty(t, response.Header().Get(echo.HeaderContentDisposition))
 		assert.Equal(t, 256<<10, response.Body.Len())
 		assert.LessOrEqual(t, body.maxRead, 32<<10, "stream memory is bounded by the fixed copy buffer")
 		assert.True(t, body.closed)
@@ -644,6 +702,7 @@ func TestVideoAndOriginalRoutesStreamSafeHeadersWithBoundedMemory(t *testing.T) 
 		fixture.thumbnail.response = immich.MediaResponse{
 			Body: io.NopCloser(bytes.NewReader(original)), StatusCode: http.StatusOK,
 			ContentType: "image/jpeg", ContentLength: int64(len(original)), ETag: `"original"`,
+			LastModified: "Mon, 27 Jul 2026 12:00:00 GMT",
 		}
 		e := echo.New()
 		e.HTTPErrorHandler = errcodes.NewHandler().Handle
@@ -659,9 +718,10 @@ func TestVideoAndOriginalRoutesStreamSafeHeadersWithBoundedMemory(t *testing.T) 
 		assert.Equal(t, http.StatusOK, response.Code)
 		assert.Equal(t, original, response.Body.Bytes())
 		assert.Equal(t, "private, no-cache", response.Header().Get(echo.HeaderCacheControl))
-		disposition := response.Header().Get(echo.HeaderContentDisposition)
-		assert.Contains(t, disposition, "memento-"+fixture.media[0].String()+".jpg")
-		assert.NotContains(t, disposition, "private")
+		assert.Equal(t, strconv.Itoa(len(original)), response.Header().Get(echo.HeaderContentLength))
+		assert.Equal(t, "Mon, 27 Jul 2026 12:00:00 GMT", response.Header().Get("Last-Modified"))
+		assert.Equal(t, "attachment; filename=memento-"+fixture.media[0].String()+".jpg",
+			response.Header().Get(echo.HeaderContentDisposition))
 		assert.Equal(t, immich.MediaRequest{IfNoneMatch: `"original"`}, fixture.thumbnail.requests[0])
 	})
 }
@@ -821,7 +881,7 @@ func TestMediaRepresentationsRevalidateEveryAuthorizationBoundaryBeforeImmich(t 
 				load func() (immich.MediaResponse, error)
 			}{
 				{name: "thumbnail", load: func() (immich.MediaResponse, error) {
-					return fixture.service.Thumbnail(ctx, fixture.actor, fixture.media[0])
+					return fixture.service.Thumbnail(ctx, fixture.actor, fixture.media[0], immich.MediaRequest{})
 				}},
 				{name: "preview", load: func() (immich.MediaResponse, error) {
 					return fixture.service.Preview(ctx, fixture.actor, fixture.media[0], immich.MediaRequest{})
@@ -854,7 +914,7 @@ func TestRecipientAuthorizationMatrixRevalidatesReuseWithdrawalAndAvailability(t
 	assert.Empty(t, photos.Media[0].PreviewURL)
 	assert.Empty(t, photos.Media[0].VideoURL)
 	assert.Empty(t, photos.Media[0].OriginalURL)
-	_, err = fixture.service.Thumbnail(ctx, fixture.actor, fixture.media[1])
+	_, err = fixture.service.Thumbnail(ctx, fixture.actor, fixture.media[1], immich.MediaRequest{})
 	assert.ErrorIs(t, err, ErrNotFound, "source-missing Media cannot reach Immich")
 	assert.Empty(t, fixture.thumbnail.assets)
 
@@ -866,11 +926,11 @@ func TestRecipientAuthorizationMatrixRevalidatesReuseWithdrawalAndAvailability(t
 	require.NoError(t, err)
 	require.Len(t, photos.Media, 1, "Media reuse stays visible through another valid placement")
 
-	thumbnail, err := fixture.service.Thumbnail(ctx, fixture.actor, fixture.media[0])
+	thumbnail, err := fixture.service.Thumbnail(ctx, fixture.actor, fixture.media[0], immich.MediaRequest{})
 	require.NoError(t, err)
 	require.NoError(t, thumbnail.Body.Close())
 	assert.Equal(t, []uuid.UUID{fixture.assets[0]}, fixture.thumbnail.assets)
-	_, err = fixture.service.Thumbnail(ctx, fixture.actor, uuid.New())
+	_, err = fixture.service.Thumbnail(ctx, fixture.actor, uuid.New(), immich.MediaRequest{})
 	assert.ErrorIs(t, err, ErrNotFound)
 	assert.Len(t, fixture.thumbnail.assets, 1, "guessed identifiers never reach Immich")
 

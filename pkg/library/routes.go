@@ -168,7 +168,7 @@ func (h *Handler) streamRepresentation(c echo.Context, kind representation) erro
 	var response immich.MediaResponse
 	switch kind {
 	case representationThumbnail:
-		response, err = h.service.Thumbnail(c.Request().Context(), actor, id)
+		response, err = h.service.Thumbnail(c.Request().Context(), actor, id, request)
 	case representationPreview:
 		response, err = h.service.Preview(c.Request().Context(), actor, id, request)
 	case representationVideo:

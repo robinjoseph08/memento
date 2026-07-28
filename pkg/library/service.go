@@ -84,7 +84,7 @@ type Event struct {
 }
 
 type mediaSource interface {
-	Thumbnail(ctx context.Context, assetID uuid.UUID) (immich.MediaResponse, error)
+	Thumbnail(ctx context.Context, assetID uuid.UUID, request immich.MediaRequest) (immich.MediaResponse, error)
 	Preview(ctx context.Context, assetID uuid.UUID, request immich.MediaRequest) (immich.MediaResponse, error)
 	Video(ctx context.Context, assetID uuid.UUID, request immich.MediaRequest) (immich.MediaResponse, error)
 	Original(ctx context.Context, assetID uuid.UUID, request immich.MediaRequest) (immich.MediaResponse, error)
@@ -543,8 +543,8 @@ const (
 	representationOriginal
 )
 
-func (s *Service) Thumbnail(ctx context.Context, actor setup.SessionActor, mediaID uuid.UUID) (immich.MediaResponse, error) {
-	return s.Representation(ctx, actor, mediaID, representationThumbnail, immich.MediaRequest{})
+func (s *Service) Thumbnail(ctx context.Context, actor setup.SessionActor, mediaID uuid.UUID, request immich.MediaRequest) (immich.MediaResponse, error) {
+	return s.Representation(ctx, actor, mediaID, representationThumbnail, request)
 }
 
 func (s *Service) Preview(ctx context.Context, actor setup.SessionActor, mediaID uuid.UUID, request immich.MediaRequest) (immich.MediaResponse, error) {
@@ -590,7 +590,7 @@ func (s *Service) Representation(ctx context.Context, actor setup.SessionActor, 
 	var response immich.MediaResponse
 	switch kind {
 	case representationThumbnail:
-		response, err = s.immich.Thumbnail(ctx, assetID)
+		response, err = s.immich.Thumbnail(ctx, assetID, request)
 	case representationPreview:
 		response, err = s.immich.Preview(ctx, assetID, request)
 	case representationVideo:

@@ -455,8 +455,8 @@ func (c *Client) AlbumAssetsPage(ctx context.Context, albumID uuid.UUID, page in
 }
 
 // Thumbnail opens a bounded thumbnail after the caller resolves authorization.
-func (c *Client) Thumbnail(ctx context.Context, assetID uuid.UUID) (MediaResponse, error) {
-	return c.derivative(ctx, assetID, "thumbnail", MediaRequest{})
+func (c *Client) Thumbnail(ctx context.Context, assetID uuid.UUID, request MediaRequest) (MediaResponse, error) {
+	return c.derivative(ctx, assetID, "thumbnail", request)
 }
 
 // Preview opens a bounded viewer-sized image derivative.
