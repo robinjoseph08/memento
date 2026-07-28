@@ -513,17 +513,20 @@ func (c *Client) media(ctx context.Context, assetID uuid.UUID, path []string, qu
 		}
 	}
 
-	result, err := normalizeMediaResponse(response, bounded, original)
+	result, err := normalizeMediaResponse(response, request, bounded, original)
 	if err != nil {
 		_ = response.Body.Close()
 		cancel()
 		return MediaResponse{}, err
 	}
-	body := &cancelReadCloser{ReadCloser: response.Body, cancel: cancel}
-	result.Body = &safeReadCloser{ReadCloser: body}
-	if bounded && result.StatusCode != http.StatusNotModified && result.StatusCode != http.StatusRequestedRangeNotSatisfiable {
-		result.Body = &boundedReadCloser{ReadCloser: body, remaining: maxThumbnailResponse}
+	cancelBody := &cancelReadCloser{ReadCloser: response.Body, cancel: cancel}
+	var body io.ReadCloser = &safeReadCloser{ReadCloser: cancelBody}
+	if result.StatusCode == http.StatusPartialContent {
+		body = &exactLengthReadCloser{ReadCloser: body, remaining: result.ContentLength}
+	} else if bounded && result.StatusCode != http.StatusNotModified && result.StatusCode != http.StatusRequestedRangeNotSatisfiable {
+		body = &boundedReadCloser{ReadCloser: body, remaining: maxThumbnailResponse}
 	}
+	result.Body = body
 	return result, nil
 }
 
@@ -585,29 +588,129 @@ func effectivePort(endpoint *url.URL) string {
 
 var contentRangePattern = regexp.MustCompile(`^bytes (?:[0-9]+-[0-9]+/[0-9]+|\*/[0-9]+)$`)
 
-func parseContentRange(value string) (length int64, unsatisfied, valid bool) {
+type mediaContentRange struct {
+	start       int64
+	end         int64
+	total       int64
+	unsatisfied bool
+}
+
+func parseContentRange(value string) (mediaContentRange, bool) {
 	if !contentRangePattern.MatchString(value) {
-		return 0, false, false
+		return mediaContentRange{}, false
 	}
 	value = strings.TrimPrefix(value, "bytes ")
 	parts := strings.Split(value, "/")
 	total, err := strconv.ParseInt(parts[1], 10, 64)
 	if err != nil || total < 0 {
-		return 0, false, false
+		return mediaContentRange{}, false
 	}
 	if parts[0] == "*" {
-		return 0, true, true
+		return mediaContentRange{total: total, unsatisfied: true}, true
 	}
 	bounds := strings.Split(parts[0], "-")
 	start, startErr := strconv.ParseInt(bounds[0], 10, 64)
 	end, endErr := strconv.ParseInt(bounds[1], 10, 64)
 	if startErr != nil || endErr != nil || start < 0 || start > end || end >= total {
-		return 0, false, false
+		return mediaContentRange{}, false
 	}
-	return end - start + 1, false, true
+	return mediaContentRange{start: start, end: end, total: total}, true
 }
 
-func normalizeMediaResponse(response *http.Response, bounded, original bool) (MediaResponse, error) {
+type requestedMediaRange struct {
+	first  int64
+	last   int64
+	suffix int64
+}
+
+func parseRequestedMediaRanges(value string) ([]requestedMediaRange, bool) {
+	if !strings.HasPrefix(value, "bytes=") {
+		return nil, false
+	}
+	parts := strings.Split(strings.TrimPrefix(value, "bytes="), ",")
+	if len(parts) == 0 {
+		return nil, false
+	}
+	result := make([]requestedMediaRange, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if strings.Count(part, "-") != 1 {
+			return nil, false
+		}
+		bounds := strings.SplitN(part, "-", 2)
+		if bounds[0] == "" {
+			suffix, err := strconv.ParseInt(bounds[1], 10, 64)
+			if err != nil || suffix <= 0 {
+				return nil, false
+			}
+			result = append(result, requestedMediaRange{first: -1, last: -1, suffix: suffix})
+			continue
+		}
+		first, err := strconv.ParseInt(bounds[0], 10, 64)
+		if err != nil || first < 0 {
+			return nil, false
+		}
+		last := int64(-1)
+		if bounds[1] != "" {
+			last, err = strconv.ParseInt(bounds[1], 10, 64)
+			if err != nil || last < first {
+				return nil, false
+			}
+		}
+		result = append(result, requestedMediaRange{first: first, last: last})
+	}
+	return result, len(result) > 0
+}
+
+func (requested requestedMediaRange) resolve(total int64) (int64, int64, bool) {
+	if total <= 0 {
+		return 0, 0, false
+	}
+	if requested.suffix > 0 {
+		start := total - requested.suffix
+		if start < 0 {
+			start = 0
+		}
+		return start, total - 1, true
+	}
+	if requested.first >= total {
+		return 0, 0, false
+	}
+	end := total - 1
+	if requested.last >= 0 && requested.last < end {
+		end = requested.last
+	}
+	return requested.first, end, true
+}
+
+func responseRangeMatchesRequest(contentRange mediaContentRange, requestValue string) bool {
+	requestedRanges, valid := parseRequestedMediaRanges(requestValue)
+	if !valid {
+		return false
+	}
+	for _, requested := range requestedRanges {
+		start, end, satisfiable := requested.resolve(contentRange.total)
+		if satisfiable && start == contentRange.start && end == contentRange.end {
+			return true
+		}
+	}
+	return false
+}
+
+func requestRangeIsUnsatisfied(contentRange mediaContentRange, requestValue string) bool {
+	requestedRanges, valid := parseRequestedMediaRanges(requestValue)
+	if !valid {
+		return false
+	}
+	for _, requested := range requestedRanges {
+		if _, _, satisfiable := requested.resolve(contentRange.total); satisfiable {
+			return false
+		}
+	}
+	return true
+}
+
+func normalizeMediaResponse(response *http.Response, request MediaRequest, bounded, original bool) (MediaResponse, error) {
 	result := MediaResponse{StatusCode: response.StatusCode, ContentLength: response.ContentLength}
 	if response.ContentLength < -1 || (bounded && response.ContentLength > maxThumbnailResponse) ||
 		(original && response.Header.Get("Content-Encoding") != "") {
@@ -626,17 +729,26 @@ func normalizeMediaResponse(response *http.Response, bounded, original bool) (Me
 	} else if ranges != "" {
 		return MediaResponse{}, errInvalidResponse
 	}
-	rangeLength, rangeUnsatisfied, rangeValid := parseContentRange(response.Header.Get("Content-Range"))
+	contentRange, rangeValid := parseContentRange(response.Header.Get("Content-Range"))
 	if response.Header.Get("Content-Range") != "" {
 		if !rangeValid || (response.StatusCode != http.StatusPartialContent && response.StatusCode != http.StatusRequestedRangeNotSatisfiable) {
 			return MediaResponse{}, errInvalidResponse
 		}
 		result.ContentRange = response.Header.Get("Content-Range")
 	}
-	if response.StatusCode == http.StatusPartialContent && (!rangeValid || rangeUnsatisfied || (response.ContentLength >= 0 && response.ContentLength != rangeLength)) {
+	if response.StatusCode == http.StatusPartialContent {
+		rangeLength := contentRange.end - contentRange.start + 1
+		if !rangeValid || contentRange.unsatisfied || !responseRangeMatchesRequest(contentRange, request.Range) ||
+			(response.ContentLength >= 0 && response.ContentLength != rangeLength) || (bounded && rangeLength > maxThumbnailResponse) {
+			return MediaResponse{}, errInvalidResponse
+		}
+		result.ContentLength = rangeLength
+	}
+	if response.StatusCode == http.StatusRequestedRangeNotSatisfiable &&
+		(!rangeValid || !contentRange.unsatisfied || !requestRangeIsUnsatisfied(contentRange, request.Range)) {
 		return MediaResponse{}, errInvalidResponse
 	}
-	if response.StatusCode == http.StatusRequestedRangeNotSatisfiable && (!rangeValid || !rangeUnsatisfied) {
+	if response.StatusCode == http.StatusNotModified && request.IfNoneMatch == "" && request.IfModifiedSince == "" {
 		return MediaResponse{}, errInvalidResponse
 	}
 	if response.StatusCode == http.StatusNotModified || response.StatusCode == http.StatusRequestedRangeNotSatisfiable {
@@ -694,6 +806,34 @@ func (body *boundedReadCloser) Read(contents []byte) (int, error) {
 	count, err := body.ReadCloser.Read(contents)
 	body.remaining -= int64(count)
 	if err != nil && !errors.Is(err, io.EOF) {
+		return count, errInvalidResponse
+	}
+	return count, err
+}
+
+type exactLengthReadCloser struct {
+	io.ReadCloser
+	remaining int64
+}
+
+func (body *exactLengthReadCloser) Read(contents []byte) (int, error) {
+	if len(contents) == 0 {
+		return 0, nil
+	}
+	if body.remaining == 0 {
+		var extra [1]byte
+		count, err := body.ReadCloser.Read(extra[:])
+		if count > 0 || (err != nil && !errors.Is(err, io.EOF)) {
+			return 0, errInvalidResponse
+		}
+		return 0, err
+	}
+	if int64(len(contents)) > body.remaining {
+		contents = contents[:body.remaining]
+	}
+	count, err := body.ReadCloser.Read(contents)
+	body.remaining -= int64(count)
+	if errors.Is(err, io.EOF) && body.remaining > 0 {
 		return count, errInvalidResponse
 	}
 	return count, err
