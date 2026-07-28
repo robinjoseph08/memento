@@ -5,6 +5,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 
@@ -441,6 +442,9 @@ afterEach(() => {
 test("shows the resulting Event with highlighted Staged net changes", async () => {
   const staged = organizedDraft(8);
   staged.lifecycle = "published";
+  staged.title = "Corrected family weekend";
+  staged.description = "The complete corrected description";
+  staged.grouping_timezone = "America/New_York";
   staged.published_editable_version = 7;
   staged.staged_update = {
     id: "12121212-1212-4212-8212-121212121212",
@@ -499,6 +503,7 @@ test("shows the resulting Event with highlighted Staged net changes", async () =
         count: 2,
         media_item_ids: [items.a.id],
         moment_ids: [momentOneID],
+        event_metadata_fields: ["title", "description", "grouping_timezone"],
         detail: "Event or Moment metadata edited",
       },
       {
@@ -514,7 +519,7 @@ test("shows the resulting Event with highlighted Staged net changes", async () =
   renderOrganizer();
 
   const workItem = await screen.findByRole("button", {
-    name: /Family weekend/,
+    name: /Corrected family weekend/,
   });
   expect(workItem).toHaveTextContent("Staged update");
   fireEvent.click(workItem);
@@ -522,7 +527,19 @@ test("shows the resulting Event with highlighted Staged net changes", async () =
   const review = await screen.findByRole("region", {
     name: "Staged update review",
   });
-  expect(review).toHaveTextContent("complete resulting Event");
+  expect(review).toHaveTextContent(
+    "Event details and organization that will replace the current Publication",
+  );
+  const eventMetadata = within(review).getByRole("region", {
+    name: "Event details that will publish",
+  });
+  expect(eventMetadata).toHaveTextContent("Corrected family weekend");
+  expect(eventMetadata).toHaveTextContent("The complete corrected description");
+  expect(eventMetadata).toHaveTextContent("America/New_York");
+  expect(eventMetadata.querySelectorAll(".staged-metadata")).toHaveLength(3);
+  expect(
+    within(eventMetadata).getAllByText("Staged: Metadata edits"),
+  ).toHaveLength(3);
   expect(review).toHaveTextContent("Additions1");
   expect(review).toHaveTextContent("Removals2");
   expect(review).toHaveTextContent("Moves and ordering1");

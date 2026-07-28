@@ -1582,6 +1582,41 @@ h1 {
   margin: 0;
 }
 
+.staged-event-metadata {
+  margin-top: 0.75rem;
+}
+
+.staged-event-metadata h5 {
+  margin: 0;
+}
+
+.staged-event-metadata dl {
+  display: grid;
+  gap: 0.45rem;
+  margin: 0.45rem 0 0;
+}
+
+.staged-event-metadata dl > div {
+  padding: 0.45rem;
+  border: 1px solid transparent;
+  border-radius: 0.5rem;
+  background: rgb(2 6 23 / 45%);
+}
+
+.staged-event-metadata dl > div.staged-metadata {
+  border-color: #facc15;
+  background: rgb(133 77 14 / 18%);
+}
+
+.staged-event-metadata dt {
+  font-weight: 700;
+}
+
+.staged-event-metadata dd {
+  margin: 0.2rem 0 0;
+  overflow-wrap: anywhere;
+}
+
 .staged-review > ul {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr));

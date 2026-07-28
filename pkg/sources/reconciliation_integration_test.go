@@ -5,6 +5,8 @@ package sources
 import (
 	"context"
 	"errors"
+	"io"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -13,6 +15,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/robinjoseph08/memento/pkg/config"
 	"github.com/robinjoseph08/memento/pkg/immich"
+	"github.com/robinjoseph08/memento/pkg/library"
+	"github.com/robinjoseph08/memento/pkg/setup"
 	"github.com/robinjoseph08/memento/pkg/staging"
 	"github.com/robinjoseph08/memento/pkg/worker"
 	"github.com/stretchr/testify/assert"
@@ -21,19 +25,20 @@ import (
 )
 
 type reconciliationConnector struct {
-	mu           sync.Mutex
-	summary      immich.AlbumSummary
-	after        *immich.AlbumSummary
-	pages        map[int]immich.AssetPage
-	albumCalls   int
-	pageCalls    []int
-	albumIDs     []uuid.UUID
-	pageAlbumIDs []uuid.UUID
-	albumErrAt   int
-	pageErrAt    int
-	dependency   error
-	checkErr     error
-	servedAssets map[uuid.UUID]bool
+	mu             sync.Mutex
+	summary        immich.AlbumSummary
+	after          *immich.AlbumSummary
+	pages          map[int]immich.AssetPage
+	albumCalls     int
+	pageCalls      []int
+	albumIDs       []uuid.UUID
+	pageAlbumIDs   []uuid.UUID
+	albumErrAt     int
+	pageErrAt      int
+	dependency     error
+	checkErr       error
+	servedAssets   map[uuid.UUID]bool
+	thumbnailCalls []uuid.UUID
 }
 
 func (connector *reconciliationConnector) Check(context.Context) error {
@@ -87,6 +92,21 @@ func (connector *reconciliationConnector) AssetExists(_ context.Context, assetID
 		}
 	}
 	return false, nil
+}
+
+func (connector *reconciliationConnector) Thumbnail(_ context.Context, assetID uuid.UUID) (immich.MediaResponse, error) {
+	connector.mu.Lock()
+	defer connector.mu.Unlock()
+	connector.thumbnailCalls = append(connector.thumbnailCalls, assetID)
+	return immich.MediaResponse{
+		Body: io.NopCloser(strings.NewReader("thumbnail")), ContentType: "image/webp", ContentLength: 9,
+	}, nil
+}
+
+func (connector *reconciliationConnector) requestedThumbnails() []uuid.UUID {
+	connector.mu.Lock()
+	defer connector.mu.Unlock()
+	return append([]uuid.UUID(nil), connector.thumbnailCalls...)
 }
 
 func (connector *reconciliationConnector) setAssetExists(assetID uuid.UUID, exists bool) {
@@ -146,6 +166,7 @@ func newReconciliationService(t *testing.T, connector Connector) (*Service, uuid
 
 type stagedSourceEvent struct {
 	eventID, momentID, mediaID, publicationID uuid.UUID
+	recipient                                 setup.SessionActor
 }
 
 func publishSourceEventFixture(t *testing.T, service *Service, sourceAlbumID uuid.UUID, assetID uuid.UUID) stagedSourceEvent {
@@ -201,6 +222,43 @@ func publishSourceEventFixture(t *testing.T, service *Service, sourceAlbumID uui
 		fixture.eventID, fixture.publicationID, publishedMomentID, fixture.mediaID, fixture.publicationID, fixture.eventID).Exec(ctx)
 	require.NoError(t, err)
 	return fixture
+}
+
+func authorizeSourceRecipient(t *testing.T, service *Service, fixture *stagedSourceEvent) {
+	t.Helper()
+	recipientPersonID, recipientAccessID, recipientSessionID := uuid.New(), uuid.New(), uuid.New()
+	fixture.recipient = setup.SessionActor{
+		PersonID: recipientPersonID, AccessID: recipientAccessID, SessionID: recipientSessionID,
+	}
+	_, err := service.db.NewRaw(`
+		UPDATE system_settings SET setup_complete = true WHERE id = 1;
+		INSERT INTO people (id, display_name, sort_name) VALUES (?, 'Source Recipient', 'source recipient');
+		INSERT INTO person_roles (person_id, role) VALUES (?, 'recipient');
+		INSERT INTO recipient_access_generations (
+			id, person_id, generation, state, is_current, onboarding_completed_at, created_at, updated_at
+		) VALUES (?, ?, 1, 'completed', true, ?, ?, ?);
+		INSERT INTO sessions (
+			id, credential_hash, person_id, recipient_access_generation_id,
+			security_epoch, session_type, idle_expires_at
+		) SELECT ?, decode(repeat('42', 32), 'hex'), ?, ?, security_epoch, 'trusted', '2100-01-01T00:00:00Z'
+		FROM system_settings WHERE id = 1;
+		INSERT INTO audience_snapshot_entries (
+			snapshot_id, recipient_person_id, recipient_access_generation_id
+		) SELECT snapshot_id, ?, ? FROM current_audience_snapshots
+		WHERE target_kind = 'moment' AND target_id = ?;
+		INSERT INTO audience_entries (
+			published_moment_id, recipient_person_id, recipient_access_generation_id
+		) SELECT id, ?, ? FROM published_moments WHERE publication_id = ? AND draft_moment_id = ?;
+		INSERT INTO current_audience_entitlements (
+			event_id, publication_id, recipient_person_id, recipient_access_generation_id, media_item_id
+		) VALUES (?, ?, ?, ?, ?)
+	`, recipientPersonID, recipientPersonID,
+		recipientAccessID, recipientPersonID, service.now(), service.now(), service.now(),
+		recipientSessionID, recipientPersonID, recipientAccessID,
+		recipientPersonID, recipientAccessID, fixture.momentID,
+		recipientPersonID, recipientAccessID, fixture.publicationID, fixture.momentID,
+		fixture.eventID, fixture.publicationID, recipientPersonID, recipientAccessID, fixture.mediaID).Exec(context.Background())
+	require.NoError(t, err)
 }
 
 func reconciliationWorkerConfig() config.WorkerConfig {
@@ -566,6 +624,7 @@ func TestFinalPublishedSourceRemovalStaysPrivateWhileMediaRemainsAvailable(t *te
 	service, sourceAlbumID := newReconciliationService(t, connector)
 	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
 	fixture := publishSourceEventFixture(t, service, sourceAlbumID, original.SourceID)
+	authorizeSourceRecipient(t, service, &fixture)
 	connector.setAssetExists(original.SourceID, true)
 
 	connector.setMembership()
@@ -584,6 +643,23 @@ func TestFinalPublishedSourceRemovalStaysPrivateWhileMediaRemainsAvailable(t *te
 	assert.False(t, editablePlacement, "the source removal changes only the private editable result")
 	assert.True(t, currentPlacement, "Recipients retain the prior projection until Publication")
 	assert.True(t, historicalPlacement)
+
+	recipientLibrary := library.New(service.db, connector)
+	listed, err := recipientLibrary.Events(context.Background(), fixture.recipient, "10", "")
+	require.NoError(t, err)
+	require.Len(t, listed.Events, 1)
+	assert.Equal(t, fixture.eventID.String(), listed.Events[0].ID)
+	assert.Equal(t, fixture.mediaID.String(), listed.Events[0].CoverMediaID)
+	assert.True(t, listed.Events[0].CoverAvailable)
+	assert.Equal(t, "/api/me/media/"+fixture.mediaID.String()+"/thumbnail", listed.Events[0].ThumbnailURL)
+	thumbnail, err := recipientLibrary.Thumbnail(context.Background(), fixture.recipient, fixture.mediaID)
+	require.NoError(t, err)
+	contents, err := io.ReadAll(thumbnail.Body)
+	require.NoError(t, err)
+	require.NoError(t, thumbnail.Body.Close())
+	assert.Equal(t, "thumbnail", string(contents))
+	assert.Equal(t, []uuid.UUID{original.SourceID}, connector.requestedThumbnails())
+
 	require.NoError(t, service.db.RunInTx(context.Background(), nil, func(ctx context.Context, tx bun.Tx) error {
 		if _, err := tx.NewRaw(`DELETE FROM draft_moments WHERE id = ?`, fixture.momentID).Exec(ctx); err != nil {
 			return err

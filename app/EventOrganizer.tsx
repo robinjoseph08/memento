@@ -160,12 +160,62 @@ function StagedUpdateReview({ event }: { event: DraftEvent }) {
   const deletedMoments = event.staged_update.changes.flatMap(
     (change) => change.deleted_moments ?? [],
   );
+  const changedEventMetadata = new Set(
+    event.staged_update.changes.flatMap(
+      (change) => change.event_metadata_fields ?? [],
+    ),
+  );
+  const metadataLabel = (
+    field: "title" | "description" | "grouping_timezone",
+  ) =>
+    changedEventMetadata.has(field) ? (
+      <span className="staged-change-label">Staged: Metadata edits</span>
+    ) : null;
   return (
     <section aria-labelledby="staged-review-title" className="staged-review">
       <div>
         <p className="step-label">Private until Publication</p>
         <h4 id="staged-review-title">Staged update review</h4>
-        <p>The organization below is the complete resulting Event.</p>
+        <p>
+          Review the Event details and organization that will replace the
+          current Publication.
+        </p>
+        <section
+          aria-labelledby="staged-event-metadata-title"
+          className="staged-event-metadata"
+        >
+          <h5 id="staged-event-metadata-title">
+            Event details that will publish
+          </h5>
+          <dl>
+            <div
+              className={
+                changedEventMetadata.has("title") ? "staged-metadata" : ""
+              }
+            >
+              <dt>Title {metadataLabel("title")}</dt>
+              <dd>{event.title || "Untitled Event"}</dd>
+            </div>
+            <div
+              className={
+                changedEventMetadata.has("description") ? "staged-metadata" : ""
+              }
+            >
+              <dt>Description {metadataLabel("description")}</dt>
+              <dd>{event.description || "No description"}</dd>
+            </div>
+            <div
+              className={
+                changedEventMetadata.has("grouping_timezone")
+                  ? "staged-metadata"
+                  : ""
+              }
+            >
+              <dt>Grouping timezone {metadataLabel("grouping_timezone")}</dt>
+              <dd>{event.grouping_timezone}</dd>
+            </div>
+          </dl>
+        </section>
         {removedMedia.length > 0 || deletedMoments.length > 0 ? (
           <section
             aria-labelledby="removed-items-title"

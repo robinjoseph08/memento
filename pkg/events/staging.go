@@ -25,13 +25,14 @@ type StagedDeletedMoment struct {
 
 // StagedChange is one category in the coalesced difference from the current Publication.
 type StagedChange struct {
-	Kind           staging.ChangeKind    `json:"kind" tstype:"\"addition\" | \"removal\" | \"move\" | \"metadata\" | \"moment_structure\" | \"access\""`
-	Count          int                   `json:"count"`
-	MediaItemIDs   []string              `json:"media_item_ids"`
-	MomentIDs      []string              `json:"moment_ids"`
-	RemovedMedia   []StagedRemovedMedia  `json:"removed_media,omitempty"`
-	DeletedMoments []StagedDeletedMoment `json:"deleted_moments,omitempty"`
-	Detail         string                `json:"detail"`
+	Kind                staging.ChangeKind    `json:"kind" tstype:"\"addition\" | \"removal\" | \"move\" | \"metadata\" | \"moment_structure\" | \"access\""`
+	Count               int                   `json:"count"`
+	MediaItemIDs        []string              `json:"media_item_ids"`
+	MomentIDs           []string              `json:"moment_ids"`
+	EventMetadataFields []string              `json:"event_metadata_fields,omitempty" tstype:"(\"title\" | \"description\" | \"grouping_timezone\")[]"`
+	RemovedMedia        []StagedRemovedMedia  `json:"removed_media,omitempty"`
+	DeletedMoments      []StagedDeletedMoment `json:"deleted_moments,omitempty"`
+	Detail              string                `json:"detail"`
 }
 
 // StagedUpdate is the one private net update for a published Event.
@@ -62,8 +63,8 @@ func stagedUpdateFromDomain(update *staging.Update) *StagedUpdate {
 		}
 		changes = append(changes, StagedChange{
 			Kind: change.Kind, Count: change.Count, MediaItemIDs: change.MediaItemIDs,
-			MomentIDs: change.MomentIDs, RemovedMedia: removedMedia,
-			DeletedMoments: deletedMoments, Detail: change.Detail,
+			MomentIDs: change.MomentIDs, EventMetadataFields: change.EventMetadataFields,
+			RemovedMedia: removedMedia, DeletedMoments: deletedMoments, Detail: change.Detail,
 		})
 	}
 	return &StagedUpdate{

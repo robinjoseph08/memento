@@ -577,9 +577,35 @@ func TestFailureAtEveryPublicationBoundaryRollsBackEverything(t *testing.T) {
 	fixture.service.failPublicationStep = nil
 	_, err := fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, fixture.request())
 	require.NoError(t, err)
-	_, err = fixture.db.NewRaw(`UPDATE events SET title = 'Replacement candidate', version = 8 WHERE id = ?`, fixture.event).Exec(ctx)
+	require.NoError(t, fixture.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if _, err := tx.NewRaw(`
+			UPDATE events SET title = 'Replacement candidate', description = 'Replacement description',
+				grouping_timezone = 'America/New_York', version = 8
+			WHERE id = ?
+		`, fixture.event).Exec(ctx); err != nil {
+			return err
+		}
+		if _, err := refreshStagedUpdate(ctx, tx, fixture.event, fixture.service.now().UTC()); err != nil {
+			return err
+		}
+		_, err := tx.NewRaw(`
+			INSERT INTO staged_source_removals (
+				event_id, media_item_id, draft_moment_id, position, was_cover, created_at
+			) VALUES (?, ?, ?, 17, true, ?)
+		`, fixture.event, fixture.media[0], fixture.moments[0], fixture.service.now().UTC()).Exec(ctx)
+		return err
+	}))
+	editable, err := fixture.service.GetEvent(ctx, fixture.event)
 	require.NoError(t, err)
-	replacementTables := append([]string{"events"}, publicationTables...)
+	require.NotNil(t, editable.StagedUpdate)
+	var metadataFields []string
+	for _, change := range editable.StagedUpdate.Changes {
+		if change.Kind == "metadata" {
+			metadataFields = change.EventMetadataFields
+		}
+	}
+	assert.ElementsMatch(t, []string{"title", "description", "grouping_timezone"}, metadataFields)
+	replacementTables := append([]string{"events", "staged_updates", "staged_source_removals"}, publicationTables...)
 	priorState := snapshotTables(replacementTables)
 	for _, failedStep := range steps {
 		fixture.service.failPublicationStep = func(step PublicationStep) error {

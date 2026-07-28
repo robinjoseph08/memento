@@ -60,13 +60,14 @@ func (kind *ChangeKind) UnmarshalJSON(data []byte) error {
 
 // Change is one category in the coalesced difference from the current Publication.
 type Change struct {
-	Kind           ChangeKind      `json:"kind"`
-	Count          int             `json:"count"`
-	MediaItemIDs   []string        `json:"media_item_ids"`
-	MomentIDs      []string        `json:"moment_ids"`
-	RemovedMedia   []RemovedMedia  `json:"removed_media,omitempty"`
-	DeletedMoments []DeletedMoment `json:"deleted_moments,omitempty"`
-	Detail         string          `json:"detail"`
+	Kind                ChangeKind      `json:"kind"`
+	Count               int             `json:"count"`
+	MediaItemIDs        []string        `json:"media_item_ids"`
+	MomentIDs           []string        `json:"moment_ids"`
+	EventMetadataFields []string        `json:"event_metadata_fields,omitempty"`
+	RemovedMedia        []RemovedMedia  `json:"removed_media,omitempty"`
+	DeletedMoments      []DeletedMoment `json:"deleted_moments,omitempty"`
+	Detail              string          `json:"detail"`
 }
 
 // Update is the one private net update for a published Event.
@@ -208,16 +209,26 @@ func summarizeStagedUpdate(ctx context.Context, db bun.IDB, eventID, publication
 		return nil, err
 	}
 
-	var eventMetadataChanged bool
+	var titleChanged, descriptionChanged, timezoneChanged bool
 	if err := db.NewRaw(`
-		SELECT EXISTS (
-			SELECT 1 FROM events AS editable
-			JOIN published_event_revisions AS published ON published.publication_id = ?
-			WHERE editable.id = ? AND (editable.title, editable.description, editable.grouping_timezone)
-				IS DISTINCT FROM (published.title, published.description, published.grouping_timezone)
-		)
-	`, publicationID, eventID).Scan(ctx, &eventMetadataChanged); err != nil {
+		SELECT editable.title IS DISTINCT FROM published.title,
+		       editable.description IS DISTINCT FROM published.description,
+		       editable.grouping_timezone IS DISTINCT FROM published.grouping_timezone
+		FROM events AS editable
+		JOIN published_event_revisions AS published ON published.publication_id = ?
+		WHERE editable.id = ?
+	`, publicationID, eventID).Scan(ctx, &titleChanged, &descriptionChanged, &timezoneChanged); err != nil {
 		return nil, err
+	}
+	eventMetadataFields := make([]string, 0, 3)
+	if titleChanged {
+		eventMetadataFields = append(eventMetadataFields, "title")
+	}
+	if descriptionChanged {
+		eventMetadataFields = append(eventMetadataFields, "description")
+	}
+	if timezoneChanged {
+		eventMetadataFields = append(eventMetadataFields, "grouping_timezone")
 	}
 	var metadataMedia []uuid.UUID
 	if err := db.NewRaw(`
@@ -331,7 +342,7 @@ func summarizeStagedUpdate(ctx context.Context, db bun.IDB, eventID, publication
 	appendMediaChange(ChangeKindRemoval, "Media removed", removals)
 	appendMediaChange(ChangeKindMove, "Media moved or reordered", moves)
 	metadataExtra := 0
-	if eventMetadataChanged {
+	if len(eventMetadataFields) > 0 {
 		metadataExtra = 1
 	}
 	if len(metadataMedia)+len(metadataMoments)+metadataExtra > 0 {
@@ -345,7 +356,8 @@ func summarizeStagedUpdate(ctx context.Context, db bun.IDB, eventID, publication
 		}
 		changes = append(changes, Change{
 			Kind: ChangeKindMetadata, Count: len(metadataMedia) + len(metadataMoments) + metadataExtra,
-			MediaItemIDs: mediaIDs, MomentIDs: momentIDs, Detail: "Event, Moment, or Media metadata edited",
+			MediaItemIDs: mediaIDs, MomentIDs: momentIDs, EventMetadataFields: eventMetadataFields,
+			Detail: "Event, Moment, or Media metadata edited",
 		})
 	}
 	appendMomentChange(ChangeKindMomentStructure, "Moment structure or ordering changed", structureMoments, 0)
