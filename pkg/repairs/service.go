@@ -906,9 +906,11 @@ func relinkDraftMediaReferences(ctx context.Context, tx bun.Tx, stableMediaID, c
 			SELECT event_id FROM draft_media_placements WHERE media_item_id = ?
 			UNION
 			SELECT event_id FROM draft_moments WHERE cover_media_item_id = ?
+			UNION
+			SELECT event_id FROM staged_source_removals WHERE media_item_id IN (?, ?)
 		)
 		ORDER BY id FOR UPDATE
-	`, candidateMediaID, candidateMediaID).Scan(ctx, &affectedEventIDs); err != nil {
+	`, candidateMediaID, candidateMediaID, stableMediaID, candidateMediaID).Scan(ctx, &affectedEventIDs); err != nil {
 		return err
 	}
 	var eventCollision, looseCollision bool
@@ -936,17 +938,76 @@ func relinkDraftMediaReferences(ctx context.Context, tx bun.Tx, stableMediaID, c
 	if _, err := tx.NewRaw(`UPDATE draft_moments SET cover_media_item_id = ? WHERE cover_media_item_id = ?`, stableMediaID, candidateMediaID).Exec(ctx); err != nil {
 		return err
 	}
-	if len(affectedEventIDs) > 0 {
-		if _, err := tx.NewRaw(`
-			DELETE FROM staged_source_removals
-			WHERE event_id IN (?) AND media_item_id IN (?, ?)
-		`, bun.List(affectedEventIDs), stableMediaID, candidateMediaID).Exec(ctx); err != nil {
+	for _, eventID := range affectedEventIDs {
+		var momentID *uuid.UUID
+		var position int
+		var wasCover bool
+		err := tx.NewRaw(`
+			SELECT draft_moment_id, position, was_cover
+			FROM staged_source_removals
+			WHERE event_id = ? AND media_item_id IN (?, ?)
+			ORDER BY (media_item_id = ?) DESC
+			LIMIT 1
+		`, eventID, stableMediaID, candidateMediaID, stableMediaID).Scan(ctx, &momentID, &position, &wasCover)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		for _, eventID := range affectedEventIDs {
-			if _, err := staging.InvalidateEvent(ctx, tx, eventID, now); err != nil {
+		if err == nil {
+			if momentID != nil {
+				var retained bool
+				if err := tx.NewRaw(`SELECT EXISTS (SELECT 1 FROM draft_moments WHERE event_id = ? AND id = ?)`, eventID, *momentID).Scan(ctx, &retained); err != nil {
+					return err
+				}
+				if !retained {
+					momentID = nil
+				}
+			}
+			var placed, occupied bool
+			if err := tx.NewRaw(`SELECT EXISTS (SELECT 1 FROM draft_media_placements WHERE event_id = ? AND media_item_id = ?)`, eventID, stableMediaID).Scan(ctx, &placed); err != nil {
 				return err
 			}
+			if err := tx.NewRaw(`
+				SELECT EXISTS (
+					SELECT 1 FROM draft_media_placements
+					WHERE event_id = ? AND position = ? AND media_item_id <> ?
+				)
+			`, eventID, position, stableMediaID).Scan(ctx, &occupied); err != nil {
+				return err
+			}
+			if placed && !occupied {
+				if _, err := tx.NewRaw(`
+					UPDATE draft_media_placements SET draft_moment_id = ?, position = ?
+					WHERE event_id = ? AND media_item_id = ?
+				`, momentID, position, eventID, stableMediaID).Exec(ctx); err != nil {
+					return err
+				}
+			} else if !placed {
+				if occupied {
+					if err := tx.NewRaw(`SELECT COALESCE(max(position), -1) + 1 FROM draft_media_placements WHERE event_id = ?`, eventID).Scan(ctx, &position); err != nil {
+						return err
+					}
+				}
+				if _, err := tx.NewRaw(`
+					INSERT INTO draft_media_placements (event_id, media_item_id, draft_moment_id, position, created_at)
+					VALUES (?, ?, ?, ?, ?)
+				`, eventID, stableMediaID, momentID, position, now).Exec(ctx); err != nil {
+					return err
+				}
+			}
+			if wasCover && momentID != nil {
+				if _, err := tx.NewRaw(`UPDATE draft_moments SET cover_media_item_id = ? WHERE id = ? AND cover_media_item_id IS NULL`, stableMediaID, *momentID).Exec(ctx); err != nil {
+					return err
+				}
+			}
+		}
+		if _, err := tx.NewRaw(`
+			DELETE FROM staged_source_removals
+			WHERE event_id = ? AND media_item_id IN (?, ?)
+		`, eventID, stableMediaID, candidateMediaID).Exec(ctx); err != nil {
+			return err
+		}
+		if _, err := staging.InvalidateEvent(ctx, tx, eventID, now); err != nil {
+			return err
 		}
 	}
 	if _, err := tx.NewRaw(`

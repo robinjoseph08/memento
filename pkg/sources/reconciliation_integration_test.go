@@ -694,8 +694,8 @@ func TestFinalPublishedSourceRemovalStaysPrivateWhileMediaRemainsAvailable(t *te
 	assert.True(t, deletedMomentFound)
 }
 
-func TestPublishedSourceRemovalThenReappearanceRestoresPlacementAndClearsStaging(t *testing.T) {
-	original := reconciliationAsset(uuid.New())
+func TestPublishedPartialSourceRemovalThenReappearanceRestoresPlacementAndClearsStaging(t *testing.T) {
+	original, future := reconciliationAsset(uuid.New()), reconciliationAsset(uuid.New())
 	connector := &reconciliationConnector{summary: sourceAlbum(uuid.New(), "Restored source", 1)}
 	connector.pages = map[int]immich.AssetPage{1: {Items: []immich.AssetSummary{original}}}
 	service, sourceAlbumID := newReconciliationService(t, connector)
@@ -704,12 +704,14 @@ func TestPublishedSourceRemovalThenReappearanceRestoresPlacementAndClearsStaging
 	connector.setAssetExists(original.SourceID, true)
 	const originalPosition = 4
 	_, err := service.db.NewRaw(`
+		UPDATE event_sources SET include_future_media = false WHERE event_id = ? AND source_album_id = ?;
 		UPDATE draft_media_placements SET position = ? WHERE event_id = ? AND media_item_id = ?;
 		UPDATE published_media_placements SET position = ?
 		WHERE published_moment_id IN (SELECT id FROM published_moments WHERE publication_id = ?)
 		  AND media_item_id = ?;
 		UPDATE current_published_placements SET position = ? WHERE event_id = ? AND media_item_id = ?
-	`, originalPosition, fixture.eventID, fixture.mediaID,
+	`, fixture.eventID, sourceAlbumID,
+		originalPosition, fixture.eventID, fixture.mediaID,
 		originalPosition, fixture.publicationID, fixture.mediaID,
 		originalPosition, fixture.eventID, fixture.mediaID).Exec(context.Background())
 	require.NoError(t, err)
@@ -733,7 +735,7 @@ func TestPublishedSourceRemovalThenReappearanceRestoresPlacementAndClearsStaging
 	require.NotNil(t, removed)
 	require.Len(t, removed.Changes, 2)
 
-	connector.setMembership(original)
+	connector.setMembership(original, future)
 	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
 	var restoredMomentID *uuid.UUID
 	var restoredPosition int
@@ -748,6 +750,11 @@ func TestPublishedSourceRemovalThenReappearanceRestoresPlacementAndClearsStaging
 	require.NoError(t, service.db.NewRaw(`SELECT cover_media_item_id FROM draft_moments WHERE id = ?`, fixture.momentID).Scan(context.Background(), &restoredCoverID))
 	require.NotNil(t, restoredCoverID)
 	assert.Equal(t, fixture.mediaID, *restoredCoverID)
+	var futureMediaID uuid.UUID
+	require.NoError(t, service.db.NewRaw(`SELECT id FROM media_items WHERE immich_asset_id = ?`, future.SourceID).Scan(context.Background(), &futureMediaID))
+	var futurePlacement bool
+	require.NoError(t, service.db.NewRaw(`SELECT EXISTS (SELECT 1 FROM draft_media_placements WHERE event_id = ? AND media_item_id = ?)`, fixture.eventID, futureMediaID).Scan(context.Background(), &futurePlacement))
+	assert.False(t, futurePlacement, "a partial-source Event restores selected Media without accepting genuinely new Media")
 	var restorationRows, stagedRows int
 	require.NoError(t, service.db.NewRaw(`SELECT count(*) FROM staged_source_removals WHERE event_id = ?`, fixture.eventID).Scan(context.Background(), &restorationRows))
 	require.NoError(t, service.db.NewRaw(`SELECT count(*) FROM staged_updates WHERE event_id = ?`, fixture.eventID).Scan(context.Background(), &stagedRows))

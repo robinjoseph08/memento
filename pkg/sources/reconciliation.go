@@ -480,11 +480,7 @@ func syncEditableEvents(
 			}
 			continue
 		}
-		eventAddedMediaIDs := addedMediaIDs
-		if !event.IncludeFutureMedia {
-			eventAddedMediaIDs = nil
-		}
-		for _, mediaID := range eventAddedMediaIDs {
+		for _, mediaID := range addedMediaIDs {
 			var exists bool
 			if err := tx.NewRaw(`SELECT EXISTS (SELECT 1 FROM draft_media_placements WHERE event_id = ? AND media_item_id = ?)`, eventID, mediaID).Scan(ctx, &exists); err != nil {
 				return err
@@ -500,6 +496,9 @@ func syncEditableEvents(
 				FROM staged_source_removals WHERE event_id = ? AND media_item_id = ?
 			`, eventID, mediaID).Scan(ctx, &momentID, &position, &wasCover)
 			if errors.Is(err, sql.ErrNoRows) {
+				if !event.IncludeFutureMedia {
+					continue
+				}
 				momentID = nil
 				if err := tx.NewRaw(`SELECT COALESCE(max(position), -1) + 1 FROM draft_media_placements WHERE event_id = ?`, eventID).Scan(ctx, &position); err != nil {
 					return err
