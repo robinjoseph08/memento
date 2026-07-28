@@ -10,6 +10,7 @@ import type {
   MediaCandidate,
   MutationResponse,
   PersonCandidate,
+  SourceProblem,
   UnlinkedPerson,
 } from "./types/generated/repairs";
 
@@ -156,6 +157,37 @@ function FaceAnchors({ values }: { values: FaceAnchorEvidence[] }) {
         ))}
       </ol>
     </section>
+  );
+}
+
+function SourceProblemCard({ problem }: { problem: SourceProblem }) {
+  const mediaProblem = problem.kind === "media_item";
+  return (
+    <article className="repair-card repair-problem">
+      <p className="step-label">
+        {problem.published && mediaProblem
+          ? "Published Media unavailable"
+          : mediaProblem
+            ? "Media source missing"
+            : "Source album missing"}
+      </p>
+      <h3>{problem.label}</h3>
+      <p>
+        {problem.priority === "critical"
+          ? "This published Source problem has the highest priority. Its listing and Audience remain unchanged, but Media delivery is blocked."
+          : "This Source problem needs Curator review. No backing or authorization changes automatically."}
+      </p>
+      {mediaProblem ? (
+        <p>
+          {problem.candidate_count > 0
+            ? `${problem.candidate_count} replacement ${problem.candidate_count === 1 ? "candidate is" : "candidates are"} ready for evidence review below.`
+            : "No safe replacement candidate is available yet."}
+        </p>
+      ) : null}
+      <small>
+        Missing since {new Date(problem.missing_since).toLocaleString()}
+      </small>
+    </article>
   );
 }
 
@@ -409,8 +441,10 @@ export function RepairWorkspace({ csrfToken }: { csrfToken: string }) {
     },
   });
   const data = repairs.data;
+  const sourceProblems = data?.source_problems ?? [];
   const empty =
     data &&
+    sourceProblems.length === 0 &&
     data.person_candidates.length === 0 &&
     data.media_candidates.length === 0 &&
     data.unlinked_immich_people.length === 0;
@@ -442,6 +476,12 @@ export function RepairWorkspace({ csrfToken }: { csrfToken: string }) {
       ) : null}
       {empty ? <p>No Immich identity changes need review.</p> : null}
       <div className="repair-list">
+        {sourceProblems.map((problem) => (
+          <SourceProblemCard
+            key={`${problem.kind}:${problem.id}`}
+            problem={problem}
+          />
+        ))}
         {data?.person_candidates.map((candidate) => (
           <PersonRepair
             candidate={candidate}

@@ -298,6 +298,35 @@ func TestAssetExistsDistinguishesPresentAndDeletedAssets(t *testing.T) {
 	assert.False(t, exists)
 }
 
+func TestAssetExistsRejectsMalformedAndUnauthorizedResponses(t *testing.T) {
+	assetID := uuid.New()
+	for _, test := range []struct {
+		name   string
+		status int
+		body   string
+		want   string
+	}{
+		{name: "malformed", status: http.StatusOK, body: `{`, want: "Immich returned an invalid response"},
+		{name: "mismatched identity", status: http.StatusOK, body: `{"id":"` + uuid.NewString() + `"}`, want: "Immich returned an invalid response"},
+		{name: "unauthorized", status: http.StatusUnauthorized, body: `{"message":"private"}`, want: "Immich API key is invalid"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := contractServer(t, func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(test.status)
+				_, _ = w.Write([]byte(test.body))
+			})
+			defer server.Close()
+			client, err := New(clientConfig(server.URL), server.Client())
+			require.NoError(t, err)
+
+			exists, err := client.AssetExists(context.Background(), assetID)
+			assert.False(t, exists)
+			require.EqualError(t, err, test.want)
+			assert.NotContains(t, err.Error(), "private")
+		})
+	}
+}
+
 func TestAlbumAssetsPageUsesPinnedPaginationAndReturnsOnlyNormalizedRepairEvidence(t *testing.T) {
 	albumID, assetID := uuid.New(), uuid.New()
 	server := contractServer(t, func(w http.ResponseWriter, r *http.Request) {

@@ -59,6 +59,17 @@ test("shows private normalized Media evidence and confirms only after an explici
     }
     return Promise.resolve(
       jsonResponse({
+        source_problems: [
+          {
+            kind: "media_item",
+            id: "99999999-9999-4999-8999-999999999999",
+            label: "missing.jpg",
+            priority: "critical",
+            published: true,
+            missing_since: "2026-01-01T00:00:00Z",
+            candidate_count: 1,
+          },
+        ],
         person_candidates: [],
         unlinked_immich_people: [],
         media_candidates: [
@@ -104,6 +115,9 @@ test("shows private normalized Media evidence and confirms only after an explici
 
   renderWorkspace();
   expect(await screen.findByText("/private/old.jpg")).toBeInTheDocument();
+  expect(screen.getByText("Published Media unavailable")).toBeInTheDocument();
+  expect(screen.getByText("missing.jpg")).toBeInTheDocument();
+  expect(screen.getByText(/highest priority/)).toBeInTheDocument();
   expect(screen.getByText("/private/moved/new.jpg")).toBeInTheDocument();
   expect(
     screen.getByText("33333333-3333-4333-8333-333333333333"),

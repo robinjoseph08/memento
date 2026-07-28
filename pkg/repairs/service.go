@@ -31,6 +31,7 @@ type Connector interface {
 	Check(ctx context.Context) error
 	People(ctx context.Context) ([]immich.PersonSummary, error)
 	Faces(ctx context.Context, assetID uuid.UUID) ([]immich.FaceSummary, error)
+	AssetExists(ctx context.Context, assetID uuid.UUID) (bool, error)
 }
 
 // Evidence describes normalized private media attributes. Path is intentionally Curator-only.
@@ -86,6 +87,17 @@ type MediaCandidate struct {
 	ResolvedAt             *time.Time           `json:"resolved_at,omitempty"`
 }
 
+// SourceProblem is a prioritized Curator-only Source missing problem.
+type SourceProblem struct {
+	Kind           string    `json:"kind"`
+	ID             string    `json:"id"`
+	Label          string    `json:"label"`
+	Priority       string    `json:"priority"`
+	Published      bool      `json:"published"`
+	MissingSince   time.Time `json:"missing_since"`
+	CandidateCount int       `json:"candidate_count"`
+}
+
 // UnlinkedPerson is a newly observed Immich identity, still only an addition.
 type UnlinkedPerson struct {
 	ImmichPersonID string `json:"immich_person_id"`
@@ -95,6 +107,7 @@ type UnlinkedPerson struct {
 
 // ListResponse is generated to TypeScript by Tygo.
 type ListResponse struct {
+	SourceProblems       []SourceProblem   `json:"source_problems"`
 	PersonCandidates     []PersonCandidate `json:"person_candidates"`
 	MediaCandidates      []MediaCandidate  `json:"media_candidates"`
 	UnlinkedImmichPeople []UnlinkedPerson  `json:"unlinked_immich_people"`
@@ -377,7 +390,10 @@ func appendUnique(values []string, value string) []string {
 
 // List returns private evidence and confirmation state only.
 func (s *Service) List(ctx context.Context) (ListResponse, error) {
-	response := ListResponse{PersonCandidates: []PersonCandidate{}, MediaCandidates: []MediaCandidate{}, UnlinkedImmichPeople: []UnlinkedPerson{}}
+	response := ListResponse{SourceProblems: []SourceProblem{}, PersonCandidates: []PersonCandidate{}, MediaCandidates: []MediaCandidate{}, UnlinkedImmichPeople: []UnlinkedPerson{}}
+	if err := s.listSourceProblems(ctx, &response); err != nil {
+		return ListResponse{}, err
+	}
 	if err := s.listPersonCandidates(ctx, &response); err != nil {
 		return ListResponse{}, err
 	}
@@ -396,6 +412,42 @@ func (s *Service) List(ctx context.Context) (ListResponse, error) {
 		return ListResponse{}, err
 	}
 	return response, nil
+}
+
+func (s *Service) listSourceProblems(ctx context.Context, response *ListResponse) error {
+	return s.db.NewRaw(`
+		WITH problems AS (
+			SELECT 'media_item'::text AS kind, media.id,
+				COALESCE(NULLIF(backing.filename, ''), 'Media item') AS label,
+				EXISTS (
+					SELECT 1 FROM current_published_placements AS placement
+					WHERE placement.media_item_id = media.id
+				) AS published,
+				media.updated_at AS missing_since,
+				(
+					SELECT count(*) FROM media_repair_candidates AS candidate
+					WHERE candidate.media_item_id = media.id AND candidate.state = 'pending'
+				)::integer AS candidate_count
+			FROM media_items AS media
+			LEFT JOIN media_backings AS backing ON backing.media_item_id = media.id AND backing.active
+			WHERE media.availability = 'source_missing'
+			UNION ALL
+			SELECT 'source_album'::text, album.id, album.name,
+				EXISTS (
+					SELECT 1 FROM source_album_memberships AS membership
+					JOIN current_published_placements AS placement ON placement.media_item_id = membership.media_item_id
+					WHERE membership.source_album_id = album.id
+				),
+				album.missing_since, 0
+			FROM source_albums AS album
+			WHERE album.source_missing
+		)
+		SELECT kind, id, label,
+			CASE WHEN published THEN 'critical' ELSE 'high' END AS priority,
+			published, missing_since, candidate_count
+		FROM problems
+		ORDER BY published DESC, (kind = 'media_item') DESC, missing_since, id
+	`).Scan(ctx, &response.SourceProblems)
 }
 
 func (s *Service) listPersonCandidates(ctx context.Context, response *ListResponse) error {
@@ -787,8 +839,22 @@ func (s *Service) RejectPerson(ctx context.Context, actor setup.CuratorSession, 
 
 // ConfirmMedia atomically moves source membership to the stable portal Media identity.
 func (s *Service) ConfirmMedia(ctx context.Context, actor setup.CuratorSession, candidateID uuid.UUID) (MutationResponse, error) {
+	candidateAssetID, err := s.pendingMediaCandidateAsset(ctx, candidateID)
+	if err != nil {
+		return MutationResponse{}, err
+	}
+	if s.connector == nil {
+		return MutationResponse{}, ErrDependency
+	}
+	exists, err := s.connector.AssetExists(ctx, candidateAssetID)
+	if err != nil {
+		return MutationResponse{}, ErrDependency
+	}
+	if !exists {
+		return MutationResponse{}, ErrConflict
+	}
 	now := s.now().UTC()
-	err := s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 		if err := staging.LockAccessSummaryRefresh(ctx, tx); err != nil {
 			return err
 		}
@@ -849,6 +915,18 @@ func (s *Service) ConfirmMedia(ctx context.Context, actor setup.CuratorSession, 
 		}
 		if !previousChecksum.Valid || !candidateChecksum.Valid || previousChecksum.String != candidateChecksum.String ||
 			previousAvailability != "source_missing" || candidateAvailability != "current" || previousHasMembership || !candidateHasMembership {
+			return ErrConflict
+		}
+		var candidateHasIdentityOrAuthorization bool
+		if err := tx.NewRaw(`
+			SELECT EXISTS (SELECT 1 FROM published_media_placements WHERE media_item_id = ?)
+				OR EXISTS (SELECT 1 FROM current_audience_entitlements WHERE media_item_id = ?)
+				OR EXISTS (SELECT 1 FROM comments WHERE media_item_id = ?)
+				OR EXISTS (SELECT 1 FROM favorites WHERE media_item_id = ?)
+		`, candidateMediaID, candidateMediaID, candidateMediaID, candidateMediaID).Scan(ctx, &candidateHasIdentityOrAuthorization); err != nil {
+			return err
+		}
+		if candidateHasIdentityOrAuthorization {
 			return ErrConflict
 		}
 		if err := relinkDraftMediaReferences(ctx, tx, mediaItemID, candidateMediaID, now); err != nil {
@@ -1020,6 +1098,25 @@ func relinkDraftMediaReferences(ctx context.Context, tx bun.Tx, stableMediaID, c
 		return err
 	}
 	return nil
+}
+
+func (s *Service) pendingMediaCandidateAsset(ctx context.Context, candidateID uuid.UUID) (uuid.UUID, error) {
+	var assetID uuid.UUID
+	err := s.db.NewRaw(`
+		SELECT candidate_immich_asset_id FROM media_repair_candidates
+		WHERE id = ? AND state = 'pending'
+	`, candidateID).Scan(ctx, &assetID)
+	if !errors.Is(err, sql.ErrNoRows) {
+		return assetID, err
+	}
+	var exists bool
+	if scanErr := s.db.NewRaw(`SELECT EXISTS (SELECT 1 FROM media_repair_candidates WHERE id = ?)`, candidateID).Scan(ctx, &exists); scanErr != nil {
+		return uuid.Nil, scanErr
+	}
+	if exists {
+		return uuid.Nil, ErrAlreadyResolved
+	}
+	return uuid.Nil, ErrNotFound
 }
 
 func mediaCandidateMissingError(ctx context.Context, tx bun.Tx, candidateID uuid.UUID) error {

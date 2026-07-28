@@ -17,6 +17,7 @@ import (
 	"github.com/robinjoseph08/memento/pkg/events"
 	"github.com/robinjoseph08/memento/pkg/immich"
 	"github.com/robinjoseph08/memento/pkg/library"
+	"github.com/robinjoseph08/memento/pkg/repairs"
 	"github.com/robinjoseph08/memento/pkg/setup"
 	"github.com/robinjoseph08/memento/pkg/staging"
 	"github.com/robinjoseph08/memento/pkg/worker"
@@ -1038,6 +1039,46 @@ func TestPublishedPartialSourceRemovalThenReappearanceRestoresPlacementAndClears
 	assert.Zero(t, reviewRestorationRows)
 }
 
+func TestMissingAlbumBecomesCuratorVisibleWithoutChangingPublishedMedia(t *testing.T) {
+	original := repairableReconciliationAsset(uuid.New(), "/library/tracked/family.jpg")
+	connector := &reconciliationConnector{summary: sourceAlbum(uuid.New(), "Missing album", 1)}
+	connector.pages = map[int]immich.AssetPage{1: {Items: []immich.AssetSummary{original}}}
+	service, sourceAlbumID := newReconciliationService(t, connector)
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	fixture := publishSourceEventFixture(t, service, sourceAlbumID, original.SourceID)
+
+	connector.albumCalls = 0
+	connector.albumErrAt = 1
+	connector.dependency = immich.ErrNotFound
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	missing, err := service.Get(context.Background(), sourceAlbumID)
+	require.NoError(t, err)
+	assert.True(t, missing.SourceMissing)
+	var availability string
+	var memberships, placements int
+	require.NoError(t, service.db.NewRaw(`SELECT availability FROM media_items WHERE id = ?`, fixture.mediaID).Scan(context.Background(), &availability))
+	require.NoError(t, service.db.NewRaw(`SELECT count(*) FROM source_album_memberships WHERE source_album_id = ?`, sourceAlbumID).Scan(context.Background(), &memberships))
+	require.NoError(t, service.db.NewRaw(`SELECT count(*) FROM current_published_placements WHERE media_item_id = ?`, fixture.mediaID).Scan(context.Background(), &placements))
+	assert.Equal(t, "current", availability, "a missing album does not prove its independently served assets are missing")
+	assert.Equal(t, 1, memberships)
+	assert.Equal(t, 1, placements, "published history must not be silently removed")
+	problems, err := repairs.New(service.db, nil).List(context.Background())
+	require.NoError(t, err)
+	require.NotEmpty(t, problems.SourceProblems)
+	assert.Equal(t, "source_album", problems.SourceProblems[0].Kind)
+	assert.Equal(t, sourceAlbumID.String(), problems.SourceProblems[0].ID)
+	assert.Equal(t, "critical", problems.SourceProblems[0].Priority)
+	assert.True(t, problems.SourceProblems[0].Published)
+
+	connector.albumCalls = 0
+	connector.albumErrAt = 0
+	connector.dependency = nil
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	restored, err := service.Get(context.Background(), sourceAlbumID)
+	require.NoError(t, err)
+	assert.False(t, restored.SourceMissing)
+}
+
 func TestConfirmedDeletedPublishedMediaBecomesUnavailable(t *testing.T) {
 	original := repairableReconciliationAsset(uuid.New(), "/library/deleted/family.jpg")
 	connector := &reconciliationConnector{summary: sourceAlbum(uuid.New(), "Deleted source", 1)}
@@ -1053,6 +1094,13 @@ func TestConfirmedDeletedPublishedMediaBecomesUnavailable(t *testing.T) {
 	var availability string
 	require.NoError(t, service.db.NewRaw(`SELECT availability FROM media_items WHERE id = ?`, fixture.mediaID).Scan(context.Background(), &availability))
 	assert.Equal(t, "source_missing", availability, "a confirmed missing Immich asset stops published delivery immediately")
+	problems, err := repairs.New(service.db, nil).List(context.Background())
+	require.NoError(t, err)
+	require.NotEmpty(t, problems.SourceProblems)
+	assert.Equal(t, "media_item", problems.SourceProblems[0].Kind)
+	assert.Equal(t, fixture.mediaID.String(), problems.SourceProblems[0].ID)
+	assert.Equal(t, "critical", problems.SourceProblems[0].Priority)
+	assert.True(t, problems.SourceProblems[0].Published)
 	var currentPlacement bool
 	require.NoError(t, service.db.NewRaw(`SELECT EXISTS (SELECT 1 FROM current_published_placements WHERE event_id = ? AND media_item_id = ?)`, fixture.eventID, fixture.mediaID).Scan(context.Background(), &currentPlacement))
 	assert.True(t, currentPlacement, "the unavailable published listing remains until correction")

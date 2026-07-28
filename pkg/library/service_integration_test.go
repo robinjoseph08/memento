@@ -1214,6 +1214,64 @@ func TestSlowRepresentationOpeningDoesNotExhaustMinimumConnectionPool(t *testing
 	}
 }
 
+func TestUpstreamMissingResponseFailsEveryRepresentationClosedWithoutRemovingHistory(t *testing.T) {
+	fixture := newLibraryFixture(t)
+	ctx := context.Background()
+	fixture.thumbnail.err = immich.ErrNotFound
+
+	_, err := fixture.service.Thumbnail(ctx, fixture.actor, fixture.media[0], immich.MediaRequest{})
+	assert.ErrorIs(t, err, ErrNotFound)
+	fixture.thumbnail.err = nil
+
+	photos, err := fixture.service.Photos(ctx, fixture.actor, "10", "", false)
+	require.NoError(t, err)
+	var missing *Media
+	for index := range photos.Media {
+		if photos.Media[index].ID == fixture.media[0].String() {
+			missing = &photos.Media[index]
+			break
+		}
+	}
+	require.NotNil(t, missing, "the published listing remains in Recipient history")
+	assert.False(t, missing.Available)
+	assert.Empty(t, missing.ThumbnailURL)
+	assert.Empty(t, missing.PreviewURL)
+	assert.Empty(t, missing.VideoURL)
+	assert.Empty(t, missing.OriginalURL)
+
+	for _, open := range []func() (immich.MediaResponse, error){
+		func() (immich.MediaResponse, error) {
+			return fixture.service.Thumbnail(ctx, fixture.actor, fixture.media[0], immich.MediaRequest{})
+		},
+		func() (immich.MediaResponse, error) {
+			return fixture.service.Preview(ctx, fixture.actor, fixture.media[0], immich.MediaRequest{})
+		},
+		func() (immich.MediaResponse, error) {
+			return fixture.service.Original(ctx, fixture.actor, fixture.media[0], immich.MediaRequest{})
+		},
+	} {
+		_, err := open()
+		assert.ErrorIs(t, err, ErrNotFound)
+	}
+	assert.Len(t, fixture.thumbnail.assets, 1, "once missing is observed no derivative or original can reach Immich")
+	var placements, entitlements int
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM current_published_placements WHERE media_item_id = ?`, fixture.media[0]).Scan(ctx, &placements))
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM current_audience_entitlements WHERE media_item_id = ?`, fixture.media[0]).Scan(ctx, &entitlements))
+	assert.Positive(t, placements)
+	assert.Positive(t, entitlements, "Source missing must not change the current Audience")
+}
+
+func TestMalformedOrUnauthorizedUpstreamFailureDoesNotInventSourceMissing(t *testing.T) {
+	fixture := newLibraryFixture(t)
+	fixture.thumbnail.err = errors.New("Immich returned an invalid response")
+
+	_, err := fixture.service.Thumbnail(context.Background(), fixture.actor, fixture.media[0], immich.MediaRequest{})
+	require.Error(t, err)
+	var availability string
+	require.NoError(t, fixture.db.NewRaw(`SELECT availability FROM media_items WHERE id = ?`, fixture.media[0]).Scan(context.Background(), &availability))
+	assert.Equal(t, "current", availability, "only a confirmed not-found response is Source missing evidence")
+}
+
 func TestRecipientAuthorizationMatrixRevalidatesReuseWithdrawalAndAvailability(t *testing.T) {
 	fixture := newLibraryFixture(t)
 	ctx := context.Background()

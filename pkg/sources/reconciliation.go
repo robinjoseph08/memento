@@ -20,6 +20,8 @@ import (
 
 const ReconciliationJobKind = "reconcile_source_album"
 
+var errSourceAlbumMissing = errors.New("source album missing")
+
 // ReconciliationResponse acknowledges a bounded Curator request. Dependency
 // work remains in the single-concurrency durable worker.
 type ReconciliationResponse struct {
@@ -116,6 +118,9 @@ func (s *Service) Reconcile(ctx context.Context, sourceAlbumID uuid.UUID) error 
 		}
 
 		snapshot, snapshotErr := s.readSnapshot(ctx, immichAlbumID)
+		if errors.Is(snapshotErr, errSourceAlbumMissing) {
+			return recordMissingSourceAlbum(ctx, tx, sourceAlbumID, now, s.reconciliationInterval)
+		}
 		if snapshotErr != nil {
 			outcome = snapshotErr
 			status := "unstable"
@@ -170,6 +175,9 @@ func (s *Service) readSnapshot(ctx context.Context, albumID uuid.UUID) (reconcil
 		return snapshot, ErrDependency
 	}
 	before, err := s.connector.Album(ctx, albumID)
+	if errors.Is(err, immich.ErrNotFound) {
+		return snapshot, errSourceAlbumMissing
+	}
 	if err != nil {
 		snapshot.diagnostic = "dependency_unavailable"
 		return snapshot, ErrDependency
@@ -190,6 +198,9 @@ func (s *Service) readSnapshot(ctx context.Context, albumID uuid.UUID) (reconcil
 			return snapshot, ErrUnstable
 		}
 		page, pageErr := s.connector.AlbumAssetsPage(ctx, albumID, pageNumber)
+		if errors.Is(pageErr, immich.ErrNotFound) {
+			return snapshot, errSourceAlbumMissing
+		}
 		if pageErr != nil {
 			snapshot.diagnostic = "dependency_unavailable"
 			return snapshot, ErrDependency
@@ -216,6 +227,9 @@ func (s *Service) readSnapshot(ctx context.Context, albumID uuid.UUID) (reconcil
 	}
 
 	after, err := s.connector.Album(ctx, albumID)
+	if errors.Is(err, immich.ErrNotFound) {
+		return snapshot, errSourceAlbumMissing
+	}
 	if err != nil {
 		snapshot.diagnostic = "dependency_unavailable"
 		return snapshot, ErrDependency
@@ -412,12 +426,14 @@ func (s *Service) applyValidatedSnapshot(
 			name = ?, description = ?, asset_count = ?, source_created_at = ?, source_updated_at = ?,
 			source_start_at = ?, source_end_at = ?, source_last_modified_asset_at = ?,
 			source_fingerprint = ?, candidate_membership_fingerprint = ?, candidate_membership_passes = ?,
+			source_missing = false, missing_since = NULL, last_seen_at = ?,
+			version = version + CASE WHEN source_missing THEN 1 ELSE 0 END,
 			last_reconciled_at = ?, next_reconciliation_at = ?, updated_at = ?
 		WHERE id = ?
 	`, snapshot.after.Name, snapshot.after.Description, snapshot.after.AssetCount,
 		snapshot.after.CreatedAt, snapshot.after.UpdatedAt, snapshot.after.StartDate, snapshot.after.EndDate,
 		snapshot.after.LastModifiedAssetTimestamp, summaryFingerprint[:], snapshot.fingerprint[:], stablePasses,
-		now, now.Add(s.reconciliationInterval), now, sourceAlbumID).Exec(ctx)
+		now, now, now.Add(s.reconciliationInterval), now, sourceAlbumID).Exec(ctx)
 	if err != nil {
 		return 0, 0, 0, err
 	}
@@ -850,6 +866,17 @@ func proposeMediaRepairs(ctx context.Context, tx bun.Tx, now time.Time) error {
 			face_anchor_evidence = EXCLUDED.face_anchor_evidence,
 			conflict_evidence = EXCLUDED.conflict_evidence
 	`, now).Exec(ctx)
+	return err
+}
+
+func recordMissingSourceAlbum(ctx context.Context, tx bun.Tx, sourceAlbumID uuid.UUID, now time.Time, interval time.Duration) error {
+	_, err := tx.NewRaw(`
+		UPDATE source_albums SET
+			source_missing = true, missing_since = COALESCE(missing_since, ?),
+			version = version + CASE WHEN source_missing THEN 0 ELSE 1 END,
+			next_reconciliation_at = ?, updated_at = ?
+		WHERE id = ?
+	`, now, now.Add(interval), now, sourceAlbumID).Exec(ctx)
 	return err
 }
 
