@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"sort"
@@ -27,6 +28,8 @@ import (
 	"github.com/robinjoseph08/memento/pkg/errcodes"
 	"github.com/robinjoseph08/memento/pkg/events"
 	"github.com/robinjoseph08/memento/pkg/favorites"
+	"github.com/robinjoseph08/memento/pkg/immich"
+	"github.com/robinjoseph08/memento/pkg/library"
 	"github.com/robinjoseph08/memento/pkg/migrations"
 	"github.com/robinjoseph08/memento/pkg/recipients"
 	"github.com/robinjoseph08/memento/pkg/setup"
@@ -35,6 +38,29 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/uptrace/bun"
 )
+
+type interactionMediaSource struct{}
+
+func (interactionMediaSource) Thumbnail(_ context.Context, _ uuid.UUID, _ immich.MediaRequest) (immich.MediaResponse, error) {
+	return interactionMedia("thumbnail"), nil
+}
+
+func (interactionMediaSource) Preview(_ context.Context, _ uuid.UUID, _ immich.MediaRequest) (immich.MediaResponse, error) {
+	return interactionMedia("preview"), nil
+}
+
+func (interactionMediaSource) Video(_ context.Context, _ uuid.UUID, _ immich.MediaRequest) (immich.MediaResponse, error) {
+	return interactionMedia("video"), nil
+}
+
+func (interactionMediaSource) Original(_ context.Context, _ uuid.UUID, _ immich.MediaRequest) (immich.MediaResponse, error) {
+	return interactionMedia("original"), nil
+}
+
+func interactionMedia(body string) immich.MediaResponse {
+	return immich.MediaResponse{Body: io.NopCloser(strings.NewReader(body)), StatusCode: http.StatusOK,
+		ContentType: "image/webp", ContentLength: int64(len(body))}
+}
 
 type interactionFixture struct {
 	db          *bun.DB
@@ -77,11 +103,15 @@ func newInteractionFixture(t *testing.T) interactionFixture {
 			INSERT INTO recipient_access_generations
 				(id, person_id, generation, state, is_current, onboarding_completed_at)
 			VALUES (?, ?, 1, 'completed', true, ?);
+			INSERT INTO recipient_emails
+				(id, recipient_access_generation_id, email, normalized_email)
+			VALUES (gen_random_uuid(), ?, ?, ?);
 			INSERT INTO sessions
 				(id, credential_hash, person_id, recipient_access_generation_id, security_epoch, session_type, idle_expires_at)
 			SELECT ?, ?, ?, ?, security_epoch, 'trusted', ?::timestamptz + interval '1 hour'
 			FROM system_settings WHERE id = 1
 		`, personID, titleName(name), name, personID, accessID, personID, now,
+			accessID, name+"@example.com", name+"@example.com",
 			sessionID, credentialHash[:], personID, accessID, now).Exec(ctx)
 		require.NoError(t, err)
 	}
@@ -103,11 +133,15 @@ func newInteractionFixture(t *testing.T) interactionFixture {
 		VALUES (?, 'moment', ?, ?, ?, 'Shared');
 		INSERT INTO media_items
 			(id, immich_asset_id, media_type, width, height, local_date_time, availability, first_seen_at, last_seen_at)
-		VALUES (?, gen_random_uuid(), 'image', 1200, 800, '2026-07-28T12:00:00Z', 'current', ?, ?)
+		VALUES (?, gen_random_uuid(), 'image', 1200, 800, '2026-07-28T12:00:00Z', 'current', ?, ?);
+		INSERT INTO media_backings (id, media_item_id, immich_asset_id, capture_at, filename, linked_at)
+		SELECT gen_random_uuid(), id, immich_asset_id, '2026-07-28T12:00:00Z', 'shared-photo.jpg', ?
+		FROM media_items WHERE id = ?
 	`, fixture.people["curator"], fixture.event, now, now,
 		fixture.publication, fixture.event, fixture.people["curator"], now,
 		fixture.publication, fixture.event, fixture.event, fixture.publication, now,
-		snapshot, fixture.moment, fixture.people["curator"], now, fixture.media, now, now).Exec(ctx)
+		snapshot, fixture.moment, fixture.people["curator"], now, fixture.media, now, now,
+		now, fixture.media).Exec(ctx)
 	require.NoError(t, err)
 	_, err = db.NewRaw(`
 		INSERT INTO published_moments
@@ -164,6 +198,7 @@ func interactionHTTP(t *testing.T, fixture interactionFixture) (*echo.Echo, map[
 	e.HTTPErrorHandler = errcodes.NewHandler().Handle
 	RegisterRoutes(e, NewHandler(fixture.comments, authorizer))
 	favorites.RegisterRoutes(e, favorites.NewHandler(fixture.favorites, authorizer))
+	library.RegisterRoutes(e, library.NewHandler(library.New(fixture.db, interactionMediaSource{}), authorizer))
 	return e, csrf
 }
 
@@ -185,6 +220,16 @@ func serveInteraction(t *testing.T, e *echo.Echo, method, path, credential, csrf
 	response := httptest.NewRecorder()
 	e.ServeHTTP(response, request)
 	assert.Equal(t, "private, no-store", response.Header().Get(echo.HeaderCacheControl), method+" "+path)
+	return response
+}
+
+func serveInteractionMedia(t *testing.T, e *echo.Echo, path, credential string) *httptest.ResponseRecorder {
+	t.Helper()
+	request := httptest.NewRequestWithContext(context.Background(), http.MethodGet, path, nil)
+	request.AddCookie(&http.Cookie{Name: setup.CookieName, Value: credential})
+	response := httptest.NewRecorder()
+	e.ServeHTTP(response, request)
+	assert.Equal(t, "private, no-cache", response.Header().Get(echo.HeaderCacheControl), path)
 	return response
 }
 
@@ -625,45 +670,92 @@ func TestCuratorFavoriteListPaginatesWithoutCrossRecipientDisclosure(t *testing.
 }
 
 func TestFavoritesRemainPrivateAndPersistAcrossAccessLoss(t *testing.T) {
-	fixture := newInteractionFixture(t)
-	ctx := context.Background()
-	state, err := fixture.favorites.Set(ctx, fixture.actors["alex"], fixture.media, true)
-	require.NoError(t, err)
-	assert.True(t, state.Favorite)
-	alex, err := fixture.favorites.Get(ctx, fixture.actors["alex"], fixture.media)
-	require.NoError(t, err)
-	blair, err := fixture.favorites.Get(ctx, fixture.actors["blair"], fixture.media)
-	require.NoError(t, err)
-	assert.True(t, alex.Favorite)
-	assert.False(t, blair.Favorite, "Favorite state is not shared across Recipients")
+	changes := []struct {
+		name   string
+		change func(context.Context, interactionFixture) error
+	}{
+		{
+			name: "Withdrawal",
+			change: func(ctx context.Context, fixture interactionFixture) error {
+				_, err := events.New(fixture.db).Withdraw(ctx,
+					setup.CuratorSession{PersonID: fixture.people["curator"], SessionID: fixture.actors["curator"].SessionID},
+					events.WithdrawRequest{TargetKind: events.WithdrawalTargetMedia, TargetID: fixture.media.String(), Reason: "Favorite persistence test"})
+				return err
+			},
+		},
+		{
+			name: "Suspension",
+			change: func(ctx context.Context, fixture interactionFixture) error {
+				_, err := recipients.New(fixture.db, nil, "", nil).Suspend(ctx,
+					setup.CuratorSession{PersonID: fixture.people["curator"], SessionID: fixture.actors["curator"].SessionID},
+					fixture.people["alex"], fixture.access["alex"])
+				return err
+			},
+		},
+		{
+			name: "Revocation",
+			change: func(ctx context.Context, fixture interactionFixture) error {
+				_, err := recipients.New(fixture.db, nil, "", nil).RevokeAccess(ctx,
+					setup.CuratorSession{PersonID: fixture.people["curator"], SessionID: fixture.actors["curator"].SessionID},
+					fixture.people["alex"], fixture.access["alex"])
+				return err
+			},
+		},
+	}
 
-	_, err = fixture.favorites.CuratorList(ctx, fixture.actors["blair"], fixture.people["alex"])
-	require.ErrorIs(t, err, favorites.ErrNotCurator)
-	curatorView, err := fixture.favorites.CuratorList(ctx, fixture.actors["curator"], fixture.people["alex"])
-	require.NoError(t, err)
-	assert.Equal(t, []string{fixture.media.String()}, curatorView.MediaItemIDs)
-	_, err = fixture.favorites.Get(ctx, fixture.actors["casey"], fixture.media)
-	require.ErrorIs(t, err, favorites.ErrNotFound)
+	for _, change := range changes {
+		t.Run(change.name, func(t *testing.T) {
+			fixture := newInteractionFixture(t)
+			ctx := context.Background()
+			state, err := fixture.favorites.Set(ctx, fixture.actors["alex"], fixture.media, true)
+			require.NoError(t, err)
+			assert.True(t, state.Favorite)
 
-	fixture.removeGrant(t, "alex")
-	_, err = fixture.favorites.Get(ctx, fixture.actors["alex"], fixture.media)
-	require.ErrorIs(t, err, favorites.ErrNotFound)
-	var retained bool
-	require.NoError(t, fixture.db.NewRaw(`SELECT is_current FROM favorites WHERE recipient_person_id = ? AND media_item_id = ?`, fixture.people["alex"], fixture.media).Scan(ctx, &retained))
-	assert.True(t, retained)
-	fixture.grant(t, "alex")
-	alex, err = fixture.favorites.Get(ctx, fixture.actors["alex"], fixture.media)
-	require.NoError(t, err)
-	assert.True(t, alex.Favorite)
-	state, err = fixture.favorites.Set(ctx, fixture.actors["alex"], fixture.media, false)
-	require.NoError(t, err)
-	assert.False(t, state.Favorite)
-	_, err = fixture.favorites.Set(ctx, fixture.actors["alex"], fixture.media, false)
-	require.NoError(t, err)
-	var actions []string
-	require.NoError(t, fixture.db.NewRaw(`SELECT action FROM interaction_activity_items
-		WHERE kind = 'favorite' AND favorite_recipient_person_id = ? AND media_item_id = ? ORDER BY id`, fixture.people["alex"], fixture.media).Scan(ctx, &actions))
-	assert.Equal(t, []string{"favorite_added", "favorite_removed"}, actions, "Favorite activity records only state changes in the shared interaction feed")
+			other, err := fixture.favorites.Get(ctx, fixture.actors["blair"], fixture.media)
+			require.NoError(t, err)
+			assert.False(t, other.Favorite, "another Recipient never receives Alex's Favorite state")
+			_, err = fixture.favorites.CuratorList(ctx, fixture.actors["blair"], fixture.people["alex"])
+			require.ErrorIs(t, err, favorites.ErrNotCurator)
+
+			require.NoError(t, change.change(ctx, fixture))
+			_, err = fixture.favorites.Get(ctx, fixture.actors["alex"], fixture.media)
+			require.ErrorIs(t, err, favorites.ErrNotFound, "the Recipient cannot browse an inaccessible Favorite")
+			_, err = fixture.favorites.Set(ctx, fixture.actors["alex"], fixture.media, false)
+			require.ErrorIs(t, err, favorites.ErrNotFound, "access loss cannot erase the retained Favorite")
+
+			var retained bool
+			require.NoError(t, fixture.db.NewRaw(`SELECT is_current FROM favorites
+				WHERE recipient_person_id = ? AND media_item_id = ?`, fixture.people["alex"], fixture.media).Scan(ctx, &retained))
+			assert.True(t, retained)
+			curatorView, err := fixture.favorites.CuratorList(ctx, fixture.actors["curator"], fixture.people["alex"])
+			require.NoError(t, err)
+			assert.Equal(t, []string{fixture.media.String()}, curatorView.MediaItemIDs,
+				"only the Curator retains cross-Recipient visibility after access loss")
+		})
+	}
+
+	t.Run("temporary access restoration retains state and transition activity", func(t *testing.T) {
+		fixture := newInteractionFixture(t)
+		ctx := context.Background()
+		_, err := fixture.favorites.Set(ctx, fixture.actors["alex"], fixture.media, true)
+		require.NoError(t, err)
+		fixture.removeGrant(t, "alex")
+		_, err = fixture.favorites.Get(ctx, fixture.actors["alex"], fixture.media)
+		require.ErrorIs(t, err, favorites.ErrNotFound)
+		fixture.grant(t, "alex")
+		state, err := fixture.favorites.Get(ctx, fixture.actors["alex"], fixture.media)
+		require.NoError(t, err)
+		assert.True(t, state.Favorite)
+		_, err = fixture.favorites.Set(ctx, fixture.actors["alex"], fixture.media, false)
+		require.NoError(t, err)
+		_, err = fixture.favorites.Set(ctx, fixture.actors["alex"], fixture.media, false)
+		require.NoError(t, err)
+		var actions []string
+		require.NoError(t, fixture.db.NewRaw(`SELECT action FROM interaction_activity_items
+			WHERE kind = 'favorite' AND favorite_recipient_person_id = ? AND media_item_id = ? ORDER BY id`, fixture.people["alex"], fixture.media).Scan(ctx, &actions))
+		assert.Equal(t, []string{"favorite_added", "favorite_removed"}, actions,
+			"Favorite activity records only state changes in the shared interaction feed")
+	})
 }
 
 func TestInteractionMutationsSerializeBeforeWithdrawalAndRevocation(t *testing.T) {
@@ -834,7 +926,24 @@ func TestInteractionHTTPRoutesUsePersistedSessionsAndPrivateContracts(t *testing
 	curatorCredential := fixture.credentials["curator"]
 	caseyCredential := fixture.credentials["casey"]
 
-	response := serveInteraction(t, e, http.MethodGet, "/api/comments/media/"+mediaPath, "", "", "", nil)
+	response := serveInteraction(t, e, http.MethodGet, "/api/me/media/"+mediaPath+"/thumbnail", curatorCredential, "", "", nil)
+	assert.Equal(t, http.StatusNotFound, response.Code, "the Recipient media route still follows Audience access")
+	response = serveInteraction(t, e, http.MethodGet, "/api/curator/media/"+mediaPath+"/thumbnail", alexCredential, "", "", nil)
+	assert.Equal(t, http.StatusNotFound, response.Code, "the moderation representation is Curator-only")
+	response = serveInteractionMedia(t, e, "/api/curator/media/"+mediaPath+"/thumbnail", curatorCredential)
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	assert.Equal(t, "thumbnail", response.Body.String())
+	assert.Equal(t, "private, no-cache", response.Header().Get(echo.HeaderCacheControl))
+	response = serveInteraction(t, e, http.MethodGet, "/api/curator/media/"+mediaPath, curatorCredential, "", "", nil)
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	assert.Equal(t, "private, no-store", response.Header().Get(echo.HeaderCacheControl))
+	var mediaContext library.CuratorMedia
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &mediaContext))
+	assert.Equal(t, "shared-photo.jpg", mediaContext.Filename)
+	assert.Equal(t, []string{"Shared Event"}, mediaContext.EventTitles)
+	assert.Equal(t, "/api/curator/media/"+mediaPath+"/preview", mediaContext.PreviewURL)
+
+	response = serveInteraction(t, e, http.MethodGet, "/api/comments/media/"+mediaPath, "", "", "", nil)
 	assert.Equal(t, http.StatusUnauthorized, response.Code)
 	response = serveInteraction(t, e, http.MethodGet, "/api/comments/media/not-a-uuid", alexCredential, "", "", nil)
 	assert.Equal(t, http.StatusNotFound, response.Code)

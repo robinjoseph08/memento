@@ -4,7 +4,7 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { apiJSON, apiNoContent } from "./api";
 import type {
@@ -13,6 +13,7 @@ import type {
   HistoryResponse,
 } from "./types/generated/comments";
 import type { CuratorListResponse as FavoritePage } from "./types/generated/favorites";
+import type { CuratorMedia } from "./types/generated/library";
 import type { ListResponse as PeopleResponse } from "./types/generated/people";
 import type { SessionResponse } from "./types/generated/setup";
 
@@ -31,11 +32,126 @@ function commentText(comment: Comment) {
   return comment.body;
 }
 
+function CuratorMediaViewer({
+  mediaID,
+  onClose,
+}: {
+  mediaID: string;
+  onClose: () => void;
+}) {
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const media = useQuery({
+    queryKey: ["curator-media-context", mediaID],
+    queryFn: () => apiJSON<CuratorMedia>(`/api/curator/media/${mediaID}`),
+    retry: false,
+  });
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    if (typeof dialog.showModal === "function") {
+      if (!dialog.open) dialog.showModal();
+    } else if (!dialog.open) {
+      dialog.setAttribute("open", "");
+    }
+  }, []);
+
+  function close() {
+    if (dialogRef.current && typeof dialogRef.current.close === "function") {
+      dialogRef.current.close();
+    } else {
+      onClose();
+    }
+  }
+
+  const context = media.data;
+  const label = context?.filename || "Media item";
+  return (
+    <dialog
+      aria-labelledby="curator-media-context-title"
+      aria-modal="true"
+      className="curator-media-viewer"
+      onClose={onClose}
+      ref={dialogRef}
+    >
+      <header>
+        <div>
+          <p className="step-label">Curator-only moderation context</p>
+          <h3 id="curator-media-context-title">{label}</h3>
+        </div>
+        <button autoFocus onClick={close} type="button">
+          Close Media context
+        </button>
+      </header>
+      <InteractionError error={media.error} />
+      {media.isPending ? <p>Loading Media context…</p> : null}
+      {context ? (
+        <>
+          <div className="curator-media-preview">
+            {!context.available ? (
+              <p>Source unavailable</p>
+            ) : context.media_type === "video" ? (
+              <video
+                aria-label={`Moderation preview for ${label}`}
+                controls
+                playsInline
+                poster={context.thumbnail_url}
+                preload="metadata"
+                src={context.video_url}
+              />
+            ) : (
+              <img
+                alt={`Moderation preview for ${label}`}
+                src={context.preview_url}
+              />
+            )}
+          </div>
+          <dl className="curator-media-metadata">
+            <div>
+              <dt>Portal Media ID</dt>
+              <dd>{context.id}</dd>
+            </div>
+            <div>
+              <dt>Type</dt>
+              <dd>{context.media_type}</dd>
+            </div>
+            <div>
+              <dt>Dimensions</dt>
+              <dd>
+                {context.width && context.height
+                  ? `${context.width} × ${context.height}`
+                  : "Unknown"}
+              </dd>
+            </div>
+            <div>
+              <dt>Capture time</dt>
+              <dd>
+                {context.local_date_time
+                  ? new Date(context.local_date_time).toLocaleString()
+                  : "Unknown"}
+              </dd>
+            </div>
+            <div>
+              <dt>Current Events</dt>
+              <dd>
+                {context.event_titles.length > 0
+                  ? context.event_titles.join(", ")
+                  : "Not in a current Event"}
+              </dd>
+            </div>
+          </dl>
+        </>
+      ) : null}
+    </dialog>
+  );
+}
+
 export function CuratorInteractions({ session }: { session: SessionResponse }) {
   const queryClient = useQueryClient();
   const [opened, setOpened] = useState(false);
   const [recipientID, setRecipientID] = useState("");
   const [historyCommentID, setHistoryCommentID] = useState("");
+  const [mediaContextID, setMediaContextID] = useState("");
   const comments = useInfiniteQuery({
     queryKey: ["curator-comments", session.csrf_token],
     queryFn: ({ pageParam }) => {
@@ -137,18 +253,24 @@ export function CuratorInteractions({ session }: { session: SessionResponse }) {
               <ol className="curator-comment-list">
                 {commentItems.map((comment) => (
                   <li key={comment.id}>
-                    <img
-                      alt=""
-                      loading="lazy"
-                      src={`/api/me/media/${comment.media_item_id}/thumbnail`}
-                    />
+                    <button
+                      aria-label={`View Media context for ${comment.author_name}'s Comment`}
+                      className="curator-media-trigger"
+                      onClick={() => setMediaContextID(comment.media_item_id)}
+                      type="button"
+                    >
+                      <img
+                        alt=""
+                        loading="lazy"
+                        src={`/api/curator/media/${comment.media_item_id}/thumbnail`}
+                      />
+                    </button>
                     <div>
                       <strong>{comment.author_name}</strong>
                       <time dateTime={comment.created_at}>
                         {new Date(comment.created_at).toLocaleString()}
                       </time>
                       <p>{commentText(comment)}</p>
-                      <small>Media {comment.media_item_id.slice(0, 8)}</small>
                       <div className="comment-actions">
                         {comment.can_moderate ? (
                           <button
@@ -242,12 +364,19 @@ export function CuratorInteractions({ session }: { session: SessionResponse }) {
               <ul className="curator-favorite-list">
                 {favoriteIDs.map((mediaID) => (
                   <li key={mediaID}>
-                    <img
-                      alt=""
-                      loading="lazy"
-                      src={`/api/me/media/${mediaID}/thumbnail`}
-                    />
-                    <span>Media {mediaID.slice(0, 8)}</span>
+                    <button
+                      aria-label="View Media context for this Favorite"
+                      className="curator-media-trigger"
+                      onClick={() => setMediaContextID(mediaID)}
+                      type="button"
+                    >
+                      <img
+                        alt=""
+                        loading="lazy"
+                        src={`/api/curator/media/${mediaID}/thumbnail`}
+                      />
+                      <span>View Media context</span>
+                    </button>
                   </li>
                 ))}
               </ul>
@@ -269,6 +398,12 @@ export function CuratorInteractions({ session }: { session: SessionResponse }) {
               ) : null}
             </section>
           </div>
+          {mediaContextID ? (
+            <CuratorMediaViewer
+              mediaID={mediaContextID}
+              onClose={() => setMediaContextID("")}
+            />
+          ) : null}
         </>
       ) : null}
     </details>

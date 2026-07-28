@@ -145,6 +145,21 @@ test("gives the Curator a discoverable private moderation and Favorite surface",
           next_cursor: null,
         });
       }
+      if (path === `/api/curator/media/${mediaID}`) {
+        return json({
+          id: mediaID,
+          media_type: "image",
+          width: 1600,
+          height: 900,
+          local_date_time: "2026-07-28T10:30:00Z",
+          available: true,
+          filename: "family-picnic.jpg",
+          event_titles: ["Family picnic"],
+          thumbnail_url: `/api/curator/media/${mediaID}/thumbnail`,
+          preview_url: `/api/curator/media/${mediaID}/preview`,
+          video_url: "",
+        });
+      }
       if (path === `/api/comments/${moderatedID}/moderation-history?limit=50`) {
         return json({
           history: [
@@ -180,6 +195,30 @@ test("gives the Curator a discoverable private moderation and Favorite surface",
     requests.some(({ path }) => path.startsWith("/api/favorites/curator")),
   ).toBe(false);
 
+  const commentMedia = screen.getAllByRole("button", {
+    name: "View Media context for Alex's Comment",
+  })[0];
+  expect(commentMedia.querySelector("img")).toHaveAttribute(
+    "src",
+    `/api/curator/media/${mediaID}/thumbnail`,
+  );
+  fireEvent.click(commentMedia);
+  const mediaDialog = await screen.findByRole("dialog", {
+    name: "family-picnic.jpg",
+  });
+  expect(mediaDialog).toBeVisible();
+  expect(within(mediaDialog).getByText(mediaID)).toBeVisible();
+  expect(within(mediaDialog).getByText("1600 × 900")).toBeVisible();
+  expect(within(mediaDialog).getByText("Family picnic")).toBeVisible();
+  expect(
+    within(mediaDialog).getByAltText(
+      "Moderation preview for family-picnic.jpg",
+    ),
+  ).toHaveAttribute("src", `/api/curator/media/${mediaID}/preview`);
+  fireEvent.click(
+    within(mediaDialog).getByRole("button", { name: "Close Media context" }),
+  );
+
   fireEvent.change(await screen.findByLabelText("Recipient"), {
     target: { value: recipientID },
   });
@@ -187,9 +226,13 @@ test("gives the Curator a discoverable private moderation and Favorite surface",
     .getByRole("heading", { name: "Recipient Favorites" })
     .closest("section");
   expect(favoriteSection).not.toBeNull();
-  expect(
-    await within(favoriteSection!).findByText("Media 22222222"),
-  ).toBeVisible();
+  const favoriteMedia = await within(favoriteSection!).findByRole("button", {
+    name: "View Media context for this Favorite",
+  });
+  expect(favoriteMedia.querySelector("img")).toHaveAttribute(
+    "src",
+    `/api/curator/media/${mediaID}/thumbnail`,
+  );
 
   fireEvent.click(
     screen.getByRole("button", { name: "Show moderation history" }),

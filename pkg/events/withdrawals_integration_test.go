@@ -596,7 +596,8 @@ func TestEveryImplementedRecipientContentRouteEnforcesEveryWithdrawalKind(t *tes
 			recipientHTTP := withdrawalRecipientHTTP(fixture, recipientActor, mediaSource)
 			var routes []string
 			for _, route := range recipientHTTP.Routes() {
-				if route.Method != echo.RouteNotFound {
+				if route.Method != echo.RouteNotFound &&
+					(route.Name == "policy:recipient_content" || route.Name == "policy:recipient_content_csrf") {
 					routes = append(routes, route.Method+" "+route.Path)
 				}
 			}
