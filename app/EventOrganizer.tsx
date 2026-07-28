@@ -328,7 +328,9 @@ function stagedCountLabel(change: StagedChange) {
     case "moment_structure":
       return countedNoun(change.count, "Moment");
     case "access":
-      return countedNoun(change.count, "Recipient");
+      return change.recipient_access?.length
+        ? countedNoun(change.count, "Recipient")
+        : countedNoun(change.moment_ids.length, "Moment");
     case "metadata": {
       const parts = [
         change.event_metadata_fields?.length ? "1 Event" : undefined,
@@ -715,6 +717,7 @@ export function EventOrganizer({
   const [conflictRecoveryPending, setConflictRecoveryPending] = useState(false);
   const [restoreRecoveryError, setRestoreRecoveryError] = useState("");
   const [restoreRecoveryPending, setRestoreRecoveryPending] = useState(false);
+  const [restoreStatus, setRestoreStatus] = useState("");
   const [mergeError, setMergeError] = useState("");
   const [revision, setRevision] = useState(0);
   const [notifyRecipients, setNotifyRecipients] = useState(true);
@@ -828,6 +831,7 @@ export function EventOrganizer({
           }),
         },
       ),
+    onMutate: () => setRestoreStatus(""),
     onSuccess: (restored, attempted) => {
       setRestoreRecoveryError("");
       if (selectedIDRef.current !== restored.id) {
@@ -840,6 +844,14 @@ export function EventOrganizer({
         latest?.id === restored.id
           ? rebaseOrganization(attempted.event, latest, restored)
           : cloneEvent(restored);
+      const originalMoment = restored.moments.find((moment) =>
+        moment.media_items.some((item) => item.id === attempted.mediaID),
+      );
+      const relocatedToUnassigned =
+        originalMoment !== undefined &&
+        latest?.id === restored.id &&
+        !latest.moments.some((moment) => moment.id === originalMoment.id) &&
+        next.unassigned_media.some((item) => item.id === attempted.mediaID);
       queryClient.setQueryData(["event", restored.id], next);
       latestDraftRef.current = next;
       setDraft(next);
@@ -847,6 +859,11 @@ export function EventOrganizer({
       if (!hasNewerOrganization) {
         revisionRef.current = 0;
         setRevision(0);
+      }
+      if (relocatedToUnassigned) {
+        setRestoreStatus(
+          "Restored Media was moved to Unassigned Media because its original Moment was removed while restoration was pending. Choose it in Unassigned Media, move it to a Moment, then review the Event before Publication.",
+        );
       }
       setPreviewOpen(false);
       void queryClient.invalidateQueries({ queryKey: ["events"] });
@@ -1479,6 +1496,11 @@ export function EventOrganizer({
                     : "Changes not saved yet"}
         </p>
       </header>
+      {restoreStatus ? (
+        <p aria-live="polite" role="status">
+          {restoreStatus}
+        </p>
+      ) : null}
       <nav aria-label="Mobile workspace panes" className="mobile-pane-nav">
         {(["work", "organize", "inspect"] as Pane[]).map((pane) => (
           <button
@@ -1591,6 +1613,7 @@ export function EventOrganizer({
                     setConflictRecoveryPending(false);
                     setRestoreRecoveryError("");
                     setRestoreRecoveryPending(false);
+                    setRestoreStatus("");
                     restorePublishedMedia.reset();
                     setMergeError("");
                     setNotifyRecipients(true);

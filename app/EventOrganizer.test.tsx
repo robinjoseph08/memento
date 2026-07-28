@@ -748,6 +748,42 @@ test("shows the resulting Event with highlighted Staged net changes", async () =
   ).toBeVisible();
 });
 
+test("summarizes a masked Audience change by its affected Moments", async () => {
+  const staged = organizedDraft(8);
+  staged.lifecycle = "published";
+  staged.published_editable_version = 7;
+  staged.staged_update = {
+    id: "12121212-1212-4212-8212-121212121212",
+    base_publication_id: "13131313-1313-4313-8313-131313131313",
+    updated_at: "2026-05-03T01:00:00Z",
+    changes: [
+      {
+        kind: "access",
+        count: 0,
+        media_item_ids: [],
+        moment_ids: [momentOneID, momentTwoID],
+        detail:
+          "Moment Audience changed without changing global Recipient Media access",
+      },
+    ],
+  };
+  stubOrganizerAPI(staged);
+  renderOrganizer();
+
+  fireEvent.click(
+    await screen.findByRole("button", { name: /Family weekend/ }),
+  );
+
+  const review = await screen.findByRole("region", {
+    name: "Staged update review",
+  });
+  const accessSummary = within(review)
+    .getByText("Access changes")
+    .closest("li");
+  expect(accessSummary).toHaveTextContent("2 Moments");
+  expect(accessSummary).not.toHaveTextContent("0 Recipients");
+});
+
 test("restores an autosaved published Media removal from Staged review", async () => {
   const staged = organizedDraft(8);
   staged.lifecycle = "published";
@@ -1011,6 +1047,9 @@ test("keeps restored Media when its Moment is merged during a delayed restoratio
     expect(
       within(unassigned).getByRole("checkbox", { name: /loose photo/ }),
     ).toBeInTheDocument(),
+  );
+  expect(screen.getByRole("status")).toHaveTextContent(
+    "Restored Media was moved to Unassigned Media because its original Moment was removed while restoration was pending. Choose it in Unassigned Media, move it to a Moment, then review the Event before Publication.",
   );
   const momentTitles = screen.getAllByLabelText(/^Title for Moment/);
   expect(momentTitles).toHaveLength(1);
