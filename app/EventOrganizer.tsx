@@ -129,7 +129,10 @@ function PlaceLabelEditor({
 function organizationRequest(event: DraftEvent): OrganizeEventRequest {
   return {
     version: event.version,
+    title: event.title,
+    description: event.description,
     place_labels: event.place_labels,
+    grouping_timezone: event.grouping_timezone,
     moments: event.moments.map((moment) => ({
       id: moment.id,
       title: moment.title,
@@ -247,6 +250,30 @@ function StagedUpdateReview({ event }: { event: DraftEvent }) {
             <strong>{stagedLabels[change.kind]}</strong>
             <span>{change.count}</span>
             <small>{change.detail}</small>
+            {change.kind === "access" && change.recipient_access?.length ? (
+              <ul
+                aria-label="Recipient access changes"
+                className="recipient-access-changes"
+              >
+                {change.recipient_access.map((access) => (
+                  <li key={access.recipient_person_id}>
+                    <strong>{access.recipient_name}</strong>
+                    <span>
+                      {access.granted_media_count > 0
+                        ? `${access.granted_media_count} Media granted`
+                        : ""}
+                      {access.granted_media_count > 0 &&
+                      access.revoked_media_count > 0
+                        ? ", "
+                        : ""}
+                      {access.revoked_media_count > 0
+                        ? `${access.revoked_media_count} Media revoked`
+                        : ""}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
           </li>
         ))}
       </ul>
@@ -445,6 +472,12 @@ export function EventOrganizer({
     }
     return kinds;
   }, [currentDraft?.staged_update]);
+  const allMedia = currentDraft
+    ? [
+        ...currentDraft.moments.flatMap((moment) => moment.media_items),
+        ...currentDraft.unassigned_media,
+      ]
+    : [];
 
   const previewRecipients = useQuery({
     queryKey: ["preview-recipients", selectedID],
@@ -761,6 +794,30 @@ export function EventOrganizer({
     setSelectedMedia(new Set());
   }
 
+  function removeSelectedMedia() {
+    if (
+      !currentDraft ||
+      selectedMedia.size === 0 ||
+      selectedMedia.size >= allMedia.length
+    )
+      return;
+    change((next) => {
+      takeSelectedMedia(next);
+      next.moments = next.moments.filter(
+        (moment) => moment.media_items.length > 0,
+      );
+      for (const moment of next.moments) {
+        if (
+          moment.cover_media_item_id &&
+          selectedMedia.has(moment.cover_media_item_id)
+        ) {
+          moment.cover_media_item_id = null;
+        }
+      }
+    });
+    setSelectedMedia(new Set());
+  }
+
   function createMomentFromSelected() {
     if (!currentDraft || selectedMedia.size === 0 || !newMomentDay) return;
     const id = crypto.randomUUID();
@@ -929,16 +986,6 @@ export function EventOrganizer({
 
   const inspected = currentDraft?.moments.find(
     (moment) => moment.id === inspectedMomentID,
-  );
-  const allMedia = useMemo(
-    () =>
-      currentDraft
-        ? [
-            ...currentDraft.moments.flatMap((moment) => moment.media_items),
-            ...currentDraft.unassigned_media,
-          ]
-        : [],
-    [currentDraft],
   );
   const withdrawalTargets = currentDraft?.withdrawal_targets ?? [];
   const selectedWithdrawTarget =
@@ -1148,6 +1195,50 @@ export function EventOrganizer({
                 placeholder="Paris, Jardin du Luxembourg"
               />
               <StagedUpdateReview event={currentDraft} />
+              <section
+                aria-labelledby="event-details-title"
+                className="event-details-editor"
+              >
+                <h4 id="event-details-title">Event details</h4>
+                <label>
+                  Event title
+                  <input
+                    maxLength={240}
+                    onChange={(event) =>
+                      change((next) => {
+                        next.title = event.target.value;
+                      })
+                    }
+                    type="text"
+                    value={currentDraft.title}
+                  />
+                </label>
+                <label>
+                  Event description
+                  <textarea
+                    maxLength={2000}
+                    onChange={(event) =>
+                      change((next) => {
+                        next.description = event.target.value;
+                      })
+                    }
+                    value={currentDraft.description}
+                  />
+                </label>
+                <label>
+                  Grouping timezone
+                  <input
+                    maxLength={100}
+                    onChange={(event) =>
+                      change((next) => {
+                        next.grouping_timezone = event.target.value;
+                      })
+                    }
+                    type="text"
+                    value={currentDraft.grouping_timezone}
+                  />
+                </label>
+              </section>
               <div className="move-toolbar">
                 <div className="move-control">
                   <label>
@@ -1170,6 +1261,16 @@ export function EventOrganizer({
                     type="button"
                   >
                     Move selected Media
+                  </button>
+                  <button
+                    disabled={
+                      selectedMedia.size === 0 ||
+                      selectedMedia.size >= allMedia.length
+                    }
+                    onClick={removeSelectedMedia}
+                    type="button"
+                  >
+                    Remove selected Media
                   </button>
                 </div>
                 <div className="move-control">

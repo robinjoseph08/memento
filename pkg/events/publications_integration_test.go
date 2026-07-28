@@ -14,6 +14,7 @@ import (
 	"github.com/robinjoseph08/memento/internal/testdb"
 	"github.com/robinjoseph08/memento/pkg/migrations"
 	"github.com/robinjoseph08/memento/pkg/setup"
+	"github.com/robinjoseph08/memento/pkg/staging"
 	"github.com/robinjoseph08/memento/pkg/worker"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -499,6 +500,43 @@ func TestPublicationRejectsStaleAndUnreviewedEditableState(t *testing.T) {
 	_, err = fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, fixture.request())
 	assert.ErrorIs(t, err, ErrPublicationNotReady)
 	assertUnpublished()
+}
+
+func TestCuratorCanStageEventMetadataAndMediaRemovalCorrections(t *testing.T) {
+	fixture := newPublicationFixture(t)
+	ctx := context.Background()
+	_, err := fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, fixture.request())
+	require.NoError(t, err)
+
+	title := "Corrected family weekend"
+	description := "A portal-owned correction"
+	timezone := "America/New_York"
+	secondCover, thirdCover := fixture.media[1].String(), fixture.media[2].String()
+	corrected, err := fixture.service.OrganizeEvent(ctx, fixture.actor, fixture.event, OrganizeEventRequest{
+		Version: 7, Title: &title, Description: &description, GroupingTimezone: &timezone,
+		Moments: []OrganizeMoment{
+			{ID: fixture.moments[1].String(), Title: "Moment", ProposedDay: "2026-07-28", CoverMediaItemID: &secondCover, MediaItemIDs: []string{fixture.media[1].String()}},
+			{ID: fixture.moments[2].String(), Title: "Moment", ProposedDay: "2026-07-29", CoverMediaItemID: &thirdCover, MediaItemIDs: []string{fixture.media[2].String()}},
+		},
+		FinalReviewComplete: true,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, title, corrected.Title)
+	assert.Equal(t, description, corrected.Description)
+	assert.Equal(t, timezone, corrected.GroupingTimezone)
+	assert.False(t, corrected.FinalReviewComplete)
+	assert.Len(t, corrected.Moments, 2)
+	require.NotNil(t, corrected.StagedUpdate)
+
+	changes := make(map[staging.ChangeKind]StagedChange)
+	for _, change := range corrected.StagedUpdate.Changes {
+		changes[change.Kind] = change
+	}
+	assert.Equal(t, []string{fixture.media[0].String()}, changes[staging.ChangeKindRemoval].MediaItemIDs)
+	assert.ElementsMatch(t, []string{"title", "description", "grouping_timezone"}, changes[staging.ChangeKindMetadata].EventMetadataFields)
+	assert.Equal(t, []string{fixture.moments[0].String()}, changes[staging.ChangeKindMomentStructure].MomentIDs)
+	_, err = fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, PublishEventRequest{Version: corrected.Version})
+	assert.ErrorIs(t, err, ErrPublicationNotReady, "Curator corrections require a fresh final review")
 }
 
 func TestOrganizationChangesInvalidateReviewedAudienceAndFinalReview(t *testing.T) {

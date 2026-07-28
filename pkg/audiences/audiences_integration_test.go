@@ -251,8 +251,21 @@ func TestPublishedEventAudienceChangeStaysPrivateAndCancelsWhenRestored(t *testi
 	require.NotNil(t, update)
 	require.Len(t, update.Changes, 1)
 	assert.Equal(t, staging.ChangeKindAccess, update.Changes[0].Kind)
-	assert.Equal(t, 1, update.Changes[0].Count)
+	assert.Equal(t, 2, update.Changes[0].Count)
 	assert.Equal(t, []string{f.momentID.String()}, update.Changes[0].MomentIDs)
+	require.Len(t, update.Changes[0].RecipientAccess, 2)
+	accessByPerson := make(map[string]staging.RecipientAccessChange)
+	for _, access := range update.Changes[0].RecipientAccess {
+		accessByPerson[access.RecipientPersonID] = access
+	}
+	assert.Equal(t, staging.RecipientAccessChange{
+		RecipientPersonID: f.people["manual"].String(), RecipientName: "manual",
+		GrantedMediaCount: 1,
+	}, accessByPerson[f.people["manual"].String()])
+	assert.Equal(t, staging.RecipientAccessChange{
+		RecipientPersonID: f.people["present"].String(), RecipientName: "present",
+		RevokedMediaCount: 1,
+	}, accessByPerson[f.people["present"].String()])
 	var stagedRows int
 	require.NoError(t, f.db.NewRaw(`SELECT count(*) FROM staged_updates WHERE event_id = ?`, eventID).Scan(ctx, &stagedRows))
 	assert.Equal(t, 1, stagedRows)

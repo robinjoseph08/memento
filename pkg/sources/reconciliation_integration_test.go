@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/robinjoseph08/memento/pkg/config"
+	"github.com/robinjoseph08/memento/pkg/events"
 	"github.com/robinjoseph08/memento/pkg/immich"
 	"github.com/robinjoseph08/memento/pkg/library"
 	"github.com/robinjoseph08/memento/pkg/setup"
@@ -94,13 +95,29 @@ func (connector *reconciliationConnector) AssetExists(_ context.Context, assetID
 	return false, nil
 }
 
-func (connector *reconciliationConnector) Thumbnail(_ context.Context, assetID uuid.UUID) (immich.MediaResponse, error) {
+func (connector *reconciliationConnector) Thumbnail(_ context.Context, assetID uuid.UUID, _ immich.MediaRequest) (immich.MediaResponse, error) {
 	connector.mu.Lock()
 	defer connector.mu.Unlock()
 	connector.thumbnailCalls = append(connector.thumbnailCalls, assetID)
+	return testMediaResponse("thumbnail", "image/webp"), nil
+}
+
+func (connector *reconciliationConnector) Preview(context.Context, uuid.UUID, immich.MediaRequest) (immich.MediaResponse, error) {
+	return testMediaResponse("preview", "image/jpeg"), nil
+}
+
+func (connector *reconciliationConnector) Video(context.Context, uuid.UUID, immich.MediaRequest) (immich.MediaResponse, error) {
+	return testMediaResponse("video", "video/mp4"), nil
+}
+
+func (connector *reconciliationConnector) Original(context.Context, uuid.UUID, immich.MediaRequest) (immich.MediaResponse, error) {
+	return testMediaResponse("original", "application/octet-stream"), nil
+}
+
+func testMediaResponse(body, contentType string) immich.MediaResponse {
 	return immich.MediaResponse{
-		Body: io.NopCloser(strings.NewReader("thumbnail")), ContentType: "image/webp", ContentLength: 9,
-	}, nil
+		Body: io.NopCloser(strings.NewReader(body)), ContentType: contentType, ContentLength: int64(len(body)),
+	}
 }
 
 func (connector *reconciliationConnector) requestedThumbnails() []uuid.UUID {
@@ -166,6 +183,7 @@ func newReconciliationService(t *testing.T, connector Connector) (*Service, uuid
 
 type stagedSourceEvent struct {
 	eventID, momentID, mediaID, publicationID uuid.UUID
+	curator                                   setup.CuratorSession
 	recipient                                 setup.SessionActor
 }
 
@@ -174,6 +192,7 @@ func publishSourceEventFixture(t *testing.T, service *Service, sourceAlbumID uui
 	ctx := context.Background()
 	fixture := stagedSourceEvent{eventID: uuid.New(), momentID: uuid.New(), publicationID: uuid.New()}
 	curatorID, snapshotID, publishedMomentID := uuid.New(), uuid.New(), uuid.New()
+	fixture.curator = setup.CuratorSession{PersonID: curatorID}
 	require.NoError(t, service.db.NewRaw(`SELECT id FROM media_items WHERE immich_asset_id = ?`, assetID).Scan(ctx, &fixture.mediaID))
 	_, err := service.db.NewRaw(`
 		INSERT INTO people (id, display_name, sort_name) VALUES (?, 'Source Curator', 'source curator');
@@ -626,6 +645,25 @@ func TestFinalPublishedSourceRemovalStaysPrivateWhileMediaRemainsAvailable(t *te
 	fixture := publishSourceEventFixture(t, service, sourceAlbumID, original.SourceID)
 	authorizeSourceRecipient(t, service, &fixture)
 	connector.setAssetExists(original.SourceID, true)
+	_, err := service.db.NewRaw(`
+		UPDATE draft_moments SET review_version = 7 WHERE id = ?;
+		INSERT INTO attendance (moment_id, person_id, source, confirmed_by_person_id, confirmed_at)
+		VALUES (?, ?, 'manual', ?, now());
+		INSERT INTO audience_overrides (
+			target_kind, target_id, recipient_person_id, state, updated_by_person_id, updated_at
+		) VALUES ('moment', ?, ?, 'included', ?, now());
+		INSERT INTO audience_proposals (
+			target_kind, target_id, recipient_person_id,
+			recipient_access_generation_id, included, recalculated_at
+		) VALUES ('moment', ?, ?, ?, true, now());
+		INSERT INTO audience_reasons (target_kind, target_id, recipient_person_id, kind)
+		VALUES ('moment', ?, ?, 'manually_included')
+	`, fixture.momentID,
+		fixture.momentID, fixture.recipient.PersonID, fixture.curator.PersonID,
+		fixture.momentID, fixture.recipient.PersonID, fixture.curator.PersonID,
+		fixture.momentID, fixture.recipient.PersonID, fixture.recipient.AccessID,
+		fixture.momentID, fixture.recipient.PersonID).Exec(context.Background())
+	require.NoError(t, err)
 
 	connector.setMembership()
 	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
@@ -644,6 +682,29 @@ func TestFinalPublishedSourceRemovalStaysPrivateWhileMediaRemainsAvailable(t *te
 	assert.True(t, currentPlacement, "Recipients retain the prior projection until Publication")
 	assert.True(t, historicalPlacement)
 
+	var attendanceComplete, audienceComplete, currentSnapshot bool
+	var reviewVersion int64
+	var attendanceRows, proposalRows, overrideRows, reasonRows int
+	require.NoError(t, service.db.NewRaw(`
+		SELECT attendance_complete, audience_complete, review_version
+		FROM draft_moments WHERE id = ?
+	`, fixture.momentID).Scan(context.Background(), &attendanceComplete, &audienceComplete, &reviewVersion))
+	require.NoError(t, service.db.NewRaw(`SELECT count(*) FROM attendance WHERE moment_id = ?`, fixture.momentID).Scan(context.Background(), &attendanceRows))
+	require.NoError(t, service.db.NewRaw(`SELECT count(*) FROM audience_proposals WHERE target_kind = 'moment' AND target_id = ?`, fixture.momentID).Scan(context.Background(), &proposalRows))
+	require.NoError(t, service.db.NewRaw(`SELECT count(*) FROM audience_overrides WHERE target_kind = 'moment' AND target_id = ?`, fixture.momentID).Scan(context.Background(), &overrideRows))
+	require.NoError(t, service.db.NewRaw(`SELECT count(*) FROM audience_reasons WHERE target_kind = 'moment' AND target_id = ?`, fixture.momentID).Scan(context.Background(), &reasonRows))
+	require.NoError(t, service.db.NewRaw(`SELECT EXISTS (SELECT 1 FROM current_audience_snapshots WHERE target_kind = 'moment' AND target_id = ?)`, fixture.momentID).Scan(context.Background(), &currentSnapshot))
+	assert.False(t, attendanceComplete)
+	assert.False(t, audienceComplete)
+	assert.Equal(t, int64(8), reviewVersion)
+	assert.Zero(t, attendanceRows)
+	assert.Zero(t, proposalRows)
+	assert.Zero(t, overrideRows)
+	assert.Zero(t, reasonRows)
+	assert.False(t, currentSnapshot)
+	_, err = events.New(service.db).PublishEvent(context.Background(), fixture.curator, fixture.eventID, events.PublishEventRequest{Version: 2})
+	assert.ErrorIs(t, err, events.ErrPublicationNotReady, "source membership changes require fresh Attendance and Audience review")
+
 	recipientLibrary := library.New(service.db, connector)
 	listed, err := recipientLibrary.Events(context.Background(), fixture.recipient, "10", "")
 	require.NoError(t, err)
@@ -652,7 +713,7 @@ func TestFinalPublishedSourceRemovalStaysPrivateWhileMediaRemainsAvailable(t *te
 	assert.Equal(t, fixture.mediaID.String(), listed.Events[0].CoverMediaID)
 	assert.True(t, listed.Events[0].CoverAvailable)
 	assert.Equal(t, "/api/me/media/"+fixture.mediaID.String()+"/thumbnail", listed.Events[0].ThumbnailURL)
-	thumbnail, err := recipientLibrary.Thumbnail(context.Background(), fixture.recipient, fixture.mediaID)
+	thumbnail, err := recipientLibrary.Thumbnail(context.Background(), fixture.recipient, fixture.mediaID, immich.MediaRequest{})
 	require.NoError(t, err)
 	contents, err := io.ReadAll(thumbnail.Body)
 	require.NoError(t, err)

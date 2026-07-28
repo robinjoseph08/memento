@@ -23,16 +23,25 @@ type StagedDeletedMoment struct {
 	ProposedDay string `json:"proposed_day"`
 }
 
+// StagedRecipientAccess describes a Recipient's net Media authorization change.
+type StagedRecipientAccess struct {
+	RecipientPersonID string `json:"recipient_person_id"`
+	RecipientName     string `json:"recipient_name"`
+	GrantedMediaCount int    `json:"granted_media_count"`
+	RevokedMediaCount int    `json:"revoked_media_count"`
+}
+
 // StagedChange is one category in the coalesced difference from the current Publication.
 type StagedChange struct {
-	Kind                staging.ChangeKind    `json:"kind" tstype:"\"addition\" | \"removal\" | \"move\" | \"metadata\" | \"moment_structure\" | \"access\""`
-	Count               int                   `json:"count"`
-	MediaItemIDs        []string              `json:"media_item_ids"`
-	MomentIDs           []string              `json:"moment_ids"`
-	EventMetadataFields []string              `json:"event_metadata_fields,omitempty" tstype:"(\"title\" | \"description\" | \"grouping_timezone\")[]"`
-	RemovedMedia        []StagedRemovedMedia  `json:"removed_media,omitempty"`
-	DeletedMoments      []StagedDeletedMoment `json:"deleted_moments,omitempty"`
-	Detail              string                `json:"detail"`
+	Kind                staging.ChangeKind      `json:"kind" tstype:"\"addition\" | \"removal\" | \"move\" | \"metadata\" | \"moment_structure\" | \"access\""`
+	Count               int                     `json:"count"`
+	MediaItemIDs        []string                `json:"media_item_ids"`
+	MomentIDs           []string                `json:"moment_ids"`
+	EventMetadataFields []string                `json:"event_metadata_fields,omitempty" tstype:"(\"title\" | \"description\" | \"grouping_timezone\")[]"`
+	RemovedMedia        []StagedRemovedMedia    `json:"removed_media,omitempty"`
+	DeletedMoments      []StagedDeletedMoment   `json:"deleted_moments,omitempty"`
+	RecipientAccess     []StagedRecipientAccess `json:"recipient_access,omitempty"`
+	Detail              string                  `json:"detail"`
 }
 
 // StagedUpdate is the one private net update for a published Event.
@@ -61,10 +70,18 @@ func stagedUpdateFromDomain(update *staging.Update) *StagedUpdate {
 				ID: moment.ID, Title: moment.Title, ProposedDay: moment.ProposedDay,
 			})
 		}
+		recipientAccess := make([]StagedRecipientAccess, 0, len(change.RecipientAccess))
+		for _, access := range change.RecipientAccess {
+			recipientAccess = append(recipientAccess, StagedRecipientAccess{
+				RecipientPersonID: access.RecipientPersonID, RecipientName: access.RecipientName,
+				GrantedMediaCount: access.GrantedMediaCount, RevokedMediaCount: access.RevokedMediaCount,
+			})
+		}
 		changes = append(changes, StagedChange{
 			Kind: change.Kind, Count: change.Count, MediaItemIDs: change.MediaItemIDs,
 			MomentIDs: change.MomentIDs, EventMetadataFields: change.EventMetadataFields,
-			RemovedMedia: removedMedia, DeletedMoments: deletedMoments, Detail: change.Detail,
+			RemovedMedia: removedMedia, DeletedMoments: deletedMoments,
+			RecipientAccess: recipientAccess, Detail: change.Detail,
 		})
 	}
 	return &StagedUpdate{

@@ -58,16 +58,25 @@ func (kind *ChangeKind) UnmarshalJSON(data []byte) error {
 	}
 }
 
+// RecipientAccessChange describes a Recipient's net Media authorization change.
+type RecipientAccessChange struct {
+	RecipientPersonID string `json:"recipient_person_id"`
+	RecipientName     string `json:"recipient_name"`
+	GrantedMediaCount int    `json:"granted_media_count"`
+	RevokedMediaCount int    `json:"revoked_media_count"`
+}
+
 // Change is one category in the coalesced difference from the current Publication.
 type Change struct {
-	Kind                ChangeKind      `json:"kind"`
-	Count               int             `json:"count"`
-	MediaItemIDs        []string        `json:"media_item_ids"`
-	MomentIDs           []string        `json:"moment_ids"`
-	EventMetadataFields []string        `json:"event_metadata_fields,omitempty"`
-	RemovedMedia        []RemovedMedia  `json:"removed_media,omitempty"`
-	DeletedMoments      []DeletedMoment `json:"deleted_moments,omitempty"`
-	Detail              string          `json:"detail"`
+	Kind                ChangeKind              `json:"kind"`
+	Count               int                     `json:"count"`
+	MediaItemIDs        []string                `json:"media_item_ids"`
+	MomentIDs           []string                `json:"moment_ids"`
+	EventMetadataFields []string                `json:"event_metadata_fields,omitempty"`
+	RemovedMedia        []RemovedMedia          `json:"removed_media,omitempty"`
+	DeletedMoments      []DeletedMoment         `json:"deleted_moments,omitempty"`
+	RecipientAccess     []RecipientAccessChange `json:"recipient_access,omitempty"`
+	Detail              string                  `json:"detail"`
 }
 
 // Update is the one private net update for a published Event.
@@ -260,12 +269,25 @@ func summarizeStagedUpdate(ctx context.Context, db bun.IDB, eventID, publication
 	}
 	var structureMoments []uuid.UUID
 	if err := db.NewRaw(`
-		SELECT COALESCE(editable.id, published.draft_moment_id)
-		FROM (SELECT id, position FROM draft_moments WHERE event_id = ?) AS editable
-		FULL JOIN (SELECT draft_moment_id, position FROM published_moments WHERE publication_id = ?) AS published
-		  ON published.draft_moment_id = editable.id
-		WHERE editable.id IS NULL OR published.draft_moment_id IS NULL OR editable.position <> published.position
-		ORDER BY COALESCE(editable.position, published.position), COALESCE(editable.id, published.draft_moment_id)
+		WITH editable AS (
+			SELECT id, position FROM draft_moments WHERE event_id = ?
+		), published AS (
+			SELECT draft_moment_id AS id, position FROM published_moments WHERE publication_id = ?
+		), editable_retained AS (
+			SELECT editable.id, row_number() OVER (ORDER BY editable.position, editable.id) AS retained_rank
+			FROM editable JOIN published USING (id)
+		), published_retained AS (
+			SELECT published.id, row_number() OVER (ORDER BY published.position, published.id) AS retained_rank
+			FROM published JOIN editable USING (id)
+		)
+		SELECT COALESCE(editable.id, published.id)
+		FROM editable
+		FULL JOIN published USING (id)
+		LEFT JOIN editable_retained ON editable_retained.id = COALESCE(editable.id, published.id)
+		LEFT JOIN published_retained ON published_retained.id = COALESCE(editable.id, published.id)
+		WHERE editable.id IS NULL OR published.id IS NULL
+		   OR editable_retained.retained_rank <> published_retained.retained_rank
+		ORDER BY COALESCE(editable.position, published.position), COALESCE(editable.id, published.id)
 	`, eventID, publicationID).Scan(ctx, &structureMoments); err != nil {
 		return nil, err
 	}
@@ -308,6 +330,43 @@ func summarizeStagedUpdate(ctx context.Context, db bun.IDB, eventID, publication
 			 WHERE current.target_kind = 'moment' AND current.target_id = moment.id)
 		) ORDER BY moment.position, moment.id
 	`, eventID, publicationID, publicationID).Scan(ctx, &accessMoments); err != nil {
+		return nil, err
+	}
+	var recipientAccess []RecipientAccessChange
+	if err := db.NewRaw(`
+		WITH editable AS (
+			SELECT DISTINCT entry.recipient_access_generation_id AS access_id,
+				placement.media_item_id
+			FROM draft_moments AS moment
+			JOIN current_audience_snapshots AS snapshot
+			  ON snapshot.target_kind = 'moment' AND snapshot.target_id = moment.id
+			JOIN audience_snapshot_entries AS entry ON entry.snapshot_id = snapshot.snapshot_id
+			JOIN draft_media_placements AS placement ON placement.draft_moment_id = moment.id
+			WHERE moment.event_id = ?
+		), published AS (
+			SELECT DISTINCT audience.recipient_access_generation_id AS access_id,
+				placement.media_item_id
+			FROM published_moments AS moment
+			JOIN audience_entries AS audience ON audience.published_moment_id = moment.id
+			JOIN published_media_placements AS placement ON placement.published_moment_id = moment.id
+			WHERE moment.publication_id = ?
+		), changed AS (
+			SELECT COALESCE(editable.access_id, published.access_id) AS access_id,
+				(editable.media_item_id IS NOT NULL AND published.media_item_id IS NULL)::integer AS granted,
+				(published.media_item_id IS NOT NULL AND editable.media_item_id IS NULL)::integer AS revoked
+			FROM editable
+			FULL JOIN published USING (access_id, media_item_id)
+			WHERE editable.media_item_id IS NULL OR published.media_item_id IS NULL
+		)
+		SELECT person.id AS recipient_person_id, person.display_name AS recipient_name,
+			sum(changed.granted)::integer AS granted_media_count,
+			sum(changed.revoked)::integer AS revoked_media_count
+		FROM changed
+		JOIN recipient_access_generations AS access ON access.id = changed.access_id
+		JOIN people AS person ON person.id = access.person_id
+		GROUP BY person.id, person.display_name, person.sort_name
+		ORDER BY person.sort_name, person.id
+	`, eventID, publicationID).Scan(ctx, &recipientAccess); err != nil {
 		return nil, err
 	}
 
@@ -359,7 +418,17 @@ func summarizeStagedUpdate(ctx context.Context, db bun.IDB, eventID, publication
 		})
 	}
 	appendMomentChange(ChangeKindMomentStructure, "Moment structure or ordering changed", structureMoments, 0)
-	appendMomentChange(ChangeKindAccess, "Audience access changed", accessMoments, 0)
+	if len(recipientAccess) > 0 {
+		momentIDs := make([]string, 0, len(accessMoments))
+		for _, id := range accessMoments {
+			momentIDs = append(momentIDs, id.String())
+		}
+		changes = append(changes, Change{
+			Kind: ChangeKindAccess, Count: len(recipientAccess), MediaItemIDs: []string{},
+			MomentIDs: momentIDs, RecipientAccess: recipientAccess,
+			Detail: "Recipient Media access granted or revoked",
+		})
+	}
 	return changes, nil
 }
 

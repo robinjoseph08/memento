@@ -150,6 +150,10 @@ function eventFromRequest(
     baseline.moments.map((moment) => [moment.id, moment]),
   );
   const existing = draft(request.version + 1);
+  existing.title = request.title ?? baseline.title;
+  existing.description = request.description ?? baseline.description;
+  existing.grouping_timezone =
+    request.grouping_timezone ?? baseline.grouping_timezone;
   existing.final_review_complete = request.final_review_complete;
   existing.place_labels = request.place_labels;
   existing.moments = request.moments.map((moment) => ({
@@ -508,10 +512,24 @@ test("shows the resulting Event with highlighted Staged net changes", async () =
       },
       {
         kind: "access",
-        count: 1,
+        count: 2,
         media_item_ids: [],
         moment_ids: [momentOneID],
-        detail: "Audience access changed",
+        recipient_access: [
+          {
+            recipient_person_id: "55555555-5555-4555-8555-555555555555",
+            recipient_name: "Alex",
+            granted_media_count: 2,
+            revoked_media_count: 0,
+          },
+          {
+            recipient_person_id: "66666666-6666-4666-8666-666666666666",
+            recipient_name: "Jamie",
+            granted_media_count: 0,
+            revoked_media_count: 1,
+          },
+        ],
+        detail: "Recipient Media access granted or revoked",
       },
     ],
   };
@@ -545,7 +563,12 @@ test("shows the resulting Event with highlighted Staged net changes", async () =
   expect(review).toHaveTextContent("Moves and ordering1");
   expect(review).toHaveTextContent("Moment structure1");
   expect(review).toHaveTextContent("Metadata edits2");
-  expect(review).toHaveTextContent("Access changes1");
+  expect(review).toHaveTextContent("Access changes2");
+  const recipientAccess = within(review).getByRole("list", {
+    name: "Recipient access changes",
+  });
+  expect(recipientAccess).toHaveTextContent("Alex2 Media granted");
+  expect(recipientAccess).toHaveTextContent("Jamie1 Media revoked");
   expect(review).toHaveTextContent("Removed from the resulting Event");
   expect(review).toHaveTextContent("Undated third photo");
   expect(review).toHaveTextContent(items.c.id);
@@ -902,6 +925,40 @@ test("organizes merged and split days with pointer and keyboard controls", async
   ]);
   expect(lastSave.moments[1].cover_media_item_id).toBe(items.loose.id);
 }, 15_000);
+
+test("autosaves Curator Event metadata and Media removal corrections", async () => {
+  const initial = organizedDraft();
+  const saves = stubOrganizerAPI(initial);
+  renderOrganizer();
+  fireEvent.click(
+    await screen.findByRole("button", { name: /Family weekend/ }),
+  );
+
+  fireEvent.change(await screen.findByLabelText("Event title"), {
+    target: { value: "Corrected family weekend" },
+  });
+  fireEvent.change(screen.getByLabelText("Event description"), {
+    target: { value: "A corrected description" },
+  });
+  fireEvent.change(screen.getByLabelText("Grouping timezone"), {
+    target: { value: "America/New_York" },
+  });
+  fireEvent.click(screen.getByRole("checkbox", { name: /second photo/ }));
+  fireEvent.click(
+    screen.getByRole("button", { name: "Remove selected Media" }),
+  );
+
+  await waitFor(() => expect(saves.length).toBeGreaterThan(0), contentionWait);
+  await screen.findByText("All changes saved", {}, contentionWait);
+  const saved = saves.at(-1)!;
+  expect(saved.title).toBe("Corrected family weekend");
+  expect(saved.description).toBe("A corrected description");
+  expect(saved.grouping_timezone).toBe("America/New_York");
+  expect(
+    saved.moments.flatMap((moment) => moment.media_item_ids),
+  ).not.toContain(items.b.id);
+  expect(screen.queryByRole("checkbox", { name: /second photo/ })).toBeNull();
+});
 
 test("autosaves readiness and persists the complete organization after reload", async () => {
   const saves = stubOrganizerAPI(organizedDraft());

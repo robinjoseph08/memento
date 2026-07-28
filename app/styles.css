@@ -1637,10 +1637,29 @@ h1 {
   background: rgb(2 6 23 / 45%);
 }
 
-.staged-review > ul > li span {
+.staged-review > ul > li > span {
   color: #7dd3fc;
   font-size: 1.1rem;
   font-weight: 700;
+}
+
+.recipient-access-changes {
+  display: grid;
+  gap: 0.35rem;
+  margin: 0.45rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.recipient-access-changes li {
+  display: grid;
+  padding-top: 0.35rem;
+  border-top: 1px solid rgb(125 211 252 / 35%);
+  font-size: 0.78rem;
+}
+
+.recipient-access-changes span {
+  color: #bae6fd;
 }
 
 .staged-removed {
@@ -1685,6 +1704,31 @@ h1 {
   gap: 0.5rem;
 }
 
+.event-details-editor {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.65rem;
+  margin-top: 1rem;
+  padding: 0.75rem;
+  border-radius: 0.75rem;
+  background: rgb(2 6 23 / 60%);
+}
+
+.event-details-editor h4,
+.event-details-editor label:nth-of-type(2) {
+  grid-column: 1 / -1;
+}
+
+.event-details-editor label {
+  display: grid;
+  gap: 0.3rem;
+}
+
+.event-details-editor textarea {
+  min-height: 5rem;
+  resize: vertical;
+}
+
 .move-toolbar {
   flex-wrap: wrap;
   justify-content: space-between;
@@ -1708,6 +1752,7 @@ h1 {
 }
 
 .curator-workspace select,
+.curator-workspace textarea,
 .curator-workspace input[type="date"],
 .curator-workspace input[type="text"] {
   padding: 0.45rem;
@@ -1898,8 +1943,10 @@ h1 {
   }
 
   .curator-workspace select,
+  .curator-workspace textarea,
   .curator-workspace input[type="date"],
   .curator-workspace input[type="text"],
+  .event-details-editor,
   .move-toolbar,
   .media-row {
     border-color: #bae6fd;
@@ -1971,8 +2018,14 @@ h1 {
   }
 
   .organize-pane > header,
-  .staged-review {
+  .staged-review,
+  .event-details-editor {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .event-details-editor h4,
+  .event-details-editor label:nth-of-type(2) {
+    grid-column: auto;
   }
 }
 

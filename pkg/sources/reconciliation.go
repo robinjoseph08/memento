@@ -461,6 +461,7 @@ func syncEditableEvents(
 			return err
 		}
 		changed := false
+		changedMomentIDs := make(map[uuid.UUID]struct{})
 		if len(metadataChangedMediaIDs) > 0 {
 			if err := tx.NewRaw(`
 				SELECT EXISTS (
@@ -531,6 +532,9 @@ func syncEditableEvents(
 			`, eventID, mediaID, momentID, position, now).Exec(ctx); err != nil {
 				return err
 			}
+			if momentID != nil {
+				changedMomentIDs[*momentID] = struct{}{}
+			}
 			if wasCover && momentID != nil {
 				if _, err := tx.NewRaw(`UPDATE draft_moments SET cover_media_item_id = ? WHERE id = ? AND cover_media_item_id IS NULL`, mediaID, *momentID).Exec(ctx); err != nil {
 					return err
@@ -595,12 +599,42 @@ func syncEditableEvents(
 			if _, err := tx.NewRaw(`DELETE FROM draft_media_placements WHERE event_id = ? AND media_item_id = ?`, eventID, mediaID).Exec(ctx); err != nil {
 				return err
 			}
+			if momentID != nil {
+				changedMomentIDs[*momentID] = struct{}{}
+			}
 			changed = true
 		}
 		if !changed {
 			continue
 		}
+		for momentID := range changedMomentIDs {
+			if err := invalidateSourceChangedMomentReview(ctx, tx, momentID); err != nil {
+				return err
+			}
+		}
 		if _, err := staging.InvalidateEvent(ctx, tx, lockedEventID, now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func invalidateSourceChangedMomentReview(ctx context.Context, tx bun.Tx, momentID uuid.UUID) error {
+	if _, err := tx.NewRaw(`
+		UPDATE draft_moments
+		SET attendance_complete = false, audience_complete = false,
+			review_version = review_version + 1
+		WHERE id = ?
+	`, momentID).Exec(ctx); err != nil {
+		return err
+	}
+	for _, statement := range []string{
+		`DELETE FROM attendance WHERE moment_id = ?`,
+		`DELETE FROM audience_proposals WHERE target_kind = 'moment' AND target_id = ?`,
+		`DELETE FROM audience_overrides WHERE target_kind = 'moment' AND target_id = ?`,
+		`DELETE FROM current_audience_snapshots WHERE target_kind = 'moment' AND target_id = ?`,
+	} {
+		if _, err := tx.NewRaw(statement, momentID).Exec(ctx); err != nil {
 			return err
 		}
 	}

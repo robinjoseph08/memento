@@ -94,7 +94,10 @@ type OrganizeMoment struct {
 // OrganizeEventRequest atomically replaces draft organization at an expected version.
 type OrganizeEventRequest struct {
 	Version             int64            `json:"version" validate:"required,min=1"`
+	Title               *string          `json:"title" tstype:"string"`
+	Description         *string          `json:"description" tstype:"string"`
 	PlaceLabels         []string         `json:"place_labels"`
+	GroupingTimezone    *string          `json:"grouping_timezone" tstype:"string"`
 	Moments             []OrganizeMoment `json:"moments" validate:"max=100000,dive"`
 	UnassignedMediaIDs  []string         `json:"unassigned_media_ids" validate:"max=100000"`
 	FinalReviewComplete bool             `json:"final_review_complete"`
@@ -584,6 +587,9 @@ func (s *Service) OrganizeEvent(ctx context.Context, actor setup.CuratorSession,
 		placements = append(placements, draftPlacementRow{MediaItemID: mediaID, Position: len(placements)})
 	}
 
+	if len(seenMedia) == 0 {
+		return Event{}, ErrNoMediaAvailable
+	}
 	eventPlaceLabels, valid := normalizePlaceLabels(request.PlaceLabels)
 	if !valid {
 		return Event{}, ErrPlaceLabelsInvalid
@@ -593,8 +599,8 @@ func (s *Service) OrganizeEvent(ctx context.Context, actor setup.CuratorSession,
 	var organized Event
 	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 		var currentVersion int64
-		var timezone, priorEventPlaceLabelsJSON string
-		err := tx.NewRaw(`SELECT version, grouping_timezone, to_json(place_labels)::text FROM events WHERE id = ? AND lifecycle IN ('draft', 'published') FOR UPDATE`, id).Scan(ctx, &currentVersion, &timezone, &priorEventPlaceLabelsJSON)
+		var title, description, timezone, priorEventPlaceLabelsJSON string
+		err := tx.NewRaw(`SELECT version, title, description, grouping_timezone, to_json(place_labels)::text FROM events WHERE id = ? AND lifecycle IN ('draft', 'published') FOR UPDATE`, id).Scan(ctx, &currentVersion, &title, &description, &timezone, &priorEventPlaceLabelsJSON)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrNotFound
 		}
@@ -608,6 +614,24 @@ func (s *Service) OrganizeEvent(ctx context.Context, actor setup.CuratorSession,
 		if err := json.Unmarshal([]byte(priorEventPlaceLabelsJSON), &priorEventPlaceLabels); err != nil {
 			return err
 		}
+		nextTitle, nextDescription, nextTimezone := title, description, timezone
+		if request.Title != nil {
+			nextTitle = strings.TrimSpace(*request.Title)
+		}
+		if request.Description != nil {
+			nextDescription = strings.TrimSpace(*request.Description)
+		}
+		if request.GroupingTimezone != nil {
+			location, err := draftLocation(*request.GroupingTimezone)
+			if err != nil {
+				return ErrInvalid
+			}
+			nextTimezone = location.String()
+		}
+		if nextTitle == "" || utf8.RuneCountInString(nextTitle) > 240 || utf8.RuneCountInString(nextDescription) > 2000 {
+			return ErrInvalid
+		}
+		metadataChanged := title != nextTitle || description != nextDescription || timezone != nextTimezone
 		var priorMoments []priorMomentState
 		if err := tx.NewRaw(`
 			SELECT id, position, title, to_json(place_labels)::text AS place_labels_json,
@@ -628,11 +652,15 @@ func (s *Service) OrganizeEvent(ctx context.Context, actor setup.CuratorSession,
 		`, id).Scan(ctx, &priorPlacements); err != nil {
 			return err
 		}
-		if len(priorPlacements) != len(seenMedia) {
+		if len(seenMedia) > len(priorPlacements) {
 			return ErrInvalid
 		}
+		priorMedia := make(map[uuid.UUID]struct{}, len(priorPlacements))
 		for _, placement := range priorPlacements {
-			if _, exists := seenMedia[placement.MediaItemID]; !exists {
+			priorMedia[placement.MediaItemID] = struct{}{}
+		}
+		for mediaID := range seenMedia {
+			if _, exists := priorMedia[mediaID]; !exists {
 				return ErrInvalid
 			}
 		}
@@ -707,20 +735,22 @@ func (s *Service) OrganizeEvent(ctx context.Context, actor setup.CuratorSession,
 		if _, err := tx.NewRaw(`DELETE FROM draft_moments WHERE event_id = ?`, id).Exec(ctx); err != nil {
 			return err
 		}
-		if err := insertDraftMoments(ctx, tx, id, timezone, momentRows); err != nil {
+		if err := insertDraftMoments(ctx, tx, id, nextTimezone, momentRows); err != nil {
 			return err
 		}
 		if err := insertDraftPlacements(ctx, tx, id, now, placements); err != nil {
 			return err
 		}
-		finalReviewComplete := request.FinalReviewComplete && !organizationChanged
+		finalReviewComplete := request.FinalReviewComplete && !organizationChanged && !metadataChanged
 		if _, err := tx.NewRaw(`
-			UPDATE events SET place_labels = ?, final_review_complete = ?, version = version + 1, updated_at = ? WHERE id = ?
-		`, pgdialect.Array(eventPlaceLabels), finalReviewComplete, now, id).Exec(ctx); err != nil {
+			UPDATE events SET title = ?, description = ?, place_labels = ?, grouping_timezone = ?,
+				final_review_complete = ?, version = version + 1, updated_at = ? WHERE id = ?
+		`, nextTitle, nextDescription, pgdialect.Array(eventPlaceLabels), nextTimezone, finalReviewComplete, now, id).Exec(ctx); err != nil {
 			return err
 		}
 		if err := appendDraftAudit(ctx, tx, actor, "event_draft_organized", map[string]any{
 			"event_id": id.String(), "prior_version": currentVersion, "moment_count": len(momentRows),
+			"removed_media_count": len(priorPlacements) - len(placements), "metadata_changed": metadataChanged,
 		}); err != nil {
 			return err
 		}
