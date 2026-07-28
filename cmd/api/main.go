@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/robinjoseph08/golib/logger"
+	"github.com/robinjoseph08/memento/pkg/archives"
 	"github.com/robinjoseph08/memento/pkg/audiences"
 	"github.com/robinjoseph08/memento/pkg/config"
 	"github.com/robinjoseph08/memento/pkg/database"
@@ -136,6 +137,7 @@ func run() error {
 	audienceHandler := audiences.NewHandler(audiences.New(db, immichClient), setupService)
 	sessionHandler := sessions.NewHandler(sessions.New(db, emailService, setupService, cfg.Security), setupService)
 	libraryHandler := library.NewHandler(library.New(db, immichClient), setupService)
+	archiveHandler := archives.NewHandler(archives.New(db, immichClient), setupService)
 	e, err := server.New(healthService, emaildelivery.NewHandler(emailService), setupHandler, peopleHandler, familyHandler, visibilityHandler, recipientHandler, sourceHandler, eventHandler, repairHandler, suggestionHandler, audienceHandler, sessionHandler)
 	if err != nil {
 		_ = db.Close()
@@ -143,6 +145,7 @@ func run() error {
 		return err
 	}
 	library.RegisterRoutes(e, libraryHandler)
+	archives.RegisterRoutes(e, archiveHandler)
 
 	workCtx, cancelWork := context.WithCancel(context.Background())
 	defer cancelWork()

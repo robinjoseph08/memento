@@ -58,6 +58,7 @@ var (
 	errAlbumAssetsFailed  = safeError("Immich album membership lookup failed")
 	errPeopleFailed       = safeError("Immich people lookup failed")
 	errFacesFailed        = safeError("Immich face lookup failed")
+	errArchiveFailed      = safeError("Immich archive request failed")
 	// ErrNotFound identifies an Immich resource that disappeared between evidence reads.
 	ErrNotFound = safeError("Immich resource not found")
 )
@@ -122,6 +123,17 @@ type assetResponse struct {
 	Checksum         *string         `json:"checksum"`
 	OriginalFileName *string         `json:"originalFileName"`
 	OriginalPath     *string         `json:"originalPath"`
+	LivePhotoVideoID json.RawMessage `json:"livePhotoVideoId"`
+}
+
+type downloadInfoResponse struct {
+	TotalSize *int64                 `json:"totalSize"`
+	Archives  *[]downloadArchiveInfo `json:"archives"`
+}
+
+type downloadArchiveInfo struct {
+	Size     *int64    `json:"size"`
+	AssetIDs *[]string `json:"assetIds"`
 }
 
 type peopleResponse struct {
@@ -192,10 +204,26 @@ func (response *searchAssetsResponse) UnmarshalJSON(contents []byte) error {
 
 func (response *assetResponse) UnmarshalJSON(contents []byte) error {
 	type exactAssetResponse assetResponse
-	if err := rejectCaseVariantFields(contents, "id", "type", "width", "height", "localDateTime", "fileCreatedAt", "checksum", "originalFileName", "originalPath"); err != nil {
+	if err := rejectCaseVariantFields(contents, "id", "type", "width", "height", "localDateTime", "fileCreatedAt", "checksum", "originalFileName", "originalPath", "livePhotoVideoId"); err != nil {
 		return err
 	}
 	return json.Unmarshal(contents, (*exactAssetResponse)(response))
+}
+
+func (response *downloadInfoResponse) UnmarshalJSON(contents []byte) error {
+	type exactDownloadInfoResponse downloadInfoResponse
+	if err := rejectCaseVariantFields(contents, "totalSize", "archives"); err != nil {
+		return err
+	}
+	return json.Unmarshal(contents, (*exactDownloadInfoResponse)(response))
+}
+
+func (response *downloadArchiveInfo) UnmarshalJSON(contents []byte) error {
+	type exactDownloadArchiveInfo downloadArchiveInfo
+	if err := rejectCaseVariantFields(contents, "size", "assetIds"); err != nil {
+		return err
+	}
+	return json.Unmarshal(contents, (*exactDownloadArchiveInfo)(response))
 }
 
 func (response *peopleResponse) UnmarshalJSON(contents []byte) error {
@@ -293,6 +321,19 @@ type MediaResponse struct {
 	AcceptRanges  string
 	ETag          string
 	LastModified  string
+}
+
+// ArchivePart is one server-derived Immich archive group.
+type ArchivePart struct {
+	Size        int64
+	AssetIDs    []uuid.UUID
+	CompanionOf map[uuid.UUID]uuid.UUID
+}
+
+// ArchiveResponse is a streaming ZIP body with allowlisted metadata.
+type ArchiveResponse struct {
+	Body          io.ReadCloser
+	ContentLength int64
 }
 
 // New returns a least-privilege server-side client.
@@ -862,6 +903,163 @@ func (body *cancelReadCloser) Close() error {
 	return err
 }
 
+// ArchiveInfo asks Immich to expand current Live Photo companions and split assets.
+func (c *Client) ArchiveInfo(ctx context.Context, assetIDs []uuid.UUID) ([]ArchivePart, error) {
+	if len(assetIDs) == 0 {
+		return nil, errInvalidResponse
+	}
+	ids := make([]string, len(assetIDs))
+	seenRequested := make(map[uuid.UUID]struct{}, len(assetIDs))
+	companions := make(map[uuid.UUID]uuid.UUID)
+	for index, id := range assetIDs {
+		if id == uuid.Nil {
+			return nil, errInvalidResponse
+		}
+		if _, duplicate := seenRequested[id]; duplicate {
+			return nil, errInvalidResponse
+		}
+		seenRequested[id] = struct{}{}
+		ids[index] = id.String()
+
+		var asset assetResponse
+		if err := c.getJSON(ctx, "assets/"+id.String(), &asset, errArchiveFailed); err != nil {
+			return nil, err
+		}
+		if asset.ID == nil || *asset.ID != id.String() {
+			return nil, errInvalidResponse
+		}
+		if len(asset.LivePhotoVideoID) == 0 {
+			return nil, errInvalidResponse
+		}
+		if string(asset.LivePhotoVideoID) != "null" {
+			var rawCompanion string
+			if err := json.Unmarshal(asset.LivePhotoVideoID, &rawCompanion); err != nil {
+				return nil, errInvalidResponse
+			}
+			companion, err := uuid.Parse(rawCompanion)
+			if err != nil || companion == uuid.Nil {
+				return nil, errInvalidResponse
+			}
+			companions[companion] = id
+		}
+	}
+	body, err := json.Marshal(map[string]any{"assetIds": ids})
+	if err != nil {
+		return nil, errInvalidResponse
+	}
+	var response downloadInfoResponse
+	if err := c.doJSONStatus(ctx, http.MethodPost, "download/info", nil, body, &response, errArchiveFailed, http.StatusCreated); err != nil {
+		return nil, err
+	}
+	if response.TotalSize == nil || response.Archives == nil || *response.TotalSize < 0 || len(*response.Archives) == 0 {
+		return nil, errInvalidResponse
+	}
+	parts := make([]ArchivePart, 0, len(*response.Archives))
+	seen := make(map[uuid.UUID]struct{}, len(assetIDs)+len(companions))
+	var total int64
+	for _, rawPart := range *response.Archives {
+		if rawPart.Size == nil || rawPart.AssetIDs == nil || *rawPart.Size < 0 || len(*rawPart.AssetIDs) == 0 {
+			return nil, errInvalidResponse
+		}
+		part := ArchivePart{Size: *rawPart.Size, AssetIDs: make([]uuid.UUID, 0, len(*rawPart.AssetIDs)), CompanionOf: make(map[uuid.UUID]uuid.UUID)}
+		for _, rawID := range *rawPart.AssetIDs {
+			id, parseErr := uuid.Parse(rawID)
+			if parseErr != nil || id == uuid.Nil {
+				return nil, errInvalidResponse
+			}
+			if _, requested := seenRequested[id]; !requested {
+				primary, companion := companions[id]
+				if !companion {
+					return nil, errInvalidResponse
+				}
+				part.CompanionOf[id] = primary
+			}
+			if _, duplicate := seen[id]; duplicate {
+				return nil, errInvalidResponse
+			}
+			seen[id] = struct{}{}
+			part.AssetIDs = append(part.AssetIDs, id)
+		}
+		if *rawPart.Size > (1<<63-1)-total {
+			return nil, errInvalidResponse
+		}
+		total += *rawPart.Size
+		parts = append(parts, part)
+	}
+	for requested := range seenRequested {
+		if _, included := seen[requested]; !included {
+			return nil, errInvalidResponse
+		}
+	}
+	if total != *response.TotalSize {
+		return nil, errInvalidResponse
+	}
+	return parts, nil
+}
+
+// Archive opens an Immich ZIP for an already server-derived exact asset list.
+func (c *Client) Archive(ctx context.Context, assetIDs []uuid.UUID) (ArchiveResponse, error) {
+	if len(assetIDs) == 0 {
+		return ArchiveResponse{}, errInvalidResponse
+	}
+	ids := make([]string, len(assetIDs))
+	seen := make(map[uuid.UUID]struct{}, len(assetIDs))
+	for index, id := range assetIDs {
+		if id == uuid.Nil {
+			return ArchiveResponse{}, errInvalidResponse
+		}
+		if _, duplicate := seen[id]; duplicate {
+			return ArchiveResponse{}, errInvalidResponse
+		}
+		seen[id] = struct{}{}
+		ids[index] = id.String()
+	}
+	body, err := json.Marshal(map[string]any{"assetIds": ids})
+	if err != nil {
+		return ArchiveResponse{}, errInvalidResponse
+	}
+	requestCtx, cancel := context.WithCancel(ctx)
+	timer := time.AfterFunc(c.healthTimeout, cancel)
+	endpoint := c.baseURL.JoinPath("api", "download", "archive")
+	req, err := http.NewRequestWithContext(requestCtx, http.MethodPost, endpoint.String(), bytes.NewReader(body))
+	if err != nil {
+		timer.Stop()
+		cancel()
+		return ArchiveResponse{}, errCreateRequest
+	}
+	req.Header.Set("Accept", "application/zip,application/octet-stream")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", c.apiKey)
+	response, err := c.httpClient.Do(req)
+	if !timer.Stop() {
+		if response != nil {
+			_ = response.Body.Close()
+		}
+		cancel()
+		return ArchiveResponse{}, errUnreachable
+	}
+	if err != nil {
+		cancel()
+		return ArchiveResponse{}, errUnreachable
+	}
+	if response.StatusCode != http.StatusOK {
+		defer response.Body.Close()
+		defer cancel()
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxJSONResponse))
+		if response.StatusCode == http.StatusNotFound {
+			return ArchiveResponse{}, ErrNotFound
+		}
+		return ArchiveResponse{}, errArchiveFailed
+	}
+	contentType, _, parseErr := mime.ParseMediaType(response.Header.Get("Content-Type"))
+	if parseErr != nil || (contentType != "application/zip" && contentType != "application/octet-stream") || response.ContentLength < -1 {
+		_ = response.Body.Close()
+		cancel()
+		return ArchiveResponse{}, errInvalidResponse
+	}
+	return ArchiveResponse{Body: &safeReadCloser{ReadCloser: &cancelReadCloser{ReadCloser: response.Body, cancel: cancel}}, ContentLength: response.ContentLength}, nil
+}
+
 // People returns every current Immich identity, including hidden clusters.
 func (c *Client) People(ctx context.Context) ([]PersonSummary, error) {
 	result := make([]PersonSummary, 0)
@@ -945,6 +1143,10 @@ func (c *Client) getJSONQuery(ctx context.Context, path string, query url.Values
 }
 
 func (c *Client) doJSON(ctx context.Context, method, path string, query url.Values, body []byte, target any, statusError error) error {
+	return c.doJSONStatus(ctx, method, path, query, body, target, statusError, http.StatusOK)
+}
+
+func (c *Client) doJSONStatus(ctx context.Context, method, path string, query url.Values, body []byte, target any, statusError error, expectedStatus int) error {
 	requestCtx, cancel := context.WithTimeout(ctx, c.healthTimeout)
 	defer cancel()
 	endpoint := c.baseURL.JoinPath("api", path)
@@ -969,7 +1171,7 @@ func (c *Client) doJSON(ctx context.Context, method, path string, query url.Valu
 		return errUnreachable
 	}
 	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
+	if response.StatusCode != expectedStatus {
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxJSONResponse))
 		if response.StatusCode == http.StatusNotFound && path == "faces" {
 			return ErrNotFound

@@ -1,0 +1,348 @@
+//go:build integration
+
+package archives
+
+import (
+	"archive/zip"
+	"bytes"
+	"context"
+	"io"
+	"net/url"
+	"slices"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/robinjoseph08/memento/internal/testdb"
+	"github.com/robinjoseph08/memento/pkg/immich"
+	"github.com/robinjoseph08/memento/pkg/migrations"
+	"github.com/robinjoseph08/memento/pkg/setup"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/uptrace/bun"
+)
+
+type archiveStub struct {
+	planned         []immich.ArchivePart
+	companions      map[uuid.UUID]uuid.UUID
+	originalCalls   []uuid.UUID
+	infoCalls       [][]uuid.UUID
+	originalStarted chan struct{}
+	releaseOriginal <-chan struct{}
+	originalOnce    sync.Once
+}
+
+func (stub *archiveStub) ArchiveInfo(_ context.Context, ids []uuid.UUID) ([]immich.ArchivePart, error) {
+	stub.infoCalls = append(stub.infoCalls, slices.Clone(ids))
+	if len(stub.infoCalls) == 1 && stub.planned != nil {
+		return stub.planned, nil
+	}
+	part := immich.ArchivePart{Size: int64(len(ids) * 10), CompanionOf: make(map[uuid.UUID]uuid.UUID)}
+	for _, id := range ids {
+		part.AssetIDs = append(part.AssetIDs, id)
+		if companion := stub.companions[id]; companion != uuid.Nil {
+			part.AssetIDs = append(part.AssetIDs, companion)
+			part.CompanionOf[companion] = id
+		}
+	}
+	return []immich.ArchivePart{part}, nil
+}
+
+func (stub *archiveStub) Original(ctx context.Context, id uuid.UUID, _ immich.MediaRequest) (immich.MediaResponse, error) {
+	stub.originalCalls = append(stub.originalCalls, id)
+	if stub.originalStarted != nil {
+		stub.originalOnce.Do(func() { close(stub.originalStarted) })
+	}
+	if stub.releaseOriginal != nil {
+		select {
+		case <-stub.releaseOriginal:
+		case <-ctx.Done():
+			return immich.MediaResponse{}, ctx.Err()
+		}
+	}
+	return immich.MediaResponse{Body: io.NopCloser(bytes.NewBufferString("asset")), ContentType: "image/jpeg", ContentLength: 5}, nil
+}
+
+type archiveFixture struct {
+	db          *bun.DB
+	service     *Service
+	source      *archiveStub
+	actor       setup.SessionActor
+	event       uuid.UUID
+	media       []uuid.UUID
+	assets      []uuid.UUID
+	hiddenActor setup.SessionActor
+}
+
+func newArchiveFixture(t *testing.T, source *archiveStub) archiveFixture {
+	t.Helper()
+	ctx := context.Background()
+	db := testdb.Open(t)
+	require.NoError(t, migrations.Apply(ctx, db))
+	fixture := archiveFixture{db: db, source: source, event: uuid.New(), media: []uuid.UUID{uuid.New(), uuid.New(), uuid.New()}, assets: []uuid.UUID{uuid.New(), uuid.New(), uuid.New()}}
+	curator, personID, accessID, sessionID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	fixture.actor = setup.SessionActor{PersonID: personID, AccessID: accessID, SessionID: sessionID}
+	fixture.hiddenActor = setup.SessionActor{PersonID: uuid.New(), AccessID: uuid.New(), SessionID: uuid.New()}
+	publication, publishedMoment, draftMoment, snapshot := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	now := time.Now().UTC().Truncate(time.Second)
+	_, err := db.NewRaw(`
+		UPDATE system_settings SET setup_complete = true WHERE id = 1;
+		INSERT INTO people (id, display_name, sort_name) VALUES
+			(?, 'Curator', 'curator'), (?, 'Alex', 'alex'), (?, 'Hidden', 'hidden');
+		INSERT INTO person_roles (person_id, role) VALUES (?, 'curator'), (?, 'recipient'), (?, 'recipient');
+		INSERT INTO recipient_access_generations
+			(id, person_id, generation, state, is_current, onboarding_completed_at)
+		VALUES (?, ?, 1, 'completed', true, ?), (?, ?, 1, 'completed', true, ?);
+		INSERT INTO sessions
+			(id, credential_hash, person_id, recipient_access_generation_id, security_epoch, session_type, idle_expires_at)
+		SELECT ?, decode(repeat('42', 32), 'hex'), ?, ?, security_epoch, 'trusted', ?::timestamptz + interval '1 hour'
+		FROM system_settings WHERE id = 1;
+		INSERT INTO events (id, lifecycle, title, description, grouping_timezone, version, created_at, updated_at)
+		VALUES (?, 'published', '../Family / Weekend', '', 'UTC', 1, ?, ?);
+		INSERT INTO publications
+			(id, event_id, revision, editable_version, published_by_person_id, notify_recipients, committed_at)
+		VALUES (?, ?, 1, 1, ?, false, ?);
+		UPDATE events SET current_publication_id = ? WHERE id = ?;
+		INSERT INTO current_published_events
+			(event_id, publication_id, title, description, grouping_timezone, committed_at)
+		VALUES (?, ?, '../Family / Weekend', '', 'UTC', ?);
+		INSERT INTO audience_snapshots (id, target_kind, target_id, approved_by_person_id, approved_at, label)
+		VALUES (?, 'moment', ?, ?, ?, 'Shared');
+		INSERT INTO published_moments
+			(id, publication_id, draft_moment_id, audience_snapshot_id, position, title, proposed_day)
+		VALUES (?, ?, ?, ?, 0, '', '2026-07-27')
+	`, curator, personID, fixture.hiddenActor.PersonID, curator, personID, fixture.hiddenActor.PersonID,
+		accessID, personID, now, fixture.hiddenActor.AccessID, fixture.hiddenActor.PersonID, now,
+		sessionID, personID, accessID, now,
+		fixture.event, now, now, publication, fixture.event, curator, now,
+		publication, fixture.event, fixture.event, publication, now,
+		snapshot, draftMoment, curator, now, publishedMoment, publication, draftMoment, snapshot).Exec(ctx)
+	require.NoError(t, err)
+	for index := range fixture.media {
+		_, err = db.NewRaw(`
+			INSERT INTO media_items
+				(id, immich_asset_id, media_type, width, height, local_date_time, availability, first_seen_at, last_seen_at)
+			VALUES (?, ?, 'image', 100, 100, ?, 'current', ?, ?);
+			INSERT INTO media_backings (id, media_item_id, immich_asset_id, linked_at)
+			VALUES (gen_random_uuid(), ?, ?, ?);
+			INSERT INTO published_media_placements
+				(published_moment_id, media_item_id, position, media_type, width, height, local_date_time)
+			VALUES (?, ?, ?, 'image', 100, 100, ?);
+			INSERT INTO current_published_placements
+				(event_id, publication_id, published_moment_id, media_item_id, position)
+			VALUES (?, ?, ?, ?, ?)
+		`, fixture.media[index], fixture.assets[index], now.Format(time.RFC3339), now, now,
+			fixture.media[index], fixture.assets[index], now,
+			publishedMoment, fixture.media[index], index, now.Format(time.RFC3339),
+			fixture.event, publication, publishedMoment, fixture.media[index], index).Exec(ctx)
+		require.NoError(t, err)
+		entitledAccess := accessID
+		if index == 2 {
+			entitledAccess = fixture.hiddenActor.AccessID
+		}
+		_, err = db.NewRaw(`INSERT INTO current_audience_entitlements
+			(event_id, publication_id, recipient_person_id, recipient_access_generation_id, media_item_id)
+		SELECT ?, ?, person_id, ?, ? FROM recipient_access_generations WHERE id = ?`, fixture.event,
+			publication, entitledAccess, fixture.media[index], entitledAccess).Exec(ctx)
+		require.NoError(t, err)
+	}
+	_, err = db.NewRaw(`INSERT INTO sessions
+		(id, credential_hash, person_id, recipient_access_generation_id, security_epoch, session_type, idle_expires_at)
+		SELECT ?, decode(repeat('44', 32), 'hex'), ?, ?, security_epoch, 'trusted', now() + interval '1 hour'
+		FROM system_settings WHERE id = 1`, fixture.hiddenActor.SessionID, fixture.hiddenActor.PersonID, fixture.hiddenActor.AccessID).Exec(ctx)
+	require.NoError(t, err)
+	fixture.service = New(db, source)
+	return fixture
+}
+
+func TestPlansCompleteEventAndRejectsIncompleteSubset(t *testing.T) {
+	source := &archiveStub{}
+	fixture := newArchiveFixture(t, source)
+	source.planned = []immich.ArchivePart{
+		{Size: 12, AssetIDs: []uuid.UUID{fixture.assets[0]}, CompanionOf: map[uuid.UUID]uuid.UUID{}},
+		{Size: 15, AssetIDs: []uuid.UUID{fixture.assets[1]}, CompanionOf: map[uuid.UUID]uuid.UUID{}},
+	}
+	fixedNow := time.Now().UTC().Truncate(time.Second)
+	fixture.service.now = func() time.Time { return fixedNow }
+
+	response, err := fixture.service.Plan(context.Background(), fixture.actor, PlanRequest{Scope: "event", EventID: stringPointer(fixture.event.String())})
+	require.NoError(t, err)
+	assert.Equal(t, 2, response.ItemCount)
+	assert.Equal(t, int64(27), response.TotalSize)
+	assert.Equal(t, fixedNow.Add(15*time.Minute), response.ExpiresAt)
+	assert.Equal(t, "Family-Weekend", response.Name)
+	require.Len(t, response.Parts, 2)
+	assert.Equal(t, "Family-Weekend-part-1-of-2.zip", response.Parts[0].Filename)
+	assert.NotContains(t, response.Parts[0].Filename, "..")
+	assert.NotContains(t, response.Parts[0].Filename, "/")
+	downloadURL, err := url.Parse(response.Parts[0].DownloadURL)
+	require.NoError(t, err)
+	assert.Equal(t, "/api/me/archives/parts/1", downloadURL.Path, "archive secrets stay out of request-log paths")
+	assert.NotEmpty(t, downloadURL.Query().Get("token"))
+	assert.ElementsMatch(t, fixture.assets[:2], source.infoCalls[0])
+
+	_, err = fixture.service.Plan(context.Background(), fixture.actor, PlanRequest{Scope: "subset", MediaIDs: []string{fixture.media[0].String(), fixture.media[2].String()}})
+	assert.ErrorIs(t, err, ErrInvalidSelection)
+	assert.Len(t, source.infoCalls, 1, "the complete selection is authorized before Immich is contacted")
+}
+
+func TestPartsAreSessionBoundExpiringAndIndividuallySingleUse(t *testing.T) {
+	source := &archiveStub{}
+	fixture := newArchiveFixture(t, source)
+	source.planned = []immich.ArchivePart{
+		{Size: 12, AssetIDs: []uuid.UUID{fixture.assets[0]}, CompanionOf: map[uuid.UUID]uuid.UUID{}},
+		{Size: 15, AssetIDs: []uuid.UUID{fixture.assets[1]}, CompanionOf: map[uuid.UUID]uuid.UUID{}},
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	fixture.service.now = func() time.Time { return now }
+	plan, err := fixture.service.Plan(context.Background(), fixture.actor, PlanRequest{Scope: "event", EventID: stringPointer(fixture.event.String())})
+	require.NoError(t, err)
+	token := tokenFromURL(plan.Parts[0].DownloadURL)
+
+	otherSession := fixture.actor
+	otherSession.SessionID = uuid.New()
+	_, err = fixture.db.NewRaw(`INSERT INTO sessions
+		(id, credential_hash, person_id, recipient_access_generation_id, security_epoch, session_type, idle_expires_at)
+		SELECT ?, decode(repeat('43', 32), 'hex'), ?, ?, security_epoch, 'trusted', now() + interval '1 hour'
+		FROM system_settings WHERE id = 1`, otherSession.SessionID, otherSession.PersonID, otherSession.AccessID).Exec(context.Background())
+	require.NoError(t, err)
+	_, err = fixture.service.StreamPart(context.Background(), otherSession, token, 1)
+	assert.ErrorIs(t, err, ErrNotFound)
+	_, err = fixture.service.StreamPart(context.Background(), fixture.hiddenActor, token, 1)
+	assert.ErrorIs(t, err, ErrNotFound)
+
+	stream, err := fixture.service.StreamPart(context.Background(), fixture.actor, token, 1)
+	require.NoError(t, err)
+	contents, err := io.ReadAll(stream.Body)
+	require.NoError(t, err)
+	require.NoError(t, stream.Body.Close())
+	zipReader, err := zip.NewReader(bytes.NewReader(contents), int64(len(contents)))
+	require.NoError(t, err)
+	require.Len(t, zipReader.File, 1)
+	assert.Equal(t, "Family-Weekend/0001-media.jpg", zipReader.File[0].Name)
+	assert.Equal(t, "Family-Weekend-part-1-of-2.zip", stream.Filename)
+	_, err = fixture.service.StreamPart(context.Background(), fixture.actor, token, 1)
+	assert.ErrorIs(t, err, ErrNotFound)
+	assert.Len(t, source.originalCalls, 1, "replay is rejected before opening Immich")
+
+	_, err = fixture.db.NewRaw(`UPDATE recipient_access_generations SET state = 'revoked', is_current = false, ended_at = now() WHERE id = ?`, fixture.actor.AccessID).Exec(context.Background())
+	require.NoError(t, err)
+	_, err = fixture.service.StreamPart(context.Background(), fixture.actor, token, 2)
+	assert.ErrorIs(t, err, ErrNotFound)
+	assert.Len(t, source.originalCalls, 1)
+
+	_, err = fixture.db.NewRaw(`UPDATE recipient_access_generations SET state = 'completed', is_current = true, ended_at = NULL WHERE id = ?`, fixture.actor.AccessID).Exec(context.Background())
+	require.NoError(t, err)
+	now = plan.ExpiresAt
+	_, err = fixture.service.StreamPart(context.Background(), fixture.actor, token, 2)
+	assert.ErrorIs(t, err, ErrNotFound)
+}
+
+func TestEveryAccessLossBlocksAnUnstartedPart(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		change func(context.Context, archiveFixture) error
+	}{
+		{name: "suspension", change: func(ctx context.Context, fixture archiveFixture) error {
+			_, err := fixture.db.NewRaw(`UPDATE recipient_access_generations SET state = 'suspended' WHERE id = ?`, fixture.actor.AccessID).Exec(ctx)
+			return err
+		}},
+		{name: "revocation", change: func(ctx context.Context, fixture archiveFixture) error {
+			_, err := fixture.db.NewRaw(`UPDATE recipient_access_generations SET state = 'revoked', is_current = false, ended_at = now() WHERE id = ?`, fixture.actor.AccessID).Exec(ctx)
+			return err
+		}},
+		{name: "Session revocation", change: func(ctx context.Context, fixture archiveFixture) error {
+			_, err := fixture.db.NewRaw(`UPDATE sessions SET revoked_at = now() WHERE id = ?`, fixture.actor.SessionID).Exec(ctx)
+			return err
+		}},
+		{name: "Withdrawal", change: func(ctx context.Context, fixture archiveFixture) error {
+			_, err := fixture.db.NewRaw(`INSERT INTO content_withdrawals
+				(id, target_kind, target_id, withdrawn_by_person_id, withdrawn_at, reason)
+				VALUES (?, 'media', ?, ?, now(), 'Archive test')`, uuid.New(), fixture.media[0], fixture.actor.PersonID).Exec(ctx)
+			return err
+		}},
+		{name: "entitlement loss", change: func(ctx context.Context, fixture archiveFixture) error {
+			_, err := fixture.db.NewRaw(`DELETE FROM current_audience_entitlements
+				WHERE recipient_access_generation_id = ? AND media_item_id = ?`, fixture.actor.AccessID, fixture.media[0]).Exec(ctx)
+			return err
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			source := &archiveStub{}
+			fixture := newArchiveFixture(t, source)
+			source.planned = []immich.ArchivePart{{Size: 12, AssetIDs: []uuid.UUID{fixture.assets[0]}, CompanionOf: map[uuid.UUID]uuid.UUID{}}}
+			plan, err := fixture.service.Plan(context.Background(), fixture.actor, PlanRequest{Scope: "subset", MediaIDs: []string{fixture.media[0].String()}})
+			require.NoError(t, err)
+			require.NoError(t, test.change(context.Background(), fixture))
+
+			_, err = fixture.service.StreamPart(context.Background(), fixture.actor, tokenFromURL(plan.Parts[0].DownloadURL), 1)
+			assert.ErrorIs(t, err, ErrNotFound)
+			assert.Empty(t, source.originalCalls)
+		})
+	}
+}
+
+func TestPartReauthorizesAfterOpeningTheUpstreamStream(t *testing.T) {
+	release := make(chan struct{})
+	source := &archiveStub{originalStarted: make(chan struct{}), releaseOriginal: release}
+	fixture := newArchiveFixture(t, source)
+	source.planned = []immich.ArchivePart{{
+		Size: 12, AssetIDs: []uuid.UUID{fixture.assets[0]}, CompanionOf: map[uuid.UUID]uuid.UUID{},
+	}}
+	plan, err := fixture.service.Plan(context.Background(), fixture.actor, PlanRequest{Scope: "subset", MediaIDs: []string{fixture.media[0].String()}})
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	result := make(chan error, 1)
+	go func() {
+		stream, streamErr := fixture.service.StreamPart(ctx, fixture.actor, tokenFromURL(plan.Parts[0].DownloadURL), 1)
+		if stream.Body != nil {
+			_ = stream.Body.Close()
+		}
+		result <- streamErr
+	}()
+	select {
+	case <-source.originalStarted:
+	case <-ctx.Done():
+		t.Fatalf("upstream stream did not open before deadline: %v", ctx.Err())
+	}
+	_, err = fixture.db.NewRaw(`DELETE FROM current_audience_entitlements
+		WHERE recipient_access_generation_id = ? AND media_item_id = ?`, fixture.actor.AccessID, fixture.media[0]).Exec(ctx)
+	require.NoError(t, err)
+	close(release)
+	select {
+	case streamErr := <-result:
+		assert.ErrorIs(t, streamErr, ErrNotFound)
+	case <-ctx.Done():
+		t.Fatalf("final archive authorization did not finish before deadline: %v", ctx.Err())
+	}
+}
+
+func TestPartRevalidatesCurrentLivePhotoCompanion(t *testing.T) {
+	companion, replacement := uuid.New(), uuid.New()
+	source := &archiveStub{}
+	fixture := newArchiveFixture(t, source)
+	source.planned = []immich.ArchivePart{{
+		Size: 30, AssetIDs: []uuid.UUID{fixture.assets[0], companion},
+		CompanionOf: map[uuid.UUID]uuid.UUID{companion: fixture.assets[0]},
+	}}
+	source.companions = map[uuid.UUID]uuid.UUID{fixture.assets[0]: replacement}
+	plan, err := fixture.service.Plan(context.Background(), fixture.actor, PlanRequest{Scope: "subset", MediaIDs: []string{fixture.media[0].String()}})
+	require.NoError(t, err)
+
+	_, err = fixture.service.StreamPart(context.Background(), fixture.actor, tokenFromURL(plan.Parts[0].DownloadURL), 1)
+	assert.ErrorIs(t, err, ErrNotFound)
+	assert.Empty(t, source.originalCalls, "a changed companion is blocked before archive streaming")
+}
+
+func stringPointer(value string) *string { return &value }
+
+func tokenFromURL(value string) string {
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return ""
+	}
+	return parsed.Query().Get("token")
+}

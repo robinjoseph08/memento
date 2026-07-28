@@ -41,6 +41,17 @@ function requestPath(input: RequestInfo | URL) {
   return input.url;
 }
 
+function archiveRequest(init?: RequestInit) {
+  if (typeof init?.body !== "string") {
+    throw new Error("Expected a JSON archive request body.");
+  }
+  return JSON.parse(init.body) as {
+    scope: "event" | "subset";
+    event_id: string | null;
+    media_ids: string[];
+  };
+}
+
 function renderLibrary(librarySession = session) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
@@ -284,6 +295,154 @@ test("shows the original download warning only for public computers", async () =
       "This original will remain on this public computer after sign-out.",
     ),
   ).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "Close viewer" }));
+  fireEvent.click(screen.getByRole("button", { name: "Select photos" }));
+  expect(
+    screen.getByText(
+      "Subset archive files will remain on this public computer after sign-out.",
+    ),
+  ).toBeVisible();
+});
+
+test("plans complete Event and explicit subset archives with Session CSRF", async () => {
+  const requests: Array<{ path: string; init?: RequestInit }> = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = requestPath(input);
+      requests.push({ path, init });
+      if (path.startsWith("/api/me/photos?")) {
+        return json({
+          media: [
+            {
+              id: "media-1",
+              media_type: "image",
+              width: 1600,
+              height: 900,
+              local_date_time: "2026-07-27T12:00:00Z",
+              available: true,
+              thumbnail_url: "/api/me/media/media-1/thumbnail",
+              preview_url: "/api/me/media/media-1/preview",
+              video_url: "",
+              original_url: "/api/me/media/media-1/original",
+            },
+            {
+              id: "media-2",
+              media_type: "image",
+              width: 900,
+              height: 900,
+              local_date_time: "2026-07-27T13:00:00Z",
+              available: true,
+              thumbnail_url: "/api/me/media/media-2/thumbnail",
+              preview_url: "/api/me/media/media-2/preview",
+              video_url: "",
+              original_url: "/api/me/media/media-2/original",
+            },
+          ],
+          next_cursor: null,
+        });
+      }
+      if (path === "/api/me/new-for-you") return json({ events: [] });
+      if (path.startsWith("/api/me/events?")) {
+        return json({
+          events: [
+            {
+              id: "event-1",
+              publication_id: "publication-1",
+              title: "Family weekend",
+              description: "",
+              committed_at: "2026-07-27T12:00:00Z",
+              cover_media_id: "media-1",
+              cover_width: 1600,
+              cover_height: 900,
+              cover_available: true,
+              thumbnail_url: "/api/me/media/media-1/thumbnail",
+              media_count: 2,
+            },
+          ],
+          next_cursor: null,
+        });
+      }
+      if (path.startsWith("/api/me/events/event-1?")) {
+        return json({
+          id: "event-1",
+          publication_id: "publication-1",
+          title: "Family weekend",
+          description: "",
+          committed_at: "2026-07-27T12:00:00Z",
+          cover_media_id: "media-1",
+          cover_available: true,
+          media_count: 2,
+          media: [],
+          next_cursor: null,
+        });
+      }
+      if (path === "/api/me/archives") {
+        const body = archiveRequest(init);
+        return json({
+          name: body.scope === "event" ? "Family-weekend" : "Memento-selection",
+          item_count: 2,
+          total_size: 30,
+          expires_at: "2026-07-27T12:15:00Z",
+          parts: [
+            {
+              part_number: 1,
+              size: 30,
+              filename: "safe-name.zip",
+              download_url: "/api/me/archives/parts/1?token=private-token",
+            },
+          ],
+        });
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    }),
+  );
+
+  renderLibrary();
+  fireEvent.click(await screen.findByRole("button", { name: "Select photos" }));
+  fireEvent.click(screen.getByRole("checkbox", { name: /Select Photo 1/ }));
+  fireEvent.click(screen.getByRole("checkbox", { name: /Select Photo 2/ }));
+  fireEvent.click(screen.getByRole("button", { name: "Download 2 selected" }));
+  const subsetLink = await screen.findByRole("link", {
+    name: "Download archive",
+  });
+  expect(subsetLink).toHaveAttribute(
+    "href",
+    "/api/me/archives/parts/1?token=private-token",
+  );
+  expect(subsetLink).toHaveAttribute("download", "safe-name.zip");
+
+  const subsetRequest = requests.find(
+    ({ path, init }) =>
+      path === "/api/me/archives" && archiveRequest(init).scope === "subset",
+  );
+  expect(subsetRequest?.init).toMatchObject({
+    method: "POST",
+    headers: { "X-Memento-CSRF": session.csrf_token },
+  });
+  expect(archiveRequest(subsetRequest?.init)).toEqual({
+    scope: "subset",
+    event_id: null,
+    media_ids: ["media-1", "media-2"],
+  });
+
+  fireEvent.click(screen.getAllByRole("button", { name: "Events" })[0]);
+  fireEvent.click(
+    await screen.findByRole("button", { name: /Family weekend/ }),
+  );
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Download Event" }),
+  );
+  await waitFor(() =>
+    expect(
+      requests.some(
+        ({ path, init }) =>
+          path === "/api/me/archives" &&
+          archiveRequest(init).scope === "event" &&
+          archiveRequest(init).event_id === "event-1",
+      ),
+    ).toBe(true),
+  );
 });
 
 test("navigates Events and Favorites without exposing an unavailable aggregate", async () => {
