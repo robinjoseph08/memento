@@ -112,7 +112,7 @@
   outline-offset: -3px;
 }
 
-.media-viewer {
+.media-viewer[open] {
   position: fixed;
   z-index: 50;
   inset: 0;
@@ -355,7 +355,7 @@
     object-fit: contain;
   }
 
-  .media-viewer {
+  .media-viewer[open] {
     display: block;
     overflow: auto;
   }

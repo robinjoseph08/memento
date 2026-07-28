@@ -38,6 +38,19 @@ const event = {
   media_count: 1,
 };
 
+async function expectClosedViewerHidden(page: Page) {
+  await page.evaluate(() => {
+    const dialog = document.createElement("dialog");
+    dialog.className = "media-viewer";
+    dialog.dataset.closedViewerProbe = "";
+    document.body.append(dialog);
+  });
+  const closedViewer = page.locator("dialog[data-closed-viewer-probe]");
+  await expect(closedViewer).toHaveCount(1);
+  await expect(closedViewer).toBeHidden();
+  await closedViewer.evaluate((dialog) => dialog.remove());
+}
+
 async function recipientAPI(page: Page) {
   await page.route("**/api/**", async (route) => {
     const request = route.request();
@@ -139,6 +152,7 @@ test("@desktop Recipient lands on Photos and sees only filtered Event totals", a
   await expect(page.locator(".library-rail")).toBeVisible();
   await expect(page.locator(".mobile-library-nav")).toBeHidden();
   await expect(page.getByText("hidden", { exact: false })).toHaveCount(0);
+  await expectClosedViewerHidden(page);
 
   await page.getByRole("button", { name: "Load more photos" }).click();
   await expect(page.getByAltText("Video 2 from July 2026")).toBeVisible();
@@ -221,6 +235,7 @@ test("@mobile complete thumbnails and compact navigation do not expose inaccessi
   await expect(page.locator(".library-rail")).toBeHidden();
   await expect(page.getByLabel("Jump to date")).toBeVisible();
   await expect(page.getByText(/total/i)).toHaveCount(0);
+  await expectClosedViewerHidden(page);
 
   await page
     .getByRole("button", { name: "Open Photo 1 from July 2026" })
