@@ -13,18 +13,13 @@ import type {
   PublicationResponse,
   PublishedEventView,
   Withdrawal,
+  WithdrawalTarget,
 } from "./types/generated/events";
 import type { SessionResponse } from "./types/generated/setup";
 
 type Pane = "work" | "organize" | "inspect";
 type SaveState = "saved" | "saving" | "unsaved" | "failed" | "conflict";
 type SaveAttempt = { event: DraftEvent; revision: number };
-type WithdrawalTargetKind = "event" | "moment" | "media";
-type WithdrawalTarget = {
-  kind: WithdrawalTargetKind;
-  id: string;
-  label: string;
-};
 
 function mediaLabel(item: MediaItem) {
   if (!item.local_date_time) return `Undated ${item.media_type}`;
@@ -276,12 +271,13 @@ export function EventOrganizer({
         method: "POST",
         headers: { "X-Memento-CSRF": session.csrf_token },
         body: JSON.stringify({
-          target_kind: target.kind,
-          target_id: target.id,
+          target_kind: target.target_kind,
+          target_id: target.target_id,
           reason: withdrawReason,
         }),
       }),
     onSuccess: () => {
+      setWithdrawTarget(undefined);
       setWithdrawReason("");
       setPreviewOpen(false);
       void queryClient.invalidateQueries({ queryKey: ["events"] });
@@ -686,35 +682,16 @@ export function EventOrganizer({
         : [],
     [currentDraft],
   );
-  const withdrawalTargets = useMemo<WithdrawalTarget[]>(() => {
-    if (!currentDraft) return [];
-    const targets: WithdrawalTarget[] = [
-      {
-        kind: "event",
-        id: currentDraft.id,
-        label: `Event: ${currentDraft.title}`,
-      },
-    ];
-    currentDraft.moments.forEach((moment, index) => {
-      targets.push({
-        kind: "moment",
-        id: moment.id,
-        label: `Moment: ${moment.title || `Moment ${index + 1}`}`,
-      });
-    });
-    for (const item of new Map(
-      currentDraft.moments
-        .flatMap((moment) => moment.media_items)
-        .map((item) => [item.id, item]),
-    ).values()) {
-      targets.push({
-        kind: "media",
-        id: item.id,
-        label: `Media: ${mediaLabel(item)}`,
-      });
-    }
-    return targets;
-  }, [currentDraft]);
+  const withdrawalTargets = currentDraft?.withdrawal_targets ?? [];
+  const selectedWithdrawTarget =
+    withdrawTarget &&
+    withdrawalTargets.some(
+      (target) =>
+        target.target_kind === withdrawTarget.target_kind &&
+        target.target_id === withdrawTarget.target_id,
+    )
+      ? withdrawTarget
+      : withdrawalTargets[0];
 
   return (
     <section aria-labelledby="curator-work-title" className="curator-workspace">
@@ -850,11 +827,7 @@ export function EventOrganizer({
                     setPreviewOpen(false);
                     publish.reset();
                     withdraw.reset();
-                    setWithdrawTarget({
-                      kind: "event",
-                      id: event.id,
-                      label: `Event: ${event.title}`,
-                    });
+                    setWithdrawTarget(undefined);
                     setWithdrawReason("");
                     setSelectedID(event.id);
                     setActivePane("organize");
@@ -1146,26 +1119,31 @@ export function EventOrganizer({
                   <h4 id="withdrawal-actions-title">Withdraw access</h4>
                   <p>
                     Withdrawal takes effect immediately. Restoration is not a
-                    toggle and requires newly reviewed Audiences in a fresh
-                    Publication.
+                    toggle and requires newly reviewed Audiences plus a fresh
+                    Publication for every Event where the identity is currently
+                    placed. Reused Media may require several Publications.
                   </p>
                   <label>
-                    Published target
+                    Currently published target
                     <select
+                      disabled={withdrawalTargets.length === 0}
                       onChange={(event) => {
                         setWithdrawTarget(
                           withdrawalTargets.find(
-                            (target) => target.id === event.target.value,
+                            (target) => target.target_id === event.target.value,
                           ),
                         );
                         withdraw.reset();
                       }}
-                      value={withdrawTarget?.id ?? ""}
+                      value={selectedWithdrawTarget?.target_id ?? ""}
                     >
+                      {withdrawalTargets.length === 0 ? (
+                        <option value="">No targets available</option>
+                      ) : null}
                       {withdrawalTargets.map((target) => (
                         <option
-                          key={`${target.kind}:${target.id}`}
-                          value={target.id}
+                          key={`${target.target_kind}:${target.target_id}`}
+                          value={target.target_id}
                         >
                           {target.label}
                         </option>
@@ -1187,17 +1165,17 @@ export function EventOrganizer({
                     disabled={
                       saveState !== "saved" ||
                       withdraw.isPending ||
-                      !withdrawTarget ||
+                      !selectedWithdrawTarget ||
                       !withdrawReason.trim()
                     }
                     onClick={() => {
                       if (
-                        withdrawTarget &&
+                        selectedWithdrawTarget &&
                         window.confirm(
                           "Withdraw Recipient access immediately? Identity and history will be preserved.",
                         )
                       ) {
-                        withdraw.mutate(withdrawTarget);
+                        withdraw.mutate(selectedWithdrawTarget);
                       }
                     }}
                     type="button"

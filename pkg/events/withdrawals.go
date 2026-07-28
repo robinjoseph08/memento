@@ -50,6 +50,13 @@ func (kind WithdrawalTargetKind) placementPredicate() string {
 	}
 }
 
+// WithdrawalTarget describes one currently published stable identity available to withdraw.
+type WithdrawalTarget struct {
+	TargetKind WithdrawalTargetKind `json:"target_kind"`
+	TargetID   string               `json:"target_id"`
+	Label      string               `json:"label"`
+}
+
 // WithdrawRequest identifies one published stable identity and records why access is removed.
 type WithdrawRequest struct {
 	TargetKind WithdrawalTargetKind `json:"target_kind" validate:"required"`
@@ -181,7 +188,7 @@ func (s *Service) Withdraw(ctx context.Context, actor setup.CuratorSession, requ
 				return err
 			}
 		}
-		if len(momentIDs) == 0 || len(eventIDs) == 0 {
+		if len(eventIDs) == 0 {
 			return ErrNotFound
 		}
 
@@ -258,11 +265,13 @@ func (s *Service) Withdraw(ctx context.Context, actor setup.CuratorSession, requ
 			return err
 		}
 
-		if _, err := tx.NewRaw(`DELETE FROM current_audience_snapshots WHERE target_kind = 'moment' AND target_id IN (?)`, bun.List(momentIDs)).Exec(ctx); err != nil {
-			return err
-		}
-		if _, err := tx.NewRaw(`UPDATE draft_moments SET audience_complete = false, review_version = review_version + 1 WHERE id IN (?)`, bun.List(momentIDs)).Exec(ctx); err != nil {
-			return err
+		if len(momentIDs) > 0 {
+			if _, err := tx.NewRaw(`DELETE FROM current_audience_snapshots WHERE target_kind = 'moment' AND target_id IN (?)`, bun.List(momentIDs)).Exec(ctx); err != nil {
+				return err
+			}
+			if _, err := tx.NewRaw(`UPDATE draft_moments SET audience_complete = false, review_version = review_version + 1 WHERE id IN (?)`, bun.List(momentIDs)).Exec(ctx); err != nil {
+				return err
+			}
 		}
 		if _, err := tx.NewRaw(`UPDATE events SET final_review_complete = false, version = version + 1, updated_at = ? WHERE id IN (?)`, now, bun.List(eventIDs)).Exec(ctx); err != nil {
 			return err

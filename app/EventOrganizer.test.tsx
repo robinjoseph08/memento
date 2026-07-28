@@ -76,6 +76,38 @@ function draft(version = 1): DraftEvent {
       },
     ],
     unassigned_media: [items.loose],
+    withdrawal_targets: [
+      {
+        target_kind: "event",
+        target_id: eventID,
+        label: "Event: Family weekend",
+      },
+      {
+        target_kind: "moment",
+        target_id: momentOneID,
+        label: "Moment: Friday",
+      },
+      {
+        target_kind: "moment",
+        target_id: momentTwoID,
+        label: "Moment: Saturday",
+      },
+      {
+        target_kind: "media",
+        target_id: items.a.id,
+        label: "Media: first photo",
+      },
+      {
+        target_kind: "media",
+        target_id: items.b.id,
+        label: "Media: second photo",
+      },
+      {
+        target_kind: "media",
+        target_id: items.c.id,
+        label: "Media: third photo",
+      },
+    ],
     withdrawals: [],
     created_at: "2026-05-03T00:00:00Z",
     updated_at: "2026-05-03T00:00:00Z",
@@ -274,6 +306,11 @@ function stubOrganizerAPI(initial: DraftEvent) {
             ...moment,
             audience_complete: false,
           })),
+          withdrawal_targets: persisted.withdrawal_targets.filter(
+            (target) =>
+              target.target_kind !== request.target_kind ||
+              target.target_id !== request.target_id,
+          ),
           withdrawals: [
             {
               id: "77777777-7777-4777-8777-777777777777",
@@ -443,16 +480,19 @@ test("publishes ready work and previews Recipient output read only", async () =>
   ).not.toBeInTheDocument();
 });
 
-test("withdraws published access with a reason and requires fresh Audience review", async () => {
+test("withdraws a currently published target even when the staged draft differs", async () => {
   const published = organizedDraft();
   published.lifecycle = "published";
   published.final_review_complete = true;
   published.published_editable_version = published.version;
-  published.moments = published.moments.map((moment) => ({
-    ...moment,
-    attendance_complete: true,
-    audience_complete: true,
-  }));
+  published.moments = published.moments
+    .filter((moment) => moment.id !== momentOneID)
+    .map((moment) => ({
+      ...moment,
+      attendance_complete: true,
+      audience_complete: true,
+      media_items: [...moment.media_items, items.loose],
+    }));
   stubOrganizerAPI(published);
   const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
   renderOrganizer();
@@ -460,7 +500,14 @@ test("withdraws published access with a reason and requires fresh Audience revie
     await screen.findByRole("button", { name: /Family weekend/ }),
   );
 
-  fireEvent.change(await screen.findByLabelText("Attributable reason"), {
+  const target = await screen.findByLabelText("Currently published target");
+  expect(target).toHaveTextContent("Moment: Friday");
+  expect(target).not.toHaveTextContent("loose photo");
+  fireEvent.change(target, { target: { value: momentOneID } });
+  expect(
+    screen.getByText(/Reused Media may require several Publications/),
+  ).toBeInTheDocument();
+  fireEvent.change(screen.getByLabelText("Attributable reason"), {
     target: { value: "Privacy request" },
   });
   fireEvent.click(screen.getByRole("button", { name: "Withdraw access" }));
@@ -470,9 +517,9 @@ test("withdraws published access with a reason and requires fresh Audience revie
       "Access withdrawn for 2 Recipients across 3 Media items. No external notification was sent.",
     ),
   ).toBeInTheDocument();
-  expect(await screen.findByText(/Privacy request by Robin/)).toHaveTextContent(
-    "Access remains withdrawn.",
-  );
+  const history = await screen.findByText(/Privacy request by Robin/);
+  expect(history).toHaveTextContent("moment: Privacy request");
+  expect(history).toHaveTextContent("Access remains withdrawn.");
   expect(screen.getByRole("button", { name: "Publish Event" })).toBeDisabled();
   expect(confirm).toHaveBeenCalledWith(
     "Withdraw Recipient access immediately? Identity and history will be preserved.",

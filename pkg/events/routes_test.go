@@ -136,14 +136,14 @@ func TestPublicationErrorsDescribeTheActualReadinessCheck(t *testing.T) {
 	}
 }
 
-func TestWithdrawalErrorsRequireReasonAndFreshPublicationForRestoration(t *testing.T) {
+func TestWithdrawalErrorsDescribeCurrentTargetsAndEveryRequiredRestorationPublication(t *testing.T) {
 	for _, test := range []struct {
 		err     error
 		message string
 	}{
-		{ErrWithdrawalInvalid, "provide a reason"},
-		{ErrAlreadyWithdrawn, "fresh Publication"},
-		{ErrNotFound, "Published content not found"},
+		{ErrWithdrawalInvalid, "currently published"},
+		{ErrAlreadyWithdrawn, "every Event"},
+		{ErrNotFound, "Currently published content not found"},
 	} {
 		mapped := withdrawalError(test.err)
 		require.Error(t, mapped)

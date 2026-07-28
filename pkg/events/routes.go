@@ -298,11 +298,11 @@ func withdrawalError(err error) error {
 	case err == nil:
 		return nil
 	case errors.Is(err, ErrWithdrawalInvalid):
-		return errcodes.ValidationError("Choose a published Event, Moment, or Media item and provide a reason up to 1000 characters.")
+		return errcodes.ValidationError("Choose a currently published Event, Moment, or Media item and provide a reason up to 1000 characters.")
 	case errors.Is(err, ErrAlreadyWithdrawn):
-		return errcodes.Conflict("This content is already withdrawn. Restoration requires a fresh Publication with newly reviewed Audiences.")
+		return errcodes.Conflict("This content is already withdrawn. Restoration requires newly reviewed Audiences and a fresh Publication for every Event where it is currently placed.")
 	case errors.Is(err, ErrNotFound):
-		return errcodes.NotFound("Published content")
+		return errcodes.NotFound("Currently published content")
 	default:
 		return err
 	}

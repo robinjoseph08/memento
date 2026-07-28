@@ -54,7 +54,7 @@ func init() {
 					`ALTER TABLE publication_audit_events
 						DROP CONSTRAINT publication_audit_events_target_kind_check,
 						ADD CONSTRAINT publication_audit_events_target_kind_check
-						CHECK (target_kind IN ('moment', 'loose_item'))`,
+						CHECK (target_kind IN ('moment', 'loose_item')) NOT VALID`,
 					`DROP FUNCTION content_is_withdrawn(uuid, uuid, uuid)`,
 					`DROP INDEX content_withdrawals_content_revision_idx`,
 					`ALTER TABLE content_withdrawals DROP COLUMN content_revision, DROP COLUMN reason`,

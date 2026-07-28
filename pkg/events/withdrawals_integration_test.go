@@ -334,6 +334,77 @@ func TestCuratorCanInspectWithdrawalHistoryAfterDraftIdentityRemoval(t *testing.
 	assert.Equal(t, "Removed Media", history["media"].Reason)
 }
 
+func TestWithdrawalTargetsAndValidationUseTheCurrentPublicationInsteadOfTheStagedDraft(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		kind   WithdrawalTargetKind
+		target func(publicationFixture) uuid.UUID
+		stage  func(context.Context, publicationFixture) error
+	}{
+		{
+			name: "Moment removed from draft", kind: WithdrawalTargetMoment,
+			target: func(f publicationFixture) uuid.UUID { return f.moments[0] },
+			stage: func(ctx context.Context, f publicationFixture) error {
+				_, err := f.db.NewRaw(`
+					UPDATE draft_media_placements SET draft_moment_id = NULL WHERE draft_moment_id = ?;
+					DELETE FROM draft_moments WHERE id = ?
+				`, f.moments[0], f.moments[0]).Exec(ctx)
+				return err
+			},
+		},
+		{
+			name: "Media removed from draft", kind: WithdrawalTargetMedia,
+			target: func(f publicationFixture) uuid.UUID { return f.media[0] },
+			stage: func(ctx context.Context, f publicationFixture) error {
+				_, err := f.db.NewRaw(`DELETE FROM draft_media_placements WHERE event_id = ? AND media_item_id = ?`, f.event, f.media[0]).Exec(ctx)
+				return err
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newPublicationFixture(t)
+			ctx := context.Background()
+			_, err := fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, fixture.request())
+			require.NoError(t, err)
+			require.NoError(t, test.stage(ctx, fixture))
+
+			stagedMediaID := uuid.New()
+			_, err = fixture.db.NewRaw(`
+				INSERT INTO media_items (
+					id, immich_asset_id, media_type, width, height, local_date_time,
+					first_seen_at, last_seen_at
+				) VALUES (?, ?, 'image', 1200, 800, '2026-07-30T10:00:00Z', now(), now());
+				INSERT INTO draft_media_placements (
+					event_id, media_item_id, draft_moment_id, position, created_at
+				) VALUES (?, ?, ?, 99, now())
+			`, stagedMediaID, uuid.New(), fixture.event, stagedMediaID, fixture.moments[1]).Exec(ctx)
+			require.NoError(t, err)
+
+			event, err := fixture.service.GetEvent(ctx, fixture.event)
+			require.NoError(t, err)
+			targets := make(map[string]WithdrawalTarget, len(event.WithdrawalTargets))
+			for _, target := range event.WithdrawalTargets {
+				targets[string(target.TargetKind)+":"+target.TargetID] = target
+			}
+			publishedKey := string(test.kind) + ":" + test.target(fixture).String()
+			assert.Contains(t, targets, publishedKey, "a current Publication identity remains withdrawable after draft removal")
+			assert.NotContains(t, targets, "media:"+stagedMediaID.String(), "staged unpublished Media must not be presented as published")
+			_, err = fixture.service.Withdraw(ctx, fixture.actor, WithdrawRequest{
+				TargetKind: WithdrawalTargetMedia, TargetID: stagedMediaID.String(), Reason: "Not published yet",
+			})
+			assert.ErrorIs(t, err, ErrNotFound)
+
+			_, err = fixture.service.Withdraw(ctx, fixture.actor, WithdrawRequest{
+				TargetKind: test.kind, TargetID: test.target(fixture).String(), Reason: "Withdraw published identity",
+			})
+			require.NoError(t, err)
+			var finalReview bool
+			require.NoError(t, fixture.db.NewRaw(`SELECT final_review_complete FROM events WHERE id = ?`, fixture.event).Scan(ctx, &finalReview))
+			assert.False(t, finalReview)
+		})
+	}
+}
+
 func TestWithdrawalRejectsInvalidUnpublishedAndDuplicateTargets(t *testing.T) {
 	fixture := newPublicationFixture(t)
 	ctx := context.Background()

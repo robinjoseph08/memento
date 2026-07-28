@@ -67,6 +67,38 @@ function draft(version = 1): DraftEvent {
       },
     ],
     unassigned_media: [items.loose],
+    withdrawal_targets: [
+      {
+        target_kind: "event",
+        target_id: eventID,
+        label: "Event: Family weekend",
+      },
+      {
+        target_kind: "moment",
+        target_id: momentOneID,
+        label: "Moment: Friday",
+      },
+      {
+        target_kind: "moment",
+        target_id: momentTwoID,
+        label: "Moment: Saturday",
+      },
+      {
+        target_kind: "media",
+        target_id: items.first.id,
+        label: "Media: first photo",
+      },
+      {
+        target_kind: "media",
+        target_id: items.second.id,
+        label: "Media: second photo",
+      },
+      {
+        target_kind: "media",
+        target_id: items.third.id,
+        label: "Media: third photo",
+      },
+    ],
     withdrawals: [],
     created_at: "2026-05-03T00:00:00Z",
     updated_at: "2026-05-03T00:00:00Z",
@@ -170,6 +202,11 @@ async function mockCuratorAPI(
           ...moment,
           audience_complete: false,
         })),
+        withdrawal_targets: persisted.withdrawal_targets.filter(
+          (target) =>
+            target.target_kind !== body.target_kind ||
+            target.target_id !== body.target_id,
+        ),
         withdrawals: [
           ...persisted.withdrawals,
           {
@@ -413,7 +450,7 @@ for (const target of [
       await page.getByRole("button", { name: "Inspect", exact: true }).click();
     }
 
-    await page.getByLabel("Published target").selectOption(target.id);
+    await page.getByLabel("Currently published target").selectOption(target.id);
     await page.getByLabel("Attributable reason").fill("Privacy request");
     await page.getByRole("button", { name: "Withdraw access" }).click();
     await expect(

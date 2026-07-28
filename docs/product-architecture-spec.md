@@ -299,7 +299,7 @@ Person only
 - Source removal remains staged while Immich can still serve the Media. If Immich cannot serve it, delivery stops immediately, the published listing remains marked unavailable until correction, and the Curator receives a delivery problem.
 - A confirmed relink changes the Immich backing while preserving Memento Media identity, URL, placement, Audiences, Comments, Favorites, and history.
 - Event and Moment reorganization is a staged correction. During an Event split, the Curator selects which result keeps the original Event identity.
-- Withdrawal immediately blocks access to an Event, Moment, or Media item and preserves identity and history. Restoration requires a new Publication with newly reviewed Audiences.
+- Withdrawal immediately blocks access to a currently published Event, Moment, or Media identity and preserves identity and history. Targets come from current Publications, never unpublished Staged updates. Restoration requires newly reviewed Audiences and a fresh Publication for every Event where the identity is currently placed, so Media reused across Events remains withdrawn until each placement has a later Publication.
 
 ### Recipient library
 

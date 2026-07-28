@@ -10,7 +10,52 @@ import (
 	"github.com/robinjoseph08/memento/internal/testdb"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/uptrace/bun/migrate"
 )
+
+func TestWithdrawalMigrationRollbackPreservesEventAndMediaAuditHistory(t *testing.T) {
+	db := testdb.Open(t)
+	ctx := context.Background()
+	priorMigrations := migrate.NewMigrations()
+	foundWithdrawalMigration := false
+	for _, migration := range collection.Sorted() {
+		if migration.Name == "202607280001" {
+			foundWithdrawalMigration = true
+			break
+		}
+		priorMigrations.Add(migration)
+	}
+	require.True(t, foundWithdrawalMigration)
+	require.NoError(t, applyCollection(ctx, db, priorMigrations))
+	require.NoError(t, Apply(ctx, db))
+	personID := uuid.New()
+	_, err := db.NewRaw(`INSERT INTO people (id, display_name, sort_name) VALUES (?, 'Curator', 'curator')`, personID).Exec(ctx)
+	require.NoError(t, err)
+	for _, kind := range []string{"event", "media"} {
+		_, err = db.NewRaw(`INSERT INTO publication_audit_events (
+			target_kind, target_id, actor_person_id, action
+		) VALUES (?, gen_random_uuid(), ?, 'content_withdrawn')`, kind, personID).Exec(ctx)
+		require.NoError(t, err)
+	}
+
+	migrator := migrate.NewMigrator(db, collection, migrate.WithMarkAppliedOnSuccess(true))
+	_, err = migrator.Rollback(ctx)
+	require.NoError(t, err)
+	var preserved int
+	require.NoError(t, db.NewRaw(`SELECT count(*) FROM publication_audit_events WHERE action = 'content_withdrawn'`).Scan(ctx, &preserved))
+	assert.Equal(t, 2, preserved)
+	var validated bool
+	require.NoError(t, db.NewRaw(`
+		SELECT convalidated FROM pg_constraint
+		WHERE conrelid = 'publication_audit_events'::regclass
+		  AND conname = 'publication_audit_events_target_kind_check'
+	`).Scan(ctx, &validated))
+	assert.False(t, validated, "the legacy constraint must tolerate preserved newer audit rows")
+	_, err = db.NewRaw(`INSERT INTO publication_audit_events (
+		target_kind, target_id, actor_person_id, action
+	) VALUES ('event', gen_random_uuid(), ?, 'new_legacy_write')`, personID).Exec(ctx)
+	assert.Error(t, err, "the downgraded schema must reject new target kinds unsupported by the older application")
+}
 
 func TestWithdrawalMigrationRequiresReasonsAndSupportsEveryPublishedTargetKindInAudit(t *testing.T) {
 	db := testdb.Open(t)

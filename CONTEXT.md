@@ -135,7 +135,7 @@ The single coalescing net change to a published Event that remains private until
 _Avoid_: Live sync, pending upload
 
 **Withdrawal**:
-The Curator's immediate revocation of Recipient access to an Event, Moment, or Media item without erasing its identity, interactions, or publication history. Restoration requires a new Publication with freshly reviewed Audience snapshots.
+The Curator's immediate revocation of Recipient access to a currently published Event, Moment, or Media identity without erasing its identity, interactions, or publication history. Restoration requires freshly reviewed Audience snapshots and a later Publication for every Event where the identity is currently placed; reused Media can therefore require several Publications.
 _Avoid_: Delete, source missing, unpublish
 
 ### Notifications and interactions
