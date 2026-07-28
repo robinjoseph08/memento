@@ -4,18 +4,27 @@ package comments
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/labstack/echo/v4"
 	"github.com/robinjoseph08/memento/internal/placementlock"
 	"github.com/robinjoseph08/memento/internal/testdb"
 	"github.com/robinjoseph08/memento/pkg/activity"
+	"github.com/robinjoseph08/memento/pkg/binder"
+	"github.com/robinjoseph08/memento/pkg/config"
+	"github.com/robinjoseph08/memento/pkg/errcodes"
 	"github.com/robinjoseph08/memento/pkg/events"
 	"github.com/robinjoseph08/memento/pkg/favorites"
 	"github.com/robinjoseph08/memento/pkg/migrations"
@@ -32,6 +41,7 @@ type interactionFixture struct {
 	comments    *Service
 	favorites   *favorites.Service
 	actors      map[string]setup.SessionActor
+	credentials map[string]string
 	people      map[string]uuid.UUID
 	access      map[string]uuid.UUID
 	media       uuid.UUID
@@ -50,13 +60,16 @@ func newInteractionFixture(t *testing.T) interactionFixture {
 	commentService.SetHandoff(interactionActivity.RecordComment)
 	fixture := interactionFixture{
 		db: db, comments: commentService, favorites: favorites.New(db, interactionActivity), actors: map[string]setup.SessionActor{},
-		people: map[string]uuid.UUID{}, access: map[string]uuid.UUID{}, media: uuid.New(),
+		credentials: map[string]string{}, people: map[string]uuid.UUID{}, access: map[string]uuid.UUID{}, media: uuid.New(),
 		event: uuid.New(), publication: uuid.New(), moment: uuid.New(),
 	}
 	now := time.Now().UTC().Truncate(time.Second)
-	for index, name := range []string{"curator", "alex", "blair", "casey"} {
+	for _, name := range []string{"curator", "alex", "blair", "casey"} {
 		personID, accessID, sessionID := uuid.New(), uuid.New(), uuid.New()
+		rawCredential := sha256.Sum256([]byte("interaction-session-" + name))
+		credentialHash := sha256.Sum256(rawCredential[:])
 		fixture.people[name], fixture.access[name] = personID, accessID
+		fixture.credentials[name] = hex.EncodeToString(rawCredential[:])
 		fixture.actors[name] = setup.SessionActor{PersonID: personID, AccessID: accessID, SessionID: sessionID, Curator: name == "curator"}
 		_, err := db.NewRaw(`
 			INSERT INTO people (id, display_name, sort_name) VALUES (?, ?, ?);
@@ -66,10 +79,10 @@ func newInteractionFixture(t *testing.T) interactionFixture {
 			VALUES (?, ?, 1, 'completed', true, ?);
 			INSERT INTO sessions
 				(id, credential_hash, person_id, recipient_access_generation_id, security_epoch, session_type, idle_expires_at)
-			SELECT ?, decode(repeat(?, 32), 'hex'), ?, ?, security_epoch, 'trusted', ?::timestamptz + interval '1 hour'
+			SELECT ?, ?, ?, ?, security_epoch, 'trusted', ?::timestamptz + interval '1 hour'
 			FROM system_settings WHERE id = 1
 		`, personID, titleName(name), name, personID, accessID, personID, now,
-			sessionID, []string{"11", "22", "33", "44"}[index], personID, accessID, now).Exec(ctx)
+			sessionID, credentialHash[:], personID, accessID, now).Exec(ctx)
 		require.NoError(t, err)
 	}
 	snapshot := uuid.New()
@@ -133,6 +146,46 @@ func (fixture interactionFixture) removeGrant(t *testing.T, name string) {
 		WHERE event_id = ? AND recipient_access_generation_id = ? AND media_item_id = ?`,
 		fixture.event, fixture.access[name], fixture.media).Exec(context.Background())
 	require.NoError(t, err)
+}
+
+func interactionHTTP(t *testing.T, fixture interactionFixture) (*echo.Echo, map[string]string) {
+	t.Helper()
+	authorizer := setup.New(fixture.db, nil, config.SecurityConfig{Secret: "interaction-route-integration-secret"})
+	csrf := make(map[string]string, len(fixture.credentials))
+	for name, credential := range fixture.credentials {
+		session, err := authorizer.Session(context.Background(), credential)
+		require.NoError(t, err)
+		csrf[name] = session.CSRFToken
+	}
+	e := echo.New()
+	requestBinder, err := binder.New()
+	require.NoError(t, err)
+	e.Binder = requestBinder
+	e.HTTPErrorHandler = errcodes.NewHandler().Handle
+	RegisterRoutes(e, NewHandler(fixture.comments, authorizer))
+	favorites.RegisterRoutes(e, favorites.NewHandler(fixture.favorites, authorizer))
+	return e, csrf
+}
+
+func serveInteraction(t *testing.T, e *echo.Echo, method, path, credential, csrf, body string, headers map[string]string) *httptest.ResponseRecorder {
+	t.Helper()
+	request := httptest.NewRequestWithContext(context.Background(), method, path, strings.NewReader(body))
+	if body != "" {
+		request.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	}
+	if credential != "" {
+		request.AddCookie(&http.Cookie{Name: setup.CookieName, Value: credential})
+	}
+	if csrf != "" {
+		request.Header.Set(setup.CSRFHeader, csrf)
+	}
+	for name, value := range headers {
+		request.Header.Set(name, value)
+	}
+	response := httptest.NewRecorder()
+	e.ServeHTTP(response, request)
+	assert.Equal(t, "private, no-store", response.Header().Get(echo.HeaderCacheControl), method+" "+path)
+	return response
 }
 
 func waitForBlockedQueries(t *testing.T, db *bun.DB, pattern string, minimum int) {
@@ -429,14 +482,40 @@ func TestCommentHandoffReauthorizesAndWithdrawalAndRevocationDenyImmediately(t *
 
 	_, err = fixture.db.NewRaw(`UPDATE content_withdrawals SET restored_at = now(), restored_by_publication_id = ?, content_revision = 2 WHERE target_id = ?`, fixture.publication, fixture.media).Exec(ctx)
 	require.NoError(t, err)
-	_, err = fixture.db.NewRaw(`UPDATE recipient_access_generations SET state = 'revoked', is_current = false, ended_at = now() WHERE id = ?;
-		UPDATE sessions SET revoked_at = now() WHERE id = ?`, fixture.access["alex"], fixture.actors["alex"].SessionID).Exec(ctx)
+	revokedComment, err := fixture.comments.Create(ctx, fixture.actors["blair"], fixture.media, uuid.New(), BodyRequest{Body: "Suppress after Revocation"})
 	require.NoError(t, err)
+	require.NoError(t, fixture.db.NewRaw(`SELECT outbox.payload::text FROM outbox_events AS outbox
+		JOIN comment_activity_items AS activity ON outbox.aggregate_id = activity.id::text
+		WHERE outbox.kind = ? AND activity.comment_id = ? AND activity.recipient_access_generation_id = ?`,
+		CommentJobKind, revokedComment.ID, fixture.access["alex"]).Scan(ctx, &payloadText))
+
+	handoffCalls := 0
+	fixture.comments.SetHandoff(func(ctx context.Context, tx bun.Tx, accessID, commentID uuid.UUID) error {
+		handoffCalls++
+		return activityService.RecordComment(ctx, tx, accessID, commentID)
+	})
+	_, err = recipients.New(fixture.db, nil, "", nil).RevokeAccess(ctx,
+		setup.CuratorSession{PersonID: fixture.people["curator"], SessionID: fixture.actors["curator"].SessionID},
+		fixture.people["alex"], fixture.access["alex"])
+	require.NoError(t, err)
+	require.NoError(t, fixture.comments.HandleCommentJob(ctx, worker.Job{Payload: json.RawMessage(payloadText)}))
+	assert.Zero(t, handoffCalls, "Revocation suppresses queued Comment activity before handoff")
+	var dispatched, revokedSuppressed bool
+	require.NoError(t, fixture.db.NewRaw(`SELECT dispatched_at IS NOT NULL, suppressed_at IS NOT NULL
+		FROM comment_activity_items WHERE comment_id = ? AND recipient_access_generation_id = ?`,
+		revokedComment.ID, fixture.access["alex"]).Scan(ctx, &dispatched, &revokedSuppressed))
+	assert.False(t, dispatched)
+	assert.True(t, revokedSuppressed)
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM interaction_activity_items
+		WHERE kind = 'comment' AND comment_id = ? AND recipient_access_generation_id = ?`,
+		revokedComment.ID, fixture.access["alex"]).Scan(ctx, &integrated))
+	assert.Zero(t, integrated, "Revocation creates no handed-off activity item")
+
 	_, err = fixture.comments.List(ctx, fixture.actors["alex"], fixture.media)
 	require.ErrorIs(t, err, ErrNotFound)
 	var persisted int
 	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM comments WHERE media_item_id = ?`, fixture.media).Scan(ctx, &persisted))
-	assert.Equal(t, 3, persisted)
+	assert.Equal(t, 4, persisted)
 }
 
 func TestCommentListsPaginateDeterministicallyAndCreationIsIdempotent(t *testing.T) {
@@ -744,6 +823,222 @@ func TestCommentActivityRecordingSerializesWithEligibilityChanges(t *testing.T) 
 			assert.Equal(t, 1, activityCount, "activity commits before the conflicting eligibility change")
 		})
 	}
+}
+
+func TestInteractionHTTPRoutesUsePersistedSessionsAndPrivateContracts(t *testing.T) {
+	fixture := newInteractionFixture(t)
+	e, csrf := interactionHTTP(t, fixture)
+	mediaPath := fixture.media.String()
+	alexCredential := fixture.credentials["alex"]
+	blairCredential := fixture.credentials["blair"]
+	curatorCredential := fixture.credentials["curator"]
+	caseyCredential := fixture.credentials["casey"]
+
+	response := serveInteraction(t, e, http.MethodGet, "/api/comments/media/"+mediaPath, "", "", "", nil)
+	assert.Equal(t, http.StatusUnauthorized, response.Code)
+	response = serveInteraction(t, e, http.MethodGet, "/api/comments/media/not-a-uuid", alexCredential, "", "", nil)
+	assert.Equal(t, http.StatusNotFound, response.Code)
+
+	alexKey := uuid.NewString()
+	createHeaders := map[string]string{"Idempotency-Key": alexKey}
+	response = serveInteraction(t, e, http.MethodPost, "/api/comments/media/"+mediaPath, alexCredential, "", `{"body":" First HTTP Comment "}`, createHeaders)
+	assert.Equal(t, http.StatusForbidden, response.Code)
+	response = serveInteraction(t, e, http.MethodPost, "/api/comments/media/"+mediaPath, alexCredential, csrf["alex"], `{"body":"First HTTP Comment"}`, nil)
+	assert.Equal(t, http.StatusUnprocessableEntity, response.Code)
+	response = serveInteraction(t, e, http.MethodPost, "/api/comments/media/"+mediaPath, alexCredential, csrf["alex"], `{}`, map[string]string{"Idempotency-Key": uuid.NewString()})
+	assert.Equal(t, http.StatusUnprocessableEntity, response.Code)
+
+	response = serveInteraction(t, e, http.MethodPost, "/api/comments/media/"+mediaPath, alexCredential, csrf["alex"], `{"body":" First HTTP Comment "}`, createHeaders)
+	require.Equal(t, http.StatusCreated, response.Code, response.Body.String())
+	var alexComment Comment
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &alexComment))
+	assert.Equal(t, mediaPath, alexComment.MediaItemID)
+	assert.Equal(t, "First HTTP Comment", alexComment.Body)
+	assert.Equal(t, int64(1), alexComment.Version)
+	assert.True(t, alexComment.AuthoredByMe)
+	assert.True(t, alexComment.CanEdit)
+	assert.True(t, alexComment.CanDelete)
+
+	response = serveInteraction(t, e, http.MethodPost, "/api/comments/media/"+mediaPath, alexCredential, csrf["alex"], `{"body":"First HTTP Comment"}`, createHeaders)
+	require.Equal(t, http.StatusCreated, response.Code, response.Body.String())
+	var replayed Comment
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &replayed))
+	assert.Equal(t, alexComment.ID, replayed.ID)
+	response = serveInteraction(t, e, http.MethodPost, "/api/comments/media/"+mediaPath, alexCredential, csrf["alex"], `{"body":"Different body"}`, createHeaders)
+	assert.Equal(t, http.StatusConflict, response.Code)
+
+	blairKey := uuid.NewString()
+	response = serveInteraction(t, e, http.MethodPost, "/api/comments/media/"+mediaPath, blairCredential, csrf["blair"], `{"body":"Second HTTP Comment"}`, map[string]string{"Idempotency-Key": blairKey})
+	require.Equal(t, http.StatusCreated, response.Code, response.Body.String())
+	var blairComment Comment
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &blairComment))
+
+	response = serveInteraction(t, e, http.MethodGet, "/api/comments/media/"+mediaPath+"?limit=1", alexCredential, "", "", nil)
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	var firstPage ListResponse
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &firstPage))
+	require.Len(t, firstPage.Comments, 1)
+	require.NotNil(t, firstPage.NextCursor)
+	response = serveInteraction(t, e, http.MethodGet, "/api/comments/media/"+mediaPath+"?limit=1&cursor="+*firstPage.NextCursor, alexCredential, "", "", nil)
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	var secondPage ListResponse
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &secondPage))
+	require.Len(t, secondPage.Comments, 1)
+	assert.Nil(t, secondPage.NextCursor)
+	assert.NotEqual(t, firstPage.Comments[0].ID, secondPage.Comments[0].ID)
+	response = serveInteraction(t, e, http.MethodGet, "/api/comments/media/"+mediaPath+"?limit=1&cursor=invalid", alexCredential, "", "", nil)
+	assert.Equal(t, http.StatusUnprocessableEntity, response.Code)
+
+	response = serveInteraction(t, e, http.MethodGet, "/api/comments/media/"+mediaPath, caseyCredential, "", "", nil)
+	assert.Equal(t, http.StatusNotFound, response.Code)
+	assert.NotContains(t, response.Body.String(), alexComment.ID)
+	assert.NotContains(t, response.Body.String(), alexComment.Body)
+	guessedCommentID := uuid.NewString()
+	response = serveInteraction(t, e, http.MethodPatch, "/api/comments/"+guessedCommentID, alexCredential, csrf["alex"], `{"body":"Guess"}`, map[string]string{"If-Match": "1"})
+	assert.Equal(t, http.StatusNotFound, response.Code)
+	assert.NotContains(t, response.Body.String(), guessedCommentID)
+
+	response = serveInteraction(t, e, http.MethodPatch, "/api/comments/"+alexComment.ID, alexCredential, csrf["alex"], `{"body":"Edited over HTTP"}`, nil)
+	assert.Equal(t, http.StatusUnprocessableEntity, response.Code)
+	response = serveInteraction(t, e, http.MethodPatch, "/api/comments/"+alexComment.ID, alexCredential, csrf["alex"], `{"body":"Edited over HTTP"}`, map[string]string{"If-Match": "1"})
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	var edited Comment
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &edited))
+	assert.Equal(t, "Edited over HTTP", edited.Body)
+	assert.Equal(t, int64(2), edited.Version)
+	response = serveInteraction(t, e, http.MethodPatch, "/api/comments/"+alexComment.ID, alexCredential, csrf["alex"], `{"body":"Stale edit"}`, map[string]string{"If-Match": "1"})
+	assert.Equal(t, http.StatusConflict, response.Code)
+
+	response = serveInteraction(t, e, http.MethodPut, "/api/comments/media/"+mediaPath+"/mute", alexCredential, csrf["alex"], `{"muted":true}`, nil)
+	assert.Equal(t, http.StatusNoContent, response.Code)
+	response = serveInteraction(t, e, http.MethodGet, "/api/comments/curator?limit=1", alexCredential, "", "", nil)
+	assert.Equal(t, http.StatusForbidden, response.Code)
+	response = serveInteraction(t, e, http.MethodGet, "/api/comments/curator?limit=1", curatorCredential, "", "", nil)
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	var curatorPage CuratorListResponse
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &curatorPage))
+	require.Len(t, curatorPage.Comments, 1)
+	require.NotNil(t, curatorPage.NextCursor)
+
+	response = serveInteraction(t, e, http.MethodPost, "/api/comments/"+blairComment.ID+"/moderate", curatorCredential, csrf["curator"], `{"reason":"Privacy review"}`, map[string]string{"If-Match": "1"})
+	assert.Equal(t, http.StatusNoContent, response.Code)
+	response = serveInteraction(t, e, http.MethodGet, "/api/comments/"+blairComment.ID+"/moderation-history?limit=1", curatorCredential, "", "", nil)
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	var history HistoryResponse
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &history))
+	require.Len(t, history.History, 1)
+	assert.Equal(t, "Second HTTP Comment", history.History[0].PriorBody)
+	assert.Equal(t, "Privacy review", history.History[0].Reason)
+	response = serveInteraction(t, e, http.MethodGet, "/api/comments/"+blairComment.ID+"/moderation-history", alexCredential, "", "", nil)
+	assert.Equal(t, http.StatusForbidden, response.Code)
+
+	response = serveInteraction(t, e, http.MethodGet, "/api/favorites/"+mediaPath, alexCredential, "", "", nil)
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	var favoriteState favorites.State
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &favoriteState))
+	assert.False(t, favoriteState.Favorite)
+	response = serveInteraction(t, e, http.MethodPut, "/api/favorites/"+mediaPath, alexCredential, "", "", nil)
+	assert.Equal(t, http.StatusForbidden, response.Code)
+	response = serveInteraction(t, e, http.MethodPut, "/api/favorites/"+mediaPath, alexCredential, csrf["alex"], "", nil)
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &favoriteState))
+	assert.Equal(t, mediaPath, favoriteState.MediaItemID)
+	assert.True(t, favoriteState.Favorite)
+	response = serveInteraction(t, e, http.MethodGet, "/api/favorites/"+mediaPath, caseyCredential, "", "", nil)
+	assert.Equal(t, http.StatusNotFound, response.Code)
+	assert.NotContains(t, response.Body.String(), mediaPath)
+
+	otherMedia := uuid.New()
+	_, err := fixture.db.NewRaw(`INSERT INTO media_items
+		(id, immich_asset_id, media_type, availability, first_seen_at, last_seen_at)
+		VALUES (?, gen_random_uuid(), 'image', 'current', now(), now());
+		INSERT INTO favorites (recipient_person_id, media_item_id, is_current, created_at, updated_at)
+		VALUES (?, ?, true, now(), now())`, otherMedia, fixture.people["alex"], otherMedia).Exec(context.Background())
+	require.NoError(t, err)
+	favoriteListPath := "/api/favorites/curator/recipients/" + fixture.people["alex"].String()
+	response = serveInteraction(t, e, http.MethodGet, favoriteListPath+"?limit=1", alexCredential, "", "", nil)
+	assert.Equal(t, http.StatusForbidden, response.Code)
+	response = serveInteraction(t, e, http.MethodGet, favoriteListPath+"?limit=1", curatorCredential, "", "", nil)
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	var favoritePage favorites.CuratorListResponse
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &favoritePage))
+	assert.Equal(t, fixture.people["alex"].String(), favoritePage.RecipientPersonID)
+	require.Len(t, favoritePage.MediaItemIDs, 1)
+	require.NotNil(t, favoritePage.NextCursor)
+	response = serveInteraction(t, e, http.MethodGet, favoriteListPath+"?limit=1&cursor="+*favoritePage.NextCursor, curatorCredential, "", "", nil)
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &favoritePage))
+	require.Len(t, favoritePage.MediaItemIDs, 1)
+	assert.Nil(t, favoritePage.NextCursor)
+
+	response = serveInteraction(t, e, http.MethodDelete, "/api/favorites/"+mediaPath, alexCredential, csrf["alex"], "", nil)
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &favoriteState))
+	assert.False(t, favoriteState.Favorite)
+	response = serveInteraction(t, e, http.MethodDelete, "/api/comments/"+alexComment.ID, alexCredential, csrf["alex"], "", map[string]string{"If-Match": "2"})
+	assert.Equal(t, http.StatusNoContent, response.Code)
+	response = serveInteraction(t, e, http.MethodGet, "/api/comments/media/"+mediaPath+"?limit=100", alexCredential, "", "", nil)
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	var finalThread ListResponse
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &finalThread))
+	deletedFound := false
+	for _, comment := range finalThread.Comments {
+		if comment.ID == alexComment.ID {
+			deletedFound = true
+			assert.Equal(t, "deleted", comment.State)
+			assert.Empty(t, comment.Body)
+			assert.Equal(t, int64(3), comment.Version)
+		}
+	}
+	assert.True(t, deletedFound, "the deleted Comment remains in the route response")
+}
+
+func TestConcurrentIdenticalCommentCreatesReturnOneCommentAndOneEffectSet(t *testing.T) {
+	fixture := newInteractionFixture(t)
+	ctx := context.Background()
+	key := uuid.New()
+	blocker, err := fixture.db.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	defer func() { _ = blocker.Rollback() }()
+	_, err = blocker.NewRaw(`SELECT id FROM system_settings WHERE id = 1 FOR UPDATE`).Exec(ctx)
+	require.NoError(t, err)
+
+	type result struct {
+		comment Comment
+		err     error
+	}
+	start := make(chan struct{})
+	results := make(chan result, 2)
+	for index := 0; index < 2; index++ {
+		go func() {
+			<-start
+			comment, createErr := fixture.comments.Create(ctx, fixture.actors["alex"], fixture.media, key, BodyRequest{Body: "One simultaneous Comment"})
+			results <- result{comment: comment, err: createErr}
+		}()
+	}
+	close(start)
+	waitForBlockedQueries(t, fixture.db, `%SELECT id FROM system_settings WHERE id = 1 FOR SHARE%`, 2)
+	require.NoError(t, blocker.Commit())
+	first, second := <-results, <-results
+	require.NoError(t, first.err)
+	require.NoError(t, second.err)
+	assert.Equal(t, first.comment.ID, second.comment.ID)
+	assert.Equal(t, "One simultaneous Comment", first.comment.Body)
+
+	var commentsCount, subscriptionsCount, activitiesCount, outboxCount int
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM comments
+		WHERE author_access_generation_id = ? AND idempotency_key = ?`, fixture.access["alex"], key).Scan(ctx, &commentsCount))
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM comment_subscriptions
+		WHERE media_item_id = ? AND recipient_access_generation_id = ?`, fixture.media, fixture.access["alex"]).Scan(ctx, &subscriptionsCount))
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM comment_activity_items
+		WHERE comment_id = ?`, first.comment.ID).Scan(ctx, &activitiesCount))
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM outbox_events AS outbox
+		JOIN comment_activity_items AS activity ON outbox.aggregate_id = activity.id::text
+		WHERE outbox.kind = ? AND activity.comment_id = ?`, CommentJobKind, first.comment.ID).Scan(ctx, &outboxCount))
+	assert.Equal(t, 1, commentsCount)
+	assert.Equal(t, 1, subscriptionsCount)
+	assert.Equal(t, 1, activitiesCount)
+	assert.Equal(t, 1, outboxCount)
 }
 
 func TestConcurrentIdenticalFavoriteRequestsRecordOneTransition(t *testing.T) {
