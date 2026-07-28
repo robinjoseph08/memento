@@ -23,6 +23,7 @@ type SaveState = "saved" | "saving" | "unsaved" | "failed" | "conflict";
 type SaveAttempt = { event: DraftEvent; revision: number };
 type RestoreAttempt = SaveAttempt & { mediaID: string };
 type PublishAttempt = SaveAttempt;
+type WithdrawalAttempt = SaveAttempt & { target: WithdrawalTarget };
 
 function mediaLabel(item: Pick<MediaItem, "media_type" | "local_date_time">) {
   if (!item.local_date_time) return `Undated ${item.media_type}`;
@@ -32,8 +33,8 @@ function mediaLabel(item: Pick<MediaItem, "media_type" | "local_date_time">) {
     : `${item.media_type}, ${new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(parsed)}`;
 }
 
-function cloneEvent(event: DraftEvent): DraftEvent {
-  return structuredClone(event);
+function cloneEvent<T>(value: T): T {
+  return structuredClone(value);
 }
 
 const maxPlaceLabels = 20;
@@ -148,95 +149,129 @@ function organizationRequest(event: DraftEvent): OrganizeEventRequest {
   };
 }
 
-function rebaseOrganization(local: DraftEvent, server: DraftEvent) {
-  const rebased = cloneEvent(server);
-  rebased.title = local.title;
-  rebased.description = local.description;
-  rebased.grouping_timezone = local.grouping_timezone;
-  rebased.moments = cloneEvent(local).moments;
-  rebased.unassigned_media = cloneEvent(local).unassigned_media;
-  rebased.final_review_complete = local.final_review_complete;
-  return rebased;
+function sameIDs(left: { id: string }[], right: { id: string }[]) {
+  return (
+    left.length === right.length &&
+    left.every((item, index) => item.id === right[index].id)
+  );
 }
 
-function insertByServerOrder(
-  items: MediaItem[],
-  item: MediaItem,
-  serverItems: MediaItem[],
+function insertByServerOrder<T extends { id: string }>(
+  items: T[],
+  item: T,
+  serverItems: T[],
 ) {
-  const restoredIndex = serverItems.findIndex(
+  const serverIndex = serverItems.findIndex(
     (candidate) => candidate.id === item.id,
   );
   const successor = serverItems
-    .slice(restoredIndex + 1)
+    .slice(serverIndex + 1)
     .find((candidate) => items.some((current) => current.id === candidate.id));
   const insertionIndex = successor
     ? items.findIndex((current) => current.id === successor.id)
     : items.length;
-  items.splice(insertionIndex, 0, item);
+  items.splice(insertionIndex, 0, cloneEvent(item));
 }
 
-function rebaseRestoredMedia(
+function eventMediaIDs(event: DraftEvent) {
+  return new Set(
+    event.moments
+      .flatMap((moment) => moment.media_items)
+      .concat(event.unassigned_media)
+      .map((item) => item.id),
+  );
+}
+
+function rebaseOrganization(
+  base: DraftEvent,
   local: DraftEvent,
-  restored: DraftEvent,
-  mediaID: string,
+  serverResponse: DraftEvent,
 ) {
-  const rebased = rebaseOrganization(local, restored);
-  for (const moment of rebased.moments) {
-    moment.media_items = moment.media_items.filter(
-      (item) => item.id !== mediaID,
-    );
-  }
-  rebased.unassigned_media = rebased.unassigned_media.filter(
-    (item) => item.id !== mediaID,
-  );
+  // A separately persisted review can finish after the requested mutation but
+  // before its response arrives. In that case the local snapshot is the newer
+  // authoritative server state, not merely an optimistic edit.
+  const server =
+    local.version > serverResponse.version ? local : serverResponse;
+  const rebased = cloneEvent(server);
+  if (local.title !== base.title) rebased.title = local.title;
+  if (local.description !== base.description)
+    rebased.description = local.description;
+  if (local.grouping_timezone !== base.grouping_timezone)
+    rebased.grouping_timezone = local.grouping_timezone;
+  if (local.final_review_complete !== base.final_review_complete)
+    rebased.final_review_complete = local.final_review_complete;
 
-  const restoredUnassigned = restored.unassigned_media.find(
-    (item) => item.id === mediaID,
+  const baseMoments = new Map(
+    base.moments.map((moment) => [moment.id, moment]),
   );
-  if (restoredUnassigned) {
-    insertByServerOrder(
-      rebased.unassigned_media,
-      restoredUnassigned,
-      restored.unassigned_media,
-    );
-    return rebased;
+  const localMoments = new Map(
+    local.moments.map((moment) => [moment.id, moment]),
+  );
+  const serverMoments = new Map(
+    server.moments.map((moment) => [moment.id, moment]),
+  );
+  const baseMedia = eventMediaIDs(base);
+  const localMedia = eventMediaIDs(local);
+
+  let momentOrder = server.moments.map((moment) => moment.id);
+  if (!sameIDs(local.moments, base.moments)) {
+    momentOrder = local.moments.map((moment) => moment.id);
+    for (const serverMoment of server.moments) {
+      if (baseMoments.has(serverMoment.id) || localMoments.has(serverMoment.id))
+        continue;
+      const ordered = momentOrder.map((id) => ({ id }));
+      insertByServerOrder(ordered, { id: serverMoment.id }, server.moments);
+      momentOrder = ordered.map((item) => item.id);
+    }
   }
 
-  const serverMomentIndex = restored.moments.findIndex((moment) =>
-    moment.media_items.some((item) => item.id === mediaID),
-  );
-  if (serverMomentIndex < 0) return rebased;
-  const serverMoment = restored.moments[serverMomentIndex];
-  const restoredItem = serverMoment.media_items.find(
-    (item) => item.id === mediaID,
-  )!;
-  let target = rebased.moments.find((moment) => moment.id === serverMoment.id);
-  if (!target) {
-    target = cloneEvent(restored).moments[serverMomentIndex];
-    target.media_items = [];
-    target.cover_media_item_id =
-      serverMoment.cover_media_item_id === mediaID ? mediaID : null;
-    const successor = restored.moments
-      .slice(serverMomentIndex + 1)
-      .find((moment) =>
-        rebased.moments.some((current) => current.id === moment.id),
+  rebased.moments = momentOrder.flatMap((momentID) => {
+    const baseMoment = baseMoments.get(momentID);
+    const localMoment = localMoments.get(momentID);
+    const serverMoment = serverMoments.get(momentID);
+    if (!localMoment) return serverMoment ? [cloneEvent(serverMoment)] : [];
+    if (!baseMoment) return [cloneEvent(localMoment)];
+    if (!serverMoment) return [];
+
+    const merged = cloneEvent(serverMoment);
+    if (localMoment.title !== baseMoment.title)
+      merged.title = localMoment.title;
+    if (localMoment.proposed_day !== baseMoment.proposed_day)
+      merged.proposed_day = localMoment.proposed_day;
+    if (localMoment.cover_media_item_id !== baseMoment.cover_media_item_id)
+      merged.cover_media_item_id = localMoment.cover_media_item_id;
+    if (localMoment.attendance_complete !== baseMoment.attendance_complete)
+      merged.attendance_complete = localMoment.attendance_complete;
+    if (localMoment.audience_complete !== baseMoment.audience_complete)
+      merged.audience_complete = localMoment.audience_complete;
+
+    if (!sameIDs(localMoment.media_items, baseMoment.media_items)) {
+      merged.media_items = cloneEvent(localMoment.media_items);
+      for (const serverItem of serverMoment.media_items) {
+        if (baseMedia.has(serverItem.id) || localMedia.has(serverItem.id))
+          continue;
+        insertByServerOrder(
+          merged.media_items,
+          serverItem,
+          serverMoment.media_items,
+        );
+      }
+    }
+    return [merged];
+  });
+
+  if (!sameIDs(local.unassigned_media, base.unassigned_media)) {
+    rebased.unassigned_media = cloneEvent(local.unassigned_media);
+    for (const serverItem of server.unassigned_media) {
+      if (baseMedia.has(serverItem.id) || localMedia.has(serverItem.id))
+        continue;
+      insertByServerOrder(
+        rebased.unassigned_media,
+        serverItem,
+        server.unassigned_media,
       );
-    const insertionIndex = successor
-      ? rebased.moments.findIndex((moment) => moment.id === successor.id)
-      : rebased.moments.length;
-    rebased.moments.splice(insertionIndex, 0, target);
+    }
   }
-  target.attendance_complete = serverMoment.attendance_complete;
-  target.audience_complete = serverMoment.audience_complete;
-  if (serverMoment.cover_media_item_id === mediaID) {
-    target.cover_media_item_id = mediaID;
-  }
-  insertByServerOrder(
-    target.media_items,
-    restoredItem,
-    serverMoment.media_items,
-  );
   return rebased;
 }
 
@@ -725,18 +760,21 @@ export function EventOrganizer({
         },
       ),
     onSuccess: (restored, attempted) => {
-      queryClient.setQueryData(["event", restored.id], restored);
-      if (selectedIDRef.current !== restored.id) return;
+      if (selectedIDRef.current !== restored.id) {
+        queryClient.setQueryData(["event", restored.id], restored);
+        return;
+      }
       const latest = latestDraftRef.current;
-      const hasNewerEdits =
-        latest?.id === restored.id && revisionRef.current > attempted.revision;
-      const next = hasNewerEdits
-        ? rebaseRestoredMedia(latest, restored, attempted.mediaID)
-        : cloneEvent(restored);
+      const hasNewerOrganization = revisionRef.current > attempted.revision;
+      const next =
+        latest?.id === restored.id
+          ? rebaseOrganization(attempted.event, latest, restored)
+          : cloneEvent(restored);
+      queryClient.setQueryData(["event", restored.id], next);
       latestDraftRef.current = next;
       setDraft(next);
-      setSaveState(hasNewerEdits ? "unsaved" : "saved");
-      if (!hasNewerEdits) {
+      setSaveState(hasNewerOrganization ? "unsaved" : "saved");
+      if (!hasNewerOrganization) {
         revisionRef.current = 0;
         setRevision(0);
       }
@@ -787,7 +825,7 @@ export function EventOrganizer({
         const hasNewerEdits =
           latest?.id === server.id && revisionRef.current > attempted.revision;
         const next = hasNewerEdits
-          ? rebaseOrganization(latest, server)
+          ? rebaseOrganization(attempted.event, latest, server)
           : cloneEvent(server);
         latestDraftRef.current = next;
         setDraft(next);
@@ -805,7 +843,7 @@ export function EventOrganizer({
   });
 
   const withdraw = useMutation({
-    mutationFn: (target: WithdrawalTarget) =>
+    mutationFn: ({ target }: WithdrawalAttempt) =>
       apiJSON<Withdrawal>("/api/withdrawals", {
         method: "POST",
         headers: { "X-Memento-CSRF": session.csrf_token },
@@ -815,18 +853,40 @@ export function EventOrganizer({
           reason: withdrawReason,
         }),
       }),
-    onSuccess: () => {
+    onSuccess: async (_withdrawal, attempted) => {
       setWithdrawTarget(undefined);
       setWithdrawReason("");
       setPreviewOpen(false);
       void queryClient.invalidateQueries({ queryKey: ["events"] });
-      void queryClient.invalidateQueries({ queryKey: ["event"] });
-      void eventQuery.refetch().then((result) => {
-        if (!result.data) return;
-        latestDraftRef.current = result.data;
-        setDraft(result.data);
+      let server: DraftEvent;
+      try {
+        server = await apiJSON<DraftEvent>(`/api/events/${attempted.event.id}`);
+      } catch {
+        void queryClient.invalidateQueries({
+          queryKey: ["event", attempted.event.id],
+        });
+        return;
+      }
+      if (selectedIDRef.current !== server.id) {
+        queryClient.setQueryData(["event", server.id], server);
+        return;
+      }
+      const latest = latestDraftRef.current;
+      const hasNewerOrganization = revisionRef.current > attempted.revision;
+      const next =
+        latest?.id === server.id
+          ? rebaseOrganization(attempted.event, latest, server)
+          : cloneEvent(server);
+      queryClient.setQueryData(["event", server.id], next);
+      latestDraftRef.current = next;
+      setDraft(next);
+      setSaveState(hasNewerOrganization ? "unsaved" : "saved");
+      if (!hasNewerOrganization) {
+        revisionRef.current = 0;
         setRevision(0);
-        setSaveState("saved");
+      }
+      void queryClient.invalidateQueries({
+        queryKey: ["attendance-audience"],
       });
     },
   });
@@ -909,6 +969,7 @@ export function EventOrganizer({
       save.isPending ||
       restorePublishedMedia.isPending ||
       publish.isPending ||
+      withdraw.isPending ||
       !eventMetadataValid
     )
       return;
@@ -929,6 +990,7 @@ export function EventOrganizer({
     save.isPending,
     restorePublishedMedia.isPending,
     publish.isPending,
+    withdraw.isPending,
     saveDraft,
   ]);
 
@@ -1907,7 +1969,11 @@ export function EventOrganizer({
                           "Withdraw Recipient access immediately? Identity and history will be preserved.",
                         )
                       ) {
-                        withdraw.mutate(selectedWithdrawTarget);
+                        withdraw.mutate({
+                          target: selectedWithdrawTarget,
+                          event: cloneEvent(currentDraft),
+                          revision: revisionRef.current,
+                        });
                       }
                     }}
                     type="button"

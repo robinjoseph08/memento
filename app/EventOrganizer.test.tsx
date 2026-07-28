@@ -1120,6 +1120,47 @@ test("blocks a Moment merge that would exceed the Place-label limit", async () =
   expect(saves).toHaveLength(0);
 });
 
+test("rebases organization edits made while Withdrawal is pending", async () => {
+  const published = organizedDraft();
+  published.lifecycle = "published";
+  published.final_review_complete = true;
+  published.published_editable_version = published.version;
+  const gate = deferred();
+  const saves = stubOrganizerAPI(published, { withdrawalGate: gate.promise });
+  vi.spyOn(window, "confirm").mockReturnValue(true);
+  renderOrganizer();
+  fireEvent.click(
+    await screen.findByRole("button", { name: /Family weekend/ }),
+  );
+
+  fireEvent.change(await screen.findByLabelText("Attributable reason"), {
+    target: { value: "Privacy request" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Withdraw access" }));
+  expect(
+    await screen.findByRole("button", { name: "Withdrawing…" }),
+  ).toBeDisabled();
+  const title = screen.getByLabelText("Event title");
+  fireEvent.change(title, { target: { value: "Edited during Withdrawal" } });
+  fireEvent.change(screen.getAllByLabelText("Cover")[1], {
+    target: { value: items.a.id },
+  });
+
+  act(() => gate.resolve());
+  const history = await screen.findByText(/Privacy request by Robin/);
+  expect(history).toHaveTextContent("Access remains withdrawn.");
+  expect(title).toHaveValue("Edited during Withdrawal");
+  await waitFor(() => expect(saves).toHaveLength(1), contentionWait);
+  expect(saves[0]).toMatchObject({
+    version: 2,
+    title: "Edited during Withdrawal",
+  });
+  expect(
+    saves[0].moments.find((moment) => moment.id === momentOneID)
+      ?.cover_media_item_id,
+  ).toBe(items.a.id);
+});
+
 test("organizes merged and split days with pointer and keyboard controls", async () => {
   const saves = stubOrganizerAPI(draft());
 
