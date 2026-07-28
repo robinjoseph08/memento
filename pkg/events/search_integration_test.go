@@ -16,6 +16,7 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/robinjoseph08/memento/pkg/config"
 	"github.com/robinjoseph08/memento/pkg/errcodes"
+	peopledomain "github.com/robinjoseph08/memento/pkg/people"
 	searchdomain "github.com/robinjoseph08/memento/pkg/search"
 	"github.com/robinjoseph08/memento/pkg/setup"
 	"github.com/stretchr/testify/assert"
@@ -246,6 +247,116 @@ func TestSearchUsesOnlyAuthorizedCurrentPublicationAndDiscoverableAttendance(t *
 	withdrawnResult, err := service.Search(ctx, actor, searchdomain.Request{Query: "staged"})
 	require.NoError(t, err)
 	assertSafeEmptySearchResponse(t, withdrawnResult, "Withdrawal must remove every search observable")
+}
+
+func TestPersonMergeMovesOnlyCurrentPublishedAttendanceAndPreservesSearchMatches(t *testing.T) {
+	fixture := newPublicationFixture(t)
+	ctx := context.Background()
+	actor := createSearchSession(t, fixture)
+	sourceOnly, survivorOnly := uuid.New(), uuid.New()
+	duplicateSource, duplicateSurvivor := uuid.New(), uuid.New()
+	circleID := uuid.New()
+	_, err := fixture.db.NewRaw(`
+		INSERT INTO people (id, display_name, sort_name) VALUES
+			(?, 'Pine Source Token', 'Pine Source Token'),
+			(?, 'Maple Survivor Token', 'Maple Survivor Token'),
+			(?, 'Cedar Source Token', 'Cedar Source Token'),
+			(?, 'Birch Survivor Token', 'Birch Survivor Token');
+		INSERT INTO attendance (moment_id, person_id, source, confirmed_by_person_id, confirmed_at) VALUES
+			(?, ?, 'manual', ?, now()),
+			(?, ?, 'manual', ?, now()),
+			(?, ?, 'manual', ?, now());
+		INSERT INTO visibility_circles (id, name) VALUES (?, 'Merge search circle');
+		INSERT INTO visibility_circle_members (circle_id, person_id) VALUES
+			(?, ?), (?, ?), (?, ?), (?, ?), (?, ?)
+	`, sourceOnly, survivorOnly, duplicateSource, duplicateSurvivor,
+		fixture.moments[0], sourceOnly, fixture.actor.PersonID,
+		fixture.moments[0], duplicateSource, fixture.actor.PersonID,
+		fixture.moments[0], duplicateSurvivor, fixture.actor.PersonID,
+		circleID, circleID, actor.PersonID, circleID, sourceOnly, circleID, survivorOnly,
+		circleID, duplicateSource, circleID, duplicateSurvivor).Exec(ctx)
+	require.NoError(t, err)
+
+	first, err := fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, fixture.request())
+	require.NoError(t, err)
+	_, err = fixture.db.NewRaw(`UPDATE events SET version = 8 WHERE id = ?`, fixture.event).Exec(ctx)
+	require.NoError(t, err)
+	second, err := fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, PublishEventRequest{Version: 8})
+	require.NoError(t, err)
+
+	searchService := searchdomain.New(fixture.db)
+	before, err := searchService.Search(ctx, actor, searchdomain.Request{Query: "Pine Source Token"})
+	require.NoError(t, err)
+	require.Len(t, before.People, 1)
+	assert.Equal(t, sourceOnly.String(), before.People[0].PersonID)
+
+	peopleService := peopledomain.New(fixture.db)
+	stalePreview, err := peopleService.PreviewMerge(ctx, fixture.actor, sourceOnly, survivorOnly)
+	require.NoError(t, err)
+	var injectedPublishedMoment uuid.UUID
+	require.NoError(t, fixture.db.NewRaw(`
+		SELECT moment.id
+		FROM published_moments AS moment
+		JOIN current_published_events AS current ON current.publication_id = moment.publication_id
+		WHERE current.event_id = ? AND moment.draft_moment_id = ?
+	`, fixture.event, fixture.moments[1]).Scan(ctx, &injectedPublishedMoment))
+	_, err = fixture.db.NewRaw(`INSERT INTO published_attendance (published_moment_id, person_id) VALUES (?, ?)`, injectedPublishedMoment, sourceOnly).Exec(ctx)
+	require.NoError(t, err)
+	_, err = peopleService.Merge(ctx, fixture.actor, peopledomain.MergeRequest{
+		SourcePersonID: sourceOnly.String(), SurvivorPersonID: survivorOnly.String(),
+		SourceVersion: 1, SurvivorVersion: 1, PreviewFingerprint: stalePreview.PreviewFingerprint,
+	})
+	require.ErrorIs(t, err, peopledomain.ErrMergeStale)
+	_, err = fixture.db.NewRaw(`DELETE FROM published_attendance WHERE published_moment_id = ? AND person_id = ?`, injectedPublishedMoment, sourceOnly).Exec(ctx)
+	require.NoError(t, err)
+
+	merge := func(sourceID, survivorID uuid.UUID) {
+		preview, previewErr := peopleService.PreviewMerge(ctx, fixture.actor, sourceID, survivorID)
+		require.NoError(t, previewErr)
+		assert.Equal(t, 1, preview.References.CurrentPublishedAttendanceEntriesMoved)
+		_, mergeErr := peopleService.Merge(ctx, fixture.actor, peopledomain.MergeRequest{
+			SourcePersonID: sourceID.String(), SurvivorPersonID: survivorID.String(),
+			SourceVersion: 1, SurvivorVersion: 1, PreviewFingerprint: preview.PreviewFingerprint,
+		})
+		require.NoError(t, mergeErr)
+	}
+	merge(sourceOnly, survivorOnly)
+	merge(duplicateSource, duplicateSurvivor)
+
+	for query, expectedID := range map[string]uuid.UUID{
+		"Maple Survivor Token": survivorOnly,
+		"Birch Survivor Token": duplicateSurvivor,
+	} {
+		result, searchErr := searchService.Search(ctx, actor, searchdomain.Request{Query: query})
+		require.NoError(t, searchErr)
+		require.Len(t, result.People, 1)
+		assert.Equal(t, expectedID.String(), result.People[0].PersonID)
+	}
+	for _, query := range []string{"Pine Source Token", "Cedar Source Token"} {
+		result, searchErr := searchService.Search(ctx, actor, searchdomain.Request{Query: query})
+		require.NoError(t, searchErr)
+		assertSafeEmptySearchResponse(t, result, "merged source Attendance must not remain observable")
+	}
+
+	for _, pair := range []struct {
+		source, survivor uuid.UUID
+	}{{sourceOnly, survivorOnly}, {duplicateSource, duplicateSurvivor}} {
+		var currentSource, currentSurvivor, historicalSource int
+		require.NoError(t, fixture.db.NewRaw(`
+			SELECT
+				count(*) FILTER (WHERE moment.publication_id = ? AND attendance.person_id = ?),
+				count(*) FILTER (WHERE moment.publication_id = ? AND attendance.person_id = ?),
+				count(*) FILTER (WHERE moment.publication_id = ? AND attendance.person_id = ?)
+			FROM published_attendance AS attendance
+			JOIN published_moments AS moment ON moment.id = attendance.published_moment_id
+			WHERE attendance.person_id IN (?, ?)
+		`, second.ID, pair.source, second.ID, pair.survivor,
+			first.ID, pair.source, pair.source, pair.survivor).
+			Scan(ctx, &currentSource, &currentSurvivor, &historicalSource))
+		assert.Zero(t, currentSource)
+		assert.Equal(t, 1, currentSurvivor, "current projection transfer must deduplicate Attendance")
+		assert.Equal(t, 1, historicalSource, "historical Publication Attendance remains immutable")
+	}
 }
 
 func TestSearchDateFiltersEnforceInclusiveUpperAndLowerBounds(t *testing.T) {

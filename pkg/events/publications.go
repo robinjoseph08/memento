@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/robinjoseph08/memento/internal/placementlock"
+	"github.com/robinjoseph08/memento/pkg/audiences"
 	"github.com/robinjoseph08/memento/pkg/setup"
 	"github.com/robinjoseph08/memento/pkg/worker"
 	"github.com/uptrace/bun"
@@ -146,6 +147,9 @@ func (s *Service) PublishEvent(ctx context.Context, actor setup.CuratorSession, 
 			if errors.Is(err, sql.ErrNoRows) {
 				return ErrNotFound
 			}
+			return err
+		}
+		if err := audiences.LockPublishedAttendanceProjection(ctx, tx); err != nil {
 			return err
 		}
 		var curator bool

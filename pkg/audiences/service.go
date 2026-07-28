@@ -119,10 +119,11 @@ type Service struct {
 
 // PersonMergeEffects summarizes active Audience references moved to a surviving Person.
 type PersonMergeEffects struct {
-	AttendanceEntriesMoved int
-	AudienceOverridesMoved int
-	AudienceReasonsMoved   int
-	ReferenceFingerprint   string
+	AttendanceEntriesMoved                 int
+	CurrentPublishedAttendanceEntriesMoved int
+	AudienceOverridesMoved                 int
+	AudienceReasonsMoved                   int
+	ReferenceFingerprint                   string
 }
 
 func New(db *bun.DB, connector Connector) *Service {
@@ -799,6 +800,13 @@ func lockAudienceReferences(ctx context.Context, tx bun.Tx) error {
 	return err
 }
 
+// LockPublishedAttendanceProjection serializes Publication with Person merges
+// without serializing Publications for independent Events.
+func LockPublishedAttendanceProjection(ctx context.Context, tx bun.Tx) error {
+	_, err := tx.NewRaw(`SELECT pg_advisory_xact_lock_shared(hashtextextended('memento:audiences', 0))`).Exec(ctx)
+	return err
+}
+
 // LockReferences serializes a Person merge with proposal recalculation and locks affected active references.
 func LockReferences(ctx context.Context, tx bun.Tx, sourceID, survivorID uuid.UUID) error {
 	if err := lockAudienceReferences(ctx, tx); err != nil {
@@ -806,6 +814,12 @@ func LockReferences(ctx context.Context, tx bun.Tx, sourceID, survivorID uuid.UU
 	}
 	for _, query := range []string{
 		`SELECT moment_id, person_id FROM attendance WHERE person_id IN (?, ?) ORDER BY moment_id, person_id FOR UPDATE`,
+		`SELECT attendance.published_moment_id, attendance.person_id
+		 FROM published_attendance AS attendance
+		 JOIN published_moments AS moment ON moment.id = attendance.published_moment_id
+		 JOIN current_published_events AS current ON current.publication_id = moment.publication_id
+		 WHERE attendance.person_id IN (?, ?)
+		 ORDER BY attendance.published_moment_id, attendance.person_id FOR UPDATE OF attendance`,
 		`SELECT target_kind, target_id, recipient_person_id FROM audience_overrides WHERE recipient_person_id IN (?, ?) ORDER BY target_kind, target_id, recipient_person_id FOR UPDATE`,
 		`SELECT id FROM audience_reasons WHERE matching_person_id IN (?, ?) ORDER BY id FOR UPDATE`,
 	} {
@@ -823,6 +837,9 @@ func PreviewPersonMerge(ctx context.Context, db bun.IDB, sourceID, survivorID uu
 		Source                            string
 		ConfirmedAt                       time.Time
 	}
+	type publishedAttendanceReference struct {
+		PublishedMomentID, PersonID uuid.UUID
+	}
 	type overrideReference struct {
 		TargetKind            string
 		TargetID, RecipientID uuid.UUID
@@ -839,6 +856,17 @@ func PreviewPersonMerge(ctx context.Context, db bun.IDB, sourceID, survivorID uu
 	if err := db.NewRaw(`SELECT moment_id, person_id, source, confirmed_by_person_id AS confirmed_by_id, confirmed_at FROM attendance WHERE person_id IN (?, ?) ORDER BY moment_id, person_id`, sourceID, survivorID).Scan(ctx, &attendance); err != nil {
 		return PersonMergeEffects{}, err
 	}
+	publishedAttendance := make([]publishedAttendanceReference, 0)
+	if err := db.NewRaw(`
+		SELECT attendance.published_moment_id, attendance.person_id
+		FROM published_attendance AS attendance
+		JOIN published_moments AS moment ON moment.id = attendance.published_moment_id
+		JOIN current_published_events AS current ON current.publication_id = moment.publication_id
+		WHERE attendance.person_id IN (?, ?)
+		ORDER BY attendance.published_moment_id, attendance.person_id
+	`, sourceID, survivorID).Scan(ctx, &publishedAttendance); err != nil {
+		return PersonMergeEffects{}, err
+	}
 	overrides := make([]overrideReference, 0)
 	if err := db.NewRaw(`SELECT target_kind, target_id, recipient_person_id AS recipient_id, state, updated_by_person_id AS updated_by_id, updated_at FROM audience_overrides WHERE recipient_person_id IN (?, ?) ORDER BY target_kind, target_id, recipient_person_id`, sourceID, survivorID).Scan(ctx, &overrides); err != nil {
 		return PersonMergeEffects{}, err
@@ -853,6 +881,11 @@ func PreviewPersonMerge(ctx context.Context, db bun.IDB, sourceID, survivorID uu
 			effects.AttendanceEntriesMoved++
 		}
 	}
+	for _, reference := range publishedAttendance {
+		if reference.PersonID == sourceID {
+			effects.CurrentPublishedAttendanceEntriesMoved++
+		}
+	}
 	for _, reference := range overrides {
 		if reference.RecipientID == sourceID {
 			effects.AudienceOverridesMoved++
@@ -864,10 +897,11 @@ func PreviewPersonMerge(ctx context.Context, db bun.IDB, sourceID, survivorID uu
 		}
 	}
 	encoded, err := json.Marshal(struct {
-		Attendance []attendanceReference `json:"attendance"`
-		Overrides  []overrideReference   `json:"overrides"`
-		Reasons    []reasonReference     `json:"reasons"`
-	}{Attendance: attendance, Overrides: overrides, Reasons: reasons})
+		Attendance          []attendanceReference          `json:"attendance"`
+		PublishedAttendance []publishedAttendanceReference `json:"published_attendance"`
+		Overrides           []overrideReference            `json:"overrides"`
+		Reasons             []reasonReference              `json:"reasons"`
+	}{Attendance: attendance, PublishedAttendance: publishedAttendance, Overrides: overrides, Reasons: reasons})
 	if err != nil {
 		return PersonMergeEffects{}, err
 	}
@@ -876,8 +910,8 @@ func PreviewPersonMerge(ctx context.Context, db bun.IDB, sourceID, survivorID uu
 	return effects, nil
 }
 
-// MergePersonReferences moves active Attendance and Audience references to the surviving Person.
-// Approved snapshots and publication audit attribution remain attached to the original Person.
+// MergePersonReferences moves editable and current-projection Attendance plus active Audience references.
+// Historical Publication Attendance, approved snapshots, and publication audit attribution remain attached to the original Person.
 func MergePersonReferences(ctx context.Context, tx bun.Tx, sourceID, survivorID uuid.UUID) (PersonMergeEffects, error) {
 	if sourceID == survivorID {
 		return PersonMergeEffects{}, ErrInvalid
@@ -893,6 +927,30 @@ func MergePersonReferences(ctx context.Context, tx bun.Tx, sourceID, survivorID 
 		return PersonMergeEffects{}, err
 	}
 	if _, err := tx.NewRaw(`DELETE FROM attendance WHERE person_id = ?`, sourceID).Exec(ctx); err != nil {
+		return PersonMergeEffects{}, err
+	}
+	if _, err := tx.NewRaw(`
+		DELETE FROM published_attendance AS source_attendance
+		USING published_moments AS moment, current_published_events AS current
+		WHERE source_attendance.published_moment_id = moment.id
+		  AND current.publication_id = moment.publication_id
+		  AND source_attendance.person_id = ?
+		  AND EXISTS (
+			SELECT 1 FROM published_attendance AS survivor_attendance
+			WHERE survivor_attendance.published_moment_id = source_attendance.published_moment_id
+			  AND survivor_attendance.person_id = ?
+		  )
+	`, sourceID, survivorID).Exec(ctx); err != nil {
+		return PersonMergeEffects{}, err
+	}
+	if _, err := tx.NewRaw(`
+		UPDATE published_attendance AS attendance
+		SET person_id = ?
+		FROM published_moments AS moment, current_published_events AS current
+		WHERE attendance.published_moment_id = moment.id
+		  AND current.publication_id = moment.publication_id
+		  AND attendance.person_id = ?
+	`, survivorID, sourceID).Exec(ctx); err != nil {
 		return PersonMergeEffects{}, err
 	}
 	if _, err := tx.NewRaw(`

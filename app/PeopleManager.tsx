@@ -1003,6 +1003,13 @@ function MergeConfirmation({
           Attendance entries will move to the survivor.
         </li>
         <li>
+          {
+            preview.affected_references
+              .current_published_attendance_entries_moved
+          }{" "}
+          current published Attendance references will move to the survivor.
+        </li>
+        <li>
           {preview.affected_references.audience_overrides_moved} manual Audience
           overrides will move to the survivor.
         </li>
