@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -8,7 +9,7 @@ import {
 } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 
-import { RecipientLibrary } from "./RecipientLibrary";
+import { ArchiveDownloads, RecipientLibrary } from "./RecipientLibrary";
 
 const session = {
   display_name: "Alex",
@@ -65,6 +66,7 @@ function renderLibrary(librarySession = session) {
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
@@ -308,11 +310,16 @@ test("plans and downloads complete Event and explicit subset archives with Sessi
   const requests: Array<{ path: string; init?: RequestInit }> = [];
   const createObjectURL = vi
     .spyOn(URL, "createObjectURL")
-    .mockReturnValue("blob:archive");
+    .mockReturnValueOnce("blob:archive-one")
+    .mockReturnValueOnce("blob:archive-two");
   vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
+  const downloads: Array<{ filename: string; href: string }> = [];
   const click = vi
     .spyOn(HTMLAnchorElement.prototype, "click")
-    .mockImplementation(() => undefined);
+    .mockImplementation(function (this: HTMLAnchorElement) {
+      downloads.push({ filename: this.download, href: this.href });
+    });
+  const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
   vi.stubGlobal(
     "fetch",
     vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
@@ -390,20 +397,33 @@ test("plans and downloads complete Event and explicit subset archives with Sessi
           name: body.scope === "event" ? "Family-weekend" : "Memento-selection",
           item_count: 2,
           total_size: 30,
-          expires_at: "2026-07-27T12:15:00Z",
+          expires_at: expiresAt,
           parts: [
             {
               part_number: 1,
-              size: 30,
-              filename: "safe-name.zip",
-              download_url: "/api/me/archives/parts/1?token=private-token",
+              size: 12,
+              filename: "safe-part-one.zip",
+              download_url: "/api/me/archives/parts/1?token=token-one",
+            },
+            {
+              part_number: 2,
+              size: 18,
+              filename: "safe-part-two.zip",
+              download_url: "/api/me/archives/parts/2?token=token-two",
             },
           ],
         });
       }
-      if (path === "/api/me/archives/parts/1?token=private-token") {
+      if (path === "/api/me/archives/parts/1?token=token-one") {
         return Promise.resolve(
-          new Response("zip", {
+          new Response("zip-one", {
+            headers: { "Content-Type": "application/zip" },
+          }),
+        );
+      }
+      if (path === "/api/me/archives/parts/2?token=token-two") {
+        return Promise.resolve(
+          new Response("zip-two", {
             headers: { "Content-Type": "application/zip" },
           }),
         );
@@ -417,9 +437,14 @@ test("plans and downloads complete Event and explicit subset archives with Sessi
   fireEvent.click(screen.getByRole("checkbox", { name: /Select Photo 1/ }));
   fireEvent.click(screen.getByRole("checkbox", { name: /Select Photo 2/ }));
   fireEvent.click(screen.getByRole("button", { name: "Download 2 selected" }));
-  const subsetDownload = await screen.findByRole("button", {
-    name: "Download archive",
+  const firstSubsetDownload = await screen.findByRole("button", {
+    name: "Download part 1",
   });
+  const secondSubsetDownload = screen.getByRole("button", {
+    name: "Download part 2",
+  });
+  expect(screen.getByText("safe-part-one.zip (12 bytes)")).toBeVisible();
+  expect(screen.getByText("safe-part-two.zip (18 bytes)")).toBeVisible();
 
   const subsetRequest = requests.find(
     ({ path, init }) =>
@@ -435,11 +460,11 @@ test("plans and downloads complete Event and explicit subset archives with Sessi
     media_ids: ["media-1", "media-2"],
   });
 
-  fireEvent.click(subsetDownload);
+  fireEvent.click(firstSubsetDownload);
   await waitFor(() =>
     expect(
       requests.find(
-        ({ path }) => path === "/api/me/archives/parts/1?token=private-token",
+        ({ path }) => path === "/api/me/archives/parts/1?token=token-one",
       )?.init,
     ).toMatchObject({
       method: "POST",
@@ -451,11 +476,41 @@ test("plans and downloads complete Event and explicit subset archives with Sessi
   );
   await waitFor(() =>
     expect(
-      screen.getByRole("button", { name: "Downloaded archive" }),
+      screen.getByRole("button", { name: "Downloaded part 1" }),
     ).toBeDisabled(),
   );
-  expect(createObjectURL).toHaveBeenCalledWith(expect.any(Blob));
-  expect(click).toHaveBeenCalledOnce();
+  expect(secondSubsetDownload).toBeEnabled();
+
+  fireEvent.click(secondSubsetDownload);
+  await waitFor(() =>
+    expect(
+      requests.find(
+        ({ path }) => path === "/api/me/archives/parts/2?token=token-two",
+      )?.init,
+    ).toMatchObject({
+      method: "POST",
+      headers: {
+        Accept: "application/zip",
+        "X-Memento-CSRF": session.csrf_token,
+      },
+    }),
+  );
+  await waitFor(() =>
+    expect(
+      screen.getByRole("button", { name: "Downloaded part 2" }),
+    ).toBeDisabled(),
+  );
+  expect(
+    screen.getByRole("button", { name: "Downloaded part 1" }),
+  ).toBeDisabled();
+  expect(createObjectURL).toHaveBeenCalledTimes(2);
+  expect(createObjectURL).toHaveBeenNthCalledWith(1, expect.any(Blob));
+  expect(createObjectURL).toHaveBeenNthCalledWith(2, expect.any(Blob));
+  expect(click).toHaveBeenCalledTimes(2);
+  expect(downloads).toEqual([
+    { filename: "safe-part-one.zip", href: "blob:archive-one" },
+    { filename: "safe-part-two.zip", href: "blob:archive-two" },
+  ]);
 
   fireEvent.click(screen.getAllByRole("button", { name: "Events" })[0]);
   fireEvent.click(
@@ -474,6 +529,65 @@ test("plans and downloads complete Event and explicit subset archives with Sessi
       ),
     ).toBe(true),
   );
+});
+
+test("expires archive controls at the server-provided deadline", () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-07-27T12:14:00Z"));
+  const expiresAt = "2026-07-27T12:15:00Z";
+
+  render(
+    <ArchiveDownloads
+      csrfToken={session.csrf_token}
+      plan={{
+        name: "Family-weekend",
+        item_count: 2,
+        total_size: 30,
+        expires_at: expiresAt,
+        parts: [
+          {
+            part_number: 1,
+            size: 12,
+            filename: "part-one.zip",
+            download_url: "/api/me/archives/parts/1?token=one",
+          },
+          {
+            part_number: 2,
+            size: 18,
+            filename: "part-two.zip",
+            download_url: "/api/me/archives/parts/2?token=two",
+          },
+        ],
+      }}
+      publicComputer={false}
+    />,
+  );
+
+  const downloads = screen.getByRole("region", { name: "Archive downloads" });
+  expect(downloads).toHaveTextContent("Available until");
+  expect(downloads.querySelector("time")).toHaveAttribute(
+    "datetime",
+    expiresAt,
+  );
+  expect(screen.getByRole("button", { name: "Download part 1" })).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Download part 2" })).toBeEnabled();
+
+  act(() => {
+    vi.advanceTimersByTime(60 * 1000);
+  });
+
+  expect(
+    screen.getByText(
+      "Archive plan expired. Prepare a new archive to download it.",
+    ),
+  ).toBeVisible();
+  expect(downloads).not.toHaveTextContent("Available until");
+  expect(
+    screen.getByRole("button", { name: "Download part 1" }),
+  ).toBeDisabled();
+  expect(
+    screen.getByRole("button", { name: "Download part 2" }),
+  ).toBeDisabled();
 });
 
 test("navigates Events and Favorites without exposing an unavailable aggregate", async () => {

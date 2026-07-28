@@ -8,6 +8,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"io"
 	"net/url"
 	"slices"
@@ -294,13 +295,29 @@ func TestPlansCompleteEventAndRejectsIncompleteSubset(t *testing.T) {
 	assert.Equal(t, fixedNow.Add(15*time.Minute), response.ExpiresAt)
 	assert.Equal(t, "Family-Weekend", response.Name)
 	require.Len(t, response.Parts, 2)
-	assert.Equal(t, "Family-Weekend-part-1-of-2.zip", response.Parts[0].Filename)
-	assert.NotContains(t, response.Parts[0].Filename, "..")
-	assert.NotContains(t, response.Parts[0].Filename, "/")
-	downloadURL, err := url.Parse(response.Parts[0].DownloadURL)
-	require.NoError(t, err)
-	assert.Equal(t, "/api/me/archives/parts/1", downloadURL.Path, "archive secrets stay out of request-log paths")
-	assert.NotEmpty(t, downloadURL.Query().Get("token"))
+	assert.Equal(t, PartSummary{
+		PartNumber: 1, Size: 12, Filename: "Family-Weekend-part-1-of-2.zip",
+		DownloadURL: response.Parts[0].DownloadURL,
+	}, response.Parts[0])
+	assert.Equal(t, PartSummary{
+		PartNumber: 2, Size: 15, Filename: "Family-Weekend-part-2-of-2.zip",
+		DownloadURL: response.Parts[1].DownloadURL,
+	}, response.Parts[1])
+	var planToken string
+	for index, part := range response.Parts {
+		assert.NotContains(t, part.Filename, "..")
+		assert.NotContains(t, part.Filename, "/")
+		downloadURL, parseErr := url.Parse(part.DownloadURL)
+		require.NoError(t, parseErr)
+		assert.Equal(t, fmt.Sprintf("/api/me/archives/parts/%d", index+1), downloadURL.Path,
+			"archive secrets stay out of request-log paths")
+		if index == 0 {
+			planToken = downloadURL.Query().Get("token")
+			assert.NotEmpty(t, planToken)
+		} else {
+			assert.Equal(t, planToken, downloadURL.Query().Get("token"))
+		}
+	}
 	assert.ElementsMatch(t, fixture.assets[:2], source.infoCalls[0])
 
 	_, err = fixture.service.Plan(context.Background(), fixture.actor, PlanRequest{Scope: "subset", MediaIDs: []string{fixture.media[0].String(), fixture.media[2].String()}})
@@ -428,6 +445,45 @@ func TestPartsAreSessionBoundExpiringAndIndividuallySingleUse(t *testing.T) {
 	now = plan.ExpiresAt
 	_, err = fixture.service.StreamPart(context.Background(), fixture.actor, token, 2)
 	assert.ErrorIs(t, err, ErrNotFound)
+}
+
+func TestMultipartPartsUseDistinctAssetsAndSingleUseState(t *testing.T) {
+	source := &archiveStub{}
+	fixture := newArchiveFixture(t, source)
+	source.planned = []immich.ArchivePart{
+		{Size: 12, AssetIDs: []uuid.UUID{fixture.assets[0]}, CompanionOf: map[uuid.UUID]uuid.UUID{}},
+		{Size: 15, AssetIDs: []uuid.UUID{fixture.assets[1]}, CompanionOf: map[uuid.UUID]uuid.UUID{}},
+	}
+	plan, err := fixture.service.Plan(context.Background(), fixture.actor, PlanRequest{
+		Scope: "subset", MediaIDs: []string{fixture.media[0].String(), fixture.media[1].String()},
+	})
+	require.NoError(t, err)
+	require.Len(t, plan.Parts, 2)
+	token := tokenFromURL(plan.Parts[0].DownloadURL)
+	assert.Equal(t, token, tokenFromURL(plan.Parts[1].DownloadURL))
+
+	second, err := fixture.service.StreamPart(context.Background(), fixture.actor, token, 2)
+	require.NoError(t, err)
+	assert.Equal(t, "Memento-selection-part-2-of-2.zip", second.Filename)
+	secondContents, err := io.ReadAll(second.Body)
+	require.NoError(t, err)
+	require.NoError(t, second.Body.Close())
+	assert.Equal(t, int64(len(secondContents)), second.ContentLength)
+
+	first, err := fixture.service.StreamPart(context.Background(), fixture.actor, token, 1)
+	require.NoError(t, err, "consuming part two must not consume part one")
+	assert.Equal(t, "Memento-selection-part-1-of-2.zip", first.Filename)
+	firstContents, err := io.ReadAll(first.Body)
+	require.NoError(t, err)
+	require.NoError(t, first.Body.Close())
+	assert.Equal(t, int64(len(firstContents)), first.ContentLength)
+
+	assert.Equal(t, [][]uuid.UUID{{fixture.assets[1]}, {fixture.assets[0]}}, source.archiveCalls)
+	_, err = fixture.service.StreamPart(context.Background(), fixture.actor, token, 1)
+	assert.ErrorIs(t, err, ErrNotFound)
+	_, err = fixture.service.StreamPart(context.Background(), fixture.actor, token, 2)
+	assert.ErrorIs(t, err, ErrNotFound)
+	assert.Len(t, source.archiveCalls, 2, "each consumed part is rejected before reopening Immich")
 }
 
 func TestPartRejectsMalformedArchiveWithoutConsumingPart(t *testing.T) {
@@ -808,6 +864,43 @@ func TestConcurrentPartDeliveryAllowsExactlyOneStream(t *testing.T) {
 	}
 	assert.Equal(t, 1, succeeded)
 	assert.Equal(t, 1, rejected)
+}
+
+func TestPartStreamsCurrentLivePhotoPrimaryAndCompanion(t *testing.T) {
+	companion := uuid.New()
+	source := &archiveStub{}
+	fixture := newArchiveFixture(t, source)
+	source.planned = []immich.ArchivePart{{
+		Size: 30, AssetIDs: []uuid.UUID{fixture.assets[0], companion},
+		CompanionOf: map[uuid.UUID]uuid.UUID{companion: fixture.assets[0]},
+	}}
+	source.companions = map[uuid.UUID]uuid.UUID{fixture.assets[0]: companion}
+	plan, err := fixture.service.Plan(context.Background(), fixture.actor, PlanRequest{
+		Scope: "subset", MediaIDs: []string{fixture.media[0].String()},
+	})
+	require.NoError(t, err)
+
+	stream, err := fixture.service.StreamPart(context.Background(), fixture.actor,
+		tokenFromURL(plan.Parts[0].DownloadURL), 1)
+	require.NoError(t, err)
+	contents, err := io.ReadAll(stream.Body)
+	require.NoError(t, err)
+	require.NoError(t, stream.Body.Close())
+	archive, err := zip.NewReader(bytes.NewReader(contents), int64(len(contents)))
+	require.NoError(t, err)
+	require.Len(t, archive.File, 2)
+	assert.Equal(t, "Family-Weekend/0001-media.jpg", archive.File[0].Name)
+	assert.Equal(t, "Family-Weekend/0002-live-photo.jpg", archive.File[1].Name)
+	for _, file := range archive.File {
+		entry, openErr := file.Open()
+		require.NoError(t, openErr)
+		entryContents, readErr := io.ReadAll(entry)
+		require.NoError(t, readErr)
+		require.NoError(t, entry.Close())
+		assert.Len(t, entryContents, 15)
+	}
+	assert.Equal(t, [][]uuid.UUID{{fixture.assets[0]}, {fixture.assets[0], companion}}, source.infoCalls)
+	assert.Equal(t, [][]uuid.UUID{{fixture.assets[0], companion}}, source.archiveCalls)
 }
 
 func TestPartRevalidatesCurrentLivePhotoCompanion(t *testing.T) {

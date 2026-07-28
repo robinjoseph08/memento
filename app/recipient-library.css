@@ -336,6 +336,16 @@
   gap: 0.6rem;
 }
 
+.archive-part {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.archive-part > span {
+  color: #94a3b8;
+  font-size: 0.85rem;
+}
+
 .archive-downloads button {
   color: #7dd3fc;
 }

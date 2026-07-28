@@ -270,7 +270,11 @@ function MediaViewer({
   );
 }
 
-function ArchiveDownloads({
+function archivePartSize(size: number) {
+  return `${new Intl.NumberFormat().format(size)} ${size === 1 ? "byte" : "bytes"}`;
+}
+
+export function ArchiveDownloads({
   csrfToken,
   plan,
   publicComputer,
@@ -284,8 +288,20 @@ function ArchiveDownloads({
     new Set(),
   );
   const [error, setError] = useState<Error | null>(null);
+  const expiration = Date.parse(plan.expires_at);
+  const [expired, setExpired] = useState(
+    () => !Number.isFinite(expiration) || Date.now() >= expiration,
+  );
+
+  useEffect(() => {
+    const remaining = expiration - Date.now();
+    if (!Number.isFinite(expiration) || remaining <= 0) return;
+    const timeout = window.setTimeout(() => setExpired(true), remaining);
+    return () => window.clearTimeout(timeout);
+  }, [expiration]);
 
   async function download(part: ArchivePlanResponse["parts"][number]) {
+    if (expired) return;
     setDownloadingPart(part.part_number);
     setError(null);
     try {
@@ -316,10 +332,18 @@ function ArchiveDownloads({
   return (
     <section aria-label="Archive downloads" className="archive-downloads">
       <strong>{plan.name}</strong>
-      <span>
-        {plan.item_count} {plan.item_count === 1 ? "item" : "items"}, available
-        for 15 minutes
-      </span>
+      {expired ? (
+        <span>Archive plan expired. Prepare a new archive to download it.</span>
+      ) : (
+        <span>
+          {plan.item_count} {plan.item_count === 1 ? "item" : "items"}.
+          Available until{" "}
+          <time dateTime={plan.expires_at}>
+            {new Date(expiration).toLocaleString()}
+          </time>
+          .
+        </span>
+      )}
       {publicComputer ? (
         <p>
           These archive files will remain on this public computer after
@@ -333,18 +357,22 @@ function ArchiveDownloads({
           const label =
             plan.parts.length === 1 ? "archive" : `part ${part.part_number}`;
           return (
-            <button
-              disabled={downloaded || downloading}
-              key={part.part_number}
-              onClick={() => void download(part)}
-              type="button"
-            >
-              {downloaded
-                ? `Downloaded ${label}`
-                : downloading
-                  ? `Downloading ${label}…`
-                  : `Download ${label}`}
-            </button>
+            <div className="archive-part" key={part.part_number}>
+              <span>
+                {part.filename} ({archivePartSize(part.size)})
+              </span>
+              <button
+                disabled={expired || downloaded || downloading}
+                onClick={() => void download(part)}
+                type="button"
+              >
+                {downloaded
+                  ? `Downloaded ${label}`
+                  : downloading
+                    ? `Downloading ${label}…`
+                    : `Download ${label}`}
+              </button>
+            </div>
           );
         })}
       </div>
@@ -558,6 +586,9 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
             {archivePlan ? (
               <ArchiveDownloads
                 csrfToken={session.csrf_token}
+                key={archivePlan.parts
+                  .map((part) => part.download_url)
+                  .join("|")}
                 plan={archivePlan}
                 publicComputer={session.session_type === "public"}
               />
@@ -689,6 +720,9 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
                   {destination === "photos" && archivePlan ? (
                     <ArchiveDownloads
                       csrfToken={session.csrf_token}
+                      key={archivePlan.parts
+                        .map((part) => part.download_url)
+                        .join("|")}
                       plan={archivePlan}
                       publicComputer={session.session_type === "public"}
                     />

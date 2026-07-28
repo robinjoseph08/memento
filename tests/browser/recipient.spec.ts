@@ -121,7 +121,7 @@ async function recipientAPI(
             payload.scope === "event" ? "Family-weekend" : "Memento-selection",
           item_count: 1,
           total_size: 3,
-          expires_at: "2026-07-27T12:15:00Z",
+          expires_at: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
           parts: [
             {
               part_number: 1,
