@@ -10,6 +10,7 @@ import { BrowserRouter } from "react-router-dom";
 import { afterEach, expect, test, vi } from "vitest";
 
 import { App } from "./App";
+import { PWA_UPDATE_EVENT } from "./pwa";
 
 const contentionWait = { timeout: 5_000 };
 
@@ -1421,6 +1422,144 @@ test("keeps sign-out available from the draft organization workspace", async () 
     method: "POST",
     headers: { "X-Memento-CSRF": csrfToken },
   });
+});
+
+test("keeps dirty draft work through declined update and offline transitions", async () => {
+  const csrfToken = "c".repeat(64);
+  const eventID = "11111111-1111-4111-8111-111111111111";
+  const momentID = "22222222-2222-4222-8222-222222222222";
+  const mediaID = "33333333-3333-4333-8333-333333333333";
+  const draft = {
+    id: eventID,
+    lifecycle: "draft",
+    title: "Family weekend",
+    description: "",
+    place_labels: [],
+    grouping_timezone: "UTC",
+    version: 1,
+    final_review_complete: false,
+    published_editable_version: null,
+    published_attendance_recovery_required: false,
+    sources: [],
+    moments: [
+      {
+        id: momentID,
+        title: "Friday",
+        place_labels: [],
+        proposed_day: "2026-05-01",
+        grouping_timezone: "UTC",
+        source_days: ["2026-05-01"],
+        proposal_kind: "local_day",
+        cover_media_item_id: mediaID,
+        attendance_complete: false,
+        audience_complete: false,
+        media_items: [
+          {
+            id: mediaID,
+            media_type: "image",
+            width: 1200,
+            height: 800,
+            local_date_time: null,
+          },
+        ],
+      },
+    ],
+    unassigned_media: [],
+    withdrawal_targets: [],
+    withdrawals: [],
+    created_at: "2026-05-03T00:00:00Z",
+    updated_at: "2026-05-03T00:00:00Z",
+  };
+  window.history.replaceState(null, "", "/?workspace=drafts");
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = requestPath(input);
+      if (path === "/api/setup")
+        return Promise.resolve(
+          jsonResponse({ error: { message: "Setup not found." } }, 404),
+        );
+      if (path === "/api/session")
+        return Promise.resolve(
+          jsonResponse({
+            display_name: "Robin Joseph",
+            session_type: "public",
+            csrf_token: csrfToken,
+            curator: true,
+          }),
+        );
+      if (path === "/api/sessions")
+        return Promise.resolve(jsonResponse({ sessions: [] }));
+      if (path === "/api/events")
+        return Promise.resolve(
+          jsonResponse({
+            events: [
+              {
+                id: eventID,
+                title: draft.title,
+                version: draft.version,
+                moment_count: 1,
+                unassigned_count: 0,
+                updated_at: draft.updated_at,
+              },
+            ],
+          }),
+        );
+      if (path === `/api/events/${eventID}`)
+        return Promise.resolve(jsonResponse(draft));
+      if (
+        path === `/api/events/${eventID}/organization` &&
+        init?.method === "PUT"
+      )
+        return new Promise<Response>(() => undefined);
+      return Promise.reject(new Error(`Unexpected request: ${path}`));
+    }),
+  );
+  const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+  const acceptUpdate = vi.fn();
+
+  renderApp();
+  fireEvent.click(
+    await screen.findByRole("button", { name: /Family weekend/ }),
+  );
+  const title = await screen.findByLabelText("Title for Moment 1");
+  fireEvent.change(title, { target: { value: "Not saved yet" } });
+
+  fireEvent(
+    window,
+    new CustomEvent(PWA_UPDATE_EVENT, { detail: acceptUpdate }),
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Update and restart" }));
+  expect(confirm).toHaveBeenNthCalledWith(
+    1,
+    "Discard changes that have not finished saving and update Memento?",
+  );
+  expect(acceptUpdate).not.toHaveBeenCalled();
+  expect(screen.getByText("Your unsaved changes were kept.")).toBeVisible();
+
+  fireEvent.offline(window);
+  expect(confirm).toHaveBeenNthCalledWith(
+    2,
+    "Discard changes that have not finished saving and go offline?",
+  );
+  expect(screen.getByLabelText("Title for Moment 1")).toHaveValue(
+    "Not saved yet",
+  );
+  expect(
+    screen.getByText(/Reconnect before leaving while these changes/),
+  ).toBeVisible();
+  expect(
+    screen.queryByRole("heading", { name: "Memento is offline" }),
+  ).not.toBeInTheDocument();
+  fireEvent.online(window);
+
+  expect(await screen.findByText("Saving…")).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "Update and restart" }));
+  expect(confirm).toHaveBeenCalledTimes(2);
+  expect(acceptUpdate).not.toHaveBeenCalled();
+  expect(
+    screen.getByText("Wait for the current save to finish before restarting."),
+  ).toBeVisible();
 });
 
 test("validates Immich and supports private Source album ignore and restore triage", async () => {

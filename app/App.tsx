@@ -21,6 +21,7 @@ import { FamilyManager } from "./FamilyManager";
 import { InvitationSuggestions } from "./InvitationSuggestions";
 import { PeopleManager } from "./PeopleManager";
 import { OfflineNotice, PWAUpdatePrompt, ThemeToggle } from "./PWAControls";
+import { PWA_RESTART_GUARD_EVENT, type PWARestartGuardDetail } from "./pwa";
 import { RepairWorkspace } from "./RepairWorkspace";
 import { RecipientLibrary } from "./RecipientLibrary";
 import { useOnlineStatus } from "./useOnlineStatus";
@@ -1410,6 +1411,7 @@ function ReadyCard({
   const [searchParams, setSearchParams] = useSearchParams();
   const [draftsDirty, setDraftsDirty] = useState(false);
   const [draftsSaving, setDraftsSaving] = useState(false);
+  const [preserveDraftOffline, setPreserveDraftOffline] = useState(false);
   const draftsRequested = searchParams.get("workspace") === "drafts";
   const signOut = useMutation({
     mutationFn: () => {
@@ -1446,7 +1448,60 @@ function ReadyCard({
     return () => window.removeEventListener("popstate", protectDraftHistory);
   }, [draftsDirty, draftsSaving, setSearchParams]);
 
-  if (session && !online) {
+  useEffect(() => {
+    const protectDraftOnOffline = () => {
+      if (!draftsDirty) {
+        setPreserveDraftOffline(false);
+        return;
+      }
+      if (
+        draftsSaving ||
+        !window.confirm(
+          "Discard changes that have not finished saving and go offline?",
+        )
+      ) {
+        setPreserveDraftOffline(true);
+        return;
+      }
+      setDraftsDirty(false);
+      setPreserveDraftOffline(false);
+    };
+    const resetOfflineProtection = () => setPreserveDraftOffline(false);
+    const protectDraftOnRestart = (event: Event) => {
+      if (!draftsDirty) return;
+      const restartEvent = event as CustomEvent<PWARestartGuardDetail>;
+      if (draftsSaving) {
+        restartEvent.detail.blockedBy = "saving";
+        event.preventDefault();
+        return;
+      }
+      if (
+        !window.confirm(
+          "Discard changes that have not finished saving and update Memento?",
+        )
+      ) {
+        restartEvent.detail.blockedBy = "dirty";
+        event.preventDefault();
+        return;
+      }
+      setDraftsDirty(false);
+    };
+    window.addEventListener("offline", protectDraftOnOffline);
+    window.addEventListener("online", resetOfflineProtection);
+    window.addEventListener(PWA_RESTART_GUARD_EVENT, protectDraftOnRestart);
+    return () => {
+      window.removeEventListener("offline", protectDraftOnOffline);
+      window.removeEventListener("online", resetOfflineProtection);
+      window.removeEventListener(
+        PWA_RESTART_GUARD_EVENT,
+        protectDraftOnRestart,
+      );
+    };
+  }, [draftsDirty, draftsSaving]);
+
+  const keepDirtyDraftOpenOffline =
+    session?.curator && !online && draftsDirty && preserveDraftOffline;
+  if (session && !online && !keepDirtyDraftOpenOffline) {
     return (
       <div className="offline-shell">
         <ThemeToggle />
@@ -1502,6 +1557,12 @@ function ReadyCard({
           </button>
         </div>
         <ErrorMessage error={signOut.error} />
+        {!online ? (
+          <p className="form-error" role="alert">
+            Memento is offline. Reconnect before leaving while these changes
+            remain unsaved.
+          </p>
+        ) : null}
         <EventOrganizer
           onDirtyChange={setDraftsDirty}
           onSavingChange={setDraftsSaving}

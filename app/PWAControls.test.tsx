@@ -5,6 +5,7 @@ import { OfflineNotice, PWAUpdatePrompt, ThemeToggle } from "./PWAControls";
 import {
   applyTheme,
   initializeTheme,
+  PWA_RESTART_GUARD_EVENT,
   PWA_UPDATE_EVENT,
   readTheme,
   registerServiceWorker,
@@ -112,6 +113,38 @@ test("an available update waits for explicit approval", () => {
   fireEvent.click(screen.getByRole("button", { name: "Update and restart" }));
 
   expect(acceptUpdate).toHaveBeenCalledOnce();
+  expect(
+    screen.queryByText("A Memento update is ready."),
+  ).not.toBeInTheDocument();
+});
+
+test("an update restart remains pending when current work blocks it", () => {
+  const acceptUpdate = vi.fn();
+  const protectSavingWork = (event: Event) => {
+    const guard = event as CustomEvent<{ blockedBy?: string }>;
+    guard.detail.blockedBy = "saving";
+    event.preventDefault();
+  };
+  window.addEventListener(PWA_RESTART_GUARD_EVENT, protectSavingWork);
+
+  try {
+    render(<PWAUpdatePrompt />);
+    fireEvent(
+      window,
+      new CustomEvent(PWA_UPDATE_EVENT, { detail: acceptUpdate }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Update and restart" }));
+
+    expect(acceptUpdate).not.toHaveBeenCalled();
+    expect(
+      screen.getByText(
+        "Wait for the current save to finish before restarting.",
+      ),
+    ).toBeVisible();
+    expect(screen.getByText("A Memento update is ready.")).toBeVisible();
+  } finally {
+    window.removeEventListener(PWA_RESTART_GUARD_EVENT, protectSavingWork);
+  }
 });
 
 test("accepting an update already activated by another tab restarts immediately", async () => {

@@ -2,6 +2,11 @@ export type Theme = "dark" | "light";
 
 export const THEME_STORAGE_KEY = "memento-theme";
 export const PWA_UPDATE_EVENT = "memento-pwa-update";
+export const PWA_RESTART_GUARD_EVENT = "memento-pwa-restart-guard";
+
+export interface PWARestartGuardDetail {
+  blockedBy?: "dirty" | "saving";
+}
 
 const THEME_COLORS: Record<Theme, string> = {
   dark: "#020617",
@@ -62,12 +67,15 @@ export function registerServiceWorker(
       .then((registration) => {
         let updateAccepted = false;
         let reloading = false;
+        const announcedWorkers = new WeakSet<ServiceWorker>();
         const restart = () => {
           if (reloading) return;
           reloading = true;
           reload();
         };
         const announceUpdate = (worker: ServiceWorker) => {
+          if (announcedWorkers.has(worker)) return;
+          announcedWorkers.add(worker);
           const acceptUpdate = () => {
             updateAccepted = true;
             if (

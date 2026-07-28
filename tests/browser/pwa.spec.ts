@@ -194,6 +194,12 @@ test("@desktop manifest, browser installability, scoped restart, and cache priva
   request,
 }) => {
   const runtimeObservation = observeRuntimeRequests(context);
+  await page.addInitScript((updateEvent) => {
+    window.addEventListener(updateEvent, () => {
+      const count = Number(sessionStorage.getItem(updateEvent) ?? "0");
+      sessionStorage.setItem(updateEvent, String(count + 1));
+    });
+  }, "memento-pwa-update");
   await recipientAPI(page);
 
   const manifestResponse = await request.get("/manifest.webmanifest");
@@ -230,6 +236,12 @@ test("@desktop manifest, browser installability, scoped restart, and cache priva
         type: "image/png",
         purpose: "maskable",
       }),
+      expect.objectContaining({
+        src: "/icon-monochrome.png",
+        sizes: "512x512",
+        type: "image/png",
+        purpose: "monochrome",
+      }),
     ]),
   );
 
@@ -251,6 +263,12 @@ test("@desktop manifest, browser installability, scoped restart, and cache priva
       size: 512,
       digest:
         "34bf30cd5e3446248d0f0fee6cb3ac7f7d03788fcc0236956251acb94f53a025",
+    },
+    {
+      path: "/icon-monochrome.png",
+      size: 512,
+      digest:
+        "b9c97949eb395c63748663400ca047dc503e7a5d276e1326e83ca1f9c1660e53",
     },
     {
       path: "/apple-touch-icon.png",
@@ -400,13 +418,41 @@ test("@desktop manifest, browser installability, scoped restart, and cache priva
       new URL(rejectedCachePaths.query, page.url()).href,
     );
 
-    await page.evaluate(() =>
-      navigator.serviceWorker.register(
-        "/service-worker.js?browser-update=second",
-        { scope: "/" },
-      ),
+    const initialCacheNames = await page.evaluate(() => caches.keys());
+    const initialCacheName = initialCacheNames.find((name) =>
+      name.startsWith("memento-shell-"),
     );
+    expect(initialCacheName).toBeTruthy();
+    await context.addCookies([
+      {
+        name: "memento-worker-revision",
+        value: "second",
+        url: new URL("/", page.url()).href,
+      },
+    ]);
+    const workerUpdateRequests: string[] = [];
+    context.on("request", (networkRequest) => {
+      if (new URL(networkRequest.url()).pathname === "/service-worker.js") {
+        workerUpdateRequests.push(networkRequest.url());
+      }
+    });
+
+    await page.evaluate(async () => {
+      const registration = await navigator.serviceWorker.ready;
+      await registration.update();
+    });
     await expect(page.getByText("A Memento update is ready.")).toBeVisible();
+    expect(
+      await page.evaluate(() => sessionStorage.getItem("memento-pwa-update")),
+    ).toBe("1");
+    expect(workerUpdateRequests.length).toBeGreaterThan(0);
+    expect(
+      workerUpdateRequests.every(
+        (url) =>
+          url === new URL("/service-worker.js", page.url()).href &&
+          new URL(url).search === "",
+      ),
+    ).toBe(true);
 
     const restarted = page.waitForEvent("framenavigated", {
       predicate: (frame) => frame === page.mainFrame(),
@@ -420,8 +466,28 @@ test("@desktop manifest, browser installability, scoped restart, and cache priva
           () => navigator.serviceWorker.controller?.scriptURL ?? "",
         ),
       )
-      .toContain("/service-worker.js?browser-update=second");
+      .toBe(new URL("/service-worker.js", page.url()).href);
+    await expect
+      .poll(() => page.evaluate(() => caches.keys()))
+      .toEqual(["memento-shell-v7-browser-revision"]);
+    expect(await page.evaluate(() => caches.keys())).not.toContain(
+      initialCacheName,
+    );
     await expect(page.getByRole("heading", { name: "Photos" })).toBeVisible();
+
+    const stableRevision = await page.evaluate(async () => {
+      const registration = await navigator.serviceWorker.ready;
+      await registration.update();
+      return {
+        active: registration.active?.state,
+        waiting: registration.waiting?.state ?? null,
+      };
+    });
+    expect(stableRevision).toEqual({ active: "activated", waiting: null });
+    expect(
+      await page.evaluate(() => sessionStorage.getItem("memento-pwa-update")),
+    ).toBe("1");
+    await expect(page.getByText("A Memento update is ready.")).toHaveCount(0);
   }
 
   await runtimeObservation.waitForQuiescence(page);
