@@ -23,6 +23,19 @@ func init() {
 						ADD COLUMN content_revision bigint NOT NULL DEFAULT 0 CHECK (content_revision >= 0)`,
 					`CREATE UNIQUE INDEX content_withdrawals_content_revision_idx
 						ON content_withdrawals (content_revision) WHERE content_revision > 0`,
+					`CREATE FUNCTION content_is_withdrawn(
+						event_id uuid, moment_id uuid, media_id uuid
+					) RETURNS boolean
+					LANGUAGE sql STABLE PARALLEL SAFE
+					SET search_path = public
+					RETURN EXISTS (
+						SELECT 1 FROM content_withdrawals AS withdrawal
+						WHERE withdrawal.restored_at IS NULL AND (
+							(withdrawal.target_kind = 'event' AND withdrawal.target_id = event_id)
+							OR (withdrawal.target_kind = 'moment' AND withdrawal.target_id = moment_id)
+							OR (withdrawal.target_kind = 'media' AND withdrawal.target_id = media_id)
+						)
+					)`,
 					`ALTER TABLE publication_audit_events
 						DROP CONSTRAINT publication_audit_events_target_kind_check,
 						ADD CONSTRAINT publication_audit_events_target_kind_check
@@ -42,6 +55,7 @@ func init() {
 						DROP CONSTRAINT publication_audit_events_target_kind_check,
 						ADD CONSTRAINT publication_audit_events_target_kind_check
 						CHECK (target_kind IN ('moment', 'loose_item'))`,
+					`DROP FUNCTION content_is_withdrawn(uuid, uuid, uuid)`,
 					`DROP INDEX content_withdrawals_content_revision_idx`,
 					`ALTER TABLE content_withdrawals DROP COLUMN content_revision, DROP COLUMN reason`,
 					`DROP INDEX publications_content_revision_idx`,

@@ -629,23 +629,13 @@ func (s *Service) HandlePublicationJob(ctx context.Context, job worker.Job) erro
 		SELECT 1 FROM current_published_events AS current
 		WHERE current.event_id = ? AND current.publication_id = ?
 		  AND NOT EXISTS (
-			SELECT 1 FROM content_withdrawals
-			WHERE restored_at IS NULL AND target_kind = 'event' AND target_id = current.event_id
-		  )
-		  AND NOT EXISTS (
-			SELECT 1 FROM content_withdrawals AS withdrawal
-			JOIN published_moments AS moment
-			  ON moment.publication_id = current.publication_id
-			 AND moment.draft_moment_id = withdrawal.target_id
-			WHERE withdrawal.restored_at IS NULL AND withdrawal.target_kind = 'moment'
-		  )
-		  AND NOT EXISTS (
-			SELECT 1 FROM content_withdrawals AS withdrawal
-			JOIN published_moments AS moment ON moment.publication_id = current.publication_id
-			JOIN published_media_placements AS placement
-			  ON placement.published_moment_id = moment.id
-			 AND placement.media_item_id = withdrawal.target_id
-			WHERE withdrawal.restored_at IS NULL AND withdrawal.target_kind = 'media'
+			SELECT 1 FROM current_published_placements AS placement
+			JOIN published_moments AS moment ON moment.id = placement.published_moment_id
+			WHERE placement.event_id = current.event_id
+			  AND placement.publication_id = current.publication_id
+			  AND content_is_withdrawn(
+				placement.event_id, moment.draft_moment_id, placement.media_item_id
+			  )
 		  )
 	)`, payload.EventID, payload.PublicationID).Scan(ctx, &deliverable); err != nil {
 		return err
@@ -672,18 +662,9 @@ func (s *Service) loadPublishedEvent(ctx context.Context, db bun.IDB, eventID, a
 			  ON placement.event_id = entitlement.event_id AND placement.media_item_id = entitlement.media_item_id
 			JOIN published_moments AS moment ON moment.id = placement.published_moment_id
 			WHERE entitlement.event_id = current.event_id AND entitlement.recipient_access_generation_id = ?
-			  AND NOT EXISTS (
-				SELECT 1 FROM content_withdrawals
-				WHERE restored_at IS NULL AND target_kind = 'moment' AND target_id = moment.draft_moment_id
+			  AND NOT content_is_withdrawn(
+				placement.event_id, moment.draft_moment_id, placement.media_item_id
 			  )
-			  AND NOT EXISTS (
-				SELECT 1 FROM content_withdrawals
-				WHERE restored_at IS NULL AND target_kind = 'media' AND target_id = placement.media_item_id
-			  )
-		  )
-		  AND NOT EXISTS (
-			SELECT 1 FROM content_withdrawals
-			WHERE restored_at IS NULL AND target_kind = 'event' AND target_id = current.event_id
 		  )
 	`, accessID, eventID, accessID).Scan(ctx, &publicationID, &view.Title, &view.Description, &coverID)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -715,13 +696,8 @@ func (s *Service) loadPublishedEvent(ctx context.Context, db bun.IDB, eventID, a
 		JOIN published_moments AS moment ON moment.id = placement.published_moment_id
 		JOIN media_items AS media ON media.id = placement.media_item_id
 		WHERE placement.event_id = ?
-		  AND NOT EXISTS (
-			SELECT 1 FROM content_withdrawals
-			WHERE restored_at IS NULL AND target_kind = 'moment' AND target_id = moment.draft_moment_id
-		  )
-		  AND NOT EXISTS (
-			SELECT 1 FROM content_withdrawals
-			WHERE restored_at IS NULL AND target_kind = 'media' AND target_id = placement.media_item_id
+		  AND NOT content_is_withdrawn(
+			placement.event_id, moment.draft_moment_id, placement.media_item_id
 		  )
 		ORDER BY placement.position
 	`, accessID, eventID).Scan(ctx, &view.Media); err != nil {

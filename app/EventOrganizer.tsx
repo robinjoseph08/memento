@@ -19,6 +19,12 @@ import type { SessionResponse } from "./types/generated/setup";
 type Pane = "work" | "organize" | "inspect";
 type SaveState = "saved" | "saving" | "unsaved" | "failed" | "conflict";
 type SaveAttempt = { event: DraftEvent; revision: number };
+type WithdrawalTargetKind = "event" | "moment" | "media";
+type WithdrawalTarget = {
+  kind: WithdrawalTargetKind;
+  id: string;
+  label: string;
+};
 
 function mediaLabel(item: MediaItem) {
   if (!item.local_date_time) return `Undated ${item.media_type}`;
@@ -175,7 +181,7 @@ export function EventOrganizer({
   const [notifyRecipients, setNotifyRecipients] = useState(true);
   const [previewRecipientID, setPreviewRecipientID] = useState("");
   const [previewOpen, setPreviewOpen] = useState(false);
-  const [withdrawTarget, setWithdrawTarget] = useState("");
+  const [withdrawTarget, setWithdrawTarget] = useState<WithdrawalTarget>();
   const [withdrawReason, setWithdrawReason] = useState("");
   const revisionRef = useRef(0);
   const latestDraftRef = useRef<DraftEvent | undefined>(undefined);
@@ -265,13 +271,13 @@ export function EventOrganizer({
   });
 
   const withdraw = useMutation({
-    mutationFn: ({ kind, id }: { kind: string; id: string }) =>
+    mutationFn: (target: WithdrawalTarget) =>
       apiJSON<Withdrawal>("/api/withdrawals", {
         method: "POST",
         headers: { "X-Memento-CSRF": session.csrf_token },
         body: JSON.stringify({
-          target_kind: kind,
-          target_id: id,
+          target_kind: target.kind,
+          target_id: target.id,
           reason: withdrawReason,
         }),
       }),
@@ -680,6 +686,35 @@ export function EventOrganizer({
         : [],
     [currentDraft],
   );
+  const withdrawalTargets = useMemo<WithdrawalTarget[]>(() => {
+    if (!currentDraft) return [];
+    const targets: WithdrawalTarget[] = [
+      {
+        kind: "event",
+        id: currentDraft.id,
+        label: `Event: ${currentDraft.title}`,
+      },
+    ];
+    currentDraft.moments.forEach((moment, index) => {
+      targets.push({
+        kind: "moment",
+        id: moment.id,
+        label: `Moment: ${moment.title || `Moment ${index + 1}`}`,
+      });
+    });
+    for (const item of new Map(
+      currentDraft.moments
+        .flatMap((moment) => moment.media_items)
+        .map((item) => [item.id, item]),
+    ).values()) {
+      targets.push({
+        kind: "media",
+        id: item.id,
+        label: `Media: ${mediaLabel(item)}`,
+      });
+    }
+    return targets;
+  }, [currentDraft]);
 
   return (
     <section aria-labelledby="curator-work-title" className="curator-workspace">
@@ -815,7 +850,11 @@ export function EventOrganizer({
                     setPreviewOpen(false);
                     publish.reset();
                     withdraw.reset();
-                    setWithdrawTarget(`event:${event.id}`);
+                    setWithdrawTarget({
+                      kind: "event",
+                      id: event.id,
+                      label: `Event: ${event.title}`,
+                    });
                     setWithdrawReason("");
                     setSelectedID(event.id);
                     setActivePane("organize");
@@ -1114,34 +1153,21 @@ export function EventOrganizer({
                     Published target
                     <select
                       onChange={(event) => {
-                        setWithdrawTarget(event.target.value);
+                        setWithdrawTarget(
+                          withdrawalTargets.find(
+                            (target) => target.id === event.target.value,
+                          ),
+                        );
                         withdraw.reset();
                       }}
-                      value={withdrawTarget}
+                      value={withdrawTarget?.id ?? ""}
                     >
-                      <option value={`event:${currentDraft.id}`}>
-                        Event: {currentDraft.title}
-                      </option>
-                      {currentDraft.moments.map((moment, index) => (
+                      {withdrawalTargets.map((target) => (
                         <option
-                          key={`moment:${moment.id}`}
-                          value={`moment:${moment.id}`}
+                          key={`${target.kind}:${target.id}`}
+                          value={target.id}
                         >
-                          Moment: {moment.title || `Moment ${index + 1}`}
-                        </option>
-                      ))}
-                      {Array.from(
-                        new Map(
-                          currentDraft.moments
-                            .flatMap((moment) => moment.media_items)
-                            .map((item) => [item.id, item]),
-                        ).values(),
-                      ).map((item) => (
-                        <option
-                          key={`media:${item.id}`}
-                          value={`media:${item.id}`}
-                        >
-                          Media: {mediaLabel(item)}
+                          {target.label}
                         </option>
                       ))}
                     </select>
@@ -1165,13 +1191,13 @@ export function EventOrganizer({
                       !withdrawReason.trim()
                     }
                     onClick={() => {
-                      const [kind, id] = withdrawTarget.split(":");
                       if (
+                        withdrawTarget &&
                         window.confirm(
                           "Withdraw Recipient access immediately? Identity and history will be preserved.",
                         )
                       ) {
-                        withdraw.mutate({ kind, id });
+                        withdraw.mutate(withdrawTarget);
                       }
                     }}
                     type="button"

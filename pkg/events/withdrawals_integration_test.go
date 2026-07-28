@@ -4,20 +4,42 @@ package events
 
 import (
 	"context"
+	"net/http"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/labstack/echo/v4"
+	"github.com/robinjoseph08/memento/pkg/errcodes"
+	"github.com/robinjoseph08/memento/pkg/library"
 	"github.com/robinjoseph08/memento/pkg/outbox"
+	"github.com/robinjoseph08/memento/pkg/setup"
 	"github.com/robinjoseph08/memento/pkg/worker"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
+type withdrawalRecipientAuthorizer struct {
+	actor setup.SessionActor
+}
+
+func (authorizer withdrawalRecipientAuthorizer) AuthorizeSession(context.Context, string, string, bool) (setup.SessionActor, error) {
+	return authorizer.actor, nil
+}
+
+func withdrawalRecipientHTTP(fixture publicationFixture, actor setup.SessionActor) *echo.Echo {
+	e := echo.New()
+	e.HTTPErrorHandler = errcodes.NewHandler().Handle
+	library.RegisterRoutes(e, library.NewHandler(library.New(fixture.db, nil), withdrawalRecipientAuthorizer{
+		actor: actor,
+	}))
+	return e
+}
+
 func TestWithdrawalImmediatelyDeniesOnlyThePublishedTargetAndPreservesHistory(t *testing.T) {
 	for _, test := range []struct {
 		name               string
-		kind               string
+		kind               WithdrawalTargetKind
 		target             func(publicationFixture) uuid.UUID
 		expectedRecipients int
 		invalidatedReview  int
@@ -34,6 +56,17 @@ func TestWithdrawalImmediatelyDeniesOnlyThePublishedTargetAndPreservesHistory(t 
 			ctx := context.Background()
 			publication, err := fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, fixture.request())
 			require.NoError(t, err)
+			recipientActor := fixture.actorFor("shared")
+			_, err = fixture.db.NewRaw(`INSERT INTO sessions (
+				id, credential_hash, person_id, recipient_access_generation_id,
+				security_epoch, session_type, idle_expires_at
+			) SELECT ?, decode(repeat('43', 32), 'hex'), ?, ?, security_epoch, 'trusted', now() + interval '1 hour'
+			  FROM system_settings WHERE id = 1`, recipientActor.SessionID, recipientActor.PersonID,
+				recipientActor.AccessID).Exec(ctx)
+			require.NoError(t, err)
+			recipientHTTP := withdrawalRecipientHTTP(fixture, recipientActor)
+			openedPath := "/api/me/events/" + fixture.event.String()
+			require.Equal(t, http.StatusOK, draftRequest(recipientHTTP, http.MethodGet, openedPath, "").Code)
 			_, err = fixture.db.NewRaw(`INSERT INTO favorites (recipient_person_id, media_item_id) VALUES (?, ?)`, fixture.people["shared"], fixture.media[0]).Exec(ctx)
 			require.NoError(t, err)
 			var outboxBefore int
@@ -59,6 +92,11 @@ func TestWithdrawalImmediatelyDeniesOnlyThePublishedTargetAndPreservesHistory(t 
 			} else {
 				assert.NoError(t, hiddenErr)
 			}
+			openedResponse := draftRequest(recipientHTTP, http.MethodGet, openedPath, "")
+			guessedResponse := draftRequest(recipientHTTP, http.MethodGet, "/api/me/events/"+uuid.NewString(), "")
+			assert.Equal(t, http.StatusNotFound, openedResponse.Code, "a previously opened Recipient route must be denied")
+			assert.Equal(t, guessedResponse.Code, openedResponse.Code, "withdrawn and guessed routes must be indistinguishable")
+			assert.Equal(t, guessedResponse.Body.String(), openedResponse.Body.String())
 
 			var incomplete, snapshots, publications, audienceEntries, favorites, outboxAfter, pendingOutbox int
 			require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM draft_moments WHERE event_id = ? AND NOT audience_complete`, fixture.event).Scan(ctx, &incomplete))
@@ -85,57 +123,83 @@ func TestWithdrawalImmediatelyDeniesOnlyThePublishedTargetAndPreservesHistory(t 
 			require.NoError(t, fixture.db.NewRaw(`SELECT action, metadata->>'reason' FROM publication_audit_events WHERE event_id = ? AND action = 'content_withdrawn'`, fixture.event).Scan(ctx, &auditAction, &auditReason))
 			assert.Equal(t, "content_withdrawn", auditAction)
 			assert.Equal(t, "Requested by the family", auditReason)
+			event, err := fixture.service.GetEvent(ctx, fixture.event)
+			require.NoError(t, err)
+			require.Len(t, event.Withdrawals, 1)
+			assert.Equal(t, test.kind, event.Withdrawals[0].TargetKind)
+			assert.Equal(t, test.target(fixture).String(), event.Withdrawals[0].TargetID)
+			assert.Equal(t, "Requested by the family", event.Withdrawals[0].Reason)
 		})
 	}
 }
 
-func TestWithdrawalCannotBeToggledAndRestoresOnlyThroughFreshReviewedPublication(t *testing.T) {
-	fixture := newPublicationFixture(t)
-	ctx := context.Background()
-	first, err := fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, fixture.request())
-	require.NoError(t, err)
-	_, err = fixture.service.Withdraw(ctx, fixture.actor, WithdrawRequest{
-		TargetKind: "moment", TargetID: fixture.moments[0].String(), Reason: "Review access",
-	})
-	require.NoError(t, err)
+func TestWithdrawalCannotBeToggledAndRestoresEveryTargetOnlyThroughFreshReviewedPublication(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		kind    WithdrawalTargetKind
+		target  func(publicationFixture) uuid.UUID
+		reviews []int
+	}{
+		{name: "Event", kind: WithdrawalTargetEvent, target: func(f publicationFixture) uuid.UUID { return f.event }, reviews: []int{0, 1, 2}},
+		{name: "Moment", kind: WithdrawalTargetMoment, target: func(f publicationFixture) uuid.UUID { return f.moments[0] }, reviews: []int{0}},
+		{name: "Media", kind: WithdrawalTargetMedia, target: func(f publicationFixture) uuid.UUID { return f.media[0] }, reviews: []int{0}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newPublicationFixture(t)
+			ctx := context.Background()
+			first, err := fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, fixture.request())
+			require.NoError(t, err)
+			targetID := test.target(fixture)
+			_, err = fixture.service.Withdraw(ctx, fixture.actor, WithdrawRequest{
+				TargetKind: test.kind, TargetID: targetID.String(), Reason: "Review access",
+			})
+			require.NoError(t, err)
 
-	_, err = fixture.service.Withdraw(ctx, fixture.actor, WithdrawRequest{
-		TargetKind: "moment", TargetID: fixture.moments[0].String(), Reason: "Try a toggle",
-	})
-	assert.ErrorIs(t, err, ErrAlreadyWithdrawn)
-	_, err = fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, PublishEventRequest{Version: 8})
-	assert.ErrorIs(t, err, ErrPublicationNotReady, "the older Audience must not silently restore access")
+			_, err = fixture.service.Withdraw(ctx, fixture.actor, WithdrawRequest{
+				TargetKind: test.kind, TargetID: targetID.String(), Reason: "Try a toggle",
+			})
+			assert.ErrorIs(t, err, ErrAlreadyWithdrawn)
+			_, err = fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, PublishEventRequest{Version: 8})
+			assert.ErrorIs(t, err, ErrPublicationNotReady, "the older Audience must not silently restore access")
 
-	freshSnapshot := uuid.New()
-	_, err = fixture.db.NewRaw(`
-		INSERT INTO audience_snapshots (id, target_kind, target_id, approved_by_person_id, approved_at, label)
-		VALUES (?, 'moment', ?, ?, now(), 'Shared');
-		INSERT INTO audience_snapshot_entries (snapshot_id, recipient_person_id, recipient_access_generation_id)
-		VALUES (?, ?, ?);
-		INSERT INTO current_audience_snapshots (target_kind, target_id, snapshot_id)
-		VALUES ('moment', ?, ?);
-		UPDATE draft_moments SET audience_complete = true WHERE id = ?;
-		UPDATE events SET final_review_complete = true WHERE id = ?
-	`, freshSnapshot, fixture.moments[0], fixture.actor.PersonID,
-		freshSnapshot, fixture.people["shared"], fixture.access["shared"],
-		fixture.moments[0], freshSnapshot, fixture.moments[0], fixture.event).Exec(ctx)
-	require.NoError(t, err)
+			for _, index := range test.reviews {
+				freshSnapshot := uuid.New()
+				_, err = fixture.db.NewRaw(`
+					INSERT INTO audience_snapshots (id, target_kind, target_id, approved_by_person_id, approved_at, label)
+					VALUES (?, 'moment', ?, ?, now(), 'Shared');
+					INSERT INTO audience_snapshot_entries (snapshot_id, recipient_person_id, recipient_access_generation_id)
+					SELECT ?, entry.recipient_person_id, entry.recipient_access_generation_id
+					FROM audience_entries AS entry
+					JOIN published_moments AS moment ON moment.id = entry.published_moment_id
+					WHERE moment.publication_id = ? AND moment.draft_moment_id = ?;
+					INSERT INTO current_audience_snapshots (target_kind, target_id, snapshot_id)
+					VALUES ('moment', ?, ?);
+					UPDATE draft_moments SET audience_complete = true WHERE id = ?
+				`, freshSnapshot, fixture.moments[index], fixture.actor.PersonID,
+					freshSnapshot, first.ID, fixture.moments[index], fixture.moments[index],
+					freshSnapshot, fixture.moments[index]).Exec(ctx)
+				require.NoError(t, err)
+			}
+			_, err = fixture.db.NewRaw(`UPDATE events SET final_review_complete = true WHERE id = ?`, fixture.event).Exec(ctx)
+			require.NoError(t, err)
 
-	second, err := fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, PublishEventRequest{Version: 8})
-	require.NoError(t, err)
-	assert.NotEqual(t, first.ID, second.ID)
-	view, err := fixture.service.RecipientEvent(ctx, fixture.actorFor("shared"), fixture.event)
-	require.NoError(t, err)
-	assert.Equal(t, second.ID, view.PublicationID)
+			second, err := fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, PublishEventRequest{Version: 8})
+			require.NoError(t, err)
+			assert.NotEqual(t, first.ID, second.ID)
+			view, err := fixture.service.RecipientEvent(ctx, fixture.actorFor("shared"), fixture.event)
+			require.NoError(t, err)
+			assert.Equal(t, second.ID, view.PublicationID)
 
-	var restoredPublication uuid.UUID
-	var restoredAt *string
-	require.NoError(t, fixture.db.NewRaw(`SELECT restored_by_publication_id, restored_at::text FROM content_withdrawals WHERE target_kind = 'moment' AND target_id = ?`, fixture.moments[0]).Scan(ctx, &restoredPublication, &restoredAt))
-	assert.Equal(t, uuid.MustParse(second.ID), restoredPublication)
-	assert.NotNil(t, restoredAt)
-	var restoredAudit int
-	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM publication_audit_events WHERE event_id = ? AND action = 'content_restored_by_publication'`, fixture.event).Scan(ctx, &restoredAudit))
-	assert.Equal(t, 1, restoredAudit)
+			var restoredPublication uuid.UUID
+			var restoredAt *string
+			require.NoError(t, fixture.db.NewRaw(`SELECT restored_by_publication_id, restored_at::text FROM content_withdrawals WHERE target_kind = ? AND target_id = ?`, test.kind, targetID).Scan(ctx, &restoredPublication, &restoredAt))
+			assert.Equal(t, uuid.MustParse(second.ID), restoredPublication)
+			assert.NotNil(t, restoredAt)
+			var restoredAudit int
+			require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM publication_audit_events WHERE event_id = ? AND action = 'content_restored_by_publication'`, fixture.event).Scan(ctx, &restoredAudit))
+			assert.Equal(t, 1, restoredAudit)
+		})
+	}
 }
 
 func TestWithdrawalInvalidatesAlreadyHandedOffOptionalDelivery(t *testing.T) {
@@ -260,7 +324,7 @@ func TestCuratorCanInspectWithdrawalHistoryAfterDraftIdentityRemoval(t *testing.
 	event, err := fixture.service.GetEvent(ctx, fixture.event)
 	require.NoError(t, err)
 	require.Len(t, event.Withdrawals, 2)
-	history := make(map[string]Withdrawal, len(event.Withdrawals))
+	history := make(map[WithdrawalTargetKind]Withdrawal, len(event.Withdrawals))
 	for _, item := range event.Withdrawals {
 		history[item.TargetKind] = item
 	}

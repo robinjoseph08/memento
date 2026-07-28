@@ -4,6 +4,7 @@ import type {
   Event as DraftEvent,
   MediaItem,
   OrganizeEventRequest,
+  WithdrawRequest,
 } from "../../app/types/generated/events";
 
 const csrfToken = "c".repeat(64);
@@ -108,6 +109,7 @@ async function mockCuratorAPI(
 ) {
   let persisted = initial;
   const attempts: OrganizeEventRequest[] = [];
+  const withdrawalRequests: WithdrawRequest[] = [];
   let failureIndex = 0;
 
   await page.route("**/api/**", async (route) => {
@@ -154,11 +156,12 @@ async function mockCuratorAPI(
       return;
     }
     if (path === "/api/withdrawals" && request.method() === "POST") {
-      const body = request.postDataJSON() as {
-        target_kind: string;
-        target_id: string;
-        reason: string;
-      };
+      const body = request.postDataJSON() as WithdrawRequest;
+      withdrawalRequests.push(body);
+      const affected =
+        body.target_kind === "event"
+          ? { recipients: 2, media: 3 }
+          : { recipients: 1, media: 1 };
       persisted = {
         ...persisted,
         version: persisted.version + 1,
@@ -168,8 +171,9 @@ async function mockCuratorAPI(
           audience_complete: false,
         })),
         withdrawals: [
+          ...persisted.withdrawals,
           {
-            id: "77777777-7777-4777-8777-777777777777",
+            id: `${persisted.withdrawals.length + 7}7777777-7777-4777-8777-777777777777`,
             target_kind: body.target_kind,
             target_id: body.target_id,
             reason: body.reason,
@@ -177,8 +181,8 @@ async function mockCuratorAPI(
             withdrawn_at: "2026-05-03T00:00:00Z",
             restored_by_publication_id: null,
             restored_at: null,
-            affected_recipient_count: 2,
-            affected_media_count: 3,
+            affected_recipient_count: affected.recipients,
+            affected_media_count: affected.media,
             affected_event_count: 1,
           },
         ],
@@ -315,6 +319,7 @@ async function mockCuratorAPI(
 
   return {
     attempts,
+    withdrawalRequests,
     persisted: () => persisted,
   };
 }
@@ -379,40 +384,73 @@ test("@desktop @mobile publishes atomically and keeps Recipient preview read onl
   ).toBeDisabled();
 });
 
-test("@desktop @mobile withdraws published access immediately and requires Publication to restore", async ({
-  page,
-}) => {
-  const published = draft();
-  published.lifecycle = "published";
-  published.published_editable_version = published.version;
-  published.final_review_complete = true;
-  published.unassigned_media = [];
-  published.moments = published.moments.map((moment) => ({
-    ...moment,
-    attendance_complete: true,
-    audience_complete: true,
-  }));
-  await mockCuratorAPI(page, [], published);
-  page.on("dialog", (dialog) => dialog.accept());
-  await openEvent(page);
-  if ((page.viewportSize()?.width ?? 1280) <= 1024) {
-    await page.getByRole("button", { name: "Inspect", exact: true }).click();
-  }
+for (const target of [
+  { name: "Event", id: eventID, recipients: 2, media: 3 },
+  { name: "Moment", id: momentOneID, recipients: 1, media: 1 },
+  { name: "Media", id: items.first.id, recipients: 1, media: 1 },
+]) {
+  test(`@desktop @mobile withdraws published access for ${target.name} with persistent confirmation`, async ({
+    page,
+  }) => {
+    const published = draft();
+    published.lifecycle = "published";
+    published.published_editable_version = published.version;
+    published.final_review_complete = true;
+    published.unassigned_media = [];
+    published.moments = published.moments.map((moment) => ({
+      ...moment,
+      attendance_complete: true,
+      audience_complete: true,
+    }));
+    const server = await mockCuratorAPI(page, [], published);
+    let confirmation = "";
+    page.once("dialog", async (dialog) => {
+      confirmation = dialog.message();
+      await dialog.accept();
+    });
+    await openEvent(page);
+    if ((page.viewportSize()?.width ?? 1280) <= 1024) {
+      await page.getByRole("button", { name: "Inspect", exact: true }).click();
+    }
 
-  await page.getByLabel("Attributable reason").fill("Privacy request");
-  await page.getByRole("button", { name: "Withdraw access" }).click();
-  await expect(
-    page.getByText(
-      "Access withdrawn for 2 Recipients across 3 Media items. No external notification was sent.",
-    ),
-  ).toBeVisible();
-  await expect(page.getByText(/Privacy request by Robin/)).toContainText(
-    "Access remains withdrawn.",
-  );
-  await expect(
-    page.getByRole("button", { name: "Publish Event" }),
-  ).toBeDisabled();
-});
+    await page.getByLabel("Published target").selectOption(target.id);
+    await page.getByLabel("Attributable reason").fill("Privacy request");
+    await page.getByRole("button", { name: "Withdraw access" }).click();
+    await expect(
+      page.getByText(
+        `Access withdrawn for ${target.recipients} Recipients across ${target.media} Media items. No external notification was sent.`,
+      ),
+    ).toBeVisible();
+    expect(confirmation).toBe(
+      "Withdraw Recipient access immediately? Identity and history will be preserved.",
+    );
+    expect(server.withdrawalRequests).toEqual([
+      {
+        target_kind: target.name.toLowerCase(),
+        target_id: target.id,
+        reason: "Privacy request",
+      },
+    ]);
+    await expect(page.getByText(/Privacy request by Robin/)).toContainText(
+      "Access remains withdrawn.",
+    );
+    await expect(
+      page.getByRole("button", { name: "Publish Event" }),
+    ).toBeDisabled();
+
+    await page.reload();
+    await page.getByRole("button", { name: /Family weekend/ }).click();
+    if ((page.viewportSize()?.width ?? 1280) <= 1024) {
+      await page.getByRole("button", { name: "Inspect", exact: true }).click();
+    }
+    await expect(page.getByText(/Privacy request by Robin/)).toContainText(
+      "Access remains withdrawn.",
+    );
+    await expect(
+      page.getByRole("button", { name: "Publish Event" }),
+    ).toBeDisabled();
+  });
+}
 
 test("@desktop organizes, orders, autosaves, and persists after reload", async ({
   page,

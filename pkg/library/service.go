@@ -194,15 +194,8 @@ const validPlacements = `
 	 AND published.media_item_id = placement.media_item_id
 	JOIN published_moments AS moment ON moment.id = placement.published_moment_id
 	JOIN media_items AS media ON media.id = placement.media_item_id
-	WHERE NOT EXISTS (
-		SELECT 1 FROM content_withdrawals
-		WHERE restored_at IS NULL AND target_kind = 'event' AND target_id = placement.event_id
-	) AND NOT EXISTS (
-		SELECT 1 FROM content_withdrawals
-		WHERE restored_at IS NULL AND target_kind = 'moment' AND target_id = moment.draft_moment_id
-	) AND NOT EXISTS (
-		SELECT 1 FROM content_withdrawals
-		WHERE restored_at IS NULL AND target_kind = 'media' AND target_id = placement.media_item_id
+	WHERE NOT content_is_withdrawn(
+		placement.event_id, moment.draft_moment_id, placement.media_item_id
 	)
 `
 

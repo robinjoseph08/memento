@@ -19,34 +19,65 @@ var (
 	ErrAlreadyWithdrawn  = errors.New("content is already withdrawn")
 )
 
+// WithdrawalTargetKind identifies a stable published identity that can be withdrawn.
+type WithdrawalTargetKind string
+
+const (
+	WithdrawalTargetEvent  WithdrawalTargetKind = "event"
+	WithdrawalTargetMoment WithdrawalTargetKind = "moment"
+	WithdrawalTargetMedia  WithdrawalTargetKind = "media"
+)
+
+func (kind WithdrawalTargetKind) valid() bool {
+	switch kind {
+	case WithdrawalTargetEvent, WithdrawalTargetMoment, WithdrawalTargetMedia:
+		return true
+	default:
+		return false
+	}
+}
+
+func (kind WithdrawalTargetKind) placementPredicate() string {
+	switch kind {
+	case WithdrawalTargetEvent:
+		return "placement.event_id = ?"
+	case WithdrawalTargetMoment:
+		return "moment.draft_moment_id = ?"
+	case WithdrawalTargetMedia:
+		return "placement.media_item_id = ?"
+	default:
+		return "FALSE"
+	}
+}
+
 // WithdrawRequest identifies one published stable identity and records why access is removed.
 type WithdrawRequest struct {
-	TargetKind string `json:"target_kind" validate:"required,oneof=event moment media"`
-	TargetID   string `json:"target_id" validate:"required"`
-	Reason     string `json:"reason" validate:"required,max=1000" mod:"trim"`
+	TargetKind WithdrawalTargetKind `json:"target_kind" validate:"required"`
+	TargetID   string               `json:"target_id" validate:"required"`
+	Reason     string               `json:"reason" validate:"required,max=1000" mod:"trim"`
 }
 
 // Withdrawal confirms the durable access removal while retaining the target identity.
 type Withdrawal struct {
-	ID                      string     `json:"id"`
-	TargetKind              string     `json:"target_kind"`
-	TargetID                string     `json:"target_id"`
-	Reason                  string     `json:"reason"`
-	WithdrawnByName         string     `json:"withdrawn_by_name"`
-	WithdrawnAt             time.Time  `json:"withdrawn_at"`
-	RestoredByPublicationID *string    `json:"restored_by_publication_id" tstype:"string | null,required"`
-	RestoredAt              *time.Time `json:"restored_at" tstype:"string | null,required"`
-	AffectedRecipientCount  int        `json:"affected_recipient_count"`
-	AffectedMediaCount      int        `json:"affected_media_count"`
-	AffectedEventCount      int        `json:"affected_event_count"`
+	ID                      string               `json:"id"`
+	TargetKind              WithdrawalTargetKind `json:"target_kind"`
+	TargetID                string               `json:"target_id"`
+	Reason                  string               `json:"reason"`
+	WithdrawnByName         string               `json:"withdrawn_by_name"`
+	WithdrawnAt             time.Time            `json:"withdrawn_at"`
+	RestoredByPublicationID *string              `json:"restored_by_publication_id" tstype:"string | null,required"`
+	RestoredAt              *time.Time           `json:"restored_at" tstype:"string | null,required"`
+	AffectedRecipientCount  int                  `json:"affected_recipient_count"`
+	AffectedMediaCount      int                  `json:"affected_media_count"`
+	AffectedEventCount      int                  `json:"affected_event_count"`
 }
 
 // Withdraw immediately denies Recipient access and invalidates the Audience reviews required for restoration.
 func (s *Service) Withdraw(ctx context.Context, actor setup.CuratorSession, request WithdrawRequest) (Withdrawal, error) {
-	kind := strings.TrimSpace(request.TargetKind)
+	kind := request.TargetKind
 	targetID, err := uuid.Parse(request.TargetID)
 	reason := strings.TrimSpace(request.Reason)
-	if err != nil || targetID == uuid.Nil || (kind != "event" && kind != "moment" && kind != "media") || reason == "" || utf8.RuneCountInString(reason) > 1000 {
+	if err != nil || targetID == uuid.Nil || !kind.valid() || reason == "" || utf8.RuneCountInString(reason) > 1000 {
 		return Withdrawal{}, ErrWithdrawalInvalid
 	}
 
@@ -75,14 +106,12 @@ func (s *Service) Withdraw(ctx context.Context, actor setup.CuratorSession, requ
 			return ErrAlreadyWithdrawn
 		}
 
-		targetFilter := `(? = 'event' AND placement.event_id = ?)
-			OR (? = 'moment' AND moment.draft_moment_id = ?)
-			OR (? = 'media' AND placement.media_item_id = ?)`
+		targetFilter := kind.placementPredicate()
 		var exists bool
 		if err := tx.NewRaw(`SELECT EXISTS (
 			SELECT 1 FROM current_published_placements AS placement
 			JOIN published_moments AS moment ON moment.id = placement.published_moment_id
-			WHERE `+targetFilter+`)`, kind, targetID, kind, targetID, kind, targetID).Scan(ctx, &exists); err != nil {
+			WHERE `+targetFilter+`)`, targetID).Scan(ctx, &exists); err != nil {
 			return err
 		}
 		if !exists {
@@ -102,13 +131,11 @@ func (s *Service) Withdraw(ctx context.Context, actor setup.CuratorSession, requ
 			JOIN recipient_access_generations AS access
 			  ON access.id = entitlement.recipient_access_generation_id
 			 AND access.is_current AND access.state = 'completed'
-			WHERE NOT EXISTS (SELECT 1 FROM content_withdrawals WHERE restored_at IS NULL AND target_kind = 'event' AND target_id = selected.event_id)
-			  AND NOT EXISTS (SELECT 1 FROM content_withdrawals WHERE restored_at IS NULL AND target_kind = 'moment' AND target_id = selected.draft_moment_id)
-			  AND NOT EXISTS (SELECT 1 FROM content_withdrawals WHERE restored_at IS NULL AND target_kind = 'media' AND target_id = selected.media_item_id)
+			WHERE NOT content_is_withdrawn(selected.event_id, selected.draft_moment_id, selected.media_item_id)
 		)
 		SELECT count(DISTINCT recipient_access_generation_id)::integer,
 		       count(DISTINCT media_item_id)::integer, count(DISTINCT event_id)::integer
-		FROM visible`, kind, targetID, kind, targetID, kind, targetID).Scan(ctx,
+		FROM visible`, targetID).Scan(ctx,
 			&result.AffectedRecipientCount, &result.AffectedMediaCount, &result.AffectedEventCount); err != nil {
 			return err
 		}
@@ -118,7 +145,7 @@ func (s *Service) Withdraw(ctx context.Context, actor setup.CuratorSession, requ
 			FROM selected
 			JOIN current_audience_entitlements AS entitlement
 			  ON entitlement.event_id = selected.event_id AND entitlement.media_item_id = selected.media_item_id
-			ORDER BY entitlement.recipient_access_generation_id`, kind, targetID, kind, targetID, kind, targetID).Scan(ctx, &affectedAccessIDs); err != nil {
+			ORDER BY entitlement.recipient_access_generation_id`, targetID).Scan(ctx, &affectedAccessIDs); err != nil {
 			return err
 		}
 
@@ -126,7 +153,7 @@ func (s *Service) Withdraw(ctx context.Context, actor setup.CuratorSession, requ
 		if err := tx.NewRaw(`SELECT DISTINCT placement.event_id
 			FROM current_published_placements AS placement
 			JOIN published_moments AS moment ON moment.id = placement.published_moment_id
-			WHERE `+targetFilter+` ORDER BY placement.event_id`, kind, targetID, kind, targetID, kind, targetID).Scan(ctx, &eventIDs); err != nil {
+			WHERE `+targetFilter+` ORDER BY placement.event_id`, targetID).Scan(ctx, &eventIDs); err != nil {
 			return err
 		}
 		var lockedEventIDs []uuid.UUID
@@ -139,15 +166,15 @@ func (s *Service) Withdraw(ctx context.Context, actor setup.CuratorSession, requ
 
 		var momentIDs []uuid.UUID
 		switch kind {
-		case "event":
+		case WithdrawalTargetEvent:
 			if err := tx.NewRaw(`SELECT id FROM draft_moments WHERE event_id = ? ORDER BY id FOR UPDATE`, targetID).Scan(ctx, &momentIDs); err != nil {
 				return err
 			}
-		case "moment":
+		case WithdrawalTargetMoment:
 			if err := tx.NewRaw(`SELECT id FROM draft_moments WHERE id = ? FOR UPDATE`, targetID).Scan(ctx, &momentIDs); err != nil {
 				return err
 			}
-		case "media":
+		case WithdrawalTargetMedia:
 			if err := tx.NewRaw(`SELECT moment.id FROM draft_media_placements AS placement
 				JOIN draft_moments AS moment ON moment.id = placement.draft_moment_id
 				WHERE placement.media_item_id = ? ORDER BY moment.id FOR UPDATE OF moment`, targetID).Scan(ctx, &momentIDs); err != nil {
@@ -176,7 +203,7 @@ func (s *Service) Withdraw(ctx context.Context, actor setup.CuratorSession, requ
 			 DELETE FROM current_audience_entitlements AS entitlement USING selected
 			 WHERE entitlement.event_id = selected.event_id AND entitlement.media_item_id = selected.media_item_id`,
 		} {
-			if _, err := tx.NewRaw(statement, kind, targetID, kind, targetID, kind, targetID).Exec(ctx); err != nil {
+			if _, err := tx.NewRaw(statement, targetID).Exec(ctx); err != nil {
 				return err
 			}
 		}
@@ -273,7 +300,7 @@ func (s *Service) Withdraw(ctx context.Context, actor setup.CuratorSession, requ
 
 type restoredWithdrawal struct {
 	ID         uuid.UUID
-	TargetKind string
+	TargetKind WithdrawalTargetKind
 	TargetID   uuid.UUID
 }
 
