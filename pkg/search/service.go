@@ -4,7 +4,6 @@ package search
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -17,9 +16,11 @@ import (
 )
 
 const (
-	maxEventResults  = 100
-	maxPhotoResults  = 200
-	maxPersonResults = 100
+	maxEventResults        = 100
+	maxPhotoResults        = 200
+	maxPersonResults       = 100
+	maxSearchTerms         = 12
+	searchStatementTimeout = "3s"
 )
 
 var (
@@ -35,21 +36,6 @@ type DateFilter struct {
 	Date      *string `json:"date,omitempty" tstype:"string | null"`
 	StartDate *string `json:"start_date,omitempty" tstype:"string | null"`
 	EndDate   *string `json:"end_date,omitempty" tstype:"string | null"`
-}
-
-// UnmarshalJSON validates the discriminated date variant before it enters the service.
-func (filter *DateFilter) UnmarshalJSON(data []byte) error {
-	type wireDateFilter DateFilter
-	var decoded wireDateFilter
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		return err
-	}
-	validated := DateFilter(decoded)
-	if _, err := parseDateFilter(validated); err != nil {
-		return err
-	}
-	*filter = validated
-	return nil
 }
 
 // Request keeps private free text in a POST body and transient browser state.
@@ -121,6 +107,9 @@ func parseRequest(request Request) ([]string, *bounds, error) {
 		return nil, nil, ErrInvalidRequest
 	}
 	terms := tokenize(query)
+	if len(terms) > maxSearchTerms {
+		return nil, nil, ErrInvalidRequest
+	}
 	var dateBounds *bounds
 	if request.Date != nil {
 		parsed, err := parseDateFilter(*request.Date)
@@ -136,9 +125,29 @@ func parseRequest(request Request) ([]string, *bounds, error) {
 }
 
 func tokenize(value string) []string {
-	return strings.FieldsFunc(strings.ToLower(value), func(r rune) bool {
+	candidates := strings.FieldsFunc(strings.ToLower(value), func(r rune) bool {
 		return !unicode.IsLetter(r) && !unicode.IsNumber(r) && !unicode.IsMark(r)
 	})
+	terms := make([]string, 0, len(candidates))
+	seen := make(map[string]struct{}, len(candidates))
+	for _, candidate := range candidates {
+		containsWordCharacter := false
+		for _, r := range candidate {
+			if unicode.IsLetter(r) || unicode.IsNumber(r) {
+				containsWordCharacter = true
+				break
+			}
+		}
+		if !containsWordCharacter {
+			continue
+		}
+		if _, duplicate := seen[candidate]; duplicate {
+			continue
+		}
+		seen[candidate] = struct{}{}
+		terms = append(terms, candidate)
+	}
+	return terms
 }
 
 func parseDateFilter(filter DateFilter) (bounds, error) {
@@ -324,6 +333,9 @@ func (s *Service) Search(ctx context.Context, actor setup.SessionActor, request 
 		Photos: make([]Media, 0), People: make([]PersonAttendanceResult, 0),
 	}
 	err = s.db.RunInTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true}, func(ctx context.Context, tx bun.Tx) error {
+		if _, err := tx.ExecContext(ctx, `SET LOCAL statement_timeout = '`+searchStatementTimeout+`'`); err != nil {
+			return err
+		}
 		if err := ensureActor(ctx, tx, actor); err != nil {
 			return err
 		}

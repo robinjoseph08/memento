@@ -19,10 +19,11 @@ const invalidRequestMessage = "Enter search text or choose one complete year, mo
 type Handler struct {
 	service    *Service
 	authorizer Authorizer
+	limiter    *searchLimiter
 }
 
 func NewHandler(service *Service, authorizer Authorizer) *Handler {
-	return &Handler{service: service, authorizer: authorizer}
+	return &Handler{service: service, authorizer: authorizer, limiter: newSearchLimiter()}
 }
 
 func (h *Handler) Search(c echo.Context) error {
@@ -39,11 +40,13 @@ func (h *Handler) Search(c echo.Context) error {
 	}
 	var request Request
 	if err := c.Bind(&request); err != nil {
-		var httpError *echo.HTTPError
-		if errors.As(err, &httpError) && errors.Is(httpError.Internal, ErrInvalidRequest) {
-			return errcodes.ValidationError(invalidRequestMessage)
-		}
 		return err
+	}
+	if _, _, err := parseRequest(request); err != nil {
+		return errcodes.ValidationError(invalidRequestMessage)
+	}
+	if !h.limiter.allow(actor.AccessID) {
+		return errcodes.TooManyRequests("Too many searches. Try again later.")
 	}
 	response, err := h.service.Search(c.Request().Context(), actor, request)
 	switch {

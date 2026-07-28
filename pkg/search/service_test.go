@@ -2,6 +2,7 @@ package search
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -51,20 +52,44 @@ func TestParseRequestRejectsIncompleteAmbiguousAndReversedFilters(t *testing.T) 
 	}
 }
 
-func TestDateFilterRejectsInvalidVariantsAtTheJSONBoundary(t *testing.T) {
+func TestDateFilterRejectsInvalidVariantsAfterJSONDecoding(t *testing.T) {
 	for _, body := range []string{
 		`{"date":{"kind":"year"}}`,
 		`{"date":{"kind":"year","year":2026,"month":"2026-07"}}`,
 		`{"date":{"kind":"range","start_date":"2026-07-29","end_date":"2026-07-20"}}`,
 	} {
 		var request Request
-		err := json.Unmarshal([]byte(body), &request)
+		require.NoError(t, json.Unmarshal([]byte(body), &request))
+		_, _, err := parseRequest(request)
 		assert.ErrorIs(t, err, ErrInvalidRequest)
 	}
 }
 
-func TestTokenizeKeepsUnicodeWordsForDatabaseUnaccentNormalization(t *testing.T) {
-	assert.Equal(t, []string{"café", "são", "2026"}, tokenize(" CAFÉ, São / 2026 "))
+func TestTokenizeKeepsUniqueUnicodeWordsAndDiscardsMarkOnlyTerms(t *testing.T) {
+	assert.Equal(t, []string{"café", "são", "2026"}, tokenize(" CAFÉ, café São / 2026 "))
+	assert.Empty(t, tokenize("\u0301 \u0308"))
+
+	_, _, err := parseRequest(Request{Query: "\u0301"})
+	require.ErrorIs(t, err, ErrInvalidRequest)
+
+	date := "2026-07-28"
+	terms, _, err := parseRequest(Request{Query: "\u0301", Date: &DateFilter{Kind: "date", Date: &date}})
+	require.NoError(t, err)
+	assert.Empty(t, terms)
+}
+
+func TestParseRequestBoundsUniqueTermsWithoutPenalizingDuplicates(t *testing.T) {
+	allowed := strings.Join([]string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l"}, " ")
+	terms, _, err := parseRequest(Request{Query: allowed})
+	require.NoError(t, err)
+	assert.Len(t, terms, maxSearchTerms)
+
+	terms, _, err = parseRequest(Request{Query: strings.Repeat("a ", 100)})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"a"}, terms)
+
+	_, _, err = parseRequest(Request{Query: allowed + " m"})
+	assert.ErrorIs(t, err, ErrInvalidRequest)
 }
 
 func TestLongTermDocumentMatchingUsesAnIndexableConservativeTypoPrefilter(t *testing.T) {
