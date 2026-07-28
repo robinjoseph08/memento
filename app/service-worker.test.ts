@@ -148,6 +148,28 @@ test("successful token-bearing HTML navigation refreshes only the stable shell k
   );
 });
 
+test("no-store HTML navigation does not replace the cached application shell", async () => {
+  const worker = await loadWorker();
+  const response = new Response("private shell", {
+    headers: {
+      "Cache-Control": "private, No-Store",
+      "Content-Type": "text/html; charset=utf-8",
+    },
+  });
+  worker.fetchMock.mockResolvedValue(response);
+  const navigation = {
+    method: "GET",
+    mode: "navigate",
+    url: "https://memento.example/invitation?token=private-token",
+  } as Request;
+  const probe = fetchEvent(navigation);
+
+  worker.listeners.get("fetch")!(probe.event);
+
+  await expect(probe.response()).resolves.toBe(response);
+  expect(worker.cache.put).not.toHaveBeenCalled();
+});
+
 test("non-HTML navigation never replaces the cached application shell", async () => {
   const worker = await loadWorker();
   const response = new Response("download", {

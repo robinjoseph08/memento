@@ -516,6 +516,75 @@ test("restores, saves, and explicitly completes Recipient Onboarding", async () 
   );
 });
 
+test("shows the invalid Invitation copy for the inspection endpoint's not-found response", async () => {
+  const token = "9".repeat(64);
+  window.history.replaceState(null, "", `/invitation?token=${token}`);
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(() =>
+      Promise.resolve(
+        jsonResponse({ error: { message: "Invitation not found." } }, 404),
+      ),
+    ),
+  );
+
+  renderApp();
+
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "This Invitation is invalid or no longer available.",
+  );
+  expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+});
+
+test.each([
+  {
+    failure: () => Promise.reject(new TypeError("network unavailable")),
+    kind: "network failure",
+  },
+  {
+    failure: () =>
+      Promise.resolve(
+        jsonResponse({ error: { message: "Memento is unavailable." } }, 503),
+      ),
+    kind: "server failure",
+  },
+])("keeps the Invitation retryable after $kind", async ({ failure }) => {
+  const token = "8".repeat(64);
+  let unavailable = true;
+  window.history.replaceState(null, "", `/invitation?token=${token}`);
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(() =>
+      unavailable
+        ? failure()
+        : Promise.resolve(
+            jsonResponse({
+              recipient_name: "Alex",
+              curator_name: "Robin",
+              expires_at: "2026-08-10T12:00:00Z",
+            }),
+          ),
+    ),
+  );
+
+  renderApp();
+
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "Memento could not check this Invitation. Check your connection and try again.",
+  );
+  expect(
+    screen.queryByText("This Invitation is invalid or no longer available."),
+  ).toBeNull();
+  expect(window.location.search).toBe(`?token=${token}`);
+
+  unavailable = false;
+  fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+
+  expect(
+    await screen.findByRole("button", { name: "Accept Invitation" }),
+  ).toBeEnabled();
+});
+
 test("shows an unavailable Invitation instead of waiting forever when the token is absent", async () => {
   window.history.replaceState(null, "", "/invitation");
   const fetchMock = vi.fn();

@@ -21,8 +21,17 @@ function isCacheable(response) {
 
 function isHTMLResponse(response) {
   const contentType = response.headers.get("Content-Type") ?? "";
+  const cacheControl = response.headers.get("Cache-Control") ?? "";
+  const noStore = cacheControl
+    .split(",")
+    .some(
+      (directive) =>
+        directive.trim().split("=", 1)[0].toLowerCase() === "no-store",
+    );
   return (
-    isCacheable(response) && /^text\/html(?:;|$)/i.test(contentType.trim())
+    isCacheable(response) &&
+    !noStore &&
+    /^text\/html(?:;|$)/i.test(contentType.trim())
   );
 }
 

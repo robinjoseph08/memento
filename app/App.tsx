@@ -1591,6 +1591,11 @@ function InvitationLanding() {
   const currentSession = accepted
     ? (acceptedSession ?? acceptedIdentity.data)
     : undefined;
+  const invalidInvitation =
+    !token ||
+    (invitation.error instanceof APIError && invitation.error.status === 404);
+  const inspectionUnavailable =
+    Boolean(token) && invitation.isError && !invalidInvitation;
 
   if (exitedInvitation) {
     return <MementoApp />;
@@ -1644,10 +1649,21 @@ function InvitationLanding() {
         {!accepted && token && invitation.isPending ? (
           <p aria-live="polite">Checking this Invitation securely…</p>
         ) : null}
-        {!accepted && (!token || invitation.isError) ? (
+        {!accepted && invalidInvitation ? (
           <p className="form-error" role="alert">
             This Invitation is invalid or no longer available.
           </p>
+        ) : null}
+        {!accepted && inspectionUnavailable ? (
+          <>
+            <p className="form-error" role="alert">
+              Memento could not check this Invitation. Check your connection and
+              try again.
+            </p>
+            <button onClick={() => void invitation.refetch()} type="button">
+              Try again
+            </button>
+          </>
         ) : null}
         {!accepted && invitation.data ? (
           <>
