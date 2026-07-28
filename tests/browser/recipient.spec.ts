@@ -136,6 +136,8 @@ async function recipientAPI(
       path === "/api/me/archives/parts/1" &&
       url.searchParams.get("token") === "private-token"
     ) {
+      expect(request.method()).toBe("POST");
+      expect(request.headers()["x-memento-csrf"]).toBe("c".repeat(64));
       await route.fulfill({
         contentType: "application/zip",
         headers: {
@@ -191,12 +193,17 @@ test("@desktop Recipient lands on Photos and sees only filtered Event totals", a
   await page.getByRole("button", { name: "Select photos" }).click();
   await page.getByRole("checkbox", { name: /Select Photo 1/ }).check();
   await page.getByRole("button", { name: "Download 1 selected" }).click();
-  const subsetArchive = page.getByRole("link", { name: "Download archive" });
-  await expect(subsetArchive).toHaveAttribute(
-    "href",
-    "/api/me/archives/parts/1?token=private-token",
-  );
-  await expect(subsetArchive).toHaveAttribute("download", "Family-weekend.zip");
+  const subsetArchive = page.getByRole("button", {
+    name: "Download archive",
+  });
+  const [download] = await Promise.all([
+    page.waitForEvent("download"),
+    subsetArchive.click(),
+  ]);
+  expect(download.suggestedFilename()).toBe("Family-weekend.zip");
+  await expect(
+    page.getByRole("button", { name: "Downloaded archive" }),
+  ).toBeDisabled();
   await page.getByRole("button", { name: "Cancel selection" }).click();
 
   await page.getByRole("button", { name: "Load more photos" }).click();
@@ -253,8 +260,8 @@ test("@desktop Recipient lands on Photos and sees only filtered Event totals", a
   await expect(page.getByText(/Moment/)).toHaveCount(0);
   await page.getByRole("button", { name: "Download Event" }).click();
   await expect(
-    page.getByRole("link", { name: "Download archive" }),
-  ).toHaveAttribute("href", "/api/me/archives/parts/1?token=private-token");
+    page.getByRole("button", { name: "Download archive" }),
+  ).toBeEnabled();
   await expect(page.getByAltText("Photo 1 from July 2026")).toHaveAttribute(
     "src",
     media.thumbnail_url,

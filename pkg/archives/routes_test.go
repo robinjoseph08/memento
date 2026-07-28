@@ -46,8 +46,10 @@ func TestArchiveRoutesRequireSessionAndCSRFWithoutTokenHints(t *testing.T) {
 		status   int
 		mutation bool
 	}{
-		{name: "part missing Session", method: http.MethodGet, path: "/api/me/archives/parts/1?token=" + token, status: http.StatusUnauthorized},
-		{name: "part invalid Session", method: http.MethodGet, path: "/api/me/archives/parts/1?token=" + token, cookie: true, authErr: setup.ErrUnauthenticated, status: http.StatusUnauthorized},
+		{name: "safe GET cannot consume part", method: http.MethodGet, path: "/api/me/archives/parts/1?token=" + token, cookie: true, status: http.StatusNotFound},
+		{name: "part missing Session", method: http.MethodPost, path: "/api/me/archives/parts/1?token=" + token, status: http.StatusUnauthorized},
+		{name: "part invalid Session", method: http.MethodPost, path: "/api/me/archives/parts/1?token=" + token, cookie: true, authErr: setup.ErrUnauthenticated, status: http.StatusUnauthorized, mutation: true},
+		{name: "part missing CSRF", method: http.MethodPost, path: "/api/me/archives/parts/1?token=" + token, cookie: true, authErr: setup.ErrCSRF, status: http.StatusForbidden, mutation: true},
 		{name: "plan missing CSRF", method: http.MethodPost, path: "/api/me/archives", body: `{"scope":"event","event_id":"` + uuid.NewString() + `","media_ids":[]}`, cookie: true, authErr: setup.ErrCSRF, status: http.StatusForbidden, mutation: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {

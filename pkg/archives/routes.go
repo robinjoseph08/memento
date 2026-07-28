@@ -76,7 +76,7 @@ func (h *Handler) Plan(c echo.Context) error {
 }
 
 func (h *Handler) Part(c echo.Context) error {
-	actor, err := h.authorize(c, false)
+	actor, err := h.authorize(c, true)
 	if err != nil {
 		return err
 	}
@@ -115,6 +115,6 @@ func RegisterRoutes(e *echo.Echo, handler *Handler) {
 	plan.Name = "policy:recipient_content_csrf"
 	// Keep the secret out of the path because request logging records paths but
 	// deliberately omits query values.
-	part := group.GET("/parts/:part", handler.Part)
-	part.Name = "policy:recipient_content"
+	part := group.POST("/parts/:part", handler.Part)
+	part.Name = "policy:recipient_content_csrf"
 }

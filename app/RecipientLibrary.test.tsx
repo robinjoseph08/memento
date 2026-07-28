@@ -304,8 +304,15 @@ test("shows the original download warning only for public computers", async () =
   ).toBeVisible();
 });
 
-test("plans complete Event and explicit subset archives with Session CSRF", async () => {
+test("plans and downloads complete Event and explicit subset archives with Session CSRF", async () => {
   const requests: Array<{ path: string; init?: RequestInit }> = [];
+  const createObjectURL = vi
+    .spyOn(URL, "createObjectURL")
+    .mockReturnValue("blob:archive");
+  vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
+  const click = vi
+    .spyOn(HTMLAnchorElement.prototype, "click")
+    .mockImplementation(() => undefined);
   vi.stubGlobal(
     "fetch",
     vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
@@ -394,6 +401,13 @@ test("plans complete Event and explicit subset archives with Session CSRF", asyn
           ],
         });
       }
+      if (path === "/api/me/archives/parts/1?token=private-token") {
+        return Promise.resolve(
+          new Response("zip", {
+            headers: { "Content-Type": "application/zip" },
+          }),
+        );
+      }
       throw new Error(`Unexpected request: ${path}`);
     }),
   );
@@ -403,14 +417,9 @@ test("plans complete Event and explicit subset archives with Session CSRF", asyn
   fireEvent.click(screen.getByRole("checkbox", { name: /Select Photo 1/ }));
   fireEvent.click(screen.getByRole("checkbox", { name: /Select Photo 2/ }));
   fireEvent.click(screen.getByRole("button", { name: "Download 2 selected" }));
-  const subsetLink = await screen.findByRole("link", {
+  const subsetDownload = await screen.findByRole("button", {
     name: "Download archive",
   });
-  expect(subsetLink).toHaveAttribute(
-    "href",
-    "/api/me/archives/parts/1?token=private-token",
-  );
-  expect(subsetLink).toHaveAttribute("download", "safe-name.zip");
 
   const subsetRequest = requests.find(
     ({ path, init }) =>
@@ -425,6 +434,28 @@ test("plans complete Event and explicit subset archives with Session CSRF", asyn
     event_id: null,
     media_ids: ["media-1", "media-2"],
   });
+
+  fireEvent.click(subsetDownload);
+  await waitFor(() =>
+    expect(
+      requests.find(
+        ({ path }) => path === "/api/me/archives/parts/1?token=private-token",
+      )?.init,
+    ).toMatchObject({
+      method: "POST",
+      headers: {
+        Accept: "application/zip",
+        "X-Memento-CSRF": session.csrf_token,
+      },
+    }),
+  );
+  await waitFor(() =>
+    expect(
+      screen.getByRole("button", { name: "Downloaded archive" }),
+    ).toBeDisabled(),
+  );
+  expect(createObjectURL).toHaveBeenCalledWith(expect.any(Blob));
+  expect(click).toHaveBeenCalledOnce();
 
   fireEvent.click(screen.getAllByRole("button", { name: "Events" })[0]);
   fireEvent.click(

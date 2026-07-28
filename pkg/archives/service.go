@@ -2,7 +2,6 @@
 package archives
 
 import (
-	"archive/zip"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -65,7 +64,7 @@ type Stream struct {
 
 type archiveSource interface {
 	ArchiveInfo(ctx context.Context, assetIDs []uuid.UUID) ([]immich.ArchivePart, error)
-	Original(ctx context.Context, assetID uuid.UUID, request immich.MediaRequest) (immich.MediaResponse, error)
+	Archive(ctx context.Context, assetIDs []uuid.UUID) (immich.ArchiveResponse, error)
 }
 
 type Service struct {
@@ -323,6 +322,7 @@ type plannedPart struct {
 	Name       string
 	PartNumber int
 	PartCount  int
+	Size       int64
 	ConsumedAt *time.Time
 	ExpiresAt  time.Time
 	Items      []plannedItem
@@ -357,14 +357,14 @@ func (s *Service) loadPart(ctx context.Context, db bun.IDB, actor setup.SessionA
 	var result plannedPart
 	query := `SELECT plan.id, part.id, plan.name, part.part_number,
 		(SELECT count(*) FROM archive_parts AS count_part WHERE count_part.archive_plan_id = plan.id),
-		part.consumed_at, plan.expires_at
+		part.size, part.consumed_at, plan.expires_at
 		FROM archive_plans AS plan JOIN archive_parts AS part ON part.archive_plan_id = plan.id
 		WHERE plan.token_hash = ? AND plan.recipient_person_id = ?
 		  AND plan.recipient_access_generation_id = ? AND plan.session_id = ?
 		  AND part.part_number = ?` + lockClause
 	if err := db.NewRaw(query, hash[:], actor.PersonID, actor.AccessID, actor.SessionID, number).Scan(ctx,
 		&result.PlanID, &result.PartID, &result.Name, &result.PartNumber, &result.PartCount,
-		&result.ConsumedAt, &result.ExpiresAt); err != nil {
+		&result.Size, &result.ConsumedAt, &result.ExpiresAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return plannedPart{}, ErrNotFound
 		}
@@ -448,13 +448,20 @@ func (s *Service) StreamPart(ctx context.Context, actor setup.SessionActor, rawT
 	if err := authorizeItems(ctx, s.db, actor, part.Items, false); err != nil {
 		return Stream{}, err
 	}
-	_, primaries := expectedAssets(part)
+	assets, primaries := expectedAssets(part)
 	info, err := s.source.ArchiveInfo(ctx, primaries)
 	if err != nil || !archiveInfoMatches(info, part.Items) {
 		return Stream{}, ErrNotFound
 	}
-	opened, err := openArchive(ctx, s.source, part.Items)
-	if err != nil {
+	opened, err := s.source.Archive(ctx, assets)
+	if err != nil || opened.Body == nil {
+		if opened.Body != nil {
+			_ = opened.Body.Close()
+		}
+		return Stream{}, ErrUnavailable
+	}
+	if opened.ContentLength >= 0 && opened.ContentLength != part.Size {
+		_ = opened.Body.Close()
 		return Stream{}, ErrUnavailable
 	}
 	err = s.db.RunInTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted}, func(ctx context.Context, tx bun.Tx) error {
@@ -491,10 +498,10 @@ func (s *Service) StreamPart(ctx context.Context, actor setup.SessionActor, rawT
 		return nil
 	})
 	if err != nil {
-		_ = opened.Close()
+		_ = opened.Body.Close()
 		return Stream{}, err
 	}
-	return Stream{Body: opened, ContentLength: -1,
+	return Stream{Body: opened.Body, ContentLength: part.Size,
 		Filename: partFilename(part.Name, part.PartNumber, part.PartCount)}, nil
 }
 
@@ -544,63 +551,6 @@ func authorizeItems(ctx context.Context, db bun.IDB, actor setup.SessionActor, i
 		}
 	}
 	return nil
-}
-
-func openArchive(ctx context.Context, source archiveSource, items []plannedItem) (io.ReadCloser, error) {
-	if len(items) == 0 {
-		return nil, ErrUnavailable
-	}
-	first, err := source.Original(ctx, items[0].AssetID, immich.MediaRequest{})
-	if err != nil || first.Body == nil {
-		return nil, ErrUnavailable
-	}
-	reader, writer := io.Pipe()
-	go func() {
-		archive := zip.NewWriter(writer)
-		for index, item := range items {
-			response := first
-			if index > 0 {
-				response, err = source.Original(ctx, item.AssetID, immich.MediaRequest{})
-				if err != nil || response.Body == nil {
-					_ = archive.Close()
-					_ = writer.CloseWithError(ErrUnavailable)
-					return
-				}
-			}
-			entry, err := archive.CreateHeader(&zip.FileHeader{
-				Name: item.EntryName + archiveExtension(response.ContentType), Method: zip.Store,
-			})
-			if err == nil {
-				_, err = io.CopyBuffer(entry, response.Body, make([]byte, 32<<10))
-			}
-			closeErr := response.Body.Close()
-			if err != nil || closeErr != nil {
-				_ = archive.Close()
-				_ = writer.CloseWithError(ErrUnavailable)
-				return
-			}
-		}
-		if err := archive.Close(); err != nil {
-			_ = writer.CloseWithError(ErrUnavailable)
-			return
-		}
-		_ = writer.Close()
-	}()
-	return reader, nil
-}
-
-func archiveExtension(contentType string) string {
-	extension := map[string]string{
-		"application/octet-stream": ".bin", "image/avif": ".avif", "image/bmp": ".bmp",
-		"image/gif": ".gif", "image/heic": ".heic", "image/heif": ".heif", "image/jpeg": ".jpg",
-		"image/png": ".png", "image/tiff": ".tiff", "image/webp": ".webp", "video/mp4": ".mp4",
-		"video/mpeg": ".mpeg", "video/quicktime": ".mov", "video/webm": ".webm",
-		"video/x-matroska": ".mkv", "video/x-msvideo": ".avi",
-	}[contentType]
-	if extension == "" {
-		return ".bin"
-	}
-	return extension
 }
 
 func ensureActor(ctx context.Context, db bun.IDB, actor setup.SessionActor) error {

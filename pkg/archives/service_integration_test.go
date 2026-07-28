@@ -3,7 +3,6 @@
 package archives
 
 import (
-	"archive/zip"
 	"bytes"
 	"context"
 	"io"
@@ -24,13 +23,14 @@ import (
 )
 
 type archiveStub struct {
-	planned         []immich.ArchivePart
-	companions      map[uuid.UUID]uuid.UUID
-	originalCalls   []uuid.UUID
-	infoCalls       [][]uuid.UUID
-	originalStarted chan struct{}
-	releaseOriginal <-chan struct{}
-	originalOnce    sync.Once
+	planned              []immich.ArchivePart
+	companions           map[uuid.UUID]uuid.UUID
+	archiveCalls         [][]uuid.UUID
+	infoCalls            [][]uuid.UUID
+	archiveStarted       chan struct{}
+	releaseArchive       <-chan struct{}
+	archiveContentLength *int64
+	archiveOnce          sync.Once
 }
 
 func (stub *archiveStub) ArchiveInfo(_ context.Context, ids []uuid.UUID) ([]immich.ArchivePart, error) {
@@ -49,19 +49,23 @@ func (stub *archiveStub) ArchiveInfo(_ context.Context, ids []uuid.UUID) ([]immi
 	return []immich.ArchivePart{part}, nil
 }
 
-func (stub *archiveStub) Original(ctx context.Context, id uuid.UUID, _ immich.MediaRequest) (immich.MediaResponse, error) {
-	stub.originalCalls = append(stub.originalCalls, id)
-	if stub.originalStarted != nil {
-		stub.originalOnce.Do(func() { close(stub.originalStarted) })
+func (stub *archiveStub) Archive(ctx context.Context, ids []uuid.UUID) (immich.ArchiveResponse, error) {
+	stub.archiveCalls = append(stub.archiveCalls, slices.Clone(ids))
+	if stub.archiveStarted != nil {
+		stub.archiveOnce.Do(func() { close(stub.archiveStarted) })
 	}
-	if stub.releaseOriginal != nil {
+	if stub.releaseArchive != nil {
 		select {
-		case <-stub.releaseOriginal:
+		case <-stub.releaseArchive:
 		case <-ctx.Done():
-			return immich.MediaResponse{}, ctx.Err()
+			return immich.ArchiveResponse{}, ctx.Err()
 		}
 	}
-	return immich.MediaResponse{Body: io.NopCloser(bytes.NewBufferString("asset")), ContentType: "image/jpeg", ContentLength: 5}, nil
+	contentLength := int64(-1)
+	if stub.archiveContentLength != nil {
+		contentLength = *stub.archiveContentLength
+	}
+	return immich.ArchiveResponse{Body: io.NopCloser(bytes.NewBufferString("archive")), ContentLength: contentLength}, nil
 }
 
 type archiveFixture struct {
@@ -217,26 +221,49 @@ func TestPartsAreSessionBoundExpiringAndIndividuallySingleUse(t *testing.T) {
 	contents, err := io.ReadAll(stream.Body)
 	require.NoError(t, err)
 	require.NoError(t, stream.Body.Close())
-	zipReader, err := zip.NewReader(bytes.NewReader(contents), int64(len(contents)))
-	require.NoError(t, err)
-	require.Len(t, zipReader.File, 1)
-	assert.Equal(t, "Family-Weekend/0001-media.jpg", zipReader.File[0].Name)
+	assert.Equal(t, "archive", string(contents))
+	assert.Equal(t, int64(12), stream.ContentLength)
 	assert.Equal(t, "Family-Weekend-part-1-of-2.zip", stream.Filename)
+	require.Len(t, source.archiveCalls, 1)
+	assert.Equal(t, []uuid.UUID{fixture.assets[0]}, source.archiveCalls[0])
 	_, err = fixture.service.StreamPart(context.Background(), fixture.actor, token, 1)
 	assert.ErrorIs(t, err, ErrNotFound)
-	assert.Len(t, source.originalCalls, 1, "replay is rejected before opening Immich")
+	assert.Len(t, source.archiveCalls, 1, "replay is rejected before opening Immich")
 
 	_, err = fixture.db.NewRaw(`UPDATE recipient_access_generations SET state = 'revoked', is_current = false, ended_at = now() WHERE id = ?`, fixture.actor.AccessID).Exec(context.Background())
 	require.NoError(t, err)
 	_, err = fixture.service.StreamPart(context.Background(), fixture.actor, token, 2)
 	assert.ErrorIs(t, err, ErrNotFound)
-	assert.Len(t, source.originalCalls, 1)
+	assert.Len(t, source.archiveCalls, 1)
 
 	_, err = fixture.db.NewRaw(`UPDATE recipient_access_generations SET state = 'completed', is_current = true, ended_at = NULL WHERE id = ?`, fixture.actor.AccessID).Exec(context.Background())
 	require.NoError(t, err)
 	now = plan.ExpiresAt
 	_, err = fixture.service.StreamPart(context.Background(), fixture.actor, token, 2)
 	assert.ErrorIs(t, err, ErrNotFound)
+}
+
+func TestPartRejectsArchiveSizeDriftWithoutConsumingPart(t *testing.T) {
+	source := &archiveStub{}
+	fixture := newArchiveFixture(t, source)
+	source.planned = []immich.ArchivePart{{
+		Size: 12, AssetIDs: []uuid.UUID{fixture.assets[0]}, CompanionOf: map[uuid.UUID]uuid.UUID{},
+	}}
+	plan, err := fixture.service.Plan(context.Background(), fixture.actor, PlanRequest{
+		Scope: "subset", MediaIDs: []string{fixture.media[0].String()},
+	})
+	require.NoError(t, err)
+	token := tokenFromURL(plan.Parts[0].DownloadURL)
+
+	driftedSize := int64(13)
+	source.archiveContentLength = &driftedSize
+	_, err = fixture.service.StreamPart(context.Background(), fixture.actor, token, 1)
+	assert.ErrorIs(t, err, ErrUnavailable)
+
+	source.archiveContentLength = nil
+	stream, err := fixture.service.StreamPart(context.Background(), fixture.actor, token, 1)
+	require.NoError(t, err)
+	require.NoError(t, stream.Body.Close())
 }
 
 func TestEveryAccessLossBlocksAnUnstartedPart(t *testing.T) {
@@ -278,14 +305,53 @@ func TestEveryAccessLossBlocksAnUnstartedPart(t *testing.T) {
 
 			_, err = fixture.service.StreamPart(context.Background(), fixture.actor, tokenFromURL(plan.Parts[0].DownloadURL), 1)
 			assert.ErrorIs(t, err, ErrNotFound)
-			assert.Empty(t, source.originalCalls)
+			assert.Empty(t, source.archiveCalls)
 		})
 	}
 }
 
+func TestArchiveOpeningHonorsCancellationWithoutConsumingPart(t *testing.T) {
+	release := make(chan struct{})
+	source := &archiveStub{archiveStarted: make(chan struct{}), releaseArchive: release}
+	fixture := newArchiveFixture(t, source)
+	source.planned = []immich.ArchivePart{{
+		Size: 12, AssetIDs: []uuid.UUID{fixture.assets[0]}, CompanionOf: map[uuid.UUID]uuid.UUID{},
+	}}
+	plan, err := fixture.service.Plan(context.Background(), fixture.actor, PlanRequest{
+		Scope: "subset", MediaIDs: []string{fixture.media[0].String()},
+	})
+	require.NoError(t, err)
+	token := tokenFromURL(plan.Parts[0].DownloadURL)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	result := make(chan error, 1)
+	go func() {
+		_, streamErr := fixture.service.StreamPart(ctx, fixture.actor, token, 1)
+		result <- streamErr
+	}()
+	select {
+	case <-source.archiveStarted:
+	case <-ctx.Done():
+		t.Fatalf("upstream archive did not open before deadline: %v", ctx.Err())
+	}
+	cancel()
+	select {
+	case streamErr := <-result:
+		assert.ErrorIs(t, streamErr, ErrUnavailable)
+	case <-time.After(5 * time.Second):
+		t.Fatal("canceled archive did not return before deadline")
+	}
+
+	close(release)
+	source.releaseArchive = nil
+	stream, err := fixture.service.StreamPart(context.Background(), fixture.actor, token, 1)
+	require.NoError(t, err)
+	require.NoError(t, stream.Body.Close())
+}
+
 func TestPartReauthorizesAfterOpeningTheUpstreamStream(t *testing.T) {
 	release := make(chan struct{})
-	source := &archiveStub{originalStarted: make(chan struct{}), releaseOriginal: release}
+	source := &archiveStub{archiveStarted: make(chan struct{}), releaseArchive: release}
 	fixture := newArchiveFixture(t, source)
 	source.planned = []immich.ArchivePart{{
 		Size: 12, AssetIDs: []uuid.UUID{fixture.assets[0]}, CompanionOf: map[uuid.UUID]uuid.UUID{},
@@ -304,7 +370,7 @@ func TestPartReauthorizesAfterOpeningTheUpstreamStream(t *testing.T) {
 		result <- streamErr
 	}()
 	select {
-	case <-source.originalStarted:
+	case <-source.archiveStarted:
 	case <-ctx.Done():
 		t.Fatalf("upstream stream did not open before deadline: %v", ctx.Err())
 	}
@@ -334,7 +400,7 @@ func TestPartRevalidatesCurrentLivePhotoCompanion(t *testing.T) {
 
 	_, err = fixture.service.StreamPart(context.Background(), fixture.actor, tokenFromURL(plan.Parts[0].DownloadURL), 1)
 	assert.ErrorIs(t, err, ErrNotFound)
-	assert.Empty(t, source.originalCalls, "a changed companion is blocked before archive streaming")
+	assert.Empty(t, source.archiveCalls, "a changed companion is blocked before archive streaming")
 }
 
 func stringPointer(value string) *string { return &value }

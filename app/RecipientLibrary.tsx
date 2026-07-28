@@ -6,7 +6,7 @@ import {
 } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { apiJSON, apiNoContent } from "./api";
+import { apiJSON, apiNoContent, apiResponse } from "./api";
 import type {
   PlanRequest as ArchivePlanRequest,
   PlanResponse as ArchivePlanResponse,
@@ -271,12 +271,48 @@ function MediaViewer({
 }
 
 function ArchiveDownloads({
+  csrfToken,
   plan,
   publicComputer,
 }: {
+  csrfToken: string;
   plan: ArchivePlanResponse;
   publicComputer: boolean;
 }) {
+  const [downloadingPart, setDownloadingPart] = useState<number>();
+  const [downloadedParts, setDownloadedParts] = useState<Set<number>>(
+    new Set(),
+  );
+  const [error, setError] = useState<Error | null>(null);
+
+  async function download(part: ArchivePlanResponse["parts"][number]) {
+    setDownloadingPart(part.part_number);
+    setError(null);
+    try {
+      const response = await apiResponse(part.download_url, {
+        method: "POST",
+        headers: {
+          Accept: "application/zip",
+          "X-Memento-CSRF": csrfToken,
+        },
+      });
+      const objectURL = URL.createObjectURL(await response.blob());
+      const link = document.createElement("a");
+      link.download = part.filename;
+      link.href = objectURL;
+      link.style.display = "none";
+      document.body.append(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(objectURL), 0);
+      setDownloadedParts((current) => new Set(current).add(part.part_number));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause : new Error("Download failed."));
+    } finally {
+      setDownloadingPart(undefined);
+    }
+  }
+
   return (
     <section aria-label="Archive downloads" className="archive-downloads">
       <strong>{plan.name}</strong>
@@ -291,17 +327,28 @@ function ArchiveDownloads({
         </p>
       ) : null}
       <div>
-        {plan.parts.map((part) => (
-          <a
-            download={part.filename}
-            href={part.download_url}
-            key={part.part_number}
-          >
-            Download{" "}
-            {plan.parts.length === 1 ? "archive" : `part ${part.part_number}`}
-          </a>
-        ))}
+        {plan.parts.map((part) => {
+          const downloaded = downloadedParts.has(part.part_number);
+          const downloading = downloadingPart === part.part_number;
+          const label =
+            plan.parts.length === 1 ? "archive" : `part ${part.part_number}`;
+          return (
+            <button
+              disabled={downloaded || downloading}
+              key={part.part_number}
+              onClick={() => void download(part)}
+              type="button"
+            >
+              {downloaded
+                ? `Downloaded ${label}`
+                : downloading
+                  ? `Downloading ${label}…`
+                  : `Download ${label}`}
+            </button>
+          );
+        })}
       </div>
+      <LibraryError error={error} />
     </section>
   );
 }
@@ -510,6 +557,7 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
             <LibraryError error={event.error ?? archive.error} />
             {archivePlan ? (
               <ArchiveDownloads
+                csrfToken={session.csrf_token}
                 plan={archivePlan}
                 publicComputer={session.session_type === "public"}
               />
@@ -640,6 +688,7 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
                   ) : null}
                   {destination === "photos" && archivePlan ? (
                     <ArchiveDownloads
+                      csrfToken={session.csrf_token}
                       plan={archivePlan}
                       publicComputer={session.session_type === "public"}
                     />
