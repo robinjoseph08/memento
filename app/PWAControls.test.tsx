@@ -227,12 +227,14 @@ test("accepting an update already activated by another tab restarts immediately"
   }
 });
 
-test("offline copy says protected media is unavailable rather than empty", () => {
+test("offline notice persistently announces and focuses the transition", () => {
   render(<OfflineNotice />);
 
-  expect(
-    screen.getByRole("heading", { name: "Memento is offline" }),
-  ).toBeInTheDocument();
+  const alert = screen.getByRole("alert", { name: "Memento is offline" });
+  const title = screen.getByRole("heading", { name: "Memento is offline" });
+  expect(alert).toHaveAttribute("aria-live", "assertive");
+  expect(alert).toHaveAttribute("aria-atomic", "true");
+  expect(title).toHaveFocus();
   expect(
     screen.getByText(/Memento's offline cache does not store protected photos/),
   ).toBeVisible();

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import {
   applyTheme,
@@ -80,10 +80,22 @@ export function PWAUpdatePrompt() {
 }
 
 export function OfflineNotice() {
+  const title = useRef<HTMLHeadingElement>(null);
+
+  useEffect(() => title.current?.focus(), []);
+
   return (
-    <section aria-labelledby="offline-title" className="offline-notice">
+    <section
+      aria-atomic="true"
+      aria-labelledby="offline-title"
+      aria-live="assertive"
+      className="offline-notice"
+      role="alert"
+    >
       <p className="step-label">Network unavailable</p>
-      <h1 id="offline-title">Memento is offline</h1>
+      <h1 id="offline-title" ref={title} tabIndex={-1}>
+        Memento is offline
+      </h1>
       <p>
         Reconnect to open your private library. Memento's offline cache does not
         store protected photos or account responses. Files you downloaded

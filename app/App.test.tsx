@@ -1004,9 +1004,14 @@ test("clears protected query data offline and after Session revocation", async (
   ).toBeDefined();
 
   fireEvent.offline(window);
-  expect(
-    await screen.findByRole("heading", { name: "Memento is offline" }),
-  ).toBeInTheDocument();
+  const offlineAlert = await screen.findByRole("alert", {
+    name: "Memento is offline",
+  });
+  const offlineTitle = screen.getByRole("heading", {
+    name: "Memento is offline",
+  });
+  expect(offlineAlert).toHaveAttribute("aria-live", "assertive");
+  expect(offlineTitle).toHaveFocus();
   await vi.waitFor(() =>
     expect(
       client.getQueryData(["recipient-library", csrfToken, "photos"]),
@@ -1015,6 +1020,7 @@ test("clears protected query data offline and after Session revocation", async (
 
   revoked = true;
   fireEvent.online(window);
+  expect(offlineAlert).not.toBeInTheDocument();
   expect(
     screen.queryByAltText("Photo 1 from July 2026"),
   ).not.toBeInTheDocument();
