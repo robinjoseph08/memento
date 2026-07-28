@@ -192,7 +192,9 @@ test("@desktop Recipient lands on Photos and sees only filtered Event totals", a
 
   await page.getByRole("button", { name: "Select photos" }).click();
   await page.getByRole("checkbox", { name: /Select Photo 1/ }).check();
-  await page.getByRole("button", { name: "Download 1 selected" }).click();
+  await page
+    .getByRole("button", { name: "Prepare archive for 1 selected" })
+    .click();
   const subsetArchive = page.getByRole("button", {
     name: "Download archive",
   });
@@ -258,7 +260,7 @@ test("@desktop Recipient lands on Photos and sees only filtered Event totals", a
   await page.getByRole("button", { name: /Family weekend/ }).click();
   await expect(page.getByText("1 item")).toBeVisible();
   await expect(page.getByText(/Moment/)).toHaveCount(0);
-  await page.getByRole("button", { name: "Download Event" }).click();
+  await page.getByRole("button", { name: "Prepare Event archive" }).click();
   await expect(
     page.getByRole("button", { name: "Download archive" }),
   ).toBeEnabled();

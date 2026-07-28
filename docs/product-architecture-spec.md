@@ -540,7 +540,7 @@ All application JSON and protected Media routes are under `/api`. Stable portal 
 | `/api/publications` and `/api/withdrawals` | final review, publish, history, immediate Withdrawal, restoration staging |
 | `/api/library` | Recipient Photos timeline, Events, New for you, collection statistics, seen state |
 | `/api/media` | Recipient metadata, authorized thumbnail, preview, playback, and original streams |
-| `/api/archives` | plan, inspect safe summary, and single-use part streams |
+| `/api/me/archives` | Recipient plan, inspect safe summary, and single-use part streams |
 | `/api/comments` | create, edit, delete, moderate, mute, list authorized item Comments |
 | `/api/favorites` | Recipient toggle and list, Curator per-Recipient view |
 | `/api/search` | authorized portal-index search and structured date filters |

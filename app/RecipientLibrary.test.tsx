@@ -436,7 +436,9 @@ test("plans and downloads complete Event and explicit subset archives with Sessi
   fireEvent.click(await screen.findByRole("button", { name: "Select photos" }));
   fireEvent.click(screen.getByRole("checkbox", { name: /Select Photo 1/ }));
   fireEvent.click(screen.getByRole("checkbox", { name: /Select Photo 2/ }));
-  fireEvent.click(screen.getByRole("button", { name: "Download 2 selected" }));
+  fireEvent.click(
+    screen.getByRole("button", { name: "Prepare archive for 2 selected" }),
+  );
   const firstSubsetDownload = await screen.findByRole("button", {
     name: "Download part 1",
   });
@@ -517,7 +519,7 @@ test("plans and downloads complete Event and explicit subset archives with Sessi
     await screen.findByRole("button", { name: /Family weekend/ }),
   );
   fireEvent.click(
-    await screen.findByRole("button", { name: "Download Event" }),
+    await screen.findByRole("button", { name: "Prepare Event archive" }),
   );
   await waitFor(() =>
     expect(

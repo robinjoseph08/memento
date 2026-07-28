@@ -573,7 +573,9 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
                 onClick={planEvent}
                 type="button"
               >
-                {archive.isPending ? "Preparing archive…" : "Download Event"}
+                {archive.isPending
+                  ? "Preparing archive…"
+                  : "Prepare Event archive"}
               </button>
               {session.session_type === "public" ? (
                 <p className="archive-warning">
@@ -704,7 +706,7 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
                         >
                           {archive.isPending
                             ? "Preparing archive…"
-                            : `Download ${selectedMedia.size} selected`}
+                            : `Prepare archive for ${selectedMedia.size} selected`}
                         </button>
                       ) : null}
                     </div>
