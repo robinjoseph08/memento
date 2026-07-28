@@ -104,6 +104,9 @@ func (s *Service) Reconcile(ctx context.Context, sourceAlbumID uuid.UUID) error 
 	var outcome error
 	var rolledBackFailure *reconciliationSnapshot
 	err := s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if err := staging.LockAccessSummaryRefresh(ctx, tx); err != nil {
+			return err
+		}
 		var immichAlbumID uuid.UUID
 		if err := tx.NewRaw(`SELECT immich_album_id FROM source_albums WHERE id = ? FOR UPDATE`, sourceAlbumID).Scan(ctx, &immichAlbumID); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {

@@ -1187,6 +1187,95 @@ func TestPublicationInvalidatesAnotherEventsChangedStagedAccessImpact(t *testing
 	assert.ErrorIs(t, err, ErrPublicationNotReady, "the changed access impact requires fresh final review")
 }
 
+func TestFirstStagedInsertSerializesWithEntitlementReplacement(t *testing.T) {
+	fixture := newPublicationFixture(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, err := fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, fixture.request())
+	require.NoError(t, err)
+	secondEvent, secondMoment, _ := publishReusedMediaInSecondEvent(t, fixture)
+
+	secondReplacementSnapshot := uuid.New()
+	require.NoError(t, fixture.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if err := staging.LockAccessSummaryRefresh(ctx, tx); err != nil {
+			return err
+		}
+		if _, updateErr := tx.NewRaw(`
+			INSERT INTO audience_snapshots (
+				id, target_kind, target_id, approved_by_person_id, approved_at, label
+			) VALUES (?, 'moment', ?, ?, ?, 'Curator only');
+			UPDATE current_audience_snapshots SET snapshot_id = ?
+			WHERE target_kind = 'moment' AND target_id = ?;
+			UPDATE events SET version = 8, final_review_complete = true WHERE id = ?
+		`, secondReplacementSnapshot, secondMoment, fixture.actor.PersonID, fixture.service.now(),
+			secondReplacementSnapshot, secondMoment, secondEvent).Exec(ctx); updateErr != nil {
+			return updateErr
+		}
+		_, refreshErr := staging.Refresh(ctx, tx, secondEvent, fixture.service.now().UTC())
+		return refreshErr
+	}))
+
+	firstInsert, err := fixture.db.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	committed := false
+	defer func() {
+		if !committed {
+			_ = firstInsert.Rollback()
+		}
+	}()
+	require.NoError(t, staging.LockAccessSummaryRefresh(ctx, firstInsert))
+	firstReplacementSnapshot := uuid.New()
+	_, err = firstInsert.NewRaw(`
+		INSERT INTO audience_snapshots (
+			id, target_kind, target_id, approved_by_person_id, approved_at, label
+		) VALUES (?, 'moment', ?, ?, ?, 'Pending only');
+		INSERT INTO audience_snapshot_entries (
+			snapshot_id, recipient_person_id, recipient_access_generation_id
+		) VALUES (?, ?, ?);
+		UPDATE current_audience_snapshots SET snapshot_id = ?
+		WHERE target_kind = 'moment' AND target_id = ?;
+		UPDATE events SET version = 8, final_review_complete = true WHERE id = ?
+	`, firstReplacementSnapshot, fixture.moments[0], fixture.actor.PersonID, fixture.service.now(),
+		firstReplacementSnapshot, fixture.people["pending"], fixture.access["pending"],
+		firstReplacementSnapshot, fixture.moments[0], fixture.event).Exec(ctx)
+	require.NoError(t, err)
+	firstUpdate, err := staging.Refresh(ctx, firstInsert, fixture.event, fixture.service.now().UTC())
+	require.NoError(t, err)
+	require.NotNil(t, firstUpdate, "the regression requires an uncommitted first Staged insert")
+
+	published := make(chan error, 1)
+	go func() {
+		_, publishErr := fixture.service.PublishEvent(ctx, fixture.actor, secondEvent, PublishEventRequest{Version: 8})
+		published <- publishErr
+	}()
+	waitForAdvisoryLockWaiter(t, fixture, staging.AccessSummaryLockKey, "ExclusiveLock")
+	require.NoError(t, firstInsert.Commit())
+	committed = true
+	select {
+	case publishErr := <-published:
+		require.NoError(t, publishErr)
+	case <-ctx.Done():
+		t.Fatalf("Publication did not finish after the first Staged insert committed: %v; database stats: %+v", ctx.Err(), fixture.db.Stats())
+	}
+
+	dependent, err := staging.Load(ctx, fixture.db, fixture.event)
+	require.NoError(t, err)
+	require.NotNil(t, dependent)
+	var access staging.Change
+	for _, change := range dependent.Changes {
+		if change.Kind == staging.ChangeKindAccess {
+			access = change
+		}
+	}
+	require.Equal(t, staging.ChangeKindAccess, access.Kind)
+	require.Len(t, access.RecipientAccess, 2, "the dependent scan must observe and refresh the committed first insert")
+	var version int64
+	var finalReview bool
+	require.NoError(t, fixture.db.NewRaw(`SELECT version, final_review_complete FROM events WHERE id = ?`, fixture.event).Scan(ctx, &version, &finalReview))
+	assert.Equal(t, int64(9), version)
+	assert.False(t, finalReview)
+}
+
 func TestNoNewMediaStructuralAndAccessCorrectionsAreQuiet(t *testing.T) {
 	tests := []struct {
 		name   string

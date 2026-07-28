@@ -133,7 +133,7 @@ func (s *Service) PublishEvent(ctx context.Context, actor setup.CuratorSession, 
 		// Every Publication can change the global entitlement union summarized by
 		// another Staged Event. Serialize that replacement before locking one Event
 		// so dependent versions can be invalidated without cross-Event deadlocks.
-		if err := staging.LockAccessSummaryInputs(ctx, tx); err != nil {
+		if err := staging.LockAccessSummaryReplacement(ctx, tx); err != nil {
 			return err
 		}
 		// Publications share this lock while Withdrawal takes it exclusively. Taking
@@ -388,9 +388,6 @@ func (s *Service) PublishEvent(ctx context.Context, actor setup.CuratorSession, 
 		`, eventID, publicationID, publicationID).Exec(ctx); err != nil {
 			return err
 		}
-		if err := staging.RefreshDependentAccessUpdates(ctx, tx, eventID, now); err != nil {
-			return err
-		}
 		if _, err := tx.NewRaw(`
 			INSERT INTO current_recipient_event_covers (event_id, recipient_access_generation_id, media_item_id)
 			SELECT DISTINCT ON (entitlement.recipient_access_generation_id)
@@ -431,6 +428,11 @@ func (s *Service) PublishEvent(ctx context.Context, actor setup.CuratorSession, 
 			return err
 		}
 		if err := restoreEligibleWithdrawals(ctx, tx, eventID, publicationID, now, actor); err != nil {
+			return err
+		}
+		// Withdrawal restoration changes which nominal entitlement rows are
+		// effective. Refresh dependents only after that state is final.
+		if err := staging.RefreshDependentAccessUpdates(ctx, tx, eventID, now); err != nil {
 			return err
 		}
 		if err := s.publicationBoundary(PublicationStepEntitlements); err != nil {

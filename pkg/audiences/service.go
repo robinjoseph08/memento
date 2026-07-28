@@ -199,6 +199,9 @@ func (s *Service) ConfirmAttendance(ctx context.Context, actor setup.CuratorSess
 	now := s.now().UTC()
 	var response Review
 	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if err := staging.LockAccessSummaryRefresh(ctx, tx); err != nil {
+			return err
+		}
 		t := target{targetMoment, momentID}
 		if err := lockTarget(ctx, tx, t, version); err != nil {
 			return err
@@ -256,6 +259,9 @@ func (s *Service) Recalculate(ctx context.Context, actor setup.CuratorSession, k
 	now := s.now().UTC()
 	var response Review
 	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if err := staging.LockAccessSummaryRefresh(ctx, tx); err != nil {
+			return err
+		}
 		if err := lockTarget(ctx, tx, t, version); err != nil {
 			return err
 		}
@@ -301,6 +307,9 @@ func (s *Service) SetOverride(ctx context.Context, actor setup.CuratorSession, k
 	now := s.now().UTC()
 	var response Review
 	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if err := staging.LockAccessSummaryRefresh(ctx, tx); err != nil {
+			return err
+		}
 		if err := lockTarget(ctx, tx, t, version); err != nil {
 			return err
 		}
@@ -364,6 +373,9 @@ func (s *Service) Approve(ctx context.Context, actor setup.CuratorSession, kind 
 	now, snapshotID := s.now().UTC(), uuid.New()
 	var response ApprovalResponse
 	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if err := staging.LockAccessSummaryRefresh(ctx, tx); err != nil {
+			return err
+		}
 		if err := lockTarget(ctx, tx, t, version); err != nil {
 			return err
 		}

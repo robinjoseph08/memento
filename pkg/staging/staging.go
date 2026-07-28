@@ -94,10 +94,35 @@ type stagedPlacement struct {
 	Position    int       `bun:"position"`
 }
 
+// AccessSummaryLockKey identifies the transaction lock protecting global
+// Recipient-Media inputs and every Staged access summary derived from them.
+const AccessSummaryLockKey = "events:staged-access-summary-inputs"
+
+// LockAccessSummaryRefresh holds the global entitlement inputs stable while a
+// Staged update is refreshed. Callers that write editable Event state must take
+// this shared lock before locking or writing an Event.
+func LockAccessSummaryRefresh(ctx context.Context, tx bun.Tx) error {
+	_, err := tx.NewRaw(`SELECT pg_advisory_xact_lock_shared(hashtextextended(?, 0))`, AccessSummaryLockKey).Exec(ctx)
+	return err
+}
+
+// LockAccessSummaryReplacement serializes Publication and Withdrawal changes
+// to global entitlement inputs with every Staged refresh. It must be acquired
+// before locking an individual Event.
+func LockAccessSummaryReplacement(ctx context.Context, tx bun.Tx) error {
+	_, err := tx.NewRaw(`SELECT pg_advisory_xact_lock(hashtextextended(?, 0))`, AccessSummaryLockKey).Exec(ctx)
+	return err
+}
+
 // Refresh coalesces the editable Event against its current immutable
 // Publication. Callers must make their editable writes and this refresh in the
-// same transaction so an empty update can never enter the work queue.
+// same transaction so an empty update can never enter the work queue. Callers
+// that write Event state must acquire LockAccessSummaryRefresh before those
+// writes; this acquisition also protects read-only/retry callers.
 func Refresh(ctx context.Context, tx bun.Tx, eventID uuid.UUID, now time.Time) (*Update, error) {
+	if err := LockAccessSummaryRefresh(ctx, tx); err != nil {
+		return nil, err
+	}
 	var lifecycle string
 	var publicationID *uuid.UUID
 	if err := tx.NewRaw(`SELECT lifecycle, current_publication_id FROM events WHERE id = ? FOR UPDATE`, eventID).Scan(ctx, &lifecycle, &publicationID); err != nil {
@@ -144,19 +169,12 @@ func Refresh(ctx context.Context, tx bun.Tx, eventID uuid.UUID, now time.Time) (
 	return &Update{ID: stagedID.String(), BasePublicationID: publicationID.String(), Changes: changes, UpdatedAt: now}, nil
 }
 
-// LockAccessSummaryInputs serializes Publications that replace the global
-// Recipient-Media entitlement inputs used by every Staged access summary. It
-// must be acquired before locking an individual Event.
-func LockAccessSummaryInputs(ctx context.Context, tx bun.Tx) error {
-	_, err := tx.NewRaw(`SELECT pg_advisory_xact_lock(hashtextextended('events:staged-access-summary-inputs', 0))`).Exec(ctx)
-	return err
-}
-
 // RefreshDependentAccessUpdates refreshes other Staged Events after a
-// Publication replaces current entitlements. A changed access impact is new
-// review information, so the dependent Event receives a new version and loses
-// final-review approval in the same transaction.
-func RefreshDependentAccessUpdates(ctx context.Context, tx bun.Tx, publishedEventID uuid.UUID, now time.Time) error {
+// Publication or Withdrawal replaces effective current entitlements. A changed
+// access impact is new review information, so the dependent Event receives a
+// new version and loses final-review approval in the same transaction.
+// excludedEventID may be uuid.Nil when no Event is being replaced.
+func RefreshDependentAccessUpdates(ctx context.Context, tx bun.Tx, excludedEventID uuid.UUID, now time.Time) error {
 	type candidate struct {
 		EventID    uuid.UUID `bun:"event_id"`
 		NetChanges []byte    `bun:"net_changes"`
@@ -166,10 +184,10 @@ func RefreshDependentAccessUpdates(ctx context.Context, tx bun.Tx, publishedEven
 		SELECT staged.event_id, staged.net_changes
 		FROM staged_updates AS staged
 		JOIN events AS event ON event.id = staged.event_id
-		WHERE staged.event_id <> ?
+		WHERE ?::uuid = ?::uuid OR staged.event_id <> ?
 		ORDER BY staged.event_id
 		FOR UPDATE OF event, staged
-	`, publishedEventID).Scan(ctx, &candidates); err != nil {
+	`, excludedEventID, uuid.Nil, excludedEventID).Scan(ctx, &candidates); err != nil {
 		return err
 	}
 	for _, candidate := range candidates {
@@ -185,12 +203,12 @@ func RefreshDependentAccessUpdates(ctx context.Context, tx bun.Tx, publishedEven
 		if err != nil {
 			return err
 		}
-		if update == nil {
-			continue
-		}
-		currentAccess, err := accessChangeFingerprint(update.Changes)
-		if err != nil {
-			return err
+		currentAccess := ""
+		if update != nil {
+			currentAccess, err = accessChangeFingerprint(update.Changes)
+			if err != nil {
+				return err
+			}
 		}
 		if priorAccess == currentAccess {
 			continue
@@ -217,7 +235,8 @@ func accessChangeFingerprint(changes []Change) (string, error) {
 }
 
 // InvalidateEvent records an externally-applied editable change and refreshes
-// its coalesced update in the same transaction.
+// its coalesced update in the same transaction. Its caller must acquire
+// LockAccessSummaryRefresh before locking or writing the Event.
 func InvalidateEvent(ctx context.Context, tx bun.Tx, eventID uuid.UUID, now time.Time) (*Update, error) {
 	if _, err := tx.NewRaw(`
 		UPDATE events SET version = version + 1, final_review_complete = false, updated_at = ?
@@ -435,12 +454,23 @@ func summarizeStagedUpdate(ctx context.Context, db bun.IDB, eventID, publication
 			JOIN audience_snapshot_entries AS entry ON entry.snapshot_id = snapshot.snapshot_id
 			JOIN draft_media_placements AS placement ON placement.draft_moment_id = moment.id
 			WHERE moment.event_id = ?
+		), effective_entitlements AS (
+			SELECT DISTINCT entitlement.event_id,
+				entitlement.recipient_access_generation_id AS access_id,
+				entitlement.media_item_id
+			FROM current_audience_entitlements AS entitlement
+			JOIN current_published_placements AS placement
+			  ON placement.event_id = entitlement.event_id
+			 AND placement.media_item_id = entitlement.media_item_id
+			JOIN published_moments AS moment ON moment.id = placement.published_moment_id
+			WHERE NOT content_is_withdrawn(
+				placement.event_id, moment.draft_moment_id, placement.media_item_id
+			)
 		), before_global AS (
-			SELECT DISTINCT recipient_access_generation_id AS access_id, media_item_id
-			FROM current_audience_entitlements
+			SELECT DISTINCT access_id, media_item_id FROM effective_entitlements
 		), after_global AS (
-			SELECT DISTINCT recipient_access_generation_id AS access_id, media_item_id
-			FROM current_audience_entitlements WHERE event_id <> ?
+			SELECT DISTINCT access_id, media_item_id
+			FROM effective_entitlements WHERE event_id <> ?
 			UNION
 			SELECT access_id, media_item_id FROM editable_event
 		), changed AS (

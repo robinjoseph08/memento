@@ -611,6 +611,9 @@ func (s *Service) OrganizeEvent(ctx context.Context, actor setup.CuratorSession,
 	now := s.now().UTC()
 	var organized Event
 	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if err := staging.LockAccessSummaryRefresh(ctx, tx); err != nil {
+			return err
+		}
 		var currentVersion int64
 		var title, description, timezone, priorEventPlaceLabelsJSON string
 		err := tx.NewRaw(`SELECT version, title, description, grouping_timezone, to_json(place_labels)::text FROM events WHERE id = ? AND lifecycle IN ('draft', 'published') FOR UPDATE`, id).Scan(ctx, &currentVersion, &title, &description, &timezone, &priorEventPlaceLabelsJSON)
@@ -796,6 +799,9 @@ func (s *Service) RestorePublishedMedia(ctx context.Context, actor setup.Curator
 	now := s.now().UTC()
 	var restored Event
 	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if err := staging.LockAccessSummaryRefresh(ctx, tx); err != nil {
+			return err
+		}
 		var currentVersion int64
 		var lifecycle string
 		var publicationID *uuid.UUID

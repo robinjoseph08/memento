@@ -789,6 +789,9 @@ func (s *Service) RejectPerson(ctx context.Context, actor setup.CuratorSession, 
 func (s *Service) ConfirmMedia(ctx context.Context, actor setup.CuratorSession, candidateID uuid.UUID) (MutationResponse, error) {
 	now := s.now().UTC()
 	err := s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if err := staging.LockAccessSummaryRefresh(ctx, tx); err != nil {
+			return err
+		}
 		var mediaItemID, previousAssetID, candidateAssetID uuid.UUID
 		var candidateMediaItemID uuid.NullUUID
 		err := tx.NewRaw(`

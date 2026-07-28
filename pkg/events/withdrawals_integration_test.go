@@ -21,9 +21,11 @@ import (
 	"github.com/robinjoseph08/memento/pkg/library"
 	"github.com/robinjoseph08/memento/pkg/outbox"
 	"github.com/robinjoseph08/memento/pkg/setup"
+	"github.com/robinjoseph08/memento/pkg/staging"
 	"github.com/robinjoseph08/memento/pkg/worker"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/uptrace/bun"
 )
 
 type withdrawalRecipientAuthorizer struct {
@@ -517,6 +519,89 @@ func TestMomentWithdrawalKeepsReusedMediaAvailableWhenAnotherPlacementIsVisible(
 	assert.Equal(t, 1, withdrawal.AffectedEventCount)
 	_, err = fixture.service.RecipientEvent(ctx, fixture.actorFor("shared"), secondEvent)
 	assert.ErrorIs(t, err, ErrNoPublication)
+}
+
+func TestWithdrawalAndRestorationRefreshDependentEffectiveAccess(t *testing.T) {
+	fixture := newPublicationFixture(t)
+	ctx := context.Background()
+	_, err := fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, fixture.request())
+	require.NoError(t, err)
+	secondEvent, secondMoment, secondPublication := publishReusedMediaInSecondEvent(t, fixture)
+
+	firstReplacementSnapshot := uuid.New()
+	require.NoError(t, fixture.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if err := staging.LockAccessSummaryRefresh(ctx, tx); err != nil {
+			return err
+		}
+		if _, updateErr := tx.NewRaw(`
+			INSERT INTO audience_snapshots (
+				id, target_kind, target_id, approved_by_person_id, approved_at, label
+			) VALUES (?, 'moment', ?, ?, ?, 'Pending only');
+			INSERT INTO audience_snapshot_entries (
+				snapshot_id, recipient_person_id, recipient_access_generation_id
+			) VALUES (?, ?, ?);
+			UPDATE current_audience_snapshots SET snapshot_id = ?
+			WHERE target_kind = 'moment' AND target_id = ?;
+			UPDATE events SET version = 8, final_review_complete = true WHERE id = ?
+		`, firstReplacementSnapshot, fixture.moments[0], fixture.actor.PersonID, fixture.service.now(),
+			firstReplacementSnapshot, fixture.people["pending"], fixture.access["pending"],
+			firstReplacementSnapshot, fixture.moments[0], fixture.event).Exec(ctx); updateErr != nil {
+			return updateErr
+		}
+		_, refreshErr := staging.Refresh(ctx, tx, fixture.event, fixture.service.now().UTC())
+		return refreshErr
+	}))
+
+	accessByPerson := func() map[string]staging.RecipientAccessChange {
+		t.Helper()
+		update, loadErr := staging.Load(ctx, fixture.db, fixture.event)
+		require.NoError(t, loadErr)
+		require.NotNil(t, update)
+		for _, change := range update.Changes {
+			if change.Kind != staging.ChangeKindAccess {
+				continue
+			}
+			result := make(map[string]staging.RecipientAccessChange, len(change.RecipientAccess))
+			for _, recipient := range change.RecipientAccess {
+				result[recipient.RecipientPersonID] = recipient
+			}
+			return result
+		}
+		t.Fatal("Staged update has no access change")
+		return nil
+	}
+	prior := accessByPerson()
+	assert.Contains(t, prior, fixture.people["pending"].String())
+	assert.NotContains(t, prior, fixture.people["shared"].String(), "the overlapping Event initially preserves shared access")
+
+	withdrawal, err := fixture.service.Withdraw(ctx, fixture.actor, WithdrawRequest{
+		TargetKind: WithdrawalTargetEvent, TargetID: secondEvent.String(), Reason: "Refresh global access",
+	})
+	require.NoError(t, err)
+	withdrawn := accessByPerson()
+	assert.Equal(t, 1, withdrawn[fixture.people["pending"].String()].GrantedMediaCount)
+	assert.Equal(t, 1, withdrawn[fixture.people["shared"].String()].RevokedMediaCount)
+	var version int64
+	var finalReview bool
+	require.NoError(t, fixture.db.NewRaw(`SELECT version, final_review_complete FROM events WHERE id = ?`, fixture.event).Scan(ctx, &version, &finalReview))
+	assert.Equal(t, int64(9), version)
+	assert.False(t, finalReview, "Withdrawal changed the dependent access review")
+
+	_, err = fixture.db.NewRaw(`UPDATE events SET final_review_complete = true WHERE id = ?`, fixture.event).Exec(ctx)
+	require.NoError(t, err)
+	reviewMomentForFreshPublication(t, fixture, secondEvent, secondMoment, secondPublication.ID)
+	restoredPublication, err := fixture.service.PublishEvent(ctx, fixture.actor, secondEvent, PublishEventRequest{Version: 8})
+	require.NoError(t, err)
+
+	restored := accessByPerson()
+	assert.Contains(t, restored, fixture.people["pending"].String())
+	assert.NotContains(t, restored, fixture.people["shared"].String(), "restored effective access masks the proposed revocation again")
+	require.NoError(t, fixture.db.NewRaw(`SELECT version, final_review_complete FROM events WHERE id = ?`, fixture.event).Scan(ctx, &version, &finalReview))
+	assert.Equal(t, int64(10), version)
+	assert.False(t, finalReview, "restoration changed the dependent access review after final Withdrawal state")
+	var restoredBy uuid.UUID
+	require.NoError(t, fixture.db.NewRaw(`SELECT restored_by_publication_id FROM content_withdrawals WHERE id = ?`, withdrawal.ID).Scan(ctx, &restoredBy))
+	assert.Equal(t, uuid.MustParse(restoredPublication.ID), restoredBy)
 }
 
 func TestPartialWithdrawalPreservesEventProjectionsForRecipientsWithAnotherEntitlement(t *testing.T) {
