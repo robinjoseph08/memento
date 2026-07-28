@@ -30,6 +30,8 @@ type OrganizerAPIOptions = {
   restoreGate?: Promise<void>;
   restoreMomentID?: string;
   restoreAsCover?: boolean;
+  restoreConflictOnce?: boolean;
+  restoreVersions?: number[];
   publicationRefetchGate?: Promise<void>;
   withdrawalGate?: Promise<void>;
 };
@@ -239,6 +241,8 @@ function stubOrganizerAPI(
 ) {
   let persisted = initial;
   let publicationCommitted = false;
+  let restorationConflictReturned = false;
+  let restorationRefetched = false;
   const saves: OrganizeEventRequest[] = [];
   const reviews = new Map<string, ReturnType<typeof emptyReview>>();
   const reviewFor = (momentID: string) => {
@@ -393,7 +397,28 @@ function stubOrganizerAPI(
           version: number;
           media_item_id: string;
         };
+        options.restoreVersions?.push(request.version);
         expect(request.version).toBe(persisted.version);
+        if (options.restoreConflictOnce && !restorationConflictReturned) {
+          persisted = {
+            ...persisted,
+            version: persisted.version + 1,
+            title: "Newer server Event",
+          };
+          restorationConflictReturned = true;
+          return response(
+            {
+              error: {
+                message:
+                  "This Event changed in another browser. Review the newer version before saving again.",
+              },
+            },
+            409,
+          );
+        }
+        if (restorationConflictReturned && !restorationRefetched) {
+          throw new Error("Restoration retried before loading the newer Event");
+        }
         const restored = Object.values(items).find(
           (item) => item.id === request.media_item_id,
         );
@@ -423,6 +448,7 @@ function stubOrganizerAPI(
           : response(restoration);
       }
       if (path === `/api/events/${eventID}`) {
+        if (restorationConflictReturned) restorationRefetched = true;
         if (publicationCommitted && options.publicationRefetchGate) {
           return options.publicationRefetchGate.then(() => response(persisted));
         }
@@ -768,6 +794,69 @@ test("restores an autosaved published Media removal from Staged review", async (
   );
   expect(
     screen.getByRole("checkbox", { name: /loose photo/ }),
+  ).toBeInTheDocument();
+  expect(screen.getByText("All changes saved")).toBeInTheDocument();
+});
+
+test("loads the newer Event before retrying a restoration conflict", async () => {
+  const staged = organizedDraft(8);
+  staged.lifecycle = "published";
+  staged.published_editable_version = 7;
+  staged.moments[1].media_items = staged.moments[1].media_items.filter(
+    (item) => item.id !== items.loose.id,
+  );
+  staged.staged_update = {
+    id: "12121212-1212-4212-8212-121212121212",
+    base_publication_id: "13131313-1313-4313-8313-131313131313",
+    updated_at: "2026-05-03T01:00:00Z",
+    changes: [
+      {
+        kind: "removal",
+        count: 1,
+        media_item_ids: [items.loose.id],
+        moment_ids: [],
+        removed_media: [
+          {
+            id: items.loose.id,
+            media_type: items.loose.media_type,
+            local_date_time: items.loose.local_date_time,
+            restorable: true,
+          },
+        ],
+        detail: "Media removed",
+      },
+    ],
+  };
+  const restoreVersions: number[] = [];
+  stubOrganizerAPI(staged, { restoreConflictOnce: true, restoreVersions });
+  renderOrganizer();
+  fireEvent.click(
+    await screen.findByRole("button", { name: /Family weekend/ }),
+  );
+
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Restore removed Media" }),
+  );
+  expect(
+    await screen.findByText(
+      "This Event changed in another browser. Load the newer Event before retrying this restoration.",
+    ),
+  ).toBeInTheDocument();
+
+  fireEvent.click(
+    screen.getByRole("button", {
+      name: "Load newer Event and retry restoration",
+    }),
+  );
+
+  await waitFor(() =>
+    expect(
+      screen.queryByRole("region", { name: "Staged update review" }),
+    ).not.toBeInTheDocument(),
+  );
+  expect(restoreVersions).toEqual([8, 9]);
+  expect(
+    screen.getByRole("heading", { name: "Newer server Event" }),
   ).toBeInTheDocument();
   expect(screen.getByText("All changes saved")).toBeInTheDocument();
 });
@@ -1119,15 +1208,22 @@ test("publishes ready work and previews Recipient output read only", async () =>
 
   const publish = await screen.findByRole("button", { name: "Publish Event" });
   expect(screen.getByText("6 of 6 complete")).toBeInTheDocument();
-  expect(
-    screen.getByRole("heading", { name: "Readiness" }).closest("section"),
-  ).toHaveTextContent("Next action: Ready to publish");
+  const readiness = screen
+    .getByRole("heading", { name: "Readiness" })
+    .closest("section")!;
+  expect(readiness).toHaveTextContent("Next action: Ready to publish");
   expect(publish).toBeEnabled();
   fireEvent.click(publish);
   expect(
     await screen.findByText("Published revision 1 atomically."),
   ).toBeInTheDocument();
   expect(publish).toBeDisabled();
+  await waitFor(() =>
+    expect(readiness).toHaveTextContent(
+      "Publication status: Published and up to date",
+    ),
+  );
+  expect(readiness).not.toHaveTextContent("Next action: Ready to publish");
 
   const recipient = await screen.findByLabelText("Preview Recipient");
   fireEvent.change(recipient, {

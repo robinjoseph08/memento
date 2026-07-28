@@ -352,6 +352,9 @@ function StagedUpdateReview({
   restoringMediaID,
   restoreDisabled,
   restoreError,
+  restoreConflict,
+  restoreRecoveryPending,
+  onRecoverRestore,
   metadataValid,
 }: {
   event: DraftEvent;
@@ -359,6 +362,9 @@ function StagedUpdateReview({
   restoringMediaID?: string;
   restoreDisabled: boolean;
   restoreError?: string;
+  restoreConflict: boolean;
+  restoreRecoveryPending: boolean;
+  onRecoverRestore: () => void;
   metadataValid: boolean;
 }) {
   if (!event.staged_update) return null;
@@ -486,7 +492,24 @@ function StagedUpdateReview({
                 </li>
               ))}
             </ul>
-            {restoreError ? (
+            {restoreConflict ? (
+              <div className="form-error">
+                <p role="alert">
+                  This Event changed in another browser. Load the newer Event
+                  before retrying this restoration.
+                </p>
+                <button
+                  disabled={restoreRecoveryPending}
+                  onClick={onRecoverRestore}
+                  type="button"
+                >
+                  {restoreRecoveryPending
+                    ? "Loading newer Event…"
+                    : "Load newer Event and retry restoration"}
+                </button>
+                {restoreError ? <p role="alert">{restoreError}</p> : null}
+              </div>
+            ) : restoreError ? (
               <p className="form-error" role="alert">
                 {restoreError}
               </p>
@@ -573,6 +596,8 @@ function Checklist({
     { label: "Final review", done: event.final_review_complete },
   ];
   const complete = checks.filter((check) => check.done).length;
+  const currentPublication =
+    event.lifecycle === "published" && event.staged_update === null;
   const next = checks.find((check) => !check.done)?.label ?? "Ready to publish";
   return (
     <section aria-labelledby="readiness-title" className="readiness">
@@ -594,7 +619,10 @@ function Checklist({
         ))}
       </ul>
       <p>
-        <strong>Next action:</strong> {next}
+        <strong>
+          {currentPublication ? "Publication status:" : "Next action:"}
+        </strong>{" "}
+        {currentPublication ? "Published and up to date" : next}
       </p>
     </section>
   );
@@ -685,6 +713,8 @@ export function EventOrganizer({
   const [saveState, setSaveState] = useState<SaveState>("saved");
   const [conflictRecoveryError, setConflictRecoveryError] = useState("");
   const [conflictRecoveryPending, setConflictRecoveryPending] = useState(false);
+  const [restoreRecoveryError, setRestoreRecoveryError] = useState("");
+  const [restoreRecoveryPending, setRestoreRecoveryPending] = useState(false);
   const [mergeError, setMergeError] = useState("");
   const [revision, setRevision] = useState(0);
   const [notifyRecipients, setNotifyRecipients] = useState(true);
@@ -799,6 +829,7 @@ export function EventOrganizer({
         },
       ),
     onSuccess: (restored, attempted) => {
+      setRestoreRecoveryError("");
       if (selectedIDRef.current !== restored.id) {
         queryClient.setQueryData(["event", restored.id], restored);
         return;
@@ -1321,6 +1352,45 @@ export function EventOrganizer({
     });
   }
 
+  async function reloadAndRetryRestoration() {
+    const attempted = restorePublishedMedia.variables;
+    if (!attempted) return;
+    const mediaID = attempted.mediaID;
+    setRestoreRecoveryError("");
+    setRestoreRecoveryPending(true);
+    try {
+      const result = await eventQuery.refetch();
+      if (!result.isSuccess || !result.data) {
+        setRestoreRecoveryError(
+          result.error?.message ?? "The newer Event could not be loaded.",
+        );
+        return;
+      }
+      const next = cloneEvent(result.data);
+      queryClient.setQueryData(["event", next.id], next);
+      latestDraftRef.current = next;
+      setDraft(next);
+      revisionRef.current = 0;
+      setRevision(0);
+      setSaveState("saved");
+      const remainsRestorable = next.staged_update?.changes.some((change) =>
+        change.removed_media?.some(
+          (item) => item.id === mediaID && item.restorable,
+        ),
+      );
+      restorePublishedMedia.reset();
+      if (!remainsRestorable) {
+        setRestoreRecoveryError(
+          "The newer Event no longer offers this restoration. Review its current Staged update.",
+        );
+        return;
+      }
+      restorePublishedMedia.mutate({ event: next, mediaID, revision: 0 });
+    } finally {
+      setRestoreRecoveryPending(false);
+    }
+  }
+
   async function loadNewerVersion() {
     setConflictRecoveryError("");
     setConflictRecoveryPending(true);
@@ -1519,6 +1589,9 @@ export function EventOrganizer({
                     setSaveState("saved");
                     setConflictRecoveryError("");
                     setConflictRecoveryPending(false);
+                    setRestoreRecoveryError("");
+                    setRestoreRecoveryPending(false);
+                    restorePublishedMedia.reset();
                     setMergeError("");
                     setNotifyRecipients(true);
                     setPreviewRecipientID("");
@@ -1599,7 +1672,19 @@ export function EventOrganizer({
                   })
                 }
                 restoreDisabled={saveState !== "saved"}
-                restoreError={restorePublishedMedia.error?.message}
+                restoreError={
+                  restoreRecoveryError ||
+                  (restorePublishedMedia.error instanceof APIError &&
+                  restorePublishedMedia.error.status === 409
+                    ? undefined
+                    : restorePublishedMedia.error?.message)
+                }
+                restoreConflict={
+                  restorePublishedMedia.error instanceof APIError &&
+                  restorePublishedMedia.error.status === 409
+                }
+                restoreRecoveryPending={restoreRecoveryPending}
+                onRecoverRestore={() => void reloadAndRetryRestoration()}
                 metadataValid={eventMetadataValid}
                 restoringMediaID={
                   restorePublishedMedia.isPending

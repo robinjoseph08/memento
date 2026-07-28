@@ -569,7 +569,9 @@ test("@mobile Staged review fits every change category in the page", async ({
   staged.lifecycle = "published";
   staged.title = "Corrected family weekend";
   staged.description = "The complete corrected description";
+  staged.place_labels = ["Coastal overlook", "Garden terrace"];
   staged.grouping_timezone = "America/New_York";
+  staged.moments[0].place_labels = ["Breakfast room", "Harbor view"];
   staged.published_editable_version = staged.version;
   staged.staged_update = {
     id: "12121212-1212-4212-8212-121212121212",
@@ -607,10 +609,15 @@ test("@mobile Staged review fits every change category in the page", async ({
       },
       {
         kind: "metadata",
-        count: 3,
+        count: 4,
         media_item_ids: [items.third.id],
         moment_ids: [momentOneID],
-        event_metadata_fields: ["title", "description", "grouping_timezone"],
+        event_metadata_fields: [
+          "title",
+          "description",
+          "place_labels",
+          "grouping_timezone",
+        ],
         detail: "Event, Moment, or Media metadata edited",
       },
       {
@@ -649,6 +656,20 @@ test("@mobile Staged review fits every change category in the page", async ({
 
   const review = page.getByRole("region", { name: "Staged update review" });
   await expect(review).toBeVisible();
+  const eventMetadata = review.locator(".staged-event-metadata");
+  await expect(eventMetadata).toContainText("Coastal overlook, Garden terrace");
+  await expect(eventMetadata.locator(".staged-metadata")).toHaveCount(4);
+  await expect(eventMetadata.getByText("Staged: Metadata edits")).toHaveCount(
+    4,
+  );
+  await expect(page.getByLabel("Place labels for Moment 1")).toHaveValue(
+    "Breakfast room, Harbor view",
+  );
+  await expect(
+    page.locator(".moment-card").filter({
+      has: page.getByLabel("Place labels for Moment 1"),
+    }),
+  ).toHaveClass(/staged-metadata/);
   const summary = review.getByRole("list", { name: "Net change summary" });
   await expect(summary.locator(":scope > li")).toHaveCount(6);
   for (const detail of [
