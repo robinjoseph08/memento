@@ -20,10 +20,11 @@ type Authorizer interface {
 type Handler struct {
 	service    *Service
 	authorizer Authorizer
+	limiter    *limiter
 }
 
 func NewHandler(service *Service, authorizer Authorizer) *Handler {
-	return &Handler{service: service, authorizer: authorizer}
+	return &Handler{service: service, authorizer: authorizer, limiter: newLimiter()}
 }
 
 func (h *Handler) authorize(c echo.Context, mutation bool) (setup.SessionActor, error) {
@@ -64,6 +65,9 @@ func (h *Handler) Plan(c echo.Context) error {
 	if err != nil {
 		return err
 	}
+	if !h.limiter.allowPlan(actor.SessionID) {
+		return errcodes.TooManyRequests("Too many archive plans. Try again later.")
+	}
 	var request PlanRequest
 	if err := c.Bind(&request); err != nil {
 		return err
@@ -80,6 +84,10 @@ func (h *Handler) Part(c echo.Context) error {
 	if err != nil {
 		return err
 	}
+	if !h.limiter.acquireStream(actor.SessionID) {
+		return errcodes.TooManyRequests("Too many archive downloads. Try again after an active download finishes.")
+	}
+	defer h.limiter.releaseStream(actor.SessionID)
 	number, err := strconv.Atoi(c.Param("part"))
 	if err != nil {
 		return errcodes.NotFound("Archive")

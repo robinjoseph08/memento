@@ -41,6 +41,8 @@ func init() {
 						archive_part_id uuid NOT NULL REFERENCES archive_parts(id) ON DELETE CASCADE,
 						position integer NOT NULL CHECK (position >= 0),
 						media_item_id uuid NOT NULL REFERENCES media_items(id) ON DELETE RESTRICT,
+						event_id uuid NOT NULL REFERENCES events(id) ON DELETE RESTRICT,
+						draft_moment_id uuid NOT NULL,
 						media_backing_id uuid NOT NULL REFERENCES media_backings(id) ON DELETE RESTRICT,
 						immich_asset_id uuid NOT NULL,
 						entry_name text NOT NULL CHECK (

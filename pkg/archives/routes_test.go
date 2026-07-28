@@ -71,6 +71,40 @@ func TestArchiveRoutesRequireSessionAndCSRFWithoutTokenHints(t *testing.T) {
 	}
 }
 
+func TestArchiveRoutesDenyExcessPlanningAndConcurrentStreams(t *testing.T) {
+	actor := setup.SessionActor{SessionID: uuid.New()}
+	authorizer := &routeAuthorizer{actor: actor}
+	handler := NewHandler(New(nil, nil), authorizer)
+	handler.limiter.planLimit = 1
+	e := echo.New()
+	e.HTTPErrorHandler = errcodes.NewHandler().Handle
+	RegisterRoutes(e, handler)
+
+	plan := func() *httptest.ResponseRecorder {
+		request := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/me/archives",
+			strings.NewReader(`{"scope":"event","event_id":"`+uuid.NewString()+`","media_ids":[]}`))
+		request.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+		request.AddCookie(&http.Cookie{Name: setup.CookieName, Value: "opaque"})
+		response := httptest.NewRecorder()
+		e.ServeHTTP(response, request)
+		return response
+	}
+	assert.Equal(t, http.StatusServiceUnavailable, plan().Code)
+	assert.Equal(t, http.StatusTooManyRequests, plan().Code)
+
+	require.True(t, handler.limiter.acquireStream(actor.SessionID))
+	require.True(t, handler.limiter.acquireStream(actor.SessionID))
+	defer handler.limiter.releaseStream(actor.SessionID)
+	defer handler.limiter.releaseStream(actor.SessionID)
+	request := httptest.NewRequestWithContext(context.Background(), http.MethodPost,
+		"/api/me/archives/parts/1?token="+strings.Repeat("x", 43), nil)
+	request.AddCookie(&http.Cookie{Name: setup.CookieName, Value: "opaque"})
+	response := httptest.NewRecorder()
+	e.ServeHTTP(response, request)
+	assert.Equal(t, http.StatusTooManyRequests, response.Code)
+	assert.Equal(t, "private, no-store", response.Header().Get(echo.HeaderCacheControl))
+}
+
 func TestArchiveErrorsRemainNonEnumerating(t *testing.T) {
 	require.Error(t, archiveError(ErrInvalidSelection))
 	require.Error(t, archiveError(ErrNotFound))

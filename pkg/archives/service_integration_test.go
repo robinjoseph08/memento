@@ -74,6 +74,7 @@ type archiveFixture struct {
 	source      *archiveStub
 	actor       setup.SessionActor
 	event       uuid.UUID
+	draftMoment uuid.UUID
 	media       []uuid.UUID
 	assets      []uuid.UUID
 	hiddenActor setup.SessionActor
@@ -84,11 +85,11 @@ func newArchiveFixture(t *testing.T, source *archiveStub) archiveFixture {
 	ctx := context.Background()
 	db := testdb.Open(t)
 	require.NoError(t, migrations.Apply(ctx, db))
-	fixture := archiveFixture{db: db, source: source, event: uuid.New(), media: []uuid.UUID{uuid.New(), uuid.New(), uuid.New()}, assets: []uuid.UUID{uuid.New(), uuid.New(), uuid.New()}}
+	fixture := archiveFixture{db: db, source: source, event: uuid.New(), draftMoment: uuid.New(), media: []uuid.UUID{uuid.New(), uuid.New(), uuid.New()}, assets: []uuid.UUID{uuid.New(), uuid.New(), uuid.New()}}
 	curator, personID, accessID, sessionID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
 	fixture.actor = setup.SessionActor{PersonID: personID, AccessID: accessID, SessionID: sessionID}
 	fixture.hiddenActor = setup.SessionActor{PersonID: uuid.New(), AccessID: uuid.New(), SessionID: uuid.New()}
-	publication, publishedMoment, draftMoment, snapshot := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	publication, publishedMoment, snapshot := uuid.New(), uuid.New(), uuid.New()
 	now := time.Now().UTC().Truncate(time.Second)
 	_, err := db.NewRaw(`
 		UPDATE system_settings SET setup_complete = true WHERE id = 1;
@@ -121,7 +122,7 @@ func newArchiveFixture(t *testing.T, source *archiveStub) archiveFixture {
 		sessionID, personID, accessID, now,
 		fixture.event, now, now, publication, fixture.event, curator, now,
 		publication, fixture.event, fixture.event, publication, now,
-		snapshot, draftMoment, curator, now, publishedMoment, publication, draftMoment, snapshot).Exec(ctx)
+		snapshot, fixture.draftMoment, curator, now, publishedMoment, publication, fixture.draftMoment, snapshot).Exec(ctx)
 	require.NoError(t, err)
 	for index := range fixture.media {
 		_, err = db.NewRaw(`
@@ -158,6 +159,46 @@ func newArchiveFixture(t *testing.T, source *archiveStub) archiveFixture {
 	require.NoError(t, err)
 	fixture.service = New(db, source)
 	return fixture
+}
+
+func addAuthorizedReuse(t *testing.T, fixture archiveFixture, mediaIndex int) {
+	t.Helper()
+	ctx := context.Background()
+	eventID, publicationID := uuid.New(), uuid.New()
+	publishedMomentID, draftMomentID, snapshotID := uuid.New(), uuid.New(), uuid.New()
+	now := time.Now().UTC().Truncate(time.Second)
+	_, err := fixture.db.NewRaw(`
+		INSERT INTO events (id, lifecycle, title, description, grouping_timezone, version, created_at, updated_at)
+		VALUES (?, 'published', 'Other Event', '', 'UTC', 1, ?, ?);
+		INSERT INTO publications
+			(id, event_id, revision, editable_version, published_by_person_id, notify_recipients, committed_at)
+		VALUES (?, ?, 1, 1, ?, false, ?);
+		UPDATE events SET current_publication_id = ? WHERE id = ?;
+		INSERT INTO current_published_events
+			(event_id, publication_id, title, description, grouping_timezone, committed_at)
+		VALUES (?, ?, 'Other Event', '', 'UTC', ?);
+		INSERT INTO audience_snapshots (id, target_kind, target_id, approved_by_person_id, approved_at, label)
+		VALUES (?, 'moment', ?, ?, ?, 'Shared');
+		INSERT INTO published_moments
+			(id, publication_id, draft_moment_id, audience_snapshot_id, position, title, proposed_day)
+		VALUES (?, ?, ?, ?, 0, '', '2026-07-28');
+		INSERT INTO published_media_placements
+			(published_moment_id, media_item_id, position, media_type, width, height, local_date_time)
+		VALUES (?, ?, 0, 'image', 100, 100, ?);
+		INSERT INTO current_published_placements
+			(event_id, publication_id, published_moment_id, media_item_id, position)
+		VALUES (?, ?, ?, ?, 0);
+		INSERT INTO current_audience_entitlements
+			(event_id, publication_id, recipient_person_id, recipient_access_generation_id, media_item_id)
+		VALUES (?, ?, ?, ?, ?)
+	`, eventID, now, now, publicationID, eventID, fixture.actor.PersonID, now,
+		publicationID, eventID, eventID, publicationID, now,
+		snapshotID, draftMomentID, fixture.actor.PersonID, now,
+		publishedMomentID, publicationID, draftMomentID, snapshotID,
+		publishedMomentID, fixture.media[mediaIndex], now.Format(time.RFC3339),
+		eventID, publicationID, publishedMomentID, fixture.media[mediaIndex],
+		eventID, publicationID, fixture.actor.PersonID, fixture.actor.AccessID, fixture.media[mediaIndex]).Exec(ctx)
+	require.NoError(t, err)
 }
 
 func TestPlansCompleteEventAndRejectsIncompleteSubset(t *testing.T) {
@@ -264,6 +305,40 @@ func TestPartRejectsArchiveSizeDriftWithoutConsumingPart(t *testing.T) {
 	stream, err := fixture.service.StreamPart(context.Background(), fixture.actor, token, 1)
 	require.NoError(t, err)
 	require.NoError(t, stream.Body.Close())
+}
+
+func TestPartReauthorizationKeepsThePlannedPlacementIdentity(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		targetKind string
+		targetID   func(archiveFixture) uuid.UUID
+	}{
+		{name: "Event Withdrawal", targetKind: "event", targetID: func(fixture archiveFixture) uuid.UUID { return fixture.event }},
+		{name: "Moment Withdrawal", targetKind: "moment", targetID: func(fixture archiveFixture) uuid.UUID { return fixture.draftMoment }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			source := &archiveStub{}
+			fixture := newArchiveFixture(t, source)
+			source.planned = []immich.ArchivePart{{
+				Size: 12, AssetIDs: []uuid.UUID{fixture.assets[0]}, CompanionOf: map[uuid.UUID]uuid.UUID{},
+			}}
+			plan, err := fixture.service.Plan(context.Background(), fixture.actor, PlanRequest{
+				Scope: "subset", MediaIDs: []string{fixture.media[0].String()},
+			})
+			require.NoError(t, err)
+			addAuthorizedReuse(t, fixture, 0)
+			_, err = fixture.db.NewRaw(`INSERT INTO content_withdrawals
+				(id, target_kind, target_id, withdrawn_by_person_id, withdrawn_at, reason)
+				VALUES (?, ?, ?, ?, now(), 'Archive placement test')`, uuid.New(), test.targetKind,
+				test.targetID(fixture), fixture.actor.PersonID).Exec(context.Background())
+			require.NoError(t, err)
+
+			_, err = fixture.service.StreamPart(context.Background(), fixture.actor,
+				tokenFromURL(plan.Parts[0].DownloadURL), 1)
+			assert.ErrorIs(t, err, ErrNotFound)
+			assert.Empty(t, source.archiveCalls, "authorization through another placement must not preserve the planned placement")
+		})
+	}
 }
 
 func TestEveryAccessLossBlocksAnUnstartedPart(t *testing.T) {

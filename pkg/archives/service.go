@@ -78,20 +78,21 @@ func New(db *bun.DB, source archiveSource) *Service {
 }
 
 type candidate struct {
-	MediaID    uuid.UUID `bun:"media_item_id"`
-	BackingID  uuid.UUID `bun:"backing_id"`
-	AssetID    uuid.UUID `bun:"asset_id"`
-	EventID    uuid.UUID `bun:"event_id"`
-	EventTitle string    `bun:"event_title"`
+	MediaID       uuid.UUID `bun:"media_item_id"`
+	BackingID     uuid.UUID `bun:"backing_id"`
+	AssetID       uuid.UUID `bun:"asset_id"`
+	EventID       uuid.UUID `bun:"event_id"`
+	DraftMomentID uuid.UUID `bun:"draft_moment_id"`
+	EventTitle    string    `bun:"event_title"`
 }
 
 const authorizedCandidates = `
 	SELECT DISTINCT ON (valid.media_item_id)
 	       valid.media_item_id, backing.id AS backing_id, backing.immich_asset_id AS asset_id,
-	       valid.event_id, current.title AS event_title
+	       valid.event_id, valid.draft_moment_id, current.title AS event_title
 	FROM (` + `
 		SELECT placement.event_id, placement.publication_id, placement.published_moment_id,
-		       placement.media_item_id, placement.position
+		       moment.draft_moment_id, placement.media_item_id, placement.position
 		FROM current_published_placements AS placement
 		JOIN events AS event ON event.id = placement.event_id AND event.lifecycle = 'published'
 		JOIN current_audience_entitlements AS entitlement
@@ -250,8 +251,10 @@ func (s *Service) Plan(ctx context.Context, actor setup.SessionActor, request Pl
 				}
 				entryName := fmt.Sprintf("%s/%04d-%s", safeArchiveName(item.EventTitle), position+1, entryKind)
 				if _, err := tx.NewRaw(`INSERT INTO archive_part_items
-					(archive_part_id, position, media_item_id, media_backing_id, immich_asset_id, entry_name, is_live_photo_companion)
-					VALUES (?, ?, ?, ?, ?, ?, ?)`, partID, position, item.MediaID, item.BackingID, assetID, entryName, companion).Exec(ctx); err != nil {
+					(archive_part_id, position, media_item_id, event_id, draft_moment_id, media_backing_id,
+					 immich_asset_id, entry_name, is_live_photo_companion)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, partID, position, item.MediaID, item.EventID,
+					item.DraftMomentID, item.BackingID, assetID, entryName, companion).Exec(ctx); err != nil {
 					return err
 				}
 			}
@@ -308,6 +311,8 @@ func partFilename(name string, part, total int) string {
 type plannedItem struct {
 	Position            int           `bun:"position"`
 	MediaID             uuid.UUID     `bun:"media_item_id"`
+	EventID             uuid.UUID     `bun:"event_id"`
+	DraftMomentID       uuid.UUID     `bun:"draft_moment_id"`
 	BackingID           uuid.UUID     `bun:"media_backing_id"`
 	AssetID             uuid.UUID     `bun:"immich_asset_id"`
 	PrimaryAssetID      uuid.UUID     `bun:"primary_asset_id"`
@@ -373,8 +378,8 @@ func (s *Service) loadPart(ctx context.Context, db bun.IDB, actor setup.SessionA
 	if result.ConsumedAt != nil || !s.now().UTC().Before(result.ExpiresAt) {
 		return plannedPart{}, ErrNotFound
 	}
-	if err := db.NewRaw(`SELECT item.position, item.media_item_id, item.media_backing_id,
-		item.immich_asset_id, backing.immich_asset_id AS primary_asset_id,
+	if err := db.NewRaw(`SELECT item.position, item.media_item_id, item.event_id, item.draft_moment_id,
+		item.media_backing_id, item.immich_asset_id, backing.immich_asset_id AS primary_asset_id,
 		(SELECT companion.immich_asset_id
 		 FROM archive_part_items AS companion
 		 JOIN archive_parts AS companion_part ON companion_part.id = companion.archive_part_id
@@ -541,9 +546,11 @@ func authorizeItems(ctx context.Context, db bun.IDB, actor setup.SessionActor, i
 	for _, item := range items {
 		var valid bool
 		query := `SELECT EXISTS (` + authorizedCandidates + `
-			WHERE valid.media_item_id = ? AND backing.id = ? AND backing.immich_asset_id = ?
+			WHERE valid.media_item_id = ? AND valid.event_id = ? AND valid.draft_moment_id = ?
+			  AND backing.id = ? AND backing.immich_asset_id = ?
 			ORDER BY valid.media_item_id LIMIT 1)`
-		if err := db.NewRaw(query, actor.AccessID, item.MediaID, item.BackingID, item.PrimaryAssetID).Scan(ctx, &valid); err != nil {
+		if err := db.NewRaw(query, actor.AccessID, item.MediaID, item.EventID, item.DraftMomentID,
+			item.BackingID, item.PrimaryAssetID).Scan(ctx, &valid); err != nil {
 			return err
 		}
 		if !valid {
