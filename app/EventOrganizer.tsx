@@ -161,12 +161,14 @@ function StagedUpdateReview({
   restoringMediaID,
   restoreDisabled,
   restoreError,
+  metadataValid,
 }: {
   event: DraftEvent;
   onRestoreMedia: (mediaID: string) => void;
   restoringMediaID?: string;
   restoreDisabled: boolean;
   restoreError?: string;
+  metadataValid: boolean;
 }) {
   if (!event.staged_update) return null;
   const removedMedia = event.staged_update.changes.flatMap(
@@ -200,8 +202,16 @@ function StagedUpdateReview({
           className="staged-event-metadata"
         >
           <h5 id="staged-event-metadata-title">
-            Event details that will publish
+            {metadataValid
+              ? "Event details that will publish"
+              : "Event details not ready to publish"}
           </h5>
+          {!metadataValid ? (
+            <p className="form-error" role="alert">
+              Fix the Event detail validation errors before this review can be
+              saved or published.
+            </p>
+          ) : null}
           <dl>
             <div
               className={
@@ -316,6 +326,17 @@ function StagedUpdateReview({
   );
 }
 
+function validGroupingTimezone(value: string) {
+  const timezone = value.trim();
+  if (!timezone || timezone === "Local") return false;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: timezone }).format();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function Checklist({ event }: { event: DraftEvent }) {
   const checks = [
     { label: "Media organization", done: event.unassigned_media.length === 0 },
@@ -323,11 +344,7 @@ function Checklist({ event }: { event: DraftEvent }) {
       label: "Moments",
       done:
         event.moments.length > 0 &&
-        event.moments.every(
-          (moment) =>
-            moment.media_items.length > 0 &&
-            moment.cover_media_item_id !== null,
-        ),
+        event.moments.every((moment) => moment.media_items.length > 0),
     },
     {
       label: "Attendance",
@@ -489,6 +506,16 @@ export function EventOrganizer({
       : eventQuery.data?.id === selectedID
         ? eventQuery.data
         : undefined;
+  const titleValidationError =
+    currentDraft && currentDraft.title.trim() === ""
+      ? "Event title is required."
+      : "";
+  const timezoneValidationError =
+    currentDraft && !validGroupingTimezone(currentDraft.grouping_timezone)
+      ? "Enter a valid IANA timezone, such as America/New_York or UTC."
+      : "";
+  const eventMetadataValid =
+    titleValidationError === "" && timezoneValidationError === "";
   const stagedMediaKinds = useMemo(() => {
     const kinds = new Map<string, StagedChange["kind"][]>();
     for (const change of currentDraft?.staged_update?.changes ?? []) {
@@ -707,7 +734,8 @@ export function EventOrganizer({
       revision === 0 ||
       saveState === "conflict" ||
       saveState === "failed" ||
-      save.isPending
+      save.isPending ||
+      !eventMetadataValid
     )
       return;
     const timer = window.setTimeout(
@@ -719,7 +747,14 @@ export function EventOrganizer({
       450,
     );
     return () => window.clearTimeout(timer);
-  }, [currentDraft, revision, saveState, save.isPending, saveDraft]);
+  }, [
+    currentDraft,
+    eventMetadataValid,
+    revision,
+    saveState,
+    save.isPending,
+    saveDraft,
+  ]);
 
   function change(mutator: (next: DraftEvent) => void) {
     if (!currentDraft) return;
@@ -1070,15 +1105,17 @@ export function EventOrganizer({
           <h2 id="curator-work-title">Organize drafts</h2>
         </div>
         <p aria-live="polite" className={`save-state ${saveState}`}>
-          {saveState === "saved"
-            ? "All changes saved"
-            : saveState === "saving"
-              ? "Saving…"
-              : saveState === "conflict"
-                ? "Save conflict"
-                : saveState === "failed"
-                  ? "Autosave failed"
-                  : "Changes not saved yet"}
+          {saveState === "conflict"
+            ? "Save conflict"
+            : !eventMetadataValid
+              ? "Fix validation errors before autosave"
+              : saveState === "saved"
+                ? "All changes saved"
+                : saveState === "saving"
+                  ? "Saving…"
+                  : saveState === "failed"
+                    ? "Autosave failed"
+                    : "Changes not saved yet"}
         </p>
       </header>
       <nav aria-label="Mobile workspace panes" className="mobile-pane-nav">
@@ -1116,7 +1153,7 @@ export function EventOrganizer({
             Load newer version
           </button>
           <button
-            disabled={conflictRecoveryPending}
+            disabled={conflictRecoveryPending || !eventMetadataValid}
             onClick={() => void keepMyChanges()}
             type="button"
           >
@@ -1127,7 +1164,7 @@ export function EventOrganizer({
         <div className="form-error" role="alert">
           <p>{save.error.message}</p>
           <button
-            disabled={!currentDraft || save.isPending}
+            disabled={!currentDraft || save.isPending || !eventMetadataValid}
             onClick={() => {
               if (currentDraft)
                 save.mutate({
@@ -1265,6 +1302,7 @@ export function EventOrganizer({
                 }
                 restoreDisabled={saveState !== "saved"}
                 restoreError={restorePublishedMedia.error?.message}
+                metadataValid={eventMetadataValid}
                 restoringMediaID={
                   restorePublishedMedia.isPending
                     ? restorePublishedMedia.variables?.mediaID
@@ -1279,15 +1317,29 @@ export function EventOrganizer({
                 <label>
                   Event title
                   <input
+                    aria-describedby={
+                      titleValidationError ? "event-title-error" : undefined
+                    }
+                    aria-invalid={titleValidationError !== ""}
                     maxLength={240}
                     onChange={(event) =>
                       change((next) => {
                         next.title = event.target.value;
                       })
                     }
+                    required
                     type="text"
                     value={currentDraft.title}
                   />
+                  {titleValidationError ? (
+                    <small
+                      className="form-field-error"
+                      id="event-title-error"
+                      role="alert"
+                    >
+                      {titleValidationError}
+                    </small>
+                  ) : null}
                 </label>
                 <label>
                   Event description
@@ -1304,15 +1356,32 @@ export function EventOrganizer({
                 <label>
                   Grouping timezone
                   <input
+                    aria-describedby={
+                      timezoneValidationError
+                        ? "grouping-timezone-error"
+                        : undefined
+                    }
+                    aria-invalid={timezoneValidationError !== ""}
                     maxLength={100}
                     onChange={(event) =>
                       change((next) => {
                         next.grouping_timezone = event.target.value;
                       })
                     }
+                    required
+                    spellCheck={false}
                     type="text"
                     value={currentDraft.grouping_timezone}
                   />
+                  {timezoneValidationError ? (
+                    <small
+                      className="form-field-error"
+                      id="grouping-timezone-error"
+                      role="alert"
+                    >
+                      {timezoneValidationError}
+                    </small>
+                  ) : null}
                 </label>
               </section>
               <div className="move-toolbar">
@@ -1451,8 +1520,9 @@ export function EventOrganizer({
                       </div>
                     </header>
                     <label>
-                      Cover
+                      Cover (optional)
                       <select
+                        aria-label="Cover"
                         onChange={(event) =>
                           change((next) => {
                             next.moments[index].cover_media_item_id =
@@ -1461,7 +1531,7 @@ export function EventOrganizer({
                         }
                         value={moment.cover_media_item_id ?? ""}
                       >
-                        <option value="">Choose a cover</option>
+                        <option value="">No cover selected</option>
                         {moment.media_items.map((item) => (
                           <option key={item.id} value={item.id}>
                             {mediaLabel(item)}

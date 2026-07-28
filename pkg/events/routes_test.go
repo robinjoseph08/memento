@@ -197,6 +197,14 @@ func TestPreviewRequiresASelectedRecipientBeforeServiceAccess(t *testing.T) {
 	assert.Contains(t, response.Body.String(), "Choose a current Recipient")
 }
 
+func TestDraftValidationErrorDescribesOptionalCoversAndMediaOmission(t *testing.T) {
+	mapped := draftError(ErrInvalid, "Event")
+	require.Error(t, mapped)
+	assert.Contains(t, mapped.Error(), "at least one Media item with no duplicates")
+	assert.Contains(t, mapped.Error(), "only covers from their Moments")
+	assert.NotContains(t, mapped.Error(), "every Media item")
+}
+
 func TestDraftErrorsDescribeEmptyAndOversizedSourceSelections(t *testing.T) {
 	for _, test := range []struct {
 		err     error

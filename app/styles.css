@@ -1724,6 +1724,11 @@ h1 {
   gap: 0.3rem;
 }
 
+.form-field-error {
+  color: #fca5a5;
+  font-size: 0.8rem;
+}
+
 .event-details-editor textarea {
   min-height: 5rem;
   resize: vertical;

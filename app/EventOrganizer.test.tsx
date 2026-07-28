@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -462,6 +463,7 @@ function renderOrganizer() {
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
@@ -681,6 +683,7 @@ test("publishes ready work and previews Recipient output read only", async () =>
   ready.final_review_complete = true;
   ready.moments = ready.moments.map((moment) => ({
     ...moment,
+    cover_media_item_id: null,
     attendance_complete: true,
     audience_complete: true,
   }));
@@ -691,6 +694,10 @@ test("publishes ready work and previews Recipient output read only", async () =>
   );
 
   const publish = await screen.findByRole("button", { name: "Publish Event" });
+  expect(screen.getByText("5 of 5 complete")).toBeInTheDocument();
+  expect(
+    screen.getByRole("heading", { name: "Readiness" }).closest("section"),
+  ).toHaveTextContent("Next action: Ready to publish");
   expect(publish).toBeEnabled();
   fireEvent.click(publish);
   expect(
@@ -1038,6 +1045,75 @@ test("autosaves Curator Event metadata and Media removal corrections", async () 
     saved.moments.flatMap((moment) => moment.media_item_ids),
   ).not.toContain(items.b.id);
   expect(screen.queryByRole("checkbox", { name: /second photo/ })).toBeNull();
+});
+
+test("blocks invalid Event metadata until title and timezone are valid", async () => {
+  const initial = organizedDraft();
+  initial.lifecycle = "published";
+  initial.published_editable_version = initial.version - 1;
+  initial.staged_update = {
+    id: "12121212-1212-4212-8212-121212121212",
+    base_publication_id: "13131313-1313-4313-8313-131313131313",
+    updated_at: "2026-05-03T01:00:00Z",
+    changes: [
+      {
+        kind: "metadata",
+        count: 1,
+        media_item_ids: [],
+        moment_ids: [],
+        event_metadata_fields: ["description"],
+        detail: "Event metadata edited",
+      },
+    ],
+  };
+  const saves = stubOrganizerAPI(initial);
+  renderOrganizer();
+  fireEvent.click(
+    await screen.findByRole("button", { name: /Family weekend/ }),
+  );
+
+  const title = await screen.findByLabelText("Event title");
+  const timezone = screen.getByLabelText("Grouping timezone");
+  expect(title).toBeRequired();
+  expect(timezone).toBeRequired();
+
+  vi.useFakeTimers();
+  fireEvent.change(title, { target: { value: "   " } });
+  fireEvent.change(timezone, { target: { value: "Mars/Olympus" } });
+
+  expect(title).toHaveAttribute("aria-invalid", "true");
+  expect(timezone).toHaveAttribute("aria-invalid", "true");
+  expect(screen.getByText("Event title is required.")).toBeInTheDocument();
+  expect(
+    screen.getByText(
+      "Enter a valid IANA timezone, such as America/New_York or UTC.",
+    ),
+  ).toBeInTheDocument();
+  expect(
+    screen.getByText("Fix validation errors before autosave"),
+  ).toBeInTheDocument();
+  expect(
+    screen.getByRole("region", {
+      name: "Event details not ready to publish",
+    }),
+  ).toHaveTextContent(
+    "Fix the Event detail validation errors before this review can be saved or published.",
+  );
+
+  await act(async () => vi.advanceTimersByTimeAsync(500));
+  expect(saves).toHaveLength(0);
+
+  fireEvent.change(title, { target: { value: "Valid corrected title" } });
+  await act(async () => vi.advanceTimersByTimeAsync(500));
+  expect(saves).toHaveLength(0);
+
+  fireEvent.change(timezone, { target: { value: "America/New_York" } });
+  await act(async () => vi.advanceTimersByTimeAsync(500));
+  expect(saves).toHaveLength(1);
+  vi.useRealTimers();
+  expect(await screen.findByText("All changes saved")).toBeInTheDocument();
+  expect(saves[0].title).toBe("Valid corrected title");
+  expect(saves[0].grouping_timezone).toBe("America/New_York");
 });
 
 test("autosaves readiness and persists the complete organization after reload", async () => {

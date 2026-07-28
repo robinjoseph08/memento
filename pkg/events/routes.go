@@ -354,7 +354,7 @@ func draftError(err error, resource string) error {
 	case errors.Is(err, ErrPlaceLabelsInvalid):
 		return errcodes.ValidationError("Use no more than 20 Place labels, with 1 to 120 characters in each label.")
 	case errors.Is(err, ErrInvalid):
-		return errcodes.ValidationError("Draft fields must be valid, include every Media item exactly once, and use a cover from its Moment.")
+		return errcodes.ValidationError("Draft fields must be valid, include at least one Media item with no duplicates, and use only covers from their Moments.")
 	case errors.Is(err, ErrVersionConflict):
 		return errcodes.Conflict("This Event changed in another browser. Review the newer version before saving again.")
 	case errors.Is(err, ErrSourceUnavailable):
