@@ -102,6 +102,7 @@ func (s *Service) HandleReconciliationJob(ctx context.Context, job worker.Job) e
 func (s *Service) Reconcile(ctx context.Context, sourceAlbumID uuid.UUID) error {
 	now := s.now().UTC()
 	var outcome error
+	var rolledBackFailure *reconciliationSnapshot
 	err := s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 		var immichAlbumID uuid.UUID
 		if err := tx.NewRaw(`SELECT immich_album_id FROM source_albums WHERE id = ? FOR UPDATE`, sourceAlbumID).Scan(ctx, &immichAlbumID); err != nil {
@@ -118,15 +119,15 @@ func (s *Service) Reconcile(ctx context.Context, sourceAlbumID uuid.UUID) error 
 			if errors.Is(snapshotErr, ErrDependency) {
 				status = "failed"
 			}
-			if err := recordReconciliationRun(ctx, tx, sourceAlbumID, now, status, snapshot); err != nil {
-				return err
-			}
-			_, err := tx.NewRaw(`UPDATE source_albums SET next_reconciliation_at = ?, updated_at = ? WHERE id = ?`, now, now, sourceAlbumID).Exec(ctx)
-			return err
+			return recordFailedReconciliation(ctx, tx, sourceAlbumID, now, status, snapshot)
 		}
 
 		stablePasses, additions, removals, err := s.applyValidatedSnapshot(ctx, tx, sourceAlbumID, snapshot, now)
 		if err != nil {
+			if errors.Is(err, ErrDependency) {
+				snapshot.diagnostic = "dependency_unavailable"
+				rolledBackFailure = &snapshot
+			}
 			return err
 		}
 		snapshot.diagnostic = ""
@@ -139,6 +140,21 @@ func (s *Service) Reconcile(ctx context.Context, sourceAlbumID uuid.UUID) error 
 		return ErrNotFound
 	}
 	if err != nil {
+		if rolledBackFailure != nil {
+			recordErr := s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+				var lockedSourceAlbumID uuid.UUID
+				if err := tx.NewRaw(`SELECT id FROM source_albums WHERE id = ? FOR UPDATE`, sourceAlbumID).Scan(ctx, &lockedSourceAlbumID); err != nil {
+					if errors.Is(err, sql.ErrNoRows) {
+						return ErrNotFound
+					}
+					return err
+				}
+				return recordFailedReconciliation(ctx, tx, sourceAlbumID, now, "failed", *rolledBackFailure)
+			})
+			if recordErr != nil {
+				return fmt.Errorf("record failed Source reconciliation: %w", recordErr)
+			}
+		}
 		return fmt.Errorf("reconcile Source album: %w", err)
 	}
 	return outcome
@@ -831,6 +847,21 @@ func proposeMediaRepairs(ctx context.Context, tx bun.Tx, now time.Time) error {
 			face_anchor_evidence = EXCLUDED.face_anchor_evidence,
 			conflict_evidence = EXCLUDED.conflict_evidence
 	`, now).Exec(ctx)
+	return err
+}
+
+func recordFailedReconciliation(
+	ctx context.Context,
+	tx bun.Tx,
+	sourceAlbumID uuid.UUID,
+	now time.Time,
+	status string,
+	snapshot reconciliationSnapshot,
+) error {
+	if err := recordReconciliationRun(ctx, tx, sourceAlbumID, now, status, snapshot); err != nil {
+		return err
+	}
+	_, err := tx.NewRaw(`UPDATE source_albums SET next_reconciliation_at = ?, updated_at = ? WHERE id = ?`, now, now, sourceAlbumID).Exec(ctx)
 	return err
 }
 

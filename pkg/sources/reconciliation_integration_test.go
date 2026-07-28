@@ -694,16 +694,26 @@ func TestAssetExistsDependencyFailurePreservesPublishedAndEditableState(t *testi
 
 	type preservedState struct {
 		Memberships, ReviewVersion                             int
+		SourceAssetCount, CandidatePasses                      int
 		Availability, EditableTitle, CurrentTitle, StagedID    string
+		SourceName, SourceFingerprint, CandidateFingerprint    string
 		EditablePlacement, CurrentPlacement, FinalReview       bool
 		AttendanceComplete, AudienceComplete, CurrentSnapshot  bool
 		AttendanceRows, ProposalRows, OverrideRows, ReasonRows int
 		EditableMediaIDs, CurrentMediaIDs, StagedKinds         []string
+		LastReconciledAt                                       time.Time
 	}
 	readState := func() preservedState {
 		t.Helper()
 		var state preservedState
 		require.NoError(t, service.db.NewRaw(`SELECT count(*) FROM source_album_memberships WHERE source_album_id = ? AND media_item_id = ?`, sourceAlbumID, fixture.mediaID).Scan(context.Background(), &state.Memberships))
+		require.NoError(t, service.db.NewRaw(`
+			SELECT name, asset_count, encode(source_fingerprint, 'hex'),
+				COALESCE(encode(candidate_membership_fingerprint, 'hex'), ''),
+				candidate_membership_passes, last_reconciled_at
+			FROM source_albums WHERE id = ?
+		`, sourceAlbumID).Scan(context.Background(), &state.SourceName, &state.SourceAssetCount,
+			&state.SourceFingerprint, &state.CandidateFingerprint, &state.CandidatePasses, &state.LastReconciledAt))
 		require.NoError(t, service.db.NewRaw(`SELECT availability FROM media_items WHERE id = ?`, fixture.mediaID).Scan(context.Background(), &state.Availability))
 		require.NoError(t, service.db.NewRaw(`SELECT EXISTS (SELECT 1 FROM draft_media_placements WHERE event_id = ? AND media_item_id = ?)`, fixture.eventID, fixture.mediaID).Scan(context.Background(), &state.EditablePlacement))
 		require.NoError(t, service.db.NewRaw(`SELECT EXISTS (SELECT 1 FROM current_published_placements WHERE event_id = ? AND media_item_id = ?)`, fixture.eventID, fixture.mediaID).Scan(context.Background(), &state.CurrentPlacement))
@@ -758,12 +768,39 @@ func TestAssetExistsDependencyFailurePreservesPublishedAndEditableState(t *testi
 	assert.Equal(t, []int{1, 1, 1, 1}, []int{before.AttendanceRows, before.ProposalRows, before.OverrideRows, before.ReasonRows})
 	assert.Equal(t, []string{string(staging.ChangeKindMetadata)}, before.StagedKinds)
 
+	var runCountBefore int
+	require.NoError(t, service.db.NewRaw(`SELECT count(*) FROM reconciliation_runs WHERE source_album_id = ?`, sourceAlbumID).Scan(context.Background(), &runCountBefore))
+
 	injected := errors.New("private AssetExists dependency detail")
 	connector.setAssetExistsError(injected)
 	err = service.Reconcile(context.Background(), sourceAlbumID)
 	require.ErrorIs(t, err, ErrDependency)
 	assert.NotContains(t, err.Error(), injected.Error(), "dependency failures expose only the safe Source classification")
-	assert.Equal(t, before, readState(), "AssetExists failure must roll back membership, projections, review evidence, and existing Staged work")
+	assert.Equal(t, before, readState(), "AssetExists failure must roll back Source, Event, Staged, projection, and review state")
+
+	var runCountAfter, stablePasses, additions, removals int
+	var status, diagnostic string
+	var summariesMatch, membershipFingerprintAbsent bool
+	require.NoError(t, service.db.NewRaw(`SELECT count(*) FROM reconciliation_runs WHERE source_album_id = ?`, sourceAlbumID).Scan(context.Background(), &runCountAfter))
+	require.NoError(t, service.db.NewRaw(`
+		SELECT status, diagnostic, before_summary_fingerprint = after_summary_fingerprint,
+			membership_fingerprint IS NULL, stable_passes, addition_count, removal_count
+		FROM reconciliation_runs
+		WHERE source_album_id = ?
+		ORDER BY completed_at DESC, id DESC LIMIT 1
+	`, sourceAlbumID).Scan(context.Background(), &status, &diagnostic, &summariesMatch,
+		&membershipFingerprintAbsent, &stablePasses, &additions, &removals))
+	assert.Equal(t, runCountBefore+1, runCountAfter)
+	assert.Equal(t, "failed", status)
+	assert.Equal(t, "dependency_unavailable", diagnostic)
+	assert.NotContains(t, diagnostic, injected.Error(), "durable diagnostics must not retain private dependency details")
+	assert.True(t, summariesMatch)
+	assert.True(t, membershipFingerprintAbsent)
+	assert.Equal(t, []int{0, 0, 0}, []int{stablePasses, additions, removals})
+
+	var nextReconciliationAt time.Time
+	require.NoError(t, service.db.NewRaw(`SELECT next_reconciliation_at FROM source_albums WHERE id = ?`, sourceAlbumID).Scan(context.Background(), &nextReconciliationAt))
+	assert.Equal(t, service.now().UTC(), nextReconciliationAt)
 }
 
 func TestFinalPublishedSourceRemovalStaysPrivateWhileMediaRemainsAvailable(t *testing.T) {
