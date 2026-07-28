@@ -8,6 +8,9 @@ const media = {
   local_date_time: "2026-07-27T12:00:00Z",
   available: true,
   thumbnail_url: "/api/me/media/11111111-1111-4111-8111-111111111111/thumbnail",
+  preview_url: "/api/me/media/11111111-1111-4111-8111-111111111111/preview",
+  video_url: "",
+  original_url: "/api/me/media/11111111-1111-4111-8111-111111111111/original",
 };
 
 const secondMedia = {
@@ -18,6 +21,9 @@ const secondMedia = {
   height: 1600,
   local_date_time: "2026-07-27T13:00:00Z",
   thumbnail_url: "/api/me/media/44444444-4444-4444-8444-444444444444/thumbnail",
+  preview_url: "/api/me/media/44444444-4444-4444-8444-444444444444/preview",
+  video_url: "/api/me/media/44444444-4444-4444-8444-444444444444/video",
+  original_url: "/api/me/media/44444444-4444-4444-8444-444444444444/original",
 };
 
 const event = {
@@ -31,6 +37,19 @@ const event = {
   thumbnail_url: media.thumbnail_url,
   media_count: 1,
 };
+
+async function expectClosedViewerHidden(page: Page) {
+  await page.evaluate(() => {
+    const dialog = document.createElement("dialog");
+    dialog.className = "media-viewer";
+    dialog.dataset.closedViewerProbe = "";
+    document.body.append(dialog);
+  });
+  const closedViewer = page.locator("dialog[data-closed-viewer-probe]");
+  await expect(closedViewer).toHaveCount(1);
+  await expect(closedViewer).toBeHidden();
+  await closedViewer.evaluate((dialog) => dialog.remove());
+}
 
 async function recipientAPI(page: Page) {
   await page.route("**/api/**", async (route) => {
@@ -80,6 +99,7 @@ async function recipientAPI(page: Page) {
       });
     } else if (
       path === media.thumbnail_url ||
+      path === media.preview_url ||
       path === secondMedia.thumbnail_url
     ) {
       await route.fulfill({
@@ -132,10 +152,51 @@ test("@desktop Recipient lands on Photos and sees only filtered Event totals", a
   await expect(page.locator(".library-rail")).toBeVisible();
   await expect(page.locator(".mobile-library-nav")).toBeHidden();
   await expect(page.getByText("hidden", { exact: false })).toHaveCount(0);
+  await expectClosedViewerHidden(page);
 
   await page.getByRole("button", { name: "Load more photos" }).click();
   await expect(page.getByAltText("Video 2 from July 2026")).toBeVisible();
   await expect(page.getByAltText("Photo 1 from July 2026")).toBeVisible();
+  const opener = page.getByRole("button", {
+    name: "Open Photo 1 from July 2026",
+  });
+  await opener.click();
+  const viewer = page.getByRole("dialog", { name: "Media viewer" });
+  const closeViewer = page.getByRole("button", { name: "Close viewer" });
+  const downloadOriginal = page.getByRole("link", {
+    name: "Download original",
+  });
+  await expect(viewer).toBeVisible();
+  await expect(viewer).toHaveAttribute("aria-modal", "true");
+  await expect(closeViewer).toBeFocused();
+  await expect(page.getByAltText("Selected photo preview")).toHaveAttribute(
+    "src",
+    media.preview_url,
+  );
+  await expect(downloadOriginal).toHaveAttribute("href", media.original_url);
+
+  await page
+    .locator(".library-rail")
+    .getByRole("button", { name: "Events" })
+    .evaluate((button: HTMLButtonElement) => button.focus());
+  await expect(closeViewer).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(downloadOriginal).toBeFocused();
+  for (const key of ["Tab", "Tab", "Shift+Tab", "Shift+Tab"]) {
+    await page.keyboard.press(key);
+    const focus = await viewer.evaluate((dialog) => ({
+      inside: dialog.contains(document.activeElement),
+      active:
+        document.activeElement?.getAttribute("aria-label") ??
+        document.activeElement?.tagName ??
+        "none",
+    }));
+    expect(focus.inside, `${key} focused ${focus.active}`).toBe(true);
+  }
+
+  await closeViewer.click();
+  await expect(viewer).toBeHidden();
+  await expect(opener).toBeFocused();
 
   await page
     .locator(".library-rail")
@@ -145,6 +206,20 @@ test("@desktop Recipient lands on Photos and sees only filtered Event totals", a
   await page.getByRole("button", { name: /Family weekend/ }).click();
   await expect(page.getByText("1 item")).toBeVisible();
   await expect(page.getByText(/Moment/)).toHaveCount(0);
+  await expect(page.getByAltText("Photo 1 from July 2026")).toHaveAttribute(
+    "src",
+    media.thumbnail_url,
+  );
+  await page
+    .getByRole("button", { name: "Open Photo 1 from July 2026" })
+    .click();
+  await expect(page.getByAltText("Selected photo preview")).toHaveAttribute(
+    "src",
+    media.preview_url,
+  );
+  await expect(
+    page.getByRole("link", { name: "Download original" }),
+  ).toHaveAttribute("href", media.original_url);
 });
 
 test("@mobile complete thumbnails and compact navigation do not expose inaccessible totals", async ({
@@ -160,6 +235,42 @@ test("@mobile complete thumbnails and compact navigation do not expose inaccessi
   await expect(page.locator(".library-rail")).toBeHidden();
   await expect(page.getByLabel("Jump to date")).toBeVisible();
   await expect(page.getByText(/total/i)).toHaveCount(0);
+  await expectClosedViewerHidden(page);
+
+  await page
+    .getByRole("button", { name: "Open Photo 1 from July 2026" })
+    .click();
+  const viewer = page.getByRole("dialog", { name: "Media viewer" });
+  await expect(viewer).toBeVisible();
+  await expect(viewer).toHaveCSS("overflow-y", "auto");
+  expect(
+    await viewer.evaluate(
+      (element) => element.scrollWidth <= element.clientWidth,
+    ),
+  ).toBe(true);
+
+  const download = page.getByRole("link", { name: "Download original" });
+  await download.scrollIntoViewIfNeeded();
+  await expect(download).toBeVisible();
+  await expect(download).toHaveAttribute("href", media.original_url);
+  const downloadBox = await download.boundingBox();
+  const viewport = page.viewportSize();
+  expect(downloadBox).not.toBeNull();
+  expect(viewport).not.toBeNull();
+  expect(downloadBox!.x).toBeGreaterThanOrEqual(0);
+  expect(downloadBox!.x + downloadBox!.width).toBeLessThanOrEqual(
+    viewport!.width,
+  );
+  expect(downloadBox!.y).toBeGreaterThanOrEqual(0);
+  expect(downloadBox!.y + downloadBox!.height).toBeLessThanOrEqual(
+    viewport!.height,
+  );
+
+  const close = page.getByRole("button", { name: "Close viewer" });
+  await close.scrollIntoViewIfNeeded();
+  await expect(close).toBeVisible();
+  await close.click();
+  await expect(viewer).toBeHidden();
 
   await page
     .locator(".mobile-library-nav")

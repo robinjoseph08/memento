@@ -43,7 +43,10 @@ func TestLibraryRoutesRequireACompletedRecipientSessionWithoutIdentifierHints(t 
 		err    error
 	}{
 		{name: "missing cookie", path: "/api/me/photos"},
-		{name: "invalid session", path: "/api/me/media/" + requestedID + "/thumbnail", cookie: true, err: setup.ErrUnauthenticated},
+		{name: "invalid thumbnail session", path: "/api/me/media/" + requestedID + "/thumbnail", cookie: true, err: setup.ErrUnauthenticated},
+		{name: "invalid preview session", path: "/api/me/media/" + requestedID + "/preview", cookie: true, err: setup.ErrUnauthenticated},
+		{name: "invalid video session", path: "/api/me/media/" + requestedID + "/video", cookie: true, err: setup.ErrUnauthenticated},
+		{name: "invalid original session", path: "/api/me/media/" + requestedID + "/original", cookie: true, err: setup.ErrUnauthenticated},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			authorizer := &routeAuthorizer{err: test.err}
@@ -114,6 +117,29 @@ func TestEventMediaCursorCarriesOnlyAuthorizedResourceAndPublicationContext(t *t
 	})
 	_, err = decodeCursor(*withOrdinal, cursorKindEventMedia)
 	assert.ErrorIs(t, err, ErrInvalidCursor)
+}
+
+func TestOriginalDispositionUsesAUsableExtensionForEveryAllowedFormatFamily(t *testing.T) {
+	id := uuid.New()
+	for _, test := range []struct {
+		contentType string
+		extension   string
+	}{
+		{contentType: "image/avif", extension: ".avif"},
+		{contentType: "image/gif", extension: ".gif"},
+		{contentType: "image/heic", extension: ".heic"},
+		{contentType: "image/tiff", extension: ".tiff"},
+		{contentType: "video/quicktime", extension: ".mov"},
+		{contentType: "video/webm", extension: ".webm"},
+		{contentType: "application/octet-stream", extension: ".bin"},
+		{contentType: "image/vnd.camera.raw", extension: ".bin"},
+		{contentType: "video/vnd.camera.raw", extension: ".bin"},
+	} {
+		t.Run(test.contentType, func(t *testing.T) {
+			assert.Equal(t, "attachment; filename=memento-"+id.String()+test.extension,
+				originalDisposition(id, test.contentType))
+		})
+	}
 }
 
 func TestLibraryErrorMappingKeepsCursorAndContentFailuresDistinct(t *testing.T) {

@@ -54,7 +54,7 @@ func newFixture(t *testing.T) fixture {
 	require.NoError(t, err)
 	security := config.SecurityConfig{Secret: "sessions-integration-secret-at-least-32-bytes", SignInRateWindow: 15 * time.Minute, SignInEmailLimit: 3, SignInIPLimit: 10}
 	delivery := emaildelivery.New(db, config.SMTPConfig{Enabled: true, RetryWindow: time.Hour}, discardSender{}, security.Secret)
-	auth := setup.New(db, delivery, security)
+	auth := setup.New(db, delivery, security, setup.WithClock(func() time.Time { return now }))
 	credential := hex.EncodeToString(raw)
 	session, err := auth.Session(ctx, credential)
 	require.NoError(t, err)

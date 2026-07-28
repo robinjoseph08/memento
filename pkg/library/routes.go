@@ -3,13 +3,16 @@ package library
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"strconv"
 
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 	"github.com/robinjoseph08/memento/pkg/errcodes"
+	"github.com/robinjoseph08/memento/pkg/immich"
 	"github.com/robinjoseph08/memento/pkg/setup"
 )
 
@@ -137,6 +140,22 @@ func (h *Handler) MarkSeen(c echo.Context) error {
 }
 
 func (h *Handler) Thumbnail(c echo.Context) error {
+	return h.streamRepresentation(c, representationThumbnail)
+}
+
+func (h *Handler) Preview(c echo.Context) error {
+	return h.streamRepresentation(c, representationPreview)
+}
+
+func (h *Handler) Video(c echo.Context) error {
+	return h.streamRepresentation(c, representationVideo)
+}
+
+func (h *Handler) Original(c echo.Context) error {
+	return h.streamRepresentation(c, representationOriginal)
+}
+
+func (h *Handler) streamRepresentation(c echo.Context, kind representation) error {
 	actor, err := h.authorize(c, false)
 	if err != nil {
 		return err
@@ -145,22 +164,88 @@ func (h *Handler) Thumbnail(c echo.Context) error {
 	if err != nil || id == uuid.Nil {
 		return errcodes.NotFound("Content")
 	}
-	response, err := h.service.Thumbnail(c.Request().Context(), actor, id)
+	request := immichMediaRequest(c.Request().Header)
+	var response immich.MediaResponse
+	switch kind {
+	case representationThumbnail:
+		response, err = h.service.Thumbnail(c.Request().Context(), actor, id, request)
+	case representationPreview:
+		response, err = h.service.Preview(c.Request().Context(), actor, id, request)
+	case representationVideo:
+		response, err = h.service.Video(c.Request().Context(), actor, id, request)
+	case representationOriginal:
+		response, err = h.service.Original(c.Request().Context(), actor, id, request)
+	default:
+		err = ErrNotFound
+	}
 	if mapped := libraryError(err); mapped != nil {
 		return mapped
 	}
-	defer response.Body.Close()
-	c.Response().Header().Set(echo.HeaderCacheControl, "private, no-store")
-	c.Response().Header().Set(echo.HeaderContentType, response.ContentType)
-	if response.ETag != "" {
-		c.Response().Header().Set("ETag", response.ETag)
+	if response.Body != nil {
+		defer response.Body.Close()
+	}
+	headers := c.Response().Header()
+	headers.Set(echo.HeaderCacheControl, "private, no-cache")
+	if response.ContentType != "" {
+		headers.Set(echo.HeaderContentType, response.ContentType)
 	}
 	if response.ContentLength >= 0 {
-		c.Response().Header().Set(echo.HeaderContentLength, strconv.FormatInt(response.ContentLength, 10))
+		headers.Set(echo.HeaderContentLength, strconv.FormatInt(response.ContentLength, 10))
 	}
-	c.Response().WriteHeader(http.StatusOK)
-	_, err = io.Copy(c.Response(), response.Body)
+	for name, value := range map[string]string{
+		"Content-Range": response.ContentRange, "Accept-Ranges": response.AcceptRanges,
+		"ETag": response.ETag, "Last-Modified": response.LastModified,
+	} {
+		if value != "" {
+			headers.Set(name, value)
+		}
+	}
+	if kind == representationOriginal && (response.StatusCode == 0 || response.StatusCode == http.StatusOK || response.StatusCode == http.StatusPartialContent) {
+		headers.Set(echo.HeaderContentDisposition, originalDisposition(id, response.ContentType))
+	}
+	status := response.StatusCode
+	if status == 0 {
+		status = http.StatusOK
+	}
+	c.Response().WriteHeader(status)
+	if response.Body == nil || status == http.StatusNotModified || status == http.StatusRequestedRangeNotSatisfiable {
+		return nil
+	}
+	buffer := make([]byte, 32<<10)
+	_, err = io.CopyBuffer(c.Response(), response.Body, buffer)
 	return err
+}
+
+func immichMediaRequest(header http.Header) immich.MediaRequest {
+	return immich.MediaRequest{
+		Range: header.Get("Range"), IfRange: header.Get("If-Range"),
+		IfNoneMatch: header.Get("If-None-Match"), IfModifiedSince: header.Get("If-Modified-Since"),
+	}
+}
+
+func originalDisposition(id uuid.UUID, contentType string) string {
+	extension := map[string]string{
+		"application/octet-stream": ".bin",
+		"image/avif":               ".avif",
+		"image/bmp":                ".bmp",
+		"image/gif":                ".gif",
+		"image/heic":               ".heic",
+		"image/heif":               ".heif",
+		"image/jpeg":               ".jpg",
+		"image/png":                ".png",
+		"image/tiff":               ".tiff",
+		"image/webp":               ".webp",
+		"video/mp4":                ".mp4",
+		"video/mpeg":               ".mpeg",
+		"video/quicktime":          ".mov",
+		"video/webm":               ".webm",
+		"video/x-matroska":         ".mkv",
+		"video/x-msvideo":          ".avi",
+	}[contentType]
+	if extension == "" {
+		extension = ".bin"
+	}
+	return mime.FormatMediaType("attachment", map[string]string{"filename": fmt.Sprintf("memento-%s%s", id, extension)})
 }
 
 func noStore(next echo.HandlerFunc) echo.HandlerFunc {
@@ -186,4 +271,10 @@ func RegisterRoutes(e *echo.Echo, handler *Handler) {
 	seen.Name = "policy:recipient_content_csrf"
 	thumbnail := me.GET("/media/:id/thumbnail", handler.Thumbnail)
 	thumbnail.Name = "policy:recipient_content"
+	preview := me.GET("/media/:id/preview", handler.Preview)
+	preview.Name = "policy:recipient_content"
+	video := me.GET("/media/:id/video", handler.Video)
+	video.Name = "policy:recipient_content"
+	original := me.GET("/media/:id/original", handler.Original)
+	original.Name = "policy:recipient_content"
 }
