@@ -85,6 +85,14 @@ func (connector *reconciliationConnector) AlbumAssetsPage(_ context.Context, alb
 	}
 	return connector.pages[page], nil
 }
+func (connector *reconciliationConnector) People(context.Context) ([]immich.PersonSummary, error) {
+	return nil, nil
+}
+
+func (connector *reconciliationConnector) Faces(context.Context, uuid.UUID) ([]immich.FaceSummary, error) {
+	return nil, nil
+}
+
 func (connector *reconciliationConnector) AssetExists(_ context.Context, assetID uuid.UUID) (bool, error) {
 	connector.mu.Lock()
 	defer connector.mu.Unlock()
@@ -102,6 +110,10 @@ func (connector *reconciliationConnector) AssetExists(_ context.Context, assetID
 		}
 	}
 	return false, nil
+}
+
+func (connector *reconciliationConnector) AssetDeliveryAvailable(ctx context.Context, assetID uuid.UUID, _ string) (bool, error) {
+	return connector.AssetExists(ctx, assetID)
 }
 
 func (connector *reconciliationConnector) Thumbnail(_ context.Context, assetID uuid.UUID, _ immich.MediaRequest) (immich.MediaResponse, error) {
@@ -1248,6 +1260,82 @@ func TestDelivery404CannotBeClearedByAlbumMetadata(t *testing.T) {
 	assert.Equal(t, audienceBefore, loadExactSourceAudience(t, service, fixture), "delivery failure and reconciliation must preserve every Audience and entitlement row")
 }
 
+func TestDeliveryMissingMediaCanBeExplicitlyRelinkedWhileStillInAlbumMetadata(t *testing.T) {
+	original := repairableReconciliationAsset(uuid.New(), "/library/stale/family.jpg")
+	connector := &reconciliationConnector{summary: sourceAlbum(uuid.New(), "Stale delivery source", 1)}
+	connector.pages = map[int]immich.AssetPage{1: {Items: []immich.AssetSummary{original}}}
+	service, sourceAlbumID := newReconciliationService(t, connector)
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	fixture := publishSourceEventFixture(t, service, sourceAlbumID, original.SourceID)
+	authorizeSourceRecipient(t, service, &fixture)
+	audienceBefore := loadExactSourceAudience(t, service, fixture)
+	mediaService := library.New(service.db, connector)
+
+	connector.setThumbnailError(immich.ErrNotFound)
+	_, err := mediaService.Thumbnail(context.Background(), fixture.recipient, fixture.mediaID, immich.MediaRequest{})
+	require.ErrorIs(t, err, library.ErrNotFound)
+	problems, err := repairs.New(service.db, nil).List(context.Background())
+	require.NoError(t, err)
+	require.Len(t, problems.SourceProblems, 1)
+	missingSince := problems.SourceProblems[0].MissingSince
+
+	replacement := repairableReconciliationAsset(uuid.New(), "/library/reimported/family.jpg")
+	_, err = service.db.NewRaw(`UPDATE event_sources SET include_future_media = false WHERE event_id = ?`, fixture.eventID).Exec(context.Background())
+	require.NoError(t, err)
+	connector.setThumbnailError(nil)
+	connector.setMembership(original, replacement)
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+
+	var candidateID uuid.UUID
+	require.NoError(t, service.db.NewRaw(`
+		SELECT id FROM media_repair_candidates
+		WHERE media_item_id = ? AND candidate_immich_asset_id = ? AND state = 'pending'
+	`, fixture.mediaID, replacement.SourceID).Scan(context.Background(), &candidateID))
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	var candidateState string
+	require.NoError(t, service.db.NewRaw(`SELECT state FROM media_repair_candidates WHERE id = ?`, candidateID).Scan(context.Background(), &candidateState))
+	assert.Equal(t, "pending", candidateState, "reconciliation must retain an explicit repair for delivery-missing Media still present in stale album metadata")
+	problems, err = repairs.New(service.db, nil).List(context.Background())
+	require.NoError(t, err)
+	require.NotEmpty(t, problems.SourceProblems)
+	assert.Equal(t, missingSince, problems.SourceProblems[0].MissingSince, "reconciliation must preserve the original delivery failure onset")
+
+	curatorAccessID, curatorSessionID := uuid.New(), uuid.New()
+	_, err = service.db.NewRaw(`
+		INSERT INTO person_roles (person_id, role) VALUES (?, 'recipient');
+		INSERT INTO recipient_access_generations (
+			id, person_id, generation, state, is_current, onboarding_completed_at
+		) VALUES (?, ?, 1, 'completed', true, now());
+		INSERT INTO sessions (
+			id, credential_hash, person_id, recipient_access_generation_id,
+			security_epoch, session_type, idle_expires_at
+		) SELECT ?, decode(repeat('43', 32), 'hex'), ?, ?, security_epoch, 'trusted', '2100-01-01T00:00:00Z'
+		FROM system_settings WHERE id = 1
+	`, fixture.curator.PersonID, curatorAccessID, fixture.curator.PersonID,
+		curatorSessionID, fixture.curator.PersonID, curatorAccessID).Exec(context.Background())
+	require.NoError(t, err)
+	fixture.curator.SessionID = curatorSessionID
+	_, err = repairs.New(service.db, connector).ConfirmMedia(context.Background(), fixture.curator, candidateID)
+	require.NoError(t, err)
+	var stableAssetID uuid.UUID
+	var availability string
+	var missingAt *time.Time
+	require.NoError(t, service.db.NewRaw(`SELECT immich_asset_id, availability, missing_since FROM media_items WHERE id = ?`, fixture.mediaID).Scan(context.Background(), &stableAssetID, &availability, &missingAt))
+	assert.Equal(t, replacement.SourceID, stableAssetID)
+	assert.Equal(t, "current", availability)
+	assert.Nil(t, missingAt)
+	var staleMemberships, replacementMemberships int
+	require.NoError(t, service.db.NewRaw(`SELECT count(*) FROM source_album_memberships WHERE media_item_id = ? AND immich_asset_id = ?`, fixture.mediaID, original.SourceID).Scan(context.Background(), &staleMemberships))
+	require.NoError(t, service.db.NewRaw(`SELECT count(*) FROM source_album_memberships WHERE media_item_id = ? AND immich_asset_id = ?`, fixture.mediaID, replacement.SourceID).Scan(context.Background(), &replacementMemberships))
+	assert.Zero(t, staleMemberships)
+	assert.Equal(t, 1, replacementMemberships)
+	assert.Equal(t, audienceBefore, loadExactSourceAudience(t, service, fixture), "explicit relink must not alter Audience or entitlement state")
+	var publishedPlacements int
+	require.NoError(t, service.db.NewRaw(`SELECT count(*) FROM current_published_placements WHERE event_id = ? AND media_item_id = ?`, fixture.eventID, fixture.mediaID).Scan(context.Background(), &publishedPlacements))
+	assert.Equal(t, 1, publishedPlacements, "the published portal identity and URL remain stable")
+}
+
 func TestNewSourceMediaFollowsOnlyEventsConfiguredForFutureMedia(t *testing.T) {
 	original, added := reconciliationAsset(uuid.New()), reconciliationAsset(uuid.New())
 	connector := &reconciliationConnector{summary: sourceAlbum(uuid.New(), "Divided source", 1)}
@@ -1428,7 +1516,7 @@ func TestRejectedMediaRepairIsNotProposedAgain(t *testing.T) {
 	assert.Zero(t, pendingCount)
 }
 
-func TestPendingMediaRepairIsSupersededWhenPreviousAssetReturns(t *testing.T) {
+func TestPendingMediaRepairIsNotSupersededByPreviousAlbumMetadata(t *testing.T) {
 	oldAsset := repairableReconciliationAsset(uuid.New(), "/library/old/family.jpg")
 	connector := &reconciliationConnector{summary: sourceAlbum(uuid.New(), "Reversed repair album", 1)}
 	connector.pages = map[int]immich.AssetPage{1: {Items: []immich.AssetSummary{oldAsset}}}
@@ -1447,8 +1535,8 @@ func TestPendingMediaRepairIsSupersededWhenPreviousAssetReturns(t *testing.T) {
 	require.NoError(t, service.db.NewRaw(`
 		SELECT state, candidate_media_item_id FROM media_repair_candidates
 	`).Scan(context.Background(), &state, &candidateMediaItemID))
-	assert.Equal(t, "superseded", state)
-	assert.False(t, candidateMediaItemID.Valid)
+	assert.Equal(t, "pending", state, "album metadata cannot make delivery-missing Media healthy or supersede explicit repair")
+	assert.True(t, candidateMediaItemID.Valid)
 }
 
 func TestMediaRepairRequiresExactChecksumDespiteMatchingMetadata(t *testing.T) {

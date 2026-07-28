@@ -519,6 +519,34 @@ func (c *Client) AssetExists(ctx context.Context, assetID uuid.UUID) (bool, erro
 	return true, nil
 }
 
+// AssetDeliveryAvailable verifies that the representations needed to serve an
+// asset can each return bytes. A metadata response alone is not delivery evidence.
+func (c *Client) AssetDeliveryAvailable(ctx context.Context, assetID uuid.UUID, mediaType string) (bool, error) {
+	if assetID == uuid.Nil || (mediaType != "image" && mediaType != "video") {
+		return false, errInvalidResponse
+	}
+	probes := []func(context.Context, uuid.UUID, MediaRequest) (MediaResponse, error){c.Thumbnail, c.Preview, c.Original}
+	if mediaType == "video" {
+		probes = append(probes, c.Video)
+	}
+	for _, probe := range probes {
+		response, err := probe(ctx, assetID, MediaRequest{Range: "bytes=0-0"})
+		if errors.Is(err, ErrNotFound) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		var firstByte [1]byte
+		read, readErr := io.ReadFull(response.Body, firstByte[:])
+		closeErr := response.Body.Close()
+		if read != len(firstByte) || (readErr != nil && !errors.Is(readErr, io.EOF) && !errors.Is(readErr, io.ErrUnexpectedEOF)) || closeErr != nil {
+			return false, errInvalidResponse
+		}
+	}
+	return true, nil
+}
+
 // Thumbnail opens a bounded thumbnail after the caller resolves authorization.
 func (c *Client) Thumbnail(ctx context.Context, assetID uuid.UUID, request MediaRequest) (MediaResponse, error) {
 	return c.derivative(ctx, assetID, "thumbnail", request)
@@ -569,7 +597,7 @@ func (c *Client) media(ctx context.Context, assetID uuid.UUID, path []string, qu
 		defer cancel()
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxJSONResponse))
 		switch response.StatusCode {
-		case http.StatusNotFound:
+		case http.StatusBadRequest, http.StatusNotFound:
 			return MediaResponse{}, ErrNotFound
 		case http.StatusUnauthorized, http.StatusForbidden:
 			return MediaResponse{}, errInvalidCredentials
@@ -1202,8 +1230,9 @@ func (c *Client) doJSONStatus(ctx context.Context, method, path string, query ur
 	defer response.Body.Close()
 	if response.StatusCode != expectedStatus {
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxJSONResponse))
-		if response.StatusCode == http.StatusNotFound && (path == "faces" || path == "search/metadata" ||
-			strings.HasPrefix(path, "assets/") || strings.HasPrefix(path, "albums/")) {
+		if (response.StatusCode == http.StatusNotFound && (path == "faces" || path == "search/metadata" ||
+			strings.HasPrefix(path, "assets/") || strings.HasPrefix(path, "albums/"))) ||
+			(response.StatusCode == http.StatusBadRequest && (path == "search/metadata" || strings.HasPrefix(path, "albums/") || strings.HasPrefix(path, "assets/"))) {
 			return ErrNotFound
 		}
 		if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {

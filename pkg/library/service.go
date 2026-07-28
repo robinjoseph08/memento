@@ -739,7 +739,7 @@ func (s *Service) markSourceMissing(ctx context.Context, mediaID, backingID, ass
 			return err
 		}
 		_, err := tx.NewRaw(`
-			UPDATE media_items AS media SET availability = 'source_missing', updated_at = now()
+			UPDATE media_items AS media SET availability = 'source_missing', missing_since = COALESCE(missing_since, now()), updated_at = now()
 			WHERE media.id = ? AND media.availability = 'current'
 			  AND EXISTS (
 				SELECT 1 FROM media_backings AS backing

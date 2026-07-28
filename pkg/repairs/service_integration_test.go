@@ -7,6 +7,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
+	"slices"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -25,16 +29,20 @@ import (
 )
 
 type identityConnector struct {
-	people         []immich.PersonSummary
-	faces          map[uuid.UUID][]immich.FaceSummary
-	faceErrs       map[uuid.UUID]error
-	faceCalls      []uuid.UUID
-	faceMu         sync.Mutex
-	faceStarted    chan struct{}
-	releaseFace    chan struct{}
-	assetExists    map[uuid.UUID]bool
-	assetExistsErr error
-	err            error
+	people            []immich.PersonSummary
+	faces             map[uuid.UUID][]immich.FaceSummary
+	faceErrs          map[uuid.UUID]error
+	faceCalls         []uuid.UUID
+	faceMu            sync.Mutex
+	faceStarted       chan struct{}
+	releaseFace       chan struct{}
+	assetExists       map[uuid.UUID]bool
+	assetExistsErr    error
+	deliveryAvailable map[uuid.UUID]bool
+	deliveryErr       error
+	deliveryMu        sync.Mutex
+	deliveryCalls     []uuid.UUID
+	err               error
 }
 
 func (connector *identityConnector) Check(context.Context) error { return connector.err }
@@ -49,6 +57,28 @@ func (connector *identityConnector) AssetExists(_ context.Context, assetID uuid.
 		return exists, nil
 	}
 	return true, nil
+}
+
+func (connector *identityConnector) AssetDeliveryAvailable(_ context.Context, assetID uuid.UUID, _ string) (bool, error) {
+	connector.deliveryMu.Lock()
+	defer connector.deliveryMu.Unlock()
+	connector.deliveryCalls = append(connector.deliveryCalls, assetID)
+	if connector.deliveryErr != nil {
+		return false, connector.deliveryErr
+	}
+	if available, configured := connector.deliveryAvailable[assetID]; configured {
+		return available, nil
+	}
+	return true, nil
+}
+
+func (connector *identityConnector) setDeliveryAvailable(assetID uuid.UUID, available bool) {
+	connector.deliveryMu.Lock()
+	defer connector.deliveryMu.Unlock()
+	if connector.deliveryAvailable == nil {
+		connector.deliveryAvailable = make(map[uuid.UUID]bool)
+	}
+	connector.deliveryAvailable[assetID] = available
 }
 
 func (connector *identityConnector) Faces(_ context.Context, assetID uuid.UUID) ([]immich.FaceSummary, error) {
@@ -130,26 +160,42 @@ func hashBytes(value string) []byte {
 
 func checksum(value string) string { return hex.EncodeToString(hashBytes(value)[:20]) }
 
-func waitForRepairBlockedQuery(t *testing.T, db *bun.DB, blockerPID int, pattern string) {
+func waitForRepairBlockedQuery(t *testing.T, db *bun.DB, blockerPID int, pattern string) int {
 	t.Helper()
-	deadline := time.Now().Add(4 * time.Second)
+	timer := time.NewTimer(4 * time.Second)
+	defer timer.Stop()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	lastState := "no matching backend"
 	for {
-		var waiting bool
+		type waitState struct {
+			PID       int
+			WaitType  string
+			WaitEvent string
+			Blockers  string
+			Query     string
+		}
+		var states []waitState
 		err := db.NewRaw(`
-			SELECT EXISTS (
-				SELECT 1 FROM pg_stat_activity
-				WHERE datname = current_database() AND wait_event_type = 'Lock'
-				  AND ? = ANY(pg_blocking_pids(pid)) AND query LIKE ?
-			)
-		`, blockerPID, pattern).Scan(context.Background(), &waiting)
+			SELECT pid, COALESCE(wait_event_type, '') AS wait_type,
+				COALESCE(wait_event, '') AS wait_event,
+				array_to_string(pg_blocking_pids(pid), ',') AS blockers, query
+			FROM pg_stat_activity
+			WHERE datname = current_database() AND query LIKE ?
+			ORDER BY pid
+		`, pattern).Scan(context.Background(), &states)
 		require.NoError(t, err)
-		if waiting {
-			return
+		for _, state := range states {
+			lastState = fmt.Sprintf("pid=%d wait_type=%q wait_event=%q blockers=%q query=%q", state.PID, state.WaitType, state.WaitEvent, state.Blockers, state.Query)
+			if state.WaitType == "Lock" && slices.Contains(strings.Split(state.Blockers, ","), strconv.Itoa(blockerPID)) {
+				return state.PID
+			}
 		}
-		if time.Now().After(deadline) {
-			require.FailNow(t, "expected query did not wait for the controlled lock", pattern)
+		select {
+		case <-ticker.C:
+		case <-timer.C:
+			require.FailNow(t, "expected query did not wait for the controlled lock", "pattern=%q blocker_pid=%d last_state=%s", pattern, blockerPID, lastState)
 		}
-		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -338,13 +384,11 @@ func TestPersonReconciliationLocksPeopleBeforeLinks(t *testing.T) {
 	require.NoError(t, err)
 	_, err = personBlocker.NewRaw(`SELECT id FROM people WHERE id = ? FOR UPDATE`, fixture.personID).Exec(context.Background())
 	require.NoError(t, err)
+	var personBlockerPID int
+	require.NoError(t, personBlocker.NewRaw(`SELECT pg_backend_pid()`).Scan(context.Background(), &personBlockerPID))
 	result := make(chan error, 1)
 	go func() { result <- reconcile(fixture.service) }()
-	select {
-	case reconcileErr := <-result:
-		t.Fatalf("reconciliation completed while the Person was locked: %v", reconcileErr)
-	case <-time.After(100 * time.Millisecond):
-	}
+	waitForRepairBlockedQuery(t, fixture.db, personBlockerPID, `%SELECT person.id FROM people AS person%`)
 	linkProbe, err := fixture.db.BeginTx(context.Background(), nil)
 	require.NoError(t, err)
 	_, err = linkProbe.NewRaw(`SELECT person_id FROM immich_person_links WHERE person_id = ? FOR UPDATE NOWAIT`, fixture.personID).Exec(context.Background())
@@ -444,16 +488,14 @@ func TestPersonRejectionLocksPeopleBeforeCandidate(t *testing.T) {
 	require.NoError(t, err)
 	_, err = personBlocker.NewRaw(`SELECT id FROM people WHERE id = ? FOR UPDATE`, fixture.actor.PersonID).Exec(context.Background())
 	require.NoError(t, err)
+	var personBlockerPID int
+	require.NoError(t, personBlocker.NewRaw(`SELECT pg_backend_pid()`).Scan(context.Background(), &personBlockerPID))
 	rejection := make(chan error, 1)
 	go func() {
 		_, rejectErr := fixture.service.RejectPerson(context.Background(), fixture.actor, candidateID)
 		rejection <- rejectErr
 	}()
-	select {
-	case rejectErr := <-rejection:
-		t.Fatalf("rejection completed while the actor Person was locked: %v", rejectErr)
-	case <-time.After(100 * time.Millisecond):
-	}
+	waitForRepairBlockedQuery(t, fixture.db, personBlockerPID, `%SELECT id FROM people WHERE id IN%`)
 	candidateProbe, err := fixture.db.BeginTx(context.Background(), nil)
 	require.NoError(t, err)
 	_, err = candidateProbe.NewRaw(`SELECT id FROM person_repair_candidates WHERE id = ? FOR UPDATE NOWAIT`, candidateID).Exec(context.Background())
@@ -543,6 +585,8 @@ func TestManualPersonLinkCannotRecreateLinkAfterConcurrentArchive(t *testing.T) 
 		DELETE FROM immich_person_links WHERE person_id = ?
 	`, fixture.personID, fixture.personID)
 	require.NoError(t, err)
+	var lifecycleBlockerPID int
+	require.NoError(t, tx.NewRaw(`SELECT pg_backend_pid()`).Scan(context.Background(), &lifecycleBlockerPID))
 
 	result := make(chan error, 1)
 	go func() {
@@ -551,11 +595,7 @@ func TestManualPersonLinkCannotRecreateLinkAfterConcurrentArchive(t *testing.T) 
 		})
 		result <- linkErr
 	}()
-	select {
-	case linkErr := <-result:
-		t.Fatalf("link completed before lifecycle transaction committed: %v", linkErr)
-	case <-time.After(100 * time.Millisecond):
-	}
+	waitForRepairBlockedQuery(t, fixture.db, lifecycleBlockerPID, `%SELECT id FROM people WHERE id IN%`)
 	require.NoError(t, tx.Commit())
 	select {
 	case linkErr := <-result:
@@ -694,9 +734,9 @@ func TestRejectedMediaRepairLeavesAddRemoveAndBackingUntouched(t *testing.T) {
 	oldAssetID, newAssetID := uuid.New(), uuid.New()
 	candidateID := uuid.New()
 	_, err := fixture.db.ExecContext(context.Background(), `
-		INSERT INTO media_items (id, immich_asset_id, media_type, local_date_time, availability, first_seen_at, last_seen_at)
-		VALUES (?, ?, 'image', '2026-01-01T00:00:00Z', 'source_missing', now(), now()),
-		       (?, ?, 'image', '2026-01-01T00:00:00Z', 'current', now(), now());
+		INSERT INTO media_items (id, immich_asset_id, media_type, local_date_time, availability, missing_since, first_seen_at, last_seen_at)
+		VALUES (?, ?, 'image', '2026-01-01T00:00:00Z', 'source_missing', now(), now(), now()),
+		       (?, ?, 'image', '2026-01-01T00:00:00Z', 'current', NULL, now(), now());
 		INSERT INTO media_backings (id, media_item_id, immich_asset_id, checksum, linked_at)
 		VALUES (gen_random_uuid(), ?, ?, ?, now()), (gen_random_uuid(), ?, ?, ?, now());
 		INSERT INTO media_repair_candidates (id, media_item_id, candidate_media_item_id, previous_immich_asset_id, candidate_immich_asset_id, created_at)
@@ -721,9 +761,9 @@ func TestMediaConfirmationRevalidatesReplacementAvailability(t *testing.T) {
 	oldMediaID, newMediaID := uuid.New(), uuid.New()
 	oldAssetID, newAssetID, candidateID := uuid.New(), uuid.New(), uuid.New()
 	_, err := fixture.db.ExecContext(context.Background(), `
-		INSERT INTO media_items (id, immich_asset_id, media_type, local_date_time, availability, first_seen_at, last_seen_at)
-		VALUES (?, ?, 'image', '2026-01-01T00:00:00Z', 'source_missing', now(), now()),
-		       (?, ?, 'image', '2026-01-01T00:00:00Z', 'current', now(), now());
+		INSERT INTO media_items (id, immich_asset_id, media_type, local_date_time, availability, missing_since, first_seen_at, last_seen_at)
+		VALUES (?, ?, 'image', '2026-01-01T00:00:00Z', 'source_missing', now(), now(), now()),
+		       (?, ?, 'image', '2026-01-01T00:00:00Z', 'current', NULL, now(), now());
 		INSERT INTO media_backings (id, media_item_id, immich_asset_id, checksum, linked_at)
 		VALUES (gen_random_uuid(), ?, ?, ?, now()), (gen_random_uuid(), ?, ?, ?, now());
 		INSERT INTO media_repair_candidates (id, media_item_id, candidate_media_item_id, previous_immich_asset_id, candidate_immich_asset_id, created_at)
@@ -740,6 +780,70 @@ func TestMediaConfirmationRevalidatesReplacementAvailability(t *testing.T) {
 	fixture.connector.assetExists = map[uuid.UUID]bool{newAssetID: false}
 	_, err = fixture.service.ConfirmMedia(context.Background(), fixture.actor, candidateID)
 	assert.ErrorIs(t, err, ErrConflict)
+	fixture.connector.assetExists[newAssetID] = true
+	fixture.connector.deliveryErr = errors.New("malformed or unauthorized delivery response")
+	_, err = fixture.service.ConfirmMedia(context.Background(), fixture.actor, candidateID)
+	assert.ErrorIs(t, err, ErrDependency)
+	fixture.connector.deliveryErr = nil
+	fixture.connector.setDeliveryAvailable(newAssetID, false)
+	_, err = fixture.service.ConfirmMedia(context.Background(), fixture.actor, candidateID)
+	assert.ErrorIs(t, err, ErrConflict)
+	var state, availability string
+	var activeAssetID uuid.UUID
+	require.NoError(t, fixture.db.NewRaw(`SELECT state FROM media_repair_candidates WHERE id = ?`, candidateID).Scan(context.Background(), &state))
+	require.NoError(t, fixture.db.NewRaw(`SELECT availability FROM media_items WHERE id = ?`, oldMediaID).Scan(context.Background(), &availability))
+	require.NoError(t, fixture.db.NewRaw(`SELECT immich_asset_id FROM media_backings WHERE media_item_id = ? AND active`, oldMediaID).Scan(context.Background(), &activeAssetID))
+	assert.Equal(t, "pending", state)
+	assert.Equal(t, "source_missing", availability)
+	assert.Equal(t, oldAssetID, activeAssetID)
+}
+
+func TestMediaConfirmationChecksDeliveryAfterEnteringConcurrencyBoundary(t *testing.T) {
+	fixture := newRepairFixture(t, 0)
+	oldMediaID, newMediaID := uuid.New(), uuid.New()
+	oldAssetID, newAssetID, candidateID, sourceAlbumID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	_, err := fixture.db.ExecContext(context.Background(), `
+		INSERT INTO source_albums (
+			id, immich_album_id, name, asset_count, source_created_at, source_updated_at,
+			first_seen_at, last_seen_at, source_fingerprint, next_reconciliation_at
+		) VALUES (?, gen_random_uuid(), 'Race album', 1, now(), now(), now(), now(), ?, now());
+		INSERT INTO media_items (
+			id, immich_asset_id, media_type, local_date_time, availability, missing_since, first_seen_at, last_seen_at
+		) VALUES (?, ?, 'image', '2026-01-01T00:00:00Z', 'source_missing', now(), now(), now()),
+		         (?, ?, 'image', '2026-01-01T00:00:00Z', 'current', NULL, now(), now());
+		INSERT INTO media_backings (id, media_item_id, immich_asset_id, checksum, linked_at)
+		VALUES (gen_random_uuid(), ?, ?, ?, now()), (gen_random_uuid(), ?, ?, ?, now());
+		INSERT INTO source_album_memberships (
+			source_album_id, immich_asset_id, media_item_id, first_seen_at, last_seen_at, source_fingerprint
+		) VALUES (?, ?, ?, now(), now(), ?);
+		INSERT INTO media_repair_candidates (
+			id, media_item_id, candidate_media_item_id, previous_immich_asset_id, candidate_immich_asset_id, created_at
+		) VALUES (?, ?, ?, ?, ?, now());
+	`, sourceAlbumID, hashBytes("race-album"), oldMediaID, oldAssetID, newMediaID, newAssetID,
+		oldMediaID, oldAssetID, checksum("race"), newMediaID, newAssetID, checksum("race"),
+		sourceAlbumID, newAssetID, newMediaID, hashBytes("race-membership"),
+		candidateID, oldMediaID, newMediaID, oldAssetID, newAssetID)
+	require.NoError(t, err)
+
+	boundaryBlocker, err := fixture.db.BeginTx(context.Background(), nil)
+	require.NoError(t, err)
+	require.NoError(t, staging.LockAccessSummaryReplacement(context.Background(), boundaryBlocker))
+	var blockerPID int
+	require.NoError(t, boundaryBlocker.NewRaw(`SELECT pg_backend_pid()`).Scan(context.Background(), &blockerPID))
+	confirmation := make(chan error, 1)
+	go func() {
+		_, confirmErr := fixture.service.ConfirmMedia(context.Background(), fixture.actor, candidateID)
+		confirmation <- confirmErr
+	}()
+	waitForRepairBlockedQuery(t, fixture.db, blockerPID, `%pg_advisory_xact_lock_shared%`)
+	fixture.connector.setDeliveryAvailable(newAssetID, false)
+	require.NoError(t, boundaryBlocker.Rollback())
+	select {
+	case confirmErr := <-confirmation:
+		require.ErrorIs(t, confirmErr, ErrConflict)
+	case <-time.After(time.Second):
+		t.Fatal("confirmation did not complete after the concurrency boundary was released")
+	}
 	var state, availability string
 	var activeAssetID uuid.UUID
 	require.NoError(t, fixture.db.NewRaw(`SELECT state FROM media_repair_candidates WHERE id = ?`, candidateID).Scan(context.Background(), &state))
@@ -759,16 +863,16 @@ func TestMediaConfirmationPreservesPortalIdentityAndMovesBacking(t *testing.T) {
 		INSERT INTO source_albums (
 			id, immich_album_id, name, asset_count, source_created_at, source_updated_at,
 			first_seen_at, last_seen_at, source_fingerprint, next_reconciliation_at
-		) VALUES (?, gen_random_uuid(), 'Repair album', 1, now(), now(), now(), now(), ?, now());
-		INSERT INTO media_items (id, immich_asset_id, media_type, local_date_time, availability, first_seen_at, last_seen_at)
-		VALUES (?, ?, 'image', '2026-01-01T00:00:00Z', 'source_missing', now(), now()),
-		       (?, ?, 'image', '2026-01-01T00:00:00Z', 'current', now(), now());
+		) VALUES (?, gen_random_uuid(), 'Repair album', 2, now(), now(), now(), now(), ?, now());
+		INSERT INTO media_items (id, immich_asset_id, media_type, local_date_time, availability, missing_since, first_seen_at, last_seen_at)
+		VALUES (?, ?, 'image', '2026-01-01T00:00:00Z', 'source_missing', now(), now(), now()),
+		       (?, ?, 'image', '2026-01-01T00:00:00Z', 'current', NULL, now(), now());
 		INSERT INTO media_backings (id, media_item_id, immich_asset_id, checksum, capture_at, filename, original_path, linked_at)
 		VALUES (?, ?, ?, ?, '2026-01-01T00:00:00Z', 'old.jpg', '/old/old.jpg', now()),
 		       (?, ?, ?, ?, '2026-01-01T00:00:00Z', 'new.jpg', '/moved/new.jpg', now());
 		INSERT INTO source_album_memberships (
 			source_album_id, immich_asset_id, media_item_id, first_seen_at, last_seen_at, source_fingerprint
-		) VALUES (?, ?, ?, now(), now(), ?);
+		) VALUES (?, ?, ?, now(), now(), ?), (?, ?, ?, now(), now(), ?);
 		INSERT INTO media_repair_candidates (
 			id, media_item_id, candidate_media_item_id, previous_immich_asset_id,
 			candidate_immich_asset_id, previous_evidence, candidate_evidence, created_at
@@ -780,6 +884,7 @@ func TestMediaConfirmationPreservesPortalIdentityAndMovesBacking(t *testing.T) {
 		);
 	`, sourceAlbumID, hashBytes("album"), oldMediaID, oldAssetID, newMediaID, newAssetID,
 		oldBackingID, oldMediaID, oldAssetID, checksum("same"), newBackingID, newMediaID, newAssetID, checksum("same"),
+		sourceAlbumID, oldAssetID, oldMediaID, hashBytes("stale-membership"),
 		sourceAlbumID, newAssetID, newMediaID, hashBytes("membership"), candidateID, oldMediaID, newMediaID, oldAssetID, newAssetID,
 		checksum("same"), checksum("same"))
 	require.NoError(t, err)
@@ -981,8 +1086,8 @@ func TestMediaConfirmationPreservesPortalIdentityAndMovesBacking(t *testing.T) {
 	competingMediaID, competingAssetID, competingCandidateID := uuid.New(), uuid.New(), uuid.New()
 	historyID, historicalCandidateAssetID := uuid.New(), uuid.New()
 	_, err = fixture.db.ExecContext(context.Background(), `
-		INSERT INTO media_items (id, immich_asset_id, media_type, local_date_time, availability, first_seen_at, last_seen_at)
-		VALUES (?, ?, 'image', '2026-01-01T00:00:00Z', 'source_missing', now(), now());
+		INSERT INTO media_items (id, immich_asset_id, media_type, local_date_time, availability, missing_since, first_seen_at, last_seen_at)
+		VALUES (?, ?, 'image', '2026-01-01T00:00:00Z', 'source_missing', now(), now(), now());
 		INSERT INTO media_backings (id, media_item_id, immich_asset_id, checksum, linked_at)
 		VALUES (gen_random_uuid(), ?, ?, ?, now());
 		INSERT INTO media_repair_candidates (
@@ -1011,17 +1116,13 @@ func TestMediaConfirmationPreservesPortalIdentityAndMovesBacking(t *testing.T) {
 		})
 		concurrentEvent <- createErr
 	}()
-	waitForRepairBlockedQuery(t, fixture.db, eventBlockerPID, `%INSERT INTO events%`)
+	concurrentEventPID := waitForRepairBlockedQuery(t, fixture.db, eventBlockerPID, `%INSERT INTO events%`)
 	confirmation := make(chan error, 1)
 	go func() {
 		_, confirmErr := fixture.service.ConfirmMedia(context.Background(), fixture.actor, candidateID)
 		confirmation <- confirmErr
 	}()
-	select {
-	case confirmErr := <-confirmation:
-		t.Fatalf("confirmation completed while Event creation held the candidate Media: %v", confirmErr)
-	case <-time.After(100 * time.Millisecond):
-	}
+	waitForRepairBlockedQuery(t, fixture.db, concurrentEventPID, `%SELECT id FROM media_items WHERE id IN%`)
 	candidateProbe, err := fixture.db.BeginTx(context.Background(), nil)
 	require.NoError(t, err)
 	_, err = candidateProbe.NewRaw(`SELECT id FROM media_repair_candidates WHERE id = ? FOR UPDATE NOWAIT`, candidateID).Exec(context.Background())
@@ -1082,6 +1183,9 @@ func TestMediaConfirmationPreservesPortalIdentityAndMovesBacking(t *testing.T) {
 	var membershipMediaID uuid.UUID
 	require.NoError(t, fixture.db.NewRaw(`SELECT media_item_id FROM source_album_memberships WHERE source_album_id = ? AND immich_asset_id = ?`, sourceAlbumID, newAssetID).Scan(context.Background(), &membershipMediaID))
 	assert.Equal(t, oldMediaID, membershipMediaID)
+	var staleMemberships int
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM source_album_memberships WHERE source_album_id = ? AND immich_asset_id = ?`, sourceAlbumID, oldAssetID).Scan(context.Background(), &staleMemberships))
+	assert.Zero(t, staleMemberships, "explicit relink retires stale source membership metadata")
 	var placementMediaID, coverMediaID, looseMediaID uuid.UUID
 	var looseVersion int64
 	require.NoError(t, fixture.db.NewRaw(`SELECT media_item_id FROM draft_media_placements WHERE event_id = ?`, eventID).Scan(context.Background(), &placementMediaID))
@@ -1100,6 +1204,19 @@ func TestMediaConfirmationPreservesPortalIdentityAndMovesBacking(t *testing.T) {
 	assert.Equal(t, 1, entitlements)
 	assert.Equal(t, 1, comments)
 	assert.Equal(t, 1, favorites)
+	var publicationRevision int64
+	require.NoError(t, fixture.db.NewRaw(`SELECT revision FROM publications WHERE id = ? AND event_id = ?`, publicationID, eventID).Scan(context.Background(), &publicationRevision))
+	assert.Equal(t, int64(1), publicationRevision, "relink preserves immutable Publication history")
+	var auditAction, auditPreviousAssetID, auditCandidateAssetID string
+	var auditTargetID uuid.UUID
+	require.NoError(t, fixture.db.NewRaw(`
+		SELECT target_id, action, metadata->>'previous_immich_asset_id', metadata->>'candidate_immich_asset_id'
+		FROM publication_audit_events WHERE target_kind = 'media' AND target_id = ? AND action = 'media_relinked'
+	`, oldMediaID).Scan(context.Background(), &auditTargetID, &auditAction, &auditPreviousAssetID, &auditCandidateAssetID))
+	assert.Equal(t, oldMediaID, auditTargetID)
+	assert.Equal(t, "media_relinked", auditAction)
+	assert.Equal(t, oldAssetID.String(), auditPreviousAssetID)
+	assert.Equal(t, newAssetID.String(), auditCandidateAssetID)
 	var eventVersion int64
 	require.NoError(t, fixture.db.NewRaw(`SELECT version FROM events WHERE id = ?`, eventID).Scan(context.Background(), &eventVersion))
 	assert.Equal(t, int64(2), eventVersion)

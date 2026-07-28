@@ -296,6 +296,14 @@ func TestAssetExistsDistinguishesPresentAndDeletedAssets(t *testing.T) {
 	exists, err = client.AssetExists(context.Background(), assetID)
 	require.NoError(t, err)
 	assert.False(t, exists)
+
+	deletedServer := contractServer(t, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusBadRequest) })
+	defer deletedServer.Close()
+	client, err = New(clientConfig(deletedServer.URL), deletedServer.Client())
+	require.NoError(t, err)
+	exists, err = client.AssetExists(context.Background(), assetID)
+	require.NoError(t, err)
+	assert.False(t, exists)
 }
 
 func TestAssetExistsRejectsMalformedAndUnauthorizedResponses(t *testing.T) {
@@ -323,6 +331,80 @@ func TestAssetExistsRejectsMalformedAndUnauthorizedResponses(t *testing.T) {
 			assert.False(t, exists)
 			require.EqualError(t, err, test.want)
 			assert.NotContains(t, err.Error(), "private")
+		})
+	}
+}
+
+func TestAssetDeliveryAvailableRequiresEveryRelevantRepresentation(t *testing.T) {
+	for _, mediaType := range []string{"image", "video"} {
+		t.Run(mediaType, func(t *testing.T) {
+			assetID := uuid.New()
+			var paths []string
+			server := contractServer(t, func(w http.ResponseWriter, r *http.Request) {
+				paths = append(paths, r.URL.Path+"?"+r.URL.RawQuery)
+				assert.Equal(t, "bytes=0-0", r.Header.Get("Range"))
+				contentType := "image/jpeg"
+				if strings.HasSuffix(r.URL.Path, "/video/playback") {
+					contentType = "video/mp4"
+				}
+				w.Header().Set("Content-Type", contentType)
+				_, _ = w.Write([]byte("available"))
+			})
+			defer server.Close()
+			client, err := New(clientConfig(server.URL), server.Client())
+			require.NoError(t, err)
+
+			available, err := client.AssetDeliveryAvailable(context.Background(), assetID, mediaType)
+			require.NoError(t, err)
+			assert.True(t, available)
+			want := []string{
+				"/api/assets/" + assetID.String() + "/thumbnail?size=thumbnail",
+				"/api/assets/" + assetID.String() + "/thumbnail?size=preview",
+				"/api/assets/" + assetID.String() + "/original?",
+			}
+			if mediaType == "video" {
+				want = append(want, "/api/assets/"+assetID.String()+"/video/playback?")
+			}
+			assert.Equal(t, want, paths)
+		})
+	}
+}
+
+func TestAssetDeliveryAvailableFailsClosed(t *testing.T) {
+	assetID := uuid.New()
+	for _, test := range []struct {
+		name       string
+		status     int
+		want       bool
+		wantErr    string
+		failedPath string
+	}{
+		{name: "missing derivative", status: http.StatusNotFound, failedPath: "/thumbnail", want: false},
+		{name: "missing original", status: http.StatusNotFound, failedPath: "/original", want: false},
+		{name: "unauthorized original", status: http.StatusUnauthorized, failedPath: "/original", wantErr: "Immich API key is invalid"},
+		{name: "empty original", status: http.StatusOK, failedPath: "/original", wantErr: "Immich returned an invalid response"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := contractServer(t, func(w http.ResponseWriter, r *http.Request) {
+				failed := strings.Contains(r.URL.Path, test.failedPath)
+				if failed {
+					w.WriteHeader(test.status)
+					return
+				}
+				w.Header().Set("Content-Type", "image/jpeg")
+				_, _ = w.Write([]byte("available"))
+			})
+			defer server.Close()
+			client, err := New(clientConfig(server.URL), server.Client())
+			require.NoError(t, err)
+
+			available, err := client.AssetDeliveryAvailable(context.Background(), assetID, "image")
+			assert.Equal(t, test.want, available)
+			if test.wantErr == "" {
+				require.NoError(t, err)
+			} else {
+				require.EqualError(t, err, test.wantErr)
+			}
 		})
 	}
 }
@@ -463,7 +545,7 @@ func TestFacesIdentifyDeletedAssets(t *testing.T) {
 	client, err := New(clientConfig(server.URL), server.Client())
 	require.NoError(t, err)
 	_, err = client.Faces(context.Background(), uuid.New())
-	assert.ErrorIs(t, err, ErrNotFound)
+	require.ErrorIs(t, err, ErrNotFound)
 }
 
 func TestAlbumAssetsNormalizeChecksumForRepairWithoutForwardingBase64(t *testing.T) {
@@ -519,27 +601,28 @@ func TestAlbumSummaryUsesPinnedDetailContract(t *testing.T) {
 	require.EqualError(t, err, "Immich returned an invalid response")
 }
 
-func TestAlbumAndMembership404sIdentifyMissingSourceAlbum(t *testing.T) {
+func TestAlbumAndMembershipMissingResponsesIdentifyMissingSourceAlbum(t *testing.T) {
 	albumID := uuid.New()
 	server := contractServer(t, func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/albums/" + albumID.String():
 			assert.Equal(t, http.MethodGet, r.Method)
+			w.WriteHeader(http.StatusBadRequest)
 		case "/api/search/metadata":
 			assert.Equal(t, http.MethodPost, r.Method)
+			w.WriteHeader(http.StatusBadRequest)
 		default:
 			t.Fatalf("unexpected request %s", r.URL.Path)
 		}
-		w.WriteHeader(http.StatusNotFound)
 	})
 	defer server.Close()
 	client, err := New(clientConfig(server.URL), server.Client())
 	require.NoError(t, err)
 
 	_, err = client.Album(context.Background(), albumID)
-	assert.ErrorIs(t, err, ErrNotFound)
+	require.ErrorIs(t, err, ErrNotFound)
 	_, err = client.AlbumAssetsPage(context.Background(), albumID, 1)
-	assert.ErrorIs(t, err, ErrNotFound)
+	require.ErrorIs(t, err, ErrNotFound)
 }
 
 func TestAlbumSummaryRejectsMismatchedIdentity(t *testing.T) {
@@ -1186,6 +1269,7 @@ func TestMediaRepresentationsRejectInvalidEntryPointsStatusesAndHeaders(t *testi
 		original bool
 		want     string
 	}{
+		{name: "deleted resource", status: http.StatusBadRequest, want: "Immich resource not found"},
 		{name: "missing resource", status: http.StatusNotFound, want: "Immich resource not found"},
 		{name: "dependency unavailable", status: http.StatusServiceUnavailable, want: "Immich validation failed"},
 		{name: "video with image body", status: http.StatusOK, headers: http.Header{"Content-Type": {"image/jpeg"}}, want: "Immich returned an invalid response"},

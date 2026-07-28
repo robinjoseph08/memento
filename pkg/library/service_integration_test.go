@@ -231,11 +231,16 @@ func (fixture libraryFixture) place(t *testing.T, eventIndex int, mediaID, acces
 		INSERT INTO current_published_placements
 			(event_id, publication_id, published_moment_id, media_item_id, position)
 		VALUES (?, ?, ?, ?, ?);
+		INSERT INTO audience_entries (
+			published_moment_id, recipient_person_id, recipient_access_generation_id
+		) SELECT ?, person_id, ? FROM recipient_access_generations WHERE id = ?
+		ON CONFLICT DO NOTHING;
 		INSERT INTO current_audience_entitlements
 			(event_id, publication_id, recipient_person_id, recipient_access_generation_id, media_item_id)
 		SELECT ?, ?, person_id, ?, ? FROM recipient_access_generations WHERE id = ?
 	`, fixture.moments[eventIndex], position, mediaID,
 		fixture.events[eventIndex], fixture.publications[eventIndex], fixture.moments[eventIndex], mediaID, position,
+		fixture.moments[eventIndex], accessID, accessID,
 		fixture.events[eventIndex], fixture.publications[eventIndex], accessID, mediaID, accessID).Exec(context.Background())
 	require.NoError(t, err)
 }
@@ -929,7 +934,7 @@ func TestMediaRepresentationsRevalidateEveryAuthorizationBoundaryBeforeImmich(t 
 		{
 			name: "source unavailable",
 			deny: func(ctx context.Context, fixture libraryFixture) error {
-				_, err := fixture.db.NewRaw(`UPDATE media_items SET availability = 'source_missing' WHERE id = ?`, fixture.media[0]).Exec(ctx)
+				_, err := fixture.db.NewRaw(`UPDATE media_items SET availability = 'source_missing', missing_since = now() WHERE id = ?`, fixture.media[0]).Exec(ctx)
 				return err
 			},
 			reason: "source-unavailable Media cannot be streamed",
@@ -1071,7 +1076,7 @@ func TestRepresentationLocksResolvedMediaAndBackingThroughFinalHandoff(t *testin
 		name   string
 		mutate string
 	}{
-		{name: "availability mutation", mutate: `UPDATE media_items SET availability = 'source_missing' WHERE id = ?`},
+		{name: "availability mutation", mutate: `UPDATE media_items SET availability = 'source_missing', missing_since = now() WHERE id = ?`},
 		{name: "active backing mutation", mutate: `UPDATE media_backings SET active = false, ended_at = now() WHERE media_item_id = ? AND active`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -1305,7 +1310,7 @@ func TestMalformedOrUnauthorizedUpstreamFailureDoesNotInventSourceMissing(t *tes
 func TestRecipientAuthorizationMatrixRevalidatesReuseWithdrawalAndAvailability(t *testing.T) {
 	fixture := newLibraryFixture(t)
 	ctx := context.Background()
-	_, err := fixture.db.NewRaw(`UPDATE media_items SET availability = 'source_missing' WHERE id = ?`, fixture.media[1]).Exec(ctx)
+	_, err := fixture.db.NewRaw(`UPDATE media_items SET availability = 'source_missing', missing_since = now() WHERE id = ?`, fixture.media[1]).Exec(ctx)
 	require.NoError(t, err)
 	photos, err := fixture.service.Photos(ctx, fixture.actor, "10", "", false)
 	require.NoError(t, err)

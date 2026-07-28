@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/robinjoseph08/memento/internal/testdb"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -539,6 +540,39 @@ func TestOnboardingMigrationPreservesLegacyAcknowledgmentsAndAddsResumableProgre
 	assert.Empty(t, sessionType, "a Recipient must explicitly choose how to treat the browser")
 	_, err = db.ExecContext(ctx, `UPDATE onboarding_progress SET email_preference = 'invalid' WHERE recipient_access_generation_id = ?`, accessID)
 	require.Error(t, err, "resumable preferences must remain in the constrained domains")
+}
+
+func TestMediaMissingSinceMigrationBackfillsOriginalOnsetAndEnforcesTransitions(t *testing.T) {
+	db := testdb.Open(t)
+	ctx := context.Background()
+	priorMigrations := migrate.NewMigrations()
+	foundMigration := false
+	for _, migration := range collection.Sorted() {
+		if migration.Name == "202607280007" {
+			foundMigration = true
+			break
+		}
+		priorMigrations.Add(migration)
+	}
+	require.True(t, foundMigration)
+	require.NoError(t, applyCollection(ctx, db, priorMigrations))
+	mediaID, assetID := uuid.New(), uuid.New()
+	missingAt := time.Date(2026, 7, 28, 12, 0, 0, 0, time.UTC)
+	_, err := db.ExecContext(ctx, `
+		INSERT INTO media_items (
+			id, immich_asset_id, media_type, availability, first_seen_at, last_seen_at, updated_at
+		) VALUES (?, ?, 'image', 'source_missing', ?, ?, ?)
+	`, mediaID, assetID, missingAt.Add(-time.Hour), missingAt, missingAt)
+	require.NoError(t, err)
+	require.NoError(t, Apply(ctx, db))
+
+	var backfilled time.Time
+	require.NoError(t, db.NewRaw(`SELECT missing_since FROM media_items WHERE id = ?`, mediaID).Scan(ctx, &backfilled))
+	assert.Equal(t, missingAt, backfilled)
+	_, err = db.ExecContext(ctx, `UPDATE media_items SET availability = 'current' WHERE id = ?`, mediaID)
+	require.Error(t, err, "availability cannot become current while missing onset remains")
+	_, err = db.ExecContext(ctx, `UPDATE media_items SET availability = 'current', missing_since = NULL WHERE id = ?`, mediaID)
+	require.NoError(t, err)
 }
 
 func TestAttendanceAudienceMigrationResetsLegacyReviewFlagsAndBackfillsVersions(t *testing.T) {

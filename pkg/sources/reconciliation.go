@@ -378,10 +378,10 @@ func (s *Service) applyValidatedSnapshot(
 		removals = int(removed)
 		if len(confirmedMissingMediaIDs) > 0 {
 			if _, err := tx.NewRaw(`
-				UPDATE media_items AS media SET availability = 'source_missing', updated_at = ?
+				UPDATE media_items AS media SET availability = 'source_missing', missing_since = COALESCE(missing_since, ?), updated_at = ?
 				WHERE availability = 'current' AND id IN (?)
 				  AND NOT EXISTS (SELECT 1 FROM source_album_memberships WHERE media_item_id = media.id)
-			`, now, bun.List(confirmedMissingMediaIDs)).Exec(ctx); err != nil {
+			`, now, now, bun.List(confirmedMissingMediaIDs)).Exec(ctx); err != nil {
 				return 0, 0, 0, err
 			}
 		}
@@ -622,12 +622,15 @@ func syncEditableEvents(
 					return err
 				}
 			}
-			var wasPublished bool
+			var wasPublished, sourceMissing bool
 			if err := tx.NewRaw(`SELECT EXISTS (SELECT 1 FROM current_published_placements WHERE event_id = ? AND media_item_id = ?)`, eventID, mediaID).Scan(ctx, &wasPublished); err != nil {
 				return err
 			}
+			if err := tx.NewRaw(`SELECT availability = 'source_missing' FROM media_items WHERE id = ?`, mediaID).Scan(ctx, &sourceMissing); err != nil {
+				return err
+			}
 			if wasPublished {
-				if momentID != nil {
+				if momentID != nil && !sourceMissing {
 					if err := staging.PreserveMomentReview(ctx, tx, eventID, *momentID, now); err != nil {
 						return err
 					}
@@ -649,7 +652,7 @@ func syncEditableEvents(
 			if _, err := tx.NewRaw(`DELETE FROM draft_media_placements WHERE event_id = ? AND media_item_id = ?`, eventID, mediaID).Exec(ctx); err != nil {
 				return err
 			}
-			if momentID != nil {
+			if momentID != nil && !sourceMissing {
 				changedMomentIDs[*momentID] = struct{}{}
 			}
 			changed = true
@@ -811,7 +814,6 @@ func supersedeInvalidMediaRepairs(ctx context.Context, tx bun.Tx, now time.Time)
 			  AND previous.immich_asset_id = repair.previous_immich_asset_id AND previous.active
 			  AND previous.checksum IS NOT NULL AND previous.checksum = candidate.checksum
 			  AND previous_item.availability = 'source_missing' AND candidate_item.availability = 'current'
-			  AND NOT EXISTS (SELECT 1 FROM source_album_memberships WHERE media_item_id = previous_item.id)
 			  AND EXISTS (SELECT 1 FROM source_album_memberships WHERE media_item_id = candidate_item.id)
 		  )
 	`, now).Exec(ctx)
