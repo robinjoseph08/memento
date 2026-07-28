@@ -164,6 +164,7 @@ type Service struct {
 	db                    *bun.DB
 	now                   func() time.Time
 	failPublicationStep   func(PublicationStep) error
+	failWithdrawalStep    func(WithdrawalStep) error
 	recipientReadBoundary func()
 }
 

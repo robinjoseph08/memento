@@ -28,6 +28,19 @@ const (
 	WithdrawalTargetMedia  WithdrawalTargetKind = "media"
 )
 
+// WithdrawalStep identifies a transactional write boundary used by rollback tests.
+type WithdrawalStep string
+
+const (
+	WithdrawalStepLocked      WithdrawalStep = "locked"
+	WithdrawalStepRecorded    WithdrawalStep = "recorded"
+	WithdrawalStepProjections WithdrawalStep = "projections"
+	WithdrawalStepActivity    WithdrawalStep = "activity"
+	WithdrawalStepDelivery    WithdrawalStep = "delivery"
+	WithdrawalStepReviews     WithdrawalStep = "reviews"
+	WithdrawalStepAudit       WithdrawalStep = "audit"
+)
+
 func (kind WithdrawalTargetKind) valid() bool {
 	switch kind {
 	case WithdrawalTargetEvent, WithdrawalTargetMoment, WithdrawalTargetMedia:
@@ -77,6 +90,13 @@ type Withdrawal struct {
 	AffectedRecipientCount  int                  `json:"affected_recipient_count"`
 	AffectedMediaCount      int                  `json:"affected_media_count"`
 	AffectedEventCount      int                  `json:"affected_event_count"`
+}
+
+func (s *Service) withdrawalBoundary(step WithdrawalStep) error {
+	if s.failWithdrawalStep == nil {
+		return nil
+	}
+	return s.failWithdrawalStep(step)
 }
 
 // Withdraw immediately denies Recipient access and invalidates the Audience reviews required for restoration.
@@ -191,6 +211,9 @@ func (s *Service) Withdraw(ctx context.Context, actor setup.CuratorSession, requ
 		if len(eventIDs) == 0 {
 			return ErrNotFound
 		}
+		if err := s.withdrawalBoundary(WithdrawalStepLocked); err != nil {
+			return err
+		}
 
 		var contentRevision int64
 		if err := tx.NewRaw(`UPDATE system_settings SET content_revision = content_revision + 1 WHERE id = 1 RETURNING content_revision`).Scan(ctx, &contentRevision); err != nil {
@@ -199,6 +222,9 @@ func (s *Service) Withdraw(ctx context.Context, actor setup.CuratorSession, requ
 		if _, err := tx.NewRaw(`INSERT INTO content_withdrawals (
 			id, target_kind, target_id, reason, withdrawn_by_person_id, withdrawn_at, content_revision
 		) VALUES (?, ?, ?, ?, ?, ?, ?)`, withdrawalID, kind, targetID, reason, actor.PersonID, now, contentRevision).Exec(ctx); err != nil {
+			return err
+		}
+		if err := s.withdrawalBoundary(WithdrawalStepRecorded); err != nil {
 			return err
 		}
 
@@ -234,6 +260,9 @@ func (s *Service) Withdraw(ctx context.Context, actor setup.CuratorSession, requ
 		         placement.position`, bun.List(eventIDs)).Exec(ctx); err != nil {
 			return err
 		}
+		if err := s.withdrawalBoundary(WithdrawalStepProjections); err != nil {
+			return err
+		}
 		if len(affectedAccessIDs) > 0 {
 			for _, statement := range []string{
 				`DELETE FROM new_for_you_entries AS entry USING publications AS publication
@@ -247,6 +276,9 @@ func (s *Service) Withdraw(ctx context.Context, actor setup.CuratorSession, requ
 					return err
 				}
 			}
+		}
+		if err := s.withdrawalBoundary(WithdrawalStepActivity); err != nil {
+			return err
 		}
 		eventIDStrings := make([]string, len(eventIDs))
 		for index, eventID := range eventIDs {
@@ -264,6 +296,9 @@ func (s *Service) Withdraw(ctx context.Context, actor setup.CuratorSession, requ
 			  AND payload->>'event_id' IN (?)`, now, bun.List(eventIDStrings)).Exec(ctx); err != nil {
 			return err
 		}
+		if err := s.withdrawalBoundary(WithdrawalStepDelivery); err != nil {
+			return err
+		}
 
 		if len(momentIDs) > 0 {
 			if _, err := tx.NewRaw(`DELETE FROM current_audience_snapshots WHERE target_kind = 'moment' AND target_id IN (?)`, bun.List(momentIDs)).Exec(ctx); err != nil {
@@ -274,6 +309,9 @@ func (s *Service) Withdraw(ctx context.Context, actor setup.CuratorSession, requ
 			}
 		}
 		if _, err := tx.NewRaw(`UPDATE events SET final_review_complete = false, version = version + 1, updated_at = ? WHERE id IN (?)`, now, bun.List(eventIDs)).Exec(ctx); err != nil {
+			return err
+		}
+		if err := s.withdrawalBoundary(WithdrawalStepReviews); err != nil {
 			return err
 		}
 
@@ -299,7 +337,7 @@ func (s *Service) Withdraw(ctx context.Context, actor setup.CuratorSession, requ
 			}
 			return err
 		}
-		return nil
+		return s.withdrawalBoundary(WithdrawalStepAudit)
 	})
 	if err != nil {
 		return Withdrawal{}, err

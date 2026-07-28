@@ -3,14 +3,20 @@
 package events
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"fmt"
+	"io"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 	"github.com/robinjoseph08/memento/pkg/errcodes"
+	"github.com/robinjoseph08/memento/pkg/immich"
 	"github.com/robinjoseph08/memento/pkg/library"
 	"github.com/robinjoseph08/memento/pkg/outbox"
 	"github.com/robinjoseph08/memento/pkg/setup"
@@ -27,13 +33,101 @@ func (authorizer withdrawalRecipientAuthorizer) AuthorizeSession(context.Context
 	return authorizer.actor, nil
 }
 
-func withdrawalRecipientHTTP(fixture publicationFixture, actor setup.SessionActor) *echo.Echo {
+type withdrawalThumbnailSource struct {
+	mu     sync.Mutex
+	assets []uuid.UUID
+}
+
+func (source *withdrawalThumbnailSource) Thumbnail(_ context.Context, assetID uuid.UUID) (immich.MediaResponse, error) {
+	source.mu.Lock()
+	source.assets = append(source.assets, assetID)
+	source.mu.Unlock()
+	return immich.MediaResponse{
+		Body: io.NopCloser(bytes.NewBufferString("thumbnail")), ContentType: "image/webp", ContentLength: 9,
+	}, nil
+}
+
+func (source *withdrawalThumbnailSource) callCount() int {
+	source.mu.Lock()
+	defer source.mu.Unlock()
+	return len(source.assets)
+}
+
+func withdrawalRecipientHTTP(fixture publicationFixture, actor setup.SessionActor, source *withdrawalThumbnailSource) *echo.Echo {
 	e := echo.New()
 	e.HTTPErrorHandler = errcodes.NewHandler().Handle
-	library.RegisterRoutes(e, library.NewHandler(library.New(fixture.db, nil), withdrawalRecipientAuthorizer{
-		actor: actor,
-	}))
+	service := library.New(fixture.db, nil)
+	if source != nil {
+		service = library.New(fixture.db, source)
+	}
+	library.RegisterRoutes(e, library.NewHandler(service, withdrawalRecipientAuthorizer{actor: actor}))
 	return e
+}
+
+type withdrawalTestCase struct {
+	name    string
+	kind    WithdrawalTargetKind
+	target  func(publicationFixture) uuid.UUID
+	reviews []int
+}
+
+func withdrawalTestCases() []withdrawalTestCase {
+	return []withdrawalTestCase{
+		{name: "Event", kind: WithdrawalTargetEvent, target: func(f publicationFixture) uuid.UUID { return f.event }, reviews: []int{0, 1, 2}},
+		{name: "Moment", kind: WithdrawalTargetMoment, target: func(f publicationFixture) uuid.UUID { return f.moments[0] }, reviews: []int{0}},
+		{name: "Media", kind: WithdrawalTargetMedia, target: func(f publicationFixture) uuid.UUID { return f.media[0] }, reviews: []int{0}},
+	}
+}
+
+func createWithdrawalRecipientSession(t *testing.T, fixture publicationFixture, actor setup.SessionActor) {
+	t.Helper()
+	_, err := fixture.db.NewRaw(`INSERT INTO sessions (
+		id, credential_hash, person_id, recipient_access_generation_id,
+		security_epoch, session_type, idle_expires_at
+	) SELECT ?, decode(repeat('43', 32), 'hex'), ?, ?, security_epoch, 'trusted', now() + interval '1 hour'
+	  FROM system_settings WHERE id = 1`, actor.SessionID, actor.PersonID, actor.AccessID).Exec(context.Background())
+	require.NoError(t, err)
+}
+
+func snapshotWithdrawalState(t *testing.T, fixture publicationFixture, tables []string) map[string]string {
+	t.Helper()
+	state := make(map[string]string, len(tables))
+	for _, table := range tables {
+		var serialized string
+		require.NoError(t, fixture.db.NewRaw(fmt.Sprintf(`
+			SELECT COALESCE(
+				jsonb_agg(to_jsonb(row_value) ORDER BY to_jsonb(row_value)::text),
+				'[]'::jsonb
+			)::text FROM %s AS row_value
+		`, table)).Scan(context.Background(), &serialized), table)
+		state[table] = serialized
+	}
+	return state
+}
+
+func reviewForFreshPublication(t *testing.T, fixture publicationFixture, priorPublicationID string, reviews []int) {
+	t.Helper()
+	ctx := context.Background()
+	for _, index := range reviews {
+		freshSnapshot := uuid.New()
+		_, err := fixture.db.NewRaw(`
+			INSERT INTO audience_snapshots (id, target_kind, target_id, approved_by_person_id, approved_at, label)
+			VALUES (?, 'moment', ?, ?, now(), 'Shared');
+			INSERT INTO audience_snapshot_entries (snapshot_id, recipient_person_id, recipient_access_generation_id)
+			SELECT ?, entry.recipient_person_id, entry.recipient_access_generation_id
+			FROM audience_entries AS entry
+			JOIN published_moments AS moment ON moment.id = entry.published_moment_id
+			WHERE moment.publication_id = ? AND moment.draft_moment_id = ?;
+			INSERT INTO current_audience_snapshots (target_kind, target_id, snapshot_id)
+			VALUES ('moment', ?, ?);
+			UPDATE draft_moments SET audience_complete = true WHERE id = ?
+		`, freshSnapshot, fixture.moments[index], fixture.actor.PersonID,
+			freshSnapshot, priorPublicationID, fixture.moments[index], fixture.moments[index],
+			freshSnapshot, fixture.moments[index]).Exec(ctx)
+		require.NoError(t, err)
+	}
+	_, err := fixture.db.NewRaw(`UPDATE events SET final_review_complete = true WHERE id = ?`, fixture.event).Exec(ctx)
+	require.NoError(t, err)
 }
 
 func TestWithdrawalImmediatelyDeniesOnlyThePublishedTargetAndPreservesHistory(t *testing.T) {
@@ -64,7 +158,7 @@ func TestWithdrawalImmediatelyDeniesOnlyThePublishedTargetAndPreservesHistory(t 
 			  FROM system_settings WHERE id = 1`, recipientActor.SessionID, recipientActor.PersonID,
 				recipientActor.AccessID).Exec(ctx)
 			require.NoError(t, err)
-			recipientHTTP := withdrawalRecipientHTTP(fixture, recipientActor)
+			recipientHTTP := withdrawalRecipientHTTP(fixture, recipientActor, nil)
 			openedPath := "/api/me/events/" + fixture.event.String()
 			require.Equal(t, http.StatusOK, draftRequest(recipientHTTP, http.MethodGet, openedPath, "").Code)
 			_, err = fixture.db.NewRaw(`INSERT INTO favorites (recipient_person_id, media_item_id) VALUES (?, ?)`, fixture.people["shared"], fixture.media[0]).Exec(ctx)
@@ -129,6 +223,219 @@ func TestWithdrawalImmediatelyDeniesOnlyThePublishedTargetAndPreservesHistory(t 
 			assert.Equal(t, test.kind, event.Withdrawals[0].TargetKind)
 			assert.Equal(t, test.target(fixture).String(), event.Withdrawals[0].TargetID)
 			assert.Equal(t, "Requested by the family", event.Withdrawals[0].Reason)
+		})
+	}
+}
+
+func TestEveryImplementedRecipientContentRouteEnforcesEveryWithdrawalKind(t *testing.T) {
+	for _, test := range withdrawalTestCases() {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newPublicationFixture(t)
+			ctx := context.Background()
+			publication, err := fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, fixture.request())
+			require.NoError(t, err)
+			recipientActor := fixture.actorFor("shared")
+			createWithdrawalRecipientSession(t, fixture, recipientActor)
+			_, err = fixture.db.NewRaw(`
+				INSERT INTO favorites (recipient_person_id, media_item_id) VALUES (?, ?);
+				INSERT INTO media_backings (id, media_item_id, immich_asset_id, linked_at)
+				SELECT gen_random_uuid(), id, immich_asset_id, now() FROM media_items WHERE id = ?
+			`, fixture.people["shared"], fixture.media[0], fixture.media[0]).Exec(ctx)
+			require.NoError(t, err)
+			thumbnail := &withdrawalThumbnailSource{}
+			recipientHTTP := withdrawalRecipientHTTP(fixture, recipientActor, thumbnail)
+			var routes []string
+			for _, route := range recipientHTTP.Routes() {
+				if route.Method != echo.RouteNotFound {
+					routes = append(routes, route.Method+" "+route.Path)
+				}
+			}
+			assert.ElementsMatch(t, []string{
+				"GET /api/me/photos", "GET /api/me/favorites", "GET /api/me/events",
+				"GET /api/me/events/:id", "GET /api/me/new-for-you",
+				"POST /api/me/new-for-you/:publication_id/seen", "GET /api/me/media/:id/thumbnail",
+			}, routes, "the matrix must be updated whenever an implemented Recipient content surface changes")
+
+			for _, path := range []string{
+				"/api/me/photos", "/api/me/favorites", "/api/me/events",
+				"/api/me/events/" + fixture.event.String(), "/api/me/new-for-you",
+				"/api/me/media/" + fixture.media[0].String() + "/thumbnail",
+			} {
+				assert.Equal(t, http.StatusOK, draftRequest(recipientHTTP, http.MethodGet, path, "").Code, "pre-open %s", path)
+			}
+			require.Equal(t, 1, thumbnail.callCount())
+
+			_, err = fixture.service.Withdraw(ctx, fixture.actor, WithdrawRequest{
+				TargetKind: test.kind, TargetID: test.target(fixture).String(), Reason: "Route matrix",
+			})
+			require.NoError(t, err)
+
+			for _, path := range []string{
+				"/api/me/photos", "/api/me/favorites", "/api/me/events", "/api/me/new-for-you",
+			} {
+				response := draftRequest(recipientHTTP, http.MethodGet, path, "")
+				assert.Equal(t, http.StatusOK, response.Code, path)
+				assert.NotContains(t, response.Body.String(), fixture.event.String(), path)
+				assert.NotContains(t, response.Body.String(), fixture.media[0].String(), path)
+				assert.NotContains(t, response.Body.String(), publication.ID, path)
+			}
+
+			openedEvent := draftRequest(recipientHTTP, http.MethodGet, "/api/me/events/"+fixture.event.String(), "")
+			guessedEvent := draftRequest(recipientHTTP, http.MethodGet, "/api/me/events/"+uuid.NewString(), "")
+			assert.Equal(t, http.StatusNotFound, openedEvent.Code)
+			assert.Equal(t, guessedEvent.Code, openedEvent.Code)
+			assert.Equal(t, guessedEvent.Body.String(), openedEvent.Body.String())
+
+			openedSeen := draftRequest(recipientHTTP, http.MethodPost, "/api/me/new-for-you/"+publication.ID+"/seen", "")
+			guessedSeen := draftRequest(recipientHTTP, http.MethodPost, "/api/me/new-for-you/"+uuid.NewString()+"/seen", "")
+			assert.Equal(t, http.StatusNotFound, openedSeen.Code)
+			assert.Equal(t, guessedSeen.Code, openedSeen.Code)
+			assert.Equal(t, guessedSeen.Body.String(), openedSeen.Body.String())
+
+			openedThumbnail := draftRequest(recipientHTTP, http.MethodGet, "/api/me/media/"+fixture.media[0].String()+"/thumbnail", "")
+			guessedThumbnail := draftRequest(recipientHTTP, http.MethodGet, "/api/me/media/"+uuid.NewString()+"/thumbnail", "")
+			assert.Equal(t, http.StatusNotFound, openedThumbnail.Code)
+			assert.Equal(t, guessedThumbnail.Code, openedThumbnail.Code)
+			assert.Equal(t, guessedThumbnail.Body.String(), openedThumbnail.Body.String())
+			assert.Equal(t, 1, thumbnail.callCount(), "denied and guessed thumbnails must not reach Immich")
+		})
+	}
+}
+
+func TestFailureAtEveryWithdrawalBoundaryRollsBackEveryMutation(t *testing.T) {
+	steps := []WithdrawalStep{
+		WithdrawalStepLocked, WithdrawalStepRecorded, WithdrawalStepProjections,
+		WithdrawalStepActivity, WithdrawalStepDelivery, WithdrawalStepReviews, WithdrawalStepAudit,
+	}
+	tables := []string{
+		"system_settings", "events", "draft_moments", "current_audience_snapshots",
+		"content_withdrawals", "published_search_documents", "current_audience_entitlements",
+		"current_recipient_event_covers", "new_for_you_entries", "publication_activity_items",
+		"outbox_events", "jobs", "publication_audit_events",
+	}
+	injected := errors.New("injected Withdrawal failure")
+	for _, test := range withdrawalTestCases() {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newPublicationFixture(t)
+			ctx := context.Background()
+			_, err := fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, fixture.request())
+			require.NoError(t, err)
+			dispatched, err := outbox.New(fixture.db).Dispatch(ctx, "withdrawal-rollback", time.Minute)
+			require.NoError(t, err)
+			require.True(t, dispatched)
+			_, err = fixture.db.NewRaw(`INSERT INTO outbox_events (
+				kind, aggregate_kind, aggregate_id, aggregate_version, payload, available_at, created_at
+			) SELECT kind, aggregate_kind, aggregate_id, 99, payload, available_at, created_at
+			  FROM outbox_events WHERE aggregate_id = ?`, fixture.event.String()).Exec(ctx)
+			require.NoError(t, err)
+			prior := snapshotWithdrawalState(t, fixture, tables)
+
+			for _, failedStep := range steps {
+				fixture.service.failWithdrawalStep = func(step WithdrawalStep) error {
+					if step == failedStep {
+						return injected
+					}
+					return nil
+				}
+				_, err = fixture.service.Withdraw(ctx, fixture.actor, WithdrawRequest{
+					TargetKind: test.kind, TargetID: test.target(fixture).String(), Reason: "Rollback test",
+				})
+				assert.ErrorIs(t, err, injected, failedStep)
+				assert.Equal(t, prior, snapshotWithdrawalState(t, fixture, tables), failedStep)
+			}
+			fixture.service.failWithdrawalStep = nil
+		})
+	}
+}
+
+func TestConcurrentRecipientReadSeesCompletePriorAccessUntilWithdrawalCommits(t *testing.T) {
+	for _, test := range withdrawalTestCases() {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newPublicationFixture(t)
+			ctx := context.Background()
+			_, err := fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, fixture.request())
+			require.NoError(t, err)
+			reached := make(chan struct{})
+			release := make(chan struct{})
+			var releaseOnce sync.Once
+			defer releaseOnce.Do(func() { close(release) })
+			fixture.service.failWithdrawalStep = func(step WithdrawalStep) error {
+				if step == WithdrawalStepAudit {
+					close(reached)
+					<-release
+				}
+				return nil
+			}
+			withdrawn := make(chan error, 1)
+			go func() {
+				_, withdrawErr := fixture.service.Withdraw(ctx, fixture.actor, WithdrawRequest{
+					TargetKind: test.kind, TargetID: test.target(fixture).String(), Reason: "Atomic visibility",
+				})
+				withdrawn <- withdrawErr
+			}()
+			<-reached
+
+			prior, err := fixture.service.RecipientEvent(ctx, fixture.actorFor("shared"), fixture.event)
+			require.NoError(t, err)
+			require.Len(t, prior.Media, 1, "uncommitted Withdrawal must not expose a partial projection")
+			assert.Equal(t, fixture.media[0].String(), prior.Media[0].ID)
+
+			releaseOnce.Do(func() { close(release) })
+			require.NoError(t, <-withdrawn)
+			fixture.service.failWithdrawalStep = nil
+			_, err = fixture.service.RecipientEvent(ctx, fixture.actorFor("shared"), fixture.event)
+			assert.ErrorIs(t, err, ErrNoPublication, "committed Withdrawal must deny the same read")
+		})
+	}
+}
+
+func TestFailedFreshPublicationKeepsEveryWithdrawalActiveAndRollsBackRestoration(t *testing.T) {
+	failedSteps := []PublicationStep{
+		PublicationStepEntitlements, PublicationStepActivity, PublicationStepAudit, PublicationStepOutbox,
+	}
+	tables := []string{
+		"system_settings", "events", "publications", "published_event_revisions", "published_moments",
+		"published_media_placements", "audience_entries", "current_published_events",
+		"current_published_placements", "current_audience_entitlements", "current_recipient_event_covers",
+		"new_for_you_entries", "published_search_documents", "publication_activity_items",
+		"publication_curator_activity_items", "publication_audit_events", "outbox_events", "content_withdrawals",
+	}
+	injected := errors.New("injected post-restoration Publication failure")
+	for _, test := range withdrawalTestCases() {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newPublicationFixture(t)
+			ctx := context.Background()
+			first, err := fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, fixture.request())
+			require.NoError(t, err)
+			withdrawal, err := fixture.service.Withdraw(ctx, fixture.actor, WithdrawRequest{
+				TargetKind: test.kind, TargetID: test.target(fixture).String(), Reason: "Keep active on failure",
+			})
+			require.NoError(t, err)
+			reviewForFreshPublication(t, fixture, first.ID, test.reviews)
+			prior := snapshotWithdrawalState(t, fixture, tables)
+
+			for _, failedStep := range failedSteps {
+				fixture.service.failPublicationStep = func(step PublicationStep) error {
+					if step == failedStep {
+						return injected
+					}
+					return nil
+				}
+				_, err = fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, PublishEventRequest{Version: 8})
+				assert.ErrorIs(t, err, injected, failedStep)
+				assert.Equal(t, prior, snapshotWithdrawalState(t, fixture, tables), failedStep)
+				var active bool
+				require.NoError(t, fixture.db.NewRaw(`SELECT restored_at IS NULL AND restored_by_publication_id IS NULL
+					FROM content_withdrawals WHERE id = ?`, withdrawal.ID).Scan(ctx, &active))
+				assert.True(t, active, failedStep)
+				var restorationAudits int
+				require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM publication_audit_events
+					WHERE action = 'content_restored_by_publication'`).Scan(ctx, &restorationAudits))
+				assert.Zero(t, restorationAudits, failedStep)
+				_, err = fixture.service.RecipientEvent(ctx, fixture.actorFor("shared"), fixture.event)
+				assert.ErrorIs(t, err, ErrNoPublication, failedStep)
+			}
+			fixture.service.failPublicationStep = nil
 		})
 	}
 }
