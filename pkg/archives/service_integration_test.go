@@ -899,7 +899,7 @@ func TestPartStreamsCurrentLivePhotoPrimaryAndCompanion(t *testing.T) {
 		require.NoError(t, entry.Close())
 		assert.Len(t, entryContents, 15)
 	}
-	assert.Equal(t, [][]uuid.UUID{{fixture.assets[0]}, {fixture.assets[0], companion}}, source.infoCalls)
+	assert.Equal(t, [][]uuid.UUID{{fixture.assets[0]}, {fixture.assets[0]}}, source.infoCalls)
 	assert.Equal(t, [][]uuid.UUID{{fixture.assets[0], companion}}, source.archiveCalls)
 }
 

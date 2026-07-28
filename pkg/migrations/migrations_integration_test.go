@@ -40,10 +40,14 @@ func TestApplyFromEmptyDatabaseUnderConcurrentLock(t *testing.T) {
 	require.NoError(t, SetupConsistent(ctx, db))
 
 	var settingsCount, jobsCount int
+	var jobKind, idempotencyKey string
 	require.NoError(t, db.NewRaw(`SELECT count(*) FROM system_settings`).Scan(ctx, &settingsCount))
-	require.NoError(t, db.NewRaw(`SELECT count(*) FROM jobs`).Scan(ctx, &jobsCount))
+	require.NoError(t, db.NewRaw(`SELECT count(*), max(kind), max(idempotency_key) FROM jobs`).Scan(ctx,
+		&jobsCount, &jobKind, &idempotencyKey))
 	assert.Equal(t, 1, settingsCount)
-	assert.Zero(t, jobsCount)
+	assert.Equal(t, 1, jobsCount)
+	assert.Equal(t, "cleanup_archive_plans", jobKind)
+	assert.Equal(t, "archive-plans-cleanup", idempotencyKey)
 }
 
 func TestApplyWaitsForMigrationLockBeyondDriverReadTimeout(t *testing.T) {

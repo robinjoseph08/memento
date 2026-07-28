@@ -93,13 +93,14 @@ func deliverLatestCode(t *testing.T, db *bun.DB, delivery *emaildelivery.Service
 	var job worker.Job
 	err = db.NewRaw(`
 		WITH candidate AS (
-			SELECT id FROM jobs WHERE status = 'pending' ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED
+			SELECT id FROM jobs WHERE kind = ? AND status = 'pending'
+			ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED
 		)
 		UPDATE jobs AS job SET status = 'running', lease_owner = 'setup-test-worker',
 			lease_expires_at = now() + interval '1 minute'
 		FROM candidate WHERE job.id = candidate.id
 		RETURNING job.id, job.kind, job.payload, job.attempts
-	`).Scan(ctx, &job.ID, &job.Kind, &job.Payload, &job.Attempts)
+	`, emaildelivery.JobKind).Scan(ctx, &job.ID, &job.Kind, &job.Payload, &job.Attempts)
 	require.NoError(t, err)
 	job.LeaseOwner = "setup-test-worker"
 	require.NoError(t, delivery.Handle(ctx, job))
@@ -189,12 +190,14 @@ func TestExpiredSetupCodeEmailIsNeverDelivered(t *testing.T) {
 	require.True(t, dispatched)
 	var job worker.Job
 	err = db.NewRaw(`
-		WITH candidate AS (SELECT id FROM jobs WHERE status = 'pending' ORDER BY id LIMIT 1)
+		WITH candidate AS (
+			SELECT id FROM jobs WHERE kind = ? AND status = 'pending' ORDER BY id LIMIT 1
+		)
 		UPDATE jobs AS job SET status = 'running', lease_owner = 'expired-worker',
 			lease_expires_at = now() + interval '1 minute'
 		FROM candidate WHERE job.id = candidate.id
 		RETURNING job.id, job.kind, job.payload, job.attempts
-	`).Scan(context.Background(), &job.ID, &job.Kind, &job.Payload, &job.Attempts)
+	`, emaildelivery.JobKind).Scan(context.Background(), &job.ID, &job.Kind, &job.Payload, &job.Attempts)
 	require.NoError(t, err)
 	job.LeaseOwner = "expired-worker"
 	err = service.delivery.Handle(context.Background(), job)
