@@ -1393,15 +1393,16 @@ function ReadyCard({
   session,
   onComplete,
   onSignOut,
+  online,
 }: {
   session?: SessionResponse;
   onComplete: (session: SessionResponse) => void;
   onSignOut: () => void;
+  online: boolean;
 }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const [draftsDirty, setDraftsDirty] = useState(false);
   const [draftsSaving, setDraftsSaving] = useState(false);
-  const online = useOnlineStatus();
   const draftsRequested = searchParams.get("workspace") === "drafts";
   const signOut = useMutation({
     mutationFn: () => {
@@ -1560,7 +1561,6 @@ function InvitationLanding() {
   const [token] = useState(() => searchParams.get("token") ?? "");
   const [accepted, setAccepted] = useState(false);
   const [acceptedSession, setAcceptedSession] = useState<SessionResponse>();
-  const [exitedInvitation, setExitedInvitation] = useState(false);
   const invitation = useQuery({
     queryKey: ["invitation", token],
     queryFn: () =>
@@ -1583,7 +1583,11 @@ function InvitationLanding() {
   });
   const acceptedIdentity = useQuery({
     queryKey: ["accepted-invitation-session"],
-    queryFn: () => apiJSON<SessionResponse>("/api/session"),
+    queryFn: async () => {
+      const identity = await apiJSON<SessionResponse>("/api/session");
+      setAcceptedSession(identity);
+      return identity;
+    },
     enabled: accepted,
     retry: 2,
     retryDelay: 0,
@@ -1597,24 +1601,8 @@ function InvitationLanding() {
   const inspectionUnavailable =
     Boolean(token) && invitation.isError && !invalidInvitation;
 
-  if (exitedInvitation) {
-    return <MementoApp />;
-  }
-
   if (currentSession) {
-    return (
-      <main>
-        <ReadyCard
-          onComplete={setAcceptedSession}
-          onSignOut={() => {
-            setAccepted(false);
-            setAcceptedSession(undefined);
-            setExitedInvitation(true);
-          }}
-          session={currentSession}
-        />
-      </main>
-    );
+    return <MementoApp initialSession={currentSession} />;
   }
 
   return (
@@ -1693,14 +1681,21 @@ function InvitationLanding() {
   );
 }
 
-function MementoApp() {
+function MementoApp({
+  initialSession,
+}: {
+  initialSession?: SessionResponse;
+} = {}) {
   const queryClient = useQueryClient();
   const online = useOnlineStatus();
-  const [completedSession, setCompletedSession] = useState<SessionResponse>();
+  const [completedSession, setCompletedSession] = useState<
+    SessionResponse | undefined
+  >(initialSession);
   const [signedOut, setSignedOut] = useState(false);
   const bootstrap = useQuery({
     queryKey: ["bootstrap"],
     queryFn: fetchBootstrap,
+    enabled: !initialSession || signedOut,
     retry: false,
   });
   const clearProtectedQueries = useCallback(() => {
@@ -1751,6 +1746,7 @@ function MementoApp() {
         <ReadyCard
           onComplete={completeSession}
           onSignOut={signOut}
+          online={online}
           session={completedSession}
         />
       </main>
@@ -1809,6 +1805,7 @@ function MementoApp() {
       <ReadyCard
         onComplete={completeSession}
         onSignOut={signOut}
+        online={online}
         session={session}
       />
     </main>

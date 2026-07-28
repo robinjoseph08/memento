@@ -1,6 +1,12 @@
 import { createHash } from "node:crypto";
 
-import { expect, test, type Page, type Request } from "@playwright/test";
+import {
+  expect,
+  test,
+  type BrowserContext,
+  type Page,
+  type Request,
+} from "@playwright/test";
 
 test.use({ serviceWorkers: "allow" });
 
@@ -100,16 +106,75 @@ function pngSize(bytes: Buffer) {
   };
 }
 
-async function observeDelayedRuntimeRequests(requests: Request[]) {
-  const initialCount = requests.length;
-  const startedAt = Date.now();
-  await expect
-    .poll(() => Date.now() - startedAt, {
-      intervals: [100, 200, 300, 500, 500],
-      timeout: 2_000,
-    })
-    .toBeGreaterThanOrEqual(1_000);
-  expect(requests.length).toBeGreaterThanOrEqual(initialCount);
+function observeRuntimeRequests(context: BrowserContext) {
+  const requests: Request[] = [];
+  const pending = new Set<Request>();
+  let activityVersion = 0;
+
+  context.on("request", (request) => {
+    requests.push(request);
+    pending.add(request);
+    activityVersion += 1;
+  });
+  const finish = (request: Request) => {
+    pending.delete(request);
+    activityVersion += 1;
+  };
+  context.on("requestfinished", finish);
+  context.on("requestfailed", finish);
+
+  return {
+    requests,
+    async waitForQuiescence(page: Page) {
+      let previousActivityVersion = -1;
+      let stableObservations = 0;
+      await expect
+        .poll(
+          async () => {
+            const lifecycle = await page.evaluate(async () => {
+              const registration =
+                await navigator.serviceWorker.getRegistration();
+              return {
+                document: document.readyState,
+                fonts: document.fonts.status,
+                serviceWorker: registration?.active?.state ?? "missing",
+              };
+            });
+            if (
+              pending.size === 0 &&
+              activityVersion === previousActivityVersion
+            ) {
+              stableObservations += 1;
+            } else {
+              stableObservations = 0;
+            }
+            previousActivityVersion = activityVersion;
+            return {
+              settled:
+                lifecycle.document === "complete" &&
+                lifecycle.fonts === "loaded" &&
+                lifecycle.serviceWorker === "activated" &&
+                stableObservations >= 3,
+              lifecycle,
+              activityVersion,
+              requestCount: requests.length,
+              pending: [...pending].map((request) => request.url()),
+              recent: requests.slice(-8).map((request) => ({
+                url: request.url(),
+                serviceWorker: Boolean(request.serviceWorker()),
+              })),
+            };
+          },
+          {
+            intervals: [100, 250, 500],
+            timeout: 5_000,
+            message:
+              "runtime requests did not reach browser-lifecycle quiescence",
+          },
+        )
+        .toMatchObject({ settled: true });
+    },
+  };
 }
 
 async function cachedURLs(page: Page) {
@@ -128,10 +193,7 @@ test("@desktop manifest, browser installability, scoped restart, and cache priva
   page,
   request,
 }) => {
-  const runtimeRequests: Request[] = [];
-  context.on("request", (networkRequest) =>
-    runtimeRequests.push(networkRequest),
-  );
+  const runtimeObservation = observeRuntimeRequests(context);
   await recipientAPI(page);
 
   const manifestResponse = await request.get("/manifest.webmanifest");
@@ -315,17 +377,26 @@ test("@desktop manifest, browser installability, scoped restart, and cache priva
     await expect(page.getByRole("heading", { name: "Photos" })).toBeVisible();
   }
 
-  await observeDelayedRuntimeRequests(runtimeRequests);
+  await runtimeObservation.waitForQuiescence(page);
   const applicationOrigin = new URL(page.url()).origin;
-  expect(
-    runtimeRequests.every(
+  const thirdPartyRequests = runtimeObservation.requests
+    .filter(
       (networkRequest) =>
-        new URL(networkRequest.url()).origin === applicationOrigin,
-    ),
-  ).toBe(true);
+        new URL(networkRequest.url()).origin !== applicationOrigin,
+    )
+    .map((networkRequest) => ({
+      url: networkRequest.url(),
+      serviceWorker: Boolean(networkRequest.serviceWorker()),
+    }));
+  expect(
+    thirdPartyRequests,
+    "runtime requests must stay first-party after lifecycle quiescence",
+  ).toEqual([]);
   if (browserName === "chromium") {
     expect(
-      runtimeRequests.some((networkRequest) => networkRequest.serviceWorker()),
+      runtimeObservation.requests.some((networkRequest) =>
+        networkRequest.serviceWorker(),
+      ),
     ).toBe(true);
   }
 });

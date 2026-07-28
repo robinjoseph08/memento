@@ -966,6 +966,135 @@ test("clears protected query data offline and after Session revocation", async (
   ).toBeUndefined();
 });
 
+test("clears accepted-Invitation private data offline and after Session revocation", async () => {
+  const token = "i".repeat(64);
+  const csrfToken = "j".repeat(64);
+  let revoked = false;
+  window.history.replaceState(null, "", `/invitation?token=${token}`);
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) => {
+      const path = requestPath(input);
+      if (path === "/api/auth/invitations/inspect") {
+        return Promise.resolve(
+          jsonResponse({
+            recipient_name: "Recipient",
+            curator_name: "Robin",
+            expires_at: "2026-08-10T12:00:00Z",
+          }),
+        );
+      }
+      if (path === "/api/auth/invitations/accept") {
+        return Promise.resolve(jsonResponse({ status: "onboarding" }));
+      }
+      if (path === "/api/setup") {
+        return Promise.resolve(
+          jsonResponse({ error: { message: "Setup not found." } }, 404),
+        );
+      }
+      if (path === "/api/session") {
+        return Promise.resolve(
+          revoked
+            ? jsonResponse({ error: { message: "Sign in required." } }, 401)
+            : jsonResponse({
+                display_name: "Recipient",
+                session_type: "public",
+                csrf_token: csrfToken,
+                curator: false,
+                onboarding_required: false,
+              }),
+        );
+      }
+      if (revoked) {
+        return Promise.resolve(
+          jsonResponse({ error: { message: "Sign in required." } }, 401),
+        );
+      }
+      if (path.startsWith("/api/me/photos?")) {
+        return Promise.resolve(
+          jsonResponse({
+            media: [
+              {
+                id: "accepted-private-photo",
+                media_type: "image",
+                width: 1600,
+                height: 900,
+                local_date_time: "2026-07-27T12:00:00Z",
+                available: true,
+                thumbnail_url: "/api/me/media/accepted-private-photo/thumbnail",
+                preview_url: "/api/me/media/accepted-private-photo/preview",
+                video_url: "",
+                original_url: "/api/me/media/accepted-private-photo/original",
+              },
+            ],
+            next_cursor: null,
+          }),
+        );
+      }
+      if (path === "/api/me/new-for-you") {
+        return Promise.resolve(jsonResponse({ events: [] }));
+      }
+      if (path === "/api/sessions") {
+        return Promise.resolve(jsonResponse({ sessions: [] }));
+      }
+      if (path === "/api/me/interest-list") {
+        return Promise.resolve(
+          jsonResponse({
+            recipient: {
+              id: "11111111-1111-4111-8111-111111111111",
+              display_name: "Recipient",
+              sort_name: "recipient",
+            },
+            version: 0,
+            entries: [],
+            history: [],
+          }),
+        );
+      }
+      if (path.startsWith("/api/me/people?")) {
+        return Promise.resolve(jsonResponse({ people: [] }));
+      }
+      if (path === "/api/invitation-suggestions") {
+        return Promise.resolve(jsonResponse({ suggestions: [] }));
+      }
+      return Promise.reject(new Error(`Unexpected request: ${path}`));
+    }),
+  );
+
+  const { client } = renderApp();
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Accept Invitation" }),
+  );
+  expect(
+    await screen.findByAltText("Photo 1 from July 2026"),
+  ).toBeInTheDocument();
+  expect(
+    client.getQueryData(["recipient-library", csrfToken, "photos"]),
+  ).toBeDefined();
+
+  fireEvent.offline(window);
+  expect(
+    await screen.findByRole("heading", { name: "Memento is offline" }),
+  ).toBeInTheDocument();
+  await vi.waitFor(() =>
+    expect(
+      client.getQueryData(["recipient-library", csrfToken, "photos"]),
+    ).toBeUndefined(),
+  );
+
+  revoked = true;
+  fireEvent.online(window);
+  expect(
+    screen.queryByAltText("Photo 1 from July 2026"),
+  ).not.toBeInTheDocument();
+  expect(
+    await screen.findByRole("heading", { name: "Sign in to Memento" }),
+  ).toBeInTheDocument();
+  expect(
+    client.getQueryData(["recipient-library", csrfToken, "photos"]),
+  ).toBeUndefined();
+});
+
 test("safe bootstrap GETs show permanent closure without starting setup", async () => {
   const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     expect(init?.method).toBeUndefined();
