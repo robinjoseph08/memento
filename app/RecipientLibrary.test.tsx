@@ -53,6 +53,11 @@ function archiveRequest(init?: RequestInit) {
   };
 }
 
+function stringBody(body: BodyInit | null | undefined) {
+  if (typeof body !== "string") throw new Error("Expected a JSON body.");
+  return body;
+}
+
 function renderLibrary(librarySession = session) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
@@ -162,6 +167,12 @@ test("lands on Photos with durable New for you and real-ratio authorized thumbna
       }
       if (path === "/api/me/new-for-you/publication-1/seen") {
         return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      if (path.startsWith("/api/favorites/")) {
+        return json({ media_item_id: path.split("/").at(-1), favorite: false });
+      }
+      if (path.startsWith("/api/comments/media/")) {
+        return json({ comments: [], muted: false });
       }
       throw new Error(`Unexpected request: ${path}`);
     }),
@@ -290,6 +301,12 @@ test("shows the original download warning only for public computers", async () =
         });
       }
       if (path === "/api/me/new-for-you") return json({ events: [] });
+      if (path.startsWith("/api/favorites/")) {
+        return json({ media_item_id: "media-1", favorite: false });
+      }
+      if (path.startsWith("/api/comments/media/")) {
+        return json({ comments: [], muted: false });
+      }
       throw new Error(`Unexpected request: ${path}`);
     }),
   );
@@ -890,4 +907,143 @@ test("does not claim a library is empty when its request fails", async () => {
   expect(
     screen.queryByText("No Events are available."),
   ).not.toBeInTheDocument();
+});
+
+test("favorites, comments, and mute controls stay in the private Media viewer", async () => {
+  const requests: Array<{ path: string; init?: RequestInit }> = [];
+  let isFavorite = false;
+  let muted = false;
+  let comments = [
+    {
+      id: "comment-1",
+      media_item_id: "media-1",
+      author_person_id: "alex",
+      author_name: "Alex",
+      body: "A private memory",
+      state: "active",
+      created_at: "2026-07-28T12:00:00Z",
+      edited_at: null,
+      moderated_at: null,
+      moderator_name: null,
+      authored_by_me: true,
+      can_edit: true,
+      can_delete: true,
+      can_moderate: false,
+    },
+  ];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = requestPath(input);
+      requests.push({ path, init });
+      if (path.startsWith("/api/me/photos?")) {
+        return json({
+          media: [
+            {
+              id: "media-1",
+              media_type: "image",
+              width: 1600,
+              height: 900,
+              local_date_time: "2026-07-28T12:00:00Z",
+              available: true,
+              thumbnail_url: "/api/me/media/media-1/thumbnail",
+              preview_url: "/api/me/media/media-1/preview",
+              video_url: "",
+              original_url: "/api/me/media/media-1/original",
+            },
+          ],
+          next_cursor: null,
+        });
+      }
+      if (path === "/api/me/new-for-you") return json({ events: [] });
+      if (path === "/api/favorites/media-1") {
+        if (init?.method === "PUT") isFavorite = true;
+        if (init?.method === "DELETE") isFavorite = false;
+        return json({ media_item_id: "media-1", favorite: isFavorite });
+      }
+      if (path === "/api/comments/media/media-1/mute") {
+        const request = JSON.parse(stringBody(init?.body)) as {
+          muted: boolean;
+        };
+        muted = request.muted;
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      if (path === "/api/comments/media/media-1") {
+        if (init?.method === "POST") {
+          const request = JSON.parse(stringBody(init.body)) as { body: string };
+          comments = [
+            ...comments,
+            {
+              ...comments[0],
+              id: "comment-2",
+              body: request.body,
+              created_at: "2026-07-28T12:01:00Z",
+            },
+          ];
+          return json(comments[1]);
+        }
+        return json({ comments, muted });
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    }),
+  );
+
+  renderLibrary();
+  fireEvent.click(
+    await screen.findByRole("button", {
+      name: "Open Photo 1 from July 2026",
+    }),
+  );
+
+  expect(await screen.findByText("A private memory")).toBeVisible();
+  expect(
+    screen.getByText("Favorites aren't shared with other recipients."),
+  ).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "Add Favorite" }));
+  expect(
+    await screen.findByRole("button", { name: "Remove Favorite" }),
+  ).toHaveAttribute("aria-pressed", "true");
+
+  fireEvent.change(screen.getByLabelText("Add a Comment"), {
+    target: { value: "Another memory" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Post Comment" }));
+  expect(await screen.findByText("Another memory")).toBeVisible();
+
+  fireEvent.click(
+    screen.getByRole("checkbox", {
+      name: "Mute future Comment notifications",
+    }),
+  );
+  await waitFor(() =>
+    expect(
+      screen.getByRole("checkbox", {
+        name: "Mute future Comment notifications",
+      }),
+    ).toBeChecked(),
+  );
+  const favoriteRequest = requests.find(
+    ({ path, init }) =>
+      path === "/api/favorites/media-1" && init?.method === "PUT",
+  );
+  expect(favoriteRequest?.init).toMatchObject({
+    method: "PUT",
+    headers: { "X-Memento-CSRF": session.csrf_token },
+  });
+  const commentRequest = requests.find(
+    ({ path, init }) =>
+      path === "/api/comments/media/media-1" && init?.method === "POST",
+  );
+  expect(commentRequest?.init).toMatchObject({
+    method: "POST",
+    headers: { "X-Memento-CSRF": session.csrf_token },
+  });
+  const muteRequest = requests.find(
+    ({ path, init }) =>
+      path === "/api/comments/media/media-1/mute" && init?.method === "PUT",
+  );
+  expect(muteRequest?.init).toMatchObject({
+    method: "PUT",
+    headers: { "X-Memento-CSRF": session.csrf_token },
+  });
 });

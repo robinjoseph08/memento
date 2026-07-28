@@ -4,7 +4,7 @@
 
 Status: implementation-ready specification for the MVP.
 
-The deployable foundation, first-browser Curator setup, family administration, Invitation and Onboarding, passwordless sign-in, Session management, Recipient access lifecycle, early curation workflows, atomic Event Publication, immediate Event, Moment, and Media Withdrawal with restoration through fresh Publications, the authorization-filtered Recipient library, responsive Media viewer, protected thumbnail, preview, video, and original streaming, and Session-bound Event and subset archive delivery are implemented. Notification delivery, restore validation, Recovery hold, and later product phases are not yet implemented.
+The deployable foundation, first-browser Curator setup, family administration, Invitation and Onboarding, passwordless sign-in, Session management, Recipient access lifecycle, early curation workflows, atomic Event Publication, immediate Event, Moment, and Media Withdrawal with restoration through fresh Publications, the authorization-filtered Recipient library, responsive Media viewer, protected thumbnail, preview, video, and original streaming, Session-bound Event and subset archive delivery, item-level Comments and moderation, Comment subscriptions and mutes, and private Favorites are implemented. External notification channels, restore validation, Recovery hold, and later product phases are not yet implemented.
 
 The key words **MUST**, **MUST NOT**, **REQUIRED**, **SHOULD**, **SHOULD NOT**, and **MAY** are normative. They have their usual requirements-language meanings. Product terms such as Person, Recipient, Pending Recipient, Audience, Publication, and Staged update have the exact meanings in [`CONTEXT.md`](../CONTEXT.md).
 

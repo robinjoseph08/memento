@@ -14,11 +14,13 @@ import (
 	"github.com/robinjoseph08/golib/logger"
 	"github.com/robinjoseph08/memento/pkg/archives"
 	"github.com/robinjoseph08/memento/pkg/audiences"
+	"github.com/robinjoseph08/memento/pkg/comments"
 	"github.com/robinjoseph08/memento/pkg/config"
 	"github.com/robinjoseph08/memento/pkg/database"
 	"github.com/robinjoseph08/memento/pkg/emaildelivery"
 	"github.com/robinjoseph08/memento/pkg/events"
 	"github.com/robinjoseph08/memento/pkg/family"
+	"github.com/robinjoseph08/memento/pkg/favorites"
 	"github.com/robinjoseph08/memento/pkg/health"
 	"github.com/robinjoseph08/memento/pkg/immich"
 	"github.com/robinjoseph08/memento/pkg/library"
@@ -100,7 +102,8 @@ func run() error {
 	sourceService := sources.New(db, immichClient, cfg.Sources.ReconciliationInterval)
 	eventService := events.New(db)
 	archiveService := archives.New(db, immichClient)
-	handlers := jobHandlers(sourceService, eventService, archiveService, emailService, cfg.SMTP.Enabled)
+	commentService := comments.New(db)
+	handlers := jobHandlers(sourceService, eventService, archiveService, commentService, emailService, cfg.SMTP.Enabled)
 
 	owner, err := leaseOwner()
 	if err != nil {
@@ -141,6 +144,8 @@ func run() error {
 	libraryHandler := library.NewHandler(library.New(db, immichClient), setupService)
 	archiveHandler := archives.NewHandler(archiveService, setupService)
 	searchHandler := search.NewHandler(search.New(db), setupService)
+	commentHandler := comments.NewHandler(commentService, setupService)
+	favoriteHandler := favorites.NewHandler(favorites.New(db), setupService)
 	e, err := server.New(healthService, emaildelivery.NewHandler(emailService), setupHandler, peopleHandler, familyHandler, visibilityHandler, recipientHandler, sourceHandler, eventHandler, repairHandler, suggestionHandler, audienceHandler, sessionHandler)
 	if err != nil {
 		_ = db.Close()
@@ -150,6 +155,8 @@ func run() error {
 	library.RegisterRoutes(e, libraryHandler)
 	archives.RegisterRoutes(e, archiveHandler)
 	search.RegisterRoutes(e, searchHandler)
+	comments.RegisterRoutes(e, commentHandler)
+	favorites.RegisterRoutes(e, favoriteHandler)
 
 	workCtx, cancelWork := context.WithCancel(context.Background())
 	defer cancelWork()
@@ -189,11 +196,12 @@ func run() error {
 	return nil
 }
 
-func jobHandlers(sourceService *sources.Service, eventService *events.Service, archiveService *archives.Service, emailService *emaildelivery.Service, smtpEnabled bool) map[string]worker.Handler {
+func jobHandlers(sourceService *sources.Service, eventService *events.Service, archiveService *archives.Service, commentService *comments.Service, emailService *emaildelivery.Service, smtpEnabled bool) map[string]worker.Handler {
 	handlers := map[string]worker.Handler{
 		sources.ReconciliationJobKind: sourceService.HandleReconciliationJob,
 		events.PublicationJobKind:     eventService.HandlePublicationJob,
 		archives.CleanupJobKind:       archiveService.HandleCleanupJob,
+		comments.CommentJobKind:       commentService.HandleCommentJob,
 	}
 	if smtpEnabled {
 		handlers[emaildelivery.JobKind] = emailService.Handle

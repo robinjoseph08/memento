@@ -12,6 +12,11 @@ import type {
   PlanResponse as ArchivePlanResponse,
 } from "./types/generated/archives";
 import type {
+  Comment as MediaComment,
+  ListResponse as CommentListResponse,
+} from "./types/generated/comments";
+import type { State as FavoriteState } from "./types/generated/favorites";
+import type {
   Event as EventDetail,
   EventPage,
   EventSummary,
@@ -212,14 +217,102 @@ function EventCards({
 
 function MediaViewer({
   media,
-  publicComputer,
+  session,
   onClose,
 }: {
   media: Media;
-  publicComputer: boolean;
+  session: SessionResponse;
   onClose: () => void;
 }) {
+  const queryClient = useQueryClient();
   const dialogRef = useRef<HTMLDialogElement>(null);
+  const [commentBody, setCommentBody] = useState("");
+  const favorite = useQuery({
+    queryKey: ["favorite", session.csrf_token, media.id],
+    queryFn: () => apiJSON<FavoriteState>(`/api/favorites/${media.id}`),
+    retry: false,
+  });
+  const comments = useQuery({
+    queryKey: ["comments", session.csrf_token, media.id],
+    queryFn: () =>
+      apiJSON<CommentListResponse>(`/api/comments/media/${media.id}`),
+    retry: false,
+  });
+  const toggleFavorite = useMutation({
+    mutationFn: (next: boolean) =>
+      apiJSON<FavoriteState>(`/api/favorites/${media.id}`, {
+        method: next ? "PUT" : "DELETE",
+        headers: { "X-Memento-CSRF": session.csrf_token },
+      }),
+    onSuccess: async (state) => {
+      queryClient.setQueryData(
+        ["favorite", session.csrf_token, media.id],
+        state,
+      );
+      await queryClient.invalidateQueries({ queryKey: ["recipient-library"] });
+    },
+  });
+  const createComment = useMutation({
+    mutationFn: () =>
+      apiJSON<MediaComment>(`/api/comments/media/${media.id}`, {
+        method: "POST",
+        headers: { "X-Memento-CSRF": session.csrf_token },
+        body: JSON.stringify({ body: commentBody }),
+      }),
+    onSuccess: async () => {
+      setCommentBody("");
+      await queryClient.invalidateQueries({
+        queryKey: ["comments", session.csrf_token, media.id],
+      });
+    },
+  });
+  const editComment = useMutation({
+    mutationFn: ({ id, body }: { id: string; body: string }) =>
+      apiJSON<MediaComment>(`/api/comments/${id}`, {
+        method: "PATCH",
+        headers: { "X-Memento-CSRF": session.csrf_token },
+        body: JSON.stringify({ body }),
+      }),
+    onSuccess: () =>
+      queryClient.invalidateQueries({
+        queryKey: ["comments", session.csrf_token, media.id],
+      }),
+  });
+  const deleteComment = useMutation({
+    mutationFn: (id: string) =>
+      apiNoContent(`/api/comments/${id}`, {
+        method: "DELETE",
+        headers: { "X-Memento-CSRF": session.csrf_token },
+      }),
+    onSuccess: () =>
+      queryClient.invalidateQueries({
+        queryKey: ["comments", session.csrf_token, media.id],
+      }),
+  });
+  const moderateComment = useMutation({
+    mutationFn: ({ id, reason }: { id: string; reason: string }) =>
+      apiNoContent(`/api/comments/${id}/moderate`, {
+        method: "POST",
+        headers: { "X-Memento-CSRF": session.csrf_token },
+        body: JSON.stringify({ reason }),
+      }),
+    onSuccess: () =>
+      queryClient.invalidateQueries({
+        queryKey: ["comments", session.csrf_token, media.id],
+      }),
+  });
+  const muteComments = useMutation({
+    mutationFn: (muted: boolean) =>
+      apiNoContent(`/api/comments/media/${media.id}/mute`, {
+        method: "PUT",
+        headers: { "X-Memento-CSRF": session.csrf_token },
+        body: JSON.stringify({ muted }),
+      }),
+    onSuccess: () =>
+      queryClient.invalidateQueries({
+        queryKey: ["comments", session.csrf_token, media.id],
+      }),
+  });
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -316,7 +409,7 @@ function MediaViewer({
               : "Unavailable"}
           </dd>
         </dl>
-        {publicComputer ? (
+        {session.session_type === "public" ? (
           <p className="viewer-download-warning">
             This original will remain on this public computer after sign-out.
           </p>
@@ -324,6 +417,136 @@ function MediaViewer({
         <a className="viewer-download" download href={media.original_url}>
           Download original
         </a>
+        <section aria-labelledby="favorite-title" className="viewer-favorite">
+          <h3 id="favorite-title">Favorite</h3>
+          <button
+            aria-pressed={favorite.data?.favorite ?? false}
+            disabled={favorite.isPending || toggleFavorite.isPending}
+            onClick={() => toggleFavorite.mutate(!favorite.data?.favorite)}
+            type="button"
+          >
+            {favorite.data?.favorite ? "Remove Favorite" : "Add Favorite"}
+          </button>
+          <p>Favorites aren&apos;t shared with other recipients.</p>
+          <LibraryError error={favorite.error ?? toggleFavorite.error} />
+        </section>
+        <section aria-labelledby="comments-title" className="viewer-comments">
+          <div className="viewer-comments-heading">
+            <h3 id="comments-title">Comments</h3>
+            <label>
+              <input
+                checked={comments.data?.muted ?? false}
+                disabled={
+                  muteComments.isPending ||
+                  !comments.data?.comments.some(
+                    (comment) => comment.authored_by_me,
+                  )
+                }
+                onChange={(event) => muteComments.mutate(event.target.checked)}
+                type="checkbox"
+              />
+              Mute future Comment notifications
+            </label>
+          </div>
+          <LibraryError
+            error={
+              comments.error ??
+              createComment.error ??
+              editComment.error ??
+              deleteComment.error ??
+              moderateComment.error ??
+              muteComments.error
+            }
+          />
+          <ol className="comment-list">
+            {comments.data?.comments.map((comment) => (
+              <li key={comment.id}>
+                <div>
+                  <strong>{comment.author_name}</strong>
+                  <time dateTime={comment.created_at}>
+                    {new Intl.DateTimeFormat(undefined, {
+                      dateStyle: "medium",
+                      timeStyle: "short",
+                    }).format(new Date(comment.created_at))}
+                  </time>
+                </div>
+                {comment.state === "deleted" ? (
+                  <p className="comment-tombstone">Comment deleted.</p>
+                ) : comment.state === "moderated" ? (
+                  <p className="comment-tombstone">
+                    Comment moderated by{" "}
+                    {comment.moderator_name ?? "the Curator"}.
+                  </p>
+                ) : (
+                  <p>{comment.body}</p>
+                )}
+                <div className="comment-actions">
+                  {comment.can_edit ? (
+                    <button
+                      disabled={editComment.isPending}
+                      onClick={() => {
+                        const body = window.prompt(
+                          "Edit Comment",
+                          comment.body,
+                        );
+                        if (body?.trim())
+                          editComment.mutate({ id: comment.id, body });
+                      }}
+                      type="button"
+                    >
+                      Edit
+                    </button>
+                  ) : null}
+                  {comment.can_delete ? (
+                    <button
+                      disabled={deleteComment.isPending}
+                      onClick={() => deleteComment.mutate(comment.id)}
+                      type="button"
+                    >
+                      Delete
+                    </button>
+                  ) : null}
+                  {comment.can_moderate ? (
+                    <button
+                      disabled={moderateComment.isPending}
+                      onClick={() => {
+                        const reason = window.prompt("Moderation reason");
+                        if (reason?.trim())
+                          moderateComment.mutate({ id: comment.id, reason });
+                      }}
+                      type="button"
+                    >
+                      Moderate
+                    </button>
+                  ) : null}
+                </div>
+              </li>
+            ))}
+          </ol>
+          <form
+            className="comment-form"
+            onSubmit={(event: FormEvent<HTMLFormElement>) => {
+              event.preventDefault();
+              createComment.mutate();
+            }}
+          >
+            <label>
+              Add a Comment
+              <textarea
+                maxLength={2000}
+                onChange={(event) => setCommentBody(event.target.value)}
+                required
+                value={commentBody}
+              />
+            </label>
+            <button
+              disabled={createComment.isPending || !commentBody.trim()}
+              type="submit"
+            >
+              {createComment.isPending ? "Posting…" : "Post Comment"}
+            </button>
+          </form>
+        </section>
       </aside>
     </dialog>
   );
@@ -1102,7 +1325,7 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
         <MediaViewer
           media={openedMedia}
           onClose={closeMedia}
-          publicComputer={session.session_type === "public"}
+          session={session}
         />
       ) : null}
       <LibraryNavigation
