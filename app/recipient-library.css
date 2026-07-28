@@ -193,6 +193,24 @@
   text-align: center;
 }
 
+.media-selection {
+  position: absolute;
+  top: 0.45rem;
+  left: 0.45rem;
+  display: grid;
+  width: 2rem;
+  height: 2rem;
+  place-items: center;
+  border-radius: 999px;
+  background: rgb(2 6 23 / 85%);
+}
+
+.media-selection input {
+  width: 1.1rem;
+  height: 1.1rem;
+  accent-color: #38bdf8;
+}
+
 .media-kind {
   position: absolute;
   right: 0.4rem;
@@ -284,6 +302,52 @@
 
 .library-back {
   margin-bottom: 1rem;
+}
+
+.selection-toolbar {
+  display: flex;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.archive-warning,
+.archive-downloads {
+  margin: 0 0 1rem;
+  padding: 0.8rem;
+  border: 1px solid #fbbf24;
+  border-radius: 0.6rem;
+  color: #fef3c7;
+}
+
+.archive-downloads {
+  display: grid;
+  gap: 0.5rem;
+  border-color: #38bdf8;
+  color: inherit;
+}
+
+.archive-downloads > span {
+  color: #94a3b8;
+}
+
+.archive-downloads > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+.archive-part {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.archive-part > span {
+  color: #94a3b8;
+  font-size: 0.85rem;
+}
+
+.archive-downloads button {
+  color: #7dd3fc;
 }
 
 .library-empty {

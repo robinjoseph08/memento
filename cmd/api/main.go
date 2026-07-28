@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/robinjoseph08/golib/logger"
+	"github.com/robinjoseph08/memento/pkg/archives"
 	"github.com/robinjoseph08/memento/pkg/audiences"
 	"github.com/robinjoseph08/memento/pkg/config"
 	"github.com/robinjoseph08/memento/pkg/database"
@@ -97,7 +98,8 @@ func run() error {
 	emailService := emaildelivery.New(db, cfg.SMTP, emailSender, cfg.Security.Secret)
 	sourceService := sources.New(db, immichClient, cfg.Sources.ReconciliationInterval)
 	eventService := events.New(db)
-	handlers := jobHandlers(sourceService, eventService, emailService, cfg.SMTP.Enabled)
+	archiveService := archives.New(db, immichClient)
+	handlers := jobHandlers(sourceService, eventService, archiveService, emailService, cfg.SMTP.Enabled)
 
 	owner, err := leaseOwner()
 	if err != nil {
@@ -136,6 +138,7 @@ func run() error {
 	audienceHandler := audiences.NewHandler(audiences.New(db, immichClient), setupService)
 	sessionHandler := sessions.NewHandler(sessions.New(db, emailService, setupService, cfg.Security), setupService)
 	libraryHandler := library.NewHandler(library.New(db, immichClient), setupService)
+	archiveHandler := archives.NewHandler(archiveService, setupService)
 	e, err := server.New(healthService, emaildelivery.NewHandler(emailService), setupHandler, peopleHandler, familyHandler, visibilityHandler, recipientHandler, sourceHandler, eventHandler, repairHandler, suggestionHandler, audienceHandler, sessionHandler)
 	if err != nil {
 		_ = db.Close()
@@ -143,6 +146,7 @@ func run() error {
 		return err
 	}
 	library.RegisterRoutes(e, libraryHandler)
+	archives.RegisterRoutes(e, archiveHandler)
 
 	workCtx, cancelWork := context.WithCancel(context.Background())
 	defer cancelWork()
@@ -182,10 +186,11 @@ func run() error {
 	return nil
 }
 
-func jobHandlers(sourceService *sources.Service, eventService *events.Service, emailService *emaildelivery.Service, smtpEnabled bool) map[string]worker.Handler {
+func jobHandlers(sourceService *sources.Service, eventService *events.Service, archiveService *archives.Service, emailService *emaildelivery.Service, smtpEnabled bool) map[string]worker.Handler {
 	handlers := map[string]worker.Handler{
 		sources.ReconciliationJobKind: sourceService.HandleReconciliationJob,
 		events.PublicationJobKind:     eventService.HandlePublicationJob,
+		archives.CleanupJobKind:       archiveService.HandleCleanupJob,
 	}
 	if smtpEnabled {
 		handlers[emaildelivery.JobKind] = emailService.Handle

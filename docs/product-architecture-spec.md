@@ -4,7 +4,7 @@
 
 Status: implementation-ready specification for the MVP.
 
-The deployable foundation, first-browser Curator setup, family administration, Invitation and Onboarding, passwordless sign-in, Session management, Recipient access lifecycle, early curation workflows, atomic Event Publication, immediate Event, Moment, and Media Withdrawal with restoration through fresh Publications, the authorization-filtered Recipient library, responsive Media viewer, and protected thumbnail, preview, video, and original streaming are implemented. Archive delivery, notification delivery, restore validation, Recovery hold, and later product phases are not yet implemented.
+The deployable foundation, first-browser Curator setup, family administration, Invitation and Onboarding, passwordless sign-in, Session management, Recipient access lifecycle, early curation workflows, atomic Event Publication, immediate Event, Moment, and Media Withdrawal with restoration through fresh Publications, the authorization-filtered Recipient library, responsive Media viewer, protected thumbnail, preview, video, and original streaming, and Session-bound Event and subset archive delivery are implemented. Notification delivery, restore validation, Recovery hold, and later product phases are not yet implemented.
 
 The key words **MUST**, **MUST NOT**, **REQUIRED**, **SHOULD**, **SHOULD NOT**, and **MAY** are normative. They have their usual requirements-language meanings. Product terms such as Person, Recipient, Pending Recipient, Audience, Publication, and Staged update have the exact meanings in [`CONTEXT.md`](../CONTEXT.md).
 
@@ -540,7 +540,7 @@ All application JSON and protected Media routes are under `/api`. Stable portal 
 | `/api/publications` and `/api/withdrawals` | final review, publish, history, immediate Withdrawal, restoration staging |
 | `/api/library` | Recipient Photos timeline, Events, New for you, collection statistics, seen state |
 | `/api/media` | Recipient metadata, authorized thumbnail, preview, playback, and original streams |
-| `/api/archives` | plan, inspect safe summary, and single-use part streams |
+| `/api/me/archives` | Recipient plan, inspect safe summary, and single-use part streams |
 | `/api/comments` | create, edit, delete, moderate, mute, list authorized item Comments |
 | `/api/favorites` | Recipient toggle and list, Curator per-Recipient view |
 | `/api/search` | authorized portal-index search and structured date filters |

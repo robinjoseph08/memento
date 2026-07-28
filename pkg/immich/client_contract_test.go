@@ -3,6 +3,7 @@
 package immich
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -147,6 +148,26 @@ func TestImmichV303LiveContract(t *testing.T) {
 	assert.Equal(t, http.StatusOK, fullVideo.StatusCode)
 	assert.Empty(t, fullVideo.ContentRange)
 	assert.Greater(t, len(contractReadMedia(t, fullVideo)), 8, "an If-Range mismatch returns the complete playback representation")
+
+	archiveParts, err := client.ArchiveInfo(ctx, []uuid.UUID{imageID, videoID})
+	require.NoError(t, err)
+	require.NotEmpty(t, archiveParts)
+	var archivedIDs []uuid.UUID
+	for _, part := range archiveParts {
+		archivedIDs = append(archivedIDs, part.AssetIDs...)
+	}
+	assert.ElementsMatch(t, []uuid.UUID{imageID, videoID}, archivedIDs)
+	archiveResponse, err := client.Archive(ctx, archivedIDs)
+	require.NoError(t, err)
+	archiveBytes, err := io.ReadAll(archiveResponse.Body)
+	require.NoError(t, err)
+	require.NoError(t, archiveResponse.Body.Close())
+	zipReader, err := zip.NewReader(bytes.NewReader(archiveBytes), int64(len(archiveBytes)))
+	require.NoError(t, err)
+	require.Len(t, zipReader.File, 2)
+	for _, file := range zipReader.File {
+		assert.Equal(t, filepath.Base(file.Name), file.Name, "Immich archive entries never expose a source path")
+	}
 }
 
 func contractUpload(t *testing.T, ctx context.Context, client *http.Client, baseURL, bearer, path string) uuid.UUID {

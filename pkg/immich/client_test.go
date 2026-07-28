@@ -47,6 +47,91 @@ func validContract(w http.ResponseWriter, r *http.Request) bool {
 	}
 }
 
+func TestArchiveInfoValidatesCurrentLivePhotoExpansionAndArchiveStreamsExactIDs(t *testing.T) {
+	primary, second, companion := uuid.New(), uuid.New(), uuid.New()
+	var archiveBody string
+	server := contractServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/assets/" + primary.String():
+			_, _ = w.Write([]byte(`{"id":"` + primary.String() + `","livePhotoVideoId":"` + companion.String() + `"}`))
+		case "/api/assets/" + second.String():
+			_, _ = w.Write([]byte(`{"id":"` + second.String() + `","livePhotoVideoId":null}`))
+		case "/api/download/info":
+			assert.Equal(t, http.MethodPost, r.Method)
+			contents, readErr := io.ReadAll(r.Body)
+			assert.NoError(t, readErr)
+			assert.JSONEq(t, `{"assetIds":["`+primary.String()+`","`+second.String()+`"]}`, string(contents))
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"totalSize":30,"archives":[{"size":30,"assetIds":["` + primary.String() + `","` + second.String() + `","` + companion.String() + `"]}]}`))
+		case "/api/download/archive":
+			contents, readErr := io.ReadAll(r.Body)
+			assert.NoError(t, readErr)
+			archiveBody = string(contents)
+			w.Header().Set("Content-Type", "application/zip")
+			w.Header().Set("Content-Length", "3")
+			_, _ = w.Write([]byte("zip"))
+		default:
+			t.Fatalf("unexpected request %s", r.URL.Path)
+		}
+	})
+	defer server.Close()
+	client, err := New(clientConfig(server.URL), server.Client())
+	require.NoError(t, err)
+
+	parts, err := client.ArchiveInfo(context.Background(), []uuid.UUID{primary, second})
+	require.NoError(t, err)
+	require.Len(t, parts, 1)
+	assert.Equal(t, []uuid.UUID{primary, second, companion}, parts[0].AssetIDs)
+	assert.Equal(t, primary, parts[0].CompanionOf[companion])
+
+	response, err := client.Archive(context.Background(), parts[0].AssetIDs)
+	require.NoError(t, err)
+	contents, err := io.ReadAll(response.Body)
+	require.NoError(t, err)
+	require.NoError(t, response.Body.Close())
+	assert.Equal(t, "zip", string(contents))
+	assert.Equal(t, int64(3), response.ContentLength)
+	assert.JSONEq(t, `{"assetIds":["`+primary.String()+`","`+second.String()+`","`+companion.String()+`"]}`, archiveBody)
+}
+
+func TestArchiveInfoRejectsUnexpectedExpansionAndMalformedParts(t *testing.T) {
+	primary, unexpected := uuid.New(), uuid.New()
+	server := contractServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/assets/") {
+			_, _ = w.Write([]byte(`{"id":"` + primary.String() + `","livePhotoVideoId":null}`))
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"totalSize":10,"archives":[{"size":10,"assetIds":["` + primary.String() + `","` + unexpected.String() + `"]}]}`))
+	})
+	defer server.Close()
+	client, err := New(clientConfig(server.URL), server.Client())
+	require.NoError(t, err)
+	_, err = client.ArchiveInfo(context.Background(), []uuid.UUID{primary})
+	require.EqualError(t, err, "Immich returned an invalid response")
+}
+
+func TestArchiveInfoRejectsOmittedCurrentLivePhotoCompanion(t *testing.T) {
+	primary, companion := uuid.New(), uuid.New()
+	server := contractServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/assets/" + primary.String():
+			_, _ = w.Write([]byte(`{"id":"` + primary.String() + `","livePhotoVideoId":"` + companion.String() + `"}`))
+		case "/api/download/info":
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"totalSize":10,"archives":[{"size":10,"assetIds":["` + primary.String() + `"]}]}`))
+		default:
+			t.Fatalf("unexpected request %s", r.URL.Path)
+		}
+	})
+	defer server.Close()
+	client, err := New(clientConfig(server.URL), server.Client())
+	require.NoError(t, err)
+
+	_, err = client.ArchiveInfo(context.Background(), []uuid.UUID{primary})
+	require.EqualError(t, err, "Immich returned an invalid response")
+}
+
 func TestCheckValidatesVersionAPIKeyAndExactLeastPrivilegePermissions(t *testing.T) {
 	server := contractServer(t, func(w http.ResponseWriter, r *http.Request) {
 		assert.True(t, validContract(w, r), "unexpected request %s", r.URL.Path)

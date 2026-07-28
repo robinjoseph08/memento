@@ -6,7 +6,11 @@ import {
 } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { apiJSON, apiNoContent } from "./api";
+import { apiJSON, apiNoContent, apiResponse } from "./api";
+import type {
+  PlanRequest as ArchivePlanRequest,
+  PlanResponse as ArchivePlanResponse,
+} from "./types/generated/archives";
 import type {
   Event as EventDetail,
   EventPage,
@@ -40,9 +44,15 @@ function mediaAlt(item: Media, index: number) {
 function Gallery({
   media,
   onOpen,
+  selected,
+  selectionEnabled = false,
+  onToggle,
 }: {
   media: Media[];
   onOpen: (media: Media) => void;
+  selected?: Set<string>;
+  selectionEnabled?: boolean;
+  onToggle?: (media: Media) => void;
 }) {
   return (
     <div aria-label="Media gallery" className="justified-gallery">
@@ -74,6 +84,16 @@ function Gallery({
           ) : (
             <span className="media-unavailable">Source unavailable</span>
           )}
+          {selectionEnabled && item.available ? (
+            <label className="media-selection">
+              <input
+                aria-label={`${selected?.has(item.id) ? "Remove" : "Select"} ${mediaAlt(item, index)}`}
+                checked={selected?.has(item.id) ?? false}
+                onChange={() => onToggle?.(item)}
+                type="checkbox"
+              />
+            </label>
+          ) : null}
           {item.media_type === "video" ? (
             <span className="media-kind">Video</span>
           ) : null}
@@ -250,6 +270,117 @@ function MediaViewer({
   );
 }
 
+function archivePartSize(size: number) {
+  return `${new Intl.NumberFormat().format(size)} ${size === 1 ? "byte" : "bytes"}`;
+}
+
+export function ArchiveDownloads({
+  csrfToken,
+  plan,
+  publicComputer,
+}: {
+  csrfToken: string;
+  plan: ArchivePlanResponse;
+  publicComputer: boolean;
+}) {
+  const [downloadingPart, setDownloadingPart] = useState<number>();
+  const [downloadedParts, setDownloadedParts] = useState<Set<number>>(
+    new Set(),
+  );
+  const [error, setError] = useState<Error | null>(null);
+  const expiration = Date.parse(plan.expires_at);
+  const [expired, setExpired] = useState(
+    () => !Number.isFinite(expiration) || Date.now() >= expiration,
+  );
+
+  useEffect(() => {
+    const remaining = expiration - Date.now();
+    if (!Number.isFinite(expiration) || remaining <= 0) return;
+    const timeout = window.setTimeout(() => setExpired(true), remaining);
+    return () => window.clearTimeout(timeout);
+  }, [expiration]);
+
+  async function download(part: ArchivePlanResponse["parts"][number]) {
+    if (expired) return;
+    setDownloadingPart(part.part_number);
+    setError(null);
+    try {
+      const response = await apiResponse(part.download_url, {
+        method: "POST",
+        headers: {
+          Accept: "application/zip",
+          "X-Memento-CSRF": csrfToken,
+        },
+      });
+      const objectURL = URL.createObjectURL(await response.blob());
+      const link = document.createElement("a");
+      link.download = part.filename;
+      link.href = objectURL;
+      link.style.display = "none";
+      document.body.append(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(objectURL), 0);
+      setDownloadedParts((current) => new Set(current).add(part.part_number));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause : new Error("Download failed."));
+    } finally {
+      setDownloadingPart(undefined);
+    }
+  }
+
+  return (
+    <section aria-label="Archive downloads" className="archive-downloads">
+      <strong>{plan.name}</strong>
+      {expired ? (
+        <span>Archive plan expired. Prepare a new archive to download it.</span>
+      ) : (
+        <span>
+          {plan.item_count} {plan.item_count === 1 ? "item" : "items"}.
+          Available until{" "}
+          <time dateTime={plan.expires_at}>
+            {new Date(expiration).toLocaleString()}
+          </time>
+          .
+        </span>
+      )}
+      {publicComputer ? (
+        <p>
+          These archive files will remain on this public computer after
+          sign-out.
+        </p>
+      ) : null}
+      <div>
+        {plan.parts.map((part) => {
+          const downloaded = downloadedParts.has(part.part_number);
+          const downloading = downloadingPart === part.part_number;
+          const label =
+            plan.parts.length === 1 ? "archive" : `part ${part.part_number}`;
+          return (
+            <div className="archive-part" key={part.part_number}>
+              <span>
+                {part.filename} ({archivePartSize(part.size)})
+              </span>
+              <button
+                disabled={expired || downloaded || downloading}
+                onClick={() => void download(part)}
+                type="button"
+              >
+                {downloaded
+                  ? `Downloaded ${label}`
+                  : downloading
+                    ? `Downloading ${label}…`
+                    : `Download ${label}`}
+              </button>
+            </div>
+          );
+        })}
+      </div>
+      <LibraryError error={error} />
+    </section>
+  );
+}
+
 function LibraryError({ error }: { error: Error | null }) {
   return error ? (
     <p className="form-error" role="alert">
@@ -263,6 +394,9 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
   const [destination, setDestination] = useState<Destination>("photos");
   const [openedEvent, setOpenedEvent] = useState<EventSummary>();
   const [openedMedia, setOpenedMedia] = useState<Media>();
+  const [selectionEnabled, setSelectionEnabled] = useState(false);
+  const [selectedMedia, setSelectedMedia] = useState<Set<string>>(new Set());
+  const [archivePlan, setArchivePlan] = useState<ArchivePlanResponse>();
   const mediaOpener = useRef<HTMLElement | null>(null);
   const endpoint = destination === "favorites" ? "favorites" : "photos";
   const photos = useInfiniteQuery({
@@ -310,6 +444,15 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
     enabled: Boolean(openedEvent),
     retry: false,
   });
+  const archive = useMutation({
+    mutationFn: (request: ArchivePlanRequest) =>
+      apiJSON<ArchivePlanResponse>("/api/me/archives", {
+        method: "POST",
+        headers: { "X-Memento-CSRF": session.csrf_token },
+        body: JSON.stringify(request),
+      }),
+    onSuccess: (plan) => setArchivePlan(plan),
+  });
   const seen = useMutation({
     mutationFn: (publicationID: string) =>
       apiNoContent(`/api/me/new-for-you/${publicationID}/seen`, {
@@ -330,8 +473,36 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
   const dates = useMemo(() => [...new Set(media.map(mediaLabel))], [media]);
 
   function openEvent(summary: EventSummary, isNew = false) {
+    setArchivePlan(undefined);
     setOpenedEvent(summary);
     if (isNew) seen.mutate(summary.publication_id);
+  }
+
+  function toggleMedia(item: Media) {
+    setArchivePlan(undefined);
+    setSelectedMedia((current) => {
+      const next = new Set(current);
+      if (next.has(item.id)) next.delete(item.id);
+      else next.add(item.id);
+      return next;
+    });
+  }
+
+  function planSubset() {
+    archive.mutate({
+      scope: "subset",
+      event_id: null,
+      media_ids: [...selectedMedia],
+    });
+  }
+
+  function planEvent() {
+    if (!openedEvent) return;
+    archive.mutate({
+      scope: "event",
+      event_id: openedEvent.id,
+      media_ids: [],
+    });
   }
 
   function openMedia(item: Media) {
@@ -361,6 +532,9 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
             }
             key={item}
             onClick={() => {
+              setArchivePlan(undefined);
+              setSelectionEnabled(false);
+              setSelectedMedia(new Set());
               setOpenedEvent(undefined);
               setDestination(item);
             }}
@@ -375,7 +549,10 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
           <>
             <button
               className="library-back"
-              onClick={() => setOpenedEvent(undefined)}
+              onClick={() => {
+                setArchivePlan(undefined);
+                setOpenedEvent(undefined);
+              }}
               type="button"
             >
               Back to {destination === "photos" ? "Photos" : "Events"}
@@ -391,8 +568,33 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
                   {event.data.pages[0].media_count === 1 ? "item" : "items"}
                 </span>
               ) : null}
+              <button
+                disabled={archive.isPending}
+                onClick={planEvent}
+                type="button"
+              >
+                {archive.isPending
+                  ? "Preparing archive…"
+                  : "Prepare Event archive"}
+              </button>
+              {session.session_type === "public" ? (
+                <p className="archive-warning">
+                  Event archive files will remain on this public computer after
+                  sign-out.
+                </p>
+              ) : null}
             </header>
-            <LibraryError error={event.error} />
+            <LibraryError error={event.error ?? archive.error} />
+            {archivePlan ? (
+              <ArchiveDownloads
+                csrfToken={session.csrf_token}
+                key={archivePlan.parts
+                  .map((part) => part.download_url)
+                  .join("|")}
+                plan={archivePlan}
+                publicComputer={session.session_type === "public"}
+              />
+            ) : null}
             <Gallery media={eventMedia} onOpen={openMedia} />
             {event.hasNextPage ? (
               <button
@@ -479,7 +681,54 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
                   </>
                 ) : null}
                 <div className="dated-galleries">
-                  <LibraryError error={photos.error} />
+                  <LibraryError error={photos.error ?? archive.error} />
+                  {destination === "photos" ? (
+                    <div className="selection-toolbar">
+                      <button
+                        onClick={() => {
+                          setArchivePlan(undefined);
+                          setSelectionEnabled((current) => !current);
+                          setSelectedMedia(new Set());
+                        }}
+                        type="button"
+                      >
+                        {selectionEnabled
+                          ? "Cancel selection"
+                          : "Select photos"}
+                      </button>
+                      {selectionEnabled ? (
+                        <button
+                          disabled={
+                            selectedMedia.size === 0 || archive.isPending
+                          }
+                          onClick={planSubset}
+                          type="button"
+                        >
+                          {archive.isPending
+                            ? "Preparing archive…"
+                            : `Prepare archive for ${selectedMedia.size} selected`}
+                        </button>
+                      ) : null}
+                    </div>
+                  ) : null}
+                  {destination === "photos" &&
+                  selectionEnabled &&
+                  session.session_type === "public" ? (
+                    <p className="archive-warning">
+                      Subset archive files will remain on this public computer
+                      after sign-out.
+                    </p>
+                  ) : null}
+                  {destination === "photos" && archivePlan ? (
+                    <ArchiveDownloads
+                      csrfToken={session.csrf_token}
+                      key={archivePlan.parts
+                        .map((part) => part.download_url)
+                        .join("|")}
+                      plan={archivePlan}
+                      publicComputer={session.session_type === "public"}
+                    />
+                  ) : null}
                   {dates.map((date, index) => (
                     <section id={`date-${index}`} key={date}>
                       <h2>{date}</h2>
@@ -488,6 +737,11 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
                           (item) => mediaLabel(item) === date,
                         )}
                         onOpen={openMedia}
+                        onToggle={toggleMedia}
+                        selected={selectedMedia}
+                        selectionEnabled={
+                          destination === "photos" && selectionEnabled
+                        }
                       />
                     </section>
                   ))}
@@ -530,6 +784,9 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
             }
             key={item}
             onClick={() => {
+              setArchivePlan(undefined);
+              setSelectionEnabled(false);
+              setSelectedMedia(new Set());
               setOpenedEvent(undefined);
               setDestination(item);
             }}

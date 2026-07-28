@@ -157,7 +157,7 @@ func TestRequiredTestEmailIsCommittedBeforeWorkerDelivery(t *testing.T) {
 	assert.Zero(t, server.count(), "request path must not contact SMTP")
 	var events, jobs int
 	require.NoError(t, db.NewRaw(`SELECT count(*) FROM outbox_events WHERE delivered_at IS NULL`).Scan(context.Background(), &events))
-	require.NoError(t, db.NewRaw(`SELECT count(*) FROM jobs`).Scan(context.Background(), &jobs))
+	require.NoError(t, db.NewRaw(`SELECT count(*) FROM jobs WHERE kind = ?`, JobKind).Scan(context.Background(), &jobs))
 	assert.Equal(t, 1, events)
 	assert.Zero(t, jobs)
 
@@ -194,7 +194,7 @@ func TestTemporaryFailureRetriesWithBoundedBackoff(t *testing.T) {
 	assert.Equal(t, 2, sender.count())
 	var jobAttempts int
 	var safeError string
-	require.NoError(t, db.NewRaw(`SELECT attempts, last_safe_error FROM jobs`).Scan(context.Background(), &jobAttempts, &safeError))
+	require.NoError(t, db.NewRaw(`SELECT attempts, last_safe_error FROM jobs WHERE kind = ?`, JobKind).Scan(context.Background(), &jobAttempts, &safeError))
 	assert.Equal(t, 1, jobAttempts)
 	assert.Equal(t, "smtp_unavailable", safeError)
 	assert.NotContains(t, safeError, "secret")
@@ -214,7 +214,7 @@ func TestInterruptedRetryPreservesDurableBackoff(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, dispatched)
 	var job worker.Job
-	require.NoError(t, db.NewRaw(`SELECT id, kind, payload, attempts FROM jobs`).Scan(context.Background(), &job.ID, &job.Kind, &job.Payload, &job.Attempts))
+	require.NoError(t, db.NewRaw(`SELECT id, kind, payload, attempts FROM jobs WHERE kind = ?`, JobKind).Scan(context.Background(), &job.ID, &job.Kind, &job.Payload, &job.Attempts))
 	leaseJob(t, db, &job, "interrupted-worker")
 
 	err = service.Handle(context.Background(), job)
@@ -254,11 +254,11 @@ func TestExpiredLeaseRecoversWithoutRepeatingRecordedEffect(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, dispatched)
 	var job worker.Job
-	require.NoError(t, db.NewRaw(`SELECT id, kind, payload, attempts FROM jobs`).Scan(context.Background(), &job.ID, &job.Kind, &job.Payload, &job.Attempts))
+	require.NoError(t, db.NewRaw(`SELECT id, kind, payload, attempts FROM jobs WHERE kind = ?`, JobKind).Scan(context.Background(), &job.ID, &job.Kind, &job.Payload, &job.Attempts))
 	leaseJob(t, db, &job, "interrupted-worker")
 	require.NoError(t, service.Handle(context.Background(), job))
 	assert.Equal(t, 1, server.count())
-	_, err = db.NewRaw(`UPDATE jobs SET status = 'running', lease_owner = 'dead-process', lease_expires_at = now() - interval '1 second'`).Exec(context.Background())
+	_, err = db.NewRaw(`UPDATE jobs SET status = 'running', lease_owner = 'dead-process', lease_expires_at = now() - interval '1 second' WHERE id = ?`, job.ID).Exec(context.Background())
 	require.NoError(t, err)
 
 	jobWorker, err := worker.New(db, workerConfig(), "recovery-worker", map[string]worker.Handler{JobKind: service.Handle})
@@ -267,7 +267,7 @@ func TestExpiredLeaseRecoversWithoutRepeatingRecordedEffect(t *testing.T) {
 	defer stopWorker(jobWorker)
 	require.Eventually(t, func() bool {
 		var status string
-		err := db.NewRaw(`SELECT status FROM jobs`).Scan(context.Background(), &status)
+		err := db.NewRaw(`SELECT status FROM jobs WHERE id = ?`, job.ID).Scan(context.Background(), &status)
 		return err == nil && status == "completed"
 	}, asynchronousCompletionTimeout, 5*time.Millisecond)
 	assert.Equal(t, 1, server.count(), "a recorded send must make lease recovery idempotent")
@@ -307,7 +307,7 @@ func TestOnlyCurrentLeaseCanPersistTerminalDeliveryState(t *testing.T) {
 			require.NoError(t, err)
 			assert.True(t, dispatched)
 			var staleJob worker.Job
-			require.NoError(t, db.NewRaw(`SELECT id, kind, payload, attempts FROM jobs`).Scan(context.Background(), &staleJob.ID, &staleJob.Kind, &staleJob.Payload, &staleJob.Attempts))
+			require.NoError(t, db.NewRaw(`SELECT id, kind, payload, attempts FROM jobs WHERE kind = ?`, JobKind).Scan(context.Background(), &staleJob.ID, &staleJob.Kind, &staleJob.Payload, &staleJob.Attempts))
 			leaseJob(t, db, &staleJob, "stale-worker")
 			staleResult := make(chan error, 1)
 			go func() { staleResult <- service.Handle(context.Background(), staleJob) }()
@@ -349,7 +349,7 @@ func TestRetryWindowExhaustionBecomesPermanentFailure(t *testing.T) {
 	_, err = db.NewRaw(`UPDATE email_deliveries SET created_at = now() - interval '2 hours' WHERE public_id = ?`, response.DeliveryID).Exec(context.Background())
 	require.NoError(t, err)
 	var job worker.Job
-	require.NoError(t, db.NewRaw(`SELECT id, kind, payload, attempts FROM jobs`).Scan(context.Background(), &job.ID, &job.Kind, &job.Payload, &job.Attempts))
+	require.NoError(t, db.NewRaw(`SELECT id, kind, payload, attempts FROM jobs WHERE kind = ?`, JobKind).Scan(context.Background(), &job.ID, &job.Kind, &job.Payload, &job.Attempts))
 	leaseJob(t, db, &job, "exhaustion-worker")
 
 	err = service.Handle(context.Background(), job)
@@ -388,7 +388,7 @@ func TestPermanentRecipientRejectionCreatesSafeOperatorVisibleFailure(t *testing
 	require.NoError(t, db.NewRaw(`SELECT diagnostic FROM delivery_problems`).Scan(context.Background(), &diagnostic))
 	assert.Equal(t, "recipient_rejected", diagnostic)
 	var jobStatus string
-	require.NoError(t, db.NewRaw(`SELECT status FROM jobs`).Scan(context.Background(), &jobStatus))
+	require.NoError(t, db.NewRaw(`SELECT status FROM jobs WHERE kind = ?`, JobKind).Scan(context.Background(), &jobStatus))
 	assert.Equal(t, "failed", jobStatus)
 }
 
@@ -405,7 +405,7 @@ func TestOutboxLeaseIsReclaimableAfterInterruptedDispatch(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, dispatched)
 	var jobs int
-	require.NoError(t, db.NewRaw(`SELECT count(*) FROM jobs`).Scan(context.Background(), &jobs))
+	require.NoError(t, db.NewRaw(`SELECT count(*) FROM jobs WHERE kind = ?`, JobKind).Scan(context.Background(), &jobs))
 	assert.Equal(t, 1, jobs)
 }
 

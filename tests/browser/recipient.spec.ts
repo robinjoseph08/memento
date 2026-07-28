@@ -51,7 +51,10 @@ async function expectClosedViewerHidden(page: Page) {
   await closedViewer.evaluate((dialog) => dialog.remove());
 }
 
-async function recipientAPI(page: Page) {
+async function recipientAPI(
+  page: Page,
+  sessionType: "trusted" | "public" = "trusted",
+) {
   await page.route("**/api/**", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
@@ -65,7 +68,7 @@ async function recipientAPI(page: Page) {
       await route.fulfill({
         json: {
           display_name: "Alex",
-          session_type: "trusted",
+          session_type: sessionType,
           csrf_token: "c".repeat(64),
           curator: false,
           onboarding_required: false,
@@ -108,6 +111,39 @@ async function recipientAPI(page: Page) {
           "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
           "base64",
         ),
+      });
+    } else if (path === "/api/me/archives" && request.method() === "POST") {
+      const payload = request.postDataJSON() as { scope: string };
+      await route.fulfill({
+        status: 201,
+        json: {
+          name:
+            payload.scope === "event" ? "Family-weekend" : "Memento-selection",
+          item_count: 1,
+          total_size: 3,
+          expires_at: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+          parts: [
+            {
+              part_number: 1,
+              size: 3,
+              filename: "Family-weekend.zip",
+              download_url: "/api/me/archives/parts/1?token=private-token",
+            },
+          ],
+        },
+      });
+    } else if (
+      path === "/api/me/archives/parts/1" &&
+      url.searchParams.get("token") === "private-token"
+    ) {
+      expect(request.method()).toBe("POST");
+      expect(request.headers()["x-memento-csrf"]).toBe("c".repeat(64));
+      await route.fulfill({
+        contentType: "application/zip",
+        headers: {
+          "Content-Disposition": 'attachment; filename="Family-weekend.zip"',
+        },
+        body: Buffer.from("zip"),
       });
     } else if (path.endsWith("/seen")) {
       await route.fulfill({ status: 204, body: "" });
@@ -153,6 +189,24 @@ test("@desktop Recipient lands on Photos and sees only filtered Event totals", a
   await expect(page.locator(".mobile-library-nav")).toBeHidden();
   await expect(page.getByText("hidden", { exact: false })).toHaveCount(0);
   await expectClosedViewerHidden(page);
+
+  await page.getByRole("button", { name: "Select photos" }).click();
+  await page.getByRole("checkbox", { name: /Select Photo 1/ }).check();
+  await page
+    .getByRole("button", { name: "Prepare archive for 1 selected" })
+    .click();
+  const subsetArchive = page.getByRole("button", {
+    name: "Download archive",
+  });
+  const [download] = await Promise.all([
+    page.waitForEvent("download"),
+    subsetArchive.click(),
+  ]);
+  expect(download.suggestedFilename()).toBe("Family-weekend.zip");
+  await expect(
+    page.getByRole("button", { name: "Downloaded archive" }),
+  ).toBeDisabled();
+  await page.getByRole("button", { name: "Cancel selection" }).click();
 
   await page.getByRole("button", { name: "Load more photos" }).click();
   await expect(page.getByAltText("Video 2 from July 2026")).toBeVisible();
@@ -206,6 +260,10 @@ test("@desktop Recipient lands on Photos and sees only filtered Event totals", a
   await page.getByRole("button", { name: /Family weekend/ }).click();
   await expect(page.getByText("1 item")).toBeVisible();
   await expect(page.getByText(/Moment/)).toHaveCount(0);
+  await page.getByRole("button", { name: "Prepare Event archive" }).click();
+  await expect(
+    page.getByRole("button", { name: "Download archive" }),
+  ).toBeEnabled();
   await expect(page.getByAltText("Photo 1 from July 2026")).toHaveAttribute(
     "src",
     media.thumbnail_url,
@@ -220,6 +278,40 @@ test("@desktop Recipient lands on Photos and sees only filtered Event totals", a
   await expect(
     page.getByRole("link", { name: "Download original" }),
   ).toHaveAttribute("href", media.original_url);
+});
+
+test("@desktop public-computer original, subset, and Event archives show persistent-file warnings", async ({
+  page,
+}) => {
+  await recipientAPI(page, "public");
+  await page.goto("/");
+
+  await page
+    .getByRole("button", { name: "Open Photo 1 from July 2026" })
+    .click();
+  await expect(
+    page.getByText(
+      "This original will remain on this public computer after sign-out.",
+    ),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Close viewer" }).click();
+
+  await page.getByRole("button", { name: "Select photos" }).click();
+  await expect(
+    page.getByText(
+      "Subset archive files will remain on this public computer after sign-out.",
+    ),
+  ).toBeVisible();
+  await page
+    .locator(".library-rail")
+    .getByRole("button", { name: "Events" })
+    .click();
+  await page.getByRole("button", { name: /Family weekend/ }).click();
+  await expect(
+    page.getByText(
+      "Event archive files will remain on this public computer after sign-out.",
+    ),
+  ).toBeVisible();
 });
 
 test("@mobile complete thumbnails and compact navigation do not expose inaccessible totals", async ({
