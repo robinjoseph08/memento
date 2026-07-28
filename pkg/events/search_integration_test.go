@@ -29,27 +29,32 @@ func TestSearchUsesOnlyAuthorizedCurrentPublicationAndDiscoverableAttendance(t *
 	credentialRaw := bytes.Repeat([]byte{0x73}, 32)
 	credential := hex.EncodeToString(credentialRaw)
 	credentialHash := sha256.Sum256(credentialRaw)
-	attendeeID, hiddenAttendeeID, circleID := uuid.New(), uuid.New(), uuid.New()
+	attendeeID, hiddenAttendeeID, unauthorizedAttendeeID, circleID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
 	_, err := fixture.db.NewRaw(`
 		UPDATE events SET title = 'Café Reunion', description = 'A summer gathering',
 		       place_labels = ARRAY['São Paulo'] WHERE id = ?;
 		UPDATE draft_moments SET place_labels = ARRAY['Jardín Central'] WHERE id = ?;
 		INSERT INTO people (id, display_name, sort_name) VALUES
-			(?, 'José Alvarez', 'jose alvarez'), (?, 'Private Match', 'private match');
+			(?, 'José Alvarez', 'jose alvarez'),
+			(?, 'Private Match', 'private match'),
+			(?, 'Unauthorized Boundary', 'unauthorized boundary');
 		INSERT INTO attendance (moment_id, person_id, source, confirmed_by_person_id, confirmed_at)
-		VALUES (?, ?, 'manual', ?, now()), (?, ?, 'manual', ?, now());
+		VALUES (?, ?, 'manual', ?, now()),
+		       (?, ?, 'manual', ?, now()),
+		       (?, ?, 'manual', ?, now());
 		INSERT INTO visibility_circles (id, name) VALUES (?, 'Search circle');
 		INSERT INTO visibility_circle_members (circle_id, person_id)
-		VALUES (?, ?), (?, ?);
+		VALUES (?, ?), (?, ?), (?, ?);
 		INSERT INTO sessions (
 			id, credential_hash, person_id, recipient_access_generation_id,
 			security_epoch, session_type, idle_expires_at
 		) SELECT ?, ?, ?, ?, security_epoch, 'trusted', now() + interval '1 hour'
 		  FROM system_settings WHERE id = 1
-	`, fixture.event, fixture.moments[0], attendeeID, hiddenAttendeeID,
+	`, fixture.event, fixture.moments[0], attendeeID, hiddenAttendeeID, unauthorizedAttendeeID,
 		fixture.moments[0], attendeeID, fixture.actor.PersonID,
 		fixture.moments[0], hiddenAttendeeID, fixture.actor.PersonID,
-		circleID, circleID, fixture.people["shared"], circleID, attendeeID,
+		fixture.moments[1], unauthorizedAttendeeID, fixture.actor.PersonID,
+		circleID, circleID, fixture.people["shared"], circleID, attendeeID, circleID, unauthorizedAttendeeID,
 		sessionID, credentialHash[:], fixture.people["shared"], fixture.access["shared"]).Exec(ctx)
 	require.NoError(t, err)
 
@@ -142,14 +147,18 @@ func TestSearchUsesOnlyAuthorizedCurrentPublicationAndDiscoverableAttendance(t *
 	hiddenDate := "2026-07-28"
 	hiddenDateResult, err := service.Search(ctx, actor, searchdomain.Request{Date: &searchdomain.DateFilter{Kind: "date", Date: &hiddenDate}})
 	require.NoError(t, err)
-	assert.Zero(t, hiddenDateResult.TotalEvents)
-	assert.Zero(t, hiddenDateResult.TotalPhotos)
+	assertSafeEmptySearchResponse(t, hiddenDateResult, "an unauthorized Moment date must disclose no search observable")
 
 	personResult, err := service.Search(ctx, actor, searchdomain.Request{Query: "jose"})
 	require.NoError(t, err)
 	require.Len(t, personResult.People, 1)
 	assert.Equal(t, "José Alvarez", personResult.People[0].PersonName)
 	assert.Equal(t, "Café Reunion", personResult.People[0].EventTitle)
+
+	unauthorizedPersonResult, err := service.Search(ctx, actor, searchdomain.Request{Query: "Unauthorized Boundary"})
+	require.NoError(t, err)
+	assertSafeEmptySearchResponse(t, unauthorizedPersonResult,
+		"a same-circle Person attending only an unauthorized Moment must disclose no search observable")
 
 	_, err = fixture.db.NewRaw(`
 		UPDATE people SET display_name = 'SelfOnlyToken' WHERE id = ?;
@@ -161,29 +170,74 @@ func TestSearchUsesOnlyAuthorizedCurrentPublicationAndDiscoverableAttendance(t *
 	require.NoError(t, err)
 	selfResult, err := service.Search(ctx, actor, searchdomain.Request{Query: "SelfOnlyToken"})
 	require.NoError(t, err)
-	assert.Zero(t, selfResult.TotalEvents, "a Recipient's own Person is not discoverable")
-	assert.Empty(t, selfResult.People)
+	assertSafeEmptySearchResponse(t, selfResult, "a Recipient's own Person must disclose no search observable")
 
 	hiddenResult, err := service.Search(ctx, actor, searchdomain.Request{Query: "Private Match"})
 	require.NoError(t, err)
-	assert.Empty(t, hiddenResult.Events)
-	assert.Empty(t, hiddenResult.Photos)
-	assert.Empty(t, hiddenResult.People)
+	assertSafeEmptySearchResponse(t, hiddenResult, "a non-discoverable Person match must disclose no search observable")
 
-	_, err = fixture.db.NewRaw(`UPDATE events SET title = 'Staged Secret', version = 8 WHERE id = ?`, fixture.event).Exec(ctx)
+	stagedAttendeeID := uuid.New()
+	_, err = fixture.db.NewRaw(`
+		UPDATE events
+		SET title = 'Staged Secret', place_labels = ARRAY['Copper Harbor'], version = 8
+		WHERE id = ?;
+		UPDATE draft_moments SET place_labels = ARRAY['Willow Terrace'] WHERE id = ?;
+		DELETE FROM attendance WHERE moment_id = ? AND person_id = ?;
+		INSERT INTO people (id, display_name, sort_name)
+		VALUES (?, 'Future Attendee', 'future attendee');
+		INSERT INTO attendance (moment_id, person_id, source, confirmed_by_person_id, confirmed_at)
+		VALUES (?, ?, 'manual', ?, now());
+		INSERT INTO visibility_circle_members (circle_id, person_id) VALUES (?, ?)
+	`, fixture.event, fixture.moments[0], fixture.moments[0], attendeeID,
+		stagedAttendeeID, fixture.moments[0], stagedAttendeeID, fixture.actor.PersonID,
+		circleID, stagedAttendeeID).Exec(ctx)
 	require.NoError(t, err)
+
 	stagedResult, err := service.Search(ctx, actor, searchdomain.Request{Query: "staged"})
 	require.NoError(t, err)
-	assert.Zero(t, stagedResult.TotalEvents)
+	assertSafeEmptySearchResponse(t, stagedResult, "staged Event text must not replace the current Publication")
+	stagedAttendanceResult, err := service.Search(ctx, actor, searchdomain.Request{Query: "Future Attendee"})
+	require.NoError(t, err)
+	assertSafeEmptySearchResponse(t, stagedAttendanceResult, "staged Attendance must not enter the current Publication")
+	publishedAttendanceResult, err := service.Search(ctx, actor, searchdomain.Request{Query: "jose"})
+	require.NoError(t, err)
+	require.Len(t, publishedAttendanceResult.People, 1)
+	assert.Equal(t, "José Alvarez", publishedAttendanceResult.People[0].PersonName,
+		"removing live Attendance must not alter the current Publication")
+	for _, query := range []string{"sao", "jardin"} {
+		publishedPlaceResult, searchErr := service.Search(ctx, actor, searchdomain.Request{Query: query})
+		require.NoError(t, searchErr, query)
+		assert.Equal(t, 1, publishedPlaceResult.TotalEvents, query)
+		assert.Equal(t, 1, publishedPlaceResult.TotalPhotos, query)
+	}
+	for _, query := range []string{"copper", "willow"} {
+		stagedPlaceResult, searchErr := service.Search(ctx, actor, searchdomain.Request{Query: query})
+		require.NoError(t, searchErr, query)
+		assertSafeEmptySearchResponse(t, stagedPlaceResult, "staged Place labels must not enter the current Publication: "+query)
+	}
 
 	_, err = fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, PublishEventRequest{Version: 8})
 	require.NoError(t, err)
-	oldResult, err := service.Search(ctx, actor, searchdomain.Request{Query: "cafe"})
-	require.NoError(t, err)
-	assert.Zero(t, oldResult.TotalEvents)
+	for _, query := range []string{"cafe", "jose", "sao", "jardin"} {
+		replacedResult, searchErr := service.Search(ctx, actor, searchdomain.Request{Query: query})
+		require.NoError(t, searchErr, query)
+		assertSafeEmptySearchResponse(t, replacedResult, "a replacement Publication must remove stale projection text: "+query)
+	}
 	newResult, err := service.Search(ctx, actor, searchdomain.Request{Query: "staged"})
 	require.NoError(t, err)
 	assert.Equal(t, 1, newResult.TotalEvents)
+	newAttendanceResult, err := service.Search(ctx, actor, searchdomain.Request{Query: "Future Attendee"})
+	require.NoError(t, err)
+	assert.Equal(t, 1, newAttendanceResult.TotalEvents)
+	assert.Equal(t, 1, newAttendanceResult.TotalPhotos)
+	require.Len(t, newAttendanceResult.People, 1)
+	assert.Equal(t, "Future Attendee", newAttendanceResult.People[0].PersonName)
+	for _, query := range []string{"copper", "willow"} {
+		newPlaceResult, searchErr := service.Search(ctx, actor, searchdomain.Request{Query: query})
+		require.NoError(t, searchErr, query)
+		assert.Equal(t, 1, newPlaceResult.TotalEvents, query)
+		assert.Equal(t, 1, newPlaceResult.TotalPhotos, query)
+	}
 
 	_, err = fixture.service.Withdraw(ctx, fixture.actor, WithdrawRequest{
 		TargetKind: WithdrawalTargetEvent, TargetID: fixture.event.String(), Reason: "Privacy correction",
@@ -191,8 +245,16 @@ func TestSearchUsesOnlyAuthorizedCurrentPublicationAndDiscoverableAttendance(t *
 	require.NoError(t, err)
 	withdrawnResult, err := service.Search(ctx, actor, searchdomain.Request{Query: "staged"})
 	require.NoError(t, err)
-	assert.Zero(t, withdrawnResult.TotalEvents)
-	assert.Zero(t, withdrawnResult.TotalPhotos)
-	assert.Empty(t, withdrawnResult.People)
+	assertSafeEmptySearchResponse(t, withdrawnResult, "Withdrawal must remove every search observable")
+}
 
+func assertSafeEmptySearchResponse(t *testing.T, result searchdomain.Response, message string) {
+	t.Helper()
+	assert.Empty(t, result.Events, message)
+	assert.Empty(t, result.Shared, message)
+	assert.Empty(t, result.Photos, message)
+	assert.Empty(t, result.People, message)
+	assert.Zero(t, result.TotalEvents, message)
+	assert.Zero(t, result.TotalPhotos, message)
+	assert.False(t, result.HasMore, message)
 }
