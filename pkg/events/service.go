@@ -18,6 +18,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/robinjoseph08/memento/pkg/setup"
+	"github.com/robinjoseph08/memento/pkg/staging"
 	"github.com/uptrace/bun"
 	"github.com/uptrace/bun/dialect/pgdialect"
 )
@@ -1097,14 +1098,14 @@ func getEvent(ctx context.Context, db bun.IDB, id uuid.UUID) (Event, error) {
 		return Event{}, err
 	}
 	if stagedID != nil && stagedPublicationID != nil && stagedUpdatedAt != nil {
-		changes := make([]StagedChange, 0)
+		changes := make([]staging.Change, 0)
 		if err := json.Unmarshal(stagedChanges, &changes); err != nil {
 			return Event{}, err
 		}
-		event.StagedUpdate = &StagedUpdate{
+		event.StagedUpdate = stagedUpdateFromDomain(&staging.Update{
 			ID: stagedID.String(), BasePublicationID: stagedPublicationID.String(),
 			Changes: changes, UpdatedAt: *stagedUpdatedAt,
-		}
+		})
 	}
 	return event, nil
 }

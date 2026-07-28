@@ -25,7 +25,7 @@ type StagedDeletedMoment struct {
 
 // StagedChange is one category in the coalesced difference from the current Publication.
 type StagedChange struct {
-	Kind           string                `json:"kind"`
+	Kind           staging.ChangeKind    `json:"kind" tstype:"\"addition\" | \"removal\" | \"move\" | \"metadata\" | \"moment_structure\" | \"access\""`
 	Count          int                   `json:"count"`
 	MediaItemIDs   []string              `json:"media_item_ids"`
 	MomentIDs      []string              `json:"moment_ids"`

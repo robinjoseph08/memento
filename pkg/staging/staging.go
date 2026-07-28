@@ -27,9 +27,40 @@ type DeletedMoment struct {
 	ProposedDay string `json:"proposed_day"`
 }
 
+// ChangeKind identifies a supported category in a coalesced update.
+type ChangeKind string
+
+var errUnknownChangeKind = errors.New("unknown Staged change kind")
+
+const (
+	ChangeKindAddition        ChangeKind = "addition"
+	ChangeKindRemoval         ChangeKind = "removal"
+	ChangeKindMove            ChangeKind = "move"
+	ChangeKindMetadata        ChangeKind = "metadata"
+	ChangeKindMomentStructure ChangeKind = "moment_structure"
+	ChangeKindAccess          ChangeKind = "access"
+)
+
+// UnmarshalJSON rejects persisted change categories that this version cannot render.
+func (kind *ChangeKind) UnmarshalJSON(data []byte) error {
+	var value string
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	candidate := ChangeKind(value)
+	switch candidate {
+	case ChangeKindAddition, ChangeKindRemoval, ChangeKindMove, ChangeKindMetadata,
+		ChangeKindMomentStructure, ChangeKindAccess:
+		*kind = candidate
+		return nil
+	default:
+		return fmt.Errorf("%w %q", errUnknownChangeKind, value)
+	}
+}
+
 // Change is one category in the coalesced difference from the current Publication.
 type Change struct {
-	Kind           string          `json:"kind"`
+	Kind           ChangeKind      `json:"kind"`
 	Count          int             `json:"count"`
 	MediaItemIDs   []string        `json:"media_item_ids"`
 	MomentIDs      []string        `json:"moment_ids"`
@@ -272,17 +303,17 @@ func summarizeStagedUpdate(ctx context.Context, db bun.IDB, eventID, publication
 	}
 
 	changes := make([]Change, 0, 6)
-	appendMediaChange := func(kind, detail string, ids []string) {
+	appendMediaChange := func(kind ChangeKind, detail string, ids []string) {
 		if len(ids) == 0 {
 			return
 		}
 		change := Change{Kind: kind, Count: len(ids), MediaItemIDs: ids, MomentIDs: []string{}, Detail: detail}
-		if kind == "removal" {
+		if kind == ChangeKindRemoval {
 			change.RemovedMedia = removedMedia
 		}
 		changes = append(changes, change)
 	}
-	appendMomentChange := func(kind, detail string, ids []uuid.UUID, extra int) {
+	appendMomentChange := func(kind ChangeKind, detail string, ids []uuid.UUID, extra int) {
 		if len(ids)+extra == 0 {
 			return
 		}
@@ -291,14 +322,14 @@ func summarizeStagedUpdate(ctx context.Context, db bun.IDB, eventID, publication
 			momentIDs = append(momentIDs, id.String())
 		}
 		change := Change{Kind: kind, Count: len(ids) + extra, MediaItemIDs: []string{}, MomentIDs: momentIDs, Detail: detail}
-		if kind == "moment_structure" {
+		if kind == ChangeKindMomentStructure {
 			change.DeletedMoments = deletedMoments
 		}
 		changes = append(changes, change)
 	}
-	appendMediaChange("addition", "Media added", additions)
-	appendMediaChange("removal", "Media removed", removals)
-	appendMediaChange("move", "Media moved or reordered", moves)
+	appendMediaChange(ChangeKindAddition, "Media added", additions)
+	appendMediaChange(ChangeKindRemoval, "Media removed", removals)
+	appendMediaChange(ChangeKindMove, "Media moved or reordered", moves)
 	metadataExtra := 0
 	if eventMetadataChanged {
 		metadataExtra = 1
@@ -313,12 +344,12 @@ func summarizeStagedUpdate(ctx context.Context, db bun.IDB, eventID, publication
 			mediaIDs = append(mediaIDs, id.String())
 		}
 		changes = append(changes, Change{
-			Kind: "metadata", Count: len(metadataMedia) + len(metadataMoments) + metadataExtra,
+			Kind: ChangeKindMetadata, Count: len(metadataMedia) + len(metadataMoments) + metadataExtra,
 			MediaItemIDs: mediaIDs, MomentIDs: momentIDs, Detail: "Event, Moment, or Media metadata edited",
 		})
 	}
-	appendMomentChange("moment_structure", "Moment structure or ordering changed", structureMoments, 0)
-	appendMomentChange("access", "Audience access changed", accessMoments, 0)
+	appendMomentChange(ChangeKindMomentStructure, "Moment structure or ordering changed", structureMoments, 0)
+	appendMomentChange(ChangeKindAccess, "Audience access changed", accessMoments, 0)
 	return changes, nil
 }
 

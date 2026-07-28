@@ -12,6 +12,7 @@ import type {
   PreviewRecipientsResponse,
   PublicationResponse,
   PublishedEventView,
+  StagedChange,
   Withdrawal,
   WithdrawalTarget,
 } from "./types/generated/events";
@@ -142,7 +143,7 @@ function organizationRequest(event: DraftEvent): OrganizeEventRequest {
   };
 }
 
-const stagedLabels: Record<string, string> = {
+const stagedLabels: Record<StagedChange["kind"], string> = {
   addition: "Additions",
   removal: "Removals",
   move: "Moves and ordering",
@@ -193,7 +194,7 @@ function StagedUpdateReview({ event }: { event: DraftEvent }) {
       <ul aria-label="Net change summary">
         {event.staged_update.changes.map((change) => (
           <li key={change.kind}>
-            <strong>{stagedLabels[change.kind] ?? change.kind}</strong>
+            <strong>{stagedLabels[change.kind]}</strong>
             <span>{change.count}</span>
             <small>{change.detail}</small>
           </li>
@@ -269,7 +270,7 @@ function MediaRow({
   selected: boolean;
   onSelect: () => void;
   onMove: (direction: -1 | 1) => void;
-  stagedKind?: string;
+  stagedKind?: StagedChange["kind"];
 }) {
   return (
     <li
@@ -363,7 +364,7 @@ export function EventOrganizer({
         ? eventQuery.data
         : undefined;
   const stagedMediaKinds = useMemo(() => {
-    const kinds = new Map<string, string>();
+    const kinds = new Map<string, StagedChange["kind"]>();
     for (const change of currentDraft?.staged_update?.changes ?? []) {
       for (const mediaID of change.media_item_ids)
         kinds.set(mediaID, change.kind);
@@ -371,7 +372,7 @@ export function EventOrganizer({
     return kinds;
   }, [currentDraft?.staged_update]);
   const stagedMomentKinds = useMemo(() => {
-    const kinds = new Map<string, string[]>();
+    const kinds = new Map<string, StagedChange["kind"][]>();
     for (const change of currentDraft?.staged_update?.changes ?? []) {
       for (const momentID of change.moment_ids) {
         kinds.set(momentID, [...(kinds.get(momentID) ?? []), change.kind]);
