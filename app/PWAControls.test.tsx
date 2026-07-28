@@ -200,6 +200,9 @@ test("offline copy says protected media is unavailable rather than empty", () =>
   expect(
     screen.getByRole("heading", { name: "Memento is offline" }),
   ).toBeInTheDocument();
-  expect(screen.getByText(/never saved for offline viewing/)).toBeVisible();
+  expect(
+    screen.getByText(/Memento's offline cache does not store protected photos/),
+  ).toBeVisible();
+  expect(screen.getByText(/downloaded separately remain/)).toBeVisible();
   expect(screen.queryByText(/No photos/)).not.toBeInTheDocument();
 });

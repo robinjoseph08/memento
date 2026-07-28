@@ -19,16 +19,17 @@ type WorkerHandler = (event: ExtendableEvent & FetchEvent) => void;
 async function loadWorker() {
   const listeners = new Map<string, WorkerHandler>();
   const cache = {
-    add: vi.fn((path: string) => {
-      void path;
-      return Promise.resolve();
-    }),
-    addAll: vi.fn((paths: string[]) => {
-      void paths;
-      return Promise.resolve();
-    }),
-    match: vi.fn((request: RequestInfo | URL) => {
+    add: vi.fn((request: RequestInfo | URL) => {
       void request;
+      return Promise.resolve();
+    }),
+    addAll: vi.fn((requests: Array<RequestInfo | URL>) => {
+      void requests;
+      return Promise.resolve();
+    }),
+    match: vi.fn((request: RequestInfo | URL, options?: CacheQueryOptions) => {
+      void request;
+      void options;
       return Promise.resolve(undefined as Response | undefined);
     }),
     put: vi.fn((request: RequestInfo | URL, response: Response) => {
@@ -55,7 +56,13 @@ async function loadWorker() {
     resolve(process.cwd(), "public/service-worker.js"),
     "utf8",
   );
-  vm.runInNewContext(source, { caches, fetch: fetchMock, self, URL });
+  vm.runInNewContext(source, {
+    caches,
+    fetch: fetchMock,
+    Request,
+    self,
+    URL,
+  });
   return { cache, caches, fetchMock, listeners, self };
 }
 
@@ -76,6 +83,9 @@ test.each([
   "https://memento.example/api/session",
   "https://memento.example/api/me/photos?limit=40",
   "https://memento.example/api/me/media/private/thumbnail",
+  "https://memento.example/protected-media/family-photo.jpg",
+  "https://memento.example/private-gallery/alex/library.json",
+  "https://memento.example/archives/family-weekend.zip",
   "https://immich.example/api/assets/private",
 ])("service worker never handles protected request %s", async (url) => {
   const worker = await loadWorker();
@@ -200,6 +210,9 @@ test("service worker falls back only to a cached public asset", async () => {
 
   await expect(probe.response()).resolves.toBe(cached);
   expect(worker.cache.match).toHaveBeenCalledOnce();
+  expect(worker.cache.match).toHaveBeenCalledWith("/icon.svg", {
+    ignoreVary: true,
+  });
   expect(worker.cache.put).not.toHaveBeenCalled();
 });
 
@@ -227,10 +240,12 @@ test("install preloads only the public shell and selected Memento icons", async 
   await work;
 
   expect(worker.cache.addAll).toHaveBeenCalledOnce();
-  const paths = worker.cache.addAll.mock.calls[0][0];
+  const requests = worker.cache.addAll.mock.calls[0][0] as Request[];
+  const paths = requests.map((request) => new URL(request.url).pathname);
   expect(paths).toContain("/");
   expect(paths).toContain("/icon-512.png");
   expect(paths.every((path) => !path.startsWith("/api"))).toBe(true);
+  expect(requests.every((request) => request.cache === "reload")).toBe(true);
   expect(worker.self.skipWaiting).not.toHaveBeenCalled();
 });
 
@@ -269,19 +284,22 @@ test("install discovers hashed scripts, styles, and self-hosted fonts", async ()
   });
   await work;
 
-  expect(worker.cache.add).toHaveBeenCalledWith("/assets/app-123.css");
-  expect(worker.cache.add).toHaveBeenCalledWith("/assets/app-456.js");
-  expect(worker.cache.add).toHaveBeenCalledWith("/assets/dm-sans-789.woff2");
-  expect(
-    worker.cache.add.mock.calls.every(([path]) => path.startsWith("/assets/")),
-  ).toBe(true);
+  const added = worker.cache.add.mock.calls.map(
+    ([request]) => request as Request,
+  );
+  expect(added.map((request) => new URL(request.url).pathname)).toEqual([
+    "/assets/app-123.css",
+    "/assets/app-456.js",
+    "/assets/dm-sans-789.woff2",
+  ]);
+  expect(added.every((request) => request.cache === "reload")).toBe(true);
 });
 
 test("activation replaces only Memento shell caches and claims open clients", async () => {
   const worker = await loadWorker();
   worker.caches.keys.mockResolvedValue([
-    "memento-shell-v4",
     "memento-shell-v5",
+    "memento-shell-v6",
     "another-application-cache",
   ]);
   let work: Promise<unknown> | undefined;
@@ -296,7 +314,7 @@ test("activation replaces only Memento shell caches and claims open clients", as
   await work;
 
   expect(worker.caches.delete).toHaveBeenCalledOnce();
-  expect(worker.caches.delete).toHaveBeenCalledWith("memento-shell-v4");
+  expect(worker.caches.delete).toHaveBeenCalledWith("memento-shell-v5");
   expect(worker.self.clients.claim).toHaveBeenCalledOnce();
 });
 

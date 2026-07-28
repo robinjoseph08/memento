@@ -1,4 +1,6 @@
-import { expect, test, type Page } from "@playwright/test";
+import { createHash } from "node:crypto";
+
+import { expect, test, type Page, type Request } from "@playwright/test";
 
 test.use({ serviceWorkers: "allow" });
 
@@ -10,7 +12,32 @@ const session = {
   onboarding_required: false,
 };
 
-async function emptyRecipientAPI(page: Page) {
+const publicCachePaths = new Set([
+  "/",
+  "/manifest.webmanifest",
+  "/icon.svg",
+  "/favicon.ico",
+  "/apple-touch-icon.png",
+  "/icon-192.png",
+  "/icon-512.png",
+  "/icon-mask.png",
+  "/icon-monochrome.png",
+]);
+
+const privatePhoto = {
+  id: "private-photo",
+  media_type: "image",
+  width: 1600,
+  height: 900,
+  local_date_time: "2026-07-27T12:00:00Z",
+  available: true,
+  thumbnail_url: "/api/me/media/private-photo/thumbnail",
+  preview_url: "/api/me/media/private-photo/preview",
+  video_url: "",
+  original_url: "/api/me/media/private-photo/original",
+};
+
+async function recipientAPI(page: Page, media: object[] = []) {
   await page.route("**/api/**", async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
@@ -24,7 +51,7 @@ async function emptyRecipientAPI(page: Page) {
     } else if (path === "/api/session/refresh") {
       await route.fulfill({ status: 204, body: "" });
     } else if (path === "/api/me/photos") {
-      await route.fulfill({ json: { media: [], next_cursor: null } });
+      await route.fulfill({ json: { media, next_cursor: null } });
     } else if (path === "/api/me/new-for-you") {
       await route.fulfill({ json: { events: [] } });
     } else if (path === "/api/me/events") {
@@ -65,16 +92,47 @@ async function emptyRecipientAPI(page: Page) {
   });
 }
 
+function pngSize(bytes: Buffer) {
+  expect(bytes.subarray(1, 4).toString("ascii")).toBe("PNG");
+  return {
+    width: bytes.readUInt32BE(16),
+    height: bytes.readUInt32BE(20),
+  };
+}
+
+async function observeDelayedRuntimeRequests(requests: Request[]) {
+  const initialCount = requests.length;
+  const startedAt = Date.now();
+  await expect
+    .poll(() => Date.now() - startedAt, {
+      intervals: [100, 200, 300, 500, 500],
+      timeout: 2_000,
+    })
+    .toBeGreaterThanOrEqual(1_000);
+  expect(requests.length).toBeGreaterThanOrEqual(initialCount);
+}
+
+async function cachedURLs(page: Page) {
+  return page.evaluate(async () => {
+    const names = await caches.keys();
+    const requests = await Promise.all(
+      names.map(async (name) => (await caches.open(name)).keys()),
+    );
+    return requests.flat().map((cachedRequest) => cachedRequest.url);
+  });
+}
+
 test("@desktop manifest, browser installability, scoped restart, and cache privacy", async ({
   browserName,
+  context,
   page,
   request,
 }) => {
-  const runtimeRequests: string[] = [];
-  page.on("request", (networkRequest) =>
-    runtimeRequests.push(networkRequest.url()),
+  const runtimeRequests: Request[] = [];
+  context.on("request", (networkRequest) =>
+    runtimeRequests.push(networkRequest),
   );
-  await emptyRecipientAPI(page);
+  await recipientAPI(page);
 
   const manifestResponse = await request.get("/manifest.webmanifest");
   expect(manifestResponse.ok()).toBe(true);
@@ -93,17 +151,59 @@ test("@desktop manifest, browser installability, scoped restart, and cache priva
   expect(manifest.icons).toEqual(
     expect.arrayContaining([
       expect.objectContaining({
+        src: "/icon-192.png",
+        sizes: "192x192",
+        type: "image/png",
+        purpose: "any",
+      }),
+      expect.objectContaining({
         src: "/icon-512.png",
         sizes: "512x512",
+        type: "image/png",
         purpose: "any",
       }),
       expect.objectContaining({
         src: "/icon-mask.png",
         sizes: "512x512",
+        type: "image/png",
         purpose: "maskable",
       }),
     ]),
   );
+
+  const expectedIcons = [
+    {
+      path: "/icon-192.png",
+      size: 192,
+      digest:
+        "14dc849101076129c52788a5cedff30f16b9d461b7a8b4d92685c007fb95d037",
+    },
+    {
+      path: "/icon-512.png",
+      size: 512,
+      digest:
+        "f40858ec22eef6f75403c9ec8967c7688658af547da79d8b1b93168606f878f9",
+    },
+    {
+      path: "/icon-mask.png",
+      size: 512,
+      digest:
+        "34bf30cd5e3446248d0f0fee6cb3ac7f7d03788fcc0236956251acb94f53a025",
+    },
+    {
+      path: "/apple-touch-icon.png",
+      size: 180,
+      digest:
+        "fd101998f3dd99daf50a97e6b52c8d25935feea51a2244ec868afe871ce8ed52",
+    },
+  ];
+  for (const icon of expectedIcons) {
+    const response = await request.get(icon.path);
+    expect(response.headers()["content-type"]).toBe("image/png");
+    const bytes = await response.body();
+    expect(pngSize(bytes)).toEqual({ width: icon.size, height: icon.size });
+    expect(createHash("sha256").update(bytes).digest("hex")).toBe(icon.digest);
+  }
 
   await page.goto("/photos");
   await expect(page.getByRole("heading", { name: "Photos" })).toBeVisible();
@@ -146,20 +246,50 @@ test("@desktop manifest, browser installability, scoped restart, and cache priva
     expect(workerState.active).toBe("activated");
     expect(workerState.script).toMatch(/\/service-worker\.js$/);
 
-    await page.evaluate(() =>
-      fetch("/api/me/media/11111111-1111-4111-8111-111111111111/thumbnail"),
-    );
-    const cachedURLs = await page.evaluate(async () => {
-      const names = await caches.keys();
-      const requests = await Promise.all(
-        names.map(async (name) => (await caches.open(name)).keys()),
+    const protectedPaths = [
+      "/api/me/media/11111111-1111-4111-8111-111111111111/thumbnail",
+      "/protected-media/family-photo.jpg",
+      "/private-gallery/alex/library.json",
+      "/archives/family-weekend.zip",
+    ];
+    for (const path of protectedPaths.slice(1)) {
+      await page.route(`**${path}`, (route) =>
+        route.fulfill({
+          body: "private response",
+          headers: { "Cache-Control": "private, no-store" },
+        }),
       );
-      return requests.flat().map((cachedRequest) => cachedRequest.url);
-    });
-    expect(cachedURLs.some((url) => new URL(url).pathname === "/")).toBe(true);
+    }
+    await page.evaluate(async (paths) => {
+      await Promise.all(paths.map((path) => fetch(path)));
+    }, protectedPaths);
+
+    const cacheEntries = await cachedURLs(page);
+    const cachePaths = cacheEntries.map((url) => new URL(url).pathname);
+    expect(cachePaths).toContain("/");
     expect(
-      cachedURLs.every((url) => !new URL(url).pathname.startsWith("/api")),
+      cachePaths.some((path) => /^\/assets\/index-[\w-]+\.js$/.test(path)),
     ).toBe(true);
+    expect(
+      cachePaths.some((path) => /^\/assets\/index-[\w-]+\.css$/.test(path)),
+    ).toBe(true);
+    expect(
+      cachePaths.some((path) =>
+        /^\/assets\/dm-sans-[\w-]+\.woff2?$/.test(path),
+      ),
+    ).toBe(true);
+    expect(
+      cacheEntries.every((url) => {
+        const cached = new URL(url);
+        return (
+          cached.origin === new URL(page.url()).origin &&
+          cached.search === "" &&
+          (publicCachePaths.has(cached.pathname) ||
+            cached.pathname.startsWith("/assets/"))
+        );
+      }),
+    ).toBe(true);
+    expect(cachePaths).toEqual(expect.not.arrayContaining(protectedPaths));
 
     await page.evaluate(() =>
       navigator.serviceWorker.register(
@@ -185,16 +315,25 @@ test("@desktop manifest, browser installability, scoped restart, and cache priva
     await expect(page.getByRole("heading", { name: "Photos" })).toBeVisible();
   }
 
+  await observeDelayedRuntimeRequests(runtimeRequests);
   const applicationOrigin = new URL(page.url()).origin;
   expect(
-    runtimeRequests.every((url) => new URL(url).origin === applicationOrigin),
+    runtimeRequests.every(
+      (networkRequest) =>
+        new URL(networkRequest.url()).origin === applicationOrigin,
+    ),
   ).toBe(true);
+  if (browserName === "chromium") {
+    expect(
+      runtimeRequests.some((networkRequest) => networkRequest.serviceWorker()),
+    ).toBe(true);
+  }
 });
 
 test("@mobile compact navigation and theme control remain usable", async ({
   page,
 }) => {
-  await emptyRecipientAPI(page);
+  await recipientAPI(page);
   await page.goto("/");
 
   await expect(page.locator(".mobile-library-nav")).toBeVisible();
@@ -214,27 +353,65 @@ test("@mobile compact navigation and theme control remain usable", async ({
   ).toBeVisible();
 });
 
-test("@desktop restart without API network shows unavailable, never an empty library", async ({
+test("@desktop service worker opens a production deep link offline without private restart data", async ({
+  browserName,
+  context,
   page,
 }) => {
-  await emptyRecipientAPI(page);
-  await page.goto("/");
-  await expect(page.getByText("No photos are available.")).toBeVisible();
+  test.skip(
+    browserName !== "chromium",
+    "Chromium exposes service-worker response attribution",
+  );
+  await recipientAPI(page, [privatePhoto]);
+  await page.goto("/photos");
+  await expect(page.getByAltText("Photo 1 from July 2026")).toBeVisible();
+
+  await expect
+    .poll(() =>
+      page.evaluate(async () => {
+        await navigator.serviceWorker.ready;
+        return navigator.serviceWorker.controller?.state ?? "";
+      }),
+    )
+    .toBe("activated");
+  const productionCachePaths = (await cachedURLs(page)).map(
+    (url) => new URL(url).pathname,
+  );
+  expect(
+    productionCachePaths.some((path) =>
+      /^\/assets\/index-[\w-]+\.js$/.test(path),
+    ),
+  ).toBe(true);
+  expect(
+    productionCachePaths.some((path) =>
+      /^\/assets\/index-[\w-]+\.css$/.test(path),
+    ),
+  ).toBe(true);
 
   await page.unroute("**/api/**");
-  await page.route("**/api/**", (route) => route.abort("internetdisconnected"));
-  await page.addInitScript(() => {
-    Object.defineProperty(Navigator.prototype, "onLine", {
-      configurable: true,
-      get: () => false,
-    });
+  const workerResponses: string[] = [];
+  context.on("response", (response) => {
+    if (response.fromServiceWorker()) workerResponses.push(response.url());
   });
-  await page.reload();
+  await context.setOffline(true);
+  const navigation = await page.goto("/events/family-weekend", {
+    waitUntil: "domcontentloaded",
+  });
 
+  expect(navigation?.fromServiceWorker()).toBe(true);
+  expect(new URL(page.url()).pathname).toBe("/events/family-weekend");
   await expect(
     page.getByRole("heading", { name: "Memento is offline" }),
   ).toBeVisible();
-  await expect(page.getByText(/never saved for offline viewing/)).toBeVisible();
+  await expect(
+    page.getByText(/Memento's offline cache does not store protected photos/),
+  ).toBeVisible();
+  await expect(page.getByAltText("Photo 1 from July 2026")).toHaveCount(0);
   await expect(page.getByText("No photos are available.")).toHaveCount(0);
   await expect(page.locator(".justified-gallery")).toHaveCount(0);
+  expect(
+    workerResponses.some(
+      (url) => new URL(url).pathname === "/events/family-weekend",
+    ),
+  ).toBe(true);
 });

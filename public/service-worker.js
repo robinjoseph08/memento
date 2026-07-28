@@ -1,7 +1,7 @@
-/* global caches, fetch, self, URL */
+/* global caches, fetch, Request, self, URL */
 
 const CACHE_PREFIX = "memento-shell-";
-const CACHE_NAME = `${CACHE_PREFIX}v5`;
+const CACHE_NAME = `${CACHE_PREFIX}v6`;
 const SHELL_URL = "/";
 const PUBLIC_PATHS = new Set([
   SHELL_URL,
@@ -53,9 +53,13 @@ function isShellNavigation(request, url) {
   );
 }
 
+function freshRequest(path) {
+  return new Request(new URL(path, self.location.origin), { cache: "reload" });
+}
+
 async function precacheShell() {
   const cache = await caches.open(CACHE_NAME);
-  await cache.addAll([...PUBLIC_PATHS]);
+  await cache.addAll([...PUBLIC_PATHS].map(freshRequest));
   const visited = new Set();
   const pending = [SHELL_URL];
 
@@ -70,7 +74,7 @@ async function precacheShell() {
     const assets = source.match(/\/assets\/[A-Za-z0-9._/-]+/g) ?? [];
     for (const asset of new Set(assets)) {
       if (visited.has(asset)) continue;
-      await cache.add(asset);
+      await cache.add(freshRequest(asset));
       pending.push(asset);
     }
   }
@@ -86,7 +90,9 @@ async function refreshPublicAsset(request) {
     return response;
   } catch (error) {
     const cache = await caches.open(CACHE_NAME);
-    const cached = await cache.match(request);
+    const cached = await cache.match(new URL(request.url).pathname, {
+      ignoreVary: true,
+    });
     if (cached) return cached;
     throw error;
   }

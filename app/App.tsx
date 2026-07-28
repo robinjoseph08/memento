@@ -1778,8 +1778,8 @@ function MementoApp() {
           <section aria-labelledby="memento-title" className="shell-card">
             <BrandHeader />
             <p className="lede" role="alert">
-              Memento cannot reach the server. Your authorized library has not
-              been reported as empty.
+              Memento could not verify access to your authorized library. It has
+              not been reported as empty.
             </p>
             <button onClick={() => void bootstrap.refetch()} type="button">
               Try again

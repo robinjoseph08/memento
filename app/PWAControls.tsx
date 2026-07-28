@@ -58,8 +58,9 @@ export function OfflineNotice() {
       <p className="step-label">Network unavailable</p>
       <h1 id="offline-title">Memento is offline</h1>
       <p>
-        Reconnect to open your private library. Protected photos and account
-        responses are never saved for offline viewing.
+        Reconnect to open your private library. Memento's offline cache does not
+        store protected photos or account responses. Files you downloaded
+        separately remain on this device.
       </p>
     </section>
   );
