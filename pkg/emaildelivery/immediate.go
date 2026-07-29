@@ -161,7 +161,7 @@ func (s *Service) QueuePublication(ctx context.Context, _ uuid.UUID, publication
 				WHERE NOT content_is_withdrawn(placement.event_id, moment.draft_moment_id, placement.media_item_id)
 			  )
 			ORDER BY activity.recipient_access_generation_id
-		`, publicationID, maxImmediatePublicationMedia).Scan(ctx, &candidates); err != nil {
+		`, publicationID, maxImmediatePublicationMedia+1).Scan(ctx, &candidates); err != nil {
 			return err
 		}
 		for _, candidate := range candidates {

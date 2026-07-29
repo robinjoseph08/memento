@@ -404,6 +404,45 @@ func TestImmediateEmailBoundsLargePublicationCandidateWork(t *testing.T) {
 	assert.NotContains(t, messages[0].Body, "125 new items", "delivery does not count or expose candidates beyond its bounded authorization set")
 }
 
+func TestImmediateEmailQueuesWhenOnlyOverflowPublicationCandidateRemainsAuthorized(t *testing.T) {
+	fixture := newImmediateFixture(t)
+	fixture.addLargePublicationActivity(t, maxImmediatePublicationMedia+1)
+
+	var overflowAssetID uuid.UUID
+	require.NoError(t, fixture.db.NewRaw(`
+		SELECT media.immich_asset_id
+		FROM publication_notification_media AS candidate
+		JOIN media_items AS media ON media.id = candidate.media_item_id
+		WHERE candidate.publication_id = ? AND candidate.recipient_access_generation_id = ?
+		ORDER BY candidate.media_item_id OFFSET ? LIMIT 1
+	`, fixture.publication, fixture.access["alex"], maxImmediatePublicationMedia).Scan(context.Background(), &overflowAssetID))
+	result, err := fixture.db.NewRaw(`
+		DELETE FROM current_audience_entitlements
+		WHERE recipient_access_generation_id = ? AND media_item_id IN (
+			SELECT candidate.media_item_id
+			FROM publication_notification_media AS candidate
+			WHERE candidate.publication_id = ? AND candidate.recipient_access_generation_id = ?
+			ORDER BY candidate.media_item_id LIMIT ?
+		)
+	`, fixture.access["alex"], fixture.publication, fixture.access["alex"], maxImmediatePublicationMedia).Exec(context.Background())
+	require.NoError(t, err)
+	removed, err := result.RowsAffected()
+	require.NoError(t, err)
+	require.EqualValues(t, maxImmediatePublicationMedia, removed)
+	fixture.preview.allowOnly(overflowAssetID)
+
+	require.NoError(t, fixture.service.QueuePublication(context.Background(), fixture.event, fixture.publication))
+	var batchID int64
+	require.NoError(t, fixture.db.NewRaw(`SELECT id FROM notification_batches`).Scan(context.Background(), &batchID))
+	require.NoError(t, fixture.service.HandleImmediate(context.Background(), fixture.leasedBatchJob(t, batchID)))
+
+	messages := fixture.sender.sent()
+	require.Len(t, messages, 1)
+	assert.Contains(t, messages[0].Body, "Original title: 1 new item")
+	assert.Equal(t, []uuid.UUID{overflowAssetID}, fixture.preview.requests(),
+		"queueing and delivery use only the authorized overflow candidate")
+}
+
 func TestImmediateEmailReanchorsOverlappingOutOfOrderActivityAtTheExactBoundary(t *testing.T) {
 	fixture := newImmediateFixture(t)
 	first := fixture.addComment(t, fixture.base.Add(10*time.Minute), "First observed")
@@ -507,7 +546,9 @@ func TestImmediateEmailIncludesOneClickUnsubscribeAndPrivacyDisclosure(t *testin
 	e.ServeHTTP(invalidResponse, invalidRequest)
 	assert.Equal(t, http.StatusNotFound, invalidResponse.Code)
 
-	_, err = fixture.db.NewRaw(`UPDATE notification_preference_tokens SET expires_at = clock_timestamp() - interval '1 second'
+	_, err = fixture.db.NewRaw(`UPDATE notification_preference_tokens
+		SET created_at = clock_timestamp() - interval '2 seconds',
+		    expires_at = clock_timestamp() - interval '1 second'
 		WHERE notification_batch_id = ?`, batchID).Exec(context.Background())
 	require.NoError(t, err)
 	expiredRequest := httptest.NewRequestWithContext(context.Background(), http.MethodGet, parsed.RequestURI(), nil)

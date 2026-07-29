@@ -22,15 +22,16 @@ func TestCuratorWorkReadsSafeUnresolvedImmediateDeliveryProblems(t *testing.T) {
 	personID, accessID, batchPublicID := uuid.New(), uuid.New(), uuid.New()
 	_, err := db.NewRaw(`
 		INSERT INTO people (id, display_name, sort_name) VALUES (?, 'Private Recipient', 'recipient');
-		INSERT INTO recipient_access_generations (id, person_id, generation, state, is_current)
-		VALUES (?, ?, 1, 'completed', true);
+		INSERT INTO recipient_access_generations
+			(id, person_id, generation, state, is_current, onboarding_completed_at)
+		VALUES (?, ?, 1, 'completed', true, clock_timestamp());
 		INSERT INTO recipient_emails (id, recipient_access_generation_id, email, normalized_email, is_current)
 		VALUES (gen_random_uuid(), ?, 'private-recipient@example.com', 'private-recipient@example.com', true);
 		INSERT INTO notification_batches
 			(public_id, recipient_access_generation_id, channel, window_started_at, closes_at, status)
-		VALUES (?, ?, 'email', clock_timestamp() - interval '20 minutes', clock_timestamp() - interval '5 minutes', 'failed')
+		VALUES (?, ?, 'email', statement_timestamp() - interval '20 minutes', statement_timestamp() - interval '5 minutes', 'failed')
 		RETURNING id
-	`, personID, accessID, personID, accessID, accessID, batchPublicID, accessID).Exec(ctx)
+	`, personID, accessID, personID, accessID, batchPublicID, accessID).Exec(ctx)
 	require.NoError(t, err)
 	var batchID int64
 	require.NoError(t, db.NewRaw(`SELECT id FROM notification_batches WHERE public_id = ?`, batchPublicID).Scan(ctx, &batchID))
