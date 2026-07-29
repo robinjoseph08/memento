@@ -1032,6 +1032,122 @@ test("clears protected query data offline and after Session revocation", async (
   ).toBeUndefined();
 });
 
+test("updates a Recipient weekly email schedule independently of access", async () => {
+  const csrfToken = "e".repeat(64);
+  const requests: Array<{ path: string; init?: RequestInit }> = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = requestPath(input);
+      requests.push({ path, init });
+      if (path === "/api/setup") {
+        return Promise.resolve(
+          jsonResponse({ error: { message: "Setup not found." } }, 404),
+        );
+      }
+      if (path === "/api/session") {
+        return Promise.resolve(
+          jsonResponse({
+            display_name: "Recipient",
+            session_type: "public",
+            csrf_token: csrfToken,
+            curator: false,
+            onboarding_required: false,
+          }),
+        );
+      }
+      if (path === "/api/me/email-preferences") {
+        if (init?.method === "PUT") {
+          return Promise.resolve(
+            jsonResponse(JSON.parse(stringBody(init.body))),
+          );
+        }
+        return Promise.resolve(
+          jsonResponse({
+            email_preference: "immediate",
+            weekly_day: "sunday",
+            weekly_local_time: "09:00",
+            weekly_timezone: "UTC",
+          }),
+        );
+      }
+      if (path.startsWith("/api/me/photos?")) {
+        return Promise.resolve(jsonResponse({ media: [], next_cursor: null }));
+      }
+      if (path === "/api/me/new-for-you") {
+        return Promise.resolve(jsonResponse({ events: [] }));
+      }
+      if (path === "/api/sessions") {
+        return Promise.resolve(jsonResponse({ sessions: [] }));
+      }
+      if (path === "/api/me/interest-list") {
+        return Promise.resolve(
+          jsonResponse({
+            recipient: {
+              id: "11111111-1111-4111-8111-111111111111",
+              display_name: "Recipient",
+              sort_name: "recipient",
+            },
+            version: 0,
+            entries: [],
+            history: [],
+          }),
+        );
+      }
+      if (path.startsWith("/api/me/people?")) {
+        return Promise.resolve(jsonResponse({ people: [] }));
+      }
+      if (path === "/api/invitation-suggestions") {
+        return Promise.resolve(jsonResponse({ suggestions: [] }));
+      }
+      return Promise.reject(new Error(`Unexpected request: ${path}`));
+    }),
+  );
+
+  renderApp();
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Manage email preferences" }),
+  );
+  expect(
+    await screen.findByLabelText("Publication and Comment email"),
+  ).toHaveValue("immediate");
+  expect(
+    screen.getByText(/required identity and security email/),
+  ).toBeVisible();
+  fireEvent.change(screen.getByLabelText("Publication and Comment email"), {
+    target: { value: "weekly" },
+  });
+  fireEvent.change(screen.getByLabelText("Day"), {
+    target: { value: "wednesday" },
+  });
+  fireEvent.change(screen.getByLabelText("Local time"), {
+    target: { value: "18:45" },
+  });
+  fireEvent.change(screen.getByLabelText("Timezone"), {
+    target: { value: "Europe/London" },
+  });
+  fireEvent.click(
+    screen.getByRole("button", { name: "Save email preferences" }),
+  );
+  expect(
+    await screen.findByText("Your email preferences were saved."),
+  ).toBeInTheDocument();
+
+  const update = requests.find(
+    ({ path, init }) =>
+      path === "/api/me/email-preferences" && init?.method === "PUT",
+  );
+  expect(update?.init?.headers).toMatchObject({
+    "X-Memento-CSRF": csrfToken,
+  });
+  expect(JSON.parse(stringBody(update?.init?.body))).toEqual({
+    email_preference: "weekly",
+    weekly_day: "wednesday",
+    weekly_local_time: "18:45",
+    weekly_timezone: "Europe/London",
+  });
+});
+
 test("clears protected data and Session after an authenticated mutation returns 401", async () => {
   const csrfToken = "m".repeat(64);
   vi.stubGlobal(

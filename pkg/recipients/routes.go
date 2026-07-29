@@ -15,12 +15,16 @@ import (
 )
 
 const (
-	curatorReadPolicy        = "policy:curator"
-	curatorMutationPolicy    = "policy:curator_csrf"
-	invitationInspectPolicy  = "policy:token_inspect"
-	invitationAcceptPolicy   = "policy:token_exchange"
-	onboardingReadPolicy     = "policy:onboarding_session"
-	onboardingMutationPolicy = "policy:onboarding_session_csrf"
+	curatorReadPolicy                = "policy:curator"
+	curatorMutationPolicy            = "policy:curator_csrf"
+	invitationInspectPolicy          = "policy:token_inspect"
+	invitationAcceptPolicy           = "policy:token_exchange"
+	onboardingReadPolicy             = "policy:onboarding_session"
+	onboardingMutationPolicy         = "policy:onboarding_session_csrf"
+	preferenceReadPolicy             = "policy:recipient_self"
+	preferenceMutationPolicy         = "policy:recipient_self_csrf"
+	platformPreferenceReadPolicy     = "policy:curator"
+	platformPreferenceMutationPolicy = "policy:curator_csrf"
 )
 
 type Handler struct {
@@ -222,6 +226,82 @@ func (h *Handler) Accept(c echo.Context) error {
 	return c.JSON(http.StatusOK, response)
 }
 
+func (h *Handler) authorizeRecipient(c echo.Context, mutation bool) (setup.SessionActor, error) {
+	cookie, err := c.Cookie(setup.CookieName)
+	if err != nil || cookie.Value == "" {
+		return setup.SessionActor{}, errcodes.Unauthorized("A valid Recipient Session is required.")
+	}
+	actor, err := h.auth.AuthorizeSession(c.Request().Context(), cookie.Value, c.Request().Header.Get(setup.CSRFHeader), mutation)
+	if err != nil {
+		switch {
+		case errors.Is(err, setup.ErrUnauthenticated):
+			return setup.SessionActor{}, errcodes.Unauthorized("A valid Recipient Session is required.")
+		case errors.Is(err, setup.ErrCSRF):
+			return setup.SessionActor{}, errcodes.Forbidden("Changing email preferences requires a valid CSRF token")
+		default:
+			return setup.SessionActor{}, err
+		}
+	}
+	return actor, nil
+}
+
+func (h *Handler) EmailPreferences(c echo.Context) error {
+	actor, err := h.authorizeRecipient(c, false)
+	if err != nil {
+		return err
+	}
+	response, err := h.service.EmailPreferences(c.Request().Context(), actor)
+	if err != nil {
+		return onboardingError(err)
+	}
+	return c.JSON(http.StatusOK, response)
+}
+
+func (h *Handler) UpdateEmailPreferences(c echo.Context) error {
+	actor, err := h.authorizeRecipient(c, true)
+	if err != nil {
+		return err
+	}
+	var request EmailPreferenceRequest
+	if err := bindJSON(c, &request); err != nil {
+		return err
+	}
+	response, err := h.service.UpdateEmailPreferences(c.Request().Context(), actor, request)
+	if err != nil {
+		return onboardingError(err)
+	}
+	return c.JSON(http.StatusOK, response)
+}
+
+func (h *Handler) PlatformEmailDefaults(c echo.Context) error {
+	if _, err := h.authorize(c, false); err != nil {
+		return err
+	}
+	response, err := h.service.PlatformEmailDefaults(c.Request().Context())
+	if err != nil {
+		return err
+	}
+	return c.JSON(http.StatusOK, response)
+}
+
+func (h *Handler) UpdatePlatformEmailDefaults(c echo.Context) error {
+	if _, err := h.authorize(c, true); err != nil {
+		return err
+	}
+	var request PlatformEmailDefaultsRequest
+	if err := bindJSON(c, &request); err != nil {
+		return err
+	}
+	response, err := h.service.UpdatePlatformEmailDefaults(c.Request().Context(), request)
+	if errors.Is(err, emaildelivery.ErrNotificationPreference) {
+		return errcodes.ValidationError("Choose a valid IANA timezone.")
+	}
+	if err != nil {
+		return err
+	}
+	return c.JSON(http.StatusOK, response)
+}
+
 func (h *Handler) authorizeOnboarding(c echo.Context, mutation bool) (setup.SessionActor, error) {
 	cookie, err := c.Cookie(setup.CookieName)
 	if err != nil || cookie.Value == "" {
@@ -327,6 +407,8 @@ func onboardingError(err error) error {
 		return errcodes.Conflict("Onboarding is no longer available for this Recipient generation.")
 	case errors.Is(err, ErrOnboardingChoices):
 		return errcodes.ValidationError("Choose valid Onboarding preferences and acknowledge every disclosure before completing.")
+	case errors.Is(err, emaildelivery.ErrNotificationPreference):
+		return errcodes.ValidationError("Choose Immediate, Weekly, or None and a valid weekly day, local time, and timezone.")
 	case errors.Is(err, setup.ErrUnauthenticated):
 		return errcodes.Unauthorized("A verified Onboarding Session is required.")
 	default:
@@ -384,6 +466,18 @@ func RegisterRoutes(e *echo.Echo, handler *Handler) {
 	inspect.Name = invitationInspectPolicy
 	accept := tokens.POST("/accept", handler.Accept)
 	accept.Name = invitationAcceptPolicy
+
+	platformPreferences := e.Group("/api/curator/email-defaults", noStore)
+	platformPreferenceRead := platformPreferences.GET("", handler.PlatformEmailDefaults)
+	platformPreferenceRead.Name = platformPreferenceReadPolicy
+	platformPreferenceUpdate := platformPreferences.PUT("", handler.UpdatePlatformEmailDefaults)
+	platformPreferenceUpdate.Name = platformPreferenceMutationPolicy
+
+	preferences := e.Group("/api/me/email-preferences", noStore)
+	preferenceRead := preferences.GET("", handler.EmailPreferences)
+	preferenceRead.Name = preferenceReadPolicy
+	preferenceUpdate := preferences.PUT("", handler.UpdateEmailPreferences)
+	preferenceUpdate.Name = preferenceMutationPolicy
 
 	onboarding := e.Group("/api/onboarding", noStore)
 	read := onboarding.GET("", handler.Onboarding)

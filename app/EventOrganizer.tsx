@@ -1122,7 +1122,7 @@ export function EventOrganizer({
     revisionRef.current = nextRevision;
     latestDraftRef.current = next;
     setDraft(next);
-    setSaveState("unsaved");
+    if (saveState !== "failed") setSaveState("unsaved");
     setRevision(nextRevision);
   }
 

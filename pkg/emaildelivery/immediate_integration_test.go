@@ -158,6 +158,7 @@ func newImmediateFixture(t *testing.T) immediateFixture {
 		event: uuid.New(), publication: uuid.New(), moment: uuid.New(), media: []uuid.UUID{uuid.New(), uuid.New()},
 		base: time.Now().UTC().Add(-time.Hour).Truncate(time.Microsecond),
 	}
+	service.now = func() time.Time { return fixture.base }
 	for _, name := range []string{"curator", "alex", "blair"} {
 		fixture.people[name], fixture.access[name] = uuid.New(), uuid.New()
 		displayName := map[string]string{"curator": "Curator", "alex": "Alex", "blair": "Blair"}[name]
@@ -370,7 +371,7 @@ func TestImmediateEmailUsesOneRecipientWindowWithExactBoundary(t *testing.T) {
 
 func TestImmediateEmailBoundsBatchWorkAndMessageSize(t *testing.T) {
 	fixture := newImmediateFixture(t)
-	for index := range maxImmediateBatchItems + 1 {
+	for index := range maxEmailBatchItems + 1 {
 		commentID := fixture.addComment(t, fixture.base.Add(time.Duration(index)*time.Microsecond), fmt.Sprintf("Comment %d", index))
 		fixture.queueComment(t, commentID)
 	}
@@ -380,20 +381,20 @@ func TestImmediateEmailBoundsBatchWorkAndMessageSize(t *testing.T) {
 	var truncated bool
 	require.NoError(t, fixture.db.NewRaw(`SELECT id, truncated FROM notification_batches`).Scan(context.Background(), &batchID, &truncated))
 	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM notification_batch_items WHERE batch_id = ?`, batchID).Scan(context.Background(), &itemCount))
-	assert.Equal(t, maxImmediateBatchItems, itemCount)
+	assert.Equal(t, maxEmailBatchItems, itemCount)
 	assert.True(t, truncated, "overflow is durably summarized instead of growing delivery work")
 
 	require.NoError(t, fixture.service.HandleImmediate(context.Background(), fixture.leasedBatchJob(t, batchID)))
 	messages := fixture.sender.sent()
 	require.Len(t, messages, 1)
-	assert.Equal(t, maxImmediateBatchItems, strings.Count(messages[0].Body, "Blair commented on an item you can access."))
+	assert.Equal(t, maxEmailBatchItems, strings.Count(messages[0].Body, "Blair commented on an item you can access."))
 	assert.Contains(t, messages[0].Body, "Additional activity is available in Memento.")
-	assert.LessOrEqual(t, len(messages[0].Body), immediateBodyLineBudget+2048)
+	assert.LessOrEqual(t, len(messages[0].Body), emailBodyLineBudget+2048)
 }
 
 func TestImmediateEmailBoundsLargePublicationCandidateWork(t *testing.T) {
 	fixture := newImmediateFixture(t)
-	fixture.addLargePublicationActivity(t, maxImmediatePublicationMedia+25)
+	fixture.addLargePublicationActivity(t, maxEmailPublicationMedia+25)
 	require.NoError(t, fixture.service.QueuePublication(context.Background(), fixture.event, fixture.publication))
 	var batchID int64
 	require.NoError(t, fixture.db.NewRaw(`SELECT id FROM notification_batches`).Scan(context.Background(), &batchID))
@@ -407,7 +408,7 @@ func TestImmediateEmailBoundsLargePublicationCandidateWork(t *testing.T) {
 
 func TestImmediateEmailQueuesWhenOnlyOverflowPublicationCandidateRemainsAuthorized(t *testing.T) {
 	fixture := newImmediateFixture(t)
-	fixture.addLargePublicationActivity(t, maxImmediatePublicationMedia+1)
+	fixture.addLargePublicationActivity(t, maxEmailPublicationMedia+1)
 
 	var overflowAssetID uuid.UUID
 	require.NoError(t, fixture.db.NewRaw(`
@@ -416,7 +417,7 @@ func TestImmediateEmailQueuesWhenOnlyOverflowPublicationCandidateRemainsAuthoriz
 		JOIN media_items AS media ON media.id = candidate.media_item_id
 		WHERE candidate.publication_id = ? AND candidate.recipient_access_generation_id = ?
 		ORDER BY candidate.media_item_id OFFSET ? LIMIT 1
-	`, fixture.publication, fixture.access["alex"], maxImmediatePublicationMedia).Scan(context.Background(), &overflowAssetID))
+	`, fixture.publication, fixture.access["alex"], maxEmailPublicationMedia).Scan(context.Background(), &overflowAssetID))
 	result, err := fixture.db.NewRaw(`
 		DELETE FROM current_audience_entitlements
 		WHERE recipient_access_generation_id = ? AND media_item_id IN (
@@ -425,11 +426,11 @@ func TestImmediateEmailQueuesWhenOnlyOverflowPublicationCandidateRemainsAuthoriz
 			WHERE candidate.publication_id = ? AND candidate.recipient_access_generation_id = ?
 			ORDER BY candidate.media_item_id LIMIT ?
 		)
-	`, fixture.access["alex"], fixture.publication, fixture.access["alex"], maxImmediatePublicationMedia).Exec(context.Background())
+	`, fixture.access["alex"], fixture.publication, fixture.access["alex"], maxEmailPublicationMedia).Exec(context.Background())
 	require.NoError(t, err)
 	removed, err := result.RowsAffected()
 	require.NoError(t, err)
-	require.EqualValues(t, maxImmediatePublicationMedia, removed)
+	require.EqualValues(t, maxEmailPublicationMedia, removed)
 	fixture.preview.allowOnly(overflowAssetID)
 
 	require.NoError(t, fixture.service.QueuePublication(context.Background(), fixture.event, fixture.publication))
@@ -662,13 +663,13 @@ func TestImmediateEmailIncludesOneClickUnsubscribeAndPrivacyDisclosure(t *testin
 		WHERE recipient_access_generation_id = ?`, fixture.access["alex"]).Scan(context.Background(), &preference))
 	assert.Equal(t, "immediate", preference, "authenticated GET confirmation must not mutate durable preference")
 
-	for range 2 {
+	for attempt, expectedStatus := range []int{http.StatusOK, http.StatusNotFound} {
 		request := httptest.NewRequestWithContext(context.Background(), http.MethodPost, parsed.RequestURI(),
 			strings.NewReader("List-Unsubscribe=One-Click"))
 		request.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
 		response := httptest.NewRecorder()
 		e.ServeHTTP(response, request)
-		assert.Equal(t, http.StatusOK, response.Code, "one-click unsubscribe is safely idempotent")
+		assert.Equal(t, expectedStatus, response.Code, "preference token use %d", attempt+1)
 		assert.Equal(t, "no-store", response.Header().Get(echo.HeaderCacheControl))
 		assert.Equal(t, "no-referrer", response.Header().Get("Referrer-Policy"))
 	}
@@ -848,7 +849,7 @@ func TestImmediateEmailHoldsAuthorizationLocksThroughSMTPAcceptance(t *testing.T
 			SET email_preference = 'none' WHERE recipient_access_generation_id = ?`, fixture.access["alex"]).Exec(context.Background())
 		preferenceChanged <- err
 	}()
-	waitForImmediateLockWait(t, fixture.db, `%UPDATE notification_preferences%email_preference = 'none'%`)
+	waitForEmailBatchLock(t, fixture.db, `%UPDATE notification_preferences%email_preference = 'none'%`)
 
 	close(blocking.release)
 	require.NoError(t, <-delivered)
@@ -869,7 +870,7 @@ func TestImmediateEmailReauthorizesAndHandlesTerminalFailures(t *testing.T) {
 		require.NoError(t, fixture.service.QueuePublication(context.Background(), fixture.event, fixture.publication))
 		var batchID int64
 		require.NoError(t, fixture.db.NewRaw(`SELECT id FROM notification_batches`).Scan(context.Background(), &batchID))
-		fixture.service.beforeImmediateSend = func() {
+		fixture.service.beforeOptionalSend = func() {
 			_, err := fixture.db.NewRaw(`DELETE FROM current_audience_entitlements
 				WHERE recipient_access_generation_id = ?`, fixture.access["alex"]).Exec(context.Background())
 			require.NoError(t, err)
@@ -926,6 +927,22 @@ func TestImmediateEmailReauthorizesAndHandlesTerminalFailures(t *testing.T) {
 		assert.Equal(t, "recipient_rejected", problem.Diagnostic)
 		assert.Nil(t, problem.EmailDeliveryID)
 		assert.Nil(t, problem.ResolvedAt, "the Curator work queue sees an unresolved optional-email delivery problem")
+	})
+
+	t.Run("permanent infrastructure failure preserves the preference", func(t *testing.T) {
+		fixture := newImmediateFixture(t)
+		fixture.sender.results = []error{&smtp.DeliveryError{Diagnostic: "tls_verification_failed", Temporary: false}}
+		fixture.addPublicationActivity(t, fixture.base, fixture.media[0])
+		require.NoError(t, fixture.service.QueuePublication(context.Background(), fixture.event, fixture.publication))
+		var batchID int64
+		require.NoError(t, fixture.db.NewRaw(`SELECT id FROM notification_batches`).Scan(context.Background(), &batchID))
+
+		err := fixture.service.HandleImmediate(context.Background(), fixture.leasedBatchJob(t, batchID))
+		require.EqualError(t, err, "tls_verification_failed")
+		var preference string
+		require.NoError(t, fixture.db.NewRaw(`SELECT email_preference FROM notification_preferences
+			WHERE recipient_access_generation_id = ?`, fixture.access["alex"]).Scan(context.Background(), &preference))
+		assert.Equal(t, "immediate", preference)
 	})
 }
 
@@ -1061,7 +1078,7 @@ func TestImmediateEmailSuppressedBatchCannotReplayAfterEligibilityIsRestored(t *
 	assert.Empty(t, fixture.sender.sent(), "a replayed suppressed batch cannot send after eligibility is restored")
 }
 
-func waitForImmediateLockWait(t *testing.T, db *bun.DB, pattern string) {
+func waitForEmailBatchLock(t *testing.T, db *bun.DB, pattern string) {
 	t.Helper()
 	deadline := time.NewTimer(5 * time.Second)
 	defer deadline.Stop()

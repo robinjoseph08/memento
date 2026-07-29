@@ -1,7 +1,9 @@
 package emaildelivery
 
 import (
+	"bytes"
 	"errors"
+	"html/template"
 	"net/http"
 
 	"github.com/labstack/echo/v4"
@@ -14,9 +16,9 @@ const (
 	preferenceMutationPolicy = "policy:token_exchange"
 )
 
-const unsubscribePage = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Memento email preferences</title></head><body><main><h1>Optional email</h1><p>Stop immediate and weekly Memento email. Required identity and security messages will still be sent.</p><form method="post" action=""><input type="hidden" name="List-Unsubscribe" value="One-Click"><button type="submit">Unsubscribe</button></form></main></body></html>`
+var preferencePage = template.Must(template.New("email-preferences").Parse(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Memento email preferences</title></head><body><main><h1>Optional email</h1><p>These choices never change your Media access or required identity and security email.</p><form method="post" action=""><label>Email frequency <select name="email_preference"><option value="immediate"{{if eq .EmailPreference "immediate"}} selected{{end}}>Immediate</option><option value="weekly"{{if eq .EmailPreference "weekly"}} selected{{end}}>Weekly</option><option value="none"{{if eq .EmailPreference "none"}} selected{{end}}>None</option></select></label><label>Weekly day <select name="weekly_day">{{range .Days}}<option value="{{.}}"{{if eq . $.WeeklyDay}} selected{{end}}>{{.}}</option>{{end}}</select></label><label>Weekly local time <input name="weekly_local_time" type="time" required value="{{.WeeklyLocalTime}}"></label><label>Timezone <input name="weekly_timezone" required value="{{.WeeklyTimezone}}"></label><button type="submit">Save email preferences</button></form><form method="post" action=""><input type="hidden" name="List-Unsubscribe" value="One-Click"><button type="submit">Unsubscribe</button></form></main></body></html>`))
 
-const unsubscribedPage = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Memento email preferences</title></head><body><main><h1>Optional email stopped</h1><p>You will no longer receive optional Memento email. Required identity and security messages will still be sent.</p></main></body></html>`
+const preferenceSavedPage = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Memento email preferences</title></head><body><main><h1>Email preferences saved</h1><p>This single-use link has been consumed. Required identity and security messages remain available.</p></main></body></html>`
 
 type requester interface {
 	RequestTest(c echo.Context) error
@@ -57,26 +59,46 @@ func (h *Handler) GetStatus(c echo.Context) error {
 }
 
 func (h *Handler) PreferencePage(c echo.Context) error {
-	if err := h.service.ValidateUnsubscribe(c.Request().Context(), c.QueryParam("token")); err != nil {
+	preference, err := h.service.PreferenceToken(c.Request().Context(), c.QueryParam("token"))
+	if err != nil {
 		if errors.Is(err, ErrUnsubscribeToken) {
 			return errcodes.NotFound("Email preference")
 		}
 		return err
 	}
-	return c.HTML(http.StatusOK, unsubscribePage)
+	var page bytes.Buffer
+	if err := preferencePage.Execute(&page, struct {
+		Preference
+		Days []string
+	}{Preference: preference, Days: []string{"sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"}}); err != nil {
+		return err
+	}
+	return c.HTMLBlob(http.StatusOK, page.Bytes())
 }
 
 func (h *Handler) Unsubscribe(c echo.Context) error {
-	if c.FormValue("List-Unsubscribe") != "One-Click" {
-		return errcodes.NotFound("Email preference")
+	var err error
+	if c.FormValue("List-Unsubscribe") == "One-Click" {
+		err = h.service.Unsubscribe(c.Request().Context(), c.QueryParam("token"))
+	} else {
+		err = h.service.UpdatePreferenceToken(c.Request().Context(), c.QueryParam("token"), PreferenceUpdate{
+			EmailPreference: c.FormValue("email_preference"),
+			WeeklyDay:       c.FormValue("weekly_day"),
+			WeeklyLocalTime: c.FormValue("weekly_local_time"),
+			WeeklyTimezone:  c.FormValue("weekly_timezone"),
+		})
 	}
-	if err := h.service.Unsubscribe(c.Request().Context(), c.QueryParam("token")); err != nil {
-		if errors.Is(err, ErrUnsubscribeToken) {
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrUnsubscribeToken):
 			return errcodes.NotFound("Email preference")
+		case errors.Is(err, ErrNotificationPreference):
+			return errcodes.ValidationError("Choose a valid email frequency, weekly day, local time, and timezone.")
+		default:
+			return err
 		}
-		return err
 	}
-	return c.HTML(http.StatusOK, unsubscribedPage)
+	return c.HTML(http.StatusOK, preferenceSavedPage)
 }
 
 func unsubscribeHeaders(next echo.HandlerFunc) echo.HandlerFunc {

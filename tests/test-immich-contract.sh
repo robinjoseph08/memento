@@ -27,6 +27,7 @@ wait_for_server() {
 }
 
 fail_with_logs() {
+  compose ps --all >&2 || true
   compose logs server database redis >&2
   echo "$1" >&2
   exit 1

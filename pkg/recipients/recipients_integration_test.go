@@ -224,6 +224,60 @@ func TestRecipientMutationsRequireSessionBoundCSRF(t *testing.T) {
 	}
 }
 
+func TestRecipientCanUpdateWeeklyEmailScheduleWithoutChangingAccessOrIdentity(t *testing.T) {
+	fixture := newRecipientFixture(t)
+	recipientActor, err := fixture.auth.AuthorizeSession(context.Background(), fixture.credential, "", false)
+	require.NoError(t, err)
+	_, err = fixture.db.NewRaw(`INSERT INTO notification_preferences
+		(recipient_access_generation_id, email_preference)
+		VALUES (?, 'immediate')`, recipientActor.AccessID).Exec(context.Background())
+	require.NoError(t, err)
+	e := recipientHTTP(t, fixture)
+
+	platformRequest := httptest.NewRequestWithContext(context.Background(), http.MethodPut, "/api/curator/email-defaults",
+		strings.NewReader(`{"weekly_timezone":"America/Chicago"}`))
+	platformRequest.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	platformRequest.Header.Set(setup.CSRFHeader, fixture.csrf)
+	platformRequest.AddCookie(&http.Cookie{Name: setup.CookieName, Value: fixture.credential})
+	platformResponse := httptest.NewRecorder()
+	e.ServeHTTP(platformResponse, platformRequest)
+	require.Equal(t, http.StatusOK, platformResponse.Code, platformResponse.Body.String())
+	assert.JSONEq(t, `{"weekly_day":"sunday","weekly_local_time":"09:00","weekly_timezone":"America/Chicago"}`, platformResponse.Body.String())
+
+	read := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/me/email-preferences", nil)
+	read.AddCookie(&http.Cookie{Name: setup.CookieName, Value: fixture.credential})
+	readResponse := httptest.NewRecorder()
+	e.ServeHTTP(readResponse, read)
+	require.Equal(t, http.StatusOK, readResponse.Code, readResponse.Body.String())
+	assert.JSONEq(t, `{"email_preference":"immediate","weekly_day":"sunday","weekly_local_time":"09:00","weekly_timezone":"America/Chicago"}`, readResponse.Body.String())
+
+	body := `{"email_preference":"weekly","weekly_day":"wednesday","weekly_local_time":"18:45","weekly_timezone":"Europe/London"}`
+	withoutCSRF := httptest.NewRequestWithContext(context.Background(), http.MethodPut, "/api/me/email-preferences", strings.NewReader(body))
+	withoutCSRF.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	withoutCSRF.AddCookie(&http.Cookie{Name: setup.CookieName, Value: fixture.credential})
+	denied := httptest.NewRecorder()
+	e.ServeHTTP(denied, withoutCSRF)
+	assert.Equal(t, http.StatusForbidden, denied.Code)
+
+	request := httptest.NewRequestWithContext(context.Background(), http.MethodPut, "/api/me/email-preferences", strings.NewReader(body))
+	request.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	request.Header.Set(setup.CSRFHeader, fixture.csrf)
+	request.AddCookie(&http.Cookie{Name: setup.CookieName, Value: fixture.credential})
+	response := httptest.NewRecorder()
+	e.ServeHTTP(response, request)
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	assert.JSONEq(t, body, response.Body.String())
+
+	var email, state string
+	require.NoError(t, fixture.db.NewRaw(`SELECT email.email, access.state
+		FROM recipient_emails AS email
+		JOIN recipient_access_generations AS access ON access.id = email.recipient_access_generation_id
+		WHERE email.recipient_access_generation_id = ? AND email.is_current`, recipientActor.AccessID).
+		Scan(context.Background(), &email, &state))
+	assert.Equal(t, "robin@example.com", email)
+	assert.Equal(t, "completed", state)
+}
+
 func TestRecipientRoutesAttributeSecurityAuditRequests(t *testing.T) {
 	fixture := newRecipientFixture(t)
 	e := recipientHTTP(t, fixture)

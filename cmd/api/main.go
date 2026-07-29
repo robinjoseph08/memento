@@ -214,6 +214,7 @@ func jobHandlers(sourceService *sources.Service, eventService *events.Service, a
 	if smtpEnabled {
 		handlers[emaildelivery.JobKind] = emailService.Handle
 		handlers[emaildelivery.ImmediateJobKind] = emailService.HandleImmediate
+		handlers[emaildelivery.WeeklyJobKind] = emailService.HandleWeekly
 	}
 	return handlers
 }

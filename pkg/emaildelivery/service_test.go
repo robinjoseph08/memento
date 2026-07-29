@@ -51,7 +51,7 @@ func TestImmediateHandlerRejectsInvalidPayloadBeforeDependencies(t *testing.T) {
 
 func TestImmediateBatchItemKindRejectsUnknownValues(t *testing.T) {
 	_, err := batchItemKind("future_kind").spec()
-	require.ErrorIs(t, err, errUnsupportedImmediateItemKind)
+	require.ErrorIs(t, err, errUnsupportedEmailItemKind)
 }
 
 func TestSafePreviewRejectsUndecodableBytes(t *testing.T) {
