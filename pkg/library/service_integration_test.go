@@ -5,8 +5,10 @@ package library
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -20,9 +22,11 @@ import (
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 	"github.com/robinjoseph08/memento/internal/testdb"
+	"github.com/robinjoseph08/memento/pkg/config"
 	"github.com/robinjoseph08/memento/pkg/errcodes"
 	"github.com/robinjoseph08/memento/pkg/immich"
 	"github.com/robinjoseph08/memento/pkg/migrations"
+	"github.com/robinjoseph08/memento/pkg/repairs"
 	"github.com/robinjoseph08/memento/pkg/setup"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -116,6 +120,54 @@ func (source *blockingRepresentationSource) open(ctx context.Context, contents s
 	body := &observedRepresentationBody{Reader: strings.NewReader(contents), closed: make(chan struct{})}
 	source.bodies <- body
 	return immich.MediaResponse{Body: body, StatusCode: http.StatusOK, ContentType: "image/webp"}, nil
+}
+
+type lateMissingRepresentationSource struct {
+	started chan struct{}
+	release <-chan struct{}
+}
+
+func (source *lateMissingRepresentationSource) missing(ctx context.Context) (immich.MediaResponse, error) {
+	select {
+	case source.started <- struct{}{}:
+	case <-ctx.Done():
+		return immich.MediaResponse{}, ctx.Err()
+	}
+	select {
+	case <-source.release:
+		return immich.MediaResponse{}, immich.ErrNotFound
+	case <-ctx.Done():
+		return immich.MediaResponse{}, ctx.Err()
+	}
+}
+
+func (source *lateMissingRepresentationSource) Thumbnail(ctx context.Context, _ uuid.UUID, _ immich.MediaRequest) (immich.MediaResponse, error) {
+	return source.missing(ctx)
+}
+func (source *lateMissingRepresentationSource) Preview(ctx context.Context, _ uuid.UUID, _ immich.MediaRequest) (immich.MediaResponse, error) {
+	return source.missing(ctx)
+}
+func (source *lateMissingRepresentationSource) Video(ctx context.Context, _ uuid.UUID, _ immich.MediaRequest) (immich.MediaResponse, error) {
+	return source.missing(ctx)
+}
+func (source *lateMissingRepresentationSource) Original(ctx context.Context, _ uuid.UUID, _ immich.MediaRequest) (immich.MediaResponse, error) {
+	return source.missing(ctx)
+}
+
+type relinkEvidenceSource struct{ asset immich.AssetSummary }
+
+func (*relinkEvidenceSource) Check(context.Context) error { return nil }
+func (*relinkEvidenceSource) People(context.Context) ([]immich.PersonSummary, error) {
+	return nil, nil
+}
+func (*relinkEvidenceSource) Faces(context.Context, uuid.UUID) ([]immich.FaceSummary, error) {
+	return nil, nil
+}
+func (source *relinkEvidenceSource) Asset(context.Context, uuid.UUID) (immich.AssetSummary, error) {
+	return source.asset, nil
+}
+func (*relinkEvidenceSource) AssetDeliveryAvailable(context.Context, uuid.UUID, string) (bool, error) {
+	return true, nil
 }
 
 type libraryFixture struct {
@@ -231,11 +283,16 @@ func (fixture libraryFixture) place(t *testing.T, eventIndex int, mediaID, acces
 		INSERT INTO current_published_placements
 			(event_id, publication_id, published_moment_id, media_item_id, position)
 		VALUES (?, ?, ?, ?, ?);
+		INSERT INTO audience_entries (
+			published_moment_id, recipient_person_id, recipient_access_generation_id
+		) SELECT ?, person_id, ? FROM recipient_access_generations WHERE id = ?
+		ON CONFLICT DO NOTHING;
 		INSERT INTO current_audience_entitlements
 			(event_id, publication_id, recipient_person_id, recipient_access_generation_id, media_item_id)
 		SELECT ?, ?, person_id, ?, ? FROM recipient_access_generations WHERE id = ?
 	`, fixture.moments[eventIndex], position, mediaID,
 		fixture.events[eventIndex], fixture.publications[eventIndex], fixture.moments[eventIndex], mediaID, position,
+		fixture.moments[eventIndex], accessID, accessID,
 		fixture.events[eventIndex], fixture.publications[eventIndex], accessID, mediaID, accessID).Exec(context.Background())
 	require.NoError(t, err)
 }
@@ -929,7 +986,7 @@ func TestMediaRepresentationsRevalidateEveryAuthorizationBoundaryBeforeImmich(t 
 		{
 			name: "source unavailable",
 			deny: func(ctx context.Context, fixture libraryFixture) error {
-				_, err := fixture.db.NewRaw(`UPDATE media_items SET availability = 'source_missing' WHERE id = ?`, fixture.media[0]).Exec(ctx)
+				_, err := fixture.db.NewRaw(`UPDATE media_items SET availability = 'source_missing', missing_since = now() WHERE id = ?`, fixture.media[0]).Exec(ctx)
 				return err
 			},
 			reason: "source-unavailable Media cannot be streamed",
@@ -1071,7 +1128,7 @@ func TestRepresentationLocksResolvedMediaAndBackingThroughFinalHandoff(t *testin
 		name   string
 		mutate string
 	}{
-		{name: "availability mutation", mutate: `UPDATE media_items SET availability = 'source_missing' WHERE id = ?`},
+		{name: "availability mutation", mutate: `UPDATE media_items SET availability = 'source_missing', missing_since = now() WHERE id = ?`},
 		{name: "active backing mutation", mutate: `UPDATE media_backings SET active = false, ended_at = now() WHERE media_item_id = ? AND active`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -1168,6 +1225,43 @@ func waitForLibraryLockWait(t *testing.T, db *bun.DB, pid int) {
 	t.Fatalf("Media lifecycle writer did not wait on the representation row locks; last wait was %q", lastWait)
 }
 
+func waitForLibraryBlockedQuery(t *testing.T, db *bun.DB, blockerPID int, pattern string) int {
+	t.Helper()
+	deadline := time.NewTimer(5 * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	lastState := "no matching backend"
+	for {
+		type waitState struct {
+			PID      int
+			WaitType string
+			Blockers string
+			Query    string
+		}
+		var states []waitState
+		err := db.NewRaw(`
+			SELECT pid, COALESCE(wait_event_type, '') AS wait_type,
+				array_to_string(pg_blocking_pids(pid), ',') AS blockers, query
+			FROM pg_stat_activity
+			WHERE datname = current_database() AND pid <> ? AND query LIKE ?
+			ORDER BY pid
+		`, blockerPID, pattern).Scan(context.Background(), &states)
+		require.NoError(t, err)
+		for _, state := range states {
+			lastState = fmt.Sprintf("pid=%d wait_type=%q blockers=%v query=%q", state.PID, state.WaitType, state.Blockers, state.Query)
+			if state.WaitType == "Lock" && slices.Contains(strings.Split(state.Blockers, ","), strconv.Itoa(blockerPID)) {
+				return state.PID
+			}
+		}
+		select {
+		case <-ticker.C:
+		case <-deadline.C:
+			t.Fatalf("query did not reach the controlled lock: pattern=%q blocker_pid=%d last_state=%s", pattern, blockerPID, lastState)
+		}
+	}
+}
+
 func TestSlowRepresentationOpeningDoesNotExhaustMinimumConnectionPool(t *testing.T) {
 	fixture := newLibraryFixture(t)
 	fixture.db.SetMaxOpenConns(2)
@@ -1214,10 +1308,468 @@ func TestSlowRepresentationOpeningDoesNotExhaustMinimumConnectionPool(t *testing
 	}
 }
 
+type exactLibraryAudience struct {
+	PublishedEntries    string
+	CurrentEntitlements string
+}
+
+func loadExactLibraryAudience(t *testing.T, fixture libraryFixture, mediaID uuid.UUID) exactLibraryAudience {
+	t.Helper()
+	ctx := context.Background()
+	var state exactLibraryAudience
+	require.NoError(t, fixture.db.NewRaw(`
+		SELECT COALESCE(jsonb_agg(to_jsonb(audience) ORDER BY audience.published_moment_id, audience.recipient_person_id, audience.recipient_access_generation_id), '[]'::jsonb)::text
+		FROM (
+			SELECT DISTINCT entry.published_moment_id, entry.recipient_person_id, entry.recipient_access_generation_id
+			FROM audience_entries AS entry
+			JOIN current_published_placements AS placement ON placement.published_moment_id = entry.published_moment_id
+			WHERE placement.media_item_id = ?
+		) AS audience
+	`, mediaID).Scan(ctx, &state.PublishedEntries))
+	require.NoError(t, fixture.db.NewRaw(`
+		SELECT COALESCE(jsonb_agg(to_jsonb(entitlement) ORDER BY entitlement.event_id, entitlement.publication_id, entitlement.recipient_person_id, entitlement.recipient_access_generation_id, entitlement.media_item_id), '[]'::jsonb)::text
+		FROM (
+			SELECT event_id, publication_id, recipient_person_id, recipient_access_generation_id, media_item_id
+			FROM current_audience_entitlements WHERE media_item_id = ?
+		) AS entitlement
+	`, mediaID).Scan(ctx, &state.CurrentEntitlements))
+	require.NotEqual(t, "[]", state.PublishedEntries)
+	require.NotEqual(t, "[]", state.CurrentEntitlements)
+	return state
+}
+
+func TestUpstreamMissingResponseFailsEveryRepresentationClosedWithoutRemovingHistory(t *testing.T) {
+	fixture := newLibraryFixture(t)
+	ctx := context.Background()
+	audienceBefore := loadExactLibraryAudience(t, fixture, fixture.media[0])
+	fixture.thumbnail.err = immich.ErrNotFound
+
+	_, err := fixture.service.Thumbnail(ctx, fixture.actor, fixture.media[0], immich.MediaRequest{})
+	assert.ErrorIs(t, err, ErrNotFound)
+	fixture.thumbnail.err = nil
+
+	photos, err := fixture.service.Photos(ctx, fixture.actor, "10", "", false)
+	require.NoError(t, err)
+	var missing *Media
+	for index := range photos.Media {
+		if photos.Media[index].ID == fixture.media[0].String() {
+			missing = &photos.Media[index]
+			break
+		}
+	}
+	require.NotNil(t, missing, "the published listing remains in Recipient history")
+	assert.False(t, missing.Available)
+	assert.Empty(t, missing.ThumbnailURL)
+	assert.Empty(t, missing.PreviewURL)
+	assert.Empty(t, missing.VideoURL)
+	assert.Empty(t, missing.OriginalURL)
+
+	for _, open := range []func() (immich.MediaResponse, error){
+		func() (immich.MediaResponse, error) {
+			return fixture.service.Thumbnail(ctx, fixture.actor, fixture.media[0], immich.MediaRequest{})
+		},
+		func() (immich.MediaResponse, error) {
+			return fixture.service.Preview(ctx, fixture.actor, fixture.media[0], immich.MediaRequest{})
+		},
+		func() (immich.MediaResponse, error) {
+			return fixture.service.Original(ctx, fixture.actor, fixture.media[0], immich.MediaRequest{})
+		},
+	} {
+		_, err := open()
+		assert.ErrorIs(t, err, ErrNotFound)
+	}
+	assert.Len(t, fixture.thumbnail.assets, 1, "once missing is observed no derivative or original can reach Immich")
+	var placements int
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM current_published_placements WHERE media_item_id = ?`, fixture.media[0]).Scan(ctx, &placements))
+	assert.Positive(t, placements)
+	assert.Equal(t, audienceBefore, loadExactLibraryAudience(t, fixture, fixture.media[0]), "Source missing must preserve every relevant Audience and entitlement row")
+}
+
+func TestVideoPlaybackNotFoundBlocksEveryRepresentationAndPreservesHistory(t *testing.T) {
+	fixture := newLibraryFixture(t)
+	ctx := context.Background()
+	_, err := fixture.db.NewRaw(`
+		UPDATE media_items SET media_type = 'video' WHERE id = ?;
+		UPDATE published_media_placements SET media_type = 'video' WHERE media_item_id = ?
+	`, fixture.media[0], fixture.media[0]).Exec(ctx)
+	require.NoError(t, err)
+	audienceBefore := loadExactLibraryAudience(t, fixture, fixture.media[0])
+	fixture.thumbnail.err = immich.ErrNotFound
+	_, err = fixture.service.Video(ctx, fixture.actor, fixture.media[0], immich.MediaRequest{})
+	assert.ErrorIs(t, err, ErrNotFound)
+	fixture.thumbnail.err = nil
+	for _, open := range []func() (immich.MediaResponse, error){
+		func() (immich.MediaResponse, error) {
+			return fixture.service.Thumbnail(ctx, fixture.actor, fixture.media[0], immich.MediaRequest{})
+		},
+		func() (immich.MediaResponse, error) {
+			return fixture.service.Preview(ctx, fixture.actor, fixture.media[0], immich.MediaRequest{})
+		},
+		func() (immich.MediaResponse, error) {
+			return fixture.service.Video(ctx, fixture.actor, fixture.media[0], immich.MediaRequest{})
+		},
+		func() (immich.MediaResponse, error) {
+			return fixture.service.Original(ctx, fixture.actor, fixture.media[0], immich.MediaRequest{})
+		},
+	} {
+		_, err := open()
+		assert.ErrorIs(t, err, ErrNotFound)
+	}
+	assert.Equal(t, []string{"video"}, fixture.thumbnail.representations)
+	assert.Equal(t, audienceBefore, loadExactLibraryAudience(t, fixture, fixture.media[0]))
+}
+
+func TestCuratorNotFoundUsesSharedMissingTransitionAndFailsClosed(t *testing.T) {
+	fixture := newLibraryFixture(t)
+	ctx := context.Background()
+	_, err := fixture.db.NewRaw(`
+		DELETE FROM person_roles WHERE person_id = ? AND role = 'curator';
+		INSERT INTO person_roles (person_id, role) VALUES (?, 'curator')
+	`, fixture.curator, fixture.actor.PersonID).Exec(ctx)
+	require.NoError(t, err)
+	curator := fixture.actor
+	curator.Curator = true
+	fixture.thumbnail.err = immich.ErrNotFound
+	_, err = fixture.service.CuratorRepresentation(ctx, curator, fixture.media[0], representationPreview, immich.MediaRequest{})
+	assert.ErrorIs(t, err, ErrNotFound)
+	fixture.thumbnail.err = nil
+	_, err = fixture.service.CuratorRepresentation(ctx, curator, fixture.media[0], representationThumbnail, immich.MediaRequest{})
+	assert.ErrorIs(t, err, ErrNotFound)
+	_, err = fixture.service.Thumbnail(ctx, fixture.actor, fixture.media[0], immich.MediaRequest{})
+	assert.ErrorIs(t, err, ErrNotFound)
+	assert.Equal(t, []string{"preview"}, fixture.thumbnail.representations)
+	var availability string
+	require.NoError(t, fixture.db.NewRaw(`SELECT availability FROM media_items WHERE id = ?`, fixture.media[0]).Scan(ctx, &availability))
+	assert.Equal(t, "source_missing", availability)
+}
+
+func TestLateOldBackingNotFoundCannotUndoConfirmedRelink(t *testing.T) {
+	fixture := newLibraryFixture(t)
+	ctx := context.Background()
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	lateSource := &lateMissingRepresentationSource{started: started, release: release}
+	lateService := New(fixture.db, lateSource)
+	delivery := make(chan error, 1)
+	go func() {
+		_, err := lateService.Thumbnail(ctx, fixture.actor, fixture.media[0], immich.MediaRequest{})
+		delivery <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("old backing delivery did not begin")
+	}
+
+	stableMediaID, oldAssetID := fixture.media[0], fixture.assets[0]
+	candidateMediaID, candidateAssetID, candidateBackingID := uuid.New(), uuid.New(), uuid.New()
+	sourceAlbumID, candidateID := uuid.New(), uuid.New()
+	digest := sha256.Sum256([]byte("late old backing relink"))
+	checksum := fmt.Sprintf("%x", digest[:20])
+	_, err := fixture.db.NewRaw(`
+		UPDATE media_items SET availability = 'source_missing', missing_since = now() WHERE id = ?;
+		UPDATE media_backings SET checksum = ? WHERE media_item_id = ? AND active;
+		INSERT INTO source_albums (
+			id, immich_album_id, name, asset_count, source_created_at, source_updated_at,
+			first_seen_at, last_seen_at, source_fingerprint, next_reconciliation_at
+		) VALUES (?, gen_random_uuid(), 'Relink race', 1, now(), now(), now(), now(), decode(repeat('12', 32), 'hex'), now());
+		INSERT INTO media_items (
+			id, immich_asset_id, media_type, availability, first_seen_at, last_seen_at
+		) VALUES (?, ?, 'image', 'current', now(), now());
+		INSERT INTO media_backings (
+			id, media_item_id, immich_asset_id, checksum, filename, original_path, linked_at
+		) VALUES (?, ?, ?, ?, 'replacement.jpg', '/library/replacement.jpg', now());
+		INSERT INTO source_album_memberships (
+			source_album_id, immich_asset_id, media_item_id, first_seen_at, last_seen_at, source_fingerprint
+		) VALUES (?, ?, ?, now(), now(), decode(repeat('13', 32), 'hex'));
+		INSERT INTO media_repair_candidates (
+			id, media_item_id, candidate_media_item_id, previous_immich_asset_id,
+			candidate_immich_asset_id, previous_evidence, candidate_evidence, created_at
+		) VALUES (?, ?, ?, ?, ?,
+			jsonb_build_object('checksum', ?, 'capture', NULL, 'filename', '', 'path', ''),
+			jsonb_build_object('checksum', ?, 'capture', NULL, 'filename', 'replacement.jpg', 'path', '/library/replacement.jpg'), now())
+	`, stableMediaID, checksum, stableMediaID, sourceAlbumID,
+		candidateMediaID, candidateAssetID, candidateBackingID, candidateMediaID,
+		candidateAssetID, checksum, sourceAlbumID, candidateAssetID, candidateMediaID,
+		candidateID, stableMediaID, candidateMediaID, oldAssetID, candidateAssetID, checksum, checksum).Exec(ctx)
+	require.NoError(t, err)
+	evidence := &relinkEvidenceSource{asset: immich.AssetSummary{
+		SourceID: candidateAssetID, MediaType: "image", Checksum: checksum,
+		Filename: "renamed-without-identity-change.jpg", OriginalPath: "/library/replacement.jpg",
+	}}
+	repairService := repairs.New(fixture.db, evidence)
+	listed, err := repairService.List(ctx)
+	require.NoError(t, err)
+	var reviewToken string
+	for _, candidate := range listed.MediaCandidates {
+		if candidate.ID == candidateID.String() {
+			reviewToken = candidate.ReviewToken
+		}
+	}
+	require.NotEmpty(t, reviewToken)
+	_, err = repairService.ConfirmMedia(ctx, setup.CuratorSession{
+		PersonID: fixture.actor.PersonID, SessionID: fixture.actor.SessionID,
+	}, candidateID, reviewToken)
+	require.NoError(t, err)
+	close(release)
+	select {
+	case err := <-delivery:
+		assert.ErrorIs(t, err, ErrNotFound)
+	case <-time.After(5 * time.Second):
+		t.Fatal("late old backing response did not finish")
+	}
+	var activeAssetID uuid.UUID
+	var availability string
+	require.NoError(t, fixture.db.NewRaw(`
+		SELECT media.immich_asset_id, media.availability FROM media_items AS media WHERE media.id = ?
+	`, stableMediaID).Scan(ctx, &activeAssetID, &availability))
+	assert.Equal(t, candidateAssetID, activeAssetID)
+	assert.Equal(t, "current", availability)
+}
+
+func TestCandidateNotFoundAndConfirmationSerializeForBothLockOrders(t *testing.T) {
+	type raceFixture struct {
+		library          libraryFixture
+		stableMediaID    uuid.UUID
+		stableAssetID    uuid.UUID
+		candidateMediaID uuid.UUID
+		candidateAssetID uuid.UUID
+		candidateID      uuid.UUID
+		candidateBacking uuid.UUID
+		reviewToken      string
+		repairService    *repairs.Service
+		deliveryService  *Service
+		source           *lateMissingRepresentationSource
+		release          chan struct{}
+		curator          setup.SessionActor
+	}
+	newRace := func(t *testing.T) raceFixture {
+		t.Helper()
+		fixture := newLibraryFixture(t)
+		result := raceFixture{library: fixture, stableMediaID: fixture.media[0], stableAssetID: fixture.assets[0],
+			candidateMediaID: uuid.New(), candidateAssetID: uuid.New(), candidateID: uuid.New(), candidateBacking: uuid.New()}
+		sourceAlbumID := uuid.New()
+		digest := sha256.Sum256([]byte("candidate missing confirmation race"))
+		checksum := fmt.Sprintf("%x", digest[:20])
+		_, err := fixture.db.NewRaw(`
+			DELETE FROM person_roles WHERE person_id = ? AND role = 'curator';
+			INSERT INTO person_roles (person_id, role) VALUES (?, 'curator');
+			UPDATE media_items SET availability = 'source_missing', missing_since = now() WHERE id = ?;
+			UPDATE media_backings SET checksum = ? WHERE media_item_id = ? AND active;
+			INSERT INTO source_albums (
+				id, immich_album_id, name, asset_count, source_created_at, source_updated_at,
+				first_seen_at, last_seen_at, source_fingerprint, next_reconciliation_at
+			) VALUES (?, gen_random_uuid(), 'Candidate missing race', 1, now(), now(), now(), now(), decode(repeat('14', 32), 'hex'), now());
+			INSERT INTO media_items (
+				id, immich_asset_id, media_type, availability, first_seen_at, last_seen_at
+			) VALUES (?, ?, 'image', 'current', now(), now());
+			INSERT INTO media_backings (
+				id, media_item_id, immich_asset_id, checksum, filename, original_path, linked_at
+			) VALUES (?, ?, ?, ?, 'candidate.jpg', '/library/candidate.jpg', now());
+			INSERT INTO source_album_memberships (
+				source_album_id, immich_asset_id, media_item_id, first_seen_at, last_seen_at, source_fingerprint
+			) VALUES (?, ?, ?, now(), now(), decode(repeat('15', 32), 'hex'));
+			INSERT INTO media_repair_candidates (
+				id, media_item_id, candidate_media_item_id, previous_immich_asset_id,
+				candidate_immich_asset_id, previous_evidence, candidate_evidence, created_at
+			) VALUES (?, ?, ?, ?, ?,
+				jsonb_build_object('checksum', ?, 'capture', NULL, 'filename', '', 'path', ''),
+				jsonb_build_object('checksum', ?, 'capture', NULL, 'filename', 'candidate.jpg', 'path', '/library/candidate.jpg'), now())
+		`, fixture.curator, fixture.actor.PersonID, result.stableMediaID, checksum, result.stableMediaID, sourceAlbumID,
+			result.candidateMediaID, result.candidateAssetID, result.candidateBacking,
+			result.candidateMediaID, result.candidateAssetID, checksum,
+			sourceAlbumID, result.candidateAssetID, result.candidateMediaID,
+			result.candidateID, result.stableMediaID, result.candidateMediaID,
+			result.stableAssetID, result.candidateAssetID, checksum, checksum).Exec(context.Background())
+		require.NoError(t, err)
+		evidence := &relinkEvidenceSource{asset: immich.AssetSummary{
+			SourceID: result.candidateAssetID, MediaType: "image", Checksum: checksum,
+			Filename: "candidate.jpg", OriginalPath: "/library/candidate.jpg",
+		}}
+		result.repairService = repairs.New(fixture.db, evidence)
+		listed, err := result.repairService.List(context.Background())
+		require.NoError(t, err)
+		for _, candidate := range listed.MediaCandidates {
+			if candidate.ID == result.candidateID.String() {
+				result.reviewToken = candidate.ReviewToken
+			}
+		}
+		require.NotEmpty(t, result.reviewToken)
+		started, release := make(chan struct{}, 1), make(chan struct{})
+		result.release = release
+		result.source = &lateMissingRepresentationSource{started: started, release: release}
+		result.deliveryService = New(fixture.db, result.source)
+		result.curator = fixture.actor
+		result.curator.Curator = true
+		return result
+	}
+	startDelivery := func(t *testing.T, race raceFixture) chan error {
+		t.Helper()
+		result := make(chan error, 1)
+		go func() {
+			_, err := race.deliveryService.CuratorRepresentation(context.Background(), race.curator,
+				race.candidateMediaID, representationThumbnail, immich.MediaRequest{})
+			result <- err
+		}()
+		select {
+		case <-race.source.started:
+		case <-time.After(5 * time.Second):
+			t.Fatal("candidate delivery did not reach Immich")
+		}
+		return result
+	}
+	confirm := func(race raceFixture) error {
+		_, err := race.repairService.ConfirmMedia(context.Background(), setup.CuratorSession{
+			PersonID: race.library.actor.PersonID, SessionID: race.library.actor.SessionID,
+		}, race.candidateID, race.reviewToken)
+		return err
+	}
+
+	t.Run("confirmation commits before missing transition", func(t *testing.T) {
+		race := newRace(t)
+		delivery := startDelivery(t, race)
+		require.NoError(t, confirm(race))
+		close(race.release)
+		select {
+		case err := <-delivery:
+			assert.ErrorIs(t, err, ErrNotFound)
+		case <-time.After(5 * time.Second):
+			t.Fatal("candidate missing transition did not follow the confirmed backing move")
+		}
+		var assetID uuid.UUID
+		var availability string
+		require.NoError(t, race.library.db.NewRaw(`SELECT immich_asset_id, availability FROM media_items WHERE id = ?`, race.stableMediaID).Scan(context.Background(), &assetID, &availability))
+		assert.Equal(t, race.candidateAssetID, assetID)
+		assert.Equal(t, "source_missing", availability, "late missing evidence follows the exact moved backing")
+	})
+
+	t.Run("missing transition locks before confirmation", func(t *testing.T) {
+		race := newRace(t)
+		delivery := startDelivery(t, race)
+		blocker, err := race.library.db.BeginTx(context.Background(), nil)
+		require.NoError(t, err)
+		_, err = blocker.NewRaw(`SELECT id FROM media_items WHERE id = ? FOR UPDATE`, race.candidateMediaID).Exec(context.Background())
+		require.NoError(t, err)
+		var blockerPID int
+		require.NoError(t, blocker.NewRaw(`SELECT pg_backend_pid()`).Scan(context.Background(), &blockerPID))
+		close(race.release)
+		missingPID := waitForLibraryBlockedQuery(t, race.library.db, blockerPID, `%SELECT id FROM media_items WHERE id =%FOR UPDATE%`)
+		confirmation := make(chan error, 1)
+		go func() { confirmation <- confirm(race) }()
+		waitForLibraryBlockedQuery(t, race.library.db, missingPID, `%SELECT id FROM media_items WHERE id IN%FOR UPDATE%`)
+		require.NoError(t, blocker.Commit())
+		select {
+		case err := <-delivery:
+			assert.ErrorIs(t, err, ErrNotFound)
+		case <-time.After(5 * time.Second):
+			t.Fatal("candidate missing transition did not finish")
+		}
+		select {
+		case err := <-confirmation:
+			assert.ErrorIs(t, err, repairs.ErrConflict)
+		case <-time.After(5 * time.Second):
+			t.Fatal("confirmation did not observe the missing candidate")
+		}
+		var stableAvailability, candidateAvailability string
+		require.NoError(t, race.library.db.NewRaw(`SELECT availability FROM media_items WHERE id = ?`, race.stableMediaID).Scan(context.Background(), &stableAvailability))
+		require.NoError(t, race.library.db.NewRaw(`SELECT availability FROM media_items WHERE id = ?`, race.candidateMediaID).Scan(context.Background(), &candidateAvailability))
+		assert.Equal(t, "source_missing", stableAvailability)
+		assert.Equal(t, "source_missing", candidateAvailability)
+	})
+}
+
+func TestMalformedOrUnauthorizedUpstreamFailureDoesNotInventSourceMissing(t *testing.T) {
+	fixture := newLibraryFixture(t)
+	fixture.thumbnail.err = errors.New("Immich returned an invalid response")
+
+	_, err := fixture.service.Thumbnail(context.Background(), fixture.actor, fixture.media[0], immich.MediaRequest{})
+	require.Error(t, err)
+	var availability string
+	require.NoError(t, fixture.db.NewRaw(`SELECT availability FROM media_items WHERE id = ?`, fixture.media[0]).Scan(context.Background(), &availability))
+	assert.Equal(t, "current", availability, "only a confirmed not-found response is Source missing evidence")
+}
+
+func TestRealImmichAuthorizationFailuresPreserveMediaAvailability(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			fixture := newLibraryFixture(t)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				assert.Equal(t, fixture.assets[0].String(), strings.Split(r.URL.Path, "/")[3])
+				w.WriteHeader(status)
+			}))
+			defer server.Close()
+			client, err := immich.New(config.ImmichConfig{
+				URL: server.URL, APIKey: "rejected-key", HealthTimeout: time.Second,
+			}, server.Client())
+			require.NoError(t, err)
+			service := New(fixture.db, client)
+
+			_, err = service.Thumbnail(context.Background(), fixture.actor, fixture.media[0], immich.MediaRequest{})
+			require.EqualError(t, err, "Immich API key is invalid")
+			var availability string
+			var missingSince *time.Time
+			require.NoError(t, fixture.db.NewRaw(`SELECT availability, missing_since FROM media_items WHERE id = ?`, fixture.media[0]).Scan(context.Background(), &availability, &missingSince))
+			assert.Equal(t, "current", availability)
+			assert.Nil(t, missingSince, "upstream authorization failure is not missing-source evidence")
+		})
+	}
+}
+
+func TestRecipientMalformedRangeUpstreamBadRequestDoesNotMarkSourceMissing(t *testing.T) {
+	fixture := newLibraryFixture(t)
+	var upstreamCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamCalls++
+		w.WriteHeader(http.StatusBadRequest)
+	}))
+	defer server.Close()
+	client, err := immich.New(config.ImmichConfig{
+		URL: server.URL, APIKey: "test-key", HealthTimeout: time.Second,
+	}, server.Client())
+	require.NoError(t, err)
+	service := New(fixture.db, client)
+
+	_, err = service.Thumbnail(context.Background(), fixture.actor, fixture.media[0], immich.MediaRequest{Range: "bytes=not-a-range"})
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, immich.ErrNotFound)
+	assert.NotErrorIs(t, err, ErrNotFound)
+	var availability string
+	require.NoError(t, fixture.db.NewRaw(`SELECT availability FROM media_items WHERE id = ?`, fixture.media[0]).Scan(context.Background(), &availability))
+	assert.Equal(t, "current", availability, "a recipient-induced 400 is request failure, not global missing evidence")
+	assert.Zero(t, upstreamCalls, "malformed recipient headers are rejected before Immich")
+}
+
+func TestDeletedImmichBadRequestWithBrowserValidatorsMarksExactBackingMissing(t *testing.T) {
+	for _, request := range []immich.MediaRequest{
+		{Range: "bytes=0-1023"},
+		{IfNoneMatch: `"thumbnail-v1"`},
+		{IfModifiedSince: "Mon, 27 Jul 2026 12:00:00 GMT"},
+	} {
+		fixture := newLibraryFixture(t)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusBadRequest)
+		}))
+		client, err := immich.New(config.ImmichConfig{
+			URL: server.URL, APIKey: "test-key", HealthTimeout: time.Second,
+		}, server.Client())
+		require.NoError(t, err)
+		service := New(fixture.db, client)
+
+		_, err = service.Thumbnail(context.Background(), fixture.actor, fixture.media[0], request)
+		assert.ErrorIs(t, err, ErrNotFound)
+		var availability string
+		var missingSince *time.Time
+		require.NoError(t, fixture.db.NewRaw(`SELECT availability, missing_since FROM media_items WHERE id = ?`, fixture.media[0]).Scan(context.Background(), &availability, &missingSince))
+		assert.Equal(t, "source_missing", availability)
+		assert.NotNil(t, missingSince)
+		server.Close()
+	}
+}
+
 func TestRecipientAuthorizationMatrixRevalidatesReuseWithdrawalAndAvailability(t *testing.T) {
 	fixture := newLibraryFixture(t)
 	ctx := context.Background()
-	_, err := fixture.db.NewRaw(`UPDATE media_items SET availability = 'source_missing' WHERE id = ?`, fixture.media[1]).Exec(ctx)
+	_, err := fixture.db.NewRaw(`UPDATE media_items SET availability = 'source_missing', missing_since = now() WHERE id = ?`, fixture.media[1]).Exec(ctx)
 	require.NoError(t, err)
 	photos, err := fixture.service.Photos(ctx, fixture.actor, "10", "", false)
 	require.NoError(t, err)

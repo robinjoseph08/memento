@@ -59,6 +59,17 @@ test("shows private normalized Media evidence and confirms only after an explici
     }
     return Promise.resolve(
       jsonResponse({
+        source_problems: [
+          {
+            kind: "media_item",
+            id: "99999999-9999-4999-8999-999999999999",
+            label: "missing.jpg",
+            priority: "critical",
+            published: true,
+            missing_since: "2026-01-01T00:00:00Z",
+            candidate_count: 1,
+          },
+        ],
         person_candidates: [],
         unlinked_immich_people: [],
         media_candidates: [
@@ -67,6 +78,9 @@ test("shows private normalized Media evidence and confirms only after an explici
             media_item_id: "22222222-2222-4222-8222-222222222222",
             previous_immich_asset_id: "33333333-3333-4333-8333-333333333333",
             candidate_immich_asset_id: "44444444-4444-4444-8444-444444444444",
+            media_type: "image",
+            review_token:
+              "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             state: "pending",
             previous: {
               checksum: "abcd",
@@ -104,6 +118,9 @@ test("shows private normalized Media evidence and confirms only after an explici
 
   renderWorkspace();
   expect(await screen.findByText("/private/old.jpg")).toBeInTheDocument();
+  expect(screen.getByText("Published Media unavailable")).toBeInTheDocument();
+  expect(screen.getByText("missing.jpg")).toBeInTheDocument();
+  expect(screen.getByText(/highest priority/)).toBeInTheDocument();
   expect(screen.getByText("/private/moved/new.jpg")).toBeInTheDocument();
   expect(
     screen.getByText("33333333-3333-4333-8333-333333333333"),
@@ -137,9 +154,111 @@ test("shows private normalized Media evidence and confirms only after an explici
       "/api/repairs/media/11111111-1111-4111-8111-111111111111/confirm",
     );
     expect(confirmation?.init?.headers).toMatchObject({
+      "Content-Type": "application/json",
       "X-Memento-CSRF": "private-csrf",
     });
+    expect(stringBody(confirmation?.init?.body)).toBe(
+      '{"review_token":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}',
+    );
   });
+});
+
+test("explains that a missing published album does not block current Media", async () => {
+  vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
+    if (requestPath(input).startsWith("/api/people")) {
+      return Promise.resolve(jsonResponse({ people: [] }));
+    }
+    return Promise.resolve(
+      jsonResponse({
+        source_problems: [
+          {
+            kind: "source_album",
+            id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            label: "Family album",
+            priority: "critical",
+            published: true,
+            missing_since: "2026-01-01T00:00:00Z",
+            candidate_count: 0,
+          },
+        ],
+        person_candidates: [],
+        unlinked_immich_people: [],
+        media_candidates: [],
+      }),
+    );
+  });
+
+  renderWorkspace();
+  expect(await screen.findByText("Source album missing")).toBeInTheDocument();
+  expect(
+    screen.getByText(
+      /Media items remain available unless their own backing is missing/,
+    ),
+  ).toBeInTheDocument();
+  expect(
+    screen.queryByText(/Media delivery is blocked/),
+  ).not.toBeInTheDocument();
+});
+
+test("renders Source problems in critical and Media-first priority order", async () => {
+  vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
+    if (requestPath(input).startsWith("/api/people")) {
+      return Promise.resolve(jsonResponse({ people: [] }));
+    }
+    return Promise.resolve(
+      jsonResponse({
+        source_problems: [
+          {
+            kind: "media_item",
+            id: "10000000-0000-4000-8000-000000000001",
+            label: "Critical media",
+            priority: "critical",
+            published: true,
+            missing_since: "2026-01-01T00:00:00Z",
+            candidate_count: 0,
+          },
+          {
+            kind: "source_album",
+            id: "10000000-0000-4000-8000-000000000002",
+            label: "Critical album",
+            priority: "critical",
+            published: true,
+            missing_since: "2026-01-01T00:00:00Z",
+            candidate_count: 0,
+          },
+          {
+            kind: "media_item",
+            id: "10000000-0000-4000-8000-000000000003",
+            label: "High media",
+            priority: "high",
+            published: false,
+            missing_since: "2026-01-01T00:00:00Z",
+            candidate_count: 0,
+          },
+          {
+            kind: "source_album",
+            id: "10000000-0000-4000-8000-000000000004",
+            label: "High album",
+            priority: "high",
+            published: false,
+            missing_since: "2026-01-01T00:00:00Z",
+            candidate_count: 0,
+          },
+        ],
+        person_candidates: [],
+        media_candidates: [],
+        unlinked_immich_people: [],
+      }),
+    );
+  });
+
+  renderWorkspace();
+  await screen.findByText("Critical media");
+  expect(
+    screen
+      .getAllByRole("heading", { level: 3 })
+      .map((heading) => heading.textContent),
+  ).toEqual(["Critical media", "Critical album", "High media", "High album"]);
 });
 
 test("shows conflicted Person evidence and permits confirming the current link", async () => {

@@ -21,6 +21,7 @@ import (
 	"unicode"
 
 	"github.com/google/uuid"
+	"github.com/robinjoseph08/memento/internal/mediaavailability"
 	"github.com/robinjoseph08/memento/internal/placementlock"
 	"github.com/robinjoseph08/memento/pkg/immich"
 	"github.com/robinjoseph08/memento/pkg/setup"
@@ -29,12 +30,15 @@ import (
 )
 
 const (
-	CleanupJobKind      = "cleanup_archive_plans"
-	planLifetime        = 15 * time.Minute
-	cleanupInterval     = time.Hour
-	cleanupBatchSize    = 100
-	maximumSelection    = 1000
-	maximumArchiveParts = 1000
+	CleanupJobKind                 = "cleanup_archive_plans"
+	planLifetime                   = 15 * time.Minute
+	cleanupInterval                = time.Hour
+	cleanupBatchSize               = 100
+	maximumSelection               = 1000
+	maximumArchiveParts            = 1000
+	missingVerificationDeadline    = 5 * time.Second
+	missingVerificationWorkBudget  = 64
+	missingVerificationConcurrency = 8
 )
 
 var (
@@ -73,6 +77,7 @@ type Stream struct {
 type archiveSource interface {
 	ArchiveInfo(ctx context.Context, assetIDs []uuid.UUID) ([]immich.ArchivePart, error)
 	Archive(ctx context.Context, assetIDs []uuid.UUID) (immich.ArchiveResponse, error)
+	Original(ctx context.Context, assetID uuid.UUID, request immich.MediaRequest) (immich.MediaResponse, error)
 }
 
 type Service struct {
@@ -121,6 +126,51 @@ type candidate struct {
 	EventID       uuid.UUID `bun:"event_id"`
 	DraftMomentID uuid.UUID `bun:"draft_moment_id"`
 	EventTitle    string    `bun:"event_title"`
+}
+
+func (s *Service) markVerifiedSourceMissing(ctx context.Context, backings []mediaavailability.Backing) error {
+	verification, verificationErr := mediaavailability.VerifyMissing(ctx, backings, mediaavailability.VerificationOptions{
+		Deadline: missingVerificationDeadline, MaxProbes: missingVerificationWorkBudget,
+		Concurrency: missingVerificationConcurrency,
+	}, func(probeCtx context.Context, assetID uuid.UUID) (bool, error) {
+		response, err := s.source.Original(probeCtx, assetID, immich.MediaRequest{Range: "bytes=0-0"})
+		if errors.Is(err, immich.ErrNotFound) {
+			return false, nil
+		}
+		if err != nil || response.Body == nil {
+			if response.Body != nil {
+				_ = response.Body.Close()
+			}
+			if err != nil {
+				return false, err
+			}
+			return false, ErrUnavailable
+		}
+		var firstByte [1]byte
+		read, readErr := io.ReadFull(response.Body, firstByte[:])
+		closeErr := response.Body.Close()
+		if read != len(firstByte) || readErr != nil || closeErr != nil {
+			return false, ErrUnavailable
+		}
+		return true, nil
+	})
+	if err := mediaavailability.MarkSourceMissing(ctx, s.db, verification.Missing); err != nil {
+		return err
+	}
+	if verificationErr != nil || !verification.Complete {
+		return ErrUnavailable
+	}
+	return nil
+}
+
+func candidateBackings(candidates []candidate) []mediaavailability.Backing {
+	backings := make([]mediaavailability.Backing, 0, len(candidates))
+	for _, item := range candidates {
+		backings = append(backings, mediaavailability.Backing{
+			MediaID: item.MediaID, BackingID: item.BackingID, AssetID: item.AssetID,
+		})
+	}
+	return backings
 }
 
 const authorizedCandidates = `
@@ -223,6 +273,12 @@ func (s *Service) Plan(ctx context.Context, actor setup.SessionActor, request Pl
 		assetToCandidate[item.AssetID] = item
 	}
 	parts, err := s.source.ArchiveInfo(ctx, assets)
+	if errors.Is(err, immich.ErrNotFound) {
+		if markErr := s.markVerifiedSourceMissing(ctx, candidateBackings(initial)); markErr != nil {
+			return PlanResponse{}, ErrUnavailable
+		}
+		return PlanResponse{}, ErrNotFound
+	}
 	if err != nil || len(parts) == 0 || len(parts) > maximumArchiveParts {
 		return PlanResponse{}, ErrUnavailable
 	}
@@ -434,6 +490,16 @@ func (s *Service) loadPart(ctx context.Context, db bun.IDB, actor setup.SessionA
 	return result, nil
 }
 
+func plannedBackings(part plannedPart) []mediaavailability.Backing {
+	backings := make([]mediaavailability.Backing, 0, len(part.Items))
+	for _, item := range part.Items {
+		backings = append(backings, mediaavailability.Backing{
+			MediaID: item.MediaID, BackingID: item.BackingID, AssetID: item.PrimaryAssetID,
+		})
+	}
+	return backings
+}
+
 func expectedAssets(part plannedPart) ([]uuid.UUID, []uuid.UUID) {
 	all := make([]uuid.UUID, 0, len(part.Items))
 	primaries := make([]uuid.UUID, 0, len(part.Items))
@@ -492,10 +558,25 @@ func (s *Service) StreamPart(ctx context.Context, actor setup.SessionActor, rawT
 	}
 	assets, primaries := expectedAssets(part)
 	info, err := s.source.ArchiveInfo(ctx, primaries)
+	if errors.Is(err, immich.ErrNotFound) {
+		if markErr := s.markVerifiedSourceMissing(ctx, plannedBackings(part)); markErr != nil {
+			return Stream{}, ErrUnavailable
+		}
+		return Stream{}, ErrNotFound
+	}
 	if err != nil || !archiveInfoMatches(info, part.Items) {
 		return Stream{}, ErrNotFound
 	}
 	opened, err := s.source.Archive(ctx, assets)
+	if errors.Is(err, immich.ErrNotFound) {
+		if opened.Body != nil {
+			_ = opened.Body.Close()
+		}
+		if markErr := s.markVerifiedSourceMissing(ctx, plannedBackings(part)); markErr != nil {
+			return Stream{}, ErrUnavailable
+		}
+		return Stream{}, ErrNotFound
+	}
 	if err != nil || opened.Body == nil {
 		if opened.Body != nil {
 			_ = opened.Body.Close()

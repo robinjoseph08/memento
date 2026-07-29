@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/robinjoseph08/memento/internal/mediaavailability"
 	"github.com/robinjoseph08/memento/internal/placementlock"
 	"github.com/robinjoseph08/memento/pkg/immich"
 	"github.com/robinjoseph08/memento/pkg/setup"
@@ -673,10 +674,7 @@ func (s *Service) CuratorRepresentation(ctx context.Context, actor setup.Session
 	if err != nil {
 		return immich.MediaResponse{}, err
 	}
-	response, err := s.openRepresentation(ctx, resolved.AssetID, kind, request)
-	if errors.Is(err, immich.ErrNotFound) {
-		err = ErrNotFound
-	}
+	response, err := s.openResolvedRepresentation(ctx, mediaID, resolved.BackingID, resolved.AssetID, kind, request)
 	if err != nil {
 		if response.Body != nil {
 			_ = response.Body.Close()
@@ -719,6 +717,23 @@ func (s *Service) CuratorRepresentation(ctx context.Context, actor setup.Session
 		return immich.MediaResponse{}, err
 	}
 	return response, nil
+}
+
+func (s *Service) openResolvedRepresentation(ctx context.Context, mediaID, backingID, assetID uuid.UUID, kind representation, request immich.MediaRequest) (immich.MediaResponse, error) {
+	response, err := s.openRepresentation(ctx, assetID, kind, request)
+	if !errors.Is(err, immich.ErrNotFound) {
+		return response, err
+	}
+	if markErr := s.markSourceMissing(ctx, mediaID, backingID, assetID); markErr != nil {
+		return response, markErr
+	}
+	return response, ErrNotFound
+}
+
+func (s *Service) markSourceMissing(ctx context.Context, mediaID, backingID, assetID uuid.UUID) error {
+	return mediaavailability.MarkSourceMissing(ctx, s.db, []mediaavailability.Backing{{
+		MediaID: mediaID, BackingID: backingID, AssetID: assetID,
+	}})
 }
 
 func (s *Service) openRepresentation(ctx context.Context, assetID uuid.UUID, kind representation, request immich.MediaRequest) (immich.MediaResponse, error) {
@@ -772,10 +787,7 @@ func (s *Service) Representation(ctx context.Context, actor setup.SessionActor, 
 	if err != nil {
 		return immich.MediaResponse{}, err
 	}
-	response, err := s.openRepresentation(ctx, resolved.AssetID, kind, request)
-	if errors.Is(err, immich.ErrNotFound) {
-		err = ErrNotFound
-	}
+	response, err := s.openResolvedRepresentation(ctx, mediaID, resolved.BackingID, resolved.AssetID, kind, request)
 	if err != nil {
 		if response.Body != nil {
 			_ = response.Body.Close()

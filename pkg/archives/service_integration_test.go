@@ -10,6 +10,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"slices"
 	"sync"
@@ -19,8 +21,11 @@ import (
 	"github.com/google/uuid"
 	"github.com/robinjoseph08/memento/internal/placementlock"
 	"github.com/robinjoseph08/memento/internal/testdb"
+	"github.com/robinjoseph08/memento/pkg/config"
 	"github.com/robinjoseph08/memento/pkg/immich"
+	"github.com/robinjoseph08/memento/pkg/library"
 	"github.com/robinjoseph08/memento/pkg/migrations"
+	"github.com/robinjoseph08/memento/pkg/repairs"
 	"github.com/robinjoseph08/memento/pkg/setup"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -28,19 +33,29 @@ import (
 )
 
 type archiveStub struct {
-	planned        []immich.ArchivePart
-	companions     map[uuid.UUID]uuid.UUID
-	archiveCalls   [][]uuid.UUID
-	infoCalls      [][]uuid.UUID
-	archiveStarted chan struct{}
-	releaseArchive <-chan struct{}
-	archivePayload []byte
-	archiveNames   map[uuid.UUID]string
-	archiveOnce    sync.Once
+	planned           []immich.ArchivePart
+	companions        map[uuid.UUID]uuid.UUID
+	archiveCalls      [][]uuid.UUID
+	infoCalls         [][]uuid.UUID
+	archiveStarted    chan struct{}
+	releaseArchive    <-chan struct{}
+	archivePayload    []byte
+	archiveNames      map[uuid.UUID]string
+	originalAvailable map[uuid.UUID]bool
+	originalErrors    map[uuid.UUID]error
+	originalErr       error
+	originalCalls     []uuid.UUID
+	infoErr           error
+	archiveErr        error
+	archiveOnce       sync.Once
+	originalMu        sync.Mutex
 }
 
 func (stub *archiveStub) ArchiveInfo(_ context.Context, ids []uuid.UUID) ([]immich.ArchivePart, error) {
 	stub.infoCalls = append(stub.infoCalls, slices.Clone(ids))
+	if stub.infoErr != nil {
+		return nil, stub.infoErr
+	}
 	if len(stub.infoCalls) == 1 && stub.planned != nil {
 		return stub.planned, nil
 	}
@@ -55,8 +70,27 @@ func (stub *archiveStub) ArchiveInfo(_ context.Context, ids []uuid.UUID) ([]immi
 	return []immich.ArchivePart{part}, nil
 }
 
+func (stub *archiveStub) Original(_ context.Context, id uuid.UUID, _ immich.MediaRequest) (immich.MediaResponse, error) {
+	stub.originalMu.Lock()
+	defer stub.originalMu.Unlock()
+	stub.originalCalls = append(stub.originalCalls, id)
+	if err := stub.originalErrors[id]; err != nil {
+		return immich.MediaResponse{}, err
+	}
+	if stub.originalErr != nil {
+		return immich.MediaResponse{}, stub.originalErr
+	}
+	if available, configured := stub.originalAvailable[id]; configured && !available {
+		return immich.MediaResponse{}, immich.ErrNotFound
+	}
+	return immich.MediaResponse{Body: io.NopCloser(bytes.NewReader([]byte{'x'}))}, nil
+}
+
 func (stub *archiveStub) Archive(ctx context.Context, ids []uuid.UUID) (immich.ArchiveResponse, error) {
 	stub.archiveCalls = append(stub.archiveCalls, slices.Clone(ids))
+	if stub.archiveErr != nil {
+		return immich.ArchiveResponse{}, stub.archiveErr
+	}
 	if stub.archiveStarted != nil {
 		stub.archiveOnce.Do(func() { close(stub.archiveStarted) })
 	}
@@ -116,6 +150,10 @@ type simultaneousArchiveSource struct {
 
 func (source *simultaneousArchiveSource) ArchiveInfo(_ context.Context, _ []uuid.UUID) ([]immich.ArchivePart, error) {
 	return []immich.ArchivePart{source.part}, nil
+}
+
+func (*simultaneousArchiveSource) Original(context.Context, uuid.UUID, immich.MediaRequest) (immich.MediaResponse, error) {
+	return immich.MediaResponse{Body: io.NopCloser(bytes.NewReader([]byte{'x'}))}, nil
 }
 
 func (source *simultaneousArchiveSource) Archive(ctx context.Context, _ []uuid.UUID) (immich.ArchiveResponse, error) {
@@ -323,6 +361,244 @@ func TestPlansCompleteEventAndRejectsIncompleteSubset(t *testing.T) {
 	_, err = fixture.service.Plan(context.Background(), fixture.actor, PlanRequest{Scope: "subset", MediaIDs: []string{fixture.media[0].String(), fixture.media[2].String()}})
 	assert.ErrorIs(t, err, ErrInvalidSelection)
 	assert.Len(t, source.infoCalls, 1, "the complete selection is authorized before Immich is contacted")
+}
+
+func TestArchiveNotFoundMarksPublishedMediaUnavailableAndPreservesHistory(t *testing.T) {
+	for _, path := range []string{"info", "original"} {
+		t.Run(path, func(t *testing.T) {
+			source := &archiveStub{}
+			fixture := newArchiveFixture(t, source)
+			source.planned = []immich.ArchivePart{{
+				Size: 10, AssetIDs: []uuid.UUID{fixture.assets[0]}, CompanionOf: map[uuid.UUID]uuid.UUID{},
+			}}
+			plan, err := fixture.service.Plan(context.Background(), fixture.actor, PlanRequest{
+				Scope: "subset", MediaIDs: []string{fixture.media[0].String()},
+			})
+			require.NoError(t, err)
+			source.originalAvailable = map[uuid.UUID]bool{fixture.assets[0]: false}
+			if path == "info" {
+				source.infoErr = immich.ErrNotFound
+			} else {
+				source.archiveErr = immich.ErrNotFound
+			}
+
+			_, err = fixture.service.StreamPart(context.Background(), fixture.actor, tokenFromURL(plan.Parts[0].DownloadURL), 1)
+			assert.ErrorIs(t, err, ErrNotFound)
+			var availability string
+			var missingSince *time.Time
+			require.NoError(t, fixture.db.NewRaw(`SELECT availability, missing_since FROM media_items WHERE id = ?`, fixture.media[0]).Scan(context.Background(), &availability, &missingSince))
+			assert.Equal(t, "source_missing", availability)
+			assert.NotNil(t, missingSince)
+
+			page, err := library.New(fixture.db, nil).Photos(context.Background(), fixture.actor, "10", "", false)
+			require.NoError(t, err)
+			var listed *library.Media
+			for index := range page.Media {
+				if page.Media[index].ID == fixture.media[0].String() {
+					listed = &page.Media[index]
+				}
+			}
+			require.NotNil(t, listed, "published archive Media remains in Recipient history")
+			assert.False(t, listed.Available)
+			assert.Empty(t, listed.OriginalURL)
+			problems, err := repairs.New(fixture.db, nil).List(context.Background())
+			require.NoError(t, err)
+			require.NotEmpty(t, problems.SourceProblems)
+			assert.Equal(t, fixture.media[0].String(), problems.SourceProblems[0].ID)
+			assert.True(t, problems.SourceProblems[0].Published)
+
+			beforeCalls := len(source.infoCalls)
+			_, err = fixture.service.Plan(context.Background(), fixture.actor, PlanRequest{
+				Scope: "subset", MediaIDs: []string{fixture.media[0].String()},
+			})
+			assert.ErrorIs(t, err, ErrInvalidSelection)
+			assert.Len(t, source.infoCalls, beforeCalls, "subsequent archive delivery fails before Immich")
+		})
+	}
+}
+
+func TestMultiItemAggregateNotFoundMarksOnlyIndividuallyMissingBacking(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		path string
+	}{
+		{name: "plan metadata", path: "plan"},
+		{name: "stream metadata", path: "info"},
+		{name: "stream archive", path: "archive"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			source := &archiveStub{}
+			fixture := newArchiveFixture(t, source)
+			source.originalAvailable = map[uuid.UUID]bool{
+				fixture.assets[0]: false,
+				fixture.assets[1]: true,
+			}
+			request := PlanRequest{Scope: "subset", MediaIDs: []string{
+				fixture.media[0].String(), fixture.media[1].String(),
+			}}
+			if test.path == "plan" {
+				source.infoErr = immich.ErrNotFound
+				_, err := fixture.service.Plan(context.Background(), fixture.actor, request)
+				assert.ErrorIs(t, err, ErrNotFound)
+			} else {
+				source.planned = []immich.ArchivePart{{
+					Size: 20, AssetIDs: []uuid.UUID{fixture.assets[0], fixture.assets[1]},
+					CompanionOf: map[uuid.UUID]uuid.UUID{},
+				}}
+				plan, err := fixture.service.Plan(context.Background(), fixture.actor, request)
+				require.NoError(t, err)
+				if test.path == "info" {
+					source.infoErr = immich.ErrNotFound
+				} else {
+					source.archiveErr = immich.ErrNotFound
+				}
+				_, err = fixture.service.StreamPart(context.Background(), fixture.actor,
+					tokenFromURL(plan.Parts[0].DownloadURL), 1)
+				assert.ErrorIs(t, err, ErrNotFound)
+			}
+
+			var availability []string
+			require.NoError(t, fixture.db.NewRaw(`
+				SELECT availability FROM media_items WHERE id IN (?, ?) ORDER BY id
+			`, fixture.media[0], fixture.media[1]).Scan(context.Background(), &availability))
+			expected := map[uuid.UUID]string{
+				fixture.media[0]: "source_missing",
+				fixture.media[1]: "current",
+			}
+			for _, mediaID := range fixture.media[:2] {
+				var actual string
+				require.NoError(t, fixture.db.NewRaw(`SELECT availability FROM media_items WHERE id = ?`, mediaID).Scan(context.Background(), &actual))
+				assert.Equal(t, expected[mediaID], actual)
+			}
+			assert.ElementsMatch(t, fixture.assets[:2], source.originalCalls)
+		})
+	}
+}
+
+func TestRealImmichArchiveMemberDisappearsBetweenPlanAndStream(t *testing.T) {
+	fixture := newArchiveFixture(t, &archiveStub{})
+	assetID := fixture.assets[0]
+	var missing bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/assets/" + assetID.String():
+			if missing {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"` + assetID.String() + `","livePhotoVideoId":null}`))
+		case "/api/download/info":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"totalSize":10,"archives":[{"size":10,"assetIds":["` + assetID.String() + `"]}]}`))
+		case "/api/download/archive":
+			missing = true
+			w.WriteHeader(http.StatusBadRequest)
+		case "/api/assets/" + assetID.String() + "/original":
+			if missing {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			w.Header().Set("Content-Type", "image/jpeg")
+			w.Header().Set("Content-Range", "bytes 0-0/1")
+			w.WriteHeader(http.StatusPartialContent)
+			_, _ = w.Write([]byte{'x'})
+		default:
+			t.Fatalf("unexpected Immich request %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	client, err := immich.New(config.ImmichConfig{
+		URL: server.URL, APIKey: "test-key", HealthTimeout: time.Second,
+	}, server.Client())
+	require.NoError(t, err)
+	fixture.service = New(fixture.db, client)
+
+	plan, err := fixture.service.Plan(context.Background(), fixture.actor, PlanRequest{
+		Scope: "subset", MediaIDs: []string{fixture.media[0].String()},
+	})
+	require.NoError(t, err)
+	_, err = fixture.service.StreamPart(context.Background(), fixture.actor,
+		tokenFromURL(plan.Parts[0].DownloadURL), 1)
+	assert.ErrorIs(t, err, ErrNotFound)
+
+	var availability string
+	var missingSince *time.Time
+	require.NoError(t, fixture.db.NewRaw(`SELECT availability, missing_since FROM media_items WHERE id = ?`, fixture.media[0]).Scan(context.Background(), &availability, &missingSince))
+	assert.Equal(t, "source_missing", availability)
+	assert.NotNil(t, missingSince)
+}
+
+func TestAggregateNotFoundVerificationFailureMarksNothing(t *testing.T) {
+	source := &archiveStub{infoErr: immich.ErrNotFound, originalErr: errors.New("private malformed original response")}
+	fixture := newArchiveFixture(t, source)
+	_, err := fixture.service.Plan(context.Background(), fixture.actor, PlanRequest{
+		Scope: "subset", MediaIDs: []string{fixture.media[0].String(), fixture.media[1].String()},
+	})
+	assert.ErrorIs(t, err, ErrUnavailable)
+	for _, mediaID := range fixture.media[:2] {
+		var availability string
+		require.NoError(t, fixture.db.NewRaw(`SELECT availability FROM media_items WHERE id = ?`, mediaID).Scan(context.Background(), &availability))
+		assert.Equal(t, "current", availability)
+	}
+}
+
+func TestAggregateNotFoundPersistsMissingEvidenceDespiteMixedProbeUncertainty(t *testing.T) {
+	source := &archiveStub{infoErr: immich.ErrNotFound}
+	fixture := newArchiveFixture(t, source)
+	addAuthorizedReuse(t, fixture, 2)
+	source.originalAvailable = map[uuid.UUID]bool{
+		fixture.assets[0]: false,
+		fixture.assets[1]: true,
+	}
+	source.originalErrors = map[uuid.UUID]error{
+		fixture.assets[2]: errors.New("private original dependency failure"),
+	}
+
+	_, err := fixture.service.Plan(context.Background(), fixture.actor, PlanRequest{
+		Scope: "subset", MediaIDs: []string{
+			fixture.media[0].String(), fixture.media[1].String(), fixture.media[2].String(),
+		},
+	})
+	assert.ErrorIs(t, err, ErrUnavailable)
+
+	expected := map[uuid.UUID]string{
+		fixture.media[0]: "source_missing",
+		fixture.media[1]: "current",
+		fixture.media[2]: "current",
+	}
+	for mediaID, want := range expected {
+		var availability string
+		require.NoError(t, fixture.db.NewRaw(`SELECT availability FROM media_items WHERE id = ?`, mediaID).Scan(context.Background(), &availability))
+		assert.Equal(t, want, availability)
+	}
+	assert.ElementsMatch(t, fixture.assets, source.originalCalls)
+}
+
+func TestArchiveFailuresOtherThanNotFoundPreserveAvailability(t *testing.T) {
+	for _, failure := range []struct {
+		name string
+		err  error
+	}{
+		{name: "malformed", err: errors.New("Immich returned malformed archive metadata")},
+		{name: "unauthorized", err: errors.New("Immich API key is invalid")},
+		{name: "dependency", err: context.DeadlineExceeded},
+	} {
+		t.Run(failure.name, func(t *testing.T) {
+			source := &archiveStub{infoErr: failure.err}
+			fixture := newArchiveFixture(t, source)
+			_, err := fixture.service.Plan(context.Background(), fixture.actor, PlanRequest{
+				Scope: "subset", MediaIDs: []string{fixture.media[0].String()},
+			})
+			assert.ErrorIs(t, err, ErrUnavailable)
+			var availability string
+			var missingSince *time.Time
+			require.NoError(t, fixture.db.NewRaw(`SELECT availability, missing_since FROM media_items WHERE id = ?`, fixture.media[0]).Scan(context.Background(), &availability, &missingSince))
+			assert.Equal(t, "current", availability)
+			assert.Nil(t, missingSince)
+		})
+	}
 }
 
 func TestCleanupExpiredPlansCascadesAndRetainsActivePlans(t *testing.T) {

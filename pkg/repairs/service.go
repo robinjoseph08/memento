@@ -3,7 +3,10 @@ package repairs
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -31,6 +34,8 @@ type Connector interface {
 	Check(ctx context.Context) error
 	People(ctx context.Context) ([]immich.PersonSummary, error)
 	Faces(ctx context.Context, assetID uuid.UUID) ([]immich.FaceSummary, error)
+	Asset(ctx context.Context, assetID uuid.UUID) (immich.AssetSummary, error)
+	AssetDeliveryAvailable(ctx context.Context, assetID uuid.UUID, mediaType string) (bool, error)
 }
 
 // Evidence describes normalized private media attributes. Path is intentionally Curator-only.
@@ -77,6 +82,8 @@ type MediaCandidate struct {
 	MediaItemID            string               `json:"media_item_id"`
 	PreviousImmichAssetID  string               `json:"previous_immich_asset_id"`
 	CandidateImmichAssetID string               `json:"candidate_immich_asset_id"`
+	MediaType              string               `json:"media_type"`
+	ReviewToken            string               `json:"review_token"`
 	State                  string               `json:"state"`
 	Previous               Evidence             `json:"previous"`
 	Candidate              Evidence             `json:"candidate"`
@@ -84,6 +91,17 @@ type MediaCandidate struct {
 	Conflicts              []string             `json:"conflicts"`
 	CreatedAt              time.Time            `json:"created_at"`
 	ResolvedAt             *time.Time           `json:"resolved_at,omitempty"`
+}
+
+// SourceProblem is a prioritized Curator-only Source missing problem.
+type SourceProblem struct {
+	Kind           string    `json:"kind"`
+	ID             string    `json:"id"`
+	Label          string    `json:"label"`
+	Priority       string    `json:"priority"`
+	Published      bool      `json:"published"`
+	MissingSince   time.Time `json:"missing_since"`
+	CandidateCount int       `json:"candidate_count"`
 }
 
 // UnlinkedPerson is a newly observed Immich identity, still only an addition.
@@ -95,9 +113,15 @@ type UnlinkedPerson struct {
 
 // ListResponse is generated to TypeScript by Tygo.
 type ListResponse struct {
+	SourceProblems       []SourceProblem   `json:"source_problems"`
 	PersonCandidates     []PersonCandidate `json:"person_candidates"`
 	MediaCandidates      []MediaCandidate  `json:"media_candidates"`
 	UnlinkedImmichPeople []UnlinkedPerson  `json:"unlinked_immich_people"`
+}
+
+// ConfirmMediaRequest binds confirmation to the exact evidence the Curator reviewed.
+type ConfirmMediaRequest struct {
+	ReviewToken string `json:"review_token" validate:"required,len=64,hexadecimal"`
 }
 
 // LinkPersonRequest explicitly maps one addition to one portal Person.
@@ -377,7 +401,10 @@ func appendUnique(values []string, value string) []string {
 
 // List returns private evidence and confirmation state only.
 func (s *Service) List(ctx context.Context) (ListResponse, error) {
-	response := ListResponse{PersonCandidates: []PersonCandidate{}, MediaCandidates: []MediaCandidate{}, UnlinkedImmichPeople: []UnlinkedPerson{}}
+	response := ListResponse{SourceProblems: []SourceProblem{}, PersonCandidates: []PersonCandidate{}, MediaCandidates: []MediaCandidate{}, UnlinkedImmichPeople: []UnlinkedPerson{}}
+	if err := s.listSourceProblems(ctx, &response); err != nil {
+		return ListResponse{}, err
+	}
 	if err := s.listPersonCandidates(ctx, &response); err != nil {
 		return ListResponse{}, err
 	}
@@ -396,6 +423,42 @@ func (s *Service) List(ctx context.Context) (ListResponse, error) {
 		return ListResponse{}, err
 	}
 	return response, nil
+}
+
+func (s *Service) listSourceProblems(ctx context.Context, response *ListResponse) error {
+	return s.db.NewRaw(`
+		WITH problems AS (
+			SELECT 'media_item'::text AS kind, media.id,
+				COALESCE(NULLIF(backing.filename, ''), 'Media item') AS label,
+				EXISTS (
+					SELECT 1 FROM current_published_placements AS placement
+					WHERE placement.media_item_id = media.id
+				) AS published,
+				media.missing_since,
+				(
+					SELECT count(*) FROM media_repair_candidates AS candidate
+					WHERE candidate.media_item_id = media.id AND candidate.state = 'pending'
+				)::integer AS candidate_count
+			FROM media_items AS media
+			LEFT JOIN media_backings AS backing ON backing.media_item_id = media.id AND backing.active
+			WHERE media.availability = 'source_missing'
+			UNION ALL
+			SELECT 'source_album'::text, album.id, album.name,
+				EXISTS (
+					SELECT 1 FROM source_album_memberships AS membership
+					JOIN current_published_placements AS placement ON placement.media_item_id = membership.media_item_id
+					WHERE membership.source_album_id = album.id
+				),
+				album.missing_since, 0
+			FROM source_albums AS album
+			WHERE album.source_missing
+		)
+		SELECT kind, id, label,
+			CASE WHEN published THEN 'critical' ELSE 'high' END AS priority,
+			published, missing_since, candidate_count
+		FROM problems
+		ORDER BY published DESC, (kind = 'media_item') DESC, missing_since, id
+	`).Scan(ctx, &response.SourceProblems)
 }
 
 func (s *Service) listPersonCandidates(ctx context.Context, response *ListResponse) error {
@@ -448,27 +511,34 @@ func (s *Service) listPersonCandidates(ctx context.Context, response *ListRespon
 
 func (s *Service) listMediaCandidates(ctx context.Context, response *ListResponse) error {
 	type row struct {
-		ID, MediaItemID, PreviousID, CandidateID uuid.UUID
-		State                                    string
-		Previous, Candidate, Anchors, Conflicts  json.RawMessage
-		CreatedAt                                time.Time
-		ResolvedAt                               *time.Time
+		ID, MediaItemID                         uuid.UUID
+		CandidateMediaItemID                    uuid.NullUUID
+		PreviousID, CandidateID                 uuid.UUID
+		MediaType, State                        string
+		Previous, Candidate, Anchors, Conflicts json.RawMessage
+		CreatedAt                               time.Time
+		ResolvedAt                              *time.Time
 	}
 	var rows []row
 	if err := s.db.NewRaw(`
-		SELECT id, media_item_id, previous_immich_asset_id AS previous_id,
-			candidate_immich_asset_id AS candidate_id, state,
-			previous_evidence AS previous, candidate_evidence AS candidate,
-			face_anchor_evidence AS anchors, conflict_evidence AS conflicts,
-			created_at, resolved_at
-		FROM media_repair_candidates
-		ORDER BY (state = 'pending') DESC, created_at DESC, id
+		SELECT repair.id, repair.media_item_id, repair.candidate_media_item_id,
+			repair.previous_immich_asset_id AS previous_id,
+			repair.candidate_immich_asset_id AS candidate_id,
+			COALESCE(candidate_media.media_type, stable_media.media_type) AS media_type,
+			repair.state, repair.previous_evidence AS previous,
+			repair.candidate_evidence AS candidate,
+			repair.face_anchor_evidence AS anchors, repair.conflict_evidence AS conflicts,
+			repair.created_at, repair.resolved_at
+		FROM media_repair_candidates AS repair
+		JOIN media_items AS stable_media ON stable_media.id = repair.media_item_id
+		LEFT JOIN media_items AS candidate_media ON candidate_media.id = repair.candidate_media_item_id
+		ORDER BY (repair.state = 'pending') DESC, repair.created_at DESC, repair.id
 	`).Scan(ctx, &rows); err != nil {
 		return err
 	}
 	for _, raw := range rows {
 		candidate := MediaCandidate{ID: raw.ID.String(), MediaItemID: raw.MediaItemID.String(), PreviousImmichAssetID: raw.PreviousID.String(),
-			CandidateImmichAssetID: raw.CandidateID.String(), State: raw.State, Conflicts: []string{}, FaceAnchors: []FaceAnchorEvidence{},
+			CandidateImmichAssetID: raw.CandidateID.String(), MediaType: raw.MediaType, State: raw.State, Conflicts: []string{}, FaceAnchors: []FaceAnchorEvidence{},
 			CreatedAt: raw.CreatedAt, ResolvedAt: raw.ResolvedAt}
 		if err := json.Unmarshal(raw.Previous, &candidate.Previous); err != nil {
 			return err
@@ -481,6 +551,15 @@ func (s *Service) listMediaCandidates(ctx context.Context, response *ListRespons
 		}
 		if err := json.Unmarshal(raw.Conflicts, &candidate.Conflicts); err != nil {
 			return err
+		}
+		if raw.State == "pending" {
+			candidate.ReviewToken = mediaEvidenceToken(mediaEvidenceSnapshot{
+				CandidateID: raw.ID, MediaItemID: raw.MediaItemID,
+				CandidateMediaItemID: raw.CandidateMediaItemID,
+				PreviousAssetID:      raw.PreviousID, CandidateAssetID: raw.CandidateID,
+				MediaType: raw.MediaType, Previous: candidate.Previous, Candidate: candidate.Candidate,
+				Anchors: candidate.FaceAnchors, Conflicts: candidate.Conflicts,
+			})
 		}
 		response.MediaCandidates = append(response.MediaCandidates, candidate)
 	}
@@ -785,120 +864,497 @@ func (s *Service) RejectPerson(ctx context.Context, actor setup.CuratorSession, 
 	return s.resolveCandidate(ctx, actor, "person", candidateID, "rejected")
 }
 
-// ConfirmMedia atomically moves source membership to the stable portal Media identity.
-func (s *Service) ConfirmMedia(ctx context.Context, actor setup.CuratorSession, candidateID uuid.UUID) (MutationResponse, error) {
-	now := s.now().UTC()
-	err := s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
-		if err := staging.LockAccessSummaryRefresh(ctx, tx); err != nil {
-			return err
+type mediaEvidenceSnapshot struct {
+	CandidateID          uuid.UUID
+	MediaItemID          uuid.UUID
+	CandidateMediaItemID uuid.NullUUID
+	PreviousAssetID      uuid.UUID
+	CandidateAssetID     uuid.UUID
+	MediaType            string
+	Previous             Evidence
+	Candidate            Evidence
+	Anchors              []FaceAnchorEvidence
+	Conflicts            []string
+}
+
+func mediaEvidenceToken(snapshot mediaEvidenceSnapshot) string {
+	encoded, _ := json.Marshal(snapshot)
+	digest := sha256.Sum256(encoded)
+	return hex.EncodeToString(digest[:])
+}
+
+func validEvidenceChecksum(value string) bool {
+	decoded, err := hex.DecodeString(value)
+	return err == nil && len(decoded) == sha1ChecksumBytes && hex.EncodeToString(decoded) == value
+}
+
+const sha1ChecksumBytes = 20
+
+func decodeEvidence(raw json.RawMessage) (Evidence, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return Evidence{}, ErrConflict
+	}
+	for _, field := range []string{"checksum", "capture", "filename", "path"} {
+		if _, present := fields[field]; !present {
+			return Evidence{}, ErrConflict
 		}
-		var mediaItemID, previousAssetID, candidateAssetID uuid.UUID
-		var candidateMediaItemID uuid.NullUUID
-		err := tx.NewRaw(`
+	}
+	var evidence Evidence
+	if err := json.Unmarshal(raw, &evidence); err != nil || !validEvidenceChecksum(evidence.Checksum) {
+		return Evidence{}, ErrConflict
+	}
+	return evidence, nil
+}
+
+func decodeMediaEvidence(previousRaw, candidateRaw, anchorsRaw, conflictsRaw json.RawMessage) (Evidence, Evidence, []FaceAnchorEvidence, []string, error) {
+	previous, err := decodeEvidence(previousRaw)
+	if err != nil {
+		return Evidence{}, Evidence{}, nil, nil, err
+	}
+	candidate, err := decodeEvidence(candidateRaw)
+	if err != nil {
+		return Evidence{}, Evidence{}, nil, nil, err
+	}
+	var anchors []FaceAnchorEvidence
+	if err := json.Unmarshal(anchorsRaw, &anchors); err != nil || anchors == nil {
+		return Evidence{}, Evidence{}, nil, nil, ErrConflict
+	}
+	for _, anchor := range anchors {
+		faceID, faceErr := uuid.Parse(anchor.FaceID)
+		assetID, assetErr := uuid.Parse(anchor.AssetID)
+		validLastPerson := true
+		if anchor.LastPersonID != "" {
+			lastPersonID, err := uuid.Parse(anchor.LastPersonID)
+			validLastPerson = err == nil && lastPersonID != uuid.Nil
+		}
+		if faceErr != nil || faceID == uuid.Nil || assetErr != nil || assetID == uuid.Nil || !validLastPerson ||
+			(anchor.Checksum != "" && !validEvidenceChecksum(anchor.Checksum)) || anchor.ImageWidth < 0 || anchor.ImageHeight < 0 ||
+			anchor.X1 < 0 || anchor.Y1 < 0 || anchor.X2 < anchor.X1 || anchor.Y2 < anchor.Y1 {
+			return Evidence{}, Evidence{}, nil, nil, ErrConflict
+		}
+	}
+	var conflicts []string
+	if err := json.Unmarshal(conflictsRaw, &conflicts); err != nil || conflicts == nil {
+		return Evidence{}, Evidence{}, nil, nil, ErrConflict
+	}
+	return previous, candidate, anchors, conflicts, nil
+}
+
+func reviewTokenMatches(provided, expected string) bool {
+	providedBytes, providedErr := hex.DecodeString(provided)
+	expectedBytes, expectedErr := hex.DecodeString(expected)
+	return providedErr == nil && expectedErr == nil && len(providedBytes) == sha256.Size &&
+		len(expectedBytes) == sha256.Size && subtle.ConstantTimeCompare(providedBytes, expectedBytes) == 1
+}
+
+func (s *Service) validateFreshMediaEvidence(ctx context.Context, snapshot mediaEvidenceSnapshot) error {
+	asset, err := s.connector.Asset(ctx, snapshot.CandidateAssetID)
+	if errors.Is(err, immich.ErrNotFound) {
+		return ErrConflict
+	}
+	if err != nil {
+		return ErrDependency
+	}
+	if asset.SourceID != snapshot.CandidateAssetID || asset.MediaType != snapshot.MediaType ||
+		asset.Checksum != snapshot.Candidate.Checksum || asset.OriginalPath != snapshot.Candidate.Path {
+		return ErrConflict
+	}
+	candidateAnchors := make([]FaceAnchorEvidence, 0)
+	for _, anchor := range snapshot.Anchors {
+		if anchor.AssetID == snapshot.CandidateAssetID.String() {
+			candidateAnchors = append(candidateAnchors, anchor)
+		}
+	}
+	if len(candidateAnchors) == 0 {
+		return nil
+	}
+	faces, err := s.connector.Faces(ctx, snapshot.CandidateAssetID)
+	if err != nil {
+		if errors.Is(err, immich.ErrNotFound) {
+			return ErrConflict
+		}
+		return ErrDependency
+	}
+	facesByID := make(map[string]immich.FaceSummary, len(faces))
+	for _, face := range faces {
+		facesByID[face.SourceID.String()] = face
+	}
+	for _, anchor := range candidateAnchors {
+		face, present := facesByID[anchor.FaceID]
+		if !present || (anchor.Checksum != "" && anchor.Checksum != asset.Checksum) ||
+			face.ImageWidth != anchor.ImageWidth || face.ImageHeight != anchor.ImageHeight ||
+			face.X1 != anchor.X1 || face.Y1 != anchor.Y1 || face.X2 != anchor.X2 || face.Y2 != anchor.Y2 {
+			return ErrConflict
+		}
+	}
+	return nil
+}
+
+// ConfirmMedia atomically moves source membership to the stable portal Media identity.
+func (s *Service) ConfirmMedia(ctx context.Context, actor setup.CuratorSession, candidateID uuid.UUID, reviewToken string) (MutationResponse, error) {
+	if s.connector == nil {
+		return MutationResponse{}, ErrDependency
+	}
+	// Obtain the exact reviewed snapshot and fresh Immich evidence before taking
+	// the global staging boundary or Media row locks. The transaction below then
+	// rejects any identity, evidence, or type change observed before commit.
+	var expectedMediaItemID, expectedPreviousAssetID, expectedCandidateAssetID uuid.UUID
+	var expectedCandidateMediaItemID uuid.NullUUID
+	var expectedCandidateItemAssetID uuid.NullUUID
+	var expectedPreviousMediaType string
+	var expectedMediaType, expectedCandidateBackingState sql.NullString
+	var expectedCandidateHasBackingHistory bool
+	var previousRaw, candidateRaw, anchorsRaw, conflictsRaw json.RawMessage
+	err := s.db.NewRaw(`
+		SELECT repair.media_item_id, repair.candidate_media_item_id,
+			repair.previous_immich_asset_id, repair.candidate_immich_asset_id,
+			stable_media.media_type, candidate_media.media_type,
+			candidate_media.immich_asset_id, candidate_backing.state,
+			EXISTS (
+				SELECT 1 FROM media_backings AS history
+				WHERE history.media_item_id = candidate_media.id
+				  AND (candidate_backing.id IS NULL OR history.id <> candidate_backing.id)
+			),
+			repair.previous_evidence, repair.candidate_evidence,
+			repair.face_anchor_evidence, repair.conflict_evidence
+		FROM media_repair_candidates AS repair
+		JOIN media_items AS stable_media ON stable_media.id = repair.media_item_id
+		LEFT JOIN media_items AS candidate_media ON candidate_media.id = repair.candidate_media_item_id
+		LEFT JOIN media_backings AS candidate_backing
+		  ON candidate_backing.media_item_id = candidate_media.id
+		 AND candidate_backing.immich_asset_id = repair.candidate_immich_asset_id
+		 AND candidate_backing.active
+		WHERE repair.id = ? AND repair.state = 'pending'
+	`, candidateID).Scan(ctx, &expectedMediaItemID, &expectedCandidateMediaItemID,
+		&expectedPreviousAssetID, &expectedCandidateAssetID, &expectedPreviousMediaType,
+		&expectedMediaType, &expectedCandidateItemAssetID, &expectedCandidateBackingState,
+		&expectedCandidateHasBackingHistory, &previousRaw, &candidateRaw, &anchorsRaw, &conflictsRaw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return MutationResponse{}, mediaCandidateMissingError(ctx, s.db, candidateID)
+	}
+	if err != nil {
+		return MutationResponse{}, err
+	}
+	if !expectedCandidateMediaItemID.Valid || !expectedMediaType.Valid ||
+		!expectedCandidateItemAssetID.Valid || expectedCandidateItemAssetID.UUID != expectedCandidateAssetID ||
+		!expectedCandidateBackingState.Valid || expectedCandidateBackingState.String != "addition" ||
+		expectedCandidateHasBackingHistory || expectedCandidateMediaItemID.UUID == expectedMediaItemID {
+		return MutationResponse{}, ErrConflict
+	}
+	expectedPreviousEvidence, expectedCandidateEvidence, expectedAnchors, expectedConflicts, err := decodeMediaEvidence(previousRaw, candidateRaw, anchorsRaw, conflictsRaw)
+	if err != nil {
+		return MutationResponse{}, err
+	}
+	expectedSnapshot := mediaEvidenceSnapshot{
+		CandidateID: candidateID, MediaItemID: expectedMediaItemID,
+		CandidateMediaItemID: expectedCandidateMediaItemID,
+		PreviousAssetID:      expectedPreviousAssetID, CandidateAssetID: expectedCandidateAssetID,
+		MediaType: expectedMediaType.String, Previous: expectedPreviousEvidence, Candidate: expectedCandidateEvidence,
+		Anchors: expectedAnchors, Conflicts: expectedConflicts,
+	}
+	if !reviewTokenMatches(reviewToken, mediaEvidenceToken(expectedSnapshot)) {
+		return MutationResponse{}, ErrConflict
+	}
+	if expectedPreviousMediaType != expectedMediaType.String {
+		return MutationResponse{}, ErrConflict
+	}
+
+	// First wait for every concurrency boundary in a transaction with no network
+	// work. After the bounded probes, the apply transaction takes both locks only
+	// with try-locks. Contention restarts the protocol, so evidence is never used
+	// after waiting and no database lock is held over an Immich read.
+	const maximumEvidenceAttempts = 3
+	for attempt := 0; attempt < maximumEvidenceAttempts; attempt++ {
+		err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+			if err := staging.LockAccessSummaryReplacement(ctx, tx); err != nil {
+				return err
+			}
+			return staging.LockMediaRelink(ctx, tx)
+		})
+		if err != nil {
+			return MutationResponse{}, err
+		}
+		if err := s.validateFreshMediaEvidence(ctx, expectedSnapshot); err != nil {
+			return MutationResponse{}, err
+		}
+		deliverable, err := s.connector.AssetDeliveryAvailable(ctx, expectedCandidateAssetID, expectedMediaType.String)
+		if err != nil {
+			return MutationResponse{}, ErrDependency
+		}
+		if !deliverable {
+			return MutationResponse{}, ErrConflict
+		}
+
+		now := s.now().UTC()
+		err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+			locked, err := tryMediaConfirmationLocks(ctx, tx)
+			if err != nil {
+				return err
+			}
+			if !locked {
+				return errMediaEvidenceRetry
+			}
+			var mediaItemID, previousAssetID, candidateAssetID uuid.UUID
+			var candidateMediaItemID uuid.NullUUID
+			err = tx.NewRaw(`
 			SELECT media_item_id, candidate_media_item_id, previous_immich_asset_id, candidate_immich_asset_id
 			FROM media_repair_candidates WHERE id = ? AND state = 'pending'
 		`, candidateID).Scan(ctx, &mediaItemID, &candidateMediaItemID, &previousAssetID, &candidateAssetID)
-		if errors.Is(err, sql.ErrNoRows) {
-			return mediaCandidateMissingError(ctx, tx, candidateID)
-		}
-		if err != nil {
-			return err
-		}
-		if !candidateMediaItemID.Valid {
-			return ErrConflict
-		}
-		if _, err := tx.NewRaw(`SELECT id FROM media_items WHERE id IN (?, ?) ORDER BY id FOR UPDATE`, mediaItemID, candidateMediaItemID.UUID).Exec(ctx); err != nil {
-			return err
-		}
-		var lockedMediaItemID, lockedPreviousAssetID, lockedCandidateAssetID uuid.UUID
-		var lockedCandidateMediaItemID uuid.NullUUID
-		err = tx.NewRaw(`
-			SELECT media_item_id, candidate_media_item_id, previous_immich_asset_id, candidate_immich_asset_id
+			if errors.Is(err, sql.ErrNoRows) {
+				return mediaCandidateMissingError(ctx, tx, candidateID)
+			}
+			if err != nil {
+				return err
+			}
+			if !candidateMediaItemID.Valid {
+				return ErrConflict
+			}
+			var lockedMediaIDs []uuid.UUID
+			if err := tx.NewRaw(`SELECT id FROM media_items WHERE id IN (?, ?) ORDER BY id FOR UPDATE`, mediaItemID, candidateMediaItemID.UUID).Scan(ctx, &lockedMediaIDs); err != nil {
+				return err
+			}
+			if len(lockedMediaIDs) != 2 {
+				return ErrConflict
+			}
+			var lockedMediaItemID, lockedPreviousAssetID, lockedCandidateAssetID uuid.UUID
+			var lockedCandidateMediaItemID uuid.NullUUID
+			var lockedPreviousRaw, lockedCandidateRaw, lockedAnchorsRaw, lockedConflictsRaw json.RawMessage
+			err = tx.NewRaw(`
+			SELECT media_item_id, candidate_media_item_id, previous_immich_asset_id,
+				candidate_immich_asset_id, previous_evidence, candidate_evidence,
+				face_anchor_evidence, conflict_evidence
 			FROM media_repair_candidates WHERE id = ? AND state = 'pending' FOR UPDATE
-		`, candidateID).Scan(ctx, &lockedMediaItemID, &lockedCandidateMediaItemID, &lockedPreviousAssetID, &lockedCandidateAssetID)
-		if errors.Is(err, sql.ErrNoRows) {
-			return mediaCandidateMissingError(ctx, tx, candidateID)
-		}
-		if err != nil {
-			return err
-		}
-		if !lockedCandidateMediaItemID.Valid || lockedMediaItemID != mediaItemID ||
-			lockedCandidateMediaItemID.UUID != candidateMediaItemID.UUID || lockedPreviousAssetID != previousAssetID ||
-			lockedCandidateAssetID != candidateAssetID {
-			return ErrConflict
-		}
-		candidateMediaID := candidateMediaItemID.UUID
-		var previousChecksum, candidateChecksum sql.NullString
-		var previousAvailability, candidateAvailability string
-		var previousHasMembership, candidateHasMembership bool
-		if err := tx.NewRaw(`
-			SELECT previous.checksum, candidate.checksum, previous_item.availability, candidate_item.availability,
-				EXISTS (SELECT 1 FROM source_album_memberships WHERE media_item_id = previous_item.id),
-				EXISTS (SELECT 1 FROM source_album_memberships WHERE media_item_id = candidate_item.id)
+		`, candidateID).Scan(ctx, &lockedMediaItemID, &lockedCandidateMediaItemID,
+				&lockedPreviousAssetID, &lockedCandidateAssetID, &lockedPreviousRaw,
+				&lockedCandidateRaw, &lockedAnchorsRaw, &lockedConflictsRaw)
+			if errors.Is(err, sql.ErrNoRows) {
+				return mediaCandidateMissingError(ctx, tx, candidateID)
+			}
+			if err != nil {
+				return err
+			}
+			if !lockedCandidateMediaItemID.Valid || lockedMediaItemID != mediaItemID ||
+				lockedCandidateMediaItemID.UUID != candidateMediaItemID.UUID || lockedPreviousAssetID != previousAssetID ||
+				lockedCandidateAssetID != candidateAssetID || mediaItemID != expectedMediaItemID ||
+				candidateMediaItemID.UUID != expectedCandidateMediaItemID.UUID || previousAssetID != expectedPreviousAssetID ||
+				candidateAssetID != expectedCandidateAssetID {
+				return ErrConflict
+			}
+			lockedPreviousEvidence, lockedCandidateEvidence, lockedAnchors, lockedConflicts, evidenceErr := decodeMediaEvidence(lockedPreviousRaw, lockedCandidateRaw, lockedAnchorsRaw, lockedConflictsRaw)
+			if evidenceErr != nil || !reviewTokenMatches(reviewToken, mediaEvidenceToken(mediaEvidenceSnapshot{
+				CandidateID: candidateID, MediaItemID: lockedMediaItemID,
+				CandidateMediaItemID: lockedCandidateMediaItemID,
+				PreviousAssetID:      lockedPreviousAssetID, CandidateAssetID: lockedCandidateAssetID,
+				MediaType: expectedMediaType.String, Previous: lockedPreviousEvidence, Candidate: lockedCandidateEvidence,
+				Anchors: lockedAnchors, Conflicts: lockedConflicts,
+			})) {
+				return ErrConflict
+			}
+			candidateMediaID := candidateMediaItemID.UUID
+			var previousMediaType, candidateMediaType string
+			if err := tx.NewRaw(`
+			SELECT previous.media_type, candidate.media_type
+			FROM media_items AS previous, media_items AS candidate
+			WHERE previous.id = ? AND candidate.id = ?
+		`, mediaItemID, candidateMediaID).Scan(ctx, &previousMediaType, &candidateMediaType); errors.Is(err, sql.ErrNoRows) {
+				return ErrConflict
+			} else if err != nil {
+				return err
+			}
+			if previousMediaType != expectedPreviousMediaType || candidateMediaType != expectedMediaType.String ||
+				previousMediaType != candidateMediaType {
+				return ErrConflict
+			}
+			var previousChecksum, candidateChecksum sql.NullString
+			var previousPath, candidatePath, previousAvailability, candidateAvailability string
+			var candidateBackingState string
+			var candidateItemAssetID uuid.UUID
+			var candidateHasMembership, candidateHasBackingHistory bool
+			if err := tx.NewRaw(`
+			SELECT previous.checksum, candidate.checksum, previous.original_path, candidate.original_path,
+				previous_item.availability, candidate_item.availability, candidate.state,
+				candidate_item.immich_asset_id,
+				EXISTS (SELECT 1 FROM source_album_memberships WHERE media_item_id = candidate_item.id),
+				EXISTS (
+					SELECT 1 FROM media_backings AS history
+					WHERE history.media_item_id = candidate_item.id AND history.id <> candidate.id
+				)
 			FROM media_backings AS previous
 			JOIN media_items AS previous_item ON previous_item.id = previous.media_item_id
 			JOIN media_backings AS candidate ON candidate.media_item_id = ? AND candidate.immich_asset_id = ? AND candidate.active
 			JOIN media_items AS candidate_item ON candidate_item.id = candidate.media_item_id
 			WHERE previous.media_item_id = ? AND previous.immich_asset_id = ? AND previous.active
 		`, candidateMediaID, candidateAssetID, mediaItemID, previousAssetID).Scan(ctx,
-			&previousChecksum, &candidateChecksum, &previousAvailability, &candidateAvailability,
-			&previousHasMembership, &candidateHasMembership); errors.Is(err, sql.ErrNoRows) {
-			return ErrConflict
-		} else if err != nil {
-			return err
-		}
-		if !previousChecksum.Valid || !candidateChecksum.Valid || previousChecksum.String != candidateChecksum.String ||
-			previousAvailability != "source_missing" || candidateAvailability != "current" || previousHasMembership || !candidateHasMembership {
-			return ErrConflict
-		}
-		if err := relinkDraftMediaReferences(ctx, tx, mediaItemID, candidateMediaID, now); err != nil {
-			return err
-		}
-		if err := execRepairExactlyOne(ctx, tx, `UPDATE media_backings SET active = false, ended_at = ? WHERE media_item_id = ? AND active AND immich_asset_id = ?`, now, mediaItemID, previousAssetID); err != nil {
-			return err
-		}
-		membershipResult, err := tx.NewRaw(`UPDATE source_album_memberships SET media_item_id = ? WHERE media_item_id = ?`, mediaItemID, candidateMediaID).Exec(ctx)
-		if err != nil {
-			return err
-		}
-		memberships, err := membershipResult.RowsAffected()
-		if err != nil {
-			return err
-		}
-		if memberships == 0 {
-			return ErrConflict
-		}
-		if err := execRepairExactlyOne(ctx, tx, `UPDATE media_backings SET media_item_id = ?, state = 'confirmed', confirmed_at = ? WHERE media_item_id = ? AND active AND immich_asset_id = ?`, mediaItemID, now, candidateMediaID, candidateAssetID); err != nil {
-			return err
-		}
-		if err := execRepairExactlyOne(ctx, tx, `UPDATE media_repair_candidates SET state = 'confirmed', resolved_at = ?, resolved_by_person_id = ?, candidate_media_item_id = NULL WHERE id = ? AND state = 'pending'`, now, actor.PersonID, candidateID); err != nil {
-			return err
-		}
-		if _, err := tx.NewRaw(`
+				&previousChecksum, &candidateChecksum, &previousPath, &candidatePath,
+				&previousAvailability, &candidateAvailability, &candidateBackingState,
+				&candidateItemAssetID, &candidateHasMembership, &candidateHasBackingHistory); errors.Is(err, sql.ErrNoRows) {
+				return ErrConflict
+			} else if err != nil {
+				return err
+			}
+			if !previousChecksum.Valid || !candidateChecksum.Valid || previousChecksum.String != candidateChecksum.String ||
+				previousChecksum.String != expectedPreviousEvidence.Checksum || previousPath != expectedPreviousEvidence.Path ||
+				candidateChecksum.String != expectedCandidateEvidence.Checksum || candidatePath != expectedCandidateEvidence.Path ||
+				previousAvailability != "source_missing" || candidateAvailability != "current" ||
+				candidateBackingState != "addition" || candidateItemAssetID != candidateAssetID ||
+				!candidateHasMembership || candidateHasBackingHistory {
+				return ErrConflict
+			}
+			var candidateHasIdentityOrAuthorization bool
+			if err := tx.NewRaw(`
+			WITH candidate AS (SELECT ?::uuid AS media_id),
+			candidate_moments AS (
+				SELECT moment.id
+				FROM draft_moments AS moment, candidate
+				WHERE moment.cover_media_item_id = candidate.media_id
+				   OR EXISTS (
+					SELECT 1 FROM draft_media_placements AS placement
+					WHERE placement.draft_moment_id = moment.id
+					  AND placement.media_item_id = candidate.media_id
+				   )
+			),
+			candidate_loose_items AS (
+				SELECT loose.id FROM loose_items AS loose, candidate
+				WHERE loose.media_item_id = candidate.media_id
+			)
+			SELECT EXISTS (
+				SELECT 1 FROM published_media_placements, candidate
+				WHERE media_item_id = candidate.media_id
+			) OR EXISTS (
+				SELECT 1 FROM current_audience_entitlements, candidate
+				WHERE media_item_id = candidate.media_id
+			) OR EXISTS (
+				SELECT 1 FROM comments, candidate WHERE media_item_id = candidate.media_id
+			) OR EXISTS (
+				SELECT 1 FROM favorites, candidate WHERE media_item_id = candidate.media_id
+			) OR EXISTS (
+				SELECT 1 FROM draft_moments AS moment
+				JOIN candidate_moments ON candidate_moments.id = moment.id
+				WHERE moment.audience_complete
+			) OR EXISTS (
+				SELECT 1 FROM loose_items AS loose
+				JOIN candidate_loose_items ON candidate_loose_items.id = loose.id
+				WHERE loose.audience_complete
+			) OR EXISTS (
+				SELECT 1 FROM audience_snapshots AS snapshot
+				WHERE snapshot.target_kind = 'loose_item'
+				  AND snapshot.target_id IN (SELECT id FROM candidate_loose_items)
+			) OR EXISTS (
+				SELECT 1 FROM current_audience_snapshots AS current
+				WHERE (
+					current.target_kind = 'loose_item'
+					AND current.target_id IN (SELECT id FROM candidate_loose_items)
+				) OR (
+					current.target_kind = 'moment'
+					AND current.target_id IN (SELECT id FROM candidate_moments)
+					AND NOT EXISTS (
+						SELECT 1 FROM events AS event
+						JOIN published_moments AS published
+						  ON published.publication_id = event.current_publication_id
+						 AND published.draft_moment_id = current.target_id
+						 AND published.audience_snapshot_id = current.snapshot_id
+					)
+				)
+			) OR EXISTS (
+				SELECT 1 FROM audience_proposals AS proposal
+				WHERE (proposal.target_kind = 'moment' AND proposal.target_id IN (SELECT id FROM candidate_moments))
+				   OR (proposal.target_kind = 'loose_item' AND proposal.target_id IN (SELECT id FROM candidate_loose_items))
+			) OR EXISTS (
+				SELECT 1 FROM audience_overrides AS audience_override
+				WHERE (audience_override.target_kind = 'moment' AND audience_override.target_id IN (SELECT id FROM candidate_moments))
+				   OR (audience_override.target_kind = 'loose_item' AND audience_override.target_id IN (SELECT id FROM candidate_loose_items))
+			)
+		`, candidateMediaID).Scan(ctx, &candidateHasIdentityOrAuthorization); err != nil {
+				return err
+			}
+			if candidateHasIdentityOrAuthorization {
+				return ErrConflict
+			}
+			if err := relinkDraftMediaReferences(ctx, tx, mediaItemID, candidateMediaID, now); err != nil {
+				return err
+			}
+			if err := execRepairExactlyOne(ctx, tx, `UPDATE media_backings SET active = false, ended_at = ? WHERE media_item_id = ? AND active AND immich_asset_id = ?`, now, mediaItemID, previousAssetID); err != nil {
+				return err
+			}
+			if _, err := tx.NewRaw(`DELETE FROM source_album_memberships WHERE media_item_id = ? AND immich_asset_id = ?`, mediaItemID, previousAssetID).Exec(ctx); err != nil {
+				return err
+			}
+			membershipResult, err := tx.NewRaw(`UPDATE source_album_memberships SET media_item_id = ? WHERE media_item_id = ?`, mediaItemID, candidateMediaID).Exec(ctx)
+			if err != nil {
+				return err
+			}
+			memberships, err := membershipResult.RowsAffected()
+			if err != nil {
+				return err
+			}
+			if memberships == 0 {
+				return ErrConflict
+			}
+			if err := execRepairExactlyOne(ctx, tx, `UPDATE media_backings SET media_item_id = ?, state = 'confirmed', confirmed_at = ? WHERE media_item_id = ? AND active AND immich_asset_id = ?`, mediaItemID, now, candidateMediaID, candidateAssetID); err != nil {
+				return err
+			}
+			if err := execRepairExactlyOne(ctx, tx, `UPDATE media_repair_candidates SET state = 'confirmed', resolved_at = ?, resolved_by_person_id = ?, candidate_media_item_id = NULL WHERE id = ? AND state = 'pending'`, now, actor.PersonID, candidateID); err != nil {
+				return err
+			}
+			if _, err := tx.NewRaw(`
 			UPDATE media_repair_candidates
 			SET state = 'superseded', resolved_at = ?, resolved_by_person_id = ?, candidate_media_item_id = NULL
 			WHERE id <> ? AND state = 'pending'
 			  AND (media_item_id IN (?, ?) OR candidate_media_item_id IN (?, ?))
 		`, now, actor.PersonID, candidateID, mediaItemID, candidateMediaID, mediaItemID, candidateMediaID).Exec(ctx); err != nil {
-			return err
-		}
-		if _, err := tx.NewRaw(`
+				return err
+			}
+			if _, err := tx.NewRaw(`
 			UPDATE media_repair_candidates SET media_item_id = ? WHERE media_item_id = ?
 		`, mediaItemID, candidateMediaID).Exec(ctx); err != nil {
-			return err
+				return err
+			}
+			if err := execRepairExactlyOne(ctx, tx, `DELETE FROM media_items WHERE id = ?`, candidateMediaID); err != nil {
+				return err
+			}
+			if err := execRepairExactlyOne(ctx, tx, `UPDATE media_items SET immich_asset_id = ?, availability = 'current', missing_since = NULL, last_seen_at = ?, updated_at = ? WHERE id = ? AND immich_asset_id = ?`, candidateAssetID, now, now, mediaItemID, previousAssetID); err != nil {
+				return err
+			}
+			auditMetadata, err := json.Marshal(map[string]any{
+				"candidate_id": candidateID.String(), "previous_immich_asset_id": previousAssetID.String(),
+				"candidate_immich_asset_id": candidateAssetID.String(),
+			})
+			if err != nil {
+				return err
+			}
+			if _, err := tx.NewRaw(`
+			INSERT INTO publication_audit_events (
+				target_kind, target_id, actor_person_id, action, metadata, created_at
+			) VALUES ('media', ?, ?, 'media_relinked', ?::jsonb, ?)
+		`, mediaItemID, actor.PersonID, string(auditMetadata), now).Exec(ctx); err != nil {
+				return err
+			}
+			return appendAudit(ctx, tx, actor, nil, "immich_media_backing_confirmed", map[string]any{"media_item_id": mediaItemID.String(), "previous_immich_asset_id": previousAssetID.String(), "candidate_immich_asset_id": candidateAssetID.String()})
+		})
+		if errors.Is(err, errMediaEvidenceRetry) {
+			continue
 		}
-		if err := execRepairExactlyOne(ctx, tx, `DELETE FROM media_items WHERE id = ?`, candidateMediaID); err != nil {
-			return err
+		if err != nil {
+			return MutationResponse{}, err
 		}
-		if err := execRepairExactlyOne(ctx, tx, `UPDATE media_items SET immich_asset_id = ?, availability = 'current', last_seen_at = ?, updated_at = ? WHERE id = ? AND immich_asset_id = ?`, candidateAssetID, now, now, mediaItemID, previousAssetID); err != nil {
-			return err
-		}
-		return appendAudit(ctx, tx, actor, nil, "immich_media_backing_confirmed", map[string]any{"media_item_id": mediaItemID.String(), "previous_immich_asset_id": previousAssetID.String(), "candidate_immich_asset_id": candidateAssetID.String()})
-	})
-	if err != nil {
-		return MutationResponse{}, err
+		return MutationResponse{Status: "confirmed"}, nil
 	}
-	return MutationResponse{Status: "confirmed"}, nil
+	return MutationResponse{}, ErrConflict
+}
+
+var errMediaEvidenceRetry = errors.New("media confirmation evidence retry")
+
+func tryMediaConfirmationLocks(ctx context.Context, tx bun.Tx) (bool, error) {
+	var accessLocked bool
+	if err := tx.NewRaw(`SELECT pg_try_advisory_xact_lock(hashtextextended(?, 0))`, staging.AccessSummaryLockKey).Scan(ctx, &accessLocked); err != nil || !accessLocked {
+		return false, err
+	}
+	var mediaLocked bool
+	if err := tx.NewRaw(`SELECT pg_try_advisory_xact_lock(hashtextextended(?, 0))`, staging.MediaOrganizationLockKey).Scan(ctx, &mediaLocked); err != nil {
+		return false, err
+	}
+	return mediaLocked, nil
 }
 
 func relinkDraftMediaReferences(ctx context.Context, tx bun.Tx, stableMediaID, candidateMediaID uuid.UUID, now time.Time) error {
@@ -1022,9 +1478,9 @@ func relinkDraftMediaReferences(ctx context.Context, tx bun.Tx, stableMediaID, c
 	return nil
 }
 
-func mediaCandidateMissingError(ctx context.Context, tx bun.Tx, candidateID uuid.UUID) error {
+func mediaCandidateMissingError(ctx context.Context, db bun.IDB, candidateID uuid.UUID) error {
 	var exists bool
-	if err := tx.NewRaw(`SELECT EXISTS (SELECT 1 FROM media_repair_candidates WHERE id = ?)`, candidateID).Scan(ctx, &exists); err != nil {
+	if err := db.NewRaw(`SELECT EXISTS (SELECT 1 FROM media_repair_candidates WHERE id = ?)`, candidateID).Scan(ctx, &exists); err != nil {
 		return err
 	}
 	if exists {

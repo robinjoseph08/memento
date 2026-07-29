@@ -451,7 +451,8 @@ func selectMedia(ctx context.Context, tx bun.Tx, sourceIDs, selectedIDs []uuid.U
 	query := `
 		SELECT media.id, media.media_type, media.width, media.height, media.local_date_time
 		FROM media_items AS media
-		WHERE EXISTS (
+		WHERE media.availability = 'current'
+		  AND EXISTS (
 			SELECT 1 FROM source_album_memberships AS membership
 			WHERE membership.media_item_id = media.id AND membership.source_album_id IN (?)
 		)`
@@ -616,6 +617,9 @@ func (s *Service) OrganizeEvent(ctx context.Context, actor setup.CuratorSession,
 	var organized Event
 	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 		if err := staging.LockAccessSummaryRefresh(ctx, tx); err != nil {
+			return err
+		}
+		if err := staging.LockMediaOrganization(ctx, tx); err != nil {
 			return err
 		}
 		var currentVersion int64
@@ -1450,7 +1454,7 @@ func (s *Service) SourceMedia(ctx context.Context, sourceID uuid.UUID) (SourceMe
 		SELECT media.id, media.media_type, media.width, media.height, media.local_date_time
 		FROM source_album_memberships AS membership
 		JOIN media_items AS media ON media.id = membership.media_item_id
-		WHERE membership.source_album_id = ?
+		WHERE membership.source_album_id = ? AND media.availability = 'current'
 		ORDER BY media.local_date_time NULLS LAST, media.id
 		LIMIT ?
 	`, sourceID, maxDraftMediaItems+1).Scan(ctx, &media); err != nil {
@@ -1486,7 +1490,8 @@ func (s *Service) CreateLooseItem(ctx context.Context, actor setup.CuratorSessio
 	var result LooseItem
 	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 		var capture *string
-		err := tx.NewRaw(`SELECT local_date_time FROM media_items WHERE id = ? FOR UPDATE`, mediaID).Scan(ctx, &capture)
+		var availability string
+		err := tx.NewRaw(`SELECT local_date_time, availability FROM media_items WHERE id = ? FOR UPDATE`, mediaID).Scan(ctx, &capture, &availability)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrMediaUnavailable
 		}
@@ -1502,6 +1507,9 @@ func (s *Service) CreateLooseItem(ctx context.Context, actor setup.CuratorSessio
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
 			return err
+		}
+		if availability != "current" {
+			return ErrMediaUnavailable
 		}
 		day, _ := captureDay(capture, location)
 		if _, err := tx.NewRaw(`

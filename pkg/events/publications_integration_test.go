@@ -416,7 +416,7 @@ func TestPublicationPersistsNotificationChoiceAndSelectsASafeAvailableCover(t *t
 	_, err := fixture.db.NewRaw(`
 		INSERT INTO audience_snapshot_entries (snapshot_id, recipient_person_id, recipient_access_generation_id)
 		VALUES (?, ?, ?);
-		UPDATE media_items SET availability = 'source_missing' WHERE id = ?
+		UPDATE media_items SET availability = 'source_missing', missing_since = now() WHERE id = ?
 	`, secondSnapshot, fixture.people["shared"], fixture.access["shared"], fixture.media[0]).Exec(ctx)
 	require.NoError(t, err)
 	notify := false

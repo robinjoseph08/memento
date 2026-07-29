@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -130,6 +131,48 @@ func TestArchiveInfoRejectsOmittedCurrentLivePhotoCompanion(t *testing.T) {
 
 	_, err = client.ArchiveInfo(context.Background(), []uuid.UUID{primary})
 	require.EqualError(t, err, "Immich returned an invalid response")
+}
+
+func TestArchiveMissingMemberBadRequestsAreNotFound(t *testing.T) {
+	assetID := uuid.New()
+	server := contractServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/assets/" + assetID.String():
+			_, _ = w.Write([]byte(`{"id":"` + assetID.String() + `","livePhotoVideoId":null}`))
+		case "/api/download/info", "/api/download/archive":
+			w.WriteHeader(http.StatusBadRequest)
+		default:
+			t.Fatalf("unexpected request %s", r.URL.Path)
+		}
+	})
+	defer server.Close()
+	client, err := New(clientConfig(server.URL), server.Client())
+	require.NoError(t, err)
+
+	_, err = client.ArchiveInfo(context.Background(), []uuid.UUID{assetID})
+	require.ErrorIs(t, err, ErrNotFound)
+	_, err = client.Archive(context.Background(), []uuid.UUID{assetID})
+	require.ErrorIs(t, err, ErrNotFound)
+}
+
+func TestArchiveBadRequestClassificationDoesNotBroadenOtherFailures(t *testing.T) {
+	assetID := uuid.New()
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusServiceUnavailable} {
+		server := contractServer(t, func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(status)
+		})
+		client, err := New(clientConfig(server.URL), server.Client())
+		require.NoError(t, err)
+		_, err = client.Archive(context.Background(), []uuid.UUID{assetID})
+		require.NotErrorIs(t, err, ErrNotFound)
+		server.Close()
+	}
+	client, err := New(clientConfig("https://immich.internal"), nil)
+	require.NoError(t, err)
+	_, err = client.Archive(context.Background(), []uuid.UUID{uuid.Nil})
+	require.NotErrorIs(t, err, ErrNotFound)
+	_, err = client.Archive(context.Background(), []uuid.UUID{assetID, assetID})
+	require.NotErrorIs(t, err, ErrNotFound)
 }
 
 func TestCheckValidatesVersionAPIKeyAndExactLeastPrivilegePermissions(t *testing.T) {
@@ -275,6 +318,41 @@ func TestOwnedAlbumsRejectsMalformedOrDuplicateSummaries(t *testing.T) {
 	}
 }
 
+func TestAssetReturnsCompleteNormalizedRepairEvidence(t *testing.T) {
+	assetID := uuid.New()
+	server := contractServer(t, func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/api/assets/"+assetID.String(), r.URL.Path)
+		_, _ = w.Write([]byte(`{"id":"` + assetID.String() + `","type":"IMAGE","width":1600,"height":1200,"localDateTime":"2026-01-01T00:00:00Z","fileCreatedAt":"2025-12-31T23:00:00Z","checksum":"ERERERERERERERERERERERERERE=","originalFileName":" family.jpg ","originalPath":" /private/family.jpg "}`))
+	})
+	defer server.Close()
+	client, err := New(clientConfig(server.URL), server.Client())
+	require.NoError(t, err)
+
+	asset, err := client.Asset(context.Background(), assetID)
+	require.NoError(t, err)
+	assert.Equal(t, assetID, asset.SourceID)
+	assert.Equal(t, "image", asset.MediaType)
+	assert.Equal(t, "1111111111111111111111111111111111111111", asset.Checksum)
+	assert.Equal(t, "2025-12-31T23:00:00Z", asset.CaptureAt)
+	assert.Equal(t, "family.jpg", asset.Filename)
+	assert.Equal(t, "/private/family.jpg", asset.OriginalPath)
+}
+
+func TestAssetRejectsMismatchedValidResponseID(t *testing.T) {
+	requestedID := uuid.New()
+	responseID := uuid.New()
+	server := contractServer(t, func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/api/assets/"+requestedID.String(), r.URL.Path)
+		_, _ = w.Write([]byte(`{"id":"` + responseID.String() + `","type":"IMAGE","width":1600,"height":1200,"localDateTime":"2026-01-01T00:00:00Z","fileCreatedAt":"2025-12-31T23:00:00Z","checksum":"ERERERERERERERERERERERERERE=","originalFileName":"family.jpg","originalPath":"/private/family.jpg"}`))
+	})
+	defer server.Close()
+	client, err := New(clientConfig(server.URL), server.Client())
+	require.NoError(t, err)
+
+	_, err = client.Asset(context.Background(), requestedID)
+	require.EqualError(t, err, "Immich returned an invalid response")
+}
+
 func TestAssetExistsDistinguishesPresentAndDeletedAssets(t *testing.T) {
 	assetID := uuid.New()
 	server := contractServer(t, func(w http.ResponseWriter, r *http.Request) {
@@ -296,6 +374,179 @@ func TestAssetExistsDistinguishesPresentAndDeletedAssets(t *testing.T) {
 	exists, err = client.AssetExists(context.Background(), assetID)
 	require.NoError(t, err)
 	assert.False(t, exists)
+
+	deletedServer := contractServer(t, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusBadRequest) })
+	defer deletedServer.Close()
+	client, err = New(clientConfig(deletedServer.URL), deletedServer.Client())
+	require.NoError(t, err)
+	exists, err = client.AssetExists(context.Background(), assetID)
+	require.NoError(t, err)
+	assert.False(t, exists)
+}
+
+func TestAssetExistsRejectsMalformedAndUnauthorizedResponses(t *testing.T) {
+	assetID := uuid.New()
+	for _, test := range []struct {
+		name   string
+		status int
+		body   string
+		want   string
+	}{
+		{name: "malformed", status: http.StatusOK, body: `{`, want: "Immich returned an invalid response"},
+		{name: "mismatched identity", status: http.StatusOK, body: `{"id":"` + uuid.NewString() + `"}`, want: "Immich returned an invalid response"},
+		{name: "unauthorized", status: http.StatusUnauthorized, body: `{"message":"private"}`, want: "Immich API key is invalid"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := contractServer(t, func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(test.status)
+				_, _ = w.Write([]byte(test.body))
+			})
+			defer server.Close()
+			client, err := New(clientConfig(server.URL), server.Client())
+			require.NoError(t, err)
+
+			exists, err := client.AssetExists(context.Background(), assetID)
+			assert.False(t, exists)
+			require.EqualError(t, err, test.want)
+			assert.NotContains(t, err.Error(), "private")
+		})
+	}
+}
+
+func TestAssetDeliveryAvailableRequiresEveryRelevantRepresentation(t *testing.T) {
+	for _, mediaType := range []string{"image", "video"} {
+		t.Run(mediaType, func(t *testing.T) {
+			assetID := uuid.New()
+			var paths []string
+			server := contractServer(t, func(w http.ResponseWriter, r *http.Request) {
+				paths = append(paths, r.URL.Path+"?"+r.URL.RawQuery)
+				assert.Equal(t, "bytes=0-0", r.Header.Get("Range"))
+				contentType := "image/jpeg"
+				if strings.HasSuffix(r.URL.Path, "/video/playback") {
+					contentType = "video/mp4"
+				}
+				w.Header().Set("Content-Type", contentType)
+				_, _ = w.Write([]byte("available"))
+			})
+			defer server.Close()
+			client, err := New(clientConfig(server.URL), server.Client())
+			require.NoError(t, err)
+
+			available, err := client.AssetDeliveryAvailable(context.Background(), assetID, mediaType)
+			require.NoError(t, err)
+			assert.True(t, available)
+			want := []string{
+				"/api/assets/" + assetID.String() + "/thumbnail?size=thumbnail",
+				"/api/assets/" + assetID.String() + "/thumbnail?size=preview",
+				"/api/assets/" + assetID.String() + "/original?",
+			}
+			if mediaType == "video" {
+				want = append(want, "/api/assets/"+assetID.String()+"/video/playback?")
+			}
+			assert.Equal(t, want, paths)
+		})
+	}
+}
+
+func TestAssetDeliveryAvailableFailsClosed(t *testing.T) {
+	assetID := uuid.New()
+	for _, test := range []struct {
+		name       string
+		status     int
+		want       bool
+		wantErr    string
+		failedPath string
+	}{
+		{name: "missing derivative", status: http.StatusNotFound, failedPath: "/thumbnail", want: false},
+		{name: "missing original", status: http.StatusNotFound, failedPath: "/original", want: false},
+		{name: "bad request original", status: http.StatusBadRequest, failedPath: "/original", want: false},
+		{name: "unauthorized original", status: http.StatusUnauthorized, failedPath: "/original", wantErr: "Immich API key is invalid"},
+		{name: "empty original", status: http.StatusOK, failedPath: "/original", wantErr: "Immich returned an invalid response"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := contractServer(t, func(w http.ResponseWriter, r *http.Request) {
+				failed := strings.Contains(r.URL.Path, test.failedPath)
+				if failed {
+					w.WriteHeader(test.status)
+					return
+				}
+				w.Header().Set("Content-Type", "image/jpeg")
+				_, _ = w.Write([]byte("available"))
+			})
+			defer server.Close()
+			client, err := New(clientConfig(server.URL), server.Client())
+			require.NoError(t, err)
+
+			available, err := client.AssetDeliveryAvailable(context.Background(), assetID, "image")
+			assert.Equal(t, test.want, available)
+			if test.wantErr == "" {
+				require.NoError(t, err)
+			} else {
+				require.EqualError(t, err, test.wantErr)
+			}
+		})
+	}
+}
+
+type bodyTimeoutReadCloser struct {
+	ctx     context.Context
+	started chan struct{}
+	once    sync.Once
+}
+
+func (body *bodyTimeoutReadCloser) Read([]byte) (int, error) {
+	body.once.Do(func() { close(body.started) })
+	<-body.ctx.Done()
+	return 0, body.ctx.Err()
+}
+
+func (*bodyTimeoutReadCloser) Close() error { return nil }
+
+func TestAssetDeliveryAvailableBoundsBodyReadsAfterHeaders(t *testing.T) {
+	assetID := uuid.New()
+	bodyReadStarted := make(chan struct{})
+	transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"image/jpeg"}},
+			Body:       &bodyTimeoutReadCloser{ctx: request.Context(), started: bodyReadStarted},
+			Request:    request,
+		}, nil
+	})
+	cfg := clientConfig("http://immich.test")
+	cfg.HealthTimeout = time.Hour
+	client, err := New(cfg, &http.Client{Transport: transport})
+	require.NoError(t, err)
+	activateBodyTimeout := make(chan struct{})
+	client.healthContext = func(parent context.Context, _ time.Duration) (context.Context, context.CancelFunc) {
+		probeCtx, cancel := context.WithCancel(parent)
+		go func() {
+			select {
+			case <-activateBodyTimeout:
+				cancel()
+			case <-probeCtx.Done():
+			}
+		}()
+		return probeCtx, cancel
+	}
+
+	result := make(chan error, 1)
+	go func() {
+		_, availableErr := client.AssetDeliveryAvailable(context.Background(), assetID, "image")
+		result <- availableErr
+	}()
+	select {
+	case <-bodyReadStarted:
+	case <-time.After(time.Second):
+		t.Fatal("delivery probe did not begin its post-header body read")
+	}
+	close(activateBodyTimeout)
+	select {
+	case availableErr := <-result:
+		require.EqualError(t, availableErr, "Immich returned an invalid response")
+	case <-time.After(time.Second):
+		t.Fatal("delivery probe body read did not stop after its timeout activated")
+	}
 }
 
 func TestAlbumAssetsPageUsesPinnedPaginationAndReturnsOnlyNormalizedRepairEvidence(t *testing.T) {
@@ -434,7 +685,7 @@ func TestFacesIdentifyDeletedAssets(t *testing.T) {
 	client, err := New(clientConfig(server.URL), server.Client())
 	require.NoError(t, err)
 	_, err = client.Faces(context.Background(), uuid.New())
-	assert.ErrorIs(t, err, ErrNotFound)
+	require.ErrorIs(t, err, ErrNotFound)
 }
 
 func TestAlbumAssetsNormalizeChecksumForRepairWithoutForwardingBase64(t *testing.T) {
@@ -488,6 +739,30 @@ func TestAlbumSummaryUsesPinnedDetailContract(t *testing.T) {
 
 	_, err = client.Album(context.Background(), uuid.Nil)
 	require.EqualError(t, err, "Immich returned an invalid response")
+}
+
+func TestAlbumAndMembershipMissingResponsesIdentifyMissingSourceAlbum(t *testing.T) {
+	albumID := uuid.New()
+	server := contractServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/albums/" + albumID.String():
+			assert.Equal(t, http.MethodGet, r.Method)
+			w.WriteHeader(http.StatusBadRequest)
+		case "/api/search/metadata":
+			assert.Equal(t, http.MethodPost, r.Method)
+			w.WriteHeader(http.StatusBadRequest)
+		default:
+			t.Fatalf("unexpected request %s", r.URL.Path)
+		}
+	})
+	defer server.Close()
+	client, err := New(clientConfig(server.URL), server.Client())
+	require.NoError(t, err)
+
+	_, err = client.Album(context.Background(), albumID)
+	require.ErrorIs(t, err, ErrNotFound)
+	_, err = client.AlbumAssetsPage(context.Background(), albumID, 1)
+	require.ErrorIs(t, err, ErrNotFound)
 }
 
 func TestAlbumSummaryRejectsMismatchedIdentity(t *testing.T) {
@@ -641,17 +916,18 @@ func TestAlbumAssetsPageRejectsInvalidEntryPointsAndResponses(t *testing.T) {
 
 func TestClientReturnsSafeFailClosedDependencyErrors(t *testing.T) {
 	operations := []struct {
-		name string
-		run  func(*Client) error
-		want string
+		name         string
+		run          func(*Client) error
+		want         string
+		notFoundWant string
 	}{
-		{"validation", func(client *Client) error { return client.Check(context.Background()) }, "Immich validation failed"},
-		{"discovery", func(client *Client) error { _, err := client.OwnedAlbums(context.Background()); return err }, "Immich album discovery failed"},
-		{"album summary", func(client *Client) error { _, err := client.Album(context.Background(), uuid.New()); return err }, "Immich album discovery failed"},
+		{"validation", func(client *Client) error { return client.Check(context.Background()) }, "Immich validation failed", ""},
+		{"discovery", func(client *Client) error { _, err := client.OwnedAlbums(context.Background()); return err }, "Immich album discovery failed", ""},
+		{"album summary", func(client *Client) error { _, err := client.Album(context.Background(), uuid.New()); return err }, "Immich album discovery failed", ErrNotFound.Error()},
 		{"membership", func(client *Client) error {
 			_, err := client.AlbumAssetsPage(context.Background(), uuid.New(), 1)
 			return err
-		}, "Immich album membership lookup failed"},
+		}, "Immich album membership lookup failed", ErrNotFound.Error()},
 	}
 	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusTooManyRequests, http.StatusServiceUnavailable} {
 		for _, operation := range operations {
@@ -668,7 +944,11 @@ func TestClientReturnsSafeFailClosedDependencyErrors(t *testing.T) {
 					require.EqualError(t, err, "Immich API key is invalid")
 					assert.True(t, IsConfigurationError(err))
 				} else {
-					require.EqualError(t, err, operation.want)
+					want := operation.want
+					if status == http.StatusNotFound && operation.notFoundWant != "" {
+						want = operation.notFoundWant
+					}
+					require.EqualError(t, err, want)
 					assert.False(t, IsConfigurationError(err))
 				}
 				assert.NotContains(t, err.Error(), "private")
@@ -768,6 +1048,7 @@ func TestThumbnailMapsUpstreamStatusesTimeoutsAndReadFailuresToSafeErrors(t *tes
 	}{
 		{status: http.StatusUnauthorized, want: "Immich API key is invalid"},
 		{status: http.StatusForbidden, want: "Immich API key is invalid"},
+		{status: http.StatusBadRequest, want: "Immich resource not found"},
 		{status: http.StatusNotFound, want: "Immich resource not found"},
 		{status: http.StatusInternalServerError, want: "Immich validation failed"},
 	} {
@@ -1114,6 +1395,47 @@ func TestMediaConditionalAndUnsatisfiedRangesReturnSafeEmptyResponses(t *testing
 	}
 }
 
+func TestDeletedMediaBadRequestWithValidBrowserHeadersIsNotFound(t *testing.T) {
+	assetID := uuid.New()
+	for _, request := range []MediaRequest{
+		{Range: "bytes=0-1023"},
+		{IfNoneMatch: `W/"preview-v1"`},
+		{IfModifiedSince: "Mon, 27 Jul 2026 12:00:00 GMT"},
+		{Range: "bytes=0-1023", IfRange: `"video-v1"`},
+	} {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusBadRequest)
+		}))
+		client, err := New(clientConfig(server.URL), server.Client())
+		require.NoError(t, err)
+		_, err = client.Preview(context.Background(), assetID, request)
+		require.ErrorIs(t, err, ErrNotFound)
+		server.Close()
+	}
+}
+
+func TestMalformedMediaHeadersAreRejectedBeforeImmich(t *testing.T) {
+	assetID := uuid.New()
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusBadRequest)
+	}))
+	defer server.Close()
+	client, err := New(clientConfig(server.URL), server.Client())
+	require.NoError(t, err)
+	for _, request := range []MediaRequest{
+		{Range: "bytes=not-a-range"},
+		{IfNoneMatch: "malformed"},
+		{IfModifiedSince: "tomorrow"},
+		{IfRange: `"orphan-validator"`},
+	} {
+		_, err = client.Preview(context.Background(), assetID, request)
+		require.EqualError(t, err, "Immich validation failed")
+	}
+	assert.Zero(t, calls)
+}
+
 func TestMediaRepresentationsRejectInvalidEntryPointsStatusesAndHeaders(t *testing.T) {
 	client, err := New(clientConfig("https://immich.internal"), nil)
 	require.NoError(t, err)
@@ -1129,6 +1451,7 @@ func TestMediaRepresentationsRejectInvalidEntryPointsStatusesAndHeaders(t *testi
 		original bool
 		want     string
 	}{
+		{name: "recipient-induced bad request", request: MediaRequest{IfNoneMatch: "malformed"}, status: http.StatusBadRequest, want: "Immich validation failed"},
 		{name: "missing resource", status: http.StatusNotFound, want: "Immich resource not found"},
 		{name: "dependency unavailable", status: http.StatusServiceUnavailable, want: "Immich validation failed"},
 		{name: "video with image body", status: http.StatusOK, headers: http.Header{"Content-Type": {"image/jpeg"}}, want: "Immich returned an invalid response"},

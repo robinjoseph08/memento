@@ -77,6 +77,7 @@ type Client struct {
 	baseURL       *url.URL
 	apiKey        string
 	healthTimeout time.Duration
+	healthContext func(context.Context, time.Duration) (context.Context, context.CancelFunc)
 	httpClient    *http.Client
 }
 
@@ -350,7 +351,10 @@ func New(cfg config.ImmichConfig, httpClient *http.Client) (*Client, error) {
 	safeHTTPClient.CheckRedirect = func(*http.Request, []*http.Request) error {
 		return http.ErrUseLastResponse
 	}
-	return &Client{baseURL: baseURL, apiKey: cfg.APIKey, healthTimeout: cfg.HealthTimeout, httpClient: &safeHTTPClient}, nil
+	return &Client{
+		baseURL: baseURL, apiKey: cfg.APIKey, healthTimeout: cfg.HealthTimeout,
+		healthContext: context.WithTimeout, httpClient: &safeHTTPClient,
+	}, nil
 }
 
 // Check verifies the exact server version and the exact required read-only API
@@ -449,35 +453,11 @@ func (c *Client) AlbumAssetsPage(ctx context.Context, albumID uuid.UUID, page in
 	}
 	result := AssetPage{Items: make([]AssetSummary, 0, len(*response.Assets.Items))}
 	for _, raw := range *response.Assets.Items {
-		if raw.ID == nil || raw.Type == nil {
+		asset, err := normalizeAsset(raw)
+		if err != nil {
 			return AssetPage{}, errInvalidResponse
 		}
-		assetID, err := uuid.Parse(*raw.ID)
-		width, widthErr := requiredNullableDimension(raw.Width)
-		height, heightErr := requiredNullableDimension(raw.Height)
-		localDateTime, localDateTimeErr := requiredNullableLocalDateTime(raw.LocalDateTime)
-		if err != nil || assetID == uuid.Nil || !validAssetType(*raw.Type) || widthErr != nil || heightErr != nil || localDateTimeErr != nil {
-			return AssetPage{}, errInvalidResponse
-		}
-		checksum, checksumErr := optionalChecksum(raw.Checksum)
-		captureAt := ""
-		if localDateTime != nil {
-			captureAt = *localDateTime
-		}
-		if raw.FileCreatedAt != nil && strings.TrimSpace(*raw.FileCreatedAt) != "" {
-			if _, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(*raw.FileCreatedAt)); err != nil {
-				return AssetPage{}, errInvalidResponse
-			}
-			captureAt = strings.TrimSpace(*raw.FileCreatedAt)
-		}
-		if checksumErr != nil {
-			return AssetPage{}, errInvalidResponse
-		}
-		result.Items = append(result.Items, AssetSummary{
-			SourceID: assetID, MediaType: strings.ToLower(*raw.Type), Width: width, Height: height,
-			LocalDateTime: localDateTime, CaptureAt: truncate(captureAt, 64), Checksum: checksum,
-			Filename: truncate(optionalString(raw.OriginalFileName), 1024), OriginalPath: truncate(optionalString(raw.OriginalPath), 4096),
-		})
+		result.Items = append(result.Items, asset)
 	}
 	if string(response.Assets.NextPage) != "null" {
 		var nextValue string
@@ -494,6 +474,54 @@ func (c *Client) AlbumAssetsPage(ctx context.Context, albumID uuid.UUID, page in
 		return AssetPage{}, errInvalidResponse
 	}
 	return result, nil
+}
+
+func normalizeAsset(raw assetResponse) (AssetSummary, error) {
+	if raw.ID == nil || raw.Type == nil {
+		return AssetSummary{}, errInvalidResponse
+	}
+	assetID, err := uuid.Parse(*raw.ID)
+	width, widthErr := requiredNullableDimension(raw.Width)
+	height, heightErr := requiredNullableDimension(raw.Height)
+	localDateTime, localDateTimeErr := requiredNullableLocalDateTime(raw.LocalDateTime)
+	if err != nil || assetID == uuid.Nil || !validAssetType(*raw.Type) || widthErr != nil || heightErr != nil || localDateTimeErr != nil {
+		return AssetSummary{}, errInvalidResponse
+	}
+	checksum, checksumErr := optionalChecksum(raw.Checksum)
+	if checksumErr != nil {
+		return AssetSummary{}, errInvalidResponse
+	}
+	captureAt := ""
+	if localDateTime != nil {
+		captureAt = *localDateTime
+	}
+	if raw.FileCreatedAt != nil && strings.TrimSpace(*raw.FileCreatedAt) != "" {
+		if _, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(*raw.FileCreatedAt)); err != nil {
+			return AssetSummary{}, errInvalidResponse
+		}
+		captureAt = strings.TrimSpace(*raw.FileCreatedAt)
+	}
+	return AssetSummary{
+		SourceID: assetID, MediaType: strings.ToLower(*raw.Type), Width: width, Height: height,
+		LocalDateTime: localDateTime, CaptureAt: truncate(captureAt, 64), Checksum: checksum,
+		Filename: truncate(optionalString(raw.OriginalFileName), 1024), OriginalPath: truncate(optionalString(raw.OriginalPath), 4096),
+	}, nil
+}
+
+// Asset returns fresh normalized metadata for one exact Immich asset.
+func (c *Client) Asset(ctx context.Context, assetID uuid.UUID) (AssetSummary, error) {
+	if assetID == uuid.Nil {
+		return AssetSummary{}, errInvalidResponse
+	}
+	var response assetResponse
+	if err := c.getJSON(ctx, "assets/"+assetID.String(), &response, errAssetFailed); err != nil {
+		return AssetSummary{}, err
+	}
+	asset, err := normalizeAsset(response)
+	if err != nil || asset.SourceID != assetID {
+		return AssetSummary{}, errInvalidResponse
+	}
+	return asset, nil
 }
 
 // AssetExists distinguishes an album-only removal from an Immich asset that
@@ -515,6 +543,38 @@ func (c *Client) AssetExists(ctx context.Context, assetID uuid.UUID) (bool, erro
 	responseID, err := uuid.Parse(*response.ID)
 	if err != nil || responseID != assetID {
 		return false, errInvalidResponse
+	}
+	return true, nil
+}
+
+// AssetDeliveryAvailable verifies that the representations needed to serve an
+// asset can each return bytes. A metadata response alone is not delivery evidence.
+func (c *Client) AssetDeliveryAvailable(ctx context.Context, assetID uuid.UUID, mediaType string) (bool, error) {
+	if assetID == uuid.Nil || (mediaType != "image" && mediaType != "video") {
+		return false, errInvalidResponse
+	}
+	probes := []func(context.Context, uuid.UUID, MediaRequest) (MediaResponse, error){c.Thumbnail, c.Preview, c.Original}
+	if mediaType == "video" {
+		probes = append(probes, c.Video)
+	}
+	for _, probe := range probes {
+		probeCtx, cancel := c.healthContext(ctx, c.healthTimeout)
+		response, err := probe(probeCtx, assetID, MediaRequest{Range: "bytes=0-0"})
+		if errors.Is(err, ErrNotFound) {
+			cancel()
+			return false, nil
+		}
+		if err != nil {
+			cancel()
+			return false, err
+		}
+		var firstByte [1]byte
+		read, readErr := io.ReadFull(response.Body, firstByte[:])
+		closeErr := response.Body.Close()
+		cancel()
+		if read != len(firstByte) || (readErr != nil && !errors.Is(readErr, io.EOF) && !errors.Is(readErr, io.ErrUnexpectedEOF)) || closeErr != nil {
+			return false, errInvalidResponse
+		}
 	}
 	return true, nil
 }
@@ -547,6 +607,9 @@ func (c *Client) media(ctx context.Context, assetID uuid.UUID, path []string, qu
 	if assetID == uuid.Nil {
 		return MediaResponse{}, errInvalidResponse
 	}
+	if !validMediaRequest(request) {
+		return MediaResponse{}, errRequestFailed
+	}
 	requestCtx, cancel := context.WithCancel(ctx)
 	headerTimer := time.AfterFunc(c.healthTimeout, cancel)
 	endpointParts := append([]string{"api", "assets", assetID.String()}, path...)
@@ -569,6 +632,10 @@ func (c *Client) media(ctx context.Context, assetID uuid.UUID, path []string, qu
 		defer cancel()
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxJSONResponse))
 		switch response.StatusCode {
+		case http.StatusBadRequest:
+			// Recipient-controlled validators are accepted only after strict local
+			// validation, so Immich's v3.0.3 deleted-asset 400 is missing evidence.
+			return MediaResponse{}, ErrNotFound
 		case http.StatusNotFound:
 			return MediaResponse{}, ErrNotFound
 		case http.StatusUnauthorized, http.StatusForbidden:
@@ -622,6 +689,82 @@ func (c *Client) doMediaRequest(ctx context.Context, endpoint *url.URL, accept s
 		}
 		current = location
 	}
+}
+
+func validMediaRequest(request MediaRequest) bool {
+	if len(request.Range) > 256 || len(request.IfRange) > 1024 || len(request.IfNoneMatch) > 4096 || len(request.IfModifiedSince) > 256 {
+		return false
+	}
+	if request.Range != "" {
+		ranges, valid := parseRequestedMediaRanges(request.Range)
+		if !valid || len(ranges) != 1 || request.Range != canonicalMediaRange(ranges[0]) {
+			return false
+		}
+	}
+	if request.IfNoneMatch != "" && !validETagList(request.IfNoneMatch) {
+		return false
+	}
+	if request.IfModifiedSince != "" {
+		modified, err := http.ParseTime(request.IfModifiedSince)
+		if err != nil || modified.UTC().Format(http.TimeFormat) != request.IfModifiedSince {
+			return false
+		}
+	}
+	if request.IfRange != "" {
+		if request.Range == "" || request.IfNoneMatch != "" || request.IfModifiedSince != "" ||
+			(!validEntityTag(request.IfRange, false) && !validHTTPDate(request.IfRange)) {
+			return false
+		}
+	}
+	return true
+}
+
+func canonicalMediaRange(requested requestedMediaRange) string {
+	if requested.suffix > 0 {
+		return "bytes=-" + strconv.FormatInt(requested.suffix, 10)
+	}
+	if requested.last >= 0 {
+		return "bytes=" + strconv.FormatInt(requested.first, 10) + "-" + strconv.FormatInt(requested.last, 10)
+	}
+	return "bytes=" + strconv.FormatInt(requested.first, 10) + "-"
+}
+
+func validHTTPDate(value string) bool {
+	parsed, err := http.ParseTime(value)
+	return err == nil && parsed.UTC().Format(http.TimeFormat) == value
+}
+
+func validEntityTag(value string, allowWeak bool) bool {
+	if allowWeak && strings.HasPrefix(value, "W/") {
+		value = strings.TrimPrefix(value, "W/")
+	} else if strings.HasPrefix(value, "W/") {
+		return false
+	}
+	if len(value) < 2 || value[0] != '"' || value[len(value)-1] != '"' {
+		return false
+	}
+	for _, character := range []byte(value[1 : len(value)-1]) {
+		if character < 0x21 || character == 0x22 || character > 0x7e {
+			return false
+		}
+	}
+	return true
+}
+
+func validETagList(value string) bool {
+	if value == "*" {
+		return true
+	}
+	parts := strings.Split(value, ",")
+	if len(parts) != 1 {
+		return false
+	}
+	for _, part := range parts {
+		if !validEntityTag(strings.TrimSpace(part), true) {
+			return false
+		}
+	}
+	return true
 }
 
 func setMediaRequestHeaders(header http.Header, request MediaRequest) {
@@ -782,6 +925,9 @@ func normalizeMediaResponse(response *http.Response, request MediaRequest, bound
 		return MediaResponse{}, errInvalidResponse
 	}
 	result.ETag = response.Header.Get("ETag")
+	if result.ETag != "" && !validEntityTag(result.ETag, true) {
+		return MediaResponse{}, errInvalidResponse
+	}
 	if modified := response.Header.Get("Last-Modified"); modified != "" {
 		parsed, err := http.ParseTime(modified)
 		if err != nil {
@@ -1075,7 +1221,9 @@ func (c *Client) Archive(ctx context.Context, assetIDs []uuid.UUID) (ArchiveResp
 		defer response.Body.Close()
 		defer cancel()
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxJSONResponse))
-		if response.StatusCode == http.StatusNotFound {
+		if response.StatusCode == http.StatusNotFound || response.StatusCode == http.StatusBadRequest {
+			// The request is built only from locally validated, server-derived UUIDs.
+			// Immich uses 400 when one of those members disappears.
 			return ArchiveResponse{}, ErrNotFound
 		}
 		return ArchiveResponse{}, errArchiveFailed
@@ -1202,7 +1350,9 @@ func (c *Client) doJSONStatus(ctx context.Context, method, path string, query ur
 	defer response.Body.Close()
 	if response.StatusCode != expectedStatus {
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxJSONResponse))
-		if response.StatusCode == http.StatusNotFound && (path == "faces" || strings.HasPrefix(path, "assets/")) {
+		if (response.StatusCode == http.StatusNotFound && (path == "faces" || path == "search/metadata" ||
+			strings.HasPrefix(path, "assets/") || strings.HasPrefix(path, "albums/"))) ||
+			(response.StatusCode == http.StatusBadRequest && (path == "download/info" || path == "search/metadata" || strings.HasPrefix(path, "albums/") || strings.HasPrefix(path, "assets/"))) {
 			return ErrNotFound
 		}
 		if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {

@@ -10,6 +10,7 @@ import type {
   MediaCandidate,
   MutationResponse,
   PersonCandidate,
+  SourceProblem,
   UnlinkedPerson,
 } from "./types/generated/repairs";
 
@@ -29,6 +30,7 @@ function CandidateActions({
   canConfirm = true,
   confirmText = "Confirm repair",
   csrfToken,
+  reviewToken,
 }: {
   kind: "people" | "media";
   candidateID: string;
@@ -36,6 +38,7 @@ function CandidateActions({
   canConfirm?: boolean;
   confirmText?: string;
   csrfToken: string;
+  reviewToken?: string;
 }) {
   const queryClient = useQueryClient();
   const [action, setAction] = useState<"confirm" | "reject">();
@@ -46,7 +49,14 @@ function CandidateActions({
         `/api/repairs/${kind}/${candidateID}/${nextAction}`,
         {
           method: "POST",
-          headers: { "X-Memento-CSRF": csrfToken },
+          headers: {
+            "Content-Type": "application/json",
+            "X-Memento-CSRF": csrfToken,
+          },
+          body:
+            kind === "media"
+              ? JSON.stringify({ review_token: reviewToken })
+              : undefined,
         },
       );
     },
@@ -159,6 +169,39 @@ function FaceAnchors({ values }: { values: FaceAnchorEvidence[] }) {
   );
 }
 
+function SourceProblemCard({ problem }: { problem: SourceProblem }) {
+  const mediaProblem = problem.kind === "media_item";
+  return (
+    <article className="repair-card repair-problem">
+      <p className="step-label">
+        {problem.published && mediaProblem
+          ? "Published Media unavailable"
+          : mediaProblem
+            ? "Media source missing"
+            : "Source album missing"}
+      </p>
+      <h3>{problem.label}</h3>
+      <p>
+        {problem.priority === "critical"
+          ? mediaProblem
+            ? "This published Media problem has the highest priority. Its listing and Audience remain unchanged, but Media delivery is blocked."
+            : "This published Source album problem has the highest priority. Published Media listings and Audiences remain unchanged. Media items remain available unless their own backing is missing."
+          : "This Source problem needs Curator review. No backing or authorization changes automatically."}
+      </p>
+      {mediaProblem ? (
+        <p>
+          {problem.candidate_count > 0
+            ? `${problem.candidate_count} replacement ${problem.candidate_count === 1 ? "candidate is" : "candidates are"} ready for evidence review below.`
+            : "No safe replacement candidate is available yet."}
+        </p>
+      ) : null}
+      <small>
+        Missing since {new Date(problem.missing_since).toLocaleString()}
+      </small>
+    </article>
+  );
+}
+
 function PersonRepair({
   candidate,
   csrfToken,
@@ -264,6 +307,7 @@ function MediaRepair({
               label="Immich asset ID"
               value={candidate.candidate_immich_asset_id}
             />
+            <EvidenceField label="Media type" value={candidate.media_type} />
             <EvidenceField
               label="Checksum"
               value={candidate.candidate.checksum}
@@ -293,6 +337,7 @@ function MediaRepair({
           }
           csrfToken={csrfToken}
           kind="media"
+          reviewToken={candidate.review_token}
         />
       ) : null}
     </article>
@@ -409,8 +454,10 @@ export function RepairWorkspace({ csrfToken }: { csrfToken: string }) {
     },
   });
   const data = repairs.data;
+  const sourceProblems = data?.source_problems ?? [];
   const empty =
     data &&
+    sourceProblems.length === 0 &&
     data.person_candidates.length === 0 &&
     data.media_candidates.length === 0 &&
     data.unlinked_immich_people.length === 0;
@@ -442,6 +489,12 @@ export function RepairWorkspace({ csrfToken }: { csrfToken: string }) {
       ) : null}
       {empty ? <p>No Immich identity changes need review.</p> : null}
       <div className="repair-list">
+        {sourceProblems.map((problem) => (
+          <SourceProblemCard
+            key={`${problem.kind}:${problem.id}`}
+            problem={problem}
+          />
+        ))}
         {data?.person_candidates.map((candidate) => (
           <PersonRepair
             candidate={candidate}

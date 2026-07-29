@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -75,6 +76,9 @@ func TestImmichV303LiveContract(t *testing.T) {
 	}, http.StatusCreated, &createdAlbum)
 	albumID, err := uuid.Parse(createdAlbum.ID)
 	require.NoError(t, err)
+	t.Cleanup(func() {
+		contractDELETE(t, ctx, httpClient, baseURL+"/api/albums/"+albumID.String(), login.AccessToken, http.StatusNoContent, http.StatusNotFound, http.StatusBadRequest)
+	})
 
 	albums, err := client.OwnedAlbums(ctx)
 	require.NoError(t, err)
@@ -93,6 +97,12 @@ func TestImmichV303LiveContract(t *testing.T) {
 	assert.Empty(t, page.Items)
 	assert.Nil(t, page.NextPage)
 
+	contractDELETE(t, ctx, httpClient, baseURL+"/api/albums/"+albumID.String(), login.AccessToken, http.StatusNoContent)
+	_, err = client.Album(ctx, albumID)
+	require.ErrorIs(t, err, ErrNotFound, "a real deleted album must reach reconciliation as missing evidence")
+	_, err = client.AlbumAssetsPage(ctx, albumID, 1)
+	require.ErrorIs(t, err, ErrNotFound, "v3.0.3 rejects metadata search for a deleted album as missing evidence")
+
 	people, err := client.People(ctx)
 	require.NoError(t, err)
 	assert.Empty(t, people)
@@ -103,6 +113,19 @@ func TestImmichV303LiveContract(t *testing.T) {
 	require.NoError(t, err)
 	imageID := contractUpload(t, ctx, httpClient, baseURL, login.AccessToken, imagePath)
 	videoID := contractUpload(t, ctx, httpClient, baseURL, login.AccessToken, videoPath)
+	imageEvidence, err := client.Asset(ctx, imageID)
+	require.NoError(t, err)
+	assert.Equal(t, imageID, imageEvidence.SourceID)
+	assert.Equal(t, "image", imageEvidence.MediaType)
+	assert.NotEmpty(t, imageEvidence.Checksum)
+	assert.Equal(t, filepath.Base(imagePath), imageEvidence.Filename)
+	assert.NotEmpty(t, imageEvidence.OriginalPath)
+	contractAwaitDelivery(t, func() (bool, error) {
+		return client.AssetDeliveryAvailable(ctx, imageID, "image")
+	})
+	contractAwaitDelivery(t, func() (bool, error) {
+		return client.AssetDeliveryAvailable(ctx, videoID, "video")
+	})
 
 	thumbnail := contractAwaitMedia(t, func() (MediaResponse, error) {
 		return client.Thumbnail(ctx, imageID, MediaRequest{})
@@ -168,6 +191,27 @@ func TestImmichV303LiveContract(t *testing.T) {
 	for _, file := range zipReader.File {
 		assert.Equal(t, filepath.Base(file.Name), file.Name, "Immich archive entries never expose a source path")
 	}
+
+	contractDeleteAssets(t, ctx, httpClient, baseURL, login.AccessToken, []uuid.UUID{imageID, videoID}, http.StatusNoContent, http.StatusNotFound)
+	for _, deletedID := range []uuid.UUID{imageID, videoID} {
+		contractAwaitAssetDeleted(t, func() (bool, error) { return client.AssetExists(ctx, deletedID) })
+		_, err = client.Asset(ctx, deletedID)
+		require.ErrorIs(t, err, ErrNotFound)
+	}
+	deletedRepresentations := []struct {
+		name string
+		load func() (MediaResponse, error)
+	}{
+		{name: "thumbnail", load: func() (MediaResponse, error) { return client.Thumbnail(ctx, imageID, MediaRequest{}) }},
+		{name: "preview", load: func() (MediaResponse, error) { return client.Preview(ctx, imageID, MediaRequest{}) }},
+		{name: "original", load: func() (MediaResponse, error) { return client.Original(ctx, imageID, MediaRequest{}) }},
+		{name: "video", load: func() (MediaResponse, error) { return client.Video(ctx, videoID, MediaRequest{}) }},
+	}
+	for _, representation := range deletedRepresentations {
+		t.Run("deleted asset "+representation.name, func(t *testing.T) {
+			contractAwaitMediaDeleted(t, representation.load)
+		})
+	}
 }
 
 func contractUpload(t *testing.T, ctx context.Context, client *http.Client, baseURL, bearer, path string) uuid.UUID {
@@ -204,6 +248,9 @@ func contractUpload(t *testing.T, ctx context.Context, client *http.Client, base
 	assert.Equal(t, "created", uploaded.Status)
 	id, err := uuid.Parse(uploaded.ID)
 	require.NoError(t, err)
+	t.Cleanup(func() {
+		contractDeleteAssets(t, ctx, client, baseURL, bearer, []uuid.UUID{id}, http.StatusNoContent, http.StatusNotFound, http.StatusBadRequest)
+	})
 	return id
 }
 
@@ -226,12 +273,117 @@ func contractAwaitMedia(t *testing.T, load func() (MediaResponse, error)) MediaR
 	}
 }
 
+func contractAwaitDelivery(t *testing.T, load func() (bool, error)) {
+	t.Helper()
+	deadline := time.Now().Add(90 * time.Second)
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+	var lastAvailable bool
+	var lastErr error
+	for {
+		lastAvailable, lastErr = load()
+		if lastErr == nil && lastAvailable {
+			return
+		}
+		if time.Now().After(deadline) {
+			require.FailNow(t, "asset delivery did not become available", "last_available=%t last_error=%v", lastAvailable, lastErr)
+		}
+		<-ticker.C
+	}
+}
+
+func contractAwaitAssetDeleted(t *testing.T, load func() (bool, error)) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	var lastExists bool
+	var lastErr error
+	for {
+		lastExists, lastErr = load()
+		if lastErr == nil && !lastExists {
+			return
+		}
+		if time.Now().After(deadline) {
+			require.FailNow(t, "deleted asset remained available", "last_exists=%t last_error=%v", lastExists, lastErr)
+		}
+		<-ticker.C
+	}
+}
+
+func contractAwaitMediaDeleted(t *testing.T, load func() (MediaResponse, error)) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	attempts := 0
+	lastStatus := 0
+	var lastErr error
+	for {
+		attempts++
+		response, err := load()
+		lastStatus = response.StatusCode
+		lastErr = err
+		if response.Body != nil {
+			_ = response.Body.Close()
+		}
+		if errors.Is(err, ErrNotFound) {
+			return
+		}
+		if time.Now().After(deadline) {
+			require.FailNow(t, "deleted representation remained available",
+				"attempts=%d last_status=%d last_error=%v", attempts, lastStatus, lastErr)
+		}
+		<-ticker.C
+	}
+}
+
 func contractReadMedia(t *testing.T, response MediaResponse) []byte {
 	t.Helper()
 	contents, err := io.ReadAll(response.Body)
 	require.NoError(t, err)
 	require.NoError(t, response.Body.Close())
 	return contents
+}
+
+func contractDELETE(t *testing.T, ctx context.Context, client *http.Client, endpoint, bearer string, wantStatuses ...int) {
+	t.Helper()
+	request, err := http.NewRequestWithContext(ctx, http.MethodDelete, endpoint, nil)
+	require.NoError(t, err)
+	request.Header.Set("Authorization", "Bearer "+bearer)
+	response, err := client.Do(request)
+	require.NoError(t, err)
+	defer response.Body.Close()
+	contents, err := io.ReadAll(io.LimitReader(response.Body, 4096))
+	require.NoError(t, err)
+	require.Contains(t, wantStatuses, response.StatusCode, "%s: %q", endpoint, contents)
+}
+
+func contractDeleteAssets(
+	t *testing.T,
+	ctx context.Context,
+	client *http.Client,
+	baseURL, bearer string,
+	assetIDs []uuid.UUID,
+	wantStatuses ...int,
+) {
+	t.Helper()
+	ids := make([]string, 0, len(assetIDs))
+	for _, assetID := range assetIDs {
+		ids = append(ids, assetID.String())
+	}
+	encoded, err := json.Marshal(map[string]any{"ids": ids, "force": true})
+	require.NoError(t, err)
+	request, err := http.NewRequestWithContext(ctx, http.MethodDelete, baseURL+"/api/assets", bytes.NewReader(encoded))
+	require.NoError(t, err)
+	request.Header.Set("Authorization", "Bearer "+bearer)
+	request.Header.Set("Content-Type", "application/json")
+	response, err := client.Do(request)
+	require.NoError(t, err)
+	defer response.Body.Close()
+	contents, err := io.ReadAll(io.LimitReader(response.Body, 4096))
+	require.NoError(t, err)
+	require.Contains(t, wantStatuses, response.StatusCode, "delete assets: %q", contents)
 }
 
 func contractPOST(

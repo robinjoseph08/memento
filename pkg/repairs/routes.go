@@ -21,9 +21,19 @@ type Authorizer interface {
 	AuthorizeCurator(ctx context.Context, credential, csrf string, mutation bool) (setup.CuratorSession, error)
 }
 
+type handlerService interface {
+	List(ctx context.Context) (ListResponse, error)
+	ReconcilePeople(ctx context.Context) (MutationResponse, error)
+	LinkPerson(ctx context.Context, actor setup.CuratorSession, request LinkPersonRequest) (MutationResponse, error)
+	ConfirmPerson(ctx context.Context, actor setup.CuratorSession, id uuid.UUID) (MutationResponse, error)
+	RejectPerson(ctx context.Context, actor setup.CuratorSession, id uuid.UUID) (MutationResponse, error)
+	ConfirmMedia(ctx context.Context, actor setup.CuratorSession, id uuid.UUID, token string) (MutationResponse, error)
+	RejectMedia(ctx context.Context, actor setup.CuratorSession, id uuid.UUID) (MutationResponse, error)
+}
+
 // Handler exposes private evidence and explicit confirmation actions.
 type Handler struct {
-	service    *Service
+	service    handlerService
 	authorizer Authorizer
 }
 
@@ -71,8 +81,27 @@ func (h *Handler) LinkPerson(c echo.Context) error {
 
 func (h *Handler) ConfirmPerson(c echo.Context) error { return h.resolve(c, h.service.ConfirmPerson) }
 func (h *Handler) RejectPerson(c echo.Context) error  { return h.resolve(c, h.service.RejectPerson) }
-func (h *Handler) ConfirmMedia(c echo.Context) error  { return h.resolve(c, h.service.ConfirmMedia) }
 func (h *Handler) RejectMedia(c echo.Context) error   { return h.resolve(c, h.service.RejectMedia) }
+
+func (h *Handler) ConfirmMedia(c echo.Context) error {
+	actor, err := h.authorize(c, true)
+	if err != nil {
+		return err
+	}
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil || id == uuid.Nil {
+		return errcodes.NotFound("Repair candidate")
+	}
+	var request ConfirmMediaRequest
+	if err := c.Bind(&request); err != nil {
+		return err
+	}
+	response, err := h.service.ConfirmMedia(c.Request().Context(), actor, id, request.ReviewToken)
+	if errors.Is(err, ErrConflict) {
+		return errcodes.Conflict("Repair confirmation could not be completed. Refresh repairs and try again.")
+	}
+	return mutationResult(c, response, err)
+}
 
 func (h *Handler) resolve(c echo.Context, action func(context.Context, setup.CuratorSession, uuid.UUID) (MutationResponse, error)) error {
 	actor, err := h.authorize(c, true)
