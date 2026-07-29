@@ -46,6 +46,8 @@ func TestVerifyMissingBoundsAggregateWorkAndConcurrency(t *testing.T) {
 
 	started := make(chan struct{}, concurrency)
 	release := make(chan struct{})
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(release) })
 	var mu sync.Mutex
 	calls, active, maximumActive := 0, 0, 0
 	probe := func(ctx context.Context, _ uuid.UUID) (bool, error) {
@@ -84,11 +86,28 @@ func TestVerifyMissingBoundsAggregateWorkAndConcurrency(t *testing.T) {
 		}, probe)
 		finished <- outcome{verification: verification, err: err}
 	}()
-	for range concurrency {
-		<-started
+	deadline := time.NewTimer(5 * time.Second)
+	defer deadline.Stop()
+	for startedCount := 0; startedCount < concurrency; startedCount++ {
+		select {
+		case <-started:
+		case <-deadline.C:
+			mu.Lock()
+			observedCalls, observedActive, observedMaximum := calls, active, maximumActive
+			mu.Unlock()
+			t.Fatalf("timed out waiting for probes to start: started=%d/%d calls=%d active=%d maximum_active=%d", startedCount, concurrency, observedCalls, observedActive, observedMaximum)
+		}
 	}
-	close(release)
-	completed := <-finished
+	releaseOnce.Do(func() { close(release) })
+	var completed outcome
+	select {
+	case completed = <-finished:
+	case <-deadline.C:
+		mu.Lock()
+		observedCalls, observedActive, observedMaximum := calls, active, maximumActive
+		mu.Unlock()
+		t.Fatalf("timed out waiting for verification: calls=%d/%d active=%d maximum_active=%d", observedCalls, workBudget, observedActive, observedMaximum)
+	}
 	require.NoError(t, completed.err)
 	assert.False(t, completed.verification.Complete)
 	assert.Empty(t, completed.verification.Missing)
