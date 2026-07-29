@@ -32,8 +32,8 @@ func MarkSourceMissing(ctx context.Context, db *bun.DB, backings []Backing) erro
 	})
 }
 
-// MarkSourceMissingInTx applies the same exact-backing transition inside a
-// caller transaction that already owns the surrounding reconciliation locks.
+// MarkSourceMissingInTx applies the same exact-backing transition inside the
+// caller's transaction, alongside any broader locks or updates the caller requires.
 func MarkSourceMissingInTx(ctx context.Context, tx bun.Tx, backings []Backing) error {
 	unique := make(map[uuid.UUID]Backing, len(backings))
 	for _, backing := range backings {
