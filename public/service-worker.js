@@ -223,7 +223,7 @@ async function pushActivitySummary(data) {
           ) ||
           typeof activity.title !== "string" ||
           activity.title.length < 1 ||
-          activity.title.length > 160 ||
+          activity.title.length > 480 ||
           !Number.isInteger(activity.addition_count) ||
           activity.addition_count < 1 ||
           activity.addition_count > 100 ||
@@ -241,7 +241,7 @@ async function pushActivitySummary(data) {
           !onlyKeys(activity, new Set(["kind", "author"])) ||
           typeof activity.author !== "string" ||
           activity.author.length < 1 ||
-          activity.author.length > 120
+          activity.author.length > 240
         ) {
           return undefined;
         }

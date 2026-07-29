@@ -59,6 +59,7 @@ func TestEndpointPolicyRejectsUnsafeDestinations(t *testing.T) {
 		{name: "mixed answer", endpoint: "https://push.example/subscription", addresses: []netip.Addr{netip.MustParseAddr("8.8.8.8"), netip.MustParseAddr("192.168.1.1")}},
 		{name: "mapped private", endpoint: "https://push.example/subscription", addresses: []netip.Addr{netip.MustParseAddr("::ffff:10.0.0.1")}},
 		{name: "NAT64", endpoint: "https://push.example/subscription", addresses: []netip.Addr{netip.MustParseAddr("64:ff9b::a00:1")}},
+		{name: "site local", endpoint: "https://push.example/subscription", addresses: []netip.Addr{netip.MustParseAddr("fec0::1")}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
