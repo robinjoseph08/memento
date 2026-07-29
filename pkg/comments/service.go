@@ -22,7 +22,10 @@ import (
 	"github.com/uptrace/bun"
 )
 
-const CommentJobKind = "comment_activity_created"
+const (
+	CommentJobKind       = "comment_activity_created"
+	commentActivityDelay = 15 * time.Minute
+)
 
 var (
 	ErrNotFound             = errors.New("comment not found")
@@ -107,14 +110,18 @@ type pageCursor struct {
 type Handoff func(context.Context, bun.Tx, uuid.UUID, uuid.UUID) error
 
 type Service struct {
-	db      *bun.DB
-	now     func() time.Time
-	handoff Handoff
+	db               *bun.DB
+	now              func() time.Time
+	handoff          Handoff
+	immediateHandoff Handoff
 }
 
 func New(db *bun.DB) *Service { return &Service{db: db, now: time.Now} }
 
 func (s *Service) SetHandoff(handoff Handoff) { s.handoff = handoff }
+
+// SetImmediateHandoff installs a transactionally durable handoff that runs when Comment activity is created.
+func (s *Service) SetImmediateHandoff(handoff Handoff) { s.immediateHandoff = handoff }
 
 func normalizeBody(body string, maximum int) (string, error) {
 	body = strings.TrimSpace(body)
@@ -293,8 +300,13 @@ func (s *Service) Create(ctx context.Context, actor setup.SessionActor, mediaID,
 			if _, err := tx.NewRaw(`INSERT INTO outbox_events
 				(kind, aggregate_kind, aggregate_id, aggregate_version, payload, available_at, created_at)
 				VALUES (?, 'comment_activity', ?, 1, ?::jsonb, ?, ?)`, CommentJobKind,
-				strconv.FormatInt(activityID, 10), string(payload), now.Add(15*time.Minute), now).Exec(ctx); err != nil {
+				strconv.FormatInt(activityID, 10), string(payload), now.Add(commentActivityDelay), now).Exec(ctx); err != nil {
 				return err
+			}
+			if s.immediateHandoff != nil {
+				if err := s.immediateHandoff(ctx, tx, accessID, commentID); err != nil {
+					return fmt.Errorf("immediate Comment activity handoff: %w", err)
+				}
 			}
 		}
 		return loadComment(ctx, tx, commentID, &result)

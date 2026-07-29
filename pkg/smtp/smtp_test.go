@@ -381,6 +381,37 @@ func TestSMTPResponsesAreReducedToSafeFailureCodes(t *testing.T) {
 	}
 }
 
+func TestOptionalMessageIncludesOneClickUnsubscribeHeaders(t *testing.T) {
+	formatted := formatMessage("Memento <memento@example.com>", Message{
+		ID: "batch-unsubscribe", To: "recipient@example.com", Subject: "New activity", Body: "Authorized activity only",
+		UnsubscribeURL: "https://memento.example/api/email/preferences/unsubscribe?token=private-token",
+	})
+
+	assert.Contains(t, formatted, "List-Unsubscribe: <https://memento.example/api/email/preferences/unsubscribe?token=private-token>\r\n")
+	assert.Contains(t, formatted, "List-Unsubscribe-Post: List-Unsubscribe=One-Click\r\n")
+
+	required := formatMessage("Memento <memento@example.com>", Message{
+		ID: "required", To: "recipient@example.com", Subject: "Sign in", Body: "Required security message",
+	})
+	assert.NotContains(t, required, "List-Unsubscribe", "required identity and security email is not optional")
+}
+
+func TestEmbeddedImageUsesPrivateMultipartCID(t *testing.T) {
+	formatted := formatMessage("Memento <memento@example.com>", Message{
+		ID: "batch-1", To: "recipient@example.com", Subject: "New activity\r\nBcc: attacker@example.com",
+		Body: "Authorized activity only", Embedded: &EmbeddedImage{
+			ContentID: "memento-preview", ContentType: "image/jpeg", Data: []byte("safe-private-preview"),
+		},
+	})
+
+	assert.Contains(t, formatted, "Content-Type: multipart/related")
+	assert.Contains(t, formatted, `src="cid:memento-preview"`)
+	assert.Contains(t, formatted, base64.StdEncoding.EncodeToString([]byte("safe-private-preview")))
+	assert.NotContains(t, formatted, "http://")
+	assert.NotContains(t, formatted, "https://")
+	assert.NotContains(t, formatted, "\r\nBcc:", "Recipient-derived headers cannot add another SMTP header")
+}
+
 func testCertificate(t *testing.T) (tls.Certificate, *x509.Certificate) {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)

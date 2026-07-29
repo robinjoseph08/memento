@@ -589,6 +589,11 @@ func (c *Client) Preview(ctx context.Context, assetID uuid.UUID, request MediaRe
 	return c.derivative(ctx, assetID, "preview", request)
 }
 
+// EmailThumbnail opens a bounded thumbnail in a format supported by the email preview decoder.
+func (c *Client) EmailThumbnail(ctx context.Context, assetID uuid.UUID, request MediaRequest) (MediaResponse, error) {
+	return c.media(ctx, assetID, []string{"thumbnail"}, url.Values{"size": {"thumbnail"}}, "image/jpeg,image/png,image/gif", request, true, false)
+}
+
 // Video streams Immich's playback representation with browser range validators.
 func (c *Client) Video(ctx context.Context, assetID uuid.UUID, request MediaRequest) (MediaResponse, error) {
 	return c.media(ctx, assetID, []string{"video", "playback"}, nil, "video/*", request, false, false)

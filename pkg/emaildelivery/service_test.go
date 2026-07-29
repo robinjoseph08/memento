@@ -7,6 +7,7 @@ import (
 
 	"github.com/robinjoseph08/memento/pkg/config"
 	"github.com/robinjoseph08/memento/pkg/smtp"
+	"github.com/robinjoseph08/memento/pkg/worker"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/uptrace/bun"
@@ -41,6 +42,21 @@ func TestSetupCodeBodyIsEncryptedForPersistenceAndStableRestarts(t *testing.T) {
 	assert.Equal(t, plaintext, decrypted)
 	_, err = New(nil, config.SMTPConfig{}, nil, "different-security-secret-32-bytes").deliveryBody(KindSetupCode, persisted)
 	require.ErrorIs(t, err, errSensitiveBody)
+}
+
+func TestImmediateHandlerRejectsInvalidPayloadBeforeDependencies(t *testing.T) {
+	err := new(Service).HandleImmediate(context.Background(), worker.Job{Payload: []byte(`{"batch_id":"private"}`)})
+	assert.EqualError(t, err, "invalid_immediate_email_job")
+}
+
+func TestImmediateBatchItemKindRejectsUnknownValues(t *testing.T) {
+	_, err := batchItemKind("future_kind").spec()
+	require.ErrorIs(t, err, errUnsupportedImmediateItemKind)
+}
+
+func TestSafePreviewRejectsUndecodableBytes(t *testing.T) {
+	_, err := safePreview([]byte("private source metadata without an image"))
+	require.Error(t, err)
 }
 
 func TestRetryDelayStaysWithinConfiguredExponentialBounds(t *testing.T) {

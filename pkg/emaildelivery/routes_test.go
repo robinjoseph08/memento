@@ -14,8 +14,10 @@ import (
 
 type routeStub struct{}
 
-func (routeStub) RequestTest(c echo.Context) error { return c.NoContent(http.StatusAccepted) }
-func (routeStub) GetStatus(c echo.Context) error   { return c.NoContent(http.StatusOK) }
+func (routeStub) RequestTest(c echo.Context) error    { return c.NoContent(http.StatusAccepted) }
+func (routeStub) GetStatus(c echo.Context) error      { return c.NoContent(http.StatusOK) }
+func (routeStub) PreferencePage(c echo.Context) error { return c.NoContent(http.StatusOK) }
+func (routeStub) Unsubscribe(c echo.Context) error    { return c.NoContent(http.StatusOK) }
 
 func TestDisabledSMTPReturnsSafeServiceUnavailable(t *testing.T) {
 	e := echo.New()
@@ -31,14 +33,32 @@ func TestDisabledSMTPReturnsSafeServiceUnavailable(t *testing.T) {
 	assert.NotContains(t, response.Body.String(), "password")
 }
 
-func TestRoutesDeclareSetupOnlyPolicy(t *testing.T) {
+func TestRoutesDeclareSetupAndTokenPolicies(t *testing.T) {
 	e := echo.New()
 	RegisterRoutes(e, routeStub{})
 
 	policies := make(map[string]string)
 	for _, route := range e.Routes() {
-		policies[route.Path] = route.Name
+		policies[route.Method+" "+route.Path] = route.Name
 	}
-	assert.Equal(t, setupOnlyPolicy, policies["/api/setup/email/test"])
-	assert.Equal(t, setupOnlyPolicy, policies["/api/setup/email/test/:delivery_id"])
+	assert.Equal(t, setupOnlyPolicy, policies["POST /api/setup/email/test"])
+	assert.Equal(t, setupOnlyPolicy, policies["GET /api/setup/email/test/:delivery_id"])
+	assert.Equal(t, tokenInspectPolicy, policies["GET /api/email/preferences/unsubscribe"])
+	assert.Equal(t, preferenceMutationPolicy, policies["POST /api/email/preferences/unsubscribe"])
+}
+
+func TestUnsubscribePageAppliesTokenFlowHeadersWithoutReflectingToken(t *testing.T) {
+	e := echo.New()
+	RegisterRoutes(e, routeStub{})
+	request := httptest.NewRequestWithContext(context.Background(), http.MethodGet,
+		"/api/email/preferences/unsubscribe?token=private-token", nil)
+	response := httptest.NewRecorder()
+
+	e.ServeHTTP(response, request)
+
+	assert.Equal(t, http.StatusOK, response.Code)
+	assert.Equal(t, "no-store", response.Header().Get("Cache-Control"))
+	assert.Equal(t, "no-referrer", response.Header().Get("Referrer-Policy"))
+	assert.Contains(t, response.Header().Get("Content-Security-Policy"), "form-action 'self'")
+	assert.NotContains(t, response.Body.String(), "private-token")
 }

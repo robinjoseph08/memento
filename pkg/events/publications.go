@@ -20,10 +20,10 @@ import (
 
 const PublicationJobKind = "publication_committed"
 
-// PublicationHandoff performs the final channel-specific external delivery.
+// PublicationHandoff performs a channel-specific durable delivery handoff.
 type PublicationHandoff func(context.Context, uuid.UUID, uuid.UUID) error
 
-// SetPublicationHandoff installs optional delivery inside the Withdrawal ordering boundary.
+// SetPublicationHandoff installs optional delivery queueing inside the Withdrawal ordering boundary.
 func (s *Service) SetPublicationHandoff(handoff PublicationHandoff) {
 	s.publicationHandoff = handoff
 }
@@ -525,6 +525,33 @@ func (s *Service) PublishEvent(ctx context.Context, actor setup.CuratorSession, 
 			publicationID, publicationID, now).Exec(ctx); err != nil {
 			return err
 		}
+		if _, err := tx.NewRaw(`
+			WITH prior_effective_entitlements AS MATERIALIZED (
+				SELECT * FROM unnest(?::uuid[], ?::uuid[]) AS prior(access_id, media_item_id)
+			)
+			INSERT INTO publication_notification_media (
+				publication_id, recipient_access_generation_id, media_item_id
+			)
+			SELECT DISTINCT ?::uuid, entitlement.recipient_access_generation_id, entitlement.media_item_id
+			FROM current_audience_entitlements AS entitlement
+			JOIN publication_activity_items AS activity
+			  ON activity.publication_id = ?
+			 AND activity.recipient_access_generation_id = entitlement.recipient_access_generation_id
+			JOIN current_published_placements AS placement
+			  ON placement.event_id = entitlement.event_id
+			 AND placement.media_item_id = entitlement.media_item_id
+			JOIN published_moments AS moment ON moment.id = placement.published_moment_id
+			WHERE entitlement.event_id = ?
+			  AND NOT content_is_withdrawn(placement.event_id, moment.draft_moment_id, placement.media_item_id)
+			  AND NOT EXISTS (
+				SELECT 1 FROM prior_effective_entitlements AS prior
+				WHERE prior.access_id = entitlement.recipient_access_generation_id
+				  AND prior.media_item_id = entitlement.media_item_id
+			  )
+		`, pgdialect.Array(priorAccessIDs), pgdialect.Array(priorMediaIDs), publicationID,
+			publicationID, eventID).Exec(ctx); err != nil {
+			return err
+		}
 		if _, err := tx.NewRaw(`INSERT INTO publication_curator_activity_items (publication_id, actor_person_id, created_at) VALUES (?, ?, ?)`, publicationID, actor.PersonID, now).Exec(ctx); err != nil {
 			return err
 		}
@@ -738,7 +765,7 @@ func (s *Service) RecipientEvent(ctx context.Context, actor setup.SessionActor, 
 	return view, err
 }
 
-// HandlePublicationJob orders the final optional-delivery handoff against
+// HandlePublicationJob orders the optional delivery queue handoff against
 // Withdrawal. A handoff already in progress finishes before Withdrawal commits;
 // one that starts after commit observes the Withdrawal and fails closed.
 func (s *Service) HandlePublicationJob(ctx context.Context, job worker.Job) error {
@@ -753,7 +780,7 @@ func (s *Service) HandlePublicationJob(ctx context.Context, job worker.Job) erro
 	result := ""
 	err := s.db.RunInTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted, ReadOnly: true}, func(ctx context.Context, tx bun.Tx) error {
 		// Withdrawal takes this lock exclusively through commit. Keep shared access
-		// through the final external handoff, not merely through eligibility checks.
+		// through the durable delivery handoff, not merely through eligibility checks.
 		if err := placementlock.Acquire(ctx, tx, placementlock.Shared); err != nil {
 			return err
 		}
@@ -791,10 +818,10 @@ func (s *Service) HandlePublicationJob(ctx context.Context, job worker.Job) erro
 		)`, payload.PublicationID).Scan(ctx, &hasRecipientActivity); err != nil {
 			return err
 		}
-		if payload.NotifyRecipients && hasRecipientActivity && s.publicationHandoff != nil {
-			return s.publicationHandoff(ctx, payload.EventID, payload.PublicationID)
+		if !payload.NotifyRecipients || !hasRecipientActivity || s.publicationHandoff == nil {
+			return nil
 		}
-		return nil
+		return s.publicationHandoff(ctx, payload.EventID, payload.PublicationID)
 	})
 	if err != nil {
 		return err

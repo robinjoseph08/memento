@@ -1517,6 +1517,7 @@ func TestThumbnailStreamsOnlyImageResponsesWithoutFollowingRedirects(t *testing.
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			assert.Equal(t, "/api/assets/"+assetID.String()+"/thumbnail", r.URL.Path)
 			assert.Equal(t, "secret-key", r.Header.Get("x-api-key"))
+			assert.Equal(t, "image/avif,image/webp,image/*", r.Header.Get("Accept"))
 			w.Header().Set("Content-Type", "image/webp")
 			w.Header().Set("ETag", `"safe"`)
 			_, _ = w.Write([]byte("thumbnail"))
@@ -1532,6 +1533,25 @@ func TestThumbnailStreamsOnlyImageResponsesWithoutFollowingRedirects(t *testing.
 		assert.Equal(t, "thumbnail", string(contents))
 		assert.Equal(t, "image/webp", response.ContentType)
 		assert.Equal(t, `"safe"`, response.ETag)
+	})
+
+	t.Run("email compatible image", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, "/api/assets/"+assetID.String()+"/thumbnail", r.URL.Path)
+			assert.Equal(t, "thumbnail", r.URL.Query().Get("size"))
+			assert.Equal(t, "image/jpeg,image/png,image/gif", r.Header.Get("Accept"))
+			w.Header().Set("Content-Type", "image/jpeg")
+			_, _ = w.Write([]byte("email thumbnail"))
+		}))
+		defer server.Close()
+		client, err := New(clientConfig(server.URL), server.Client())
+		require.NoError(t, err)
+		response, err := client.EmailThumbnail(context.Background(), assetID, MediaRequest{})
+		require.NoError(t, err)
+		contents, err := io.ReadAll(response.Body)
+		require.NoError(t, err)
+		require.NoError(t, response.Body.Close())
+		assert.Equal(t, "email thumbnail", string(contents))
 	})
 
 	t.Run("not modified", func(t *testing.T) {

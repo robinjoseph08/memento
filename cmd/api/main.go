@@ -100,12 +100,16 @@ func run() error {
 		}
 	}
 	emailService := emaildelivery.New(db, cfg.SMTP, emailSender, cfg.Security.Secret)
+	emailService.SetPublicURL(cfg.HTTP.PublicURL)
+	emailService.SetPreviewSource(immichClient)
 	sourceService := sources.New(db, immichClient, cfg.Sources.ReconciliationInterval)
 	eventService := events.New(db)
+	eventService.SetPublicationHandoff(emailService.QueuePublication)
 	archiveService := archives.New(db, immichClient)
 	interactionActivity := activity.New(db)
 	commentService := comments.New(db)
 	commentService.SetHandoff(interactionActivity.RecordComment)
+	commentService.SetImmediateHandoff(emailService.QueueComment)
 	handlers := jobHandlers(sourceService, eventService, archiveService, commentService, emailService, cfg.SMTP.Enabled)
 
 	owner, err := leaseOwner()
@@ -160,6 +164,7 @@ func run() error {
 	search.RegisterRoutes(e, searchHandler)
 	comments.RegisterRoutes(e, commentHandler)
 	favorites.RegisterRoutes(e, favoriteHandler)
+	activity.RegisterRoutes(e, activity.NewHandler(interactionActivity, setupService))
 
 	workCtx, cancelWork := context.WithCancel(context.Background())
 	defer cancelWork()
@@ -208,6 +213,7 @@ func jobHandlers(sourceService *sources.Service, eventService *events.Service, a
 	}
 	if smtpEnabled {
 		handlers[emaildelivery.JobKind] = emailService.Handle
+		handlers[emaildelivery.ImmediateJobKind] = emailService.HandleImmediate
 	}
 	return handlers
 }

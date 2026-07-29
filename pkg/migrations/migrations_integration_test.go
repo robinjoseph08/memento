@@ -667,6 +667,31 @@ func TestEmailDeliveryInfrastructureEnforcesDurableState(t *testing.T) {
 	assert.ErrorContains(t, err, "outbox_events_aggregate_kind_aggregate_id_aggregate_version")
 }
 
+func TestImmediateEmailInfrastructureEnforcesDurableWindows(t *testing.T) {
+	db := testdb.Open(t)
+	ctx := context.Background()
+	require.NoError(t, Apply(ctx, db))
+
+	var tables int
+	require.NoError(t, db.NewRaw(`
+		SELECT count(*) FROM information_schema.tables
+		WHERE table_schema = current_schema()
+		  AND table_name IN ('publication_notification_media', 'notification_batches', 'notification_batch_items')
+	`).Scan(ctx, &tables))
+	assert.Equal(t, 3, tables)
+
+	personID, accessID := uuid.New(), uuid.New()
+	_, err := db.ExecContext(ctx, `
+		INSERT INTO people (id, display_name, sort_name) VALUES (?, 'Recipient', 'recipient');
+		INSERT INTO recipient_access_generations (id, person_id, generation, state)
+		VALUES (?, ?, 1, 'pending');
+		INSERT INTO notification_batches
+			(public_id, recipient_access_generation_id, channel, window_started_at, closes_at)
+		VALUES (gen_random_uuid(), ?, 'email', now(), now() + interval '14 minutes')
+	`, personID, accessID, personID, accessID)
+	require.Error(t, err, "a batch cannot drift from the exact coalescing window")
+}
+
 func TestSetupInfrastructureEnforcesSingletonCuratorAndSecurityEpoch(t *testing.T) {
 	db := testdb.Open(t)
 	ctx := context.Background()

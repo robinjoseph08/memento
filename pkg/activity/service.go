@@ -19,6 +19,55 @@ type Service struct {
 
 func New(db *bun.DB) *Service { return &Service{db: db} }
 
+// CuratorWorkItem is a safe unresolved problem on the Curator's prioritized work surface.
+type CuratorWorkItem struct {
+	ID         string    `json:"id"`
+	Kind       string    `json:"kind"`
+	SourceKind string    `json:"source_kind"`
+	SourceID   string    `json:"source_id"`
+	Diagnostic string    `json:"diagnostic"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+// CuratorWorkResponse is the bounded Curator work queue response.
+type CuratorWorkResponse struct {
+	Items []CuratorWorkItem `json:"items"`
+}
+
+// ListCuratorWork returns unresolved delivery failures without recipient addresses or provider details.
+func (s *Service) ListCuratorWork(ctx context.Context) (CuratorWorkResponse, error) {
+	var items []CuratorWorkItem
+	if err := s.db.NewRaw(`
+		SELECT problem.id::text AS id, 'delivery_problem' AS kind,
+		       CASE WHEN problem.notification_batch_id IS NOT NULL THEN 'notification_batch' ELSE 'email_delivery' END AS source_kind,
+		       COALESCE(batch.public_id::text, delivery.public_id::text) AS source_id,
+		       problem.diagnostic, problem.created_at
+		FROM delivery_problems AS problem
+		LEFT JOIN notification_batches AS batch ON batch.id = problem.notification_batch_id
+		LEFT JOIN email_deliveries AS delivery ON delivery.id = problem.email_delivery_id
+		WHERE problem.resolved_at IS NULL
+		ORDER BY problem.created_at DESC, problem.id DESC
+		LIMIT 100
+	`).Scan(ctx, &items); err != nil {
+		return CuratorWorkResponse{}, err
+	}
+	for index := range items {
+		items[index].Diagnostic = safeDeliveryDiagnostic(items[index].Diagnostic)
+	}
+	return CuratorWorkResponse{Items: items}, nil
+}
+
+func safeDeliveryDiagnostic(diagnostic string) string {
+	switch diagnostic {
+	case "authentication_rejected", "authentication_unavailable", "delivery_expired", "invalid_recipient",
+		"recipient_rejected", "retry_window_exhausted", "smtp_rejected", "smtp_unavailable",
+		"tls_required", "tls_verification_failed":
+		return diagnostic
+	default:
+		return "delivery_failed"
+	}
+}
+
 // RecordComment completes a Comment handoff idempotently in the caller's transaction.
 func (s *Service) RecordComment(ctx context.Context, tx bun.Tx, accessID, commentID uuid.UUID) error {
 	result, err := tx.NewRaw(`INSERT INTO interaction_activity_items
