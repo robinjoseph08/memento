@@ -2190,6 +2190,8 @@ test("recovers an ordinary failed autosave with an explicit retry", async () => 
   fireEvent.change(screen.getByLabelText("Title for Moment 1"), {
     target: { value: "Latest recovered title" },
   });
+  await new Promise((resolve) => window.setTimeout(resolve, 600));
+  expect(attempts).toHaveLength(1);
   fireEvent.click(screen.getByRole("button", { name: "Retry autosave" }));
   expect(await screen.findByText("All changes saved")).toBeInTheDocument();
   expect(attempts).toHaveLength(2);
