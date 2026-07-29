@@ -20,10 +20,12 @@ type VerificationOptions struct {
 	AfterAssetID uuid.UUID
 }
 
-// Verification contains only definitive per-asset evidence. Complete is false
-// when the aggregate exceeded its work budget or any probe was uncertain.
+// Verification contains only definitive per-asset evidence. Checked includes
+// every backing whose probe succeeded, whether present or missing. Complete is
+// false when the aggregate exceeded its work budget or any probe was uncertain.
 // Cursor identifies the end of an incomplete deterministic work window.
 type Verification struct {
+	Checked  []Backing
 	Missing  []Backing
 	Complete bool
 	Cursor   uuid.UUID
@@ -104,7 +106,10 @@ func VerifyMissing(
 		<-done
 	}
 
-	result := Verification{Missing: make([]Backing, 0), Complete: !budgetExceeded}
+	result := Verification{
+		Checked: make([]Backing, 0, len(assetIDs)), Missing: make([]Backing, 0),
+		Complete: !budgetExceeded,
+	}
 	if budgetExceeded {
 		result.Cursor = assetIDs[len(assetIDs)-1]
 	}
@@ -117,6 +122,7 @@ func VerifyMissing(
 			}
 			continue
 		}
+		result.Checked = append(result.Checked, byAsset[assetIDs[index]]...)
 		if !checked.exists {
 			result.Missing = append(result.Missing, byAsset[assetIDs[index]]...)
 		}

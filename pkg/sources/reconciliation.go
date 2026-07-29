@@ -195,7 +195,8 @@ func (s *Service) Reconcile(ctx context.Context, sourceAlbumID uuid.UUID) error 
 	verification, err := s.confirmMissingBackings(
 		ctx, removedBackings, databaseSnapshot.missingVerificationCursor.UUID,
 	)
-	if err != nil {
+	verificationIncomplete := errors.Is(err, errMissingVerificationIncomplete)
+	if err != nil && !verificationIncomplete {
 		if recordErr := s.recordMissingVerification(ctx, sourceAlbumID, databaseSnapshot, verification, now); recordErr != nil {
 			return recordErr
 		}
@@ -204,6 +205,13 @@ func (s *Service) Reconcile(ctx context.Context, sourceAlbumID uuid.UUID) error 
 			return recordErr
 		}
 		return fmt.Errorf("confirm removed Immich asset: %w", ErrDependency)
+	}
+	verifiedRemovals := removedBackings
+	if verificationIncomplete {
+		// A bounded window is still definitive for every successful probe. Apply
+		// only that window after the membership stability boundary so each retry
+		// shrinks the stale membership set and eventually completes.
+		verifiedRemovals = verification.Checked
 	}
 
 	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
@@ -214,7 +222,7 @@ func (s *Service) Reconcile(ctx context.Context, sourceAlbumID uuid.UUID) error 
 			return err
 		}
 		stablePasses, additions, removals, err := s.applyValidatedSnapshot(
-			ctx, tx, sourceAlbumID, snapshot, removedBackings, verification.Missing, now,
+			ctx, tx, sourceAlbumID, snapshot, verifiedRemovals, verification.Missing, now,
 		)
 		if err != nil {
 			return err
@@ -231,6 +239,9 @@ func (s *Service) Reconcile(ctx context.Context, sourceAlbumID uuid.UUID) error 
 	}
 	if err != nil {
 		return fmt.Errorf("reconcile Source album: %w", err)
+	}
+	if verificationIncomplete {
+		return fmt.Errorf("confirm removed Immich asset: %w", ErrDependency)
 	}
 	return nil
 }
@@ -575,25 +586,25 @@ func (s *Service) applyValidatedSnapshot(
 	removals := 0
 	var removedMediaIDs []uuid.UUID
 	if stablePasses >= 2 {
+		removedAssetIDs := make([]uuid.UUID, 0, len(removedMemberships))
 		for _, membership := range removedMemberships {
 			removedMediaIDs = append(removedMediaIDs, membership.MediaID)
+			removedAssetIDs = append(removedAssetIDs, membership.AssetID)
 		}
-		result, err := tx.NewRaw(`
-			DELETE FROM source_album_memberships AS membership
-			WHERE source_album_id = ?
-			  AND NOT EXISTS (
-				SELECT 1 FROM jsonb_array_elements_text(?::jsonb) AS candidate(id)
-				WHERE candidate.id::uuid = membership.immich_asset_id
-			  )
-		`, sourceAlbumID, string(encodedIDs)).Exec(ctx)
-		if err != nil {
-			return 0, 0, 0, err
+		if len(removedAssetIDs) > 0 {
+			result, err := tx.NewRaw(`
+				DELETE FROM source_album_memberships
+				WHERE source_album_id = ? AND immich_asset_id IN (?)
+			`, sourceAlbumID, bun.List(removedAssetIDs)).Exec(ctx)
+			if err != nil {
+				return 0, 0, 0, err
+			}
+			removed, err := result.RowsAffected()
+			if err != nil {
+				return 0, 0, 0, err
+			}
+			removals = int(removed)
 		}
-		removed, err := result.RowsAffected()
-		if err != nil {
-			return 0, 0, 0, err
-		}
-		removals = int(removed)
 		// Evidence-free migrated additions have no repair seam, but a stable Media
 		// identity must outlive every publication, interaction, authorization, and
 		// archive reference. Delete only an entirely unreferenced private draft.

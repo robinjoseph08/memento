@@ -1434,7 +1434,7 @@ func TestMissingAlbumChecksSharedMembersForGlobalAssetLoss(t *testing.T) {
 	assert.Equal(t, 2, memberships, "missing-album evidence retains membership history")
 }
 
-func TestBoundedRemovalVerificationAdvancesPastFirstWorkWindow(t *testing.T) {
+func TestBoundedRemovalVerificationEventuallyCleansEveryStaleMembership(t *testing.T) {
 	assets := make([]immich.AssetSummary, missingVerificationWorkBudget+1)
 	for index := range assets {
 		assets[index] = repairableReconciliationAsset(uuid.New(), fmt.Sprintf("/library/bounded/%03d.jpg", index))
@@ -1450,7 +1450,7 @@ func TestBoundedRemovalVerificationAdvancesPastFirstWorkWindow(t *testing.T) {
 	connector.setMembership()
 
 	require.ErrorIs(t, service.Reconcile(context.Background(), sourceAlbumID), ErrDependency)
-	var missingCount int
+	var missingCount, membershipCount int
 	var cursor uuid.NullUUID
 	require.NoError(t, service.db.NewRaw(`
 		SELECT count(*) FROM media_items WHERE availability = 'source_missing'
@@ -1460,13 +1460,29 @@ func TestBoundedRemovalVerificationAdvancesPastFirstWorkWindow(t *testing.T) {
 	`, sourceAlbumID).Scan(context.Background(), &cursor))
 	assert.Equal(t, missingVerificationWorkBudget, missingCount)
 	require.True(t, cursor.Valid)
+	require.NoError(t, service.db.NewRaw(`
+		SELECT count(*) FROM source_album_memberships WHERE source_album_id = ?
+	`, sourceAlbumID).Scan(context.Background(), &membershipCount))
+	assert.Equal(t, len(assets), membershipCount,
+		"the first observed absence must cross the membership stability boundary")
 
 	require.ErrorIs(t, service.Reconcile(context.Background(), sourceAlbumID), ErrDependency)
+	require.NoError(t, service.db.NewRaw(`
+		SELECT count(*) FROM source_album_memberships WHERE source_album_id = ?
+	`, sourceAlbumID).Scan(context.Background(), &membershipCount))
+	assert.Equal(t, 1, membershipCount,
+		"the second bounded pass removes only its definitively checked window")
+
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	require.NoError(t, service.db.NewRaw(`
+		SELECT count(*) FROM source_album_memberships WHERE source_album_id = ?
+	`, sourceAlbumID).Scan(context.Background(), &membershipCount))
+	assert.Zero(t, membershipCount, "the final bounded pass cleans the remaining stale membership")
 	require.NoError(t, service.db.NewRaw(`
 		SELECT count(*) FROM media_items WHERE availability = 'source_missing'
 	`).Scan(context.Background(), &missingCount))
 	assert.Equal(t, len(assets), missingCount,
-		"a later bounded pass must verify Media beyond the first deterministic work window")
+		"cleanup retains stable missing Media identities after every Source membership is removed")
 }
 
 func TestConfirmedDeletedPublishedMediaBecomesUnavailable(t *testing.T) {

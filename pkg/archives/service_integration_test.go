@@ -42,6 +42,7 @@ type archiveStub struct {
 	archivePayload    []byte
 	archiveNames      map[uuid.UUID]string
 	originalAvailable map[uuid.UUID]bool
+	originalErrors    map[uuid.UUID]error
 	originalErr       error
 	originalCalls     []uuid.UUID
 	infoErr           error
@@ -73,6 +74,9 @@ func (stub *archiveStub) Original(_ context.Context, id uuid.UUID, _ immich.Medi
 	stub.originalMu.Lock()
 	defer stub.originalMu.Unlock()
 	stub.originalCalls = append(stub.originalCalls, id)
+	if err := stub.originalErrors[id]; err != nil {
+		return immich.MediaResponse{}, err
+	}
 	if stub.originalErr != nil {
 		return immich.MediaResponse{}, stub.originalErr
 	}
@@ -538,6 +542,38 @@ func TestAggregateNotFoundVerificationFailureMarksNothing(t *testing.T) {
 		require.NoError(t, fixture.db.NewRaw(`SELECT availability FROM media_items WHERE id = ?`, mediaID).Scan(context.Background(), &availability))
 		assert.Equal(t, "current", availability)
 	}
+}
+
+func TestAggregateNotFoundPersistsMissingEvidenceDespiteMixedProbeUncertainty(t *testing.T) {
+	source := &archiveStub{infoErr: immich.ErrNotFound}
+	fixture := newArchiveFixture(t, source)
+	addAuthorizedReuse(t, fixture, 2)
+	source.originalAvailable = map[uuid.UUID]bool{
+		fixture.assets[0]: false,
+		fixture.assets[1]: true,
+	}
+	source.originalErrors = map[uuid.UUID]error{
+		fixture.assets[2]: errors.New("private original dependency failure"),
+	}
+
+	_, err := fixture.service.Plan(context.Background(), fixture.actor, PlanRequest{
+		Scope: "subset", MediaIDs: []string{
+			fixture.media[0].String(), fixture.media[1].String(), fixture.media[2].String(),
+		},
+	})
+	assert.ErrorIs(t, err, ErrUnavailable)
+
+	expected := map[uuid.UUID]string{
+		fixture.media[0]: "source_missing",
+		fixture.media[1]: "current",
+		fixture.media[2]: "current",
+	}
+	for mediaID, want := range expected {
+		var availability string
+		require.NoError(t, fixture.db.NewRaw(`SELECT availability FROM media_items WHERE id = ?`, mediaID).Scan(context.Background(), &availability))
+		assert.Equal(t, want, availability)
+	}
+	assert.ElementsMatch(t, fixture.assets, source.originalCalls)
 }
 
 func TestArchiveFailuresOtherThanNotFoundPreserveAvailability(t *testing.T) {

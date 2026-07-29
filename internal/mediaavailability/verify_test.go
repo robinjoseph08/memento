@@ -110,6 +110,7 @@ func TestVerifyMissingBoundsAggregateWorkAndConcurrency(t *testing.T) {
 	}
 	require.NoError(t, completed.err)
 	assert.False(t, completed.verification.Complete)
+	assert.Len(t, completed.verification.Checked, workBudget)
 	assert.Empty(t, completed.verification.Missing)
 	assert.Equal(t, workBudget, calls)
 	assert.Equal(t, concurrency, maximumActive)
@@ -158,14 +159,16 @@ func TestVerifyMissingRetainsOnlyPreciseEvidence(t *testing.T) {
 	missingAsset, currentAsset, uncertainAsset := uuid.New(), uuid.New(), uuid.New()
 	firstMissing := Backing{MediaID: uuid.New(), BackingID: uuid.New(), AssetID: missingAsset}
 	secondMissing := Backing{MediaID: uuid.New(), BackingID: uuid.New(), AssetID: missingAsset}
+	current := Backing{MediaID: uuid.New(), BackingID: uuid.New(), AssetID: currentAsset}
+	uncertain := Backing{MediaID: uuid.New(), BackingID: uuid.New(), AssetID: uncertainAsset}
 	uncertainErr := errors.New("malformed dependency response")
 	calls := make(map[uuid.UUID]int)
 
 	verification, err := VerifyMissing(context.Background(), []Backing{
 		firstMissing,
-		{MediaID: uuid.New(), BackingID: uuid.New(), AssetID: currentAsset},
+		current,
 		secondMissing,
-		{MediaID: uuid.New(), BackingID: uuid.New(), AssetID: uncertainAsset},
+		uncertain,
 	}, VerificationOptions{Deadline: time.Minute, MaxProbes: 10, Concurrency: 1}, func(_ context.Context, assetID uuid.UUID) (bool, error) {
 		calls[assetID]++
 		switch assetID {
@@ -180,6 +183,7 @@ func TestVerifyMissingRetainsOnlyPreciseEvidence(t *testing.T) {
 
 	require.ErrorIs(t, err, uncertainErr)
 	assert.False(t, verification.Complete)
+	assert.ElementsMatch(t, []Backing{firstMissing, secondMissing, current}, verification.Checked)
 	assert.Equal(t, []Backing{firstMissing, secondMissing}, verification.Missing)
 	assert.Equal(t, map[uuid.UUID]int{missingAsset: 1, currentAsset: 1, uncertainAsset: 1}, calls)
 }

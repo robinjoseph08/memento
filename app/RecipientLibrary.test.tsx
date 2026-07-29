@@ -1607,6 +1607,101 @@ test("keeps a withdrawn delivery error privacy-safe without claiming a retained 
   ).not.toBeInTheDocument();
 });
 
+test("classifies a stale Favorite 404 as withdrawn without a generic mutation error", async () => {
+  let withdrawn = false;
+  const comment = {
+    id: "comment-stale",
+    media_item_id: "media-1",
+    author_person_id: "alex",
+    author_name: "Alex",
+    body: "Retained interaction history",
+    state: "active",
+    version: 1,
+    created_at: "2026-07-28T12:00:00Z",
+    edited_at: null,
+    moderated_at: null,
+    moderator_name: null,
+    authored_by_me: true,
+    can_edit: true,
+    can_delete: true,
+    can_moderate: false,
+  };
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = requestPath(input);
+      if (path.startsWith("/api/me/photos?")) {
+        return json({
+          media: withdrawn
+            ? []
+            : [
+                {
+                  id: "media-1",
+                  media_type: "image",
+                  width: 1600,
+                  height: 900,
+                  local_date_time: "2026-07-28T12:00:00Z",
+                  available: true,
+                  thumbnail_url: "/api/me/media/media-1/thumbnail",
+                  preview_url: "/api/me/media/media-1/preview",
+                  video_url: "",
+                  original_url: "/api/me/media/media-1/original",
+                },
+              ],
+          next_cursor: null,
+        });
+      }
+      if (path === "/api/me/new-for-you") return json({ events: [] });
+      if (path === "/api/favorites/media-1") {
+        if (init?.method === "PUT") {
+          return apiError("Favorite mutation failed", 404);
+        }
+        return json({ media_item_id: "media-1", favorite: false });
+      }
+      if (path.startsWith("/api/comments/media/media-1?")) {
+        return json({
+          comments: [comment],
+          can_mute: true,
+          muted: false,
+          next_cursor: null,
+        });
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    }),
+  );
+
+  renderLibrary();
+  fireEvent.click(
+    await screen.findByRole("button", {
+      name: "Open Photo 1 from July 2026",
+    }),
+  );
+  expect(await screen.findByText(comment.body)).toBeVisible();
+  const favorite = screen.getByRole("button", { name: "Add Favorite" });
+  expect(favorite).toBeEnabled();
+
+  withdrawn = true;
+  fireEvent.click(favorite);
+
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "This content is no longer available.",
+  );
+  expect(screen.getByRole("button", { name: "Add Favorite" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Edit" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Delete" })).toBeDisabled();
+  expect(
+    screen.getByRole("checkbox", {
+      name: "Mute future Comment notifications",
+    }),
+  ).toBeDisabled();
+  expect(screen.getByLabelText("Add a Comment")).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Post Comment" })).toBeDisabled();
+  expect(
+    screen.queryByText("Favorite mutation failed"),
+  ).not.toBeInTheDocument();
+  expect(screen.getAllByRole("alert")).toHaveLength(1);
+});
+
 test("refreshes Search after a representation error and retains unavailable Media", async () => {
   let searchCalls = 0;
   const searchMedia = (available: boolean) => ({
