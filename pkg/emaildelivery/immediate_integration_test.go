@@ -477,6 +477,97 @@ func TestImmediateEmailReanchorsOverlappingOutOfOrderActivityAtTheExactBoundary(
 	assert.Equal(t, fixture.base.Add(coalescingWindow), availableAt, "the durable send schedule follows the reanchored close")
 }
 
+func TestImmediateEmailRepartitionsThreeOutOfOrderTimestampsIntoExactWindows(t *testing.T) {
+	fixture := newImmediateFixture(t)
+	atTen := fixture.addComment(t, fixture.base.Add(10*time.Minute), "First observed")
+	fixture.queueComment(t, atTen)
+	atTwentyFour := fixture.addComment(t, fixture.base.Add(24*time.Minute), "Recent")
+	fixture.queueComment(t, atTwentyFour)
+	delayed := fixture.addComment(t, fixture.base, "Delayed")
+	fixture.queueComment(t, delayed)
+
+	type batch struct {
+		Started   time.Time `bun:"window_started_at"`
+		Closes    time.Time `bun:"closes_at"`
+		FirstItem time.Time `bun:"first_item"`
+		LastItem  time.Time `bun:"last_item"`
+		Items     int
+		Available time.Time `bun:"available_at"`
+	}
+	var batches []batch
+	require.NoError(t, fixture.db.NewRaw(`
+		SELECT batch.window_started_at, batch.closes_at,
+		       min(item.activity_created_at) AS first_item,
+		       max(item.activity_created_at) AS last_item,
+		       count(item.id) AS items, outbox.available_at
+		FROM notification_batches AS batch
+		JOIN notification_batch_items AS item ON item.batch_id = batch.id
+		JOIN outbox_events AS outbox
+		  ON outbox.kind = ? AND outbox.aggregate_id = batch.public_id::text
+		GROUP BY batch.id, outbox.available_at
+		ORDER BY batch.window_started_at
+	`, ImmediateJobKind).Scan(context.Background(), &batches))
+	require.Len(t, batches, 2)
+	assert.Equal(t, fixture.base, batches[0].Started)
+	assert.Equal(t, fixture.base.Add(coalescingWindow), batches[0].Closes)
+	assert.Equal(t, fixture.base, batches[0].FirstItem)
+	assert.Equal(t, fixture.base.Add(10*time.Minute), batches[0].LastItem)
+	assert.Equal(t, 2, batches[0].Items)
+	assert.Equal(t, batches[0].Closes, batches[0].Available)
+	assert.Equal(t, fixture.base.Add(24*time.Minute), batches[1].Started)
+	assert.Equal(t, fixture.base.Add(39*time.Minute), batches[1].Closes)
+	assert.Equal(t, batches[1].Started, batches[1].FirstItem)
+	assert.Equal(t, batches[1].Started, batches[1].LastItem)
+	assert.Equal(t, 1, batches[1].Items)
+	assert.Equal(t, batches[1].Closes, batches[1].Available)
+	assert.False(t, batches[0].Closes.After(batches[1].Started), "durable windows never overlap")
+}
+
+func TestImmediateEmailSerializesConcurrentOutOfOrderRepartitioning(t *testing.T) {
+	fixture := newImmediateFixture(t)
+	atTen := fixture.addComment(t, fixture.base.Add(10*time.Minute), "First observed")
+	fixture.queueComment(t, atTen)
+	delayed := fixture.addComment(t, fixture.base, "Delayed")
+	recent := fixture.addComment(t, fixture.base.Add(24*time.Minute), "Recent")
+
+	start := make(chan struct{})
+	errors := make(chan error, 2)
+	var wait sync.WaitGroup
+	for _, commentID := range []uuid.UUID{delayed, recent} {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			<-start
+			errors <- fixture.db.RunInTx(context.Background(), nil, func(ctx context.Context, tx bun.Tx) error {
+				return fixture.service.QueueComment(ctx, tx, fixture.access["alex"], commentID)
+			})
+		}()
+	}
+	close(start)
+	wait.Wait()
+	close(errors)
+	for err := range errors {
+		require.NoError(t, err)
+	}
+
+	type batch struct {
+		Started time.Time `bun:"window_started_at"`
+		Closes  time.Time `bun:"closes_at"`
+		Items   int
+	}
+	var batches []batch
+	require.NoError(t, fixture.db.NewRaw(`
+		SELECT batch.window_started_at, batch.closes_at, count(item.id) AS items
+		FROM notification_batches AS batch
+		JOIN notification_batch_items AS item ON item.batch_id = batch.id
+		GROUP BY batch.id ORDER BY batch.window_started_at
+	`).Scan(context.Background(), &batches))
+	require.Len(t, batches, 2)
+	assert.Equal(t, batch{Started: fixture.base, Closes: fixture.base.Add(15 * time.Minute), Items: 2}, batches[0])
+	assert.Equal(t, batch{Started: fixture.base.Add(24 * time.Minute), Closes: fixture.base.Add(39 * time.Minute), Items: 1}, batches[1])
+	assert.False(t, batches[0].Closes.After(batches[1].Started))
+}
+
 func TestImmediateEmailSendsEachRecipientBatchOnlyToItsExactCurrentAddress(t *testing.T) {
 	fixture := newImmediateFixture(t)
 	fixture.addPublicationActivityFor(t, "alex", fixture.base, fixture.media[0])

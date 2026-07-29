@@ -12,6 +12,7 @@ import (
 	"image/jpeg"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -185,6 +186,26 @@ func (s *Service) QueueComment(ctx context.Context, tx bun.Tx, accessID, comment
 	return s.queueImmediateItem(ctx, tx, accessID, commentBatchItem, commentID, comment.CreatedAt)
 }
 
+type pendingImmediateBatch struct {
+	ID              int64
+	PublicID        uuid.UUID
+	WindowStartedAt time.Time
+	Truncated       bool
+}
+
+type pendingImmediateItem struct {
+	ID                int64
+	BatchID           int64
+	ActivityCreatedAt time.Time
+	Incoming          bool
+}
+
+type plannedImmediateWindow struct {
+	StartedAt time.Time
+	Items     []pendingImmediateItem
+	Truncated bool
+}
+
 func (s *Service) queueImmediateItem(ctx context.Context, tx bun.Tx, accessID uuid.UUID, kind batchItemKind, sourceID uuid.UUID, activityAt time.Time) error {
 	spec, err := kind.spec()
 	if err != nil {
@@ -203,65 +224,125 @@ func (s *Service) queueImmediateItem(ctx context.Context, tx bun.Tx, accessID uu
 	if alreadyQueued {
 		return nil
 	}
-	activityAt = activityAt.UTC()
-	var batchID int64
-	var publicID uuid.UUID
-	var windowStartedAt time.Time
-	err = tx.NewRaw(`
-		SELECT id, public_id, window_started_at FROM notification_batches
+
+	var batches []pendingImmediateBatch
+	if err := tx.NewRaw(`
+		SELECT id, public_id, window_started_at, truncated FROM notification_batches
 		WHERE recipient_access_generation_id = ? AND channel = 'email' AND status = 'pending'
-		  AND window_started_at < ? AND closes_at > ?
-		ORDER BY window_started_at LIMIT 1 FOR UPDATE
-	`, accessID, activityAt.Add(coalescingWindow), activityAt).Scan(ctx, &batchID, &publicID, &windowStartedAt)
-	if errors.Is(err, sql.ErrNoRows) {
-		publicID = uuid.New()
-		closesAt := activityAt.Add(coalescingWindow)
-		if err := tx.NewRaw(`
-			INSERT INTO notification_batches (
-				public_id, recipient_access_generation_id, channel, window_started_at, closes_at
-			) VALUES (?, ?, 'email', ?, ?) RETURNING id
-		`, publicID, accessID, activityAt, closesAt).Scan(ctx, &batchID); err != nil {
+		ORDER BY window_started_at, id FOR UPDATE
+	`, accessID).Scan(ctx, &batches); err != nil {
+		return err
+	}
+	batchIDs := make([]int64, 0, len(batches))
+	truncatedByBatch := make(map[int64]bool, len(batches))
+	for _, batch := range batches {
+		batchIDs = append(batchIDs, batch.ID)
+		truncatedByBatch[batch.ID] = batch.Truncated
+	}
+
+	var items []pendingImmediateItem
+	if len(batchIDs) > 0 {
+		if err := tx.NewRaw(`SELECT id, batch_id, activity_created_at FROM notification_batch_items
+			WHERE batch_id IN (?) ORDER BY activity_created_at, id`, bun.List(batchIDs)).Scan(ctx, &items); err != nil {
 			return err
 		}
-		payload, err := json.Marshal(immediateJobPayload{BatchID: batchID})
+	}
+	activityAt = activityAt.UTC()
+	items = append(items, pendingImmediateItem{ActivityCreatedAt: activityAt, Incoming: true})
+	sort.SliceStable(items, func(left, right int) bool {
+		return items[left].ActivityCreatedAt.Before(items[right].ActivityCreatedAt)
+	})
+
+	windows := make([]plannedImmediateWindow, 0, len(batches)+1)
+	for _, item := range items {
+		if len(windows) == 0 || !item.ActivityCreatedAt.Before(windows[len(windows)-1].StartedAt.Add(coalescingWindow)) {
+			windows = append(windows, plannedImmediateWindow{StartedAt: item.ActivityCreatedAt})
+		}
+		window := &windows[len(windows)-1]
+		window.Items = append(window.Items, item)
+		window.Truncated = window.Truncated || truncatedByBatch[item.BatchID]
+	}
+
+	for index, batch := range batches {
+		startedAt := windows[index].StartedAt
+		if _, err := tx.NewRaw(`UPDATE notification_batches
+			SET window_started_at = ?, closes_at = ?, updated_at = clock_timestamp()
+			WHERE id = ?`, startedAt, startedAt.Add(coalescingWindow), batch.ID).Exec(ctx); err != nil {
+			return err
+		}
+	}
+	for len(batches) < len(windows) {
+		batch, err := createImmediateBatch(ctx, tx, accessID, windows[len(batches)].StartedAt)
 		if err != nil {
 			return err
 		}
-		if _, err := tx.NewRaw(`
-			INSERT INTO outbox_events (
-				kind, aggregate_kind, aggregate_id, aggregate_version, payload, available_at, created_at
-			) VALUES (?, 'notification_batch', ?, 1, ?::jsonb, ?, clock_timestamp())
-		`, ImmediateJobKind, publicID.String(), string(payload), closesAt).Exec(ctx); err != nil {
-			return err
-		}
-	} else if err != nil {
-		return err
-	} else if activityAt.Before(windowStartedAt) {
-		closesAt := activityAt.Add(coalescingWindow)
+		batches = append(batches, batch)
+	}
+	for index, window := range windows {
+		batch := batches[index]
+		closesAt := window.StartedAt.Add(coalescingWindow)
+		truncated := window.Truncated || len(window.Items) > maxImmediateBatchItems
 		if _, err := tx.NewRaw(`UPDATE notification_batches
-			SET window_started_at = ?, closes_at = ?, updated_at = clock_timestamp()
-			WHERE id = ?`, activityAt, closesAt, batchID).Exec(ctx); err != nil {
+			SET window_started_at = ?, closes_at = ?, truncated = ?, updated_at = clock_timestamp()
+			WHERE id = ?`, window.StartedAt, closesAt, truncated, batch.ID).Exec(ctx); err != nil {
 			return err
 		}
 		if _, err := tx.NewRaw(`UPDATE outbox_events SET available_at = ?
 			WHERE kind = ? AND aggregate_kind = 'notification_batch' AND aggregate_id = ?
-			  AND delivered_at IS NULL`, closesAt, ImmediateJobKind, publicID.String()).Exec(ctx); err != nil {
+			  AND delivered_at IS NULL`, closesAt, ImmediateJobKind, batch.PublicID.String()).Exec(ctx); err != nil {
 			return err
 		}
+
+		itemIDs := make([]int64, 0, len(window.Items))
+		hasIncoming := false
+		for _, item := range window.Items {
+			if item.Incoming {
+				hasIncoming = true
+			} else {
+				itemIDs = append(itemIDs, item.ID)
+			}
+		}
+		incomingFits := hasIncoming && len(itemIDs) < maxImmediateBatchItems
+		if len(itemIDs) > 0 {
+			if _, err := tx.NewRaw(`UPDATE notification_batch_items SET batch_id = ? WHERE id IN (?)`,
+				batch.ID, bun.List(itemIDs)).Exec(ctx); err != nil {
+				return err
+			}
+		}
+		if incomingFits {
+			if _, err := tx.NewRaw(`INSERT INTO notification_batch_items
+				(batch_id, recipient_access_generation_id, kind, `+column+`, activity_created_at)
+				VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`,
+				batch.ID, accessID, kind, sourceID, activityAt).Exec(ctx); err != nil {
+				return err
+			}
+		}
 	}
-	var itemCount int
-	if err := tx.NewRaw(`SELECT count(*) FROM notification_batch_items WHERE batch_id = ?`, batchID).Scan(ctx, &itemCount); err != nil {
-		return err
+	return nil
+}
+
+func createImmediateBatch(ctx context.Context, tx bun.Tx, accessID uuid.UUID, startedAt time.Time) (pendingImmediateBatch, error) {
+	batch := pendingImmediateBatch{PublicID: uuid.New(), WindowStartedAt: startedAt}
+	closesAt := startedAt.Add(coalescingWindow)
+	if err := tx.NewRaw(`
+		INSERT INTO notification_batches (
+			public_id, recipient_access_generation_id, channel, window_started_at, closes_at
+		) VALUES (?, ?, 'email', ?, ?) RETURNING id
+	`, batch.PublicID, accessID, startedAt, closesAt).Scan(ctx, &batch.ID); err != nil {
+		return pendingImmediateBatch{}, err
 	}
-	if itemCount >= maxImmediateBatchItems {
-		_, err := tx.NewRaw(`UPDATE notification_batches
-			SET truncated = true, updated_at = clock_timestamp() WHERE id = ?`, batchID).Exec(ctx)
-		return err
+	payload, err := json.Marshal(immediateJobPayload{BatchID: batch.ID})
+	if err != nil {
+		return pendingImmediateBatch{}, err
 	}
-	_, err = tx.NewRaw(`INSERT INTO notification_batch_items
-		(batch_id, recipient_access_generation_id, kind, `+column+`, activity_created_at)
-		VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`, batchID, accessID, kind, sourceID, activityAt).Exec(ctx)
-	return err
+	if _, err := tx.NewRaw(`
+		INSERT INTO outbox_events (
+			kind, aggregate_kind, aggregate_id, aggregate_version, payload, available_at, created_at
+		) VALUES (?, 'notification_batch', ?, 1, ?::jsonb, ?, clock_timestamp())
+	`, ImmediateJobKind, batch.PublicID.String(), string(payload), closesAt).Exec(ctx); err != nil {
+		return pendingImmediateBatch{}, err
+	}
+	return batch, nil
 }
 
 // HandleImmediate reauthorizes at assembly and again while holding authorization locks through SMTP acceptance.
