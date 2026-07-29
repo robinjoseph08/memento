@@ -677,6 +677,64 @@ func TestImmediateEmailIncludesOneClickUnsubscribeAndPrivacyDisclosure(t *testin
 	assert.Equal(t, "none", preference)
 }
 
+func TestImmediateEmailKeepsAcceptedUnsubscribeTokenDurableAcrossCommitFailure(t *testing.T) {
+	fixture := newImmediateFixture(t)
+	fixture.addPublicationActivity(t, fixture.base, fixture.media[0])
+	require.NoError(t, fixture.service.QueuePublication(context.Background(), fixture.event, fixture.publication))
+	var batchID int64
+	require.NoError(t, fixture.db.NewRaw(`SELECT id FROM notification_batches`).Scan(context.Background(), &batchID))
+	job := fixture.leasedBatchJob(t, batchID)
+
+	_, err := fixture.db.NewRaw(`
+		CREATE FUNCTION reject_immediate_sent_update() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN
+			RAISE EXCEPTION 'forced post-acceptance failure';
+		END
+		$$;
+		CREATE TRIGGER reject_immediate_sent_update
+			BEFORE UPDATE OF status ON notification_batches
+			FOR EACH ROW WHEN (NEW.status = 'sent')
+			EXECUTE FUNCTION reject_immediate_sent_update()
+	`).Exec(context.Background())
+	require.NoError(t, err)
+
+	err = fixture.service.HandleImmediate(context.Background(), job)
+	require.ErrorContains(t, err, "forced post-acceptance failure")
+	messages := fixture.sender.sent()
+	require.Len(t, messages, 1, "SMTP accepted before the transaction's forced failure")
+	firstToken := messages[0].UnsubscribeURL
+	parsed, err := url.Parse(firstToken)
+	require.NoError(t, err)
+	encoded := parsed.Query().Get("token")
+	require.NotEmpty(t, encoded)
+	require.NoError(t, fixture.service.ValidateUnsubscribe(context.Background(), encoded),
+		"the accepted message references a token committed before SMTP")
+
+	var status string
+	var attempts, tokens int
+	require.NoError(t, fixture.db.NewRaw(`SELECT status, attempts FROM notification_batches WHERE id = ?`, batchID).
+		Scan(context.Background(), &status, &attempts))
+	assert.Equal(t, "pending", status)
+	assert.Zero(t, attempts, "the post-acceptance batch update rolled back")
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM notification_preference_tokens
+		WHERE notification_batch_id = ?`, batchID).Scan(context.Background(), &tokens))
+	assert.Equal(t, 1, tokens, "unsubscribe durability is independent of the delivery transaction")
+
+	_, err = fixture.db.NewRaw(`DROP TRIGGER reject_immediate_sent_update ON notification_batches`).Exec(context.Background())
+	require.NoError(t, err)
+	require.NoError(t, fixture.service.HandleImmediate(context.Background(), job))
+	messages = fixture.sender.sent()
+	require.Len(t, messages, 2)
+	assert.Equal(t, messages[0].ID, messages[1].ID, "retry preserves the provider deduplication identity")
+	require.NoError(t, fixture.service.ValidateUnsubscribe(context.Background(), encoded),
+		"the first accepted token remains valid when a provider deduplicates the retry")
+	require.NoError(t, fixture.service.Unsubscribe(context.Background(), encoded))
+	var preference string
+	require.NoError(t, fixture.db.NewRaw(`SELECT email_preference FROM notification_preferences
+		WHERE recipient_access_generation_id = ?`, fixture.access["alex"]).Scan(context.Background(), &preference))
+	assert.Equal(t, "none", preference, "the token from the first accepted message remains usable")
+}
+
 func TestImmediateEmailRecomputesSurvivorsAndStripsPreviewMetadata(t *testing.T) {
 	fixture := newImmediateFixture(t)
 	fixture.addPublicationActivity(t, fixture.base, fixture.media...)

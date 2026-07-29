@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -16,26 +17,56 @@ import (
 
 var errUnsubscribeURLUnavailable = errors.New("unsubscribe URL is unavailable")
 
+type durableUnsubscribe struct {
+	URL  string
+	Hash [sha256.Size]byte
+}
+
 // SetPublicURL installs the validated public origin used by optional email links.
 func (s *Service) SetPublicURL(publicURL string) { s.publicURL = strings.TrimRight(publicURL, "/") }
 
-func (s *Service) newUnsubscribeURLIn(ctx context.Context, tx bun.Tx, accessID uuid.UUID, batchID int64) (string, error) {
+func (s *Service) newDurableUnsubscribeURL(ctx context.Context, batchID int64) (durableUnsubscribe, error) {
 	if s.publicURL == "" {
-		return "", errUnsubscribeURLUnavailable
+		return durableUnsubscribe{}, errUnsubscribeURLUnavailable
 	}
 	var token [32]byte
 	if _, err := rand.Read(token[:]); err != nil {
-		return "", fmt.Errorf("generate unsubscribe token: %w", err)
+		return durableUnsubscribe{}, fmt.Errorf("generate unsubscribe token: %w", err)
 	}
 	hash := sha256.Sum256(token[:])
-	if _, err := tx.NewRaw(`INSERT INTO notification_preference_tokens
+	result, err := s.db.NewRaw(`INSERT INTO notification_preference_tokens
 		(token_hash, recipient_access_generation_id, notification_batch_id, created_at, expires_at)
-		VALUES (?, ?, ?, clock_timestamp(), clock_timestamp() + interval '1 year')`,
-		hash[:], accessID, batchID).Exec(ctx); err != nil {
-		return "", err
+		SELECT ?, batch.recipient_access_generation_id, batch.id,
+		       clock_timestamp(), clock_timestamp() + interval '1 year'
+		FROM notification_batches AS batch
+		WHERE batch.id = ? AND batch.status = 'pending'`, hash[:], batchID).Exec(ctx)
+	if err != nil {
+		return durableUnsubscribe{}, err
+	}
+	inserted, err := result.RowsAffected()
+	if err != nil {
+		return durableUnsubscribe{}, err
+	}
+	if inserted == 0 {
+		return durableUnsubscribe{}, nil
 	}
 	encoded := base64.RawURLEncoding.EncodeToString(token[:])
-	return s.publicURL + "/api/email/preferences/unsubscribe?token=" + url.QueryEscape(encoded), nil
+	return durableUnsubscribe{
+		URL:  s.publicURL + "/api/email/preferences/unsubscribe?token=" + url.QueryEscape(encoded),
+		Hash: hash,
+	}, nil
+}
+
+func lockDurableUnsubscribe(ctx context.Context, tx bun.Tx, token durableUnsubscribe, accessID uuid.UUID, batchID int64) error {
+	var hash []byte
+	err := tx.NewRaw(`SELECT token_hash FROM notification_preference_tokens
+		WHERE token_hash = ? AND recipient_access_generation_id = ?
+		  AND notification_batch_id = ? AND expires_at > clock_timestamp()
+		FOR SHARE`, token.Hash[:], accessID, batchID).Scan(ctx, &hash)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrUnsubscribeToken
+	}
+	return err
 }
 
 func unsubscribeTokenHash(encoded string) ([sha256.Size]byte, error) {
