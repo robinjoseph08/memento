@@ -1180,6 +1180,32 @@ func TestProductionClientAlbumAndMembership404sMarkSourceMissing(t *testing.T) {
 	assert.Equal(t, "source_album", problems.SourceProblems[0].Kind)
 }
 
+func addStaleSharedAlbumMembership(t *testing.T, service *Service, sourceAlbumID, mediaID, assetID uuid.UUID) uuid.UUID {
+	t.Helper()
+	sharedAlbumID := uuid.New()
+	_, err := service.db.NewRaw(`
+		INSERT INTO source_albums (
+			id, immich_album_id, name, description, asset_count, source_created_at,
+			source_updated_at, source_start_at, source_end_at, source_last_modified_asset_at,
+			disposition, version, ignored_at, first_seen_at, last_seen_at, source_missing,
+			missing_since, source_fingerprint, next_reconciliation_at, created_at, updated_at
+		)
+		SELECT ?, ?, name || ' shared', description, asset_count, source_created_at,
+		       source_updated_at, source_start_at, source_end_at, source_last_modified_asset_at,
+		       disposition, version, ignored_at, first_seen_at, last_seen_at, false,
+		       NULL, source_fingerprint, next_reconciliation_at, created_at, updated_at
+		FROM source_albums WHERE id = ?;
+		INSERT INTO source_album_memberships (
+			source_album_id, immich_asset_id, media_item_id, first_seen_at, last_seen_at, source_fingerprint
+		)
+		SELECT ?, immich_asset_id, media_item_id, first_seen_at, last_seen_at, source_fingerprint
+		FROM source_album_memberships
+		WHERE source_album_id = ? AND media_item_id = ? AND immich_asset_id = ?
+	`, sharedAlbumID, uuid.New(), sourceAlbumID, sharedAlbumID, sourceAlbumID, mediaID, assetID).Exec(context.Background())
+	require.NoError(t, err)
+	return sharedAlbumID
+}
+
 func TestMissingAlbumBecomesCuratorVisibleWithoutChangingPublishedMedia(t *testing.T) {
 	original := repairableReconciliationAsset(uuid.New(), "/library/tracked/family.jpg")
 	connector := &reconciliationConnector{summary: sourceAlbum(uuid.New(), "Missing album", 1)}
@@ -1221,6 +1247,63 @@ func TestMissingAlbumBecomesCuratorVisibleWithoutChangingPublishedMedia(t *testi
 	restored, err := service.Get(context.Background(), sourceAlbumID)
 	require.NoError(t, err)
 	assert.False(t, restored.SourceMissing)
+}
+
+func TestRemovedAssetUsesFreshGlobalAvailabilityDespiteSharedMembership(t *testing.T) {
+	for _, test := range []struct {
+		name             string
+		exists           bool
+		wantAvailability string
+	}{
+		{name: "globally missing", exists: false, wantAvailability: "source_missing"},
+		{name: "legitimately shared", exists: true, wantAvailability: "current"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			original := repairableReconciliationAsset(uuid.New(), "/library/shared/family.jpg")
+			connector := &reconciliationConnector{summary: sourceAlbum(uuid.New(), "Shared source", 1)}
+			connector.pages = map[int]immich.AssetPage{1: {Items: []immich.AssetSummary{original}}}
+			service, sourceAlbumID := newReconciliationService(t, connector)
+			require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+			fixture := publishSourceEventFixture(t, service, sourceAlbumID, original.SourceID)
+			addStaleSharedAlbumMembership(t, service, sourceAlbumID, fixture.mediaID, original.SourceID)
+			connector.setAssetExists(original.SourceID, test.exists)
+			connector.setMembership()
+
+			require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+			var observedAvailability string
+			require.NoError(t, service.db.NewRaw(`SELECT availability FROM media_items WHERE id = ?`, fixture.mediaID).Scan(context.Background(), &observedAvailability))
+			assert.Equal(t, test.wantAvailability, observedAvailability, "fresh global availability is definitive on the first observed removal")
+			require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+			var availability string
+			var memberships int
+			require.NoError(t, service.db.NewRaw(`SELECT availability FROM media_items WHERE id = ?`, fixture.mediaID).Scan(context.Background(), &availability))
+			require.NoError(t, service.db.NewRaw(`SELECT count(*) FROM source_album_memberships WHERE media_item_id = ?`, fixture.mediaID).Scan(context.Background(), &memberships))
+			assert.Equal(t, test.wantAvailability, availability)
+			assert.Equal(t, 1, memberships, "only the stale other album membership remains")
+		})
+	}
+}
+
+func TestMissingAlbumChecksSharedMembersForGlobalAssetLoss(t *testing.T) {
+	original := repairableReconciliationAsset(uuid.New(), "/library/shared-missing/family.jpg")
+	connector := &reconciliationConnector{summary: sourceAlbum(uuid.New(), "Missing shared source", 1)}
+	connector.pages = map[int]immich.AssetPage{1: {Items: []immich.AssetSummary{original}}}
+	service, sourceAlbumID := newReconciliationService(t, connector)
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	fixture := publishSourceEventFixture(t, service, sourceAlbumID, original.SourceID)
+	addStaleSharedAlbumMembership(t, service, sourceAlbumID, fixture.mediaID, original.SourceID)
+	connector.setAssetExists(original.SourceID, false)
+	connector.albumCalls = 0
+	connector.albumErrAt = 1
+	connector.dependency = immich.ErrNotFound
+
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	var availability string
+	var memberships int
+	require.NoError(t, service.db.NewRaw(`SELECT availability FROM media_items WHERE id = ?`, fixture.mediaID).Scan(context.Background(), &availability))
+	require.NoError(t, service.db.NewRaw(`SELECT count(*) FROM source_album_memberships WHERE media_item_id = ?`, fixture.mediaID).Scan(context.Background(), &memberships))
+	assert.Equal(t, "source_missing", availability)
+	assert.Equal(t, 2, memberships, "missing-album evidence retains membership history")
 }
 
 func TestConfirmedDeletedPublishedMediaBecomesUnavailable(t *testing.T) {

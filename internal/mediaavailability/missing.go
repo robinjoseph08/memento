@@ -27,6 +27,14 @@ func MarkSourceMissing(ctx context.Context, db *bun.DB, backings []Backing) erro
 	if len(backings) == 0 {
 		return nil
 	}
+	return db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		return MarkSourceMissingInTx(ctx, tx, backings)
+	})
+}
+
+// MarkSourceMissingInTx applies the same exact-backing transition inside a
+// caller transaction that already owns the surrounding reconciliation locks.
+func MarkSourceMissingInTx(ctx context.Context, tx bun.Tx, backings []Backing) error {
 	unique := make(map[uuid.UUID]Backing, len(backings))
 	for _, backing := range backings {
 		if backing.MediaID == uuid.Nil || backing.BackingID == uuid.Nil || backing.AssetID == uuid.Nil {
@@ -44,34 +52,33 @@ func MarkSourceMissing(ctx context.Context, db *bun.DB, backings []Backing) erro
 		}
 		return bytes.Compare(left.BackingID[:], right.BackingID[:])
 	})
-	return db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
-		for _, backing := range ordered {
-			// Confirmation may move an active addition backing to the stable Media
-			// identity while this not-found response is in flight. Resolve by the
-			// exact backing, then lock Media before rechecking the backing to retain
-			// the repository-wide Media-to-backing lock order. A move between those
-			// statements is retried against its surviving identity.
-			for {
-				var currentMediaID uuid.UUID
-				err := tx.NewRaw(`
+	for _, backing := range ordered {
+		// Confirmation may move an active addition backing to the stable Media
+		// identity while this not-found response is in flight. Resolve by the
+		// exact backing, then lock Media before rechecking the backing to retain
+		// the repository-wide Media-to-backing lock order. A move between those
+		// statements is retried against its surviving identity.
+		for {
+			var currentMediaID uuid.UUID
+			err := tx.NewRaw(`
 					SELECT media_item_id FROM media_backings
 					WHERE id = ? AND immich_asset_id = ? AND active
 				`, backing.BackingID, backing.AssetID).Scan(ctx, &currentMediaID)
-				if errors.Is(err, sql.ErrNoRows) {
-					break
-				}
-				if err != nil {
-					return err
-				}
-				var lockedMediaID uuid.UUID
-				err = tx.NewRaw(`SELECT id FROM media_items WHERE id = ? FOR UPDATE`, currentMediaID).Scan(ctx, &lockedMediaID)
-				if errors.Is(err, sql.ErrNoRows) {
-					continue
-				}
-				if err != nil {
-					return err
-				}
-				result, err := tx.NewRaw(`
+			if errors.Is(err, sql.ErrNoRows) {
+				break
+			}
+			if err != nil {
+				return err
+			}
+			var lockedMediaID uuid.UUID
+			err = tx.NewRaw(`SELECT id FROM media_items WHERE id = ? FOR UPDATE`, currentMediaID).Scan(ctx, &lockedMediaID)
+			if errors.Is(err, sql.ErrNoRows) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			result, err := tx.NewRaw(`
 					UPDATE media_items AS media
 					SET availability = 'source_missing', missing_since = COALESCE(missing_since, now()), updated_at = now()
 					WHERE media.id = ? AND media.availability = 'current'
@@ -81,28 +88,27 @@ func MarkSourceMissing(ctx context.Context, db *bun.DB, backings []Backing) erro
 						  AND backing.immich_asset_id = ? AND backing.active
 					  )
 				`, currentMediaID, backing.BackingID, backing.AssetID).Exec(ctx)
-				if err != nil {
-					return err
-				}
-				updated, err := result.RowsAffected()
-				if err != nil {
-					return err
-				}
-				if updated > 0 {
-					break
-				}
-				var stillCurrent bool
-				if err := tx.NewRaw(`SELECT EXISTS (
+			if err != nil {
+				return err
+			}
+			updated, err := result.RowsAffected()
+			if err != nil {
+				return err
+			}
+			if updated > 0 {
+				break
+			}
+			var stillCurrent bool
+			if err := tx.NewRaw(`SELECT EXISTS (
 					SELECT 1 FROM media_backings
 					WHERE id = ? AND media_item_id = ? AND immich_asset_id = ? AND active
 				)`, backing.BackingID, currentMediaID, backing.AssetID).Scan(ctx, &stillCurrent); err != nil {
-					return err
-				}
-				if stillCurrent {
-					break
-				}
+				return err
+			}
+			if stillCurrent {
+				break
 			}
 		}
-		return nil
-	})
+	}
+	return nil
 }

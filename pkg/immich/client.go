@@ -607,6 +607,9 @@ func (c *Client) media(ctx context.Context, assetID uuid.UUID, path []string, qu
 	if assetID == uuid.Nil {
 		return MediaResponse{}, errInvalidResponse
 	}
+	if !validMediaRequest(request) {
+		return MediaResponse{}, errRequestFailed
+	}
 	requestCtx, cancel := context.WithCancel(ctx)
 	headerTimer := time.AfterFunc(c.healthTimeout, cancel)
 	endpointParts := append([]string{"api", "assets", assetID.String()}, path...)
@@ -630,9 +633,8 @@ func (c *Client) media(ctx context.Context, assetID uuid.UUID, path []string, qu
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxJSONResponse))
 		switch response.StatusCode {
 		case http.StatusBadRequest:
-			if request.Range != "" || request.IfRange != "" || request.IfNoneMatch != "" || request.IfModifiedSince != "" {
-				return MediaResponse{}, errRequestFailed
-			}
+			// Recipient-controlled validators are accepted only after strict local
+			// validation, so Immich's v3.0.3 deleted-asset 400 is missing evidence.
 			return MediaResponse{}, ErrNotFound
 		case http.StatusNotFound:
 			return MediaResponse{}, ErrNotFound
@@ -687,6 +689,82 @@ func (c *Client) doMediaRequest(ctx context.Context, endpoint *url.URL, accept s
 		}
 		current = location
 	}
+}
+
+func validMediaRequest(request MediaRequest) bool {
+	if len(request.Range) > 256 || len(request.IfRange) > 1024 || len(request.IfNoneMatch) > 4096 || len(request.IfModifiedSince) > 256 {
+		return false
+	}
+	if request.Range != "" {
+		ranges, valid := parseRequestedMediaRanges(request.Range)
+		if !valid || len(ranges) != 1 || request.Range != canonicalMediaRange(ranges[0]) {
+			return false
+		}
+	}
+	if request.IfNoneMatch != "" && !validETagList(request.IfNoneMatch) {
+		return false
+	}
+	if request.IfModifiedSince != "" {
+		modified, err := http.ParseTime(request.IfModifiedSince)
+		if err != nil || modified.UTC().Format(http.TimeFormat) != request.IfModifiedSince {
+			return false
+		}
+	}
+	if request.IfRange != "" {
+		if request.Range == "" || request.IfNoneMatch != "" || request.IfModifiedSince != "" ||
+			(!validEntityTag(request.IfRange, false) && !validHTTPDate(request.IfRange)) {
+			return false
+		}
+	}
+	return true
+}
+
+func canonicalMediaRange(requested requestedMediaRange) string {
+	if requested.suffix > 0 {
+		return "bytes=-" + strconv.FormatInt(requested.suffix, 10)
+	}
+	if requested.last >= 0 {
+		return "bytes=" + strconv.FormatInt(requested.first, 10) + "-" + strconv.FormatInt(requested.last, 10)
+	}
+	return "bytes=" + strconv.FormatInt(requested.first, 10) + "-"
+}
+
+func validHTTPDate(value string) bool {
+	parsed, err := http.ParseTime(value)
+	return err == nil && parsed.UTC().Format(http.TimeFormat) == value
+}
+
+func validEntityTag(value string, allowWeak bool) bool {
+	if allowWeak && strings.HasPrefix(value, "W/") {
+		value = strings.TrimPrefix(value, "W/")
+	} else if strings.HasPrefix(value, "W/") {
+		return false
+	}
+	if len(value) < 2 || value[0] != '"' || value[len(value)-1] != '"' {
+		return false
+	}
+	for _, character := range []byte(value[1 : len(value)-1]) {
+		if character < 0x21 || character == 0x22 || character > 0x7e {
+			return false
+		}
+	}
+	return true
+}
+
+func validETagList(value string) bool {
+	if value == "*" {
+		return true
+	}
+	parts := strings.Split(value, ",")
+	if len(parts) != 1 {
+		return false
+	}
+	for _, part := range parts {
+		if !validEntityTag(strings.TrimSpace(part), true) {
+			return false
+		}
+	}
+	return true
 }
 
 func setMediaRequestHeaders(header http.Header, request MediaRequest) {
@@ -847,6 +925,9 @@ func normalizeMediaResponse(response *http.Response, request MediaRequest, bound
 		return MediaResponse{}, errInvalidResponse
 	}
 	result.ETag = response.Header.Get("ETag")
+	if result.ETag != "" && !validEntityTag(result.ETag, true) {
+		return MediaResponse{}, errInvalidResponse
+	}
 	if modified := response.Header.Get("Last-Modified"); modified != "" {
 		parsed, err := http.ParseTime(modified)
 		if err != nil {
@@ -1140,7 +1221,9 @@ func (c *Client) Archive(ctx context.Context, assetIDs []uuid.UUID) (ArchiveResp
 		defer response.Body.Close()
 		defer cancel()
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxJSONResponse))
-		if response.StatusCode == http.StatusNotFound {
+		if response.StatusCode == http.StatusNotFound || response.StatusCode == http.StatusBadRequest {
+			// The request is built only from locally validated, server-derived UUIDs.
+			// Immich uses 400 when one of those members disappears.
 			return ArchiveResponse{}, ErrNotFound
 		}
 		return ArchiveResponse{}, errArchiveFailed
@@ -1269,7 +1352,7 @@ func (c *Client) doJSONStatus(ctx context.Context, method, path string, query ur
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxJSONResponse))
 		if (response.StatusCode == http.StatusNotFound && (path == "faces" || path == "search/metadata" ||
 			strings.HasPrefix(path, "assets/") || strings.HasPrefix(path, "albums/"))) ||
-			(response.StatusCode == http.StatusBadRequest && (path == "search/metadata" || strings.HasPrefix(path, "albums/") || strings.HasPrefix(path, "assets/"))) {
+			(response.StatusCode == http.StatusBadRequest && (path == "download/info" || path == "search/metadata" || strings.HasPrefix(path, "albums/") || strings.HasPrefix(path, "assets/"))) {
 			return ErrNotFound
 		}
 		if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {

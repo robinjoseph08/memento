@@ -1717,8 +1717,9 @@ func TestRealImmichAuthorizationFailuresPreserveMediaAvailability(t *testing.T) 
 
 func TestRecipientMalformedRangeUpstreamBadRequestDoesNotMarkSourceMissing(t *testing.T) {
 	fixture := newLibraryFixture(t)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "bytes=not-a-range", r.Header.Get("Range"))
+	var upstreamCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamCalls++
 		w.WriteHeader(http.StatusBadRequest)
 	}))
 	defer server.Close()
@@ -1735,6 +1736,34 @@ func TestRecipientMalformedRangeUpstreamBadRequestDoesNotMarkSourceMissing(t *te
 	var availability string
 	require.NoError(t, fixture.db.NewRaw(`SELECT availability FROM media_items WHERE id = ?`, fixture.media[0]).Scan(context.Background(), &availability))
 	assert.Equal(t, "current", availability, "a recipient-induced 400 is request failure, not global missing evidence")
+	assert.Zero(t, upstreamCalls, "malformed recipient headers are rejected before Immich")
+}
+
+func TestDeletedImmichBadRequestWithBrowserValidatorsMarksExactBackingMissing(t *testing.T) {
+	for _, request := range []immich.MediaRequest{
+		{Range: "bytes=0-1023"},
+		{IfNoneMatch: `"thumbnail-v1"`},
+		{IfModifiedSince: "Mon, 27 Jul 2026 12:00:00 GMT"},
+	} {
+		fixture := newLibraryFixture(t)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusBadRequest)
+		}))
+		client, err := immich.New(config.ImmichConfig{
+			URL: server.URL, APIKey: "test-key", HealthTimeout: time.Second,
+		}, server.Client())
+		require.NoError(t, err)
+		service := New(fixture.db, client)
+
+		_, err = service.Thumbnail(context.Background(), fixture.actor, fixture.media[0], request)
+		assert.ErrorIs(t, err, ErrNotFound)
+		var availability string
+		var missingSince *time.Time
+		require.NoError(t, fixture.db.NewRaw(`SELECT availability, missing_since FROM media_items WHERE id = ?`, fixture.media[0]).Scan(context.Background(), &availability, &missingSince))
+		assert.Equal(t, "source_missing", availability)
+		assert.NotNil(t, missingSince)
+		server.Close()
+	}
 }
 
 func TestRecipientAuthorizationMatrixRevalidatesReuseWithdrawalAndAvailability(t *testing.T) {

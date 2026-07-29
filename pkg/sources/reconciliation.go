@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/robinjoseph08/memento/internal/mediaavailability"
 	"github.com/robinjoseph08/memento/pkg/immich"
 	"github.com/robinjoseph08/memento/pkg/staging"
 	"github.com/robinjoseph08/memento/pkg/worker"
@@ -119,6 +120,20 @@ func (s *Service) Reconcile(ctx context.Context, sourceAlbumID uuid.UUID) error 
 
 		snapshot, snapshotErr := s.readSnapshot(ctx, immichAlbumID)
 		if errors.Is(snapshotErr, errSourceAlbumMissing) {
+			backings, err := sourceMembershipBackings(ctx, tx, sourceAlbumID)
+			if err != nil {
+				return err
+			}
+			missing, err := s.confirmMissingBackings(ctx, backings)
+			if err != nil {
+				return fmt.Errorf("confirm missing Source album assets: %w", ErrDependency)
+			}
+			if err := mediaavailability.MarkSourceMissingInTx(ctx, tx, missing); err != nil {
+				return err
+			}
+			if err := proposeMediaRepairs(ctx, tx, now); err != nil {
+				return err
+			}
 			return recordMissingSourceAlbum(ctx, tx, sourceAlbumID, now, s.reconciliationInterval)
 		}
 		if snapshotErr != nil {
@@ -252,6 +267,43 @@ func (s *Service) readSnapshot(ctx context.Context, albumID uuid.UUID) (reconcil
 	return snapshot, nil
 }
 
+func sourceMembershipBackings(ctx context.Context, tx bun.Tx, sourceAlbumID uuid.UUID) ([]mediaavailability.Backing, error) {
+	var backings []mediaavailability.Backing
+	if err := tx.NewRaw(`
+		SELECT membership.media_item_id AS media_id, backing.id AS backing_id,
+		       membership.immich_asset_id AS asset_id
+		FROM source_album_memberships AS membership
+		JOIN media_backings AS backing
+		  ON backing.media_item_id = membership.media_item_id
+		 AND backing.immich_asset_id = membership.immich_asset_id AND backing.active
+		WHERE membership.source_album_id = ?
+		ORDER BY membership.media_item_id
+	`, sourceAlbumID).Scan(ctx, &backings); err != nil {
+		return nil, err
+	}
+	return backings, nil
+}
+
+func (s *Service) confirmMissingBackings(ctx context.Context, backings []mediaavailability.Backing) ([]mediaavailability.Backing, error) {
+	missing := make([]mediaavailability.Backing, 0, len(backings))
+	availability := make(map[uuid.UUID]bool, len(backings))
+	for _, backing := range backings {
+		exists, checked := availability[backing.AssetID]
+		if !checked {
+			var err error
+			exists, err = s.connector.AssetExists(ctx, backing.AssetID)
+			if err != nil {
+				return nil, err
+			}
+			availability[backing.AssetID] = exists
+		}
+		if !exists {
+			missing = append(missing, backing)
+		}
+	}
+	return missing, nil
+}
+
 func (s *Service) applyValidatedSnapshot(
 	ctx context.Context,
 	tx bun.Tx,
@@ -317,48 +369,39 @@ func (s *Service) applyValidatedSnapshot(
 			return 0, 0, 0, err
 		}
 	}
+	var removedMemberships []mediaavailability.Backing
+	if err := tx.NewRaw(`
+		SELECT membership.media_item_id AS media_id, backing.id AS backing_id,
+		       membership.immich_asset_id AS asset_id
+		FROM source_album_memberships AS membership
+		JOIN media_backings AS backing
+		  ON backing.media_item_id = membership.media_item_id
+		 AND backing.immich_asset_id = membership.immich_asset_id AND backing.active
+		WHERE membership.source_album_id = ?
+		  AND NOT EXISTS (
+			SELECT 1 FROM jsonb_array_elements_text(?::jsonb) AS candidate(id)
+			WHERE candidate.id::uuid = membership.immich_asset_id
+		  )
+		ORDER BY membership.media_item_id
+	`, sourceAlbumID, string(encodedIDs)).Scan(ctx, &removedMemberships); err != nil {
+		return 0, 0, 0, err
+	}
+	confirmedMissing, err := s.confirmMissingBackings(ctx, removedMemberships)
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("confirm removed Immich asset: %w", ErrDependency)
+	}
+	if err := mediaavailability.MarkSourceMissingInTx(ctx, tx, confirmedMissing); err != nil {
+		return 0, 0, 0, err
+	}
+	if err := proposeMediaRepairs(ctx, tx, now); err != nil {
+		return 0, 0, 0, err
+	}
+
 	removals := 0
 	var removedMediaIDs []uuid.UUID
 	if stablePasses >= 2 {
-		type removedMembership struct {
-			MediaItemID   uuid.UUID `bun:"media_item_id"`
-			ImmichAssetID uuid.UUID `bun:"immich_asset_id"`
-		}
-		var removedMemberships []removedMembership
-		if err := tx.NewRaw(`
-			SELECT membership.media_item_id, membership.immich_asset_id
-			FROM source_album_memberships AS membership
-			WHERE membership.source_album_id = ?
-			  AND NOT EXISTS (
-				SELECT 1 FROM jsonb_array_elements_text(?::jsonb) AS candidate(id)
-				WHERE candidate.id::uuid = membership.immich_asset_id
-			  )
-			ORDER BY membership.media_item_id
-		`, sourceAlbumID, string(encodedIDs)).Scan(ctx, &removedMemberships); err != nil {
-			return 0, 0, 0, err
-		}
-		confirmedMissingMediaIDs := make([]uuid.UUID, 0)
 		for _, membership := range removedMemberships {
-			removedMediaIDs = append(removedMediaIDs, membership.MediaItemID)
-			var retainedByAnotherSource bool
-			if err := tx.NewRaw(`
-				SELECT EXISTS (
-					SELECT 1 FROM source_album_memberships
-					WHERE media_item_id = ? AND source_album_id <> ?
-				)
-			`, membership.MediaItemID, sourceAlbumID).Scan(ctx, &retainedByAnotherSource); err != nil {
-				return 0, 0, 0, err
-			}
-			if retainedByAnotherSource {
-				continue
-			}
-			exists, err := s.connector.AssetExists(ctx, membership.ImmichAssetID)
-			if err != nil {
-				return 0, 0, 0, fmt.Errorf("confirm removed Immich asset: %w", ErrDependency)
-			}
-			if !exists {
-				confirmedMissingMediaIDs = append(confirmedMissingMediaIDs, membership.MediaItemID)
-			}
+			removedMediaIDs = append(removedMediaIDs, membership.MediaID)
 		}
 		result, err := tx.NewRaw(`
 			DELETE FROM source_album_memberships AS membership
@@ -376,18 +419,6 @@ func (s *Service) applyValidatedSnapshot(
 			return 0, 0, 0, err
 		}
 		removals = int(removed)
-		if len(confirmedMissingMediaIDs) > 0 {
-			if _, err := tx.NewRaw(`
-				UPDATE media_items AS media SET availability = 'source_missing', missing_since = COALESCE(missing_since, ?), updated_at = ?
-				WHERE availability = 'current' AND id IN (?)
-				  AND NOT EXISTS (SELECT 1 FROM source_album_memberships WHERE media_item_id = media.id)
-			`, now, now, bun.List(confirmedMissingMediaIDs)).Exec(ctx); err != nil {
-				return 0, 0, 0, err
-			}
-		}
-		if err := proposeMediaRepairs(ctx, tx, now); err != nil {
-			return 0, 0, 0, err
-		}
 		// Evidence-free migrated additions have no repair seam, but a stable Media
 		// identity must outlive every publication, interaction, authorization, and
 		// archive reference. Delete only an entirely unreferenced private draft.

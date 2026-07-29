@@ -1295,7 +1295,7 @@ test("favorites, comments, and mute controls stay in the private Media viewer", 
   });
 });
 
-test("disables stale interaction controls and returns to the Library after Media access loss", async () => {
+test("shows retained unavailable listing copy only after a fresh unavailable Media listing", async () => {
   let accessLost = false;
   const comment = {
     id: "comment-1",
@@ -1320,22 +1320,22 @@ test("disables stale interaction controls and returns to the Library after Media
       const path = requestPath(input);
       if (path.startsWith("/api/me/photos?")) {
         return json({
-          media: accessLost
-            ? []
-            : [
-                {
-                  id: "media-1",
-                  media_type: "image",
-                  width: 1600,
-                  height: 900,
-                  local_date_time: "2026-07-28T12:00:00Z",
-                  available: true,
-                  thumbnail_url: "/api/me/media/media-1/thumbnail",
-                  preview_url: "/api/me/media/media-1/preview",
-                  video_url: "",
-                  original_url: "/api/me/media/media-1/original",
-                },
-              ],
+          media: [
+            {
+              id: "media-1",
+              media_type: "image",
+              width: 1600,
+              height: 900,
+              local_date_time: "2026-07-28T12:00:00Z",
+              available: !accessLost,
+              thumbnail_url: accessLost
+                ? ""
+                : "/api/me/media/media-1/thumbnail",
+              preview_url: accessLost ? "" : "/api/me/media/media-1/preview",
+              video_url: "",
+              original_url: accessLost ? "" : "/api/me/media/media-1/original",
+            },
+          ],
           next_cursor: null,
         });
       }
@@ -1393,5 +1393,67 @@ test("disables stale interaction controls and returns to the Library after Media
       screen.queryByRole("dialog", { name: "Media viewer" }),
     ).not.toBeInTheDocument(),
   );
-  expect(await screen.findByText("No photos are available.")).toBeVisible();
+  expect(await screen.findByText("Source unavailable")).toBeVisible();
+});
+
+test("keeps a removed Media 404 privacy-safe without claiming a retained listing", async () => {
+  let accessLost = false;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) => {
+      const path = requestPath(input);
+      if (path.startsWith("/api/me/photos?")) {
+        return json({
+          media: accessLost
+            ? []
+            : [
+                {
+                  id: "media-1",
+                  media_type: "image",
+                  width: 1600,
+                  height: 900,
+                  local_date_time: "2026-07-28T12:00:00Z",
+                  available: true,
+                  thumbnail_url: "/api/me/media/media-1/thumbnail",
+                  preview_url: "/api/me/media/media-1/preview",
+                  video_url: "",
+                  original_url: "/api/me/media/media-1/original",
+                },
+              ],
+          next_cursor: null,
+        });
+      }
+      if (path === "/api/me/new-for-you") return json({ events: [] });
+      if (path === "/api/favorites/media-1") {
+        return accessLost
+          ? apiError("This Media is unavailable.", 404)
+          : json({ media_item_id: "media-1", favorite: false });
+      }
+      if (path.startsWith("/api/comments/media/media-1?")) {
+        return json({
+          comments: [],
+          can_mute: false,
+          muted: false,
+          next_cursor: null,
+        });
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    }),
+  );
+
+  renderLibrary();
+  const opener = await screen.findByRole("button", {
+    name: "Open Photo 1 from July 2026",
+  });
+  accessLost = true;
+  fireEvent.click(opener);
+
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "This content is no longer available.",
+  );
+  expect(
+    screen.queryByText(
+      /Library listing and interaction history remain available/,
+    ),
+  ).not.toBeInTheDocument();
 });

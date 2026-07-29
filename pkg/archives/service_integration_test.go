@@ -10,6 +10,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"slices"
 	"sync"
@@ -19,6 +21,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/robinjoseph08/memento/internal/placementlock"
 	"github.com/robinjoseph08/memento/internal/testdb"
+	"github.com/robinjoseph08/memento/pkg/config"
 	"github.com/robinjoseph08/memento/pkg/immich"
 	"github.com/robinjoseph08/memento/pkg/library"
 	"github.com/robinjoseph08/memento/pkg/migrations"
@@ -463,6 +466,52 @@ func TestMultiItemAggregateNotFoundMarksOnlyIndividuallyMissingBacking(t *testin
 			assert.ElementsMatch(t, fixture.assets[:2], source.assetCalls)
 		})
 	}
+}
+
+func TestRealImmichArchiveMemberDisappearsBetweenPlanAndStream(t *testing.T) {
+	fixture := newArchiveFixture(t, &archiveStub{})
+	assetID := fixture.assets[0]
+	var missing bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/assets/" + assetID.String():
+			if missing {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"` + assetID.String() + `","livePhotoVideoId":null}`))
+		case "/api/download/info":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"totalSize":10,"archives":[{"size":10,"assetIds":["` + assetID.String() + `"]}]}`))
+		case "/api/download/archive":
+			missing = true
+			w.WriteHeader(http.StatusBadRequest)
+		default:
+			t.Fatalf("unexpected Immich request %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	client, err := immich.New(config.ImmichConfig{
+		URL: server.URL, APIKey: "test-key", HealthTimeout: time.Second,
+	}, server.Client())
+	require.NoError(t, err)
+	fixture.service = New(fixture.db, client)
+
+	plan, err := fixture.service.Plan(context.Background(), fixture.actor, PlanRequest{
+		Scope: "subset", MediaIDs: []string{fixture.media[0].String()},
+	})
+	require.NoError(t, err)
+	_, err = fixture.service.StreamPart(context.Background(), fixture.actor,
+		tokenFromURL(plan.Parts[0].DownloadURL), 1)
+	assert.ErrorIs(t, err, ErrNotFound)
+
+	var availability string
+	var missingSince *time.Time
+	require.NoError(t, fixture.db.NewRaw(`SELECT availability, missing_since FROM media_items WHERE id = ?`, fixture.media[0]).Scan(context.Background(), &availability, &missingSince))
+	assert.Equal(t, "source_missing", availability)
+	assert.NotNil(t, missingSince)
 }
 
 func TestAggregateNotFoundVerificationFailureMarksNothing(t *testing.T) {

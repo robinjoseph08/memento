@@ -223,10 +223,12 @@ function EventCards({
 function MediaViewer({
   media,
   session,
+  confirmRetainedUnavailable,
   onClose,
 }: {
   media: Media;
   session: SessionResponse;
+  confirmRetainedUnavailable: () => Promise<boolean>;
   onClose: () => void;
 }) {
   const queryClient = useQueryClient();
@@ -235,20 +237,34 @@ function MediaViewer({
     undefined,
   );
   const [commentBody, setCommentBody] = useState("");
-  const [mediaUnavailable, setMediaUnavailable] = useState(false);
+  const [mediaAccess, setMediaAccess] = useState<
+    "available" | "backing-unavailable" | "withdrawn"
+  >("available");
   const favorite = useQuery({
     queryKey: ["favorite", session.csrf_token, media.id],
-    queryFn: () => apiJSON<FavoriteState>(`/api/favorites/${media.id}`),
+    queryFn: async () => {
+      try {
+        return await apiJSON<FavoriteState>(`/api/favorites/${media.id}`);
+      } catch (error) {
+        void classifyUnavailableMedia(error);
+        throw error;
+      }
+    },
     retry: false,
   });
   const comments = useInfiniteQuery({
     queryKey: ["comments", session.csrf_token, media.id],
-    queryFn: ({ pageParam }) => {
+    queryFn: async ({ pageParam }) => {
       const params = new URLSearchParams({ limit: "50" });
       if (pageParam) params.set("cursor", pageParam);
-      return apiJSON<CommentListResponse>(
-        `/api/comments/media/${media.id}?${params.toString()}`,
-      );
+      try {
+        return await apiJSON<CommentListResponse>(
+          `/api/comments/media/${media.id}?${params.toString()}`,
+        );
+      } catch (error) {
+        void classifyUnavailableMedia(error);
+        throw error;
+      }
     },
     initialPageParam: "",
     getNextPageParam: (page) => page.next_cursor ?? undefined,
@@ -256,15 +272,17 @@ function MediaViewer({
   });
   const commentItems =
     comments.data?.pages.flatMap((page) => page.comments) ?? [];
-  const unavailableMedia =
-    mediaUnavailable ||
-    isUnavailableResponse(favorite.error) ||
-    isUnavailableResponse(comments.error);
+  const unavailableMedia = mediaAccess !== "available";
 
-  function markMediaUnavailable(error: unknown) {
+  async function classifyUnavailableMedia(error: unknown) {
     if (!isUnavailableResponse(error)) return;
-    setMediaUnavailable(true);
-    void queryClient.invalidateQueries({ queryKey: ["recipient-library"] });
+    let retainedUnavailable = false;
+    try {
+      retainedUnavailable = await confirmRetainedUnavailable();
+    } catch {
+      // A failed listing refresh cannot prove retained access.
+    }
+    setMediaAccess(retainedUnavailable ? "backing-unavailable" : "withdrawn");
   }
 
   async function verifyMediaAfterUnavailableComment(error: unknown) {
@@ -279,7 +297,7 @@ function MediaViewer({
         queryKey: ["comments", session.csrf_token, media.id],
       });
     } catch (recheckError) {
-      markMediaUnavailable(recheckError);
+      await classifyUnavailableMedia(recheckError);
     }
   }
 
@@ -296,7 +314,7 @@ function MediaViewer({
       );
       await queryClient.invalidateQueries({ queryKey: ["recipient-library"] });
     },
-    onError: (error) => markMediaUnavailable(error),
+    onError: (error) => void classifyUnavailableMedia(error),
   });
   const createComment = useMutation({
     mutationFn: () => {
@@ -321,7 +339,7 @@ function MediaViewer({
         queryKey: ["comments", session.csrf_token, media.id],
       });
     },
-    onError: (error) => markMediaUnavailable(error),
+    onError: (error) => void classifyUnavailableMedia(error),
   });
   const editComment = useMutation({
     mutationFn: ({
@@ -498,8 +516,9 @@ function MediaViewer({
         {unavailableMedia ? (
           <div className="viewer-unavailable">
             <p className="form-error" role="alert">
-              This Media&apos;s backing is temporarily unavailable. Its Library
-              listing and interaction history remain available.
+              {mediaAccess === "backing-unavailable"
+                ? "This Media's backing is temporarily unavailable. Its Library listing and interaction history remain available."
+                : "This content is no longer available."}
             </p>
             <button
               onClick={() => {
@@ -539,7 +558,10 @@ function MediaViewer({
           <p>Favorites aren&apos;t shared with other recipients.</p>
           <LibraryError
             error={
-              unavailableMedia ? null : (favorite.error ?? toggleFavorite.error)
+              unavailableMedia ||
+              isUnavailableResponse(favorite.error ?? toggleFavorite.error)
+                ? null
+                : (favorite.error ?? toggleFavorite.error)
             }
           />
         </section>
@@ -562,7 +584,15 @@ function MediaViewer({
           </div>
           <LibraryError
             error={
-              unavailableMedia
+              unavailableMedia ||
+              isUnavailableResponse(
+                comments.error ??
+                  createComment.error ??
+                  editComment.error ??
+                  deleteComment.error ??
+                  moderateComment.error ??
+                  muteComments.error,
+              )
                 ? null
                 : (comments.error ??
                   createComment.error ??
@@ -979,6 +1009,26 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
       };
     }
     search.mutate({ query: searchText, date });
+  }
+
+  async function confirmRetainedUnavailable() {
+    if (openedEvent) {
+      const refreshed = await event.refetch();
+      if (refreshed.error) return false;
+      const current = refreshed.data?.pages
+        .flatMap((page) => page.media)
+        .find((item) => item.id === openedMedia?.id);
+      return current?.available === false;
+    }
+    if (destination === "photos" || destination === "favorites") {
+      const refreshed = await photos.refetch();
+      if (refreshed.error) return false;
+      const current = refreshed.data?.pages
+        .flatMap((page) => page.media)
+        .find((item) => item.id === openedMedia?.id);
+      return current?.available === false;
+    }
+    return false;
   }
 
   function openMedia(item: Media) {
@@ -1478,6 +1528,7 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
       </div>
       {openedMedia ? (
         <MediaViewer
+          confirmRetainedUnavailable={confirmRetainedUnavailable}
           media={openedMedia}
           onClose={closeMedia}
           session={session}
