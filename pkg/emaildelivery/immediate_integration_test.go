@@ -20,6 +20,7 @@ import (
 	"github.com/robinjoseph08/memento/internal/testdb"
 	"github.com/robinjoseph08/memento/pkg/immich"
 	"github.com/robinjoseph08/memento/pkg/migrations"
+	"github.com/robinjoseph08/memento/pkg/outbox"
 	"github.com/robinjoseph08/memento/pkg/smtp"
 	"github.com/robinjoseph08/memento/pkg/worker"
 	"github.com/stretchr/testify/assert"
@@ -31,6 +32,7 @@ type immediateSender struct {
 	mu       sync.Mutex
 	results  []error
 	messages []smtp.Message
+	accepted int
 }
 
 func (s *immediateSender) Send(_ context.Context, message smtp.Message) error {
@@ -38,10 +40,14 @@ func (s *immediateSender) Send(_ context.Context, message smtp.Message) error {
 	defer s.mu.Unlock()
 	s.messages = append(s.messages, message)
 	if len(s.results) == 0 {
+		s.accepted++
 		return nil
 	}
 	result := s.results[0]
 	s.results = s.results[1:]
+	if result == nil {
+		s.accepted++
+	}
 	return result
 }
 
@@ -49,6 +55,38 @@ func (s *immediateSender) sent() []smtp.Message {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]smtp.Message(nil), s.messages...)
+}
+
+func (s *immediateSender) acceptedCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.accepted
+}
+
+type blockingImmediateSender struct {
+	entered  chan struct{}
+	release  chan struct{}
+	mu       sync.Mutex
+	accepted []smtp.Message
+}
+
+func (s *blockingImmediateSender) Send(ctx context.Context, message smtp.Message) error {
+	close(s.entered)
+	select {
+	case <-s.release:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.accepted = append(s.accepted, message)
+	return nil
+}
+
+func (s *blockingImmediateSender) acceptedMessages() []smtp.Message {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]smtp.Message(nil), s.accepted...)
 }
 
 type immediatePreviewSource struct {
@@ -434,7 +472,54 @@ func TestImmediateCommentEligibilityIsSharedByQueueAndSend(t *testing.T) {
 	assert.Equal(t, "suppressed", status)
 }
 
-func TestImmediateEmailReauthorizesBetweenAssemblyAndSendAndRetriesDurably(t *testing.T) {
+func TestImmediateEmailHoldsAuthorizationLocksThroughSMTPAcceptance(t *testing.T) {
+	fixture := newImmediateFixture(t)
+	blocking := &blockingImmediateSender{entered: make(chan struct{}), release: make(chan struct{})}
+	t.Cleanup(func() {
+		select {
+		case <-blocking.release:
+		default:
+			close(blocking.release)
+		}
+	})
+	fixture.service.sender = blocking
+	fixture.addPublicationActivity(t, fixture.base, fixture.media[0])
+	require.NoError(t, fixture.service.QueuePublication(context.Background(), fixture.event, fixture.publication))
+	var batchID int64
+	require.NoError(t, fixture.db.NewRaw(`SELECT id FROM notification_batches`).Scan(context.Background(), &batchID))
+
+	job := fixture.leasedBatchJob(t, batchID)
+	delivered := make(chan error, 1)
+	go func() {
+		delivered <- fixture.service.HandleImmediate(context.Background(), job)
+	}()
+	select {
+	case <-blocking.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("immediate sender was not reached")
+	}
+
+	preferenceChanged := make(chan error, 1)
+	go func() {
+		_, err := fixture.db.NewRaw(`UPDATE notification_preferences
+			SET email_preference = 'none' WHERE recipient_access_generation_id = ?`, fixture.access["alex"]).Exec(context.Background())
+		preferenceChanged <- err
+	}()
+	waitForImmediateLockWait(t, fixture.db, `%UPDATE notification_preferences%email_preference = 'none'%`)
+
+	close(blocking.release)
+	require.NoError(t, <-delivered)
+	require.NoError(t, <-preferenceChanged)
+	messages := blocking.acceptedMessages()
+	require.Len(t, messages, 1)
+	assert.Equal(t, "alex@example.com", messages[0].To)
+	var preference string
+	require.NoError(t, fixture.db.NewRaw(`SELECT email_preference FROM notification_preferences
+		WHERE recipient_access_generation_id = ?`, fixture.access["alex"]).Scan(context.Background(), &preference))
+	assert.Equal(t, "none", preference)
+}
+
+func TestImmediateEmailReauthorizesAndHandlesTerminalFailures(t *testing.T) {
 	t.Run("authorization loss suppresses SMTP", func(t *testing.T) {
 		fixture := newImmediateFixture(t)
 		fixture.addPublicationActivity(t, fixture.base, fixture.media[0])
@@ -452,30 +537,6 @@ func TestImmediateEmailReauthorizesBetweenAssemblyAndSendAndRetriesDurably(t *te
 		var status string
 		require.NoError(t, fixture.db.NewRaw(`SELECT status FROM notification_batches WHERE id = ?`, batchID).Scan(context.Background(), &status))
 		assert.Equal(t, "suppressed", status)
-	})
-
-	t.Run("temporary SMTP failure preserves retryable batch", func(t *testing.T) {
-		fixture := newImmediateFixture(t)
-		fixture.sender.results = []error{errors.New("private provider failure"), nil}
-		fixture.addPublicationActivity(t, fixture.base, fixture.media[0])
-		require.NoError(t, fixture.service.QueuePublication(context.Background(), fixture.event, fixture.publication))
-		var batchID int64
-		require.NoError(t, fixture.db.NewRaw(`SELECT id FROM notification_batches`).Scan(context.Background(), &batchID))
-		job := fixture.leasedBatchJob(t, batchID)
-
-		err := fixture.service.HandleImmediate(context.Background(), job)
-		require.EqualError(t, err, "smtp_unavailable")
-		var status, diagnostic string
-		var attempts int
-		require.NoError(t, fixture.db.NewRaw(`SELECT status, attempts, last_safe_error FROM notification_batches WHERE id = ?`, batchID).Scan(context.Background(), &status, &attempts, &diagnostic))
-		assert.Equal(t, "pending", status)
-		assert.Equal(t, 1, attempts)
-		assert.Equal(t, "smtp_unavailable", diagnostic)
-
-		require.NoError(t, fixture.service.HandleImmediate(context.Background(), job))
-		require.NoError(t, fixture.db.NewRaw(`SELECT status, attempts FROM notification_batches WHERE id = ?`, batchID).Scan(context.Background(), &status, &attempts))
-		assert.Equal(t, "sent", status)
-		assert.Equal(t, 2, attempts)
 	})
 
 	t.Run("expired retry window becomes a durable failure without another SMTP attempt", func(t *testing.T) {
@@ -514,6 +575,59 @@ func TestImmediateEmailReauthorizesBetweenAssemblyAndSendAndRetriesDurably(t *te
 	})
 }
 
+func TestImmediateEmailWorkerPersistsRetryAcrossRestartAndSendsOnce(t *testing.T) {
+	fixture := newImmediateFixture(t)
+	fixture.service.cfg.RetryBase = time.Second
+	fixture.service.cfg.RetryMax = time.Second
+	fixture.sender.results = []error{errors.New("private provider failure"), nil}
+	fixture.addPublicationActivity(t, fixture.base, fixture.media[0])
+	require.NoError(t, fixture.service.QueuePublication(context.Background(), fixture.event, fixture.publication))
+
+	first, err := worker.New(fixture.db, workerConfig(), "immediate-retry-first", map[string]worker.Handler{
+		ImmediateJobKind: fixture.service.HandleImmediate,
+	}, worker.WithDispatcher(outbox.New(fixture.db)))
+	require.NoError(t, err)
+	first.Start(context.Background())
+	t.Cleanup(func() { stopWorker(first) })
+
+	var jobID int64
+	var retrySeconds float64
+	require.Eventually(t, func() bool {
+		var retryable bool
+		err := fixture.db.NewRaw(`SELECT id,
+			status = 'pending' AND attempts = 1 AND last_safe_error = 'smtp_unavailable'
+			AND lease_owner IS NULL AND lease_expires_at IS NULL,
+			EXTRACT(EPOCH FROM (available_at - updated_at))
+			FROM jobs WHERE kind = ?`, ImmediateJobKind).Scan(context.Background(), &jobID, &retryable, &retrySeconds)
+		return err == nil && retryable
+	}, asynchronousCompletionTimeout, 5*time.Millisecond)
+	assert.GreaterOrEqual(t, retrySeconds, 0.8)
+	assert.LessOrEqual(t, retrySeconds, 1.0)
+	assert.Len(t, fixture.sender.sent(), 1)
+	assert.Zero(t, fixture.sender.acceptedCount())
+	stopWorker(first)
+
+	second, err := worker.New(fixture.db, workerConfig(), "immediate-retry-second", map[string]worker.Handler{
+		ImmediateJobKind: fixture.service.HandleImmediate,
+	})
+	require.NoError(t, err)
+	second.Start(context.Background())
+	t.Cleanup(func() { stopWorker(second) })
+
+	require.Eventually(t, func() bool {
+		var completed bool
+		err := fixture.db.NewRaw(`SELECT job.status = 'completed' AND job.attempts = 1
+			AND job.lease_owner IS NULL AND job.lease_expires_at IS NULL
+			AND batch.status = 'sent' AND batch.attempts = 2
+			FROM jobs AS job
+			JOIN notification_batches AS batch ON batch.id = (job.payload->>'batch_id')::bigint
+			WHERE job.id = ?`, jobID).Scan(context.Background(), &completed)
+		return err == nil && completed
+	}, asynchronousCompletionTimeout, 5*time.Millisecond)
+	assert.Len(t, fixture.sender.sent(), 2)
+	assert.Equal(t, 1, fixture.sender.acceptedCount(), "only the eventual successful SMTP acceptance is recorded")
+}
+
 func TestImmediateEmailCreatesNoBacklogAfterEligibilityIsRestored(t *testing.T) {
 	fixture := newImmediateFixture(t)
 	fixture.addPublicationActivity(t, fixture.base, fixture.media[0])
@@ -534,6 +648,85 @@ func TestImmediateEmailCreatesNoBacklogAfterEligibilityIsRestored(t *testing.T) 
 	require.NoError(t, err)
 	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM notification_batches`).Scan(context.Background(), &batches))
 	assert.Zero(t, batches, "restoring optional delivery does not sweep missed Comment activity")
+}
+
+func TestImmediateEmailSuppressedBatchCannotReplayAfterEligibilityIsRestored(t *testing.T) {
+	fixture := newImmediateFixture(t)
+	fixture.addPublicationActivity(t, fixture.base, fixture.media[0])
+	require.NoError(t, fixture.service.QueuePublication(context.Background(), fixture.event, fixture.publication))
+	_, err := fixture.db.NewRaw(`UPDATE notification_preferences SET email_preference = 'none'
+		WHERE recipient_access_generation_id = ?`, fixture.access["alex"]).Exec(context.Background())
+	require.NoError(t, err)
+
+	dispatched, err := outbox.New(fixture.db).Dispatch(context.Background(), "immediate-suppression-dispatch", time.Minute)
+	require.NoError(t, err)
+	require.True(t, dispatched)
+	var job worker.Job
+	require.NoError(t, fixture.db.NewRaw(`SELECT id, kind, payload, attempts FROM jobs WHERE kind = ?`, ImmediateJobKind).
+		Scan(context.Background(), &job.ID, &job.Kind, &job.Payload, &job.Attempts))
+	leaseJob(t, fixture.db, &job, "interrupted-suppression-worker")
+	var batchID int64
+	require.NoError(t, fixture.db.NewRaw(`SELECT id FROM notification_batches`).Scan(context.Background(), &batchID))
+	require.NoError(t, fixture.service.HandleImmediate(context.Background(), job))
+	var batchStatus string
+	require.NoError(t, fixture.db.NewRaw(`SELECT status FROM notification_batches WHERE id = ?`, batchID).
+		Scan(context.Background(), &batchStatus))
+	assert.Equal(t, "suppressed", batchStatus)
+	assert.Empty(t, fixture.sender.sent())
+
+	_, err = fixture.db.NewRaw(`UPDATE notification_preferences SET email_preference = 'immediate'
+		WHERE recipient_access_generation_id = ?`, fixture.access["alex"]).Exec(context.Background())
+	require.NoError(t, err)
+	require.NoError(t, fixture.service.QueuePublication(context.Background(), fixture.event, fixture.publication))
+	var batches, items, jobs, outboxEvents int
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM notification_batches`).Scan(context.Background(), &batches))
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM notification_batch_items`).Scan(context.Background(), &items))
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM jobs WHERE kind = ?`, ImmediateJobKind).Scan(context.Background(), &jobs))
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM outbox_events WHERE kind = ?`, ImmediateJobKind).Scan(context.Background(), &outboxEvents))
+	assert.Equal(t, 1, batches)
+	assert.Equal(t, 1, items)
+	assert.Equal(t, 1, jobs)
+	assert.Equal(t, 1, outboxEvents, "restoring eligibility does not enqueue the historical activity again")
+
+	_, err = fixture.db.NewRaw(`UPDATE jobs SET lease_expires_at = now() - interval '1 second' WHERE id = ?`, job.ID).
+		Exec(context.Background())
+	require.NoError(t, err)
+	restarted, err := worker.New(fixture.db, workerConfig(), "immediate-suppression-replay", map[string]worker.Handler{
+		ImmediateJobKind: fixture.service.HandleImmediate,
+	})
+	require.NoError(t, err)
+	restarted.Start(context.Background())
+	t.Cleanup(func() { stopWorker(restarted) })
+	require.Eventually(t, func() bool {
+		var completed bool
+		err := fixture.db.NewRaw(`SELECT job.status = 'completed' AND batch.status = 'suppressed'
+			FROM jobs AS job JOIN notification_batches AS batch ON batch.id = ?
+			WHERE job.id = ?`, batchID, job.ID).Scan(context.Background(), &completed)
+		return err == nil && completed
+	}, asynchronousCompletionTimeout, 5*time.Millisecond)
+	assert.Empty(t, fixture.sender.sent(), "a replayed suppressed batch cannot send after eligibility is restored")
+}
+
+func waitForImmediateLockWait(t *testing.T, db *bun.DB, pattern string) {
+	t.Helper()
+	deadline := time.NewTimer(5 * time.Second)
+	defer deadline.Stop()
+	poll := time.NewTicker(5 * time.Millisecond)
+	defer poll.Stop()
+	lastWaiting := 0
+	for {
+		require.NoError(t, db.NewRaw(`SELECT count(*) FROM pg_stat_activity
+			WHERE datname = current_database() AND wait_event_type = 'Lock'
+			  AND cardinality(pg_blocking_pids(pid)) > 0 AND query LIKE ?`, pattern).Scan(context.Background(), &lastWaiting))
+		if lastWaiting > 0 {
+			return
+		}
+		select {
+		case <-deadline.C:
+			t.Fatalf("authorization mutation did not wait for SMTP transaction lock; last waiting count: %d", lastWaiting)
+		case <-poll.C:
+		}
+	}
 }
 
 func previewWithPrivateMetadata(t *testing.T) []byte {
