@@ -1022,6 +1022,80 @@ func TestMediaConfirmationRejectsCrossTypeCandidateBeforeDeliveryProbe(t *testin
 	assert.Equal(t, "pending", state)
 }
 
+func TestMediaConfirmationRejectsNonAdditionCandidateBackingAndHistory(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		confirmed  bool
+		addHistory bool
+	}{
+		{name: "confirmed backing from a prior relink", confirmed: true},
+		{name: "candidate with backing history", addHistory: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newRepairFixture(t, 0)
+			oldMediaID, newMediaID := uuid.New(), uuid.New()
+			oldAssetID, newAssetID, candidateID, sourceAlbumID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+			_, err := fixture.db.ExecContext(context.Background(), `
+				INSERT INTO source_albums (
+					id, immich_album_id, name, asset_count, source_created_at, source_updated_at,
+					first_seen_at, last_seen_at, source_fingerprint, next_reconciliation_at
+				) VALUES (?, gen_random_uuid(), 'Candidate state', 1, now(), now(), now(), now(), ?, now());
+				INSERT INTO media_items (id, immich_asset_id, media_type, availability, missing_since, first_seen_at, last_seen_at)
+				VALUES (?, ?, 'image', 'source_missing', now(), now(), now()),
+				       (?, ?, 'image', 'current', NULL, now(), now());
+				INSERT INTO media_backings (id, media_item_id, immich_asset_id, checksum, linked_at)
+				VALUES (gen_random_uuid(), ?, ?, ?, now());
+				INSERT INTO media_backings (id, media_item_id, immich_asset_id, checksum, linked_at)
+				VALUES (gen_random_uuid(), ?, ?, ?, now());
+				INSERT INTO source_album_memberships (
+					source_album_id, immich_asset_id, media_item_id, first_seen_at, last_seen_at, source_fingerprint
+				) VALUES (?, ?, ?, now(), now(), ?);
+				INSERT INTO media_repair_candidates (
+					id, media_item_id, candidate_media_item_id, previous_immich_asset_id,
+					candidate_immich_asset_id, previous_evidence, candidate_evidence, created_at
+				) VALUES (?, ?, ?, ?, ?,
+					jsonb_build_object('checksum', ?, 'capture', NULL, 'filename', '', 'path', ''),
+					jsonb_build_object('checksum', ?, 'capture', NULL, 'filename', '', 'path', ''), now());
+			`, sourceAlbumID, hashBytes("candidate-state"), oldMediaID, oldAssetID, newMediaID, newAssetID,
+				oldMediaID, oldAssetID, checksum("candidate-state"),
+				newMediaID, newAssetID, checksum("candidate-state"),
+				sourceAlbumID, newAssetID, newMediaID, hashBytes("candidate-membership"),
+				candidateID, oldMediaID, newMediaID, oldAssetID, newAssetID,
+				checksum("candidate-state"), checksum("candidate-state"))
+			require.NoError(t, err)
+			if test.confirmed {
+				_, err = fixture.db.NewRaw(`
+					UPDATE media_backings SET state = 'confirmed', confirmed_at = now()
+					WHERE media_item_id = ? AND active
+				`, newMediaID).Exec(context.Background())
+				require.NoError(t, err)
+			}
+			if test.addHistory {
+				_, err = fixture.db.NewRaw(`
+					INSERT INTO media_backings (
+						id, media_item_id, immich_asset_id, checksum, active, linked_at, ended_at
+					) VALUES (gen_random_uuid(), ?, gen_random_uuid(), ?, false, now() - interval '1 hour', now())
+				`, newMediaID, checksum("old-candidate-history")).Exec(context.Background())
+				require.NoError(t, err)
+			}
+			setFreshAssetFromBacking(t, fixture, newAssetID)
+			reviewToken := reviewedMediaToken(t, fixture, candidateID)
+
+			_, err = fixture.service.ConfirmMedia(context.Background(), fixture.actor, candidateID, reviewToken)
+			assert.ErrorIs(t, err, ErrConflict)
+			var state string
+			var retainedItems int
+			require.NoError(t, fixture.db.NewRaw(`SELECT state FROM media_repair_candidates WHERE id = ?`, candidateID).Scan(context.Background(), &state))
+			require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM media_items WHERE id IN (?, ?)`, oldMediaID, newMediaID).Scan(context.Background(), &retainedItems))
+			assert.Equal(t, "pending", state)
+			assert.Equal(t, 2, retainedItems, "invalid candidate state returns a domain conflict without reaching a delete FK")
+			fixture.connector.deliveryMu.Lock()
+			assert.Empty(t, fixture.connector.deliveryCalls, "invalid persisted candidate state is rejected before dependency probes")
+			fixture.connector.deliveryMu.Unlock()
+		})
+	}
+}
+
 func TestMediaConfirmationProbesWithoutHoldingGlobalOrMediaLocksAndRejectsChangedState(t *testing.T) {
 	fixture := newRepairFixture(t, 0)
 	oldMediaID, newMediaID := uuid.New(), uuid.New()

@@ -1372,7 +1372,7 @@ test("disables stale interaction controls and returns to the Library after Media
   vi.spyOn(window, "prompt").mockReturnValueOnce("A changed Comment");
   fireEvent.click(screen.getByRole("button", { name: "Edit" }));
   expect(await screen.findByRole("alert")).toHaveTextContent(
-    "This Media is no longer available in your Library.",
+    "This Media's backing is temporarily unavailable.",
   );
   expect(screen.getByRole("button", { name: "Add Favorite" })).toBeDisabled();
   expect(screen.getByRole("button", { name: "Edit" })).toBeDisabled();

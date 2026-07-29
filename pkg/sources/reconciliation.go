@@ -847,8 +847,14 @@ func supersedeInvalidMediaRepairs(ctx context.Context, tx bun.Tx, now time.Time)
 			WHERE previous.media_item_id = repair.media_item_id
 			  AND previous.immich_asset_id = repair.previous_immich_asset_id AND previous.active
 			  AND previous.checksum IS NOT NULL AND previous.checksum = candidate.checksum
+			  AND candidate.state = 'addition'
+			  AND candidate_item.immich_asset_id = candidate.immich_asset_id
 			  AND previous_item.media_type = candidate_item.media_type
 			  AND previous_item.availability = 'source_missing' AND candidate_item.availability = 'current'
+			  AND NOT EXISTS (
+				SELECT 1 FROM media_backings AS history
+				WHERE history.media_item_id = candidate_item.id AND history.id <> candidate.id
+			  )
 			  AND EXISTS (SELECT 1 FROM source_album_memberships WHERE media_item_id = candidate_item.id)
 		  )
 	`, now).Exec(ctx)
@@ -891,8 +897,14 @@ func proposeMediaRepairs(ctx context.Context, tx bun.Tx, now time.Time) error {
 		JOIN media_backings AS addition ON addition.checksum = missing.checksum AND addition.media_item_id <> missing.media_item_id
 		JOIN media_items AS addition_item ON addition_item.id = addition.media_item_id
 		WHERE missing.active AND addition.active AND missing.checksum IS NOT NULL
+		  AND addition.state = 'addition'
+		  AND addition_item.immich_asset_id = addition.immich_asset_id
 		  AND missing_item.media_type = addition_item.media_type
 		  AND missing_item.availability = 'source_missing' AND addition_item.availability = 'current'
+		  AND NOT EXISTS (
+			SELECT 1 FROM media_backings AS history
+			WHERE history.media_item_id = addition_item.id AND history.id <> addition.id
+		  )
 		  AND NOT EXISTS (
 			SELECT 1 FROM media_repair_candidates AS rejected
 			WHERE rejected.media_item_id = missing.media_item_id

@@ -498,8 +498,8 @@ function MediaViewer({
         {unavailableMedia ? (
           <div className="viewer-unavailable">
             <p className="form-error" role="alert">
-              This Media is no longer available in your Library. Interaction
-              history remains private and may return if access is restored.
+              This Media&apos;s backing is temporarily unavailable. Its Library
+              listing and interaction history remain available.
             </p>
             <button
               onClick={() => {

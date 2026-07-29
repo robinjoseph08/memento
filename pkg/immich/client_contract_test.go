@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -208,11 +209,7 @@ func TestImmichV303LiveContract(t *testing.T) {
 	}
 	for _, representation := range deletedRepresentations {
 		t.Run("deleted asset "+representation.name, func(t *testing.T) {
-			response, loadErr := representation.load()
-			if response.Body != nil {
-				_ = response.Body.Close()
-			}
-			require.ErrorIs(t, loadErr, ErrNotFound)
+			contractAwaitMediaDeleted(t, representation.load)
 		})
 	}
 }
@@ -309,6 +306,33 @@ func contractAwaitAssetDeleted(t *testing.T, load func() (bool, error)) {
 		}
 		if time.Now().After(deadline) {
 			require.FailNow(t, "deleted asset remained available", "last_exists=%t last_error=%v", lastExists, lastErr)
+		}
+		<-ticker.C
+	}
+}
+
+func contractAwaitMediaDeleted(t *testing.T, load func() (MediaResponse, error)) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	attempts := 0
+	lastStatus := 0
+	var lastErr error
+	for {
+		attempts++
+		response, err := load()
+		lastStatus = response.StatusCode
+		lastErr = err
+		if response.Body != nil {
+			_ = response.Body.Close()
+		}
+		if errors.Is(err, ErrNotFound) {
+			return
+		}
+		if time.Now().After(deadline) {
+			require.FailNow(t, "deleted representation remained available",
+				"attempts=%d last_status=%d last_error=%v", attempts, lastStatus, lastErr)
 		}
 		<-ticker.C
 	}

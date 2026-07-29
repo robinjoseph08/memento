@@ -21,9 +21,19 @@ type Authorizer interface {
 	AuthorizeCurator(ctx context.Context, credential, csrf string, mutation bool) (setup.CuratorSession, error)
 }
 
+type handlerService interface {
+	List(ctx context.Context) (ListResponse, error)
+	ReconcilePeople(ctx context.Context) (MutationResponse, error)
+	LinkPerson(ctx context.Context, actor setup.CuratorSession, request LinkPersonRequest) (MutationResponse, error)
+	ConfirmPerson(ctx context.Context, actor setup.CuratorSession, id uuid.UUID) (MutationResponse, error)
+	RejectPerson(ctx context.Context, actor setup.CuratorSession, id uuid.UUID) (MutationResponse, error)
+	ConfirmMedia(ctx context.Context, actor setup.CuratorSession, id uuid.UUID, token string) (MutationResponse, error)
+	RejectMedia(ctx context.Context, actor setup.CuratorSession, id uuid.UUID) (MutationResponse, error)
+}
+
 // Handler exposes private evidence and explicit confirmation actions.
 type Handler struct {
-	service    *Service
+	service    handlerService
 	authorizer Authorizer
 }
 

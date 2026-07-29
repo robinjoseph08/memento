@@ -1001,26 +1001,45 @@ func (s *Service) ConfirmMedia(ctx context.Context, actor setup.CuratorSession, 
 	// rejects any identity, evidence, or type change observed before commit.
 	var expectedMediaItemID, expectedPreviousAssetID, expectedCandidateAssetID uuid.UUID
 	var expectedCandidateMediaItemID uuid.NullUUID
-	var expectedMediaType string
+	var expectedCandidateItemAssetID uuid.NullUUID
+	var expectedPreviousMediaType string
+	var expectedMediaType, expectedCandidateBackingState sql.NullString
+	var expectedCandidateHasBackingHistory bool
 	var previousRaw, candidateRaw, anchorsRaw, conflictsRaw json.RawMessage
 	err := s.db.NewRaw(`
 		SELECT repair.media_item_id, repair.candidate_media_item_id,
 			repair.previous_immich_asset_id, repair.candidate_immich_asset_id,
-			candidate_media.media_type, repair.previous_evidence,
-			repair.candidate_evidence, repair.face_anchor_evidence, repair.conflict_evidence
+			stable_media.media_type, candidate_media.media_type,
+			candidate_media.immich_asset_id, candidate_backing.state,
+			EXISTS (
+				SELECT 1 FROM media_backings AS history
+				WHERE history.media_item_id = candidate_media.id
+				  AND (candidate_backing.id IS NULL OR history.id <> candidate_backing.id)
+			),
+			repair.previous_evidence, repair.candidate_evidence,
+			repair.face_anchor_evidence, repair.conflict_evidence
 		FROM media_repair_candidates AS repair
-		JOIN media_items AS candidate_media ON candidate_media.id = repair.candidate_media_item_id
+		JOIN media_items AS stable_media ON stable_media.id = repair.media_item_id
+		LEFT JOIN media_items AS candidate_media ON candidate_media.id = repair.candidate_media_item_id
+		LEFT JOIN media_backings AS candidate_backing
+		  ON candidate_backing.media_item_id = candidate_media.id
+		 AND candidate_backing.immich_asset_id = repair.candidate_immich_asset_id
+		 AND candidate_backing.active
 		WHERE repair.id = ? AND repair.state = 'pending'
 	`, candidateID).Scan(ctx, &expectedMediaItemID, &expectedCandidateMediaItemID,
-		&expectedPreviousAssetID, &expectedCandidateAssetID, &expectedMediaType,
-		&previousRaw, &candidateRaw, &anchorsRaw, &conflictsRaw)
+		&expectedPreviousAssetID, &expectedCandidateAssetID, &expectedPreviousMediaType,
+		&expectedMediaType, &expectedCandidateItemAssetID, &expectedCandidateBackingState,
+		&expectedCandidateHasBackingHistory, &previousRaw, &candidateRaw, &anchorsRaw, &conflictsRaw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return MutationResponse{}, mediaCandidateMissingError(ctx, s.db, candidateID)
 	}
 	if err != nil {
 		return MutationResponse{}, err
 	}
-	if !expectedCandidateMediaItemID.Valid {
+	if !expectedCandidateMediaItemID.Valid || !expectedMediaType.Valid ||
+		!expectedCandidateItemAssetID.Valid || expectedCandidateItemAssetID.UUID != expectedCandidateAssetID ||
+		!expectedCandidateBackingState.Valid || expectedCandidateBackingState.String != "addition" ||
+		expectedCandidateHasBackingHistory || expectedCandidateMediaItemID.UUID == expectedMediaItemID {
 		return MutationResponse{}, ErrConflict
 	}
 	expectedPreviousEvidence, expectedCandidateEvidence, expectedAnchors, expectedConflicts, err := decodeMediaEvidence(previousRaw, candidateRaw, anchorsRaw, conflictsRaw)
@@ -1031,25 +1050,19 @@ func (s *Service) ConfirmMedia(ctx context.Context, actor setup.CuratorSession, 
 		CandidateID: candidateID, MediaItemID: expectedMediaItemID,
 		CandidateMediaItemID: expectedCandidateMediaItemID,
 		PreviousAssetID:      expectedPreviousAssetID, CandidateAssetID: expectedCandidateAssetID,
-		MediaType: expectedMediaType, Previous: expectedPreviousEvidence, Candidate: expectedCandidateEvidence,
+		MediaType: expectedMediaType.String, Previous: expectedPreviousEvidence, Candidate: expectedCandidateEvidence,
 		Anchors: expectedAnchors, Conflicts: expectedConflicts,
 	}
 	if !reviewTokenMatches(reviewToken, mediaEvidenceToken(expectedSnapshot)) {
 		return MutationResponse{}, ErrConflict
 	}
-	var expectedPreviousMediaType string
-	if err := s.db.NewRaw(`SELECT media_type FROM media_items WHERE id = ?`, expectedMediaItemID).Scan(ctx, &expectedPreviousMediaType); errors.Is(err, sql.ErrNoRows) {
-		return MutationResponse{}, ErrConflict
-	} else if err != nil {
-		return MutationResponse{}, err
-	}
-	if expectedPreviousMediaType != expectedMediaType {
+	if expectedPreviousMediaType != expectedMediaType.String {
 		return MutationResponse{}, ErrConflict
 	}
 	if err := s.validateFreshMediaEvidence(ctx, expectedSnapshot); err != nil {
 		return MutationResponse{}, err
 	}
-	deliverable, err := s.connector.AssetDeliveryAvailable(ctx, expectedCandidateAssetID, expectedMediaType)
+	deliverable, err := s.connector.AssetDeliveryAvailable(ctx, expectedCandidateAssetID, expectedMediaType.String)
 	if err != nil {
 		return MutationResponse{}, ErrDependency
 	}
@@ -1080,8 +1093,12 @@ func (s *Service) ConfirmMedia(ctx context.Context, actor setup.CuratorSession, 
 		if !candidateMediaItemID.Valid {
 			return ErrConflict
 		}
-		if _, err := tx.NewRaw(`SELECT id FROM media_items WHERE id IN (?, ?) ORDER BY id FOR UPDATE`, mediaItemID, candidateMediaItemID.UUID).Exec(ctx); err != nil {
+		var lockedMediaIDs []uuid.UUID
+		if err := tx.NewRaw(`SELECT id FROM media_items WHERE id IN (?, ?) ORDER BY id FOR UPDATE`, mediaItemID, candidateMediaItemID.UUID).Scan(ctx, &lockedMediaIDs); err != nil {
 			return err
+		}
+		if len(lockedMediaIDs) != 2 {
+			return ErrConflict
 		}
 		var lockedMediaItemID, lockedPreviousAssetID, lockedCandidateAssetID uuid.UUID
 		var lockedCandidateMediaItemID uuid.NullUUID
@@ -1112,7 +1129,7 @@ func (s *Service) ConfirmMedia(ctx context.Context, actor setup.CuratorSession, 
 			CandidateID: candidateID, MediaItemID: lockedMediaItemID,
 			CandidateMediaItemID: lockedCandidateMediaItemID,
 			PreviousAssetID:      lockedPreviousAssetID, CandidateAssetID: lockedCandidateAssetID,
-			MediaType: expectedMediaType, Previous: lockedPreviousEvidence, Candidate: lockedCandidateEvidence,
+			MediaType: expectedMediaType.String, Previous: lockedPreviousEvidence, Candidate: lockedCandidateEvidence,
 			Anchors: lockedAnchors, Conflicts: lockedConflicts,
 		})) {
 			return ErrConflict
@@ -1123,28 +1140,38 @@ func (s *Service) ConfirmMedia(ctx context.Context, actor setup.CuratorSession, 
 			SELECT previous.media_type, candidate.media_type
 			FROM media_items AS previous, media_items AS candidate
 			WHERE previous.id = ? AND candidate.id = ?
-		`, mediaItemID, candidateMediaID).Scan(ctx, &previousMediaType, &candidateMediaType); err != nil {
+		`, mediaItemID, candidateMediaID).Scan(ctx, &previousMediaType, &candidateMediaType); errors.Is(err, sql.ErrNoRows) {
+			return ErrConflict
+		} else if err != nil {
 			return err
 		}
-		if previousMediaType != expectedPreviousMediaType || candidateMediaType != expectedMediaType ||
+		if previousMediaType != expectedPreviousMediaType || candidateMediaType != expectedMediaType.String ||
 			previousMediaType != candidateMediaType {
 			return ErrConflict
 		}
 		var previousChecksum, candidateChecksum sql.NullString
 		var previousPath, candidatePath, previousAvailability, candidateAvailability string
-		var candidateHasMembership bool
+		var candidateBackingState string
+		var candidateItemAssetID uuid.UUID
+		var candidateHasMembership, candidateHasBackingHistory bool
 		if err := tx.NewRaw(`
 			SELECT previous.checksum, candidate.checksum, previous.original_path, candidate.original_path,
-				previous_item.availability, candidate_item.availability,
-				EXISTS (SELECT 1 FROM source_album_memberships WHERE media_item_id = candidate_item.id)
+				previous_item.availability, candidate_item.availability, candidate.state,
+				candidate_item.immich_asset_id,
+				EXISTS (SELECT 1 FROM source_album_memberships WHERE media_item_id = candidate_item.id),
+				EXISTS (
+					SELECT 1 FROM media_backings AS history
+					WHERE history.media_item_id = candidate_item.id AND history.id <> candidate.id
+				)
 			FROM media_backings AS previous
 			JOIN media_items AS previous_item ON previous_item.id = previous.media_item_id
 			JOIN media_backings AS candidate ON candidate.media_item_id = ? AND candidate.immich_asset_id = ? AND candidate.active
 			JOIN media_items AS candidate_item ON candidate_item.id = candidate.media_item_id
 			WHERE previous.media_item_id = ? AND previous.immich_asset_id = ? AND previous.active
 		`, candidateMediaID, candidateAssetID, mediaItemID, previousAssetID).Scan(ctx,
-			&previousChecksum, &candidateChecksum, &previousPath, &candidatePath, &previousAvailability, &candidateAvailability,
-			&candidateHasMembership); errors.Is(err, sql.ErrNoRows) {
+			&previousChecksum, &candidateChecksum, &previousPath, &candidatePath,
+			&previousAvailability, &candidateAvailability, &candidateBackingState,
+			&candidateItemAssetID, &candidateHasMembership, &candidateHasBackingHistory); errors.Is(err, sql.ErrNoRows) {
 			return ErrConflict
 		} else if err != nil {
 			return err
@@ -1152,7 +1179,9 @@ func (s *Service) ConfirmMedia(ctx context.Context, actor setup.CuratorSession, 
 		if !previousChecksum.Valid || !candidateChecksum.Valid || previousChecksum.String != candidateChecksum.String ||
 			previousChecksum.String != expectedPreviousEvidence.Checksum || previousPath != expectedPreviousEvidence.Path ||
 			candidateChecksum.String != expectedCandidateEvidence.Checksum || candidatePath != expectedCandidateEvidence.Path ||
-			previousAvailability != "source_missing" || candidateAvailability != "current" || !candidateHasMembership {
+			previousAvailability != "source_missing" || candidateAvailability != "current" ||
+			candidateBackingState != "addition" || candidateItemAssetID != candidateAssetID ||
+			!candidateHasMembership || candidateHasBackingHistory {
 			return ErrConflict
 		}
 		var candidateHasIdentityOrAuthorization bool

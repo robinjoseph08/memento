@@ -1596,6 +1596,65 @@ func TestDeleteReimportAndPathMoveStayAddRemoveUntilRepairConfirmation(t *testin
 	assert.Equal(t, oldAsset.Checksum, checksum)
 }
 
+func TestMediaRepairProposalsUseOnlyUnclaimedAdditionBackings(t *testing.T) {
+	connector := &reconciliationConnector{summary: sourceAlbum(uuid.New(), "Candidate backing states", 0)}
+	connector.pages = map[int]immich.AssetPage{1: {}}
+	service, sourceAlbumID := newReconciliationService(t, connector)
+	stableMediaID, stableAssetID := uuid.New(), uuid.New()
+	confirmedMediaID, confirmedAssetID := uuid.New(), uuid.New()
+	historyMediaID, historyAssetID, historyOldAssetID := uuid.New(), uuid.New(), uuid.New()
+	additionMediaID, additionAssetID := uuid.New(), uuid.New()
+	checksum := "3333333333333333333333333333333333333333"
+	_, err := service.db.NewRaw(`
+		INSERT INTO media_items (id, immich_asset_id, media_type, availability, missing_since, first_seen_at, last_seen_at)
+		VALUES (?, ?, 'image', 'source_missing', now(), now(), now()),
+		       (?, ?, 'image', 'current', NULL, now(), now()),
+		       (?, ?, 'image', 'current', NULL, now(), now()),
+		       (?, ?, 'image', 'current', NULL, now(), now());
+		INSERT INTO media_backings (id, media_item_id, immich_asset_id, checksum, linked_at)
+		VALUES (gen_random_uuid(), ?, ?, ?, now());
+		INSERT INTO media_backings (
+			id, media_item_id, immich_asset_id, checksum, state, linked_at, confirmed_at
+		) VALUES (gen_random_uuid(), ?, ?, ?, 'confirmed', now(), now());
+		INSERT INTO media_backings (id, media_item_id, immich_asset_id, checksum, linked_at)
+		VALUES (gen_random_uuid(), ?, ?, ?, now()),
+		       (gen_random_uuid(), ?, ?, ?, now());
+		INSERT INTO media_backings (
+			id, media_item_id, immich_asset_id, checksum, active, linked_at, ended_at
+		) VALUES (gen_random_uuid(), ?, ?, ?, false, now() - interval '1 hour', now());
+		INSERT INTO source_album_memberships (
+			source_album_id, immich_asset_id, media_item_id, first_seen_at, last_seen_at, source_fingerprint
+		) VALUES (?, ?, ?, now(), now(), decode(repeat('31', 32), 'hex')),
+		         (?, ?, ?, now(), now(), decode(repeat('32', 32), 'hex')),
+		         (?, ?, ?, now(), now(), decode(repeat('33', 32), 'hex'))
+	`, stableMediaID, stableAssetID, confirmedMediaID, confirmedAssetID,
+		historyMediaID, historyAssetID, additionMediaID, additionAssetID,
+		stableMediaID, stableAssetID, checksum,
+		confirmedMediaID, confirmedAssetID, checksum,
+		historyMediaID, historyAssetID, checksum,
+		additionMediaID, additionAssetID, checksum,
+		historyMediaID, historyOldAssetID, checksum,
+		sourceAlbumID, confirmedAssetID, confirmedMediaID,
+		sourceAlbumID, historyAssetID, historyMediaID,
+		sourceAlbumID, additionAssetID, additionMediaID).Exec(context.Background())
+	require.NoError(t, err)
+	require.NoError(t, service.db.RunInTx(context.Background(), nil, func(ctx context.Context, tx bun.Tx) error {
+		return proposeMediaRepairs(ctx, tx, time.Now().UTC())
+	}))
+
+	var candidateAssetID uuid.UUID
+	var pending int
+	require.NoError(t, service.db.NewRaw(`
+		SELECT count(*) FROM media_repair_candidates WHERE state = 'pending'
+	`).Scan(context.Background(), &pending))
+	require.NoError(t, service.db.NewRaw(`
+		SELECT candidate_immich_asset_id FROM media_repair_candidates WHERE state = 'pending'
+	`).Scan(context.Background(), &candidateAssetID))
+	assert.Equal(t, 1, pending)
+	assert.Equal(t, additionAssetID, candidateAssetID,
+		"confirmed identities and Media with backing history are not disposable additions")
+}
+
 func TestRejectedMediaRepairIsNotProposedAgain(t *testing.T) {
 	oldAsset := repairableReconciliationAsset(uuid.New(), "/library/old/family.jpg")
 	connector := &reconciliationConnector{summary: sourceAlbum(uuid.New(), "Rejected repair album", 1)}
