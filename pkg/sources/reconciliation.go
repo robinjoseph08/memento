@@ -41,6 +41,15 @@ type reconciliationSnapshot struct {
 	diagnostic  string
 }
 
+type reconciliationDatabaseSnapshot struct {
+	immichAlbumID                  uuid.UUID
+	updatedAt                      time.Time
+	sourceFingerprint              []byte
+	candidateMembershipFingerprint []byte
+	candidateMembershipPasses      int
+	backings                       []mediaavailability.Backing
+}
+
 // QueueReconciliation makes one durable per-album job immediately eligible.
 // Repeated requests and requests during a live lease coalesce into that job.
 func (s *Service) QueueReconciliation(ctx context.Context, sourceAlbumID uuid.UUID) (ReconciliationResponse, error) {
@@ -104,29 +113,37 @@ func (s *Service) HandleReconciliationJob(ctx context.Context, job worker.Job) e
 // scheduling metadata, but never membership or validated removal evidence.
 func (s *Service) Reconcile(ctx context.Context, sourceAlbumID uuid.UUID) error {
 	now := s.now().UTC()
-	var outcome error
-	var rolledBackFailure *reconciliationSnapshot
-	err := s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
-		if err := staging.LockAccessSummaryRefresh(ctx, tx); err != nil {
+	databaseSnapshot, err := s.readReconciliationDatabaseSnapshot(ctx, sourceAlbumID)
+	if err != nil {
+		return err
+	}
+
+	// Immich reads and per-asset delivery checks are deliberately outside the
+	// Source row and staged-access lock boundary. The apply transaction below
+	// accepts them only if the exact Source membership snapshot is unchanged.
+	snapshot, snapshotErr := s.readSnapshot(ctx, databaseSnapshot.immichAlbumID)
+	if snapshotErr != nil && !errors.Is(snapshotErr, errSourceAlbumMissing) {
+		status := "unstable"
+		if errors.Is(snapshotErr, ErrDependency) {
+			status = "failed"
+		}
+		if err := s.recordFailedSnapshot(ctx, sourceAlbumID, now, status, snapshot); err != nil {
 			return err
 		}
-		var immichAlbumID uuid.UUID
-		if err := tx.NewRaw(`SELECT immich_album_id FROM source_albums WHERE id = ? FOR UPDATE`, sourceAlbumID).Scan(ctx, &immichAlbumID); err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				return ErrNotFound
-			}
-			return fmt.Errorf("lock Source album reconciliation: %w", err)
-		}
+		return snapshotErr
+	}
 
-		snapshot, snapshotErr := s.readSnapshot(ctx, immichAlbumID)
-		if errors.Is(snapshotErr, errSourceAlbumMissing) {
-			backings, err := sourceMembershipBackings(ctx, tx, sourceAlbumID)
-			if err != nil {
+	if errors.Is(snapshotErr, errSourceAlbumMissing) {
+		// Album absence is definitive evidence about the Source itself. Asset
+		// probes are optional, independent evidence: retain every proven result,
+		// but never let an uncertain probe roll back the missing-album state.
+		missing, _ := s.confirmMissingBackings(ctx, databaseSnapshot.backings)
+		err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+			if err := staging.LockAccessSummaryRefresh(ctx, tx); err != nil {
 				return err
 			}
-			missing, err := s.confirmMissingBackings(ctx, backings)
-			if err != nil {
-				return fmt.Errorf("confirm missing Source album assets: %w", ErrDependency)
+			if err := validateReconciliationDatabaseSnapshot(ctx, tx, sourceAlbumID, databaseSnapshot); err != nil {
+				return err
 			}
 			if err := mediaavailability.MarkSourceMissingInTx(ctx, tx, missing); err != nil {
 				return err
@@ -135,52 +152,128 @@ func (s *Service) Reconcile(ctx context.Context, sourceAlbumID uuid.UUID) error 
 				return err
 			}
 			return recordMissingSourceAlbum(ctx, tx, sourceAlbumID, now, s.reconciliationInterval)
-		}
-		if snapshotErr != nil {
-			outcome = snapshotErr
-			status := "unstable"
-			if errors.Is(snapshotErr, ErrDependency) {
-				status = "failed"
-			}
-			return recordFailedReconciliation(ctx, tx, sourceAlbumID, now, status, snapshot)
-		}
-
-		stablePasses, additions, removals, err := s.applyValidatedSnapshot(ctx, tx, sourceAlbumID, snapshot, now)
+		})
 		if err != nil {
-			if errors.Is(err, ErrDependency) {
-				snapshot.diagnostic = "dependency_unavailable"
-				rolledBackFailure = &snapshot
-			}
+			return fmt.Errorf("reconcile Source album: %w", err)
+		}
+		return nil
+	}
+
+	removedBackings := make([]mediaavailability.Backing, 0)
+	for _, backing := range databaseSnapshot.backings {
+		if _, present := snapshot.assets[backing.AssetID]; !present {
+			removedBackings = append(removedBackings, backing)
+		}
+	}
+	confirmedMissing, err := s.confirmMissingBackings(ctx, removedBackings)
+	if err != nil {
+		snapshot.diagnostic = "dependency_unavailable"
+		if recordErr := s.recordFailedSnapshot(ctx, sourceAlbumID, now, "failed", snapshot); recordErr != nil {
+			return recordErr
+		}
+		return fmt.Errorf("confirm removed Immich asset: %w", ErrDependency)
+	}
+
+	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if err := staging.LockAccessSummaryRefresh(ctx, tx); err != nil {
+			return err
+		}
+		if err := validateReconciliationDatabaseSnapshot(ctx, tx, sourceAlbumID, databaseSnapshot); err != nil {
+			return err
+		}
+		stablePasses, additions, removals, err := s.applyValidatedSnapshot(
+			ctx, tx, sourceAlbumID, snapshot, removedBackings, confirmedMissing, now,
+		)
+		if err != nil {
 			return err
 		}
 		snapshot.diagnostic = ""
-		if err := recordValidatedRun(ctx, tx, sourceAlbumID, now, snapshot, stablePasses, additions, removals); err != nil {
-			return err
-		}
-		return nil
+		return recordValidatedRun(ctx, tx, sourceAlbumID, now, snapshot, stablePasses, additions, removals)
 	})
 	if errors.Is(err, ErrNotFound) {
 		return ErrNotFound
 	}
 	if err != nil {
-		if rolledBackFailure != nil {
-			recordErr := s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
-				var lockedSourceAlbumID uuid.UUID
-				if err := tx.NewRaw(`SELECT id FROM source_albums WHERE id = ? FOR UPDATE`, sourceAlbumID).Scan(ctx, &lockedSourceAlbumID); err != nil {
-					if errors.Is(err, sql.ErrNoRows) {
-						return ErrNotFound
-					}
-					return err
-				}
-				return recordFailedReconciliation(ctx, tx, sourceAlbumID, now, "failed", *rolledBackFailure)
-			})
-			if recordErr != nil {
-				return fmt.Errorf("record failed Source reconciliation: %w", recordErr)
-			}
-		}
 		return fmt.Errorf("reconcile Source album: %w", err)
 	}
-	return outcome
+	return nil
+}
+
+func (s *Service) readReconciliationDatabaseSnapshot(ctx context.Context, sourceAlbumID uuid.UUID) (reconciliationDatabaseSnapshot, error) {
+	var snapshot reconciliationDatabaseSnapshot
+	err := s.db.RunInTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true}, func(ctx context.Context, tx bun.Tx) error {
+		if err := tx.NewRaw(`
+			SELECT immich_album_id, updated_at, source_fingerprint,
+			       candidate_membership_fingerprint, candidate_membership_passes
+			FROM source_albums WHERE id = ?
+		`, sourceAlbumID).Scan(ctx, &snapshot.immichAlbumID, &snapshot.updatedAt,
+			&snapshot.sourceFingerprint, &snapshot.candidateMembershipFingerprint,
+			&snapshot.candidateMembershipPasses); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrNotFound
+			}
+			return err
+		}
+		var err error
+		snapshot.backings, err = sourceMembershipBackings(ctx, tx, sourceAlbumID)
+		return err
+	})
+	return snapshot, err
+}
+
+func sameBackingSnapshot(left, right []mediaavailability.Backing) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func validateReconciliationDatabaseSnapshot(ctx context.Context, tx bun.Tx, sourceAlbumID uuid.UUID, expected reconciliationDatabaseSnapshot) error {
+	var immichAlbumID uuid.UUID
+	var updatedAt time.Time
+	var sourceFingerprint, candidateMembershipFingerprint []byte
+	var candidateMembershipPasses int
+	if err := tx.NewRaw(`
+		SELECT immich_album_id, updated_at, source_fingerprint,
+		       candidate_membership_fingerprint, candidate_membership_passes
+		FROM source_albums WHERE id = ? FOR UPDATE
+	`, sourceAlbumID).Scan(ctx, &immichAlbumID, &updatedAt, &sourceFingerprint,
+		&candidateMembershipFingerprint, &candidateMembershipPasses); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return err
+	}
+	current, err := sourceMembershipBackings(ctx, tx, sourceAlbumID)
+	if err != nil {
+		return err
+	}
+	if immichAlbumID != expected.immichAlbumID || !updatedAt.Equal(expected.updatedAt) ||
+		string(sourceFingerprint) != string(expected.sourceFingerprint) ||
+		string(candidateMembershipFingerprint) != string(expected.candidateMembershipFingerprint) ||
+		candidateMembershipPasses != expected.candidateMembershipPasses ||
+		!sameBackingSnapshot(current, expected.backings) {
+		return ErrUnstable
+	}
+	return nil
+}
+
+func (s *Service) recordFailedSnapshot(ctx context.Context, sourceAlbumID uuid.UUID, now time.Time, status string, snapshot reconciliationSnapshot) error {
+	return s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		var lockedID uuid.UUID
+		if err := tx.NewRaw(`SELECT id FROM source_albums WHERE id = ? FOR UPDATE`, sourceAlbumID).Scan(ctx, &lockedID); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrNotFound
+			}
+			return err
+		}
+		return recordFailedReconciliation(ctx, tx, sourceAlbumID, now, status, snapshot)
+	})
 }
 
 func (s *Service) readSnapshot(ctx context.Context, albumID uuid.UUID) (reconciliationSnapshot, error) {
@@ -277,7 +370,7 @@ func sourceMembershipBackings(ctx context.Context, tx bun.Tx, sourceAlbumID uuid
 		  ON backing.media_item_id = membership.media_item_id
 		 AND backing.immich_asset_id = membership.immich_asset_id AND backing.active
 		WHERE membership.source_album_id = ?
-		ORDER BY membership.media_item_id
+		ORDER BY membership.media_item_id, membership.immich_asset_id, backing.id
 	`, sourceAlbumID).Scan(ctx, &backings); err != nil {
 		return nil, err
 	}
@@ -287,13 +380,22 @@ func sourceMembershipBackings(ctx context.Context, tx bun.Tx, sourceAlbumID uuid
 func (s *Service) confirmMissingBackings(ctx context.Context, backings []mediaavailability.Backing) ([]mediaavailability.Backing, error) {
 	missing := make([]mediaavailability.Backing, 0, len(backings))
 	availability := make(map[uuid.UUID]bool, len(backings))
+	uncertain := make(map[uuid.UUID]bool, len(backings))
+	var confirmationErr error
 	for _, backing := range backings {
+		if uncertain[backing.AssetID] {
+			continue
+		}
 		exists, checked := availability[backing.AssetID]
 		if !checked {
 			var err error
 			exists, err = s.connector.AssetExists(ctx, backing.AssetID)
 			if err != nil {
-				return nil, err
+				if confirmationErr == nil {
+					confirmationErr = err
+				}
+				uncertain[backing.AssetID] = true
+				continue
 			}
 			availability[backing.AssetID] = exists
 		}
@@ -301,7 +403,7 @@ func (s *Service) confirmMissingBackings(ctx context.Context, backings []mediaav
 			missing = append(missing, backing)
 		}
 	}
-	return missing, nil
+	return missing, confirmationErr
 }
 
 func (s *Service) applyValidatedSnapshot(
@@ -309,6 +411,8 @@ func (s *Service) applyValidatedSnapshot(
 	tx bun.Tx,
 	sourceAlbumID uuid.UUID,
 	snapshot reconciliationSnapshot,
+	removedMemberships []mediaavailability.Backing,
+	confirmedMissing []mediaavailability.Backing,
 	now time.Time,
 ) (int, int, int, error) {
 	var previous []byte
@@ -369,32 +473,15 @@ func (s *Service) applyValidatedSnapshot(
 			return 0, 0, 0, err
 		}
 	}
-	var removedMemberships []mediaavailability.Backing
-	if err := tx.NewRaw(`
-		SELECT membership.media_item_id AS media_id, backing.id AS backing_id,
-		       membership.immich_asset_id AS asset_id
-		FROM source_album_memberships AS membership
-		JOIN media_backings AS backing
-		  ON backing.media_item_id = membership.media_item_id
-		 AND backing.immich_asset_id = membership.immich_asset_id AND backing.active
-		WHERE membership.source_album_id = ?
-		  AND NOT EXISTS (
-			SELECT 1 FROM jsonb_array_elements_text(?::jsonb) AS candidate(id)
-			WHERE candidate.id::uuid = membership.immich_asset_id
-		  )
-		ORDER BY membership.media_item_id
-	`, sourceAlbumID, string(encodedIDs)).Scan(ctx, &removedMemberships); err != nil {
-		return 0, 0, 0, err
-	}
-	confirmedMissing, err := s.confirmMissingBackings(ctx, removedMemberships)
-	if err != nil {
-		return 0, 0, 0, fmt.Errorf("confirm removed Immich asset: %w", ErrDependency)
-	}
 	if err := mediaavailability.MarkSourceMissingInTx(ctx, tx, confirmedMissing); err != nil {
 		return 0, 0, 0, err
 	}
-	if err := proposeMediaRepairs(ctx, tx, now); err != nil {
-		return 0, 0, 0, err
+	// A replacement addition is repair evidence only after the same complete
+	// membership has survived the removal stability boundary.
+	if stablePasses >= 2 {
+		if err := proposeMediaRepairs(ctx, tx, now); err != nil {
+			return 0, 0, 0, err
+		}
 	}
 
 	removals := 0

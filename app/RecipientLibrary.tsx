@@ -272,10 +272,10 @@ function MediaViewer({
   });
   const commentItems =
     comments.data?.pages.flatMap((page) => page.comments) ?? [];
-  const unavailableMedia = mediaAccess !== "available";
+  const deliveryUnavailable = mediaAccess !== "available";
+  const unavailableMedia = mediaAccess === "withdrawn";
 
-  async function classifyUnavailableMedia(error: unknown) {
-    if (!isUnavailableResponse(error)) return;
+  async function refreshMediaAccess() {
     let retainedUnavailable = false;
     try {
       retainedUnavailable = await confirmRetainedUnavailable();
@@ -283,6 +283,11 @@ function MediaViewer({
       // A failed listing refresh cannot prove retained access.
     }
     setMediaAccess(retainedUnavailable ? "backing-unavailable" : "withdrawn");
+  }
+
+  async function classifyUnavailableMedia(error: unknown) {
+    if (!isUnavailableResponse(error)) return;
+    await refreshMediaAccess();
   }
 
   async function verifyMediaAfterUnavailableComment(error: unknown) {
@@ -485,17 +490,24 @@ function MediaViewer({
       ref={dialogRef}
     >
       <div className="viewer-media">
-        {media.media_type === "video" ? (
+        {deliveryUnavailable ? (
+          <span className="media-unavailable">Source unavailable</span>
+        ) : media.media_type === "video" ? (
           <video
             aria-label="Video preview"
             controls
+            onError={() => void refreshMediaAccess()}
             playsInline
             poster={media.thumbnail_url}
             preload="metadata"
             src={media.video_url}
           />
         ) : (
-          <img alt="Selected photo preview" src={media.preview_url} />
+          <img
+            alt="Selected photo preview"
+            onError={() => void refreshMediaAccess()}
+            src={media.preview_url}
+          />
         )}
       </div>
       <aside className="viewer-details">
@@ -513,7 +525,7 @@ function MediaViewer({
               : "Unavailable"}
           </dd>
         </dl>
-        {unavailableMedia ? (
+        {deliveryUnavailable ? (
           <div className="viewer-unavailable">
             <p className="form-error" role="alert">
               {mediaAccess === "backing-unavailable"
@@ -533,12 +545,12 @@ function MediaViewer({
             </button>
           </div>
         ) : null}
-        {session.session_type === "public" ? (
+        {session.session_type === "public" && !deliveryUnavailable ? (
           <p className="viewer-download-warning">
             This original will remain on this public computer after sign-out.
           </p>
         ) : null}
-        {unavailableMedia ? null : (
+        {deliveryUnavailable ? null : (
           <a className="viewer-download" download href={media.original_url}>
             Download original
           </a>
@@ -1018,7 +1030,7 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
       const current = refreshed.data?.pages
         .flatMap((page) => page.media)
         .find((item) => item.id === openedMedia?.id);
-      return current?.available === false;
+      return current !== undefined;
     }
     if (destination === "photos" || destination === "favorites") {
       const refreshed = await photos.refetch();
@@ -1026,7 +1038,14 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
       const current = refreshed.data?.pages
         .flatMap((page) => page.media)
         .find((item) => item.id === openedMedia?.id);
-      return current?.available === false;
+      return current !== undefined;
+    }
+    if (destination === "search" && search.variables) {
+      const refreshed = await search.mutateAsync(search.variables);
+      const current = refreshed.photos.find(
+        (item) => item.id === openedMedia?.id,
+      );
+      return current !== undefined;
     }
     return false;
   }

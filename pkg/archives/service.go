@@ -74,7 +74,7 @@ type Stream struct {
 type archiveSource interface {
 	ArchiveInfo(ctx context.Context, assetIDs []uuid.UUID) ([]immich.ArchivePart, error)
 	Archive(ctx context.Context, assetIDs []uuid.UUID) (immich.ArchiveResponse, error)
-	AssetExists(ctx context.Context, assetID uuid.UUID) (bool, error)
+	Original(ctx context.Context, assetID uuid.UUID, request immich.MediaRequest) (immich.MediaResponse, error)
 }
 
 type Service struct {
@@ -126,22 +126,44 @@ type candidate struct {
 }
 
 func (s *Service) markVerifiedSourceMissing(ctx context.Context, backings []mediaavailability.Backing) error {
-	missing := make([]mediaavailability.Backing, 0, len(backings))
-	seen := make(map[uuid.UUID]struct{}, len(backings))
+	byAsset := make(map[uuid.UUID][]mediaavailability.Backing, len(backings))
+	assetIDs := make([]uuid.UUID, 0, len(backings))
 	for _, backing := range backings {
-		if _, duplicate := seen[backing.AssetID]; duplicate {
+		if _, seen := byAsset[backing.AssetID]; !seen {
+			assetIDs = append(assetIDs, backing.AssetID)
+		}
+		byAsset[backing.AssetID] = append(byAsset[backing.AssetID], backing)
+	}
+	missing := make([]mediaavailability.Backing, 0, len(backings))
+	var verificationErr error
+	for _, assetID := range assetIDs {
+		response, err := s.source.Original(ctx, assetID, immich.MediaRequest{Range: "bytes=0-0"})
+		if errors.Is(err, immich.ErrNotFound) {
+			missing = append(missing, byAsset[assetID]...)
 			continue
 		}
-		seen[backing.AssetID] = struct{}{}
-		exists, err := s.source.AssetExists(ctx, backing.AssetID)
-		if err != nil {
-			return err
+		if err != nil || response.Body == nil {
+			if verificationErr == nil {
+				verificationErr = ErrUnavailable
+			}
+			if response.Body != nil {
+				_ = response.Body.Close()
+			}
+			continue
 		}
-		if !exists {
-			missing = append(missing, backing)
+		var firstByte [1]byte
+		read, readErr := io.ReadFull(response.Body, firstByte[:])
+		closeErr := response.Body.Close()
+		if read != len(firstByte) || readErr != nil || closeErr != nil {
+			if verificationErr == nil {
+				verificationErr = ErrUnavailable
+			}
 		}
 	}
-	return mediaavailability.MarkSourceMissing(ctx, s.db, missing)
+	if err := mediaavailability.MarkSourceMissing(ctx, s.db, missing); err != nil {
+		return err
+	}
+	return verificationErr
 }
 
 func candidateBackings(candidates []candidate) []mediaavailability.Backing {

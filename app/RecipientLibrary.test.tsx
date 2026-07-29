@@ -1295,7 +1295,7 @@ test("favorites, comments, and mute controls stay in the private Media viewer", 
   });
 });
 
-test("shows retained unavailable listing copy only after a fresh unavailable Media listing", async () => {
+test("classifies a photo delivery error from its refreshed retained listing", async () => {
   let accessLost = false;
   const comment = {
     id: "comment-1",
@@ -1316,7 +1316,7 @@ test("shows retained unavailable listing copy only after a fresh unavailable Med
   };
   vi.stubGlobal(
     "fetch",
-    vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    vi.fn((input: RequestInfo | URL) => {
       const path = requestPath(input);
       if (path.startsWith("/api/me/photos?")) {
         return json({
@@ -1341,13 +1341,7 @@ test("shows retained unavailable listing copy only after a fresh unavailable Med
       }
       if (path === "/api/me/new-for-you") return json({ events: [] });
       if (path === "/api/favorites/media-1") {
-        return accessLost
-          ? apiError("This Media is unavailable.", 404)
-          : json({ media_item_id: "media-1", favorite: false });
-      }
-      if (path === "/api/comments/comment-1" && init?.method === "PATCH") {
-        accessLost = true;
-        return apiError("Comments for this Media are unavailable.", 404);
+        return json({ media_item_id: "media-1", favorite: false });
       }
       if (path.startsWith("/api/comments/media/media-1?")) {
         return json({
@@ -1369,20 +1363,23 @@ test("shows retained unavailable listing copy only after a fresh unavailable Med
   );
   expect(await screen.findByText(comment.body)).toBeVisible();
 
-  vi.spyOn(window, "prompt").mockReturnValueOnce("A changed Comment");
-  fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+  accessLost = true;
+  fireEvent.error(screen.getByAltText("Selected photo preview"));
   expect(await screen.findByRole("alert")).toHaveTextContent(
     "This Media's backing is temporarily unavailable.",
   );
-  expect(screen.getByRole("button", { name: "Add Favorite" })).toBeDisabled();
-  expect(screen.getByRole("button", { name: "Edit" })).toBeDisabled();
-  expect(screen.getByRole("button", { name: "Delete" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Add Favorite" })).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Edit" })).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Delete" })).toBeEnabled();
   expect(
     screen.getByRole("checkbox", {
       name: "Mute future Comment notifications",
     }),
-  ).toBeDisabled();
-  expect(screen.getByLabelText("Add a Comment")).toBeDisabled();
+  ).toBeEnabled();
+  expect(screen.getByLabelText("Add a Comment")).toBeEnabled();
+  expect(
+    screen.queryByAltText("Selected photo preview"),
+  ).not.toBeInTheDocument();
   expect(
     screen.queryByRole("link", { name: "Download original" }),
   ).not.toBeInTheDocument();
@@ -1396,7 +1393,72 @@ test("shows retained unavailable listing copy only after a fresh unavailable Med
   expect(await screen.findByText("Source unavailable")).toBeVisible();
 });
 
-test("keeps a removed Media 404 privacy-safe without claiming a retained listing", async () => {
+test("classifies a video element delivery error and hides playback controls", async () => {
+  let deliveryFailed = false;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) => {
+      const path = requestPath(input);
+      if (path.startsWith("/api/me/photos?")) {
+        return json({
+          media: [
+            {
+              id: "media-video",
+              media_type: "video",
+              width: 1920,
+              height: 1080,
+              local_date_time: "2026-07-28T12:00:00Z",
+              available: !deliveryFailed,
+              thumbnail_url: deliveryFailed
+                ? ""
+                : "/api/me/media/media-video/thumbnail",
+              preview_url: "",
+              video_url: deliveryFailed
+                ? ""
+                : "/api/me/media/media-video/video",
+              original_url: deliveryFailed
+                ? ""
+                : "/api/me/media/media-video/original",
+            },
+          ],
+          next_cursor: null,
+        });
+      }
+      if (path === "/api/me/new-for-you") return json({ events: [] });
+      if (path === "/api/favorites/media-video") {
+        return json({ media_item_id: "media-video", favorite: false });
+      }
+      if (path.startsWith("/api/comments/media/media-video?")) {
+        return json({
+          comments: [],
+          can_mute: false,
+          muted: false,
+          next_cursor: null,
+        });
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    }),
+  );
+
+  renderLibrary();
+  fireEvent.click(
+    await screen.findByRole("button", {
+      name: "Open Video 1 from July 2026",
+    }),
+  );
+  deliveryFailed = true;
+  fireEvent.error(screen.getByLabelText("Video preview"));
+
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "This Media's backing is temporarily unavailable.",
+  );
+  expect(screen.queryByLabelText("Video preview")).not.toBeInTheDocument();
+  expect(
+    screen.queryByRole("link", { name: "Download original" }),
+  ).not.toBeInTheDocument();
+});
+
+test("keeps a withdrawn delivery error privacy-safe without claiming a retained listing", async () => {
   let accessLost = false;
   vi.stubGlobal(
     "fetch",
@@ -1425,9 +1487,7 @@ test("keeps a removed Media 404 privacy-safe without claiming a retained listing
       }
       if (path === "/api/me/new-for-you") return json({ events: [] });
       if (path === "/api/favorites/media-1") {
-        return accessLost
-          ? apiError("This Media is unavailable.", 404)
-          : json({ media_item_id: "media-1", favorite: false });
+        return json({ media_item_id: "media-1", favorite: false });
       }
       if (path.startsWith("/api/comments/media/media-1?")) {
         return json({
@@ -1445,8 +1505,9 @@ test("keeps a removed Media 404 privacy-safe without claiming a retained listing
   const opener = await screen.findByRole("button", {
     name: "Open Photo 1 from July 2026",
   });
-  accessLost = true;
   fireEvent.click(opener);
+  accessLost = true;
+  fireEvent.error(screen.getByAltText("Selected photo preview"));
 
   expect(await screen.findByRole("alert")).toHaveTextContent(
     "This content is no longer available.",
@@ -1455,5 +1516,79 @@ test("keeps a removed Media 404 privacy-safe without claiming a retained listing
     screen.queryByText(
       /Library listing and interaction history remain available/,
     ),
+  ).not.toBeInTheDocument();
+});
+
+test("refreshes Search after a representation error and retains unavailable Media", async () => {
+  let searchCalls = 0;
+  const searchMedia = (available: boolean) => ({
+    id: "media-search",
+    media_type: "image",
+    width: 1200,
+    height: 800,
+    local_date_time: "2026-07-27T10:00:00Z",
+    available,
+    thumbnail_url: available ? "/api/me/media/media-search/thumbnail" : "",
+    preview_url: available ? "/api/me/media/media-search/preview" : "",
+    video_url: "",
+    original_url: available ? "/api/me/media/media-search/original" : "",
+  });
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) => {
+      const path = requestPath(input);
+      if (path.startsWith("/api/me/photos?")) {
+        return json({ media: [], next_cursor: null });
+      }
+      if (path === "/api/me/new-for-you") return json({ events: [] });
+      if (path === "/api/search") {
+        searchCalls++;
+        return json({
+          events: [],
+          photos: [searchMedia(searchCalls === 1)],
+          people: [],
+          total_events: 0,
+          total_photos: 1,
+          has_more: false,
+        });
+      }
+      if (path === "/api/favorites/media-search") {
+        return json({ media_item_id: "media-search", favorite: false });
+      }
+      if (path.startsWith("/api/comments/media/media-search?")) {
+        return json({
+          comments: [],
+          can_mute: false,
+          muted: false,
+          next_cursor: null,
+        });
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    }),
+  );
+
+  renderLibrary();
+  fireEvent.click(screen.getByRole("button", { name: "Search library" }));
+  fireEvent.change(
+    screen.getByRole("searchbox", {
+      name: "Search published Events, Place labels, and People",
+    }),
+    { target: { value: "picnic" } },
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Run search" }));
+  fireEvent.click(
+    await screen.findByRole("button", {
+      name: "Open Photo 1 from July 2026",
+    }),
+  );
+  fireEvent.error(screen.getByAltText("Selected photo preview"));
+
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "This Media's backing is temporarily unavailable.",
+  );
+  expect(searchCalls).toBe(2);
+  expect(screen.getByRole("button", { name: "Add Favorite" })).toBeEnabled();
+  expect(
+    screen.queryByRole("link", { name: "Download original" }),
   ).not.toBeInTheDocument();
 });

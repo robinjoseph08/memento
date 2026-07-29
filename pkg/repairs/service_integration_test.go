@@ -995,6 +995,69 @@ func TestMediaConfirmationRevalidatesReplacementAvailability(t *testing.T) {
 	assert.Equal(t, oldAssetID, activeAssetID)
 }
 
+func TestMediaConfirmationRevalidatesAfterWaitingForConcurrencyBoundary(t *testing.T) {
+	fixture := newRepairFixture(t, 0)
+	oldMediaID, newMediaID := uuid.New(), uuid.New()
+	oldAssetID, newAssetID, candidateID, sourceAlbumID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	_, err := fixture.db.ExecContext(context.Background(), `
+		INSERT INTO source_albums (
+			id, immich_album_id, name, asset_count, source_created_at, source_updated_at,
+			first_seen_at, last_seen_at, source_fingerprint, next_reconciliation_at
+		) VALUES (?, gen_random_uuid(), 'Waiting candidate', 1, now(), now(), now(), now(), ?, now());
+		INSERT INTO media_items (id, immich_asset_id, media_type, availability, missing_since, first_seen_at, last_seen_at)
+		VALUES (?, ?, 'image', 'source_missing', now(), now(), now()),
+		       (?, ?, 'image', 'current', NULL, now(), now());
+		INSERT INTO media_backings (id, media_item_id, immich_asset_id, checksum, original_path, linked_at)
+		VALUES (gen_random_uuid(), ?, ?, ?, '/old.jpg', now()),
+		       (gen_random_uuid(), ?, ?, ?, '/new.jpg', now());
+		INSERT INTO source_album_memberships (
+			source_album_id, immich_asset_id, media_item_id, first_seen_at, last_seen_at, source_fingerprint
+		) VALUES (?, ?, ?, now(), now(), ?);
+		INSERT INTO media_repair_candidates (
+			id, media_item_id, candidate_media_item_id, previous_immich_asset_id,
+			candidate_immich_asset_id, previous_evidence, candidate_evidence, created_at
+		) VALUES (?, ?, ?, ?, ?,
+			jsonb_build_object('checksum', ?, 'capture', NULL, 'filename', '', 'path', '/old.jpg'),
+			jsonb_build_object('checksum', ?, 'capture', NULL, 'filename', '', 'path', '/new.jpg'), now());
+	`, sourceAlbumID, hashBytes("waiting-source"), oldMediaID, oldAssetID, newMediaID, newAssetID,
+		oldMediaID, oldAssetID, checksum("waiting"), newMediaID, newAssetID, checksum("waiting"),
+		sourceAlbumID, newAssetID, newMediaID, hashBytes("waiting-membership"),
+		candidateID, oldMediaID, newMediaID, oldAssetID, newAssetID, checksum("waiting"), checksum("waiting"))
+	require.NoError(t, err)
+	setFreshAssetFromBacking(t, fixture, newAssetID)
+	reviewToken := reviewedMediaToken(t, fixture, candidateID)
+
+	holder, err := fixture.db.BeginTx(context.Background(), nil)
+	require.NoError(t, err)
+	require.NoError(t, staging.LockMediaOrganization(context.Background(), holder))
+	var holderPID int
+	require.NoError(t, holder.NewRaw(`SELECT pg_backend_pid()`).Scan(context.Background(), &holderPID))
+
+	result := make(chan error, 1)
+	go func() {
+		_, confirmErr := fixture.service.ConfirmMedia(context.Background(), fixture.actor, candidateID, reviewToken)
+		result <- confirmErr
+	}()
+	waitForRepairBlockedQuery(t, fixture.db, holderPID, `%pg_advisory_xact_lock(hashtextextended%`)
+	fixture.connector.assetMissing = map[uuid.UUID]bool{newAssetID: true}
+	require.NoError(t, holder.Rollback())
+	select {
+	case confirmErr := <-result:
+		assert.ErrorIs(t, confirmErr, ErrConflict)
+	case <-time.After(time.Second):
+		t.Fatal("confirmation did not complete after the controlled lock was released")
+	}
+
+	var state, availability string
+	var activeAssetID uuid.UUID
+	require.NoError(t, fixture.db.NewRaw(`SELECT state FROM media_repair_candidates WHERE id = ?`, candidateID).Scan(context.Background(), &state))
+	require.NoError(t, fixture.db.NewRaw(`SELECT availability FROM media_items WHERE id = ?`, oldMediaID).Scan(context.Background(), &availability))
+	require.NoError(t, fixture.db.NewRaw(`SELECT immich_asset_id FROM media_backings WHERE media_item_id = ? AND active`, oldMediaID).Scan(context.Background(), &activeAssetID))
+	assert.Equal(t, "pending", state)
+	assert.Equal(t, "source_missing", availability)
+	assert.Equal(t, oldAssetID, activeAssetID)
+}
+
 func TestMediaConfirmationRejectsCrossTypeCandidateBeforeDeliveryProbe(t *testing.T) {
 	fixture := newRepairFixture(t, 0)
 	oldMediaID, newMediaID := uuid.New(), uuid.New()

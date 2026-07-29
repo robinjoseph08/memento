@@ -1249,6 +1249,88 @@ func TestMissingAlbumBecomesCuratorVisibleWithoutChangingPublishedMedia(t *testi
 	assert.False(t, restored.SourceMissing)
 }
 
+func TestMissingAlbumEvidenceCommitsDespiteUncertainAssetChecks(t *testing.T) {
+	for _, probeErr := range []error{
+		errors.New("malformed AssetExists response"),
+		errors.New("unauthorized AssetExists response"),
+		context.DeadlineExceeded,
+	} {
+		original := repairableReconciliationAsset(uuid.New(), "/library/missing-uncertain/family.jpg")
+		connector := &reconciliationConnector{summary: sourceAlbum(uuid.New(), "Missing uncertain source", 1)}
+		connector.pages = map[int]immich.AssetPage{1: {Items: []immich.AssetSummary{original}}}
+		service, sourceAlbumID := newReconciliationService(t, connector)
+		require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+		connector.setAssetExistsError(probeErr)
+		connector.albumCalls = 0
+		connector.albumErrAt = 1
+		connector.dependency = immich.ErrNotFound
+
+		require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+		album, err := service.Get(context.Background(), sourceAlbumID)
+		require.NoError(t, err)
+		assert.True(t, album.SourceMissing)
+		var availability string
+		require.NoError(t, service.db.NewRaw(`SELECT availability FROM media_items WHERE immich_asset_id = ?`, original.SourceID).Scan(context.Background(), &availability))
+		assert.Equal(t, "current", availability, "an uncertain asset probe must not create missing-Media evidence")
+	}
+}
+
+type lockBoundaryConnector struct {
+	*reconciliationConnector
+	started chan struct{}
+	release <-chan struct{}
+	once    sync.Once
+}
+
+func (connector *lockBoundaryConnector) AssetExists(ctx context.Context, assetID uuid.UUID) (bool, error) {
+	connector.once.Do(func() { close(connector.started) })
+	select {
+	case <-connector.release:
+		return connector.reconciliationConnector.AssetExists(ctx, assetID)
+	case <-ctx.Done():
+		return false, ctx.Err()
+	}
+}
+
+func TestAssetChecksDoNotHoldSourceOrStagedAccessLocks(t *testing.T) {
+	original := repairableReconciliationAsset(uuid.New(), "/library/lock-boundary/family.jpg")
+	base := &reconciliationConnector{summary: sourceAlbum(uuid.New(), "Lock boundary", 1)}
+	base.pages = map[int]immich.AssetPage{1: {Items: []immich.AssetSummary{original}}}
+	service, sourceAlbumID := newReconciliationService(t, base)
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	base.setMembership()
+	release := make(chan struct{})
+	blocking := &lockBoundaryConnector{reconciliationConnector: base, started: make(chan struct{}), release: release}
+	service.connector = blocking
+
+	result := make(chan error, 1)
+	go func() { result <- service.Reconcile(context.Background(), sourceAlbumID) }()
+	select {
+	case <-blocking.started:
+	case <-time.After(time.Second):
+		t.Fatal("reconciliation did not reach the controlled asset check")
+	}
+
+	boundary := make(chan error, 1)
+	go func() {
+		boundary <- service.db.RunInTx(context.Background(), nil, func(ctx context.Context, tx bun.Tx) error {
+			if err := staging.LockAccessSummaryReplacement(ctx, tx); err != nil {
+				return err
+			}
+			_, err := tx.NewRaw(`SELECT id FROM source_albums WHERE id = ? FOR UPDATE`, sourceAlbumID).Exec(ctx)
+			return err
+		})
+	}()
+	select {
+	case err := <-boundary:
+		require.NoError(t, err, "network checks must be outside both database lock boundaries")
+	case <-time.After(time.Second):
+		t.Fatal("Source or staged-access lock remained held during the asset check")
+	}
+	close(release)
+	require.NoError(t, <-result)
+}
+
 func TestRemovedAssetUsesFreshGlobalAvailabilityDespiteSharedMembership(t *testing.T) {
 	for _, test := range []struct {
 		name             string
@@ -1934,30 +2016,35 @@ func (connector *blockingReconciliationConnector) AssetExists(context.Context, u
 	return true, nil
 }
 
-func TestReconciliationSerializesDependencyScansPerSourceAlbum(t *testing.T) {
+func TestConcurrentDependencyScansUseOptimisticSourceBoundary(t *testing.T) {
 	connector := &blockingReconciliationConnector{
-		summary:      sourceAlbum(uuid.New(), "Serialized reconciliation", 0),
+		summary:      sourceAlbum(uuid.New(), "Concurrent reconciliation", 0),
 		firstStarted: make(chan struct{}), releaseFirst: make(chan struct{}),
 	}
 	service, sourceAlbumID := newReconciliationService(t, connector)
-	results := make(chan error, 2)
-	go func() { results <- service.Reconcile(context.Background(), sourceAlbumID) }()
+	firstResult := make(chan error, 1)
+	secondResult := make(chan error, 1)
+	go func() { firstResult <- service.Reconcile(context.Background(), sourceAlbumID) }()
 	select {
 	case <-connector.firstStarted:
 	case <-time.After(time.Second):
 		t.Fatal("first reconciliation did not start its dependency scan")
 	}
-	go func() { results <- service.Reconcile(context.Background(), sourceAlbumID) }()
-	time.Sleep(100 * time.Millisecond)
-	assert.Equal(t, int32(1), connector.albumCalls.Load(), "second scan must wait for the Source album transaction lock")
+	go func() { secondResult <- service.Reconcile(context.Background(), sourceAlbumID) }()
+	select {
+	case err := <-secondResult:
+		require.NoError(t, err, "a dependency scan must not wait behind a Source row lock")
+	case <-time.After(time.Second):
+		t.Fatal("second dependency scan was blocked by the first network read")
+	}
+	assert.Equal(t, int32(3), connector.albumCalls.Load())
+
 	close(connector.releaseFirst)
-	for range 2 {
-		select {
-		case err := <-results:
-			require.NoError(t, err)
-		case <-time.After(time.Second):
-			t.Fatal("serialized reconciliation did not complete")
-		}
+	select {
+	case err := <-firstResult:
+		require.ErrorIs(t, err, ErrUnstable, "the stale scan must fail its exact apply predicate")
+	case <-time.After(time.Second):
+		t.Fatal("stale reconciliation did not complete")
 	}
 }
 

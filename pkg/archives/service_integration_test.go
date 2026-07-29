@@ -33,20 +33,20 @@ import (
 )
 
 type archiveStub struct {
-	planned        []immich.ArchivePart
-	companions     map[uuid.UUID]uuid.UUID
-	archiveCalls   [][]uuid.UUID
-	infoCalls      [][]uuid.UUID
-	archiveStarted chan struct{}
-	releaseArchive <-chan struct{}
-	archivePayload []byte
-	archiveNames   map[uuid.UUID]string
-	assetExists    map[uuid.UUID]bool
-	assetExistsErr error
-	assetCalls     []uuid.UUID
-	infoErr        error
-	archiveErr     error
-	archiveOnce    sync.Once
+	planned           []immich.ArchivePart
+	companions        map[uuid.UUID]uuid.UUID
+	archiveCalls      [][]uuid.UUID
+	infoCalls         [][]uuid.UUID
+	archiveStarted    chan struct{}
+	releaseArchive    <-chan struct{}
+	archivePayload    []byte
+	archiveNames      map[uuid.UUID]string
+	originalAvailable map[uuid.UUID]bool
+	originalErr       error
+	originalCalls     []uuid.UUID
+	infoErr           error
+	archiveErr        error
+	archiveOnce       sync.Once
 }
 
 func (stub *archiveStub) ArchiveInfo(_ context.Context, ids []uuid.UUID) ([]immich.ArchivePart, error) {
@@ -68,15 +68,15 @@ func (stub *archiveStub) ArchiveInfo(_ context.Context, ids []uuid.UUID) ([]immi
 	return []immich.ArchivePart{part}, nil
 }
 
-func (stub *archiveStub) AssetExists(_ context.Context, id uuid.UUID) (bool, error) {
-	stub.assetCalls = append(stub.assetCalls, id)
-	if stub.assetExistsErr != nil {
-		return false, stub.assetExistsErr
+func (stub *archiveStub) Original(_ context.Context, id uuid.UUID, _ immich.MediaRequest) (immich.MediaResponse, error) {
+	stub.originalCalls = append(stub.originalCalls, id)
+	if stub.originalErr != nil {
+		return immich.MediaResponse{}, stub.originalErr
 	}
-	if exists, configured := stub.assetExists[id]; configured {
-		return exists, nil
+	if available, configured := stub.originalAvailable[id]; configured && !available {
+		return immich.MediaResponse{}, immich.ErrNotFound
 	}
-	return true, nil
+	return immich.MediaResponse{Body: io.NopCloser(bytes.NewReader([]byte{'x'}))}, nil
 }
 
 func (stub *archiveStub) Archive(ctx context.Context, ids []uuid.UUID) (immich.ArchiveResponse, error) {
@@ -145,8 +145,8 @@ func (source *simultaneousArchiveSource) ArchiveInfo(_ context.Context, _ []uuid
 	return []immich.ArchivePart{source.part}, nil
 }
 
-func (*simultaneousArchiveSource) AssetExists(context.Context, uuid.UUID) (bool, error) {
-	return true, nil
+func (*simultaneousArchiveSource) Original(context.Context, uuid.UUID, immich.MediaRequest) (immich.MediaResponse, error) {
+	return immich.MediaResponse{Body: io.NopCloser(bytes.NewReader([]byte{'x'}))}, nil
 }
 
 func (source *simultaneousArchiveSource) Archive(ctx context.Context, _ []uuid.UUID) (immich.ArchiveResponse, error) {
@@ -368,7 +368,7 @@ func TestArchiveNotFoundMarksPublishedMediaUnavailableAndPreservesHistory(t *tes
 				Scope: "subset", MediaIDs: []string{fixture.media[0].String()},
 			})
 			require.NoError(t, err)
-			source.assetExists = map[uuid.UUID]bool{fixture.assets[0]: false}
+			source.originalAvailable = map[uuid.UUID]bool{fixture.assets[0]: false}
 			if path == "info" {
 				source.infoErr = immich.ErrNotFound
 			} else {
@@ -422,7 +422,7 @@ func TestMultiItemAggregateNotFoundMarksOnlyIndividuallyMissingBacking(t *testin
 		t.Run(test.name, func(t *testing.T) {
 			source := &archiveStub{}
 			fixture := newArchiveFixture(t, source)
-			source.assetExists = map[uuid.UUID]bool{
+			source.originalAvailable = map[uuid.UUID]bool{
 				fixture.assets[0]: false,
 				fixture.assets[1]: true,
 			}
@@ -463,7 +463,7 @@ func TestMultiItemAggregateNotFoundMarksOnlyIndividuallyMissingBacking(t *testin
 				require.NoError(t, fixture.db.NewRaw(`SELECT availability FROM media_items WHERE id = ?`, mediaID).Scan(context.Background(), &actual))
 				assert.Equal(t, expected[mediaID], actual)
 			}
-			assert.ElementsMatch(t, fixture.assets[:2], source.assetCalls)
+			assert.ElementsMatch(t, fixture.assets[:2], source.originalCalls)
 		})
 	}
 }
@@ -488,6 +488,15 @@ func TestRealImmichArchiveMemberDisappearsBetweenPlanAndStream(t *testing.T) {
 		case "/api/download/archive":
 			missing = true
 			w.WriteHeader(http.StatusBadRequest)
+		case "/api/assets/" + assetID.String() + "/original":
+			if missing {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			w.Header().Set("Content-Type", "image/jpeg")
+			w.Header().Set("Content-Range", "bytes 0-0/1")
+			w.WriteHeader(http.StatusPartialContent)
+			_, _ = w.Write([]byte{'x'})
 		default:
 			t.Fatalf("unexpected Immich request %s", r.URL.Path)
 		}
@@ -515,7 +524,7 @@ func TestRealImmichArchiveMemberDisappearsBetweenPlanAndStream(t *testing.T) {
 }
 
 func TestAggregateNotFoundVerificationFailureMarksNothing(t *testing.T) {
-	source := &archiveStub{infoErr: immich.ErrNotFound, assetExistsErr: errors.New("private malformed asset response")}
+	source := &archiveStub{infoErr: immich.ErrNotFound, originalErr: errors.New("private malformed original response")}
 	fixture := newArchiveFixture(t, source)
 	_, err := fixture.service.Plan(context.Background(), fixture.actor, PlanRequest{
 		Scope: "subset", MediaIDs: []string{fixture.media[0].String(), fixture.media[1].String()},
