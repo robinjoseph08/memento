@@ -381,6 +381,21 @@ func TestSMTPResponsesAreReducedToSafeFailureCodes(t *testing.T) {
 	}
 }
 
+func TestOptionalMessageIncludesOneClickUnsubscribeHeaders(t *testing.T) {
+	formatted := formatMessage("Memento <memento@example.com>", Message{
+		ID: "batch-unsubscribe", To: "recipient@example.com", Subject: "New activity", Body: "Authorized activity only",
+		UnsubscribeURL: "https://memento.example/api/email/preferences/unsubscribe?token=private-token",
+	})
+
+	assert.Contains(t, formatted, "List-Unsubscribe: <https://memento.example/api/email/preferences/unsubscribe?token=private-token>\r\n")
+	assert.Contains(t, formatted, "List-Unsubscribe-Post: List-Unsubscribe=One-Click\r\n")
+
+	required := formatMessage("Memento <memento@example.com>", Message{
+		ID: "required", To: "recipient@example.com", Subject: "Sign in", Body: "Required security message",
+	})
+	assert.NotContains(t, required, "List-Unsubscribe", "required identity and security email is not optional")
+}
+
 func TestEmbeddedImageUsesPrivateMultipartCID(t *testing.T) {
 	formatted := formatMessage("Memento <memento@example.com>", Message{
 		ID: "batch-1", To: "recipient@example.com", Subject: "New activity\r\nBcc: attacker@example.com",

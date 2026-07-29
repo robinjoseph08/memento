@@ -100,6 +100,7 @@ func run() error {
 		}
 	}
 	emailService := emaildelivery.New(db, cfg.SMTP, emailSender, cfg.Security.Secret)
+	emailService.SetPublicURL(cfg.HTTP.PublicURL)
 	emailService.SetPreviewSource(immichClient)
 	sourceService := sources.New(db, immichClient, cfg.Sources.ReconciliationInterval)
 	eventService := events.New(db)

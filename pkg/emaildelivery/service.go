@@ -43,6 +43,7 @@ var (
 	ErrNotConfigured     = errors.New("SMTP is not configured")
 	ErrSetupComplete     = errors.New("test email is available only during setup")
 	ErrDeliveryAbsent    = errors.New("email delivery not found")
+	ErrUnsubscribeToken  = errors.New("unsubscribe token is invalid")
 )
 
 // TestEmailResponse is generated to TypeScript by Tygo.
@@ -98,6 +99,7 @@ type Service struct {
 	sender              smtp.Sender
 	bodyAEAD            cipher.AEAD
 	previewSource       previewSource
+	publicURL           string
 	beforeImmediateSend func()
 }
 

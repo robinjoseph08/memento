@@ -41,11 +41,12 @@ type EmbeddedImage struct {
 
 // Message contains a complete email. Callers must not log it.
 type Message struct {
-	ID       string
-	To       string
-	Subject  string
-	Body     string
-	Embedded *EmbeddedImage
+	ID             string
+	To             string
+	Subject        string
+	Body           string
+	UnsubscribeURL string
+	Embedded       *EmbeddedImage
 }
 
 // DeliveryError is the only dependency failure exposed outside this package.
@@ -253,6 +254,10 @@ func formatMessage(from string, message Message) string {
 	writer := bufio.NewWriter(&body)
 	_, _ = fmt.Fprintf(writer, "From: %s\r\nTo: %s\r\nSubject: %s\r\n", from, message.To, safeHeader(message.Subject))
 	_, _ = fmt.Fprintf(writer, "Message-ID: <%s@memento.local>\r\n", safeHeader(message.ID))
+	if message.UnsubscribeURL != "" {
+		_, _ = fmt.Fprintf(writer, "List-Unsubscribe: <%s>\r\n", safeHeader(message.UnsubscribeURL))
+		_, _ = io.WriteString(writer, "List-Unsubscribe-Post: List-Unsubscribe=One-Click\r\n")
+	}
 	if message.Embedded == nil {
 		_, _ = io.WriteString(writer, "MIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n")
 		_, _ = io.WriteString(writer, strings.ReplaceAll(message.Body, "\n", "\r\n"))

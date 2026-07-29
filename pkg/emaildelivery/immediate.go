@@ -339,9 +339,14 @@ func (s *Service) HandleImmediate(ctx context.Context, job worker.Job) error {
 			}
 			return recordImmediateProblemIn(ctx, tx, payload.BatchID, terminalDiagnostic)
 		}
+		unsubscribeURL, err := s.newUnsubscribeURLIn(ctx, tx, accessID, payload.BatchID)
+		if err != nil {
+			return err
+		}
 		sendErr = s.sender.Send(ctx, smtp.Message{
 			ID: publicID.String(), To: current.Recipient, Subject: "New activity in Memento",
-			Body: current.Body, Embedded: preview,
+			Body:           current.Body + "\n\nManage optional email or unsubscribe: " + unsubscribeURL,
+			UnsubscribeURL: unsubscribeURL, Embedded: preview,
 		})
 		if sendErr == nil {
 			_, err := tx.NewRaw(`UPDATE notification_batches
@@ -492,7 +497,7 @@ func (s *Service) assembleImmediateIn(ctx context.Context, db bun.IDB, batchID i
 		lines = append(lines, "Additional activity is available in Memento.")
 	}
 	result.Body = "New activity is ready in Memento:\n\n" + strings.Join(lines, "\n") +
-		"\n\nCounts include only items you can currently access. Sign in to Memento to view them."
+		"\n\nThis email excludes hidden item counts and Moment details. Sign in to Memento to view the activity you can currently access."
 	return result, nil
 }
 

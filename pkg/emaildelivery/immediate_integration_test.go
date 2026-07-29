@@ -5,6 +5,8 @@ package emaildelivery
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"image"
@@ -12,12 +14,15 @@ import (
 	"image/jpeg"
 	"io"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/labstack/echo/v4"
 	"github.com/robinjoseph08/memento/internal/testdb"
 	"github.com/robinjoseph08/memento/pkg/immich"
 	"github.com/robinjoseph08/memento/pkg/migrations"
@@ -145,6 +150,7 @@ func newImmediateFixture(t *testing.T) immediateFixture {
 	sender := new(immediateSender)
 	preview := &immediatePreviewSource{contents: previewWithPrivateMetadata(t)}
 	service := New(db, deliveryConfig(), sender)
+	service.SetPublicURL("https://memento.example")
 	service.SetPreviewSource(preview)
 	fixture := immediateFixture{
 		db: db, service: service, sender: sender, preview: preview, people: map[string]uuid.UUID{}, access: map[string]uuid.UUID{},
@@ -414,6 +420,52 @@ func TestImmediateEmailSendsEachRecipientBatchOnlyToItsExactCurrentAddress(t *te
 	require.Len(t, messages, 2)
 	assert.Equal(t, "alex@example.com", messages[0].To)
 	assert.Equal(t, "blair@example.com", messages[1].To)
+}
+
+func TestImmediateEmailIncludesOneClickUnsubscribeAndPrivacyDisclosure(t *testing.T) {
+	fixture := newImmediateFixture(t)
+	fixture.addPublicationActivity(t, fixture.base, fixture.media[0])
+	require.NoError(t, fixture.service.QueuePublication(context.Background(), fixture.event, fixture.publication))
+	var batchID int64
+	require.NoError(t, fixture.db.NewRaw(`SELECT id FROM notification_batches`).Scan(context.Background(), &batchID))
+
+	require.NoError(t, fixture.service.HandleImmediate(context.Background(), fixture.leasedBatchJob(t, batchID)))
+	messages := fixture.sender.sent()
+	require.Len(t, messages, 1)
+	message := messages[0]
+	assert.Contains(t, message.Body, "This email excludes hidden item counts and Moment details.")
+	assert.Contains(t, message.Body, "Manage optional email or unsubscribe: "+message.UnsubscribeURL)
+	parsed, err := url.Parse(message.UnsubscribeURL)
+	require.NoError(t, err)
+	assert.Equal(t, "https://memento.example", parsed.Scheme+"://"+parsed.Host)
+	assert.Equal(t, "/api/email/preferences/unsubscribe", parsed.Path)
+	encoded := parsed.Query().Get("token")
+	raw, err := base64.RawURLEncoding.DecodeString(encoded)
+	require.NoError(t, err)
+	require.Len(t, raw, 32, "unsubscribe credentials contain at least 256 bits of random material")
+	hash := sha256.Sum256(raw)
+	var storedHash []byte
+	require.NoError(t, fixture.db.NewRaw(`SELECT token_hash FROM notification_preference_tokens
+		WHERE notification_batch_id = ?`, batchID).Scan(context.Background(), &storedHash))
+	assert.Equal(t, hash[:], storedHash)
+	assert.NotEqual(t, raw, storedHash, "only the one-way token hash is persisted")
+
+	e := echo.New()
+	RegisterRoutes(e, NewHandler(fixture.service))
+	for range 2 {
+		request := httptest.NewRequestWithContext(context.Background(), http.MethodPost, parsed.RequestURI(),
+			strings.NewReader("List-Unsubscribe=One-Click"))
+		request.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+		response := httptest.NewRecorder()
+		e.ServeHTTP(response, request)
+		assert.Equal(t, http.StatusOK, response.Code, "one-click unsubscribe is safely idempotent")
+		assert.Equal(t, "no-store", response.Header().Get(echo.HeaderCacheControl))
+		assert.Equal(t, "no-referrer", response.Header().Get("Referrer-Policy"))
+	}
+	var preference string
+	require.NoError(t, fixture.db.NewRaw(`SELECT email_preference FROM notification_preferences
+		WHERE recipient_access_generation_id = ?`, fixture.access["alex"]).Scan(context.Background(), &preference))
+	assert.Equal(t, "none", preference)
 }
 
 func TestImmediateEmailRecomputesSurvivorsAndStripsPreviewMetadata(t *testing.T) {
