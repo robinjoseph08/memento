@@ -46,7 +46,7 @@ var (
 )
 
 type previewSource interface {
-	Thumbnail(ctx context.Context, assetID uuid.UUID, request immich.MediaRequest) (immich.MediaResponse, error)
+	EmailThumbnail(ctx context.Context, assetID uuid.UUID, request immich.MediaRequest) (immich.MediaResponse, error)
 }
 
 type immediateJobPayload struct {
@@ -194,21 +194,24 @@ func (s *Service) queueImmediateItem(ctx context.Context, tx bun.Tx, accessID uu
 	if alreadyQueued {
 		return nil
 	}
+	activityAt = activityAt.UTC()
 	var batchID int64
+	var publicID uuid.UUID
+	var windowStartedAt time.Time
 	err = tx.NewRaw(`
-		SELECT id FROM notification_batches
+		SELECT id, public_id, window_started_at FROM notification_batches
 		WHERE recipient_access_generation_id = ? AND channel = 'email' AND status = 'pending'
-		  AND window_started_at <= ? AND closes_at > ?
+		  AND window_started_at < ? AND closes_at > ?
 		ORDER BY window_started_at LIMIT 1 FOR UPDATE
-	`, accessID, activityAt, activityAt).Scan(ctx, &batchID)
+	`, accessID, activityAt.Add(coalescingWindow), activityAt).Scan(ctx, &batchID, &publicID, &windowStartedAt)
 	if errors.Is(err, sql.ErrNoRows) {
-		publicID := uuid.New()
-		closesAt := activityAt.UTC().Add(coalescingWindow)
+		publicID = uuid.New()
+		closesAt := activityAt.Add(coalescingWindow)
 		if err := tx.NewRaw(`
 			INSERT INTO notification_batches (
 				public_id, recipient_access_generation_id, channel, window_started_at, closes_at
 			) VALUES (?, ?, 'email', ?, ?) RETURNING id
-		`, publicID, accessID, activityAt.UTC(), closesAt).Scan(ctx, &batchID); err != nil {
+		`, publicID, accessID, activityAt, closesAt).Scan(ctx, &batchID); err != nil {
 			return err
 		}
 		payload, err := json.Marshal(immediateJobPayload{BatchID: batchID})
@@ -224,10 +227,22 @@ func (s *Service) queueImmediateItem(ctx context.Context, tx bun.Tx, accessID uu
 		}
 	} else if err != nil {
 		return err
+	} else if activityAt.Before(windowStartedAt) {
+		closesAt := activityAt.Add(coalescingWindow)
+		if _, err := tx.NewRaw(`UPDATE notification_batches
+			SET window_started_at = ?, closes_at = ?, updated_at = clock_timestamp()
+			WHERE id = ?`, activityAt, closesAt, batchID).Exec(ctx); err != nil {
+			return err
+		}
+		if _, err := tx.NewRaw(`UPDATE outbox_events SET available_at = ?
+			WHERE kind = ? AND aggregate_kind = 'notification_batch' AND aggregate_id = ?
+			  AND delivered_at IS NULL`, closesAt, ImmediateJobKind, publicID.String()).Exec(ctx); err != nil {
+			return err
+		}
 	}
 	_, err = tx.NewRaw(`INSERT INTO notification_batch_items
 		(batch_id, recipient_access_generation_id, kind, `+column+`, activity_created_at)
-		VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`, batchID, accessID, kind, sourceID, activityAt.UTC()).Exec(ctx)
+		VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`, batchID, accessID, kind, sourceID, activityAt).Exec(ctx)
 	return err
 }
 
@@ -608,7 +623,7 @@ func lockRecipientGeneration(ctx context.Context, tx bun.Tx, accessID uuid.UUID)
 }
 
 func (s *Service) loadSafePreview(ctx context.Context, assetID uuid.UUID) *smtp.EmbeddedImage {
-	response, err := s.previewSource.Thumbnail(ctx, assetID, immich.MediaRequest{})
+	response, err := s.previewSource.EmailThumbnail(ctx, assetID, immich.MediaRequest{})
 	if err != nil || response.StatusCode != http.StatusOK {
 		if response.Body != nil {
 			_ = response.Body.Close()

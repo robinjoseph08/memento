@@ -419,6 +419,40 @@ func TestConcurrentAndStaleCommentMutationsCannotOverwriteNewerState(t *testing.
 		ModerateRequest{Reason: "current moderation"}))
 }
 
+func TestImmediateEmailHandoffDoesNotAdvanceFirstPartyCommentActivity(t *testing.T) {
+	fixture := newInteractionFixture(t)
+	ctx := context.Background()
+	var handedAccess, handedComment uuid.UUID
+	fixture.comments.SetImmediateHandoff(func(_ context.Context, _ bun.Tx, accessID, commentID uuid.UUID) error {
+		handedAccess, handedComment = accessID, commentID
+		return nil
+	})
+
+	created, err := fixture.comments.Create(ctx, fixture.actors["alex"], fixture.media, uuid.New(), BodyRequest{Body: "Separate delivery timing"})
+	require.NoError(t, err)
+	assert.Equal(t, fixture.access["curator"], handedAccess)
+	assert.Equal(t, uuid.MustParse(created.ID), handedComment)
+	var preservesDelay bool
+	require.NoError(t, fixture.db.NewRaw(`SELECT bool_and(available_at = created_at + interval '15 minutes')
+		FROM outbox_events WHERE kind = ? AND aggregate_id IN (
+			SELECT id::text FROM comment_activity_items WHERE comment_id = ?
+		)`, CommentJobKind, created.ID).Scan(ctx, &preservesDelay))
+	assert.True(t, preservesDelay, "first-party Comment activity keeps its established delay")
+}
+
+func TestImmediateEmailHandoffFailureRollsBackCommentActivity(t *testing.T) {
+	fixture := newInteractionFixture(t)
+	failure := errors.New("email batch unavailable")
+	fixture.comments.SetImmediateHandoff(func(context.Context, bun.Tx, uuid.UUID, uuid.UUID) error { return failure })
+	commentID := uuid.New()
+
+	_, err := fixture.comments.Create(context.Background(), fixture.actors["alex"], fixture.media, commentID, BodyRequest{Body: "Rollback together"})
+	require.ErrorIs(t, err, failure)
+	var comments int
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM comments WHERE id = ?`, commentID).Scan(context.Background(), &comments))
+	assert.Zero(t, comments)
+}
+
 func TestCommentSubscriptionsMuteSelfSuppressionAndNoBacklog(t *testing.T) {
 	fixture := newInteractionFixture(t)
 	ctx := context.Background()

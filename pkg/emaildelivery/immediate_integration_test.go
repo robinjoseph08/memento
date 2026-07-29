@@ -53,7 +53,7 @@ func (s *immediateSender) sent() []smtp.Message {
 
 type immediatePreviewSource struct{ contents []byte }
 
-func (source immediatePreviewSource) Thumbnail(context.Context, uuid.UUID, immich.MediaRequest) (immich.MediaResponse, error) {
+func (source immediatePreviewSource) EmailThumbnail(context.Context, uuid.UUID, immich.MediaRequest) (immich.MediaResponse, error) {
 	return immich.MediaResponse{
 		Body: io.NopCloser(bytes.NewReader(source.contents)), StatusCode: http.StatusOK,
 		ContentType: "image/jpeg", ContentLength: int64(len(source.contents)),
@@ -250,6 +250,39 @@ func TestImmediateEmailUsesOneRecipientWindowWithExactBoundary(t *testing.T) {
 	var outbox int
 	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM outbox_events WHERE kind = ?`, ImmediateJobKind).Scan(context.Background(), &outbox))
 	assert.Equal(t, 2, outbox, "each durable window has exactly one delayed delivery event")
+}
+
+func TestImmediateEmailReanchorsOverlappingOutOfOrderActivityAtTheExactBoundary(t *testing.T) {
+	fixture := newImmediateFixture(t)
+	first := fixture.addComment(t, fixture.base.Add(10*time.Minute), "First observed")
+	fixture.queueComment(t, first)
+	overlappingOlder := fixture.addComment(t, fixture.base, "Older overlapping")
+	fixture.queueComment(t, overlappingOlder)
+	exactOlderBoundary := fixture.addComment(t, fixture.base.Add(-coalescingWindow), "Exact older boundary")
+	fixture.queueComment(t, exactOlderBoundary)
+
+	type batch struct {
+		Started time.Time `bun:"window_started_at"`
+		Closes  time.Time `bun:"closes_at"`
+		Items   int
+	}
+	var batches []batch
+	require.NoError(t, fixture.db.NewRaw(`SELECT batch.window_started_at, batch.closes_at, count(item.id) AS items
+		FROM notification_batches AS batch JOIN notification_batch_items AS item ON item.batch_id = batch.id
+		GROUP BY batch.id ORDER BY batch.window_started_at`).Scan(context.Background(), &batches))
+	require.Len(t, batches, 2)
+	assert.Equal(t, fixture.base.Add(-coalescingWindow), batches[0].Started)
+	assert.Equal(t, fixture.base, batches[0].Closes)
+	assert.Equal(t, 1, batches[0].Items, "an exact older close boundary starts a separate window")
+	assert.Equal(t, fixture.base, batches[1].Started)
+	assert.Equal(t, fixture.base.Add(coalescingWindow), batches[1].Closes)
+	assert.Equal(t, 2, batches[1].Items, "overlapping out-of-order activity reanchors the existing window")
+
+	var availableAt time.Time
+	require.NoError(t, fixture.db.NewRaw(`SELECT available_at FROM outbox_events
+		WHERE kind = ? AND aggregate_id = (SELECT public_id::text FROM notification_batches WHERE window_started_at = ?)`,
+		ImmediateJobKind, fixture.base).Scan(context.Background(), &availableAt))
+	assert.Equal(t, fixture.base.Add(coalescingWindow), availableAt, "the durable send schedule follows the reanchored close")
 }
 
 func TestImmediateEmailRecomputesSurvivorsAndStripsPreviewMetadata(t *testing.T) {
