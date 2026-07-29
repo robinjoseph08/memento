@@ -160,6 +160,7 @@ func newImmediateFixture(t *testing.T) immediateFixture {
 	}
 	for _, name := range []string{"curator", "alex", "blair"} {
 		fixture.people[name], fixture.access[name] = uuid.New(), uuid.New()
+		displayName := map[string]string{"curator": "Curator", "alex": "Alex", "blair": "Blair"}[name]
 		_, err := db.NewRaw(`
 			INSERT INTO people (id, display_name, sort_name) VALUES (?, ?, ?);
 			INSERT INTO person_roles (person_id, role) VALUES (?, 'recipient');
@@ -176,7 +177,7 @@ func newImmediateFixture(t *testing.T) immediateFixture {
 			VALUES (gen_random_uuid(), ?, ?, ?, true);
 			INSERT INTO notification_preferences (recipient_access_generation_id, email_preference, updated_at)
 			VALUES (?, 'immediate', ?)
-		`, fixture.people[name], name, name, fixture.people[name], fixture.access[name], fixture.people[name], fixture.base,
+		`, fixture.people[name], displayName, name, fixture.people[name], fixture.access[name], fixture.people[name], fixture.base,
 			fixture.access[name], fixture.base, fixture.access[name], name+"@example.com", name+"@example.com",
 			fixture.access[name], fixture.base).Exec(ctx)
 		require.NoError(t, err)

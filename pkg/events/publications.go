@@ -767,7 +767,7 @@ func (s *Service) RecipientEvent(ctx context.Context, actor setup.SessionActor, 
 
 // HandlePublicationJob orders the optional delivery queue handoff against
 // Withdrawal. A handoff already in progress finishes before Withdrawal commits;
-// one that starts after commit observes current surviving activity and fails closed.
+// one that starts after commit observes the Withdrawal and fails closed.
 func (s *Service) HandlePublicationJob(ctx context.Context, job worker.Job) error {
 	var payload struct {
 		EventID          uuid.UUID `json:"event_id"`
@@ -792,6 +792,26 @@ func (s *Service) HandlePublicationJob(ctx context.Context, job worker.Job) erro
 			result = "unknown_publication"
 			return nil
 		}
+		var deliverable bool
+		if err := tx.NewRaw(`SELECT EXISTS (
+			SELECT 1 FROM current_published_events AS current
+			WHERE current.event_id = ? AND current.publication_id = ?
+			  AND NOT EXISTS (
+				SELECT 1 FROM current_published_placements AS placement
+				JOIN published_moments AS moment ON moment.id = placement.published_moment_id
+				WHERE placement.event_id = current.event_id
+				  AND placement.publication_id = current.publication_id
+				  AND content_is_withdrawn(
+					placement.event_id, moment.draft_moment_id, placement.media_item_id
+				  )
+			  )
+		)`, payload.EventID, payload.PublicationID).Scan(ctx, &deliverable); err != nil {
+			return err
+		}
+		if !deliverable {
+			result = "publication_withdrawn"
+			return nil
+		}
 		var hasRecipientActivity bool
 		if err := tx.NewRaw(`SELECT EXISTS (
 			SELECT 1 FROM publication_activity_items WHERE publication_id = ?
@@ -799,29 +819,6 @@ func (s *Service) HandlePublicationJob(ctx context.Context, job worker.Job) erro
 			return err
 		}
 		if !payload.NotifyRecipients || !hasRecipientActivity || s.publicationHandoff == nil {
-			return nil
-		}
-		var deliverable bool
-		if err := tx.NewRaw(`SELECT EXISTS (
-			SELECT 1
-			FROM publication_notification_media AS candidate
-			JOIN publications AS source ON source.id = candidate.publication_id
-			JOIN current_audience_entitlements AS entitlement
-			  ON entitlement.event_id = source.event_id
-			 AND entitlement.recipient_access_generation_id = candidate.recipient_access_generation_id
-			 AND entitlement.media_item_id = candidate.media_item_id
-			JOIN current_published_placements AS placement
-			  ON placement.event_id = entitlement.event_id
-			 AND placement.media_item_id = entitlement.media_item_id
-			JOIN published_moments AS moment ON moment.id = placement.published_moment_id
-			JOIN media_items AS media ON media.id = candidate.media_item_id AND media.availability = 'current'
-			WHERE candidate.publication_id = ?
-			  AND NOT content_is_withdrawn(placement.event_id, moment.draft_moment_id, placement.media_item_id)
-		)`, payload.PublicationID).Scan(ctx, &deliverable); err != nil {
-			return err
-		}
-		if !deliverable {
-			result = "publication_withdrawn"
 			return nil
 		}
 		return s.publicationHandoff(ctx, payload.EventID, payload.PublicationID)

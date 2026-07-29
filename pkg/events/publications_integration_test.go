@@ -142,11 +142,11 @@ func assertPublicationHandoffSkipped(t *testing.T, fixture publicationFixture, p
 		return nil
 	})
 	job := worker.Job{Payload: []byte(fmt.Sprintf(
-		`{"event_id":%q,"publication_id":%q,"notify_recipients":true}`,
-		fixture.event.String(), publication.ID,
+		`{"event_id":%q,"publication_id":%q,"notify_recipients":%t}`,
+		fixture.event.String(), publication.ID, publication.NotifyRecipients,
 	))}
 	require.NoError(t, fixture.service.HandlePublicationJob(context.Background(), job))
-	assert.Zero(t, calls, "a Publication with no newly granted Media skips external handoff")
+	assert.Zero(t, calls, "a Publication that does not qualify for optional delivery skips external handoff")
 }
 
 func (fixture publicationFixture) actorFor(name string) setup.SessionActor {
@@ -454,6 +454,7 @@ func TestPublicationPersistsNotificationChoiceAndSelectsASafeAvailableCover(t *t
 	assert.Equal(t, PublicationJobKind, outboxKind)
 	assert.Equal(t, int64(1), outboxVersion)
 	assert.JSONEq(t, `{"event_id":"`+fixture.event.String()+`","notify_recipients":false,"publication_id":"`+publication.ID+`"}`, outboxPayload)
+	assertPublicationHandoffSkipped(t, fixture, publication)
 	var searchText string
 	require.NoError(t, fixture.db.NewRaw(`SELECT search_text FROM published_search_documents WHERE recipient_access_generation_id = ? AND media_item_id = ?`, fixture.access["shared"], fixture.media[1]).Scan(ctx, &searchText))
 	assert.Contains(t, searchText, "Family weekend")
