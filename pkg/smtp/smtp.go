@@ -47,6 +47,7 @@ type Message struct {
 	Body           string
 	UnsubscribeURL string
 	Embedded       *EmbeddedImage
+	EmbeddedImages []EmbeddedImage
 }
 
 // DeliveryError is the only dependency failure exposed outside this package.
@@ -258,7 +259,11 @@ func formatMessage(from string, message Message) string {
 		_, _ = fmt.Fprintf(writer, "List-Unsubscribe: <%s>\r\n", safeHeader(message.UnsubscribeURL))
 		_, _ = io.WriteString(writer, "List-Unsubscribe-Post: List-Unsubscribe=One-Click\r\n")
 	}
-	if message.Embedded == nil {
+	embedded := append([]EmbeddedImage(nil), message.EmbeddedImages...)
+	if message.Embedded != nil {
+		embedded = append([]EmbeddedImage{*message.Embedded}, embedded...)
+	}
+	if len(embedded) == 0 {
 		_, _ = io.WriteString(writer, "MIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n")
 		_, _ = io.WriteString(writer, strings.ReplaceAll(message.Body, "\n", "\r\n"))
 		_, _ = io.WriteString(writer, "\r\n")
@@ -273,15 +278,21 @@ func formatMessage(from string, message Message) string {
 	_, _ = io.WriteString(writer, strings.ReplaceAll(message.Body, "\n", "\r\n"))
 	_, _ = fmt.Fprintf(writer, "\r\n--%s-alternative\r\nContent-Type: text/html; charset=UTF-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n", boundary)
 	htmlBody := strings.ReplaceAll(html.EscapeString(message.Body), "\n", "<br>\r\n")
-	_, _ = fmt.Fprintf(writer, "<p>%s</p><p><img src=\"cid:%s\" alt=\"Authorized Memento preview\" style=\"max-width:480px;max-height:480px\"></p>\r\n", htmlBody, safeHeader(message.Embedded.ContentID))
-	_, _ = fmt.Fprintf(writer, "--%s-alternative--\r\n\r\n", boundary)
-	_, _ = fmt.Fprintf(writer, "--%s\r\nContent-Type: %s\r\nContent-Transfer-Encoding: base64\r\nContent-ID: <%s>\r\nContent-Disposition: inline; filename=\"memento-preview.jpg\"\r\n\r\n", boundary, safeHeader(message.Embedded.ContentType), safeHeader(message.Embedded.ContentID))
-	encoded := base64.StdEncoding.EncodeToString(message.Embedded.Data)
-	for len(encoded) > 76 {
-		_, _ = io.WriteString(writer, encoded[:76]+"\r\n")
-		encoded = encoded[76:]
+	_, _ = fmt.Fprintf(writer, "<p>%s</p><p>", htmlBody)
+	for _, image := range embedded {
+		_, _ = fmt.Fprintf(writer, "<img src=\"cid:%s\" alt=\"Authorized Memento preview\" style=\"max-width:480px;max-height:480px\">", safeHeader(image.ContentID))
 	}
-	_, _ = io.WriteString(writer, encoded+"\r\n")
+	_, _ = io.WriteString(writer, "</p>\r\n")
+	_, _ = fmt.Fprintf(writer, "--%s-alternative--\r\n\r\n", boundary)
+	for index, image := range embedded {
+		_, _ = fmt.Fprintf(writer, "--%s\r\nContent-Type: %s\r\nContent-Transfer-Encoding: base64\r\nContent-ID: <%s>\r\nContent-Disposition: inline; filename=\"memento-preview-%d.jpg\"\r\n\r\n", boundary, safeHeader(image.ContentType), safeHeader(image.ContentID), index+1)
+		encoded := base64.StdEncoding.EncodeToString(image.Data)
+		for len(encoded) > 76 {
+			_, _ = io.WriteString(writer, encoded[:76]+"\r\n")
+			encoded = encoded[76:]
+		}
+		_, _ = io.WriteString(writer, encoded+"\r\n")
+	}
 	_, _ = fmt.Fprintf(writer, "--%s--\r\n", boundary)
 	_ = writer.Flush()
 	return body.String()

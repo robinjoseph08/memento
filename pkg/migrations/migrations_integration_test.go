@@ -692,6 +692,37 @@ func TestImmediateEmailInfrastructureEnforcesDurableWindows(t *testing.T) {
 	require.Error(t, err, "a batch cannot drift from the exact coalescing window")
 }
 
+func TestWeeklyEmailInfrastructureEnforcesSchedulesAndVariableWindows(t *testing.T) {
+	db := testdb.Open(t)
+	ctx := context.Background()
+	require.NoError(t, Apply(ctx, db))
+
+	personID, accessID := uuid.New(), uuid.New()
+	_, err := db.ExecContext(ctx, `
+		INSERT INTO people (id, display_name, sort_name) VALUES (?, 'Recipient', 'recipient');
+		INSERT INTO recipient_access_generations
+			(id, person_id, generation, state, is_current, onboarding_completed_at)
+		VALUES (?, ?, 1, 'completed', true, now());
+		INSERT INTO notification_preferences
+			(recipient_access_generation_id, email_preference, weekly_day, weekly_local_time, weekly_timezone)
+		VALUES (?, 'weekly', 'sunday', '09:00', 'America/New_York');
+		INSERT INTO notification_batches
+			(public_id, recipient_access_generation_id, channel, cadence, window_started_at, closes_at)
+		VALUES (gen_random_uuid(), ?, 'email', 'weekly',
+		        '2026-03-01T14:00:00Z', '2026-03-08T13:00:00Z')
+	`, personID, accessID, personID, accessID, accessID, accessID)
+	require.NoError(t, err, "a weekly window may span a daylight-saving offset change")
+
+	_, err = db.ExecContext(ctx, `UPDATE notification_preferences SET weekly_local_time = '9:00'
+		WHERE recipient_access_generation_id = ?`, accessID)
+	require.Error(t, err, "weekly local time uses an unambiguous HH:MM representation")
+
+	_, err = db.ExecContext(ctx, `INSERT INTO notification_batches
+		(public_id, recipient_access_generation_id, channel, cadence, window_started_at, closes_at)
+		VALUES (gen_random_uuid(), ?, 'email', 'immediate', now(), now() + interval '1 hour')`, accessID)
+	require.Error(t, err, "immediate batches retain their exact fifteen-minute boundary")
+}
+
 func TestSetupInfrastructureEnforcesSingletonCuratorAndSecurityEpoch(t *testing.T) {
 	db := testdb.Open(t)
 	ctx := context.Background()

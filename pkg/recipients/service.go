@@ -150,6 +150,22 @@ type OnboardingResponse struct {
 	CSRFToken                 string `json:"csrf_token"`
 }
 
+// EmailPreferenceRequest changes optional email independently of Recipient access.
+type EmailPreferenceRequest struct {
+	EmailPreference string `json:"email_preference" validate:"required,oneof=immediate weekly none"`
+	WeeklyDay       string `json:"weekly_day" validate:"required"`
+	WeeklyLocalTime string `json:"weekly_local_time" validate:"required"`
+	WeeklyTimezone  string `json:"weekly_timezone" validate:"required,max=255"`
+}
+
+// EmailPreferenceResponse reports optional email settings without identity email.
+type EmailPreferenceResponse struct {
+	EmailPreference string `json:"email_preference"`
+	WeeklyDay       string `json:"weekly_day"`
+	WeeklyLocalTime string `json:"weekly_local_time"`
+	WeeklyTimezone  string `json:"weekly_timezone"`
+}
+
 // OnboardingCompleteResponse confirms completion and the rotated CSRF token.
 type OnboardingCompleteResponse struct {
 	Status    string `json:"status"`
@@ -639,6 +655,39 @@ func (s *Service) Accept(ctx context.Context, token string) (AcceptResponse, err
 		return AcceptResponse{}, err
 	}
 	return response, nil
+}
+
+// EmailPreferences returns the completed Recipient's account-level optional email settings.
+func (s *Service) EmailPreferences(ctx context.Context, actor setup.SessionActor) (EmailPreferenceResponse, error) {
+	preference, err := s.delivery.PreferenceFor(ctx, actor.AccessID)
+	if err != nil {
+		return EmailPreferenceResponse{}, err
+	}
+	return EmailPreferenceResponse{
+		EmailPreference: preference.EmailPreference,
+		WeeklyDay:       preference.WeeklyDay,
+		WeeklyLocalTime: preference.WeeklyLocalTime,
+		WeeklyTimezone:  preference.WeeklyTimezone,
+	}, nil
+}
+
+// UpdateEmailPreferences changes optional delivery without changing access or identity email.
+func (s *Service) UpdateEmailPreferences(ctx context.Context, actor setup.SessionActor, request EmailPreferenceRequest) (EmailPreferenceResponse, error) {
+	preference, err := s.delivery.UpdatePreference(ctx, actor.AccessID, emaildelivery.PreferenceUpdate{
+		EmailPreference: request.EmailPreference,
+		WeeklyDay:       request.WeeklyDay,
+		WeeklyLocalTime: request.WeeklyLocalTime,
+		WeeklyTimezone:  request.WeeklyTimezone,
+	})
+	if err != nil {
+		return EmailPreferenceResponse{}, err
+	}
+	return EmailPreferenceResponse{
+		EmailPreference: preference.EmailPreference,
+		WeeklyDay:       preference.WeeklyDay,
+		WeeklyLocalTime: preference.WeeklyLocalTime,
+		WeeklyTimezone:  preference.WeeklyTimezone,
+	}, nil
 }
 
 // Onboarding returns the persisted draft for a verified Onboarding Session.

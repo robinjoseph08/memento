@@ -30,6 +30,7 @@ import (
 
 const (
 	ImmediateJobKind             = "send_immediate_email"
+	WeeklyJobKind                = "send_weekly_email"
 	coalescingWindow             = 15 * time.Minute
 	maxPreviewBytes              = 20 << 20
 	maxPreviewPixels             = 480
@@ -121,12 +122,19 @@ func (s *Service) QueuePublication(ctx context.Context, _ uuid.UUID, publication
 	}
 	return s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 		type candidate struct {
-			AccessID  uuid.UUID `bun:"access_id"`
-			CreatedAt time.Time `bun:"created_at"`
+			AccessID          uuid.UUID `bun:"access_id"`
+			CreatedAt         time.Time `bun:"created_at"`
+			Preference        string    `bun:"email_preference"`
+			WeeklyDay         string    `bun:"weekly_day"`
+			WeeklyLocalTime   string    `bun:"weekly_local_time"`
+			WeeklyTimezone    string    `bun:"weekly_timezone"`
+			PreferenceVersion int64     `bun:"preference_version"`
 		}
 		var candidates []candidate
 		if err := tx.NewRaw(`
-			SELECT activity.recipient_access_generation_id AS access_id, activity.created_at
+			SELECT activity.recipient_access_generation_id AS access_id, activity.created_at,
+			       preference.email_preference, preference.weekly_day,
+			       preference.weekly_local_time, preference.weekly_timezone, preference.preference_version
 			FROM publication_activity_items AS activity
 			JOIN publications AS publication ON publication.id = activity.publication_id
 			JOIN recipient_access_generations AS access
@@ -136,7 +144,7 @@ func (s *Service) QueuePublication(ctx context.Context, _ uuid.UUID, publication
 			  ON person.id = access.person_id AND person.archived_at IS NULL AND person.merged_at IS NULL
 			JOIN notification_preferences AS preference
 			  ON preference.recipient_access_generation_id = access.id
-			 AND preference.email_preference = 'immediate'
+			 AND preference.email_preference IN ('immediate', 'weekly')
 			JOIN recipient_emails AS email
 			  ON email.recipient_access_generation_id = access.id AND email.is_current
 			WHERE activity.publication_id = ? AND publication.notify_recipients
@@ -166,7 +174,17 @@ func (s *Service) QueuePublication(ctx context.Context, _ uuid.UUID, publication
 			return err
 		}
 		for _, candidate := range candidates {
-			if err := s.queueImmediateItem(ctx, tx, candidate.AccessID, publicationBatchItem, publicationID, candidate.CreatedAt); err != nil {
+			if candidate.Preference == "immediate" {
+				if err := s.queueImmediateItem(ctx, tx, candidate.AccessID, publicationBatchItem, publicationID, candidate.CreatedAt, candidate.PreferenceVersion); err != nil {
+					return err
+				}
+				continue
+			}
+			schedule, err := parseWeeklySchedule(candidate.WeeklyDay, candidate.WeeklyLocalTime, candidate.WeeklyTimezone)
+			if err != nil {
+				return err
+			}
+			if err := s.queueWeeklyItem(ctx, tx, candidate.AccessID, publicationBatchItem, publicationID, candidate.CreatedAt, candidate.PreferenceVersion, schedule); err != nil {
 				return err
 			}
 		}
@@ -179,11 +197,31 @@ func (s *Service) QueueComment(ctx context.Context, tx bun.Tx, accessID, comment
 	if !s.Configured() {
 		return nil
 	}
-	comment, eligible, err := loadImmediateComment(ctx, tx, accessID, commentID, false)
+	var preference Preference
+	var preferenceVersion int64
+	if err := tx.NewRaw(`SELECT email_preference, weekly_day, weekly_local_time, weekly_timezone, preference_version
+		FROM notification_preferences WHERE recipient_access_generation_id = ?`, accessID).
+		Scan(ctx, &preference.EmailPreference, &preference.WeeklyDay, &preference.WeeklyLocalTime, &preference.WeeklyTimezone, &preferenceVersion); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		return err
+	}
+	if preference.EmailPreference != "immediate" && preference.EmailPreference != "weekly" {
+		return nil
+	}
+	comment, eligible, err := loadEmailComment(ctx, tx, accessID, commentID, preference.EmailPreference, false)
 	if err != nil || !eligible {
 		return err
 	}
-	return s.queueImmediateItem(ctx, tx, accessID, commentBatchItem, commentID, comment.CreatedAt)
+	if preference.EmailPreference == "immediate" {
+		return s.queueImmediateItem(ctx, tx, accessID, commentBatchItem, commentID, comment.CreatedAt, preferenceVersion)
+	}
+	schedule, err := parseWeeklySchedule(preference.WeeklyDay, preference.WeeklyLocalTime, preference.WeeklyTimezone)
+	if err != nil {
+		return err
+	}
+	return s.queueWeeklyItem(ctx, tx, accessID, commentBatchItem, commentID, comment.CreatedAt, preferenceVersion, schedule)
 }
 
 type pendingImmediateBatch struct {
@@ -206,7 +244,7 @@ type plannedImmediateWindow struct {
 	Truncated bool
 }
 
-func (s *Service) queueImmediateItem(ctx context.Context, tx bun.Tx, accessID uuid.UUID, kind batchItemKind, sourceID uuid.UUID, activityAt time.Time) error {
+func (s *Service) queueImmediateItem(ctx context.Context, tx bun.Tx, accessID uuid.UUID, kind batchItemKind, sourceID uuid.UUID, activityAt time.Time, preferenceVersion int64) error {
 	spec, err := kind.spec()
 	if err != nil {
 		return err
@@ -228,9 +266,10 @@ func (s *Service) queueImmediateItem(ctx context.Context, tx bun.Tx, accessID uu
 	var batches []pendingImmediateBatch
 	if err := tx.NewRaw(`
 		SELECT id, public_id, window_started_at, truncated FROM notification_batches
-		WHERE recipient_access_generation_id = ? AND channel = 'email' AND status = 'pending'
+		WHERE recipient_access_generation_id = ? AND channel = 'email' AND cadence = 'immediate'
+		  AND preference_version = ? AND status = 'pending'
 		ORDER BY window_started_at, id FOR UPDATE
-	`, accessID).Scan(ctx, &batches); err != nil {
+	`, accessID, preferenceVersion).Scan(ctx, &batches); err != nil {
 		return err
 	}
 	batchIDs := make([]int64, 0, len(batches))
@@ -272,7 +311,7 @@ func (s *Service) queueImmediateItem(ctx context.Context, tx bun.Tx, accessID uu
 		}
 	}
 	for len(batches) < len(windows) {
-		batch, err := createImmediateBatch(ctx, tx, accessID, windows[len(batches)].StartedAt)
+		batch, err := createImmediateBatch(ctx, tx, accessID, windows[len(batches)].StartedAt, preferenceVersion)
 		if err != nil {
 			return err
 		}
@@ -321,14 +360,14 @@ func (s *Service) queueImmediateItem(ctx context.Context, tx bun.Tx, accessID uu
 	return nil
 }
 
-func createImmediateBatch(ctx context.Context, tx bun.Tx, accessID uuid.UUID, startedAt time.Time) (pendingImmediateBatch, error) {
+func createImmediateBatch(ctx context.Context, tx bun.Tx, accessID uuid.UUID, startedAt time.Time, preferenceVersion int64) (pendingImmediateBatch, error) {
 	batch := pendingImmediateBatch{PublicID: uuid.New(), WindowStartedAt: startedAt}
 	closesAt := startedAt.Add(coalescingWindow)
 	if err := tx.NewRaw(`
 		INSERT INTO notification_batches (
-			public_id, recipient_access_generation_id, channel, window_started_at, closes_at
-		) VALUES (?, ?, 'email', ?, ?) RETURNING id
-	`, batch.PublicID, accessID, startedAt, closesAt).Scan(ctx, &batch.ID); err != nil {
+			public_id, recipient_access_generation_id, channel, cadence, preference_version, window_started_at, closes_at
+		) VALUES (?, ?, 'email', 'immediate', ?, ?, ?) RETURNING id
+	`, batch.PublicID, accessID, preferenceVersion, startedAt, closesAt).Scan(ctx, &batch.ID); err != nil {
 		return pendingImmediateBatch{}, err
 	}
 	payload, err := json.Marshal(immediateJobPayload{BatchID: batch.ID})
@@ -462,7 +501,8 @@ func (s *Service) HandleImmediate(ctx context.Context, job worker.Job) error {
 			status = "failed"
 			terminalFailure = true
 			if _, err := tx.NewRaw(`UPDATE notification_preferences
-				SET email_preference = 'none', updated_at = clock_timestamp()
+				SET email_preference = 'none', preference_version = preference_version + 1,
+				    updated_at = clock_timestamp()
 				WHERE recipient_access_generation_id = ?`, accessID).Exec(ctx); err != nil {
 				return err
 			}
@@ -536,9 +576,10 @@ func (s *Service) assembleImmediateIn(ctx context.Context, db bun.IDB, batchID i
 		JOIN notification_preferences AS preference
 		  ON preference.recipient_access_generation_id = access.id
 		 AND preference.email_preference = 'immediate'
+		 AND preference.preference_version = batch.preference_version
 		JOIN recipient_emails AS email
 		  ON email.recipient_access_generation_id = access.id AND email.is_current
-		WHERE batch.id = ? AND batch.status = 'pending'`+lockClause, batchID).Scan(ctx, &accessID, &recipient, &truncated)
+		WHERE batch.id = ? AND batch.cadence = 'immediate' AND batch.status = 'pending'`+lockClause, batchID).Scan(ctx, &accessID, &recipient, &truncated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return assembledImmediate{Empty: true}, nil
 	}
@@ -727,15 +768,15 @@ func assemblePublication(ctx context.Context, db bun.IDB, accessID, publicationI
 }
 
 func assembleComment(ctx context.Context, db bun.IDB, accessID, commentID uuid.UUID, lock bool) (string, uuid.UUID, uuid.UUID, bool, error) {
-	comment, eligible, err := loadImmediateComment(ctx, db, accessID, commentID, lock)
+	comment, eligible, err := loadEmailComment(ctx, db, accessID, commentID, "immediate", lock)
 	if err != nil || !eligible {
 		return "", uuid.Nil, uuid.Nil, false, err
 	}
 	return comment.Author + " commented on an item you can access.", comment.MediaID, comment.AssetID, true, nil
 }
 
-// loadImmediateComment is the shared queue-time and send-time Comment authorization boundary.
-func loadImmediateComment(ctx context.Context, db bun.IDB, accessID, commentID uuid.UUID, lock bool) (immediateComment, bool, error) {
+// loadEmailComment is the shared queue-time and send-time Comment authorization boundary.
+func loadEmailComment(ctx context.Context, db bun.IDB, accessID, commentID uuid.UUID, preferenceValue string, lock bool) (immediateComment, bool, error) {
 	lockClause := ""
 	if lock {
 		lockClause = " FOR SHARE OF comment"
@@ -759,7 +800,7 @@ func loadImmediateComment(ctx context.Context, db bun.IDB, accessID, commentID u
 		  ON recipient.id = access.person_id AND recipient.archived_at IS NULL AND recipient.merged_at IS NULL
 		JOIN notification_preferences AS preference
 		  ON preference.recipient_access_generation_id = access.id
-		 AND preference.email_preference = 'immediate'
+		 AND preference.email_preference = ?
 		JOIN recipient_emails AS email
 		  ON email.recipient_access_generation_id = access.id AND email.is_current
 		JOIN people AS author ON author.id = comment.author_person_id
@@ -791,7 +832,7 @@ func loadImmediateComment(ctx context.Context, db bun.IDB, accessID, commentID u
 				  AND entitlement.media_item_id = comment.media_item_id
 				  AND NOT content_is_withdrawn(placement.event_id, moment.draft_moment_id, placement.media_item_id)
 			)
-		  )`+lockClause, accessID, commentID).Scan(ctx, &comment)
+		  )`+lockClause, accessID, preferenceValue, commentID).Scan(ctx, &comment)
 	if errors.Is(err, sql.ErrNoRows) {
 		return immediateComment{}, false, nil
 	}

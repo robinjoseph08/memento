@@ -662,13 +662,13 @@ func TestImmediateEmailIncludesOneClickUnsubscribeAndPrivacyDisclosure(t *testin
 		WHERE recipient_access_generation_id = ?`, fixture.access["alex"]).Scan(context.Background(), &preference))
 	assert.Equal(t, "immediate", preference, "authenticated GET confirmation must not mutate durable preference")
 
-	for range 2 {
+	for attempt, expectedStatus := range []int{http.StatusOK, http.StatusNotFound} {
 		request := httptest.NewRequestWithContext(context.Background(), http.MethodPost, parsed.RequestURI(),
 			strings.NewReader("List-Unsubscribe=One-Click"))
 		request.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
 		response := httptest.NewRecorder()
 		e.ServeHTTP(response, request)
-		assert.Equal(t, http.StatusOK, response.Code, "one-click unsubscribe is safely idempotent")
+		assert.Equal(t, expectedStatus, response.Code, "preference token use %d", attempt+1)
 		assert.Equal(t, "no-store", response.Header().Get(echo.HeaderCacheControl))
 		assert.Equal(t, "no-referrer", response.Header().Get("Referrer-Policy"))
 	}
