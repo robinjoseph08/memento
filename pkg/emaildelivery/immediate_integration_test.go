@@ -281,6 +281,37 @@ func TestImmediateEmailRecomputesSurvivorsAndStripsPreviewMetadata(t *testing.T)
 	assert.LessOrEqual(t, decoded.Bounds().Dy(), maxPreviewPixels)
 }
 
+func TestImmediateCommentEligibilityIsSharedByQueueAndSend(t *testing.T) {
+	fixture := newImmediateFixture(t)
+	commentID := fixture.addComment(t, fixture.base, "Private eligibility")
+	_, err := fixture.db.NewRaw(`UPDATE comment_subscriptions SET muted = true
+		WHERE media_item_id = ? AND recipient_access_generation_id = ?`,
+		fixture.media[0], fixture.access["alex"]).Exec(context.Background())
+	require.NoError(t, err)
+	fixture.queueComment(t, commentID)
+	var batches int
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM notification_batches`).Scan(context.Background(), &batches))
+	assert.Zero(t, batches, "muted Comment activity is ineligible at queue time")
+
+	_, err = fixture.db.NewRaw(`UPDATE comment_subscriptions SET muted = false
+		WHERE media_item_id = ? AND recipient_access_generation_id = ?`,
+		fixture.media[0], fixture.access["alex"]).Exec(context.Background())
+	require.NoError(t, err)
+	fixture.queueComment(t, commentID)
+	var batchID int64
+	require.NoError(t, fixture.db.NewRaw(`SELECT id FROM notification_batches`).Scan(context.Background(), &batchID))
+
+	_, err = fixture.db.NewRaw(`UPDATE comment_subscriptions SET muted = true
+		WHERE media_item_id = ? AND recipient_access_generation_id = ?`,
+		fixture.media[0], fixture.access["alex"]).Exec(context.Background())
+	require.NoError(t, err)
+	require.NoError(t, fixture.service.HandleImmediate(context.Background(), fixture.leasedBatchJob(t, batchID)))
+	assert.Empty(t, fixture.sender.sent(), "muted Comment activity is ineligible at send time")
+	var status string
+	require.NoError(t, fixture.db.NewRaw(`SELECT status FROM notification_batches WHERE id = ?`, batchID).Scan(context.Background(), &status))
+	assert.Equal(t, "suppressed", status)
+}
+
 func TestImmediateEmailReauthorizesBetweenAssemblyAndSendAndRetriesDurably(t *testing.T) {
 	t.Run("authorization loss suppresses SMTP", func(t *testing.T) {
 		fixture := newImmediateFixture(t)

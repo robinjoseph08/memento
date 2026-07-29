@@ -49,6 +49,11 @@ func TestImmediateHandlerRejectsInvalidPayloadBeforeDependencies(t *testing.T) {
 	assert.EqualError(t, err, "invalid_immediate_email_job")
 }
 
+func TestImmediateBatchItemKindRejectsUnknownValues(t *testing.T) {
+	_, err := batchItemKind("future_kind").spec()
+	require.ErrorIs(t, err, errUnsupportedImmediateItemKind)
+}
+
 func TestSafePreviewRejectsUndecodableBytes(t *testing.T) {
 	_, err := safePreview([]byte("private source metadata without an image"))
 	require.Error(t, err)

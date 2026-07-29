@@ -33,11 +33,16 @@ const (
 	maxPreviewBytes      = 20 << 20
 	maxPreviewPixels     = 480
 	maxPreviewSourceArea = 25_000_000
+
+	publicationBatchItem batchItemKind = "publication"
+	commentBatchItem     batchItemKind = "comment"
 )
 
 var (
-	errPreviewDimensions        = errors.New("preview dimensions are invalid")
-	errPreviewDimensionsChanged = errors.New("preview dimensions changed during decode")
+	errPreviewDimensions            = errors.New("preview dimensions are invalid")
+	errPreviewDimensionsChanged     = errors.New("preview dimensions changed during decode")
+	errUnsupportedImmediateItemKind = errors.New("unsupported immediate batch item kind")
+	errMalformedImmediateItem       = errors.New("malformed immediate batch item")
 )
 
 type previewSource interface {
@@ -56,12 +61,48 @@ type assembledImmediate struct {
 	Empty          bool
 }
 
+type batchItemKind string
+
 type batchItem struct {
 	ID                int64
-	Kind              string
+	Kind              batchItemKind
 	PublicationID     *uuid.UUID
 	CommentID         *uuid.UUID
 	ActivityCreatedAt time.Time
+}
+
+type batchItemSpec struct {
+	sourceColumn string
+	sourceID     func(batchItem) *uuid.UUID
+	assemble     func(context.Context, bun.IDB, uuid.UUID, uuid.UUID, bool) (string, uuid.UUID, uuid.UUID, bool, error)
+}
+
+func (kind batchItemKind) spec() (batchItemSpec, error) {
+	switch kind {
+	case publicationBatchItem:
+		return batchItemSpec{
+			sourceColumn: "publication_id",
+			sourceID:     func(item batchItem) *uuid.UUID { return item.PublicationID },
+			assemble: func(ctx context.Context, db bun.IDB, accessID, sourceID uuid.UUID, _ bool) (string, uuid.UUID, uuid.UUID, bool, error) {
+				return assemblePublication(ctx, db, accessID, sourceID)
+			},
+		}, nil
+	case commentBatchItem:
+		return batchItemSpec{
+			sourceColumn: "comment_id",
+			sourceID:     func(item batchItem) *uuid.UUID { return item.CommentID },
+			assemble:     assembleComment,
+		}, nil
+	default:
+		return batchItemSpec{}, fmt.Errorf("%w: %q", errUnsupportedImmediateItemKind, kind)
+	}
+}
+
+type immediateComment struct {
+	CreatedAt time.Time
+	Author    string
+	MediaID   uuid.UUID
+	AssetID   uuid.UUID
 }
 
 // SetPreviewSource installs the private derivative source used for embedded previews.
@@ -115,7 +156,7 @@ func (s *Service) QueuePublication(ctx context.Context, _ uuid.UUID, publication
 			return err
 		}
 		for _, candidate := range candidates {
-			if err := s.queueImmediateItem(ctx, tx, candidate.AccessID, "publication", publicationID, candidate.CreatedAt); err != nil {
+			if err := s.queueImmediateItem(ctx, tx, candidate.AccessID, publicationBatchItem, publicationID, candidate.CreatedAt); err != nil {
 				return err
 			}
 		}
@@ -128,66 +169,22 @@ func (s *Service) QueueComment(ctx context.Context, tx bun.Tx, accessID, comment
 	if !s.Configured() {
 		return nil
 	}
-	var createdAt time.Time
-	err := tx.NewRaw(`
-		SELECT comment.created_at
-		FROM comments AS comment
-		JOIN recipient_access_generations AS access
-		  ON access.id = ? AND access.is_current AND access.state = 'completed'
-		JOIN people AS recipient
-		  ON recipient.id = access.person_id AND recipient.archived_at IS NULL AND recipient.merged_at IS NULL
-		JOIN notification_preferences AS preference
-		  ON preference.recipient_access_generation_id = access.id
-		 AND preference.email_preference = 'immediate'
-		JOIN recipient_emails AS email
-		  ON email.recipient_access_generation_id = access.id AND email.is_current
-		JOIN media_items AS media ON media.id = comment.media_item_id AND media.availability = 'current'
-		WHERE comment.id = ? AND comment.state = 'active' AND comment.author_person_id <> access.person_id
-		  AND (
-			EXISTS (SELECT 1 FROM person_roles WHERE person_id = access.person_id AND role = 'curator')
-			OR EXISTS (
-				SELECT 1 FROM comment_subscriptions AS subscription
-				WHERE subscription.media_item_id = comment.media_item_id
-				  AND subscription.recipient_access_generation_id = access.id AND NOT subscription.muted
-			)
-		  )
-		  AND EXISTS (
-			SELECT 1 FROM current_published_placements AS placement
-			JOIN published_moments AS moment ON moment.id = placement.published_moment_id
-			WHERE placement.media_item_id = comment.media_item_id
-			  AND NOT content_is_withdrawn(placement.event_id, moment.draft_moment_id, placement.media_item_id)
-		  )
-		  AND (
-			EXISTS (SELECT 1 FROM person_roles WHERE person_id = access.person_id AND role = 'curator')
-			OR EXISTS (
-				SELECT 1 FROM current_audience_entitlements AS entitlement
-				JOIN current_published_placements AS placement
-				  ON placement.event_id = entitlement.event_id
-				 AND placement.media_item_id = entitlement.media_item_id
-				JOIN published_moments AS moment ON moment.id = placement.published_moment_id
-				WHERE entitlement.recipient_access_generation_id = access.id
-				  AND entitlement.media_item_id = comment.media_item_id
-				  AND NOT content_is_withdrawn(placement.event_id, moment.draft_moment_id, placement.media_item_id)
-			)
-		  )
-	`, accessID, commentID).Scan(ctx, &createdAt)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil
+	comment, eligible, err := loadImmediateComment(ctx, tx, accessID, commentID, false)
+	if err != nil || !eligible {
+		return err
 	}
+	return s.queueImmediateItem(ctx, tx, accessID, commentBatchItem, commentID, comment.CreatedAt)
+}
+
+func (s *Service) queueImmediateItem(ctx context.Context, tx bun.Tx, accessID uuid.UUID, kind batchItemKind, sourceID uuid.UUID, activityAt time.Time) error {
+	spec, err := kind.spec()
 	if err != nil {
 		return err
 	}
-	return s.queueImmediateItem(ctx, tx, accessID, "comment", commentID, createdAt)
-}
-
-func (s *Service) queueImmediateItem(ctx context.Context, tx bun.Tx, accessID uuid.UUID, kind string, sourceID uuid.UUID, activityAt time.Time) error {
 	if _, err := tx.NewRaw(`SELECT pg_advisory_xact_lock(hashtextextended(?::text, 4610))`, accessID.String()).Exec(ctx); err != nil {
 		return err
 	}
-	column := "publication_id"
-	if kind == "comment" {
-		column = "comment_id"
-	}
+	column := spec.sourceColumn
 	var alreadyQueued bool
 	if err := tx.NewRaw(`SELECT EXISTS (SELECT 1 FROM notification_batch_items
 		WHERE recipient_access_generation_id = ? AND kind = ? AND `+column+` = ?)`,
@@ -198,7 +195,7 @@ func (s *Service) queueImmediateItem(ctx context.Context, tx bun.Tx, accessID uu
 		return nil
 	}
 	var batchID int64
-	err := tx.NewRaw(`
+	err = tx.NewRaw(`
 		SELECT id FROM notification_batches
 		WHERE recipient_access_generation_id = ? AND channel = 'email' AND status = 'pending'
 		  AND window_started_at <= ? AND closes_at > ?
@@ -379,14 +376,14 @@ func (s *Service) assembleImmediate(ctx context.Context, batchID int64, lock boo
 }
 
 func (s *Service) assembleImmediateIn(ctx context.Context, db bun.IDB, batchID int64, lock bool) (assembledImmediate, error) {
-	var accessID, personID uuid.UUID
+	var accessID uuid.UUID
 	var recipient string
 	lockClause := ""
 	if lock {
 		lockClause = " FOR SHARE OF access, person, preference, email"
 	}
 	err := db.NewRaw(`
-		SELECT access.id, access.person_id, email.email
+		SELECT access.id, email.email
 		FROM notification_batches AS batch
 		JOIN recipient_access_generations AS access
 		  ON access.id = batch.recipient_access_generation_id
@@ -398,20 +395,12 @@ func (s *Service) assembleImmediateIn(ctx context.Context, db bun.IDB, batchID i
 		 AND preference.email_preference = 'immediate'
 		JOIN recipient_emails AS email
 		  ON email.recipient_access_generation_id = access.id AND email.is_current
-		WHERE batch.id = ? AND batch.status = 'pending'`+lockClause, batchID).Scan(ctx, &accessID, &personID, &recipient)
+		WHERE batch.id = ? AND batch.status = 'pending'`+lockClause, batchID).Scan(ctx, &accessID, &recipient)
 	if errors.Is(err, sql.ErrNoRows) {
 		return assembledImmediate{Empty: true}, nil
 	}
 	if err != nil {
 		return assembledImmediate{}, err
-	}
-	if lock {
-		if err := lockImmediateMedia(ctx, db, batchID); err != nil {
-			return assembledImmediate{}, err
-		}
-		if err := lockImmediateEvents(ctx, db, batchID); err != nil {
-			return assembledImmediate{}, err
-		}
 	}
 	var items []batchItem
 	if err := db.NewRaw(`SELECT id, kind, publication_id, comment_id, activity_created_at
@@ -421,28 +410,22 @@ func (s *Service) assembleImmediateIn(ctx context.Context, db bun.IDB, batchID i
 	lines := make([]string, 0, len(items))
 	result := assembledImmediate{Recipient: recipient}
 	for _, item := range items {
-		switch item.Kind {
-		case "publication":
-			line, mediaID, assetID, survives, err := assemblePublication(ctx, db, accessID, *item.PublicationID)
-			if err != nil {
-				return assembledImmediate{}, err
-			}
-			if survives {
-				lines = append(lines, line)
-				if result.PreviewMediaID == uuid.Nil {
-					result.PreviewMediaID, result.PreviewAssetID = mediaID, assetID
-				}
-			}
-		case "comment":
-			line, mediaID, assetID, survives, err := assembleComment(ctx, db, accessID, personID, *item.CommentID, lock)
-			if err != nil {
-				return assembledImmediate{}, err
-			}
-			if survives {
-				lines = append(lines, line)
-				if result.PreviewMediaID == uuid.Nil {
-					result.PreviewMediaID, result.PreviewAssetID = mediaID, assetID
-				}
+		spec, err := item.Kind.spec()
+		if err != nil {
+			return assembledImmediate{}, err
+		}
+		sourceID := spec.sourceID(item)
+		if sourceID == nil {
+			return assembledImmediate{}, fmt.Errorf("%w: item %d has no %s", errMalformedImmediateItem, item.ID, spec.sourceColumn)
+		}
+		line, mediaID, assetID, survives, err := spec.assemble(ctx, db, accessID, *sourceID, lock)
+		if err != nil {
+			return assembledImmediate{}, err
+		}
+		if survives {
+			lines = append(lines, line)
+			if result.PreviewMediaID == uuid.Nil {
+				result.PreviewMediaID, result.PreviewAssetID = mediaID, assetID
 			}
 		}
 	}
@@ -538,9 +521,16 @@ func assemblePublication(ctx context.Context, db bun.IDB, accessID, publicationI
 	return fmt.Sprintf("%s: %d %s", title, count, label), mediaID, assetID, count > 0, nil
 }
 
-func assembleComment(ctx context.Context, db bun.IDB, accessID, personID, commentID uuid.UUID, lock bool) (string, uuid.UUID, uuid.UUID, bool, error) {
-	var author string
-	var mediaID, assetID uuid.UUID
+func assembleComment(ctx context.Context, db bun.IDB, accessID, commentID uuid.UUID, lock bool) (string, uuid.UUID, uuid.UUID, bool, error) {
+	comment, eligible, err := loadImmediateComment(ctx, db, accessID, commentID, lock)
+	if err != nil || !eligible {
+		return "", uuid.Nil, uuid.Nil, false, err
+	}
+	return comment.Author + " commented on an item you can access.", comment.MediaID, comment.AssetID, true, nil
+}
+
+// loadImmediateComment is the shared queue-time and send-time Comment authorization boundary.
+func loadImmediateComment(ctx context.Context, db bun.IDB, accessID, commentID uuid.UUID, lock bool) (immediateComment, bool, error) {
 	lockClause := ""
 	if lock {
 		lockClause = " FOR SHARE OF comment"
@@ -550,21 +540,32 @@ func assembleComment(ctx context.Context, db bun.IDB, accessID, personID, commen
 			  AND media_item_id = (SELECT media_item_id FROM comments WHERE id = ?)
 			FOR SHARE`, accessID, commentID).Scan(ctx, &subscriptionMediaID)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return "", uuid.Nil, uuid.Nil, false, err
+			return immediateComment{}, false, err
 		}
 	}
+	var comment immediateComment
 	err := db.NewRaw(`
-		SELECT author.display_name, comment.media_item_id, media.immich_asset_id
+		SELECT comment.created_at, author.display_name AS author,
+		       comment.media_item_id AS media_id, media.immich_asset_id AS asset_id
 		FROM comments AS comment
+		JOIN recipient_access_generations AS access
+		  ON access.id = ? AND access.is_current AND access.state = 'completed'
+		JOIN people AS recipient
+		  ON recipient.id = access.person_id AND recipient.archived_at IS NULL AND recipient.merged_at IS NULL
+		JOIN notification_preferences AS preference
+		  ON preference.recipient_access_generation_id = access.id
+		 AND preference.email_preference = 'immediate'
+		JOIN recipient_emails AS email
+		  ON email.recipient_access_generation_id = access.id AND email.is_current
 		JOIN people AS author ON author.id = comment.author_person_id
 		JOIN media_items AS media ON media.id = comment.media_item_id AND media.availability = 'current'
-		WHERE comment.id = ? AND comment.state = 'active' AND comment.author_person_id <> ?
+		WHERE comment.id = ? AND comment.state = 'active' AND comment.author_person_id <> access.person_id
 		  AND (
-			EXISTS (SELECT 1 FROM person_roles WHERE person_id = ? AND role = 'curator')
+			EXISTS (SELECT 1 FROM person_roles WHERE person_id = access.person_id AND role = 'curator')
 			OR EXISTS (
 				SELECT 1 FROM comment_subscriptions AS subscription
 				WHERE subscription.media_item_id = comment.media_item_id
-				  AND subscription.recipient_access_generation_id = ? AND NOT subscription.muted
+				  AND subscription.recipient_access_generation_id = access.id AND NOT subscription.muted
 			)
 		  )
 		  AND EXISTS (
@@ -574,25 +575,25 @@ func assembleComment(ctx context.Context, db bun.IDB, accessID, personID, commen
 			  AND NOT content_is_withdrawn(placement.event_id, moment.draft_moment_id, placement.media_item_id)
 		  )
 		  AND (
-			EXISTS (SELECT 1 FROM person_roles WHERE person_id = ? AND role = 'curator')
+			EXISTS (SELECT 1 FROM person_roles WHERE person_id = access.person_id AND role = 'curator')
 			OR EXISTS (
 				SELECT 1 FROM current_audience_entitlements AS entitlement
 				JOIN current_published_placements AS placement
 				  ON placement.event_id = entitlement.event_id
 				 AND placement.media_item_id = entitlement.media_item_id
 				JOIN published_moments AS moment ON moment.id = placement.published_moment_id
-				WHERE entitlement.recipient_access_generation_id = ?
+				WHERE entitlement.recipient_access_generation_id = access.id
 				  AND entitlement.media_item_id = comment.media_item_id
 				  AND NOT content_is_withdrawn(placement.event_id, moment.draft_moment_id, placement.media_item_id)
 			)
-		  )`+lockClause, commentID, personID, personID, accessID, personID, accessID).Scan(ctx, &author, &mediaID, &assetID)
+		  )`+lockClause, accessID, commentID).Scan(ctx, &comment)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", uuid.Nil, uuid.Nil, false, nil
+		return immediateComment{}, false, nil
 	}
 	if err != nil {
-		return "", uuid.Nil, uuid.Nil, false, err
+		return immediateComment{}, false, err
 	}
-	return author + " commented on an item you can access.", mediaID, assetID, true, nil
+	return comment, true, nil
 }
 
 func lockRecipientGeneration(ctx context.Context, tx bun.Tx, accessID uuid.UUID) error {
