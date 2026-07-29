@@ -1234,6 +1234,40 @@ func TestConfirmedDeletedPublishedMediaBecomesUnavailable(t *testing.T) {
 	assert.Equal(t, audienceBefore, loadExactSourceAudience(t, service, fixture), "missing Media must preserve every Audience and entitlement row")
 }
 
+func TestChecksumlessPublishedMissingMediaSurvivesRepeatedReconciliation(t *testing.T) {
+	original := repairableReconciliationAsset(uuid.New(), "/library/migrated/family.jpg")
+	connector := &reconciliationConnector{summary: sourceAlbum(uuid.New(), "Migrated source", 1)}
+	connector.pages = map[int]immich.AssetPage{1: {Items: []immich.AssetSummary{original}}}
+	service, sourceAlbumID := newReconciliationService(t, connector)
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	fixture := publishSourceEventFixture(t, service, sourceAlbumID, original.SourceID)
+	authorizeSourceRecipient(t, service, &fixture)
+	_, err := service.db.NewRaw(`UPDATE media_backings SET checksum = NULL WHERE media_item_id = ? AND active`, fixture.mediaID).Exec(context.Background())
+	require.NoError(t, err)
+
+	connector.setMembership()
+	for range 4 {
+		require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID),
+			"repeated cleanup must not retry or roll back a referenced missing Media transition")
+	}
+	var availability string
+	var missingSince *time.Time
+	var backings, placements int
+	require.NoError(t, service.db.NewRaw(`SELECT availability, missing_since FROM media_items WHERE id = ?`, fixture.mediaID).Scan(context.Background(), &availability, &missingSince))
+	require.NoError(t, service.db.NewRaw(`SELECT count(*) FROM media_backings WHERE media_item_id = ?`, fixture.mediaID).Scan(context.Background(), &backings))
+	require.NoError(t, service.db.NewRaw(`SELECT count(*) FROM published_media_placements WHERE media_item_id = ?`, fixture.mediaID).Scan(context.Background(), &placements))
+	assert.Equal(t, "source_missing", availability)
+	assert.NotNil(t, missingSince)
+	assert.Equal(t, 1, backings, "history-bearing checksumless Media retains its backing identity")
+	assert.Positive(t, placements)
+
+	firstMissingSince := *missingSince
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	require.NoError(t, service.db.NewRaw(`SELECT availability, missing_since FROM media_items WHERE id = ?`, fixture.mediaID).Scan(context.Background(), &availability, &missingSince))
+	assert.Equal(t, "source_missing", availability)
+	assert.Equal(t, firstMissingSince, *missingSince)
+}
+
 func TestDelivery404CannotBeClearedByAlbumMetadata(t *testing.T) {
 	original := repairableReconciliationAsset(uuid.New(), "/library/still-listed/family.jpg")
 	connector := &reconciliationConnector{summary: sourceAlbum(uuid.New(), "Still listed source", 1)}

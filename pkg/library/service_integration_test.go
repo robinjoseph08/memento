@@ -1308,6 +1308,32 @@ func TestMalformedOrUnauthorizedUpstreamFailureDoesNotInventSourceMissing(t *tes
 	assert.Equal(t, "current", availability, "only a confirmed not-found response is Source missing evidence")
 }
 
+func TestRealImmichAuthorizationFailuresPreserveMediaAvailability(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			fixture := newLibraryFixture(t)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				assert.Equal(t, fixture.assets[0].String(), strings.Split(r.URL.Path, "/")[3])
+				w.WriteHeader(status)
+			}))
+			defer server.Close()
+			client, err := immich.New(config.ImmichConfig{
+				URL: server.URL, APIKey: "rejected-key", HealthTimeout: time.Second,
+			}, server.Client())
+			require.NoError(t, err)
+			service := New(fixture.db, client)
+
+			_, err = service.Thumbnail(context.Background(), fixture.actor, fixture.media[0], immich.MediaRequest{})
+			require.EqualError(t, err, "Immich API key is invalid")
+			var availability string
+			var missingSince *time.Time
+			require.NoError(t, fixture.db.NewRaw(`SELECT availability, missing_since FROM media_items WHERE id = ?`, fixture.media[0]).Scan(context.Background(), &availability, &missingSince))
+			assert.Equal(t, "current", availability)
+			assert.Nil(t, missingSince, "upstream authorization failure is not missing-source evidence")
+		})
+	}
+}
+
 func TestRecipientMalformedRangeUpstreamBadRequestDoesNotMarkSourceMissing(t *testing.T) {
 	fixture := newLibraryFixture(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

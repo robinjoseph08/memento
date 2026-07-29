@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -410,21 +411,47 @@ func TestAssetDeliveryAvailableFailsClosed(t *testing.T) {
 	}
 }
 
+type bodyTimeoutReadCloser struct {
+	ctx     context.Context
+	started chan struct{}
+	once    sync.Once
+}
+
+func (body *bodyTimeoutReadCloser) Read([]byte) (int, error) {
+	body.once.Do(func() { close(body.started) })
+	<-body.ctx.Done()
+	return 0, body.ctx.Err()
+}
+
+func (*bodyTimeoutReadCloser) Close() error { return nil }
+
 func TestAssetDeliveryAvailableBoundsBodyReadsAfterHeaders(t *testing.T) {
 	assetID := uuid.New()
-	headersSent := make(chan struct{})
-	server := contractServer(t, func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "image/jpeg")
-		w.WriteHeader(http.StatusOK)
-		w.(http.Flusher).Flush()
-		close(headersSent)
-		<-r.Context().Done()
+	bodyReadStarted := make(chan struct{})
+	transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"image/jpeg"}},
+			Body:       &bodyTimeoutReadCloser{ctx: request.Context(), started: bodyReadStarted},
+			Request:    request,
+		}, nil
 	})
-	defer server.Close()
-	cfg := clientConfig(server.URL)
-	cfg.HealthTimeout = 50 * time.Millisecond
-	client, err := New(cfg, server.Client())
+	cfg := clientConfig("http://immich.test")
+	cfg.HealthTimeout = time.Hour
+	client, err := New(cfg, &http.Client{Transport: transport})
 	require.NoError(t, err)
+	activateBodyTimeout := make(chan struct{})
+	client.healthContext = func(parent context.Context, _ time.Duration) (context.Context, context.CancelFunc) {
+		probeCtx, cancel := context.WithCancel(parent)
+		go func() {
+			select {
+			case <-activateBodyTimeout:
+				cancel()
+			case <-probeCtx.Done():
+			}
+		}()
+		return probeCtx, cancel
+	}
 
 	result := make(chan error, 1)
 	go func() {
@@ -432,15 +459,16 @@ func TestAssetDeliveryAvailableBoundsBodyReadsAfterHeaders(t *testing.T) {
 		result <- availableErr
 	}()
 	select {
-	case <-headersSent:
+	case <-bodyReadStarted:
 	case <-time.After(time.Second):
-		t.Fatal("delivery probe did not receive response headers")
+		t.Fatal("delivery probe did not begin its post-header body read")
 	}
+	close(activateBodyTimeout)
 	select {
 	case availableErr := <-result:
 		require.EqualError(t, availableErr, "Immich returned an invalid response")
 	case <-time.After(time.Second):
-		t.Fatal("delivery probe body read exceeded its deadline")
+		t.Fatal("delivery probe body read did not stop after its timeout activated")
 	}
 }
 

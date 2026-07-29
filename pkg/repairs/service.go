@@ -896,6 +896,9 @@ func (s *Service) ConfirmMedia(ctx context.Context, actor setup.CuratorSession, 
 		if err := staging.LockAccessSummaryRefresh(ctx, tx); err != nil {
 			return err
 		}
+		if err := staging.LockMediaRelink(ctx, tx); err != nil {
+			return err
+		}
 		var mediaItemID, previousAssetID, candidateAssetID uuid.UUID
 		var candidateMediaItemID uuid.NullUUID
 		err := tx.NewRaw(`

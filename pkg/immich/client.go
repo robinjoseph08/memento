@@ -77,6 +77,7 @@ type Client struct {
 	baseURL       *url.URL
 	apiKey        string
 	healthTimeout time.Duration
+	healthContext func(context.Context, time.Duration) (context.Context, context.CancelFunc)
 	httpClient    *http.Client
 }
 
@@ -350,7 +351,10 @@ func New(cfg config.ImmichConfig, httpClient *http.Client) (*Client, error) {
 	safeHTTPClient.CheckRedirect = func(*http.Request, []*http.Request) error {
 		return http.ErrUseLastResponse
 	}
-	return &Client{baseURL: baseURL, apiKey: cfg.APIKey, healthTimeout: cfg.HealthTimeout, httpClient: &safeHTTPClient}, nil
+	return &Client{
+		baseURL: baseURL, apiKey: cfg.APIKey, healthTimeout: cfg.HealthTimeout,
+		healthContext: context.WithTimeout, httpClient: &safeHTTPClient,
+	}, nil
 }
 
 // Check verifies the exact server version and the exact required read-only API
@@ -530,7 +534,7 @@ func (c *Client) AssetDeliveryAvailable(ctx context.Context, assetID uuid.UUID, 
 		probes = append(probes, c.Video)
 	}
 	for _, probe := range probes {
-		probeCtx, cancel := context.WithTimeout(ctx, c.healthTimeout)
+		probeCtx, cancel := c.healthContext(ctx, c.healthTimeout)
 		response, err := probe(probeCtx, assetID, MediaRequest{Range: "bytes=0-0"})
 		if errors.Is(err, ErrNotFound) {
 			cancel()

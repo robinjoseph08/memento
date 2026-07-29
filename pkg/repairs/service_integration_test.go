@@ -1256,44 +1256,44 @@ func TestMediaConfirmationPreservesPortalIdentityAndMovesBacking(t *testing.T) {
 		competingCandidateID, competingMediaID, newMediaID, competingAssetID, newAssetID,
 		historyID, newMediaID, newAssetID, historicalCandidateAssetID, fixture.actor.PersonID)
 	require.NoError(t, err)
-	eventBlocker, err := fixture.db.BeginTx(context.Background(), nil)
+	eventBoundary, err := fixture.db.BeginTx(context.Background(), nil)
 	require.NoError(t, err)
-	_, err = eventBlocker.ExecContext(context.Background(), `LOCK TABLE events IN ACCESS EXCLUSIVE MODE`)
+	_, err = eventBoundary.NewRaw(`SELECT id FROM events WHERE id = ? FOR UPDATE`, eventID).Exec(context.Background())
 	require.NoError(t, err)
-	var eventBlockerPID int
-	require.NoError(t, eventBlocker.NewRaw(`SELECT pg_backend_pid()`).Scan(context.Background(), &eventBlockerPID))
-	concurrentEvent := make(chan error, 1)
+	var eventBoundaryPID int
+	require.NoError(t, eventBoundary.NewRaw(`SELECT pg_backend_pid()`).Scan(context.Background(), &eventBoundaryPID))
+
+	coverID := newMediaID.String()
+	organization := make(chan error, 1)
 	go func() {
-		_, createErr := events.New(fixture.db).CreateEvent(context.Background(), fixture.actor, events.CreateEventRequest{
-			SourceAlbumIDs: []string{sourceAlbumID.String()}, MediaItemIDs: []string{newMediaID.String()},
-			Timezone: "UTC", Title: "Concurrent repair draft",
+		_, organizeErr := events.New(fixture.db).OrganizeEvent(context.Background(), fixture.actor, eventID, events.OrganizeEventRequest{
+			Version: 1,
+			Moments: []events.OrganizeMoment{{
+				ID: momentID.String(), ProposedDay: "2026-01-01", CoverMediaItemID: &coverID,
+				MediaItemIDs: []string{newMediaID.String()},
+			}},
 		})
-		concurrentEvent <- createErr
+		organization <- organizeErr
 	}()
-	concurrentEventPID := waitForRepairBlockedQuery(t, fixture.db, eventBlockerPID, `%INSERT INTO events%`)
+	organizerPID := waitForRepairBlockedQuery(t, fixture.db, eventBoundaryPID, `%SELECT version, title, description, grouping_timezone%`)
 	confirmation := make(chan error, 1)
 	go func() {
 		_, confirmErr := fixture.service.ConfirmMedia(context.Background(), fixture.actor, candidateID)
 		confirmation <- confirmErr
 	}()
-	waitForRepairBlockedQuery(t, fixture.db, concurrentEventPID, `%SELECT id FROM media_items WHERE id IN%`)
-	candidateProbe, err := fixture.db.BeginTx(context.Background(), nil)
-	require.NoError(t, err)
-	_, err = candidateProbe.NewRaw(`SELECT id FROM media_repair_candidates WHERE id = ? FOR UPDATE NOWAIT`, candidateID).Exec(context.Background())
-	require.NoError(t, err, "confirmation must wait for Media rows before locking its candidate")
-	require.NoError(t, candidateProbe.Rollback())
-	require.NoError(t, eventBlocker.Rollback())
+	waitForRepairBlockedQuery(t, fixture.db, organizerPID, `%pg_advisory_xact_lock(hashtextextended%`)
+	require.NoError(t, eventBoundary.Rollback())
 	select {
-	case createErr := <-concurrentEvent:
-		require.NoError(t, createErr)
+	case organizeErr := <-organization:
+		require.NoError(t, organizeErr, "Event organization completes before the waiting relink")
 	case <-time.After(time.Second):
-		t.Fatal("Event creation did not complete after its table was released")
+		t.Fatal("Event organization did not complete after its controlled Event lock was released")
 	}
 	select {
 	case confirmErr := <-confirmation:
 		require.NoError(t, confirmErr)
 	case <-time.After(time.Second):
-		t.Fatal("confirmation did not complete after Event creation")
+		t.Fatal("confirmation did not complete after Event organization")
 	}
 	var actualAssetID uuid.UUID
 	var availability string
@@ -1373,7 +1373,7 @@ func TestMediaConfirmationPreservesPortalIdentityAndMovesBacking(t *testing.T) {
 	assert.Equal(t, newAssetID.String(), auditCandidateAssetID)
 	var eventVersion int64
 	require.NoError(t, fixture.db.NewRaw(`SELECT version FROM events WHERE id = ?`, eventID).Scan(context.Background(), &eventVersion))
-	assert.Equal(t, int64(2), eventVersion)
+	assert.Equal(t, int64(3), eventVersion, "organization and relink each advance the serialized Event state")
 	_, err = events.New(fixture.db).OrganizeEvent(context.Background(), fixture.actor, eventID, events.OrganizeEventRequest{
 		Version: 1, UnassignedMediaIDs: []string{newMediaID.String()},
 	})

@@ -21,6 +21,7 @@ import (
 	"unicode"
 
 	"github.com/google/uuid"
+	"github.com/robinjoseph08/memento/internal/mediaavailability"
 	"github.com/robinjoseph08/memento/internal/placementlock"
 	"github.com/robinjoseph08/memento/pkg/immich"
 	"github.com/robinjoseph08/memento/pkg/setup"
@@ -123,6 +124,16 @@ type candidate struct {
 	EventTitle    string    `bun:"event_title"`
 }
 
+func (s *Service) markCandidatesSourceMissing(ctx context.Context, candidates []candidate) error {
+	backings := make([]mediaavailability.Backing, 0, len(candidates))
+	for _, item := range candidates {
+		backings = append(backings, mediaavailability.Backing{
+			MediaID: item.MediaID, BackingID: item.BackingID, AssetID: item.AssetID,
+		})
+	}
+	return mediaavailability.MarkSourceMissing(ctx, s.db, backings)
+}
+
 const authorizedCandidates = `
 	SELECT DISTINCT ON (valid.media_item_id)
 	       valid.media_item_id, backing.id AS backing_id, backing.immich_asset_id AS asset_id,
@@ -223,6 +234,12 @@ func (s *Service) Plan(ctx context.Context, actor setup.SessionActor, request Pl
 		assetToCandidate[item.AssetID] = item
 	}
 	parts, err := s.source.ArchiveInfo(ctx, assets)
+	if errors.Is(err, immich.ErrNotFound) {
+		if markErr := s.markCandidatesSourceMissing(ctx, initial); markErr != nil {
+			return PlanResponse{}, ErrUnavailable
+		}
+		return PlanResponse{}, ErrNotFound
+	}
 	if err != nil || len(parts) == 0 || len(parts) > maximumArchiveParts {
 		return PlanResponse{}, ErrUnavailable
 	}
@@ -434,6 +451,16 @@ func (s *Service) loadPart(ctx context.Context, db bun.IDB, actor setup.SessionA
 	return result, nil
 }
 
+func (s *Service) markPlannedSourceMissing(ctx context.Context, part plannedPart) error {
+	backings := make([]mediaavailability.Backing, 0, len(part.Items))
+	for _, item := range part.Items {
+		backings = append(backings, mediaavailability.Backing{
+			MediaID: item.MediaID, BackingID: item.BackingID, AssetID: item.PrimaryAssetID,
+		})
+	}
+	return mediaavailability.MarkSourceMissing(ctx, s.db, backings)
+}
+
 func expectedAssets(part plannedPart) ([]uuid.UUID, []uuid.UUID) {
 	all := make([]uuid.UUID, 0, len(part.Items))
 	primaries := make([]uuid.UUID, 0, len(part.Items))
@@ -492,10 +519,25 @@ func (s *Service) StreamPart(ctx context.Context, actor setup.SessionActor, rawT
 	}
 	assets, primaries := expectedAssets(part)
 	info, err := s.source.ArchiveInfo(ctx, primaries)
+	if errors.Is(err, immich.ErrNotFound) {
+		if markErr := s.markPlannedSourceMissing(ctx, part); markErr != nil {
+			return Stream{}, ErrUnavailable
+		}
+		return Stream{}, ErrNotFound
+	}
 	if err != nil || !archiveInfoMatches(info, part.Items) {
 		return Stream{}, ErrNotFound
 	}
 	opened, err := s.source.Archive(ctx, assets)
+	if errors.Is(err, immich.ErrNotFound) {
+		if opened.Body != nil {
+			_ = opened.Body.Close()
+		}
+		if markErr := s.markPlannedSourceMissing(ctx, part); markErr != nil {
+			return Stream{}, ErrUnavailable
+		}
+		return Stream{}, ErrNotFound
+	}
 	if err != nil || opened.Body == nil {
 		if opened.Body != nil {
 			_ = opened.Body.Close()

@@ -98,6 +98,10 @@ type stagedPlacement struct {
 // Recipient-Media inputs and every Staged access summary derived from them.
 const AccessSummaryLockKey = "events:staged-access-summary-inputs"
 
+// MediaOrganizationLockKey orders editable Event organization against explicit
+// Media identity relinks before either operation takes Event or Media row locks.
+const MediaOrganizationLockKey = "events:media-organization"
+
 // LockAccessSummaryRefresh holds the global entitlement inputs stable while a
 // Staged update is refreshed. Callers that write editable Event state must take
 // this shared lock before locking or writing an Event.
@@ -111,6 +115,20 @@ func LockAccessSummaryRefresh(ctx context.Context, tx bun.Tx) error {
 // before locking an individual Event.
 func LockAccessSummaryReplacement(ctx context.Context, tx bun.Tx) error {
 	_, err := tx.NewRaw(`SELECT pg_advisory_xact_lock(hashtextextended(?, 0))`, AccessSummaryLockKey).Exec(ctx)
+	return err
+}
+
+// LockMediaOrganization permits unrelated Event organization to remain
+// concurrent while ordering every organizer before Event and Media row locks.
+func LockMediaOrganization(ctx context.Context, tx bun.Tx) error {
+	_, err := tx.NewRaw(`SELECT pg_advisory_xact_lock_shared(hashtextextended(?, 0))`, MediaOrganizationLockKey).Exec(ctx)
+	return err
+}
+
+// LockMediaRelink excludes Event organization while a relink changes draft
+// Media references. It must be acquired before Event or Media row locks.
+func LockMediaRelink(ctx context.Context, tx bun.Tx) error {
+	_, err := tx.NewRaw(`SELECT pg_advisory_xact_lock(hashtextextended(?, 0))`, MediaOrganizationLockKey).Exec(ctx)
 	return err
 }
 

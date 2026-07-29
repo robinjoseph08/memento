@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/robinjoseph08/memento/internal/mediaavailability"
 	"github.com/robinjoseph08/memento/internal/placementlock"
 	"github.com/robinjoseph08/memento/pkg/immich"
 	"github.com/robinjoseph08/memento/pkg/setup"
@@ -730,25 +731,9 @@ func (s *Service) openResolvedRepresentation(ctx context.Context, mediaID, backi
 }
 
 func (s *Service) markSourceMissing(ctx context.Context, mediaID, backingID, assetID uuid.UUID) error {
-	return s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
-		var lockedMediaID uuid.UUID
-		if err := tx.NewRaw(`SELECT id FROM media_items WHERE id = ? FOR UPDATE`, mediaID).Scan(ctx, &lockedMediaID); err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				return nil
-			}
-			return err
-		}
-		_, err := tx.NewRaw(`
-			UPDATE media_items AS media SET availability = 'source_missing', missing_since = COALESCE(missing_since, now()), updated_at = now()
-			WHERE media.id = ? AND media.availability = 'current'
-			  AND EXISTS (
-				SELECT 1 FROM media_backings AS backing
-				WHERE backing.id = ? AND backing.media_item_id = media.id
-				  AND backing.immich_asset_id = ? AND backing.active
-			  )
-		`, mediaID, backingID, assetID).Exec(ctx)
-		return err
-	})
+	return mediaavailability.MarkSourceMissing(ctx, s.db, []mediaavailability.Backing{{
+		MediaID: mediaID, BackingID: backingID, AssetID: assetID,
+	}})
 }
 
 func (s *Service) openRepresentation(ctx context.Context, assetID uuid.UUID, kind representation, request immich.MediaRequest) (immich.MediaResponse, error) {

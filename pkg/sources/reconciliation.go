@@ -388,27 +388,47 @@ func (s *Service) applyValidatedSnapshot(
 		if err := proposeMediaRepairs(ctx, tx, now); err != nil {
 			return 0, 0, 0, err
 		}
-		// Evidence-free additions predate repair support and have no safe identity seam to preserve.
+		// Evidence-free migrated additions have no repair seam, but a stable Media
+		// identity must outlive every publication, interaction, authorization, and
+		// archive reference. Delete only an entirely unreferenced private draft.
 		if _, err := tx.NewRaw(`
-			DELETE FROM media_backings AS backing
-			WHERE backing.active AND backing.checksum IS NULL
-			  AND EXISTS (
-				SELECT 1 FROM media_items AS media WHERE media.id = backing.media_item_id
-				  AND media.availability = 'source_missing'
+			WITH disposable AS MATERIALIZED (
+				SELECT media.id
+				FROM media_items AS media
+				WHERE media.availability = 'source_missing'
 				  AND NOT EXISTS (SELECT 1 FROM source_album_memberships WHERE media_item_id = media.id)
-				  AND NOT EXISTS (SELECT 1 FROM media_repair_candidates WHERE media_item_id = media.id)
+				  AND NOT EXISTS (SELECT 1 FROM media_repair_candidates WHERE media_item_id = media.id OR candidate_media_item_id = media.id)
+				  AND NOT EXISTS (SELECT 1 FROM draft_media_placements WHERE media_item_id = media.id)
+				  AND NOT EXISTS (SELECT 1 FROM draft_moments WHERE cover_media_item_id = media.id)
+				  AND NOT EXISTS (SELECT 1 FROM loose_items WHERE media_item_id = media.id)
+				  AND NOT EXISTS (SELECT 1 FROM published_media_placements WHERE media_item_id = media.id)
+				  AND NOT EXISTS (SELECT 1 FROM published_moments WHERE cover_media_item_id = media.id)
+				  AND NOT EXISTS (SELECT 1 FROM current_published_placements WHERE media_item_id = media.id)
+				  AND NOT EXISTS (SELECT 1 FROM current_audience_entitlements WHERE media_item_id = media.id)
+				  AND NOT EXISTS (SELECT 1 FROM current_recipient_event_covers WHERE media_item_id = media.id)
+				  AND NOT EXISTS (SELECT 1 FROM published_search_documents WHERE media_item_id = media.id)
+				  AND NOT EXISTS (SELECT 1 FROM favorites WHERE media_item_id = media.id)
+				  AND NOT EXISTS (SELECT 1 FROM comments WHERE media_item_id = media.id)
+				  AND NOT EXISTS (SELECT 1 FROM comment_subscriptions WHERE media_item_id = media.id)
+				  AND NOT EXISTS (SELECT 1 FROM interaction_activity_items WHERE media_item_id = media.id)
+				  AND NOT EXISTS (SELECT 1 FROM staged_source_removals WHERE media_item_id = media.id)
+				  AND NOT EXISTS (SELECT 1 FROM archive_part_items WHERE media_item_id = media.id)
+				  AND NOT EXISTS (SELECT 1 FROM content_withdrawals WHERE target_kind = 'media' AND target_id = media.id)
+				  AND NOT EXISTS (SELECT 1 FROM publication_audit_events WHERE target_kind = 'media' AND target_id = media.id)
+				FOR UPDATE OF media
+			), deleted_backings AS (
+				DELETE FROM media_backings AS backing USING disposable
+				WHERE backing.media_item_id = disposable.id AND backing.active AND backing.checksum IS NULL
+				  AND NOT EXISTS (SELECT 1 FROM archive_part_items WHERE media_backing_id = backing.id)
+				RETURNING backing.id, backing.media_item_id
+			)
+			DELETE FROM media_items AS media USING disposable
+			WHERE media.id = disposable.id
+			  AND NOT EXISTS (
+				SELECT 1 FROM media_backings AS backing
+				WHERE backing.media_item_id = media.id
+				  AND NOT EXISTS (SELECT 1 FROM deleted_backings WHERE deleted_backings.id = backing.id)
 			  )
-		`).Exec(ctx); err != nil {
-			return 0, 0, 0, err
-		}
-		if _, err := tx.NewRaw(`
-			DELETE FROM media_items AS media
-			WHERE availability = 'source_missing'
-			  AND NOT EXISTS (SELECT 1 FROM source_album_memberships WHERE media_item_id = media.id)
-			  AND NOT EXISTS (SELECT 1 FROM media_backings WHERE media_item_id = media.id)
-			  AND NOT EXISTS (SELECT 1 FROM media_repair_candidates WHERE media_item_id = media.id)
-			  AND NOT EXISTS (SELECT 1 FROM draft_media_placements WHERE media_item_id = media.id)
-			  AND NOT EXISTS (SELECT 1 FROM loose_items WHERE media_item_id = media.id)
 		`).Exec(ctx); err != nil {
 			return 0, 0, 0, err
 		}

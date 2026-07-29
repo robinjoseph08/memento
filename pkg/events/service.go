@@ -618,6 +618,9 @@ func (s *Service) OrganizeEvent(ctx context.Context, actor setup.CuratorSession,
 		if err := staging.LockAccessSummaryRefresh(ctx, tx); err != nil {
 			return err
 		}
+		if err := staging.LockMediaOrganization(ctx, tx); err != nil {
+			return err
+		}
 		var currentVersion int64
 		var title, description, timezone, priorEventPlaceLabelsJSON string
 		err := tx.NewRaw(`SELECT version, title, description, grouping_timezone, to_json(place_labels)::text FROM events WHERE id = ? AND lifecycle IN ('draft', 'published') FOR UPDATE`, id).Scan(ctx, &currentVersion, &title, &description, &timezone, &priorEventPlaceLabelsJSON)
