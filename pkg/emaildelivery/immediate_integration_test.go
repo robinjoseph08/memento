@@ -51,25 +51,50 @@ func (s *immediateSender) sent() []smtp.Message {
 	return append([]smtp.Message(nil), s.messages...)
 }
 
-type immediatePreviewSource struct{ contents []byte }
+type immediatePreviewSource struct {
+	mu        sync.Mutex
+	contents  []byte
+	allowed   map[uuid.UUID]bool
+	requested []uuid.UUID
+}
 
-func (source immediatePreviewSource) EmailThumbnail(context.Context, uuid.UUID, immich.MediaRequest) (immich.MediaResponse, error) {
+func (source *immediatePreviewSource) EmailThumbnail(_ context.Context, assetID uuid.UUID, _ immich.MediaRequest) (immich.MediaResponse, error) {
+	source.mu.Lock()
+	defer source.mu.Unlock()
+	source.requested = append(source.requested, assetID)
+	if source.allowed != nil && !source.allowed[assetID] {
+		return immich.MediaResponse{Body: http.NoBody, StatusCode: http.StatusNotFound}, nil
+	}
 	return immich.MediaResponse{
 		Body: io.NopCloser(bytes.NewReader(source.contents)), StatusCode: http.StatusOK,
 		ContentType: "image/jpeg", ContentLength: int64(len(source.contents)),
 	}, nil
 }
 
+func (source *immediatePreviewSource) allowOnly(assetID uuid.UUID) {
+	source.mu.Lock()
+	defer source.mu.Unlock()
+	source.allowed = map[uuid.UUID]bool{assetID: true}
+}
+
+func (source *immediatePreviewSource) requests() []uuid.UUID {
+	source.mu.Lock()
+	defer source.mu.Unlock()
+	return append([]uuid.UUID(nil), source.requested...)
+}
+
 type immediateFixture struct {
 	db          *bun.DB
 	service     *Service
 	sender      *immediateSender
+	preview     *immediatePreviewSource
 	people      map[string]uuid.UUID
 	access      map[string]uuid.UUID
 	event       uuid.UUID
 	publication uuid.UUID
 	moment      uuid.UUID
 	media       []uuid.UUID
+	assets      []uuid.UUID
 	base        time.Time
 }
 
@@ -79,10 +104,11 @@ func newImmediateFixture(t *testing.T) immediateFixture {
 	db := testdb.Open(t)
 	require.NoError(t, migrations.Apply(ctx, db))
 	sender := new(immediateSender)
+	preview := &immediatePreviewSource{contents: previewWithPrivateMetadata(t)}
 	service := New(db, deliveryConfig(), sender)
-	service.SetPreviewSource(immediatePreviewSource{contents: previewWithPrivateMetadata(t)})
+	service.SetPreviewSource(preview)
 	fixture := immediateFixture{
-		db: db, service: service, sender: sender, people: map[string]uuid.UUID{}, access: map[string]uuid.UUID{},
+		db: db, service: service, sender: sender, preview: preview, people: map[string]uuid.UUID{}, access: map[string]uuid.UUID{},
 		event: uuid.New(), publication: uuid.New(), moment: uuid.New(), media: []uuid.UUID{uuid.New(), uuid.New()},
 		base: time.Now().UTC().Add(-time.Hour).Truncate(time.Microsecond),
 	}
@@ -94,13 +120,19 @@ func newImmediateFixture(t *testing.T) immediateFixture {
 			INSERT INTO recipient_access_generations
 				(id, person_id, generation, state, is_current, onboarding_completed_at)
 			VALUES (?, ?, 1, 'completed', true, ?);
+			INSERT INTO onboarding_choices
+				(recipient_access_generation_id, privacy_acknowledged, engagement_acknowledged,
+				 interest_list_acknowledged, email_previews_acknowledged, push_guidance_acknowledged,
+				 informed_choices_version, email_preference, completed_at)
+			VALUES (?, true, true, true, true, true, 2, 'immediate', ?);
 			INSERT INTO recipient_emails
 				(id, recipient_access_generation_id, email, normalized_email, is_current)
 			VALUES (gen_random_uuid(), ?, ?, ?, true);
 			INSERT INTO notification_preferences (recipient_access_generation_id, email_preference, updated_at)
 			VALUES (?, 'immediate', ?)
 		`, fixture.people[name], name, name, fixture.people[name], fixture.access[name], fixture.people[name], fixture.base,
-			fixture.access[name], name+"@example.com", name+"@example.com", fixture.access[name], fixture.base).Exec(ctx)
+			fixture.access[name], fixture.base, fixture.access[name], name+"@example.com", name+"@example.com",
+			fixture.access[name], fixture.base).Exec(ctx)
 		require.NoError(t, err)
 	}
 	_, err := db.NewRaw(`
@@ -144,6 +176,7 @@ func newImmediateFixture(t *testing.T) immediateFixture {
 	require.NoError(t, err)
 	for position, mediaID := range fixture.media {
 		assetID := uuid.New()
+		fixture.assets = append(fixture.assets, assetID)
 		_, err := db.NewRaw(`
 			INSERT INTO media_items
 				(id, immich_asset_id, media_type, width, height, local_date_time, availability, first_seen_at, last_seen_at)
@@ -173,15 +206,20 @@ func newImmediateFixture(t *testing.T) immediateFixture {
 
 func (fixture immediateFixture) addPublicationActivity(t *testing.T, at time.Time, mediaIDs ...uuid.UUID) {
 	t.Helper()
+	fixture.addPublicationActivityFor(t, "alex", at, mediaIDs...)
+}
+
+func (fixture immediateFixture) addPublicationActivityFor(t *testing.T, recipient string, at time.Time, mediaIDs ...uuid.UUID) {
+	t.Helper()
 	_, err := fixture.db.NewRaw(`INSERT INTO publication_activity_items
 		(publication_id, recipient_access_generation_id, created_at) VALUES (?, ?, ?)
 		ON CONFLICT (publication_id, recipient_access_generation_id) DO UPDATE SET created_at = EXCLUDED.created_at`,
-		fixture.publication, fixture.access["alex"], at).Exec(context.Background())
+		fixture.publication, fixture.access[recipient], at).Exec(context.Background())
 	require.NoError(t, err)
 	for _, mediaID := range mediaIDs {
 		_, err = fixture.db.NewRaw(`INSERT INTO publication_notification_media
 			(publication_id, recipient_access_generation_id, media_item_id) VALUES (?, ?, ?)
-			ON CONFLICT DO NOTHING`, fixture.publication, fixture.access["alex"], mediaID).Exec(context.Background())
+			ON CONFLICT DO NOTHING`, fixture.publication, fixture.access[recipient], mediaID).Exec(context.Background())
 		require.NoError(t, err)
 	}
 }
@@ -285,6 +323,37 @@ func TestImmediateEmailReanchorsOverlappingOutOfOrderActivityAtTheExactBoundary(
 	assert.Equal(t, fixture.base.Add(coalescingWindow), availableAt, "the durable send schedule follows the reanchored close")
 }
 
+func TestImmediateEmailSendsEachRecipientBatchOnlyToItsExactCurrentAddress(t *testing.T) {
+	fixture := newImmediateFixture(t)
+	fixture.addPublicationActivityFor(t, "alex", fixture.base, fixture.media[0])
+	fixture.addPublicationActivityFor(t, "blair", fixture.base, fixture.media[0])
+	require.NoError(t, fixture.service.QueuePublication(context.Background(), fixture.event, fixture.publication))
+
+	type recipientBatch struct {
+		ID      int64
+		Address string
+	}
+	var batches []recipientBatch
+	require.NoError(t, fixture.db.NewRaw(`SELECT batch.id, email.email AS address
+		FROM notification_batches AS batch
+		JOIN recipient_emails AS email
+		  ON email.recipient_access_generation_id = batch.recipient_access_generation_id AND email.is_current
+		ORDER BY email.email`).Scan(context.Background(), &batches))
+	require.Len(t, batches, 2)
+	require.Equal(t, []recipientBatch{
+		{ID: batches[0].ID, Address: "alex@example.com"},
+		{ID: batches[1].ID, Address: "blair@example.com"},
+	}, batches)
+
+	for _, batch := range batches {
+		require.NoError(t, fixture.service.HandleImmediate(context.Background(), fixture.leasedBatchJob(t, batch.ID)))
+	}
+	messages := fixture.sender.sent()
+	require.Len(t, messages, 2)
+	assert.Equal(t, "alex@example.com", messages[0].To)
+	assert.Equal(t, "blair@example.com", messages[1].To)
+}
+
 func TestImmediateEmailRecomputesSurvivorsAndStripsPreviewMetadata(t *testing.T) {
 	fixture := newImmediateFixture(t)
 	fixture.addPublicationActivity(t, fixture.base, fixture.media...)
@@ -296,8 +365,9 @@ func TestImmediateEmailRecomputesSurvivorsAndStripsPreviewMetadata(t *testing.T)
 		UPDATE comments SET state = 'deleted', deleted_at = clock_timestamp() WHERE id = ?;
 		DELETE FROM current_audience_entitlements
 		WHERE recipient_access_generation_id = ? AND media_item_id = ?
-	`, fixture.event, deleted, fixture.access["alex"], fixture.media[1]).Exec(context.Background())
+	`, fixture.event, deleted, fixture.access["alex"], fixture.media[0]).Exec(context.Background())
 	require.NoError(t, err)
+	fixture.preview.allowOnly(fixture.assets[1])
 	var batchID int64
 	require.NoError(t, fixture.db.NewRaw(`SELECT id FROM notification_batches ORDER BY id LIMIT 1`).Scan(context.Background(), &batchID))
 
@@ -307,11 +377,30 @@ func TestImmediateEmailRecomputesSurvivorsAndStripsPreviewMetadata(t *testing.T)
 	assert.Contains(t, messages[0].Body, "Corrected safe title: 1 new item")
 	assert.NotContains(t, messages[0].Body, "Blair commented")
 	require.NotNil(t, messages[0].Embedded)
+	assert.Equal(t, []uuid.UUID{fixture.assets[1]}, fixture.preview.requests(), "only the currently authorized surviving asset is fetched")
 	assert.NotContains(t, string(messages[0].Embedded.Data), "private-gps-metadata")
 	decoded, err := jpeg.Decode(bytes.NewReader(messages[0].Embedded.Data))
 	require.NoError(t, err)
 	assert.LessOrEqual(t, decoded.Bounds().Dx(), maxPreviewPixels)
 	assert.LessOrEqual(t, decoded.Bounds().Dy(), maxPreviewPixels)
+}
+
+func TestImmediateEmailOmitsPreviewWithoutPersistedDisclosureAcknowledgment(t *testing.T) {
+	fixture := newImmediateFixture(t)
+	fixture.addPublicationActivity(t, fixture.base, fixture.media[0])
+	require.NoError(t, fixture.service.QueuePublication(context.Background(), fixture.event, fixture.publication))
+	_, err := fixture.db.NewRaw(`UPDATE onboarding_choices
+		SET email_previews_acknowledged = false, push_guidance_acknowledged = false, informed_choices_version = 1
+		WHERE recipient_access_generation_id = ?`, fixture.access["alex"]).Exec(context.Background())
+	require.NoError(t, err)
+	var batchID int64
+	require.NoError(t, fixture.db.NewRaw(`SELECT id FROM notification_batches`).Scan(context.Background(), &batchID))
+
+	require.NoError(t, fixture.service.HandleImmediate(context.Background(), fixture.leasedBatchJob(t, batchID)))
+	messages := fixture.sender.sent()
+	require.Len(t, messages, 1, "a migrated recipient remains eligible for immediate text email")
+	assert.Nil(t, messages[0].Embedded)
+	assert.Empty(t, fixture.preview.requests(), "private image bytes are not fetched without preview disclosure acknowledgment")
 }
 
 func TestImmediateCommentEligibilityIsSharedByQueueAndSend(t *testing.T) {

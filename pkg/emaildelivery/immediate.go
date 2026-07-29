@@ -58,6 +58,7 @@ type assembledImmediate struct {
 	Body           string
 	PreviewMediaID uuid.UUID
 	PreviewAssetID uuid.UUID
+	PreviewAllowed bool
 	Empty          bool
 }
 
@@ -261,7 +262,7 @@ func (s *Service) HandleImmediate(ctx context.Context, job worker.Job) error {
 		return err
 	}
 	var preview *smtp.EmbeddedImage
-	if !assembled.Empty && assembled.PreviewAssetID != uuid.Nil && s.previewSource != nil {
+	if !assembled.Empty && assembled.PreviewAllowed && assembled.PreviewAssetID != uuid.Nil && s.previewSource != nil {
 		preview = s.loadSafePreview(ctx, assembled.PreviewAssetID)
 	}
 	if s.beforeImmediateSend != nil {
@@ -313,7 +314,7 @@ func (s *Service) HandleImmediate(ctx context.Context, job worker.Job) error {
 				WHERE id = ? AND status = 'pending'`, payload.BatchID).Exec(ctx)
 			return err
 		}
-		if preview != nil && (current.PreviewMediaID != assembled.PreviewMediaID || current.PreviewAssetID != assembled.PreviewAssetID) {
+		if preview != nil && (!current.PreviewAllowed || current.PreviewMediaID != assembled.PreviewMediaID || current.PreviewAssetID != assembled.PreviewAssetID) {
 			preview = nil
 		}
 		deliveryAttempts = attempts
@@ -417,13 +418,17 @@ func (s *Service) assembleImmediateIn(ctx context.Context, db bun.IDB, batchID i
 	if err != nil {
 		return assembledImmediate{}, err
 	}
+	previewAllowed, err := loadPreviewAcknowledgment(ctx, db, accessID, lock)
+	if err != nil {
+		return assembledImmediate{}, err
+	}
 	var items []batchItem
 	if err := db.NewRaw(`SELECT id, kind, publication_id, comment_id, activity_created_at
 		FROM notification_batch_items WHERE batch_id = ? ORDER BY activity_created_at, id`, batchID).Scan(ctx, &items); err != nil {
 		return assembledImmediate{}, err
 	}
 	lines := make([]string, 0, len(items))
-	result := assembledImmediate{Recipient: recipient}
+	result := assembledImmediate{Recipient: recipient, PreviewAllowed: previewAllowed}
 	for _, item := range items {
 		spec, err := item.Kind.spec()
 		if err != nil {
@@ -450,6 +455,20 @@ func (s *Service) assembleImmediateIn(ctx context.Context, db bun.IDB, batchID i
 	result.Body = "New activity is ready in Memento:\n\n" + strings.Join(lines, "\n") +
 		"\n\nCounts include only items you can currently access. Sign in to Memento to view them."
 	return result, nil
+}
+
+func loadPreviewAcknowledgment(ctx context.Context, db bun.IDB, accessID uuid.UUID, lock bool) (bool, error) {
+	lockClause := ""
+	if lock {
+		lockClause = " FOR SHARE"
+	}
+	var acknowledged bool
+	err := db.NewRaw(`SELECT email_previews_acknowledged FROM onboarding_choices
+		WHERE recipient_access_generation_id = ?`+lockClause, accessID).Scan(ctx, &acknowledged)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return acknowledged, err
 }
 
 func lockImmediateEvents(ctx context.Context, db bun.IDB, batchID int64) error {
