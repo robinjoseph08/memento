@@ -179,4 +179,5 @@ depends = [
 
 [tasks."ci:quiet"]
 description = "Show wrapper summaries for the complete CI gate and task output only on failure"
+env = { MISE_JOBS = "1" }
 run = "./scripts/run-mise-quiet.sh ci"
