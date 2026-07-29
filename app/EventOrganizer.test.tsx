@@ -670,9 +670,11 @@ test("shows the resulting Event with highlighted Staged net changes", async () =
   stubOrganizerAPI(staged);
   renderOrganizer();
 
-  const workItem = await screen.findByRole("button", {
-    name: /Corrected family weekend/,
-  });
+  const workItem = await screen.findByRole(
+    "button",
+    { name: /Corrected family weekend/ },
+    contentionWait,
+  );
   expect(workItem).toHaveTextContent("Staged update");
   fireEvent.click(workItem);
 
