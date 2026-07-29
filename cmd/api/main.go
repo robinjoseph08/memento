@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/robinjoseph08/golib/logger"
 	"github.com/robinjoseph08/memento/pkg/activity"
 	"github.com/robinjoseph08/memento/pkg/archives"
@@ -29,6 +30,7 @@ import (
 	"github.com/robinjoseph08/memento/pkg/migrations"
 	"github.com/robinjoseph08/memento/pkg/outbox"
 	"github.com/robinjoseph08/memento/pkg/people"
+	"github.com/robinjoseph08/memento/pkg/push"
 	"github.com/robinjoseph08/memento/pkg/recipients"
 	"github.com/robinjoseph08/memento/pkg/repairs"
 	"github.com/robinjoseph08/memento/pkg/search"
@@ -40,6 +42,7 @@ import (
 	"github.com/robinjoseph08/memento/pkg/suggestions"
 	"github.com/robinjoseph08/memento/pkg/visibility"
 	"github.com/robinjoseph08/memento/pkg/worker"
+	"github.com/uptrace/bun"
 )
 
 func main() {
@@ -102,15 +105,31 @@ func run() error {
 	emailService := emaildelivery.New(db, cfg.SMTP, emailSender, cfg.Security.Secret)
 	emailService.SetPublicURL(cfg.HTTP.PublicURL)
 	emailService.SetPreviewSource(immichClient)
+	pushPolicy := push.NewEndpointPolicy(nil)
+	var pushSender push.Sender
+	if cfg.Push.Enabled {
+		pushSender = push.NewWebPushSender(cfg.Push, pushPolicy, nil)
+	}
+	pushService := push.New(db, cfg.Push, cfg.Security.Secret, pushSender, pushPolicy)
 	sourceService := sources.New(db, immichClient, cfg.Sources.ReconciliationInterval)
 	eventService := events.New(db)
-	eventService.SetPublicationHandoff(emailService.QueuePublication)
+	eventService.SetPublicationHandoff(func(ctx context.Context, eventID, publicationID uuid.UUID) error {
+		if err := emailService.QueuePublication(ctx, eventID, publicationID); err != nil {
+			return err
+		}
+		return pushService.QueuePublication(ctx, eventID, publicationID)
+	})
 	archiveService := archives.New(db, immichClient)
 	interactionActivity := activity.New(db)
 	commentService := comments.New(db)
 	commentService.SetHandoff(interactionActivity.RecordComment)
-	commentService.SetImmediateHandoff(emailService.QueueComment)
-	handlers := jobHandlers(sourceService, eventService, archiveService, commentService, emailService, cfg.SMTP.Enabled)
+	commentService.SetImmediateHandoff(func(ctx context.Context, tx bun.Tx, accessID, commentID uuid.UUID) error {
+		if err := emailService.QueueComment(ctx, tx, accessID, commentID); err != nil {
+			return err
+		}
+		return pushService.QueueComment(ctx, tx, accessID, commentID)
+	})
+	handlers := jobHandlers(sourceService, eventService, archiveService, commentService, emailService, cfg.SMTP.Enabled, pushService)
 
 	owner, err := leaseOwner()
 	if err != nil {
@@ -165,6 +184,7 @@ func run() error {
 	comments.RegisterRoutes(e, commentHandler)
 	favorites.RegisterRoutes(e, favoriteHandler)
 	activity.RegisterRoutes(e, activity.NewHandler(interactionActivity, setupService))
+	push.RegisterRoutes(e, push.NewHandler(pushService, setupService))
 
 	workCtx, cancelWork := context.WithCancel(context.Background())
 	defer cancelWork()
@@ -204,7 +224,7 @@ func run() error {
 	return nil
 }
 
-func jobHandlers(sourceService *sources.Service, eventService *events.Service, archiveService *archives.Service, commentService *comments.Service, emailService *emaildelivery.Service, smtpEnabled bool) map[string]worker.Handler {
+func jobHandlers(sourceService *sources.Service, eventService *events.Service, archiveService *archives.Service, commentService *comments.Service, emailService *emaildelivery.Service, smtpEnabled bool, pushServices ...*push.Service) map[string]worker.Handler {
 	handlers := map[string]worker.Handler{
 		sources.ReconciliationJobKind: sourceService.HandleReconciliationJob,
 		events.PublicationJobKind:     eventService.HandlePublicationJob,
@@ -215,6 +235,9 @@ func jobHandlers(sourceService *sources.Service, eventService *events.Service, a
 		handlers[emaildelivery.JobKind] = emailService.Handle
 		handlers[emaildelivery.ImmediateJobKind] = emailService.HandleImmediate
 		handlers[emaildelivery.WeeklyJobKind] = emailService.HandleWeekly
+	}
+	if len(pushServices) > 0 && pushServices[0] != nil && pushServices[0].Configured() {
+		handlers[push.JobKind] = pushServices[0].Handle
 	}
 	return handlers
 }

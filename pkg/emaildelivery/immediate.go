@@ -12,7 +12,6 @@ import (
 	"image/jpeg"
 	"io"
 	"net/http"
-	"sort"
 	"strings"
 	"time"
 
@@ -23,6 +22,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/robinjoseph08/memento/internal/placementlock"
 	"github.com/robinjoseph08/memento/pkg/immich"
+	"github.com/robinjoseph08/memento/pkg/notificationactivity"
 	"github.com/robinjoseph08/memento/pkg/smtp"
 	"github.com/robinjoseph08/memento/pkg/worker"
 	"github.com/uptrace/bun"
@@ -238,157 +238,10 @@ type pendingEmailBatch struct {
 	Truncated       bool
 }
 
-type pendingImmediateItem struct {
-	ID                int64
-	BatchID           int64
-	ActivityCreatedAt time.Time
-	Incoming          bool
-}
-
-type plannedImmediateWindow struct {
-	StartedAt time.Time
-	Items     []pendingImmediateItem
-	Truncated bool
-}
-
 func (s *Service) queueImmediateItem(ctx context.Context, tx bun.Tx, accessID uuid.UUID, kind batchItemKind, sourceID uuid.UUID, activityAt time.Time, preferenceVersion int64) error {
-	spec, err := kind.spec()
-	if err != nil {
-		return err
-	}
-	if _, err := tx.NewRaw(`SELECT pg_advisory_xact_lock(hashtextextended(?::text, 4610))`, accessID.String()).Exec(ctx); err != nil {
-		return err
-	}
-	column := spec.sourceColumn
-	var alreadyQueued bool
-	if err := tx.NewRaw(`SELECT EXISTS (SELECT 1 FROM notification_batch_items
-		WHERE recipient_access_generation_id = ? AND kind = ? AND `+column+` = ?)`,
-		accessID, kind, sourceID).Scan(ctx, &alreadyQueued); err != nil {
-		return err
-	}
-	if alreadyQueued {
-		return nil
-	}
-
-	var batches []pendingEmailBatch
-	if err := tx.NewRaw(`
-		SELECT id, public_id, window_started_at, truncated FROM notification_batches
-		WHERE recipient_access_generation_id = ? AND channel = 'email' AND cadence = 'immediate'
-		  AND preference_version = ? AND status = 'pending'
-		ORDER BY window_started_at, id FOR UPDATE
-	`, accessID, preferenceVersion).Scan(ctx, &batches); err != nil {
-		return err
-	}
-	batchIDs := make([]int64, 0, len(batches))
-	truncatedByBatch := make(map[int64]bool, len(batches))
-	for _, batch := range batches {
-		batchIDs = append(batchIDs, batch.ID)
-		truncatedByBatch[batch.ID] = batch.Truncated
-	}
-
-	var items []pendingImmediateItem
-	if len(batchIDs) > 0 {
-		if err := tx.NewRaw(`SELECT id, batch_id, activity_created_at FROM notification_batch_items
-			WHERE batch_id IN (?) ORDER BY activity_created_at, id`, bun.List(batchIDs)).Scan(ctx, &items); err != nil {
-			return err
-		}
-	}
-	activityAt = activityAt.UTC()
-	items = append(items, pendingImmediateItem{ActivityCreatedAt: activityAt, Incoming: true})
-	sort.SliceStable(items, func(left, right int) bool {
-		return items[left].ActivityCreatedAt.Before(items[right].ActivityCreatedAt)
+	return notificationactivity.QueueImmediate(ctx, tx, accessID, notificationactivity.Kind(kind), sourceID, activityAt, notificationactivity.Target{
+		Channel: "email", JobKind: ImmediateJobKind, PreferenceVersion: preferenceVersion,
 	})
-
-	windows := make([]plannedImmediateWindow, 0, len(batches)+1)
-	for _, item := range items {
-		if len(windows) == 0 || !item.ActivityCreatedAt.Before(windows[len(windows)-1].StartedAt.Add(coalescingWindow)) {
-			windows = append(windows, plannedImmediateWindow{StartedAt: item.ActivityCreatedAt})
-		}
-		window := &windows[len(windows)-1]
-		window.Items = append(window.Items, item)
-		window.Truncated = window.Truncated || truncatedByBatch[item.BatchID]
-	}
-
-	for index, batch := range batches {
-		startedAt := windows[index].StartedAt
-		if _, err := tx.NewRaw(`UPDATE notification_batches
-			SET window_started_at = ?, closes_at = ?, updated_at = clock_timestamp()
-			WHERE id = ?`, startedAt, startedAt.Add(coalescingWindow), batch.ID).Exec(ctx); err != nil {
-			return err
-		}
-	}
-	for len(batches) < len(windows) {
-		batch, err := createImmediateBatch(ctx, tx, accessID, windows[len(batches)].StartedAt, preferenceVersion)
-		if err != nil {
-			return err
-		}
-		batches = append(batches, batch)
-	}
-	for index, window := range windows {
-		batch := batches[index]
-		closesAt := window.StartedAt.Add(coalescingWindow)
-		truncated := window.Truncated || len(window.Items) > maxEmailBatchItems
-		if _, err := tx.NewRaw(`UPDATE notification_batches
-			SET window_started_at = ?, closes_at = ?, truncated = ?, updated_at = clock_timestamp()
-			WHERE id = ?`, window.StartedAt, closesAt, truncated, batch.ID).Exec(ctx); err != nil {
-			return err
-		}
-		if _, err := tx.NewRaw(`UPDATE outbox_events SET available_at = ?
-			WHERE kind = ? AND aggregate_kind = 'notification_batch' AND aggregate_id = ?
-			  AND delivered_at IS NULL`, closesAt, ImmediateJobKind, batch.PublicID.String()).Exec(ctx); err != nil {
-			return err
-		}
-
-		itemIDs := make([]int64, 0, len(window.Items))
-		hasIncoming := false
-		for _, item := range window.Items {
-			if item.Incoming {
-				hasIncoming = true
-			} else {
-				itemIDs = append(itemIDs, item.ID)
-			}
-		}
-		incomingFits := hasIncoming && len(itemIDs) < maxEmailBatchItems
-		if len(itemIDs) > 0 {
-			if _, err := tx.NewRaw(`UPDATE notification_batch_items SET batch_id = ? WHERE id IN (?)`,
-				batch.ID, bun.List(itemIDs)).Exec(ctx); err != nil {
-				return err
-			}
-		}
-		if incomingFits {
-			if _, err := tx.NewRaw(`INSERT INTO notification_batch_items
-				(batch_id, recipient_access_generation_id, kind, `+column+`, activity_created_at)
-				VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`,
-				batch.ID, accessID, kind, sourceID, activityAt).Exec(ctx); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-func createImmediateBatch(ctx context.Context, tx bun.Tx, accessID uuid.UUID, startedAt time.Time, preferenceVersion int64) (pendingEmailBatch, error) {
-	batch := pendingEmailBatch{PublicID: uuid.New(), WindowStartedAt: startedAt}
-	closesAt := startedAt.Add(coalescingWindow)
-	if err := tx.NewRaw(`
-		INSERT INTO notification_batches (
-			public_id, recipient_access_generation_id, channel, cadence, preference_version, window_started_at, closes_at
-		) VALUES (?, ?, 'email', 'immediate', ?, ?, ?) RETURNING id
-	`, batch.PublicID, accessID, preferenceVersion, startedAt, closesAt).Scan(ctx, &batch.ID); err != nil {
-		return pendingEmailBatch{}, err
-	}
-	payload, err := json.Marshal(emailBatchJobPayload{BatchID: batch.ID})
-	if err != nil {
-		return pendingEmailBatch{}, err
-	}
-	if _, err := tx.NewRaw(`
-		INSERT INTO outbox_events (
-			kind, aggregate_kind, aggregate_id, aggregate_version, payload, available_at, created_at
-		) VALUES (?, 'notification_batch', ?, 1, ?::jsonb, ?, clock_timestamp())
-	`, ImmediateJobKind, batch.PublicID.String(), string(payload), closesAt).Exec(ctx); err != nil {
-		return pendingEmailBatch{}, err
-	}
-	return batch, nil
 }
 
 // HandleImmediate reauthorizes at assembly and again while holding authorization locks through SMTP acceptance.
@@ -588,7 +441,8 @@ func (s *Service) assembleImmediateIn(ctx context.Context, db bun.IDB, batchID i
 		 AND preference.preference_version = batch.preference_version
 		JOIN recipient_emails AS email
 		  ON email.recipient_access_generation_id = access.id AND email.is_current
-		WHERE batch.id = ? AND batch.cadence = 'immediate' AND batch.status = 'pending'`+lockClause, batchID).Scan(ctx, &accessID, &recipient, &truncated)
+		WHERE batch.id = ? AND batch.channel = 'email' AND batch.cadence = 'immediate'
+		  AND batch.status = 'pending'`+lockClause, batchID).Scan(ctx, &accessID, &recipient, &truncated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return assembledImmediate{Empty: true}, nil
 	}
@@ -599,42 +453,23 @@ func (s *Service) assembleImmediateIn(ctx context.Context, db bun.IDB, batchID i
 	if err != nil {
 		return assembledImmediate{}, err
 	}
-	var items []batchItem
-	if err := db.NewRaw(`SELECT id, kind, publication_id, comment_id, activity_created_at
-		FROM notification_batch_items WHERE batch_id = ? ORDER BY activity_created_at, id
-		LIMIT ?`, batchID, maxEmailBatchItems+1).Scan(ctx, &items); err != nil {
+	authorized, err := notificationactivity.AuthorizeBatch(ctx, db, batchID, lock)
+	if err != nil {
 		return assembledImmediate{}, err
 	}
-	if len(items) > maxEmailBatchItems {
-		items = items[:maxEmailBatchItems]
-		truncated = true
-	}
-	lines := make([]string, 0, len(items)+1)
+	truncated = truncated || authorized.Truncated
+	lines := make([]string, 0, len(authorized.Activities)+1)
 	lineBytes := 0
 	result := assembledImmediate{Recipient: recipient, PreviewAllowed: previewAllowed}
-	for _, item := range items {
-		spec, err := item.Kind.spec()
-		if err != nil {
-			return assembledImmediate{}, err
+	for _, activity := range authorized.Activities {
+		if lineBytes+len(activity.Text)+1 > emailBodyLineBudget {
+			truncated = true
+			break
 		}
-		sourceID := spec.sourceID(item)
-		if sourceID == nil {
-			return assembledImmediate{}, fmt.Errorf("%w: item %d has no %s", errMalformedEmailItem, item.ID, spec.sourceColumn)
-		}
-		line, mediaID, assetID, survives, err := spec.assemble(ctx, db, accessID, *sourceID, lock)
-		if err != nil {
-			return assembledImmediate{}, err
-		}
-		if survives {
-			if lineBytes+len(line)+1 > emailBodyLineBudget {
-				truncated = true
-				break
-			}
-			lines = append(lines, line)
-			lineBytes += len(line) + 1
-			if result.PreviewMediaID == uuid.Nil {
-				result.PreviewMediaID, result.PreviewAssetID = mediaID, assetID
-			}
+		lines = append(lines, activity.Text)
+		lineBytes += len(activity.Text) + 1
+		if result.PreviewMediaID == uuid.Nil {
+			result.PreviewMediaID, result.PreviewAssetID = activity.MediaID, activity.AssetID
 		}
 	}
 	if len(lines) == 0 {

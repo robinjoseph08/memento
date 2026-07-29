@@ -1404,7 +1404,11 @@ test("restores and refreshes a signed-in Trusted-device Session", async () => {
       "Setup is complete. You're signed in as Robin Joseph.",
     ),
   ).toBeInTheDocument();
-  expect(fetchMock).toHaveBeenCalledTimes(14);
+  expect(fetchMock).toHaveBeenCalledTimes(15);
+  expect(fetchMock).toHaveBeenCalledWith(
+    "/api/push",
+    expect.objectContaining({ credentials: "same-origin" }),
+  );
   expect(fetchMock).toHaveBeenCalledWith(
     "/api/people?query=&include_archived=false",
     expect.objectContaining({ credentials: "same-origin" }),

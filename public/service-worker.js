@@ -182,6 +182,72 @@ async function refreshShell(request) {
   }
 }
 
+async function pushActivityCount(data) {
+  if (!data) return undefined;
+  try {
+    const text = await data.text();
+    if (text.length > 128) return undefined;
+    const payload = JSON.parse(text);
+    if (
+      !payload ||
+      typeof payload !== "object" ||
+      Array.isArray(payload) ||
+      Object.keys(payload).length !== 2 ||
+      payload.version !== 1 ||
+      !Number.isInteger(payload.count) ||
+      payload.count < 1 ||
+      payload.count > 99
+    ) {
+      return undefined;
+    }
+    return payload.count;
+  } catch {
+    return undefined;
+  }
+}
+
+async function showPushNotification(data) {
+  const count = await pushActivityCount(data);
+  const body = count
+    ? `${count} new Memento ${count === 1 ? "update is" : "updates are"} ready.`
+    : "New Memento activity is ready.";
+  await self.registration.showNotification("New activity in Memento", {
+    body,
+    tag: "memento-activity",
+  });
+}
+
+async function openPhotos() {
+  const destination = new URL("/photos", self.location.origin);
+  const openClients = await self.clients.matchAll({
+    type: "window",
+    includeUncontrolled: true,
+  });
+  for (const client of openClients) {
+    if (new URL(client.url).origin !== self.location.origin) continue;
+    try {
+      await client.navigate(destination.href);
+      await client.focus();
+      return;
+    } catch {
+      // Try another same-origin window before opening a new one.
+    }
+  }
+  await self.clients.openWindow("/photos");
+}
+
+async function announceSubscriptionChange() {
+  const openClients = await self.clients.matchAll({
+    type: "window",
+    includeUncontrolled: true,
+  });
+  for (const client of openClients) {
+    if (new URL(client.url).origin === self.location.origin) {
+      client.postMessage({ type: "PUSH_SUBSCRIPTION_CHANGED" });
+    }
+  }
+}
+
 self.addEventListener("install", (event) => {
   event.waitUntil(precacheShell());
 });
@@ -209,6 +275,19 @@ self.addEventListener("message", (event) => {
   if (event.data?.type === "SKIP_WAITING") {
     event.waitUntil(self.skipWaiting());
   }
+});
+
+self.addEventListener("push", (event) => {
+  event.waitUntil(showPushNotification(event.data));
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  event.waitUntil(openPhotos());
+});
+
+self.addEventListener("pushsubscriptionchange", (event) => {
+  event.waitUntil(announceSubscriptionChange());
 });
 
 self.addEventListener("fetch", (event) => {
