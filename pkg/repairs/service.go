@@ -843,8 +843,56 @@ func (s *Service) ConfirmMedia(ctx context.Context, actor setup.CuratorSession, 
 	if s.connector == nil {
 		return MutationResponse{}, ErrDependency
 	}
+	// Obtain fresh Immich evidence before taking the global staging boundary or
+	// Media row locks. The transaction below rejects any identity or type change
+	// observed between this snapshot and commit.
+	var expectedMediaItemID, expectedPreviousAssetID, expectedCandidateAssetID uuid.UUID
+	var expectedCandidateMediaItemID uuid.NullUUID
+	err := s.db.NewRaw(`
+		SELECT media_item_id, candidate_media_item_id,
+			previous_immich_asset_id, candidate_immich_asset_id
+		FROM media_repair_candidates WHERE id = ? AND state = 'pending'
+	`, candidateID).Scan(ctx, &expectedMediaItemID, &expectedCandidateMediaItemID,
+		&expectedPreviousAssetID, &expectedCandidateAssetID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return MutationResponse{}, mediaCandidateMissingError(ctx, s.db, candidateID)
+	}
+	if err != nil {
+		return MutationResponse{}, err
+	}
+	if !expectedCandidateMediaItemID.Valid {
+		return MutationResponse{}, ErrConflict
+	}
+	var expectedPreviousMediaType, expectedCandidateMediaType string
+	if err := s.db.NewRaw(`
+		SELECT previous.media_type, candidate.media_type
+		FROM media_items AS previous, media_items AS candidate
+		WHERE previous.id = ? AND candidate.id = ?
+	`, expectedMediaItemID, expectedCandidateMediaItemID.UUID).Scan(ctx, &expectedPreviousMediaType, &expectedCandidateMediaType); errors.Is(err, sql.ErrNoRows) {
+		return MutationResponse{}, ErrConflict
+	} else if err != nil {
+		return MutationResponse{}, err
+	}
+	if expectedPreviousMediaType != expectedCandidateMediaType {
+		return MutationResponse{}, ErrConflict
+	}
+	exists, err := s.connector.AssetExists(ctx, expectedCandidateAssetID)
+	if err != nil {
+		return MutationResponse{}, ErrDependency
+	}
+	if !exists {
+		return MutationResponse{}, ErrConflict
+	}
+	deliverable, err := s.connector.AssetDeliveryAvailable(ctx, expectedCandidateAssetID, expectedCandidateMediaType)
+	if err != nil {
+		return MutationResponse{}, ErrDependency
+	}
+	if !deliverable {
+		return MutationResponse{}, ErrConflict
+	}
+
 	now := s.now().UTC()
-	err := s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 		if err := staging.LockAccessSummaryRefresh(ctx, tx); err != nil {
 			return err
 		}
@@ -880,26 +928,22 @@ func (s *Service) ConfirmMedia(ctx context.Context, actor setup.CuratorSession, 
 		}
 		if !lockedCandidateMediaItemID.Valid || lockedMediaItemID != mediaItemID ||
 			lockedCandidateMediaItemID.UUID != candidateMediaItemID.UUID || lockedPreviousAssetID != previousAssetID ||
-			lockedCandidateAssetID != candidateAssetID {
+			lockedCandidateAssetID != candidateAssetID || mediaItemID != expectedMediaItemID ||
+			candidateMediaItemID.UUID != expectedCandidateMediaItemID.UUID || previousAssetID != expectedPreviousAssetID ||
+			candidateAssetID != expectedCandidateAssetID {
 			return ErrConflict
 		}
 		candidateMediaID := candidateMediaItemID.UUID
-		var candidateMediaType string
-		if err := tx.NewRaw(`SELECT media_type FROM media_items WHERE id = ?`, candidateMediaID).Scan(ctx, &candidateMediaType); err != nil {
+		var previousMediaType, candidateMediaType string
+		if err := tx.NewRaw(`
+			SELECT previous.media_type, candidate.media_type
+			FROM media_items AS previous, media_items AS candidate
+			WHERE previous.id = ? AND candidate.id = ?
+		`, mediaItemID, candidateMediaID).Scan(ctx, &previousMediaType, &candidateMediaType); err != nil {
 			return err
 		}
-		exists, err := s.connector.AssetExists(ctx, candidateAssetID)
-		if err != nil {
-			return ErrDependency
-		}
-		if !exists {
-			return ErrConflict
-		}
-		deliverable, err := s.connector.AssetDeliveryAvailable(ctx, candidateAssetID, candidateMediaType)
-		if err != nil {
-			return ErrDependency
-		}
-		if !deliverable {
+		if previousMediaType != expectedPreviousMediaType || candidateMediaType != expectedCandidateMediaType ||
+			previousMediaType != candidateMediaType {
 			return ErrConflict
 		}
 		var previousChecksum, candidateChecksum sql.NullString
@@ -1124,9 +1168,9 @@ func relinkDraftMediaReferences(ctx context.Context, tx bun.Tx, stableMediaID, c
 	return nil
 }
 
-func mediaCandidateMissingError(ctx context.Context, tx bun.Tx, candidateID uuid.UUID) error {
+func mediaCandidateMissingError(ctx context.Context, db bun.IDB, candidateID uuid.UUID) error {
 	var exists bool
-	if err := tx.NewRaw(`SELECT EXISTS (SELECT 1 FROM media_repair_candidates WHERE id = ?)`, candidateID).Scan(ctx, &exists); err != nil {
+	if err := db.NewRaw(`SELECT EXISTS (SELECT 1 FROM media_repair_candidates WHERE id = ?)`, candidateID).Scan(ctx, &exists); err != nil {
 		return err
 	}
 	if exists {

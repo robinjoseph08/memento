@@ -381,6 +381,7 @@ func TestAssetDeliveryAvailableFailsClosed(t *testing.T) {
 	}{
 		{name: "missing derivative", status: http.StatusNotFound, failedPath: "/thumbnail", want: false},
 		{name: "missing original", status: http.StatusNotFound, failedPath: "/original", want: false},
+		{name: "bad request original", status: http.StatusBadRequest, failedPath: "/original", wantErr: "Immich validation failed"},
 		{name: "unauthorized original", status: http.StatusUnauthorized, failedPath: "/original", wantErr: "Immich API key is invalid"},
 		{name: "empty original", status: http.StatusOK, failedPath: "/original", wantErr: "Immich returned an invalid response"},
 	} {
@@ -406,6 +407,40 @@ func TestAssetDeliveryAvailableFailsClosed(t *testing.T) {
 				require.EqualError(t, err, test.wantErr)
 			}
 		})
+	}
+}
+
+func TestAssetDeliveryAvailableBoundsBodyReadsAfterHeaders(t *testing.T) {
+	assetID := uuid.New()
+	headersSent := make(chan struct{})
+	server := contractServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/jpeg")
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		close(headersSent)
+		<-r.Context().Done()
+	})
+	defer server.Close()
+	cfg := clientConfig(server.URL)
+	cfg.HealthTimeout = 50 * time.Millisecond
+	client, err := New(cfg, server.Client())
+	require.NoError(t, err)
+
+	result := make(chan error, 1)
+	go func() {
+		_, availableErr := client.AssetDeliveryAvailable(context.Background(), assetID, "image")
+		result <- availableErr
+	}()
+	select {
+	case <-headersSent:
+	case <-time.After(time.Second):
+		t.Fatal("delivery probe did not receive response headers")
+	}
+	select {
+	case availableErr := <-result:
+		require.EqualError(t, availableErr, "Immich returned an invalid response")
+	case <-time.After(time.Second):
+		t.Fatal("delivery probe body read exceeded its deadline")
 	}
 }
 
@@ -908,6 +943,7 @@ func TestThumbnailMapsUpstreamStatusesTimeoutsAndReadFailuresToSafeErrors(t *tes
 	}{
 		{status: http.StatusUnauthorized, want: "Immich API key is invalid"},
 		{status: http.StatusForbidden, want: "Immich API key is invalid"},
+		{status: http.StatusBadRequest, want: "Immich resource not found"},
 		{status: http.StatusNotFound, want: "Immich resource not found"},
 		{status: http.StatusInternalServerError, want: "Immich validation failed"},
 	} {
@@ -1269,7 +1305,7 @@ func TestMediaRepresentationsRejectInvalidEntryPointsStatusesAndHeaders(t *testi
 		original bool
 		want     string
 	}{
-		{name: "deleted resource", status: http.StatusBadRequest, want: "Immich resource not found"},
+		{name: "recipient-induced bad request", request: MediaRequest{IfNoneMatch: "malformed"}, status: http.StatusBadRequest, want: "Immich validation failed"},
 		{name: "missing resource", status: http.StatusNotFound, want: "Immich resource not found"},
 		{name: "dependency unavailable", status: http.StatusServiceUnavailable, want: "Immich validation failed"},
 		{name: "video with image body", status: http.StatusOK, headers: http.Header{"Content-Type": {"image/jpeg"}}, want: "Immich returned an invalid response"},

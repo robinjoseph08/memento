@@ -530,16 +530,20 @@ func (c *Client) AssetDeliveryAvailable(ctx context.Context, assetID uuid.UUID, 
 		probes = append(probes, c.Video)
 	}
 	for _, probe := range probes {
-		response, err := probe(ctx, assetID, MediaRequest{Range: "bytes=0-0"})
+		probeCtx, cancel := context.WithTimeout(ctx, c.healthTimeout)
+		response, err := probe(probeCtx, assetID, MediaRequest{Range: "bytes=0-0"})
 		if errors.Is(err, ErrNotFound) {
+			cancel()
 			return false, nil
 		}
 		if err != nil {
+			cancel()
 			return false, err
 		}
 		var firstByte [1]byte
 		read, readErr := io.ReadFull(response.Body, firstByte[:])
 		closeErr := response.Body.Close()
+		cancel()
 		if read != len(firstByte) || (readErr != nil && !errors.Is(readErr, io.EOF) && !errors.Is(readErr, io.ErrUnexpectedEOF)) || closeErr != nil {
 			return false, errInvalidResponse
 		}
@@ -597,7 +601,12 @@ func (c *Client) media(ctx context.Context, assetID uuid.UUID, path []string, qu
 		defer cancel()
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxJSONResponse))
 		switch response.StatusCode {
-		case http.StatusBadRequest, http.StatusNotFound:
+		case http.StatusBadRequest:
+			if request.Range != "" || request.IfRange != "" || request.IfNoneMatch != "" || request.IfModifiedSince != "" {
+				return MediaResponse{}, errRequestFailed
+			}
+			return MediaResponse{}, ErrNotFound
+		case http.StatusNotFound:
 			return MediaResponse{}, ErrNotFound
 		case http.StatusUnauthorized, http.StatusForbidden:
 			return MediaResponse{}, errInvalidCredentials

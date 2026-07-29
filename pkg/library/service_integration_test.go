@@ -20,6 +20,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 	"github.com/robinjoseph08/memento/internal/testdb"
+	"github.com/robinjoseph08/memento/pkg/config"
 	"github.com/robinjoseph08/memento/pkg/errcodes"
 	"github.com/robinjoseph08/memento/pkg/immich"
 	"github.com/robinjoseph08/memento/pkg/migrations"
@@ -1305,6 +1306,28 @@ func TestMalformedOrUnauthorizedUpstreamFailureDoesNotInventSourceMissing(t *tes
 	var availability string
 	require.NoError(t, fixture.db.NewRaw(`SELECT availability FROM media_items WHERE id = ?`, fixture.media[0]).Scan(context.Background(), &availability))
 	assert.Equal(t, "current", availability, "only a confirmed not-found response is Source missing evidence")
+}
+
+func TestRecipientMalformedRangeUpstreamBadRequestDoesNotMarkSourceMissing(t *testing.T) {
+	fixture := newLibraryFixture(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "bytes=not-a-range", r.Header.Get("Range"))
+		w.WriteHeader(http.StatusBadRequest)
+	}))
+	defer server.Close()
+	client, err := immich.New(config.ImmichConfig{
+		URL: server.URL, APIKey: "test-key", HealthTimeout: time.Second,
+	}, server.Client())
+	require.NoError(t, err)
+	service := New(fixture.db, client)
+
+	_, err = service.Thumbnail(context.Background(), fixture.actor, fixture.media[0], immich.MediaRequest{Range: "bytes=not-a-range"})
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, immich.ErrNotFound)
+	assert.NotErrorIs(t, err, ErrNotFound)
+	var availability string
+	require.NoError(t, fixture.db.NewRaw(`SELECT availability FROM media_items WHERE id = ?`, fixture.media[0]).Scan(context.Background(), &availability))
+	assert.Equal(t, "current", availability, "a recipient-induced 400 is request failure, not global missing evidence")
 }
 
 func TestRecipientAuthorizationMatrixRevalidatesReuseWithdrawalAndAvailability(t *testing.T) {

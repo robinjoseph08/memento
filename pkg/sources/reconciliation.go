@@ -756,12 +756,18 @@ func upsertMediaItemBatch(ctx context.Context, tx bun.Tx, sourceAlbumID uuid.UUI
 	}
 	// Album membership proves metadata presence, not that derivatives or original
 	// bytes are serveable. Only an explicit confirmed relink may clear source_missing.
+	// Inactive backing history is also a tombstone for a source identity retired by
+	// that relink, so stale album metadata cannot import it as a new portal identity.
 	if _, err := tx.NewRaw(`
 		INSERT INTO media_items (
 			id, immich_asset_id, media_type, width, height, local_date_time, first_seen_at, last_seen_at, updated_at
 		)
 		SELECT portal_id, immich_asset_id, media_type, width, height, local_date_time, ?, ?, ?
 		FROM `+incoming+`
+		WHERE NOT EXISTS (
+			SELECT 1 FROM media_backings AS retired
+			WHERE retired.immich_asset_id = incoming.immich_asset_id AND NOT retired.active
+		)
 		ON CONFLICT (immich_asset_id) DO UPDATE SET
 			media_type = EXCLUDED.media_type, width = EXCLUDED.width, height = EXCLUDED.height,
 			local_date_time = EXCLUDED.local_date_time, last_seen_at = EXCLUDED.last_seen_at,
@@ -777,6 +783,10 @@ func upsertMediaItemBatch(ctx context.Context, tx bun.Tx, sourceAlbumID uuid.UUI
 			NULLIF(incoming.checksum, ''), NULLIF(incoming.capture_at, ''), incoming.filename, incoming.original_path, ?
 		FROM `+incoming+`
 		JOIN media_items AS media ON media.immich_asset_id = incoming.immich_asset_id
+		WHERE NOT EXISTS (
+			SELECT 1 FROM media_backings AS retired
+			WHERE retired.immich_asset_id = incoming.immich_asset_id AND NOT retired.active
+		)
 		ON CONFLICT (immich_asset_id) WHERE active DO UPDATE SET
 			checksum = EXCLUDED.checksum, capture_at = EXCLUDED.capture_at,
 			filename = EXCLUDED.filename, original_path = EXCLUDED.original_path
@@ -790,6 +800,10 @@ func upsertMediaItemBatch(ctx context.Context, tx bun.Tx, sourceAlbumID uuid.UUI
 		SELECT ?, incoming.immich_asset_id, media.id, ?, ?, decode(incoming.source_fingerprint, 'hex')
 		FROM `+incoming+`
 		JOIN media_items AS media ON media.immich_asset_id = incoming.immich_asset_id
+		WHERE NOT EXISTS (
+			SELECT 1 FROM media_backings AS retired
+			WHERE retired.immich_asset_id = incoming.immich_asset_id AND NOT retired.active
+		)
 		ON CONFLICT (source_album_id, immich_asset_id) DO UPDATE SET
 			media_item_id = EXCLUDED.media_item_id,
 			last_seen_at = EXCLUDED.last_seen_at,
@@ -813,6 +827,7 @@ func supersedeInvalidMediaRepairs(ctx context.Context, tx bun.Tx, now time.Time)
 			WHERE previous.media_item_id = repair.media_item_id
 			  AND previous.immich_asset_id = repair.previous_immich_asset_id AND previous.active
 			  AND previous.checksum IS NOT NULL AND previous.checksum = candidate.checksum
+			  AND previous_item.media_type = candidate_item.media_type
 			  AND previous_item.availability = 'source_missing' AND candidate_item.availability = 'current'
 			  AND EXISTS (SELECT 1 FROM source_album_memberships WHERE media_item_id = candidate_item.id)
 		  )
@@ -856,6 +871,7 @@ func proposeMediaRepairs(ctx context.Context, tx bun.Tx, now time.Time) error {
 		JOIN media_backings AS addition ON addition.checksum = missing.checksum AND addition.media_item_id <> missing.media_item_id
 		JOIN media_items AS addition_item ON addition_item.id = addition.media_item_id
 		WHERE missing.active AND addition.active AND missing.checksum IS NOT NULL
+		  AND missing_item.media_type = addition_item.media_type
 		  AND missing_item.availability = 'source_missing' AND addition_item.availability = 'current'
 		  AND NOT EXISTS (
 			SELECT 1 FROM media_repair_candidates AS rejected

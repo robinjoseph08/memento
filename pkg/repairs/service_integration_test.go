@@ -42,6 +42,9 @@ type identityConnector struct {
 	deliveryErr       error
 	deliveryMu        sync.Mutex
 	deliveryCalls     []uuid.UUID
+	deliveryTypes     []string
+	deliveryStarted   chan uuid.UUID
+	releaseDelivery   <-chan struct{}
 	err               error
 }
 
@@ -59,14 +62,32 @@ func (connector *identityConnector) AssetExists(_ context.Context, assetID uuid.
 	return true, nil
 }
 
-func (connector *identityConnector) AssetDeliveryAvailable(_ context.Context, assetID uuid.UUID, _ string) (bool, error) {
+func (connector *identityConnector) AssetDeliveryAvailable(ctx context.Context, assetID uuid.UUID, mediaType string) (bool, error) {
 	connector.deliveryMu.Lock()
-	defer connector.deliveryMu.Unlock()
 	connector.deliveryCalls = append(connector.deliveryCalls, assetID)
-	if connector.deliveryErr != nil {
-		return false, connector.deliveryErr
+	connector.deliveryTypes = append(connector.deliveryTypes, mediaType)
+	started, release := connector.deliveryStarted, connector.releaseDelivery
+	deliveryErr := connector.deliveryErr
+	available, configured := connector.deliveryAvailable[assetID]
+	connector.deliveryMu.Unlock()
+	if started != nil {
+		select {
+		case started <- assetID:
+		case <-ctx.Done():
+			return false, ctx.Err()
+		}
 	}
-	if available, configured := connector.deliveryAvailable[assetID]; configured {
+	if release != nil {
+		select {
+		case <-release:
+		case <-ctx.Done():
+			return false, ctx.Err()
+		}
+	}
+	if deliveryErr != nil {
+		return false, deliveryErr
+	}
+	if configured {
 		return available, nil
 	}
 	return true, nil
@@ -798,7 +819,34 @@ func TestMediaConfirmationRevalidatesReplacementAvailability(t *testing.T) {
 	assert.Equal(t, oldAssetID, activeAssetID)
 }
 
-func TestMediaConfirmationChecksDeliveryAfterEnteringConcurrencyBoundary(t *testing.T) {
+func TestMediaConfirmationRejectsCrossTypeCandidateBeforeDeliveryProbe(t *testing.T) {
+	fixture := newRepairFixture(t, 0)
+	oldMediaID, newMediaID := uuid.New(), uuid.New()
+	oldAssetID, newAssetID, candidateID := uuid.New(), uuid.New(), uuid.New()
+	_, err := fixture.db.ExecContext(context.Background(), `
+		INSERT INTO media_items (id, immich_asset_id, media_type, local_date_time, availability, missing_since, first_seen_at, last_seen_at)
+		VALUES (?, ?, 'image', '2026-01-01T00:00:00Z', 'source_missing', now(), now(), now()),
+		       (?, ?, 'video', '2026-01-01T00:00:00Z', 'current', NULL, now(), now());
+		INSERT INTO media_backings (id, media_item_id, immich_asset_id, checksum, linked_at)
+		VALUES (gen_random_uuid(), ?, ?, ?, now()), (gen_random_uuid(), ?, ?, ?, now());
+		INSERT INTO media_repair_candidates (id, media_item_id, candidate_media_item_id, previous_immich_asset_id, candidate_immich_asset_id, created_at)
+		VALUES (?, ?, ?, ?, ?, now());
+	`, oldMediaID, oldAssetID, newMediaID, newAssetID,
+		oldMediaID, oldAssetID, checksum("cross-type"), newMediaID, newAssetID, checksum("cross-type"),
+		candidateID, oldMediaID, newMediaID, oldAssetID, newAssetID)
+	require.NoError(t, err)
+
+	_, err = fixture.service.ConfirmMedia(context.Background(), fixture.actor, candidateID)
+	require.ErrorIs(t, err, ErrConflict)
+	fixture.connector.deliveryMu.Lock()
+	assert.Empty(t, fixture.connector.deliveryCalls, "cross-type stable metadata is rejected without probing the wrong representation contract")
+	fixture.connector.deliveryMu.Unlock()
+	var state string
+	require.NoError(t, fixture.db.NewRaw(`SELECT state FROM media_repair_candidates WHERE id = ?`, candidateID).Scan(context.Background(), &state))
+	assert.Equal(t, "pending", state)
+}
+
+func TestMediaConfirmationProbesWithoutHoldingGlobalOrMediaLocksAndRejectsChangedState(t *testing.T) {
 	fixture := newRepairFixture(t, 0)
 	oldMediaID, newMediaID := uuid.New(), uuid.New()
 	oldAssetID, newAssetID, candidateID, sourceAlbumID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
@@ -825,24 +873,38 @@ func TestMediaConfirmationChecksDeliveryAfterEnteringConcurrencyBoundary(t *test
 		candidateID, oldMediaID, newMediaID, oldAssetID, newAssetID)
 	require.NoError(t, err)
 
-	boundaryBlocker, err := fixture.db.BeginTx(context.Background(), nil)
-	require.NoError(t, err)
-	require.NoError(t, staging.LockAccessSummaryReplacement(context.Background(), boundaryBlocker))
-	var blockerPID int
-	require.NoError(t, boundaryBlocker.NewRaw(`SELECT pg_backend_pid()`).Scan(context.Background(), &blockerPID))
+	started := make(chan uuid.UUID, 1)
+	release := make(chan struct{})
+	fixture.connector.deliveryStarted = started
+	fixture.connector.releaseDelivery = release
 	confirmation := make(chan error, 1)
 	go func() {
 		_, confirmErr := fixture.service.ConfirmMedia(context.Background(), fixture.actor, candidateID)
 		confirmation <- confirmErr
 	}()
-	waitForRepairBlockedQuery(t, fixture.db, blockerPID, `%pg_advisory_xact_lock_shared%`)
-	fixture.connector.setDeliveryAvailable(newAssetID, false)
-	require.NoError(t, boundaryBlocker.Rollback())
+	select {
+	case probedAssetID := <-started:
+		assert.Equal(t, newAssetID, probedAssetID)
+	case <-time.After(time.Second):
+		t.Fatal("confirmation did not begin delivery evidence read")
+	}
+
+	mutationCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	mutation, err := fixture.db.BeginTx(mutationCtx, nil)
+	require.NoError(t, err)
+	require.NoError(t, staging.LockAccessSummaryReplacement(mutationCtx, mutation),
+		"delivery evidence must not hold the global staged-access lock")
+	_, err = mutation.NewRaw(`UPDATE media_items SET media_type = 'video' WHERE id = ?`, newMediaID).Exec(mutationCtx)
+	require.NoError(t, err, "delivery evidence must not lock candidate Media")
+	require.NoError(t, mutation.Commit())
+	close(release)
+
 	select {
 	case confirmErr := <-confirmation:
 		require.ErrorIs(t, confirmErr, ErrConflict)
 	case <-time.After(time.Second):
-		t.Fatal("confirmation did not complete after the concurrency boundary was released")
+		t.Fatal("confirmation did not reject state changed during delivery evidence")
 	}
 	var state, availability string
 	var activeAssetID uuid.UUID
@@ -852,6 +914,98 @@ func TestMediaConfirmationChecksDeliveryAfterEnteringConcurrencyBoundary(t *test
 	assert.Equal(t, "pending", state)
 	assert.Equal(t, "source_missing", availability)
 	assert.Equal(t, oldAssetID, activeAssetID)
+}
+
+func TestCompetingMediaConfirmationsHaveOneWinnerAndSupersedeOverlap(t *testing.T) {
+	fixture := newRepairFixture(t, 0)
+	stableMediaID, firstMediaID, secondMediaID := uuid.New(), uuid.New(), uuid.New()
+	stableAssetID, firstAssetID, secondAssetID := uuid.New(), uuid.New(), uuid.New()
+	firstCandidateID, secondCandidateID, sourceAlbumID := uuid.New(), uuid.New(), uuid.New()
+	_, err := fixture.db.ExecContext(context.Background(), `
+		INSERT INTO source_albums (
+			id, immich_album_id, name, asset_count, source_created_at, source_updated_at,
+			first_seen_at, last_seen_at, source_fingerprint, next_reconciliation_at
+		) VALUES (?, gen_random_uuid(), 'Competing repair album', 2, now(), now(), now(), now(), ?, now());
+		INSERT INTO media_items (id, immich_asset_id, media_type, local_date_time, availability, missing_since, first_seen_at, last_seen_at)
+		VALUES (?, ?, 'image', '2026-01-01T00:00:00Z', 'source_missing', now(), now(), now()),
+		       (?, ?, 'image', '2026-01-01T00:00:00Z', 'current', NULL, now(), now()),
+		       (?, ?, 'image', '2026-01-01T00:00:00Z', 'current', NULL, now(), now());
+		INSERT INTO media_backings (id, media_item_id, immich_asset_id, checksum, linked_at)
+		VALUES (gen_random_uuid(), ?, ?, ?, now()), (gen_random_uuid(), ?, ?, ?, now()), (gen_random_uuid(), ?, ?, ?, now());
+		INSERT INTO source_album_memberships (source_album_id, immich_asset_id, media_item_id, first_seen_at, last_seen_at, source_fingerprint)
+		VALUES (?, ?, ?, now(), now(), ?), (?, ?, ?, now(), now(), ?);
+		INSERT INTO media_repair_candidates (id, media_item_id, candidate_media_item_id, previous_immich_asset_id, candidate_immich_asset_id, created_at)
+		VALUES (?, ?, ?, ?, ?, now()), (?, ?, ?, ?, ?, now());
+	`, sourceAlbumID, hashBytes("competing-album"),
+		stableMediaID, stableAssetID, firstMediaID, firstAssetID, secondMediaID, secondAssetID,
+		stableMediaID, stableAssetID, checksum("competing"), firstMediaID, firstAssetID, checksum("competing"), secondMediaID, secondAssetID, checksum("competing"),
+		sourceAlbumID, firstAssetID, firstMediaID, hashBytes("first-membership"),
+		sourceAlbumID, secondAssetID, secondMediaID, hashBytes("second-membership"),
+		firstCandidateID, stableMediaID, firstMediaID, stableAssetID, firstAssetID,
+		secondCandidateID, stableMediaID, secondMediaID, stableAssetID, secondAssetID)
+	require.NoError(t, err)
+
+	started := make(chan uuid.UUID, 2)
+	release := make(chan struct{})
+	fixture.connector.deliveryStarted = started
+	fixture.connector.releaseDelivery = release
+	type result struct {
+		candidateID uuid.UUID
+		err         error
+	}
+	results := make(chan result, 2)
+	for _, candidateID := range []uuid.UUID{firstCandidateID, secondCandidateID} {
+		go func() {
+			_, confirmErr := fixture.service.ConfirmMedia(context.Background(), fixture.actor, candidateID)
+			results <- result{candidateID: candidateID, err: confirmErr}
+		}()
+	}
+	probed := make(map[uuid.UUID]bool, 2)
+	for range 2 {
+		select {
+		case assetID := <-started:
+			probed[assetID] = true
+		case <-time.After(time.Second):
+			t.Fatal("both competing confirmations did not reach fresh delivery evidence")
+		}
+	}
+	assert.Equal(t, map[uuid.UUID]bool{firstAssetID: true, secondAssetID: true}, probed)
+	close(release)
+
+	var winner uuid.UUID
+	successes := 0
+	for range 2 {
+		select {
+		case outcome := <-results:
+			if outcome.err == nil {
+				successes++
+				winner = outcome.candidateID
+			} else {
+				assert.ErrorIs(t, outcome.err, ErrAlreadyResolved)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("competing confirmation did not finish")
+		}
+	}
+	assert.Equal(t, 1, successes)
+	winningAssetID := firstAssetID
+	losingCandidateID := secondCandidateID
+	if winner == secondCandidateID {
+		winningAssetID = secondAssetID
+		losingCandidateID = firstCandidateID
+	}
+	var actualAssetID, confirmedID uuid.UUID
+	var availability string
+	require.NoError(t, fixture.db.NewRaw(`SELECT immich_asset_id, availability FROM media_items WHERE id = ?`, stableMediaID).Scan(context.Background(), &actualAssetID, &availability))
+	require.NoError(t, fixture.db.NewRaw(`SELECT id FROM media_repair_candidates WHERE state = 'confirmed'`).Scan(context.Background(), &confirmedID))
+	assert.Equal(t, winningAssetID, actualAssetID)
+	assert.Equal(t, "current", availability)
+	assert.Equal(t, winner, confirmedID)
+	var losingState string
+	var losingCandidateMediaID uuid.NullUUID
+	require.NoError(t, fixture.db.NewRaw(`SELECT state, candidate_media_item_id FROM media_repair_candidates WHERE id = ?`, losingCandidateID).Scan(context.Background(), &losingState, &losingCandidateMediaID))
+	assert.Equal(t, "superseded", losingState)
+	assert.False(t, losingCandidateMediaID.Valid)
 }
 
 func TestMediaConfirmationPreservesPortalIdentityAndMovesBacking(t *testing.T) {

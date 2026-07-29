@@ -112,6 +112,12 @@ func TestImmichV303LiveContract(t *testing.T) {
 	require.NoError(t, err)
 	imageID := contractUpload(t, ctx, httpClient, baseURL, login.AccessToken, imagePath)
 	videoID := contractUpload(t, ctx, httpClient, baseURL, login.AccessToken, videoPath)
+	contractAwaitDelivery(t, func() (bool, error) {
+		return client.AssetDeliveryAvailable(ctx, imageID, "image")
+	})
+	contractAwaitDelivery(t, func() (bool, error) {
+		return client.AssetDeliveryAvailable(ctx, videoID, "video")
+	})
 
 	thumbnail := contractAwaitMedia(t, func() (MediaResponse, error) {
 		return client.Thumbnail(ctx, imageID, MediaRequest{})
@@ -256,6 +262,25 @@ func contractAwaitMedia(t *testing.T, load func() (MediaResponse, error)) MediaR
 		lastErr = err
 		if time.Now().After(deadline) {
 			require.NoError(t, lastErr, "media did not become available before the contract deadline")
+		}
+		<-ticker.C
+	}
+}
+
+func contractAwaitDelivery(t *testing.T, load func() (bool, error)) {
+	t.Helper()
+	deadline := time.Now().Add(90 * time.Second)
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+	var lastAvailable bool
+	var lastErr error
+	for {
+		lastAvailable, lastErr = load()
+		if lastErr == nil && lastAvailable {
+			return
+		}
+		if time.Now().After(deadline) {
+			require.FailNow(t, "asset delivery did not become available", "last_available=%t last_error=%v", lastAvailable, lastErr)
 		}
 		<-ticker.C
 	}

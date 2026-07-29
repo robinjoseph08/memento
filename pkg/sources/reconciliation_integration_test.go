@@ -1334,6 +1334,50 @@ func TestDeliveryMissingMediaCanBeExplicitlyRelinkedWhileStillInAlbumMetadata(t 
 	var publishedPlacements int
 	require.NoError(t, service.db.NewRaw(`SELECT count(*) FROM current_published_placements WHERE event_id = ? AND media_item_id = ?`, fixture.eventID, fixture.mediaID).Scan(context.Background(), &publishedPlacements))
 	assert.Equal(t, 1, publishedPlacements, "the published portal identity and URL remain stable")
+
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID),
+		"stale album metadata after confirmation must be safely ignored")
+	var mediaItems, activeMemberships, pendingRepairs int
+	require.NoError(t, service.db.NewRaw(`SELECT count(*) FROM media_items`).Scan(context.Background(), &mediaItems))
+	require.NoError(t, service.db.NewRaw(`SELECT count(*) FROM source_album_memberships WHERE source_album_id = ?`, sourceAlbumID).Scan(context.Background(), &activeMemberships))
+	require.NoError(t, service.db.NewRaw(`SELECT count(*) FROM media_repair_candidates WHERE state = 'pending'`).Scan(context.Background(), &pendingRepairs))
+	assert.Equal(t, 1, mediaItems, "retired backing history prevents stale original metadata from creating a duplicate Media identity")
+	assert.Equal(t, 1, activeMemberships)
+	assert.Zero(t, pendingRepairs)
+	problems, err = repairs.New(service.db, nil).List(context.Background())
+	require.NoError(t, err)
+	assert.Empty(t, problems.SourceProblems)
+	update, err := staging.Load(context.Background(), service.db, fixture.eventID)
+	require.NoError(t, err)
+	assert.Nil(t, update, "stale retired metadata cannot restage the confirmed relink")
+
+	legitimateAddition := repairableReconciliationAsset(uuid.New(), "/library/new/independent.jpg")
+	legitimateAddition.Checksum = "2222222222222222222222222222222222222222"
+	connector.setMembership(original, replacement, legitimateAddition)
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	var legitimateMediaID uuid.UUID
+	require.NoError(t, service.db.NewRaw(`
+		SELECT id FROM media_items WHERE immich_asset_id = ?
+	`, legitimateAddition.SourceID).Scan(context.Background(), &legitimateMediaID))
+	assert.NotEqual(t, fixture.mediaID, legitimateMediaID, "backing tombstones do not block genuinely new Media ingestion")
+	update, err = staging.Load(context.Background(), service.db, fixture.eventID)
+	require.NoError(t, err)
+	assert.Nil(t, update, "an Event not following future Media remains unchanged by a legitimate addition")
+
+	listed, err := mediaService.Events(context.Background(), fixture.recipient, "10", "")
+	require.NoError(t, err)
+	require.Len(t, listed.Events, 1)
+	assert.Equal(t, fixture.mediaID.String(), listed.Events[0].CoverMediaID)
+	assert.Equal(t, "/api/me/media/"+fixture.mediaID.String()+"/thumbnail", listed.Events[0].ThumbnailURL)
+	thumbnail, err := mediaService.Thumbnail(context.Background(), fixture.recipient, fixture.mediaID, immich.MediaRequest{})
+	require.NoError(t, err)
+	contents, err := io.ReadAll(thumbnail.Body)
+	require.NoError(t, err)
+	require.NoError(t, thumbnail.Body.Close())
+	assert.Equal(t, "thumbnail", string(contents))
+	requested := connector.requestedThumbnails()
+	require.NotEmpty(t, requested)
+	assert.Equal(t, replacement.SourceID, requested[len(requested)-1], "the stable portal URL now delivers the confirmed backing")
 }
 
 func TestNewSourceMediaFollowsOnlyEventsConfiguredForFutureMedia(t *testing.T) {
@@ -1575,6 +1619,43 @@ func TestAmbiguousChecksumCandidatesExposeConflictEvidence(t *testing.T) {
 	`).Scan(context.Background(), &pending, &conflicted))
 	assert.Equal(t, 2, pending)
 	assert.Equal(t, 2, conflicted)
+}
+
+func TestMediaRepairMatchingIgnoresAndSupersedesCrossTypeCandidates(t *testing.T) {
+	oldAsset := repairableReconciliationAsset(uuid.New(), "/library/old/family.jpg")
+	connector := &reconciliationConnector{summary: sourceAlbum(uuid.New(), "Typed repair album", 1)}
+	connector.pages = map[int]immich.AssetPage{1: {Items: []immich.AssetSummary{oldAsset}}}
+	service, sourceAlbumID := newReconciliationService(t, connector)
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+
+	imageReplacement := repairableReconciliationAsset(uuid.New(), "/library/new/family.jpg")
+	videoReplacement := repairableReconciliationAsset(uuid.New(), "/library/new/family.mp4")
+	videoReplacement.MediaType = "video"
+	connector.setMembership(imageReplacement, videoReplacement)
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	var candidateID, candidateAssetID uuid.UUID
+	var conflicts string
+	require.NoError(t, service.db.NewRaw(`
+		SELECT id, candidate_immich_asset_id, conflict_evidence::text
+		FROM media_repair_candidates WHERE state = 'pending'
+	`).Scan(context.Background(), &candidateID, &candidateAssetID, &conflicts))
+	assert.Equal(t, imageReplacement.SourceID, candidateAssetID)
+	assert.Equal(t, "[]", conflicts, "a checksum match of another media type does not make the image repair ambiguous")
+
+	imageReplacement.MediaType = "video"
+	connector.setMembership(imageReplacement, videoReplacement)
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	var state string
+	var candidateMediaItemID uuid.NullUUID
+	require.NoError(t, service.db.NewRaw(`
+		SELECT state, candidate_media_item_id FROM media_repair_candidates WHERE id = ?
+	`, candidateID).Scan(context.Background(), &state, &candidateMediaItemID))
+	assert.Equal(t, "superseded", state, "a retained proposal is rejected when its Media type no longer matches the stable identity")
+	assert.False(t, candidateMediaItemID.Valid)
+	var pending int
+	require.NoError(t, service.db.NewRaw(`SELECT count(*) FROM media_repair_candidates WHERE state = 'pending'`).Scan(context.Background(), &pending))
+	assert.Zero(t, pending, "cross-type additions cannot be proposed as replacement backing")
 }
 
 func TestDuplicateAssetsWithChangedRepairEvidenceAreUnstable(t *testing.T) {
