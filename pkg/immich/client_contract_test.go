@@ -112,6 +112,13 @@ func TestImmichV303LiveContract(t *testing.T) {
 	require.NoError(t, err)
 	imageID := contractUpload(t, ctx, httpClient, baseURL, login.AccessToken, imagePath)
 	videoID := contractUpload(t, ctx, httpClient, baseURL, login.AccessToken, videoPath)
+	imageEvidence, err := client.Asset(ctx, imageID)
+	require.NoError(t, err)
+	assert.Equal(t, imageID, imageEvidence.SourceID)
+	assert.Equal(t, "image", imageEvidence.MediaType)
+	assert.NotEmpty(t, imageEvidence.Checksum)
+	assert.Equal(t, filepath.Base(imagePath), imageEvidence.Filename)
+	assert.NotEmpty(t, imageEvidence.OriginalPath)
 	contractAwaitDelivery(t, func() (bool, error) {
 		return client.AssetDeliveryAvailable(ctx, imageID, "image")
 	})
@@ -187,6 +194,8 @@ func TestImmichV303LiveContract(t *testing.T) {
 	contractDeleteAssets(t, ctx, httpClient, baseURL, login.AccessToken, []uuid.UUID{imageID, videoID}, http.StatusNoContent, http.StatusNotFound)
 	for _, deletedID := range []uuid.UUID{imageID, videoID} {
 		contractAwaitAssetDeleted(t, func() (bool, error) { return client.AssetExists(ctx, deletedID) })
+		_, err = client.Asset(ctx, deletedID)
+		require.ErrorIs(t, err, ErrNotFound)
 	}
 	deletedRepresentations := []struct {
 		name string

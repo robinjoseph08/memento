@@ -38,6 +38,9 @@ type archiveStub struct {
 	releaseArchive <-chan struct{}
 	archivePayload []byte
 	archiveNames   map[uuid.UUID]string
+	assetExists    map[uuid.UUID]bool
+	assetExistsErr error
+	assetCalls     []uuid.UUID
 	infoErr        error
 	archiveErr     error
 	archiveOnce    sync.Once
@@ -60,6 +63,17 @@ func (stub *archiveStub) ArchiveInfo(_ context.Context, ids []uuid.UUID) ([]immi
 		}
 	}
 	return []immich.ArchivePart{part}, nil
+}
+
+func (stub *archiveStub) AssetExists(_ context.Context, id uuid.UUID) (bool, error) {
+	stub.assetCalls = append(stub.assetCalls, id)
+	if stub.assetExistsErr != nil {
+		return false, stub.assetExistsErr
+	}
+	if exists, configured := stub.assetExists[id]; configured {
+		return exists, nil
+	}
+	return true, nil
 }
 
 func (stub *archiveStub) Archive(ctx context.Context, ids []uuid.UUID) (immich.ArchiveResponse, error) {
@@ -126,6 +140,10 @@ type simultaneousArchiveSource struct {
 
 func (source *simultaneousArchiveSource) ArchiveInfo(_ context.Context, _ []uuid.UUID) ([]immich.ArchivePart, error) {
 	return []immich.ArchivePart{source.part}, nil
+}
+
+func (*simultaneousArchiveSource) AssetExists(context.Context, uuid.UUID) (bool, error) {
+	return true, nil
 }
 
 func (source *simultaneousArchiveSource) Archive(ctx context.Context, _ []uuid.UUID) (immich.ArchiveResponse, error) {
@@ -347,6 +365,7 @@ func TestArchiveNotFoundMarksPublishedMediaUnavailableAndPreservesHistory(t *tes
 				Scope: "subset", MediaIDs: []string{fixture.media[0].String()},
 			})
 			require.NoError(t, err)
+			source.assetExists = map[uuid.UUID]bool{fixture.assets[0]: false}
 			if path == "info" {
 				source.infoErr = immich.ErrNotFound
 			} else {
@@ -385,6 +404,78 @@ func TestArchiveNotFoundMarksPublishedMediaUnavailableAndPreservesHistory(t *tes
 			assert.ErrorIs(t, err, ErrInvalidSelection)
 			assert.Len(t, source.infoCalls, beforeCalls, "subsequent archive delivery fails before Immich")
 		})
+	}
+}
+
+func TestMultiItemAggregateNotFoundMarksOnlyIndividuallyMissingBacking(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		path string
+	}{
+		{name: "plan metadata", path: "plan"},
+		{name: "stream metadata", path: "info"},
+		{name: "stream archive", path: "archive"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			source := &archiveStub{}
+			fixture := newArchiveFixture(t, source)
+			source.assetExists = map[uuid.UUID]bool{
+				fixture.assets[0]: false,
+				fixture.assets[1]: true,
+			}
+			request := PlanRequest{Scope: "subset", MediaIDs: []string{
+				fixture.media[0].String(), fixture.media[1].String(),
+			}}
+			if test.path == "plan" {
+				source.infoErr = immich.ErrNotFound
+				_, err := fixture.service.Plan(context.Background(), fixture.actor, request)
+				assert.ErrorIs(t, err, ErrNotFound)
+			} else {
+				source.planned = []immich.ArchivePart{{
+					Size: 20, AssetIDs: []uuid.UUID{fixture.assets[0], fixture.assets[1]},
+					CompanionOf: map[uuid.UUID]uuid.UUID{},
+				}}
+				plan, err := fixture.service.Plan(context.Background(), fixture.actor, request)
+				require.NoError(t, err)
+				if test.path == "info" {
+					source.infoErr = immich.ErrNotFound
+				} else {
+					source.archiveErr = immich.ErrNotFound
+				}
+				_, err = fixture.service.StreamPart(context.Background(), fixture.actor,
+					tokenFromURL(plan.Parts[0].DownloadURL), 1)
+				assert.ErrorIs(t, err, ErrNotFound)
+			}
+
+			var availability []string
+			require.NoError(t, fixture.db.NewRaw(`
+				SELECT availability FROM media_items WHERE id IN (?, ?) ORDER BY id
+			`, fixture.media[0], fixture.media[1]).Scan(context.Background(), &availability))
+			expected := map[uuid.UUID]string{
+				fixture.media[0]: "source_missing",
+				fixture.media[1]: "current",
+			}
+			for _, mediaID := range fixture.media[:2] {
+				var actual string
+				require.NoError(t, fixture.db.NewRaw(`SELECT availability FROM media_items WHERE id = ?`, mediaID).Scan(context.Background(), &actual))
+				assert.Equal(t, expected[mediaID], actual)
+			}
+			assert.ElementsMatch(t, fixture.assets[:2], source.assetCalls)
+		})
+	}
+}
+
+func TestAggregateNotFoundVerificationFailureMarksNothing(t *testing.T) {
+	source := &archiveStub{infoErr: immich.ErrNotFound, assetExistsErr: errors.New("private malformed asset response")}
+	fixture := newArchiveFixture(t, source)
+	_, err := fixture.service.Plan(context.Background(), fixture.actor, PlanRequest{
+		Scope: "subset", MediaIDs: []string{fixture.media[0].String(), fixture.media[1].String()},
+	})
+	assert.ErrorIs(t, err, ErrUnavailable)
+	for _, mediaID := range fixture.media[:2] {
+		var availability string
+		require.NoError(t, fixture.db.NewRaw(`SELECT availability FROM media_items WHERE id = ?`, mediaID).Scan(context.Background(), &availability))
+		assert.Equal(t, "current", availability)
 	}
 }
 

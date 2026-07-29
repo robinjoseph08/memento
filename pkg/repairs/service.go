@@ -3,7 +3,10 @@ package repairs
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -31,7 +34,7 @@ type Connector interface {
 	Check(ctx context.Context) error
 	People(ctx context.Context) ([]immich.PersonSummary, error)
 	Faces(ctx context.Context, assetID uuid.UUID) ([]immich.FaceSummary, error)
-	AssetExists(ctx context.Context, assetID uuid.UUID) (bool, error)
+	Asset(ctx context.Context, assetID uuid.UUID) (immich.AssetSummary, error)
 	AssetDeliveryAvailable(ctx context.Context, assetID uuid.UUID, mediaType string) (bool, error)
 }
 
@@ -79,6 +82,8 @@ type MediaCandidate struct {
 	MediaItemID            string               `json:"media_item_id"`
 	PreviousImmichAssetID  string               `json:"previous_immich_asset_id"`
 	CandidateImmichAssetID string               `json:"candidate_immich_asset_id"`
+	MediaType              string               `json:"media_type"`
+	ReviewToken            string               `json:"review_token"`
 	State                  string               `json:"state"`
 	Previous               Evidence             `json:"previous"`
 	Candidate              Evidence             `json:"candidate"`
@@ -112,6 +117,11 @@ type ListResponse struct {
 	PersonCandidates     []PersonCandidate `json:"person_candidates"`
 	MediaCandidates      []MediaCandidate  `json:"media_candidates"`
 	UnlinkedImmichPeople []UnlinkedPerson  `json:"unlinked_immich_people"`
+}
+
+// ConfirmMediaRequest binds confirmation to the exact evidence the Curator reviewed.
+type ConfirmMediaRequest struct {
+	ReviewToken string `json:"review_token" validate:"required,len=64,hexadecimal"`
 }
 
 // LinkPersonRequest explicitly maps one addition to one portal Person.
@@ -501,27 +511,34 @@ func (s *Service) listPersonCandidates(ctx context.Context, response *ListRespon
 
 func (s *Service) listMediaCandidates(ctx context.Context, response *ListResponse) error {
 	type row struct {
-		ID, MediaItemID, PreviousID, CandidateID uuid.UUID
-		State                                    string
-		Previous, Candidate, Anchors, Conflicts  json.RawMessage
-		CreatedAt                                time.Time
-		ResolvedAt                               *time.Time
+		ID, MediaItemID                         uuid.UUID
+		CandidateMediaItemID                    uuid.NullUUID
+		PreviousID, CandidateID                 uuid.UUID
+		MediaType, State                        string
+		Previous, Candidate, Anchors, Conflicts json.RawMessage
+		CreatedAt                               time.Time
+		ResolvedAt                              *time.Time
 	}
 	var rows []row
 	if err := s.db.NewRaw(`
-		SELECT id, media_item_id, previous_immich_asset_id AS previous_id,
-			candidate_immich_asset_id AS candidate_id, state,
-			previous_evidence AS previous, candidate_evidence AS candidate,
-			face_anchor_evidence AS anchors, conflict_evidence AS conflicts,
-			created_at, resolved_at
-		FROM media_repair_candidates
-		ORDER BY (state = 'pending') DESC, created_at DESC, id
+		SELECT repair.id, repair.media_item_id, repair.candidate_media_item_id,
+			repair.previous_immich_asset_id AS previous_id,
+			repair.candidate_immich_asset_id AS candidate_id,
+			COALESCE(candidate_media.media_type, stable_media.media_type) AS media_type,
+			repair.state, repair.previous_evidence AS previous,
+			repair.candidate_evidence AS candidate,
+			repair.face_anchor_evidence AS anchors, repair.conflict_evidence AS conflicts,
+			repair.created_at, repair.resolved_at
+		FROM media_repair_candidates AS repair
+		JOIN media_items AS stable_media ON stable_media.id = repair.media_item_id
+		LEFT JOIN media_items AS candidate_media ON candidate_media.id = repair.candidate_media_item_id
+		ORDER BY (repair.state = 'pending') DESC, repair.created_at DESC, repair.id
 	`).Scan(ctx, &rows); err != nil {
 		return err
 	}
 	for _, raw := range rows {
 		candidate := MediaCandidate{ID: raw.ID.String(), MediaItemID: raw.MediaItemID.String(), PreviousImmichAssetID: raw.PreviousID.String(),
-			CandidateImmichAssetID: raw.CandidateID.String(), State: raw.State, Conflicts: []string{}, FaceAnchors: []FaceAnchorEvidence{},
+			CandidateImmichAssetID: raw.CandidateID.String(), MediaType: raw.MediaType, State: raw.State, Conflicts: []string{}, FaceAnchors: []FaceAnchorEvidence{},
 			CreatedAt: raw.CreatedAt, ResolvedAt: raw.ResolvedAt}
 		if err := json.Unmarshal(raw.Previous, &candidate.Previous); err != nil {
 			return err
@@ -534,6 +551,15 @@ func (s *Service) listMediaCandidates(ctx context.Context, response *ListRespons
 		}
 		if err := json.Unmarshal(raw.Conflicts, &candidate.Conflicts); err != nil {
 			return err
+		}
+		if raw.State == "pending" {
+			candidate.ReviewToken = mediaEvidenceToken(mediaEvidenceSnapshot{
+				CandidateID: raw.ID, MediaItemID: raw.MediaItemID,
+				CandidateMediaItemID: raw.CandidateMediaItemID,
+				PreviousAssetID:      raw.PreviousID, CandidateAssetID: raw.CandidateID,
+				MediaType: raw.MediaType, Previous: candidate.Previous, Candidate: candidate.Candidate,
+				Anchors: candidate.FaceAnchors, Conflicts: candidate.Conflicts,
+			})
 		}
 		response.MediaCandidates = append(response.MediaCandidates, candidate)
 	}
@@ -838,22 +864,156 @@ func (s *Service) RejectPerson(ctx context.Context, actor setup.CuratorSession, 
 	return s.resolveCandidate(ctx, actor, "person", candidateID, "rejected")
 }
 
+type mediaEvidenceSnapshot struct {
+	CandidateID          uuid.UUID
+	MediaItemID          uuid.UUID
+	CandidateMediaItemID uuid.NullUUID
+	PreviousAssetID      uuid.UUID
+	CandidateAssetID     uuid.UUID
+	MediaType            string
+	Previous             Evidence
+	Candidate            Evidence
+	Anchors              []FaceAnchorEvidence
+	Conflicts            []string
+}
+
+func mediaEvidenceToken(snapshot mediaEvidenceSnapshot) string {
+	encoded, _ := json.Marshal(snapshot)
+	digest := sha256.Sum256(encoded)
+	return hex.EncodeToString(digest[:])
+}
+
+func validEvidenceChecksum(value string) bool {
+	decoded, err := hex.DecodeString(value)
+	return err == nil && len(decoded) == sha1ChecksumBytes && hex.EncodeToString(decoded) == value
+}
+
+const sha1ChecksumBytes = 20
+
+func decodeEvidence(raw json.RawMessage) (Evidence, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return Evidence{}, ErrConflict
+	}
+	for _, field := range []string{"checksum", "capture", "filename", "path"} {
+		if _, present := fields[field]; !present {
+			return Evidence{}, ErrConflict
+		}
+	}
+	var evidence Evidence
+	if err := json.Unmarshal(raw, &evidence); err != nil || !validEvidenceChecksum(evidence.Checksum) {
+		return Evidence{}, ErrConflict
+	}
+	return evidence, nil
+}
+
+func decodeMediaEvidence(previousRaw, candidateRaw, anchorsRaw, conflictsRaw json.RawMessage) (Evidence, Evidence, []FaceAnchorEvidence, []string, error) {
+	previous, err := decodeEvidence(previousRaw)
+	if err != nil {
+		return Evidence{}, Evidence{}, nil, nil, err
+	}
+	candidate, err := decodeEvidence(candidateRaw)
+	if err != nil {
+		return Evidence{}, Evidence{}, nil, nil, err
+	}
+	var anchors []FaceAnchorEvidence
+	if err := json.Unmarshal(anchorsRaw, &anchors); err != nil || anchors == nil {
+		return Evidence{}, Evidence{}, nil, nil, ErrConflict
+	}
+	for _, anchor := range anchors {
+		faceID, faceErr := uuid.Parse(anchor.FaceID)
+		assetID, assetErr := uuid.Parse(anchor.AssetID)
+		validLastPerson := true
+		if anchor.LastPersonID != "" {
+			lastPersonID, err := uuid.Parse(anchor.LastPersonID)
+			validLastPerson = err == nil && lastPersonID != uuid.Nil
+		}
+		if faceErr != nil || faceID == uuid.Nil || assetErr != nil || assetID == uuid.Nil || !validLastPerson ||
+			(anchor.Checksum != "" && !validEvidenceChecksum(anchor.Checksum)) || anchor.ImageWidth < 0 || anchor.ImageHeight < 0 ||
+			anchor.X1 < 0 || anchor.Y1 < 0 || anchor.X2 < anchor.X1 || anchor.Y2 < anchor.Y1 {
+			return Evidence{}, Evidence{}, nil, nil, ErrConflict
+		}
+	}
+	var conflicts []string
+	if err := json.Unmarshal(conflictsRaw, &conflicts); err != nil || conflicts == nil {
+		return Evidence{}, Evidence{}, nil, nil, ErrConflict
+	}
+	return previous, candidate, anchors, conflicts, nil
+}
+
+func reviewTokenMatches(provided, expected string) bool {
+	providedBytes, providedErr := hex.DecodeString(provided)
+	expectedBytes, expectedErr := hex.DecodeString(expected)
+	return providedErr == nil && expectedErr == nil && len(providedBytes) == sha256.Size &&
+		len(expectedBytes) == sha256.Size && subtle.ConstantTimeCompare(providedBytes, expectedBytes) == 1
+}
+
+func (s *Service) validateFreshMediaEvidence(ctx context.Context, snapshot mediaEvidenceSnapshot) error {
+	asset, err := s.connector.Asset(ctx, snapshot.CandidateAssetID)
+	if errors.Is(err, immich.ErrNotFound) {
+		return ErrConflict
+	}
+	if err != nil {
+		return ErrDependency
+	}
+	if asset.SourceID != snapshot.CandidateAssetID || asset.MediaType != snapshot.MediaType ||
+		asset.Checksum != snapshot.Candidate.Checksum || asset.OriginalPath != snapshot.Candidate.Path {
+		return ErrConflict
+	}
+	candidateAnchors := make([]FaceAnchorEvidence, 0)
+	for _, anchor := range snapshot.Anchors {
+		if anchor.AssetID == snapshot.CandidateAssetID.String() {
+			candidateAnchors = append(candidateAnchors, anchor)
+		}
+	}
+	if len(candidateAnchors) == 0 {
+		return nil
+	}
+	faces, err := s.connector.Faces(ctx, snapshot.CandidateAssetID)
+	if err != nil {
+		if errors.Is(err, immich.ErrNotFound) {
+			return ErrConflict
+		}
+		return ErrDependency
+	}
+	facesByID := make(map[string]immich.FaceSummary, len(faces))
+	for _, face := range faces {
+		facesByID[face.SourceID.String()] = face
+	}
+	for _, anchor := range candidateAnchors {
+		face, present := facesByID[anchor.FaceID]
+		if !present || (anchor.Checksum != "" && anchor.Checksum != asset.Checksum) ||
+			face.ImageWidth != anchor.ImageWidth || face.ImageHeight != anchor.ImageHeight ||
+			face.X1 != anchor.X1 || face.Y1 != anchor.Y1 || face.X2 != anchor.X2 || face.Y2 != anchor.Y2 {
+			return ErrConflict
+		}
+	}
+	return nil
+}
+
 // ConfirmMedia atomically moves source membership to the stable portal Media identity.
-func (s *Service) ConfirmMedia(ctx context.Context, actor setup.CuratorSession, candidateID uuid.UUID) (MutationResponse, error) {
+func (s *Service) ConfirmMedia(ctx context.Context, actor setup.CuratorSession, candidateID uuid.UUID, reviewToken string) (MutationResponse, error) {
 	if s.connector == nil {
 		return MutationResponse{}, ErrDependency
 	}
-	// Obtain fresh Immich evidence before taking the global staging boundary or
-	// Media row locks. The transaction below rejects any identity or type change
-	// observed between this snapshot and commit.
+	// Obtain the exact reviewed snapshot and fresh Immich evidence before taking
+	// the global staging boundary or Media row locks. The transaction below then
+	// rejects any identity, evidence, or type change observed before commit.
 	var expectedMediaItemID, expectedPreviousAssetID, expectedCandidateAssetID uuid.UUID
 	var expectedCandidateMediaItemID uuid.NullUUID
+	var expectedMediaType string
+	var previousRaw, candidateRaw, anchorsRaw, conflictsRaw json.RawMessage
 	err := s.db.NewRaw(`
-		SELECT media_item_id, candidate_media_item_id,
-			previous_immich_asset_id, candidate_immich_asset_id
-		FROM media_repair_candidates WHERE id = ? AND state = 'pending'
+		SELECT repair.media_item_id, repair.candidate_media_item_id,
+			repair.previous_immich_asset_id, repair.candidate_immich_asset_id,
+			candidate_media.media_type, repair.previous_evidence,
+			repair.candidate_evidence, repair.face_anchor_evidence, repair.conflict_evidence
+		FROM media_repair_candidates AS repair
+		JOIN media_items AS candidate_media ON candidate_media.id = repair.candidate_media_item_id
+		WHERE repair.id = ? AND repair.state = 'pending'
 	`, candidateID).Scan(ctx, &expectedMediaItemID, &expectedCandidateMediaItemID,
-		&expectedPreviousAssetID, &expectedCandidateAssetID)
+		&expectedPreviousAssetID, &expectedCandidateAssetID, &expectedMediaType,
+		&previousRaw, &candidateRaw, &anchorsRaw, &conflictsRaw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return MutationResponse{}, mediaCandidateMissingError(ctx, s.db, candidateID)
 	}
@@ -863,27 +1023,33 @@ func (s *Service) ConfirmMedia(ctx context.Context, actor setup.CuratorSession, 
 	if !expectedCandidateMediaItemID.Valid {
 		return MutationResponse{}, ErrConflict
 	}
-	var expectedPreviousMediaType, expectedCandidateMediaType string
-	if err := s.db.NewRaw(`
-		SELECT previous.media_type, candidate.media_type
-		FROM media_items AS previous, media_items AS candidate
-		WHERE previous.id = ? AND candidate.id = ?
-	`, expectedMediaItemID, expectedCandidateMediaItemID.UUID).Scan(ctx, &expectedPreviousMediaType, &expectedCandidateMediaType); errors.Is(err, sql.ErrNoRows) {
+	expectedPreviousEvidence, expectedCandidateEvidence, expectedAnchors, expectedConflicts, err := decodeMediaEvidence(previousRaw, candidateRaw, anchorsRaw, conflictsRaw)
+	if err != nil {
+		return MutationResponse{}, err
+	}
+	expectedSnapshot := mediaEvidenceSnapshot{
+		CandidateID: candidateID, MediaItemID: expectedMediaItemID,
+		CandidateMediaItemID: expectedCandidateMediaItemID,
+		PreviousAssetID:      expectedPreviousAssetID, CandidateAssetID: expectedCandidateAssetID,
+		MediaType: expectedMediaType, Previous: expectedPreviousEvidence, Candidate: expectedCandidateEvidence,
+		Anchors: expectedAnchors, Conflicts: expectedConflicts,
+	}
+	if !reviewTokenMatches(reviewToken, mediaEvidenceToken(expectedSnapshot)) {
+		return MutationResponse{}, ErrConflict
+	}
+	var expectedPreviousMediaType string
+	if err := s.db.NewRaw(`SELECT media_type FROM media_items WHERE id = ?`, expectedMediaItemID).Scan(ctx, &expectedPreviousMediaType); errors.Is(err, sql.ErrNoRows) {
 		return MutationResponse{}, ErrConflict
 	} else if err != nil {
 		return MutationResponse{}, err
 	}
-	if expectedPreviousMediaType != expectedCandidateMediaType {
+	if expectedPreviousMediaType != expectedMediaType {
 		return MutationResponse{}, ErrConflict
 	}
-	exists, err := s.connector.AssetExists(ctx, expectedCandidateAssetID)
-	if err != nil {
-		return MutationResponse{}, ErrDependency
+	if err := s.validateFreshMediaEvidence(ctx, expectedSnapshot); err != nil {
+		return MutationResponse{}, err
 	}
-	if !exists {
-		return MutationResponse{}, ErrConflict
-	}
-	deliverable, err := s.connector.AssetDeliveryAvailable(ctx, expectedCandidateAssetID, expectedCandidateMediaType)
+	deliverable, err := s.connector.AssetDeliveryAvailable(ctx, expectedCandidateAssetID, expectedMediaType)
 	if err != nil {
 		return MutationResponse{}, ErrDependency
 	}
@@ -919,10 +1085,15 @@ func (s *Service) ConfirmMedia(ctx context.Context, actor setup.CuratorSession, 
 		}
 		var lockedMediaItemID, lockedPreviousAssetID, lockedCandidateAssetID uuid.UUID
 		var lockedCandidateMediaItemID uuid.NullUUID
+		var lockedPreviousRaw, lockedCandidateRaw, lockedAnchorsRaw, lockedConflictsRaw json.RawMessage
 		err = tx.NewRaw(`
-			SELECT media_item_id, candidate_media_item_id, previous_immich_asset_id, candidate_immich_asset_id
+			SELECT media_item_id, candidate_media_item_id, previous_immich_asset_id,
+				candidate_immich_asset_id, previous_evidence, candidate_evidence,
+				face_anchor_evidence, conflict_evidence
 			FROM media_repair_candidates WHERE id = ? AND state = 'pending' FOR UPDATE
-		`, candidateID).Scan(ctx, &lockedMediaItemID, &lockedCandidateMediaItemID, &lockedPreviousAssetID, &lockedCandidateAssetID)
+		`, candidateID).Scan(ctx, &lockedMediaItemID, &lockedCandidateMediaItemID,
+			&lockedPreviousAssetID, &lockedCandidateAssetID, &lockedPreviousRaw,
+			&lockedCandidateRaw, &lockedAnchorsRaw, &lockedConflictsRaw)
 		if errors.Is(err, sql.ErrNoRows) {
 			return mediaCandidateMissingError(ctx, tx, candidateID)
 		}
@@ -936,6 +1107,16 @@ func (s *Service) ConfirmMedia(ctx context.Context, actor setup.CuratorSession, 
 			candidateAssetID != expectedCandidateAssetID {
 			return ErrConflict
 		}
+		lockedPreviousEvidence, lockedCandidateEvidence, lockedAnchors, lockedConflicts, evidenceErr := decodeMediaEvidence(lockedPreviousRaw, lockedCandidateRaw, lockedAnchorsRaw, lockedConflictsRaw)
+		if evidenceErr != nil || !reviewTokenMatches(reviewToken, mediaEvidenceToken(mediaEvidenceSnapshot{
+			CandidateID: candidateID, MediaItemID: lockedMediaItemID,
+			CandidateMediaItemID: lockedCandidateMediaItemID,
+			PreviousAssetID:      lockedPreviousAssetID, CandidateAssetID: lockedCandidateAssetID,
+			MediaType: expectedMediaType, Previous: lockedPreviousEvidence, Candidate: lockedCandidateEvidence,
+			Anchors: lockedAnchors, Conflicts: lockedConflicts,
+		})) {
+			return ErrConflict
+		}
 		candidateMediaID := candidateMediaItemID.UUID
 		var previousMediaType, candidateMediaType string
 		if err := tx.NewRaw(`
@@ -945,15 +1126,16 @@ func (s *Service) ConfirmMedia(ctx context.Context, actor setup.CuratorSession, 
 		`, mediaItemID, candidateMediaID).Scan(ctx, &previousMediaType, &candidateMediaType); err != nil {
 			return err
 		}
-		if previousMediaType != expectedPreviousMediaType || candidateMediaType != expectedCandidateMediaType ||
+		if previousMediaType != expectedPreviousMediaType || candidateMediaType != expectedMediaType ||
 			previousMediaType != candidateMediaType {
 			return ErrConflict
 		}
 		var previousChecksum, candidateChecksum sql.NullString
-		var previousAvailability, candidateAvailability string
+		var previousPath, candidatePath, previousAvailability, candidateAvailability string
 		var candidateHasMembership bool
 		if err := tx.NewRaw(`
-			SELECT previous.checksum, candidate.checksum, previous_item.availability, candidate_item.availability,
+			SELECT previous.checksum, candidate.checksum, previous.original_path, candidate.original_path,
+				previous_item.availability, candidate_item.availability,
 				EXISTS (SELECT 1 FROM source_album_memberships WHERE media_item_id = candidate_item.id)
 			FROM media_backings AS previous
 			JOIN media_items AS previous_item ON previous_item.id = previous.media_item_id
@@ -961,13 +1143,15 @@ func (s *Service) ConfirmMedia(ctx context.Context, actor setup.CuratorSession, 
 			JOIN media_items AS candidate_item ON candidate_item.id = candidate.media_item_id
 			WHERE previous.media_item_id = ? AND previous.immich_asset_id = ? AND previous.active
 		`, candidateMediaID, candidateAssetID, mediaItemID, previousAssetID).Scan(ctx,
-			&previousChecksum, &candidateChecksum, &previousAvailability, &candidateAvailability,
+			&previousChecksum, &candidateChecksum, &previousPath, &candidatePath, &previousAvailability, &candidateAvailability,
 			&candidateHasMembership); errors.Is(err, sql.ErrNoRows) {
 			return ErrConflict
 		} else if err != nil {
 			return err
 		}
 		if !previousChecksum.Valid || !candidateChecksum.Valid || previousChecksum.String != candidateChecksum.String ||
+			previousChecksum.String != expectedPreviousEvidence.Checksum || previousPath != expectedPreviousEvidence.Path ||
+			candidateChecksum.String != expectedCandidateEvidence.Checksum || candidatePath != expectedCandidateEvidence.Path ||
 			previousAvailability != "source_missing" || candidateAvailability != "current" || !candidateHasMembership {
 			return ErrConflict
 		}

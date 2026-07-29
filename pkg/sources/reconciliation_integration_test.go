@@ -93,6 +93,25 @@ func (connector *reconciliationConnector) Faces(context.Context, uuid.UUID) ([]i
 	return nil, nil
 }
 
+func (connector *reconciliationConnector) Asset(_ context.Context, assetID uuid.UUID) (immich.AssetSummary, error) {
+	connector.mu.Lock()
+	defer connector.mu.Unlock()
+	if connector.assetExistsErr != nil {
+		return immich.AssetSummary{}, connector.assetExistsErr
+	}
+	if exists, configured := connector.servedAssets[assetID]; configured && !exists {
+		return immich.AssetSummary{}, immich.ErrNotFound
+	}
+	for _, page := range connector.pages {
+		for _, asset := range page.Items {
+			if asset.SourceID == assetID {
+				return asset, nil
+			}
+		}
+	}
+	return immich.AssetSummary{}, immich.ErrNotFound
+}
+
 func (connector *reconciliationConnector) AssetExists(_ context.Context, assetID uuid.UUID) (bool, error) {
 	connector.mu.Lock()
 	defer connector.mu.Unlock()
@@ -1350,7 +1369,17 @@ func TestDeliveryMissingMediaCanBeExplicitlyRelinkedWhileStillInAlbumMetadata(t 
 		curatorSessionID, fixture.curator.PersonID, curatorAccessID).Exec(context.Background())
 	require.NoError(t, err)
 	fixture.curator.SessionID = curatorSessionID
-	_, err = repairs.New(service.db, connector).ConfirmMedia(context.Background(), fixture.curator, candidateID)
+	repairService := repairs.New(service.db, connector)
+	reviewed, err := repairService.List(context.Background())
+	require.NoError(t, err)
+	var reviewToken string
+	for _, candidate := range reviewed.MediaCandidates {
+		if candidate.ID == candidateID.String() {
+			reviewToken = candidate.ReviewToken
+		}
+	}
+	require.NotEmpty(t, reviewToken)
+	_, err = repairService.ConfirmMedia(context.Background(), fixture.curator, candidateID, reviewToken)
 	require.NoError(t, err)
 	var stableAssetID uuid.UUID
 	var availability string

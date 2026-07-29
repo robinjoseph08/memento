@@ -30,6 +30,7 @@ function CandidateActions({
   canConfirm = true,
   confirmText = "Confirm repair",
   csrfToken,
+  reviewToken,
 }: {
   kind: "people" | "media";
   candidateID: string;
@@ -37,6 +38,7 @@ function CandidateActions({
   canConfirm?: boolean;
   confirmText?: string;
   csrfToken: string;
+  reviewToken?: string;
 }) {
   const queryClient = useQueryClient();
   const [action, setAction] = useState<"confirm" | "reject">();
@@ -47,7 +49,14 @@ function CandidateActions({
         `/api/repairs/${kind}/${candidateID}/${nextAction}`,
         {
           method: "POST",
-          headers: { "X-Memento-CSRF": csrfToken },
+          headers: {
+            "Content-Type": "application/json",
+            "X-Memento-CSRF": csrfToken,
+          },
+          body:
+            kind === "media"
+              ? JSON.stringify({ review_token: reviewToken })
+              : undefined,
         },
       );
     },
@@ -298,6 +307,7 @@ function MediaRepair({
               label="Immich asset ID"
               value={candidate.candidate_immich_asset_id}
             />
+            <EvidenceField label="Media type" value={candidate.media_type} />
             <EvidenceField
               label="Checksum"
               value={candidate.candidate.checksum}
@@ -327,6 +337,7 @@ function MediaRepair({
           }
           csrfToken={csrfToken}
           kind="media"
+          reviewToken={candidate.review_token}
         />
       ) : null}
     </article>

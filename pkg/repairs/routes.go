@@ -71,8 +71,24 @@ func (h *Handler) LinkPerson(c echo.Context) error {
 
 func (h *Handler) ConfirmPerson(c echo.Context) error { return h.resolve(c, h.service.ConfirmPerson) }
 func (h *Handler) RejectPerson(c echo.Context) error  { return h.resolve(c, h.service.RejectPerson) }
-func (h *Handler) ConfirmMedia(c echo.Context) error  { return h.resolve(c, h.service.ConfirmMedia) }
 func (h *Handler) RejectMedia(c echo.Context) error   { return h.resolve(c, h.service.RejectMedia) }
+
+func (h *Handler) ConfirmMedia(c echo.Context) error {
+	actor, err := h.authorize(c, true)
+	if err != nil {
+		return err
+	}
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil || id == uuid.Nil {
+		return errcodes.NotFound("Repair candidate")
+	}
+	var request ConfirmMediaRequest
+	if err := c.Bind(&request); err != nil {
+		return err
+	}
+	response, err := h.service.ConfirmMedia(c.Request().Context(), actor, id, request.ReviewToken)
+	return mutationResult(c, response, err)
+}
 
 func (h *Handler) resolve(c echo.Context, action func(context.Context, setup.CuratorSession, uuid.UUID) (MutationResponse, error)) error {
 	actor, err := h.authorize(c, true)

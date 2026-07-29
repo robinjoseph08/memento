@@ -276,6 +276,26 @@ func TestOwnedAlbumsRejectsMalformedOrDuplicateSummaries(t *testing.T) {
 	}
 }
 
+func TestAssetReturnsCompleteNormalizedRepairEvidence(t *testing.T) {
+	assetID := uuid.New()
+	server := contractServer(t, func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/api/assets/"+assetID.String(), r.URL.Path)
+		_, _ = w.Write([]byte(`{"id":"` + assetID.String() + `","type":"IMAGE","width":1600,"height":1200,"localDateTime":"2026-01-01T00:00:00Z","fileCreatedAt":"2025-12-31T23:00:00Z","checksum":"ERERERERERERERERERERERERERE=","originalFileName":" family.jpg ","originalPath":" /private/family.jpg "}`))
+	})
+	defer server.Close()
+	client, err := New(clientConfig(server.URL), server.Client())
+	require.NoError(t, err)
+
+	asset, err := client.Asset(context.Background(), assetID)
+	require.NoError(t, err)
+	assert.Equal(t, assetID, asset.SourceID)
+	assert.Equal(t, "image", asset.MediaType)
+	assert.Equal(t, "1111111111111111111111111111111111111111", asset.Checksum)
+	assert.Equal(t, "2025-12-31T23:00:00Z", asset.CaptureAt)
+	assert.Equal(t, "family.jpg", asset.Filename)
+	assert.Equal(t, "/private/family.jpg", asset.OriginalPath)
+}
+
 func TestAssetExistsDistinguishesPresentAndDeletedAssets(t *testing.T) {
 	assetID := uuid.New()
 	server := contractServer(t, func(w http.ResponseWriter, r *http.Request) {

@@ -74,6 +74,7 @@ type Stream struct {
 type archiveSource interface {
 	ArchiveInfo(ctx context.Context, assetIDs []uuid.UUID) ([]immich.ArchivePart, error)
 	Archive(ctx context.Context, assetIDs []uuid.UUID) (immich.ArchiveResponse, error)
+	AssetExists(ctx context.Context, assetID uuid.UUID) (bool, error)
 }
 
 type Service struct {
@@ -124,14 +125,33 @@ type candidate struct {
 	EventTitle    string    `bun:"event_title"`
 }
 
-func (s *Service) markCandidatesSourceMissing(ctx context.Context, candidates []candidate) error {
+func (s *Service) markVerifiedSourceMissing(ctx context.Context, backings []mediaavailability.Backing) error {
+	missing := make([]mediaavailability.Backing, 0, len(backings))
+	seen := make(map[uuid.UUID]struct{}, len(backings))
+	for _, backing := range backings {
+		if _, duplicate := seen[backing.AssetID]; duplicate {
+			continue
+		}
+		seen[backing.AssetID] = struct{}{}
+		exists, err := s.source.AssetExists(ctx, backing.AssetID)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			missing = append(missing, backing)
+		}
+	}
+	return mediaavailability.MarkSourceMissing(ctx, s.db, missing)
+}
+
+func candidateBackings(candidates []candidate) []mediaavailability.Backing {
 	backings := make([]mediaavailability.Backing, 0, len(candidates))
 	for _, item := range candidates {
 		backings = append(backings, mediaavailability.Backing{
 			MediaID: item.MediaID, BackingID: item.BackingID, AssetID: item.AssetID,
 		})
 	}
-	return mediaavailability.MarkSourceMissing(ctx, s.db, backings)
+	return backings
 }
 
 const authorizedCandidates = `
@@ -235,7 +255,7 @@ func (s *Service) Plan(ctx context.Context, actor setup.SessionActor, request Pl
 	}
 	parts, err := s.source.ArchiveInfo(ctx, assets)
 	if errors.Is(err, immich.ErrNotFound) {
-		if markErr := s.markCandidatesSourceMissing(ctx, initial); markErr != nil {
+		if markErr := s.markVerifiedSourceMissing(ctx, candidateBackings(initial)); markErr != nil {
 			return PlanResponse{}, ErrUnavailable
 		}
 		return PlanResponse{}, ErrNotFound
@@ -451,14 +471,14 @@ func (s *Service) loadPart(ctx context.Context, db bun.IDB, actor setup.SessionA
 	return result, nil
 }
 
-func (s *Service) markPlannedSourceMissing(ctx context.Context, part plannedPart) error {
+func plannedBackings(part plannedPart) []mediaavailability.Backing {
 	backings := make([]mediaavailability.Backing, 0, len(part.Items))
 	for _, item := range part.Items {
 		backings = append(backings, mediaavailability.Backing{
 			MediaID: item.MediaID, BackingID: item.BackingID, AssetID: item.PrimaryAssetID,
 		})
 	}
-	return mediaavailability.MarkSourceMissing(ctx, s.db, backings)
+	return backings
 }
 
 func expectedAssets(part plannedPart) ([]uuid.UUID, []uuid.UUID) {
@@ -520,7 +540,7 @@ func (s *Service) StreamPart(ctx context.Context, actor setup.SessionActor, rawT
 	assets, primaries := expectedAssets(part)
 	info, err := s.source.ArchiveInfo(ctx, primaries)
 	if errors.Is(err, immich.ErrNotFound) {
-		if markErr := s.markPlannedSourceMissing(ctx, part); markErr != nil {
+		if markErr := s.markVerifiedSourceMissing(ctx, plannedBackings(part)); markErr != nil {
 			return Stream{}, ErrUnavailable
 		}
 		return Stream{}, ErrNotFound
@@ -533,7 +553,7 @@ func (s *Service) StreamPart(ctx context.Context, actor setup.SessionActor, rawT
 		if opened.Body != nil {
 			_ = opened.Body.Close()
 		}
-		if markErr := s.markPlannedSourceMissing(ctx, part); markErr != nil {
+		if markErr := s.markVerifiedSourceMissing(ctx, plannedBackings(part)); markErr != nil {
 			return Stream{}, ErrUnavailable
 		}
 		return Stream{}, ErrNotFound

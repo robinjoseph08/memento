@@ -291,6 +291,62 @@ func TestSourceMediaListsOnlySelectableStableMediaIdentities(t *testing.T) {
 	require.ErrorIs(t, err, ErrSourceUnavailable)
 }
 
+func TestSourceMissingMediaCannotEnterNewDraftsButExistingMembershipAndDraftHistoryRemain(t *testing.T) {
+	fixture := newDraftFixture(t)
+	ctx := context.Background()
+	existingEvent, err := fixture.service.CreateEvent(ctx, fixture.actor, CreateEventRequest{
+		SourceAlbumIDs: []string{fixture.sources["first"].String()},
+		MediaItemIDs:   []string{fixture.media["first_only"].String()},
+		Timezone:       "UTC",
+	})
+	require.NoError(t, err)
+	existingLoose, created, err := fixture.service.CreateLooseItem(ctx, fixture.actor, CreateLooseItemRequest{
+		MediaItemID: fixture.media["unknown"].String(), Timezone: "UTC",
+	})
+	require.NoError(t, err)
+	assert.True(t, created)
+
+	_, err = fixture.db.NewRaw(`
+		UPDATE media_items SET availability = 'source_missing', missing_since = now()
+		WHERE id IN (?, ?, ?)
+	`, fixture.media["shared"], fixture.media["first_only"], fixture.media["unknown"]).Exec(ctx)
+	require.NoError(t, err)
+	var memberships int
+	require.NoError(t, fixture.db.NewRaw(`
+		SELECT count(*) FROM source_album_memberships WHERE media_item_id IN (?, ?, ?)
+	`, fixture.media["shared"], fixture.media["first_only"], fixture.media["unknown"]).Scan(ctx, &memberships))
+	assert.Equal(t, 4, memberships, "Source missing retains provenance memberships")
+
+	selectable, err := fixture.service.SourceMedia(ctx, fixture.sources["first"])
+	require.NoError(t, err)
+	assert.Empty(t, selectable.MediaItems)
+	_, err = fixture.service.CreateEvent(ctx, fixture.actor, CreateEventRequest{
+		SourceAlbumIDs: []string{fixture.sources["first"].String()},
+		MediaItemIDs:   []string{fixture.media["shared"].String()},
+		Timezone:       "UTC",
+	})
+	assert.ErrorIs(t, err, ErrMediaUnavailable)
+	_, err = fixture.service.CreateEvent(ctx, fixture.actor, CreateEventRequest{
+		SourceAlbumIDs: []string{fixture.sources["first"].String()}, Timezone: "UTC",
+	})
+	assert.ErrorIs(t, err, ErrNoMediaAvailable)
+	_, _, err = fixture.service.CreateLooseItem(ctx, fixture.actor, CreateLooseItemRequest{
+		MediaItemID: fixture.media["shared"].String(), Timezone: "UTC",
+	})
+	assert.ErrorIs(t, err, ErrMediaUnavailable)
+
+	loadedEvent, err := fixture.service.GetEvent(ctx, uuid.MustParse(existingEvent.ID))
+	require.NoError(t, err)
+	assert.Equal(t, []string{fixture.media["first_only"].String()}, allEventMediaIDs(loadedEvent))
+	retriedLoose, created, err := fixture.service.CreateLooseItem(ctx, fixture.actor, CreateLooseItemRequest{
+		MediaItemID: fixture.media["unknown"].String(), Timezone: "America/New_York",
+	})
+	require.NoError(t, err)
+	assert.False(t, created)
+	assert.Equal(t, existingLoose.ID, retriedLoose.ID)
+	assert.Equal(t, "UTC", retriedLoose.GroupingTimezone)
+}
+
 func TestRecipientSessionsCannotSeeDraftRoutesBeforePublication(t *testing.T) {
 	fixture := newDraftFixture(t)
 	ctx := context.Background()

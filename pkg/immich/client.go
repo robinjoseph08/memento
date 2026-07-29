@@ -453,35 +453,11 @@ func (c *Client) AlbumAssetsPage(ctx context.Context, albumID uuid.UUID, page in
 	}
 	result := AssetPage{Items: make([]AssetSummary, 0, len(*response.Assets.Items))}
 	for _, raw := range *response.Assets.Items {
-		if raw.ID == nil || raw.Type == nil {
+		asset, err := normalizeAsset(raw)
+		if err != nil {
 			return AssetPage{}, errInvalidResponse
 		}
-		assetID, err := uuid.Parse(*raw.ID)
-		width, widthErr := requiredNullableDimension(raw.Width)
-		height, heightErr := requiredNullableDimension(raw.Height)
-		localDateTime, localDateTimeErr := requiredNullableLocalDateTime(raw.LocalDateTime)
-		if err != nil || assetID == uuid.Nil || !validAssetType(*raw.Type) || widthErr != nil || heightErr != nil || localDateTimeErr != nil {
-			return AssetPage{}, errInvalidResponse
-		}
-		checksum, checksumErr := optionalChecksum(raw.Checksum)
-		captureAt := ""
-		if localDateTime != nil {
-			captureAt = *localDateTime
-		}
-		if raw.FileCreatedAt != nil && strings.TrimSpace(*raw.FileCreatedAt) != "" {
-			if _, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(*raw.FileCreatedAt)); err != nil {
-				return AssetPage{}, errInvalidResponse
-			}
-			captureAt = strings.TrimSpace(*raw.FileCreatedAt)
-		}
-		if checksumErr != nil {
-			return AssetPage{}, errInvalidResponse
-		}
-		result.Items = append(result.Items, AssetSummary{
-			SourceID: assetID, MediaType: strings.ToLower(*raw.Type), Width: width, Height: height,
-			LocalDateTime: localDateTime, CaptureAt: truncate(captureAt, 64), Checksum: checksum,
-			Filename: truncate(optionalString(raw.OriginalFileName), 1024), OriginalPath: truncate(optionalString(raw.OriginalPath), 4096),
-		})
+		result.Items = append(result.Items, asset)
 	}
 	if string(response.Assets.NextPage) != "null" {
 		var nextValue string
@@ -498,6 +474,54 @@ func (c *Client) AlbumAssetsPage(ctx context.Context, albumID uuid.UUID, page in
 		return AssetPage{}, errInvalidResponse
 	}
 	return result, nil
+}
+
+func normalizeAsset(raw assetResponse) (AssetSummary, error) {
+	if raw.ID == nil || raw.Type == nil {
+		return AssetSummary{}, errInvalidResponse
+	}
+	assetID, err := uuid.Parse(*raw.ID)
+	width, widthErr := requiredNullableDimension(raw.Width)
+	height, heightErr := requiredNullableDimension(raw.Height)
+	localDateTime, localDateTimeErr := requiredNullableLocalDateTime(raw.LocalDateTime)
+	if err != nil || assetID == uuid.Nil || !validAssetType(*raw.Type) || widthErr != nil || heightErr != nil || localDateTimeErr != nil {
+		return AssetSummary{}, errInvalidResponse
+	}
+	checksum, checksumErr := optionalChecksum(raw.Checksum)
+	if checksumErr != nil {
+		return AssetSummary{}, errInvalidResponse
+	}
+	captureAt := ""
+	if localDateTime != nil {
+		captureAt = *localDateTime
+	}
+	if raw.FileCreatedAt != nil && strings.TrimSpace(*raw.FileCreatedAt) != "" {
+		if _, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(*raw.FileCreatedAt)); err != nil {
+			return AssetSummary{}, errInvalidResponse
+		}
+		captureAt = strings.TrimSpace(*raw.FileCreatedAt)
+	}
+	return AssetSummary{
+		SourceID: assetID, MediaType: strings.ToLower(*raw.Type), Width: width, Height: height,
+		LocalDateTime: localDateTime, CaptureAt: truncate(captureAt, 64), Checksum: checksum,
+		Filename: truncate(optionalString(raw.OriginalFileName), 1024), OriginalPath: truncate(optionalString(raw.OriginalPath), 4096),
+	}, nil
+}
+
+// Asset returns fresh normalized metadata for one exact Immich asset.
+func (c *Client) Asset(ctx context.Context, assetID uuid.UUID) (AssetSummary, error) {
+	if assetID == uuid.Nil {
+		return AssetSummary{}, errInvalidResponse
+	}
+	var response assetResponse
+	if err := c.getJSON(ctx, "assets/"+assetID.String(), &response, errAssetFailed); err != nil {
+		return AssetSummary{}, err
+	}
+	asset, err := normalizeAsset(response)
+	if err != nil || asset.SourceID != assetID {
+		return AssetSummary{}, errInvalidResponse
+	}
+	return asset, nil
 }
 
 // AssetExists distinguishes an album-only removal from an Immich asset that

@@ -36,8 +36,9 @@ type identityConnector struct {
 	faceMu            sync.Mutex
 	faceStarted       chan struct{}
 	releaseFace       chan struct{}
-	assetExists       map[uuid.UUID]bool
-	assetExistsErr    error
+	assets            map[uuid.UUID]immich.AssetSummary
+	assetMissing      map[uuid.UUID]bool
+	assetErr          error
 	deliveryAvailable map[uuid.UUID]bool
 	deliveryErr       error
 	deliveryMu        sync.Mutex
@@ -52,14 +53,17 @@ func (connector *identityConnector) Check(context.Context) error { return connec
 func (connector *identityConnector) People(context.Context) ([]immich.PersonSummary, error) {
 	return connector.people, connector.err
 }
-func (connector *identityConnector) AssetExists(_ context.Context, assetID uuid.UUID) (bool, error) {
-	if connector.assetExistsErr != nil {
-		return false, connector.assetExistsErr
+func (connector *identityConnector) Asset(_ context.Context, assetID uuid.UUID) (immich.AssetSummary, error) {
+	if connector.assetErr != nil {
+		return immich.AssetSummary{}, connector.assetErr
 	}
-	if exists, configured := connector.assetExists[assetID]; configured {
-		return exists, nil
+	if connector.assetMissing[assetID] {
+		return immich.AssetSummary{}, immich.ErrNotFound
 	}
-	return true, nil
+	if asset, configured := connector.assets[assetID]; configured {
+		return asset, nil
+	}
+	return immich.AssetSummary{SourceID: assetID, MediaType: "image"}, nil
 }
 
 func (connector *identityConnector) AssetDeliveryAvailable(ctx context.Context, assetID uuid.UUID, mediaType string) (bool, error) {
@@ -177,6 +181,38 @@ func reconcile(service *Service) error {
 func hashBytes(value string) []byte {
 	hash := sha256.Sum256([]byte(value))
 	return hash[:]
+}
+
+func reviewedMediaToken(t *testing.T, fixture repairFixture, candidateID uuid.UUID) string {
+	t.Helper()
+	listed, err := fixture.service.List(context.Background())
+	require.NoError(t, err)
+	for _, candidate := range listed.MediaCandidates {
+		if candidate.ID == candidateID.String() {
+			require.NotEmpty(t, candidate.ReviewToken)
+			return candidate.ReviewToken
+		}
+	}
+	t.Fatalf("Media repair candidate %s was not listed", candidateID)
+	return ""
+}
+
+func setFreshAssetFromBacking(t *testing.T, fixture repairFixture, assetID uuid.UUID) {
+	t.Helper()
+	var asset immich.AssetSummary
+	asset.SourceID = assetID
+	require.NoError(t, fixture.db.NewRaw(`
+		SELECT media.media_type, COALESCE(backing.checksum, ''), COALESCE(backing.capture_at, ''),
+			backing.filename, backing.original_path
+		FROM media_backings AS backing
+		JOIN media_items AS media ON media.id = backing.media_item_id
+		WHERE backing.immich_asset_id = ? AND backing.active
+	`, assetID).Scan(context.Background(), &asset.MediaType, &asset.Checksum,
+		&asset.CaptureAt, &asset.Filename, &asset.OriginalPath))
+	if fixture.connector.assets == nil {
+		fixture.connector.assets = make(map[uuid.UUID]immich.AssetSummary)
+	}
+	fixture.connector.assets[assetID] = asset
 }
 
 func checksum(value string) string { return hex.EncodeToString(hashBytes(value)[:20]) }
@@ -749,6 +785,75 @@ func TestPersonAnchorCaptureUsesFiveOfFiftyNewestActiveBackings(t *testing.T) {
 	})
 }
 
+func TestSourceProblemsOrderPriorityThenMediaBeforeAlbums(t *testing.T) {
+	fixture := newRepairFixture(t, 0)
+	ctx := context.Background()
+	criticalMediaID, highMediaID := uuid.New(), uuid.New()
+	criticalAssetID, highAssetID := uuid.New(), uuid.New()
+	criticalAlbumID, highAlbumID := uuid.New(), uuid.New()
+	eventID, momentID, snapshotID := uuid.New(), uuid.New(), uuid.New()
+	publicationID, publishedMomentID := uuid.New(), uuid.New()
+	_, err := fixture.db.NewRaw(`
+		INSERT INTO source_albums (
+			id, immich_album_id, name, asset_count, source_created_at, source_updated_at,
+			first_seen_at, last_seen_at, source_fingerprint, source_missing, missing_since,
+			next_reconciliation_at
+		) VALUES
+			(?, gen_random_uuid(), 'Critical album', 1, now(), now(), now(), now(), decode(repeat('21', 32), 'hex'), true, now() - interval '4 hours', now()),
+			(?, gen_random_uuid(), 'High album', 1, now(), now(), now(), now(), decode(repeat('22', 32), 'hex'), true, now() - interval '3 hours', now());
+		INSERT INTO media_items (
+			id, immich_asset_id, media_type, availability, missing_since, first_seen_at, last_seen_at
+		) VALUES
+			(?, ?, 'image', 'source_missing', now() - interval '2 hours', now(), now()),
+			(?, ?, 'image', 'source_missing', now() - interval '1 hour', now(), now());
+		INSERT INTO media_backings (id, media_item_id, immich_asset_id, filename, linked_at)
+		VALUES (gen_random_uuid(), ?, ?, 'Critical media.jpg', now()),
+		       (gen_random_uuid(), ?, ?, 'High media.jpg', now());
+		INSERT INTO source_album_memberships (
+			source_album_id, immich_asset_id, media_item_id, first_seen_at, last_seen_at, source_fingerprint
+		) VALUES (?, ?, ?, now(), now(), decode(repeat('23', 32), 'hex')),
+		         (?, ?, ?, now(), now(), decode(repeat('24', 32), 'hex'));
+		INSERT INTO events (id, lifecycle, title, grouping_timezone) VALUES (?, 'published', 'Published repair', 'UTC');
+		INSERT INTO draft_moments (id, event_id, position, proposed_day, grouping_timezone)
+		VALUES (?, ?, 0, '2026-01-01', 'UTC');
+		INSERT INTO audience_snapshots (id, target_kind, target_id, approved_by_person_id, approved_at, label)
+		VALUES (?, 'moment', ?, ?, now(), 'Curator only');
+		INSERT INTO publications (id, event_id, revision, editable_version, published_by_person_id, notify_recipients, committed_at)
+		VALUES (?, ?, 1, 1, ?, false, now());
+		INSERT INTO published_moments (
+			id, publication_id, draft_moment_id, audience_snapshot_id, position, title, proposed_day
+		) VALUES (?, ?, ?, ?, 0, '', '2026-01-01');
+		INSERT INTO current_published_placements (
+			event_id, publication_id, published_moment_id, media_item_id, position
+		) VALUES (?, ?, ?, ?, 0)
+	`, criticalAlbumID, highAlbumID,
+		criticalMediaID, criticalAssetID, highMediaID, highAssetID,
+		criticalMediaID, criticalAssetID, highMediaID, highAssetID,
+		criticalAlbumID, criticalAssetID, criticalMediaID,
+		highAlbumID, highAssetID, highMediaID,
+		eventID, momentID, eventID, snapshotID, momentID, fixture.actor.PersonID,
+		publicationID, eventID, fixture.actor.PersonID,
+		publishedMomentID, publicationID, momentID, snapshotID,
+		eventID, publicationID, publishedMomentID, criticalMediaID).Exec(ctx)
+	require.NoError(t, err)
+
+	listed, err := fixture.service.List(ctx)
+	require.NoError(t, err)
+	require.Len(t, listed.SourceProblems, 4)
+	assert.Equal(t, []string{"critical", "critical", "high", "high"}, []string{
+		listed.SourceProblems[0].Priority, listed.SourceProblems[1].Priority,
+		listed.SourceProblems[2].Priority, listed.SourceProblems[3].Priority,
+	})
+	assert.Equal(t, []string{"media_item", "source_album", "media_item", "source_album"}, []string{
+		listed.SourceProblems[0].Kind, listed.SourceProblems[1].Kind,
+		listed.SourceProblems[2].Kind, listed.SourceProblems[3].Kind,
+	})
+	assert.Equal(t, []string{"Critical media.jpg", "Critical album", "High media.jpg", "High album"}, []string{
+		listed.SourceProblems[0].Label, listed.SourceProblems[1].Label,
+		listed.SourceProblems[2].Label, listed.SourceProblems[3].Label,
+	})
+}
+
 func TestRejectedMediaRepairLeavesAddRemoveAndBackingUntouched(t *testing.T) {
 	fixture := newRepairFixture(t, 0)
 	oldMediaID, newMediaID := uuid.New(), uuid.New()
@@ -787,27 +892,98 @@ func TestMediaConfirmationRevalidatesReplacementAvailability(t *testing.T) {
 		       (?, ?, 'image', '2026-01-01T00:00:00Z', 'current', NULL, now(), now());
 		INSERT INTO media_backings (id, media_item_id, immich_asset_id, checksum, linked_at)
 		VALUES (gen_random_uuid(), ?, ?, ?, now()), (gen_random_uuid(), ?, ?, ?, now());
-		INSERT INTO media_repair_candidates (id, media_item_id, candidate_media_item_id, previous_immich_asset_id, candidate_immich_asset_id, created_at)
-		VALUES (?, ?, ?, ?, ?, now());
+		INSERT INTO media_repair_candidates (
+			id, media_item_id, candidate_media_item_id, previous_immich_asset_id,
+			candidate_immich_asset_id, previous_evidence, candidate_evidence, created_at
+		) VALUES (?, ?, ?, ?, ?,
+			jsonb_build_object('checksum', ?, 'capture', NULL, 'filename', '', 'path', ''),
+			jsonb_build_object('checksum', ?, 'capture', NULL, 'filename', '', 'path', ''), now());
 	`, oldMediaID, oldAssetID, newMediaID, newAssetID,
 		oldMediaID, oldAssetID, checksum("same"), newMediaID, newAssetID, checksum("same"),
-		candidateID, oldMediaID, newMediaID, oldAssetID, newAssetID)
+		candidateID, oldMediaID, newMediaID, oldAssetID, newAssetID, checksum("same"), checksum("same"))
+	require.NoError(t, err)
+	setFreshAssetFromBacking(t, fixture, newAssetID)
+	reviewToken := reviewedMediaToken(t, fixture, candidateID)
+
+	fixture.connector.assetErr = errors.New("malformed or unauthorized Immich response")
+	_, err = fixture.service.ConfirmMedia(context.Background(), fixture.actor, candidateID, reviewToken)
+	assert.ErrorIs(t, err, ErrDependency)
+	fixture.connector.assetErr = nil
+	fixture.connector.assetMissing = map[uuid.UUID]bool{newAssetID: true}
+	_, err = fixture.service.ConfirmMedia(context.Background(), fixture.actor, candidateID, reviewToken)
+	assert.ErrorIs(t, err, ErrConflict)
+	fixture.connector.assetMissing[newAssetID] = false
+	deliveryCallCount := func() int {
+		fixture.connector.deliveryMu.Lock()
+		defer fixture.connector.deliveryMu.Unlock()
+		return len(fixture.connector.deliveryCalls)
+	}
+
+	_, err = fixture.db.NewRaw(`UPDATE media_repair_candidates SET candidate_evidence = '{}'::jsonb WHERE id = ?`, candidateID).Exec(context.Background())
+	require.NoError(t, err)
+	_, err = fixture.service.ConfirmMedia(context.Background(), fixture.actor, candidateID, reviewToken)
+	assert.ErrorIs(t, err, ErrConflict, "malformed reviewed evidence remains pending")
+	_, err = fixture.db.NewRaw(`UPDATE media_repair_candidates SET candidate_evidence = jsonb_build_object(
+		'checksum', ?, 'capture', NULL, 'filename', '', 'path', ''
+	) WHERE id = ?`, checksum("same"), candidateID).Exec(context.Background())
 	require.NoError(t, err)
 
-	fixture.connector.assetExistsErr = errors.New("malformed or unauthorized Immich response")
-	_, err = fixture.service.ConfirmMedia(context.Background(), fixture.actor, candidateID)
-	assert.ErrorIs(t, err, ErrDependency)
-	fixture.connector.assetExistsErr = nil
-	fixture.connector.assetExists = map[uuid.UUID]bool{newAssetID: false}
-	_, err = fixture.service.ConfirmMedia(context.Background(), fixture.actor, candidateID)
+	_, err = fixture.db.NewRaw(`UPDATE media_repair_candidates SET candidate_evidence = jsonb_set(candidate_evidence, '{filename}', '"stale-review.jpg"') WHERE id = ?`, candidateID).Exec(context.Background())
+	require.NoError(t, err)
+	_, err = fixture.service.ConfirmMedia(context.Background(), fixture.actor, candidateID, reviewToken)
+	assert.ErrorIs(t, err, ErrConflict, "the submitted token must bind the exact displayed evidence")
+	_, err = fixture.db.NewRaw(`UPDATE media_repair_candidates SET candidate_evidence = jsonb_set(candidate_evidence, '{filename}', '""') WHERE id = ?`, candidateID).Exec(context.Background())
+	require.NoError(t, err)
+
+	baseAsset := fixture.connector.assets[newAssetID]
+	for _, changed := range []struct {
+		name   string
+		mutate func(*immich.AssetSummary)
+	}{
+		{name: "checksum", mutate: func(asset *immich.AssetSummary) { asset.Checksum = checksum("changed upstream") }},
+		{name: "media type", mutate: func(asset *immich.AssetSummary) { asset.MediaType = "video" }},
+		{name: "path", mutate: func(asset *immich.AssetSummary) { asset.OriginalPath = "/unreviewed/path.jpg" }},
+	} {
+		t.Run("changed "+changed.name, func(t *testing.T) {
+			before := deliveryCallCount()
+			asset := baseAsset
+			changed.mutate(&asset)
+			fixture.connector.assets[newAssetID] = asset
+			_, confirmErr := fixture.service.ConfirmMedia(context.Background(), fixture.actor, candidateID, reviewToken)
+			assert.ErrorIs(t, confirmErr, ErrConflict)
+			assert.Equal(t, before, deliveryCallCount(), "stale evidence is rejected before delivery probes")
+		})
+	}
+	fixture.connector.assets[newAssetID] = baseAsset
+
+	faceID := uuid.New()
+	_, err = fixture.db.NewRaw(`UPDATE media_repair_candidates SET face_anchor_evidence = jsonb_build_array(jsonb_build_object(
+		'face_id', ?, 'asset_id', ?, 'checksum', ?, 'image_width', 100, 'image_height', 80,
+		'x1', 1, 'y1', 2, 'x2', 20, 'y2', 30
+	)) WHERE id = ?`, faceID, newAssetID, checksum("same"), candidateID).Exec(context.Background())
+	require.NoError(t, err)
+	anchorToken := reviewedMediaToken(t, fixture, candidateID)
+	fixture.connector.faces[newAssetID] = []immich.FaceSummary{{
+		SourceID: faceID, ImageWidth: 100, ImageHeight: 80, X1: 1, Y1: 2, X2: 21, Y2: 30,
+	}}
+	beforeAnchor := deliveryCallCount()
+	_, err = fixture.service.ConfirmMedia(context.Background(), fixture.actor, candidateID, anchorToken)
 	assert.ErrorIs(t, err, ErrConflict)
-	fixture.connector.assetExists[newAssetID] = true
+	assert.Equal(t, beforeAnchor, deliveryCallCount())
+	_, err = fixture.db.NewRaw(`UPDATE media_repair_candidates SET face_anchor_evidence = '[]'::jsonb WHERE id = ?`, candidateID).Exec(context.Background())
+	require.NoError(t, err)
+
+	harmlessAsset := baseAsset
+	harmlessAsset.Filename = "renamed-after-review.jpg"
+	harmlessAsset.CaptureAt = "2026-02-02T00:00:00Z"
+	fixture.connector.assets[newAssetID] = harmlessAsset
 	fixture.connector.deliveryErr = errors.New("malformed or unauthorized delivery response")
-	_, err = fixture.service.ConfirmMedia(context.Background(), fixture.actor, candidateID)
-	assert.ErrorIs(t, err, ErrDependency)
+	_, err = fixture.service.ConfirmMedia(context.Background(), fixture.actor, candidateID, reviewToken)
+	assert.ErrorIs(t, err, ErrDependency, "harmless mutable filename and capture metadata do not invalidate identity evidence")
 	fixture.connector.deliveryErr = nil
+	fixture.connector.assets[newAssetID] = baseAsset
 	fixture.connector.setDeliveryAvailable(newAssetID, false)
-	_, err = fixture.service.ConfirmMedia(context.Background(), fixture.actor, candidateID)
+	_, err = fixture.service.ConfirmMedia(context.Background(), fixture.actor, candidateID, reviewToken)
 	assert.ErrorIs(t, err, ErrConflict)
 	var state, availability string
 	var activeAssetID uuid.UUID
@@ -836,7 +1012,7 @@ func TestMediaConfirmationRejectsCrossTypeCandidateBeforeDeliveryProbe(t *testin
 		candidateID, oldMediaID, newMediaID, oldAssetID, newAssetID)
 	require.NoError(t, err)
 
-	_, err = fixture.service.ConfirmMedia(context.Background(), fixture.actor, candidateID)
+	_, err = fixture.service.ConfirmMedia(context.Background(), fixture.actor, candidateID, "")
 	require.ErrorIs(t, err, ErrConflict)
 	fixture.connector.deliveryMu.Lock()
 	assert.Empty(t, fixture.connector.deliveryCalls, "cross-type stable metadata is rejected without probing the wrong representation contract")
@@ -865,13 +1041,18 @@ func TestMediaConfirmationProbesWithoutHoldingGlobalOrMediaLocksAndRejectsChange
 			source_album_id, immich_asset_id, media_item_id, first_seen_at, last_seen_at, source_fingerprint
 		) VALUES (?, ?, ?, now(), now(), ?);
 		INSERT INTO media_repair_candidates (
-			id, media_item_id, candidate_media_item_id, previous_immich_asset_id, candidate_immich_asset_id, created_at
-		) VALUES (?, ?, ?, ?, ?, now());
+			id, media_item_id, candidate_media_item_id, previous_immich_asset_id,
+			candidate_immich_asset_id, previous_evidence, candidate_evidence, created_at
+		) VALUES (?, ?, ?, ?, ?,
+			jsonb_build_object('checksum', ?, 'capture', NULL, 'filename', '', 'path', ''),
+			jsonb_build_object('checksum', ?, 'capture', NULL, 'filename', '', 'path', ''), now());
 	`, sourceAlbumID, hashBytes("race-album"), oldMediaID, oldAssetID, newMediaID, newAssetID,
 		oldMediaID, oldAssetID, checksum("race"), newMediaID, newAssetID, checksum("race"),
 		sourceAlbumID, newAssetID, newMediaID, hashBytes("race-membership"),
-		candidateID, oldMediaID, newMediaID, oldAssetID, newAssetID)
+		candidateID, oldMediaID, newMediaID, oldAssetID, newAssetID, checksum("race"), checksum("race"))
 	require.NoError(t, err)
+	setFreshAssetFromBacking(t, fixture, newAssetID)
+	reviewToken := reviewedMediaToken(t, fixture, candidateID)
 
 	started := make(chan uuid.UUID, 1)
 	release := make(chan struct{})
@@ -879,7 +1060,7 @@ func TestMediaConfirmationProbesWithoutHoldingGlobalOrMediaLocksAndRejectsChange
 	fixture.connector.releaseDelivery = release
 	confirmation := make(chan error, 1)
 	go func() {
-		_, confirmErr := fixture.service.ConfirmMedia(context.Background(), fixture.actor, candidateID)
+		_, confirmErr := fixture.service.ConfirmMedia(context.Background(), fixture.actor, candidateID, reviewToken)
 		confirmation <- confirmErr
 	}()
 	select {
@@ -934,16 +1115,29 @@ func TestCompetingMediaConfirmationsHaveOneWinnerAndSupersedeOverlap(t *testing.
 		VALUES (gen_random_uuid(), ?, ?, ?, now()), (gen_random_uuid(), ?, ?, ?, now()), (gen_random_uuid(), ?, ?, ?, now());
 		INSERT INTO source_album_memberships (source_album_id, immich_asset_id, media_item_id, first_seen_at, last_seen_at, source_fingerprint)
 		VALUES (?, ?, ?, now(), now(), ?), (?, ?, ?, now(), now(), ?);
-		INSERT INTO media_repair_candidates (id, media_item_id, candidate_media_item_id, previous_immich_asset_id, candidate_immich_asset_id, created_at)
-		VALUES (?, ?, ?, ?, ?, now()), (?, ?, ?, ?, ?, now());
+		INSERT INTO media_repair_candidates (
+			id, media_item_id, candidate_media_item_id, previous_immich_asset_id,
+			candidate_immich_asset_id, previous_evidence, candidate_evidence, created_at
+		) VALUES (?, ?, ?, ?, ?,
+			jsonb_build_object('checksum', ?, 'capture', NULL, 'filename', '', 'path', ''),
+			jsonb_build_object('checksum', ?, 'capture', NULL, 'filename', '', 'path', ''), now()),
+			(?, ?, ?, ?, ?,
+			jsonb_build_object('checksum', ?, 'capture', NULL, 'filename', '', 'path', ''),
+			jsonb_build_object('checksum', ?, 'capture', NULL, 'filename', '', 'path', ''), now());
 	`, sourceAlbumID, hashBytes("competing-album"),
 		stableMediaID, stableAssetID, firstMediaID, firstAssetID, secondMediaID, secondAssetID,
 		stableMediaID, stableAssetID, checksum("competing"), firstMediaID, firstAssetID, checksum("competing"), secondMediaID, secondAssetID, checksum("competing"),
 		sourceAlbumID, firstAssetID, firstMediaID, hashBytes("first-membership"),
 		sourceAlbumID, secondAssetID, secondMediaID, hashBytes("second-membership"),
-		firstCandidateID, stableMediaID, firstMediaID, stableAssetID, firstAssetID,
-		secondCandidateID, stableMediaID, secondMediaID, stableAssetID, secondAssetID)
+		firstCandidateID, stableMediaID, firstMediaID, stableAssetID, firstAssetID, checksum("competing"), checksum("competing"),
+		secondCandidateID, stableMediaID, secondMediaID, stableAssetID, secondAssetID, checksum("competing"), checksum("competing"))
 	require.NoError(t, err)
+	setFreshAssetFromBacking(t, fixture, firstAssetID)
+	setFreshAssetFromBacking(t, fixture, secondAssetID)
+	reviewTokens := map[uuid.UUID]string{
+		firstCandidateID:  reviewedMediaToken(t, fixture, firstCandidateID),
+		secondCandidateID: reviewedMediaToken(t, fixture, secondCandidateID),
+	}
 
 	started := make(chan uuid.UUID, 2)
 	release := make(chan struct{})
@@ -956,7 +1150,7 @@ func TestCompetingMediaConfirmationsHaveOneWinnerAndSupersedeOverlap(t *testing.
 	results := make(chan result, 2)
 	for _, candidateID := range []uuid.UUID{firstCandidateID, secondCandidateID} {
 		go func() {
-			_, confirmErr := fixture.service.ConfirmMedia(context.Background(), fixture.actor, candidateID)
+			_, confirmErr := fixture.service.ConfirmMedia(context.Background(), fixture.actor, candidateID, reviewTokens[candidateID])
 			results <- result{candidateID: candidateID, err: confirmErr}
 		}()
 	}
@@ -1042,6 +1236,8 @@ func TestMediaConfirmationPreservesPortalIdentityAndMovesBacking(t *testing.T) {
 		sourceAlbumID, newAssetID, newMediaID, hashBytes("membership"), candidateID, oldMediaID, newMediaID, oldAssetID, newAssetID,
 		checksum("same"), checksum("same"))
 	require.NoError(t, err)
+	setFreshAssetFromBacking(t, fixture, newAssetID)
+	reviewToken := reviewedMediaToken(t, fixture, candidateID)
 	eventID, momentID, candidateLooseID, stableLooseID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
 	_, err = fixture.db.ExecContext(context.Background(), `
 		INSERT INTO events (id, title, grouping_timezone) VALUES (?, 'Repair draft', 'UTC');
@@ -1056,7 +1252,7 @@ func TestMediaConfirmationPreservesPortalIdentityAndMovesBacking(t *testing.T) {
 		INSERT INTO draft_media_placements (event_id, media_item_id, position) VALUES (?, ?, 1)
 	`, eventID, oldMediaID)
 	require.NoError(t, err)
-	_, err = fixture.service.ConfirmMedia(context.Background(), fixture.actor, candidateID)
+	_, err = fixture.service.ConfirmMedia(context.Background(), fixture.actor, candidateID, reviewToken)
 	assert.ErrorIs(t, err, ErrConflict, "colliding Event placements require explicit Curator cleanup")
 	var pendingState string
 	var retainedItems int
@@ -1071,7 +1267,7 @@ func TestMediaConfirmationPreservesPortalIdentityAndMovesBacking(t *testing.T) {
 		INSERT INTO loose_items (id, media_item_id, grouping_timezone) VALUES (?, ?, 'UTC')
 	`, stableLooseID, oldMediaID)
 	require.NoError(t, err)
-	_, err = fixture.service.ConfirmMedia(context.Background(), fixture.actor, candidateID)
+	_, err = fixture.service.ConfirmMedia(context.Background(), fixture.actor, candidateID, reviewToken)
 	assert.ErrorIs(t, err, ErrConflict, "colliding Loose items require explicit Curator cleanup")
 	require.NoError(t, fixture.db.NewRaw(`SELECT state FROM media_repair_candidates WHERE id = ?`, candidateID).Scan(context.Background(), &pendingState))
 	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM media_items WHERE id IN (?, ?)`, oldMediaID, newMediaID).Scan(context.Background(), &retainedItems))
@@ -1088,7 +1284,7 @@ func TestMediaConfirmationPreservesPortalIdentityAndMovesBacking(t *testing.T) {
 
 	_, err = fixture.db.ExecContext(context.Background(), `UPDATE media_backings SET checksum = ? WHERE id = ?`, checksum("changed"), newBackingID)
 	require.NoError(t, err)
-	_, err = fixture.service.ConfirmMedia(context.Background(), fixture.actor, candidateID)
+	_, err = fixture.service.ConfirmMedia(context.Background(), fixture.actor, candidateID, reviewToken)
 	assert.ErrorIs(t, err, ErrConflict)
 	_, err = fixture.db.ExecContext(context.Background(), `UPDATE media_backings SET checksum = ? WHERE id = ?`, checksum("same"), newBackingID)
 	require.NoError(t, err)
@@ -1156,7 +1352,7 @@ func TestMediaConfirmationPreservesPortalIdentityAndMovesBacking(t *testing.T) {
 		) AS entitlement
 	`, eventID, fixture.accessID, newMediaID).Scan(context.Background(), &candidateEntitlementBefore))
 	require.NotEmpty(t, candidateEntitlementBefore)
-	_, err = fixture.service.ConfirmMedia(context.Background(), fixture.actor, candidateID)
+	_, err = fixture.service.ConfirmMedia(context.Background(), fixture.actor, candidateID, reviewToken)
 	assert.ErrorIs(t, err, ErrConflict, "a candidate's current authorization must never transfer to the stable Media identity")
 	var pendingAfterAuthorizationConflict, candidateEntitlementAfter string
 	require.NoError(t, fixture.db.NewRaw(`SELECT state FROM media_repair_candidates WHERE id = ?`, candidateID).Scan(context.Background(), &pendingAfterAuthorizationConflict))
@@ -1278,7 +1474,7 @@ func TestMediaConfirmationPreservesPortalIdentityAndMovesBacking(t *testing.T) {
 	organizerPID := waitForRepairBlockedQuery(t, fixture.db, eventBoundaryPID, `%SELECT version, title, description, grouping_timezone%`)
 	confirmation := make(chan error, 1)
 	go func() {
-		_, confirmErr := fixture.service.ConfirmMedia(context.Background(), fixture.actor, candidateID)
+		_, confirmErr := fixture.service.ConfirmMedia(context.Background(), fixture.actor, candidateID, reviewToken)
 		confirmation <- confirmErr
 	}()
 	waitForRepairBlockedQuery(t, fixture.db, organizerPID, `%pg_advisory_xact_lock(hashtextextended%`)
@@ -1403,6 +1599,6 @@ func TestMediaConfirmationPreservesPortalIdentityAndMovesBacking(t *testing.T) {
 	require.NotNil(t, confirmedHistory)
 	assert.Equal(t, "old.jpg", confirmedHistory.Previous.Filename)
 	assert.Equal(t, "/moved/new.jpg", confirmedHistory.Candidate.Path)
-	_, err = fixture.service.ConfirmMedia(context.Background(), fixture.actor, candidateID)
+	_, err = fixture.service.ConfirmMedia(context.Background(), fixture.actor, candidateID, reviewToken)
 	assert.ErrorIs(t, err, ErrAlreadyResolved)
 }

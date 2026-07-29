@@ -5,8 +5,10 @@ package library
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -24,6 +26,7 @@ import (
 	"github.com/robinjoseph08/memento/pkg/errcodes"
 	"github.com/robinjoseph08/memento/pkg/immich"
 	"github.com/robinjoseph08/memento/pkg/migrations"
+	"github.com/robinjoseph08/memento/pkg/repairs"
 	"github.com/robinjoseph08/memento/pkg/setup"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -117,6 +120,54 @@ func (source *blockingRepresentationSource) open(ctx context.Context, contents s
 	body := &observedRepresentationBody{Reader: strings.NewReader(contents), closed: make(chan struct{})}
 	source.bodies <- body
 	return immich.MediaResponse{Body: body, StatusCode: http.StatusOK, ContentType: "image/webp"}, nil
+}
+
+type lateMissingRepresentationSource struct {
+	started chan struct{}
+	release <-chan struct{}
+}
+
+func (source *lateMissingRepresentationSource) missing(ctx context.Context) (immich.MediaResponse, error) {
+	select {
+	case source.started <- struct{}{}:
+	case <-ctx.Done():
+		return immich.MediaResponse{}, ctx.Err()
+	}
+	select {
+	case <-source.release:
+		return immich.MediaResponse{}, immich.ErrNotFound
+	case <-ctx.Done():
+		return immich.MediaResponse{}, ctx.Err()
+	}
+}
+
+func (source *lateMissingRepresentationSource) Thumbnail(ctx context.Context, _ uuid.UUID, _ immich.MediaRequest) (immich.MediaResponse, error) {
+	return source.missing(ctx)
+}
+func (source *lateMissingRepresentationSource) Preview(ctx context.Context, _ uuid.UUID, _ immich.MediaRequest) (immich.MediaResponse, error) {
+	return source.missing(ctx)
+}
+func (source *lateMissingRepresentationSource) Video(ctx context.Context, _ uuid.UUID, _ immich.MediaRequest) (immich.MediaResponse, error) {
+	return source.missing(ctx)
+}
+func (source *lateMissingRepresentationSource) Original(ctx context.Context, _ uuid.UUID, _ immich.MediaRequest) (immich.MediaResponse, error) {
+	return source.missing(ctx)
+}
+
+type relinkEvidenceSource struct{ asset immich.AssetSummary }
+
+func (*relinkEvidenceSource) Check(context.Context) error { return nil }
+func (*relinkEvidenceSource) People(context.Context) ([]immich.PersonSummary, error) {
+	return nil, nil
+}
+func (*relinkEvidenceSource) Faces(context.Context, uuid.UUID) ([]immich.FaceSummary, error) {
+	return nil, nil
+}
+func (source *relinkEvidenceSource) Asset(context.Context, uuid.UUID) (immich.AssetSummary, error) {
+	return source.asset, nil
+}
+func (*relinkEvidenceSource) AssetDeliveryAvailable(context.Context, uuid.UUID, string) (bool, error) {
+	return true, nil
 }
 
 type libraryFixture struct {
@@ -1295,6 +1346,148 @@ func TestUpstreamMissingResponseFailsEveryRepresentationClosedWithoutRemovingHis
 	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM current_published_placements WHERE media_item_id = ?`, fixture.media[0]).Scan(ctx, &placements))
 	assert.Positive(t, placements)
 	assert.Equal(t, audienceBefore, loadExactLibraryAudience(t, fixture, fixture.media[0]), "Source missing must preserve every relevant Audience and entitlement row")
+}
+
+func TestVideoPlaybackNotFoundBlocksEveryRepresentationAndPreservesHistory(t *testing.T) {
+	fixture := newLibraryFixture(t)
+	ctx := context.Background()
+	_, err := fixture.db.NewRaw(`
+		UPDATE media_items SET media_type = 'video' WHERE id = ?;
+		UPDATE published_media_placements SET media_type = 'video' WHERE media_item_id = ?
+	`, fixture.media[0], fixture.media[0]).Exec(ctx)
+	require.NoError(t, err)
+	audienceBefore := loadExactLibraryAudience(t, fixture, fixture.media[0])
+	fixture.thumbnail.err = immich.ErrNotFound
+	_, err = fixture.service.Video(ctx, fixture.actor, fixture.media[0], immich.MediaRequest{})
+	assert.ErrorIs(t, err, ErrNotFound)
+	fixture.thumbnail.err = nil
+	for _, open := range []func() (immich.MediaResponse, error){
+		func() (immich.MediaResponse, error) {
+			return fixture.service.Thumbnail(ctx, fixture.actor, fixture.media[0], immich.MediaRequest{})
+		},
+		func() (immich.MediaResponse, error) {
+			return fixture.service.Preview(ctx, fixture.actor, fixture.media[0], immich.MediaRequest{})
+		},
+		func() (immich.MediaResponse, error) {
+			return fixture.service.Video(ctx, fixture.actor, fixture.media[0], immich.MediaRequest{})
+		},
+		func() (immich.MediaResponse, error) {
+			return fixture.service.Original(ctx, fixture.actor, fixture.media[0], immich.MediaRequest{})
+		},
+	} {
+		_, err := open()
+		assert.ErrorIs(t, err, ErrNotFound)
+	}
+	assert.Equal(t, []string{"video"}, fixture.thumbnail.representations)
+	assert.Equal(t, audienceBefore, loadExactLibraryAudience(t, fixture, fixture.media[0]))
+}
+
+func TestCuratorNotFoundUsesSharedMissingTransitionAndFailsClosed(t *testing.T) {
+	fixture := newLibraryFixture(t)
+	ctx := context.Background()
+	_, err := fixture.db.NewRaw(`
+		DELETE FROM person_roles WHERE person_id = ? AND role = 'curator';
+		INSERT INTO person_roles (person_id, role) VALUES (?, 'curator')
+	`, fixture.curator, fixture.actor.PersonID).Exec(ctx)
+	require.NoError(t, err)
+	curator := fixture.actor
+	curator.Curator = true
+	fixture.thumbnail.err = immich.ErrNotFound
+	_, err = fixture.service.CuratorRepresentation(ctx, curator, fixture.media[0], representationPreview, immich.MediaRequest{})
+	assert.ErrorIs(t, err, ErrNotFound)
+	fixture.thumbnail.err = nil
+	_, err = fixture.service.CuratorRepresentation(ctx, curator, fixture.media[0], representationThumbnail, immich.MediaRequest{})
+	assert.ErrorIs(t, err, ErrNotFound)
+	_, err = fixture.service.Thumbnail(ctx, fixture.actor, fixture.media[0], immich.MediaRequest{})
+	assert.ErrorIs(t, err, ErrNotFound)
+	assert.Equal(t, []string{"preview"}, fixture.thumbnail.representations)
+	var availability string
+	require.NoError(t, fixture.db.NewRaw(`SELECT availability FROM media_items WHERE id = ?`, fixture.media[0]).Scan(ctx, &availability))
+	assert.Equal(t, "source_missing", availability)
+}
+
+func TestLateOldBackingNotFoundCannotUndoConfirmedRelink(t *testing.T) {
+	fixture := newLibraryFixture(t)
+	ctx := context.Background()
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	lateSource := &lateMissingRepresentationSource{started: started, release: release}
+	lateService := New(fixture.db, lateSource)
+	delivery := make(chan error, 1)
+	go func() {
+		_, err := lateService.Thumbnail(ctx, fixture.actor, fixture.media[0], immich.MediaRequest{})
+		delivery <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("old backing delivery did not begin")
+	}
+
+	stableMediaID, oldAssetID := fixture.media[0], fixture.assets[0]
+	candidateMediaID, candidateAssetID, candidateBackingID := uuid.New(), uuid.New(), uuid.New()
+	sourceAlbumID, candidateID := uuid.New(), uuid.New()
+	digest := sha256.Sum256([]byte("late old backing relink"))
+	checksum := fmt.Sprintf("%x", digest[:20])
+	_, err := fixture.db.NewRaw(`
+		UPDATE media_items SET availability = 'source_missing', missing_since = now() WHERE id = ?;
+		UPDATE media_backings SET checksum = ? WHERE media_item_id = ? AND active;
+		INSERT INTO source_albums (
+			id, immich_album_id, name, asset_count, source_created_at, source_updated_at,
+			first_seen_at, last_seen_at, source_fingerprint, next_reconciliation_at
+		) VALUES (?, gen_random_uuid(), 'Relink race', 1, now(), now(), now(), now(), decode(repeat('12', 32), 'hex'), now());
+		INSERT INTO media_items (
+			id, immich_asset_id, media_type, availability, first_seen_at, last_seen_at
+		) VALUES (?, ?, 'image', 'current', now(), now());
+		INSERT INTO media_backings (
+			id, media_item_id, immich_asset_id, checksum, filename, original_path, linked_at
+		) VALUES (?, ?, ?, ?, 'replacement.jpg', '/library/replacement.jpg', now());
+		INSERT INTO source_album_memberships (
+			source_album_id, immich_asset_id, media_item_id, first_seen_at, last_seen_at, source_fingerprint
+		) VALUES (?, ?, ?, now(), now(), decode(repeat('13', 32), 'hex'));
+		INSERT INTO media_repair_candidates (
+			id, media_item_id, candidate_media_item_id, previous_immich_asset_id,
+			candidate_immich_asset_id, previous_evidence, candidate_evidence, created_at
+		) VALUES (?, ?, ?, ?, ?,
+			jsonb_build_object('checksum', ?, 'capture', NULL, 'filename', '', 'path', ''),
+			jsonb_build_object('checksum', ?, 'capture', NULL, 'filename', 'replacement.jpg', 'path', '/library/replacement.jpg'), now())
+	`, stableMediaID, checksum, stableMediaID, sourceAlbumID,
+		candidateMediaID, candidateAssetID, candidateBackingID, candidateMediaID,
+		candidateAssetID, checksum, sourceAlbumID, candidateAssetID, candidateMediaID,
+		candidateID, stableMediaID, candidateMediaID, oldAssetID, candidateAssetID, checksum, checksum).Exec(ctx)
+	require.NoError(t, err)
+	evidence := &relinkEvidenceSource{asset: immich.AssetSummary{
+		SourceID: candidateAssetID, MediaType: "image", Checksum: checksum,
+		Filename: "renamed-without-identity-change.jpg", OriginalPath: "/library/replacement.jpg",
+	}}
+	repairService := repairs.New(fixture.db, evidence)
+	listed, err := repairService.List(ctx)
+	require.NoError(t, err)
+	var reviewToken string
+	for _, candidate := range listed.MediaCandidates {
+		if candidate.ID == candidateID.String() {
+			reviewToken = candidate.ReviewToken
+		}
+	}
+	require.NotEmpty(t, reviewToken)
+	_, err = repairService.ConfirmMedia(ctx, setup.CuratorSession{
+		PersonID: fixture.actor.PersonID, SessionID: fixture.actor.SessionID,
+	}, candidateID, reviewToken)
+	require.NoError(t, err)
+	close(release)
+	select {
+	case err := <-delivery:
+		assert.ErrorIs(t, err, ErrNotFound)
+	case <-time.After(5 * time.Second):
+		t.Fatal("late old backing response did not finish")
+	}
+	var activeAssetID uuid.UUID
+	var availability string
+	require.NoError(t, fixture.db.NewRaw(`
+		SELECT media.immich_asset_id, media.availability FROM media_items AS media WHERE media.id = ?
+	`, stableMediaID).Scan(ctx, &activeAssetID, &availability))
+	assert.Equal(t, candidateAssetID, activeAssetID)
+	assert.Equal(t, "current", availability)
 }
 
 func TestMalformedOrUnauthorizedUpstreamFailureDoesNotInventSourceMissing(t *testing.T) {
