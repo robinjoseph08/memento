@@ -182,6 +182,127 @@ async function refreshShell(request) {
   }
 }
 
+function onlyKeys(value, allowed) {
+  return Object.keys(value).every((key) => allowed.has(key));
+}
+
+async function pushActivitySummary(data) {
+  if (!data) return undefined;
+  try {
+    const text = await data.text();
+    if (text.length > 3500) return undefined;
+    const payload = JSON.parse(text);
+    if (
+      !payload ||
+      typeof payload !== "object" ||
+      Array.isArray(payload) ||
+      !onlyKeys(payload, new Set(["version", "activities", "truncated"])) ||
+      payload.version !== 1 ||
+      !Array.isArray(payload.activities) ||
+      payload.activities.length < 1 ||
+      payload.activities.length > 20 ||
+      (payload.truncated !== undefined &&
+        typeof payload.truncated !== "boolean")
+    ) {
+      return undefined;
+    }
+    const summaries = [];
+    for (const activity of payload.activities) {
+      if (
+        !activity ||
+        typeof activity !== "object" ||
+        Array.isArray(activity)
+      ) {
+        return undefined;
+      }
+      if (activity.kind === "publication") {
+        if (
+          !onlyKeys(
+            activity,
+            new Set(["kind", "title", "addition_count", "count_capped"]),
+          ) ||
+          typeof activity.title !== "string" ||
+          activity.title.length < 1 ||
+          activity.title.length > 480 ||
+          !Number.isInteger(activity.addition_count) ||
+          activity.addition_count < 1 ||
+          activity.addition_count > 100 ||
+          (activity.count_capped !== undefined &&
+            typeof activity.count_capped !== "boolean")
+        ) {
+          return undefined;
+        }
+        const count = `${activity.addition_count}${activity.count_capped ? "+" : ""}`;
+        summaries.push(
+          `${activity.title}: ${count} new ${activity.addition_count === 1 && !activity.count_capped ? "item" : "items"}.`,
+        );
+      } else if (activity.kind === "comment") {
+        if (
+          !onlyKeys(activity, new Set(["kind", "author"])) ||
+          typeof activity.author !== "string" ||
+          activity.author.length < 1 ||
+          activity.author.length > 240
+        ) {
+          return undefined;
+        }
+        summaries.push(`${activity.author} commented on an item.`);
+      } else {
+        return undefined;
+      }
+    }
+    const remaining = summaries.length - 1;
+    if (remaining === 0) {
+      return payload.truncated
+        ? `${summaries[0]} More updates are ready.`
+        : summaries[0];
+    }
+    const label =
+      remaining === 1 && !payload.truncated ? "update is" : "updates are";
+    return `${summaries[0]} ${remaining}${payload.truncated ? "+" : ""} more ${label} ready.`;
+  } catch {
+    return undefined;
+  }
+}
+
+async function showPushNotification(data) {
+  const summary = await pushActivitySummary(data);
+  await self.registration.showNotification("New activity in Memento", {
+    body: summary ?? "New Memento activity is ready.",
+    tag: "memento-activity",
+  });
+}
+
+async function openPhotos() {
+  const destination = new URL("/photos", self.location.origin);
+  const openClients = await self.clients.matchAll({
+    type: "window",
+    includeUncontrolled: true,
+  });
+  for (const client of openClients) {
+    if (new URL(client.url).origin !== self.location.origin) continue;
+    try {
+      await client.navigate(destination.href);
+      await client.focus();
+      return;
+    } catch {
+      // Try another same-origin window before opening a new one.
+    }
+  }
+  await self.clients.openWindow("/photos");
+}
+
+async function announceSubscriptionChange() {
+  const openClients = await self.clients.matchAll({
+    type: "window",
+    includeUncontrolled: true,
+  });
+  for (const client of openClients) {
+    if (new URL(client.url).origin === self.location.origin) {
+      client.postMessage({ type: "PUSH_SUBSCRIPTION_CHANGED" });
+    }
+  }
+}
+
 self.addEventListener("install", (event) => {
   event.waitUntil(precacheShell());
 });
@@ -209,6 +330,19 @@ self.addEventListener("message", (event) => {
   if (event.data?.type === "SKIP_WAITING") {
     event.waitUntil(self.skipWaiting());
   }
+});
+
+self.addEventListener("push", (event) => {
+  event.waitUntil(showPushNotification(event.data));
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  event.waitUntil(openPhotos());
+});
+
+self.addEventListener("pushsubscriptionchange", (event) => {
+  event.waitUntil(announceSubscriptionChange());
 });
 
 self.addEventListener("fetch", (event) => {

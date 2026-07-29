@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	webpush "github.com/SherClockHolmes/webpush-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -172,6 +173,30 @@ func TestValidateAcceptsExplicitLoopbackSMTPForDevelopment(t *testing.T) {
 		Timeout: time.Second, RetryBase: time.Second, RetryMax: time.Minute, RetryWindow: time.Hour,
 	}
 	assert.NoError(t, cfg.Validate())
+}
+
+func TestLoadValidatesWebPushAndPrivateKeyFile(t *testing.T) {
+	setRequiredEnvironment(t)
+	privateKey, publicKey, err := webpush.GenerateVAPIDKeys()
+	require.NoError(t, err)
+	privatePath := filepath.Join(t.TempDir(), "push-private-key")
+	require.NoError(t, os.WriteFile(privatePath, []byte(privateKey+"\n"), 0o600))
+	t.Setenv("MEMENTO_PUSH_ENABLED", "true")
+	t.Setenv("MEMENTO_PUSH_PUBLIC_KEY", publicKey)
+	t.Setenv("MEMENTO_PUSH_PRIVATE_KEY_FILE", privatePath)
+	t.Setenv("MEMENTO_PUSH_SUBJECT", "mailto:operator@example.com")
+
+	cfg, err := Load("")
+	require.NoError(t, err)
+	assert.True(t, cfg.Push.Enabled)
+	assert.Equal(t, publicKey, cfg.Push.PublicKey)
+	assert.Equal(t, privateKey, cfg.Push.PrivateKey)
+
+	cfg.Push.PrivateKey = publicKey
+	require.ErrorContains(t, cfg.Validate(), "matching unpadded base64url")
+	cfg.Push.PrivateKey = privateKey
+	cfg.HTTP.PublicURL = "http://localhost:8081"
+	assert.ErrorContains(t, cfg.Validate(), "push requires an HTTPS")
 }
 
 func TestValidateRejectsUnsafeValues(t *testing.T) {

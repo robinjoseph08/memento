@@ -6,6 +6,7 @@ import { expect, test, vi } from "vitest";
 
 type ExtendableEvent = {
   data?: unknown;
+  notification?: { close(): void; data?: unknown };
   waitUntil(response: Promise<unknown>): void;
 };
 
@@ -38,7 +39,14 @@ async function loadWorker() {
   const fetchMock = vi.fn<typeof fetch>();
   const self = {
     location: { origin: "https://memento.example" },
-    clients: { claim: vi.fn(() => Promise.resolve()) },
+    clients: {
+      claim: vi.fn(() => Promise.resolve()),
+      matchAll: vi.fn(() => Promise.resolve([] as unknown[])),
+      openWindow: vi.fn(() => Promise.resolve()),
+    },
+    registration: {
+      showNotification: vi.fn(() => Promise.resolve()),
+    },
     skipWaiting: vi.fn(() => Promise.resolve()),
     addEventListener(type: string, handler: WorkerHandler) {
       listeners.set(type, handler);
@@ -511,4 +519,153 @@ test("an explicit update message activates a waiting worker", async () => {
   await work;
 
   expect(worker.self.skipWaiting).toHaveBeenCalledOnce();
+});
+
+test("push shows authorized Publication and Comment context from a bounded payload", async () => {
+  const worker = await loadWorker();
+  let work: Promise<unknown> | undefined;
+
+  worker.listeners.get("push")!({
+    data: {
+      text: () =>
+        Promise.resolve(
+          '{"version":1,"activities":[{"kind":"publication","title":"Family picnic","addition_count":3},{"kind":"comment","author":"Blair"}]}',
+        ),
+    },
+    request: new Request("https://memento.example/"),
+    respondWith: vi.fn(),
+    waitUntil(promise) {
+      work = promise;
+    },
+  });
+  await work;
+
+  expect(worker.self.registration.showNotification).toHaveBeenCalledOnce();
+  expect(worker.self.registration.showNotification).toHaveBeenCalledWith(
+    "New activity in Memento",
+    {
+      body: "Family picnic: 3 new items. 1 more update is ready.",
+      tag: "memento-activity",
+    },
+  );
+  const notification = JSON.stringify(
+    worker.self.registration.showNotification.mock.calls[0],
+  );
+  expect(notification).not.toMatch(/media|thumbnail|https?:|\/photos/i);
+});
+
+test.each([
+  undefined,
+  '{"version":2,"activities":[{"kind":"comment","author":"Alex"}]}',
+  '{"version":1,"activities":[]}',
+  '{"version":1,"activities":[{"kind":"publication","title":"Family","addition_count":101}]}',
+  '{"version":1,"activities":[{"kind":"comment","author":"Alex","url":"/photos"}]}',
+  "not-json",
+])(
+  "invalid or absent push data still shows one generic notification",
+  async (text) => {
+    const worker = await loadWorker();
+    let work: Promise<unknown> | undefined;
+
+    worker.listeners.get("push")!({
+      data:
+        text === undefined ? undefined : { text: () => Promise.resolve(text) },
+      request: new Request("https://memento.example/"),
+      respondWith: vi.fn(),
+      waitUntil(promise) {
+        work = promise;
+      },
+    });
+    await work;
+
+    expect(worker.self.registration.showNotification).toHaveBeenCalledOnce();
+    expect(worker.self.registration.showNotification).toHaveBeenCalledWith(
+      "New activity in Memento",
+      expect.objectContaining({ body: "New Memento activity is ready." }),
+    );
+  },
+);
+
+test("notification click ignores notification data and navigates a same-origin client to photos", async () => {
+  const worker = await loadWorker();
+  const client = {
+    url: "https://memento.example/private-location",
+    navigate: vi.fn(() => Promise.resolve()),
+    focus: vi.fn(() => Promise.resolve()),
+    postMessage: vi.fn(),
+  };
+  worker.self.clients.matchAll.mockResolvedValue([client]);
+  const close = vi.fn();
+  let work: Promise<unknown> | undefined;
+
+  worker.listeners.get("notificationclick")!({
+    notification: {
+      close,
+      data: { url: "https://attacker.example/private-media" },
+    },
+    request: new Request("https://memento.example/"),
+    respondWith: vi.fn(),
+    waitUntil(promise) {
+      work = promise;
+    },
+  });
+  await work;
+
+  expect(close).toHaveBeenCalledOnce();
+  expect(client.navigate).toHaveBeenCalledWith(
+    "https://memento.example/photos",
+  );
+  expect(client.focus).toHaveBeenCalledOnce();
+  expect(worker.self.clients.openWindow).not.toHaveBeenCalled();
+});
+
+test("notification click opens the hardcoded photos destination without a usable client", async () => {
+  const worker = await loadWorker();
+  worker.self.clients.matchAll.mockResolvedValue([]);
+  let work: Promise<unknown> | undefined;
+
+  worker.listeners.get("notificationclick")!({
+    notification: { close: vi.fn() },
+    request: new Request("https://memento.example/"),
+    respondWith: vi.fn(),
+    waitUntil(promise) {
+      work = promise;
+    },
+  });
+  await work;
+
+  expect(worker.self.clients.openWindow).toHaveBeenCalledWith("/photos");
+});
+
+test("push subscription changes ask same-origin clients to reconcile without subscribing", async () => {
+  const worker = await loadWorker();
+  const sameOrigin = {
+    url: "https://memento.example/photos",
+    postMessage: vi.fn(),
+  };
+  const foreign = {
+    url: "https://elsewhere.example/",
+    postMessage: vi.fn(),
+  };
+  worker.self.clients.matchAll.mockResolvedValue([sameOrigin, foreign]);
+  let work: Promise<unknown> | undefined;
+
+  worker.listeners.get("pushsubscriptionchange")!({
+    request: new Request("https://memento.example/"),
+    respondWith: vi.fn(),
+    waitUntil(promise) {
+      work = promise;
+    },
+  });
+  await work;
+
+  expect(sameOrigin.postMessage).toHaveBeenCalledWith({
+    type: "PUSH_SUBSCRIPTION_CHANGED",
+  });
+  expect(foreign.postMessage).not.toHaveBeenCalled();
+  const source = await readFile(
+    resolve(process.cwd(), "public/service-worker.js"),
+    "utf8",
+  );
+  expect(source).not.toContain("pushManager.subscribe");
 });

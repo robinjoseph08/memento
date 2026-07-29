@@ -2,6 +2,9 @@
 package config
 
 import (
+	"crypto/ecdh"
+	"crypto/subtle"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"net"
@@ -32,6 +35,7 @@ type Config struct {
 	GeoIP    GeoIPConfig
 	Security SecurityConfig
 	SMTP     SMTPConfig
+	Push     PushConfig
 	Worker   WorkerConfig
 }
 
@@ -90,6 +94,18 @@ type SMTPConfig struct {
 	RetryBase           time.Duration
 	RetryMax            time.Duration
 	RetryWindow         time.Duration
+}
+
+type PushConfig struct {
+	Enabled     bool
+	PublicKey   string
+	PrivateKey  string
+	Subject     string
+	Timeout     time.Duration
+	RetryBase   time.Duration
+	RetryMax    time.Duration
+	RetryWindow time.Duration
+	TTL         time.Duration
 }
 
 type WorkerConfig struct {
@@ -153,6 +169,17 @@ type rawConfig struct {
 		RetryMax            string `koanf:"retry_max"`
 		RetryWindow         string `koanf:"retry_window"`
 	} `koanf:"smtp"`
+	Push struct {
+		Enabled     bool   `koanf:"enabled"`
+		PublicKey   string `koanf:"public_key"`
+		PrivateKey  string `koanf:"private_key"`
+		Subject     string `koanf:"subject"`
+		Timeout     string `koanf:"timeout"`
+		RetryBase   string `koanf:"retry_base"`
+		RetryMax    string `koanf:"retry_max"`
+		RetryWindow string `koanf:"retry_window"`
+		TTL         string `koanf:"ttl"`
+	} `koanf:"push"`
 	Worker struct {
 		PollInterval      string `koanf:"poll_interval"`
 		HeartbeatInterval string `koanf:"heartbeat_interval"`
@@ -195,6 +222,12 @@ var (
 	errSMTPInsecureCredentials  = errors.New("SMTP credentials are not permitted with insecure development transport")
 	errSMTPInsecureHost         = errors.New("insecure SMTP is limited to loopback or private IP addresses")
 	errSMTPRetryBounds          = errors.New("SMTP retry durations must satisfy retry_base <= retry_max <= retry_window <= 24h")
+	errPushKeysRequired         = errors.New("push public_key and private_key are required when push is enabled")
+	errPushKeysInvalid          = errors.New("push VAPID keys must be a matching unpadded base64url P-256 key pair")
+	errPushSubjectInvalid       = errors.New("push.subject must be a mailto or HTTPS URI")
+	errPushHTTPSRequired        = errors.New("push requires an HTTPS http.public_url")
+	errPushRetryBounds          = errors.New("push retry durations must satisfy retry_base <= retry_max <= retry_window <= 24h")
+	errPushTTLInvalid           = errors.New("push.ttl must be between 1 minute and 24 hours")
 	errWorkerRetryBounds        = errors.New("worker retry durations must satisfy worker.retry_base <= worker.retry_max <= 24h")
 	errHeartbeatMaxAge          = errors.New("worker.heartbeat_max_age must exceed worker.heartbeat_interval")
 	errLeasePollInterval        = errors.New("worker.lease_duration must exceed worker.poll_interval")
@@ -225,6 +258,12 @@ var defaults = map[string]any{
 	"smtp.retry_base":                        "30s",
 	"smtp.retry_max":                         "1h",
 	"smtp.retry_window":                      "24h",
+	"push.enabled":                           false,
+	"push.timeout":                           "10s",
+	"push.retry_base":                        "30s",
+	"push.retry_max":                         "1h",
+	"push.retry_window":                      "24h",
+	"push.ttl":                               "15m",
 	"worker.poll_interval":                   "1s",
 	"worker.heartbeat_interval":              "2s",
 	"worker.heartbeat_max_age":               "10s",
@@ -262,6 +301,9 @@ func Load(path string) (Config, error) {
 		return Config{}, err
 	}
 	if err := loadSecretFile(k, "smtp.password", "MEMENTO_SMTP_PASSWORD_FILE"); err != nil {
+		return Config{}, err
+	}
+	if err := loadSecretFile(k, "push.private_key", "MEMENTO_PUSH_PRIVATE_KEY_FILE"); err != nil {
 		return Config{}, err
 	}
 
@@ -317,6 +359,15 @@ func envKey(key string) string {
 		"MEMENTO_SMTP_RETRY_BASE":                        "smtp.retry_base",
 		"MEMENTO_SMTP_RETRY_MAX":                         "smtp.retry_max",
 		"MEMENTO_SMTP_RETRY_WINDOW":                      "smtp.retry_window",
+		"MEMENTO_PUSH_ENABLED":                           "push.enabled",
+		"MEMENTO_PUSH_PUBLIC_KEY":                        "push.public_key",
+		"MEMENTO_PUSH_PRIVATE_KEY":                       "push.private_key",
+		"MEMENTO_PUSH_SUBJECT":                           "push.subject",
+		"MEMENTO_PUSH_TIMEOUT":                           "push.timeout",
+		"MEMENTO_PUSH_RETRY_BASE":                        "push.retry_base",
+		"MEMENTO_PUSH_RETRY_MAX":                         "push.retry_max",
+		"MEMENTO_PUSH_RETRY_WINDOW":                      "push.retry_window",
+		"MEMENTO_PUSH_TTL":                               "push.ttl",
 		"MEMENTO_WORKER_POLL_INTERVAL":                   "worker.poll_interval",
 		"MEMENTO_WORKER_HEARTBEAT_INTERVAL":              "worker.heartbeat_interval",
 		"MEMENTO_WORKER_HEARTBEAT_MAX_AGE":               "worker.heartbeat_max_age",
@@ -381,6 +432,10 @@ func parse(raw rawConfig) (Config, error) {
 	cfg.SMTP.FromAddress = raw.SMTP.FromAddress
 	cfg.SMTP.TestRecipient = raw.SMTP.TestRecipient
 	cfg.SMTP.InsecureDevelopment = raw.SMTP.InsecureDevelopment
+	cfg.Push.Enabled = raw.Push.Enabled
+	cfg.Push.PublicKey = raw.Push.PublicKey
+	cfg.Push.PrivateKey = raw.Push.PrivateKey
+	cfg.Push.Subject = raw.Push.Subject
 
 	if cfg.HTTP.ShutdownTimeout, err = duration("http.shutdown_timeout", raw.HTTP.ShutdownTimeout); err != nil {
 		return Config{}, err
@@ -413,6 +468,21 @@ func parse(raw rawConfig) (Config, error) {
 		return Config{}, err
 	}
 	if cfg.SMTP.RetryWindow, err = duration("smtp.retry_window", raw.SMTP.RetryWindow); err != nil {
+		return Config{}, err
+	}
+	if cfg.Push.Timeout, err = duration("push.timeout", raw.Push.Timeout); err != nil {
+		return Config{}, err
+	}
+	if cfg.Push.RetryBase, err = duration("push.retry_base", raw.Push.RetryBase); err != nil {
+		return Config{}, err
+	}
+	if cfg.Push.RetryMax, err = duration("push.retry_max", raw.Push.RetryMax); err != nil {
+		return Config{}, err
+	}
+	if cfg.Push.RetryWindow, err = duration("push.retry_window", raw.Push.RetryWindow); err != nil {
+		return Config{}, err
+	}
+	if cfg.Push.TTL, err = duration("push.ttl", raw.Push.TTL); err != nil {
 		return Config{}, err
 	}
 	if cfg.Worker.PollInterval, err = duration("worker.poll_interval", raw.Worker.PollInterval); err != nil {
@@ -543,6 +613,12 @@ func (c Config) Validate() error {
 	if err := c.SMTP.Validate(); err != nil {
 		return err
 	}
+	if err := c.Push.Validate(); err != nil {
+		return err
+	}
+	if c.Push.Enabled && publicURL.Scheme != "https" {
+		return errPushHTTPSRequired
+	}
 	if c.Worker.HeartbeatMaxAge <= c.Worker.HeartbeatInterval {
 		return errHeartbeatMaxAge
 	}
@@ -596,6 +672,44 @@ func (c SMTPConfig) Validate() error {
 		return errSMTPRetryBounds
 	}
 	return nil
+}
+
+// Validate rejects incomplete or mismatched VAPID configuration when push is enabled.
+func (c PushConfig) Validate() error {
+	if !c.Enabled {
+		return nil
+	}
+	if c.PublicKey == "" || c.PrivateKey == "" {
+		return errPushKeysRequired
+	}
+	if strings.Contains(c.PublicKey, "=") || strings.Contains(c.PrivateKey, "=") {
+		return errPushKeysInvalid
+	}
+	publicKey, publicErr := base64.RawURLEncoding.DecodeString(c.PublicKey)
+	privateKey, privateErr := base64.RawURLEncoding.DecodeString(c.PrivateKey)
+	curve := ecdh.P256()
+	public, publicKeyErr := curve.NewPublicKey(publicKey)
+	private, privateKeyErr := curve.NewPrivateKey(privateKey)
+	if publicErr != nil || privateErr != nil || publicKeyErr != nil || privateKeyErr != nil ||
+		!equalBytes(public.Bytes(), private.PublicKey().Bytes()) {
+		return errPushKeysInvalid
+	}
+	subject, err := url.Parse(c.Subject)
+	if err != nil || ((subject.Scheme != "mailto" || subject.Opaque == "") &&
+		(subject.Scheme != "https" || subject.Host == "" || subject.User != nil)) {
+		return errPushSubjectInvalid
+	}
+	if c.RetryBase > c.RetryMax || c.RetryMax > c.RetryWindow || c.RetryWindow > 24*time.Hour {
+		return errPushRetryBounds
+	}
+	if c.TTL < time.Minute || c.TTL > 24*time.Hour {
+		return errPushTTLInvalid
+	}
+	return nil
+}
+
+func equalBytes(left, right []byte) bool {
+	return subtle.ConstantTimeCompare(left, right) == 1
 }
 
 func singleAddress(value string) bool {

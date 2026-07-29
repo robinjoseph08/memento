@@ -22,6 +22,8 @@ import { InvitationSuggestions } from "./InvitationSuggestions";
 import { PeopleManager } from "./PeopleManager";
 import { OfflineNotice, PWAUpdatePrompt, ThemeToggle } from "./PWAControls";
 import { PWA_RESTART_GUARD_EVENT, type PWARestartGuardDetail } from "./pwa";
+import { PushNotifications } from "./PushNotifications";
+import { unsubscribeLocalPushBestEffort } from "./push";
 import { RepairWorkspace } from "./RepairWorkspace";
 import { RecipientLibrary } from "./RecipientLibrary";
 import { useOnlineStatus } from "./useOnlineStatus";
@@ -1816,6 +1818,7 @@ function ReadyCard({
           <details className="recipient-account-tools" open>
             <summary>Account and family settings</summary>
             <EmailPreferences session={session} />
+            <PushNotifications session={session} />
             <InvitationSuggestions session={session} />
             <SessionManager onSignedOut={onSignOut} session={session} />
             <RecipientVisibilityManager
@@ -1831,6 +1834,7 @@ function ReadyCard({
         <PublicSessionBanner session={session} />
         <SessionManager onSignedOut={onSignOut} session={session} />
         <EmailPreferences session={session} />
+        <PushNotifications session={session} />
         <PlatformEmailDefaults session={session} />
         <PeopleManager session={session} />
         <InvitationSuggestions session={session} />
@@ -2023,6 +2027,7 @@ function MementoApp({
     queryClient.getMutationCache().clear();
   }, [queryClient]);
   const revokeLocalSession = useCallback(() => {
+    void unsubscribeLocalPushBestEffort();
     clearProtectedData();
     setCompletedSession(undefined);
     setSignedOut(true);
@@ -2072,6 +2077,7 @@ function MementoApp({
   };
 
   const signOut = () => {
+    void unsubscribeLocalPushBestEffort();
     clearProtectedData();
     setCompletedSession(undefined);
     setSignedOut(true);

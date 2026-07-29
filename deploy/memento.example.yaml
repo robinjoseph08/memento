@@ -1,6 +1,6 @@
 # Secrets are intentionally omitted. Supply database.url, immich.api_key,
-# security.secret, and smtp.password through their MEMENTO_* value or
-# MEMENTO_*_FILE setting.
+# security.secret, smtp.password, and push.private_key through their
+# MEMENTO_* value or MEMENTO_*_FILE setting.
 http:
   address: "127.0.0.1:8081"
   # Public origin used for personalized Invitation links in email.
@@ -56,6 +56,19 @@ smtp:
   retry_base: 30s
   retry_max: 1h
   retry_window: 24h
+
+# Generate one stable VAPID P-256 pair with a Web Push tool. Put the matching
+# unpadded base64url private key in MEMENTO_PUSH_PRIVATE_KEY_FILE. Rotating the
+# pair requires every device to enroll again.
+push:
+  enabled: false
+  public_key: ""
+  subject: "mailto:operator@example.com"
+  timeout: 10s
+  retry_base: 30s
+  retry_max: 1h
+  retry_window: 24h
+  ttl: 15m
 
 worker:
   poll_interval: 1s

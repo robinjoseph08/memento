@@ -12,7 +12,7 @@ import (
 )
 
 func TestJobHandlersAlwaysRegistersDomainHandlers(t *testing.T) {
-	handlers := jobHandlers(&sources.Service{}, &events.Service{}, &archives.Service{}, &comments.Service{}, &emaildelivery.Service{}, false)
+	handlers := jobHandlers(&sources.Service{}, &events.Service{}, &archives.Service{}, &comments.Service{}, &emaildelivery.Service{}, false, nil)
 	assert.Contains(t, handlers, sources.ReconciliationJobKind)
 	assert.Contains(t, handlers, events.PublicationJobKind)
 	assert.Contains(t, handlers, archives.CleanupJobKind)
@@ -21,7 +21,7 @@ func TestJobHandlersAlwaysRegistersDomainHandlers(t *testing.T) {
 	assert.NotContains(t, handlers, emaildelivery.ImmediateJobKind)
 	assert.NotContains(t, handlers, emaildelivery.WeeklyJobKind)
 
-	handlers = jobHandlers(&sources.Service{}, &events.Service{}, &archives.Service{}, &comments.Service{}, &emaildelivery.Service{}, true)
+	handlers = jobHandlers(&sources.Service{}, &events.Service{}, &archives.Service{}, &comments.Service{}, &emaildelivery.Service{}, true, nil)
 	assert.Contains(t, handlers, sources.ReconciliationJobKind)
 	assert.Contains(t, handlers, events.PublicationJobKind)
 	assert.Contains(t, handlers, archives.CleanupJobKind)
