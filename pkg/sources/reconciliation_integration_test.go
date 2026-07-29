@@ -1275,6 +1275,40 @@ func TestMissingAlbumEvidenceCommitsDespiteUncertainAssetChecks(t *testing.T) {
 	}
 }
 
+func TestMissingAlbumProblemCommitsBeforeOptionalAssetChecks(t *testing.T) {
+	original := repairableReconciliationAsset(uuid.New(), "/library/prompt-missing/family.jpg")
+	base := &reconciliationConnector{summary: sourceAlbum(uuid.New(), "Prompt missing source", 1)}
+	base.pages = map[int]immich.AssetPage{1: {Items: []immich.AssetSummary{original}}}
+	service, sourceAlbumID := newReconciliationService(t, base)
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+
+	release := make(chan struct{})
+	blocking := &lockBoundaryConnector{
+		reconciliationConnector: base, started: make(chan struct{}), release: release,
+	}
+	base.albumCalls = 0
+	base.albumErrAt = 1
+	base.dependency = immich.ErrNotFound
+	service.connector = blocking
+	result := make(chan error, 1)
+	go func() { result <- service.Reconcile(context.Background(), sourceAlbumID) }()
+	select {
+	case <-blocking.started:
+	case <-time.After(time.Second):
+		t.Fatal("missing-album reconciliation did not reach its optional asset checks")
+	}
+	album, err := service.Get(context.Background(), sourceAlbumID)
+	require.NoError(t, err)
+	assert.True(t, album.SourceMissing, "definitive album absence must be visible while optional checks remain blocked")
+	close(release)
+	select {
+	case reconcileErr := <-result:
+		require.NoError(t, reconcileErr)
+	case <-time.After(time.Second):
+		t.Fatal("missing-album reconciliation did not finish after optional checks were released")
+	}
+}
+
 type lockBoundaryConnector struct {
 	*reconciliationConnector
 	started chan struct{}
@@ -1328,7 +1362,19 @@ func TestAssetChecksDoNotHoldSourceOrStagedAccessLocks(t *testing.T) {
 		t.Fatal("Source or staged-access lock remained held during the asset check")
 	}
 	close(release)
-	require.NoError(t, <-result)
+	completionCtx, cancelCompletion := context.WithTimeout(context.Background(), time.Second)
+	defer cancelCompletion()
+	select {
+	case reconcileErr := <-result:
+		require.NoError(t, reconcileErr)
+	case <-completionCtx.Done():
+		var lastDiagnostic *string
+		_ = service.db.NewRaw(`
+			SELECT diagnostic FROM reconciliation_runs
+			WHERE source_album_id = ? ORDER BY completed_at DESC, id DESC LIMIT 1
+		`, sourceAlbumID).Scan(context.Background(), &lastDiagnostic)
+		t.Fatalf("reconciliation did not finish before its deadline: %v; last observed diagnostic: %v", completionCtx.Err(), lastDiagnostic)
+	}
 }
 
 func TestRemovedAssetUsesFreshGlobalAvailabilityDespiteSharedMembership(t *testing.T) {

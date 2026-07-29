@@ -19,9 +19,17 @@ import (
 	"github.com/uptrace/bun"
 )
 
-const ReconciliationJobKind = "reconcile_source_album"
+const (
+	ReconciliationJobKind          = "reconcile_source_album"
+	missingVerificationDeadline    = 5 * time.Second
+	missingVerificationWorkBudget  = 64
+	missingVerificationConcurrency = 8
+)
 
-var errSourceAlbumMissing = errors.New("source album missing")
+var (
+	errSourceAlbumMissing            = errors.New("source album missing")
+	errMissingVerificationIncomplete = errors.New("missing-media verification incomplete")
+)
 
 // ReconciliationResponse acknowledges a bounded Curator request. Dependency
 // work remains in the single-concurrency durable worker.
@@ -134,10 +142,9 @@ func (s *Service) Reconcile(ctx context.Context, sourceAlbumID uuid.UUID) error 
 	}
 
 	if errors.Is(snapshotErr, errSourceAlbumMissing) {
-		// Album absence is definitive evidence about the Source itself. Asset
-		// probes are optional, independent evidence: retain every proven result,
-		// but never let an uncertain probe roll back the missing-album state.
-		missing, _ := s.confirmMissingBackings(ctx, databaseSnapshot.backings)
+		// Album absence is definitive evidence about the Source itself. Commit
+		// that problem before optional per-asset probes so a large or unhealthy
+		// album cannot delay Curator visibility.
 		err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 			if err := staging.LockAccessSummaryRefresh(ctx, tx); err != nil {
 				return err
@@ -145,16 +152,30 @@ func (s *Service) Reconcile(ctx context.Context, sourceAlbumID uuid.UUID) error 
 			if err := validateReconciliationDatabaseSnapshot(ctx, tx, sourceAlbumID, databaseSnapshot); err != nil {
 				return err
 			}
-			if err := mediaavailability.MarkSourceMissingInTx(ctx, tx, missing); err != nil {
-				return err
-			}
-			if err := proposeMediaRepairs(ctx, tx, now); err != nil {
-				return err
-			}
 			return recordMissingSourceAlbum(ctx, tx, sourceAlbumID, now, s.reconciliationInterval)
 		})
 		if err != nil {
 			return fmt.Errorf("reconcile Source album: %w", err)
+		}
+
+		// Asset probes are optional, independent evidence. Retain every precise
+		// result within the aggregate budget, but never infer that unprobed or
+		// uncertain assets are missing.
+		missing, _ := s.confirmMissingBackings(ctx, databaseSnapshot.backings)
+		if len(missing) == 0 {
+			return nil
+		}
+		err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+			if err := staging.LockAccessSummaryRefresh(ctx, tx); err != nil {
+				return err
+			}
+			if err := mediaavailability.MarkSourceMissingInTx(ctx, tx, missing); err != nil {
+				return err
+			}
+			return proposeMediaRepairs(ctx, tx, now)
+		})
+		if err != nil {
+			return fmt.Errorf("record missing Source album assets: %w", err)
 		}
 		return nil
 	}
@@ -378,32 +399,17 @@ func sourceMembershipBackings(ctx context.Context, tx bun.Tx, sourceAlbumID uuid
 }
 
 func (s *Service) confirmMissingBackings(ctx context.Context, backings []mediaavailability.Backing) ([]mediaavailability.Backing, error) {
-	missing := make([]mediaavailability.Backing, 0, len(backings))
-	availability := make(map[uuid.UUID]bool, len(backings))
-	uncertain := make(map[uuid.UUID]bool, len(backings))
-	var confirmationErr error
-	for _, backing := range backings {
-		if uncertain[backing.AssetID] {
-			continue
-		}
-		exists, checked := availability[backing.AssetID]
-		if !checked {
-			var err error
-			exists, err = s.connector.AssetExists(ctx, backing.AssetID)
-			if err != nil {
-				if confirmationErr == nil {
-					confirmationErr = err
-				}
-				uncertain[backing.AssetID] = true
-				continue
-			}
-			availability[backing.AssetID] = exists
-		}
-		if !exists {
-			missing = append(missing, backing)
-		}
+	verification, err := mediaavailability.VerifyMissing(ctx, backings, mediaavailability.VerificationOptions{
+		Deadline: missingVerificationDeadline, MaxProbes: missingVerificationWorkBudget,
+		Concurrency: missingVerificationConcurrency,
+	}, s.connector.AssetExists)
+	if err != nil {
+		return verification.Missing, err
 	}
-	return missing, confirmationErr
+	if !verification.Complete {
+		return verification.Missing, errMissingVerificationIncomplete
+	}
+	return verification.Missing, nil
 }
 
 func (s *Service) applyValidatedSnapshot(

@@ -1203,11 +1203,69 @@ func (s *Service) ConfirmMedia(ctx context.Context, actor setup.CuratorSession, 
 			}
 			var candidateHasIdentityOrAuthorization bool
 			if err := tx.NewRaw(`
-			SELECT EXISTS (SELECT 1 FROM published_media_placements WHERE media_item_id = ?)
-				OR EXISTS (SELECT 1 FROM current_audience_entitlements WHERE media_item_id = ?)
-				OR EXISTS (SELECT 1 FROM comments WHERE media_item_id = ?)
-				OR EXISTS (SELECT 1 FROM favorites WHERE media_item_id = ?)
-		`, candidateMediaID, candidateMediaID, candidateMediaID, candidateMediaID).Scan(ctx, &candidateHasIdentityOrAuthorization); err != nil {
+			WITH candidate AS (SELECT ?::uuid AS media_id),
+			candidate_moments AS (
+				SELECT moment.id
+				FROM draft_moments AS moment, candidate
+				WHERE moment.cover_media_item_id = candidate.media_id
+				   OR EXISTS (
+					SELECT 1 FROM draft_media_placements AS placement
+					WHERE placement.draft_moment_id = moment.id
+					  AND placement.media_item_id = candidate.media_id
+				   )
+			),
+			candidate_loose_items AS (
+				SELECT loose.id FROM loose_items AS loose, candidate
+				WHERE loose.media_item_id = candidate.media_id
+			)
+			SELECT EXISTS (
+				SELECT 1 FROM published_media_placements, candidate
+				WHERE media_item_id = candidate.media_id
+			) OR EXISTS (
+				SELECT 1 FROM current_audience_entitlements, candidate
+				WHERE media_item_id = candidate.media_id
+			) OR EXISTS (
+				SELECT 1 FROM comments, candidate WHERE media_item_id = candidate.media_id
+			) OR EXISTS (
+				SELECT 1 FROM favorites, candidate WHERE media_item_id = candidate.media_id
+			) OR EXISTS (
+				SELECT 1 FROM draft_moments AS moment
+				JOIN candidate_moments ON candidate_moments.id = moment.id
+				WHERE moment.audience_complete
+			) OR EXISTS (
+				SELECT 1 FROM loose_items AS loose
+				JOIN candidate_loose_items ON candidate_loose_items.id = loose.id
+				WHERE loose.audience_complete
+			) OR EXISTS (
+				SELECT 1 FROM audience_snapshots AS snapshot
+				WHERE snapshot.target_kind = 'loose_item'
+				  AND snapshot.target_id IN (SELECT id FROM candidate_loose_items)
+			) OR EXISTS (
+				SELECT 1 FROM current_audience_snapshots AS current
+				WHERE (
+					current.target_kind = 'loose_item'
+					AND current.target_id IN (SELECT id FROM candidate_loose_items)
+				) OR (
+					current.target_kind = 'moment'
+					AND current.target_id IN (SELECT id FROM candidate_moments)
+					AND NOT EXISTS (
+						SELECT 1 FROM events AS event
+						JOIN published_moments AS published
+						  ON published.publication_id = event.current_publication_id
+						 AND published.draft_moment_id = current.target_id
+						 AND published.audience_snapshot_id = current.snapshot_id
+					)
+				)
+			) OR EXISTS (
+				SELECT 1 FROM audience_proposals AS proposal
+				WHERE (proposal.target_kind = 'moment' AND proposal.target_id IN (SELECT id FROM candidate_moments))
+				   OR (proposal.target_kind = 'loose_item' AND proposal.target_id IN (SELECT id FROM candidate_loose_items))
+			) OR EXISTS (
+				SELECT 1 FROM audience_overrides AS audience_override
+				WHERE (audience_override.target_kind = 'moment' AND audience_override.target_id IN (SELECT id FROM candidate_moments))
+				   OR (audience_override.target_kind = 'loose_item' AND audience_override.target_id IN (SELECT id FROM candidate_loose_items))
+			)
+		`, candidateMediaID).Scan(ctx, &candidateHasIdentityOrAuthorization); err != nil {
 				return err
 			}
 			if candidateHasIdentityOrAuthorization {

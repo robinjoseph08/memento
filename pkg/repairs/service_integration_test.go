@@ -1058,6 +1058,67 @@ func TestMediaConfirmationRevalidatesAfterWaitingForConcurrencyBoundary(t *testi
 	assert.Equal(t, oldAssetID, activeAssetID)
 }
 
+func TestMediaConfirmationRejectsCandidateWithApprovedDraftAudience(t *testing.T) {
+	fixture := newRepairFixture(t, 0)
+	oldMediaID, candidateMediaID := uuid.New(), uuid.New()
+	oldAssetID, candidateAssetID := uuid.New(), uuid.New()
+	candidateID, sourceAlbumID, eventID, momentID, snapshotID := uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	_, err := fixture.db.ExecContext(context.Background(), `
+		INSERT INTO source_albums (
+			id, immich_album_id, name, asset_count, source_created_at, source_updated_at,
+			first_seen_at, last_seen_at, source_fingerprint, next_reconciliation_at
+		) VALUES (?, gen_random_uuid(), 'Approved candidate', 1, now(), now(), now(), now(), ?, now());
+		INSERT INTO media_items (id, immich_asset_id, media_type, availability, missing_since, first_seen_at, last_seen_at)
+		VALUES (?, ?, 'image', 'source_missing', now(), now(), now()),
+		       (?, ?, 'image', 'current', NULL, now(), now());
+		INSERT INTO media_backings (id, media_item_id, immich_asset_id, checksum, original_path, linked_at)
+		VALUES (gen_random_uuid(), ?, ?, ?, '/old-approved.jpg', now()),
+		       (gen_random_uuid(), ?, ?, ?, '/candidate-approved.jpg', now());
+		INSERT INTO source_album_memberships (
+			source_album_id, immich_asset_id, media_item_id, first_seen_at, last_seen_at, source_fingerprint
+		) VALUES (?, ?, ?, now(), now(), ?);
+		INSERT INTO media_repair_candidates (
+			id, media_item_id, candidate_media_item_id, previous_immich_asset_id,
+			candidate_immich_asset_id, previous_evidence, candidate_evidence, created_at
+		) VALUES (?, ?, ?, ?, ?,
+			jsonb_build_object('checksum', ?, 'capture', NULL, 'filename', '', 'path', '/old-approved.jpg'),
+			jsonb_build_object('checksum', ?, 'capture', NULL, 'filename', '', 'path', '/candidate-approved.jpg'), now());
+		INSERT INTO events (id, title, grouping_timezone) VALUES (?, 'Approved candidate Event', 'UTC');
+		INSERT INTO draft_moments (
+			id, event_id, position, proposed_day, grouping_timezone, audience_complete
+		) VALUES (?, ?, 0, '2026-01-01', 'UTC', true);
+		INSERT INTO draft_media_placements (event_id, media_item_id, draft_moment_id, position)
+		VALUES (?, ?, ?, 0);
+		INSERT INTO audience_snapshots (id, target_kind, target_id, approved_by_person_id, approved_at, label)
+		VALUES (?, 'moment', ?, ?, now(), 'Curator only');
+		INSERT INTO current_audience_snapshots (target_kind, target_id, snapshot_id)
+		VALUES ('moment', ?, ?)
+	`, sourceAlbumID, hashBytes("approved-source"), oldMediaID, oldAssetID, candidateMediaID, candidateAssetID,
+		oldMediaID, oldAssetID, checksum("approved"), candidateMediaID, candidateAssetID, checksum("approved"),
+		sourceAlbumID, candidateAssetID, candidateMediaID, hashBytes("approved-membership"),
+		candidateID, oldMediaID, candidateMediaID, oldAssetID, candidateAssetID, checksum("approved"), checksum("approved"),
+		eventID, momentID, eventID, eventID, candidateMediaID, momentID,
+		snapshotID, momentID, fixture.actor.PersonID, momentID, snapshotID)
+	require.NoError(t, err)
+	setFreshAssetFromBacking(t, fixture, candidateAssetID)
+	reviewToken := reviewedMediaToken(t, fixture, candidateID)
+
+	_, err = fixture.service.ConfirmMedia(context.Background(), fixture.actor, candidateID, reviewToken)
+	assert.ErrorIs(t, err, ErrConflict)
+	var state string
+	var placedMediaID uuid.UUID
+	var audienceComplete bool
+	var currentSnapshotID uuid.UUID
+	require.NoError(t, fixture.db.NewRaw(`SELECT state FROM media_repair_candidates WHERE id = ?`, candidateID).Scan(context.Background(), &state))
+	require.NoError(t, fixture.db.NewRaw(`SELECT media_item_id FROM draft_media_placements WHERE event_id = ?`, eventID).Scan(context.Background(), &placedMediaID))
+	require.NoError(t, fixture.db.NewRaw(`SELECT audience_complete FROM draft_moments WHERE id = ?`, momentID).Scan(context.Background(), &audienceComplete))
+	require.NoError(t, fixture.db.NewRaw(`SELECT snapshot_id FROM current_audience_snapshots WHERE target_kind = 'moment' AND target_id = ?`, momentID).Scan(context.Background(), &currentSnapshotID))
+	assert.Equal(t, "pending", state)
+	assert.Equal(t, candidateMediaID, placedMediaID, "approved candidate placement must not transfer")
+	assert.True(t, audienceComplete)
+	assert.Equal(t, snapshotID, currentSnapshotID)
+}
+
 func TestMediaConfirmationRejectsCrossTypeCandidateBeforeDeliveryProbe(t *testing.T) {
 	fixture := newRepairFixture(t, 0)
 	oldMediaID, newMediaID := uuid.New(), uuid.New()

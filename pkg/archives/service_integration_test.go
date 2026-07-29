@@ -47,6 +47,7 @@ type archiveStub struct {
 	infoErr           error
 	archiveErr        error
 	archiveOnce       sync.Once
+	originalMu        sync.Mutex
 }
 
 func (stub *archiveStub) ArchiveInfo(_ context.Context, ids []uuid.UUID) ([]immich.ArchivePart, error) {
@@ -69,6 +70,8 @@ func (stub *archiveStub) ArchiveInfo(_ context.Context, ids []uuid.UUID) ([]immi
 }
 
 func (stub *archiveStub) Original(_ context.Context, id uuid.UUID, _ immich.MediaRequest) (immich.MediaResponse, error) {
+	stub.originalMu.Lock()
+	defer stub.originalMu.Unlock()
 	stub.originalCalls = append(stub.originalCalls, id)
 	if stub.originalErr != nil {
 		return immich.MediaResponse{}, stub.originalErr

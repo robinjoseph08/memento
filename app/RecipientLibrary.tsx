@@ -137,22 +137,22 @@ function Gallery({
             flexGrow: item.width && item.height ? item.width / item.height : 1,
           }}
         >
-          {item.available ? (
-            <button
-              aria-label={`Open ${mediaAlt(item, index)}`}
-              className="viewer-trigger"
-              onClick={() => onOpen(item)}
-              type="button"
-            >
+          <button
+            aria-label={`Open ${mediaAlt(item, index)}`}
+            className="viewer-trigger"
+            onClick={() => onOpen(item)}
+            type="button"
+          >
+            {item.available ? (
               <img
                 alt={mediaAlt(item, index)}
                 loading="lazy"
                 src={item.thumbnail_url}
               />
-            </button>
-          ) : (
-            <span className="media-unavailable">Source unavailable</span>
-          )}
+            ) : (
+              <span className="media-unavailable">Source unavailable</span>
+            )}
+          </button>
           {selectionEnabled && item.available ? (
             <label className="media-selection">
               <input
@@ -220,15 +220,18 @@ function EventCards({
   );
 }
 
+type RefreshedMediaAccess = "available" | "backing-unavailable" | "withdrawn";
+type MediaAccess = RefreshedMediaAccess | "delivery-unavailable";
+
 function MediaViewer({
   media,
   session,
-  confirmRetainedUnavailable,
+  refreshListingAccess,
   onClose,
 }: {
   media: Media;
   session: SessionResponse;
-  confirmRetainedUnavailable: () => Promise<boolean>;
+  refreshListingAccess: () => Promise<RefreshedMediaAccess>;
   onClose: () => void;
 }) {
   const queryClient = useQueryClient();
@@ -236,10 +239,12 @@ function MediaViewer({
   const commentRetry = useRef<{ body: string; key: string } | undefined>(
     undefined,
   );
+  const representationRetries = useRef(0);
   const [commentBody, setCommentBody] = useState("");
-  const [mediaAccess, setMediaAccess] = useState<
-    "available" | "backing-unavailable" | "withdrawn"
-  >("available");
+  const [mediaAccess, setMediaAccess] = useState<MediaAccess>(
+    media.available ? "available" : "backing-unavailable",
+  );
+  const [representationAttempt, setRepresentationAttempt] = useState(0);
   const favorite = useQuery({
     queryKey: ["favorite", session.csrf_token, media.id],
     queryFn: async () => {
@@ -275,14 +280,26 @@ function MediaViewer({
   const deliveryUnavailable = mediaAccess !== "available";
   const unavailableMedia = mediaAccess === "withdrawn";
 
-  async function refreshMediaAccess() {
-    let retainedUnavailable = false;
+  async function refreshMediaAccess(retryRepresentation = false) {
+    let refreshedAccess: RefreshedMediaAccess = "withdrawn";
     try {
-      retainedUnavailable = await confirmRetainedUnavailable();
+      refreshedAccess = await refreshListingAccess();
     } catch {
       // A failed listing refresh cannot prove retained access.
     }
-    setMediaAccess(retainedUnavailable ? "backing-unavailable" : "withdrawn");
+    if (
+      retryRepresentation &&
+      refreshedAccess === "available" &&
+      representationRetries.current > 0
+    ) {
+      setMediaAccess("delivery-unavailable");
+      return;
+    }
+    setMediaAccess(refreshedAccess);
+    if (retryRepresentation && refreshedAccess === "available") {
+      representationRetries.current++;
+      setRepresentationAttempt((attempt) => attempt + 1);
+    }
   }
 
   async function classifyUnavailableMedia(error: unknown) {
@@ -491,12 +508,17 @@ function MediaViewer({
     >
       <div className="viewer-media">
         {deliveryUnavailable ? (
-          <span className="media-unavailable">Source unavailable</span>
+          <span className="media-unavailable">
+            {mediaAccess === "delivery-unavailable"
+              ? "Media unavailable"
+              : "Source unavailable"}
+          </span>
         ) : media.media_type === "video" ? (
           <video
             aria-label="Video preview"
             controls
-            onError={() => void refreshMediaAccess()}
+            key={`${media.id}-${representationAttempt}`}
+            onError={() => void refreshMediaAccess(true)}
             playsInline
             poster={media.thumbnail_url}
             preload="metadata"
@@ -505,7 +527,8 @@ function MediaViewer({
         ) : (
           <img
             alt="Selected photo preview"
-            onError={() => void refreshMediaAccess()}
+            key={`${media.id}-${representationAttempt}`}
+            onError={() => void refreshMediaAccess(true)}
             src={media.preview_url}
           />
         )}
@@ -530,7 +553,9 @@ function MediaViewer({
             <p className="form-error" role="alert">
               {mediaAccess === "backing-unavailable"
                 ? "This Media's backing is temporarily unavailable. Its Library listing and interaction history remain available."
-                : "This content is no longer available."}
+                : mediaAccess === "delivery-unavailable"
+                  ? "This Media could not be loaded. Its Library listing and interaction history remain available."
+                  : "This content is no longer available."}
             </p>
             <button
               onClick={() => {
@@ -1023,31 +1048,38 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
     search.mutate({ query: searchText, date });
   }
 
-  async function confirmRetainedUnavailable() {
+  function classifyRefreshedListing(current: Media | undefined) {
+    if (!current) return "withdrawn" as const;
+    return current.available
+      ? ("available" as const)
+      : ("backing-unavailable" as const);
+  }
+
+  async function refreshListingAccess(): Promise<RefreshedMediaAccess> {
     if (openedEvent) {
       const refreshed = await event.refetch();
-      if (refreshed.error) return false;
+      if (refreshed.error) return "withdrawn";
       const current = refreshed.data?.pages
         .flatMap((page) => page.media)
         .find((item) => item.id === openedMedia?.id);
-      return current !== undefined;
+      return classifyRefreshedListing(current);
     }
     if (destination === "photos" || destination === "favorites") {
       const refreshed = await photos.refetch();
-      if (refreshed.error) return false;
+      if (refreshed.error) return "withdrawn";
       const current = refreshed.data?.pages
         .flatMap((page) => page.media)
         .find((item) => item.id === openedMedia?.id);
-      return current !== undefined;
+      return classifyRefreshedListing(current);
     }
     if (destination === "search" && search.variables) {
       const refreshed = await search.mutateAsync(search.variables);
       const current = refreshed.photos.find(
         (item) => item.id === openedMedia?.id,
       );
-      return current !== undefined;
+      return classifyRefreshedListing(current);
     }
-    return false;
+    return "withdrawn";
   }
 
   function openMedia(item: Media) {
@@ -1547,9 +1579,9 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
       </div>
       {openedMedia ? (
         <MediaViewer
-          confirmRetainedUnavailable={confirmRetainedUnavailable}
           media={openedMedia}
           onClose={closeMedia}
+          refreshListingAccess={refreshListingAccess}
           session={session}
         />
       ) : null}

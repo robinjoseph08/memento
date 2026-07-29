@@ -1391,6 +1391,94 @@ test("classifies a photo delivery error from its refreshed retained listing", as
     ).not.toBeInTheDocument(),
   );
   expect(await screen.findByText("Source unavailable")).toBeVisible();
+
+  fireEvent.click(
+    screen.getByRole("button", { name: "Open Photo 1 from July 2026" }),
+  );
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "This Media's backing is temporarily unavailable.",
+  );
+  expect(screen.getByText(comment.body)).toBeVisible();
+  expect(screen.getByRole("button", { name: "Add Favorite" })).toBeEnabled();
+  expect(
+    screen.queryByRole("link", { name: "Download original" }),
+  ).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Close viewer" }));
+  await waitFor(() =>
+    expect(
+      screen.queryByRole("dialog", { name: "Media viewer" }),
+    ).not.toBeInTheDocument(),
+  );
+});
+
+test("retries a transient representation failure once and then fails closed", async () => {
+  let photoCalls = 0;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) => {
+      const path = requestPath(input);
+      if (path.startsWith("/api/me/photos?")) {
+        photoCalls++;
+        return json({
+          media: [
+            {
+              id: "media-transient",
+              media_type: "image",
+              width: 1600,
+              height: 900,
+              local_date_time: "2026-07-28T12:00:00Z",
+              available: true,
+              thumbnail_url: "/api/me/media/media-transient/thumbnail",
+              preview_url: "/api/me/media/media-transient/preview",
+              video_url: "",
+              original_url: "/api/me/media/media-transient/original",
+            },
+          ],
+          next_cursor: null,
+        });
+      }
+      if (path === "/api/me/new-for-you") return json({ events: [] });
+      if (path === "/api/favorites/media-transient") {
+        return json({ media_item_id: "media-transient", favorite: false });
+      }
+      if (path.startsWith("/api/comments/media/media-transient?")) {
+        return json({
+          comments: [],
+          can_mute: false,
+          muted: false,
+          next_cursor: null,
+        });
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    }),
+  );
+
+  renderLibrary();
+  fireEvent.click(
+    await screen.findByRole("button", {
+      name: "Open Photo 1 from July 2026",
+    }),
+  );
+  fireEvent.error(screen.getByAltText("Selected photo preview"));
+  await waitFor(() => expect(photoCalls).toBe(2));
+
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  expect(screen.getByAltText("Selected photo preview")).toBeVisible();
+  expect(screen.getByRole("link", { name: "Download original" })).toBeVisible();
+
+  fireEvent.error(screen.getByAltText("Selected photo preview"));
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "This Media could not be loaded.",
+  );
+  expect(photoCalls).toBe(3);
+  expect(screen.getByText("Media unavailable")).toBeVisible();
+  expect(
+    screen.queryByAltText("Selected photo preview"),
+  ).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Add Favorite" })).toBeEnabled();
+  expect(
+    screen.queryByRole("link", { name: "Download original" }),
+  ).not.toBeInTheDocument();
 });
 
 test("classifies a video element delivery error and hides playback controls", async () => {
