@@ -849,7 +849,7 @@ func TestImmediateEmailHoldsAuthorizationLocksThroughSMTPAcceptance(t *testing.T
 			SET email_preference = 'none' WHERE recipient_access_generation_id = ?`, fixture.access["alex"]).Exec(context.Background())
 		preferenceChanged <- err
 	}()
-	waitForImmediateLockWait(t, fixture.db, `%UPDATE notification_preferences%email_preference = 'none'%`)
+	waitForEmailBatchLock(t, fixture.db, `%UPDATE notification_preferences%email_preference = 'none'%`)
 
 	close(blocking.release)
 	require.NoError(t, <-delivered)
@@ -1078,7 +1078,7 @@ func TestImmediateEmailSuppressedBatchCannotReplayAfterEligibilityIsRestored(t *
 	assert.Empty(t, fixture.sender.sent(), "a replayed suppressed batch cannot send after eligibility is restored")
 }
 
-func waitForImmediateLockWait(t *testing.T, db *bun.DB, pattern string) {
+func waitForEmailBatchLock(t *testing.T, db *bun.DB, pattern string) {
 	t.Helper()
 	deadline := time.NewTimer(5 * time.Second)
 	defer deadline.Stop()

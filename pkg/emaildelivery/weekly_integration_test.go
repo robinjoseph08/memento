@@ -75,7 +75,16 @@ func TestPlatformTimezoneSchedulesRecipientsWithoutPersonalOverrides(t *testing.
 	_, err = fixture.service.UpdatePlatformWeeklyTimezone(context.Background(), "Europe/London")
 	require.NoError(t, err)
 	require.NoError(t, fixture.service.HandleWeekly(context.Background(), fixture.leasedWeeklyJob(t, batchID)))
-	assert.Empty(t, fixture.sender.sent(), "a changed platform schedule cannot revive its earlier pending batch")
+	require.Len(t, fixture.sender.sent(), 1, "already queued activity remains on its original schedule")
+
+	commentID := fixture.addComment(t, fixture.base.Add(time.Minute), "Uses the new household timezone")
+	fixture.queueComment(t, commentID)
+	var nextDue time.Time
+	require.NoError(t, fixture.db.NewRaw(`SELECT closes_at FROM notification_batches WHERE status = 'pending'`).
+		Scan(context.Background(), &nextDue))
+	london, err := parseWeeklySchedule("sunday", "09:00", "Europe/London")
+	require.NoError(t, err)
+	assert.Equal(t, london.Next(fixture.base), nextDue)
 }
 
 func TestDelayedWeeklyHandoffUsesTheNextFutureSchedule(t *testing.T) {
@@ -248,6 +257,51 @@ func TestWeeklyDigestStopsAtTheTwentyFourHourRetryWindow(t *testing.T) {
 	assert.Empty(t, fixture.sender.sent())
 }
 
+func TestWeeklyPreviewMediaStayLockedThroughSMTPAcceptance(t *testing.T) {
+	fixture := newImmediateFixture(t)
+	fixture.useWeekly(t, "sunday", "09:00", "UTC")
+	fixture.addLargePublicationActivity(t, maxEmailPublicationMedia+10)
+	blocking := &blockingImmediateSender{entered: make(chan struct{}), release: make(chan struct{})}
+	t.Cleanup(func() {
+		select {
+		case <-blocking.release:
+		default:
+			close(blocking.release)
+		}
+	})
+	fixture.service.sender = blocking
+	require.NoError(t, fixture.service.QueuePublication(context.Background(), fixture.event, fixture.publication))
+	var batchID int64
+	require.NoError(t, fixture.db.NewRaw(`SELECT id FROM notification_batches`).Scan(context.Background(), &batchID))
+
+	delivered := make(chan error, 1)
+	go func() {
+		delivered <- fixture.service.HandleWeekly(context.Background(), fixture.leasedWeeklyJob(t, batchID))
+	}()
+	select {
+	case <-blocking.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("weekly sender was not reached")
+	}
+	requested := fixture.preview.requests()
+	require.NotEmpty(t, requested)
+	var previewMediaID uuid.UUID
+	require.NoError(t, fixture.db.NewRaw(`SELECT id FROM media_items WHERE immich_asset_id = ?`, requested[0]).
+		Scan(context.Background(), &previewMediaID))
+	relinked := make(chan error, 1)
+	go func() {
+		_, err := fixture.db.NewRaw(`UPDATE media_items SET immich_asset_id = ? WHERE id = ?`, uuid.New(), previewMediaID).
+			Exec(context.Background())
+		relinked <- err
+	}()
+	waitForEmailBatchLock(t, fixture.db, `%UPDATE media_items SET immich_asset_id%`)
+
+	close(blocking.release)
+	require.NoError(t, <-delivered)
+	require.NoError(t, <-relinked)
+	require.Len(t, blocking.acceptedMessages(), 1)
+}
+
 func TestWeeklyPreviewIsDroppedWhenMediaRelinksBeforeSMTP(t *testing.T) {
 	fixture := newImmediateFixture(t)
 	fixture.useWeekly(t, "sunday", "09:00", "UTC")
@@ -286,6 +340,24 @@ func TestWeeklyRetryBatchSendsNewActivityAtTheNextSchedule(t *testing.T) {
 	require.Len(t, due, 2)
 	assert.Equal(t, firstDue, due[0])
 	assert.Equal(t, schedule.Next(firstDue), due[1])
+}
+
+func TestAcceptedWeeklySMTPDoesNotClaimAsynchronousBounceDetection(t *testing.T) {
+	fixture := newImmediateFixture(t)
+	fixture.useWeekly(t, "sunday", "09:00", "UTC")
+	fixture.addPublicationActivity(t, fixture.base, fixture.media[0])
+	require.NoError(t, fixture.service.QueuePublication(context.Background(), fixture.event, fixture.publication))
+	var batchID int64
+	require.NoError(t, fixture.db.NewRaw(`SELECT id FROM notification_batches`).Scan(context.Background(), &batchID))
+	require.NoError(t, fixture.service.HandleWeekly(context.Background(), fixture.leasedWeeklyJob(t, batchID)))
+
+	preference, err := fixture.service.PreferenceFor(context.Background(), fixture.access["alex"])
+	require.NoError(t, err)
+	assert.Equal(t, "weekly", preference.EmailPreference)
+	var problems int
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM delivery_problems WHERE notification_batch_id = ?`, batchID).
+		Scan(context.Background(), &problems))
+	assert.Zero(t, problems, "generic SMTP records only the synchronous acceptance result and has no later bounce detector")
 }
 
 func TestRestoringWeeklyEmailDoesNotRevivePendingActivity(t *testing.T) {

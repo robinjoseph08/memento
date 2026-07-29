@@ -92,12 +92,8 @@ func (s *Service) updatePreferenceIn(ctx context.Context, tx bun.Tx, accessID uu
 	if err != nil {
 		return err
 	}
-	changedSchedule := current.WeeklyDay != update.WeeklyDay ||
-		current.WeeklyLocalTime != update.WeeklyLocalTime || current.WeeklyTimezone != update.WeeklyTimezone
-	invalidatesPending := current.EmailPreference != update.EmailPreference ||
-		(current.EmailPreference == "weekly" && changedSchedule)
 	nextVersion := currentVersion
-	if invalidatesPending {
+	if current.EmailPreference != update.EmailPreference {
 		nextVersion++
 	}
 	if _, err := tx.NewRaw(`UPDATE notification_preferences
@@ -129,13 +125,6 @@ func (s *Service) UpdatePlatformWeeklyTimezone(ctx context.Context, timezone str
 		}
 		if current == timezone {
 			return nil
-		}
-		if _, err := tx.NewRaw(`UPDATE notification_preferences AS preference
-			SET preference_version = preference_version + 1, updated_at = clock_timestamp()
-			FROM recipient_access_generations AS access
-			WHERE access.id = preference.recipient_access_generation_id AND access.is_current
-			  AND preference.email_preference = 'weekly' AND NOT preference.weekly_schedule_overridden`).Exec(ctx); err != nil {
-			return err
 		}
 		_, err := tx.NewRaw(`UPDATE system_settings SET weekly_timezone = ?, updated_at = clock_timestamp()
 			WHERE id = 1`, timezone).Exec(ctx)

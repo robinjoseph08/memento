@@ -461,10 +461,16 @@ func weeklyPublicationPreviews(ctx context.Context, db bun.IDB, accessID, public
 		return nil, nil
 	}
 	var previews []weeklyPreview
-	err := db.NewRaw(`SELECT candidate.media_item_id AS media_id, media.immich_asset_id AS asset_id
+	err := db.NewRaw(`WITH bounded_candidates AS MATERIALIZED (
+			SELECT candidate.media_item_id
+			FROM publication_notification_media AS candidate
+			WHERE candidate.publication_id = ? AND candidate.recipient_access_generation_id = ?
+			ORDER BY candidate.media_item_id
+			LIMIT ?
+		)
+		SELECT candidate.media_item_id AS media_id, media.immich_asset_id AS asset_id
 		FROM publications AS source
-		JOIN publication_notification_media AS candidate
-		  ON candidate.publication_id = source.id AND candidate.recipient_access_generation_id = ?
+		JOIN bounded_candidates AS candidate ON true
 		JOIN current_audience_entitlements AS entitlement
 		  ON entitlement.event_id = source.event_id
 		 AND entitlement.recipient_access_generation_id = ?
@@ -476,7 +482,8 @@ func weeklyPublicationPreviews(ctx context.Context, db bun.IDB, accessID, public
 		WHERE source.id = ? AND source.notify_recipients
 		  AND NOT content_is_withdrawn(placement.event_id, moment.draft_moment_id, placement.media_item_id)
 		GROUP BY candidate.media_item_id, media.immich_asset_id
-		ORDER BY min(placement.position), candidate.media_item_id LIMIT ?`, accessID, accessID, publicationID, limit).
+		ORDER BY min(placement.position), candidate.media_item_id LIMIT ?`,
+		publicationID, accessID, maxEmailPublicationMedia+1, accessID, publicationID, limit).
 		Scan(ctx, &previews)
 	return previews, err
 }
