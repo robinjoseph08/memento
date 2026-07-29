@@ -3,20 +3,27 @@
 package push
 
 import (
+	"bytes"
 	"context"
-	"crypto/elliptic"
+	"crypto/ecdh"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"net/netip"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/labstack/echo/v4"
 	"github.com/robinjoseph08/memento/internal/testdb"
+	"github.com/robinjoseph08/memento/pkg/binder"
 	"github.com/robinjoseph08/memento/pkg/config"
 	"github.com/robinjoseph08/memento/pkg/emaildelivery"
+	"github.com/robinjoseph08/memento/pkg/errcodes"
 	"github.com/robinjoseph08/memento/pkg/migrations"
 	"github.com/robinjoseph08/memento/pkg/notificationactivity"
 	"github.com/robinjoseph08/memento/pkg/setup"
@@ -33,9 +40,23 @@ func (integrationResolver) LookupNetIP(context.Context, string, string) ([]netip
 	return []netip.Addr{netip.MustParseAddr("8.8.8.8")}, nil
 }
 
-type integrationEmailSender struct{}
+type integrationEmailSender struct {
+	mu       sync.Mutex
+	messages []smtp.Message
+}
 
-func (integrationEmailSender) Send(context.Context, smtp.Message) error { return nil }
+func (s *integrationEmailSender) Send(_ context.Context, message smtp.Message) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.messages = append(s.messages, message)
+	return nil
+}
+
+func (s *integrationEmailSender) sent() []smtp.Message {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]smtp.Message(nil), s.messages...)
+}
 
 type integrationPushSender struct {
 	mu       sync.Mutex
@@ -67,6 +88,7 @@ func (s *integrationPushSender) Send(ctx context.Context, subscription BrowserSu
 type pushFixture struct {
 	db          *bun.DB
 	email       *emaildelivery.Service
+	emailSender *integrationEmailSender
 	push        *Service
 	sender      *integrationPushSender
 	curator     uuid.UUID
@@ -91,7 +113,9 @@ func newPushFixture(t *testing.T) pushFixture {
 	base := time.Now().UTC().Add(-time.Hour).Truncate(time.Microsecond)
 	f := pushFixture{db: db, sender: &integrationPushSender{statuses: map[string]int{}}, curator: uuid.New(), alex: uuid.New(), blair: uuid.New(), access: uuid.New(), blairAccess: uuid.New(), event: uuid.New(), publication: uuid.New(), moment: uuid.New(), media: uuid.New(), asset: uuid.New(), comment: uuid.New(), base: base}
 	emailCfg := config.SMTPConfig{Enabled: true, RetryBase: time.Second, RetryMax: time.Minute, RetryWindow: time.Hour}
-	f.email = emaildelivery.New(db, emailCfg, integrationEmailSender{}, "test-only-security-secret-32-bytes")
+	f.emailSender = new(integrationEmailSender)
+	f.email = emaildelivery.New(db, emailCfg, f.emailSender, "test-only-security-secret-32-bytes")
+	f.email.SetPublicURL("https://memento.example")
 	pushCfg := config.PushConfig{Enabled: true, PublicKey: "test", PrivateKey: "test", Subject: "mailto:test@example.com", Timeout: time.Second, RetryBase: time.Second, RetryMax: time.Minute, RetryWindow: time.Hour, TTL: 15 * time.Minute}
 	policy := NewEndpointPolicy(integrationResolver{})
 	f.push = New(db, pushCfg, "test-only-security-secret-32-bytes", f.sender, policy)
@@ -172,18 +196,18 @@ func newPushFixture(t *testing.T) pushFixture {
 
 func browserSubscription(t *testing.T, endpoint string) BrowserSubscription {
 	t.Helper()
-	_, x, y, err := elliptic.GenerateKey(elliptic.P256(), rand.Reader)
+	userKey, err := ecdh.P256().GenerateKey(rand.Reader)
 	require.NoError(t, err)
 	auth := make([]byte, 16)
 	_, err = rand.Read(auth)
 	require.NoError(t, err)
 	return BrowserSubscription{Endpoint: endpoint, Keys: BrowserSubscriptionKeys{
-		P256DH: base64.RawURLEncoding.EncodeToString(elliptic.Marshal(elliptic.P256(), x, y)),
+		P256DH: base64.RawURLEncoding.EncodeToString(userKey.PublicKey().Bytes()),
 		Auth:   base64.RawURLEncoding.EncodeToString(auth),
 	}}
 }
 
-func (f pushFixture) enroll(t *testing.T, endpoint string) setup.SessionActor {
+func (f pushFixture) trustedActor(t *testing.T) setup.SessionActor {
 	t.Helper()
 	actor := setup.SessionActor{PersonID: f.alex, AccessID: f.access, SessionID: uuid.New()}
 	credential := make([]byte, 32)
@@ -194,7 +218,13 @@ func (f pushFixture) enroll(t *testing.T, endpoint string) setup.SessionActor {
 		SELECT ?, ?, ?, ?, security_epoch, 'trusted', ? FROM system_settings WHERE id = 1`,
 		actor.SessionID, credential, actor.PersonID, actor.AccessID, f.base.Add(24*time.Hour)).Exec(context.Background())
 	require.NoError(t, err)
-	_, err = f.push.Enroll(context.Background(), actor, browserSubscription(t, endpoint))
+	return actor
+}
+
+func (f pushFixture) enroll(t *testing.T, endpoint string) setup.SessionActor {
+	t.Helper()
+	actor := f.trustedActor(t)
+	_, err := f.push.Enroll(context.Background(), actor, browserSubscription(t, endpoint))
 	require.NoError(t, err)
 	return actor
 }
@@ -207,6 +237,107 @@ func (f pushFixture) leasedJob(t *testing.T, batchID int64) worker.Job {
 	require.NoError(t, f.db.NewRaw(`INSERT INTO jobs (kind, payload, status, lease_owner, lease_expires_at)
 		VALUES (?, ?::jsonb, 'running', 'push-test', clock_timestamp() + interval '1 hour') RETURNING id`, JobKind, string(payload)).Scan(context.Background(), &id))
 	return worker.Job{ID: id, Kind: JobKind, Payload: payload, LeaseOwner: "push-test"}
+}
+
+func (f pushFixture) leasedEmailJob(t *testing.T, batchID int64) worker.Job {
+	t.Helper()
+	payload, err := json.Marshal(notificationactivity.JobPayload{BatchID: batchID})
+	require.NoError(t, err)
+	var id int64
+	require.NoError(t, f.db.NewRaw(`INSERT INTO jobs (kind, payload, status, lease_owner, lease_expires_at)
+		VALUES (?, ?::jsonb, 'running', 'email-test', clock_timestamp() + interval '1 hour') RETURNING id`,
+		emaildelivery.ImmediateJobKind, string(payload)).Scan(context.Background(), &id))
+	return worker.Job{ID: id, Kind: emaildelivery.ImmediateJobKind, Payload: payload, LeaseOwner: "email-test"}
+}
+
+func TestPushRoutesEnforceSafeGETCSRFContentTypeAndPublicSessionPolicy(t *testing.T) {
+	f := newPushFixture(t)
+	security := config.SecurityConfig{Secret: "test-only-security-secret-32-bytes"}
+	auth := setup.New(f.db, f.email, security)
+	issueSession := func(t *testing.T, sessionType string) setup.BrowserSession {
+		t.Helper()
+		var browser setup.BrowserSession
+		require.NoError(t, f.db.RunInTx(context.Background(), nil, func(ctx context.Context, tx bun.Tx) error {
+			var err error
+			browser, _, err = auth.NewBrowserSessionIn(ctx, tx, f.alex, f.access, sessionType, time.Now().UTC())
+			return err
+		}))
+		return browser
+	}
+	requestBinder, err := binder.New()
+	require.NoError(t, err)
+	e := echo.New()
+	e.Binder = requestBinder
+	e.HTTPErrorHandler = errcodes.NewHandler().Handle
+	RegisterRoutes(e, NewHandler(f.push, auth))
+	material, err := json.Marshal(browserSubscription(t, "https://push.example/route"))
+	require.NoError(t, err)
+	exercise := func(method, path string, body []byte, contentType, credential, csrf string) *httptest.ResponseRecorder {
+		t.Helper()
+		request := httptest.NewRequest(method, path, bytes.NewReader(body))
+		if contentType != "" {
+			request.Header.Set(echo.HeaderContentType, contentType)
+		}
+		if csrf != "" {
+			request.Header.Set(setup.CSRFHeader, csrf)
+		}
+		request.AddCookie(&http.Cookie{Name: setup.CookieName, Value: credential})
+		response := httptest.NewRecorder()
+		e.ServeHTTP(response, request)
+		return response
+	}
+
+	trusted := issueSession(t, "trusted")
+	response := exercise(http.MethodGet, "/api/push", nil, "", trusted.Credential, "")
+	assert.Equal(t, http.StatusOK, response.Code)
+	assert.Equal(t, "no-store", response.Header().Get(echo.HeaderCacheControl))
+	var subscriptions int
+	require.NoError(t, f.db.NewRaw(`SELECT count(*) FROM push_subscriptions`).Scan(context.Background(), &subscriptions))
+	assert.Zero(t, subscriptions, "safe GET must not enroll a device")
+
+	response = exercise(http.MethodPost, "/api/push", material, echo.MIMEApplicationJSON, trusted.Credential, "")
+	assert.Equal(t, http.StatusForbidden, response.Code)
+	response = exercise(http.MethodPost, "/api/push", material, echo.MIMETextPlain, trusted.Credential, trusted.CSRFToken)
+	assert.Equal(t, http.StatusUnsupportedMediaType, response.Code)
+
+	public := issueSession(t, "public")
+	response = exercise(http.MethodPost, "/api/push", material, echo.MIMEApplicationJSON, public.Credential, public.CSRFToken)
+	assert.Equal(t, http.StatusForbidden, response.Code)
+	require.NoError(t, f.db.NewRaw(`SELECT count(*) FROM push_subscriptions`).Scan(context.Background(), &subscriptions))
+	assert.Zero(t, subscriptions)
+}
+
+func TestConcurrentEndpointEnrollmentReturnsOneConflict(t *testing.T) {
+	f := newPushFixture(t)
+	first := f.trustedActor(t)
+	second := f.trustedActor(t)
+	material := browserSubscription(t, "https://push.example/concurrent")
+	results := make(chan error, 2)
+	go func() {
+		_, err := f.push.Enroll(context.Background(), first, material)
+		results <- err
+	}()
+	go func() {
+		_, err := f.push.Enroll(context.Background(), second, material)
+		results <- err
+	}()
+	errorsSeen := []error{<-results, <-results}
+	var successes, conflicts int
+	for _, err := range errorsSeen {
+		switch {
+		case err == nil:
+			successes++
+		case errors.Is(err, ErrEndpointConflict):
+			conflicts++
+		default:
+			t.Fatalf("unexpected concurrent enrollment result: %v", err)
+		}
+	}
+	assert.Equal(t, 1, successes)
+	assert.Equal(t, 1, conflicts)
+	var subscriptions int
+	require.NoError(t, f.db.NewRaw(`SELECT count(*) FROM push_subscriptions WHERE disabled_at IS NULL`).Scan(context.Background(), &subscriptions))
+	assert.Equal(t, 1, subscriptions)
 }
 
 func TestPublicSessionCannotEnrollOrReconcilePush(t *testing.T) {
@@ -353,22 +484,40 @@ func TestPushMatchesEmailSurvivorsAndTerminalOutcomeIsDeviceOnly(t *testing.T) {
 	require.NoError(t, f.db.NewRaw(`SELECT material_ciphertext FROM push_subscriptions ORDER BY id LIMIT 1`).Scan(context.Background(), &ciphertext))
 	assert.NotContains(t, string(ciphertext), "https://push.example")
 
+	survivingComment := uuid.New()
+	_, err := f.db.NewRaw(`INSERT INTO comments
+		(id, media_item_id, author_person_id, author_access_generation_id, idempotency_key, body, created_at, updated_at)
+		VALUES (?, ?, ?, ?, gen_random_uuid(), 'Still current', ?, ?)`, survivingComment, f.media,
+		f.blair, f.blairAccess, f.base.Add(2*time.Minute), f.base.Add(2*time.Minute)).Exec(context.Background())
+	require.NoError(t, err)
 	require.NoError(t, f.email.QueuePublication(context.Background(), f.event, f.publication))
 	require.NoError(t, f.push.QueuePublication(context.Background(), f.event, f.publication))
 	require.NoError(t, f.db.RunInTx(context.Background(), nil, func(ctx context.Context, tx bun.Tx) error {
-		if err := f.email.QueueComment(ctx, tx, f.access, f.comment); err != nil {
-			return err
+		for _, commentID := range []uuid.UUID{f.comment, survivingComment} {
+			if err := f.email.QueueComment(ctx, tx, f.access, commentID); err != nil {
+				return err
+			}
+			if err := f.push.QueueComment(ctx, tx, f.access, commentID); err != nil {
+				return err
+			}
 		}
-		return f.push.QueueComment(ctx, tx, f.access, f.comment)
+		return nil
 	}))
-	_, err := f.db.NewRaw(`UPDATE comments SET state = 'deleted', deleted_at = clock_timestamp(), updated_at = clock_timestamp() WHERE id = ?`, f.comment).Exec(context.Background())
+	_, err = f.db.NewRaw(`UPDATE comments SET state = 'deleted', deleted_at = clock_timestamp(), updated_at = clock_timestamp() WHERE id = ?`, f.comment).Exec(context.Background())
 	require.NoError(t, err)
 
 	var emailBatch int64
 	require.NoError(t, f.db.NewRaw(`SELECT id FROM notification_batches WHERE channel = 'email' AND cadence = 'immediate'`).Scan(context.Background(), &emailBatch))
 	emailSet, err := notificationactivity.AuthorizeBatch(context.Background(), f.db, emailBatch, false)
 	require.NoError(t, err)
-	require.Len(t, emailSet.Activities, 1)
+	require.Len(t, emailSet.Activities, 2)
+	assert.Equal(t, survivingComment, emailSet.Activities[1].SourceID)
+	assert.Equal(t, "Blair", emailSet.Activities[1].Author)
+	require.NoError(t, f.email.HandleImmediate(context.Background(), f.leasedEmailJob(t, emailBatch)))
+	emailMessages := f.emailSender.sent()
+	require.Len(t, emailMessages, 1)
+	assert.Contains(t, emailMessages[0].Body, "Family picnic: 1 new item")
+	assert.Contains(t, emailMessages[0].Body, "Blair commented on an item you can access.")
 	var pushBatches []int64
 	require.NoError(t, f.db.NewRaw(`SELECT id FROM notification_batches WHERE channel = 'push' ORDER BY id`).Scan(context.Background(), &pushBatches))
 	require.Len(t, pushBatches, 2)
@@ -383,10 +532,12 @@ func TestPushMatchesEmailSurvivorsAndTerminalOutcomeIsDeviceOnly(t *testing.T) {
 		var decoded pushPayload
 		require.NoError(t, json.Unmarshal(payload, &decoded))
 		assert.Equal(t, 1, decoded.Version)
-		require.Len(t, decoded.Activities, 1)
+		require.Len(t, decoded.Activities, 2)
 		assert.Equal(t, notificationactivity.Publication, decoded.Activities[0].Kind)
 		assert.Equal(t, "Family picnic", decoded.Activities[0].Title)
 		assert.Equal(t, 1, decoded.Activities[0].AdditionCount)
+		assert.Equal(t, notificationactivity.Comment, decoded.Activities[1].Kind)
+		assert.Equal(t, "Blair", decoded.Activities[1].Author)
 		assert.NotContains(t, string(payload), f.media.String())
 		assert.NotContains(t, string(payload), f.asset.String())
 		assert.NotContains(t, string(payload), endpoint)
@@ -401,5 +552,5 @@ func TestPushMatchesEmailSurvivorsAndTerminalOutcomeIsDeviceOnly(t *testing.T) {
 	assert.Equal(t, "immediate", preference)
 	var emailStatus string
 	require.NoError(t, f.db.NewRaw(`SELECT status FROM notification_batches WHERE id = ?`, emailBatch).Scan(context.Background(), &emailStatus))
-	assert.Equal(t, "pending", emailStatus)
+	assert.Equal(t, "sent", emailStatus)
 }

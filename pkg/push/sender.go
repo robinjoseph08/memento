@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
+	"strings"
+	"time"
 
 	webpush "github.com/SherClockHolmes/webpush-go"
 	"github.com/robinjoseph08/memento/pkg/config"
@@ -13,6 +16,7 @@ import (
 // DeliveryResult contains only the provider status needed for safe classification.
 type DeliveryResult struct {
 	StatusCode int
+	RetryAfter time.Duration
 }
 
 // Sender delivers an encrypted Web Push payload.
@@ -53,5 +57,17 @@ func (s *WebPushSender) Send(ctx context.Context, subscription BrowserSubscripti
 	}
 	defer response.Body.Close()
 	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
-	return DeliveryResult{StatusCode: response.StatusCode}, nil
+	return DeliveryResult{StatusCode: response.StatusCode,
+		RetryAfter: parseRetryAfter(response.Header.Get("Retry-After"), time.Now())}, nil
+}
+
+func parseRetryAfter(value string, now time.Time) time.Duration {
+	value = strings.TrimSpace(value)
+	if seconds, err := strconv.Atoi(value); err == nil && seconds > 0 {
+		return time.Duration(seconds) * time.Second
+	}
+	if retryAt, err := http.ParseTime(value); err == nil && retryAt.After(now) {
+		return retryAt.Sub(now)
+	}
+	return 0
 }

@@ -33,9 +33,7 @@ export function PushNotifications({ session }: { session: SessionResponse }) {
     retry: false,
   });
   const canReconcile =
-    supported &&
-    !needsAppleInstallation &&
-    configuration.data?.available === true;
+    supported && !needsAppleInstallation && configuration.data !== undefined;
   const reconciliation = useQuery({
     queryKey: PUSH_RECONCILIATION_QUERY_KEY,
     queryFn: () => reconcileAuthenticatedPush(session.csrf_token),

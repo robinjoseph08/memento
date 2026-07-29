@@ -267,6 +267,9 @@ func (s *Service) Handle(ctx context.Context, job worker.Job) error {
 		if temporary {
 			diagnostic = "push_unavailable"
 			retryAfter = s.retryDelay(attempts)
+			if result.RetryAfter > retryAfter {
+				retryAfter = result.RetryAfter
+			}
 			remaining := s.cfg.RetryWindow - time.Since(closesAt)
 			if remaining <= 0 {
 				diagnostic, terminal = "retry_window_exhausted", true

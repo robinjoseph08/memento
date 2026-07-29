@@ -132,6 +132,9 @@ func (s *Service) Enroll(ctx context.Context, actor setup.SessionActor, request 
 		if err := requireTrustedSession(ctx, tx, actor, true); err != nil {
 			return err
 		}
+		if _, err := tx.NewRaw(`SELECT pg_advisory_xact_lock(hashtextextended(encode(?::bytea, 'hex'), 4612))`, hash[:]).Exec(ctx); err != nil {
+			return err
+		}
 		type existingRow struct {
 			ID                uuid.UUID
 			SessionID         uuid.UUID

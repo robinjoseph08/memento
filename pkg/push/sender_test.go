@@ -39,6 +39,14 @@ func (t *captureTransport) RoundTrip(request *http.Request) (*http.Response, err
 	return &http.Response{StatusCode: http.StatusCreated, Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(nil)), Request: request}, nil
 }
 
+func TestParseRetryAfterSupportsProviderDelayFormats(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, time.July, 29, 12, 0, 0, 0, time.UTC)
+	assert.Equal(t, 2*time.Minute, parseRetryAfter("120", now))
+	assert.Equal(t, 3*time.Minute, parseRetryAfter(now.Add(3*time.Minute).Format(http.TimeFormat), now))
+	assert.Zero(t, parseRetryAfter("invalid", now))
+}
+
 func TestWebPushSenderEncryptsPayloadAndAddsVAPIDWithoutApplicationCredentials(t *testing.T) {
 	t.Parallel()
 	privateKey, publicKey, err := webpush.GenerateVAPIDKeys()

@@ -253,6 +253,40 @@ test("an active enrollment can be disabled and unsubscribed locally", async () =
   });
 });
 
+test("unavailable server reconciliation removes an existing local subscription", async () => {
+  const unsubscribe = vi.fn(() => Promise.resolve(true));
+  const localSubscription = {
+    endpoint: "https://push.example/subscription",
+    toJSON: () => ({
+      endpoint: "https://push.example/subscription",
+      expirationTime: null,
+      keys: { p256dh: "public-key", auth: "auth-secret" },
+    }),
+    unsubscribe,
+  } as unknown as PushSubscription;
+  installBrowserPush({ subscription: localSubscription });
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) =>
+      requestPath(input) === "/api/push/reconcile"
+        ? json({ enrolled: false, remove_local: true })
+        : json({ available: false, public_key: "", enrolled: false }),
+    ),
+  );
+
+  renderPush();
+
+  expect(
+    await screen.findByText(
+      "Push notifications are not available from this Memento server.",
+    ),
+  ).toBeVisible();
+  await waitFor(() => expect(unsubscribe).toHaveBeenCalledOnce());
+  expect(
+    screen.queryByRole("button", { name: "Enable push notifications" }),
+  ).not.toBeInTheDocument();
+});
+
 test("public sessions show unavailable without contacting push APIs", () => {
   const requestPermission = vi.fn();
   vi.stubGlobal("Notification", { permission: "default", requestPermission });
