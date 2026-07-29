@@ -85,7 +85,7 @@ export function enrollPushSubscription(
   csrfToken: string,
 ) {
   return apiJSON<ConfigurationResponse>("/api/push", {
-    method: "PUT",
+    method: "POST",
     headers: { "X-Memento-CSRF": csrfToken },
     body: JSON.stringify(pushSubscriptionRequest(subscription)),
   });

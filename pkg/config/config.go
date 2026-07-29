@@ -3,6 +3,7 @@ package config
 
 import (
 	"crypto/ecdh"
+	"crypto/subtle"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -708,14 +709,7 @@ func (c PushConfig) Validate() error {
 }
 
 func equalBytes(left, right []byte) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	var difference byte
-	for index := range left {
-		difference |= left[index] ^ right[index]
-	}
-	return difference == 0
+	return subtle.ConstantTimeCompare(left, right) == 1
 }
 
 func singleAddress(value string) bool {

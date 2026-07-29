@@ -521,12 +521,17 @@ test("an explicit update message activates a waiting worker", async () => {
   expect(worker.self.skipWaiting).toHaveBeenCalledOnce();
 });
 
-test("push shows one generic notification from a bounded versioned count", async () => {
+test("push shows authorized Publication and Comment context from a bounded payload", async () => {
   const worker = await loadWorker();
   let work: Promise<unknown> | undefined;
 
   worker.listeners.get("push")!({
-    data: { text: () => Promise.resolve('{"version":1,"count":3}') },
+    data: {
+      text: () =>
+        Promise.resolve(
+          '{"version":1,"activities":[{"kind":"publication","title":"Family picnic","addition_count":3},{"kind":"comment","author":"Blair"}]}',
+        ),
+    },
     request: new Request("https://memento.example/"),
     respondWith: vi.fn(),
     waitUntil(promise) {
@@ -539,21 +544,22 @@ test("push shows one generic notification from a bounded versioned count", async
   expect(worker.self.registration.showNotification).toHaveBeenCalledWith(
     "New activity in Memento",
     {
-      body: "3 new Memento updates are ready.",
+      body: "Family picnic: 3 new items. 1 more update is ready.",
       tag: "memento-activity",
     },
   );
   const notification = JSON.stringify(
     worker.self.registration.showNotification.mock.calls[0],
   );
-  expect(notification).not.toMatch(/name|media|thumbnail|https?:|\/photos/i);
+  expect(notification).not.toMatch(/media|thumbnail|https?:|\/photos/i);
 });
 
 test.each([
   undefined,
-  '{"version":2,"count":1}',
-  '{"version":1,"count":100}',
-  '{"version":1,"count":1,"name":"Alex"}',
+  '{"version":2,"activities":[{"kind":"comment","author":"Alex"}]}',
+  '{"version":1,"activities":[]}',
+  '{"version":1,"activities":[{"kind":"publication","title":"Family","addition_count":101}]}',
+  '{"version":1,"activities":[{"kind":"comment","author":"Alex","url":"/photos"}]}',
   "not-json",
 ])(
   "invalid or absent push data still shows one generic notification",

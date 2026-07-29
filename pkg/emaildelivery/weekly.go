@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/robinjoseph08/memento/internal/placementlock"
+	"github.com/robinjoseph08/memento/pkg/notificationactivity"
 	"github.com/robinjoseph08/memento/pkg/smtp"
 	"github.com/robinjoseph08/memento/pkg/worker"
 	"github.com/uptrace/bun"
@@ -210,7 +210,7 @@ func (s *Service) HandleWeekly(ctx context.Context, job worker.Job) error {
 	var retryAfter time.Duration
 	var terminalFailure bool
 	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
-		if err := placementlock.Acquire(ctx, tx, placementlock.Shared); err != nil {
+		if err := notificationactivity.LockBatchResources(ctx, tx, payload.BatchID); err != nil {
 			return err
 		}
 		var accessID, publicID uuid.UUID
@@ -232,12 +232,6 @@ func (s *Service) HandleWeekly(ctx context.Context, job worker.Job) error {
 			return worker.Permanent("weekly_email_batch_invalid")
 		}
 		if err := s.requireLease(ctx, job); err != nil {
-			return err
-		}
-		if err := lockEmailBatchMedia(ctx, tx, payload.BatchID); err != nil {
-			return err
-		}
-		if err := lockEmailBatchEvents(ctx, tx, payload.BatchID); err != nil {
 			return err
 		}
 		if err := lockRecipientGeneration(ctx, tx, accessID); err != nil && !errors.Is(err, sql.ErrNoRows) {

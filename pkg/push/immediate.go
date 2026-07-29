@@ -18,9 +18,23 @@ const JobKind = "send_immediate_push"
 
 var errLeaseLost = errors.New("push delivery job lease lost")
 
+const (
+	maximumPushActivities = 20
+	maximumPushPayload    = 3000
+)
+
+type pushActivity struct {
+	Kind          notificationactivity.Kind `json:"kind"`
+	Title         string                    `json:"title,omitempty"`
+	AdditionCount int                       `json:"addition_count,omitempty"`
+	CountCapped   bool                      `json:"count_capped,omitempty"`
+	Author        string                    `json:"author,omitempty"`
+}
+
 type pushPayload struct {
-	Version int `json:"version"`
-	Count   int `json:"count"`
+	Version    int            `json:"version"`
+	Activities []pushActivity `json:"activities"`
+	Truncated  bool           `json:"truncated,omitempty"`
 }
 
 // QueuePublication creates independent device batches for currently enabled trusted Sessions.
@@ -73,7 +87,7 @@ func (s *Service) QueuePublication(ctx context.Context, _ uuid.UUID, publication
 		for _, candidate := range candidates {
 			subscriptionID := candidate.SubscriptionID
 			if err := notificationactivity.QueueImmediate(ctx, tx, candidate.AccessID, notificationactivity.Publication,
-				publicationID, candidate.CreatedAt, notificationactivity.Target{Channel: "push", JobKind: JobKind,
+				publicationID, candidate.CreatedAt, notificationactivity.Target{Channel: notificationactivity.Push, JobKind: JobKind,
 					PreferenceVersion: candidate.EnrollmentVersion, PushSubscriptionID: &subscriptionID}); err != nil {
 				return err
 			}
@@ -111,7 +125,7 @@ func (s *Service) QueueComment(ctx context.Context, tx bun.Tx, accessID, comment
 	for _, candidate := range candidates {
 		subscriptionID := candidate.SubscriptionID
 		if err := notificationactivity.QueueImmediate(ctx, tx, accessID, notificationactivity.Comment,
-			commentID, activity.ActivityCreatedAt, notificationactivity.Target{Channel: "push", JobKind: JobKind,
+			commentID, activity.ActivityCreatedAt, notificationactivity.Target{Channel: notificationactivity.Push, JobKind: JobKind,
 				PreferenceVersion: candidate.EnrollmentVersion, PushSubscriptionID: &subscriptionID}); err != nil {
 			return err
 		}
@@ -223,8 +237,7 @@ func (s *Service) Handle(ctx context.Context, job worker.Job) error {
 				updated_at = clock_timestamp() WHERE id = ? AND status = 'pending'`, payload.BatchID).Exec(ctx)
 			return updateErr
 		}
-		message := pushPayload{Version: 1, Count: len(authorized.Activities)}
-		contents, err := json.Marshal(message)
+		contents, err := authorizedPushPayload(authorized)
 		if err != nil {
 			return err
 		}
@@ -279,6 +292,38 @@ func (s *Service) Handle(ctx context.Context, job worker.Job) error {
 		return worker.RetryAfter(retryAfter, diagnostic)
 	}
 	return nil
+}
+
+func authorizedPushPayload(authorized notificationactivity.AuthorizedSet) ([]byte, error) {
+	payload := pushPayload{Version: 1, Truncated: authorized.Truncated}
+	for _, activity := range authorized.Activities {
+		item := pushActivity{Kind: activity.Kind}
+		switch activity.Kind {
+		case notificationactivity.Publication:
+			item.Title = activity.Title
+			item.AdditionCount = min(activity.AdditionCount, notificationactivity.MaxPublicationMedia)
+			item.CountCapped = activity.AdditionCount > notificationactivity.MaxPublicationMedia
+		case notificationactivity.Comment:
+			item.Author = activity.Author
+		default:
+			continue
+		}
+		candidate := payload
+		candidate.Activities = append(append([]pushActivity(nil), payload.Activities...), item)
+		encoded, err := json.Marshal(candidate)
+		if err != nil {
+			return nil, err
+		}
+		if len(candidate.Activities) > maximumPushActivities || len(encoded) > maximumPushPayload {
+			payload.Truncated = true
+			break
+		}
+		payload = candidate
+	}
+	if len(payload.Activities) < len(authorized.Activities) {
+		payload.Truncated = true
+	}
+	return json.Marshal(payload)
 }
 
 func failPushBatch(ctx context.Context, tx bun.Tx, batchID int64, diagnostic string) error {

@@ -17,11 +17,13 @@ import (
 )
 
 const (
-	CoalescingWindow         = 15 * time.Minute
-	MaxBatchItems            = 100
-	MaxPublicationMedia      = 100
-	Publication         Kind = "publication"
-	Comment             Kind = "comment"
+	CoalescingWindow            = 15 * time.Minute
+	MaxBatchItems               = 100
+	MaxPublicationMedia         = 100
+	Publication         Kind    = "publication"
+	Comment             Kind    = "comment"
+	Email               Channel = "email"
+	Push                Channel = "push"
 )
 
 var (
@@ -34,9 +36,12 @@ var (
 // Kind identifies one source of optional activity.
 type Kind string
 
+// Channel identifies an independent optional delivery path.
+type Channel string
+
 // Target identifies one independently coalesced delivery channel and device.
 type Target struct {
-	Channel            string
+	Channel            Channel
 	JobKind            string
 	PreferenceVersion  int64
 	PushSubscriptionID *uuid.UUID
@@ -52,6 +57,9 @@ type Activity struct {
 	Kind              Kind
 	SourceID          uuid.UUID
 	Text              string
+	Title             string
+	AdditionCount     int
+	Author            string
 	MediaID           uuid.UUID
 	AssetID           uuid.UUID
 	ActivityCreatedAt time.Time
@@ -92,13 +100,13 @@ func QueueImmediate(ctx context.Context, tx bun.Tx, accessID uuid.UUID, kind Kin
 	if err != nil {
 		return err
 	}
-	if target.Channel != "email" && target.Channel != "push" {
+	if target.Channel != Email && target.Channel != Push {
 		return fmt.Errorf("%w: %q", errInvalidChannel, target.Channel)
 	}
-	if target.JobKind == "" || (target.Channel == "push") != (target.PushSubscriptionID != nil) {
+	if target.JobKind == "" || (target.Channel == Push) != (target.PushSubscriptionID != nil) {
 		return errInvalidTarget
 	}
-	lockKey := accessID.String() + ":" + target.Channel
+	lockKey := accessID.String() + ":" + string(target.Channel)
 	if target.PushSubscriptionID != nil {
 		lockKey += ":" + target.PushSubscriptionID.String()
 	}
@@ -355,7 +363,8 @@ func AuthorizePublication(ctx context.Context, db bun.IDB, accessID, publication
 	} else if count > MaxPublicationMedia {
 		text = fmt.Sprintf("%s: %d+ new items", title, MaxPublicationMedia)
 	}
-	return Activity{Kind: Publication, SourceID: publicationID, Text: text, MediaID: mediaID, AssetID: assetID}, count > 0, nil
+	return Activity{Kind: Publication, SourceID: publicationID, Text: text, Title: title,
+		AdditionCount: count, MediaID: mediaID, AssetID: assetID}, count > 0, nil
 }
 
 // AuthorizeComment rechecks current comment state, subscription, access, availability, and Withdrawal.
@@ -400,7 +409,8 @@ func AuthorizeComment(ctx context.Context, db bun.IDB, accessID, commentID uuid.
 	if err != nil {
 		return Activity{}, false, err
 	}
-	return Activity{Kind: Comment, SourceID: commentID, Text: author + " commented on an item you can access.", MediaID: mediaID, AssetID: assetID, ActivityCreatedAt: createdAt}, true, nil
+	return Activity{Kind: Comment, SourceID: commentID, Text: author + " commented on an item you can access.",
+		Author: author, MediaID: mediaID, AssetID: assetID, ActivityCreatedAt: createdAt}, true, nil
 }
 
 // LockBatchResources orders Media and Event authorization mutations behind a final send.

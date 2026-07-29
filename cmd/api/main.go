@@ -224,7 +224,7 @@ func run() error {
 	return nil
 }
 
-func jobHandlers(sourceService *sources.Service, eventService *events.Service, archiveService *archives.Service, commentService *comments.Service, emailService *emaildelivery.Service, smtpEnabled bool, pushServices ...*push.Service) map[string]worker.Handler {
+func jobHandlers(sourceService *sources.Service, eventService *events.Service, archiveService *archives.Service, commentService *comments.Service, emailService *emaildelivery.Service, smtpEnabled bool, pushService *push.Service) map[string]worker.Handler {
 	handlers := map[string]worker.Handler{
 		sources.ReconciliationJobKind: sourceService.HandleReconciliationJob,
 		events.PublicationJobKind:     eventService.HandlePublicationJob,
@@ -236,8 +236,8 @@ func jobHandlers(sourceService *sources.Service, eventService *events.Service, a
 		handlers[emaildelivery.ImmediateJobKind] = emailService.HandleImmediate
 		handlers[emaildelivery.WeeklyJobKind] = emailService.HandleWeekly
 	}
-	if len(pushServices) > 0 && pushServices[0] != nil && pushServices[0].Configured() {
-		handlers[push.JobKind] = pushServices[0].Handle
+	if pushService != nil && pushService.Configured() {
+		handlers[push.JobKind] = pushService.Handle
 	}
 	return handlers
 }

@@ -27,7 +27,7 @@ async function routeRecipientAPI(page: Page) {
       });
     } else if (path === "/api/push/reconcile") {
       await route.fulfill({ json: { enrolled: false, remove_local: false } });
-    } else if (path === "/api/push" && request.method() === "PUT") {
+    } else if (path === "/api/push" && request.method() === "POST") {
       await route.fulfill({
         json: { available: true, public_key: "AQID", enrolled: true },
       });
@@ -178,30 +178,39 @@ test("@desktop Android capability detection prompts only after the explicit acti
     .toMatchObject({ permission: 1, subscribe: 1 });
 });
 
-test("@desktop iPhone and iPad guidance requires Home Screen installation before enabling", async ({
-  page,
-}) => {
-  await mockPushBrowser(
+for (const device of [
+  {
+    name: "iPhone",
+    userAgent:
+      "Mozilla/5.0 (iPhone; CPU iPhone OS 18_4 like Mac OS X) AppleWebKit/605.1.15 Mobile",
+  },
+  {
+    name: "iPad",
+    userAgent:
+      "Mozilla/5.0 (iPad; CPU OS 18_4 like Mac OS X) AppleWebKit/605.1.15 Mobile",
+  },
+]) {
+  test(`@desktop ${device.name} guidance requires Home Screen installation before enabling`, async ({
     page,
-    "Mozilla/5.0 (iPhone; CPU iPhone OS 18_4 like Mac OS X) AppleWebKit/605.1.15 Mobile",
-    false,
-  );
-  await routeRecipientAPI(page);
-  await page.goto("/");
+  }) => {
+    await mockPushBrowser(page, device.userAgent, false);
+    await routeRecipientAPI(page);
+    await page.goto("/");
 
-  await expect(
-    page.getByText(/Add Memento to your iPhone or iPad Home Screen/),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("button", { name: "Enable push notifications" }),
-  ).toHaveCount(0);
-  const calls = await page.evaluate(
-    () =>
-      (
-        window as typeof window & {
-          __pushCalls: { permission: number; subscribe: number };
-        }
-      ).__pushCalls,
-  );
-  expect(calls).toMatchObject({ permission: 0, subscribe: 0 });
-});
+    await expect(
+      page.getByText(/Add Memento to your iPhone or iPad Home Screen/),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Enable push notifications" }),
+    ).toHaveCount(0);
+    const calls = await page.evaluate(
+      () =>
+        (
+          window as typeof window & {
+            __pushCalls: { permission: number; subscribe: number };
+          }
+        ).__pushCalls,
+    );
+    expect(calls).toMatchObject({ permission: 0, subscribe: 0 });
+  });
+}

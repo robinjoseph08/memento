@@ -8,6 +8,7 @@ import (
 	"crypto/ecdh"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
@@ -332,12 +333,5 @@ func (s *Service) decrypt(id uuid.UUID, version int64, ciphertext []byte) (Brows
 }
 
 func equalHash(left, right []byte) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	var value byte
-	for index := range left {
-		value |= left[index] ^ right[index]
-	}
-	return value == 0
+	return subtle.ConstantTimeCompare(left, right) == 1
 }

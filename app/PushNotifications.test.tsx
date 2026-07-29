@@ -164,7 +164,7 @@ test("requests permission synchronously from Enable before awaiting browser work
     vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const path = requestPath(input);
       requests.push({ path, init });
-      if (path === "/api/push" && init?.method === "PUT")
+      if (path === "/api/push" && init?.method === "POST")
         return json({ available: true, public_key: "AQID", enrolled: true });
       if (path === "/api/push")
         return json({ available: true, public_key: "AQID", enrolled: false });
@@ -196,7 +196,7 @@ test("requests permission synchronously from Enable before awaiting browser work
     applicationServerKey: new Uint8Array([1, 2, 3]),
   });
   const enrollment = requests.find(
-    ({ path, init }) => path === "/api/push" && init?.method === "PUT",
+    ({ path, init }) => path === "/api/push" && init?.method === "POST",
   );
   expect(JSON.parse(enrollment?.init?.body as string)).toEqual({
     endpoint: "https://push.example/subscription",
@@ -274,28 +274,33 @@ test("public sessions show unavailable without contacting push APIs", () => {
   ).not.toBeInTheDocument();
 });
 
-test("iPhone and iPad browsers outside standalone mode show installation guidance", async () => {
-  const browser = installBrowserPush({
-    userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)",
-    standalone: false,
-  });
-  vi.stubGlobal(
-    "fetch",
-    vi.fn(() => json({ available: true, public_key: "AQID", enrolled: false })),
-  );
+test.each([
+  ["iPhone", "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)"],
+  ["iPad", "Mozilla/5.0 (iPad; CPU OS 18_0 like Mac OS X)"],
+])(
+  "%s outside standalone mode shows installation guidance",
+  async (_device, userAgent) => {
+    const browser = installBrowserPush({ userAgent, standalone: false });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        json({ available: true, public_key: "AQID", enrolled: false }),
+      ),
+    );
 
-  renderPush();
+    renderPush();
 
-  expect(
-    await screen.findByText(/Add Memento to your iPhone or iPad Home Screen/),
-  ).toBeVisible();
-  expect(browser.getSubscription).not.toHaveBeenCalled();
-  expect(browser.subscribe).not.toHaveBeenCalled();
-  expect(browser.requestPermission).not.toHaveBeenCalled();
-  expect(
-    screen.queryByRole("button", { name: "Enable push notifications" }),
-  ).not.toBeInTheDocument();
-});
+    expect(
+      await screen.findByText(/Add Memento to your iPhone or iPad Home Screen/),
+    ).toBeVisible();
+    expect(browser.getSubscription).not.toHaveBeenCalled();
+    expect(browser.subscribe).not.toHaveBeenCalled();
+    expect(browser.requestPermission).not.toHaveBeenCalled();
+    expect(
+      screen.queryByRole("button", { name: "Enable push notifications" }),
+    ).not.toBeInTheDocument();
+  },
+);
 
 test("Android relies on capability detection without an installation gate", async () => {
   installBrowserPush({

@@ -147,8 +147,8 @@ export function PushNotifications({ session }: { session: SessionResponse }) {
     <section aria-labelledby="push-notifications-title" className="shell-card">
       <h2 id="push-notifications-title">Push notifications</h2>
       <p>
-        Receive limited activity counts on this trusted device. Push is optional
-        and independent of email and private Media access.
+        Receive limited authorized activity context on this trusted device. Push
+        is optional and independent of email and private Media access.
       </p>
       {configuration.isPending && !isPublic ? (
         <p aria-live="polite">Checking push availability…</p>

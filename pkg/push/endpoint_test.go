@@ -79,23 +79,36 @@ func TestEndpointPolicyAcceptsOnlyPublicHTTPS(t *testing.T) {
 
 func TestHTTPClientRejectsDNSRebindingBeforeDial(t *testing.T) {
 	t.Parallel()
-	resolver := &sequenceResolver{answers: []resolverAnswer{
-		{addresses: []netip.Addr{netip.MustParseAddr("8.8.8.8")}},
-		{addresses: []netip.Addr{netip.MustParseAddr("127.0.0.1")}},
-	}}
-	policy := NewEndpointPolicy(resolver)
-	require.NoError(t, policy.Validate(context.Background(), "https://push.example/subscription"))
-	dialer := &recordingDialer{}
-	client := NewHTTPClient(policy, dialer, &tls.Config{MinVersion: tls.VersionTLS12}, time.Second)
-	request, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "https://push.example/subscription", nil)
-	require.NoError(t, err)
-	response, err := client.Do(request)
-	if response != nil {
-		response.Body.Close()
+	for _, test := range []struct {
+		name    string
+		address string
+	}{
+		{name: "loopback", address: "127.0.0.1"},
+		{name: "private", address: "10.0.0.1"},
+		{name: "link local", address: "169.254.1.1"},
+		{name: "metadata service", address: "169.254.169.254"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			resolver := &sequenceResolver{answers: []resolverAnswer{
+				{addresses: []netip.Addr{netip.MustParseAddr("8.8.8.8")}},
+				{addresses: []netip.Addr{netip.MustParseAddr(test.address)}},
+			}}
+			policy := NewEndpointPolicy(resolver)
+			require.NoError(t, policy.Validate(context.Background(), "https://push.example/subscription"))
+			dialer := &recordingDialer{}
+			client := NewHTTPClient(policy, dialer, &tls.Config{MinVersion: tls.VersionTLS12}, time.Second)
+			request, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "https://push.example/subscription", nil)
+			require.NoError(t, err)
+			response, err := client.Do(request)
+			if response != nil {
+				response.Body.Close()
+			}
+			require.ErrorIs(t, err, ErrEndpointPrivate)
+			assert.False(t, dialer.called, "the rebinding answer must never reach the socket dialer")
+			assert.Equal(t, 2, resolver.calls)
+		})
 	}
-	require.ErrorIs(t, err, ErrEndpointPrivate)
-	assert.False(t, dialer.called, "the private rebinding answer must never reach the socket dialer")
-	assert.Equal(t, 2, resolver.calls)
 }
 
 func TestHTTPClientDisablesProxyAndRedirects(t *testing.T) {

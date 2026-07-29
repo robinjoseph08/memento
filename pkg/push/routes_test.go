@@ -19,7 +19,7 @@ func TestRegisterRoutesDeclaresPushPolicies(t *testing.T) {
 	}
 	assert.Equal(t, map[string]string{
 		"GET /api/push":            selfReadPolicy,
-		"PUT /api/push":            selfMutationPolicy,
+		"POST /api/push":           selfMutationPolicy,
 		"POST /api/push/reconcile": selfMutationPolicy,
 		"DELETE /api/push":         selfMutationPolicy,
 	}, policies)

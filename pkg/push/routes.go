@@ -128,7 +128,7 @@ func RegisterRoutes(e *echo.Echo, handler *Handler) {
 	group := e.Group("/api/push", noStore)
 	configuration := group.GET("", handler.Configuration)
 	configuration.Name = selfReadPolicy
-	enroll := group.PUT("", handler.Enroll)
+	enroll := group.POST("", handler.Enroll)
 	enroll.Name = selfMutationPolicy
 	reconcile := group.POST("/reconcile", handler.Reconcile)
 	reconcile.Name = selfMutationPolicy

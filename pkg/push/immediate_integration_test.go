@@ -41,9 +41,20 @@ type integrationPushSender struct {
 	mu       sync.Mutex
 	statuses map[string]int
 	payloads map[string][]byte
+	entered  chan struct{}
+	release  chan struct{}
+	once     sync.Once
 }
 
-func (s *integrationPushSender) Send(_ context.Context, subscription BrowserSubscription, payload []byte) (DeliveryResult, error) {
+func (s *integrationPushSender) Send(ctx context.Context, subscription BrowserSubscription, payload []byte) (DeliveryResult, error) {
+	if s.entered != nil {
+		s.once.Do(func() { close(s.entered) })
+		select {
+		case <-s.release:
+		case <-ctx.Done():
+			return DeliveryResult{}, ctx.Err()
+		}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.payloads == nil {
@@ -221,6 +232,117 @@ func TestPublicSessionCannotEnrollOrReconcilePush(t *testing.T) {
 	assert.Zero(t, count)
 }
 
+func TestPushHoldsSessionPreferenceLockThroughProviderAcceptance(t *testing.T) {
+	f := newPushFixture(t)
+	f.sender.entered = make(chan struct{})
+	f.sender.release = make(chan struct{})
+	t.Cleanup(func() {
+		select {
+		case <-f.sender.release:
+		default:
+			close(f.sender.release)
+		}
+	})
+	actor := f.enroll(t, "https://push.example/locking")
+	f.sender.statuses["https://push.example/locking"] = 201
+	require.NoError(t, f.push.QueuePublication(context.Background(), f.event, f.publication))
+	var batchID int64
+	require.NoError(t, f.db.NewRaw(`SELECT id FROM notification_batches WHERE channel = 'push'`).Scan(context.Background(), &batchID))
+	job := f.leasedJob(t, batchID)
+	delivered := make(chan error, 1)
+	go func() { delivered <- f.push.Handle(context.Background(), job) }()
+	select {
+	case <-f.sender.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("push sender was not reached")
+	}
+
+	revoked := make(chan error, 1)
+	go func() {
+		revoked <- f.db.RunInTx(context.Background(), nil, func(ctx context.Context, tx bun.Tx) error {
+			if _, err := tx.NewRaw(`UPDATE sessions SET revoked_at = clock_timestamp() WHERE id = ?`, actor.SessionID).Exec(ctx); err != nil {
+				return err
+			}
+			_, err := tx.NewRaw(`UPDATE push_subscriptions SET disabled_at = clock_timestamp() WHERE session_id = ?`, actor.SessionID).Exec(ctx)
+			return err
+		})
+	}()
+	waitForBlockedPushMutation(t, f.db, `%UPDATE sessions SET revoked_at%`)
+	select {
+	case err := <-revoked:
+		t.Fatalf("Session revocation finished before provider acceptance: %v", err)
+	default:
+	}
+	close(f.sender.release)
+	require.NoError(t, <-delivered)
+	require.NoError(t, <-revoked)
+	var disabled bool
+	require.NoError(t, f.db.NewRaw(`SELECT disabled_at IS NOT NULL FROM push_subscriptions WHERE session_id = ?`, actor.SessionID).Scan(context.Background(), &disabled))
+	assert.True(t, disabled)
+}
+
+func waitForBlockedPushMutation(t *testing.T, db *bun.DB, pattern string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	var lastBlocked bool
+	for time.Now().Before(deadline) {
+		err := db.NewRaw(`SELECT EXISTS (
+			SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid()
+			 AND cardinality(pg_blocking_pids(pid)) > 0 AND query LIKE ?
+		)`, pattern).Scan(context.Background(), &lastBlocked)
+		require.NoError(t, err)
+		if lastBlocked {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("push mutation did not block before deadline; last blocked state: %t", lastBlocked)
+}
+
+func TestPushReauthorizesWithdrawalImmediatelyBeforeSend(t *testing.T) {
+	f := newPushFixture(t)
+	f.enroll(t, "https://push.example/withdrawn")
+	f.sender.statuses["https://push.example/withdrawn"] = 201
+	require.NoError(t, f.push.QueuePublication(context.Background(), f.event, f.publication))
+	var batchID int64
+	require.NoError(t, f.db.NewRaw(`SELECT id FROM notification_batches WHERE channel = 'push'`).Scan(context.Background(), &batchID))
+	_, err := f.db.NewRaw(`INSERT INTO content_withdrawals
+		(id, target_kind, target_id, withdrawn_by_person_id, withdrawn_at, reason, content_revision)
+		VALUES (?, 'media', ?, ?, clock_timestamp(), 'Recipient requested removal', 1)`,
+		uuid.New(), f.media, f.curator).Exec(context.Background())
+	require.NoError(t, err)
+
+	require.NoError(t, f.push.Handle(context.Background(), f.leasedJob(t, batchID)))
+	assert.Empty(t, f.sender.payloads)
+	var status string
+	require.NoError(t, f.db.NewRaw(`SELECT status FROM notification_batches WHERE id = ?`, batchID).Scan(context.Background(), &status))
+	assert.Equal(t, "suppressed", status)
+}
+
+func TestPushRequiresCurrentSecurityEpochAtSend(t *testing.T) {
+	f := newPushFixture(t)
+	f.enroll(t, "https://push.example/restored")
+	f.sender.statuses["https://push.example/restored"] = 201
+	require.NoError(t, f.push.QueuePublication(context.Background(), f.event, f.publication))
+	var batchID int64
+	require.NoError(t, f.db.NewRaw(`SELECT id FROM notification_batches WHERE channel = 'push'`).Scan(context.Background(), &batchID))
+	epoch := make([]byte, 32)
+	_, err := rand.Read(epoch)
+	require.NoError(t, err)
+	_, err = f.db.NewRaw(`UPDATE system_settings SET security_epoch = ? WHERE id = 1`, epoch).Exec(context.Background())
+	require.NoError(t, err)
+
+	require.NoError(t, f.push.Handle(context.Background(), f.leasedJob(t, batchID)))
+	assert.Empty(t, f.sender.payloads)
+	var batchStatus string
+	var disabled bool
+	require.NoError(t, f.db.NewRaw(`SELECT batch.status, subscription.disabled_at IS NOT NULL
+		FROM notification_batches AS batch JOIN push_subscriptions AS subscription ON subscription.id = batch.push_subscription_id
+		WHERE batch.id = ?`, batchID).Scan(context.Background(), &batchStatus, &disabled))
+	assert.Equal(t, "suppressed", batchStatus)
+	assert.True(t, disabled)
+}
+
 func TestPushMatchesEmailSurvivorsAndTerminalOutcomeIsDeviceOnly(t *testing.T) {
 	f := newPushFixture(t)
 	f.enroll(t, "https://push.example/expired")
@@ -261,7 +383,10 @@ func TestPushMatchesEmailSurvivorsAndTerminalOutcomeIsDeviceOnly(t *testing.T) {
 		var decoded pushPayload
 		require.NoError(t, json.Unmarshal(payload, &decoded))
 		assert.Equal(t, 1, decoded.Version)
-		assert.Equal(t, 1, decoded.Count)
+		require.Len(t, decoded.Activities, 1)
+		assert.Equal(t, notificationactivity.Publication, decoded.Activities[0].Kind)
+		assert.Equal(t, "Family picnic", decoded.Activities[0].Title)
+		assert.Equal(t, 1, decoded.Activities[0].AdditionCount)
 		assert.NotContains(t, string(payload), f.media.String())
 		assert.NotContains(t, string(payload), f.asset.String())
 		assert.NotContains(t, string(payload), endpoint)
