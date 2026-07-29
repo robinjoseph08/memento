@@ -1481,6 +1481,75 @@ test("retries a transient representation failure once and then fails closed", as
   ).not.toBeInTheDocument();
 });
 
+test("does not classify a failed listing refresh as withdrawn", async () => {
+  let photoCalls = 0;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) => {
+      const path = requestPath(input);
+      if (path.startsWith("/api/me/photos?")) {
+        photoCalls++;
+        if (photoCalls > 1) {
+          return apiError("Photos are temporarily unavailable.");
+        }
+        return json({
+          media: [
+            {
+              id: "media-unconfirmed",
+              media_type: "image",
+              width: 1600,
+              height: 900,
+              local_date_time: "2026-07-28T12:00:00Z",
+              available: true,
+              thumbnail_url: "/api/me/media/media-unconfirmed/thumbnail",
+              preview_url: "/api/me/media/media-unconfirmed/preview",
+              video_url: "",
+              original_url: "/api/me/media/media-unconfirmed/original",
+            },
+          ],
+          next_cursor: null,
+        });
+      }
+      if (path === "/api/me/new-for-you") return json({ events: [] });
+      if (path === "/api/favorites/media-unconfirmed") {
+        return json({ media_item_id: "media-unconfirmed", favorite: false });
+      }
+      if (path.startsWith("/api/comments/media/media-unconfirmed?")) {
+        return json({
+          comments: [],
+          can_mute: false,
+          muted: false,
+          next_cursor: null,
+        });
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    }),
+  );
+
+  renderLibrary();
+  fireEvent.click(
+    await screen.findByRole("button", {
+      name: "Open Photo 1 from July 2026",
+    }),
+  );
+  fireEvent.error(screen.getByAltText("Selected photo preview"));
+
+  expect(
+    await screen.findByText(
+      "This Media could not be loaded because Library access could not be refreshed. Try again from the Library.",
+    ),
+  ).toBeVisible();
+  expect(
+    screen.queryByText("This content is no longer available."),
+  ).not.toBeInTheDocument();
+  expect(screen.getByText("Access unconfirmed")).toBeVisible();
+  expect(screen.getByRole("button", { name: "Add Favorite" })).toBeEnabled();
+  expect(
+    screen.queryByRole("link", { name: "Download original" }),
+  ).not.toBeInTheDocument();
+  expect(photoCalls).toBe(2);
+});
+
 test("classifies a video element delivery error and hides playback controls", async () => {
   let deliveryFailed = false;
   vi.stubGlobal(

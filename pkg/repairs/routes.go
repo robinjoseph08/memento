@@ -97,6 +97,9 @@ func (h *Handler) ConfirmMedia(c echo.Context) error {
 		return err
 	}
 	response, err := h.service.ConfirmMedia(c.Request().Context(), actor, id, request.ReviewToken)
+	if errors.Is(err, ErrConflict) {
+		return errcodes.Conflict("Repair confirmation could not be completed. Refresh repairs and try again.")
+	}
 	return mutationResult(c, response, err)
 }
 

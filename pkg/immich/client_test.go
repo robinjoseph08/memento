@@ -338,6 +338,21 @@ func TestAssetReturnsCompleteNormalizedRepairEvidence(t *testing.T) {
 	assert.Equal(t, "/private/family.jpg", asset.OriginalPath)
 }
 
+func TestAssetRejectsMismatchedValidResponseID(t *testing.T) {
+	requestedID := uuid.New()
+	responseID := uuid.New()
+	server := contractServer(t, func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/api/assets/"+requestedID.String(), r.URL.Path)
+		_, _ = w.Write([]byte(`{"id":"` + responseID.String() + `","type":"IMAGE","width":1600,"height":1200,"localDateTime":"2026-01-01T00:00:00Z","fileCreatedAt":"2025-12-31T23:00:00Z","checksum":"ERERERERERERERERERERERERERE=","originalFileName":"family.jpg","originalPath":"/private/family.jpg"}`))
+	})
+	defer server.Close()
+	client, err := New(clientConfig(server.URL), server.Client())
+	require.NoError(t, err)
+
+	_, err = client.Asset(context.Background(), requestedID)
+	require.EqualError(t, err, "Immich returned an invalid response")
+}
+
 func TestAssetExistsDistinguishesPresentAndDeletedAssets(t *testing.T) {
 	assetID := uuid.New()
 	server := contractServer(t, func(w http.ResponseWriter, r *http.Request) {

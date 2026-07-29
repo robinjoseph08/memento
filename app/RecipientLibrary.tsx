@@ -220,7 +220,8 @@ function EventCards({
   );
 }
 
-type RefreshedMediaAccess = "available" | "backing-unavailable" | "withdrawn";
+type RefreshedMediaAccess =
+  "available" | "backing-unavailable" | "withdrawn" | "access-unconfirmed";
 type MediaAccess = RefreshedMediaAccess | "delivery-unavailable";
 
 function MediaViewer({
@@ -281,11 +282,11 @@ function MediaViewer({
   const unavailableMedia = mediaAccess === "withdrawn";
 
   async function refreshMediaAccess(retryRepresentation = false) {
-    let refreshedAccess: RefreshedMediaAccess = "withdrawn";
+    let refreshedAccess: RefreshedMediaAccess = "access-unconfirmed";
     try {
       refreshedAccess = await refreshListingAccess();
     } catch {
-      // A failed listing refresh cannot prove retained access.
+      // Keep access unconfirmed when the listing itself cannot be refreshed.
     }
     if (
       retryRepresentation &&
@@ -511,7 +512,9 @@ function MediaViewer({
           <span className="media-unavailable">
             {mediaAccess === "delivery-unavailable"
               ? "Media unavailable"
-              : "Source unavailable"}
+              : mediaAccess === "access-unconfirmed"
+                ? "Access unconfirmed"
+                : "Source unavailable"}
           </span>
         ) : media.media_type === "video" ? (
           <video
@@ -555,7 +558,9 @@ function MediaViewer({
                 ? "This Media's backing is temporarily unavailable. Its Library listing and interaction history remain available."
                 : mediaAccess === "delivery-unavailable"
                   ? "This Media could not be loaded. Its Library listing and interaction history remain available."
-                  : "This content is no longer available."}
+                  : mediaAccess === "access-unconfirmed"
+                    ? "This Media could not be loaded because Library access could not be refreshed. Try again from the Library."
+                    : "This content is no longer available."}
             </p>
             <button
               onClick={() => {
@@ -1058,7 +1063,7 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
   async function refreshListingAccess(): Promise<RefreshedMediaAccess> {
     if (openedEvent) {
       const refreshed = await event.refetch();
-      if (refreshed.error) return "withdrawn";
+      if (refreshed.error) return "access-unconfirmed";
       const current = refreshed.data?.pages
         .flatMap((page) => page.media)
         .find((item) => item.id === openedMedia?.id);
@@ -1066,18 +1071,22 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
     }
     if (destination === "photos" || destination === "favorites") {
       const refreshed = await photos.refetch();
-      if (refreshed.error) return "withdrawn";
+      if (refreshed.error) return "access-unconfirmed";
       const current = refreshed.data?.pages
         .flatMap((page) => page.media)
         .find((item) => item.id === openedMedia?.id);
       return classifyRefreshedListing(current);
     }
     if (destination === "search" && search.variables) {
-      const refreshed = await search.mutateAsync(search.variables);
-      const current = refreshed.photos.find(
-        (item) => item.id === openedMedia?.id,
-      );
-      return classifyRefreshedListing(current);
+      try {
+        const refreshed = await search.mutateAsync(search.variables);
+        const current = refreshed.photos.find(
+          (item) => item.id === openedMedia?.id,
+        );
+        return classifyRefreshedListing(current);
+      } catch {
+        return "access-unconfirmed";
+      }
     }
     return "withdrawn";
   }

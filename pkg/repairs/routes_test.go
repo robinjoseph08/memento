@@ -153,7 +153,9 @@ func TestMediaConfirmHTTPRouteBindsReviewTokenAndMapsConflicts(t *testing.T) {
 		response := repairJSONRequest(repairHTTPWithService(service, &routeAuthorizer{}), http.MethodPost,
 			path, "session", "csrf", `{}`)
 		assert.Equal(t, http.StatusConflict, response.Code)
-		assert.Contains(t, response.Body.String(), `"code":"conflict"`)
+		assert.Contains(t, response.Body.String(), "Repair confirmation could not be completed")
+		assert.NotContains(t, response.Body.String(), "evidence changed")
+		assert.NotContains(t, response.Body.String(), "another confirmed link")
 	})
 
 	t.Run("domain conflict", func(t *testing.T) {
@@ -163,7 +165,9 @@ func TestMediaConfirmHTTPRouteBindsReviewTokenAndMapsConflicts(t *testing.T) {
 		response := repairJSONRequest(repairHTTPWithService(service, &routeAuthorizer{}), http.MethodPost,
 			path, "session", "csrf", `{"review_token":"`+reviewToken+`"}`)
 		assert.Equal(t, http.StatusConflict, response.Code)
-		assert.Contains(t, response.Body.String(), "Repair evidence changed")
+		assert.Contains(t, response.Body.String(), "Repair confirmation could not be completed")
+		assert.NotContains(t, response.Body.String(), "evidence changed")
+		assert.NotContains(t, response.Body.String(), "another confirmed link")
 		assert.Equal(t, "no-store", response.Header().Get(echo.HeaderCacheControl))
 	})
 }
