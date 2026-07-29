@@ -29,6 +29,7 @@ func init() {
 						window_started_at timestamptz NOT NULL,
 						closes_at timestamptz NOT NULL,
 						status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'sent', 'suppressed', 'failed')),
+						truncated boolean NOT NULL DEFAULT false,
 						attempts integer NOT NULL DEFAULT 0 CHECK (attempts >= 0),
 						last_safe_error text,
 						sent_at timestamptz,
@@ -39,6 +40,12 @@ func init() {
 						CHECK ((status = 'sent') = (sent_at IS NOT NULL))
 					)`,
 					`CREATE INDEX notification_batches_due_idx ON notification_batches (closes_at, id) WHERE status = 'pending'`,
+					`ALTER TABLE delivery_problems ALTER COLUMN email_delivery_id DROP NOT NULL`,
+					`ALTER TABLE delivery_problems ADD COLUMN notification_batch_id bigint UNIQUE REFERENCES notification_batches(id) ON DELETE RESTRICT`,
+					`ALTER TABLE delivery_problems ADD CONSTRAINT delivery_problems_source_check CHECK (
+						(email_delivery_id IS NOT NULL AND notification_batch_id IS NULL) OR
+						(email_delivery_id IS NULL AND notification_batch_id IS NOT NULL)
+					)`,
 					`CREATE TABLE notification_batch_items (
 						id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
 						batch_id bigint NOT NULL REFERENCES notification_batches(id) ON DELETE RESTRICT,
@@ -74,7 +81,11 @@ func init() {
 				for _, statement := range []string{
 					`DELETE FROM jobs WHERE kind = 'send_immediate_email'`,
 					`DELETE FROM outbox_events WHERE kind = 'send_immediate_email'`,
+					`DELETE FROM delivery_problems WHERE notification_batch_id IS NOT NULL`,
 					`DROP TABLE IF EXISTS notification_batch_items`,
+					`ALTER TABLE delivery_problems DROP CONSTRAINT delivery_problems_source_check`,
+					`ALTER TABLE delivery_problems DROP COLUMN notification_batch_id`,
+					`ALTER TABLE delivery_problems ALTER COLUMN email_delivery_id SET NOT NULL`,
 					`DROP TABLE IF EXISTS notification_batches`,
 					`DROP TABLE IF EXISTS publication_notification_media`,
 				} {

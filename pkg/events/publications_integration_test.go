@@ -22,6 +22,11 @@ import (
 	"github.com/uptrace/bun"
 )
 
+type publicationNotificationCandidate struct {
+	AccessID uuid.UUID `bun:"access_id"`
+	MediaID  uuid.UUID `bun:"media_id"`
+}
+
 type publicationFixture struct {
 	db      *bun.DB
 	service *Service
@@ -148,6 +153,15 @@ func (fixture publicationFixture) actorFor(name string) setup.SessionActor {
 	return setup.SessionActor{PersonID: fixture.people[name], AccessID: fixture.access[name], SessionID: uuid.New()}
 }
 
+func publicationNotificationCandidates(t *testing.T, fixture publicationFixture, publicationID string) []publicationNotificationCandidate {
+	t.Helper()
+	var candidates []publicationNotificationCandidate
+	require.NoError(t, fixture.db.NewRaw(`SELECT recipient_access_generation_id AS access_id, media_item_id AS media_id
+		FROM publication_notification_media WHERE publication_id = ?
+		ORDER BY recipient_access_generation_id, media_item_id`, publicationID).Scan(context.Background(), &candidates))
+	return candidates
+}
+
 func assertRecipientPublicationSurfacesMatch(t *testing.T, fixture publicationFixture, publicationID string) {
 	t.Helper()
 	var mismatches int
@@ -214,6 +228,10 @@ func TestPublicationBuildsImmutableHistoryAndFilteredCurrentProjections(t *testi
 	assert.Equal(t, int64(1), publication.Revision)
 	assert.True(t, publication.NotifyRecipients, "notifications default on")
 	assertRecipientPublicationSurfacesMatch(t, fixture, publication.ID)
+	assert.ElementsMatch(t, []publicationNotificationCandidate{
+		{AccessID: fixture.access["shared"], MediaID: fixture.media[0]},
+		{AccessID: fixture.access["hidden"], MediaID: fixture.media[1]},
+	}, publicationNotificationCandidates(t, fixture, publication.ID), "initial Publication materializes only exact completed-Recipient candidates")
 	require.NoError(t, fixture.service.HandlePublicationJob(ctx, worker.Job{Payload: []byte(`{"event_id":"` + fixture.event.String() + `","publication_id":"` + publication.ID + `"}`)}))
 	unknownJob := worker.Job{Payload: []byte(`{"event_id":"` + fixture.event.String() + `","publication_id":"` + uuid.NewString() + `"}`)}
 	require.EqualError(t, fixture.service.HandlePublicationJob(ctx, unknownJob), "unknown_publication")
@@ -314,6 +332,9 @@ func TestPublicationBuildsImmutableHistoryAndFilteredCurrentProjections(t *testi
 	require.NoError(t, err)
 	assert.Equal(t, int64(2), second.Revision)
 	assertRecipientPublicationSurfacesMatch(t, fixture, second.ID)
+	assert.Equal(t, []publicationNotificationCandidate{
+		{AccessID: fixture.access["hidden"], MediaID: fixture.media[0]},
+	}, publicationNotificationCandidates(t, fixture, second.ID), "mixed revision excludes retained Media and materializes the exact newly accessible candidate per Recipient")
 	var historicalTitles []string
 	require.NoError(t, fixture.db.NewRaw(`SELECT title FROM published_event_revisions ORDER BY created_at, publication_id`).Scan(ctx, &historicalTitles))
 	assert.ElementsMatch(t, []string{"Family weekend", "Corrected weekend"}, historicalTitles)

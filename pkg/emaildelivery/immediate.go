@@ -28,11 +28,13 @@ import (
 )
 
 const (
-	ImmediateJobKind     = "send_immediate_email"
-	coalescingWindow     = 15 * time.Minute
-	maxPreviewBytes      = 20 << 20
-	maxPreviewPixels     = 480
-	maxPreviewSourceArea = 25_000_000
+	ImmediateJobKind        = "send_immediate_email"
+	coalescingWindow        = 15 * time.Minute
+	maxPreviewBytes         = 20 << 20
+	maxPreviewPixels        = 480
+	maxPreviewSourceArea    = 25_000_000
+	maxImmediateBatchItems  = 100
+	immediateBodyLineBudget = 30 << 10
 
 	publicationBatchItem batchItemKind = "publication"
 	commentBatchItem     batchItemKind = "comment"
@@ -241,6 +243,15 @@ func (s *Service) queueImmediateItem(ctx context.Context, tx bun.Tx, accessID uu
 			return err
 		}
 	}
+	var itemCount int
+	if err := tx.NewRaw(`SELECT count(*) FROM notification_batch_items WHERE batch_id = ?`, batchID).Scan(ctx, &itemCount); err != nil {
+		return err
+	}
+	if itemCount >= maxImmediateBatchItems {
+		_, err := tx.NewRaw(`UPDATE notification_batches
+			SET truncated = true, updated_at = clock_timestamp() WHERE id = ?`, batchID).Exec(ctx)
+		return err
+	}
 	_, err = tx.NewRaw(`INSERT INTO notification_batch_items
 		(batch_id, recipient_access_generation_id, kind, `+column+`, activity_created_at)
 		VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`, batchID, accessID, kind, sourceID, activityAt).Exec(ctx)
@@ -321,10 +332,12 @@ func (s *Service) HandleImmediate(ctx context.Context, job worker.Job) error {
 		if s.cfg.RetryWindow > 0 && time.Since(closesAt) >= s.cfg.RetryWindow {
 			terminalDiagnostic = "retry_window_exhausted"
 			terminalFailure = true
-			_, err := tx.NewRaw(`UPDATE notification_batches
+			if _, err := tx.NewRaw(`UPDATE notification_batches
 				SET status = 'failed', last_safe_error = ?, updated_at = clock_timestamp()
-				WHERE id = ? AND status = 'pending'`, terminalDiagnostic, payload.BatchID).Exec(ctx)
-			return err
+				WHERE id = ? AND status = 'pending'`, terminalDiagnostic, payload.BatchID).Exec(ctx); err != nil {
+				return err
+			}
+			return recordImmediateProblemIn(ctx, tx, payload.BatchID, terminalDiagnostic)
 		}
 		sendErr = s.sender.Send(ctx, smtp.Message{
 			ID: publicID.String(), To: current.Recipient, Subject: "New activity in Memento",
@@ -364,10 +377,15 @@ func (s *Service) HandleImmediate(ctx context.Context, job worker.Job) error {
 				}
 			}
 		}
-		_, err = tx.NewRaw(`UPDATE notification_batches
+		if _, err = tx.NewRaw(`UPDATE notification_batches
 			SET status = ?, attempts = attempts + 1, last_safe_error = ?, updated_at = clock_timestamp()
-			WHERE id = ? AND status = 'pending'`, status, terminalDiagnostic, payload.BatchID).Exec(ctx)
-		return err
+			WHERE id = ? AND status = 'pending'`, status, terminalDiagnostic, payload.BatchID).Exec(ctx); err != nil {
+			return err
+		}
+		if terminalFailure {
+			return recordImmediateProblemIn(ctx, tx, payload.BatchID, terminalDiagnostic)
+		}
+		return nil
 	})
 	if err != nil {
 		return err
@@ -379,6 +397,12 @@ func (s *Service) HandleImmediate(ctx context.Context, job worker.Job) error {
 		return nil
 	}
 	return worker.RetryAfter(retryAfter, terminalDiagnostic)
+}
+
+func recordImmediateProblemIn(ctx context.Context, tx bun.Tx, batchID int64, diagnostic string) error {
+	_, err := tx.NewRaw(`INSERT INTO delivery_problems (notification_batch_id, diagnostic)
+		VALUES (?, ?) ON CONFLICT (notification_batch_id) DO NOTHING`, batchID, diagnostic).Exec(ctx)
+	return err
 }
 
 func (s *Service) assembleImmediate(ctx context.Context, batchID int64, lock bool) (assembledImmediate, error) {
@@ -394,12 +418,13 @@ func (s *Service) assembleImmediate(ctx context.Context, batchID int64, lock boo
 func (s *Service) assembleImmediateIn(ctx context.Context, db bun.IDB, batchID int64, lock bool) (assembledImmediate, error) {
 	var accessID uuid.UUID
 	var recipient string
+	var truncated bool
 	lockClause := ""
 	if lock {
 		lockClause = " FOR SHARE OF access, person, preference, email"
 	}
 	err := db.NewRaw(`
-		SELECT access.id, email.email
+		SELECT access.id, email.email, batch.truncated
 		FROM notification_batches AS batch
 		JOIN recipient_access_generations AS access
 		  ON access.id = batch.recipient_access_generation_id
@@ -411,7 +436,7 @@ func (s *Service) assembleImmediateIn(ctx context.Context, db bun.IDB, batchID i
 		 AND preference.email_preference = 'immediate'
 		JOIN recipient_emails AS email
 		  ON email.recipient_access_generation_id = access.id AND email.is_current
-		WHERE batch.id = ? AND batch.status = 'pending'`+lockClause, batchID).Scan(ctx, &accessID, &recipient)
+		WHERE batch.id = ? AND batch.status = 'pending'`+lockClause, batchID).Scan(ctx, &accessID, &recipient, &truncated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return assembledImmediate{Empty: true}, nil
 	}
@@ -424,10 +449,16 @@ func (s *Service) assembleImmediateIn(ctx context.Context, db bun.IDB, batchID i
 	}
 	var items []batchItem
 	if err := db.NewRaw(`SELECT id, kind, publication_id, comment_id, activity_created_at
-		FROM notification_batch_items WHERE batch_id = ? ORDER BY activity_created_at, id`, batchID).Scan(ctx, &items); err != nil {
+		FROM notification_batch_items WHERE batch_id = ? ORDER BY activity_created_at, id
+		LIMIT ?`, batchID, maxImmediateBatchItems+1).Scan(ctx, &items); err != nil {
 		return assembledImmediate{}, err
 	}
-	lines := make([]string, 0, len(items))
+	if len(items) > maxImmediateBatchItems {
+		items = items[:maxImmediateBatchItems]
+		truncated = true
+	}
+	lines := make([]string, 0, len(items)+1)
+	lineBytes := 0
 	result := assembledImmediate{Recipient: recipient, PreviewAllowed: previewAllowed}
 	for _, item := range items {
 		spec, err := item.Kind.spec()
@@ -443,7 +474,12 @@ func (s *Service) assembleImmediateIn(ctx context.Context, db bun.IDB, batchID i
 			return assembledImmediate{}, err
 		}
 		if survives {
+			if lineBytes+len(line)+1 > immediateBodyLineBudget {
+				truncated = true
+				break
+			}
 			lines = append(lines, line)
+			lineBytes += len(line) + 1
 			if result.PreviewMediaID == uuid.Nil {
 				result.PreviewMediaID, result.PreviewAssetID = mediaID, assetID
 			}
@@ -451,6 +487,9 @@ func (s *Service) assembleImmediateIn(ctx context.Context, db bun.IDB, batchID i
 	}
 	if len(lines) == 0 {
 		return assembledImmediate{Empty: true}, nil
+	}
+	if truncated {
+		lines = append(lines, "Additional activity is available in Memento.")
 	}
 	result.Body = "New activity is ready in Memento:\n\n" + strings.Join(lines, "\n") +
 		"\n\nCounts include only items you can currently access. Sign in to Memento to view them."
@@ -474,21 +513,26 @@ func loadPreviewAcknowledgment(ctx context.Context, db bun.IDB, accessID uuid.UU
 func lockImmediateEvents(ctx context.Context, db bun.IDB, batchID int64) error {
 	var ids []uuid.UUID
 	if err := db.NewRaw(`
+		WITH selected_items AS MATERIALIZED (
+			SELECT kind, publication_id, comment_id
+			FROM notification_batch_items WHERE batch_id = ?
+			ORDER BY activity_created_at, id LIMIT ?
+		)
 		SELECT event.id
 		FROM events AS event
 		WHERE event.id IN (
 			SELECT publication.event_id
-			FROM notification_batch_items AS item
+			FROM selected_items AS item
 			JOIN publications AS publication ON publication.id = item.publication_id
-			WHERE item.batch_id = ? AND item.kind = 'publication'
+			WHERE item.kind = 'publication'
 			UNION
 			SELECT placement.event_id
-			FROM notification_batch_items AS item
+			FROM selected_items AS item
 			JOIN comments AS comment ON comment.id = item.comment_id
 			JOIN current_published_placements AS placement ON placement.media_item_id = comment.media_item_id
-			WHERE item.batch_id = ? AND item.kind = 'comment'
+			WHERE item.kind = 'comment'
 		) ORDER BY event.id FOR SHARE
-	`, batchID, batchID).Scan(ctx, &ids); err != nil {
+	`, batchID, maxImmediateBatchItems).Scan(ctx, &ids); err != nil {
 		return err
 	}
 	return nil
@@ -497,22 +541,27 @@ func lockImmediateEvents(ctx context.Context, db bun.IDB, batchID int64) error {
 func lockImmediateMedia(ctx context.Context, db bun.IDB, batchID int64) error {
 	var ids []uuid.UUID
 	return db.NewRaw(`
+		WITH selected_items AS MATERIALIZED (
+			SELECT batch_id, kind, publication_id, comment_id
+			FROM notification_batch_items WHERE batch_id = ?
+			ORDER BY activity_created_at, id LIMIT ?
+		)
 		SELECT media.id FROM media_items AS media
 		WHERE media.id IN (
 			SELECT candidate.media_item_id
-			FROM notification_batch_items AS item
+			FROM selected_items AS item
 			JOIN notification_batches AS batch ON batch.id = item.batch_id
 			JOIN publication_notification_media AS candidate
 			  ON candidate.publication_id = item.publication_id
 			 AND candidate.recipient_access_generation_id = batch.recipient_access_generation_id
-			WHERE item.batch_id = ? AND item.kind = 'publication'
+			WHERE item.kind = 'publication'
 			UNION
 			SELECT comment.media_item_id
-			FROM notification_batch_items AS item
+			FROM selected_items AS item
 			JOIN comments AS comment ON comment.id = item.comment_id
-			WHERE item.batch_id = ? AND item.kind = 'comment'
+			WHERE item.kind = 'comment'
 		) ORDER BY media.id FOR SHARE
-	`, batchID, batchID).Scan(ctx, &ids)
+	`, batchID, maxImmediateBatchItems).Scan(ctx, &ids)
 }
 
 func assemblePublication(ctx context.Context, db bun.IDB, accessID, publicationID uuid.UUID) (string, uuid.UUID, uuid.UUID, bool, error) {

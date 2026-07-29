@@ -12,6 +12,7 @@ import (
 	"image/jpeg"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -328,6 +329,29 @@ func TestImmediateEmailUsesOneRecipientWindowWithExactBoundary(t *testing.T) {
 	assert.Equal(t, 2, outbox, "each durable window has exactly one delayed delivery event")
 }
 
+func TestImmediateEmailBoundsBatchWorkAndMessageSize(t *testing.T) {
+	fixture := newImmediateFixture(t)
+	for index := range maxImmediateBatchItems + 1 {
+		commentID := fixture.addComment(t, fixture.base.Add(time.Duration(index)*time.Microsecond), fmt.Sprintf("Comment %d", index))
+		fixture.queueComment(t, commentID)
+	}
+
+	var batchID int64
+	var itemCount int
+	var truncated bool
+	require.NoError(t, fixture.db.NewRaw(`SELECT id, truncated FROM notification_batches`).Scan(context.Background(), &batchID, &truncated))
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM notification_batch_items WHERE batch_id = ?`, batchID).Scan(context.Background(), &itemCount))
+	assert.Equal(t, maxImmediateBatchItems, itemCount)
+	assert.True(t, truncated, "overflow is durably summarized instead of growing delivery work")
+
+	require.NoError(t, fixture.service.HandleImmediate(context.Background(), fixture.leasedBatchJob(t, batchID)))
+	messages := fixture.sender.sent()
+	require.Len(t, messages, 1)
+	assert.Equal(t, maxImmediateBatchItems, strings.Count(messages[0].Body, "Blair commented on an item you can access."))
+	assert.Contains(t, messages[0].Body, "Additional activity is available in Memento.")
+	assert.LessOrEqual(t, len(messages[0].Body), immediateBodyLineBudget+2048)
+}
+
 func TestImmediateEmailReanchorsOverlappingOutOfOrderActivityAtTheExactBoundary(t *testing.T) {
 	fixture := newImmediateFixture(t)
 	first := fixture.addComment(t, fixture.base.Add(10*time.Minute), "First observed")
@@ -572,6 +596,17 @@ func TestImmediateEmailReauthorizesAndHandlesTerminalFailures(t *testing.T) {
 			WHERE recipient_access_generation_id = ?`, fixture.access["alex"]).Scan(context.Background(), &preference))
 		assert.Equal(t, "failed", status)
 		assert.Equal(t, "none", preference)
+
+		var problem struct {
+			Diagnostic      string
+			EmailDeliveryID *int64 `bun:"email_delivery_id"`
+			ResolvedAt      *time.Time
+		}
+		require.NoError(t, fixture.db.NewRaw(`SELECT diagnostic, email_delivery_id, resolved_at
+			FROM delivery_problems WHERE notification_batch_id = ?`, batchID).Scan(context.Background(), &problem))
+		assert.Equal(t, "recipient_rejected", problem.Diagnostic)
+		assert.Nil(t, problem.EmailDeliveryID)
+		assert.Nil(t, problem.ResolvedAt, "the Curator work queue sees an unresolved optional-email delivery problem")
 	})
 }
 
