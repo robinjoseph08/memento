@@ -10,6 +10,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/pem"
+	"fmt"
 	"math/big"
 	"net"
 	"net/textproto"
@@ -410,6 +411,26 @@ func TestEmbeddedImageUsesPrivateMultipartCID(t *testing.T) {
 	assert.NotContains(t, formatted, "http://")
 	assert.NotContains(t, formatted, "https://")
 	assert.NotContains(t, formatted, "\r\nBcc:", "Recipient-derived headers cannot add another SMTP header")
+}
+
+func TestWeeklyEmbeddedImagesUseDistinctPrivateCIDs(t *testing.T) {
+	formatted := formatMessage("Memento <memento@example.com>", Message{
+		ID: "weekly-batch", To: "recipient@example.com", Subject: "Weekly digest", Body: "Authorized activity only",
+		EmbeddedImages: []EmbeddedImage{
+			{ContentID: "memento-preview-1", ContentType: "image/jpeg", Data: []byte("first-private-preview")},
+			{ContentID: "memento-preview-2", ContentType: "image/jpeg", Data: []byte("second-private-preview")},
+			{ContentID: "memento-preview-3", ContentType: "image/jpeg", Data: []byte("third-private-preview")},
+		},
+	})
+
+	for index, contents := range []string{"first-private-preview", "second-private-preview", "third-private-preview"} {
+		contentID := fmt.Sprintf("memento-preview-%d", index+1)
+		assert.Contains(t, formatted, `src="cid:`+contentID+`"`)
+		assert.Contains(t, formatted, "Content-ID: <"+contentID+">")
+		assert.Contains(t, formatted, base64.StdEncoding.EncodeToString([]byte(contents)))
+	}
+	assert.NotContains(t, formatted, "http://")
+	assert.NotContains(t, formatted, "https://")
 }
 
 func testCertificate(t *testing.T) (tls.Certificate, *x509.Certificate) {

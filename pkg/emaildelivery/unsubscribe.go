@@ -85,8 +85,11 @@ func (s *Service) PreferenceToken(ctx context.Context, encoded string) (Preferen
 	}
 	var preference Preference
 	err = s.db.NewRaw(`SELECT preference.email_preference, preference.weekly_day,
-		       preference.weekly_local_time, preference.weekly_timezone
+		       preference.weekly_local_time,
+		       CASE WHEN preference.weekly_schedule_overridden THEN preference.weekly_timezone
+		            ELSE settings.weekly_timezone END
 		FROM notification_preference_tokens AS token
+		JOIN system_settings AS settings ON settings.id = 1
 		JOIN recipient_access_generations AS access
 		  ON access.id = token.recipient_access_generation_id AND access.is_current
 		JOIN notification_preferences AS preference

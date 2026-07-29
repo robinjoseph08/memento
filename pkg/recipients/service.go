@@ -166,6 +166,18 @@ type EmailPreferenceResponse struct {
 	WeeklyTimezone  string `json:"weekly_timezone"`
 }
 
+// PlatformEmailDefaultsRequest changes the household default weekly timezone.
+type PlatformEmailDefaultsRequest struct {
+	WeeklyTimezone string `json:"weekly_timezone" validate:"required,max=255"`
+}
+
+// PlatformEmailDefaultsResponse reports the household default weekly schedule.
+type PlatformEmailDefaultsResponse struct {
+	WeeklyDay       string `json:"weekly_day"`
+	WeeklyLocalTime string `json:"weekly_local_time"`
+	WeeklyTimezone  string `json:"weekly_timezone"`
+}
+
 // OnboardingCompleteResponse confirms completion and the rotated CSRF token.
 type OnboardingCompleteResponse struct {
 	Status    string `json:"status"`
@@ -688,6 +700,24 @@ func (s *Service) UpdateEmailPreferences(ctx context.Context, actor setup.Sessio
 		WeeklyLocalTime: preference.WeeklyLocalTime,
 		WeeklyTimezone:  preference.WeeklyTimezone,
 	}, nil
+}
+
+// PlatformEmailDefaults returns the Curator-managed default weekly schedule.
+func (s *Service) PlatformEmailDefaults(ctx context.Context) (PlatformEmailDefaultsResponse, error) {
+	timezone, err := s.delivery.PlatformWeeklyTimezone(ctx)
+	if err != nil {
+		return PlatformEmailDefaultsResponse{}, err
+	}
+	return PlatformEmailDefaultsResponse{WeeklyDay: "sunday", WeeklyLocalTime: "09:00", WeeklyTimezone: timezone}, nil
+}
+
+// UpdatePlatformEmailDefaults changes the default timezone for Recipients without overrides.
+func (s *Service) UpdatePlatformEmailDefaults(ctx context.Context, request PlatformEmailDefaultsRequest) (PlatformEmailDefaultsResponse, error) {
+	timezone, err := s.delivery.UpdatePlatformWeeklyTimezone(ctx, request.WeeklyTimezone)
+	if err != nil {
+		return PlatformEmailDefaultsResponse{}, err
+	}
+	return PlatformEmailDefaultsResponse{WeeklyDay: "sunday", WeeklyLocalTime: "09:00", WeeklyTimezone: timezone}, nil
 }
 
 // Onboarding returns the persisted draft for a verified Onboarding Session.

@@ -15,14 +15,16 @@ import (
 )
 
 const (
-	curatorReadPolicy        = "policy:curator"
-	curatorMutationPolicy    = "policy:curator_csrf"
-	invitationInspectPolicy  = "policy:token_inspect"
-	invitationAcceptPolicy   = "policy:token_exchange"
-	onboardingReadPolicy     = "policy:onboarding_session"
-	onboardingMutationPolicy = "policy:onboarding_session_csrf"
-	preferenceReadPolicy     = "policy:recipient_self"
-	preferenceMutationPolicy = "policy:recipient_self_csrf"
+	curatorReadPolicy                = "policy:curator"
+	curatorMutationPolicy            = "policy:curator_csrf"
+	invitationInspectPolicy          = "policy:token_inspect"
+	invitationAcceptPolicy           = "policy:token_exchange"
+	onboardingReadPolicy             = "policy:onboarding_session"
+	onboardingMutationPolicy         = "policy:onboarding_session_csrf"
+	preferenceReadPolicy             = "policy:recipient_self"
+	preferenceMutationPolicy         = "policy:recipient_self_csrf"
+	platformPreferenceReadPolicy     = "policy:curator"
+	platformPreferenceMutationPolicy = "policy:curator_csrf"
 )
 
 type Handler struct {
@@ -271,6 +273,35 @@ func (h *Handler) UpdateEmailPreferences(c echo.Context) error {
 	return c.JSON(http.StatusOK, response)
 }
 
+func (h *Handler) PlatformEmailDefaults(c echo.Context) error {
+	if _, err := h.authorize(c, false); err != nil {
+		return err
+	}
+	response, err := h.service.PlatformEmailDefaults(c.Request().Context())
+	if err != nil {
+		return err
+	}
+	return c.JSON(http.StatusOK, response)
+}
+
+func (h *Handler) UpdatePlatformEmailDefaults(c echo.Context) error {
+	if _, err := h.authorize(c, true); err != nil {
+		return err
+	}
+	var request PlatformEmailDefaultsRequest
+	if err := bindJSON(c, &request); err != nil {
+		return err
+	}
+	response, err := h.service.UpdatePlatformEmailDefaults(c.Request().Context(), request)
+	if errors.Is(err, emaildelivery.ErrNotificationPreference) {
+		return errcodes.ValidationError("Choose a valid IANA timezone.")
+	}
+	if err != nil {
+		return err
+	}
+	return c.JSON(http.StatusOK, response)
+}
+
 func (h *Handler) authorizeOnboarding(c echo.Context, mutation bool) (setup.SessionActor, error) {
 	cookie, err := c.Cookie(setup.CookieName)
 	if err != nil || cookie.Value == "" {
@@ -435,6 +466,12 @@ func RegisterRoutes(e *echo.Echo, handler *Handler) {
 	inspect.Name = invitationInspectPolicy
 	accept := tokens.POST("/accept", handler.Accept)
 	accept.Name = invitationAcceptPolicy
+
+	platformPreferences := e.Group("/api/curator/email-defaults", noStore)
+	platformPreferenceRead := platformPreferences.GET("", handler.PlatformEmailDefaults)
+	platformPreferenceRead.Name = platformPreferenceReadPolicy
+	platformPreferenceUpdate := platformPreferences.PUT("", handler.UpdatePlatformEmailDefaults)
+	platformPreferenceUpdate.Name = platformPreferenceMutationPolicy
 
 	preferences := e.Group("/api/me/email-preferences", noStore)
 	preferenceRead := preferences.GET("", handler.EmailPreferences)

@@ -94,17 +94,18 @@ type delivery struct {
 
 // Service queues and delivers required messages and authorized optional batches.
 type Service struct {
-	db                  *bun.DB
-	cfg                 config.SMTPConfig
-	sender              smtp.Sender
-	bodyAEAD            cipher.AEAD
-	previewSource       previewSource
-	publicURL           string
-	beforeImmediateSend func()
+	db                 *bun.DB
+	cfg                config.SMTPConfig
+	sender             smtp.Sender
+	bodyAEAD           cipher.AEAD
+	previewSource      previewSource
+	publicURL          string
+	now                func() time.Time
+	beforeOptionalSend func()
 }
 
 func New(db *bun.DB, cfg config.SMTPConfig, sender smtp.Sender, securitySecret ...string) *Service {
-	service := &Service{db: db, cfg: cfg, sender: sender}
+	service := &Service{db: db, cfg: cfg, sender: sender, now: time.Now}
 	if len(securitySecret) != 0 && len(securitySecret[0]) >= 32 {
 		key := sha256.Sum256(append([]byte("memento:required-email:"), []byte(securitySecret[0])...))
 		block, err := aes.NewCipher(key[:])

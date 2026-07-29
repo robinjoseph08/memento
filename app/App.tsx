@@ -47,6 +47,8 @@ import type {
   OnboardingCompleteResponse,
   OnboardingRequest,
   OnboardingResponse,
+  PlatformEmailDefaultsRequest,
+  PlatformEmailDefaultsResponse,
 } from "./types/generated/recipients";
 import type {
   EmailChangeCompleteRequest,
@@ -1059,6 +1061,87 @@ function EmailPreferences({ session }: { session: SessionResponse }) {
   );
 }
 
+function PlatformEmailDefaults({ session }: { session: SessionResponse }) {
+  const [requested, setRequested] = useState(false);
+  const [timezone, setTimezone] = useState<string>();
+  const defaults = useQuery({
+    queryKey: ["platform-email-defaults"],
+    queryFn: () =>
+      apiJSON<PlatformEmailDefaultsResponse>("/api/curator/email-defaults"),
+    enabled: requested,
+    retry: false,
+  });
+  const update = useMutation({
+    mutationFn: (request: PlatformEmailDefaultsRequest) =>
+      apiJSON<PlatformEmailDefaultsResponse>("/api/curator/email-defaults", {
+        method: "PUT",
+        headers: { "X-Memento-CSRF": session.csrf_token },
+        body: JSON.stringify(request),
+      }),
+    onSuccess: (response) => setTimezone(response.weekly_timezone),
+  });
+  if (!requested) {
+    return (
+      <section
+        aria-labelledby="platform-email-defaults-title"
+        className="shell-card"
+      >
+        <h2 id="platform-email-defaults-title">Household weekly default</h2>
+        <p>
+          Recipients without a personal override use Sunday at 9:00 AM in this
+          timezone.
+        </p>
+        <button onClick={() => setRequested(true)} type="button">
+          Configure household timezone
+        </button>
+      </section>
+    );
+  }
+  if (defaults.isPending) {
+    return <p aria-live="polite">Loading the household email default…</p>;
+  }
+  if (defaults.isError) {
+    return <ErrorMessage error={defaults.error} />;
+  }
+  const currentTimezone = timezone ?? defaults.data.weekly_timezone;
+  return (
+    <section
+      aria-labelledby="platform-email-defaults-title"
+      className="shell-card"
+    >
+      <h2 id="platform-email-defaults-title">Household weekly default</h2>
+      <form
+        className="setup-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          update.mutate({ weekly_timezone: currentTimezone });
+        }}
+      >
+        <p>
+          Sunday at 9:00 AM for Recipients who have not chosen a personal
+          schedule.
+        </p>
+        <label>
+          Default timezone
+          <input
+            onChange={(event) => setTimezone(event.target.value)}
+            placeholder="America/New_York"
+            required
+            value={currentTimezone}
+          />
+        </label>
+        <ErrorMessage error={update.error} />
+        {update.isSuccess ? (
+          <p aria-live="polite">The household weekly default was saved.</p>
+        ) : null}
+        <button disabled={update.isPending} type="submit">
+          {update.isPending ? "Saving…" : "Save household default"}
+        </button>
+      </form>
+    </section>
+  );
+}
+
 function RecipientOnboarding({
   session,
   onComplete,
@@ -1748,6 +1831,7 @@ function ReadyCard({
         <PublicSessionBanner session={session} />
         <SessionManager onSignedOut={onSignOut} session={session} />
         <EmailPreferences session={session} />
+        <PlatformEmailDefaults session={session} />
         <PeopleManager session={session} />
         <InvitationSuggestions session={session} />
         <FamilyManager session={session} />

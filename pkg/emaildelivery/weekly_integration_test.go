@@ -12,10 +12,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/robinjoseph08/memento/pkg/smtp"
 	"github.com/robinjoseph08/memento/pkg/worker"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/uptrace/bun"
 )
 
 func (fixture immediateFixture) useWeekly(t *testing.T, day, localTime, timezone string) weeklySchedule {
@@ -23,10 +25,22 @@ func (fixture immediateFixture) useWeekly(t *testing.T, day, localTime, timezone
 	schedule, err := parseWeeklySchedule(day, localTime, timezone)
 	require.NoError(t, err)
 	_, err = fixture.db.NewRaw(`UPDATE notification_preferences
-		SET email_preference = 'weekly', weekly_day = ?, weekly_local_time = ?, weekly_timezone = ?
+		SET email_preference = 'weekly', weekly_day = ?, weekly_local_time = ?, weekly_timezone = ?,
+		    weekly_schedule_overridden = true
 		WHERE recipient_access_generation_id = ?`, day, localTime, timezone, fixture.access["alex"]).Exec(context.Background())
 	require.NoError(t, err)
 	return schedule
+}
+
+func (fixture immediateFixture) leasedRequiredJob(t *testing.T, deliveryID int64) worker.Job {
+	t.Helper()
+	payload := []byte(`{"delivery_id":` + fmt.Sprint(deliveryID) + `}`)
+	var id int64
+	require.NoError(t, fixture.db.NewRaw(`INSERT INTO jobs
+		(kind, payload, status, lease_owner, lease_expires_at)
+		VALUES (?, ?::jsonb, 'running', 'required-test', clock_timestamp() + interval '1 hour') RETURNING id`,
+		JobKind, string(payload)).Scan(context.Background(), &id))
+	return worker.Job{ID: id, Kind: JobKind, Payload: payload, LeaseOwner: "required-test"}
 }
 
 func (fixture immediateFixture) leasedWeeklyJob(t *testing.T, batchID int64) worker.Job {
@@ -38,6 +52,44 @@ func (fixture immediateFixture) leasedWeeklyJob(t *testing.T, batchID int64) wor
 		VALUES (?, ?::jsonb, 'running', 'weekly-test', clock_timestamp() + interval '1 hour') RETURNING id`,
 		WeeklyJobKind, string(payload)).Scan(context.Background(), &id))
 	return worker.Job{ID: id, Kind: WeeklyJobKind, Payload: payload, LeaseOwner: "weekly-test"}
+}
+
+func TestPlatformTimezoneSchedulesRecipientsWithoutPersonalOverrides(t *testing.T) {
+	fixture := newImmediateFixture(t)
+	_, err := fixture.db.NewRaw(`UPDATE notification_preferences
+		SET email_preference = 'weekly' WHERE recipient_access_generation_id = ?`, fixture.access["alex"]).Exec(context.Background())
+	require.NoError(t, err)
+	_, err = fixture.service.UpdatePlatformWeeklyTimezone(context.Background(), "America/New_York")
+	require.NoError(t, err)
+	fixture.addPublicationActivity(t, fixture.base, fixture.media[0])
+	require.NoError(t, fixture.service.QueuePublication(context.Background(), fixture.event, fixture.publication))
+
+	var batchID int64
+	var closesAt time.Time
+	require.NoError(t, fixture.db.NewRaw(`SELECT id, closes_at FROM notification_batches`).
+		Scan(context.Background(), &batchID, &closesAt))
+	schedule, err := parseWeeklySchedule("sunday", "09:00", "America/New_York")
+	require.NoError(t, err)
+	assert.Equal(t, schedule.Next(fixture.base), closesAt)
+
+	_, err = fixture.service.UpdatePlatformWeeklyTimezone(context.Background(), "Europe/London")
+	require.NoError(t, err)
+	require.NoError(t, fixture.service.HandleWeekly(context.Background(), fixture.leasedWeeklyJob(t, batchID)))
+	assert.Empty(t, fixture.sender.sent(), "a changed platform schedule cannot revive its earlier pending batch")
+}
+
+func TestDelayedWeeklyHandoffUsesTheNextFutureSchedule(t *testing.T) {
+	fixture := newImmediateFixture(t)
+	schedule := fixture.useWeekly(t, "sunday", "09:00", "UTC")
+	firstBoundary := schedule.Next(fixture.base)
+	fixture.service.now = func() time.Time { return firstBoundary.Add(time.Minute) }
+	fixture.addPublicationActivity(t, fixture.base, fixture.media[0])
+	require.NoError(t, fixture.service.QueuePublication(context.Background(), fixture.event, fixture.publication))
+
+	var closesAt time.Time
+	require.NoError(t, fixture.db.NewRaw(`SELECT closes_at FROM notification_batches`).Scan(context.Background(), &closesAt))
+	assert.Equal(t, schedule.Next(firstBoundary.Add(time.Minute)), closesAt)
+	assert.True(t, closesAt.After(fixture.service.now()))
 }
 
 func TestWeeklyDigestUsesLocalBoundaryAndThreeSafeAuthorizedPreviews(t *testing.T) {
@@ -140,11 +192,100 @@ func TestWeeklyDigestRetriesTemporaryFailuresAndDisablesOnlyOptionalEmailOnRejec
 		preference, preferenceErr := fixture.service.PreferenceFor(context.Background(), fixture.access["alex"])
 		require.NoError(t, preferenceErr)
 		assert.Equal(t, "none", preference.EmailPreference)
+
+		var requiredID int64
+		require.NoError(t, fixture.db.RunInTx(context.Background(), nil, func(ctx context.Context, tx bun.Tx) error {
+			var err error
+			requiredID, _, err = fixture.service.QueueRequired(ctx, tx, RequiredMessage{
+				Kind: "required_test", Recipient: "alex@example.com", Subject: "Required security email", Body: "Required email remains available.",
+			})
+			return err
+		}))
+		require.NoError(t, fixture.service.Handle(context.Background(), fixture.leasedRequiredJob(t, requiredID)))
+		messages := fixture.sender.sent()
+		require.Len(t, messages, 2)
+		assert.Equal(t, "Required security email", messages[1].Subject)
+
 		var problems int
 		require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM delivery_problems WHERE notification_batch_id = ?`, batchID).
 			Scan(context.Background(), &problems))
 		assert.Equal(t, 1, problems)
 	})
+
+	t.Run("non-recipient permanent failure", func(t *testing.T) {
+		fixture := newImmediateFixture(t)
+		fixture.useWeekly(t, "sunday", "09:00", "UTC")
+		fixture.sender.results = []error{&smtp.DeliveryError{Diagnostic: "tls_verification_failed", Temporary: false}}
+		fixture.addPublicationActivity(t, fixture.base, fixture.media[0])
+		require.NoError(t, fixture.service.QueuePublication(context.Background(), fixture.event, fixture.publication))
+		var batchID int64
+		require.NoError(t, fixture.db.NewRaw(`SELECT id FROM notification_batches`).Scan(context.Background(), &batchID))
+		err := fixture.service.HandleWeekly(context.Background(), fixture.leasedWeeklyJob(t, batchID))
+		require.Error(t, err)
+		preference, preferenceErr := fixture.service.PreferenceFor(context.Background(), fixture.access["alex"])
+		require.NoError(t, preferenceErr)
+		assert.Equal(t, "weekly", preference.EmailPreference, "infrastructure failures cannot unsubscribe a Recipient")
+	})
+}
+
+func TestWeeklyDigestStopsAtTheTwentyFourHourRetryWindow(t *testing.T) {
+	fixture := newImmediateFixture(t)
+	fixture.service.cfg.RetryWindow = 24 * time.Hour
+	fixture.useWeekly(t, "sunday", "09:00", "UTC")
+	fixture.addPublicationActivity(t, fixture.base, fixture.media[0])
+	require.NoError(t, fixture.service.QueuePublication(context.Background(), fixture.event, fixture.publication))
+	var batchID int64
+	require.NoError(t, fixture.db.NewRaw(`SELECT id FROM notification_batches`).Scan(context.Background(), &batchID))
+	_, err := fixture.db.NewRaw(`UPDATE notification_batches
+		SET window_started_at = clock_timestamp() - interval '8 days',
+		    closes_at = clock_timestamp() - interval '24 hours 1 second'
+		WHERE id = ?`, batchID).Exec(context.Background())
+	require.NoError(t, err)
+
+	err = fixture.service.HandleWeekly(context.Background(), fixture.leasedWeeklyJob(t, batchID))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "retry_window_exhausted")
+	assert.Empty(t, fixture.sender.sent())
+}
+
+func TestWeeklyPreviewIsDroppedWhenMediaRelinksBeforeSMTP(t *testing.T) {
+	fixture := newImmediateFixture(t)
+	fixture.useWeekly(t, "sunday", "09:00", "UTC")
+	fixture.addPublicationActivity(t, fixture.base, fixture.media[0])
+	require.NoError(t, fixture.service.QueuePublication(context.Background(), fixture.event, fixture.publication))
+	var batchID int64
+	require.NoError(t, fixture.db.NewRaw(`SELECT id FROM notification_batches`).Scan(context.Background(), &batchID))
+	newAssetID := uuid.New()
+	fixture.service.beforeOptionalSend = func() {
+		_, err := fixture.db.NewRaw(`UPDATE media_items SET immich_asset_id = ? WHERE id = ?`, newAssetID, fixture.media[0]).Exec(context.Background())
+		require.NoError(t, err)
+	}
+
+	require.NoError(t, fixture.service.HandleWeekly(context.Background(), fixture.leasedWeeklyJob(t, batchID)))
+	messages := fixture.sender.sent()
+	require.Len(t, messages, 1)
+	assert.Empty(t, messages[0].EmbeddedImages, "bytes loaded from an earlier backing cannot survive final authorization")
+}
+
+func TestWeeklyRetryBatchSendsNewActivityAtTheNextSchedule(t *testing.T) {
+	fixture := newImmediateFixture(t)
+	schedule := fixture.useWeekly(t, "sunday", "09:00", "UTC")
+	fixture.addPublicationActivity(t, fixture.base, fixture.media[0])
+	require.NoError(t, fixture.service.QueuePublication(context.Background(), fixture.event, fixture.publication))
+	var firstBatchID int64
+	var firstDue time.Time
+	require.NoError(t, fixture.db.NewRaw(`SELECT id, closes_at FROM notification_batches`).
+		Scan(context.Background(), &firstBatchID, &firstDue))
+	_, err := fixture.db.NewRaw(`UPDATE notification_batches SET attempts = 1 WHERE id = ?`, firstBatchID).Exec(context.Background())
+	require.NoError(t, err)
+	commentID := fixture.addComment(t, fixture.base.Add(time.Minute), "After attempted digest")
+	fixture.queueComment(t, commentID)
+
+	var due []time.Time
+	require.NoError(t, fixture.db.NewRaw(`SELECT closes_at FROM notification_batches ORDER BY closes_at`).Scan(context.Background(), &due))
+	require.Len(t, due, 2)
+	assert.Equal(t, firstDue, due[0])
+	assert.Equal(t, schedule.Next(firstDue), due[1])
 }
 
 func TestRestoringWeeklyEmailDoesNotRevivePendingActivity(t *testing.T) {

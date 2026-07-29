@@ -11,8 +11,11 @@ func init() {
 		func(ctx context.Context, db *bun.DB) error {
 			return db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 				for _, statement := range []string{
+					`ALTER TABLE system_settings ADD COLUMN weekly_timezone text NOT NULL DEFAULT 'UTC'
+						CHECK (weekly_timezone <> '' AND length(weekly_timezone) <= 255)`,
 					`ALTER TABLE notification_preferences
 						ADD COLUMN preference_version bigint NOT NULL DEFAULT 0 CHECK (preference_version >= 0),
+						ADD COLUMN weekly_schedule_overridden boolean NOT NULL DEFAULT false,
 						ADD COLUMN weekly_day text NOT NULL DEFAULT 'sunday'
 							CHECK (weekly_day IN ('sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday')),
 						ADD COLUMN weekly_local_time text NOT NULL DEFAULT '09:00'
@@ -83,7 +86,8 @@ func init() {
 					`ALTER TABLE notification_batches DROP COLUMN preference_version, DROP COLUMN cadence`,
 					`ALTER TABLE notification_preferences
 						DROP COLUMN weekly_timezone, DROP COLUMN weekly_local_time, DROP COLUMN weekly_day,
-						DROP COLUMN preference_version`,
+						DROP COLUMN weekly_schedule_overridden, DROP COLUMN preference_version`,
+					`ALTER TABLE system_settings DROP COLUMN weekly_timezone`,
 				} {
 					if _, err := tx.ExecContext(ctx, statement); err != nil {
 						return err

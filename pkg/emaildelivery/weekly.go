@@ -121,24 +121,41 @@ func (s *Service) queueWeeklyItem(ctx context.Context, tx bun.Tx, accessID uuid.
 		return err
 	}
 	activityAt = activityAt.UTC()
-	due := schedule.Next(activityAt)
+	queuedAt := s.now().UTC()
+	due := schedule.Next(queuedAt)
+	windowStartedAt := queuedAt
 	if due.IsZero() {
 		return ErrNotificationPreference
 	}
-	var batch pendingImmediateBatch
-	err = tx.NewRaw(`SELECT id, public_id, window_started_at FROM notification_batches
-		WHERE recipient_access_generation_id = ? AND channel = 'email' AND cadence = 'weekly'
-		  AND preference_version = ? AND status = 'pending' AND attempts = 0 AND closes_at = ? FOR UPDATE`, accessID, preferenceVersion, due).
-		Scan(ctx, &batch.ID, &batch.PublicID, &batch.WindowStartedAt)
-	if errors.Is(err, sql.ErrNoRows) {
-		batch = pendingImmediateBatch{PublicID: uuid.New(), WindowStartedAt: activityAt}
+	var batch pendingEmailBatch
+	for {
+		var attempts int
+		err = tx.NewRaw(`SELECT id, public_id, window_started_at, attempts FROM notification_batches
+			WHERE recipient_access_generation_id = ? AND channel = 'email' AND cadence = 'weekly'
+			  AND preference_version = ? AND status = 'pending' AND closes_at = ? FOR UPDATE`, accessID, preferenceVersion, due).
+			Scan(ctx, &batch.ID, &batch.PublicID, &batch.WindowStartedAt, &attempts)
+		if err == nil && attempts == 0 {
+			break
+		}
+		if err == nil {
+			windowStartedAt = due
+			due = schedule.Next(due)
+			if due.IsZero() {
+				return ErrNotificationPreference
+			}
+			continue
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		batch = pendingEmailBatch{PublicID: uuid.New(), WindowStartedAt: windowStartedAt}
 		if err := tx.NewRaw(`INSERT INTO notification_batches
 			(public_id, recipient_access_generation_id, channel, cadence, preference_version, window_started_at, closes_at)
-			VALUES (?, ?, 'email', 'weekly', ?, ?, ?) RETURNING id`, batch.PublicID, accessID, preferenceVersion, activityAt, due).
+			VALUES (?, ?, 'email', 'weekly', ?, ?, ?) RETURNING id`, batch.PublicID, accessID, preferenceVersion, windowStartedAt, due).
 			Scan(ctx, &batch.ID); err != nil {
 			return err
 		}
-		payload, err := json.Marshal(immediateJobPayload{BatchID: batch.ID})
+		payload, err := json.Marshal(emailBatchJobPayload{BatchID: batch.ID})
 		if err != nil {
 			return err
 		}
@@ -148,13 +165,7 @@ func (s *Service) queueWeeklyItem(ctx context.Context, tx bun.Tx, accessID uuid.
 			WeeklyJobKind, batch.PublicID.String(), string(payload), due).Exec(ctx); err != nil {
 			return err
 		}
-	} else if err != nil {
-		return err
-	} else if activityAt.Before(batch.WindowStartedAt) {
-		if _, err := tx.NewRaw(`UPDATE notification_batches SET window_started_at = ?, updated_at = clock_timestamp()
-			WHERE id = ?`, activityAt, batch.ID).Exec(ctx); err != nil {
-			return err
-		}
+		break
 	}
 	_, err = tx.NewRaw(`INSERT INTO notification_batch_items
 		(batch_id, recipient_access_generation_id, kind, `+spec.sourceColumn+`, activity_created_at)
@@ -164,7 +175,7 @@ func (s *Service) queueWeeklyItem(ctx context.Context, tx bun.Tx, accessID uuid.
 
 // HandleWeekly reauthorizes a weekly digest before preview loading and through SMTP acceptance.
 func (s *Service) HandleWeekly(ctx context.Context, job worker.Job) error {
-	var payload immediateJobPayload
+	var payload emailBatchJobPayload
 	if err := json.Unmarshal(job.Payload, &payload); err != nil || payload.BatchID <= 0 {
 		return worker.Permanent("invalid_weekly_email_job")
 	}
@@ -175,15 +186,15 @@ func (s *Service) HandleWeekly(ctx context.Context, job worker.Job) error {
 	if err != nil {
 		return err
 	}
-	loaded := make(map[uuid.UUID]smtp.EmbeddedImage, len(assembled.Previews))
+	loaded := make(map[weeklyPreview]smtp.EmbeddedImage, len(assembled.Previews))
 	for index, candidate := range assembled.Previews {
 		if image := s.loadSafePreview(ctx, candidate.AssetID); image != nil {
 			image.ContentID = fmt.Sprintf("memento-preview-%d", index+1)
-			loaded[candidate.MediaID] = *image
+			loaded[candidate] = *image
 		}
 	}
-	if s.beforeImmediateSend != nil {
-		s.beforeImmediateSend()
+	if s.beforeOptionalSend != nil {
+		s.beforeOptionalSend()
 	}
 	var unsubscribe durableUnsubscribe
 	if !assembled.Empty {
@@ -223,10 +234,10 @@ func (s *Service) HandleWeekly(ctx context.Context, job worker.Job) error {
 		if err := s.requireLease(ctx, job); err != nil {
 			return err
 		}
-		if err := lockImmediateMedia(ctx, tx, payload.BatchID); err != nil {
+		if err := lockEmailBatchMedia(ctx, tx, payload.BatchID); err != nil {
 			return err
 		}
-		if err := lockImmediateEvents(ctx, tx, payload.BatchID); err != nil {
+		if err := lockEmailBatchEvents(ctx, tx, payload.BatchID); err != nil {
 			return err
 		}
 		if err := lockRecipientGeneration(ctx, tx, accessID); err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -244,7 +255,7 @@ func (s *Service) HandleWeekly(ctx context.Context, job worker.Job) error {
 		}
 		embedded := make([]smtp.EmbeddedImage, 0, maxWeeklyPreviews)
 		for _, candidate := range current.Previews {
-			if image, ok := loaded[candidate.MediaID]; ok {
+			if image, ok := loaded[candidate]; ok {
 				embedded = append(embedded, image)
 			}
 		}
@@ -256,7 +267,7 @@ func (s *Service) HandleWeekly(ctx context.Context, job worker.Job) error {
 				WHERE id = ? AND status = 'pending'`, terminalDiagnostic, payload.BatchID).Exec(ctx); err != nil {
 				return err
 			}
-			return recordImmediateProblemIn(ctx, tx, payload.BatchID, terminalDiagnostic)
+			return recordEmailBatchProblemIn(ctx, tx, payload.BatchID, terminalDiagnostic)
 		}
 		if unsubscribe.URL == "" {
 			return errUnsubscribeURLUnavailable
@@ -284,11 +295,13 @@ func (s *Service) HandleWeekly(ctx context.Context, job worker.Job) error {
 		status = "pending"
 		if !failure.Temporary {
 			status, terminalFailure = "failed", true
-			if _, err := tx.NewRaw(`UPDATE notification_preferences
-				SET email_preference = 'none', preference_version = preference_version + 1,
-				    updated_at = clock_timestamp()
-				WHERE recipient_access_generation_id = ?`, accessID).Exec(ctx); err != nil {
-				return err
+			if failure.Diagnostic == "recipient_rejected" {
+				if _, err := tx.NewRaw(`UPDATE notification_preferences
+					SET email_preference = 'none', preference_version = preference_version + 1,
+					    updated_at = clock_timestamp()
+					WHERE recipient_access_generation_id = ?`, accessID).Exec(ctx); err != nil {
+					return err
+				}
 			}
 		} else {
 			retryAfter = s.retryDelay(deliveryAttempts)
@@ -307,7 +320,7 @@ func (s *Service) HandleWeekly(ctx context.Context, job worker.Job) error {
 			return err
 		}
 		if terminalFailure {
-			return recordImmediateProblemIn(ctx, tx, payload.BatchID, terminalDiagnostic)
+			return recordEmailBatchProblemIn(ctx, tx, payload.BatchID, terminalDiagnostic)
 		}
 		return nil
 	})
@@ -368,11 +381,11 @@ func (s *Service) assembleWeeklyIn(ctx context.Context, db bun.IDB, batchID int6
 	var items []batchItem
 	if err := db.NewRaw(`SELECT id, kind, publication_id, comment_id, activity_created_at
 		FROM notification_batch_items WHERE batch_id = ? ORDER BY activity_created_at, id
-		LIMIT ?`, batchID, maxImmediateBatchItems+1).Scan(ctx, &items); err != nil {
+		LIMIT ?`, batchID, maxEmailBatchItems+1).Scan(ctx, &items); err != nil {
 		return assembledWeekly{}, err
 	}
-	if len(items) > maxImmediateBatchItems {
-		items, truncated = items[:maxImmediateBatchItems], true
+	if len(items) > maxEmailBatchItems {
+		items, truncated = items[:maxEmailBatchItems], true
 	}
 	result := assembledWeekly{Recipient: recipient}
 	lines := make([]string, 0, len(items)+1)
@@ -385,20 +398,20 @@ func (s *Service) assembleWeeklyIn(ctx context.Context, db bun.IDB, batchID int6
 		switch item.Kind {
 		case publicationBatchItem:
 			if item.PublicationID == nil {
-				return assembledWeekly{}, fmt.Errorf("%w: item %d has no publication_id", errMalformedImmediateItem, item.ID)
+				return assembledWeekly{}, fmt.Errorf("%w: item %d has no publication_id", errMalformedEmailItem, item.ID)
 			}
 			line, mediaID, assetID, survives, err = assemblePublication(ctx, db, accessID, *item.PublicationID)
 		case commentBatchItem:
 			if item.CommentID == nil {
-				return assembledWeekly{}, fmt.Errorf("%w: item %d has no comment_id", errMalformedImmediateItem, item.ID)
+				return assembledWeekly{}, fmt.Errorf("%w: item %d has no comment_id", errMalformedEmailItem, item.ID)
 			}
-			var comment immediateComment
+			var comment emailComment
 			comment, survives, err = loadEmailComment(ctx, db, accessID, *item.CommentID, "weekly", lock)
 			if survives {
 				line, mediaID, assetID = comment.Author+" commented on an item you can access.", comment.MediaID, comment.AssetID
 			}
 		default:
-			return assembledWeekly{}, fmt.Errorf("%w: %q", errUnsupportedImmediateItemKind, item.Kind)
+			return assembledWeekly{}, fmt.Errorf("%w: %q", errUnsupportedEmailItemKind, item.Kind)
 		}
 		if err != nil {
 			return assembledWeekly{}, err
@@ -406,7 +419,7 @@ func (s *Service) assembleWeeklyIn(ctx context.Context, db bun.IDB, batchID int6
 		if !survives {
 			continue
 		}
-		if lineBytes+len(line)+1 > immediateBodyLineBudget {
+		if lineBytes+len(line)+1 > emailBodyLineBudget {
 			truncated = true
 			break
 		}

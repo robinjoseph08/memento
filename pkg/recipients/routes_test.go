@@ -31,6 +31,8 @@ func TestInvitationRoutesUseSafeMethodsAndExplicitPolicies(t *testing.T) {
 		http.MethodPost + " /api/recipients/:person_id/revoke":             curatorMutationPolicy,
 		http.MethodGet + " /api/auth/invitations/inspect":                  invitationInspectPolicy,
 		http.MethodPost + " /api/auth/invitations/accept":                  invitationAcceptPolicy,
+		http.MethodGet + " /api/curator/email-defaults":                    platformPreferenceReadPolicy,
+		http.MethodPut + " /api/curator/email-defaults":                    platformPreferenceMutationPolicy,
 		http.MethodGet + " /api/me/email-preferences":                      preferenceReadPolicy,
 		http.MethodPut + " /api/me/email-preferences":                      preferenceMutationPolicy,
 		http.MethodGet + " /api/onboarding":                                onboardingReadPolicy,

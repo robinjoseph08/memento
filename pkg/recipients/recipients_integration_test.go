@@ -234,12 +234,22 @@ func TestRecipientCanUpdateWeeklyEmailScheduleWithoutChangingAccessOrIdentity(t 
 	require.NoError(t, err)
 	e := recipientHTTP(t, fixture)
 
+	platformRequest := httptest.NewRequestWithContext(context.Background(), http.MethodPut, "/api/curator/email-defaults",
+		strings.NewReader(`{"weekly_timezone":"America/Chicago"}`))
+	platformRequest.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	platformRequest.Header.Set(setup.CSRFHeader, fixture.csrf)
+	platformRequest.AddCookie(&http.Cookie{Name: setup.CookieName, Value: fixture.credential})
+	platformResponse := httptest.NewRecorder()
+	e.ServeHTTP(platformResponse, platformRequest)
+	require.Equal(t, http.StatusOK, platformResponse.Code, platformResponse.Body.String())
+	assert.JSONEq(t, `{"weekly_day":"sunday","weekly_local_time":"09:00","weekly_timezone":"America/Chicago"}`, platformResponse.Body.String())
+
 	read := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/me/email-preferences", nil)
 	read.AddCookie(&http.Cookie{Name: setup.CookieName, Value: fixture.credential})
 	readResponse := httptest.NewRecorder()
 	e.ServeHTTP(readResponse, read)
 	require.Equal(t, http.StatusOK, readResponse.Code, readResponse.Body.String())
-	assert.JSONEq(t, `{"email_preference":"immediate","weekly_day":"sunday","weekly_local_time":"09:00","weekly_timezone":"UTC"}`, readResponse.Body.String())
+	assert.JSONEq(t, `{"email_preference":"immediate","weekly_day":"sunday","weekly_local_time":"09:00","weekly_timezone":"America/Chicago"}`, readResponse.Body.String())
 
 	body := `{"email_preference":"weekly","weekly_day":"wednesday","weekly_local_time":"18:45","weekly_timezone":"Europe/London"}`
 	withoutCSRF := httptest.NewRequestWithContext(context.Background(), http.MethodPut, "/api/me/email-preferences", strings.NewReader(body))

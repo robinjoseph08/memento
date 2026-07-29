@@ -38,8 +38,11 @@ func (s *Service) PreferenceFor(ctx context.Context, accessID uuid.UUID) (Prefer
 	var preference Preference
 	err := s.db.NewRaw(`
 		SELECT preference.email_preference, preference.weekly_day,
-		       preference.weekly_local_time, preference.weekly_timezone
+		       preference.weekly_local_time,
+		       CASE WHEN preference.weekly_schedule_overridden THEN preference.weekly_timezone
+		            ELSE settings.weekly_timezone END
 		FROM notification_preferences AS preference
+		JOIN system_settings AS settings ON settings.id = 1
 		JOIN recipient_access_generations AS access
 		  ON access.id = preference.recipient_access_generation_id
 		 AND access.is_current AND access.state = 'completed'
@@ -99,10 +102,47 @@ func (s *Service) updatePreferenceIn(ctx context.Context, tx bun.Tx, accessID uu
 	}
 	if _, err := tx.NewRaw(`UPDATE notification_preferences
 		SET email_preference = ?, weekly_day = ?, weekly_local_time = ?, weekly_timezone = ?,
-		    preference_version = ?, updated_at = clock_timestamp()
+		    weekly_schedule_overridden = true, preference_version = ?, updated_at = clock_timestamp()
 		WHERE recipient_access_generation_id = ?`, update.EmailPreference, update.WeeklyDay,
 		update.WeeklyLocalTime, update.WeeklyTimezone, nextVersion, accessID).Exec(ctx); err != nil {
 		return err
 	}
 	return nil
+}
+
+// PlatformWeeklyTimezone returns the Curator-managed timezone used by schedules without an override.
+func (s *Service) PlatformWeeklyTimezone(ctx context.Context) (string, error) {
+	var timezone string
+	err := s.db.NewRaw(`SELECT weekly_timezone FROM system_settings WHERE id = 1`).Scan(ctx, &timezone)
+	return timezone, err
+}
+
+// UpdatePlatformWeeklyTimezone changes the default and invalidates pending default-schedule batches.
+func (s *Service) UpdatePlatformWeeklyTimezone(ctx context.Context, timezone string) (string, error) {
+	if _, err := parseWeeklySchedule("sunday", "09:00", timezone); err != nil {
+		return "", err
+	}
+	err := s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		var current string
+		if err := tx.NewRaw(`SELECT weekly_timezone FROM system_settings WHERE id = 1 FOR UPDATE`).Scan(ctx, &current); err != nil {
+			return err
+		}
+		if current == timezone {
+			return nil
+		}
+		if _, err := tx.NewRaw(`UPDATE notification_preferences AS preference
+			SET preference_version = preference_version + 1, updated_at = clock_timestamp()
+			FROM recipient_access_generations AS access
+			WHERE access.id = preference.recipient_access_generation_id AND access.is_current
+			  AND preference.email_preference = 'weekly' AND NOT preference.weekly_schedule_overridden`).Exec(ctx); err != nil {
+			return err
+		}
+		_, err := tx.NewRaw(`UPDATE system_settings SET weekly_timezone = ?, updated_at = clock_timestamp()
+			WHERE id = 1`, timezone).Exec(ctx)
+		return err
+	})
+	if err != nil {
+		return "", err
+	}
+	return timezone, nil
 }
