@@ -293,7 +293,7 @@ func (s *Service) Create(ctx context.Context, actor setup.SessionActor, mediaID,
 			if _, err := tx.NewRaw(`INSERT INTO outbox_events
 				(kind, aggregate_kind, aggregate_id, aggregate_version, payload, available_at, created_at)
 				VALUES (?, 'comment_activity', ?, 1, ?::jsonb, ?, ?)`, CommentJobKind,
-				strconv.FormatInt(activityID, 10), string(payload), now.Add(15*time.Minute), now).Exec(ctx); err != nil {
+				strconv.FormatInt(activityID, 10), string(payload), now, now).Exec(ctx); err != nil {
 				return err
 			}
 		}

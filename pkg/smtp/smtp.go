@@ -6,8 +6,10 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"net"
 	"net/mail"
@@ -30,12 +32,20 @@ const (
 	StatusInsecureDevelopment = "insecure_development"
 )
 
-// Message contains a complete required email. Callers must not log it.
+// EmbeddedImage is a private inline image whose bytes travel only in the email.
+type EmbeddedImage struct {
+	ContentID   string
+	ContentType string
+	Data        []byte
+}
+
+// Message contains a complete email. Callers must not log it.
 type Message struct {
-	ID      string
-	To      string
-	Subject string
-	Body    string
+	ID       string
+	To       string
+	Subject  string
+	Body     string
+	Embedded *EmbeddedImage
 }
 
 // DeliveryError is the only dependency failure exposed outside this package.
@@ -241,13 +251,39 @@ func classify(stage string, err error) *DeliveryError {
 func formatMessage(from string, message Message) string {
 	var body strings.Builder
 	writer := bufio.NewWriter(&body)
-	_, _ = fmt.Fprintf(writer, "From: %s\r\nTo: %s\r\nSubject: %s\r\n", from, message.To, message.Subject)
-	_, _ = fmt.Fprintf(writer, "Message-ID: <%s@memento.local>\r\n", message.ID)
-	_, _ = io.WriteString(writer, "MIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n")
+	_, _ = fmt.Fprintf(writer, "From: %s\r\nTo: %s\r\nSubject: %s\r\n", from, message.To, safeHeader(message.Subject))
+	_, _ = fmt.Fprintf(writer, "Message-ID: <%s@memento.local>\r\n", safeHeader(message.ID))
+	if message.Embedded == nil {
+		_, _ = io.WriteString(writer, "MIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n")
+		_, _ = io.WriteString(writer, strings.ReplaceAll(message.Body, "\n", "\r\n"))
+		_, _ = io.WriteString(writer, "\r\n")
+		_ = writer.Flush()
+		return body.String()
+	}
+
+	boundary := "memento-related-" + safeHeader(message.ID)
+	_, _ = fmt.Fprintf(writer, "MIME-Version: 1.0\r\nContent-Type: multipart/related; boundary=%q\r\n\r\n", boundary)
+	_, _ = fmt.Fprintf(writer, "--%s\r\nContent-Type: multipart/alternative; boundary=%q\r\n\r\n", boundary, boundary+"-alternative")
+	_, _ = fmt.Fprintf(writer, "--%s-alternative\r\nContent-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n", boundary)
 	_, _ = io.WriteString(writer, strings.ReplaceAll(message.Body, "\n", "\r\n"))
-	_, _ = io.WriteString(writer, "\r\n")
+	_, _ = fmt.Fprintf(writer, "\r\n--%s-alternative\r\nContent-Type: text/html; charset=UTF-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n", boundary)
+	htmlBody := strings.ReplaceAll(html.EscapeString(message.Body), "\n", "<br>\r\n")
+	_, _ = fmt.Fprintf(writer, "<p>%s</p><p><img src=\"cid:%s\" alt=\"Authorized Memento preview\" style=\"max-width:480px;max-height:480px\"></p>\r\n", htmlBody, safeHeader(message.Embedded.ContentID))
+	_, _ = fmt.Fprintf(writer, "--%s-alternative--\r\n\r\n", boundary)
+	_, _ = fmt.Fprintf(writer, "--%s\r\nContent-Type: %s\r\nContent-Transfer-Encoding: base64\r\nContent-ID: <%s>\r\nContent-Disposition: inline; filename=\"memento-preview.jpg\"\r\n\r\n", boundary, safeHeader(message.Embedded.ContentType), safeHeader(message.Embedded.ContentID))
+	encoded := base64.StdEncoding.EncodeToString(message.Embedded.Data)
+	for len(encoded) > 76 {
+		_, _ = io.WriteString(writer, encoded[:76]+"\r\n")
+		encoded = encoded[76:]
+	}
+	_, _ = io.WriteString(writer, encoded+"\r\n")
+	_, _ = fmt.Fprintf(writer, "--%s--\r\n", boundary)
 	_ = writer.Flush()
 	return body.String()
+}
+
+func safeHeader(value string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(value, "\r", ""), "\n", "")
 }
 
 type plainAuth struct{ username, password string }

@@ -381,6 +381,22 @@ func TestSMTPResponsesAreReducedToSafeFailureCodes(t *testing.T) {
 	}
 }
 
+func TestEmbeddedImageUsesPrivateMultipartCID(t *testing.T) {
+	formatted := formatMessage("Memento <memento@example.com>", Message{
+		ID: "batch-1", To: "recipient@example.com", Subject: "New activity\r\nBcc: attacker@example.com",
+		Body: "Authorized activity only", Embedded: &EmbeddedImage{
+			ContentID: "memento-preview", ContentType: "image/jpeg", Data: []byte("safe-private-preview"),
+		},
+	})
+
+	assert.Contains(t, formatted, "Content-Type: multipart/related")
+	assert.Contains(t, formatted, `src="cid:memento-preview"`)
+	assert.Contains(t, formatted, base64.StdEncoding.EncodeToString([]byte("safe-private-preview")))
+	assert.NotContains(t, formatted, "http://")
+	assert.NotContains(t, formatted, "https://")
+	assert.NotContains(t, formatted, "\r\nBcc:", "Recipient-derived headers cannot add another SMTP header")
+}
+
 func testCertificate(t *testing.T) (tls.Certificate, *x509.Certificate) {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)

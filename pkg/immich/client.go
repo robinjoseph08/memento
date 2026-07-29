@@ -600,7 +600,7 @@ func (c *Client) Original(ctx context.Context, assetID uuid.UUID, request MediaR
 }
 
 func (c *Client) derivative(ctx context.Context, assetID uuid.UUID, size string, request MediaRequest) (MediaResponse, error) {
-	return c.media(ctx, assetID, []string{"thumbnail"}, url.Values{"size": {size}}, "image/avif,image/webp,image/*", request, true, false)
+	return c.media(ctx, assetID, []string{"thumbnail"}, url.Values{"size": {size}}, "image/jpeg,image/png,image/gif", request, true, false)
 }
 
 func (c *Client) media(ctx context.Context, assetID uuid.UUID, path []string, query url.Values, accept string, request MediaRequest, bounded, original bool) (MediaResponse, error) {

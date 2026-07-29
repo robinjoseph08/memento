@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/robinjoseph08/golib/logger"
 	"github.com/robinjoseph08/memento/pkg/activity"
 	"github.com/robinjoseph08/memento/pkg/archives"
@@ -40,6 +41,7 @@ import (
 	"github.com/robinjoseph08/memento/pkg/suggestions"
 	"github.com/robinjoseph08/memento/pkg/visibility"
 	"github.com/robinjoseph08/memento/pkg/worker"
+	"github.com/uptrace/bun"
 )
 
 func main() {
@@ -100,12 +102,19 @@ func run() error {
 		}
 	}
 	emailService := emaildelivery.New(db, cfg.SMTP, emailSender, cfg.Security.Secret)
+	emailService.SetPreviewSource(immichClient)
 	sourceService := sources.New(db, immichClient, cfg.Sources.ReconciliationInterval)
 	eventService := events.New(db)
+	eventService.SetPublicationHandoff(emailService.QueuePublication)
 	archiveService := archives.New(db, immichClient)
 	interactionActivity := activity.New(db)
 	commentService := comments.New(db)
-	commentService.SetHandoff(interactionActivity.RecordComment)
+	commentService.SetHandoff(func(ctx context.Context, tx bun.Tx, accessID, commentID uuid.UUID) error {
+		if err := interactionActivity.RecordComment(ctx, tx, accessID, commentID); err != nil {
+			return err
+		}
+		return emailService.QueueComment(ctx, tx, accessID, commentID)
+	})
 	handlers := jobHandlers(sourceService, eventService, archiveService, commentService, emailService, cfg.SMTP.Enabled)
 
 	owner, err := leaseOwner()
@@ -208,6 +217,7 @@ func jobHandlers(sourceService *sources.Service, eventService *events.Service, a
 	}
 	if smtpEnabled {
 		handlers[emaildelivery.JobKind] = emailService.Handle
+		handlers[emaildelivery.ImmediateJobKind] = emailService.HandleImmediate
 	}
 	return handlers
 }

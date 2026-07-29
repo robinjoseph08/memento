@@ -1,4 +1,4 @@
-// Package emaildelivery owns durable required-email requests and delivery status.
+// Package emaildelivery owns durable required email and authorized optional email batches.
 package emaildelivery
 
 import (
@@ -91,12 +91,14 @@ type delivery struct {
 	InvitationID  *string
 }
 
-// Service creates required test requests and handles their leased jobs.
+// Service queues and delivers required messages and authorized optional batches.
 type Service struct {
-	db       *bun.DB
-	cfg      config.SMTPConfig
-	sender   smtp.Sender
-	bodyAEAD cipher.AEAD
+	db                  *bun.DB
+	cfg                 config.SMTPConfig
+	sender              smtp.Sender
+	bodyAEAD            cipher.AEAD
+	previewSource       previewSource
+	beforeImmediateSend func()
 }
 
 func New(db *bun.DB, cfg config.SMTPConfig, sender smtp.Sender, securitySecret ...string) *Service {
@@ -111,7 +113,7 @@ func New(db *bun.DB, cfg config.SMTPConfig, sender smtp.Sender, securitySecret .
 	return service
 }
 
-// Configured reports whether required security email can be durably queued.
+// Configured reports whether email can be durably queued.
 func (s *Service) Configured() bool { return s != nil && s.cfg.Enabled && s.sender != nil }
 
 // RequestTest atomically commits the delivery and its outbox event.
