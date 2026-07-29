@@ -24,6 +24,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 	"github.com/robinjoseph08/memento/internal/testdb"
+	"github.com/robinjoseph08/memento/pkg/errcodes"
 	"github.com/robinjoseph08/memento/pkg/immich"
 	"github.com/robinjoseph08/memento/pkg/migrations"
 	"github.com/robinjoseph08/memento/pkg/outbox"
@@ -269,6 +270,37 @@ func (fixture immediateFixture) addPublicationActivityFor(t *testing.T, recipien
 	}
 }
 
+func (fixture immediateFixture) addLargePublicationActivity(t *testing.T, count int) {
+	t.Helper()
+	fixture.addPublicationActivity(t, fixture.base)
+	for position := range count {
+		mediaID := uuid.NewMD5(uuid.Nil, []byte(fmt.Sprintf("large-publication-media-%04d", position)))
+		assetID := uuid.NewMD5(uuid.Nil, []byte(fmt.Sprintf("large-publication-asset-%04d", position)))
+		_, err := fixture.db.NewRaw(`
+			INSERT INTO media_items
+				(id, immich_asset_id, media_type, width, height, local_date_time, availability, first_seen_at, last_seen_at)
+			VALUES (?, ?, 'image', 1200, 800, '2026-07-28T12:00:00Z', 'current', ?, ?);
+			INSERT INTO published_media_placements
+				(published_moment_id, media_item_id, position, media_type, width, height, local_date_time)
+			VALUES (?, ?, ?, 'image', 1200, 800, '2026-07-28T12:00:00Z');
+			INSERT INTO current_published_placements
+				(event_id, publication_id, published_moment_id, media_item_id, position)
+			VALUES (?, ?, ?, ?, ?);
+			INSERT INTO current_audience_entitlements
+				(event_id, publication_id, recipient_person_id, recipient_access_generation_id, media_item_id)
+			VALUES (?, ?, ?, ?, ?);
+			INSERT INTO publication_notification_media
+				(publication_id, recipient_access_generation_id, media_item_id)
+			VALUES (?, ?, ?)
+		`, mediaID, assetID, fixture.base, fixture.base,
+			fixture.moment, mediaID, position+100,
+			fixture.event, fixture.publication, fixture.moment, mediaID, position+100,
+			fixture.event, fixture.publication, fixture.people["alex"], fixture.access["alex"], mediaID,
+			fixture.publication, fixture.access["alex"], mediaID).Exec(context.Background())
+		require.NoError(t, err)
+	}
+}
+
 func (fixture immediateFixture) addComment(t *testing.T, at time.Time, body string) uuid.UUID {
 	t.Helper()
 	commentID := uuid.New()
@@ -356,6 +388,20 @@ func TestImmediateEmailBoundsBatchWorkAndMessageSize(t *testing.T) {
 	assert.Equal(t, maxImmediateBatchItems, strings.Count(messages[0].Body, "Blair commented on an item you can access."))
 	assert.Contains(t, messages[0].Body, "Additional activity is available in Memento.")
 	assert.LessOrEqual(t, len(messages[0].Body), immediateBodyLineBudget+2048)
+}
+
+func TestImmediateEmailBoundsLargePublicationCandidateWork(t *testing.T) {
+	fixture := newImmediateFixture(t)
+	fixture.addLargePublicationActivity(t, maxImmediatePublicationMedia+25)
+	require.NoError(t, fixture.service.QueuePublication(context.Background(), fixture.event, fixture.publication))
+	var batchID int64
+	require.NoError(t, fixture.db.NewRaw(`SELECT id FROM notification_batches`).Scan(context.Background(), &batchID))
+
+	require.NoError(t, fixture.service.HandleImmediate(context.Background(), fixture.leasedBatchJob(t, batchID)))
+	messages := fixture.sender.sent()
+	require.Len(t, messages, 1)
+	assert.Contains(t, messages[0].Body, "Original title: 100+ new items")
+	assert.NotContains(t, messages[0].Body, "125 new items", "delivery does not count or expose candidates beyond its bounded authorization set")
 }
 
 func TestImmediateEmailReanchorsOverlappingOutOfOrderActivityAtTheExactBoundary(t *testing.T) {
@@ -451,7 +497,38 @@ func TestImmediateEmailIncludesOneClickUnsubscribeAndPrivacyDisclosure(t *testin
 	assert.NotEqual(t, raw, storedHash, "only the one-way token hash is persisted")
 
 	e := echo.New()
+	e.HTTPErrorHandler = errcodes.NewHandler().Handle
 	RegisterRoutes(e, NewHandler(fixture.service))
+
+	invalidToken := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{0x5a}, 32))
+	invalidRequest := httptest.NewRequestWithContext(context.Background(), http.MethodGet,
+		"/api/email/preferences/unsubscribe?token="+invalidToken, nil)
+	invalidResponse := httptest.NewRecorder()
+	e.ServeHTTP(invalidResponse, invalidRequest)
+	assert.Equal(t, http.StatusNotFound, invalidResponse.Code)
+
+	_, err = fixture.db.NewRaw(`UPDATE notification_preference_tokens SET expires_at = clock_timestamp() - interval '1 second'
+		WHERE notification_batch_id = ?`, batchID).Exec(context.Background())
+	require.NoError(t, err)
+	expiredRequest := httptest.NewRequestWithContext(context.Background(), http.MethodGet, parsed.RequestURI(), nil)
+	expiredResponse := httptest.NewRecorder()
+	e.ServeHTTP(expiredResponse, expiredRequest)
+	assert.Equal(t, http.StatusNotFound, expiredResponse.Code)
+
+	_, err = fixture.db.NewRaw(`UPDATE notification_preference_tokens SET expires_at = clock_timestamp() + interval '1 year'
+		WHERE notification_batch_id = ?`, batchID).Exec(context.Background())
+	require.NoError(t, err)
+	validRequest := httptest.NewRequestWithContext(context.Background(), http.MethodGet, parsed.RequestURI(), nil)
+	validResponse := httptest.NewRecorder()
+	e.ServeHTTP(validResponse, validRequest)
+	assert.Equal(t, http.StatusOK, validResponse.Code)
+	assert.Contains(t, validResponse.Body.String(), "Unsubscribe")
+	assert.NotContains(t, validResponse.Body.String(), encoded)
+	var preference string
+	require.NoError(t, fixture.db.NewRaw(`SELECT email_preference FROM notification_preferences
+		WHERE recipient_access_generation_id = ?`, fixture.access["alex"]).Scan(context.Background(), &preference))
+	assert.Equal(t, "immediate", preference, "authenticated GET confirmation must not mutate durable preference")
+
 	for range 2 {
 		request := httptest.NewRequestWithContext(context.Background(), http.MethodPost, parsed.RequestURI(),
 			strings.NewReader("List-Unsubscribe=One-Click"))
@@ -462,7 +539,6 @@ func TestImmediateEmailIncludesOneClickUnsubscribeAndPrivacyDisclosure(t *testin
 		assert.Equal(t, "no-store", response.Header().Get(echo.HeaderCacheControl))
 		assert.Equal(t, "no-referrer", response.Header().Get("Referrer-Policy"))
 	}
-	var preference string
 	require.NoError(t, fixture.db.NewRaw(`SELECT email_preference FROM notification_preferences
 		WHERE recipient_access_generation_id = ?`, fixture.access["alex"]).Scan(context.Background(), &preference))
 	assert.Equal(t, "none", preference)

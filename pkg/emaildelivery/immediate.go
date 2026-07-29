@@ -28,13 +28,14 @@ import (
 )
 
 const (
-	ImmediateJobKind        = "send_immediate_email"
-	coalescingWindow        = 15 * time.Minute
-	maxPreviewBytes         = 20 << 20
-	maxPreviewPixels        = 480
-	maxPreviewSourceArea    = 25_000_000
-	maxImmediateBatchItems  = 100
-	immediateBodyLineBudget = 30 << 10
+	ImmediateJobKind             = "send_immediate_email"
+	coalescingWindow             = 15 * time.Minute
+	maxPreviewBytes              = 20 << 20
+	maxPreviewPixels             = 480
+	maxPreviewSourceArea         = 25_000_000
+	maxImmediateBatchItems       = 100
+	maxImmediatePublicationMedia = 100
+	immediateBodyLineBudget      = 30 << 10
 
 	publicationBatchItem batchItemKind = "publication"
 	commentBatchItem     batchItemKind = "comment"
@@ -140,7 +141,14 @@ func (s *Service) QueuePublication(ctx context.Context, _ uuid.UUID, publication
 			WHERE activity.publication_id = ? AND publication.notify_recipients
 			  AND EXISTS (
 				SELECT 1
-				FROM publication_notification_media AS candidate_media
+				FROM LATERAL (
+					SELECT candidate.media_item_id
+					FROM publication_notification_media AS candidate
+					WHERE candidate.publication_id = activity.publication_id
+					  AND candidate.recipient_access_generation_id = activity.recipient_access_generation_id
+					ORDER BY candidate.media_item_id
+					LIMIT ?
+				) AS candidate_media
 				JOIN current_audience_entitlements AS entitlement
 				  ON entitlement.event_id = publication.event_id
 				 AND entitlement.recipient_access_generation_id = activity.recipient_access_generation_id
@@ -150,12 +158,10 @@ func (s *Service) QueuePublication(ctx context.Context, _ uuid.UUID, publication
 				 AND placement.media_item_id = entitlement.media_item_id
 				JOIN published_moments AS moment ON moment.id = placement.published_moment_id
 				JOIN media_items AS media ON media.id = candidate_media.media_item_id AND media.availability = 'current'
-				WHERE candidate_media.publication_id = activity.publication_id
-				  AND candidate_media.recipient_access_generation_id = activity.recipient_access_generation_id
-				  AND NOT content_is_withdrawn(placement.event_id, moment.draft_moment_id, placement.media_item_id)
+				WHERE NOT content_is_withdrawn(placement.event_id, moment.draft_moment_id, placement.media_item_id)
 			  )
 			ORDER BY activity.recipient_access_generation_id
-		`, publicationID).Scan(ctx, &candidates); err != nil {
+		`, publicationID, maxImmediatePublicationMedia).Scan(ctx, &candidates); err != nil {
 			return err
 		}
 		for _, candidate := range candidates {
@@ -556,9 +562,14 @@ func lockImmediateMedia(ctx context.Context, db bun.IDB, batchID int64) error {
 			SELECT candidate.media_item_id
 			FROM selected_items AS item
 			JOIN notification_batches AS batch ON batch.id = item.batch_id
-			JOIN publication_notification_media AS candidate
-			  ON candidate.publication_id = item.publication_id
-			 AND candidate.recipient_access_generation_id = batch.recipient_access_generation_id
+			JOIN LATERAL (
+				SELECT source.media_item_id
+				FROM publication_notification_media AS source
+				WHERE source.publication_id = item.publication_id
+				  AND source.recipient_access_generation_id = batch.recipient_access_generation_id
+				ORDER BY source.media_item_id
+				LIMIT ?
+			) AS candidate ON true
 			WHERE item.kind = 'publication'
 			UNION
 			SELECT comment.media_item_id
@@ -566,7 +577,7 @@ func lockImmediateMedia(ctx context.Context, db bun.IDB, batchID int64) error {
 			JOIN comments AS comment ON comment.id = item.comment_id
 			WHERE item.kind = 'comment'
 		) ORDER BY media.id FOR SHARE
-	`, batchID, maxImmediateBatchItems).Scan(ctx, &ids)
+	`, batchID, maxImmediateBatchItems, maxImmediatePublicationMedia+1).Scan(ctx, &ids)
 }
 
 func assemblePublication(ctx context.Context, db bun.IDB, accessID, publicationID uuid.UUID) (string, uuid.UUID, uuid.UUID, bool, error) {
@@ -574,25 +585,37 @@ func assemblePublication(ctx context.Context, db bun.IDB, accessID, publicationI
 	var count int
 	var mediaID, assetID uuid.UUID
 	err := db.NewRaw(`
-		SELECT current.title, count(DISTINCT candidate.media_item_id),
-		       (array_agg(candidate.media_item_id ORDER BY placement.position))[1],
-		       (array_agg(media.immich_asset_id ORDER BY placement.position))[1]
+		WITH bounded_candidates AS MATERIALIZED (
+			SELECT candidate.media_item_id
+			FROM publication_notification_media AS candidate
+			WHERE candidate.publication_id = ?
+			  AND candidate.recipient_access_generation_id = ?
+			ORDER BY candidate.media_item_id
+			LIMIT ?
+		), authorized AS MATERIALIZED (
+			SELECT DISTINCT candidate.media_item_id, media.immich_asset_id, placement.position
+			FROM publications AS source
+			JOIN bounded_candidates AS candidate ON true
+			JOIN current_audience_entitlements AS entitlement
+			  ON entitlement.event_id = source.event_id
+			 AND entitlement.recipient_access_generation_id = ?
+			 AND entitlement.media_item_id = candidate.media_item_id
+			JOIN current_published_placements AS placement
+			  ON placement.event_id = entitlement.event_id AND placement.media_item_id = entitlement.media_item_id
+			JOIN published_moments AS moment ON moment.id = placement.published_moment_id
+			JOIN media_items AS media ON media.id = candidate.media_item_id AND media.availability = 'current'
+			WHERE source.id = ? AND source.notify_recipients
+			  AND NOT content_is_withdrawn(placement.event_id, moment.draft_moment_id, placement.media_item_id)
+		)
+		SELECT current.title, count(authorized.media_item_id),
+		       (array_agg(authorized.media_item_id ORDER BY authorized.position, authorized.media_item_id))[1],
+		       (array_agg(authorized.immich_asset_id ORDER BY authorized.position, authorized.media_item_id))[1]
 		FROM publications AS source
 		JOIN current_published_events AS current ON current.event_id = source.event_id
-		JOIN publication_notification_media AS candidate
-		  ON candidate.publication_id = source.id
-		 AND candidate.recipient_access_generation_id = ?
-		JOIN current_audience_entitlements AS entitlement
-		  ON entitlement.event_id = source.event_id
-		 AND entitlement.recipient_access_generation_id = candidate.recipient_access_generation_id
-		 AND entitlement.media_item_id = candidate.media_item_id
-		JOIN current_published_placements AS placement
-		  ON placement.event_id = entitlement.event_id AND placement.media_item_id = entitlement.media_item_id
-		JOIN published_moments AS moment ON moment.id = placement.published_moment_id
-		JOIN media_items AS media ON media.id = candidate.media_item_id AND media.availability = 'current'
-		WHERE source.id = ? AND source.notify_recipients
-		  AND NOT content_is_withdrawn(placement.event_id, moment.draft_moment_id, placement.media_item_id)
-		GROUP BY current.title, source.id`, accessID, publicationID).Scan(ctx, &title, &count, &mediaID, &assetID)
+		JOIN authorized ON true
+		WHERE source.id = ?
+		GROUP BY current.title, source.id`, publicationID, accessID, maxImmediatePublicationMedia+1,
+		accessID, publicationID, publicationID).Scan(ctx, &title, &count, &mediaID, &assetID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", uuid.Nil, uuid.Nil, false, nil
 	}
@@ -601,6 +624,9 @@ func assemblePublication(ctx context.Context, db bun.IDB, accessID, publicationI
 	}
 	if strings.TrimSpace(title) == "" {
 		title = "A family event"
+	}
+	if count > maxImmediatePublicationMedia {
+		return fmt.Sprintf("%s: %d+ new items", title, maxImmediatePublicationMedia), mediaID, assetID, true, nil
 	}
 	label := "new item"
 	if count != 1 {

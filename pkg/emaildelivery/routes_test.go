@@ -33,22 +33,23 @@ func TestDisabledSMTPReturnsSafeServiceUnavailable(t *testing.T) {
 	assert.NotContains(t, response.Body.String(), "password")
 }
 
-func TestRoutesDeclareSetupOnlyPolicy(t *testing.T) {
+func TestRoutesDeclareSetupAndTokenPolicies(t *testing.T) {
 	e := echo.New()
 	RegisterRoutes(e, routeStub{})
 
 	policies := make(map[string]string)
 	for _, route := range e.Routes() {
-		policies[route.Path] = route.Name
+		policies[route.Method+" "+route.Path] = route.Name
 	}
-	assert.Equal(t, setupOnlyPolicy, policies["/api/setup/email/test"])
-	assert.Equal(t, setupOnlyPolicy, policies["/api/setup/email/test/:delivery_id"])
-	assert.Equal(t, publicSafePolicy, policies["/api/email/preferences/unsubscribe"])
+	assert.Equal(t, setupOnlyPolicy, policies["POST /api/setup/email/test"])
+	assert.Equal(t, setupOnlyPolicy, policies["GET /api/setup/email/test/:delivery_id"])
+	assert.Equal(t, tokenInspectPolicy, policies["GET /api/email/preferences/unsubscribe"])
+	assert.Equal(t, preferenceMutationPolicy, policies["POST /api/email/preferences/unsubscribe"])
 }
 
-func TestUnsubscribePageIsSafeAndDoesNotMutateOnGET(t *testing.T) {
+func TestUnsubscribePageAppliesTokenFlowHeadersWithoutReflectingToken(t *testing.T) {
 	e := echo.New()
-	RegisterRoutes(e, NewHandler(New(nil, config.SMTPConfig{}, nil)))
+	RegisterRoutes(e, routeStub{})
 	request := httptest.NewRequestWithContext(context.Background(), http.MethodGet,
 		"/api/email/preferences/unsubscribe?token=private-token", nil)
 	response := httptest.NewRecorder()
@@ -59,6 +60,5 @@ func TestUnsubscribePageIsSafeAndDoesNotMutateOnGET(t *testing.T) {
 	assert.Equal(t, "no-store", response.Header().Get("Cache-Control"))
 	assert.Equal(t, "no-referrer", response.Header().Get("Referrer-Policy"))
 	assert.Contains(t, response.Header().Get("Content-Security-Policy"), "form-action 'self'")
-	assert.Contains(t, response.Body.String(), "Unsubscribe")
 	assert.NotContains(t, response.Body.String(), "private-token")
 }

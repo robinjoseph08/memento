@@ -9,8 +9,9 @@ import (
 )
 
 const (
-	setupOnlyPolicy  = "policy:setup_only"
-	publicSafePolicy = "policy:public_safe"
+	setupOnlyPolicy          = "policy:setup_only"
+	tokenInspectPolicy       = "policy:token_inspect"
+	preferenceMutationPolicy = "policy:token_exchange"
 )
 
 const unsubscribePage = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Memento email preferences</title></head><body><main><h1>Optional email</h1><p>Stop immediate and weekly Memento email. Required identity and security messages will still be sent.</p><form method="post" action=""><input type="hidden" name="List-Unsubscribe" value="One-Click"><button type="submit">Unsubscribe</button></form></main></body></html>`
@@ -56,6 +57,12 @@ func (h *Handler) GetStatus(c echo.Context) error {
 }
 
 func (h *Handler) PreferencePage(c echo.Context) error {
+	if err := h.service.ValidateUnsubscribe(c.Request().Context(), c.QueryParam("token")); err != nil {
+		if errors.Is(err, ErrUnsubscribeToken) {
+			return errcodes.NotFound("Email preference")
+		}
+		return err
+	}
 	return c.HTML(http.StatusOK, unsubscribePage)
 }
 
@@ -83,7 +90,7 @@ func unsubscribeHeaders(next echo.HandlerFunc) echo.HandlerFunc {
 	}
 }
 
-// RegisterRoutes registers setup-only delivery and public token preference routes.
+// RegisterRoutes registers setup-only delivery and token-authorized preference routes.
 func RegisterRoutes(e *echo.Echo, handler requester) {
 	request := e.POST("/api/setup/email/test", handler.RequestTest)
 	request.Name = setupOnlyPolicy
@@ -91,7 +98,7 @@ func RegisterRoutes(e *echo.Echo, handler requester) {
 	status.Name = setupOnlyPolicy
 	preferences := e.Group("/api/email/preferences", unsubscribeHeaders)
 	page := preferences.GET("/unsubscribe", handler.PreferencePage)
-	page.Name = publicSafePolicy
+	page.Name = tokenInspectPolicy
 	unsubscribe := preferences.POST("/unsubscribe", handler.Unsubscribe)
-	unsubscribe.Name = publicSafePolicy
+	unsubscribe.Name = preferenceMutationPolicy
 }

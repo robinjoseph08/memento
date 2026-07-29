@@ -164,6 +164,7 @@ func run() error {
 	search.RegisterRoutes(e, searchHandler)
 	comments.RegisterRoutes(e, commentHandler)
 	favorites.RegisterRoutes(e, favoriteHandler)
+	activity.RegisterRoutes(e, activity.NewHandler(interactionActivity, setupService))
 
 	workCtx, cancelWork := context.WithCancel(context.Background())
 	defer cancelWork()

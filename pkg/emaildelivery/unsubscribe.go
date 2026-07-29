@@ -38,13 +38,44 @@ func (s *Service) newUnsubscribeURLIn(ctx context.Context, tx bun.Tx, accessID u
 	return s.publicURL + "/api/email/preferences/unsubscribe?token=" + url.QueryEscape(encoded), nil
 }
 
-// Unsubscribe disables optional email for the current Recipient generation named by an opaque token.
-func (s *Service) Unsubscribe(ctx context.Context, encoded string) error {
+func unsubscribeTokenHash(encoded string) ([sha256.Size]byte, error) {
 	token, err := base64.RawURLEncoding.DecodeString(encoded)
 	if err != nil || len(token) != 32 {
+		return [sha256.Size]byte{}, ErrUnsubscribeToken
+	}
+	return sha256.Sum256(token), nil
+}
+
+// ValidateUnsubscribe confirms that a preference token is current without mutating durable state.
+func (s *Service) ValidateUnsubscribe(ctx context.Context, encoded string) error {
+	hash, err := unsubscribeTokenHash(encoded)
+	if err != nil {
+		return err
+	}
+	var valid bool
+	if err := s.db.NewRaw(`SELECT EXISTS (
+		SELECT 1
+		FROM notification_preference_tokens AS token
+		JOIN recipient_access_generations AS access
+		  ON access.id = token.recipient_access_generation_id AND access.is_current
+		JOIN notification_preferences AS preference
+		  ON preference.recipient_access_generation_id = token.recipient_access_generation_id
+		WHERE token.token_hash = ? AND token.expires_at > clock_timestamp()
+	)`, hash[:]).Scan(ctx, &valid); err != nil {
+		return err
+	}
+	if !valid {
 		return ErrUnsubscribeToken
 	}
-	hash := sha256.Sum256(token)
+	return nil
+}
+
+// Unsubscribe disables optional email for the current Recipient generation named by an opaque token.
+func (s *Service) Unsubscribe(ctx context.Context, encoded string) error {
+	hash, err := unsubscribeTokenHash(encoded)
+	if err != nil {
+		return err
+	}
 	result, err := s.db.NewRaw(`UPDATE notification_preferences AS preference
 		SET email_preference = 'none', updated_at = clock_timestamp()
 		FROM notification_preference_tokens AS token
