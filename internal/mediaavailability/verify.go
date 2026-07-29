@@ -1,8 +1,10 @@
 package mediaavailability
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"sort"
 	"time"
 
 	"github.com/google/uuid"
@@ -12,16 +14,19 @@ var errInvalidVerificationOptions = errors.New("invalid missing-media verificati
 
 // VerificationOptions bounds one aggregate dependency verification pass.
 type VerificationOptions struct {
-	Deadline    time.Duration
-	MaxProbes   int
-	Concurrency int
+	Deadline     time.Duration
+	MaxProbes    int
+	Concurrency  int
+	AfterAssetID uuid.UUID
 }
 
 // Verification contains only definitive per-asset evidence. Complete is false
 // when the aggregate exceeded its work budget or any probe was uncertain.
+// Cursor identifies the end of an incomplete deterministic work window.
 type Verification struct {
 	Missing  []Backing
 	Complete bool
+	Cursor   uuid.UUID
 }
 
 // VerifyMissing probes each distinct asset at most once with bounded aggregate
@@ -40,19 +45,28 @@ func VerifyMissing(
 	}
 
 	byAsset := make(map[uuid.UUID][]Backing, len(backings))
-	assetIDs := make([]uuid.UUID, 0, min(len(backings), options.MaxProbes))
-	budgetExceeded := false
+	assetIDs := make([]uuid.UUID, 0, len(backings))
 	for _, backing := range backings {
 		if existing, seen := byAsset[backing.AssetID]; seen {
 			byAsset[backing.AssetID] = append(existing, backing)
 			continue
 		}
 		byAsset[backing.AssetID] = []Backing{backing}
-		if len(assetIDs) < options.MaxProbes {
-			assetIDs = append(assetIDs, backing.AssetID)
-		} else {
-			budgetExceeded = true
+		assetIDs = append(assetIDs, backing.AssetID)
+	}
+	sort.Slice(assetIDs, func(left, right int) bool {
+		return bytes.Compare(assetIDs[left][:], assetIDs[right][:]) < 0
+	})
+	budgetExceeded := len(assetIDs) > options.MaxProbes
+	if budgetExceeded {
+		start := sort.Search(len(assetIDs), func(index int) bool {
+			return bytes.Compare(assetIDs[index][:], options.AfterAssetID[:]) > 0
+		})
+		selected := make([]uuid.UUID, 0, options.MaxProbes)
+		for offset := range options.MaxProbes {
+			selected = append(selected, assetIDs[(start+offset)%len(assetIDs)])
 		}
+		assetIDs = selected
 	}
 
 	verificationCtx := ctx
@@ -91,6 +105,9 @@ func VerifyMissing(
 	}
 
 	result := Verification{Missing: make([]Backing, 0), Complete: !budgetExceeded}
+	if budgetExceeded {
+		result.Cursor = assetIDs[len(assetIDs)-1]
+	}
 	var firstErr error
 	for index, checked := range results {
 		if checked.err != nil {

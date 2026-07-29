@@ -1434,6 +1434,41 @@ func TestMissingAlbumChecksSharedMembersForGlobalAssetLoss(t *testing.T) {
 	assert.Equal(t, 2, memberships, "missing-album evidence retains membership history")
 }
 
+func TestBoundedRemovalVerificationAdvancesPastFirstWorkWindow(t *testing.T) {
+	assets := make([]immich.AssetSummary, missingVerificationWorkBudget+1)
+	for index := range assets {
+		assets[index] = repairableReconciliationAsset(uuid.New(), fmt.Sprintf("/library/bounded/%03d.jpg", index))
+		assets[index].Checksum = fmt.Sprintf("%040d", index+1)
+	}
+	connector := &reconciliationConnector{summary: sourceAlbum(uuid.New(), "Bounded removal source", len(assets))}
+	connector.pages = map[int]immich.AssetPage{1: {Items: assets}}
+	service, sourceAlbumID := newReconciliationService(t, connector)
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	for _, asset := range assets {
+		connector.setAssetExists(asset.SourceID, false)
+	}
+	connector.setMembership()
+
+	require.ErrorIs(t, service.Reconcile(context.Background(), sourceAlbumID), ErrDependency)
+	var missingCount int
+	var cursor uuid.NullUUID
+	require.NoError(t, service.db.NewRaw(`
+		SELECT count(*) FROM media_items WHERE availability = 'source_missing'
+	`).Scan(context.Background(), &missingCount))
+	require.NoError(t, service.db.NewRaw(`
+		SELECT missing_verification_cursor FROM source_albums WHERE id = ?
+	`, sourceAlbumID).Scan(context.Background(), &cursor))
+	assert.Equal(t, missingVerificationWorkBudget, missingCount)
+	require.True(t, cursor.Valid)
+
+	require.ErrorIs(t, service.Reconcile(context.Background(), sourceAlbumID), ErrDependency)
+	require.NoError(t, service.db.NewRaw(`
+		SELECT count(*) FROM media_items WHERE availability = 'source_missing'
+	`).Scan(context.Background(), &missingCount))
+	assert.Equal(t, len(assets), missingCount,
+		"a later bounded pass must verify Media beyond the first deterministic work window")
+}
+
 func TestConfirmedDeletedPublishedMediaBecomesUnavailable(t *testing.T) {
 	original := repairableReconciliationAsset(uuid.New(), "/library/deleted/family.jpg")
 	connector := &reconciliationConnector{summary: sourceAlbum(uuid.New(), "Deleted source", 1)}

@@ -115,6 +115,45 @@ func TestVerifyMissingBoundsAggregateWorkAndConcurrency(t *testing.T) {
 	assert.Equal(t, concurrency, maximumActive)
 }
 
+func TestVerifyMissingAdvancesDeterministicWorkWindow(t *testing.T) {
+	assetIDs := []uuid.UUID{
+		uuid.MustParse("00000000-0000-0000-0000-000000000001"),
+		uuid.MustParse("00000000-0000-0000-0000-000000000002"),
+		uuid.MustParse("00000000-0000-0000-0000-000000000003"),
+		uuid.MustParse("00000000-0000-0000-0000-000000000004"),
+		uuid.MustParse("00000000-0000-0000-0000-000000000005"),
+	}
+	backings := make([]Backing, len(assetIDs))
+	for index, assetID := range assetIDs {
+		backings[index] = Backing{MediaID: uuid.New(), BackingID: uuid.New(), AssetID: assetID}
+	}
+	missingAssetID := assetIDs[3]
+	var cursor uuid.UUID
+	var windows [][]uuid.UUID
+	var missing []Backing
+	for range 3 {
+		var checked []uuid.UUID
+		verification, err := VerifyMissing(context.Background(), backings, VerificationOptions{
+			Deadline: time.Minute, MaxProbes: 2, Concurrency: 1, AfterAssetID: cursor,
+		}, func(_ context.Context, assetID uuid.UUID) (bool, error) {
+			checked = append(checked, assetID)
+			return assetID != missingAssetID, nil
+		})
+		require.NoError(t, err)
+		assert.False(t, verification.Complete)
+		windows = append(windows, checked)
+		missing = append(missing, verification.Missing...)
+		cursor = verification.Cursor
+	}
+
+	assert.Equal(t, [][]uuid.UUID{
+		{assetIDs[0], assetIDs[1]},
+		{assetIDs[2], assetIDs[3]},
+		{assetIDs[4], assetIDs[0]},
+	}, windows)
+	assert.Equal(t, []Backing{backings[3]}, missing)
+}
+
 func TestVerifyMissingRetainsOnlyPreciseEvidence(t *testing.T) {
 	missingAsset, currentAsset, uncertainAsset := uuid.New(), uuid.New(), uuid.New()
 	firstMissing := Backing{MediaID: uuid.New(), BackingID: uuid.New(), AssetID: missingAsset}

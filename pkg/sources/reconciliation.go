@@ -55,6 +55,7 @@ type reconciliationDatabaseSnapshot struct {
 	sourceFingerprint              []byte
 	candidateMembershipFingerprint []byte
 	candidateMembershipPasses      int
+	missingVerificationCursor      uuid.NullUUID
 	backings                       []mediaavailability.Backing
 }
 
@@ -161,18 +162,23 @@ func (s *Service) Reconcile(ctx context.Context, sourceAlbumID uuid.UUID) error 
 		// Asset probes are optional, independent evidence. Retain every precise
 		// result within the aggregate budget, but never infer that unprobed or
 		// uncertain assets are missing.
-		missing, _ := s.confirmMissingBackings(ctx, databaseSnapshot.backings)
-		if len(missing) == 0 {
-			return nil
-		}
+		verification, _ := s.confirmMissingBackings(
+			ctx, databaseSnapshot.backings, databaseSnapshot.missingVerificationCursor.UUID,
+		)
 		err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 			if err := staging.LockAccessSummaryRefresh(ctx, tx); err != nil {
 				return err
 			}
-			if err := mediaavailability.MarkSourceMissingInTx(ctx, tx, missing); err != nil {
+			if err := mediaavailability.MarkSourceMissingInTx(ctx, tx, verification.Missing); err != nil {
 				return err
 			}
-			return proposeMediaRepairs(ctx, tx, now)
+			if len(verification.Missing) > 0 {
+				if err := proposeMediaRepairs(ctx, tx, now); err != nil {
+					return err
+				}
+			}
+			return updateMissingVerificationCursor(ctx, tx, sourceAlbumID,
+				databaseSnapshot.missingVerificationCursor, verification.Cursor)
 		})
 		if err != nil {
 			return fmt.Errorf("record missing Source album assets: %w", err)
@@ -186,8 +192,13 @@ func (s *Service) Reconcile(ctx context.Context, sourceAlbumID uuid.UUID) error 
 			removedBackings = append(removedBackings, backing)
 		}
 	}
-	confirmedMissing, err := s.confirmMissingBackings(ctx, removedBackings)
+	verification, err := s.confirmMissingBackings(
+		ctx, removedBackings, databaseSnapshot.missingVerificationCursor.UUID,
+	)
 	if err != nil {
+		if recordErr := s.recordMissingVerification(ctx, sourceAlbumID, databaseSnapshot, verification, now); recordErr != nil {
+			return recordErr
+		}
 		snapshot.diagnostic = "dependency_unavailable"
 		if recordErr := s.recordFailedSnapshot(ctx, sourceAlbumID, now, "failed", snapshot); recordErr != nil {
 			return recordErr
@@ -203,9 +214,13 @@ func (s *Service) Reconcile(ctx context.Context, sourceAlbumID uuid.UUID) error 
 			return err
 		}
 		stablePasses, additions, removals, err := s.applyValidatedSnapshot(
-			ctx, tx, sourceAlbumID, snapshot, removedBackings, confirmedMissing, now,
+			ctx, tx, sourceAlbumID, snapshot, removedBackings, verification.Missing, now,
 		)
 		if err != nil {
+			return err
+		}
+		if err := updateMissingVerificationCursor(ctx, tx, sourceAlbumID,
+			databaseSnapshot.missingVerificationCursor, verification.Cursor); err != nil {
 			return err
 		}
 		snapshot.diagnostic = ""
@@ -225,11 +240,12 @@ func (s *Service) readReconciliationDatabaseSnapshot(ctx context.Context, source
 	err := s.db.RunInTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true}, func(ctx context.Context, tx bun.Tx) error {
 		if err := tx.NewRaw(`
 			SELECT immich_album_id, updated_at, source_fingerprint,
-			       candidate_membership_fingerprint, candidate_membership_passes
+			       candidate_membership_fingerprint, candidate_membership_passes,
+			       missing_verification_cursor
 			FROM source_albums WHERE id = ?
 		`, sourceAlbumID).Scan(ctx, &snapshot.immichAlbumID, &snapshot.updatedAt,
 			&snapshot.sourceFingerprint, &snapshot.candidateMembershipFingerprint,
-			&snapshot.candidateMembershipPasses); err != nil {
+			&snapshot.candidateMembershipPasses, &snapshot.missingVerificationCursor); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return ErrNotFound
 			}
@@ -259,12 +275,15 @@ func validateReconciliationDatabaseSnapshot(ctx context.Context, tx bun.Tx, sour
 	var updatedAt time.Time
 	var sourceFingerprint, candidateMembershipFingerprint []byte
 	var candidateMembershipPasses int
+	var missingVerificationCursor uuid.NullUUID
 	if err := tx.NewRaw(`
 		SELECT immich_album_id, updated_at, source_fingerprint,
-		       candidate_membership_fingerprint, candidate_membership_passes
+		       candidate_membership_fingerprint, candidate_membership_passes,
+		       missing_verification_cursor
 		FROM source_albums WHERE id = ? FOR UPDATE
 	`, sourceAlbumID).Scan(ctx, &immichAlbumID, &updatedAt, &sourceFingerprint,
-		&candidateMembershipFingerprint, &candidateMembershipPasses); err != nil {
+		&candidateMembershipFingerprint, &candidateMembershipPasses,
+		&missingVerificationCursor); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrNotFound
 		}
@@ -278,6 +297,7 @@ func validateReconciliationDatabaseSnapshot(ctx context.Context, tx bun.Tx, sour
 		string(sourceFingerprint) != string(expected.sourceFingerprint) ||
 		string(candidateMembershipFingerprint) != string(expected.candidateMembershipFingerprint) ||
 		candidateMembershipPasses != expected.candidateMembershipPasses ||
+		missingVerificationCursor != expected.missingVerificationCursor ||
 		!sameBackingSnapshot(current, expected.backings) {
 		return ErrUnstable
 	}
@@ -398,18 +418,80 @@ func sourceMembershipBackings(ctx context.Context, tx bun.Tx, sourceAlbumID uuid
 	return backings, nil
 }
 
-func (s *Service) confirmMissingBackings(ctx context.Context, backings []mediaavailability.Backing) ([]mediaavailability.Backing, error) {
+func (s *Service) confirmMissingBackings(
+	ctx context.Context,
+	backings []mediaavailability.Backing,
+	afterAssetID uuid.UUID,
+) (mediaavailability.Verification, error) {
 	verification, err := mediaavailability.VerifyMissing(ctx, backings, mediaavailability.VerificationOptions{
 		Deadline: missingVerificationDeadline, MaxProbes: missingVerificationWorkBudget,
-		Concurrency: missingVerificationConcurrency,
+		Concurrency: missingVerificationConcurrency, AfterAssetID: afterAssetID,
 	}, s.connector.AssetExists)
 	if err != nil {
-		return verification.Missing, err
+		return verification, err
 	}
 	if !verification.Complete {
-		return verification.Missing, errMissingVerificationIncomplete
+		return verification, errMissingVerificationIncomplete
 	}
-	return verification.Missing, nil
+	return verification, nil
+}
+
+func (s *Service) recordMissingVerification(
+	ctx context.Context,
+	sourceAlbumID uuid.UUID,
+	databaseSnapshot reconciliationDatabaseSnapshot,
+	verification mediaavailability.Verification,
+	now time.Time,
+) error {
+	return s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if err := staging.LockAccessSummaryRefresh(ctx, tx); err != nil {
+			return err
+		}
+		if err := validateReconciliationDatabaseSnapshot(ctx, tx, sourceAlbumID, databaseSnapshot); err != nil {
+			return err
+		}
+		if err := mediaavailability.MarkSourceMissingInTx(ctx, tx, verification.Missing); err != nil {
+			return err
+		}
+		if len(verification.Missing) > 0 {
+			if err := proposeMediaRepairs(ctx, tx, now); err != nil {
+				return err
+			}
+		}
+		return updateMissingVerificationCursor(ctx, tx, sourceAlbumID,
+			databaseSnapshot.missingVerificationCursor, verification.Cursor)
+	})
+}
+
+func updateMissingVerificationCursor(
+	ctx context.Context,
+	tx bun.Tx,
+	sourceAlbumID uuid.UUID,
+	expected uuid.NullUUID,
+	next uuid.UUID,
+) error {
+	var expectedValue, nextValue any
+	if expected.Valid {
+		expectedValue = expected.UUID
+	}
+	if next != uuid.Nil {
+		nextValue = next
+	}
+	result, err := tx.NewRaw(`
+		UPDATE source_albums SET missing_verification_cursor = ?
+		WHERE id = ? AND missing_verification_cursor IS NOT DISTINCT FROM ?
+	`, nextValue, sourceAlbumID, expectedValue).Exec(ctx)
+	if err != nil {
+		return err
+	}
+	updated, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if updated != 1 {
+		return ErrUnstable
+	}
+	return nil
 }
 
 func (s *Service) applyValidatedSnapshot(
