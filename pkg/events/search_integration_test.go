@@ -119,8 +119,8 @@ func TestSearchUsesOnlyAuthorizedCurrentPublicationAndDiscoverableAttendance(t *
 		VALUES (?, ?, ?, ?, 0);
 		INSERT INTO current_audience_entitlements (event_id, publication_id, recipient_person_id, recipient_access_generation_id, media_item_id)
 		VALUES (?, ?, ?, ?, ?);
-		INSERT INTO published_search_documents (event_id, publication_id, recipient_access_generation_id, media_item_id, search_text, capture_date)
-		VALUES (?, ?, ?, ?, 'Summer duplicate', '2026-07-27')
+		INSERT INTO published_search_documents (event_id, publication_id, media_item_id, search_text, capture_date)
+		VALUES (?, ?, ?, 'Summer duplicate', '2026-07-27')
 	`, duplicateEvent, duplicatePublication, duplicateEvent, fixture.actor.PersonID,
 		duplicatePublication, duplicateEvent, duplicatePublication, duplicateEvent,
 		duplicateSnapshot, uuid.New(), fixture.actor.PersonID,
@@ -128,7 +128,7 @@ func TestSearchUsesOnlyAuthorizedCurrentPublicationAndDiscoverableAttendance(t *
 		duplicateMoment, fixture.media[0], duplicateEvent, duplicatePublication,
 		duplicateEvent, duplicatePublication, duplicateMoment, fixture.media[0],
 		duplicateEvent, duplicatePublication, fixture.people["shared"], fixture.access["shared"], fixture.media[0],
-		duplicateEvent, duplicatePublication, fixture.access["shared"], fixture.media[0]).Exec(ctx)
+		duplicateEvent, duplicatePublication, fixture.media[0]).Exec(ctx)
 	require.NoError(t, err)
 	deduplicated, err := service.Search(ctx, actor, searchdomain.Request{Query: "summer"})
 	require.NoError(t, err)
@@ -660,13 +660,13 @@ func TestSearchDateFiltersEnforceInclusiveUpperAndLowerBounds(t *testing.T) {
 				event_id, publication_id, recipient_person_id, recipient_access_generation_id, media_item_id
 			) VALUES (?, ?, ?, ?, ?);
 			INSERT INTO published_search_documents (
-				event_id, publication_id, recipient_access_generation_id, media_item_id, search_text, capture_date
-			) VALUES (?, ?, ?, ?, 'date boundary', ?::date)
+				event_id, publication_id, media_item_id, search_text, capture_date
+			) VALUES (?, ?, ?, 'date boundary', ?::date)
 		`, mediaID, uuid.New(), boundary.date,
 			publishedMomentID, mediaID, position+10, boundary.date,
 			fixture.event, publicationID, publishedMomentID, mediaID, position+10,
 			fixture.event, publicationID, actor.PersonID, actor.AccessID, mediaID,
-			fixture.event, publicationID, actor.AccessID, mediaID, boundary.date).Exec(ctx)
+			fixture.event, publicationID, mediaID, boundary.date).Exec(ctx)
 		require.NoError(t, err, boundary.name)
 	}
 

@@ -18,7 +18,7 @@ import (
 // This release-defined digest covers table, constraint name, and normalized definition
 // for every expected foreign key after all registered migrations.
 const (
-	expectedForeignKeyInventorySHA256  = "36e7876e46cabafb9266d3483b83951764af985a630b8bd80e17388d8010204c"
+	expectedForeignKeyInventorySHA256  = "b3f8fb90c09854bf630a6555174c66de27de0ccec35e37ffed8e317388a7896f"
 	expectedRecoveryDeliveryViewSHA256 = "6ef46fa32643821f6367cb7e25264bbd62d1ed32e76713519440e05f80af285f"
 	expectedWithdrawalFunctionSHA256   = "82ee8848f421c74c31eb5c380df242243f12d9eff71695ac974f3375cbc940f8"
 )
@@ -105,8 +105,9 @@ func validateForeignKeys(ctx context.Context, db bun.IDB) error {
 		return fmt.Errorf("foreign keys: %w", err)
 	}
 	digest := sha256.Sum256([]byte(inventory))
-	if hex.EncodeToString(digest[:]) != expectedForeignKeyInventorySHA256 {
-		return ErrForeignKeys
+	actualInventorySHA256 := hex.EncodeToString(digest[:])
+	if actualInventorySHA256 != expectedForeignKeyInventorySHA256 {
+		return fmt.Errorf("%w: inventory SHA-256 %s", ErrForeignKeys, actualInventorySHA256)
 	}
 	var invalid int
 	if err := db.NewRaw(`SELECT count(*) FROM pg_constraint
@@ -323,12 +324,12 @@ func validateProjections(ctx context.Context, db bun.IDB) error {
 		(SELECT count(*) FROM published_search_documents AS document
 		 WHERE NOT EXISTS (SELECT 1 FROM current_audience_entitlements AS entitlement
 		  WHERE entitlement.event_id = document.event_id AND entitlement.publication_id = document.publication_id
-		   AND entitlement.recipient_access_generation_id = document.recipient_access_generation_id
 		   AND entitlement.media_item_id = document.media_item_id)) +
-		(SELECT count(*) FROM current_audience_entitlements AS entitlement
+		(SELECT count(*) FROM (
+		 SELECT DISTINCT event_id, publication_id, media_item_id FROM current_audience_entitlements
+		) AS entitlement
 		 WHERE NOT EXISTS (SELECT 1 FROM published_search_documents AS document
 		  WHERE document.event_id = entitlement.event_id AND document.publication_id = entitlement.publication_id
-		   AND document.recipient_access_generation_id = entitlement.recipient_access_generation_id
 		   AND document.media_item_id = entitlement.media_item_id)) +
 		(SELECT count(*) FROM events AS event
 		 WHERE (event.current_staged_update_id IS NULL) <> (NOT EXISTS (

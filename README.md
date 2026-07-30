@@ -73,6 +73,8 @@ mise ci:quiet
 
 The integration task provisions an isolated PostgreSQL 17 database and removes it when the tests finish. It does not connect to an existing PostgreSQL server unless `MEMENTO_TEST_DATABASE_URL` is explicitly set. Set that variable to use an explicitly managed integration database instead of the disposable container.
 
+Run `mise test:performance` manually to build the deterministic 100,000-Media fixture and measure every baseline target. The target-scale suite is not part of ordinary CI because it is sensitive to shared-runner load. See [`docs/performance.md`](docs/performance.md) for reproducibility and evidence requirements.
+
 Tygo output under `app/types/generated/` is gitignored. Mise generates it from Go before every frontend task that consumes it, so contributors never need to commit regenerated files with a PR. The production Docker build also generates its own copy instead of depending on the local working tree.
 
 Individual checks are available through names such as `mise lint:eslint`, `mise lint:prettier`, `mise lint:types`, `mise types:generate`, `mise test:integration`, `mise compose:validate`, `mise caddy:validate`, and `mise test:production`. Docker-backed test harnesses live under `tests/`. See [`docs/accessibility.md`](docs/accessibility.md) for the automated browser matrix and assistive-technology release checks.

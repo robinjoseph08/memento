@@ -456,7 +456,7 @@ func TestPublicationPersistsNotificationChoiceAndSelectsASafeAvailableCover(t *t
 	assert.JSONEq(t, `{"event_id":"`+fixture.event.String()+`","notify_recipients":false,"publication_id":"`+publication.ID+`"}`, outboxPayload)
 	assertPublicationHandoffSkipped(t, fixture, publication)
 	var searchText string
-	require.NoError(t, fixture.db.NewRaw(`SELECT search_text FROM published_search_documents WHERE recipient_access_generation_id = ? AND media_item_id = ?`, fixture.access["shared"], fixture.media[1]).Scan(ctx, &searchText))
+	require.NoError(t, fixture.db.NewRaw(`SELECT search_text FROM published_search_documents WHERE media_item_id = ?`, fixture.media[1]).Scan(ctx, &searchText))
 	assert.Contains(t, searchText, "Family weekend")
 	assert.Contains(t, searchText, "A private Event")
 	view, err := fixture.service.RecipientEvent(ctx, fixture.actorFor("shared"), fixture.event)

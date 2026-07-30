@@ -114,7 +114,7 @@ run = "pnpm lint:types"
 [tasks.test]
 description = "Run Go and frontend unit tests"
 depends = ["dependencies:install", "types:generate"]
-run = ["go test ./...", "pnpm test"]
+run = ["go test ./...", "go test -run '^$' -tags='integration performance' ./tests/performance", "pnpm test"]
 
 [tasks."test:race"]
 description = "Run Go unit tests with the race detector"
@@ -137,6 +137,14 @@ run = "pnpm build"
 [tasks."test:integration"]
 description = "Run PostgreSQL integration tests"
 run = "./tests/test-integration.sh"
+
+[tasks."test:performance"]
+description = "Run the manual 100,000-Media target-scale performance proof"
+run = "./tests/test-performance.sh"
+
+[tasks."test:performance-compile"]
+description = "Compile the performance harness without running target-scale scenarios"
+run = "go test -run '^$' -tags='integration performance' ./tests/performance"
 
 [tasks."test:immich-contract"]
 description = "Run the connector contract against Immich v3.0.3"
