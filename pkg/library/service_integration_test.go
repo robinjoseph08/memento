@@ -22,11 +22,15 @@ import (
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 	"github.com/robinjoseph08/memento/internal/testdb"
+	commentsservice "github.com/robinjoseph08/memento/pkg/comments"
 	"github.com/robinjoseph08/memento/pkg/config"
 	"github.com/robinjoseph08/memento/pkg/errcodes"
+	favoritesservice "github.com/robinjoseph08/memento/pkg/favorites"
 	"github.com/robinjoseph08/memento/pkg/immich"
+	"github.com/robinjoseph08/memento/pkg/mediaaccess"
 	"github.com/robinjoseph08/memento/pkg/migrations"
 	"github.com/robinjoseph08/memento/pkg/repairs"
+	searchservice "github.com/robinjoseph08/memento/pkg/search"
 	"github.com/robinjoseph08/memento/pkg/setup"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1826,4 +1830,339 @@ func TestRecipientAuthorizationMatrixRevalidatesReuseWithdrawalAndAvailability(t
 	require.NoError(t, err)
 	_, err = fixture.service.Events(ctx, fixture.actor, "10", "")
 	assert.ErrorIs(t, err, ErrNotFound, "the current access generation state is revalidated inside the content read")
+}
+
+func TestMediaAccessFailsClosedOnRecoveryHoldWithoutEpochRotation(t *testing.T) {
+	fixture := newLibraryFixture(t)
+	ctx := context.Background()
+
+	require.NoError(t, mediaaccess.Require(ctx, fixture.db, fixture.actor, fixture.media[0]))
+	allowed, err := mediaaccess.GenerationCanAccess(ctx, fixture.db, fixture.actor.AccessID, fixture.media[0])
+	require.NoError(t, err)
+	require.True(t, allowed)
+
+	_, err = fixture.db.NewRaw(`UPDATE system_settings SET recovery_hold = true,
+		recovery_nonce_hash = decode(repeat('ab', 32), 'hex'), recovery_started_at = now() WHERE id = 1`).Exec(ctx)
+	require.NoError(t, err)
+	assert.ErrorIs(t, mediaaccess.Require(ctx, fixture.db, fixture.actor, fixture.media[0]), mediaaccess.ErrNotFound)
+	allowed, err = mediaaccess.GenerationCanAccess(ctx, fixture.db, fixture.actor.AccessID, fixture.media[0])
+	require.NoError(t, err)
+	assert.False(t, allowed)
+
+	tx, err := fixture.db.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = tx.Rollback() })
+	assert.ErrorIs(t, mediaaccess.RequireForMutation(ctx, tx, fixture.actor, fixture.media[0]), mediaaccess.ErrNotFound)
+}
+
+type productionMatrixSessionType string
+type productionMatrixValidity string
+type productionMatrixEpoch string
+type productionMatrixRecipientState string
+type productionMatrixGeneration string
+type productionMatrixEntitlement string
+type productionMatrixPlacement string
+type productionMatrixWithdrawal string
+type productionMatrixSource string
+
+const (
+	matrixTrustedSession     productionMatrixSessionType    = "trusted"
+	matrixPublicSession      productionMatrixSessionType    = "public"
+	matrixValidSession       productionMatrixValidity       = "valid"
+	matrixExpiredSession     productionMatrixValidity       = "expired"
+	matrixRevokedSession     productionMatrixValidity       = "revoked"
+	matrixCurrentEpoch       productionMatrixEpoch          = "current"
+	matrixStaleEpoch         productionMatrixEpoch          = "stale"
+	matrixPendingAccess      productionMatrixRecipientState = "pending"
+	matrixCompletedAccess    productionMatrixRecipientState = "completed"
+	matrixSuspendedAccess    productionMatrixRecipientState = "suspended"
+	matrixRevokedAccess      productionMatrixRecipientState = "revoked"
+	matrixCurrentGeneration  productionMatrixGeneration     = "current"
+	matrixStaleGeneration    productionMatrixGeneration     = "stale"
+	matrixEntitled           productionMatrixEntitlement    = "entitled"
+	matrixUnentitled         productionMatrixEntitlement    = "not_entitled"
+	matrixSinglePlacement    productionMatrixPlacement      = "single"
+	matrixReusedPlacement    productionMatrixPlacement      = "reused"
+	matrixNoWithdrawal       productionMatrixWithdrawal     = "none"
+	matrixPrimaryWithdrawal  productionMatrixWithdrawal     = "primary"
+	matrixCompleteWithdrawal productionMatrixWithdrawal     = "all"
+	matrixCurrentSource      productionMatrixSource         = "current"
+	matrixMissingSource      productionMatrixSource         = "source_missing"
+)
+
+func TestRecipientAuthorizationCartesianMatrixUsesProductionQueries(t *testing.T) {
+	fixture := newLibraryFixture(t)
+	ctx := context.Background()
+	commentService := commentsservice.New(fixture.db)
+	favoriteService := favoritesservice.New(fixture.db, nil)
+	searchService := searchservice.New(fixture.db)
+	_, err := fixture.db.NewRaw(`UPDATE media_items SET media_type = 'video' WHERE id = ?;
+		UPDATE published_media_placements SET media_type = 'video' WHERE media_item_id = ?;
+		DELETE FROM current_audience_entitlements WHERE recipient_access_generation_id = ? AND media_item_id <> ?`,
+		fixture.media[0], fixture.media[0], fixture.actor.AccessID, fixture.media[0]).Exec(ctx)
+	require.NoError(t, err)
+	representations := []struct {
+		name string
+		open func(context.Context, setup.SessionActor, uuid.UUID, immich.MediaRequest) (immich.MediaResponse, error)
+	}{
+		{"thumbnail", fixture.service.Thumbnail},
+		{"preview", fixture.service.Preview},
+		{"video", fixture.service.Video},
+		{"original", fixture.service.Original},
+	}
+	type authorizationState struct {
+		sessionType    productionMatrixSessionType
+		validity       productionMatrixValidity
+		epoch          productionMatrixEpoch
+		recipientState productionMatrixRecipientState
+		generation     productionMatrixGeneration
+		entitled       productionMatrixEntitlement
+		placement      productionMatrixPlacement
+		withdrawal     productionMatrixWithdrawal
+		source         productionMatrixSource
+	}
+	caseNumber := 0
+	for _, sessionType := range []productionMatrixSessionType{matrixTrustedSession, matrixPublicSession} {
+		for _, validity := range []productionMatrixValidity{matrixValidSession, matrixExpiredSession, matrixRevokedSession} {
+			for _, epoch := range []productionMatrixEpoch{matrixCurrentEpoch, matrixStaleEpoch} {
+				for _, recipientState := range []productionMatrixRecipientState{matrixPendingAccess, matrixCompletedAccess, matrixSuspendedAccess, matrixRevokedAccess} {
+					for _, generation := range []productionMatrixGeneration{matrixCurrentGeneration, matrixStaleGeneration} {
+						for _, entitled := range []productionMatrixEntitlement{matrixEntitled, matrixUnentitled} {
+							for _, placement := range []productionMatrixPlacement{matrixSinglePlacement, matrixReusedPlacement} {
+								for _, withdrawal := range []productionMatrixWithdrawal{matrixNoWithdrawal, matrixPrimaryWithdrawal, matrixCompleteWithdrawal} {
+									for _, source := range []productionMatrixSource{matrixCurrentSource, matrixMissingSource} {
+										state := authorizationState{sessionType, validity, epoch, recipientState, generation, entitled, placement, withdrawal, source}
+										caseNumber++
+										isCompleted := recipientState == matrixCompletedAccess
+										hasCompletedOnboarding := isCompleted || recipientState == matrixSuspendedAccess || recipientState == matrixRevokedAccess
+										_, err := fixture.db.NewRaw(`
+											UPDATE system_settings SET security_epoch = decode(repeat('42', 32), 'hex'), recovery_hold = false WHERE id = 1;
+											UPDATE recipient_access_generations SET state = ?, is_current = ?,
+												onboarding_completed_at = CASE WHEN ? THEN now() ELSE NULL END,
+												ended_at = CASE WHEN ? = 'revoked' THEN now() ELSE NULL END
+											WHERE id = ?;
+											UPDATE sessions SET session_type = ?, revoked_at = CASE WHEN ? = 'revoked' THEN now() ELSE NULL END,
+												security_epoch = decode(repeat(CASE WHEN ? = 'current' THEN '42' ELSE '43' END, 32), 'hex'),
+												idle_expires_at = CASE WHEN ? = 'trusted' THEN now() + CASE WHEN ? = 'expired' THEN interval '-1 hour' ELSE interval '1 hour' END ELSE NULL END,
+												absolute_expires_at = CASE WHEN ? = 'public' THEN now() + CASE WHEN ? = 'expired' THEN interval '-1 hour' ELSE interval '1 hour' END ELSE NULL END
+											WHERE id = ?;
+											DELETE FROM current_audience_entitlements WHERE recipient_access_generation_id = ? AND media_item_id = ?;
+											INSERT INTO current_audience_entitlements
+												(event_id, publication_id, recipient_person_id, recipient_access_generation_id, media_item_id)
+											SELECT ?, ?, person_id, ?, ? FROM recipient_access_generations WHERE id = ? AND ? = 'entitled';
+											INSERT INTO current_audience_entitlements
+												(event_id, publication_id, recipient_person_id, recipient_access_generation_id, media_item_id)
+											SELECT ?, ?, person_id, ?, ? FROM recipient_access_generations
+											WHERE id = ? AND ? = 'entitled' AND ? = 'reused';
+											DELETE FROM content_withdrawals WHERE target_id IN (?, ?, ?);
+											INSERT INTO content_withdrawals (id, target_kind, target_id, withdrawn_by_person_id, withdrawn_at)
+											SELECT gen_random_uuid(), 'event', ?, ?, now() WHERE ? = 'primary';
+											INSERT INTO content_withdrawals (id, target_kind, target_id, withdrawn_by_person_id, withdrawn_at)
+											SELECT gen_random_uuid(), 'media', ?, ?, now() WHERE ? = 'all';
+											UPDATE media_items SET availability = ?, missing_since = CASE WHEN ? = 'source_missing' THEN now() ELSE NULL END WHERE id = ?
+										`, recipientState, generation == matrixCurrentGeneration, hasCompletedOnboarding, recipientState, fixture.actor.AccessID,
+											sessionType, validity, epoch, sessionType, validity, sessionType, validity, fixture.actor.SessionID,
+											fixture.actor.AccessID, fixture.media[0],
+											fixture.events[0], fixture.publications[0], fixture.actor.AccessID, fixture.media[0], fixture.actor.AccessID, entitled,
+											fixture.events[1], fixture.publications[1], fixture.actor.AccessID, fixture.media[0], fixture.actor.AccessID, entitled, placement,
+											fixture.events[0], fixture.events[1], fixture.media[0],
+											fixture.events[0], fixture.curator, withdrawal,
+											fixture.media[0], fixture.curator, withdrawal,
+											source, source, fixture.media[0]).Exec(ctx)
+										require.NoErrorf(t, err, "case %d: %+v", caseNumber, state)
+
+										sessionUsable := validity == matrixValidSession && epoch == matrixCurrentEpoch
+										generationUsable := isCompleted && generation == matrixCurrentGeneration
+										livePlacement := entitled == matrixEntitled && withdrawal != matrixCompleteWithdrawal && (withdrawal == matrixNoWithdrawal || placement == matrixReusedPlacement)
+										metadataVisible := sessionUsable && generationUsable && livePlacement
+										accessErr := mediaaccess.Require(ctx, fixture.db, fixture.actor, fixture.media[0])
+										if metadataVisible {
+											require.NoErrorf(t, accessErr, "case %d: %+v", caseNumber, state)
+										} else {
+											require.ErrorIsf(t, accessErr, mediaaccess.ErrNotFound, "case %d: %+v", caseNumber, state)
+										}
+
+										photos, photosErr := fixture.service.Photos(ctx, fixture.actor, "10", "", false)
+										events, eventsErr := fixture.service.Events(ctx, fixture.actor, "10", "")
+										newForYou, newForYouErr := fixture.service.NewForYou(ctx, fixture.actor)
+										targetEventIndex := 0
+										if placement == matrixReusedPlacement {
+											targetEventIndex = 1
+										}
+										event, eventErr := fixture.service.Event(ctx, fixture.actor, fixture.events[targetEventIndex], "10", "")
+										_, searchErr := searchService.Search(ctx, fixture.actor, searchservice.Request{Query: "Event"})
+										if sessionUsable && generationUsable {
+											require.NoErrorf(t, photosErr, "case %d: %+v", caseNumber, state)
+											require.NoErrorf(t, eventsErr, "case %d: %+v", caseNumber, state)
+											require.NoErrorf(t, newForYouErr, "case %d: %+v", caseNumber, state)
+											require.NoErrorf(t, searchErr, "case %d: %+v", caseNumber, state)
+											photoVisible := slices.ContainsFunc(photos.Media, func(item Media) bool { return item.ID == fixture.media[0].String() })
+											eventVisible := slices.ContainsFunc(events.Events, func(item EventSummary) bool { return item.ID == fixture.events[targetEventIndex].String() })
+											newForYouVisible := slices.ContainsFunc(newForYou.Events, func(item EventSummary) bool { return item.ID == fixture.events[targetEventIndex].String() })
+											assert.Equalf(t, metadataVisible, photoVisible, "case %d: %+v", caseNumber, state)
+											assert.Equalf(t, metadataVisible, eventVisible, "case %d: %+v", caseNumber, state)
+											assert.Equalf(t, metadataVisible, newForYouVisible, "case %d: %+v", caseNumber, state)
+											if metadataVisible {
+												require.NoErrorf(t, eventErr, "case %d: %+v", caseNumber, state)
+												assert.Equal(t, fixture.events[targetEventIndex].String(), event.ID)
+											} else {
+												require.ErrorIsf(t, eventErr, ErrNotFound, "case %d: %+v", caseNumber, state)
+											}
+										} else {
+											require.ErrorIsf(t, photosErr, ErrNotFound, "case %d: %+v", caseNumber, state)
+											require.ErrorIsf(t, eventsErr, ErrNotFound, "case %d: %+v", caseNumber, state)
+											require.ErrorIsf(t, newForYouErr, ErrNotFound, "case %d: %+v", caseNumber, state)
+											require.ErrorIsf(t, eventErr, ErrNotFound, "case %d: %+v", caseNumber, state)
+											require.ErrorIsf(t, searchErr, searchservice.ErrNotFound, "case %d: %+v", caseNumber, state)
+										}
+
+										_, commentErr := commentService.List(ctx, fixture.actor, fixture.media[0])
+										_, favoriteErr := favoriteService.Get(ctx, fixture.actor, fixture.media[0])
+										if metadataVisible {
+											require.NoErrorf(t, commentErr, "case %d: %+v", caseNumber, state)
+											require.NoErrorf(t, favoriteErr, "case %d: %+v", caseNumber, state)
+										} else {
+											require.ErrorIsf(t, commentErr, commentsservice.ErrNotFound, "case %d: %+v", caseNumber, state)
+											require.ErrorIsf(t, favoriteErr, favoritesservice.ErrNotFound, "case %d: %+v", caseNumber, state)
+										}
+
+										for _, representation := range representations {
+											fixture.thumbnail.assets = nil
+											stream, streamErr := representation.open(ctx, fixture.actor, fixture.media[0], immich.MediaRequest{})
+											if metadataVisible && source == matrixCurrentSource {
+												require.NoErrorf(t, streamErr, "%s case %d: %+v", representation.name, caseNumber, state)
+												require.NoError(t, stream.Body.Close())
+												require.Len(t, fixture.thumbnail.assets, 1)
+											} else {
+												require.ErrorIsf(t, streamErr, ErrNotFound, "%s case %d: %+v", representation.name, caseNumber, state)
+												assert.Empty(t, fixture.thumbnail.assets, "denied cases must not reach Immich")
+											}
+										}
+										for _, deniedID := range []uuid.UUID{fixture.media[2], uuid.New()} {
+											fixture.thumbnail.assets = nil
+											_, deniedErr := fixture.service.Thumbnail(ctx, fixture.actor, deniedID, immich.MediaRequest{})
+											require.ErrorIsf(t, deniedErr, ErrNotFound, "cross-Recipient and guessed identifiers must not enumerate case %d: %+v", caseNumber, state)
+											assert.Empty(t, fixture.thumbnail.assets, "denied identifiers must not reach Immich")
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	require.Equal(t, 2304, caseNumber)
+}
+
+func FuzzProductionAuthorizationTransitions(f *testing.F) {
+	f.Add([]byte{0, 2, 4, 6, 8, 10, 12})
+	f.Add([]byte{12, 13, 8, 9, 6, 7, 4, 5, 2, 3, 0, 1})
+	f.Add([]byte{})
+	f.Fuzz(func(t *testing.T, transitions []byte) {
+		if len(transitions) > 128 {
+			t.Skip()
+		}
+		fixture := newLibraryFixture(t)
+		ctx := context.Background()
+		mediaID := fixture.media[1]
+		notRevoked, notExpired, epochCurrent := true, true, true
+		accessCompleted, entitled, withdrawn, sourceCurrent := true, true, false, true
+
+		for index, rawTransition := range transitions {
+			transition := rawTransition % 14
+			var query string
+			var args []any
+			switch transition {
+			case 0:
+				query = `UPDATE sessions SET revoked_at = now() WHERE id = ?`
+				args = []any{fixture.actor.SessionID}
+				notRevoked = false
+			case 1:
+				query = `UPDATE sessions SET revoked_at = NULL WHERE id = ?`
+				args = []any{fixture.actor.SessionID}
+				notRevoked = true
+			case 2:
+				query = `UPDATE sessions SET security_epoch = decode(repeat('43', 32), 'hex') WHERE id = ?`
+				args = []any{fixture.actor.SessionID}
+				epochCurrent = false
+			case 3:
+				query = `UPDATE sessions SET security_epoch = settings.security_epoch FROM system_settings AS settings WHERE sessions.id = ? AND settings.id = 1`
+				args = []any{fixture.actor.SessionID}
+				epochCurrent = true
+			case 4:
+				query = `UPDATE recipient_access_generations SET state = 'suspended' WHERE id = ?`
+				args = []any{fixture.actor.AccessID}
+				accessCompleted = false
+			case 5:
+				query = `UPDATE recipient_access_generations SET state = 'completed', is_current = true, onboarding_completed_at = now(), ended_at = NULL WHERE id = ?`
+				args = []any{fixture.actor.AccessID}
+				accessCompleted = true
+			case 6:
+				query = `DELETE FROM current_audience_entitlements WHERE recipient_access_generation_id = ? AND media_item_id = ?`
+				args = []any{fixture.actor.AccessID, mediaID}
+				entitled = false
+			case 7:
+				query = `INSERT INTO current_audience_entitlements
+					(event_id, publication_id, recipient_person_id, recipient_access_generation_id, media_item_id)
+					SELECT ?, ?, person_id, ?, ? FROM recipient_access_generations WHERE id = ? ON CONFLICT DO NOTHING`
+				args = []any{fixture.events[0], fixture.publications[0], fixture.actor.AccessID, mediaID, fixture.actor.AccessID}
+				entitled = true
+			case 8:
+				query = `INSERT INTO content_withdrawals (id, target_kind, target_id, withdrawn_by_person_id, withdrawn_at)
+					VALUES (gen_random_uuid(), 'media', ?, ?, now()) ON CONFLICT DO NOTHING`
+				args = []any{mediaID, fixture.curator}
+				withdrawn = true
+			case 9:
+				query = `DELETE FROM content_withdrawals WHERE target_kind = 'media' AND target_id = ?`
+				args = []any{mediaID}
+				withdrawn = false
+			case 10:
+				query = `UPDATE media_items SET availability = 'source_missing', missing_since = now() WHERE id = ?`
+				args = []any{mediaID}
+				sourceCurrent = false
+			case 11:
+				query = `UPDATE media_items SET availability = 'current', missing_since = NULL WHERE id = ?`
+				args = []any{mediaID}
+				sourceCurrent = true
+			case 12:
+				query = `UPDATE sessions SET idle_expires_at = now() - interval '1 hour' WHERE id = ?`
+				args = []any{fixture.actor.SessionID}
+				notExpired = false
+			case 13:
+				query = `UPDATE sessions SET idle_expires_at = now() + interval '1 hour' WHERE id = ?`
+				args = []any{fixture.actor.SessionID}
+				notExpired = true
+			}
+
+			updateDone := make(chan error, 1)
+			go func() {
+				_, err := fixture.db.NewRaw(query, args...).Exec(ctx)
+				updateDone <- err
+			}()
+			concurrentErr := mediaaccess.Require(ctx, fixture.db, fixture.actor, mediaID)
+			require.Truef(t, concurrentErr == nil || errors.Is(concurrentErr, mediaaccess.ErrNotFound),
+				"transition %d returned an unsafe intermediate error: %v", index, concurrentErr)
+			require.NoErrorf(t, <-updateDone, "transition %d", index)
+
+			metadataVisible := notRevoked && notExpired && epochCurrent && accessCompleted && entitled && !withdrawn
+			finalErr := mediaaccess.Require(ctx, fixture.db, fixture.actor, mediaID)
+			if metadataVisible {
+				require.NoErrorf(t, finalErr, "transition %d", index)
+			} else {
+				require.ErrorIsf(t, finalErr, mediaaccess.ErrNotFound, "transition %d", index)
+			}
+			fixture.thumbnail.assets = nil
+			stream, streamErr := fixture.service.Thumbnail(ctx, fixture.actor, mediaID, immich.MediaRequest{})
+			if metadataVisible && sourceCurrent {
+				require.NoErrorf(t, streamErr, "transition %d", index)
+				require.NoError(t, stream.Body.Close())
+				require.Len(t, fixture.thumbnail.assets, 1)
+			} else {
+				require.ErrorIsf(t, streamErr, ErrNotFound, "transition %d", index)
+				assert.Empty(t, fixture.thumbnail.assets, "denied transitions must not reach Immich")
+			}
+		}
+	})
 }

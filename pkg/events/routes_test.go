@@ -17,10 +17,9 @@ import (
 )
 
 type draftAuthorizer struct {
-	actor        setup.CuratorSession
-	err          error
-	recipientErr error
-	mutation     bool
+	actor    setup.CuratorSession
+	err      error
+	mutation bool
 }
 
 func (authorizer *draftAuthorizer) AuthorizeCurator(_ context.Context, _, _ string, mutation bool) (setup.CuratorSession, error) {
@@ -30,10 +29,6 @@ func (authorizer *draftAuthorizer) AuthorizeCurator(_ context.Context, _, _ stri
 
 func (authorizer *draftAuthorizer) ContextWithRequestMetadata(ctx context.Context, _ *http.Request) context.Context {
 	return ctx
-}
-
-func (authorizer *draftAuthorizer) AuthorizeSession(context.Context, string, string, bool) (setup.SessionActor, error) {
-	return setup.SessionActor{}, authorizer.recipientErr
 }
 
 func draftHTTP(service *Service, authorizer Authorizer) *echo.Echo {
@@ -186,14 +181,6 @@ func TestWithdrawalErrorsDescribeCurrentTargetsAndEveryRequiredRestorationPublic
 	}
 }
 
-func TestRecipientProjectionRequiresACompletedSessionBeforeServiceAccess(t *testing.T) {
-	authorizer := &draftAuthorizer{recipientErr: setup.ErrUnauthenticated}
-	e := draftHTTP(nil, authorizer)
-	response := draftRequest(e, http.MethodGet, "/api/me/events/11111111-1111-4111-8111-111111111111", "")
-	assert.Equal(t, http.StatusUnauthorized, response.Code)
-	assert.Contains(t, response.Body.String(), "valid Recipient Session")
-}
-
 func TestPreviewRequiresASelectedRecipientBeforeServiceAccess(t *testing.T) {
 	e := draftHTTP(nil, &draftAuthorizer{})
 	response := draftRequest(e, http.MethodPost, "/api/events/11111111-1111-4111-8111-111111111111/preview", "")
@@ -238,7 +225,6 @@ func TestDraftRoutesUseNoStoreAndStableNotFoundErrors(t *testing.T) {
 		{http.MethodGet, "/api/events/not-an-id/preview-recipients", ""},
 		{http.MethodPost, "/api/events/not-an-id/preview", ""},
 		{http.MethodPost, "/api/withdrawals", `{}`},
-		{http.MethodGet, "/api/me/events/not-an-id", ""},
 		{http.MethodPost, "/api/events", `{}`},
 		{http.MethodGet, "/api/loose-items/not-an-id", ""},
 		{http.MethodPost, "/api/loose-items", `{}`},

@@ -54,7 +54,14 @@ grep -q '"immich":"ok"' "$ready_body"
 
 curl --fail --silent --dump-header "$temporary/headers" --output "$temporary/index.html" "$base_url/"
 grep -q '<title>Memento</title>' "$temporary/index.html"
-grep -qi '^Content-Security-Policy:' "$temporary/headers"
+grep -qi "^Content-Security-Policy: default-src 'self'.*frame-ancestors 'none'" "$temporary/headers"
+grep -qi '^Cross-Origin-Opener-Policy: same-origin' "$temporary/headers"
+grep -qi '^Cross-Origin-Resource-Policy: same-origin' "$temporary/headers"
+grep -qi '^Permissions-Policy: camera=(), geolocation=(), microphone=()' "$temporary/headers"
+grep -qi '^Referrer-Policy: no-referrer' "$temporary/headers"
+grep -qi '^Strict-Transport-Security: max-age=31536000; includeSubDomains' "$temporary/headers"
+grep -qi '^X-Content-Type-Options: nosniff' "$temporary/headers"
+grep -qi '^X-Frame-Options: DENY' "$temporary/headers"
 if grep -qi '^Server:' "$temporary/headers"; then
   printf 'Caddy exposed its Server header\n' >&2
   exit 1
@@ -73,6 +80,36 @@ curl --fail --silent --dump-header "$temporary/invitation-headers" --output "$te
 grep -q '<title>Memento</title>' "$temporary/invitation.html"
 grep -qi "$(printf '^Referrer-Policy: no-referrer\r$')" "$temporary/invitation-headers"
 grep -qi '^Cache-Control: no-store' "$temporary/invitation-headers"
+
+hostile_origin_code=$(curl --silent --output "$temporary/hostile-origin.json" --write-out '%{http_code}' \
+  --header 'Origin: https://evil.example' --header 'Content-Type: application/json' --data '{}' \
+  "$base_url/api/setup/complete")
+[ "$hostile_origin_code" = 403 ]
+if grep -q 'evil.example' "$temporary/hostile-origin.json"; then
+  printf 'origin denial reflected an unapproved origin\n' >&2
+  exit 1
+fi
+approved_origin_code=$(curl --silent --dump-header "$temporary/approved-origin-headers" \
+  --output "$temporary/approved-origin.json" --write-out '%{http_code}' \
+  --header 'Origin: http://localhost:8080' --header 'Content-Type: application/json' --data '{}' \
+  "$base_url/api/setup/complete")
+[ "$approved_origin_code" != 403 ]
+grep -qi '^Access-Control-Allow-Origin: http://localhost:8080' "$temporary/approved-origin-headers"
+simple_mutation_code=$(curl --silent --output "$temporary/simple-mutation.json" --write-out '%{http_code}' \
+  --header 'Content-Type: text/plain' --data 'private input' "$base_url/api/setup/complete")
+[ "$simple_mutation_code" = 415 ]
+preflight_code=$(curl --silent --dump-header "$temporary/preflight-headers" --output /dev/null --write-out '%{http_code}' \
+  --request OPTIONS --header 'Origin: http://localhost:8080' \
+  --header 'Access-Control-Request-Method: POST' \
+  --header 'Access-Control-Request-Headers: content-type, x-memento-csrf' \
+  "$base_url/api/setup/complete")
+[ "$preflight_code" = 204 ]
+grep -qi '^Access-Control-Allow-Origin: http://localhost:8080' "$temporary/preflight-headers"
+grep -qi '^Access-Control-Allow-Credentials: true' "$temporary/preflight-headers"
+protected_code=$(curl --silent --dump-header "$temporary/protected-headers" \
+  --output "$temporary/protected.json" --write-out '%{http_code}' "$base_url/api/me/photos")
+[ "$protected_code" = 401 ]
+grep -qi '^Cache-Control: private, no-store' "$temporary/protected-headers"
 
 compose up --no-build --detach --no-deps front
 front_endpoint=$(compose port front 8443 | head -n 1)

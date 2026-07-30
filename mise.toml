@@ -120,6 +120,10 @@ run = ["go test ./...", "pnpm test"]
 description = "Run Go unit tests with the race detector"
 run = "go test -race ./..."
 
+[tasks."test:fuzz"]
+description = "Replay the deterministic corpus for security-sensitive fuzz targets"
+run = "go test -count=1 -run '^Fuzz' ./pkg/binder ./pkg/archives ./pkg/immich ./pkg/push ./tests"
+
 [tasks."test:browser"]
 description = "Run desktop and mobile browser tests"
 depends = ["dependencies:browsers", "types:generate"]
@@ -169,6 +173,7 @@ description = "Run the complete CI validation suite"
 depends = [
   "check",
   "test:race",
+  "test:fuzz",
   "test:browser",
   "test:integration",
   "test:immich-contract",

@@ -619,6 +619,41 @@ test("@desktop @mobile Recipient navigation, archives, and Media viewer are acce
   const accessibilityTree = await page.locator("body").ariaSnapshot();
   expect(accessibilityTree).not.toContain("Hidden family photo");
   expect(accessibilityTree).not.toContain(inaccessibleMediaID);
+  const browserArtifacts = await page.evaluate(async (hiddenID) => {
+    const resourceURLs = Array.from(
+      document.querySelectorAll<HTMLElement>("[href], [src]"),
+    ).flatMap((element) =>
+      [element.getAttribute("href"), element.getAttribute("src")].filter(
+        (value): value is string => value !== null,
+      ),
+    );
+    const storageValues = [localStorage, sessionStorage].flatMap((storage) =>
+      Array.from({ length: storage.length }, (_, index) => {
+        const key = storage.key(index) ?? "";
+        return `${key}=${storage.getItem(key) ?? ""}`;
+      }),
+    );
+    const cachedURLs = (
+      await Promise.all(
+        (await caches.keys()).map(async (name) =>
+          (await caches.open(name))
+            .keys()
+            .then((requests) => requests.map((request) => request.url)),
+        ),
+      )
+    ).flat();
+    return {
+      html: document.documentElement.outerHTML,
+      leakedResource: resourceURLs.find((value) => value.includes(hiddenID)),
+      leakedStorage: storageValues.find((value) => value.includes(hiddenID)),
+      leakedCache: cachedURLs.find((value) => value.includes(hiddenID)),
+    };
+  }, inaccessibleMediaID);
+  expect(browserArtifacts.html).not.toContain(inaccessibleMediaID);
+  expect(browserArtifacts.html).not.toContain("Hidden family photo");
+  expect(browserArtifacts.leakedResource).toBeUndefined();
+  expect(browserArtifacts.leakedStorage).toBeUndefined();
+  expect(browserArtifacts.leakedCache).toBeUndefined();
   expect(browserRequests.some((url) => url.includes(mediaID))).toBe(true);
   expect(browserRequests.some((url) => url.includes(inaccessibleMediaID))).toBe(
     false,
