@@ -196,22 +196,24 @@ func run() error {
 	favoriteService := favorites.New(db, interactionActivity)
 	favoriteService.SetEngagementActivity(engagementService)
 	favoriteHandler := favorites.NewHandler(favoriteService, setupService)
-	e, err := server.New(healthService, emaildelivery.NewHandler(emailService), setupHandler, peopleHandler, familyHandler, visibilityHandler, recipientHandler, sourceHandler, eventHandler, repairHandler, suggestionHandler, audienceHandler, sessionHandler)
+	e, err := server.New(cfg.HTTP.PublicURL, server.RouteHandlers{
+		Health: healthService, Email: emaildelivery.NewHandler(emailService), Setup: setupHandler,
+		People: peopleHandler, Family: familyHandler, Visibility: visibilityHandler,
+		Recipients: recipientHandler, Sources: sourceHandler, Events: eventHandler,
+		Repairs: repairHandler, Suggestions: suggestionHandler, Audiences: audienceHandler,
+		Sessions: sessionHandler, Library: libraryHandler, Archives: archiveHandler,
+		Search: searchHandler, Comments: commentHandler, Favorites: favoriteHandler,
+		Activity:           activity.NewHandler(interactionActivity, setupService),
+		Engagement:         engagement.NewHandler(engagementService, setupService),
+		Push:               push.NewHandler(pushService, setupService),
+		Recovery:           recovery.NewHandler(recoveryService, setupService),
+		RecoveryMiddleware: recoveryService.Middleware(),
+	})
 	if err != nil {
 		_ = db.Close()
 		log.Err(err).Error("HTTP server initialization failed")
 		return err
 	}
-	library.RegisterRoutes(e, libraryHandler)
-	archives.RegisterRoutes(e, archiveHandler)
-	search.RegisterRoutes(e, searchHandler)
-	comments.RegisterRoutes(e, commentHandler)
-	favorites.RegisterRoutes(e, favoriteHandler)
-	activity.RegisterRoutes(e, activity.NewHandler(interactionActivity, setupService))
-	engagement.RegisterRoutes(e, engagement.NewHandler(engagementService, setupService))
-	push.RegisterRoutes(e, push.NewHandler(pushService, setupService))
-	recovery.RegisterRoutes(e, recovery.NewHandler(recoveryService, setupService))
-	e.Use(recoveryService.Middleware())
 
 	workCtx, cancelWork := context.WithCancel(context.Background())
 	defer cancelWork()

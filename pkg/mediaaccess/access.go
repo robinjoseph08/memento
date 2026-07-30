@@ -26,7 +26,8 @@ func Require(ctx context.Context, db bun.IDB, actor setup.SessionActor, mediaID 
 		  ON access.id = session.recipient_access_generation_id
 		 AND access.person_id = session.person_id AND access.is_current AND access.state = 'completed'
 		JOIN system_settings AS settings
-		  ON settings.id = 1 AND settings.setup_complete AND settings.security_epoch = session.security_epoch
+		  ON settings.id = 1 AND settings.setup_complete AND NOT settings.recovery_hold
+		 AND settings.security_epoch = session.security_epoch
 		JOIN media_items AS media ON media.id = ?
 		WHERE session.id = ? AND session.person_id = ? AND session.recipient_access_generation_id = ?
 		  AND session.revoked_at IS NULL
@@ -113,6 +114,7 @@ func GenerationCanAccess(ctx context.Context, db bun.IDB, accessID, mediaID uuid
 	err := db.NewRaw(`SELECT EXISTS (
 		SELECT 1 FROM recipient_access_generations AS access
 		JOIN people AS person ON person.id = access.person_id AND person.archived_at IS NULL AND person.merged_at IS NULL
+		JOIN system_settings AS settings ON settings.id = 1 AND settings.setup_complete AND NOT settings.recovery_hold
 		JOIN media_items AS media ON media.id = ?
 		WHERE access.id = ? AND access.is_current AND access.state = 'completed'
 		AND (

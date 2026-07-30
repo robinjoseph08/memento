@@ -66,13 +66,13 @@ func keys(values map[string]json.RawMessage) []string {
 
 func newServer(t *testing.T) *echo.Echo {
 	t.Helper()
-	e, err := New(new(health.Service), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	e, err := New("http://localhost", RouteHandlers{Health: new(health.Service)})
 	require.NoError(t, err)
 	return e
 }
 
 func TestServerRegistersPeopleRoutesWhenHandlerIsProvided(t *testing.T) {
-	e, err := New(new(health.Service), nil, nil, people.NewHandler(nil, nil), nil, nil, nil, nil, nil, nil, nil, nil)
+	e, err := New("http://localhost", RouteHandlers{Health: new(health.Service), People: people.NewHandler(nil, nil)})
 	require.NoError(t, err)
 	routes := make(map[string]bool)
 	for _, route := range e.Routes() {
@@ -88,7 +88,7 @@ func TestServerRegistersPeopleRoutesWhenHandlerIsProvided(t *testing.T) {
 }
 
 func TestServerRegistersFamilyRoutesWhenHandlerIsProvided(t *testing.T) {
-	e, err := New(new(health.Service), nil, nil, nil, family.NewHandler(nil, nil), nil, nil, nil, nil, nil, nil, nil)
+	e, err := New("http://localhost", RouteHandlers{Health: new(health.Service), Family: family.NewHandler(nil, nil)})
 	require.NoError(t, err)
 	routes := make(map[string]bool)
 	for _, route := range e.Routes() {
@@ -104,7 +104,7 @@ func TestServerRegistersFamilyRoutesWhenHandlerIsProvided(t *testing.T) {
 }
 
 func TestServerRegistersVisibilityRoutesWhenHandlerIsProvided(t *testing.T) {
-	e, err := New(new(health.Service), nil, nil, nil, nil, visibility.NewHandler(nil, nil), nil, nil, nil, nil, nil, nil)
+	e, err := New("http://localhost", RouteHandlers{Health: new(health.Service), Visibility: visibility.NewHandler(nil, nil)})
 	require.NoError(t, err)
 	routes := make(map[string]bool)
 	for _, route := range e.Routes() {
@@ -122,7 +122,7 @@ func TestServerRegistersVisibilityRoutesWhenHandlerIsProvided(t *testing.T) {
 }
 
 func TestServerRegistersRecipientRoutesWhenHandlerIsProvided(t *testing.T) {
-	e, err := New(new(health.Service), nil, nil, nil, nil, nil, recipients.NewHandler(nil, nil), nil, nil, nil, nil, nil)
+	e, err := New("http://localhost", RouteHandlers{Health: new(health.Service), Recipients: recipients.NewHandler(nil, nil)})
 	require.NoError(t, err)
 	routes := make(map[string]bool)
 	for _, route := range e.Routes() {
@@ -140,7 +140,7 @@ func TestServerRegistersRecipientRoutesWhenHandlerIsProvided(t *testing.T) {
 }
 
 func TestServerRegistersSuggestionRoutesWhenHandlerIsProvided(t *testing.T) {
-	e, err := New(new(health.Service), nil, nil, nil, nil, nil, nil, nil, nil, nil, suggestions.NewHandler(nil, nil), nil)
+	e, err := New("http://localhost", RouteHandlers{Health: new(health.Service), Suggestions: suggestions.NewHandler(nil, nil)})
 	require.NoError(t, err)
 	routes := make(map[string]bool)
 	for _, route := range e.Routes() {
@@ -156,7 +156,7 @@ func TestServerRegistersSuggestionRoutesWhenHandlerIsProvided(t *testing.T) {
 }
 
 func TestServerRegistersSessionRoutesWhenHandlerIsProvided(t *testing.T) {
-	e, err := New(new(health.Service), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, sessions.NewHandler(nil, nil))
+	e, err := New("http://localhost", RouteHandlers{Health: new(health.Service), Sessions: sessions.NewHandler(nil, nil)})
 	require.NoError(t, err)
 	routes := make(map[string]bool)
 	for _, route := range e.Routes() {
@@ -174,7 +174,7 @@ func TestServerRegistersSessionRoutesWhenHandlerIsProvided(t *testing.T) {
 }
 
 func TestServerRegistersDraftRoutesWhenHandlerIsProvided(t *testing.T) {
-	e, err := New(new(health.Service), nil, nil, nil, nil, nil, nil, nil, events.NewHandler(nil, nil), nil, nil, nil)
+	e, err := New("http://localhost", RouteHandlers{Health: new(health.Service), Events: events.NewHandler(nil, nil)})
 	require.NoError(t, err)
 	routes := make(map[string]bool)
 	for _, route := range e.Routes() {
@@ -183,7 +183,7 @@ func TestServerRegistersDraftRoutesWhenHandlerIsProvided(t *testing.T) {
 	for _, route := range []string{
 		"POST /api/events", "GET /api/events/:id", "POST /api/events/:id/publications",
 		"GET /api/events/:id/preview-recipients", "POST /api/events/:id/preview",
-		"POST /api/withdrawals", "GET /api/me/events/:id", "POST /api/loose-items", "GET /api/loose-items/:id",
+		"POST /api/withdrawals", "POST /api/loose-items", "GET /api/loose-items/:id",
 		"GET /api/sources/:id/media-items",
 	} {
 		assert.True(t, routes[route], route)
@@ -191,7 +191,7 @@ func TestServerRegistersDraftRoutesWhenHandlerIsProvided(t *testing.T) {
 }
 
 func TestServerRegistersAudienceRoutesWhenHandlerIsProvided(t *testing.T) {
-	e, err := New(new(health.Service), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, audiences.NewHandler(nil, nil))
+	e, err := New("http://localhost", RouteHandlers{Health: new(health.Service), Audiences: audiences.NewHandler(nil, nil)})
 	require.NoError(t, err)
 	routes := make(map[string]bool)
 	for _, route := range e.Routes() {
@@ -209,7 +209,7 @@ func TestServerRegistersAudienceRoutesWhenHandlerIsProvided(t *testing.T) {
 }
 
 func TestServerRegistersCuratorRepairRoutesWhenHandlerIsProvided(t *testing.T) {
-	e, err := New(new(health.Service), nil, nil, nil, nil, nil, nil, nil, nil, repairs.NewHandler(nil, nil), nil, nil)
+	e, err := New("http://localhost", RouteHandlers{Health: new(health.Service), Repairs: repairs.NewHandler(nil, nil)})
 	require.NoError(t, err)
 	routes := make(map[string]bool)
 	for _, route := range e.Routes() {
@@ -261,12 +261,14 @@ func TestMethodNotAllowedPreservesAllowHeader(t *testing.T) {
 func TestChunkedBodyLimitErrorsSurviveBinding(t *testing.T) {
 	e := newServer(t)
 	e.Use(middleware.BodyLimit("1K"))
-	e.POST("/api/bind", func(c echo.Context) error {
+	bind := func(c echo.Context) error {
 		payload := struct {
 			Name string `json:"name" form:"name"`
 		}{}
 		return c.Bind(&payload)
-	})
+	}
+	e.POST("/api/bind", bind)
+	e.POST("/api/email/preferences/unsubscribe", bind)
 
 	var multipartBody bytes.Buffer
 	multipartWriter := multipart.NewWriter(&multipartBody)
@@ -274,16 +276,17 @@ func TestChunkedBodyLimitErrorsSurviveBinding(t *testing.T) {
 	require.NoError(t, multipartWriter.Close())
 	tests := []struct {
 		name        string
+		path        string
 		body        string
 		contentType string
 	}{
-		{"JSON", `{"name":"` + strings.Repeat("x", 2<<10) + `"}`, echo.MIMEApplicationJSON},
-		{"form", url.Values{"name": {strings.Repeat("x", 2<<10)}}.Encode(), echo.MIMEApplicationForm},
-		{"multipart", multipartBody.String(), multipartWriter.FormDataContentType()},
+		{"JSON", "/api/bind", `{"name":"` + strings.Repeat("x", 2<<10) + `"}`, echo.MIMEApplicationJSON},
+		{"form", "/api/email/preferences/unsubscribe", url.Values{"name": {strings.Repeat("x", 2<<10)}}.Encode(), echo.MIMEApplicationForm},
+		{"multipart", "/api/email/preferences/unsubscribe", multipartBody.String(), multipartWriter.FormDataContentType()},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			request := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/bind", nil)
+			request := httptest.NewRequestWithContext(context.Background(), http.MethodPost, test.path, nil)
 			request.Body = io.NopCloser(iotest.OneByteReader(strings.NewReader(test.body)))
 			request.ContentLength = -1
 			request.Header.Set(echo.HeaderContentType, test.contentType)

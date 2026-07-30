@@ -202,57 +202,75 @@ const authorizedCandidates = `
 	JOIN media_backings AS backing ON backing.media_item_id = valid.media_item_id AND backing.active
 `
 
-func (s *Service) resolve(ctx context.Context, db bun.IDB, actor setup.SessionActor, request PlanRequest) ([]candidate, uuid.UUID, string, error) {
-	if err := ensureActor(ctx, db, actor); err != nil {
-		return nil, uuid.Nil, "", err
-	}
+type parsedSelection struct {
+	scope   string
+	eventID uuid.UUID
+	media   []uuid.UUID
+}
+
+func parsePlanSelection(request PlanRequest) (parsedSelection, error) {
 	switch request.Scope {
 	case "event":
 		if request.EventID == nil || len(request.MediaIDs) != 0 {
-			return nil, uuid.Nil, "", ErrInvalidSelection
+			return parsedSelection{}, ErrInvalidSelection
 		}
 		eventID, err := uuid.Parse(*request.EventID)
 		if err != nil || eventID == uuid.Nil {
-			return nil, uuid.Nil, "", ErrInvalidSelection
+			return parsedSelection{}, ErrInvalidSelection
 		}
-		var rows []candidate
-		query := authorizedCandidates + ` WHERE valid.event_id = ? ORDER BY valid.media_item_id, valid.position`
-		if err := db.NewRaw(query, actor.AccessID, eventID).Scan(ctx, &rows); err != nil {
-			return nil, uuid.Nil, "", err
-		}
-		if len(rows) == 0 {
-			return nil, uuid.Nil, "", ErrNotFound
-		}
-		return rows, eventID, rows[0].EventTitle, nil
+		return parsedSelection{scope: request.Scope, eventID: eventID}, nil
 	case "subset":
 		if request.EventID != nil || len(request.MediaIDs) == 0 || len(request.MediaIDs) > maximumSelection {
-			return nil, uuid.Nil, "", ErrInvalidSelection
+			return parsedSelection{}, ErrInvalidSelection
 		}
 		ids := make([]uuid.UUID, len(request.MediaIDs))
 		seen := make(map[uuid.UUID]struct{}, len(ids))
 		for index, rawID := range request.MediaIDs {
 			id, err := uuid.Parse(rawID)
 			if err != nil || id == uuid.Nil {
-				return nil, uuid.Nil, "", ErrInvalidSelection
+				return parsedSelection{}, ErrInvalidSelection
 			}
 			if _, duplicate := seen[id]; duplicate {
-				return nil, uuid.Nil, "", ErrInvalidSelection
+				return parsedSelection{}, ErrInvalidSelection
 			}
 			seen[id] = struct{}{}
 			ids[index] = id
 		}
+		return parsedSelection{scope: request.Scope, media: ids}, nil
+	default:
+		return parsedSelection{}, ErrInvalidSelection
+	}
+}
+
+func (s *Service) resolve(ctx context.Context, db bun.IDB, actor setup.SessionActor, request PlanRequest) ([]candidate, uuid.UUID, string, error) {
+	if err := ensureActor(ctx, db, actor); err != nil {
+		return nil, uuid.Nil, "", err
+	}
+	selection, err := parsePlanSelection(request)
+	if err != nil {
+		return nil, uuid.Nil, "", err
+	}
+	if selection.scope == "event" {
 		var rows []candidate
-		query := authorizedCandidates + ` WHERE valid.media_item_id IN (?) ORDER BY valid.media_item_id, current.committed_at DESC, valid.event_id`
-		if err := db.NewRaw(query, actor.AccessID, bun.List(ids)).Scan(ctx, &rows); err != nil {
+		query := authorizedCandidates + ` WHERE valid.event_id = ? ORDER BY valid.media_item_id, valid.position`
+		if err := db.NewRaw(query, actor.AccessID, selection.eventID).Scan(ctx, &rows); err != nil {
 			return nil, uuid.Nil, "", err
 		}
-		if len(rows) != len(ids) {
-			return nil, uuid.Nil, "", ErrInvalidSelection
+		if len(rows) == 0 {
+			return nil, uuid.Nil, "", ErrNotFound
 		}
-		return rows, uuid.Nil, "Memento selection", nil
-	default:
+		return rows, selection.eventID, rows[0].EventTitle, nil
+	}
+
+	var rows []candidate
+	query := authorizedCandidates + ` WHERE valid.media_item_id IN (?) ORDER BY valid.media_item_id, current.committed_at DESC, valid.event_id`
+	if err := db.NewRaw(query, actor.AccessID, bun.List(selection.media)).Scan(ctx, &rows); err != nil {
+		return nil, uuid.Nil, "", err
+	}
+	if len(rows) != len(selection.media) {
 		return nil, uuid.Nil, "", ErrInvalidSelection
 	}
+	return rows, uuid.Nil, "Memento selection", nil
 }
 
 func sameCandidates(left, right []candidate) bool {

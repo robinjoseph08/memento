@@ -22,23 +22,14 @@ type Authorizer interface {
 	ContextWithRequestMetadata(ctx context.Context, request *http.Request) context.Context
 }
 
-type recipientAuthorizer interface {
-	AuthorizeSession(ctx context.Context, credential, csrfToken string, mutation bool) (setup.SessionActor, error)
-}
-
-// Handler exposes Curator Event workflows and separately authorized Recipient projections.
+// Handler exposes Curator Event workflows.
 type Handler struct {
-	service         *Service
-	authorizer      Authorizer
-	recipientAccess recipientAuthorizer
+	service    *Service
+	authorizer Authorizer
 }
 
 func NewHandler(service *Service, authorizer Authorizer) *Handler {
-	handler := &Handler{service: service, authorizer: authorizer}
-	if access, ok := authorizer.(recipientAuthorizer); ok {
-		handler.recipientAccess = access
-	}
-	return handler
+	return &Handler{service: service, authorizer: authorizer}
 }
 
 func (h *Handler) requestContext(c echo.Context) context.Context {
@@ -201,32 +192,6 @@ func (h *Handler) PreviewEvent(c echo.Context) error {
 	return c.JSON(http.StatusOK, view)
 }
 
-func (h *Handler) RecipientEvent(c echo.Context) error {
-	if h.recipientAccess == nil {
-		return errcodes.NotFound("Page")
-	}
-	cookie, err := c.Cookie(setup.CookieName)
-	if err != nil || cookie.Value == "" {
-		return errcodes.Unauthorized("A valid Recipient Session is required.")
-	}
-	actor, err := h.recipientAccess.AuthorizeSession(c.Request().Context(), cookie.Value, "", false)
-	if errors.Is(err, setup.ErrUnauthenticated) {
-		return errcodes.Unauthorized("A valid Recipient Session is required.")
-	}
-	if err != nil {
-		return err
-	}
-	id, err := routeID(c.Param("id"), "Event")
-	if err != nil {
-		return err
-	}
-	view, err := h.service.RecipientEvent(c.Request().Context(), actor, id)
-	if mapped := publicationError(err); mapped != nil {
-		return mapped
-	}
-	return c.JSON(http.StatusOK, view)
-}
-
 func (h *Handler) SourceMedia(c echo.Context) error {
 	if _, err := h.authorize(c, false); err != nil {
 		return err
@@ -380,7 +345,7 @@ func routeID(value, resource string) (uuid.UUID, error) {
 	return id, nil
 }
 
-// RegisterRoutes registers no-store Curator workflows and Recipient projections.
+// RegisterRoutes registers no-store Curator workflows.
 func RegisterRoutes(e *echo.Echo, handler *Handler) {
 	events := e.Group("/api/events", noStore)
 	createEvent := events.POST("", handler.CreateEvent)
@@ -402,9 +367,6 @@ func RegisterRoutes(e *echo.Echo, handler *Handler) {
 
 	withdrawal := e.POST("/api/withdrawals", handler.Withdraw, noStore)
 	withdrawal.Name = curatorMutationPolicy
-
-	recipientEvent := e.GET("/api/me/events/:id", handler.RecipientEvent, noStore)
-	recipientEvent.Name = "policy:recipient"
 
 	looseItems := e.Group("/api/loose-items", noStore)
 	createLoose := looseItems.POST("", handler.CreateLooseItem)

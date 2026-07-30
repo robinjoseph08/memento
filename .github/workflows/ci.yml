@@ -31,6 +31,8 @@ jobs:
             task: build
           - name: Race tests
             task: test:race
+          - name: Security fuzz tests
+            task: test:fuzz
           - name: Browser tests
             task: test:browser
           - name: PostgreSQL integration tests
