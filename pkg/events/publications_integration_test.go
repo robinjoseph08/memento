@@ -298,7 +298,7 @@ func TestPublicationBuildsImmutableHistoryAndFilteredCurrentProjections(t *testi
 		"published_media_placements": 3, "audience_entries": 3,
 		"current_published_events": 1, "current_published_placements": 3,
 		"current_audience_entitlements": 3, "current_recipient_event_covers": 3,
-		"new_for_you_entries": 2, "published_search_documents": 3,
+		"new_for_you_entries": 2, "published_search_documents": 2,
 		"publication_activity_items": 2, "publication_curator_activity_items": 1,
 		"publication_audit_events": 1, "outbox_events": 1,
 		"publication_preview_audit_events": 3,

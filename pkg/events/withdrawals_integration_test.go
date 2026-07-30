@@ -404,11 +404,7 @@ func TestWithdrawalImmediatelyDeniesOnlyThePublishedTargetAndPreservesHistory(t 
 			for _, table := range []string{"current_audience_entitlements", "current_recipient_event_covers", "published_search_documents", "new_for_you_entries", "publication_activity_items"} {
 				var count int
 				require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM `+table).Scan(ctx, &count), table)
-				expected := test.remainingCurrent
-				if table == "published_search_documents" && test.kind != "event" {
-					expected = 2
-				}
-				assert.Equal(t, expected, count, table)
+				assert.Equal(t, test.remainingCurrent, count, table)
 			}
 
 			var auditAction, auditReason string

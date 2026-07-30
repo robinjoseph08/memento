@@ -207,7 +207,7 @@ func TestPeopleSearchNormalizesCaseAccentsAndWhitespace(t *testing.T) {
 func TestPeopleListUsesBoundedQueriesAndShowsLatestMeaningfulActivity(t *testing.T) {
 	fixture := newPeopleFixture(t)
 	ctx := context.Background()
-	latest := time.Date(2026, time.July, 30, 17, 0, 0, 0, time.UTC)
+	latest := time.Now().UTC().Add(time.Hour).Truncate(time.Microsecond)
 	_, err := fixture.db.NewRaw(`INSERT INTO engagement_daily_aggregates
 		(recipient_person_id, activity_date, kind, event_count, first_occurred_at, last_occurred_at)
 		VALUES (?, ?, 'visit', 1, ?, ?)`, fixture.actor.PersonID, latest.Format(time.DateOnly), latest, latest).Exec(ctx)
