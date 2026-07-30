@@ -32,6 +32,10 @@ type fakeRecovery struct {
 	calls *atomic.Int32
 }
 
+func (r fakeRecovery) Acquire(context.Context) (func(), error) {
+	return func() {}, nil
+}
+
 func (r fakeRecovery) Held(context.Context) (bool, error) {
 	if r.calls != nil {
 		r.calls.Add(1)

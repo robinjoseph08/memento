@@ -1,0 +1,125 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  contract:
+    name: Validate release contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out complete history
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+
+      - name: Validate version and required files
+        run: ./scripts/check-release.sh "$GITHUB_REF_NAME"
+
+      - name: Require tagged commit on master
+        run: git merge-base --is-ancestor "$GITHUB_SHA" origin/master
+
+  validation:
+    name: Run complete release gates
+    needs: contract
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    name: Publish immutable image
+    needs: validation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: write
+      packages: write
+      attestations: write
+      id-token: write
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Sign in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Capture immutable source metadata
+        id: source
+        run: |
+          echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          echo "created=$(git show -s --format=%cI "$GITHUB_SHA")" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push one production image
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ghcr.io/${{ github.repository }}:${{ github.ref_name }}
+          build-args: |
+            MEMENTO_VERSION=${{ steps.source.outputs.version }}
+            MEMENTO_REVISION=${{ github.sha }}
+            MEMENTO_SOURCE=${{ github.server_url }}/${{ github.repository }}
+            MEMENTO_CREATED=${{ steps.source.outputs.created }}
+          provenance: mode=max
+          sbom: true
+
+      - name: Attest the published digest
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-name: ghcr.io/${{ github.repository }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      - name: Record immutable deployment reference
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          printf 'ghcr.io/%s@%s\n' "$GITHUB_REPOSITORY" "$IMAGE_DIGEST" > memento-image.txt
+          sha256sum memento-image.txt > memento-image.txt.sha256
+          cat > release-notes.md <<EOF
+          ## Immutable deployment artifact
+
+          Deploy this exact image reference:
+
+          \`ghcr.io/${GITHUB_REPOSITORY}@${IMAGE_DIGEST}\`
+
+          The image is licensed under MIT, contains its license at
+          \`/usr/share/licenses/memento/LICENSE\`, and carries an attached SBOM,
+          BuildKit provenance, and GitHub artifact attestation. Tags are discovery
+          references only. Use the digest above in production.
+          EOF
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          prerelease=
+          case "$GITHUB_REF_NAME" in
+            *-*) prerelease=--prerelease ;;
+          esac
+          gh release create "$GITHUB_REF_NAME" \
+            --verify-tag \
+            --generate-notes \
+            --notes-file release-notes.md \
+            --title "Memento $GITHUB_REF_NAME" \
+            $prerelease \
+            LICENSE memento-image.txt memento-image.txt.sha256

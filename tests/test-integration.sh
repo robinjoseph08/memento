@@ -27,7 +27,7 @@ docker run --detach \
   --env POSTGRES_PASSWORD=test-admin-only-password \
   --publish 127.0.0.1::5432 \
   --tmpfs /var/lib/postgresql/data \
-  postgres:17.7-alpine3.23 >/dev/null
+  postgres:17.7-alpine3.23@sha256:bb377b7239d2774ac8cc76f481596ce96c5a6b5e9d141f6d0a0ee371a6e7c0f2 >/dev/null
 
 ready=false
 endpoint=

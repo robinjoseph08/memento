@@ -150,6 +150,12 @@ compose exec --no-TTY postgres psql --username postgres --dbname postgres --tupl
   "SELECT rolsuper FROM pg_roles WHERE rolname = 'memento_app';" | grep -Eq '^[[:space:]]*f[[:space:]]*$'
 compose exec --no-TTY memento sh -c "ps | grep -q '[m]emento' && ps | grep -q '[c]addy'"
 compose exec --no-TTY memento sh -c "grep -aq 'America/Los_Angeles' /usr/local/bin/memento"
+compose exec --no-TTY memento test -x /usr/local/bin/memento-migrations
+compose exec --no-TTY memento grep -q 'MIT License' /usr/share/licenses/memento/LICENSE
+[ "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.licenses" }}' "memento:$image_tag")" = MIT ]
+[ "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' "memento:$image_tag")" = dev ]
+[ "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "memento:$image_tag")" = unknown ]
+[ "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.source" }}' "memento:$image_tag")" = https://github.com/robinjoseph08/memento ]
 container=$(compose ps --quiet memento)
 image_user=$(docker inspect --format '{{.Config.User}}' "$container")
 [ -n "$image_user" ] && [ "$image_user" != 0 ] && [ "$image_user" != root ]
@@ -170,6 +176,54 @@ fi
 live_code=$(curl --silent --output "$temporary/live.json" --write-out '%{http_code}' "$base_url/api/health/live")
 [ "$live_code" = 200 ]
 grep -qx '{"status":"live"}' "$temporary/live.json"
+
+compose start immich >/dev/null
+ready_code=000
+for _ in $(seq 1 60); do
+  ready_code=$(curl --silent --max-time 5 --output "$ready_body" --write-out '%{http_code}' "$base_url/api/health/ready" || true)
+  [ "$ready_code" = 200 ] && break
+  sleep 1
+done
+[ "$ready_code" = 200 ] || {
+  compose logs immich memento
+  printf 'readiness did not recover after Immich restart: HTTP %s\n' "$ready_code" >&2
+  exit 1
+}
+
+postgres_container=$(compose ps --quiet postgres)
+postgres_network=$(docker inspect --format '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}}{{end}}' "$postgres_container")
+[ -n "$postgres_network" ]
+docker network disconnect "$postgres_network" "$postgres_container"
+ready_code=000
+for _ in $(seq 1 15); do
+  ready_code=$(curl --silent --max-time 5 --output "$ready_body" --write-out '%{http_code}' "$base_url/api/health/ready" || true)
+  if [ "$ready_code" = 503 ] && grep -q '"postgresql":"unavailable"' "$ready_body"; then
+    break
+  fi
+  sleep 1
+done
+[ "$ready_code" = 503 ]
+grep -q '"postgresql":"unavailable"' "$ready_body"
+if grep -Eq 'test-only-key|test-only-security-secret|postgresql://|http://immich|test-only-password' "$ready_body"; then
+  printf 'PostgreSQL outage readiness exposed private dependency configuration\n' >&2
+  exit 1
+fi
+live_code=$(curl --silent --max-time 5 --output "$temporary/live.json" --write-out '%{http_code}' "$base_url/api/health/live")
+[ "$live_code" = 200 ]
+grep -qx '{"status":"live"}' "$temporary/live.json"
+
+docker network connect --alias postgres "$postgres_network" "$postgres_container"
+ready_code=000
+for _ in $(seq 1 60); do
+  ready_code=$(curl --silent --max-time 5 --output "$ready_body" --write-out '%{http_code}' "$base_url/api/health/ready" || true)
+  [ "$ready_code" = 200 ] && break
+  sleep 1
+done
+[ "$ready_code" = 200 ] || {
+  compose logs postgres memento
+  printf 'readiness did not recover after PostgreSQL network restoration: HTTP %s\n' "$ready_code" >&2
+  exit 1
+}
 
 started=$(date +%s)
 docker kill --signal TERM "$container" >/dev/null

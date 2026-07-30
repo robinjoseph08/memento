@@ -26,6 +26,8 @@ Optional Web Push requires HTTPS-capable devices and outbound HTTPS access to br
 
 The PostgreSQL image recommended by Immich v3.0.3 already contains `unaccent` and `pg_trgm`, but extensions must be created separately inside each logical database.
 
+Production releases publish one MIT-licensed multi-platform image with an immutable digest, SBOM, provenance, and GitHub attestation. Deploy the digest through [`deploy/compose.production.yaml`](deploy/compose.production.yaml), not a mutable tag. The [operator runbook](docs/operator-runbook.md) covers deployment, health monitoring, graceful shutdown, backup, restore, planned-downtime upgrades, and rollback boundaries. Use the [dependency drills](docs/dependency-drills.md) and [clean-environment release exercise](docs/release-exercise.md) for release acceptance.
+
 Complete first-browser setup before public exposure. Browser setup requires HTTPS, except on a browser-recognized loopback address such as `localhost`; a private-network HTTP address is not sufficient because the required Secure Session cookie would be discarded. Setup has no CLI token. Its first successful transaction creates the sole Person with Curator and Recipient roles, records completed Onboarding choices, creates an opaque server-side Session, and permanently disables setup.
 
 ## Developer prerequisites
@@ -77,7 +79,7 @@ Run `mise test:performance` manually to build the deterministic 100,000-Media fi
 
 Tygo output under `app/types/generated/` is gitignored. Mise generates it from Go before every frontend task that consumes it, so contributors never need to commit regenerated files with a PR. The production Docker build also generates its own copy instead of depending on the local working tree.
 
-Individual checks are available through names such as `mise lint:eslint`, `mise lint:prettier`, `mise lint:types`, `mise types:generate`, `mise test:integration`, `mise compose:validate`, `mise caddy:validate`, and `mise test:production`. Docker-backed test harnesses live under `tests/`. See [`docs/accessibility.md`](docs/accessibility.md) for the automated browser matrix and assistive-technology release checks.
+Individual checks are available through names such as `mise lint:eslint`, `mise lint:prettier`, `mise lint:types`, `mise types:generate`, `mise test:integration`, `mise compose:validate`, `mise compose:production:validate`, `mise caddy:validate`, and `mise test:production`. Before creating a version tag, run `mise run release:check -- v0.1.0` with the intended tag. Docker-backed test harnesses live under `tests/`. See [`docs/accessibility.md`](docs/accessibility.md) for the automated browser matrix and assistive-technology release checks.
 
 ## Provision PostgreSQL beside Immich
 
@@ -171,11 +173,13 @@ Web Push is independently optional. Generate one stable VAPID P-256 key pair wit
 
 Never put real credentials or private keys in the YAML example, image, logs, or health output.
 
-Build the one-image production topology with an explicit application tag:
+For local development and production-topology testing only, build the one-image topology with an explicit local tag:
 
 ```sh
-docker build --tag memento:0.1.0 .
+docker build --tag memento:local .
 ```
+
+Production operators must instead copy [`deploy/production.env.example`](deploy/production.env.example), set `MEMENTO_IMAGE` to the `ghcr.io/robinjoseph08/memento@sha256:...` reference recorded in the GitHub Release, and deploy with [`deploy/compose.production.yaml`](deploy/compose.production.yaml). Version tags are discovery references and must not be used as production deployment identities. The Compose file mounts ordinary configuration and secrets read-only, uses the image health check, runs without Linux capabilities on a read-only root filesystem, joins an operator-selected external private network, and allows 15 seconds for SIGTERM shutdown.
 
 Caddy listens on port 8080 by default, serves the frontend with SPA fallback, and proxies `/api/*` to the Go process on loopback. Set `MEMENTO_SITE_ADDRESS` to a Caddy site address for direct TLS exposure. When a separate reverse proxy terminates HTTPS in front of the bundled Caddy process, set `MEMENTO_CADDY_TRUSTED_PROXY_CIDRS` to its space-separated CIDR networks. Caddy then preserves the trusted client address and original HTTPS scheme; untrusted forwarding headers remain ignored. The container health check calls only `/api/health/live`; use `/api/health/ready` for traffic readiness.
 
@@ -343,6 +347,8 @@ During Recovery hold, liveness remains available but readiness returns unavailab
 Open Memento, sign in as the Curator with the fresh code, and review the bounded restored-state counts on the Recovery screen. Release requires that fresh current-epoch Curator Session, its CSRF token, and explicit confirmation. Release is persisted and audited. It does not rewrite People, Audiences, Publications, or interaction history. Keep the pre-restore database until the application is ready and the Curator has completed this review.
 
 A database restore does not restore Immich Media, SMTP credentials, the Immich API key, VAPID private keys, configuration files, or an optional local GeoIP database. Back up those through their own secure operator procedures.
+
+For the complete migration-compatible upgrade sequence, planned downtime, preflight restore validation, and the point after which rollback requires a database restore and fresh Recovery nonce, follow the [operator runbook](docs/operator-runbook.md#migration-compatible-upgrade). Execute the [dependency drills](docs/dependency-drills.md) and [clean-environment release exercise](docs/release-exercise.md) against the exact image digest before declaring a stable release operable.
 
 ## License
 
