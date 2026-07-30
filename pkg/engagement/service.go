@@ -380,9 +380,12 @@ func (s *Service) RecordArchiveDownload(ctx context.Context, tx bun.Tx, actor se
 // DeleteExpiredDetails removes only rows strictly older than one year, in bounded batches.
 func (s *Service) DeleteExpiredDetails(ctx context.Context) (int64, error) {
 	cutoff := s.now().UTC().AddDate(-1, 0, 0)
-	result, err := s.db.NewRaw(`WITH expired AS (
+	result, err := s.db.NewRaw(`WITH expired AS MATERIALIZED (
 		SELECT id FROM engagement_events WHERE occurred_at < ?
 		ORDER BY occurred_at, id FOR UPDATE SKIP LOCKED LIMIT ?
+	), deleted_activity AS (
+		DELETE FROM curator_activity_items AS activity USING expired
+		WHERE activity.source_kind = 'engagement' AND activity.source_id = expired.id::text
 	)
 	DELETE FROM engagement_events AS event USING expired WHERE event.id = expired.id`, cutoff, retentionBatchSize).Exec(ctx)
 	if err != nil {

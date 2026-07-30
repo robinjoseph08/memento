@@ -1001,8 +1001,12 @@ export function EventOrganizer({
         headers: { "X-Memento-CSRF": session.csrf_token },
         body: JSON.stringify(organizationRequest(event)),
       }),
-    onMutate: () => setSaveState("saving"),
+    onMutate: () => {
+      setSaveState("saving");
+      onSavingChange?.(true);
+    },
     onSuccess: (saved, attempted) => {
+      onSavingChange?.(false);
       void queryClient.invalidateQueries({ queryKey: ["events"] });
       void queryClient.invalidateQueries({
         queryKey: ["attendance-audience"],
@@ -1041,6 +1045,7 @@ export function EventOrganizer({
       setRevision(0);
     },
     onError: (error, attempted) => {
+      onSavingChange?.(false);
       if (selectedIDRef.current !== attempted.event.id) return;
       if (error instanceof APIError && error.status === 409) {
         const latest = latestDraftRef.current;

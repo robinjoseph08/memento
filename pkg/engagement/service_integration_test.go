@@ -200,13 +200,15 @@ func TestDetailedEngagementExpiresWithoutRemovingAggregatesOrSecurityAudit(t *te
 	require.NoError(t, err)
 	assert.EqualValues(t, 1, deleted)
 
-	var details, aggregates, audits int
+	var details, aggregates, audits, curatorDetails int
 	require.NoError(t, db.NewRaw(`SELECT count(*) FROM engagement_events WHERE recipient_person_id = ?`, actor.PersonID).Scan(ctx, &details))
 	require.NoError(t, db.NewRaw(`SELECT count(*) FROM engagement_daily_aggregates WHERE recipient_person_id = ?`, actor.PersonID).Scan(ctx, &aggregates))
 	require.NoError(t, db.NewRaw(`SELECT count(*) FROM security_audit_events WHERE action = 'retention_proof'`, actor.PersonID).Scan(ctx, &audits))
+	require.NoError(t, db.NewRaw(`SELECT count(*) FROM curator_activity_items WHERE source_kind = 'engagement' AND actor_person_id = ?`, actor.PersonID).Scan(ctx, &curatorDetails))
 	assert.Equal(t, 3, details)
 	assert.Equal(t, 2, aggregates)
 	assert.Equal(t, 1, audits)
+	assert.Equal(t, 3, curatorDetails, "expired per-Recipient activity projections are removed with details")
 }
 
 func persistEngagementCredential(t *testing.T, db *bun.DB, actor setup.SessionActor) string {

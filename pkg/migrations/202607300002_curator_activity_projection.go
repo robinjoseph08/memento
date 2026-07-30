@@ -71,7 +71,7 @@ func init() {
 							CASE WHEN NEW.action IN (
 								'pending_recipient_designated', 'invitation_sent', 'invitation_reissued', 'invitation_revoked',
 								'invitation_accepted', 'recipient_suspended', 'recipient_suspension_lifted',
-								'recipient_access_revoked', 'recipient_email_changed', 'recipient_email_recovered'
+								'recipient_access_revoked', 'recipient_email_changed', 'recipient_email_recovered', 'onboarding_completed'
 							) THEN 'access' ELSE 'security' END,
 							NEW.subject_person_id, NEW.outcome)
 						ON CONFLICT (source_kind, source_id, version) DO NOTHING;
@@ -240,7 +240,7 @@ func init() {
 						CASE WHEN audit.action IN (
 							'pending_recipient_designated', 'invitation_sent', 'invitation_reissued', 'invitation_revoked',
 							'invitation_accepted', 'recipient_suspended', 'recipient_suspension_lifted',
-							'recipient_access_revoked', 'recipient_email_changed', 'recipient_email_recovered'
+							'recipient_access_revoked', 'recipient_email_changed', 'recipient_email_recovered', 'onboarding_completed'
 						) THEN 'access' ELSE 'security' END,
 						audit.subject_person_id, audit.outcome
 					FROM security_audit_events AS audit WHERE audit.action NOT LIKE 'invitation_suggestion_%'
