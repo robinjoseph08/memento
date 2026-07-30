@@ -39,6 +39,7 @@ type ReviewCounts struct {
 	AudienceEntitlements    int `json:"audience_entitlements"`
 	PublishedEvents         int `json:"published_events"`
 	PublishedMediaItems     int `json:"published_media_items"`
+	ActiveWithdrawals       int `json:"active_withdrawals"`
 	PendingEmailBatches     int `json:"pending_email_batches"`
 	ActivePushSubscriptions int `json:"active_push_subscriptions"`
 }
@@ -196,6 +197,7 @@ func (s *Service) Review(ctx context.Context, actor setup.CuratorSession) (Revie
 			(SELECT count(*) FROM current_audience_entitlements),
 			(SELECT count(*) FROM current_published_events),
 			(SELECT count(DISTINCT media_item_id) FROM current_published_placements),
+			(SELECT count(*) FROM content_withdrawals WHERE restored_at IS NULL),
 			(SELECT count(*) FROM notification_batches WHERE channel = 'email' AND status = 'pending'),
 			(SELECT count(*) FROM push_subscriptions WHERE disabled_at IS NULL)`).Scan(ctx,
 			&response.Counts.People, &response.Counts.CurrentRecipients,
@@ -203,7 +205,7 @@ func (s *Service) Review(ctx context.Context, actor setup.CuratorSession) (Revie
 			&response.Counts.RevokedGenerations, &response.Counts.RestoredSessions,
 			&response.Counts.FreshSessions, &response.Counts.AudienceEntitlements,
 			&response.Counts.PublishedEvents, &response.Counts.PublishedMediaItems,
-			&response.Counts.PendingEmailBatches, &response.Counts.ActivePushSubscriptions)
+			&response.Counts.ActiveWithdrawals, &response.Counts.PendingEmailBatches, &response.Counts.ActivePushSubscriptions)
 	})
 	return response, err
 }

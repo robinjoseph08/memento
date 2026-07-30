@@ -2043,6 +2043,7 @@ test("requires a fresh Curator review before explicitly releasing Recovery hold"
               audience_entitlements: 24,
               published_events: 5,
               published_media_items: 100,
+              active_withdrawals: 2,
               pending_email_batches: 3,
               active_push_subscriptions: 4,
             },

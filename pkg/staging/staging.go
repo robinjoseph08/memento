@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/google/uuid"
@@ -31,7 +32,10 @@ type DeletedMoment struct {
 // ChangeKind identifies a supported category in a coalesced update.
 type ChangeKind string
 
-var errUnknownChangeKind = errors.New("unknown Staged change kind")
+var (
+	errUnknownChangeKind = errors.New("unknown Staged change kind")
+	errStagedProjection  = errors.New("persisted staged update does not match editable state")
+)
 
 const (
 	ChangeKindAddition        ChangeKind = "addition"
@@ -237,6 +241,29 @@ func RefreshDependentAccessUpdates(ctx context.Context, tx bun.Tx, excludedEvent
 		`, now, candidate.EventID).Exec(ctx); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// ValidateUpdateProjection recomputes one persisted Staged update without mutation.
+func ValidateUpdateProjection(ctx context.Context, db bun.IDB, eventID, publicationID uuid.UUID, stored []byte) error {
+	expected, err := summarizeStagedUpdate(ctx, db, eventID, publicationID)
+	if err != nil {
+		return err
+	}
+	encoded, err := json.Marshal(expected)
+	if err != nil {
+		return err
+	}
+	var expectedValue, storedValue any
+	if err := json.Unmarshal(encoded, &expectedValue); err != nil {
+		return err
+	}
+	if err := json.Unmarshal(stored, &storedValue); err != nil {
+		return err
+	}
+	if len(expected) == 0 || !reflect.DeepEqual(expectedValue, storedValue) {
+		return errStagedProjection
 	}
 	return nil
 }

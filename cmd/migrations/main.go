@@ -31,14 +31,15 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	db, err := database.Open(ctx, cfg.Database)
+	connectCtx, cancelConnect := context.WithTimeout(context.Background(), 30*time.Second)
+	db, err := database.Open(connectCtx, cfg.Database)
+	cancelConnect()
 	if err != nil {
 		return err
 	}
 	defer db.Close()
 
+	ctx := context.Background()
 	if args[0] == "apply" {
 		if err := migrations.Apply(ctx, db); err != nil {
 			return err

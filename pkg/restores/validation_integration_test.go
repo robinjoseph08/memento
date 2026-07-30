@@ -67,6 +67,47 @@ func TestValidateRejectsMissingForeignKeyAndNullCurrentPublicationProjection(t *
 		_, err = Validate(ctx, db)
 		assert.ErrorIs(t, err, ErrProjections)
 	})
+
+	t.Run("stale staged net change", func(t *testing.T) {
+		db := testdb.Open(t)
+		ctx := context.Background()
+		require.NoError(t, migrations.Apply(ctx, db))
+		personID, eventID := "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"
+		publicationID, stagedID := "33333333-3333-4333-8333-333333333333", "44444444-4444-4444-8444-444444444444"
+		_, err := db.NewRaw(`
+			INSERT INTO people (id, display_name, sort_name) VALUES (?, 'Publisher', 'publisher');
+			INSERT INTO events (id, lifecycle, title, grouping_timezone, current_publication_id)
+			 VALUES (?, 'published', 'Edited title', 'UTC', NULL);
+			INSERT INTO publications
+			 (id, event_id, revision, editable_version, published_by_person_id, notify_recipients, committed_at)
+			VALUES (?, ?, 1, 1, ?, false, now());
+			UPDATE events SET current_publication_id = ? WHERE id = ?;
+			INSERT INTO published_event_revisions
+			 (publication_id, event_id, title, description, grouping_timezone, created_at)
+			VALUES (?, ?, 'Published title', '', 'UTC', now());
+			INSERT INTO current_published_events
+			 (event_id, publication_id, title, description, grouping_timezone, committed_at)
+			VALUES (?, ?, 'Published title', '', 'UTC', now());
+			INSERT INTO staged_updates (id, event_id, base_publication_id, net_changes, created_at, updated_at)
+			VALUES (?, ?, ?, '[]'::jsonb, now(), now());
+			UPDATE events SET current_staged_update_id = ? WHERE id = ?
+		`, personID, eventID, publicationID, eventID, personID, publicationID, eventID,
+			publicationID, eventID, eventID, publicationID, stagedID, eventID, publicationID, stagedID, eventID).Exec(ctx)
+		require.NoError(t, err)
+		_, err = Validate(ctx, db)
+		assert.ErrorIs(t, err, ErrProjections)
+	})
+}
+
+func TestValidateRejectsAlteredRecoveryDeliveryView(t *testing.T) {
+	db := testdb.Open(t)
+	ctx := context.Background()
+	require.NoError(t, migrations.Apply(ctx, db))
+	_, err := db.NewRaw(`CREATE OR REPLACE VIEW recovery_curator_sign_in_deliveries AS
+		SELECT id, public_id FROM email_deliveries`).Exec(ctx)
+	require.NoError(t, err)
+	_, err = Validate(ctx, db)
+	assert.ErrorIs(t, err, ErrSecurity)
 }
 
 func databaseFingerprint(t *testing.T, db *bun.DB) map[string]string {

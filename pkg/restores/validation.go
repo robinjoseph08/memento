@@ -9,13 +9,18 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/google/uuid"
 	"github.com/robinjoseph08/memento/pkg/migrations"
+	"github.com/robinjoseph08/memento/pkg/staging"
 	"github.com/uptrace/bun"
 )
 
 // This release-defined digest covers table, constraint name, and normalized definition
 // for every expected foreign key after all registered migrations.
-const expectedForeignKeyInventorySHA256 = "1b49cf8988b176531ad730e92b382e6f223f9bc2a931f509ef202f2bdfdf4963"
+const (
+	expectedForeignKeyInventorySHA256  = "1b49cf8988b176531ad730e92b382e6f223f9bc2a931f509ef202f2bdfdf4963"
+	expectedRecoveryDeliveryViewSHA256 = "6ef46fa32643821f6367cb7e25264bbd62d1ed32e76713519440e05f80af285f"
+)
 
 var (
 	ErrForeignKeys = errors.New("foreign-key validation failed")
@@ -166,6 +171,32 @@ func validateProjections(ctx context.Context, db bun.IDB) error {
 		) AS expected JOIN current_published_placements AS placement
 		 ON placement.event_id = expected.event_id AND placement.media_item_id = expected.media_item_id
 		 WHERE placement.position IS DISTINCT FROM expected.expected_position) +
+		(SELECT count(*) FROM (
+		 (SELECT moment.id AS published_moment_id, attendance.person_id
+		  FROM current_published_events AS current
+		  JOIN events AS event ON event.id = current.event_id
+		  JOIN publications AS publication ON publication.id = current.publication_id
+		  JOIN published_moments AS moment ON moment.publication_id = current.publication_id
+		  JOIN attendance ON attendance.moment_id = moment.draft_moment_id
+		  WHERE current.attendance_projection_ready AND event.version = publication.editable_version
+		  EXCEPT
+		  SELECT published_moment_id, person_id FROM published_attendance)
+		 UNION ALL
+		 (SELECT published.published_moment_id, published.person_id FROM published_attendance AS published
+		  JOIN published_moments AS moment ON moment.id = published.published_moment_id
+		  JOIN current_published_events AS current ON current.publication_id = moment.publication_id
+		  JOIN events AS event ON event.id = current.event_id
+		  JOIN publications AS publication ON publication.id = current.publication_id
+		  WHERE current.attendance_projection_ready AND event.version = publication.editable_version
+		  EXCEPT
+		  SELECT moment.id, attendance.person_id
+		  FROM current_published_events AS current
+		  JOIN events AS event ON event.id = current.event_id
+		  JOIN publications AS publication ON publication.id = current.publication_id
+		  JOIN published_moments AS moment ON moment.publication_id = current.publication_id
+		  JOIN attendance ON attendance.moment_id = moment.draft_moment_id
+		  WHERE current.attendance_projection_ready AND event.version = publication.editable_version)
+		) AS attendance_mismatch) +
 		(SELECT count(*) FROM current_published_placements AS placement
 		 WHERE NOT EXISTS (
 		  SELECT 1 FROM current_published_events AS current
@@ -194,6 +225,18 @@ func validateProjections(ctx context.Context, db bun.IDB) error {
 		(SELECT count(*) FROM audience_entries AS audience
 		 JOIN recipient_access_generations AS access ON access.id = audience.recipient_access_generation_id
 		 WHERE audience.recipient_person_id IS DISTINCT FROM access.person_id) +
+		(SELECT count(*) FROM audience_entries AS audience
+		 JOIN published_moments AS moment ON moment.id = audience.published_moment_id
+		 WHERE NOT EXISTS (SELECT 1 FROM audience_snapshot_entries AS snapshot
+		  WHERE snapshot.snapshot_id = moment.audience_snapshot_id
+		   AND snapshot.recipient_person_id = audience.recipient_person_id
+		   AND snapshot.recipient_access_generation_id = audience.recipient_access_generation_id)) +
+		(SELECT count(*) FROM published_moments AS moment
+		 JOIN audience_snapshot_entries AS snapshot ON snapshot.snapshot_id = moment.audience_snapshot_id
+		 WHERE NOT EXISTS (SELECT 1 FROM audience_entries AS audience
+		  WHERE audience.published_moment_id = moment.id
+		   AND audience.recipient_person_id = snapshot.recipient_person_id
+		   AND audience.recipient_access_generation_id = snapshot.recipient_access_generation_id)) +
 		(SELECT count(*) FROM current_audience_entitlements AS entitlement
 		 JOIN recipient_access_generations AS access ON access.id = entitlement.recipient_access_generation_id
 		 WHERE entitlement.recipient_person_id IS DISTINCT FROM access.person_id) +
@@ -280,10 +323,32 @@ func validateProjections(ctx context.Context, db bun.IDB) error {
 	if invalid != 0 {
 		return ErrProjections
 	}
+	type stagedRow struct {
+		EventID           uuid.UUID
+		BasePublicationID uuid.UUID
+		NetChanges        []byte
+	}
+	var stagedRows []stagedRow
+	if err := db.NewRaw(`SELECT event_id, base_publication_id, net_changes FROM staged_updates ORDER BY event_id`).Scan(ctx, &stagedRows); err != nil {
+		return fmt.Errorf("projections: %w", err)
+	}
+	for _, row := range stagedRows {
+		if err := staging.ValidateUpdateProjection(ctx, db, row.EventID, row.BasePublicationID, row.NetChanges); err != nil {
+			return ErrProjections
+		}
+	}
 	return nil
 }
 
 func validateSecurity(ctx context.Context, db bun.IDB) error {
+	var viewDefinition string
+	if err := db.NewRaw(`SELECT pg_get_viewdef('recovery_curator_sign_in_deliveries'::regclass, true)`).Scan(ctx, &viewDefinition); err != nil {
+		return fmt.Errorf("security settings: %w", err)
+	}
+	viewDigest := sha256.Sum256([]byte(viewDefinition))
+	if hex.EncodeToString(viewDigest[:]) != expectedRecoveryDeliveryViewSHA256 {
+		return ErrSecurity
+	}
 	var invalid int
 	err := db.NewRaw(`SELECT
 		(SELECT count(*) FROM system_settings WHERE id <> 1 OR octet_length(security_epoch) <> 32 OR

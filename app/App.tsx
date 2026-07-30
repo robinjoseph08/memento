@@ -1709,6 +1709,7 @@ function RecoveryCard({
         ["Audience entitlements", review.data.counts.audience_entitlements],
         ["Published Events", review.data.counts.published_events],
         ["Published Media items", review.data.counts.published_media_items],
+        ["Active Withdrawals", review.data.counts.active_withdrawals],
         [
           "Pending optional email batches",
           review.data.counts.pending_email_batches,
