@@ -1,0 +1,41 @@
+services:
+  memento:
+    image: "ghcr.io/robinjoseph08/memento@${MEMENTO_IMAGE_DIGEST:?Set MEMENTO_IMAGE_DIGEST to the sha256 digest from the GitHub Release}"
+    restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      MEMENTO_CONFIG_FILE: /etc/memento/memento.yaml
+      MEMENTO_DATABASE_URL_FILE: /run/secrets/database_url
+      MEMENTO_IMMICH_API_KEY_FILE: /run/secrets/immich_api_key
+      MEMENTO_SECURITY_SECRET_FILE: /run/secrets/security_secret
+      MEMENTO_SMTP_PASSWORD_FILE: "${MEMENTO_SMTP_PASSWORD_FILE:-}"
+      MEMENTO_PUSH_PRIVATE_KEY_FILE: "${MEMENTO_PUSH_PRIVATE_KEY_FILE:-}"
+      MEMENTO_RECOVERY_NONCE_FILE: "${MEMENTO_RECOVERY_NONCE_FILE:-}"
+      MEMENTO_CADDY_TRUSTED_PROXY_CIDRS: "${MEMENTO_CADDY_TRUSTED_PROXY_CIDRS:-127.0.0.0/8 ::1/128}"
+      MEMENTO_SITE_ADDRESS: "${MEMENTO_SITE_ADDRESS:-:8080}"
+    ports:
+      - "${MEMENTO_BIND_ADDRESS:-127.0.0.1}:${MEMENTO_PORT:-8080}:8080"
+    volumes:
+      - "${MEMENTO_CONFIG_PATH:?Set MEMENTO_CONFIG_PATH}:/etc/memento/memento.yaml:ro"
+      - "${MEMENTO_SECRETS_PATH:?Set MEMENTO_SECRETS_PATH}:/run/secrets:ro"
+      - caddy-data:/data
+      - caddy-config:/config
+    tmpfs:
+      - /tmp:mode=1777
+    networks:
+      - memento-private
+    stop_signal: SIGTERM
+    stop_grace_period: 15s
+
+networks:
+  memento-private:
+    name: "${MEMENTO_NETWORK:?Set MEMENTO_NETWORK to the private network that reaches PostgreSQL and Immich}"
+    external: true
+
+volumes:
+  caddy-data:
+  caddy-config:

@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: postgres:17.7-alpine3.23
+    image: postgres:17.7-alpine3.23@sha256:bb377b7239d2774ac8cc76f481596ce96c5a6b5e9d141f6d0a0ee371a6e7c0f2
     environment:
       POSTGRES_DB: postgres
       POSTGRES_USER: postgres
@@ -14,7 +14,7 @@ services:
       - /var/lib/postgresql/data
 
   immich:
-    image: caddy:2.10.2-alpine
+    image: caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
     command:
       [
         "caddy",
@@ -29,8 +29,6 @@ services:
 
   memento:
     image: "memento:${MEMENTO_TEST_IMAGE_TAG:-test}"
-    build:
-      context: ..
     environment:
       LOG_FORMAT: json
       MEMENTO_DATABASE_URL: postgresql://memento_app:test-only-password@postgres:5432/memento?sslmode=disable
@@ -52,7 +50,7 @@ services:
     stop_grace_period: 10s
 
   front:
-    image: caddy:2.10.2-alpine
+    image: caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
     volumes:
       - ./fixtures/front.Caddyfile:/etc/caddy/Caddyfile:ro
     depends_on:

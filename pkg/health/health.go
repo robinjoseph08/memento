@@ -54,8 +54,10 @@ type DeliveryStatus interface {
 	Status() string
 }
 
-// RecoveryStatus exposes only whether Recovery hold blocks readiness.
+// RecoveryStatus fences readiness against concurrent Recovery activation and
+// exposes only whether Recovery hold blocks traffic.
 type RecoveryStatus interface {
+	Acquire(ctx context.Context) (func(), error)
 	Held(ctx context.Context) (bool, error)
 }
 
@@ -146,10 +148,17 @@ func (s *Service) Ready(c echo.Context) error {
 		}
 		if s.recovery == nil {
 			checks.Recovery = StatusOK
-		} else if held, err := s.recovery.Held(ctx); err == nil && !held {
-			checks.Recovery = StatusOK
 		} else {
-			return c.JSON(http.StatusServiceUnavailable, ReadyResponse{Status: "not_ready", Checks: checks})
+			releaseFence, err := s.recovery.Acquire(ctx)
+			if err != nil {
+				return c.JSON(http.StatusServiceUnavailable, ReadyResponse{Status: "not_ready", Checks: checks})
+			}
+			defer releaseFence()
+			held, err := s.recovery.Held(ctx)
+			if err != nil || held {
+				return c.JSON(http.StatusServiceUnavailable, ReadyResponse{Status: "not_ready", Checks: checks})
+			}
+			checks.Recovery = StatusOK
 		}
 		if err := s.setup(ctx); err == nil {
 			checks.Setup = StatusOK

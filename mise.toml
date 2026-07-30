@@ -1,6 +1,7 @@
 [tools]
 go = "1.26.5"
 node = "24.18.0"
+"github:rhysd/actionlint" = "1.7.7"
 "npm:pnpm" = "11.16.0"
 "github:golangci/golangci-lint" = "2.12.2"
 "github:air-verse/air" = "1.64.2"
@@ -158,10 +159,29 @@ run = "docker compose config --quiet"
 description = "Validate the production Caddy configuration"
 run = '''
 docker run --rm --interactive \
-  caddy:2.10.2-alpine \
+  caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d \
   caddy validate --config - --adapter caddyfile \
   < "$PWD/Caddyfile"
 '''
+
+[tasks."compose:production:validate"]
+description = "Validate the digest-pinned production Compose contract"
+run = '''
+MEMENTO_IMAGE_DIGEST=sha256:0000000000000000000000000000000000000000000000000000000000000000 \
+MEMENTO_CONFIG_PATH=/tmp/memento.yaml \
+MEMENTO_SECRETS_PATH=/tmp/memento-secrets \
+MEMENTO_NETWORK=memento-private \
+docker compose --file deploy/compose.production.yaml config --format json \
+  | ./scripts/check-production-compose.py
+'''
+
+[tasks."workflow:validate"]
+description = "Validate GitHub Actions workflow syntax and expressions"
+run = "actionlint"
+
+[tasks."release:check"]
+description = "Validate a release tag against repository metadata"
+run = "./scripts/check-release.sh"
 
 [tasks."test:production"]
 description = "Assemble and test the production topology"
@@ -186,6 +206,8 @@ depends = [
   "test:integration",
   "test:immich-contract",
   "compose:validate",
+  "compose:production:validate",
+  "workflow:validate",
   "caddy:validate",
   "test:production",
 ]

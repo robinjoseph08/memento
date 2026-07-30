@@ -27,9 +27,26 @@ type fakeDelivery string
 func (d fakeDelivery) Status() string { return string(d) }
 
 type fakeRecovery struct {
-	held  bool
-	err   error
-	calls *atomic.Int32
+	held       bool
+	err        error
+	acquireErr error
+	calls      *atomic.Int32
+	acquired   *atomic.Int32
+	released   *atomic.Int32
+}
+
+func (r fakeRecovery) Acquire(context.Context) (func(), error) {
+	if r.acquired != nil {
+		r.acquired.Add(1)
+	}
+	if r.acquireErr != nil {
+		return nil, r.acquireErr
+	}
+	return func() {
+		if r.released != nil {
+			r.released.Add(1)
+		}
+	}, nil
 }
 
 func (r fakeRecovery) Held(context.Context) (bool, error) {
@@ -92,6 +109,66 @@ func TestRecoveryHoldBlocksReadinessBeforeWorkerOrExternalChecks(t *testing.T) {
 	assert.Contains(t, response.Body.String(), `"worker":"unavailable"`)
 	assert.Contains(t, response.Body.String(), `"immich":"unavailable"`)
 	assert.Zero(t, externalCalls.Load())
+}
+
+func TestReadyReleasesRecoveryFenceWhenStateCheckBlocks(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		held bool
+		err  error
+	}{
+		{name: "held", held: true},
+		{name: "state error", err: errors.New("state unavailable")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var acquired, released atomic.Int32
+			ok := func(context.Context) error { return nil }
+			service := newWithChecks(ok, ok, ok, checkerFunc(ok), fakeWorker{healthy: true}, time.Second, time.Second)
+			service.SetRecoveryStatus(fakeRecovery{
+				held: test.held, err: test.err,
+				acquired: &acquired, released: &released,
+			})
+
+			response := request(t, service.Ready)
+
+			assert.Equal(t, http.StatusServiceUnavailable, response.Code)
+			assert.Equal(t, int32(1), acquired.Load())
+			assert.Equal(t, int32(1), released.Load())
+		})
+	}
+}
+
+func TestRecoveryFenceFailureBlocksReadinessBeforeExternalChecks(t *testing.T) {
+	var externalCalls atomic.Int32
+	ok := func(context.Context) error { return nil }
+	service := newWithChecks(ok, ok, ok, checkerFunc(func(context.Context) error {
+		externalCalls.Add(1)
+		return nil
+	}), fakeWorker{healthy: true}, time.Second, time.Second)
+	service.SetRecoveryStatus(fakeRecovery{acquireErr: errors.New("fence unavailable")})
+
+	response := request(t, service.Ready)
+
+	assert.Equal(t, http.StatusServiceUnavailable, response.Code)
+	assert.Contains(t, response.Body.String(), `"recovery":"unavailable"`)
+	assert.Zero(t, externalCalls.Load())
+}
+
+func TestReadyHoldsRecoveryFenceThroughExternalChecks(t *testing.T) {
+	var acquired, released atomic.Int32
+	ok := func(context.Context) error { return nil }
+	service := newWithChecks(ok, ok, ok, checkerFunc(func(context.Context) error {
+		assert.Equal(t, int32(1), acquired.Load())
+		assert.Zero(t, released.Load())
+		return nil
+	}), fakeWorker{healthy: true}, time.Second, time.Second)
+	service.SetRecoveryStatus(fakeRecovery{acquired: &acquired, released: &released})
+
+	response := request(t, service.Ready)
+
+	assert.Equal(t, http.StatusOK, response.Code)
+	assert.Equal(t, int32(1), acquired.Load())
+	assert.Equal(t, int32(1), released.Load())
 }
 
 func TestReadyReportsSMTPWithoutChangingLibraryReadiness(t *testing.T) {

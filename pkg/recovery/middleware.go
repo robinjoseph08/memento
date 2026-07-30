@@ -29,6 +29,12 @@ func (s *Service) Middleware() echo.MiddlewareFunc {
 			if !strings.HasPrefix(path, "/api/") || path == "/api/health/live" {
 				return next(c)
 			}
+			// Readiness acquires this same traffic fence after PostgreSQL has
+			// proved reachable, so a database outage can still return its safe,
+			// allowlisted readiness payload instead of a generic server error.
+			if path == "/api/health/ready" {
+				return next(c)
+			}
 			releaseFence, err := s.Acquire(c.Request().Context())
 			if err != nil {
 				return err

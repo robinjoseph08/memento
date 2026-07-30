@@ -1,6 +1,7 @@
 name: CI
 
 on:
+  workflow_call:
   pull_request:
   push:
     branches: [master]
@@ -39,8 +40,12 @@ jobs:
             task: test:integration
           - name: Immich contract
             task: test:immich-contract
-          - name: Compose validation
+          - name: Development Compose validation
             task: compose:validate
+          - name: Production Compose validation
+            task: compose:production:validate
+          - name: Workflow validation
+            task: workflow:validate
           - name: Caddy validation
             task: caddy:validate
           - name: Production topology
