@@ -22,6 +22,7 @@ import (
 	"github.com/robinjoseph08/memento/internal/placementlock"
 	"github.com/robinjoseph08/memento/internal/testdb"
 	"github.com/robinjoseph08/memento/pkg/config"
+	"github.com/robinjoseph08/memento/pkg/engagement"
 	"github.com/robinjoseph08/memento/pkg/immich"
 	"github.com/robinjoseph08/memento/pkg/library"
 	"github.com/robinjoseph08/memento/pkg/migrations"
@@ -273,6 +274,7 @@ func newArchiveFixture(t *testing.T, source *archiveStub) archiveFixture {
 		FROM system_settings WHERE id = 1`, fixture.hiddenActor.SessionID, fixture.hiddenActor.PersonID, fixture.hiddenActor.AccessID).Exec(ctx)
 	require.NoError(t, err)
 	fixture.service = New(db, source)
+	fixture.service.SetEngagementHandoff(engagement.New(db).RecordArchiveDownload)
 	return fixture
 }
 
@@ -706,6 +708,10 @@ func TestPartsAreSessionBoundExpiringAndIndividuallySingleUse(t *testing.T) {
 	assert.Len(t, entryContents, 12)
 	require.Len(t, source.archiveCalls, 1)
 	assert.Equal(t, []uuid.UUID{fixture.assets[0]}, source.archiveCalls[0])
+	var archiveEngagement int
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM engagement_events
+		WHERE recipient_person_id = ? AND kind = ?`, fixture.actor.PersonID, engagement.KindArchiveDownloadStarted).Scan(context.Background(), &archiveEngagement))
+	assert.Equal(t, 1, archiveEngagement)
 	_, err = fixture.service.StreamPart(context.Background(), fixture.actor, token, 1)
 	assert.ErrorIs(t, err, ErrNotFound)
 	assert.Len(t, source.archiveCalls, 1, "replay is rejected before opening Immich")

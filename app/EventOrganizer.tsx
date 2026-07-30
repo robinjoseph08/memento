@@ -714,7 +714,9 @@ export function EventOrganizer({
   onSavingChange?: (saving: boolean) => void;
 }) {
   const queryClient = useQueryClient();
-  const [selectedID, setSelectedID] = useState("");
+  const [selectedID, setSelectedID] = useState(
+    () => new URLSearchParams(window.location.search).get("event") ?? "",
+  );
   const [draft, setDraft] = useState<DraftEvent>();
   const [selectedMedia, setSelectedMedia] = useState<Set<string>>(new Set());
   const [destination, setDestination] = useState("unassigned");

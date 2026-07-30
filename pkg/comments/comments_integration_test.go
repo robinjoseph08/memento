@@ -25,6 +25,7 @@ import (
 	"github.com/robinjoseph08/memento/pkg/activity"
 	"github.com/robinjoseph08/memento/pkg/binder"
 	"github.com/robinjoseph08/memento/pkg/config"
+	"github.com/robinjoseph08/memento/pkg/engagement"
 	"github.com/robinjoseph08/memento/pkg/errcodes"
 	"github.com/robinjoseph08/memento/pkg/events"
 	"github.com/robinjoseph08/memento/pkg/favorites"
@@ -82,10 +83,14 @@ func newInteractionFixture(t *testing.T) interactionFixture {
 	db := testdb.Open(t)
 	require.NoError(t, migrations.Apply(ctx, db))
 	interactionActivity := activity.New(db)
+	engagementActivity := engagement.New(db)
 	commentService := New(db)
 	commentService.SetHandoff(interactionActivity.RecordComment)
+	commentService.SetEngagementHandoff(engagementActivity.RecordComment)
+	favoriteService := favorites.New(db, interactionActivity)
+	favoriteService.SetEngagementActivity(engagementActivity)
 	fixture := interactionFixture{
-		db: db, comments: commentService, favorites: favorites.New(db, interactionActivity), actors: map[string]setup.SessionActor{},
+		db: db, comments: commentService, favorites: favoriteService, actors: map[string]setup.SessionActor{},
 		credentials: map[string]string{}, people: map[string]uuid.UUID{}, access: map[string]uuid.UUID{}, media: uuid.New(),
 		event: uuid.New(), publication: uuid.New(), moment: uuid.New(),
 	}
@@ -323,6 +328,9 @@ func TestCommentsAuthorizeChronologyOwnershipAndModerationHistory(t *testing.T) 
 	assert.True(t, alexComment.AuthoredByMe)
 	blairComment, err := fixture.comments.Create(ctx, fixture.actors["blair"], fixture.media, uuid.New(), BodyRequest{Body: "Second"})
 	require.NoError(t, err)
+	var commentEngagement int
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM engagement_events WHERE kind = ?`, engagement.KindCommentCreated).Scan(ctx, &commentEngagement))
+	assert.Equal(t, 2, commentEngagement)
 
 	listed, err := fixture.comments.List(ctx, fixture.actors["alex"], fixture.media)
 	require.NoError(t, err)
@@ -809,6 +817,11 @@ func TestFavoritesRemainPrivateAndPersistAcrossAccessLoss(t *testing.T) {
 		require.NoError(t, err)
 		_, err = fixture.favorites.Set(ctx, fixture.actors["alex"], fixture.media, false)
 		require.NoError(t, err)
+		var engagementActions []string
+		require.NoError(t, fixture.db.NewRaw(`SELECT kind FROM engagement_events
+			WHERE recipient_person_id = ? AND media_item_id = ? AND kind IN (?, ?) ORDER BY occurred_at, id`,
+			fixture.people["alex"], fixture.media, engagement.KindFavoriteAdded, engagement.KindFavoriteRemoved).Scan(ctx, &engagementActions))
+		assert.Equal(t, []string{engagement.KindFavoriteAdded, engagement.KindFavoriteRemoved}, engagementActions)
 		var actions []string
 		require.NoError(t, fixture.db.NewRaw(`SELECT action FROM interaction_activity_items
 			WHERE kind = 'favorite' AND favorite_recipient_person_id = ? AND media_item_id = ? ORDER BY id`, fixture.people["alex"], fixture.media).Scan(ctx, &actions))

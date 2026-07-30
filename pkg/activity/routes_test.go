@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 	"github.com/robinjoseph08/memento/pkg/errcodes"
 	"github.com/robinjoseph08/memento/pkg/setup"
@@ -23,6 +24,16 @@ func (stub *curatorWorkStub) ListCuratorWork(context.Context) (CuratorWorkRespon
 	return stub.response, nil
 }
 
+func (stub *curatorWorkStub) ListCuratorActivity(context.Context, PageRequest) (CuratorActivityResponse, error) {
+	stub.called = true
+	return CuratorActivityResponse{}, nil
+}
+
+func (stub *curatorWorkStub) MarkRead(context.Context, uuid.UUID, MarkReadRequest) error {
+	stub.called = true
+	return nil
+}
+
 type curatorAuthorizerStub struct{ err error }
 
 func (stub curatorAuthorizerStub) AuthorizeCurator(context.Context, string, string, bool) (setup.CuratorSession, error) {
@@ -34,10 +45,14 @@ func TestCuratorWorkRouteDeclaresCuratorPolicy(t *testing.T) {
 	RegisterRoutes(e, NewHandler(&curatorWorkStub{}, curatorAuthorizerStub{}))
 
 	routes := e.Routes()
-	require.Len(t, routes, 1)
-	assert.Equal(t, "GET", routes[0].Method)
-	assert.Equal(t, "/api/activity/curator/work", routes[0].Path)
-	assert.Equal(t, curatorWorkPolicy, routes[0].Name)
+	require.Len(t, routes, 3)
+	policies := map[string]string{}
+	for _, route := range routes {
+		policies[route.Method+" "+route.Path] = route.Name
+	}
+	assert.Equal(t, curatorWorkPolicy, policies["GET /api/activity/curator/work"])
+	assert.Equal(t, curatorWorkPolicy, policies["GET /api/activity/curator"])
+	assert.Equal(t, curatorWorkPolicy, policies["POST /api/activity/curator/read"])
 }
 
 func TestCuratorWorkRouteRequiresCuratorAuthorization(t *testing.T) {
@@ -72,7 +87,8 @@ func TestCuratorWorkRouteRequiresCuratorAuthorization(t *testing.T) {
 
 func TestCuratorWorkRouteReturnsOnlyAfterAuthorization(t *testing.T) {
 	service := &curatorWorkStub{response: CuratorWorkResponse{Items: []CuratorWorkItem{{
-		ID: "7", Kind: "delivery_problem", SourceKind: "notification_batch", SourceID: "safe-source", Diagnostic: "recipient_rejected",
+		ID: "delivery_problem:7", Kind: "delivery_problem", SourceKind: "delivery_problem",
+		SourceID: "7", Version: "problem 7", Summary: "recipient_rejected",
 	}}}}
 	e := echo.New()
 	e.HTTPErrorHandler = errcodes.NewHandler().Handle
@@ -86,6 +102,6 @@ func TestCuratorWorkRouteReturnsOnlyAfterAuthorization(t *testing.T) {
 	require.Equal(t, http.StatusOK, response.Code)
 	assert.True(t, service.called)
 	assert.Equal(t, "no-store", response.Header().Get(echo.HeaderCacheControl))
-	assert.Contains(t, response.Body.String(), `"diagnostic":"recipient_rejected"`)
+	assert.Contains(t, response.Body.String(), `"summary":"recipient_rejected"`)
 	assert.NotContains(t, response.Body.String(), "opaque-session")
 }

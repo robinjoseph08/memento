@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState, type FormEvent } from "react";
 
 import { apiJSON, apiNoContent } from "./api";
+import { RecipientEngagement } from "./RecipientEngagement";
 import type {
   CreateRequest,
   ListResponse,
@@ -708,6 +709,7 @@ function RecipientControls({
             Generation {current.access.generation}, {current.access.state}.
             Login email: {current.email}.
           </p>
+          <RecipientEngagement personID={person.id} />
           {!invitation && current.access.state === "pending" ? (
             <button
               disabled={invitationAction.isPending}

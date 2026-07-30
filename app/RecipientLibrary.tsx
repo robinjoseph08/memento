@@ -7,6 +7,7 @@ import {
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 
 import { APIError, apiJSON, apiNoContent, apiResponse } from "./api";
+import { recordEngagement } from "./engagement";
 import { ThemeToggle } from "./PWAControls";
 import type {
   PlanRequest as ArchivePlanRequest,
@@ -229,11 +230,15 @@ function MediaViewer({
   session,
   refreshListingAccess,
   onClose,
+  onOriginalDownload,
+  onVideoStarted,
 }: {
   media: Media;
   session: SessionResponse;
   refreshListingAccess: () => Promise<RefreshedMediaAccess>;
   onClose: () => void;
+  onOriginalDownload: () => void;
+  onVideoStarted: () => void;
 }) {
   const queryClient = useQueryClient();
   const dialogRef = useRef<HTMLDialogElement>(null);
@@ -241,6 +246,7 @@ function MediaViewer({
     undefined,
   );
   const representationRetries = useRef(0);
+  const videoStarted = useRef(false);
   const [commentBody, setCommentBody] = useState("");
   const [mediaAccess, setMediaAccess] = useState<MediaAccess>(
     media.available ? "available" : "backing-unavailable",
@@ -522,6 +528,11 @@ function MediaViewer({
             controls
             key={`${media.id}-${representationAttempt}`}
             onError={() => void refreshMediaAccess(true)}
+            onPlay={() => {
+              if (videoStarted.current) return;
+              videoStarted.current = true;
+              onVideoStarted();
+            }}
             playsInline
             poster={media.thumbnail_url}
             preload="metadata"
@@ -581,7 +592,12 @@ function MediaViewer({
           </p>
         ) : null}
         {deliveryUnavailable ? null : (
-          <a className="viewer-download" download href={media.original_url}>
+          <a
+            className="viewer-download"
+            download
+            href={media.original_url}
+            onClick={onOriginalDownload}
+          >
             Download original
           </a>
         )}
@@ -993,9 +1009,24 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
   const eventMedia = event.data?.pages.flatMap((page) => page.media) ?? [];
   const dates = useMemo(() => [...new Set(media.map(mediaLabel))], [media]);
 
+  useEffect(() => {
+    const recordVisit = () => {
+      if (document.visibilityState === "visible") {
+        void recordEngagement(session, { kind: "visit" });
+      }
+    };
+    recordVisit();
+    document.addEventListener("visibilitychange", recordVisit);
+    return () => document.removeEventListener("visibilitychange", recordVisit);
+  }, [session]);
+
   function openEvent(summary: EventSummary, isNew = false) {
     setArchivePlan(undefined);
     setOpenedEvent(summary);
+    void recordEngagement(session, {
+      kind: "event_opened",
+      event_id: summary.id,
+    });
     if (isNew) seen.mutate(summary.publication_id);
   }
 
@@ -1032,6 +1063,10 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
     setSelectedMedia(new Set());
     setOpenedEvent(undefined);
     setDestination(destination);
+    void recordEngagement(session, {
+      kind: "destination_opened",
+      destination,
+    });
   }
 
   function submitSearch(event: FormEvent<HTMLFormElement>) {
@@ -1097,6 +1132,10 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
         ? document.activeElement
         : null;
     setOpenedMedia(item);
+    void recordEngagement(session, {
+      kind: "media_opened",
+      media_item_id: item.id,
+    });
   }
 
   function closeMedia() {
@@ -1590,6 +1629,18 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
         <MediaViewer
           media={openedMedia}
           onClose={closeMedia}
+          onOriginalDownload={() => {
+            void recordEngagement(session, {
+              kind: "original_download_started",
+              media_item_id: openedMedia.id,
+            });
+          }}
+          onVideoStarted={() => {
+            void recordEngagement(session, {
+              kind: "video_started",
+              media_item_id: openedMedia.id,
+            });
+          }}
           refreshListingAccess={refreshListingAccess}
           session={session}
         />

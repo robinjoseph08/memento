@@ -80,15 +80,21 @@ type archiveSource interface {
 	Original(ctx context.Context, assetID uuid.UUID, request immich.MediaRequest) (immich.MediaResponse, error)
 }
 
+type EngagementHandoff func(context.Context, bun.Tx, setup.SessionActor, uuid.UUID, *uuid.UUID, time.Time) error
+
 type Service struct {
-	db     *bun.DB
-	source archiveSource
-	now    func() time.Time
+	db         *bun.DB
+	source     archiveSource
+	now        func() time.Time
+	engagement EngagementHandoff
 }
 
 func New(db *bun.DB, source archiveSource) *Service {
 	return &Service{db: db, source: source, now: time.Now}
 }
+
+// SetEngagementHandoff installs the meaningful-use recorder for final Archive part claims.
+func (s *Service) SetEngagementHandoff(handoff EngagementHandoff) { s.engagement = handoff }
 
 // HandleCleanupJob removes expired plans in bounded passes. A full pass is
 // immediately continued so a backlog converges without one long transaction.
@@ -612,14 +618,18 @@ func (s *Service) StreamPart(ctx context.Context, actor setup.SessionActor, rawT
 		if err := authorizeItems(ctx, tx, actor, locked.Items, true); err != nil {
 			return err
 		}
+		consumedAt := s.now().UTC()
 		result, err := tx.NewRaw(`UPDATE archive_parts SET consumed_at = ? WHERE id = ? AND consumed_at IS NULL`,
-			s.now().UTC(), locked.PartID).Exec(ctx)
+			consumedAt, locked.PartID).Exec(ctx)
 		if err != nil {
 			return err
 		}
 		count, err := result.RowsAffected()
 		if err != nil || count != 1 {
 			return ErrNotFound
+		}
+		if s.engagement != nil {
+			return s.engagement(ctx, tx, actor, locked.PartID, nil, consumedAt)
 		}
 		return nil
 	})

@@ -2468,3 +2468,140 @@ h1 {
     color: #475569;
   }
 }
+
+.curator-activity {
+  display: grid;
+  gap: 1rem;
+}
+
+.curator-activity-heading,
+.curator-activity-heading > div,
+.activity-tabs,
+.activity-filters {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.activity-tabs button[aria-selected="true"] {
+  border-color: #38bdf8;
+  background: rgb(14 116 144 / 24%);
+}
+
+.curator-work-list,
+.activity-list,
+.engagement-timeline {
+  display: grid;
+  gap: 0.75rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.work-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem;
+  border: 1px solid #334155;
+  border-radius: 0.9rem;
+  background: rgb(15 23 42 / 88%);
+}
+
+.work-item.unread,
+.activity-item.unread {
+  border-left: 0.25rem solid #38bdf8;
+}
+
+.work-item h3,
+.work-item p {
+  margin: 0.2rem 0;
+}
+
+.work-progress,
+.activity-item time {
+  color: #94a3b8;
+  font-size: 0.88rem;
+}
+
+.activity-item {
+  border: 1px solid #334155;
+  border-radius: 0.75rem;
+  overflow: hidden;
+}
+
+.activity-item > button {
+  width: 100%;
+  display: grid;
+  grid-template-columns:
+    minmax(10rem, 1fr) minmax(8rem, 1fr) minmax(8rem, 1fr)
+    auto;
+  gap: 0.75rem;
+  text-align: left;
+  border: 0;
+  border-radius: 0;
+}
+
+.recipient-engagement {
+  display: grid;
+  gap: 0.75rem;
+  margin: 1rem 0;
+  padding: 1rem;
+  border: 1px solid #334155;
+  border-radius: 0.9rem;
+}
+
+.engagement-latest,
+.recipient-engagement h4 {
+  margin: 0;
+}
+
+.engagement-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+  gap: 0.75rem;
+  margin: 0;
+}
+
+.engagement-metrics > div {
+  padding: 0.75rem;
+  border-radius: 0.7rem;
+  background: rgb(15 23 42 / 80%);
+}
+
+.engagement-metrics dt {
+  color: #94a3b8;
+  font-size: 0.85rem;
+}
+
+.engagement-metrics dd {
+  margin: 0.25rem 0 0;
+  font-weight: 600;
+}
+
+:root[data-theme="light"] .work-item,
+:root[data-theme="light"] .recipient-engagement,
+:root[data-theme="light"] .engagement-metrics > div {
+  border-color: #bae6fd;
+  background: rgb(255 255 255 / 92%);
+}
+
+:root[data-theme="light"] .work-progress,
+:root[data-theme="light"] .activity-item time,
+:root[data-theme="light"] .engagement-metrics dt {
+  color: #475569;
+}
+
+@media (max-width: 700px) {
+  .work-item {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .activity-item > button {
+    grid-template-columns: 1fr;
+  }
+}
