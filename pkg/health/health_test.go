@@ -111,6 +111,33 @@ func TestRecoveryHoldBlocksReadinessBeforeWorkerOrExternalChecks(t *testing.T) {
 	assert.Zero(t, externalCalls.Load())
 }
 
+func TestReadyReleasesRecoveryFenceWhenStateCheckBlocks(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		held bool
+		err  error
+	}{
+		{name: "held", held: true},
+		{name: "state error", err: errors.New("state unavailable")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var acquired, released atomic.Int32
+			ok := func(context.Context) error { return nil }
+			service := newWithChecks(ok, ok, ok, checkerFunc(ok), fakeWorker{healthy: true}, time.Second, time.Second)
+			service.SetRecoveryStatus(fakeRecovery{
+				held: test.held, err: test.err,
+				acquired: &acquired, released: &released,
+			})
+
+			response := request(t, service.Ready)
+
+			assert.Equal(t, http.StatusServiceUnavailable, response.Code)
+			assert.Equal(t, int32(1), acquired.Load())
+			assert.Equal(t, int32(1), released.Load())
+		})
+	}
+}
+
 func TestRecoveryFenceFailureBlocksReadinessBeforeExternalChecks(t *testing.T) {
 	var externalCalls atomic.Int32
 	ok := func(context.Context) error { return nil }

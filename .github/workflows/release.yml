@@ -60,6 +60,11 @@ jobs:
           version: v0.36.0
           driver-opts: image=docker.io/moby/buildkit:v0.32.0@sha256:1f8167fcb0eca5b7126353d35299386945cbb8949cc516c592a49f80cfce4fa2
 
+      - name: Reconfirm tagged commit at the head of master
+        run: |
+          git fetch --no-tags origin refs/heads/master:refs/remotes/origin/master
+          test "$GITHUB_SHA" = "$(git rev-parse origin/master)"
+
       - name: Sign in to GHCR
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
@@ -108,7 +113,7 @@ jobs:
           mkdir -p "$bundle/deploy" "$bundle/docs"
           cp deploy/compose.production.yaml deploy/production.env.example deploy/memento.example.yaml "$bundle/deploy/"
           cp docs/operator-runbook.md docs/dependency-drills.md docs/release-exercise.md "$bundle/docs/"
-          cp LICENSE memento-image.txt memento-image.txt.sha256 "$bundle/"
+          cp LICENSE README.md memento-image.txt memento-image.txt.sha256 "$bundle/"
           tar --sort=name --owner=0 --group=0 --numeric-owner \
             --mtime="@$(git show -s --format=%ct "$GITHUB_SHA")" \
             -czf "$bundle.tar.gz" "$bundle"
@@ -129,23 +134,25 @@ jobs:
 
           The checksum-pinned \`memento-deployment-${RELEASE_VERSION}.tar.gz\`
           bundle contains the production Compose contract, configuration examples,
-          license, operator runbook, dependency drills, and release exercise.
+          README, license, operator runbook, dependency drills, and release exercise.
+          Stable version tags create a draft Release until that exact digest passes
+          the reviewed clean-environment exercise.
           EOF
 
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          prerelease=
+          release_state=--draft
           case "$GITHUB_REF_NAME" in
-            *-*) prerelease=--prerelease ;;
+            *-*) release_state=--prerelease ;;
           esac
           gh release create "$GITHUB_REF_NAME" \
             --verify-tag \
             --generate-notes \
             --notes-file release-notes.md \
             --title "Memento $GITHUB_REF_NAME" \
-            $prerelease \
+            $release_state \
             LICENSE memento-image.txt memento-image.txt.sha256 \
             "memento-deployment-${GITHUB_REF_NAME#v}.tar.gz" \
             "memento-deployment-${GITHUB_REF_NAME#v}.tar.gz.sha256"

@@ -24,7 +24,12 @@ compose up --no-build --detach --wait --wait-timeout 90 postgres immich
 compose exec --no-TTY postgres \
   psql --username postgres --dbname postgres --set ON_ERROR_STOP=1 \
   < "$root/tests/fixtures/init-database.sql" >/dev/null
-docker build --tag "memento:$image_tag" "$root"
+docker build \
+  --build-arg MEMENTO_VERSION=0.1.0-test \
+  --build-arg MEMENTO_REVISION=0123456789abcdef0123456789abcdef01234567 \
+  --build-arg MEMENTO_SOURCE=https://github.com/robinjoseph08/memento \
+  --build-arg MEMENTO_CREATED=2026-07-30T12:00:00Z \
+  --tag "memento:$image_tag" "$root"
 compose up --no-build --detach --wait --wait-timeout 90 memento
 endpoint=$(compose port memento 8080 | head -n 1)
 [ -n "$endpoint" ] || {
@@ -43,6 +48,7 @@ wait_for_readiness() {
   shift 4
   ready_code=000
   for _ in $(seq 1 "$attempts"); do
+    : > "$ready_body"
     ready_code=$(curl --silent --max-time 5 --output "$ready_body" --write-out '%{http_code}' "$base_url/api/health/ready" || true)
     if [ "$ready_code" = "$expected_code" ] && grep -q "$expected_pattern" "$ready_body"; then
       return 0
@@ -130,17 +136,19 @@ front_endpoint=$(compose port front 8443 | head -n 1)
   exit 1
 }
 front_url="https://localhost:${front_endpoint##*:}"
-front_ready=false
+front_code=000
 for _ in $(seq 1 30); do
-  if curl --insecure --fail --silent --max-time 5 "$front_url/api/setup" > "$temporary/front-setup.json"; then
-    front_ready=true
-    break
-  fi
+  : > "$temporary/front-setup.json"
+  front_code=$(curl --insecure --silent --max-time 5 --output "$temporary/front-setup.json" \
+    --write-out '%{http_code}' "$front_url/api/setup" || true)
+  [ "$front_code" = 200 ] && break
   sleep 1
 done
-[ "$front_ready" = true ] || {
-  compose logs front memento
-  printf 'front proxy did not become ready\n' >&2
+[ "$front_code" = 200 ] || {
+  compose logs front memento >&2
+  printf 'front proxy did not become ready: last HTTP status %s, body: ' "$front_code" >&2
+  cat "$temporary/front-setup.json" >&2 || true
+  printf '\n' >&2
   exit 1
 }
 grep -q '"status":"available"' "$temporary/front-setup.json"
@@ -164,9 +172,10 @@ compose exec --no-TTY memento sh -c "grep -aq 'America/Los_Angeles' /usr/local/b
 compose exec --no-TTY memento test -x /usr/local/bin/memento-migrations
 compose exec --no-TTY memento grep -q 'MIT License' /usr/share/licenses/memento/LICENSE
 [ "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.licenses" }}' "memento:$image_tag")" = MIT ]
-[ "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' "memento:$image_tag")" = dev ]
-[ "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "memento:$image_tag")" = unknown ]
+[ "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' "memento:$image_tag")" = 0.1.0-test ]
+[ "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "memento:$image_tag")" = 0123456789abcdef0123456789abcdef01234567 ]
 [ "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.source" }}' "memento:$image_tag")" = https://github.com/robinjoseph08/memento ]
+[ "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.created" }}' "memento:$image_tag")" = 2026-07-30T12:00:00Z ]
 container=$(compose ps --quiet memento)
 image_user=$(docker inspect --format '{{.Config.User}}' "$container")
 [ -n "$image_user" ] && [ "$image_user" != 0 ] && [ "$image_user" != root ]

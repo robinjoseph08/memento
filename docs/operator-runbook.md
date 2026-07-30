@@ -31,7 +31,9 @@ A Memento release publishes one multi-platform image to GHCR. A version tag is a
 
 The image contains the MIT license at `/usr/share/licenses/memento/LICENSE`. Its attached SBOM and provenance describe the exact build. Never replace the digest with `latest`, a version tag, or another floating alias in production.
 
-The publish job requires the protected GitHub `release` environment. Repository administrators must configure required reviewers for that environment and a tag ruleset that limits `v*` creation to release maintainers. The workflow accepts only a tag at the current head of `master`.
+The publish job requires the protected GitHub `release` environment. Repository administrators must configure required reviewers for that environment and a tag ruleset that limits `v*` creation to release maintainers. The workflow accepts only a tag at the current head of `master` and reconfirms that state after environment approval.
+
+Prerelease tags publish a GitHub prerelease. A stable version tag creates a draft GitHub Release and pushes its exact candidate digest. Run the complete clean-environment exercise against that digest, attach the reviewed sanitized evidence, and only then publish the same draft without rebuilding or changing its assets. A version tag or GHCR tag alone is never release acceptance.
 
 Download the versioned deployment bundle and checksum from the same GitHub Release, then verify and extract it:
 

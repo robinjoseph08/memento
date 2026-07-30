@@ -2,7 +2,7 @@
 
 This exercise is the final operator acceptance gate for a Memento release. Run it on a clean isolated host using published digest-pinned images. Ordinary CI proves deterministic contracts with fixtures, but it cannot prove a real Immich library, SMTP service, browser Push service, destructive restore cutover, or operator procedure.
 
-A stable release is not complete until this exercise has passed and its sanitized record has been reviewed. Keep failed attempts in the record and link each failure to a tracked issue.
+A stable version tag creates a draft GitHub Release and its final candidate image digest. A stable release is not complete until this exercise has passed against that exact digest, its sanitized record has been reviewed and attached, and a release maintainer publishes the same draft without rebuilding it. Keep failed attempts in the record and link each failure to a tracked issue.
 
 ## Safety and environment
 
@@ -125,13 +125,13 @@ A rolling or overlapping two-instance upgrade fails the exercise.
 ## Phase 7: release gates and final shutdown
 
 1. Confirm the commit recorded in the image passed every required CI job.
-2. Confirm the GitHub Release includes `LICENSE`, `memento-image.txt`, and its checksum.
+2. Confirm the draft GitHub Release includes `LICENSE`, `memento-image.txt`, its checksum, and the checksum-pinned deployment bundle.
 3. Verify the attached SBOM, provenance, and GitHub attestation refer to the same digest.
 4. Repeat liveness, readiness, authorized delivery, unauthorized denial, SMTP, and Push probes.
 5. Send SIGTERM with an idle system and confirm status 0 before the configured grace period.
 6. Start once more and confirm readiness and durable state.
 7. Review logs and evidence for secrets or private data.
-8. Mark the exercise passed only after a second reviewer checks every phase.
+8. Mark the exercise passed only after a second reviewer checks every phase, attach the sanitized record, then publish the unchanged draft GitHub Release.
 
 ## Versioned evidence template
 

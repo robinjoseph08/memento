@@ -21,17 +21,20 @@ func TestExecutableContainerImagesArePinnedByDigest(t *testing.T) {
 	stages := make(map[string]bool)
 	for _, line := range strings.Split(dockerfile, "\n") {
 		trimmed := strings.TrimSpace(line)
+		upper := strings.ToUpper(trimmed)
 		switch {
-		case strings.HasPrefix(trimmed, "# syntax="):
+		case strings.HasPrefix(strings.ToLower(trimmed), "# syntax="):
 			assert.Regexp(t, pinnedDigest, trimmed, "Dockerfile frontend must be immutable: %s", trimmed)
-		case strings.HasPrefix(trimmed, "FROM "):
+		case strings.HasPrefix(upper, "FROM "):
 			fields := strings.Fields(trimmed)
 			reference := fields[1]
-			if !stages[reference] && reference != "scratch" {
-				assert.Regexp(t, pinnedDigest, reference, "Dockerfile base must be immutable: %s", reference)
-			}
+			assertDockerReferencePinned(t, stages, reference, trimmed)
 			if len(fields) == 4 && strings.EqualFold(fields[2], "AS") {
 				stages[fields[3]] = true
+			}
+		case strings.HasPrefix(upper, "COPY "), strings.HasPrefix(upper, "RUN "):
+			for _, match := range regexp.MustCompile(`(?i)(?:--from=|\bfrom=)([^,\s]+)`).FindAllStringSubmatch(trimmed, -1) {
+				assertDockerReferencePinned(t, stages, match[1], trimmed)
 			}
 		}
 	}
@@ -59,9 +62,20 @@ func TestExecutableContainerImagesArePinnedByDigest(t *testing.T) {
 	}
 }
 
+func assertDockerReferencePinned(t *testing.T, stages map[string]bool, reference, instruction string) {
+	t.Helper()
+	if stages[reference] || reference == "scratch" || regexp.MustCompile(`^[0-9]+$`).MatchString(reference) {
+		return
+	}
+	assert.Regexp(t, pinnedDigest, reference, "Dockerfile external source must be immutable: %s", instruction)
+}
+
 func TestWorkflowActionsArePinnedByCommit(t *testing.T) {
 	workflows, err := filepath.Glob("../.github/workflows/*.yml")
 	require.NoError(t, err)
+	yamlWorkflows, err := filepath.Glob("../.github/workflows/*.yaml")
+	require.NoError(t, err)
+	workflows = append(workflows, yamlWorkflows...)
 	require.NotEmpty(t, workflows)
 	for _, path := range workflows {
 		content, err := os.ReadFile(path)
@@ -72,8 +86,8 @@ func TestWorkflowActionsArePinnedByCommit(t *testing.T) {
 			}
 			assert.Regexp(t, `^[^@]+@[0-9a-f]{40}$`, match[1], "%s contains an unpinned action", path)
 		}
-		for _, image := range regexp.MustCompile(`docker\.io/[^\s]+`).FindAllString(string(content), -1) {
-			assert.Regexp(t, pinnedDigest, image, "%s contains a floating action helper image: %s", path, image)
+		for _, match := range regexp.MustCompile(`(?m)^\s*(?:image:\s*|driver-opts:\s*image=)([^\s]+)`).FindAllStringSubmatch(string(content), -1) {
+			assert.Regexp(t, pinnedDigest, match[1], "%s contains a floating action helper image: %s", path, match[1])
 		}
 	}
 }
@@ -104,7 +118,12 @@ func TestReleaseWorkflowPublishesExactTagAndRecordsDigest(t *testing.T) {
 	assert.Contains(t, workflow, "${{ steps.build.outputs.digest }}")
 	assert.Contains(t, workflow, "environment: release")
 	assert.Contains(t, workflow, "needs: validation")
+	assert.Contains(t, workflow, "MEMENTO_VERSION=${{ steps.source.outputs.version }}")
+	assert.Contains(t, workflow, "MEMENTO_REVISION=${{ github.sha }}")
+	assert.Contains(t, workflow, "MEMENTO_CREATED=${{ steps.source.outputs.created }}")
 	assert.Contains(t, workflow, "memento-deployment-${RELEASE_VERSION}.tar.gz")
+	assert.Contains(t, workflow, "cp LICENSE README.md memento-image.txt")
+	assert.Contains(t, workflow, "release_state=--draft")
 	assert.NotContains(t, workflow, ":latest")
 }
 

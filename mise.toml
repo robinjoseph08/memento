@@ -171,7 +171,8 @@ MEMENTO_IMAGE_DIGEST=sha256:0000000000000000000000000000000000000000000000000000
 MEMENTO_CONFIG_PATH=/tmp/memento.yaml \
 MEMENTO_SECRETS_PATH=/tmp/memento-secrets \
 MEMENTO_NETWORK=memento-private \
-docker compose --file deploy/compose.production.yaml config --quiet
+docker compose --file deploy/compose.production.yaml config --format json \
+  | ./scripts/check-production-compose.py
 '''
 
 [tasks."workflow:validate"]
