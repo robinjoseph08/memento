@@ -144,7 +144,8 @@ func run() error {
 		log.Error("worker identity generation failed")
 		return err
 	}
-	jobWorker, err := worker.New(db, cfg.Worker, owner, handlers, worker.WithDispatcher(outbox.New(db)))
+	jobWorker, err := worker.New(db, cfg.Worker, owner, handlers,
+		worker.WithDispatcher(outbox.New(db)), worker.WithTrafficGate(recoveryService))
 	if err != nil {
 		_ = db.Close()
 		log.Err(err).Error("worker startup failed")

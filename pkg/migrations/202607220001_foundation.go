@@ -123,12 +123,8 @@ func applyCollection(ctx context.Context, db *bun.DB, migrations *migrate.Migrat
 }
 
 // Current reports whether the database has every known migration and no unknown applied migrations.
-func Current(ctx context.Context, db *bun.DB) error {
-	return CurrentIn(ctx, db)
-}
-
-// CurrentIn performs the migration-ledger check through the supplied read-only-capable database handle.
-func CurrentIn(ctx context.Context, db bun.IDB) error {
+// It accepts a transaction so restore validation can enforce a read-only snapshot.
+func Current(ctx context.Context, db bun.IDB) error {
 	var applied []string
 	if err := db.NewRaw(`SELECT name FROM bun_migrations ORDER BY name`).Scan(ctx, &applied); err != nil {
 		return fmt.Errorf("read migration status: %w", err)
@@ -152,12 +148,7 @@ func CurrentIn(ctx context.Context, db bun.IDB) error {
 }
 
 // Extensions verifies that PostgreSQL loaded both search extensions in this logical database.
-func Extensions(ctx context.Context, db *bun.DB) error {
-	return ExtensionsIn(ctx, db)
-}
-
-// ExtensionsIn performs the extension check through the supplied database handle.
-func ExtensionsIn(ctx context.Context, db bun.IDB) error {
+func Extensions(ctx context.Context, db bun.IDB) error {
 	var count int
 	if err := db.NewRaw(`SELECT count(*) FROM pg_extension WHERE extname IN ('unaccent', 'pg_trgm')`).Scan(ctx, &count); err != nil {
 		return fmt.Errorf("verify required extensions: %w", err)
@@ -169,12 +160,7 @@ func ExtensionsIn(ctx context.Context, db bun.IDB) error {
 }
 
 // SetupConsistent verifies the singleton and sole-Curator transition without exposing state.
-func SetupConsistent(ctx context.Context, db *bun.DB) error {
-	return SetupConsistentIn(ctx, db)
-}
-
-// SetupConsistentIn performs the setup check through the supplied database handle.
-func SetupConsistentIn(ctx context.Context, db bun.IDB) error {
+func SetupConsistent(ctx context.Context, db bun.IDB) error {
 	var settingsCount, curatorCount int
 	var setupComplete bool
 	if err := db.NewRaw(`

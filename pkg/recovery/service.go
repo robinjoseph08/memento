@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/subtle"
 	"database/sql"
 	"errors"
 	"io"
@@ -20,6 +19,7 @@ var (
 	ErrSetupIncomplete = errors.New("recovery hold requires completed, sole-Curator setup")
 	ErrNotHeld         = errors.New("recovery hold is not active")
 	ErrFreshCurator    = errors.New("a fresh Curator Session is required")
+	ErrReviewRequired  = errors.New("restored state review is required")
 )
 
 // StatusResponse is the public, non-sensitive Recovery state.
@@ -86,7 +86,7 @@ func New(db *bun.DB, options ...Option) *Service {
 	return service
 }
 
-// Activate starts Recovery hold for a fresh nonce. Reusing the last nonce is an idempotent no-op.
+// Activate starts Recovery hold for a fresh nonce. Reusing any consumed nonce is an idempotent no-op.
 func (s *Service) Activate(ctx context.Context, nonce string) (bool, error) {
 	if nonce == "" {
 		return false, nil
@@ -94,19 +94,31 @@ func (s *Service) Activate(ctx context.Context, nonce string) (bool, error) {
 	nonceHash := sha256.Sum256([]byte(nonce))
 	activated := false
 	err := s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
-		var setupComplete bool
-		var curatorCount int
-		var storedHash []byte
-		if err := tx.NewRaw(`SELECT setup_complete, recovery_nonce_hash,
-			(SELECT count(*) FROM person_roles WHERE role = 'curator')
-			FROM system_settings WHERE id = 1 FOR UPDATE`).
-			Scan(ctx, &setupComplete, &storedHash, &curatorCount); err != nil {
+		if _, err := tx.NewRaw(`SELECT pg_advisory_xact_lock(hashtextextended(current_database() || ':memento:recovery-traffic', 0))`).Exec(ctx); err != nil {
 			return err
 		}
-		if !setupComplete || curatorCount != 1 {
+		var setupComplete bool
+		var curatorCount, recoverableCuratorCount int
+		if err := tx.NewRaw(`SELECT setup_complete,
+			(SELECT count(*) FROM person_roles WHERE role = 'curator'),
+			(SELECT count(*) FROM person_roles AS role
+			 JOIN people AS person ON person.id = role.person_id AND person.archived_at IS NULL AND person.merged_at IS NULL
+			 JOIN recipient_access_generations AS access ON access.person_id = person.id
+			  AND access.is_current AND access.state = 'completed'
+			 JOIN recipient_emails AS email ON email.recipient_access_generation_id = access.id AND email.is_current
+			 WHERE role.role = 'curator')
+			FROM system_settings WHERE id = 1 FOR UPDATE`).
+			Scan(ctx, &setupComplete, &curatorCount, &recoverableCuratorCount); err != nil {
+			return err
+		}
+		if !setupComplete || curatorCount != 1 || recoverableCuratorCount != 1 {
 			return ErrSetupIncomplete
 		}
-		if len(storedHash) == len(nonceHash) && subtle.ConstantTimeCompare(storedHash, nonceHash[:]) == 1 {
+		var consumed bool
+		if err := tx.NewRaw(`SELECT EXISTS (SELECT 1 FROM recovery_nonce_history WHERE nonce_hash = ?)`, nonceHash[:]).Scan(ctx, &consumed); err != nil {
+			return err
+		}
+		if consumed {
 			return nil
 		}
 		epoch := make([]byte, 32)
@@ -116,8 +128,13 @@ func (s *Service) Activate(ctx context.Context, nonce string) (bool, error) {
 		now := s.now().UTC()
 		if _, err := tx.NewRaw(`UPDATE system_settings
 			SET recovery_hold = true, recovery_nonce_hash = ?, recovery_started_at = ?,
-			    recovery_released_at = NULL, security_epoch = ?, updated_at = ?
+			    recovery_reviewed_at = NULL, recovery_reviewed_by_person_id = NULL,
+			    recovery_reviewed_by_session_id = NULL, recovery_released_at = NULL,
+			    security_epoch = ?, updated_at = ?
 			WHERE id = 1`, nonceHash[:], now, epoch, now).Exec(ctx); err != nil {
+			return err
+		}
+		if _, err := tx.NewRaw(`INSERT INTO recovery_nonce_history (nonce_hash, consumed_at) VALUES (?, ?)`, nonceHash[:], now).Exec(ctx); err != nil {
 			return err
 		}
 		if _, err := tx.NewRaw(`INSERT INTO security_audit_events (action, outcome, metadata, created_at)
@@ -180,7 +197,33 @@ func (s *Service) Review(ctx context.Context, actor setup.CuratorSession) (Revie
 	return response, err
 }
 
-// Release clears Recovery hold only for the fresh, current-epoch Curator Session.
+// AcknowledgeReview records the fresh Curator's explicit restored-state review.
+func (s *Service) AcknowledgeReview(ctx context.Context, actor setup.CuratorSession) error {
+	return s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if err := requireFreshCurator(ctx, tx, actor, true); err != nil {
+			return err
+		}
+		now := s.now().UTC()
+		result, err := tx.NewRaw(`UPDATE system_settings
+			SET recovery_reviewed_at = ?, recovery_reviewed_by_person_id = ?,
+			    recovery_reviewed_by_session_id = ?, updated_at = ?
+			WHERE id = 1 AND recovery_hold`, now, actor.PersonID, actor.SessionID, now).Exec(ctx)
+		if err != nil {
+			return err
+		}
+		if affected, _ := result.RowsAffected(); affected != 1 {
+			return ErrNotHeld
+		}
+		metadata := setup.RequestMetadataFromContext(ctx)
+		_, err = tx.NewRaw(`INSERT INTO security_audit_events
+			(actor_person_id, subject_person_id, action, outcome, client_ip, user_agent, session_id, metadata, created_at)
+			VALUES (?, ?, 'recovery_state_reviewed', 'success', NULLIF(?, '')::inet, ?, ?, '{}'::jsonb, ?)`,
+			actor.PersonID, actor.PersonID, metadata.ClientIP, metadata.UserAgent, actor.SessionID, now).Exec(ctx)
+		return err
+	})
+}
+
+// Release clears Recovery hold only for the fresh Curator Session that acknowledged review.
 func (s *Service) Release(ctx context.Context, actor setup.CuratorSession) error {
 	return s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 		if err := requireFreshCurator(ctx, tx, actor, true); err != nil {
@@ -188,11 +231,22 @@ func (s *Service) Release(ctx context.Context, actor setup.CuratorSession) error
 		}
 		now := s.now().UTC()
 		result, err := tx.NewRaw(`UPDATE system_settings SET recovery_hold = false,
-			recovery_released_at = ?, updated_at = ? WHERE id = 1 AND recovery_hold`, now, now).Exec(ctx)
+			recovery_released_at = ?, updated_at = ?
+			WHERE id = 1 AND recovery_hold
+			 AND recovery_reviewed_at IS NOT NULL
+			 AND recovery_reviewed_by_person_id = ? AND recovery_reviewed_by_session_id = ?`,
+			now, now, actor.PersonID, actor.SessionID).Exec(ctx)
 		if err != nil {
 			return err
 		}
 		if affected, _ := result.RowsAffected(); affected != 1 {
+			var held bool
+			if err := tx.NewRaw(`SELECT recovery_hold FROM system_settings WHERE id = 1`).Scan(ctx, &held); err != nil {
+				return err
+			}
+			if held {
+				return ErrReviewRequired
+			}
 			return ErrNotHeld
 		}
 		metadata := setup.RequestMetadataFromContext(ctx)

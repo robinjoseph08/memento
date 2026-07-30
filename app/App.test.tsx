@@ -2049,6 +2049,9 @@ test("requires a fresh Curator review before explicitly releasing Recovery hold"
           }),
         );
       }
+      if (path === "/api/recovery/review/complete") {
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
       if (path === "/api/recovery/release") {
         releaseRequested = true;
         return new Promise<Response>(() => undefined);

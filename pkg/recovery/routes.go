@@ -50,6 +50,25 @@ func (h *Handler) Review(c echo.Context) error {
 	return c.JSON(http.StatusOK, response)
 }
 
+func (h *Handler) AcknowledgeReview(c echo.Context) error {
+	actor, err := h.curator(c, true)
+	if err != nil {
+		return err
+	}
+	ctx := h.auth.ContextWithRequestMetadata(c.Request().Context(), c.Request())
+	if err := h.service.AcknowledgeReview(ctx, actor); err != nil {
+		switch {
+		case errors.Is(err, ErrNotHeld):
+			return errcodes.Conflict("Recovery hold is no longer active.")
+		case errors.Is(err, ErrFreshCurator):
+			return errcodes.Unauthorized("A fresh Curator Session is required.")
+		default:
+			return err
+		}
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
 func (h *Handler) Release(c echo.Context) error {
 	actor, err := h.curator(c, true)
 	if err != nil {
@@ -62,6 +81,8 @@ func (h *Handler) Release(c echo.Context) error {
 			return errcodes.Conflict("Recovery hold is no longer active.")
 		case errors.Is(err, ErrFreshCurator):
 			return errcodes.Unauthorized("A fresh Curator Session is required.")
+		case errors.Is(err, ErrReviewRequired):
+			return errcodes.Conflict("Review restored state before releasing Recovery hold.")
 		default:
 			return err
 		}
@@ -98,6 +119,8 @@ func RegisterRoutes(e *echo.Echo, handler *Handler) {
 	status.Name = publicRecoveryPolicy
 	review := group.GET("/review", handler.Review)
 	review.Name = curatorRecoveryPolicy
+	acknowledge := group.POST("/review/complete", handler.AcknowledgeReview)
+	acknowledge.Name = curatorRecoveryPolicy
 	release := group.POST("/release", handler.Release)
 	release.Name = curatorRecoveryPolicy
 }

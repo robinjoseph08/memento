@@ -53,7 +53,8 @@ func TestRecoveryHoldBlocksOutboxDispatchAndJobClaims(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, dispatched)
 
-	_, err = db.NewRaw(`UPDATE system_settings SET recovery_hold = false, recovery_released_at = now() WHERE id = 1`).Exec(ctx)
+	_, err = db.NewRaw(`UPDATE system_settings SET recovery_hold = false,
+		recovery_nonce_hash = NULL, recovery_started_at = NULL WHERE id = 1`).Exec(ctx)
 	require.NoError(t, err)
 	claimed, err = jobWorker.claim(ctx)
 	require.NoError(t, err)

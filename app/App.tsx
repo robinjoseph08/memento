@@ -1682,15 +1682,43 @@ function RecoveryCard({
     retry: false,
   });
   const release = useMutation({
-    mutationFn: () => {
+    mutationFn: async () => {
       if (!session) throw new Error("A fresh Curator Session is required.");
+      const headers = { "X-Memento-CSRF": session.csrf_token };
+      await apiNoContent("/api/recovery/review/complete", {
+        method: "POST",
+        headers,
+      });
       return apiNoContent("/api/recovery/release", {
         method: "POST",
-        headers: { "X-Memento-CSRF": session.csrf_token },
+        headers,
       });
     },
     onSuccess: onReleased,
   });
+
+  const restoredCounts = review.data
+    ? ([
+        ["People", review.data.counts.people],
+        ["Current Recipients", review.data.counts.current_recipients],
+        ["Completed Recipients", review.data.counts.completed_recipients],
+        ["Suspended Recipients", review.data.counts.suspended_recipients],
+        ["Revoked access generations", review.data.counts.revoked_generations],
+        ["Invalidated restored Sessions", review.data.counts.restored_sessions],
+        ["Fresh Sessions", review.data.counts.fresh_sessions],
+        ["Audience entitlements", review.data.counts.audience_entitlements],
+        ["Published Events", review.data.counts.published_events],
+        ["Published Media items", review.data.counts.published_media_items],
+        [
+          "Pending optional email batches",
+          review.data.counts.pending_email_batches,
+        ],
+        [
+          "Active Push subscriptions",
+          review.data.counts.active_push_subscriptions,
+        ],
+      ] as const)
+    : [];
 
   if (!session) {
     return <SignInFlow onComplete={onComplete} recovery />;
@@ -1728,54 +1756,12 @@ function RecoveryCard({
             {new Date(review.data.started_at).toLocaleString()}.
           </p>
           <dl className="recovery-counts">
-            <div>
-              <dt>People</dt>
-              <dd>{review.data.counts.people}</dd>
-            </div>
-            <div>
-              <dt>Current Recipients</dt>
-              <dd>{review.data.counts.current_recipients}</dd>
-            </div>
-            <div>
-              <dt>Completed Recipients</dt>
-              <dd>{review.data.counts.completed_recipients}</dd>
-            </div>
-            <div>
-              <dt>Suspended Recipients</dt>
-              <dd>{review.data.counts.suspended_recipients}</dd>
-            </div>
-            <div>
-              <dt>Revoked access generations</dt>
-              <dd>{review.data.counts.revoked_generations}</dd>
-            </div>
-            <div>
-              <dt>Invalidated restored Sessions</dt>
-              <dd>{review.data.counts.restored_sessions}</dd>
-            </div>
-            <div>
-              <dt>Fresh Sessions</dt>
-              <dd>{review.data.counts.fresh_sessions}</dd>
-            </div>
-            <div>
-              <dt>Audience entitlements</dt>
-              <dd>{review.data.counts.audience_entitlements}</dd>
-            </div>
-            <div>
-              <dt>Published Events</dt>
-              <dd>{review.data.counts.published_events}</dd>
-            </div>
-            <div>
-              <dt>Published Media items</dt>
-              <dd>{review.data.counts.published_media_items}</dd>
-            </div>
-            <div>
-              <dt>Pending optional email batches</dt>
-              <dd>{review.data.counts.pending_email_batches}</dd>
-            </div>
-            <div>
-              <dt>Active Push subscriptions</dt>
-              <dd>{review.data.counts.active_push_subscriptions}</dd>
-            </div>
+            {restoredCounts.map(([label, value]) => (
+              <div key={label}>
+                <dt>{label}</dt>
+                <dd>{value}</dd>
+              </div>
+            ))}
           </dl>
           <label className="checkbox-choice">
             <input

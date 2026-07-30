@@ -92,6 +92,34 @@ func TestRecoveryNonceRotationReviewAndFreshCuratorRelease(t *testing.T) {
 	require.NoError(t, db.NewRaw(`SELECT security_epoch FROM system_settings WHERE id = 1`).Scan(ctx, &secondEpoch))
 	assert.NotEqual(t, epoch, secondEpoch)
 
+	activated, err = service.Activate(ctx, nonce)
+	require.NoError(t, err)
+	assert.False(t, activated, "every consumed nonce remains idempotent after newer restores")
+	var afterReplayEpoch []byte
+	require.NoError(t, db.NewRaw(`SELECT security_epoch FROM system_settings WHERE id = 1`).Scan(ctx, &afterReplayEpoch))
+	assert.Equal(t, secondEpoch, afterReplayEpoch)
+
+	releaseFence, err := service.Acquire(ctx)
+	require.NoError(t, err)
+	activationResult := make(chan error, 1)
+	go func() {
+		_, activationErr := service.Activate(context.Background(), "third-fresh-recovery-nonce-with-more-than-32-bytes")
+		activationResult <- activationErr
+	}()
+	require.Eventually(t, func() bool {
+		var waiting bool
+		queryErr := db.NewRaw(`SELECT EXISTS (SELECT 1 FROM pg_locks
+			WHERE locktype = 'advisory' AND NOT granted)`).Scan(ctx, &waiting)
+		return queryErr == nil && waiting
+	}, time.Second, 5*time.Millisecond, "Recovery activation never waited for in-flight traffic")
+	select {
+	case activationErr := <-activationResult:
+		require.Failf(t, "Recovery activation crossed the traffic fence", "error: %v", activationErr)
+	default:
+	}
+	releaseFence()
+	require.NoError(t, <-activationResult)
+
 	activated, err = service.Activate(ctx, "")
 	require.NoError(t, err)
 	assert.False(t, activated)
@@ -134,12 +162,18 @@ func TestRecoveryNonceRotationReviewAndFreshCuratorRelease(t *testing.T) {
 	assert.Equal(t, 1, review.Counts.RestoredSessions)
 	assert.Equal(t, 1, review.Counts.FreshSessions)
 
+	assert.ErrorIs(t, service.Release(ctx, freshActor), ErrReviewRequired)
+	require.NoError(t, service.AcknowledgeReview(ctx, freshActor))
 	require.NoError(t, service.Release(ctx, freshActor))
 	held, err = service.Held(ctx)
 	require.NoError(t, err)
 	assert.False(t, held)
 	require.NoError(t, db.NewRaw(`SELECT count(*) FROM security_audit_events
 		WHERE action = 'recovery_hold_released' AND actor_person_id = ? AND session_id = ?`,
+		personID, freshSessionID).Scan(ctx, &auditCount))
+	assert.Equal(t, 1, auditCount)
+	require.NoError(t, db.NewRaw(`SELECT count(*) FROM security_audit_events
+		WHERE action = 'recovery_state_reviewed' AND actor_person_id = ? AND session_id = ?`,
 		personID, freshSessionID).Scan(ctx, &auditCount))
 	assert.Equal(t, 1, auditCount)
 
