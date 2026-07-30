@@ -78,6 +78,34 @@ func TestMeaningfulEngagementIsIdempotentAggregatedAndCuratorOnly(t *testing.T) 
 	assert.Equal(t, 2, aggregate)
 }
 
+func TestSessionEngagementUsesUTCDayAcrossDatabaseTimezones(t *testing.T) {
+	db := testdb.Open(t)
+	ctx := context.Background()
+	require.NoError(t, migrations.Apply(ctx, db))
+	now := time.Date(2026, time.July, 30, 14, 0, 0, 0, time.UTC)
+	actor := seedEngagementActor(t, db, false, now)
+	nextSessionID := uuid.New()
+	credentialHash := sha256.Sum256(nextSessionID[:])
+	occurredAt := time.Date(2026, time.July, 31, 0, 30, 0, 0, time.UTC)
+	require.NoError(t, db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if _, err := tx.ExecContext(ctx, `SET LOCAL TIME ZONE 'America/Los_Angeles'`); err != nil {
+			return err
+		}
+		_, err := tx.NewRaw(`INSERT INTO sessions
+			(id, credential_hash, person_id, recipient_access_generation_id, security_epoch,
+			 session_type, created_at, last_activity_at, idle_expires_at)
+			SELECT ?, ?, ?, ?, security_epoch, 'trusted', ?, ?, ?
+			FROM system_settings WHERE id = 1`, nextSessionID, credentialHash[:], actor.PersonID,
+			actor.AccessID, occurredAt, occurredAt, occurredAt.Add(time.Hour)).Exec(ctx)
+		return err
+	}))
+	var count int
+	require.NoError(t, db.NewRaw(`SELECT event_count FROM engagement_daily_aggregates
+		WHERE recipient_person_id = ? AND activity_date = '2026-07-31' AND kind = ?`,
+		actor.PersonID, KindSessionStarted).Scan(ctx, &count))
+	assert.Equal(t, 1, count)
+}
+
 func TestRecipientEngagementRoutesAreCuratorOnlyWithPersistedSessions(t *testing.T) {
 	db := testdb.Open(t)
 	ctx := context.Background()

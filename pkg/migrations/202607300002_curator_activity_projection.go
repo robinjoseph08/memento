@@ -206,7 +206,7 @@ func init() {
 						IF inserted_id IS NOT NULL THEN
 							INSERT INTO engagement_daily_aggregates
 								(recipient_person_id, activity_date, kind, event_count, first_occurred_at, last_occurred_at)
-							VALUES (NEW.person_id, NEW.created_at::date, 'session_started', 1, NEW.created_at, NEW.created_at)
+							VALUES (NEW.person_id, (NEW.created_at AT TIME ZONE 'UTC')::date, 'session_started', 1, NEW.created_at, NEW.created_at)
 							ON CONFLICT (recipient_person_id, activity_date, kind) DO UPDATE
 							SET event_count = engagement_daily_aggregates.event_count + 1,
 								first_occurred_at = LEAST(engagement_daily_aggregates.first_occurred_at, EXCLUDED.first_occurred_at),
@@ -226,9 +226,9 @@ func init() {
 					ON CONFLICT DO NOTHING`,
 					`INSERT INTO engagement_daily_aggregates
 						(recipient_person_id, activity_date, kind, event_count, first_occurred_at, last_occurred_at)
-					SELECT recipient_person_id, occurred_at::date, kind, count(*), min(occurred_at), max(occurred_at)
+					SELECT recipient_person_id, (occurred_at AT TIME ZONE 'UTC')::date, kind, count(*), min(occurred_at), max(occurred_at)
 					FROM engagement_events WHERE kind = 'session_started'
-					GROUP BY recipient_person_id, occurred_at::date, kind
+					GROUP BY recipient_person_id, (occurred_at AT TIME ZONE 'UTC')::date, kind
 					ON CONFLICT (recipient_person_id, activity_date, kind) DO UPDATE
 					SET event_count = EXCLUDED.event_count,
 						first_occurred_at = EXCLUDED.first_occurred_at,
