@@ -94,7 +94,7 @@ export function CuratorActivity({ session }: { session: SessionResponse }) {
     },
   });
 
-  function read(
+  function markItemRead(
     item: CuratorWorkItem | CuratorActivityItem,
     surface: "work" | "activity",
   ) {
@@ -108,7 +108,7 @@ export function CuratorActivity({ session }: { session: SessionResponse }) {
   }
 
   function openWork(item: CuratorWorkItem) {
-    read(item, "work");
+    markItemRead(item, "work");
     if (item.source_kind === "event") {
       setSearchParams((current) => {
         const next = new URLSearchParams(current);
@@ -144,17 +144,37 @@ export function CuratorActivity({ session }: { session: SessionResponse }) {
           role="tablist"
         >
           <button
+            aria-controls="curator-work-panel"
             aria-selected={tab === "work"}
+            id="curator-work-tab"
             onClick={() => setTab("work")}
+            onKeyDown={(event) => {
+              if (event.key === "ArrowRight" || event.key === "ArrowLeft") {
+                event.preventDefault();
+                setTab("activity");
+                document.getElementById("curator-activity-tab")?.focus();
+              }
+            }}
             role="tab"
+            tabIndex={tab === "work" ? 0 : -1}
             type="button"
           >
             Work
           </button>
           <button
+            aria-controls="curator-activity-panel"
             aria-selected={tab === "activity"}
+            id="curator-activity-tab"
             onClick={() => setTab("activity")}
+            onKeyDown={(event) => {
+              if (event.key === "ArrowRight" || event.key === "ArrowLeft") {
+                event.preventDefault();
+                setTab("work");
+                document.getElementById("curator-work-tab")?.focus();
+              }
+            }}
             role="tab"
+            tabIndex={tab === "activity" ? 0 : -1}
             type="button"
           >
             Activity
@@ -163,7 +183,12 @@ export function CuratorActivity({ session }: { session: SessionResponse }) {
       </header>
 
       {tab === "work" ? (
-        <div className="curator-work-list">
+        <div
+          aria-labelledby="curator-work-tab"
+          className="curator-work-list"
+          id="curator-work-panel"
+          role="tabpanel"
+        >
           {work.isPending ? <p>Loading prioritized work…</p> : null}
           {work.error ? (
             <p className="form-error" role="alert">
@@ -196,7 +221,11 @@ export function CuratorActivity({ session }: { session: SessionResponse }) {
           ) : null}
         </div>
       ) : (
-        <div>
+        <div
+          aria-labelledby="curator-activity-tab"
+          id="curator-activity-panel"
+          role="tabpanel"
+        >
           <div className="activity-filters">
             <label>
               Category
@@ -239,7 +268,7 @@ export function CuratorActivity({ session }: { session: SessionResponse }) {
                   <button
                     aria-label={`Mark ${label(item.action)} read`}
                     disabled={item.read || markRead.isPending}
-                    onClick={() => read(item, "activity")}
+                    onClick={() => markItemRead(item, "activity")}
                     type="button"
                   >
                     <strong>{label(item.action)}</strong>

@@ -26,7 +26,7 @@ func TestCuratorActivityAttributesEveryRoutineCategoryWithoutPrivatePayloads(t *
 		UPDATE system_settings SET setup_complete = true;
 		INSERT INTO people (id, display_name, sort_name) VALUES
 			(?, 'Robin Curator', 'curator'), (?, 'Alex Recipient', 'recipient');
-		INSERT INTO person_roles (person_id, role) VALUES (?, 'curator'), (?, 'recipient');
+		INSERT INTO person_roles (person_id, role) VALUES (?, 'curator'), (?, 'recipient'), (?, 'recipient');
 		INSERT INTO recipient_access_generations
 			(id, person_id, generation, state, is_current, onboarding_completed_at)
 		VALUES (?, ?, 1, 'completed', true, ?);
@@ -73,7 +73,7 @@ func TestCuratorActivityAttributesEveryRoutineCategoryWithoutPrivatePayloads(t *
 			(public_id, kind, recipient, subject, body, status, created_at, updated_at)
 		VALUES ('activity-delivery', 'required_test', 'secret@example.com', 'Private subject',
 			 'PRIVATE EMAIL BODY', 'failed', ?, ?);
-	`, curatorID, recipientID, curatorID, recipientID,
+	`, curatorID, recipientID, curatorID, curatorID, recipientID,
 		accessID, recipientID, now, sessionID, sessionID.String(), recipientID, accessID, now, now, now.Add(time.Hour),
 		mediaID, uuid.New(), now, now, eventID, now, now,
 		publicationID, eventID, curatorID, now.Add(-8*time.Minute), publicationID, curatorID, now.Add(-8*time.Minute),

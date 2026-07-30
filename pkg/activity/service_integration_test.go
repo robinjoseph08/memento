@@ -44,8 +44,12 @@ func TestCuratorWorkReadsSafeUnresolvedImmediateDeliveryProblems(t *testing.T) {
 	require.Len(t, response.Items, 1)
 	assert.Equal(t, "delivery_problem", response.Items[0].Kind)
 	assert.Equal(t, "delivery_problem", response.Items[0].SourceKind)
-	assert.Equal(t, response.Items[0].ID, response.Items[0].SourceID)
+	assert.Equal(t, "delivery_problem:"+response.Items[0].SourceID, response.Items[0].ID)
 	assert.Equal(t, "recipient_rejected", response.Items[0].Summary)
+	assert.Equal(t, "Delivery problem for Private Recipient", response.Items[0].Title)
+	require.NotNil(t, response.Items[0].Subject)
+	assert.Equal(t, personID.String(), response.Items[0].Subject.PersonID)
+	assert.Equal(t, personID.String(), response.Items[0].NextActionTargetID)
 	assert.Equal(t, 0, response.Items[0].Priority)
 	assert.Equal(t, "review_delivery", response.Items[0].NextAction)
 	assert.False(t, response.Items[0].Read)
@@ -53,7 +57,21 @@ func TestCuratorWorkReadsSafeUnresolvedImmediateDeliveryProblems(t *testing.T) {
 	encoded, err := json.Marshal(response)
 	require.NoError(t, err)
 	assert.NotContains(t, string(encoded), "private-recipient@example.com")
-	assert.NotContains(t, string(encoded), "Private Recipient")
+	var engagementCount int
+	require.NoError(t, db.NewRaw(`SELECT count(*) FROM engagement_events`).Scan(ctx, &engagementCount))
+	assert.Zero(t, engagementCount, "background delivery does not count as Recipient engagement")
+
+	resolvedAt := time.Now().UTC().Add(time.Minute).Truncate(time.Microsecond)
+	_, err = db.NewRaw(`UPDATE delivery_problems SET resolved_at = ? WHERE id = ?`, resolvedAt, response.Items[0].SourceID).Exec(ctx)
+	require.NoError(t, err)
+	activity, err := New(db).ListCuratorActivity(ctx, PageRequest{Category: "delivery", Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, activity.Items, 2)
+	assert.Equal(t, "delivery_problem_resolved", activity.Items[0].Action)
+	assert.Equal(t, resolvedAt, activity.Items[0].CreatedAt)
+	require.NotNil(t, activity.Items[0].Subject)
+	assert.Equal(t, personID.String(), activity.Items[0].Subject.PersonID)
+	assert.Equal(t, "delivery_failed", activity.Items[1].Action)
 }
 
 func TestCuratorWorkPrioritizesProblemsAndVersionedReadState(t *testing.T) {
@@ -63,11 +81,19 @@ func TestCuratorWorkPrioritizesProblemsAndVersionedReadState(t *testing.T) {
 	now := time.Date(2026, time.July, 30, 15, 0, 0, 0, time.UTC)
 	curatorID := uuid.New()
 	_, err := db.NewRaw(`INSERT INTO people (id, display_name, sort_name) VALUES (?, 'Curator', 'curator');
-		INSERT INTO person_roles (person_id, role) VALUES (?, 'curator')`, curatorID, curatorID).Exec(ctx)
+		INSERT INTO person_roles (person_id, role) VALUES (?, 'curator'), (?, 'recipient')`, curatorID, curatorID, curatorID).Exec(ctx)
 	require.NoError(t, err)
 
 	privacySourceID, newSourceID, eventID := uuid.New(), uuid.New(), uuid.New()
+	stagedEventID, publicationID, stagedUpdateID := uuid.New(), uuid.New(), uuid.New()
 	fingerprint := make([]byte, 32)
+	_, err = db.NewRaw(`INSERT INTO email_deliveries
+		(public_id, kind, recipient, subject, body, status, created_at, updated_at)
+		VALUES ('priority-delivery', 'required_test', 'private@example.com', 'Test', 'Private', 'failed', ?, ?);
+		INSERT INTO delivery_problems (email_delivery_id, diagnostic, created_at)
+		SELECT id, 'smtp_unavailable', ? FROM email_deliveries WHERE public_id = 'priority-delivery'`,
+		now.Add(-5*time.Hour), now.Add(-5*time.Hour), now.Add(-5*time.Hour)).Exec(ctx)
+	require.NoError(t, err)
 	_, err = db.NewRaw(`
 		INSERT INTO source_albums
 			(id, immich_album_id, name, asset_count, source_created_at, source_updated_at,
@@ -76,38 +102,49 @@ func TestCuratorWorkPrioritizesProblemsAndVersionedReadState(t *testing.T) {
 		VALUES (?, ?, 'Missing published source', 0, ?, ?, ?, ?, 'ignored', ?, true, ?, ?, ?),
 		       (?, ?, 'New family album', 0, ?, ?, ?, ?, 'unreviewed', NULL, false, NULL, ?, ?);
 		INSERT INTO events (id, lifecycle, title, description, grouping_timezone, version, created_at, updated_at)
-		VALUES (?, 'draft', 'Draft Event', '', 'UTC', 3, ?, ?)
+		VALUES (?, 'draft', 'Draft Event', '', 'UTC', 3, ?, ?),
+		       (?, 'published', 'Staged Event', '', 'UTC', 4, ?, ?);
+		INSERT INTO publications
+			(id, event_id, revision, editable_version, published_by_person_id, notify_recipients, committed_at)
+		VALUES (?, ?, 1, 4, ?, false, ?);
+		INSERT INTO staged_updates (id, event_id, base_publication_id, net_changes, created_at, updated_at)
+		VALUES (?, ?, ?, '{}'::jsonb, ?, ?);
+		UPDATE events SET current_publication_id = ?, current_staged_update_id = ? WHERE id = ?
 	`, privacySourceID, uuid.New(), now, now, now.Add(-4*time.Hour), now, now.Add(-4*time.Hour), now.Add(-time.Hour), fingerprint, now,
 		newSourceID, uuid.New(), now, now, now.Add(-3*time.Hour), now, fingerprint, now,
-		eventID, now.Add(-2*time.Hour), now.Add(-2*time.Hour)).Exec(ctx)
+		eventID, now.Add(-2*time.Hour), now.Add(-2*time.Hour),
+		stagedEventID, now.Add(-90*time.Minute), now.Add(-90*time.Minute),
+		publicationID, stagedEventID, curatorID, now.Add(-3*time.Hour),
+		stagedUpdateID, stagedEventID, publicationID, now.Add(-90*time.Minute), now.Add(-90*time.Minute),
+		publicationID, stagedUpdateID, stagedEventID).Exec(ctx)
 	require.NoError(t, err)
 
 	service := New(db)
 	response, err := service.ListCuratorWork(ctx)
 	require.NoError(t, err)
-	require.Len(t, response.Items, 3)
-	assert.Equal(t, []string{"privacy_problem", "draft_event", "new_source_album"}, []string{
-		response.Items[0].Kind, response.Items[1].Kind, response.Items[2].Kind,
+	require.Len(t, response.Items, 5)
+	assert.Equal(t, []string{"delivery_problem", "privacy_problem", "draft_event", "staged_update", "new_source_album"}, []string{
+		response.Items[0].Kind, response.Items[1].Kind, response.Items[2].Kind, response.Items[3].Kind, response.Items[4].Kind,
 	})
-	assert.Equal(t, []int{10, 20, 30}, []int{
-		response.Items[0].Priority, response.Items[1].Priority, response.Items[2].Priority,
+	assert.Equal(t, []int{0, 10, 20, 20, 30}, []int{
+		response.Items[0].Priority, response.Items[1].Priority, response.Items[2].Priority, response.Items[3].Priority, response.Items[4].Priority,
 	})
-	assert.Equal(t, "organize_media", response.Items[1].NextAction)
-	assert.Equal(t, "draft 3", response.Items[1].Version)
+	assert.Equal(t, "organize_media", response.Items[2].NextAction)
+	assert.Equal(t, "draft 3", response.Items[2].Version)
 
 	require.NoError(t, service.MarkRead(ctx, curatorID, MarkReadRequest{
-		Surface: "work", SourceKind: response.Items[1].SourceKind, SourceID: response.Items[1].SourceID,
-		Version: response.Items[1].Version,
+		Surface: "work", SourceKind: response.Items[2].SourceKind, SourceID: response.Items[2].SourceID,
+		Version: response.Items[2].Version,
 	}))
 	response, err = service.ListCuratorWork(ctx)
 	require.NoError(t, err)
-	assert.True(t, response.Items[1].Read)
+	assert.True(t, response.Items[2].Read)
 
 	_, err = db.NewRaw(`UPDATE events SET version = 4, updated_at = ? WHERE id = ?`, now.Add(time.Minute), eventID).Exec(ctx)
 	require.NoError(t, err)
 	response, err = service.ListCuratorWork(ctx)
 	require.NoError(t, err)
-	assert.False(t, response.Items[1].Read, "changed work becomes unread again")
+	assert.False(t, response.Items[2].Read, "changed work becomes unread again")
 	assert.ErrorIs(t, service.MarkRead(ctx, curatorID, MarkReadRequest{
 		Surface: "work", SourceKind: "event", SourceID: eventID.String(), Version: "draft 3",
 	}), ErrVersionConflict)

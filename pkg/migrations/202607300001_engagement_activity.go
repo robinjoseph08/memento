@@ -49,6 +49,8 @@ func init() {
 						ON engagement_events (recipient_person_id, kind, occurred_at DESC, id DESC)`,
 					`CREATE INDEX engagement_events_media_openers_idx
 						ON engagement_events (media_item_id, occurred_at DESC, id DESC) WHERE kind = 'media_opened'`,
+					`CREATE INDEX engagement_events_event_time_idx
+						ON engagement_events (event_id, occurred_at DESC, id DESC) WHERE event_id IS NOT NULL`,
 					`CREATE INDEX engagement_events_retention_idx ON engagement_events (occurred_at, id)`,
 					`CREATE TABLE engagement_daily_aggregates (
 						recipient_person_id uuid NOT NULL REFERENCES people(id) ON DELETE RESTRICT,

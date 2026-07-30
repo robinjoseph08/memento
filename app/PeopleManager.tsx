@@ -216,6 +216,13 @@ export function PeopleManager({ session }: { session: SessionResponse }) {
                 {person.status}
                 {person.roles.length ? ` · ${person.roles.join(", ")}` : ""}
               </span>
+              {person.roles.includes("recipient") ? (
+                <span className="person-latest-activity">
+                  {person.latest_meaningful_activity_at
+                    ? `Last meaningful activity: ${formatInvitationDate(person.latest_meaningful_activity_at)}`
+                    : "No meaningful activity recorded"}
+                </span>
+              ) : null}
             </button>
           ))}
           {people.isSuccess && people.data.people.length === 0 ? (

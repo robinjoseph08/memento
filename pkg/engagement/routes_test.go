@@ -24,7 +24,7 @@ func (stub *routeServiceStub) RecordBrowserEvent(context.Context, setup.SessionA
 	stub.recorded = true
 	return nil
 }
-func (stub *routeServiceStub) Recipient(context.Context, uuid.UUID, string, int) (RecipientDetail, error) {
+func (stub *routeServiceStub) GetRecipientEngagement(context.Context, uuid.UUID, string, int) (RecipientDetail, error) {
 	return stub.detail, nil
 }
 func (stub *routeServiceStub) MediaOpeners(context.Context, uuid.UUID) (MediaOpenersResponse, error) {

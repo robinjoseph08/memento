@@ -703,6 +703,9 @@ func TestThumbnailAndPreviewRoutesForwardValidatorsAndDispatch(t *testing.T) {
 		assert.Equal(t, `"thumbnail-v1"`, response.Header().Get("ETag"))
 		assert.Equal(t, []string{"thumbnail"}, fixture.thumbnail.representations)
 		assert.Equal(t, immich.MediaRequest{IfNoneMatch: `"thumbnail-v1"`}, fixture.thumbnail.requests[0])
+		var engagementCount int
+		require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM engagement_events`).Scan(context.Background(), &engagementCount))
+		assert.Zero(t, engagementCount, "thumbnail and revalidation traffic is not meaningful engagement")
 	})
 
 	t.Run("successful preview with If-Modified-Since", func(t *testing.T) {
@@ -730,6 +733,9 @@ func TestThumbnailAndPreviewRoutesForwardValidatorsAndDispatch(t *testing.T) {
 		assert.Equal(t, lastModified, response.Header().Get("Last-Modified"))
 		assert.Equal(t, []string{"preview"}, fixture.thumbnail.representations)
 		assert.Equal(t, immich.MediaRequest{IfModifiedSince: ifModifiedSince}, fixture.thumbnail.requests[0])
+		var engagementCount int
+		require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM engagement_events`).Scan(context.Background(), &engagementCount))
+		assert.Zero(t, engagementCount, "Preview as Recipient is not meaningful engagement")
 	})
 }
 

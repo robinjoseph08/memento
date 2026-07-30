@@ -405,7 +405,7 @@ func (s *Service) HandleRetentionJob(ctx context.Context, _ worker.Job) error {
 }
 
 // Recipient returns safe metrics and recent details for one Recipient Person.
-func (s *Service) Recipient(ctx context.Context, personID uuid.UUID, encodedCursor string, limit int) (RecipientDetail, error) {
+func (s *Service) GetRecipientEngagement(ctx context.Context, personID uuid.UUID, encodedCursor string, limit int) (RecipientDetail, error) {
 	if limit <= 0 {
 		limit = 50
 	}

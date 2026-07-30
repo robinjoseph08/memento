@@ -19,7 +19,7 @@ const (
 
 type engagementService interface {
 	RecordBrowserEvent(ctx context.Context, actor setup.SessionActor, request BrowserEventRequest) error
-	Recipient(ctx context.Context, personID uuid.UUID, cursor string, limit int) (RecipientDetail, error)
+	GetRecipientEngagement(ctx context.Context, personID uuid.UUID, cursor string, limit int) (RecipientDetail, error)
 	MediaOpeners(ctx context.Context, mediaID uuid.UUID) (MediaOpenersResponse, error)
 }
 
@@ -116,7 +116,7 @@ func (h *Handler) Recipient(c echo.Context) error {
 		}
 		limit = parsed
 	}
-	response, err := h.service.Recipient(c.Request().Context(), personID, c.QueryParam("cursor"), limit)
+	response, err := h.service.GetRecipientEngagement(c.Request().Context(), personID, c.QueryParam("cursor"), limit)
 	if mapped := engagementError(err); mapped != nil {
 		return mapped
 	}

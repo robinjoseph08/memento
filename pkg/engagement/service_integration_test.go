@@ -4,11 +4,18 @@ package engagement
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/labstack/echo/v4"
 	"github.com/robinjoseph08/memento/internal/testdb"
+	"github.com/robinjoseph08/memento/pkg/config"
+	"github.com/robinjoseph08/memento/pkg/errcodes"
 	"github.com/robinjoseph08/memento/pkg/migrations"
 	"github.com/robinjoseph08/memento/pkg/setup"
 	"github.com/stretchr/testify/assert"
@@ -59,6 +66,33 @@ func TestMeaningfulEngagementIsIdempotentAggregatedAndCuratorOnly(t *testing.T) 
 	assert.Equal(t, 2, aggregate)
 }
 
+func TestRecipientEngagementRoutesAreCuratorOnlyWithPersistedSessions(t *testing.T) {
+	db := testdb.Open(t)
+	ctx := context.Background()
+	require.NoError(t, migrations.Apply(ctx, db))
+	now := time.Date(2026, time.July, 30, 15, 0, 0, 0, time.UTC)
+	recipient := seedEngagementActor(t, db, false, now)
+	curator := seedEngagementActor(t, db, true, now)
+	recipientCredential := persistEngagementCredential(t, db, recipient)
+	curatorCredential := persistEngagementCredential(t, db, curator)
+
+	e := echo.New()
+	e.HTTPErrorHandler = errcodes.NewHandler().Handle
+	RegisterRoutes(e, NewHandler(New(db), setup.New(db, nil, config.SecurityConfig{})))
+	serve := func(credential string) *httptest.ResponseRecorder {
+		request := httptest.NewRequestWithContext(ctx, http.MethodGet,
+			"/api/engagement/recipients/"+recipient.PersonID.String(), nil)
+		request.AddCookie(&http.Cookie{Name: setup.CookieName, Value: credential})
+		response := httptest.NewRecorder()
+		e.ServeHTTP(response, request)
+		return response
+	}
+
+	assert.Equal(t, http.StatusNotFound, serve(recipientCredential).Code,
+		"a Recipient cannot discover any Recipient engagement, including their own")
+	assert.Equal(t, http.StatusOK, serve(curatorCredential).Code)
+}
+
 func TestRecipientAdministrationReportsOnlyMeaningfulExplicitDetails(t *testing.T) {
 	db := testdb.Open(t)
 	ctx := context.Background()
@@ -97,16 +131,16 @@ func TestRecipientAdministrationReportsOnlyMeaningfulExplicitDetails(t *testing.
 		return service.RecordArchiveDownload(ctx, tx, actor, uuid.New(), &eventID, now.Add(-2*time.Minute))
 	}))
 
-	firstPage, err := service.Recipient(ctx, actor.PersonID, "", 2)
+	firstPage, err := service.GetRecipientEngagement(ctx, actor.PersonID, "", 2)
 	require.NoError(t, err)
 	require.Len(t, firstPage.Timeline, 2)
 	require.NotNil(t, firstPage.NextCursor)
-	secondPage, err := service.Recipient(ctx, actor.PersonID, *firstPage.NextCursor, 2)
+	secondPage, err := service.GetRecipientEngagement(ctx, actor.PersonID, *firstPage.NextCursor, 2)
 	require.NoError(t, err)
 	require.Len(t, secondPage.Timeline, 2)
 	assert.NotEqual(t, firstPage.Timeline[1].ID, secondPage.Timeline[0].ID)
 
-	detail, err := service.Recipient(ctx, actor.PersonID, "", 100)
+	detail, err := service.GetRecipientEngagement(ctx, actor.PersonID, "", 100)
 	require.NoError(t, err)
 	assert.Equal(t, now.Add(-2*time.Minute), *detail.LatestMeaningfulActivity)
 	assert.Equal(t, 1, detail.ActiveDays.Days7)
@@ -161,6 +195,15 @@ func TestDetailedEngagementExpiresWithoutRemovingAggregatesOrSecurityAudit(t *te
 	assert.Equal(t, 2, details)
 	assert.Equal(t, 1, aggregates)
 	assert.Equal(t, 1, audits)
+}
+
+func persistEngagementCredential(t *testing.T, db *bun.DB, actor setup.SessionActor) string {
+	t.Helper()
+	raw := sha256.Sum256(actor.SessionID[:])
+	hash := sha256.Sum256(raw[:])
+	_, err := db.NewRaw(`UPDATE sessions SET credential_hash = ? WHERE id = ?`, hash[:], actor.SessionID).Exec(context.Background())
+	require.NoError(t, err)
+	return hex.EncodeToString(raw[:])
 }
 
 func seedEngagementActor(t *testing.T, db *bun.DB, curator bool, now time.Time) setup.SessionActor {

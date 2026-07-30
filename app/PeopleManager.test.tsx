@@ -80,6 +80,29 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+test("prominently shows latest meaningful Recipient activity in the directory", async () => {
+  const alex = {
+    ...person("33333333-3333-3333-3333-333333333333", "Alex", "Alex"),
+    roles: ["recipient"],
+    latest_meaningful_activity_at: "2026-07-30T17:00:00Z",
+  };
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = requestPath(input);
+      if (path.startsWith("/api/people?") && !init?.method) {
+        return Promise.resolve(jsonResponse({ people: [alex] }));
+      }
+      return Promise.reject(new Error(`Unexpected request: ${path}`));
+    }),
+  );
+
+  renderManager();
+  const row = await screen.findByRole("button", { name: /^Alex/ });
+  expect(row).toHaveTextContent("Last meaningful activity:");
+  expect(row).not.toHaveTextContent("No meaningful activity recorded");
+});
+
 test("discloses archive effects and invalidates Visibility caches", async () => {
   const alex = person("33333333-3333-3333-3333-333333333333", "Alex", "Alex");
   let archived = false;

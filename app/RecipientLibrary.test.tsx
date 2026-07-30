@@ -773,14 +773,19 @@ test("keeps private search text in a POST body and renders safe grouped results"
 });
 
 test("presents independent photo and Event totals for a range-only Event match", async () => {
+  const requests: Array<{ path: string; init?: RequestInit }> = [];
   vi.stubGlobal(
     "fetch",
-    vi.fn((input: RequestInfo | URL) => {
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const path = requestPath(input);
+      requests.push({ path, init });
       if (path.startsWith("/api/me/photos?")) {
         return json({ media: [], next_cursor: null });
       }
       if (path === "/api/me/new-for-you") return json({ events: [] });
+      if (path === "/api/me/engagement") {
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
       if (path === "/api/search") {
         return json({
           events: [
@@ -822,9 +827,27 @@ test("presents independent photo and Event totals for a range-only Event match",
   expect(
     await screen.findByText("0 matching photos. 1 matching Event."),
   ).toBeVisible();
-  expect(
-    screen.getByRole("button", { name: /Summer holiday/ }),
-  ).toHaveTextContent("0 matching items");
+  const result = screen.getByRole("button", { name: /Summer holiday/ });
+  expect(result).toHaveTextContent("0 matching items");
+  fireEvent.click(result);
+  await waitFor(() => {
+    const engagement = requests.find(
+      (request) =>
+        request.path === "/api/me/engagement" &&
+        typeof request.init?.body === "string" &&
+        request.init.body.includes('"event_opened"'),
+    );
+    const engagementBody = engagement?.init?.body;
+    if (typeof engagementBody !== "string") {
+      throw new Error("Expected an Event engagement request");
+    }
+    const body = JSON.parse(engagementBody) as Record<string, unknown>;
+    expect(body).toMatchObject({
+      kind: "event_opened",
+      event_id: "event-range-match",
+      document_visible: true,
+    });
+  });
   expect(
     screen.queryByText("Nothing in your shared collection matched."),
   ).not.toBeInTheDocument();

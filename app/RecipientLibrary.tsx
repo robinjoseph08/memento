@@ -1020,7 +1020,7 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
     return () => document.removeEventListener("visibilitychange", recordVisit);
   }, [session]);
 
-  function openEvent(summary: EventSummary, isNew = false) {
+  function openEvent(summary: OpenedEvent, isNew = false) {
     setArchivePlan(undefined);
     setOpenedEvent(summary);
     void recordEngagement(session, {
@@ -1428,7 +1428,7 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
                             className="event-card"
                             key={event.id}
                             onClick={() =>
-                              setOpenedEvent({
+                              openEvent({
                                 id: event.id,
                                 title: event.title,
                                 publication_id: "",

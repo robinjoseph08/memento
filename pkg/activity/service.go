@@ -34,20 +34,22 @@ func New(db *bun.DB) *Service { return &Service{db: db} }
 
 // CuratorWorkItem is safe, versioned work with one clear next action.
 type CuratorWorkItem struct {
-	ID              string    `json:"id"`
-	Kind            string    `json:"kind"`
-	SourceKind      string    `json:"source_kind"`
-	SourceID        string    `json:"source_id"`
-	Version         string    `json:"version"`
-	Priority        int       `json:"priority"`
-	Title           string    `json:"title"`
-	Summary         string    `json:"summary"`
-	CompletedSteps  []string  `json:"completed_steps"`
-	RemainingSteps  []string  `json:"remaining_steps"`
-	NextAction      string    `json:"next_action"`
-	NextActionLabel string    `json:"next_action_label"`
-	Read            bool      `json:"read"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	ID                 string       `json:"id"`
+	Kind               string       `json:"kind"`
+	SourceKind         string       `json:"source_kind"`
+	SourceID           string       `json:"source_id"`
+	Version            string       `json:"version"`
+	Priority           int          `json:"priority"`
+	Title              string       `json:"title"`
+	Summary            string       `json:"summary"`
+	CompletedSteps     []string     `json:"completed_steps"`
+	RemainingSteps     []string     `json:"remaining_steps"`
+	NextAction         string       `json:"next_action"`
+	NextActionLabel    string       `json:"next_action_label"`
+	NextActionTargetID string       `json:"next_action_target_id,omitempty"`
+	Subject            *Attribution `json:"subject,omitempty"`
+	Read               bool         `json:"read"`
+	UpdatedAt          time.Time    `json:"updated_at"`
 }
 
 // MarkReadRequest binds durable read state to the exact work or activity version observed.
@@ -138,13 +140,19 @@ func (s *Service) ListCuratorWork(ctx context.Context) (CuratorWorkResponse, err
 
 func (s *Service) listDeliveryWork(ctx context.Context, items *[]CuratorWorkItem) error {
 	var rows []struct {
-		ID          string
-		Diagnostic  string
-		CreatedAt   time.Time
-		ReadVersion *string
+		ID            string
+		Diagnostic    string
+		CreatedAt     time.Time
+		RecipientID   *string
+		RecipientName *string
+		ReadVersion   *string
 	}
 	if err := s.db.NewRaw(`SELECT problem.id::text AS id, problem.diagnostic, problem.created_at,
-		read.read_version FROM delivery_problems AS problem
+		recipient.id::text AS recipient_id, recipient.display_name AS recipient_name, read.read_version
+		FROM delivery_problems AS problem
+		LEFT JOIN notification_batches AS batch ON batch.id = problem.notification_batch_id
+		LEFT JOIN recipient_access_generations AS access ON access.id = batch.recipient_access_generation_id
+		LEFT JOIN people AS recipient ON recipient.id = access.person_id
 		LEFT JOIN curator_item_read_states AS read ON read.surface = 'work'
 		 AND read.source_kind = 'delivery_problem' AND read.source_id = problem.id::text
 		WHERE problem.resolved_at IS NULL`).Scan(ctx, &rows); err != nil {
@@ -152,13 +160,19 @@ func (s *Service) listDeliveryWork(ctx context.Context, items *[]CuratorWorkItem
 	}
 	for _, row := range rows {
 		version := "problem " + row.ID
-		*items = append(*items, CuratorWorkItem{
+		item := CuratorWorkItem{
 			ID: "delivery_problem:" + row.ID, Kind: "delivery_problem", SourceKind: "delivery_problem",
 			SourceID: row.ID, Version: version, Priority: 0, Title: "Delivery problem",
 			Summary: safeDeliveryDiagnostic(row.Diagnostic), NextAction: "review_delivery",
-			NextActionLabel: "Review delivery", Read: row.ReadVersion != nil && *row.ReadVersion == version,
+			NextActionLabel: "Review Recipient delivery", Read: row.ReadVersion != nil && *row.ReadVersion == version,
 			CompletedSteps: []string{}, RemainingSteps: []string{"review_delivery"}, UpdatedAt: row.CreatedAt,
-		})
+		}
+		if row.RecipientID != nil && row.RecipientName != nil {
+			item.Title = "Delivery problem for " + *row.RecipientName
+			item.NextActionTargetID = *row.RecipientID
+			item.Subject = &Attribution{PersonID: *row.RecipientID, PersonName: *row.RecipientName}
+		}
+		*items = append(*items, item)
 	}
 	return nil
 }
@@ -318,7 +332,7 @@ func (s *Service) listSourceWork(ctx context.Context, items *[]CuratorWorkItem) 
 			SourceID: row.ID, Version: version, Priority: 30, Title: row.Name,
 			Summary: "New Source album ready for triage", CompletedSteps: []string{},
 			RemainingSteps: []string{"triage_source"}, NextAction: "triage_source",
-			NextActionLabel: "Draft Event or Ignore", Read: row.ReadVersion != nil && *row.ReadVersion == version,
+			NextActionLabel: "Review Source album", Read: row.ReadVersion != nil && *row.ReadVersion == version,
 			UpdatedAt: row.FirstSeen,
 		})
 	}
@@ -418,6 +432,7 @@ func currentActivityVersion(ctx context.Context, tx bun.Tx, sourceKind, sourceID
 		"interaction_favorite":           `SELECT 'favorite ' || id::text FROM interaction_activity_items WHERE id::text = ? AND kind = 'favorite'`,
 		"invitation_suggestion_activity": `SELECT 'suggestion activity ' || id::text FROM curator_activity_items WHERE id::text = ?`,
 		"delivery_problem":               `SELECT 'problem ' || id::text FROM delivery_problems WHERE id::text = ?`,
+		"delivery_problem_resolution":    `SELECT 'problem resolution ' || id::text || ' ' || extract(epoch FROM resolved_at)::text FROM delivery_problems WHERE id::text = ? AND resolved_at IS NOT NULL`,
 	}
 	query, valid := queries[sourceKind]
 	if !valid {
@@ -525,10 +540,24 @@ func (s *Service) ListCuratorActivity(ctx context.Context, page PageRequest) (Cu
 		JOIN people AS requester ON requester.id = suggestion.requester_person_id
 		UNION ALL
 		SELECT 'delivery_problem', problem.id::text, 'problem ' || problem.id::text,
-			'delivery', CASE WHEN problem.resolved_at IS NULL THEN 'delivery_failed' ELSE 'delivery_problem_resolved' END,
-			NULL::text, CAST(NULL AS text), NULL::text, CAST(NULL AS text),
-			NULL::text, CAST(NULL AS text), NULL::text, CAST(NULL AS text), problem.created_at
+			'delivery', 'delivery_failed', NULL::text, CAST(NULL AS text),
+			recipient.id::text, recipient.display_name, 'delivery_problem', problem.id::text,
+			'Delivery problem', NULL::text, problem.created_at
 		FROM delivery_problems AS problem
+		LEFT JOIN notification_batches AS batch ON batch.id = problem.notification_batch_id
+		LEFT JOIN recipient_access_generations AS access ON access.id = batch.recipient_access_generation_id
+		LEFT JOIN people AS recipient ON recipient.id = access.person_id
+		UNION ALL
+		SELECT 'delivery_problem_resolution', problem.id::text,
+			'problem resolution ' || problem.id::text || ' ' || extract(epoch FROM problem.resolved_at)::text,
+			'delivery', 'delivery_problem_resolved', NULL::text, CAST(NULL AS text),
+			recipient.id::text, recipient.display_name, 'delivery_problem', problem.id::text,
+			'Delivery problem', NULL::text, problem.resolved_at
+		FROM delivery_problems AS problem
+		LEFT JOIN notification_batches AS batch ON batch.id = problem.notification_batch_id
+		LEFT JOIN recipient_access_generations AS access ON access.id = batch.recipient_access_generation_id
+		LEFT JOIN people AS recipient ON recipient.id = access.person_id
+		WHERE problem.resolved_at IS NOT NULL
 	), projected AS (
 		SELECT base.*, COALESCE(read.read_version = base.version, false) AS read
 		FROM base LEFT JOIN curator_item_read_states AS read
