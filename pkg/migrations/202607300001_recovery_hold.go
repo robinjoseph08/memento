@@ -50,16 +50,6 @@ func init() {
 					 JOIN system_settings AS settings ON settings.id = 1 AND settings.recovery_hold
 					  AND settings.security_epoch = challenge.security_epoch
 					 WHERE delivery.kind = 'sign_in_code'`,
-					`CREATE TABLE restore_expected_foreign_keys (
-						table_name text NOT NULL,
-						constraint_name text NOT NULL,
-						definition text NOT NULL,
-						PRIMARY KEY (table_name, constraint_name)
-					)`,
-					`INSERT INTO restore_expected_foreign_keys (table_name, constraint_name, definition)
-					 SELECT conrelid::regclass::text, conname, pg_get_constraintdef(oid, true)
-					 FROM pg_constraint
-					 WHERE contype = 'f' AND connamespace = current_schema()::regnamespace`,
 				} {
 					if _, err := tx.ExecContext(ctx, statement); err != nil {
 						return err
@@ -71,7 +61,6 @@ func init() {
 		func(ctx context.Context, db *bun.DB) error {
 			return db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 				for _, statement := range []string{
-					`DROP TABLE restore_expected_foreign_keys`,
 					`DROP VIEW recovery_curator_sign_in_deliveries`,
 					`ALTER TABLE sign_in_challenges DROP CONSTRAINT sign_in_challenges_security_epoch_length`,
 					`ALTER TABLE sign_in_challenges DROP COLUMN security_epoch`,

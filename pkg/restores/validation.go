@@ -3,13 +3,19 @@ package restores
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 
 	"github.com/robinjoseph08/memento/pkg/migrations"
 	"github.com/uptrace/bun"
 )
+
+// This release-defined digest covers table, constraint name, and normalized definition
+// for every expected foreign key after all registered migrations.
+const expectedForeignKeyInventorySHA256 = "1b49cf8988b176531ad730e92b382e6f223f9bc2a931f509ef202f2bdfdf4963"
 
 var (
 	ErrForeignKeys = errors.New("foreign-key validation failed")
@@ -77,21 +83,19 @@ func Validate(ctx context.Context, db *bun.DB) (Result, error) {
 }
 
 func validateForeignKeys(ctx context.Context, db bun.IDB) error {
-	var invalid int
-	if err := db.NewRaw(`WITH actual AS (
-		SELECT conrelid::regclass::text AS table_name, conname AS constraint_name,
-		       pg_get_constraintdef(oid, true) AS definition
+	var inventory string
+	if err := db.NewRaw(`SELECT COALESCE(jsonb_agg(
+		jsonb_build_array(conrelid::regclass::text, conname, pg_get_constraintdef(oid, true))
+		ORDER BY conrelid::regclass::text, conname)::text, '[]')
 		FROM pg_constraint
-		WHERE contype = 'f' AND connamespace = current_schema()::regnamespace
-	)
-	SELECT count(*) FROM restore_expected_foreign_keys AS expected
-	FULL JOIN actual USING (table_name, constraint_name, definition)
-	WHERE expected.table_name IS NULL OR actual.table_name IS NULL`).Scan(ctx, &invalid); err != nil {
+		WHERE contype = 'f' AND connamespace = current_schema()::regnamespace`).Scan(ctx, &inventory); err != nil {
 		return fmt.Errorf("foreign keys: %w", err)
 	}
-	if invalid != 0 {
+	digest := sha256.Sum256([]byte(inventory))
+	if hex.EncodeToString(digest[:]) != expectedForeignKeyInventorySHA256 {
 		return ErrForeignKeys
 	}
+	var invalid int
 	if err := db.NewRaw(`SELECT count(*) FROM pg_constraint
 		WHERE contype = 'f' AND connamespace = current_schema()::regnamespace AND NOT convalidated`).Scan(ctx, &invalid); err != nil {
 		return fmt.Errorf("foreign keys: %w", err)
@@ -147,9 +151,21 @@ func validateProjections(ctx context.Context, db bun.IDB) error {
 		  OR current.description IS DISTINCT FROM revision.description
 		  OR current.grouping_timezone IS DISTINCT FROM revision.grouping_timezone
 		  OR current.place_labels IS DISTINCT FROM revision.place_labels) +
+		(SELECT count(*) FROM current_published_events AS current WHERE NOT EXISTS (
+		 SELECT 1 FROM published_event_revisions AS revision
+		 WHERE revision.publication_id = current.publication_id AND revision.event_id = current.event_id)) +
 		(SELECT count(*) FROM events AS event WHERE event.current_publication_id IS NOT NULL AND NOT EXISTS (
 		 SELECT 1 FROM current_published_events AS current
 		 WHERE current.event_id = event.id AND current.publication_id = event.current_publication_id)) +
+		(SELECT count(*) FROM (
+		 SELECT current.event_id, media.media_item_id,
+		  row_number() OVER (PARTITION BY current.event_id ORDER BY moment.position, media.position) - 1 AS expected_position
+		 FROM current_published_events AS current
+		 JOIN published_moments AS moment ON moment.publication_id = current.publication_id
+		 JOIN published_media_placements AS media ON media.published_moment_id = moment.id
+		) AS expected JOIN current_published_placements AS placement
+		 ON placement.event_id = expected.event_id AND placement.media_item_id = expected.media_item_id
+		 WHERE placement.position IS DISTINCT FROM expected.expected_position) +
 		(SELECT count(*) FROM current_published_placements AS placement
 		 WHERE NOT EXISTS (
 		  SELECT 1 FROM current_published_events AS current
@@ -169,6 +185,9 @@ func validateProjections(ctx context.Context, db bun.IDB) error {
 		 JOIN audience_snapshots AS snapshot ON snapshot.id = current.snapshot_id
 		 WHERE current.target_kind IS DISTINCT FROM snapshot.target_kind
 		  OR current.target_id IS DISTINCT FROM snapshot.target_id) +
+		(SELECT count(*) FROM audience_proposals AS audience
+		 JOIN recipient_access_generations AS access ON access.id = audience.recipient_access_generation_id
+		 WHERE audience.recipient_person_id IS DISTINCT FROM access.person_id) +
 		(SELECT count(*) FROM audience_snapshot_entries AS audience
 		 JOIN recipient_access_generations AS access ON access.id = audience.recipient_access_generation_id
 		 WHERE audience.recipient_person_id IS DISTINCT FROM access.person_id) +
@@ -187,6 +206,11 @@ func validateProjections(ctx context.Context, db bun.IDB) error {
 		  WHERE placement.event_id = entitlement.event_id AND placement.publication_id = entitlement.publication_id
 		   AND placement.media_item_id = entitlement.media_item_id
 		 )) +
+		(SELECT count(*) FROM current_audience_entitlements AS entitlement
+		 JOIN current_published_placements AS placement
+		  ON placement.event_id = entitlement.event_id AND placement.media_item_id = entitlement.media_item_id
+		 JOIN published_moments AS moment ON moment.id = placement.published_moment_id
+		 WHERE content_is_withdrawn(entitlement.event_id, moment.draft_moment_id, entitlement.media_item_id)) +
 		(SELECT count(*) FROM audience_entries AS audience
 		 JOIN published_moments AS moment ON moment.id = audience.published_moment_id
 		 JOIN current_published_events AS current ON current.publication_id = moment.publication_id

@@ -7,9 +7,11 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"sync"
 	"sync/atomic"
 	"testing"
 
+	webpush "github.com/SherClockHolmes/webpush-go"
 	"github.com/robinjoseph08/memento/internal/testdb"
 	"github.com/robinjoseph08/memento/pkg/migrations"
 	"github.com/stretchr/testify/assert"
@@ -37,8 +39,30 @@ func TestValidateCommandMakesNoExternalContact(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	t.Setenv("MEMENTO_IMMICH_URL", "http://"+listener.Addr().String())
+	host, port, err := net.SplitHostPort(listener.Addr().String())
+	require.NoError(t, err)
+	t.Setenv("MEMENTO_SMTP_ENABLED", "true")
+	t.Setenv("MEMENTO_SMTP_HOST", host)
+	t.Setenv("MEMENTO_SMTP_PORT", port)
+	t.Setenv("MEMENTO_SMTP_MODE", "insecure")
+	t.Setenv("MEMENTO_SMTP_INSECURE_DEVELOPMENT", "true")
+	t.Setenv("MEMENTO_SMTP_FROM_ADDRESS", "memento@example.com")
+	t.Setenv("MEMENTO_SMTP_TEST_RECIPIENT", "operator@example.com")
+	privateKey, publicKey, err := webpush.GenerateVAPIDKeys()
+	require.NoError(t, err)
+	t.Setenv("MEMENTO_PUSH_ENABLED", "true")
+	t.Setenv("MEMENTO_PUSH_PUBLIC_KEY", publicKey)
+	t.Setenv("MEMENTO_PUSH_PRIVATE_KEY", privateKey)
+	t.Setenv("MEMENTO_PUSH_SUBJECT", "mailto:operator@example.com")
 	var contacts atomic.Int32
 	acceptDone := make(chan struct{})
+	var cleanupOnce sync.Once
+	cleanupListener := func() {
+		cleanupOnce.Do(func() {
+			_ = listener.Close()
+			<-acceptDone
+		})
+	}
 	go func() {
 		defer close(acceptDone)
 		for {
@@ -50,9 +74,9 @@ func TestValidateCommandMakesNoExternalContact(t *testing.T) {
 			_ = connection.Close()
 		}
 	}()
+	t.Cleanup(cleanupListener)
 
 	require.NoError(t, run([]string{"validate"}))
-	require.NoError(t, listener.Close())
-	<-acceptDone
+	cleanupListener()
 	assert.Zero(t, contacts.Load(), "restore validation contacted a configured external dependency")
 }

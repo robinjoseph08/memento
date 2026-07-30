@@ -34,6 +34,8 @@ func TestRecoveryHoldBlocksOutboxDispatchAndJobClaims(t *testing.T) {
 	require.NoError(t, migrations.Apply(ctx, db))
 	_, err := db.NewRaw(`
 		INSERT INTO jobs (kind) VALUES ('external_delivery');
+		INSERT INTO jobs (kind, payload) VALUES ('send_required_email',
+		 '{"delivery_id":"999999999999999999999999999999999999999999999999"}'::jsonb);
 		INSERT INTO outbox_events (kind, aggregate_kind, aggregate_id, aggregate_version)
 		VALUES ('external_delivery', 'test', 'held', 1);
 		UPDATE system_settings SET recovery_hold = true,
@@ -43,7 +45,8 @@ func TestRecoveryHoldBlocksOutboxDispatchAndJobClaims(t *testing.T) {
 	require.NoError(t, err)
 
 	jobWorker, err := New(db, testConfig(), "held-owner", map[string]Handler{
-		"external_delivery": func(context.Context, Job) error { return nil },
+		"external_delivery":   func(context.Context, Job) error { return nil },
+		"send_required_email": func(context.Context, Job) error { return nil },
 	})
 	require.NoError(t, err)
 	claimed, err := jobWorker.claim(ctx)

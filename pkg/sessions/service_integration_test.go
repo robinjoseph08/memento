@@ -169,6 +169,16 @@ func TestRecoveryHoldRejectsRestoredChallengesAndAllowsOnlyFreshCuratorSignIn(t 
 		map[string]worker.Handler{emaildelivery.JobKind: f.delivery.Handle}, worker.WithTrafficGate(hold))
 	require.NoError(t, err)
 	jobWorker.Start(ctx)
+	workerStopped := false
+	t.Cleanup(func() {
+		if workerStopped {
+			return
+		}
+		jobWorker.StopClaims()
+		drainCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = jobWorker.Drain(drainCtx)
+	})
 	var message smtp.Message
 	select {
 	case message = <-f.sender.messages:
@@ -176,7 +186,11 @@ func TestRecoveryHoldRejectsRestoredChallengesAndAllowsOnlyFreshCuratorSignIn(t 
 		t.Fatal("fresh Curator sign-in code was not delivered during Recovery hold")
 	}
 	jobWorker.StopClaims()
-	require.NoError(t, jobWorker.Drain(ctx))
+	drainCtx, cancelDrain := context.WithTimeout(ctx, time.Second)
+	drainErr := jobWorker.Drain(drainCtx)
+	cancelDrain()
+	require.NoError(t, drainErr)
+	workerStopped = true
 	code := regexp.MustCompile(`\b[0-9]{8}\b`).FindString(message.Body)
 	require.Len(t, code, 8)
 
@@ -190,6 +204,17 @@ func TestRecoveryHoldRejectsRestoredChallengesAndAllowsOnlyFreshCuratorSignIn(t 
 	fresh, err := f.auth.Session(ctx, result.session.Credential)
 	require.NoError(t, err)
 	assert.True(t, fresh.Curator)
+	actor, err := f.auth.AuthorizeCurator(ctx, result.session.Credential, result.session.CSRFToken, true)
+	require.NoError(t, err)
+	review, err := hold.Review(ctx, actor)
+	require.NoError(t, err)
+	assert.True(t, review.Held)
+	assert.ErrorIs(t, hold.Release(ctx, actor), recovery.ErrReviewRequired)
+	require.NoError(t, hold.AcknowledgeReview(ctx, actor))
+	require.NoError(t, hold.Release(ctx, actor))
+	held, err := hold.Held(ctx)
+	require.NoError(t, err)
+	assert.False(t, held)
 }
 
 func TestSignInCodeIsEightDigitSingleUseAndCreatesPolicyBoundSessions(t *testing.T) {

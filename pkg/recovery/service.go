@@ -52,13 +52,24 @@ type ReviewResponse struct {
 
 // Service atomically activates, reports, and releases Recovery hold.
 type Service struct {
-	db     *bun.DB
-	random io.Reader
-	now    func() time.Time
+	db      *bun.DB
+	fenceDB *bun.DB
+	random  io.Reader
+	now     func() time.Time
 }
 
 // Option configures deterministic Service dependencies.
 type Option func(*Service)
+
+// WithFenceDB uses a dedicated connection pool for traffic locks so fenced
+// handlers never compete with their own application queries.
+func WithFenceDB(db *bun.DB) Option {
+	return func(service *Service) {
+		if db != nil {
+			service.fenceDB = db
+		}
+	}
+}
 
 // WithRandom configures the cryptographic epoch source.
 func WithRandom(source io.Reader) Option {
@@ -79,7 +90,7 @@ func WithClock(now func() time.Time) Option {
 }
 
 func New(db *bun.DB, options ...Option) *Service {
-	service := &Service{db: db, random: rand.Reader, now: time.Now}
+	service := &Service{db: db, fenceDB: db, random: rand.Reader, now: time.Now}
 	for _, option := range options {
 		option(service)
 	}
@@ -94,7 +105,7 @@ func (s *Service) Activate(ctx context.Context, nonce string) (bool, error) {
 	nonceHash := sha256.Sum256([]byte(nonce))
 	activated := false
 	err := s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
-		if _, err := tx.NewRaw(`SELECT pg_advisory_xact_lock(hashtextextended(current_database() || ':memento:recovery-traffic', 0))`).Exec(ctx); err != nil {
+		if _, err := tx.NewRaw(`SELECT pg_advisory_xact_lock(` + recoveryTrafficLockSQL + `)`).Exec(ctx); err != nil {
 			return err
 		}
 		var setupComplete bool

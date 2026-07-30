@@ -101,6 +101,7 @@ func TestRecoveryNonceRotationReviewAndFreshCuratorRelease(t *testing.T) {
 
 	releaseFence, err := service.Acquire(ctx)
 	require.NoError(t, err)
+	t.Cleanup(releaseFence)
 	activationResult := make(chan error, 1)
 	go func() {
 		_, activationErr := service.Activate(context.Background(), "third-fresh-recovery-nonce-with-more-than-32-bytes")

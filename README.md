@@ -320,7 +320,7 @@ go run ./cmd/migrations validate
 
 For the production image, supply the same environment and secret mounts used by Memento, override only the candidate database URL and name, and run `/usr/local/bin/memento-migrations validate` with the image entrypoint overridden. A successful command prints a JSON object with `"status":"valid"`, the completed checks, and representative counts. Any failure exits nonzero. The `validate` action never applies migrations. Use `memento-migrations apply` only for an explicit migration operation, never as candidate validation.
 
-After validation succeeds, preserve the old database during cutover. From the administrative `postgres` database, terminate only Memento connections and use a unique suffix in place of `<RESTORE_TIMESTAMP>`:
+After validation succeeds, preserve the old database during cutover. Keep every Memento API and worker process stopped through the database rename and the first nonce-bearing startup. Do not use a rolling deployment or overlap a pre-Recovery-fence binary with this cutover. From the administrative `postgres` database, terminate only Memento connections and use a unique suffix in place of `<RESTORE_TIMESTAMP>`:
 
 ```sql
 SELECT pg_terminate_backend(pid)
@@ -334,7 +334,7 @@ ALTER DATABASE memento_restore RENAME TO memento;
 
 If the second rename fails, the original database still exists under the `memento_pre_restore_<RESTORE_TIMESTAMP>` name and can be renamed back. Keep that database until recovery validation and Curator review succeed. Remove it later only through an explicit operator decision.
 
-Before the first application start against the restored production database, generate a fresh nonce and provide it through the protected `MEMENTO_RECOVERY_NONCE_FILE` setting. Startup hashes the nonce, takes the singleton settings lock, rotates the security epoch, persists Recovery hold, and writes the security audit in one transaction before starting HTTP or worker work. Only the hash is stored. Reusing that exact nonce is an idempotent no-op. Every different nonce starts a new hold and rotates the epoch, even when a hold is already active. Remove the nonce setting after successful activation. A normal restart never clears the persisted hold.
+Before the first application start against the restored production database, generate a fresh nonce and provide it through the protected `MEMENTO_RECOVERY_NONCE_FILE` setting. Startup hashes the nonce, takes the singleton settings lock, rotates the security epoch, persists Recovery hold, and writes the security audit in one transaction before starting HTTP or worker work. Only nonce hashes are stored. Reusing any previously consumed nonce is an idempotent no-op. Every different nonce starts a new hold and rotates the epoch, even when a hold is already active. Remove the nonce setting after successful activation. A normal restart never clears the persisted hold.
 
 During Recovery hold, liveness remains available but readiness returns unavailable. Restored Sessions, Recipient content, Invitation and optional email delivery, Web Push, notification assembly, outbox dispatch, and ordinary job claims remain blocked. Passwordless sign-in stays non-enumerating and sends a code only to the sole Curator. Challenges restored from the backup cannot create a Session because they belong to the prior security epoch.
 

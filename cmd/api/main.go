@@ -67,6 +67,13 @@ func run() error {
 		log.Err(err).Error("Memento database connection failed")
 		return err
 	}
+	fenceDB, err := database.Open(startupCtx, cfg.Database)
+	if err != nil {
+		_ = db.Close()
+		log.Err(err).Error("Recovery traffic-fence connection failed")
+		return err
+	}
+	defer func() { _ = fenceDB.Close() }()
 	if err := migrations.Apply(startupCtx, db); err != nil {
 		_ = db.Close()
 		log.Err(err).Error("database migration failed")
@@ -77,7 +84,7 @@ func run() error {
 		log.Err(err).Error("required PostgreSQL extensions are unavailable")
 		return err
 	}
-	recoveryService := recovery.New(db)
+	recoveryService := recovery.New(db, recovery.WithFenceDB(fenceDB))
 	if _, err := recoveryService.Activate(startupCtx, cfg.Recovery.Nonce); err != nil {
 		_ = db.Close()
 		log.Err(err).Error("Recovery hold activation failed")

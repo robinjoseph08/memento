@@ -279,8 +279,7 @@ func (w *Worker) claim(ctx context.Context) (*Job, error) {
 				NOT EXISTS (SELECT 1 FROM system_settings WHERE id = 1 AND recovery_hold)
 				OR (kind = 'send_required_email' AND EXISTS (
 					SELECT 1 FROM recovery_curator_sign_in_deliveries AS allowed
-					WHERE allowed.id = CASE WHEN jobs.payload->>'delivery_id' ~ '^[0-9]+$'
-					 THEN (jobs.payload->>'delivery_id')::bigint ELSE 0 END
+					WHERE allowed.id::text = jobs.payload->>'delivery_id'
 				))
 			  )
 			ORDER BY available_at, id
