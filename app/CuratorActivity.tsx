@@ -166,7 +166,11 @@ export function CuratorActivity({ session }: { session: SessionResponse }) {
             item.source_kind === "media_problem"
           ? "curator-repairs"
           : "curator-people";
-    document.getElementById(target)?.scrollIntoView({ behavior: "smooth" });
+    document.getElementById(target)?.scrollIntoView({
+      behavior: window.matchMedia?.("(prefers-reduced-motion: reduce)").matches
+        ? "auto"
+        : "smooth",
+    });
   }
 
   return (

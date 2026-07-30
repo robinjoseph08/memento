@@ -97,6 +97,7 @@ test("@desktop Public-computer Session disables push and keeps privacy actions p
   await expect(warning).toContainText(
     "downloaded originals or archives remain",
   );
+  await page.getByLabel("Account for Alex").click();
   await page.getByText("Sessions and login email").click();
   await expect(
     page.getByRole("button", { name: "Sign out Library computer" }),

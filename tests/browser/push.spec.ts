@@ -145,6 +145,7 @@ test("@desktop Android capability detection prompts only after the explicit acti
   );
   await routeRecipientAPI(page);
   await page.goto("/");
+  await page.getByLabel("Account for Alex").click();
 
   const enable = page.getByRole("button", {
     name: "Enable push notifications",
@@ -196,6 +197,7 @@ for (const device of [
     await mockPushBrowser(page, device.userAgent, false);
     await routeRecipientAPI(page);
     await page.goto("/");
+    await page.getByLabel("Account for Alex").click();
 
     await expect(
       page.getByText(/Add Memento to your iPhone or iPad Home Screen/),

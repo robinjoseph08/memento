@@ -29,6 +29,7 @@
 
 .library-rail button,
 .mobile-library-nav button {
+  min-height: 2.75rem;
   border: 0;
   background: transparent;
   color: #94a3b8;
@@ -411,16 +412,31 @@
   grid-column: 2;
   grid-row: 1;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: 0.25rem;
   align-self: start;
   max-height: calc(100vh - 4rem);
   overflow: auto;
+  padding: 0.5rem;
+  border-left: 1px solid #334155;
+  touch-action: none;
+  user-select: none;
 }
 
 .date-rail a {
+  display: flex;
+  min-height: 1.75rem;
+  align-items: center;
+  padding: 0.2rem 0.45rem;
+  border-radius: 0.4rem;
   color: #7dd3fc;
   font-size: 0.75rem;
   text-decoration: none;
+}
+
+.date-rail a:hover,
+.date-rail a[aria-current="date"] {
+  background: #0c4a6e;
+  color: #e0f2fe;
 }
 
 .mobile-date-nav,
@@ -544,6 +560,10 @@
     color: #bae6fd;
   }
 
+  .mobile-date-nav select {
+    min-height: 2.75rem;
+  }
+
   .gallery-item {
     min-width: min(8rem, calc(50vw - 1.5rem));
     height: auto;
@@ -591,5 +611,76 @@
 
   .library-brand {
     color: #0c4a6e;
+  }
+
+  .library-rail button,
+  .mobile-library-nav button,
+  .library-heading p,
+  .library-heading span,
+  .event-card span,
+  .place-label-editor span,
+  .search-summary,
+  .viewer-details dt,
+  .viewer-favorite p,
+  .viewer-comments-heading label,
+  .comment-list time,
+  .comment-tombstone,
+  .archive-downloads > span,
+  .archive-part > span,
+  .library-empty {
+    color: #475569;
+  }
+
+  .library-rail button[aria-current="page"],
+  .mobile-library-nav button[aria-current="page"],
+  .date-rail a:hover,
+  .date-rail a[aria-current="date"] {
+    background: #bae6fd;
+    color: #0c4a6e;
+  }
+
+  .search-form,
+  .new-for-you,
+  .gallery-item,
+  .viewer-details,
+  .comment-list li {
+    border-color: #cbd5e1;
+    background: white;
+    color: #0f172a;
+  }
+
+  .media-viewer[open] {
+    background: rgb(248 250 252 / 98%);
+    color: #0f172a;
+  }
+
+  .viewer-download-warning,
+  .archive-warning {
+    background: #fef3c7;
+    color: #78350f;
+  }
+
+  .archive-downloads {
+    background: white;
+    color: #0f172a;
+  }
+
+  .date-rail {
+    border-color: #cbd5e1;
+  }
+
+  .mobile-date-nav {
+    color: #075985;
+  }
+
+  .mobile-date-nav select {
+    border: 1px solid #94a3b8;
+    background: white;
+    color: #0f172a;
+  }
+
+  .date-rail a,
+  .archive-downloads button {
+    color: #075985;
   }
 }

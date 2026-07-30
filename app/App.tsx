@@ -1447,7 +1447,13 @@ function RecipientOnboarding({
   );
 }
 
-function PublicSessionBanner({ session }: { session: SessionResponse }) {
+function PublicSessionBanner({
+  session,
+  onSignOut,
+}: {
+  session: SessionResponse;
+  onSignOut?: () => void;
+}) {
   if (session.session_type !== "public") return null;
   return (
     <aside className="public-session-warning">
@@ -1456,7 +1462,36 @@ function PublicSessionBanner({ session }: { session: SessionResponse }) {
         Sign out when finished. Push is disabled, and downloaded originals or
         archives remain on this computer after sign-out.
       </span>
+      {onSignOut ? (
+        <button onClick={onSignOut} type="button">
+          Sign out now
+        </button>
+      ) : null}
     </aside>
+  );
+}
+
+function RecipientOnboardingReview() {
+  return (
+    <details className="recipient-onboarding-review">
+      <summary>Review Onboarding</summary>
+      <div>
+        <h2>Private access and delivery</h2>
+        <p>
+          Your Session and email are personal. There are no public galleries or
+          reusable shared Media links.
+        </p>
+        <p>
+          Meaningful signed-in activity is visible to the Curator. Email opens,
+          prefetching, and incidental thumbnails are excluded.
+        </p>
+        <p>
+          Interest-list choices help the Curator prepare Audience proposals but
+          never grant access. Email previews can remain in a mailbox after
+          access changes, and push can show limited context on a lock screen.
+        </p>
+      </div>
+    </details>
   );
 }
 
@@ -1904,7 +1939,10 @@ function ReadyCard({
   if (session?.curator && (draftsRequested || draftsDirty)) {
     return (
       <section className="draft-work-shell">
-        <PublicSessionBanner session={session} />
+        <PublicSessionBanner
+          onSignOut={() => signOut.mutate()}
+          session={session}
+        />
         <SessionManager onSignedOut={onSignOut} session={session} />
         <div className="draft-work-actions">
           <button
@@ -1975,25 +2013,41 @@ function ReadyCard({
     if (!session.curator) {
       return (
         <>
-          <PublicSessionBanner session={session} />
-          <RecipientLibrary session={session} />
-          <details className="recipient-account-tools" open>
-            <summary>Account and family settings</summary>
-            <EmailPreferences session={session} />
-            <PushNotifications session={session} />
-            <InvitationSuggestions session={session} />
-            <SessionManager onSignedOut={onSignOut} session={session} />
-            <RecipientVisibilityManager
-              onSignOut={onSignOut}
-              session={session}
-            />
-          </details>
+          <PublicSessionBanner
+            onSignOut={() => signOut.mutate()}
+            session={session}
+          />
+          <div className="recipient-experience">
+            <RecipientLibrary session={session} />
+            <details className="recipient-account-tools">
+              <summary aria-label={`Account for ${session.display_name}`}>
+                <span aria-hidden="true">
+                  {session.display_name.trim().charAt(0).toUpperCase() || "M"}
+                </span>
+                <strong>Account</strong>
+              </summary>
+              <div className="recipient-account-drawer">
+                <RecipientOnboardingReview />
+                <EmailPreferences session={session} />
+                <PushNotifications session={session} />
+                <InvitationSuggestions session={session} />
+                <SessionManager onSignedOut={onSignOut} session={session} />
+                <RecipientVisibilityManager
+                  onSignOut={onSignOut}
+                  session={session}
+                />
+              </div>
+            </details>
+          </div>
         </>
       );
     }
     return (
       <>
-        <PublicSessionBanner session={session} />
+        <PublicSessionBanner
+          onSignOut={() => signOut.mutate()}
+          session={session}
+        />
         <CuratorActivity session={session} />
         <SessionManager onSignedOut={onSignOut} session={session} />
         <EmailPreferences session={session} />
