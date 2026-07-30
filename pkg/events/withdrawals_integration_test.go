@@ -21,6 +21,7 @@ import (
 	"github.com/robinjoseph08/memento/pkg/immich"
 	"github.com/robinjoseph08/memento/pkg/library"
 	"github.com/robinjoseph08/memento/pkg/outbox"
+	"github.com/robinjoseph08/memento/pkg/restores"
 	"github.com/robinjoseph08/memento/pkg/setup"
 	"github.com/robinjoseph08/memento/pkg/staging"
 	"github.com/robinjoseph08/memento/pkg/worker"
@@ -1573,6 +1574,13 @@ func TestMediaRestorationUsesTransactionalContentRevisions(t *testing.T) {
 	var active bool
 	require.NoError(t, fixture.db.NewRaw(`SELECT restored_at IS NULL FROM content_withdrawals WHERE id = ?`, withdrawal.ID).Scan(ctx, &active))
 	assert.True(t, active, "one fresh placement Publication must not restore shared Media")
+	_, err = fixture.db.NewRaw(`INSERT INTO recipient_emails
+		(id, recipient_access_generation_id, email, normalized_email, is_current)
+		SELECT ?, id, 'curator@example.com', 'curator@example.com', true
+		FROM recipient_access_generations WHERE person_id = ? AND is_current`, uuid.New(), fixture.actor.PersonID).Exec(ctx)
+	require.NoError(t, err)
+	_, err = restores.Validate(ctx, fixture.db)
+	require.NoError(t, err, "a valid nominal entitlement rebuilt after shared-Media Withdrawal must validate")
 	_, err = fixture.service.RecipientEvent(ctx, fixture.actorFor("shared"), fixture.event)
 	assert.ErrorIs(t, err, ErrNoPublication)
 

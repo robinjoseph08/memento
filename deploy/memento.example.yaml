@@ -1,6 +1,6 @@
 # Secrets are intentionally omitted. Supply database.url, immich.api_key,
-# security.secret, smtp.password, and push.private_key through their
-# MEMENTO_* value or MEMENTO_*_FILE setting.
+# security.secret, smtp.password, push.private_key, and the one-time restore
+# recovery nonce through their MEMENTO_* value or MEMENTO_*_FILE setting.
 http:
   address: "127.0.0.1:8081"
   # Public origin used for personalized Invitation links in email.

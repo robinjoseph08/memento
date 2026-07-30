@@ -32,6 +32,7 @@ import (
 	"github.com/robinjoseph08/memento/pkg/people"
 	"github.com/robinjoseph08/memento/pkg/push"
 	"github.com/robinjoseph08/memento/pkg/recipients"
+	"github.com/robinjoseph08/memento/pkg/recovery"
 	"github.com/robinjoseph08/memento/pkg/repairs"
 	"github.com/robinjoseph08/memento/pkg/search"
 	"github.com/robinjoseph08/memento/pkg/server"
@@ -66,6 +67,13 @@ func run() error {
 		log.Err(err).Error("Memento database connection failed")
 		return err
 	}
+	fenceDB, err := database.Open(startupCtx, cfg.Database)
+	if err != nil {
+		_ = db.Close()
+		log.Err(err).Error("Recovery traffic-fence connection failed")
+		return err
+	}
+	defer func() { _ = fenceDB.Close() }()
 	if err := migrations.Apply(startupCtx, db); err != nil {
 		_ = db.Close()
 		log.Err(err).Error("database migration failed")
@@ -74,6 +82,12 @@ func run() error {
 	if err := migrations.Extensions(startupCtx, db); err != nil {
 		_ = db.Close()
 		log.Err(err).Error("required PostgreSQL extensions are unavailable")
+		return err
+	}
+	recoveryService := recovery.New(db, recovery.WithFenceDB(fenceDB))
+	if _, err := recoveryService.Activate(startupCtx, cfg.Recovery.Nonce); err != nil {
+		_ = db.Close()
+		log.Err(err).Error("Recovery hold activation failed")
 		return err
 	}
 
@@ -137,13 +151,15 @@ func run() error {
 		log.Error("worker identity generation failed")
 		return err
 	}
-	jobWorker, err := worker.New(db, cfg.Worker, owner, handlers, worker.WithDispatcher(outbox.New(db)))
+	jobWorker, err := worker.New(db, cfg.Worker, owner, handlers,
+		worker.WithDispatcher(outbox.New(db)), worker.WithTrafficGate(recoveryService))
 	if err != nil {
 		_ = db.Close()
 		log.Err(err).Error("worker startup failed")
 		return err
 	}
 	healthService := health.New(db, immichClient, jobWorker, cfg.Database.HealthTimeout, cfg.Worker.HeartbeatMaxAge, deliveryHealth)
+	healthService.SetRecoveryStatus(recoveryService)
 	setupService := setup.New(db, emailService, cfg.Security)
 	localGeoIP, err := sessions.OpenLocalGeoIP(cfg.GeoIP.DatabasePath)
 	if err != nil {
@@ -185,6 +201,8 @@ func run() error {
 	favorites.RegisterRoutes(e, favoriteHandler)
 	activity.RegisterRoutes(e, activity.NewHandler(interactionActivity, setupService))
 	push.RegisterRoutes(e, push.NewHandler(pushService, setupService))
+	recovery.RegisterRoutes(e, recovery.NewHandler(recoveryService, setupService))
+	e.Use(recoveryService.Middleware())
 
 	workCtx, cancelWork := context.WithCancel(context.Background())
 	defer cancelWork()

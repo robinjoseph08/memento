@@ -68,6 +68,23 @@ immich:
 	assert.Equal(t, "file-key", cfg.Immich.APIKey)
 }
 
+func TestLoadAcceptsRecoveryNonceFromSecretFileAndRejectsShortValues(t *testing.T) {
+	setRequiredEnvironment(t)
+	noncePath := filepath.Join(t.TempDir(), "recovery-nonce")
+	recoveryNonce := "fresh-restore-nonce-with-at-least-32-random-bytes"
+	require.NoError(t, os.WriteFile(noncePath, []byte(recoveryNonce+"\n"), 0o600))
+	t.Setenv("MEMENTO_RECOVERY_NONCE_FILE", noncePath)
+
+	cfg, err := Load("")
+	require.NoError(t, err)
+	assert.Equal(t, recoveryNonce, cfg.Recovery.Nonce)
+
+	t.Setenv("MEMENTO_RECOVERY_NONCE_FILE", "")
+	t.Setenv("MEMENTO_RECOVERY_NONCE", "too-short")
+	_, err = Load("")
+	assert.ErrorContains(t, err, "recovery.nonce")
+}
+
 func TestLoadRejectsUnreadableAndEmptySecretFiles(t *testing.T) {
 	setRequiredEnvironment(t)
 	t.Setenv("MEMENTO_DATABASE_URL_FILE", filepath.Join(t.TempDir(), "missing"))

@@ -34,6 +34,7 @@ type Config struct {
 	Sources  SourcesConfig
 	GeoIP    GeoIPConfig
 	Security SecurityConfig
+	Recovery RecoveryConfig
 	SMTP     SMTPConfig
 	Push     PushConfig
 	Worker   WorkerConfig
@@ -64,6 +65,11 @@ type SourcesConfig struct {
 
 type GeoIPConfig struct {
 	DatabasePath string
+}
+
+type RecoveryConfig struct {
+	// Nonce is set only for the first start after restoring a database.
+	Nonce string
 }
 
 type SecurityConfig struct {
@@ -141,6 +147,9 @@ type rawConfig struct {
 	GeoIP struct {
 		DatabasePath string `koanf:"database_path"`
 	} `koanf:"geoip"`
+	Recovery struct {
+		Nonce string `koanf:"nonce"`
+	} `koanf:"recovery"`
 	Security struct {
 		Secret                     string `koanf:"secret"`
 		SetupRateWindow            string `koanf:"setup_rate_window"`
@@ -208,6 +217,7 @@ var (
 	errImmichAPIKeyRequired     = errors.New("immich.api_key is required")
 	errReconciliationInterval   = errors.New("sources.reconciliation_interval must be positive")
 	errSecuritySecretRequired   = errors.New("security.secret must contain at least 32 bytes")
+	errRecoveryNonceInvalid     = errors.New("recovery.nonce must contain at least 32 bytes when set")
 	errSetupRateLimits          = errors.New("security setup rate limits must be positive")
 	errInvitationRateLimits     = errors.New("security Invitation acceptance rate limits must be positive")
 	errSignInRateLimits         = errors.New("security sign-in rate limits must be positive")
@@ -300,6 +310,9 @@ func Load(path string) (Config, error) {
 	if err := loadSecretFile(k, "security.secret", "MEMENTO_SECURITY_SECRET_FILE"); err != nil {
 		return Config{}, err
 	}
+	if err := loadSecretFile(k, "recovery.nonce", "MEMENTO_RECOVERY_NONCE_FILE"); err != nil {
+		return Config{}, err
+	}
 	if err := loadSecretFile(k, "smtp.password", "MEMENTO_SMTP_PASSWORD_FILE"); err != nil {
 		return Config{}, err
 	}
@@ -336,6 +349,7 @@ func envKey(key string) string {
 		"MEMENTO_SOURCES_RECONCILIATION_INTERVAL":        "sources.reconciliation_interval",
 		"MEMENTO_GEOIP_DATABASE_PATH":                    "geoip.database_path",
 		"MEMENTO_SECURITY_SECRET":                        "security.secret",
+		"MEMENTO_RECOVERY_NONCE":                         "recovery.nonce",
 		"MEMENTO_SECURITY_SETUP_RATE_WINDOW":             "security.setup_rate_window",
 		"MEMENTO_SECURITY_SETUP_EMAIL_LIMIT":             "security.setup_email_limit",
 		"MEMENTO_SECURITY_SETUP_IP_LIMIT":                "security.setup_ip_limit",
@@ -412,6 +426,7 @@ func parse(raw rawConfig) (Config, error) {
 	cfg.Immich.APIKey = raw.Immich.APIKey
 	cfg.GeoIP.DatabasePath = raw.GeoIP.DatabasePath
 	cfg.Security.Secret = raw.Security.Secret
+	cfg.Recovery.Nonce = raw.Recovery.Nonce
 	cfg.Security.SetupEmailLimit = raw.Security.SetupEmailLimit
 	cfg.Security.SetupIPLimit = raw.Security.SetupIPLimit
 	cfg.Security.InvitationAcceptIPLimit = raw.Security.InvitationAcceptIPLimit
@@ -600,6 +615,9 @@ func (c Config) Validate() error {
 	}
 	if len(c.Security.Secret) < 32 {
 		return errSecuritySecretRequired
+	}
+	if c.Recovery.Nonce != "" && len(c.Recovery.Nonce) < 32 {
+		return errRecoveryNonceInvalid
 	}
 	if c.Security.SetupRateWindow <= 0 || c.Security.SetupEmailLimit <= 0 || c.Security.SetupIPLimit <= 0 {
 		return errSetupRateLimits

@@ -99,7 +99,8 @@ func (s *Service) Configuration(ctx context.Context, actor setup.SessionActor) (
 	var trusted bool
 	if err := s.db.NewRaw(`SELECT EXISTS (
 		SELECT 1 FROM sessions AS session
-		JOIN system_settings AS settings ON settings.id = 1 AND settings.security_epoch = session.security_epoch
+		JOIN system_settings AS settings ON settings.id = 1 AND NOT settings.recovery_hold
+		 AND settings.security_epoch = session.security_epoch
 		JOIN recipient_access_generations AS access ON access.id = session.recipient_access_generation_id
 		 AND access.is_current AND access.state = 'completed'
 		WHERE session.id = ? AND session.person_id = ? AND access.id = ? AND session.session_type = 'trusted'
@@ -266,7 +267,7 @@ func requireTrustedSession(ctx context.Context, db bun.IDB, actor setup.SessionA
 		JOIN recipient_access_generations AS access ON access.id = session.recipient_access_generation_id
 		 AND access.person_id = session.person_id AND access.is_current AND access.state = 'completed'
 		JOIN system_settings AS settings ON settings.id = 1 AND settings.setup_complete
-		 AND settings.security_epoch = session.security_epoch
+		 AND NOT settings.recovery_hold AND settings.security_epoch = session.security_epoch
 		WHERE session.id = ? AND session.person_id = ? AND access.id = ? AND session.session_type = 'trusted'
 		 AND session.revoked_at IS NULL AND session.idle_expires_at > clock_timestamp()`+lockClause,
 		actor.SessionID, actor.PersonID, actor.AccessID).Scan(ctx, &id)

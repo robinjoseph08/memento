@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"regexp"
 	"testing"
 	"time"
 
@@ -16,22 +17,31 @@ import (
 	"github.com/robinjoseph08/memento/pkg/config"
 	"github.com/robinjoseph08/memento/pkg/emaildelivery"
 	"github.com/robinjoseph08/memento/pkg/migrations"
+	"github.com/robinjoseph08/memento/pkg/outbox"
+	"github.com/robinjoseph08/memento/pkg/recovery"
 	"github.com/robinjoseph08/memento/pkg/setup"
 	"github.com/robinjoseph08/memento/pkg/smtp"
+	"github.com/robinjoseph08/memento/pkg/worker"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/uptrace/bun"
 )
 
-type discardSender struct{}
+type recordingSender struct {
+	messages chan smtp.Message
+}
 
-func (discardSender) Send(context.Context, smtp.Message) error { return nil }
+func (s *recordingSender) Send(_ context.Context, message smtp.Message) error {
+	s.messages <- message
+	return nil
+}
 
 type fixture struct {
 	db                            *bun.DB
 	service                       *Service
 	auth                          *setup.Service
 	delivery                      *emaildelivery.Service
+	sender                        *recordingSender
 	personID, accessID, sessionID uuid.UUID
 	credential, csrf              string
 	now                           time.Time
@@ -53,14 +63,15 @@ func newFixture(t *testing.T) fixture {
 	_, err = db.NewRaw(`INSERT INTO sessions (id, credential_hash, person_id, recipient_access_generation_id, security_epoch, session_type, created_at, last_activity_at, idle_expires_at, browser, platform) VALUES (?, ?, ?, ?, ?, 'trusted', ?, ?, ?, 'Firefox', 'Linux')`, sessionID, hash[:], personID, accessID, epoch, now, now, now.Add(365*24*time.Hour)).Exec(ctx)
 	require.NoError(t, err)
 	security := config.SecurityConfig{Secret: "sessions-integration-secret-at-least-32-bytes", SignInRateWindow: 15 * time.Minute, SignInEmailLimit: 3, SignInIPLimit: 10}
-	delivery := emaildelivery.New(db, config.SMTPConfig{Enabled: true, RetryWindow: time.Hour}, discardSender{}, security.Secret)
+	sender := &recordingSender{messages: make(chan smtp.Message, 8)}
+	delivery := emaildelivery.New(db, config.SMTPConfig{Enabled: true, RetryBase: time.Millisecond, RetryMax: time.Second, RetryWindow: time.Hour}, sender, security.Secret)
 	auth := setup.New(db, delivery, security, setup.WithClock(func() time.Time { return now }))
 	credential := hex.EncodeToString(raw)
 	session, err := auth.Session(ctx, credential)
 	require.NoError(t, err)
 	service := New(db, delivery, auth, security)
 	service.now = func() time.Time { return now }
-	return fixture{db: db, service: service, auth: auth, delivery: delivery, personID: personID, accessID: accessID, sessionID: sessionID, credential: credential, csrf: session.CSRFToken, now: now}
+	return fixture{db: db, service: service, auth: auth, delivery: delivery, sender: sender, personID: personID, accessID: accessID, sessionID: sessionID, credential: credential, csrf: session.CSRFToken, now: now}
 }
 
 func TestSignInStartIsNonEnumeratingAndStoresOnlyEligibleChallenge(t *testing.T) {
@@ -99,10 +110,111 @@ func insertChallenge(t *testing.T, f fixture, fill byte, code string) string {
 		if err != nil {
 			return err
 		}
-		_, err = tx.NewRaw(`INSERT INTO sign_in_challenges (id, challenge_hash, code_hash, recipient_access_generation_id, recipient_email_id, email_delivery_id, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, uuid.New(), digest(raw), f.service.codeHash("sign-in", raw, code), f.accessID, emailID, deliveryID, expires, f.now).Exec(ctx)
+		_, err = tx.NewRaw(`INSERT INTO sign_in_challenges (id, challenge_hash, code_hash, recipient_access_generation_id, recipient_email_id, email_delivery_id, security_epoch, expires_at, created_at)
+			SELECT ?, ?, ?, ?, ?, ?, security_epoch, ?, ? FROM system_settings WHERE id = 1`, uuid.New(), digest(raw), f.service.codeHash("sign-in", raw, code), f.accessID, emailID, deliveryID, expires, f.now).Exec(ctx)
 		return err
 	}))
 	return challengeID
+}
+
+func TestRecoveryHoldRejectsRestoredChallengesAndAllowsOnlyFreshCuratorSignIn(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	curatorID, curatorAccessID, curatorEmailID := uuid.New(), uuid.New(), uuid.New()
+	_, err := f.db.NewRaw(`
+		INSERT INTO people (id, display_name, sort_name) VALUES (?, 'Curator', 'curator');
+		INSERT INTO person_roles (person_id, role) VALUES (?, 'curator'), (?, 'recipient');
+		INSERT INTO recipient_access_generations
+			(id, person_id, generation, state, is_current, onboarding_completed_at)
+		VALUES (?, ?, 1, 'completed', true, now());
+		INSERT INTO recipient_emails
+			(id, recipient_access_generation_id, email, normalized_email, is_current)
+		VALUES (?, ?, 'curator@example.com', 'curator@example.com', true)
+	`, curatorID, curatorID, curatorID, curatorAccessID, curatorID, curatorEmailID, curatorAccessID).Exec(ctx)
+	require.NoError(t, err)
+
+	oldChallenge := insertChallenge(t, f, 0x41, "12345678")
+	hold := recovery.New(f.db, recovery.WithRandom(bytes.NewReader(bytes.Repeat([]byte{0x52}, 32))))
+	activated, err := hold.Activate(ctx, "fresh-recovery-nonce-that-is-longer-than-thirty-two-bytes")
+	require.NoError(t, err)
+	require.True(t, activated)
+
+	_, err = f.service.VerifySignIn(ctx, SignInVerifyRequest{
+		ChallengeID: oldChallenge, Code: "12345678", SessionType: "trusted",
+	})
+	assert.ErrorIs(t, err, ErrInvalidCode, "a restored code cannot mint a Session in the rotated epoch")
+
+	var before int
+	require.NoError(t, f.db.NewRaw(`SELECT count(*) FROM sign_in_challenges`).Scan(ctx, &before))
+	f.service.random = bytes.NewReader(bytes.Repeat([]byte{0x62}, 256))
+	response, err := f.service.RequestSignIn(ctx, SignInRequest{Email: "alex@example.com"})
+	require.NoError(t, err)
+	assert.Equal(t, "accepted", response.Status)
+	var after int
+	require.NoError(t, f.db.NewRaw(`SELECT count(*) FROM sign_in_challenges`).Scan(ctx, &after))
+	assert.Equal(t, before, after, "Recipient sign-in remains non-enumerating but queues no code during Recovery hold")
+
+	f.service.random = bytes.NewReader(bytes.Repeat([]byte{0x63}, 256))
+	freshChallenge, err := f.service.RequestSignIn(ctx, SignInRequest{Email: "curator@example.com"})
+	require.NoError(t, err)
+	dispatched, err := outbox.New(f.db).Dispatch(ctx, "recovery-sign-in-dispatch", time.Minute)
+	require.NoError(t, err)
+	require.True(t, dispatched)
+	workerConfig := config.WorkerConfig{
+		PollInterval: time.Millisecond, HeartbeatInterval: 2 * time.Millisecond,
+		HeartbeatMaxAge: time.Second, LeaseDuration: time.Second,
+		DrainTimeout: time.Second, RetryBase: time.Millisecond, RetryMax: time.Second,
+	}
+	jobWorker, err := worker.New(f.db, workerConfig, "recovery-sign-in-worker",
+		map[string]worker.Handler{emaildelivery.JobKind: f.delivery.Handle}, worker.WithTrafficGate(hold))
+	require.NoError(t, err)
+	jobWorker.Start(ctx)
+	workerStopped := false
+	t.Cleanup(func() {
+		if workerStopped {
+			return
+		}
+		jobWorker.StopClaims()
+		drainCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = jobWorker.Drain(drainCtx)
+	})
+	var message smtp.Message
+	select {
+	case message = <-f.sender.messages:
+	case <-time.After(time.Second):
+		t.Fatal("fresh Curator sign-in code was not delivered during Recovery hold")
+	}
+	jobWorker.StopClaims()
+	drainCtx, cancelDrain := context.WithTimeout(ctx, time.Second)
+	drainErr := jobWorker.Drain(drainCtx)
+	cancelDrain()
+	require.NoError(t, drainErr)
+	workerStopped = true
+	code := regexp.MustCompile(`\b[0-9]{8}\b`).FindString(message.Body)
+	require.Len(t, code, 8)
+
+	result, err := f.service.VerifySignIn(ctx, SignInVerifyRequest{
+		ChallengeID: freshChallenge.ChallengeID, Code: code, SessionType: "trusted",
+	})
+	require.NoError(t, err)
+	assert.Len(t, result.session.Credential, 64)
+	_, err = f.auth.Session(ctx, f.credential)
+	assert.ErrorIs(t, err, setup.ErrUnauthenticated, "the restored Session stays invalid")
+	fresh, err := f.auth.Session(ctx, result.session.Credential)
+	require.NoError(t, err)
+	assert.True(t, fresh.Curator)
+	actor, err := f.auth.AuthorizeCurator(ctx, result.session.Credential, result.session.CSRFToken, true)
+	require.NoError(t, err)
+	review, err := hold.Review(ctx, actor)
+	require.NoError(t, err)
+	assert.True(t, review.Held)
+	assert.ErrorIs(t, hold.Release(ctx, actor), recovery.ErrReviewRequired)
+	require.NoError(t, hold.AcknowledgeReview(ctx, actor))
+	require.NoError(t, hold.Release(ctx, actor))
+	held, err := hold.Held(ctx)
+	require.NoError(t, err)
+	assert.False(t, held)
 }
 
 func TestSignInCodeIsEightDigitSingleUseAndCreatesPolicyBoundSessions(t *testing.T) {

@@ -161,6 +161,8 @@ Required settings are:
 - `MEMENTO_IMMICH_API_KEY` or `MEMENTO_IMMICH_API_KEY_FILE`
 - `MEMENTO_SECURITY_SECRET` or `MEMENTO_SECURITY_SECRET_FILE`, containing at least 32 random bytes and kept stable across restarts
 
+`MEMENTO_RECOVERY_NONCE` or `MEMENTO_RECOVERY_NONCE_FILE` is a one-time restore setting, not routine configuration. It must contain at least 32 random bytes when set. Use a fresh value only for the first application start after replacing the production database with a validated restore, then remove it from the runtime environment.
+
 Environment names for YAML fields use the `MEMENTO_` prefix and underscores, such as `MEMENTO_HTTP_SHUTDOWN_TIMEOUT` and `MEMENTO_WORKER_LEASE_DURATION`. Secret file values override direct environment values and surrounding whitespace is removed. Generate the security secret with a cryptographically secure tool, store it like the database and Immich credentials, and do not rotate it as a routine restart action. Setup bursts default to three code requests per normalized email and twenty setup mutations per client IP in fifteen minutes. Configure them with `MEMENTO_SECURITY_SETUP_EMAIL_LIMIT`, `MEMENTO_SECURITY_SETUP_IP_LIMIT`, and `MEMENTO_SECURITY_SETUP_RATE_WINDOW`. Invitation acceptance defaults to twenty attempts per token and client IP in fifteen minutes; configure it with `MEMENTO_SECURITY_INVITATION_ACCEPT_IP_LIMIT` and `MEMENTO_SECURITY_INVITATION_ACCEPT_RATE_WINDOW`. Passwordless sign-in defaults to three starts per normalized email and ten per client IP in fifteen minutes; configure it with `MEMENTO_SECURITY_SIGN_IN_EMAIL_LIMIT`, `MEMENTO_SECURITY_SIGN_IN_IP_LIMIT`, and `MEMENTO_SECURITY_SIGN_IN_RATE_WINDOW`. `MEMENTO_GEOIP_DATABASE_PATH` may point to a local MaxMind-compatible City database for approximate Session locations; Memento performs no request-time GeoIP network lookup. `MEMENTO_SECURITY_TRUSTED_PROXY_CIDRS` explicitly identifies proxies whose forwarding headers may supply the client IP; it defaults to the loopback networks used by the bundled Caddy process. Source album membership reconciliation defaults to every ten minutes and can be configured with `MEMENTO_SOURCES_RECONCILIATION_INTERVAL`. SMTP is optional until email is needed, but must be enabled before first-browser setup can send its verification code. When enabled, its host, transport mode, sender, test recipient, and optional username are ordinary settings, while its password should use `MEMENTO_SMTP_PASSWORD_FILE`.
 
 Web Push is independently optional. Generate one stable VAPID P-256 key pair with a standards-compatible Web Push tool. Configure `MEMENTO_PUSH_PUBLIC_KEY`, `MEMENTO_PUSH_PRIVATE_KEY_FILE`, and a `mailto:` or HTTPS `MEMENTO_PUSH_SUBJECT`, then set `MEMENTO_PUSH_ENABLED=true`. The public key and private key must be unpadded base64url and must match. Rotating this key pair requires each device to enroll again. Restrictive firewalls must permit the browser vendors' push endpoints, including Apple, Mozilla, and Google services. Memento validates every untrusted endpoint at enrollment and again while connecting, bypasses environment proxies, rejects non-public addresses, and never forwards Memento credentials.
@@ -306,7 +308,19 @@ docker exec -i immich_postgres \
 
 The Immich container normally permits local socket authentication for this command. If the installation requires a password, use a protected PostgreSQL password file or container secret. Do not place `PGPASSWORD` or the password itself in the shell command.
 
-Read-only restore validation and Recovery hold are not part of the current foundation. Do not cut a restored database into a production deployment until those safeguards are implemented. The remaining commands document the intended later-phase cutover and must not be treated as a complete recovery procedure today. After `pg_restore` succeeds and a future release provides restore validation, validate `memento_restore` and preserve the old database during cutover. From the administrative `postgres` database, terminate only Memento connections and use a unique suffix in place of `<RESTORE_TIMESTAMP>`:
+After `pg_restore` succeeds, run the validation command from the same Memento release that will serve the restore. Point `MEMENTO_DATABASE_URL` at `memento_restore`, set `MEMENTO_DATABASE_NAME=memento_restore`, and retain the other required configuration values. The validator opens no Immich, SMTP, Push, or other network client. It checks the exact migration ledger, required extensions, singleton setup and sole-Curator state, validated foreign keys, publication and Staged update projections, security settings, and representative non-sensitive counts inside one repeatable-read, read-only transaction.
+
+For a local source checkout:
+
+```sh
+MEMENTO_DATABASE_URL='<POSTGRESQL_URL_SELECTING_memento_restore>' \
+MEMENTO_DATABASE_NAME=memento_restore \
+go run ./cmd/migrations validate
+```
+
+For the production image, supply the same environment and secret mounts used by Memento, override only the candidate database URL and name, and run `/usr/local/bin/memento-migrations validate` with the image entrypoint overridden. A successful command prints a JSON object with `"status":"valid"`, the completed checks, and representative counts. Any failure exits nonzero. The `validate` action never applies migrations. Use `memento-migrations apply` only for an explicit migration operation, never as candidate validation.
+
+After validation succeeds, preserve the old database during cutover. Keep every Memento API and worker process stopped through the database rename and the first nonce-bearing startup. Do not use a rolling deployment or overlap a pre-Recovery-fence binary with this cutover. From the administrative `postgres` database, terminate only Memento connections and use a unique suffix in place of `<RESTORE_TIMESTAMP>`:
 
 ```sql
 SELECT pg_terminate_backend(pid)
@@ -318,9 +332,13 @@ ALTER DATABASE memento RENAME TO memento_pre_restore_<RESTORE_TIMESTAMP>;
 ALTER DATABASE memento_restore RENAME TO memento;
 ```
 
-If the second rename fails, the original database still exists under the `memento_pre_restore_<RESTORE_TIMESTAMP>` name and can be renamed back. Retain that database until recovery validation and Curator review succeed; remove it later through an explicit operator decision.
+If the second rename fails, the original database still exists under the `memento_pre_restore_<RESTORE_TIMESTAMP>` name and can be renamed back. Keep that database until recovery validation and Curator review succeed. Remove it later only through an explicit operator decision.
 
-The completed application will require `MEMENTO_RECOVERY_NONCE=<fresh-random-value>` before starting a restored database. That later-phase Recovery hold will rotate the security epoch, invalidate restored Sessions and linked push subscriptions, and block Recipient access and optional delivery until Curator review. The current foundation does not accept or enforce this setting, so it must not be used to claim that a restored production deployment is safe.
+Before the first application start against the restored production database, generate a fresh nonce and provide it through the protected `MEMENTO_RECOVERY_NONCE_FILE` setting. Startup hashes the nonce, takes the singleton settings lock, rotates the security epoch, persists Recovery hold, and writes the security audit in one transaction before starting HTTP or worker work. Only nonce hashes are stored. Reusing any previously consumed nonce is an idempotent no-op. Every different nonce starts a new hold and rotates the epoch, even when a hold is already active. Remove the nonce setting after successful activation. A normal restart never clears the persisted hold.
+
+During Recovery hold, liveness remains available but readiness returns unavailable. Restored Sessions, Recipient content, Invitation and optional email delivery, Web Push, notification assembly, outbox dispatch, and ordinary job claims remain blocked. Passwordless sign-in stays non-enumerating and sends a code only to the sole Curator. Challenges restored from the backup cannot create a Session because they belong to the prior security epoch.
+
+Open Memento, sign in as the Curator with the fresh code, and review the bounded restored-state counts on the Recovery screen. Release requires that fresh current-epoch Curator Session, its CSRF token, and explicit confirmation. Release is persisted and audited. It does not rewrite People, Audiences, Publications, or interaction history. Keep the pre-restore database until the application is ready and the Curator has completed this review.
 
 A database restore does not restore Immich Media, SMTP credentials, the Immich API key, VAPID private keys, configuration files, or an optional local GeoIP database. Back up those through their own secure operator procedures.
 

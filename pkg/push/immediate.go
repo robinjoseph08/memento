@@ -63,7 +63,7 @@ func (s *Service) QueuePublication(ctx context.Context, _ uuid.UUID, publication
 			 AND session.recipient_access_generation_id = access.id AND session.session_type = 'trusted'
 			 AND session.revoked_at IS NULL AND session.idle_expires_at > clock_timestamp()
 			JOIN system_settings AS settings ON settings.id = 1 AND settings.setup_complete
-			 AND settings.security_epoch = session.security_epoch
+			 AND NOT settings.recovery_hold AND settings.security_epoch = session.security_epoch
 			WHERE activity.publication_id = ? AND publication.notify_recipients
 			AND EXISTS (
 			 SELECT 1 FROM LATERAL (
@@ -116,7 +116,7 @@ func (s *Service) QueueComment(ctx context.Context, tx bun.Tx, accessID, comment
 		 AND session.recipient_access_generation_id = ? AND session.session_type = 'trusted'
 		 AND session.revoked_at IS NULL AND session.idle_expires_at > clock_timestamp()
 		JOIN system_settings AS settings ON settings.id = 1 AND settings.setup_complete
-		 AND settings.security_epoch = session.security_epoch
+		 AND NOT settings.recovery_hold AND settings.security_epoch = session.security_epoch
 		WHERE subscription.disabled_at IS NULL
 		 AND (subscription.expiration_at IS NULL OR subscription.expiration_at > clock_timestamp())
 		ORDER BY subscription.id`, accessID).Scan(ctx, &candidates); err != nil {
@@ -188,7 +188,7 @@ func (s *Service) Handle(ctx context.Context, job worker.Job) error {
 			 AND access.id = batch.recipient_access_generation_id AND access.is_current AND access.state = 'completed'
 			JOIN people AS person ON person.id = session.person_id AND person.archived_at IS NULL AND person.merged_at IS NULL
 			JOIN system_settings AS settings ON settings.id = 1 AND settings.setup_complete
-			 AND settings.security_epoch = session.security_epoch
+			 AND NOT settings.recovery_hold AND settings.security_epoch = session.security_epoch
 			WHERE batch.id = ? AND subscription.id = ? AND subscription.disabled_at IS NULL
 			 AND (subscription.expiration_at IS NULL OR subscription.expiration_at > clock_timestamp())
 			FOR UPDATE OF subscription, session, access, person, settings`, payload.BatchID, subscriptionID).
@@ -203,7 +203,7 @@ func (s *Service) Handle(ctx context.Context, job worker.Job) error {
 				   AND access.is_current AND access.state = 'completed'
 				  JOIN people AS person ON person.id = session.person_id AND person.archived_at IS NULL AND person.merged_at IS NULL
 				  JOIN system_settings AS settings ON settings.id = 1 AND settings.setup_complete
-				   AND settings.security_epoch = session.security_epoch
+				   AND NOT settings.recovery_hold AND settings.security_epoch = session.security_epoch
 				  WHERE session.id = subscription.session_id AND session.person_id = subscription.person_id
 				   AND session.session_type = 'trusted' AND session.revoked_at IS NULL
 				   AND session.idle_expires_at > clock_timestamp()

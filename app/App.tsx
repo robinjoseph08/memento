@@ -61,6 +61,10 @@ import type {
   SignInVerifyRequest,
 } from "./types/generated/sessions";
 import type {
+  ReviewResponse as RecoveryReviewResponse,
+  StatusResponse as RecoveryStatusResponse,
+} from "./types/generated/recovery";
+import type {
   Album as SourceAlbum,
   DiscoveryResponse,
   ListResponse as SourceListResponse,
@@ -70,11 +74,17 @@ import type {
 type BootstrapState =
   | { kind: "available" }
   | { kind: "session"; session: SessionResponse }
+  | { kind: "recovery"; session?: SessionResponse }
   | { kind: "closed" };
 
-function removeProtectedQueries(queryClient: QueryClient) {
+function removeProtectedQueries(
+  queryClient: QueryClient,
+  keepRecoveryReview = false,
+) {
   queryClient.removeQueries({
-    predicate: (query) => query.queryKey[0] !== "bootstrap",
+    predicate: (query) =>
+      query.queryKey[0] !== "bootstrap" &&
+      (!keepRecoveryReview || query.queryKey[0] !== "recovery-review"),
   });
 }
 
@@ -83,6 +93,22 @@ async function fetchBootstrap(): Promise<BootstrapState> {
     await apiJSON<AvailabilityResponse>("/api/setup");
     return { kind: "available" };
   } catch (error) {
+    if (error instanceof APIError && error.status === 503) {
+      const recovery = await apiJSON<RecoveryStatusResponse>(
+        "/api/recovery/status",
+      );
+      if (recovery.held) {
+        try {
+          const session = await apiJSON<SessionResponse>("/api/session");
+          return { kind: "recovery", session };
+        } catch (sessionError) {
+          if (sessionError instanceof APIError && sessionError.status === 401) {
+            return { kind: "recovery" };
+          }
+          throw sessionError;
+        }
+      }
+    }
     if (!(error instanceof APIError) || error.status !== 404) {
       throw error;
     }
@@ -159,8 +185,10 @@ function ErrorMessage({ error }: { error: Error | null }) {
 
 function SignInFlow({
   onComplete,
+  recovery = false,
 }: {
   onComplete: (session: SessionResponse) => void;
+  recovery?: boolean;
 }) {
   const [email, setEmail] = useState("");
   const [challengeID, setChallengeID] = useState("");
@@ -194,10 +222,18 @@ function SignInFlow({
     <section aria-labelledby="sign-in-title" className="shell-card setup-card">
       <BrandHeader />
       <div className="setup-heading">
-        <p className="step-label">Private Recipient access</p>
-        <h2 id="sign-in-title">Sign in to Memento</h2>
+        <p className="step-label">
+          {recovery ? "Recovery hold" : "Private Recipient access"}
+        </p>
+        <h2 id="sign-in-title">
+          {recovery ? "Curator recovery sign-in" : "Sign in to Memento"}
+        </h2>
       </div>
-      <p className="lede">Setup is complete.</p>
+      <p className="lede">
+        {recovery
+          ? "Recipient access and optional delivery remain blocked until fresh Curator review."
+          : "Setup is complete."}
+      </p>
       {!challengeID ? (
         <form
           className="setup-form"
@@ -209,6 +245,9 @@ function SignInFlow({
           <p className="form-intro">
             Enter your login email. Memento does not reveal whether an address
             is eligible and sends a code only when sign-in is available.
+            {recovery
+              ? " During Recovery hold, only the Curator receives a code."
+              : ""}
           </p>
           <label>
             Login email
@@ -1626,6 +1665,128 @@ function SessionManager({
   );
 }
 
+function RecoveryCard({
+  session,
+  onComplete,
+  onReleased,
+}: {
+  session?: SessionResponse;
+  onComplete: (session: SessionResponse) => void;
+  onReleased: () => void;
+}) {
+  const [reviewed, setReviewed] = useState(false);
+  const review = useQuery({
+    queryKey: ["recovery-review", session?.csrf_token],
+    queryFn: () => apiJSON<RecoveryReviewResponse>("/api/recovery/review"),
+    enabled: Boolean(session?.curator),
+    retry: false,
+  });
+  const release = useMutation({
+    mutationFn: async () => {
+      if (!session) throw new Error("A fresh Curator Session is required.");
+      const headers = { "X-Memento-CSRF": session.csrf_token };
+      await apiNoContent("/api/recovery/review/complete", {
+        method: "POST",
+        headers,
+      });
+      return apiNoContent("/api/recovery/release", {
+        method: "POST",
+        headers,
+      });
+    },
+    onSuccess: onReleased,
+  });
+
+  const restoredCounts = review.data
+    ? ([
+        ["People", review.data.counts.people],
+        ["Current Recipients", review.data.counts.current_recipients],
+        ["Completed Recipients", review.data.counts.completed_recipients],
+        ["Suspended Recipients", review.data.counts.suspended_recipients],
+        ["Revoked access generations", review.data.counts.revoked_generations],
+        ["Invalidated restored Sessions", review.data.counts.restored_sessions],
+        ["Fresh Sessions", review.data.counts.fresh_sessions],
+        ["Audience entitlements", review.data.counts.audience_entitlements],
+        ["Published Events", review.data.counts.published_events],
+        ["Published Media items", review.data.counts.published_media_items],
+        ["Active Withdrawals", review.data.counts.active_withdrawals],
+        [
+          "Pending optional email batches",
+          review.data.counts.pending_email_batches,
+        ],
+        [
+          "Active Push subscriptions",
+          review.data.counts.active_push_subscriptions,
+        ],
+      ] as const)
+    : [];
+
+  if (!session) {
+    return <SignInFlow onComplete={onComplete} recovery />;
+  }
+  if (!session.curator) {
+    return (
+      <section className="shell-card setup-card">
+        <BrandHeader />
+        <h2>Fresh Curator review required</h2>
+        <p role="alert">
+          This Session cannot review or release Recovery hold. Sign in with the
+          Curator login email and its fresh code.
+        </p>
+      </section>
+    );
+  }
+
+  return (
+    <section aria-labelledby="recovery-title" className="shell-card setup-card">
+      <BrandHeader />
+      <div className="setup-heading">
+        <p className="step-label">Recovery hold</p>
+        <h2 id="recovery-title">Review restored authorization state</h2>
+      </div>
+      <p className="lede">
+        Recipient access, restored Sessions, optional email, Web Push, and
+        delivery work remain blocked.
+      </p>
+      {review.isPending ? <p role="status">Loading restored state…</p> : null}
+      <ErrorMessage error={review.error ?? release.error} />
+      {review.data ? (
+        <>
+          <p>
+            Recovery hold began{" "}
+            {new Date(review.data.started_at).toLocaleString()}.
+          </p>
+          <dl className="recovery-counts">
+            {restoredCounts.map(([label, value]) => (
+              <div key={label}>
+                <dt>{label}</dt>
+                <dd>{value}</dd>
+              </div>
+            ))}
+          </dl>
+          <label className="checkbox-choice">
+            <input
+              checked={reviewed}
+              onChange={(event) => setReviewed(event.target.checked)}
+              type="checkbox"
+            />
+            I reviewed the restored Recipient access, Sessions, Audiences, and
+            delivery state and want to release Recovery hold.
+          </label>
+          <button
+            className="recovery-release"
+            disabled={!reviewed || release.isPending}
+            onClick={() => release.mutate()}
+            type="button"
+          >
+            {release.isPending ? "Releasing…" : "Release Recovery hold"}
+          </button>
+        </>
+      ) : null}
+    </section>
+  );
+}
+
 function ReadyCard({
   session,
   onComplete,
@@ -2022,10 +2183,13 @@ function MementoApp({
     enabled: !initialSession || signedOut,
     retry: false,
   });
-  const clearProtectedData = useCallback(() => {
-    removeProtectedQueries(queryClient);
-    queryClient.getMutationCache().clear();
-  }, [queryClient]);
+  const clearProtectedData = useCallback(
+    (keepRecoveryReview = false) => {
+      removeProtectedQueries(queryClient, keepRecoveryReview);
+      queryClient.getMutationCache().clear();
+    },
+    [queryClient],
+  );
   const revokeLocalSession = useCallback(() => {
     void unsubscribeLocalPushBestEffort();
     clearProtectedData();
@@ -2034,8 +2198,12 @@ function MementoApp({
   }, [clearProtectedData]);
 
   useEffect(() => {
-    if (!online || bootstrap.data?.kind === "closed") {
-      clearProtectedData();
+    if (
+      !online ||
+      bootstrap.data?.kind === "closed" ||
+      bootstrap.data?.kind === "recovery"
+    ) {
+      clearProtectedData(bootstrap.data?.kind === "recovery");
     }
   }, [bootstrap.data, clearProtectedData, online]);
 
@@ -2082,6 +2250,22 @@ function MementoApp({
     setCompletedSession(undefined);
     setSignedOut(true);
   };
+
+  if (bootstrap.data?.kind === "recovery") {
+    return (
+      <main>
+        <RecoveryCard
+          onComplete={completeSession}
+          onReleased={() => void bootstrap.refetch()}
+          session={
+            !signedOut
+              ? (completedSession ?? bootstrap.data.session)
+              : undefined
+          }
+        />
+      </main>
+    );
+  }
 
   if (completedSession && !signedOut) {
     return (

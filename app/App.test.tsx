@@ -1986,3 +1986,111 @@ test("announces a concurrent setup conflict without claiming success", async () 
   ).toHaveAttribute("role", "alert");
   expect(screen.queryByText(/You're signed in/)).not.toBeInTheDocument();
 });
+
+test("requires a fresh Curator review before explicitly releasing Recovery hold", async () => {
+  let signedIn = false;
+  let releaseRequested = false;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = requestPath(input);
+      if (path === "/api/setup") {
+        return Promise.resolve(
+          jsonResponse({ error: { message: "held" } }, 503),
+        );
+      }
+      if (path === "/api/recovery/status") {
+        return Promise.resolve(jsonResponse({ held: true }));
+      }
+      if (path === "/api/session") {
+        return Promise.resolve(
+          signedIn
+            ? jsonResponse({
+                display_name: "Robin",
+                session_type: "trusted",
+                csrf_token: "fresh-csrf",
+                curator: true,
+                onboarding_required: false,
+              })
+            : jsonResponse({ error: { message: "unauthorized" } }, 401),
+        );
+      }
+      if (path === "/api/auth/sign-in/request") {
+        return Promise.resolve(
+          jsonResponse(
+            { challenge_id: "a".repeat(64), status: "accepted" },
+            202,
+          ),
+        );
+      }
+      if (path === "/api/auth/sign-in/verify") {
+        signedIn = true;
+        return Promise.resolve(jsonResponse({ status: "signed_in" }));
+      }
+      if (path === "/api/recovery/review") {
+        return Promise.resolve(
+          jsonResponse({
+            held: true,
+            started_at: "2026-07-30T12:00:00Z",
+            counts: {
+              people: 12,
+              current_recipients: 8,
+              completed_recipients: 7,
+              suspended_recipients: 1,
+              revoked_generations: 2,
+              restored_sessions: 9,
+              fresh_sessions: 1,
+              audience_entitlements: 24,
+              published_events: 5,
+              published_media_items: 100,
+              active_withdrawals: 2,
+              pending_email_batches: 3,
+              active_push_subscriptions: 4,
+            },
+          }),
+        );
+      }
+      if (path === "/api/recovery/review/complete") {
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      if (path === "/api/recovery/release") {
+        releaseRequested = true;
+        return new Promise<Response>(() => undefined);
+      }
+      return Promise.reject(
+        new Error(`Unexpected request: ${path} ${init?.method ?? "GET"}`),
+      );
+    }),
+  );
+
+  renderApp();
+  expect(
+    await screen.findByRole("heading", { name: "Curator recovery sign-in" }),
+  ).toBeInTheDocument();
+  fireEvent.change(screen.getByLabelText("Login email"), {
+    target: { value: "curator@example.com" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Send sign-in code" }));
+  await screen.findByLabelText("Sign-in code");
+  fireEvent.change(screen.getByLabelText("Sign-in code"), {
+    target: { value: "12345678" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Verify and sign in" }));
+
+  expect(
+    await screen.findByRole("heading", {
+      name: "Review restored authorization state",
+    }),
+  ).toBeInTheDocument();
+  expect(
+    await screen.findByText("Invalidated restored Sessions"),
+  ).toBeInTheDocument();
+  const release = screen.getByRole("button", { name: "Release Recovery hold" });
+  expect(release).toBeDisabled();
+  fireEvent.click(
+    screen.getByLabelText(/I reviewed the restored Recipient access/),
+  );
+  expect(release).toBeEnabled();
+  fireEvent.click(release);
+  await waitFor(() => expect(releaseRequested).toBe(true));
+});

@@ -27,6 +27,7 @@ type ReadyChecks struct {
 	PostgreSQL string `json:"postgresql"`
 	Migrations string `json:"migrations"`
 	Setup      string `json:"setup"`
+	Recovery   string `json:"recovery"`
 	Worker     string `json:"worker"`
 	Immich     string `json:"immich"`
 	SMTP       string `json:"smtp"`
@@ -53,6 +54,11 @@ type DeliveryStatus interface {
 	Status() string
 }
 
+// RecoveryStatus exposes only whether Recovery hold blocks readiness.
+type RecoveryStatus interface {
+	Held(ctx context.Context) (bool, error)
+}
+
 type disabledDelivery struct{}
 
 func (disabledDelivery) Status() string { return "disabled" }
@@ -65,6 +71,7 @@ type Service struct {
 	immich          Checker
 	worker          Worker
 	delivery        DeliveryStatus
+	recovery        RecoveryStatus
 	databaseTimeout time.Duration
 	heartbeatMaxAge time.Duration
 	draining        atomic.Bool
@@ -89,6 +96,11 @@ func newWithChecks(postgres, migration, setup func(context.Context) error, immic
 		delivery = deliveries[0]
 	}
 	return &Service{postgres: postgres, migration: migration, setup: setup, immich: immich, worker: worker, delivery: delivery, databaseTimeout: databaseTimeout, heartbeatMaxAge: heartbeatMaxAge}
+}
+
+// SetRecoveryStatus adds the persisted Recovery readiness gate.
+func (s *Service) SetRecoveryStatus(status RecoveryStatus) {
+	s.recovery = status
 }
 
 // SetDraining drops readiness synchronously before shutdown work starts.
@@ -116,6 +128,7 @@ func (s *Service) Ready(c echo.Context) error {
 		PostgreSQL: StatusUnavailable,
 		Migrations: StatusUnavailable,
 		Setup:      StatusUnavailable,
+		Recovery:   StatusUnavailable,
 		Worker:     StatusUnavailable,
 		Immich:     StatusUnavailable,
 		SMTP:       smtpStatus,
@@ -131,6 +144,13 @@ func (s *Service) Ready(c echo.Context) error {
 		if err := s.migration(ctx); err == nil {
 			checks.Migrations = StatusOK
 		}
+		if s.recovery == nil {
+			checks.Recovery = StatusOK
+		} else if held, err := s.recovery.Held(ctx); err == nil && !held {
+			checks.Recovery = StatusOK
+		} else {
+			return c.JSON(http.StatusServiceUnavailable, ReadyResponse{Status: "not_ready", Checks: checks})
+		}
 		if err := s.setup(ctx); err == nil {
 			checks.Setup = StatusOK
 		}
@@ -143,7 +163,7 @@ func (s *Service) Ready(c echo.Context) error {
 	}
 	status := http.StatusOK
 	label := "ready"
-	if checks.PostgreSQL != StatusOK || checks.Migrations != StatusOK || checks.Setup != StatusOK || checks.Worker != StatusOK || checks.Immich != StatusOK {
+	if checks.PostgreSQL != StatusOK || checks.Migrations != StatusOK || checks.Setup != StatusOK || checks.Recovery != StatusOK || checks.Worker != StatusOK || checks.Immich != StatusOK {
 		status = http.StatusServiceUnavailable
 		label = "not_ready"
 	}

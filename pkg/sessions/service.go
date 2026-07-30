@@ -186,7 +186,10 @@ func (s *Service) RequestSignIn(ctx context.Context, request SignInRequest) (Sig
 			JOIN system_settings AS settings ON settings.id = 1 AND settings.setup_complete
 			WHERE recipient_email.normalized_email = ? AND recipient_email.is_current
 			  AND access.is_current AND access.state = 'completed'
-			FOR UPDATE OF recipient_email, access
+			  AND (NOT settings.recovery_hold OR EXISTS (
+				SELECT 1 FROM person_roles WHERE person_id = access.person_id AND role = 'curator'
+			  ))
+			FOR UPDATE OF recipient_email, access, settings
 		`, normalized).Scan(ctx, &accessID, &emailID, &email, &name)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil
@@ -201,7 +204,8 @@ func (s *Service) RequestSignIn(ctx context.Context, request SignInRequest) (Sig
 		if err != nil {
 			return err
 		}
-		_, err = tx.NewRaw(`INSERT INTO sign_in_challenges (id, challenge_hash, code_hash, recipient_access_generation_id, recipient_email_id, email_delivery_id, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, challengeUUID, digest(challengeRaw), s.codeHash("sign-in", challengeRaw, code), accessID, emailID, deliveryID, expiresAt, now).Exec(ctx)
+		_, err = tx.NewRaw(`INSERT INTO sign_in_challenges (id, challenge_hash, code_hash, recipient_access_generation_id, recipient_email_id, email_delivery_id, security_epoch, expires_at, created_at)
+			SELECT ?, ?, ?, ?, ?, ?, security_epoch, ?, ? FROM system_settings WHERE id = 1`, challengeUUID, digest(challengeRaw), s.codeHash("sign-in", challengeRaw, code), accessID, emailID, deliveryID, expiresAt, now).Exec(ctx)
 		return err
 	})
 	if err != nil {
@@ -230,7 +234,12 @@ func (s *Service) VerifySignIn(ctx context.Context, request SignInVerifyRequest)
 			FROM sign_in_challenges AS challenge
 			JOIN recipient_access_generations AS access ON access.id = challenge.recipient_access_generation_id AND access.is_current AND access.state = 'completed'
 			JOIN recipient_emails AS recipient_email ON recipient_email.id = challenge.recipient_email_id AND recipient_email.recipient_access_generation_id = access.id AND recipient_email.is_current
-			WHERE challenge.challenge_hash = ? FOR UPDATE OF challenge, access
+			JOIN system_settings AS settings ON settings.id = 1 AND settings.security_epoch = challenge.security_epoch
+			WHERE challenge.challenge_hash = ?
+			  AND (NOT settings.recovery_hold OR EXISTS (
+				SELECT 1 FROM person_roles WHERE person_id = access.person_id AND role = 'curator'
+			  ))
+			FOR UPDATE OF challenge, access, settings
 		`, digest(challengeRaw)).Scan(ctx, &challengeID, &expected, &attempts, &expiresAt, &consumedAt, &accessID, &personID)
 		if errors.Is(err, sql.ErrNoRows) {
 			invalid = true

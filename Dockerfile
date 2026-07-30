@@ -24,11 +24,13 @@ RUN pnpm build
 
 FROM go-base AS backend
 COPY cmd ./cmd
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/memento ./cmd/api
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/memento ./cmd/api \
+  && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/memento-migrations ./cmd/migrations
 
 FROM caddy:2.10.2-alpine
 COPY --from=frontend /src/dist /srv/memento
 COPY --from=backend /out/memento /usr/local/bin/memento
+COPY --from=backend /out/memento-migrations /usr/local/bin/memento-migrations
 COPY Caddyfile /etc/caddy/Caddyfile
 COPY deploy/entrypoint.sh /usr/local/bin/memento-entrypoint
 COPY deploy/healthcheck.sh /usr/local/bin/memento-healthcheck

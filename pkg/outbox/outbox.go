@@ -32,10 +32,17 @@ func (d *Dispatcher) Dispatch(ctx context.Context, owner string, lease time.Dura
 	var claimed event
 	err := d.db.NewRaw(`
 		WITH candidate AS (
-			SELECT id FROM outbox_events
-			WHERE delivered_at IS NULL AND available_at <= now()
-			  AND (lease_owner IS NULL OR lease_expires_at <= now())
-			ORDER BY available_at, id
+			SELECT event.id FROM outbox_events AS event
+			WHERE event.delivered_at IS NULL AND event.available_at <= now()
+			  AND (event.lease_owner IS NULL OR event.lease_expires_at <= now())
+			  AND (
+				NOT EXISTS (SELECT 1 FROM system_settings WHERE id = 1 AND recovery_hold)
+				OR (event.kind = 'send_required_email' AND EXISTS (
+					SELECT 1 FROM recovery_curator_sign_in_deliveries AS allowed
+					WHERE allowed.public_id = event.aggregate_id
+				))
+			  )
+			ORDER BY event.available_at, event.id
 			FOR UPDATE SKIP LOCKED
 			LIMIT 1
 		)

@@ -40,6 +40,11 @@ type Dispatcher interface {
 	Dispatch(ctx context.Context, owner string, lease time.Duration) (bool, error)
 }
 
+// TrafficGate fences claims and handler effects against Recovery activation.
+type TrafficGate interface {
+	Acquire(ctx context.Context) (release func(), err error)
+}
+
 type handlerFailure struct {
 	diagnostic string
 	retryAfter time.Duration
@@ -73,13 +78,19 @@ func WithDispatcher(dispatcher Dispatcher) Option {
 	return func(w *Worker) { w.dispatcher = dispatcher }
 }
 
+// WithTrafficGate fences a complete poll and any claimed handler execution.
+func WithTrafficGate(gate TrafficGate) Option {
+	return func(w *Worker) { w.trafficGate = gate }
+}
+
 // Worker polls PostgreSQL, heartbeats, and owns at most one active job at a time.
 type Worker struct {
-	db         *bun.DB
-	cfg        config.WorkerConfig
-	owner      string
-	handlers   map[string]Handler
-	dispatcher Dispatcher
+	db          *bun.DB
+	cfg         config.WorkerConfig
+	owner       string
+	handlers    map[string]Handler
+	dispatcher  Dispatcher
+	trafficGate TrafficGate
 
 	claimsOpen   atomic.Bool
 	heartbeat    atomic.Int64
@@ -138,22 +149,35 @@ func (w *Worker) run(ctx context.Context) {
 			if !w.claimsOpen.Load() || w.hasActiveJob() {
 				continue
 			}
+			releaseFence := func() {}
+			if w.trafficGate != nil {
+				var err error
+				releaseFence, err = w.trafficGate.Acquire(ctx)
+				if err != nil {
+					continue
+				}
+			}
+			claimed := false
 			if w.dispatcher != nil {
 				if _, err := w.dispatcher.Dispatch(ctx, w.owner, w.cfg.LeaseDuration); err != nil {
+					releaseFence()
 					continue
 				}
 			}
 			if len(w.handlers) != 0 {
-				w.claimAndRun(ctx)
+				claimed = w.claimAndRun(ctx, releaseFence)
+			}
+			if !claimed {
+				releaseFence()
 			}
 		}
 	}
 }
 
-func (w *Worker) claimAndRun(ctx context.Context) {
+func (w *Worker) claimAndRun(ctx context.Context, releaseFence func()) bool {
 	job, err := w.claim(ctx)
 	if err != nil || job == nil {
-		return
+		return false
 	}
 	jobCtx, cancel := context.WithCancel(ctx)
 	w.mu.Lock()
@@ -165,6 +189,7 @@ func (w *Worker) claimAndRun(ctx context.Context) {
 	go func() {
 		defer w.wg.Done()
 		defer cancel()
+		defer releaseFence()
 		handlerErr := w.handlers[job.Kind](jobCtx, *job)
 		finalizeCtx, finalizeCancel := context.WithTimeout(context.WithoutCancel(jobCtx), 5*time.Second)
 		defer finalizeCancel()
@@ -198,6 +223,7 @@ func (w *Worker) claimAndRun(ctx context.Context) {
 		}
 		w.mu.Unlock()
 	}()
+	return true
 }
 
 func (w *Worker) hasActiveJob() bool {
@@ -249,6 +275,13 @@ func (w *Worker) claim(ctx context.Context) (*Job, error) {
 			WHERE kind IN (?)
 			  AND available_at <= now()
 			  AND (status = 'pending' OR (status = 'running' AND lease_expires_at <= now()))
+			  AND (
+				NOT EXISTS (SELECT 1 FROM system_settings WHERE id = 1 AND recovery_hold)
+				OR (kind = 'send_required_email' AND EXISTS (
+					SELECT 1 FROM recovery_curator_sign_in_deliveries AS allowed
+					WHERE allowed.id::text = jobs.payload->>'delivery_id'
+				))
+			  )
 			ORDER BY available_at, id
 			FOR UPDATE SKIP LOCKED
 			LIMIT 1
