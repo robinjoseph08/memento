@@ -44,6 +44,8 @@ jobs:
             task: compose:validate
           - name: Production Compose validation
             task: compose:production:validate
+          - name: Workflow validation
+            task: workflow:validate
           - name: Caddy validation
             task: caddy:validate
           - name: Production topology

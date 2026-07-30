@@ -32,7 +32,7 @@ Complete first-browser setup before public exposure. Browser setup requires HTTP
 
 ## Developer prerequisites
 
-[Mise](https://mise.jdx.dev/) is the source of truth for development tool versions and project tasks. `mise.toml` pins Go 1.26.5, Node.js 24.18.0, pnpm 11.16.0, Air 1.64.2, and golangci-lint 2.12.2. Tygo 0.2.21 remains pinned as a Go tool in `go.mod`, and deployment files pin all container base tags.
+[Mise](https://mise.jdx.dev/) is the source of truth for development tool versions and project tasks. `mise.toml` pins Go 1.26.5, Node.js 24.18.0, pnpm 11.16.0, Air 1.64.2, golangci-lint 2.12.2, and actionlint 1.7.7. Tygo 0.2.21 remains pinned as a Go tool in `go.mod`, and deployment files pin all container base tags.
 
 Install mise and Docker with the Compose plugin, then install the pinned tools, project dependencies, and generated API types:
 
@@ -79,7 +79,7 @@ Run `mise test:performance` manually to build the deterministic 100,000-Media fi
 
 Tygo output under `app/types/generated/` is gitignored. Mise generates it from Go before every frontend task that consumes it, so contributors never need to commit regenerated files with a PR. The production Docker build also generates its own copy instead of depending on the local working tree.
 
-Individual checks are available through names such as `mise lint:eslint`, `mise lint:prettier`, `mise lint:types`, `mise types:generate`, `mise test:integration`, `mise compose:validate`, `mise compose:production:validate`, `mise caddy:validate`, and `mise test:production`. Before creating a version tag, run `mise run release:check -- v0.1.0` with the intended tag. Docker-backed test harnesses live under `tests/`. See [`docs/accessibility.md`](docs/accessibility.md) for the automated browser matrix and assistive-technology release checks.
+Individual checks are available through names such as `mise lint:eslint`, `mise lint:prettier`, `mise lint:types`, `mise types:generate`, `mise test:integration`, `mise compose:validate`, `mise compose:production:validate`, `mise workflow:validate`, `mise caddy:validate`, and `mise test:production`. Before creating a version tag, run `mise run release:check -- v0.1.0` with the intended tag. Docker-backed test harnesses live under `tests/`. See [`docs/accessibility.md`](docs/accessibility.md) for the automated browser matrix and assistive-technology release checks.
 
 ## Provision PostgreSQL beside Immich
 
@@ -179,7 +179,7 @@ For local development and production-topology testing only, build the one-image 
 docker build --tag memento:local .
 ```
 
-Production operators must instead copy [`deploy/production.env.example`](deploy/production.env.example), set `MEMENTO_IMAGE` to the `ghcr.io/robinjoseph08/memento@sha256:...` reference recorded in the GitHub Release, and deploy with [`deploy/compose.production.yaml`](deploy/compose.production.yaml). Version tags are discovery references and must not be used as production deployment identities. The Compose file mounts ordinary configuration and secrets read-only, uses the image health check, runs without Linux capabilities on a read-only root filesystem, joins an operator-selected external private network, and allows 15 seconds for SIGTERM shutdown.
+Production operators must instead download the checksum-pinned deployment bundle from the GitHub Release, set `MEMENTO_IMAGE_DIGEST` to the `sha256:...` portion of the reference recorded in `memento-image.txt`, and deploy with [`deploy/compose.production.yaml`](deploy/compose.production.yaml). Version tags are discovery references and must not be used as production deployment identities. The Compose file mounts ordinary configuration and secrets read-only, uses the image health check, runs without Linux capabilities on a read-only root filesystem, joins an operator-selected external private network, and allows 15 seconds for SIGTERM shutdown.
 
 Caddy listens on port 8080 by default, serves the frontend with SPA fallback, and proxies `/api/*` to the Go process on loopback. Set `MEMENTO_SITE_ADDRESS` to a Caddy site address for direct TLS exposure. When a separate reverse proxy terminates HTTPS in front of the bundled Caddy process, set `MEMENTO_CADDY_TRUSTED_PROXY_CIDRS` to its space-separated CIDR networks. Caddy then preserves the trusted client address and original HTTPS scheme; untrusted forwarding headers remain ignored. The container health check calls only `/api/health/live`; use `/api/health/ready` for traffic readiness.
 
@@ -273,7 +273,10 @@ docker exec immich_postgres \
 
 [ -s "$tmp" ]
 docker exec -i immich_postgres pg_restore --list < "$tmp" >/dev/null
-mv "$tmp" "$final"
+# The same-directory hard link publishes atomically and fails rather than
+# replacing a backup if another scheduler instance created the final name.
+ln "$tmp" "$final"
+rm "$tmp"
 trap - 0 1 2 3 15
 printf 'Created %s\n' "$final"
 ```

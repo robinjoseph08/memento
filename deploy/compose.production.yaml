@@ -1,6 +1,6 @@
 services:
   memento:
-    image: "${MEMENTO_IMAGE:?Set MEMENTO_IMAGE to the digest-pinned image from the GitHub Release}"
+    image: "ghcr.io/robinjoseph08/memento@${MEMENTO_IMAGE_DIGEST:?Set MEMENTO_IMAGE_DIGEST to the sha256 digest from the GitHub Release}"
     restart: unless-stopped
     init: true
     read_only: true

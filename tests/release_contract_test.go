@@ -18,15 +18,20 @@ var pinnedDigest = regexp.MustCompile(`@sha256:[0-9a-f]{64}(?:\s|$|["'])`)
 
 func TestExecutableContainerImagesArePinnedByDigest(t *testing.T) {
 	dockerfile := readRepositoryFile(t, "Dockerfile")
+	stages := make(map[string]bool)
 	for _, line := range strings.Split(dockerfile, "\n") {
 		trimmed := strings.TrimSpace(line)
 		switch {
 		case strings.HasPrefix(trimmed, "# syntax="):
 			assert.Regexp(t, pinnedDigest, trimmed, "Dockerfile frontend must be immutable: %s", trimmed)
 		case strings.HasPrefix(trimmed, "FROM "):
-			reference := strings.Fields(trimmed)[1]
-			if strings.Contains(reference, ":") {
+			fields := strings.Fields(trimmed)
+			reference := fields[1]
+			if !stages[reference] && reference != "scratch" {
 				assert.Regexp(t, pinnedDigest, reference, "Dockerfile base must be immutable: %s", reference)
+			}
+			if len(fields) == 4 && strings.EqualFold(fields[2], "AS") {
+				stages[fields[3]] = true
 			}
 		}
 	}
@@ -67,12 +72,16 @@ func TestWorkflowActionsArePinnedByCommit(t *testing.T) {
 			}
 			assert.Regexp(t, `^[^@]+@[0-9a-f]{40}$`, match[1], "%s contains an unpinned action", path)
 		}
+		for _, image := range regexp.MustCompile(`docker\.io/[^\s]+`).FindAllString(string(content), -1) {
+			assert.Regexp(t, pinnedDigest, image, "%s contains a floating action helper image: %s", path, image)
+		}
 	}
 }
 
 func TestProductionComposeRequiresImmutableSingleImage(t *testing.T) {
 	compose := readRepositoryFile(t, "deploy/compose.production.yaml")
-	assert.Contains(t, compose, `image: "${MEMENTO_IMAGE:?`)
+	assert.Contains(t, compose, `image: "ghcr.io/robinjoseph08/memento@${MEMENTO_IMAGE_DIGEST:?`)
+	assert.NotContains(t, compose, "${MEMENTO_IMAGE:")
 	assert.NotContains(t, compose, "build:")
 	assert.Equal(t, 1, strings.Count(compose, "  memento:\n"))
 	assert.Contains(t, compose, "read_only: true")
@@ -93,6 +102,9 @@ func TestReleaseWorkflowPublishesExactTagAndRecordsDigest(t *testing.T) {
 	assert.Contains(t, workflow, "sbom: true")
 	assert.Contains(t, workflow, "ghcr.io/${{ github.repository }}:${{ github.ref_name }}")
 	assert.Contains(t, workflow, "${{ steps.build.outputs.digest }}")
+	assert.Contains(t, workflow, "environment: release")
+	assert.Contains(t, workflow, "needs: validation")
+	assert.Contains(t, workflow, "memento-deployment-${RELEASE_VERSION}.tar.gz")
 	assert.NotContains(t, workflow, ":latest")
 }
 

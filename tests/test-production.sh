@@ -35,17 +35,28 @@ endpoint=$(compose port memento 8080 | head -n 1)
 base_url="http://$endpoint"
 
 ready_body=$temporary/ready.json
-ready_code=000
-for _ in $(seq 1 60); do
-  ready_code=$(curl --silent --output "$ready_body" --write-out '%{http_code}' "$base_url/api/health/ready" || true)
-  [ "$ready_code" = 200 ] && break
-  sleep 1
-done
-[ "$ready_code" = 200 ] || {
-  compose logs
-  printf 'readiness did not become healthy: HTTP %s\n' "$ready_code" >&2
-  exit 1
+wait_for_readiness() {
+  expected_code=$1
+  expected_pattern=$2
+  attempts=$3
+  failure_message=$4
+  shift 4
+  ready_code=000
+  for _ in $(seq 1 "$attempts"); do
+    ready_code=$(curl --silent --max-time 5 --output "$ready_body" --write-out '%{http_code}' "$base_url/api/health/ready" || true)
+    if [ "$ready_code" = "$expected_code" ] && grep -q "$expected_pattern" "$ready_body"; then
+      return 0
+    fi
+    sleep 1
+  done
+  compose logs "$@" >&2 || true
+  printf '%s: last HTTP status %s, body: ' "$failure_message" "$ready_code" >&2
+  cat "$ready_body" >&2 || true
+  printf '\n' >&2
+  return 1
 }
+
+wait_for_readiness 200 '"status":"ready"' 60 'readiness did not become healthy' postgres immich memento
 grep -q '"status":"ready"' "$ready_body"
 grep -q '"postgresql":"ok"' "$ready_body"
 grep -q '"migrations":"ok"' "$ready_body"
@@ -71,7 +82,7 @@ for asset in $(grep -Eo '(src|href)="/assets/[^"]+"' "$temporary/index.html" | c
 done
 curl --fail --silent --output /dev/null "$base_url/manifest.webmanifest"
 curl --fail --silent --output /dev/null "$base_url/service-worker.js"
-[ "$(curl --fail --silent "$base_url/api/health/live")" = '{"status":"live"}' ]
+[ "$(curl --fail --silent --max-time 5 "$base_url/api/health/live")" = '{"status":"live"}' ]
 curl --fail --silent --dump-header "$temporary/setup-headers" --output "$temporary/setup.json" "$base_url/api/setup"
 grep -q '"status":"available"' "$temporary/setup.json"
 grep -qi '^Cache-Control: no-store' "$temporary/setup-headers"
@@ -121,7 +132,7 @@ front_endpoint=$(compose port front 8443 | head -n 1)
 front_url="https://localhost:${front_endpoint##*:}"
 front_ready=false
 for _ in $(seq 1 30); do
-  if curl --insecure --fail --silent "$front_url/api/setup" > "$temporary/front-setup.json"; then
+  if curl --insecure --fail --silent --max-time 5 "$front_url/api/setup" > "$temporary/front-setup.json"; then
     front_ready=true
     break
   fi
@@ -166,44 +177,23 @@ if compose exec --no-TTY immich wget -q -O /dev/null http://memento:8091/api/hea
 fi
 
 compose stop immich
-ready_code=$(curl --silent --output "$ready_body" --write-out '%{http_code}' "$base_url/api/health/ready")
-[ "$ready_code" = 503 ]
-grep -q '"immich":"unavailable"' "$ready_body"
+wait_for_readiness 503 '"immich":"unavailable"' 15 'readiness did not report the Immich outage' immich memento
 if grep -Eq 'test-only-key|test-only-security-secret|postgresql://|http://immich|test-only-password' "$ready_body"; then
   printf 'readiness exposed private dependency configuration\n' >&2
   exit 1
 fi
-live_code=$(curl --silent --output "$temporary/live.json" --write-out '%{http_code}' "$base_url/api/health/live")
+live_code=$(curl --silent --max-time 5 --output "$temporary/live.json" --write-out '%{http_code}' "$base_url/api/health/live")
 [ "$live_code" = 200 ]
 grep -qx '{"status":"live"}' "$temporary/live.json"
 
 compose start immich >/dev/null
-ready_code=000
-for _ in $(seq 1 60); do
-  ready_code=$(curl --silent --max-time 5 --output "$ready_body" --write-out '%{http_code}' "$base_url/api/health/ready" || true)
-  [ "$ready_code" = 200 ] && break
-  sleep 1
-done
-[ "$ready_code" = 200 ] || {
-  compose logs immich memento
-  printf 'readiness did not recover after Immich restart: HTTP %s\n' "$ready_code" >&2
-  exit 1
-}
+wait_for_readiness 200 '"status":"ready"' 60 'readiness did not recover after Immich restart' immich memento
 
 postgres_container=$(compose ps --quiet postgres)
 postgres_network=$(docker inspect --format '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}}{{end}}' "$postgres_container")
 [ -n "$postgres_network" ]
 docker network disconnect "$postgres_network" "$postgres_container"
-ready_code=000
-for _ in $(seq 1 15); do
-  ready_code=$(curl --silent --max-time 5 --output "$ready_body" --write-out '%{http_code}' "$base_url/api/health/ready" || true)
-  if [ "$ready_code" = 503 ] && grep -q '"postgresql":"unavailable"' "$ready_body"; then
-    break
-  fi
-  sleep 1
-done
-[ "$ready_code" = 503 ]
-grep -q '"postgresql":"unavailable"' "$ready_body"
+wait_for_readiness 503 '"postgresql":"unavailable"' 15 'readiness did not report the PostgreSQL outage' postgres memento
 if grep -Eq 'test-only-key|test-only-security-secret|postgresql://|http://immich|test-only-password' "$ready_body"; then
   printf 'PostgreSQL outage readiness exposed private dependency configuration\n' >&2
   exit 1
@@ -213,17 +203,7 @@ live_code=$(curl --silent --max-time 5 --output "$temporary/live.json" --write-o
 grep -qx '{"status":"live"}' "$temporary/live.json"
 
 docker network connect --alias postgres "$postgres_network" "$postgres_container"
-ready_code=000
-for _ in $(seq 1 60); do
-  ready_code=$(curl --silent --max-time 5 --output "$ready_body" --write-out '%{http_code}' "$base_url/api/health/ready" || true)
-  [ "$ready_code" = 200 ] && break
-  sleep 1
-done
-[ "$ready_code" = 200 ] || {
-  compose logs postgres memento
-  printf 'readiness did not recover after PostgreSQL network restoration: HTTP %s\n' "$ready_code" >&2
-  exit 1
-}
+wait_for_readiness 200 '"status":"ready"' 60 'readiness did not recover after PostgreSQL network restoration' postgres memento
 
 started=$(date +%s)
 docker kill --signal TERM "$container" >/dev/null

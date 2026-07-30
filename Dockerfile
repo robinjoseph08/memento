@@ -13,8 +13,9 @@ RUN go tool tygo generate
 
 FROM node:24.18.0-alpine3.23@sha256:595398b0081eacda8e1c4c5b97b76cd1020e4d58a8ebcb4843b9bca1e79e7436 AS frontend
 WORKDIR /src
-RUN npm install --global pnpm@11.16.0
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+RUN corepack enable \
+  && corepack prepare "$(node -p "require('./package.json').packageManager")" --activate
 RUN pnpm install --frozen-lockfile
 COPY public ./public
 COPY tsconfig.json tsconfig.app.json tsconfig.node.json vite.config.ts ./

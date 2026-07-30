@@ -31,9 +31,21 @@ A Memento release publishes one multi-platform image to GHCR. A version tag is a
 
 The image contains the MIT license at `/usr/share/licenses/memento/LICENSE`. Its attached SBOM and provenance describe the exact build. Never replace the digest with `latest`, a version tag, or another floating alias in production.
 
+The publish job requires the protected GitHub `release` environment. Repository administrators must configure required reviewers for that environment and a tag ruleset that limits `v*` creation to release maintainers. The workflow accepts only a tag at the current head of `master`.
+
+Download the versioned deployment bundle and checksum from the same GitHub Release, then verify and extract it:
+
+```sh
+sha256sum --check memento-deployment-<version>.tar.gz.sha256
+tar -xzf memento-deployment-<version>.tar.gz
+cd memento-deployment-<version>
+```
+
+The bundle contains the production Compose file, configuration examples, license, runbook, drills, and release exercise. A clean deployment does not require a source checkout.
+
 ## Prepare configuration and secrets
 
-Copy [`deploy/memento.example.yaml`](../deploy/memento.example.yaml) and [`deploy/production.env.example`](../deploy/production.env.example) to an operator-owned directory outside the source checkout:
+Copy `deploy/memento.example.yaml` and `deploy/production.env.example` from the verified bundle to an operator-owned directory:
 
 ```sh
 install -d -m 0700 /srv/memento/config /srv/memento/secrets
@@ -98,7 +110,7 @@ An optional MaxMind-compatible City database is local operator data. Mount it re
 
 The production Compose file contains only Memento. PostgreSQL and Immich remain independently operated services. Create or select an external private Docker network that reaches both dependencies, then set `MEMENTO_NETWORK` to that network's name.
 
-Copy the production Compose file to the operator directory or invoke it from a checked, immutable deployment bundle. Set `MEMENTO_IMAGE` in `production.env` to the digest from the GitHub Release. Validate without pulling or building:
+Use the production Compose file from the verified deployment bundle. Set `MEMENTO_IMAGE_DIGEST` in `production.env` to the `sha256:...` portion of the reference in `memento-image.txt`. The Compose contract fixes the image registry and repository so configuration cannot substitute another image. Validate without pulling or building:
 
 ```sh
 docker compose \
@@ -171,23 +183,23 @@ Memento permits planned downtime and does not support rolling upgrades. Upgrade 
 1. Record the current image digest, configuration checksum, secret inventory, and health state.
 2. Read all intervening release notes and obtain the candidate digest.
 3. Create a fresh production database backup and verify its archive list.
-4. Restore that backup into a separate logical database such as `memento_upgrade_check`.
-5. Create a temporary database URL secret that selects only the disposable database.
-6. Run the candidate migration binary against the disposable restore:
+4. Start an isolated disposable PostgreSQL instance or cluster with no route to production PostgreSQL. A second logical database on the production cluster is not a security boundary for untrusted candidate code.
+5. Provision only the temporary Memento role, database, and required extensions there. Restore the backup and create a temporary database URL secret containing credentials valid only in that isolated instance.
+6. Put the candidate container and isolated PostgreSQL instance on a dedicated temporary network, then run the candidate migration binary:
 
    ```sh
-   docker run --rm --network "$MEMENTO_NETWORK" \
+   docker run --rm --network "$UPGRADE_CHECK_NETWORK" \
      --entrypoint /usr/local/bin/memento-migrations \
      -e MEMENTO_DATABASE_URL_FILE=/run/secrets/database_url \
-     -e MEMENTO_DATABASE_NAME=memento_upgrade_check \
+     -e MEMENTO_DATABASE_NAME=memento \
      -v /srv/memento/upgrade-check-secrets:/run/secrets:ro \
      "$CANDIDATE_IMAGE" apply
    ```
 
 7. Run the same image's read-only validator by replacing `apply` with `validate`. Save its non-sensitive JSON result.
-8. Delete the disposable database only after the maintenance decision is complete.
+8. Destroy the temporary credential, network, and PostgreSQL instance only after the maintenance decision is complete.
 
-Never test candidate migrations against production while traffic is active.
+Never give candidate code a production database credential or a network path to production during preflight, and never test candidate migrations against production while traffic is active.
 
 ### Planned downtime
 
@@ -196,7 +208,7 @@ Never test candidate migrations against production while traffic is active.
 3. Create and validate one final pre-upgrade backup.
 4. Pull the candidate by digest.
 5. Run `/usr/local/bin/memento-migrations apply` once against production using the same protected configuration and secret mounts.
-6. Replace `MEMENTO_IMAGE` with the candidate digest and start with `--no-build`.
+6. Replace `MEMENTO_IMAGE_DIGEST` with the candidate digest and start with `--no-build`.
 7. Require liveness and readiness to become healthy within the maintenance window.
 8. Confirm Curator sign-in, Recipient sign-in, an authorized Media delivery, an unauthorized denial, worker freshness, and configured email and Push behavior.
 9. Restore traffic and monitor readiness, logs, job backlog, and delivery problems.

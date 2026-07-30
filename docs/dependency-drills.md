@@ -59,7 +59,7 @@ Block Memento's connection to the dedicated Immich v3.0.3 staging endpoint while
 
 ### Recovery
 
-Restore the exact endpoint, wait for readiness, then test one authorized and one unauthorized delivery. Review delivery problems and source-missing findings. A transport outage alone must not invent Source missing state.
+Restore the exact endpoint, wait for readiness, then test one authorized and one unauthorized delivery. Review delivery problems and Source missing findings. A transport outage alone must not invent Source missing state.
 
 Automated evidence: `TestThumbnailRouteKeepsUpstreamFailuresSafeAndPrivate`, `TestMediaRepresentationSelectsOnlyActiveBackingAndFailsClosedForVideo`, `TestUpstreamMissingResponseFailsEveryRepresentationClosedWithoutRemovingHistory`, `TestMalformedOrUnauthorizedUpstreamFailureDoesNotInventSourceMissing`, and `tests/test-production.sh`.
 

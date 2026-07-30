@@ -8,7 +8,7 @@ A stable release is not complete until this exercise has passed and its sanitize
 
 Use a disposable environment with:
 
-- no source checkout and no locally built Memento image;
+- no source checkout and no locally built Memento image, using only the verified release deployment bundle;
 - Docker and the Compose plugin installed;
 - a dedicated Memento PostgreSQL database and role;
 - a dedicated or approved Immich v3.0.3 instance with non-sensitive test Media;
@@ -41,7 +41,7 @@ Inspect and record the image's version, revision, source, created time, and MIT 
 3. Prepare protected configuration and secret files with no secrets in YAML or the environment file.
 4. Configure Immich v3.0.3 with exactly `album.read`, `asset.read`, `asset.view`, `asset.download`, `person.read`, and `face.read`.
 5. Configure production SMTP, stable VAPID keys, and optional local GeoIP when it is part of the release environment.
-6. Set `MEMENTO_IMAGE` to the candidate digest in the production environment file.
+6. Set `MEMENTO_IMAGE_DIGEST` to the candidate `sha256:...` digest in the production environment file.
 7. Validate `deploy/compose.production.yaml`, pull, and start with `--no-build`.
 8. Confirm the deployment has one Memento container, the process runs as UID 10001, the root filesystem is read-only, and Caddy plus the Go application and worker are in that image.
 9. Confirm liveness and readiness return HTTP 200 and expose only allowlisted states.
@@ -111,10 +111,10 @@ Use a prior supported digest as the running version and the candidate as the tar
 
 1. Record the prior digest and establish healthy setup, Publication, Recipient, email, and Push state.
 2. Create a fresh backup.
-3. Restore it to a disposable database, run candidate migrations there, then run the candidate read-only validator.
+3. Restore it to an isolated disposable PostgreSQL instance with no production route or credential, run candidate migrations there, then run the candidate read-only validator.
 4. Announce and begin planned downtime. Remove the single instance from traffic and stop it cleanly.
 5. Run candidate migrations explicitly against production.
-6. Change only `MEMENTO_IMAGE` to the candidate digest. Do not rotate stable secrets or VAPID keys.
+6. Change only `MEMENTO_IMAGE_DIGEST` to the candidate digest. Do not rotate stable secrets or VAPID keys.
 7. Start with `--no-build`, wait for readiness, and repeat the setup-state, Curator, Recipient, authorization, Media, worker, email, and Push smoke tests.
 8. Confirm the prior binary is not used after the migration boundary.
 9. State the tested rollback boundary: before migration, revert the digest; after migration, restore the pre-upgrade backup with a fresh Recovery nonce.
