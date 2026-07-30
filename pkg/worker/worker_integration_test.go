@@ -11,6 +11,7 @@ import (
 	"github.com/robinjoseph08/memento/internal/testdb"
 	"github.com/robinjoseph08/memento/pkg/config"
 	"github.com/robinjoseph08/memento/pkg/migrations"
+	"github.com/robinjoseph08/memento/pkg/outbox"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -25,6 +26,42 @@ func testConfig() config.WorkerConfig {
 		RetryBase:         5 * time.Millisecond,
 		RetryMax:          time.Second,
 	}
+}
+
+func TestRecoveryHoldBlocksOutboxDispatchAndJobClaims(t *testing.T) {
+	db := testdb.Open(t)
+	ctx := context.Background()
+	require.NoError(t, migrations.Apply(ctx, db))
+	_, err := db.NewRaw(`
+		INSERT INTO jobs (kind) VALUES ('external_delivery');
+		INSERT INTO outbox_events (kind, aggregate_kind, aggregate_id, aggregate_version)
+		VALUES ('external_delivery', 'test', 'held', 1);
+		UPDATE system_settings SET recovery_hold = true,
+		 recovery_nonce_hash = decode(repeat('12', 32), 'hex'), recovery_started_at = now()
+		WHERE id = 1
+	`).Exec(ctx)
+	require.NoError(t, err)
+
+	jobWorker, err := New(db, testConfig(), "held-owner", map[string]Handler{
+		"external_delivery": func(context.Context, Job) error { return nil },
+	})
+	require.NoError(t, err)
+	claimed, err := jobWorker.claim(ctx)
+	require.NoError(t, err)
+	assert.Nil(t, claimed)
+	dispatched, err := outbox.New(db).Dispatch(ctx, "held-owner", time.Minute)
+	require.NoError(t, err)
+	assert.False(t, dispatched)
+
+	_, err = db.NewRaw(`UPDATE system_settings SET recovery_hold = false, recovery_released_at = now() WHERE id = 1`).Exec(ctx)
+	require.NoError(t, err)
+	claimed, err = jobWorker.claim(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, claimed)
+	assert.Equal(t, "external_delivery", claimed.Kind)
+	dispatched, err = outbox.New(db).Dispatch(ctx, "released-owner", time.Minute)
+	require.NoError(t, err)
+	assert.True(t, dispatched)
 }
 
 func TestShutdownStopsClaimsAndMakesLeaseReclaimable(t *testing.T) {

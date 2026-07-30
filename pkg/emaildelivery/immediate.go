@@ -137,7 +137,7 @@ func (s *Service) QueuePublication(ctx context.Context, _ uuid.UUID, publication
 			            ELSE settings.weekly_timezone END AS weekly_timezone,
 			       preference.preference_version
 			FROM publication_activity_items AS activity
-			JOIN system_settings AS settings ON settings.id = 1
+			JOIN system_settings AS settings ON settings.id = 1 AND NOT settings.recovery_hold
 			JOIN publications AS publication ON publication.id = activity.publication_id
 			JOIN recipient_access_generations AS access
 			  ON access.id = activity.recipient_access_generation_id
@@ -205,7 +205,7 @@ func (s *Service) QueueComment(ctx context.Context, tx bun.Tx, accessID, comment
 		       CASE WHEN preference.weekly_schedule_overridden THEN preference.weekly_timezone
 		            ELSE settings.weekly_timezone END, preference.preference_version
 		FROM notification_preferences AS preference
-		JOIN system_settings AS settings ON settings.id = 1
+		JOIN system_settings AS settings ON settings.id = 1 AND NOT settings.recovery_hold
 		WHERE preference.recipient_access_generation_id = ?`, accessID).
 		Scan(ctx, &preference.EmailPreference, &preference.WeeklyDay, &preference.WeeklyLocalTime, &preference.WeeklyTimezone, &preferenceVersion); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -423,6 +423,7 @@ func (s *Service) assembleImmediateIn(ctx context.Context, db bun.IDB, batchID i
 	err := db.NewRaw(`
 		SELECT access.id, email.email, batch.truncated
 		FROM notification_batches AS batch
+		JOIN system_settings AS settings ON settings.id = 1 AND NOT settings.recovery_hold
 		JOIN recipient_access_generations AS access
 		  ON access.id = batch.recipient_access_generation_id
 		 AND access.is_current AND access.state = 'completed'

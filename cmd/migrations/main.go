@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"github.com/robinjoseph08/memento/pkg/config"
 	"github.com/robinjoseph08/memento/pkg/database"
 	"github.com/robinjoseph08/memento/pkg/migrations"
+	"github.com/robinjoseph08/memento/pkg/restores"
 )
 
 var errUsage = errors.New("usage: migrations apply|validate")
@@ -42,11 +44,9 @@ func run(args []string) error {
 			return err
 		}
 	}
-	if err := migrations.Extensions(ctx, db); err != nil {
+	result, err := restores.Validate(ctx, db)
+	if err != nil {
 		return err
 	}
-	if err := migrations.Current(ctx, db); err != nil {
-		return err
-	}
-	return migrations.SetupConsistent(ctx, db)
+	return json.NewEncoder(os.Stdout).Encode(result)
 }

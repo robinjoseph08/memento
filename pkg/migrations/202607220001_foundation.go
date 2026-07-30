@@ -124,28 +124,40 @@ func applyCollection(ctx context.Context, db *bun.DB, migrations *migrate.Migrat
 
 // Current reports whether the database has every known migration and no unknown applied migrations.
 func Current(ctx context.Context, db *bun.DB) error {
-	migrator := migrate.NewMigrator(db, collection, migrate.WithMarkAppliedOnSuccess(true))
-	statuses, err := migrator.MigrationsWithStatus(ctx)
-	if err != nil {
+	return CurrentIn(ctx, db)
+}
+
+// CurrentIn performs the migration-ledger check through the supplied read-only-capable database handle.
+func CurrentIn(ctx context.Context, db bun.IDB) error {
+	var applied []string
+	if err := db.NewRaw(`SELECT name FROM bun_migrations ORDER BY name`).Scan(ctx, &applied); err != nil {
 		return fmt.Errorf("read migration status: %w", err)
 	}
-	for _, migration := range statuses {
-		if !migration.IsApplied() {
+	known := make(map[string]int, len(collection.Sorted()))
+	for _, migration := range collection.Sorted() {
+		known[migration.Name]++
+	}
+	for _, name := range applied {
+		if known[name] == 0 {
+			return errUnknownMigrations
+		}
+		known[name]--
+	}
+	for _, remaining := range known {
+		if remaining != 0 {
 			return errUnappliedMigrations
 		}
-	}
-	missing, err := migrator.MissingMigrations(ctx)
-	if err != nil {
-		return fmt.Errorf("read missing migrations: %w", err)
-	}
-	if len(missing) != 0 {
-		return errUnknownMigrations
 	}
 	return nil
 }
 
 // Extensions verifies that PostgreSQL loaded both search extensions in this logical database.
 func Extensions(ctx context.Context, db *bun.DB) error {
+	return ExtensionsIn(ctx, db)
+}
+
+// ExtensionsIn performs the extension check through the supplied database handle.
+func ExtensionsIn(ctx context.Context, db bun.IDB) error {
 	var count int
 	if err := db.NewRaw(`SELECT count(*) FROM pg_extension WHERE extname IN ('unaccent', 'pg_trgm')`).Scan(ctx, &count); err != nil {
 		return fmt.Errorf("verify required extensions: %w", err)
@@ -158,6 +170,11 @@ func Extensions(ctx context.Context, db *bun.DB) error {
 
 // SetupConsistent verifies the singleton and sole-Curator transition without exposing state.
 func SetupConsistent(ctx context.Context, db *bun.DB) error {
+	return SetupConsistentIn(ctx, db)
+}
+
+// SetupConsistentIn performs the setup check through the supplied database handle.
+func SetupConsistentIn(ctx context.Context, db bun.IDB) error {
 	var settingsCount, curatorCount int
 	var setupComplete bool
 	if err := db.NewRaw(`

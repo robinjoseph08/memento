@@ -16,6 +16,7 @@ import (
 	"github.com/robinjoseph08/memento/pkg/config"
 	"github.com/robinjoseph08/memento/pkg/emaildelivery"
 	"github.com/robinjoseph08/memento/pkg/migrations"
+	"github.com/robinjoseph08/memento/pkg/recovery"
 	"github.com/robinjoseph08/memento/pkg/setup"
 	"github.com/robinjoseph08/memento/pkg/smtp"
 	"github.com/stretchr/testify/assert"
@@ -99,10 +100,79 @@ func insertChallenge(t *testing.T, f fixture, fill byte, code string) string {
 		if err != nil {
 			return err
 		}
-		_, err = tx.NewRaw(`INSERT INTO sign_in_challenges (id, challenge_hash, code_hash, recipient_access_generation_id, recipient_email_id, email_delivery_id, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, uuid.New(), digest(raw), f.service.codeHash("sign-in", raw, code), f.accessID, emailID, deliveryID, expires, f.now).Exec(ctx)
+		_, err = tx.NewRaw(`INSERT INTO sign_in_challenges (id, challenge_hash, code_hash, recipient_access_generation_id, recipient_email_id, email_delivery_id, security_epoch, expires_at, created_at)
+			SELECT ?, ?, ?, ?, ?, ?, security_epoch, ?, ? FROM system_settings WHERE id = 1`, uuid.New(), digest(raw), f.service.codeHash("sign-in", raw, code), f.accessID, emailID, deliveryID, expires, f.now).Exec(ctx)
 		return err
 	}))
 	return challengeID
+}
+
+func TestRecoveryHoldRejectsRestoredChallengesAndAllowsOnlyFreshCuratorSignIn(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	curatorID, curatorAccessID, curatorEmailID := uuid.New(), uuid.New(), uuid.New()
+	_, err := f.db.NewRaw(`
+		INSERT INTO people (id, display_name, sort_name) VALUES (?, 'Curator', 'curator');
+		INSERT INTO person_roles (person_id, role) VALUES (?, 'curator'), (?, 'recipient');
+		INSERT INTO recipient_access_generations
+			(id, person_id, generation, state, is_current, onboarding_completed_at)
+		VALUES (?, ?, 1, 'completed', true, now());
+		INSERT INTO recipient_emails
+			(id, recipient_access_generation_id, email, normalized_email, is_current)
+		VALUES (?, ?, 'curator@example.com', 'curator@example.com', true)
+	`, curatorID, curatorID, curatorID, curatorAccessID, curatorID, curatorEmailID, curatorAccessID).Exec(ctx)
+	require.NoError(t, err)
+
+	oldChallenge := insertChallenge(t, f, 0x41, "12345678")
+	hold := recovery.New(f.db, recovery.WithRandom(bytes.NewReader(bytes.Repeat([]byte{0x52}, 32))))
+	activated, err := hold.Activate(ctx, "fresh-recovery-nonce-that-is-longer-than-thirty-two-bytes")
+	require.NoError(t, err)
+	require.True(t, activated)
+
+	_, err = f.service.VerifySignIn(ctx, SignInVerifyRequest{
+		ChallengeID: oldChallenge, Code: "12345678", SessionType: "trusted",
+	})
+	assert.ErrorIs(t, err, ErrInvalidCode, "a restored code cannot mint a Session in the rotated epoch")
+
+	var before int
+	require.NoError(t, f.db.NewRaw(`SELECT count(*) FROM sign_in_challenges`).Scan(ctx, &before))
+	f.service.random = bytes.NewReader(bytes.Repeat([]byte{0x62}, 256))
+	response, err := f.service.RequestSignIn(ctx, SignInRequest{Email: "alex@example.com"})
+	require.NoError(t, err)
+	assert.Equal(t, "accepted", response.Status)
+	var after int
+	require.NoError(t, f.db.NewRaw(`SELECT count(*) FROM sign_in_challenges`).Scan(ctx, &after))
+	assert.Equal(t, before, after, "Recipient sign-in remains non-enumerating but queues no code during Recovery hold")
+
+	raw := bytes.Repeat([]byte{0x63}, 32)
+	freshChallenge := hex.EncodeToString(raw)
+	expires := f.now.Add(10 * time.Minute)
+	require.NoError(t, f.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		deliveryID, _, err := f.delivery.QueueRequired(ctx, tx, emaildelivery.RequiredMessage{
+			Kind: emaildelivery.KindSignInCode, Recipient: "curator@example.com", Subject: "code",
+			Body: "code", DeliverBefore: &expires,
+		})
+		if err != nil {
+			return err
+		}
+		_, err = tx.NewRaw(`INSERT INTO sign_in_challenges
+			(id, challenge_hash, code_hash, recipient_access_generation_id, recipient_email_id,
+			 email_delivery_id, security_epoch, expires_at, created_at)
+			SELECT ?, ?, ?, ?, ?, ?, security_epoch, ?, ? FROM system_settings WHERE id = 1`,
+			uuid.New(), digest(raw), f.service.codeHash("sign-in", raw, "87654321"), curatorAccessID,
+			curatorEmailID, deliveryID, expires, f.now).Exec(ctx)
+		return err
+	}))
+	result, err := f.service.VerifySignIn(ctx, SignInVerifyRequest{
+		ChallengeID: freshChallenge, Code: "87654321", SessionType: "trusted",
+	})
+	require.NoError(t, err)
+	assert.Len(t, result.session.Credential, 64)
+	_, err = f.auth.Session(ctx, f.credential)
+	assert.ErrorIs(t, err, setup.ErrUnauthenticated, "the restored Session stays invalid")
+	fresh, err := f.auth.Session(ctx, result.session.Credential)
+	require.NoError(t, err)
+	assert.True(t, fresh.Curator)
 }
 
 func TestSignInCodeIsEightDigitSingleUseAndCreatesPolicyBoundSessions(t *testing.T) {

@@ -249,6 +249,20 @@ func (w *Worker) claim(ctx context.Context) (*Job, error) {
 			WHERE kind IN (?)
 			  AND available_at <= now()
 			  AND (status = 'pending' OR (status = 'running' AND lease_expires_at <= now()))
+			  AND (
+				NOT EXISTS (SELECT 1 FROM system_settings WHERE id = 1 AND recovery_hold)
+				OR (kind = 'send_required_email' AND EXISTS (
+					SELECT 1 FROM email_deliveries AS delivery
+					JOIN sign_in_challenges AS challenge ON challenge.email_delivery_id = delivery.id
+					JOIN recipient_access_generations AS access ON access.id = challenge.recipient_access_generation_id
+					JOIN person_roles AS role ON role.person_id = access.person_id AND role.role = 'curator'
+					JOIN system_settings AS settings ON settings.id = 1 AND settings.recovery_hold
+					 AND settings.security_epoch = challenge.security_epoch
+					WHERE delivery.id = CASE WHEN jobs.payload->>'delivery_id' ~ '^[0-9]+$'
+					 THEN (jobs.payload->>'delivery_id')::bigint ELSE 0 END
+					  AND delivery.kind = 'sign_in_code'
+				))
+			  )
 			ORDER BY available_at, id
 			FOR UPDATE SKIP LOCKED
 			LIMIT 1

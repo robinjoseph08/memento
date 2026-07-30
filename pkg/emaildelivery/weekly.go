@@ -350,6 +350,7 @@ func (s *Service) assembleWeeklyIn(ctx context.Context, db bun.IDB, batchID int6
 	var truncated bool
 	err := db.NewRaw(`SELECT access.id, email.email, batch.truncated
 		FROM notification_batches AS batch
+		JOIN system_settings AS settings ON settings.id = 1 AND NOT settings.recovery_hold
 		JOIN recipient_access_generations AS access
 		  ON access.id = batch.recipient_access_generation_id
 		 AND access.is_current AND access.state = 'completed'

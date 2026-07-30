@@ -144,7 +144,8 @@ func CurrentRecipientSession(ctx context.Context, db bun.IDB, actor SessionActor
 		  ON access.id = session.recipient_access_generation_id
 		 AND access.person_id = session.person_id AND access.is_current AND access.state = 'completed'
 		JOIN system_settings AS settings
-		  ON settings.id = 1 AND settings.setup_complete AND settings.security_epoch = session.security_epoch
+		  ON settings.id = 1 AND settings.setup_complete AND NOT settings.recovery_hold
+		 AND settings.security_epoch = session.security_epoch
 		WHERE session.id = ? AND session.person_id = ? AND session.recipient_access_generation_id = ?
 		  AND session.revoked_at IS NULL
 		  AND ((session.session_type = 'trusted' AND session.idle_expires_at > now())
@@ -554,7 +555,8 @@ func (s *Service) NewBrowserSessionIn(ctx context.Context, tx bun.Tx, personID, 
 		return BrowserSession{}, uuid.Nil, err
 	}
 	var securityEpoch []byte
-	if err := tx.NewRaw(`SELECT security_epoch FROM system_settings WHERE id = 1 AND setup_complete`).Scan(ctx, &securityEpoch); err != nil {
+	if err := tx.NewRaw(`SELECT security_epoch FROM system_settings WHERE id = 1 AND setup_complete
+		AND (NOT recovery_hold OR EXISTS (SELECT 1 FROM person_roles WHERE person_id = ? AND role = 'curator'))`, personID).Scan(ctx, &securityEpoch); err != nil {
 		return BrowserSession{}, uuid.Nil, err
 	}
 	browser, platform, clientIP, location := s.sessionMetadata(ctx)
