@@ -102,17 +102,23 @@ type AcceptRequest struct {
 	CreatePerson *CreatePersonRequest `json:"create_person,omitempty"`
 }
 
+type EngagementHandoff func(context.Context, bun.Tx, setup.SessionActor, uuid.UUID, string, time.Time) error
+
 // Service persists suggestions without invoking Recipient access or Invitation services.
 type Service struct {
-	db     *bun.DB
-	people *people.Service
-	now    func() time.Time
-	random io.Reader
+	db         *bun.DB
+	people     *people.Service
+	now        func() time.Time
+	random     io.Reader
+	engagement EngagementHandoff
 }
 
 func New(db *bun.DB, peopleService *people.Service) *Service {
 	return &Service{db: db, people: peopleService, now: time.Now, random: rand.Reader}
 }
+
+// SetEngagementHandoff installs the meaningful-use recorder for Recipient suggestion actions.
+func (s *Service) SetEngagementHandoff(handoff EngagementHandoff) { s.engagement = handoff }
 
 func normalizeSubmission(request SubmitRequest) (SubmitRequest, string, error) {
 	request.Name = strings.TrimSpace(request.Name)
@@ -172,6 +178,11 @@ func (s *Service) Submit(ctx context.Context, actor setup.SessionActor, request 
 		if err := appendAudit(ctx, tx, actor.PersonID, actor.PersonID, actor.SessionID, "invitation_suggestion_submitted", id, nil); err != nil {
 			return err
 		}
+		if s.engagement != nil {
+			if err := s.engagement(ctx, tx, actor, id, "submitted", now); err != nil {
+				return err
+			}
+		}
 		result = RequesterSuggestion{
 			ID: id.String(), Name: request.Name, Email: request.Email,
 			RelationshipContext: request.RelationshipContext, SpokeWithPerson: *request.SpokeWithPerson,
@@ -226,6 +237,11 @@ func (s *Service) Withdraw(ctx context.Context, actor setup.SessionActor, id uui
 		}
 		if err := appendAudit(ctx, tx, actor.PersonID, actor.PersonID, actor.SessionID, "invitation_suggestion_withdrawn", id, nil); err != nil {
 			return err
+		}
+		if s.engagement != nil {
+			if err := s.engagement(ctx, tx, actor, id, "withdrawn", now); err != nil {
+				return err
+			}
 		}
 		result = row.requester()
 		return nil

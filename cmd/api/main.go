@@ -20,6 +20,7 @@ import (
 	"github.com/robinjoseph08/memento/pkg/config"
 	"github.com/robinjoseph08/memento/pkg/database"
 	"github.com/robinjoseph08/memento/pkg/emaildelivery"
+	"github.com/robinjoseph08/memento/pkg/engagement"
 	"github.com/robinjoseph08/memento/pkg/events"
 	"github.com/robinjoseph08/memento/pkg/family"
 	"github.com/robinjoseph08/memento/pkg/favorites"
@@ -133,17 +134,20 @@ func run() error {
 		}
 		return pushService.QueuePublication(ctx, eventID, publicationID)
 	})
+	engagementService := engagement.New(db)
 	archiveService := archives.New(db, immichClient)
+	archiveService.SetEngagementHandoff(engagementService.RecordArchiveDownload)
 	interactionActivity := activity.New(db)
 	commentService := comments.New(db)
 	commentService.SetHandoff(interactionActivity.RecordComment)
+	commentService.SetEngagementHandoff(engagementService.RecordComment)
 	commentService.SetImmediateHandoff(func(ctx context.Context, tx bun.Tx, accessID, commentID uuid.UUID) error {
 		if err := emailService.QueueComment(ctx, tx, accessID, commentID); err != nil {
 			return err
 		}
 		return pushService.QueueComment(ctx, tx, accessID, commentID)
 	})
-	handlers := jobHandlers(sourceService, eventService, archiveService, commentService, emailService, cfg.SMTP.Enabled, pushService)
+	handlers := jobHandlers(sourceService, eventService, archiveService, commentService, engagementService, emailService, cfg.SMTP.Enabled, pushService)
 
 	owner, err := leaseOwner()
 	if err != nil {
@@ -180,14 +184,18 @@ func run() error {
 	sourceHandler := sources.NewHandler(sourceService, setupService)
 	eventHandler := events.NewHandler(eventService, setupService)
 	repairHandler := repairs.NewHandler(repairs.New(db, immichClient), setupService)
-	suggestionHandler := suggestions.NewHandler(suggestions.New(db, peopleService), setupService)
+	suggestionService := suggestions.New(db, peopleService)
+	suggestionService.SetEngagementHandoff(engagementService.RecordSuggestion)
+	suggestionHandler := suggestions.NewHandler(suggestionService, setupService)
 	audienceHandler := audiences.NewHandler(audiences.New(db, immichClient), setupService)
 	sessionHandler := sessions.NewHandler(sessions.New(db, emailService, setupService, cfg.Security), setupService)
 	libraryHandler := library.NewHandler(library.New(db, immichClient), setupService)
 	archiveHandler := archives.NewHandler(archiveService, setupService)
 	searchHandler := search.NewHandler(search.New(db), setupService)
 	commentHandler := comments.NewHandler(commentService, setupService)
-	favoriteHandler := favorites.NewHandler(favorites.New(db, interactionActivity), setupService)
+	favoriteService := favorites.New(db, interactionActivity)
+	favoriteService.SetEngagementActivity(engagementService)
+	favoriteHandler := favorites.NewHandler(favoriteService, setupService)
 	e, err := server.New(healthService, emaildelivery.NewHandler(emailService), setupHandler, peopleHandler, familyHandler, visibilityHandler, recipientHandler, sourceHandler, eventHandler, repairHandler, suggestionHandler, audienceHandler, sessionHandler)
 	if err != nil {
 		_ = db.Close()
@@ -200,6 +208,7 @@ func run() error {
 	comments.RegisterRoutes(e, commentHandler)
 	favorites.RegisterRoutes(e, favoriteHandler)
 	activity.RegisterRoutes(e, activity.NewHandler(interactionActivity, setupService))
+	engagement.RegisterRoutes(e, engagement.NewHandler(engagementService, setupService))
 	push.RegisterRoutes(e, push.NewHandler(pushService, setupService))
 	recovery.RegisterRoutes(e, recovery.NewHandler(recoveryService, setupService))
 	e.Use(recoveryService.Middleware())
@@ -242,12 +251,13 @@ func run() error {
 	return nil
 }
 
-func jobHandlers(sourceService *sources.Service, eventService *events.Service, archiveService *archives.Service, commentService *comments.Service, emailService *emaildelivery.Service, smtpEnabled bool, pushService *push.Service) map[string]worker.Handler {
+func jobHandlers(sourceService *sources.Service, eventService *events.Service, archiveService *archives.Service, commentService *comments.Service, engagementService *engagement.Service, emailService *emaildelivery.Service, smtpEnabled bool, pushService *push.Service) map[string]worker.Handler {
 	handlers := map[string]worker.Handler{
 		sources.ReconciliationJobKind: sourceService.HandleReconciliationJob,
 		events.PublicationJobKind:     eventService.HandlePublicationJob,
 		archives.CleanupJobKind:       archiveService.HandleCleanupJob,
 		comments.CommentJobKind:       commentService.HandleCommentJob,
+		engagement.RetentionJobKind:   engagementService.HandleRetentionJob,
 	}
 	if smtpEnabled {
 		handlers[emaildelivery.JobKind] = emailService.Handle

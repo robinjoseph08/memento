@@ -26,7 +26,7 @@ func TestValidateUsesReadOnlySnapshotAndReturnsRepresentativeCounts(t *testing.T
 	require.NoError(t, err)
 	assert.Equal(t, "valid", result.Status)
 	assert.Equal(t, []string{"migrations", "extensions", "setup_and_sole_curator", "foreign_keys", "projections", "security_settings"}, result.Checks)
-	assert.Equal(t, 1, result.Counts.Jobs)
+	assert.Equal(t, 2, result.Counts.Jobs)
 	assert.Zero(t, result.Counts.People)
 	_, err = json.Marshal(result)
 	require.NoError(t, err)

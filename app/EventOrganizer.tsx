@@ -714,7 +714,9 @@ export function EventOrganizer({
   onSavingChange?: (saving: boolean) => void;
 }) {
   const queryClient = useQueryClient();
-  const [selectedID, setSelectedID] = useState("");
+  const [selectedID, setSelectedID] = useState(
+    () => new URLSearchParams(window.location.search).get("event") ?? "",
+  );
   const [draft, setDraft] = useState<DraftEvent>();
   const [selectedMedia, setSelectedMedia] = useState<Set<string>>(new Set());
   const [destination, setDestination] = useState("unassigned");
@@ -999,8 +1001,12 @@ export function EventOrganizer({
         headers: { "X-Memento-CSRF": session.csrf_token },
         body: JSON.stringify(organizationRequest(event)),
       }),
-    onMutate: () => setSaveState("saving"),
+    onMutate: () => {
+      setSaveState("saving");
+      onSavingChange?.(true);
+    },
     onSuccess: (saved, attempted) => {
+      onSavingChange?.(false);
       void queryClient.invalidateQueries({ queryKey: ["events"] });
       void queryClient.invalidateQueries({
         queryKey: ["attendance-audience"],
@@ -1039,6 +1045,7 @@ export function EventOrganizer({
       setRevision(0);
     },
     onError: (error, attempted) => {
+      onSavingChange?.(false);
       if (selectedIDRef.current !== attempted.event.id) return;
       if (error instanceof APIError && error.status === 409) {
         const latest = latestDraftRef.current;

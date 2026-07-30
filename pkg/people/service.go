@@ -40,21 +40,22 @@ var (
 
 // Person is the durable Curator view of one identity.
 type Person struct {
-	ID                   string     `json:"id"`
-	DisplayName          string     `json:"display_name"`
-	SortName             string     `json:"sort_name"`
-	Version              int64      `json:"version"`
-	Status               string     `json:"status"`
-	CreatedAt            time.Time  `json:"created_at"`
-	UpdatedAt            time.Time  `json:"updated_at"`
-	ArchivedAt           *time.Time `json:"archived_at,omitempty"`
-	MergedAt             *time.Time `json:"merged_at,omitempty"`
-	MergedIntoPersonID   string     `json:"merged_into_person_id,omitempty"`
-	Roles                []string   `json:"roles"`
-	CurrentAccess        *Access    `json:"current_recipient_access,omitempty"`
-	CurrentLoginEmail    string     `json:"current_login_email,omitempty"`
-	UnrevokedSessions    int        `json:"unrevoked_sessions"`
-	HistoricalAuditCount int        `json:"historical_audit_count"`
+	ID                         string     `json:"id"`
+	DisplayName                string     `json:"display_name"`
+	SortName                   string     `json:"sort_name"`
+	Version                    int64      `json:"version"`
+	Status                     string     `json:"status"`
+	CreatedAt                  time.Time  `json:"created_at"`
+	UpdatedAt                  time.Time  `json:"updated_at"`
+	ArchivedAt                 *time.Time `json:"archived_at,omitempty"`
+	MergedAt                   *time.Time `json:"merged_at,omitempty"`
+	MergedIntoPersonID         string     `json:"merged_into_person_id,omitempty"`
+	Roles                      []string   `json:"roles"`
+	CurrentAccess              *Access    `json:"current_recipient_access,omitempty"`
+	CurrentLoginEmail          string     `json:"current_login_email,omitempty"`
+	UnrevokedSessions          int        `json:"unrevoked_sessions"`
+	HistoricalAuditCount       int        `json:"historical_audit_count"`
+	LatestMeaningfulActivityAt *time.Time `json:"latest_meaningful_activity_at,omitempty"`
 }
 
 // Access describes the current Recipient access generation without granting authority.
@@ -233,6 +234,11 @@ type personCountRow struct {
 	Count    int       `bun:"count"`
 }
 
+type personActivityRow struct {
+	PersonID uuid.UUID `bun:"recipient_person_id"`
+	Latest   time.Time `bun:"latest"`
+}
+
 func (s *Service) List(ctx context.Context, query string, includeArchived bool) (ListResponse, error) {
 	query = escapeLikePattern(strings.TrimSpace(query))
 	result := ListResponse{People: []Person{}}
@@ -296,6 +302,17 @@ func (s *Service) List(ctx context.Context, query string, includeArchived bool) 
 			i := indexByID[access.PersonID]
 			result.People[i].CurrentAccess = &Access{ID: access.ID.String(), Generation: access.Generation, State: access.State}
 			result.People[i].CurrentLoginEmail = access.Email
+		}
+
+		activities := make([]personActivityRow, 0)
+		if err := tx.NewRaw(`SELECT recipient_person_id, max(last_occurred_at) AS latest
+			FROM engagement_daily_aggregates WHERE recipient_person_id IN (?)
+			GROUP BY recipient_person_id`, bun.List(ids)).Scan(ctx, &activities); err != nil {
+			return err
+		}
+		for _, activity := range activities {
+			latest := activity.Latest
+			result.People[indexByID[activity.PersonID]].LatestMeaningfulActivityAt = &latest
 		}
 
 		sessionCounts := make([]personCountRow, 0)
@@ -797,6 +814,23 @@ func (s *Service) Merge(ctx context.Context, actor setup.CuratorSession, request
 			return err
 		}
 		if _, err := tx.NewRaw(`UPDATE recipient_activity_items SET recipient_person_id = ? WHERE recipient_person_id = ?`, survivorID, sourceID).Exec(ctx); err != nil {
+			return err
+		}
+		if _, err := tx.NewRaw(`INSERT INTO engagement_daily_aggregates
+			(recipient_person_id, activity_date, kind, event_count, first_occurred_at, last_occurred_at)
+			SELECT ?, activity_date, kind, event_count, first_occurred_at, last_occurred_at
+			FROM engagement_daily_aggregates WHERE recipient_person_id = ?
+			ON CONFLICT (recipient_person_id, activity_date, kind) DO UPDATE
+			SET event_count = engagement_daily_aggregates.event_count + EXCLUDED.event_count,
+				first_occurred_at = LEAST(engagement_daily_aggregates.first_occurred_at, EXCLUDED.first_occurred_at),
+				last_occurred_at = GREATEST(engagement_daily_aggregates.last_occurred_at, EXCLUDED.last_occurred_at)`,
+			survivorID, sourceID).Exec(ctx); err != nil {
+			return err
+		}
+		if _, err := tx.NewRaw(`DELETE FROM engagement_daily_aggregates WHERE recipient_person_id = ?`, sourceID).Exec(ctx); err != nil {
+			return err
+		}
+		if _, err := tx.NewRaw(`UPDATE engagement_events SET recipient_person_id = ? WHERE recipient_person_id = ?`, survivorID, sourceID).Exec(ctx); err != nil {
 			return err
 		}
 		resultingGeneration := 0

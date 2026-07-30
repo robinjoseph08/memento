@@ -18,7 +18,7 @@ import (
 // This release-defined digest covers table, constraint name, and normalized definition
 // for every expected foreign key after all registered migrations.
 const (
-	expectedForeignKeyInventorySHA256  = "1b49cf8988b176531ad730e92b382e6f223f9bc2a931f509ef202f2bdfdf4963"
+	expectedForeignKeyInventorySHA256  = "36e7876e46cabafb9266d3483b83951764af985a630b8bd80e17388d8010204c"
 	expectedRecoveryDeliveryViewSHA256 = "6ef46fa32643821f6367cb7e25264bbd62d1ed32e76713519440e05f80af285f"
 	expectedWithdrawalFunctionSHA256   = "82ee8848f421c74c31eb5c380df242243f12d9eff71695ac974f3375cbc940f8"
 )

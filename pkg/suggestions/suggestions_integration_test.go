@@ -17,6 +17,7 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/robinjoseph08/memento/internal/testdb"
 	"github.com/robinjoseph08/memento/pkg/config"
+	"github.com/robinjoseph08/memento/pkg/engagement"
 	"github.com/robinjoseph08/memento/pkg/errcodes"
 	"github.com/robinjoseph08/memento/pkg/migrations"
 	"github.com/robinjoseph08/memento/pkg/people"
@@ -77,6 +78,7 @@ func newSuggestionFixture(t *testing.T) suggestionFixture {
 	now := time.Date(2026, 7, 27, 12, 30, 0, 0, time.UTC)
 	service := New(db, people.New(db))
 	service.now = func() time.Time { return now }
+	service.SetEngagementHandoff(engagement.New(db).RecordSuggestion)
 	return suggestionFixture{
 		db: db, service: service, existingID: existingID, now: now,
 		curator:        setup.CuratorSession{PersonID: curatorID, SessionID: curatorSession},
@@ -157,19 +159,21 @@ func TestSubmissionIsIsolatedAuditedAndHasNoIdentityOrAccessSideEffects(t *testi
 	assert.Equal(t, fixture.existingID.String(), curator.Suggestions[0].MatchingPeople[0].PersonID)
 	assert.ElementsMatch(t, []string{"same_name", "same_recipient_email"}, curator.Suggestions[0].MatchingPeople[0].Reasons)
 
-	var peopleAfter, accessAfter, invitationsAfter, sessionsAfter, recipientActivity, curatorActivity int
+	var peopleAfter, accessAfter, invitationsAfter, sessionsAfter, recipientActivity, curatorActivity, engagementCount int
 	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM people`).Scan(ctx, &peopleAfter))
 	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM recipient_access_generations`).Scan(ctx, &accessAfter))
 	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM invitations`).Scan(ctx, &invitationsAfter))
 	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM sessions`).Scan(ctx, &sessionsAfter))
 	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM recipient_activity_items WHERE invitation_suggestion_id = ?`, submitted.ID).Scan(ctx, &recipientActivity))
 	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM curator_activity_items WHERE invitation_suggestion_id = ?`, submitted.ID).Scan(ctx, &curatorActivity))
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM engagement_events WHERE kind = ? AND recipient_person_id = ?`, engagement.KindInvitationSuggestionSubmitted, fixture.requester.PersonID).Scan(ctx, &engagementCount))
 	assert.Equal(t, peopleBefore, peopleAfter)
 	assert.Equal(t, accessBefore, accessAfter)
 	assert.Equal(t, invitationsBefore, invitationsAfter)
 	assert.Equal(t, sessionsBefore, sessionsAfter)
 	assert.Equal(t, 1, recipientActivity)
 	assert.Equal(t, 1, curatorActivity)
+	assert.Equal(t, 1, engagementCount)
 
 	var actorID, sessionID uuid.UUID
 	var clientIP, userAgent string

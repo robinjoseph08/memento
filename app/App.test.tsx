@@ -1386,6 +1386,9 @@ test("restores and refreshes a signed-in Trusted-device Session", async () => {
     if (path.startsWith("/api/visibility-circles?")) {
       return Promise.resolve(jsonResponse({ circles: [] }));
     }
+    if (path === "/api/activity/curator/work") {
+      return Promise.resolve(jsonResponse({ items: [] }));
+    }
     return Promise.resolve(
       jsonResponse({
         display_name: "Robin Joseph",
@@ -1404,7 +1407,11 @@ test("restores and refreshes a signed-in Trusted-device Session", async () => {
       "Setup is complete. You're signed in as Robin Joseph.",
     ),
   ).toBeInTheDocument();
-  expect(fetchMock).toHaveBeenCalledTimes(15);
+  expect(fetchMock).toHaveBeenCalledTimes(16);
+  expect(fetchMock).toHaveBeenCalledWith(
+    "/api/activity/curator/work?limit=50",
+    expect.objectContaining({ credentials: "same-origin" }),
+  );
   expect(fetchMock).toHaveBeenCalledWith(
     "/api/push",
     expect.objectContaining({ credentials: "same-origin" }),

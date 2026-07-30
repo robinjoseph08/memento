@@ -50,15 +50,23 @@ type CuratorActivity interface {
 	RecordFavorite(ctx context.Context, tx bun.Tx, recipientID, mediaID uuid.UUID, action string, createdAt time.Time) error
 }
 
+type EngagementActivity interface {
+	RecordFavorite(ctx context.Context, tx bun.Tx, actor setup.SessionActor, mediaID uuid.UUID, action string, createdAt time.Time) error
+}
+
 type Service struct {
-	db       *bun.DB
-	now      func() time.Time
-	activity CuratorActivity
+	db         *bun.DB
+	now        func() time.Time
+	activity   CuratorActivity
+	engagement EngagementActivity
 }
 
 func New(db *bun.DB, activity CuratorActivity) *Service {
 	return &Service{db: db, now: time.Now, activity: activity}
 }
+
+// SetEngagementActivity installs the meaningful-use recorder for real Favorite transitions.
+func (s *Service) SetEngagementActivity(engagement EngagementActivity) { s.engagement = engagement }
 
 func (s *Service) Get(ctx context.Context, actor setup.SessionActor, mediaID uuid.UUID) (State, error) {
 	if err := mediaaccess.Require(ctx, s.db, actor, mediaID); err != nil {
@@ -108,7 +116,13 @@ func (s *Service) Set(ctx context.Context, actor setup.SessionActor, mediaID uui
 		if s.activity == nil {
 			return ErrActivityNotConfigured
 		}
-		return s.activity.RecordFavorite(ctx, tx, actor.PersonID, mediaID, action, now)
+		if err := s.activity.RecordFavorite(ctx, tx, actor.PersonID, mediaID, action, now); err != nil {
+			return err
+		}
+		if s.engagement != nil {
+			return s.engagement.RecordFavorite(ctx, tx, actor, mediaID, action, now)
+		}
+		return nil
 	})
 	if err != nil {
 		return State{}, mapAccessError(err)

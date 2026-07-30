@@ -109,11 +109,14 @@ type pageCursor struct {
 
 type Handoff func(context.Context, bun.Tx, uuid.UUID, uuid.UUID) error
 
+type EngagementHandoff func(context.Context, bun.Tx, setup.SessionActor, uuid.UUID, uuid.UUID, time.Time) error
+
 type Service struct {
-	db               *bun.DB
-	now              func() time.Time
-	handoff          Handoff
-	immediateHandoff Handoff
+	db                *bun.DB
+	now               func() time.Time
+	handoff           Handoff
+	immediateHandoff  Handoff
+	engagementHandoff EngagementHandoff
 }
 
 func New(db *bun.DB) *Service { return &Service{db: db, now: time.Now} }
@@ -122,6 +125,9 @@ func (s *Service) SetHandoff(handoff Handoff) { s.handoff = handoff }
 
 // SetImmediateHandoff installs a transactionally durable handoff that runs when Comment activity is created.
 func (s *Service) SetImmediateHandoff(handoff Handoff) { s.immediateHandoff = handoff }
+
+// SetEngagementHandoff installs the meaningful-use handoff for a newly created Comment.
+func (s *Service) SetEngagementHandoff(handoff EngagementHandoff) { s.engagementHandoff = handoff }
 
 func normalizeBody(body string, maximum int) (string, error) {
 	body = strings.TrimSpace(body)
@@ -263,6 +269,11 @@ func (s *Service) Create(ctx context.Context, actor setup.SessionActor, mediaID,
 			(media_item_id, recipient_access_generation_id, created_at, updated_at)
 			VALUES (?, ?, ?, ?) ON CONFLICT (media_item_id, recipient_access_generation_id) DO NOTHING`, mediaID, actor.AccessID, now, now).Exec(ctx); err != nil {
 			return err
+		}
+		if s.engagementHandoff != nil {
+			if err := s.engagementHandoff(ctx, tx, actor, commentID, mediaID, now); err != nil {
+				return fmt.Errorf("record Comment engagement: %w", err)
+			}
 		}
 		var subscribers []uuid.UUID
 		if err := tx.NewRaw(`SELECT candidate.recipient_access_generation_id FROM (

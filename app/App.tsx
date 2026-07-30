@@ -15,6 +15,7 @@ import {
 import { useSearchParams } from "react-router-dom";
 
 import { APIError, apiJSON, apiNoContent } from "./api";
+import { CuratorActivity } from "./CuratorActivity";
 import { CuratorInteractions } from "./CuratorInteractions";
 import { EventOrganizer } from "./EventOrganizer";
 import { FamilyManager } from "./FamilyManager";
@@ -1993,16 +1994,19 @@ function ReadyCard({
     return (
       <>
         <PublicSessionBanner session={session} />
+        <CuratorActivity session={session} />
         <SessionManager onSignedOut={onSignOut} session={session} />
         <EmailPreferences session={session} />
         <PushNotifications session={session} />
         <PlatformEmailDefaults session={session} />
-        <PeopleManager session={session} />
+        <div id="curator-people">
+          <PeopleManager session={session} />
+        </div>
         <InvitationSuggestions session={session} />
         <FamilyManager session={session} />
         <VisibilityManager session={session} />
         <CuratorInteractions session={session} />
-        <section className="shell-card curator-card">
+        <section className="shell-card curator-card" id="curator-sources">
           <SourceWorkspace
             onSignOut={() => signOut.mutate()}
             session={session}
@@ -2010,7 +2014,7 @@ function ReadyCard({
             signOutPending={signOut.isPending}
           />
         </section>
-        <section className="shell-card curator-card">
+        <section className="shell-card curator-card" id="curator-repairs">
           <RepairWorkspace csrfToken={session.csrf_token} />
         </section>
       </>

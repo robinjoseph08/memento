@@ -204,9 +204,14 @@ func TestPeopleSearchNormalizesCaseAccentsAndWhitespace(t *testing.T) {
 	assert.Empty(t, result.People)
 }
 
-func TestPeopleListUsesBoundedQueries(t *testing.T) {
+func TestPeopleListUsesBoundedQueriesAndShowsLatestMeaningfulActivity(t *testing.T) {
 	fixture := newPeopleFixture(t)
 	ctx := context.Background()
+	latest := time.Date(2026, time.July, 30, 17, 0, 0, 0, time.UTC)
+	_, err := fixture.db.NewRaw(`INSERT INTO engagement_daily_aggregates
+		(recipient_person_id, activity_date, kind, event_count, first_occurred_at, last_occurred_at)
+		VALUES (?, ?, 'visit', 1, ?, ?)`, fixture.actor.PersonID, latest.Format(time.DateOnly), latest, latest).Exec(ctx)
+	require.NoError(t, err)
 	for i := range 20 {
 		addPerson(t, fixture.db, fmt.Sprintf("Person %02d", i), fmt.Sprintf("Person %02d", i))
 	}
@@ -215,7 +220,16 @@ func TestPeopleListUsesBoundedQueries(t *testing.T) {
 	result, err := fixture.service.List(ctx, "", false)
 	require.NoError(t, err)
 	assert.Len(t, result.People, 21)
-	assert.LessOrEqual(t, counter.count.Load(), int64(7))
+	var curator Person
+	for _, person := range result.People {
+		if person.ID == fixture.actor.PersonID.String() {
+			curator = person
+			break
+		}
+	}
+	require.NotNil(t, curator.LatestMeaningfulActivityAt)
+	assert.Equal(t, latest, *curator.LatestMeaningfulActivityAt)
+	assert.LessOrEqual(t, counter.count.Load(), int64(8))
 }
 
 func TestPeopleRoutesEnforceCuratorCSRFAndPreserveMergeDirection(t *testing.T) {
@@ -765,6 +779,13 @@ func TestMergeExplicitlyTransfersGenerationResolvesEmailInvalidatesSessionsAndPr
 	require.NoError(t, fixture.db.NewRaw(`SELECT actor_person_id, subject_person_id FROM security_audit_events WHERE action = 'shared_history'`).Scan(ctx, &sharedHistoryActor, &sharedHistorySubject))
 	assert.Equal(t, source, sharedHistoryActor)
 	assert.Equal(t, survivor, sharedHistorySubject)
+	var sourceEngagement, survivorEngagement, sourceAggregates int
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM engagement_events WHERE recipient_person_id = ?`, source).Scan(ctx, &sourceEngagement))
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM engagement_events WHERE recipient_person_id = ?`, survivor).Scan(ctx, &survivorEngagement))
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM engagement_daily_aggregates WHERE recipient_person_id = ?`, source).Scan(ctx, &sourceAggregates))
+	assert.Zero(t, sourceEngagement)
+	assert.GreaterOrEqual(t, survivorEngagement, 2)
+	assert.Zero(t, sourceAggregates)
 	var mergeAuditMetadata string
 	require.NoError(t, fixture.db.NewRaw(`SELECT metadata::text FROM security_audit_events WHERE action = 'people_merged'`).Scan(ctx, &mergeAuditMetadata))
 	assert.Contains(t, mergeAuditMetadata, survivor.String())

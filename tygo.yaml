@@ -2,6 +2,14 @@ type_mappings:
   time.Time: "string /* RFC3339 */"
 
 packages:
+  - path: "github.com/robinjoseph08/memento/pkg/activity"
+    output_path: "app/types/generated/activity.ts"
+    fallback_type: unknown
+    preserve_comments: none
+  - path: "github.com/robinjoseph08/memento/pkg/engagement"
+    output_path: "app/types/generated/engagement.ts"
+    fallback_type: unknown
+    preserve_comments: none
   - path: "github.com/robinjoseph08/memento/pkg/archives"
     output_path: "app/types/generated/archives.ts"
     fallback_type: unknown

@@ -80,15 +80,21 @@ type archiveSource interface {
 	Original(ctx context.Context, assetID uuid.UUID, request immich.MediaRequest) (immich.MediaResponse, error)
 }
 
+type EngagementHandoff func(context.Context, bun.Tx, setup.SessionActor, uuid.UUID, *uuid.UUID, time.Time) error
+
 type Service struct {
-	db     *bun.DB
-	source archiveSource
-	now    func() time.Time
+	db         *bun.DB
+	source     archiveSource
+	now        func() time.Time
+	engagement EngagementHandoff
 }
 
 func New(db *bun.DB, source archiveSource) *Service {
 	return &Service{db: db, source: source, now: time.Now}
 }
+
+// SetEngagementHandoff installs the meaningful-use recorder for final Archive part claims.
+func (s *Service) SetEngagementHandoff(handoff EngagementHandoff) { s.engagement = handoff }
 
 // HandleCleanupJob removes expired plans in bounded passes. A full pass is
 // immediately continued so a backlog converges without one long transaction.
@@ -417,6 +423,7 @@ type plannedItem struct {
 type plannedPart struct {
 	PlanID     uuid.UUID
 	PartID     uuid.UUID
+	EventID    uuid.NullUUID
 	Name       string
 	PartNumber int
 	PartCount  int
@@ -453,7 +460,7 @@ func (s *Service) loadPart(ctx context.Context, db bun.IDB, actor setup.SessionA
 		lockClause = " FOR UPDATE OF part"
 	}
 	var result plannedPart
-	query := `SELECT plan.id, part.id, plan.name, part.part_number,
+	query := `SELECT plan.id, part.id, plan.event_id, plan.name, part.part_number,
 		(SELECT count(*) FROM archive_parts AS count_part WHERE count_part.archive_plan_id = plan.id),
 		part.size, part.consumed_at, plan.expires_at
 		FROM archive_plans AS plan JOIN archive_parts AS part ON part.archive_plan_id = plan.id
@@ -461,7 +468,7 @@ func (s *Service) loadPart(ctx context.Context, db bun.IDB, actor setup.SessionA
 		  AND plan.recipient_access_generation_id = ? AND plan.session_id = ?
 		  AND part.part_number = ?` + lockClause
 	if err := db.NewRaw(query, hash[:], actor.PersonID, actor.AccessID, actor.SessionID, number).Scan(ctx,
-		&result.PlanID, &result.PartID, &result.Name, &result.PartNumber, &result.PartCount,
+		&result.PlanID, &result.PartID, &result.EventID, &result.Name, &result.PartNumber, &result.PartCount,
 		&result.Size, &result.ConsumedAt, &result.ExpiresAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return plannedPart{}, ErrNotFound
@@ -612,14 +619,22 @@ func (s *Service) StreamPart(ctx context.Context, actor setup.SessionActor, rawT
 		if err := authorizeItems(ctx, tx, actor, locked.Items, true); err != nil {
 			return err
 		}
+		consumedAt := s.now().UTC()
 		result, err := tx.NewRaw(`UPDATE archive_parts SET consumed_at = ? WHERE id = ? AND consumed_at IS NULL`,
-			s.now().UTC(), locked.PartID).Exec(ctx)
+			consumedAt, locked.PartID).Exec(ctx)
 		if err != nil {
 			return err
 		}
 		count, err := result.RowsAffected()
 		if err != nil || count != 1 {
 			return ErrNotFound
+		}
+		if s.engagement != nil {
+			var eventID *uuid.UUID
+			if locked.EventID.Valid {
+				eventID = &locked.EventID.UUID
+			}
+			return s.engagement(ctx, tx, actor, locked.PartID, eventID, consumedAt)
 		}
 		return nil
 	})
