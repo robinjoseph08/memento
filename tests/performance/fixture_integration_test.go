@@ -263,12 +263,12 @@ func (fixture scaleFixture) seedEvents(ctx context.Context, tx bun.Tx) error {
 		 GROUP BY activity.publication_id,activity.recipient_access_generation_id`,
 		`INSERT INTO comments (id,media_item_id,author_person_id,author_access_generation_id,idempotency_key,body,created_at,updated_at)
 		 SELECT md5('comment-' || media.id)::uuid,media.id,access.person_id,access.id,md5('comment-key-' || media.id)::uuid,'Fixture Comment '||row_number() OVER (),'` + fixtureNow + `','` + fixtureNow + `'
-		 FROM (SELECT id,row_number() OVER (ORDER BY id) n FROM media_items LIMIT 1000) media
+		 FROM (SELECT id,row_number() OVER (ORDER BY id) n FROM media_items ORDER BY id LIMIT 1000) media
 		 JOIN (SELECT id,person_id,row_number() OVER (ORDER BY id) n FROM recipient_access_generations WHERE person_id<>'00000000-0000-4000-8000-000000000001') access
 		 ON access.n=((media.n-1)%50)+1`,
 		`INSERT INTO favorites (recipient_person_id,media_item_id,is_current,created_at,updated_at)
 		 SELECT access.person_id,media.id,true,'` + fixtureNow + `','` + fixtureNow + `'
-		 FROM (SELECT id,row_number() OVER (ORDER BY id) n FROM media_items LIMIT 5000) media
+		 FROM (SELECT id,row_number() OVER (ORDER BY id) n FROM media_items ORDER BY id LIMIT 5000) media
 		 JOIN (SELECT person_id,row_number() OVER (ORDER BY person_id) n FROM recipient_access_generations WHERE person_id<>'00000000-0000-4000-8000-000000000001') access
 		 ON access.n=((media.n-1)%50)+1`,
 		`INSERT INTO notification_batches (public_id,recipient_access_generation_id,channel,window_started_at,closes_at,status)
@@ -313,6 +313,8 @@ func (fixture scaleFixture) readAndValidateShape(t *testing.T, ctx context.Conte
 		require.NoError(t, fixture.db.NewRaw(query.query).Scan(ctx, query.dest))
 	}
 	require.NoError(t, fixture.db.NewRaw(`SELECT count(DISTINCT recipient_access_generation_id) FROM current_audience_entitlements WHERE event_id = ?`, fixture.publicationEvent).Scan(ctx, &shape.PublicationRecipients))
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM draft_media_placements WHERE draft_moment_id=?`, fixture.proposalMoment).Scan(ctx, &shape.ProposalMomentItems))
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM attendance WHERE moment_id=?`, fixture.proposalMoment).Scan(ctx, &shape.AttendanceRows))
 	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM (
 		SELECT entry.recipient_access_generation_id
 		FROM draft_moments moment
@@ -326,7 +328,11 @@ func (fixture scaleFixture) readAndValidateShape(t *testing.T, ctx context.Conte
 		(SELECT string_agg(event_id::text||':'||media_item_id::text||':'||position,',' ORDER BY event_id,position) FROM draft_media_placements) ||
 		(SELECT string_agg(snapshot_id::text||':'||recipient_access_generation_id::text,',' ORDER BY snapshot_id,recipient_access_generation_id) FROM audience_snapshot_entries) ||
 		(SELECT string_agg(recipient_person_id::text||':'||media_item_id::text,',' ORDER BY recipient_person_id,media_item_id) FROM favorites) ||
-		(SELECT string_agg(recipient_access_generation_id::text||':'||publication_id::text,',' ORDER BY recipient_access_generation_id,publication_id) FROM publication_activity_items)
+		(SELECT string_agg(recipient_access_generation_id::text||':'||publication_id::text,',' ORDER BY recipient_access_generation_id,publication_id) FROM publication_activity_items) ||
+		(SELECT string_agg(id::text||':'||media_item_id::text||':'||body,',' ORDER BY id) FROM comments) ||
+		(SELECT string_agg(event_id::text||':'||media_item_id::text||':'||search_text,',' ORDER BY event_id,media_item_id) FROM published_search_documents) ||
+		(SELECT string_agg(public_id::text||':'||recipient_access_generation_id::text,',' ORDER BY public_id) FROM notification_batches) ||
+		(SELECT string_agg(origin_key,',' ORDER BY origin_key) FROM engagement_events)
 	)`).Scan(ctx, &fixtureDataChecksum))
 	encodedShape, err := json.Marshal(struct {
 		Shape FixtureShape `json:"shape"`
@@ -343,6 +349,8 @@ func (fixture scaleFixture) readAndValidateShape(t *testing.T, ctx context.Conte
 	require.Positive(t, shape.AudienceEntries)
 	require.Equal(t, 50, shape.PublicationRecipients)
 	require.Positive(t, shape.OverlappingRecipients)
+	require.Equal(t, 500, shape.ProposalMomentItems)
+	require.Equal(t, 50, shape.AttendanceRows)
 	require.Positive(t, shape.Comments)
 	require.Positive(t, shape.Favorites)
 	require.Positive(t, shape.SearchDocuments)

@@ -32,6 +32,42 @@ func TestReportValidationRequiresEveryBaselineAndScaleEvidence(t *testing.T) {
 	require.ErrorContains(t, report.Validate(), `missing baseline metric "stream_buffer"`)
 }
 
+func TestQualifyingReportEnforcesSampleMinimums(t *testing.T) {
+	report := completeReport(t)
+	report.Qualifying = true
+	for index := range report.Metrics {
+		minimum := 20
+		switch report.Metrics[index].Name {
+		case "liveness":
+			minimum = 100
+		case "reconciliation":
+			minimum = 1
+		case "stream_buffer":
+			minimum = 32
+		}
+		report.Metrics[index].Samples = repeatedSample(report.Metrics[index].P95, minimum)
+	}
+	for index := range report.Comparisons {
+		report.Comparisons[index].Samples = repeatedSample(report.Comparisons[index].P95, 20)
+	}
+	require.NoError(t, report.Validate())
+
+	for index := range report.Metrics {
+		if report.Metrics[index].Name == "publication" {
+			report.Metrics[index].Samples = report.Metrics[index].Samples[:19]
+		}
+	}
+	require.ErrorContains(t, report.Validate(), `qualifying metric "publication" requires at least 20 samples`)
+}
+
+func repeatedSample(value int64, count int) []int64 {
+	result := make([]int64, count)
+	for index := range result {
+		result[index] = value
+	}
+	return result
+}
+
 func TestReportMarkdownRecordsRequiredContext(t *testing.T) {
 	markdown := completeReport(t).Markdown()
 	assert.Contains(t, markdown, "100,000 Media items")
@@ -56,16 +92,16 @@ func completeReport(t *testing.T) Report {
 	}
 	plan, err := json.Marshal([]any{map[string]any{"Plan": map[string]any{"Node Type": "Index Scan"}}})
 	require.NoError(t, err)
-	plans := make([]PlanEvidence, 4)
+	plans := make([]PlanEvidence, 5)
 	for index := range plans {
-		plans[index] = PlanEvidence{Name: []string{"authorization", "gallery", "search", "curator"}[index], CacheState: "warm", SQLRole: "memento_app", Plan: plan}
+		plans[index] = PlanEvidence{Name: []string{"authorization", "media_authorization", "gallery", "search", "curator"}[index], CacheState: "warm", SQLRole: "memento_app", Plan: plan}
 	}
 	return Report{
 		SchemaVersion: 1,
 		Qualifying:    false,
 		GeneratedAt:   time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC),
 		CacheState:    "warm",
-		Fixture:       FixtureShape{MediaItems: 100000, Recipients: 50, Events: 21, LargestEventPlacements: 5000, ReusedMediaItems: 1000, AudienceEntries: 250, PublicationRecipients: 50, OverlappingRecipients: 25, Comments: 1000, Favorites: 1000, SearchDocuments: 100000, DeliveryActivity: 50, Checksum: "fixture-v1"},
+		Fixture:       FixtureShape{MediaItems: 100000, Recipients: 50, Events: 21, LargestEventPlacements: 5000, ReusedMediaItems: 1000, AudienceEntries: 250, PublicationRecipients: 50, OverlappingRecipients: 25, ProposalMomentItems: 500, AttendanceRows: 50, Comments: 1000, Favorites: 1000, SearchDocuments: 100000, DeliveryActivity: 50, Checksum: "fixture-v1"},
 		Environment:   Environment{GitRevision: "abc", OS: "linux", Architecture: "amd64", CPU: "test", LogicalCPUs: 4, GoVersion: "go1.26", PostgreSQLVersion: "PostgreSQL 17", DatabasePoolSize: 16},
 		Metrics:       metrics,
 		Comparisons: []Metric{

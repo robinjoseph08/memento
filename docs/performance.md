@@ -45,8 +45,8 @@ Set-based PostgreSQL inserts keep fixture generation bounded. The suite runs `AN
 - Full reconciliation is measured once as a completion target.
 - The process and PostgreSQL cache are warmed before recorded samples.
 - Every result records cache state, scenario, concurrency, and injected Immich latency.
-- Reconciliation, Publication, and notification-dispatch competing-work scenarios are reported separately.
-- Notification start samples persist an exact 15-minute batch window, schedule the production immediate-email job kind at `closes_at`, and record production worker handler entry.
+- Representative foreground latency is reported while a full reconciliation transaction, an atomic Publication, and production notification assembly and provider dispatch are active.
+- Notification start samples queue authorized Comment activity through the production coalescer and transactional outbox, then record production `HandleImmediate` entry after the exact 15-minute window closes.
 - Proxy overhead subtracts observed controlled upstream blocking time.
 - Stream evidence holds 32 concurrent 16 MiB streams open, measures Go heap growth per stream, and records the largest application-requested upstream read. The larger observation is evaluated against 1 MiB. The downstream test writer discards bytes so receiver buffering is not attributed to the application.
 - Publication uses 5,000 placements across 50 Recipients with overlapping Moment Audiences and checks the production transaction boundary. Existing failure-boundary tests continue to prove rollback at every durable step.

@@ -30,9 +30,11 @@ import (
 	"github.com/robinjoseph08/memento/pkg/immich"
 	"github.com/robinjoseph08/memento/pkg/library"
 	"github.com/robinjoseph08/memento/pkg/mediaaccess"
+	"github.com/robinjoseph08/memento/pkg/outbox"
 	"github.com/robinjoseph08/memento/pkg/people"
 	"github.com/robinjoseph08/memento/pkg/search"
 	"github.com/robinjoseph08/memento/pkg/setup"
+	"github.com/robinjoseph08/memento/pkg/smtp"
 	"github.com/robinjoseph08/memento/pkg/sources"
 	"github.com/robinjoseph08/memento/pkg/worker"
 	"github.com/stretchr/testify/require"
@@ -141,9 +143,9 @@ func TestTargetScalePerformance(t *testing.T) {
 	}
 	addDuration("audience_proposal", audienceDurations, 1, 0)
 
-	jobDurations := measureWorkerStarts(t, fixture.db, "performance_job_start", operationSamples, 2*time.Millisecond, 0)
+	jobDurations := measureWorkerStarts(t, fixture.db, "performance_job_start", operationSamples, 2*time.Millisecond)
 	addDuration("job_start", jobDurations, 1, 0)
-	notificationDurations := measureWorkerStarts(t, fixture.db, emaildelivery.ImmediateJobKind, operationSamples, 2*time.Millisecond, 10*time.Millisecond)
+	notificationDurations := measureNotificationStarts(t, fixture, operationSamples)
 	addDuration("notification_dispatch", notificationDurations, 1, 0)
 
 	reconciliationConnector := newScaleConnector(0, nil)
@@ -153,6 +155,16 @@ func TestTargetScalePerformance(t *testing.T) {
 	require.NoError(t, reconciliationService.Reconcile(ctx, fixture.sourceAlbum))
 	require.Equal(t, int64(200), reconciliationConnector.pageCalls.Load(), "warm and measured reconciliation must each consume 100 pages")
 	require.Equal(t, int64(1), reconciliationConnector.maximumActive.Load(), "connector pagination remains bounded and serial")
+	var memberships, mediaItems, activeBackings, validatedRuns int
+	require.NoError(t, fixture.db.NewRaw(`SELECT
+		(SELECT count(*) FROM source_album_memberships WHERE source_album_id=?),
+		(SELECT count(*) FROM media_items),
+		(SELECT count(*) FROM media_backings WHERE active),
+		(SELECT count(*) FROM reconciliation_runs WHERE source_album_id=? AND status='validated')`, fixture.sourceAlbum, fixture.sourceAlbum).Scan(ctx, &memberships, &mediaItems, &activeBackings, &validatedRuns))
+	require.Equal(t, 100000, memberships)
+	require.Equal(t, 100000, mediaItems)
+	require.Equal(t, 100000, activeBackings)
+	require.GreaterOrEqual(t, validatedRuns, 2)
 	addDuration("reconciliation", []time.Duration{time.Since(started)}, 1, 0)
 
 	proxySource := &streamSource{delay: 5 * time.Millisecond, size: 1}
@@ -164,7 +176,7 @@ func TestTargetScalePerformance(t *testing.T) {
 	metrics = append(metrics, proxyMetric)
 
 	streamConcurrency := configuredSamples("MEMENTO_PERFORMANCE_STREAM_CONCURRENCY", 32)
-	streamSource := &streamSource{size: 16 << 20, hold: true, streamStarted: make(chan struct{}, streamConcurrency), release: make(chan struct{})}
+	streamSource := &streamSource{size: 16 << 20, hold: true, streamStarted: make(chan struct{}, streamConcurrency), release: make(chan struct{}), readObserved: make(chan struct{}, 1)}
 	streamRouter := libraryRouter(actor, fixture.db, streamSource)
 	streamBuffers := measureConcurrentStreams(t, streamRouter, streamSource, mediaID, streamConcurrency)
 	streamMetric, err := NewByteMetric(mustBaseline(t, "stream_buffer"), streamBuffers, "warm", "steady", streamConcurrency)
@@ -254,7 +266,101 @@ func (fixture scaleFixture) recipientActor(index int) setup.SessionActor {
 	return setup.SessionActor{PersonID: deterministicUUID("person", index), AccessID: deterministicUUID("access", index), SessionID: deterministicUUID("session", index)}
 }
 
-func measureWorkerStarts(t *testing.T, db *bun.DB, kind string, samples int, poll, eligibilityDelay time.Duration) []time.Duration {
+type performanceEmailSender struct{}
+
+func (performanceEmailSender) Send(context.Context, smtp.Message) error { return nil }
+
+func performanceEmailService(db *bun.DB, sender smtp.Sender) *emaildelivery.Service {
+	service := emaildelivery.New(db, config.SMTPConfig{
+		Enabled: true, Host: "smtp.example.test", Port: 465, Mode: "implicit_tls",
+		FromAddress: "memento@example.test", Timeout: time.Second,
+		RetryBase: time.Millisecond, RetryMax: time.Second, RetryWindow: 24 * time.Hour,
+	}, sender, "performance-only-security-secret-32-bytes")
+	service.SetPublicURL("https://memento.example.test")
+	return service
+}
+
+func queuePerformanceComment(t *testing.T, fixture scaleFixture, service *emaildelivery.Service, prefix string, sample int, closesAt time.Time) time.Time {
+	t.Helper()
+	activityAt := closesAt.Add(-15 * time.Minute)
+	commentID := deterministicUUID(prefix+"-comment", sample)
+	require.NoError(t, fixture.db.RunInTx(context.Background(), nil, func(ctx context.Context, tx bun.Tx) error {
+		if _, err := tx.NewRaw(`INSERT INTO comments (id,media_item_id,author_person_id,author_access_generation_id,idempotency_key,body,created_at,updated_at) VALUES (?,?,?,?,?,'Performance notification',?,?)`, commentID, deterministicUUID("media", 1), deterministicUUID("person", 2), deterministicUUID("access", 2), deterministicUUID(prefix+"-comment-key", sample), activityAt, activityAt).Exec(ctx); err != nil {
+			return err
+		}
+		if _, err := tx.NewRaw(`INSERT INTO comment_activity_items (comment_id,recipient_access_generation_id,created_at) VALUES (?,?,?)`, commentID, deterministicUUID("access", 1), activityAt).Exec(ctx); err != nil {
+			return err
+		}
+		if _, err := tx.NewRaw(`INSERT INTO comment_subscriptions (media_item_id,recipient_access_generation_id,muted,created_at,updated_at) VALUES (?,?,false,?,?) ON CONFLICT (media_item_id,recipient_access_generation_id) DO UPDATE SET muted=false,updated_at=EXCLUDED.updated_at`, deterministicUUID("media", 1), deterministicUUID("access", 1), activityAt, activityAt).Exec(ctx); err != nil {
+			return err
+		}
+		return service.QueueComment(ctx, tx, deterministicUUID("access", 1), commentID)
+	}))
+	var persistedClose time.Time
+	require.NoError(t, fixture.db.NewRaw(`SELECT batch.closes_at FROM notification_batches batch JOIN notification_batch_items item ON item.batch_id=batch.id WHERE item.comment_id=?`, commentID).Scan(context.Background(), &persistedClose))
+	return persistedClose
+}
+
+func measureNotificationStarts(t *testing.T, fixture scaleFixture, samples int) []time.Duration {
+	t.Helper()
+	service := performanceEmailService(fixture.db, performanceEmailSender{})
+	starts := make(chan time.Time, samples)
+	jobWorker, err := worker.New(fixture.db, config.WorkerConfig{PollInterval: 2 * time.Millisecond, HeartbeatInterval: 50 * time.Millisecond, LeaseDuration: time.Minute, RetryBase: time.Millisecond, RetryMax: time.Second}, "performance-notification-start", map[string]worker.Handler{
+		emaildelivery.ImmediateJobKind: func(ctx context.Context, job worker.Job) error {
+			starts <- time.Now()
+			return service.HandleImmediate(ctx, job)
+		},
+	}, worker.WithDispatcher(outbox.New(fixture.db)))
+	require.NoError(t, err)
+	workerCtx, cancel := context.WithCancel(context.Background())
+	jobWorker.Start(workerCtx)
+	defer func() {
+		jobWorker.StopClaims()
+		drainCtx, drainCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer drainCancel()
+		require.NoError(t, jobWorker.Drain(drainCtx))
+		cancel()
+	}()
+
+	result := make([]time.Duration, 0, samples)
+	for sample := -1; sample < samples; sample++ {
+		closesAt := time.Now().Add(10 * time.Millisecond)
+		persistedClose := queuePerformanceComment(t, fixture, service, "measurement", sample+2, closesAt)
+		select {
+		case handlerStarted := <-starts:
+			if sample >= 0 {
+				result = append(result, handlerStarted.Sub(persistedClose))
+			}
+		case <-time.After(5 * time.Second):
+			var states string
+			_ = fixture.db.NewRaw(`SELECT COALESCE(string_agg(status||':'||COALESCE(last_safe_error,''),',' ORDER BY id),'none') FROM jobs WHERE kind=?`, emaildelivery.ImmediateJobKind).Scan(context.Background(), &states)
+			t.Fatalf("notification dispatch did not start after closes_at for sample %d/%d; jobs=%s", sample+1, samples, states)
+		}
+		waitForNotificationCompletion(t, fixture.db)
+	}
+	return result
+}
+
+func waitForNotificationCompletion(t *testing.T, db *bun.DB) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		var active int
+		var states string
+		require.NoError(t, db.NewRaw(`SELECT count(*) FILTER (WHERE status IN ('pending','running')),COALESCE(string_agg(status||':'||COALESCE(last_safe_error,''),',' ORDER BY id),'none') FROM jobs WHERE kind=?`, emaildelivery.ImmediateJobKind).Scan(context.Background(), &active, &states))
+		if active == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("notification dispatch did not finish before deadline; jobs=%s", states)
+		}
+		<-ticker.C
+	}
+}
+
+func measureWorkerStarts(t *testing.T, db *bun.DB, kind string, samples int, poll time.Duration) []time.Duration {
 	t.Helper()
 	starts := make(chan time.Time, samples)
 	jobWorker, err := worker.New(db, config.WorkerConfig{PollInterval: poll, HeartbeatInterval: 50 * time.Millisecond, LeaseDuration: time.Minute, RetryBase: time.Millisecond, RetryMax: time.Second}, kind, map[string]worker.Handler{kind: func(context.Context, worker.Job) error { starts <- time.Now(); return nil }})
@@ -269,18 +375,15 @@ func measureWorkerStarts(t *testing.T, db *bun.DB, kind string, samples int, pol
 		cancel()
 	})
 	result := make([]time.Duration, 0, samples)
-	for sample := 0; sample < samples; sample++ {
-		availableAt := time.Now().Add(eligibilityDelay)
-		if kind == emaildelivery.ImmediateJobKind {
-			windowStartedAt := availableAt.Add(-15 * time.Minute)
-			_, err := db.NewRaw(`INSERT INTO notification_batches (public_id,recipient_access_generation_id,channel,window_started_at,closes_at,status) VALUES (?,?,'email',?,?,'pending')`, deterministicUUID("measurement-batch", sample+1), deterministicUUID("access", 1), windowStartedAt, availableAt).Exec(context.Background())
-			require.NoError(t, err)
-		}
-		_, err := db.NewRaw(`INSERT INTO jobs (kind,payload,available_at,created_at,updated_at) VALUES (?, '{}'::jsonb, ?, ?, ?)`, kind, availableAt, time.Now(), time.Now()).Exec(context.Background())
+	for sample := -1; sample < samples; sample++ {
+		availableAt := time.Now()
+		_, err := db.NewRaw(`INSERT INTO jobs (kind,payload,available_at,created_at,updated_at) VALUES (?, '{}'::jsonb, ?, ?, ?)`, kind, availableAt, availableAt, availableAt).Exec(context.Background())
 		require.NoError(t, err)
 		select {
 		case handlerStarted := <-starts:
-			result = append(result, handlerStarted.Sub(availableAt))
+			if sample >= 0 {
+				result = append(result, handlerStarted.Sub(availableAt))
+			}
 		case <-time.After(5 * time.Second):
 			t.Fatalf("%s did not start within deadline", kind)
 		}
@@ -305,6 +408,7 @@ type streamSource struct {
 	hold          bool
 	streamStarted chan struct{}
 	release       chan struct{}
+	readObserved  chan struct{}
 	blocked       atomic.Int64
 	maximumRead   atomic.Int64
 }
@@ -325,6 +429,7 @@ func (source *streamSource) response(ctx context.Context, contentType string) (i
 	if source.hold {
 		body.started = source.streamStarted
 		body.release = source.release
+		body.readObserved = source.readObserved
 	}
 	return immich.MediaResponse{Body: body, StatusCode: http.StatusOK, ContentType: contentType, ContentLength: source.size}, nil
 }
@@ -342,11 +447,12 @@ func (source *streamSource) Original(ctx context.Context, _ uuid.UUID, _ immich.
 }
 
 type measuredBody struct {
-	remaining   int64
-	maximumRead *atomic.Int64
-	started     chan<- struct{}
-	release     <-chan struct{}
-	once        sync.Once
+	remaining    int64
+	maximumRead  *atomic.Int64
+	started      chan<- struct{}
+	release      <-chan struct{}
+	readObserved chan<- struct{}
+	once         sync.Once
 }
 
 func (body *measuredBody) Read(buffer []byte) (int, error) {
@@ -373,6 +479,12 @@ func (body *measuredBody) Read(buffer []byte) (int, error) {
 		buffer[index] = byte(index)
 	}
 	body.remaining -= read
+	if body.readObserved != nil {
+		select {
+		case body.readObserved <- struct{}{}:
+		default:
+		}
+	}
 	return int(read), nil
 }
 func (*measuredBody) Close() error { return nil }
@@ -405,6 +517,7 @@ func streamRequest(router http.Handler, mediaID uuid.UUID) error {
 
 func measureProxyHTTP(t *testing.T, router http.Handler, source *streamSource, mediaID uuid.UUID, samples int) ([]time.Duration, time.Duration) {
 	t.Helper()
+	require.NoError(t, streamRequest(router, mediaID), "proxy warm-up failed")
 	durations := make([]time.Duration, 0, samples)
 	var blocked time.Duration
 	for range samples {
@@ -440,15 +553,33 @@ func measureConcurrentStreams(t *testing.T, router http.Handler, source *streamS
 	}
 	var active runtime.MemStats
 	runtime.ReadMemStats(&active)
+	peakHeap := active.HeapAlloc
 	close(source.release)
-	group.Wait()
+	completed := make(chan struct{})
+	go func() {
+		group.Wait()
+		close(completed)
+	}()
+monitor:
+	for {
+		select {
+		case <-source.readObserved:
+			var current runtime.MemStats
+			runtime.ReadMemStats(&current)
+			if current.HeapAlloc > peakHeap {
+				peakHeap = current.HeapAlloc
+			}
+		case <-completed:
+			break monitor
+		}
+	}
 	close(errors)
 	for err := range errors {
 		require.NoError(t, err)
 	}
 	growth := int64(0)
-	if active.HeapAlloc > before.HeapAlloc {
-		growth = int64(active.HeapAlloc-before.HeapAlloc) / int64(concurrency)
+	if peakHeap > before.HeapAlloc {
+		growth = int64(peakHeap-before.HeapAlloc) / int64(concurrency)
 	}
 	if maximumRead := source.maximumRead.Load(); maximumRead > growth {
 		growth = maximumRead

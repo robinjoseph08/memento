@@ -22,8 +22,10 @@ import (
 	"github.com/robinjoseph08/memento/pkg/events"
 	"github.com/robinjoseph08/memento/pkg/immich"
 	"github.com/robinjoseph08/memento/pkg/library"
+	"github.com/robinjoseph08/memento/pkg/outbox"
 	"github.com/robinjoseph08/memento/pkg/search"
 	"github.com/robinjoseph08/memento/pkg/setup"
+	"github.com/robinjoseph08/memento/pkg/smtp"
 	"github.com/robinjoseph08/memento/pkg/sources"
 	"github.com/robinjoseph08/memento/pkg/worker"
 	"github.com/stretchr/testify/require"
@@ -107,6 +109,36 @@ func (connector *scaleConnector) summary() immich.AlbumSummary {
 	return immich.AlbumSummary{SourceID: uuid.MustParse("00000000-0000-4000-8000-000000000005"), Name: "Target-scale source", AssetCount: 100000, CreatedAt: now, UpdatedAt: now}
 }
 
+type blockingEmailSender struct {
+	started chan struct{}
+	release <-chan struct{}
+	once    sync.Once
+}
+
+func (sender *blockingEmailSender) Send(ctx context.Context, _ smtp.Message) error {
+	sender.once.Do(func() { close(sender.started) })
+	select {
+	case <-sender.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+type publicationStartHook struct {
+	started chan struct{}
+	once    sync.Once
+}
+
+func (hook *publicationStartHook) BeforeQuery(ctx context.Context, _ *bun.QueryEvent) context.Context {
+	return ctx
+}
+func (hook *publicationStartHook) AfterQuery(_ context.Context, event *bun.QueryEvent) {
+	if event.Err == nil && strings.Contains(event.Query, "events:staged-access-summary-inputs") && strings.Contains(event.Query, "pg_advisory_xact_lock(") {
+		hook.once.Do(func() { close(hook.started) })
+	}
+}
+
 func measureCompetingWork(t *testing.T, ctx context.Context, fixture scaleFixture, actor setup.SessionActor, libraryService *library.Service, searchService *search.Service, samples int) []Metric {
 	t.Helper()
 	measureTimeline := func() error {
@@ -134,13 +166,17 @@ func measureCompetingWork(t *testing.T, ctx context.Context, fixture scaleFixtur
 	var publicationVersion int64
 	require.NoError(t, fixture.db.NewRaw(`UPDATE events SET title='Family Event 01 Competing Publication',version=version+1,final_review_complete=true WHERE id=? RETURNING version`, fixture.publicationEvent).Scan(ctx, &publicationVersion))
 	publicationStarted := make(chan struct{})
+	fixture.db.AddQueryHook(&publicationStartHook{started: publicationStarted})
 	publicationResult := make(chan error, 1)
 	go func() {
-		close(publicationStarted)
 		_, publishErr := events.New(fixture.db).PublishEvent(ctx, setup.CuratorSession{PersonID: fixture.curatorID, SessionID: fixture.curatorSession}, fixture.publicationEvent, events.PublishEventRequest{Version: publicationVersion})
 		publicationResult <- publishErr
 	}()
-	<-publicationStarted
+	select {
+	case <-publicationStarted:
+	case <-time.After(10 * time.Second):
+		t.Fatal("competing Publication did not enter its transaction")
+	}
 	publicationSamples := measure(t, samples, measureTimeline)
 	require.NoError(t, <-publicationResult)
 	publicationMetric, err := NewDurationMetric(mustBaseline(t, "recipient_list"), publicationSamples, "warm", "competing", "publication", 2, 0)
@@ -148,27 +184,15 @@ func measureCompetingWork(t *testing.T, ctx context.Context, fixture scaleFixtur
 
 	notificationStarted := make(chan struct{})
 	releaseNotification := make(chan struct{})
+	sender := &blockingEmailSender{started: notificationStarted, release: releaseNotification}
+	emailService := performanceEmailService(fixture.db, sender)
 	notificationWorker, err := worker.New(fixture.db, config.WorkerConfig{PollInterval: 2 * time.Millisecond, HeartbeatInterval: 50 * time.Millisecond, LeaseDuration: time.Minute, RetryBase: time.Millisecond, RetryMax: time.Second}, "performance-notification-competitor", map[string]worker.Handler{
-		emaildelivery.ImmediateJobKind: func(handlerCtx context.Context, _ worker.Job) error {
-			var items int
-			if queryErr := fixture.db.NewRaw(`SELECT count(*) FROM notification_batch_items item JOIN notification_batches batch ON batch.id=item.batch_id WHERE batch.status='pending'`).Scan(handlerCtx, &items); queryErr != nil {
-				return queryErr
-			}
-			close(notificationStarted)
-			select {
-			case <-releaseNotification:
-				return nil
-			case <-handlerCtx.Done():
-				return handlerCtx.Err()
-			}
-		},
-	})
+		emaildelivery.ImmediateJobKind: emailService.HandleImmediate,
+	}, worker.WithDispatcher(outbox.New(fixture.db)))
 	require.NoError(t, err)
 	workerCtx, stopWorker := context.WithCancel(ctx)
 	notificationWorker.Start(workerCtx)
-	now := time.Now()
-	_, err = fixture.db.NewRaw(`INSERT INTO jobs (kind,payload,available_at,created_at,updated_at) VALUES (?, '{}'::jsonb, ?, ?, ?)`, emaildelivery.ImmediateJobKind, now, now, now).Exec(ctx)
-	require.NoError(t, err)
+	queuePerformanceComment(t, fixture, emailService, "competitor", 1, time.Now().Add(10*time.Millisecond))
 	select {
 	case <-notificationStarted:
 	case <-time.After(10 * time.Second):
@@ -192,16 +216,55 @@ func measureCompetingWork(t *testing.T, ctx context.Context, fixture scaleFixtur
 	return []Metric{recipientMetric, publicationMetric, searchMetric}
 }
 
+type queryCaptureHook struct {
+	match string
+	mu    sync.Mutex
+	query string
+}
+
+func (hook *queryCaptureHook) BeforeQuery(ctx context.Context, _ *bun.QueryEvent) context.Context {
+	return ctx
+}
+func (hook *queryCaptureHook) AfterQuery(_ context.Context, event *bun.QueryEvent) {
+	if event.Err != nil || !strings.Contains(event.QueryTemplate, hook.match) {
+		return
+	}
+	hook.mu.Lock()
+	defer hook.mu.Unlock()
+	if hook.query == "" {
+		hook.query = event.Query
+	}
+}
+func (hook *queryCaptureHook) captured() string {
+	hook.mu.Lock()
+	defer hook.mu.Unlock()
+	return hook.query
+}
+
 func capturePlans(t *testing.T, ctx context.Context, db *bun.DB, actor setup.SessionActor) []PlanEvidence {
 	t.Helper()
+	searchCapture := &queryCaptureHook{match: "WITH authorized AS"}
+	db.AddQueryHook(searchCapture)
+	searchResponse, err := search.New(db).Search(ctx, actor, search.Request{Query: "01"})
+	require.NoError(t, err)
+	require.NotEmpty(t, searchResponse.Events)
+	require.NotEmpty(t, searchCapture.captured())
+
+	galleryCapture := &queryCaptureHook{match: "WITH valid AS"}
+	db.AddQueryHook(galleryCapture)
+	gallery, err := library.New(db, nil).Photos(ctx, actor, "100", "", false)
+	require.NoError(t, err)
+	require.Len(t, gallery.Media, 100)
+	require.NotEmpty(t, galleryCapture.captured())
+
 	plans := []struct {
 		name, role, query string
 		args              []any
 	}{
 		{name: "authorization", role: "Session authorization", query: `SELECT EXISTS (SELECT 1 FROM sessions session JOIN people person ON person.id=session.person_id AND person.archived_at IS NULL AND person.merged_at IS NULL JOIN recipient_access_generations access ON access.id=session.recipient_access_generation_id AND access.person_id=session.person_id AND access.is_current AND access.state='completed' JOIN system_settings settings ON settings.id=1 AND settings.setup_complete AND NOT settings.recovery_hold AND settings.security_epoch=session.security_epoch WHERE session.id=? AND session.person_id=? AND session.recipient_access_generation_id=? AND session.revoked_at IS NULL)`, args: []any{actor.SessionID, actor.PersonID, actor.AccessID}},
 		{name: "media_authorization", role: "Simple Media authorization", query: `SELECT EXISTS (SELECT 1 FROM current_audience_entitlements entitlement JOIN current_published_placements placement ON placement.event_id=entitlement.event_id AND placement.publication_id=entitlement.publication_id AND placement.media_item_id=entitlement.media_item_id JOIN published_moments moment ON moment.id=placement.published_moment_id WHERE entitlement.recipient_access_generation_id=? AND entitlement.media_item_id=? AND NOT content_is_withdrawn(placement.event_id,moment.draft_moment_id,placement.media_item_id))`, args: []any{actor.AccessID, deterministicUUID("media", 1)}},
-		{name: "gallery", role: "Recipient timeline", query: `SELECT placement.event_id,placement.media_item_id FROM current_audience_entitlements entitlement JOIN current_published_placements placement ON placement.event_id=entitlement.event_id AND placement.publication_id=entitlement.publication_id AND placement.media_item_id=entitlement.media_item_id JOIN media_items media ON media.id=placement.media_item_id WHERE entitlement.recipient_access_generation_id=? ORDER BY media.local_date_time DESC,media.id LIMIT 100`, args: []any{actor.AccessID}},
-		{name: "search", role: "Authorized search", query: `SELECT document.event_id,document.media_item_id FROM current_audience_entitlements entitlement JOIN published_search_documents document ON document.event_id=entitlement.event_id AND document.publication_id=entitlement.publication_id AND document.media_item_id=entitlement.media_item_id WHERE entitlement.recipient_access_generation_id=? AND document.search_vector @@ plainto_tsquery('simple',?) ORDER BY document.event_id,document.media_item_id LIMIT 100`, args: []any{actor.AccessID, "family reunion mountains"}},
+		{name: "gallery", role: "Recipient timeline", query: galleryCapture.captured()},
+		{name: "search", role: "Authorized search", query: searchCapture.captured()},
 		{name: "curator", role: "Curator People list", query: `SELECT id,display_name,sort_name FROM people WHERE archived_at IS NULL ORDER BY memento_normalize_person_name(sort_name),id LIMIT 200`},
 	}
 	result := make([]PlanEvidence, 0, len(plans))

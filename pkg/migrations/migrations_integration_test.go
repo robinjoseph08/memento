@@ -227,15 +227,17 @@ func TestSearchMigrationPreservesExistingPublishedDocumentsAndIndexes(t *testing
 	_, err := db.ExecContext(ctx, `
 		INSERT INTO people (id, display_name, sort_name) VALUES
 			('11111111-1111-4111-8111-111111111111', 'Existing Recipient', 'existing recipient'),
+			('dddddddd-dddd-4ddd-8ddd-dddddddddddd', 'Second Recipient', 'second recipient'),
 			('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'Faithful Current Attendee', 'faithful current attendee'),
 			('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'Staged Added Attendee', 'staged added attendee'),
 			('cccccccc-cccc-4ccc-8ccc-cccccccccccc', 'Staged Removed Attendee', 'staged removed attendee');
 		INSERT INTO recipient_access_generations (
 			id, person_id, generation, state, onboarding_completed_at
-		) VALUES (
-			'22222222-2222-4222-8222-222222222222',
-			'11111111-1111-4111-8111-111111111111', 1, 'completed', now()
-		);
+		) VALUES
+			('22222222-2222-4222-8222-222222222222',
+			 '11111111-1111-4111-8111-111111111111', 1, 'completed', now()),
+			('eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+			 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', 1, 'completed', now());
 		INSERT INTO events (id, lifecycle, title, grouping_timezone, version) VALUES
 			('33333333-3333-4333-8333-333333333333', 'published', 'Faithful Legacy Event', 'UTC', 2),
 			('33333333-3333-4333-8333-333333333334', 'published', 'Recovery Legacy Event', 'UTC', 2);
@@ -328,22 +330,29 @@ func TestSearchMigrationPreservesExistingPublishedDocumentsAndIndexes(t *testing
 		INSERT INTO current_audience_entitlements (
 			event_id, publication_id, recipient_person_id,
 			recipient_access_generation_id, media_item_id
-		) VALUES (
-			'33333333-3333-4333-8333-333333333333',
-			'66666666-6666-4666-8666-666666666666',
-			'11111111-1111-4111-8111-111111111111',
-			'22222222-2222-4222-8222-222222222222',
-			'44444444-4444-4444-8444-444444444444'
-		);
+		) VALUES
+			('33333333-3333-4333-8333-333333333333',
+			 '66666666-6666-4666-8666-666666666666',
+			 '11111111-1111-4111-8111-111111111111',
+			 '22222222-2222-4222-8222-222222222222',
+			 '44444444-4444-4444-8444-444444444444'),
+			('33333333-3333-4333-8333-333333333333',
+			 '66666666-6666-4666-8666-666666666666',
+			 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+			 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+			 '44444444-4444-4444-8444-444444444444');
 		INSERT INTO published_search_documents (
 			event_id, publication_id, recipient_access_generation_id,
 			media_item_id, search_text
-		) VALUES (
-			'33333333-3333-4333-8333-333333333333',
-			'66666666-6666-4666-8666-666666666666',
-			'22222222-2222-4222-8222-222222222222',
-			'44444444-4444-4444-8444-444444444444', 'Café legacy'
-		)
+		) VALUES
+			('33333333-3333-4333-8333-333333333333',
+			 '66666666-6666-4666-8666-666666666666',
+			 '22222222-2222-4222-8222-222222222222',
+			 '44444444-4444-4444-8444-444444444444', 'Café legacy'),
+			('33333333-3333-4333-8333-333333333333',
+			 '66666666-6666-4666-8666-666666666666',
+			 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+			 '44444444-4444-4444-8444-444444444444', 'Café legacy')
 	`)
 	require.NoError(t, err)
 	require.NoError(t, Apply(ctx, db))
@@ -360,6 +369,9 @@ func TestSearchMigrationPreservesExistingPublishedDocumentsAndIndexes(t *testing
 	assert.Equal(t, "cafe legacy", normalized)
 	assert.True(t, vectorIndex)
 	assert.True(t, trigramIndex)
+	var compactDocuments int
+	require.NoError(t, db.NewRaw(`SELECT count(*) FROM published_search_documents`).Scan(ctx, &compactDocuments))
+	assert.Equal(t, 1, compactDocuments, "identical per-Recipient documents compact to one placement document")
 
 	type publishedAttendanceRow struct {
 		PublicationID, PersonID string
@@ -406,6 +418,9 @@ func TestSearchMigrationPreservesExistingPublishedDocumentsAndIndexes(t *testing
 	var searchText string
 	require.NoError(t, db.NewRaw(`SELECT search_text FROM published_search_documents`).Scan(ctx, &searchText))
 	assert.Equal(t, "Café legacy", searchText)
+	var expandedDocuments int
+	require.NoError(t, db.NewRaw(`SELECT count(*) FROM published_search_documents`).Scan(ctx, &expandedDocuments))
+	assert.Equal(t, 2, expandedDocuments, "rollback restores one document for each entitled Recipient")
 	require.NoError(t, db.NewRaw(`
 		SELECT to_regclass('published_search_documents_vector_idx') IS NOT NULL,
 		       to_regclass('published_search_documents_trigram_idx') IS NOT NULL

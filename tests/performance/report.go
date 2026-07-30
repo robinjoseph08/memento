@@ -52,6 +52,8 @@ type FixtureShape struct {
 	AudienceEntries        int    `json:"audience_entries"`
 	PublicationRecipients  int    `json:"publication_recipients"`
 	OverlappingRecipients  int    `json:"overlapping_recipients"`
+	ProposalMomentItems    int    `json:"proposal_moment_items"`
+	AttendanceRows         int    `json:"attendance_rows"`
 	Comments               int    `json:"comments"`
 	Favorites              int    `json:"favorites"`
 	SearchDocuments        int    `json:"search_documents"`
@@ -171,7 +173,7 @@ func (r Report) Validate() error {
 	if r.CacheState == "" || r.Fixture.Checksum == "" || r.Environment.PostgreSQLVersion == "" {
 		return fmt.Errorf("%w: missing cache, fixture checksum, or PostgreSQL evidence", errInvalidReport)
 	}
-	if r.Fixture.MediaItems != 100000 || r.Fixture.Recipients != 50 || r.Fixture.Events == 0 || r.Fixture.LargestEventPlacements != 5000 || r.Fixture.ReusedMediaItems == 0 || r.Fixture.AudienceEntries == 0 || r.Fixture.PublicationRecipients != 50 || r.Fixture.OverlappingRecipients == 0 || r.Fixture.Comments == 0 || r.Fixture.Favorites == 0 || r.Fixture.SearchDocuments == 0 || r.Fixture.DeliveryActivity == 0 {
+	if r.Fixture.MediaItems != 100000 || r.Fixture.Recipients != 50 || r.Fixture.Events == 0 || r.Fixture.LargestEventPlacements != 5000 || r.Fixture.ReusedMediaItems == 0 || r.Fixture.AudienceEntries == 0 || r.Fixture.PublicationRecipients != 50 || r.Fixture.OverlappingRecipients == 0 || r.Fixture.ProposalMomentItems != 500 || r.Fixture.AttendanceRows != 50 || r.Fixture.Comments == 0 || r.Fixture.Favorites == 0 || r.Fixture.SearchDocuments == 0 || r.Fixture.DeliveryActivity == 0 {
 		return fmt.Errorf("%w: fixture does not match the target-scale shape: %+v", errInvalidReport, r.Fixture)
 	}
 	seen := make(map[string]bool, len(r.Metrics))
@@ -239,12 +241,20 @@ func (r Report) Validate() error {
 	if !competitors["reconciliation"] || !competitors["publication"] || !competitors["notification dispatch"] {
 		return fmt.Errorf("%w: reconciliation, publication, and notification dispatch competing-work evidence is required", errInvalidReport)
 	}
-	if len(r.Plans) < 4 {
-		return fmt.Errorf("%w: authorization, gallery, search, and Curator PostgreSQL plans are required", errInvalidReport)
-	}
+	requiredPlans := map[string]bool{"authorization": false, "media_authorization": false, "gallery": false, "search": false, "curator": false}
 	for _, plan := range r.Plans {
 		if plan.Name == "" || plan.CacheState == "" || plan.SQLRole == "" || !json.Valid(plan.Plan) {
 			return fmt.Errorf("%w: invalid PostgreSQL plan evidence %q", errInvalidReport, plan.Name)
+		}
+		seen, required := requiredPlans[plan.Name]
+		if !required || seen {
+			return fmt.Errorf("%w: unknown or duplicate PostgreSQL plan %q", errInvalidReport, plan.Name)
+		}
+		requiredPlans[plan.Name] = true
+	}
+	for name, present := range requiredPlans {
+		if !present {
+			return fmt.Errorf("%w: missing PostgreSQL plan %q", errInvalidReport, name)
 		}
 	}
 	return nil
@@ -269,7 +279,7 @@ func (r Report) Write(jsonPath, markdownPath string) error {
 func (r Report) Markdown() string {
 	var output strings.Builder
 	fmt.Fprintf(&output, "# Target-scale performance report\n\nGenerated: `%s`  \nQualifying: `%t`  \nGit revision: `%s` (dirty: `%t`)  \nCache state: `%s`  \nPostgreSQL: `%s`\n\n", r.GeneratedAt.UTC().Format(time.RFC3339), r.Qualifying, r.Environment.GitRevision, r.Environment.GitDirty, r.CacheState, r.Environment.PostgreSQLVersion)
-	fmt.Fprintf(&output, "## Fixture\n\n100,000 Media items, %d Recipients, %d Events, largest Event %d placements, %d reused Media items, %d Audience entries, %d Publication Recipients, %d overlapping Recipients, %d Comments, %d Favorites, %d search documents, and %d delivery activity rows. Fixture checksum: `%s`.\n\n", r.Fixture.Recipients, r.Fixture.Events, r.Fixture.LargestEventPlacements, r.Fixture.ReusedMediaItems, r.Fixture.AudienceEntries, r.Fixture.PublicationRecipients, r.Fixture.OverlappingRecipients, r.Fixture.Comments, r.Fixture.Favorites, r.Fixture.SearchDocuments, r.Fixture.DeliveryActivity, r.Fixture.Checksum)
+	fmt.Fprintf(&output, "## Fixture\n\n100,000 Media items, %d Recipients, %d Events, largest Event %d placements, %d reused Media items, %d Audience entries, %d Publication Recipients, %d overlapping Recipients, a %d-item proposal Moment with %d Attendance rows, %d Comments, %d Favorites, %d search documents, and %d delivery activity rows. Fixture checksum: `%s`.\n\n", r.Fixture.Recipients, r.Fixture.Events, r.Fixture.LargestEventPlacements, r.Fixture.ReusedMediaItems, r.Fixture.AudienceEntries, r.Fixture.PublicationRecipients, r.Fixture.OverlappingRecipients, r.Fixture.ProposalMomentItems, r.Fixture.AttendanceRows, r.Fixture.Comments, r.Fixture.Favorites, r.Fixture.SearchDocuments, r.Fixture.DeliveryActivity, r.Fixture.Checksum)
 	output.WriteString("## Baselines\n\n| Operation | p95 | Target | Result | Scenario | Concurrency | Immich latency |\n| --- | ---: | ---: | --- | --- | ---: | ---: |\n")
 	for _, metric := range r.Metrics {
 		result := "PASS"
