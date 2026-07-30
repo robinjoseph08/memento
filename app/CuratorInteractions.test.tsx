@@ -202,6 +202,7 @@ test("gives the Curator a discoverable private moderation and Favorite surface",
     "src",
     `/api/curator/media/${mediaID}/thumbnail`,
   );
+  commentMedia.focus();
   fireEvent.click(commentMedia);
   const mediaDialog = await screen.findByRole("dialog", {
     name: "family-picnic.jpg",
@@ -218,6 +219,7 @@ test("gives the Curator a discoverable private moderation and Favorite surface",
   fireEvent.click(
     within(mediaDialog).getByRole("button", { name: "Close Media context" }),
   );
+  await waitFor(() => expect(commentMedia).toHaveFocus());
 
   fireEvent.change(await screen.findByLabelText("Recipient"), {
     target: { value: recipientID },

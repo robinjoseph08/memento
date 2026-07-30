@@ -260,7 +260,7 @@
 
 .recipient-account-drawer {
   position: fixed;
-  z-index: 45;
+  z-index: 55;
   top: 4.5rem;
   right: max(1rem, env(safe-area-inset-right));
   width: min(34rem, calc(100vw - 2rem));
@@ -354,12 +354,6 @@
 @media (max-width: 760px) {
   .session-row {
     grid-template-columns: 1fr;
-  }
-
-  .recipient-account-tools {
-    position: fixed;
-    top: max(0.75rem, env(safe-area-inset-top));
-    right: max(0.75rem, env(safe-area-inset-right));
   }
 
   .recipient-account-tools > summary strong {

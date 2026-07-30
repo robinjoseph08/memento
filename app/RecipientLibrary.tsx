@@ -5,9 +5,11 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { useInRouterContext, useLocation, useNavigate } from "react-router-dom";
 
 import { APIError, apiJSON, apiNoContent, apiResponse } from "./api";
 import { recordEngagement } from "./engagement";
+import { preferredScrollBehavior } from "./motion";
 import { ThemeToggle } from "./PWAControls";
 import type {
   PlanRequest as ArchivePlanRequest,
@@ -35,7 +37,11 @@ import type { SessionResponse } from "./types/generated/setup";
 type Destination = "photos" | "events" | "favorites" | "search";
 type SearchDateKind = "" | "year" | "month" | "date" | "range";
 type SearchDateFilter = NonNullable<SearchRequest["date"]>;
-type OpenedEvent = Pick<EventSummary, "id" | "title" | "publication_id">;
+type OpenedEvent = {
+  id: string;
+  title?: string;
+  publication_id?: string;
+};
 
 const libraryDestinations: ReadonlyArray<{
   destination: Destination;
@@ -95,7 +101,7 @@ function parsedMediaDate(media: Media) {
   return Number.isNaN(parsed.valueOf()) ? undefined : parsed;
 }
 
-function mediaLabel(media: Media) {
+function mediaMonthLabel(media: Media) {
   const parsed = parsedMediaDate(media);
   if (!parsed) return "Date unavailable";
   return new Intl.DateTimeFormat(undefined, {
@@ -110,12 +116,6 @@ function mediaDateLabel(media: Media) {
   return new Intl.DateTimeFormat(undefined, {
     dateStyle: "long",
   }).format(parsed);
-}
-
-function preferredScrollBehavior(): ScrollBehavior {
-  return window.matchMedia?.("(prefers-reduced-motion: reduce)").matches
-    ? "auto"
-    : "smooth";
 }
 
 function destinationFromPath(pathname: string): Destination {
@@ -143,7 +143,7 @@ function pushLibraryPath(pathname: string) {
 
 function mediaAlt(item: Media, index: number) {
   const kind = item.media_type === "video" ? "Video" : "Photo";
-  const date = mediaLabel(item);
+  const date = mediaMonthLabel(item);
   return date === "Date unavailable"
     ? `${kind} ${index + 1}, date unavailable`
     : `${kind} ${index + 1} from ${date}`;
@@ -596,7 +596,7 @@ function MediaViewer({
         <h2>{media.media_type === "video" ? "Video" : "Photo"}</h2>
         <dl>
           <dt>Date</dt>
-          <dd>{mediaLabel(media)}</dd>
+          <dd>{mediaMonthLabel(media)}</dd>
           <dt>Dimensions</dt>
           <dd>
             {media.width && media.height
@@ -1034,16 +1034,27 @@ function LibraryError({ error }: { error: Error | null }) {
   ) : null;
 }
 
-export function RecipientLibrary({ session }: { session: SessionResponse }) {
+function RecipientLibraryContent({
+  session,
+  pathname,
+  navigatePath,
+}: {
+  session: SessionResponse;
+  pathname: string;
+  navigatePath: (pathname: string) => void;
+}) {
   const queryClient = useQueryClient();
-  const initialEventID = eventIDFromPath(window.location.pathname);
-  const [destination, setDestination] = useState<Destination>(() =>
-    destinationFromPath(window.location.pathname),
-  );
-  const [openedEvent, setOpenedEvent] = useState<OpenedEvent | undefined>(() =>
-    initialEventID
-      ? { id: initialEventID, title: "Event", publication_id: "" }
-      : undefined,
+  const [openedEventSummary, setOpenedEventSummary] = useState<OpenedEvent>();
+  const destination = destinationFromPath(pathname);
+  const openedEventID = eventIDFromPath(pathname);
+  const openedEvent = useMemo(
+    () =>
+      openedEventID
+        ? openedEventSummary?.id === openedEventID
+          ? openedEventSummary
+          : { id: openedEventID }
+        : undefined,
+    [openedEventID, openedEventSummary],
   );
   const [openedMedia, setOpenedMedia] = useState<Media>();
   const [selectionEnabled, setSelectionEnabled] = useState(false);
@@ -1142,23 +1153,7 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
   const dates = useMemo(() => [...new Set(media.map(mediaDateLabel))], [media]);
 
   useEffect(() => {
-    const restorePath = () => {
-      navigationStarted.current = true;
-      const eventID = eventIDFromPath(window.location.pathname);
-      setDestination(destinationFromPath(window.location.pathname));
-      setOpenedEvent((current) => {
-        if (!eventID) return undefined;
-        return current?.id === eventID
-          ? current
-          : { id: eventID, title: "Event", publication_id: "" };
-      });
-    };
-    window.addEventListener("popstate", restorePath);
-    return () => window.removeEventListener("popstate", restorePath);
-  }, []);
-
-  useEffect(() => {
-    document.title = `${openedEvent ? (event.data?.pages[0]?.title ?? openedEvent.title) : destination[0].toUpperCase() + destination.slice(1)} | Memento`;
+    document.title = `${openedEvent ? (event.data?.pages[0]?.title ?? openedEvent.title ?? "Event") : destination[0].toUpperCase() + destination.slice(1)} | Memento`;
   }, [destination, event.data, openedEvent]);
 
   useEffect(() => {
@@ -1180,13 +1175,13 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
   function openEvent(summary: OpenedEvent, isNew = false) {
     navigationStarted.current = true;
     setArchivePlan(undefined);
-    setOpenedEvent(summary);
-    pushLibraryPath(`/events/${encodeURIComponent(summary.id)}`);
+    setOpenedEventSummary(summary);
+    navigatePath(`/events/${encodeURIComponent(summary.id)}`);
     void recordEngagement(session, {
       kind: "event_opened",
       event_id: summary.id,
     });
-    if (isNew) seen.mutate(summary.publication_id);
+    if (isNew && summary.publication_id) seen.mutate(summary.publication_id);
   }
 
   function toggleMedia(item: Media) {
@@ -1221,9 +1216,8 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
     setArchivePlan(undefined);
     setSelectionEnabled(false);
     setSelectedMedia(new Set());
-    setOpenedEvent(undefined);
-    setDestination(destination);
-    pushLibraryPath(destinationPath(destination));
+    setOpenedEventSummary(undefined);
+    navigatePath(destinationPath(destination));
     void recordEngagement(session, {
       kind: "destination_opened",
       destination,
@@ -1327,8 +1321,8 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
               onClick={() => {
                 navigationStarted.current = true;
                 setArchivePlan(undefined);
-                setOpenedEvent(undefined);
-                pushLibraryPath(destinationPath(destination));
+                setOpenedEventSummary(undefined);
+                navigatePath(destinationPath(destination));
               }}
               type="button"
             >
@@ -1341,7 +1335,9 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
             </button>
             <header className="library-heading">
               <h1 ref={libraryHeading} tabIndex={-1}>
-                {event.data?.pages[0]?.title ?? openedEvent.title}
+                {event.data?.pages[0]?.title ??
+                  openedEvent.title ??
+                  "Loading Event…"}
               </h1>
               {event.data?.pages[0]?.description ? (
                 <p>{event.data.pages[0].description}</p>
@@ -1598,7 +1594,6 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
                               openEvent({
                                 id: event.id,
                                 title: event.title,
-                                publication_id: "",
                               })
                             }
                             style={{
@@ -1814,5 +1809,42 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
         onNavigate={navigateTo}
       />
     </section>
+  );
+}
+
+function RoutedRecipientLibrary({ session }: { session: SessionResponse }) {
+  const location = useLocation();
+  const navigate = useNavigate();
+  return (
+    <RecipientLibraryContent
+      navigatePath={(pathname) => {
+        void navigate(pathname);
+      }}
+      pathname={location.pathname}
+      session={session}
+    />
+  );
+}
+
+function UnroutedRecipientLibrary({ session }: { session: SessionResponse }) {
+  const [pathname, setPathname] = useState(window.location.pathname);
+  return (
+    <RecipientLibraryContent
+      navigatePath={(nextPathname) => {
+        pushLibraryPath(nextPathname);
+        setPathname(nextPathname);
+      }}
+      pathname={pathname}
+      session={session}
+    />
+  );
+}
+
+export function RecipientLibrary({ session }: { session: SessionResponse }) {
+  const routed = useInRouterContext();
+  return routed ? (
+    <RoutedRecipientLibrary session={session} />
+  ) : (
+    <UnroutedRecipientLibrary session={session} />
   );
 }

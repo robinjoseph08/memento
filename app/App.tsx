@@ -1452,7 +1452,7 @@ function PublicSessionBanner({
   onSignOut,
 }: {
   session: SessionResponse;
-  onSignOut?: () => void;
+  onSignOut: () => void;
 }) {
   if (session.session_type !== "public") return null;
   return (
@@ -1462,11 +1462,9 @@ function PublicSessionBanner({
         Sign out when finished. Push is disabled, and downloaded originals or
         archives remain on this computer after sign-out.
       </span>
-      {onSignOut ? (
-        <button onClick={onSignOut} type="button">
-          Sign out now
-        </button>
-      ) : null}
+      <button onClick={onSignOut} type="button">
+        Sign out now
+      </button>
     </aside>
   );
 }

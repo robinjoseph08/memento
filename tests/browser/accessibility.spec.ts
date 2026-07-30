@@ -6,6 +6,7 @@ const eventID = "11111111-1111-4111-8111-111111111111";
 const momentID = "22222222-2222-4222-8222-222222222222";
 const mediaID = "33333333-3333-4333-8333-333333333333";
 const recipientID = "44444444-4444-4444-8444-444444444444";
+const inaccessibleMediaID = "99999999-9999-4999-8999-999999999999";
 const transparentPixel = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
   "base64",
@@ -112,6 +113,21 @@ const publishedEvent = {
 };
 
 async function mockRecipient(page: Page) {
+  let favorite = false;
+  const comments: Array<{
+    id: string;
+    media_item_id: string;
+    author_name: string;
+    body: string;
+    state: string;
+    version: number;
+    created_at: string;
+    edited_at: null;
+    can_edit: boolean;
+    can_delete: boolean;
+    can_moderate: boolean;
+    moderator_name: null;
+  }> = [];
   await page.route("**/api/**", async (route) => {
     const request = route.request();
     const path = pathOf(request);
@@ -156,18 +172,38 @@ async function mockRecipient(page: Page) {
     ) {
       await route.fulfill({ contentType: "image/png", body: transparentPixel });
     } else if (path === `/api/favorites/${mediaID}`) {
-      await route.fulfill({
-        json: { media_item_id: mediaID, favorite: false },
-      });
+      if (request.method() === "PUT") favorite = true;
+      if (request.method() === "DELETE") favorite = false;
+      await route.fulfill({ json: { media_item_id: mediaID, favorite } });
     } else if (path === `/api/comments/media/${mediaID}`) {
-      await route.fulfill({
-        json: {
-          comments: [],
-          can_mute: false,
-          muted: false,
-          next_cursor: null,
-        },
-      });
+      if (request.method() === "POST") {
+        const body = (request.postDataJSON() as { body: string }).body;
+        const comment = {
+          id: "88888888-8888-4888-8888-888888888888",
+          media_item_id: mediaID,
+          author_name: "Alex",
+          body,
+          state: "active",
+          version: 1,
+          created_at: "2026-07-27T14:00:00Z",
+          edited_at: null,
+          can_edit: true,
+          can_delete: true,
+          can_moderate: false,
+          moderator_name: null,
+        };
+        comments.splice(0, comments.length, comment);
+        await route.fulfill({ status: 201, json: comment });
+      } else {
+        await route.fulfill({
+          json: {
+            comments,
+            can_mute: comments.length > 0,
+            muted: false,
+            next_cursor: null,
+          },
+        });
+      }
     } else if (path === "/api/search" && request.method() === "POST") {
       await route.fulfill({
         json: {
@@ -396,6 +432,8 @@ test("@desktop @mobile Onboarding has accessible names, order, announcements, an
 test("@desktop @mobile Recipient navigation, archives, and Media viewer are accessible", async ({
   page,
 }) => {
+  const browserRequests: string[] = [];
+  page.on("request", (request) => browserRequests.push(request.url()));
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.addInitScript(() => {
     Object.defineProperty(window, "__mementoScrollBehaviors", {
@@ -477,6 +515,21 @@ test("@desktop @mobile Recipient navigation, archives, and Media viewer are acce
   await expect(
     page.getByRole("button", { name: "Close viewer" }),
   ).toBeFocused();
+  await page.getByRole("button", { name: "Add Favorite" }).click();
+  await expect(
+    page.getByRole("button", { name: "Remove Favorite" }),
+  ).toHaveAttribute("aria-pressed", "true");
+  await page.getByRole("textbox", { name: "Add a Comment" }).fill("Wonderful");
+  await page.getByRole("button", { name: "Post Comment" }).click();
+  const commentList = page.locator(".comment-list");
+  await expect(commentList).toHaveAttribute("aria-live", "polite");
+  await expect(commentList).toContainText("Wonderful");
+  if ((page.viewportSize()?.width ?? 1280) <= 700) {
+    const downloadTarget = await page
+      .getByRole("link", { name: "Download original" })
+      .boundingBox();
+    expect(downloadTarget?.height).toBeGreaterThanOrEqual(44);
+  }
   await expectAccessible(page);
   await page.getByRole("button", { name: "Close viewer" }).click();
   await expect(openMedia).toBeFocused();
@@ -486,6 +539,7 @@ test("@desktop @mobile Recipient navigation, archives, and Media viewer are acce
       ? page.locator(".mobile-library-nav")
       : page.locator(".library-rail");
   const eventsNavigation = navigation.getByRole("button", { name: "Events" });
+  await page.keyboard.press("Tab");
   await eventsNavigation.focus();
   await expect(eventsNavigation).toHaveCSS("outline-style", "solid");
   await expect(eventsNavigation).toHaveCSS("outline-width", "3px");
@@ -508,7 +562,7 @@ test("@desktop @mobile Recipient navigation, archives, and Media viewer are acce
   await page.getByRole("button", { name: "Prepare Event archive" }).click();
   await expect(
     page.getByRole("region", { name: "Archive downloads" }),
-  ).toBeVisible();
+  ).toHaveAttribute("aria-live", "polite");
   await expectAccessible(page);
 
   if ((page.viewportSize()?.width ?? 1280) <= 700) {
@@ -532,6 +586,17 @@ test("@desktop @mobile Recipient navigation, archives, and Media viewer are acce
     page.getByText("Favorites aren't shared with other recipients."),
   ).toBeVisible();
   await expectAccessible(page);
+
+  await expect(page.getByText(/hidden/i)).toHaveCount(0);
+  expect(browserRequests.some((url) => url.includes(inaccessibleMediaID))).toBe(
+    false,
+  );
+  const applicationOrigin = new URL(page.url()).origin;
+  expect(
+    browserRequests
+      .filter((url) => new URL(url).origin !== applicationOrigin)
+      .map((url) => new URL(url).origin),
+  ).toEqual([]);
 });
 
 test("@desktop @mobile Publication review and responsive drill-down are accessible", async ({

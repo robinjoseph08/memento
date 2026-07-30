@@ -232,6 +232,13 @@
   margin-top: 1.25rem;
 }
 
+.viewer-download {
+  display: flex;
+  width: fit-content;
+  min-height: 2.75rem;
+  align-items: center;
+}
+
 .viewer-favorite,
 .viewer-comments {
   margin-top: 1.5rem;
