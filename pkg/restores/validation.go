@@ -20,6 +20,7 @@ import (
 const (
 	expectedForeignKeyInventorySHA256  = "1b49cf8988b176531ad730e92b382e6f223f9bc2a931f509ef202f2bdfdf4963"
 	expectedRecoveryDeliveryViewSHA256 = "6ef46fa32643821f6367cb7e25264bbd62d1ed32e76713519440e05f80af285f"
+	expectedWithdrawalFunctionSHA256   = "82ee8848f421c74c31eb5c380df242243f12d9eff71695ac974f3375cbc940f8"
 )
 
 var (
@@ -212,6 +213,10 @@ func validateProjections(ctx context.Context, db bun.IDB) error {
 		 WHERE NOT EXISTS (SELECT 1 FROM current_published_placements AS placement
 		  WHERE placement.event_id = current.event_id AND placement.publication_id = current.publication_id
 		   AND placement.published_moment_id = moment.id AND placement.media_item_id = media.media_item_id)) +
+		(SELECT count(*) FROM content_withdrawals AS withdrawal WHERE
+		 (withdrawal.target_kind = 'event' AND NOT EXISTS (SELECT 1 FROM events WHERE id = withdrawal.target_id)) OR
+		 (withdrawal.target_kind = 'moment' AND NOT EXISTS (SELECT 1 FROM draft_moments WHERE id = withdrawal.target_id)) OR
+		 (withdrawal.target_kind = 'media' AND NOT EXISTS (SELECT 1 FROM media_items WHERE id = withdrawal.target_id))) +
 		(SELECT count(*) FROM current_audience_snapshots AS current
 		 JOIN audience_snapshots AS snapshot ON snapshot.id = current.snapshot_id
 		 WHERE current.target_kind IS DISTINCT FROM snapshot.target_kind
@@ -250,15 +255,25 @@ func validateProjections(ctx context.Context, db bun.IDB) error {
 		   AND placement.media_item_id = entitlement.media_item_id
 		 )) +
 		(SELECT count(*) FROM current_audience_entitlements AS entitlement
+		 JOIN publications AS publication ON publication.id = entitlement.publication_id
 		 JOIN current_published_placements AS placement
 		  ON placement.event_id = entitlement.event_id AND placement.media_item_id = entitlement.media_item_id
 		 JOIN published_moments AS moment ON moment.id = placement.published_moment_id
-		 WHERE content_is_withdrawn(entitlement.event_id, moment.draft_moment_id, entitlement.media_item_id)) +
+		 WHERE EXISTS (SELECT 1 FROM content_withdrawals AS withdrawal
+		  WHERE withdrawal.restored_at IS NULL AND withdrawal.content_revision > publication.content_revision
+		   AND ((withdrawal.target_kind = 'event' AND withdrawal.target_id = entitlement.event_id)
+		    OR (withdrawal.target_kind = 'moment' AND withdrawal.target_id = moment.draft_moment_id)
+		    OR (withdrawal.target_kind = 'media' AND withdrawal.target_id = entitlement.media_item_id)))) +
 		(SELECT count(*) FROM audience_entries AS audience
 		 JOIN published_moments AS moment ON moment.id = audience.published_moment_id
 		 JOIN current_published_events AS current ON current.publication_id = moment.publication_id
 		 JOIN published_media_placements AS media ON media.published_moment_id = moment.id
-		 WHERE NOT content_is_withdrawn(current.event_id, moment.draft_moment_id, media.media_item_id)
+		 JOIN publications AS publication ON publication.id = current.publication_id
+		 WHERE NOT EXISTS (SELECT 1 FROM content_withdrawals AS withdrawal
+		  WHERE withdrawal.restored_at IS NULL AND withdrawal.content_revision > publication.content_revision
+		   AND ((withdrawal.target_kind = 'event' AND withdrawal.target_id = current.event_id)
+		    OR (withdrawal.target_kind = 'moment' AND withdrawal.target_id = moment.draft_moment_id)
+		    OR (withdrawal.target_kind = 'media' AND withdrawal.target_id = media.media_item_id)))
 		  AND NOT EXISTS (SELECT 1 FROM current_audience_entitlements AS entitlement
 		   WHERE entitlement.event_id = current.event_id AND entitlement.publication_id = current.publication_id
 		    AND entitlement.recipient_access_generation_id = audience.recipient_access_generation_id
@@ -347,6 +362,19 @@ func validateSecurity(ctx context.Context, db bun.IDB) error {
 	}
 	viewDigest := sha256.Sum256([]byte(viewDefinition))
 	if hex.EncodeToString(viewDigest[:]) != expectedRecoveryDeliveryViewSHA256 {
+		return ErrSecurity
+	}
+	var withdrawalDefinition string
+	if err := db.NewRaw(`SELECT replace(pg_get_functiondef(function.oid), current_schema() || '.', '')
+		FROM pg_proc AS function
+		JOIN pg_namespace AS namespace ON namespace.oid = function.pronamespace
+		WHERE namespace.oid = current_schema()::regnamespace
+		 AND function.proname = 'content_is_withdrawn'
+		 AND oidvectortypes(function.proargtypes) = 'uuid, uuid, uuid'`).Scan(ctx, &withdrawalDefinition); err != nil {
+		return fmt.Errorf("security settings: %w", err)
+	}
+	withdrawalDigest := sha256.Sum256([]byte(withdrawalDefinition))
+	if hex.EncodeToString(withdrawalDigest[:]) != expectedWithdrawalFunctionSHA256 {
 		return ErrSecurity
 	}
 	var invalid int

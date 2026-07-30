@@ -99,15 +99,28 @@ func TestValidateRejectsMissingForeignKeyAndNullCurrentPublicationProjection(t *
 	})
 }
 
-func TestValidateRejectsAlteredRecoveryDeliveryView(t *testing.T) {
-	db := testdb.Open(t)
-	ctx := context.Background()
-	require.NoError(t, migrations.Apply(ctx, db))
-	_, err := db.NewRaw(`CREATE OR REPLACE VIEW recovery_curator_sign_in_deliveries AS
-		SELECT id, public_id FROM email_deliveries`).Exec(ctx)
-	require.NoError(t, err)
-	_, err = Validate(ctx, db)
-	assert.ErrorIs(t, err, ErrSecurity)
+func TestValidateRejectsAlteredAuthorizationSchema(t *testing.T) {
+	t.Run("Recovery delivery view", func(t *testing.T) {
+		db := testdb.Open(t)
+		ctx := context.Background()
+		require.NoError(t, migrations.Apply(ctx, db))
+		_, err := db.NewRaw(`CREATE OR REPLACE VIEW recovery_curator_sign_in_deliveries AS
+			SELECT id, public_id FROM email_deliveries`).Exec(ctx)
+		require.NoError(t, err)
+		_, err = Validate(ctx, db)
+		assert.ErrorIs(t, err, ErrSecurity)
+	})
+
+	t.Run("Withdrawal function", func(t *testing.T) {
+		db := testdb.Open(t)
+		ctx := context.Background()
+		require.NoError(t, migrations.Apply(ctx, db))
+		_, err := db.NewRaw(`CREATE OR REPLACE FUNCTION content_is_withdrawn(event_id uuid, moment_id uuid, media_id uuid)
+			RETURNS boolean LANGUAGE sql STABLE PARALLEL SAFE RETURN false`).Exec(ctx)
+		require.NoError(t, err)
+		_, err = Validate(ctx, db)
+		assert.ErrorIs(t, err, ErrSecurity)
+	})
 }
 
 func databaseFingerprint(t *testing.T, db *bun.DB) map[string]string {
