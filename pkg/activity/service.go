@@ -192,7 +192,10 @@ func (s *Service) listDeliveryWork(ctx context.Context, items *[]CuratorWorkItem
 		recipient.id::text AS recipient_id, recipient.display_name AS recipient_name, read.read_version
 		FROM delivery_problems AS problem
 		LEFT JOIN notification_batches AS batch ON batch.id = problem.notification_batch_id
-		LEFT JOIN recipient_access_generations AS access ON access.id = batch.recipient_access_generation_id
+		LEFT JOIN email_deliveries AS delivery ON delivery.id = problem.email_delivery_id
+		LEFT JOIN invitations AS invitation ON invitation.id = delivery.invitation_id
+		LEFT JOIN recipient_access_generations AS access
+		 ON access.id = COALESCE(batch.recipient_access_generation_id, invitation.recipient_access_generation_id)
 		LEFT JOIN people AS recipient ON recipient.id = access.person_id
 		LEFT JOIN curator_item_read_states AS read ON read.surface = 'work'
 		 AND read.source_kind = 'delivery_problem' AND read.source_id = problem.id::text
@@ -356,7 +359,7 @@ func (s *Service) listSourceWork(ctx context.Context, items *[]CuratorWorkItem) 
 	var rows []struct {
 		ID, Name    string
 		Version     int64
-		FirstSeen   time.Time
+		FirstSeen   time.Time `bun:"first_seen_at"`
 		ReadVersion *string
 	}
 	if err := s.db.NewRaw(`SELECT album.id::text AS id, album.name, album.version,
@@ -399,13 +402,20 @@ func (s *Service) MarkRead(ctx context.Context, curatorID uuid.UUID, request Mar
 		if current != request.Version {
 			return ErrVersionConflict
 		}
+		readAt := time.Now().UTC()
 		_, err = tx.NewRaw(`INSERT INTO curator_item_read_states
 			(surface, source_kind, source_id, read_version, read_by_person_id, read_at)
 			VALUES (?, ?, ?, ?, ?, ?)
 			ON CONFLICT (surface, source_kind, source_id) DO UPDATE
 			SET read_version = EXCLUDED.read_version, read_by_person_id = EXCLUDED.read_by_person_id,
 				read_at = EXCLUDED.read_at`, request.Surface, request.SourceKind, request.SourceID, request.Version,
-			curatorID, time.Now().UTC()).Exec(ctx)
+			curatorID, readAt).Exec(ctx)
+		if err != nil || request.Surface != "activity" {
+			return err
+		}
+		_, err = tx.NewRaw(`UPDATE curator_activity_items SET read_at = ?
+			WHERE source_kind = ? AND source_id = ? AND version = ?`, readAt,
+			request.SourceKind, request.SourceID, request.Version).Exec(ctx)
 		return err
 	})
 }
@@ -465,22 +475,10 @@ func currentWorkVersion(ctx context.Context, tx bun.Tx, sourceKind, sourceID str
 }
 
 func currentActivityVersion(ctx context.Context, tx bun.Tx, sourceKind, sourceID string) (string, error) {
-	queries := map[string]string{
-		"security_audit":                 `SELECT 'audit ' || id::text FROM security_audit_events WHERE id::text = ?`,
-		"publication":                    `SELECT 'publication ' || revision::text FROM publications WHERE id::text = ?`,
-		"publication_audit":              `SELECT 'publication audit ' || id::text FROM publication_audit_events WHERE id::text = ? AND action IN ('content_withdrawn', 'content_restored_by_publication')`,
-		"comment":                        `SELECT 'comment ' || id::text FROM comments WHERE id::text = ?`,
-		"interaction_favorite":           `SELECT 'favorite ' || id::text FROM interaction_activity_items WHERE id::text = ? AND kind = 'favorite'`,
-		"invitation_suggestion_activity": `SELECT 'suggestion activity ' || id::text FROM curator_activity_items WHERE id::text = ?`,
-		"delivery_problem":               `SELECT 'problem ' || id::text FROM delivery_problems WHERE id::text = ?`,
-		"delivery_problem_resolution":    `SELECT 'problem resolution ' || id::text || ' ' || extract(epoch FROM resolved_at)::text FROM delivery_problems WHERE id::text = ? AND resolved_at IS NOT NULL`,
-	}
-	query, valid := queries[sourceKind]
-	if !valid {
-		return "", ErrInvalidReadState
-	}
 	var version string
-	if err := tx.NewRaw(query, sourceID).Scan(ctx, &version); err != nil {
+	if err := tx.NewRaw(`SELECT version FROM curator_activity_items
+		WHERE source_kind = ? AND source_id = ? ORDER BY created_at DESC, id DESC LIMIT 1`,
+		sourceKind, sourceID).Scan(ctx, &version); err != nil {
 		return "", workNotFound(err)
 	}
 	return version, nil
@@ -495,7 +493,7 @@ func workNotFound(err error) error {
 
 var activityCategories = map[string]struct{}{
 	"security": {}, "publication": {}, "withdrawal": {}, "comment": {}, "favorite": {},
-	"invitation_suggestion": {}, "delivery": {}, "access": {},
+	"invitation_suggestion": {}, "delivery": {}, "access": {}, "engagement": {},
 }
 
 // ListCuratorActivity returns safe chronological history without raw metadata or private bodies.
@@ -523,89 +521,20 @@ func (s *Service) ListCuratorActivity(ctx context.Context, page PageRequest) (Cu
 		Read                                            bool
 	}
 	var rows []row
-	if err := s.db.NewRaw(`WITH base AS (
-		SELECT 'security_audit'::text AS source_kind, audit.id::text AS source_id,
-			'audit ' || audit.id::text AS version,
-			CASE WHEN audit.action IN (
-				'pending_recipient_designated', 'invitation_sent', 'invitation_reissued', 'invitation_revoked',
-				'invitation_accepted', 'recipient_suspended', 'recipient_suspension_lifted',
-				'recipient_access_revoked', 'recipient_email_changed', 'recipient_email_recovered'
-			) THEN 'access' ELSE 'security' END AS category,
-			audit.action, actor.id::text AS actor_id, actor.display_name AS actor_name,
-			subject.id::text AS subject_id, subject.display_name AS subject_name,
-			NULL::text AS target_kind, NULL::text AS target_id, NULL::text AS target_label,
-			audit.outcome, audit.created_at
-		FROM security_audit_events AS audit
-		LEFT JOIN people AS actor ON actor.id = audit.actor_person_id
-		LEFT JOIN people AS subject ON subject.id = audit.subject_person_id
-		WHERE audit.action NOT LIKE 'invitation_suggestion_%'
-		UNION ALL
-		SELECT 'publication', activity.publication_id::text, 'publication ' || publication.revision::text,
-			'publication', 'event_published', actor.id::text, actor.display_name,
-			NULL::text, CAST(NULL AS text), 'event', event.id::text, event.title, NULL, activity.created_at
-		FROM publication_curator_activity_items AS activity
-		JOIN publications AS publication ON publication.id = activity.publication_id
-		JOIN events AS event ON event.id = publication.event_id
-		JOIN people AS actor ON actor.id = activity.actor_person_id
-		UNION ALL
-		SELECT 'publication_audit', audit.id::text, 'publication audit ' || audit.id::text,
-			'withdrawal', audit.action, actor.id::text, actor.display_name,
-			NULL::text, CAST(NULL AS text), audit.target_kind, audit.target_id::text, COALESCE(event.title, 'Content'), NULL, audit.created_at
-		FROM publication_audit_events AS audit
-		JOIN people AS actor ON actor.id = audit.actor_person_id
-		LEFT JOIN events AS event ON event.id = audit.event_id
-		WHERE audit.action IN ('content_withdrawn', 'content_restored_by_publication')
-		UNION ALL
-		SELECT 'comment', comment.id::text, 'comment ' || comment.id::text,
-			'comment', 'comment_created', actor.id::text, actor.display_name,
-			NULL::text, CAST(NULL AS text), 'media', comment.media_item_id::text, 'Media item', NULL, comment.created_at
-		FROM comments AS comment
-		JOIN people AS actor ON actor.id = comment.author_person_id
-		UNION ALL
-		SELECT 'interaction_favorite', interaction.id::text, 'favorite ' || interaction.id::text,
-			'favorite', interaction.action, actor.id::text, actor.display_name,
-			NULL::text, CAST(NULL AS text), 'media', interaction.media_item_id::text, 'Media item', NULL, interaction.created_at
-		FROM interaction_activity_items AS interaction
-		JOIN people AS actor ON actor.id = interaction.actor_person_id
-		WHERE interaction.kind = 'favorite'
-		UNION ALL
-		SELECT 'invitation_suggestion_activity', activity.id::text, 'suggestion activity ' || activity.id::text,
-			'invitation_suggestion', activity.action, actor.id::text, actor.display_name,
-			requester.id::text, requester.display_name, 'invitation_suggestion', suggestion.id::text,
-			'Invitation suggestion', NULL, activity.created_at
+	if err := s.db.NewRaw(`SELECT activity.source_kind, activity.source_id, activity.version,
+		activity.category, activity.action, actor.id::text AS actor_id, actor.display_name AS actor_name,
+		subject.id::text AS subject_id, subject.display_name AS subject_name,
+		activity.target_kind, activity.target_id, activity.target_label, activity.outcome,
+		activity.created_at, (activity.read_at IS NOT NULL OR COALESCE(read.read_version = activity.version, false)) AS read
 		FROM curator_activity_items AS activity
-		JOIN people AS actor ON actor.id = activity.actor_person_id
-		JOIN invitation_suggestions AS suggestion ON suggestion.id = activity.invitation_suggestion_id
-		JOIN people AS requester ON requester.id = suggestion.requester_person_id
-		UNION ALL
-		SELECT 'delivery_problem', problem.id::text, 'problem ' || problem.id::text,
-			'delivery', 'delivery_failed', NULL::text, CAST(NULL AS text),
-			recipient.id::text, recipient.display_name, 'delivery_problem', problem.id::text,
-			'Delivery problem', NULL::text, problem.created_at
-		FROM delivery_problems AS problem
-		LEFT JOIN notification_batches AS batch ON batch.id = problem.notification_batch_id
-		LEFT JOIN recipient_access_generations AS access ON access.id = batch.recipient_access_generation_id
-		LEFT JOIN people AS recipient ON recipient.id = access.person_id
-		UNION ALL
-		SELECT 'delivery_problem_resolution', problem.id::text,
-			'problem resolution ' || problem.id::text || ' ' || extract(epoch FROM problem.resolved_at)::text,
-			'delivery', 'delivery_problem_resolved', NULL::text, CAST(NULL AS text),
-			recipient.id::text, recipient.display_name, 'delivery_problem', problem.id::text,
-			'Delivery problem', NULL::text, problem.resolved_at
-		FROM delivery_problems AS problem
-		LEFT JOIN notification_batches AS batch ON batch.id = problem.notification_batch_id
-		LEFT JOIN recipient_access_generations AS access ON access.id = batch.recipient_access_generation_id
-		LEFT JOIN people AS recipient ON recipient.id = access.person_id
-		WHERE problem.resolved_at IS NOT NULL
-	), projected AS (
-		SELECT base.*, COALESCE(read.read_version = base.version, false) AS read
-		FROM base LEFT JOIN curator_item_read_states AS read
-		 ON read.surface = 'activity' AND read.source_kind = base.source_kind AND read.source_id = base.source_id
-	)
-	SELECT * FROM projected
-	WHERE (? = '' OR category = ?) AND (NOT ? OR NOT read)
-	  AND (created_at, source_kind || ':' || source_id) < (?, ?)
-	ORDER BY created_at DESC, source_kind || ':' || source_id DESC LIMIT ?`,
+		LEFT JOIN people AS actor ON actor.id = activity.actor_person_id
+		LEFT JOIN people AS subject ON subject.id = activity.subject_person_id
+		LEFT JOIN curator_item_read_states AS read
+		 ON read.surface = 'activity' AND read.source_kind = activity.source_kind AND read.source_id = activity.source_id
+		WHERE (? = '' OR activity.category = ?)
+		  AND (NOT ? OR (activity.read_at IS NULL AND read.read_version IS DISTINCT FROM activity.version))
+		  AND (activity.created_at, activity.source_kind || ':' || activity.source_id) < (?, ?)
+		ORDER BY activity.created_at DESC, activity.source_kind || ':' || activity.source_id DESC LIMIT ?`,
 		page.Category, page.Category, page.Unread, cursorTime, cursorID, page.Limit+1).Scan(ctx, &rows); err != nil {
 		return CuratorActivityResponse{}, err
 	}

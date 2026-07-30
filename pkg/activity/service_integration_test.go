@@ -72,6 +72,35 @@ func TestCuratorWorkReadsSafeUnresolvedImmediateDeliveryProblems(t *testing.T) {
 	require.NotNil(t, activity.Items[0].Subject)
 	assert.Equal(t, personID.String(), activity.Items[0].Subject.PersonID)
 	assert.Equal(t, "delivery_failed", activity.Items[1].Action)
+
+	var emailID uuid.UUID
+	require.NoError(t, db.NewRaw(`SELECT id FROM recipient_emails WHERE recipient_access_generation_id = ?`, accessID).Scan(ctx, &emailID))
+	invitationID := uuid.New()
+	_, err = db.NewRaw(`INSERT INTO invitations
+		(id, recipient_access_generation_id, recipient_email_id, token_hash, issued_at, expires_at, automatic_reminder_scheduled_at)
+		VALUES (?, ?, ?, decode(repeat('55', 32), 'hex'), ?, ?, ?);
+		INSERT INTO email_deliveries
+		(public_id, kind, recipient, subject, body, status, deliver_before, invitation_id, created_at, updated_at)
+		VALUES ('invitation-delivery-problem', 'invitation_initial', 'private-recipient@example.com',
+			'Invitation', 'Private body', 'failed', ?, ?, ?, ?)
+	`, invitationID, accessID, emailID, resolvedAt, resolvedAt.Add(14*24*time.Hour), resolvedAt.Add(7*24*time.Hour),
+		resolvedAt.Add(time.Hour), invitationID, resolvedAt.Add(time.Minute), resolvedAt.Add(time.Minute)).Exec(ctx)
+	require.NoError(t, err)
+	var invitationDeliveryID int64
+	require.NoError(t, db.NewRaw(`SELECT id FROM email_deliveries WHERE public_id = 'invitation-delivery-problem'`).Scan(ctx, &invitationDeliveryID))
+	_, err = db.NewRaw(`INSERT INTO delivery_problems (email_delivery_id, diagnostic, created_at)
+		VALUES (?, 'recipient_rejected', ?)`, invitationDeliveryID, resolvedAt.Add(time.Minute)).Exec(ctx)
+	require.NoError(t, err)
+	work, err := New(db).ListCuratorWork(ctx, WorkPageRequest{Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, work.Items, 1)
+	require.NotNil(t, work.Items[0].Subject)
+	assert.Equal(t, personID.String(), work.Items[0].Subject.PersonID)
+	activity, err = New(db).ListCuratorActivity(ctx, PageRequest{Category: "delivery", Limit: 10})
+	require.NoError(t, err)
+	require.NotNil(t, activity.Items[0].Subject)
+	assert.Equal(t, personID.String(), activity.Items[0].Subject.PersonID,
+		"Invitation-backed delivery failures remain attributable without exposing email")
 }
 
 func TestCuratorWorkPrioritizesProblemsAndVersionedReadState(t *testing.T) {

@@ -17,7 +17,7 @@ func init() {
 						recipient_access_generation_id uuid NOT NULL REFERENCES recipient_access_generations(id) ON DELETE RESTRICT,
 						session_id uuid NOT NULL REFERENCES sessions(id) ON DELETE RESTRICT,
 						kind text NOT NULL CHECK (kind IN (
-							'visit', 'destination_opened', 'event_opened', 'media_opened', 'video_started',
+							'session_started', 'visit', 'destination_opened', 'event_opened', 'media_opened', 'video_started',
 							'original_download_started', 'archive_download_started', 'comment_created',
 							'favorite_added', 'favorite_removed', 'invitation_suggestion_submitted',
 							'invitation_suggestion_withdrawn'
@@ -29,7 +29,7 @@ func init() {
 						origin_key text,
 						occurred_at timestamptz NOT NULL,
 						CHECK (
-							(kind = 'visit' AND destination IS NULL AND event_id IS NULL AND media_item_id IS NULL) OR
+							(kind IN ('session_started', 'visit') AND destination IS NULL AND event_id IS NULL AND media_item_id IS NULL) OR
 							(kind = 'destination_opened' AND destination IS NOT NULL AND event_id IS NULL AND media_item_id IS NULL) OR
 							(kind = 'event_opened' AND destination IS NULL AND event_id IS NOT NULL AND media_item_id IS NULL) OR
 							(kind IN ('media_opened', 'video_started', 'original_download_started', 'comment_created', 'favorite_added', 'favorite_removed')
@@ -56,7 +56,7 @@ func init() {
 						recipient_person_id uuid NOT NULL REFERENCES people(id) ON DELETE RESTRICT,
 						activity_date date NOT NULL,
 						kind text NOT NULL CHECK (kind IN (
-							'visit', 'destination_opened', 'event_opened', 'media_opened', 'video_started',
+							'session_started', 'visit', 'destination_opened', 'event_opened', 'media_opened', 'video_started',
 							'original_download_started', 'archive_download_started', 'comment_created',
 							'favorite_added', 'favorite_removed', 'invitation_suggestion_submitted',
 							'invitation_suggestion_withdrawn'

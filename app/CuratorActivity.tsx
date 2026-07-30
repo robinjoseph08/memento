@@ -25,6 +25,7 @@ const categories = [
   "favorite",
   "invitation_suggestion",
   "delivery",
+  "engagement",
 ] as const;
 
 function formatWhen(value: string) {

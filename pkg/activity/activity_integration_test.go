@@ -33,7 +33,7 @@ func TestCuratorActivityAttributesEveryRoutineCategoryWithoutPrivatePayloads(t *
 		INSERT INTO sessions
 			(id, credential_hash, person_id, recipient_access_generation_id, security_epoch,
 			 session_type, created_at, last_activity_at, idle_expires_at)
-		SELECT ?, digest(?::text, 'sha256'), ?, ?, security_epoch, 'trusted', ?, ?, ?
+		SELECT ?, decode(repeat('42', 32), 'hex'), ?, ?, security_epoch, 'trusted', ?, ?, ?
 		FROM system_settings WHERE id = 1;
 		INSERT INTO media_items
 			(id, immich_asset_id, media_type, width, height, local_date_time, first_seen_at, last_seen_at)
@@ -74,7 +74,7 @@ func TestCuratorActivityAttributesEveryRoutineCategoryWithoutPrivatePayloads(t *
 		VALUES ('activity-delivery', 'required_test', 'secret@example.com', 'Private subject',
 			 'PRIVATE EMAIL BODY', 'failed', ?, ?);
 	`, curatorID, recipientID, curatorID, curatorID, recipientID,
-		accessID, recipientID, now, sessionID, sessionID.String(), recipientID, accessID, now, now, now.Add(time.Hour),
+		accessID, recipientID, now, sessionID, recipientID, accessID, now, now, now.Add(time.Hour),
 		mediaID, uuid.New(), now, now, eventID, now, now,
 		publicationID, eventID, curatorID, now.Add(-8*time.Minute), publicationID, curatorID, now.Add(-8*time.Minute),
 		eventID, eventID, curatorID, now.Add(-7*time.Minute),
@@ -91,7 +91,7 @@ func TestCuratorActivityAttributesEveryRoutineCategoryWithoutPrivatePayloads(t *
 	require.NoError(t, db.NewRaw(`SELECT id FROM email_deliveries WHERE public_id = 'activity-delivery'`).Scan(ctx, &deliveryID))
 	_, err = db.NewRaw(`INSERT INTO delivery_problems (email_delivery_id, diagnostic, created_at)
 		VALUES (?, 'provider said secret@example.com PRIVATE', ?);
-		UPDATE comments SET state = 'deleted' WHERE id = ?`, deliveryID, now, commentID).Exec(ctx)
+		UPDATE comments SET state = 'deleted', deleted_at = ? WHERE id = ?`, deliveryID, now, now, commentID).Exec(ctx)
 	require.NoError(t, err)
 
 	response, err := New(db).ListCuratorActivity(ctx, PageRequest{Limit: 50})
@@ -100,7 +100,7 @@ func TestCuratorActivityAttributesEveryRoutineCategoryWithoutPrivatePayloads(t *
 	for _, item := range response.Items {
 		categories[item.Category] = true
 	}
-	for _, category := range []string{"security", "access", "publication", "withdrawal", "comment", "favorite", "invitation_suggestion", "delivery"} {
+	for _, category := range []string{"security", "access", "publication", "withdrawal", "comment", "favorite", "invitation_suggestion", "delivery", "engagement"} {
 		assert.True(t, categories[category], category)
 	}
 	encoded, err := json.Marshal(response)

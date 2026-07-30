@@ -24,6 +24,7 @@ import (
 const (
 	RetentionJobKind = "retain_engagement"
 
+	KindSessionStarted                = "session_started"
 	KindVisit                         = "visit"
 	KindDestinationOpened             = "destination_opened"
 	KindEventOpened                   = "event_opened"
@@ -270,16 +271,20 @@ func parseBrowserTarget(request BrowserEventRequest) (*string, *uuid.UUID, *uuid
 func recipientCanOpenEvent(ctx context.Context, db bun.IDB, actor setup.SessionActor, eventID uuid.UUID) (bool, error) {
 	var authorized bool
 	err := db.NewRaw(`SELECT EXISTS (
-		SELECT 1 FROM current_audience_entitlements AS entitlement
-		JOIN events AS event ON event.id = entitlement.event_id AND event.lifecycle = 'published'
-		JOIN current_published_placements AS placement
-		  ON placement.event_id = entitlement.event_id
-		 AND placement.publication_id = entitlement.publication_id
-		 AND placement.media_item_id = entitlement.media_item_id
-		JOIN published_moments AS moment ON moment.id = placement.published_moment_id
-		WHERE entitlement.event_id = ? AND entitlement.recipient_access_generation_id = ?
-		  AND NOT content_is_withdrawn(placement.event_id, moment.draft_moment_id, placement.media_item_id)
-	)`, eventID, actor.AccessID).Scan(ctx, &authorized)
+		SELECT 1 FROM events AS event WHERE event.id = ? AND event.lifecycle = 'published' AND (
+			EXISTS (SELECT 1 FROM person_roles WHERE person_id = ? AND role = 'curator')
+			OR EXISTS (
+				SELECT 1 FROM current_audience_entitlements AS entitlement
+				JOIN current_published_placements AS placement
+				  ON placement.event_id = entitlement.event_id
+				 AND placement.publication_id = entitlement.publication_id
+				 AND placement.media_item_id = entitlement.media_item_id
+				JOIN published_moments AS moment ON moment.id = placement.published_moment_id
+				WHERE entitlement.event_id = event.id AND entitlement.recipient_access_generation_id = ?
+				  AND NOT content_is_withdrawn(placement.event_id, moment.draft_moment_id, placement.media_item_id)
+			)
+		)
+	)`, eventID, actor.PersonID, actor.AccessID).Scan(ctx, &authorized)
 	return authorized, err
 }
 

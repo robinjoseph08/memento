@@ -816,6 +816,23 @@ func (s *Service) Merge(ctx context.Context, actor setup.CuratorSession, request
 		if _, err := tx.NewRaw(`UPDATE recipient_activity_items SET recipient_person_id = ? WHERE recipient_person_id = ?`, survivorID, sourceID).Exec(ctx); err != nil {
 			return err
 		}
+		if _, err := tx.NewRaw(`INSERT INTO engagement_daily_aggregates
+			(recipient_person_id, activity_date, kind, event_count, first_occurred_at, last_occurred_at)
+			SELECT ?, activity_date, kind, event_count, first_occurred_at, last_occurred_at
+			FROM engagement_daily_aggregates WHERE recipient_person_id = ?
+			ON CONFLICT (recipient_person_id, activity_date, kind) DO UPDATE
+			SET event_count = engagement_daily_aggregates.event_count + EXCLUDED.event_count,
+				first_occurred_at = LEAST(engagement_daily_aggregates.first_occurred_at, EXCLUDED.first_occurred_at),
+				last_occurred_at = GREATEST(engagement_daily_aggregates.last_occurred_at, EXCLUDED.last_occurred_at)`,
+			survivorID, sourceID).Exec(ctx); err != nil {
+			return err
+		}
+		if _, err := tx.NewRaw(`DELETE FROM engagement_daily_aggregates WHERE recipient_person_id = ?`, sourceID).Exec(ctx); err != nil {
+			return err
+		}
+		if _, err := tx.NewRaw(`UPDATE engagement_events SET recipient_person_id = ? WHERE recipient_person_id = ?`, survivorID, sourceID).Exec(ctx); err != nil {
+			return err
+		}
 		resultingGeneration := 0
 		if _, err := tx.NewRaw(`
 			UPDATE person_repair_candidates

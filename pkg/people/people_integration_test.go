@@ -229,7 +229,7 @@ func TestPeopleListUsesBoundedQueriesAndShowsLatestMeaningfulActivity(t *testing
 	}
 	require.NotNil(t, curator.LatestMeaningfulActivityAt)
 	assert.Equal(t, latest, *curator.LatestMeaningfulActivityAt)
-	assert.LessOrEqual(t, counter.count.Load(), int64(7))
+	assert.LessOrEqual(t, counter.count.Load(), int64(8))
 }
 
 func TestPeopleRoutesEnforceCuratorCSRFAndPreserveMergeDirection(t *testing.T) {
@@ -779,6 +779,13 @@ func TestMergeExplicitlyTransfersGenerationResolvesEmailInvalidatesSessionsAndPr
 	require.NoError(t, fixture.db.NewRaw(`SELECT actor_person_id, subject_person_id FROM security_audit_events WHERE action = 'shared_history'`).Scan(ctx, &sharedHistoryActor, &sharedHistorySubject))
 	assert.Equal(t, source, sharedHistoryActor)
 	assert.Equal(t, survivor, sharedHistorySubject)
+	var sourceEngagement, survivorEngagement, sourceAggregates int
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM engagement_events WHERE recipient_person_id = ?`, source).Scan(ctx, &sourceEngagement))
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM engagement_events WHERE recipient_person_id = ?`, survivor).Scan(ctx, &survivorEngagement))
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM engagement_daily_aggregates WHERE recipient_person_id = ?`, source).Scan(ctx, &sourceAggregates))
+	assert.Zero(t, sourceEngagement)
+	assert.GreaterOrEqual(t, survivorEngagement, 2)
+	assert.Zero(t, sourceAggregates)
 	var mergeAuditMetadata string
 	require.NoError(t, fixture.db.NewRaw(`SELECT metadata::text FROM security_audit_events WHERE action = 'people_merged'`).Scan(ctx, &mergeAuditMetadata))
 	assert.Contains(t, mergeAuditMetadata, survivor.String())

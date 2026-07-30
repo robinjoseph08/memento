@@ -710,7 +710,7 @@ func TestPartsAreSessionBoundExpiringAndIndividuallySingleUse(t *testing.T) {
 	assert.Equal(t, []uuid.UUID{fixture.assets[0]}, source.archiveCalls[0])
 	var archiveEngagement int
 	var engagementEventID uuid.UUID
-	require.NoError(t, fixture.db.NewRaw(`SELECT count(*), max(event_id) FROM engagement_events
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*), min(event_id::text)::uuid FROM engagement_events
 		WHERE recipient_person_id = ? AND kind = ?`, fixture.actor.PersonID, engagement.KindArchiveDownloadStarted).
 		Scan(context.Background(), &archiveEngagement, &engagementEventID))
 	assert.Equal(t, 1, archiveEngagement)

@@ -46,6 +46,15 @@ func TestMeaningfulEngagementIsIdempotentAggregatedAndCuratorOnly(t *testing.T) 
 	require.NoError(t, service.RecordBrowserEvent(ctx, curator, BrowserEventRequest{
 		Kind: KindVisit, ClientClaimID: uuid.New().String(), DocumentVisible: true,
 	}), "the dual-role Curator's explicit Recipient browsing is meaningful")
+	curatorEventID := uuid.New()
+	_, err := db.NewRaw(`INSERT INTO events
+		(id, lifecycle, title, description, grouping_timezone, created_at, updated_at)
+		VALUES (?, 'published', 'Curator Event', '', 'UTC', ?, ?)`, curatorEventID, now, now).Exec(ctx)
+	require.NoError(t, err)
+	curatorEventRaw := curatorEventID.String()
+	require.NoError(t, service.RecordBrowserEvent(ctx, curator, BrowserEventRequest{
+		Kind: KindEventOpened, ClientClaimID: uuid.New().String(), EventID: &curatorEventRaw, DocumentVisible: true,
+	}), "Curator authority does not depend on Audience membership")
 	assert.ErrorIs(t, service.RecordBrowserEvent(ctx, recipient, BrowserEventRequest{
 		Kind: KindVisit, ClientClaimID: uuid.New().String(), DocumentVisible: false,
 	}), ErrInvalid)
@@ -53,11 +62,11 @@ func TestMeaningfulEngagementIsIdempotentAggregatedAndCuratorOnly(t *testing.T) 
 	var details, aggregate int
 	require.NoError(t, db.NewRaw(`SELECT count(*) FROM engagement_events WHERE recipient_person_id = ?`, recipient.PersonID).Scan(ctx, &details))
 	require.NoError(t, db.NewRaw(`SELECT event_count FROM engagement_daily_aggregates WHERE recipient_person_id = ? AND activity_date = ? AND kind = ?`, recipient.PersonID, now.Format(time.DateOnly), KindVisit).Scan(ctx, &aggregate))
-	assert.Equal(t, 1, details)
+	assert.Equal(t, 2, details, "Session creation and the explicit visit are meaningful")
 	assert.Equal(t, 1, aggregate)
 	var curatorDetails int
 	require.NoError(t, db.NewRaw(`SELECT count(*) FROM engagement_events WHERE recipient_person_id = ?`, curator.PersonID).Scan(ctx, &curatorDetails))
-	assert.Equal(t, 1, curatorDetails)
+	assert.Equal(t, 3, curatorDetails, "Session, visit, and Event open are retained for the dual-role Curator")
 
 	now = now.Add(30 * time.Minute)
 	require.NoError(t, service.RecordBrowserEvent(ctx, recipient, BrowserEventRequest{
@@ -65,7 +74,7 @@ func TestMeaningfulEngagementIsIdempotentAggregatedAndCuratorOnly(t *testing.T) 
 	}))
 	require.NoError(t, db.NewRaw(`SELECT count(*) FROM engagement_events WHERE recipient_person_id = ?`, recipient.PersonID).Scan(ctx, &details))
 	require.NoError(t, db.NewRaw(`SELECT event_count FROM engagement_daily_aggregates WHERE recipient_person_id = ? AND activity_date = ? AND kind = ?`, recipient.PersonID, now.Format(time.DateOnly), KindVisit).Scan(ctx, &aggregate))
-	assert.Equal(t, 2, details)
+	assert.Equal(t, 3, details)
 	assert.Equal(t, 2, aggregate)
 }
 
@@ -145,7 +154,7 @@ func TestRecipientAdministrationReportsOnlyMeaningfulExplicitDetails(t *testing.
 
 	detail, err := service.GetRecipientEngagement(ctx, actor.PersonID, "", 100)
 	require.NoError(t, err)
-	assert.Equal(t, now.Add(-2*time.Minute), *detail.LatestMeaningfulActivity)
+	assert.Equal(t, now, *detail.LatestMeaningfulActivity)
 	assert.Equal(t, 1, detail.ActiveDays.Days7)
 	assert.Equal(t, 1, detail.Counts90Days.EventOpens)
 	assert.Equal(t, 1, detail.Counts90Days.MediaOpens)
@@ -153,7 +162,7 @@ func TestRecipientAdministrationReportsOnlyMeaningfulExplicitDetails(t *testing.
 	assert.Equal(t, 1, detail.Counts90Days.Comments)
 	assert.Equal(t, 1, detail.Counts90Days.FavoriteChanges)
 	assert.Equal(t, 1, detail.Counts90Days.InvitationSuggestions)
-	require.Len(t, detail.Timeline, 6)
+	require.Len(t, detail.Timeline, 7)
 
 	openers, err := service.MediaOpeners(ctx, mediaID)
 	require.NoError(t, err)
@@ -195,8 +204,8 @@ func TestDetailedEngagementExpiresWithoutRemovingAggregatesOrSecurityAudit(t *te
 	require.NoError(t, db.NewRaw(`SELECT count(*) FROM engagement_events WHERE recipient_person_id = ?`, actor.PersonID).Scan(ctx, &details))
 	require.NoError(t, db.NewRaw(`SELECT count(*) FROM engagement_daily_aggregates WHERE recipient_person_id = ?`, actor.PersonID).Scan(ctx, &aggregates))
 	require.NoError(t, db.NewRaw(`SELECT count(*) FROM security_audit_events WHERE action = 'retention_proof'`, actor.PersonID).Scan(ctx, &audits))
-	assert.Equal(t, 2, details)
-	assert.Equal(t, 1, aggregates)
+	assert.Equal(t, 3, details)
+	assert.Equal(t, 2, aggregates)
 	assert.Equal(t, 1, audits)
 }
 
@@ -212,6 +221,7 @@ func persistEngagementCredential(t *testing.T, db *bun.DB, actor setup.SessionAc
 func seedEngagementActor(t *testing.T, db *bun.DB, curator bool, now time.Time) setup.SessionActor {
 	t.Helper()
 	personID, accessID, sessionID := uuid.New(), uuid.New(), uuid.New()
+	credentialHash := sha256.Sum256(sessionID[:])
 	ctx := context.Background()
 	_, err := db.NewRaw(`
 		UPDATE system_settings SET setup_complete = true;
@@ -223,10 +233,10 @@ func seedEngagementActor(t *testing.T, db *bun.DB, curator bool, now time.Time) 
 		INSERT INTO sessions
 			(id, credential_hash, person_id, recipient_access_generation_id, security_epoch,
 			 session_type, created_at, last_activity_at, idle_expires_at)
-		SELECT ?, digest(?::text, 'sha256'), ?, ?, security_epoch, 'trusted', ?, ?, ?
+		SELECT ?, ?, ?, ?, security_epoch, 'trusted', ?, ?, ?
 		FROM system_settings WHERE id = 1;
 	`, personID, map[bool]string{true: "Curator", false: "Recipient"}[curator], uuid.NewString(),
-		personID, accessID, personID, now, sessionID, sessionID.String(), personID, accessID, now, now, now.Add(time.Hour)).Exec(ctx)
+		personID, accessID, personID, now, sessionID, credentialHash[:], personID, accessID, now, now, now.Add(time.Hour)).Exec(ctx)
 	require.NoError(t, err)
 	if curator {
 		_, err = db.NewRaw(`INSERT INTO person_roles (person_id, role) VALUES (?, 'curator')`, personID).Exec(ctx)
