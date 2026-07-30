@@ -54,35 +54,42 @@ type Result struct {
 
 // Validate checks a candidate database in one repeatable-read, read-only transaction.
 func Validate(ctx context.Context, db *bun.DB) (Result, error) {
-	result := Result{Status: "valid", Checks: make([]string, 0, 6)}
+	var result Result
 	err := db.RunInTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true}, func(ctx context.Context, tx bun.Tx) error {
-		if err := migrations.Current(ctx, tx); err != nil {
-			return fmt.Errorf("migrations: %w", err)
-		}
-		result.Checks = append(result.Checks, "migrations")
-		if err := migrations.Extensions(ctx, tx); err != nil {
-			return fmt.Errorf("extensions: %w", err)
-		}
-		result.Checks = append(result.Checks, "extensions")
-		if err := migrations.SetupConsistent(ctx, tx); err != nil {
-			return fmt.Errorf("setup: %w", err)
-		}
-		result.Checks = append(result.Checks, "setup_and_sole_curator")
-		if err := validateForeignKeys(ctx, tx); err != nil {
-			return err
-		}
-		result.Checks = append(result.Checks, "foreign_keys")
-		if err := validateProjections(ctx, tx); err != nil {
-			return err
-		}
-		result.Checks = append(result.Checks, "projections")
-		if err := validateSecurity(ctx, tx); err != nil {
-			return err
-		}
-		result.Checks = append(result.Checks, "security_settings")
-		return loadCounts(ctx, tx, &result.Counts)
+		var err error
+		result, err = validateSnapshot(ctx, tx)
+		return err
 	})
-	if err != nil {
+	return result, err
+}
+
+func validateSnapshot(ctx context.Context, db bun.IDB) (Result, error) {
+	result := Result{Status: "valid", Checks: make([]string, 0, 6)}
+	if err := migrations.Current(ctx, db); err != nil {
+		return Result{}, fmt.Errorf("migrations: %w", err)
+	}
+	result.Checks = append(result.Checks, "migrations")
+	if err := migrations.Extensions(ctx, db); err != nil {
+		return Result{}, fmt.Errorf("extensions: %w", err)
+	}
+	result.Checks = append(result.Checks, "extensions")
+	if err := migrations.SetupConsistent(ctx, db); err != nil {
+		return Result{}, fmt.Errorf("setup: %w", err)
+	}
+	result.Checks = append(result.Checks, "setup_and_sole_curator")
+	if err := validateForeignKeys(ctx, db); err != nil {
+		return Result{}, err
+	}
+	result.Checks = append(result.Checks, "foreign_keys")
+	if err := validateProjections(ctx, db); err != nil {
+		return Result{}, err
+	}
+	result.Checks = append(result.Checks, "projections")
+	if err := validateSecurity(ctx, db); err != nil {
+		return Result{}, err
+	}
+	result.Checks = append(result.Checks, "security_settings")
+	if err := loadCounts(ctx, db, &result.Counts); err != nil {
 		return Result{}, err
 	}
 	return result, nil
