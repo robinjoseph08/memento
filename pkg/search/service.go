@@ -4,6 +4,7 @@ package search
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -226,12 +227,11 @@ const authorizedDocuments = `
 	       placement.published_moment_id, moment.proposed_day AS event_day, placement.position,
 	       published.media_type, published.width, published.height, published.local_date_time,
 	       media.availability = 'current' AS available
-	FROM published_search_documents AS document
-	JOIN current_audience_entitlements AS entitlement
-	  ON entitlement.event_id = document.event_id
-	 AND entitlement.publication_id = document.publication_id
-	 AND entitlement.recipient_access_generation_id = document.recipient_access_generation_id
-	 AND entitlement.media_item_id = document.media_item_id
+	FROM current_audience_entitlements AS entitlement
+	JOIN published_search_documents AS document
+	  ON document.event_id = entitlement.event_id
+	 AND document.publication_id = entitlement.publication_id
+	 AND document.media_item_id = entitlement.media_item_id
 	JOIN current_published_events AS current
 	  ON current.event_id = document.event_id AND current.publication_id = document.publication_id
 	JOIN events AS event ON event.id = current.event_id AND event.lifecycle = 'published'
@@ -244,7 +244,7 @@ const authorizedDocuments = `
 	 AND published.media_item_id = placement.media_item_id
 	JOIN published_moments AS moment ON moment.id = placement.published_moment_id
 	JOIN media_items AS media ON media.id = document.media_item_id
-	WHERE document.recipient_access_generation_id = ?
+	WHERE entitlement.recipient_access_generation_id = ?
 	  AND NOT content_is_withdrawn(placement.event_id, moment.draft_moment_id, placement.media_item_id)
 `
 
@@ -368,7 +368,7 @@ func (s *Service) Search(ctx context.Context, actor setup.SessionActor, request 
 			return err
 		}
 		cte, args := matchingCTE(actor, terms, dateBounds)
-		eventQuery := cte + `, ranked_events AS (
+		combinedQuery := cte + `, ranked_events AS (
 			SELECT candidate.event_id, candidate.title, candidate.description,
 			       count(DISTINCT matched.media_item_id)::integer AS media_count,
 			       min(matched.capture_date)::text AS date_start,
@@ -384,19 +384,46 @@ func (s *Service) Search(ctx context.Context, actor setup.SessionActor, request 
 			 AND matched.publication_id = candidate.publication_id
 			 AND matched.media_item_id = candidate.media_item_id
 			GROUP BY candidate.event_id, candidate.title, candidate.description
+		), event_rows AS (
+			SELECT event_id AS id, title, description, media_count, date_start, date_end,
+			       cover_media_id, cover_width, cover_height, cover_available, committed_at,
+			       count(*) OVER ()::integer AS total_events
+			FROM ranked_events ORDER BY committed_at DESC, event_id DESC LIMIT ?
+		), unique_photos AS (
+			SELECT DISTINCT ON (matched.media_item_id)
+			       matched.media_item_id AS id, matched.media_type, matched.width, matched.height,
+			       matched.local_date_time, matched.available, matched.committed_at
+			FROM matched
+			ORDER BY matched.media_item_id, matched.committed_at DESC, matched.event_id DESC
+		), photo_rows AS (
+			SELECT *, count(*) OVER ()::integer AS total_photos
+			FROM unique_photos
+			ORDER BY COALESCE(local_date_time, '') DESC, id DESC LIMIT ?
 		)
-		SELECT event_id AS id, title, description, media_count, date_start, date_end,
-		       cover_media_id, cover_width, cover_height, cover_available, committed_at,
-		       count(*) OVER ()::integer AS total_events
-		FROM ranked_events ORDER BY committed_at DESC, event_id DESC LIMIT ?`
+		SELECT COALESCE((SELECT jsonb_agg(to_jsonb(event_rows) ORDER BY committed_at DESC, id DESC) FROM event_rows), '[]'::jsonb)::text,
+		       COALESCE((SELECT jsonb_agg(to_jsonb(photo_rows) ORDER BY COALESCE(local_date_time, '') DESC, id DESC) FROM photo_rows), '[]'::jsonb)::text`
 		type eventRow struct {
 			EventResult
-			CommittedAt time.Time `bun:"committed_at"`
-			TotalEvents int       `bun:"total_events"`
+			CommittedAt time.Time `json:"committed_at"`
+			TotalEvents int       `json:"total_events"`
+		}
+		type photoRow struct {
+			Media
+			CommittedAt time.Time `json:"committed_at"`
+			TotalPhotos int       `json:"total_photos"`
+		}
+		var eventJSON, photoJSON string
+		combinedArgs := append(append([]any(nil), args...), maxEventResults+1, maxPhotoResults+1)
+		if err := tx.NewRaw(combinedQuery, combinedArgs...).Scan(ctx, &eventJSON, &photoJSON); err != nil {
+			return fmt.Errorf("search Events and Photos: %w", err)
 		}
 		var eventRows []eventRow
-		if err := tx.NewRaw(eventQuery, append(args, maxEventResults+1)...).Scan(ctx, &eventRows); err != nil {
-			return fmt.Errorf("search Events: %w", err)
+		var photos []photoRow
+		if err := json.Unmarshal([]byte(eventJSON), &eventRows); err != nil {
+			return fmt.Errorf("decode search Events: %w", err)
+		}
+		if err := json.Unmarshal([]byte(photoJSON), &photos); err != nil {
+			return fmt.Errorf("decode search Photos: %w", err)
 		}
 		if len(eventRows) > 0 {
 			response.TotalEvents = eventRows[0].TotalEvents
@@ -411,28 +438,6 @@ func (s *Service) Search(ctx context.Context, actor setup.SessionActor, request 
 			}
 			response.Events = append(response.Events, row.EventResult)
 		}
-
-		photoQuery := cte + `, unique_photos AS (
-			SELECT DISTINCT ON (matched.media_item_id)
-			       matched.media_item_id AS id, matched.media_type, matched.width, matched.height,
-			       matched.local_date_time, matched.available, matched.committed_at
-			FROM matched
-			ORDER BY matched.media_item_id, matched.committed_at DESC, matched.event_id DESC
-		), ordered_photos AS (
-			SELECT *, count(*) OVER ()::integer AS total_photos
-			FROM unique_photos
-		)
-		SELECT * FROM ordered_photos
-		ORDER BY COALESCE(local_date_time, '') DESC, id DESC LIMIT ?`
-		type photoRow struct {
-			Media
-			CommittedAt time.Time `bun:"committed_at"`
-			TotalPhotos int       `bun:"total_photos"`
-		}
-		var photos []photoRow
-		if err := tx.NewRaw(photoQuery, append(args, maxPhotoResults+1)...).Scan(ctx, &photos); err != nil {
-			return fmt.Errorf("search Photos: %w", err)
-		}
 		if len(photos) > 0 {
 			response.TotalPhotos = photos[0].TotalPhotos
 		}
@@ -445,7 +450,18 @@ func (s *Service) Search(ctx context.Context, actor setup.SessionActor, request 
 			response.Photos = append(response.Photos, row.Media)
 		}
 
+		var hasDiscoverablePeople bool
 		if len(terms) > 0 {
+			if err := tx.NewRaw(`SELECT EXISTS (
+				SELECT 1 FROM visibility_circle_members AS own_membership
+				JOIN visibility_circles AS circle ON circle.id = own_membership.circle_id AND circle.archived_at IS NULL
+				JOIN visibility_circle_members AS shared_membership ON shared_membership.circle_id = circle.id
+				WHERE own_membership.person_id = ? AND shared_membership.person_id <> ?
+			)`, actor.PersonID, actor.PersonID).Scan(ctx, &hasDiscoverablePeople); err != nil {
+				return err
+			}
+		}
+		if len(terms) > 0 && hasDiscoverablePeople {
 			personPredicates := make([]string, 0, len(terms))
 			for _, term := range terms {
 				long := utf8.RuneCountInString(term) >= 5

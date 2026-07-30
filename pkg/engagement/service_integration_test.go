@@ -266,7 +266,7 @@ func seedEngagementActor(t *testing.T, db *bun.DB, curator bool, now time.Time) 
 		SELECT ?, ?, ?, ?, security_epoch, 'trusted', ?, ?, ?
 		FROM system_settings WHERE id = 1;
 	`, personID, map[bool]string{true: "Curator", false: "Recipient"}[curator], uuid.NewString(),
-		personID, accessID, personID, now, sessionID, credentialHash[:], personID, accessID, now, now, now.Add(time.Hour)).Exec(ctx)
+		personID, accessID, personID, now, sessionID, credentialHash[:], personID, accessID, now, now, now.Add(24*time.Hour)).Exec(ctx)
 	require.NoError(t, err)
 	if curator {
 		_, err = db.NewRaw(`INSERT INTO person_roles (person_id, role) VALUES (?, 'curator')`, personID).Exec(ctx)
