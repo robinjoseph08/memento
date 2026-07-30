@@ -43,9 +43,9 @@ func TestMeaningfulEngagementIsIdempotentAggregatedAndCuratorOnly(t *testing.T) 
 		Kind: KindVisit, ClientClaimID: uuid.New().String(), DocumentVisible: true,
 	}), "visits in one active window coalesce")
 
-	assert.ErrorIs(t, service.RecordBrowserEvent(ctx, curator, BrowserEventRequest{
+	require.NoError(t, service.RecordBrowserEvent(ctx, curator, BrowserEventRequest{
 		Kind: KindVisit, ClientClaimID: uuid.New().String(), DocumentVisible: true,
-	}), ErrNotFound, "Curator browsing and Preview as Recipient cannot create engagement")
+	}), "the dual-role Curator's explicit Recipient browsing is meaningful")
 	assert.ErrorIs(t, service.RecordBrowserEvent(ctx, recipient, BrowserEventRequest{
 		Kind: KindVisit, ClientClaimID: uuid.New().String(), DocumentVisible: false,
 	}), ErrInvalid)
@@ -55,6 +55,9 @@ func TestMeaningfulEngagementIsIdempotentAggregatedAndCuratorOnly(t *testing.T) 
 	require.NoError(t, db.NewRaw(`SELECT event_count FROM engagement_daily_aggregates WHERE recipient_person_id = ? AND activity_date = ? AND kind = ?`, recipient.PersonID, now.Format(time.DateOnly), KindVisit).Scan(ctx, &aggregate))
 	assert.Equal(t, 1, details)
 	assert.Equal(t, 1, aggregate)
+	var curatorDetails int
+	require.NoError(t, db.NewRaw(`SELECT count(*) FROM engagement_events WHERE recipient_person_id = ?`, curator.PersonID).Scan(ctx, &curatorDetails))
+	assert.Equal(t, 1, curatorDetails)
 
 	now = now.Add(30 * time.Minute)
 	require.NoError(t, service.RecordBrowserEvent(ctx, recipient, BrowserEventRequest{

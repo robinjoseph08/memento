@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"sort"
 	"time"
 
@@ -60,9 +61,16 @@ type MarkReadRequest struct {
 	Version    string `json:"version" validate:"required"`
 }
 
+// WorkPageRequest selects one bounded work queue page.
+type WorkPageRequest struct {
+	Cursor string
+	Limit  int
+}
+
 // CuratorWorkResponse is the bounded Curator work queue response.
 type CuratorWorkResponse struct {
-	Items []CuratorWorkItem `json:"items"`
+	Items      []CuratorWorkItem `json:"items"`
+	NextCursor *string           `json:"next_cursor" tstype:"string | null,required"`
 }
 
 // Attribution names the Person responsible for or affected by an activity item.
@@ -108,8 +116,24 @@ type activityCursor struct {
 	ID        string    `json:"i"`
 }
 
+type workCursor struct {
+	Priority  int       `json:"p"`
+	UpdatedAt time.Time `json:"t"`
+	ID        string    `json:"i"`
+}
+
 // ListCuratorWork returns delivery and privacy problems before editable work and new Sources.
-func (s *Service) ListCuratorWork(ctx context.Context) (CuratorWorkResponse, error) {
+func (s *Service) ListCuratorWork(ctx context.Context, page WorkPageRequest) (CuratorWorkResponse, error) {
+	if page.Limit <= 0 {
+		page.Limit = 50
+	}
+	if page.Limit > 100 {
+		return CuratorWorkResponse{}, ErrInvalidCursor
+	}
+	cursor, err := decodeWorkCursor(page.Cursor)
+	if err != nil {
+		return CuratorWorkResponse{}, err
+	}
 	items := make([]CuratorWorkItem, 0)
 	if err := s.listDeliveryWork(ctx, &items); err != nil {
 		return CuratorWorkResponse{}, err
@@ -123,19 +147,36 @@ func (s *Service) ListCuratorWork(ctx context.Context) (CuratorWorkResponse, err
 	if err := s.listSourceWork(ctx, &items); err != nil {
 		return CuratorWorkResponse{}, err
 	}
-	sort.Slice(items, func(left, right int) bool {
-		if items[left].Priority != items[right].Priority {
-			return items[left].Priority < items[right].Priority
-		}
-		if !items[left].UpdatedAt.Equal(items[right].UpdatedAt) {
-			return items[left].UpdatedAt.Before(items[right].UpdatedAt)
-		}
-		return items[left].ID < items[right].ID
-	})
-	if len(items) > 200 {
-		items = items[:200]
+	sort.Slice(items, func(left, right int) bool { return workItemBefore(items[left], items[right]) })
+	if cursor != nil {
+		items = slices.DeleteFunc(items, func(item CuratorWorkItem) bool {
+			return !workItemAfterCursor(item, *cursor)
+		})
 	}
-	return CuratorWorkResponse{Items: items}, nil
+	response := CuratorWorkResponse{Items: items}
+	if len(items) > page.Limit {
+		last := items[page.Limit-1]
+		encoded := encodeWorkCursor(workCursor{Priority: last.Priority, UpdatedAt: last.UpdatedAt, ID: last.ID})
+		response.NextCursor = &encoded
+		response.Items = items[:page.Limit]
+	}
+	return response, nil
+}
+
+func workItemBefore(left, right CuratorWorkItem) bool {
+	if left.Priority != right.Priority {
+		return left.Priority < right.Priority
+	}
+	if !left.UpdatedAt.Equal(right.UpdatedAt) {
+		return left.UpdatedAt.Before(right.UpdatedAt)
+	}
+	return left.ID < right.ID
+}
+
+func workItemAfterCursor(item CuratorWorkItem, cursor workCursor) bool {
+	return item.Priority > cursor.Priority ||
+		(item.Priority == cursor.Priority && item.UpdatedAt.After(cursor.UpdatedAt)) ||
+		(item.Priority == cursor.Priority && item.UpdatedAt.Equal(cursor.UpdatedAt) && item.ID > cursor.ID)
 }
 
 func (s *Service) listDeliveryWork(ctx context.Context, items *[]CuratorWorkItem) error {
@@ -428,7 +469,7 @@ func currentActivityVersion(ctx context.Context, tx bun.Tx, sourceKind, sourceID
 		"security_audit":                 `SELECT 'audit ' || id::text FROM security_audit_events WHERE id::text = ?`,
 		"publication":                    `SELECT 'publication ' || revision::text FROM publications WHERE id::text = ?`,
 		"publication_audit":              `SELECT 'publication audit ' || id::text FROM publication_audit_events WHERE id::text = ? AND action IN ('content_withdrawn', 'content_restored_by_publication')`,
-		"interaction_comment":            `SELECT 'comment ' || comment_id::text FROM interaction_activity_items WHERE comment_id::text = ? AND kind = 'comment' LIMIT 1`,
+		"comment":                        `SELECT 'comment ' || id::text FROM comments WHERE id::text = ?`,
 		"interaction_favorite":           `SELECT 'favorite ' || id::text FROM interaction_activity_items WHERE id::text = ? AND kind = 'favorite'`,
 		"invitation_suggestion_activity": `SELECT 'suggestion activity ' || id::text FROM curator_activity_items WHERE id::text = ?`,
 		"delivery_problem":               `SELECT 'problem ' || id::text FROM delivery_problems WHERE id::text = ?`,
@@ -515,13 +556,11 @@ func (s *Service) ListCuratorActivity(ctx context.Context, page PageRequest) (Cu
 		LEFT JOIN events AS event ON event.id = audit.event_id
 		WHERE audit.action IN ('content_withdrawn', 'content_restored_by_publication')
 		UNION ALL
-		SELECT 'interaction_comment', interaction.comment_id::text, 'comment ' || interaction.comment_id::text,
-			'comment', interaction.action, actor.id::text, actor.display_name,
-			NULL::text, CAST(NULL AS text), 'media', interaction.media_item_id::text, 'Media item', NULL, min(interaction.created_at)
-		FROM interaction_activity_items AS interaction
-		JOIN people AS actor ON actor.id = interaction.actor_person_id
-		WHERE interaction.kind = 'comment'
-		GROUP BY interaction.comment_id, interaction.action, actor.id, actor.display_name, interaction.media_item_id
+		SELECT 'comment', comment.id::text, 'comment ' || comment.id::text,
+			'comment', 'comment_created', actor.id::text, actor.display_name,
+			NULL::text, CAST(NULL AS text), 'media', comment.media_item_id::text, 'Media item', NULL, comment.created_at
+		FROM comments AS comment
+		JOIN people AS actor ON actor.id = comment.author_person_id
 		UNION ALL
 		SELECT 'interaction_favorite', interaction.id::text, 'favorite ' || interaction.id::text,
 			'favorite', interaction.action, actor.id::text, actor.display_name,
@@ -596,6 +635,32 @@ func (s *Service) ListCuratorActivity(ctx context.Context, page PageRequest) (Cu
 func validActivityCategory(category string) bool {
 	_, valid := activityCategories[category]
 	return valid
+}
+
+func encodeWorkCursor(cursor workCursor) string {
+	value, _ := json.Marshal(cursor)
+	return base64.RawURLEncoding.EncodeToString(value)
+}
+
+func decodeWorkCursor(raw string) (*workCursor, error) {
+	if raw == "" {
+		return nil, nil
+	}
+	value, err := base64.RawURLEncoding.DecodeString(raw)
+	if err != nil {
+		return nil, ErrInvalidCursor
+	}
+	decoder := json.NewDecoder(bytes.NewReader(value))
+	decoder.DisallowUnknownFields()
+	var cursor workCursor
+	if err := decoder.Decode(&cursor); err != nil {
+		return nil, ErrInvalidCursor
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) || cursor.Priority < 0 || cursor.UpdatedAt.IsZero() || cursor.ID == "" {
+		return nil, ErrInvalidCursor
+	}
+	cursor.UpdatedAt = cursor.UpdatedAt.UTC()
+	return &cursor, nil
 }
 
 func encodeActivityCursor(cursor activityCursor) string {

@@ -19,7 +19,7 @@ type curatorAuthorizer interface {
 }
 
 type curatorWorkLister interface {
-	ListCuratorWork(ctx context.Context) (CuratorWorkResponse, error)
+	ListCuratorWork(ctx context.Context, page WorkPageRequest) (CuratorWorkResponse, error)
 	ListCuratorActivity(ctx context.Context, page PageRequest) (CuratorActivityResponse, error)
 	MarkRead(ctx context.Context, curatorID uuid.UUID, request MarkReadRequest) error
 }
@@ -59,7 +59,20 @@ func (h *Handler) ListCuratorWork(c echo.Context) error {
 	if _, err := h.authorize(c, false); err != nil {
 		return err
 	}
-	response, err := h.service.ListCuratorWork(c.Request().Context())
+	limit := 50
+	if raw := c.QueryParam("limit"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 {
+			return errcodes.ValidationError("Use a work queue limit from 1 to 100.")
+		}
+		limit = parsed
+	}
+	response, err := h.service.ListCuratorWork(c.Request().Context(), WorkPageRequest{
+		Cursor: c.QueryParam("cursor"), Limit: limit,
+	})
+	if errors.Is(err, ErrInvalidCursor) {
+		return errcodes.ValidationError("Use a valid work queue cursor and limit from 1 to 100.")
+	}
 	if err != nil {
 		return err
 	}
@@ -73,7 +86,7 @@ func (h *Handler) ListCuratorActivity(c echo.Context) error {
 	limit := 50
 	if raw := c.QueryParam("limit"); raw != "" {
 		parsed, err := strconv.Atoi(raw)
-		if err != nil {
+		if err != nil || parsed < 1 {
 			return errcodes.ValidationError("Use an activity limit from 1 to 100.")
 		}
 		limit = parsed

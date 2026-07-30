@@ -90,7 +90,8 @@ func TestCuratorActivityAttributesEveryRoutineCategoryWithoutPrivatePayloads(t *
 	var deliveryID int64
 	require.NoError(t, db.NewRaw(`SELECT id FROM email_deliveries WHERE public_id = 'activity-delivery'`).Scan(ctx, &deliveryID))
 	_, err = db.NewRaw(`INSERT INTO delivery_problems (email_delivery_id, diagnostic, created_at)
-		VALUES (?, 'provider said secret@example.com PRIVATE', ?)`, deliveryID, now).Exec(ctx)
+		VALUES (?, 'provider said secret@example.com PRIVATE', ?);
+		UPDATE comments SET state = 'deleted' WHERE id = ?`, deliveryID, now, commentID).Exec(ctx)
 	require.NoError(t, err)
 
 	response, err := New(db).ListCuratorActivity(ctx, PageRequest{Limit: 50})
@@ -108,6 +109,7 @@ func TestCuratorActivityAttributesEveryRoutineCategoryWithoutPrivatePayloads(t *
 		assert.NotContains(t, string(encoded), private)
 	}
 	comment := findActivityCategory(response.Items, "comment")
+	assert.Equal(t, "comment", comment.SourceKind, "deleted Comments remain in authoritative Curator history")
 	require.NotNil(t, comment.Actor)
 	assert.Equal(t, recipientID.String(), comment.Actor.PersonID)
 	assert.Equal(t, mediaID.String(), *comment.TargetID)

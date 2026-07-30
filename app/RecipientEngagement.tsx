@@ -1,7 +1,11 @@
-import { useInfiniteQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
+import { useState } from "react";
 
 import { apiJSON } from "./api";
-import type { RecipientDetail } from "./types/generated/engagement";
+import type {
+  MediaOpenersResponse,
+  RecipientDetail,
+} from "./types/generated/engagement";
 
 function formatWhen(value: string | null) {
   if (!value) return "No meaningful authenticated activity yet";
@@ -19,6 +23,7 @@ function label(value: string) {
 }
 
 export function RecipientEngagement({ personID }: { personID: string }) {
+  const [openersMediaID, setOpenersMediaID] = useState<string>();
   const engagement = useInfiniteQuery({
     queryKey: ["recipient-engagement", personID],
     queryFn: ({ pageParam }) => {
@@ -30,6 +35,15 @@ export function RecipientEngagement({ personID }: { personID: string }) {
     },
     initialPageParam: "",
     getNextPageParam: (page) => page.next_cursor ?? undefined,
+    retry: false,
+  });
+  const mediaOpeners = useQuery({
+    queryKey: ["media-engagement-openers", openersMediaID],
+    queryFn: () =>
+      apiJSON<MediaOpenersResponse>(
+        `/api/engagement/media/${openersMediaID}/openers`,
+      ),
+    enabled: Boolean(openersMediaID),
     retry: false,
   });
 
@@ -105,14 +119,51 @@ export function RecipientEngagement({ personID }: { personID: string }) {
             {timeline.map((item) => (
               <li key={item.id}>
                 <strong>{label(item.kind)}</strong>
-                {item.target_label ? ` · ${item.target_label}` : ""}
+                {item.target_kind === "media" && item.target_id
+                  ? ` · Media ${item.target_id}`
+                  : item.target_label
+                    ? ` · ${item.target_label}`
+                    : ""}
                 {` · ${formatWhen(item.occurred_at)}`}
+                {item.kind === "media_opened" && item.target_id ? (
+                  <button
+                    onClick={() =>
+                      setOpenersMediaID(item.target_id ?? undefined)
+                    }
+                    type="button"
+                  >
+                    Inspect Media openers
+                  </button>
+                ) : null}
               </li>
             ))}
           </ol>
         ) : (
           <p>No detailed engagement in the retained year.</p>
         )}
+        {openersMediaID ? (
+          <section aria-live="polite" className="media-openers">
+            <h5>Recipients who explicitly opened Media {openersMediaID}</h5>
+            {mediaOpeners.isPending ? <p>Loading Media openers…</p> : null}
+            {mediaOpeners.error ? (
+              <p className="form-error" role="alert">
+                {mediaOpeners.error.message}
+              </p>
+            ) : null}
+            {mediaOpeners.data?.openers.length ? (
+              <ul>
+                {mediaOpeners.data.openers.map((opener) => (
+                  <li key={opener.recipient_person_id}>
+                    {opener.recipient_name}: {opener.open_count} explicit opens,
+                    latest {formatWhen(opener.latest_opened_at)}
+                  </li>
+                ))}
+              </ul>
+            ) : mediaOpeners.isSuccess ? (
+              <p>No retained explicit Media opens.</p>
+            ) : null}
+          </section>
+        ) : null}
         {engagement.hasNextPage ? (
           <button
             disabled={engagement.isFetchingNextPage}

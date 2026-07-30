@@ -709,9 +709,12 @@ func TestPartsAreSessionBoundExpiringAndIndividuallySingleUse(t *testing.T) {
 	require.Len(t, source.archiveCalls, 1)
 	assert.Equal(t, []uuid.UUID{fixture.assets[0]}, source.archiveCalls[0])
 	var archiveEngagement int
-	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM engagement_events
-		WHERE recipient_person_id = ? AND kind = ?`, fixture.actor.PersonID, engagement.KindArchiveDownloadStarted).Scan(context.Background(), &archiveEngagement))
+	var engagementEventID uuid.UUID
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*), max(event_id) FROM engagement_events
+		WHERE recipient_person_id = ? AND kind = ?`, fixture.actor.PersonID, engagement.KindArchiveDownloadStarted).
+		Scan(context.Background(), &archiveEngagement, &engagementEventID))
 	assert.Equal(t, 1, archiveEngagement)
+	assert.Equal(t, fixture.event, engagementEventID)
 	_, err = fixture.service.StreamPart(context.Background(), fixture.actor, token, 1)
 	assert.ErrorIs(t, err, ErrNotFound)
 	assert.Len(t, source.archiveCalls, 1, "replay is rejected before opening Immich")

@@ -39,7 +39,7 @@ func TestCuratorWorkReadsSafeUnresolvedImmediateDeliveryProblems(t *testing.T) {
 		VALUES (?, 'recipient_rejected', ?)`, batchID, time.Now().UTC()).Exec(ctx)
 	require.NoError(t, err)
 
-	response, err := New(db).ListCuratorWork(ctx)
+	response, err := New(db).ListCuratorWork(ctx, WorkPageRequest{Limit: 100})
 	require.NoError(t, err)
 	require.Len(t, response.Items, 1)
 	assert.Equal(t, "delivery_problem", response.Items[0].Kind)
@@ -120,7 +120,16 @@ func TestCuratorWorkPrioritizesProblemsAndVersionedReadState(t *testing.T) {
 	require.NoError(t, err)
 
 	service := New(db)
-	response, err := service.ListCuratorWork(ctx)
+	firstPage, err := service.ListCuratorWork(ctx, WorkPageRequest{Limit: 2})
+	require.NoError(t, err)
+	require.Len(t, firstPage.Items, 2)
+	require.NotNil(t, firstPage.NextCursor)
+	secondPage, err := service.ListCuratorWork(ctx, WorkPageRequest{Cursor: *firstPage.NextCursor, Limit: 2})
+	require.NoError(t, err)
+	require.Len(t, secondPage.Items, 2)
+	assert.NotEqual(t, firstPage.Items[1].ID, secondPage.Items[0].ID)
+
+	response, err := service.ListCuratorWork(ctx, WorkPageRequest{Limit: 100})
 	require.NoError(t, err)
 	require.Len(t, response.Items, 5)
 	assert.Equal(t, []string{"delivery_problem", "privacy_problem", "draft_event", "staged_update", "new_source_album"}, []string{
@@ -136,13 +145,13 @@ func TestCuratorWorkPrioritizesProblemsAndVersionedReadState(t *testing.T) {
 		Surface: "work", SourceKind: response.Items[2].SourceKind, SourceID: response.Items[2].SourceID,
 		Version: response.Items[2].Version,
 	}))
-	response, err = service.ListCuratorWork(ctx)
+	response, err = service.ListCuratorWork(ctx, WorkPageRequest{Limit: 100})
 	require.NoError(t, err)
 	assert.True(t, response.Items[2].Read)
 
 	_, err = db.NewRaw(`UPDATE events SET version = 4, updated_at = ? WHERE id = ?`, now.Add(time.Minute), eventID).Exec(ctx)
 	require.NoError(t, err)
-	response, err = service.ListCuratorWork(ctx)
+	response, err = service.ListCuratorWork(ctx, WorkPageRequest{Limit: 100})
 	require.NoError(t, err)
 	assert.False(t, response.Items[2].Read, "changed work becomes unread again")
 	assert.ErrorIs(t, service.MarkRead(ctx, curatorID, MarkReadRequest{

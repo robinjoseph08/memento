@@ -1,10 +1,8 @@
 import {
   useInfiniteQuery,
   useMutation,
-  useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { useState } from "react";
 import { useSearchParams } from "react-router-dom";
 
 import { apiJSON, apiNoContent } from "./api";
@@ -56,13 +54,28 @@ function attribution(item: CuratorActivityItem) {
 
 export function CuratorActivity({ session }: { session: SessionResponse }) {
   const queryClient = useQueryClient();
-  const [, setSearchParams] = useSearchParams();
-  const [tab, setTab] = useState<"work" | "activity">("work");
-  const [category, setCategory] = useState("");
-  const [unreadOnly, setUnreadOnly] = useState(false);
-  const work = useQuery({
+  const [searchParams, setSearchParams] = useSearchParams();
+  const tab =
+    searchParams.get("activity_view") === "activity" ? "activity" : "work";
+  const requestedCategory = searchParams.get("activity_category") ?? "";
+  const category = categories.includes(
+    requestedCategory as (typeof categories)[number],
+  )
+    ? requestedCategory
+    : "";
+  const unreadOnly = searchParams.get("activity_unread") === "true";
+  const work = useInfiniteQuery({
     queryKey: ["curator-work"],
-    queryFn: () => apiJSON<CuratorWorkResponse>("/api/activity/curator/work"),
+    queryFn: ({ pageParam }) => {
+      const params = new URLSearchParams({ limit: "50" });
+      if (pageParam) params.set("cursor", pageParam);
+      return apiJSON<CuratorWorkResponse>(
+        `/api/activity/curator/work?${params.toString()}`,
+      );
+    },
+    initialPageParam: "",
+    getNextPageParam: (page) => page.next_cursor ?? undefined,
+    enabled: tab === "work",
   });
   const activity = useInfiniteQuery({
     queryKey: ["curator-activity", category, unreadOnly],
@@ -93,6 +106,33 @@ export function CuratorActivity({ session }: { session: SessionResponse }) {
       ]);
     },
   });
+
+  function setActivityView(nextTab: "work" | "activity") {
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      if (nextTab === "activity") next.set("activity_view", "activity");
+      else next.delete("activity_view");
+      return next;
+    });
+  }
+
+  function setActivityCategory(nextCategory: string) {
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      if (nextCategory) next.set("activity_category", nextCategory);
+      else next.delete("activity_category");
+      return next;
+    });
+  }
+
+  function setActivityUnread(nextUnread: boolean) {
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      if (nextUnread) next.set("activity_unread", "true");
+      else next.delete("activity_unread");
+      return next;
+    });
+  }
 
   function markItemRead(
     item: CuratorWorkItem | CuratorActivityItem,
@@ -147,11 +187,11 @@ export function CuratorActivity({ session }: { session: SessionResponse }) {
             aria-controls="curator-work-panel"
             aria-selected={tab === "work"}
             id="curator-work-tab"
-            onClick={() => setTab("work")}
+            onClick={() => setActivityView("work")}
             onKeyDown={(event) => {
               if (event.key === "ArrowRight" || event.key === "ArrowLeft") {
                 event.preventDefault();
-                setTab("activity");
+                setActivityView("activity");
                 document.getElementById("curator-activity-tab")?.focus();
               }
             }}
@@ -165,11 +205,11 @@ export function CuratorActivity({ session }: { session: SessionResponse }) {
             aria-controls="curator-activity-panel"
             aria-selected={tab === "activity"}
             id="curator-activity-tab"
-            onClick={() => setTab("activity")}
+            onClick={() => setActivityView("activity")}
             onKeyDown={(event) => {
               if (event.key === "ArrowRight" || event.key === "ArrowLeft") {
                 event.preventDefault();
-                setTab("work");
+                setActivityView("work");
                 document.getElementById("curator-work-tab")?.focus();
               }
             }}
@@ -195,28 +235,41 @@ export function CuratorActivity({ session }: { session: SessionResponse }) {
               {work.error.message}
             </p>
           ) : null}
-          {work.data?.items.map((item) => (
-            <article
-              className={item.read ? "work-item" : "work-item unread"}
-              key={item.id}
+          {work.data?.pages
+            .flatMap((page) => page.items)
+            .map((item) => (
+              <article
+                className={item.read ? "work-item" : "work-item unread"}
+                key={item.id}
+              >
+                <div>
+                  <p className="eyebrow">{label(item.kind)}</p>
+                  <h3>{item.title}</h3>
+                  <p>{item.summary}</p>
+                  {item.completed_steps.length ||
+                  item.remaining_steps.length ? (
+                    <p className="work-progress">
+                      {item.completed_steps.length} complete ·{" "}
+                      {item.remaining_steps.length} remaining
+                    </p>
+                  ) : null}
+                </div>
+                <button onClick={() => openWork(item)} type="button">
+                  {item.next_action_label}
+                </button>
+              </article>
+            ))}
+          {work.hasNextPage ? (
+            <button
+              disabled={work.isFetchingNextPage}
+              onClick={() => void work.fetchNextPage()}
+              type="button"
             >
-              <div>
-                <p className="eyebrow">{label(item.kind)}</p>
-                <h3>{item.title}</h3>
-                <p>{item.summary}</p>
-                {item.completed_steps.length || item.remaining_steps.length ? (
-                  <p className="work-progress">
-                    {item.completed_steps.length} complete ·{" "}
-                    {item.remaining_steps.length} remaining
-                  </p>
-                ) : null}
-              </div>
-              <button onClick={() => openWork(item)} type="button">
-                {item.next_action_label}
-              </button>
-            </article>
-          ))}
-          {work.isSuccess && work.data.items.length === 0 ? (
+              {work.isFetchingNextPage ? "Loading…" : "Load more work"}
+            </button>
+          ) : null}
+          {work.isSuccess &&
+          work.data.pages.every((page) => page.items.length === 0) ? (
             <p>No Curator work is waiting.</p>
           ) : null}
         </div>
@@ -230,7 +283,7 @@ export function CuratorActivity({ session }: { session: SessionResponse }) {
             <label>
               Category
               <select
-                onChange={(event) => setCategory(event.target.value)}
+                onChange={(event) => setActivityCategory(event.target.value)}
                 value={category}
               >
                 {categories.map((item) => (
@@ -243,7 +296,7 @@ export function CuratorActivity({ session }: { session: SessionResponse }) {
             <label className="inline-choice">
               <input
                 checked={unreadOnly}
-                onChange={(event) => setUnreadOnly(event.target.checked)}
+                onChange={(event) => setActivityUnread(event.target.checked)}
                 type="checkbox"
               />
               Unread only

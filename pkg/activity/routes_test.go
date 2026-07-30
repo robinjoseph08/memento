@@ -19,7 +19,7 @@ type curatorWorkStub struct {
 	called   bool
 }
 
-func (stub *curatorWorkStub) ListCuratorWork(context.Context) (CuratorWorkResponse, error) {
+func (stub *curatorWorkStub) ListCuratorWork(context.Context, WorkPageRequest) (CuratorWorkResponse, error) {
 	stub.called = true
 	return stub.response, nil
 }

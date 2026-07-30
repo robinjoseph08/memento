@@ -1409,7 +1409,7 @@ test("restores and refreshes a signed-in Trusted-device Session", async () => {
   ).toBeInTheDocument();
   expect(fetchMock).toHaveBeenCalledTimes(16);
   expect(fetchMock).toHaveBeenCalledWith(
-    "/api/activity/curator/work",
+    "/api/activity/curator/work?limit=50",
     expect.objectContaining({ credentials: "same-origin" }),
   );
   expect(fetchMock).toHaveBeenCalledWith(

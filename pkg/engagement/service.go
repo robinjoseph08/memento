@@ -155,10 +155,7 @@ func New(db *bun.DB, options ...Option) *Service {
 
 // RecordBrowserEvent accepts only explicit visible-document actions from a non-Curator Recipient.
 func (s *Service) RecordBrowserEvent(ctx context.Context, actor setup.SessionActor, request BrowserEventRequest) error {
-	if actor.Curator || !request.DocumentVisible {
-		if actor.Curator {
-			return ErrNotFound
-		}
+	if !request.DocumentVisible {
 		return ErrInvalid
 	}
 	claimID, err := uuid.Parse(request.ClientClaimID)
@@ -325,9 +322,6 @@ func incrementAggregate(ctx context.Context, tx bun.Tx, personID uuid.UUID, kind
 }
 
 func (s *Service) recordServerEvent(ctx context.Context, tx bun.Tx, record eventRecord) error {
-	if record.Actor.Curator {
-		return nil
-	}
 	current, err := setup.CurrentRecipientSession(ctx, tx, record.Actor)
 	if err != nil {
 		return err
