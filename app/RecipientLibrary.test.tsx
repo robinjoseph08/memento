@@ -8,6 +8,7 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 import { afterEach, expect, test, vi } from "vitest";
 
 import { ArchiveDownloads, RecipientLibrary } from "./RecipientLibrary";
@@ -64,9 +65,11 @@ function renderLibrary(librarySession = session) {
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
   render(
-    <QueryClientProvider client={client}>
-      <RecipientLibrary session={librarySession} />
-    </QueryClientProvider>,
+    <MemoryRouter initialEntries={[window.location.pathname]}>
+      <QueryClientProvider client={client}>
+        <RecipientLibrary session={librarySession} />
+      </QueryClientProvider>
+    </MemoryRouter>,
   );
 }
 

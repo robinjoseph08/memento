@@ -78,6 +78,20 @@ async function mockOnboarding(page: Page) {
   });
 }
 
+const inaccessibleMedia = {
+  id: inaccessibleMediaID,
+  media_type: "image",
+  width: 1200,
+  height: 800,
+  local_date_time: "2026-07-27T13:00:00Z",
+  available: true,
+  thumbnail_url: `/api/me/media/${inaccessibleMediaID}/thumbnail`,
+  preview_url: `/api/me/media/${inaccessibleMediaID}/preview`,
+  video_url: "",
+  original_url: `/api/me/media/${inaccessibleMediaID}/original`,
+  private_label: "Hidden family photo",
+};
+
 const media = {
   id: mediaID,
   media_type: "image",
@@ -99,6 +113,9 @@ const olderMedia = {
   preview_url: "/api/me/media/77777777-7777-4777-8777-777777777777/preview",
   original_url: "/api/me/media/77777777-7777-4777-8777-777777777777/original",
 };
+
+const serverMedia = [media, olderMedia, inaccessibleMedia];
+const authorizedMediaIDs = new Set([media.id, olderMedia.id]);
 
 const publishedEvent = {
   id: eventID,
@@ -150,7 +167,10 @@ async function mockRecipient(page: Page) {
       await route.fulfill({ status: 204 });
     } else if (path === "/api/me/photos") {
       await route.fulfill({
-        json: { media: [media, olderMedia], next_cursor: null },
+        json: {
+          media: serverMedia.filter((item) => authorizedMediaIDs.has(item.id)),
+          next_cursor: null,
+        },
       });
     } else if (path === "/api/me/favorites") {
       await route.fulfill({ json: { media: [media], next_cursor: null } });
@@ -162,7 +182,11 @@ async function mockRecipient(page: Page) {
       });
     } else if (path === `/api/me/events/${eventID}`) {
       await route.fulfill({
-        json: { ...publishedEvent, media: [media], next_cursor: null },
+        json: {
+          ...publishedEvent,
+          media: serverMedia.filter((item) => item.id === mediaID),
+          next_cursor: null,
+        },
       });
     } else if (
       path === media.thumbnail_url ||
@@ -570,12 +594,15 @@ test("@desktop @mobile Recipient navigation, archives, and Media viewer are acce
   } else {
     await page.getByRole("button", { name: "Search library" }).click();
   }
-  await page
-    .getByRole("searchbox", {
-      name: "Search published Events, Place labels, and People",
-    })
-    .fill("family");
-  await page.getByRole("button", { name: "Run search" }).click();
+  await expect(page.getByRole("heading", { name: "Search" })).toBeFocused();
+  const searchbox = page.getByRole("searchbox", {
+    name: "Search published Events, Place labels, and People",
+  });
+  await searchbox.fill("family");
+  await expect(searchbox).toHaveValue("family");
+  const runSearch = page.getByRole("button", { name: "Run search" });
+  await expect(runSearch).toBeEnabled();
+  await runSearch.click();
   await expect(
     page.getByText("1 matching photo. 0 matching Events."),
   ).toBeVisible();
@@ -588,6 +615,11 @@ test("@desktop @mobile Recipient navigation, archives, and Media viewer are acce
   await expectAccessible(page);
 
   await expect(page.getByText(/hidden/i)).toHaveCount(0);
+  await expect(page.locator(".media-unavailable")).toHaveCount(0);
+  const accessibilityTree = await page.locator("body").ariaSnapshot();
+  expect(accessibilityTree).not.toContain("Hidden family photo");
+  expect(accessibilityTree).not.toContain(inaccessibleMediaID);
+  expect(browserRequests.some((url) => url.includes(mediaID))).toBe(true);
   expect(browserRequests.some((url) => url.includes(inaccessibleMediaID))).toBe(
     false,
   );

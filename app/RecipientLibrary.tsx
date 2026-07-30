@@ -5,7 +5,7 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import { useInRouterContext, useLocation, useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 
 import { APIError, apiJSON, apiNoContent, apiResponse } from "./api";
 import { recordEngagement } from "./engagement";
@@ -133,12 +133,6 @@ function destinationPath(destination: Destination) {
 function eventIDFromPath(pathname: string) {
   const encodedID = pathname.match(/^\/events\/([^/]+)$/)?.[1];
   return encodedID ? decodeURIComponent(encodedID) : undefined;
-}
-
-function pushLibraryPath(pathname: string) {
-  if (window.location.pathname !== pathname) {
-    window.history.pushState({}, "", pathname);
-  }
 }
 
 function mediaAlt(item: Media, index: number) {
@@ -1812,7 +1806,7 @@ function RecipientLibraryContent({
   );
 }
 
-function RoutedRecipientLibrary({ session }: { session: SessionResponse }) {
+export function RecipientLibrary({ session }: { session: SessionResponse }) {
   const location = useLocation();
   const navigate = useNavigate();
   return (
@@ -1823,28 +1817,5 @@ function RoutedRecipientLibrary({ session }: { session: SessionResponse }) {
       pathname={location.pathname}
       session={session}
     />
-  );
-}
-
-function UnroutedRecipientLibrary({ session }: { session: SessionResponse }) {
-  const [pathname, setPathname] = useState(window.location.pathname);
-  return (
-    <RecipientLibraryContent
-      navigatePath={(nextPathname) => {
-        pushLibraryPath(nextPathname);
-        setPathname(nextPathname);
-      }}
-      pathname={pathname}
-      session={session}
-    />
-  );
-}
-
-export function RecipientLibrary({ session }: { session: SessionResponse }) {
-  const routed = useInRouterContext();
-  return routed ? (
-    <RoutedRecipientLibrary session={session} />
-  ) : (
-    <UnroutedRecipientLibrary session={session} />
   );
 }
