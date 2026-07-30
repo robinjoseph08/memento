@@ -188,7 +188,7 @@
 
 .public-session-warning {
   position: sticky;
-  z-index: 20;
+  z-index: 45;
   top: 0.5rem;
   display: grid;
   width: min(100%, 68rem);
@@ -200,6 +200,108 @@
   background: #451a03;
   color: #fef3c7;
   text-align: left;
+}
+
+.public-session-warning button {
+  width: fit-content;
+  min-height: 2.75rem;
+  padding: 0.55rem 0.85rem;
+  border: 1px solid #fbbf24;
+  border-radius: 0.6rem;
+  background: #78350f;
+  color: #fef3c7;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.recipient-experience {
+  position: relative;
+  width: min(100%, 92rem);
+}
+
+.recipient-experience > .recipient-library {
+  width: 100%;
+}
+
+.recipient-account-tools {
+  position: absolute;
+  z-index: 40;
+  top: 1rem;
+  right: 1rem;
+}
+
+.recipient-account-tools > summary {
+  display: flex;
+  min-height: 2.75rem;
+  gap: 0.45rem;
+  align-items: center;
+  padding: 0.35rem 0.75rem 0.35rem 0.35rem;
+  border: 1px solid #38bdf8;
+  border-radius: 999px;
+  background: #0f172a;
+  color: #e0f2fe;
+  cursor: pointer;
+  list-style: none;
+}
+
+.recipient-account-tools > summary::-webkit-details-marker {
+  display: none;
+}
+
+.recipient-account-tools > summary > span {
+  display: grid;
+  width: 2rem;
+  height: 2rem;
+  place-items: center;
+  border-radius: 50%;
+  background: #0284c7;
+  color: white;
+}
+
+.recipient-account-drawer {
+  position: fixed;
+  z-index: 55;
+  top: 4.5rem;
+  right: max(1rem, env(safe-area-inset-right));
+  width: min(34rem, calc(100vw - 2rem));
+  max-height: calc(100vh - 5.5rem);
+  overflow: auto;
+  padding: 1rem;
+  border: 1px solid #334155;
+  border-radius: 1rem;
+  background: #020617;
+  box-shadow: 0 1.5rem 4rem rgb(0 0 0 / 55%);
+}
+
+.recipient-account-drawer > :where(section, details) {
+  width: 100%;
+  margin: 0 0 1rem;
+  border-radius: 0.85rem;
+}
+
+.recipient-onboarding-review {
+  padding: 1rem;
+  border: 1px solid #334155;
+  text-align: left;
+}
+
+.recipient-onboarding-review > summary {
+  cursor: pointer;
+  color: #bae6fd;
+  font-weight: 700;
+}
+
+.recipient-onboarding-review h2 {
+  font-size: 1.35rem;
+}
+
+.recipient-onboarding-review p {
+  color: #cbd5e1;
+  line-height: 1.5;
+}
+
+.recipient-experience .app-preferences {
+  padding-right: 6.5rem;
 }
 
 .session-manager {
@@ -252,6 +354,25 @@
 @media (max-width: 760px) {
   .session-row {
     grid-template-columns: 1fr;
+  }
+
+  .recipient-account-tools > summary strong {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+  }
+
+  .recipient-account-tools > summary {
+    padding-right: 0.35rem;
+  }
+
+  .recipient-account-drawer {
+    top: calc(4.25rem + env(safe-area-inset-top));
+    bottom: calc(4.25rem + env(safe-area-inset-bottom));
+    max-height: none;
   }
 }
 
@@ -907,8 +1028,18 @@ h1 {
     color: #475569;
   }
 
+  .eyebrow {
+    color: #0369a1;
+  }
+
   .status {
     color: #075985;
+  }
+
+  .form-error {
+    border-color: #fca5a5;
+    background: #fef2f2;
+    color: #991b1b;
   }
 
   .setup-heading h2,
@@ -1000,10 +1131,26 @@ h1 {
     color: #0c4a6e;
   }
 
-  .theme-toggle {
+  .theme-toggle,
+  .recipient-account-tools > summary {
     border-color: #0284c7;
     background: white;
     color: #075985;
+  }
+
+  .recipient-account-drawer,
+  .recipient-onboarding-review {
+    border-color: #bae6fd;
+    background: #f8fafc;
+    color: #0f172a;
+  }
+
+  .recipient-onboarding-review > summary {
+    color: #075985;
+  }
+
+  .recipient-onboarding-review p {
+    color: #334155;
   }
 
   .offline-notice {
@@ -2603,5 +2750,42 @@ h1 {
 
   .activity-item > button {
     grid-template-columns: 1fr;
+  }
+}
+
+:where(button, a, input, select, textarea, summary):focus-visible {
+  outline: 3px solid #38bdf8;
+  outline-offset: 3px;
+}
+
+:root[data-theme="light"]
+  :where(button, a, input, select, textarea, summary):focus-visible {
+  outline-color: #0369a1;
+}
+
+:where(input[type="checkbox"], input[type="radio"]) {
+  min-width: 1.5rem;
+  min-height: 1.5rem;
+}
+
+@media (pointer: coarse) {
+  :where(
+    button,
+    summary,
+    select,
+    input:not([type="checkbox"]):not([type="radio"])
+  ) {
+    min-height: 2.75rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
   }
 }

@@ -152,6 +152,7 @@ export function CuratorInteractions({ session }: { session: SessionResponse }) {
   const [recipientID, setRecipientID] = useState("");
   const [historyCommentID, setHistoryCommentID] = useState("");
   const [mediaContextID, setMediaContextID] = useState("");
+  const mediaContextOpener = useRef<HTMLElement | null>(null);
   const comments = useInfiniteQuery({
     queryKey: ["curator-comments", session.csrf_token],
     queryFn: ({ pageParam }) => {
@@ -229,6 +230,22 @@ export function CuratorInteractions({ session }: { session: SessionResponse }) {
   const historyItems =
     history.data?.pages.flatMap((page) => page.history) ?? [];
 
+  function openMediaContext(mediaID: string) {
+    mediaContextOpener.current =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    setMediaContextID(mediaID);
+  }
+
+  function closeMediaContext() {
+    const opener = mediaContextOpener.current;
+    setMediaContextID("");
+    requestAnimationFrame(() => {
+      if (opener?.isConnected) opener.focus();
+    });
+  }
+
   if (!session.curator) return null;
 
   return (
@@ -256,7 +273,7 @@ export function CuratorInteractions({ session }: { session: SessionResponse }) {
                     <button
                       aria-label={`View Media context for ${comment.author_name}'s Comment`}
                       className="curator-media-trigger"
-                      onClick={() => setMediaContextID(comment.media_item_id)}
+                      onClick={() => openMediaContext(comment.media_item_id)}
                       type="button"
                     >
                       <img
@@ -367,7 +384,7 @@ export function CuratorInteractions({ session }: { session: SessionResponse }) {
                     <button
                       aria-label="View Media context for this Favorite"
                       className="curator-media-trigger"
-                      onClick={() => setMediaContextID(mediaID)}
+                      onClick={() => openMediaContext(mediaID)}
                       type="button"
                     >
                       <img
@@ -401,7 +418,7 @@ export function CuratorInteractions({ session }: { session: SessionResponse }) {
           {mediaContextID ? (
             <CuratorMediaViewer
               mediaID={mediaContextID}
-              onClose={() => setMediaContextID("")}
+              onClose={closeMediaContext}
             />
           ) : null}
         </>

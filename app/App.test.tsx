@@ -1105,6 +1105,7 @@ test("updates a Recipient weekly email schedule independently of access", async 
   );
 
   renderApp();
+  fireEvent.click(await screen.findByLabelText("Account for Recipient"));
   fireEvent.click(
     await screen.findByRole("button", { name: "Manage email preferences" }),
   );
@@ -1500,6 +1501,7 @@ test("routes a non-Curator Session to the Recipient library and self-service too
   expect(
     await screen.findByRole("heading", { name: "Photos" }),
   ).toBeInTheDocument();
+  fireEvent.click(screen.getByLabelText("Account for Recipient"));
   expect(
     await screen.findByRole("heading", { name: "Your Interest list" }),
   ).toBeInTheDocument();

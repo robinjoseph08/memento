@@ -26,6 +26,7 @@ export function PushNotifications({ session }: { session: SessionResponse }) {
     !isPublic && isAppleMobileDevice() && !isStandaloneDisplay();
   const [permissionResult, setPermissionResult] =
     useState<NotificationPermission>();
+  const [disabledSuccessfully, setDisabledSuccessfully] = useState(false);
   const configuration = useQuery({
     queryKey: PUSH_CONFIGURATION_QUERY_KEY,
     queryFn: fetchPushConfiguration,
@@ -85,6 +86,7 @@ export function PushNotifications({ session }: { session: SessionResponse }) {
     },
     onSuccess: (response) => {
       if (!response) return;
+      setDisabledSuccessfully(false);
       queryClient.setQueryData(PUSH_CONFIGURATION_QUERY_KEY, response);
       queryClient.setQueryData<ReconcileResponse>(
         PUSH_RECONCILIATION_QUERY_KEY,
@@ -95,6 +97,7 @@ export function PushNotifications({ session }: { session: SessionResponse }) {
   const disable = useMutation({
     mutationFn: () => disablePushSubscription(session.csrf_token),
     onSuccess: () => {
+      setDisabledSuccessfully(true);
       void unsubscribeLocalPushBestEffort();
       if (configuration.data) {
         queryClient.setQueryData(PUSH_CONFIGURATION_QUERY_KEY, {
@@ -152,7 +155,16 @@ export function PushNotifications({ session }: { session: SessionResponse }) {
         <p aria-live="polite">Checking push availability…</p>
       ) : null}
       {guidance ? <p>{guidance}</p> : null}
-      {error ? <p className="form-error">{error.message}</p> : null}
+      {error ? (
+        <p className="form-error" role="alert">
+          {error.message}
+        </p>
+      ) : null}
+      {disabledSuccessfully && !enrolled ? (
+        <p aria-live="polite">
+          Push notifications are disabled on this device.
+        </p>
+      ) : null}
       {enrolled && !isPublic ? (
         <>
           <p aria-live="polite">

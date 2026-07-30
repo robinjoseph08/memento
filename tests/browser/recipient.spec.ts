@@ -194,7 +194,7 @@ async function recipientAPI(
   });
 }
 
-test("@desktop Recipient lands on Photos and sees only filtered Event totals", async ({
+test("@desktop @mobile Recipient lands on Photos and sees only filtered Event totals", async ({
   page,
 }) => {
   await recipientAPI(page);
@@ -204,8 +204,17 @@ test("@desktop Recipient lands on Photos and sees only filtered Event totals", a
   await expect(
     page.getByRole("heading", { name: "New for you" }),
   ).toBeVisible();
-  await expect(page.locator(".library-rail")).toBeVisible();
-  await expect(page.locator(".mobile-library-nav")).toBeHidden();
+  const mobile = (page.viewportSize()?.width ?? 1280) <= 700;
+  const primaryNavigation = page.locator(
+    mobile ? ".mobile-library-nav" : ".library-rail",
+  );
+  if (mobile) {
+    await expect(page.locator(".library-rail")).toBeHidden();
+    await expect(page.locator(".mobile-library-nav")).toBeVisible();
+  } else {
+    await expect(page.locator(".library-rail")).toBeVisible();
+    await expect(page.locator(".mobile-library-nav")).toBeHidden();
+  }
   await expect(page.getByText("hidden", { exact: false })).toHaveCount(0);
   await expectClosedViewerHidden(page);
 
@@ -257,8 +266,7 @@ test("@desktop Recipient lands on Photos and sees only filtered Event totals", a
     page.getByText("This Media is no longer available in your Library."),
   ).toHaveCount(0);
 
-  await page
-    .locator(".library-rail")
+  await primaryNavigation
     .getByRole("button", { name: "Events" })
     .evaluate((button: HTMLButtonElement) => button.focus());
   await expect(closeViewer).toBeFocused();
@@ -280,10 +288,7 @@ test("@desktop Recipient lands on Photos and sees only filtered Event totals", a
   await expect(viewer).toBeHidden();
   await expect(opener).toBeFocused();
 
-  await page
-    .locator(".library-rail")
-    .getByRole("button", { name: "Events" })
-    .click();
+  await primaryNavigation.getByRole("button", { name: "Events" }).click();
   await expect(page.getByText("1 item")).toBeVisible();
   await page.getByRole("button", { name: /Family weekend/ }).click();
   await expect(page.getByText("1 item")).toBeVisible();
@@ -308,7 +313,7 @@ test("@desktop Recipient lands on Photos and sees only filtered Event totals", a
   ).toHaveAttribute("href", media.original_url);
 });
 
-test("@desktop public-computer original, subset, and Event archives show persistent-file warnings", async ({
+test("@desktop @mobile public-computer original, subset, and Event archives show persistent-file warnings", async ({
   page,
 }) => {
   await recipientAPI(page, "public");
@@ -330,10 +335,12 @@ test("@desktop public-computer original, subset, and Event archives show persist
       "Subset archive files will remain on this public computer after sign-out.",
     ),
   ).toBeVisible();
-  await page
-    .locator(".library-rail")
-    .getByRole("button", { name: "Events" })
-    .click();
+  const primaryNavigation = page.locator(
+    (page.viewportSize()?.width ?? 1280) <= 700
+      ? ".mobile-library-nav"
+      : ".library-rail",
+  );
+  await primaryNavigation.getByRole("button", { name: "Events" }).click();
   await page.getByRole("button", { name: /Family weekend/ }).click();
   await expect(
     page.getByText(

@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-test("@desktop Public-computer Session disables push and keeps privacy actions prominent", async ({
+test("@desktop @mobile Public-computer Session disables push and keeps privacy actions prominent", async ({
   page,
 }) => {
   let signedIn = false;
@@ -97,6 +97,7 @@ test("@desktop Public-computer Session disables push and keeps privacy actions p
   await expect(warning).toContainText(
     "downloaded originals or archives remain",
   );
+  await page.getByLabel("Account for Alex").click();
   await page.getByText("Sessions and login email").click();
   await expect(
     page.getByRole("button", { name: "Sign out Library computer" }),
@@ -105,7 +106,7 @@ test("@desktop Public-computer Session disables push and keeps privacy actions p
   await expect(page.getByText(/created .* last active/)).toBeVisible();
 });
 
-test("@desktop Curator recovery and Recipient lifecycle keep generation actions current", async ({
+test("@desktop @mobile Curator recovery and Recipient lifecycle keep generation actions current", async ({
   page,
 }) => {
   const personID = "22222222-2222-4222-8222-222222222222";

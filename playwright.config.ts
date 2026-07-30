@@ -32,6 +32,7 @@ export default defineConfig({
       grep: /@mobile/,
       use: {
         ...devices["Desktop Firefox"],
+        hasTouch: true,
         viewport: { width: 393, height: 851 },
       },
     },

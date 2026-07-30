@@ -6,6 +6,7 @@ import {
 import { useSearchParams } from "react-router-dom";
 
 import { apiJSON, apiNoContent } from "./api";
+import { preferredScrollBehavior } from "./motion";
 import type {
   CuratorActivityItem,
   CuratorActivityResponse,
@@ -166,7 +167,9 @@ export function CuratorActivity({ session }: { session: SessionResponse }) {
             item.source_kind === "media_problem"
           ? "curator-repairs"
           : "curator-people";
-    document.getElementById(target)?.scrollIntoView({ behavior: "smooth" });
+    document.getElementById(target)?.scrollIntoView({
+      behavior: preferredScrollBehavior(),
+    });
   }
 
   return (

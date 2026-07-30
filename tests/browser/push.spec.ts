@@ -135,7 +135,7 @@ async function mockPushBrowser(
   );
 }
 
-test("@desktop Android capability detection prompts only after the explicit action", async ({
+test("@desktop @mobile Android capability detection prompts only after the explicit action", async ({
   page,
 }) => {
   await mockPushBrowser(
@@ -145,6 +145,7 @@ test("@desktop Android capability detection prompts only after the explicit acti
   );
   await routeRecipientAPI(page);
   await page.goto("/");
+  await page.getByLabel("Account for Alex").click();
 
   const enable = page.getByRole("button", {
     name: "Enable push notifications",
@@ -190,12 +191,13 @@ for (const device of [
       "Mozilla/5.0 (iPad; CPU OS 18_4 like Mac OS X) AppleWebKit/605.1.15 Mobile",
   },
 ]) {
-  test(`@desktop ${device.name} guidance requires Home Screen installation before enabling`, async ({
+  test(`@desktop @mobile ${device.name} guidance requires Home Screen installation before enabling`, async ({
     page,
   }) => {
     await mockPushBrowser(page, device.userAgent, false);
     await routeRecipientAPI(page);
     await page.goto("/");
+    await page.getByLabel("Account for Alex").click();
 
     await expect(
       page.getByText(/Add Memento to your iPhone or iPad Home Screen/),

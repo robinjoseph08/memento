@@ -1601,6 +1601,7 @@ export function EventOrganizer({
         </div>
       ) : null}
       <fieldset
+        aria-label="Curator Event workspace"
         className="curator-split"
         data-active-pane={activePane}
         disabled={conflictRecoveryPending}

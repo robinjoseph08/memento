@@ -126,6 +126,7 @@ test("signs in with an eight-digit code and keeps Public-computer warnings promi
   expect(
     screen.getByText(/downloaded originals or archives remain/),
   ).toBeVisible();
+  fireEvent.click(screen.getByLabelText("Account for Alex"));
   fireEvent.click(screen.getByText("Sessions and login email"));
   expect(await screen.findByText("Push unavailable")).toBeVisible();
   expect(screen.getByText(/created .* last active/)).toBeVisible();
@@ -252,6 +253,8 @@ test("retries Session bootstrap without reusing an accepted sign-in code", async
   fireEvent.click(
     await screen.findByRole("button", { name: "Retry loading Session" }),
   );
+  await screen.findByRole("heading", { name: "Photos" });
+  fireEvent.click(screen.getByLabelText("Account for Alex"));
   expect(await screen.findByText("Your Interest list")).toBeVisible();
   expect(verificationCalls).toBe(1);
 });
