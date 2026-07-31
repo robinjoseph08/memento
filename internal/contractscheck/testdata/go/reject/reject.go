@@ -36,3 +36,27 @@ func AnonymousResponse(c echo.Context) error {
 		Status string `json:"status"`
 	}{Status: "no"}, "  ")
 }
+
+func callBind(bind func(any) error) error {
+	return bind(&struct{}{})
+}
+
+func HigherOrderBind(c echo.Context) error {
+	return callBind(c.Bind)
+}
+
+func ReturnedJSON(c echo.Context) func(int, any) error {
+	return c.JSON
+}
+
+func ReturnedJSONPretty(c echo.Context) func(int, any, string) error {
+	return c.JSONPretty
+}
+
+func ReturnedBindMethodExpression() func(echo.Context, any) error {
+	return echo.Context.Bind
+}
+
+func ReturnedBindWrapper() func(echo.Context, any) error {
+	return bindJSON
+}

@@ -3,6 +3,7 @@ package immich
 import (
 	"bytes"
 	"encoding/json"
+	"time"
 )
 
 type rawProviderResponse struct {
@@ -10,6 +11,22 @@ type rawProviderResponse struct {
 }
 
 type requestMap map[string]string
+
+type responseMapList []map[string]string
+
+type responseInterfaceList []any
+
+type responseScalarList []string
+
+type responseAnonymousList []struct {
+	ID string `json:"id"`
+}
+
+type responseScalar string
+
+type ExportedProviderResponse struct {
+	ID *string `json:"id"`
+}
 
 func AnonymousRequest() error {
 	_, err := marshalJSONRequest(struct {
@@ -113,4 +130,95 @@ func MethodValueRequest(client *Client) error {
 	send := client.doJSON
 	var response providerResponse
 	return send(0, "POST", "assets", nil, []byte(`{}`), &response, nil)
+}
+
+func RawMessageResponse(client *Client) error {
+	var response rawProviderResponse
+	return client.getJSON(0, "assets/one", &response, nil)
+}
+
+func NamedSliceOfMapResponse(client *Client) error {
+	var response responseMapList
+	return client.getJSON(0, "assets", &response, nil)
+}
+
+func NamedSliceOfInterfaceResponse(client *Client) error {
+	var response responseInterfaceList
+	return client.getJSON(0, "assets", &response, nil)
+}
+
+func NamedSliceOfScalarResponse(client *Client) error {
+	var response responseScalarList
+	return client.getJSON(0, "assets", &response, nil)
+}
+
+func NamedSliceOfAnonymousResponse(client *Client) error {
+	var response responseAnonymousList
+	return client.getJSON(0, "assets", &response, nil)
+}
+
+func NamedScalarResponse(client *Client) error {
+	var response responseScalar
+	return client.getJSON(0, "assets", &response, nil)
+}
+
+func ExternalStructResponse(client *Client) error {
+	var response time.Time
+	return client.getJSON(0, "assets", &response, nil)
+}
+
+func ExportedStructResponse(client *Client) error {
+	var response ExportedProviderResponse
+	return client.getJSON(0, "assets", &response, nil)
+}
+
+func RawBytesResponse(client *Client) error {
+	var response []byte
+	return client.getJSON(0, "assets", &response, nil)
+}
+
+func UnresolvedResponse[Response any](client *Client, response Response) error {
+	return client.getJSON(0, "assets", &response, nil)
+}
+
+func callGet(get func(int, string, any, error) error) error {
+	var response providerResponse
+	return get(0, "assets/one", &response, nil)
+}
+
+func HigherOrderMethodValue(client *Client) error {
+	return callGet(client.getJSON)
+}
+
+func ReturnedMethodValue(client *Client) func(int, string, any, error) error {
+	return client.getJSON
+}
+
+func ReturnedMethodExpression() func(*Client, int, string, any, error) error {
+	return (*Client).getJSON
+}
+
+func ReturnedGetJSONQuery(client *Client) func(int, string, any, any, error) error {
+	return client.getJSONQuery
+}
+
+func ReturnedDoJSONStatus(client *Client) func(int, string, string, any, any, any, error, int) error {
+	return client.doJSONStatus
+}
+
+func callMarshal(marshal func(providerRequest) ([]byte, error)) error {
+	_, err := marshal(providerRequest{})
+	return err
+}
+
+func HigherOrderMarshal() error {
+	return callMarshal(marshalJSONRequest[providerRequest])
+}
+
+func ReturnedMarshal() func(providerRequest) ([]byte, error) {
+	return marshalJSONRequest[providerRequest]
+}
+
+func ReturnedResponseWrapper() func(*Client, any) error {
+	return forwardResponse
 }

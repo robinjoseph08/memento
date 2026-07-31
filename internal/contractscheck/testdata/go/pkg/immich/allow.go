@@ -13,6 +13,12 @@ type providerResponse struct {
 	ID *string `json:"id"`
 }
 
+type providerResponses []providerResponse
+
+type localSerializedEnvelope struct {
+	Extra json.RawMessage `json:"extra"`
+}
+
 func AllowedDependencyContracts(client *Client) error {
 	if _, err := marshalJSONRequest(providerRequest{IDs: []string{"one"}}); err != nil {
 		return err
@@ -24,7 +30,7 @@ func AllowedDependencyContracts(client *Client) error {
 	if err := client.getJSON(0, "assets/one", &response, nil); err != nil {
 		return err
 	}
-	var responses []providerResponse
+	var responses providerResponses
 	if err := client.getJSONQuery(0, "assets", nil, &responses, nil); err != nil {
 		return err
 	}
@@ -33,7 +39,7 @@ func AllowedDependencyContracts(client *Client) error {
 }
 
 func AllowedLocalSerialization() error {
-	local := map[string]any{"id": "one"}
+	local := localSerializedEnvelope{Extra: json.RawMessage(`{"id":"one"}`)}
 	if _, err := json.Marshal(local); err != nil {
 		return err
 	}
