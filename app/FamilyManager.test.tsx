@@ -10,7 +10,8 @@ import {
 import { afterEach, expect, test, vi } from "vitest";
 
 import { FamilyManager } from "./FamilyManager";
-import type { Relationship } from "./types/generated/family";
+import { problemResponse } from "./test/problem";
+import type { MutationRequest, Relationship } from "./types/generated/family";
 import type { Person } from "./types/generated/people";
 
 const contentionWait = { timeout: 5_000 };
@@ -95,12 +96,7 @@ test("creates, edits, archives, and inspects relationship-annotated Family branc
         return jsonResponse({ relationships });
       }
       if (path === "/api/relationships" && init?.method === "POST") {
-        const request = JSON.parse(stringBody(init.body)) as {
-          relationship_type: string;
-          person_a_id: string;
-          person_b_id: string;
-          partner_status: string;
-        };
+        const request = JSON.parse(stringBody(init.body)) as MutationRequest;
         const created: Relationship = {
           id: "33333333-3333-3333-3333-333333333333",
           relationship_type: request.relationship_type,
@@ -272,7 +268,7 @@ test("keeps an in-progress edit stale when a refetch removes its relationship", 
       }
       if (path === `/api/relationships/${relationship.id}`) {
         return jsonResponse(
-          { error: { message: "The connection changed in another request." } },
+          problemResponse("The connection changed in another request.", 409),
           409,
         );
       }
@@ -402,12 +398,10 @@ test("shows a rejected cycle without implying that the connection was saved", as
       }
       if (path === "/api/relationships" && init?.method === "POST") {
         return jsonResponse(
-          {
-            error: {
-              message:
-                "That parent-child connection would create a cycle. The Family graph was not changed.",
-            },
-          },
+          problemResponse(
+            "That parent-child connection would create a cycle. The Family graph was not changed.",
+            409,
+          ),
           409,
         );
       }

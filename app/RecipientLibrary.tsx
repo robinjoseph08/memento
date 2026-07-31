@@ -16,8 +16,11 @@ import type {
   PlanResponse as ArchivePlanResponse,
 } from "./types/generated/archives";
 import type {
+  BodyRequest as CommentBodyRequest,
   Comment as MediaComment,
   ListResponse as CommentListResponse,
+  ModerateRequest,
+  MuteRequest,
 } from "./types/generated/comments";
 import type { State as FavoriteState } from "./types/generated/favorites";
 import type {
@@ -394,7 +397,9 @@ function MediaViewer({
           "Idempotency-Key": submission.key,
           "X-Memento-CSRF": session.csrf_token,
         },
-        body: JSON.stringify({ body: submission.body }),
+        body: JSON.stringify({
+          body: submission.body,
+        } satisfies CommentBodyRequest),
       });
     },
     onSuccess: async () => {
@@ -422,7 +427,7 @@ function MediaViewer({
           "If-Match": String(version),
           "X-Memento-CSRF": session.csrf_token,
         },
-        body: JSON.stringify({ body }),
+        body: JSON.stringify({ body } satisfies CommentBodyRequest),
       }),
     onSuccess: () =>
       queryClient.invalidateQueries({
@@ -461,7 +466,7 @@ function MediaViewer({
           "If-Match": String(version),
           "X-Memento-CSRF": session.csrf_token,
         },
-        body: JSON.stringify({ reason }),
+        body: JSON.stringify({ reason } satisfies ModerateRequest),
       }),
     onSuccess: () =>
       queryClient.invalidateQueries({
@@ -474,7 +479,7 @@ function MediaViewer({
       apiNoContent(`/api/comments/media/${media.id}/mute`, {
         method: "PUT",
         headers: { "X-Memento-CSRF": session.csrf_token },
-        body: JSON.stringify({ muted }),
+        body: JSON.stringify({ muted } satisfies MuteRequest),
       }),
     onSuccess: () =>
       queryClient.invalidateQueries({

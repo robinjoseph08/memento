@@ -4,6 +4,7 @@ import { useState } from "react";
 import { apiJSON } from "./api";
 import type { ListResponse as PeopleListResponse } from "./types/generated/people";
 import type {
+  ConfirmMediaRequest,
   FaceAnchorEvidence,
   LinkPersonRequest,
   ListResponse,
@@ -45,6 +46,13 @@ function CandidateActions({
   const resolve = useMutation({
     mutationFn: (nextAction: "confirm" | "reject") => {
       setAction(nextAction);
+      let request: ConfirmMediaRequest | undefined;
+      if (kind === "media" && nextAction === "confirm") {
+        if (!reviewToken) {
+          throw new Error("Media repair review token is unavailable.");
+        }
+        request = { review_token: reviewToken };
+      }
       return apiJSON<MutationResponse>(
         `/api/repairs/${kind}/${candidateID}/${nextAction}`,
         {
@@ -53,10 +61,7 @@ function CandidateActions({
             "Content-Type": "application/json",
             "X-Memento-CSRF": csrfToken,
           },
-          body:
-            kind === "media"
-              ? JSON.stringify({ review_token: reviewToken })
-              : undefined,
+          body: request ? JSON.stringify(request) : undefined,
         },
       );
     },

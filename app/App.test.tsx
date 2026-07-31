@@ -11,6 +11,7 @@ import { afterEach, expect, test, vi } from "vitest";
 
 import { App } from "./App";
 import { PWA_UPDATE_EVENT } from "./pwa";
+import { problemResponse } from "./test/problem";
 
 const contentionWait = { timeout: 5_000 };
 
@@ -204,7 +205,7 @@ test("keeps a failed Invitation token available for an explicit retry", async ()
       }
       if (path === "/api/auth/invitations/accept") {
         return Promise.resolve(
-          jsonResponse({ error: { message: "Please retry." } }, 503),
+          jsonResponse(problemResponse("Please retry.", 503), 503),
         );
       }
       return Promise.reject(new Error(`Unexpected request: ${path}`));
@@ -832,10 +833,7 @@ test("does not claim sign-in until the Secure cookie restores a Session", async 
         );
       }
       return Promise.resolve(
-        jsonResponse(
-          { error: { message: "A valid Session is required." } },
-          401,
-        ),
+        jsonResponse(problemResponse("A valid Session is required.", 401), 401),
       );
     }),
   );
@@ -1966,7 +1964,7 @@ test("announces a concurrent setup conflict without claiming success", async () 
       }
       return Promise.resolve(
         jsonResponse(
-          { error: { message: "Setup is no longer available." } },
+          problemResponse("Setup is no longer available.", 409),
           409,
         ),
       );
@@ -2019,7 +2017,7 @@ test("requires a fresh Curator review before explicitly releasing Recovery hold"
         return Promise.resolve(
           confirmationAttempts === 1
             ? jsonResponse(
-                { error: { message: "Confirmation unavailable" } },
+                problemResponse("Confirmation unavailable", 500),
                 500,
               )
             : jsonResponse({ error: { message: "Setup not found" } }, 404),

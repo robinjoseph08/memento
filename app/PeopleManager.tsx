@@ -7,20 +7,25 @@ import type {
   CreateRequest,
   ListResponse,
   MergePreview,
+  MergePreviewRequest,
   MergeRequest,
   Person,
   UpdateRequest,
+  VersionRequest,
 } from "./types/generated/people";
 import type {
   DeliveryStatus,
   DesignateRequest,
   Invitation,
   InvitationActionRequest,
+  LifecycleActionRequest,
   Recipient,
 } from "./types/generated/recipients";
 import type { SessionResponse } from "./types/generated/setup";
 import type {
   ListResponse as SessionListResponse,
+  RecoveryCompleteRequest,
+  RecoveryRequest,
   RecoveryStartResponse,
 } from "./types/generated/sessions";
 
@@ -115,7 +120,9 @@ export function PeopleManager({ session }: { session: SessionResponse }) {
       apiJSON<Person>(`/api/people/${person.id}/archive`, {
         method: "POST",
         headers: { "X-Memento-CSRF": session.csrf_token },
-        body: JSON.stringify({ version: person.version }),
+        body: JSON.stringify({
+          version: person.version,
+        } satisfies VersionRequest),
       }),
     onSuccess: async () => {
       setSelectedID("");
@@ -130,7 +137,7 @@ export function PeopleManager({ session }: { session: SessionResponse }) {
         body: JSON.stringify({
           source_person_id: mergeSourceID,
           survivor_person_id: mergeSurvivorID,
-        }),
+        } satisfies MergePreviewRequest),
       }),
     onSuccess: (result) => {
       setPreview(result);
@@ -600,7 +607,9 @@ function RecipientControls({
       apiJSON<Recipient>(`/api/recipients/${person.id}/${action}`, {
         method: "POST",
         headers: { "X-Memento-CSRF": session.csrf_token },
-        body: JSON.stringify({ access_id: accessID }),
+        body: JSON.stringify({
+          access_id: accessID,
+        } satisfies LifecycleActionRequest),
       }),
     onSuccess: refresh,
   });
@@ -620,7 +629,9 @@ function RecipientControls({
         {
           method: "POST",
           headers: { "X-Memento-CSRF": session.csrf_token },
-          body: JSON.stringify({ new_email: recoveryEmail }),
+          body: JSON.stringify({
+            new_email: recoveryEmail,
+          } satisfies RecoveryRequest),
         },
       ),
     onSuccess: setRecovery,
@@ -636,7 +647,7 @@ function RecipientControls({
           body: JSON.stringify({
             recovery_id: recovery.recovery_id,
             code: recoveryCode,
-          }),
+          } satisfies RecoveryCompleteRequest),
         },
       );
     },

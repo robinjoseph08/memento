@@ -9,7 +9,8 @@ import {
 import { afterEach, expect, test, vi } from "vitest";
 
 import { AttendanceAudienceReview } from "./AttendanceAudienceReview";
-import type { Review } from "./types/generated/audiences";
+import { problemResponse } from "./test/problem";
+import type { OverrideRequest, Review } from "./types/generated/audiences";
 
 const momentID = "11111111-1111-4111-8111-111111111111";
 const attendeeID = "22222222-2222-4222-8222-222222222222";
@@ -184,10 +185,7 @@ test("retains explained manual overrides and explicitly approves a snapshot", as
       const path = pathOf(input);
       if (path.endsWith("/attendance-audience")) return response(current);
       if (path.endsWith("/audience/override")) {
-        const request = JSON.parse(init?.body as string) as {
-          recipient_person_id: string;
-          state: string;
-        };
+        const request = JSON.parse(init?.body as string) as OverrideRequest;
         overrideBodies.push(request);
         current = {
           ...current,
@@ -263,7 +261,7 @@ test("reloads the latest review after an optimistic conflict", async () => {
       }
       if (path.endsWith("/attendance") && init?.method === "PUT") {
         return response(
-          { error: { message: "This review changed in another browser." } },
+          problemResponse("This review changed in another browser.", 409),
           409,
         );
       }
