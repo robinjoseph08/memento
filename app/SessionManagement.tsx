@@ -16,9 +16,11 @@ import type { SessionResponse } from "./types/generated/setup";
 export function SessionManager({
   session,
   onSignedOut,
+  mutationsDisabled = false,
 }: {
   session: SessionResponse;
   onSignedOut: () => void;
+  mutationsDisabled?: boolean;
 }) {
   const [labels, setLabels] = useState<Record<string, string>>({});
   const [labelBases, setLabelBases] = useState<Record<string, string>>({});
@@ -149,7 +151,9 @@ export function SessionManager({
           <button
             aria-label={`${item.current ? "Sign out" : "Revoke"} ${item.label || `${item.browser} on ${item.platform}`}`}
             className="danger-button"
-            disabled={revoke.isPending || item.status !== "active"}
+            disabled={
+              mutationsDisabled || revoke.isPending || item.status !== "active"
+            }
             onClick={() => revoke.mutate(item.id)}
             type="button"
           >
@@ -164,7 +168,7 @@ export function SessionManager({
       />
       <button
         className="danger-button"
-        disabled={signOutAll.isPending}
+        disabled={mutationsDisabled || signOutAll.isPending}
         onClick={() => signOutAll.mutate()}
         type="button"
       >

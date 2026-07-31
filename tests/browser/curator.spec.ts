@@ -149,11 +149,14 @@ async function mockCuratorAPI(
   page: Page,
   outcomes: Array<"failed" | "conflict" | "success"> = [],
   initial = draft(),
+  options: { failEventReloadAfterWithdrawal?: boolean } = {},
 ) {
   let persisted = initial;
   const attempts: OrganizeEventRequest[] = [];
   const withdrawalRequests: WithdrawRequest[] = [];
   let failureIndex = 0;
+  let withdrawalCommitted = false;
+  let previewRequests = 0;
 
   await page.route("**/api/**", async (route) => {
     const request = route.request();
@@ -196,10 +199,18 @@ async function mockCuratorAPI(
       return;
     }
     if (path === `/api/events/${eventID}` && request.method() === "GET") {
+      if (withdrawalCommitted && options.failEventReloadAfterWithdrawal) {
+        await route.fulfill({
+          status: 503,
+          json: problemResponse("The Event reload failed.", 503),
+        });
+        return;
+      }
       await route.fulfill({ json: persisted });
       return;
     }
     if (path === "/api/withdrawals" && request.method() === "POST") {
+      expect(request.headers()["x-memento-csrf"]).toBe(csrfToken);
       const body = request.postDataJSON() as WithdrawRequest;
       withdrawalRequests.push(body);
       const affected =
@@ -236,6 +247,7 @@ async function mockCuratorAPI(
           },
         ],
       };
+      withdrawalCommitted = true;
       await route.fulfill({ status: 201, json: persisted.withdrawals[0] });
       return;
     }
@@ -278,6 +290,7 @@ async function mockCuratorAPI(
       return;
     }
     if (path === `/api/events/${eventID}/preview`) {
+      previewRequests += 1;
       expect(request.method()).toBe("POST");
       expect(request.headers()["x-memento-csrf"]).toBe(csrfToken);
       await route.fulfill({
@@ -369,6 +382,7 @@ async function mockCuratorAPI(
     attempts,
     withdrawalRequests,
     persisted: () => persisted,
+    previewRequests: () => previewRequests,
   };
 }
 
@@ -422,10 +436,13 @@ test("@desktop @mobile publishes atomically and keeps Recipient preview read onl
   await expect(preview).not.toBeVisible();
 
   await page.reload();
-  await expect(page.getByText(/Published · 2 Moments/)).toBeVisible();
-  await page.getByRole("button", { name: /Family weekend/ }).click();
+  await expect(
+    page.getByRole("heading", { name: /Family weekend/i }),
+  ).toBeVisible();
   if ((page.viewportSize()?.width ?? 1280) <= 1024) {
     await page.getByRole("button", { name: "Inspect", exact: true }).click();
+  } else {
+    await expect(page.getByText(/Published · 2 Moments/)).toBeVisible();
   }
   await expect(
     page.getByRole("button", { name: "Publish Event" }),
@@ -487,7 +504,9 @@ for (const target of [
     ).toBeDisabled();
 
     await page.reload();
-    await page.getByRole("button", { name: /Family weekend/ }).click();
+    await expect(
+      page.getByRole("heading", { name: /Family weekend/i }),
+    ).toBeVisible();
     if ((page.viewportSize()?.width ?? 1280) <= 1024) {
       await page.getByRole("button", { name: "Inspect", exact: true }).click();
     }
@@ -499,6 +518,52 @@ for (const target of [
     ).toBeDisabled();
   });
 }
+
+test("@desktop @mobile fails closed when Withdrawal authority cannot reload", async ({
+  page,
+}) => {
+  const published = draft();
+  published.lifecycle = "published";
+  published.published_editable_version = published.version;
+  published.final_review_complete = true;
+  published.unassigned_media = [];
+  published.moments = published.moments.map((moment) => ({
+    ...moment,
+    attendance_complete: true,
+    audience_complete: true,
+  }));
+  const server = await mockCuratorAPI(page, [], published, {
+    failEventReloadAfterWithdrawal: true,
+  });
+  page.once("dialog", async (dialog) => dialog.accept());
+  await openEvent(page);
+  if ((page.viewportSize()?.width ?? 1280) <= 1024)
+    await page.getByRole("button", { name: "Inspect", exact: true }).click();
+
+  await page
+    .getByLabel("Preview Recipient")
+    .selectOption("ffffffff-ffff-4fff-8fff-ffffffffffff");
+  await page.getByRole("button", { name: "Preview as Recipient" }).click();
+  await expect(page.getByText("1 authorized Media items")).toBeVisible();
+  expect(server.previewRequests()).toBe(1);
+
+  await page.getByLabel("Attributable reason").fill("Privacy request");
+  await page.getByRole("button", { name: "Withdraw access" }).click();
+
+  await expect(
+    page.getByText(
+      "Reload the authoritative Event before Preview, Withdrawal, or Publication can continue.",
+    ),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("region", { name: "Read-only Recipient preview" }),
+  ).toHaveCount(0);
+  await expect(page.getByText("1 authorized Media items")).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Preview as Recipient" }),
+  ).toBeDisabled();
+  await expect.poll(server.previewRequests).toBe(1);
+});
 
 test("@desktop organizes, orders, autosaves, and persists after reload", async ({
   page,
@@ -558,7 +623,9 @@ test("@desktop organizes, orders, autosaves, and persists after reload", async (
   ).toEqual([items.third.id, items.first.id, items.loose.id]);
 
   await page.reload();
-  await page.getByRole("button", { name: /Family weekend/ }).click();
+  await expect(
+    page.getByRole("heading", { name: /Family weekend/i }),
+  ).toBeVisible();
   await expect(page.locator(".moment-list .moment-card")).toHaveCount(2);
   await expect(page.getByLabel("Cover").nth(0)).toHaveValue(items.second.id);
   await expect(page.getByLabel("Cover").nth(1)).toHaveValue(items.loose.id);

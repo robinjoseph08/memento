@@ -273,9 +273,11 @@ export function RecipientOnboarding({
 export function PublicSessionBanner({
   session,
   onSignOut,
+  disabled = false,
 }: {
   session: SessionResponse;
   onSignOut: () => void;
+  disabled?: boolean;
 }) {
   if (session.session_type !== "public") return null;
   return (
@@ -285,7 +287,7 @@ export function PublicSessionBanner({
         Sign out when finished. Push is disabled, and downloaded originals or
         archives remain on this computer after sign-out.
       </span>
-      <button onClick={onSignOut} type="button">
+      <button disabled={disabled} onClick={onSignOut} type="button">
         Sign out now
       </button>
     </aside>
