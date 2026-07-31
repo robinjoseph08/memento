@@ -93,7 +93,7 @@ function ReadyCard({
         { replace: true },
       );
     const protectDraftHistory = () => {
-      if (!draftsDirty) return;
+      if (!draftsDirty && !draftsSaving) return;
       if (draftsSaving) {
         restoreDraftLocation();
         return;
@@ -108,7 +108,7 @@ function ReadyCard({
 
   useEffect(() => {
     const protectDraftOnOffline = () => {
-      if (!draftsDirty) {
+      if (!draftsDirty && !draftsSaving) {
         setPreserveDraftOffline(false);
         return;
       }
@@ -126,7 +126,7 @@ function ReadyCard({
     };
     const resetOfflineProtection = () => setPreserveDraftOffline(false);
     const protectDraftOnRestart = (event: Event) => {
-      if (!draftsDirty) return;
+      if (!draftsDirty && !draftsSaving) return;
       const restartEvent = event as CustomEvent<PWARestartGuardDetail>;
       if (draftsSaving) {
         restartEvent.detail.blockedBy = "saving";
@@ -157,9 +157,12 @@ function ReadyCard({
     };
   }, [draftsDirty, draftsSaving]);
 
-  const keepDirtyDraftOpenOffline =
-    session?.curator && !online && draftsDirty && preserveDraftOffline;
-  if (session && !online && !keepDirtyDraftOpenOffline) {
+  const keepDraftOpenOffline =
+    session?.curator &&
+    !online &&
+    (draftsDirty || draftsSaving) &&
+    preserveDraftOffline;
+  if (session && !online && !keepDraftOpenOffline) {
     return (
       <div className="offline-shell">
         <ThemeToggle />
@@ -168,14 +171,19 @@ function ReadyCard({
     );
   }
 
-  if (session?.curator && (draftsRequested || draftsDirty)) {
+  if (session?.curator && (draftsRequested || draftsDirty || draftsSaving)) {
     return (
       <section className="draft-work-shell">
         <PublicSessionBanner
+          disabled={draftsSaving}
           onSignOut={() => signOut.mutate()}
           session={session}
         />
-        <SessionManager onSignedOut={onSignOut} session={session} />
+        <SessionManager
+          mutationsDisabled={draftsSaving}
+          onSignedOut={onSignOut}
+          session={session}
+        />
         <div className="draft-work-actions">
           <button
             className="back-to-management"
@@ -201,7 +209,7 @@ function ReadyCard({
           </button>
           <button
             className="source-sign-out"
-            disabled={signOut.isPending}
+            disabled={signOut.isPending || draftsSaving}
             onClick={() => {
               if (
                 draftsDirty &&

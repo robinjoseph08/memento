@@ -1,13 +1,6 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
-import { APIError, apiJSON } from "./api";
-import type {
-  ApprovalResponse,
-  AttendanceRequest,
-  OverrideRequest,
-  Review,
-} from "./types/generated/audiences";
+import { useAudienceReview } from "./hooks/queries/audiences";
 
 const reasonLabels: Record<string, string> = {
   present: "Present",
@@ -29,13 +22,19 @@ export function AttendanceAudienceReview({
   onAudienceChanged: () => void;
   onAudienceApproved: () => void;
 }) {
-  const queryClient = useQueryClient();
-  const queryKey = ["attendance-audience", momentID];
-  const review = useQuery({
-    queryKey,
-    queryFn: () =>
-      apiJSON<Review>(`/api/moments/${momentID}/attendance-audience`),
-    retry: false,
+  const {
+    review,
+    confirmAttendance,
+    override,
+    recalculate,
+    approve,
+    errors,
+    hasConflict,
+    reset,
+  } = useAudienceReview(csrfToken, momentID, {
+    onAttendanceConfirmed,
+    onAudienceChanged,
+    onAudienceApproved,
   });
   const [attendanceOverride, setAttendanceOverride] = useState<Set<string>>();
   const [manualRecipientID, setManualRecipientID] = useState("");
@@ -43,94 +42,9 @@ export function AttendanceAudienceReview({
     attendanceOverride ??
     new Set(review.data?.attendance.map((person) => person.id) ?? []);
 
-  const confirmAttendance = useMutation({
-    mutationFn: () =>
-      apiJSON<Review>(`/api/moments/${momentID}/attendance`, {
-        method: "PUT",
-        headers: {
-          "If-Match": String(review.data?.version ?? 0),
-          "X-Memento-CSRF": csrfToken,
-        },
-        body: JSON.stringify({
-          person_ids: [...attendance],
-        } satisfies AttendanceRequest),
-      }),
-    onSuccess: (result) => {
-      queryClient.setQueryData(queryKey, result);
-      onAttendanceConfirmed();
-    },
-  });
-  const override = useMutation({
-    mutationFn: (request: OverrideRequest) =>
-      apiJSON<Review>(`/api/moments/${momentID}/audience/override`, {
-        method: "PUT",
-        headers: {
-          "If-Match": String(review.data?.version ?? 0),
-          "X-Memento-CSRF": csrfToken,
-        },
-        body: JSON.stringify(request),
-      }),
-    onSuccess: (result) => {
-      queryClient.setQueryData(queryKey, result);
-      onAudienceChanged();
-    },
-  });
-  const recalculate = useMutation({
-    mutationFn: () =>
-      apiJSON<Review>(`/api/moments/${momentID}/audience/recalculate`, {
-        method: "POST",
-        headers: {
-          "If-Match": String(review.data?.version ?? 0),
-          "X-Memento-CSRF": csrfToken,
-        },
-      }),
-    onSuccess: (result) => {
-      queryClient.setQueryData(queryKey, result);
-      onAudienceChanged();
-    },
-  });
-  const approve = useMutation({
-    mutationFn: () =>
-      apiJSON<ApprovalResponse>(`/api/moments/${momentID}/audience/approve`, {
-        method: "POST",
-        headers: {
-          "If-Match": String(review.data?.version ?? 0),
-          "X-Memento-CSRF": csrfToken,
-        },
-      }),
-    onSuccess: (result) => {
-      queryClient.setQueryData<Review>(queryKey, (current) =>
-        current
-          ? {
-              ...current,
-              approved_audience: result.audience,
-              audience_complete: true,
-              version: result.version,
-            }
-          : current,
-      );
-      onAudienceApproved();
-    },
-  });
-
-  const errors = [
-    review.error,
-    confirmAttendance.error,
-    override.error,
-    recalculate.error,
-    approve.error,
-  ].filter((error): error is Error => error instanceof Error);
-  const hasConflict = errors.some(
-    (error) => error instanceof APIError && error.status === 409,
-  );
-
   function loadLatestReview() {
     setAttendanceOverride(undefined);
-    confirmAttendance.reset();
-    override.reset();
-    recalculate.reset();
-    approve.reset();
-    void review.refetch();
+    void reset();
   }
 
   if (review.isPending) return <p>Loading Attendance and Audience…</p>;
@@ -205,7 +119,9 @@ export function AttendanceAudienceReview({
         ))}
         <button
           disabled={confirmAttendance.isPending}
-          onClick={() => confirmAttendance.mutate()}
+          onClick={() =>
+            confirmAttendance.mutate({ person_ids: [...attendance] })
+          }
           type="button"
         >
           Confirm Attendance

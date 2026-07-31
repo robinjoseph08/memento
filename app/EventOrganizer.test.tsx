@@ -8,9 +8,11 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
+import { MemoryRouter, useNavigate } from "react-router-dom";
 import { afterEach, expect, test, vi } from "vitest";
 
 import { EventOrganizer } from "./EventOrganizer";
+import { eventKeys } from "./hooks/queries/events";
 import { problemResponse } from "./test/problem";
 import type {
   Event as DraftEvent,
@@ -38,6 +40,8 @@ type OrganizerAPIOptions = {
   restoreVersions?: number[];
   publicationRefetchGate?: Promise<void>;
   withdrawalGate?: Promise<void>;
+  withdrawalRefetchGate?: Promise<void>;
+  withdrawalRefetchFailures?: number;
 };
 
 function deferred() {
@@ -248,6 +252,8 @@ function stubOrganizerAPI(
   let publicationCommitted = false;
   let restorationConflictReturned = false;
   let restorationRefetched = false;
+  let withdrawalCommitted = false;
+  let withdrawalRefetchFailures = options.withdrawalRefetchFailures ?? 0;
   const saves: OrganizeEventRequest[] = [];
   const reviews = new Map<string, ReturnType<typeof emptyReview>>();
   const reviewFor = (momentID: string) => {
@@ -327,6 +333,12 @@ function stubOrganizerAPI(
               name: "Alex",
               access_state: "onboarding",
             },
+            {
+              person_id: "abababab-abab-4bab-8bab-abababababab",
+              access_id: "89898989-8989-4989-8989-898989898989",
+              name: "Bailey",
+              access_state: "completed",
+            },
           ],
         });
       }
@@ -385,6 +397,7 @@ function stubOrganizerAPI(
             },
           ],
         };
+        withdrawalCommitted = true;
         const withdrawal = structuredClone(persisted.withdrawals[0]);
         return options.withdrawalGate
           ? options.withdrawalGate.then(() => response(withdrawal, 201))
@@ -451,6 +464,18 @@ function stubOrganizerAPI(
           : response(restoration);
       }
       if (path === `/api/events/${eventID}`) {
+        if (withdrawalCommitted && options.withdrawalRefetchGate)
+          return options.withdrawalRefetchGate.then(() => response(persisted));
+        if (withdrawalCommitted && withdrawalRefetchFailures > 0) {
+          withdrawalRefetchFailures -= 1;
+          return response(
+            problemResponse(
+              "The Event reload is temporarily unavailable.",
+              503,
+            ),
+            503,
+          );
+        }
         if (restorationConflictReturned) restorationRefetched = true;
         if (publicationCommitted && options.publicationRefetchGate) {
           return options.publicationRefetchGate.then(() => response(persisted));
@@ -537,27 +562,44 @@ function stubOrganizerAPI(
   return saves;
 }
 
-function renderOrganizer() {
+function ExternalNavigation() {
+  const navigate = useNavigate();
+  return (
+    <button
+      onClick={() => void navigate("/?event=external-event")}
+      type="button"
+    >
+      Navigate externally
+    </button>
+  );
+}
+
+function renderOrganizer(initialEntry = "/") {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
-  return render(
+  const rendered = render(
     <QueryClientProvider client={client}>
-      <EventOrganizer
-        session={{
-          display_name: "Robin",
-          session_type: "public",
-          csrf_token: csrfToken,
-          curator: true,
-          onboarding_required: false,
-        }}
-      />
+      <MemoryRouter initialEntries={[initialEntry]}>
+        <ExternalNavigation />
+        <EventOrganizer
+          session={{
+            display_name: "Robin",
+            session_type: "public",
+            csrf_token: csrfToken,
+            curator: true,
+            onboarding_required: false,
+          }}
+        />
+      </MemoryRouter>
     </QueryClientProvider>,
   );
+  return { ...rendered, client };
 }
 
 afterEach(() => {
   cleanup();
+  window.history.replaceState(null, "", window.location.pathname);
   vi.useRealTimers();
   vi.restoreAllMocks();
 });
@@ -1247,10 +1289,29 @@ test("refreshes Publication state while preserving edits made during refetch", a
   fireEvent.click(
     await screen.findByRole("button", { name: /Family weekend/ }),
   );
+  const recipientSelect = await screen.findByLabelText("Preview Recipient");
+  await waitFor(() => expect(recipientSelect).toBeEnabled());
+  fireEvent.change(recipientSelect, {
+    target: { value: "ffffffff-ffff-4fff-8fff-ffffffffffff" },
+  });
+  const previewButton = screen.getByRole("button", {
+    name: "Preview as Recipient",
+  });
+  await waitFor(() => expect(previewButton).toBeEnabled());
+  fireEvent.click(previewButton);
+  expect(
+    await screen.findByText("1 authorized Media items"),
+  ).toBeInTheDocument();
 
   fireEvent.click(await screen.findByRole("button", { name: "Publish Event" }));
   expect(
     await screen.findByRole("button", { name: "Publishing…" }),
+  ).toBeDisabled();
+  expect(
+    screen.queryByRole("region", { name: "Read-only Recipient preview" }),
+  ).not.toBeInTheDocument();
+  expect(
+    screen.getByRole("button", { name: "Preview as Recipient" }),
   ).toBeDisabled();
   const title = screen.getByLabelText("Event title");
   fireEvent.change(title, { target: { value: "Follow-up correction" } });
@@ -1343,12 +1404,27 @@ test("publishes ready work and previews Recipient output read only", async () =>
       screen.getByRole("button", { name: action, hidden: true }),
     ).toBeDisabled();
   }
+  fireEvent.change(recipient, {
+    target: { value: "abababab-abab-4bab-8bab-abababababab" },
+  });
+  expect(
+    screen.queryByRole("region", { name: "Read-only Recipient preview" }),
+  ).not.toBeInTheDocument();
+  expect(recipient).toHaveValue("abababab-abab-4bab-8bab-abababababab");
+  fireEvent.change(recipient, {
+    target: { value: "ffffffff-ffff-4fff-8fff-ffffffffffff" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Preview as Recipient" }));
+  await screen.findByRole("region", { name: "Read-only Recipient preview" });
   fireEvent.change(screen.getByLabelText("Title for Moment 1"), {
     target: { value: "A new correction" },
   });
   expect(
     screen.queryByRole("region", { name: "Read-only Recipient preview" }),
   ).not.toBeInTheDocument();
+  expect(screen.getByLabelText("Preview Recipient")).toHaveValue(
+    "ffffffff-ffff-4fff-8fff-ffffffffffff",
+  );
   expect(readiness).toHaveTextContent("Next action: Ready to publish");
   expect(readiness).not.toHaveTextContent("Published and up to date");
 });
@@ -1501,6 +1577,129 @@ test("withdraws a currently published target even when the staged draft differs"
   expect(confirm).toHaveBeenCalledWith(
     "Withdraw Recipient access immediately? Identity and history will be preserved.",
   );
+});
+
+test("closes Preview as soon as Withdrawal commits", async () => {
+  const published = organizedDraft();
+  published.lifecycle = "published";
+  published.final_review_complete = true;
+  published.published_editable_version = published.version;
+  published.moments = published.moments.map((moment) => ({
+    ...moment,
+    attendance_complete: true,
+    audience_complete: true,
+  }));
+  const reloadGate = deferred();
+  stubOrganizerAPI(published, { withdrawalRefetchGate: reloadGate.promise });
+  vi.spyOn(window, "confirm").mockReturnValue(true);
+  renderOrganizer();
+  fireEvent.click(
+    await screen.findByRole("button", { name: /Family weekend/ }),
+  );
+  const recipientSelect = await screen.findByLabelText("Preview Recipient");
+  await waitFor(() => expect(recipientSelect).toBeEnabled());
+  fireEvent.change(recipientSelect, {
+    target: { value: "ffffffff-ffff-4fff-8fff-ffffffffffff" },
+  });
+  const previewButton = screen.getByRole("button", {
+    name: "Preview as Recipient",
+  });
+  await waitFor(() => expect(previewButton).toBeEnabled());
+  fireEvent.click(previewButton);
+  expect(
+    await screen.findByText("1 authorized Media items"),
+  ).toBeInTheDocument();
+
+  fireEvent.change(screen.getByLabelText("Attributable reason"), {
+    target: { value: "Privacy request" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Withdraw access" }));
+
+  expect(
+    await screen.findByText(
+      "Reload the authoritative Event before Preview, Withdrawal, or Publication can continue.",
+    ),
+  ).toBeInTheDocument();
+  expect(
+    screen.queryByRole("region", { name: "Read-only Recipient preview" }),
+  ).not.toBeInTheDocument();
+  expect(
+    screen.queryByText("1 authorized Media items"),
+  ).not.toBeInTheDocument();
+
+  reloadGate.resolve();
+  await waitFor(() =>
+    expect(
+      screen.queryByText(
+        "Reload the authoritative Event before Preview, Withdrawal, or Publication can continue.",
+      ),
+    ).not.toBeInTheDocument(),
+  );
+});
+
+test("blocks stale Preview after Withdrawal until Event authority reloads", async () => {
+  const published = organizedDraft();
+  published.lifecycle = "published";
+  published.final_review_complete = true;
+  published.published_editable_version = published.version;
+  published.moments = published.moments.map((moment) => ({
+    ...moment,
+    attendance_complete: true,
+    audience_complete: true,
+  }));
+  stubOrganizerAPI(published, { withdrawalRefetchFailures: 10 });
+  vi.spyOn(window, "confirm").mockReturnValue(true);
+  const { client } = renderOrganizer();
+  fireEvent.click(
+    await screen.findByRole("button", { name: /Family weekend/ }),
+  );
+
+  const recipientSelect = await screen.findByLabelText("Preview Recipient");
+  await waitFor(() => expect(recipientSelect).toBeEnabled());
+  fireEvent.change(recipientSelect, {
+    target: { value: "ffffffff-ffff-4fff-8fff-ffffffffffff" },
+  });
+  const previewButton = screen.getByRole("button", {
+    name: "Preview as Recipient",
+  });
+  await waitFor(() => expect(previewButton).toBeEnabled());
+  fireEvent.click(previewButton);
+  const preview = await screen.findByRole("region", {
+    name: "Read-only Recipient preview",
+  });
+  await waitFor(() =>
+    expect(preview).toHaveTextContent("1 authorized Media items"),
+  );
+
+  fireEvent.change(screen.getByLabelText("Attributable reason"), {
+    target: { value: "Privacy request" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Withdraw access" }));
+
+  expect(
+    await screen.findByText(
+      "Reload the authoritative Event before Preview, Withdrawal, or Publication can continue.",
+    ),
+  ).toBeInTheDocument();
+  expect(
+    await screen.findAllByText("The Event reload is temporarily unavailable."),
+  ).toHaveLength(2);
+  expect(
+    screen.queryByRole("region", { name: "Read-only Recipient preview" }),
+  ).not.toBeInTheDocument();
+  expect(
+    screen.queryByText("1 authorized Media items"),
+  ).not.toBeInTheDocument();
+  expect(
+    screen.getByRole("button", { name: "Preview as Recipient" }),
+  ).toBeDisabled();
+  expect(
+    client
+      .getQueriesData({
+        queryKey: eventKeys.recipientPreviews(csrfToken),
+      })
+      .every(([, data]) => data === undefined),
+  ).toBe(true);
 });
 
 test("preserves raw Place-label editing and autosaves parsed labels on blur", async () => {
@@ -2018,7 +2217,7 @@ test("keeps newer authoritative review state after a delayed autosave response",
     attendanceGate: attendanceGate.promise,
     organizationGate: organizationGate.promise,
   });
-  renderOrganizer();
+  const { client } = renderOrganizer();
   fireEvent.click(
     await screen.findByRole("button", { name: /Family weekend/ }),
   );
@@ -2054,6 +2253,46 @@ test("keeps newer authoritative review state after a delayed autosave response",
   ).toHaveTextContent("✓ Attendance");
   expect(screen.getByLabelText("Title for Moment 1")).toHaveValue(
     "Saving while review completes",
+  );
+  const cached = client.getQueryData<DraftEvent>(
+    eventKeys.detail(csrfToken, eventID),
+  );
+  expect(cached?.title).toBe("Family weekend");
+  expect(cached?.moments[0]).toMatchObject({
+    title: "Saving while review completes",
+    attendance_complete: true,
+  });
+});
+
+test("adopts newer authoritative Event state after autosave completes", async () => {
+  stubOrganizerAPI(draft());
+  const { client } = renderOrganizer();
+  fireEvent.click(
+    await screen.findByRole("button", { name: /Family weekend/ }),
+  );
+  const title = await screen.findByLabelText("Title for Moment 1");
+  fireEvent.change(title, { target: { value: "Saved organization" } });
+  await screen.findByText("All changes saved");
+
+  const cached = client.getQueryData<DraftEvent>(
+    eventKeys.detail(csrfToken, eventID),
+  )!;
+  act(() => {
+    client.setQueryData(eventKeys.detail(csrfToken, eventID), {
+      ...cached,
+      version: cached.version + 1,
+      moments: cached.moments.map((moment, index) =>
+        index === 0
+          ? { ...moment, title: "Newer authoritative organization" }
+          : moment,
+      ),
+    });
+  });
+
+  await waitFor(() =>
+    expect(screen.getByLabelText("Title for Moment 1")).toHaveValue(
+      "Newer authoritative organization",
+    ),
   );
 });
 
@@ -2679,6 +2918,138 @@ test("loads the selected Event instead of retaining the previous draft", async (
     await screen.findByRole("heading", { name: "Summer picnic" }),
   ).toBeInTheDocument();
   expect(screen.getByLabelText("Title for Moment 1")).toHaveValue("Friday");
+});
+
+test("ignores a delayed Audience completion from a previously selected Event", async () => {
+  const secondID = "44444444-4444-4444-8444-444444444444";
+  const first = draft();
+  const second = { ...draft(), id: secondID, title: "Summer picnic" };
+  const attendanceGate = deferred();
+  let attendanceCompleted = false;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = pathOf(input);
+      if (path === "/api/events" && !init?.method)
+        return response({
+          events: [
+            {
+              id: first.id,
+              title: first.title,
+              version: first.version,
+              moment_count: first.moments.length,
+              unassigned_count: first.unassigned_media.length,
+              has_staged_update: false,
+              lifecycle: first.lifecycle,
+              updated_at: first.updated_at,
+            },
+            {
+              id: second.id,
+              title: second.title,
+              version: second.version,
+              moment_count: second.moments.length,
+              unassigned_count: second.unassigned_media.length,
+              has_staged_update: false,
+              lifecycle: second.lifecycle,
+              updated_at: second.updated_at,
+            },
+          ],
+        });
+      if (path === `/api/events/${first.id}`) return response(first);
+      if (path === `/api/events/${second.id}`) return response(second);
+      if (path === `/api/moments/${momentOneID}/attendance-audience`)
+        return response(emptyReview(momentOneID));
+      if (
+        path === `/api/moments/${momentOneID}/attendance` &&
+        init?.method === "PUT"
+      )
+        return attendanceGate.promise.then(() => {
+          attendanceCompleted = true;
+          const result = emptyReview(momentOneID);
+          result.version = 2;
+          result.attendance_confirmed = true;
+          return response(result);
+        });
+      throw new Error(`Unexpected request: ${path}`);
+    }),
+  );
+
+  renderOrganizer();
+  fireEvent.click(
+    await screen.findByRole("button", { name: /Family weekend/ }),
+  );
+  fireEvent.click(
+    (
+      await screen.findAllByRole("button", {
+        name: "Inspect Attendance and Audience",
+      })
+    )[0],
+  );
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Confirm Attendance" }),
+  );
+  fireEvent.click(screen.getByRole("button", { name: /Summer picnic/ }));
+  await screen.findByRole("heading", { name: "Summer picnic" });
+  fireEvent.change(screen.getByLabelText("Event title"), {
+    target: { value: "" },
+  });
+  fireEvent.change(screen.getByLabelText("Title for Moment 1"), {
+    target: { value: "Unsaved second Event" },
+  });
+
+  attendanceGate.resolve();
+  await waitFor(() => expect(attendanceCompleted).toBe(true));
+  expect(screen.getByRole("button", { name: /Summer picnic/ })).toHaveAttribute(
+    "aria-current",
+    "page",
+  );
+  expect(screen.getByLabelText("Title for Moment 1")).toHaveValue(
+    "Unsaved second Event",
+  );
+});
+
+test("opens a bookmarked Event in the Event pane", async () => {
+  stubOrganizerAPI(draft());
+  renderOrganizer(`/?event=${eventID}`);
+
+  expect(
+    await screen.findByRole("heading", { name: "Family weekend" }),
+  ).toBeInTheDocument();
+  await waitFor(() =>
+    expect(document.getElementById("organize-pane")).toHaveFocus(),
+  );
+});
+
+test("keeps transient organization state when URL navigation is rejected", async () => {
+  const organizationGate = deferred();
+  const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+  stubOrganizerAPI(draft(), { organizationGate: organizationGate.promise });
+  renderOrganizer();
+  fireEvent.click(
+    await screen.findByRole("button", { name: /Family weekend/ }),
+  );
+  const mediaSelection = await screen.findByRole("checkbox", {
+    name: /first photo/,
+  });
+  fireEvent.click(mediaSelection);
+  fireEvent.change(screen.getByLabelText("Title for Moment 1"), {
+    target: { value: "Unsaved URL navigation" },
+  });
+  await screen.findByText("Saving…");
+
+  fireEvent.click(screen.getByRole("button", { name: "Navigate externally" }));
+
+  await waitFor(() =>
+    expect(confirm).toHaveBeenCalledWith(
+      "Discard changes that have not finished saving?",
+    ),
+  );
+  expect(screen.getByRole("heading", { name: "Family weekend" })).toBeVisible();
+  expect(screen.getByLabelText("Title for Moment 1")).toHaveValue(
+    "Unsaved URL navigation",
+  );
+  expect(mediaSelection).toBeChecked();
+  organizationGate.resolve();
 });
 
 test("does not silently discard a draft when navigating between Events", async () => {
