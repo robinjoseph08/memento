@@ -19,8 +19,9 @@ var errPackageLoading = errors.New("go package loading failed")
 type rootRule string
 
 const (
-	namedExportedStructRoot rootRule = "named-exported-struct"
-	namedDependencyRoot     rootRule = "named-dependency"
+	namedExportedStructRoot     rootRule = "named-exported-struct"
+	namedDependencyRequestRoot  rootRule = "named-dependency-request"
+	namedDependencyResponseRoot rootRule = "named-dependency-response"
 )
 
 type transportSink struct {
@@ -33,6 +34,17 @@ type functionBody struct {
 	declaration *ast.FuncDecl
 	function    *types.Func
 	pkg         *packages.Package
+}
+
+type callableTarget struct {
+	function       *types.Func
+	argumentOffset int
+}
+
+type aliasAssignment struct {
+	variable   *types.Var
+	expression ast.Expr
+	info       *types.Info
 }
 
 // CheckGo finds JSON contract roots crossing production HTTP and dependency seams.
@@ -59,7 +71,8 @@ func CheckGo(directory string, patterns ...string) ([]string, error) {
 	}
 
 	functions := collectFunctionBodies(loaded)
-	wrappers := discoverWrappers(functions)
+	aliases := discoverFunctionAliases(loaded)
+	wrappers := discoverWrappers(functions, aliases)
 	diagnostics := rawMessageFieldDiagnostics(absoluteDirectory, loaded)
 	for _, body := range functions {
 		ast.Inspect(body.declaration.Body, func(node ast.Node) bool {
@@ -67,22 +80,32 @@ func CheckGo(directory string, patterns ...string) ([]string, error) {
 			if !ok {
 				return true
 			}
-			for _, sink := range callSinks(call, body.pkg.TypesInfo, body.pkg.PkgPath, wrappers) {
+			for _, sink := range callSinks(call, body.pkg.TypesInfo, wrappers, aliases) {
 				if sink.argument >= len(call.Args) {
 					continue
 				}
 				root := call.Args[sink.argument]
+				if sink.rule == namedDependencyRequestRoot && isNilExpression(root) {
+					continue
+				}
 				if forwardedParameter(body, root, sink, wrappers) {
 					continue
 				}
-				problem := describeInvalidRoot(body.pkg.TypesInfo.TypeOf(root), sink.rule)
+				problem := "unknown type"
+				if !isNilExpression(root) {
+					problem = describeInvalidRoot(body.pkg.TypesInfo.TypeOf(root), sink.rule)
+				}
 				if problem == "" {
 					continue
 				}
 				position := body.pkg.Fset.Position(root.Pos())
 				expectation := "must be a named exported struct"
-				if sink.rule == namedDependencyRoot {
-					expectation = "must not use an anonymous struct or map"
+				switch sink.rule {
+				case namedExportedStructRoot:
+				case namedDependencyRequestRoot:
+					expectation = "must be a named struct"
+				case namedDependencyResponseRoot:
+					expectation = "must use a named provider DTO"
 				}
 				diagnostics = append(diagnostics, fmt.Sprintf(
 					"%s:%d:%d: %s JSON contract %s; got %s",
@@ -139,7 +162,7 @@ func collectFunctionBodies(loaded []*packages.Package) []functionBody {
 	return result
 }
 
-func discoverWrappers(functions []functionBody) map[*types.Func][]transportSink {
+func discoverWrappers(functions []functionBody, aliases map[*types.Var]callableTarget) map[*types.Func][]transportSink {
 	wrappers := make(map[*types.Func][]transportSink)
 	changed := true
 	for changed {
@@ -150,7 +173,7 @@ func discoverWrappers(functions []functionBody) map[*types.Func][]transportSink 
 				if !ok {
 					return true
 				}
-				for _, sink := range callSinks(call, body.pkg.TypesInfo, body.pkg.PkgPath, wrappers) {
+				for _, sink := range callSinks(call, body.pkg.TypesInfo, wrappers, aliases) {
 					if sink.argument >= len(call.Args) {
 						continue
 					}
@@ -171,33 +194,46 @@ func discoverWrappers(functions []functionBody) map[*types.Func][]transportSink 
 	return wrappers
 }
 
-func callSinks(call *ast.CallExpr, info *types.Info, packagePath string, wrappers map[*types.Func][]transportSink) []transportSink {
-	function := calledFunction(call.Fun, info)
-	if function == nil {
+func callSinks(
+	call *ast.CallExpr,
+	info *types.Info,
+	wrappers map[*types.Func][]transportSink,
+	aliases map[*types.Var]callableTarget,
+) []transportSink {
+	target, ok := resolveCallable(call.Fun, info, aliases)
+	if !ok {
 		return nil
 	}
+	function := target.function
+	var sinks []transportSink
 	if function.Pkg() != nil && function.Pkg().Path() == echoPackagePath {
 		switch function.Name() {
 		case "Bind":
-			return []transportSink{{argument: 0, kind: "request", rule: namedExportedStructRoot}}
+			sinks = []transportSink{{argument: 0, kind: "request", rule: namedExportedStructRoot}}
 		case "JSON", "JSONPretty":
-			return []transportSink{{argument: 1, kind: "response", rule: namedExportedStructRoot}}
+			sinks = []transportSink{{argument: 1, kind: "response", rule: namedExportedStructRoot}}
 		}
 	}
-	if isImmichPackage(packagePath) && function.Pkg() != nil && function.Pkg().Path() == "encoding/json" && function.Name() == "Marshal" {
-		return []transportSink{{argument: 0, kind: "Immich request", rule: namedDependencyRoot}}
+	if isImmichRequestMarshal(function) {
+		sinks = []transportSink{{argument: 0, kind: "Immich request", rule: namedDependencyRequestRoot}}
 	}
 	if isImmichClientMethod(function) {
 		switch function.Name() {
 		case "getJSON":
-			return []transportSink{{argument: 2, kind: "Immich response", rule: namedDependencyRoot}}
+			sinks = []transportSink{{argument: 2, kind: "Immich response", rule: namedDependencyResponseRoot}}
 		case "getJSONQuery":
-			return []transportSink{{argument: 3, kind: "Immich response", rule: namedDependencyRoot}}
+			sinks = []transportSink{{argument: 3, kind: "Immich response", rule: namedDependencyResponseRoot}}
 		case "doJSON", "doJSONStatus":
-			return []transportSink{{argument: 5, kind: "Immich response", rule: namedDependencyRoot}}
+			sinks = []transportSink{
+				{argument: 4, kind: "Immich request", rule: namedDependencyRequestRoot},
+				{argument: 5, kind: "Immich response", rule: namedDependencyResponseRoot},
+			}
 		}
 	}
-	return wrappers[function]
+	if sinks == nil {
+		sinks = wrappers[function]
+	}
+	return offsetSinks(sinks, target.argumentOffset)
 }
 
 func isImmichPackage(packagePath string) bool {
@@ -220,25 +256,126 @@ func isImmichClientMethod(function *types.Func) bool {
 	return ok && named.Obj().Name() == "Client"
 }
 
-func calledFunction(expression ast.Expr, info *types.Info) *types.Func {
+func isImmichRequestMarshal(function *types.Func) bool {
+	if function.Pkg() == nil || !isImmichPackage(function.Pkg().Path()) || function.Name() != "marshalJSONRequest" {
+		return false
+	}
+	signature, _ := function.Type().(*types.Signature)
+	return signature != nil && signature.Recv() == nil
+}
+
+func discoverFunctionAliases(loaded []*packages.Package) map[*types.Var]callableTarget {
+	var assignments []aliasAssignment
+	for _, pkg := range loaded {
+		for _, file := range pkg.Syntax {
+			ast.Inspect(file, func(node ast.Node) bool {
+				switch node := node.(type) {
+				case *ast.AssignStmt:
+					if len(node.Lhs) != len(node.Rhs) {
+						return true
+					}
+					for index, left := range node.Lhs {
+						identifier, ok := unparenthesized(left).(*ast.Ident)
+						if !ok {
+							continue
+						}
+						if variable := assignedVariable(identifier, pkg.TypesInfo); variable != nil {
+							assignments = append(assignments, aliasAssignment{variable: variable, expression: node.Rhs[index], info: pkg.TypesInfo})
+						}
+					}
+				case *ast.ValueSpec:
+					if len(node.Names) != len(node.Values) {
+						return true
+					}
+					for index, identifier := range node.Names {
+						if variable, _ := pkg.TypesInfo.Defs[identifier].(*types.Var); variable != nil {
+							assignments = append(assignments, aliasAssignment{variable: variable, expression: node.Values[index], info: pkg.TypesInfo})
+						}
+					}
+				}
+				return true
+			})
+		}
+	}
+
+	aliases := make(map[*types.Var]callableTarget)
+	conflicts := make(map[*types.Var]bool)
+	changed := true
+	for changed {
+		changed = false
+		for _, assignment := range assignments {
+			if conflicts[assignment.variable] {
+				continue
+			}
+			target, ok := resolveCallable(assignment.expression, assignment.info, aliases)
+			if !ok {
+				continue
+			}
+			if existing, found := aliases[assignment.variable]; found && existing != target {
+				delete(aliases, assignment.variable)
+				conflicts[assignment.variable] = true
+				changed = true
+				continue
+			}
+			if _, found := aliases[assignment.variable]; !found {
+				aliases[assignment.variable] = target
+				changed = true
+			}
+		}
+	}
+	return aliases
+}
+
+func assignedVariable(identifier *ast.Ident, info *types.Info) *types.Var {
+	if variable, _ := info.Defs[identifier].(*types.Var); variable != nil {
+		return variable
+	}
+	variable, _ := info.Uses[identifier].(*types.Var)
+	return variable
+}
+
+func resolveCallable(expression ast.Expr, info *types.Info, aliases map[*types.Var]callableTarget) (callableTarget, bool) {
 	switch expression := unparenthesized(expression).(type) {
 	case *ast.Ident:
-		function, _ := info.Uses[expression].(*types.Func)
-		return function
+		if function, _ := info.Uses[expression].(*types.Func); function != nil {
+			return callableTarget{function: function}, true
+		}
+		variable, _ := info.Uses[expression].(*types.Var)
+		target, ok := aliases[variable]
+		return target, ok
 	case *ast.SelectorExpr:
 		if selection := info.Selections[expression]; selection != nil {
 			function, _ := selection.Obj().(*types.Func)
-			return function
+			if function == nil {
+				return callableTarget{}, false
+			}
+			offset := 0
+			if selection.Kind() == types.MethodExpr {
+				offset = 1
+			}
+			return callableTarget{function: function, argumentOffset: offset}, true
 		}
 		function, _ := info.Uses[expression.Sel].(*types.Func)
-		return function
+		return callableTarget{function: function}, function != nil
 	case *ast.IndexExpr:
-		return calledFunction(expression.X, info)
+		return resolveCallable(expression.X, info, aliases)
 	case *ast.IndexListExpr:
-		return calledFunction(expression.X, info)
+		return resolveCallable(expression.X, info, aliases)
 	default:
-		return nil
+		return callableTarget{}, false
 	}
+}
+
+func offsetSinks(sinks []transportSink, offset int) []transportSink {
+	if offset == 0 || len(sinks) == 0 {
+		return sinks
+	}
+	result := make([]transportSink, len(sinks))
+	for index, sink := range sinks {
+		sink.argument += offset
+		result[index] = sink
+	}
+	return result
 }
 
 func forwardedParameter(body functionBody, root ast.Expr, sink transportSink, wrappers map[*types.Func][]transportSink) bool {
@@ -271,19 +408,15 @@ func describeInvalidRoot(root types.Type, rule rootRule) string {
 	if root == nil {
 		return "unknown type"
 	}
-	root = types.Unalias(root)
-	for {
-		pointer, ok := root.(*types.Pointer)
-		if !ok {
-			break
-		}
-		root = types.Unalias(pointer.Elem())
+	root = dereference(root)
+	if rule == namedDependencyRequestRoot {
+		return describeInvalidDependencyRequestRoot(root)
+	}
+	if rule == namedDependencyResponseRoot {
+		return describeInvalidDependencyResponseRoot(root)
 	}
 	if named, ok := root.(*types.Named); ok {
 		underlying := named.Underlying()
-		if rule == namedDependencyRoot {
-			return describeInvalidDependencyRoot(underlying, true)
-		}
 		if _, ok := underlying.(*types.Struct); ok && named.Obj().Exported() {
 			return ""
 		}
@@ -296,27 +429,52 @@ func describeInvalidRoot(root types.Type, rule rootRule) string {
 		}
 		return typeCategory(underlying)
 	}
-	if rule == namedDependencyRoot {
-		return describeInvalidDependencyRoot(root.Underlying(), false)
-	}
 	return typeCategory(root.Underlying())
 }
 
-func describeInvalidDependencyRoot(root types.Type, named bool) string {
-	switch root := root.(type) {
-	case *types.Struct:
-		if named {
+func dereference(root types.Type) types.Type {
+	root = types.Unalias(root)
+	for {
+		pointer, ok := root.(*types.Pointer)
+		if !ok {
+			return root
+		}
+		root = types.Unalias(pointer.Elem())
+	}
+}
+
+func describeInvalidDependencyRequestRoot(root types.Type) string {
+	named, ok := root.(*types.Named)
+	if !ok {
+		return typeCategory(root.Underlying())
+	}
+	if _, ok := named.Underlying().(*types.Struct); !ok {
+		return typeCategory(named.Underlying())
+	}
+	if named.Obj().Pkg() == nil || !isImmichPackage(named.Obj().Pkg().Path()) {
+		return "external struct " + named.Obj().Name()
+	}
+	return ""
+}
+
+func describeInvalidDependencyResponseRoot(root types.Type) string {
+	if named, ok := root.(*types.Named); ok {
+		switch named.Underlying().(type) {
+		case *types.Map:
+			return "map"
+		case *types.Interface:
+			return "interface"
+		default:
 			return ""
 		}
-		return "anonymous struct"
-	case *types.Map:
-		return "map"
+	}
+	switch root := root.Underlying().(type) {
 	case *types.Slice:
-		return describeInvalidRoot(root.Elem(), namedDependencyRoot)
+		return describeInvalidDependencyResponseRoot(dereference(root.Elem()))
 	case *types.Array:
-		return describeInvalidRoot(root.Elem(), namedDependencyRoot)
+		return describeInvalidDependencyResponseRoot(dereference(root.Elem()))
 	default:
-		return ""
+		return typeCategory(root)
 	}
 }
 
@@ -334,9 +492,16 @@ func typeCategory(root types.Type) string {
 		return "interface"
 	case *types.Basic:
 		return "scalar"
+	case *types.TypeParam:
+		return "unresolved type parameter"
 	default:
 		return "unnamed type"
 	}
+}
+
+func isNilExpression(expression ast.Expr) bool {
+	identifier, ok := unparenthesized(expression).(*ast.Ident)
+	return ok && identifier.Name == "nil"
 }
 
 func unparenthesized(expression ast.Expr) ast.Expr {

@@ -478,18 +478,15 @@ func (c *Client) AlbumAssetsPage(ctx context.Context, albumID uuid.UUID, page in
 	if albumID == uuid.Nil || page < 1 || page > int(^uint(0)>>1)/assetPageSize {
 		return AssetPage{}, errInvalidResponse
 	}
-	body, err := json.Marshal(searchMetadataRequest{
+	request := searchMetadataRequest{
 		AlbumIDs:   []string{albumID.String()},
 		Page:       page,
 		Size:       assetPageSize,
 		WithExif:   false,
 		WithPeople: false,
-	})
-	if err != nil {
-		return AssetPage{}, errInvalidResponse
 	}
 	var response searchResponse
-	if err := c.doJSON(ctx, http.MethodPost, "search/metadata", nil, body, &response, errAlbumAssetsFailed); err != nil {
+	if err := c.doJSON(ctx, http.MethodPost, "search/metadata", nil, request, &response, errAlbumAssetsFailed); err != nil {
 		return AssetPage{}, err
 	}
 	if response.Assets == nil || response.Assets.Count == nil || response.Assets.Items == nil || response.Assets.Total == nil ||
@@ -1172,12 +1169,9 @@ func (c *Client) ArchiveInfo(ctx context.Context, assetIDs []uuid.UUID) ([]Archi
 			companions[companion] = id
 		}
 	}
-	body, err := json.Marshal(downloadRequest{AssetIDs: ids})
-	if err != nil {
-		return nil, errInvalidResponse
-	}
+	request := downloadRequest{AssetIDs: ids}
 	var response downloadInfoResponse
-	if err := c.doJSONStatus(ctx, http.MethodPost, "download/info", nil, body, &response, errArchiveFailed, http.StatusCreated); err != nil {
+	if err := c.doJSONStatus(ctx, http.MethodPost, "download/info", nil, request, &response, errArchiveFailed, http.StatusCreated); err != nil {
 		return nil, err
 	}
 	if response.TotalSize == nil || response.Archives == nil || *response.TotalSize < 0 || len(*response.Archives) == 0 {
@@ -1248,7 +1242,7 @@ func (c *Client) Archive(ctx context.Context, assetIDs []uuid.UUID) (ArchiveResp
 		seen[id] = struct{}{}
 		ids[index] = id.String()
 	}
-	body, err := json.Marshal(downloadRequest{AssetIDs: ids})
+	body, err := marshalJSONRequest(downloadRequest{AssetIDs: ids})
 	if err != nil {
 		return ArchiveResponse{}, errInvalidResponse
 	}
@@ -1376,6 +1370,10 @@ func (c *Client) Faces(ctx context.Context, assetID uuid.UUID) ([]FaceSummary, e
 	return result, nil
 }
 
+func marshalJSONRequest[Request any](request Request) ([]byte, error) {
+	return json.Marshal(request)
+}
+
 func (c *Client) getJSON(ctx context.Context, path string, target any, statusError error) error {
 	return c.getJSONQuery(ctx, path, nil, target, statusError)
 }
@@ -1384,11 +1382,19 @@ func (c *Client) getJSONQuery(ctx context.Context, path string, query url.Values
 	return c.doJSON(ctx, http.MethodGet, path, query, nil, target, statusError)
 }
 
-func (c *Client) doJSON(ctx context.Context, method, path string, query url.Values, body []byte, target any, statusError error) error {
-	return c.doJSONStatus(ctx, method, path, query, body, target, statusError, http.StatusOK)
+func (c *Client) doJSON(ctx context.Context, method, path string, query url.Values, request any, target any, statusError error) error {
+	return c.doJSONStatus(ctx, method, path, query, request, target, statusError, http.StatusOK)
 }
 
-func (c *Client) doJSONStatus(ctx context.Context, method, path string, query url.Values, body []byte, target any, statusError error, expectedStatus int) error {
+func (c *Client) doJSONStatus(ctx context.Context, method, path string, query url.Values, request any, target any, statusError error, expectedStatus int) error {
+	var body []byte
+	if request != nil {
+		var err error
+		body, err = marshalJSONRequest(request)
+		if err != nil {
+			return errInvalidResponse
+		}
+	}
 	requestCtx, cancel := context.WithTimeout(ctx, c.healthTimeout)
 	defer cancel()
 	endpoint := c.baseURL.JoinPath("api", path)

@@ -1,6 +1,7 @@
 package immich
 
 import (
+	"bytes"
 	"encoding/json"
 )
 
@@ -13,10 +14,13 @@ type providerResponse struct {
 }
 
 func AllowedDependencyContracts(client *Client) error {
-	if _, err := json.Marshal(providerRequest{IDs: []string{"one"}}); err != nil {
+	if _, err := marshalJSONRequest(providerRequest{IDs: []string{"one"}}); err != nil {
 		return err
 	}
 	var response providerResponse
+	if err := client.doJSON(0, "POST", "assets", nil, providerRequest{IDs: []string{"one"}}, &response, nil); err != nil {
+		return err
+	}
 	if err := client.getJSON(0, "assets/one", &response, nil); err != nil {
 		return err
 	}
@@ -26,4 +30,13 @@ func AllowedDependencyContracts(client *Client) error {
 	}
 	var fields map[string]json.RawMessage
 	return json.Unmarshal([]byte(`{"id":"one"}`), &fields)
+}
+
+func AllowedLocalSerialization() error {
+	local := map[string]any{"id": "one"}
+	if _, err := json.Marshal(local); err != nil {
+		return err
+	}
+	var body bytes.Buffer
+	return json.NewEncoder(&body).Encode(local)
 }
