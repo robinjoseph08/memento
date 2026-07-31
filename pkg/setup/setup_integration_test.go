@@ -235,43 +235,55 @@ func TestCodeRequestAndVerificationCreateNoIdentityOrSession(t *testing.T) {
 func TestLockWaitCannotExtendChallengeOrVerificationLifetime(t *testing.T) {
 	t.Run("code verification", func(t *testing.T) {
 		db, service := newSetupService(t)
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
 		challenge := requestedChallenge(t, db, service, "Delayed Code", "delayed-code@example.com")
 		code := latestCode(t, db)
-		_, err := db.NewRaw(`UPDATE login_challenges SET expires_at = now() + interval '100 milliseconds'`).Exec(context.Background())
+		_, err := db.NewRaw(`UPDATE login_challenges SET expires_at = now() + interval '100 milliseconds'`).Exec(ctx)
 		require.NoError(t, err)
-		lock, err := db.BeginTx(context.Background(), nil)
+		lock, err := db.BeginTx(ctx, nil)
 		require.NoError(t, err)
-		_, err = lock.NewRaw(`SELECT id FROM system_settings WHERE id = 1 FOR UPDATE`).Exec(context.Background())
+		defer func() { _ = lock.Rollback() }()
+		_, err = lock.NewRaw(`SELECT id FROM system_settings WHERE id = 1 FOR UPDATE`).Exec(ctx)
 		require.NoError(t, err)
+		var blockerPID int
+		require.NoError(t, lock.NewRaw(`SELECT pg_backend_pid()`).Scan(ctx, &blockerPID))
 		result := make(chan error, 1)
 		go func() {
-			_, verifyErr := service.VerifyCode(context.Background(), VerifyCodeRequest{ChallengeID: challenge.ChallengeID, Code: code})
+			_, verifyErr := service.VerifyCode(ctx, VerifyCodeRequest{ChallengeID: challenge.ChallengeID, Code: code})
 			result <- verifyErr
 		}()
-		time.Sleep(200 * time.Millisecond)
+		testdb.WaitForBlockedQueries(t, ctx, db, blockerPID, `%SELECT setup_complete FROM system_settings WHERE id = 1 FOR SHARE%`, 1)
+		testdb.WaitForDatabaseDeadline(t, ctx, db, "setup challenge code expiration", `SELECT clock_timestamp(), expires_at FROM login_challenges WHERE email = ?`, "delayed-code@example.com")
 		require.NoError(t, lock.Commit())
-		require.ErrorIs(t, <-result, ErrInvalidCode)
+		require.ErrorIs(t, testdb.WaitForErrorResult(t, result, "setup code verification after system settings lock release"), ErrInvalidCode)
 	})
 
 	t.Run("final completion", func(t *testing.T) {
 		db, service := newSetupService(t)
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
 		verified := verifiedChallenge(t, db, service, "Delayed Completion", "delayed-completion@example.com")
-		_, err := db.NewRaw(`UPDATE login_challenges SET verification_expires_at = now() + interval '100 milliseconds'`).Exec(context.Background())
+		_, err := db.NewRaw(`UPDATE login_challenges SET verification_expires_at = now() + interval '100 milliseconds'`).Exec(ctx)
 		require.NoError(t, err)
-		lock, err := db.BeginTx(context.Background(), nil)
+		lock, err := db.BeginTx(ctx, nil)
 		require.NoError(t, err)
-		_, err = lock.NewRaw(`SELECT id FROM system_settings WHERE id = 1 FOR UPDATE`).Exec(context.Background())
+		defer func() { _ = lock.Rollback() }()
+		_, err = lock.NewRaw(`SELECT id FROM system_settings WHERE id = 1 FOR UPDATE`).Exec(ctx)
 		require.NoError(t, err)
+		var blockerPID int
+		require.NoError(t, lock.NewRaw(`SELECT pg_backend_pid()`).Scan(ctx, &blockerPID))
 		result := make(chan error, 1)
 		go func() {
-			_, completeErr := service.complete(context.Background(), completionRequest(verified.VerificationToken, "trusted"))
+			_, completeErr := service.complete(ctx, completionRequest(verified.VerificationToken, "trusted"))
 			result <- completeErr
 		}()
-		time.Sleep(200 * time.Millisecond)
+		testdb.WaitForBlockedQueries(t, ctx, db, blockerPID, `%SELECT setup_complete, security_epoch FROM system_settings WHERE id = 1 FOR UPDATE%`, 1)
+		testdb.WaitForDatabaseDeadline(t, ctx, db, "setup verification expiration", `SELECT clock_timestamp(), verification_expires_at FROM login_challenges WHERE email = ?`, "delayed-completion@example.com")
 		require.NoError(t, lock.Commit())
-		require.ErrorIs(t, <-result, ErrInvalidToken)
+		require.ErrorIs(t, testdb.WaitForErrorResult(t, result, "setup completion after system settings lock release"), ErrInvalidToken)
 		var people int
-		require.NoError(t, db.NewRaw(`SELECT count(*) FROM people`).Scan(context.Background(), &people))
+		require.NoError(t, db.NewRaw(`SELECT count(*) FROM people`).Scan(ctx, &people))
 		assert.Zero(t, people)
 	})
 }

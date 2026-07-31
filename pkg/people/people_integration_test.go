@@ -377,7 +377,8 @@ func TestMergeRejectsStaleSourceAndSurvivorVersionsWithoutEffects(t *testing.T) 
 
 func TestArchiveAndMergeUseOnePersonRepairLockOrder(t *testing.T) {
 	fixture := newPeopleFixture(t)
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
 	source := addPerson(t, fixture.db, "Source", "Source")
 	survivor := addPerson(t, fixture.db, "Survivor", "Survivor")
 	candidateID := uuid.New()
@@ -392,18 +393,17 @@ func TestArchiveAndMergeUseOnePersonRepairLockOrder(t *testing.T) {
 
 	blocker, err := fixture.db.BeginTx(ctx, nil)
 	require.NoError(t, err)
+	defer func() { _ = blocker.Rollback() }()
 	_, err = blocker.NewRaw(`SELECT id FROM person_repair_candidates WHERE id = ? FOR UPDATE`, candidateID).Exec(ctx)
 	require.NoError(t, err)
+	var blockerPID int
+	require.NoError(t, blocker.NewRaw(`SELECT pg_backend_pid()`).Scan(ctx, &blockerPID))
 	archiveResult := make(chan error, 1)
 	go func() {
 		_, archiveErr := fixture.service.Archive(ctx, fixture.actor, source, 1)
 		archiveResult <- archiveErr
 	}()
-	select {
-	case archiveErr := <-archiveResult:
-		t.Fatalf("archive completed while its repair candidate was locked: %v", archiveErr)
-	case <-time.After(100 * time.Millisecond):
-	}
+	archivePID := testdb.WaitForBlockedQueries(t, ctx, fixture.db, blockerPID, `%SELECT id FROM person_repair_candidates WHERE person_id =%ORDER BY id FOR UPDATE%`, 1)[0]
 	mergeResult := make(chan error, 1)
 	go func() {
 		_, mergeErr := fixture.service.Merge(ctx, fixture.actor, MergeRequest{
@@ -412,24 +412,10 @@ func TestArchiveAndMergeUseOnePersonRepairLockOrder(t *testing.T) {
 		})
 		mergeResult <- mergeErr
 	}()
-	select {
-	case mergeErr := <-mergeResult:
-		t.Fatalf("merge completed while archive held the Person lock: %v", mergeErr)
-	case <-time.After(100 * time.Millisecond):
-	}
+	testdb.WaitForBlockedQueries(t, ctx, fixture.db, archivePID, `%SELECT id FROM people WHERE id IN%ORDER BY id FOR NO KEY UPDATE%`, 1)
 	require.NoError(t, blocker.Commit())
-	select {
-	case archiveErr := <-archiveResult:
-		require.NoError(t, archiveErr)
-	case <-time.After(3 * time.Second):
-		t.Fatal("archive did not complete after candidate lock release")
-	}
-	select {
-	case mergeErr := <-mergeResult:
-		assert.ErrorIs(t, mergeErr, ErrMergeStale)
-	case <-time.After(3 * time.Second):
-		t.Fatal("merge did not complete after archive")
-	}
+	require.NoError(t, testdb.WaitForErrorResult(t, archiveResult, "Person archive after repair candidate lock release"))
+	assert.ErrorIs(t, testdb.WaitForErrorResult(t, mergeResult, "Person merge after archive completion"), ErrMergeStale)
 }
 
 func TestArchiveDisablesPushLinkedToRevokedSessions(t *testing.T) {
@@ -961,17 +947,27 @@ func TestPersonMergeMovesAttendanceAndOverridesWithoutRewritingApprovedSnapshots
 
 func TestFamilyMutationAndPersonMergeUseOneDeadlockFreeLockOrder(t *testing.T) {
 	fixture := newPeopleFixture(t)
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
 	source := addPerson(t, fixture.db, "Source", "Source")
 	survivor := addPerson(t, fixture.db, "Survivor", "Survivor")
 	child := addPerson(t, fixture.db, "Child", "Child")
 	preview, err := fixture.service.PreviewMerge(ctx, fixture.actor, source, survivor)
 	require.NoError(t, err)
-	_, err = fixture.db.ExecContext(ctx, `
-		CREATE FUNCTION delay_merge_racing_family_insert() RETURNS trigger LANGUAGE plpgsql AS $$
-		BEGIN PERFORM pg_sleep(0.3); RETURN NEW; END $$;
-		CREATE TRIGGER delay_merge_racing_family_insert BEFORE INSERT ON family_relationships
-		FOR EACH ROW EXECUTE FUNCTION delay_merge_racing_family_insert()`)
+	const advisoryKey = 360038
+	connection, err := fixture.db.DB.Conn(ctx)
+	require.NoError(t, err)
+	defer connection.Close()
+	_, err = connection.ExecContext(ctx, `SELECT pg_advisory_lock($1)`, advisoryKey)
+	require.NoError(t, err)
+	defer func() { _, _ = connection.ExecContext(ctx, `SELECT pg_advisory_unlock($1)`, advisoryKey) }()
+	var blockerPID int
+	require.NoError(t, connection.QueryRowContext(ctx, `SELECT pg_backend_pid()`).Scan(&blockerPID))
+	_, err = fixture.db.ExecContext(ctx, fmt.Sprintf(`
+		CREATE FUNCTION coordinate_merge_racing_family_insert() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN PERFORM pg_advisory_xact_lock(%d); RETURN NEW; END $$;
+		CREATE TRIGGER coordinate_merge_racing_family_insert BEFORE INSERT ON family_relationships
+		FOR EACH ROW EXECUTE FUNCTION coordinate_merge_racing_family_insert()`, advisoryKey))
 	require.NoError(t, err)
 
 	createResult := make(chan error, 1)
@@ -981,13 +977,20 @@ func TestFamilyMutationAndPersonMergeUseOneDeadlockFreeLockOrder(t *testing.T) {
 		})
 		createResult <- createErr
 	}()
-	time.Sleep(100 * time.Millisecond)
-	_, mergeErr := fixture.service.Merge(ctx, fixture.actor, MergeRequest{
-		SourcePersonID: source.String(), SurvivorPersonID: survivor.String(), SourceVersion: 1, SurvivorVersion: 1,
-		PreviewFingerprint: preview.PreviewFingerprint,
-	})
-	require.NoError(t, <-createResult)
-	require.ErrorIs(t, mergeErr, ErrStale)
+	createPID := testdb.WaitForBlockedQueries(t, ctx, fixture.db, blockerPID, `%INSERT INTO family_relationships%`, 1)[0]
+	mergeResult := make(chan error, 1)
+	go func() {
+		_, mergeErr := fixture.service.Merge(ctx, fixture.actor, MergeRequest{
+			SourcePersonID: source.String(), SurvivorPersonID: survivor.String(), SourceVersion: 1, SurvivorVersion: 1,
+			PreviewFingerprint: preview.PreviewFingerprint,
+		})
+		mergeResult <- mergeErr
+	}()
+	testdb.WaitForBlockedQueries(t, ctx, fixture.db, createPID, `%pg_advisory_xact_lock(hashtextextended%`, 1)
+	_, err = connection.ExecContext(ctx, `SELECT pg_advisory_unlock($1)`, advisoryKey)
+	require.NoError(t, err)
+	require.NoError(t, testdb.WaitForErrorResult(t, createResult, "Family mutation after coordination lock release"))
+	require.ErrorIs(t, testdb.WaitForErrorResult(t, mergeResult, "Person merge after Family mutation completion"), ErrStale)
 }
 
 func TestMergeRejectsStaleFamilyRelationshipPreview(t *testing.T) {
