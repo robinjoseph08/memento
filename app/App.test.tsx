@@ -161,7 +161,9 @@ test("clears accepted Invitation data offline before Session confirmation", asyn
 
   expect(await screen.findByText("Invitation accepted.")).toBeInTheDocument();
   await vi.waitFor(() => expect(sessionRequested).toBe(true));
-  expect(client.getQueryState(["accepted-invitation-session"])).toBeDefined();
+  expect(
+    client.getQueryState(["accepted-invitation-session", 1]),
+  ).toBeDefined();
   expect(
     client
       .getQueryCache()
@@ -177,7 +179,9 @@ test("clears accepted Invitation data offline before Session confirmation", asyn
   expect(
     await screen.findByRole("heading", { name: "Memento is offline" }),
   ).toBeInTheDocument();
-  expect(client.getQueryData(["accepted-invitation-session"])).toBeUndefined();
+  expect(
+    client.getQueryData(["accepted-invitation-session", 1]),
+  ).toBeUndefined();
   expect(screen.queryByText(/Robin invited Alex/)).not.toBeInTheDocument();
   fireEvent.online(window);
 });
@@ -1387,7 +1391,7 @@ test("restores and refreshes a signed-in Trusted-device Session", async () => {
     if (path.startsWith("/api/visibility-circles?")) {
       return Promise.resolve(jsonResponse({ circles: [] }));
     }
-    if (path === "/api/activity/curator/work") {
+    if (path === "/api/activity/curator/work?limit=50") {
       return Promise.resolve(jsonResponse({ items: [] }));
     }
     return Promise.resolve(
@@ -1998,14 +2002,27 @@ test("announces a concurrent setup conflict without claiming success", async () 
 
 test("requires a fresh Curator review before explicitly releasing Recovery hold", async () => {
   let signedIn = false;
-  let releaseRequested = false;
+  let releaseAttempts = 0;
+  let reviewCompletionRequests = 0;
+  let confirmationAttempts = 0;
   vi.stubGlobal(
     "fetch",
     vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const path = requestPath(input);
       if (path === "/api/setup") {
+        if (releaseAttempts < 2) {
+          return Promise.resolve(
+            jsonResponse({ error: { message: "held" } }, 503),
+          );
+        }
+        confirmationAttempts += 1;
         return Promise.resolve(
-          jsonResponse({ error: { message: "held" } }, 503),
+          confirmationAttempts === 1
+            ? jsonResponse(
+                { error: { message: "Confirmation unavailable" } },
+                500,
+              )
+            : jsonResponse({ error: { message: "Setup not found" } }, 404),
         );
       }
       if (path === "/api/recovery/status") {
@@ -2060,11 +2077,18 @@ test("requires a fresh Curator review before explicitly releasing Recovery hold"
         );
       }
       if (path === "/api/recovery/review/complete") {
+        reviewCompletionRequests += 1;
         return Promise.resolve(new Response(null, { status: 204 }));
       }
       if (path === "/api/recovery/release") {
-        releaseRequested = true;
-        return new Promise<Response>(() => undefined);
+        releaseAttempts += 1;
+        if (releaseAttempts === 1) {
+          return Promise.reject(
+            new TypeError("The release response was lost before commit."),
+          );
+        }
+        signedIn = false;
+        return Promise.resolve(new Response(null, { status: 204 }));
       }
       return Promise.reject(
         new Error(`Unexpected request: ${path} ${init?.method ?? "GET"}`),
@@ -2072,7 +2096,7 @@ test("requires a fresh Curator review before explicitly releasing Recovery hold"
     }),
   );
 
-  renderApp();
+  const { client } = renderApp();
   expect(
     await screen.findByRole("heading", { name: "Curator recovery sign-in" }),
   ).toBeInTheDocument();
@@ -2101,5 +2125,38 @@ test("requires a fresh Curator review before explicitly releasing Recovery hold"
   );
   expect(release).toBeEnabled();
   fireEvent.click(release);
-  await waitFor(() => expect(releaseRequested).toBe(true));
+  await waitFor(() => expect(releaseAttempts).toBe(1));
+  expect(
+    await screen.findByRole("heading", {
+      name: "Review restored authorization state",
+    }),
+  ).toBeInTheDocument();
+  expect(
+    await screen.findByText("The release response was lost before commit."),
+  ).toHaveAttribute("role", "alert");
+  const retryRelease = screen.getByRole("button", {
+    name: "Release Recovery hold",
+  });
+  expect(retryRelease).toBeEnabled();
+  fireEvent.click(retryRelease);
+  await waitFor(() => expect(releaseAttempts).toBe(2));
+  expect(reviewCompletionRequests).toBe(1);
+  expect(await screen.findByText("Confirmation unavailable")).toHaveAttribute(
+    "role",
+    "alert",
+  );
+  fireEvent.click(
+    screen.getByRole("button", {
+      name: "Retry confirming Recovery release",
+    }),
+  );
+  expect(
+    await screen.findByRole("heading", { name: "Sign in to Memento" }),
+  ).toBeInTheDocument();
+  expect(
+    client
+      .getQueryCache()
+      .getAll()
+      .some((query) => query.queryKey[0] === "recovery-review"),
+  ).toBe(false);
 });
