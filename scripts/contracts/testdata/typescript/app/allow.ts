@@ -1,4 +1,4 @@
-import { apiJSON, apiNoContent } from "./api";
+import { apiJSON, apiNoContent, apiResponse } from "./api";
 import type {
   RequestContract,
   ResponseContract,
@@ -6,13 +6,26 @@ import type {
 
 type UIState = Record<string, boolean>;
 const expanded: UIState = { details: true };
+const transportLabels = new Map<string, string>([["fetch", "Loading"]]);
 void expanded;
+void transportLabels;
 
 function generatedRequest(): RequestContract {
   return { name: "helper" };
 }
 
-export async function allowed() {
+function generatedResponseHelper(path: string) {
+  return apiJSON<ResponseContract>(path);
+}
+
+function generatedRequestHelper(request: RequestContract) {
+  return apiNoContent("/api/helper", {
+    method: "POST",
+    body: JSON.stringify(request),
+  });
+}
+
+export async function allowed(condition: boolean) {
   const annotated: RequestContract = { name: "annotated" };
   await apiJSON<ResponseContract>("/api/one", {
     method: "POST",
@@ -30,5 +43,12 @@ export async function allowed() {
     method: "POST",
     body: JSON.stringify(generatedRequest()),
   });
-  await fetch("/public/status");
+
+  const body = JSON.stringify(annotated);
+  const base = { method: "POST" };
+  const options = condition ? { ...base, body } : { ...base };
+  await apiNoContent("/api/immutable-options", options);
+  await apiResponse("/downloads/archive", { headers: { Accept: "zip" } });
+  await generatedResponseHelper("/api/helper-response");
+  await generatedRequestHelper(annotated);
 }

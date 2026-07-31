@@ -5,6 +5,24 @@ import { pathToFileURL } from "node:url";
 import ts from "typescript";
 
 const sharedAPIFunctions = new Set(["apiJSON", "apiNoContent", "apiResponse"]);
+const assignmentOperators = new Set([
+  ts.SyntaxKind.EqualsToken,
+  ts.SyntaxKind.PlusEqualsToken,
+  ts.SyntaxKind.MinusEqualsToken,
+  ts.SyntaxKind.AsteriskEqualsToken,
+  ts.SyntaxKind.AsteriskAsteriskEqualsToken,
+  ts.SyntaxKind.SlashEqualsToken,
+  ts.SyntaxKind.PercentEqualsToken,
+  ts.SyntaxKind.LessThanLessThanEqualsToken,
+  ts.SyntaxKind.GreaterThanGreaterThanEqualsToken,
+  ts.SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken,
+  ts.SyntaxKind.AmpersandEqualsToken,
+  ts.SyntaxKind.BarEqualsToken,
+  ts.SyntaxKind.CaretEqualsToken,
+  ts.SyntaxKind.BarBarEqualsToken,
+  ts.SyntaxKind.AmpersandAmpersandEqualsToken,
+  ts.SyntaxKind.QuestionQuestionEqualsToken,
+]);
 const maximumAnalysisDepth = 40;
 
 export function checkTypeScriptContracts(repositoryRoot, options = {}) {
@@ -40,16 +58,22 @@ export function checkTypeScriptContracts(repositoryRoot, options = {}) {
     .filter((sourceFile) =>
       isProductionAppSource(sourceFile, appRoot, included),
     );
-  const context = createAnalysisContext({
+  const context = {
     apiPath,
     checker,
     generatedRoot,
     sourceFiles,
-  });
+    unsafeObjectSymbols: collectUnsafeObjectSymbols(
+      sourceFiles,
+      checker,
+      apiPath,
+    ),
+  };
   const diagnostics = new Set();
 
   for (const sourceFile of sourceFiles) {
     const sourcePath = path.resolve(sourceFile.fileName);
+    if (sourcePath === apiPath) continue;
     const relative = normalizePath(path.relative(root, sourcePath));
     const report = (node, code, message) => {
       const start = sourceFile.getLineAndCharacterOfPosition(
@@ -61,55 +85,65 @@ export function checkTypeScriptContracts(repositoryRoot, options = {}) {
     };
 
     const visit = (node) => {
-      if (ts.isCallExpression(node) && sourcePath !== apiPath) {
-        const target = resolveCallTarget(node.expression, context, new Set());
-        if (target.sharedNames.has("apiJSON")) {
-          checkResponseContract(node, report, context);
-        }
-        if (target.sharedNames.size > 0 && node.arguments.length >= 2) {
-          checkRequestContract(node.arguments[1], report, context);
-        }
-        if (target.globalFetch) {
-          checkDirectFetch(node, report, context);
+      if (ts.isCallExpression(node)) {
+        const sharedName = directSharedAPIName(node.expression, context);
+        if (isAllowedDirectSharedCall(node.expression, sharedName)) {
+          if (sharedName === "apiJSON") {
+            checkResponseContract(node, report, context);
+          }
+          if (node.arguments.length >= 2) {
+            checkRequestContract(node.arguments[1], report, context);
+          }
         }
       }
+
+      if (isReferenceExpression(node) && !isNestedReferenceName(node)) {
+        const sharedName = sharedAPINameForExpression(node, context);
+        if (
+          sharedName &&
+          !isImportReference(node) &&
+          (!isDirectCallTarget(node) || referenceName(node) !== sharedName)
+        ) {
+          report(
+            node,
+            "shared-api-indirection",
+            `${sharedName} must be called directly and cannot be stored, passed, returned, rebound, or wrapped`,
+          );
+        }
+        if (isGlobalFetchExpression(node, checker)) {
+          report(
+            node,
+            "direct-fetch",
+            "global fetch is only allowed in app/api.ts",
+          );
+        }
+      }
+
+      if (ts.isBindingElement(node)) {
+        const propertySymbol = bindingElementPropertySymbol(node, checker);
+        const sharedName = sharedAPINameForSymbol(propertySymbol, context);
+        if (sharedName) {
+          report(
+            node.propertyName ?? node.name,
+            "shared-api-indirection",
+            `${sharedName} must be called directly and cannot be stored, passed, returned, rebound, or wrapped`,
+          );
+        }
+        if (propertySymbol && isGlobalFetchSymbol(propertySymbol)) {
+          report(
+            node.propertyName ?? node.name,
+            "direct-fetch",
+            "global fetch is only allowed in app/api.ts",
+          );
+        }
+      }
+
       ts.forEachChild(node, visit);
     };
     visit(sourceFile);
   }
 
   return [...diagnostics].sort();
-}
-
-function createAnalysisContext({
-  apiPath,
-  checker,
-  generatedRoot,
-  sourceFiles,
-}) {
-  const context = {
-    apiPath,
-    callSites: new Map(),
-    checker,
-    generatedRoot,
-    sourceFiles,
-  };
-
-  for (const sourceFile of sourceFiles) {
-    const visit = (node) => {
-      if (ts.isCallExpression(node)) {
-        const target = resolveCallTarget(node.expression, context, new Set());
-        for (const fn of target.functions) {
-          const calls = context.callSites.get(fn) ?? [];
-          calls.push(node);
-          context.callSites.set(fn, calls);
-        }
-      }
-      ts.forEachChild(node, visit);
-    };
-    visit(sourceFile);
-  }
-  return context;
 }
 
 function checkResponseContract(call, report, context) {
@@ -124,7 +158,13 @@ function checkResponseContract(call, report, context) {
 
   const responseTypeNode = call.typeArguments[0];
   const responseType = context.checker.getTypeFromTypeNode(responseTypeNode);
-  if (!hasGeneratedResponseType(responseType, call, context, new Set())) {
+  if (
+    !hasGeneratedDeclaration(
+      responseType,
+      context.generatedRoot,
+      context.checker,
+    )
+  ) {
     report(
       responseTypeNode,
       "response-contract",
@@ -133,82 +173,22 @@ function checkResponseContract(call, report, context) {
   }
 }
 
-function hasGeneratedResponseType(type, call, context, seen) {
-  if (hasGeneratedDeclaration(type, context.generatedRoot, context.checker)) {
-    return true;
-  }
-  if ((type.flags & ts.TypeFlags.TypeParameter) === 0) return false;
-
-  const symbol = type.getSymbol();
-  if (!symbol || seen.has(symbol)) return false;
-  seen.add(symbol);
-  const declaration = (symbol.getDeclarations() ?? []).find(
-    ts.isTypeParameterDeclaration,
-  );
-  const fn = declaration && enclosingFunction(declaration);
-  if (!declaration || !fn || !fn.typeParameters) return false;
-  const typeParameterIndex = fn.typeParameters.indexOf(declaration);
-  if (typeParameterIndex < 0) return false;
-
-  const callSites = context.callSites.get(fn) ?? [];
-  if (callSites.length === 0) return false;
-  return callSites.every((outerCall) => {
-    let instantiatedType;
-    const typeArgument = outerCall.typeArguments?.[typeParameterIndex];
-    if (typeArgument) {
-      instantiatedType = context.checker.getTypeFromTypeNode(typeArgument);
-    } else if (isDirectFunctionReturn(call, fn)) {
-      instantiatedType = promisedType(
-        context.checker.getTypeAtLocation(outerCall),
-        context.checker,
-      );
-    }
-    return (
-      instantiatedType !== undefined &&
-      hasGeneratedResponseType(
-        instantiatedType,
-        outerCall,
-        context,
-        new Set(seen),
-      )
-    );
-  });
-}
-
-function isDirectFunctionReturn(call, fn) {
-  if (ts.isArrowFunction(fn) && fn.body === call) return true;
-  return (
-    ts.isReturnStatement(call.parent) &&
-    call.parent.expression === call &&
-    enclosingFunction(call.parent) === fn
-  );
-}
-
-function promisedType(type, checker) {
-  return checker.getPromisedTypeOfPromise(type) ?? type;
-}
-
 function checkRequestContract(init, report, context) {
-  const options = requestBodies(init, new Map(), context, new Set(), 0);
+  const options = requestBodies(init, context, new Set(), 0);
   if (options.unknown) {
     report(
       init,
       "request-contract",
-      "shared API request options could not be resolved deterministically",
+      "shared API request options must be an immutable object-literal, conditional, or spread graph",
     );
+    return;
   }
 
   for (const body of options.bodies) {
-    const serialized = serializedPayloads(
-      body.expression,
-      body.environment,
-      context,
-      new Set(),
-      0,
-    );
+    const serialized = serializedPayloads(body, context, new Set(), 0);
     if (serialized.unknown) {
       report(
-        body.expression,
+        body,
         "request-contract",
         "shared API request body could not be resolved deterministically",
       );
@@ -216,23 +196,15 @@ function checkRequestContract(init, report, context) {
     }
     if (serialized.payloads.length === 0 && !serialized.absent) {
       report(
-        body.expression,
+        body,
         "request-contract",
         "shared API request body must serialize a payload with generated-type provenance",
       );
     }
     for (const payload of serialized.payloads) {
-      if (
-        !hasGeneratedProvenance(
-          payload.expression,
-          payload.environment,
-          context,
-          new Set(),
-          0,
-        )
-      ) {
+      if (!hasGeneratedProvenance(payload, context, new Set(), 0)) {
         report(
-          payload.expression,
+          payload,
           "request-contract",
           "shared API request payload must have generated-type provenance",
         );
@@ -241,10 +213,10 @@ function checkRequestContract(init, report, context) {
   }
 }
 
-function requestBodies(expression, environment, context, seen, depth) {
+function requestBodies(expression, context, seen, depth) {
   if (depth > maximumAnalysisDepth) return unknownBodies();
   expression = unwrapExpression(expression);
-  if (isAbsentBody(expression)) return knownBodies();
+  if (isAbsent(expression)) return knownBodies();
 
   if (ts.isObjectLiteralExpression(expression)) {
     const result = knownBodies();
@@ -253,25 +225,16 @@ function requestBodies(expression, environment, context, seen, depth) {
         ts.isPropertyAssignment(property) &&
         propertyName(property.name) === "body"
       ) {
-        result.bodies.push({
-          environment,
-          expression: property.initializer,
-        });
+        result.bodies.push(property.initializer);
       } else if (
         ts.isShorthandPropertyAssignment(property) &&
         property.name.text === "body"
       ) {
-        result.bodies.push({ environment, expression: property.name });
+        result.bodies.push(property.name);
       } else if (ts.isSpreadAssignment(property)) {
         mergeBodies(
           result,
-          requestBodies(
-            property.expression,
-            environment,
-            context,
-            seen,
-            depth + 1,
-          ),
+          requestBodies(property.expression, context, new Set(seen), depth + 1),
         );
       } else if (
         property.name &&
@@ -286,100 +249,30 @@ function requestBodies(expression, environment, context, seen, depth) {
 
   if (ts.isConditionalExpression(expression)) {
     return mergeBodies(
-      requestBodies(
-        expression.whenTrue,
-        environment,
-        context,
-        new Set(seen),
-        depth + 1,
-      ),
-      requestBodies(
-        expression.whenFalse,
-        environment,
-        context,
-        new Set(seen),
-        depth + 1,
-      ),
+      requestBodies(expression.whenTrue, context, new Set(seen), depth + 1),
+      requestBodies(expression.whenFalse, context, new Set(seen), depth + 1),
     );
   }
 
-  const references = referencedValues(expression, environment, context, seen);
-  if (references.length > 0) {
-    const result = knownBodies();
-    for (const reference of references) {
-      mergeBodies(
-        result,
-        requestBodies(
-          reference.expression,
-          reference.environment,
-          context,
-          new Set(seen),
-          depth + 1,
-        ),
-      );
-    }
-    return result;
-  }
-
-  if (ts.isCallExpression(expression)) {
-    return requestBodiesFromFunctionCall(
-      expression,
-      environment,
-      context,
-      seen,
-      depth,
-    );
+  const initializer = immutableConstInitializer(expression, context, seen);
+  if (initializer) {
+    return requestBodies(initializer, context, seen, depth + 1);
   }
 
   return unknownBodies();
 }
 
-function requestBodiesFromFunctionCall(
-  call,
-  environment,
-  context,
-  seen,
-  depth,
-) {
-  const target = resolveCallTarget(call.expression, context, new Set());
-  if (target.functions.length === 0) return unknownBodies();
-  const result = knownBodies();
-  for (const fn of target.functions) {
-    const returns = functionReturns(fn);
-    if (returns.length === 0) {
-      result.unknown = true;
-      continue;
-    }
-    const callEnvironment = bindArguments(fn, call, environment, context);
-    for (const returned of returns) {
-      mergeBodies(
-        result,
-        requestBodies(
-          returned,
-          callEnvironment,
-          context,
-          new Set(seen),
-          depth + 1,
-        ),
-      );
-    }
-  }
-  return result;
-}
-
-function serializedPayloads(expression, environment, context, seen, depth) {
+function serializedPayloads(expression, context, seen, depth) {
   if (depth > maximumAnalysisDepth) return unknownPayloads();
   expression = unwrapExpression(expression);
-  if (isAbsentBody(expression)) {
+  if (isAbsent(expression)) {
     return { absent: true, payloads: [], unknown: false };
   }
   if (isJSONStringifyCall(expression, context.checker)) {
     return {
       absent: false,
       payloads:
-        expression.arguments.length > 0
-          ? [{ environment, expression: expression.arguments[0] }]
-          : [],
+        expression.arguments.length > 0 ? [expression.arguments[0]] : [],
       unknown: expression.arguments.length === 0,
     };
   }
@@ -387,14 +280,12 @@ function serializedPayloads(expression, environment, context, seen, depth) {
     return mergePayloads(
       serializedPayloads(
         expression.whenTrue,
-        environment,
         context,
         new Set(seen),
         depth + 1,
       ),
       serializedPayloads(
         expression.whenFalse,
-        environment,
         context,
         new Set(seen),
         depth + 1,
@@ -402,60 +293,35 @@ function serializedPayloads(expression, environment, context, seen, depth) {
     );
   }
 
-  const references = referencedValues(expression, environment, context, seen);
-  if (references.length > 0) {
-    const result = { absent: true, payloads: [], unknown: false };
-    for (const reference of references) {
-      mergePayloads(
-        result,
-        serializedPayloads(
-          reference.expression,
-          reference.environment,
-          context,
-          new Set(seen),
-          depth + 1,
-        ),
-      );
-    }
-    return result;
-  }
-
-  if (ts.isCallExpression(expression)) {
-    const target = resolveCallTarget(expression.expression, context, new Set());
-    if (target.functions.length === 0) return unknownPayloads();
-    const result = { absent: true, payloads: [], unknown: false };
-    for (const fn of target.functions) {
-      const returns = functionReturns(fn);
-      if (returns.length === 0) {
-        result.unknown = true;
-        continue;
-      }
-      const callEnvironment = bindArguments(
-        fn,
-        expression,
-        environment,
-        context,
-      );
-      for (const returned of returns) {
-        mergePayloads(
-          result,
-          serializedPayloads(
-            returned,
-            callEnvironment,
-            context,
-            new Set(seen),
-            depth + 1,
-          ),
-        );
-      }
-    }
-    return result;
+  const initializer = immutableConstInitializer(expression, context, seen);
+  if (initializer) {
+    return serializedPayloads(initializer, context, seen, depth + 1);
   }
 
   return { absent: false, payloads: [], unknown: false };
 }
 
-function hasGeneratedProvenance(expression, environment, context, seen, depth) {
+function immutableConstInitializer(expression, context, seen) {
+  if (!ts.isIdentifier(expression)) return undefined;
+  const symbol = expressionSymbol(expression, context.checker);
+  if (!symbol || seen.has(symbol) || context.unsafeObjectSymbols.has(symbol)) {
+    return undefined;
+  }
+  seen.add(symbol);
+  const declarations = symbol.getDeclarations() ?? [];
+  if (declarations.length !== 1) return undefined;
+  const declaration = declarations[0];
+  if (
+    !ts.isVariableDeclaration(declaration) ||
+    !declaration.initializer ||
+    !isConstVariableDeclaration(declaration)
+  ) {
+    return undefined;
+  }
+  return declaration.initializer;
+}
+
+function hasGeneratedProvenance(expression, context, seen, depth) {
   if (depth > maximumAnalysisDepth) return false;
   expression = unwrapParentheses(expression);
 
@@ -471,18 +337,6 @@ function hasGeneratedProvenance(expression, environment, context, seen, depth) {
     );
   }
 
-  const symbol = expressionSymbol(expression, context.checker);
-  const bound = symbol && environment.get(symbol);
-  if (bound) {
-    return hasGeneratedProvenance(
-      bound.expression,
-      bound.environment,
-      context,
-      new Set(seen),
-      depth + 1,
-    );
-  }
-
   if (
     hasGeneratedDeclaration(
       context.checker.getTypeAtLocation(expression),
@@ -493,6 +347,7 @@ function hasGeneratedProvenance(expression, environment, context, seen, depth) {
     return true;
   }
 
+  const symbol = expressionSymbol(expression, context.checker);
   if (symbol && !seen.has(symbol)) {
     seen.add(symbol);
     for (const declaration of symbol.getDeclarations() ?? []) {
@@ -509,13 +364,7 @@ function hasGeneratedProvenance(expression, environment, context, seen, depth) {
       const value = declarationValue(declaration);
       if (
         value &&
-        hasGeneratedProvenance(
-          value,
-          environment,
-          context,
-          new Set(seen),
-          depth + 1,
-        )
+        hasGeneratedProvenance(value, context, new Set(seen), depth + 1)
       ) {
         return true;
       }
@@ -524,356 +373,257 @@ function hasGeneratedProvenance(expression, environment, context, seen, depth) {
 
   if (ts.isCallExpression(expression)) {
     const signature = context.checker.getResolvedSignature(expression);
-    if (
+    return Boolean(
       signature &&
       hasGeneratedDeclaration(
         context.checker.getReturnTypeOfSignature(signature),
         context.generatedRoot,
         context.checker,
-      )
-    ) {
-      return true;
-    }
-    const target = resolveCallTarget(expression.expression, context, new Set());
-    return (
-      target.functions.length > 0 &&
-      target.functions.every((fn) => {
-        const returns = functionReturns(fn);
-        if (returns.length === 0) return false;
-        const callEnvironment = bindArguments(
-          fn,
-          expression,
-          environment,
-          context,
-        );
-        return returns.every((returned) =>
-          hasGeneratedProvenance(
-            returned,
-            callEnvironment,
-            context,
-            new Set(seen),
-            depth + 1,
-          ),
-        );
-      })
+      ),
     );
   }
 
   return false;
 }
 
-function checkDirectFetch(call, report, context) {
-  if (call.arguments.length === 0) {
-    report(
-      call.expression,
-      "direct-api-fetch",
-      "fetch URL could not be resolved deterministically; possible /api traffic must use app/api.ts",
-    );
-    return;
-  }
-  const paths = constantStrings(
-    call.arguments[0],
-    new Map(),
-    context,
-    new Set(),
-    0,
-  );
-  if (
-    paths.values.some(isAPIPathText) ||
-    paths.prefixes.some(isDefinitelyAPIPathPrefix)
-  ) {
-    report(
-      call.expression,
-      "direct-api-fetch",
-      "direct /api fetch is only allowed in app/api.ts",
-    );
-  } else if (
-    paths.unbounded ||
-    paths.prefixes.some((prefix) => !isDefinitelyNonAPIPathPrefix(prefix))
-  ) {
-    report(
-      call.expression,
-      "direct-api-fetch",
-      "fetch URL could not be resolved deterministically; possible /api traffic must use app/api.ts",
-    );
-  }
-}
+function collectUnsafeObjectSymbols(sourceFiles, checker, apiPath) {
+  const unsafe = new Set();
+  const aliases = [];
 
-function constantStrings(expression, environment, context, seen, depth) {
-  if (depth > maximumAnalysisDepth) return unknownStrings();
-  expression = unwrapExpression(expression);
-  if (ts.isStringLiteralLike(expression)) {
-    return { prefixes: [], unbounded: false, values: [expression.text] };
-  }
-  if (ts.isTemplateExpression(expression)) {
-    let result = {
-      prefixes: [],
-      unbounded: false,
-      values: [expression.head.text],
-    };
-    for (const span of expression.templateSpans) {
-      const part = constantStrings(
-        span.expression,
-        environment,
-        context,
-        new Set(seen),
-        depth + 1,
-      );
-      result = concatenateStrings(result, part, span.literal.text);
-    }
-    return result;
-  }
-  if (
-    ts.isBinaryExpression(expression) &&
-    expression.operatorToken.kind === ts.SyntaxKind.PlusToken
-  ) {
-    return concatenateStrings(
-      constantStrings(
-        expression.left,
-        environment,
-        context,
-        new Set(seen),
-        depth + 1,
-      ),
-      constantStrings(
-        expression.right,
-        environment,
-        context,
-        new Set(seen),
-        depth + 1,
-      ),
-      "",
-    );
-  }
-  if (ts.isConditionalExpression(expression)) {
-    return mergeStrings(
-      constantStrings(
-        expression.whenTrue,
-        environment,
-        context,
-        new Set(seen),
-        depth + 1,
-      ),
-      constantStrings(
-        expression.whenFalse,
-        environment,
-        context,
-        new Set(seen),
-        depth + 1,
-      ),
-    );
-  }
+  const markRoot = (expression) => {
+    const symbol = rootExpressionSymbol(expression, checker);
+    if (symbol) unsafe.add(symbol);
+  };
 
-  const references = referencedValues(expression, environment, context, seen, {
-    constantsOnly: true,
-  });
-  if (references.length > 0) {
-    const result = { prefixes: [], unbounded: false, values: [] };
-    for (const reference of references) {
-      mergeStrings(
-        result,
-        constantStrings(
-          reference.expression,
-          reference.environment,
-          context,
-          new Set(seen),
-          depth + 1,
-        ),
-      );
-    }
-    return result;
-  }
-  return unknownStrings();
-}
-
-function referencedValues(
-  expression,
-  environment,
-  context,
-  seen,
-  options = {},
-) {
-  if (
-    !ts.isIdentifier(expression) &&
-    !ts.isPropertyAccessExpression(expression)
-  ) {
-    return [];
-  }
-  const symbol = expressionSymbol(expression, context.checker);
-  if (!symbol || seen.has(symbol)) return [];
-  seen.add(symbol);
-
-  const bound = environment.get(symbol);
-  if (bound) return [bound];
-
-  const result = [];
-  for (const declaration of symbol.getDeclarations() ?? []) {
-    const value = declarationValue(declaration);
-    if (
-      value &&
-      (!options.constantsOnly || isConstantDeclaration(declaration))
-    ) {
-      result.push({ environment, expression: value });
-      continue;
-    }
-    if (ts.isParameter(declaration)) {
-      const fn = enclosingFunction(declaration);
-      if (!fn) continue;
-      for (const call of context.callSites.get(fn) ?? []) {
-        const index = fn.parameters.indexOf(declaration);
-        const argument = call.arguments[index];
-        if (argument) {
-          result.push({
-            environment: bindArguments(fn, call, new Map(), context),
-            expression: argument,
-          });
-        }
-      }
-    }
-  }
-  return result;
-}
-
-function resolveCallTarget(expression, context, seen) {
-  expression = unwrapExpression(expression);
-  const result = emptyCallTarget();
-
-  if (ts.isConditionalExpression(expression)) {
-    mergeCallTarget(
-      result,
-      resolveCallTarget(expression.whenTrue, context, new Set(seen)),
-    );
-    mergeCallTarget(
-      result,
-      resolveCallTarget(expression.whenFalse, context, new Set(seen)),
-    );
-    return result;
-  }
-  if (
-    ts.isBinaryExpression(expression) &&
-    [ts.SyntaxKind.BarBarToken, ts.SyntaxKind.QuestionQuestionToken].includes(
-      expression.operatorToken.kind,
-    )
-  ) {
-    mergeCallTarget(
-      result,
-      resolveCallTarget(expression.left, context, new Set(seen)),
-    );
-    mergeCallTarget(
-      result,
-      resolveCallTarget(expression.right, context, new Set(seen)),
-    );
-    return result;
-  }
-  if (ts.isCallExpression(expression)) {
-    const factory = resolveCallTarget(
-      expression.expression,
-      context,
-      new Set(),
-    );
-    for (const fn of factory.functions) {
-      for (const returned of functionReturns(fn)) {
-        mergeCallTarget(
-          result,
-          resolveCallTarget(returned, context, new Set(seen)),
-        );
-      }
-    }
-    return result;
-  }
-
-  const symbol = expressionSymbol(expression, context.checker);
-  if (!symbol || seen.has(symbol)) return result;
-  seen.add(symbol);
-
-  const declarations = symbol.getDeclarations() ?? [];
-  if (
-    declarations.some(
-      (declaration) =>
-        path.resolve(declaration.getSourceFile().fileName) ===
-          context.apiPath &&
-        sharedAPIFunctions.has(declarationSymbolName(declaration)),
-    )
-  ) {
-    for (const declaration of declarations) {
-      const name = declarationSymbolName(declaration);
+  for (const sourceFile of sourceFiles) {
+    if (path.resolve(sourceFile.fileName) === apiPath) continue;
+    const visit = (node) => {
       if (
-        path.resolve(declaration.getSourceFile().fileName) ===
-          context.apiPath &&
-        sharedAPIFunctions.has(name)
+        ts.isBinaryExpression(node) &&
+        assignmentOperators.has(node.operatorToken.kind)
       ) {
-        result.sharedNames.add(name);
+        markRoot(node.left);
+      } else if (
+        (ts.isPrefixUnaryExpression(node) ||
+          ts.isPostfixUnaryExpression(node)) &&
+        [ts.SyntaxKind.PlusPlusToken, ts.SyntaxKind.MinusMinusToken].includes(
+          node.operator,
+        )
+      ) {
+        markRoot(node.operand);
+      } else if (ts.isDeleteExpression(node) || ts.isReturnStatement(node)) {
+        if (node.expression) markRoot(node.expression);
+      } else if (ts.isVariableDeclaration(node) && node.initializer) {
+        const source = rootExpressionSymbol(node.initializer, checker, {
+          referencesOnly: true,
+        });
+        if (source) {
+          for (const target of bindingSymbols(node.name, checker)) {
+            aliases.push([target, source]);
+          }
+        }
+      } else if (ts.isCallExpression(node)) {
+        if (ts.isPropertyAccessExpression(node.expression)) {
+          markRoot(node.expression.expression);
+        }
+        const directShared = directSharedAPIName(node.expression, {
+          apiPath,
+          checker,
+        });
+        node.arguments.forEach((argument, index) => {
+          if (!(directShared && index === 1)) markRoot(argument);
+        });
       }
-    }
-    return result;
-  }
-  if (isGlobalFetchSymbol(symbol)) {
-    result.globalFetch = true;
-    return result;
+      ts.forEachChild(node, visit);
+    };
+    visit(sourceFile);
   }
 
-  for (const declaration of declarations) {
-    if (isFunctionLikeDeclaration(declaration)) {
-      result.functions.push(declaration);
-      continue;
-    }
-    if (ts.isParameter(declaration)) {
-      const fn = enclosingFunction(declaration);
-      const index = fn?.parameters.indexOf(declaration) ?? -1;
-      for (const call of (fn && context.callSites.get(fn)) ?? []) {
-        const argument = call.arguments[index];
-        if (argument) {
-          mergeCallTarget(
-            result,
-            resolveCallTarget(argument, context, new Set(seen)),
-          );
-        }
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const [left, right] of aliases) {
+      if (unsafe.has(left) && !unsafe.has(right)) {
+        unsafe.add(right);
+        changed = true;
       }
-      if (declaration.type) {
-        mergeCallTarget(
-          result,
-          resolveTypeNodeCallTarget(declaration.type, context, new Set(seen)),
-        );
+      if (unsafe.has(right) && !unsafe.has(left)) {
+        unsafe.add(left);
+        changed = true;
       }
-      continue;
-    }
-    const value = declarationValue(declaration);
-    if (!value) continue;
-    if (isFunctionLikeDeclaration(value)) {
-      result.functions.push(value);
-    } else {
-      mergeCallTarget(result, resolveCallTarget(value, context, new Set(seen)));
     }
   }
-  result.functions = [...new Set(result.functions)];
-  return result;
+  return unsafe;
 }
 
-function resolveTypeNodeCallTarget(node, context, seen) {
-  node = ts.isParenthesizedTypeNode(node) ? node.type : node;
-  if (ts.isTypeQueryNode(node)) {
-    return resolveCallTarget(node.exprName, context, seen);
-  }
-  if (ts.isUnionTypeNode(node) || ts.isIntersectionTypeNode(node)) {
-    const result = emptyCallTarget();
-    for (const part of node.types) {
-      mergeCallTarget(
-        result,
-        resolveTypeNodeCallTarget(part, context, new Set(seen)),
-      );
+function directSharedAPIName(expression, context) {
+  expression = unwrapExpression(expression);
+  return sharedAPINameForExpression(expression, context);
+}
+
+function sharedAPINameForExpression(expression, context) {
+  return sharedAPINameForSymbol(
+    expressionSymbol(expression, context.checker),
+    context,
+  );
+}
+
+function sharedAPINameForSymbol(symbol, context) {
+  if (!symbol) return undefined;
+  for (const declaration of symbol.getDeclarations() ?? []) {
+    const name = declarationSymbolName(declaration);
+    if (
+      path.resolve(declaration.getSourceFile().fileName) === context.apiPath &&
+      sharedAPIFunctions.has(name)
+    ) {
+      return name;
     }
-    return result;
   }
-  return emptyCallTarget();
+  return undefined;
+}
+
+function isAllowedDirectSharedCall(expression, sharedName) {
+  expression = unwrapExpression(expression);
+  return Boolean(sharedName && referenceName(expression) === sharedName);
+}
+
+function referenceName(node) {
+  if (ts.isIdentifier(node)) return node.text;
+  if (ts.isPropertyAccessExpression(node)) return node.name.text;
+  return undefined;
+}
+
+function isDirectCallTarget(node) {
+  let current = node;
+  while (
+    current.parent &&
+    (ts.isParenthesizedExpression(current.parent) ||
+      ts.isAsExpression(current.parent) ||
+      ts.isSatisfiesExpression(current.parent) ||
+      ts.isTypeAssertionExpression(current.parent) ||
+      ts.isNonNullExpression(current.parent))
+  ) {
+    current = current.parent;
+  }
+  return (
+    ts.isCallExpression(current.parent) && current.parent.expression === current
+  );
+}
+
+function isReferenceExpression(node) {
+  return (
+    ts.isIdentifier(node) ||
+    ts.isPropertyAccessExpression(node) ||
+    ts.isElementAccessExpression(node)
+  );
+}
+
+function isNestedReferenceName(node) {
+  return (
+    ts.isIdentifier(node) &&
+    ((ts.isPropertyAccessExpression(node.parent) &&
+      node.parent.name === node) ||
+      (ts.isQualifiedName(node.parent) && node.parent.right === node))
+  );
+}
+
+function isImportReference(node) {
+  for (let current = node; current; current = current.parent) {
+    if (
+      ts.isImportDeclaration(current) ||
+      ts.isImportEqualsDeclaration(current)
+    ) {
+      return true;
+    }
+    if (ts.isStatement(current)) return false;
+  }
+  return false;
+}
+
+function bindingElementPropertySymbol(node, checker) {
+  if (!ts.isObjectBindingPattern(node.parent)) return undefined;
+  const name = propertyName(node.propertyName ?? node.name);
+  if (!name) return undefined;
+  const owner = node.parent.parent;
+  let source;
+  if (
+    (ts.isVariableDeclaration(owner) || ts.isParameter(owner)) &&
+    owner.initializer
+  ) {
+    source = owner.initializer;
+  } else if (ts.isParameter(owner)) {
+    source = owner;
+  }
+  if (!source) return undefined;
+  const type = checker.getTypeAtLocation(source);
+  const symbol = checker.getPropertyOfType(type, name);
+  return resolveAliasSymbol(symbol, checker);
+}
+
+function isGlobalFetchExpression(expression, checker) {
+  return isGlobalFetchSymbol(expressionSymbol(expression, checker));
+}
+
+function rootExpressionSymbol(expression, checker, options = {}) {
+  expression = unwrapExpression(expression);
+  if (ts.isPropertyAccessExpression(expression)) {
+    return rootExpressionSymbol(expression.expression, checker, options);
+  }
+  if (ts.isElementAccessExpression(expression)) {
+    return rootExpressionSymbol(expression.expression, checker, options);
+  }
+  if (!ts.isIdentifier(expression)) return undefined;
+  if (options.referencesOnly && declarationName(expression)) return undefined;
+  return expressionSymbol(expression, checker);
+}
+
+function declarationName(node) {
+  return (
+    (ts.isVariableDeclaration(node.parent) ||
+      ts.isParameter(node.parent) ||
+      ts.isFunctionDeclaration(node.parent)) &&
+    node.parent.name === node
+  );
+}
+
+function bindingSymbols(name, checker) {
+  if (ts.isIdentifier(name)) {
+    const symbol = expressionSymbol(name, checker);
+    return symbol ? [symbol] : [];
+  }
+  const symbols = [];
+  for (const element of name.elements) {
+    if (!ts.isOmittedExpression(element)) {
+      symbols.push(...bindingSymbols(element.name, checker));
+    }
+  }
+  return symbols;
 }
 
 function expressionSymbol(expression, checker) {
-  let symbol = checker.getSymbolAtLocation(expression);
-  if (!symbol && ts.isPropertyAccessExpression(expression)) {
-    symbol = checker.getSymbolAtLocation(expression.name);
+  let symbol =
+    ts.isIdentifier(expression) &&
+    ts.isShorthandPropertyAssignment(expression.parent) &&
+    expression.parent.name === expression
+      ? checker.getShorthandAssignmentValueSymbol(expression.parent)
+      : checker.getSymbolAtLocation(expression);
+  if (
+    !symbol &&
+    (ts.isPropertyAccessExpression(expression) ||
+      ts.isElementAccessExpression(expression))
+  ) {
+    symbol = checker.getSymbolAtLocation(
+      ts.isPropertyAccessExpression(expression)
+        ? expression.name
+        : expression.argumentExpression,
+    );
   }
+  return resolveAliasSymbol(symbol, checker);
+}
+
+function resolveAliasSymbol(symbol, checker) {
   if (symbol && (symbol.flags & ts.SymbolFlags.Alias) !== 0) {
-    symbol = checker.getAliasedSymbol(symbol);
+    return checker.getAliasedSymbol(symbol);
   }
   return symbol;
 }
@@ -893,79 +643,6 @@ function declarationValue(declaration) {
   }
   if (ts.isShorthandPropertyAssignment(declaration)) return declaration.name;
   return undefined;
-}
-
-function isConstantDeclaration(declaration) {
-  if (!ts.isVariableDeclaration(declaration)) return true;
-  const declarationList = declaration.parent;
-  return (
-    ts.isVariableDeclarationList(declarationList) &&
-    (declarationList.flags & ts.NodeFlags.Const) !== 0
-  );
-}
-
-function bindArguments(fn, call, callerEnvironment, context) {
-  const environment = new Map();
-  for (let index = 0; index < fn.parameters.length; index += 1) {
-    const parameter = fn.parameters[index];
-    const symbol = context.checker.getSymbolAtLocation(parameter.name);
-    const argument = call.arguments[index] ?? parameter.initializer;
-    if (symbol && argument) {
-      environment.set(symbol, {
-        environment: callerEnvironment,
-        expression: argument,
-      });
-    }
-  }
-  return environment;
-}
-
-function functionReturns(fn) {
-  if (ts.isArrowFunction(fn) && !ts.isBlock(fn.body)) return [fn.body];
-  if (!fn.body || !ts.isBlock(fn.body)) return [];
-  const returns = [];
-  const visit = (node) => {
-    if (node !== fn && isFunctionLikeDeclaration(node)) return;
-    if (ts.isReturnStatement(node) && node.expression) {
-      returns.push(node.expression);
-      return;
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(fn.body);
-  return returns;
-}
-
-function enclosingFunction(node) {
-  for (let current = node.parent; current; current = current.parent) {
-    if (isFunctionLikeDeclaration(current)) return current;
-  }
-  return undefined;
-}
-
-function isFunctionLikeDeclaration(node) {
-  return (
-    ts.isFunctionDeclaration(node) ||
-    ts.isFunctionExpression(node) ||
-    ts.isArrowFunction(node) ||
-    ts.isMethodDeclaration(node) ||
-    ts.isGetAccessorDeclaration(node) ||
-    ts.isSetAccessorDeclaration(node)
-  );
-}
-
-function isJSONStringifyCall(node, checker) {
-  if (
-    !ts.isCallExpression(node) ||
-    !ts.isPropertyAccessExpression(node.expression) ||
-    node.expression.name.text !== "stringify"
-  ) {
-    return false;
-  }
-  const owner = node.expression.expression;
-  if (!ts.isIdentifier(owner) || owner.text !== "JSON") return false;
-  const symbol = checker.getSymbolAtLocation(owner);
-  return symbol ? isLibrarySymbol(symbol) : false;
 }
 
 function hasGeneratedDeclaration(
@@ -1046,10 +723,27 @@ function hasGeneratedTypeNode(node, generatedRoot, checker, seen) {
 }
 
 function isGlobalFetchSymbol(symbol) {
-  return symbol.getName() === "fetch" && isLibrarySymbol(symbol);
+  if (!symbol || symbol.getName() !== "fetch") return false;
+  const declarations = symbol.getDeclarations() ?? [];
+  return declarations.some((declaration) =>
+    /(^|\/)lib\.[^/]+\.d\.ts$/.test(
+      normalizePath(declaration.getSourceFile().fileName),
+    ),
+  );
 }
 
-function isLibrarySymbol(symbol) {
+function isJSONStringifyCall(node, checker) {
+  if (
+    !ts.isCallExpression(node) ||
+    !ts.isPropertyAccessExpression(node.expression) ||
+    node.expression.name.text !== "stringify"
+  ) {
+    return false;
+  }
+  const owner = node.expression.expression;
+  if (!ts.isIdentifier(owner) || owner.text !== "JSON") return false;
+  const symbol = checker.getSymbolAtLocation(owner);
+  if (!symbol) return false;
   const declarations = symbol.getDeclarations() ?? [];
   return (
     declarations.length > 0 &&
@@ -1061,6 +755,14 @@ function isLibrarySymbol(symbol) {
   );
 }
 
+function isConstVariableDeclaration(declaration) {
+  const declarationList = declaration.parent;
+  return (
+    ts.isVariableDeclarationList(declarationList) &&
+    (declarationList.flags & ts.NodeFlags.Const) !== 0
+  );
+}
+
 function declarationSymbolName(declaration) {
   return declaration.name && ts.isIdentifier(declaration.name)
     ? declaration.name.text
@@ -1069,27 +771,16 @@ function declarationSymbolName(declaration) {
 
 function propertyName(name) {
   if (ts.isIdentifier(name) || ts.isStringLiteralLike(name)) return name.text;
+  if (
+    ts.isComputedPropertyName(name) &&
+    ts.isStringLiteralLike(name.expression)
+  ) {
+    return name.expression.text;
+  }
   return undefined;
 }
 
-function isAPIPathText(text) {
-  return (
-    text === "/api" || text.startsWith("/api/") || text.startsWith("/api?")
-  );
-}
-
-function isDefinitelyAPIPathPrefix(prefix) {
-  return prefix.startsWith("/api/") || prefix.startsWith("/api?");
-}
-
-function isDefinitelyNonAPIPathPrefix(prefix) {
-  const apiStem = "/api";
-  if (prefix.length < apiStem.length) return !apiStem.startsWith(prefix);
-  if (!prefix.startsWith(apiStem)) return true;
-  return prefix.length > apiStem.length && !["/", "?"].includes(prefix[4]);
-}
-
-function isAbsentBody(expression) {
+function isAbsent(expression) {
   expression = unwrapExpression(expression);
   return (
     expression.kind === ts.SyntaxKind.UndefinedKeyword ||
@@ -1118,17 +809,6 @@ function unwrapParentheses(expression) {
   return expression;
 }
 
-function emptyCallTarget() {
-  return { functions: [], globalFetch: false, sharedNames: new Set() };
-}
-
-function mergeCallTarget(target, source) {
-  target.functions.push(...source.functions);
-  target.globalFetch ||= source.globalFetch;
-  for (const name of source.sharedNames) target.sharedNames.add(name);
-  return target;
-}
-
 function knownBodies() {
   return { bodies: [], unknown: false };
 }
@@ -1152,39 +832,6 @@ function mergePayloads(target, source) {
   target.payloads.push(...source.payloads);
   target.unknown ||= source.unknown;
   return target;
-}
-
-function unknownStrings() {
-  return { prefixes: [], unbounded: true, values: [] };
-}
-
-function mergeStrings(target, source) {
-  target.values.push(...source.values);
-  target.values = [...new Set(target.values)];
-  target.prefixes.push(...source.prefixes);
-  target.prefixes = [...new Set(target.prefixes)];
-  target.unbounded ||= source.unbounded;
-  return target;
-}
-
-function concatenateStrings(left, right, suffix) {
-  const values = [];
-  const prefixes = [];
-  for (const leftValue of left.values) {
-    for (const rightValue of right.values) {
-      values.push(leftValue + rightValue + suffix);
-    }
-    for (const rightPrefix of right.prefixes) {
-      prefixes.push(leftValue + rightPrefix);
-    }
-    if (right.unbounded) prefixes.push(leftValue);
-  }
-  prefixes.push(...left.prefixes);
-  return {
-    prefixes: [...new Set(prefixes)],
-    unbounded: left.unbounded,
-    values: [...new Set(values)],
-  };
 }
 
 function findConfig(root) {

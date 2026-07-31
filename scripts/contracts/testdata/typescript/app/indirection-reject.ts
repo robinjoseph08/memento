@@ -1,64 +1,36 @@
-import { apiJSON, apiNoContent } from "./api";
-
-interface LocalRequest {
-  name: string;
-}
-
-interface LocalResponse {
-  id: string;
-}
+import * as sharedAPI from "./api";
+import {
+  apiJSON,
+  apiJSON as importedJSONAlias,
+  apiNoContent,
+  apiResponse,
+} from "./api";
+import type { ResponseContract } from "./types/generated/contracts";
 
 const jsonAlias = apiJSON;
-const noContentAlias = apiNoContent;
+const { apiNoContent: destructuredNoContent } = sharedAPI;
+const boundResponse = apiResponse.bind(undefined, "/api/bound");
 
-function localResponseWrapper(path: string) {
-  return apiJSON<LocalResponse>(path);
+function acceptClient(client: typeof apiJSON) {
+  return client<ResponseContract>("/api/parameter");
 }
 
-function forwardedClientWrapper(client: typeof apiJSON) {
-  return client<LocalResponse>("/api/forwarded-client");
+function returnClient() {
+  return apiResponse;
 }
 
-function localRequestWrapper(request: LocalRequest) {
-  return apiNoContent("/api/wrapped-request", {
-    method: "POST",
-    body: JSON.stringify(request),
-  });
+function unresolvedGenericHelper<T>(path: string) {
+  return apiJSON<T>(path);
 }
 
-function forwardOptions(options: RequestInit) {
-  return noContentAlias("/api/forwarded-options", options);
-}
-
-function localOptions(request: LocalRequest): RequestInit {
-  return {
-    method: "POST",
-    body: JSON.stringify(request),
-  };
-}
-
-function fetchPath(path: string) {
-  return fetch(path);
-}
-
-export function rejectedDynamicOptions(options: RequestInit) {
-  return apiNoContent("/api/dynamic-options", options);
-}
-
-export function rejectedDynamicFetch(path: string) {
-  return fetch(path);
-}
-
-export async function rejectedIndirection() {
-  const request: LocalRequest = { name: "local" };
-  await jsonAlias<LocalResponse>("/api/aliased-response");
-  await localResponseWrapper("/api/wrapped-response");
-  await forwardedClientWrapper(jsonAlias);
-  await localRequestWrapper(request);
-  await forwardOptions(localOptions(request));
-
-  const apiRoot = "/api";
-  const constantPath = apiRoot + "/constant";
-  await fetch(constantPath);
-  await fetchPath(`${apiRoot}/wrapped`);
+export async function rejectedSharedAPIIndirection() {
+  await importedJSONAlias<ResponseContract>("/api/import-alias");
+  await jsonAlias<ResponseContract>("/api/alias");
+  await destructuredNoContent("/api/destructured", {});
+  await boundResponse();
+  await apiJSON.call(undefined, "/api/call");
+  await apiNoContent.apply(undefined, ["/api/apply", {}]);
+  await acceptClient(apiJSON);
+  await unresolvedGenericHelper<ResponseContract>("/api/generic-helper");
+  return returnClient();
 }
