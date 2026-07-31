@@ -23,6 +23,7 @@ function renderApp() {
       </QueryClientProvider>
     </BrowserRouter>,
   );
+  return client;
 }
 
 afterEach(() => {
@@ -257,4 +258,87 @@ test("retries Session bootstrap without reusing an accepted sign-in code", async
   fireEvent.click(screen.getByLabelText("Account for Alex"));
   expect(await screen.findByText("Your Interest list")).toBeVisible();
   expect(verificationCalls).toBe(1);
+});
+
+test("does not let a stale bootstrap response undo a confirmed sign-in", async () => {
+  let signedIn = false;
+  let sessionRequests = 0;
+  let staleBootstrapRequested = false;
+  let resolveStaleBootstrap: (response: Response) => void = () => undefined;
+  const staleBootstrap = new Promise<Response>((resolve) => {
+    resolveStaleBootstrap = resolve;
+  });
+
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) => {
+      const path =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.href
+            : input.url;
+      if (path === "/api/setup")
+        return Promise.resolve(json({ error: { message: "not found" } }, 404));
+      if (path === "/api/session") {
+        sessionRequests += 1;
+        if (sessionRequests === 2) {
+          staleBootstrapRequested = true;
+          return staleBootstrap;
+        }
+        return Promise.resolve(
+          signedIn
+            ? json({
+                display_name: "Alex",
+                session_type: "trusted",
+                csrf_token: "c".repeat(64),
+                curator: false,
+                onboarding_required: false,
+              })
+            : json({ error: { message: "sign in" } }, 401),
+        );
+      }
+      if (path === "/api/auth/sign-in/request")
+        return Promise.resolve(
+          json({ challenge_id: "a".repeat(64), status: "accepted" }, 202),
+        );
+      if (path === "/api/auth/sign-in/verify") {
+        signedIn = true;
+        return Promise.resolve(json({ status: "signed_in" }));
+      }
+      if (path === "/api/sessions")
+        return Promise.resolve(json({ sessions: [] }));
+      if (path === "/api/me/interest-list")
+        return Promise.resolve(
+          json({
+            recipient: { id: "1", display_name: "Alex", sort_name: "alex" },
+            version: 0,
+            entries: [],
+            history: [],
+          }),
+        );
+      if (path.startsWith("/api/me/people?"))
+        return Promise.resolve(json({ people: [] }));
+      return Promise.reject(new Error(`Unexpected request: ${path}`));
+    }),
+  );
+
+  const client = renderApp();
+  fireEvent.change(await screen.findByLabelText("Login email"), {
+    target: { value: "alex@example.com" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Send sign-in code" }));
+  fireEvent.change(await screen.findByLabelText("Sign-in code"), {
+    target: { value: "12345678" },
+  });
+
+  const staleRefetch = client.refetchQueries({ queryKey: ["bootstrap"] });
+  await vi.waitFor(() => expect(staleBootstrapRequested).toBe(true));
+  fireEvent.click(screen.getByRole("button", { name: "Verify and sign in" }));
+  await screen.findByRole("heading", { name: "Photos" });
+
+  resolveStaleBootstrap(json({ error: { message: "sign in" } }, 401));
+  await staleRefetch;
+  expect(screen.getByRole("heading", { name: "Photos" })).toBeVisible();
+  expect(screen.queryByLabelText("Login email")).not.toBeInTheDocument();
 });
