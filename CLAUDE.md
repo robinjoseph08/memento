@@ -1,3 +1,9 @@
+## Guidance Hierarchy
+
+`CLAUDE.md` is the canonical root guidance, and `AGENTS.md` remains a symlink to it for agent compatibility. Before changing a file, read this file and every nearer `CLAUDE.md` in its directory ancestry.
+
+Place durable engineering rules in the narrowest directory that owns them. Child guidance extends its ancestors and should reference rather than repeat broader rules. When a change establishes or alters a reusable pattern, invariant, test seam, deployment contract, or evidence obligation, update the nearest relevant guidance in the same change. Move guidance when its scope narrows instead of leaving conflicting copies.
+
 ## Git Conventions
 
 ### Commit Message Format

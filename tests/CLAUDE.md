@@ -1,0 +1,7 @@
+# Test Standards
+
+- Test at the highest useful deterministic seam: package tests for pure rules, `httptest` for handler contracts, isolated PostgreSQL for persistence and concurrency, Playwright for browser-visible behavior, and dedicated suites for real dependency contracts.
+- Prove behavior through executable inputs and observable outputs. Source-code inspection may enforce repository structure, but it is not evidence that a product, privacy, recovery, or deployment behavior works.
+- Apply the root deterministic synchronization, resource isolation, cleanup, and flake-diagnosis rules to every harness here. Infrastructure helpers should make those constraints the default rather than leaving them to each test.
+- Use the `integration` build tag and `internal/testdb` for real PostgreSQL behavior. Keep controlled clocks, randomness, DNS, dialers, and dependency failures injectable where outcomes depend on them.
+- When a security surface changes, update both the authorization capability model and its concrete production evidence registry.
