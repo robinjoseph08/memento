@@ -1011,7 +1011,7 @@ func TestDeliveryUsesWallClockWhenInvitationExpiresWhileWaitingForLock(t *testin
 	designate(t, fixture)
 	invitation, _ := deterministicIssue(t, fixture, 0x4a)
 	job := claimDelivery(t, fixture, invitation.Invitation.ID, emaildelivery.KindInvitationInitial, "expiry-recheck")
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	expiryTx, err := fixture.db.BeginTx(ctx, nil)
@@ -1034,9 +1034,9 @@ func TestDeliveryUsesWallClockWhenInvitationExpiresWhileWaitingForLock(t *testin
 	delivered := make(chan error, 1)
 	go func() { delivered <- fixture.delivery.Handle(ctx, job) }()
 	waitForBlockedQuery(t, ctx, fixture.db, blockerPID, `%SELECT id FROM invitations WHERE id =%FOR UPDATE%`)
-	time.Sleep(600 * time.Millisecond)
+	testdb.WaitForDatabaseDeadline(t, ctx, expiryTx, "invitation expiration", `SELECT clock_timestamp(), expires_at FROM invitations WHERE id = ?`, invitation.Invitation.ID)
 	require.NoError(t, expiryTx.Commit())
-	require.NoError(t, <-delivered)
+	require.NoError(t, testdb.WaitForErrorResult(t, delivered, "Recipient delivery after invitation lock release"))
 	assert.Zero(t, fixture.sender.count())
 	assertDeliveryCancelled(t, fixture, invitation.Invitation.ID, emaildelivery.KindInvitationInitial)
 }
@@ -1147,25 +1147,7 @@ func TestManualReminderIsDurableAndDoesNotExtendInvitation(t *testing.T) {
 
 func waitForBlockedQuery(t *testing.T, ctx context.Context, db *bun.DB, blockerPID int, pattern string) {
 	t.Helper()
-	deadline := time.Now().Add(4 * time.Second)
-	for {
-		var waiting bool
-		err := db.NewRaw(`
-			SELECT EXISTS (
-				SELECT 1 FROM pg_stat_activity
-				WHERE datname = current_database() AND wait_event_type = 'Lock'
-				  AND ? = ANY(pg_blocking_pids(pid)) AND query LIKE ?
-			)
-		`, blockerPID, pattern).Scan(ctx, &waiting)
-		require.NoError(t, err)
-		if waiting {
-			return
-		}
-		if time.Now().After(deadline) {
-			require.FailNow(t, "expected query did not wait for the controlled lock", pattern)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	testdb.WaitForBlockedQueries(t, ctx, db, blockerPID, pattern, 1)
 }
 
 func TestArchivePersonLockAllowsConcurrentSessionAuditToFinish(t *testing.T) {

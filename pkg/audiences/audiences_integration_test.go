@@ -404,11 +404,15 @@ func TestAttendanceAndOverrideFailuresLeaveReviewStateUnchanged(t *testing.T) {
 
 func TestConcurrentSameVersionMutationsChooseExactlyOneWinner(t *testing.T) {
 	f := newAudienceFixture(t)
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
 	blocker, err := f.db.BeginTx(ctx, nil)
 	require.NoError(t, err)
+	defer func() { _ = blocker.Rollback() }()
 	var version int64
 	require.NoError(t, blocker.NewRaw(`SELECT review_version FROM draft_moments WHERE id = ? FOR UPDATE`, f.momentID).Scan(ctx, &version))
+	var blockerPID int
+	require.NoError(t, blocker.NewRaw(`SELECT pg_backend_pid()`).Scan(ctx, &blockerPID))
 
 	resultErrors := make(chan error, 2)
 	for _, person := range []uuid.UUID{f.people["present"], f.people["both"]} {
@@ -418,10 +422,11 @@ func TestConcurrentSameVersionMutationsChooseExactlyOneWinner(t *testing.T) {
 			resultErrors <- err
 		}()
 	}
-	time.Sleep(100 * time.Millisecond)
-	assert.Empty(t, resultErrors, "both mutations must wait for the target row lock")
+	firstPID := testdb.WaitForBlockedQueries(t, ctx, f.db, blockerPID, `%SELECT review_version FROM draft_moments WHERE id =%FOR UPDATE%`, 1)[0]
+	testdb.WaitForBlockedQueries(t, ctx, f.db, firstPID, `%SELECT id FROM events WHERE id =%FOR UPDATE%`, 1)
 	require.NoError(t, blocker.Commit())
-	first, second := <-resultErrors, <-resultErrors
+	first := testdb.WaitForErrorResult(t, resultErrors, "first same-version Audience mutation after target lock release")
+	second := testdb.WaitForErrorResult(t, resultErrors, "second same-version Audience mutation after target lock release")
 	assert.True(t, (first == nil && errors.Is(second, ErrStale)) || (second == nil && errors.Is(first, ErrStale)))
 	review, err := f.service.ReviewMoment(ctx, f.momentID)
 	require.NoError(t, err)
@@ -574,27 +579,30 @@ func TestApprovalRejectsProposalWhenRecipientEligibilityChanged(t *testing.T) {
 
 func TestApprovalUsesPersonBeforeAccessLockOrder(t *testing.T) {
 	f := newAudienceFixture(t)
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
 	review, err := f.service.ConfirmAttendance(ctx, f.actor, f.momentID, 1, attendanceRequest(f.people["present"].String()))
 	require.NoError(t, err)
 	blocker, err := f.db.BeginTx(ctx, nil)
 	require.NoError(t, err)
+	defer func() { _ = blocker.Rollback() }()
 	_, err = blocker.NewRaw(`SELECT id FROM people WHERE id = ? FOR UPDATE`, f.people["present"]).Exec(ctx)
 	require.NoError(t, err)
+	var blockerPID int
+	require.NoError(t, blocker.NewRaw(`SELECT pg_backend_pid()`).Scan(ctx, &blockerPID))
 
 	approvalResult := make(chan error, 1)
 	go func() {
 		_, err := f.service.Approve(ctx, f.actor, targetMoment, f.momentID, review.Version)
 		approvalResult <- err
 	}()
-	time.Sleep(100 * time.Millisecond)
-	assert.Empty(t, approvalResult, "approval must wait for the Person lock before taking the access lock")
+	testdb.WaitForBlockedQueries(t, ctx, f.db, blockerPID, `%SELECT id FROM people WHERE id IN%ORDER BY id FOR SHARE%`, 1)
 	_, err = blocker.NewRaw(`SELECT id FROM recipient_access_generations WHERE id = ? FOR UPDATE`, f.access["present"]).Exec(ctx)
 	require.NoError(t, err, "Person lifecycle work must take the access lock without deadlocking against approval")
 	_, err = blocker.NewRaw(`UPDATE people SET archived_at = now() WHERE id = ?`, f.people["present"]).Exec(ctx)
 	require.NoError(t, err)
 	require.NoError(t, blocker.Commit())
-	assert.ErrorIs(t, <-approvalResult, ErrProposalStale)
+	assert.ErrorIs(t, testdb.WaitForErrorResult(t, approvalResult, "Audience approval after Person lock release"), ErrProposalStale)
 }
 
 func TestArchivedAttendeesCanBeRemovedFromAttendance(t *testing.T) {
