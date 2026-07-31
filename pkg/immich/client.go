@@ -93,27 +93,47 @@ type downloadRequest struct {
 	AssetIDs []string `json:"assetIds"`
 }
 
+type nullableField[T any] struct {
+	Present bool
+	Null    bool
+	Value   T
+}
+
+func (field *nullableField[T]) UnmarshalJSON(contents []byte) error {
+	field.Present = true
+	if bytes.Equal(bytes.TrimSpace(contents), []byte("null")) {
+		field.Null = true
+		var zero T
+		field.Value = zero
+		return nil
+	}
+	field.Null = false
+	return json.Unmarshal(contents, &field.Value)
+}
+
 type versionResponse struct {
-	Major      *int            `json:"major"`
-	Minor      *int            `json:"minor"`
-	Patch      *int            `json:"patch"`
-	Prerelease json.RawMessage `json:"prerelease"`
+	Major      *int                  `json:"major"`
+	Minor      *int                  `json:"minor"`
+	Patch      *int                  `json:"patch"`
+	Prerelease nullableField[string] `json:"prerelease"`
 }
 
 type apiKeyResponse struct {
 	Permissions *[]string `json:"permissions"`
 }
 
+type albumListResponse []albumResponse
+
 type albumResponse struct {
-	ID                         *string         `json:"id"`
-	AlbumName                  *string         `json:"albumName"`
-	Description                *string         `json:"description"`
-	AssetCount                 *int            `json:"assetCount"`
-	CreatedAt                  *string         `json:"createdAt"`
-	UpdatedAt                  *string         `json:"updatedAt"`
-	StartDate                  json.RawMessage `json:"startDate"`
-	EndDate                    json.RawMessage `json:"endDate"`
-	LastModifiedAssetTimestamp json.RawMessage `json:"lastModifiedAssetTimestamp"`
+	ID                         *string               `json:"id"`
+	AlbumName                  *string               `json:"albumName"`
+	Description                *string               `json:"description"`
+	AssetCount                 *int                  `json:"assetCount"`
+	CreatedAt                  *string               `json:"createdAt"`
+	UpdatedAt                  *string               `json:"updatedAt"`
+	StartDate                  nullableField[string] `json:"startDate"`
+	EndDate                    nullableField[string] `json:"endDate"`
+	LastModifiedAssetTimestamp nullableField[string] `json:"lastModifiedAssetTimestamp"`
 }
 
 type searchResponse struct {
@@ -121,23 +141,23 @@ type searchResponse struct {
 }
 
 type searchAssetsResponse struct {
-	Count    *int             `json:"count"`
-	Items    *[]assetResponse `json:"items"`
-	NextPage json.RawMessage  `json:"nextPage"`
-	Total    *int             `json:"total"`
+	Count    *int                  `json:"count"`
+	Items    *[]assetResponse      `json:"items"`
+	NextPage nullableField[string] `json:"nextPage"`
+	Total    *int                  `json:"total"`
 }
 
 type assetResponse struct {
-	ID               *string         `json:"id"`
-	Type             *string         `json:"type"`
-	Width            json.RawMessage `json:"width"`
-	Height           json.RawMessage `json:"height"`
-	LocalDateTime    json.RawMessage `json:"localDateTime"`
-	FileCreatedAt    *string         `json:"fileCreatedAt"`
-	Checksum         *string         `json:"checksum"`
-	OriginalFileName *string         `json:"originalFileName"`
-	OriginalPath     *string         `json:"originalPath"`
-	LivePhotoVideoID json.RawMessage `json:"livePhotoVideoId"`
+	ID               *string               `json:"id"`
+	Type             *string               `json:"type"`
+	Width            nullableField[int]    `json:"width"`
+	Height           nullableField[int]    `json:"height"`
+	LocalDateTime    nullableField[string] `json:"localDateTime"`
+	FileCreatedAt    *string               `json:"fileCreatedAt"`
+	Checksum         *string               `json:"checksum"`
+	OriginalFileName *string               `json:"originalFileName"`
+	OriginalPath     *string               `json:"originalPath"`
+	LivePhotoVideoID nullableField[string] `json:"livePhotoVideoId"`
 }
 
 type downloadInfoResponse struct {
@@ -167,15 +187,17 @@ type personReferenceResponse struct {
 	ID *string `json:"id"`
 }
 
+type faceListResponse []faceResponse
+
 type faceResponse struct {
-	ID          *string         `json:"id"`
-	ImageWidth  *int            `json:"imageWidth"`
-	ImageHeight *int            `json:"imageHeight"`
-	X1          *int            `json:"boundingBoxX1"`
-	Y1          *int            `json:"boundingBoxY1"`
-	X2          *int            `json:"boundingBoxX2"`
-	Y2          *int            `json:"boundingBoxY2"`
-	Person      json.RawMessage `json:"person"`
+	ID          *string                                `json:"id"`
+	ImageWidth  *int                                   `json:"imageWidth"`
+	ImageHeight *int                                   `json:"imageHeight"`
+	X1          *int                                   `json:"boundingBoxX1"`
+	Y1          *int                                   `json:"boundingBoxY1"`
+	X2          *int                                   `json:"boundingBoxX2"`
+	Y2          *int                                   `json:"boundingBoxY2"`
+	Person      nullableField[personReferenceResponse] `json:"person"`
 }
 
 func (response *versionResponse) UnmarshalJSON(contents []byte) error {
@@ -258,6 +280,14 @@ func (response *personResponse) UnmarshalJSON(contents []byte) error {
 		return err
 	}
 	return json.Unmarshal(contents, (*exactPersonResponse)(response))
+}
+
+func (response *personReferenceResponse) UnmarshalJSON(contents []byte) error {
+	type exactPersonReferenceResponse personReferenceResponse
+	if err := rejectCaseVariantFields(contents, "id"); err != nil {
+		return err
+	}
+	return json.Unmarshal(contents, (*exactPersonReferenceResponse)(response))
 }
 
 func (response *faceResponse) UnmarshalJSON(contents []byte) error {
@@ -380,11 +410,11 @@ func (c *Client) Check(ctx context.Context) error {
 	if err := c.getJSON(ctx, "server/version", &version, errRequestFailed); err != nil {
 		return err
 	}
-	if version.Major == nil || version.Minor == nil || version.Patch == nil || len(version.Prerelease) == 0 {
+	if version.Major == nil || version.Minor == nil || version.Patch == nil || !version.Prerelease.Present {
 		return errInvalidResponse
 	}
 	actual := fmt.Sprintf("%d.%d.%d", *version.Major, *version.Minor, *version.Patch)
-	if actual != supportedVersion || string(version.Prerelease) != "null" {
+	if actual != supportedVersion || !version.Prerelease.Null {
 		return errUnsupportedVersion
 	}
 
@@ -403,7 +433,7 @@ func (c *Client) Check(ctx context.Context) error {
 
 // OwnedAlbums retrieves and normalizes only albums owned by the API-key owner.
 func (c *Client) OwnedAlbums(ctx context.Context) ([]AlbumSummary, error) {
-	var response []albumResponse
+	var response albumListResponse
 	if err := c.getJSONQuery(ctx, "albums", url.Values{"isOwned": {"true"}}, &response, errOwnedAlbumsFailed); err != nil {
 		return nil, err
 	}
@@ -463,7 +493,7 @@ func (c *Client) AlbumAssetsPage(ctx context.Context, albumID uuid.UUID, page in
 		return AssetPage{}, err
 	}
 	if response.Assets == nil || response.Assets.Count == nil || response.Assets.Items == nil || response.Assets.Total == nil ||
-		len(response.Assets.NextPage) == 0 || *response.Assets.Count != len(*response.Assets.Items) ||
+		!response.Assets.NextPage.Present || *response.Assets.Count != len(*response.Assets.Items) ||
 		*response.Assets.Total != len(*response.Assets.Items) || len(*response.Assets.Items) > assetPageSize {
 		return AssetPage{}, errInvalidResponse
 	}
@@ -475,12 +505,8 @@ func (c *Client) AlbumAssetsPage(ctx context.Context, albumID uuid.UUID, page in
 		}
 		result.Items = append(result.Items, asset)
 	}
-	if string(response.Assets.NextPage) != "null" {
-		var nextValue string
-		if err := json.Unmarshal(response.Assets.NextPage, &nextValue); err != nil {
-			return AssetPage{}, errInvalidResponse
-		}
-		next, err := strconv.Atoi(nextValue)
+	if !response.Assets.NextPage.Null {
+		next, err := strconv.Atoi(response.Assets.NextPage.Value)
 		if err != nil || next != page+1 {
 			return AssetPage{}, errInvalidResponse
 		}
@@ -671,6 +697,15 @@ func (c *Client) media(ctx context.Context, assetID uuid.UUID, path []string, qu
 		_ = response.Body.Close()
 		cancel()
 		return MediaResponse{}, err
+	}
+	if result.StatusCode == http.StatusNotModified || result.StatusCode == http.StatusRequestedRangeNotSatisfiable {
+		closeErr := response.Body.Close()
+		cancel()
+		if closeErr != nil {
+			return MediaResponse{}, errInvalidResponse
+		}
+		result.Body = http.NoBody
+		return result, nil
 	}
 	cancelBody := &cancelReadCloser{ReadCloser: response.Body, cancel: cancel}
 	var body io.ReadCloser = &safeReadCloser{ReadCloser: cancelBody}
@@ -1083,6 +1118,13 @@ func (body *safeReadCloser) Read(contents []byte) (int, error) {
 	return count, err
 }
 
+func (body *safeReadCloser) Close() error {
+	if err := body.ReadCloser.Close(); err != nil {
+		return errInvalidResponse
+	}
+	return nil
+}
+
 type cancelReadCloser struct {
 	io.ReadCloser
 	cancel context.CancelFunc
@@ -1119,15 +1161,11 @@ func (c *Client) ArchiveInfo(ctx context.Context, assetIDs []uuid.UUID) ([]Archi
 		if asset.ID == nil || *asset.ID != id.String() {
 			return nil, errInvalidResponse
 		}
-		if len(asset.LivePhotoVideoID) == 0 {
+		if !asset.LivePhotoVideoID.Present {
 			return nil, errInvalidResponse
 		}
-		if string(asset.LivePhotoVideoID) != "null" {
-			var rawCompanion string
-			if err := json.Unmarshal(asset.LivePhotoVideoID, &rawCompanion); err != nil {
-				return nil, errInvalidResponse
-			}
-			companion, err := uuid.Parse(rawCompanion)
+		if !asset.LivePhotoVideoID.Null {
+			companion, err := uuid.Parse(asset.LivePhotoVideoID.Value)
 			if err != nil || companion == uuid.Nil {
 				return nil, errInvalidResponse
 			}
@@ -1247,6 +1285,9 @@ func (c *Client) Archive(ctx context.Context, assetIDs []uuid.UUID) (ArchiveResp
 			// Immich uses 400 when one of those members disappears.
 			return ArchiveResponse{}, ErrNotFound
 		}
+		if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
+			return ArchiveResponse{}, errInvalidCredentials
+		}
 		return ArchiveResponse{}, errArchiveFailed
 	}
 	contentType, _, parseErr := mime.ParseMediaType(response.Header.Get("Content-Type"))
@@ -1270,7 +1311,8 @@ func (c *Client) People(ctx context.Context) ([]PersonSummary, error) {
 			return nil, err
 		}
 		if response.People == nil || response.Total == nil || response.Hidden == nil || response.HasNextPage == nil ||
-			*response.Total < 0 || *response.Hidden < 0 || *response.Hidden > *response.Total || len(*response.People) > assetPageSize {
+			*response.Total < 0 || *response.Total > maxDatabaseInteger || *response.Hidden < 0 || *response.Hidden > maxDatabaseInteger ||
+			*response.Hidden > *response.Total || len(*response.People) > assetPageSize {
 			return nil, errInvalidResponse
 		}
 		for _, raw := range *response.People {
@@ -1301,7 +1343,7 @@ func (c *Client) Faces(ctx context.Context, assetID uuid.UUID) ([]FaceSummary, e
 	if assetID == uuid.Nil {
 		return nil, errInvalidResponse
 	}
-	var response []faceResponse
+	var response faceListResponse
 	if err := c.getJSONQuery(ctx, "faces", url.Values{"id": {assetID.String()}}, &response, errFacesFailed); err != nil {
 		return nil, err
 	}
@@ -1312,7 +1354,9 @@ func (c *Client) Faces(ctx context.Context, assetID uuid.UUID) ([]FaceSummary, e
 	seen := map[uuid.UUID]struct{}{}
 	for _, raw := range response {
 		if raw.ID == nil || raw.ImageWidth == nil || raw.ImageHeight == nil || raw.X1 == nil || raw.Y1 == nil || raw.X2 == nil || raw.Y2 == nil ||
-			*raw.ImageWidth < 0 || *raw.ImageHeight < 0 || *raw.X1 < 0 || *raw.Y1 < 0 || *raw.X2 < *raw.X1 || *raw.Y2 < *raw.Y1 {
+			*raw.ImageWidth < 0 || *raw.ImageWidth > maxDatabaseInteger || *raw.ImageHeight < 0 || *raw.ImageHeight > maxDatabaseInteger ||
+			*raw.X1 < 0 || *raw.X1 > maxDatabaseInteger || *raw.Y1 < 0 || *raw.Y1 > maxDatabaseInteger ||
+			*raw.X2 < *raw.X1 || *raw.X2 > maxDatabaseInteger || *raw.Y2 < *raw.Y1 || *raw.Y2 > maxDatabaseInteger {
 			return nil, errInvalidResponse
 		}
 		id, err := uuid.Parse(*raw.ID)
@@ -1535,15 +1579,14 @@ func normalizeAlbum(raw albumResponse) (AlbumSummary, error) {
 	}, nil
 }
 
-func optionalTime(raw json.RawMessage) (*time.Time, error) {
-	if len(raw) == 0 {
+func optionalTime(field nullableField[string]) (*time.Time, error) {
+	if !field.Present {
 		return nil, nil
 	}
-	var value string
-	if err := json.Unmarshal(raw, &value); err != nil || strings.TrimSpace(value) == "" {
+	if field.Null || strings.TrimSpace(field.Value) == "" {
 		return nil, errInvalidResponse
 	}
-	parsed, err := time.Parse(time.RFC3339, value)
+	parsed, err := time.Parse(time.RFC3339, field.Value)
 	if err != nil {
 		return nil, err
 	}
@@ -1562,18 +1605,14 @@ func validAssetType(value string) bool {
 	return value == "IMAGE" || value == "VIDEO"
 }
 
-func requiredNullableLocalDateTime(raw json.RawMessage) (*string, error) {
-	if len(raw) == 0 {
+func requiredNullableLocalDateTime(field nullableField[string]) (*string, error) {
+	if !field.Present {
 		return nil, errInvalidResponse
 	}
-	if string(raw) == "null" {
+	if field.Null {
 		return nil, nil
 	}
-	var value string
-	if err := json.Unmarshal(raw, &value); err != nil {
-		return nil, errInvalidResponse
-	}
-	value = strings.TrimSpace(value)
+	value := strings.TrimSpace(field.Value)
 	parsed, err := time.Parse(time.RFC3339Nano, value)
 	if err != nil || parsed.Year() <= 0 {
 		valid := false
@@ -1612,37 +1651,32 @@ func optionalChecksum(value *string) (string, error) {
 	return hex.EncodeToString(decoded), nil
 }
 
-func nestedPersonID(raw json.RawMessage) (*uuid.UUID, error) {
-	if len(raw) == 0 {
+func nestedPersonID(field nullableField[personReferenceResponse]) (*uuid.UUID, error) {
+	if !field.Present {
 		return nil, errInvalidResponse
 	}
-	if string(raw) == "null" {
+	if field.Null {
 		return nil, nil
 	}
-	if err := rejectCaseVariantFields(raw, "id"); err != nil {
+	if field.Value.ID == nil {
 		return nil, errInvalidResponse
 	}
-	var person personReferenceResponse
-	if err := json.Unmarshal(raw, &person); err != nil || person.ID == nil {
-		return nil, errInvalidResponse
-	}
-	id, err := uuid.Parse(*person.ID)
+	id, err := uuid.Parse(*field.Value.ID)
 	if err != nil || id == uuid.Nil {
 		return nil, errInvalidResponse
 	}
 	return &id, nil
 }
 
-func requiredNullableDimension(raw json.RawMessage) (*int, error) {
-	if len(raw) == 0 {
+func requiredNullableDimension(field nullableField[int]) (*int, error) {
+	if !field.Present {
 		return nil, errInvalidResponse
 	}
-	if string(raw) == "null" {
+	if field.Null {
 		return nil, nil
 	}
-	var value int
-	if err := json.Unmarshal(raw, &value); err != nil || value < 0 || value > maxDatabaseInteger {
+	if field.Value < 0 || field.Value > maxDatabaseInteger {
 		return nil, errInvalidResponse
 	}
-	return &value, nil
+	return &field.Value, nil
 }

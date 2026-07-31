@@ -157,14 +157,23 @@ func TestArchiveMissingMemberBadRequestsAreNotFound(t *testing.T) {
 
 func TestArchiveBadRequestClassificationDoesNotBroadenOtherFailures(t *testing.T) {
 	assetID := uuid.New()
-	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusServiceUnavailable} {
+	for _, test := range []struct {
+		status int
+		want   string
+	}{
+		{status: http.StatusUnauthorized, want: "Immich API key is invalid"},
+		{status: http.StatusForbidden, want: "Immich API key is invalid"},
+		{status: http.StatusServiceUnavailable, want: "Immich archive request failed"},
+	} {
 		server := contractServer(t, func(w http.ResponseWriter, _ *http.Request) {
-			w.WriteHeader(status)
+			w.WriteHeader(test.status)
+			_, _ = w.Write([]byte(`{"private":"dependency body"}`))
 		})
 		client, err := New(clientConfig(server.URL), server.Client())
 		require.NoError(t, err)
 		_, err = client.Archive(context.Background(), []uuid.UUID{assetID})
-		require.NotErrorIs(t, err, ErrNotFound)
+		require.EqualError(t, err, test.want)
+		assert.NotContains(t, err.Error(), "private")
 		server.Close()
 	}
 	client, err := New(clientConfig("https://immich.internal"), nil)
@@ -196,7 +205,8 @@ func TestCheckRejectsUnsupportedVersionsAndInvalidPermissionSets(t *testing.T) {
 		{"duplicate version member", `{"major":4,"major":3,"minor":0,"patch":3,"prerelease":null}`, permissionsJSON, "Immich returned an invalid response"},
 		{"case-variant version member", `{"Major":3,"minor":0,"patch":3,"prerelease":null}`, permissionsJSON, "Immich returned an invalid response"},
 		{"case-colliding version member", `{"major":4,"Major":3,"minor":0,"patch":3,"prerelease":null}`, permissionsJSON, "Immich returned an invalid response"},
-		{"prerelease", `{"major":3,"minor":0,"patch":3,"prerelease":1}`, permissionsJSON, "Immich version is unsupported"},
+		{"malformed prerelease", `{"major":3,"minor":0,"patch":3,"prerelease":1}`, permissionsJSON, "Immich returned an invalid response"},
+		{"named prerelease", `{"major":3,"minor":0,"patch":3,"prerelease":"beta"}`, permissionsJSON, "Immich version is unsupported"},
 		{"missing major", `{"minor":0,"patch":3,"prerelease":null}`, permissionsJSON, "Immich returned an invalid response"},
 		{"null major", `{"major":null,"minor":0,"patch":3,"prerelease":null}`, permissionsJSON, "Immich returned an invalid response"},
 		{"missing minor", `{"major":3,"patch":3,"prerelease":null}`, permissionsJSON, "Immich returned an invalid response"},
@@ -673,6 +683,61 @@ func TestPeopleAndFacesRejectCaseDriftAndMissingPersonFields(t *testing.T) {
 	}
 }
 
+func TestPeopleAndFacesRejectUnboundedNumericEvidence(t *testing.T) {
+	assetID, faceID := uuid.New(), uuid.New()
+	for name, body := range map[string]string{
+		"unstorable people total": `{"people":[],"total":2147483648,"hidden":0,"hasNextPage":false}`,
+		"unstorable hidden total": `{"people":[],"total":2147483647,"hidden":2147483648,"hasNextPage":false}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := contractServer(t, func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(body)) })
+			defer server.Close()
+			client, err := New(clientConfig(server.URL), server.Client())
+			require.NoError(t, err)
+			_, err = client.People(context.Background())
+			require.EqualError(t, err, "Immich returned an invalid response")
+		})
+	}
+
+	validPerson := `,"person":null}`
+	for name, fields := range map[string]string{
+		"unstorable image height": `"imageWidth":100,"imageHeight":2147483648,"boundingBoxX1":1,"boundingBoxY1":2,"boundingBoxX2":20,"boundingBoxY2":30`,
+		"unstorable coordinate":   `"imageWidth":100,"imageHeight":80,"boundingBoxX1":1,"boundingBoxY1":2,"boundingBoxX2":2147483648,"boundingBoxY2":30`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := contractServer(t, func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(`[{"id":"` + faceID.String() + `",` + fields + validPerson + `]`))
+			})
+			defer server.Close()
+			client, err := New(clientConfig(server.URL), server.Client())
+			require.NoError(t, err)
+			_, err = client.Faces(context.Background(), assetID)
+			require.EqualError(t, err, "Immich returned an invalid response")
+		})
+	}
+}
+
+func TestFacesAcceptPinnedZeroAndOutOfImageCoordinates(t *testing.T) {
+	assetID := uuid.New()
+	zeroFace, outsideFace := uuid.New(), uuid.New()
+	server := contractServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`[` +
+			`{"id":"` + zeroFace.String() + `","imageWidth":0,"imageHeight":0,"boundingBoxX1":0,"boundingBoxY1":0,"boundingBoxX2":0,"boundingBoxY2":0,"person":null},` +
+			`{"id":"` + outsideFace.String() + `","imageWidth":100,"imageHeight":80,"boundingBoxX1":20,"boundingBoxY1":20,"boundingBoxX2":101,"boundingBoxY2":81,"person":null}` +
+			`]`))
+	})
+	defer server.Close()
+	client, err := New(clientConfig(server.URL), server.Client())
+	require.NoError(t, err)
+
+	faces, err := client.Faces(context.Background(), assetID)
+	require.NoError(t, err)
+	require.Len(t, faces, 2)
+	assert.Equal(t, FaceSummary{SourceID: zeroFace}, faces[0])
+	assert.Equal(t, 101, faces[1].X2)
+	assert.Equal(t, 81, faces[1].Y2)
+}
+
 func TestFacesIdentifyDeletedAssets(t *testing.T) {
 	server := contractServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
@@ -972,6 +1037,14 @@ func (failingReadCloser) Read([]byte) (int, error) {
 }
 
 func (failingReadCloser) Close() error { return nil }
+
+type failingCloseReadCloser struct {
+	io.Reader
+}
+
+func (failingCloseReadCloser) Close() error {
+	return errors.New("close https://immich.internal/private?key=secret")
+}
 
 func TestClientRejectsRedirectsWithoutForwardingAPIKey(t *testing.T) {
 	targetRequests := make(chan *http.Request, 1)
@@ -1386,6 +1459,9 @@ func TestMediaConditionalAndUnsatisfiedRangesReturnSafeEmptyResponses(t *testing
 			require.NoError(t, err)
 			assert.Equal(t, test.status, response.StatusCode)
 			assert.Equal(t, int64(-1), response.ContentLength)
+			contents, readErr := io.ReadAll(response.Body)
+			require.NoError(t, readErr)
+			assert.Empty(t, contents)
 			require.NoError(t, response.Body.Close())
 		})
 	}
@@ -1484,6 +1560,50 @@ func TestMediaRepresentationsRejectInvalidEntryPointsStatusesAndHeaders(t *testi
 				_, err = client.Video(context.Background(), assetID, test.request)
 			}
 			require.EqualError(t, err, test.want)
+		})
+	}
+}
+
+func TestMediaAndArchiveCloseFailuresReturnOnlySafeErrors(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		load func(*Client) (io.ReadCloser, error)
+	}{
+		{
+			name: "media",
+			load: func(client *Client) (io.ReadCloser, error) {
+				response, err := client.Original(context.Background(), uuid.New(), MediaRequest{})
+				return response.Body, err
+			},
+		},
+		{
+			name: "archive",
+			load: func(client *Client) (io.ReadCloser, error) {
+				response, err := client.Archive(context.Background(), []uuid.UUID{uuid.New()})
+				return response.Body, err
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
+				header := http.Header{"Content-Type": []string{"application/octet-stream"}}
+				if strings.HasSuffix(request.URL.Path, "/archive") {
+					header.Set("Content-Type", "application/zip")
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     header,
+					Body:       failingCloseReadCloser{Reader: strings.NewReader("safe")},
+					Request:    request,
+				}, nil
+			})
+			client, err := New(clientConfig("https://immich.internal"), &http.Client{Transport: transport})
+			require.NoError(t, err)
+			body, err := test.load(client)
+			require.NoError(t, err)
+			err = body.Close()
+			require.EqualError(t, err, "Immich returned an invalid response")
+			assert.NotContains(t, err.Error(), "private")
 		})
 	}
 }

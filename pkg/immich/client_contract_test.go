@@ -120,6 +120,9 @@ func TestImmichV303LiveContract(t *testing.T) {
 	assert.NotEmpty(t, imageEvidence.Checksum)
 	assert.Equal(t, filepath.Base(imagePath), imageEvidence.Filename)
 	assert.NotEmpty(t, imageEvidence.OriginalPath)
+	imageExists, err := client.AssetExists(ctx, imageID)
+	require.NoError(t, err)
+	assert.True(t, imageExists)
 	contractAwaitDelivery(t, func() (bool, error) {
 		return client.AssetDeliveryAvailable(ctx, imageID, "image")
 	})
@@ -127,11 +130,25 @@ func TestImmichV303LiveContract(t *testing.T) {
 		return client.AssetDeliveryAvailable(ctx, videoID, "video")
 	})
 
+	faces, err := client.Faces(ctx, imageID)
+	require.NoError(t, err)
+	for _, face := range faces {
+		assert.NotEqual(t, uuid.Nil, face.SourceID)
+		assert.Positive(t, face.ImageWidth)
+		assert.Positive(t, face.ImageHeight)
+	}
+
 	thumbnail := contractAwaitMedia(t, func() (MediaResponse, error) {
 		return client.Thumbnail(ctx, imageID, MediaRequest{})
 	})
 	assert.Equal(t, http.StatusOK, thumbnail.StatusCode)
 	assert.NotEmpty(t, contractReadMedia(t, thumbnail))
+
+	emailThumbnail := contractAwaitMedia(t, func() (MediaResponse, error) {
+		return client.EmailThumbnail(ctx, imageID, MediaRequest{})
+	})
+	assert.Equal(t, http.StatusOK, emailThumbnail.StatusCode)
+	assert.NotEmpty(t, contractReadMedia(t, emailThumbnail))
 
 	preview := contractAwaitMedia(t, func() (MediaResponse, error) {
 		return client.Preview(ctx, imageID, MediaRequest{})
