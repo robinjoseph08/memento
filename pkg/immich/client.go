@@ -81,6 +81,18 @@ type Client struct {
 	httpClient    *http.Client
 }
 
+type searchMetadataRequest struct {
+	AlbumIDs   []string `json:"albumIds"`
+	Page       int      `json:"page"`
+	Size       int      `json:"size"`
+	WithExif   bool     `json:"withExif"`
+	WithPeople bool     `json:"withPeople"`
+}
+
+type downloadRequest struct {
+	AssetIDs []string `json:"assetIds"`
+}
+
 type versionResponse struct {
 	Major      *int            `json:"major"`
 	Minor      *int            `json:"minor"`
@@ -149,6 +161,10 @@ type personResponse struct {
 	ID       *string `json:"id"`
 	Name     *string `json:"name"`
 	IsHidden *bool   `json:"isHidden"`
+}
+
+type personReferenceResponse struct {
+	ID *string `json:"id"`
 }
 
 type faceResponse struct {
@@ -432,12 +448,12 @@ func (c *Client) AlbumAssetsPage(ctx context.Context, albumID uuid.UUID, page in
 	if albumID == uuid.Nil || page < 1 || page > int(^uint(0)>>1)/assetPageSize {
 		return AssetPage{}, errInvalidResponse
 	}
-	body, err := json.Marshal(map[string]any{
-		"albumIds":   []string{albumID.String()},
-		"page":       page,
-		"size":       assetPageSize,
-		"withExif":   false,
-		"withPeople": false,
+	body, err := json.Marshal(searchMetadataRequest{
+		AlbumIDs:   []string{albumID.String()},
+		Page:       page,
+		Size:       assetPageSize,
+		WithExif:   false,
+		WithPeople: false,
 	})
 	if err != nil {
 		return AssetPage{}, errInvalidResponse
@@ -1118,7 +1134,7 @@ func (c *Client) ArchiveInfo(ctx context.Context, assetIDs []uuid.UUID) ([]Archi
 			companions[companion] = id
 		}
 	}
-	body, err := json.Marshal(map[string]any{"assetIds": ids})
+	body, err := json.Marshal(downloadRequest{AssetIDs: ids})
 	if err != nil {
 		return nil, errInvalidResponse
 	}
@@ -1194,7 +1210,7 @@ func (c *Client) Archive(ctx context.Context, assetIDs []uuid.UUID) (ArchiveResp
 		seen[id] = struct{}{}
 		ids[index] = id.String()
 	}
-	body, err := json.Marshal(map[string]any{"assetIds": ids})
+	body, err := json.Marshal(downloadRequest{AssetIDs: ids})
 	if err != nil {
 		return ArchiveResponse{}, errInvalidResponse
 	}
@@ -1606,9 +1622,7 @@ func nestedPersonID(raw json.RawMessage) (*uuid.UUID, error) {
 	if err := rejectCaseVariantFields(raw, "id"); err != nil {
 		return nil, errInvalidResponse
 	}
-	var person struct {
-		ID *string `json:"id"`
-	}
+	var person personReferenceResponse
 	if err := json.Unmarshal(raw, &person); err != nil || person.ID == nil {
 		return nil, errInvalidResponse
 	}
