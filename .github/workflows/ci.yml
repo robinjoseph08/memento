@@ -26,6 +26,8 @@ jobs:
             task: lint
           - name: Frontend lint
             task: lint:js
+          - name: Contract checks
+            task: contracts:check
           - name: Unit tests
             task: test
           - name: Frontend build

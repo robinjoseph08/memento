@@ -112,6 +112,16 @@ description = "Run TypeScript type checking"
 depends = ["dependencies:install", "types:generate"]
 run = "pnpm lint:types"
 
+[tasks."contracts:check"]
+description = "Enforce deterministic Go and TypeScript JSON contract roots"
+depends = ["dependencies:install", "types:generate"]
+run = [
+  "go test ./internal/contractscheck",
+  "node --test scripts/contracts/check-typescript-contracts.test.mjs",
+  "go run ./cmd/contractscheck",
+  "node scripts/contracts/check-typescript-contracts.mjs",
+]
+
 [tasks.test]
 description = "Run Go and frontend unit tests"
 depends = ["dependencies:install", "types:generate"]
@@ -190,7 +200,7 @@ run = "./tests/test-production.sh"
 
 [tasks.check]
 description = "Run fast validation checks before pushing"
-depends = ["lint", "lint:js", "types:generate", "test", "build"]
+depends = ["contracts:check", "lint", "lint:js", "types:generate", "test", "build"]
 
 [tasks."check:quiet"]
 description = "Show wrapper summaries for the fast validation gate and task output only on failure"
