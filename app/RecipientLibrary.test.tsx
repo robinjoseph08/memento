@@ -8,7 +8,7 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 import { afterEach, expect, test, vi } from "vitest";
 
 import { ArchiveDownloads, RecipientLibrary } from "./RecipientLibrary";
@@ -63,23 +63,82 @@ function stringBody(body: BodyInit | null | undefined) {
   return body;
 }
 
-function renderLibrary(librarySession = session) {
+function CurrentRoute({ historyControls = false }) {
+  const location = useLocation();
+  const navigate = useNavigate();
+  return (
+    <>
+      <output aria-label="Current route">
+        {location.pathname}
+        {location.search}
+      </output>
+      {historyControls ? (
+        <>
+          <button onClick={() => void navigate(-1)} type="button">
+            Browser back
+          </button>
+          <button onClick={() => void navigate(1)} type="button">
+            Browser forward
+          </button>
+        </>
+      ) : null}
+    </>
+  );
+}
+
+function renderLibrary(
+  librarySession = session,
+  initialRoute = "/",
+  historyControls = false,
+) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
-  render(
-    <MemoryRouter initialEntries={[window.location.pathname]}>
+  const library = (currentSession: typeof session) => (
+    <MemoryRouter initialEntries={[initialRoute]}>
       <QueryClientProvider client={client}>
-        <RecipientLibrary session={librarySession} />
+        <RecipientLibrary session={currentSession} />
+        <CurrentRoute historyControls={historyControls} />
       </QueryClientProvider>
-    </MemoryRouter>,
+    </MemoryRouter>
   );
+  const result = render(library(librarySession));
+  return {
+    client,
+    rerenderSession(currentSession: typeof session) {
+      result.rerender(library(currentSession));
+    },
+  };
 }
 
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
   vi.restoreAllMocks();
+});
+
+test("does not request New for you on direct entry to Events", async () => {
+  const requests: string[] = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) => {
+      const path = requestPath(input);
+      requests.push(path);
+      if (path.startsWith("/api/me/events?")) {
+        return json({ events: [], next_cursor: null });
+      }
+      if (path === "/api/me/engagement") {
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    }),
+  );
+
+  renderLibrary(session, "/events");
+
+  expect(await screen.findByRole("heading", { name: "Events" })).toBeVisible();
+  expect(await screen.findByText("No Events are available.")).toBeVisible();
+  expect(requests).not.toContain("/api/me/new-for-you");
 });
 
 test("lands on Photos with durable New for you and real-ratio authorized thumbnails", async () => {
@@ -566,6 +625,297 @@ test("plans and downloads complete Event and explicit subset archives with Sessi
   );
 });
 
+test("keeps subset selection stable while archive preparation is pending and preserves toggle focus", async () => {
+  const requests: string[] = [];
+  let resolveArchive!: (response: Response) => void;
+  const pendingArchive = new Promise<Response>((resolve) => {
+    resolveArchive = resolve;
+  });
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) => {
+      const path = requestPath(input);
+      requests.push(path);
+      if (path.startsWith("/api/me/photos?")) {
+        return json({
+          media: [
+            {
+              id: "media-1",
+              media_type: "image",
+              width: 1600,
+              height: 900,
+              local_date_time: "2026-07-27T12:00:00Z",
+              available: true,
+              thumbnail_url: "/api/me/media/media-1/thumbnail",
+              preview_url: "/api/me/media/media-1/preview",
+              video_url: "",
+              original_url: "/api/me/media/media-1/original",
+            },
+            {
+              id: "media-2",
+              media_type: "image",
+              width: 1600,
+              height: 900,
+              local_date_time: "2026-07-27T13:00:00Z",
+              available: true,
+              thumbnail_url: "/api/me/media/media-2/thumbnail",
+              preview_url: "/api/me/media/media-2/preview",
+              video_url: "",
+              original_url: "/api/me/media/media-2/original",
+            },
+          ],
+          next_cursor: null,
+        });
+      }
+      if (path === "/api/me/new-for-you") return json({ events: [] });
+      if (path === "/api/me/archives") return pendingArchive;
+      throw new Error(`Unexpected request: ${path}`);
+    }),
+  );
+
+  renderLibrary();
+  const selectionToggle = await screen.findByRole("button", {
+    name: "Select photos",
+  });
+  fireEvent.click(selectionToggle);
+  expect(selectionToggle).toHaveTextContent("Cancel selection");
+  const firstPhoto = screen.getByRole("checkbox", { name: /Select Photo 1/ });
+  const secondPhoto = screen.getByRole("checkbox", { name: /Select Photo 2/ });
+  fireEvent.click(firstPhoto);
+  const prepare = screen.getByRole("button", {
+    name: "Prepare archive for 1 selected",
+  });
+  fireEvent.click(prepare);
+  fireEvent.click(prepare);
+
+  await waitFor(() =>
+    expect(requests.filter((path) => path === "/api/me/archives")).toHaveLength(
+      1,
+    ),
+  );
+  expect(selectionToggle).toBeDisabled();
+  expect(firstPhoto).toBeDisabled();
+  expect(secondPhoto).toBeDisabled();
+  expect(
+    screen.getByRole("button", { name: "Preparing archive…" }),
+  ).toBeDisabled();
+  selectionToggle.click();
+  secondPhoto.click();
+  expect(selectionToggle).toHaveTextContent("Cancel selection");
+  expect(firstPhoto).toBeChecked();
+  expect(secondPhoto).not.toBeChecked();
+
+  act(() => {
+    resolveArchive(
+      new Response(
+        JSON.stringify({
+          name: "Memento-selection",
+          item_count: 1,
+          total_size: 12,
+          expires_at: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+          parts: [
+            {
+              part_number: 1,
+              size: 12,
+              filename: "selection.zip",
+              download_url: "/api/me/archives/parts/1?token=one",
+            },
+          ],
+        }),
+        { headers: { "Content-Type": "application/json" } },
+      ),
+    );
+  });
+  expect(
+    await screen.findByRole("region", { name: "Archive downloads" }),
+  ).toBeVisible();
+
+  fireEvent.click(secondPhoto);
+  await waitFor(() =>
+    expect(
+      screen.queryByRole("region", { name: "Archive downloads" }),
+    ).not.toBeInTheDocument(),
+  );
+  selectionToggle.focus();
+  expect(selectionToggle).toHaveFocus();
+  fireEvent.click(selectionToggle);
+
+  expect(selectionToggle).toBe(
+    screen.getByRole("button", { name: "Select photos" }),
+  );
+  expect(selectionToggle).toHaveFocus();
+  expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+  expect(requests.filter((path) => path === "/api/me/archives")).toHaveLength(
+    1,
+  );
+});
+
+test("clicking Photos while on Photos clears selection and its prepared archive", async () => {
+  const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) => {
+      const path = requestPath(input);
+      if (path.startsWith("/api/me/photos?")) {
+        return json({
+          media: [
+            {
+              id: "media-1",
+              media_type: "image",
+              width: 1600,
+              height: 900,
+              local_date_time: "2026-07-27T12:00:00Z",
+              available: true,
+              thumbnail_url: "/api/me/media/media-1/thumbnail",
+              preview_url: "/api/me/media/media-1/preview",
+              video_url: "",
+              original_url: "/api/me/media/media-1/original",
+            },
+          ],
+          next_cursor: null,
+        });
+      }
+      if (path === "/api/me/new-for-you") return json({ events: [] });
+      if (path === "/api/me/archives") {
+        return json({
+          name: "Memento-selection",
+          item_count: 1,
+          total_size: 12,
+          expires_at: expiresAt,
+          parts: [
+            {
+              part_number: 1,
+              size: 12,
+              filename: "selection.zip",
+              download_url: "/api/me/archives/parts/1?token=one",
+            },
+          ],
+        });
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    }),
+  );
+
+  renderLibrary();
+  fireEvent.click(await screen.findByRole("button", { name: "Select photos" }));
+  fireEvent.click(screen.getByRole("checkbox", { name: /Select Photo 1/ }));
+  fireEvent.click(
+    screen.getByRole("button", { name: "Prepare archive for 1 selected" }),
+  );
+  expect(
+    await screen.findByRole("region", { name: "Archive downloads" }),
+  ).toBeVisible();
+
+  fireEvent.click(screen.getAllByRole("button", { name: "Photos" })[0]);
+
+  expect(
+    await screen.findByRole("button", { name: "Select photos" }),
+  ).toBeVisible();
+  expect(
+    screen.queryByRole("region", { name: "Archive downloads" }),
+  ).not.toBeInTheDocument();
+  expect(
+    screen.queryByRole("checkbox", { name: /Photo 1/ }),
+  ).not.toBeInTheDocument();
+});
+
+test("discards a pending subset archive when Photos navigation resets selection", async () => {
+  const archiveRequests: RequestInit[] = [];
+  let resolveArchive!: (response: Response) => void;
+  const pendingArchive = new Promise<Response>((resolve) => {
+    resolveArchive = resolve;
+  });
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = requestPath(input);
+      if (path.startsWith("/api/me/photos?")) {
+        return json({
+          media: [
+            {
+              id: "media-1",
+              media_type: "image",
+              width: 1600,
+              height: 900,
+              local_date_time: "2026-07-27T12:00:00Z",
+              available: true,
+              thumbnail_url: "/api/me/media/media-1/thumbnail",
+              preview_url: "/api/me/media/media-1/preview",
+              video_url: "",
+              original_url: "/api/me/media/media-1/original",
+            },
+          ],
+          next_cursor: null,
+        });
+      }
+      if (path === "/api/me/new-for-you") return json({ events: [] });
+      if (path === "/api/me/archives") {
+        archiveRequests.push(init ?? {});
+        return pendingArchive;
+      }
+      if (path === "/api/me/engagement") {
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    }),
+  );
+
+  renderLibrary();
+  fireEvent.click(await screen.findByRole("button", { name: "Select photos" }));
+  fireEvent.click(screen.getByRole("checkbox", { name: /Select Photo 1/ }));
+  fireEvent.click(
+    screen.getByRole("button", { name: "Prepare archive for 1 selected" }),
+  );
+  await waitFor(() => expect(archiveRequests).toHaveLength(1));
+
+  fireEvent.click(screen.getAllByRole("button", { name: "Photos" })[0]);
+  expect(
+    await screen.findByRole("button", { name: "Select photos" }),
+  ).toBeVisible();
+
+  act(() => {
+    resolveArchive(
+      new Response(
+        JSON.stringify({
+          name: "Obsolete selection",
+          item_count: 1,
+          total_size: 12,
+          expires_at: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+          parts: [
+            {
+              part_number: 1,
+              size: 12,
+              filename: "obsolete-selection.zip",
+              download_url: "/api/me/archives/parts/1?token=obsolete",
+            },
+          ],
+        }),
+        { headers: { "Content-Type": "application/json" } },
+      ),
+    );
+  });
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: "Select photos" })).toBeEnabled(),
+  );
+
+  fireEvent.click(screen.getByRole("button", { name: "Select photos" }));
+  fireEvent.click(screen.getByRole("checkbox", { name: /Select Photo 1/ }));
+
+  expect(
+    screen.getByRole("button", { name: "Prepare archive for 1 selected" }),
+  ).toBeEnabled();
+  expect(
+    screen.queryByRole("region", { name: "Archive downloads" }),
+  ).not.toBeInTheDocument();
+  expect(screen.queryByText("Obsolete selection")).not.toBeInTheDocument();
+  expect(archiveRequests).toHaveLength(1);
+  expect(archiveRequest(archiveRequests[0])).toEqual({
+    scope: "subset",
+    event_id: null,
+    media_ids: ["media-1"],
+  });
+});
+
 test("expires archive controls at the server-provided deadline", () => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2026-07-27T12:14:00Z"));
@@ -678,6 +1028,207 @@ test("navigates Events and Favorites without exposing an unavailable aggregate",
   expect(await screen.findByText("No Favorites yet.")).toBeVisible();
 });
 
+test("resets private Search state when the Session identity changes", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) => {
+      const path = requestPath(input);
+      if (path === "/api/search") {
+        return json({
+          events: [],
+          photos: [],
+          people: [
+            {
+              person_id: "person-private",
+              person_name: "Private Person",
+              event_id: "event-private",
+              event_title: "Private Event",
+            },
+          ],
+          total_events: 0,
+          total_photos: 0,
+          has_more: false,
+        });
+      }
+      if (path === "/api/me/engagement") {
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    }),
+  );
+
+  const view = renderLibrary(session, "/search");
+  const searchbox = screen.getByRole("searchbox", {
+    name: "Search published Events, Place labels, and People",
+  });
+  fireEvent.change(searchbox, { target: { value: "private search" } });
+  fireEvent.click(screen.getByRole("button", { name: "Run search" }));
+  expect(await screen.findByText("Private Person")).toBeVisible();
+
+  view.rerenderSession({ ...session, csrf_token: "d".repeat(64) });
+
+  expect(
+    screen.getByRole("searchbox", {
+      name: "Search published Events, Place labels, and People",
+    }),
+  ).toHaveValue("");
+  expect(screen.queryByText("Private Person")).not.toBeInTheDocument();
+  expect(screen.queryByText("Private Event")).not.toBeInTheDocument();
+});
+
+test("retries an unchanged failed Search when Search is pressed again", async () => {
+  let searchRequests = 0;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) => {
+      const path = requestPath(input);
+      if (path === "/api/search") {
+        searchRequests += 1;
+        if (searchRequests === 1) return apiError("Search temporarily failed.");
+        return json({
+          events: [],
+          photos: [],
+          people: [
+            {
+              person_id: "person-retry",
+              person_name: "Retry succeeded",
+              event_id: "event-retry",
+              event_title: "Family retry",
+            },
+          ],
+          total_events: 0,
+          total_photos: 0,
+          has_more: false,
+        });
+      }
+      if (path === "/api/me/engagement") {
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    }),
+  );
+
+  renderLibrary(session, "/search");
+  fireEvent.change(
+    screen.getByRole("searchbox", {
+      name: "Search published Events, Place labels, and People",
+    }),
+    { target: { value: "same criteria" } },
+  );
+  const submit = screen.getByRole("button", { name: "Run search" });
+  fireEvent.click(submit);
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "Search temporarily failed.",
+  );
+
+  fireEvent.click(submit);
+
+  expect(await screen.findByText("Retry succeeded")).toBeVisible();
+  expect(searchRequests).toBe(2);
+});
+
+test("does not repeat a submitted Search on focus or reconnect", async () => {
+  let searchRequests = 0;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) => {
+      const path = requestPath(input);
+      if (path === "/api/search") {
+        searchRequests += 1;
+        return json({
+          events: [],
+          photos: [],
+          people: [],
+          total_events: 0,
+          total_photos: 0,
+          has_more: false,
+        });
+      }
+      if (path === "/api/me/engagement") {
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    }),
+  );
+
+  renderLibrary(session, "/search");
+  fireEvent.change(
+    screen.getByRole("searchbox", {
+      name: "Search published Events, Place labels, and People",
+    }),
+    { target: { value: "private criteria" } },
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Run search" }));
+  await screen.findByText("Nothing in your shared collection matched.");
+  expect(searchRequests).toBe(1);
+
+  await act(async () => {
+    window.dispatchEvent(new Event("visibilitychange"));
+    await Promise.resolve();
+  });
+  expect(searchRequests).toBe(1);
+
+  await act(async () => {
+    window.dispatchEvent(new Event("offline"));
+    window.dispatchEvent(new Event("online"));
+    await Promise.resolve();
+  });
+  expect(searchRequests).toBe(1);
+});
+
+test("initializes a bookmarkable date range and keeps private text out of the URL", async () => {
+  const requests: Array<{ path: string; init?: RequestInit }> = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = requestPath(input);
+      requests.push({ path, init });
+      if (path === "/api/search") {
+        return json({
+          events: [],
+          photos: [],
+          people: [],
+          total_events: 0,
+          total_photos: 0,
+          has_more: false,
+        });
+      }
+      if (path === "/api/me/engagement") {
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    }),
+  );
+
+  renderLibrary(session, "/search?date=range&start=2026-06-01&end=2026-07-31");
+
+  expect(screen.getByLabelText("Date filter")).toHaveValue("range");
+  expect(screen.getByLabelText("Start date")).toHaveValue("2026-06-01");
+  expect(screen.getByLabelText("End date")).toHaveValue("2026-07-31");
+  const searchbox = screen.getByRole("searchbox", {
+    name: "Search published Events, Place labels, and People",
+  });
+  fireEvent.change(searchbox, { target: { value: "private reunion" } });
+  fireEvent.click(screen.getByRole("button", { name: "Run search" }));
+
+  await screen.findByText("Nothing in your shared collection matched.");
+  const request = requests.find(({ path }) => path === "/api/search");
+  expect(JSON.parse(stringBody(request?.init?.body))).toEqual({
+    query: "private reunion",
+    date: {
+      kind: "range",
+      start_date: "2026-06-01",
+      end_date: "2026-07-31",
+    },
+  });
+  expect(screen.getByLabelText("Current route")).toHaveTextContent(
+    "/search?date=range&start=2026-06-01&end=2026-07-31",
+  );
+  expect(screen.getByLabelText("Current route")).not.toHaveTextContent(
+    "private",
+  );
+});
+
 test("keeps private search text in a POST body and renders safe grouped results", async () => {
   const requests: Array<{ path: string; init?: RequestInit }> = [];
   vi.stubGlobal(
@@ -776,6 +1327,161 @@ test("keeps private search text in a POST body and renders safe grouped results"
   expect(
     screen.queryByText("1 matching photo. 1 matching Event."),
   ).not.toBeInTheDocument();
+});
+
+test("preserves submitted search text and successful results across route navigation", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) => {
+      const path = requestPath(input);
+      if (path.startsWith("/api/me/photos?")) {
+        return json({ media: [], next_cursor: null });
+      }
+      if (path === "/api/me/new-for-you") return json({ events: [] });
+      if (path === "/api/search") {
+        return json({
+          events: [],
+          photos: [],
+          people: [
+            {
+              person_id: "person-search",
+              person_name: "José Alvarez",
+              event_id: "event-search",
+              event_title: "Café Reunion",
+            },
+          ],
+          total_events: 0,
+          total_photos: 0,
+          has_more: false,
+        });
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    }),
+  );
+
+  renderLibrary();
+  fireEvent.click(screen.getByRole("button", { name: "Search library" }));
+  const searchbox = screen.getByRole("searchbox", {
+    name: "Search published Events, Place labels, and People",
+  });
+  fireEvent.change(searchbox, { target: { value: "José café" } });
+  fireEvent.change(screen.getByLabelText("Date filter"), {
+    target: { value: "year" },
+  });
+  fireEvent.change(screen.getByLabelText("Year"), {
+    target: { value: "2026" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Run search" }));
+  expect(await screen.findByText("José Alvarez")).toBeVisible();
+
+  fireEvent.click(screen.getAllByRole("button", { name: "Photos" })[0]);
+  await screen.findByRole("heading", { name: "Photos" });
+  fireEvent.click(screen.getByRole("button", { name: "Search library" }));
+
+  expect(
+    screen.getByRole("searchbox", {
+      name: "Search published Events, Place labels, and People",
+    }),
+  ).toHaveValue("José café");
+  expect(screen.getByLabelText("Date filter")).toHaveValue("year");
+  expect(screen.getByLabelText("Year")).toHaveValue(2026);
+  expect(screen.getByLabelText("Current route")).toHaveTextContent(
+    "/search?date=year&year=2026",
+  );
+  expect(screen.getByText("José Alvarez")).toBeVisible();
+  expect(screen.getByText(/attended part of Café Reunion/)).toBeVisible();
+});
+
+test("restores structured Search filters from browser history, including an empty URL", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = requestPath(input);
+      if (path.startsWith("/api/me/photos?")) {
+        return json({ media: [], next_cursor: null });
+      }
+      if (path === "/api/me/new-for-you") return json({ events: [] });
+      if (path === "/api/me/engagement") {
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      if (path === "/api/search") {
+        const request = JSON.parse(stringBody(init?.body)) as {
+          date: { year?: number } | null;
+        };
+        const year = request.date?.year;
+        return json({
+          events: [],
+          photos: [],
+          people: [
+            {
+              person_id: `person-${year}`,
+              person_name: `Result ${year}`,
+              event_id: `event-${year}`,
+              event_title: `History ${year}`,
+            },
+          ],
+          total_events: 0,
+          total_photos: 0,
+          has_more: false,
+        });
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    }),
+  );
+
+  renderLibrary(session, "/search", true);
+  fireEvent.click(screen.getAllByRole("button", { name: "Photos" })[0]);
+  await screen.findByRole("heading", { name: "Photos" });
+  fireEvent.click(screen.getByRole("button", { name: "Search library" }));
+  fireEvent.change(screen.getByLabelText("Date filter"), {
+    target: { value: "year" },
+  });
+  fireEvent.change(screen.getByLabelText("Year"), {
+    target: { value: "2024" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Run search" }));
+  expect(await screen.findByText("Result 2024")).toBeVisible();
+
+  fireEvent.click(screen.getAllByRole("button", { name: "Photos" })[0]);
+  await screen.findByRole("heading", { name: "Photos" });
+  fireEvent.click(screen.getByRole("button", { name: "Search library" }));
+  expect(await screen.findByLabelText("Year")).toHaveValue(2024);
+  fireEvent.change(screen.getByLabelText("Year"), {
+    target: { value: "2025" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Run search" }));
+  expect(await screen.findByText("Result 2025")).toBeVisible();
+
+  fireEvent.click(screen.getByRole("button", { name: "Browser back" }));
+  await screen.findByRole("heading", { name: "Photos" });
+  fireEvent.click(screen.getByRole("button", { name: "Browser back" }));
+  await waitFor(() =>
+    expect(screen.getByLabelText("Current route")).toHaveTextContent(
+      "/search?date=year&year=2024",
+    ),
+  );
+  expect(screen.getByLabelText("Date filter")).toHaveValue("year");
+  expect(screen.getByLabelText("Year")).toHaveValue(2024);
+  expect(screen.queryByText("Result 2025")).not.toBeInTheDocument();
+  expect(screen.queryByText("Result 2024")).not.toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole("button", { name: "Browser back" }));
+  await screen.findByRole("heading", { name: "Photos" });
+  fireEvent.click(screen.getByRole("button", { name: "Browser back" }));
+  await waitFor(() =>
+    expect(screen.getByLabelText("Current route")).toHaveTextContent(
+      /^\/search$/,
+    ),
+  );
+  expect(screen.getByLabelText("Date filter")).toHaveValue("");
+  expect(screen.queryByLabelText("Year")).not.toBeInTheDocument();
+  expect(screen.queryByText(/Result 202[45]/)).not.toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole("button", { name: "Browser forward" }));
+  await screen.findByRole("heading", { name: "Photos" });
+  fireEvent.click(screen.getByRole("button", { name: "Browser forward" }));
+  await waitFor(() => expect(screen.getByLabelText("Year")).toHaveValue(2024));
+  expect(screen.queryByText(/Result 202[45]/)).not.toBeInTheDocument();
 });
 
 test("presents independent photo and Event totals for a range-only Event match", async () => {
@@ -902,6 +1608,76 @@ test("shows safe bounded-term search guidance without echoing the query in the e
   expect(alert).not.toHaveTextContent(privateQuery);
   expect(alert).not.toHaveTextContent(
     "Enter search text or choose one complete year, month, date, or date range.",
+  );
+});
+
+test("preserves a failed New for you seen request after returning to Photos", async () => {
+  let failSeen: (response: Response) => void = () => undefined;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) => {
+      const path = requestPath(input);
+      if (path.startsWith("/api/me/photos?")) {
+        return json({ media: [], next_cursor: null });
+      }
+      if (path === "/api/me/new-for-you") {
+        return json({
+          events: [
+            {
+              id: "event-1",
+              publication_id: "publication-1",
+              title: "Family weekend",
+              description: "",
+              committed_at: "2026-07-27T12:00:00Z",
+              cover_media_id: "media-1",
+              cover_width: 1600,
+              cover_height: 900,
+              cover_available: true,
+              thumbnail_url: "/api/me/media/media-1/thumbnail",
+              media_count: 1,
+            },
+          ],
+        });
+      }
+      if (path === "/api/me/new-for-you/publication-1/seen") {
+        return new Promise<Response>((resolve) => {
+          failSeen = resolve;
+        });
+      }
+      if (path.startsWith("/api/me/events/event-1?")) {
+        return json({
+          id: "event-1",
+          publication_id: "publication-1",
+          title: "Family weekend",
+          description: "",
+          committed_at: "2026-07-27T12:00:00Z",
+          cover_media_id: "media-1",
+          media_count: 0,
+          media: [],
+          next_cursor: null,
+        });
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    }),
+  );
+
+  renderLibrary();
+  fireEvent.click(
+    await screen.findByRole("button", { name: /Family weekend/ }),
+  );
+  await screen.findByRole("heading", { name: "Family weekend" });
+  act(() => {
+    failSeen(
+      new Response(
+        JSON.stringify(problemResponse("Could not mark Event as seen.", 503)),
+        { status: 503, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+  });
+  fireEvent.click(screen.getAllByRole("button", { name: "Photos" })[0]);
+
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "Could not mark Event as seen.",
   );
 });
 
