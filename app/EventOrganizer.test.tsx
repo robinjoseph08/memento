@@ -11,10 +11,13 @@ import {
 import { afterEach, expect, test, vi } from "vitest";
 
 import { EventOrganizer } from "./EventOrganizer";
+import { problemResponse } from "./test/problem";
 import type {
   Event as DraftEvent,
   MediaItem,
   OrganizeEventRequest,
+  RestorePublishedMediaRequest,
+  WithdrawRequest,
 } from "./types/generated/events";
 
 const csrfToken = "c".repeat(64);
@@ -351,11 +354,7 @@ function stubOrganizerAPI(
       }
       if (path === "/api/withdrawals" && init?.method === "POST") {
         expect(init.headers).toMatchObject({ "X-Memento-CSRF": csrfToken });
-        const request = JSON.parse(stringBody(init.body)) as {
-          target_kind: string;
-          target_id: string;
-          reason: string;
-        };
+        const request = JSON.parse(stringBody(init.body)) as WithdrawRequest;
         expect(request.reason).toBe("Privacy request");
         persisted = {
           ...persisted,
@@ -396,10 +395,9 @@ function stubOrganizerAPI(
         init?.method === "POST"
       ) {
         expect(init.headers).toMatchObject({ "X-Memento-CSRF": csrfToken });
-        const request = JSON.parse(stringBody(init.body)) as {
-          version: number;
-          media_item_id: string;
-        };
+        const request = JSON.parse(
+          stringBody(init.body),
+        ) as RestorePublishedMediaRequest;
         options.restoreVersions?.push(request.version);
         expect(request.version).toBe(persisted.version);
         if (options.restoreConflictOnce && !restorationConflictReturned) {
@@ -411,12 +409,10 @@ function stubOrganizerAPI(
           };
           restorationConflictReturned = true;
           const conflict = response(
-            {
-              error: {
-                message:
-                  "This Event changed in another browser. Review the newer version before saving again.",
-              },
-            },
+            problemResponse(
+              "This Event changed in another browser. Review the newer version before saving again.",
+              409,
+            ),
             409,
           );
           return options.restoreConflictGate
@@ -2166,7 +2162,7 @@ test("recovers an ordinary failed autosave with an explicit retry", async () => 
         attempts.push(request);
         if (attempts.length === 1)
           return response(
-            { error: { message: "Autosave is temporarily unavailable." } },
+            problemResponse("Autosave is temporarily unavailable.", 503),
             503,
           );
         return response(eventFromRequest(request));
@@ -2233,7 +2229,7 @@ test("keeps stale autosaves recoverable without silently overwriting newer work"
           conflict = false;
           serverDraft = { ...draft(2), title: "Newer server work" };
           return response(
-            { error: { message: "This Event changed in another browser." } },
+            problemResponse("This Event changed in another browser.", 409),
             409,
           );
         }
@@ -2293,7 +2289,7 @@ test("keeps a conflict recoverable when loading the newer version fails", async 
       if (path === `/api/events/${eventID}`) {
         if (failRefetch)
           return response(
-            { error: { message: "Newer work is temporarily unavailable." } },
+            problemResponse("Newer work is temporarily unavailable.", 503),
             503,
           );
         return response(serverDraft);
@@ -2303,7 +2299,7 @@ test("keeps a conflict recoverable when loading the newer version fails", async 
         serverDraft.moments[0].title = "Newer Moment organization";
         failRefetch = true;
         return response(
-          { error: { message: "This Event changed in another browser." } },
+          problemResponse("This Event changed in another browser.", 409),
           409,
         );
       }
@@ -2375,7 +2371,7 @@ test("blocks edits while conflict replacement loads the newer version", async ()
         putBodies.push(request);
         if (putBodies.length === 1)
           return response(
-            { error: { message: "This Event changed in another browser." } },
+            problemResponse("This Event changed in another browser.", 409),
             409,
           );
         return response(eventFromRequest(request));
@@ -2770,7 +2766,7 @@ test("clears a failed autosave after confirmed Event navigation", async () => {
       if (path === `/api/events/${secondID}`) return response(second);
       if (path === `/api/events/${eventID}/organization`)
         return response(
-          { error: { message: "Autosave is temporarily unavailable." } },
+          problemResponse("Autosave is temporarily unavailable.", 503),
           503,
         );
       throw new Error(`Unexpected request: ${path}`);
@@ -2817,7 +2813,7 @@ test("reports and retries a selected Event load failure", async () => {
         if (failLoad) {
           failLoad = false;
           return response(
-            { error: { message: "The Event is temporarily unavailable." } },
+            problemResponse("The Event is temporarily unavailable.", 503),
             503,
           );
         }

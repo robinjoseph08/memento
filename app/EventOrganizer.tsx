@@ -11,10 +11,13 @@ import type {
   OrganizeEventRequest,
   PreviewRecipientsResponse,
   PublicationResponse,
+  PublishEventRequest,
   PublishedEventView,
+  RestorePublishedMediaRequest,
   StagedChange,
   Withdrawal,
   WithdrawalTarget,
+  WithdrawRequest,
 } from "./types/generated/events";
 import type { SessionResponse } from "./types/generated/setup";
 
@@ -839,7 +842,7 @@ export function EventOrganizer({
           body: JSON.stringify({
             version: event.version,
             media_item_id: mediaID,
-          }),
+          } satisfies RestorePublishedMediaRequest),
         },
       ),
     onMutate: () => setRestoreStatus(""),
@@ -896,7 +899,7 @@ export function EventOrganizer({
         body: JSON.stringify({
           version: event.version,
           notify_recipients: notifyRecipients,
-        }),
+        } satisfies PublishEventRequest),
       }),
     onSuccess: async (publication, attempted) => {
       setPreviewOpen(false);
@@ -954,7 +957,7 @@ export function EventOrganizer({
           target_kind: target.target_kind,
           target_id: target.target_id,
           reason: withdrawReason,
-        }),
+        } satisfies WithdrawRequest),
       }),
     onSuccess: async (_withdrawal, attempted) => {
       setWithdrawTarget(undefined);

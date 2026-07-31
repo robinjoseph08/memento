@@ -4,6 +4,7 @@ import { BrowserRouter } from "react-router-dom";
 import { afterEach, expect, test, vi } from "vitest";
 
 import { App } from "./App";
+import type { RenameRequest } from "./types/generated/sessions";
 
 function json(value: unknown, status = 200) {
   return new Response(JSON.stringify(value), {
@@ -146,7 +147,7 @@ test("signs in with an eight-digit code and keeps Public-computer warnings promi
         ({ path, init }) =>
           path === "/api/sessions/11111111-1111-4111-8111-111111111111" &&
           init?.method === "PATCH" &&
-          (JSON.parse(init.body as string) as { label: string }).label ===
+          (JSON.parse(init.body as string) as RenameRequest).label ===
             "Shared laptop",
       ),
     ).toBe(true),

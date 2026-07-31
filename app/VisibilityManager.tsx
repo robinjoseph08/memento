@@ -10,8 +10,12 @@ import type { SessionResponse } from "./types/generated/setup";
 import type {
   Circle,
   CircleListResponse,
+  CircleRequest,
+  CircleVersionRequest,
   DiscoveryResponse,
   InterestListResponse,
+  InterestMutationRequest,
+  MembershipRequest,
   Person,
 } from "./types/generated/visibility";
 
@@ -202,7 +206,7 @@ export function RecipientVisibilityManager({
         body: JSON.stringify({
           selected,
           version: interest.data?.version ?? 0,
-        }),
+        } satisfies InterestMutationRequest),
       }),
     onSuccess: (response) => {
       queryClient.setQueryData(["recipient-interest-list"], response);
@@ -385,12 +389,12 @@ export function VisibilityManager({ session }: { session: SessionResponse }) {
             body: JSON.stringify({
               name: circleName,
               version: editingCircle.version,
-            }),
+            } satisfies CircleRequest),
           })
         : apiJSON<Circle>("/api/visibility-circles", {
             method: "POST",
             headers: { "X-Memento-CSRF": session.csrf_token },
-            body: JSON.stringify({ name: circleName }),
+            body: JSON.stringify({ name: circleName } satisfies CircleRequest),
           }),
     onSuccess: async (circle) => {
       setCircleName("");
@@ -406,7 +410,9 @@ export function VisibilityManager({ session }: { session: SessionResponse }) {
       apiJSON<Circle>(`/api/visibility-circles/${circle.id}/archive`, {
         method: "POST",
         headers: { "X-Memento-CSRF": session.csrf_token },
-        body: JSON.stringify({ version: circle.version }),
+        body: JSON.stringify({
+          version: circle.version,
+        } satisfies CircleVersionRequest),
       }),
     onSuccess: async () => {
       setCircleName("");
@@ -436,7 +442,10 @@ export function VisibilityManager({ session }: { session: SessionResponse }) {
         {
           method: "PUT",
           headers: { "X-Memento-CSRF": session.csrf_token },
-          body: JSON.stringify({ included, version: circle.version }),
+          body: JSON.stringify({
+            included,
+            version: circle.version,
+          } satisfies MembershipRequest),
         },
       ),
     onSuccess: async () => {
@@ -467,7 +476,7 @@ export function VisibilityManager({ session }: { session: SessionResponse }) {
           body: JSON.stringify({
             selected,
             version: interest.data?.version ?? 0,
-          }),
+          } satisfies InterestMutationRequest),
         },
       ),
     onSuccess: (response, variables) => {

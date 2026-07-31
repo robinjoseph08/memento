@@ -16,7 +16,10 @@ import {
 import type { Person as CuratorPerson } from "./types/generated/people";
 import type {
   Circle,
+  CircleRequest,
   InterestListResponse,
+  InterestMutationRequest,
+  MembershipRequest,
 } from "./types/generated/visibility";
 
 function jsonResponse(value: unknown, status = 200) {
@@ -51,9 +54,9 @@ function curatorPerson(
   };
 }
 
-function stringBody(body: BodyInit | null | undefined) {
+function requestBody<T>(body: BodyInit | null | undefined): T {
   if (typeof body !== "string") throw new Error("Expected JSON body");
-  return JSON.parse(body) as Record<string, unknown>;
+  return JSON.parse(body) as T;
 }
 
 function renderManager() {
@@ -125,7 +128,7 @@ test("manages overlapping circle membership with a desktop matrix and mobile fil
       if (path === "/api/visibility-circles" && init?.method === "POST") {
         const created: Circle = {
           id: "66666666-6666-4666-8666-666666666666",
-          name: String(stringBody(init.body).name),
+          name: requestBody<CircleRequest>(init.body).name,
           version: 1,
           members: [],
           created_at: "2026-01-01T00:00:00Z",
@@ -135,7 +138,7 @@ test("manages overlapping circle membership with a desktop matrix and mobile fil
         return jsonResponse(created, 201);
       }
       if (path.includes("/members/") && init?.method === "PUT") {
-        const included = Boolean(stringBody(init.body).included);
+        const included = requestBody<MembershipRequest>(init.body).included;
         circles = circles.map((circle) =>
           path.includes(circle.id)
             ? {
@@ -150,7 +153,7 @@ test("manages overlapping circle membership with a desktop matrix and mobile fil
         return jsonResponse(circles.find((circle) => path.includes(circle.id)));
       }
       if (path.includes(circles[0].id) && init?.method === "PATCH") {
-        const body = stringBody(init.body);
+        const body = requestBody<CircleRequest>(init.body);
         circles = circles.map((circle, index) =>
           index === 0
             ? {
@@ -177,10 +180,12 @@ test("manages overlapping circle membership with a desktop matrix and mobile fil
   const membershipRequest = requests.find(({ path }) =>
     path.includes("/members/"),
   );
-  expect(stringBody(membershipRequest?.init?.body)).toEqual({
-    included: true,
-    version: 1,
-  });
+  expect(requestBody<MembershipRequest>(membershipRequest?.init?.body)).toEqual(
+    {
+      included: true,
+      version: 1,
+    },
+  );
   expect(membershipRequest?.init?.headers).toEqual(
     expect.objectContaining({ "X-Memento-CSRF": "csrf-token" }),
   );
@@ -207,7 +212,7 @@ test("manages overlapping circle membership with a desktop matrix and mobile fil
     await screen.findByRole("button", { name: "Edit Updated Family" }),
   ).toBeInTheDocument();
   const updateRequest = requests.find(({ init }) => init?.method === "PATCH");
-  expect(stringBody(updateRequest?.init?.body)).toEqual({
+  expect(requestBody<CircleRequest>(updateRequest?.init?.body)).toEqual({
     name: "Updated Family",
     version: 2,
   });
@@ -223,7 +228,7 @@ test("manages overlapping circle membership with a desktop matrix and mobile fil
     ({ path, init }) =>
       path === "/api/visibility-circles" && init?.method === "POST",
   );
-  expect(stringBody(createRequest?.init?.body)).toEqual({
+  expect(requestBody<CircleRequest>(createRequest?.init?.body)).toEqual({
     name: "Grandparents",
   });
 }, 10_000);
@@ -358,7 +363,7 @@ test("lets a Recipient edit only their own discoverable Interest choices", async
   expect(alexChoice).toBeChecked();
   const mutation = requests.find(({ init }) => init?.method === "PUT");
   expect(mutation?.path).toBe(`/api/me/interest-list/${alex.id}`);
-  expect(stringBody(mutation?.init?.body)).toEqual({
+  expect(requestBody<InterestMutationRequest>(mutation?.init?.body)).toEqual({
     selected: true,
     version: 0,
   });
@@ -491,7 +496,7 @@ test("edits an empty Interest list on a Recipient's behalf and shows attributed 
   ).toBeInTheDocument();
 
   const mutation = requests.find(({ init }) => init?.method === "PUT");
-  expect(stringBody(mutation?.init?.body)).toEqual({
+  expect(requestBody<InterestMutationRequest>(mutation?.init?.body)).toEqual({
     selected: true,
     version: 0,
   });

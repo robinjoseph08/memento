@@ -9,6 +9,7 @@ import {
 import { afterEach, expect, test, vi } from "vitest";
 
 import { RepairWorkspace } from "./RepairWorkspace";
+import type { ListResponse } from "./types/generated/repairs";
 
 function jsonResponse(value: unknown) {
   return new Response(JSON.stringify(value), {
@@ -160,6 +161,61 @@ test("shows private normalized Media evidence and confirms only after an explici
     expect(stringBody(confirmation?.init?.body)).toBe(
       '{"review_token":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}',
     );
+  });
+});
+
+test("rejects a Media repair without sending its review token", async () => {
+  const requests: Array<{ path: string; init?: RequestInit }> = [];
+  vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+    const path = requestPath(input);
+    requests.push({ path, init });
+    if (path.startsWith("/api/people")) {
+      return Promise.resolve(jsonResponse({ people: [] }));
+    }
+    if (init?.method === "POST") {
+      return Promise.resolve(jsonResponse({ status: "rejected" }));
+    }
+    return Promise.resolve(
+      jsonResponse({
+        source_problems: [],
+        person_candidates: [],
+        unlinked_immich_people: [],
+        media_candidates: [
+          {
+            id: "11111111-1111-4111-8111-111111111111",
+            media_item_id: "22222222-2222-4222-8222-222222222222",
+            previous_immich_asset_id: "33333333-3333-4333-8333-333333333333",
+            candidate_immich_asset_id: "44444444-4444-4444-8444-444444444444",
+            media_type: "image",
+            review_token:
+              "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            state: "pending",
+            previous: { filename: "old.jpg", path: "/private/old.jpg" },
+            candidate: {
+              filename: "new.jpg",
+              path: "/private/moved/new.jpg",
+            },
+            face_anchors: [],
+            conflicts: [],
+            created_at: "2026-01-01T00:00:00Z",
+          },
+        ],
+      } satisfies ListResponse),
+    );
+  });
+
+  renderWorkspace();
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Reject repair for new.jpg" }),
+  );
+  await waitFor(() => {
+    const rejection = requests.find(
+      (request) => request.init?.method === "POST",
+    );
+    expect(rejection?.path).toBe(
+      "/api/repairs/media/11111111-1111-4111-8111-111111111111/reject",
+    );
+    expect(rejection?.init?.body).toBeUndefined();
   });
 });
 

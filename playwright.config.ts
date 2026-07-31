@@ -7,7 +7,6 @@ export default defineConfig({
   retries: process.env.CI ? 2 : 0,
   reporter: "line",
   use: {
-    baseURL: "http://127.0.0.1:4173",
     serviceWorkers: "block",
     trace: "retain-on-failure",
   },
@@ -38,9 +37,11 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command:
-      "pnpm build && pnpm exec vite preview --host 127.0.0.1 --port 4173 --strictPort",
-    url: "http://127.0.0.1:4173",
+    command: "pnpm build && node scripts/start-browser-preview.mjs",
+    wait: {
+      stdout:
+        /MEMENTO_BROWSER_URL=(?<PLAYWRIGHT_TEST_BASE_URL>http:\/\/127\.0\.0\.1:\d+)/,
+    },
     reuseExistingServer: false,
   },
 });

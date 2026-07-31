@@ -12,6 +12,13 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, expect, test, vi } from "vitest";
 
 import { ArchiveDownloads, RecipientLibrary } from "./RecipientLibrary";
+import { problemResponse } from "./test/problem";
+import type { PlanRequest as ArchivePlanRequest } from "./types/generated/archives";
+import type {
+  BodyRequest as CommentBodyRequest,
+  MuteRequest,
+} from "./types/generated/comments";
+import type { BrowserEventRequest } from "./types/generated/engagement";
 
 const session = {
   display_name: "Alex",
@@ -31,7 +38,7 @@ function json(value: unknown) {
 
 function apiError(message: string, status = 503) {
   return Promise.resolve(
-    new Response(JSON.stringify({ error: { message } }), {
+    new Response(JSON.stringify(problemResponse(message, status)), {
       status,
       headers: { "Content-Type": "application/json" },
     }),
@@ -48,11 +55,7 @@ function archiveRequest(init?: RequestInit) {
   if (typeof init?.body !== "string") {
     throw new Error("Expected a JSON archive request body.");
   }
-  return JSON.parse(init.body) as {
-    scope: "event" | "subset";
-    event_id: string | null;
-    media_ids: string[];
-  };
+  return JSON.parse(init.body) as ArchivePlanRequest;
 }
 
 function stringBody(body: BodyInit | null | undefined) {
@@ -844,7 +847,7 @@ test("presents independent photo and Event totals for a range-only Event match",
     if (typeof engagementBody !== "string") {
       throw new Error("Expected an Event engagement request");
     }
-    const body = JSON.parse(engagementBody) as Record<string, unknown>;
+    const body = JSON.parse(engagementBody) as BrowserEventRequest;
     expect(body).toMatchObject({
       kind: "event_opened",
       event_id: "event-range-match",
@@ -870,9 +873,9 @@ test("shows safe bounded-term search guidance without echoing the query in the e
       if (path === "/api/search") {
         return Promise.resolve(
           new Response(
-            JSON.stringify({
-              error: { message: "Use 12 or fewer unique search terms." },
-            }),
+            JSON.stringify(
+              problemResponse("Use 12 or fewer unique search terms.", 422),
+            ),
             {
               status: 422,
               headers: { "Content-Type": "application/json" },
@@ -1125,15 +1128,15 @@ test("favorites, comments, and mute controls stay in the private Media viewer", 
         return json({ media_item_id: "media-1", favorite: isFavorite });
       }
       if (path === "/api/comments/media/media-1/mute") {
-        const request = JSON.parse(stringBody(init?.body)) as {
-          muted: boolean;
-        };
+        const request = JSON.parse(stringBody(init?.body)) as MuteRequest;
         muted = request.muted;
         return Promise.resolve(new Response(null, { status: 204 }));
       }
       if (path === "/api/comments/comment-1") {
         if (init?.method === "PATCH") {
-          const request = JSON.parse(stringBody(init.body)) as { body: string };
+          const request = JSON.parse(
+            stringBody(init.body),
+          ) as CommentBodyRequest;
           comments[0] = {
             ...comments[0],
             body: request.body,
@@ -1162,7 +1165,9 @@ test("favorites, comments, and mute controls stay in the private Media viewer", 
           commentAttempts += 1;
           if (commentAttempts === 1)
             return Promise.reject(new Error("Connection lost"));
-          const request = JSON.parse(stringBody(init.body)) as { body: string };
+          const request = JSON.parse(
+            stringBody(init.body),
+          ) as CommentBodyRequest;
           comments = [
             ...comments,
             {

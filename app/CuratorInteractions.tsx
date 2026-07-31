@@ -11,6 +11,7 @@ import type {
   Comment,
   CuratorListResponse as CommentPage,
   HistoryResponse,
+  ModerateRequest,
 } from "./types/generated/comments";
 import type { CuratorListResponse as FavoritePage } from "./types/generated/favorites";
 import type { CuratorMedia } from "./types/generated/library";
@@ -208,7 +209,7 @@ export function CuratorInteractions({ session }: { session: SessionResponse }) {
           "If-Match": String(comment.version),
           "X-Memento-CSRF": session.csrf_token,
         },
-        body: JSON.stringify({ reason }),
+        body: JSON.stringify({ reason } satisfies ModerateRequest),
       }),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["curator-comments"] });

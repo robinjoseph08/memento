@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
+import { problemResponse } from "../../app/test/problem";
 import type {
   Event as DraftEvent,
   MediaItem,
@@ -160,7 +161,7 @@ async function mockCuratorAPI(
     if (path === "/api/setup") {
       await route.fulfill({
         status: 404,
-        json: { error: { message: "Setup not found." } },
+        json: problemResponse("Setup not found.", 404),
       });
       return;
     }
@@ -334,7 +335,7 @@ async function mockCuratorAPI(
       if (outcome === "failed") {
         await route.fulfill({
           status: 503,
-          json: { error: { message: "Autosave is temporarily unavailable." } },
+          json: problemResponse("Autosave is temporarily unavailable.", 503),
         });
         return;
       }
@@ -346,9 +347,7 @@ async function mockCuratorAPI(
         };
         await route.fulfill({
           status: 409,
-          json: {
-            error: { message: "This Event changed in another browser." },
-          },
+          json: problemResponse("This Event changed in another browser.", 409),
         });
         return;
       }
@@ -362,7 +361,7 @@ async function mockCuratorAPI(
     }
     await route.fulfill({
       status: 500,
-      json: { error: { message: `Unexpected request: ${path}` } },
+      json: problemResponse(`Unexpected request: ${path}`, 500),
     });
   });
 

@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { InvitationSuggestions } from "./InvitationSuggestions";
 import type { SessionResponse } from "./types/generated/setup";
+import type { SubmitRequest } from "./types/generated/suggestions";
 
 const session: SessionResponse = {
   display_name: "Alex",
@@ -67,7 +68,7 @@ describe("InvitationSuggestions", () => {
           csrf: new Headers(init?.headers).get("X-Memento-CSRF") ?? undefined,
         });
         if (path === "/api/invitation-suggestions" && init?.method === "POST") {
-          const body = requestBody(init) as Record<string, unknown>;
+          const body = requestBody(init) as SubmitRequest;
           suggestions = [
             {
               id: "11111111-1111-4111-8111-111111111111",

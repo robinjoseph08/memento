@@ -7,6 +7,7 @@ import type {
   ListResponse as FamilyListResponse,
   MutationRequest,
   Relationship,
+  VersionRequest,
 } from "./types/generated/family";
 import type {
   ListResponse as PeopleListResponse,
@@ -182,7 +183,9 @@ export function FamilyManager({ session }: { session: SessionResponse }) {
       apiJSON<Relationship>(`/api/relationships/${relationship.id}/archive`, {
         method: "POST",
         headers: { "X-Memento-CSRF": session.csrf_token },
-        body: JSON.stringify({ version: relationship.version }),
+        body: JSON.stringify({
+          version: relationship.version,
+        } satisfies VersionRequest),
       }),
     onSuccess: refreshFamily,
   });
