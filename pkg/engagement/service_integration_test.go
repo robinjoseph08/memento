@@ -252,6 +252,8 @@ func seedEngagementActor(t *testing.T, db *bun.DB, curator bool, now time.Time) 
 	t.Helper()
 	personID, accessID, sessionID := uuid.New(), uuid.New(), uuid.New()
 	credentialHash := sha256.Sum256(sessionID[:])
+	// Engagement timestamps use a fixed clock, while Session authorization uses PostgreSQL's clock.
+	sessionExpiresAt := time.Date(9999, time.December, 31, 0, 0, 0, 0, time.UTC)
 	ctx := context.Background()
 	_, err := db.NewRaw(`
 		UPDATE system_settings SET setup_complete = true;
@@ -266,7 +268,8 @@ func seedEngagementActor(t *testing.T, db *bun.DB, curator bool, now time.Time) 
 		SELECT ?, ?, ?, ?, security_epoch, 'trusted', ?, ?, ?
 		FROM system_settings WHERE id = 1;
 	`, personID, map[bool]string{true: "Curator", false: "Recipient"}[curator], uuid.NewString(),
-		personID, accessID, personID, now, sessionID, credentialHash[:], personID, accessID, now, now, now.Add(24*time.Hour)).Exec(ctx)
+		personID, accessID, personID, now, sessionID, credentialHash[:], personID, accessID, now, now,
+		sessionExpiresAt).Exec(ctx)
 	require.NoError(t, err)
 	if curator {
 		_, err = db.NewRaw(`INSERT INTO person_roles (person_id, role) VALUES (?, 'curator')`, personID).Exec(ctx)
