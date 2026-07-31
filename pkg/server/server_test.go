@@ -17,6 +17,7 @@ import (
 	"github.com/labstack/echo/v4/middleware"
 	"github.com/robinjoseph08/memento/pkg/audiences"
 	"github.com/robinjoseph08/memento/pkg/binder"
+	"github.com/robinjoseph08/memento/pkg/errcodes"
 	"github.com/robinjoseph08/memento/pkg/events"
 	"github.com/robinjoseph08/memento/pkg/family"
 	"github.com/robinjoseph08/memento/pkg/health"
@@ -30,18 +31,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-type errorPayload struct {
-	Code       string `json:"code"`
-	Message    string `json:"message"`
-	StatusCode int    `json:"status_code"`
-	RequestID  string `json:"request_id"`
-}
-
-type errorEnvelope struct {
-	Error errorPayload `json:"error"`
-}
-
-func decodeError(t *testing.T, response *httptest.ResponseRecorder) errorEnvelope {
+func decodeError(t *testing.T, response *httptest.ResponseRecorder) errcodes.ProblemResponse {
 	t.Helper()
 	var fields map[string]json.RawMessage
 	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &fields))
@@ -51,7 +41,7 @@ func decodeError(t *testing.T, response *httptest.ResponseRecorder) errorEnvelop
 	require.NoError(t, json.Unmarshal(fields["error"], &errorFields))
 	require.Len(t, errorFields, 4)
 	require.ElementsMatch(t, []string{"code", "message", "status_code", "request_id"}, keys(errorFields))
-	var envelope errorEnvelope
+	var envelope errcodes.ProblemResponse
 	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &envelope))
 	return envelope
 }

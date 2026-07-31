@@ -505,13 +505,7 @@ func TestFavoritesAndNewForYouRemainRecipientScopedAndDurable(t *testing.T) {
 	assert.ErrorIs(t, err, ErrNotFound, "an already-seen Publication cannot be enumerated through mutation")
 }
 
-type libraryErrorSignature struct {
-	Code       string `json:"code"`
-	Message    string `json:"message"`
-	StatusCode int    `json:"status_code"`
-}
-
-func requestLibraryError(t *testing.T, fixture libraryFixture, method, path string) (int, string, libraryErrorSignature) {
+func requestLibraryError(t *testing.T, fixture libraryFixture, method, path string) (int, string, errcodes.Problem) {
 	t.Helper()
 	e := echo.New()
 	e.HTTPErrorHandler = errcodes.NewHandler().Handle
@@ -521,9 +515,7 @@ func requestLibraryError(t *testing.T, fixture libraryFixture, method, path stri
 	request.Header.Set(setup.CSRFHeader, "valid")
 	response := httptest.NewRecorder()
 	e.ServeHTTP(response, request)
-	var envelope struct {
-		Error libraryErrorSignature `json:"error"`
-	}
+	var envelope errcodes.ProblemResponse
 	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &envelope))
 	return response.Code, response.Header().Get(echo.HeaderCacheControl), envelope.Error
 }

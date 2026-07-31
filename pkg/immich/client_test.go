@@ -554,21 +554,17 @@ func TestAlbumAssetsPageUsesPinnedPaginationAndReturnsOnlyNormalizedRepairEviden
 	server := contractServer(t, func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, http.MethodPost, r.Method)
 		assert.Equal(t, "/api/search/metadata", r.URL.Path)
-		var request struct {
-			AlbumIDs   []string `json:"albumIds"`
-			Page       int      `json:"page"`
-			Size       int      `json:"size"`
-			WithExif   bool     `json:"withExif"`
-			WithPeople bool     `json:"withPeople"`
-		}
-		if !assert.NoError(t, json.NewDecoder(r.Body).Decode(&request)) {
+		contents, err := io.ReadAll(r.Body)
+		if !assert.NoError(t, err) {
 			return
 		}
-		assert.Equal(t, []string{albumID.String()}, request.AlbumIDs)
-		assert.Equal(t, 2, request.Page)
-		assert.Equal(t, 1000, request.Size)
-		assert.False(t, request.WithExif)
-		assert.False(t, request.WithPeople)
+		assert.JSONEq(t, `{
+			"albumIds": ["`+albumID.String()+`"],
+			"page": 2,
+			"size": 1000,
+			"withExif": false,
+			"withPeople": false
+		}`, string(contents))
 		_, _ = w.Write([]byte(`{"assets":{"count":1,"items":[{` +
 			`"id":"` + assetID.String() + `","type":"IMAGE","width":1200,"height":800,"localDateTime":"2026-01-01T10:00:00.000Z",` +
 			`"originalPath":"/secret/source.jpg","libraryId":"secret-library","people":[{"name":"Private face"}]` +

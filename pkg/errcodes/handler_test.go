@@ -17,14 +17,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-type errorResponse struct {
-	Code        string            `json:"code"`
-	Message     string            `json:"message"`
-	StatusCode  int               `json:"status_code"`
-	FieldErrors map[string]string `json:"field_errors"`
-	RequestID   string            `json:"request_id"`
-}
-
 func serveError(err error) *httptest.ResponseRecorder {
 	e := echo.New()
 	e.Use(goliblogger.Middleware())
@@ -35,7 +27,7 @@ func serveError(err error) *httptest.ResponseRecorder {
 	return response
 }
 
-func decodeError(t *testing.T, response *httptest.ResponseRecorder) errorResponse {
+func decodeError(t *testing.T, response *httptest.ResponseRecorder) Problem {
 	t.Helper()
 	var envelope map[string]json.RawMessage
 	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &envelope))
@@ -52,9 +44,49 @@ func decodeError(t *testing.T, response *httptest.ResponseRecorder) errorRespons
 	} else {
 		require.Len(t, fields, 4)
 	}
-	var payload errorResponse
+	var payload Problem
 	require.NoError(t, json.Unmarshal(envelope["error"], &payload))
 	return payload
+}
+
+func TestProblemResponsePreservesWireShape(t *testing.T) {
+	response := ProblemResponse{Error: Problem{
+		Code:        "validation_error",
+		Message:     "Check the highlighted fields.",
+		StatusCode:  http.StatusUnprocessableEntity,
+		FieldErrors: map[string]string{"email": "Enter a valid email address."},
+		RequestID:   "request-id",
+	}}
+
+	contents, err := json.Marshal(response)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{
+		"error": {
+			"code": "validation_error",
+			"message": "Check the highlighted fields.",
+			"status_code": 422,
+			"field_errors": {"email": "Enter a valid email address."},
+			"request_id": "request-id"
+		}
+	}`, string(contents))
+}
+
+func TestProblemResponseOmitsEmptyOptionalFields(t *testing.T) {
+	response := ProblemResponse{Error: Problem{
+		Code:       "not_found",
+		Message:    "Photo not found.",
+		StatusCode: http.StatusNotFound,
+	}}
+
+	contents, err := json.Marshal(response)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{
+		"error": {
+			"code": "not_found",
+			"message": "Photo not found.",
+			"status_code": 404
+		}
+	}`, string(contents))
 }
 
 func TestHandlerUsesWrappedErrorCode(t *testing.T) {

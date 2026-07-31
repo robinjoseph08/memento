@@ -34,7 +34,7 @@ func (h *Handler) Handle(err error, c echo.Context) {
 	}
 }
 
-func (h *Handler) generatePayload(c echo.Context, err error) (int, map[string]any) {
+func (h *Handler) generatePayload(c echo.Context, err error) (int, ProblemResponse) {
 	httpCode := http.StatusInternalServerError
 	code := "internal_server_error"
 	message := http.StatusText(http.StatusInternalServerError)
@@ -59,18 +59,14 @@ func (h *Handler) generatePayload(c echo.Context, err error) (int, map[string]an
 		fieldErrors = codedError.FieldErrors
 	}
 
-	errorPayload := map[string]any{
-		"code":        code,
-		"message":     message,
-		"status_code": httpCode,
+	problem := Problem{
+		Code:        code,
+		Message:     message,
+		StatusCode:  httpCode,
+		FieldErrors: fieldErrors,
+		RequestID:   goliblogger.IDFromEchoContext(c),
 	}
-	if len(fieldErrors) != 0 {
-		errorPayload["field_errors"] = fieldErrors
-	}
-	if requestID := goliblogger.IDFromEchoContext(c); requestID != "" {
-		errorPayload["request_id"] = requestID
-	}
-	return httpCode, map[string]any{"error": errorPayload}
+	return httpCode, ProblemResponse{Error: problem}
 }
 
 func validHTTPErrorStatus(status int) bool {

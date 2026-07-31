@@ -1,3 +1,5 @@
+import type { ProblemResponse } from "./types/generated/errcodes";
+
 export class APIError extends Error {
   constructor(
     message: string,
@@ -22,9 +24,7 @@ export async function apiResponse(path: string, init?: RequestInit) {
   }
   let message = "Memento is unavailable.";
   try {
-    const payload = (await response.json()) as {
-      error?: { message?: string };
-    };
+    const payload = (await response.json()) as Partial<ProblemResponse>;
     if (payload.error?.message) {
       message = payload.error.message;
     }
