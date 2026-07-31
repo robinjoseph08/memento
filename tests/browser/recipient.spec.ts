@@ -235,6 +235,9 @@ test("@desktop @mobile Recipient lands on Photos and sees only filtered Event to
     page.getByRole("button", { name: "Downloaded archive" }),
   ).toBeDisabled();
   await page.getByRole("button", { name: "Cancel selection" }).click();
+  await expect(
+    page.getByRole("button", { name: "Select photos" }),
+  ).toBeFocused();
 
   await page.getByRole("button", { name: "Load more photos" }).click();
   await expect(page.getByAltText("Video 2 from July 2026")).toBeVisible();
