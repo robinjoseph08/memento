@@ -97,8 +97,10 @@ func TestProductionRoutePolicyCensus(t *testing.T) {
 
 	sort.Strings(census)
 	digest := sha256.Sum256([]byte(strings.Join(census, "\n") + "\n"))
-	assert.Len(t, seen, 151, "the census must contain every production API route exactly once")
-	assert.Equalf(t, "4d58dc632b40a623737d007d55852ee28511d81b6e4136da948533f3ce77dbe5", hex.EncodeToString(digest[:]),
+	assert.Len(t, seen, 157, "the census must contain every production API route exactly once")
+	assert.Equalf(t, "eeeac8fa0cdabb6d5a509ee8b00d3352938127d36bd93a7b747689ecd85b4641", hex.EncodeToString(digest[:]),
 		"the production route-policy census changed:\n%s", strings.Join(census, "\n"))
 	assert.Equal(t, "policy:recipient_content", seen["GET /api/me/events/:id"])
+	assert.Equal(t, "policy:recipient_content", seen["GET /api/me/loose-items/:id"])
+	assert.Equal(t, "policy:curator_csrf", seen["POST /api/loose-items/:id/publications"])
 }

@@ -1,7 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { apiJSON } from "../../api";
-import { audienceKeys, eventKeys, sourceKeys } from "./curationKeys";
+import {
+  audienceKeys,
+  eventKeys,
+  looseItemKeys,
+  sourceKeys,
+} from "./curationKeys";
 import { isIdentityGenerationActive } from "./sessions";
 import type {
   CreateEventRequest,
@@ -133,8 +138,24 @@ export function useCreateLooseItem(identityGeneration: string) {
         headers: { "X-Memento-CSRF": identityGeneration },
         body: JSON.stringify(request),
       }),
+    onSuccess: (looseItem) => {
+      if (!isIdentityGenerationActive(queryClient, identityGeneration)) return;
+      queryClient.setQueryData(
+        looseItemKeys.detail(identityGeneration, looseItem.id),
+        looseItem,
+      );
+      void queryClient.invalidateQueries({
+        queryKey: looseItemKeys.all(identityGeneration),
+      });
+      void queryClient.invalidateQueries({
+        queryKey: sourceKeys.mediaRoot(identityGeneration),
+      });
+    },
     onError: () => {
       if (!isIdentityGenerationActive(queryClient, identityGeneration)) return;
+      void queryClient.invalidateQueries({
+        queryKey: looseItemKeys.all(identityGeneration),
+      });
       void queryClient.invalidateQueries({
         queryKey: sourceKeys.mediaRoot(identityGeneration),
       });

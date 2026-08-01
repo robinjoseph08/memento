@@ -167,17 +167,23 @@ type Event struct {
 
 // LooseItem is a private independently publishable Media draft.
 type LooseItem struct {
-	ID               string    `json:"id"`
-	Lifecycle        string    `json:"lifecycle"`
-	Title            string    `json:"title"`
-	Description      string    `json:"description"`
-	GroupingTimezone string    `json:"grouping_timezone"`
-	ProposedDay      *string   `json:"proposed_day" tstype:"string | null,required"`
-	Version          int64     `json:"version"`
-	AudienceComplete bool      `json:"audience_complete"`
-	MediaItem        MediaItem `json:"media_item"`
-	CreatedAt        time.Time `json:"created_at"`
-	UpdatedAt        time.Time `json:"updated_at"`
+	ID                           string             `json:"id"`
+	Lifecycle                    string             `json:"lifecycle"`
+	Title                        string             `json:"title"`
+	Description                  string             `json:"description"`
+	GroupingTimezone             string             `json:"grouping_timezone"`
+	ProposedDay                  *string            `json:"proposed_day" tstype:"string | null,required"`
+	PlaceLabels                  []string           `json:"place_labels"`
+	Version                      int64              `json:"version"`
+	AudienceComplete             bool               `json:"audience_complete"`
+	PublishedEditableVersion     *int64             `json:"published_editable_version" tstype:"number | null,required"`
+	HasStagedUpdate              bool               `json:"has_staged_update"`
+	PendingWithdrawalPublication bool               `json:"pending_withdrawal_publication"`
+	WithdrawalTargets            []WithdrawalTarget `json:"withdrawal_targets"`
+	Withdrawals                  []Withdrawal       `json:"withdrawals"`
+	MediaItem                    MediaItem          `json:"media_item"`
+	CreatedAt                    time.Time          `json:"created_at"`
+	UpdatedAt                    time.Time          `json:"updated_at"`
 }
 
 // SourceMediaResponse lists stable Media identities available for selection.
@@ -198,6 +204,19 @@ type Service struct {
 
 func New(db *bun.DB) *Service {
 	return &Service{db: db, now: time.Now}
+}
+
+func requireCurator(ctx context.Context, db bun.IDB, personID uuid.UUID) error {
+	var curator bool
+	if err := db.NewRaw(`SELECT EXISTS (
+		SELECT 1 FROM person_roles WHERE person_id = ? AND role = 'curator'
+	)`, personID).Scan(ctx, &curator); err != nil {
+		return err
+	}
+	if !curator {
+		return setup.ErrNotCurator
+	}
+	return nil
 }
 
 type sourceRecord struct {
@@ -1486,6 +1505,9 @@ func (s *Service) SourceMedia(ctx context.Context, sourceID uuid.UUID) (SourceMe
 
 // CreateLooseItem creates or returns the one stable Loose identity for a Media item.
 func (s *Service) CreateLooseItem(ctx context.Context, actor setup.CuratorSession, request CreateLooseItemRequest) (LooseItem, bool, error) {
+	if err := requireCurator(ctx, s.db, actor.PersonID); err != nil {
+		return LooseItem{}, false, err
+	}
 	mediaID, err := uuid.Parse(request.MediaItemID)
 	if err != nil || mediaID == uuid.Nil {
 		return LooseItem{}, false, ErrInvalid
@@ -1550,27 +1572,75 @@ func (s *Service) CreateLooseItem(ctx context.Context, actor setup.CuratorSessio
 }
 
 // GetLooseItem returns one Curator-only Loose draft.
-func (s *Service) GetLooseItem(ctx context.Context, id uuid.UUID) (LooseItem, error) {
+func (s *Service) GetLooseItem(ctx context.Context, actor setup.CuratorSession, id uuid.UUID) (LooseItem, error) {
+	if err := requireCurator(ctx, s.db, actor.PersonID); err != nil {
+		return LooseItem{}, err
+	}
 	return getLooseItem(ctx, s.db, id)
 }
 
 func getLooseItem(ctx context.Context, db bun.IDB, id uuid.UUID) (LooseItem, error) {
 	var item LooseItem
+	var placeLabelsJSON, withdrawalsJSON string
 	err := db.NewRaw(`
 		SELECT loose.id, loose.lifecycle, loose.title, loose.description, loose.grouping_timezone,
-			loose.proposed_day::text, loose.version, loose.audience_complete, loose.created_at, loose.updated_at,
-			media.id, media.media_type, media.width, media.height, media.local_date_time
+			loose.proposed_day::text, to_json(loose.place_labels)::text, loose.version, loose.audience_complete,
+			publication.editable_version, loose.current_staged_update_id IS NOT NULL,
+			EXISTS (SELECT 1 FROM content_withdrawals AS withdrawal
+				WHERE withdrawal.restored_at IS NULL AND (
+				 (withdrawal.target_kind = 'loose_item' AND withdrawal.target_id = loose.id)
+				 OR (withdrawal.target_kind = 'media' AND withdrawal.target_id = loose.media_item_id))),
+			COALESCE((SELECT jsonb_agg(jsonb_build_object(
+				'id', withdrawal.id, 'target_kind', withdrawal.target_kind,
+				'target_id', withdrawal.target_id, 'reason', withdrawal.reason,
+				'withdrawn_by_name', person.display_name, 'withdrawn_at', withdrawal.withdrawn_at,
+				'restored_by_publication_id', withdrawal.restored_by_publication_id,
+				'restored_at', withdrawal.restored_at, 'affected_recipient_count', 0,
+				'affected_media_count', 0, 'affected_event_count', 0
+			) ORDER BY withdrawal.withdrawn_at DESC, withdrawal.id)
+			FROM content_withdrawals AS withdrawal
+			JOIN people AS person ON person.id = withdrawal.withdrawn_by_person_id
+			WHERE (withdrawal.target_kind = 'loose_item' AND withdrawal.target_id = loose.id)
+			   OR (withdrawal.target_kind = 'media' AND withdrawal.target_id = loose.media_item_id
+			       AND EXISTS (SELECT 1 FROM publications AS history
+			           WHERE history.loose_item_id = loose.id
+			             AND history.content_revision <= withdrawal.content_revision))), '[]'::jsonb)::text,
+			loose.created_at, loose.updated_at, media.id, media.media_type, media.width, media.height, media.local_date_time
 		FROM loose_items AS loose
 		JOIN media_items AS media ON media.id = loose.media_item_id
+		LEFT JOIN publications AS publication ON publication.id = loose.current_publication_id
 		WHERE loose.id = ?
 	`, id).Scan(ctx, &item.ID, &item.Lifecycle, &item.Title, &item.Description, &item.GroupingTimezone,
-		&item.ProposedDay, &item.Version, &item.AudienceComplete, &item.CreatedAt, &item.UpdatedAt,
+		&item.ProposedDay, &placeLabelsJSON, &item.Version, &item.AudienceComplete,
+		&item.PublishedEditableVersion, &item.HasStagedUpdate, &item.PendingWithdrawalPublication,
+		&withdrawalsJSON, &item.CreatedAt, &item.UpdatedAt,
 		&item.MediaItem.ID, &item.MediaItem.MediaType, &item.MediaItem.Width,
 		&item.MediaItem.Height, &item.MediaItem.LocalDateTime)
 	if errors.Is(err, sql.ErrNoRows) {
 		return LooseItem{}, ErrNotFound
 	}
-	return item, err
+	if err != nil {
+		return LooseItem{}, err
+	}
+	if err := json.Unmarshal([]byte(placeLabelsJSON), &item.PlaceLabels); err != nil {
+		return LooseItem{}, err
+	}
+	if err := json.Unmarshal([]byte(withdrawalsJSON), &item.Withdrawals); err != nil {
+		return LooseItem{}, err
+	}
+	item.WithdrawalTargets = make([]WithdrawalTarget, 0)
+	if item.PublishedEditableVersion != nil && !item.PendingWithdrawalPublication {
+		label := strings.TrimSpace(item.Title)
+		if label == "" {
+			label = "Loose item"
+		}
+		item.WithdrawalTargets = append(item.WithdrawalTargets, WithdrawalTarget{
+			TargetKind: WithdrawalTargetLooseItem,
+			TargetID:   item.ID,
+			Label:      "Loose item: " + label,
+		})
+	}
+	return item, nil
 }
 
 func draftLocation(name string) (*time.Location, error) {

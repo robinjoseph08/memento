@@ -272,6 +272,57 @@ func (fixture immediateFixture) addPublicationActivityFor(t *testing.T, recipien
 	}
 }
 
+func (fixture immediateFixture) addLoosePublicationActivity(t *testing.T) (uuid.UUID, uuid.UUID) {
+	t.Helper()
+	looseID, publicationID, snapshotID := uuid.New(), uuid.New(), uuid.New()
+	_, err := fixture.db.NewRaw(`
+		INSERT INTO loose_items (id, media_item_id, lifecycle, title, description, grouping_timezone,
+			version, audience_complete, created_at, updated_at)
+		VALUES (?, ?, 'published', 'Loose portrait', '', 'UTC', 1, true, ?, ?);
+		INSERT INTO audience_snapshots (id, target_kind, target_id, approved_by_person_id, approved_at, label)
+		VALUES (?, 'loose_item', ?, ?, ?, 'Shared');
+		INSERT INTO audience_snapshot_entries (snapshot_id, recipient_person_id, recipient_access_generation_id)
+		VALUES (?, ?, ?);
+		INSERT INTO current_audience_snapshots (target_kind, target_id, snapshot_id)
+		VALUES ('loose_item', ?, ?);
+		INSERT INTO publications (id, loose_item_id, revision, editable_version, published_by_person_id,
+			notify_recipients, committed_at)
+		VALUES (?, ?, 1, 1, ?, true, ?);
+		UPDATE loose_items SET current_publication_id = ? WHERE id = ?;
+		INSERT INTO published_loose_item_revisions (publication_id, loose_item_id, media_item_id,
+			audience_snapshot_id, title, description, grouping_timezone, place_labels, media_type,
+			width, height, local_date_time, created_at)
+		VALUES (?, ?, ?, ?, 'Loose portrait', '', 'UTC', '{}', 'image', 1200, 800,
+			'2026-07-28T12:00:00Z', ?);
+		INSERT INTO published_loose_audience_entries
+			(publication_id, recipient_person_id, recipient_access_generation_id)
+		VALUES (?, ?, ?);
+		INSERT INTO current_published_loose_items (loose_item_id, publication_id, media_item_id,
+			title, description, grouping_timezone, place_labels, media_type, width, height,
+			local_date_time, committed_at)
+		VALUES (?, ?, ?, 'Loose portrait', '', 'UTC', '{}', 'image', 1200, 800,
+			'2026-07-28T12:00:00Z', ?);
+		INSERT INTO current_loose_item_entitlements (loose_item_id, publication_id,
+			recipient_person_id, recipient_access_generation_id, media_item_id)
+		VALUES (?, ?, ?, ?, ?);
+		INSERT INTO publication_activity_items (publication_id, recipient_access_generation_id, created_at)
+		VALUES (?, ?, ?);
+		INSERT INTO publication_notification_media (publication_id, recipient_access_generation_id, media_item_id)
+		VALUES (?, ?, ?)
+	`, looseID, fixture.media[0], fixture.base, fixture.base,
+		snapshotID, looseID, fixture.people["curator"], fixture.base,
+		snapshotID, fixture.people["alex"], fixture.access["alex"], looseID, snapshotID,
+		publicationID, looseID, fixture.people["curator"], fixture.base, publicationID, looseID,
+		publicationID, looseID, fixture.media[0], snapshotID, fixture.base,
+		publicationID, fixture.people["alex"], fixture.access["alex"],
+		looseID, publicationID, fixture.media[0], fixture.base,
+		looseID, publicationID, fixture.people["alex"], fixture.access["alex"], fixture.media[0],
+		publicationID, fixture.access["alex"], fixture.base,
+		publicationID, fixture.access["alex"], fixture.media[0]).Exec(context.Background())
+	require.NoError(t, err)
+	return looseID, publicationID
+}
+
 func (fixture immediateFixture) addLargePublicationActivity(t *testing.T, count int) {
 	t.Helper()
 	fixture.addPublicationActivity(t, fixture.base)
@@ -861,6 +912,58 @@ func TestImmediateEmailHoldsAuthorizationLocksThroughSMTPAcceptance(t *testing.T
 	require.NoError(t, fixture.db.NewRaw(`SELECT email_preference FROM notification_preferences
 		WHERE recipient_access_generation_id = ?`, fixture.access["alex"]).Scan(context.Background(), &preference))
 	assert.Equal(t, "none", preference)
+}
+
+func TestImmediateEmailHoldsLooseAuthorizationThroughSMTPAcceptance(t *testing.T) {
+	fixture := newImmediateFixture(t)
+	blocking := &blockingImmediateSender{entered: make(chan struct{}), release: make(chan struct{})}
+	t.Cleanup(func() {
+		select {
+		case <-blocking.release:
+		default:
+			close(blocking.release)
+		}
+	})
+	fixture.service.sender = blocking
+	looseID, publicationID := fixture.addLoosePublicationActivity(t)
+	require.NoError(t, fixture.service.QueuePublication(context.Background(), uuid.Nil, publicationID))
+	var batchID int64
+	require.NoError(t, fixture.db.NewRaw(`SELECT id FROM notification_batches`).Scan(context.Background(), &batchID))
+
+	delivered := make(chan error, 1)
+	go func() {
+		delivered <- fixture.service.HandleImmediate(context.Background(), fixture.leasedBatchJob(t, batchID))
+	}()
+	select {
+	case <-blocking.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("immediate sender was not reached")
+	}
+
+	revoked := make(chan error, 1)
+	go func() {
+		revoked <- fixture.db.RunInTx(context.Background(), nil, func(ctx context.Context, tx bun.Tx) error {
+			if _, err := tx.NewRaw(`UPDATE loose_items SET title = title WHERE id = ?`, looseID).Exec(ctx); err != nil {
+				return err
+			}
+			_, err := tx.NewRaw(`DELETE FROM current_loose_item_entitlements WHERE loose_item_id = ?`, looseID).Exec(ctx)
+			return err
+		})
+	}()
+	waitForEmailBatchLock(t, fixture.db, `%UPDATE loose_items SET title = title%`)
+	select {
+	case err := <-revoked:
+		t.Fatalf("Loose revocation finished before SMTP acceptance: %v", err)
+	default:
+	}
+
+	close(blocking.release)
+	require.NoError(t, <-delivered)
+	require.NoError(t, <-revoked)
+	require.Len(t, blocking.acceptedMessages(), 1)
+	var entitlements int
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM current_loose_item_entitlements WHERE loose_item_id = ?`, looseID).Scan(context.Background(), &entitlements))
+	assert.Zero(t, entitlements)
 }
 
 func TestImmediateEmailReauthorizesAndHandlesTerminalFailures(t *testing.T) {

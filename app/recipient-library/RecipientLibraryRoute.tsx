@@ -230,7 +230,11 @@ export function RecipientLibraryRoute({
               </button>
             </header>
             {destination === "photos" ? (
-              <NewForYou model={newForYouModel} onOpenEvent={openEvent} />
+              <NewForYou
+                model={newForYouModel}
+                onOpenEvent={openEvent}
+                onOpenMedia={openMedia}
+              />
             ) : null}
             {destination === "search" ? (
               <SearchDestination

@@ -18,7 +18,7 @@ import (
 // This release-defined digest covers table, constraint name, and normalized definition
 // for every expected foreign key after all registered migrations.
 const (
-	expectedForeignKeyInventorySHA256  = "b3f8fb90c09854bf630a6555174c66de27de0ccec35e37ffed8e317388a7896f"
+	expectedForeignKeyInventorySHA256  = "cbd0bfd83cd47df967ac2fd9735a50b3266d0c24d6f4270e0da7a9abc5c778fd"
 	expectedRecoveryDeliveryViewSHA256 = "6ef46fa32643821f6367cb7e25264bbd62d1ed32e76713519440e05f80af285f"
 	expectedWithdrawalFunctionSHA256   = "82ee8848f421c74c31eb5c380df242243f12d9eff71695ac974f3375cbc940f8"
 )
@@ -159,7 +159,8 @@ func validateProjections(ctx context.Context, db bun.IDB) error {
 		 JOIN events AS event ON event.id = current.event_id
 		 JOIN publications AS publication ON publication.id = current.publication_id
 		 JOIN published_event_revisions AS revision ON revision.publication_id = current.publication_id
-		 WHERE event.current_publication_id IS DISTINCT FROM current.publication_id
+		 WHERE event.lifecycle <> 'published'
+		  OR event.current_publication_id IS DISTINCT FROM current.publication_id
 		  OR publication.event_id IS DISTINCT FROM current.event_id
 		  OR revision.event_id IS DISTINCT FROM current.event_id OR current.title IS DISTINCT FROM revision.title
 		  OR current.description IS DISTINCT FROM revision.description
@@ -232,7 +233,8 @@ func validateProjections(ctx context.Context, db bun.IDB) error {
 		(SELECT count(*) FROM content_withdrawals AS withdrawal WHERE
 		 (withdrawal.target_kind = 'event' AND NOT EXISTS (SELECT 1 FROM events WHERE id = withdrawal.target_id)) OR
 		 (withdrawal.target_kind = 'moment' AND NOT EXISTS (SELECT 1 FROM draft_moments WHERE id = withdrawal.target_id)) OR
-		 (withdrawal.target_kind = 'media' AND NOT EXISTS (SELECT 1 FROM media_items WHERE id = withdrawal.target_id))) +
+		 (withdrawal.target_kind = 'media' AND NOT EXISTS (SELECT 1 FROM media_items WHERE id = withdrawal.target_id)) OR
+		 (withdrawal.target_kind = 'loose_item' AND NOT EXISTS (SELECT 1 FROM loose_items WHERE id = withdrawal.target_id))) +
 		(SELECT count(*) FROM current_audience_snapshots AS current
 		 JOIN audience_snapshots AS snapshot ON snapshot.id = current.snapshot_id
 		 WHERE current.target_kind IS DISTINCT FROM snapshot.target_kind
@@ -346,7 +348,141 @@ func validateProjections(ctx context.Context, db bun.IDB) error {
 		(SELECT count(*) FROM staged_updates AS staged
 		 JOIN events AS event ON event.id = staged.event_id
 		 WHERE event.current_staged_update_id IS DISTINCT FROM staged.id
-		  OR event.current_publication_id IS DISTINCT FROM staged.base_publication_id)
+		  OR event.current_publication_id IS DISTINCT FROM staged.base_publication_id) +
+		(SELECT count(*) FROM current_published_loose_items AS current WHERE NOT EXISTS (
+		 SELECT 1 FROM published_loose_item_revisions AS revision
+		 WHERE revision.publication_id = current.publication_id
+		  AND revision.loose_item_id = current.loose_item_id)) +
+		(SELECT count(*) FROM current_published_loose_items AS current
+		 JOIN loose_items AS loose ON loose.id = current.loose_item_id
+		 JOIN publications AS publication ON publication.id = current.publication_id
+		 JOIN published_loose_item_revisions AS revision ON revision.publication_id = current.publication_id
+		 WHERE loose.lifecycle <> 'published'
+		  OR loose.current_publication_id IS DISTINCT FROM current.publication_id
+		  OR publication.loose_item_id IS DISTINCT FROM current.loose_item_id
+		  OR revision.loose_item_id IS DISTINCT FROM current.loose_item_id
+		  OR revision.media_item_id IS DISTINCT FROM current.media_item_id
+		  OR current.title IS DISTINCT FROM revision.title
+		  OR current.description IS DISTINCT FROM revision.description
+		  OR current.grouping_timezone IS DISTINCT FROM revision.grouping_timezone
+		  OR current.proposed_day IS DISTINCT FROM revision.proposed_day
+		  OR current.place_labels IS DISTINCT FROM revision.place_labels
+		  OR current.media_type IS DISTINCT FROM revision.media_type
+		  OR current.width IS DISTINCT FROM revision.width
+		  OR current.height IS DISTINCT FROM revision.height
+		  OR current.local_date_time IS DISTINCT FROM revision.local_date_time
+		  OR current.committed_at IS DISTINCT FROM publication.committed_at) +
+		(SELECT count(*) FROM loose_items AS loose
+		 WHERE loose.current_publication_id IS NOT NULL AND NOT EXISTS (
+		  SELECT 1 FROM current_published_loose_items AS current
+		  WHERE current.loose_item_id = loose.id AND current.publication_id = loose.current_publication_id)) +
+		(SELECT count(*) FROM published_loose_audience_entries AS audience
+		 JOIN published_loose_item_revisions AS revision ON revision.publication_id = audience.publication_id
+		 WHERE NOT EXISTS (SELECT 1 FROM audience_snapshot_entries AS snapshot
+		  WHERE snapshot.snapshot_id = revision.audience_snapshot_id
+		   AND snapshot.recipient_person_id = audience.recipient_person_id
+		   AND snapshot.recipient_access_generation_id = audience.recipient_access_generation_id)) +
+		(SELECT count(*) FROM published_loose_item_revisions AS revision
+		 JOIN audience_snapshot_entries AS snapshot ON snapshot.snapshot_id = revision.audience_snapshot_id
+		 WHERE NOT EXISTS (SELECT 1 FROM published_loose_audience_entries AS audience
+		  WHERE audience.publication_id = revision.publication_id
+		   AND audience.recipient_person_id = snapshot.recipient_person_id
+		   AND audience.recipient_access_generation_id = snapshot.recipient_access_generation_id)) +
+		(SELECT count(*) FROM current_published_loose_items AS current
+		 JOIN published_loose_audience_entries AS audience ON audience.publication_id = current.publication_id
+		 WHERE NOT EXISTS (SELECT 1 FROM content_withdrawals AS withdrawal
+		  WHERE withdrawal.restored_at IS NULL AND (
+		   (withdrawal.target_kind = 'loose_item' AND withdrawal.target_id = current.loose_item_id)
+		   OR (withdrawal.target_kind = 'media' AND withdrawal.target_id = current.media_item_id)))
+		  AND NOT EXISTS (SELECT 1 FROM current_loose_item_entitlements AS entitlement
+		   WHERE entitlement.loose_item_id = current.loose_item_id
+		    AND entitlement.publication_id = current.publication_id
+		    AND entitlement.media_item_id = current.media_item_id
+		    AND entitlement.recipient_person_id = audience.recipient_person_id
+		    AND entitlement.recipient_access_generation_id = audience.recipient_access_generation_id)) +
+		(SELECT count(*) FROM current_loose_item_entitlements AS entitlement
+		 JOIN recipient_access_generations AS access ON access.id = entitlement.recipient_access_generation_id
+		 WHERE entitlement.recipient_person_id IS DISTINCT FROM access.person_id
+		  OR NOT EXISTS (
+		   SELECT 1 FROM current_published_loose_items AS current
+		   JOIN published_loose_audience_entries AS audience
+		     ON audience.publication_id = current.publication_id
+		    AND audience.recipient_access_generation_id = entitlement.recipient_access_generation_id
+		   WHERE current.loose_item_id = entitlement.loose_item_id
+		    AND current.publication_id = entitlement.publication_id
+		    AND current.media_item_id = entitlement.media_item_id
+		    AND audience.recipient_person_id = entitlement.recipient_person_id)) +
+		(SELECT count(*) FROM current_loose_item_entitlements AS entitlement
+		 WHERE EXISTS (SELECT 1 FROM content_withdrawals AS withdrawal
+		  WHERE withdrawal.restored_at IS NULL AND withdrawal.target_kind = 'loose_item'
+		   AND withdrawal.target_id = entitlement.loose_item_id)) +
+		(SELECT count(*) FROM published_loose_search_documents AS document
+		 JOIN current_published_loose_items AS current
+		   ON current.loose_item_id = document.loose_item_id
+		  AND current.publication_id = document.publication_id
+		 WHERE document.media_item_id IS DISTINCT FROM current.media_item_id
+		  OR document.search_text IS DISTINCT FROM concat_ws(' ', current.title, current.description)
+		  OR document.capture_date IS DISTINCT FROM memento_local_capture_date(current.local_date_time)
+		  OR document.place_text IS DISTINCT FROM array_to_string(current.place_labels, ' ')
+		  OR NOT EXISTS (SELECT 1 FROM current_loose_item_entitlements AS entitlement
+		   WHERE entitlement.loose_item_id = document.loose_item_id
+		    AND entitlement.publication_id = document.publication_id
+		    AND entitlement.media_item_id = document.media_item_id)) +
+		(SELECT count(*) FROM current_loose_item_entitlements AS entitlement
+		 WHERE NOT EXISTS (SELECT 1 FROM content_withdrawals AS withdrawal
+		  WHERE withdrawal.restored_at IS NULL AND (
+		   (withdrawal.target_kind = 'loose_item' AND withdrawal.target_id = entitlement.loose_item_id)
+		   OR (withdrawal.target_kind = 'media' AND withdrawal.target_id = entitlement.media_item_id)))
+		  AND NOT EXISTS (SELECT 1 FROM published_loose_search_documents AS document
+		   WHERE document.loose_item_id = entitlement.loose_item_id
+		    AND document.publication_id = entitlement.publication_id
+		    AND document.media_item_id = entitlement.media_item_id)) +
+		(SELECT count(*) FROM loose_items AS loose
+		 WHERE (loose.current_staged_update_id IS NULL) <> (NOT EXISTS (
+		  SELECT 1 FROM loose_staged_updates AS staged WHERE staged.loose_item_id = loose.id))) +
+		(SELECT count(*) FROM loose_staged_updates AS staged
+		 JOIN loose_items AS loose ON loose.id = staged.loose_item_id
+		 WHERE loose.current_staged_update_id IS DISTINCT FROM staged.id
+		  OR loose.current_publication_id IS DISTINCT FROM staged.base_publication_id) +
+		(SELECT count(*) FROM (
+		 WITH expected AS (
+		  SELECT 'event'::text AS origin_kind, entitlement.event_id AS origin_id,
+		   entitlement.publication_id, entitlement.recipient_person_id,
+		   entitlement.recipient_access_generation_id, entitlement.media_item_id, placement.position
+		  FROM current_audience_entitlements AS entitlement
+		  JOIN events AS event ON event.id = entitlement.event_id AND event.lifecycle = 'published'
+		  JOIN current_published_placements AS placement
+		    ON placement.event_id = entitlement.event_id
+		   AND placement.publication_id = entitlement.publication_id
+		   AND placement.media_item_id = entitlement.media_item_id
+		  JOIN published_moments AS moment ON moment.id = placement.published_moment_id
+		  WHERE NOT content_is_withdrawn(placement.event_id, moment.draft_moment_id, placement.media_item_id)
+		  UNION ALL
+		  SELECT 'loose_item'::text, entitlement.loose_item_id, entitlement.publication_id,
+		   entitlement.recipient_person_id, entitlement.recipient_access_generation_id,
+		   entitlement.media_item_id, 0
+		  FROM current_loose_item_entitlements AS entitlement
+		  JOIN loose_items AS loose ON loose.id = entitlement.loose_item_id AND loose.lifecycle = 'published'
+		  JOIN current_published_loose_items AS current
+		    ON current.loose_item_id = entitlement.loose_item_id
+		   AND current.publication_id = entitlement.publication_id
+		  WHERE NOT EXISTS (SELECT 1 FROM content_withdrawals AS withdrawal
+		   WHERE withdrawal.restored_at IS NULL AND (
+		    (withdrawal.target_kind = 'loose_item' AND withdrawal.target_id = entitlement.loose_item_id)
+		    OR (withdrawal.target_kind = 'media' AND withdrawal.target_id = entitlement.media_item_id)))
+		 )
+		 (SELECT origin_kind, origin_id, publication_id, recipient_person_id,
+		   recipient_access_generation_id, media_item_id, position FROM current_media_entitlements
+		  EXCEPT
+		  SELECT origin_kind, origin_id, publication_id, recipient_person_id,
+		   recipient_access_generation_id, media_item_id, position FROM expected)
+		 UNION ALL
+		 (SELECT origin_kind, origin_id, publication_id, recipient_person_id,
+		   recipient_access_generation_id, media_item_id, position FROM expected
+		  EXCEPT
+		  SELECT origin_kind, origin_id, publication_id, recipient_person_id,
+		   recipient_access_generation_id, media_item_id, position FROM current_media_entitlements)
+		) AS entitlement_mismatch)
 	`).Scan(ctx, &invalid)
 	if err != nil {
 		return fmt.Errorf("projections: %w", err)

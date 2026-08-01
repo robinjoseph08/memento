@@ -6,7 +6,7 @@ import { APIError } from "./api";
 import { InvitationLanding, SignInFlow } from "./Authentication";
 import { CuratorActivity } from "./CuratorActivity";
 import { CuratorInteractions } from "./CuratorInteractions";
-import { EventOrganizer } from "./EventOrganizer";
+import { CurationWorkspace } from "./CurationWorkspace";
 import { FamilyManager } from "./FamilyManager";
 import { useBootstrap, type BootstrapState } from "./hooks/queries/bootstrap";
 import {
@@ -236,7 +236,7 @@ function ReadyCard({
             remain unsaved.
           </p>
         ) : null}
-        <EventOrganizer
+        <CurationWorkspace
           onDirtyChange={setDraftsDirty}
           onSavingChange={setDraftsSaving}
           session={session}

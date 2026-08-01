@@ -5,14 +5,16 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 
-import { apiJSON, apiNoContent } from "../../api";
+import { APIError, apiJSON, apiNoContent } from "../../api";
 import type {
   Event as EventDetail,
   EventPage,
+  LooseItem,
   MediaChronology,
   MediaPage,
   NewForYouResponse,
 } from "../../types/generated/library";
+import type { RefreshedMediaAccess } from "../../recipient-library/types";
 import { isIdentityGenerationActive } from "./sessions";
 
 export type RecipientMediaListing = "photos" | "favorites";
@@ -99,6 +101,24 @@ export function useNewForYou(identityGeneration: string, enabled = true) {
     enabled,
     retry: false,
   });
+}
+
+export function useRecipientLooseItemAccess(identityGeneration: string) {
+  const queryClient = useQueryClient();
+  return async (looseItemID: string): Promise<RefreshedMediaAccess> => {
+    try {
+      const looseItem = await queryClient.fetchQuery({
+        queryKey: ["recipient-loose-item", identityGeneration, looseItemID],
+        queryFn: () => apiJSON<LooseItem>(`/api/me/loose-items/${looseItemID}`),
+        staleTime: 0,
+      });
+      return looseItem.media.available ? "available" : "backing-unavailable";
+    } catch (error) {
+      return error instanceof APIError && error.status === 404
+        ? "withdrawn"
+        : "access-unconfirmed";
+    }
+  };
 }
 
 export function useMarkPublicationSeen(identityGeneration: string) {

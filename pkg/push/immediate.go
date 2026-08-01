@@ -72,14 +72,13 @@ func (s *Service) QueuePublication(ctx context.Context, _ uuid.UUID, publication
 			   AND candidate.recipient_access_generation_id = activity.recipient_access_generation_id
 			  ORDER BY candidate.media_item_id LIMIT ?
 			 ) AS candidate_media
-			 JOIN current_audience_entitlements AS entitlement ON entitlement.event_id = publication.event_id
+			 JOIN current_media_entitlements AS entitlement
+			  ON entitlement.origin_kind = CASE WHEN publication.event_id IS NOT NULL THEN 'event' ELSE 'loose_item' END
+			  AND entitlement.origin_id = COALESCE(publication.event_id, publication.loose_item_id)
+			  AND entitlement.publication_id = publication.id
 			  AND entitlement.recipient_access_generation_id = activity.recipient_access_generation_id
 			  AND entitlement.media_item_id = candidate_media.media_item_id
-			 JOIN current_published_placements AS placement ON placement.event_id = entitlement.event_id
-			  AND placement.media_item_id = entitlement.media_item_id
-			 JOIN published_moments AS moment ON moment.id = placement.published_moment_id
 			 JOIN media_items AS media ON media.id = candidate_media.media_item_id AND media.availability = 'current'
-			 WHERE NOT content_is_withdrawn(placement.event_id, moment.draft_moment_id, placement.media_item_id)
 			) ORDER BY activity.recipient_access_generation_id, subscription.id`, publicationID,
 			notificationactivity.MaxPublicationMedia+1).Scan(ctx, &candidates); err != nil {
 			return err

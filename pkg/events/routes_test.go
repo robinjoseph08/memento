@@ -68,8 +68,13 @@ func TestDraftRoutesAreInvisibleToRecipientsBeforePublication(t *testing.T) {
 		{http.MethodGet, "/api/events/11111111-1111-4111-8111-111111111111/preview-recipients", ""},
 		{http.MethodPost, "/api/events/11111111-1111-4111-8111-111111111111/preview?recipient_person_id=22222222-2222-4222-8222-222222222222", ""},
 		{http.MethodPost, "/api/withdrawals", `{}`},
+		{http.MethodGet, "/api/loose-items", ""},
 		{http.MethodGet, "/api/loose-items/11111111-1111-4111-8111-111111111111", ""},
 		{http.MethodPost, "/api/loose-items", `{}`},
+		{http.MethodPut, "/api/loose-items/11111111-1111-4111-8111-111111111111", `{}`},
+		{http.MethodPost, "/api/loose-items/11111111-1111-4111-8111-111111111111/publications", `{}`},
+		{http.MethodGet, "/api/loose-items/11111111-1111-4111-8111-111111111111/preview-recipients", ""},
+		{http.MethodPost, "/api/loose-items/11111111-1111-4111-8111-111111111111/preview?recipient_person_id=22222222-2222-4222-8222-222222222222", ""},
 		{http.MethodGet, "/api/sources/11111111-1111-4111-8111-111111111111/media-items", ""},
 	} {
 		response := draftRequest(e, test.method, test.path, test.body)
@@ -90,6 +95,9 @@ func TestDraftMutationsRequireCSRFBeforeBindingOrDatabaseAccess(t *testing.T) {
 		{http.MethodPost, "/api/events/11111111-1111-4111-8111-111111111111/preview"},
 		{http.MethodPost, "/api/withdrawals"},
 		{http.MethodPost, "/api/loose-items"},
+		{http.MethodPut, "/api/loose-items/11111111-1111-4111-8111-111111111111"},
+		{http.MethodPost, "/api/loose-items/11111111-1111-4111-8111-111111111111/publications"},
+		{http.MethodPost, "/api/loose-items/11111111-1111-4111-8111-111111111111/preview"},
 	} {
 		response := draftRequest(e, test.method, test.path, `{}`)
 		assert.Equal(t, http.StatusForbidden, response.Code)
@@ -112,6 +120,7 @@ func TestDraftRequestValidationRejectsMissingFieldsBeforeServiceAccess(t *testin
 		{"/api/events", `{"timezone":"UTC"}`, "source_album_ids"},
 		{"/api/events/11111111-1111-4111-8111-111111111111/published-media-restorations", `{"version":1}`, "media_item_id"},
 		{"/api/loose-items", `{"timezone":"UTC"}`, "media_item_id"},
+		{"/api/loose-items/11111111-1111-4111-8111-111111111111/publications", `{}`, "version"},
 	} {
 		response := draftRequest(e, http.MethodPost, test.path, test.body)
 		require.Equal(t, http.StatusUnprocessableEntity, response.Code)
@@ -160,6 +169,23 @@ func TestPublicationErrorsDescribeTheActualReadinessCheck(t *testing.T) {
 		{ErrNoPublication, "Event not found"},
 	} {
 		mapped := publicationError(test.err)
+		require.Error(t, mapped)
+		assert.Contains(t, mapped.Error(), test.message)
+	}
+}
+
+func TestLoosePublicationErrorsDescribeLooseReadinessAndSourceState(t *testing.T) {
+	for _, test := range []struct {
+		err     error
+		message string
+	}{
+		{ErrVersionConflict, "Loose item changed"},
+		{ErrPublicationNotReady, "explicit Curator-only Audience"},
+		{ErrAudienceNotCurrent, "Loose item Audience"},
+		{ErrMediaUnavailable, "Source Media is unavailable"},
+		{ErrNoPublication, "Loose item not found"},
+	} {
+		mapped := loosePublicationError(test.err)
 		require.Error(t, mapped)
 		assert.Contains(t, mapped.Error(), test.message)
 	}

@@ -180,7 +180,7 @@ func assertRecipientPublicationSurfacesMatch(t *testing.T, fixture publicationFi
 func TestPreviewRendersSavedEditableResultBeforePublication(t *testing.T) {
 	fixture := newPublicationFixture(t)
 	ctx := context.Background()
-	previewRecipients, err := fixture.service.PreviewRecipients(ctx, fixture.event)
+	previewRecipients, err := fixture.service.PreviewRecipients(ctx, fixture.actor, fixture.event)
 	require.NoError(t, err)
 	assert.Len(t, previewRecipients.Recipients, 4)
 	firstPreview, err := fixture.service.PreviewEvent(ctx, fixture.actor, fixture.event, fixture.people["shared"])
@@ -254,10 +254,10 @@ func TestPublicationBuildsImmutableHistoryAndFilteredCurrentProjections(t *testi
 
 	_, err = fixture.service.RecipientEvent(ctx, fixture.actorFor("pending"), fixture.event)
 	assert.ErrorIs(t, err, ErrNoPublication)
-	previewRecipients, err := fixture.service.PreviewRecipients(ctx, fixture.event)
+	previewRecipients, err := fixture.service.PreviewRecipients(ctx, fixture.actor, fixture.event)
 	require.NoError(t, err)
 	assert.Len(t, previewRecipients.Recipients, 4)
-	_, err = fixture.service.PreviewRecipients(ctx, uuid.New())
+	_, err = fixture.service.PreviewRecipients(ctx, fixture.actor, uuid.New())
 	assert.ErrorIs(t, err, ErrNoPublication)
 
 	preview, err := fixture.service.PreviewEvent(ctx, fixture.actor, fixture.event, fixture.people["pending"])

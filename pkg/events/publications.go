@@ -113,6 +113,13 @@ type PublishedEventView struct {
 	Capabilities  PreviewCapabilities `json:"capabilities"`
 }
 
+func nullableUUID(id uuid.UUID) any {
+	if id == uuid.Nil {
+		return nil
+	}
+	return id
+}
+
 func (s *Service) publicationBoundary(step PublicationStep) error {
 	if s.failPublicationStep == nil {
 		return nil
@@ -253,15 +260,8 @@ func (s *Service) PublishEvent(ctx context.Context, actor setup.CuratorSession, 
 			ON COMMIT DROP AS
 			SELECT DISTINCT entitlement.recipient_access_generation_id AS access_id,
 			       entitlement.media_item_id
-			FROM current_audience_entitlements AS entitlement
-			JOIN current_published_placements AS placement
-			  ON placement.event_id = entitlement.event_id
-			 AND placement.media_item_id = entitlement.media_item_id
-			JOIN published_moments AS moment ON moment.id = placement.published_moment_id
-			WHERE NOT content_is_withdrawn(
-				placement.event_id, moment.draft_moment_id, placement.media_item_id
-			)
-			  AND EXISTS (
+			FROM current_media_entitlements AS entitlement
+			WHERE EXISTS (
 				SELECT 1
 				FROM draft_moments AS candidate_moment
 				JOIN current_audience_snapshots AS candidate_snapshot
@@ -475,6 +475,9 @@ func (s *Service) PublishEvent(ctx context.Context, actor setup.CuratorSession, 
 		if err := restoreEligibleWithdrawals(ctx, tx, eventID, publicationID, now, actor); err != nil {
 			return err
 		}
+		if err := projectDeferredRestorationActivity(ctx, tx, publicationID, now); err != nil {
+			return err
+		}
 		// Withdrawal restoration changes which nominal entitlement rows are
 		// effective. Refresh dependents only after that state is final.
 		if err := staging.RefreshDependentAccessUpdates(ctx, tx, eventID, now); err != nil {
@@ -608,9 +611,13 @@ func (s *Service) PublishEvent(ctx context.Context, actor setup.CuratorSession, 
 }
 
 // PreviewRecipients lists current non-Curator Recipient generations for an editable Event, including Pending recipients.
-func (s *Service) PreviewRecipients(ctx context.Context, eventID uuid.UUID) (PreviewRecipientsResponse, error) {
+func (s *Service) PreviewRecipients(ctx context.Context, actor setup.CuratorSession, eventID uuid.UUID) (PreviewRecipientsResponse, error) {
+	if err := requireCurator(ctx, s.db, actor.PersonID); err != nil {
+		return PreviewRecipientsResponse{}, err
+	}
 	var editable bool
-	if err := s.db.NewRaw(`SELECT EXISTS (SELECT 1 FROM events WHERE id = ? AND lifecycle IN ('draft', 'published'))`, eventID).Scan(ctx, &editable); err != nil {
+	if err := s.db.NewRaw(`SELECT EXISTS (SELECT 1 FROM events WHERE id = ? AND lifecycle IN ('draft', 'published'))
+		OR EXISTS (SELECT 1 FROM loose_items WHERE id = ? AND lifecycle IN ('draft', 'published'))`, eventID, eventID).Scan(ctx, &editable); err != nil {
 		return PreviewRecipientsResponse{}, err
 	}
 	if !editable {
@@ -764,11 +771,17 @@ func (s *Service) RecipientEvent(ctx context.Context, actor setup.SessionActor, 
 func (s *Service) HandlePublicationJob(ctx context.Context, job worker.Job) error {
 	var payload struct {
 		EventID          uuid.UUID `json:"event_id"`
+		LooseItemID      uuid.UUID `json:"loose_item_id"`
 		PublicationID    uuid.UUID `json:"publication_id"`
 		NotifyRecipients bool      `json:"notify_recipients"`
 	}
-	if err := json.Unmarshal(job.Payload, &payload); err != nil || payload.EventID == uuid.Nil || payload.PublicationID == uuid.Nil {
+	if err := json.Unmarshal(job.Payload, &payload); err != nil || payload.PublicationID == uuid.Nil ||
+		((payload.EventID == uuid.Nil) == (payload.LooseItemID == uuid.Nil)) {
 		return worker.Permanent("invalid_publication_payload")
+	}
+	targetID := payload.EventID
+	if targetID == uuid.Nil {
+		targetID = payload.LooseItemID
 	}
 	result := ""
 	err := s.db.RunInTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted, ReadOnly: true}, func(ctx context.Context, tx bun.Tx) error {
@@ -778,7 +791,10 @@ func (s *Service) HandlePublicationJob(ctx context.Context, job worker.Job) erro
 			return err
 		}
 		var exists bool
-		if err := tx.NewRaw(`SELECT EXISTS (SELECT 1 FROM publications WHERE id = ? AND event_id = ?)`, payload.PublicationID, payload.EventID).Scan(ctx, &exists); err != nil {
+		if err := tx.NewRaw(`SELECT EXISTS (SELECT 1 FROM publications WHERE id = ?
+			AND ((?::uuid IS NOT NULL AND event_id = ?::uuid) OR (?::uuid IS NOT NULL AND loose_item_id = ?::uuid)))`,
+			payload.PublicationID, nullableUUID(payload.EventID), nullableUUID(payload.EventID),
+			nullableUUID(payload.LooseItemID), nullableUUID(payload.LooseItemID)).Scan(ctx, &exists); err != nil {
 			return err
 		}
 		if !exists {
@@ -786,19 +802,31 @@ func (s *Service) HandlePublicationJob(ctx context.Context, job worker.Job) erro
 			return nil
 		}
 		var deliverable bool
-		if err := tx.NewRaw(`SELECT EXISTS (
-			SELECT 1 FROM current_published_events AS current
-			WHERE current.event_id = ? AND current.publication_id = ?
-			  AND NOT EXISTS (
-				SELECT 1 FROM current_published_placements AS placement
-				JOIN published_moments AS moment ON moment.id = placement.published_moment_id
-				WHERE placement.event_id = current.event_id
-				  AND placement.publication_id = current.publication_id
-				  AND content_is_withdrawn(
-					placement.event_id, moment.draft_moment_id, placement.media_item_id
+		if payload.EventID != uuid.Nil {
+			if err := tx.NewRaw(`SELECT EXISTS (
+				SELECT 1 FROM current_published_events AS current
+				WHERE current.event_id = ? AND current.publication_id = ?
+				  AND NOT EXISTS (
+					SELECT 1 FROM current_published_placements AS placement
+					JOIN published_moments AS moment ON moment.id = placement.published_moment_id
+					WHERE placement.event_id = current.event_id
+					  AND placement.publication_id = current.publication_id
+					  AND content_is_withdrawn(placement.event_id, moment.draft_moment_id, placement.media_item_id)
 				  )
-			  )
-		)`, payload.EventID, payload.PublicationID).Scan(ctx, &deliverable); err != nil {
+			)`, payload.EventID, payload.PublicationID).Scan(ctx, &deliverable); err != nil {
+				return err
+			}
+		} else if err := tx.NewRaw(`SELECT EXISTS (
+			SELECT 1 FROM current_published_loose_items AS current
+			JOIN loose_items AS loose ON loose.id = current.loose_item_id AND loose.lifecycle = 'published'
+			WHERE current.loose_item_id = ? AND current.publication_id = ?
+			  AND NOT EXISTS (
+				SELECT 1 FROM content_withdrawals AS withdrawal
+				WHERE withdrawal.restored_at IS NULL AND (
+				  (withdrawal.target_kind = 'loose_item' AND withdrawal.target_id = current.loose_item_id)
+				  OR (withdrawal.target_kind = 'media' AND withdrawal.target_id = current.media_item_id)
+				)
+			  ))`, payload.LooseItemID, payload.PublicationID).Scan(ctx, &deliverable); err != nil {
 			return err
 		}
 		if !deliverable {
@@ -814,7 +842,7 @@ func (s *Service) HandlePublicationJob(ctx context.Context, job worker.Job) erro
 		if !payload.NotifyRecipients || !hasRecipientActivity || s.publicationHandoff == nil {
 			return nil
 		}
-		return s.publicationHandoff(ctx, payload.EventID, payload.PublicationID)
+		return s.publicationHandoff(ctx, targetID, payload.PublicationID)
 	})
 	if err != nil {
 		return err

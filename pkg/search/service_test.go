@@ -103,5 +103,5 @@ func TestLongTermDocumentMatchingUsesAnIndexableConservativeTypoPrefilter(t *tes
 
 	assert.Contains(t, query, "memento_normalize_search_text(?) OPERATOR(public.<<%) authorized.normalized_search_text")
 	assert.Contains(t, query, "strict_word_similarity(memento_normalize_search_text(?), authorized.normalized_search_text) >= 0.3")
-	assert.Len(t, args, 8)
+	assert.Len(t, args, 9)
 }

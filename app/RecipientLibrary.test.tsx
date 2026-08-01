@@ -2675,3 +2675,80 @@ test("refreshes Search after a representation error and retains unavailable Medi
     screen.queryByRole("link", { name: "Download original" }),
   ).not.toBeInTheDocument();
 });
+
+test("renders authorized Loose items in New for you and opens their one Media item without Event semantics", async () => {
+  const requests: Array<{ path: string; init?: RequestInit }> = [];
+  const looseMedia = {
+    id: "loose-media-1",
+    media_type: "image",
+    width: 900,
+    height: 1200,
+    local_date_time: "2026-08-01T12:00:00Z",
+    available: true,
+    thumbnail_url: "/api/me/media/loose-media-1/thumbnail",
+    preview_url: "/api/me/media/loose-media-1/preview",
+    video_url: "",
+    original_url: "/api/me/media/loose-media-1/original",
+  };
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = requestPath(input);
+      requests.push({ path, init });
+      if (path.startsWith("/api/me/photos?"))
+        return json({ media: [], next_cursor: null });
+      if (path === "/api/me/new-for-you")
+        return json({
+          events: [],
+          loose_items: [
+            {
+              id: "loose-1",
+              publication_id: "loose-publication-1",
+              title: "Garden portrait",
+              description: "Shared independently",
+              proposed_day: "2026-08-01",
+              place_labels: ["Garden"],
+              committed_at: "2026-08-01T12:00:00Z",
+              media: looseMedia,
+            },
+          ],
+        });
+      if (path === "/api/me/new-for-you/loose-publication-1/seen")
+        return Promise.resolve(new Response(null, { status: 204 }));
+      if (path.startsWith("/api/favorites/"))
+        return json({ media_item_id: "loose-media-1", favorite: false });
+      if (path.startsWith("/api/comments/media/"))
+        return json({ comments: [], muted: false });
+      throw new Error(`Unexpected request: ${path}`);
+    }),
+  );
+
+  renderLibrary();
+  const card = await screen.findByRole("button", {
+    name: "Open Loose item Garden portrait",
+  });
+  expect(card).toHaveTextContent("1 independently shared Media item");
+  expect(card).toHaveTextContent("Garden");
+  expect(screen.queryByText(/Moment/)).not.toBeInTheDocument();
+  fireEvent.click(card);
+
+  expect(
+    await screen.findByRole("dialog", { name: "Media viewer" }),
+  ).toBeVisible();
+  expect(screen.getByAltText("Selected photo preview")).toHaveAttribute(
+    "src",
+    looseMedia.preview_url,
+  );
+  expect(requests.some(({ path }) => path.startsWith("/api/me/events/"))).toBe(
+    false,
+  );
+  await waitFor(() =>
+    expect(
+      requests.find(({ path }) => path.endsWith("/loose-publication-1/seen"))
+        ?.init,
+    ).toMatchObject({
+      method: "POST",
+      headers: { "X-Memento-CSRF": session.csrf_token },
+    }),
+  );
+});

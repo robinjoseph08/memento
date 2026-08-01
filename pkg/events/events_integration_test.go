@@ -64,7 +64,7 @@ func newDraftFixture(t *testing.T) draftFixture {
 	_, err := db.NewRaw(`
 		UPDATE system_settings SET setup_complete = true WHERE id = 1;
 		INSERT INTO people (id, display_name, sort_name) VALUES (?, 'Recipient', 'Recipient');
-		INSERT INTO person_roles (person_id, role) VALUES (?, 'recipient');
+		INSERT INTO person_roles (person_id, role) VALUES (?, 'recipient'), (?, 'curator');
 		INSERT INTO recipient_access_generations (
 			id, person_id, generation, state, is_current, onboarding_completed_at, created_at, updated_at
 		) VALUES (?, ?, 1, 'completed', true, ?, ?, ?);
@@ -73,7 +73,7 @@ func newDraftFixture(t *testing.T) draftFixture {
 			session_type, idle_expires_at
 		) SELECT ?, ?, ?, ?, security_epoch, 'trusted', now() + interval '1 day'
 		FROM system_settings WHERE id = 1
-	`, personID, personID, accessID, personID, now, now, now,
+	`, personID, personID, personID, accessID, personID, now, now, now,
 		sessionID, credentialHash[:], personID, accessID).Exec(ctx)
 	require.NoError(t, err)
 
@@ -303,7 +303,7 @@ func TestCreatingEventAndLooseItemDraftsCreatesNoRecipientPublicationState(t *te
 	ctx := context.Background()
 	recipient := setup.SessionActor{PersonID: uuid.New(), AccessID: uuid.New(), SessionID: uuid.New()}
 	_, err := fixture.db.NewRaw(`
-		INSERT INTO person_roles (person_id, role) VALUES (?, 'curator');
+		INSERT INTO person_roles (person_id, role) VALUES (?, 'curator') ON CONFLICT DO NOTHING;
 		INSERT INTO people (id, display_name, sort_name) VALUES (?, 'Eligible Recipient', 'Eligible Recipient');
 		INSERT INTO person_roles (person_id, role) VALUES (?, 'recipient');
 		INSERT INTO recipient_access_generations (
@@ -546,6 +546,8 @@ func TestRecipientSessionsCannotSeeDraftRoutesBeforePublication(t *testing.T) {
 	}
 	_, err = visibilityService.MutateInterest(ctx, visibilityActor, fixture.actor.PersonID, attendee, true)
 	require.NoError(t, err)
+	_, err = fixture.db.NewRaw(`DELETE FROM person_roles WHERE person_id = ? AND role = 'curator'`, fixture.actor.PersonID).Exec(ctx)
+	require.NoError(t, err)
 
 	setupService := setup.New(fixture.db, nil, config.SecurityConfig{Secret: "recipient-visibility-test-secret"})
 	session, err := setupService.Session(ctx, fixture.credential)
@@ -575,7 +577,7 @@ func TestRecipientSessionsCannotSeeDraftRoutesBeforePublication(t *testing.T) {
 func TestDraftRoutesRecordRequestAttributionAndReportLooseItemCreationStatus(t *testing.T) {
 	fixture := newDraftFixture(t)
 	ctx := context.Background()
-	_, err := fixture.db.NewRaw(`INSERT INTO person_roles (person_id, role) VALUES (?, 'curator')`, fixture.actor.PersonID).Exec(ctx)
+	_, err := fixture.db.NewRaw(`INSERT INTO person_roles (person_id, role) VALUES (?, 'curator') ON CONFLICT DO NOTHING`, fixture.actor.PersonID).Exec(ctx)
 	require.NoError(t, err)
 	setupService := setup.New(fixture.db, nil, config.SecurityConfig{Secret: "draft-route-audit-test-secret"})
 	session, err := setupService.Session(ctx, fixture.credential)
@@ -654,7 +656,7 @@ func TestDraftRoutesRecordRequestAttributionAndReportLooseItemCreationStatus(t *
 func TestDraftRoutesMapSemanticServiceErrors(t *testing.T) {
 	fixture := newDraftFixture(t)
 	ctx := context.Background()
-	_, err := fixture.db.NewRaw(`INSERT INTO person_roles (person_id, role) VALUES (?, 'curator')`, fixture.actor.PersonID).Exec(ctx)
+	_, err := fixture.db.NewRaw(`INSERT INTO person_roles (person_id, role) VALUES (?, 'curator') ON CONFLICT DO NOTHING`, fixture.actor.PersonID).Exec(ctx)
 	require.NoError(t, err)
 	setupService := setup.New(fixture.db, nil, config.SecurityConfig{Secret: "draft-route-errors-test-secret"})
 	session, err := setupService.Session(ctx, fixture.credential)
@@ -919,9 +921,11 @@ func TestDraftAuditFailuresRollBackEventAndLooseItemCreation(t *testing.T) {
 func TestDraftLookupsAndLooseItemValidationFailClosed(t *testing.T) {
 	fixture := newDraftFixture(t)
 	ctx := context.Background()
-	_, err := fixture.service.GetEvent(ctx, uuid.New())
+	_, err := fixture.db.NewRaw(`INSERT INTO person_roles (person_id, role) VALUES (?, 'curator') ON CONFLICT DO NOTHING`, fixture.actor.PersonID).Exec(ctx)
+	require.NoError(t, err)
+	_, err = fixture.service.GetEvent(ctx, uuid.New())
 	require.ErrorIs(t, err, ErrNotFound)
-	_, err = fixture.service.GetLooseItem(ctx, uuid.New())
+	_, err = fixture.service.GetLooseItem(ctx, fixture.actor, uuid.New())
 	require.ErrorIs(t, err, ErrNotFound)
 	_, err = fixture.service.SourceMedia(ctx, uuid.New())
 	require.ErrorIs(t, err, ErrNotFound)

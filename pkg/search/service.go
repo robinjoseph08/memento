@@ -246,6 +246,21 @@ const authorizedDocuments = `
 	JOIN media_items AS media ON media.id = document.media_item_id
 	WHERE entitlement.recipient_access_generation_id = ?
 	  AND NOT content_is_withdrawn(placement.event_id, moment.draft_moment_id, placement.media_item_id)
+	UNION ALL
+	SELECT NULL::uuid AS event_id, document.publication_id, document.media_item_id,
+	       document.search_vector, document.normalized_search_text, document.capture_date,
+	       current.title, current.description, current.committed_at,
+	       NULL::uuid AS published_moment_id, current.proposed_day AS event_day, 0 AS position,
+	       current.media_type, current.width, current.height, current.local_date_time,
+	       media.availability = 'current' AS available
+	FROM published_loose_search_documents AS document
+	JOIN current_published_loose_items AS current
+	  ON current.loose_item_id = document.loose_item_id AND current.publication_id = document.publication_id
+	JOIN current_media_entitlements AS entitlement
+	  ON entitlement.origin_kind = 'loose_item' AND entitlement.origin_id = current.loose_item_id
+	 AND entitlement.publication_id = current.publication_id AND entitlement.media_item_id = document.media_item_id
+	JOIN media_items AS media ON media.id = document.media_item_id
+	WHERE entitlement.recipient_access_generation_id = ?
 `
 
 const documentTypoPredicate = `(memento_normalize_search_text(?) OPERATOR(public.<<%) authorized.normalized_search_text
@@ -275,7 +290,7 @@ const discoverablePerson = `
 `
 
 func matchingCTE(actor setup.SessionActor, terms []string, dateBounds *bounds) (string, []any) {
-	args := []any{actor.AccessID}
+	args := []any{actor.AccessID, actor.AccessID}
 	textPredicates := make([]string, 0, len(terms))
 	for _, term := range terms {
 		long := utf8.RuneCountInString(term) >= 5
@@ -300,7 +315,7 @@ func matchingCTE(actor setup.SessionActor, terms []string, dateBounds *bounds) (
 		SELECT authorized.* FROM authorized WHERE ` + textWhere + `
 	), authorized_event_ranges AS (
 		SELECT event_id, min(event_day) AS date_start, max(event_day) AS date_end
-		FROM authorized GROUP BY event_id
+		FROM authorized WHERE event_id IS NOT NULL GROUP BY event_id
 	), matched AS (
 		SELECT text_matched.* FROM text_matched`
 	if dateBounds != nil {

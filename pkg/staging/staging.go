@@ -504,22 +504,16 @@ func summarizeStagedUpdate(ctx context.Context, db bun.IDB, eventID, publication
 			JOIN draft_media_placements AS placement ON placement.draft_moment_id = moment.id
 			WHERE moment.event_id = ?
 		), effective_entitlements AS (
-			SELECT DISTINCT entitlement.event_id,
+			SELECT DISTINCT entitlement.origin_kind, entitlement.origin_id,
 				entitlement.recipient_access_generation_id AS access_id,
 				entitlement.media_item_id
-			FROM current_audience_entitlements AS entitlement
-			JOIN current_published_placements AS placement
-			  ON placement.event_id = entitlement.event_id
-			 AND placement.media_item_id = entitlement.media_item_id
-			JOIN published_moments AS moment ON moment.id = placement.published_moment_id
-			WHERE NOT content_is_withdrawn(
-				placement.event_id, moment.draft_moment_id, placement.media_item_id
-			)
+			FROM current_media_entitlements AS entitlement
 		), before_global AS (
 			SELECT DISTINCT access_id, media_item_id FROM effective_entitlements
 		), after_global AS (
 			SELECT DISTINCT access_id, media_item_id
-			FROM effective_entitlements WHERE event_id <> ?
+			FROM effective_entitlements
+			WHERE NOT (origin_kind = 'event' AND origin_id = ?)
 			UNION
 			SELECT access_id, media_item_id FROM editable_event
 		), changed AS (

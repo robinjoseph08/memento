@@ -147,6 +147,22 @@ func (h *Handler) Event(c echo.Context) error {
 	return c.JSON(http.StatusOK, response)
 }
 
+func (h *Handler) LooseItem(c echo.Context) error {
+	actor, err := h.authorize(c, false)
+	if err != nil {
+		return err
+	}
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil || id == uuid.Nil {
+		return errcodes.NotFound("Content")
+	}
+	response, err := h.service.LooseItem(c.Request().Context(), actor, id)
+	if mapped := libraryError(err); mapped != nil {
+		return mapped
+	}
+	return c.JSON(http.StatusOK, response)
+}
+
 func (h *Handler) NewForYou(c echo.Context) error {
 	actor, err := h.authorize(c, false)
 	if err != nil {
@@ -352,6 +368,8 @@ func RegisterRoutes(e *echo.Echo, handler *Handler) {
 	events.Name = "policy:recipient_content"
 	event := me.GET("/events/:id", handler.Event)
 	event.Name = "policy:recipient_content"
+	looseItem := me.GET("/loose-items/:id", handler.LooseItem)
+	looseItem.Name = "policy:recipient_content"
 	newForYou := me.GET("/new-for-you", handler.NewForYou)
 	newForYou.Name = "policy:recipient_content"
 	seen := me.POST("/new-for-you/:publication_id/seen", handler.MarkSeen)

@@ -15,6 +15,7 @@ type recipientState string
 type generationState string
 type audienceState string
 type placementState string
+type originState string
 type withdrawalState string
 type sourceState string
 type commentState string
@@ -46,6 +47,9 @@ const (
 	unentitledAudience   audienceState     = "not_entitled"
 	singlePlacement      placementState    = "single"
 	reusedPlacement      placementState    = "reused"
+	eventOrigin          originState       = "event_only"
+	looseOrigin          originState       = "loose_only"
+	reusedOrigin         originState       = "event_and_loose"
 	noWithdrawal         withdrawalState   = "none"
 	primaryWithdrawal    withdrawalState   = "primary"
 	completeWithdrawal   withdrawalState   = "all"
@@ -72,6 +76,7 @@ type matrixState struct {
 	generation        generationState
 	audience          audienceState
 	placement         placementState
+	origin            originState
 	withdrawal        withdrawalState
 	source            sourceState
 	comment           commentState
@@ -86,6 +91,7 @@ const (
 	surfaceLibraryProjection  matrixSurface = "library_pages_order_counts_covers"
 	surfaceLibraryChronology  matrixSurface = "library_chronology_dates_counts_cursors"
 	surfaceEventDetail        matrixSurface = "event_detail"
+	surfaceLooseItemDetail    matrixSurface = "loose_item_detail"
 	surfacePeopleDirectory    matrixSurface = "people_directory"
 	surfaceSearch             matrixSurface = "search"
 	surfaceNewForYou          matrixSurface = "new_for_you"
@@ -111,7 +117,8 @@ const (
 )
 
 var matrixSurfaces = []matrixSurface{
-	surfaceLibraryProjection, surfaceLibraryChronology, surfaceEventDetail, surfacePeopleDirectory, surfaceSearch, surfaceNewForYou,
+	surfaceLibraryProjection, surfaceLibraryChronology, surfaceEventDetail, surfaceLooseItemDetail,
+	surfacePeopleDirectory, surfaceSearch, surfaceNewForYou,
 	surfaceThumbnail, surfacePreview, surfaceVideo, surfaceOriginal,
 	surfaceEventArchive, surfaceSubsetArchive, surfaceArchivePart,
 	surfaceComments, surfaceCommentWrite, surfaceCommentChange,
@@ -129,19 +136,21 @@ func cartesianMatrix(visit func(matrixState)) {
 					for _, generation := range []generationState{currentGeneration, staleGeneration} {
 						for _, audience := range []audienceState{entitledAudience, unentitledAudience} {
 							for _, placement := range []placementState{singlePlacement, reusedPlacement} {
-								for _, withdrawal := range []withdrawalState{noWithdrawal, primaryWithdrawal, completeWithdrawal} {
-									for _, source := range []sourceState{currentSource, missingSource} {
-										for _, comment := range []commentState{activeComment, deletedComment, moderatedComment} {
-											for _, email := range []emailPreference{immediateEmail, weeklyEmail, noEmail} {
-												for _, push := range []pushPreference{enabledPush, disabledPush} {
-													for _, identifier := range []identifierAttempt{authorizedIdentifier, crossRecipientID, guessedIdentifier} {
-														visit(matrixState{
-															sessionType: sessionType, sessionValidity: sessionValidity, epoch: epoch,
-															recipientState: recipientState, generation: generation, audience: audience,
-															placement: placement, withdrawal: withdrawal, source: source,
-															comment: comment, emailPreference: email, pushPreference: push,
-															identifierAttempt: identifier,
-														})
+								for _, origin := range []originState{eventOrigin, looseOrigin, reusedOrigin} {
+									for _, withdrawal := range []withdrawalState{noWithdrawal, primaryWithdrawal, completeWithdrawal} {
+										for _, source := range []sourceState{currentSource, missingSource} {
+											for _, comment := range []commentState{activeComment, deletedComment, moderatedComment} {
+												for _, email := range []emailPreference{immediateEmail, weeklyEmail, noEmail} {
+													for _, push := range []pushPreference{enabledPush, disabledPush} {
+														for _, identifier := range []identifierAttempt{authorizedIdentifier, crossRecipientID, guessedIdentifier} {
+															visit(matrixState{
+																sessionType: sessionType, sessionValidity: sessionValidity, epoch: epoch,
+																recipientState: recipientState, generation: generation, audience: audience,
+																placement: placement, origin: origin, withdrawal: withdrawal, source: source,
+																comment: comment, emailPreference: email, pushPreference: push,
+																identifierAttempt: identifier,
+															})
+														}
 													}
 												}
 											}
@@ -172,6 +181,14 @@ func (state matrixState) hasLivePlacement() bool {
 	return state.withdrawal == noWithdrawal || state.placement == reusedPlacement
 }
 
+func (state matrixState) hasEventOrigin() bool {
+	return state.origin == eventOrigin || state.origin == reusedOrigin
+}
+
+func (state matrixState) hasLooseOrigin() bool {
+	return state.origin == looseOrigin || state.origin == reusedOrigin
+}
+
 func (state matrixState) contentVisible() bool {
 	return state.sessionUsable() && state.generationUsable() && state.hasLivePlacement()
 }
@@ -191,13 +208,18 @@ func (state matrixState) allows(surface matrixSurface) bool {
 	case surfacePeopleDirectory:
 		interestAccess := state.recipientState == onboardingRecipient || state.recipientState == completedRecipient
 		return state.sessionUsable() && interestAccess && state.generation == currentGeneration && state.identifierAttempt == authorizedIdentifier
-	case surfaceEventDetail, surfaceComments, surfaceCommentWrite, surfaceFavoriteWrite:
+	case surfaceEventDetail:
+		return state.resourceVisible() && state.hasEventOrigin()
+	case surfaceLooseItemDetail:
+		return state.resourceVisible() && state.hasLooseOrigin()
+	case surfaceComments, surfaceCommentWrite, surfaceFavoriteWrite:
 		return state.resourceVisible()
 	case surfaceCommentChange:
 		return state.resourceVisible() && state.comment == activeComment
-	case surfaceThumbnail, surfacePreview, surfaceVideo, surfaceOriginal,
-		surfaceEventArchive, surfaceSubsetArchive, surfaceArchivePart:
+	case surfaceThumbnail, surfacePreview, surfaceVideo, surfaceOriginal:
 		return state.resourceVisible() && state.source == currentSource
+	case surfaceEventArchive, surfaceSubsetArchive, surfaceArchivePart:
+		return state.resourceVisible() && state.source == currentSource && state.hasEventOrigin()
 	case surfaceImmediateEmail:
 		return state.deliveryEligible() && state.emailPreference == immediateEmail
 	case surfaceWeeklyEmail:
@@ -255,7 +277,7 @@ func TestAuthorizationCapabilityMatrixCoversEveryCombination(t *testing.T) {
 		// Cross-Recipient and guessed identifiers are indistinguishable from absent content.
 		if state.identifierAttempt != authorizedIdentifier {
 			for _, surface := range []matrixSurface{
-				surfaceEventDetail, surfaceThumbnail, surfaceOriginal, surfaceArchivePart,
+				surfaceEventDetail, surfaceLooseItemDetail, surfaceThumbnail, surfaceOriginal, surfaceArchivePart,
 				surfaceComments, surfaceCommentWrite, surfaceFavoriteWrite, surfacePreviewAsRecipient,
 			} {
 				assert.False(t, state.allows(surface))
@@ -263,7 +285,7 @@ func TestAuthorizationCapabilityMatrixCoversEveryCombination(t *testing.T) {
 		}
 	})
 
-	require.Equal(t, 155520, cases)
+	require.Equal(t, 466560, cases)
 	for _, surface := range matrixSurfaces {
 		assert.Positivef(t, allowCounts[surface], "%s must have an allowed state", surface)
 		assert.Positivef(t, denyCounts[surface], "%s must have a denied state", surface)
@@ -320,7 +342,8 @@ func FuzzAuthorizationTransitions(f *testing.F) {
 
 			if !state.sessionUsable() || !state.generationUsable() || !state.hasLivePlacement() {
 				for _, surface := range []matrixSurface{
-					surfaceLibraryProjection, surfaceLibraryChronology, surfaceEventDetail, surfaceSearch, surfaceThumbnail,
+					surfaceLibraryProjection, surfaceLibraryChronology, surfaceEventDetail, surfaceLooseItemDetail,
+					surfaceSearch, surfaceThumbnail,
 					surfaceOriginal, surfaceArchivePart, surfaceComments, surfaceFavorites,
 				} {
 					assert.False(t, state.allows(surface), "access loss must fail closed after transition %d", transition)
