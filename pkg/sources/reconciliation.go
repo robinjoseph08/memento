@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/robinjoseph08/memento/internal/localcapture"
 	"github.com/robinjoseph08/memento/internal/mediaavailability"
 	"github.com/robinjoseph08/memento/pkg/immich"
 	"github.com/robinjoseph08/memento/pkg/staging"
@@ -691,14 +692,29 @@ func syncEditableEvents(
 	if err != nil {
 		return err
 	}
+	addedLocalDateTimes := make(map[uuid.UUID]*string, len(addedMediaIDs))
+	if len(addedMediaIDs) > 0 {
+		type addedMedia struct {
+			ID            uuid.UUID `bun:"id"`
+			LocalDateTime *string   `bun:"local_date_time"`
+		}
+		var media []addedMedia
+		if err := tx.NewRaw(`SELECT id, local_date_time FROM media_items WHERE id IN (?)`, bun.List(addedMediaIDs)).Scan(ctx, &media); err != nil {
+			return err
+		}
+		for _, item := range media {
+			addedLocalDateTimes[item.ID] = item.LocalDateTime
+		}
+	}
 	type editableEvent struct {
 		ID                 uuid.UUID `bun:"id"`
+		GroupingTimezone   string    `bun:"grouping_timezone"`
 		LinkedSource       bool      `bun:"linked_source"`
 		IncludeFutureMedia bool      `bun:"include_future_media"`
 	}
 	var events []editableEvent
 	if err := tx.NewRaw(`
-		SELECT event.id,
+		SELECT event.id, event.grouping_timezone,
 		       EXISTS (
 			   SELECT 1 FROM event_sources AS source
 			   WHERE source.event_id = event.id AND source.source_album_id = ?
@@ -735,6 +751,11 @@ func syncEditableEvents(
 		changed := false
 		changedMomentIDs := make(map[uuid.UUID]struct{})
 		restoredMomentReviews := make(map[uuid.UUID]struct{})
+		momentsToRestore := make(map[uuid.UUID]struct{})
+		routes, location, err := mergedMomentRoutes(ctx, tx, eventID, event.GroupingTimezone)
+		if err != nil {
+			return err
+		}
 		if len(metadataChangedMediaIDs) > 0 {
 			if err := tx.NewRaw(`
 				SELECT EXISTS (
@@ -765,6 +786,7 @@ func syncEditableEvents(
 			var momentID *uuid.UUID
 			var position int
 			var wasCover bool
+			restoredSourceRemoval := false
 			err := tx.NewRaw(`
 				SELECT draft_moment_id, position, was_cover
 				FROM staged_source_removals WHERE event_id = ? AND media_item_id = ?
@@ -773,13 +795,19 @@ func syncEditableEvents(
 				if !event.IncludeFutureMedia {
 					continue
 				}
-				momentID = nil
+				day, _ := localcapture.Parse(addedLocalDateTimes[mediaID], location)
+				if day != nil {
+					if routed, ok := routes[*day]; ok {
+						momentID = &routed
+					}
+				}
 				if err := tx.NewRaw(`SELECT COALESCE(max(position), -1) + 1 FROM draft_media_placements WHERE event_id = ?`, eventID).Scan(ctx, &position); err != nil {
 					return err
 				}
 			} else if err != nil {
 				return err
 			} else {
+				restoredSourceRemoval = true
 				var occupied bool
 				if err := tx.NewRaw(`SELECT EXISTS (SELECT 1 FROM draft_media_placements WHERE event_id = ? AND position = ?)`, eventID, position).Scan(ctx, &occupied); err != nil {
 					return err
@@ -799,6 +827,11 @@ func syncEditableEvents(
 					}
 				}
 			}
+			if momentID != nil && !restoredSourceRemoval {
+				if err := staging.PreserveMomentReview(ctx, tx, eventID, *momentID, now); err != nil {
+					return err
+				}
+			}
 			if _, err := tx.NewRaw(`
 				INSERT INTO draft_media_placements (event_id, media_item_id, draft_moment_id, position, created_at)
 				VALUES (?, ?, ?, ?, ?)
@@ -816,7 +849,7 @@ func syncEditableEvents(
 			if _, err := tx.NewRaw(`DELETE FROM staged_source_removals WHERE event_id = ? AND media_item_id = ?`, eventID, mediaID).Exec(ctx); err != nil {
 				return err
 			}
-			if momentID != nil {
+			if momentID != nil && restoredSourceRemoval {
 				restored, err := staging.RestoreMomentReviewIfPublishedResult(ctx, tx, eventID, *momentID)
 				if err != nil {
 					return err
@@ -889,13 +922,30 @@ func syncEditableEvents(
 			if _, err := tx.NewRaw(`DELETE FROM draft_media_placements WHERE event_id = ? AND media_item_id = ?`, eventID, mediaID).Exec(ctx); err != nil {
 				return err
 			}
-			if momentID != nil && !sourceMissing {
-				changedMomentIDs[*momentID] = struct{}{}
+			if momentID != nil {
+				if !wasPublished {
+					momentsToRestore[*momentID] = struct{}{}
+				} else if !sourceMissing {
+					changedMomentIDs[*momentID] = struct{}{}
+				}
 			}
 			changed = true
 		}
 		if !changed {
 			continue
+		}
+		if len(momentsToRestore) > 0 {
+			for momentID := range momentsToRestore {
+				restored, err := staging.RestoreMomentReviewIfPublishedResult(ctx, tx, eventID, momentID)
+				if err != nil {
+					return err
+				}
+				if restored {
+					restoredMomentReviews[momentID] = struct{}{}
+				} else {
+					changedMomentIDs[momentID] = struct{}{}
+				}
+			}
 		}
 		for momentID := range changedMomentIDs {
 			if _, restored := restoredMomentReviews[momentID]; restored {
@@ -910,6 +960,42 @@ func syncEditableEvents(
 		}
 	}
 	return nil
+}
+
+func mergedMomentRoutes(ctx context.Context, tx bun.Tx, eventID uuid.UUID, timezone string) (map[string]uuid.UUID, *time.Location, error) {
+	location, err := time.LoadLocation(timezone)
+	if err != nil {
+		return map[string]uuid.UUID{}, nil, nil
+	}
+	type sourceDay struct {
+		MomentID     uuid.UUID `bun:"moment_id"`
+		Day          string    `bun:"day"`
+		ProposalKind string    `bun:"proposal_kind"`
+	}
+	var rows []sourceDay
+	if err := tx.NewRaw(`
+		SELECT moment.id AS moment_id, day::text AS day, moment.proposal_kind
+		FROM draft_moments AS moment
+		CROSS JOIN LATERAL unnest(moment.source_days) AS day
+		WHERE moment.event_id = ? ORDER BY day, moment.id
+	`, eventID).Scan(ctx, &rows); err != nil {
+		return nil, nil, err
+	}
+	counts := make(map[string]int)
+	targets := make(map[string]uuid.UUID)
+	merged := make(map[string]bool)
+	for _, row := range rows {
+		counts[row.Day]++
+		targets[row.Day] = row.MomentID
+		merged[row.Day] = row.ProposalKind == "merged_days"
+	}
+	routes := make(map[string]uuid.UUID)
+	for day, count := range counts {
+		if count == 1 && merged[day] {
+			routes[day] = targets[day]
+		}
+	}
+	return routes, location, nil
 }
 
 func invalidateSourceChangedMomentReview(ctx context.Context, tx bun.Tx, momentID uuid.UUID) error {

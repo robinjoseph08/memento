@@ -17,6 +17,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/google/uuid"
+	"github.com/robinjoseph08/memento/internal/localcapture"
 	"github.com/robinjoseph08/memento/pkg/setup"
 	"github.com/robinjoseph08/memento/pkg/staging"
 	"github.com/uptrace/bun"
@@ -478,7 +479,7 @@ func selectMedia(ctx context.Context, tx bun.Tx, sourceIDs, selectedIDs []uuid.U
 
 func prepareProposals(media []mediaRecord, location *time.Location) {
 	for index := range media {
-		media[index].day, media[index].instant = captureDay(media[index].LocalDateTime, location)
+		media[index].day, media[index].instant = localcapture.Parse(media[index].LocalDateTime, location)
 	}
 	sort.Slice(media, func(i, j int) bool {
 		leftDay, rightDay := media[i].day, media[j].day
@@ -497,26 +498,6 @@ func prepareProposals(media []mediaRecord, location *time.Location) {
 		}
 		return left.Before(*right)
 	})
-}
-
-func captureDay(raw *string, location *time.Location) (*string, *time.Time) {
-	if raw == nil || strings.TrimSpace(*raw) == "" {
-		return nil, nil
-	}
-	value := strings.TrimSpace(*raw)
-	if parsed, err := time.Parse(time.RFC3339Nano, value); err == nil && parsed.Year() > 0 {
-		day := parsed.Format(time.DateOnly)
-		instant := parsed.UTC()
-		return &day, &instant
-	}
-	for _, layout := range []string{"2006-01-02T15:04:05.999999999", "2006-01-02T15:04:05", "2006-01-02 15:04:05.999999999", "2006-01-02 15:04:05"} {
-		if parsed, err := time.ParseInLocation(layout, value, location); err == nil && parsed.Year() > 0 {
-			day := parsed.Format(time.DateOnly)
-			instant := parsed.UTC()
-			return &day, &instant
-		}
-	}
-	return nil, nil
 }
 
 // ListEvents returns private editable Events ordered by recent activity.
@@ -1511,7 +1492,7 @@ func (s *Service) CreateLooseItem(ctx context.Context, actor setup.CuratorSessio
 		if availability != "current" {
 			return ErrMediaUnavailable
 		}
-		day, _ := captureDay(capture, location)
+		day, _ := localcapture.Parse(capture, location)
 		if _, err := tx.NewRaw(`
 			INSERT INTO loose_items (
 				id, media_item_id, title, description, grouping_timezone, proposed_day, created_at, updated_at
