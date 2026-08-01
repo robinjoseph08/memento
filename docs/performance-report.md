@@ -1,8 +1,8 @@
 # Target-scale performance report
 
-- Generated: `2026-08-01T05:11:15Z`
+- Generated: `2026-08-01T05:31:45Z`
 - Qualifying: `true`
-- Git revision: `a19a4c1300535677949e6a08600a914aa7f6531c` (dirty: `false`)
+- Git revision: `080a1c4a78bcecb42c61768f0fb45b054527e960` (dirty: `false`)
 - Cache state: `warm`
 - PostgreSQL: `PostgreSQL 17.7 on aarch64-unknown-linux-musl, compiled by gcc (Alpine 15.2.0) 15.2.0, 64-bit`
 
@@ -14,28 +14,28 @@
 
 | Operation | p95 | Target | Result | Scenario | Concurrency | Immich latency |
 | --- | ---: | ---: | --- | --- | ---: | ---: |
-| Liveness response | 3.208µs | 50ms | PASS | steady | 1 | 0s |
-| Readiness response with healthy dependencies | 1.098208ms | 500ms | PASS | steady | 1 | 0s |
-| Session validation plus simple authorization | 1.765042ms | 50ms | PASS | steady | 1 | 0s |
-| Recipient timeline or Event page, up to 100 items | 9.610375ms | 300ms | PASS | steady | 1 | 0s |
-| Curator work queue or People list | 3.491208ms | 300ms | PASS | steady | 1 | 0s |
-| Authorized search first page | 45.54325ms | 500ms | PASS | steady | 1 | 0s |
-| Comment, Favorite, preference, or seen-state mutation | 4.059083ms | 300ms | PASS | steady | 1 | 0s |
-| Atomic Publication with 5,000 placements and 50 Recipients | 2.160399416s | 3s | PASS | steady | 1 | 0s |
-| Audience proposal recalculation for 50 Recipients and 500 Moment items | 900.324667ms | 1s | PASS | steady | 1 | 0s |
-| Eligible job start after available_at | 13.693667ms | 1m0s | PASS | steady | 1 | 0s |
-| Notification dispatch start after coalescing closes | 50.216ms | 2m0s | PASS | steady | 1 | 0s |
-| Full 100,000-item reconciliation | 10.808990917s | 30m0s | PASS | steady | 1 | 0s |
-| Media proxy first-byte application overhead | 18.045625ms | 150ms | PASS | steady | 1 | 5ms |
+| Liveness response | 3.292µs | 50ms | PASS | steady | 1 | 0s |
+| Readiness response with healthy dependencies | 941.417µs | 500ms | PASS | steady | 1 | 0s |
+| Session validation plus simple authorization | 1.777458ms | 50ms | PASS | steady | 1 | 0s |
+| Recipient timeline or Event page, up to 100 items | 9.252ms | 300ms | PASS | steady | 1 | 0s |
+| Curator work queue or People list | 3.912417ms | 300ms | PASS | steady | 1 | 0s |
+| Authorized search first page | 44.79225ms | 500ms | PASS | steady | 1 | 0s |
+| Comment, Favorite, preference, or seen-state mutation | 3.665458ms | 300ms | PASS | steady | 1 | 0s |
+| Atomic Publication with 5,000 placements and 50 Recipients | 1.769866666s | 3s | PASS | steady | 1 | 0s |
+| Audience proposal recalculation for 50 Recipients and 500 Moment items | 470.522875ms | 1s | PASS | steady | 1 | 0s |
+| Eligible job start after available_at | 2.769875ms | 1m0s | PASS | steady | 1 | 0s |
+| Notification dispatch start after coalescing closes | 4.905ms | 2m0s | PASS | steady | 1 | 0s |
+| Full 100,000-item reconciliation | 10.502512791s | 30m0s | PASS | steady | 1 | 0s |
+| Media proxy first-byte application overhead | 18.479041ms | 150ms | PASS | steady | 1 | 5ms |
 | Application buffer bytes per active Media stream | 32768 B | 1048576 B | PASS | steady | 32 | 0s |
 
 ## Competing work
 
 | Operation | p95 | Competitor | Concurrency |
 | --- | ---: | --- | ---: |
-| Recipient timeline or Event page, up to 100 items | 11.210375ms | reconciliation | 2 |
-| Recipient timeline or Event page, up to 100 items | 12.420416ms | publication | 2 |
-| Authorized search first page | 51.564666ms | notification dispatch | 2 |
+| Recipient timeline or Event page, up to 100 items | 10.492541ms | reconciliation | 2 |
+| Recipient timeline or Event page, up to 100 items | 12.247333ms | publication | 2 |
+| Authorized search first page | 51.788291ms | notification dispatch | 2 |
 
 ## PostgreSQL plans and buffers
 
@@ -46,11 +46,17 @@
 - `search`: warm cache, role `Authorized search`; full `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)` is in the JSON artifact.
 - `curator`: warm cache, role `Curator People list`; full `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)` is in the JSON artifact.
 
+## Limitations
+
+- Results characterize this recorded host and warm PostgreSQL cache, not arbitrary operator hardware or Immich storage throughput.
+- Complete Recipient chronology correctness and its query plan are exercised at target scale, but the product specification defines no standalone chronology latency target.
+- Controlled local dependencies do not model networked PostgreSQL or Immich latency except where a metric records injected dependency delay.
+
 ## Environment
 
 - OS/architecture: `darwin/arm64`
 - CPU: `Apple M3 Pro` (11 logical CPUs)
 - Memory: 38654705664 bytes
 - Go: `go1.26.5`
-- Database size: 606637203 bytes
+- Database size: 579529875 bytes
 - Database pool: 16 connections
