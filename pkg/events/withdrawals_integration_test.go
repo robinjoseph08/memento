@@ -691,7 +691,7 @@ func TestEveryImplementedRecipientContentRouteEnforcesEveryWithdrawalKind(t *tes
 			assert.ElementsMatch(t, []string{
 				"GET /api/me/photos", "GET /api/me/photos/chronology",
 				"GET /api/me/favorites", "GET /api/me/favorites/chronology", "GET /api/me/events",
-				"GET /api/me/events/:id", "GET /api/me/new-for-you",
+				"GET /api/me/events/:id", "GET /api/me/loose-items/:id", "GET /api/me/new-for-you",
 				"POST /api/me/new-for-you/:publication_id/seen",
 				"GET /api/me/media/:id/thumbnail", "GET /api/me/media/:id/preview",
 				"GET /api/me/media/:id/video", "GET /api/me/media/:id/original",
@@ -704,6 +704,10 @@ func TestEveryImplementedRecipientContentRouteEnforcesEveryWithdrawalKind(t *tes
 			} {
 				assert.Equal(t, http.StatusOK, draftRequest(recipientHTTP, http.MethodGet, path, "").Code, "pre-open %s", path)
 			}
+			missingLoose := draftRequest(recipientHTTP, http.MethodGet, "/api/me/loose-items/"+fixture.event.String(), "")
+			guessedLoose := draftRequest(recipientHTTP, http.MethodGet, "/api/me/loose-items/"+uuid.NewString(), "")
+			assert.Equal(t, http.StatusNotFound, missingLoose.Code)
+			assert.Equal(t, guessedLoose.Body.String(), missingLoose.Body.String())
 			for _, representation := range []string{"thumbnail", "preview", "video", "original"} {
 				path := "/api/me/media/" + fixture.media[0].String() + "/" + representation
 				assert.Equal(t, http.StatusOK, draftRequest(recipientHTTP, http.MethodGet, path, "").Code, "pre-open %s", path)
@@ -731,6 +735,11 @@ func TestEveryImplementedRecipientContentRouteEnforcesEveryWithdrawalKind(t *tes
 			assert.Equal(t, http.StatusNotFound, openedEvent.Code)
 			assert.Equal(t, guessedEvent.Code, openedEvent.Code)
 			assert.Equal(t, guessedEvent.Body.String(), openedEvent.Body.String())
+
+			openedLoose := draftRequest(recipientHTTP, http.MethodGet, "/api/me/loose-items/"+fixture.event.String(), "")
+			guessedLoose = draftRequest(recipientHTTP, http.MethodGet, "/api/me/loose-items/"+uuid.NewString(), "")
+			assert.Equal(t, http.StatusNotFound, openedLoose.Code)
+			assert.Equal(t, guessedLoose.Body.String(), openedLoose.Body.String())
 
 			openedSeen := draftRequest(recipientHTTP, http.MethodPost, "/api/me/new-for-you/"+publication.ID+"/seen", "")
 			guessedSeen := draftRequest(recipientHTTP, http.MethodPost, "/api/me/new-for-you/"+uuid.NewString()+"/seen", "")

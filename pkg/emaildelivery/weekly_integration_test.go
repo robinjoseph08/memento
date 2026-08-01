@@ -257,6 +257,42 @@ func TestWeeklyDigestStopsAtTheTwentyFourHourRetryWindow(t *testing.T) {
 	assert.Empty(t, fixture.sender.sent())
 }
 
+func TestWeeklyEmailAuthorizesAndReauthorizesLoosePublication(t *testing.T) {
+	t.Run("authorized Loose activity is delivered", func(t *testing.T) {
+		fixture := newImmediateFixture(t)
+		fixture.useWeekly(t, "sunday", "09:00", "UTC")
+		_, publicationID := fixture.addLoosePublicationActivity(t)
+		require.NoError(t, fixture.service.QueuePublication(context.Background(), uuid.Nil, publicationID))
+		var batchID int64
+		require.NoError(t, fixture.db.NewRaw(`SELECT id FROM notification_batches`).Scan(context.Background(), &batchID))
+		require.NoError(t, fixture.service.HandleWeekly(context.Background(), fixture.leasedWeeklyJob(t, batchID)))
+		messages := fixture.sender.sent()
+		require.Len(t, messages, 1)
+		assert.Contains(t, messages[0].Body, "Loose portrait: 1 new item")
+		preference, err := fixture.service.PreferenceFor(context.Background(), fixture.access["alex"])
+		require.NoError(t, err)
+		assert.Equal(t, "weekly", preference.EmailPreference)
+	})
+
+	t.Run("Loose access loss suppresses delivery", func(t *testing.T) {
+		fixture := newImmediateFixture(t)
+		fixture.useWeekly(t, "sunday", "09:00", "UTC")
+		looseID, publicationID := fixture.addLoosePublicationActivity(t)
+		require.NoError(t, fixture.service.QueuePublication(context.Background(), uuid.Nil, publicationID))
+		var batchID int64
+		require.NoError(t, fixture.db.NewRaw(`SELECT id FROM notification_batches`).Scan(context.Background(), &batchID))
+		_, err := fixture.db.NewRaw(`DELETE FROM current_loose_item_entitlements WHERE loose_item_id = ?`, looseID).
+			Exec(context.Background())
+		require.NoError(t, err)
+		require.NoError(t, fixture.service.HandleWeekly(context.Background(), fixture.leasedWeeklyJob(t, batchID)))
+		assert.Empty(t, fixture.sender.sent())
+		var status string
+		require.NoError(t, fixture.db.NewRaw(`SELECT status FROM notification_batches WHERE id = ?`, batchID).
+			Scan(context.Background(), &status))
+		assert.Equal(t, "suppressed", status)
+	})
+}
+
 func TestWeeklyPreviewMediaStayLockedThroughSMTPAcceptance(t *testing.T) {
 	fixture := newImmediateFixture(t)
 	fixture.useWeekly(t, "sunday", "09:00", "UTC")

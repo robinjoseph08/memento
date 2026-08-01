@@ -36,7 +36,8 @@ func (h *Handler) ReviewMoment(c echo.Context) error    { return h.review(c, tar
 func (h *Handler) ReviewLooseItem(c echo.Context) error { return h.review(c, targetLoose) }
 
 func (h *Handler) review(c echo.Context, kind string) error {
-	if _, err := h.authorize(c, false); err != nil {
+	actor, err := h.authorize(c, false)
+	if err != nil {
 		return err
 	}
 	id, err := audienceRouteID(c.Param("id"))
@@ -47,7 +48,7 @@ func (h *Handler) review(c echo.Context, kind string) error {
 	if kind == targetMoment {
 		response, err = h.service.ReviewMoment(c.Request().Context(), id)
 	} else {
-		response, err = h.service.ReviewLooseItem(c.Request().Context(), id)
+		response, err = h.service.ReviewLooseItem(c.Request().Context(), actor, id)
 	}
 	if mapped := audienceError(err); mapped != nil {
 		return mapped

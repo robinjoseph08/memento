@@ -3154,11 +3154,11 @@ test("keeps transient organization state when URL navigation is rejected", async
   fireEvent.click(screen.getByRole("button", { name: "Navigate externally" }));
 
   await waitFor(() =>
-    expect(confirm).toHaveBeenCalledWith(
-      "Discard changes that have not finished saving?",
-    ),
+    expect(
+      screen.getByRole("heading", { name: "Family weekend" }),
+    ).toBeVisible(),
   );
-  expect(screen.getByRole("heading", { name: "Family weekend" })).toBeVisible();
+  expect(confirm).not.toHaveBeenCalled();
   expect(screen.getByLabelText("Title for Moment 1")).toHaveValue(
     "Unsaved URL navigation",
   );

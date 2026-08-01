@@ -158,14 +158,15 @@ func (h *Handler) PublishEvent(c echo.Context) error {
 }
 
 func (h *Handler) PreviewRecipients(c echo.Context) error {
-	if _, err := h.authorize(c, false); err != nil {
+	actor, err := h.authorize(c, false)
+	if err != nil {
 		return err
 	}
 	eventID, err := routeID(c.Param("id"), "Event")
 	if err != nil {
 		return err
 	}
-	response, err := h.service.PreviewRecipients(c.Request().Context(), eventID)
+	response, err := h.service.PreviewRecipients(c.Request().Context(), actor, eventID)
 	if mapped := publicationError(err); mapped != nil {
 		return mapped
 	}
@@ -227,19 +228,92 @@ func (h *Handler) CreateLooseItem(c echo.Context) error {
 	return c.JSON(status, item)
 }
 
+func (h *Handler) ListLooseItems(c echo.Context) error {
+	actor, err := h.authorize(c, false)
+	if err != nil {
+		return err
+	}
+	response, err := h.service.ListLooseItems(c.Request().Context(), actor)
+	if err != nil {
+		return err
+	}
+	return c.JSON(http.StatusOK, response)
+}
+
 func (h *Handler) GetLooseItem(c echo.Context) error {
-	if _, err := h.authorize(c, false); err != nil {
+	actor, err := h.authorize(c, false)
+	if err != nil {
 		return err
 	}
 	id, err := routeID(c.Param("id"), "Loose item")
 	if err != nil {
 		return err
 	}
-	item, err := h.service.GetLooseItem(c.Request().Context(), id)
+	item, err := h.service.GetLooseItem(c.Request().Context(), actor, id)
 	if mapped := draftError(err, "Loose item"); mapped != nil {
 		return mapped
 	}
 	return c.JSON(http.StatusOK, item)
+}
+
+func (h *Handler) UpdateLooseItem(c echo.Context) error {
+	actor, err := h.authorize(c, true)
+	if err != nil {
+		return err
+	}
+	id, err := routeID(c.Param("id"), "Loose item")
+	if err != nil {
+		return err
+	}
+	var request UpdateLooseItemRequest
+	if err := c.Bind(&request); err != nil {
+		return err
+	}
+	item, err := h.service.UpdateLooseItem(h.requestContext(c), actor, id, request)
+	if mapped := draftError(err, "Loose item"); mapped != nil {
+		return mapped
+	}
+	return c.JSON(http.StatusOK, item)
+}
+
+func (h *Handler) PublishLooseItem(c echo.Context) error {
+	actor, err := h.authorize(c, true)
+	if err != nil {
+		return err
+	}
+	id, err := routeID(c.Param("id"), "Loose item")
+	if err != nil {
+		return err
+	}
+	var request PublishLooseItemRequest
+	if err := c.Bind(&request); err != nil {
+		return err
+	}
+	publication, err := h.service.PublishLooseItem(h.requestContext(c), actor, id, request)
+	if mapped := loosePublicationError(err); mapped != nil {
+		return mapped
+	}
+	return c.JSON(http.StatusCreated, publication)
+}
+
+func (h *Handler) PreviewLooseItem(c echo.Context) error {
+	actor, err := h.authorize(c, true)
+	if err != nil {
+		return err
+	}
+	id, err := routeID(c.Param("id"), "Loose item")
+	if err != nil {
+		return err
+	}
+	recipientID, err := uuid.Parse(c.QueryParam("recipient_person_id"))
+	if err != nil || recipientID == uuid.Nil {
+		return errcodes.ValidationError("Choose a current Recipient to preview.")
+	}
+	view, err := h.service.PreviewLooseItem(h.requestContext(c), actor, id, recipientID)
+	if mapped := loosePublicationError(err); mapped != nil {
+		return mapped
+	}
+	return c.JSON(http.StatusOK, view)
 }
 
 func (h *Handler) authorize(c echo.Context, mutation bool) (setup.CuratorSession, error) {
@@ -276,6 +350,25 @@ func publicationError(err error) error {
 		return errcodes.Conflict("Finish Media organization, approve every Moment Audience, and complete final review before publishing.")
 	case errors.Is(err, ErrAudienceNotCurrent):
 		return errcodes.Conflict("A Recipient's access changed. Recalculate and approve every affected Audience before publishing.")
+	default:
+		return err
+	}
+}
+
+func loosePublicationError(err error) error {
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, ErrNotFound), errors.Is(err, ErrNoPublication):
+		return errcodes.NotFound("Loose item")
+	case errors.Is(err, ErrVersionConflict):
+		return errcodes.Conflict("This Loose item changed in another browser. Reload and review the current editable version before publishing.")
+	case errors.Is(err, ErrPublicationNotReady):
+		return errcodes.Conflict("Approve the Loose item Audience, including an explicit Curator-only Audience, before publishing.")
+	case errors.Is(err, ErrAudienceNotCurrent):
+		return errcodes.Conflict("A Recipient's access changed. Recalculate and approve the Loose item Audience before publishing.")
+	case errors.Is(err, ErrMediaUnavailable):
+		return errcodes.Conflict("The Loose item's Source Media is unavailable. Relink it before publishing.")
 	default:
 		return err
 	}
@@ -320,6 +413,8 @@ func draftError(err error, resource string) error {
 		return errcodes.ValidationError("Use no more than 20 Place labels, with 1 to 120 characters in each label.")
 	case errors.Is(err, ErrInvalid):
 		return errcodes.ValidationError("Draft fields must be valid, include at least one Media item with no duplicates, and use only covers from their Moments.")
+	case errors.Is(err, ErrVersionConflict) && resource == "Loose item":
+		return errcodes.Conflict("This Loose item changed in another browser. Review the newer version before saving again.")
 	case errors.Is(err, ErrVersionConflict):
 		return errcodes.Conflict("This Event changed in another browser. Review the newer version before saving again.")
 	case errors.Is(err, ErrSourceUnavailable):
@@ -371,8 +466,18 @@ func RegisterRoutes(e *echo.Echo, handler *Handler) {
 	looseItems := e.Group("/api/loose-items", noStore)
 	createLoose := looseItems.POST("", handler.CreateLooseItem)
 	createLoose.Name = curatorMutationPolicy
+	listLoose := looseItems.GET("", handler.ListLooseItems)
+	listLoose.Name = curatorReadPolicy
 	getLoose := looseItems.GET("/:id", handler.GetLooseItem)
 	getLoose.Name = curatorReadPolicy
+	updateLoose := looseItems.PUT("/:id", handler.UpdateLooseItem)
+	updateLoose.Name = curatorMutationPolicy
+	publishLoose := looseItems.POST("/:id/publications", handler.PublishLooseItem)
+	publishLoose.Name = curatorMutationPolicy
+	previewLooseRecipients := looseItems.GET("/:id/preview-recipients", handler.PreviewRecipients)
+	previewLooseRecipients.Name = curatorReadPolicy
+	previewLoose := looseItems.POST("/:id/preview", handler.PreviewLooseItem)
+	previewLoose.Name = curatorMutationPolicy
 
 	sourceMedia := e.GET("/api/sources/:id/media-items", handler.SourceMedia, noStore)
 	sourceMedia.Name = curatorReadPolicy

@@ -381,6 +381,12 @@ test("creates a Loose item around one stable Media identity and preserves Source
     proposed_day: null,
     version: 1,
     audience_complete: false,
+    published_editable_version: null,
+    has_staged_update: false,
+    pending_withdrawal_publication: false,
+    withdrawal_targets: [],
+    withdrawals: [],
+    place_labels: [],
     media_item: mediaUndated,
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",
@@ -420,15 +426,11 @@ test("creates a Loose item around one stable Media identity and preserves Source
     screen.getByRole("button", { name: "Create private Loose item" }),
   );
 
-  expect(
-    await screen.findByText(
-      "Loose item is ready privately. Review its Audience before Publication.",
+  await waitFor(() =>
+    expect(window.location.search).toBe(
+      "?workspace=drafts&loose=loose-created",
     ),
-  ).toBeVisible();
-  expect(screen.getAllByText("Trip")).not.toHaveLength(0);
-  expect(
-    screen.getByLabelText(/Select undated video Media media-undated/),
-  ).not.toBeChecked();
+  );
   const creation = requests.find(({ path }) => path === "/api/loose-items");
   expect(jsonBody(creation?.init?.body)).toEqual({
     media_item_id: "media-undated",

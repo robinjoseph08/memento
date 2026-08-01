@@ -25,9 +25,10 @@ var (
 type WithdrawalTargetKind string
 
 const (
-	WithdrawalTargetEvent  WithdrawalTargetKind = "event"
-	WithdrawalTargetMoment WithdrawalTargetKind = "moment"
-	WithdrawalTargetMedia  WithdrawalTargetKind = "media"
+	WithdrawalTargetEvent     WithdrawalTargetKind = "event"
+	WithdrawalTargetMoment    WithdrawalTargetKind = "moment"
+	WithdrawalTargetMedia     WithdrawalTargetKind = "media"
+	WithdrawalTargetLooseItem WithdrawalTargetKind = "loose_item"
 )
 
 // WithdrawalStep identifies a transactional write boundary used by rollback tests.
@@ -46,7 +47,7 @@ const (
 
 func (kind WithdrawalTargetKind) valid() bool {
 	switch kind {
-	case WithdrawalTargetEvent, WithdrawalTargetMoment, WithdrawalTargetMedia:
+	case WithdrawalTargetEvent, WithdrawalTargetMoment, WithdrawalTargetMedia, WithdrawalTargetLooseItem:
 		return true
 	default:
 		return false
@@ -61,6 +62,8 @@ func (kind WithdrawalTargetKind) placementPredicate() string {
 		return "moment.draft_moment_id = ?"
 	case WithdrawalTargetMedia:
 		return "placement.media_item_id = ?"
+	case WithdrawalTargetLooseItem:
+		return "FALSE"
 	default:
 		return "FALSE"
 	}
@@ -112,6 +115,9 @@ func (s *Service) Withdraw(ctx context.Context, actor setup.CuratorSession, requ
 	}
 
 	now := s.now().UTC()
+	if kind == WithdrawalTargetLooseItem {
+		return s.withdrawLooseItem(ctx, actor, targetID, reason, now)
+	}
 	withdrawalID := uuid.New()
 	result := Withdrawal{
 		ID: withdrawalID.String(), TargetKind: kind, TargetID: targetID.String(),
@@ -161,18 +167,27 @@ func (s *Service) Withdraw(ctx context.Context, actor setup.CuratorSession, requ
 			WHERE `+targetFilter+` ORDER BY placement.event_id`, targetID).Scan(ctx, &eventIDs); err != nil {
 			return err
 		}
-		if len(eventIDs) == 0 {
+		var looseItemIDs []uuid.UUID
+		if kind == WithdrawalTargetMedia {
+			if err := tx.NewRaw(`SELECT loose_item_id FROM current_published_loose_items
+				WHERE media_item_id = ? ORDER BY loose_item_id`, targetID).Scan(ctx, &looseItemIDs); err != nil {
+				return err
+			}
+		}
+		if len(eventIDs) == 0 && len(looseItemIDs) == 0 {
 			return ErrNotFound
 		}
 		if err := s.withdrawalBoundary(WithdrawalStepTargeted); err != nil {
 			return err
 		}
 		var lockedEventIDs []uuid.UUID
-		if err := tx.NewRaw(`SELECT id FROM events WHERE id IN (?) ORDER BY id FOR UPDATE`, bun.List(eventIDs)).Scan(ctx, &lockedEventIDs); err != nil {
-			return err
-		}
-		if len(lockedEventIDs) != len(eventIDs) {
-			return ErrNotFound
+		if len(eventIDs) > 0 {
+			if err := tx.NewRaw(`SELECT id FROM events WHERE id IN (?) ORDER BY id FOR UPDATE`, bun.List(eventIDs)).Scan(ctx, &lockedEventIDs); err != nil {
+				return err
+			}
+			if len(lockedEventIDs) != len(eventIDs) {
+				return ErrNotFound
+			}
 		}
 
 		var currentEventIDs []uuid.UUID
@@ -182,7 +197,7 @@ func (s *Service) Withdraw(ctx context.Context, actor setup.CuratorSession, requ
 			WHERE `+targetFilter+` ORDER BY placement.event_id`, targetID).Scan(ctx, &currentEventIDs); err != nil {
 			return err
 		}
-		if len(currentEventIDs) == 0 {
+		if len(currentEventIDs) == 0 && len(looseItemIDs) == 0 {
 			return ErrNotFound
 		}
 		lockedEvents := make(map[uuid.UUID]struct{}, len(lockedEventIDs))
@@ -197,13 +212,29 @@ func (s *Service) Withdraw(ctx context.Context, actor setup.CuratorSession, requ
 		eventIDs = currentEventIDs
 
 		var hasVisiblePlacement bool
-		if err := tx.NewRaw(`SELECT EXISTS (
-			SELECT 1 FROM (`+selectedPlacements+`) AS selected
-			WHERE NOT content_is_withdrawn(
-				selected.event_id, selected.draft_moment_id, selected.media_item_id
-			)
-		)`, targetID).Scan(ctx, &hasVisiblePlacement); err != nil {
-			return err
+		if len(eventIDs) > 0 {
+			if err := tx.NewRaw(`SELECT EXISTS (
+				SELECT 1 FROM (`+selectedPlacements+`) AS selected
+				WHERE NOT content_is_withdrawn(
+					selected.event_id, selected.draft_moment_id, selected.media_item_id
+				)
+			)`, targetID).Scan(ctx, &hasVisiblePlacement); err != nil {
+				return err
+			}
+		}
+		if !hasVisiblePlacement && kind == WithdrawalTargetMedia && len(looseItemIDs) > 0 {
+			if err := tx.NewRaw(`SELECT EXISTS (
+				SELECT 1 FROM current_published_loose_items AS current
+				WHERE current.loose_item_id IN (?)
+				  AND NOT EXISTS (
+					SELECT 1 FROM content_withdrawals AS withdrawal
+					WHERE withdrawal.restored_at IS NULL
+					  AND withdrawal.target_kind = 'loose_item'
+					  AND withdrawal.target_id = current.loose_item_id
+				  )
+			)`, bun.List(looseItemIDs)).Scan(ctx, &hasVisiblePlacement); err != nil {
+				return err
+			}
 		}
 		if !hasVisiblePlacement {
 			return ErrAlreadyWithdrawn
@@ -263,9 +294,32 @@ func (s *Service) Withdraw(ctx context.Context, actor setup.CuratorSession, requ
 				ORDER BY 1`, targetID, targetID).Scan(ctx, &momentIDs); err != nil {
 				return err
 			}
+			if len(looseItemIDs) > 0 {
+				var lockedLooseItemIDs []uuid.UUID
+				if err := tx.NewRaw(`SELECT id FROM loose_items WHERE id IN (?) ORDER BY id FOR UPDATE`,
+					bun.List(looseItemIDs)).Scan(ctx, &lockedLooseItemIDs); err != nil {
+					return err
+				}
+				if len(lockedLooseItemIDs) != len(looseItemIDs) {
+					return ErrVersionConflict
+				}
+			}
+		case WithdrawalTargetLooseItem:
+			return ErrWithdrawalInvalid
 		}
 		if len(momentIDs) > 0 {
 			if _, err := tx.NewRaw(`SELECT id FROM draft_moments WHERE id IN (?) ORDER BY id FOR UPDATE`, bun.List(momentIDs)).Exec(ctx); err != nil {
+				return err
+			}
+		}
+		if kind == WithdrawalTargetMedia {
+			result.AffectedMediaCount = 1
+			if err := tx.NewRaw(`SELECT count(DISTINCT entitlement.recipient_access_generation_id)::integer
+				FROM current_media_entitlements AS entitlement
+				JOIN recipient_access_generations AS access
+				  ON access.id = entitlement.recipient_access_generation_id
+				 AND access.is_current AND access.state = 'completed'
+				WHERE entitlement.media_item_id = ?`, targetID).Scan(ctx, &result.AffectedRecipientCount); err != nil {
 				return err
 			}
 		}
@@ -286,37 +340,39 @@ func (s *Service) Withdraw(ctx context.Context, actor setup.CuratorSession, requ
 			return err
 		}
 
-		for _, statement := range []string{
-			`WITH selected AS (` + selectedPlacements + `)
-			 DELETE FROM published_search_documents AS document USING selected
-			 WHERE document.event_id = selected.event_id AND document.media_item_id = selected.media_item_id`,
-			`WITH selected AS (` + selectedPlacements + `)
-			 DELETE FROM current_audience_entitlements AS entitlement USING selected
-			 WHERE entitlement.event_id = selected.event_id AND entitlement.media_item_id = selected.media_item_id`,
-		} {
-			if _, err := tx.NewRaw(statement, targetID).Exec(ctx); err != nil {
+		if len(eventIDs) > 0 {
+			for _, statement := range []string{
+				`WITH selected AS (` + selectedPlacements + `)
+				 DELETE FROM published_search_documents AS document USING selected
+				 WHERE document.event_id = selected.event_id AND document.media_item_id = selected.media_item_id`,
+				`WITH selected AS (` + selectedPlacements + `)
+				 DELETE FROM current_audience_entitlements AS entitlement USING selected
+				 WHERE entitlement.event_id = selected.event_id AND entitlement.media_item_id = selected.media_item_id`,
+			} {
+				if _, err := tx.NewRaw(statement, targetID).Exec(ctx); err != nil {
+					return err
+				}
+			}
+			if _, err := tx.NewRaw(`DELETE FROM current_recipient_event_covers WHERE event_id IN (?)`, bun.List(eventIDs)).Exec(ctx); err != nil {
 				return err
 			}
-		}
-		if _, err := tx.NewRaw(`DELETE FROM current_recipient_event_covers WHERE event_id IN (?)`, bun.List(eventIDs)).Exec(ctx); err != nil {
-			return err
-		}
-		if _, err := tx.NewRaw(`INSERT INTO current_recipient_event_covers (
-			event_id, recipient_access_generation_id, media_item_id
-		)
-		SELECT DISTINCT ON (entitlement.event_id, entitlement.recipient_access_generation_id)
-		       entitlement.event_id, entitlement.recipient_access_generation_id, entitlement.media_item_id
-		FROM current_audience_entitlements AS entitlement
-		JOIN current_published_placements AS placement
-		  ON placement.event_id = entitlement.event_id AND placement.media_item_id = entitlement.media_item_id
-		JOIN media_items AS media ON media.id = entitlement.media_item_id
-		JOIN published_moments AS moment ON moment.id = placement.published_moment_id
-		WHERE entitlement.event_id IN (?)
-		ORDER BY entitlement.event_id, entitlement.recipient_access_generation_id,
-		         (media.availability = 'current') DESC,
-		         (moment.cover_media_item_id = entitlement.media_item_id) DESC,
-		         placement.position`, bun.List(eventIDs)).Exec(ctx); err != nil {
-			return err
+			if _, err := tx.NewRaw(`INSERT INTO current_recipient_event_covers (
+				event_id, recipient_access_generation_id, media_item_id
+			)
+			SELECT DISTINCT ON (entitlement.event_id, entitlement.recipient_access_generation_id)
+			       entitlement.event_id, entitlement.recipient_access_generation_id, entitlement.media_item_id
+			FROM current_audience_entitlements AS entitlement
+			JOIN current_published_placements AS placement
+			  ON placement.event_id = entitlement.event_id AND placement.media_item_id = entitlement.media_item_id
+			JOIN media_items AS media ON media.id = entitlement.media_item_id
+			JOIN published_moments AS moment ON moment.id = placement.published_moment_id
+			WHERE entitlement.event_id IN (?)
+			ORDER BY entitlement.event_id, entitlement.recipient_access_generation_id,
+			         (media.availability = 'current') DESC,
+			         (moment.cover_media_item_id = entitlement.media_item_id) DESC,
+			         placement.position`, bun.List(eventIDs)).Exec(ctx); err != nil {
+				return err
+			}
 		}
 		if err := s.withdrawalBoundary(WithdrawalStepProjections); err != nil {
 			return err
@@ -345,24 +401,54 @@ func (s *Service) Withdraw(ctx context.Context, actor setup.CuratorSession, requ
 				}
 			}
 		}
+		if len(looseItemIDs) > 0 {
+			if _, err := tx.NewRaw(`DELETE FROM new_for_you_entries AS entry USING publications AS publication
+				WHERE entry.publication_id = publication.id AND publication.loose_item_id IN (?)`, bun.List(looseItemIDs)).Exec(ctx); err != nil {
+				return err
+			}
+			if _, err := tx.NewRaw(`DELETE FROM publication_activity_items AS activity USING publications AS publication
+				WHERE activity.publication_id = publication.id AND publication.loose_item_id IN (?)`, bun.List(looseItemIDs)).Exec(ctx); err != nil {
+				return err
+			}
+		}
 		if err := s.withdrawalBoundary(WithdrawalStepActivity); err != nil {
 			return err
 		}
-		eventIDStrings := make([]string, len(eventIDs))
-		for index, eventID := range eventIDs {
-			eventIDStrings[index] = eventID.String()
+		if len(eventIDs) > 0 {
+			eventIDStrings := make([]string, len(eventIDs))
+			for index, eventID := range eventIDs {
+				eventIDStrings[index] = eventID.String()
+			}
+			if _, err := tx.NewRaw(`UPDATE outbox_events
+				SET delivered_at = ?, lease_owner = NULL, lease_expires_at = NULL
+				WHERE kind = 'publication_committed' AND aggregate_kind = 'event_publication'
+				  AND aggregate_id IN (?) AND delivered_at IS NULL`, now, bun.List(eventIDStrings)).Exec(ctx); err != nil {
+				return err
+			}
+			if _, err := tx.NewRaw(`UPDATE jobs
+				SET status = 'failed', last_safe_error = 'publication_withdrawn', updated_at = ?
+				WHERE kind = 'publication_committed' AND status = 'pending'
+				  AND payload->>'event_id' IN (?)`, now, bun.List(eventIDStrings)).Exec(ctx); err != nil {
+				return err
+			}
 		}
-		if _, err := tx.NewRaw(`UPDATE outbox_events
-			SET delivered_at = ?, lease_owner = NULL, lease_expires_at = NULL
-			WHERE kind = 'publication_committed' AND aggregate_kind = 'event_publication'
-			  AND aggregate_id IN (?) AND delivered_at IS NULL`, now, bun.List(eventIDStrings)).Exec(ctx); err != nil {
-			return err
-		}
-		if _, err := tx.NewRaw(`UPDATE jobs
-			SET status = 'failed', last_safe_error = 'publication_withdrawn', updated_at = ?
-			WHERE kind = 'publication_committed' AND status = 'pending'
-			  AND payload->>'event_id' IN (?)`, now, bun.List(eventIDStrings)).Exec(ctx); err != nil {
-			return err
+		if len(looseItemIDs) > 0 {
+			looseIDStrings := make([]string, len(looseItemIDs))
+			for index, looseID := range looseItemIDs {
+				looseIDStrings[index] = looseID.String()
+			}
+			if _, err := tx.NewRaw(`UPDATE outbox_events
+				SET delivered_at = ?, lease_owner = NULL, lease_expires_at = NULL
+				WHERE kind = 'publication_committed' AND aggregate_kind = 'loose_item_publication'
+				  AND aggregate_id IN (?) AND delivered_at IS NULL`, now, bun.List(looseIDStrings)).Exec(ctx); err != nil {
+				return err
+			}
+			if _, err := tx.NewRaw(`UPDATE jobs
+				SET status = 'failed', last_safe_error = 'publication_withdrawn', updated_at = ?
+				WHERE kind = 'publication_committed' AND status = 'pending'
+				  AND payload->>'loose_item_id' IN (?)`, now, bun.List(looseIDStrings)).Exec(ctx); err != nil {
+				return err
+			}
 		}
 		if err := s.withdrawalBoundary(WithdrawalStepDelivery); err != nil {
 			return err
@@ -376,8 +462,27 @@ func (s *Service) Withdraw(ctx context.Context, actor setup.CuratorSession, requ
 				return err
 			}
 		}
-		if _, err := tx.NewRaw(`UPDATE events SET final_review_complete = false, version = version + 1, updated_at = ? WHERE id IN (?)`, now, bun.List(eventIDs)).Exec(ctx); err != nil {
-			return err
+		if len(eventIDs) > 0 {
+			if _, err := tx.NewRaw(`UPDATE events SET final_review_complete = false, version = version + 1, updated_at = ? WHERE id IN (?)`, now, bun.List(eventIDs)).Exec(ctx); err != nil {
+				return err
+			}
+		}
+		if len(looseItemIDs) > 0 {
+			if _, err := tx.NewRaw(`DELETE FROM current_audience_snapshots
+				WHERE target_kind = 'loose_item' AND target_id IN (?)`, bun.List(looseItemIDs)).Exec(ctx); err != nil {
+				return err
+			}
+			for _, looseID := range looseItemIDs {
+				var currentPublicationID uuid.UUID
+				if err := tx.NewRaw(`UPDATE loose_items SET audience_complete = false,
+					review_version = review_version + 1, version = version + 1, updated_at = ?
+					WHERE id = ? RETURNING current_publication_id`, now, looseID).Scan(ctx, &currentPublicationID); err != nil {
+					return err
+				}
+				if err := refreshLooseStagedUpdate(ctx, tx, looseID, currentPublicationID, now); err != nil {
+					return err
+				}
+			}
 		}
 		// The affected Events already received a new version for Withdrawal review.
 		// Refresh them first, then invalidate any other Staged Event whose effective
@@ -410,10 +515,139 @@ func (s *Service) Withdraw(ctx context.Context, actor setup.CuratorSession, requ
 				return err
 			}
 		}
+		if len(eventIDs) == 0 {
+			if _, err := tx.NewRaw(`INSERT INTO publication_audit_events (
+				event_id, target_kind, target_id, actor_person_id, action, metadata, created_at
+			) VALUES (NULL, ?, ?, ?, 'content_withdrawn', ?::jsonb, ?)`, kind, targetID,
+				actor.PersonID, string(metadata), now).Exec(ctx); err != nil {
+				return err
+			}
+		}
 		if err := tx.NewRaw(`SELECT display_name FROM people WHERE id = ?`, actor.PersonID).Scan(ctx, &result.WithdrawnByName); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return setup.ErrNotCurator
 			}
+			return err
+		}
+		return s.withdrawalBoundary(WithdrawalStepAudit)
+	})
+	if err != nil {
+		return Withdrawal{}, err
+	}
+	return result, nil
+}
+
+func (s *Service) withdrawLooseItem(ctx context.Context, actor setup.CuratorSession, looseID uuid.UUID, reason string, now time.Time) (Withdrawal, error) {
+	withdrawalID := uuid.New()
+	result := Withdrawal{ID: withdrawalID.String(), TargetKind: WithdrawalTargetLooseItem,
+		TargetID: looseID.String(), Reason: reason, WithdrawnAt: now}
+	err := s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if err := requireCurator(ctx, tx, actor.PersonID); err != nil {
+			return err
+		}
+		if err := staging.LockAccessSummaryReplacement(ctx, tx); err != nil {
+			return err
+		}
+		if _, err := tx.NewRaw(`SELECT pg_advisory_xact_lock(hashtextextended('loose_item:' || ?, 0))`, looseID.String()).Exec(ctx); err != nil {
+			return err
+		}
+		if err := placementlock.Acquire(ctx, tx, placementlock.Exclusive); err != nil {
+			return err
+		}
+		var publicationID, mediaID uuid.UUID
+		if err := tx.NewRaw(`SELECT current_publication_id, media_item_id FROM loose_items
+			WHERE id = ? AND lifecycle = 'published' FOR UPDATE`, looseID).Scan(ctx, &publicationID, &mediaID); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrNotFound
+			}
+			return err
+		}
+		var active bool
+		if err := tx.NewRaw(`SELECT EXISTS (SELECT 1 FROM content_withdrawals
+			WHERE restored_at IS NULL AND (
+			 (target_kind = 'loose_item' AND target_id = ?)
+			 OR (target_kind = 'media' AND target_id = ?)))`, looseID, mediaID).Scan(ctx, &active); err != nil {
+			return err
+		}
+		if active {
+			return ErrAlreadyWithdrawn
+		}
+		if err := s.withdrawalBoundary(WithdrawalStepTargeted); err != nil {
+			return err
+		}
+		if err := s.withdrawalBoundary(WithdrawalStepLocked); err != nil {
+			return err
+		}
+		if err := tx.NewRaw(`SELECT count(DISTINCT entitlement.recipient_access_generation_id)::integer
+			FROM current_loose_item_entitlements AS entitlement JOIN recipient_access_generations AS access
+			ON access.id=entitlement.recipient_access_generation_id AND access.is_current AND access.state='completed'
+			WHERE entitlement.loose_item_id=?`, looseID).Scan(ctx, &result.AffectedRecipientCount); err != nil {
+			return err
+		}
+		result.AffectedMediaCount = 1
+		var contentRevision int64
+		if err := tx.NewRaw(`UPDATE system_settings SET content_revision=content_revision+1 WHERE id=1 RETURNING content_revision`).Scan(ctx, &contentRevision); err != nil {
+			return err
+		}
+		if _, err := tx.NewRaw(`INSERT INTO content_withdrawals (id,target_kind,target_id,reason,withdrawn_by_person_id,withdrawn_at,content_revision)
+			VALUES (?, 'loose_item', ?, ?, ?, ?, ?)`, withdrawalID, looseID, reason, actor.PersonID, now, contentRevision).Exec(ctx); err != nil {
+			return err
+		}
+		if err := s.withdrawalBoundary(WithdrawalStepRecorded); err != nil {
+			return err
+		}
+		if _, err := tx.NewRaw(`DELETE FROM published_loose_search_documents WHERE loose_item_id=?`, looseID).Exec(ctx); err != nil {
+			return err
+		}
+		if _, err := tx.NewRaw(`DELETE FROM current_loose_item_entitlements WHERE loose_item_id=?`, looseID).Exec(ctx); err != nil {
+			return err
+		}
+		if err := s.withdrawalBoundary(WithdrawalStepProjections); err != nil {
+			return err
+		}
+		if _, err := tx.NewRaw(`DELETE FROM new_for_you_entries WHERE publication_id=?`, publicationID).Exec(ctx); err != nil {
+			return err
+		}
+		if _, err := tx.NewRaw(`DELETE FROM publication_activity_items WHERE publication_id=?`, publicationID).Exec(ctx); err != nil {
+			return err
+		}
+		if err := s.withdrawalBoundary(WithdrawalStepActivity); err != nil {
+			return err
+		}
+		if _, err := tx.NewRaw(`UPDATE outbox_events SET delivered_at=?, lease_owner=NULL, lease_expires_at=NULL
+			WHERE kind='publication_committed' AND aggregate_kind='loose_item_publication' AND aggregate_id=? AND delivered_at IS NULL`, now, looseID.String()).Exec(ctx); err != nil {
+			return err
+		}
+		if _, err := tx.NewRaw(`UPDATE jobs SET status='failed', last_safe_error='publication_withdrawn', updated_at=?
+			WHERE kind='publication_committed' AND status='pending' AND payload->>'loose_item_id'=?`, now, looseID.String()).Exec(ctx); err != nil {
+			return err
+		}
+		if err := s.withdrawalBoundary(WithdrawalStepDelivery); err != nil {
+			return err
+		}
+		if _, err := tx.NewRaw(`DELETE FROM current_audience_snapshots WHERE target_kind='loose_item' AND target_id=?`, looseID).Exec(ctx); err != nil {
+			return err
+		}
+		if _, err := tx.NewRaw(`UPDATE loose_items SET audience_complete=false, review_version=review_version+1,
+			version=version+1, updated_at=? WHERE id=?`, now, looseID).Exec(ctx); err != nil {
+			return err
+		}
+		if err := refreshLooseStagedUpdate(ctx, tx, looseID, publicationID, now); err != nil {
+			return err
+		}
+		if err := staging.RefreshDependentAccessUpdates(ctx, tx, uuid.Nil, now); err != nil {
+			return err
+		}
+		if err := s.withdrawalBoundary(WithdrawalStepReviews); err != nil {
+			return err
+		}
+		metadata, _ := json.Marshal(map[string]any{"withdrawal_id": withdrawalID, "reason": reason,
+			"affected_recipient_count": result.AffectedRecipientCount, "affected_media_count": 1, "affected_event_count": 0})
+		if _, err := tx.NewRaw(`INSERT INTO publication_audit_events (event_id,target_kind,target_id,actor_person_id,action,metadata,created_at)
+			VALUES (NULL,'loose_item',?,?, 'content_withdrawn',?::jsonb,?)`, looseID, actor.PersonID, string(metadata), now).Exec(ctx); err != nil {
+			return err
+		}
+		if err := tx.NewRaw(`SELECT display_name FROM people WHERE id=?`, actor.PersonID).Scan(ctx, &result.WithdrawnByName); err != nil {
 			return err
 		}
 		return s.withdrawalBoundary(WithdrawalStepAudit)
@@ -458,6 +692,87 @@ func hasPendingWithdrawalPublication(ctx context.Context, db bun.IDB, eventID uu
 	return pending, err
 }
 
+// projectDeferredRestorationActivity reactivates durable handoffs for current
+// origins that advanced before the final shared-Media restoration Publication.
+func projectDeferredRestorationActivity(ctx context.Context, tx bun.Tx, restoringPublicationID uuid.UUID, now time.Time) error {
+	if _, err := tx.NewRaw(`CREATE TEMPORARY TABLE memento_deferred_restoration_candidates
+		ON COMMIT DROP AS
+		WITH restored_media AS MATERIALIZED (
+		 SELECT target_id AS media_item_id, content_revision FROM content_withdrawals
+		 WHERE target_kind = 'media' AND restored_by_publication_id = ?
+		)
+		SELECT DISTINCT entitlement.publication_id, entitlement.recipient_access_generation_id,
+		 entitlement.media_item_id
+		FROM current_audience_entitlements AS entitlement
+		JOIN publications AS publication ON publication.id = entitlement.publication_id
+		JOIN recipient_access_generations AS access ON access.id = entitlement.recipient_access_generation_id
+		JOIN restored_media AS restored ON restored.media_item_id = entitlement.media_item_id
+		 AND publication.content_revision > restored.content_revision
+		WHERE entitlement.publication_id <> ? AND access.is_current AND access.state = 'completed'
+		 AND NOT EXISTS (SELECT 1 FROM memento_prior_effective_entitlements AS prior
+		  WHERE prior.access_id = entitlement.recipient_access_generation_id
+		   AND prior.media_item_id = entitlement.media_item_id)
+		UNION
+		SELECT DISTINCT entitlement.publication_id, entitlement.recipient_access_generation_id,
+		 entitlement.media_item_id
+		FROM current_loose_item_entitlements AS entitlement
+		JOIN publications AS publication ON publication.id = entitlement.publication_id
+		JOIN recipient_access_generations AS access ON access.id = entitlement.recipient_access_generation_id
+		JOIN restored_media AS restored ON restored.media_item_id = entitlement.media_item_id
+		 AND publication.content_revision > restored.content_revision
+		WHERE entitlement.publication_id <> ? AND access.is_current AND access.state = 'completed'
+		 AND NOT EXISTS (SELECT 1 FROM memento_prior_effective_entitlements AS prior
+		  WHERE prior.access_id = entitlement.recipient_access_generation_id
+		   AND prior.media_item_id = entitlement.media_item_id)`, restoringPublicationID,
+		restoringPublicationID, restoringPublicationID).Exec(ctx); err != nil {
+		return err
+	}
+	if _, err := tx.NewRaw(`INSERT INTO publication_activity_items
+		(publication_id, recipient_access_generation_id, created_at)
+		SELECT DISTINCT publication_id, recipient_access_generation_id, ?::timestamptz
+		FROM memento_deferred_restoration_candidates ON CONFLICT DO NOTHING`, now).Exec(ctx); err != nil {
+		return err
+	}
+	if _, err := tx.NewRaw(`INSERT INTO new_for_you_entries
+		(recipient_access_generation_id, publication_id)
+		SELECT DISTINCT recipient_access_generation_id, publication_id
+		FROM memento_deferred_restoration_candidates
+		ON CONFLICT (recipient_access_generation_id, publication_id)
+		DO UPDATE SET seen_at = NULL`).Exec(ctx); err != nil {
+		return err
+	}
+	if _, err := tx.NewRaw(`INSERT INTO publication_notification_media
+		(publication_id, recipient_access_generation_id, media_item_id)
+		SELECT publication_id, recipient_access_generation_id, media_item_id
+		FROM memento_deferred_restoration_candidates ON CONFLICT DO NOTHING`).Exec(ctx); err != nil {
+		return err
+	}
+	_, err := tx.NewRaw(`WITH deferred AS MATERIALIZED (
+	 SELECT DISTINCT publication.id, publication.event_id, publication.loose_item_id,
+	  publication.notify_recipients
+	 FROM publications AS publication
+	 JOIN memento_deferred_restoration_candidates AS candidate
+	  ON candidate.publication_id = publication.id
+	 WHERE publication.notify_recipients
+	) INSERT INTO outbox_events
+	 (kind, aggregate_kind, aggregate_id, aggregate_version, payload, available_at, created_at)
+	 SELECT 'publication_committed', identity.aggregate_kind, identity.aggregate_id,
+	  version.next_version,
+	  jsonb_build_object('publication_id', deferred.id, 'notify_recipients', true) ||
+	   CASE WHEN deferred.event_id IS NOT NULL THEN jsonb_build_object('event_id', deferred.event_id)
+	    ELSE jsonb_build_object('loose_item_id', deferred.loose_item_id) END,
+	  ?::timestamptz, ?::timestamptz
+	 FROM deferred
+	 CROSS JOIN LATERAL (SELECT
+	  CASE WHEN deferred.event_id IS NOT NULL THEN 'event_publication' ELSE 'loose_item_publication' END,
+	  COALESCE(deferred.event_id, deferred.loose_item_id)::text
+	 ) AS identity(aggregate_kind, aggregate_id)
+	 CROSS JOIN LATERAL (SELECT COALESCE(max(aggregate_version), 0) + 1 AS next_version
+	  FROM outbox_events WHERE aggregate_kind = identity.aggregate_kind
+	   AND aggregate_id = identity.aggregate_id AND kind = 'publication_committed') AS version`, now, now).Exec(ctx)
+	return err
+}
+
 // restoreEligibleWithdrawals is called only inside a successful Publication transaction.
 // A reused Media identity stays withdrawn until every current placement has a post-Withdrawal Publication.
 func restoreEligibleWithdrawals(ctx context.Context, tx bun.Tx, eventID, publicationID uuid.UUID, now time.Time, actor setup.CuratorSession) error {
@@ -470,14 +785,26 @@ func restoreEligibleWithdrawals(ctx context.Context, tx bun.Tx, eventID, publica
 				SELECT 1 FROM draft_moments WHERE event_id = ? AND id = withdrawal.target_id
 			))
 			OR (withdrawal.target_kind = 'media'
-				AND EXISTS (
-					SELECT 1 FROM current_published_placements
-					WHERE media_item_id = withdrawal.target_id
+				AND (
+					EXISTS (
+						SELECT 1 FROM current_published_placements
+						WHERE media_item_id = withdrawal.target_id
+					)
+					OR EXISTS (
+						SELECT 1 FROM current_published_loose_items
+						WHERE media_item_id = withdrawal.target_id
+					)
 				)
 				AND NOT EXISTS (
 					SELECT 1 FROM current_published_placements AS placement
 					JOIN publications AS publication ON publication.id = placement.publication_id
 					WHERE placement.media_item_id = withdrawal.target_id
+					  AND publication.content_revision <= withdrawal.content_revision
+				)
+				AND NOT EXISTS (
+					SELECT 1 FROM current_published_loose_items AS loose
+					JOIN publications AS publication ON publication.id = loose.publication_id
+					WHERE loose.media_item_id = withdrawal.target_id
 					  AND publication.content_revision <= withdrawal.content_revision
 				)
 			)
@@ -497,6 +824,40 @@ func restoreEligibleWithdrawals(ctx context.Context, tx bun.Tx, eventID, publica
 			event_id, target_kind, target_id, actor_person_id, action, metadata, created_at
 		) VALUES (?, ?, ?, ?, 'content_restored_by_publication', ?::jsonb, ?)`, eventID,
 			withdrawal.TargetKind, withdrawal.TargetID, actor.PersonID, string(metadata), now).Exec(ctx); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// restoreEligibleLooseWithdrawals restores a Loose target, and restores a shared
+// Media target only after every current Event and Loose origin has advanced.
+func restoreEligibleLooseWithdrawals(ctx context.Context, tx bun.Tx, looseID, mediaID, publicationID uuid.UUID, now time.Time, actor setup.CuratorSession) error {
+	var restored []restoredWithdrawal
+	if err := tx.NewRaw(`UPDATE content_withdrawals AS withdrawal SET restored_by_publication_id=?, restored_at=?
+		WHERE withdrawal.restored_at IS NULL AND (
+		 (withdrawal.target_kind='loose_item' AND withdrawal.target_id=?)
+		 OR (withdrawal.target_kind='media' AND withdrawal.target_id=?
+		  AND NOT EXISTS (SELECT 1 FROM current_published_placements AS placement
+		   JOIN publications AS publication ON publication.id=placement.publication_id
+		   WHERE placement.media_item_id=withdrawal.target_id
+		    AND publication.content_revision <= withdrawal.content_revision)
+		  AND NOT EXISTS (SELECT 1 FROM current_published_loose_items AS loose
+		   JOIN publications AS publication ON publication.id=loose.publication_id
+		   WHERE loose.media_item_id=withdrawal.target_id
+		    AND publication.content_revision <= withdrawal.content_revision)
+		 )) RETURNING id,target_kind,target_id`, publicationID, now, looseID, mediaID).Scan(ctx, &restored); err != nil {
+		return err
+	}
+	for _, withdrawal := range restored {
+		metadata, err := json.Marshal(map[string]any{"withdrawal_id": withdrawal.ID, "restored_by_publication_id": publicationID})
+		if err != nil {
+			return err
+		}
+		if _, err := tx.NewRaw(`INSERT INTO publication_audit_events
+			(event_id,target_kind,target_id,actor_person_id,action,metadata,created_at)
+			VALUES (NULL,?,?,?,'content_restored_by_publication',?::jsonb,?)`, withdrawal.TargetKind,
+			withdrawal.TargetID, actor.PersonID, string(metadata), now).Exec(ctx); err != nil {
 			return err
 		}
 	}

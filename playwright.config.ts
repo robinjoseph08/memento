@@ -38,6 +38,7 @@ export default defineConfig({
   ],
   webServer: {
     command: "pnpm build && node scripts/start-browser-preview.mjs",
+    gracefulShutdown: { signal: "SIGTERM", timeout: 10_000 },
     wait: {
       stdout:
         /MEMENTO_BROWSER_URL=(?<PLAYWRIGHT_TEST_BASE_URL>http:\/\/127\.0\.0\.1:\d+)/,

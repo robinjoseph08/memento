@@ -41,3 +41,35 @@ export const audienceKeys = {
   review: (identityGeneration: string, momentID: string) =>
     ["attendance-audience", identityGeneration, momentID] as const,
 };
+
+export const looseItemKeys = {
+  all: (identityGeneration: string) =>
+    ["loose-items", identityGeneration] as const,
+  details: (identityGeneration: string) =>
+    ["loose-item", identityGeneration] as const,
+  detail: (identityGeneration: string, looseItemID: string) =>
+    ["loose-item", identityGeneration, looseItemID] as const,
+  audiences: (identityGeneration: string) =>
+    ["loose-audience", identityGeneration] as const,
+  audience: (identityGeneration: string, looseItemID: string) =>
+    ["loose-audience", identityGeneration, looseItemID] as const,
+  previewRecipientsRoot: (identityGeneration: string) =>
+    ["loose-preview-recipients", identityGeneration] as const,
+  previewRecipients: (identityGeneration: string, looseItemID: string) =>
+    ["loose-preview-recipients", identityGeneration, looseItemID] as const,
+  recipientPreviews: (identityGeneration: string) =>
+    ["loose-preview", identityGeneration] as const,
+  recipientPreview: (
+    identityGeneration: string,
+    looseItemID: string,
+    version: number | undefined,
+    recipientID: string,
+  ) =>
+    [
+      "loose-preview",
+      identityGeneration,
+      looseItemID,
+      version,
+      recipientID,
+    ] as const,
+};

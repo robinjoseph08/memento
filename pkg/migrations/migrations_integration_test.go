@@ -657,6 +657,32 @@ func TestAttendanceAudienceMigrationResetsLegacyReviewFlagsAndBackfillsVersions(
 	assert.Zero(t, audienceTables)
 }
 
+func TestLoosePublicationMigrationRollbackFailsClosedAfterHistoryExists(t *testing.T) {
+	db := testdb.Open(t)
+	ctx := context.Background()
+	require.NoError(t, Apply(ctx, db))
+	curatorID, mediaID, assetID, looseID, publicationID := uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	_, err := db.NewRaw(`
+		INSERT INTO people (id, display_name, sort_name) VALUES (?, 'Curator', 'Curator');
+		INSERT INTO person_roles (person_id, role) VALUES (?, 'curator');
+		INSERT INTO media_items (id, immich_asset_id, media_type, first_seen_at, last_seen_at)
+		VALUES (?, ?, 'image', now(), now());
+		INSERT INTO loose_items (id, media_item_id, grouping_timezone) VALUES (?, ?, 'UTC');
+		INSERT INTO publications
+		(id, loose_item_id, revision, editable_version, published_by_person_id, notify_recipients, committed_at)
+		VALUES (?, ?, 1, 1, ?, false, now())
+	`, curatorID, curatorID, mediaID, assetID, looseID, mediaID, publicationID, looseID, curatorID).Exec(ctx)
+	require.NoError(t, err)
+
+	migrator := migrate.NewMigrator(db, collection, migrate.WithMarkAppliedOnSuccess(true))
+	_, err = migrator.Rollback(ctx)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot roll back Loose item Publication schema after Publication history exists")
+	var viewExists bool
+	require.NoError(t, db.NewRaw(`SELECT to_regclass('current_media_entitlements') IS NOT NULL`).Scan(ctx, &viewExists))
+	assert.True(t, viewExists, "failed downgrade must preserve the authorization view")
+}
+
 func TestVisibilityInfrastructureEnforcesPrivacyStateConstraints(t *testing.T) {
 	db := testdb.Open(t)
 	ctx := context.Background()

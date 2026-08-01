@@ -793,7 +793,7 @@ test("@mobile drills down without clipping and manually populates a Moment", asy
   await expect(page.locator(".organize-pane")).toBeHidden();
   await page.getByRole("button", { name: /Family weekend/ }).click();
   await expect(
-    page.getByRole("button", { name: "Event", pressed: true }),
+    page.getByRole("button", { name: "Event", pressed: true, exact: true }),
   ).toBeVisible();
   await expect(page.locator(".work-pane")).toBeHidden();
   await expect(page.locator(".organize-pane")).toBeVisible();

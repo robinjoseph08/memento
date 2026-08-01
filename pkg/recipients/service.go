@@ -823,7 +823,11 @@ func (s *Service) CompleteOnboarding(ctx context.Context, actor setup.SessionAct
 		if _, err := tx.NewRaw(`
 			INSERT INTO new_for_you_entries (recipient_access_generation_id, publication_id)
 			SELECT DISTINCT ?::uuid, entitlement.publication_id
-			FROM current_audience_entitlements AS entitlement
+			FROM (
+				SELECT publication_id, recipient_access_generation_id FROM current_audience_entitlements
+				UNION
+				SELECT publication_id, recipient_access_generation_id FROM current_loose_item_entitlements
+			) AS entitlement
 			WHERE entitlement.recipient_access_generation_id = ?
 			ON CONFLICT DO NOTHING
 		`, actor.AccessID, actor.AccessID).Exec(ctx); err != nil {
@@ -832,7 +836,11 @@ func (s *Service) CompleteOnboarding(ctx context.Context, actor setup.SessionAct
 		if _, err := tx.NewRaw(`
 			INSERT INTO publication_activity_items (publication_id, recipient_access_generation_id, created_at)
 			SELECT DISTINCT entitlement.publication_id, ?::uuid, ?::timestamptz
-			FROM current_audience_entitlements AS entitlement
+			FROM (
+				SELECT publication_id, recipient_access_generation_id FROM current_audience_entitlements
+				UNION
+				SELECT publication_id, recipient_access_generation_id FROM current_loose_item_entitlements
+			) AS entitlement
 			WHERE entitlement.recipient_access_generation_id = ?
 			ON CONFLICT DO NOTHING
 		`, actor.AccessID, now, actor.AccessID).Exec(ctx); err != nil {

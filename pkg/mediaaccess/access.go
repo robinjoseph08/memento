@@ -36,16 +36,9 @@ func Require(ctx context.Context, db bun.IDB, actor setup.SessionActor, mediaID 
 		  AND (
 		    EXISTS (SELECT 1 FROM person_roles WHERE person_id = session.person_id AND role = 'curator')
 		    OR EXISTS (
-		      SELECT 1 FROM current_audience_entitlements AS entitlement
-		      JOIN current_published_placements AS placement
-		        ON placement.event_id = entitlement.event_id
-		       AND placement.publication_id = entitlement.publication_id
-		       AND placement.media_item_id = entitlement.media_item_id
-		      JOIN events AS event ON event.id = placement.event_id AND event.lifecycle = 'published'
-		      JOIN published_moments AS moment ON moment.id = placement.published_moment_id
+		      SELECT 1 FROM current_media_entitlements AS entitlement
 		      WHERE entitlement.recipient_access_generation_id = session.recipient_access_generation_id
 		        AND entitlement.media_item_id = media.id
-		        AND NOT content_is_withdrawn(placement.event_id, moment.draft_moment_id, placement.media_item_id)
 		    )
 		  )
 	)`, mediaID, actor.SessionID, actor.PersonID, actor.AccessID).Scan(ctx, &authorized); err != nil {
@@ -120,16 +113,9 @@ func GenerationCanAccess(ctx context.Context, db bun.IDB, accessID, mediaID uuid
 		AND (
 		  EXISTS (SELECT 1 FROM person_roles WHERE person_id = access.person_id AND role = 'curator')
 		  OR EXISTS (
-		    SELECT 1 FROM current_audience_entitlements AS entitlement
-		    JOIN current_published_placements AS placement
-		      ON placement.event_id = entitlement.event_id
-		     AND placement.publication_id = entitlement.publication_id
-		     AND placement.media_item_id = entitlement.media_item_id
-		    JOIN events AS event ON event.id = placement.event_id AND event.lifecycle = 'published'
-		    JOIN published_moments AS moment ON moment.id = placement.published_moment_id
+		    SELECT 1 FROM current_media_entitlements AS entitlement
 		    WHERE entitlement.recipient_access_generation_id = access.id
 		      AND entitlement.media_item_id = media.id
-		      AND NOT content_is_withdrawn(placement.event_id, moment.draft_moment_id, placement.media_item_id)
 		  )
 		)
 	)`, mediaID, accessID).Scan(ctx, &authorized)

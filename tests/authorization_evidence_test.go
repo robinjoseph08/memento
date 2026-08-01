@@ -16,24 +16,40 @@ type productionEvidence struct {
 }
 
 var matrixEvidence = map[matrixSurface][]productionEvidence{
-	surfaceLibraryProjection: {{"pkg/library/service_integration_test.go", "TestRecipientLibraryPaginatesOnlyCurrentAuthorizedUnion"}},
+	surfaceLibraryProjection: {
+		{"pkg/library/service_integration_test.go", "TestRecipientLibraryPaginatesOnlyCurrentAuthorizedUnion"},
+		{"pkg/events/loose_publications_integration_test.go", "TestLoosePublicationProjectsAuthorizedRecipientLibraryAndSearch"},
+	},
 	surfaceLibraryChronology: {{"pkg/library/service_integration_test.go", "TestChronologyProjectsTheCompleteCurrentAuthorizedDistinctLibraryAndDirectAnchors"}},
-	surfaceEventDetail:       {{"pkg/library/service_integration_test.go", "TestValidUnauthorizedIdentifiersAreIndistinguishableFromMissingContent"}},
-	surfacePeopleDirectory:   {{"pkg/visibility/visibility_integration_test.go", "TestRecipientPeopleSearchAuthorizesBeforeMatchingAndRevealsOnlyTheDirectUnion"}},
-	surfaceSearch:            {{"pkg/events/search_integration_test.go", "TestSearchUsesOnlyAuthorizedCurrentPublicationAndDiscoverableAttendance"}},
-	surfaceNewForYou:         {{"pkg/library/service_integration_test.go", "TestRecipientAuthorizationMatrixRevalidatesReuseWithdrawalAndAvailability"}},
-	surfaceThumbnail:         {{"pkg/library/service_integration_test.go", "TestMediaRepresentationsRevalidateEveryAuthorizationBoundaryBeforeImmich"}},
-	surfacePreview:           {{"pkg/library/service_integration_test.go", "TestThumbnailAndPreviewRoutesForwardValidatorsAndDispatch"}},
-	surfaceVideo:             {{"pkg/library/service_integration_test.go", "TestVideoAndOriginalRoutesStreamSafeHeadersWithBoundedMemory"}},
-	surfaceOriginal:          {{"pkg/library/service_integration_test.go", "TestVideoAndOriginalRoutesStreamSafeHeadersWithBoundedMemory"}},
-	surfaceEventArchive:      {{"pkg/archives/service_integration_test.go", "TestPlansCompleteEventAndRejectsIncompleteSubset"}},
-	surfaceSubsetArchive:     {{"pkg/archives/service_integration_test.go", "TestPlansCompleteEventAndRejectsIncompleteSubset"}},
-	surfaceArchivePart:       {{"pkg/archives/service_integration_test.go", "TestEveryAccessLossBlocksAnUnstartedPart"}},
-	surfaceComments:          {{"pkg/comments/comments_integration_test.go", "TestCommentsAuthorizeChronologyOwnershipAndModerationHistory"}},
-	surfaceCommentWrite:      {{"pkg/comments/comments_integration_test.go", "TestCommentsAuthorizeChronologyOwnershipAndModerationHistory"}},
-	surfaceCommentChange:     {{"pkg/comments/comments_integration_test.go", "TestCommentsAuthorizeChronologyOwnershipAndModerationHistory"}},
-	surfaceFavorites:         {{"pkg/comments/comments_integration_test.go", "TestFavoritesRemainPrivateAndPersistAcrossAccessLoss"}},
-	surfaceFavoriteWrite:     {{"pkg/comments/comments_integration_test.go", "TestFavoritesRemainPrivateAndPersistAcrossAccessLoss"}},
+	surfaceEventDetail: {
+		{"pkg/library/service_integration_test.go", "TestValidUnauthorizedIdentifiersAreIndistinguishableFromMissingContent"},
+		{"pkg/events/loose_publications_integration_test.go", "TestLooseOnlyEntitlementDoesNotGrantEventDetailOrArchive"},
+	},
+	surfaceLooseItemDetail: {{"pkg/events/loose_publications_integration_test.go", "TestLoosePublicationProjectsAuthorizedRecipientLibraryAndSearch"}},
+	surfacePeopleDirectory: {{"pkg/visibility/visibility_integration_test.go", "TestRecipientPeopleSearchAuthorizesBeforeMatchingAndRevealsOnlyTheDirectUnion"}},
+	surfaceSearch: {
+		{"pkg/events/search_integration_test.go", "TestSearchUsesOnlyAuthorizedCurrentPublicationAndDiscoverableAttendance"},
+		{"pkg/events/loose_publications_integration_test.go", "TestLoosePublicationProjectsAuthorizedRecipientLibraryAndSearch"},
+	},
+	surfaceNewForYou: {
+		{"pkg/library/service_integration_test.go", "TestRecipientAuthorizationMatrixRevalidatesReuseWithdrawalAndAvailability"},
+		{"pkg/events/loose_publications_integration_test.go", "TestLoosePublicationProjectsAuthorizedRecipientLibraryAndSearch"},
+	},
+	surfaceThumbnail: {{"pkg/library/service_integration_test.go", "TestMediaRepresentationsRevalidateEveryAuthorizationBoundaryBeforeImmich"}},
+	surfacePreview:   {{"pkg/library/service_integration_test.go", "TestThumbnailAndPreviewRoutesForwardValidatorsAndDispatch"}},
+	surfaceVideo:     {{"pkg/library/service_integration_test.go", "TestVideoAndOriginalRoutesStreamSafeHeadersWithBoundedMemory"}},
+	surfaceOriginal:  {{"pkg/library/service_integration_test.go", "TestVideoAndOriginalRoutesStreamSafeHeadersWithBoundedMemory"}},
+	surfaceEventArchive: {
+		{"pkg/archives/service_integration_test.go", "TestPlansCompleteEventAndRejectsIncompleteSubset"},
+		{"pkg/events/loose_publications_integration_test.go", "TestLooseOnlyEntitlementDoesNotGrantEventDetailOrArchive"},
+	},
+	surfaceSubsetArchive: {{"pkg/archives/service_integration_test.go", "TestPlansCompleteEventAndRejectsIncompleteSubset"}},
+	surfaceArchivePart:   {{"pkg/archives/service_integration_test.go", "TestEveryAccessLossBlocksAnUnstartedPart"}},
+	surfaceComments:      {{"pkg/comments/comments_integration_test.go", "TestCommentsAuthorizeChronologyOwnershipAndModerationHistory"}},
+	surfaceCommentWrite:  {{"pkg/comments/comments_integration_test.go", "TestCommentsAuthorizeChronologyOwnershipAndModerationHistory"}},
+	surfaceCommentChange: {{"pkg/comments/comments_integration_test.go", "TestCommentsAuthorizeChronologyOwnershipAndModerationHistory"}},
+	surfaceFavorites:     {{"pkg/comments/comments_integration_test.go", "TestFavoritesRemainPrivateAndPersistAcrossAccessLoss"}},
+	surfaceFavoriteWrite: {{"pkg/comments/comments_integration_test.go", "TestFavoritesRemainPrivateAndPersistAcrossAccessLoss"}},
 	surfaceImmediateEmail: {
 		{"pkg/emaildelivery/immediate_integration_test.go", "TestImmediateEmailReauthorizesAndHandlesTerminalFailures"},
 		{"pkg/emaildelivery/immediate_integration_test.go", "TestImmediateEmailHoldsAuthorizationLocksThroughSMTPAcceptance"},
@@ -47,8 +63,11 @@ var matrixEvidence = map[matrixSurface][]productionEvidence{
 		{"pkg/push/immediate_integration_test.go", "TestPushHoldsSessionPreferenceLockThroughProviderAcceptance"},
 		{"pkg/push/immediate_integration_test.go", "TestPushMatchesEmailSurvivorsAndTerminalOutcomeIsDeviceOnly"},
 	},
-	surfaceCommentPush:        {{"pkg/push/immediate_integration_test.go", "TestPushMatchesEmailSurvivorsAndTerminalOutcomeIsDeviceOnly"}},
-	surfacePreviewAsRecipient: {{"pkg/events/publications_integration_test.go", "TestPreviewRendersSavedEditableResultBeforePublication"}},
+	surfaceCommentPush: {{"pkg/push/immediate_integration_test.go", "TestPushMatchesEmailSurvivorsAndTerminalOutcomeIsDeviceOnly"}},
+	surfacePreviewAsRecipient: {
+		{"pkg/events/publications_integration_test.go", "TestPreviewRendersSavedEditableResultBeforePublication"},
+		{"pkg/events/loose_publications_integration_test.go", "TestLoosePublicationSupportsEmptyAudienceAndGenerationAwarePreview"},
+	},
 }
 
 func TestAuthorizationMatrixSurfacesHaveProductionEvidence(t *testing.T) {

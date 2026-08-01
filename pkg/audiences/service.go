@@ -148,7 +148,10 @@ func (s *Service) ReviewMoment(ctx context.Context, id uuid.UUID) (Review, error
 	return review, nil
 }
 
-func (s *Service) ReviewLooseItem(ctx context.Context, id uuid.UUID) (Review, error) {
+func (s *Service) ReviewLooseItem(ctx context.Context, actor setup.CuratorSession, id uuid.UUID) (Review, error) {
+	if err := requireCurator(ctx, s.db, actor.PersonID); err != nil {
+		return Review{}, err
+	}
 	if err := requireTarget(ctx, s.db, target{targetLoose, id}); err != nil {
 		return Review{}, err
 	}
@@ -232,7 +235,7 @@ func (s *Service) ConfirmAttendance(ctx context.Context, actor setup.CuratorSess
 		if err := recalculate(ctx, tx, t, now); err != nil {
 			return err
 		}
-		if err := advanceTargetVersion(ctx, tx, t); err != nil {
+		if err := advanceTargetVersion(ctx, tx, t, now); err != nil {
 			return err
 		}
 		if err := invalidateEventReview(ctx, tx, t, now); err != nil {
@@ -259,6 +262,9 @@ func (s *Service) Recalculate(ctx context.Context, actor setup.CuratorSession, k
 	now := s.now().UTC()
 	var response Review
 	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if err := requireCurator(ctx, tx, actor.PersonID); err != nil {
+			return err
+		}
 		if err := staging.LockAccessSummaryRefresh(ctx, tx); err != nil {
 			return err
 		}
@@ -274,7 +280,7 @@ func (s *Service) Recalculate(ctx context.Context, actor setup.CuratorSession, k
 		if err := markAudienceIncomplete(ctx, tx, t); err != nil {
 			return err
 		}
-		if err := advanceTargetVersion(ctx, tx, t); err != nil {
+		if err := advanceTargetVersion(ctx, tx, t, now); err != nil {
 			return err
 		}
 		if err := invalidateEventReview(ctx, tx, t, now); err != nil {
@@ -307,6 +313,9 @@ func (s *Service) SetOverride(ctx context.Context, actor setup.CuratorSession, k
 	now := s.now().UTC()
 	var response Review
 	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if err := requireCurator(ctx, tx, actor.PersonID); err != nil {
+			return err
+		}
 		if err := staging.LockAccessSummaryRefresh(ctx, tx); err != nil {
 			return err
 		}
@@ -344,7 +353,7 @@ func (s *Service) SetOverride(ctx context.Context, actor setup.CuratorSession, k
 		if err := markAudienceIncomplete(ctx, tx, t); err != nil {
 			return err
 		}
-		if err := advanceTargetVersion(ctx, tx, t); err != nil {
+		if err := advanceTargetVersion(ctx, tx, t, now); err != nil {
 			return err
 		}
 		if err := invalidateEventReview(ctx, tx, t, now); err != nil {
@@ -373,6 +382,9 @@ func (s *Service) Approve(ctx context.Context, actor setup.CuratorSession, kind 
 	now, snapshotID := s.now().UTC(), uuid.New()
 	var response ApprovalResponse
 	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if err := requireCurator(ctx, tx, actor.PersonID); err != nil {
+			return err
+		}
 		if err := staging.LockAccessSummaryRefresh(ctx, tx); err != nil {
 			return err
 		}
@@ -416,7 +428,7 @@ func (s *Service) Approve(ctx context.Context, actor setup.CuratorSession, kind 
 		if err != nil {
 			return err
 		}
-		if err := advanceTargetVersion(ctx, tx, t); err != nil {
+		if err := advanceTargetVersion(ctx, tx, t, now); err != nil {
 			return err
 		}
 		if err := invalidateEventReview(ctx, tx, t, now); err != nil {
@@ -584,6 +596,18 @@ func validTarget(kind string, id uuid.UUID) (target, error) {
 	return target{kind, id}, nil
 }
 
+func requireCurator(ctx context.Context, db bun.IDB, personID uuid.UUID) error {
+	var authorized bool
+	if err := db.NewRaw(`SELECT EXISTS (SELECT 1 FROM person_roles WHERE person_id = ? AND role = 'curator')`, personID).
+		Scan(ctx, &authorized); err != nil {
+		return err
+	}
+	if !authorized {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func requireTarget(ctx context.Context, db bun.IDB, t target) error {
 	query := `SELECT EXISTS (SELECT 1 FROM draft_moments WHERE id = ?)`
 	if t.kind == targetLoose {
@@ -630,13 +654,21 @@ func lockTarget(ctx context.Context, tx bun.Tx, t target, expectedVersion int64)
 	return nil
 }
 
-func advanceTargetVersion(ctx context.Context, tx bun.Tx, t target) error {
-	query := `UPDATE draft_moments SET review_version = review_version + 1 WHERE id = ?`
-	if t.kind == targetLoose {
-		query = `UPDATE loose_items SET review_version = review_version + 1 WHERE id = ?`
+func advanceTargetVersion(ctx context.Context, tx bun.Tx, t target, now time.Time) error {
+	if t.kind != targetLoose {
+		_, err := tx.NewRaw(`UPDATE draft_moments SET review_version = review_version + 1 WHERE id = ?`, t.id).Exec(ctx)
+		return err
 	}
-	_, err := tx.NewRaw(query, t.id).Exec(ctx)
-	return err
+	var publicationID *uuid.UUID
+	if err := tx.NewRaw(`UPDATE loose_items SET review_version = review_version + 1,
+		version = version + 1, updated_at = ? WHERE id = ? RETURNING current_publication_id`, now, t.id).
+		Scan(ctx, &publicationID); err != nil {
+		return err
+	}
+	if publicationID == nil {
+		return nil
+	}
+	return staging.RefreshLoose(ctx, tx, t.id, *publicationID, now)
 }
 
 func invalidateEventReview(ctx context.Context, tx bun.Tx, t target, now time.Time) error {

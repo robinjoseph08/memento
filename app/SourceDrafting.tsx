@@ -195,10 +195,12 @@ export function SourceDraftBuilder({
       description,
     };
     createLoose.mutate(request, {
-      onSuccess: () => {
-        setSelectedMedia(new Set());
-        setStatus(
-          "Loose item is ready privately. Review its Audience before Publication.",
+      onSuccess: (looseItem) => {
+        setSearchParams(
+          new URLSearchParams({
+            workspace: "drafts",
+            loose: looseItem.id,
+          }),
         );
       },
     });

@@ -331,23 +331,32 @@ func AuthorizePublication(ctx context.Context, db bun.IDB, accessID, publication
 		SELECT candidate.media_item_id FROM publication_notification_media AS candidate
 		WHERE candidate.publication_id = ? AND candidate.recipient_access_generation_id = ?
 		ORDER BY candidate.media_item_id LIMIT ?
+	), source AS MATERIALIZED (
+		SELECT publication.id, publication.notify_recipients,
+		 CASE WHEN publication.event_id IS NOT NULL THEN 'event'::text ELSE 'loose_item'::text END AS origin_kind,
+		 COALESCE(publication.event_id, publication.loose_item_id) AS origin_id,
+		 COALESCE(event.title, loose.title) AS title
+		FROM publications AS publication
+		LEFT JOIN current_published_events AS event
+		 ON event.event_id=publication.event_id AND event.publication_id=publication.id
+		LEFT JOIN current_published_loose_items AS loose
+		 ON loose.loose_item_id=publication.loose_item_id AND loose.publication_id=publication.id
+		WHERE publication.id=? AND (event.publication_id IS NOT NULL OR loose.publication_id IS NOT NULL)
 	), authorized AS MATERIALIZED (
-		SELECT DISTINCT candidate.media_item_id, media.immich_asset_id, placement.position
-		FROM publications AS source JOIN bounded_candidates AS candidate ON true
-		JOIN current_audience_entitlements AS entitlement ON entitlement.event_id = source.event_id
-		 AND entitlement.recipient_access_generation_id = ? AND entitlement.media_item_id = candidate.media_item_id
-		JOIN current_published_placements AS placement ON placement.event_id = entitlement.event_id AND placement.media_item_id = entitlement.media_item_id
-		JOIN published_moments AS moment ON moment.id = placement.published_moment_id
-		JOIN media_items AS media ON media.id = candidate.media_item_id AND media.availability = 'current'
-		WHERE source.id = ? AND source.notify_recipients
-		 AND NOT content_is_withdrawn(placement.event_id, moment.draft_moment_id, placement.media_item_id)
+		SELECT DISTINCT candidate.media_item_id, media.immich_asset_id, entitlement.position
+		FROM source JOIN bounded_candidates AS candidate ON true
+		JOIN current_media_entitlements AS entitlement
+		 ON entitlement.origin_kind=source.origin_kind AND entitlement.origin_id=source.origin_id
+		 AND entitlement.publication_id=source.id AND entitlement.recipient_access_generation_id=?
+		 AND entitlement.media_item_id=candidate.media_item_id
+		JOIN media_items AS media ON media.id=candidate.media_item_id AND media.availability='current'
+		WHERE source.notify_recipients
 	)
-	SELECT current.title, count(authorized.media_item_id),
+	SELECT source.title, count(authorized.media_item_id),
 	 (array_agg(authorized.media_item_id ORDER BY authorized.position, authorized.media_item_id))[1],
 	 (array_agg(authorized.immich_asset_id ORDER BY authorized.position, authorized.media_item_id))[1]
-	FROM publications AS source JOIN current_published_events AS current ON current.event_id = source.event_id
-	JOIN authorized ON true WHERE source.id = ? GROUP BY current.title, source.id`, publicationID, accessID,
-		MaxPublicationMedia+1, accessID, publicationID, publicationID).Scan(ctx, &title, &count, &mediaID, &assetID)
+	FROM source JOIN authorized ON true GROUP BY source.title, source.id`, publicationID, accessID,
+		MaxPublicationMedia+1, publicationID, accessID).Scan(ctx, &title, &count, &mediaID, &assetID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Activity{}, false, nil
 	}
@@ -392,16 +401,23 @@ func AuthorizeComment(ctx context.Context, db bun.IDB, accessID, commentID uuid.
 		AND (EXISTS (SELECT 1 FROM person_roles WHERE person_id = access.person_id AND role = 'curator')
 		 OR EXISTS (SELECT 1 FROM comment_subscriptions AS subscription WHERE subscription.media_item_id = comment.media_item_id
 		  AND subscription.recipient_access_generation_id = access.id AND NOT subscription.muted))
-		AND EXISTS (SELECT 1 FROM current_published_placements AS placement
-		 JOIN published_moments AS moment ON moment.id = placement.published_moment_id
-		 WHERE placement.media_item_id = comment.media_item_id
-		 AND NOT content_is_withdrawn(placement.event_id, moment.draft_moment_id, placement.media_item_id))
+		AND (EXISTS (
+		 SELECT 1 FROM current_published_placements AS placement
+		 JOIN published_moments AS moment ON moment.id=placement.published_moment_id
+		 WHERE placement.media_item_id=comment.media_item_id
+		  AND NOT content_is_withdrawn(placement.event_id,moment.draft_moment_id,placement.media_item_id)
+		) OR EXISTS (
+		 SELECT 1 FROM current_published_loose_items AS loose
+		 WHERE loose.media_item_id=comment.media_item_id AND NOT EXISTS (
+		  SELECT 1 FROM content_withdrawals AS withdrawal WHERE withdrawal.restored_at IS NULL
+		   AND ((withdrawal.target_kind='loose_item' AND withdrawal.target_id=loose.loose_item_id)
+		    OR (withdrawal.target_kind='media' AND withdrawal.target_id=loose.media_item_id))
+		 )
+		))
 		AND (EXISTS (SELECT 1 FROM person_roles WHERE person_id = access.person_id AND role = 'curator')
-		 OR EXISTS (SELECT 1 FROM current_audience_entitlements AS entitlement
-		  JOIN current_published_placements AS placement ON placement.event_id = entitlement.event_id AND placement.media_item_id = entitlement.media_item_id
-		  JOIN published_moments AS moment ON moment.id = placement.published_moment_id
-		  WHERE entitlement.recipient_access_generation_id = access.id AND entitlement.media_item_id = comment.media_item_id
-		  AND NOT content_is_withdrawn(placement.event_id, moment.draft_moment_id, placement.media_item_id)))`+lockClause,
+		 OR EXISTS (SELECT 1 FROM current_media_entitlements AS entitlement
+		  WHERE entitlement.recipient_access_generation_id=access.id
+		   AND entitlement.media_item_id=comment.media_item_id))`+lockClause,
 		accessID, commentID).Scan(ctx, &createdAt, &author, &mediaID, &assetID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Activity{}, false, nil
@@ -413,9 +429,25 @@ func AuthorizeComment(ctx context.Context, db bun.IDB, accessID, commentID uuid.
 		Author: author, MediaID: mediaID, AssetID: assetID, ActivityCreatedAt: createdAt}, true, nil
 }
 
-// LockBatchResources orders Media and Event authorization mutations behind a final send.
+// LockBatchResources orders Loose, Media, and Event authorization mutations
+// behind a final send. Loose rows precede Media rows to match Loose Publication.
 func LockBatchResources(ctx context.Context, tx bun.Tx, batchID int64) error {
 	if err := placementlock.Acquire(ctx, tx, placementlock.Shared); err != nil {
+		return err
+	}
+	var looseIDs []uuid.UUID
+	if err := tx.NewRaw(`WITH selected_items AS MATERIALIZED (
+		SELECT kind, publication_id, comment_id FROM notification_batch_items
+		WHERE batch_id = ? ORDER BY activity_created_at, id LIMIT ?
+	) SELECT loose.id FROM loose_items AS loose WHERE loose.id IN (
+		SELECT publication.loose_item_id FROM selected_items AS item
+		JOIN publications AS publication ON publication.id = item.publication_id
+		WHERE item.kind = 'publication' AND publication.loose_item_id IS NOT NULL
+		UNION SELECT current.loose_item_id FROM selected_items AS item
+		JOIN comments AS comment ON comment.id = item.comment_id
+		JOIN current_published_loose_items AS current ON current.media_item_id = comment.media_item_id
+		WHERE item.kind = 'comment'
+	) ORDER BY loose.id FOR SHARE`, batchID, MaxBatchItems).Scan(ctx, &looseIDs); err != nil {
 		return err
 	}
 	var mediaIDs []uuid.UUID

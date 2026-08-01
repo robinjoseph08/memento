@@ -194,6 +194,56 @@ func newPushFixture(t *testing.T) pushFixture {
 	return f
 }
 
+func (f pushFixture) addLoosePublicationActivity(t *testing.T) (uuid.UUID, uuid.UUID) {
+	t.Helper()
+	looseID, publicationID, snapshotID := uuid.New(), uuid.New(), uuid.New()
+	_, err := f.db.NewRaw(`
+		INSERT INTO loose_items (id, media_item_id, lifecycle, title, description, grouping_timezone,
+			version, audience_complete, created_at, updated_at)
+		VALUES (?, ?, 'published', 'Loose portrait', '', 'UTC', 1, true, ?, ?);
+		INSERT INTO audience_snapshots (id, target_kind, target_id, approved_by_person_id, approved_at, label)
+		VALUES (?, 'loose_item', ?, ?, ?, 'Shared');
+		INSERT INTO audience_snapshot_entries (snapshot_id, recipient_person_id, recipient_access_generation_id)
+		VALUES (?, ?, ?);
+		INSERT INTO current_audience_snapshots (target_kind, target_id, snapshot_id)
+		VALUES ('loose_item', ?, ?);
+		INSERT INTO publications (id, loose_item_id, revision, editable_version, published_by_person_id,
+			notify_recipients, committed_at)
+		VALUES (?, ?, 1, 1, ?, true, ?);
+		UPDATE loose_items SET current_publication_id = ? WHERE id = ?;
+		INSERT INTO published_loose_item_revisions (publication_id, loose_item_id, media_item_id,
+			audience_snapshot_id, title, description, grouping_timezone, place_labels, media_type,
+			width, height, local_date_time, created_at)
+		VALUES (?, ?, ?, ?, 'Loose portrait', '', 'UTC', '{}', 'image', 1200, 800,
+			'2026-07-28T12:00:00Z', ?);
+		INSERT INTO published_loose_audience_entries
+			(publication_id, recipient_person_id, recipient_access_generation_id)
+		VALUES (?, ?, ?);
+		INSERT INTO current_published_loose_items (loose_item_id, publication_id, media_item_id,
+			title, description, grouping_timezone, place_labels, media_type, width, height,
+			local_date_time, committed_at)
+		VALUES (?, ?, ?, 'Loose portrait', '', 'UTC', '{}', 'image', 1200, 800,
+			'2026-07-28T12:00:00Z', ?);
+		INSERT INTO current_loose_item_entitlements (loose_item_id, publication_id,
+			recipient_person_id, recipient_access_generation_id, media_item_id)
+		VALUES (?, ?, ?, ?, ?);
+		INSERT INTO publication_activity_items (publication_id, recipient_access_generation_id, created_at)
+		VALUES (?, ?, ?);
+		INSERT INTO publication_notification_media (publication_id, recipient_access_generation_id, media_item_id)
+		VALUES (?, ?, ?)
+	`, looseID, f.media, f.base, f.base,
+		snapshotID, looseID, f.curator, f.base, snapshotID, f.alex, f.access, looseID, snapshotID,
+		publicationID, looseID, f.curator, f.base, publicationID, looseID,
+		publicationID, looseID, f.media, snapshotID, f.base,
+		publicationID, f.alex, f.access,
+		looseID, publicationID, f.media, f.base,
+		looseID, publicationID, f.alex, f.access, f.media,
+		publicationID, f.access, f.base,
+		publicationID, f.access, f.media).Exec(context.Background())
+	require.NoError(t, err)
+	return looseID, publicationID
+}
+
 func browserSubscription(t *testing.T, endpoint string) BrowserSubscription {
 	t.Helper()
 	userKey, err := ecdh.P256().GenerateKey(rand.Reader)
@@ -410,6 +460,58 @@ func TestPushHoldsSessionPreferenceLockThroughProviderAcceptance(t *testing.T) {
 	var disabled bool
 	require.NoError(t, f.db.NewRaw(`SELECT disabled_at IS NOT NULL FROM push_subscriptions WHERE session_id = ?`, actor.SessionID).Scan(context.Background(), &disabled))
 	assert.True(t, disabled)
+}
+
+func TestPushHoldsLooseAuthorizationThroughProviderAcceptance(t *testing.T) {
+	f := newPushFixture(t)
+	f.sender.entered = make(chan struct{})
+	f.sender.release = make(chan struct{})
+	t.Cleanup(func() {
+		select {
+		case <-f.sender.release:
+		default:
+			close(f.sender.release)
+		}
+	})
+	f.enroll(t, "https://push.example/loose-locking")
+	f.sender.statuses["https://push.example/loose-locking"] = 201
+	looseID, publicationID := f.addLoosePublicationActivity(t)
+	require.NoError(t, f.push.QueuePublication(context.Background(), uuid.Nil, publicationID))
+	var batchID int64
+	require.NoError(t, f.db.NewRaw(`SELECT id FROM notification_batches WHERE channel = 'push'`).Scan(context.Background(), &batchID))
+
+	delivered := make(chan error, 1)
+	go func() { delivered <- f.push.Handle(context.Background(), f.leasedJob(t, batchID)) }()
+	select {
+	case <-f.sender.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("push sender was not reached")
+	}
+
+	revoked := make(chan error, 1)
+	go func() {
+		revoked <- f.db.RunInTx(context.Background(), nil, func(ctx context.Context, tx bun.Tx) error {
+			if _, err := tx.NewRaw(`UPDATE loose_items SET title = title WHERE id = ?`, looseID).Exec(ctx); err != nil {
+				return err
+			}
+			_, err := tx.NewRaw(`DELETE FROM current_loose_item_entitlements WHERE loose_item_id = ?`, looseID).Exec(ctx)
+			return err
+		})
+	}()
+	waitForBlockedPushMutation(t, f.db, `%UPDATE loose_items SET title = title%`)
+	select {
+	case err := <-revoked:
+		t.Fatalf("Loose revocation finished before provider acceptance: %v", err)
+	default:
+	}
+
+	close(f.sender.release)
+	require.NoError(t, <-delivered)
+	require.NoError(t, <-revoked)
+	assert.Contains(t, f.sender.payloads, "https://push.example/loose-locking")
+	var entitlements int
+	require.NoError(t, f.db.NewRaw(`SELECT count(*) FROM current_loose_item_entitlements WHERE loose_item_id = ?`, looseID).Scan(context.Background(), &entitlements))
+	assert.Zero(t, entitlements)
 }
 
 func waitForBlockedPushMutation(t *testing.T, db *bun.DB, pattern string) {

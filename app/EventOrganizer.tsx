@@ -223,6 +223,7 @@ export function EventOrganizer({
 }) {
   const identityGeneration = session.csrf_token;
   const [searchParams, setSearchParams] = useSearchParams();
+  const looseKindRequested = searchParams.has("loose");
   const requestedEventID = searchParams.get("event") ?? "";
   const [selectedID, setSelectedID] = useState(requestedEventID);
   const [draft, setDraft] = useState<DraftEvent>();
@@ -389,9 +390,13 @@ export function EventOrganizer({
   const synchronizeURLSelection = useEffectEvent((nextEventID: string) => {
     const previousEventID = selectedIDRef.current;
     if (
+      saveState === "saving" ||
       publicationPending ||
       withdrawalPending ||
-      restorePublishedMedia.isPending
+      restorePublishedMedia.isPending ||
+      conflictRecoveryPending ||
+      restoreRecoveryPending ||
+      authorityRefreshRequired
     ) {
       setSearchParams(
         (current) => {
@@ -423,9 +428,9 @@ export function EventOrganizer({
   });
 
   useEffect(() => {
-    if (requestedEventID !== selectedIDRef.current)
+    if (!looseKindRequested && requestedEventID !== selectedIDRef.current)
       synchronizeURLSelection(requestedEventID);
-  }, [requestedEventID]);
+  }, [looseKindRequested, requestedEventID]);
 
   useEffect(() => {
     if (saveState === "saved" && serverDraft)

@@ -466,18 +466,16 @@ func weeklyPublicationPreviews(ctx context.Context, db bun.IDB, accessID, public
 		SELECT candidate.media_item_id AS media_id, media.immich_asset_id AS asset_id
 		FROM publications AS source
 		JOIN bounded_candidates AS candidate ON true
-		JOIN current_audience_entitlements AS entitlement
-		  ON entitlement.event_id = source.event_id
+		JOIN current_media_entitlements AS entitlement
+		  ON entitlement.origin_kind = CASE WHEN source.event_id IS NOT NULL THEN 'event' ELSE 'loose_item' END
+		 AND entitlement.origin_id = COALESCE(source.event_id, source.loose_item_id)
+		 AND entitlement.publication_id = source.id
 		 AND entitlement.recipient_access_generation_id = ?
 		 AND entitlement.media_item_id = candidate.media_item_id
-		JOIN current_published_placements AS placement
-		  ON placement.event_id = entitlement.event_id AND placement.media_item_id = entitlement.media_item_id
-		JOIN published_moments AS moment ON moment.id = placement.published_moment_id
 		JOIN media_items AS media ON media.id = candidate.media_item_id AND media.availability = 'current'
 		WHERE source.id = ? AND source.notify_recipients
-		  AND NOT content_is_withdrawn(placement.event_id, moment.draft_moment_id, placement.media_item_id)
 		GROUP BY candidate.media_item_id, media.immich_asset_id
-		ORDER BY min(placement.position), candidate.media_item_id LIMIT ?`,
+		ORDER BY min(entitlement.position), candidate.media_item_id LIMIT ?`,
 		publicationID, accessID, maxEmailPublicationMedia+1, accessID, publicationID, limit).
 		Scan(ctx, &previews)
 	return previews, err

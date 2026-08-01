@@ -498,6 +498,26 @@ test("@desktop @mobile drafts combined Source Media into private Events and Loos
   };
   const eventID = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
   const momentID = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+  const looseID = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+  const currentLooseItem = {
+    id: looseID,
+    lifecycle: "draft",
+    title: "",
+    description: "",
+    grouping_timezone: "UTC",
+    proposed_day: null,
+    place_labels: [],
+    version: 1,
+    audience_complete: false,
+    published_editable_version: null,
+    has_staged_update: false,
+    pending_withdrawal_publication: false,
+    withdrawal_targets: [],
+    withdrawals: [],
+    media_item: undatedMedia,
+    created_at: "2026-06-03T00:00:00Z",
+    updated_at: "2026-06-03T00:00:00Z",
+  };
   let currentEvent = {
     id: eventID,
     lifecycle: "draft",
@@ -600,23 +620,30 @@ test("@desktop @mobile drafts combined Source Media into private Events and Loos
       });
       return;
     }
-    if (recorded.path === "/api/loose-items") {
+    if (recorded.path === "/api/loose-items" && recorded.method === "POST") {
+      await route.fulfill({ status: 201, json: currentLooseItem });
+      return;
+    }
+    if (recorded.path === "/api/loose-items" && recorded.method === "GET") {
       await route.fulfill({
-        status: 201,
         json: {
-          id: "ffffffff-ffff-4fff-8fff-ffffffffffff",
-          lifecycle: "draft",
-          title: "",
-          description: "",
-          grouping_timezone: "UTC",
-          proposed_day: null,
-          version: 1,
-          audience_complete: false,
-          media_item: undatedMedia,
-          created_at: "2026-06-03T00:00:00Z",
-          updated_at: "2026-06-03T00:00:00Z",
+          loose_items: [
+            {
+              id: looseID,
+              lifecycle: currentLooseItem.lifecycle,
+              title: currentLooseItem.title,
+              version: currentLooseItem.version,
+              audience_complete: currentLooseItem.audience_complete,
+              has_staged_update: currentLooseItem.has_staged_update,
+              updated_at: currentLooseItem.updated_at,
+            },
+          ],
         },
       });
+      return;
+    }
+    if (recorded.path === `/api/loose-items/${looseID}`) {
+      await route.fulfill({ json: currentLooseItem });
       return;
     }
     if (recorded.path === "/api/events" && recorded.method === "POST") {
@@ -665,18 +692,21 @@ test("@desktop @mobile drafts combined Source Media into private Events and Loos
     await fulfillCuratorShellRequest(route);
   });
 
-  await page.goto("/");
-  await page.getByLabel("Select Family trip for drafting").check();
-  await page.getByRole("button", { name: "Drafted" }).click();
-  await expect(page).toHaveURL(/source_view=drafted/);
-  await page.getByLabel("Select Family reunion for drafting").check();
-  await expect(page.getByText("2 Source albums selected")).toBeVisible();
-  await page
-    .getByRole("button", { name: "Draft selected Source albums" })
-    .click();
-  await expect(
-    page.getByRole("heading", { name: "Draft Source Media" }),
-  ).toBeVisible();
+  const openCombinedDraft = async () => {
+    await page.goto("/");
+    await page.getByLabel("Select Family trip for drafting").check();
+    await page.getByRole("button", { name: "Drafted" }).click();
+    await expect(page).toHaveURL(/source_view=drafted/);
+    await page.getByLabel("Select Family reunion for drafting").check();
+    await expect(page.getByText("2 Source albums selected")).toBeVisible();
+    await page
+      .getByRole("button", { name: "Draft selected Source albums" })
+      .click();
+    await expect(
+      page.getByRole("heading", { name: "Draft Source Media" }),
+    ).toBeVisible();
+  };
+  await openCombinedDraft();
   const mobileLayout = (page.viewportSize()?.width ?? 1000) <= 864;
   if (mobileLayout) {
     expect(await page.evaluate(() => window.innerWidth)).toBeLessThanOrEqual(
@@ -707,13 +737,17 @@ test("@desktop @mobile drafts combined Source Media into private Events and Loos
   await page.getByRole("button", { name: "Details", exact: true }).click();
   await page.getByLabel("Grouping timezone").fill("UTC");
   await page.getByRole("button", { name: "Create private Loose item" }).click();
+  await expect(page).toHaveURL(
+    new RegExp(`workspace=drafts.*loose=${looseID}`),
+  );
   await expect(
-    page.getByText(
-      "Loose item is ready privately. Review its Audience before Publication.",
-    ),
+    page.getByRole("heading", { name: "Untitled Loose item" }),
   ).toBeVisible();
 
-  await page.getByLabel("Event").check();
+  await openCombinedDraft();
+  await page.getByRole("button", { name: "Details", exact: true }).click();
+  await page.getByRole("radio", { name: "Event", exact: true }).check();
+  await page.getByLabel("Grouping timezone").fill("UTC");
   await page.getByLabel("Choose current Media").check();
   await page.getByRole("button", { name: /Media \(3\)/ }).click();
   await page.getByLabel(/Select photo Media aaaaaaaa/).check();

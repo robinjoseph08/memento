@@ -94,8 +94,20 @@ type EventPage struct {
 	NextCursor *string        `json:"next_cursor" tstype:"string | null,required"`
 }
 
+type LooseItem struct {
+	ID            string    `json:"id"`
+	PublicationID string    `json:"publication_id"`
+	Title         string    `json:"title"`
+	Description   string    `json:"description"`
+	ProposedDay   *string   `json:"proposed_day" tstype:"string | null,required"`
+	PlaceLabels   []string  `json:"place_labels"`
+	CommittedAt   time.Time `json:"committed_at"`
+	Media         Media     `json:"media"`
+}
+
 type NewForYouResponse struct {
-	Events []EventSummary `json:"events"`
+	Events     []EventSummary `json:"events"`
+	LooseItems []LooseItem    `json:"loose_items"`
 }
 
 type Event struct {
@@ -221,6 +233,20 @@ func encodeCursor(value cursor) *string {
 	return &encoded
 }
 
+const validLooseListingPlacements = `
+	SELECT NULL::uuid AS event_id, current.media_item_id,
+	       current.committed_at AS publication_committed_at,
+	       current.media_type, current.width, current.height, current.local_date_time,
+	       memento_local_capture_date(current.local_date_time) AS capture_date
+	FROM current_published_loose_items AS current
+	JOIN loose_items AS loose ON loose.id = current.loose_item_id AND loose.lifecycle = 'published'
+	JOIN current_media_entitlements AS entitlement
+	  ON entitlement.origin_kind = 'loose_item' AND entitlement.origin_id = current.loose_item_id
+	 AND entitlement.publication_id = current.publication_id
+	 AND entitlement.media_item_id = current.media_item_id
+	 AND entitlement.recipient_access_generation_id = ?
+`
+
 const validPlacements = `
 	SELECT placement.event_id, placement.publication_id, placement.published_moment_id,
 	       placement.media_item_id, placement.position, current.committed_at AS publication_committed_at,
@@ -267,11 +293,13 @@ const validListingPlacements = `
 	  )
 `
 
+const validAllListingPlacements = validListingPlacements + ` UNION ALL ` + validLooseListingPlacements
+
 const uniqueMedia = `
 	SELECT DISTINCT ON (valid.media_item_id) valid.media_item_id, valid.media_type,
 	       valid.width, valid.height, valid.local_date_time, valid.capture_date
 	FROM valid %s
-	ORDER BY valid.media_item_id, valid.publication_committed_at DESC, valid.event_id DESC
+	ORDER BY valid.media_item_id, valid.publication_committed_at DESC, valid.event_id DESC NULLS LAST
 `
 
 func ensureActor(ctx context.Context, db bun.IDB, actor setup.SessionActor) error {
@@ -333,7 +361,7 @@ func (s *Service) Photos(ctx context.Context, actor setup.SessionActor, rawLimit
 			favoriteJoin = `JOIN favorites AS favorite ON favorite.media_item_id = valid.media_item_id AND favorite.recipient_person_id = ? AND favorite.is_current`
 		}
 		cursorFilter := ""
-		args := []any{actor.AccessID}
+		args := []any{actor.AccessID, actor.AccessID}
 		if favorites {
 			args = append(args, actor.PersonID)
 		}
@@ -359,7 +387,7 @@ func (s *Service) Photos(ctx context.Context, actor setup.SessionActor, rawLimit
 		SELECT page.id, page.media_type, page.width, page.height, page.local_date_time,
 		       page.capture_date, media.availability = 'current' AS available
 		FROM page JOIN media_items AS media ON media.id = page.id
-		ORDER BY COALESCE(page.local_date_time, '') DESC, page.id DESC`, validListingPlacements, fmt.Sprintf(uniqueMedia, favoriteJoin), cursorFilter)
+		ORDER BY COALESCE(page.local_date_time, '') DESC, page.id DESC`, validAllListingPlacements, fmt.Sprintf(uniqueMedia, favoriteJoin), cursorFilter)
 		if err := tx.NewRaw(query, args...).Scan(ctx, &response.Media); err != nil {
 			return err
 		}
@@ -390,7 +418,7 @@ func (s *Service) Chronology(ctx context.Context, actor setup.SessionActor, favo
 			return err
 		}
 		favoriteJoin := ""
-		args := []any{actor.AccessID}
+		args := []any{actor.AccessID, actor.AccessID}
 		if favorites {
 			favoriteJoin = `JOIN favorites AS favorite ON favorite.media_item_id = valid.media_item_id AND favorite.recipient_person_id = ? AND favorite.is_current`
 			args = append(args, actor.PersonID)
@@ -399,7 +427,7 @@ func (s *Service) Chronology(ctx context.Context, actor setup.SessionActor, favo
 			SELECT capture_date::text AS capture_date, count(*)::integer AS media_count
 			FROM unique_media
 			GROUP BY capture_date
-			ORDER BY capture_date DESC NULLS LAST`, validListingPlacements, fmt.Sprintf(uniqueMedia, favoriteJoin))
+			ORDER BY capture_date DESC NULLS LAST`, validAllListingPlacements, fmt.Sprintf(uniqueMedia, favoriteJoin))
 		return tx.NewRaw(query, args...).Scan(ctx, &response.Dates)
 	})
 	if err != nil {
@@ -494,7 +522,7 @@ func (s *Service) Events(ctx context.Context, actor setup.SessionActor, rawLimit
 }
 
 func (s *Service) NewForYou(ctx context.Context, actor setup.SessionActor) (NewForYouResponse, error) {
-	response := NewForYouResponse{Events: make([]EventSummary, 0)}
+	response := NewForYouResponse{Events: make([]EventSummary, 0), LooseItems: make([]LooseItem, 0)}
 	err := s.db.RunInTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true}, func(ctx context.Context, tx bun.Tx) error {
 		if err := ensureActor(ctx, tx, actor); err != nil {
 			return err
@@ -518,7 +546,22 @@ func (s *Service) NewForYou(ctx context.Context, actor setup.SessionActor) (NewF
 		  ON current.event_id = authorized.event_id AND current.publication_id = authorized.publication_id
 		WHERE entry.recipient_access_generation_id = ? AND entry.seen_at IS NULL
 		ORDER BY current.committed_at DESC, current.event_id DESC LIMIT ?`, validPlacements)
-		return tx.NewRaw(query, actor.AccessID, actor.AccessID, maxPageSize).Scan(ctx, &response.Events)
+		if err := tx.NewRaw(query, actor.AccessID, actor.AccessID, maxPageSize).Scan(ctx, &response.Events); err != nil {
+			return err
+		}
+		return tx.NewRaw(`SELECT current.loose_item_id AS id, current.publication_id, current.title,
+			current.description, current.proposed_day::text, to_json(current.place_labels)::text AS place_labels, current.committed_at,
+			current.media_item_id AS media__id, current.media_type AS media__media_type,
+			current.width AS media__width, current.height AS media__height,
+			current.local_date_time AS media__local_date_time, media.availability='current' AS media__available
+			FROM new_for_you_entries AS entry
+			JOIN current_published_loose_items AS current ON current.publication_id=entry.publication_id
+			JOIN current_media_entitlements AS entitlement ON entitlement.origin_kind='loose_item'
+			 AND entitlement.origin_id=current.loose_item_id AND entitlement.publication_id=current.publication_id
+			 AND entitlement.recipient_access_generation_id=entry.recipient_access_generation_id
+			JOIN media_items AS media ON media.id=current.media_item_id
+			WHERE entry.recipient_access_generation_id=? AND entry.seen_at IS NULL
+			ORDER BY current.committed_at DESC, current.loose_item_id DESC LIMIT ?`, actor.AccessID, maxPageSize).Scan(ctx, &response.LooseItems)
 	})
 	if err != nil {
 		return NewForYouResponse{}, err
@@ -528,6 +571,9 @@ func (s *Service) NewForYou(ctx context.Context, actor setup.SessionActor) (NewF
 			response.Events[index].ThumbnailURL = "/api/me/media/" + response.Events[index].CoverMediaID + "/thumbnail"
 		}
 	}
+	for index := range response.LooseItems {
+		setMediaURLs(&response.LooseItems[index].Media)
+	}
 	return response, nil
 }
 
@@ -536,14 +582,13 @@ func (s *Service) MarkSeen(ctx context.Context, actor setup.SessionActor, public
 		if err := ensureActor(ctx, tx, actor); err != nil {
 			return err
 		}
-		query := fmt.Sprintf(`WITH valid AS (%s)
-			UPDATE new_for_you_entries AS entry SET seen_at = now()
+		result, err := tx.NewRaw(`UPDATE new_for_you_entries AS entry SET seen_at = now()
 			WHERE entry.recipient_access_generation_id = ? AND entry.publication_id = ? AND entry.seen_at IS NULL
 			  AND EXISTS (
-				SELECT 1 FROM valid
-				WHERE valid.publication_id = entry.publication_id
-			  )`, validPlacements)
-		result, err := tx.NewRaw(query, actor.AccessID, actor.AccessID, publicationID).Exec(ctx)
+				SELECT 1 FROM current_media_entitlements AS entitlement
+				WHERE entitlement.recipient_access_generation_id = entry.recipient_access_generation_id
+				  AND entitlement.publication_id = entry.publication_id
+			  )`, actor.AccessID, publicationID).Exec(ctx)
 		if err != nil {
 			return err
 		}
@@ -556,6 +601,35 @@ func (s *Service) MarkSeen(ctx context.Context, actor setup.SessionActor, public
 		}
 		return nil
 	})
+}
+
+func (s *Service) LooseItem(ctx context.Context, actor setup.SessionActor, looseID uuid.UUID) (LooseItem, error) {
+	var response LooseItem
+	err := s.db.RunInTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true}, func(ctx context.Context, tx bun.Tx) error {
+		if err := ensureActor(ctx, tx, actor); err != nil {
+			return err
+		}
+		err := tx.NewRaw(`SELECT current.loose_item_id AS id, current.publication_id, current.title,
+			current.description, current.proposed_day::text, to_json(current.place_labels)::text AS place_labels, current.committed_at,
+			current.media_item_id AS media__id, current.media_type AS media__media_type,
+			current.width AS media__width, current.height AS media__height,
+			current.local_date_time AS media__local_date_time, media.availability='current' AS media__available
+			FROM current_published_loose_items AS current
+			JOIN current_media_entitlements AS entitlement ON entitlement.origin_kind='loose_item'
+			 AND entitlement.origin_id=current.loose_item_id AND entitlement.publication_id=current.publication_id
+			 AND entitlement.recipient_access_generation_id=?
+			JOIN media_items AS media ON media.id=current.media_item_id
+			WHERE current.loose_item_id=?`, actor.AccessID, looseID).Scan(ctx, &response)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return err
+	})
+	if err != nil {
+		return LooseItem{}, err
+	}
+	setMediaURLs(&response.Media)
+	return response, nil
 }
 
 func (s *Service) Event(ctx context.Context, actor setup.SessionActor, eventID uuid.UUID, rawLimit, rawCursor string) (Event, error) {
@@ -867,10 +941,11 @@ func (s *Service) Representation(ctx context.Context, actor setup.SessionActor, 
 			return candidate{}, err
 		}
 		var resolved candidate
-		query := fmt.Sprintf(`WITH valid AS (%s)
-			SELECT backing.id, backing.immich_asset_id, valid.media_type FROM valid
-			JOIN media_backings AS backing ON backing.media_item_id = valid.media_item_id AND backing.active
-			WHERE valid.media_item_id = ? AND valid.available LIMIT 1`, validPlacements)
+		query := `SELECT backing.id, backing.immich_asset_id, media.media_type
+			FROM current_media_entitlements AS entitlement
+			JOIN media_items AS media ON media.id=entitlement.media_item_id AND media.availability='current'
+			JOIN media_backings AS backing ON backing.media_item_id=media.id AND backing.active
+			WHERE entitlement.recipient_access_generation_id=? AND entitlement.media_item_id=? LIMIT 1`
 		if err := db.NewRaw(query, actor.AccessID, mediaID).Scan(ctx, &resolved.BackingID, &resolved.AssetID, &resolved.MediaType); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return candidate{}, ErrNotFound
