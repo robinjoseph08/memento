@@ -95,6 +95,30 @@ func (h *Handler) Favorites(c echo.Context) error {
 	return c.JSON(http.StatusOK, response)
 }
 
+func (h *Handler) PhotosChronology(c echo.Context) error {
+	actor, err := h.authorize(c, false)
+	if err != nil {
+		return err
+	}
+	response, err := h.service.Chronology(c.Request().Context(), actor, false)
+	if mapped := libraryError(err); mapped != nil {
+		return mapped
+	}
+	return c.JSON(http.StatusOK, response)
+}
+
+func (h *Handler) FavoritesChronology(c echo.Context) error {
+	actor, err := h.authorize(c, false)
+	if err != nil {
+		return err
+	}
+	response, err := h.service.Chronology(c.Request().Context(), actor, true)
+	if mapped := libraryError(err); mapped != nil {
+		return mapped
+	}
+	return c.JSON(http.StatusOK, response)
+}
+
 func (h *Handler) Events(c echo.Context) error {
 	actor, err := h.authorize(c, false)
 	if err != nil {
@@ -318,8 +342,12 @@ func RegisterRoutes(e *echo.Echo, handler *Handler) {
 	me := e.Group("/api/me", noStore)
 	photos := me.GET("/photos", handler.Photos)
 	photos.Name = "policy:recipient_content"
+	photosChronology := me.GET("/photos/chronology", handler.PhotosChronology)
+	photosChronology.Name = "policy:recipient_content"
 	favorites := me.GET("/favorites", handler.Favorites)
 	favorites.Name = "policy:recipient_content"
+	favoritesChronology := me.GET("/favorites/chronology", handler.FavoritesChronology)
+	favoritesChronology.Name = "policy:recipient_content"
 	events := me.GET("/events", handler.Events)
 	events.Name = "policy:recipient_content"
 	event := me.GET("/events/:id", handler.Event)

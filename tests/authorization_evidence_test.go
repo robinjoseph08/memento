@@ -17,6 +17,7 @@ type productionEvidence struct {
 
 var matrixEvidence = map[matrixSurface][]productionEvidence{
 	surfaceLibraryProjection: {{"pkg/library/service_integration_test.go", "TestRecipientLibraryPaginatesOnlyCurrentAuthorizedUnion"}},
+	surfaceLibraryChronology: {{"pkg/library/service_integration_test.go", "TestChronologyProjectsTheCompleteCurrentAuthorizedDistinctLibraryAndDirectAnchors"}},
 	surfaceEventDetail:       {{"pkg/library/service_integration_test.go", "TestValidUnauthorizedIdentifiersAreIndistinguishableFromMissingContent"}},
 	surfacePeopleDirectory:   {{"pkg/visibility/visibility_integration_test.go", "TestRecipientPeopleSearchAuthorizesBeforeMatchingAndRevealsOnlyTheDirectUnion"}},
 	surfaceSearch:            {{"pkg/events/search_integration_test.go", "TestSearchUsesOnlyAuthorizedCurrentPublicationAndDiscoverableAttendance"}},

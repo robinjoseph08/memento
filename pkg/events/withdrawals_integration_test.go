@@ -689,7 +689,8 @@ func TestEveryImplementedRecipientContentRouteEnforcesEveryWithdrawalKind(t *tes
 				}
 			}
 			assert.ElementsMatch(t, []string{
-				"GET /api/me/photos", "GET /api/me/favorites", "GET /api/me/events",
+				"GET /api/me/photos", "GET /api/me/photos/chronology",
+				"GET /api/me/favorites", "GET /api/me/favorites/chronology", "GET /api/me/events",
 				"GET /api/me/events/:id", "GET /api/me/new-for-you",
 				"POST /api/me/new-for-you/:publication_id/seen",
 				"GET /api/me/media/:id/thumbnail", "GET /api/me/media/:id/preview",
@@ -697,7 +698,8 @@ func TestEveryImplementedRecipientContentRouteEnforcesEveryWithdrawalKind(t *tes
 			}, routes, "the matrix must be updated whenever an implemented Recipient content surface changes")
 
 			for _, path := range []string{
-				"/api/me/photos", "/api/me/favorites", "/api/me/events",
+				"/api/me/photos", "/api/me/photos/chronology",
+				"/api/me/favorites", "/api/me/favorites/chronology", "/api/me/events",
 				"/api/me/events/" + fixture.event.String(), "/api/me/new-for-you",
 			} {
 				assert.Equal(t, http.StatusOK, draftRequest(recipientHTTP, http.MethodGet, path, "").Code, "pre-open %s", path)
@@ -714,7 +716,8 @@ func TestEveryImplementedRecipientContentRouteEnforcesEveryWithdrawalKind(t *tes
 			require.NoError(t, err)
 
 			for _, path := range []string{
-				"/api/me/photos", "/api/me/favorites", "/api/me/events", "/api/me/new-for-you",
+				"/api/me/photos", "/api/me/photos/chronology",
+				"/api/me/favorites", "/api/me/favorites/chronology", "/api/me/events", "/api/me/new-for-you",
 			} {
 				response := draftRequest(recipientHTTP, http.MethodGet, path, "")
 				assert.Equal(t, http.StatusOK, response.Code, path)

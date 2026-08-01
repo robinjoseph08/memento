@@ -9,6 +9,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestPlanEvidenceSanitizesSearchTextAndIdentities(t *testing.T) {
+	raw := []byte(`[{"Plan":{"Filter":"query 01 for 11111111-1111-4111-8111-111111111111"}}]`)
+	sanitized, err := sanitizePlanEvidence(raw, []string{"01"})
+	require.NoError(t, err)
+	assert.NotContains(t, string(sanitized), "01")
+	assert.NotContains(t, string(sanitized), "11111111")
+	assert.Contains(t, string(sanitized), "search")
+	assert.Contains(t, string(sanitized), "uuid")
+}
+
 func TestNearestRankP95UsesIndependentSortedSamples(t *testing.T) {
 	samples := []int64{100, 1, 10, 20, 30, 40, 50, 60, 70, 80, 90, 2, 3, 4, 5, 6, 7, 8, 9, 11}
 	p95, err := NearestRankP95(samples)
@@ -30,6 +40,17 @@ func TestReportValidationRequiresEveryBaselineAndScaleEvidence(t *testing.T) {
 
 	report.Metrics = report.Metrics[:len(report.Metrics)-1]
 	require.ErrorContains(t, report.Validate(), `missing baseline metric "stream_buffer"`)
+}
+
+func TestReportValidationRequiresLimitationsAndACleanQualifyingRevision(t *testing.T) {
+	report := completeReport(t)
+	report.Limitations = nil
+	require.ErrorContains(t, report.Validate(), "missing limitations")
+
+	report = completeReport(t)
+	report.Qualifying = true
+	report.Environment.GitDirty = true
+	require.ErrorContains(t, report.Validate(), "qualifying evidence requires a clean Git revision")
 }
 
 func TestQualifyingReportEnforcesSampleMinimums(t *testing.T) {
@@ -92,15 +113,17 @@ func completeReport(t *testing.T) Report {
 	}
 	plan, err := json.Marshal([]any{map[string]any{"Plan": map[string]any{"Node Type": "Index Scan"}}})
 	require.NoError(t, err)
-	plans := make([]PlanEvidence, 5)
+	planNames := []string{"authorization", "media_authorization", "gallery", "chronology", "search", "curator"}
+	plans := make([]PlanEvidence, len(planNames))
 	for index := range plans {
-		plans[index] = PlanEvidence{Name: []string{"authorization", "media_authorization", "gallery", "search", "curator"}[index], CacheState: "warm", SQLRole: "memento_app", Plan: plan}
+		plans[index] = PlanEvidence{Name: planNames[index], CacheState: "warm", SQLRole: "memento_app", Plan: plan}
 	}
 	return Report{
 		SchemaVersion: 1,
 		Qualifying:    false,
 		GeneratedAt:   time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC),
 		CacheState:    "warm",
+		Limitations:   []string{"Recorded environment only."},
 		Fixture:       FixtureShape{MediaItems: 100000, Recipients: 50, Events: 21, LargestEventPlacements: 5000, ReusedMediaItems: 1000, AudienceEntries: 250, PublicationRecipients: 50, OverlappingRecipients: 25, ProposalMomentItems: 500, AttendanceRows: 50, Comments: 1000, Favorites: 1000, SearchDocuments: 100000, DeliveryActivity: 50, Checksum: "fixture-v1"},
 		Environment:   Environment{GitRevision: "abc", OS: "linux", Architecture: "amd64", CPU: "test", LogicalCPUs: 4, GoVersion: "go1.26", PostgreSQLVersion: "PostgreSQL 17", DatabasePoolSize: 16},
 		Metrics:       metrics,

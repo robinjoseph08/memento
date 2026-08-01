@@ -20,8 +20,11 @@ export function RecipientLibrary({ session }: { session: SessionResponse }) {
   return (
     <RecipientLibraryRoute
       key={session.csrf_token}
-      navigatePath={(pathname) => void navigate(pathname)}
+      navigatePath={(pathname, replace = false) =>
+        void navigate(pathname, { replace })
+      }
       pathname={location.pathname}
+      search={location.search}
       session={session}
     />
   );

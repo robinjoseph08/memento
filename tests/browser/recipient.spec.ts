@@ -6,6 +6,7 @@ const media = {
   width: 1600,
   height: 900,
   local_date_time: "2026-07-27T12:00:00Z",
+  capture_date: "2026-07-27",
   available: true,
   thumbnail_url: "/api/me/media/11111111-1111-4111-8111-111111111111/thumbnail",
   preview_url: "/api/me/media/11111111-1111-4111-8111-111111111111/preview",
@@ -76,6 +77,15 @@ async function recipientAPI(
       });
     } else if (path === "/api/session/refresh") {
       await route.fulfill({ status: 204, body: "" });
+    } else if (
+      path === "/api/me/photos/chronology" ||
+      path === "/api/me/favorites/chronology"
+    ) {
+      await route.fulfill({
+        json: {
+          dates: [{ capture_date: "2026-07-27", media_count: 2, cursor: "" }],
+        },
+      });
     } else if (path === "/api/me/photos") {
       const cursor = url.searchParams.get("cursor");
       if (cursor === null) {
@@ -332,6 +342,129 @@ test("@desktop @mobile Interest-list search is private, paginated, and accessibl
     .poll(() => searches.length)
     .toBeGreaterThan(searchesBeforeReopen);
   expect(searches.at(-1)?.body.query).toBe("");
+});
+
+test("@desktop @mobile complete chronology jumps directly beyond the first page", async ({
+  page,
+}) => {
+  await recipientAPI(page);
+  const distantMedia = {
+    ...media,
+    id: "55555555-5555-4555-8555-555555555555",
+    capture_date: "2010-04-03",
+    local_date_time: "2010-04-03T12:00:00Z",
+    thumbnail_url:
+      "/api/me/media/55555555-5555-4555-8555-555555555555/thumbnail",
+    preview_url: "/api/me/media/55555555-5555-4555-8555-555555555555/preview",
+    original_url: "/api/me/media/55555555-5555-4555-8555-555555555555/original",
+  };
+  const listingRequests: string[] = [];
+  await page.route("**/api/me/photos/chronology", async (route) => {
+    await route.fulfill({
+      json: {
+        dates: [
+          {
+            capture_date: "2026-07-27",
+            media_count: 80,
+            cursor: "latest-anchor",
+          },
+          {
+            capture_date: "2010-04-03",
+            media_count: 1,
+            cursor: "distant-anchor",
+          },
+        ],
+      },
+    });
+  });
+  await page.route("**/api/me/photos?*", async (route) => {
+    const url = new URL(route.request().url());
+    listingRequests.push(url.toString());
+    const cursor = url.searchParams.get("cursor");
+    if (cursor === "latest-anchor") {
+      await route.fulfill({
+        json: { media: [media], next_cursor: "unrequested-predecessor" },
+      });
+      return;
+    }
+    if (cursor === "distant-anchor") {
+      await route.fulfill({
+        json: { media: [distantMedia], next_cursor: null },
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 400,
+      json: { error: { message: `Unexpected cursor ${cursor ?? "none"}` } },
+    });
+  });
+
+  await page.goto("/");
+  await expect(
+    page.getByRole("heading", { name: "July 27, 2026" }),
+  ).toBeVisible();
+  const mobile = (page.viewportSize()?.width ?? 1280) <= 700;
+  if (mobile) {
+    await page
+      .getByRole("combobox", { name: "Jump to date" })
+      .selectOption("2010-04-03");
+  } else {
+    const rail = page.getByRole("slider", { name: "Photo dates" });
+    const railBounds = await rail.boundingBox();
+    expect(railBounds).not.toBeNull();
+    const distantPosition = {
+      x: railBounds!.width / 2,
+      y: railBounds!.height * 0.75,
+    };
+    const requestsBeforeHover = listingRequests.length;
+    await rail.hover({ position: distantPosition });
+    await expect(page.getByText("April 3, 2010 · 1 photo")).toBeVisible();
+    expect(listingRequests).toHaveLength(requestsBeforeHover);
+    await rail.hover({
+      position: { x: railBounds!.width / 2, y: railBounds!.height * 0.25 },
+    });
+    await expect(page.getByText("July 27, 2026 · 80 photos")).toBeVisible();
+    await page.mouse.down({ button: "left" });
+    await rail.hover({ force: true, position: distantPosition });
+    await expect(page.getByText("April 3, 2010 · 1 photo")).toBeVisible();
+    expect(listingRequests).toHaveLength(requestsBeforeHover);
+    await page.mouse.up({ button: "left" });
+    await expect(page).toHaveURL(/\/photos\?date=2010-04-03$/);
+  }
+
+  await expect(
+    page.getByRole("heading", { name: "April 3, 2010" }),
+  ).toBeVisible();
+  await expect(page).toHaveURL(/\/photos\?date=2010-04-03$/);
+  expect(
+    listingRequests.some(
+      (request) =>
+        new URL(request).searchParams.has("cursor") &&
+        new URL(request).searchParams.get("cursor") ===
+          "unrequested-predecessor",
+    ),
+  ).toBe(false);
+  expect(
+    listingRequests.some(
+      (request) =>
+        new URL(request).searchParams.get("cursor") === "distant-anchor",
+    ),
+  ).toBe(true);
+
+  await page.goBack();
+  await expect(page).toHaveURL(/\/$/);
+  await expect(
+    page.getByRole("heading", { name: "July 27, 2026" }),
+  ).toBeVisible();
+  await page.goForward();
+  await expect(page).toHaveURL(/\/photos\?date=2010-04-03$/);
+  await expect(
+    page.getByRole("heading", { name: "April 3, 2010" }),
+  ).toBeVisible();
+
+  await expect(
+    page.getByText("Hidden family date", { exact: false }),
+  ).toHaveCount(0);
 });
 
 test("@desktop @mobile Recipient lands on Photos and sees only filtered Event totals", async ({

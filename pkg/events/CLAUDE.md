@@ -5,6 +5,7 @@
 - Use a client-generated Event idempotency identity so retrying draft creation after an uncertain response returns the committed Event instead of creating a duplicate.
 - Keep at most one net-coalescing Staged update per published Event. Changes that cancel before Publication leave no staged residue.
 - Publication is one optimistic, locking transaction that validates every Audience, creates immutable Publication and revision history, replaces current placements, entitlement unions, covers, search and activity projections, and appends audit and outbox records. No mixed revision may become observable.
+- Every current published placement carries the immutable published Media metadata and source-local capture date used by Recipient gallery and chronology projections. Publication replaces those fields atomically with the placement.
 - Preview is read-only, authorization-filtered, capability-restricted, and excluded from Recipient activity.
 - Withdrawal removes effective access immediately while preserving identity and history. Restoration requires freshly reviewed Audiences and a later Publication for every stale placement.
 - Lock order is part of this module's interface. Coordinate Publication, staging, placement, access-generation, Attendance, and Withdrawal locks consistently and cover any change with real concurrency tests.

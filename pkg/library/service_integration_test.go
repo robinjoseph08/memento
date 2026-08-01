@@ -284,9 +284,13 @@ func (fixture libraryFixture) place(t *testing.T, eventIndex int, mediaID, acces
 		INSERT INTO published_media_placements
 			(published_moment_id, media_item_id, position, media_type, width, height, local_date_time)
 		SELECT ?, id, ?, media_type, width, height, local_date_time FROM media_items WHERE id = ?;
-		INSERT INTO current_published_placements
-			(event_id, publication_id, published_moment_id, media_item_id, position)
-		VALUES (?, ?, ?, ?, ?);
+		INSERT INTO current_published_placements (
+			event_id, publication_id, published_moment_id, media_item_id, position,
+			media_type, width, height, local_date_time, capture_date
+		)
+		SELECT ?, ?, ?, id, ?, media_type, width, height, local_date_time,
+		       memento_local_capture_date(local_date_time)
+		FROM media_items WHERE id = ?;
 		INSERT INTO audience_entries (
 			published_moment_id, recipient_person_id, recipient_access_generation_id
 		) SELECT ?, person_id, ? FROM recipient_access_generations WHERE id = ?
@@ -295,10 +299,29 @@ func (fixture libraryFixture) place(t *testing.T, eventIndex int, mediaID, acces
 			(event_id, publication_id, recipient_person_id, recipient_access_generation_id, media_item_id)
 		SELECT ?, ?, person_id, ?, ? FROM recipient_access_generations WHERE id = ?
 	`, fixture.moments[eventIndex], position, mediaID,
-		fixture.events[eventIndex], fixture.publications[eventIndex], fixture.moments[eventIndex], mediaID, position,
+		fixture.events[eventIndex], fixture.publications[eventIndex], fixture.moments[eventIndex], position, mediaID,
 		fixture.moments[eventIndex], accessID, accessID,
 		fixture.events[eventIndex], fixture.publications[eventIndex], accessID, mediaID, accessID).Exec(context.Background())
 	require.NoError(t, err)
+}
+
+func (fixture libraryFixture) addMedia(t *testing.T, eventIndex, position int, localDateTime *string) uuid.UUID {
+	t.Helper()
+	mediaID, assetID := uuid.New(), uuid.New()
+	_, err := fixture.db.NewRaw(`
+		INSERT INTO media_items
+			(id, immich_asset_id, media_type, width, height, local_date_time, availability, first_seen_at, last_seen_at)
+		VALUES (?, ?, 'image', 1200, 800, ?, 'current', now(), now());
+		INSERT INTO media_backings (id, media_item_id, immich_asset_id, linked_at)
+		VALUES (gen_random_uuid(), ?, ?, now())
+	`, mediaID, assetID, localDateTime, mediaID, assetID).Exec(context.Background())
+	require.NoError(t, err)
+	fixture.place(t, eventIndex, mediaID, fixture.actor.AccessID, position)
+	return mediaID
+}
+
+func captureTime(value string) *string {
+	return &value
 }
 
 func TestRecipientLibraryPaginatesOnlyCurrentAuthorizedUnion(t *testing.T) {
@@ -307,13 +330,17 @@ func TestRecipientLibraryPaginatesOnlyCurrentAuthorizedUnion(t *testing.T) {
 	_, err := fixture.db.NewRaw(`
 		UPDATE published_moments SET cover_media_item_id = ? WHERE id = ?;
 		UPDATE media_items SET media_type = 'video' WHERE id = ?;
-		UPDATE published_media_placements SET media_type = 'video' WHERE media_item_id = ?
-	`, fixture.media[1], fixture.moments[0], fixture.media[1], fixture.media[1]).Exec(ctx)
+		UPDATE published_media_placements SET media_type = 'video' WHERE media_item_id = ?;
+		UPDATE current_published_placements SET media_type = 'video' WHERE media_item_id = ?
+	`, fixture.media[1], fixture.moments[0], fixture.media[1], fixture.media[1], fixture.media[1]).Exec(ctx)
 	require.NoError(t, err)
 	first, err := fixture.service.Photos(ctx, fixture.actor, "1", "", false)
 	require.NoError(t, err)
 	require.Len(t, first.Media, 1)
 	assert.Equal(t, fixture.media[1].String(), first.Media[0].ID)
+	require.NotNil(t, first.Media[0].CaptureDate)
+	require.NotNil(t, first.Media[0].LocalDateTime)
+	assert.Equal(t, (*first.Media[0].LocalDateTime)[0:10], *first.Media[0].CaptureDate)
 	assert.Equal(t, "/api/me/media/"+fixture.media[1].String()+"/preview", first.Media[0].PreviewURL)
 	assert.Equal(t, "/api/me/media/"+fixture.media[1].String()+"/original", first.Media[0].OriginalURL)
 	assert.Equal(t, "/api/me/media/"+fixture.media[1].String()+"/video", first.Media[0].VideoURL)
@@ -340,6 +367,11 @@ func TestRecipientLibraryPaginatesOnlyCurrentAuthorizedUnion(t *testing.T) {
 	assert.Equal(t, 2, detail.MediaCount)
 	assert.Equal(t, fixture.media[1].String(), detail.CoverMediaID)
 	assert.Len(t, detail.Media, 2)
+	for _, media := range detail.Media {
+		require.NotNil(t, media.CaptureDate)
+		require.NotNil(t, media.LocalDateTime)
+		assert.Equal(t, (*media.LocalDateTime)[0:10], *media.CaptureDate)
+	}
 
 	newForYou, err := fixture.service.NewForYou(ctx, fixture.actor)
 	require.NoError(t, err)
@@ -360,6 +392,141 @@ func TestRecipientLibraryPaginatesOnlyCurrentAuthorizedUnion(t *testing.T) {
 
 	_, err = fixture.service.Photos(ctx, fixture.actor, "10", "guessed", false)
 	assert.ErrorIs(t, err, ErrInvalidCursor)
+}
+
+func TestChronologyProjectsTheCompleteCurrentAuthorizedDistinctLibraryAndDirectAnchors(t *testing.T) {
+	fixture := newLibraryFixture(t)
+	ctx := context.Background()
+	_, err := fixture.db.NewRaw(`
+		UPDATE published_media_placements SET local_date_time = '2023-03-04T10:00:00'
+		WHERE published_moment_id = ? AND media_item_id = ?;
+		UPDATE published_media_placements SET local_date_time = '2022-02-03T10:00:00'
+		WHERE published_moment_id = ? AND media_item_id = ?;
+		UPDATE published_media_placements SET local_date_time = '2024-04-05T10:00:00'
+		WHERE published_moment_id = ? AND media_item_id = ?;
+		UPDATE current_published_placements AS current
+		SET local_date_time = published.local_date_time,
+		    capture_date = memento_local_capture_date(published.local_date_time)
+		FROM published_media_placements AS published
+		WHERE published.published_moment_id = current.published_moment_id
+		  AND published.media_item_id = current.media_item_id;
+		UPDATE media_items SET availability = 'source_missing', missing_since = now() WHERE id = ?;
+		INSERT INTO favorites (recipient_person_id, media_item_id) VALUES (?, ?), (?, ?),
+			((SELECT person_id FROM recipient_access_generations WHERE id = ?), ?)
+	`, fixture.moments[0], fixture.media[0], fixture.moments[1], fixture.media[0],
+		fixture.moments[0], fixture.media[1], fixture.media[0],
+		fixture.actor.PersonID, fixture.media[0], fixture.actor.PersonID, fixture.media[1],
+		fixture.hiddenAccessID, fixture.media[2]).Exec(ctx)
+	require.NoError(t, err)
+
+	olderIDs := []uuid.UUID{
+		fixture.addMedia(t, 2, 10, captureTime("2021-01-02T03:04:05")),
+		fixture.addMedia(t, 2, 11, captureTime("2020-01-02T03:04:05")),
+		fixture.addMedia(t, 2, 12, captureTime("2019-01-02T03:04:05")),
+		fixture.addMedia(t, 2, 13, nil),
+	}
+
+	chronology, err := fixture.service.Chronology(ctx, fixture.actor, false)
+	require.NoError(t, err)
+	require.Len(t, chronology.Dates, 6)
+	var dates []string
+	for _, entry := range chronology.Dates {
+		if entry.CaptureDate == nil {
+			dates = append(dates, "")
+		} else {
+			dates = append(dates, *entry.CaptureDate)
+		}
+		assert.Equal(t, 1, entry.MediaCount)
+		assert.NotEmpty(t, entry.Cursor)
+	}
+	assert.Equal(t, []string{"2024-04-05", "2022-02-03", "2021-01-02", "2020-01-02", "2019-01-02", ""}, dates)
+	assert.NotContains(t, dates, time.Now().UTC().Format(time.DateOnly), "unentitled Media cannot contribute a date")
+
+	favorites, err := fixture.service.Chronology(ctx, fixture.actor, true)
+	require.NoError(t, err)
+	require.Len(t, favorites.Dates, 2)
+	assert.Equal(t, "2024-04-05", *favorites.Dates[0].CaptureDate)
+	assert.Equal(t, "2022-02-03", *favorites.Dates[1].CaptureDate)
+	assert.Equal(t, 1, favorites.Dates[0].MediaCount)
+	assert.Equal(t, 1, favorites.Dates[1].MediaCount)
+
+	page, err := fixture.service.Photos(ctx, fixture.actor, "1", chronology.Dates[3].Cursor, false)
+	require.NoError(t, err)
+	require.Len(t, page.Media, 1)
+	assert.Equal(t, olderIDs[1].String(), page.Media[0].ID)
+	assert.Equal(t, "2020-01-02", *page.Media[0].CaptureDate)
+	seen := map[string]bool{page.Media[0].ID: true}
+	for page.NextCursor != nil {
+		page, err = fixture.service.Photos(ctx, fixture.actor, "1", *page.NextCursor, false)
+		require.NoError(t, err)
+		require.Len(t, page.Media, 1)
+		assert.False(t, seen[page.Media[0].ID], "ordinary continuation after an anchor must not duplicate Media")
+		seen[page.Media[0].ID] = true
+	}
+	assert.Equal(t, map[string]bool{olderIDs[1].String(): true, olderIDs[2].String(): true, olderIDs[3].String(): true}, seen)
+
+	removedDateCursor := chronology.Dates[0].Cursor
+	removedFavoriteCursor := favorites.Dates[0].Cursor
+	_, err = fixture.db.NewRaw(`INSERT INTO content_withdrawals
+		(id, target_kind, target_id, withdrawn_by_person_id, withdrawn_at)
+		VALUES (gen_random_uuid(), 'event', ?, ?, now())`, fixture.events[0], fixture.curator).Exec(ctx)
+	require.NoError(t, err)
+
+	chronology, err = fixture.service.Chronology(ctx, fixture.actor, false)
+	require.NoError(t, err)
+	assert.Equal(t, "2022-02-03", *chronology.Dates[0].CaptureDate)
+	assert.Len(t, chronology.Dates, 5, "withdrawn Media is removed while reused Media survives through its other placement")
+
+	page, err = fixture.service.Photos(ctx, fixture.actor, "10", removedDateCursor, false)
+	require.NoError(t, err)
+	require.NotEmpty(t, page.Media)
+	assert.Equal(t, fixture.media[0].String(), page.Media[0].ID)
+	assert.Equal(t, "2022-02-03", *page.Media[0].CaptureDate, "a removed date resolves to nearest older current content")
+	favoritePage, err := fixture.service.Photos(ctx, fixture.actor, "10", removedFavoriteCursor, true)
+	require.NoError(t, err)
+	require.Len(t, favoritePage.Media, 1)
+	assert.Equal(t, fixture.media[0].String(), favoritePage.Media[0].ID)
+
+	_, err = fixture.service.Photos(ctx, fixture.actor, "10", removedDateCursor, true)
+	assert.ErrorIs(t, err, ErrInvalidCursor, "date anchors remain listing-scoped")
+}
+
+func TestChronologyDateAnchorPaginatesLargeSameDayCollectionsWithoutGapsOrDuplicates(t *testing.T) {
+	fixture := newLibraryFixture(t)
+	const mediaCount = 101
+	expected := make(map[string]bool, mediaCount)
+	for index := range mediaCount {
+		mediaID := fixture.addMedia(t, 2, 100+index, captureTime("2040-05-06T07:08:09"))
+		expected[mediaID.String()] = true
+	}
+
+	chronology, err := fixture.service.Chronology(context.Background(), fixture.actor, false)
+	require.NoError(t, err)
+	require.NotEmpty(t, chronology.Dates)
+	require.NotNil(t, chronology.Dates[0].CaptureDate)
+	assert.Equal(t, "2040-05-06", *chronology.Dates[0].CaptureDate)
+	assert.Equal(t, mediaCount, chronology.Dates[0].MediaCount)
+
+	actual := make(map[string]bool, mediaCount)
+	cursor := chronology.Dates[0].Cursor
+	for {
+		page, pageErr := fixture.service.Photos(context.Background(), fixture.actor, "17", cursor, false)
+		require.NoError(t, pageErr)
+		for _, media := range page.Media {
+			if media.CaptureDate == nil || *media.CaptureDate != "2040-05-06" {
+				assert.Equal(t, expected, actual)
+				return
+			}
+			assert.True(t, expected[media.ID])
+			assert.False(t, actual[media.ID], "same-day pagination must not duplicate Media")
+			actual[media.ID] = true
+		}
+		if page.NextCursor == nil {
+			break
+		}
+		cursor = *page.NextCursor
+	}
+	assert.Equal(t, expected, actual)
 }
 
 func TestLibraryCursorsAreScopedAndEventPaginationDoesNotExposeHiddenPositions(t *testing.T) {

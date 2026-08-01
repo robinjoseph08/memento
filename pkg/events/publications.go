@@ -375,10 +375,13 @@ func (s *Service) PublishEvent(ctx context.Context, actor setup.CuratorSession, 
 		}
 		if _, err := tx.NewRaw(`
 			INSERT INTO current_published_placements (
-				event_id, publication_id, published_moment_id, media_item_id, position
+				event_id, publication_id, published_moment_id, media_item_id, position,
+				media_type, width, height, local_date_time, capture_date
 			)
 			SELECT ?, ?, published.id, placement.media_item_id,
-			       row_number() OVER (ORDER BY published.position, placement.position) - 1
+			       row_number() OVER (ORDER BY published.position, placement.position) - 1,
+			       placement.media_type, placement.width, placement.height,
+			       placement.local_date_time, memento_local_capture_date(placement.local_date_time)
 			FROM published_moments AS published
 			JOIN published_media_placements AS placement ON placement.published_moment_id = published.id
 			WHERE published.publication_id = ?

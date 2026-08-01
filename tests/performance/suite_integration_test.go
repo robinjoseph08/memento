@@ -47,6 +47,7 @@ func TestTargetScalePerformance(t *testing.T) {
 	defer cancel()
 
 	actor := fixture.recipientActor(1)
+	chronologyActor := fixture.recipientActor(50)
 	cheapSamples := configuredSamples("MEMENTO_PERFORMANCE_CHEAP_SAMPLES", 100)
 	operationSamples := configuredSamples("MEMENTO_PERFORMANCE_OPERATION_SAMPLES", 20)
 	metrics := make([]Metric, 0, len(Baselines))
@@ -77,12 +78,30 @@ func TestTargetScalePerformance(t *testing.T) {
 	}), 1, 0)
 
 	libraryService := library.New(fixture.db, nil)
+	chronology, err := libraryService.Chronology(ctx, chronologyActor, false)
+	require.NoError(t, err)
+	require.Greater(t, len(chronology.Dates), 100, "target-scale chronology must span well beyond the initial page")
+	chronologyCount := 0
+	for _, date := range chronology.Dates {
+		chronologyCount += date.MediaCount
+	}
+	var authorizedMediaCount int
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(DISTINCT media_item_id)
+		FROM current_audience_entitlements
+		WHERE recipient_access_generation_id = ?`, chronologyActor.AccessID).Scan(ctx, &authorizedMediaCount))
+	require.Equal(t, fixture.shape.MediaItems, authorizedMediaCount, "target Recipient is authorized for the complete 100,000-Media library")
+	require.Equal(t, authorizedMediaCount, chronologyCount, "chronology counts every distinct authorized Media item")
+	targetDate := chronology.Dates[len(chronology.Dates)/2]
+	require.NotNil(t, targetDate.CaptureDate)
 	addDuration("recipient_list", measure(t, operationSamples, func() error {
-		page, err := libraryService.Photos(ctx, actor, "100", "", false)
-		if err == nil && len(page.Media) != 100 {
-			return fmt.Errorf("Recipient timeline returned %d items, expected 100", len(page.Media))
+		page, pageErr := libraryService.Photos(ctx, chronologyActor, "100", targetDate.Cursor, false)
+		if pageErr == nil && len(page.Media) != 100 {
+			return fmt.Errorf("Recipient date jump returned %d items, expected 100", len(page.Media))
 		}
-		return err
+		if pageErr == nil && (page.Media[0].CaptureDate == nil || *page.Media[0].CaptureDate != *targetDate.CaptureDate) {
+			return fmt.Errorf("Recipient date jump did not start at %s", *targetDate.CaptureDate)
+		}
+		return pageErr
 	}), 1, 0)
 
 	peopleService := people.New(fixture.db)
@@ -185,9 +204,17 @@ func TestTargetScalePerformance(t *testing.T) {
 	metrics = append(metrics, streamMetric)
 
 	comparisons := measureCompetingWork(t, ctx, fixture, actor, libraryService, searchService, operationSamples)
-	plans := capturePlans(t, ctx, fixture.db, actor)
+	plans := capturePlans(t, ctx, fixture.db, actor, chronologyActor)
 	qualifying := cheapSamples >= 100 && operationSamples >= 20 && publicationSamples >= 20 && streamConcurrency >= 32
-	report := Report{SchemaVersion: 1, Qualifying: qualifying, GeneratedAt: time.Now().UTC(), CacheState: "warm", Fixture: fixture.shape, Environment: readEnvironment(t, ctx, fixture.db), Metrics: metrics, Comparisons: comparisons, Plans: plans}
+	report := Report{
+		SchemaVersion: 1, Qualifying: qualifying, GeneratedAt: time.Now().UTC(), CacheState: "warm",
+		Limitations: []string{
+			"Results characterize this recorded host and warm PostgreSQL cache, not arbitrary operator hardware or Immich storage throughput.",
+			"Complete Recipient chronology correctness and its query plan are exercised at target scale, but the product specification defines no standalone chronology latency target.",
+			"Controlled local dependencies do not model networked PostgreSQL or Immich latency except where a metric records injected dependency delay.",
+		},
+		Fixture: fixture.shape, Environment: readEnvironment(t, ctx, fixture.db), Metrics: metrics, Comparisons: comparisons, Plans: plans,
+	}
 
 	reportDirectory := os.Getenv("MEMENTO_PERFORMANCE_REPORT_DIR")
 	if reportDirectory == "" {

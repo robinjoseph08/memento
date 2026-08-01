@@ -84,6 +84,7 @@ const inaccessibleMedia = {
   width: 1200,
   height: 800,
   local_date_time: "2026-07-27T13:00:00Z",
+  capture_date: "2026-07-27",
   available: true,
   thumbnail_url: `/api/me/media/${inaccessibleMediaID}/thumbnail`,
   preview_url: `/api/me/media/${inaccessibleMediaID}/preview`,
@@ -98,6 +99,7 @@ const media = {
   width: 1600,
   height: 900,
   local_date_time: "2026-07-27T12:00:00Z",
+  capture_date: "2026-07-27",
   available: true,
   thumbnail_url: `/api/me/media/${mediaID}/thumbnail`,
   preview_url: `/api/me/media/${mediaID}/preview`,
@@ -109,6 +111,7 @@ const olderMedia = {
   ...media,
   id: "77777777-7777-4777-8777-777777777777",
   local_date_time: "2026-06-15T12:00:00Z",
+  capture_date: "2026-06-15",
   thumbnail_url: "/api/me/media/77777777-7777-4777-8777-777777777777/thumbnail",
   preview_url: "/api/me/media/77777777-7777-4777-8777-777777777777/preview",
   original_url: "/api/me/media/77777777-7777-4777-8777-777777777777/original",
@@ -147,7 +150,8 @@ async function mockRecipient(page: Page) {
   }> = [];
   await page.route("**/api/**", async (route) => {
     const request = route.request();
-    const path = pathOf(request);
+    const url = new URL(request.url());
+    const path = url.pathname;
     if (path === "/api/setup") {
       await route.fulfill({
         status: 404,
@@ -165,10 +169,28 @@ async function mockRecipient(page: Page) {
       });
     } else if (path === "/api/session/refresh") {
       await route.fulfill({ status: 204 });
-    } else if (path === "/api/me/photos") {
+    } else if (
+      path === "/api/me/photos/chronology" ||
+      path === "/api/me/favorites/chronology"
+    ) {
       await route.fulfill({
         json: {
-          media: serverMedia.filter((item) => authorizedMediaIDs.has(item.id)),
+          dates: [
+            { capture_date: "2026-07-27", media_count: 1, cursor: "" },
+            { capture_date: "2026-06-15", media_count: 1, cursor: "older" },
+          ],
+        },
+      });
+    } else if (path === "/api/me/photos") {
+      const authorizedMedia = serverMedia.filter((item) =>
+        authorizedMediaIDs.has(item.id),
+      );
+      await route.fulfill({
+        json: {
+          media:
+            url.searchParams.get("cursor") === "older"
+              ? [olderMedia]
+              : authorizedMedia,
           next_cursor: null,
         },
       });
@@ -491,23 +513,23 @@ test("@desktop @mobile Recipient navigation, archives, and Media viewer are acce
     }
     await page.getByLabel("Jump to date").selectOption({ index: 1 });
   } else {
-    const dateNavigation = page.getByRole("navigation", {
-      name: "Photo dates",
-    });
-    await dateNavigation.getByRole("link", { name: "July 27, 2026" }).click();
-    const bounds = await dateNavigation.boundingBox();
-    expect(bounds).not.toBeNull();
-    await page.mouse.move(bounds!.x + bounds!.width / 2, bounds!.y + 1);
-    await page.mouse.down();
-    await page.mouse.move(
-      bounds!.x + bounds!.width / 2,
-      bounds!.y + bounds!.height - 1,
+    const dateSlider = page.getByRole("slider", { name: "Photo dates" });
+    await expect(dateSlider).toHaveAttribute("aria-orientation", "vertical");
+    await expect(dateSlider).toHaveAttribute(
+      "aria-valuetext",
+      "July 27, 2026, 1 photo",
     );
-    await page.mouse.up();
-    await expect(
-      dateNavigation.getByRole("link", { name: "June 15, 2026" }),
-    ).toHaveAttribute("aria-current", "date");
+    await dateSlider.focus();
+    await dateSlider.press("End");
+    await expect(page).toHaveURL(/\/photos\?date=2026-06-15$/);
+    await expect(dateSlider).toHaveAttribute(
+      "aria-valuetext",
+      "June 15, 2026, 1 photo",
+    );
   }
+  await expect(
+    page.getByRole("heading", { name: "June 15, 2026" }),
+  ).toBeVisible();
   await expect
     .poll(() =>
       page.evaluate(
@@ -520,6 +542,11 @@ test("@desktop @mobile Recipient navigation, archives, and Media viewer are acce
       ),
     )
     .toContain("auto");
+  await page.goBack();
+  await expect(page).toHaveURL(/\/$/);
+  await expect(
+    page.getByRole("heading", { name: "July 27, 2026" }),
+  ).toBeVisible();
 
   await page.getByRole("button", { name: "Use light theme" }).click();
   await expectAccessible(page);

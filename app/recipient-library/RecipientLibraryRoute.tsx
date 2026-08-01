@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { recordEngagement } from "../engagement";
 import { ThemeToggle } from "../PWAControls";
-import type { Media } from "../types/generated/library";
 import type { SessionResponse } from "../types/generated/setup";
 import { EventDetailDestination, EventsDestination } from "./EventsDestination";
 import { LibraryNavigation } from "./LibraryNavigation";
@@ -10,30 +9,40 @@ import { MediaViewer } from "./MediaViewer";
 import { NewForYou } from "./NewForYou";
 import { PhotosDestination, type PhotosSelection } from "./PhotosDestination";
 import {
+  captureDateFromSearch,
+  captureDateSearch,
   destinationFromPath,
   destinationPath,
   eventIDFromPath,
 } from "./routing";
 import { SearchDestination } from "./SearchDestination";
-import type { Destination, OpenedEvent, RefreshedMediaAccess } from "./types";
+import type {
+  Destination,
+  OpenedEvent,
+  RecipientMedia,
+  RefreshedMediaAccess,
+} from "./types";
 import { useNewForYouModel } from "./useNewForYouModel";
 import { useSearchDestinationModel } from "./useSearchDestinationModel";
 
 type OpenedMedia = {
-  media: Media;
+  media: RecipientMedia;
   refreshListingAccess: () => Promise<RefreshedMediaAccess>;
 };
 
 export function RecipientLibraryRoute({
   session,
   pathname,
+  search,
   navigatePath,
 }: {
   session: SessionResponse;
   pathname: string;
-  navigatePath: (pathname: string) => void;
+  search: string;
+  navigatePath: (pathname: string, replace?: boolean) => void;
 }) {
   const destination = destinationFromPath(pathname);
+  const selectedCaptureDate = captureDateFromSearch(search);
   const openedEventID = eventIDFromPath(pathname);
   const [openedEventSummary, setOpenedEventSummary] = useState<OpenedEvent>();
   const openedEvent = useMemo(
@@ -151,7 +160,7 @@ export function RecipientLibraryRoute({
   }
 
   function openMedia(
-    media: Media,
+    media: RecipientMedia,
     refreshListingAccess: () => Promise<RefreshedMediaAccess>,
   ) {
     mediaOpener.current =
@@ -239,6 +248,13 @@ export function RecipientLibraryRoute({
                 destination={destination}
                 key={destination}
                 onOpenMedia={openMedia}
+                onSelectCaptureDate={(captureDate, replace = false) =>
+                  navigatePath(
+                    `${destinationPath(destination)}${captureDateSearch(captureDate)}`,
+                    replace,
+                  )
+                }
+                selectedCaptureDate={selectedCaptureDate}
                 selection={selection}
                 session={session}
               />

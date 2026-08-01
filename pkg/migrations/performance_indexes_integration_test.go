@@ -37,6 +37,7 @@ func TestTargetScaleProjectionIndexesRetainAuthorizationPaths(t *testing.T) {
 	assert.Contains(t, strings.ReplaceAll(definitions["current_audience_entitlements_pkey"], " ", ""), "(recipient_access_generation_id,event_id,media_item_id)")
 	assert.Contains(t, strings.ReplaceAll(definitions["current_entitlements_media_idx"], " ", ""), "(media_item_id,recipient_access_generation_id)")
 	assert.Contains(t, strings.ReplaceAll(definitions["current_entitlements_event_idx"], " ", ""), "(event_id,recipient_access_generation_id,media_item_id)")
+
 }
 
 func TestCompactedSearchDocumentsKeepStableConstraintNames(t *testing.T) {

@@ -38,6 +38,7 @@ const privatePhoto = {
   width: 1600,
   height: 900,
   local_date_time: "2026-07-27T12:00:00Z",
+  capture_date: "2026-07-27",
   available: true,
   thumbnail_url: "/api/me/media/private-photo/thumbnail",
   preview_url: "/api/me/media/private-photo/preview",
@@ -58,6 +59,20 @@ async function recipientAPI(page: Page, media: object[] = []) {
       await route.fulfill({ json: session });
     } else if (path === "/api/session/refresh") {
       await route.fulfill({ status: 204, body: "" });
+    } else if (path === "/api/me/photos/chronology") {
+      await route.fulfill({
+        json: {
+          dates: media.length
+            ? [
+                {
+                  capture_date: "2026-07-27",
+                  media_count: media.length,
+                  cursor: "",
+                },
+              ]
+            : [],
+        },
+      });
     } else if (path === "/api/me/photos") {
       await route.fulfill({ json: { media, next_cursor: null } });
     } else if (path === "/api/me/new-for-you") {

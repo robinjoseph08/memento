@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -15,6 +16,7 @@ import (
 var (
 	errInvalidSamples = errors.New("invalid performance samples")
 	errInvalidReport  = errors.New("invalid performance report")
+	planUUIDPattern   = regexp.MustCompile(`(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b`)
 )
 
 // Baseline identifies one normative target from the product specification.
@@ -109,11 +111,43 @@ type Report struct {
 	Qualifying    bool           `json:"qualifying"`
 	GeneratedAt   time.Time      `json:"generated_at"`
 	CacheState    string         `json:"cache_state"`
+	Limitations   []string       `json:"limitations"`
 	Fixture       FixtureShape   `json:"fixture"`
 	Environment   Environment    `json:"environment"`
 	Metrics       []Metric       `json:"metrics"`
 	Comparisons   []Metric       `json:"comparisons"`
 	Plans         []PlanEvidence `json:"plans"`
+}
+
+func sanitizePlanEvidence(raw []byte, sensitive []string) (json.RawMessage, error) {
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return nil, err
+	}
+	var sanitize func(any) any
+	sanitize = func(current any) any {
+		switch typed := current.(type) {
+		case []any:
+			for index := range typed {
+				typed[index] = sanitize(typed[index])
+			}
+		case map[string]any:
+			for key, item := range typed {
+				typed[key] = sanitize(item)
+			}
+		case string:
+			typed = planUUIDPattern.ReplaceAllString(typed, "<uuid>")
+			for _, secret := range sensitive {
+				if secret != "" {
+					typed = strings.ReplaceAll(typed, secret, "<search>")
+				}
+			}
+			return typed
+		}
+		return current
+	}
+	encoded, err := json.Marshal(sanitize(value))
+	return json.RawMessage(encoded), err
 }
 
 // NearestRankP95 returns the nearest-rank 95th percentile without mutating samples.
@@ -172,6 +206,17 @@ func (r Report) Validate() error {
 	}
 	if r.CacheState == "" || r.Fixture.Checksum == "" || r.Environment.PostgreSQLVersion == "" {
 		return fmt.Errorf("%w: missing cache, fixture checksum, or PostgreSQL evidence", errInvalidReport)
+	}
+	if len(r.Limitations) == 0 {
+		return fmt.Errorf("%w: missing limitations", errInvalidReport)
+	}
+	for _, limitation := range r.Limitations {
+		if strings.TrimSpace(limitation) == "" {
+			return fmt.Errorf("%w: limitations cannot be empty", errInvalidReport)
+		}
+	}
+	if r.Qualifying && r.Environment.GitDirty {
+		return fmt.Errorf("%w: qualifying evidence requires a clean Git revision", errInvalidReport)
 	}
 	if r.Fixture.MediaItems != 100000 || r.Fixture.Recipients != 50 || r.Fixture.Events == 0 || r.Fixture.LargestEventPlacements != 5000 || r.Fixture.ReusedMediaItems == 0 || r.Fixture.AudienceEntries == 0 || r.Fixture.PublicationRecipients != 50 || r.Fixture.OverlappingRecipients == 0 || r.Fixture.ProposalMomentItems != 500 || r.Fixture.AttendanceRows != 50 || r.Fixture.Comments == 0 || r.Fixture.Favorites == 0 || r.Fixture.SearchDocuments == 0 || r.Fixture.DeliveryActivity == 0 {
 		return fmt.Errorf("%w: fixture does not match the target-scale shape: %+v", errInvalidReport, r.Fixture)
@@ -241,7 +286,7 @@ func (r Report) Validate() error {
 	if !competitors["reconciliation"] || !competitors["publication"] || !competitors["notification dispatch"] {
 		return fmt.Errorf("%w: reconciliation, publication, and notification dispatch competing-work evidence is required", errInvalidReport)
 	}
-	requiredPlans := map[string]bool{"authorization": false, "media_authorization": false, "gallery": false, "search": false, "curator": false}
+	requiredPlans := map[string]bool{"authorization": false, "media_authorization": false, "gallery": false, "chronology": false, "search": false, "curator": false}
 	for _, plan := range r.Plans {
 		if plan.Name == "" || plan.CacheState == "" || plan.SQLRole == "" || !json.Valid(plan.Plan) {
 			return fmt.Errorf("%w: invalid PostgreSQL plan evidence %q", errInvalidReport, plan.Name)
@@ -278,7 +323,7 @@ func (r Report) Write(jsonPath, markdownPath string) error {
 // Markdown renders a compact human-readable report.
 func (r Report) Markdown() string {
 	var output strings.Builder
-	fmt.Fprintf(&output, "# Target-scale performance report\n\nGenerated: `%s`  \nQualifying: `%t`  \nGit revision: `%s` (dirty: `%t`)  \nCache state: `%s`  \nPostgreSQL: `%s`\n\n", r.GeneratedAt.UTC().Format(time.RFC3339), r.Qualifying, r.Environment.GitRevision, r.Environment.GitDirty, r.CacheState, r.Environment.PostgreSQLVersion)
+	fmt.Fprintf(&output, "# Target-scale performance report\n\n- Generated: `%s`\n- Qualifying: `%t`\n- Git revision: `%s` (dirty: `%t`)\n- Cache state: `%s`\n- PostgreSQL: `%s`\n\n", r.GeneratedAt.UTC().Format(time.RFC3339), r.Qualifying, r.Environment.GitRevision, r.Environment.GitDirty, r.CacheState, r.Environment.PostgreSQLVersion)
 	fmt.Fprintf(&output, "## Fixture\n\n100,000 Media items, %d Recipients, %d Events, largest Event %d placements, %d reused Media items, %d Audience entries, %d Publication Recipients, %d overlapping Recipients, a %d-item proposal Moment with %d Attendance rows, %d Comments, %d Favorites, %d search documents, and %d delivery activity rows. Fixture checksum: `%s`.\n\n", r.Fixture.Recipients, r.Fixture.Events, r.Fixture.LargestEventPlacements, r.Fixture.ReusedMediaItems, r.Fixture.AudienceEntries, r.Fixture.PublicationRecipients, r.Fixture.OverlappingRecipients, r.Fixture.ProposalMomentItems, r.Fixture.AttendanceRows, r.Fixture.Comments, r.Fixture.Favorites, r.Fixture.SearchDocuments, r.Fixture.DeliveryActivity, r.Fixture.Checksum)
 	output.WriteString("## Baselines\n\n| Operation | p95 | Target | Result | Scenario | Concurrency | Immich latency |\n| --- | ---: | ---: | --- | --- | ---: | ---: |\n")
 	for _, metric := range r.Metrics {
@@ -299,6 +344,10 @@ func (r Report) Markdown() string {
 	output.WriteString("\n## PostgreSQL plans and buffers\n\n")
 	for _, plan := range r.Plans {
 		fmt.Fprintf(&output, "- `%s`: %s cache, role `%s`; full `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)` is in the JSON artifact.\n", plan.Name, plan.CacheState, plan.SQLRole)
+	}
+	output.WriteString("\n## Limitations\n\n")
+	for _, limitation := range r.Limitations {
+		fmt.Fprintf(&output, "- %s\n", limitation)
 	}
 	fmt.Fprintf(&output, "\n## Environment\n\n- OS/architecture: `%s/%s`\n- CPU: `%s` (%d logical CPUs)\n- Memory: %d bytes\n- Go: `%s`\n- Database size: %d bytes\n- Database pool: %d connections\n", r.Environment.OS, r.Environment.Architecture, r.Environment.CPU, r.Environment.LogicalCPUs, r.Environment.MemoryBytes, r.Environment.GoVersion, r.Environment.DatabaseSizeBytes, r.Environment.DatabasePoolSize)
 	return output.String()

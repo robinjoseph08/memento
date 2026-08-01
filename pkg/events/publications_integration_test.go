@@ -307,6 +307,18 @@ func TestPublicationBuildsImmutableHistoryAndFilteredCurrentProjections(t *testi
 		require.NoError(t, fixture.db.NewRaw("SELECT count(*) FROM "+table).Scan(ctx, &count), table)
 		assert.Equal(t, expected, count, table)
 	}
+	var placementProjectionMismatches int
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*)
+		FROM current_published_placements AS current
+		JOIN published_media_placements AS published
+		  ON published.published_moment_id = current.published_moment_id
+		 AND published.media_item_id = current.media_item_id
+		WHERE (current.media_type, current.width, current.height, current.local_date_time, current.capture_date)
+		  IS DISTINCT FROM (
+			published.media_type, published.width, published.height, published.local_date_time,
+			memento_local_capture_date(published.local_date_time)
+		  )`).Scan(ctx, &placementProjectionMismatches))
+	assert.Zero(t, placementProjectionMismatches, "Publication atomically projects immutable Media chronology fields")
 
 	_, err = fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, fixture.request())
 	assert.ErrorIs(t, err, ErrPublicationNotReady, "one editable version creates at most one Publication")

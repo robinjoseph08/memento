@@ -1,8 +1,9 @@
-import type { EventSummary, Media } from "../types/generated/library";
+import type { EventSummary } from "../types/generated/library";
 import type { EventResult } from "../types/generated/search";
 import { mediaAlt } from "./mediaPresentation";
+import type { RecipientMedia } from "./types";
 
-export function MediaGallery({
+export function MediaGallery<T extends RecipientMedia>({
   media,
   onOpen,
   selected,
@@ -10,12 +11,12 @@ export function MediaGallery({
   selectionEnabled = false,
   onToggle,
 }: {
-  media: Media[];
-  onOpen: (media: Media) => void;
+  media: T[];
+  onOpen: (media: T) => void;
   selected?: Set<string>;
   selectionDisabled?: boolean;
   selectionEnabled?: boolean;
-  onToggle?: (media: Media) => void;
+  onToggle?: (media: T) => void;
 }) {
   return (
     <div aria-label="Media gallery" className="justified-gallery">
