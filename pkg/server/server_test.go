@@ -105,7 +105,7 @@ func TestServerRegistersVisibilityRoutesWhenHandlerIsProvided(t *testing.T) {
 		"POST /api/visibility-circles/:id/archive", "PUT /api/visibility-circles/:id/members/:person_id",
 		"GET /api/interest-lists/:recipient_id/discoverable", "GET /api/interest-lists/:recipient_id",
 		"PUT /api/interest-lists/:recipient_id/people/:person_id", "GET /api/me/people",
-		"GET /api/me/interest-list", "PUT /api/me/interest-list/:person_id",
+		"POST /api/me/people/search", "GET /api/me/interest-list", "PUT /api/me/interest-list/:person_id",
 	} {
 		assert.True(t, routes[route], route)
 	}

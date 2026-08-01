@@ -81,8 +81,8 @@ async function recipientAPI(page: Page, media: object[] = []) {
           history: [],
         },
       });
-    } else if (path === "/api/me/people") {
-      await route.fulfill({ json: { people: [] } });
+    } else if (path === "/api/me/people/search") {
+      await route.fulfill({ json: { people: [], next_cursor: null } });
     } else if (path.startsWith("/api/me/media/")) {
       await route.fulfill({
         contentType: "image/png",

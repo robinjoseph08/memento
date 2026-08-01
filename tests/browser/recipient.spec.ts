@@ -183,8 +183,8 @@ async function recipientAPI(
           history: [],
         },
       });
-    } else if (path === "/api/me/people") {
-      await route.fulfill({ json: { people: [] } });
+    } else if (path === "/api/me/people/search") {
+      await route.fulfill({ json: { people: [], next_cursor: null } });
     } else {
       await route.fulfill({
         status: 404,
@@ -193,6 +193,146 @@ async function recipientAPI(
     }
   });
 }
+
+test("@desktop @mobile Interest-list search is private, paginated, and accessible", async ({
+  page,
+}) => {
+  await recipientAPI(page);
+  const visible = {
+    id: "55555555-5555-4555-8555-555555555555",
+    display_name: "José Alvarez",
+    sort_name: "Alvarez, José",
+    relationship: { connection_type: "sibling" },
+  };
+  const second = {
+    id: "66666666-6666-4666-8666-666666666666",
+    display_name: "Blair Visible",
+    sort_name: "Visible, Blair",
+  };
+  const searches: Array<{
+    url: string;
+    method: string;
+    headers: Record<string, string>;
+    body: { query?: string; cursor?: string; limit?: number };
+  }> = [];
+  await page.route("**/api/me/people/search", async (route) => {
+    const request = route.request();
+    const body = request.postDataJSON() as {
+      query?: string;
+      cursor?: string;
+      limit?: number;
+    };
+    searches.push({
+      url: request.url(),
+      method: request.method(),
+      headers: request.headers(),
+      body,
+    });
+    if (body.query === "missing") {
+      await route.fulfill({ json: { people: [], next_cursor: null } });
+    } else if (body.cursor === "directory-next") {
+      await route.fulfill({ json: { people: [second], next_cursor: null } });
+    } else {
+      await route.fulfill({
+        json: { people: [visible], next_cursor: "directory-next" },
+      });
+    }
+  });
+  await page.route(`**/api/me/interest-list/${visible.id}`, async (route) => {
+    const request = route.request();
+    expect(request.method()).toBe("PUT");
+    expect(request.headers()["x-memento-csrf"]).toBe("c".repeat(64));
+    expect(request.postDataJSON()).toEqual({ selected: true, version: 0 });
+    await route.fulfill({
+      json: {
+        recipient: {
+          id: "recipient",
+          display_name: "Alex",
+          sort_name: "alex",
+        },
+        version: 1,
+        entries: [
+          {
+            person: visible,
+            state: "active",
+            chosen_at: "2026-07-31T12:00:00Z",
+            updated_at: "2026-07-31T12:00:00Z",
+          },
+        ],
+        history: [],
+      },
+    });
+  });
+
+  await page.goto("/");
+  expect(searches).toHaveLength(0);
+  await page.getByLabel("Account for Alex").click();
+  const searchbox = page.getByRole("searchbox", {
+    name: "Search People available for your Interest list",
+  });
+  await expect(searchbox).toBeVisible();
+  await searchbox.fill("jose");
+  await searchbox.press("Enter");
+  await expect(searchbox).toBeFocused();
+  await expect(
+    page.getByRole("checkbox", { name: "José Alvarez" }),
+  ).toBeVisible();
+  await expect(page.getByText("sibling", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Load more People" }).click();
+  await expect(
+    page.getByRole("checkbox", { name: "Blair Visible" }),
+  ).toBeVisible();
+  await page.getByRole("checkbox", { name: "José Alvarez" }).click();
+  await expect(
+    page.getByRole("checkbox", { name: "José Alvarez" }),
+  ).toBeChecked();
+  await expect(page.getByText("Selected explicitly")).toBeVisible();
+
+  expect(searches.some(({ body }) => body.query === "jose")).toBe(true);
+  expect(searches.some(({ body }) => body.cursor === "directory-next")).toBe(
+    true,
+  );
+  for (const search of searches) {
+    expect(search.method).toBe("POST");
+    expect(new URL(search.url).search).toBe("");
+    expect(search.headers["x-memento-csrf"]).toBeUndefined();
+    expect(search.body.limit).toBe(25);
+  }
+
+  await searchbox.fill("missing");
+  await searchbox.press("Enter");
+  await expect(
+    page.getByText("No People are available for this search."),
+  ).toBeVisible();
+  await expect(searchbox).toBeFocused();
+  for (const privateText of [
+    "private@example.test",
+    "Private Family Circle",
+    "Hidden Intermediary",
+  ]) {
+    await expect(page.getByText(privateText, { exact: false })).toHaveCount(0);
+  }
+  const searchButton = page
+    .getByRole("search")
+    .getByRole("button", { name: "Search", exact: true });
+  const box = await searchButton.boundingBox();
+  expect(box).not.toBeNull();
+  expect(box!.height).toBeGreaterThanOrEqual(40);
+
+  await page.getByLabel("Account for Alex").click();
+  await expect(searchbox).toHaveCount(0);
+  await expect(page.locator('input[value="missing"]')).toHaveCount(0);
+  const searchesBeforeReopen = searches.length;
+  await page.getByLabel("Account for Alex").click();
+  const reopenedSearchbox = page.getByRole("searchbox", {
+    name: "Search People available for your Interest list",
+  });
+  await expect(reopenedSearchbox).toHaveValue("");
+  await expect
+    .poll(() => searches.length)
+    .toBeGreaterThan(searchesBeforeReopen);
+  expect(searches.at(-1)?.body.query).toBe("");
+});
 
 test("@desktop @mobile Recipient lands on Photos and sees only filtered Event totals", async ({
   page,

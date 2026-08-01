@@ -1,4 +1,8 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import {
+  focusManager,
+  QueryClient,
+  QueryClientProvider,
+} from "@tanstack/react-query";
 import {
   cleanup,
   fireEvent,
@@ -13,12 +17,14 @@ import {
   RecipientVisibilityManager,
   VisibilityManager,
 } from "./VisibilityManager";
+import { CURRENT_SESSION_QUERY_KEY } from "./hooks/queries/sessions";
 import type { Person as CuratorPerson } from "./types/generated/people";
 import type {
   Circle,
   CircleRequest,
   InterestListResponse,
   InterestMutationRequest,
+  PeopleSearchRequest,
   MembershipRequest,
 } from "./types/generated/visibility";
 
@@ -80,6 +86,7 @@ function renderManager() {
 
 afterEach(() => {
   cleanup();
+  focusManager.setFocused(undefined);
   vi.restoreAllMocks();
 });
 
@@ -258,6 +265,7 @@ test("lets a Recipient edit only their own discoverable Interest choices", async
     history: [],
     history_next_cursor: "older-history",
   };
+  let directoryAvailable = true;
   let resolveOlderHistory: (response: Response) => void = () => undefined;
   const olderHistory = new Promise<Response>((resolve) => {
     resolveOlderHistory = resolve;
@@ -268,12 +276,13 @@ test("lets a Recipient edit only their own discoverable Interest choices", async
     vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const path = requestPath(input);
       requests.push({ path, init });
-      if (path.startsWith("/api/me/people?")) {
-        const cursor = new URL(path, "https://memento.test").searchParams.get(
-          "cursor",
-        );
-        return cursor === nextCursor
-          ? jsonResponse({ people: [blair] })
+      if (path === "/api/me/people/search" && init?.method === "POST") {
+        const search = requestBody<PeopleSearchRequest>(init.body);
+        if (!directoryAvailable || search.query === "nobody") {
+          return jsonResponse({ people: [], next_cursor: null });
+        }
+        return search.cursor === nextCursor
+          ? jsonResponse({ people: [blair], next_cursor: null })
           : jsonResponse({ people: [alex], next_cursor: nextCursor });
       }
       if (path === "/api/me/interest-list") {
@@ -321,29 +330,84 @@ test("lets a Recipient edit only their own discoverable Interest choices", async
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
+  const session = {
+    display_name: "Recipient",
+    session_type: "trusted",
+    csrf_token: "recipient-csrf",
+    curator: false,
+    onboarding_required: false,
+  };
+  client.setQueryData(CURRENT_SESSION_QUERY_KEY, session);
   render(
     <QueryClientProvider client={client}>
-      <RecipientVisibilityManager
-        onSignOut={onSignOut}
-        session={{
-          display_name: "Recipient",
-          session_type: "trusted",
-          csrf_token: "recipient-csrf",
-          curator: false,
-          onboarding_required: false,
-        }}
-      />
+      <RecipientVisibilityManager onSignOut={onSignOut} session={session} />
     </QueryClientProvider>,
   );
 
-  const alexChoice = await screen.findByRole("checkbox", { name: /Alex/ });
-  expect(await screen.findByRole("checkbox", { name: /Blair/ })).toBeVisible();
-  expect(screen.getByText("sibling")).toBeInTheDocument();
+  const searchbox = screen.getByRole("searchbox", {
+    name: "Search People available for your Interest list",
+  });
+  expect(searchbox).toHaveAttribute("maxlength", "200");
+  let alexChoice = await screen.findByRole("checkbox", { name: /Alex/ });
   expect(
-    requests.some((request) =>
-      request.path.includes("cursor=opaque%2Fcursor%2Bvalue"),
-    ),
-  ).toBe(true);
+    screen.queryByRole("checkbox", { name: /Blair/ }),
+  ).not.toBeInTheDocument();
+  expect(screen.getByText("sibling")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Load more People" }));
+  expect(await screen.findByRole("checkbox", { name: /Blair/ })).toBeVisible();
+  const pageRequests = requests.filter(
+    ({ path, init }) =>
+      path === "/api/me/people/search" && init?.method === "POST",
+  );
+  expect(pageRequests).toHaveLength(2);
+  expect(requestBody<PeopleSearchRequest>(pageRequests[0]?.init?.body)).toEqual(
+    {
+      query: "",
+      limit: 25,
+    },
+  );
+  expect(requestBody<PeopleSearchRequest>(pageRequests[1]?.init?.body)).toEqual(
+    {
+      query: "",
+      cursor: nextCursor,
+      limit: 25,
+    },
+  );
+  expect(pageRequests.every(({ path }) => !path.includes("?"))).toBe(true);
+  for (const request of pageRequests) {
+    expect(new Headers(request.init?.headers).has("X-Memento-CSRF")).toBe(
+      false,
+    );
+  }
+
+  directoryAvailable = false;
+  focusManager.setFocused(false);
+  focusManager.setFocused(true);
+  await waitFor(() =>
+    expect(
+      screen.queryByRole("checkbox", { name: /Blair/ }),
+    ).not.toBeInTheDocument(),
+  );
+  expect(
+    screen.getByText("No People are available for this search."),
+  ).toBeVisible();
+  directoryAvailable = true;
+  focusManager.setFocused(false);
+  focusManager.setFocused(true);
+  alexChoice = await screen.findByRole("checkbox", { name: /Alex/ });
+
+  fireEvent.change(searchbox, { target: { value: "nobody" } });
+  fireEvent.submit(screen.getByRole("search"));
+  expect(
+    await screen.findByText("No People are available for this search."),
+  ).toBeVisible();
+  const searchRequest = requests.find(({ init }) => {
+    if (init?.method !== "POST" || !init.body) return false;
+    return requestBody<PeopleSearchRequest>(init.body).query === "nobody";
+  });
+  expect(searchRequest?.path).toBe("/api/me/people/search");
+  fireEvent.click(screen.getByRole("button", { name: "Clear search" }));
+  alexChoice = await screen.findByRole("checkbox", { name: /Alex/ });
   fireEvent.click(screen.getByRole("button", { name: "Load older history" }));
   fireEvent.click(alexChoice);
   await waitFor(() => expect(alexChoice).toBeChecked());
@@ -377,6 +441,165 @@ test("lets a Recipient edit only their own discoverable Interest choices", async
   expect(logout?.init?.headers).toEqual(
     expect.objectContaining({ "X-Memento-CSRF": "recipient-csrf" }),
   );
+});
+
+test("aborts an in-flight private directory query when its account surface unmounts", async () => {
+  let searchSignal: AbortSignal | undefined;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = requestPath(input);
+      if (path === "/api/me/people/search") {
+        searchSignal = init?.signal ?? undefined;
+        return new Promise<Response>(() => undefined);
+      }
+      if (path === "/api/me/interest-list") {
+        return jsonResponse({
+          recipient: {
+            id: "22222222-2222-4222-8222-222222222222",
+            display_name: "Recipient",
+            sort_name: "Recipient",
+          },
+          version: 0,
+          entries: [],
+          history: [],
+        });
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    }),
+  );
+  const session = {
+    display_name: "Recipient",
+    session_type: "trusted",
+    csrf_token: "private-query-session",
+    curator: false,
+    onboarding_required: false,
+  };
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
+  client.setQueryData(CURRENT_SESSION_QUERY_KEY, session);
+  const { unmount } = render(
+    <QueryClientProvider client={client}>
+      <RecipientVisibilityManager onSignOut={vi.fn()} session={session} />
+    </QueryClientProvider>,
+  );
+
+  await waitFor(() => expect(searchSignal).toBeDefined());
+  unmount();
+  expect(searchSignal?.aborted).toBe(true);
+});
+
+test("ignores a delayed Interest mutation after the account surface remounts", async () => {
+  const recipient = curatorPerson(
+    "22222222-2222-4222-8222-222222222222",
+    "Recipient",
+    ["recipient"],
+  );
+  const alex = {
+    id: "33333333-3333-4333-8333-333333333333",
+    display_name: "Alex",
+    sort_name: "Alex",
+  };
+  let resolveMutation: (response: Response) => void = () => undefined;
+  const delayedMutation = new Promise<Response>((resolve) => {
+    resolveMutation = resolve;
+  });
+  let mutationRequests = 0;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = requestPath(input);
+      if (path === "/api/me/people/search") {
+        return jsonResponse({ people: [], next_cursor: null });
+      }
+      if (path === "/api/me/interest-list") {
+        return jsonResponse({
+          recipient,
+          version: 0,
+          entries: [
+            {
+              person: alex,
+              state: "ineligible",
+              chosen_at: "2026-01-01T00:00:00Z",
+              updated_at: "2026-01-01T00:00:00Z",
+            },
+          ],
+          history: [],
+        });
+      }
+      if (
+        path === `/api/me/interest-list/${alex.id}` &&
+        init?.method === "PUT"
+      ) {
+        mutationRequests++;
+        return delayedMutation;
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    }),
+  );
+  const session = {
+    display_name: "Recipient",
+    session_type: "trusted",
+    csrf_token: "same-session",
+    curator: false,
+    onboarding_required: false,
+  };
+  const interestKey = ["recipient-interest-list", session.csrf_token] as const;
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
+  client.setQueryData(CURRENT_SESSION_QUERY_KEY, session);
+  const view = render(
+    <QueryClientProvider client={client}>
+      <RecipientVisibilityManager onSignOut={vi.fn()} session={session} />
+    </QueryClientProvider>,
+  );
+
+  const retainedChoice = await screen.findByRole("checkbox", { name: "Alex" });
+  expect(retainedChoice).toBeEnabled();
+  expect(
+    screen.getByText(
+      "Inactive after visibility loss. Select again to check current availability.",
+    ),
+  ).toBeVisible();
+  fireEvent.click(retainedChoice);
+  await waitFor(() => expect(mutationRequests).toBe(1));
+  view.unmount();
+  render(
+    <QueryClientProvider client={client}>
+      <RecipientVisibilityManager onSignOut={vi.fn()} session={session} />
+    </QueryClientProvider>,
+  );
+  await screen.findByText(
+    "Inactive after visibility loss. Select again to check current availability.",
+  );
+  resolveMutation(
+    jsonResponse({
+      recipient,
+      version: 1,
+      entries: [
+        {
+          person: alex,
+          state: "active",
+          chosen_at: "2026-01-01T00:00:00Z",
+          updated_at: "2026-01-01T00:00:00Z",
+        },
+      ],
+      history: [],
+    }),
+  );
+  await waitFor(() =>
+    expect(
+      client
+        .getMutationCache()
+        .getAll()
+        .some((mutation) => mutation.state.status === "success"),
+    ).toBe(true),
+  );
+  const retained = client.getQueryData<InterestListResponse>(interestKey);
+  expect(retained?.version).toBe(0);
+  expect(retained?.entries[0]?.state).toBe("ineligible");
 });
 
 test("edits an empty Interest list on a Recipient's behalf and shows attributed history", async () => {

@@ -1566,6 +1566,23 @@ h1 {
   gap: 0.65rem;
 }
 
+.interest-search {
+  display: grid;
+  gap: 0.5rem;
+  margin: 1.25rem 0;
+}
+
+.interest-search-controls {
+  display: grid;
+  grid-template-columns: minmax(12rem, 1fr) auto auto;
+  gap: 0.5rem;
+}
+
+.interest-search-status {
+  margin: 0;
+  color: #94a3b8;
+}
+
 .visibility-circle-list > button {
   display: grid;
   width: 100%;
@@ -2364,7 +2381,8 @@ h1 {
   .family-explainer,
   .family-layout,
   .visibility-layout,
-  .branch-results ul {
+  .branch-results ul,
+  .interest-search-controls {
     grid-template-columns: 1fr;
   }
 

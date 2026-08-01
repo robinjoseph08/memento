@@ -79,6 +79,10 @@ function ReadyCard({
   const [draftsDirty, setDraftsDirty] = useState(false);
   const [draftsSaving, setDraftsSaving] = useState(false);
   const [preserveDraftOffline, setPreserveDraftOffline] = useState(false);
+  const [recipientAccountIdentity, setRecipientAccountIdentity] = useState("");
+  const recipientAccountOpen =
+    recipientAccountIdentity !== "" &&
+    recipientAccountIdentity === session?.csrf_token;
   const draftsRequested = searchParams.get("workspace") === "drafts";
   const signOut = useSignOut(session?.csrf_token, onSignOut);
 
@@ -259,7 +263,15 @@ function ReadyCard({
           />
           <div className="recipient-experience">
             <RecipientLibrary session={session} />
-            <details className="recipient-account-tools">
+            <details
+              className="recipient-account-tools"
+              onToggle={(event) =>
+                setRecipientAccountIdentity(
+                  event.currentTarget.open ? session.csrf_token : "",
+                )
+              }
+              open={recipientAccountOpen}
+            >
               <summary aria-label={`Account for ${session.display_name}`}>
                 <span aria-hidden="true">
                   {session.display_name.trim().charAt(0).toUpperCase() || "M"}
@@ -272,10 +284,12 @@ function ReadyCard({
                 <PushNotifications session={session} />
                 <InvitationSuggestions session={session} />
                 <SessionManager onSignedOut={onSignOut} session={session} />
-                <RecipientVisibilityManager
-                  onSignOut={onSignOut}
-                  session={session}
-                />
+                {recipientAccountOpen ? (
+                  <RecipientVisibilityManager
+                    onSignOut={onSignOut}
+                    session={session}
+                  />
+                ) : null}
               </div>
             </details>
           </div>

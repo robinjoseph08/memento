@@ -7,10 +7,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 	"github.com/robinjoseph08/memento/pkg/errcodes"
 	"github.com/robinjoseph08/memento/pkg/setup"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 type fakeAuthorizer struct {
@@ -66,6 +68,21 @@ func TestVisibilityRoutesAuthenticateBeforeReadingPrivateState(t *testing.T) {
 	}
 }
 
+func TestPeopleSearchAuthenticatesBeforeReadingOrValidatingTheBody(t *testing.T) {
+	authorizer := &fakeAuthorizer{err: setup.ErrUnauthenticated}
+	response := visibilityRequest(
+		visibilityHTTP(authorizer),
+		http.MethodPost,
+		"/api/me/people/search",
+		"invalid",
+		"",
+		`{"query":`,
+	)
+	assert.Equal(t, http.StatusUnauthorized, response.Code)
+	assert.False(t, authorizer.mutation, "directory search is a private read and does not require CSRF")
+	assert.Equal(t, "no-store", response.Header().Get(echo.HeaderCacheControl))
+}
+
 func TestRecipientCannotInspectCircleStructureOrAnotherInterestList(t *testing.T) {
 	authorizer := &fakeAuthorizer{actor: setup.SessionActor{Curator: false}}
 	for _, path := range []string{"/api/visibility-circles", "/api/interest-lists/not-a-recipient"} {
@@ -111,6 +128,42 @@ func TestMutationBodiesRequireExplicitBooleanIntent(t *testing.T) {
 	}
 }
 
+func TestPeopleSearchBurstLimitUsesAccessAndClientIPWithoutEchoingTheQuery(t *testing.T) {
+	limiter := newDirectorySearchLimiter()
+	limiter.limit = 1
+	firstAccess := uuid.New()
+	secondAccess := uuid.New()
+	require.True(t, limiter.allow(firstAccess, "192.0.2.1"))
+	assert.False(t, limiter.allow(firstAccess, "192.0.2.2"), "one access generation is limited across IPs")
+	assert.False(t, limiter.allow(secondAccess, "192.0.2.1"), "one IP is limited across access generations")
+
+	authorizer := &fakeAuthorizer{actor: setup.SessionActor{AccessID: firstAccess}}
+	handler := NewHandler(nil, authorizer)
+	handler.limiter.limit = 0
+	e := echo.New()
+	RegisterRoutes(e, handler)
+	e.HTTPErrorHandler = errcodes.NewHandler().Handle
+	response := visibilityRequest(e, http.MethodPost, "/api/me/people/search", "session", "", `{"query":"private guessed name"}`)
+	assert.Equal(t, http.StatusTooManyRequests, response.Code)
+	assert.NotContains(t, response.Body.String(), "private guessed name")
+	assert.False(t, authorizer.mutation)
+}
+
+func TestPeopleSearchRequestBoundsPrivateInput(t *testing.T) {
+	request, err := normalizePeopleSearchRequest(PeopleSearchRequest{Query: "  José  "})
+	require.NoError(t, err)
+	assert.Equal(t, "José", request.Query)
+	assert.Equal(t, 25, request.Limit)
+	assert.Equal(t, `100\%\_\\`, escapeLike(`100%_\`))
+
+	_, err = normalizePeopleSearchRequest(PeopleSearchRequest{Query: strings.Repeat("a", 201)})
+	require.ErrorIs(t, err, ErrInvalid)
+	_, err = normalizePeopleSearchRequest(PeopleSearchRequest{Limit: 51})
+	require.ErrorIs(t, err, ErrInvalid)
+	_, err = normalizePeopleSearchRequest(PeopleSearchRequest{Cursor: strings.Repeat("a", 2049)})
+	require.ErrorIs(t, err, ErrInvalidCursor)
+}
+
 func TestVisibilityRoutePoliciesCannotBeMistakenForContentAuthority(t *testing.T) {
 	e := visibilityHTTP(&fakeAuthorizer{})
 	expected := map[string]string{
@@ -123,6 +176,7 @@ func TestVisibilityRoutePoliciesCannotBeMistakenForContentAuthority(t *testing.T
 		"GET /api/interest-lists/:recipient_id":                   curatorReadPolicy,
 		"PUT /api/interest-lists/:recipient_id/people/:person_id": curatorMutationPolicy,
 		"GET /api/me/people":                                      recipientDiscoveryPolicy,
+		"POST /api/me/people/search":                              recipientDiscoveryPolicy,
 		"GET /api/me/interest-list":                               recipientInterestPolicy,
 		"PUT /api/me/interest-list/:person_id":                    recipientMutationPolicy,
 	}

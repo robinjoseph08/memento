@@ -115,8 +115,8 @@ async function fulfillRecipientShellRequest(route: Route) {
     });
     return;
   }
-  if (path === "/api/me/people") {
-    await route.fulfill({ json: { people: [] } });
+  if (path === "/api/me/people/search") {
+    await route.fulfill({ json: { people: [], next_cursor: null } });
     return;
   }
   if (path === "/api/invitation-suggestions") {

@@ -48,7 +48,7 @@ func newVisibilityFixture(t *testing.T) visibilityFixture {
 	credentialHash := sha256.Sum256(credential[:])
 	_, err = db.NewRaw(`INSERT INTO sessions (id, credential_hash, person_id, recipient_access_generation_id, security_epoch, session_type, idle_expires_at) VALUES (?, ?, ?, ?, ?, 'trusted', ?)`, sessionID, credentialHash[:], curator, accessID, epoch, time.Now().Add(time.Hour)).Exec(ctx)
 	require.NoError(t, err)
-	return visibilityFixture{db: db, service: New(db), actor: setup.SessionActor{PersonID: curator, SessionID: sessionID, Curator: true}, curator: curator, credential: hex.EncodeToString(credential[:])}
+	return visibilityFixture{db: db, service: New(db), actor: setup.SessionActor{PersonID: curator, AccessID: accessID, SessionID: sessionID, Curator: true}, curator: curator, credential: hex.EncodeToString(credential[:])}
 }
 
 func addVisibilityPerson(t *testing.T, db *bun.DB, name string, recipient bool) uuid.UUID {
@@ -195,6 +195,106 @@ func TestDiscoveryCursorDoesNotSkipEqualNormalizedSortNames(t *testing.T) {
 	}
 	assert.ElementsMatch(t, []string{first.String(), second.String(), third.String()}, ids)
 	assert.Len(t, ids, 3)
+}
+
+func TestRecipientPeopleSearchAuthorizesBeforeMatchingAndRevealsOnlyTheDirectUnion(t *testing.T) {
+	fixture := newVisibilityFixture(t)
+	ctx := context.Background()
+	recipient := addVisibilityPerson(t, fixture.db, "Recipient", true)
+	recipientAccess := addVisibilityAccess(t, fixture.db, recipient, "completed")
+	addVisibilitySession(t, fixture.db, recipient, recipientAccess, "directory-recipient")
+	otherRecipient := addVisibilityPerson(t, fixture.db, "Other Recipient", true)
+	otherAccess := addVisibilityAccess(t, fixture.db, otherRecipient, "onboarding")
+	addVisibilitySession(t, fixture.db, otherRecipient, otherAccess, "directory-other")
+	jose := addVisibilityPerson(t, fixture.db, "José Álvarez", false)
+	visibleRecipient := addVisibilityPerson(t, fixture.db, "Taylor Visible", true)
+	visibleAccess := addVisibilityAccess(t, fixture.db, visibleRecipient, "onboarding")
+	_, err := fixture.db.NewRaw(`UPDATE people SET sort_name = 'Shared sort' WHERE id IN (?, ?)`, jose, visibleRecipient).Exec(ctx)
+	require.NoError(t, err)
+	hiddenIntermediary := addVisibilityPerson(t, fixture.db, "Hidden Intermediary", false)
+	hiddenTransitive := addVisibilityPerson(t, fixture.db, "Hidden Transitive", false)
+	otherVisible := addVisibilityPerson(t, fixture.db, "Other Union Person", false)
+	createCircleWithMembers(t, fixture, "Private Family Circle", recipient, jose, visibleRecipient)
+	createCircleWithMembers(t, fixture, "Overlapping", recipient, jose)
+	createCircleWithMembers(t, fixture, "Transitive only", jose, hiddenTransitive)
+	createCircleWithMembers(t, fixture, "Other Recipient Circle", otherRecipient, otherVisible)
+	_, err = fixture.db.NewRaw(`INSERT INTO recipient_emails (id, recipient_access_generation_id, email, normalized_email) VALUES (?, ?, 'private-visible@example.test', 'private-visible@example.test')`, uuid.New(), visibleAccess).Exec(ctx)
+	require.NoError(t, err)
+	_, err = fixture.db.NewRaw(`INSERT INTO family_relationships (id, relationship_type, person_a_id, person_b_id) VALUES (?, 'parent_child', ?, ?), (?, 'parent_child', ?, ?)`, uuid.New(), recipient, hiddenIntermediary, uuid.New(), hiddenIntermediary, jose).Exec(ctx)
+	require.NoError(t, err)
+	_, err = fixture.db.NewRaw(`UPDATE system_settings SET setup_complete = true WHERE id = 1`).Exec(ctx)
+	require.NoError(t, err)
+
+	actor := setup.SessionActor{PersonID: recipient, AccessID: recipientAccess}
+	require.NoError(t, fixture.db.NewRaw(`SELECT id FROM sessions WHERE person_id = ? AND recipient_access_generation_id = ?`, recipient, recipientAccess).Scan(ctx, &actor.SessionID))
+	otherActor := setup.SessionActor{PersonID: otherRecipient, AccessID: otherAccess}
+	require.NoError(t, fixture.db.NewRaw(`SELECT id FROM sessions WHERE person_id = ? AND recipient_access_generation_id = ?`, otherRecipient, otherAccess).Scan(ctx, &otherActor.SessionID))
+	fixture.db.SetMaxOpenConns(1)
+
+	matched, err := fixture.service.SearchPeople(ctx, actor, PeopleSearchRequest{Query: "JOSE", Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, matched.People, 1)
+	assert.Equal(t, jose.String(), matched.People[0].ID)
+	assert.Equal(t, &RelationshipAnnotation{ConnectionType: "descendant", Generation: 2}, matched.People[0].Relationship)
+
+	visibleMatch, err := fixture.service.SearchPeople(ctx, actor, PeopleSearchRequest{Query: "taylor"})
+	require.NoError(t, err)
+	require.Len(t, visibleMatch.People, 1)
+	assert.Equal(t, visibleRecipient.String(), visibleMatch.People[0].ID)
+	encodedVisible, err := json.Marshal(visibleMatch)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"people":[{"id":"`+visibleRecipient.String()+`","display_name":"Taylor Visible","sort_name":"Shared sort"}],"next_cursor":null}`, string(encodedVisible))
+
+	for _, guessed := range []string{
+		"Hidden Intermediary",
+		"Hidden Transitive",
+		"Private Family Circle",
+		"private-visible@example.test",
+		"onboarding",
+		"%",
+		"_",
+	} {
+		page, searchErr := fixture.service.SearchPeople(ctx, actor, PeopleSearchRequest{Query: guessed})
+		require.NoError(t, searchErr, guessed)
+		assert.Empty(t, page.People, guessed)
+		assert.Nil(t, page.NextCursor, guessed)
+	}
+
+	first, err := fixture.service.SearchPeople(ctx, actor, PeopleSearchRequest{Limit: 1})
+	require.NoError(t, err)
+	require.Len(t, first.People, 1)
+	require.NotNil(t, first.NextCursor)
+	assert.NotContains(t, *first.NextCursor, "José")
+	second, err := fixture.service.SearchPeople(ctx, actor, PeopleSearchRequest{Cursor: *first.NextCursor, Limit: 1})
+	require.NoError(t, err)
+	require.Len(t, second.People, 1)
+	assert.NotEqual(t, first.People[0].ID, second.People[0].ID)
+	assert.NotEqual(t, recipient.String(), first.People[0].ID)
+	assert.NotEqual(t, recipient.String(), second.People[0].ID)
+	_, err = fixture.service.SearchPeople(ctx, actor, PeopleSearchRequest{Query: "different", Cursor: *first.NextCursor})
+	require.ErrorIs(t, err, ErrInvalidCursor)
+	_, err = fixture.service.SearchPeople(ctx, otherActor, PeopleSearchRequest{Cursor: *first.NextCursor})
+	require.ErrorIs(t, err, ErrInvalidCursor)
+	otherPage, err := fixture.service.SearchPeople(ctx, otherActor, PeopleSearchRequest{})
+	require.NoError(t, err)
+	assert.Equal(t, []Person{{ID: otherVisible.String(), DisplayName: "Other Union Person", SortName: "Other Union Person"}}, otherPage.People)
+	assert.NotEqual(t, otherVisible.String(), first.People[0].ID)
+	assert.NotEqual(t, otherVisible.String(), second.People[0].ID)
+	assert.NotContains(t, []string{matched.People[0].ID}, otherVisible.String())
+
+	encoded, err := json.Marshal(first)
+	require.NoError(t, err)
+	for _, privateValue := range []string{
+		"email", "circle", "access", "onboarding", "Hidden Intermediary", "Hidden Transitive", hiddenIntermediary.String(), hiddenTransitive.String(),
+	} {
+		assert.NotContains(t, string(encoded), privateValue)
+	}
+	assert.NotContains(t, string(encoded), "total")
+
+	_, err = fixture.db.NewRaw(`UPDATE sessions SET revoked_at = now() WHERE id = ?`, actor.SessionID).Exec(ctx)
+	require.NoError(t, err)
+	_, err = fixture.service.SearchPeople(ctx, actor, PeopleSearchRequest{Query: "Hidden Transitive"})
+	require.ErrorIs(t, err, ErrNotAuthorized)
 }
 
 func TestVisibilityMutationsRejectInvalidStaleAndIneligibleChanges(t *testing.T) {
@@ -539,7 +639,9 @@ func TestRealSessionsEnforceOwnerAndCuratorVisibilityPoliciesOverHTTP(t *testing
 	onboardingAccess := addVisibilityAccess(t, fixture.db, onboardingRecipient, "onboarding")
 	onboardingCredential := addVisibilitySession(t, fixture.db, onboardingRecipient, onboardingAccess, "onboarding-recipient-session")
 	selected := addVisibilityPerson(t, fixture.db, "Selected", false)
-	createCircleWithMembers(t, fixture, "Family", recipient, onboardingRecipient, selected)
+	onboardingSelected := addVisibilityPerson(t, fixture.db, "Onboarding Selected", false)
+	createCircleWithMembers(t, fixture, "Family", recipient, selected)
+	createCircleWithMembers(t, fixture, "Onboarding Family", onboardingRecipient, onboardingSelected)
 	_, err := fixture.db.NewRaw(`UPDATE system_settings SET setup_complete = true WHERE id = 1`).Exec(ctx)
 	require.NoError(t, err)
 	setupService := setup.New(fixture.db, nil, config.SecurityConfig{Secret: "visibility-http-policy-secret"})
@@ -567,10 +669,16 @@ func TestRealSessionsEnforceOwnerAndCuratorVisibilityPoliciesOverHTTP(t *testing
 	assert.Contains(t, mutation.Body.String(), `"actor":{"id":"`+recipient.String())
 	onboardingPeople := visibilityRequest(e, "GET", "/api/me/people?limit=50", onboardingCredential, "", "")
 	require.Equal(t, 200, onboardingPeople.Code, onboardingPeople.Body.String())
-	assert.Contains(t, onboardingPeople.Body.String(), selected.String())
+	assert.Contains(t, onboardingPeople.Body.String(), onboardingSelected.String())
+	assert.NotContains(t, onboardingPeople.Body.String(), selected.String())
+	onboardingSearch := visibilityRequest(e, "POST", "/api/me/people/search", onboardingCredential, "", `{"query":"selected","limit":25}`)
+	require.Equal(t, 200, onboardingSearch.Code, onboardingSearch.Body.String())
+	assert.Contains(t, onboardingSearch.Body.String(), onboardingSelected.String())
+	assert.NotContains(t, onboardingSearch.Body.String(), selected.String())
+	assert.NotContains(t, onboardingSearch.Body.String(), "email")
 	onboardingList := visibilityRequest(e, "GET", "/api/me/interest-list", onboardingCredential, "", "")
 	require.Equal(t, 200, onboardingList.Code, onboardingList.Body.String())
-	onboardingMutation := visibilityRequest(e, "PUT", "/api/me/interest-list/"+selected.String(), onboardingCredential, onboardingSession.CSRFToken, `{"selected":true}`)
+	onboardingMutation := visibilityRequest(e, "PUT", "/api/me/interest-list/"+onboardingSelected.String(), onboardingCredential, onboardingSession.CSRFToken, `{"selected":true}`)
 	require.Equal(t, 200, onboardingMutation.Code, onboardingMutation.Body.String())
 	assert.Contains(t, onboardingMutation.Body.String(), `"actor":{"id":"`+onboardingRecipient.String())
 	badCSRF := visibilityRequest(e, "PUT", "/api/interest-lists/"+recipient.String()+"/people/"+selected.String(), fixture.credential, curatorSession.CSRFToken+"wrong", `{"selected":false}`)
