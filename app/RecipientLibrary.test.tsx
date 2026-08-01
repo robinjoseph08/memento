@@ -210,6 +210,9 @@ test("lands on Photos with durable New for you and real-ratio authorized thumbna
               publication_id: "publication-1",
               title: "Family weekend",
               description: "Authorized only",
+              date_start: "2026-07-27",
+              date_end: "2026-07-29",
+              place_labels: ["Family home", "Jardin Central"],
               committed_at: "2026-07-27T12:00:00Z",
               cover_media_id: "media-1",
               cover_width: 1600,
@@ -227,6 +230,9 @@ test("lands on Photos with durable New for you and real-ratio authorized thumbna
           publication_id: "publication-1",
           title: "Family weekend",
           description: "Authorized only",
+          date_start: "2026-07-27",
+          date_end: "2026-07-29",
+          place_labels: ["Family home", "Jardin Central"],
           committed_at: "2026-07-27T12:00:00Z",
           cover_media_id: "media-1",
           media_count: 1,
@@ -311,6 +317,8 @@ test("lands on Photos with durable New for you and real-ratio authorized thumbna
   expect(newEvent.querySelector(".event-cover")).toHaveStyle({
     aspectRatio: "1600 / 900",
   });
+  expect(newEvent).toHaveTextContent("Jul 27, 2026 to Jul 29, 2026");
+  expect(newEvent).toHaveTextContent("Family home, Jardin Central");
 
   fireEvent.click(screen.getByRole("button", { name: "Load more photos" }));
   const appended = await screen.findByAltText("Video 2 from July 2026");
@@ -333,6 +341,8 @@ test("lands on Photos with durable New for you and real-ratio authorized thumbna
   await screen.findByRole("heading", { name: "Family weekend" });
   expect(await screen.findByText("1 item")).toBeVisible();
   expect(screen.queryByText("1 items")).not.toBeInTheDocument();
+  expect(screen.getByText("Jul 27, 2026 to Jul 29, 2026")).toBeVisible();
+  expect(screen.getByText("Family home, Jardin Central")).toBeVisible();
   const eventThumbnail = await screen.findByAltText("Photo 1 from July 2026");
   expect(eventThumbnail).toHaveAttribute(
     "src",
@@ -473,6 +483,9 @@ test("plans and downloads complete Event and explicit subset archives with Sessi
               publication_id: "publication-1",
               title: "Family weekend",
               description: "",
+              date_start: null,
+              date_end: null,
+              place_labels: [],
               committed_at: "2026-07-27T12:00:00Z",
               cover_media_id: "media-1",
               cover_width: 1600,
@@ -491,6 +504,9 @@ test("plans and downloads complete Event and explicit subset archives with Sessi
           publication_id: "publication-1",
           title: "Family weekend",
           description: "",
+          date_start: null,
+          date_end: null,
+          place_labels: [],
           committed_at: "2026-07-27T12:00:00Z",
           cover_media_id: "media-1",
           cover_available: true,
@@ -1019,6 +1035,9 @@ test("navigates Events and Favorites without exposing an unavailable aggregate",
               publication_id: "publication-1",
               title: "One visible item",
               description: "",
+              date_start: null,
+              date_end: null,
+              place_labels: [],
               committed_at: "2026-07-27T12:00:00Z",
               cover_media_id: "media-1",
               cover_width: 900,
@@ -1271,6 +1290,7 @@ test("keeps private search text in a POST body and renders safe grouped results"
               id: "event-search",
               title: "Café Reunion",
               description: "",
+              place_labels: ["São Paulo"],
               media_count: 1,
               date_start: "2026-07-27",
               date_end: "2026-07-27",
@@ -1331,6 +1351,9 @@ test("keeps private search text in a POST body and renders safe grouped results"
   expect(await screen.findByText("José Alvarez")).toBeVisible();
   expect(screen.getByText(/attended part of Café Reunion/)).toBeVisible();
   expect(screen.getByText("1 matching photo. 1 matching Event.")).toBeVisible();
+  const searchEvent = screen.getByRole("button", { name: /Café Reunion/ });
+  expect(searchEvent).toHaveTextContent("Jul 27, 2026");
+  expect(searchEvent).toHaveTextContent("São Paulo");
   const searchRequest = requests.find(
     (request) => request.path === "/api/search",
   );
@@ -1529,6 +1552,7 @@ test("presents independent photo and Event totals for a range-only Event match",
               id: "event-range-match",
               title: "Summer holiday",
               description: "",
+              place_labels: [],
               media_count: 0,
               date_start: null,
               date_end: null,
@@ -1652,6 +1676,9 @@ test("preserves a failed New for you seen request after returning to Photos", as
               publication_id: "publication-1",
               title: "Family weekend",
               description: "",
+              date_start: null,
+              date_end: null,
+              place_labels: [],
               committed_at: "2026-07-27T12:00:00Z",
               cover_media_id: "media-1",
               cover_width: 1600,
@@ -1674,8 +1701,12 @@ test("preserves a failed New for you seen request after returning to Photos", as
           publication_id: "publication-1",
           title: "Family weekend",
           description: "",
+          date_start: null,
+          date_end: null,
+          place_labels: [],
           committed_at: "2026-07-27T12:00:00Z",
           cover_media_id: "media-1",
+          cover_available: true,
           media_count: 0,
           media: [],
           next_cursor: null,

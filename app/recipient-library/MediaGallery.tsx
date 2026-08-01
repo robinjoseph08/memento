@@ -1,3 +1,4 @@
+import { formatDateRange } from "../format";
 import type { EventSummary } from "../types/generated/library";
 import type { EventResult } from "../types/generated/search";
 import { mediaAlt } from "./mediaPresentation";
@@ -110,6 +111,10 @@ export function EventGallery<T extends EventSummary | EventResult>({
               )}
             </span>
             <strong>{event.title}</strong>
+            <span>{formatDateRange(event.date_start, event.date_end)}</span>
+            {event.place_labels?.length ? (
+              <span>{event.place_labels.join(", ")}</span>
+            ) : null}
             <span>
               {event.media_count} {matching ? "matching " : ""}
               {event.media_count === 1 ? "item" : "items"}

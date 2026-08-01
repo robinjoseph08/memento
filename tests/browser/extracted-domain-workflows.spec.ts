@@ -1,5 +1,7 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
 
+import type { Event as DraftEvent } from "../../app/types/generated/events";
+
 const csrfToken = "c".repeat(64);
 const sourceID = "11111111-1111-4111-8111-111111111111";
 
@@ -518,11 +520,14 @@ test("@desktop @mobile drafts combined Source Media into private Events and Loos
     created_at: "2026-06-03T00:00:00Z",
     updated_at: "2026-06-03T00:00:00Z",
   };
-  let currentEvent = {
+  let currentEvent: DraftEvent = {
     id: eventID,
     lifecycle: "draft",
     title: "Combined Source draft",
     description: "",
+    date_start: "2026-06-01",
+    date_end: "2026-06-02",
+    selected_cover_media_item_id: null,
     place_labels: [],
     grouping_timezone: "UTC",
     version: 1,
@@ -537,6 +542,8 @@ test("@desktop @mobile drafts combined Source Media into private Events and Loos
         metadata_suggestion: {
           name: "Updated Family trip",
           description: "A suggested Source description",
+          date_start: "2026-06-02",
+          date_end: "2026-06-03",
         },
       },
       { id: secondSourceID, metadata_suggestion: null },
@@ -677,12 +684,18 @@ test("@desktop @mobile drafts combined Source Media into private Events and Loos
       const body = recorded.body as {
         title: string;
         description: string;
+        date_start: string | null;
+        date_end: string | null;
+        selected_cover_media_item_id: string | null;
         grouping_timezone: string;
       };
       currentEvent = {
         ...currentEvent,
         title: body.title,
         description: body.description,
+        date_start: body.date_start,
+        date_end: body.date_end,
+        selected_cover_media_item_id: body.selected_cover_media_item_id,
         grouping_timezone: body.grouping_timezone,
         version: currentEvent.version + 1,
       };
@@ -783,6 +796,21 @@ test("@desktop @mobile drafts combined Source Media into private Events and Loos
   await expect(page.getByLabel("Event title")).toHaveValue(
     "Updated Family trip",
   );
+  await expect(page.getByLabel("Event start date")).toHaveValue("2026-06-01");
+  await expect(page.getByLabel("Event end date")).toHaveValue("2026-06-02");
+  await page
+    .getByRole("button", { name: "Use suggested date range from Source" })
+    .click();
+  await expect
+    .poll(
+      () =>
+        mutations.filter(
+          ({ path }) => path === `/api/events/${eventID}/organization`,
+        ).length,
+    )
+    .toBe(2);
+  await expect(page.getByLabel("Event start date")).toHaveValue("2026-06-02");
+  await expect(page.getByLabel("Event end date")).toHaveValue("2026-06-03");
 
   const looseCreation = mutations.find(
     ({ path }) => path === "/api/loose-items",
@@ -819,6 +847,17 @@ test("@desktop @mobile drafts combined Source Media into private Events and Loos
     body: { title: "Updated Family trip" },
   });
   expect(organization?.headers["x-memento-csrf"]).toBe(csrfToken);
+  const dateOrganization = mutations.filter(
+    ({ path }) => path === `/api/events/${eventID}/organization`,
+  )[1];
+  expect(dateOrganization).toMatchObject({
+    method: "PUT",
+    body: {
+      date_start: "2026-06-02",
+      date_end: "2026-06-03",
+      selected_cover_media_item_id: null,
+    },
+  });
   expect(
     mutations.some(({ path }) =>
       /publications|recipients|new-for-you|notifications|outbox/.test(path),

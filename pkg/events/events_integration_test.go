@@ -139,6 +139,35 @@ func (fixture draftFixture) addMedia(t *testing.T, name, capture string, sourceN
 	}
 }
 
+func TestSourceDateSuggestionsPreserveEventOwnedRangeAndChangedToEmpty(t *testing.T) {
+	fixture := newDraftFixture(t)
+	ctx := context.Background()
+	_, err := fixture.db.NewRaw(`UPDATE source_albums
+		SET source_start_at = '2026-05-01T10:00:00Z', source_end_at = '2026-05-03T18:00:00Z'
+		WHERE id = ?`, fixture.sources["first"]).Exec(ctx)
+	require.NoError(t, err)
+	created, err := fixture.service.CreateEvent(ctx, fixture.actor, CreateEventRequest{
+		SourceAlbumIDs: []string{fixture.sources["first"].String()}, Timezone: "UTC",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, created.DateStart)
+	require.NotNil(t, created.DateEnd)
+	assert.Equal(t, "2026-05-01", *created.DateStart)
+	assert.Equal(t, "2026-05-03", *created.DateEnd)
+
+	_, err = fixture.db.NewRaw(`UPDATE source_albums
+		SET source_start_at = '2026-05-02T10:00:00Z', source_end_at = NULL WHERE id = ?`, fixture.sources["first"]).Exec(ctx)
+	require.NoError(t, err)
+	loaded, err := fixture.service.GetEvent(ctx, uuid.MustParse(created.ID))
+	require.NoError(t, err)
+	assert.Equal(t, "2026-05-01", *loaded.DateStart, "Source changes never overwrite Event presentation")
+	assert.Equal(t, "2026-05-03", *loaded.DateEnd)
+	require.Len(t, loaded.Sources, 1)
+	require.NotNil(t, loaded.Sources[0].MetadataSuggestion)
+	assert.Equal(t, "2026-05-02", *loaded.Sources[0].MetadataSuggestion.DateStart)
+	assert.Equal(t, "", *loaded.Sources[0].MetadataSuggestion.DateEnd, "changed-to-empty differs from unchanged")
+}
+
 func TestDraftsCombineAndDivideSourcesWhileReusingStableMediaIdentities(t *testing.T) {
 	fixture := newDraftFixture(t)
 	ctx := context.Background()
@@ -1213,6 +1242,19 @@ func TestOrganizingRejectsInvalidCoversAndDuplicateOrUnknownMedia(t *testing.T) 
 		UnassignedMediaIDs: mediaIDs(created.UnassignedMedia),
 	})
 	require.ErrorIs(t, err, ErrInvalid)
+
+	unassigned := mediaIDs(created.UnassignedMedia)
+	require.NotEmpty(t, unassigned)
+	unassignedCover := unassigned[0]
+	_, err = fixture.service.OrganizeEvent(ctx, fixture.actor, uuid.MustParse(created.ID), OrganizeEventRequest{
+		Version: created.Version, SelectedCoverMediaItemID: &unassignedCover,
+		Moments: []OrganizeMoment{{
+			ID: created.Moments[0].ID, ProposedDay: created.Moments[0].ProposedDay,
+			MediaItemIDs: assigned,
+		}},
+		UnassignedMediaIDs: unassigned,
+	})
+	require.ErrorIs(t, err, ErrInvalid, "the Event cover must be assigned to a Moment")
 
 	replaced := append([]string(nil), assigned...)
 	replaced[0] = uuid.NewString()

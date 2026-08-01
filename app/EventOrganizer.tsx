@@ -84,6 +84,11 @@ function rebaseOrganization(
   if (local.title !== base.title) rebased.title = local.title;
   if (local.description !== base.description)
     rebased.description = local.description;
+  if (local.date_start !== base.date_start)
+    rebased.date_start = local.date_start;
+  if (local.date_end !== base.date_end) rebased.date_end = local.date_end;
+  if (local.selected_cover_media_item_id !== base.selected_cover_media_item_id)
+    rebased.selected_cover_media_item_id = local.selected_cover_media_item_id;
   if (!sameStrings(local.place_labels, base.place_labels))
     rebased.place_labels = cloneEvent(local.place_labels);
   if (local.grouping_timezone !== base.grouping_timezone)
@@ -184,6 +189,9 @@ function applyLocalOrganization(local: DraftEvent, server: DraftEvent) {
   const next = cloneEvent(server);
   next.title = local.title;
   next.description = local.description;
+  next.date_start = local.date_start;
+  next.date_end = local.date_end;
+  next.selected_cover_media_item_id = local.selected_cover_media_item_id;
   next.place_labels = cloneEvent(local.place_labels);
   next.grouping_timezone = local.grouping_timezone;
   next.final_review_complete = local.final_review_complete;
@@ -1061,6 +1069,8 @@ export function EventOrganizer({
                 setInspectedMomentID(momentID);
                 if (openPane) setActivePane("inspect");
               }}
+              coverValidationError={metadata.coverError}
+              dateValidationError={metadata.dateError}
               stagedReview={
                 <StagedUpdateReview
                   event={currentDraft}

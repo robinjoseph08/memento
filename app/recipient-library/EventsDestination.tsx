@@ -1,5 +1,6 @@
 import { useEffect, type RefObject } from "react";
 
+import { formatDateRange } from "../format";
 import {
   useRecipientEvent,
   useRecipientEvents,
@@ -90,10 +91,18 @@ export function EventDetailDestination({
             </h1>
             {eventData?.description ? <p>{eventData.description}</p> : null}
             {eventData ? (
-              <span>
-                {eventData.media_count}{" "}
-                {eventData.media_count === 1 ? "item" : "items"}
-              </span>
+              <>
+                <p>
+                  {formatDateRange(eventData.date_start, eventData.date_end)}
+                </p>
+                {eventData.place_labels?.length ? (
+                  <p>{eventData.place_labels.join(", ")}</p>
+                ) : null}
+                <span>
+                  {eventData.media_count}{" "}
+                  {eventData.media_count === 1 ? "item" : "items"}
+                </span>
+              </>
             ) : null}
           </>
         }

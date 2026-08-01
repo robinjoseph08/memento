@@ -32,6 +32,9 @@ const event = {
   publication_id: "33333333-3333-4333-8333-333333333333",
   title: "Family weekend",
   description: "One seamless authorized Event",
+  date_start: "2026-07-27",
+  date_end: "2026-07-29",
+  place_labels: ["Jardin Central", "Family home"],
   committed_at: "2026-07-27T12:00:00Z",
   cover_media_id: media.id,
   cover_available: true,
@@ -477,6 +480,9 @@ test("@desktop @mobile Recipient lands on Photos and sees only filtered Event to
   await expect(
     page.getByRole("heading", { name: "New for you" }),
   ).toBeVisible();
+  const newEvent = page.getByRole("button", { name: /Family weekend/ });
+  await expect(newEvent).toContainText("Jul 27, 2026 to Jul 29, 2026");
+  await expect(newEvent).toContainText("Jardin Central, Family home");
   const mobile = (page.viewportSize()?.width ?? 1280) <= 700;
   const primaryNavigation = page.locator(
     mobile ? ".mobile-library-nav" : ".library-rail",
@@ -566,8 +572,14 @@ test("@desktop @mobile Recipient lands on Photos and sees only filtered Event to
 
   await primaryNavigation.getByRole("button", { name: "Events" }).click();
   await expect(page.getByText("1 item")).toBeVisible();
-  await page.getByRole("button", { name: /Family weekend/ }).click();
+  const eventCard = page.getByRole("button", { name: /Family weekend/ });
+  await expect(eventCard).toContainText("Jul 27, 2026 to Jul 29, 2026");
+  await expect(eventCard).toContainText("Jardin Central, Family home");
+  await eventCard.click();
   await expect(page.getByText("1 item")).toBeVisible();
+  await expect(page.getByText("One seamless authorized Event")).toBeVisible();
+  await expect(page.getByText("Jul 27, 2026 to Jul 29, 2026")).toBeVisible();
+  await expect(page.getByText("Jardin Central, Family home")).toBeVisible();
   await expect(page.getByText(/Moment/)).toHaveCount(0);
   await page.getByRole("button", { name: "Prepare Event archive" }).click();
   await expect(

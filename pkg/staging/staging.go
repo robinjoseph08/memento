@@ -365,24 +365,38 @@ func summarizeStagedUpdate(ctx context.Context, db bun.IDB, eventID, publication
 		return nil, err
 	}
 
-	var titleChanged, descriptionChanged, placeLabelsChanged, timezoneChanged bool
+	var titleChanged, descriptionChanged, dateStartChanged, dateEndChanged, selectedCoverChanged bool
+	var placeLabelsChanged, timezoneChanged bool
 	if err := db.NewRaw(`
 		SELECT editable.title IS DISTINCT FROM published.title,
 		       editable.description IS DISTINCT FROM published.description,
+		       editable.date_start IS DISTINCT FROM published.date_start,
+		       editable.date_end IS DISTINCT FROM published.date_end,
+		       editable.selected_cover_media_item_id IS DISTINCT FROM published.selected_cover_media_item_id,
 		       editable.place_labels IS DISTINCT FROM published.place_labels,
 		       editable.grouping_timezone IS DISTINCT FROM published.grouping_timezone
 		FROM events AS editable
 		JOIN published_event_revisions AS published ON published.publication_id = ?
 		WHERE editable.id = ?
-	`, publicationID, eventID).Scan(ctx, &titleChanged, &descriptionChanged, &placeLabelsChanged, &timezoneChanged); err != nil {
+	`, publicationID, eventID).Scan(ctx, &titleChanged, &descriptionChanged, &dateStartChanged,
+		&dateEndChanged, &selectedCoverChanged, &placeLabelsChanged, &timezoneChanged); err != nil {
 		return nil, err
 	}
-	eventMetadataFields := make([]string, 0, 4)
+	eventMetadataFields := make([]string, 0, 7)
 	if titleChanged {
 		eventMetadataFields = append(eventMetadataFields, "title")
 	}
 	if descriptionChanged {
 		eventMetadataFields = append(eventMetadataFields, "description")
+	}
+	if dateStartChanged {
+		eventMetadataFields = append(eventMetadataFields, "date_start")
+	}
+	if dateEndChanged {
+		eventMetadataFields = append(eventMetadataFields, "date_end")
+	}
+	if selectedCoverChanged {
+		eventMetadataFields = append(eventMetadataFields, "selected_cover_media_item_id")
 	}
 	if placeLabelsChanged {
 		eventMetadataFields = append(eventMetadataFields, "place_labels")

@@ -88,7 +88,7 @@ type matrixState struct {
 type matrixSurface string
 
 const (
-	surfaceLibraryProjection  matrixSurface = "library_pages_order_counts_covers"
+	surfaceLibraryProjection  matrixSurface = "library_pages_presentation_order_counts_covers"
 	surfaceLibraryChronology  matrixSurface = "library_chronology_dates_counts_cursors"
 	surfaceEventDetail        matrixSurface = "event_detail"
 	surfaceLooseItemDetail    matrixSurface = "loose_item_detail"
@@ -261,6 +261,9 @@ func TestAuthorizationCapabilityMatrixCoversEveryCombination(t *testing.T) {
 		for _, surface := range []matrixSurface{surfaceLibraryProjection, surfaceLibraryChronology, surfaceSearch, surfaceNewForYou, surfaceFavorites} {
 			assert.Equal(t, content, state.allows(surface))
 		}
+		// Published Event presentation follows Event authorization. Cover preference and Source availability never create authority.
+		assert.Equal(t, content, state.allows(surfaceLibraryProjection))
+		assert.Equal(t, state.resourceVisible() && state.hasEventOrigin(), state.allows(surfaceEventDetail))
 		// Source missing preserves authorized metadata and interactions while blocking every byte-bearing surface.
 		if state.source == missingSource && state.resourceVisible() {
 			assert.True(t, state.allows(surfaceLibraryProjection))

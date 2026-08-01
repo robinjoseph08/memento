@@ -38,6 +38,9 @@ function draft(version = 1): DraftEvent {
     lifecycle: "draft",
     title: "Family weekend",
     description: "",
+    date_start: null,
+    date_end: null,
+    selected_cover_media_item_id: null,
     place_labels: [],
     grouping_timezone: "UTC",
     version,
@@ -123,6 +126,13 @@ function eventFromRequest(
     baseline.moments.map((moment) => [moment.id, moment]),
   );
   const next = draft(request.version + 1);
+  next.title = request.title ?? baseline.title;
+  next.description = request.description ?? baseline.description;
+  next.date_start = request.date_start;
+  next.date_end = request.date_end;
+  next.selected_cover_media_item_id = request.selected_cover_media_item_id;
+  next.grouping_timezone =
+    request.grouping_timezone ?? baseline.grouping_timezone;
   next.final_review_complete = request.final_review_complete;
   next.place_labels = request.place_labels;
   next.moments = request.moments.map((moment) => ({
@@ -299,7 +309,10 @@ async function mockCuratorAPI(
           event_id: eventID,
           publication_id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
           title: "Family weekend",
-          description: "",
+          description: "Recipient-safe Event description",
+          date_start: "2026-05-01",
+          date_end: "2026-05-03",
+          place_labels: ["Family home"],
           cover_media_id: items.first.id,
           media_count: 1,
           media: [{ ...items.first, available: true }],
@@ -421,6 +434,13 @@ test("@desktop @mobile publishes atomically and keeps Recipient preview read onl
   const preview = page.getByRole("region", {
     name: "Read-only Recipient preview",
   });
+  await expect(preview).toContainText("Recipient-safe Event description");
+  await expect(preview).toContainText("May 1, 2026 to May 3, 2026");
+  await expect(preview).toContainText("Family home");
+  await expect(preview).toContainText("Authorized cover available");
+  await expect(preview).not.toContainText("Friday");
+  await expect(preview).not.toContainText("Saturday");
+  await expect(preview).not.toContainText("Moment");
   await expect(preview).toContainText("1 authorized Media items");
   await expect(preview).toContainText(
     "Preview activity is not recorded as Recipient engagement.",
@@ -565,6 +585,51 @@ test("@desktop @mobile fails closed when Withdrawal authority cannot reload", as
   await expect.poll(server.previewRequests).toBe(1);
 });
 
+test("@desktop @mobile edits Event presentation and clears an unassigned cover", async ({
+  page,
+}) => {
+  const server = await mockCuratorAPI(page);
+  await openEvent(page);
+
+  await page.getByLabel("Event start date").fill("2026-05-01");
+  await page.getByLabel("Event end date").fill("2026-05-04");
+  await page.getByLabel("Event Place labels").fill("Family home, Garden");
+  await page.getByLabel("Event Place labels").blur();
+  await page.getByLabel("Event cover").selectOption(items.second.id);
+
+  await expect(page.getByText("All changes saved")).toBeVisible();
+  await expect.poll(() => server.persisted().date_start).toBe("2026-05-01");
+  expect(server.persisted()).toMatchObject({
+    date_end: "2026-05-04",
+    selected_cover_media_item_id: items.second.id,
+    place_labels: ["Family home", "Garden"],
+  });
+  expect(server.attempts.at(-1)).toMatchObject({
+    date_start: "2026-05-01",
+    date_end: "2026-05-04",
+    selected_cover_media_item_id: items.second.id,
+    place_labels: ["Family home", "Garden"],
+  });
+
+  await page.getByRole("checkbox", { name: /second photo/ }).check();
+  await page.getByLabel("Move selected to").selectOption("unassigned");
+  await page
+    .getByRole("button", { name: "Move selected Media", exact: true })
+    .click();
+  await expect(page.getByLabel("Event cover")).toHaveValue("");
+  await expect
+    .poll(() => server.persisted().selected_cover_media_item_id)
+    .toBeNull();
+
+  await page.reload();
+  await expect(page.getByLabel("Event start date")).toHaveValue("2026-05-01");
+  await expect(page.getByLabel("Event end date")).toHaveValue("2026-05-04");
+  await expect(page.getByLabel("Event Place labels")).toHaveValue(
+    "Family home, Garden",
+  );
+  await expect(page.getByLabel("Event cover")).toHaveValue("");
+});
+
 test("@desktop organizes, orders, autosaves, and persists after reload", async ({
   page,
 }) => {
@@ -608,7 +673,7 @@ test("@desktop organizes, orders, autosaves, and persists after reload", async (
   await page
     .getByRole("button", { name: "Move selected Media", exact: true })
     .click();
-  const covers = page.getByLabel("Cover");
+  const covers = page.getByLabel("Cover", { exact: true });
   await covers.nth(0).selectOption(items.loose.id);
   await covers.nth(1).selectOption(items.second.id);
   await page.getByRole("button", { name: "Move Moment 2 earlier" }).click();
@@ -627,8 +692,12 @@ test("@desktop organizes, orders, autosaves, and persists after reload", async (
     page.getByRole("heading", { name: /Family weekend/i }),
   ).toBeVisible();
   await expect(page.locator(".moment-list .moment-card")).toHaveCount(2);
-  await expect(page.getByLabel("Cover").nth(0)).toHaveValue(items.second.id);
-  await expect(page.getByLabel("Cover").nth(1)).toHaveValue(items.loose.id);
+  await expect(page.getByLabel("Cover", { exact: true }).nth(0)).toHaveValue(
+    items.second.id,
+  );
+  await expect(page.getByLabel("Cover", { exact: true }).nth(1)).toHaveValue(
+    items.loose.id,
+  );
 });
 
 test("@mobile Staged review fits every change category in the page", async ({
@@ -638,6 +707,9 @@ test("@mobile Staged review fits every change category in the page", async ({
   staged.lifecycle = "published";
   staged.title = "Corrected family weekend";
   staged.description = "The complete corrected description";
+  staged.date_start = "2026-05-01";
+  staged.date_end = "2026-05-03";
+  staged.selected_cover_media_item_id = items.second.id;
   staged.place_labels = ["Coastal overlook", "Garden terrace"];
   staged.grouping_timezone = "America/New_York";
   staged.moments[0].place_labels = ["Breakfast room", "Harbor view"];
@@ -684,6 +756,9 @@ test("@mobile Staged review fits every change category in the page", async ({
         event_metadata_fields: [
           "title",
           "description",
+          "date_start",
+          "date_end",
+          "selected_cover_media_item_id",
           "place_labels",
           "grouping_timezone",
         ],
@@ -726,10 +801,12 @@ test("@mobile Staged review fits every change category in the page", async ({
   const review = page.getByRole("region", { name: "Staged update review" });
   await expect(review).toBeVisible();
   const eventMetadata = review.locator(".staged-event-metadata");
+  await expect(eventMetadata).toContainText("May 1, 2026 to May 3, 2026");
+  await expect(eventMetadata).toContainText("second photo");
   await expect(eventMetadata).toContainText("Coastal overlook, Garden terrace");
-  await expect(eventMetadata.locator(".staged-metadata")).toHaveCount(4);
+  await expect(eventMetadata.locator(".staged-metadata")).toHaveCount(6);
   await expect(eventMetadata.getByText("Staged: Metadata edits")).toHaveCount(
-    4,
+    6,
   );
   await expect(page.getByLabel("Place labels for Moment 1")).toHaveValue(
     "Breakfast room, Harbor view",

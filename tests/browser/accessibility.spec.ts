@@ -125,8 +125,13 @@ const publishedEvent = {
   publication_id: "55555555-5555-4555-8555-555555555555",
   title: "Family weekend",
   description: "One seamless authorized Event",
+  date_start: "2026-07-27",
+  date_end: "2026-07-29",
+  place_labels: ["Family home"],
   committed_at: "2026-07-27T12:00:00Z",
   cover_media_id: mediaID,
+  cover_width: 1600,
+  cover_height: 900,
   cover_available: true,
   thumbnail_url: media.thumbnail_url,
   media_count: 1,
@@ -254,10 +259,10 @@ async function mockRecipient(page: Page) {
       await route.fulfill({
         json: {
           photos: [media],
-          events: [],
+          events: [publishedEvent],
           people: [],
           total_photos: 1,
-          total_events: 0,
+          total_events: 1,
           has_more: false,
         },
       });
@@ -323,6 +328,9 @@ const draftEvent = {
   lifecycle: "draft",
   title: "Family weekend",
   description: "Ready to publish",
+  date_start: "2026-07-27",
+  date_end: "2026-07-29",
+  selected_cover_media_item_id: mediaID,
   place_labels: ["Family home"],
   grouping_timezone: "UTC",
   version: 1,
@@ -631,8 +639,11 @@ test("@desktop @mobile Recipient navigation, archives, and Media viewer are acce
   await expect(runSearch).toBeEnabled();
   await runSearch.click();
   await expect(
-    page.getByText("1 matching photo. 0 matching Events."),
+    page.getByText("1 matching photo. 1 matching Event."),
   ).toBeVisible();
+  const searchEvent = page.getByRole("button", { name: /Family weekend/ });
+  await expect(searchEvent).toContainText("Jul 27, 2026 to Jul 29, 2026");
+  await expect(searchEvent).toContainText("Family home");
   await expectAccessible(page);
 
   await navigation.getByRole("button", { name: "Favorites" }).click();

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/robinjoseph08/memento/internal/eventcover"
 	"github.com/robinjoseph08/memento/internal/placementlock"
 	"github.com/robinjoseph08/memento/pkg/audiences"
 	"github.com/robinjoseph08/memento/pkg/setup"
@@ -106,6 +107,9 @@ type PublishedEventView struct {
 	PublicationID string              `json:"publication_id"`
 	Title         string              `json:"title"`
 	Description   string              `json:"description"`
+	DateStart     *string             `json:"date_start" tstype:"string | null,required"`
+	DateEnd       *string             `json:"date_end" tstype:"string | null,required"`
+	PlaceLabels   []string            `json:"place_labels"`
 	CoverMediaID  *string             `json:"cover_media_id" tstype:"string | null,required"`
 	MediaCount    int                 `json:"media_count"`
 	Media         []PublishedMedia    `json:"media"`
@@ -150,14 +154,18 @@ func (s *Service) PublishEvent(ctx context.Context, actor setup.CuratorSession, 
 		}
 		var title, description, timezone, lifecycle, eventPlaceLabelsJSON string
 		var eventPlaceLabels []string
+		var dateStart, dateEnd *string
+		var selectedCoverID *uuid.UUID
 		var version int64
 		var finalReview bool
 		var priorID *uuid.UUID
 		if err := tx.NewRaw(`
-			SELECT title, description, grouping_timezone, lifecycle, to_json(place_labels)::text, version,
+			SELECT title, description, date_start::text, date_end::text, selected_cover_media_item_id,
+			       grouping_timezone, lifecycle, to_json(place_labels)::text, version,
 			       final_review_complete, current_publication_id
 			FROM events WHERE id = ? FOR UPDATE
-		`, eventID).Scan(ctx, &title, &description, &timezone, &lifecycle, &eventPlaceLabelsJSON, &version, &finalReview, &priorID); err != nil {
+		`, eventID).Scan(ctx, &title, &description, &dateStart, &dateEnd, &selectedCoverID,
+			&timezone, &lifecycle, &eventPlaceLabelsJSON, &version, &finalReview, &priorID); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return ErrNotFound
 			}
@@ -227,6 +235,18 @@ func (s *Service) PublishEvent(ctx context.Context, actor setup.CuratorSession, 
 		}
 		if momentCount == 0 || unassignedCount != 0 || incompleteCount != 0 || !finalReview {
 			return ErrPublicationNotReady
+		}
+		if selectedCoverID != nil {
+			var selectedAssigned bool
+			if err := tx.NewRaw(`SELECT EXISTS (
+				SELECT 1 FROM draft_media_placements
+				WHERE event_id = ? AND media_item_id = ? AND draft_moment_id IS NOT NULL
+			)`, eventID, *selectedCoverID).Scan(ctx, &selectedAssigned); err != nil {
+				return err
+			}
+			if !selectedAssigned {
+				return ErrPublicationNotReady
+			}
 		}
 		type lockedAccess struct {
 			Current bool   `bun:"is_current"`
@@ -302,9 +322,11 @@ func (s *Service) PublishEvent(ctx context.Context, actor setup.CuratorSession, 
 		}
 		if _, err := tx.NewRaw(`
 			INSERT INTO published_event_revisions (
-				publication_id, event_id, title, description, grouping_timezone, place_labels, created_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?)
-		`, publicationID, eventID, title, description, timezone, pgdialect.Array(eventPlaceLabels), now).Exec(ctx); err != nil {
+				publication_id, event_id, title, description, date_start, date_end,
+				selected_cover_media_item_id, grouping_timezone, place_labels, created_at
+			) VALUES (?, ?, ?, ?, ?::date, ?::date, ?, ?, ?, ?)
+		`, publicationID, eventID, title, description, dateStart, dateEnd, selectedCoverID,
+			timezone, pgdialect.Array(eventPlaceLabels), now).Exec(ctx); err != nil {
 			return err
 		}
 		if _, err := tx.NewRaw(`
@@ -336,16 +358,20 @@ func (s *Service) PublishEvent(ctx context.Context, actor setup.CuratorSession, 
 
 		if _, err := tx.NewRaw(`
 			INSERT INTO current_published_events (
-				event_id, publication_id, title, description, grouping_timezone, place_labels,
+				event_id, publication_id, title, description, date_start, date_end,
+				selected_cover_media_item_id, grouping_timezone, place_labels,
 				attendance_projection_ready, committed_at
-			) VALUES (?, ?, ?, ?, ?, ?, true, ?)
+			) VALUES (?, ?, ?, ?, ?::date, ?::date, ?, ?, ?, true, ?)
 			ON CONFLICT (event_id) DO UPDATE SET
 				publication_id = EXCLUDED.publication_id, title = EXCLUDED.title,
-				description = EXCLUDED.description, grouping_timezone = EXCLUDED.grouping_timezone,
-				place_labels = EXCLUDED.place_labels,
+				description = EXCLUDED.description, date_start = EXCLUDED.date_start,
+				date_end = EXCLUDED.date_end,
+				selected_cover_media_item_id = EXCLUDED.selected_cover_media_item_id,
+				grouping_timezone = EXCLUDED.grouping_timezone, place_labels = EXCLUDED.place_labels,
 				attendance_projection_ready = EXCLUDED.attendance_projection_ready,
 				committed_at = EXCLUDED.committed_at
-		`, eventID, publicationID, title, description, timezone, pgdialect.Array(eventPlaceLabels), now).Exec(ctx); err != nil {
+		`, eventID, publicationID, title, description, dateStart, dateEnd, selectedCoverID,
+			timezone, pgdialect.Array(eventPlaceLabels), now).Exec(ctx); err != nil {
 			return err
 		}
 		if _, err := tx.NewRaw(`UPDATE events SET lifecycle = 'published', current_publication_id = ?, updated_at = ? WHERE id = ?`, publicationID, now, eventID).Exec(ctx); err != nil {
@@ -438,13 +464,11 @@ func (s *Service) PublishEvent(ctx context.Context, actor setup.CuratorSession, 
 			FROM current_audience_entitlements AS entitlement
 			JOIN current_published_placements AS placement
 			  ON placement.event_id = entitlement.event_id AND placement.media_item_id = entitlement.media_item_id
+			JOIN current_published_events AS current ON current.event_id = entitlement.event_id
 			JOIN media_items AS media ON media.id = entitlement.media_item_id
 			JOIN published_moments AS moment ON moment.id = placement.published_moment_id
 			WHERE entitlement.event_id = ?
-			ORDER BY entitlement.recipient_access_generation_id,
-			         (media.availability = 'current') DESC,
-			         (moment.cover_media_item_id = entitlement.media_item_id) DESC,
-			         placement.position
+			ORDER BY entitlement.recipient_access_generation_id, `+eventcover.ProjectionOrder+`
 		`, eventID, eventID).Exec(ctx); err != nil {
 			return err
 		}
@@ -676,20 +700,27 @@ func (s *Service) PreviewEvent(ctx context.Context, actor setup.CuratorSession, 
 
 func loadEditablePreview(ctx context.Context, db bun.IDB, eventID, accessID uuid.UUID) (PublishedEventView, int64, *uuid.UUID, error) {
 	view := PublishedEventView{
-		EventID: eventID.String(), Media: make([]PublishedMedia, 0), Preview: true,
-		Capabilities: PreviewCapabilities{},
+		EventID: eventID.String(), Media: make([]PublishedMedia, 0),
+		PlaceLabels: make([]string, 0), Preview: true, Capabilities: PreviewCapabilities{},
 	}
-	var title, description string
+	var title, description, placeLabelsJSON string
+	var dateStart, dateEnd *string
+	var placeLabels []string
 	var editableVersion int64
 	var publicationID *uuid.UUID
 	err := db.NewRaw(`
-		SELECT title, description, version, current_publication_id
+		SELECT title, description, date_start::text, date_end::text,
+		       to_json(place_labels)::text, version, current_publication_id
 		FROM events WHERE id = ? AND lifecycle IN ('draft', 'published')
-	`, eventID).Scan(ctx, &title, &description, &editableVersion, &publicationID)
+	`, eventID).Scan(ctx, &title, &description, &dateStart, &dateEnd,
+		&placeLabelsJSON, &editableVersion, &publicationID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return PublishedEventView{}, 0, nil, ErrNoPublication
 	}
 	if err != nil {
+		return PublishedEventView{}, 0, nil, err
+	}
+	if err := json.Unmarshal([]byte(placeLabelsJSON), &placeLabels); err != nil {
 		return PublishedEventView{}, 0, nil, err
 	}
 	if publicationID != nil {
@@ -718,10 +749,14 @@ func loadEditablePreview(ctx context.Context, db bun.IDB, eventID, accessID uuid
 	view.Authorized = true
 	view.Title = title
 	view.Description = description
+	view.DateStart = dateStart
+	view.DateEnd = dateEnd
+	view.PlaceLabels = placeLabels
 	var coverID uuid.UUID
 	if err := db.NewRaw(`
 		SELECT placement.media_item_id
 		FROM draft_media_placements AS placement
+		JOIN events AS current ON current.id = placement.event_id
 		JOIN draft_moments AS moment ON moment.id = placement.draft_moment_id
 		JOIN current_audience_snapshots AS snapshot
 		  ON snapshot.target_kind = 'moment' AND snapshot.target_id = moment.id
@@ -730,9 +765,7 @@ func loadEditablePreview(ctx context.Context, db bun.IDB, eventID, accessID uuid
 		 AND audience.recipient_access_generation_id = ?
 		JOIN media_items AS media ON media.id = placement.media_item_id
 		WHERE placement.event_id = ?
-		ORDER BY (media.availability = 'current') DESC,
-		         (moment.cover_media_item_id = placement.media_item_id) DESC,
-		         placement.position
+		ORDER BY `+eventcover.ProjectionOrder+`
 		LIMIT 1
 	`, accessID, eventID).Scan(ctx, &coverID); err != nil {
 		return PublishedEventView{}, 0, nil, fmt.Errorf("load editable preview cover: %w", err)
@@ -857,11 +890,28 @@ func (s *Service) loadPublishedEvent(ctx context.Context, db bun.IDB, eventID, a
 	view := PublishedEventView{EventID: eventID.String(), Media: make([]PublishedMedia, 0)}
 	var publicationID uuid.UUID
 	var coverID *uuid.UUID
+	var placeLabelsJSON string
 	err := db.NewRaw(`
-		SELECT current.publication_id, current.title, current.description, cover.media_item_id
+		SELECT current.publication_id, current.title, current.description,
+		       current.date_start::text, current.date_end::text,
+		       to_json(current.place_labels)::text, cover.media_item_id
 		FROM current_published_events AS current
-		LEFT JOIN current_recipient_event_covers AS cover
-		  ON cover.event_id = current.event_id AND cover.recipient_access_generation_id = ?
+		LEFT JOIN LATERAL (
+			SELECT placement.media_item_id
+			FROM current_audience_entitlements AS entitlement
+			JOIN current_published_placements AS placement
+			  ON placement.event_id = entitlement.event_id
+			 AND placement.media_item_id = entitlement.media_item_id
+			JOIN published_moments AS moment ON moment.id = placement.published_moment_id
+			JOIN media_items AS media ON media.id = placement.media_item_id
+			WHERE entitlement.event_id = current.event_id
+			  AND entitlement.recipient_access_generation_id = ?
+			  AND NOT content_is_withdrawn(
+				placement.event_id, moment.draft_moment_id, placement.media_item_id
+			  )
+			ORDER BY `+eventcover.ProjectionOrder+`
+			LIMIT 1
+		) AS cover ON TRUE
 		WHERE current.event_id = ?
 		  AND EXISTS (
 			SELECT 1 FROM current_audience_entitlements AS entitlement
@@ -873,11 +923,15 @@ func (s *Service) loadPublishedEvent(ctx context.Context, db bun.IDB, eventID, a
 				placement.event_id, moment.draft_moment_id, placement.media_item_id
 			  )
 		  )
-	`, accessID, eventID, accessID).Scan(ctx, &publicationID, &view.Title, &view.Description, &coverID)
+	`, accessID, eventID, accessID).Scan(ctx, &publicationID, &view.Title, &view.Description,
+		&view.DateStart, &view.DateEnd, &placeLabelsJSON, &coverID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return PublishedEventView{}, ErrNoPublication
 	}
 	if err != nil {
+		return PublishedEventView{}, err
+	}
+	if err := json.Unmarshal([]byte(placeLabelsJSON), &view.PlaceLabels); err != nil {
 		return PublishedEventView{}, err
 	}
 	view.Authorized = true

@@ -10,6 +10,7 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
+	"github.com/robinjoseph08/memento/internal/eventcover"
 	"github.com/robinjoseph08/memento/pkg/migrations"
 	"github.com/robinjoseph08/memento/pkg/staging"
 	"github.com/uptrace/bun"
@@ -18,7 +19,7 @@ import (
 // This release-defined digest covers table, constraint name, and normalized definition
 // for every expected foreign key after all registered migrations.
 const (
-	expectedForeignKeyInventorySHA256  = "cbd0bfd83cd47df967ac2fd9735a50b3266d0c24d6f4270e0da7a9abc5c778fd"
+	expectedForeignKeyInventorySHA256  = "6d0bad0dbb0f569597b46d9adb99317e77a55a3066625d60fb56a50e07d04d9d"
 	expectedRecoveryDeliveryViewSHA256 = "6ef46fa32643821f6367cb7e25264bbd62d1ed32e76713519440e05f80af285f"
 	expectedWithdrawalFunctionSHA256   = "82ee8848f421c74c31eb5c380df242243f12d9eff71695ac974f3375cbc940f8"
 )
@@ -155,6 +156,24 @@ func validateForeignKeys(ctx context.Context, db bun.IDB) error {
 func validateProjections(ctx context.Context, db bun.IDB) error {
 	var invalid int
 	err := db.NewRaw(`SELECT
+		(SELECT count(*) FROM events AS event
+		 WHERE event.selected_cover_media_item_id IS NOT NULL AND NOT EXISTS (
+		  SELECT 1 FROM draft_media_placements AS placement
+		  WHERE placement.event_id = event.id
+		   AND placement.media_item_id = event.selected_cover_media_item_id
+		   AND placement.draft_moment_id IS NOT NULL)) +
+		(SELECT count(*) FROM published_event_revisions AS revision
+		 WHERE revision.selected_cover_media_item_id IS NOT NULL AND NOT EXISTS (
+		  SELECT 1 FROM published_moments AS moment
+		  JOIN published_media_placements AS placement ON placement.published_moment_id = moment.id
+		  WHERE moment.publication_id = revision.publication_id
+		   AND placement.media_item_id = revision.selected_cover_media_item_id)) +
+		(SELECT count(*) FROM current_published_events AS current
+		 WHERE current.selected_cover_media_item_id IS NOT NULL AND NOT EXISTS (
+		  SELECT 1 FROM current_published_placements AS placement
+		  WHERE placement.event_id = current.event_id
+		   AND placement.publication_id = current.publication_id
+		   AND placement.media_item_id = current.selected_cover_media_item_id)) +
 		(SELECT count(*) FROM current_published_events AS current
 		 JOIN events AS event ON event.id = current.event_id
 		 JOIN publications AS publication ON publication.id = current.publication_id
@@ -164,6 +183,9 @@ func validateProjections(ctx context.Context, db bun.IDB) error {
 		  OR publication.event_id IS DISTINCT FROM current.event_id
 		  OR revision.event_id IS DISTINCT FROM current.event_id OR current.title IS DISTINCT FROM revision.title
 		  OR current.description IS DISTINCT FROM revision.description
+		  OR current.date_start IS DISTINCT FROM revision.date_start
+		  OR current.date_end IS DISTINCT FROM revision.date_end
+		  OR current.selected_cover_media_item_id IS DISTINCT FROM revision.selected_cover_media_item_id
 		  OR current.grouping_timezone IS DISTINCT FROM revision.grouping_timezone
 		  OR current.place_labels IS DISTINCT FROM revision.place_labels) +
 		(SELECT count(*) FROM current_published_events AS current WHERE NOT EXISTS (
@@ -309,10 +331,10 @@ func validateProjections(ctx context.Context, db bun.IDB) error {
 		   ON placement.event_id = entitlement.event_id AND placement.media_item_id = entitlement.media_item_id
 		  JOIN media_items AS media ON media.id = entitlement.media_item_id
 		  JOIN published_moments AS moment ON moment.id = placement.published_moment_id
+		  JOIN current_published_events AS current ON current.event_id = entitlement.event_id
 		  WHERE entitlement.event_id = cover.event_id
 		   AND entitlement.recipient_access_generation_id = cover.recipient_access_generation_id
-		  ORDER BY (media.availability = 'current') DESC,
-		   (moment.cover_media_item_id = entitlement.media_item_id) DESC, placement.position
+		  ORDER BY `+eventcover.ProjectionOrder+`
 		  LIMIT 1)) +
 		(SELECT count(*) FROM (
 		 SELECT event_id, recipient_access_generation_id FROM current_audience_entitlements GROUP BY 1, 2
