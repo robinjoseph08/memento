@@ -1969,6 +1969,120 @@ test("organizes merged and split days with pointer and keyboard controls", async
   expect(lastSave.moments[1].cover_media_item_id).toBe(items.loose.id);
 }, 15_000);
 
+test("renders large Event Media collections in bounded batches", async () => {
+  const initial = draft();
+  initial.unassigned_media = Array.from({ length: 201 }, (_, index) =>
+    media(
+      `99999999-9999-4999-8999-${String(index).padStart(12, "0")}`,
+      `bulk photo ${index}`,
+    ),
+  );
+  stubOrganizerAPI(initial);
+  renderOrganizer(`/?event=${eventID}`);
+
+  await waitFor(() =>
+    expect(
+      screen.getAllByRole("checkbox", { name: /bulk photo/ }),
+    ).toHaveLength(200),
+  );
+  expect(
+    screen.getByText("Showing 200 of 201 unassigned Media items."),
+  ).toBeVisible();
+  const first = screen.getByRole("checkbox", { name: /bulk photo 0$/ });
+  const second = screen.getByRole("checkbox", { name: /bulk photo 1$/ });
+  fireEvent.click(second);
+  const afterSelection = screen.getAllByRole("checkbox", {
+    name: /bulk photo/,
+  });
+  expect(afterSelection[0]).toBe(first);
+  expect(afterSelection[1]).toBe(second);
+  fireEvent.click(
+    screen.getByRole("button", { name: "Load more Unassigned Media" }),
+  );
+  expect(screen.getAllByRole("checkbox", { name: /bulk photo/ })).toHaveLength(
+    201,
+  );
+});
+
+test("keeps Source metadata advisory until the Curator explicitly accepts it", async () => {
+  const initial = draft();
+  initial.sources = [
+    {
+      id: "99999999-9999-4999-8999-999999999999",
+      metadata_suggestion: {
+        name: "Renamed Source album",
+        description: "A newer Source description",
+      },
+    },
+  ];
+  const saves = stubOrganizerAPI(initial);
+  renderOrganizer(`/?event=${eventID}`);
+
+  expect(await screen.findByText("Source metadata suggestions")).toBeVisible();
+  expect(screen.getByLabelText("Event title")).toHaveValue("Family weekend");
+  expect(screen.getByLabelText("Event description")).toHaveValue("");
+  expect(saves).toHaveLength(0);
+
+  fireEvent.click(
+    screen.getByRole("button", {
+      name: "Use suggested title Renamed Source album",
+    }),
+  );
+  fireEvent.click(
+    screen.getByRole("button", {
+      name: "Use suggested description from Source",
+    }),
+  );
+
+  expect(screen.getByLabelText("Event title")).toHaveValue(
+    "Renamed Source album",
+  );
+  expect(screen.getByLabelText("Event description")).toHaveValue(
+    "A newer Source description",
+  );
+  await waitFor(() => expect(saves).toHaveLength(1), contentionWait);
+  expect(saves[0]).toMatchObject({
+    title: "Renamed Source album",
+    description: "A newer Source description",
+  });
+  expect(
+    screen.getByRole("button", { name: "Suggested title currently used" }),
+  ).toBeDisabled();
+  expect(
+    screen.getByRole("button", {
+      name: "Suggested description currently used",
+    }),
+  ).toBeDisabled();
+});
+
+test("can explicitly accept a Source description cleared to empty", async () => {
+  const initial = draft();
+  initial.description = "Portal-owned description";
+  initial.sources = [
+    {
+      id: "99999999-9999-4999-8999-999999999999",
+      metadata_suggestion: { name: null, description: "" },
+    },
+  ];
+  const saves = stubOrganizerAPI(initial);
+  renderOrganizer(`/?event=${eventID}`);
+
+  expect(
+    await screen.findByText("Suggested description: (empty description)"),
+  ).toBeVisible();
+  expect(
+    screen.queryByRole("button", { name: /Use suggested title/ }),
+  ).not.toBeInTheDocument();
+  fireEvent.click(
+    screen.getByRole("button", {
+      name: "Use suggested description from Source",
+    }),
+  );
+
+  await waitFor(() => expect(saves).toHaveLength(1), contentionWait);
+  expect(saves[0].description).toBe("");
+});
+
 test("autosaves Curator Event metadata and Media removal corrections", async () => {
   const initial = organizedDraft();
   const saves = stubOrganizerAPI(initial);

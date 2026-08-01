@@ -133,7 +133,10 @@ async function fulfillRecipientShellRequest(route: Route) {
   });
 }
 
-function sourceAlbum(disposition: "ignored" | "unreviewed", version: number) {
+function sourceAlbum(
+  disposition: "drafted" | "ignored" | "unreviewed",
+  version: number,
+) {
   return {
     id: sourceID,
     name: "Family trip",
@@ -461,6 +464,328 @@ test("@desktop @mobile discovers and triages the private Curator Source inbox", 
   expect(mutations[1].headers["x-memento-csrf"]).toBe(csrfToken);
   expect(mutations[1].headers["if-match"]).toBe('"1"');
   expect(immichRequests).toEqual([]);
+  await expectNoHorizontalOverflow(page);
+});
+
+test("@desktop @mobile drafts combined Source Media into private Events and Loose items", async ({
+  page,
+}) => {
+  const secondSourceID = "22222222-2222-4222-8222-222222222222";
+  const datedMedia = {
+    id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    media_type: "image",
+    width: 1200,
+    height: 800,
+    local_date_time: "2026-06-01T12:00:00",
+  };
+  const undatedMedia = {
+    id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    media_type: "video",
+    width: 1920,
+    height: 1080,
+    local_date_time: null,
+  };
+  const unusedMedia = {
+    id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+    media_type: "image",
+    width: 800,
+    height: 800,
+    local_date_time: "2026-06-02T09:00:00",
+  };
+  const eventID = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+  const momentID = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+  let currentEvent = {
+    id: eventID,
+    lifecycle: "draft",
+    title: "Combined Source draft",
+    description: "",
+    place_labels: [],
+    grouping_timezone: "UTC",
+    version: 1,
+    final_review_complete: false,
+    published_editable_version: null,
+    published_attendance_recovery_required: false,
+    pending_withdrawal_publication: false,
+    staged_update: null,
+    sources: [
+      {
+        id: sourceID,
+        metadata_suggestion: {
+          name: "Updated Family trip",
+          description: "A suggested Source description",
+        },
+      },
+      { id: secondSourceID, metadata_suggestion: null },
+    ],
+    moments: [
+      {
+        id: momentID,
+        title: "",
+        place_labels: [],
+        proposed_day: "2026-06-01",
+        grouping_timezone: "UTC",
+        source_days: ["2026-06-01"],
+        proposal_kind: "local_day",
+        cover_media_item_id: datedMedia.id,
+        attendance_complete: false,
+        audience_complete: false,
+        media_items: [datedMedia],
+      },
+    ],
+    unassigned_media: [undatedMedia],
+    withdrawal_targets: [],
+    withdrawals: [],
+    created_at: "2026-06-03T00:00:00Z",
+    updated_at: "2026-06-03T00:00:00Z",
+  };
+  const mutations: RecordedRequest[] = [];
+  await page.route("**/api/**", async (route) => {
+    const recorded = recordRequest(route);
+    if (recorded.method !== "GET") mutations.push(recorded);
+    if (recorded.path === "/api/setup") {
+      await route.fulfill({
+        status: 404,
+        json: { error: { message: "Setup not found." } },
+      });
+      return;
+    }
+    if (recorded.path === "/api/session") {
+      await route.fulfill({
+        json: {
+          display_name: "Robin",
+          session_type: "public",
+          csrf_token: csrfToken,
+          curator: true,
+          onboarding_required: false,
+        },
+      });
+      return;
+    }
+    if (recorded.path === "/api/sources") {
+      const disposition = new URL(route.request().url()).searchParams.get(
+        "disposition",
+      );
+      await route.fulfill({
+        json: {
+          albums:
+            disposition === "unreviewed"
+              ? [sourceAlbum("unreviewed", 1)]
+              : disposition === "drafted"
+                ? [
+                    {
+                      ...sourceAlbum("drafted", 1),
+                      id: secondSourceID,
+                      name: "Family reunion",
+                    },
+                  ]
+                : [],
+          next_cursor: null,
+        },
+      });
+      return;
+    }
+    if (recorded.path === `/api/sources/${sourceID}/media-items`) {
+      await route.fulfill({
+        json: { media_items: [datedMedia, unusedMedia] },
+      });
+      return;
+    }
+    if (recorded.path === `/api/sources/${secondSourceID}/media-items`) {
+      await route.fulfill({
+        json: { media_items: [datedMedia, undatedMedia] },
+      });
+      return;
+    }
+    if (recorded.path === "/api/loose-items") {
+      await route.fulfill({
+        status: 201,
+        json: {
+          id: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+          lifecycle: "draft",
+          title: "",
+          description: "",
+          grouping_timezone: "UTC",
+          proposed_day: null,
+          version: 1,
+          audience_complete: false,
+          media_item: undatedMedia,
+          created_at: "2026-06-03T00:00:00Z",
+          updated_at: "2026-06-03T00:00:00Z",
+        },
+      });
+      return;
+    }
+    if (recorded.path === "/api/events" && recorded.method === "POST") {
+      await route.fulfill({ status: 201, json: currentEvent });
+      return;
+    }
+    if (recorded.path === "/api/events" && recorded.method === "GET") {
+      await route.fulfill({
+        json: {
+          events: [
+            {
+              id: eventID,
+              lifecycle: "draft",
+              title: currentEvent.title,
+              version: currentEvent.version,
+              moment_count: 1,
+              unassigned_count: 1,
+              has_staged_update: false,
+              updated_at: currentEvent.updated_at,
+            },
+          ],
+        },
+      });
+      return;
+    }
+    if (recorded.path === `/api/events/${eventID}`) {
+      await route.fulfill({ json: currentEvent });
+      return;
+    }
+    if (recorded.path === `/api/events/${eventID}/organization`) {
+      const body = recorded.body as {
+        title: string;
+        description: string;
+        grouping_timezone: string;
+      };
+      currentEvent = {
+        ...currentEvent,
+        title: body.title,
+        description: body.description,
+        grouping_timezone: body.grouping_timezone,
+        version: currentEvent.version + 1,
+      };
+      await route.fulfill({ json: currentEvent });
+      return;
+    }
+    await fulfillCuratorShellRequest(route);
+  });
+
+  await page.goto("/");
+  await page.getByLabel("Select Family trip for drafting").check();
+  await page.getByRole("button", { name: "Drafted" }).click();
+  await expect(page).toHaveURL(/source_view=drafted/);
+  await page.getByLabel("Select Family reunion for drafting").check();
+  await expect(page.getByText("2 Source albums selected")).toBeVisible();
+  await page
+    .getByRole("button", { name: "Draft selected Source albums" })
+    .click();
+  await expect(
+    page.getByRole("heading", { name: "Draft Source Media" }),
+  ).toBeVisible();
+  const mobileLayout = (page.viewportSize()?.width ?? 1000) <= 864;
+  if (mobileLayout) {
+    expect(await page.evaluate(() => window.innerWidth)).toBeLessThanOrEqual(
+      864,
+    );
+    await expect(page.locator(".source-drafting")).toHaveAttribute(
+      "data-layout",
+      "drill-down",
+    );
+    await expect(
+      page.getByRole("heading", { name: "Source Media", exact: true }),
+    ).toHaveCount(0);
+    await expect(
+      page.getByRole("heading", { name: "Draft details" }),
+    ).toHaveCount(0);
+  }
+
+  await page.getByRole("button", { name: "Details", exact: true }).click();
+  await expect(page.locator("#source-draft-details")).toBeFocused();
+  if (mobileLayout)
+    await expect(
+      page.getByRole("heading", { name: "Selected Sources" }),
+    ).toHaveCount(0);
+  await page.getByLabel("Loose item").check();
+  await page.getByRole("button", { name: /Media \(3\)/ }).click();
+  await expect(page.locator("#source-draft-media")).toBeFocused();
+  await page.getByLabel(/Select undated video Media/).check();
+  await page.getByRole("button", { name: "Details", exact: true }).click();
+  await page.getByLabel("Grouping timezone").fill("UTC");
+  await page.getByRole("button", { name: "Create private Loose item" }).click();
+  await expect(
+    page.getByText(
+      "Loose item is ready privately. Review its Audience before Publication.",
+    ),
+  ).toBeVisible();
+
+  await page.getByLabel("Event").check();
+  await page.getByLabel("Choose current Media").check();
+  await page.getByRole("button", { name: /Media \(3\)/ }).click();
+  await page.getByLabel(/Select photo Media aaaaaaaa/).check();
+  await page.getByLabel(/Select undated video Media/).check();
+  await expect(
+    page.getByText("1 item will remain private and unused."),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Details", exact: true }).click();
+  await page.getByLabel("Event title").fill("Combined Source draft");
+  await page
+    .getByRole("button", { name: "Create private Event draft" })
+    .click();
+
+  await expect(
+    page.getByRole("heading", { name: "Organize drafts" }),
+  ).toBeVisible();
+  await expect(page.getByText("Source metadata suggestions")).toBeVisible();
+  await expect(page.getByLabel("Event title")).toHaveValue(
+    "Combined Source draft",
+  );
+  await page
+    .getByRole("button", { name: "Use suggested title Updated Family trip" })
+    .click();
+  await expect
+    .poll(
+      () =>
+        mutations.filter(
+          ({ path }) => path === `/api/events/${eventID}/organization`,
+        ).length,
+    )
+    .toBe(1);
+  await expect(page.getByText("All changes saved")).toBeVisible();
+  await expect(page.getByLabel("Event title")).toHaveValue(
+    "Updated Family trip",
+  );
+
+  const looseCreation = mutations.find(
+    ({ path }) => path === "/api/loose-items",
+  );
+  expect(looseCreation).toMatchObject({
+    method: "POST",
+    body: {
+      media_item_id: undatedMedia.id,
+      timezone: "UTC",
+      title: "",
+      description: "",
+    },
+  });
+  expect(looseCreation?.headers["x-memento-csrf"]).toBe(csrfToken);
+  const eventCreation = mutations.find(
+    ({ path, method }) => path === "/api/events" && method === "POST",
+  );
+  expect(eventCreation).toMatchObject({
+    body: {
+      source_album_ids: [sourceID, secondSourceID],
+      media_item_ids: [datedMedia.id, undatedMedia.id],
+      idempotency_key: expect.any(String),
+      timezone: "UTC",
+      title: "Combined Source draft",
+      description: "",
+    },
+  });
+  expect(eventCreation?.headers["x-memento-csrf"]).toBe(csrfToken);
+  const organization = mutations.find(
+    ({ path }) => path === `/api/events/${eventID}/organization`,
+  );
+  expect(organization).toMatchObject({
+    method: "PUT",
+    body: { title: "Updated Family trip" },
+  });
+  expect(organization?.headers["x-memento-csrf"]).toBe(csrfToken);
+  expect(
+    mutations.some(({ path }) =>
+      /publications|recipients|new-for-you|notifications|outbox/.test(path),
+    ),
+  ).toBe(false);
   await expectNoHorizontalOverflow(page);
 });
 

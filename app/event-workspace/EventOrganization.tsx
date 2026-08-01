@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { Readiness } from "./Readiness";
 import { StagedChangeLabels } from "./StagedReview";
+import { SourceMetadataSuggestions } from "./SourceMetadataSuggestions";
 import type {
   Event,
   MediaItem,
@@ -183,6 +184,9 @@ export function EventOrganization({
   onInspectionTargetChange: (momentID: string, openPane: boolean) => void;
 }) {
   const [selectedMedia, setSelectedMedia] = useState<Set<string>>(new Set());
+  const [visibleMediaCounts, setVisibleMediaCounts] = useState<
+    Record<string, number>
+  >({});
   const [destination, setDestination] = useState("unassigned");
   const [newMomentDay, setNewMomentDay] = useState("");
   const [mergeError, setMergeError] = useState("");
@@ -208,6 +212,38 @@ export function EventOrganization({
     ...event.moments.flatMap((moment) => moment.media_items),
     ...event.unassigned_media,
   ];
+
+  function visibleMedia(
+    key: string,
+    items: MediaItem[],
+    retainedID?: string | null,
+  ) {
+    const limit = visibleMediaCounts[key] ?? 200;
+    const visible = items.slice(0, limit);
+    const visibleIDs = new Set(visible.map((item) => item.id));
+    for (const item of items) {
+      if (
+        !visibleIDs.has(item.id) &&
+        (selectedMedia.has(item.id) || item.id === retainedID)
+      ) {
+        visible.push(item);
+        visibleIDs.add(item.id);
+      }
+    }
+    return visible;
+  }
+
+  function loadMoreMedia(key: string) {
+    setVisibleMediaCounts((current) => ({
+      ...current,
+      [key]: (current[key] ?? 200) + 200,
+    }));
+  }
+
+  const visibleUnassignedMedia = visibleMedia(
+    "unassigned",
+    event.unassigned_media,
+  );
 
   function locateMedia(next: Event, id: string) {
     for (const moment of next.moments) {
@@ -428,6 +464,7 @@ export function EventOrganization({
         className="event-details-editor"
       >
         <h4 id="event-details-title">Event details</h4>
+        <SourceMetadataSuggestions event={event} onChange={onChange} />
         <label>
           Event title
           <input
@@ -555,7 +592,7 @@ export function EventOrganization({
       <section className="moment-card unassigned">
         <h4>Unassigned Media</h4>
         <ul>
-          {event.unassigned_media.map((item) => (
+          {visibleUnassignedMedia.map((item) => (
             <MediaRow
               item={item}
               key={item.id}
@@ -566,125 +603,152 @@ export function EventOrganization({
             />
           ))}
         </ul>
+        <p aria-live="polite">
+          Showing {visibleUnassignedMedia.length} of{" "}
+          {event.unassigned_media.length} unassigned Media items.
+        </p>
+        {visibleUnassignedMedia.length < event.unassigned_media.length ? (
+          <button onClick={() => loadMoreMedia("unassigned")} type="button">
+            Load more Unassigned Media
+          </button>
+        ) : null}
       </section>
       <div className="moment-list">
-        {event.moments.map((moment, index) => (
-          <article
-            className={`moment-card ${(stagedMomentKinds.get(moment.id) ?? []).map((kind) => `staged-${kind}`).join(" ")}`}
-            key={moment.id}
-          >
-            <header>
-              <div>
-                <p>
-                  Moment {index + 1} · {moment.proposed_day}
-                </p>
-                <StagedChangeLabels
-                  kinds={stagedMomentKinds.get(moment.id) ?? []}
-                />
-                <input
-                  aria-label={`Title for Moment ${index + 1}`}
+        {event.moments.map((moment, index) => {
+          const visibleMomentMedia = visibleMedia(
+            moment.id,
+            moment.media_items,
+            moment.cover_media_item_id,
+          );
+          return (
+            <article
+              className={`moment-card ${(stagedMomentKinds.get(moment.id) ?? []).map((kind) => `staged-${kind}`).join(" ")}`}
+              key={moment.id}
+            >
+              <header>
+                <div>
+                  <p>
+                    Moment {index + 1} · {moment.proposed_day}
+                  </p>
+                  <StagedChangeLabels
+                    kinds={stagedMomentKinds.get(moment.id) ?? []}
+                  />
+                  <input
+                    aria-label={`Title for Moment ${index + 1}`}
+                    onChange={(input) =>
+                      onChange((next) => {
+                        next.moments[index].title = input.target.value;
+                      })
+                    }
+                    placeholder={`Moment ${index + 1}`}
+                    value={moment.title}
+                  />
+                  <PlaceLabelEditor
+                    ariaLabel={`Place labels for Moment ${index + 1}`}
+                    key={`moment-place-labels-${moment.id}`}
+                    labels={moment.place_labels}
+                    onCommit={(labels) =>
+                      onChange((next) => {
+                        const target = next.moments.find(
+                          (candidate) => candidate.id === moment.id,
+                        );
+                        if (target) target.place_labels = labels;
+                      })
+                    }
+                    placeholder="Place labels, comma-separated"
+                  />
+                </div>
+                <div className="row-actions">
+                  <button
+                    aria-label={`Move Moment ${index + 1} earlier`}
+                    onClick={() => reorderMoment(index, -1)}
+                    type="button"
+                  >
+                    ↑
+                  </button>
+                  <button
+                    aria-label={`Move Moment ${index + 1} later`}
+                    onClick={() => reorderMoment(index, 1)}
+                    type="button"
+                  >
+                    ↓
+                  </button>
+                </div>
+              </header>
+              <label>
+                Cover (optional)
+                <select
+                  aria-label="Cover"
                   onChange={(input) =>
                     onChange((next) => {
-                      next.moments[index].title = input.target.value;
+                      next.moments[index].cover_media_item_id =
+                        input.target.value || null;
                     })
                   }
-                  placeholder={`Moment ${index + 1}`}
-                  value={moment.title}
-                />
-                <PlaceLabelEditor
-                  ariaLabel={`Place labels for Moment ${index + 1}`}
-                  key={`moment-place-labels-${moment.id}`}
-                  labels={moment.place_labels}
-                  onCommit={(labels) =>
-                    onChange((next) => {
-                      const target = next.moments.find(
-                        (candidate) => candidate.id === moment.id,
-                      );
-                      if (target) target.place_labels = labels;
-                    })
-                  }
-                  placeholder="Place labels, comma-separated"
-                />
-              </div>
-              <div className="row-actions">
-                <button
-                  aria-label={`Move Moment ${index + 1} earlier`}
-                  onClick={() => reorderMoment(index, -1)}
-                  type="button"
+                  value={moment.cover_media_item_id ?? ""}
                 >
-                  ↑
-                </button>
-                <button
-                  aria-label={`Move Moment ${index + 1} later`}
-                  onClick={() => reorderMoment(index, 1)}
-                  type="button"
-                >
-                  ↓
-                </button>
-              </div>
-            </header>
-            <label>
-              Cover (optional)
-              <select
-                aria-label="Cover"
-                onChange={(input) =>
-                  onChange((next) => {
-                    next.moments[index].cover_media_item_id =
-                      input.target.value || null;
-                  })
-                }
-                value={moment.cover_media_item_id ?? ""}
-              >
-                <option value="">No cover selected</option>
-                {moment.media_items.map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {mediaLabel(item)}
-                  </option>
+                  <option value="">No cover selected</option>
+                  {visibleMomentMedia.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {mediaLabel(item)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <ul>
+                {visibleMomentMedia.map((item) => (
+                  <MediaRow
+                    item={item}
+                    key={item.id}
+                    onMove={(direction) => reorderMedia(item.id, direction)}
+                    onSelect={() => toggleMedia(item.id)}
+                    selected={selectedMedia.has(item.id)}
+                    stagedKinds={stagedMediaKinds.get(item.id) ?? []}
+                  />
                 ))}
-              </select>
-            </label>
-            <ul>
-              {moment.media_items.map((item) => (
-                <MediaRow
-                  item={item}
-                  key={item.id}
-                  onMove={(direction) => reorderMedia(item.id, direction)}
-                  onSelect={() => toggleMedia(item.id)}
-                  selected={selectedMedia.has(item.id)}
-                  stagedKinds={stagedMediaKinds.get(item.id) ?? []}
-                />
-              ))}
-            </ul>
-            <div className="moment-actions">
-              <button
-                disabled={
-                  moment.media_items.filter((item) =>
-                    selectedMedia.has(item.id),
-                  ).length === 0 ||
-                  moment.media_items.every((item) => selectedMedia.has(item.id))
-                }
-                onClick={() => splitMoment(moment)}
-                type="button"
-              >
-                Split selected into new Moment
-              </button>
-              <button
-                disabled={index === 0}
-                onClick={() => mergeWithPrevious(index)}
-                type="button"
-              >
-                Merge with previous Moment
-              </button>
-              <button
-                disabled={inspectionDisabled}
-                onClick={() => onInspectionTargetChange(moment.id, true)}
-                type="button"
-              >
-                Inspect Attendance and Audience
-              </button>
-            </div>
-          </article>
-        ))}
+              </ul>
+              <p aria-live="polite">
+                Showing {visibleMomentMedia.length} of{" "}
+                {moment.media_items.length} Media items in Moment {index + 1}.
+              </p>
+              {visibleMomentMedia.length < moment.media_items.length ? (
+                <button onClick={() => loadMoreMedia(moment.id)} type="button">
+                  Load more Media for Moment {index + 1}
+                </button>
+              ) : null}
+              <div className="moment-actions">
+                <button
+                  disabled={
+                    moment.media_items.filter((item) =>
+                      selectedMedia.has(item.id),
+                    ).length === 0 ||
+                    moment.media_items.every((item) =>
+                      selectedMedia.has(item.id),
+                    )
+                  }
+                  onClick={() => splitMoment(moment)}
+                  type="button"
+                >
+                  Split selected into new Moment
+                </button>
+                <button
+                  disabled={index === 0}
+                  onClick={() => mergeWithPrevious(index)}
+                  type="button"
+                >
+                  Merge with previous Moment
+                </button>
+                <button
+                  disabled={inspectionDisabled}
+                  onClick={() => onInspectionTargetChange(moment.id, true)}
+                  type="button"
+                >
+                  Inspect Attendance and Audience
+                </button>
+              </div>
+            </article>
+          );
+        })}
       </div>
     </>
   );
