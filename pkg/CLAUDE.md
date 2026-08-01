@@ -6,3 +6,4 @@
 - Use one canonical domain type for each identity and value within service code. Convert transport input at the handler seam instead of carrying duplicate representations through the domain.
 - Declare a primary authorization policy for every route and repeat resource authorization in service queries. Apply authorization before matching, grouping, projection, totals, or existence-revealing lookup, and fail closed with non-enumerating errors where disclosure matters.
 - Put pure rules and mappings in package tests. Use isolated PostgreSQL integration tests for transactions, constraints, projections, lock ordering, authorization queries, and concurrency.
+- Recipient chronology buckets, authorized counts, date-anchor cursors, and Media pages must derive from the same current, authorization-filtered projection after reused Media has been deduplicated.

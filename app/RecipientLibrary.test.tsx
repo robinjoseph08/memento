@@ -91,6 +91,22 @@ function renderLibrary(
   initialRoute = "/",
   historyControls = false,
 ) {
+  const scenarioFetch = globalThis.fetch;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = requestPath(input);
+      if (
+        path === "/api/me/photos/chronology" ||
+        path === "/api/me/favorites/chronology"
+      ) {
+        return json({
+          dates: [{ capture_date: null, media_count: 1, cursor: "" }],
+        });
+      }
+      return scenarioFetch(input, init);
+    }),
+  );
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
@@ -526,7 +542,9 @@ test("plans and downloads complete Event and explicit subset archives with Sessi
 
   renderLibrary();
   fireEvent.click(await screen.findByRole("button", { name: "Select photos" }));
-  fireEvent.click(screen.getByRole("checkbox", { name: /Select Photo 1/ }));
+  fireEvent.click(
+    await screen.findByRole("checkbox", { name: /Select Photo 1/ }),
+  );
   fireEvent.click(screen.getByRole("checkbox", { name: /Select Photo 2/ }));
   fireEvent.click(
     screen.getByRole("button", { name: "Prepare archive for 2 selected" }),
@@ -679,7 +697,9 @@ test("keeps subset selection stable while archive preparation is pending and pre
   });
   fireEvent.click(selectionToggle);
   expect(selectionToggle).toHaveTextContent("Cancel selection");
-  const firstPhoto = screen.getByRole("checkbox", { name: /Select Photo 1/ });
+  const firstPhoto = await screen.findByRole("checkbox", {
+    name: /Select Photo 1/,
+  });
   const secondPhoto = screen.getByRole("checkbox", { name: /Select Photo 2/ });
   fireEvent.click(firstPhoto);
   const prepare = screen.getByRole("button", {
@@ -798,7 +818,9 @@ test("clicking Photos while on Photos clears selection and its prepared archive"
 
   renderLibrary();
   fireEvent.click(await screen.findByRole("button", { name: "Select photos" }));
-  fireEvent.click(screen.getByRole("checkbox", { name: /Select Photo 1/ }));
+  fireEvent.click(
+    await screen.findByRole("checkbox", { name: /Select Photo 1/ }),
+  );
   fireEvent.click(
     screen.getByRole("button", { name: "Prepare archive for 1 selected" }),
   );
@@ -862,7 +884,9 @@ test("discards a pending subset archive when Photos navigation resets selection"
 
   renderLibrary();
   fireEvent.click(await screen.findByRole("button", { name: "Select photos" }));
-  fireEvent.click(screen.getByRole("checkbox", { name: /Select Photo 1/ }));
+  fireEvent.click(
+    await screen.findByRole("checkbox", { name: /Select Photo 1/ }),
+  );
   fireEvent.click(
     screen.getByRole("button", { name: "Prepare archive for 1 selected" }),
   );

@@ -84,6 +84,7 @@ const inaccessibleMedia = {
   width: 1200,
   height: 800,
   local_date_time: "2026-07-27T13:00:00Z",
+  capture_date: "2026-07-27",
   available: true,
   thumbnail_url: `/api/me/media/${inaccessibleMediaID}/thumbnail`,
   preview_url: `/api/me/media/${inaccessibleMediaID}/preview`,
@@ -98,6 +99,7 @@ const media = {
   width: 1600,
   height: 900,
   local_date_time: "2026-07-27T12:00:00Z",
+  capture_date: "2026-07-27",
   available: true,
   thumbnail_url: `/api/me/media/${mediaID}/thumbnail`,
   preview_url: `/api/me/media/${mediaID}/preview`,
@@ -109,6 +111,7 @@ const olderMedia = {
   ...media,
   id: "77777777-7777-4777-8777-777777777777",
   local_date_time: "2026-06-15T12:00:00Z",
+  capture_date: "2026-06-15",
   thumbnail_url: "/api/me/media/77777777-7777-4777-8777-777777777777/thumbnail",
   preview_url: "/api/me/media/77777777-7777-4777-8777-777777777777/preview",
   original_url: "/api/me/media/77777777-7777-4777-8777-777777777777/original",
@@ -165,6 +168,18 @@ async function mockRecipient(page: Page) {
       });
     } else if (path === "/api/session/refresh") {
       await route.fulfill({ status: 204 });
+    } else if (
+      path === "/api/me/photos/chronology" ||
+      path === "/api/me/favorites/chronology"
+    ) {
+      await route.fulfill({
+        json: {
+          dates: [
+            { capture_date: "2026-07-27", media_count: 1, cursor: "" },
+            { capture_date: "2026-06-15", media_count: 1, cursor: "older" },
+          ],
+        },
+      });
     } else if (path === "/api/me/photos") {
       await route.fulfill({
         json: {

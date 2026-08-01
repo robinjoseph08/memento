@@ -31,6 +31,8 @@ async function routeRecipientAPI(page: Page) {
       await route.fulfill({
         json: { available: true, public_key: "AQID", enrolled: true },
       });
+    } else if (path === "/api/me/photos/chronology") {
+      await route.fulfill({ json: { dates: [] } });
     } else if (path === "/api/me/photos") {
       await route.fulfill({ json: { media: [], next_cursor: null } });
     } else if (path === "/api/me/new-for-you") {

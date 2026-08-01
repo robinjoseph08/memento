@@ -92,9 +92,10 @@ func completeReport(t *testing.T) Report {
 	}
 	plan, err := json.Marshal([]any{map[string]any{"Plan": map[string]any{"Node Type": "Index Scan"}}})
 	require.NoError(t, err)
-	plans := make([]PlanEvidence, 5)
+	planNames := []string{"authorization", "media_authorization", "gallery", "chronology", "search", "curator"}
+	plans := make([]PlanEvidence, len(planNames))
 	for index := range plans {
-		plans[index] = PlanEvidence{Name: []string{"authorization", "media_authorization", "gallery", "search", "curator"}[index], CacheState: "warm", SQLRole: "memento_app", Plan: plan}
+		plans[index] = PlanEvidence{Name: planNames[index], CacheState: "warm", SQLRole: "memento_app", Plan: plan}
 	}
 	return Report{
 		SchemaVersion: 1,

@@ -88,6 +88,10 @@ async function fulfillCuratorShellRequest(route: Route) {
 
 async function fulfillRecipientShellRequest(route: Route) {
   const path = new URL(route.request().url()).pathname;
+  if (path === "/api/me/photos/chronology") {
+    await route.fulfill({ json: { dates: [] } });
+    return;
+  }
   if (path === "/api/me/photos") {
     await route.fulfill({ json: { media: [], next_cursor: null } });
     return;

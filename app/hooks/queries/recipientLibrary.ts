@@ -9,6 +9,7 @@ import { apiJSON, apiNoContent } from "../../api";
 import type {
   Event as EventDetail,
   EventPage,
+  MediaChronology,
   MediaPage,
   NewForYouResponse,
 } from "../../types/generated/library";
@@ -16,19 +17,40 @@ import { isIdentityGenerationActive } from "./sessions";
 
 export type RecipientMediaListing = "photos" | "favorites";
 
-export function useRecipientMedia(
+export function useRecipientChronology(
   identityGeneration: string,
   listing: RecipientMediaListing,
+) {
+  return useQuery({
+    queryKey: ["recipient-library", identityGeneration, listing, "chronology"],
+    queryFn: ({ signal }) =>
+      apiJSON<MediaChronology>(`/api/me/${listing}/chronology`, { signal }),
+    retry: false,
+  });
+}
+
+export function useRecipientMediaWindow(
+  identityGeneration: string,
+  listing: RecipientMediaListing,
+  anchor: string,
   enabled = true,
 ) {
   return useInfiniteQuery({
-    queryKey: ["recipient-library", identityGeneration, listing],
-    queryFn: ({ pageParam }) => {
+    queryKey: [
+      "recipient-library",
+      identityGeneration,
+      listing,
+      "window",
+      anchor,
+    ],
+    queryFn: ({ pageParam, signal }) => {
       const params = new URLSearchParams({ limit: "40" });
       if (pageParam) params.set("cursor", pageParam);
-      return apiJSON<MediaPage>(`/api/me/${listing}?${params.toString()}`);
+      return apiJSON<MediaPage>(`/api/me/${listing}?${params.toString()}`, {
+        signal,
+      });
     },
-    initialPageParam: "",
+    initialPageParam: anchor,
     getNextPageParam: (page) => page.next_cursor ?? undefined,
     enabled,
     retry: false,
@@ -38,10 +60,12 @@ export function useRecipientMedia(
 export function useRecipientEvents(identityGeneration: string, enabled = true) {
   return useInfiniteQuery({
     queryKey: ["recipient-events", identityGeneration],
-    queryFn: ({ pageParam }) => {
+    queryFn: ({ pageParam, signal }) => {
       const params = new URLSearchParams({ limit: "24" });
       if (pageParam) params.set("cursor", pageParam);
-      return apiJSON<EventPage>(`/api/me/events?${params.toString()}`);
+      return apiJSON<EventPage>(`/api/me/events?${params.toString()}`, {
+        signal,
+      });
     },
     initialPageParam: "",
     getNextPageParam: (page) => page.next_cursor ?? undefined,
@@ -53,11 +77,12 @@ export function useRecipientEvents(identityGeneration: string, enabled = true) {
 export function useRecipientEvent(identityGeneration: string, eventID: string) {
   return useInfiniteQuery({
     queryKey: ["recipient-event", identityGeneration, eventID],
-    queryFn: ({ pageParam }) => {
+    queryFn: ({ pageParam, signal }) => {
       const params = new URLSearchParams({ limit: "40" });
       if (pageParam) params.set("cursor", pageParam);
       return apiJSON<EventDetail>(
         `/api/me/events/${eventID}?${params.toString()}`,
+        { signal },
       );
     },
     initialPageParam: "",
@@ -69,7 +94,8 @@ export function useRecipientEvent(identityGeneration: string, eventID: string) {
 export function useNewForYou(identityGeneration: string, enabled = true) {
   return useQuery({
     queryKey: ["new-for-you", identityGeneration],
-    queryFn: () => apiJSON<NewForYouResponse>("/api/me/new-for-you"),
+    queryFn: ({ signal }) =>
+      apiJSON<NewForYouResponse>("/api/me/new-for-you", { signal }),
     enabled,
     retry: false,
   });

@@ -922,6 +922,13 @@ test.each([
 
 test("clears protected query data offline and after Session revocation", async () => {
   const csrfToken = "c".repeat(64);
+  const libraryWindowKey = [
+    "recipient-library",
+    csrfToken,
+    "photos",
+    "window",
+    "",
+  ];
   let revoked = false;
   vi.stubGlobal(
     "fetch",
@@ -948,6 +955,13 @@ test("clears protected query data offline and after Session revocation", async (
           jsonResponse({ error: { message: "Sign in required." } }, 401),
         );
       }
+      if (path === "/api/me/photos/chronology") {
+        return Promise.resolve(
+          jsonResponse({
+            dates: [{ capture_date: "2026-07-27", media_count: 1, cursor: "" }],
+          }),
+        );
+      }
       if (path.startsWith("/api/me/photos?")) {
         return Promise.resolve(
           jsonResponse({
@@ -958,6 +972,7 @@ test("clears protected query data offline and after Session revocation", async (
                 width: 1600,
                 height: 900,
                 local_date_time: "2026-07-27T12:00:00Z",
+                capture_date: "2026-07-27",
                 available: true,
                 thumbnail_url: "/api/me/media/private-photo/thumbnail",
                 preview_url: "/api/me/media/private-photo/preview",
@@ -1003,9 +1018,7 @@ test("clears protected query data offline and after Session revocation", async (
   expect(
     await screen.findByAltText("Photo 1 from July 2026"),
   ).toBeInTheDocument();
-  expect(
-    client.getQueryData(["recipient-library", csrfToken, "photos"]),
-  ).toBeDefined();
+  expect(client.getQueryData(libraryWindowKey)).toBeDefined();
 
   fireEvent.offline(window);
   const offlineAlert = await screen.findByRole("alert", {
@@ -1017,9 +1030,7 @@ test("clears protected query data offline and after Session revocation", async (
   expect(offlineAlert).toHaveAttribute("aria-live", "assertive");
   expect(offlineTitle).toHaveFocus();
   await vi.waitFor(() =>
-    expect(
-      client.getQueryData(["recipient-library", csrfToken, "photos"]),
-    ).toBeUndefined(),
+    expect(client.getQueryData(libraryWindowKey)).toBeUndefined(),
   );
 
   revoked = true;
@@ -1031,9 +1042,7 @@ test("clears protected query data offline and after Session revocation", async (
   expect(
     await screen.findByRole("heading", { name: "Sign in to Memento" }),
   ).toBeInTheDocument();
-  expect(
-    client.getQueryData(["recipient-library", csrfToken, "photos"]),
-  ).toBeUndefined();
+  expect(client.getQueryData(libraryWindowKey)).toBeUndefined();
 });
 
 test("updates a Recipient weekly email schedule independently of access", async () => {
@@ -1203,6 +1212,13 @@ test("clears protected data and Session after an authenticated mutation returns 
 test("clears accepted-Invitation private data offline and after Session revocation", async () => {
   const token = "i".repeat(64);
   const csrfToken = "j".repeat(64);
+  const libraryWindowKey = [
+    "recipient-library",
+    csrfToken,
+    "photos",
+    "window",
+    "",
+  ];
   let revoked = false;
   window.history.replaceState(null, "", `/invitation?token=${token}`);
   vi.stubGlobal(
@@ -1244,6 +1260,13 @@ test("clears accepted-Invitation private data offline and after Session revocati
           jsonResponse({ error: { message: "Sign in required." } }, 401),
         );
       }
+      if (path === "/api/me/photos/chronology") {
+        return Promise.resolve(
+          jsonResponse({
+            dates: [{ capture_date: "2026-07-27", media_count: 1, cursor: "" }],
+          }),
+        );
+      }
       if (path.startsWith("/api/me/photos?")) {
         return Promise.resolve(
           jsonResponse({
@@ -1254,6 +1277,7 @@ test("clears accepted-Invitation private data offline and after Session revocati
                 width: 1600,
                 height: 900,
                 local_date_time: "2026-07-27T12:00:00Z",
+                capture_date: "2026-07-27",
                 available: true,
                 thumbnail_url: "/api/me/media/accepted-private-photo/thumbnail",
                 preview_url: "/api/me/media/accepted-private-photo/preview",
@@ -1302,18 +1326,14 @@ test("clears accepted-Invitation private data offline and after Session revocati
   expect(
     await screen.findByAltText("Photo 1 from July 2026"),
   ).toBeInTheDocument();
-  expect(
-    client.getQueryData(["recipient-library", csrfToken, "photos"]),
-  ).toBeDefined();
+  expect(client.getQueryData(libraryWindowKey)).toBeDefined();
 
   fireEvent.offline(window);
   expect(
     await screen.findByRole("heading", { name: "Memento is offline" }),
   ).toBeInTheDocument();
   await vi.waitFor(() =>
-    expect(
-      client.getQueryData(["recipient-library", csrfToken, "photos"]),
-    ).toBeUndefined(),
+    expect(client.getQueryData(libraryWindowKey)).toBeUndefined(),
   );
 
   revoked = true;
@@ -1324,9 +1344,7 @@ test("clears accepted-Invitation private data offline and after Session revocati
   expect(
     await screen.findByRole("heading", { name: "Sign in to Memento" }),
   ).toBeInTheDocument();
-  expect(
-    client.getQueryData(["recipient-library", csrfToken, "photos"]),
-  ).toBeUndefined();
+  expect(client.getQueryData(libraryWindowKey)).toBeUndefined();
 });
 
 test("safe bootstrap GETs show permanent closure without starting setup", async () => {

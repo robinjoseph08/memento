@@ -85,6 +85,21 @@ func TestTargetScalePerformance(t *testing.T) {
 		return err
 	}), 1, 0)
 
+	chronology, err := libraryService.Chronology(ctx, actor, false)
+	require.NoError(t, err)
+	require.Greater(t, len(chronology.Dates), 100, "target-scale chronology must span well beyond the initial page")
+	chronologyCount := 0
+	for _, date := range chronology.Dates {
+		chronologyCount += date.MediaCount
+	}
+	require.Equal(t, fixture.shape.MediaItems, chronologyCount, "chronology counts every distinct authorized Media item")
+	targetDate := chronology.Dates[len(chronology.Dates)/2]
+	require.NotNil(t, targetDate.CaptureDate)
+	targetPage, err := libraryService.Photos(ctx, actor, "1", targetDate.Cursor, false)
+	require.NoError(t, err)
+	require.Len(t, targetPage.Media, 1)
+	require.Equal(t, *targetDate.CaptureDate, *targetPage.Media[0].CaptureDate, "a target-scale date anchor loads directly")
+
 	peopleService := people.New(fixture.db)
 	addDuration("curator_list", measure(t, operationSamples, func() error {
 		_, err := peopleService.List(ctx, "", false)

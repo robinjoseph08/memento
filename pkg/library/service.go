@@ -37,6 +37,7 @@ type Media struct {
 	Width         *int    `json:"width" tstype:"number | null,required"`
 	Height        *int    `json:"height" tstype:"number | null,required"`
 	LocalDateTime *string `json:"local_date_time" tstype:"string | null,required"`
+	CaptureDate   *string `json:"capture_date" tstype:"string | null,required"`
 	Available     bool    `json:"available"`
 	ThumbnailURL  string  `json:"thumbnail_url"`
 	PreviewURL    string  `json:"preview_url"`
@@ -47,6 +48,16 @@ type Media struct {
 type MediaPage struct {
 	Media      []Media `json:"media"`
 	NextCursor *string `json:"next_cursor" tstype:"string | null,required"`
+}
+
+type MediaChronology struct {
+	Dates []MediaChronologyDate `json:"dates"`
+}
+
+type MediaChronologyDate struct {
+	CaptureDate *string `json:"capture_date" tstype:"string | null,required"`
+	MediaCount  int     `json:"media_count"`
+	Cursor      string  `json:"cursor"`
 }
 
 // CuratorMedia exposes moderation context without Immich identifiers, paths, or Audience details.
@@ -129,9 +140,10 @@ const (
 type cursor struct {
 	Kind          cursorKind `json:"k"`
 	Sort          string     `json:"s"`
-	ID            string     `json:"i"`
+	ID            string     `json:"i,omitempty"`
 	ResourceID    string     `json:"r,omitempty"`
 	PublicationID string     `json:"p,omitempty"`
+	DateAnchor    bool       `json:"a,omitempty"`
 }
 
 func pageSize(raw string) (int, error) {
@@ -162,8 +174,7 @@ func decodeCursor(raw string, kind cursorKind) (*cursor, error) {
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return nil, ErrInvalidCursor
 	}
-	id, err := uuid.Parse(value.ID)
-	if value.Kind != kind || err != nil || id == uuid.Nil {
+	if value.Kind != kind {
 		return nil, ErrInvalidCursor
 	}
 	switch kind {
@@ -171,15 +182,33 @@ func decodeCursor(raw string, kind cursorKind) (*cursor, error) {
 		if value.ResourceID != "" || value.PublicationID != "" {
 			return nil, ErrInvalidCursor
 		}
+		if value.DateAnchor {
+			if value.ID != "" {
+				return nil, ErrInvalidCursor
+			}
+			if value.Sort != "" {
+				parsed, parseErr := time.Parse(time.DateOnly, value.Sort)
+				if parseErr != nil || parsed.Format(time.DateOnly) != value.Sort {
+					return nil, ErrInvalidCursor
+				}
+			}
+			break
+		}
+		id, idErr := uuid.Parse(value.ID)
+		if idErr != nil || id == uuid.Nil {
+			return nil, ErrInvalidCursor
+		}
 	case cursorKindEvents:
+		id, idErr := uuid.Parse(value.ID)
 		publicationID, publicationErr := uuid.Parse(value.PublicationID)
-		if publicationErr != nil || publicationID == uuid.Nil || value.ResourceID != "" {
+		if value.DateAnchor || idErr != nil || id == uuid.Nil || publicationErr != nil || publicationID == uuid.Nil || value.ResourceID != "" {
 			return nil, ErrInvalidCursor
 		}
 	case cursorKindEventMedia:
+		id, idErr := uuid.Parse(value.ID)
 		resourceID, resourceErr := uuid.Parse(value.ResourceID)
 		publicationID, publicationErr := uuid.Parse(value.PublicationID)
-		if resourceErr != nil || resourceID == uuid.Nil || publicationErr != nil || publicationID == uuid.Nil || value.Sort != "" {
+		if value.DateAnchor || idErr != nil || id == uuid.Nil || resourceErr != nil || resourceID == uuid.Nil || publicationErr != nil || publicationID == uuid.Nil || value.Sort != "" {
 			return nil, ErrInvalidCursor
 		}
 	}
@@ -196,6 +225,7 @@ const validPlacements = `
 	SELECT placement.event_id, placement.publication_id, placement.published_moment_id,
 	       placement.media_item_id, placement.position, current.committed_at AS publication_committed_at,
 	       published.media_type, published.width, published.height, published.local_date_time,
+	       memento_local_capture_date(published.local_date_time) AS capture_date,
 	       media.availability = 'current' AS available,
 	       (moment.cover_media_item_id = placement.media_item_id) IS TRUE AS is_cover
 	FROM current_published_placements AS placement
@@ -215,6 +245,13 @@ const validPlacements = `
 	WHERE NOT content_is_withdrawn(
 		placement.event_id, moment.draft_moment_id, placement.media_item_id
 	)
+`
+
+const uniqueMedia = `
+	SELECT DISTINCT ON (valid.media_item_id) valid.media_item_id, valid.media_type,
+	       valid.width, valid.height, valid.local_date_time, valid.capture_date, valid.available
+	FROM valid %s
+	ORDER BY valid.media_item_id, valid.publication_committed_at DESC, valid.event_id DESC
 `
 
 func ensureActor(ctx context.Context, db bun.IDB, actor setup.SessionActor) error {
@@ -281,19 +318,22 @@ func (s *Service) Photos(ctx context.Context, actor setup.SessionActor, rawLimit
 			args = append(args, actor.PersonID)
 		}
 		if position != nil {
-			cursorFilter = `WHERE (COALESCE(valid.local_date_time, ''), valid.media_item_id) < (?, ?::uuid)`
-			args = append(args, position.Sort, position.ID)
+			switch {
+			case !position.DateAnchor:
+				cursorFilter = `WHERE (COALESCE(valid.local_date_time, ''), valid.media_item_id) < (?, ?::uuid)`
+				args = append(args, position.Sort, position.ID)
+			case position.Sort == "":
+				cursorFilter = `WHERE valid.capture_date IS NULL`
+			default:
+				cursorFilter = `WHERE valid.capture_date <= ?::date OR valid.capture_date IS NULL`
+				args = append(args, position.Sort)
+			}
 		}
 		args = append(args, limit+1)
-		query := fmt.Sprintf(`WITH valid AS (%s), unique_media AS (
-			SELECT DISTINCT ON (valid.media_item_id) valid.media_item_id, valid.media_type,
-			       valid.width, valid.height, valid.local_date_time, valid.available
-			FROM valid %s
-			ORDER BY valid.media_item_id, valid.publication_committed_at DESC, valid.event_id DESC
-		)
-		SELECT media_item_id AS id, media_type, width, height, local_date_time, available
+		query := fmt.Sprintf(`WITH valid AS (%s), unique_media AS (%s)
+		SELECT media_item_id AS id, media_type, width, height, local_date_time, capture_date, available
 		FROM unique_media AS valid %s
-		ORDER BY COALESCE(valid.local_date_time, '') DESC, valid.media_item_id DESC LIMIT ?`, validPlacements, favoriteJoin, cursorFilter)
+		ORDER BY COALESCE(valid.local_date_time, '') DESC, valid.media_item_id DESC LIMIT ?`, validPlacements, fmt.Sprintf(uniqueMedia, favoriteJoin), cursorFilter)
 		if err := tx.NewRaw(query, args...).Scan(ctx, &response.Media); err != nil {
 			return err
 		}
@@ -313,6 +353,42 @@ func (s *Service) Photos(ctx context.Context, actor setup.SessionActor, rawLimit
 		}
 		response.NextCursor = encodeCursor(cursor{Kind: kind, Sort: sortValue, ID: last.ID})
 		response.Media = response.Media[:limit]
+	}
+	return response, nil
+}
+
+func (s *Service) Chronology(ctx context.Context, actor setup.SessionActor, favorites bool) (MediaChronology, error) {
+	response := MediaChronology{Dates: make([]MediaChronologyDate, 0)}
+	err := s.db.RunInTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true}, func(ctx context.Context, tx bun.Tx) error {
+		if err := ensureActor(ctx, tx, actor); err != nil {
+			return err
+		}
+		favoriteJoin := ""
+		args := []any{actor.AccessID}
+		if favorites {
+			favoriteJoin = `JOIN favorites AS favorite ON favorite.media_item_id = valid.media_item_id AND favorite.recipient_person_id = ? AND favorite.is_current`
+			args = append(args, actor.PersonID)
+		}
+		query := fmt.Sprintf(`WITH valid AS (%s), unique_media AS (%s)
+			SELECT capture_date::text AS capture_date, count(*)::integer AS media_count
+			FROM unique_media
+			GROUP BY capture_date
+			ORDER BY capture_date DESC NULLS LAST`, validPlacements, fmt.Sprintf(uniqueMedia, favoriteJoin))
+		return tx.NewRaw(query, args...).Scan(ctx, &response.Dates)
+	})
+	if err != nil {
+		return MediaChronology{}, err
+	}
+	kind := cursorKindPhotos
+	if favorites {
+		kind = cursorKindFavorites
+	}
+	for index := range response.Dates {
+		date := ""
+		if response.Dates[index].CaptureDate != nil {
+			date = *response.Dates[index].CaptureDate
+		}
+		response.Dates[index].Cursor = *encodeCursor(cursor{Kind: kind, Sort: date, DateAnchor: true})
 	}
 	return response, nil
 }
@@ -516,7 +592,7 @@ func (s *Service) Event(ctx context.Context, actor setup.SessionActor, eventID u
 		args = append(args, limit+1)
 		query := fmt.Sprintf(`WITH valid AS (%s)
 			SELECT valid.media_item_id AS id, valid.media_type, valid.width, valid.height,
-			       valid.local_date_time, valid.available, valid.position
+			       valid.local_date_time, valid.capture_date, valid.available, valid.position
 			FROM valid %s ORDER BY valid.position, valid.media_item_id LIMIT ?`, validPlacements, filter)
 		type mediaPosition struct {
 			Media

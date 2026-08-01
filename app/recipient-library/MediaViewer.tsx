@@ -1,12 +1,11 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 
-import type { Media } from "../types/generated/library";
 import type { SessionResponse } from "../types/generated/setup";
 import { CommentThread } from "./CommentThread";
 import { FavoriteControl } from "./FavoriteControl";
 import { isUnavailableResponse, mediaMonthLabel } from "./mediaPresentation";
-import type { RefreshedMediaAccess } from "./types";
+import type { RecipientMedia, RefreshedMediaAccess } from "./types";
 
 type MediaAccess = RefreshedMediaAccess | "delivery-unavailable";
 
@@ -18,7 +17,7 @@ export function MediaViewer({
   onOriginalDownload,
   onVideoStarted,
 }: {
-  media: Media;
+  media: RecipientMedia;
   session: SessionResponse;
   refreshListingAccess: () => Promise<RefreshedMediaAccess>;
   onClose: () => void;

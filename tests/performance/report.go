@@ -241,7 +241,7 @@ func (r Report) Validate() error {
 	if !competitors["reconciliation"] || !competitors["publication"] || !competitors["notification dispatch"] {
 		return fmt.Errorf("%w: reconciliation, publication, and notification dispatch competing-work evidence is required", errInvalidReport)
 	}
-	requiredPlans := map[string]bool{"authorization": false, "media_authorization": false, "gallery": false, "search": false, "curator": false}
+	requiredPlans := map[string]bool{"authorization": false, "media_authorization": false, "gallery": false, "chronology": false, "search": false, "curator": false}
 	for _, plan := range r.Plans {
 		if plan.Name == "" || plan.CacheState == "" || plan.SQLRole == "" || !json.Valid(plan.Plan) {
 			return fmt.Errorf("%w: invalid PostgreSQL plan evidence %q", errInvalidReport, plan.Name)

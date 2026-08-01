@@ -43,6 +43,8 @@ func TestLibraryRoutesRequireACompletedRecipientSessionWithoutIdentifierHints(t 
 		err    error
 	}{
 		{name: "missing cookie", path: "/api/me/photos"},
+		{name: "missing photos chronology cookie", path: "/api/me/photos/chronology"},
+		{name: "missing favorites chronology cookie", path: "/api/me/favorites/chronology"},
 		{name: "invalid thumbnail session", path: "/api/me/media/" + requestedID + "/thumbnail", cookie: true, err: setup.ErrUnauthenticated},
 		{name: "invalid preview session", path: "/api/me/media/" + requestedID + "/preview", cookie: true, err: setup.ErrUnauthenticated},
 		{name: "invalid video session", path: "/api/me/media/" + requestedID + "/video", cookie: true, err: setup.ErrUnauthenticated},
@@ -61,6 +63,16 @@ func TestLibraryRoutesRequireACompletedRecipientSessionWithoutIdentifierHints(t 
 			assert.NotContains(t, response.Body.String(), requestedID)
 		})
 	}
+}
+
+func TestChronologyRoutesUseRecipientContentPolicy(t *testing.T) {
+	e := libraryHTTP(&routeAuthorizer{})
+	routes := map[string]string{}
+	for _, route := range e.Routes() {
+		routes[route.Method+" "+route.Path] = route.Name
+	}
+	assert.Equal(t, "policy:recipient_content", routes["GET /api/me/photos/chronology"])
+	assert.Equal(t, "policy:recipient_content", routes["GET /api/me/favorites/chronology"])
 }
 
 func TestCuratorMediaRoutesUseCuratorPolicy(t *testing.T) {
@@ -110,6 +122,38 @@ func TestLibraryCursorSupportsUndatedMediaAndRejectsOtherCollectionsAndTrailingD
 
 	trailing := base64.RawURLEncoding.EncodeToString([]byte(`{"k":"photos","s":"date","i":"` + id + `"} {}`))
 	_, err = decodeCursor(trailing, cursorKindPhotos)
+	assert.ErrorIs(t, err, ErrInvalidCursor)
+}
+
+func TestDateAnchorCursorIsListingScopedAndContainsNoMediaIdentityOrCount(t *testing.T) {
+	encoded := encodeCursor(cursor{Kind: cursorKindPhotos, Sort: "2026-07-27", DateAnchor: true})
+	require.NotNil(t, encoded)
+	decoded, err := decodeCursor(*encoded, cursorKindPhotos)
+	require.NoError(t, err)
+	assert.True(t, decoded.DateAnchor)
+	assert.Equal(t, "2026-07-27", decoded.Sort)
+	assert.Empty(t, decoded.ID)
+
+	payload, err := base64.RawURLEncoding.DecodeString(*encoded)
+	require.NoError(t, err)
+	assert.NotContains(t, string(payload), `"i"`)
+	assert.NotContains(t, string(payload), "count")
+
+	_, err = decodeCursor(*encoded, cursorKindFavorites)
+	require.ErrorIs(t, err, ErrInvalidCursor)
+
+	undated := encodeCursor(cursor{Kind: cursorKindFavorites, DateAnchor: true})
+	decoded, err = decodeCursor(*undated, cursorKindFavorites)
+	require.NoError(t, err)
+	assert.True(t, decoded.DateAnchor)
+	assert.Empty(t, decoded.Sort)
+
+	invalidDate := encodeCursor(cursor{Kind: cursorKindPhotos, Sort: "2026-02-30", DateAnchor: true})
+	_, err = decodeCursor(*invalidDate, cursorKindPhotos)
+	require.ErrorIs(t, err, ErrInvalidCursor)
+
+	anchorWithID := encodeCursor(cursor{Kind: cursorKindPhotos, Sort: "2026-07-27", ID: uuid.NewString(), DateAnchor: true})
+	_, err = decodeCursor(*anchorWithID, cursorKindPhotos)
 	assert.ErrorIs(t, err, ErrInvalidCursor)
 }
 

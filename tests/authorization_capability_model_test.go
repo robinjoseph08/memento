@@ -84,6 +84,7 @@ type matrixSurface string
 
 const (
 	surfaceLibraryProjection  matrixSurface = "library_pages_order_counts_covers"
+	surfaceLibraryChronology  matrixSurface = "library_chronology_dates_counts_cursors"
 	surfaceEventDetail        matrixSurface = "event_detail"
 	surfacePeopleDirectory    matrixSurface = "people_directory"
 	surfaceSearch             matrixSurface = "search"
@@ -110,7 +111,7 @@ const (
 )
 
 var matrixSurfaces = []matrixSurface{
-	surfaceLibraryProjection, surfaceEventDetail, surfacePeopleDirectory, surfaceSearch, surfaceNewForYou,
+	surfaceLibraryProjection, surfaceLibraryChronology, surfaceEventDetail, surfacePeopleDirectory, surfaceSearch, surfaceNewForYou,
 	surfaceThumbnail, surfacePreview, surfaceVideo, surfaceOriginal,
 	surfaceEventArchive, surfaceSubsetArchive, surfaceArchivePart,
 	surfaceComments, surfaceCommentWrite, surfaceCommentChange,
@@ -185,7 +186,7 @@ func (state matrixState) deliveryEligible() bool {
 
 func (state matrixState) allows(surface matrixSurface) bool {
 	switch surface {
-	case surfaceLibraryProjection, surfaceSearch, surfaceNewForYou, surfaceFavorites:
+	case surfaceLibraryProjection, surfaceLibraryChronology, surfaceSearch, surfaceNewForYou, surfaceFavorites:
 		return state.contentVisible()
 	case surfacePeopleDirectory:
 		interestAccess := state.recipientState == onboardingRecipient || state.recipientState == completedRecipient
@@ -235,12 +236,13 @@ func TestAuthorizationCapabilityMatrixCoversEveryCombination(t *testing.T) {
 
 		// Preferences are delivery choices, never content authority.
 		content := state.contentVisible()
-		for _, surface := range []matrixSurface{surfaceLibraryProjection, surfaceSearch, surfaceNewForYou, surfaceFavorites} {
+		for _, surface := range []matrixSurface{surfaceLibraryProjection, surfaceLibraryChronology, surfaceSearch, surfaceNewForYou, surfaceFavorites} {
 			assert.Equal(t, content, state.allows(surface))
 		}
 		// Source missing preserves authorized metadata and interactions while blocking every byte-bearing surface.
 		if state.source == missingSource && state.resourceVisible() {
 			assert.True(t, state.allows(surfaceLibraryProjection))
+			assert.True(t, state.allows(surfaceLibraryChronology))
 			assert.True(t, state.allows(surfaceComments))
 			assert.False(t, state.allows(surfaceThumbnail))
 			assert.False(t, state.allows(surfaceOriginal))
@@ -318,7 +320,7 @@ func FuzzAuthorizationTransitions(f *testing.F) {
 
 			if !state.sessionUsable() || !state.generationUsable() || !state.hasLivePlacement() {
 				for _, surface := range []matrixSurface{
-					surfaceLibraryProjection, surfaceEventDetail, surfaceSearch, surfaceThumbnail,
+					surfaceLibraryProjection, surfaceLibraryChronology, surfaceEventDetail, surfaceSearch, surfaceThumbnail,
 					surfaceOriginal, surfaceArchivePart, surfaceComments, surfaceFavorites,
 				} {
 					assert.False(t, state.allows(surface), "access loss must fail closed after transition %d", transition)
