@@ -6,8 +6,6 @@ import { clearTimeout, setTimeout as scheduleTimeout } from "node:timers";
 import { setTimeout as delay } from "node:timers/promises";
 import { URL } from "node:url";
 
-import { preview } from "vite";
-
 const postgresImage =
   "postgres:17.7-alpine3.23@sha256:bb377b7239d2774ac8cc76f481596ce96c5a6b5e9d141f6d0a0ee371a6e7c0f2";
 const containerName = `memento-browser-${randomUUID()}`;
@@ -128,6 +126,7 @@ async function startPostgres() {
 }
 
 async function startPreview() {
+  const { preview } = await import("vite");
   previewServer = await preview({
     plugins: [
       {

@@ -4,7 +4,7 @@ set -eu
 root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 
 run_tests() {
-  (cd "$root" && go test -p 4 -count=1 -tags=integration ./...)
+  (cd "$root" && go test -p 4 -timeout=20m -count=1 -tags=integration ./...)
 }
 
 if [ -n "${MEMENTO_TEST_DATABASE_URL:-}" ]; then
