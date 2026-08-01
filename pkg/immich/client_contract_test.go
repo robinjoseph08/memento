@@ -6,6 +6,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,6 +22,7 @@ import (
 	"github.com/robinjoseph08/memento/pkg/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/uptrace/bun/driver/pgdriver"
 )
 
 func TestImmichV303LiveContract(t *testing.T) {
@@ -113,6 +115,12 @@ func TestImmichV303LiveContract(t *testing.T) {
 	require.NoError(t, err)
 	imageID := contractUpload(t, ctx, httpClient, baseURL, login.AccessToken, imagePath)
 	videoID := contractUpload(t, ctx, httpClient, baseURL, login.AccessToken, videoPath)
+	personID, assignedFaceID, unassignedFaceID := contractSeedFaces(t, ctx, imageID)
+
+	people, err = client.People(ctx)
+	require.NoError(t, err)
+	require.Equal(t, []PersonSummary{{SourceID: personID, Name: "Contract Person", Hidden: false}}, people)
+
 	imageEvidence, err := client.Asset(ctx, imageID)
 	require.NoError(t, err)
 	assert.Equal(t, imageID, imageEvidence.SourceID)
@@ -120,6 +128,9 @@ func TestImmichV303LiveContract(t *testing.T) {
 	assert.NotEmpty(t, imageEvidence.Checksum)
 	assert.Equal(t, filepath.Base(imagePath), imageEvidence.Filename)
 	assert.NotEmpty(t, imageEvidence.OriginalPath)
+	imageExists, err := client.AssetExists(ctx, imageID)
+	require.NoError(t, err)
+	assert.True(t, imageExists)
 	contractAwaitDelivery(t, func() (bool, error) {
 		return client.AssetDeliveryAvailable(ctx, imageID, "image")
 	})
@@ -127,11 +138,30 @@ func TestImmichV303LiveContract(t *testing.T) {
 		return client.AssetDeliveryAvailable(ctx, videoID, "video")
 	})
 
+	faces, err := client.Faces(ctx, imageID)
+	require.NoError(t, err)
+	require.Equal(t, []FaceSummary{
+		{
+			SourceID: assignedFaceID, PersonID: &personID,
+			ImageWidth: 640, ImageHeight: 480, X1: 101, Y1: 57, X2: 301, Y2: 257,
+		},
+		{
+			SourceID: unassignedFaceID, PersonID: nil,
+			ImageWidth: 640, ImageHeight: 480, X1: 350, Y1: 80, X2: 550, Y2: 300,
+		},
+	}, faces)
+
 	thumbnail := contractAwaitMedia(t, func() (MediaResponse, error) {
 		return client.Thumbnail(ctx, imageID, MediaRequest{})
 	})
 	assert.Equal(t, http.StatusOK, thumbnail.StatusCode)
 	assert.NotEmpty(t, contractReadMedia(t, thumbnail))
+
+	emailThumbnail := contractAwaitMedia(t, func() (MediaResponse, error) {
+		return client.EmailThumbnail(ctx, imageID, MediaRequest{})
+	})
+	assert.Equal(t, http.StatusOK, emailThumbnail.StatusCode)
+	assert.NotEmpty(t, contractReadMedia(t, emailThumbnail))
 
 	preview := contractAwaitMedia(t, func() (MediaResponse, error) {
 		return client.Preview(ctx, imageID, MediaRequest{})
@@ -212,6 +242,51 @@ func TestImmichV303LiveContract(t *testing.T) {
 			contractAwaitMediaDeleted(t, representation.load)
 		})
 	}
+}
+
+func contractSeedFaces(t *testing.T, ctx context.Context, assetID uuid.UUID) (uuid.UUID, uuid.UUID, uuid.UUID) {
+	t.Helper()
+	databaseURL := os.Getenv("MEMENTO_TEST_IMMICH_DATABASE_URL")
+	require.NotEmpty(t, databaseURL, "MEMENTO_TEST_IMMICH_DATABASE_URL is required")
+
+	connector, err := pgdriver.NewDriver().OpenConnector(databaseURL)
+	require.NoError(t, err)
+	database := sql.OpenDB(connector)
+	defer database.Close()
+
+	seedCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	require.NoError(t, database.PingContext(seedCtx))
+
+	transaction, err := database.BeginTx(seedCtx, nil)
+	require.NoError(t, err)
+	defer transaction.Rollback()
+
+	personID := uuid.MustParse("a11ce000-0000-4000-8000-000000000001")
+	assignedFaceID := uuid.MustParse("face0000-0000-4000-8000-000000000001")
+	unassignedFaceID := uuid.MustParse("face0000-0000-4000-8000-000000000002")
+	result, err := transaction.ExecContext(seedCtx, `
+		INSERT INTO person (id, "ownerId", name, "isHidden")
+		SELECT $1, "ownerId", $2, false
+		FROM asset
+		WHERE id = $3
+	`, personID, "  Contract Person  ", assetID)
+	require.NoError(t, err)
+	rowsAffected, err := result.RowsAffected()
+	require.NoError(t, err)
+	require.EqualValues(t, 1, rowsAffected, "uploaded asset owner was not available for face seeding")
+
+	_, err = transaction.ExecContext(seedCtx, `
+		INSERT INTO asset_face (
+			id, "assetId", "personId", "imageWidth", "imageHeight",
+			"boundingBoxX1", "boundingBoxY1", "boundingBoxX2", "boundingBoxY2", "sourceType"
+		) VALUES
+			($1, $2, $3, 640, 480, 101, 57, 301, 257, 'manual'),
+			($4, $2, NULL, 640, 480, 350, 80, 550, 300, 'manual')
+	`, assignedFaceID, assetID, personID, unassignedFaceID)
+	require.NoError(t, err)
+	require.NoError(t, transaction.Commit())
+	return personID, assignedFaceID, unassignedFaceID
 }
 
 func contractUpload(t *testing.T, ctx context.Context, client *http.Client, baseURL, bearer, path string) uuid.UUID {

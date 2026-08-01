@@ -348,6 +348,16 @@ func TestRecipientLibraryPaginatesOnlyCurrentAuthorizedUnion(t *testing.T) {
 	require.NotNil(t, newForYou.Events[0].CoverHeight)
 	assert.Equal(t, 1600, *newForYou.Events[0].CoverWidth)
 	assert.Equal(t, 900, *newForYou.Events[0].CoverHeight)
+
+	recipientJSON, err := json.Marshal([]any{first, second, events, detail, newForYou})
+	require.NoError(t, err)
+	for _, assetID := range fixture.assets {
+		assert.NotContains(t, string(recipientJSON), assetID.String(), "Immich asset identities never cross a Recipient contract")
+	}
+	for _, internalField := range []string{"immich_", "original_path", "library_id", "owner_id", "bounding_box", "face_id"} {
+		assert.NotContains(t, string(recipientJSON), internalField, "provider field %q never crosses a Recipient contract", internalField)
+	}
+
 	_, err = fixture.service.Photos(ctx, fixture.actor, "10", "guessed", false)
 	assert.ErrorIs(t, err, ErrInvalidCursor)
 }
