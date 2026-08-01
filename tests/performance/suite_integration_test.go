@@ -92,7 +92,11 @@ func TestTargetScalePerformance(t *testing.T) {
 	for _, date := range chronology.Dates {
 		chronologyCount += date.MediaCount
 	}
-	require.Equal(t, fixture.shape.MediaItems, chronologyCount, "chronology counts every distinct authorized Media item")
+	var authorizedMediaCount int
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(DISTINCT media_item_id)
+		FROM current_audience_entitlements
+		WHERE recipient_access_generation_id = ?`, actor.AccessID).Scan(ctx, &authorizedMediaCount))
+	require.Equal(t, authorizedMediaCount, chronologyCount, "chronology counts every distinct authorized Media item")
 	targetDate := chronology.Dates[len(chronology.Dates)/2]
 	require.NotNil(t, targetDate.CaptureDate)
 	targetPage, err := libraryService.Photos(ctx, actor, "1", targetDate.Cursor, false)
