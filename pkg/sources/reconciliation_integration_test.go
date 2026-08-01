@@ -47,6 +47,7 @@ type reconciliationConnector struct {
 	servedAssets   map[uuid.UUID]bool
 	thumbnailCalls []uuid.UUID
 	thumbnailErr   error
+	afterPage      func(int)
 }
 
 func (connector *reconciliationConnector) Check(context.Context) error {
@@ -78,13 +79,20 @@ func (connector *reconciliationConnector) Album(_ context.Context, albumID uuid.
 }
 func (connector *reconciliationConnector) AlbumAssetsPage(_ context.Context, albumID uuid.UUID, page int) (immich.AssetPage, error) {
 	connector.mu.Lock()
-	defer connector.mu.Unlock()
 	connector.pageCalls = append(connector.pageCalls, page)
 	connector.pageAlbumIDs = append(connector.pageAlbumIDs, albumID)
 	if connector.pageErrAt > 0 && len(connector.pageCalls) == connector.pageErrAt {
+		connector.mu.Unlock()
 		return immich.AssetPage{}, connector.dependency
 	}
-	return connector.pages[page], nil
+	result := connector.pages[page]
+	afterPage := connector.afterPage
+	connector.afterPage = nil
+	connector.mu.Unlock()
+	if afterPage != nil {
+		afterPage(page)
+	}
+	return result, nil
 }
 func (connector *reconciliationConnector) People(context.Context) ([]immich.PersonSummary, error) {
 	return nil, nil
@@ -192,19 +200,38 @@ func (connector *reconciliationConnector) setAssetExistsError(err error) {
 }
 
 func (connector *reconciliationConnector) setMembership(assets ...immich.AssetSummary) {
+	connector.configureMembership(len(assets), map[int]immich.AssetPage{1: {Items: assets}})
+}
+
+func (connector *reconciliationConnector) setPaginatedMembership(first, second []immich.AssetSummary) {
+	next := 2
+	connector.configureMembership(len(first)+len(second), map[int]immich.AssetPage{
+		1: {Items: first, NextPage: &next},
+		2: {Items: second},
+	})
+}
+
+func (connector *reconciliationConnector) configureMembership(assetCount int, pages map[int]immich.AssetPage) {
 	connector.mu.Lock()
 	defer connector.mu.Unlock()
-	connector.summary.AssetCount = len(assets)
+	connector.summary.AssetCount = assetCount
 	connector.summary.UpdatedAt = connector.summary.UpdatedAt.Add(time.Second)
 	connector.summary.LastModifiedAssetTimestamp = &connector.summary.UpdatedAt
 	connector.after = nil
+	connector.afterPage = nil
 	connector.albumCalls = 0
 	connector.pageCalls = nil
 	connector.albumIDs = nil
 	connector.pageAlbumIDs = nil
 	connector.albumErrAt = 0
 	connector.pageErrAt = 0
-	connector.pages = map[int]immich.AssetPage{1: {Items: assets}}
+	connector.pages = pages
+}
+
+func (connector *reconciliationConnector) runAfterNextPage(afterPage func(int)) {
+	connector.mu.Lock()
+	defer connector.mu.Unlock()
+	connector.afterPage = afterPage
 }
 
 func reconciliationAsset(id uuid.UUID) immich.AssetSummary {
@@ -375,9 +402,9 @@ func loadExactSourceAudience(t *testing.T, service *Service, fixture stagedSourc
 		FROM (
 			SELECT event_id, publication_id, recipient_person_id, recipient_access_generation_id, media_item_id
 			FROM current_audience_entitlements
-			WHERE event_id = ? AND media_item_id = ?
+			WHERE event_id = ?
 		) AS entitlement
-	`, fixture.eventID, fixture.mediaID).Scan(ctx, &state.CurrentEntitlements))
+	`, fixture.eventID).Scan(ctx, &state.CurrentEntitlements))
 	require.NotEqual(t, "[]", state.DraftSnapshots)
 	require.NotEqual(t, "[]", state.PublishedEntries)
 	require.NotEqual(t, "[]", state.CurrentEntitlements)
@@ -609,52 +636,66 @@ func TestReconciliationCoalescesExistingMediaMetadataChangesIntoPublishedEvent(t
 	assert.Equal(t, []string{fixture.mediaID.String()}, update.Changes[0].MediaItemIDs)
 }
 
-func TestReconciliationIgnoresFailureAndInstabilityUntilTwoIdenticalValidatedRemovalPasses(t *testing.T) {
-	kept, removed := reconciliationAsset(uuid.New()), reconciliationAsset(uuid.New())
-	connector := &reconciliationConnector{summary: sourceAlbum(uuid.New(), "Stable album", 2), dependency: errors.New("private dependency")}
-	connector.pages = map[int]immich.AssetPage{1: {Items: []immich.AssetSummary{kept, removed}}}
+func TestReconciliationIgnoresDependencyAndMidPaginationMutationUntilTwoIdenticalValidatedRemovalPasses(t *testing.T) {
+	kept, retained, removed := reconciliationAsset(uuid.New()), reconciliationAsset(uuid.New()), reconciliationAsset(uuid.New())
+	connector := &reconciliationConnector{summary: sourceAlbum(uuid.New(), "Stable album", 3), dependency: errors.New("private dependency")}
+	connector.pages = map[int]immich.AssetPage{1: {Items: []immich.AssetSummary{kept, retained, removed}}}
 	service, sourceAlbumID := newReconciliationService(t, connector)
 	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
 
-	connector.setMembership(kept)
+	connector.setPaginatedMembership([]immich.AssetSummary{kept}, []immich.AssetSummary{retained})
 	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
-	assertTableCount(t, service, "source_album_memberships", 2)
+	assertTableCount(t, service, "source_album_memberships", 3)
 	assertRemovalEvidence(t, service, sourceAlbumID, 1)
 
 	connector.setCheckError(connector.dependency)
 	require.ErrorIs(t, service.Reconcile(context.Background(), sourceAlbumID), ErrDependency)
 	assertRemovalEvidence(t, service, sourceAlbumID, 1)
-	assertTableCount(t, service, "source_album_memberships", 2)
+	assertTableCount(t, service, "source_album_memberships", 3)
 
 	connector.setCheckError(nil)
 	connector.albumCalls = 0
 	connector.albumErrAt = 1
 	require.ErrorIs(t, service.Reconcile(context.Background(), sourceAlbumID), ErrDependency)
 	assertRemovalEvidence(t, service, sourceAlbumID, 1)
-	assertTableCount(t, service, "source_album_memberships", 2)
+	assertTableCount(t, service, "source_album_memberships", 3)
 
-	connector.albumErrAt = 0
-	changed := connector.summary
-	changed.UpdatedAt = changed.UpdatedAt.Add(time.Minute)
-	connector.after = &changed
-	connector.albumCalls = 0
+	connector.setPaginatedMembership([]immich.AssetSummary{kept}, []immich.AssetSummary{retained})
+	connector.runAfterNextPage(func(page int) {
+		require.Equal(t, 1, page)
+		connector.mu.Lock()
+		connector.summary.UpdatedAt = connector.summary.UpdatedAt.Add(time.Minute)
+		connector.summary.LastModifiedAssetTimestamp = &connector.summary.UpdatedAt
+		connector.mu.Unlock()
+	})
 	require.ErrorIs(t, service.Reconcile(context.Background(), sourceAlbumID), ErrUnstable)
 	assertRemovalEvidence(t, service, sourceAlbumID, 1)
-	assertTableCount(t, service, "source_album_memberships", 2)
+	assertTableCount(t, service, "source_album_memberships", 3)
 
-	connector.after = nil
-	connector.albumCalls = 0
+	connector.setPaginatedMembership([]immich.AssetSummary{kept}, []immich.AssetSummary{retained})
+	connector.runAfterNextPage(func(page int) {
+		require.Equal(t, 1, page)
+		connector.mu.Lock()
+		connector.pages[2] = immich.AssetPage{}
+		connector.mu.Unlock()
+	})
+	require.ErrorIs(t, service.Reconcile(context.Background(), sourceAlbumID), ErrUnstable)
+	assertRemovalEvidence(t, service, sourceAlbumID, 1)
+	assertTableCount(t, service, "source_album_memberships", 3)
+
+	connector.setPaginatedMembership([]immich.AssetSummary{kept}, []immich.AssetSummary{retained})
 	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
 	assertRemovalEvidence(t, service, sourceAlbumID, 2)
-	assertTableCount(t, service, "source_album_memberships", 1)
+	assertTableCount(t, service, "source_album_memberships", 2)
 
-	var status, diagnostic string
+	var summaryChanged, paginationIncomplete int
 	require.NoError(t, service.db.NewRaw(`
-		SELECT status, diagnostic FROM reconciliation_runs
-		WHERE source_album_id = ? AND diagnostic = 'summary_changed' LIMIT 1
-	`, sourceAlbumID).Scan(context.Background(), &status, &diagnostic))
-	assert.Equal(t, "unstable", status)
-	assert.Equal(t, "summary_changed", diagnostic)
+		SELECT count(*) FILTER (WHERE status = 'unstable' AND diagnostic = 'summary_changed'),
+		       count(*) FILTER (WHERE status = 'unstable' AND diagnostic = 'pagination_incomplete')
+		FROM reconciliation_runs WHERE source_album_id = ?
+	`, sourceAlbumID).Scan(context.Background(), &summaryChanged, &paginationIncomplete))
+	assert.Equal(t, 1, summaryChanged)
+	assert.Equal(t, 1, paginationIncomplete)
 }
 
 func TestDifferingValidatedPassResetsRemovalEvidence(t *testing.T) {
@@ -1576,6 +1617,17 @@ func TestDelivery404CannotBeClearedByAlbumMetadata(t *testing.T) {
 	var availability string
 	require.NoError(t, service.db.NewRaw(`SELECT availability FROM media_items WHERE id = ?`, fixture.mediaID).Scan(context.Background(), &availability))
 	assert.Equal(t, "source_missing", availability, "album membership metadata cannot prove delivery is safe")
+	problems, err := repairs.New(service.db, nil).List(context.Background())
+	require.NoError(t, err)
+	var foundPrivateRepair bool
+	for _, problem := range problems.SourceProblems {
+		if problem.Kind == "media_item" && problem.ID == fixture.mediaID.String() {
+			foundPrivateRepair = true
+			assert.True(t, problem.Published)
+			assert.Equal(t, "critical", problem.Priority)
+		}
+	}
+	assert.True(t, foundPrivateRepair, "a missing derivative creates only Curator-visible repair work")
 	_, err = mediaService.Thumbnail(context.Background(), fixture.recipient, fixture.mediaID, immich.MediaRequest{})
 	assert.ErrorIs(t, err, library.ErrNotFound)
 	assert.Equal(t, []uuid.UUID{original.SourceID}, connector.requestedThumbnails(), "fail-closed Media cannot reach Immich again")
@@ -2109,8 +2161,9 @@ func TestDeleteReimportAndPathMoveStayAddRemoveUntilRepairConfirmation(t *testin
 	connector.pages = map[int]immich.AssetPage{1: {Items: []immich.AssetSummary{oldAsset}}}
 	service, sourceAlbumID := newReconciliationService(t, connector)
 	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
-	var stableMediaID uuid.UUID
-	require.NoError(t, service.db.NewRaw(`SELECT id FROM media_items WHERE immich_asset_id = ?`, oldAsset.SourceID).Scan(context.Background(), &stableMediaID))
+	fixture := publishSourceEventFixture(t, service, sourceAlbumID, oldAsset.SourceID)
+	authorizeSourceRecipient(t, service, &fixture)
+	audienceBefore := loadExactSourceAudience(t, service, fixture)
 
 	moved := repairableReconciliationAsset(uuid.New(), "/library/moved/family.jpg")
 	connector.setMembership(moved)
@@ -2120,6 +2173,7 @@ func TestDeleteReimportAndPathMoveStayAddRemoveUntilRepairConfirmation(t *testin
 	var candidates int
 	require.NoError(t, service.db.NewRaw(`SELECT count(*) FROM media_repair_candidates`).Scan(context.Background(), &candidates))
 	assert.Zero(t, candidates, "one pass remains an addition plus a possible removal")
+	assert.Equal(t, audienceBefore, loadExactSourceAudience(t, service, fixture), "one observed replacement must not transfer authorization")
 
 	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
 	assertTableCount(t, service, "source_album_memberships", 1)
@@ -2134,7 +2188,7 @@ func TestDeleteReimportAndPathMoveStayAddRemoveUntilRepairConfirmation(t *testin
 			candidate_immich_asset_id AS candidate_id, state
 		FROM media_repair_candidates
 	`).Scan(context.Background(), &candidate))
-	assert.Equal(t, stableMediaID, candidate.MediaItemID)
+	assert.Equal(t, fixture.mediaID, candidate.MediaItemID)
 	assert.Equal(t, oldAsset.SourceID, candidate.PreviousID)
 	assert.Equal(t, moved.SourceID, candidate.CandidateID)
 	assert.Equal(t, "pending", candidate.State)
@@ -2148,6 +2202,16 @@ func TestDeleteReimportAndPathMoveStayAddRemoveUntilRepairConfirmation(t *testin
 	assert.Equal(t, "/library/old/family.jpg", oldPath)
 	assert.Equal(t, "/library/moved/family.jpg", newPath)
 	assert.Equal(t, oldAsset.Checksum, checksum)
+
+	var currentPlacement bool
+	require.NoError(t, service.db.NewRaw(`
+		SELECT EXISTS (
+			SELECT 1 FROM current_published_placements
+			WHERE event_id = ? AND media_item_id = ?
+		)
+	`, fixture.eventID, fixture.mediaID).Scan(context.Background(), &currentPlacement))
+	assert.True(t, currentPlacement, "automatic repair work must preserve the published Memento Media identity")
+	assert.Equal(t, audienceBefore, loadExactSourceAudience(t, service, fixture), "a repair proposal must not transfer or revoke authorization")
 }
 
 func TestMediaRepairProposalsUseOnlyUnclaimedAdditionBackings(t *testing.T) {

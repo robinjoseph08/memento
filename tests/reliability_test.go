@@ -2,30 +2,102 @@ package tests
 
 import (
 	"context"
+	"go/ast"
+	"go/build/constraint"
+	"go/parser"
+	"go/token"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.yaml.in/yaml/v3"
 )
 
-func TestWorkflowMatrixMatchesCompleteValidationSuite(t *testing.T) {
+func TestReleaseGateWiringRunsCompleteImmichContract(t *testing.T) {
 	mise := readRepositoryFile(t, "mise.toml")
-	workflow := readRepositoryFile(t, ".github/workflows/ci.yml")
+	ciWorkflow := parseWorkflowDefinition(t, readRepositoryFile(t, ".github/workflows/ci.yml"))
+	releaseWorkflow := parseWorkflowDefinition(t, readRepositoryFile(t, ".github/workflows/release.yml"))
 	tasks := parseTaskDefinitions(t, mise)
 
+	ciTask, ok := tasks["ci"]
+	require.True(t, ok, "mise task %q must exist", "ci")
+	assert.Contains(t, ciTask.dependencies, "test:immich-contract", "mise ci must directly include the Immich contract gate")
+
 	expected := executableTaskClosure(t, tasks, []string{"ci"})
-	matrixTasks := regexpMatches(workflow, `(?m)^\s+task: ([^\s]+)\s*$`)
+	ciSuite, ok := ciWorkflow.Jobs["suite"]
+	require.True(t, ok, "CI workflow must define the suite job")
+	assert.Empty(t, ciSuite.If, "the CI matrix must not be conditionally skipped")
+	assert.Zero(t, ciSuite.ContinueOnError.Kind, "the CI matrix job must fail when a task fails")
+	matrixTasks := make([]string, 0, len(ciSuite.Strategy.Matrix.Include))
+	for _, entry := range ciSuite.Strategy.Matrix.Include {
+		require.NotEmpty(t, entry.Task, "every CI matrix entry must name an executable mise task")
+		matrixTasks = append(matrixTasks, entry.Task)
+	}
+	require.NotEmpty(t, matrixTasks, "CI suite must define an executable task matrix")
 	actual := executableTaskClosure(t, tasks, matrixTasks)
 	slices.Sort(expected)
 	slices.Sort(actual)
-	assert.Equal(t, expected, actual, "the CI matrix must run the same validation tasks as mise ci")
+	assert.Equal(t, expected, actual, "the CI matrix executable task closure must match mise ci")
+
+	var matrixExecutionSteps int
+	for _, step := range ciSuite.Steps {
+		if strings.TrimSpace(step.Run) != `mise run ${{ matrix.task }}` {
+			continue
+		}
+		matrixExecutionSteps++
+		assert.Empty(t, step.If, "the CI matrix execution step must not be conditionally skipped")
+		assert.Zero(t, step.ContinueOnError.Kind, "the CI matrix execution step must fail its job when a task fails")
+	}
+	require.Equal(t, 1, matrixExecutionSteps, "CI must execute every declared matrix task exactly once")
+
+	ciValidation, ok := ciWorkflow.Jobs["validate"]
+	require.True(t, ok, "CI workflow must define its aggregate validation job")
+	assert.Contains(t, workflowNeeds(t, ciValidation.Needs), "suite")
+	assert.Equal(t, `${{ always() }}`, ciValidation.If, "aggregate validation must run even when a matrix task fails")
+	assert.Zero(t, ciValidation.ContinueOnError.Kind, "aggregate validation must fail its reusable workflow")
+	var aggregateFailureChecks int
+	for _, step := range ciValidation.Steps {
+		if strings.TrimSpace(step.Run) != `test "$SUITE_RESULT" = success` {
+			continue
+		}
+		aggregateFailureChecks++
+		assert.Empty(t, step.If, "the aggregate failure check must not be conditionally skipped")
+		assert.Equal(t, `${{ needs.suite.result }}`, step.Env["SUITE_RESULT"])
+		assert.Zero(t, step.ContinueOnError.Kind, "aggregate validation must fail when the suite did not succeed")
+	}
+	require.Equal(t, 1, aggregateFailureChecks, "CI must convert any matrix failure into a failed reusable workflow")
+
+	validation, ok := releaseWorkflow.Jobs["validation"]
+	require.True(t, ok, "release workflow must define the validation job")
+	assert.Equal(t, "./.github/workflows/ci.yml", validation.Uses, "release validation must invoke the complete CI workflow")
+	assert.Contains(t, workflowNeeds(t, validation.Needs), "contract", "complete validation must wait for the release contract")
+	assert.Empty(t, validation.If, "release validation must not be conditionally skipped")
+	assert.Zero(t, validation.ContinueOnError.Kind, "release validation must block publication on failure")
+	publish, ok := releaseWorkflow.Jobs["publish"]
+	require.True(t, ok, "release workflow must define the publish job")
+	assert.Contains(t, workflowNeeds(t, publish.Needs), "validation", "release publication must wait for validation")
+	assert.Empty(t, publish.If, "release publication must retain the default success condition")
+	assert.Zero(t, publish.ContinueOnError.Kind, "release publication must not ignore its own failures")
+
+	contractTask, ok := tasks["test:immich-contract"]
+	require.True(t, ok, "mise task %q must exist", "test:immich-contract")
+	assert.Equal(t, "./tests/test-immich-contract.sh", contractTask.command, "the Immich contract task must run its fixture harness")
+
+	contractScript := readRepositoryFile(t, "tests/test-immich-contract.sh")
+	contractCommandPattern := regexp.MustCompile(`(?m)^[ \t]*(go[ \t]+test[ \t]+-count=1[ \t]+-tags=immichcontract[ \t]+\./pkg/immich)[ \t]*(?:;[ \t]*then)?[ \t]*$`)
+	contractCommands := contractCommandPattern.FindAllStringSubmatch(contractScript, -1)
+	require.Len(t, contractCommands, 1, "Immich harness must execute exactly one live contract command: go test -count=1 -tags=immichcontract ./pkg/immich")
+	assert.Equal(t, "go test -count=1 -tags=immichcontract ./pkg/immich", strings.Join(strings.Fields(contractCommands[0][1]), " "))
+
+	requireTaggedGoTest(t, "pkg/immich", "immichcontract", "TestImmichV303LiveContract")
 }
 
 func TestProductionTopologyAvoidsComposeBuildDelegation(t *testing.T) {
@@ -114,7 +186,33 @@ esac
 
 type taskDefinition struct {
 	dependencies []string
+	command      string
 	executable   bool
+}
+
+type workflowDefinition struct {
+	Jobs map[string]workflowJobDefinition `yaml:"jobs"`
+}
+
+type workflowJobDefinition struct {
+	Needs           yaml.Node `yaml:"needs"`
+	Uses            string    `yaml:"uses"`
+	If              string    `yaml:"if"`
+	ContinueOnError yaml.Node `yaml:"continue-on-error"`
+	Steps           []struct {
+		Name            string            `yaml:"name"`
+		Run             string            `yaml:"run"`
+		If              string            `yaml:"if"`
+		Env             map[string]string `yaml:"env"`
+		ContinueOnError yaml.Node         `yaml:"continue-on-error"`
+	} `yaml:"steps"`
+	Strategy struct {
+		Matrix struct {
+			Include []struct {
+				Task string `yaml:"task"`
+			} `yaml:"include"`
+		} `yaml:"matrix"`
+	} `yaml:"strategy"`
 }
 
 func parseTaskDefinitions(t *testing.T, mise string) map[string]taskDefinition {
@@ -124,6 +222,7 @@ func parseTaskDefinitions(t *testing.T, mise string) map[string]taskDefinition {
 	require.NotEmpty(t, headers)
 	definitions := make(map[string]taskDefinition, len(headers))
 	dependsPattern := regexp.MustCompile(`(?ms)^depends = \[(.*?)\]`)
+	commandPattern := regexp.MustCompile(`(?m)^run = ("(?:[^"\\]|\\.)*")$`)
 	for index, header := range headers {
 		var name string
 		if header[2] >= 0 {
@@ -140,12 +239,92 @@ func parseTaskDefinitions(t *testing.T, mise string) map[string]taskDefinition {
 		if depends := dependsPattern.FindStringSubmatch(body); len(depends) == 2 {
 			dependencies = regexpMatches(depends[1], `"([^"]+)"`)
 		}
+		var command string
+		if run := commandPattern.FindStringSubmatch(body); len(run) == 2 {
+			var err error
+			command, err = strconv.Unquote(run[1])
+			require.NoError(t, err, "mise task %q has an invalid quoted run command", name)
+		}
 		definitions[name] = taskDefinition{
 			dependencies: dependencies,
+			command:      command,
 			executable:   regexp.MustCompile(`(?m)^run =`).MatchString(body),
 		}
 	}
 	return definitions
+}
+
+func parseWorkflowDefinition(t *testing.T, content string) workflowDefinition {
+	t.Helper()
+	var workflow workflowDefinition
+	require.NoError(t, yaml.Unmarshal([]byte(content), &workflow), "workflow must be valid YAML")
+	require.NotEmpty(t, workflow.Jobs, "workflow must define jobs")
+	return workflow
+}
+
+func workflowNeeds(t *testing.T, node yaml.Node) []string {
+	t.Helper()
+	switch node.Kind {
+	case yaml.ScalarNode:
+		require.NotEmpty(t, node.Value, "workflow job needs must not be empty")
+		return []string{node.Value}
+	case yaml.SequenceNode:
+		needs := make([]string, 0, len(node.Content))
+		for _, dependency := range node.Content {
+			require.Equal(t, yaml.ScalarNode, dependency.Kind, "workflow job needs entries must be job names")
+			require.NotEmpty(t, dependency.Value, "workflow job needs entries must not be empty")
+			needs = append(needs, dependency.Value)
+		}
+		return needs
+	case yaml.DocumentNode, yaml.MappingNode, yaml.AliasNode:
+		require.Failf(t, "workflow job needs must be a job name or list", "unexpected YAML node kind %d", node.Kind)
+		return nil
+	default:
+		require.Failf(t, "workflow job needs must be present", "unexpected YAML node kind %d", node.Kind)
+		return nil
+	}
+}
+
+func requireTaggedGoTest(t *testing.T, directory, tag, testName string) {
+	t.Helper()
+	paths, err := filepath.Glob(filepath.Join("..", directory, "*_test.go"))
+	require.NoError(t, err)
+	require.NotEmpty(t, paths, "%s must contain Go test files", directory)
+
+	var matchingFiles []string
+	for _, path := range paths {
+		parsed, parseErr := parser.ParseFile(token.NewFileSet(), path, nil, parser.ParseComments)
+		require.NoError(t, parseErr, "parse %s", path)
+		containsTest := false
+		for _, declaration := range parsed.Decls {
+			function, ok := declaration.(*ast.FuncDecl)
+			if ok && function.Recv == nil && function.Name.Name == testName {
+				containsTest = true
+				break
+			}
+		}
+		if !containsTest {
+			continue
+		}
+
+		matchingFiles = append(matchingFiles, path)
+		var buildExpression constraint.Expr
+		for _, commentGroup := range parsed.Comments {
+			if commentGroup.Pos() > parsed.Package {
+				break
+			}
+			for _, comment := range commentGroup.List {
+				if !strings.HasPrefix(comment.Text, "//go:build ") {
+					continue
+				}
+				buildExpression, err = constraint.Parse(comment.Text)
+				require.NoError(t, err, "%s has an invalid Go build constraint", path)
+			}
+		}
+		require.NotNil(t, buildExpression, "%s must place %s in a tagged suite", path, testName)
+		assert.Equal(t, tag, buildExpression.String(), "%s must place %s in the %s suite", path, testName, tag)
+	}
+	require.Len(t, matchingFiles, 1, "%s must contain exactly one declaration of %s; matches: %v", directory, testName, matchingFiles)
 }
 
 func executableTaskClosure(t *testing.T, tasks map[string]taskDefinition, roots []string) []string {
