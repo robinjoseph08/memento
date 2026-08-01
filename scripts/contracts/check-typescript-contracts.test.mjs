@@ -16,12 +16,24 @@ test("reports stable response, request, and direct fetch diagnostics", () => {
   assert.deepEqual(
     checkTypeScriptContracts(fixtureRoot, { include: ["app/reject.ts"] }),
     [
-      "app/reject.ts:10:9 [response-contract]: apiJSON must declare one response type from app/types/generated",
+      "app/reject.ts:10:9 [response-contract]: apiJSON must declare one response type from a configured Tygo output",
       "app/reject.ts:16:26 [request-contract]: shared API request payload must have generated-type provenance",
       "app/reject.ts:21:9 [direct-fetch]: global fetch is only allowed in app/api.ts",
       "app/reject.ts:22:9 [direct-fetch]: global fetch is only allowed in app/api.ts",
       "app/reject.ts:28:26 [request-contract]: shared API request payload must have generated-type provenance",
-      "app/reject.ts:9:17 [response-contract]: apiJSON response type LocalResponse must be declared in app/types/generated",
+      "app/reject.ts:9:17 [response-contract]: apiJSON response type LocalResponse must be declared in a configured Tygo output",
+    ],
+  );
+});
+
+test("accepts generated provenance only from exact tygo output files", () => {
+  assert.deepEqual(
+    checkTypeScriptContracts(fixtureRoot, {
+      include: ["app/provenance-reject.ts"],
+    }),
+    [
+      "app/provenance-reject.ts:11:26 [request-contract]: shared API request payload must have generated-type provenance",
+      "app/provenance-reject.ts:8:17 [response-contract]: apiJSON response type HandwrittenResponse must be declared in a configured Tygo output",
     ],
   );
 });
@@ -37,7 +49,8 @@ test("rejects shared API aliases, destructuring, bind/call/apply, parameters, re
       "app/indirection-reject.ts:12:23 [shared-api-indirection]: apiResponse must be called directly and cannot be stored, passed, returned, rebound, or wrapped",
       "app/indirection-reject.ts:14:38 [shared-api-indirection]: apiJSON must be called directly and cannot be stored, passed, returned, rebound, or wrapped",
       "app/indirection-reject.ts:19:10 [shared-api-indirection]: apiResponse must be called directly and cannot be stored, passed, returned, rebound, or wrapped",
-      "app/indirection-reject.ts:23:18 [response-contract]: apiJSON response type T must be declared in app/types/generated",
+      "app/indirection-reject.ts:1:8 [shared-api-namespace]: namespace imports from app/api.ts are forbidden; import its functions by name",
+      "app/indirection-reject.ts:23:18 [response-contract]: apiJSON response type T must be declared in a configured Tygo output",
       "app/indirection-reject.ts:27:9 [shared-api-indirection]: apiJSON must be called directly and cannot be stored, passed, returned, rebound, or wrapped",
       "app/indirection-reject.ts:31:9 [shared-api-indirection]: apiJSON must be called directly and cannot be stored, passed, returned, rebound, or wrapped",
       "app/indirection-reject.ts:32:9 [shared-api-indirection]: apiNoContent must be called directly and cannot be stored, passed, returned, rebound, or wrapped",
@@ -59,8 +72,33 @@ test("rejects computed protected API and global fetch access", () => {
       "app/computed-reject.ts:15:9 [direct-fetch]: global fetch is only allowed in app/api.ts",
       "app/computed-reject.ts:16:25 [direct-fetch]: global fetch is only allowed in app/api.ts",
       "app/computed-reject.ts:18:25 [direct-fetch]: global fetch is only allowed in app/api.ts",
+      "app/computed-reject.ts:1:8 [shared-api-namespace]: namespace imports from app/api.ts are forbidden; import its functions by name",
       "app/computed-reject.ts:20:9 [shared-api-indirection]: apiJSON must be called directly and cannot be stored, passed, returned, rebound, or wrapped; element access is forbidden",
       "app/computed-reject.ts:21:22 [direct-fetch]: global fetch is only allowed in app/api.ts",
+    ],
+  );
+});
+
+test("rejects app/api.ts namespace imports before unknown and assertion erasure", () => {
+  assert.deepEqual(
+    checkTypeScriptContracts(fixtureRoot, {
+      include: ["app/namespace-reject.ts"],
+    }),
+    [
+      "app/namespace-reject.ts:1:8 [shared-api-namespace]: namespace imports from app/api.ts are forbidden; import its functions by name",
+    ],
+  );
+});
+
+test("rejects DOM Response JSON decoding outside app/api.ts", () => {
+  assert.deepEqual(
+    checkTypeScriptContracts(fixtureRoot, {
+      include: ["app/response-json-reject.ts"],
+    }),
+    [
+      "app/response-json-reject.ts:12:9 [response-json]: decode JSON HTTP responses with apiJSON instead of Response.json()",
+      "app/response-json-reject.ts:13:9 [response-json]: decode JSON HTTP responses with apiJSON instead of Response.json()",
+      "app/response-json-reject.ts:15:9 [response-json]: decode JSON HTTP responses with apiJSON instead of Response.json()",
     ],
   );
 });

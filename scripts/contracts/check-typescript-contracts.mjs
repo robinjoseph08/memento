@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
@@ -29,7 +30,7 @@ export function checkTypeScriptContracts(repositoryRoot, options = {}) {
   const root = path.resolve(repositoryRoot);
   const appRoot = path.join(root, "app");
   const apiPath = path.join(appRoot, "api.ts");
-  const generatedRoot = path.join(appRoot, "types", "generated");
+  const generatedOutputs = readTygoOutputPaths(root);
   const configPath = findConfig(root);
   const config = ts.readConfigFile(configPath, ts.sys.readFile);
   if (config.error) throw new Error(formatCompilerDiagnostic(config.error));
@@ -61,7 +62,7 @@ export function checkTypeScriptContracts(repositoryRoot, options = {}) {
   const context = {
     apiPath,
     checker,
-    generatedRoot,
+    generatedOutputs,
     sourceFiles,
     unsafeObjectSymbols: collectUnsafeObjectSymbols(
       sourceFiles,
@@ -89,7 +90,28 @@ export function checkTypeScriptContracts(repositoryRoot, options = {}) {
     }
 
     const visit = (node) => {
+      if (
+        ts.isImportDeclaration(node) &&
+        node.importClause?.namedBindings &&
+        ts.isNamespaceImport(node.importClause.namedBindings) &&
+        namespaceImportTargetsAPI(node.importClause.namedBindings, context)
+      ) {
+        report(
+          node.importClause.namedBindings,
+          "shared-api-namespace",
+          "namespace imports from app/api.ts are forbidden; import its functions by name",
+        );
+      }
+
       if (ts.isCallExpression(node) && !isAPIFile) {
+        if (isDOMResponseJSONCall(node, context.checker)) {
+          report(
+            node.expression,
+            "response-json",
+            "decode JSON HTTP responses with apiJSON instead of Response.json()",
+          );
+        }
+
         const sharedName = directSharedAPIName(node.expression, context);
         if (isAllowedDirectSharedCall(node.expression, sharedName)) {
           if (sharedName === "apiJSON") {
@@ -335,7 +357,7 @@ function checkResponseContract(call, report, context) {
     report(
       call.expression,
       "response-contract",
-      "apiJSON must declare one response type from app/types/generated",
+      "apiJSON must declare one response type from a configured Tygo output",
     );
     return;
   }
@@ -345,14 +367,14 @@ function checkResponseContract(call, report, context) {
   if (
     !hasGeneratedDeclaration(
       responseType,
-      context.generatedRoot,
+      context.generatedOutputs,
       context.checker,
     )
   ) {
     report(
       responseTypeNode,
       "response-contract",
-      `apiJSON response type ${context.checker.typeToString(responseType)} must be declared in app/types/generated`,
+      `apiJSON response type ${context.checker.typeToString(responseType)} must be declared in a configured Tygo output`,
     );
   }
 }
@@ -516,7 +538,7 @@ function hasGeneratedProvenance(expression, context, seen, depth) {
   ) {
     return hasGeneratedDeclaration(
       context.checker.getTypeFromTypeNode(expression.type),
-      context.generatedRoot,
+      context.generatedOutputs,
       context.checker,
     );
   }
@@ -524,7 +546,7 @@ function hasGeneratedProvenance(expression, context, seen, depth) {
   if (
     hasGeneratedDeclaration(
       context.checker.getTypeAtLocation(expression),
-      context.generatedRoot,
+      context.generatedOutputs,
       context.checker,
     )
   ) {
@@ -539,7 +561,7 @@ function hasGeneratedProvenance(expression, context, seen, depth) {
         declaration.type &&
         hasGeneratedDeclaration(
           context.checker.getTypeFromTypeNode(declaration.type),
-          context.generatedRoot,
+          context.generatedOutputs,
           context.checker,
         )
       ) {
@@ -561,7 +583,7 @@ function hasGeneratedProvenance(expression, context, seen, depth) {
       signature &&
       hasGeneratedDeclaration(
         context.checker.getReturnTypeOfSignature(signature),
-        context.generatedRoot,
+        context.generatedOutputs,
         context.checker,
       ),
     );
@@ -638,6 +660,70 @@ function collectUnsafeObjectSymbols(sourceFiles, checker, apiPath) {
     }
   }
   return unsafe;
+}
+
+function namespaceImportTargetsAPI(namespaceImport, context) {
+  const symbol = resolveAliasSymbol(
+    context.checker.getSymbolAtLocation(namespaceImport.name),
+    context.checker,
+  );
+  return (symbol?.getDeclarations() ?? []).some(
+    (declaration) =>
+      path.resolve(declaration.getSourceFile().fileName) === context.apiPath,
+  );
+}
+
+function isDOMResponseJSONCall(call, checker) {
+  if (
+    !ts.isPropertyAccessExpression(call.expression) ||
+    call.expression.name.text !== "json"
+  ) {
+    return false;
+  }
+
+  const responseSymbol = checker.resolveName(
+    "Response",
+    call.expression.expression,
+    ts.SymbolFlags.Type,
+    false,
+  );
+  if (!responseSymbol || !isDOMResponseSymbol(responseSymbol)) return false;
+
+  return typeIncludesDOMResponse(
+    checker.getTypeAtLocation(call.expression.expression),
+    checker.getDeclaredTypeOfSymbol(responseSymbol),
+    checker,
+  );
+}
+
+function isDOMResponseSymbol(symbol) {
+  return (symbol.getDeclarations() ?? []).some(
+    (declaration) =>
+      declarationSymbolName(declaration) === "Response" &&
+      /(^|\/)lib\.dom\.d\.ts$/.test(
+        normalizePath(declaration.getSourceFile().fileName),
+      ),
+  );
+}
+
+function typeIncludesDOMResponse(type, responseType, checker) {
+  if (type.isUnion() || type.isIntersection()) {
+    return type.types.some((part) =>
+      typeIncludesDOMResponse(part, responseType, checker),
+    );
+  }
+  if (
+    (type.flags &
+      (ts.TypeFlags.Any |
+        ts.TypeFlags.Unknown |
+        ts.TypeFlags.Never |
+        ts.TypeFlags.Undefined |
+        ts.TypeFlags.Null)) !==
+    0
+  ) {
+    return false;
+  }
+  return checker.isTypeAssignableTo(type, responseType);
 }
 
 function directSharedAPIName(expression, context) {
@@ -915,7 +1001,7 @@ function declarationValue(declaration) {
 
 function hasGeneratedDeclaration(
   type,
-  generatedRoot,
+  generatedOutputs,
   checker,
   seen = new Set(),
 ) {
@@ -929,7 +1015,7 @@ function hasGeneratedDeclaration(
     return (
       relevant.length > 0 &&
       relevant.every((part) =>
-        hasGeneratedDeclaration(part, generatedRoot, checker, new Set(seen)),
+        hasGeneratedDeclaration(part, generatedOutputs, checker, new Set(seen)),
       )
     );
   }
@@ -940,7 +1026,7 @@ function hasGeneratedDeclaration(
   if (
     declarations.length > 0 &&
     declarations.every((declaration) =>
-      isWithin(declaration.getSourceFile().fileName, generatedRoot),
+      generatedOutputs.has(path.resolve(declaration.getSourceFile().fileName)),
     )
   ) {
     return true;
@@ -950,17 +1036,17 @@ function hasGeneratedDeclaration(
       ts.isTypeAliasDeclaration(declaration) &&
       hasGeneratedTypeNode(
         declaration.type,
-        generatedRoot,
+        generatedOutputs,
         checker,
         new Set(seen),
       ),
   );
 }
 
-function hasGeneratedTypeNode(node, generatedRoot, checker, seen) {
+function hasGeneratedTypeNode(node, generatedOutputs, checker, seen) {
   if (ts.isUnionTypeNode(node) || ts.isIntersectionTypeNode(node)) {
     return node.types.every((part) =>
-      hasGeneratedTypeNode(part, generatedRoot, checker, new Set(seen)),
+      hasGeneratedTypeNode(part, generatedOutputs, checker, new Set(seen)),
     );
   }
   const symbol = expressionSymbol(
@@ -973,7 +1059,7 @@ function hasGeneratedTypeNode(node, generatedRoot, checker, seen) {
   if (
     declarations.length > 0 &&
     declarations.every((declaration) =>
-      isWithin(declaration.getSourceFile().fileName, generatedRoot),
+      generatedOutputs.has(path.resolve(declaration.getSourceFile().fileName)),
     )
   ) {
     return true;
@@ -983,7 +1069,7 @@ function hasGeneratedTypeNode(node, generatedRoot, checker, seen) {
       ts.isTypeAliasDeclaration(declaration) &&
       hasGeneratedTypeNode(
         declaration.type,
-        generatedRoot,
+        generatedOutputs,
         checker,
         new Set(seen),
       ),
@@ -1102,6 +1188,51 @@ function mergePayloads(target, source) {
   return target;
 }
 
+function readTygoOutputPaths(root) {
+  const manifestPath = path.join(root, "tygo.yaml");
+  let manifest;
+  try {
+    manifest = readFileSync(manifestPath, "utf8");
+  } catch (error) {
+    throw new Error(`could not read ${manifestPath}: ${error.message}`, {
+      cause: error,
+    });
+  }
+
+  const outputs = new Set();
+  for (const [index, line] of manifest.split(/\r?\n/u).entries()) {
+    if (!/^\s*(?:-\s*)?output_path\s*:/u.test(line)) continue;
+    const match = line.match(
+      /^\s*(?:-\s*)?output_path\s*:\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^']|'')*)'|([^#]*?))\s*(?:#.*)?$/u,
+    );
+    if (!match) {
+      throw new Error(
+        `could not parse output_path in ${manifestPath}:${index + 1}`,
+      );
+    }
+
+    let outputPath;
+    if (match[1] !== undefined) {
+      try {
+        outputPath = JSON.parse(`"${match[1]}"`);
+      } catch {
+        throw new Error(
+          `could not parse output_path in ${manifestPath}:${index + 1}`,
+        );
+      }
+    } else if (match[2] !== undefined) {
+      outputPath = match[2].replaceAll("''", "'");
+    } else {
+      outputPath = match[3].trim();
+    }
+    if (!outputPath) {
+      throw new Error(`empty output_path in ${manifestPath}:${index + 1}`);
+    }
+    outputs.add(path.resolve(root, outputPath));
+  }
+  return outputs;
+}
+
 function findConfig(root) {
   for (const name of ["tsconfig.app.json", "tsconfig.json"]) {
     const candidate = path.join(root, name);
@@ -1120,18 +1251,6 @@ function isProductionAppSource(sourceFile, appRoot, included) {
   return (
     included === undefined ||
     included.has(normalizePath(path.join("app", relative)))
-  );
-}
-
-function isWithin(filename, directory) {
-  const relative = path.relative(
-    path.resolve(directory),
-    path.resolve(filename),
-  );
-  return (
-    relative !== ".." &&
-    !relative.startsWith(`..${path.sep}`) &&
-    !path.isAbsolute(relative)
   );
 }
 
