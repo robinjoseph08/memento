@@ -4,6 +4,8 @@ test("@desktop @mobile Public-computer Session disables push and keeps privacy a
   page,
 }) => {
   let signedIn = false;
+  let sessionGeneration = 0;
+  const peopleSearches: unknown[] = [];
   await page.route("**/api/**", async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
@@ -21,7 +23,7 @@ test("@desktop @mobile Public-computer Session disables push and keeps privacy a
               json: {
                 display_name: "Alex",
                 session_type: "public",
-                csrf_token: "c".repeat(64),
+                csrf_token: (sessionGeneration === 1 ? "c" : "d").repeat(64),
                 curator: false,
                 onboarding_required: false,
               },
@@ -39,7 +41,13 @@ test("@desktop @mobile Public-computer Session disables push and keeps privacy a
     }
     if (path === "/api/auth/sign-in/verify") {
       signedIn = true;
+      sessionGeneration++;
       await route.fulfill({ json: { status: "signed_in" } });
+      return;
+    }
+    if (path === "/api/session/logout") {
+      signedIn = false;
+      await route.fulfill({ status: 204, body: "" });
       return;
     }
     if (path === "/api/sessions") {
@@ -75,8 +83,9 @@ test("@desktop @mobile Public-computer Session disables push and keeps privacy a
       });
       return;
     }
-    if (path === "/api/me/people") {
-      await route.fulfill({ json: { people: [] } });
+    if (path === "/api/me/people/search") {
+      peopleSearches.push(request.postDataJSON());
+      await route.fulfill({ json: { people: [], next_cursor: null } });
       return;
     }
     await route.fulfill({ status: 500, json: { error: { message: path } } });
@@ -104,6 +113,39 @@ test("@desktop @mobile Public-computer Session disables push and keeps privacy a
   ).toBeVisible();
   await expect(page.getByText("Push unavailable")).toBeVisible();
   await expect(page.getByText(/created .* last active/)).toBeVisible();
+
+  const privateSearch = page.getByRole("searchbox", {
+    name: "Search People available for your Interest list",
+  });
+  await privateSearch.fill("private query");
+  await privateSearch.press("Enter");
+  await expect.poll(() => peopleSearches.length).toBeGreaterThanOrEqual(2);
+  await page.getByRole("button", { name: "Sign out", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "Sign in to Memento" }),
+  ).toBeVisible();
+  const searchesAfterSignOut = peopleSearches.length;
+
+  await page.getByLabel("Login email").fill("alex@example.com");
+  await page.getByRole("button", { name: "Send sign-in code" }).click();
+  await page.getByLabel("Sign-in code").fill("12345678");
+  await page
+    .getByRole("radio", { name: /Public computer, browser-session/ })
+    .check();
+  await page.getByRole("button", { name: "Verify and sign in" }).click();
+
+  await expect(page.getByLabel("Account for Alex")).toBeVisible();
+  await expect(privateSearch).toHaveCount(0);
+  await expect(page.locator('input[value="private query"]')).toHaveCount(0);
+  expect(peopleSearches).toHaveLength(searchesAfterSignOut);
+  await page.getByLabel("Account for Alex").click();
+  const reopenedSearch = page.getByRole("searchbox", {
+    name: "Search People available for your Interest list",
+  });
+  await expect(reopenedSearch).toHaveValue("");
+  await expect
+    .poll(() => peopleSearches.length)
+    .toBeGreaterThan(searchesAfterSignOut);
 });
 
 test("@desktop @mobile Curator recovery and Recipient lifecycle keep generation actions current", async ({

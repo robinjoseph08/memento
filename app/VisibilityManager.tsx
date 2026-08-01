@@ -1,7 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 
 import { apiJSON, apiNoContent } from "./api";
+import { isIdentityGenerationActive } from "./hooks/queries/sessions";
+import { useRecipientPeopleSearch } from "./hooks/queries/visibility";
 import type {
   ListResponse as PeopleListResponse,
   Person as CuratorPerson,
@@ -75,22 +77,22 @@ function historyPageURL(path: string, cursor: string) {
 function InterestChoice({
   person,
   entry,
-  currentlyDiscoverable,
+  listedInCurrentSearch,
   pending,
   onChange,
 }: {
   person: Person;
   entry?: InterestListResponse["entries"][number];
-  currentlyDiscoverable: boolean;
+  listedInCurrentSearch: boolean;
   pending: boolean;
   onChange: (selected: boolean) => void;
 }) {
   const active = entry?.state === "active";
   const inactive = entry?.state === "ineligible";
   const status = inactive
-    ? currentlyDiscoverable
+    ? listedInCurrentSearch
       ? "Inactive after visibility loss. Select again to restore."
-      : "Inactive because this Person is no longer discoverable."
+      : "Inactive after visibility loss. Select again to check current availability."
     : active
       ? "Selected explicitly"
       : "Not selected";
@@ -99,7 +101,7 @@ function InterestChoice({
       <input
         aria-label={person.display_name}
         checked={active}
-        disabled={pending || (inactive && !currentlyDiscoverable)}
+        disabled={pending}
         onChange={(event) => onChange(event.target.checked)}
         type="checkbox"
       />
@@ -178,26 +180,52 @@ export function RecipientVisibilityManager({
   onSignOut: () => void;
 }) {
   const queryClient = useQueryClient();
+  const identityGeneration = session.csrf_token;
+  const interestQueryKey = [
+    "recipient-interest-list",
+    identityGeneration,
+  ] as const;
+  const [searchDraft, setSearchDraft] = useState("");
+  const [submittedSearch, setSubmittedSearch] = useState("");
+  const activeMount = useRef(false);
   const interest = useQuery({
-    queryKey: ["recipient-interest-list"],
-    queryFn: () => apiJSON<InterestListResponse>("/api/me/interest-list"),
+    queryKey: interestQueryKey,
+    queryFn: ({ signal }) =>
+      apiJSON<InterestListResponse>("/api/me/interest-list", { signal }),
   });
-  const discoverable = useQuery({
-    queryKey: ["recipient-discoverable"],
-    queryFn: () => discoverAll("/api/me/people"),
-  });
+  const discoverable = useRecipientPeopleSearch(
+    identityGeneration,
+    submittedSearch,
+  );
+  useEffect(() => {
+    activeMount.current = true;
+    return () => {
+      activeMount.current = false;
+      queryClient.removeQueries({
+        queryKey: ["recipient-people-search", identityGeneration],
+      });
+      queryClient.removeQueries({
+        queryKey: ["recipient-interest-list", identityGeneration],
+      });
+    };
+  }, [identityGeneration, queryClient]);
+  const directoryPeople = useMemo(() => {
+    const people = new Map<string, Person>();
+    for (const page of discoverable.data?.pages ?? []) {
+      for (const person of page.people) people.set(person.id, person);
+    }
+    return [...people.values()];
+  }, [discoverable.data?.pages]);
   const choices = useMemo(() => {
     const people = new Map<string, Person>();
-    for (const person of discoverable.data?.people ?? []) {
-      people.set(person.id, person);
-    }
+    for (const person of directoryPeople) people.set(person.id, person);
     for (const entry of interest.data?.entries ?? []) {
       if (!people.has(entry.person.id)) {
         people.set(entry.person.id, entry.person);
       }
     }
     return [...people.values()].sort(byName);
-  }, [discoverable.data?.people, interest.data?.entries]);
+  }, [directoryPeople, interest.data?.entries]);
   const mutateInterest = useMutation({
     mutationFn: ({ person, selected }: { person: Person; selected: boolean }) =>
       apiJSON<InterestListResponse>(`/api/me/interest-list/${person.id}`, {
@@ -209,7 +237,12 @@ export function RecipientVisibilityManager({
         } satisfies InterestMutationRequest),
       }),
     onSuccess: (response) => {
-      queryClient.setQueryData(["recipient-interest-list"], response);
+      if (
+        !activeMount.current ||
+        !isIdentityGenerationActive(queryClient, identityGeneration)
+      )
+        return;
+      queryClient.setQueryData(interestQueryKey, response);
     },
   });
   const loadHistory = useMutation({
@@ -218,8 +251,13 @@ export function RecipientVisibilityManager({
         historyPageURL("/api/me/interest-list", cursor),
       ),
     onSuccess: (page) => {
+      if (
+        !activeMount.current ||
+        !isIdentityGenerationActive(queryClient, identityGeneration)
+      )
+        return;
       queryClient.setQueryData<InterestListResponse>(
-        ["recipient-interest-list"],
+        interestQueryKey,
         (current) =>
           current
             ? {
@@ -275,11 +313,60 @@ export function RecipientVisibilityManager({
           signOut.error
         }
       />
+      <form
+        className="interest-search"
+        onSubmit={(event) => {
+          event.preventDefault();
+          const nextSearch = searchDraft.trim();
+          if (nextSearch === submittedSearch) {
+            void discoverable.refetch();
+          } else {
+            setSubmittedSearch(nextSearch);
+          }
+        }}
+        role="search"
+      >
+        <label htmlFor="recipient-people-search">
+          Search People available for your Interest list
+        </label>
+        <div className="interest-search-controls">
+          <input
+            autoComplete="off"
+            id="recipient-people-search"
+            maxLength={200}
+            onChange={(event) => setSearchDraft(event.target.value)}
+            type="search"
+            value={searchDraft}
+          />
+          <button disabled={discoverable.isFetching} type="submit">
+            {discoverable.isFetching && !discoverable.isFetchingNextPage
+              ? "Searching…"
+              : "Search"}
+          </button>
+          {submittedSearch ? (
+            <button
+              disabled={discoverable.isFetching}
+              onClick={() => {
+                setSearchDraft("");
+                setSubmittedSearch("");
+              }}
+              type="button"
+            >
+              Clear search
+            </button>
+          ) : null}
+        </div>
+      </form>
       {interest.isPending || discoverable.isPending ? (
-        <p>Loading your private Interest list…</p>
+        <p aria-live="polite">Loading your private Interest list…</p>
       ) : null}
       {interest.isSuccess && discoverable.isSuccess ? (
         <div className="interest-editor">
+          <p aria-live="polite" className="interest-search-status">
+            {directoryPeople.length
+              ? `${directoryPeople.length} People available${submittedSearch ? " for this search" : ""}.`
+              : "No People are available for this search."}
+          </p>
           {choices.length ? (
             <div className="interest-choices">
               {choices.map((person) => {
@@ -288,7 +375,7 @@ export function RecipientVisibilityManager({
                 );
                 return (
                   <InterestChoice
-                    currentlyDiscoverable={discoverable.data.people.some(
+                    listedInCurrentSearch={directoryPeople.some(
                       (candidate) => candidate.id === person.id,
                     )}
                     entry={entry}
@@ -302,9 +389,18 @@ export function RecipientVisibilityManager({
                 );
               })}
             </div>
-          ) : (
-            <p>No People are discoverable through shared circles.</p>
-          )}
+          ) : null}
+          {discoverable.hasNextPage ? (
+            <button
+              disabled={discoverable.isFetchingNextPage}
+              onClick={() => void discoverable.fetchNextPage()}
+              type="button"
+            >
+              {discoverable.isFetchingNextPage
+                ? "Loading more People…"
+                : "Load more People"}
+            </button>
+          ) : null}
           <InterestHistory
             interest={interest.data}
             onLoadMore={(cursor) => loadHistory.mutate(cursor)}
@@ -769,7 +865,7 @@ export function VisibilityManager({ session }: { session: SessionResponse }) {
                 <div className="interest-choices">
                   {interestChoices.map((person) => (
                     <InterestChoice
-                      currentlyDiscoverable={discoverable.data.people.some(
+                      listedInCurrentSearch={discoverable.data.people.some(
                         (choice) => choice.id === person.id,
                       )}
                       entry={interestEntry(person.id)}

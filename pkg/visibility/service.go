@@ -2,6 +2,7 @@
 package visibility
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
@@ -9,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -95,6 +97,25 @@ type DiscoveryPageRequest struct {
 type discoveryCursor struct {
 	SortKey string    `json:"sort_key"`
 	ID      uuid.UUID `json:"id"`
+}
+
+// PeopleSearchRequest keeps private directory text and pagination in a POST body.
+type PeopleSearchRequest struct {
+	Query  string `json:"query,omitempty"`
+	Cursor string `json:"cursor,omitempty"`
+	Limit  int    `json:"limit,omitempty"`
+}
+
+// PeopleSearchResponse contains one authorized page without totals or private structure.
+type PeopleSearchResponse struct {
+	People     []Person `json:"people"`
+	NextCursor *string  `json:"next_cursor" tstype:"string | null,required"`
+}
+
+type peopleSearchCursor struct {
+	SortKey string    `json:"sort_key"`
+	ID      uuid.UUID `json:"id"`
+	Scope   string    `json:"scope"`
 }
 
 // InterestEntry is one retained choice and its current eligibility.
@@ -503,6 +524,186 @@ func encodeDiscoveryCursor(cursor discoveryCursor) (string, error) {
 		return "", err
 	}
 	return base64.RawURLEncoding.EncodeToString(encoded), nil
+}
+
+func normalizePeopleSearchRequest(request PeopleSearchRequest) (PeopleSearchRequest, error) {
+	request.Query = strings.TrimSpace(request.Query)
+	if !utf8.ValidString(request.Query) || strings.ContainsRune(request.Query, '\x00') || utf8.RuneCountInString(request.Query) > 200 {
+		return PeopleSearchRequest{}, ErrInvalid
+	}
+	if len(request.Cursor) > 2048 {
+		return PeopleSearchRequest{}, ErrInvalidCursor
+	}
+	if request.Limit == 0 {
+		request.Limit = 25
+	}
+	if request.Limit < 1 || request.Limit > 50 {
+		return PeopleSearchRequest{}, ErrInvalid
+	}
+	return request, nil
+}
+
+func requireCurrentInterestSession(ctx context.Context, db bun.IDB, actor setup.SessionActor) error {
+	var current bool
+	if err := db.NewRaw(`SELECT EXISTS (
+		SELECT 1 FROM sessions AS session
+		JOIN people AS person ON person.id = session.person_id AND person.archived_at IS NULL AND person.merged_at IS NULL
+		JOIN person_roles AS role ON role.person_id = person.id AND role.role = 'recipient'
+		JOIN recipient_access_generations AS access ON access.id = session.recipient_access_generation_id
+		 AND access.person_id = session.person_id AND access.is_current AND access.state IN ('completed', 'onboarding')
+		JOIN system_settings AS settings ON settings.id = 1 AND settings.setup_complete AND NOT settings.recovery_hold
+		 AND settings.security_epoch = session.security_epoch
+		WHERE session.id = ? AND session.person_id = ? AND session.recipient_access_generation_id = ?
+		 AND session.revoked_at IS NULL
+		 AND ((session.session_type = 'trusted' AND session.idle_expires_at > now())
+		   OR (session.session_type = 'public' AND session.absolute_expires_at > now()))
+	)`, actor.SessionID, actor.PersonID, actor.AccessID).Scan(ctx, &current); err != nil {
+		return err
+	}
+	if !current {
+		return ErrNotAuthorized
+	}
+	return nil
+}
+
+func escapeLike(value string) string {
+	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(value)
+}
+
+func peopleSearchScope(actorID uuid.UUID, normalizedQuery string) string {
+	digest := sha256.Sum256([]byte("memento:recipient-people-search:v1\x00" + actorID.String() + "\x00" + normalizedQuery))
+	return hex.EncodeToString(digest[:])
+}
+
+func decodePeopleSearchCursor(value, scope string) (peopleSearchCursor, bool, error) {
+	if value == "" {
+		return peopleSearchCursor{}, false, nil
+	}
+	encoded, err := base64.RawURLEncoding.DecodeString(value)
+	if err != nil {
+		return peopleSearchCursor{}, false, ErrInvalidCursor
+	}
+	decoder := json.NewDecoder(bytes.NewReader(encoded))
+	decoder.DisallowUnknownFields()
+	var cursor peopleSearchCursor
+	if err := decoder.Decode(&cursor); err != nil || cursor.SortKey == "" || cursor.ID == uuid.Nil || cursor.Scope != scope {
+		return peopleSearchCursor{}, false, ErrInvalidCursor
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return peopleSearchCursor{}, false, ErrInvalidCursor
+	}
+	return cursor, true, nil
+}
+
+func encodePeopleSearchCursor(cursor peopleSearchCursor) (string, error) {
+	encoded, err := json.Marshal(cursor)
+	if err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(encoded), nil
+}
+
+// SearchPeople returns one stable page from the actor's current direct shared-circle union.
+func (s *Service) SearchPeople(ctx context.Context, actor setup.SessionActor, input PeopleSearchRequest) (PeopleSearchResponse, error) {
+	type searchRow struct {
+		personRow
+		SortKey string
+	}
+	response := PeopleSearchResponse{People: []Person{}}
+	rows := make([]searchRow, 0)
+	err := s.db.RunInTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true}, func(ctx context.Context, tx bun.Tx) error {
+		if err := requireCurrentInterestSession(ctx, tx, actor); err != nil {
+			return err
+		}
+		request, err := normalizePeopleSearchRequest(input)
+		if err != nil {
+			return err
+		}
+		// Use native PostgreSQL parameters so private search text never appears in
+		// Bun query hooks, statement text, or pg_stat_activity.
+		var normalizedQuery string
+		if err := tx.Tx.QueryRowContext(ctx, `SELECT memento_normalize_person_name($1)`, request.Query).Scan(&normalizedQuery); err != nil {
+			return err
+		}
+		scope := peopleSearchScope(actor.PersonID, normalizedQuery)
+		cursor, hasCursor, err := decodePeopleSearchCursor(request.Cursor, scope)
+		if err != nil {
+			return err
+		}
+		pattern := "%" + escapeLike(normalizedQuery) + "%"
+		queryRows, err := tx.Tx.QueryContext(ctx, `WITH authorized_actor AS MATERIALIZED (
+			SELECT session.person_id
+			FROM sessions AS session
+			JOIN people AS actor_person ON actor_person.id = session.person_id AND actor_person.archived_at IS NULL AND actor_person.merged_at IS NULL
+			JOIN person_roles AS role ON role.person_id = actor_person.id AND role.role = 'recipient'
+			JOIN recipient_access_generations AS access ON access.id = session.recipient_access_generation_id
+			 AND access.person_id = session.person_id AND access.is_current AND access.state IN ('completed', 'onboarding')
+			JOIN system_settings AS settings ON settings.id = 1 AND settings.setup_complete AND NOT settings.recovery_hold
+			 AND settings.security_epoch = session.security_epoch
+			WHERE session.id = $1 AND session.person_id = $2 AND session.recipient_access_generation_id = $3
+			 AND session.revoked_at IS NULL
+			 AND ((session.session_type = 'trusted' AND session.idle_expires_at > now())
+			   OR (session.session_type = 'public' AND session.absolute_expires_at > now()))
+		), authorized_person_ids AS MATERIALIZED (
+			SELECT DISTINCT visible_membership.person_id AS id
+			FROM authorized_actor AS actor
+			JOIN visibility_circle_members AS own_membership ON own_membership.person_id = actor.person_id
+			JOIN visibility_circles AS circle ON circle.id = own_membership.circle_id AND circle.archived_at IS NULL
+			JOIN visibility_circle_members AS visible_membership ON visible_membership.circle_id = circle.id
+			WHERE visible_membership.person_id <> actor.person_id
+		)
+		SELECT person.id, person.display_name, person.sort_name,
+		       memento_normalize_person_name(person.sort_name) AS sort_key
+		FROM authorized_person_ids AS authorized
+		JOIN people AS person ON person.id = authorized.id
+		WHERE person.archived_at IS NULL AND person.merged_at IS NULL
+		 AND memento_normalize_person_name(person.display_name || ' ' || person.sort_name) LIKE $4 ESCAPE E'\\'
+		 AND (NOT $5 OR (memento_normalize_person_name(person.sort_name), person.id) > ($6, $7))
+		ORDER BY memento_normalize_person_name(person.sort_name), person.id
+		LIMIT $8`, actor.SessionID, actor.PersonID, actor.AccessID, pattern, hasCursor, cursor.SortKey, cursor.ID, request.Limit+1)
+		if err != nil {
+			return err
+		}
+		defer queryRows.Close()
+		for queryRows.Next() {
+			var row searchRow
+			if err := queryRows.Scan(&row.ID, &row.DisplayName, &row.SortName, &row.SortKey); err != nil {
+				return err
+			}
+			rows = append(rows, row)
+		}
+		if err := queryRows.Err(); err != nil {
+			return err
+		}
+		if len(rows) > request.Limit {
+			last := rows[request.Limit-1]
+			next, err := encodePeopleSearchCursor(peopleSearchCursor{SortKey: last.SortKey, ID: last.ID, Scope: scope})
+			if err != nil {
+				return err
+			}
+			response.NextCursor = &next
+			rows = rows[:request.Limit]
+		}
+		return nil
+	})
+	if err != nil {
+		return PeopleSearchResponse{}, err
+	}
+	if len(rows) == 0 {
+		return response, nil
+	}
+	// Relationship labels are presentation metadata over already-authorized rows.
+	// Resolve them after the candidate transaction so a one-connection pool cannot deadlock.
+	annotations, err := s.relationshipAnnotations(ctx, actor.PersonID)
+	if err != nil {
+		return PeopleSearchResponse{}, err
+	}
+	for _, row := range rows {
+		person := row.person()
+		person.Relationship = annotations[row.ID]
+		response.People = append(response.People, person)
+	}
+	return response, nil
 }
 
 func (s *Service) relationshipAnnotations(ctx context.Context, recipientID uuid.UUID) (map[uuid.UUID]*RelationshipAnnotation, error) {

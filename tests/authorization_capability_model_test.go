@@ -33,10 +33,11 @@ const (
 	currentEpoch epochState = "current"
 	staleEpoch   epochState = "stale"
 
-	pendingRecipient   recipientState = "pending"
-	completedRecipient recipientState = "completed"
-	suspendedRecipient recipientState = "suspended"
-	revokedRecipient   recipientState = "revoked"
+	pendingRecipient    recipientState = "pending"
+	onboardingRecipient recipientState = "onboarding"
+	completedRecipient  recipientState = "completed"
+	suspendedRecipient  recipientState = "suspended"
+	revokedRecipient    recipientState = "revoked"
 
 	currentGeneration generationState = "current"
 	staleGeneration   generationState = "stale"
@@ -84,6 +85,7 @@ type matrixSurface string
 const (
 	surfaceLibraryProjection  matrixSurface = "library_pages_order_counts_covers"
 	surfaceEventDetail        matrixSurface = "event_detail"
+	surfacePeopleDirectory    matrixSurface = "people_directory"
 	surfaceSearch             matrixSurface = "search"
 	surfaceNewForYou          matrixSurface = "new_for_you"
 	surfaceThumbnail          matrixSurface = "thumbnail"
@@ -108,7 +110,7 @@ const (
 )
 
 var matrixSurfaces = []matrixSurface{
-	surfaceLibraryProjection, surfaceEventDetail, surfaceSearch, surfaceNewForYou,
+	surfaceLibraryProjection, surfaceEventDetail, surfacePeopleDirectory, surfaceSearch, surfaceNewForYou,
 	surfaceThumbnail, surfacePreview, surfaceVideo, surfaceOriginal,
 	surfaceEventArchive, surfaceSubsetArchive, surfaceArchivePart,
 	surfaceComments, surfaceCommentWrite, surfaceCommentChange,
@@ -122,7 +124,7 @@ func cartesianMatrix(visit func(matrixState)) {
 	for _, sessionType := range []sessionType{trustedSession, publicSession} {
 		for _, sessionValidity := range []sessionValidity{validSession, expiredSession, revokedSession} {
 			for _, epoch := range []epochState{currentEpoch, staleEpoch} {
-				for _, recipientState := range []recipientState{pendingRecipient, completedRecipient, suspendedRecipient, revokedRecipient} {
+				for _, recipientState := range []recipientState{pendingRecipient, onboardingRecipient, completedRecipient, suspendedRecipient, revokedRecipient} {
 					for _, generation := range []generationState{currentGeneration, staleGeneration} {
 						for _, audience := range []audienceState{entitledAudience, unentitledAudience} {
 							for _, placement := range []placementState{singlePlacement, reusedPlacement} {
@@ -185,6 +187,9 @@ func (state matrixState) allows(surface matrixSurface) bool {
 	switch surface {
 	case surfaceLibraryProjection, surfaceSearch, surfaceNewForYou, surfaceFavorites:
 		return state.contentVisible()
+	case surfacePeopleDirectory:
+		interestAccess := state.recipientState == onboardingRecipient || state.recipientState == completedRecipient
+		return state.sessionUsable() && interestAccess && state.generation == currentGeneration && state.identifierAttempt == authorizedIdentifier
 	case surfaceEventDetail, surfaceComments, surfaceCommentWrite, surfaceFavoriteWrite:
 		return state.resourceVisible()
 	case surfaceCommentChange:
@@ -256,7 +261,7 @@ func TestAuthorizationCapabilityMatrixCoversEveryCombination(t *testing.T) {
 		}
 	})
 
-	require.Equal(t, 124416, cases)
+	require.Equal(t, 155520, cases)
 	for _, surface := range matrixSurfaces {
 		assert.Positivef(t, allowCounts[surface], "%s must have an allowed state", surface)
 		assert.Positivef(t, denyCounts[surface], "%s must have a denied state", surface)
@@ -288,7 +293,7 @@ func FuzzAuthorizationTransitions(f *testing.F) {
 			case 2:
 				state.epoch = []epochState{currentEpoch, staleEpoch}[(transition/13)%2]
 			case 3:
-				state.recipientState = []recipientState{pendingRecipient, completedRecipient, suspendedRecipient, revokedRecipient}[(transition/13)%4]
+				state.recipientState = []recipientState{pendingRecipient, onboardingRecipient, completedRecipient, suspendedRecipient, revokedRecipient}[(transition/13)%5]
 			case 4:
 				state.generation = []generationState{currentGeneration, staleGeneration}[(transition/13)%2]
 			case 5:

@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -10,6 +11,7 @@ import { BrowserRouter } from "react-router-dom";
 import { afterEach, expect, test, vi } from "vitest";
 
 import { App } from "./App";
+import { CURRENT_SESSION_QUERY_KEY } from "./hooks/queries/sessions";
 import { PWA_UPDATE_EVENT } from "./pwa";
 import { problemResponse } from "./test/problem";
 
@@ -1183,6 +1185,7 @@ test("clears protected data and Session after an authenticated mutation returns 
   );
 
   const { client } = renderApp();
+  fireEvent.click(await screen.findByLabelText("Account for Recipient"));
   await screen.findByRole("button", { name: "Sign out" });
   client.setQueryData(["protected-marker", csrfToken], {
     title: "private content",
@@ -1489,8 +1492,8 @@ test("routes a non-Curator Session to the Recipient library and self-service too
           }),
         );
       }
-      if (path.startsWith("/api/me/people?")) {
-        return Promise.resolve(jsonResponse({ people: [] }));
+      if (path === "/api/me/people/search") {
+        return Promise.resolve(jsonResponse({ people: [], next_cursor: null }));
       }
       if (path === "/api/invitation-suggestions") {
         return Promise.resolve(jsonResponse({ suggestions: [] }));
@@ -1499,7 +1502,7 @@ test("routes a non-Curator Session to the Recipient library and self-service too
     }),
   );
 
-  renderApp();
+  const { client } = renderApp();
   expect(
     await screen.findByRole("heading", { name: "Photos" }),
   ).toBeInTheDocument();
@@ -1516,6 +1519,44 @@ test("routes a non-Curator Session to the Recipient library and self-service too
     requests.some((path) => path.startsWith("/api/visibility-circles?")),
   ).toBe(false);
   expect(requests.some((path) => path.startsWith("/api/sources?"))).toBe(false);
+
+  const initialIdentity = "c".repeat(64);
+  client.setQueryData(["recipient-interest-list", initialIdentity], {
+    recipient: {
+      id: "11111111-1111-4111-8111-111111111111",
+      display_name: "Recipient",
+      sort_name: "Recipient",
+    },
+    version: 0,
+    entries: [],
+    history: [],
+  });
+  const searchesBeforeIdentityChange = requests.filter(
+    (path) => path === "/api/me/people/search",
+  ).length;
+  act(() => {
+    client.setQueryData(CURRENT_SESSION_QUERY_KEY, {
+      display_name: "Next Recipient",
+      session_type: "trusted",
+      csrf_token: "d".repeat(64),
+      curator: false,
+      onboarding_required: false,
+    });
+  });
+  await waitFor(() =>
+    expect(
+      screen.queryByRole("heading", { name: "Your Interest list" }),
+    ).not.toBeInTheDocument(),
+  );
+  expect(
+    requests.filter((path) => path === "/api/me/people/search"),
+  ).toHaveLength(searchesBeforeIdentityChange);
+  expect(
+    screen.getByLabelText("Account for Next Recipient").closest("details"),
+  ).not.toHaveAttribute("open");
+  expect(
+    client.getQueryData(["recipient-interest-list", initialIdentity]),
+  ).toBeUndefined();
 });
 
 test("keeps sign-out available from the draft organization workspace", async () => {

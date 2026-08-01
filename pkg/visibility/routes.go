@@ -30,10 +30,11 @@ type Authorizer interface {
 type Handler struct {
 	service    *Service
 	authorizer Authorizer
+	limiter    *directorySearchLimiter
 }
 
 func NewHandler(service *Service, authorizer Authorizer) *Handler {
-	return &Handler{service: service, authorizer: authorizer}
+	return &Handler{service: service, authorizer: authorizer, limiter: newDirectorySearchLimiter()}
 }
 
 func (h *Handler) authorize(c echo.Context, mutation bool) (setup.SessionActor, error) {
@@ -251,6 +252,30 @@ func (h *Handler) DiscoverSelf(c echo.Context) error {
 	return c.JSON(http.StatusOK, response)
 }
 
+func (h *Handler) SearchPeopleSelf(c echo.Context) error {
+	actor, err := h.authorizeInterest(c, false)
+	if err != nil {
+		return err
+	}
+	var request PeopleSearchRequest
+	if err := bindJSON(c, &request); err != nil {
+		return err
+	}
+	request, err = normalizePeopleSearchRequest(request)
+	if err != nil {
+		return visibilityError(err)
+	}
+	ctx := h.requestContext(c)
+	if !h.limiter.allow(actor.AccessID, setup.RequestMetadataFromContext(ctx).ClientIP) {
+		return errcodes.TooManyRequests("Too many People searches. Try again later.")
+	}
+	response, err := h.service.SearchPeople(ctx, actor, request)
+	if err != nil {
+		return visibilityError(err)
+	}
+	return c.JSON(http.StatusOK, response)
+}
+
 func (h *Handler) InterestListSelf(c echo.Context) error {
 	actor, err := h.authorizeInterest(c, false)
 	if err != nil {
@@ -345,7 +370,7 @@ func visibilityError(err error) error {
 	case errors.Is(err, ErrInvalidCursor):
 		return errcodes.ValidationError("The People or Interest history cursor is invalid. Reload and try again.")
 	case errors.Is(err, ErrInvalid):
-		return errcodes.ValidationError("Enter valid Visibility fields and a current version.")
+		return errcodes.ValidationError("Enter valid Visibility fields, search input, and a current version.")
 	default:
 		return err
 	}
@@ -391,6 +416,8 @@ func RegisterRoutes(e *echo.Echo, handler *Handler) {
 	me := e.Group("/api/me", noStore)
 	discoverSelf := me.GET("/people", handler.DiscoverSelf)
 	discoverSelf.Name = recipientDiscoveryPolicy
+	searchSelf := me.POST("/people/search", handler.SearchPeopleSelf)
+	searchSelf.Name = recipientDiscoveryPolicy
 	listSelf := me.GET("/interest-list", handler.InterestListSelf)
 	listSelf.Name = recipientInterestPolicy
 	mutateSelf := me.PUT("/interest-list/:person_id", handler.MutateInterestSelf)

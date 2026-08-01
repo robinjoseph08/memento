@@ -50,8 +50,8 @@ async function routeRecipientAPI(page: Page) {
           history: [],
         },
       });
-    } else if (path === "/api/me/people") {
-      await route.fulfill({ json: { people: [] } });
+    } else if (path === "/api/me/people/search") {
+      await route.fulfill({ json: { people: [], next_cursor: null } });
     } else {
       await route.fulfill({ status: 404, json: { error: { message: path } } });
     }
