@@ -1,10 +1,10 @@
 # Target-scale performance report
 
-Generated: `2026-07-30T17:15:16Z`  
-Qualifying: `true`  
-Git revision: `35192e3f2cb2952db5b020232cdc0bdf61844800` (dirty: `false`)  
-Cache state: `warm`  
-PostgreSQL: `PostgreSQL 17.7 on aarch64-unknown-linux-musl, compiled by gcc (Alpine 15.2.0) 15.2.0, 64-bit`
+- Generated: `2026-08-01T05:11:15Z`
+- Qualifying: `true`
+- Git revision: `a19a4c1300535677949e6a08600a914aa7f6531c` (dirty: `false`)
+- Cache state: `warm`
+- PostgreSQL: `PostgreSQL 17.7 on aarch64-unknown-linux-musl, compiled by gcc (Alpine 15.2.0) 15.2.0, 64-bit`
 
 ## Fixture
 
@@ -14,34 +14,35 @@ PostgreSQL: `PostgreSQL 17.7 on aarch64-unknown-linux-musl, compiled by gcc (Alp
 
 | Operation | p95 | Target | Result | Scenario | Concurrency | Immich latency |
 | --- | ---: | ---: | --- | --- | ---: | ---: |
-| Liveness response | 8.458µs | 50ms | PASS | steady | 1 | 0s |
-| Readiness response with healthy dependencies | 1.236209ms | 500ms | PASS | steady | 1 | 0s |
-| Session validation plus simple authorization | 1.903542ms | 50ms | PASS | steady | 1 | 0s |
-| Recipient timeline or Event page, up to 100 items | 8.19325ms | 300ms | PASS | steady | 1 | 0s |
-| Curator work queue or People list | 3.660833ms | 300ms | PASS | steady | 1 | 0s |
-| Authorized search first page | 43.058666ms | 500ms | PASS | steady | 1 | 0s |
-| Comment, Favorite, preference, or seen-state mutation | 4.080083ms | 300ms | PASS | steady | 1 | 0s |
-| Atomic Publication with 5,000 placements and 50 Recipients | 1.53153975s | 3s | PASS | steady | 1 | 0s |
-| Audience proposal recalculation for 50 Recipients and 500 Moment items | 451.703792ms | 1s | PASS | steady | 1 | 0s |
-| Eligible job start after available_at | 3.389791ms | 1m0s | PASS | steady | 1 | 0s |
-| Notification dispatch start after coalescing closes | 4.925ms | 2m0s | PASS | steady | 1 | 0s |
-| Full 100,000-item reconciliation | 11.767442708s | 30m0s | PASS | steady | 1 | 0s |
-| Media proxy first-byte application overhead | 18.137251ms | 150ms | PASS | steady | 1 | 5ms |
+| Liveness response | 3.208µs | 50ms | PASS | steady | 1 | 0s |
+| Readiness response with healthy dependencies | 1.098208ms | 500ms | PASS | steady | 1 | 0s |
+| Session validation plus simple authorization | 1.765042ms | 50ms | PASS | steady | 1 | 0s |
+| Recipient timeline or Event page, up to 100 items | 9.610375ms | 300ms | PASS | steady | 1 | 0s |
+| Curator work queue or People list | 3.491208ms | 300ms | PASS | steady | 1 | 0s |
+| Authorized search first page | 45.54325ms | 500ms | PASS | steady | 1 | 0s |
+| Comment, Favorite, preference, or seen-state mutation | 4.059083ms | 300ms | PASS | steady | 1 | 0s |
+| Atomic Publication with 5,000 placements and 50 Recipients | 2.160399416s | 3s | PASS | steady | 1 | 0s |
+| Audience proposal recalculation for 50 Recipients and 500 Moment items | 900.324667ms | 1s | PASS | steady | 1 | 0s |
+| Eligible job start after available_at | 13.693667ms | 1m0s | PASS | steady | 1 | 0s |
+| Notification dispatch start after coalescing closes | 50.216ms | 2m0s | PASS | steady | 1 | 0s |
+| Full 100,000-item reconciliation | 10.808990917s | 30m0s | PASS | steady | 1 | 0s |
+| Media proxy first-byte application overhead | 18.045625ms | 150ms | PASS | steady | 1 | 5ms |
 | Application buffer bytes per active Media stream | 32768 B | 1048576 B | PASS | steady | 32 | 0s |
 
 ## Competing work
 
 | Operation | p95 | Competitor | Concurrency |
 | --- | ---: | --- | ---: |
-| Recipient timeline or Event page, up to 100 items | 9.499208ms | reconciliation | 2 |
-| Recipient timeline or Event page, up to 100 items | 10.683833ms | publication | 2 |
-| Authorized search first page | 53.447167ms | notification dispatch | 2 |
+| Recipient timeline or Event page, up to 100 items | 11.210375ms | reconciliation | 2 |
+| Recipient timeline or Event page, up to 100 items | 12.420416ms | publication | 2 |
+| Authorized search first page | 51.564666ms | notification dispatch | 2 |
 
 ## PostgreSQL plans and buffers
 
 - `authorization`: warm cache, role `Session authorization`; full `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)` is in the JSON artifact.
 - `media_authorization`: warm cache, role `Simple Media authorization`; full `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)` is in the JSON artifact.
 - `gallery`: warm cache, role `Recipient timeline`; full `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)` is in the JSON artifact.
+- `chronology`: warm cache, role `Complete authorized Recipient chronology`; full `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)` is in the JSON artifact.
 - `search`: warm cache, role `Authorized search`; full `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)` is in the JSON artifact.
 - `curator`: warm cache, role `Curator People list`; full `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)` is in the JSON artifact.
 
@@ -51,5 +52,5 @@ PostgreSQL: `PostgreSQL 17.7 on aarch64-unknown-linux-musl, compiled by gcc (Alp
 - CPU: `Apple M3 Pro` (11 logical CPUs)
 - Memory: 38654705664 bytes
 - Go: `go1.26.5`
-- Database size: 573836435 bytes
+- Database size: 606637203 bytes
 - Database pool: 16 connections

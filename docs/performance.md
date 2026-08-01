@@ -67,6 +67,6 @@ A reduced run is marked `qualifying: false`; report validation enforces the defa
 
 ## Interpreting results
 
-The committed [qualifying report](performance-report.md) records the tested host, database version and size, fixture checksum, warm-cache state, injected Immich latency, concurrency, steady-state results, and competing-work results. Its matching [JSON artifact](performance-report.json) includes every sample and `EXPLAIN (ANALYZE, BUFFERS, SETTINGS, FORMAT JSON)` output for representative authorization, gallery, search, and Curator queries.
+The committed [qualifying report](performance-report.md) records the tested host, database version and size, fixture checksum, warm-cache state, injected Immich latency, concurrency, steady-state results, and competing-work results. Its matching [JSON artifact](performance-report.json) includes every sample and `EXPLAIN (ANALYZE, BUFFERS, SETTINGS, FORMAT JSON)` output for representative authorization, gallery, complete Recipient chronology, search, and Curator queries.
 
 Results are evidence for the recorded environment, not a claim about Immich storage throughput or arbitrary operators' hardware. Re-run the suite after query, index, PostgreSQL, Go, or target-scale fixture changes.
