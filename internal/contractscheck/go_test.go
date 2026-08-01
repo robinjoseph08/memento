@@ -77,6 +77,38 @@ func TestCheckGoContractsRejectsNestedMementoContractShapes(t *testing.T) {
 	}, diagnostics)
 }
 
+func TestCheckGoContractsTraversesUnexportedAnonymousEmbeddedStructs(t *testing.T) {
+	t.Run("Memento", func(t *testing.T) {
+		diagnostics, err := CheckGo(filepath.Join("testdata", "go"), "./promotionreject")
+		require.NoError(t, err)
+		assert.Equal(t, []string{
+			"promotionreject/promotionreject.go:6:2: response JSON contract graph promotedFields.NestedMap must not contain interface",
+			"promotionreject/promotionreject.go:7:2: response JSON contract graph promotedFields.NestedInterface must not contain interface",
+			"promotionreject/promotionreject.go:8:2: response JSON contract graph promotedFields.NestedAnonymous must not contain anonymous struct",
+		}, diagnostics)
+	})
+
+	t.Run("Immich", func(t *testing.T) {
+		diagnostics, err := CheckGo(filepath.Join("testdata", "go"), "./pkg/immich")
+		require.NoError(t, err)
+		for _, expected := range []string{
+			"pkg/immich/promotion.go:11:2: Immich provider DTO promotedProviderFields.Raw must not contain json.RawMessage fields",
+			"pkg/immich/promotion.go:6:2: Immich response JSON contract graph promotedProviderFields.NestedMap must not contain map",
+			"pkg/immich/promotion.go:7:2: Immich response JSON contract graph promotedProviderFields.NestedInterface must not contain interface",
+			"pkg/immich/promotion.go:8:2: Immich response JSON contract graph promotedProviderFields.NestedAnonymous must not contain anonymous struct",
+		} {
+			assert.Contains(t, diagnostics, expected)
+		}
+		for _, diagnostic := range diagnostics {
+			assert.NotContains(t, diagnostic, "ignoredProviderFields")
+			assert.NotContains(t, diagnostic, "promotedProviderFields.hidden")
+			assert.NotContains(t, diagnostic, "promotedProviderFields.Ignored")
+			assert.NotContains(t, diagnostic, "responseWithPromotedFields.hidden")
+			assert.NotContains(t, diagnostic, "responseWithPromotedFields.Ignored")
+		}
+	})
+}
+
 func TestCheckGoContractsRejectsCompatibleLocalEchoInterfaceDispatch(t *testing.T) {
 	diagnostics, err := CheckGo(filepath.Join("testdata", "go"), "./dispatchreject")
 	require.NoError(t, err)

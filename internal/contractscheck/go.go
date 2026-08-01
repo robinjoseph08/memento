@@ -821,14 +821,25 @@ func rawMessageFieldDiagnostics(root string, loaded []*packages.Package, roots [
 }
 
 func isJSONField(field *types.Var, tag string) bool {
-	if !field.Exported() {
-		return false
-	}
 	name := reflect.StructTag(tag).Get("json")
 	if index := strings.IndexByte(name, ','); index >= 0 {
 		name = name[:index]
 	}
-	return name != "-"
+	if name == "-" {
+		return false
+	}
+	if field.Exported() {
+		return true
+	}
+	if !field.Anonymous() {
+		return false
+	}
+	embedded := types.Unalias(field.Type())
+	if pointer, ok := embedded.(*types.Pointer); ok {
+		embedded = types.Unalias(pointer.Elem())
+	}
+	_, isStruct := embedded.Underlying().(*types.Struct)
+	return isStruct
 }
 
 func sourcePosition(loaded []*packages.Package, position token.Pos) token.Position {
