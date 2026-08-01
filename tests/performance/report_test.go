@@ -32,6 +32,17 @@ func TestReportValidationRequiresEveryBaselineAndScaleEvidence(t *testing.T) {
 	require.ErrorContains(t, report.Validate(), `missing baseline metric "stream_buffer"`)
 }
 
+func TestReportValidationRequiresLimitationsAndACleanQualifyingRevision(t *testing.T) {
+	report := completeReport(t)
+	report.Limitations = nil
+	require.ErrorContains(t, report.Validate(), "missing limitations")
+
+	report = completeReport(t)
+	report.Qualifying = true
+	report.Environment.GitDirty = true
+	require.ErrorContains(t, report.Validate(), "qualifying evidence requires a clean Git revision")
+}
+
 func TestQualifyingReportEnforcesSampleMinimums(t *testing.T) {
 	report := completeReport(t)
 	report.Qualifying = true
@@ -102,6 +113,7 @@ func completeReport(t *testing.T) Report {
 		Qualifying:    false,
 		GeneratedAt:   time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC),
 		CacheState:    "warm",
+		Limitations:   []string{"Recorded environment only."},
 		Fixture:       FixtureShape{MediaItems: 100000, Recipients: 50, Events: 21, LargestEventPlacements: 5000, ReusedMediaItems: 1000, AudienceEntries: 250, PublicationRecipients: 50, OverlappingRecipients: 25, ProposalMomentItems: 500, AttendanceRows: 50, Comments: 1000, Favorites: 1000, SearchDocuments: 100000, DeliveryActivity: 50, Checksum: "fixture-v1"},
 		Environment:   Environment{GitRevision: "abc", OS: "linux", Architecture: "amd64", CPU: "test", LogicalCPUs: 4, GoVersion: "go1.26", PostgreSQLVersion: "PostgreSQL 17", DatabasePoolSize: 16},
 		Metrics:       metrics,

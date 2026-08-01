@@ -206,7 +206,15 @@ func TestTargetScalePerformance(t *testing.T) {
 	comparisons := measureCompetingWork(t, ctx, fixture, actor, libraryService, searchService, operationSamples)
 	plans := capturePlans(t, ctx, fixture.db, actor)
 	qualifying := cheapSamples >= 100 && operationSamples >= 20 && publicationSamples >= 20 && streamConcurrency >= 32
-	report := Report{SchemaVersion: 1, Qualifying: qualifying, GeneratedAt: time.Now().UTC(), CacheState: "warm", Fixture: fixture.shape, Environment: readEnvironment(t, ctx, fixture.db), Metrics: metrics, Comparisons: comparisons, Plans: plans}
+	report := Report{
+		SchemaVersion: 1, Qualifying: qualifying, GeneratedAt: time.Now().UTC(), CacheState: "warm",
+		Limitations: []string{
+			"Results characterize this recorded host and warm PostgreSQL cache, not arbitrary operator hardware or Immich storage throughput.",
+			"Complete Recipient chronology correctness and its query plan are exercised at target scale, but the product specification defines no standalone chronology latency target.",
+			"Controlled local dependencies do not model networked PostgreSQL or Immich latency except where a metric records injected dependency delay.",
+		},
+		Fixture: fixture.shape, Environment: readEnvironment(t, ctx, fixture.db), Metrics: metrics, Comparisons: comparisons, Plans: plans,
+	}
 
 	reportDirectory := os.Getenv("MEMENTO_PERFORMANCE_REPORT_DIR")
 	if reportDirectory == "" {

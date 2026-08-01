@@ -294,7 +294,7 @@ func readEnvironment(t *testing.T, ctx context.Context, db *bun.DB) Environment 
 	if environment.GitRevision == "" {
 		environment.GitRevision = "unknown"
 	}
-	environment.GitDirty = exec.Command("git", "diff", "--quiet").Run() != nil
+	environment.GitDirty = commandOutput("git", "status", "--porcelain", "--untracked-files=normal") != ""
 	environment.CPU = commandOutput("sysctl", "-n", "machdep.cpu.brand_string")
 	if environment.CPU == "" {
 		environment.CPU = commandOutput("sh", "-c", `grep -m1 'model name' /proc/cpuinfo | cut -d: -f2-`)

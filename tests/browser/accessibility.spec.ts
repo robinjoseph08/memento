@@ -150,7 +150,8 @@ async function mockRecipient(page: Page) {
   }> = [];
   await page.route("**/api/**", async (route) => {
     const request = route.request();
-    const path = pathOf(request);
+    const url = new URL(request.url());
+    const path = url.pathname;
     if (path === "/api/setup") {
       await route.fulfill({
         status: 404,
@@ -181,9 +182,15 @@ async function mockRecipient(page: Page) {
         },
       });
     } else if (path === "/api/me/photos") {
+      const authorizedMedia = serverMedia.filter((item) =>
+        authorizedMediaIDs.has(item.id),
+      );
       await route.fulfill({
         json: {
-          media: serverMedia.filter((item) => authorizedMediaIDs.has(item.id)),
+          media:
+            url.searchParams.get("cursor") === "older"
+              ? [olderMedia]
+              : authorizedMedia,
           next_cursor: null,
         },
       });
@@ -506,23 +513,23 @@ test("@desktop @mobile Recipient navigation, archives, and Media viewer are acce
     }
     await page.getByLabel("Jump to date").selectOption({ index: 1 });
   } else {
-    const dateNavigation = page.getByRole("navigation", {
-      name: "Photo dates",
-    });
-    await dateNavigation.getByRole("link", { name: "July 27, 2026" }).click();
-    const bounds = await dateNavigation.boundingBox();
-    expect(bounds).not.toBeNull();
-    await page.mouse.move(bounds!.x + bounds!.width / 2, bounds!.y + 1);
-    await page.mouse.down();
-    await page.mouse.move(
-      bounds!.x + bounds!.width / 2,
-      bounds!.y + bounds!.height - 1,
+    const dateSlider = page.getByRole("slider", { name: "Photo dates" });
+    await expect(dateSlider).toHaveAttribute("aria-orientation", "vertical");
+    await expect(dateSlider).toHaveAttribute(
+      "aria-valuetext",
+      "July 27, 2026, 1 photo",
     );
-    await page.mouse.up();
-    await expect(
-      dateNavigation.getByRole("link", { name: "June 15, 2026" }),
-    ).toHaveAttribute("aria-current", "date");
+    await dateSlider.focus();
+    await dateSlider.press("End");
+    await expect(page).toHaveURL(/\/photos\?date=2026-06-15$/);
+    await expect(dateSlider).toHaveAttribute(
+      "aria-valuetext",
+      "June 15, 2026, 1 photo",
+    );
   }
+  await expect(
+    page.getByRole("heading", { name: "June 15, 2026" }),
+  ).toBeVisible();
   await expect
     .poll(() =>
       page.evaluate(
@@ -535,6 +542,11 @@ test("@desktop @mobile Recipient navigation, archives, and Media viewer are acce
       ),
     )
     .toContain("auto");
+  await page.goBack();
+  await expect(page).toHaveURL(/\/$/);
+  await expect(
+    page.getByRole("heading", { name: "July 27, 2026" }),
+  ).toBeVisible();
 
   await page.getByRole("button", { name: "Use light theme" }).click();
   await expectAccessible(page);
