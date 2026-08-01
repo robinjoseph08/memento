@@ -4,13 +4,26 @@ import type { PropsWithChildren } from "react";
 import { afterEach, expect, test, vi } from "vitest";
 
 import { audienceKeys, useAudienceReview } from "./audiences";
-import { eventKeys, useOrganizeEvent, usePublishEvent } from "./events";
+import {
+  eventKeys,
+  useCreateEventDraft,
+  useCreateLooseItem,
+  useOrganizeEvent,
+  usePublishEvent,
+} from "./events";
+import { sourceKeys } from "./curationKeys";
+import { CURRENT_SESSION_QUERY_KEY } from "./sessions";
 import type { Review } from "../../types/generated/audiences";
 import type { Event } from "../../types/generated/events";
 
 const identityGeneration = "session-generation";
 const eventID = "event-1";
 const momentID = "moment-1";
+
+function jsonBody(body: BodyInit | null | undefined) {
+  if (typeof body !== "string") throw new Error("Expected a JSON body");
+  return JSON.parse(body) as unknown;
+}
 
 function event(version: number): Event {
   return {
@@ -64,6 +77,160 @@ function queryHarness() {
 }
 
 afterEach(() => vi.unstubAllGlobals());
+
+test("Event draft creation seeds its detail and invalidates Event and Source projections", async () => {
+  const { client, wrapper } = queryHarness();
+  const created = event(1);
+  const fetchMock = vi.fn<
+    (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
+  >(() =>
+    Promise.resolve(
+      new Response(JSON.stringify(created), {
+        status: 201,
+        headers: { "Content-Type": "application/json" },
+      }),
+    ),
+  );
+  vi.stubGlobal("fetch", fetchMock);
+  client.setQueryData(CURRENT_SESSION_QUERY_KEY, {
+    display_name: "Robin",
+    session_type: "trusted",
+    csrf_token: identityGeneration,
+    curator: true,
+    onboarding_required: false,
+  });
+  client.setQueryData(eventKeys.all(identityGeneration), { events: [] });
+  client.setQueryData(sourceKeys.all(identityGeneration), { albums: [] });
+  const { result } = renderHook(() => useCreateEventDraft(identityGeneration), {
+    wrapper,
+  });
+
+  act(() =>
+    result.current.mutate({
+      source_album_ids: ["source-1", "source-2"],
+      media_item_ids: ["media-1"],
+      timezone: "America/New_York",
+      title: "Gathering",
+      description: "A private draft",
+    }),
+  );
+  await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+  expect(fetchMock).toHaveBeenCalledOnce();
+  const [requestURL, requestInit] = fetchMock.mock.calls[0];
+  expect(requestURL).toBe("/api/events");
+  expect(requestInit?.method).toBe("POST");
+  expect(new Headers(requestInit?.headers).get("X-Memento-CSRF")).toBe(
+    identityGeneration,
+  );
+  expect(jsonBody(requestInit?.body)).toEqual({
+    source_album_ids: ["source-1", "source-2"],
+    media_item_ids: ["media-1"],
+    timezone: "America/New_York",
+    title: "Gathering",
+    description: "A private draft",
+  });
+  expect(
+    client.getQueryData(eventKeys.detail(identityGeneration, eventID)),
+  ).toEqual(created);
+  expect(
+    client.getQueryState(eventKeys.all(identityGeneration))?.isInvalidated,
+  ).toBe(true);
+  expect(
+    client.getQueryState(sourceKeys.all(identityGeneration))?.isInvalidated,
+  ).toBe(true);
+});
+
+test("Event draft creation cannot repopulate cache after identity changes", async () => {
+  const { client, wrapper } = queryHarness();
+  const fetchMock = vi.fn(() =>
+    Promise.resolve(
+      new Response(JSON.stringify(event(1)), {
+        status: 201,
+        headers: { "Content-Type": "application/json" },
+      }),
+    ),
+  );
+  vi.stubGlobal("fetch", fetchMock);
+  const { result } = renderHook(() => useCreateEventDraft(identityGeneration), {
+    wrapper,
+  });
+
+  act(() =>
+    result.current.mutate({
+      source_album_ids: ["source-1"],
+      timezone: "UTC",
+      title: "Gathering",
+      description: "",
+    }),
+  );
+  await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+  expect(
+    client.getQueryData(eventKeys.detail(identityGeneration, eventID)),
+  ).toBeUndefined();
+});
+
+test("Loose item creation sends one stable Media identity", async () => {
+  const { wrapper } = queryHarness();
+  const looseItem = {
+    id: "loose-1",
+    lifecycle: "draft",
+    title: "Portrait",
+    description: "",
+    grouping_timezone: "UTC",
+    proposed_day: null,
+    version: 1,
+    audience_complete: false,
+    media_item: {
+      id: "media-1",
+      media_type: "image",
+      width: 100,
+      height: 100,
+      local_date_time: null,
+    },
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+  };
+  const fetchMock = vi.fn<
+    (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
+  >(() =>
+    Promise.resolve(
+      new Response(JSON.stringify(looseItem), {
+        status: 201,
+        headers: { "Content-Type": "application/json" },
+      }),
+    ),
+  );
+  vi.stubGlobal("fetch", fetchMock);
+  const { result } = renderHook(() => useCreateLooseItem(identityGeneration), {
+    wrapper,
+  });
+
+  act(() =>
+    result.current.mutate({
+      media_item_id: "media-1",
+      timezone: "UTC",
+      title: "Portrait",
+      description: "",
+    }),
+  );
+  await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+  expect(fetchMock).toHaveBeenCalledOnce();
+  const [requestURL, requestInit] = fetchMock.mock.calls[0];
+  expect(requestURL).toBe("/api/loose-items");
+  expect(requestInit?.method).toBe("POST");
+  expect(new Headers(requestInit?.headers).get("X-Memento-CSRF")).toBe(
+    identityGeneration,
+  );
+  expect(jsonBody(requestInit?.body)).toEqual({
+    media_item_id: "media-1",
+    timezone: "UTC",
+    title: "Portrait",
+    description: "",
+  });
+});
 
 test("organization owns authoritative Event cache updates and projection invalidation", async () => {
   const { client, wrapper } = queryHarness();

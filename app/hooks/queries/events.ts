@@ -1,10 +1,14 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { apiJSON } from "../../api";
-import { audienceKeys, eventKeys } from "./curationKeys";
+import { audienceKeys, eventKeys, sourceKeys } from "./curationKeys";
+import { isIdentityGenerationActive } from "./sessions";
 import type {
+  CreateEventRequest,
+  CreateLooseItemRequest,
   Event,
   EventListResponse,
+  LooseItem,
   OrganizeEventRequest,
   PreviewRecipientsResponse,
   PublicationResponse,
@@ -86,6 +90,55 @@ function invalidateEventProjections(
   });
   void queryClient.invalidateQueries({
     queryKey: eventKeys.recipientPreviews(identityGeneration),
+  });
+}
+
+export function useCreateEventDraft(identityGeneration: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (request: CreateEventRequest) =>
+      apiJSON<Event>("/api/events", {
+        method: "POST",
+        headers: { "X-Memento-CSRF": identityGeneration },
+        body: JSON.stringify(request),
+      }),
+    onSuccess: (event) => {
+      if (!isIdentityGenerationActive(queryClient, identityGeneration)) return;
+      setNewestEvent(queryClient, identityGeneration, event);
+      void queryClient.invalidateQueries({
+        queryKey: eventKeys.all(identityGeneration),
+      });
+      void queryClient.invalidateQueries({
+        queryKey: sourceKeys.all(identityGeneration),
+      });
+    },
+    onError: () => {
+      if (!isIdentityGenerationActive(queryClient, identityGeneration)) return;
+      void queryClient.invalidateQueries({
+        queryKey: sourceKeys.all(identityGeneration),
+      });
+      void queryClient.invalidateQueries({
+        queryKey: sourceKeys.mediaRoot(identityGeneration),
+      });
+    },
+  });
+}
+
+export function useCreateLooseItem(identityGeneration: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (request: CreateLooseItemRequest) =>
+      apiJSON<LooseItem>("/api/loose-items", {
+        method: "POST",
+        headers: { "X-Memento-CSRF": identityGeneration },
+        body: JSON.stringify(request),
+      }),
+    onError: () => {
+      if (!isIdentityGenerationActive(queryClient, identityGeneration)) return;
+      void queryClient.invalidateQueries({
+        queryKey: sourceKeys.mediaRoot(identityGeneration),
+      });
+    },
   });
 }
 

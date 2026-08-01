@@ -137,6 +137,21 @@ func TestIgnoreRestoreAndRediscoveryPreserveDurableIdentityAndLastSeenState(t *t
 	require.ErrorIs(t, err, ErrInvalidTransition)
 }
 
+func TestDraftedSourceAlbumsRemainSelectableFromList(t *testing.T) {
+	connector := &fakeConnector{albums: []immich.AlbumSummary{sourceAlbum(uuid.New(), "Previously drafted", 1)}}
+	service := newSourceService(t, connector)
+	require.NoError(t, discover(service))
+
+	_, err := service.db.NewRaw(`UPDATE source_albums SET disposition = 'drafted'`).Exec(context.Background())
+	require.NoError(t, err)
+
+	listed, err := service.List(context.Background(), "drafted", "", 50)
+	require.NoError(t, err)
+	require.Len(t, listed.Albums, 1)
+	assert.Equal(t, "Previously drafted", listed.Albums[0].Name)
+	assert.Equal(t, "drafted", listed.Albums[0].Disposition)
+}
+
 func TestSuccessfulAbsentDiscoveryMarksSourceMissingWithoutErasingIt(t *testing.T) {
 	connector := &fakeConnector{albums: []immich.AlbumSummary{sourceAlbum(uuid.New(), "Tracked", 1)}}
 	service := newSourceService(t, connector)
@@ -184,6 +199,21 @@ func TestDependencyFailuresFailClosedBeforePersistence(t *testing.T) {
 			assert.Equal(t, before.Albums[0], after)
 		})
 	}
+}
+
+func TestAuthenticatedSourceRouteListsPreviouslyDraftedAlbums(t *testing.T) {
+	connector := &fakeConnector{albums: []immich.AlbumSummary{sourceAlbum(uuid.New(), "Previously drafted", 1)}}
+	service := newSourceService(t, connector)
+	require.NoError(t, discover(service))
+	_, err := service.db.NewRaw(`UPDATE source_albums SET disposition = 'drafted'`).Exec(context.Background())
+	require.NoError(t, err)
+
+	response := sourceRequest(sourceHTTP(service, &fakeAuthorizer{}), http.MethodGet, "/api/sources?disposition=drafted", "session", "")
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	var listed ListResponse
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &listed))
+	require.Len(t, listed.Albums, 1)
+	assert.Equal(t, "drafted", listed.Albums[0].Disposition)
 }
 
 func TestAuthenticatedSourceRoutesWireDiscoveryInspectionAndTriage(t *testing.T) {

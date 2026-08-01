@@ -45,6 +45,7 @@ var (
 type CreateEventRequest struct {
 	SourceAlbumIDs []string `json:"source_album_ids" validate:"required,min=1,max=100"`
 	MediaItemIDs   []string `json:"media_item_ids,omitempty" validate:"max=100000"`
+	IdempotencyKey string   `json:"idempotency_key,omitempty" validate:"omitempty,uuid4"`
 	Timezone       string   `json:"timezone" validate:"required,max=100"`
 	Title          string   `json:"title,omitempty" validate:"max=240" mod:"trim"`
 	Description    string   `json:"description,omitempty" validate:"max=2000" mod:"trim"`
@@ -128,8 +129,8 @@ type EventListResponse struct {
 
 // SourceMetadataSuggestion reports current Source metadata without changing Event metadata.
 type SourceMetadataSuggestion struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
+	Name        *string `json:"name" tstype:"string | null,required"`
+	Description *string `json:"description" tstype:"string | null,required"`
 }
 
 // EventSource records private provenance through a stable portal Source identity.
@@ -186,12 +187,13 @@ type SourceMediaResponse struct {
 
 // Service persists editable and published Event state without mutating Immich.
 type Service struct {
-	db                    *bun.DB
-	now                   func() time.Time
-	failPublicationStep   func(PublicationStep) error
-	failWithdrawalStep    func(WithdrawalStep) error
-	recipientReadBoundary func()
-	publicationHandoff    PublicationHandoff
+	db                          *bun.DB
+	now                         func() time.Time
+	createEventBeforeSourceLock func()
+	failPublicationStep         func(PublicationStep) error
+	failWithdrawalStep          func(WithdrawalStep) error
+	recipientReadBoundary       func()
+	publicationHandoff          PublicationHandoff
 }
 
 func New(db *bun.DB) *Service {
@@ -279,9 +281,28 @@ func (s *Service) CreateEvent(ctx context.Context, actor setup.CuratorSession, r
 	}
 
 	eventID := uuid.New()
+	if request.IdempotencyKey != "" {
+		eventID, err = uuid.Parse(request.IdempotencyKey)
+		if err != nil || eventID == uuid.Nil {
+			return Event{}, ErrInvalid
+		}
+	}
 	now := s.now().UTC()
 	var created Event
 	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if request.IdempotencyKey != "" {
+			existing, err := getEvent(ctx, tx, eventID)
+			if err == nil {
+				created = existing
+				return nil
+			}
+			if !errors.Is(err, ErrNotFound) {
+				return err
+			}
+		}
+		if s.createEventBeforeSourceLock != nil {
+			s.createEventBeforeSourceLock()
+		}
 		sources, err := lockSources(ctx, tx, sourceIDs)
 		if err != nil {
 			return err
@@ -306,10 +327,16 @@ func (s *Service) CreateEvent(ctx context.Context, actor setup.CuratorSession, r
 		if title == "" || utf8.RuneCountInString(title) > 240 || utf8.RuneCountInString(description) > 2000 {
 			return ErrInvalid
 		}
-		if _, err := tx.NewRaw(`
+		inserted, err := tx.NewRaw(`
 			INSERT INTO events (id, title, description, grouping_timezone, created_at, updated_at)
 			VALUES (?, ?, ?, ?, ?, ?)
-		`, eventID, title, description, location.String(), now, now).Exec(ctx); err != nil {
+			ON CONFLICT (id) DO NOTHING
+		`, eventID, title, description, location.String(), now, now).Exec(ctx)
+		if err != nil {
+			return err
+		}
+		if affected, _ := inserted.RowsAffected(); affected == 0 {
+			created, err = getEvent(ctx, tx, eventID)
 			return err
 		}
 		includeFutureMedia := len(selectedIDs) == 0
@@ -1305,7 +1332,14 @@ func getEvent(ctx context.Context, db bun.IDB, id uuid.UUID) (Event, error) {
 			return Event{}, err
 		}
 		if currentName != initializedName || currentDescription != initializedDescription {
-			source.MetadataSuggestion = &SourceMetadataSuggestion{Name: currentName, Description: currentDescription}
+			suggestion := SourceMetadataSuggestion{}
+			if currentName != initializedName {
+				suggestion.Name = &currentName
+			}
+			if currentDescription != initializedDescription {
+				suggestion.Description = &currentDescription
+			}
+			source.MetadataSuggestion = &suggestion
 		}
 		event.Sources = append(event.Sources, source)
 	}

@@ -1,3 +1,13 @@
+export const sourceKeys = {
+  all: (identityGeneration: string) => ["sources", identityGeneration] as const,
+  list: (identityGeneration: string, disposition: string) =>
+    ["sources", identityGeneration, disposition] as const,
+  mediaRoot: (identityGeneration: string) =>
+    ["source-media", identityGeneration] as const,
+  mediaSelection: (identityGeneration: string, sourceIDs: string[]) =>
+    ["source-media", identityGeneration, ...sourceIDs] as const,
+};
+
 export const eventKeys = {
   all: (identityGeneration: string) => ["events", identityGeneration] as const,
   details: (identityGeneration: string) =>

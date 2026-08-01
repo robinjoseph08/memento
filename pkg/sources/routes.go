@@ -64,7 +64,7 @@ func (h *Handler) List(c echo.Context) error {
 	}
 	response, err := h.service.List(c.Request().Context(), disposition, c.QueryParam("cursor"), limit)
 	if errors.Is(err, ErrInvalidTransition) {
-		return errcodes.ValidationError("Disposition must be unreviewed or ignored.")
+		return errcodes.ValidationError("Disposition must be unreviewed, ignored, or drafted.")
 	}
 	if errors.Is(err, ErrInvalidCursor) {
 		return errcodes.ValidationError("Cursor is invalid.")

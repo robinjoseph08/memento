@@ -169,7 +169,7 @@ func (s *Service) Discover(ctx context.Context) (DiscoveryResponse, error) {
 
 // List returns a private, cursor-paginated disposition view without source identifiers.
 func (s *Service) List(ctx context.Context, disposition, encodedCursor string, limit int) (ListResponse, error) {
-	if disposition != "unreviewed" && disposition != "ignored" {
+	if disposition != "unreviewed" && disposition != "ignored" && disposition != "drafted" {
 		return ListResponse{}, ErrInvalidTransition
 	}
 	if limit < 1 || limit > 100 {

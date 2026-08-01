@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 
+import { SourceDraftBuilder } from "./SourceDrafting";
 import {
   useDiscoverSources,
   useReconcileSource,
@@ -16,10 +17,14 @@ function SourceAlbumCard({
   album,
   csrfToken,
   onTriaged,
+  onSelected,
+  selected,
 }: {
   album: Album;
   csrfToken: string;
   onTriaged: (message: string) => void;
+  onSelected: (selected: boolean) => void;
+  selected: boolean;
 }) {
   const [inspecting, setInspecting] = useState(false);
   const triageMutation = useTriageSource(csrfToken, album, () => {
@@ -36,7 +41,18 @@ function SourceAlbumCard({
   return (
     <article className="source-album">
       <div className="source-album-summary">
-        <div>
+        <div className="source-album-identity">
+          {album.disposition !== "ignored" && !album.source_missing ? (
+            <label>
+              <input
+                aria-label={`Select ${album.name} for drafting`}
+                checked={selected}
+                onChange={(event) => onSelected(event.target.checked)}
+                type="checkbox"
+              />
+              <span>Select for drafting</span>
+            </label>
+          ) : null}
           <h3>{album.name}</h3>
           <p>
             {album.asset_count} {album.asset_count === 1 ? "item" : "items"}
@@ -76,18 +92,20 @@ function SourceAlbumCard({
             >
               {reconciliation.isPending ? "Queueing…" : "Reconcile now"}
             </button>
-            <button
-              className="source-primary-action"
-              disabled={triageMutation.isPending || reconciliation.isPending}
-              onClick={() => triageMutation.mutate()}
-              type="button"
-            >
-              {triageMutation.isPending
-                ? "Saving…"
-                : album.disposition === "ignored"
-                  ? "Restore to inbox"
-                  : "Ignore Source album"}
-            </button>
+            {album.disposition !== "drafted" ? (
+              <button
+                className="source-primary-action"
+                disabled={triageMutation.isPending || reconciliation.isPending}
+                onClick={() => triageMutation.mutate()}
+                type="button"
+              >
+                {triageMutation.isPending
+                  ? "Saving…"
+                  : album.disposition === "ignored"
+                    ? "Restore to inbox"
+                    : "Ignore Source album"}
+              </button>
+            ) : null}
           </div>
         </div>
       ) : null}
@@ -107,19 +125,49 @@ export function SourceWorkspace({
   signOutPending: boolean;
 }) {
   const [triageStatus, setTriageStatus] = useState("");
+  const [selectedAlbumIDs, setSelectedAlbumIDs] = useState<Set<string>>(
+    new Set(),
+  );
+  const [drafting, setDrafting] = useState(false);
   const [searchParams, setSearchParams] = useSearchParams();
+  const sourceView = searchParams.get("source_view");
   const disposition =
-    searchParams.get("source_view") === "ignored" ? "ignored" : "unreviewed";
-  const selectDisposition = (nextDisposition: "unreviewed" | "ignored") => {
+    sourceView === "ignored"
+      ? "ignored"
+      : sourceView === "drafted"
+        ? "drafted"
+        : "unreviewed";
+  const selectDisposition = (
+    nextDisposition: "unreviewed" | "drafted" | "ignored",
+  ) => {
     setSearchParams((current) => {
       const next = new URLSearchParams(current);
-      if (nextDisposition === "ignored") next.set("source_view", "ignored");
-      else next.delete("source_view");
+      if (nextDisposition === "unreviewed") next.delete("source_view");
+      else next.set("source_view", nextDisposition);
       return next;
     });
   };
-  const sources = useSources(session.csrf_token, disposition);
+  const unreviewedSources = useSources(session.csrf_token, "unreviewed");
+  const draftedSources = useSources(session.csrf_token, "drafted");
+  const ignoredSources = useSources(session.csrf_token, "ignored");
+  const sources =
+    disposition === "drafted"
+      ? draftedSources
+      : disposition === "ignored"
+        ? ignoredSources
+        : unreviewedSources;
   const albums = sources.data?.pages.flatMap((page) => page.albums);
+  const selectableAlbums = useMemo(
+    () =>
+      [unreviewedSources.data, draftedSources.data].flatMap(
+        (data) => data?.pages.flatMap((page) => page.albums) ?? [],
+      ),
+    [draftedSources.data, unreviewedSources.data],
+  );
+  const selectedAlbums = [...selectedAlbumIDs].flatMap((id) => {
+    const album = selectableAlbums.find((candidate) => candidate.id === id);
+    return album && !album.source_missing ? [album] : [];
+  });
   const discover = useDiscoverSources(session.csrf_token);
   return (
     <section aria-labelledby="sources-title" className="source-workspace">
@@ -144,7 +192,7 @@ export function SourceWorkspace({
             }
             type="button"
           >
-            Organize drafts
+            Organize existing drafts
           </button>
           <button
             className="source-connect"
@@ -181,6 +229,13 @@ export function SourceWorkspace({
           Inbox
         </button>
         <button
+          aria-pressed={disposition === "drafted"}
+          onClick={() => selectDisposition("drafted")}
+          type="button"
+        >
+          Drafted
+        </button>
+        <button
           aria-pressed={disposition === "ignored"}
           onClick={() => selectDisposition("ignored")}
           type="button"
@@ -188,6 +243,38 @@ export function SourceWorkspace({
           Ignored
         </button>
       </div>
+      <div className="source-selection-actions">
+        <p aria-live="polite">
+          {selectedAlbums.length} Source{" "}
+          {selectedAlbums.length === 1 ? "album" : "albums"} selected
+        </p>
+        <button
+          className="source-primary-action"
+          disabled={selectedAlbums.length === 0}
+          onClick={() => setDrafting(true)}
+          type="button"
+        >
+          Draft selected Source albums
+        </button>
+        {selectedAlbums.length > 0 ? (
+          <button
+            onClick={() => {
+              setSelectedAlbumIDs(new Set());
+              setDrafting(false);
+            }}
+            type="button"
+          >
+            Clear selection
+          </button>
+        ) : null}
+      </div>
+      {drafting && selectedAlbums.length > 0 ? (
+        <SourceDraftBuilder
+          albums={selectedAlbums}
+          csrfToken={session.csrf_token}
+          onClose={() => setDrafting(false)}
+        />
+      ) : null}
       <p aria-live="polite" className="visually-hidden" role="status">
         {triageStatus}
       </p>
@@ -199,7 +286,9 @@ export function SourceWorkspace({
         <p className="source-empty">
           {disposition === "ignored"
             ? "No ignored Source albums."
-            : "No unreviewed Source albums. Connect Immich to discover owned albums."}
+            : disposition === "drafted"
+              ? "No drafted Source albums yet."
+              : "No unreviewed Source albums. Connect Immich to discover owned albums."}
         </p>
       ) : null}
       <div className="source-list">
@@ -208,7 +297,25 @@ export function SourceWorkspace({
             album={album}
             csrfToken={session.csrf_token}
             key={album.id}
-            onTriaged={setTriageStatus}
+            onSelected={(selected) => {
+              setSelectedAlbumIDs((current) => {
+                const next = new Set(current);
+                if (selected) next.add(album.id);
+                else next.delete(album.id);
+                return next;
+              });
+            }}
+            onTriaged={(message) => {
+              setTriageStatus(message);
+              if (album.disposition !== "ignored") {
+                setSelectedAlbumIDs((current) => {
+                  const next = new Set(current);
+                  next.delete(album.id);
+                  return next;
+                });
+              }
+            }}
+            selected={selectedAlbumIDs.has(album.id)}
           />
         ))}
       </div>

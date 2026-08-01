@@ -141,9 +141,10 @@ func TestDiscoveryDependencyFailureReturnsOnlySafeDiagnostics(t *testing.T) {
 	assert.NotContains(t, serialized, "private")
 }
 
-func TestSourceListRejectsInvalidPaginationBeforeDatabaseAccess(t *testing.T) {
+func TestSourceListRejectsInvalidFiltersAndPaginationBeforeDatabaseAccess(t *testing.T) {
 	e := sourceHTTP(nil, &fakeAuthorizer{})
 	for path, message := range map[string]string{
+		"/api/sources?disposition=private": "Disposition must be unreviewed, ignored, or drafted.",
 		"/api/sources?cursor=not-a-cursor": "Cursor is invalid.",
 		"/api/sources?limit=101":           "Limit must be between 1 and 100.",
 		"/api/sources?limit=word":          "Limit must be between 1 and 100.",

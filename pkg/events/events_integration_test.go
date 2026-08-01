@@ -201,6 +201,177 @@ func TestDraftsCombineAndDivideSourcesWhileReusingStableMediaIdentities(t *testi
 	assert.Equal(t, []string{"drafted", "drafted"}, dispositions)
 }
 
+func TestEventCreationReusesACommittedDraftForTheSameIdempotencyKey(t *testing.T) {
+	fixture := newDraftFixture(t)
+	ctx := context.Background()
+	key := uuid.New()
+	request := CreateEventRequest{
+		SourceAlbumIDs: []string{fixture.sources["first"].String()},
+		MediaItemIDs:   []string{fixture.media["first_only"].String()},
+		IdempotencyKey: key.String(),
+		Timezone:       "UTC",
+		Title:          "Retry-safe Event",
+	}
+
+	created, err := fixture.service.CreateEvent(ctx, fixture.actor, request)
+	require.NoError(t, err)
+	replayed, err := fixture.service.CreateEvent(ctx, fixture.actor, request)
+	require.NoError(t, err)
+	assert.Equal(t, key.String(), created.ID)
+	assert.Equal(t, created, replayed)
+
+	var eventCount, auditCount int
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM events WHERE id = ?`, key).Scan(ctx, &eventCount))
+	require.NoError(t, fixture.db.NewRaw(`
+		SELECT count(*) FROM security_audit_events
+		WHERE action = 'event_draft_created' AND metadata->>'event_id' = ?
+	`, key.String()).Scan(ctx, &auditCount))
+	assert.Equal(t, 1, eventCount)
+	assert.Equal(t, 1, auditCount)
+}
+
+func TestConcurrentEventCreationWithTheSameIdempotencyKeyCommitsOnce(t *testing.T) {
+	fixture := newDraftFixture(t)
+	key := uuid.New()
+	request := CreateEventRequest{
+		SourceAlbumIDs: []string{fixture.sources["first"].String()},
+		MediaItemIDs:   []string{fixture.media["first_only"].String()},
+		IdempotencyKey: key.String(),
+		Timezone:       "UTC",
+		Title:          "Concurrent retry-safe Event",
+	}
+	arrived := make(chan struct{}, 2)
+	release := make(chan struct{})
+	fixture.service.createEventBeforeSourceLock = func() {
+		arrived <- struct{}{}
+		<-release
+	}
+	type result struct {
+		event Event
+		err   error
+	}
+	results := make(chan result, 2)
+	for range 2 {
+		go func() {
+			event, err := fixture.service.CreateEvent(context.Background(), fixture.actor, request)
+			results <- result{event: event, err: err}
+		}()
+	}
+	released := false
+	defer func() {
+		if !released {
+			close(release)
+		}
+	}()
+	for range 2 {
+		select {
+		case <-arrived:
+		case <-time.After(2 * time.Second):
+			t.Fatal("concurrent Event creations did not reach the idempotency lock boundary")
+		}
+	}
+	close(release)
+	released = true
+
+	completed := make([]result, 0, 2)
+	for range 2 {
+		select {
+		case outcome := <-results:
+			completed = append(completed, outcome)
+		case <-time.After(2 * time.Second):
+			t.Fatal("concurrent Event creation did not finish after releasing the lock boundary")
+		}
+	}
+	first, second := completed[0], completed[1]
+	require.NoError(t, first.err)
+	require.NoError(t, second.err)
+	assert.Equal(t, key.String(), first.event.ID)
+	assert.Equal(t, first.event, second.event)
+
+	var eventCount, auditCount int
+	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM events WHERE id = ?`, key).Scan(context.Background(), &eventCount))
+	require.NoError(t, fixture.db.NewRaw(`
+		SELECT count(*) FROM security_audit_events
+		WHERE action = 'event_draft_created' AND metadata->>'event_id' = ?
+	`, key.String()).Scan(context.Background(), &auditCount))
+	assert.Equal(t, 1, eventCount)
+	assert.Equal(t, 1, auditCount)
+}
+
+func TestCreatingEventAndLooseItemDraftsCreatesNoRecipientPublicationState(t *testing.T) {
+	fixture := newDraftFixture(t)
+	ctx := context.Background()
+	recipient := setup.SessionActor{PersonID: uuid.New(), AccessID: uuid.New(), SessionID: uuid.New()}
+	_, err := fixture.db.NewRaw(`
+		INSERT INTO person_roles (person_id, role) VALUES (?, 'curator');
+		INSERT INTO people (id, display_name, sort_name) VALUES (?, 'Eligible Recipient', 'Eligible Recipient');
+		INSERT INTO person_roles (person_id, role) VALUES (?, 'recipient');
+		INSERT INTO recipient_access_generations (
+			id, person_id, generation, state, is_current, onboarding_completed_at, created_at, updated_at
+		) VALUES (?, ?, 1, 'completed', true, now(), now(), now());
+		INSERT INTO recipient_emails (
+			id, recipient_access_generation_id, email, normalized_email, is_current
+		) VALUES (gen_random_uuid(), ?, 'eligible@example.test', 'eligible@example.test', true);
+		INSERT INTO notification_preferences (recipient_access_generation_id, email_preference)
+		VALUES (?, 'immediate');
+		INSERT INTO sessions (
+			id, credential_hash, person_id, recipient_access_generation_id, security_epoch,
+			session_type, idle_expires_at
+		) SELECT ?, decode(repeat('24', 32), 'hex'), ?, ?, security_epoch, 'trusted', now() + interval '1 day'
+		FROM system_settings WHERE id = 1
+	`, fixture.actor.PersonID, recipient.PersonID, recipient.PersonID,
+		recipient.AccessID, recipient.PersonID, recipient.AccessID, recipient.AccessID,
+		recipient.SessionID, recipient.PersonID, recipient.AccessID).Exec(ctx)
+	require.NoError(t, err)
+
+	event, err := fixture.service.CreateEvent(ctx, fixture.actor, CreateEventRequest{
+		SourceAlbumIDs: []string{fixture.sources["first"].String()},
+		MediaItemIDs:   []string{fixture.media["first_only"].String()},
+		Timezone:       "UTC",
+		Title:          "Private selected Event",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "draft", event.Lifecycle)
+	assert.Equal(t, []string{fixture.media["first_only"].String()}, allEventMediaIDs(event))
+
+	looseItem, created, err := fixture.service.CreateLooseItem(ctx, fixture.actor, CreateLooseItemRequest{
+		MediaItemID: fixture.media["unknown"].String(),
+		Timezone:    "UTC",
+		Title:       "Private selected Loose item",
+	})
+	require.NoError(t, err)
+	assert.True(t, created)
+	assert.Equal(t, "draft", looseItem.Lifecycle)
+	assert.Equal(t, fixture.media["unknown"].String(), looseItem.MediaItem.ID)
+
+	_, err = fixture.service.RecipientEvent(ctx, recipient, uuid.MustParse(event.ID))
+	require.ErrorIs(t, err, ErrNoPublication)
+
+	for _, table := range []string{
+		"publications", "published_event_revisions", "published_moments", "published_media_placements",
+		"audience_entries", "current_published_events", "current_published_placements",
+		"current_audience_entitlements", "current_recipient_event_covers", "published_search_documents",
+		"new_for_you_entries", "publication_activity_items", "publication_curator_activity_items",
+		"publication_audit_events", "publication_preview_audit_events", "publication_notification_media",
+		"notification_batches", "notification_batch_items", "outbox_events", "email_deliveries", "delivery_problems",
+	} {
+		var count int
+		require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM `+table).Scan(ctx, &count), table)
+		assert.Zero(t, count, "%s must remain empty before Publication", table)
+	}
+
+	var optionalDeliveryJobs int
+	require.NoError(t, fixture.db.NewRaw(`
+		SELECT count(*) FROM jobs
+		WHERE kind IN ('publication_committed', 'send_immediate_email', 'send_weekly_email', 'send_immediate_push')
+	`).Scan(ctx, &optionalDeliveryJobs))
+	assert.Zero(t, optionalDeliveryJobs)
+
+	var currentPublicationID *uuid.UUID
+	require.NoError(t, fixture.db.NewRaw(`SELECT current_publication_id FROM events WHERE id = ?`, event.ID).Scan(ctx, &currentPublicationID))
+	assert.Nil(t, currentPublicationID)
+}
+
 func TestEventProposalOrderingUsesTheRequestedTimezoneForUnzonedTimestamps(t *testing.T) {
 	fixture := newDraftFixture(t)
 	ctx := context.Background()
@@ -536,8 +707,9 @@ func TestEventMetadataRemainsPortalOwnedWhileSourceChangesBecomeSuggestions(t *t
 	assert.Equal(t, "first source", nameChanged.Title)
 	assert.Equal(t, "first description", nameChanged.Description)
 	require.NotNil(t, nameChanged.Sources[0].MetadataSuggestion)
-	assert.Equal(t, "Later Immich title", nameChanged.Sources[0].MetadataSuggestion.Name)
-	assert.Equal(t, "first description", nameChanged.Sources[0].MetadataSuggestion.Description)
+	require.NotNil(t, nameChanged.Sources[0].MetadataSuggestion.Name)
+	assert.Equal(t, "Later Immich title", *nameChanged.Sources[0].MetadataSuggestion.Name)
+	assert.Nil(t, nameChanged.Sources[0].MetadataSuggestion.Description)
 
 	_, err = fixture.db.NewRaw(`
 		UPDATE source_albums SET name = 'first source', description = 'Later Immich description' WHERE id = ?
@@ -548,8 +720,18 @@ func TestEventMetadataRemainsPortalOwnedWhileSourceChangesBecomeSuggestions(t *t
 	assert.Equal(t, "first source", descriptionChanged.Title)
 	assert.Equal(t, "first description", descriptionChanged.Description)
 	require.NotNil(t, descriptionChanged.Sources[0].MetadataSuggestion)
-	assert.Equal(t, "first source", descriptionChanged.Sources[0].MetadataSuggestion.Name)
-	assert.Equal(t, "Later Immich description", descriptionChanged.Sources[0].MetadataSuggestion.Description)
+	assert.Nil(t, descriptionChanged.Sources[0].MetadataSuggestion.Name)
+	require.NotNil(t, descriptionChanged.Sources[0].MetadataSuggestion.Description)
+	assert.Equal(t, "Later Immich description", *descriptionChanged.Sources[0].MetadataSuggestion.Description)
+
+	_, err = fixture.db.NewRaw(`UPDATE source_albums SET description = '' WHERE id = ?`, fixture.sources["first"]).Exec(ctx)
+	require.NoError(t, err)
+	descriptionCleared, err := fixture.service.GetEvent(ctx, uuid.MustParse(event.ID))
+	require.NoError(t, err)
+	require.NotNil(t, descriptionCleared.Sources[0].MetadataSuggestion)
+	assert.Nil(t, descriptionCleared.Sources[0].MetadataSuggestion.Name)
+	require.NotNil(t, descriptionCleared.Sources[0].MetadataSuggestion.Description)
+	assert.Empty(t, *descriptionCleared.Sources[0].MetadataSuggestion.Description)
 }
 
 func TestLooseItemsReuseMediaIdentityAndKeepUnknownDatesUnassigned(t *testing.T) {
