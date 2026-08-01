@@ -34,6 +34,8 @@ func TestReleaseGateWiringRunsCompleteImmichContract(t *testing.T) {
 	expected := executableTaskClosure(t, tasks, []string{"ci"})
 	ciSuite, ok := ciWorkflow.Jobs["suite"]
 	require.True(t, ok, "CI workflow must define the suite job")
+	assert.Empty(t, ciSuite.If, "the CI matrix must not be conditionally skipped")
+	assert.Zero(t, ciSuite.ContinueOnError.Kind, "the CI matrix job must fail when a task fails")
 	matrixTasks := make([]string, 0, len(ciSuite.Strategy.Matrix.Include))
 	for _, entry := range ciSuite.Strategy.Matrix.Include {
 		require.NotEmpty(t, entry.Task, "every CI matrix entry must name an executable mise task")
@@ -51,6 +53,7 @@ func TestReleaseGateWiringRunsCompleteImmichContract(t *testing.T) {
 			continue
 		}
 		matrixExecutionSteps++
+		assert.Empty(t, step.If, "the CI matrix execution step must not be conditionally skipped")
 		assert.Zero(t, step.ContinueOnError.Kind, "the CI matrix execution step must fail its job when a task fails")
 	}
 	require.Equal(t, 1, matrixExecutionSteps, "CI must execute every declared matrix task exactly once")
@@ -59,12 +62,14 @@ func TestReleaseGateWiringRunsCompleteImmichContract(t *testing.T) {
 	require.True(t, ok, "CI workflow must define its aggregate validation job")
 	assert.Contains(t, workflowNeeds(t, ciValidation.Needs), "suite")
 	assert.Equal(t, `${{ always() }}`, ciValidation.If, "aggregate validation must run even when a matrix task fails")
+	assert.Zero(t, ciValidation.ContinueOnError.Kind, "aggregate validation must fail its reusable workflow")
 	var aggregateFailureChecks int
 	for _, step := range ciValidation.Steps {
 		if strings.TrimSpace(step.Run) != `test "$SUITE_RESULT" = success` {
 			continue
 		}
 		aggregateFailureChecks++
+		assert.Empty(t, step.If, "the aggregate failure check must not be conditionally skipped")
 		assert.Equal(t, `${{ needs.suite.result }}`, step.Env["SUITE_RESULT"])
 		assert.Zero(t, step.ContinueOnError.Kind, "aggregate validation must fail when the suite did not succeed")
 	}
@@ -73,9 +78,14 @@ func TestReleaseGateWiringRunsCompleteImmichContract(t *testing.T) {
 	validation, ok := releaseWorkflow.Jobs["validation"]
 	require.True(t, ok, "release workflow must define the validation job")
 	assert.Equal(t, "./.github/workflows/ci.yml", validation.Uses, "release validation must invoke the complete CI workflow")
+	assert.Contains(t, workflowNeeds(t, validation.Needs), "contract", "complete validation must wait for the release contract")
+	assert.Empty(t, validation.If, "release validation must not be conditionally skipped")
+	assert.Zero(t, validation.ContinueOnError.Kind, "release validation must block publication on failure")
 	publish, ok := releaseWorkflow.Jobs["publish"]
 	require.True(t, ok, "release workflow must define the publish job")
 	assert.Contains(t, workflowNeeds(t, publish.Needs), "validation", "release publication must wait for validation")
+	assert.Empty(t, publish.If, "release publication must retain the default success condition")
+	assert.Zero(t, publish.ContinueOnError.Kind, "release publication must not ignore its own failures")
 
 	contractTask, ok := tasks["test:immich-contract"]
 	require.True(t, ok, "mise task %q must exist", "test:immich-contract")
@@ -185,12 +195,14 @@ type workflowDefinition struct {
 }
 
 type workflowJobDefinition struct {
-	Needs yaml.Node `yaml:"needs"`
-	Uses  string    `yaml:"uses"`
-	If    string    `yaml:"if"`
-	Steps []struct {
+	Needs           yaml.Node `yaml:"needs"`
+	Uses            string    `yaml:"uses"`
+	If              string    `yaml:"if"`
+	ContinueOnError yaml.Node `yaml:"continue-on-error"`
+	Steps           []struct {
 		Name            string            `yaml:"name"`
 		Run             string            `yaml:"run"`
+		If              string            `yaml:"if"`
 		Env             map[string]string `yaml:"env"`
 		ContinueOnError yaml.Node         `yaml:"continue-on-error"`
 	} `yaml:"steps"`

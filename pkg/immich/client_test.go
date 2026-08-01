@@ -508,6 +508,51 @@ func TestAssetDeliveryAvailableFailsClosed(t *testing.T) {
 	}
 }
 
+type controlledHeaderTimer struct {
+	mu       sync.Mutex
+	duration time.Duration
+	callback func()
+	done     bool
+}
+
+func (timer *controlledHeaderTimer) start(duration time.Duration, callback func()) func() bool {
+	timer.mu.Lock()
+	defer timer.mu.Unlock()
+	timer.duration = duration
+	timer.callback = callback
+	timer.done = false
+	return timer.stop
+}
+
+func (timer *controlledHeaderTimer) stop() bool {
+	timer.mu.Lock()
+	defer timer.mu.Unlock()
+	if timer.done {
+		return false
+	}
+	timer.done = true
+	return true
+}
+
+func (timer *controlledHeaderTimer) fire() bool {
+	timer.mu.Lock()
+	if timer.done || timer.callback == nil {
+		timer.mu.Unlock()
+		return false
+	}
+	timer.done = true
+	callback := timer.callback
+	timer.mu.Unlock()
+	callback()
+	return true
+}
+
+func (timer *controlledHeaderTimer) configuredDuration() time.Duration {
+	timer.mu.Lock()
+	defer timer.mu.Unlock()
+	return timer.duration
+}
+
 type bodyTimeoutReadCloser struct {
 	ctx     context.Context
 	started chan struct{}
@@ -1109,6 +1154,7 @@ func TestClientRedactsTransportErrorsAndTimeouts(t *testing.T) {
 		require.NoError(t, err)
 
 		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 		result := make(chan error, 1)
 		go func() { result <- client.Check(ctx) }()
 		select {
@@ -1195,12 +1241,11 @@ func TestThumbnailMapsUpstreamStatusesTimeoutsAndReadFailuresToSafeErrors(t *tes
 
 	t.Run("timeout", func(t *testing.T) {
 		requestCount := 0
-		started := make(chan bool, 1)
+		started := make(chan struct{}, 1)
 		canceled := make(chan error, 1)
 		transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
 			requestCount++
-			_, deadlineObserved := request.Context().Deadline()
-			started <- deadlineObserved
+			started <- struct{}{}
 			<-request.Context().Done()
 			canceled <- request.Context().Err()
 			return nil, errors.New("timeout contacting https://private.internal?key=secret-key")
@@ -1209,33 +1254,36 @@ func TestThumbnailMapsUpstreamStatusesTimeoutsAndReadFailuresToSafeErrors(t *tes
 		cfg.HealthTimeout = time.Minute
 		client, err := New(cfg, &http.Client{Transport: transport})
 		require.NoError(t, err)
+		timer := &controlledHeaderTimer{}
+		client.startHeaderTimer = timer.start
 
-		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 		result := make(chan error, 1)
 		go func() {
 			_, thumbnailErr := client.Thumbnail(ctx, assetID, MediaRequest{})
 			result <- thumbnailErr
 		}()
 		select {
-		case deadlineObserved := <-started:
-			assert.True(t, deadlineObserved, "thumbnail request must carry its header timeout as a context deadline")
+		case <-started:
+			assert.Equal(t, cfg.HealthTimeout, timer.configuredDuration())
 		case <-time.After(time.Second):
 			t.Fatal("thumbnail request did not reach the controlled transport")
 		}
-		cancel()
+		require.True(t, timer.fire(), "controlled header timeout must still be active")
 		select {
 		case err = <-result:
 			requireSafeAdapterError(t, err, "Immich is unreachable", "private.internal", "configured.immich.internal", "secret-key")
 		case <-time.After(time.Second):
-			t.Fatal("thumbnail request did not stop after controlled cancellation")
+			t.Fatal("thumbnail request did not stop after its header timeout fired")
 		}
 		select {
 		case canceledErr := <-canceled:
 			require.ErrorIs(t, canceledErr, context.Canceled)
 		case <-time.After(time.Second):
-			t.Fatal("controlled thumbnail transport did not observe cancellation")
+			t.Fatal("controlled thumbnail transport did not observe its header timeout")
 		}
-		assert.Equal(t, 1, requestCount, "canceled thumbnail requests must not be retried")
+		assert.Equal(t, 1, requestCount, "timed out thumbnail requests must not be retried")
 	})
 
 	t.Run("streaming read failure", func(t *testing.T) {

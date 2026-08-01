@@ -74,11 +74,12 @@ func IsConfigurationError(err error) bool {
 // returns raw DTOs, source URLs, owner IDs, or library IDs. Paths and face
 // anchors appear only in normalized server-side repair evidence.
 type Client struct {
-	baseURL       *url.URL
-	apiKey        string
-	healthTimeout time.Duration
-	healthContext func(context.Context, time.Duration) (context.Context, context.CancelFunc)
-	httpClient    *http.Client
+	baseURL          *url.URL
+	apiKey           string
+	healthTimeout    time.Duration
+	healthContext    func(context.Context, time.Duration) (context.Context, context.CancelFunc)
+	startHeaderTimer func(time.Duration, func()) func() bool
+	httpClient       *http.Client
 }
 
 type searchMetadataRequest struct {
@@ -399,8 +400,14 @@ func New(cfg config.ImmichConfig, httpClient *http.Client) (*Client, error) {
 	}
 	return &Client{
 		baseURL: baseURL, apiKey: cfg.APIKey, healthTimeout: cfg.HealthTimeout,
-		healthContext: context.WithTimeout, httpClient: &safeHTTPClient,
+		healthContext: context.WithTimeout, startHeaderTimer: newHeaderTimer,
+		httpClient: &safeHTTPClient,
 	}, nil
+}
+
+func newHeaderTimer(timeout time.Duration, cancel func()) func() bool {
+	timer := time.AfterFunc(timeout, cancel)
+	return timer.Stop
 }
 
 // Check verifies the exact server version and the exact required read-only API
@@ -655,12 +662,12 @@ func (c *Client) media(ctx context.Context, assetID uuid.UUID, path []string, qu
 		return MediaResponse{}, errRequestFailed
 	}
 	requestCtx, cancel := context.WithCancel(ctx)
-	headerTimer := time.AfterFunc(c.healthTimeout, cancel)
+	stopHeaderTimer := c.startHeaderTimer(c.healthTimeout, cancel)
 	endpointParts := append([]string{"api", "assets", assetID.String()}, path...)
 	endpoint := c.baseURL.JoinPath(endpointParts...)
 	endpoint.RawQuery = query.Encode()
 	response, err := c.doMediaRequest(requestCtx, endpoint, accept, request, original)
-	if !headerTimer.Stop() {
+	if !stopHeaderTimer() {
 		if response != nil {
 			_ = response.Body.Close()
 		}
@@ -1247,11 +1254,11 @@ func (c *Client) Archive(ctx context.Context, assetIDs []uuid.UUID) (ArchiveResp
 		return ArchiveResponse{}, errInvalidResponse
 	}
 	requestCtx, cancel := context.WithCancel(ctx)
-	timer := time.AfterFunc(c.healthTimeout, cancel)
+	stopHeaderTimer := c.startHeaderTimer(c.healthTimeout, cancel)
 	endpoint := c.baseURL.JoinPath("api", "download", "archive")
 	req, err := http.NewRequestWithContext(requestCtx, http.MethodPost, endpoint.String(), bytes.NewReader(body))
 	if err != nil {
-		timer.Stop()
+		stopHeaderTimer()
 		cancel()
 		return ArchiveResponse{}, errCreateRequest
 	}
@@ -1259,7 +1266,7 @@ func (c *Client) Archive(ctx context.Context, assetIDs []uuid.UUID) (ArchiveResp
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-api-key", c.apiKey)
 	response, err := c.httpClient.Do(req)
-	if !timer.Stop() {
+	if !stopHeaderTimer() {
 		if response != nil {
 			_ = response.Body.Close()
 		}
