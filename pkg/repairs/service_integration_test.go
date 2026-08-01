@@ -173,6 +173,139 @@ func newRepairFixture(t *testing.T, anchorCount int) repairFixture {
 	return repairFixture{service: service, db: db, connector: connector, actor: actor, accessID: accessID, personID: personID, assetIDs: assetIDs, faceIDs: faceIDs, oldID: oldID}
 }
 
+type personAuthorizationSnapshot struct {
+	RecipientRoles                 []string
+	RecipientAccessGenerations     []string
+	CurrentAudienceSnapshotEntries []string
+	PublishedAudienceEntries       []string
+	CurrentAudienceEntitlements    []string
+}
+
+func addPersonAuthorizationFixture(t *testing.T, fixture repairFixture) {
+	t.Helper()
+	accessID, eventID, momentID := uuid.New(), uuid.New(), uuid.New()
+	snapshotID, publicationID, publishedMomentID := uuid.New(), uuid.New(), uuid.New()
+	var mediaID uuid.UUID
+	require.NoError(t, fixture.db.NewRaw(`
+		SELECT id FROM media_items WHERE immich_asset_id = ?
+	`, fixture.assetIDs[0]).Scan(context.Background(), &mediaID))
+	_, err := fixture.db.ExecContext(context.Background(), `
+		INSERT INTO person_roles (person_id, role, created_at)
+		VALUES (?, 'recipient', '2026-01-02T03:04:05Z');
+		INSERT INTO recipient_access_generations (
+			id, person_id, generation, state, is_current, onboarding_completed_at, created_at, updated_at
+		) VALUES (?, ?, 1, 'completed', true, '2026-01-02T03:04:05Z', '2026-01-02T03:04:05Z', '2026-01-02T03:04:05Z');
+		INSERT INTO events (id, lifecycle, title, grouping_timezone)
+		VALUES (?, 'published', 'Identity repair authorization', 'UTC');
+		INSERT INTO draft_moments (id, event_id, position, proposed_day, grouping_timezone)
+		VALUES (?, ?, 0, '2026-01-01', 'UTC');
+		INSERT INTO audience_snapshots (id, target_kind, target_id, approved_by_person_id, approved_at, label)
+		VALUES (?, 'moment', ?, ?, '2026-01-02T03:04:05Z', 'Shared');
+		INSERT INTO current_audience_snapshots (target_kind, target_id, snapshot_id)
+		VALUES ('moment', ?, ?);
+		INSERT INTO audience_snapshot_entries (snapshot_id, recipient_person_id, recipient_access_generation_id)
+		VALUES (?, ?, ?);
+		INSERT INTO publications (
+			id, event_id, revision, editable_version, published_by_person_id, notify_recipients, committed_at
+		) VALUES (?, ?, 1, 1, ?, false, '2026-01-02T03:04:05Z');
+		INSERT INTO published_event_revisions (
+			publication_id, event_id, title, description, grouping_timezone, created_at
+		) VALUES (?, ?, 'Identity repair authorization', '', 'UTC', '2026-01-02T03:04:05Z');
+		INSERT INTO published_moments (
+			id, publication_id, draft_moment_id, audience_snapshot_id, position,
+			title, proposed_day, cover_media_item_id
+		) VALUES (?, ?, ?, ?, 0, '', '2026-01-01', ?);
+		INSERT INTO audience_entries (published_moment_id, recipient_person_id, recipient_access_generation_id)
+		VALUES (?, ?, ?);
+		INSERT INTO published_media_placements (
+			published_moment_id, media_item_id, position, media_type, local_date_time
+		) VALUES (?, ?, 0, 'image', '2026-01-01T00:00:00Z');
+		INSERT INTO current_published_events (
+			event_id, publication_id, title, description, grouping_timezone, committed_at
+		) VALUES (?, ?, 'Identity repair authorization', '', 'UTC', '2026-01-02T03:04:05Z');
+		INSERT INTO current_published_placements (
+			event_id, publication_id, published_moment_id, media_item_id, position
+		) VALUES (?, ?, ?, ?, 0);
+		UPDATE events SET current_publication_id = ? WHERE id = ?;
+		INSERT INTO current_audience_entitlements (
+			event_id, publication_id, recipient_person_id, recipient_access_generation_id, media_item_id
+		) VALUES (?, ?, ?, ?, ?)
+	`, fixture.personID, accessID, fixture.personID,
+		eventID, momentID, eventID,
+		snapshotID, momentID, fixture.actor.PersonID, momentID, snapshotID,
+		snapshotID, fixture.personID, accessID,
+		publicationID, eventID, fixture.actor.PersonID, publicationID, eventID,
+		publishedMomentID, publicationID, momentID, snapshotID, mediaID,
+		publishedMomentID, fixture.personID, accessID, publishedMomentID, mediaID,
+		eventID, publicationID, eventID, publicationID, publishedMomentID, mediaID,
+		publicationID, eventID,
+		eventID, publicationID, fixture.personID, accessID, mediaID)
+	require.NoError(t, err)
+}
+
+func snapshotPersonAuthorization(t *testing.T, fixture repairFixture) personAuthorizationSnapshot {
+	t.Helper()
+	ctx := context.Background()
+	var snapshot personAuthorizationSnapshot
+	require.NoError(t, fixture.db.NewRaw(`
+		SELECT row_to_json(person_role)::text FROM (
+			SELECT person_id, role, created_at
+			FROM person_roles
+			WHERE person_id = ? AND role = 'recipient'
+		) AS person_role
+		ORDER BY person_role.person_id, person_role.role
+	`, fixture.personID).Scan(ctx, &snapshot.RecipientRoles))
+	require.NoError(t, fixture.db.NewRaw(`
+		SELECT row_to_json(access_generation)::text FROM (
+			SELECT id, person_id, generation, state, is_current, onboarding_completed_at,
+				ended_at, created_at, updated_at
+			FROM recipient_access_generations
+			WHERE person_id = ?
+		) AS access_generation
+		ORDER BY access_generation.generation, access_generation.id
+	`, fixture.personID).Scan(ctx, &snapshot.RecipientAccessGenerations))
+	require.NoError(t, fixture.db.NewRaw(`
+		SELECT row_to_json(entry)::text FROM (
+			SELECT current.target_kind, current.target_id, current.snapshot_id,
+				snapshot.target_kind AS snapshot_target_kind,
+				snapshot.target_id AS snapshot_target_id,
+				snapshot.approved_by_person_id, snapshot.approved_at, snapshot.label,
+				audience.recipient_person_id, audience.recipient_access_generation_id
+			FROM current_audience_snapshots AS current
+			JOIN audience_snapshots AS snapshot ON snapshot.id = current.snapshot_id
+			JOIN audience_snapshot_entries AS audience ON audience.snapshot_id = snapshot.id
+			WHERE audience.recipient_person_id = ?
+		) AS entry
+		ORDER BY entry.target_kind, entry.target_id, entry.snapshot_id,
+			entry.recipient_access_generation_id
+	`, fixture.personID).Scan(ctx, &snapshot.CurrentAudienceSnapshotEntries))
+	require.NoError(t, fixture.db.NewRaw(`
+		SELECT row_to_json(published_audience)::text FROM (
+			SELECT published_moment_id, recipient_person_id, recipient_access_generation_id
+			FROM audience_entries
+			WHERE recipient_person_id = ?
+		) AS published_audience
+		ORDER BY published_audience.published_moment_id,
+			published_audience.recipient_access_generation_id
+	`, fixture.personID).Scan(ctx, &snapshot.PublishedAudienceEntries))
+	require.NoError(t, fixture.db.NewRaw(`
+		SELECT row_to_json(current_entitlement)::text FROM (
+			SELECT event_id, publication_id, recipient_person_id,
+				recipient_access_generation_id, media_item_id
+			FROM current_audience_entitlements
+			WHERE recipient_person_id = ?
+		) AS current_entitlement
+		ORDER BY current_entitlement.event_id, current_entitlement.publication_id,
+			current_entitlement.recipient_access_generation_id, current_entitlement.media_item_id
+	`, fixture.personID).Scan(ctx, &snapshot.CurrentAudienceEntitlements))
+	require.Len(t, snapshot.RecipientRoles, 1)
+	require.Len(t, snapshot.RecipientAccessGenerations, 1)
+	require.Len(t, snapshot.CurrentAudienceSnapshotEntries, 1)
+	require.Len(t, snapshot.PublishedAudienceEntries, 1)
+	require.Len(t, snapshot.CurrentAudienceEntitlements, 1)
+	return snapshot
+}
+
 func reconcile(service *Service) error {
 	_, err := service.ReconcilePeople(context.Background())
 	return err
@@ -275,6 +408,8 @@ func addAnchorBacking(t *testing.T, fixture repairFixture, linkedAt time.Time, a
 
 func TestPersonMergeBecomesReviewAndSuppressesAttendanceUntilExplicitConfirmation(t *testing.T) {
 	fixture := newRepairFixture(t, 2)
+	addPersonAuthorizationFixture(t, fixture)
+	authorizationBefore := snapshotPersonAuthorization(t, fixture)
 	destination := uuid.New()
 	fixture.connector.people = []immich.PersonSummary{{SourceID: destination, Name: "Merged destination"}}
 	for _, assetID := range fixture.assetIDs {
@@ -284,6 +419,14 @@ func TestPersonMergeBecomesReviewAndSuppressesAttendanceUntilExplicitConfirmatio
 	}
 
 	require.NoError(t, reconcile(fixture.service))
+	assert.Equal(t, authorizationBefore, snapshotPersonAuthorization(t, fixture), "automatic reconciliation must not change authorization")
+	var linkedID uuid.UUID
+	var linkState string
+	require.NoError(t, fixture.db.NewRaw(`
+		SELECT immich_person_id, state FROM immich_person_links WHERE person_id = ?
+	`, fixture.personID).Scan(context.Background(), &linkedID, &linkState))
+	assert.Equal(t, fixture.oldID, linkedID)
+	assert.Equal(t, "needs_review", linkState)
 	suggestions, err := fixture.service.SuggestionPersonIDs(context.Background(), []uuid.UUID{destination, fixture.oldID})
 	require.NoError(t, err)
 	assert.Empty(t, suggestions)
@@ -296,13 +439,20 @@ func TestPersonMergeBecomesReviewAndSuppressesAttendanceUntilExplicitConfirmatio
 	assert.Len(t, candidate.Anchors, 2)
 	assert.Contains(t, candidate.Conflicts, "immich_person_missing")
 
-	var recipientBefore string
-	require.NoError(t, fixture.db.NewRaw(`SELECT row_to_json(g)::text FROM recipient_access_generations AS g`).Scan(context.Background(), &recipientBefore))
 	candidateID := uuid.MustParse(candidate.ID)
 	fixture.connector.faceCalls = nil
 	_, err = fixture.service.ConfirmPerson(context.Background(), fixture.actor, candidateID)
 	require.NoError(t, err)
+	assert.Equal(t, authorizationBefore, snapshotPersonAuthorization(t, fixture), "private repair confirmation must not change authorization")
 	assert.Len(t, fixture.connector.faceCalls, len(fixture.assetIDs), "confirmation must store the exact anchors it validated")
+	require.NoError(t, fixture.db.NewRaw(`
+		SELECT immich_person_id, state FROM immich_person_links WHERE person_id = ?
+	`, fixture.personID).Scan(context.Background(), &linkedID, &linkState))
+	assert.Equal(t, destination, linkedID)
+	assert.Equal(t, "linked", linkState)
+	suggestions, err = fixture.service.SuggestionPersonIDs(context.Background(), []uuid.UUID{fixture.oldID})
+	require.NoError(t, err)
+	assert.Empty(t, suggestions)
 	suggestions, err = fixture.service.SuggestionPersonIDs(context.Background(), []uuid.UUID{destination})
 	require.NoError(t, err)
 	assert.Equal(t, []uuid.UUID{fixture.personID}, suggestions)
@@ -314,32 +464,52 @@ func TestPersonMergeBecomesReviewAndSuppressesAttendanceUntilExplicitConfirmatio
 	assert.Len(t, listed.PersonCandidates[0].Anchors, 2)
 	_, err = fixture.service.ConfirmPerson(context.Background(), fixture.actor, candidateID)
 	assert.ErrorIs(t, err, ErrAlreadyResolved)
-
-	var recipientAfter string
-	require.NoError(t, fixture.db.NewRaw(`SELECT row_to_json(g)::text FROM recipient_access_generations AS g`).Scan(context.Background(), &recipientAfter))
-	assert.JSONEq(t, recipientBefore, recipientAfter)
-	// Audience tables arrive with publication work; repair confirmation deliberately has no write seam to them.
+	assert.Equal(t, authorizationBefore, snapshotPersonAuthorization(t, fixture), "repeated confirmation must not change authorization")
 }
 
 func TestPersonConfirmationRejectsChangedFaceEvidence(t *testing.T) {
 	fixture := newRepairFixture(t, 1)
+	addPersonAuthorizationFixture(t, fixture)
+	authorizationBefore := snapshotPersonAuthorization(t, fixture)
 	replacement := uuid.New()
 	fixture.connector.people = []immich.PersonSummary{{SourceID: replacement, Name: "Replacement"}}
 	faces := fixture.connector.faces[fixture.assetIDs[0]]
 	faces[0].PersonID = &replacement
 	fixture.connector.faces[fixture.assetIDs[0]] = faces
 	require.NoError(t, reconcile(fixture.service))
+	assert.Equal(t, authorizationBefore, snapshotPersonAuthorization(t, fixture), "automatic reconciliation must not change authorization")
 	listed, err := fixture.service.List(context.Background())
 	require.NoError(t, err)
 	require.Len(t, listed.PersonCandidates, 1)
+	candidateID := uuid.MustParse(listed.PersonCandidates[0].ID)
+	assert.Equal(t, "pending", listed.PersonCandidates[0].State)
+	assert.Equal(t, replacement.String(), listed.PersonCandidates[0].CandidateImmichPersonID)
+	var linkedID uuid.UUID
+	var linkState string
+	require.NoError(t, fixture.db.NewRaw(`
+		SELECT immich_person_id, state FROM immich_person_links WHERE person_id = ?
+	`, fixture.personID).Scan(context.Background(), &linkedID, &linkState))
+	assert.Equal(t, fixture.oldID, linkedID)
+	assert.Equal(t, "needs_review", linkState)
 
 	other := uuid.New()
 	fixture.connector.people = append(fixture.connector.people, immich.PersonSummary{SourceID: other, Name: "Other"})
 	faces[0].PersonID = &other
 	fixture.connector.faces[fixture.assetIDs[0]] = faces
-	_, err = fixture.service.ConfirmPerson(context.Background(), fixture.actor, uuid.MustParse(listed.PersonCandidates[0].ID))
+	_, err = fixture.service.ConfirmPerson(context.Background(), fixture.actor, candidateID)
 	assert.ErrorIs(t, err, ErrConflict)
-	suggestions, err := fixture.service.SuggestionPersonIDs(context.Background(), []uuid.UUID{replacement, other})
+	assert.Equal(t, authorizationBefore, snapshotPersonAuthorization(t, fixture), "rejected repair confirmation must not change authorization")
+	require.NoError(t, fixture.db.NewRaw(`
+		SELECT immich_person_id, state FROM immich_person_links WHERE person_id = ?
+	`, fixture.personID).Scan(context.Background(), &linkedID, &linkState))
+	assert.Equal(t, fixture.oldID, linkedID)
+	assert.Equal(t, "needs_review", linkState)
+	listed, err = fixture.service.List(context.Background())
+	require.NoError(t, err)
+	require.Len(t, listed.PersonCandidates, 1)
+	assert.Equal(t, candidateID.String(), listed.PersonCandidates[0].ID)
+	assert.Equal(t, "pending", listed.PersonCandidates[0].State)
+	suggestions, err := fixture.service.SuggestionPersonIDs(context.Background(), []uuid.UUID{fixture.oldID, replacement, other})
 	require.NoError(t, err)
 	assert.Empty(t, suggestions)
 }
@@ -462,6 +632,8 @@ func TestPersonReconciliationLocksPeopleBeforeLinks(t *testing.T) {
 
 func TestFaceReassignmentAndAnchorConflictRequireReview(t *testing.T) {
 	fixture := newRepairFixture(t, 2)
+	addPersonAuthorizationFixture(t, fixture)
+	authorizationBefore := snapshotPersonAuthorization(t, fixture)
 	other := uuid.New()
 	fixture.connector.people = append(fixture.connector.people, immich.PersonSummary{SourceID: other, Name: "Other cluster"})
 	faces := fixture.connector.faces[fixture.assetIDs[0]]
@@ -469,22 +641,46 @@ func TestFaceReassignmentAndAnchorConflictRequireReview(t *testing.T) {
 	fixture.connector.faces[fixture.assetIDs[0]] = faces
 
 	require.NoError(t, reconcile(fixture.service))
+	assert.Equal(t, authorizationBefore, snapshotPersonAuthorization(t, fixture), "automatic reconciliation must not change authorization")
+	var linkedID uuid.UUID
+	var linkState string
+	require.NoError(t, fixture.db.NewRaw(`
+		SELECT immich_person_id, state FROM immich_person_links WHERE person_id = ?
+	`, fixture.personID).Scan(context.Background(), &linkedID, &linkState))
+	assert.Equal(t, fixture.oldID, linkedID)
+	assert.Equal(t, "needs_review", linkState)
 	listed, err := fixture.service.List(context.Background())
 	require.NoError(t, err)
 	require.Len(t, listed.PersonCandidates, 1)
 	candidate := listed.PersonCandidates[0]
 	assert.Empty(t, candidate.CandidateImmichPersonID)
+	assert.Equal(t, "pending", candidate.State)
 	assert.True(t, candidate.PreviousImmichPersonPresent)
 	assert.Contains(t, candidate.Conflicts, "anchors_split_across_people")
 	suggestions, err := fixture.service.SuggestionPersonIDs(context.Background(), []uuid.UUID{fixture.oldID, other})
 	require.NoError(t, err)
 	assert.Empty(t, suggestions)
 
-	_, err = fixture.service.ConfirmPerson(context.Background(), fixture.actor, uuid.MustParse(candidate.ID))
+	candidateID := uuid.MustParse(candidate.ID)
+	_, err = fixture.service.ConfirmPerson(context.Background(), fixture.actor, candidateID)
 	require.NoError(t, err)
-	suggestions, err = fixture.service.SuggestionPersonIDs(context.Background(), []uuid.UUID{fixture.oldID, other})
+	assert.Equal(t, authorizationBefore, snapshotPersonAuthorization(t, fixture), "private repair confirmation must not change authorization")
+	require.NoError(t, fixture.db.NewRaw(`
+		SELECT immich_person_id, state FROM immich_person_links WHERE person_id = ?
+	`, fixture.personID).Scan(context.Background(), &linkedID, &linkState))
+	assert.Equal(t, fixture.oldID, linkedID)
+	assert.Equal(t, "linked", linkState)
+	suggestions, err = fixture.service.SuggestionPersonIDs(context.Background(), []uuid.UUID{other})
+	require.NoError(t, err)
+	assert.Empty(t, suggestions)
+	suggestions, err = fixture.service.SuggestionPersonIDs(context.Background(), []uuid.UUID{fixture.oldID})
 	require.NoError(t, err)
 	assert.Equal(t, []uuid.UUID{fixture.personID}, suggestions)
+	listed, err = fixture.service.List(context.Background())
+	require.NoError(t, err)
+	require.Len(t, listed.PersonCandidates, 1)
+	assert.Equal(t, candidateID.String(), listed.PersonCandidates[0].ID)
+	assert.Equal(t, "confirmed", listed.PersonCandidates[0].State)
 	var anchors int
 	require.NoError(t, fixture.db.NewRaw(`SELECT count(*) FROM immich_face_anchors WHERE person_id = ?`, fixture.personID).Scan(context.Background(), &anchors))
 	assert.Equal(t, 1, anchors, "confirmation keeps only anchors still assigned to the confirmed identity")
