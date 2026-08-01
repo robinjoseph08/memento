@@ -222,3 +222,105 @@ func ReturnedMarshal() func(providerRequest) ([]byte, error) {
 func ReturnedResponseWrapper() func(*Client, any) error {
 	return forwardResponse
 }
+
+type ExportedProviderRequest struct {
+	ID string `json:"id"`
+}
+
+type requestWithAnonymous struct {
+	Nested struct {
+		ID string `json:"id"`
+	} `json:"nested"`
+}
+
+type requestWithMap struct {
+	Nested map[string]string `json:"nested"`
+}
+
+type requestWithInterface struct {
+	Nested any `json:"nested"`
+}
+
+type requestWithExternalObject struct {
+	Nested bytes.Buffer `json:"nested"`
+}
+
+type requestWithValueLeaves struct {
+	When  time.Time     `json:"when"`
+	State responseState `json:"state"`
+}
+
+type responseState string
+
+type genericEnvelope[T any] struct {
+	Value T `json:"value"`
+}
+
+type responseWithRawFields struct {
+	Untagged json.RawMessage
+	Generic  genericEnvelope[json.RawMessage] `json:"generic"`
+	Ignored  json.RawMessage                  `json:"-"`
+	local    json.RawMessage
+}
+
+type localClient interface {
+	getJSON(int, string, any, error) error
+	getJSONQuery(int, string, any, any, error) error
+	doJSON(int, string, string, any, any, any, error) error
+	doJSONStatus(int, string, string, any, any, any, error, int) error
+}
+
+func ExportedRequestRoot() error {
+	_, err := marshalJSONRequest(ExportedProviderRequest{ID: "one"})
+	return err
+}
+
+func AnonymousRequestField() error {
+	_, err := marshalJSONRequest(requestWithAnonymous{})
+	return err
+}
+
+func MapRequestField() error {
+	_, err := marshalJSONRequest(requestWithMap{})
+	return err
+}
+
+func InterfaceRequestField() error {
+	_, err := marshalJSONRequest(requestWithInterface{})
+	return err
+}
+
+func ExternalObjectRequestField() error {
+	_, err := marshalJSONRequest(requestWithExternalObject{})
+	return err
+}
+
+func AllowedRequestValueLeaves() error {
+	_, err := marshalJSONRequest(requestWithValueLeaves{})
+	return err
+}
+
+func SemanticRawMessageFields(client *Client) error {
+	var response responseWithRawFields
+	return client.getJSON(0, "assets/one", &response, nil)
+}
+
+func LocalInterfaceBindResponse(client localClient) error {
+	response := map[string]string{}
+	return client.getJSON(0, "assets/one", &response, nil)
+}
+
+func LocalInterfaceQueryResponse(client localClient) error {
+	response := map[string]string{}
+	return client.getJSONQuery(0, "assets", nil, &response, nil)
+}
+
+func LocalInterfaceDoRequest(client localClient) error {
+	var response providerResponse
+	return client.doJSON(0, "POST", "assets", nil, map[string]string{"id": "one"}, &response, nil)
+}
+
+func LocalInterfaceDoStatusResponse(client localClient) error {
+	response := map[string]string{}
+	return client.doJSONStatus(0, "POST", "assets", nil, providerRequest{}, &response, nil, 200)
+}

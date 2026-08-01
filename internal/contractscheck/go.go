@@ -4,8 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"go/ast"
+	"go/token"
 	"go/types"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 
@@ -19,7 +21,8 @@ var errPackageLoading = errors.New("go package loading failed")
 type rootRule string
 
 const (
-	namedExportedStructRoot     rootRule = "named-exported-struct"
+	namedExportedRequestRoot    rootRule = "named-exported-request"
+	namedExportedResponseRoot   rootRule = "named-exported-response"
 	namedDependencyRequestRoot  rootRule = "named-dependency-request"
 	namedDependencyResponseRoot rootRule = "named-dependency-response"
 )
@@ -38,7 +41,13 @@ type functionBody struct {
 
 type callableTarget struct {
 	function       *types.Func
+	receiver       types.Type
 	argumentOffset int
+}
+
+type enforcedRoot struct {
+	typeOf types.Type
+	rule   rootRule
 }
 
 // CheckGo finds JSON contract roots crossing production HTTP and dependency seams.
@@ -67,7 +76,7 @@ func CheckGo(directory string, patterns ...string) ([]string, error) {
 	functions := collectFunctionBodies(loaded)
 	wrappers := discoverWrappers(functions)
 	var diagnostics []string
-	var providerRoots []types.Type
+	var enforcedRoots []enforcedRoot
 	for _, body := range functions {
 		ast.Inspect(body.declaration.Body, func(node ast.Node) bool {
 			call, ok := node.(*ast.CallExpr)
@@ -85,20 +94,19 @@ func CheckGo(directory string, patterns ...string) ([]string, error) {
 				if forwardedParameter(body, root, sink, wrappers) {
 					continue
 				}
-				if sink.rule == namedDependencyRequestRoot || sink.rule == namedDependencyResponseRoot {
-					providerRoots = append(providerRoots, body.pkg.TypesInfo.TypeOf(root))
-				}
+				rootType := body.pkg.TypesInfo.TypeOf(root)
 				problem := "unknown type"
 				if !isNilExpression(root) {
 					problem = describeInvalidRoot(body.pkg.TypesInfo.TypeOf(root), sink.rule)
 				}
 				if problem == "" {
+					enforcedRoots = append(enforcedRoots, enforcedRoot{typeOf: rootType, rule: sink.rule})
 					continue
 				}
 				position := body.pkg.Fset.Position(root.Pos())
 				expectation := "must be a named exported struct"
 				switch sink.rule {
-				case namedExportedStructRoot:
+				case namedExportedRequestRoot, namedExportedResponseRoot:
 				case namedDependencyRequestRoot:
 					expectation = "must be a named struct"
 				case namedDependencyResponseRoot:
@@ -114,7 +122,8 @@ func CheckGo(directory string, patterns ...string) ([]string, error) {
 		})
 	}
 	diagnostics = append(diagnostics, protectedFunctionValueDiagnostics(absoluteDirectory, loaded, wrappers)...)
-	diagnostics = append(diagnostics, rawMessageFieldDiagnostics(absoluteDirectory, loaded, providerRoots)...)
+	diagnostics = append(diagnostics, contractGraphDiagnostics(absoluteDirectory, loaded, enforcedRoots)...)
+	diagnostics = append(diagnostics, rawMessageFieldDiagnostics(absoluteDirectory, loaded, enforcedRoots)...)
 	slices.Sort(diagnostics)
 	return diagnostics, nil
 }
@@ -203,26 +212,26 @@ func callSinks(
 		return nil
 	}
 	function := target.function
-	sinks := directTransportSinks(function)
+	sinks := directTransportSinks(function, target.receiver)
 	if sinks == nil {
 		sinks = wrappers[function]
 	}
 	return offsetSinks(sinks, target.argumentOffset)
 }
 
-func directTransportSinks(function *types.Func) []transportSink {
-	if function.Pkg() != nil && function.Pkg().Path() == echoPackagePath {
+func directTransportSinks(function *types.Func, receiver types.Type) []transportSink {
+	if function.Pkg() != nil && (function.Pkg().Path() == echoPackagePath || isCompatibleLocalEchoInterfaceMethod(function, receiver)) {
 		switch function.Name() {
 		case "Bind":
-			return []transportSink{{argument: 0, kind: "request", rule: namedExportedStructRoot}}
+			return []transportSink{{argument: 0, kind: "request", rule: namedExportedRequestRoot}}
 		case "JSON", "JSONPretty":
-			return []transportSink{{argument: 1, kind: "response", rule: namedExportedStructRoot}}
+			return []transportSink{{argument: 1, kind: "response", rule: namedExportedResponseRoot}}
 		}
 	}
 	if isImmichRequestMarshal(function) {
 		return []transportSink{{argument: 0, kind: "Immich request", rule: namedDependencyRequestRoot}}
 	}
-	if isImmichClientMethod(function) {
+	if isImmichClientMethod(function) || isCompatibleImmichInterfaceMethod(function, receiver) {
 		switch function.Name() {
 		case "getJSON":
 			return []transportSink{{argument: 2, kind: "Immich response", rule: namedDependencyResponseRoot}}
@@ -236,6 +245,97 @@ func directTransportSinks(function *types.Func) []transportSink {
 		}
 	}
 	return nil
+}
+
+func isCompatibleLocalEchoInterfaceMethod(function *types.Func, receiver types.Type) bool {
+	if function.Pkg() == nil || function.Pkg().Path() == echoPackagePath || !isInterfaceType(receiver) {
+		return false
+	}
+	signature, _ := function.Type().(*types.Signature)
+	if signature == nil || signature.Variadic() || !isSingleErrorResult(signature.Results()) {
+		return false
+	}
+	params := signature.Params()
+	switch function.Name() {
+	case "Bind":
+		return params.Len() == 1 && isEmptyInterface(params.At(0).Type())
+	case "JSON":
+		return params.Len() == 2 && isIntType(params.At(0).Type()) && isEmptyInterface(params.At(1).Type())
+	case "JSONPretty":
+		return params.Len() == 3 && isIntType(params.At(0).Type()) && isEmptyInterface(params.At(1).Type()) && isStringType(params.At(2).Type())
+	default:
+		return false
+	}
+}
+
+func isCompatibleImmichInterfaceMethod(function *types.Func, receiver types.Type) bool {
+	if function.Pkg() == nil || !isImmichPackage(function.Pkg().Path()) || !isInterfaceType(receiver) {
+		return false
+	}
+	clientName, _ := function.Pkg().Scope().Lookup("Client").(*types.TypeName)
+	if clientName == nil {
+		return false
+	}
+	clientType, _ := clientName.Type().(*types.Named)
+	if clientType == nil {
+		return false
+	}
+	object, _, _ := types.LookupFieldOrMethod(types.NewPointer(clientType), true, function.Pkg(), function.Name())
+	clientMethod, _ := object.(*types.Func)
+	return clientMethod != nil && identicalCallableSignatures(function, clientMethod)
+}
+
+func identicalCallableSignatures(left, right *types.Func) bool {
+	leftSignature, _ := left.Type().(*types.Signature)
+	rightSignature, _ := right.Type().(*types.Signature)
+	if leftSignature == nil || rightSignature == nil || leftSignature.Variadic() != rightSignature.Variadic() {
+		return false
+	}
+	return identicalTuple(leftSignature.Params(), rightSignature.Params()) &&
+		identicalTuple(leftSignature.Results(), rightSignature.Results())
+}
+
+func identicalTuple(left, right *types.Tuple) bool {
+	if left.Len() != right.Len() {
+		return false
+	}
+	for index := range left.Len() {
+		if !types.Identical(left.At(index).Type(), right.At(index).Type()) {
+			return false
+		}
+	}
+	return true
+}
+
+func isInterfaceType(root types.Type) bool {
+	if root == nil {
+		return false
+	}
+	_, ok := types.Unalias(root).Underlying().(*types.Interface)
+	return ok
+}
+
+func isSingleErrorResult(results *types.Tuple) bool {
+	if results.Len() != 1 {
+		return false
+	}
+	errorType := types.Universe.Lookup("error").Type()
+	return types.Identical(results.At(0).Type(), errorType)
+}
+
+func isEmptyInterface(root types.Type) bool {
+	iface, ok := types.Unalias(root).Underlying().(*types.Interface)
+	return ok && iface.Empty()
+}
+
+func isIntType(root types.Type) bool {
+	basic, ok := types.Unalias(root).Underlying().(*types.Basic)
+	return ok && basic.Kind() == types.Int
+}
+
+func isStringType(root types.Type) bool {
+	basic, ok := types.Unalias(root).Underlying().(*types.Basic)
+	return ok && basic.Kind() == types.String
 }
 
 func isImmichPackage(packagePath string) bool {
@@ -281,7 +381,7 @@ func resolveCallable(expression ast.Expr, info *types.Info) (callableTarget, boo
 			if selection.Kind() == types.MethodExpr {
 				offset = 1
 			}
-			return callableTarget{function: function, argumentOffset: offset}, true
+			return callableTarget{function: function, receiver: selection.Recv(), argumentOffset: offset}, true
 		}
 		function, _ := info.Uses[expression.Sel].(*types.Func)
 		return callableTarget{function: function}, function != nil
@@ -310,28 +410,25 @@ func protectedFunctionValueDiagnostics(root string, loaded []*packages.Package, 
 				}
 				reference := callableReference(call.Fun)
 				target, ok := resolveCallable(reference, pkg.TypesInfo)
-				if ok && isProtectedTransportFunction(target.function, wrappers) {
+				if ok && isProtectedTransportFunction(target, wrappers) {
 					allowed[reference] = struct{}{}
 				}
 				return true
 			})
 			ast.Inspect(file, func(node ast.Node) bool {
 				var expression ast.Expr
-				var function *types.Func
+				var target callableTarget
 				switch node := node.(type) {
 				case *ast.SelectorExpr:
 					expression = node
-					target, ok := resolveCallable(node, pkg.TypesInfo)
-					if ok {
-						function = target.function
-					}
+					target, _ = resolveCallable(node, pkg.TypesInfo)
 				case *ast.Ident:
 					expression = node
-					function, _ = pkg.TypesInfo.Uses[node].(*types.Func)
+					target.function, _ = pkg.TypesInfo.Uses[node].(*types.Func)
 				default:
 					return true
 				}
-				if function == nil || !isProtectedTransportFunction(function, wrappers) {
+				if target.function == nil || !isProtectedTransportFunction(target, wrappers) {
 					return true
 				}
 				if _, ok := allowed[expression]; ok {
@@ -340,7 +437,7 @@ func protectedFunctionValueDiagnostics(root string, loaded []*packages.Package, 
 				position := pkg.Fset.Position(expression.Pos())
 				diagnostics = append(diagnostics, fmt.Sprintf(
 					"%s:%d:%d: protected JSON transport function %s must be called directly; function values must not be passed, stored, or returned",
-					relativePath(root, position.Filename), position.Line, position.Column, function.Name(),
+					relativePath(root, position.Filename), position.Line, position.Column, target.function.Name(),
 				))
 				return nodeTypeMayContainCallableChild(node)
 			})
@@ -360,8 +457,8 @@ func callableReference(expression ast.Expr) ast.Expr {
 	}
 }
 
-func isProtectedTransportFunction(function *types.Func, wrappers map[*types.Func][]transportSink) bool {
-	return len(directTransportSinks(function)) > 0 || len(wrappers[function]) > 0
+func isProtectedTransportFunction(target callableTarget, wrappers map[*types.Func][]transportSink) bool {
+	return len(directTransportSinks(target.function, target.receiver)) > 0 || len(wrappers[target.function]) > 0
 }
 
 func nodeTypeMayContainCallableChild(node ast.Node) bool {
@@ -457,6 +554,9 @@ func describeInvalidDependencyRequestRoot(root types.Type) string {
 	if named.Obj().Pkg() == nil || !isImmichPackage(named.Obj().Pkg().Path()) {
 		return "external struct " + named.Obj().Name()
 	}
+	if named.Obj().Exported() {
+		return "exported provider struct " + named.Obj().Name()
+	}
 	return ""
 }
 
@@ -531,104 +631,232 @@ func unparenthesized(expression ast.Expr) ast.Expr {
 	}
 }
 
-func rawMessageFieldDiagnostics(root string, loaded []*packages.Package, roots []types.Type) []string {
-	reachable := reachableImmichStructs(roots)
+func contractGraphDiagnostics(root string, loaded []*packages.Package, roots []enforcedRoot) []string {
 	var diagnostics []string
-	for _, pkg := range loaded {
-		if !isImmichPackage(pkg.PkgPath) {
+	visited := make(map[string]map[types.Type]struct{})
+	for _, enforced := range roots {
+		mode := string(enforced.rule)
+		if visited[mode] == nil {
+			visited[mode] = make(map[types.Type]struct{})
+		}
+		visitContractType(root, loaded, enforced.typeOf, enforced.rule, "", "", token.NoPos, visited[mode], &diagnostics)
+	}
+	return diagnostics
+}
+
+func visitContractType(
+	root string,
+	loaded []*packages.Package,
+	typeOf types.Type,
+	rule rootRule,
+	ownerName string,
+	fieldName string,
+	fieldPosition token.Pos,
+	visited map[types.Type]struct{},
+	diagnostics *[]string,
+) {
+	if typeOf == nil {
+		return
+	}
+	typeOf = types.Unalias(typeOf)
+	switch current := typeOf.(type) {
+	case *types.Pointer:
+		visitContractType(root, loaded, current.Elem(), rule, ownerName, fieldName, fieldPosition, visited, diagnostics)
+	case *types.Slice:
+		visitContractType(root, loaded, current.Elem(), rule, ownerName, fieldName, fieldPosition, visited, diagnostics)
+	case *types.Array:
+		visitContractType(root, loaded, current.Elem(), rule, ownerName, fieldName, fieldPosition, visited, diagnostics)
+	case *types.Map:
+		if !isMementoRoot(rule) {
+			appendGraphDiagnostic(root, loaded, fieldPosition, rule, ownerName, fieldName, "map", diagnostics)
+			return
+		}
+		visitContractType(root, loaded, current.Key(), rule, ownerName, fieldName, fieldPosition, visited, diagnostics)
+		visitContractType(root, loaded, current.Elem(), rule, ownerName, fieldName, fieldPosition, visited, diagnostics)
+	case *types.Interface:
+		appendGraphDiagnostic(root, loaded, fieldPosition, rule, ownerName, fieldName, "interface", diagnostics)
+	case *types.Struct:
+		appendGraphDiagnostic(root, loaded, fieldPosition, rule, ownerName, fieldName, "anonymous struct", diagnostics)
+	case *types.TypeParam:
+		appendGraphDiagnostic(root, loaded, fieldPosition, rule, ownerName, fieldName, "unresolved type parameter", diagnostics)
+	case *types.Named:
+		if _, ok := visited[current]; ok {
+			return
+		}
+		visited[current] = struct{}{}
+		underlying := current.Underlying()
+		if _, scalar := underlying.(*types.Basic); scalar {
+			return
+		}
+		if structure, ok := underlying.(*types.Struct); ok {
+			if !isMementoRoot(rule) {
+				object := current.Obj()
+				if object.Pkg() == nil || !isImmichPackage(object.Pkg().Path()) {
+					if isSerializedValueType(current, rule) {
+						return
+					}
+					appendGraphDiagnostic(root, loaded, fieldPosition, rule, ownerName, fieldName, "external struct "+object.Name(), diagnostics)
+					return
+				}
+				if object.Exported() {
+					appendGraphDiagnostic(root, loaded, fieldPosition, rule, ownerName, fieldName, "exported provider struct "+object.Name(), diagnostics)
+					return
+				}
+			}
+			visitContractStruct(root, loaded, current.Obj().Name(), structure, rule, visited, diagnostics)
+			return
+		}
+		visitContractType(root, loaded, underlying, rule, ownerName, fieldName, fieldPosition, visited, diagnostics)
+	case *types.Basic:
+		return
+	default:
+		appendGraphDiagnostic(root, loaded, fieldPosition, rule, ownerName, fieldName, typeCategory(current), diagnostics)
+	}
+}
+
+func visitContractStruct(
+	root string,
+	loaded []*packages.Package,
+	ownerName string,
+	structure *types.Struct,
+	rule rootRule,
+	visited map[types.Type]struct{},
+	diagnostics *[]string,
+) {
+	for index := range structure.NumFields() {
+		field := structure.Field(index)
+		if !isJSONField(field, structure.Tag(index)) {
 			continue
 		}
-		for _, file := range pkg.Syntax {
-			filename := pkg.Fset.Position(file.Pos()).Filename
-			if strings.HasSuffix(filename, "_test.go") {
-				continue
+		visitContractType(root, loaded, field.Type(), rule, ownerName, field.Name(), field.Pos(), visited, diagnostics)
+	}
+}
+
+func appendGraphDiagnostic(
+	root string,
+	loaded []*packages.Package,
+	positionToken token.Pos,
+	rule rootRule,
+	ownerName string,
+	fieldName string,
+	problem string,
+	diagnostics *[]string,
+) {
+	if ownerName == "" || fieldName == "" {
+		return
+	}
+	position := sourcePosition(loaded, positionToken)
+	kind := "request"
+	switch rule {
+	case namedExportedRequestRoot:
+	case namedExportedResponseRoot:
+		kind = "response"
+	case namedDependencyRequestRoot:
+		kind = "Immich request"
+	case namedDependencyResponseRoot:
+		kind = "Immich response"
+	}
+	*diagnostics = append(*diagnostics, fmt.Sprintf(
+		"%s:%d:%d: %s JSON contract graph %s.%s must not contain %s",
+		relativePath(root, position.Filename), position.Line, position.Column, kind, ownerName, fieldName, problem,
+	))
+}
+
+func rawMessageFieldDiagnostics(root string, loaded []*packages.Package, roots []enforcedRoot) []string {
+	var diagnostics []string
+	visited := make(map[types.Type]struct{})
+	var visit func(types.Type)
+	visit = func(typeOf types.Type) {
+		if typeOf == nil {
+			return
+		}
+		typeOf = types.Unalias(typeOf)
+		if _, ok := visited[typeOf]; ok {
+			return
+		}
+		visited[typeOf] = struct{}{}
+		switch current := typeOf.(type) {
+		case *types.Pointer:
+			visit(current.Elem())
+		case *types.Slice:
+			visit(current.Elem())
+		case *types.Array:
+			visit(current.Elem())
+		case *types.Map:
+			visit(current.Key())
+			visit(current.Elem())
+		case *types.Named:
+			object := current.Obj()
+			if object.Pkg() == nil || !isImmichPackage(object.Pkg().Path()) {
+				return
 			}
-			ast.Inspect(file, func(node ast.Node) bool {
-				typeSpec, ok := node.(*ast.TypeSpec)
-				if !ok {
-					return true
+			structure, ok := current.Underlying().(*types.Struct)
+			if !ok {
+				visit(current.Underlying())
+				return
+			}
+			for index := range structure.NumFields() {
+				field := structure.Field(index)
+				if !isJSONField(field, structure.Tag(index)) {
+					continue
 				}
-				typeName, _ := pkg.TypesInfo.Defs[typeSpec.Name].(*types.TypeName)
-				if _, ok := reachable[typeName]; !ok {
-					return false
-				}
-				structure, ok := typeSpec.Type.(*ast.StructType)
-				if !ok || !hasJSONFields(structure) {
-					return false
-				}
-				for _, field := range structure.Fields.List {
-					if !containsJSONRawMessage(pkg.TypesInfo.TypeOf(field.Type)) {
-						continue
-					}
-					position := pkg.Fset.Position(field.Type.Pos())
-					fieldName := "embedded"
-					if len(field.Names) > 0 {
-						fieldName = field.Names[0].Name
-					}
+				if containsJSONRawMessage(field.Type()) {
+					position := sourcePosition(loaded, field.Pos())
 					diagnostics = append(diagnostics, fmt.Sprintf(
 						"%s:%d:%d: Immich provider DTO %s.%s must not contain json.RawMessage fields",
-						relativePath(root, position.Filename), position.Line, position.Column, typeSpec.Name.Name, fieldName,
+						relativePath(root, position.Filename), position.Line, position.Column, object.Name(), field.Name(),
 					))
+					continue
 				}
-				return false
-			})
+				visit(field.Type())
+			}
+		}
+	}
+	for _, enforced := range roots {
+		if !isMementoRoot(enforced.rule) {
+			visit(enforced.typeOf)
 		}
 	}
 	return diagnostics
 }
 
-func reachableImmichStructs(roots []types.Type) map[*types.TypeName]struct{} {
-	result := make(map[*types.TypeName]struct{})
-	visited := make(map[types.Type]struct{})
-	var visit func(types.Type)
-	visit = func(root types.Type) {
-		if root == nil {
-			return
-		}
-		root = types.Unalias(root)
-		if _, ok := visited[root]; ok {
-			return
-		}
-		visited[root] = struct{}{}
-		switch root := root.(type) {
-		case *types.Pointer:
-			visit(root.Elem())
-		case *types.Slice:
-			visit(root.Elem())
-		case *types.Array:
-			visit(root.Elem())
-		case *types.Map:
-			visit(root.Key())
-			visit(root.Elem())
-		case *types.Struct:
-			for index := range root.NumFields() {
-				visit(root.Field(index).Type())
-			}
-		case *types.Named:
-			for index := range root.TypeArgs().Len() {
-				visit(root.TypeArgs().At(index))
-			}
-			object := root.Obj()
-			if object.Pkg() == nil || !isImmichPackage(object.Pkg().Path()) {
-				return
-			}
-			underlying := root.Underlying()
-			if _, ok := underlying.(*types.Struct); ok {
-				result[object] = struct{}{}
-			}
-			visit(underlying)
-		}
+func isJSONField(field *types.Var, tag string) bool {
+	if !field.Exported() {
+		return false
 	}
-	for _, root := range roots {
-		visit(root)
+	name := reflect.StructTag(tag).Get("json")
+	if index := strings.IndexByte(name, ','); index >= 0 {
+		name = name[:index]
 	}
-	return result
+	return name != "-"
 }
 
-func hasJSONFields(structure *ast.StructType) bool {
-	for _, field := range structure.Fields.List {
-		if field.Tag != nil && strings.Contains(field.Tag.Value, "json:") {
-			return true
+func sourcePosition(loaded []*packages.Package, position token.Pos) token.Position {
+	for _, pkg := range loaded {
+		candidate := pkg.Fset.Position(position)
+		if candidate.IsValid() && candidate.Filename != "" {
+			return candidate
+		}
+	}
+	return token.Position{}
+}
+
+func isMementoRoot(rule rootRule) bool {
+	return rule == namedExportedRequestRoot || rule == namedExportedResponseRoot
+}
+
+func isSerializedValueType(named *types.Named, rule rootRule) bool {
+	methodNames := []string{"MarshalJSON", "MarshalText"}
+	if rule == namedDependencyResponseRoot {
+		methodNames = []string{"UnmarshalJSON", "UnmarshalText"}
+	}
+	for _, receiver := range []types.Type{named, types.NewPointer(named)} {
+		methodSet := types.NewMethodSet(receiver)
+		for _, name := range methodNames {
+			selection := methodSet.Lookup(nil, name)
+			if selection != nil {
+				return true
+			}
 		}
 	}
 	return false

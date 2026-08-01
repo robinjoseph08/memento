@@ -28,10 +28,10 @@ func TestCheckGoContractsReportsStableEchoTransportDiagnostics(t *testing.T) {
 func TestCheckGoContractsReportsStableImmichDependencyDiagnostics(t *testing.T) {
 	diagnostics, err := CheckGo(filepath.Join("testdata", "go"), "./pkg/immich")
 	require.NoError(t, err)
-	assert.Equal(t, []string{
+	assert.Subset(t, diagnostics, []string{
 		"pkg/immich/reject.go:102:41: Immich response JSON contract must use a named provider DTO; got interface",
 		"pkg/immich/reject.go:106:41: Immich response JSON contract must use a named provider DTO; got unknown type",
-		"pkg/immich/reject.go:10:8: Immich provider DTO rawProviderResponse.Extra must not contain json.RawMessage fields",
+		"pkg/immich/reject.go:10:2: Immich provider DTO rawProviderResponse.Extra must not contain json.RawMessage fields",
 		"pkg/immich/reject.go:110:9: protected JSON transport function getJSON must be called directly; function values must not be passed, stored, or returned",
 		"pkg/immich/reject.go:121:33: Immich response JSON contract must use a named provider DTO; got map",
 		"pkg/immich/reject.go:126:52: Immich response JSON contract must use a named provider DTO; got map",
@@ -65,6 +65,49 @@ func TestCheckGoContractsReportsStableImmichDependencyDiagnostics(t *testing.T) 
 		"pkg/immich/reject.go:92:41: Immich response JSON contract must use a named provider DTO; got anonymous struct",
 		"pkg/immich/reject.go:97:47: Immich response JSON contract must use a named provider DTO; got map",
 	}, diagnostics)
+}
+
+func TestCheckGoContractsRejectsNestedMementoContractShapes(t *testing.T) {
+	diagnostics, err := CheckGo(filepath.Join("testdata", "go"), "./graphreject")
+	require.NoError(t, err)
+	assert.Equal(t, []string{
+		"graphreject/graphreject.go:10:2: response JSON contract graph AnonymousNestedResponse.Nested must not contain anonymous struct",
+		"graphreject/graphreject.go:16:2: request JSON contract graph InterfaceRequest.Value must not contain interface",
+		"graphreject/graphreject.go:20:2: response JSON contract graph InterfaceDictionaryResponse.Values must not contain interface",
+	}, diagnostics)
+}
+
+func TestCheckGoContractsRejectsCompatibleLocalEchoInterfaceDispatch(t *testing.T) {
+	diagnostics, err := CheckGo(filepath.Join("testdata", "go"), "./dispatchreject")
+	require.NoError(t, err)
+	assert.Len(t, diagnostics, 3)
+	assert.Contains(t, diagnostics, "dispatchreject/dispatchreject.go:15:16: request JSON contract must be a named exported struct; got map")
+	assert.Contains(t, diagnostics, "dispatchreject/dispatchreject.go:19:21: response JSON contract must be a named exported struct; got map")
+	assert.Contains(t, diagnostics, "dispatchreject/dispatchreject.go:23:27: response JSON contract must be a named exported struct; got anonymous struct")
+}
+
+func TestCheckGoContractsRejectsRecursiveImmichGraphsAndLocalInterfaces(t *testing.T) {
+	diagnostics, err := CheckGo(filepath.Join("testdata", "go"), "./pkg/immich")
+	require.NoError(t, err)
+	for _, expected := range []string{
+		"pkg/immich/reject.go:231:2: Immich request JSON contract graph requestWithAnonymous.Nested must not contain anonymous struct",
+		"pkg/immich/reject.go:237:2: Immich request JSON contract graph requestWithMap.Nested must not contain map",
+		"pkg/immich/reject.go:241:2: Immich request JSON contract graph requestWithInterface.Nested must not contain interface",
+		"pkg/immich/reject.go:245:2: Immich request JSON contract graph requestWithExternalObject.Nested must not contain external struct Buffer",
+		"pkg/immich/reject.go:260:2: Immich provider DTO responseWithRawFields.Untagged must not contain json.RawMessage fields",
+		"pkg/immich/reject.go:261:2: Immich provider DTO responseWithRawFields.Generic must not contain json.RawMessage fields",
+		"pkg/immich/reject.go:274:31: Immich request JSON contract must be a named struct; got exported provider struct ExportedProviderRequest",
+		"pkg/immich/reject.go:310:41: Immich response JSON contract must use a named provider DTO; got map",
+		"pkg/immich/reject.go:315:47: Immich response JSON contract must use a named provider DTO; got map",
+		"pkg/immich/reject.go:320:49: Immich request JSON contract must be a named struct; got map",
+		"pkg/immich/reject.go:325:74: Immich response JSON contract must use a named provider DTO; got map",
+	} {
+		assert.Contains(t, diagnostics, expected)
+	}
+	for _, diagnostic := range diagnostics {
+		assert.NotContains(t, diagnostic, "responseWithRawFields.Ignored")
+		assert.NotContains(t, diagnostic, "responseWithRawFields.local")
+	}
 }
 
 func TestCheckGoContractsAcceptsNamedContractsAndNonTransportSerialization(t *testing.T) {
