@@ -73,7 +73,7 @@ export function checkTypeScriptContracts(repositoryRoot, options = {}) {
 
   for (const sourceFile of sourceFiles) {
     const sourcePath = path.resolve(sourceFile.fileName);
-    if (sourcePath === apiPath) continue;
+    const isAPIFile = sourcePath === apiPath;
     const relative = normalizePath(path.relative(root, sourcePath));
     const report = (node, code, message) => {
       const start = sourceFile.getLineAndCharacterOfPosition(
@@ -84,8 +84,12 @@ export function checkTypeScriptContracts(repositoryRoot, options = {}) {
       );
     };
 
+    if (isAPIFile) {
+      reportUnauthorizedAPITransportFunctions(sourceFile, report, context);
+    }
+
     const visit = (node) => {
-      if (ts.isCallExpression(node)) {
+      if (ts.isCallExpression(node) && !isAPIFile) {
         const sharedName = directSharedAPIName(node.expression, context);
         if (isAllowedDirectSharedCall(node.expression, sharedName)) {
           if (sharedName === "apiJSON") {
@@ -97,25 +101,46 @@ export function checkTypeScriptContracts(repositoryRoot, options = {}) {
         }
       }
 
-      if (isReferenceExpression(node) && !isNestedReferenceName(node)) {
-        const sharedName = sharedAPINameForExpression(node, context);
+      if (
+        isReferenceExpression(node) &&
+        !isNestedReferenceName(node) &&
+        !declarationName(node)
+      ) {
+        const sharedAccess = sharedAPIAccess(node, context);
         if (
-          sharedName &&
+          sharedAccess &&
           !isImportReference(node) &&
-          (!isDirectCallTarget(node) || referenceName(node) !== sharedName)
+          (!isDirectCallTarget(node) ||
+            sharedAccess.computed ||
+            referenceName(node) !== sharedAccess.name)
         ) {
-          report(
-            node,
-            "shared-api-indirection",
-            `${sharedName} must be called directly and cannot be stored, passed, returned, rebound, or wrapped`,
-          );
+          const message = sharedAccess.name
+            ? `${sharedAccess.name} must be called directly and cannot be stored, passed, returned, rebound, or wrapped${sharedAccess.computed ? "; element access is forbidden" : ""}`
+            : "computed access to shared API exports is forbidden because the key cannot be resolved safely";
+          report(node, "shared-api-indirection", message);
         }
-        if (isGlobalFetchExpression(node, checker)) {
-          report(
-            node,
-            "direct-fetch",
-            "global fetch is only allowed in app/api.ts",
-          );
+
+        const fetchAccess = globalFetchAccess(node, checker);
+        if (fetchAccess) {
+          if (!isAPIFile) {
+            report(
+              node,
+              "direct-fetch",
+              "global fetch is only allowed in app/api.ts",
+            );
+          } else if (!isAllowedAPIGlobalFetch(node, fetchAccess, sourceFile)) {
+            const declaration = containingFunction(node);
+            if (
+              !declaration ||
+              isApprovedAPITransportFunction(declaration, sourceFile)
+            ) {
+              report(
+                node,
+                "api-transport-surface",
+                "only apiResponse, apiJSON, and apiNoContent may use or expose the app/api.ts transport flow",
+              );
+            }
+          }
         }
       }
 
@@ -132,8 +157,10 @@ export function checkTypeScriptContracts(repositoryRoot, options = {}) {
         if (propertySymbol && isGlobalFetchSymbol(propertySymbol)) {
           report(
             node.propertyName ?? node.name,
-            "direct-fetch",
-            "global fetch is only allowed in app/api.ts",
+            isAPIFile ? "api-transport-surface" : "direct-fetch",
+            isAPIFile
+              ? "only apiResponse, apiJSON, and apiNoContent may use or expose the app/api.ts transport flow"
+              : "global fetch is only allowed in app/api.ts",
           );
         }
       }
@@ -144,6 +171,163 @@ export function checkTypeScriptContracts(repositoryRoot, options = {}) {
   }
 
   return [...diagnostics].sort();
+}
+
+function reportUnauthorizedAPITransportFunctions(sourceFile, report, context) {
+  const exported = exportedFunctionLikes(sourceFile, context.checker);
+  const functions = [];
+  const collect = (node) => {
+    if (ts.isFunctionLike(node) && node.body) functions.push(node);
+    ts.forEachChild(node, collect);
+  };
+  collect(sourceFile);
+
+  for (const declaration of functions) {
+    if (isApprovedAPITransportFunction(declaration, sourceFile)) continue;
+    const hasTransport = containsTransportFlow(
+      declaration.body,
+      context,
+      new Set([declaration]),
+    );
+    const hasExportedSerialization =
+      exported.has(declaration) &&
+      containsJSONStringify(declaration.body, context.checker);
+    if (!hasTransport && !hasExportedSerialization) continue;
+    report(
+      functionLikeName(declaration),
+      "api-transport-surface",
+      "only apiResponse, apiJSON, and apiNoContent may use or expose the app/api.ts transport flow",
+    );
+  }
+}
+
+function containsTransportFlow(node, context, seen) {
+  let found = false;
+  const visit = (current) => {
+    if (found) return;
+    if (current !== node && ts.isFunctionLike(current)) return;
+    if (
+      isReferenceExpression(current) &&
+      !isNestedReferenceName(current) &&
+      !declarationName(current) &&
+      (sharedAPIAccess(current, context) ||
+        globalFetchAccess(current, context.checker))
+    ) {
+      found = true;
+      return;
+    }
+    if (ts.isCallExpression(current)) {
+      const called = calledFunctionLike(current.expression, context.checker);
+      if (
+        called &&
+        !seen.has(called) &&
+        path.resolve(called.getSourceFile().fileName) === context.apiPath
+      ) {
+        seen.add(called);
+        if (containsTransportFlow(called.body, context, seen)) {
+          found = true;
+          return;
+        }
+      }
+    }
+    ts.forEachChild(current, visit);
+  };
+  visit(node);
+  return found;
+}
+
+function calledFunctionLike(expression, checker) {
+  const symbol = expressionSymbol(unwrapExpression(expression), checker);
+  for (const declaration of symbol?.getDeclarations() ?? []) {
+    if (ts.isFunctionLike(declaration) && declaration.body) return declaration;
+    if (
+      ts.isVariableDeclaration(declaration) &&
+      declaration.initializer &&
+      ts.isFunctionLike(declaration.initializer) &&
+      declaration.initializer.body
+    ) {
+      return declaration.initializer;
+    }
+  }
+  return undefined;
+}
+
+function containsJSONStringify(node, checker) {
+  let found = false;
+  const visit = (current) => {
+    if (found) return;
+    if (current !== node && ts.isFunctionLike(current)) return;
+    if (isJSONStringifyCall(current, checker)) {
+      found = true;
+      return;
+    }
+    ts.forEachChild(current, visit);
+  };
+  visit(node);
+  return found;
+}
+
+function exportedFunctionLikes(sourceFile, checker) {
+  const result = new Set();
+  const moduleSymbol = checker.getSymbolAtLocation(sourceFile);
+  for (const exportedSymbol of moduleSymbol
+    ? checker.getExportsOfModule(moduleSymbol)
+    : []) {
+    const symbol = resolveAliasSymbol(exportedSymbol, checker);
+    for (const declaration of symbol?.getDeclarations() ?? []) {
+      if (ts.isFunctionLike(declaration) && declaration.body) {
+        result.add(declaration);
+      } else if (
+        ts.isVariableDeclaration(declaration) &&
+        declaration.initializer &&
+        ts.isFunctionLike(declaration.initializer)
+      ) {
+        result.add(declaration.initializer);
+      }
+    }
+  }
+  return result;
+}
+
+function functionLikeName(declaration) {
+  if (declaration.name) return declaration.name;
+  if (
+    ts.isVariableDeclaration(declaration.parent) &&
+    ts.isIdentifier(declaration.parent.name)
+  ) {
+    return declaration.parent.name;
+  }
+  return declaration;
+}
+
+function isApprovedAPITransportFunction(declaration, sourceFile) {
+  return (
+    ts.isFunctionDeclaration(declaration) &&
+    declaration.parent === sourceFile &&
+    declaration.name &&
+    sharedAPIFunctions.has(declaration.name.text) &&
+    declaration.modifiers?.some(
+      (modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword,
+    )
+  );
+}
+
+function containingFunction(node) {
+  for (let current = node.parent; current; current = current.parent) {
+    if (ts.isFunctionLike(current)) return current;
+  }
+  return undefined;
+}
+
+function isAllowedAPIGlobalFetch(node, access, sourceFile) {
+  const declaration = containingFunction(node);
+  return Boolean(
+    declaration &&
+    isApprovedAPITransportFunction(declaration, sourceFile) &&
+    !access.computed &&
+    isDirectCallTarget(node) &&
+    referenceName(node) === "fetch",
+  );
 }
 
 function checkResponseContract(call, report, context) {
@@ -461,6 +645,94 @@ function directSharedAPIName(expression, context) {
   return sharedAPINameForExpression(expression, context);
 }
 
+function sharedAPIAccess(expression, context) {
+  const directName = sharedAPINameForExpression(expression, context);
+  if (directName) {
+    return {
+      computed: ts.isElementAccessExpression(expression),
+      name: directName,
+    };
+  }
+  if (!ts.isElementAccessExpression(expression)) return undefined;
+
+  const protectedNames = protectedSharedAPINamesOnType(
+    expression.expression,
+    context,
+  );
+  if (protectedNames.size === 0) return undefined;
+  const key = constantStringValue(
+    expression.argumentExpression,
+    context.checker,
+    new Set(),
+    0,
+  );
+  if (key.known) {
+    return protectedNames.has(key.value)
+      ? { computed: true, name: key.value }
+      : undefined;
+  }
+  return { computed: true, name: undefined };
+}
+
+function protectedSharedAPINamesOnType(expression, context) {
+  const names = new Set();
+  const type = context.checker.getTypeAtLocation(unwrapExpression(expression));
+  for (const property of context.checker.getPropertiesOfType(type)) {
+    const name = sharedAPINameForSymbol(
+      resolveAliasSymbol(property, context.checker),
+      context,
+    );
+    if (name) names.add(name);
+  }
+  return names;
+}
+
+function globalFetchAccess(expression, checker) {
+  if (isGlobalFetchSymbol(expressionSymbol(expression, checker))) {
+    return { computed: ts.isElementAccessExpression(expression) };
+  }
+  if (!ts.isElementAccessExpression(expression)) return undefined;
+
+  const ownerType = checker.getTypeAtLocation(
+    unwrapExpression(expression.expression),
+  );
+  const fetchProperty = checker.getPropertyOfType(ownerType, "fetch");
+  if (!isGlobalFetchSymbol(resolveAliasSymbol(fetchProperty, checker))) {
+    return undefined;
+  }
+  const key = constantStringValue(
+    expression.argumentExpression,
+    checker,
+    new Set(),
+    0,
+  );
+  if (key.known && key.value !== "fetch") return undefined;
+  return { computed: true };
+}
+
+function constantStringValue(expression, checker, seen, depth) {
+  if (depth > maximumAnalysisDepth) return { known: false };
+  expression = unwrapExpression(expression);
+  if (ts.isStringLiteralLike(expression)) {
+    return { known: true, value: expression.text };
+  }
+  if (!ts.isIdentifier(expression)) return { known: false };
+  const symbol = expressionSymbol(expression, checker);
+  if (!symbol || seen.has(symbol)) return { known: false };
+  seen.add(symbol);
+  const declarations = symbol.getDeclarations() ?? [];
+  if (declarations.length !== 1) return { known: false };
+  const declaration = declarations[0];
+  if (
+    !ts.isVariableDeclaration(declaration) ||
+    !declaration.initializer ||
+    !isConstVariableDeclaration(declaration)
+  ) {
+    return { known: false };
+  }
+  return constantStringValue(declaration.initializer, checker, seen, depth + 1);
+}
+
 function sharedAPINameForExpression(expression, context) {
   return sharedAPINameForSymbol(
     expressionSymbol(expression, context.checker),
@@ -558,10 +830,6 @@ function bindingElementPropertySymbol(node, checker) {
   const type = checker.getTypeAtLocation(source);
   const symbol = checker.getPropertyOfType(type, name);
   return resolveAliasSymbol(symbol, checker);
-}
-
-function isGlobalFetchExpression(expression, checker) {
-  return isGlobalFetchSymbol(expressionSymbol(expression, checker));
 }
 
 function rootExpressionSymbol(expression, checker, options = {}) {

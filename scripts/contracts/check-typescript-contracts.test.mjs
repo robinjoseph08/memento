@@ -5,11 +5,12 @@ import { fileURLToPath } from "node:url";
 
 import { checkTypeScriptContracts } from "./check-typescript-contracts.mjs";
 
-const fixtureRoot = path.join(
+const testdataRoot = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
   "testdata",
-  "typescript",
 );
+const fixtureRoot = path.join(testdataRoot, "typescript");
+const unsafeAPIFixtureRoot = path.join(testdataRoot, "typescript-api-reject");
 
 test("reports stable response, request, and direct fetch diagnostics", () => {
   assert.deepEqual(
@@ -42,6 +43,44 @@ test("rejects shared API aliases, destructuring, bind/call/apply, parameters, re
       "app/indirection-reject.ts:32:9 [shared-api-indirection]: apiNoContent must be called directly and cannot be stored, passed, returned, rebound, or wrapped",
       "app/indirection-reject.ts:33:22 [shared-api-indirection]: apiJSON must be called directly and cannot be stored, passed, returned, rebound, or wrapped",
     ],
+  );
+});
+
+test("rejects computed protected API and global fetch access", () => {
+  assert.deepEqual(
+    checkTypeScriptContracts(fixtureRoot, {
+      include: ["app/computed-reject.ts"],
+    }),
+    [
+      "app/computed-reject.ts:10:9 [shared-api-indirection]: apiJSON must be called directly and cannot be stored, passed, returned, rebound, or wrapped; element access is forbidden",
+      "app/computed-reject.ts:11:9 [shared-api-indirection]: apiJSON must be called directly and cannot be stored, passed, returned, rebound, or wrapped; element access is forbidden",
+      "app/computed-reject.ts:12:22 [shared-api-indirection]: computed access to shared API exports is forbidden because the key cannot be resolved safely",
+      "app/computed-reject.ts:14:9 [direct-fetch]: global fetch is only allowed in app/api.ts",
+      "app/computed-reject.ts:15:9 [direct-fetch]: global fetch is only allowed in app/api.ts",
+      "app/computed-reject.ts:16:25 [direct-fetch]: global fetch is only allowed in app/api.ts",
+      "app/computed-reject.ts:18:25 [direct-fetch]: global fetch is only allowed in app/api.ts",
+      "app/computed-reject.ts:20:9 [shared-api-indirection]: apiJSON must be called directly and cannot be stored, passed, returned, rebound, or wrapped; element access is forbidden",
+      "app/computed-reject.ts:21:22 [direct-fetch]: global fetch is only allowed in app/api.ts",
+    ],
+  );
+});
+
+test("rejects exported app/api.ts transport wrappers", () => {
+  assert.deepEqual(checkTypeScriptContracts(unsafeAPIFixtureRoot), [
+    "app/api.ts:21:24 [api-transport-surface]: only apiResponse, apiJSON, and apiNoContent may use or expose the app/api.ts transport flow",
+    "app/api.ts:25:23 [api-transport-surface]: only apiResponse, apiJSON, and apiNoContent may use or expose the app/api.ts transport flow",
+    "app/api.ts:29:23 [api-transport-surface]: only apiResponse, apiJSON, and apiNoContent may use or expose the app/api.ts transport flow",
+    "app/api.ts:35:23 [api-transport-surface]: only apiResponse, apiJSON, and apiNoContent may use or expose the app/api.ts transport flow",
+    "app/api.ts:38:18 [shared-api-indirection]: apiJSON must be called directly and cannot be stored, passed, returned, rebound, or wrapped",
+    "app/api.ts:42:23 [api-transport-surface]: only apiResponse, apiJSON, and apiNoContent may use or expose the app/api.ts transport flow",
+    "app/api.ts:52:17 [api-transport-surface]: only apiResponse, apiJSON, and apiNoContent may use or expose the app/api.ts transport flow",
+  ]);
+});
+
+test("accepts the existing app/api.ts transport and validation shape", () => {
+  assert.deepEqual(
+    checkTypeScriptContracts(fixtureRoot, { include: ["app/api.ts"] }),
+    [],
   );
 });
 
