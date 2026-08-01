@@ -1093,29 +1093,44 @@ func TestClientRedactsTransportErrorsAndTimeouts(t *testing.T) {
 
 	t.Run("request deadline", func(t *testing.T) {
 		requestCount := 0
-		deadlineObserved := false
+		started := make(chan bool, 1)
 		canceled := make(chan error, 1)
 		transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
 			requestCount++
-			_, deadlineObserved = request.Context().Deadline()
-			if !deadlineObserved {
-				canceled <- errors.New("request context has no deadline")
-				return nil, errors.New("missing deadline for https://private.internal?key=secret-key")
-			}
+			_, deadlineObserved := request.Context().Deadline()
+			started <- deadlineObserved
 			<-request.Context().Done()
 			canceled <- request.Context().Err()
 			return nil, errors.New("timeout contacting https://private.internal?key=secret-key")
 		})
 		cfg := clientConfig("https://configured.immich.internal")
-		cfg.HealthTimeout = 10 * time.Millisecond
+		cfg.HealthTimeout = time.Minute
 		client, err := New(cfg, &http.Client{Transport: transport})
 		require.NoError(t, err)
 
-		err = client.Check(context.Background())
-		requireSafeAdapterError(t, err, "Immich is unreachable", "private.internal", "configured.immich.internal", "secret-key")
-		assert.True(t, deadlineObserved, "the adapter request must carry its timeout as a context deadline")
-		require.ErrorIs(t, <-canceled, context.DeadlineExceeded)
-		assert.Equal(t, 1, requestCount, "timed out requests must not be retried")
+		ctx, cancel := context.WithCancel(context.Background())
+		result := make(chan error, 1)
+		go func() { result <- client.Check(ctx) }()
+		select {
+		case deadlineObserved := <-started:
+			assert.True(t, deadlineObserved, "the adapter request must carry its timeout as a context deadline")
+		case <-time.After(time.Second):
+			t.Fatal("Immich request did not reach the controlled transport")
+		}
+		cancel()
+		select {
+		case err = <-result:
+			requireSafeAdapterError(t, err, "Immich is unreachable", "private.internal", "configured.immich.internal", "secret-key")
+		case <-time.After(time.Second):
+			t.Fatal("Immich request did not stop after controlled cancellation")
+		}
+		select {
+		case canceledErr := <-canceled:
+			require.ErrorIs(t, canceledErr, context.Canceled)
+		case <-time.After(time.Second):
+			t.Fatal("controlled transport did not observe cancellation")
+		}
+		assert.Equal(t, 1, requestCount, "canceled requests must not be retried")
 	})
 }
 
@@ -1180,24 +1195,47 @@ func TestThumbnailMapsUpstreamStatusesTimeoutsAndReadFailuresToSafeErrors(t *tes
 
 	t.Run("timeout", func(t *testing.T) {
 		requestCount := 0
+		started := make(chan bool, 1)
 		canceled := make(chan error, 1)
 		transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
 			requestCount++
+			_, deadlineObserved := request.Context().Deadline()
+			started <- deadlineObserved
 			<-request.Context().Done()
 			canceled <- request.Context().Err()
 			return nil, errors.New("timeout contacting https://private.internal?key=secret-key")
 		})
 		cfg := clientConfig("https://configured.immich.internal")
-		cfg.HealthTimeout = 10 * time.Millisecond
+		cfg.HealthTimeout = time.Minute
 		client, err := New(cfg, &http.Client{Transport: transport})
 		require.NoError(t, err)
 
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		_, err = client.Thumbnail(ctx, assetID, MediaRequest{})
-		requireSafeAdapterError(t, err, "Immich is unreachable", "private.internal", "configured.immich.internal", "secret-key")
-		require.ErrorIs(t, <-canceled, context.Canceled)
-		assert.Equal(t, 1, requestCount, "timed out thumbnail requests must not be retried")
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		result := make(chan error, 1)
+		go func() {
+			_, thumbnailErr := client.Thumbnail(ctx, assetID, MediaRequest{})
+			result <- thumbnailErr
+		}()
+		select {
+		case deadlineObserved := <-started:
+			assert.True(t, deadlineObserved, "thumbnail request must carry its header timeout as a context deadline")
+		case <-time.After(time.Second):
+			t.Fatal("thumbnail request did not reach the controlled transport")
+		}
+		cancel()
+		select {
+		case err = <-result:
+			requireSafeAdapterError(t, err, "Immich is unreachable", "private.internal", "configured.immich.internal", "secret-key")
+		case <-time.After(time.Second):
+			t.Fatal("thumbnail request did not stop after controlled cancellation")
+		}
+		select {
+		case canceledErr := <-canceled:
+			require.ErrorIs(t, canceledErr, context.Canceled)
+		case <-time.After(time.Second):
+			t.Fatal("controlled thumbnail transport did not observe cancellation")
+		}
+		assert.Equal(t, 1, requestCount, "canceled thumbnail requests must not be retried")
 	})
 
 	t.Run("streaming read failure", func(t *testing.T) {

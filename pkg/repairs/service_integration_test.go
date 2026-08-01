@@ -174,11 +174,16 @@ func newRepairFixture(t *testing.T, anchorCount int) repairFixture {
 }
 
 type personAuthorizationSnapshot struct {
-	RecipientRoles                 []string
-	RecipientAccessGenerations     []string
-	CurrentAudienceSnapshotEntries []string
-	PublishedAudienceEntries       []string
-	CurrentAudienceEntitlements    []string
+	RecipientRoles                 string
+	RecipientAccessGenerations     string
+	DraftMomentReview              string
+	Attendance                     string
+	AudienceOverrides              string
+	AudienceProposals              string
+	AudienceReasons                string
+	CurrentAudienceSnapshotEntries string
+	PublishedAudienceEntries       string
+	CurrentAudienceEntitlements    string
 }
 
 func addPersonAuthorizationFixture(t *testing.T, fixture repairFixture) {
@@ -241,6 +246,26 @@ func addPersonAuthorizationFixture(t *testing.T, fixture repairFixture) {
 		publicationID, eventID,
 		eventID, publicationID, fixture.personID, accessID, mediaID)
 	require.NoError(t, err)
+	_, err = fixture.db.ExecContext(context.Background(), `
+		UPDATE draft_moments
+		SET attendance_complete = true, audience_complete = true, review_version = 7
+		WHERE id = ?;
+		INSERT INTO attendance (moment_id, person_id, source, confirmed_by_person_id, confirmed_at)
+		VALUES (?, ?, 'manual', ?, '2026-01-02T03:04:05Z');
+		INSERT INTO audience_overrides (
+			target_kind, target_id, recipient_person_id, state, updated_by_person_id, updated_at
+		) VALUES ('moment', ?, ?, 'included', ?, '2026-01-02T03:04:05Z');
+		INSERT INTO audience_proposals (
+			target_kind, target_id, recipient_person_id, recipient_access_generation_id, included, recalculated_at
+		) VALUES ('moment', ?, ?, ?, true, '2026-01-02T03:04:05Z');
+		INSERT INTO audience_reasons (target_kind, target_id, recipient_person_id, kind)
+		VALUES ('moment', ?, ?, 'manually_included')
+	`, momentID,
+		momentID, fixture.personID, fixture.actor.PersonID,
+		momentID, fixture.personID, fixture.actor.PersonID,
+		momentID, fixture.personID, accessID,
+		momentID, fixture.personID)
+	require.NoError(t, err)
 }
 
 func snapshotPersonAuthorization(t *testing.T, fixture repairFixture) personAuthorizationSnapshot {
@@ -248,24 +273,68 @@ func snapshotPersonAuthorization(t *testing.T, fixture repairFixture) personAuth
 	ctx := context.Background()
 	var snapshot personAuthorizationSnapshot
 	require.NoError(t, fixture.db.NewRaw(`
-		SELECT row_to_json(person_role)::text FROM (
+		SELECT COALESCE(jsonb_agg(to_jsonb(person_role) ORDER BY person_role.person_id, person_role.role), '[]'::jsonb)::text
+		FROM (
 			SELECT person_id, role, created_at
 			FROM person_roles
 			WHERE person_id = ? AND role = 'recipient'
 		) AS person_role
-		ORDER BY person_role.person_id, person_role.role
 	`, fixture.personID).Scan(ctx, &snapshot.RecipientRoles))
 	require.NoError(t, fixture.db.NewRaw(`
-		SELECT row_to_json(access_generation)::text FROM (
+		SELECT COALESCE(jsonb_agg(to_jsonb(access_generation) ORDER BY access_generation.generation, access_generation.id), '[]'::jsonb)::text
+		FROM (
 			SELECT id, person_id, generation, state, is_current, onboarding_completed_at,
 				ended_at, created_at, updated_at
 			FROM recipient_access_generations
 			WHERE person_id = ?
 		) AS access_generation
-		ORDER BY access_generation.generation, access_generation.id
 	`, fixture.personID).Scan(ctx, &snapshot.RecipientAccessGenerations))
 	require.NoError(t, fixture.db.NewRaw(`
-		SELECT row_to_json(entry)::text FROM (
+		SELECT COALESCE(jsonb_agg(to_jsonb(moment_review) ORDER BY moment_review.id), '[]'::jsonb)::text
+		FROM (
+			SELECT moment.id, moment.attendance_complete, moment.audience_complete, moment.review_version
+			FROM draft_moments AS moment
+			JOIN attendance ON attendance.moment_id = moment.id
+			WHERE attendance.person_id = ?
+		) AS moment_review
+	`, fixture.personID).Scan(ctx, &snapshot.DraftMomentReview))
+	require.NoError(t, fixture.db.NewRaw(`
+		SELECT COALESCE(jsonb_agg(to_jsonb(attendance_state) ORDER BY attendance_state.moment_id,
+			attendance_state.person_id), '[]'::jsonb)::text
+		FROM (
+			SELECT moment_id, person_id, source, confirmed_by_person_id, confirmed_at
+			FROM attendance WHERE person_id = ?
+		) AS attendance_state
+	`, fixture.personID).Scan(ctx, &snapshot.Attendance))
+	require.NoError(t, fixture.db.NewRaw(`
+		SELECT COALESCE(jsonb_agg(to_jsonb(audience_override) ORDER BY audience_override.target_kind,
+			audience_override.target_id, audience_override.recipient_person_id), '[]'::jsonb)::text
+		FROM (
+			SELECT target_kind, target_id, recipient_person_id, state, updated_by_person_id, updated_at
+			FROM audience_overrides WHERE recipient_person_id = ?
+		) AS audience_override
+	`, fixture.personID).Scan(ctx, &snapshot.AudienceOverrides))
+	require.NoError(t, fixture.db.NewRaw(`
+		SELECT COALESCE(jsonb_agg(to_jsonb(audience_proposal) ORDER BY audience_proposal.target_kind,
+			audience_proposal.target_id, audience_proposal.recipient_person_id), '[]'::jsonb)::text
+		FROM (
+			SELECT target_kind, target_id, recipient_person_id, recipient_access_generation_id,
+				included, recalculated_at
+			FROM audience_proposals WHERE recipient_person_id = ?
+		) AS audience_proposal
+	`, fixture.personID).Scan(ctx, &snapshot.AudienceProposals))
+	require.NoError(t, fixture.db.NewRaw(`
+		SELECT COALESCE(jsonb_agg(to_jsonb(audience_reason) ORDER BY audience_reason.target_kind,
+			audience_reason.target_id, audience_reason.recipient_person_id, audience_reason.kind), '[]'::jsonb)::text
+		FROM (
+			SELECT target_kind, target_id, recipient_person_id, kind
+			FROM audience_reasons WHERE recipient_person_id = ?
+		) AS audience_reason
+	`, fixture.personID).Scan(ctx, &snapshot.AudienceReasons))
+	require.NoError(t, fixture.db.NewRaw(`
+		SELECT COALESCE(jsonb_agg(to_jsonb(entry) ORDER BY entry.target_kind, entry.target_id,
+			entry.snapshot_id, entry.recipient_access_generation_id), '[]'::jsonb)::text
+		FROM (
 			SELECT current.target_kind, current.target_id, current.snapshot_id,
 				snapshot.target_kind AS snapshot_target_kind,
 				snapshot.target_id AS snapshot_target_id,
@@ -276,33 +345,37 @@ func snapshotPersonAuthorization(t *testing.T, fixture repairFixture) personAuth
 			JOIN audience_snapshot_entries AS audience ON audience.snapshot_id = snapshot.id
 			WHERE audience.recipient_person_id = ?
 		) AS entry
-		ORDER BY entry.target_kind, entry.target_id, entry.snapshot_id,
-			entry.recipient_access_generation_id
 	`, fixture.personID).Scan(ctx, &snapshot.CurrentAudienceSnapshotEntries))
 	require.NoError(t, fixture.db.NewRaw(`
-		SELECT row_to_json(published_audience)::text FROM (
+		SELECT COALESCE(jsonb_agg(to_jsonb(published_audience) ORDER BY published_audience.published_moment_id,
+			published_audience.recipient_access_generation_id), '[]'::jsonb)::text
+		FROM (
 			SELECT published_moment_id, recipient_person_id, recipient_access_generation_id
 			FROM audience_entries
 			WHERE recipient_person_id = ?
 		) AS published_audience
-		ORDER BY published_audience.published_moment_id,
-			published_audience.recipient_access_generation_id
 	`, fixture.personID).Scan(ctx, &snapshot.PublishedAudienceEntries))
 	require.NoError(t, fixture.db.NewRaw(`
-		SELECT row_to_json(current_entitlement)::text FROM (
+		SELECT COALESCE(jsonb_agg(to_jsonb(current_entitlement) ORDER BY current_entitlement.event_id,
+			current_entitlement.publication_id, current_entitlement.recipient_access_generation_id,
+			current_entitlement.media_item_id), '[]'::jsonb)::text
+		FROM (
 			SELECT event_id, publication_id, recipient_person_id,
 				recipient_access_generation_id, media_item_id
 			FROM current_audience_entitlements
 			WHERE recipient_person_id = ?
 		) AS current_entitlement
-		ORDER BY current_entitlement.event_id, current_entitlement.publication_id,
-			current_entitlement.recipient_access_generation_id, current_entitlement.media_item_id
 	`, fixture.personID).Scan(ctx, &snapshot.CurrentAudienceEntitlements))
-	require.Len(t, snapshot.RecipientRoles, 1)
-	require.Len(t, snapshot.RecipientAccessGenerations, 1)
-	require.Len(t, snapshot.CurrentAudienceSnapshotEntries, 1)
-	require.Len(t, snapshot.PublishedAudienceEntries, 1)
-	require.Len(t, snapshot.CurrentAudienceEntitlements, 1)
+	require.NotEqual(t, "[]", snapshot.RecipientRoles)
+	require.NotEqual(t, "[]", snapshot.RecipientAccessGenerations)
+	require.NotEqual(t, "[]", snapshot.DraftMomentReview)
+	require.NotEqual(t, "[]", snapshot.Attendance)
+	require.NotEqual(t, "[]", snapshot.AudienceOverrides)
+	require.NotEqual(t, "[]", snapshot.AudienceProposals)
+	require.NotEqual(t, "[]", snapshot.AudienceReasons)
+	require.NotEqual(t, "[]", snapshot.CurrentAudienceSnapshotEntries)
+	require.NotEqual(t, "[]", snapshot.PublishedAudienceEntries)
+	require.NotEqual(t, "[]", snapshot.CurrentAudienceEntitlements)
 	return snapshot
 }
 

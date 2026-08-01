@@ -45,6 +45,31 @@ func TestReleaseGateWiringRunsCompleteImmichContract(t *testing.T) {
 	slices.Sort(actual)
 	assert.Equal(t, expected, actual, "the CI matrix executable task closure must match mise ci")
 
+	var matrixExecutionSteps int
+	for _, step := range ciSuite.Steps {
+		if strings.TrimSpace(step.Run) != `mise run ${{ matrix.task }}` {
+			continue
+		}
+		matrixExecutionSteps++
+		assert.Zero(t, step.ContinueOnError.Kind, "the CI matrix execution step must fail its job when a task fails")
+	}
+	require.Equal(t, 1, matrixExecutionSteps, "CI must execute every declared matrix task exactly once")
+
+	ciValidation, ok := ciWorkflow.Jobs["validate"]
+	require.True(t, ok, "CI workflow must define its aggregate validation job")
+	assert.Contains(t, workflowNeeds(t, ciValidation.Needs), "suite")
+	assert.Equal(t, `${{ always() }}`, ciValidation.If, "aggregate validation must run even when a matrix task fails")
+	var aggregateFailureChecks int
+	for _, step := range ciValidation.Steps {
+		if strings.TrimSpace(step.Run) != `test "$SUITE_RESULT" = success` {
+			continue
+		}
+		aggregateFailureChecks++
+		assert.Equal(t, `${{ needs.suite.result }}`, step.Env["SUITE_RESULT"])
+		assert.Zero(t, step.ContinueOnError.Kind, "aggregate validation must fail when the suite did not succeed")
+	}
+	require.Equal(t, 1, aggregateFailureChecks, "CI must convert any matrix failure into a failed reusable workflow")
+
 	validation, ok := releaseWorkflow.Jobs["validation"]
 	require.True(t, ok, "release workflow must define the validation job")
 	assert.Equal(t, "./.github/workflows/ci.yml", validation.Uses, "release validation must invoke the complete CI workflow")
@@ -160,8 +185,15 @@ type workflowDefinition struct {
 }
 
 type workflowJobDefinition struct {
-	Needs    yaml.Node `yaml:"needs"`
-	Uses     string    `yaml:"uses"`
+	Needs yaml.Node `yaml:"needs"`
+	Uses  string    `yaml:"uses"`
+	If    string    `yaml:"if"`
+	Steps []struct {
+		Name            string            `yaml:"name"`
+		Run             string            `yaml:"run"`
+		Env             map[string]string `yaml:"env"`
+		ContinueOnError yaml.Node         `yaml:"continue-on-error"`
+	} `yaml:"steps"`
 	Strategy struct {
 		Matrix struct {
 			Include []struct {
