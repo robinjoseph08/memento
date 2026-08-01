@@ -1,11 +1,15 @@
 package tests
 
 import (
+	"context"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -35,15 +39,77 @@ func TestProductionTopologyAvoidsComposeBuildDelegation(t *testing.T) {
 
 func TestImmichBootstrapHasSingleAttempt(t *testing.T) {
 	script := readRepositoryFile(t, "tests/test-immich-contract.sh")
-	starts := 0
-	for _, line := range strings.Split(script, "\n") {
-		if strings.HasPrefix(strings.TrimSpace(line), "compose up ") {
-			starts++
-		}
-	}
+	starts := strings.Count(script, "compose up ")
 	assert.Equal(t, 1, starts, "Immich bootstrap must start the fixture exactly once")
-	assert.NotContains(t, script, "project_base", "Immich bootstrap must not create per-attempt fixture projects")
-	assert.NotContains(t, strings.ToLower(script), "retrying", "Immich bootstrap must expose its first failure instead of retrying")
+	if strings.Contains(script, "project_base") {
+		t.Fatal("Immich bootstrap must not create per-attempt fixture projects")
+	}
+	if strings.Contains(strings.ToLower(script), "retrying") {
+		t.Fatal("Immich bootstrap must expose its first failure instead of retrying")
+	}
+	if strings.Contains(script, "compose logs") {
+		t.Fatal("Immich failures must expose status without raw service logs")
+	}
+	if !strings.Contains(script, "down --volumes --remove-orphans") {
+		t.Fatal("Immich cleanup must remove disposable volumes and orphaned containers")
+	}
+}
+
+func TestImmichExternalFixtureMountIsNarrowAndReadOnly(t *testing.T) {
+	compose := readRepositoryFile(t, "tests/fixtures/immich-contract.compose.yaml")
+	if !strings.Contains(compose, "../../pkg/immich/testdata/external:/external:ro") {
+		t.Fatal("Immich must mount the external fixture read-only")
+	}
+	if strings.Contains(compose, "../../pkg/immich/testdata:/external") {
+		t.Fatal("Immich must not mount unrelated adapter fixtures")
+	}
+}
+
+func TestImmichBootstrapSanitizesFailureAndRunsCleanup(t *testing.T) {
+	temporaryDirectory := t.TempDir()
+	dockerLog := filepath.Join(temporaryDirectory, "docker.log")
+	fakeDocker := filepath.Join(temporaryDirectory, "docker")
+	require.NoError(t, os.WriteFile(fakeDocker, []byte(`#!/bin/sh
+printf '%s\n' "$*" >> "$MEMENTO_FAKE_DOCKER_LOG"
+printf '%s\n' 'unsafe /private/fixture-source/path memento-contract@example.com testpassword' >&2
+case " $* " in
+  *" up "*) exit 1 ;;
+  *" down "*) exit 0 ;;
+  *) exit 1 ;;
+esac
+`), 0o700))
+
+	commandContext, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	command := exec.CommandContext(commandContext, "sh", "test-immich-contract.sh")
+	command.Dir = "."
+	command.Env = append(os.Environ(),
+		"PATH="+temporaryDirectory+":"+os.Getenv("PATH"),
+		"MEMENTO_FAKE_DOCKER_LOG="+dockerLog,
+	)
+	output, err := command.CombinedOutput()
+	if err == nil {
+		t.Fatal("the injected Compose startup failure must fail the harness")
+	}
+	diagnostics := string(output)
+	if !strings.Contains(diagnostics, "Pinned Immich fixture failed to start") ||
+		!strings.Contains(diagnostics, "server_state=unavailable") {
+		t.Fatal("Immich failure diagnostics omitted their safe classification")
+	}
+	if strings.Contains(diagnostics, "/private/fixture-source/path") ||
+		strings.Contains(diagnostics, "memento-contract@example.com") ||
+		strings.Contains(diagnostics, "testpassword") {
+		t.Fatal("Immich failure diagnostics exposed unsafe fixture data")
+	}
+
+	invocations, readErr := os.ReadFile(dockerLog)
+	if readErr != nil {
+		t.Fatal("fake Docker invocation log was unavailable")
+	}
+	invocationLog := string(invocations)
+	if !strings.Contains(invocationLog, " up ") || !strings.Contains(invocationLog, " down ") {
+		t.Fatal("Immich failure cleanup did not run after fixture startup failed")
+	}
 }
 
 type taskDefinition struct {

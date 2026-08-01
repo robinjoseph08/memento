@@ -14,6 +14,7 @@ services:
       - "127.0.0.1::2283"
     volumes:
       - immich-data:/data
+      - ../../pkg/immich/testdata/external:/external:ro
     depends_on:
       database:
         condition: service_healthy
