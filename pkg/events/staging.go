@@ -38,7 +38,7 @@ type StagedChange struct {
 	Count               int                     `json:"count"`
 	MediaItemIDs        []string                `json:"media_item_ids"`
 	MomentIDs           []string                `json:"moment_ids"`
-	EventMetadataFields []string                `json:"event_metadata_fields,omitempty" tstype:"(\"title\" | \"description\" | \"place_labels\" | \"grouping_timezone\")[]"`
+	EventMetadataFields []string                `json:"event_metadata_fields,omitempty" tstype:"(\"title\" | \"description\" | \"date_start\" | \"date_end\" | \"selected_cover_media_item_id\" | \"place_labels\" | \"grouping_timezone\")[]"`
 	RemovedMedia        []StagedRemovedMedia    `json:"removed_media,omitempty"`
 	DeletedMoments      []StagedDeletedMoment   `json:"deleted_moments,omitempty"`
 	RecipientAccess     []StagedRecipientAccess `json:"recipient_access,omitempty"`

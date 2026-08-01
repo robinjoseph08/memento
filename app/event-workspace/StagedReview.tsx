@@ -1,3 +1,4 @@
+import { formatDateRange } from "../format";
 import type { Event, MediaItem, StagedChange } from "../types/generated/events";
 
 const stagedLabels: Record<StagedChange["kind"], string> = {
@@ -102,8 +103,18 @@ export function StagedUpdateReview({
       (change) => change.event_metadata_fields ?? [],
     ),
   );
+  const selectedCover = event.moments
+    .flatMap((moment) => moment.media_items)
+    .find((item) => item.id === event.selected_cover_media_item_id);
   const metadataLabel = (
-    field: "title" | "description" | "place_labels" | "grouping_timezone",
+    field:
+      | "title"
+      | "description"
+      | "date_start"
+      | "date_end"
+      | "selected_cover_media_item_id"
+      | "place_labels"
+      | "grouping_timezone",
   ) =>
     changedEventMetadata.has(field) ? (
       <span className="staged-change-label">Staged: Metadata edits</span>
@@ -148,6 +159,43 @@ export function StagedUpdateReview({
             >
               <dt>Description {metadataLabel("description")}</dt>
               <dd>{event.description || "No description"}</dd>
+            </div>
+            <div
+              className={
+                changedEventMetadata.has("date_start") ||
+                changedEventMetadata.has("date_end")
+                  ? "staged-metadata"
+                  : ""
+              }
+            >
+              <dt>
+                Date range{" "}
+                {changedEventMetadata.has("date_start") ||
+                changedEventMetadata.has("date_end") ? (
+                  <span className="staged-change-label">
+                    Staged: Metadata edits
+                  </span>
+                ) : null}
+              </dt>
+              <dd>{formatDateRange(event.date_start, event.date_end)}</dd>
+            </div>
+            <div
+              className={
+                changedEventMetadata.has("selected_cover_media_item_id")
+                  ? "staged-metadata"
+                  : ""
+              }
+            >
+              <dt>
+                Event cover {metadataLabel("selected_cover_media_item_id")}
+              </dt>
+              <dd>
+                {selectedCover
+                  ? mediaLabel(selectedCover)
+                  : event.selected_cover_media_item_id
+                    ? "Selected cover is not assigned"
+                    : "Automatic safe cover selection"}
+              </dd>
             </div>
             <div
               className={

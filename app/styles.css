@@ -2283,6 +2283,12 @@ h1 {
   font-size: 0.72rem;
 }
 
+.media-identity {
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 0.7rem;
+}
+
 .move-toolbar,
 .moment-card > header,
 .moment-actions,
@@ -2305,8 +2311,27 @@ h1 {
 }
 
 .event-details-editor h4,
-.event-details-editor label:nth-of-type(2) {
+.event-details-editor > .source-metadata-suggestions,
+.event-details-editor > .event-date-range-editor,
+.event-details-editor > label:nth-of-type(2) {
   grid-column: 1 / -1;
+}
+
+.event-date-range-editor {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.65rem;
+  min-width: 0;
+}
+
+.event-date-range-editor > .form-field-error {
+  grid-column: 1 / -1;
+}
+
+.event-cover-editor {
+  display: grid;
+  gap: 0.3rem;
+  min-width: 0;
 }
 
 .event-details-editor label {
@@ -2665,7 +2690,17 @@ h1 {
   }
 
   .event-details-editor h4,
-  .event-details-editor label:nth-of-type(2) {
+  .event-details-editor > .source-metadata-suggestions,
+  .event-details-editor > .event-date-range-editor,
+  .event-details-editor > label:nth-of-type(2) {
+    grid-column: auto;
+  }
+
+  .event-date-range-editor {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .event-date-range-editor > .form-field-error {
     grid-column: auto;
   }
 }

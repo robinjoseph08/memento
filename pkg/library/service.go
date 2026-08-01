@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/robinjoseph08/memento/internal/eventcover"
 	"github.com/robinjoseph08/memento/internal/mediaavailability"
 	"github.com/robinjoseph08/memento/internal/placementlock"
 	"github.com/robinjoseph08/memento/pkg/immich"
@@ -80,6 +81,9 @@ type EventSummary struct {
 	PublicationID  string    `json:"publication_id"`
 	Title          string    `json:"title"`
 	Description    string    `json:"description"`
+	DateStart      *string   `json:"date_start" tstype:"string | null,required"`
+	DateEnd        *string   `json:"date_end" tstype:"string | null,required"`
+	PlaceLabels    []string  `json:"place_labels"`
 	CommittedAt    time.Time `json:"committed_at"`
 	CoverMediaID   string    `json:"cover_media_id"`
 	CoverWidth     *int      `json:"cover_width" tstype:"number | null,required"`
@@ -115,6 +119,9 @@ type Event struct {
 	PublicationID  string    `json:"publication_id"`
 	Title          string    `json:"title"`
 	Description    string    `json:"description"`
+	DateStart      *string   `json:"date_start" tstype:"string | null,required"`
+	DateEnd        *string   `json:"date_end" tstype:"string | null,required"`
+	PlaceLabels    []string  `json:"place_labels"`
 	CommittedAt    time.Time `json:"committed_at"`
 	CoverMediaID   string    `json:"cover_media_id"`
 	CoverAvailable bool      `json:"cover_available"`
@@ -253,7 +260,8 @@ const validPlacements = `
 	       published.media_type, published.width, published.height, published.local_date_time,
 	       memento_local_capture_date(published.local_date_time) AS capture_date,
 	       media.availability = 'current' AS available,
-	       (moment.cover_media_item_id = placement.media_item_id) IS TRUE AS is_cover
+	       (current.selected_cover_media_item_id = placement.media_item_id) IS TRUE AS is_selected_cover,
+	       (moment.cover_media_item_id = placement.media_item_id) IS TRUE AS is_moment_cover
 	FROM current_published_placements AS placement
 	JOIN events AS event ON event.id = placement.event_id AND event.lifecycle = 'published'
 	JOIN current_published_events AS current
@@ -487,14 +495,16 @@ func (s *Service) Events(ctx context.Context, actor setup.SessionActor, rawLimit
 		args = append(args, limit+1)
 		query := fmt.Sprintf(`WITH valid AS (%s), authorized_events AS (
 			SELECT valid.event_id, count(DISTINCT valid.media_item_id) AS media_count,
-			       (array_agg(valid.media_item_id ORDER BY valid.available DESC, valid.is_cover DESC, valid.position))[1] AS cover_media_id,
-			       (array_agg(valid.width ORDER BY valid.available DESC, valid.is_cover DESC, valid.position))[1] AS cover_width,
-			       (array_agg(valid.height ORDER BY valid.available DESC, valid.is_cover DESC, valid.position))[1] AS cover_height,
-			       (array_agg(valid.available ORDER BY valid.available DESC, valid.is_cover DESC, valid.position))[1] AS cover_available
+			       (array_agg(valid.media_item_id ORDER BY `+eventcover.AuthorizedOrder("valid")+`))[1] AS cover_media_id,
+			       (array_agg(valid.width ORDER BY `+eventcover.AuthorizedOrder("valid")+`))[1] AS cover_width,
+			       (array_agg(valid.height ORDER BY `+eventcover.AuthorizedOrder("valid")+`))[1] AS cover_height,
+			       (array_agg(valid.available ORDER BY `+eventcover.AuthorizedOrder("valid")+`))[1] AS cover_available
 			FROM valid GROUP BY valid.event_id
 		)
 		SELECT current.event_id AS id, current.publication_id, current.title,
-		       current.description, current.committed_at, authorized.cover_media_id,
+		       current.description, current.date_start::text AS date_start,
+		       current.date_end::text AS date_end, to_json(current.place_labels)::text AS place_labels,
+		       current.committed_at, authorized.cover_media_id,
 		       authorized.cover_width, authorized.cover_height,
 		       authorized.cover_available, authorized.media_count
 		FROM authorized_events AS authorized
@@ -530,14 +540,16 @@ func (s *Service) NewForYou(ctx context.Context, actor setup.SessionActor) (NewF
 		query := fmt.Sprintf(`WITH valid AS (%s), authorized_events AS (
 			SELECT valid.event_id, valid.publication_id,
 			       count(DISTINCT valid.media_item_id) AS media_count,
-			       (array_agg(valid.media_item_id ORDER BY valid.available DESC, valid.is_cover DESC, valid.position))[1] AS cover_media_id,
-			       (array_agg(valid.width ORDER BY valid.available DESC, valid.is_cover DESC, valid.position))[1] AS cover_width,
-			       (array_agg(valid.height ORDER BY valid.available DESC, valid.is_cover DESC, valid.position))[1] AS cover_height,
-			       (array_agg(valid.available ORDER BY valid.available DESC, valid.is_cover DESC, valid.position))[1] AS cover_available
+			       (array_agg(valid.media_item_id ORDER BY `+eventcover.AuthorizedOrder("valid")+`))[1] AS cover_media_id,
+			       (array_agg(valid.width ORDER BY `+eventcover.AuthorizedOrder("valid")+`))[1] AS cover_width,
+			       (array_agg(valid.height ORDER BY `+eventcover.AuthorizedOrder("valid")+`))[1] AS cover_height,
+			       (array_agg(valid.available ORDER BY `+eventcover.AuthorizedOrder("valid")+`))[1] AS cover_available
 			FROM valid GROUP BY valid.event_id, valid.publication_id
 		)
 		SELECT current.event_id AS id, current.publication_id, current.title,
-		       current.description, current.committed_at, authorized.cover_media_id,
+		       current.description, current.date_start::text AS date_start,
+		       current.date_end::text AS date_end, to_json(current.place_labels)::text AS place_labels,
+		       current.committed_at, authorized.cover_media_id,
 		       authorized.cover_width, authorized.cover_height,
 		       authorized.cover_available, authorized.media_count
 		FROM new_for_you_entries AS entry
@@ -650,19 +662,26 @@ func (s *Service) Event(ctx context.Context, actor setup.SessionActor, eventID u
 			return err
 		}
 		var cover uuid.UUID
+		var placeLabelsJSON string
 		if err := tx.NewRaw(fmt.Sprintf(`WITH valid AS (%s)
 			SELECT current.event_id AS id, current.publication_id, current.title, current.description,
+			       current.date_start::text, current.date_end::text, to_json(current.place_labels)::text,
 			       current.committed_at, count(*) AS media_count,
-			       (array_agg(valid.media_item_id ORDER BY valid.available DESC, valid.is_cover DESC, valid.position))[1] AS cover,
-			       (array_agg(valid.available ORDER BY valid.available DESC, valid.is_cover DESC, valid.position))[1] AS cover_available
+			       (array_agg(valid.media_item_id ORDER BY `+eventcover.AuthorizedOrder("valid")+`))[1] AS cover,
+			       (array_agg(valid.available ORDER BY `+eventcover.AuthorizedOrder("valid")+`))[1] AS cover_available
 			FROM valid JOIN current_published_events AS current ON current.event_id = valid.event_id
 			WHERE valid.event_id = ? GROUP BY current.event_id, current.publication_id,
-			current.title, current.description, current.committed_at`, validPlacements), actor.AccessID, eventID).Scan(ctx,
+			current.title, current.description, current.date_start, current.date_end,
+			current.place_labels, current.committed_at`, validPlacements), actor.AccessID, eventID).Scan(ctx,
 			&response.ID, &response.PublicationID, &response.Title, &response.Description,
+			&response.DateStart, &response.DateEnd, &placeLabelsJSON,
 			&response.CommittedAt, &response.MediaCount, &cover, &response.CoverAvailable); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return ErrNotFound
 			}
+			return err
+		}
+		if err := json.Unmarshal([]byte(placeLabelsJSON), &response.PlaceLabels); err != nil {
 			return err
 		}
 		response.CoverMediaID = cover.String()

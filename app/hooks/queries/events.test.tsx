@@ -10,6 +10,7 @@ import {
   useCreateLooseItem,
   useOrganizeEvent,
   usePublishEvent,
+  useWithdrawEvent,
 } from "./events";
 import { sourceKeys } from "./curationKeys";
 import { CURRENT_SESSION_QUERY_KEY } from "./sessions";
@@ -31,6 +32,9 @@ function event(version: number): Event {
     lifecycle: "draft",
     title: "Gathering",
     description: "",
+    date_start: null,
+    date_end: null,
+    selected_cover_media_item_id: null,
     place_labels: [],
     grouping_timezone: "UTC",
     version,
@@ -287,6 +291,19 @@ test("organization owns authoritative Event cache updates and projection invalid
   expect(new Headers(requestInit?.headers).get("X-Memento-CSRF")).toBe(
     identityGeneration,
   );
+  expect(jsonBody(requestInit?.body)).toEqual({
+    version: 1,
+    title: "Gathering",
+    description: "",
+    date_start: null,
+    date_end: null,
+    selected_cover_media_item_id: null,
+    place_labels: [],
+    grouping_timezone: "UTC",
+    moments: [],
+    unassigned_media_ids: [],
+    final_review_complete: false,
+  });
   expect(
     client.getQueryData(eventKeys.detail(identityGeneration, eventID)),
   ).toEqual(saved);
@@ -362,6 +379,28 @@ test("Publication invalidates every Event detail projection", async () => {
     eventKeys.detail(identityGeneration, otherEvent.id),
     otherEvent,
   );
+  const recipientLibraryKey = [
+    "recipient-library",
+    identityGeneration,
+    "photos",
+    "chronology",
+  ];
+  const recipientEventsKey = ["recipient-events", identityGeneration];
+  const recipientEventKey = ["recipient-event", identityGeneration, eventID];
+  const newForYouKey = ["new-for-you", identityGeneration];
+  const recipientSearchKey = [
+    "recipient-search",
+    identityGeneration,
+    { query: "Gathering" },
+  ];
+  for (const key of [
+    recipientLibraryKey,
+    recipientEventsKey,
+    recipientEventKey,
+    newForYouKey,
+    recipientSearchKey,
+  ])
+    client.setQueryData(key, { private: true });
   const publication = {
     id: "publication-1",
     event_id: eventID,
@@ -412,6 +451,80 @@ test("Publication invalidates every Event detail projection", async () => {
     client.getQueryState(eventKeys.detail(identityGeneration, otherEvent.id))
       ?.isInvalidated,
   ).toBe(true);
+  for (const key of [
+    recipientLibraryKey,
+    recipientEventsKey,
+    recipientEventKey,
+    newForYouKey,
+    recipientSearchKey,
+  ])
+    expect(client.getQueryState(key)?.isInvalidated).toBe(true);
+});
+
+test("Withdrawal evicts and invalidates every protected Recipient projection", async () => {
+  const { client, wrapper } = queryHarness();
+  const withdrawn = event(2);
+  withdrawn.lifecycle = "published";
+  const protectedKeys = [
+    ["recipient-library", identityGeneration, "photos", "chronology"],
+    ["recipient-events", identityGeneration],
+    ["recipient-event", identityGeneration, eventID],
+    ["recipient-event", identityGeneration, "reused-event"],
+    ["new-for-you", identityGeneration],
+    ["recipient-search", identityGeneration, { query: "Gathering" }],
+  ];
+  for (const key of protectedKeys) client.setQueryData(key, { private: true });
+  const withdrawal = {
+    id: "withdrawal-1",
+    target_kind: "event",
+    target_id: eventID,
+    reason: "Privacy correction",
+    withdrawn_at: "2026-01-01T00:00:00Z",
+  };
+  vi.stubGlobal(
+    "fetch",
+    vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(withdrawal), {
+          status: 201,
+          headers: { "Content-Type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(withdrawn), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+  );
+  const { result } = renderHook(
+    () =>
+      useWithdrawEvent(identityGeneration, {
+        onStarted: () => {
+          for (const key of protectedKeys)
+            expect(client.getQueryData(key)).toBeUndefined();
+        },
+        onCommitted: vi.fn(),
+        onSuccess: vi.fn(),
+        onError: vi.fn(),
+      }),
+    { wrapper },
+  );
+
+  act(() =>
+    result.current.mutate({
+      event: event(1),
+      revision: 0,
+      selectionGeneration: 0,
+      target: { target_kind: "event", target_id: eventID, label: "Event" },
+      reason: "Privacy correction",
+    }),
+  );
+  await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+  for (const key of protectedKeys)
+    expect(client.getQueryState(key)).toBeUndefined();
 });
 
 test("Audience mutations update their review and invalidate Event projections", async () => {

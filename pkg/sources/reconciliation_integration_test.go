@@ -946,6 +946,9 @@ func TestFinalPublishedSourceRemovalStaysPrivateWhileMediaRemainsAvailable(t *te
 	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
 	fixture := publishSourceEventFixture(t, service, sourceAlbumID, original.SourceID)
 	authorizeSourceRecipient(t, service, &fixture)
+	var selectedEventCover *uuid.UUID
+	require.NoError(t, service.db.NewRaw(`SELECT selected_cover_media_item_id FROM events WHERE id = ?`, fixture.eventID).Scan(context.Background(), &selectedEventCover))
+	assert.Nil(t, selectedEventCover, "automatic Event cover selection must not block Source removal")
 	connector.setAssetExists(original.SourceID, true)
 	_, err := service.db.NewRaw(`
 		UPDATE draft_moments SET review_version = 7 WHERE id = ?;
@@ -1084,6 +1087,9 @@ func TestPublishedPartialSourceRemovalThenReappearanceRestoresPlacementAndClears
 		INSERT INTO audience_reasons (target_kind, target_id, recipient_person_id, kind)
 		VALUES ('moment', ?, ?, 'manually_included');
 		UPDATE draft_moments SET review_version = 7 WHERE id = ?;
+		UPDATE events SET selected_cover_media_item_id = ? WHERE id = ?;
+		UPDATE published_event_revisions SET selected_cover_media_item_id = ? WHERE event_id = ?;
+		UPDATE current_published_events SET selected_cover_media_item_id = ? WHERE event_id = ?;
 		UPDATE event_sources SET include_future_media = false WHERE event_id = ? AND source_album_id = ?;
 		UPDATE draft_media_placements SET position = ? WHERE event_id = ? AND media_item_id = ?;
 		UPDATE published_media_placements SET position = ?
@@ -1094,7 +1100,8 @@ func TestPublishedPartialSourceRemovalThenReappearanceRestoresPlacementAndClears
 		fixture.momentID, fixture.recipient.PersonID, fixture.curator.PersonID,
 		fixture.momentID, fixture.recipient.PersonID, fixture.recipient.AccessID,
 		fixture.momentID, fixture.recipient.PersonID, fixture.momentID,
-		fixture.eventID, sourceAlbumID,
+		fixture.mediaID, fixture.eventID, fixture.mediaID, fixture.eventID,
+		fixture.mediaID, fixture.eventID, fixture.eventID, sourceAlbumID,
 		originalPosition, fixture.eventID, fixture.mediaID,
 		originalPosition, fixture.publicationID, fixture.mediaID,
 		originalPosition, fixture.eventID, fixture.mediaID).Exec(context.Background())
@@ -1104,15 +1111,19 @@ func TestPublishedPartialSourceRemovalThenReappearanceRestoresPlacementAndClears
 	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
 	var storedMomentID *uuid.UUID
 	var storedPosition int
-	var storedCover bool
+	var storedCover, storedEventCover bool
 	require.NoError(t, service.db.NewRaw(`
-		SELECT draft_moment_id, position, was_cover FROM staged_source_removals
+		SELECT draft_moment_id, position, was_cover, was_event_cover FROM staged_source_removals
 		WHERE event_id = ? AND media_item_id = ?
-	`, fixture.eventID, fixture.mediaID).Scan(context.Background(), &storedMomentID, &storedPosition, &storedCover))
+	`, fixture.eventID, fixture.mediaID).Scan(context.Background(), &storedMomentID, &storedPosition, &storedCover, &storedEventCover))
 	require.NotNil(t, storedMomentID)
 	assert.Equal(t, fixture.momentID, *storedMomentID)
 	assert.Equal(t, originalPosition, storedPosition)
 	assert.True(t, storedCover)
+	assert.True(t, storedEventCover)
+	var clearedEventCover *uuid.UUID
+	require.NoError(t, service.db.NewRaw(`SELECT selected_cover_media_item_id FROM events WHERE id = ?`, fixture.eventID).Scan(context.Background(), &clearedEventCover))
+	assert.Nil(t, clearedEventCover)
 	removed, err := staging.Load(context.Background(), service.db, fixture.eventID)
 	require.NoError(t, err)
 	require.NotNil(t, removed)
@@ -1135,6 +1146,10 @@ func TestPublishedPartialSourceRemovalThenReappearanceRestoresPlacementAndClears
 	require.NoError(t, service.db.NewRaw(`SELECT cover_media_item_id FROM draft_moments WHERE id = ?`, fixture.momentID).Scan(context.Background(), &restoredCoverID))
 	require.NotNil(t, restoredCoverID)
 	assert.Equal(t, fixture.mediaID, *restoredCoverID)
+	var restoredEventCoverID *uuid.UUID
+	require.NoError(t, service.db.NewRaw(`SELECT selected_cover_media_item_id FROM events WHERE id = ?`, fixture.eventID).Scan(context.Background(), &restoredEventCoverID))
+	require.NotNil(t, restoredEventCoverID)
+	assert.Equal(t, fixture.mediaID, *restoredEventCoverID)
 	var futureMediaID uuid.UUID
 	require.NoError(t, service.db.NewRaw(`SELECT id FROM media_items WHERE immich_asset_id = ?`, future.SourceID).Scan(context.Background(), &futureMediaID))
 	var futurePlacement bool

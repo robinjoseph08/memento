@@ -329,10 +329,17 @@ func TestRecipientLibraryPaginatesOnlyCurrentAuthorizedUnion(t *testing.T) {
 	ctx := context.Background()
 	_, err := fixture.db.NewRaw(`
 		UPDATE published_moments SET cover_media_item_id = ? WHERE id = ?;
+		UPDATE published_event_revisions
+		SET date_start = '2026-07-27', date_end = '2026-07-29', place_labels = ARRAY['Family home']
+		WHERE event_id = ?;
+		UPDATE current_published_events
+		SET date_start = '2026-07-27', date_end = '2026-07-29', place_labels = ARRAY['Family home']
+		WHERE event_id = ?;
 		UPDATE media_items SET media_type = 'video' WHERE id = ?;
 		UPDATE published_media_placements SET media_type = 'video' WHERE media_item_id = ?;
 		UPDATE current_published_placements SET media_type = 'video' WHERE media_item_id = ?
-	`, fixture.media[1], fixture.moments[0], fixture.media[1], fixture.media[1], fixture.media[1]).Exec(ctx)
+	`, fixture.media[1], fixture.moments[0], fixture.events[0], fixture.events[0],
+		fixture.media[1], fixture.media[1], fixture.media[1]).Exec(ctx)
 	require.NoError(t, err)
 	first, err := fixture.service.Photos(ctx, fixture.actor, "1", "", false)
 	require.NoError(t, err)
@@ -358,6 +365,9 @@ func TestRecipientLibraryPaginatesOnlyCurrentAuthorizedUnion(t *testing.T) {
 	assert.Equal(t, 1, events.Events[0].MediaCount)
 	assert.Equal(t, 2, events.Events[1].MediaCount)
 	assert.Equal(t, fixture.media[1].String(), events.Events[1].CoverMediaID)
+	assert.Equal(t, "2026-07-27", *events.Events[1].DateStart)
+	assert.Equal(t, "2026-07-29", *events.Events[1].DateEnd)
+	assert.Equal(t, []string{"Family home"}, events.Events[1].PlaceLabels)
 	require.NotNil(t, events.Events[1].CoverWidth)
 	require.NotNil(t, events.Events[1].CoverHeight)
 	assert.Equal(t, 1400, *events.Events[1].CoverWidth)
@@ -366,6 +376,9 @@ func TestRecipientLibraryPaginatesOnlyCurrentAuthorizedUnion(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 2, detail.MediaCount)
 	assert.Equal(t, fixture.media[1].String(), detail.CoverMediaID)
+	assert.Equal(t, "2026-07-27", *detail.DateStart)
+	assert.Equal(t, "2026-07-29", *detail.DateEnd)
+	assert.Equal(t, []string{"Family home"}, detail.PlaceLabels)
 	assert.Len(t, detail.Media, 2)
 	for _, media := range detail.Media {
 		require.NotNil(t, media.CaptureDate)
@@ -380,6 +393,17 @@ func TestRecipientLibraryPaginatesOnlyCurrentAuthorizedUnion(t *testing.T) {
 	require.NotNil(t, newForYou.Events[0].CoverHeight)
 	assert.Equal(t, 1600, *newForYou.Events[0].CoverWidth)
 	assert.Equal(t, 900, *newForYou.Events[0].CoverHeight)
+	var newPresentation *EventSummary
+	for index := range newForYou.Events {
+		if newForYou.Events[index].ID == fixture.events[0].String() {
+			newPresentation = &newForYou.Events[index]
+			break
+		}
+	}
+	require.NotNil(t, newPresentation)
+	assert.Equal(t, "2026-07-27", *newPresentation.DateStart)
+	assert.Equal(t, "2026-07-29", *newPresentation.DateEnd)
+	assert.Equal(t, []string{"Family home"}, newPresentation.PlaceLabels)
 
 	recipientJSON, err := json.Marshal([]any{first, second, events, detail, newForYou})
 	require.NoError(t, err)
@@ -398,6 +422,8 @@ func TestChronologyProjectsTheCompleteCurrentAuthorizedDistinctLibraryAndDirectA
 	fixture := newLibraryFixture(t)
 	ctx := context.Background()
 	_, err := fixture.db.NewRaw(`
+		UPDATE current_published_events SET date_start = '1900-01-01', date_end = '1900-01-02'
+		WHERE event_id = ?;
 		UPDATE published_media_placements SET local_date_time = '2023-03-04T10:00:00'
 		WHERE published_moment_id = ? AND media_item_id = ?;
 		UPDATE published_media_placements SET local_date_time = '2022-02-03T10:00:00'
@@ -413,7 +439,7 @@ func TestChronologyProjectsTheCompleteCurrentAuthorizedDistinctLibraryAndDirectA
 		UPDATE media_items SET availability = 'source_missing', missing_since = now() WHERE id = ?;
 		INSERT INTO favorites (recipient_person_id, media_item_id) VALUES (?, ?), (?, ?),
 			((SELECT person_id FROM recipient_access_generations WHERE id = ?), ?)
-	`, fixture.moments[0], fixture.media[0], fixture.moments[1], fixture.media[0],
+	`, fixture.events[0], fixture.moments[0], fixture.media[0], fixture.moments[1], fixture.media[0],
 		fixture.moments[0], fixture.media[1], fixture.media[0],
 		fixture.actor.PersonID, fixture.media[0], fixture.actor.PersonID, fixture.media[1],
 		fixture.hiddenAccessID, fixture.media[2]).Exec(ctx)

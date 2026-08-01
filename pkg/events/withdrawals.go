@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/google/uuid"
+	"github.com/robinjoseph08/memento/internal/eventcover"
 	"github.com/robinjoseph08/memento/internal/placementlock"
 	"github.com/robinjoseph08/memento/pkg/setup"
 	"github.com/robinjoseph08/memento/pkg/staging"
@@ -364,13 +365,12 @@ func (s *Service) Withdraw(ctx context.Context, actor setup.CuratorSession, requ
 			FROM current_audience_entitlements AS entitlement
 			JOIN current_published_placements AS placement
 			  ON placement.event_id = entitlement.event_id AND placement.media_item_id = entitlement.media_item_id
+			JOIN current_published_events AS current ON current.event_id = entitlement.event_id
 			JOIN media_items AS media ON media.id = entitlement.media_item_id
 			JOIN published_moments AS moment ON moment.id = placement.published_moment_id
 			WHERE entitlement.event_id IN (?)
 			ORDER BY entitlement.event_id, entitlement.recipient_access_generation_id,
-			         (media.availability = 'current') DESC,
-			         (moment.cover_media_item_id = entitlement.media_item_id) DESC,
-			         placement.position`, bun.List(eventIDs)).Exec(ctx); err != nil {
+			         `+eventcover.ProjectionOrder, bun.List(eventIDs)).Exec(ctx); err != nil {
 				return err
 			}
 		}

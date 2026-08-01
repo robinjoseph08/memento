@@ -1366,10 +1366,12 @@ func relinkDraftMediaReferences(ctx context.Context, tx bun.Tx, stableMediaID, c
 			UNION
 			SELECT event_id FROM draft_moments WHERE cover_media_item_id = ?
 			UNION
+			SELECT id FROM events WHERE selected_cover_media_item_id = ?
+			UNION
 			SELECT event_id FROM staged_source_removals WHERE media_item_id IN (?, ?)
 		)
 		ORDER BY id FOR UPDATE
-	`, candidateMediaID, candidateMediaID, stableMediaID, candidateMediaID).Scan(ctx, &affectedEventIDs); err != nil {
+	`, candidateMediaID, candidateMediaID, candidateMediaID, stableMediaID, candidateMediaID).Scan(ctx, &affectedEventIDs); err != nil {
 		return err
 	}
 	var eventCollision, looseCollision bool
@@ -1397,17 +1399,20 @@ func relinkDraftMediaReferences(ctx context.Context, tx bun.Tx, stableMediaID, c
 	if _, err := tx.NewRaw(`UPDATE draft_moments SET cover_media_item_id = ? WHERE cover_media_item_id = ?`, stableMediaID, candidateMediaID).Exec(ctx); err != nil {
 		return err
 	}
+	if _, err := tx.NewRaw(`UPDATE events SET selected_cover_media_item_id = ? WHERE selected_cover_media_item_id = ?`, stableMediaID, candidateMediaID).Exec(ctx); err != nil {
+		return err
+	}
 	for _, eventID := range affectedEventIDs {
 		var momentID *uuid.UUID
 		var position int
-		var wasCover bool
+		var wasCover, wasEventCover bool
 		err := tx.NewRaw(`
-			SELECT draft_moment_id, position, was_cover
+			SELECT draft_moment_id, position, was_cover, was_event_cover
 			FROM staged_source_removals
 			WHERE event_id = ? AND media_item_id IN (?, ?)
 			ORDER BY (media_item_id = ?) DESC
 			LIMIT 1
-		`, eventID, stableMediaID, candidateMediaID, stableMediaID).Scan(ctx, &momentID, &position, &wasCover)
+		`, eventID, stableMediaID, candidateMediaID, stableMediaID).Scan(ctx, &momentID, &position, &wasCover, &wasEventCover)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
@@ -1455,6 +1460,11 @@ func relinkDraftMediaReferences(ctx context.Context, tx bun.Tx, stableMediaID, c
 			}
 			if wasCover && momentID != nil {
 				if _, err := tx.NewRaw(`UPDATE draft_moments SET cover_media_item_id = ? WHERE id = ? AND cover_media_item_id IS NULL`, stableMediaID, *momentID).Exec(ctx); err != nil {
+					return err
+				}
+			}
+			if wasEventCover {
+				if _, err := tx.NewRaw(`UPDATE events SET selected_cover_media_item_id = ? WHERE id = ? AND selected_cover_media_item_id IS NULL`, stableMediaID, eventID).Exec(ctx); err != nil {
 					return err
 				}
 			}

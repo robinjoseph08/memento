@@ -95,14 +95,17 @@ type OrganizeMoment struct {
 
 // OrganizeEventRequest atomically replaces draft organization at an expected version.
 type OrganizeEventRequest struct {
-	Version             int64            `json:"version" validate:"required,min=1"`
-	Title               *string          `json:"title" tstype:"string"`
-	Description         *string          `json:"description" tstype:"string"`
-	PlaceLabels         []string         `json:"place_labels"`
-	GroupingTimezone    *string          `json:"grouping_timezone" tstype:"string"`
-	Moments             []OrganizeMoment `json:"moments" validate:"max=100000,dive"`
-	UnassignedMediaIDs  []string         `json:"unassigned_media_ids" validate:"max=100000"`
-	FinalReviewComplete bool             `json:"final_review_complete"`
+	Version                  int64            `json:"version" validate:"required,min=1"`
+	Title                    *string          `json:"title" tstype:"string"`
+	Description              *string          `json:"description" tstype:"string"`
+	DateStart                *string          `json:"date_start" tstype:"string | null,required"`
+	DateEnd                  *string          `json:"date_end" tstype:"string | null,required"`
+	SelectedCoverMediaItemID *string          `json:"selected_cover_media_item_id" tstype:"string | null,required"`
+	PlaceLabels              []string         `json:"place_labels"`
+	GroupingTimezone         *string          `json:"grouping_timezone" tstype:"string"`
+	Moments                  []OrganizeMoment `json:"moments" validate:"max=100000,dive"`
+	UnassignedMediaIDs       []string         `json:"unassigned_media_ids" validate:"max=100000"`
+	FinalReviewComplete      bool             `json:"final_review_complete"`
 }
 
 // RestorePublishedMediaRequest cancels one safe Media omission at an expected version.
@@ -131,6 +134,8 @@ type EventListResponse struct {
 type SourceMetadataSuggestion struct {
 	Name        *string `json:"name" tstype:"string | null,required"`
 	Description *string `json:"description" tstype:"string | null,required"`
+	DateStart   *string `json:"date_start" tstype:"string | null,required"`
+	DateEnd     *string `json:"date_end" tstype:"string | null,required"`
 }
 
 // EventSource records private provenance through a stable portal Source identity.
@@ -145,6 +150,9 @@ type Event struct {
 	Lifecycle                           string             `json:"lifecycle"`
 	Title                               string             `json:"title"`
 	Description                         string             `json:"description"`
+	DateStart                           *string            `json:"date_start" tstype:"string | null,required"`
+	DateEnd                             *string            `json:"date_end" tstype:"string | null,required"`
+	SelectedCoverMediaItemID            *string            `json:"selected_cover_media_item_id" tstype:"string | null,required"`
 	PlaceLabels                         []string           `json:"place_labels"`
 	GroupingTimezone                    string             `json:"grouping_timezone"`
 	Version                             int64              `json:"version"`
@@ -223,6 +231,8 @@ type sourceRecord struct {
 	ID          uuid.UUID
 	Name        string
 	Description string
+	StartAt     *time.Time
+	EndAt       *time.Time
 	Disposition string
 	Missing     bool
 }
@@ -279,6 +289,63 @@ type priorPlacementState struct {
 	MediaItemID   uuid.UUID
 	DraftMomentID *uuid.UUID
 	Position      int
+}
+
+func normalizeEventDateRange(start, end *string) (*string, *string, bool) {
+	if start == nil || end == nil {
+		return nil, nil, start == nil && end == nil
+	}
+	parsedStart, startErr := time.Parse(time.DateOnly, *start)
+	parsedEnd, endErr := time.Parse(time.DateOnly, *end)
+	if startErr != nil || endErr != nil || parsedStart.Format(time.DateOnly) != *start ||
+		parsedEnd.Format(time.DateOnly) != *end || parsedEnd.Before(parsedStart) {
+		return nil, nil, false
+	}
+	startValue, endValue := *start, *end
+	return &startValue, &endValue, true
+}
+
+func sameStringPointer(left, right *string) bool {
+	return left == nil && right == nil || left != nil && right != nil && *left == *right
+}
+
+func sameUUIDPointer(left, right *uuid.UUID) bool {
+	return left == nil && right == nil || left != nil && right != nil && *left == *right
+}
+
+func sourceDateSuggestion(current, initialized *time.Time) *string {
+	currentDate, initializedDate := "", ""
+	if current != nil {
+		currentDate = current.Format(time.DateOnly)
+	}
+	if initialized != nil {
+		initializedDate = initialized.Format(time.DateOnly)
+	}
+	if currentDate == initializedDate {
+		return nil
+	}
+	return &currentDate
+}
+
+func initializedSourceDateRange(sources map[uuid.UUID]sourceRecord, sourceIDs []uuid.UUID) (*string, *string) {
+	var earliest, latest time.Time
+	for index, sourceID := range sourceIDs {
+		source := sources[sourceID]
+		if source.StartAt == nil || source.EndAt == nil || source.EndAt.Before(*source.StartAt) {
+			return nil, nil
+		}
+		if index == 0 || source.StartAt.Before(earliest) {
+			earliest = *source.StartAt
+		}
+		if index == 0 || source.EndAt.After(latest) {
+			latest = *source.EndAt
+		}
+	}
+	start, end := earliest.Format(time.DateOnly), latest.Format(time.DateOnly)
+	if _, _, valid := normalizeEventDateRange(&start, &end); !valid {
+		return nil, nil
+	}
+	return &start, &end
 }
 
 // CreateEvent creates stable Event and Moment identities in one transaction.
@@ -346,11 +413,12 @@ func (s *Service) CreateEvent(ctx context.Context, actor setup.CuratorSession, r
 		if title == "" || utf8.RuneCountInString(title) > 240 || utf8.RuneCountInString(description) > 2000 {
 			return ErrInvalid
 		}
+		dateStart, dateEnd := initializedSourceDateRange(sources, sourceIDs)
 		inserted, err := tx.NewRaw(`
-			INSERT INTO events (id, title, description, grouping_timezone, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?)
+			INSERT INTO events (id, title, description, date_start, date_end, grouping_timezone, created_at, updated_at)
+			VALUES (?, ?, ?, ?::date, ?::date, ?, ?, ?)
 			ON CONFLICT (id) DO NOTHING
-		`, eventID, title, description, location.String(), now, now).Exec(ctx)
+		`, eventID, title, description, dateStart, dateEnd, location.String(), now, now).Exec(ctx)
 		if err != nil {
 			return err
 		}
@@ -364,9 +432,11 @@ func (s *Service) CreateEvent(ctx context.Context, actor setup.CuratorSession, r
 			if _, err := tx.NewRaw(`
 				INSERT INTO event_sources (
 					event_id, source_album_id, source_order, initialized_name,
-					initialized_description, initialized_at, include_future_media
-				) VALUES (?, ?, ?, ?, ?, ?, ?)
-			`, eventID, sourceID, position, source.Name, source.Description, now, includeFutureMedia).Exec(ctx); err != nil {
+					initialized_description, initialized_start_at, initialized_end_at,
+					initialized_at, include_future_media
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+			`, eventID, sourceID, position, source.Name, source.Description,
+				source.StartAt, source.EndAt, now, includeFutureMedia).Exec(ctx); err != nil {
 				return err
 			}
 		}
@@ -477,9 +547,9 @@ func lockSources(ctx context.Context, tx bun.Tx, sourceIDs []uuid.UUID) (map[uui
 	for _, id := range lockOrder {
 		var source sourceRecord
 		err := tx.NewRaw(`
-			SELECT id, name, description, disposition, source_missing
+			SELECT id, name, description, source_start_at, source_end_at, disposition, source_missing
 			FROM source_albums WHERE id = ? FOR UPDATE
-		`, id).Scan(ctx, &source.ID, &source.Name, &source.Description, &source.Disposition, &source.Missing)
+		`, id).Scan(ctx, &source.ID, &source.Name, &source.Description, &source.StartAt, &source.EndAt, &source.Disposition, &source.Missing)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrSourceUnavailable
 		}
@@ -579,6 +649,7 @@ func (s *Service) OrganizeEvent(ctx context.Context, actor setup.CuratorSession,
 	placements := make([]draftPlacementRow, 0)
 	seenMoments := make(map[uuid.UUID]struct{}, len(request.Moments))
 	seenMedia := make(map[uuid.UUID]struct{})
+	assignedMedia := make(map[uuid.UUID]struct{})
 	for position, moment := range request.Moments {
 		momentID, err := uuid.Parse(moment.ID)
 		if err != nil || momentID == uuid.Nil {
@@ -616,6 +687,7 @@ func (s *Service) OrganizeEvent(ctx context.Context, actor setup.CuratorSession,
 				return Event{}, ErrInvalid
 			}
 			seenMedia[mediaID] = struct{}{}
+			assignedMedia[mediaID] = struct{}{}
 			momentCopy := momentID
 			placements = append(placements, draftPlacementRow{MediaItemID: mediaID, DraftMomentID: &momentCopy, Position: len(placements)})
 		}
@@ -635,6 +707,21 @@ func (s *Service) OrganizeEvent(ctx context.Context, actor setup.CuratorSession,
 	if len(seenMedia) == 0 {
 		return Event{}, ErrNoMediaAvailable
 	}
+	dateStart, dateEnd, valid := normalizeEventDateRange(request.DateStart, request.DateEnd)
+	if !valid {
+		return Event{}, ErrInvalid
+	}
+	var selectedCoverID *uuid.UUID
+	if request.SelectedCoverMediaItemID != nil {
+		parsed, err := uuid.Parse(*request.SelectedCoverMediaItemID)
+		if err != nil || parsed == uuid.Nil {
+			return Event{}, ErrInvalid
+		}
+		if _, assigned := assignedMedia[parsed]; !assigned {
+			return Event{}, ErrInvalid
+		}
+		selectedCoverID = &parsed
+	}
 	eventPlaceLabels, valid := normalizePlaceLabels(request.PlaceLabels)
 	if !valid {
 		return Event{}, ErrPlaceLabelsInvalid
@@ -651,7 +738,14 @@ func (s *Service) OrganizeEvent(ctx context.Context, actor setup.CuratorSession,
 		}
 		var currentVersion int64
 		var title, description, timezone, priorEventPlaceLabelsJSON string
-		err := tx.NewRaw(`SELECT version, title, description, grouping_timezone, to_json(place_labels)::text FROM events WHERE id = ? AND lifecycle IN ('draft', 'published') FOR UPDATE`, id).Scan(ctx, &currentVersion, &title, &description, &timezone, &priorEventPlaceLabelsJSON)
+		var priorDateStart, priorDateEnd *string
+		var priorSelectedCoverID *uuid.UUID
+		err := tx.NewRaw(`SELECT version, title, description, grouping_timezone,
+			date_start::text, date_end::text, selected_cover_media_item_id,
+			to_json(place_labels)::text
+			FROM events WHERE id = ? AND lifecycle IN ('draft', 'published') FOR UPDATE`, id).Scan(ctx,
+			&currentVersion, &title, &description, &timezone, &priorDateStart, &priorDateEnd,
+			&priorSelectedCoverID, &priorEventPlaceLabelsJSON)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrNotFound
 		}
@@ -682,7 +776,9 @@ func (s *Service) OrganizeEvent(ctx context.Context, actor setup.CuratorSession,
 		if nextTitle == "" || utf8.RuneCountInString(nextTitle) > 240 || utf8.RuneCountInString(nextDescription) > 2000 {
 			return ErrInvalid
 		}
-		metadataChanged := title != nextTitle || description != nextDescription || timezone != nextTimezone
+		metadataChanged := title != nextTitle || description != nextDescription || timezone != nextTimezone ||
+			!sameStringPointer(priorDateStart, dateStart) || !sameStringPointer(priorDateEnd, dateEnd) ||
+			!sameUUIDPointer(priorSelectedCoverID, selectedCoverID)
 		var priorMoments []priorMomentState
 		if err := tx.NewRaw(`
 			SELECT id, position, title, to_json(place_labels)::text AS place_labels_json,
@@ -804,9 +900,11 @@ func (s *Service) OrganizeEvent(ctx context.Context, actor setup.CuratorSession,
 		}
 		finalReviewComplete := request.FinalReviewComplete && !organizationChanged && !metadataChanged
 		if _, err := tx.NewRaw(`
-			UPDATE events SET title = ?, description = ?, place_labels = ?, grouping_timezone = ?,
+			UPDATE events SET title = ?, description = ?, date_start = ?::date, date_end = ?::date,
+				selected_cover_media_item_id = ?, place_labels = ?, grouping_timezone = ?,
 				final_review_complete = ?, version = version + 1, updated_at = ? WHERE id = ?
-		`, nextTitle, nextDescription, pgdialect.Array(eventPlaceLabels), nextTimezone, finalReviewComplete, now, id).Exec(ctx); err != nil {
+		`, nextTitle, nextDescription, dateStart, dateEnd, selectedCoverID,
+			pgdialect.Array(eventPlaceLabels), nextTimezone, finalReviewComplete, now, id).Exec(ctx); err != nil {
 			return err
 		}
 		if err := appendDraftAudit(ctx, tx, actor, "event_draft_organized", map[string]any{
@@ -873,15 +971,17 @@ func (s *Service) RestorePublishedMedia(ctx context.Context, actor setup.Curator
 		}
 
 		var momentID uuid.UUID
-		var publishedCoverID *uuid.UUID
+		var publishedCoverID, publishedEventCoverID *uuid.UUID
 		var publishedMediaPosition, publishedMomentPosition int
 		if err := tx.NewRaw(`
 			SELECT moment.draft_moment_id, moment.cover_media_item_id,
-				placement.position, moment.position
+				revision.selected_cover_media_item_id, placement.position, moment.position
 			FROM published_moments AS moment
+			JOIN published_event_revisions AS revision ON revision.publication_id = moment.publication_id
 			JOIN published_media_placements AS placement ON placement.published_moment_id = moment.id
 			WHERE moment.publication_id = ? AND placement.media_item_id = ?
-		`, *publicationID, mediaID).Scan(ctx, &momentID, &publishedCoverID, &publishedMediaPosition, &publishedMomentPosition); err != nil {
+		`, *publicationID, mediaID).Scan(ctx, &momentID, &publishedCoverID, &publishedEventCoverID,
+			&publishedMediaPosition, &publishedMomentPosition); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return ErrInvalid
 			}
@@ -994,6 +1094,12 @@ func (s *Service) RestorePublishedMedia(ctx context.Context, actor setup.Curator
 				UPDATE draft_moments SET cover_media_item_id = ?
 				WHERE event_id = ? AND id = ? AND cover_media_item_id IS NULL
 			`, mediaID, id, momentID).Exec(ctx); err != nil {
+				return err
+			}
+		}
+		if publishedEventCoverID != nil && *publishedEventCoverID == mediaID {
+			if _, err := tx.NewRaw(`UPDATE events SET selected_cover_media_item_id = ?
+				WHERE id = ? AND selected_cover_media_item_id IS NULL`, mediaID, id).Exec(ctx); err != nil {
 				return err
 			}
 		}
@@ -1234,6 +1340,7 @@ func getEvent(ctx context.Context, db bun.IDB, id uuid.UUID) (Event, error) {
 	var stagedUpdatedAt *time.Time
 	err := db.NewRaw(`
 		SELECT event.id, event.lifecycle, event.title, event.description,
+			event.date_start::text, event.date_end::text, event.selected_cover_media_item_id::text,
 			event.grouping_timezone, event.version, event.final_review_complete,
 			publication.editable_version,
 			publication.id IS NOT NULL AND NOT COALESCE(current.attendance_projection_ready, false),
@@ -1312,6 +1419,7 @@ func getEvent(ctx context.Context, db bun.IDB, id uuid.UUID) (Event, error) {
 		LEFT JOIN staged_updates AS staged ON staged.id = event.current_staged_update_id
 		WHERE event.id = ?
 	`, id, id, id, id).Scan(ctx, &event.ID, &event.Lifecycle, &event.Title, &event.Description,
+		&event.DateStart, &event.DateEnd, &event.SelectedCoverMediaItemID,
 		&event.GroupingTimezone, &event.Version, &event.FinalReviewComplete,
 		&event.PublishedEditableVersion, &event.PublishedAttendanceRecoveryRequired,
 		&event.PendingWithdrawalPublication, &event.CreatedAt, &event.UpdatedAt,
@@ -1334,8 +1442,9 @@ func getEvent(ctx context.Context, db bun.IDB, id uuid.UUID) (Event, error) {
 	}
 	event.Sources = make([]EventSource, 0)
 	rows, err := db.QueryContext(ctx, `
-		SELECT source.id, source.name, source.description,
-			event_source.initialized_name, event_source.initialized_description
+		SELECT source.id, source.name, source.description, source.source_start_at, source.source_end_at,
+			event_source.initialized_name, event_source.initialized_description,
+			event_source.initialized_start_at, event_source.initialized_end_at
 		FROM event_sources AS event_source
 		JOIN source_albums AS source ON source.id = event_source.source_album_id
 		WHERE event_source.event_id = ? ORDER BY event_source.source_order
@@ -1346,18 +1455,23 @@ func getEvent(ctx context.Context, db bun.IDB, id uuid.UUID) (Event, error) {
 	for rows.Next() {
 		var source EventSource
 		var currentName, currentDescription, initializedName, initializedDescription string
-		if err := rows.Scan(&source.ID, &currentName, &currentDescription, &initializedName, &initializedDescription); err != nil {
+		var currentStart, currentEnd, initializedStart, initializedEnd *time.Time
+		if err := rows.Scan(&source.ID, &currentName, &currentDescription, &currentStart, &currentEnd,
+			&initializedName, &initializedDescription, &initializedStart, &initializedEnd); err != nil {
 			_ = rows.Close()
 			return Event{}, err
 		}
-		if currentName != initializedName || currentDescription != initializedDescription {
-			suggestion := SourceMetadataSuggestion{}
-			if currentName != initializedName {
-				suggestion.Name = &currentName
-			}
-			if currentDescription != initializedDescription {
-				suggestion.Description = &currentDescription
-			}
+		suggestion := SourceMetadataSuggestion{
+			DateStart: sourceDateSuggestion(currentStart, initializedStart),
+			DateEnd:   sourceDateSuggestion(currentEnd, initializedEnd),
+		}
+		if currentName != initializedName {
+			suggestion.Name = &currentName
+		}
+		if currentDescription != initializedDescription {
+			suggestion.Description = &currentDescription
+		}
+		if suggestion.Name != nil || suggestion.Description != nil || suggestion.DateStart != nil || suggestion.DateEnd != nil {
 			source.MetadataSuggestion = &suggestion
 		}
 		event.Sources = append(event.Sources, source)

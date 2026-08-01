@@ -1,3 +1,4 @@
+import { formatDateRange } from "../format";
 import type { Event } from "../types/generated/events";
 
 export function SourceMetadataSuggestions({
@@ -30,6 +31,30 @@ export function SourceMetadataSuggestions({
         {suggestions.map(({ sourceID, index, suggestion }) => {
           const suggestedName = suggestion.name;
           const suggestedDescription = suggestion.description;
+          const suggestedDateStart = suggestion.date_start;
+          const suggestedDateEnd = suggestion.date_end;
+          const hasDateSuggestion =
+            suggestedDateStart !== null || suggestedDateEnd !== null;
+          const clearsDateRange =
+            suggestedDateStart === "" || suggestedDateEnd === "";
+          const acceptedDateStart = clearsDateRange
+            ? null
+            : suggestedDateStart === null
+              ? event.date_start
+              : suggestedDateStart;
+          const acceptedDateEnd = clearsDateRange
+            ? null
+            : suggestedDateEnd === null
+              ? event.date_end
+              : suggestedDateEnd;
+          const dateSuggestionValid =
+            (!acceptedDateStart && !acceptedDateEnd) ||
+            (Boolean(acceptedDateStart) &&
+              Boolean(acceptedDateEnd) &&
+              acceptedDateStart! <= acceptedDateEnd!);
+          const dateUsed =
+            acceptedDateStart === event.date_start &&
+            acceptedDateEnd === event.date_end;
           const titleUsed = suggestedName === event.title;
           const descriptionUsed = suggestedDescription === event.description;
           const titleValid =
@@ -62,6 +87,40 @@ export function SourceMetadataSuggestions({
                   {!titleValid ? (
                     <small>
                       Suggested title exceeds the Event title limit.
+                    </small>
+                  ) : null}
+                </div>
+              ) : null}
+              {hasDateSuggestion ? (
+                <div>
+                  <span>
+                    Suggested date range:{" "}
+                    {!acceptedDateStart && !acceptedDateEnd
+                      ? "Clear date range"
+                      : acceptedDateStart && acceptedDateEnd
+                        ? formatDateRange(acceptedDateStart, acceptedDateEnd)
+                        : "Incomplete date range"}
+                  </span>
+                  <button
+                    aria-label={
+                      dateUsed
+                        ? "Suggested date range currently used"
+                        : "Use suggested date range from Source"
+                    }
+                    disabled={dateUsed || !dateSuggestionValid}
+                    onClick={() =>
+                      onChange((next) => {
+                        next.date_start = acceptedDateStart;
+                        next.date_end = acceptedDateEnd;
+                      })
+                    }
+                    type="button"
+                  >
+                    {dateUsed ? "Currently used" : "Use suggested date range"}
+                  </button>
+                  {!dateSuggestionValid ? (
+                    <small>
+                      This Source suggestion is not a complete valid date range.
                     </small>
                   ) : null}
                 </div>

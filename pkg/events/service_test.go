@@ -26,6 +26,25 @@ func TestRestoredPlacementInsertAtUsesPublishedSuccessorWithoutReorderingEditabl
 	assert.Equal(t, 0, restoredPlacementInsertAt(placements[2:], targetMoment, targetPosition, 0), "an empty restored Moment precedes the next editable Moment")
 }
 
+func TestEventDateRangeRequiresCanonicalCompleteOrderedDates(t *testing.T) {
+	start, end := "2026-08-01", "2026-08-03"
+	normalizedStart, normalizedEnd, valid := normalizeEventDateRange(&start, &end)
+	require.True(t, valid)
+	assert.Equal(t, start, *normalizedStart)
+	assert.Equal(t, end, *normalizedEnd)
+
+	_, _, valid = normalizeEventDateRange(nil, nil)
+	assert.True(t, valid)
+	_, _, valid = normalizeEventDateRange(&start, nil)
+	assert.False(t, valid)
+	reversed := "2026-07-31"
+	_, _, valid = normalizeEventDateRange(&start, &reversed)
+	assert.False(t, valid)
+	noncanonical := "2026-8-1"
+	_, _, valid = normalizeEventDateRange(&noncanonical, &end)
+	assert.False(t, valid)
+}
+
 func TestCreateEventRejectsTooManySourcesBeforeDatabaseAccess(t *testing.T) {
 	sourceIDs := make([]string, maxDraftSourceAlbums+1)
 	for index := range sourceIDs {

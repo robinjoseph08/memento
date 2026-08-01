@@ -75,6 +75,9 @@ function draft(version = 1): DraftEvent {
     lifecycle: "draft",
     title: "Family weekend",
     description: "",
+    date_start: null,
+    date_end: null,
+    selected_cover_media_item_id: null,
     place_labels: [],
     grouping_timezone: "UTC",
     version,
@@ -175,7 +178,12 @@ function eventFromRequest(
   request: OrganizeEventRequest,
   baseline = draft(request.version),
 ): DraftEvent {
-  const byID = new Map(Object.values(items).map((item) => [item.id, item]));
+  const byID = new Map(
+    [
+      ...baseline.moments.flatMap((moment) => moment.media_items),
+      ...baseline.unassigned_media,
+    ].map((item) => [item.id, item]),
+  );
   const priorMoments = new Map(
     baseline.moments.map((moment) => [moment.id, moment]),
   );
@@ -183,6 +191,9 @@ function eventFromRequest(
   existing.version = request.version + 1;
   existing.title = request.title ?? baseline.title;
   existing.description = request.description ?? baseline.description;
+  existing.date_start = request.date_start;
+  existing.date_end = request.date_end;
+  existing.selected_cover_media_item_id = request.selected_cover_media_item_id;
   existing.grouping_timezone =
     request.grouping_timezone ?? baseline.grouping_timezone;
   existing.final_review_complete = request.final_review_complete;
@@ -350,7 +361,10 @@ function stubOrganizerAPI(
           event_id: eventID,
           publication_id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
           title: "Family weekend",
-          description: "",
+          description: "A recipient-safe description",
+          date_start: "2026-05-01",
+          date_end: "2026-05-02",
+          place_labels: ["Family home"],
           cover_media_id: items.a.id,
           media_count: 1,
           media: [{ ...items.a, available: true }],
@@ -609,6 +623,9 @@ test("shows the resulting Event with highlighted Staged net changes", async () =
   staged.lifecycle = "published";
   staged.title = "Corrected family weekend";
   staged.description = "The complete corrected description";
+  staged.date_start = "2026-05-01";
+  staged.date_end = "2026-05-03";
+  staged.selected_cover_media_item_id = items.loose.id;
   staged.place_labels = ["Coastal overlook", "Garden terrace"];
   staged.grouping_timezone = "America/New_York";
   staged.moments.find((moment) => moment.id === momentOneID)!.place_labels = [
@@ -677,6 +694,9 @@ test("shows the resulting Event with highlighted Staged net changes", async () =
         event_metadata_fields: [
           "title",
           "description",
+          "date_start",
+          "date_end",
+          "selected_cover_media_item_id",
           "place_labels",
           "grouping_timezone",
         ],
@@ -727,12 +747,14 @@ test("shows the resulting Event with highlighted Staged net changes", async () =
   });
   expect(eventMetadata).toHaveTextContent("Corrected family weekend");
   expect(eventMetadata).toHaveTextContent("The complete corrected description");
+  expect(eventMetadata).toHaveTextContent("May 1, 2026 to May 3, 2026");
+  expect(eventMetadata).toHaveTextContent("loose photo");
   expect(eventMetadata).toHaveTextContent("Coastal overlook, Garden terrace");
   expect(eventMetadata).toHaveTextContent("America/New_York");
-  expect(eventMetadata.querySelectorAll(".staged-metadata")).toHaveLength(4);
+  expect(eventMetadata.querySelectorAll(".staged-metadata")).toHaveLength(6);
   expect(
     within(eventMetadata).getAllByText("Staged: Metadata edits"),
-  ).toHaveLength(4);
+  ).toHaveLength(6);
   expect(screen.getByLabelText("Place labels for Moment 2")).toHaveValue(
     "Breakfast room",
   );
@@ -1396,6 +1418,13 @@ test("publishes ready work and previews Recipient output read only", async () =>
   expect(
     await screen.findByText("1 authorized Media items"),
   ).toBeInTheDocument();
+  expect(preview).toHaveTextContent("A recipient-safe description");
+  expect(preview).toHaveTextContent("May 1, 2026 to May 2, 2026");
+  expect(preview).toHaveTextContent("Family home");
+  expect(preview).toHaveTextContent("Authorized cover available");
+  expect(preview).not.toHaveTextContent("Friday");
+  expect(preview).not.toHaveTextContent("Saturday");
+  expect(preview).not.toHaveTextContent("Moment");
   expect(preview).toHaveTextContent(
     "Preview activity is not recorded as Recipient engagement.",
   );
@@ -2004,6 +2033,41 @@ test("renders large Event Media collections in bounded batches", async () => {
   );
 });
 
+test("filters large assigned collections without dropping the selected Event cover", async () => {
+  const initial = draft();
+  const assigned = Array.from({ length: 205 }, (_, index) =>
+    media(
+      `88888888-8888-4888-8888-${String(index).padStart(12, "0")}`,
+      `bulk cover ${index}`,
+    ),
+  );
+  initial.moments = [
+    {
+      ...initial.moments[0],
+      cover_media_item_id: assigned[0].id,
+      media_items: assigned,
+    },
+  ];
+  initial.unassigned_media = [];
+  initial.selected_cover_media_item_id = assigned[204].id;
+  const saves = stubOrganizerAPI(initial);
+  renderOrganizer(`/?event=${eventID}`);
+
+  const cover = await screen.findByLabelText("Event cover");
+  expect(cover).toHaveValue(assigned[204].id);
+  expect(within(cover).getAllByRole("option")).toHaveLength(201);
+  fireEvent.change(screen.getByLabelText("Filter Event cover Media"), {
+    target: { value: "bulk cover 203" },
+  });
+  expect(
+    within(cover).getByRole("option", { name: /bulk cover 203/ }),
+  ).toBeVisible();
+  fireEvent.change(cover, { target: { value: assigned[203].id } });
+
+  await waitFor(() => expect(saves).toHaveLength(1), contentionWait);
+  expect(saves[0].selected_cover_media_item_id).toBe(assigned[203].id);
+});
+
 test("keeps Source metadata advisory until the Curator explicitly accepts it", async () => {
   const initial = draft();
   initial.sources = [
@@ -2012,6 +2076,8 @@ test("keeps Source metadata advisory until the Curator explicitly accepts it", a
       metadata_suggestion: {
         name: "Renamed Source album",
         description: "A newer Source description",
+        date_start: "2026-06-10",
+        date_end: "2026-06-12",
       },
     },
   ];
@@ -2021,6 +2087,8 @@ test("keeps Source metadata advisory until the Curator explicitly accepts it", a
   expect(await screen.findByText("Source metadata suggestions")).toBeVisible();
   expect(screen.getByLabelText("Event title")).toHaveValue("Family weekend");
   expect(screen.getByLabelText("Event description")).toHaveValue("");
+  expect(screen.getByLabelText("Event start date")).toHaveValue("");
+  expect(screen.getByLabelText("Event end date")).toHaveValue("");
   expect(saves).toHaveLength(0);
 
   fireEvent.click(
@@ -2033,6 +2101,11 @@ test("keeps Source metadata advisory until the Curator explicitly accepts it", a
       name: "Use suggested description from Source",
     }),
   );
+  fireEvent.click(
+    screen.getByRole("button", {
+      name: "Use suggested date range from Source",
+    }),
+  );
 
   expect(screen.getByLabelText("Event title")).toHaveValue(
     "Renamed Source album",
@@ -2040,10 +2113,14 @@ test("keeps Source metadata advisory until the Curator explicitly accepts it", a
   expect(screen.getByLabelText("Event description")).toHaveValue(
     "A newer Source description",
   );
+  expect(screen.getByLabelText("Event start date")).toHaveValue("2026-06-10");
+  expect(screen.getByLabelText("Event end date")).toHaveValue("2026-06-12");
   await waitFor(() => expect(saves).toHaveLength(1), contentionWait);
   expect(saves[0]).toMatchObject({
     title: "Renamed Source album",
     description: "A newer Source description",
+    date_start: "2026-06-10",
+    date_end: "2026-06-12",
   });
   expect(
     screen.getByRole("button", { name: "Suggested title currently used" }),
@@ -2061,7 +2138,12 @@ test("can explicitly accept a Source description cleared to empty", async () => 
   initial.sources = [
     {
       id: "99999999-9999-4999-8999-999999999999",
-      metadata_suggestion: { name: null, description: "" },
+      metadata_suggestion: {
+        name: null,
+        description: "",
+        date_start: null,
+        date_end: null,
+      },
     },
   ];
   const saves = stubOrganizerAPI(initial);
@@ -2083,19 +2165,101 @@ test("can explicitly accept a Source description cleared to empty", async () => 
   expect(saves[0].description).toBe("");
 });
 
+test("accepts a complete Source date clear without treating unchanged fields as clears", async () => {
+  const initial = draft();
+  initial.date_start = "2026-05-01";
+  initial.date_end = "2026-05-03";
+  initial.sources = [
+    {
+      id: "99999999-9999-4999-8999-999999999999",
+      metadata_suggestion: {
+        name: null,
+        description: null,
+        date_start: "",
+        date_end: "",
+      },
+    },
+  ];
+  const saves = stubOrganizerAPI(initial);
+  renderOrganizer(`/?event=${eventID}`);
+
+  expect(
+    await screen.findByText("Suggested date range: Clear date range"),
+  ).toBeVisible();
+  expect(screen.getByLabelText("Event start date")).toHaveValue("2026-05-01");
+  expect(screen.getByLabelText("Event end date")).toHaveValue("2026-05-03");
+  fireEvent.click(
+    screen.getByRole("button", {
+      name: "Use suggested date range from Source",
+    }),
+  );
+
+  await waitFor(() => expect(saves).toHaveLength(1), contentionWait);
+  expect(saves[0]).toMatchObject({ date_start: null, date_end: null });
+});
+
+test("accepts a one-sided cleared Source date by clearing the atomic Event range", async () => {
+  const initial = draft();
+  initial.date_start = "2026-05-01";
+  initial.date_end = "2026-05-03";
+  initial.sources = [
+    {
+      id: "99999999-9999-4999-8999-999999999999",
+      metadata_suggestion: {
+        name: null,
+        description: null,
+        date_start: null,
+        date_end: "",
+      },
+    },
+  ];
+  const saves = stubOrganizerAPI(initial);
+  renderOrganizer(`/?event=${eventID}`);
+
+  expect(
+    await screen.findByText("Suggested date range: Clear date range"),
+  ).toBeVisible();
+  fireEvent.click(
+    screen.getByRole("button", {
+      name: "Use suggested date range from Source",
+    }),
+  );
+
+  await waitFor(() => expect(saves).toHaveLength(1), contentionWait);
+  expect(saves[0]).toMatchObject({ date_start: null, date_end: null });
+});
+
 test("autosaves Curator Event metadata and Media removal corrections", async () => {
   const initial = organizedDraft();
+  initial.selected_cover_media_item_id = items.b.id;
+  initial.moments[1].media_items = initial.moments[1].media_items.filter(
+    (item) => item.id !== items.loose.id,
+  );
+  initial.moments[1].cover_media_item_id = null;
+  initial.unassigned_media = [items.loose];
   const saves = stubOrganizerAPI(initial);
   renderOrganizer();
   fireEvent.click(
     await screen.findByRole("button", { name: /Family weekend/ }),
   );
 
+  const eventCover = await screen.findByLabelText("Event cover");
+  expect(eventCover).toHaveValue(items.b.id);
+  expect(
+    within(eventCover).queryByRole("option", { name: /loose photo/ }),
+  ).toBeNull();
+  expect(screen.getAllByLabelText("Cover")).toHaveLength(2);
   fireEvent.change(await screen.findByLabelText("Event title"), {
     target: { value: "Corrected family weekend" },
   });
   fireEvent.change(screen.getByLabelText("Event description"), {
     target: { value: "A corrected description" },
+  });
+  fireEvent.change(screen.getByLabelText("Event start date"), {
+    target: { value: "2026-05-01" },
+  });
+  fireEvent.change(screen.getByLabelText("Event end date"), {
+    target: { value: "2026-05-04" },
   });
   fireEvent.change(screen.getByLabelText("Grouping timezone"), {
     target: { value: "America/New_York" },
@@ -2110,6 +2274,9 @@ test("autosaves Curator Event metadata and Media removal corrections", async () 
   const saved = saves.at(-1)!;
   expect(saved.title).toBe("Corrected family weekend");
   expect(saved.description).toBe("A corrected description");
+  expect(saved.date_start).toBe("2026-05-01");
+  expect(saved.date_end).toBe("2026-05-04");
+  expect(saved.selected_cover_media_item_id).toBeNull();
   expect(saved.grouping_timezone).toBe("America/New_York");
   expect(
     saved.moments.flatMap((moment) => moment.media_item_ids),
@@ -2149,16 +2316,28 @@ test("blocks invalid Event metadata until title and timezone are valid", async (
 
   const title = await screen.findByLabelText("Event title");
   const timezone = screen.getByLabelText("Grouping timezone");
+  const dateStart = screen.getByLabelText("Event start date");
+  const dateEnd = screen.getByLabelText("Event end date");
   expect(title).toBeRequired();
   expect(timezone).toBeRequired();
 
   vi.useFakeTimers();
+  fireEvent.change(dateStart, { target: { value: "2026-06-10" } });
+  expect(
+    screen.getByText("Enter both Event dates or clear both dates."),
+  ).toBeInTheDocument();
+  fireEvent.change(dateEnd, { target: { value: "2026-06-01" } });
   fireEvent.change(title, { target: { value: "   " } });
   fireEvent.change(timezone, { target: { value: "Mars/Olympus" } });
 
   expect(title).toHaveAttribute("aria-invalid", "true");
   expect(timezone).toHaveAttribute("aria-invalid", "true");
+  expect(dateStart).toHaveAttribute("aria-invalid", "true");
+  expect(dateEnd).toHaveAttribute("aria-invalid", "true");
   expect(screen.getByText("Event title is required.")).toBeInTheDocument();
+  expect(
+    screen.getByText("Event start date must be on or before the end date."),
+  ).toBeInTheDocument();
   expect(
     screen.getByText(
       "Enter a valid IANA timezone, such as America/New_York or UTC.",
@@ -2186,12 +2365,18 @@ test("blocks invalid Event metadata until title and timezone are valid", async (
   await act(async () => vi.advanceTimersByTimeAsync(500));
   expect(saves).toHaveLength(0);
 
+  fireEvent.change(dateEnd, { target: { value: "2026-06-12" } });
+  await act(async () => vi.advanceTimersByTimeAsync(500));
+  expect(saves).toHaveLength(0);
+
   fireEvent.change(timezone, { target: { value: "America/New_York" } });
   await act(async () => vi.advanceTimersByTimeAsync(500));
   expect(saves).toHaveLength(1);
   vi.useRealTimers();
   expect(await screen.findByText("All changes saved")).toBeInTheDocument();
   expect(saves[0].title).toBe("Valid corrected title");
+  expect(saves[0].date_start).toBe("2026-06-10");
+  expect(saves[0].date_end).toBe("2026-06-12");
   expect(saves[0].grouping_timezone).toBe("America/New_York");
 });
 
@@ -2312,14 +2497,31 @@ test("rebases Audience version changes without discarding unsaved organization",
   fireEvent.change(screen.getByLabelText("Title for Moment 1"), {
     target: { value: "Unsaved organization survives" },
   });
+  fireEvent.change(screen.getByLabelText("Event start date"), {
+    target: { value: "2026-05-01" },
+  });
+  fireEvent.change(screen.getByLabelText("Event end date"), {
+    target: { value: "2026-05-03" },
+  });
+  fireEvent.change(screen.getByLabelText("Event cover"), {
+    target: { value: items.b.id },
+  });
   fireEvent.click(confirm);
 
   await waitFor(() => expect(saves.length).toBeGreaterThan(0));
   expect(saves.at(-1)?.version).toBe(2);
+  expect(saves.at(-1)).toMatchObject({
+    date_start: "2026-05-01",
+    date_end: "2026-05-03",
+    selected_cover_media_item_id: items.b.id,
+  });
   expect(saves.at(-1)?.moments[0].title).toBe("Unsaved organization survives");
   expect(screen.getByLabelText("Title for Moment 1")).toHaveValue(
     "Unsaved organization survives",
   );
+  expect(screen.getByLabelText("Event start date")).toHaveValue("2026-05-01");
+  expect(screen.getByLabelText("Event end date")).toHaveValue("2026-05-03");
+  expect(screen.getByLabelText("Event cover")).toHaveValue(items.b.id);
 });
 
 test("keeps newer authoritative review state after a delayed autosave response", async () => {
@@ -2580,7 +2782,13 @@ test("keeps stale autosaves recoverable without silently overwriting newer work"
         putBodies.push(request);
         if (conflict) {
           conflict = false;
-          serverDraft = { ...draft(2), title: "Newer server work" };
+          serverDraft = {
+            ...draft(2),
+            title: "Newer server work",
+            date_start: "2026-07-01",
+            date_end: "2026-07-02",
+            selected_cover_media_item_id: items.a.id,
+          };
           return response(
             problemResponse("This Event changed in another browser.", 409),
             409,
@@ -2601,6 +2809,15 @@ test("keeps stale autosaves recoverable without silently overwriting newer work"
   fireEvent.change(await screen.findByLabelText("Title for Moment 1"), {
     target: { value: "My local title" },
   });
+  fireEvent.change(screen.getByLabelText("Event start date"), {
+    target: { value: "2026-06-01" },
+  });
+  fireEvent.change(screen.getByLabelText("Event end date"), {
+    target: { value: "2026-06-03" },
+  });
+  fireEvent.change(screen.getByLabelText("Event cover"), {
+    target: { value: items.b.id },
+  });
 
   expect(await screen.findByRole("alert")).toHaveTextContent(
     "Your edits have not overwritten the newer version.",
@@ -2616,6 +2833,11 @@ test("keeps stale autosaves recoverable without silently overwriting newer work"
   );
   await waitFor(() => expect(putBodies).toHaveLength(2), { timeout: 3000 });
   expect(putBodies[1].moments[0].title).toBe("My local title");
+  expect(putBodies[1]).toMatchObject({
+    date_start: "2026-06-01",
+    date_end: "2026-06-03",
+    selected_cover_media_item_id: items.b.id,
+  });
   expect(await screen.findByText("All changes saved")).toBeInTheDocument();
 });
 
@@ -2803,6 +3025,15 @@ test("preserves edits made while an autosave is in flight", async () => {
   fireEvent.change(title, { target: { value: "First edit" } });
   await waitFor(() => expect(putBodies).toHaveLength(1), { timeout: 3000 });
   fireEvent.change(title, { target: { value: "Later edit" } });
+  fireEvent.change(screen.getByLabelText("Event start date"), {
+    target: { value: "2026-08-01" },
+  });
+  fireEvent.change(screen.getByLabelText("Event end date"), {
+    target: { value: "2026-08-04" },
+  });
+  fireEvent.change(screen.getByLabelText("Event cover"), {
+    target: { value: items.c.id },
+  });
   await new Promise((resolve) => window.setTimeout(resolve, 600));
   expect(putBodies).toHaveLength(1);
   resolveFirstSave?.(response(eventFromRequest(putBodies[0])));
@@ -2810,6 +3041,11 @@ test("preserves edits made while an autosave is in flight", async () => {
   await waitFor(() => expect(putBodies).toHaveLength(2), { timeout: 3000 });
   expect(putBodies[1].version).toBe(2);
   expect(putBodies[1].moments[0].title).toBe("Later edit");
+  expect(putBodies[1]).toMatchObject({
+    date_start: "2026-08-01",
+    date_end: "2026-08-04",
+    selected_cover_media_item_id: items.c.id,
+  });
   expect(await screen.findByText("All changes saved")).toBeInTheDocument();
 });
 

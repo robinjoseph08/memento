@@ -617,6 +617,7 @@ func (s *Service) applyValidatedSnapshot(
 				  AND NOT EXISTS (SELECT 1 FROM source_album_memberships WHERE media_item_id = media.id)
 				  AND NOT EXISTS (SELECT 1 FROM media_repair_candidates WHERE media_item_id = media.id OR candidate_media_item_id = media.id)
 				  AND NOT EXISTS (SELECT 1 FROM draft_media_placements WHERE media_item_id = media.id)
+				  AND NOT EXISTS (SELECT 1 FROM events WHERE selected_cover_media_item_id = media.id)
 				  AND NOT EXISTS (SELECT 1 FROM draft_moments WHERE cover_media_item_id = media.id)
 				  AND NOT EXISTS (SELECT 1 FROM loose_items WHERE media_item_id = media.id)
 				  AND NOT EXISTS (SELECT 1 FROM published_media_placements WHERE media_item_id = media.id)
@@ -785,12 +786,12 @@ func syncEditableEvents(
 			}
 			var momentID *uuid.UUID
 			var position int
-			var wasCover bool
+			var wasCover, wasEventCover bool
 			restoredSourceRemoval := false
 			err := tx.NewRaw(`
-				SELECT draft_moment_id, position, was_cover
+				SELECT draft_moment_id, position, was_cover, was_event_cover
 				FROM staged_source_removals WHERE event_id = ? AND media_item_id = ?
-			`, eventID, mediaID).Scan(ctx, &momentID, &position, &wasCover)
+			`, eventID, mediaID).Scan(ctx, &momentID, &position, &wasCover, &wasEventCover)
 			if errors.Is(err, sql.ErrNoRows) {
 				if !event.IncludeFutureMedia {
 					continue
@@ -846,6 +847,11 @@ func syncEditableEvents(
 					return err
 				}
 			}
+			if wasEventCover {
+				if _, err := tx.NewRaw(`UPDATE events SET selected_cover_media_item_id = ? WHERE id = ? AND selected_cover_media_item_id IS NULL`, mediaID, eventID).Exec(ctx); err != nil {
+					return err
+				}
+			}
 			if _, err := tx.NewRaw(`DELETE FROM staged_source_removals WHERE event_id = ? AND media_item_id = ?`, eventID, mediaID).Exec(ctx); err != nil {
 				return err
 			}
@@ -888,9 +894,13 @@ func syncEditableEvents(
 			}
 			wasCover := false
 			if momentID != nil {
-				if err := tx.NewRaw(`SELECT cover_media_item_id = ? FROM draft_moments WHERE id = ?`, mediaID, *momentID).Scan(ctx, &wasCover); err != nil {
+				if err := tx.NewRaw(`SELECT (cover_media_item_id = ?) IS TRUE FROM draft_moments WHERE id = ?`, mediaID, *momentID).Scan(ctx, &wasCover); err != nil {
 					return err
 				}
+			}
+			var wasEventCover bool
+			if err := tx.NewRaw(`SELECT (selected_cover_media_item_id = ?) IS TRUE FROM events WHERE id = ?`, mediaID, eventID).Scan(ctx, &wasEventCover); err != nil {
+				return err
 			}
 			var wasPublished, sourceMissing bool
 			if err := tx.NewRaw(`SELECT EXISTS (SELECT 1 FROM current_published_placements WHERE event_id = ? AND media_item_id = ?)`, eventID, mediaID).Scan(ctx, &wasPublished); err != nil {
@@ -907,15 +917,20 @@ func syncEditableEvents(
 				}
 				if _, err := tx.NewRaw(`
 					INSERT INTO staged_source_removals (
-						event_id, media_item_id, draft_moment_id, position, was_cover, created_at
-					) VALUES (?, ?, ?, ?, ?, ?)
+						event_id, media_item_id, draft_moment_id, position, was_cover, was_event_cover, created_at
+					) VALUES (?, ?, ?, ?, ?, ?, ?)
 					ON CONFLICT (event_id, media_item_id) DO NOTHING
-				`, eventID, mediaID, momentID, position, wasCover, now).Exec(ctx); err != nil {
+				`, eventID, mediaID, momentID, position, wasCover, wasEventCover, now).Exec(ctx); err != nil {
 					return err
 				}
 			}
 			if wasCover {
 				if _, err := tx.NewRaw(`UPDATE draft_moments SET cover_media_item_id = NULL WHERE id = ?`, *momentID).Exec(ctx); err != nil {
+					return err
+				}
+			}
+			if wasEventCover {
+				if _, err := tx.NewRaw(`UPDATE events SET selected_cover_media_item_id = NULL WHERE id = ?`, eventID).Exec(ctx); err != nil {
 					return err
 				}
 			}

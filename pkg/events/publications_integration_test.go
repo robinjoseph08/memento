@@ -220,6 +220,129 @@ func TestPreviewRendersSavedEditableResultBeforePublication(t *testing.T) {
 	assert.Equal(t, []int64{7, 8}, versions)
 }
 
+func TestEventPresentationAndSafeCoverUseOnlyAuthorizedCandidates(t *testing.T) {
+	fixture := newPublicationFixture(t)
+	ctx := context.Background()
+	_, err := fixture.db.NewRaw(`
+		UPDATE events SET date_start = '2026-07-20', date_end = '2026-07-30',
+			place_labels = ARRAY['Outer Banks'], selected_cover_media_item_id = ?
+		WHERE id = ?
+	`, fixture.media[1], fixture.event).Exec(ctx)
+	require.NoError(t, err)
+	unauthorizedPreference, err := fixture.service.PreviewEvent(ctx, fixture.actor, fixture.event, fixture.people["shared"])
+	require.NoError(t, err)
+	require.NotNil(t, unauthorizedPreference.CoverMediaID)
+	assert.Equal(t, fixture.media[0].String(), *unauthorizedPreference.CoverMediaID)
+	assert.NotContains(t, fmt.Sprintf("%+v", unauthorizedPreference), fixture.media[1].String(), "an inaccessible preference identity stays private")
+
+	_, err = fixture.db.NewRaw(`
+		INSERT INTO audience_snapshot_entries (snapshot_id, recipient_person_id, recipient_access_generation_id)
+		SELECT snapshot_id, ?, ? FROM current_audience_snapshots
+		WHERE target_kind = 'moment' AND target_id = ?
+	`, fixture.people["shared"], fixture.access["shared"], fixture.moments[1]).Exec(ctx)
+	require.NoError(t, err)
+	preferred, err := fixture.service.PreviewEvent(ctx, fixture.actor, fixture.event, fixture.people["shared"])
+	require.NoError(t, err)
+	require.NotNil(t, preferred.CoverMediaID)
+	assert.Equal(t, fixture.media[1].String(), *preferred.CoverMediaID)
+	assert.Equal(t, "2026-07-20", *preferred.DateStart)
+	assert.Equal(t, "2026-07-30", *preferred.DateEnd)
+	assert.Equal(t, []string{"Outer Banks"}, preferred.PlaceLabels)
+
+	_, err = fixture.db.NewRaw(`UPDATE media_items SET availability = 'source_missing', missing_since = now() WHERE id = ?`, fixture.media[1]).Exec(ctx)
+	require.NoError(t, err)
+	available, err := fixture.service.PreviewEvent(ctx, fixture.actor, fixture.event, fixture.people["shared"])
+	require.NoError(t, err)
+	require.NotNil(t, available.CoverMediaID)
+	assert.Equal(t, fixture.media[0].String(), *available.CoverMediaID, "availability outranks the selected Event cover")
+
+	publication, err := fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, fixture.request())
+	require.NoError(t, err)
+	shared, err := fixture.service.RecipientEvent(ctx, fixture.actorFor("shared"), fixture.event)
+	require.NoError(t, err)
+	require.NotNil(t, shared.CoverMediaID)
+	assert.Equal(t, fixture.media[0].String(), *shared.CoverMediaID)
+	assert.NotContains(t, fmt.Sprintf("%+v", shared), fixture.media[2].String())
+
+	hidden, err := fixture.service.RecipientEvent(ctx, fixture.actorFor("hidden"), fixture.event)
+	require.NoError(t, err)
+	require.NotNil(t, hidden.CoverMediaID)
+	assert.Equal(t, fixture.media[1].String(), *hidden.CoverMediaID, "an authorized unavailable fallback remains usable without leaking another candidate")
+	require.Len(t, hidden.Media, 1)
+	assert.False(t, hidden.Media[0].Available)
+
+	var historicalStart, currentStart *string
+	var historicalCover, currentCover *uuid.UUID
+	require.NoError(t, fixture.db.NewRaw(`
+		SELECT revision.date_start::text, current.date_start::text,
+		       revision.selected_cover_media_item_id, current.selected_cover_media_item_id
+		FROM published_event_revisions AS revision
+		JOIN current_published_events AS current ON current.publication_id = revision.publication_id
+		WHERE revision.publication_id = ?
+	`, publication.ID).Scan(ctx, &historicalStart, &currentStart, &historicalCover, &currentCover))
+	assert.Equal(t, historicalStart, currentStart)
+	assert.Equal(t, historicalCover, currentCover)
+}
+
+func TestEventPresentationCorrectionRetainsImmutableHistory(t *testing.T) {
+	fixture := newPublicationFixture(t)
+	ctx := context.Background()
+	_, err := fixture.db.NewRaw(`UPDATE events
+		SET date_start = '2026-07-20', date_end = '2026-07-22',
+		    selected_cover_media_item_id = ?, place_labels = ARRAY['First place']
+		WHERE id = ?`, fixture.media[0], fixture.event).Exec(ctx)
+	require.NoError(t, err)
+	_, err = fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, fixture.request())
+	require.NoError(t, err)
+
+	require.NoError(t, fixture.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if _, updateErr := tx.NewRaw(`UPDATE events
+			SET date_start = '2026-08-01', date_end = '2026-08-03',
+			    selected_cover_media_item_id = ?, place_labels = ARRAY['Second place'],
+			    version = 8, final_review_complete = true
+			WHERE id = ?`, fixture.media[1], fixture.event).Exec(ctx); updateErr != nil {
+			return updateErr
+		}
+		_, refreshErr := refreshStagedUpdate(ctx, tx, fixture.event, fixture.service.now().UTC())
+		return refreshErr
+	}))
+	staged, err := staging.Load(ctx, fixture.db, fixture.event)
+	require.NoError(t, err)
+	require.NotNil(t, staged)
+	require.Len(t, staged.Changes, 1)
+	assert.ElementsMatch(t, []string{"date_start", "date_end", "selected_cover_media_item_id", "place_labels"}, staged.Changes[0].EventMetadataFields)
+
+	_, err = fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, PublishEventRequest{Version: 8})
+	require.NoError(t, err)
+	type presentationRevision struct {
+		Revision        int64
+		DateStart       string
+		DateEnd         string
+		SelectedCoverID uuid.UUID `bun:"selected_cover_media_item_id"`
+		PlaceLabelsJSON string
+	}
+	var revisions []presentationRevision
+	require.NoError(t, fixture.db.NewRaw(`
+		SELECT publication.revision, revision.date_start::text, revision.date_end::text,
+		       revision.selected_cover_media_item_id, to_json(revision.place_labels)::text AS place_labels_json
+		FROM published_event_revisions AS revision
+		JOIN publications AS publication ON publication.id = revision.publication_id
+		WHERE revision.event_id = ? ORDER BY publication.revision
+	`, fixture.event).Scan(ctx, &revisions))
+	require.Len(t, revisions, 2)
+	assert.Equal(t, "2026-07-20", revisions[0].DateStart)
+	assert.Equal(t, "2026-07-22", revisions[0].DateEnd)
+	assert.Equal(t, fixture.media[0], revisions[0].SelectedCoverID)
+	assert.JSONEq(t, `["First place"]`, revisions[0].PlaceLabelsJSON)
+	assert.Equal(t, "2026-08-01", revisions[1].DateStart)
+	assert.Equal(t, "2026-08-03", revisions[1].DateEnd)
+	assert.Equal(t, fixture.media[1], revisions[1].SelectedCoverID)
+	assert.JSONEq(t, `["Second place"]`, revisions[1].PlaceLabelsJSON)
+	cleared, err := staging.Load(ctx, fixture.db, fixture.event)
+	require.NoError(t, err)
+	assert.Nil(t, cleared)
+}
+
 func TestPublicationBuildsImmutableHistoryAndFilteredCurrentProjections(t *testing.T) {
 	fixture := newPublicationFixture(t)
 	ctx := context.Background()
@@ -282,6 +405,10 @@ func TestPublicationBuildsImmutableHistoryAndFilteredCurrentProjections(t *testi
 	require.NoError(t, err)
 	assert.False(t, emptyPreview.Authorized)
 	assert.Empty(t, emptyPreview.Title, "an empty Audience must not reveal Event metadata")
+	assert.Nil(t, emptyPreview.DateStart)
+	assert.Nil(t, emptyPreview.DateEnd)
+	assert.Empty(t, emptyPreview.PlaceLabels)
+	assert.Nil(t, emptyPreview.CoverMediaID)
 	assert.Empty(t, emptyPreview.Media)
 	assert.Equal(t, PreviewCapabilities{}, emptyPreview.Capabilities)
 	var pendingNewForYou bool
@@ -561,9 +688,11 @@ func TestCuratorCanStageEventMetadataAndMediaRemovalCorrections(t *testing.T) {
 	title := "Corrected family weekend"
 	description := "A portal-owned correction"
 	timezone := "America/New_York"
+	dateStart, dateEnd := "2026-07-28", "2026-07-29"
 	secondCover, thirdCover := fixture.media[1].String(), fixture.media[2].String()
 	corrected, err := fixture.service.OrganizeEvent(ctx, fixture.actor, fixture.event, OrganizeEventRequest{
-		Version: 7, Title: &title, Description: &description, GroupingTimezone: &timezone,
+		Version: 7, Title: &title, Description: &description, DateStart: &dateStart, DateEnd: &dateEnd,
+		SelectedCoverMediaItemID: &secondCover, GroupingTimezone: &timezone,
 		Moments: []OrganizeMoment{
 			{ID: fixture.moments[1].String(), Title: "Moment", ProposedDay: "2026-07-28", CoverMediaItemID: &secondCover, MediaItemIDs: []string{fixture.media[1].String()}},
 			{ID: fixture.moments[2].String(), Title: "Moment", ProposedDay: "2026-07-29", CoverMediaItemID: &thirdCover, MediaItemIDs: []string{fixture.media[2].String()}},
@@ -574,6 +703,9 @@ func TestCuratorCanStageEventMetadataAndMediaRemovalCorrections(t *testing.T) {
 	assert.Equal(t, title, corrected.Title)
 	assert.Equal(t, description, corrected.Description)
 	assert.Equal(t, timezone, corrected.GroupingTimezone)
+	assert.Equal(t, dateStart, *corrected.DateStart)
+	assert.Equal(t, dateEnd, *corrected.DateEnd)
+	assert.Equal(t, secondCover, *corrected.SelectedCoverMediaItemID)
 	assert.False(t, corrected.FinalReviewComplete)
 	assert.Len(t, corrected.Moments, 2)
 	require.NotNil(t, corrected.StagedUpdate)
@@ -583,7 +715,7 @@ func TestCuratorCanStageEventMetadataAndMediaRemovalCorrections(t *testing.T) {
 		changes[change.Kind] = change
 	}
 	assert.Equal(t, []string{fixture.media[0].String()}, changes[staging.ChangeKindRemoval].MediaItemIDs)
-	assert.ElementsMatch(t, []string{"title", "description", "grouping_timezone"}, changes[staging.ChangeKindMetadata].EventMetadataFields)
+	assert.ElementsMatch(t, []string{"title", "description", "date_start", "date_end", "selected_cover_media_item_id", "grouping_timezone"}, changes[staging.ChangeKindMetadata].EventMetadataFields)
 	assert.Equal(t, []string{fixture.moments[0].String()}, changes[staging.ChangeKindMomentStructure].MomentIDs)
 	_, err = fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, PublishEventRequest{Version: corrected.Version})
 	assert.ErrorIs(t, err, ErrPublicationNotReady, "Curator corrections require a fresh final review")
@@ -1229,7 +1361,9 @@ func TestNoNewMediaCorrectionIsQuietAndClearsStageAtomically(t *testing.T) {
 	_, err := fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, fixture.request())
 	require.NoError(t, err)
 	require.NoError(t, fixture.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
-		if _, err := tx.NewRaw(`UPDATE events SET title = 'Quiet correction', version = 8, final_review_complete = true WHERE id = ?`, fixture.event).Exec(ctx); err != nil {
+		if _, err := tx.NewRaw(`UPDATE events SET title = 'Quiet correction',
+			date_start = '2026-07-20', date_end = '2026-07-30', selected_cover_media_item_id = ?,
+			version = 8, final_review_complete = true WHERE id = ?`, fixture.media[0], fixture.event).Exec(ctx); err != nil {
 			return err
 		}
 		_, err := refreshStagedUpdate(ctx, tx, fixture.event, fixture.service.now().UTC())

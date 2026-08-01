@@ -36,6 +36,7 @@ func TestSearchUsesOnlyAuthorizedCurrentPublicationAndDiscoverableAttendance(t *
 	attendeeID, hiddenAttendeeID, unauthorizedAttendeeID, circleID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
 	_, err := fixture.db.NewRaw(`
 		UPDATE events SET title = 'Café Reunion', description = 'A summer gathering',
+		       date_start = '2026-07-27', date_end = '2026-07-27',
 		       place_labels = ARRAY['São Paulo'] WHERE id = ?;
 		UPDATE draft_moments SET place_labels = ARRAY['Jardín Central'] WHERE id = ?;
 		INSERT INTO people (id, display_name, sort_name) VALUES
@@ -95,6 +96,7 @@ func TestSearchUsesOnlyAuthorizedCurrentPublicationAndDiscoverableAttendance(t *
 		assert.Equal(t, 1, result.Events[0].MediaCount, query)
 		assert.Equal(t, "2026-07-27", *result.Events[0].DateStart, query)
 		assert.Equal(t, "2026-07-27", *result.Events[0].DateEnd, query)
+		assert.Equal(t, []string{"São Paulo"}, result.Events[0].PlaceLabels, query)
 		assert.Len(t, result.Photos, 1, query)
 	}
 
@@ -250,6 +252,34 @@ func TestSearchUsesOnlyAuthorizedCurrentPublicationAndDiscoverableAttendance(t *
 	withdrawnResult, err := service.Search(ctx, actor, searchdomain.Request{Query: "staged"})
 	require.NoError(t, err)
 	assertSafeEmptySearchResponse(t, withdrawnResult, "Withdrawal must remove every search observable")
+}
+
+func TestSearchCoverKeepsAvailabilityAheadOfMatchingMedia(t *testing.T) {
+	fixture := newPublicationFixture(t)
+	ctx := context.Background()
+	_, err := fixture.db.NewRaw(`
+		UPDATE events SET selected_cover_media_item_id = ? WHERE id = ?;
+		UPDATE draft_moments SET place_labels = ARRAY['Needle Place'] WHERE id = ?;
+		INSERT INTO audience_snapshot_entries (
+			snapshot_id, recipient_person_id, recipient_access_generation_id
+		)
+		SELECT snapshot_id, ?, ? FROM current_audience_snapshots
+		WHERE target_kind = 'moment' AND target_id = ?
+	`, fixture.media[1], fixture.event, fixture.moments[0],
+		fixture.people["shared"], fixture.access["shared"], fixture.moments[1]).Exec(ctx)
+	require.NoError(t, err)
+	_, err = fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, fixture.request())
+	require.NoError(t, err)
+	_, err = fixture.db.NewRaw(`UPDATE media_items SET availability = 'source_missing', missing_since = now() WHERE id = ?`, fixture.media[0]).Exec(ctx)
+	require.NoError(t, err)
+
+	service := searchdomain.New(fixture.db)
+	result, err := service.Search(ctx, createSearchSession(t, fixture), searchdomain.Request{Query: "needle"})
+	require.NoError(t, err)
+	require.Len(t, result.Events, 1)
+	assert.Equal(t, 1, result.Events[0].MediaCount)
+	assert.Equal(t, fixture.media[1].String(), result.Events[0].CoverMediaID)
+	assert.True(t, result.Events[0].CoverAvailable)
 }
 
 func TestSearchCapsDistinctPeopleAfterStableDeduplication(t *testing.T) {
@@ -611,7 +641,9 @@ func TestConcurrentPublicationAndPersonMergePreserveCurrentAndHistoricalAttendan
 func TestSearchDateFiltersEnforceInclusiveUpperAndLowerBounds(t *testing.T) {
 	fixture := newPublicationFixture(t)
 	ctx := context.Background()
-	_, err := fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, fixture.request())
+	_, err := fixture.db.NewRaw(`UPDATE events SET date_start = '2026-01-01', date_end = '2026-12-31' WHERE id = ?`, fixture.event).Exec(ctx)
+	require.NoError(t, err)
+	_, err = fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, fixture.request())
 	require.NoError(t, err)
 	actor := createSearchSession(t, fixture)
 	service := searchdomain.New(fixture.db)
@@ -694,12 +726,12 @@ func TestSearchDateFiltersEnforceInclusiveUpperAndLowerBounds(t *testing.T) {
 		{
 			name: "month", filter: searchdomain.DateFilter{Kind: "month", Month: &month},
 			expected: boundaryIDs("month start", "before range", "range start", "existing", "range end", "after range", "month end"),
-			start:    "2026-07-01", end: "2026-07-31",
+			start:    "2026-01-01", end: "2026-12-31",
 		},
 		{
 			name: "range", filter: searchdomain.DateFilter{Kind: "range", StartDate: &rangeStart, EndDate: &rangeEnd},
 			expected: boundaryIDs("range start", "existing", "range end"),
-			start:    "2026-07-20", end: "2026-07-29",
+			start:    "2026-01-01", end: "2026-12-31",
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -729,6 +761,7 @@ func TestSearchDateMatchesAuthorizedPublishedEventRangeWithoutMatchingPhotoCaptu
 	fixture := newPublicationFixture(t)
 	ctx := context.Background()
 	_, err := fixture.db.NewRaw(`
+		UPDATE events SET date_start = '2026-07-20', date_end = '2026-07-30' WHERE id = ?;
 		UPDATE draft_moments SET proposed_day = '2026-07-20' WHERE id = ?;
 		UPDATE draft_moments SET proposed_day = '2026-07-30' WHERE id = ?;
 		UPDATE draft_moments SET proposed_day = '2026-08-15' WHERE id = ?;
@@ -739,7 +772,7 @@ func TestSearchDateMatchesAuthorizedPublishedEventRangeWithoutMatchingPhotoCaptu
 		)
 		SELECT snapshot_id, ?, ? FROM current_audience_snapshots
 		WHERE target_kind = 'moment' AND target_id = ?
-	`, fixture.moments[0], fixture.moments[1], fixture.moments[2], fixture.media[0], fixture.media[1],
+	`, fixture.event, fixture.moments[0], fixture.moments[1], fixture.moments[2], fixture.media[0], fixture.media[1],
 		fixture.people["shared"], fixture.access["shared"], fixture.moments[1]).Exec(ctx)
 	require.NoError(t, err)
 	_, err = fixture.service.PublishEvent(ctx, fixture.actor, fixture.event, fixture.request())
@@ -758,8 +791,10 @@ func TestSearchDateMatchesAuthorizedPublishedEventRangeWithoutMatchingPhotoCaptu
 	require.Len(t, result.Events, 1)
 	assert.Equal(t, fixture.event.String(), result.Events[0].ID)
 	assert.Zero(t, result.Events[0].MediaCount, "the Event range match must not invent an in-filter Media match")
-	assert.Nil(t, result.Events[0].DateStart)
-	assert.Nil(t, result.Events[0].DateEnd)
+	require.NotNil(t, result.Events[0].DateStart)
+	require.NotNil(t, result.Events[0].DateEnd)
+	assert.Equal(t, "2026-07-20", *result.Events[0].DateStart)
+	assert.Equal(t, "2026-07-30", *result.Events[0].DateEnd)
 	assert.Contains(t, []string{fixture.media[0].String(), fixture.media[1].String()}, result.Events[0].CoverMediaID)
 
 	hiddenOnly := "2026-08-15"

@@ -12,6 +12,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/robinjoseph08/memento/internal/eventcover"
 	"github.com/robinjoseph08/memento/pkg/setup"
 	"github.com/uptrace/bun"
 	"golang.org/x/text/unicode/norm"
@@ -61,20 +62,21 @@ type Media struct {
 	OriginalURL   string  `json:"original_url"`
 }
 
-// EventResult contains authorized totals and spans. Its cover prefers matching
-// authorized Media, then falls back to authorized Event Media for a range-only match.
+// EventResult contains authorized matching totals and the explicit Event date range.
+// Its cover applies the common safe ranking over authorized Event candidates.
 type EventResult struct {
-	ID             string  `json:"id"`
-	Title          string  `json:"title"`
-	Description    string  `json:"description"`
-	MediaCount     int     `json:"media_count"`
-	DateStart      *string `json:"date_start" tstype:"string | null,required"`
-	DateEnd        *string `json:"date_end" tstype:"string | null,required"`
-	CoverMediaID   string  `json:"cover_media_id"`
-	CoverWidth     *int    `json:"cover_width" tstype:"number | null,required"`
-	CoverHeight    *int    `json:"cover_height" tstype:"number | null,required"`
-	CoverAvailable bool    `json:"cover_available"`
-	ThumbnailURL   string  `json:"thumbnail_url"`
+	ID             string   `json:"id"`
+	Title          string   `json:"title"`
+	Description    string   `json:"description"`
+	PlaceLabels    []string `json:"place_labels"`
+	MediaCount     int      `json:"media_count"`
+	DateStart      *string  `json:"date_start" tstype:"string | null,required"`
+	DateEnd        *string  `json:"date_end" tstype:"string | null,required"`
+	CoverMediaID   string   `json:"cover_media_id"`
+	CoverWidth     *int     `json:"cover_width" tstype:"number | null,required"`
+	CoverHeight    *int     `json:"cover_height" tstype:"number | null,required"`
+	CoverAvailable bool     `json:"cover_available"`
+	ThumbnailURL   string   `json:"thumbnail_url"`
 }
 
 // PersonAttendanceResult states only confirmed Attendance in an authorized part of an Event.
@@ -224,9 +226,13 @@ const authorizedDocuments = `
 	SELECT document.event_id, document.publication_id, document.media_item_id,
 	       document.search_vector, document.normalized_search_text, document.capture_date,
 	       current.title, current.description, current.committed_at,
-	       placement.published_moment_id, moment.proposed_day AS event_day, placement.position,
+	       current.date_start AS event_date_start, current.date_end AS event_date_end,
+	       current.place_labels AS event_place_labels,
+	       placement.published_moment_id, placement.position,
 	       published.media_type, published.width, published.height, published.local_date_time,
-	       media.availability = 'current' AS available
+	       media.availability = 'current' AS available,
+	       (current.selected_cover_media_item_id = placement.media_item_id) IS TRUE AS is_selected_cover,
+	       (moment.cover_media_item_id = placement.media_item_id) IS TRUE AS is_moment_cover
 	FROM current_audience_entitlements AS entitlement
 	JOIN published_search_documents AS document
 	  ON document.event_id = entitlement.event_id
@@ -250,9 +256,12 @@ const authorizedDocuments = `
 	SELECT NULL::uuid AS event_id, document.publication_id, document.media_item_id,
 	       document.search_vector, document.normalized_search_text, document.capture_date,
 	       current.title, current.description, current.committed_at,
-	       NULL::uuid AS published_moment_id, current.proposed_day AS event_day, 0 AS position,
+	       NULL::date AS event_date_start, NULL::date AS event_date_end,
+	       '{}'::text[] AS event_place_labels,
+	       NULL::uuid AS published_moment_id, 0 AS position,
 	       current.media_type, current.width, current.height, current.local_date_time,
-	       media.availability = 'current' AS available
+	       media.availability = 'current' AS available,
+	       false AS is_selected_cover, false AS is_moment_cover
 	FROM published_loose_search_documents AS document
 	JOIN current_published_loose_items AS current
 	  ON current.loose_item_id = document.loose_item_id AND current.publication_id = document.publication_id
@@ -314,7 +323,7 @@ func matchingCTE(actor setup.SessionActor, terms []string, dateBounds *bounds) (
 	cte := `WITH authorized AS (` + authorizedDocuments + `), text_matched AS (
 		SELECT authorized.* FROM authorized WHERE ` + textWhere + `
 	), authorized_event_ranges AS (
-		SELECT event_id, min(event_day) AS date_start, max(event_day) AS date_end
+		SELECT event_id, max(event_date_start) AS date_start, max(event_date_end) AS date_end
 		FROM authorized WHERE event_id IS NOT NULL GROUP BY event_id
 	), matched AS (
 		SELECT text_matched.* FROM text_matched`
@@ -385,22 +394,24 @@ func (s *Service) Search(ctx context.Context, actor setup.SessionActor, request 
 		cte, args := matchingCTE(actor, terms, dateBounds)
 		combinedQuery := cte + `, ranked_events AS (
 			SELECT candidate.event_id, candidate.title, candidate.description,
+			       candidate.event_date_start::text AS date_start,
+			       candidate.event_date_end::text AS date_end,
+			       candidate.event_place_labels AS place_labels,
 			       count(DISTINCT matched.media_item_id)::integer AS media_count,
-			       min(matched.capture_date)::text AS date_start,
-			       max(matched.capture_date)::text AS date_end,
-			       (array_agg(candidate.media_item_id ORDER BY (matched.media_item_id IS NOT NULL) DESC, candidate.available DESC, candidate.position, candidate.media_item_id))[1] AS cover_media_id,
-			       (array_agg(candidate.width ORDER BY (matched.media_item_id IS NOT NULL) DESC, candidate.available DESC, candidate.position, candidate.media_item_id))[1] AS cover_width,
-			       (array_agg(candidate.height ORDER BY (matched.media_item_id IS NOT NULL) DESC, candidate.available DESC, candidate.position, candidate.media_item_id))[1] AS cover_height,
-			       (array_agg(candidate.available ORDER BY (matched.media_item_id IS NOT NULL) DESC, candidate.available DESC, candidate.position, candidate.media_item_id))[1] AS cover_available,
+			       (array_agg(candidate.media_item_id ORDER BY ` + eventcover.AuthorizedOrder("candidate") + `))[1] AS cover_media_id,
+			       (array_agg(candidate.width ORDER BY ` + eventcover.AuthorizedOrder("candidate") + `))[1] AS cover_width,
+			       (array_agg(candidate.height ORDER BY ` + eventcover.AuthorizedOrder("candidate") + `))[1] AS cover_height,
+			       (array_agg(candidate.available ORDER BY ` + eventcover.AuthorizedOrder("candidate") + `))[1] AS cover_available,
 			       max(candidate.committed_at) AS committed_at
-			FROM text_matched AS candidate
+			FROM authorized AS candidate
 			JOIN matching_events ON matching_events.event_id = candidate.event_id
 			LEFT JOIN matched ON matched.event_id = candidate.event_id
 			 AND matched.publication_id = candidate.publication_id
 			 AND matched.media_item_id = candidate.media_item_id
-			GROUP BY candidate.event_id, candidate.title, candidate.description
+			GROUP BY candidate.event_id, candidate.title, candidate.description,
+			         candidate.event_date_start, candidate.event_date_end, candidate.event_place_labels
 		), event_rows AS (
-			SELECT event_id AS id, title, description, media_count, date_start, date_end,
+			SELECT event_id AS id, title, description, place_labels, media_count, date_start, date_end,
 			       cover_media_id, cover_width, cover_height, cover_available, committed_at,
 			       count(*) OVER ()::integer AS total_events
 			FROM ranked_events ORDER BY committed_at DESC, event_id DESC LIMIT ?

@@ -1,5 +1,6 @@
 import { useState } from "react";
 
+import { formatDateRange } from "../format";
 import {
   usePreviewRecipients,
   useRecipientPreview,
@@ -130,6 +131,40 @@ function RecipientPreviewResult({
           {preview.data?.authorized ? (
             <>
               <h5>{preview.data.title}</h5>
+              <p>{preview.data.description || "No description"}</p>
+              <dl>
+                <div>
+                  <dt>Date range</dt>
+                  <dd>
+                    {formatDateRange(
+                      preview.data.date_start,
+                      preview.data.date_end,
+                    )}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Place labels</dt>
+                  <dd>
+                    {preview.data.place_labels?.length
+                      ? preview.data.place_labels.join(", ")
+                      : "No Place labels"}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Cover</dt>
+                  <dd>
+                    {preview.data.cover_media_id === null
+                      ? "No authorized cover"
+                      : preview.data.media.some(
+                            (item) =>
+                              item.id === preview.data.cover_media_id &&
+                              item.available,
+                          )
+                        ? "Authorized cover available"
+                        : "Authorized cover unavailable"}
+                  </dd>
+                </div>
+              </dl>
               <p>{preview.data.media_count} authorized Media items</p>
               <ol>
                 {preview.data.media.map((item) => (

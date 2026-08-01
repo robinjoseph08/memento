@@ -65,6 +65,24 @@ func TestValidateRejectsCorruptRestoreState(t *testing.T) {
 		})
 	})
 
+	t.Run("selected Event cover outside its presentation", func(t *testing.T) {
+		validateMutation(t, db, ErrProjections, func(ctx context.Context, tx bun.Tx) error {
+			_, err := tx.NewRaw(`
+				INSERT INTO media_items (id, immich_asset_id, media_type, first_seen_at, last_seen_at)
+				VALUES
+				 ('11111111-1111-4111-8111-111111111111', '21111111-1111-4111-8111-111111111111', 'image', now(), now()),
+				 ('12222222-2222-4222-8222-222222222222', '22222222-2222-4222-8222-222222222222', 'image', now(), now());
+				INSERT INTO events (id, title, grouping_timezone)
+				VALUES ('33333333-3333-4333-8333-333333333333', 'Invalid cover', 'UTC');
+				INSERT INTO draft_media_placements (event_id, media_item_id, position, created_at)
+				VALUES ('33333333-3333-4333-8333-333333333333', '11111111-1111-4111-8111-111111111111', 0, now());
+				UPDATE events SET selected_cover_media_item_id = '12222222-2222-4222-8222-222222222222'
+				WHERE id = '33333333-3333-4333-8333-333333333333'
+			`).Exec(ctx)
+			return err
+		})
+	})
+
 	t.Run("stale staged net change", func(t *testing.T) {
 		validateMutation(t, db, ErrProjections, func(ctx context.Context, tx bun.Tx) error {
 			personID, eventID := "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"

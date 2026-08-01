@@ -218,7 +218,8 @@ func TestDraftValidationErrorDescribesOptionalCoversAndMediaOmission(t *testing.
 	mapped := draftError(ErrInvalid, "Event")
 	require.Error(t, mapped)
 	assert.Contains(t, mapped.Error(), "at least one Media item with no duplicates")
-	assert.Contains(t, mapped.Error(), "only covers from their Moments")
+	assert.Contains(t, mapped.Error(), "only Moment covers from their Moments")
+	assert.Contains(t, mapped.Error(), "only Event Media for the Event cover")
 	assert.NotContains(t, mapped.Error(), "every Media item")
 }
 

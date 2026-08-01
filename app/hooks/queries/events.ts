@@ -46,6 +46,9 @@ function organizationRequest(event: Event): OrganizeEventRequest {
     version: event.version,
     title: event.title,
     description: event.description,
+    date_start: event.date_start,
+    date_end: event.date_end,
+    selected_cover_media_item_id: event.selected_cover_media_item_id,
     place_labels: event.place_labels,
     grouping_timezone: event.grouping_timezone,
     moments: event.moments.map((moment) => ({
@@ -71,6 +74,32 @@ function setNewestEvent(
     (current) =>
       !current || event.version >= current.version ? event : current,
   );
+}
+
+function publishedRecipientProjectionKeys(identityGeneration: string) {
+  return [
+    ["recipient-library", identityGeneration],
+    ["recipient-events", identityGeneration],
+    ["recipient-event", identityGeneration],
+    ["new-for-you", identityGeneration],
+    ["recipient-search", identityGeneration],
+  ];
+}
+
+function invalidatePublishedRecipientProjections(
+  queryClient: ReturnType<typeof useQueryClient>,
+  identityGeneration: string,
+) {
+  for (const queryKey of publishedRecipientProjectionKeys(identityGeneration))
+    void queryClient.invalidateQueries({ queryKey });
+}
+
+function removePublishedRecipientProjections(
+  queryClient: ReturnType<typeof useQueryClient>,
+  identityGeneration: string,
+) {
+  for (const queryKey of publishedRecipientProjectionKeys(identityGeneration))
+    queryClient.removeQueries({ queryKey });
 }
 
 function invalidateEventProjections(
@@ -317,6 +346,7 @@ export function usePublishEvent(
       void queryClient.invalidateQueries({
         queryKey: eventKeys.details(identityGeneration),
       });
+      invalidatePublishedRecipientProjections(queryClient, identityGeneration);
       callbacks.onError(error, attempt);
     },
     onSuccess: async (publication, attempt) => {
@@ -346,6 +376,7 @@ export function usePublishEvent(
         attempt.event.id,
         true,
       );
+      invalidatePublishedRecipientProjections(queryClient, identityGeneration);
       callbacks.onSuccess(publication, attempt, authoritativeEvent);
     },
   });
@@ -386,12 +417,14 @@ export function useWithdrawEvent(
       queryClient.removeQueries({
         queryKey: eventKeys.recipientPreviews(identityGeneration),
       });
+      removePublishedRecipientProjections(queryClient, identityGeneration);
       callbacks.onStarted(attempt);
     },
     onError: (error, attempt) => {
       void queryClient.invalidateQueries({
         queryKey: eventKeys.details(identityGeneration),
       });
+      invalidatePublishedRecipientProjections(queryClient, identityGeneration);
       callbacks.onError(error, attempt);
     },
     onSuccess: async (withdrawal, attempt) => {
@@ -424,6 +457,7 @@ export function useWithdrawEvent(
         attempt.event.id,
         true,
       );
+      invalidatePublishedRecipientProjections(queryClient, identityGeneration);
       callbacks.onSuccess(withdrawal, attempt, authoritativeEvent);
     },
   });

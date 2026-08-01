@@ -21,6 +21,10 @@ function mediaLabel(item: Pick<MediaItem, "media_type" | "local_date_time">) {
     : `${item.media_type}, ${new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(parsed)}`;
 }
 
+function coverMediaLabel(item: MediaItem) {
+  return `${mediaLabel(item)} (${item.id})`;
+}
+
 function parsePlaceLabels(value: string) {
   return value
     .split(",")
@@ -142,6 +146,7 @@ function MediaRow({
         <span>{mediaLabel(item)}</span>
         <StagedChangeLabels kinds={stagedKinds} />
       </label>
+      <code className="media-identity">{item.id}</code>
       <span className="row-actions">
         <button
           aria-label={`Move ${mediaLabel(item)} earlier`}
@@ -168,6 +173,8 @@ export function EventOrganization({
   metadataValid,
   titleValidationError,
   timezoneValidationError,
+  dateValidationError,
+  coverValidationError,
   inspectionDisabled,
   stagedReview,
   onChange,
@@ -178,6 +185,8 @@ export function EventOrganization({
   metadataValid: boolean;
   titleValidationError: string;
   timezoneValidationError: string;
+  dateValidationError: string;
+  coverValidationError: string;
   inspectionDisabled: boolean;
   stagedReview: ReactNode;
   onChange: (mutator: (next: Event) => void) => void;
@@ -189,6 +198,7 @@ export function EventOrganization({
   >({});
   const [destination, setDestination] = useState("unassigned");
   const [newMomentDay, setNewMomentDay] = useState("");
+  const [coverFilter, setCoverFilter] = useState("");
   const [mergeError, setMergeError] = useState("");
   const stagedMediaKinds = useMemo(() => {
     const kinds = new Map<string, StagedChange["kind"][]>();
@@ -208,10 +218,27 @@ export function EventOrganization({
     }
     return kinds;
   }, [event.staged_update]);
-  const allMedia = [
-    ...event.moments.flatMap((moment) => moment.media_items),
-    ...event.unassigned_media,
-  ];
+  const assignedMedia = event.moments.flatMap((moment) => moment.media_items);
+  const allMedia = [...assignedMedia, ...event.unassigned_media];
+  const normalizedCoverFilter = coverFilter.trim().toLocaleLowerCase();
+  const filteredCoverMedia = normalizedCoverFilter
+    ? assignedMedia.filter((item) =>
+        `${coverMediaLabel(item)} ${item.id}`
+          .toLocaleLowerCase()
+          .includes(normalizedCoverFilter),
+      )
+    : assignedMedia;
+  const coverOptions = filteredCoverMedia.slice(0, 200);
+  const selectedCover = assignedMedia.find(
+    (item) => item.id === event.selected_cover_media_item_id,
+  );
+  if (
+    selectedCover &&
+    !coverOptions.some((item) => item.id === selectedCover.id)
+  ) {
+    if (coverOptions.length === 200) coverOptions[199] = selectedCover;
+    else coverOptions.push(selectedCover);
+  }
 
   function visibleMedia(
     key: string,
@@ -294,6 +321,15 @@ export function EventOrganization({
       )
         moment.cover_media_item_id = null;
     }
+    if (
+      next.selected_cover_media_item_id &&
+      !next.moments.some((moment) =>
+        moment.media_items.some(
+          (item) => item.id === next.selected_cover_media_item_id,
+        ),
+      )
+    )
+      next.selected_cover_media_item_id = null;
   }
 
   function moveSelected(targetID = destination) {
@@ -330,7 +366,6 @@ export function EventOrganization({
     const id = crypto.randomUUID();
     onChange((next) => {
       const moving = takeSelectedMedia(next);
-      repairMoments(next);
       next.moments.push({
         id,
         title: "",
@@ -344,6 +379,7 @@ export function EventOrganization({
         audience_complete: false,
         media_items: moving,
       });
+      repairMoments(next);
     });
     setSelectedMedia(new Set());
     setDestination(id);
@@ -504,6 +540,107 @@ export function EventOrganization({
             value={event.description}
           />
         </label>
+        <div className="event-date-range-editor">
+          <label>
+            Event start date
+            <input
+              aria-describedby={
+                dateValidationError ? "event-date-range-error" : undefined
+              }
+              aria-invalid={dateValidationError !== ""}
+              onChange={(input) =>
+                onChange((next) => {
+                  next.date_start = input.target.value || null;
+                })
+              }
+              required={event.date_end !== null}
+              type="date"
+              value={event.date_start ?? ""}
+            />
+          </label>
+          <label>
+            Event end date
+            <input
+              aria-describedby={
+                dateValidationError ? "event-date-range-error" : undefined
+              }
+              aria-invalid={dateValidationError !== ""}
+              min={event.date_start ?? undefined}
+              onChange={(input) =>
+                onChange((next) => {
+                  next.date_end = input.target.value || null;
+                })
+              }
+              required={event.date_start !== null}
+              type="date"
+              value={event.date_end ?? ""}
+            />
+          </label>
+          {dateValidationError ? (
+            <small
+              className="form-field-error"
+              id="event-date-range-error"
+              role="alert"
+            >
+              {dateValidationError}
+            </small>
+          ) : null}
+        </div>
+        <div className="event-cover-editor">
+          <label htmlFor="event-cover">Event cover (optional)</label>
+          {assignedMedia.length > 200 ? (
+            <>
+              <label htmlFor="event-cover-filter">
+                Filter Event cover Media
+              </label>
+              <input
+                id="event-cover-filter"
+                onChange={(input) => setCoverFilter(input.target.value)}
+                placeholder="Filter by displayed label or Media identity"
+                type="search"
+                value={coverFilter}
+              />
+            </>
+          ) : null}
+          <select
+            aria-label="Event cover"
+            aria-describedby={
+              coverValidationError
+                ? "event-cover-help event-cover-error"
+                : "event-cover-help"
+            }
+            aria-invalid={coverValidationError !== ""}
+            id="event-cover"
+            onChange={(input) =>
+              onChange((next) => {
+                next.selected_cover_media_item_id = input.target.value || null;
+              })
+            }
+            value={event.selected_cover_media_item_id ?? ""}
+          >
+            <option value="">Choose cover automatically</option>
+            {coverOptions.map((item) => (
+              <option key={item.id} value={item.id}>
+                {coverMediaLabel(item)}
+              </option>
+            ))}
+          </select>
+          <span id="event-cover-help">
+            Only Media assigned to a Moment can be selected.
+            {filteredCoverMedia.length > coverOptions.length
+              ? ` Showing ${coverOptions.length} of ${filteredCoverMedia.length} matching Media; filter to find more.`
+              : ""}
+          </span>
+          {coverValidationError ? (
+            <small
+              className="form-field-error"
+              id="event-cover-error"
+              role="alert"
+            >
+              {coverValidationError}
+            </small>
+          ) : null}
+        </div>
         <label>
           Grouping timezone
           <input

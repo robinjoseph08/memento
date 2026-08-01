@@ -18,17 +18,20 @@ type productionEvidence struct {
 var matrixEvidence = map[matrixSurface][]productionEvidence{
 	surfaceLibraryProjection: {
 		{"pkg/library/service_integration_test.go", "TestRecipientLibraryPaginatesOnlyCurrentAuthorizedUnion"},
+		{"pkg/events/publications_integration_test.go", "TestEventPresentationAndSafeCoverUseOnlyAuthorizedCandidates"},
 		{"pkg/events/loose_publications_integration_test.go", "TestLoosePublicationProjectsAuthorizedRecipientLibraryAndSearch"},
 	},
 	surfaceLibraryChronology: {{"pkg/library/service_integration_test.go", "TestChronologyProjectsTheCompleteCurrentAuthorizedDistinctLibraryAndDirectAnchors"}},
 	surfaceEventDetail: {
 		{"pkg/library/service_integration_test.go", "TestValidUnauthorizedIdentifiersAreIndistinguishableFromMissingContent"},
+		{"pkg/events/publications_integration_test.go", "TestEventPresentationAndSafeCoverUseOnlyAuthorizedCandidates"},
 		{"pkg/events/loose_publications_integration_test.go", "TestLooseOnlyEntitlementDoesNotGrantEventDetailOrArchive"},
 	},
 	surfaceLooseItemDetail: {{"pkg/events/loose_publications_integration_test.go", "TestLoosePublicationProjectsAuthorizedRecipientLibraryAndSearch"}},
 	surfacePeopleDirectory: {{"pkg/visibility/visibility_integration_test.go", "TestRecipientPeopleSearchAuthorizesBeforeMatchingAndRevealsOnlyTheDirectUnion"}},
 	surfaceSearch: {
 		{"pkg/events/search_integration_test.go", "TestSearchUsesOnlyAuthorizedCurrentPublicationAndDiscoverableAttendance"},
+		{"pkg/events/search_integration_test.go", "TestSearchDateMatchesAuthorizedPublishedEventRangeWithoutMatchingPhotoCaptureDates"},
 		{"pkg/events/loose_publications_integration_test.go", "TestLoosePublicationProjectsAuthorizedRecipientLibraryAndSearch"},
 	},
 	surfaceNewForYou: {
@@ -66,6 +69,7 @@ var matrixEvidence = map[matrixSurface][]productionEvidence{
 	surfaceCommentPush: {{"pkg/push/immediate_integration_test.go", "TestPushMatchesEmailSurvivorsAndTerminalOutcomeIsDeviceOnly"}},
 	surfacePreviewAsRecipient: {
 		{"pkg/events/publications_integration_test.go", "TestPreviewRendersSavedEditableResultBeforePublication"},
+		{"pkg/events/publications_integration_test.go", "TestEventPresentationAndSafeCoverUseOnlyAuthorizedCandidates"},
 		{"pkg/events/loose_publications_integration_test.go", "TestLoosePublicationSupportsEmptyAudienceAndGenerationAwarePreview"},
 	},
 }
