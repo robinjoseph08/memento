@@ -9,6 +9,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestPlanEvidenceSanitizesSearchTextAndIdentities(t *testing.T) {
+	raw := []byte(`[{"Plan":{"Filter":"query 01 for 11111111-1111-4111-8111-111111111111"}}]`)
+	sanitized, err := sanitizePlanEvidence(raw, []string{"01"})
+	require.NoError(t, err)
+	assert.NotContains(t, string(sanitized), "01")
+	assert.NotContains(t, string(sanitized), "11111111")
+	assert.Contains(t, string(sanitized), "search")
+	assert.Contains(t, string(sanitized), "uuid")
+}
+
 func TestNearestRankP95UsesIndependentSortedSamples(t *testing.T) {
 	samples := []int64{100, 1, 10, 20, 30, 40, 50, 60, 70, 80, 90, 2, 3, 4, 5, 6, 7, 8, 9, 11}
 	p95, err := NearestRankP95(samples)

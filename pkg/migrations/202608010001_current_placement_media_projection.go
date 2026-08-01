@@ -11,10 +11,10 @@ func init() {
 		func(ctx context.Context, db *bun.DB) error {
 			_, err := db.ExecContext(ctx, `
 				ALTER TABLE current_published_placements
-					ADD COLUMN media_type text NOT NULL DEFAULT 'image',
-					ADD COLUMN width integer,
-					ADD COLUMN height integer,
-					ADD COLUMN local_date_time text,
+					ADD COLUMN media_type text NOT NULL DEFAULT 'image' CHECK (media_type IN ('image', 'video')),
+					ADD COLUMN width integer CHECK (width IS NULL OR width >= 0),
+					ADD COLUMN height integer CHECK (height IS NULL OR height >= 0),
+					ADD COLUMN local_date_time text CHECK (local_date_time IS NULL OR (local_date_time <> '' AND char_length(local_date_time) <= 64)),
 					ADD COLUMN capture_date date;
 				UPDATE current_published_placements AS current
 				SET media_type = published.media_type,

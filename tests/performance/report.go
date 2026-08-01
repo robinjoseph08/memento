@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -15,6 +16,7 @@ import (
 var (
 	errInvalidSamples = errors.New("invalid performance samples")
 	errInvalidReport  = errors.New("invalid performance report")
+	planUUIDPattern   = regexp.MustCompile(`(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b`)
 )
 
 // Baseline identifies one normative target from the product specification.
@@ -115,6 +117,37 @@ type Report struct {
 	Metrics       []Metric       `json:"metrics"`
 	Comparisons   []Metric       `json:"comparisons"`
 	Plans         []PlanEvidence `json:"plans"`
+}
+
+func sanitizePlanEvidence(raw []byte, sensitive []string) (json.RawMessage, error) {
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return nil, err
+	}
+	var sanitize func(any) any
+	sanitize = func(current any) any {
+		switch typed := current.(type) {
+		case []any:
+			for index := range typed {
+				typed[index] = sanitize(typed[index])
+			}
+		case map[string]any:
+			for key, item := range typed {
+				typed[key] = sanitize(item)
+			}
+		case string:
+			typed = planUUIDPattern.ReplaceAllString(typed, "<uuid>")
+			for _, secret := range sensitive {
+				if secret != "" {
+					typed = strings.ReplaceAll(typed, secret, "<search>")
+				}
+			}
+			return typed
+		}
+		return current
+	}
+	encoded, err := json.Marshal(sanitize(value))
+	return json.RawMessage(encoded), err
 }
 
 // NearestRankP95 returns the nearest-rank 95th percentile without mutating samples.

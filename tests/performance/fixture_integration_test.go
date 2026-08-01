@@ -211,6 +211,13 @@ func (fixture scaleFixture) seedEvents(ctx context.Context, tx bun.Tx) error {
 		 SELECT snapshot_id,
 		 (substr(md5('person-' || recipient_no),1,8)||'-'||substr(md5('person-' || recipient_no),9,4)||'-4'||substr(md5('person-' || recipient_no),14,3)||'-8'||substr(md5('person-' || recipient_no),18,3)||'-'||substr(md5('person-' || recipient_no),21,12))::uuid,
 		 (substr(md5('access-' || recipient_no),1,8)||'-'||substr(md5('access-' || recipient_no),9,4)||'-4'||substr(md5('access-' || recipient_no),14,3)||'-8'||substr(md5('access-' || recipient_no),18,3)||'-'||substr(md5('access-' || recipient_no),21,12))::uuid FROM generated`,
+		`INSERT INTO audience_snapshot_entries (snapshot_id,recipient_person_id,recipient_access_generation_id)
+		 SELECT snapshot.id,'` + deterministicUUID("person", 50).String() + `','` + deterministicUUID("access", 50).String() + `'
+		 FROM audience_snapshots snapshot
+		 WHERE NOT EXISTS (
+			SELECT 1 FROM audience_snapshot_entries entry
+			WHERE entry.snapshot_id=snapshot.id AND entry.recipient_access_generation_id='` + deterministicUUID("access", 50).String() + `'
+		 )`,
 		`INSERT INTO attendance (moment_id,person_id,source,confirmed_by_person_id,confirmed_at)
 		 SELECT '` + deterministicUUID("moment", 21).String() + `',person_id,'manual','00000000-0000-4000-8000-000000000001','` + fixtureNow + `'
 		 FROM recipient_access_generations WHERE person_id<>'00000000-0000-4000-8000-000000000001'`,
