@@ -30,9 +30,24 @@ test("jumps directly to a distant chronology bucket without focusable date links
   Object.defineProperty(rail, "getBoundingClientRect", {
     value: () => ({ top: 100, height: 300 }),
   });
-  Object.defineProperty(rail, "setPointerCapture", { value: vi.fn() });
+  let captured = false;
+  Object.defineProperty(rail, "setPointerCapture", {
+    value: () => {
+      captured = true;
+    },
+  });
+  Object.defineProperty(rail, "hasPointerCapture", {
+    value: () => captured,
+  });
+  Object.defineProperty(rail, "releasePointerCapture", {
+    value: () => {
+      captured = false;
+    },
+  });
 
   fireEvent.pointerDown(rail, { button: 0, clientY: 250, pointerId: 7 });
+  expect(onSelect).not.toHaveBeenCalled();
+  fireEvent.pointerUp(rail, { clientY: 250, pointerId: 7 });
 
   expect(onSelect).toHaveBeenCalledWith("2022-02-03");
 });
@@ -96,7 +111,43 @@ test("drag scrubbing selects only changed chronology indexes", () => {
   fireEvent.pointerMove(rail, { clientY: 260, pointerId: 9 });
   fireEvent.pointerUp(rail, { clientY: 260, pointerId: 9 });
 
-  expect(onSelect.mock.calls).toEqual([["2022-02-03"], [null, true]]);
+  expect(onSelect.mock.calls).toEqual([[null]]);
+});
+
+test("dragging back to the active date does not create duplicate history", () => {
+  const onSelect = vi.fn();
+  render(
+    <DateNavigation
+      activeDate="2026-07-27"
+      busy={false}
+      dates={dates}
+      onSelect={onSelect}
+    />,
+  );
+  const rail = screen.getByRole("slider", { name: "Photo dates" });
+  let captured = false;
+  Object.defineProperty(rail, "getBoundingClientRect", {
+    value: () => ({ top: 0, height: 300 }),
+  });
+  Object.defineProperty(rail, "setPointerCapture", {
+    value: () => {
+      captured = true;
+    },
+  });
+  Object.defineProperty(rail, "hasPointerCapture", {
+    value: () => captured,
+  });
+  Object.defineProperty(rail, "releasePointerCapture", {
+    value: () => {
+      captured = false;
+    },
+  });
+
+  fireEvent.pointerDown(rail, { button: 0, clientY: 150, pointerId: 10 });
+  fireEvent.pointerMove(rail, { clientY: 20, pointerId: 10 });
+  fireEvent.pointerUp(rail, { clientY: 20, pointerId: 10 });
+
+  expect(onSelect).not.toHaveBeenCalled();
 });
 
 test("keyboard commands traverse, page, and reach chronology endpoints", () => {

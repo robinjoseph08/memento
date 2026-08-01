@@ -211,6 +211,13 @@ func (fixture scaleFixture) seedEvents(ctx context.Context, tx bun.Tx) error {
 		 SELECT snapshot_id,
 		 (substr(md5('person-' || recipient_no),1,8)||'-'||substr(md5('person-' || recipient_no),9,4)||'-4'||substr(md5('person-' || recipient_no),14,3)||'-8'||substr(md5('person-' || recipient_no),18,3)||'-'||substr(md5('person-' || recipient_no),21,12))::uuid,
 		 (substr(md5('access-' || recipient_no),1,8)||'-'||substr(md5('access-' || recipient_no),9,4)||'-4'||substr(md5('access-' || recipient_no),14,3)||'-8'||substr(md5('access-' || recipient_no),18,3)||'-'||substr(md5('access-' || recipient_no),21,12))::uuid FROM generated`,
+		`INSERT INTO audience_snapshot_entries (snapshot_id,recipient_person_id,recipient_access_generation_id)
+		 SELECT snapshot.id,'` + deterministicUUID("person", 50).String() + `','` + deterministicUUID("access", 50).String() + `'
+		 FROM audience_snapshots snapshot
+		 WHERE NOT EXISTS (
+			SELECT 1 FROM audience_snapshot_entries entry
+			WHERE entry.snapshot_id=snapshot.id AND entry.recipient_access_generation_id='` + deterministicUUID("access", 50).String() + `'
+		 )`,
 		`INSERT INTO attendance (moment_id,person_id,source,confirmed_by_person_id,confirmed_at)
 		 SELECT '` + deterministicUUID("moment", 21).String() + `',person_id,'manual','00000000-0000-4000-8000-000000000001','` + fixtureNow + `'
 		 FROM recipient_access_generations WHERE person_id<>'00000000-0000-4000-8000-000000000001'`,
@@ -237,8 +244,13 @@ func (fixture scaleFixture) seedEvents(ctx context.Context, tx bun.Tx) error {
 		 JOIN audience_snapshot_entries entry ON entry.snapshot_id=published.audience_snapshot_id`,
 		`INSERT INTO current_published_events (event_id,publication_id,title,description,grouping_timezone,attendance_projection_ready,committed_at)
 		 SELECT event.id,publication.id,event.title,event.description,event.grouping_timezone,true,'` + fixtureNow + `' FROM events event JOIN publications publication ON publication.event_id=event.id`,
-		`INSERT INTO current_published_placements (event_id,publication_id,published_moment_id,media_item_id,position)
-		 SELECT publication.event_id,publication.id,placement.published_moment_id,placement.media_item_id,placement.position
+		`INSERT INTO current_published_placements (
+			event_id,publication_id,published_moment_id,media_item_id,position,
+			media_type,width,height,local_date_time,capture_date
+		 )
+		 SELECT publication.event_id,publication.id,placement.published_moment_id,
+			placement.media_item_id,placement.position,placement.media_type,placement.width,
+			placement.height,placement.local_date_time,memento_local_capture_date(placement.local_date_time)
 		 FROM publications publication JOIN published_moments moment ON moment.publication_id=publication.id
 		 JOIN published_media_placements placement ON placement.published_moment_id=moment.id`,
 		`INSERT INTO current_audience_entitlements (event_id,publication_id,recipient_person_id,recipient_access_generation_id,media_item_id)

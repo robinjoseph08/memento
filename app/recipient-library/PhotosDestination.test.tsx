@@ -83,14 +83,17 @@ function renderLibrary(initialRoute: string) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
-  return render(
-    <MemoryRouter initialEntries={[initialRoute]}>
-      <QueryClientProvider client={client}>
-        <RecipientLibrary session={session} />
-        <CurrentRoute />
-      </QueryClientProvider>
-    </MemoryRouter>,
-  );
+  return {
+    client,
+    ...render(
+      <MemoryRouter initialEntries={[initialRoute]}>
+        <QueryClientProvider client={client}>
+          <RecipientLibrary session={session} />
+          <CurrentRoute />
+        </QueryClientProvider>
+      </MemoryRouter>,
+    ),
+  };
 }
 
 afterEach(() => {
@@ -162,8 +165,9 @@ test("opens a bookmarkable distant date at its chronology anchor and supports an
   ).toBe(true);
 });
 
-test("refreshes chronology and replaces a withdrawn bookmark with the resolved date", async () => {
+test("reconciles repeated Withdrawal and restoration of one date anchor", async () => {
   let chronologyRequests = 0;
+  let dateAuthorized = false;
   stubScrollIntoView();
   vi.stubGlobal(
     "fetch",
@@ -171,37 +175,33 @@ test("refreshes chronology and replaces a withdrawn bookmark with the resolved d
       const path = requestPath(input);
       if (path === "/api/me/photos/chronology") {
         chronologyRequests++;
-        return json(
-          chronologyRequests === 1
-            ? {
-                dates: [
-                  {
-                    capture_date: "2026-07-27",
-                    media_count: 1,
-                    cursor: "withdrawn-anchor",
-                  },
-                  {
-                    capture_date: "2022-02-03",
-                    media_count: 1,
-                    cursor: "current-anchor",
-                  },
-                ],
-              }
-            : {
-                dates: [
-                  {
-                    capture_date: "2022-02-03",
-                    media_count: 1,
-                    cursor: "current-anchor",
-                  },
-                ],
-              },
-        );
+        const dates = [
+          {
+            capture_date: "2022-02-03",
+            media_count: 1,
+            cursor: "current-anchor",
+          },
+        ];
+        if (chronologyRequests === 1 || dateAuthorized) {
+          dates.unshift({
+            capture_date: "2026-07-27",
+            media_count: 1,
+            cursor: "withdrawn-anchor",
+          });
+        }
+        return json({ dates });
       }
-      if (
-        path.includes("cursor=withdrawn-anchor") ||
-        path.includes("cursor=current-anchor")
-      ) {
+      if (path.includes("cursor=withdrawn-anchor")) {
+        return json({
+          media: [
+            dateAuthorized
+              ? media("restored", "2026-07-27")
+              : media("current", "2022-02-03"),
+          ],
+          next_cursor: null,
+        });
+      }
+      if (path.includes("cursor=current-anchor")) {
         return json({
           media: [media("current", "2022-02-03")],
           next_cursor: null,
@@ -215,13 +215,51 @@ test("refreshes chronology and replaces a withdrawn bookmark with the resolved d
     }),
   );
 
-  renderLibrary("/photos?date=2026-07-27");
+  const { client } = renderLibrary("/photos?date=2026-07-27");
 
   expect(
     await screen.findByRole("heading", { name: "February 3, 2022" }),
   ).toBeVisible();
   await waitFor(() => {
     expect(chronologyRequests).toBe(2);
+    expect(screen.getByLabelText("Current route")).toHaveTextContent(
+      "/photos?date=2022-02-03",
+    );
+  });
+
+  dateAuthorized = true;
+  await client.invalidateQueries({
+    queryKey: ["recipient-library", session.csrf_token, "photos"],
+  });
+  client.removeQueries({
+    queryKey: [
+      "recipient-library",
+      session.csrf_token,
+      "photos",
+      "window",
+      "withdrawn-anchor",
+    ],
+  });
+  await screen.findByRole("option", { name: "July 27, 2026 (1 photo)" });
+  fireEvent.change(screen.getByRole("combobox", { name: "Jump to date" }), {
+    target: { value: "2026-07-27", selectedIndex: 0 },
+  });
+  expect(
+    await screen.findByRole("heading", { name: "July 27, 2026" }),
+  ).toBeVisible();
+
+  dateAuthorized = false;
+  await client.invalidateQueries({
+    queryKey: [
+      "recipient-library",
+      session.csrf_token,
+      "photos",
+      "window",
+      "withdrawn-anchor",
+    ],
+  });
+  await waitFor(() => {
+    expect(chronologyRequests).toBeGreaterThanOrEqual(4);
     expect(screen.getByLabelText("Current route")).toHaveTextContent(
       "/photos?date=2022-02-03",
     );

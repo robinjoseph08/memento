@@ -284,9 +284,13 @@ func (fixture libraryFixture) place(t *testing.T, eventIndex int, mediaID, acces
 		INSERT INTO published_media_placements
 			(published_moment_id, media_item_id, position, media_type, width, height, local_date_time)
 		SELECT ?, id, ?, media_type, width, height, local_date_time FROM media_items WHERE id = ?;
-		INSERT INTO current_published_placements
-			(event_id, publication_id, published_moment_id, media_item_id, position)
-		VALUES (?, ?, ?, ?, ?);
+		INSERT INTO current_published_placements (
+			event_id, publication_id, published_moment_id, media_item_id, position,
+			media_type, width, height, local_date_time, capture_date
+		)
+		SELECT ?, ?, ?, id, ?, media_type, width, height, local_date_time,
+		       memento_local_capture_date(local_date_time)
+		FROM media_items WHERE id = ?;
 		INSERT INTO audience_entries (
 			published_moment_id, recipient_person_id, recipient_access_generation_id
 		) SELECT ?, person_id, ? FROM recipient_access_generations WHERE id = ?
@@ -295,7 +299,7 @@ func (fixture libraryFixture) place(t *testing.T, eventIndex int, mediaID, acces
 			(event_id, publication_id, recipient_person_id, recipient_access_generation_id, media_item_id)
 		SELECT ?, ?, person_id, ?, ? FROM recipient_access_generations WHERE id = ?
 	`, fixture.moments[eventIndex], position, mediaID,
-		fixture.events[eventIndex], fixture.publications[eventIndex], fixture.moments[eventIndex], mediaID, position,
+		fixture.events[eventIndex], fixture.publications[eventIndex], fixture.moments[eventIndex], position, mediaID,
 		fixture.moments[eventIndex], accessID, accessID,
 		fixture.events[eventIndex], fixture.publications[eventIndex], accessID, mediaID, accessID).Exec(context.Background())
 	require.NoError(t, err)
@@ -326,8 +330,9 @@ func TestRecipientLibraryPaginatesOnlyCurrentAuthorizedUnion(t *testing.T) {
 	_, err := fixture.db.NewRaw(`
 		UPDATE published_moments SET cover_media_item_id = ? WHERE id = ?;
 		UPDATE media_items SET media_type = 'video' WHERE id = ?;
-		UPDATE published_media_placements SET media_type = 'video' WHERE media_item_id = ?
-	`, fixture.media[1], fixture.moments[0], fixture.media[1], fixture.media[1]).Exec(ctx)
+		UPDATE published_media_placements SET media_type = 'video' WHERE media_item_id = ?;
+		UPDATE current_published_placements SET media_type = 'video' WHERE media_item_id = ?
+	`, fixture.media[1], fixture.moments[0], fixture.media[1], fixture.media[1], fixture.media[1]).Exec(ctx)
 	require.NoError(t, err)
 	first, err := fixture.service.Photos(ctx, fixture.actor, "1", "", false)
 	require.NoError(t, err)
@@ -399,6 +404,12 @@ func TestChronologyProjectsTheCompleteCurrentAuthorizedDistinctLibraryAndDirectA
 		WHERE published_moment_id = ? AND media_item_id = ?;
 		UPDATE published_media_placements SET local_date_time = '2024-04-05T10:00:00'
 		WHERE published_moment_id = ? AND media_item_id = ?;
+		UPDATE current_published_placements AS current
+		SET local_date_time = published.local_date_time,
+		    capture_date = memento_local_capture_date(published.local_date_time)
+		FROM published_media_placements AS published
+		WHERE published.published_moment_id = current.published_moment_id
+		  AND published.media_item_id = current.media_item_id;
 		UPDATE media_items SET availability = 'source_missing', missing_since = now() WHERE id = ?;
 		INSERT INTO favorites (recipient_person_id, media_item_id) VALUES (?, ?), (?, ?),
 			((SELECT person_id FROM recipient_access_generations WHERE id = ?), ?)

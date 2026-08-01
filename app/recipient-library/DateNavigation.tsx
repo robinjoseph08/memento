@@ -96,8 +96,7 @@ function DateRail({
   onSelect: (captureDate: string | null, replace?: boolean) => void;
 }) {
   const rail = useRef<HTMLDivElement>(null);
-  const lastScrubbedIndex = useRef<number | undefined>(undefined);
-  const scrubHasHistoryEntry = useRef(false);
+  const currentScrubbedIndex = useRef<number | undefined>(undefined);
   const [hoveredIndex, setHoveredIndex] = useState<number>();
 
   function indexAt(clientY: number) {
@@ -110,13 +109,9 @@ function DateRail({
     return Math.min(dates.length - 1, Math.floor(progress * dates.length));
   }
 
-  function selectIndex(index: number, replace = false) {
-    if (index === lastScrubbedIndex.current) return;
+  function selectIndex(index: number) {
     const selected = dates[index];
-    if (!selected) return;
-    lastScrubbedIndex.current = index;
-    if (replace) onSelect(selected.capture_date, true);
-    else onSelect(selected.capture_date);
+    if (selected) onSelect(selected.capture_date);
   }
 
   function keyboardIndex(key: string) {
@@ -170,22 +165,18 @@ function DateRail({
           const index = keyboardIndex(event.key);
           if (index === undefined) return;
           event.preventDefault();
-          lastScrubbedIndex.current = undefined;
           selectIndex(index);
         }}
         onPointerDown={(event) => {
           if (event.button !== 0) return;
           event.preventDefault();
-          lastScrubbedIndex.current = undefined;
-          scrubHasHistoryEntry.current = false;
-          event.currentTarget.setPointerCapture(event.pointerId);
           const index = indexAt(event.clientY);
+          currentScrubbedIndex.current = index;
           setHoveredIndex(index);
-          if (index === activeIndex) {
-            lastScrubbedIndex.current = index;
-          } else {
-            selectIndex(index);
-            scrubHasHistoryEntry.current = true;
+          try {
+            event.currentTarget.setPointerCapture(event.pointerId);
+          } catch {
+            // Synthetic and interrupted pointers still commit through the rail events.
           }
         }}
         onPointerLeave={(event) => {
@@ -196,24 +187,26 @@ function DateRail({
         onPointerMove={(event) => {
           const index = indexAt(event.clientY);
           setHoveredIndex(index);
-          if (
-            event.currentTarget.hasPointerCapture(event.pointerId) &&
-            index !== lastScrubbedIndex.current
-          ) {
-            selectIndex(index, scrubHasHistoryEntry.current);
-            scrubHasHistoryEntry.current = true;
+          if (currentScrubbedIndex.current !== undefined) {
+            currentScrubbedIndex.current = index;
           }
         }}
         onPointerUp={(event) => {
           if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-            event.currentTarget.releasePointerCapture(event.pointerId);
+            try {
+              event.currentTarget.releasePointerCapture(event.pointerId);
+            } catch {
+              // The pointer may already have been released by the browser.
+            }
           }
-          lastScrubbedIndex.current = undefined;
-          scrubHasHistoryEntry.current = false;
+          const finalIndex = currentScrubbedIndex.current;
+          currentScrubbedIndex.current = undefined;
+          if (finalIndex !== undefined && finalIndex !== activeIndex) {
+            selectIndex(finalIndex);
+          }
         }}
         onPointerCancel={() => {
-          lastScrubbedIndex.current = undefined;
-          scrubHasHistoryEntry.current = false;
+          currentScrubbedIndex.current = undefined;
         }}
         ref={rail}
         role="slider"

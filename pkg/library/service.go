@@ -247,9 +247,29 @@ const validPlacements = `
 	)
 `
 
+const validListingPlacements = `
+	SELECT placement.event_id, placement.media_item_id,
+	       current.committed_at AS publication_committed_at,
+	       placement.media_type, placement.width, placement.height, placement.local_date_time,
+	       placement.capture_date
+	FROM current_audience_entitlements AS entitlement
+	JOIN current_published_placements AS placement
+	  ON placement.event_id = entitlement.event_id
+	 AND placement.publication_id = entitlement.publication_id
+	 AND placement.media_item_id = entitlement.media_item_id
+	JOIN events AS event ON event.id = placement.event_id AND event.lifecycle = 'published'
+	JOIN current_published_events AS current
+	  ON current.event_id = placement.event_id AND current.publication_id = placement.publication_id
+	JOIN published_moments AS moment ON moment.id = placement.published_moment_id
+	WHERE entitlement.recipient_access_generation_id = ?
+	  AND NOT content_is_withdrawn(
+		placement.event_id, moment.draft_moment_id, placement.media_item_id
+	  )
+`
+
 const uniqueMedia = `
 	SELECT DISTINCT ON (valid.media_item_id) valid.media_item_id, valid.media_type,
-	       valid.width, valid.height, valid.local_date_time, valid.capture_date, valid.available
+	       valid.width, valid.height, valid.local_date_time, valid.capture_date
 	FROM valid %s
 	ORDER BY valid.media_item_id, valid.publication_committed_at DESC, valid.event_id DESC
 `
@@ -330,10 +350,16 @@ func (s *Service) Photos(ctx context.Context, actor setup.SessionActor, rawLimit
 			}
 		}
 		args = append(args, limit+1)
-		query := fmt.Sprintf(`WITH valid AS (%s), unique_media AS (%s)
-		SELECT media_item_id AS id, media_type, width, height, local_date_time, capture_date, available
-		FROM unique_media AS valid %s
-		ORDER BY COALESCE(valid.local_date_time, '') DESC, valid.media_item_id DESC LIMIT ?`, validPlacements, fmt.Sprintf(uniqueMedia, favoriteJoin), cursorFilter)
+		query := fmt.Sprintf(`WITH valid AS (%s), unique_media AS (%s), page AS (
+			SELECT valid.media_item_id AS id, valid.media_type, valid.width, valid.height,
+			       valid.local_date_time, valid.capture_date
+			FROM unique_media AS valid %s
+			ORDER BY COALESCE(valid.local_date_time, '') DESC, valid.media_item_id DESC LIMIT ?
+		)
+		SELECT page.id, page.media_type, page.width, page.height, page.local_date_time,
+		       page.capture_date, media.availability = 'current' AS available
+		FROM page JOIN media_items AS media ON media.id = page.id
+		ORDER BY COALESCE(page.local_date_time, '') DESC, page.id DESC`, validListingPlacements, fmt.Sprintf(uniqueMedia, favoriteJoin), cursorFilter)
 		if err := tx.NewRaw(query, args...).Scan(ctx, &response.Media); err != nil {
 			return err
 		}
@@ -373,7 +399,7 @@ func (s *Service) Chronology(ctx context.Context, actor setup.SessionActor, favo
 			SELECT capture_date::text AS capture_date, count(*)::integer AS media_count
 			FROM unique_media
 			GROUP BY capture_date
-			ORDER BY capture_date DESC NULLS LAST`, validPlacements, fmt.Sprintf(uniqueMedia, favoriteJoin))
+			ORDER BY capture_date DESC NULLS LAST`, validListingPlacements, fmt.Sprintf(uniqueMedia, favoriteJoin))
 		return tx.NewRaw(query, args...).Scan(ctx, &response.Dates)
 	})
 	if err != nil {

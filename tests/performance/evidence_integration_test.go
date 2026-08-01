@@ -241,7 +241,7 @@ func (hook *queryCaptureHook) captured() string {
 	return hook.query
 }
 
-func capturePlans(t *testing.T, ctx context.Context, db *bun.DB, actor setup.SessionActor) []PlanEvidence {
+func capturePlans(t *testing.T, ctx context.Context, db *bun.DB, actor, chronologyActor setup.SessionActor) []PlanEvidence {
 	t.Helper()
 	searchCapture := &queryCaptureHook{match: "WITH authorized AS"}
 	db.AddQueryHook(searchCapture)
@@ -253,12 +253,12 @@ func capturePlans(t *testing.T, ctx context.Context, db *bun.DB, actor setup.Ses
 	libraryService := library.New(db, nil)
 	chronologyCapture := &queryCaptureHook{match: "GROUP BY capture_date"}
 	db.AddQueryHook(chronologyCapture)
-	chronology, err := libraryService.Chronology(ctx, actor, false)
+	chronology, err := libraryService.Chronology(ctx, chronologyActor, false)
 	require.NoError(t, err)
 	require.NotEmpty(t, chronology.Dates)
 	require.NotEmpty(t, chronologyCapture.captured())
 
-	galleryCapture := &queryCaptureHook{match: "SELECT media_item_id AS id"}
+	galleryCapture := &queryCaptureHook{match: "page AS ("}
 	db.AddQueryHook(galleryCapture)
 	gallery, err := libraryService.Photos(ctx, actor, "100", "", false)
 	require.NoError(t, err)

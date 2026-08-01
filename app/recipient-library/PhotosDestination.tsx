@@ -125,12 +125,13 @@ export function PhotosDestination({
   useEffect(() => {
     if (!photos.isSuccess || !targetDate || !photos.data) return;
     const resolvedDate = photos.data.pages[0]?.media[0]?.capture_date;
-    if (
-      resolvedDate === targetDate.capture_date ||
-      lastReconciledAnchor.current === anchor
-    ) {
+    if (resolvedDate === targetDate.capture_date) {
+      if (lastReconciledAnchor.current === anchor) {
+        lastReconciledAnchor.current = undefined;
+      }
       return;
     }
+    if (lastReconciledAnchor.current === anchor) return;
     lastReconciledAnchor.current = anchor;
     void chronology.refetch();
   }, [anchor, chronology, photos.data, photos.isSuccess, targetDate]);
