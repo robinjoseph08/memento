@@ -346,7 +346,10 @@ test("@desktop @mobile saves and reloads Recipient email notification settings",
   expect(updates[0].headers["x-memento-csrf"]).toBe(csrfToken);
   expect(
     mutations
-      .filter(({ path }) => path !== "/api/me/engagement")
+      .filter(
+        ({ path }) =>
+          path !== "/api/me/engagement" && path !== "/api/me/people/search",
+      )
       .map(({ path }) => path),
   ).toEqual(["/api/me/email-preferences"]);
   expect(
