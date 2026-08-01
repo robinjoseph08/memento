@@ -98,7 +98,7 @@ export function PhotosDestination({
     captureDate: string | null;
   }>();
   const lastScrolledAnchor = useRef<string | undefined>(undefined);
-  const lastReconciledAnchor = useRef<string | undefined>(undefined);
+  const lastReconciledPages = useRef<typeof photos.data>(undefined);
   const subsetArchive = useSubsetArchiveModel(
     session.csrf_token,
     selection.selectedMedia,
@@ -126,13 +126,11 @@ export function PhotosDestination({
     if (!photos.isSuccess || !targetDate || !photos.data) return;
     const resolvedDate = photos.data.pages[0]?.media[0]?.capture_date;
     if (resolvedDate === targetDate.capture_date) {
-      if (lastReconciledAnchor.current === anchor) {
-        lastReconciledAnchor.current = undefined;
-      }
+      lastReconciledPages.current = undefined;
       return;
     }
-    if (lastReconciledAnchor.current === anchor) return;
-    lastReconciledAnchor.current = anchor;
+    if (lastReconciledPages.current === photos.data) return;
+    lastReconciledPages.current = photos.data;
     void chronology.refetch();
   }, [anchor, chronology, photos.data, photos.isSuccess, targetDate]);
 

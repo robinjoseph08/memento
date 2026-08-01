@@ -11,7 +11,7 @@ func init() {
 		func(ctx context.Context, db *bun.DB) error {
 			_, err := db.ExecContext(ctx, `
 				ALTER TABLE current_published_placements
-					ADD COLUMN media_type text,
+					ADD COLUMN media_type text NOT NULL DEFAULT 'image',
 					ADD COLUMN width integer,
 					ADD COLUMN height integer,
 					ADD COLUMN local_date_time text,

@@ -215,6 +215,14 @@ func validateProjections(ctx context.Context, db bun.IDB) error {
 		  WHERE current.event_id = placement.event_id AND current.publication_id = placement.publication_id
 		   AND moment.publication_id = placement.publication_id
 		 )) +
+		(SELECT count(*) FROM current_published_placements AS placement
+		 JOIN published_media_placements AS media
+		  ON media.published_moment_id = placement.published_moment_id
+		 AND media.media_item_id = placement.media_item_id
+		 WHERE (placement.media_type, placement.width, placement.height,
+		        placement.local_date_time, placement.capture_date)
+		  IS DISTINCT FROM (media.media_type, media.width, media.height,
+		                    media.local_date_time, memento_local_capture_date(media.local_date_time))) +
 		(SELECT count(*) FROM published_media_placements AS media
 		 JOIN published_moments AS moment ON moment.id = media.published_moment_id
 		 JOIN current_published_events AS current ON current.publication_id = moment.publication_id

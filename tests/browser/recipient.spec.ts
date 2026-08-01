@@ -420,29 +420,15 @@ test("@desktop @mobile complete chronology jumps directly beyond the first page"
     await rail.hover({ position: distantPosition });
     await expect(page.getByText("April 3, 2010 · 1 photo")).toBeVisible();
     expect(listingRequests).toHaveLength(requestsBeforeHover);
-    await page.mouse.move(
-      railBounds!.x + railBounds!.width / 2,
-      railBounds!.y + 1,
-    );
+    await rail.hover({
+      position: { x: railBounds!.width / 2, y: railBounds!.height * 0.25 },
+    });
     await expect(page.getByText("July 27, 2026 · 80 photos")).toBeVisible();
-    await rail.dispatchEvent("pointerdown", {
-      bubbles: true,
-      button: 0,
-      clientY: railBounds!.y + 1,
-      pointerId: 17,
-    });
-    await rail.dispatchEvent("pointermove", {
-      bubbles: true,
-      clientY: railBounds!.y + distantPosition.y,
-      pointerId: 17,
-    });
+    await page.mouse.down({ button: "left" });
+    await rail.hover({ force: true, position: distantPosition });
     await expect(page.getByText("April 3, 2010 · 1 photo")).toBeVisible();
     expect(listingRequests).toHaveLength(requestsBeforeHover);
-    await rail.dispatchEvent("pointerup", {
-      bubbles: true,
-      clientY: railBounds!.y + distantPosition.y,
-      pointerId: 17,
-    });
+    await page.mouse.up({ button: "left" });
     await expect(page).toHaveURL(/\/photos\?date=2010-04-03$/);
   }
 
