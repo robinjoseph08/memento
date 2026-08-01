@@ -26,6 +26,14 @@ func clientConfig(serverURL string) config.ImmichConfig {
 	return config.ImmichConfig{URL: serverURL, APIKey: "secret-key", HealthTimeout: 10 * time.Second}
 }
 
+func requireSafeAdapterError(t *testing.T, err error, want string, privateValues ...string) {
+	t.Helper()
+	require.EqualError(t, err, want)
+	for _, privateValue := range privateValues {
+		assert.NotContains(t, err.Error(), privateValue)
+	}
+}
+
 func contractServer(t *testing.T, handler func(http.ResponseWriter, *http.Request)) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -468,6 +476,7 @@ func TestAssetDeliveryAvailableFailsClosed(t *testing.T) {
 		failedPath string
 	}{
 		{name: "missing derivative", status: http.StatusNotFound, failedPath: "/thumbnail", want: false},
+		{name: "rate limited derivative", status: http.StatusTooManyRequests, failedPath: "/thumbnail", wantErr: "Immich validation failed"},
 		{name: "missing original", status: http.StatusNotFound, failedPath: "/original", want: false},
 		{name: "bad request original", status: http.StatusBadRequest, failedPath: "/original", want: false},
 		{name: "unauthorized original", status: http.StatusUnauthorized, failedPath: "/original", wantErr: "Immich API key is invalid"},
@@ -478,6 +487,7 @@ func TestAssetDeliveryAvailableFailsClosed(t *testing.T) {
 				failed := strings.Contains(r.URL.Path, test.failedPath)
 				if failed {
 					w.WriteHeader(test.status)
+					_, _ = w.Write([]byte(`{"private":"https://immich.internal/source?key=secret-key"}`))
 					return
 				}
 				w.Header().Set("Content-Type", "image/jpeg")
@@ -492,7 +502,7 @@ func TestAssetDeliveryAvailableFailsClosed(t *testing.T) {
 			if test.wantErr == "" {
 				require.NoError(t, err)
 			} else {
-				require.EqualError(t, err, test.wantErr)
+				requireSafeAdapterError(t, err, test.wantErr, "private", "immich.internal", "secret-key")
 			}
 		})
 	}
@@ -993,35 +1003,34 @@ func TestClientReturnsSafeFailClosedDependencyErrors(t *testing.T) {
 	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusTooManyRequests, http.StatusServiceUnavailable} {
 		for _, operation := range operations {
 			t.Run(operation.name+"/"+http.StatusText(status), func(t *testing.T) {
-				server := contractServer(t, func(w http.ResponseWriter, _ *http.Request) {
-					w.WriteHeader(status)
-					_, _ = w.Write([]byte("private dependency URL / source path / raw DTO"))
+				requestCount := 0
+				transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
+					requestCount++
+					assert.Equal(t, "secret-key", request.Header.Get("x-api-key"))
+					return &http.Response{
+						StatusCode: status,
+						Body:       io.NopCloser(strings.NewReader(`{"private":"https://private.internal/source?key=secret-key","dto":"raw DTO"}`)),
+						Request:    request,
+					}, nil
 				})
-				defer server.Close()
-				client, err := New(clientConfig(server.URL), server.Client())
+				client, err := New(clientConfig("https://configured.immich.internal"), &http.Client{Transport: transport})
 				require.NoError(t, err)
 				err = operation.run(client)
+				want := operation.want
 				if status == http.StatusUnauthorized || status == http.StatusForbidden {
-					require.EqualError(t, err, "Immich API key is invalid")
+					want = "Immich API key is invalid"
 					assert.True(t, IsConfigurationError(err))
 				} else {
-					want := operation.want
 					if status == http.StatusNotFound && operation.notFoundWant != "" {
 						want = operation.notFoundWant
 					}
-					require.EqualError(t, err, want)
 					assert.False(t, IsConfigurationError(err))
 				}
-				assert.NotContains(t, err.Error(), "private")
+				requireSafeAdapterError(t, err, want, "private", "raw DTO", "configured.immich.internal", "secret-key")
+				assert.Equal(t, 1, requestCount, "dependency faults must not be retried")
 			})
 		}
 	}
-}
-
-type failingTransport struct{}
-
-func (failingTransport) RoundTrip(*http.Request) (*http.Response, error) {
-	return nil, errors.New("dial http://private.internal?key=secret")
 }
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -1068,36 +1077,63 @@ func TestClientRejectsRedirectsWithoutForwardingAPIKey(t *testing.T) {
 }
 
 func TestClientRedactsTransportErrorsAndTimeouts(t *testing.T) {
-	client, err := New(clientConfig("https://immich.internal"), &http.Client{Transport: failingTransport{}})
-	require.NoError(t, err)
-	require.EqualError(t, client.Check(context.Background()), "Immich is unreachable")
+	t.Run("transport outage", func(t *testing.T) {
+		requestCount := 0
+		transport := roundTripFunc(func(*http.Request) (*http.Response, error) {
+			requestCount++
+			return nil, errors.New("dial https://private.internal/source?key=secret-key")
+		})
+		client, err := New(clientConfig("https://configured.immich.internal"), &http.Client{Transport: transport})
+		require.NoError(t, err)
 
-	server := contractServer(t, func(w http.ResponseWriter, _ *http.Request) {
-		time.Sleep(50 * time.Millisecond)
-		_, _ = w.Write([]byte(`{"major":3,"minor":0,"patch":3,"prerelease":null}`))
+		err = client.Check(context.Background())
+		requireSafeAdapterError(t, err, "Immich is unreachable", "private.internal", "configured.immich.internal", "secret-key")
+		assert.Equal(t, 1, requestCount, "transport outages must not be retried")
 	})
-	defer server.Close()
-	cfg := clientConfig(server.URL)
-	cfg.HealthTimeout = time.Millisecond
-	client, err = New(cfg, server.Client())
-	require.NoError(t, err)
-	require.EqualError(t, client.Check(context.Background()), "Immich is unreachable")
+
+	t.Run("request deadline", func(t *testing.T) {
+		requestCount := 0
+		deadlineObserved := false
+		canceled := make(chan error, 1)
+		transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			requestCount++
+			_, deadlineObserved = request.Context().Deadline()
+			if !deadlineObserved {
+				canceled <- errors.New("request context has no deadline")
+				return nil, errors.New("missing deadline for https://private.internal?key=secret-key")
+			}
+			<-request.Context().Done()
+			canceled <- request.Context().Err()
+			return nil, errors.New("timeout contacting https://private.internal?key=secret-key")
+		})
+		cfg := clientConfig("https://configured.immich.internal")
+		cfg.HealthTimeout = 10 * time.Millisecond
+		client, err := New(cfg, &http.Client{Transport: transport})
+		require.NoError(t, err)
+
+		err = client.Check(context.Background())
+		requireSafeAdapterError(t, err, "Immich is unreachable", "private.internal", "configured.immich.internal", "secret-key")
+		assert.True(t, deadlineObserved, "the adapter request must carry its timeout as a context deadline")
+		require.ErrorIs(t, <-canceled, context.DeadlineExceeded)
+		assert.Equal(t, 1, requestCount, "timed out requests must not be retried")
+	})
 }
 
 func TestClientRejectsInvalidOrOversizedResponses(t *testing.T) {
 	for name, body := range map[string]string{
-		"malformed":        `{`,
-		"missing field":    `{"major":3,"minor":0,"patch":3}`,
-		"trailing JSON":    `{"major":3,"minor":0,"patch":3,"prerelease":null}{}`,
-		"trailing garbage": `{"major":3,"minor":0,"patch":3,"prerelease":null} private`,
-		"oversized":        `{"major":3,"minor":0,"patch":3,"prerelease":null}` + strings.Repeat(" ", maxJSONResponse),
+		"malformed":        `{"private":"https://private.internal/source?key=secret-key"`,
+		"missing field":    `{"major":3,"minor":0,"patch":3,"private":"secret-key"}`,
+		"trailing JSON":    `{"major":3,"minor":0,"patch":3,"prerelease":null}{"private":"secret-key"}`,
+		"trailing garbage": `{"major":3,"minor":0,"patch":3,"prerelease":null} https://private.internal?key=secret-key`,
+		"oversized":        `{"major":3,"minor":0,"patch":3,"prerelease":null}` + strings.Repeat(" ", maxJSONResponse) + "private secret-key",
 	} {
 		t.Run(name, func(t *testing.T) {
 			server := contractServer(t, func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(body)) })
 			defer server.Close()
 			client, err := New(clientConfig(server.URL), server.Client())
 			require.NoError(t, err)
-			require.EqualError(t, client.Check(context.Background()), "Immich returned an invalid response")
+			err = client.Check(context.Background())
+			requireSafeAdapterError(t, err, "Immich returned an invalid response", "private", "private.internal", "secret-key")
 		})
 	}
 }
@@ -1119,34 +1155,49 @@ func TestThumbnailMapsUpstreamStatusesTimeoutsAndReadFailuresToSafeErrors(t *tes
 		{status: http.StatusForbidden, want: "Immich API key is invalid"},
 		{status: http.StatusBadRequest, want: "Immich resource not found"},
 		{status: http.StatusNotFound, want: "Immich resource not found"},
+		{status: http.StatusTooManyRequests, want: "Immich validation failed"},
 		{status: http.StatusInternalServerError, want: "Immich validation failed"},
 	} {
 		t.Run(http.StatusText(test.status), func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				w.WriteHeader(test.status)
-				_, _ = w.Write([]byte(`{"private":"response"}`))
-			}))
-			defer server.Close()
-			client, err := New(clientConfig(server.URL), server.Client())
+			requestCount := 0
+			transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
+				requestCount++
+				assert.Equal(t, "secret-key", request.Header.Get("x-api-key"))
+				return &http.Response{
+					StatusCode: test.status,
+					Body:       io.NopCloser(strings.NewReader(`{"private":"https://private.internal/source?key=secret-key"}`)),
+					Request:    request,
+				}, nil
+			})
+			client, err := New(clientConfig("https://configured.immich.internal"), &http.Client{Transport: transport})
 			require.NoError(t, err)
 
 			_, err = client.Thumbnail(context.Background(), assetID, MediaRequest{})
-			require.EqualError(t, err, test.want)
+			requireSafeAdapterError(t, err, test.want, "private", "private.internal", "configured.immich.internal", "secret-key")
+			assert.Equal(t, 1, requestCount, "thumbnail status failures must not be retried")
 		})
 	}
 
 	t.Run("timeout", func(t *testing.T) {
+		requestCount := 0
+		canceled := make(chan error, 1)
 		transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			requestCount++
 			<-request.Context().Done()
-			return nil, request.Context().Err()
+			canceled <- request.Context().Err()
+			return nil, errors.New("timeout contacting https://private.internal?key=secret-key")
 		})
-		cfg := clientConfig("https://immich.internal")
-		cfg.HealthTimeout = time.Millisecond
+		cfg := clientConfig("https://configured.immich.internal")
+		cfg.HealthTimeout = 10 * time.Millisecond
 		client, err := New(cfg, &http.Client{Transport: transport})
 		require.NoError(t, err)
 
-		_, err = client.Thumbnail(context.Background(), assetID, MediaRequest{})
-		require.EqualError(t, err, "Immich is unreachable")
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_, err = client.Thumbnail(ctx, assetID, MediaRequest{})
+		requireSafeAdapterError(t, err, "Immich is unreachable", "private.internal", "configured.immich.internal", "secret-key")
+		require.ErrorIs(t, <-canceled, context.Canceled)
+		assert.Equal(t, 1, requestCount, "timed out thumbnail requests must not be retried")
 	})
 
 	t.Run("streaming read failure", func(t *testing.T) {
@@ -1158,115 +1209,143 @@ func TestThumbnailMapsUpstreamStatusesTimeoutsAndReadFailuresToSafeErrors(t *tes
 				Request:    request,
 			}, nil
 		})
-		client, err := New(clientConfig("https://immich.internal"), &http.Client{Transport: transport})
+		client, err := New(clientConfig("https://configured.immich.internal"), &http.Client{Transport: transport})
 		require.NoError(t, err)
 		response, err := client.Thumbnail(context.Background(), assetID, MediaRequest{})
 		require.NoError(t, err)
 
 		_, err = io.ReadAll(response.Body)
-		require.EqualError(t, err, "Immich returned an invalid response")
+		requireSafeAdapterError(t, err, "Immich returned an invalid response", "private", "immich.internal", "secret")
 		require.NoError(t, response.Body.Close())
 	})
 }
 
 func TestMediaRepresentationsFollowOnlySameOriginRedirectsWithCredentials(t *testing.T) {
 	assetID := uuid.New()
-	var redirected bool
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "secret-key", r.Header.Get("x-api-key"))
-		assert.Empty(t, r.Header.Get("Authorization"))
-		assert.Empty(t, r.Header.Get("Cookie"))
-		if r.URL.Path == "/api/assets/"+assetID.String()+"/thumbnail" {
-			assert.Equal(t, "preview", r.URL.Query().Get("size"))
-			http.Redirect(w, r, "/generated/preview", http.StatusTemporaryRedirect)
-			return
-		}
-		assert.Equal(t, "/generated/preview", r.URL.Path)
-		redirected = true
-		assert.Equal(t, `"preview"`, r.Header.Get("If-None-Match"))
-		w.Header().Set("Content-Type", "image/jpeg")
-		_, _ = w.Write([]byte("preview"))
-	}))
-	defer server.Close()
-	client, err := New(clientConfig(server.URL), server.Client())
-	require.NoError(t, err)
-	response, err := client.Preview(context.Background(), assetID, MediaRequest{IfNoneMatch: `"preview"`})
-	require.NoError(t, err)
-	contents, err := io.ReadAll(response.Body)
-	require.NoError(t, err)
-	require.NoError(t, response.Body.Close())
-	assert.True(t, redirected)
-	assert.Equal(t, "preview", string(contents))
+	t.Run("relative same-origin target", func(t *testing.T) {
+		requestCount := 0
+		transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			requestCount++
+			assert.Equal(t, "secret-key", request.Header.Get("x-api-key"))
+			assert.Empty(t, request.Header.Get("Authorization"))
+			assert.Empty(t, request.Header.Get("Cookie"))
+			if requestCount == 1 {
+				assert.Equal(t, "/api/assets/"+assetID.String()+"/thumbnail", request.URL.Path)
+				assert.Equal(t, "preview", request.URL.Query().Get("size"))
+				return &http.Response{
+					StatusCode: http.StatusTemporaryRedirect,
+					Header:     http.Header{"Location": []string{"/generated/preview"}},
+					Body:       http.NoBody,
+					Request:    request,
+				}, nil
+			}
+			assert.Equal(t, "/generated/preview", request.URL.Path)
+			assert.Equal(t, `"preview"`, request.Header.Get("If-None-Match"))
+			return &http.Response{
+				StatusCode:    http.StatusOK,
+				Header:        http.Header{"Content-Type": []string{"image/jpeg"}},
+				Body:          io.NopCloser(strings.NewReader("preview")),
+				ContentLength: int64(len("preview")),
+				Request:       request,
+			}, nil
+		})
+		client, err := New(clientConfig("http://immich.test"), &http.Client{Transport: transport})
+		require.NoError(t, err)
 
-	targetCalled := false
-	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { targetCalled = true }))
-	defer target.Close()
-	crossOrigin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "secret-key", r.Header.Get("x-api-key"))
-		http.Redirect(w, r, target.URL+"/private", http.StatusFound)
-	}))
-	defer crossOrigin.Close()
-	client, err = New(clientConfig(crossOrigin.URL), crossOrigin.Client())
-	require.NoError(t, err)
-	_, err = client.Original(context.Background(), assetID, MediaRequest{})
-	require.EqualError(t, err, "Immich validation failed")
-	assert.False(t, targetCalled, "an unapproved origin is never contacted")
+		response, err := client.Preview(context.Background(), assetID, MediaRequest{IfNoneMatch: `"preview"`})
+		require.NoError(t, err)
+		contents, err := io.ReadAll(response.Body)
+		require.NoError(t, err)
+		require.NoError(t, response.Body.Close())
+		assert.Equal(t, "preview", string(contents))
+		assert.Equal(t, 2, requestCount)
+	})
 
-	credentialTargetCalled := false
-	var credentialServer *httptest.Server
-	credentialServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/credential-target" {
-			credentialTargetCalled = true
-			return
-		}
-		location := strings.Replace(credentialServer.URL, "://", "://user@", 1) + "/credential-target"
-		http.Redirect(w, r, location, http.StatusFound)
-	}))
-	defer credentialServer.Close()
-	client, err = New(clientConfig(credentialServer.URL), credentialServer.Client())
-	require.NoError(t, err)
-	_, err = client.Preview(context.Background(), assetID, MediaRequest{})
-	require.EqualError(t, err, "Immich validation failed")
-	assert.False(t, credentialTargetCalled, "credential-bearing redirects are rejected before a second request")
+	for _, test := range []struct {
+		name     string
+		location string
+	}{
+		{name: "cross-origin target", location: "https://private.example/generated/preview"},
+		{name: "credential-bearing target", location: "http://user:password@immich.test/generated/preview"},
+		{name: "configured host to loopback alias", location: "http://127.0.0.1/generated/preview"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			requestCount := 0
+			unsafeCredentialForwarded := false
+			transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
+				requestCount++
+				if requestCount > 1 && request.Header.Get("x-api-key") != "" {
+					unsafeCredentialForwarded = true
+				}
+				if requestCount == 1 {
+					assert.Equal(t, "secret-key", request.Header.Get("x-api-key"))
+					return &http.Response{
+						StatusCode: http.StatusTemporaryRedirect,
+						Header:     http.Header{"Location": []string{test.location}},
+						Body:       http.NoBody,
+						Request:    request,
+					}, nil
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": []string{"image/jpeg"}},
+					Body:       io.NopCloser(strings.NewReader("unsafe")),
+					Request:    request,
+				}, nil
+			})
+			client, err := New(clientConfig("http://immich.test"), &http.Client{Transport: transport})
+			require.NoError(t, err)
+
+			_, err = client.Preview(context.Background(), assetID, MediaRequest{})
+			requireSafeAdapterError(t, err, "Immich validation failed", test.location, "secret-key")
+			assert.Equal(t, 1, requestCount, "unsafe targets must be rejected before another request")
+			assert.False(t, unsafeCredentialForwarded)
+		})
+	}
 }
 
 func TestMediaRepresentationEnforcesTheSameOriginRedirectBudget(t *testing.T) {
 	assetID := uuid.New()
 	for _, test := range []struct {
-		name              string
-		requiredRedirects int
-		wantSuccess       bool
+		name         string
+		redirectLoop bool
+		wantSuccess  bool
 	}{
-		{name: "five redirects succeed", requiredRedirects: maxMediaRedirects, wantSuccess: true},
-		{name: "sixth redirect is rejected", requiredRedirects: maxMediaRedirects + 1},
+		{name: "five redirects succeed", wantSuccess: true},
+		{name: "same-origin redirect loop is rejected", redirectLoop: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			requestCount := 0
 			terminalReached := false
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
 				requestCount++
-				assert.Equal(t, "secret-key", r.Header.Get("x-api-key"))
-				assert.Equal(t, `"redirect-budget"`, r.Header.Get("If-None-Match"))
-				hop := 0
-				if r.URL.Path != "/api/assets/"+assetID.String()+"/thumbnail" {
-					var err error
-					hop, err = strconv.Atoi(strings.TrimPrefix(r.URL.Path, "/hop/"))
-					if err != nil {
-						t.Errorf("unexpected redirect path %q: %v", r.URL.Path, err)
-						http.Error(w, "unexpected path", http.StatusNotFound)
-						return
+				assert.Equal(t, "secret-key", request.Header.Get("x-api-key"))
+				assert.Equal(t, `"redirect-budget"`, request.Header.Get("If-None-Match"))
+				if test.wantSuccess && requestCount == maxMediaRedirects+1 {
+					terminalReached = true
+					return &http.Response{
+						StatusCode:    http.StatusOK,
+						Header:        http.Header{"Content-Type": []string{"image/jpeg"}},
+						Body:          io.NopCloser(strings.NewReader("preview")),
+						ContentLength: int64(len("preview")),
+						Request:       request,
+					}, nil
+				}
+				next := fmt.Sprintf("/hop/%d", requestCount)
+				if test.redirectLoop {
+					next = "/loop/a"
+					if request.URL.Path == "/loop/a" {
+						next = "/loop/b"
 					}
 				}
-				if hop == test.requiredRedirects {
-					terminalReached = true
-					w.Header().Set("Content-Type", "image/jpeg")
-					_, _ = w.Write([]byte("preview"))
-					return
-				}
-				http.Redirect(w, r, fmt.Sprintf("/hop/%d", hop+1), http.StatusTemporaryRedirect)
-			}))
-			defer server.Close()
-			client, err := New(clientConfig(server.URL), server.Client())
+				return &http.Response{
+					StatusCode: http.StatusTemporaryRedirect,
+					Header:     http.Header{"Location": []string{next}},
+					Body:       http.NoBody,
+					Request:    request,
+				}, nil
+			})
+			client, err := New(clientConfig("http://immich.test"), &http.Client{Transport: transport})
 			require.NoError(t, err)
 
 			response, err := client.Preview(context.Background(), assetID, MediaRequest{IfNoneMatch: `"redirect-budget"`})
@@ -1278,10 +1357,10 @@ func TestMediaRepresentationEnforcesTheSameOriginRedirectBudget(t *testing.T) {
 				assert.Equal(t, "preview", string(contents))
 				assert.True(t, terminalReached)
 			} else {
-				require.EqualError(t, err, "Immich validation failed")
+				requireSafeAdapterError(t, err, "Immich validation failed", "secret-key", "immich.test")
 				assert.False(t, terminalReached)
 			}
-			assert.Equal(t, maxMediaRedirects+1, requestCount)
+			assert.Equal(t, maxMediaRedirects+1, requestCount, "redirect requests must stay within the configured budget")
 		})
 	}
 }
@@ -1376,7 +1455,7 @@ func TestOriginalPostHeaderStreamCancellationReachesUpstream(t *testing.T) {
 		require.FailNow(t, "upstream did not observe post-header cancellation")
 	}
 	_, err = io.ReadAll(response.Body)
-	require.EqualError(t, err, "Immich returned an invalid response")
+	requireSafeAdapterError(t, err, "Immich returned an invalid response", server.URL, "secret-key")
 	require.NoError(t, response.Body.Close())
 }
 
@@ -1410,7 +1489,7 @@ func TestChunkedPartialBodiesMustMatchRangeAndDerivativeLimit(t *testing.T) {
 			if test.wantErr == "" {
 				require.NoError(t, readErr)
 			} else {
-				require.EqualError(t, readErr, test.wantErr)
+				requireSafeAdapterError(t, readErr, test.wantErr, test.body, "secret-key")
 			}
 			require.NoError(t, response.Body.Close())
 		})
@@ -1602,8 +1681,7 @@ func TestMediaAndArchiveCloseFailuresReturnOnlySafeErrors(t *testing.T) {
 			body, err := test.load(client)
 			require.NoError(t, err)
 			err = body.Close()
-			require.EqualError(t, err, "Immich returned an invalid response")
-			assert.NotContains(t, err.Error(), "private")
+			requireSafeAdapterError(t, err, "Immich returned an invalid response", "private", "immich.internal", "secret-key")
 		})
 	}
 }
@@ -1623,7 +1701,7 @@ func TestOriginalInterruptedStreamReturnsOnlySafeError(t *testing.T) {
 	response, err := client.Original(context.Background(), uuid.New(), MediaRequest{})
 	require.NoError(t, err)
 	_, err = io.ReadAll(response.Body)
-	require.EqualError(t, err, "Immich returned an invalid response")
+	requireSafeAdapterError(t, err, "Immich returned an invalid response", "private", "immich.internal", "secret")
 	require.NoError(t, response.Body.Close())
 }
 
