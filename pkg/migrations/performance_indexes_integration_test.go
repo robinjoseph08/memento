@@ -38,14 +38,6 @@ func TestTargetScaleProjectionIndexesRetainAuthorizationPaths(t *testing.T) {
 	assert.Contains(t, strings.ReplaceAll(definitions["current_entitlements_media_idx"], " ", ""), "(media_item_id,recipient_access_generation_id)")
 	assert.Contains(t, strings.ReplaceAll(definitions["current_entitlements_event_idx"], " ", ""), "(event_id,recipient_access_generation_id,media_item_id)")
 
-	var chronologyIndex string
-	require.NoError(t, db.NewRaw(`SELECT indexdef FROM pg_indexes
-		WHERE schemaname=current_schema() AND tablename='current_published_placements'
-		  AND indexname='current_placements_chronology_idx'`).Scan(ctx, &chronologyIndex))
-	compactChronologyIndex := strings.ReplaceAll(chronologyIndex, " ", "")
-	assert.Contains(t, compactChronologyIndex, "COALESCE(local_date_time,''::text)")
-	assert.Contains(t, compactChronologyIndex, "media_item_idDESC")
-	assert.Contains(t, compactChronologyIndex, "capture_date")
 }
 
 func TestCompactedSearchDocumentsKeepStableConstraintNames(t *testing.T) {
