@@ -126,7 +126,6 @@ func RestoreMomentReviewIfPublishedResult(ctx context.Context, tx bun.Tx, eventI
 	}
 
 	var exact bool
-	var missingPublished int
 	if err := tx.NewRaw(`
 		WITH published AS (
 			SELECT placement.media_item_id
@@ -141,16 +140,11 @@ func RestoreMomentReviewIfPublishedResult(ctx context.Context, tx bun.Tx, eventI
 			(SELECT media_item_id FROM published EXCEPT SELECT media_item_id FROM editable)
 			UNION ALL
 			(SELECT media_item_id FROM editable EXCEPT SELECT media_item_id FROM published)
-		), (SELECT count(*) FROM (SELECT media_item_id FROM published EXCEPT SELECT media_item_id FROM editable) AS missing)
-	`, publicationID, momentID, eventID, momentID).Scan(ctx, &exact, &missingPublished); err != nil {
+		)
+	`, publicationID, momentID, eventID, momentID).Scan(ctx, &exact); err != nil {
 		return false, err
 	}
 	if !exact {
-		if missingPublished == 0 {
-			if err := discardMomentReview(ctx, tx, eventID, momentID); err != nil {
-				return false, err
-			}
-		}
 		return false, nil
 	}
 

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/robinjoseph08/memento/internal/testdb"
 	"github.com/robinjoseph08/memento/pkg/config"
 	"github.com/robinjoseph08/memento/pkg/events"
 	"github.com/robinjoseph08/memento/pkg/immich"
@@ -221,6 +222,12 @@ func repairableReconciliationAsset(id uuid.UUID, path string) immich.AssetSummar
 	asset.Checksum = "1111111111111111111111111111111111111111"
 	asset.Filename = "family.jpg"
 	asset.OriginalPath = path
+	return asset
+}
+
+func reconciliationAssetAt(id uuid.UUID, localDateTime string) immich.AssetSummary {
+	asset := reconciliationAsset(id)
+	asset.LocalDateTime = &localDateTime
 	return asset
 }
 
@@ -1736,6 +1743,291 @@ func TestNewSourceMediaFollowsOnlyEventsConfiguredForFutureMedia(t *testing.T) {
 	require.NoError(t, service.db.NewRaw(`SELECT EXISTS (SELECT 1 FROM draft_media_placements WHERE event_id = ? AND media_item_id = ?)`, partialEventID, addedMediaID).Scan(context.Background(), &partialHasAddition))
 	assert.True(t, followingHasAddition)
 	assert.False(t, partialHasAddition, "an explicitly divided Source selection does not receive unrelated future Media")
+}
+
+func TestReconciliationRoutesFutureMediaToOneMergedMoment(t *testing.T) {
+	original := reconciliationAssetAt(uuid.New(), "2026-01-01T10:00:00Z")
+	added := reconciliationAssetAt(uuid.New(), "2026-01-02T11:00:00Z")
+	connector := &reconciliationConnector{summary: sourceAlbum(uuid.New(), "Merged days", 1)}
+	connector.pages = map[int]immich.AssetPage{1: {Items: []immich.AssetSummary{original}}}
+	service, sourceAlbumID := newReconciliationService(t, connector)
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	fixture := publishSourceEventFixture(t, service, sourceAlbumID, original.SourceID)
+	_, err := service.db.NewRaw(`
+		UPDATE draft_moments
+		SET source_days = ARRAY['2026-01-01'::date, '2026-01-02'::date],
+			proposal_kind = 'merged_days'
+		WHERE id = ?
+	`, fixture.momentID).Exec(context.Background())
+	require.NoError(t, err)
+
+	connector.setMembership(original, added)
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	var addedMediaID, routedMomentID uuid.UUID
+	require.NoError(t, service.db.NewRaw(`SELECT id FROM media_items WHERE immich_asset_id = ?`, added.SourceID).Scan(context.Background(), &addedMediaID))
+	require.NoError(t, service.db.NewRaw(`
+		SELECT draft_moment_id FROM draft_media_placements
+		WHERE event_id = ? AND media_item_id = ?
+	`, fixture.eventID, addedMediaID).Scan(context.Background(), &routedMomentID))
+	assert.Equal(t, fixture.momentID, routedMomentID)
+
+	update, err := staging.Load(context.Background(), service.db, fixture.eventID)
+	require.NoError(t, err)
+	require.NotNil(t, update)
+	require.NotEmpty(t, update.Changes)
+	assert.Equal(t, staging.ChangeKindAddition, update.Changes[0].Kind)
+	assert.Equal(t, []string{addedMediaID.String()}, update.Changes[0].MediaItemIDs)
+	var stagedRows int
+	require.NoError(t, service.db.NewRaw(`SELECT count(*) FROM staged_updates WHERE event_id = ?`, fixture.eventID).Scan(context.Background(), &stagedRows))
+	assert.Equal(t, 1, stagedRows)
+
+	var version int64
+	require.NoError(t, service.db.NewRaw(`SELECT version FROM events WHERE id = ?`, fixture.eventID).Scan(context.Background(), &version))
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	var repeatedVersion int64
+	require.NoError(t, service.db.NewRaw(`SELECT version FROM events WHERE id = ?`, fixture.eventID).Scan(context.Background(), &repeatedVersion))
+	assert.Equal(t, version, repeatedVersion, "repeated reconciliation is idempotent")
+	var repeatedStagedRows int
+	require.NoError(t, service.db.NewRaw(`SELECT count(*) FROM staged_updates WHERE event_id = ?`, fixture.eventID).Scan(context.Background(), &repeatedStagedRows))
+	assert.Equal(t, 1, repeatedStagedRows)
+}
+
+func TestReconciliationLeavesSplitDayMediaUnassigned(t *testing.T) {
+	original := reconciliationAssetAt(uuid.New(), "2026-01-01T10:00:00Z")
+	added := reconciliationAssetAt(uuid.New(), "2026-01-01T11:00:00Z")
+	connector := &reconciliationConnector{summary: sourceAlbum(uuid.New(), "Split day", 1)}
+	connector.pages = map[int]immich.AssetPage{1: {Items: []immich.AssetSummary{original}}}
+	service, sourceAlbumID := newReconciliationService(t, connector)
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	fixture := publishSourceEventFixture(t, service, sourceAlbumID, original.SourceID)
+	secondMomentID := uuid.New()
+	_, err := service.db.NewRaw(`
+		UPDATE draft_moments SET proposal_kind = 'split_day' WHERE id = ?;
+		INSERT INTO draft_moments (
+			id, event_id, position, proposed_day, grouping_timezone, source_days, proposal_kind
+		) VALUES (?, ?, 1, '2026-01-01', 'UTC', ARRAY['2026-01-01'::date], 'split_day')
+	`, fixture.momentID, secondMomentID, fixture.eventID).Exec(context.Background())
+	require.NoError(t, err)
+
+	connector.setMembership(original, added)
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	var addedMediaID uuid.UUID
+	require.NoError(t, service.db.NewRaw(`SELECT id FROM media_items WHERE immich_asset_id = ?`, added.SourceID).Scan(context.Background(), &addedMediaID))
+	var routedMomentID *uuid.UUID
+	require.NoError(t, service.db.NewRaw(`
+		SELECT draft_moment_id FROM draft_media_placements
+		WHERE event_id = ? AND media_item_id = ?
+	`, fixture.eventID, addedMediaID).Scan(context.Background(), &routedMomentID))
+	assert.Nil(t, routedMomentID, "a day retained by multiple split Moments requires explicit placement")
+}
+
+func TestReconciliationRoutesOnlyUsableLocalCaptureDays(t *testing.T) {
+	original := reconciliationAssetAt(uuid.New(), "2026-01-01T10:00:00Z")
+	zoned := reconciliationAssetAt(uuid.New(), "2026-01-02T23:00:00-10:00")
+	unzoned := reconciliationAssetAt(uuid.New(), "2026-01-02T01:00:00")
+	unknown := reconciliationAsset(uuid.New())
+	unknown.LocalDateTime = nil
+	unusable := reconciliationAssetAt(uuid.New(), "yesterday")
+	connector := &reconciliationConnector{summary: sourceAlbum(uuid.New(), "Capture days", 1)}
+	connector.pages = map[int]immich.AssetPage{1: {Items: []immich.AssetSummary{original}}}
+	service, sourceAlbumID := newReconciliationService(t, connector)
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	fixture := publishSourceEventFixture(t, service, sourceAlbumID, original.SourceID)
+	_, err := service.db.NewRaw(`
+		UPDATE events SET grouping_timezone = 'America/Los_Angeles' WHERE id = ?;
+		UPDATE draft_moments
+		SET source_days = ARRAY['2026-01-01'::date, '2026-01-02'::date],
+			proposal_kind = 'merged_days'
+		WHERE id = ?
+	`, fixture.eventID, fixture.momentID).Exec(context.Background())
+	require.NoError(t, err)
+
+	connector.setMembership(original, zoned, unzoned, unknown, unusable)
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	for _, test := range []struct {
+		name   string
+		asset  immich.AssetSummary
+		routed bool
+	}{
+		{name: "zoned local day", asset: zoned, routed: true},
+		{name: "unzoned curator timezone", asset: unzoned, routed: true},
+		{name: "unknown", asset: unknown},
+		{name: "unusable", asset: unusable},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var momentID *uuid.UUID
+			require.NoError(t, service.db.NewRaw(`
+				SELECT placement.draft_moment_id
+				FROM draft_media_placements AS placement
+				JOIN media_items AS media ON media.id = placement.media_item_id
+				WHERE placement.event_id = ? AND media.immich_asset_id = ?
+			`, fixture.eventID, test.asset.SourceID).Scan(context.Background(), &momentID))
+			if test.routed {
+				require.NotNil(t, momentID)
+				assert.Equal(t, fixture.momentID, *momentID)
+			} else {
+				assert.Nil(t, momentID, "unknown or unusable dates must not gain an authoritative guess")
+			}
+		})
+	}
+}
+
+func TestRoutedSourceAdditionCancellationRestoresPublishedMomentReview(t *testing.T) {
+	original := reconciliationAssetAt(uuid.New(), "2026-01-01T10:00:00Z")
+	added := reconciliationAssetAt(uuid.New(), "2026-01-02T11:00:00Z")
+	second := reconciliationAssetAt(uuid.New(), "2026-01-02T12:00:00Z")
+	connector := &reconciliationConnector{summary: sourceAlbum(uuid.New(), "Canceled merged addition", 1)}
+	connector.pages = map[int]immich.AssetPage{1: {Items: []immich.AssetSummary{original}}}
+	service, sourceAlbumID := newReconciliationService(t, connector)
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	fixture := publishSourceEventFixture(t, service, sourceAlbumID, original.SourceID)
+	var snapshotID uuid.UUID
+	require.NoError(t, service.db.NewRaw(`
+		SELECT snapshot_id FROM current_audience_snapshots
+		WHERE target_kind = 'moment' AND target_id = ?
+	`, fixture.momentID).Scan(context.Background(), &snapshotID))
+	_, err := service.db.NewRaw(`
+		UPDATE draft_moments
+		SET source_days = ARRAY['2026-01-01'::date, '2026-01-02'::date],
+			proposal_kind = 'merged_days'
+		WHERE id = ?
+	`, fixture.momentID).Exec(context.Background())
+	require.NoError(t, err)
+
+	connector.setMembership(original, added, second)
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	update, err := staging.Load(context.Background(), service.db, fixture.eventID)
+	require.NoError(t, err)
+	require.NotNil(t, update)
+
+	connector.setAssetExists(added.SourceID, true)
+	connector.setMembership(original, second)
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	partial, err := staging.Load(context.Background(), service.db, fixture.eventID)
+	require.NoError(t, err)
+	require.NotNil(t, partial, "the first of two routed removals retains cancellation context")
+
+	connector.setAssetExists(second.SourceID, true)
+	connector.setMembership(original)
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	cancelled, err := staging.Load(context.Background(), service.db, fixture.eventID)
+	require.NoError(t, err)
+	assert.Nil(t, cancelled, "an add-then-remove route leaves no Staged update residue")
+	var attendanceComplete, audienceComplete bool
+	var restoredSnapshotID uuid.UUID
+	var restorationRows int
+	require.NoError(t, service.db.NewRaw(`
+		SELECT attendance_complete, audience_complete FROM draft_moments WHERE id = ?
+	`, fixture.momentID).Scan(context.Background(), &attendanceComplete, &audienceComplete))
+	require.NoError(t, service.db.NewRaw(`
+		SELECT snapshot_id FROM current_audience_snapshots
+		WHERE target_kind = 'moment' AND target_id = ?
+	`, fixture.momentID).Scan(context.Background(), &restoredSnapshotID))
+	require.NoError(t, service.db.NewRaw(`
+		SELECT count(*) FROM staged_moment_review_restorations WHERE event_id = ?
+	`, fixture.eventID).Scan(context.Background(), &restorationRows))
+	assert.True(t, attendanceComplete)
+	assert.True(t, audienceComplete)
+	assert.Equal(t, snapshotID, restoredSnapshotID)
+	assert.Zero(t, restorationRows)
+}
+
+func TestRoutedSourceRemovalInvalidatesFreshMomentReview(t *testing.T) {
+	original := reconciliationAssetAt(uuid.New(), "2026-01-01T10:00:00Z")
+	added := reconciliationAssetAt(uuid.New(), "2026-01-02T11:00:00Z")
+	connector := &reconciliationConnector{summary: sourceAlbum(uuid.New(), "Fresh routed review", 1)}
+	connector.pages = map[int]immich.AssetPage{1: {Items: []immich.AssetSummary{original}}}
+	service, sourceAlbumID := newReconciliationService(t, connector)
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	fixture := publishSourceEventFixture(t, service, sourceAlbumID, original.SourceID)
+	_, err := service.db.NewRaw(`UPDATE draft_moments SET source_days=ARRAY['2026-01-01'::date,'2026-01-02'::date], proposal_kind='merged_days' WHERE id=?`, fixture.momentID).Exec(context.Background())
+	require.NoError(t, err)
+	connector.setMembership(original, added)
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+
+	freshSnapshot := uuid.New()
+	require.NoError(t, service.db.RunInTx(context.Background(), nil, func(ctx context.Context, tx bun.Tx) error {
+		if err := staging.SupersedeMomentReviewRestoration(ctx, tx, fixture.momentID); err != nil {
+			return err
+		}
+		_, err := tx.NewRaw(`
+			UPDATE draft_moments SET attendance_complete=true, audience_complete=true WHERE id=?;
+			INSERT INTO audience_snapshots (id,target_kind,target_id,approved_by_person_id,approved_at,label)
+			VALUES (?,'moment',?,?,now(),'Curator only');
+			INSERT INTO current_audience_snapshots (target_kind,target_id,snapshot_id) VALUES ('moment',?,?)
+		`, fixture.momentID, freshSnapshot, fixture.momentID, fixture.curator.PersonID, fixture.momentID, freshSnapshot).Exec(ctx)
+		return err
+	}))
+	connector.setAssetExists(added.SourceID, true)
+	connector.setMembership(original)
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+
+	var attendanceComplete, audienceComplete bool
+	var snapshots int
+	require.NoError(t, service.db.NewRaw(`SELECT attendance_complete,audience_complete FROM draft_moments WHERE id=?`, fixture.momentID).Scan(context.Background(), &attendanceComplete, &audienceComplete))
+	require.NoError(t, service.db.NewRaw(`SELECT count(*) FROM current_audience_snapshots WHERE target_kind='moment' AND target_id=?`, fixture.momentID).Scan(context.Background(), &snapshots))
+	assert.False(t, attendanceComplete)
+	assert.False(t, audienceComplete)
+	assert.Zero(t, snapshots, "review for the removed Media set cannot remain authoritative")
+}
+
+func TestReconciliationSerializesRoutingWithConcurrentMomentOrganization(t *testing.T) {
+	original := reconciliationAssetAt(uuid.New(), "2026-01-01T10:00:00Z")
+	added := reconciliationAssetAt(uuid.New(), "2026-01-02T11:00:00Z")
+	connector := &reconciliationConnector{summary: sourceAlbum(uuid.New(), "Concurrent organization", 1)}
+	connector.pages = map[int]immich.AssetPage{1: {Items: []immich.AssetSummary{original}}}
+	service, sourceAlbumID := newReconciliationService(t, connector)
+	require.NoError(t, service.Reconcile(context.Background(), sourceAlbumID))
+	fixture := publishSourceEventFixture(t, service, sourceAlbumID, original.SourceID)
+	_, err := service.db.NewRaw(`
+		UPDATE draft_moments
+		SET source_days = ARRAY['2026-01-01'::date, '2026-01-02'::date],
+			proposal_kind = 'merged_days'
+		WHERE id = ?
+	`, fixture.momentID).Exec(context.Background())
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	connection, err := service.db.DB.Conn(ctx)
+	require.NoError(t, err)
+	defer connection.Close()
+	organization, err := connection.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	defer organization.Rollback()
+	var blockerPID int
+	require.NoError(t, organization.QueryRowContext(ctx, `SELECT pg_backend_pid()`).Scan(&blockerPID))
+	_, err = organization.ExecContext(ctx, `SELECT id FROM events WHERE id = $1 FOR UPDATE`, fixture.eventID)
+	require.NoError(t, err)
+	secondMomentID := uuid.New()
+	_, err = organization.ExecContext(ctx, `
+		UPDATE draft_moments
+		SET source_days = ARRAY['2026-01-02'::date], proposal_kind = 'split_day'
+		WHERE id = $1;
+		INSERT INTO draft_moments (
+			id, event_id, position, proposed_day, grouping_timezone, source_days, proposal_kind
+		) VALUES ($2, $3, 1, '2026-01-02', 'UTC', ARRAY['2026-01-02'::date], 'split_day')
+	`, fixture.momentID, secondMomentID, fixture.eventID)
+	require.NoError(t, err)
+
+	connector.setMembership(original, added)
+	result := make(chan error, 1)
+	go func() { result <- service.Reconcile(ctx, sourceAlbumID) }()
+	testdb.WaitForBlockedQueries(t, ctx, service.db, blockerPID, `%SELECT id FROM events WHERE id =%FOR UPDATE%`, 1)
+	require.NoError(t, organization.Commit())
+	require.NoError(t, testdb.WaitForErrorResult(t, result, "reconciliation after concurrent Moment organization"))
+
+	var momentID *uuid.UUID
+	require.NoError(t, service.db.NewRaw(`
+		SELECT placement.draft_moment_id
+		FROM draft_media_placements AS placement
+		JOIN media_items AS media ON media.id = placement.media_item_id
+		WHERE placement.event_id = ? AND media.immich_asset_id = ?
+	`, fixture.eventID, added.SourceID).Scan(context.Background(), &momentID))
+	assert.Nil(t, momentID, "routing observes the serialized split-day organization")
 }
 
 func TestAddThenRemoveBeforePublicationLeavesNoEditableResidue(t *testing.T) {
