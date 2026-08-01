@@ -78,6 +78,7 @@ func TestTargetScalePerformance(t *testing.T) {
 	}), 1, 0)
 
 	libraryService := library.New(fixture.db, nil)
+	require.NoError(t, authorizeCompleteChronologyFixture(ctx, fixture.db, chronologyActor))
 	addDuration("recipient_list", measure(t, operationSamples, func() error {
 		page, err := libraryService.Photos(ctx, actor, "100", "", false)
 		if err == nil && len(page.Media) != 100 {
@@ -206,6 +207,7 @@ func TestTargetScalePerformance(t *testing.T) {
 	metrics = append(metrics, streamMetric)
 
 	comparisons := measureCompetingWork(t, ctx, fixture, actor, libraryService, searchService, operationSamples)
+	require.NoError(t, authorizeCompleteChronologyFixture(ctx, fixture.db, chronologyActor))
 	plans := capturePlans(t, ctx, fixture.db, actor, chronologyActor)
 	qualifying := cheapSamples >= 100 && operationSamples >= 20 && publicationSamples >= 20 && streamConcurrency >= 32
 	report := Report{
@@ -227,6 +229,17 @@ func TestTargetScalePerformance(t *testing.T) {
 	for _, metric := range append(append([]Metric(nil), metrics...), comparisons...) {
 		require.Truef(t, metric.Passed, "%s p95=%s target=%s scenario=%s competitor=%s", metric.Name, time.Duration(metric.P95), metric.Target, metric.Scenario, metric.CompetingWork)
 	}
+}
+
+func authorizeCompleteChronologyFixture(ctx context.Context, db *bun.DB, actor setup.SessionActor) error {
+	_, err := db.NewRaw(`INSERT INTO current_audience_entitlements (
+		event_id, publication_id, recipient_person_id,
+		recipient_access_generation_id, media_item_id
+	)
+	SELECT placement.event_id, placement.publication_id, ?::uuid, ?::uuid, placement.media_item_id
+	FROM current_published_placements AS placement
+	ON CONFLICT DO NOTHING`, actor.PersonID, actor.AccessID).Exec(ctx)
+	return err
 }
 
 func configuredSamples(name string, fallback int) int {
