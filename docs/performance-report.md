@@ -1,8 +1,8 @@
 # Target-scale performance report
 
-- Generated: `2026-08-01T05:31:45Z`
+- Generated: `2026-08-01T06:21:45Z`
 - Qualifying: `true`
-- Git revision: `080a1c4a78bcecb42c61768f0fb45b054527e960` (dirty: `false`)
+- Git revision: `17eb94a71f096dd1d2204e27f907f17ddc18448f` (dirty: `false`)
 - Cache state: `warm`
 - PostgreSQL: `PostgreSQL 17.7 on aarch64-unknown-linux-musl, compiled by gcc (Alpine 15.2.0) 15.2.0, 64-bit`
 
@@ -14,28 +14,28 @@
 
 | Operation | p95 | Target | Result | Scenario | Concurrency | Immich latency |
 | --- | ---: | ---: | --- | --- | ---: | ---: |
-| Liveness response | 3.292µs | 50ms | PASS | steady | 1 | 0s |
-| Readiness response with healthy dependencies | 941.417µs | 500ms | PASS | steady | 1 | 0s |
-| Session validation plus simple authorization | 1.777458ms | 50ms | PASS | steady | 1 | 0s |
-| Recipient timeline or Event page, up to 100 items | 9.252ms | 300ms | PASS | steady | 1 | 0s |
-| Curator work queue or People list | 3.912417ms | 300ms | PASS | steady | 1 | 0s |
-| Authorized search first page | 44.79225ms | 500ms | PASS | steady | 1 | 0s |
-| Comment, Favorite, preference, or seen-state mutation | 3.665458ms | 300ms | PASS | steady | 1 | 0s |
-| Atomic Publication with 5,000 placements and 50 Recipients | 1.769866666s | 3s | PASS | steady | 1 | 0s |
-| Audience proposal recalculation for 50 Recipients and 500 Moment items | 470.522875ms | 1s | PASS | steady | 1 | 0s |
-| Eligible job start after available_at | 2.769875ms | 1m0s | PASS | steady | 1 | 0s |
-| Notification dispatch start after coalescing closes | 4.905ms | 2m0s | PASS | steady | 1 | 0s |
-| Full 100,000-item reconciliation | 10.502512791s | 30m0s | PASS | steady | 1 | 0s |
-| Media proxy first-byte application overhead | 18.479041ms | 150ms | PASS | steady | 1 | 5ms |
+| Liveness response | 5.542µs | 50ms | PASS | steady | 1 | 0s |
+| Readiness response with healthy dependencies | 1.081125ms | 500ms | PASS | steady | 1 | 0s |
+| Session validation plus simple authorization | 2.403875ms | 50ms | PASS | steady | 1 | 0s |
+| Recipient timeline or Event page, up to 100 items | 14.601167ms | 300ms | PASS | steady | 1 | 0s |
+| Curator work queue or People list | 5.768208ms | 300ms | PASS | steady | 1 | 0s |
+| Authorized search first page | 45.603833ms | 500ms | PASS | steady | 1 | 0s |
+| Comment, Favorite, preference, or seen-state mutation | 4.75375ms | 300ms | PASS | steady | 1 | 0s |
+| Atomic Publication with 5,000 placements and 50 Recipients | 2.18893275s | 3s | PASS | steady | 1 | 0s |
+| Audience proposal recalculation for 50 Recipients and 500 Moment items | 791.709ms | 1s | PASS | steady | 1 | 0s |
+| Eligible job start after available_at | 2.271416ms | 1m0s | PASS | steady | 1 | 0s |
+| Notification dispatch start after coalescing closes | 4.857ms | 2m0s | PASS | steady | 1 | 0s |
+| Full 100,000-item reconciliation | 10.270825375s | 30m0s | PASS | steady | 1 | 0s |
+| Media proxy first-byte application overhead | 17.89075ms | 150ms | PASS | steady | 1 | 5ms |
 | Application buffer bytes per active Media stream | 32768 B | 1048576 B | PASS | steady | 32 | 0s |
 
 ## Competing work
 
 | Operation | p95 | Competitor | Concurrency |
 | --- | ---: | --- | ---: |
-| Recipient timeline or Event page, up to 100 items | 10.492541ms | reconciliation | 2 |
-| Recipient timeline or Event page, up to 100 items | 12.247333ms | publication | 2 |
-| Authorized search first page | 51.788291ms | notification dispatch | 2 |
+| Recipient timeline or Event page, up to 100 items | 3.90975ms | reconciliation | 2 |
+| Recipient timeline or Event page, up to 100 items | 5.162ms | publication | 2 |
+| Authorized search first page | 51.417959ms | notification dispatch | 2 |
 
 ## PostgreSQL plans and buffers
 
@@ -58,5 +58,5 @@
 - CPU: `Apple M3 Pro` (11 logical CPUs)
 - Memory: 38654705664 bytes
 - Go: `go1.26.5`
-- Database size: 579529875 bytes
+- Database size: 610307219 bytes
 - Database pool: 16 connections
