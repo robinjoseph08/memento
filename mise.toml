@@ -1,0 +1,289 @@
+[tools]
+go = "1.27.0"
+node = "26.8.1"
+"npm:pnpm" = "11.25.0"
+"github:air-verse/air" = "1.67.4"
+"github:gzuidhof/tygo" = "0.2.21"
+"github:golangci/golangci-lint" = "2.13.2"
+
+# === Build ===
+
+[tasks.build]
+description = "Build the production web application"
+depends = ["build:web"]
+run = "mise build:api"
+
+[tasks."build:api"]
+description = "Build the API binary with the currently generated frontend"
+run = '''
+VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
+MODULE=$(go list -m)
+CGO_ENABLED=0 go build -o ./build/api/api -installsuffix cgo \
+  -ldflags "-w -s -X $MODULE/pkg/version.Version=$VERSION" \
+  ./cmd/api
+'''
+
+[tasks."build:web"]
+description = "Generate types and build the production frontend"
+depends = ["tygo"]
+run = "pnpm build"
+outputs = ["internal/webapp/dist/index.html"]
+
+[tasks."build:air"]
+description = "Build development API binary (used by air)"
+run = "go build -o ./build/api/api-air ./cmd/api"
+
+# === Dev Server ===
+
+[tasks.start]
+description = "Start development environment (API + web)"
+run = "go run ./cmd/dev start"
+
+[tasks."start:air"]
+description = "Start API with hot reload via Air"
+run = "go run ./cmd/dev start air"
+
+[tasks."start:web"]
+description = "Start Vite dev server"
+run = "go run ./cmd/dev start web"
+
+[tasks."start:api"]
+description = "Start API directly (no hot reload)"
+run = "go run ./cmd/dev start api"
+
+# === Type Generation ===
+
+[tasks.tygo]
+description = "Generate TypeScript types from Go structs"
+run = "tygo generate"
+sources = ["tygo.yaml", "pkg/**/types.go", "pkg/**/config.go", "pkg/**/model.go", "pkg/models/*.go"]
+outputs = ["app/types/generated/**/*.ts"]
+
+# === Linting ===
+
+[tasks."lint:go"]
+description = "Run Go linting"
+# Per-worktree cache so concurrent worktrees don't trip golangci-lint's
+# "parallel golangci-lint is running" lock against each other. Cold cache
+# costs ~30s extra on the first run in a fresh worktree; warm cache is ~3s.
+env = { GOLANGCI_LINT_CACHE = "{{config_root}}/tmp/golangci-lint-cache" }
+run = "golangci-lint run"
+
+[tasks."lint:js"]
+description = "Run all JS/TS linting"
+depends = ["tygo", "lint:eslint", "lint:prettier", "lint:types"]
+
+[tasks."lint:eslint"]
+description = "Run ESLint"
+run = "pnpm lint:eslint"
+
+[tasks."lint:prettier"]
+description = "Run Prettier check"
+run = "pnpm lint:prettier"
+
+[tasks."lint:types"]
+description = "Run TypeScript type checking"
+depends = ["tygo"]
+run = "pnpm lint:types"
+
+# === Testing ===
+
+[tasks."test:go"]
+description = "Run Go tests with coverage"
+env = { TZ = "America/Chicago", CI = "true" }
+run = "go test ./... -coverprofile coverage.out"
+
+[tasks."test:race"]
+description = "Run Go tests with race detection"
+env = { TZ = "America/Chicago", CI = "true" }
+run = "go test -race ./... -coverprofile coverage.out"
+
+[tasks."test:js"]
+description = "Run all JS tests"
+depends = ["tygo", "test:unit", "test:e2e"]
+
+[tasks."test:js:fast"]
+description = "Run JS tests with chromium e2e only (firefox runs in CI)"
+depends = ["tygo", "test:unit", "e2e:chromium"]
+
+[tasks."test:unit"]
+description = "Run JS unit tests"
+run = "pnpm test:unit"
+
+[tasks."test:e2e"]
+description = "Run E2E tests"
+run = "mkdir -p ./tmp && go run ./cmd/dev e2e"
+
+[tasks."e2e:chromium"]
+description = "Run E2E tests in Chromium"
+run = "mkdir -p ./tmp && go run ./cmd/dev e2e chromium"
+
+[tasks."e2e:firefox"]
+description = "Run E2E tests in Firefox"
+run = "mkdir -p ./tmp && go run ./cmd/dev e2e firefox"
+
+[tasks."test:cover"]
+description = "Open coverage report in browser"
+run = "go tool cover -html=coverage.out"
+
+# === Check ===
+
+[tasks.check]
+description = "Run all validation checks and build the production application"
+depends = ["lint:go", "lint:js", "test:go", "test:js:fast"]
+run = "mise build"
+
+[tasks."check:quiet"]
+description = "Run all checks, suppress output on success"
+depends = ["tygo"]
+run = '''
+# Serialize concurrent check:quiet runs from different worktrees on the
+# same host with flock. Both runs together still finish faster than a
+# single run, but with much less CPU contention so the host stays
+# responsive. Falls through gracefully if flock isn't installed.
+common_dir=$(git rev-parse --path-format=absolute --git-common-dir)
+repo_hash=$(printf '%s' "$(dirname "$common_dir")" | cksum | awk '{print $1}')
+lockfile="/tmp/web-app-check-quiet-$repo_hash.lock"
+if command -v flock >/dev/null 2>&1; then
+  exec 9>"$lockfile"
+  if ! flock -n 9; then
+    echo "Another mise check:quiet is running on this host. Waiting for it to finish..."
+    flock 9
+  fi
+else
+  echo "flock not found. Running without a host-wide lock (install with 'brew install flock' on macOS)."
+fi
+echo "Running checks..."
+tmpdir=$(mktemp -d)
+trap 'rm -rf "$tmpdir"' EXIT
+for step in lint:go test:go test:js:fast lint:js; do
+  echo 1 >"$tmpdir/$step.rc"
+  touch "$tmpdir/$step.out"
+  ( mise "$step" >"$tmpdir/$step.out" 2>&1; echo $? >"$tmpdir/$step.rc" ) &
+done
+wait
+failed=0
+for step in lint:go test:go test:js:fast lint:js; do
+  rc=$(cat "$tmpdir/$step.rc" 2>/dev/null || echo 1)
+  if [ "$rc" -eq 0 ]; then
+    printf '  \033[32mPASS\033[0m  %s\n' "$step"
+  else
+    printf '  \033[31mFAIL\033[0m  %s\n' "$step"
+    cat "$tmpdir/$step.out"
+    failed=1
+  fi
+done
+if [ "$failed" -eq 0 ]; then
+  echo "Building production application..."
+  if mise build >"$tmpdir/build.out" 2>&1; then
+    printf '  \033[32mPASS\033[0m  build\n'
+  else
+    printf '  \033[31mFAIL\033[0m  build\n'
+    cat "$tmpdir/build.out"
+    failed=1
+  fi
+fi
+if [ "$failed" -eq 1 ]; then
+  printf '\n\033[31mcheck:quiet FAILED\033[0m\n'; exit 1
+else
+  printf '\n\033[32mcheck:quiet PASSED\033[0m\n'
+fi
+'''
+
+# === Database ===
+
+[tasks."db:migrate"]
+description = "Run all pending migrations"
+run = "go run ./cmd/dev db migrate"
+
+[tasks."db:migrate:create"]
+description = "Create a new migration"
+usage = 'arg "<name>" help="Migration name"'
+run = 'go run ./cmd/migrations create "$usage_name"'
+
+[tasks."db:rollback"]
+description = "Rollback last migration"
+run = "go run ./cmd/dev db rollback"
+
+[tasks."db:reset"]
+description = "Delete all data and recreate the current worktree database schema"
+run = "go run ./cmd/dev db reset"
+
+# === Cloning ===
+
+[tasks."clone:db"]
+description = "Clone the main database into this worktree"
+usage = 'flag "--to-main" help="Replace main with this worktree instead"'
+run = '''
+if [ "${usage_to_main:-false}" = "true" ]; then
+  go run ./cmd/dev clone db --to-main
+else
+  go run ./cmd/dev clone db
+fi
+'''
+
+[tasks."clone:files"]
+description = "Clone the main files into this worktree"
+usage = 'flag "--to-main" help="Replace main with this worktree instead"'
+run = '''
+if [ "${usage_to_main:-false}" = "true" ]; then
+  go run ./cmd/dev clone files --to-main
+else
+  go run ./cmd/dev clone files
+fi
+'''
+
+[tasks.clone]
+description = "Clone the main database and files into this worktree"
+usage = 'flag "--to-main" help="Replace main with this worktree instead"'
+run = '''
+if [ "${usage_to_main:-false}" = "true" ]; then
+  go run ./cmd/dev clone --to-main
+else
+  go run ./cmd/dev clone
+fi
+'''
+
+# === Other ===
+
+[tasks.docker]
+description = "Build the production Docker image"
+run = '''
+IMAGE_NAME=${IMAGE_NAME:-$(node -p "require('./package.json').name")}
+docker build --build-arg VERSION="${VERSION:-dev}" -t "$IMAGE_NAME:${DOCKER_TAG:-latest}" .
+'''
+
+[tasks.setup]
+description = "Install dependencies and bootstrap this worktree"
+run = '''
+mise install
+pnpm install --frozen-lockfile
+if [ "$(uname -s)" = "Linux" ]; then
+  pnpm exec playwright install --with-deps chromium firefox
+else
+  pnpm exec playwright install chromium firefox
+fi
+go run ./cmd/dev setup
+mise tygo
+'''
+
+# web-app-template:template-only:start
+[tasks.init]
+description = "Initialize a repository created from this template"
+usage = 'arg "<module>" help="Go module path, such as github.com/owner/repository"'
+run = 'go run ./cmd/template-init "$usage_module"'
+# web-app-template:template-only:end
+
+[tasks.release]
+description = "Create a release"
+usage = '''
+arg "<tag>" help="Release tag"
+flag "--dry-run" help="Print release actions without applying them"
+'''
+run = '''
+if [ "${usage_dry_run:-false}" = "true" ]; then
+  ./scripts/release.sh "$usage_tag" --dry-run
+else
+  ./scripts/release.sh "$usage_tag"
+fi
+'''

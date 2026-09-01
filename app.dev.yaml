@@ -1,0 +1,5 @@
+database_url: postgres://postgres:postgres@localhost:5432/web_app_template?sslmode=disable
+database_debug: true
+files_path: ./tmp/files
+server_host: 0.0.0.0
+server_port: 3579

@@ -1,0 +1,33 @@
+# Application configuration
+#
+# Copy this file to /config/app.yaml, or set CONFIG_FILE to another path.
+# Every setting can also be set with its uppercase environment variable.
+# Environment variables take precedence over this file.
+
+# PostgreSQL connection URL.
+# Env: DATABASE_URL
+database_url: postgres://app:change-me@postgres:5432/web_app_template?sslmode=disable
+
+# Log SQL queries for contexts wrapped with database.WithLogging.
+# Env: DATABASE_DEBUG
+database_debug: false
+
+# Number of connection attempts during startup.
+# Env: DATABASE_CONNECT_RETRY_COUNT
+database_connect_retry_count: 5
+
+# Delay between connection attempts.
+# Env: DATABASE_CONNECT_RETRY_DELAY
+database_connect_retry_delay: 2s
+
+# Directory used for application-managed files.
+# Env: FILES_PATH
+files_path: /data/files
+
+# HTTP listener address.
+# Env: SERVER_HOST
+server_host: 0.0.0.0
+
+# HTTP listener port.
+# Env: SERVER_PORT
+server_port: 3579

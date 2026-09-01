@@ -1,0 +1,37 @@
+version: 2
+project_name: web-app-template
+
+builds:
+  - skip: true
+
+changelog:
+  sort: asc
+  use: github
+  format: "{{ .SHA }}: {{ .Message }}"
+  groups:
+    - title: Features
+      regexp: '^.*?\[(?:Frontend|Backend|Feature|Feat)\].*$'
+      order: 0
+    - title: Bug Fixes
+      regexp: '^.*?\[Fix\].*$'
+      order: 1
+    - title: Documentation
+      regexp: '^.*?\[(?:Docs|Doc)\].*$'
+      order: 2
+    - title: Testing
+      regexp: '^.*?\[(?:Test|E2E)\].*$'
+      order: 3
+    - title: CI/CD
+      regexp: '^.*?\[(?:CI|CD)\].*$'
+      order: 4
+    - title: Other Changes
+      order: 999
+
+release:
+  draft: false
+  prerelease: auto
+  mode: replace
+  header: |
+    ## {{ .ProjectName }} {{ .Tag }}
+
+    The container image is published to GitHub Container Registry with the same version tag.

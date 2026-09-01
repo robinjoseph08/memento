@@ -1,0 +1,110 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_call:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  go:
+    name: Go
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: jdx/mise-action@v4
+      - run: mise lint:go
+      - run: mise test:race
+
+  javascript:
+    name: JavaScript
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: jdx/mise-action@v4
+      - run: pnpm install --frozen-lockfile
+      - run: mise tygo
+      - run: mise lint:js
+      - run: mise test:unit
+
+  browsers:
+    name: Browsers
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: jdx/mise-action@v4
+      - run: pnpm install --frozen-lockfile
+
+      - name: Read Playwright version
+        id: playwright
+        run: echo "version=$(pnpm exec playwright --version | awk '{print $NF}')" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Playwright browsers
+        id: browser-cache
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
+
+      - name: Install browsers
+        if: steps.browser-cache.outputs.cache-hit != 'true'
+        run: pnpm exec playwright install --with-deps chromium firefox
+
+      - name: Install browser system dependencies
+        if: steps.browser-cache.outputs.cache-hit == 'true'
+        run: pnpm exec playwright install-deps chromium firefox
+
+      - run: mise test:e2e
+
+  production:
+    name: Production
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17.6-alpine3.22@sha256:ef257d85f76e48da1c64832459b59fcaba1a4dac97bf5d7450c77753542eee94
+        env:
+          POSTGRES_DB: web_app_template
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_USER: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d web_app_template"
+          --health-interval 1s
+          --health-timeout 5s
+          --health-retries 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: jdx/mise-action@v4
+      - run: pnpm install --frozen-lockfile
+      - run: mise build
+      - run: mise docker
+
+      - name: Smoke test production image
+        run: |
+          image_name=$(node -p "require('./package.json').name")
+          container=$(docker run --detach --network host \
+            --env DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/web_app_template?sslmode=disable \
+            "$image_name:latest")
+          trap 'docker rm --force "$container" >/dev/null 2>&1 || true' EXIT
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:8080/health >/dev/null; then
+              break
+            fi
+            if [[ "$attempt" == 30 ]]; then
+              docker logs "$container"
+              exit 1
+            fi
+            sleep 1
+          done
+          curl --fail --silent http://127.0.0.1:8080/ >/dev/null
+          curl --fail --silent http://127.0.0.1:8080/settings/profile | grep --quiet '<div id="root"></div>'
+          asset_status=$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:8080/assets/missing.js)
+          api_status=$(curl --silent --output /tmp/api-missing --write-out '%{http_code}' http://127.0.0.1:8080/api/missing)
+          test "$asset_status" = 404
+          test "$api_status" = 404
+          grep --quiet 'not_found' /tmp/api-missing

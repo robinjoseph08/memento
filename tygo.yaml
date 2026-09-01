@@ -1,0 +1,11 @@
+# Tygo treats an empty package list as the current directory, so keep a
+# placeholder package until there are Go types that the frontend needs.
+type_mappings:
+  time.Time: "string /* RFC3339 */"
+  time.Duration: "number /* nanoseconds */"
+
+packages:
+  - path: "github.com/robinjoseph08/web-app-template/pkg/config"
+    output_path: "app/types/generated/stub.ts"
+    include_files:
+      - "__tygo_stub__.go"
