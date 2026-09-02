@@ -7,7 +7,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/robinjoseph08/web-app-template/internal/devtool"
+	"github.com/robinjoseph08/memento/internal/devtool"
 )
 
 func main() {

@@ -12,10 +12,10 @@ import (
 	"github.com/robinjoseph08/golib/echo/v5/health"
 	echologger "github.com/robinjoseph08/golib/echo/v5/middleware/logger"
 	"github.com/robinjoseph08/golib/echo/v5/middleware/recovery"
-	"github.com/robinjoseph08/web-app-template/internal/webapp"
-	"github.com/robinjoseph08/web-app-template/pkg/binder"
-	"github.com/robinjoseph08/web-app-template/pkg/config"
-	"github.com/robinjoseph08/web-app-template/pkg/errcodes"
+	"github.com/robinjoseph08/memento/internal/webapp"
+	"github.com/robinjoseph08/memento/pkg/binder"
+	"github.com/robinjoseph08/memento/pkg/config"
+	"github.com/robinjoseph08/memento/pkg/errcodes"
 )
 
 // New constructs the HTTP server and registers the application's routes and

@@ -18,7 +18,7 @@ import (
 	"github.com/go-playground/validator/v10"
 	"github.com/gorilla/schema"
 	"github.com/labstack/echo/v5"
-	"github.com/robinjoseph08/web-app-template/pkg/errcodes"
+	"github.com/robinjoseph08/memento/pkg/errcodes"
 )
 
 const (

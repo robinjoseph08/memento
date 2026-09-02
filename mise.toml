@@ -267,13 +267,6 @@ go run ./cmd/dev setup
 mise tygo
 '''
 
-# web-app-template:template-only:start
-[tasks.init]
-description = "Initialize a repository created from this template"
-usage = 'arg "<module>" help="Go module path, such as github.com/owner/repository"'
-run = 'go run ./cmd/template-init "$usage_module"'
-# web-app-template:template-only:end
-
 [tasks.release]
 description = "Create a release"
 usage = '''

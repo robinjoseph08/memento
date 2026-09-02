@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	"github.com/labstack/echo/v5"
-	"github.com/robinjoseph08/web-app-template/pkg/errcodes"
+	"github.com/robinjoseph08/memento/pkg/errcodes"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

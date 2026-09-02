@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/robinjoseph08/golib/logger"
-	"github.com/robinjoseph08/web-app-template/pkg/config"
+	"github.com/robinjoseph08/memento/pkg/config"
 	"github.com/uptrace/bun"
 	"github.com/uptrace/bun/dialect/pgdialect"
 	"github.com/uptrace/bun/driver/pgdriver"

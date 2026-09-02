@@ -114,15 +114,15 @@ func TestSetupMainStartsPostgresAndPreservesExistingData(t *testing.T) {
 
 	root := t.TempDir()
 	env := testEnvironment(root, root)
-	db := &fakeDatabase{exists: map[string]bool{"web_app_template": true}}
+	db := &fakeDatabase{exists: map[string]bool{"memento": true}}
 	app := testApp(env, db)
 
 	require.NoError(t, app.Run(context.Background(), []string{"setup"}))
 	assert.DirExists(t, filepath.Join(root, "tmp", "files"))
 	assert.Equal(t, []databaseCall{
 		{operation: "start"},
-		{operation: "exists", target: "web_app_template"},
-		{operation: "migrate", target: "web_app_template"},
+		{operation: "exists", target: "memento"},
+		{operation: "migrate", target: "memento"},
 	}, db.calls)
 }
 
@@ -134,7 +134,7 @@ func TestSetupLinkedWorktreeClonesMissingDataFromMain(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(mainRoot, "tmp", "files"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(mainRoot, "tmp", "files", "state.txt"), []byte("source"), 0o644))
 	env := testEnvironment(mainRoot, currentRoot)
-	db := &fakeDatabase{exists: map[string]bool{"web_app_template": true}}
+	db := &fakeDatabase{exists: map[string]bool{"memento": true}}
 	app := testApp(env, db)
 
 	require.NoError(t, app.Run(context.Background(), []string{"setup"}))
@@ -144,8 +144,8 @@ func TestSetupLinkedWorktreeClonesMissingDataFromMain(t *testing.T) {
 	assert.Equal(t, []databaseCall{
 		{operation: "require-running"},
 		{operation: "exists", target: env.CurrentDatabase},
-		{operation: "exists", target: "web_app_template"},
-		{operation: "clone", source: "web_app_template", target: env.CurrentDatabase},
+		{operation: "exists", target: "memento"},
+		{operation: "clone", source: "memento", target: env.CurrentDatabase},
 		{operation: "migrate", target: env.CurrentDatabase},
 	}, db.calls)
 }
@@ -160,7 +160,7 @@ func TestSetupLinkedWorktreePreservesFilesWhenDatabaseIsMissing(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(mainRoot, "tmp", "files", "state.txt"), []byte("main"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(currentRoot, "tmp", "files", "state.txt"), []byte("local"), 0o644))
 	env := testEnvironment(mainRoot, currentRoot)
-	db := &fakeDatabase{exists: map[string]bool{"web_app_template": true}}
+	db := &fakeDatabase{exists: map[string]bool{"memento": true}}
 	app := testApp(env, db)
 	app.Stdin = bytes.NewBufferString("n\n")
 
@@ -219,7 +219,7 @@ func TestCloneAllRestoresFilesWhenDatabaseCloneFails(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(currentRoot, "tmp", "files", "state.txt"), []byte("old"), 0o644))
 	env := testEnvironment(mainRoot, currentRoot)
 	db := &fakeDatabase{
-		exists:   map[string]bool{"web_app_template": true, env.CurrentDatabase: true},
+		exists:   map[string]bool{"memento": true, env.CurrentDatabase: true},
 		cloneErr: errors.New("clone failed"),
 	}
 	app := testApp(env, db)
@@ -243,7 +243,7 @@ func TestCloneAllKeepsInstalledFilesWhenDatabaseCleanupFails(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(currentRoot, "tmp", "files", "state.txt"), []byte("old"), 0o644))
 	env := testEnvironment(mainRoot, currentRoot)
 	db := &fakeDatabase{
-		exists:        map[string]bool{"web_app_template": true, env.CurrentDatabase: true},
+		exists:        map[string]bool{"memento": true, env.CurrentDatabase: true},
 		cloneErr:      errors.New("remove database backup"),
 		cloneReplaced: true,
 	}
@@ -266,7 +266,7 @@ func TestSetupLinkedWorktreeRestoresFilesWhenDatabaseCloneFails(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(mainRoot, "tmp", "files", "state.txt"), []byte("new"), 0o644))
 	env := testEnvironment(mainRoot, currentRoot)
 	db := &fakeDatabase{
-		exists:   map[string]bool{"web_app_template": true},
+		exists:   map[string]bool{"memento": true},
 		cloneErr: errors.New("clone failed"),
 	}
 	app := testApp(env, db)
@@ -301,12 +301,12 @@ func TestCloneDatabaseToMainReversesDirection(t *testing.T) {
 	mainRoot := t.TempDir()
 	currentRoot := t.TempDir()
 	env := testEnvironment(mainRoot, currentRoot)
-	db := &fakeDatabase{exists: map[string]bool{"web_app_template": true, env.CurrentDatabase: true}}
+	db := &fakeDatabase{exists: map[string]bool{"memento": true, env.CurrentDatabase: true}}
 	app := testApp(env, db)
 	app.Stdin = bytes.NewBufferString("y\n")
 
 	require.NoError(t, app.Run(context.Background(), []string{"clone", "db", "--to-main"}))
-	assert.Contains(t, db.calls, databaseCall{operation: "clone", source: env.CurrentDatabase, target: "web_app_template"})
+	assert.Contains(t, db.calls, databaseCall{operation: "clone", source: env.CurrentDatabase, target: "memento"})
 }
 
 func TestCloneDeclinedLeavesDestinationUntouched(t *testing.T) {
@@ -315,7 +315,7 @@ func TestCloneDeclinedLeavesDestinationUntouched(t *testing.T) {
 	mainRoot := t.TempDir()
 	currentRoot := t.TempDir()
 	env := testEnvironment(mainRoot, currentRoot)
-	db := &fakeDatabase{exists: map[string]bool{"web_app_template": true, env.CurrentDatabase: true}}
+	db := &fakeDatabase{exists: map[string]bool{"memento": true, env.CurrentDatabase: true}}
 	app := testApp(env, db)
 	app.Stdin = bytes.NewBufferString("n\n")
 
@@ -349,7 +349,7 @@ func TestStartUsesPortsSelectedAtRuntime(t *testing.T) {
 
 	root := t.TempDir()
 	env := testEnvironment(root, root)
-	db := &fakeDatabase{exists: map[string]bool{"web_app_template": true}}
+	db := &fakeDatabase{exists: map[string]bool{"memento": true}}
 	processes := &fakeProcesses{}
 	app := testApp(env, db)
 	app.Ports = &fakePorts{ports: []int{3580, 5174}}
@@ -397,7 +397,7 @@ func TestDevelopmentEnvironmentUsesCurrentWorktreeResources(t *testing.T) {
 
 	values, err := developmentEnvironment(env, 3580, 5174)
 	require.NoError(t, err)
-	assert.Equal(t, "postgres://postgres:postgres@127.0.0.1:5544/web_app_template_feature_12345678?sslmode=disable", lastEnvironmentValue(values, "DATABASE_URL"))
+	assert.Equal(t, "postgres://postgres:postgres@127.0.0.1:5544/memento_feature_12345678?sslmode=disable", lastEnvironmentValue(values, "DATABASE_URL"))
 	assert.Equal(t, filepath.Join(currentRoot, "tmp", "files"), lastEnvironmentValue(values, "FILES_PATH"))
 	assert.Equal(t, filepath.Join(currentRoot, "app.dev.yaml"), lastEnvironmentValue(values, "CONFIG_FILE"))
 	assert.Equal(t, "3580", lastEnvironmentValue(values, "SERVER_PORT"))
@@ -461,10 +461,10 @@ func testEnvironment(mainRoot, currentRoot string) Environment {
 	return Environment{
 		MainRoot:        mainRoot,
 		CurrentRoot:     currentRoot,
-		MainDatabase:    "web_app_template",
-		CurrentDatabase: "web_app_template_feature_12345678",
+		MainDatabase:    "memento",
+		CurrentDatabase: "memento_feature_12345678",
 		PostgresPort:    5432,
-		ProjectName:     "web_app_template_test",
+		ProjectName:     "memento_test",
 	}
 }
 

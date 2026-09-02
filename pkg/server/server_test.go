@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v5"
-	"github.com/robinjoseph08/web-app-template/pkg/config"
+	"github.com/robinjoseph08/memento/pkg/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

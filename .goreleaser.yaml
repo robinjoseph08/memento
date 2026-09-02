@@ -1,5 +1,5 @@
 version: 2
-project_name: web-app-template
+project_name: memento
 
 builds:
   - skip: true

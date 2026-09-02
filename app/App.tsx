@@ -6,7 +6,7 @@ export function App() {
         className="w-full max-w-2xl rounded-3xl border border-slate-200 bg-white p-8 shadow-xl sm:p-16"
       >
         <p className="mb-4 text-xs font-bold tracking-[0.16em] text-blue-700 uppercase">
-          Web App Template
+          Memento
         </p>
         <h1
           className="text-[clamp(2.5rem,8vw,5rem)] leading-[0.95] font-semibold tracking-[-0.04em]"

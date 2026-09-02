@@ -1,4 +1,4 @@
-module github.com/robinjoseph08/web-app-template
+module github.com/robinjoseph08/memento
 
 go 1.27.0
 

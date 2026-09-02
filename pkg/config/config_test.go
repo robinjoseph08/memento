@@ -28,7 +28,7 @@ func TestLoadDefaults(t *testing.T) {
 		return "example-host", nil
 	})
 	require.NoError(t, err)
-	assert.Equal(t, "postgres://postgres:postgres@localhost:5432/web_app_template?sslmode=disable", cfg.DatabaseURL)
+	assert.Equal(t, "postgres://postgres:postgres@localhost:5432/memento?sslmode=disable", cfg.DatabaseURL)
 	assert.Equal(t, 5, cfg.DatabaseConnectRetryCount)
 	assert.Equal(t, 2*time.Second, cfg.DatabaseConnectRetryDelay)
 	assert.Equal(t, "./tmp/files", cfg.FilesPath)

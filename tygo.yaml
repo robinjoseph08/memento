@@ -5,7 +5,7 @@ type_mappings:
   time.Duration: "number /* nanoseconds */"
 
 packages:
-  - path: "github.com/robinjoseph08/web-app-template/pkg/config"
+  - path: "github.com/robinjoseph08/memento/pkg/config"
     output_path: "app/types/generated/stub.ts"
     include_files:
       - "__tygo_stub__.go"

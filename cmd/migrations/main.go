@@ -7,9 +7,9 @@ import (
 	"strings"
 
 	"github.com/robinjoseph08/golib/logger"
-	"github.com/robinjoseph08/web-app-template/pkg/config"
-	"github.com/robinjoseph08/web-app-template/pkg/database"
-	"github.com/robinjoseph08/web-app-template/pkg/migrations"
+	"github.com/robinjoseph08/memento/pkg/config"
+	"github.com/robinjoseph08/memento/pkg/database"
+	"github.com/robinjoseph08/memento/pkg/migrations"
 	"github.com/uptrace/bun"
 	"github.com/uptrace/bun/migrate"
 	"github.com/urfave/cli/v2"

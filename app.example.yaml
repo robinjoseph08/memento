@@ -6,7 +6,7 @@
 
 # PostgreSQL connection URL.
 # Env: DATABASE_URL
-database_url: postgres://app:change-me@postgres:5432/web_app_template?sslmode=disable
+database_url: postgres://app:change-me@postgres:5432/memento?sslmode=disable
 
 # Log SQL queries for contexts wrapped with database.WithLogging.
 # Env: DATABASE_DEBUG

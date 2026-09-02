@@ -30,7 +30,7 @@ type Config struct {
 
 func defaults() *Config {
 	return &Config{
-		DatabaseURL:               "postgres://postgres:postgres@localhost:5432/web_app_template?sslmode=disable",
+		DatabaseURL:               "postgres://postgres:postgres@localhost:5432/memento?sslmode=disable",
 		DatabaseDebug:             false,
 		DatabaseConnectRetryCount: 5,
 		DatabaseConnectRetryDelay: 2 * time.Second,
@@ -89,7 +89,7 @@ func load(configPath string, requireConfigFile bool, environment koanf.Provider,
 // to a database.
 func NewForTest() *Config {
 	cfg := defaults()
-	cfg.DatabaseURL = "postgres://test:test@localhost:5432/web_app_template_test?sslmode=disable"
+	cfg.DatabaseURL = "postgres://test:test@localhost:5432/memento_test?sslmode=disable"
 	cfg.DatabaseConnectRetryCount = 1
 	cfg.DatabaseConnectRetryDelay = 0
 	cfg.DatabaseDebug = true

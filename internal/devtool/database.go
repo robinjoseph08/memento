@@ -14,9 +14,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/robinjoseph08/web-app-template/pkg/config"
-	"github.com/robinjoseph08/web-app-template/pkg/database"
-	"github.com/robinjoseph08/web-app-template/pkg/migrations"
+	"github.com/robinjoseph08/memento/pkg/config"
+	"github.com/robinjoseph08/memento/pkg/database"
+	"github.com/robinjoseph08/memento/pkg/migrations"
 )
 
 // DockerDatabase manages PostgreSQL through the main worktree's Compose service.
