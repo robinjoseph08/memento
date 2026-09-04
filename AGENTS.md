@@ -60,6 +60,12 @@ changes effectively. Think of these instructions less as "hard rules", more as
 "good defaults". The developer's preferences should be able to override
 anything here.
 
+## Directory guidance
+
+- Backend conventions live in `pkg/AGENTS.md`.
+- Frontend conventions live in `app/AGENTS.md`.
+- Browser-test conventions live in `e2e/AGENTS.md`.
+
 ## Plans and work artifacts
 
 - Do not commit implementation plans, research notes, or agent scratch files.

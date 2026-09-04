@@ -1,0 +1,3 @@
+# Use an in-process PostgreSQL-backed worker
+
+Memento will run a small durable worker inside the API process for chapter extraction and email delivery. PostgreSQL will retain work across page closure and process restarts, while bounded concurrency and task-specific retry rules keep slow or externally visible work out of HTTP request lifetimes. This adds worker machinery earlier than a synchronous design would, but avoids separate infrastructure and replaces two unreliable browser-driven workflows with one shared module. Manual Immich synchronization remains request-driven, and the worker will not provide periodic scheduling until a concrete need appears.
