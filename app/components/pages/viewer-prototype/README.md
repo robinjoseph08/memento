@@ -1,6 +1,6 @@
 # Approved viewer prototype
 
-Reference-only design evidence for [Memento specification #4](https://github.com/robinjoseph08/memento/issues/4#issuecomment-5546554501). This throwaway branch is not intended to merge into `master`.
+Reference-only design evidence for the [approved viewer decision on Memento specification #4](https://github.com/robinjoseph08/memento/issues/4#issuecomment-5546554501). The combined `prototype/curator-viewer-aligned` branch contains this viewer and the [approved Curator editor](../curator-prototype/README.md). Do not merge it into `master`.
 
 ## Run
 
@@ -28,7 +28,7 @@ The floating preview controls switch themes and empty-tab examples. Dark is the 
 - `reference/`: desktop, mobile, and video-lightbox captures of this version using dummy media.
 - `../../ui/viewer-prototype-controls.tsx`: throwaway presentation controls, not product UI.
 
-The Curator prototype must build on this visual language. Explore Curator workflows without redesigning the brand, theme, or base controls. The specification comment records the approved decisions.
+The Curator editor shares the typography, colors, mark, base controls, and overlay treatment. The large Album header, horizontal viewer shell, and browsing-grid density apply only to viewer presentation. The [approved Curator decision](https://github.com/robinjoseph08/memento/issues/4#issuecomment-5552928111) defines its compact editing layout. Both prototypes are approved; no further design exploration is required.
 
 ## Dummy media and boundaries
 

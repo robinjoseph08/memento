@@ -1,10 +1,12 @@
 # Approved Curator Album editor prototype
 
-Throwaway interactive evidence for [specification #4](https://github.com/robinjoseph08/memento/issues/4). This branch starts at the [approved viewer reference](https://github.com/robinjoseph08/memento/tree/dc9df26c3e2919955b4754c340ae5e9ffa70d756/app/components/pages/viewer-prototype) and must not merge into `master`.
+Throwaway interactive evidence for the [approved Curator decision on specification #4](https://github.com/robinjoseph08/memento/issues/4#issuecomment-5552928111). The combined `prototype/curator-viewer-aligned` branch contains this editor and the [approved viewer](../viewer-prototype/README.md). Do not merge it into `master`.
 
 The compact Workbench is approved. It answers how a Curator reviews large Moments without browsing a full-size gallery or opening a form for every access change. The viewer's approved visual language remains unchanged. The decision record lives on specification #4.
 
-Organization follows the [historical Curator Workbench](https://github.com/robinjoseph08/memento/tree/f81514ef6f8738fdd29805cf051c9abce042ebaf/app/prototypes/curator/album): compact Album commands, persistent section navigation, expandable Moment cards, a bounded thumbnail preview, and an adjacent access editor. Its recorded feedback called for explicit selection actions, cover selection within Moments, and bulk suggestion selection. None of its historical colors or viewer treatments are imported.
+Use compact Album commands, persistent section navigation, expandable Moment cards, a bounded thumbnail preview, and an adjacent access editor. Selection reveals organization actions and Moment cover selection. Access changes are directly editable, with bulk acceptance of suggestions.
+
+Share the viewer's typography, colors, mark, base controls, and overlay treatment. The viewer's large Album header and browsing-grid density apply only to viewer presentation, not this editor.
 
 ## Run
 
