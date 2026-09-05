@@ -19,7 +19,7 @@ func TestDevelopmentPublicURL(t *testing.T) {
 	env := Environment{MainRoot: root, CurrentRoot: root, CurrentDatabase: "memento_worktree"}
 	values, err := developmentEnvironment(env, 3581, 5177)
 	require.NoError(t, err)
-	assert.True(t, slices.Contains(values, "PUBLIC_URL=http://127.0.0.1:5177"), "use the selected Vite origin")
+	assert.True(t, slices.Contains(values, "PUBLIC_URL=http://localhost:5177"), "match Vite's advertised localhost origin at the selected port")
 	values, err = developmentEnvironment(env, 3581, 0)
 	require.NoError(t, err)
 	assert.True(t, slices.Contains(values, "PUBLIC_URL=http://127.0.0.1:3581"), "use the API origin without Vite")

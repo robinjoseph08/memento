@@ -84,12 +84,14 @@ func developmentEnvironment(env Environment, apiPort, webPort int) ([]string, er
 		)
 	}
 	publicPort := apiPort
+	publicHost := "127.0.0.1"
 	if webPort != 0 {
 		values = append(values, "WEB_PORT="+strconv.Itoa(webPort))
 		publicPort = webPort
+		publicHost = "localhost"
 	}
 	if publicPort != 0 {
-		values = append(values, "PUBLIC_URL="+fmt.Sprintf("http://127.0.0.1:%d", publicPort))
+		values = append(values, "PUBLIC_URL="+fmt.Sprintf("http://%s:%d", publicHost, publicPort))
 	}
 	return values, nil
 }
