@@ -15,7 +15,7 @@ _Avoid_: Asset
 A Media Item's inclusion in one Album and exactly one Moment. Album-specific access applies to the Album Entry rather than globally to the Media Item.
 
 **Moment**:
-A Curator-only portion of an Album whose media was captured around the same time and usually involves the same people. Moments default to capture days but may be split, merged, or span midnight. Each Moment has a Curator-selected Album Entry as its cover; viewer Album covers are derived from accessible Moment covers rather than stored separately.
+A nonempty Curator-only portion of an Album whose media was captured around the same time and usually involves the same people. Moments default to capture days but may be split, merged, or span midnight. Each Moment has a Curator-selected Album Entry as its cover; viewer Album covers are derived from accessible Moment covers rather than stored separately.
 _Avoid_: Access Set, Day Group, Chapter
 
 **Publication**:
@@ -50,7 +50,7 @@ A suggestion to share a Moment with a Person detected in its current media. Reco
 A Curator's explicit access choice for a Person. Albums may allow access, Moments and Album Entries may allow or deny it, and missing decisions inherit from broader scopes before defaulting to denied.
 
 **Unannounced Change**:
-An Album or media item that became visible to a Person after that Person's notification baseline. Completing onboarding or successfully sending an Update Notification advances the baseline.
+An Album or Album Entry that became visible to a Person after that Person's notification baseline. Completing Onboarding or approving an Update Notification advances the baseline, independently of email delivery.
 
 **Update Notification**:
 A Curator-approved in-app summary of one or more Unannounced Changes for a Person. Email is an optional delivery channel for the same notification and respects the Person's email preference.
