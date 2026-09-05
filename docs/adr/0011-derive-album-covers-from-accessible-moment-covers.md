@@ -1,0 +1,3 @@
+# Derive Album covers from accessible Moment covers
+
+Memento will store a Curator-selected cover Album Entry for each Moment rather than a separate Album cover. For each viewer, the Album cover is the configured cover of the earliest Moment they can access whose cover Album Entry they can also access. If that cover is denied, Memento continues to the next accessible Moment instead of exposing the denied entry or choosing unrelated media; if no configured Moment cover is accessible, the viewer sees a neutral placeholder. This keeps cover curation with Moment organization while making the Album presentation deterministic and subject to the same Album Entry authorization as the gallery.
