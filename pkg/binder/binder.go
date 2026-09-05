@@ -118,7 +118,11 @@ func (b *Binder) Bind(c *echo.Context, target any) error {
 		if !errors.As(err, &validationErrors) || len(validationErrors) == 0 {
 			return err
 		}
-		return errcodes.ValidationError(formatValidationError(validationErrors[0]))
+		fields := make(map[string]string, len(validationErrors))
+		for _, field := range validationErrors {
+			fields[field.Field()] = formatValidationError(field)
+		}
+		return errcodes.ValidationFields(formatValidationError(validationErrors[0]), fields)
 	}
 
 	return nil

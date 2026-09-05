@@ -1,9 +1,12 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +15,47 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestMutationOriginAndJSON(t *testing.T) {
+	t.Parallel()
+	cfg := config.NewForTest()
+	cfg.PublicURL = "https://photos.example.test"
+	srv, err := newServer(cfg, nil)
+	require.NoError(t, err)
+	e := srv.Handler.(*echo.Echo)
+	e.POST("/api/mutate", func(c *echo.Context) error { return c.NoContent(204) })
+	for _, tc := range []struct {
+		origin, content string
+		status          int
+	}{
+		{"https://photos.example.test", "application/json", 204},
+		{"https://evil.test", "application/json", 403},
+		{"", "application/json", 403},
+		{"null", "application/json", 403},
+		{"https://photos.example.test", "application/x-www-form-urlencoded", 415},
+		{"https://photos.example.test", "", 415},
+	} {
+		req := httptest.NewRequest(http.MethodPost, "/api/mutate", strings.NewReader(`{}`))
+		req.Header.Set("Origin", tc.origin)
+		req.Header.Set("Content-Type", tc.content)
+		req.Header.Set("X-Forwarded-Host", "evil.test")
+		recorder := httptest.NewRecorder()
+		srv.Handler.ServeHTTP(recorder, req)
+		assert.Equal(t, tc.status, recorder.Code)
+		assert.Empty(t, recorder.Header().Get("Access-Control-Allow-Origin"))
+		assert.Equal(t, "no-store", recorder.Header().Get("Cache-Control"))
+	}
+}
+
+func TestDatabaseControlsHealth(t *testing.T) {
+	t.Parallel()
+	srv, err := newServer(config.NewForTest(), nil, dependencies{health: func(context.Context) error { return errors.New("private database error") }})
+	require.NoError(t, err)
+	recorder := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/health", nil))
+	assert.Equal(t, 503, recorder.Code)
+	assert.JSONEq(t, `{"healthy":false}`, recorder.Body.String())
+}
 
 func TestNewConfiguresServer(t *testing.T) {
 	t.Parallel()
@@ -102,7 +146,7 @@ func TestCORS(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	srv.Handler.ServeHTTP(recorder, req)
 
-	assert.Equal(t, "*", recorder.Header().Get(echo.HeaderAccessControlAllowOrigin))
+	assert.Empty(t, recorder.Header().Get(echo.HeaderAccessControlAllowOrigin))
 }
 
 func TestRecoveryMiddleware(t *testing.T) {

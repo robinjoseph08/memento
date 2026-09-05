@@ -162,6 +162,25 @@ func TestBindMultipartForm(t *testing.T) {
 	assert.Equal(t, "note.txt", payload.FormFiles["attachment"].Filename)
 }
 
+func TestBindAllFieldErrors(t *testing.T) {
+	t.Parallel()
+	b, err := New()
+	require.NoError(t, err)
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"email":"bad","display_name":""}`))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	c := e.NewContext(req, httptest.NewRecorder())
+	var body struct {
+		Email string `json:"email" validate:"required,email"`
+		Name  string `json:"display_name" validate:"required"`
+	}
+	err = b.Bind(c, &body)
+	var fields *errcodes.FieldError
+	require.ErrorAs(t, err, &fields)
+	assert.Contains(t, fields.Fields, "email")
+	assert.Contains(t, fields.Fields, "display_name")
+}
+
 func TestBindValidation(t *testing.T) {
 	t.Parallel()
 

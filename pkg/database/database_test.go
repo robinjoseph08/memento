@@ -17,6 +17,7 @@ func TestOpenUsesPostgreSQL(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.Close()) })
 	assert.Contains(t, fmt.Sprintf("%T", db.Dialect()), "pgdialect")
+	assert.Equal(t, 3, db.Stats().MaxOpenConnections)
 }
 
 func TestOpenRejectsMalformedDatabaseURL(t *testing.T) {

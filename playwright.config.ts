@@ -1,27 +1,16 @@
 import { defineConfig, devices } from "@playwright/test";
 
-const webPort = Number(process.env.WEB_PORT ?? 5173);
-const baseURL = `http://127.0.0.1:${webPort}`;
-
 export default defineConfig({
+  globalSetup: "./e2e/global-setup.ts",
+  fullyParallel: true,
+  workers: 3,
+  forbidOnly: Boolean(process.env.CI),
+  retries: process.env.CI ? 1 : 0,
   projects: [
-    {
-      name: "chromium",
-      use: { ...devices["Desktop Chrome"] },
-    },
-    {
-      name: "firefox",
-      use: { ...devices["Desktop Firefox"] },
-    },
+    { name: "chromium", use: { ...devices["Desktop Chrome"] } },
+    { name: "firefox", use: { ...devices["Desktop Firefox"] } },
+    { name: "webkit", use: { ...devices["Desktop Safari"] } },
   ],
   testDir: "./e2e",
-  use: {
-    baseURL,
-    trace: "on-first-retry",
-  },
-  webServer: {
-    command: `pnpm start --port ${webPort}`,
-    reuseExistingServer: false,
-    url: baseURL,
-  },
+  use: { trace: "retain-on-failure" },
 });

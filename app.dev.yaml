@@ -1,3 +1,10 @@
+# Fake sign-in is only available in development and test.
+app_env: development
+auth_mode: fake
+public_url: http://localhost:5173
+# Instance base URL, without /api. Override with your local Immich settings.
+immich_url: http://localhost:2283
+immich_api_key: development-placeholder
 database_url: postgres://postgres:postgres@localhost:5432/memento?sslmode=disable
 database_debug: true
 files_path: ./tmp/files

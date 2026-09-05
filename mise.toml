@@ -29,6 +29,15 @@ depends = ["tygo"]
 run = "pnpm build"
 outputs = ["internal/webapp/dist/index.html"]
 
+[tasks."build:fixture"]
+description = "Build the isolated QA and browser-test supervisor"
+run = "go build -o ./build/fixture/fixture ./cmd/fixture"
+
+[tasks."qa:setup"]
+description = "Build and start an empty installation with controlled Immich"
+depends = ["build", "build:fixture"]
+run = "./build/fixture/fixture --offline"
+
 [tasks."build:air"]
 description = "Build development API binary (used by air)"
 run = "go build -o ./build/api/api-air ./cmd/api"
@@ -103,7 +112,7 @@ description = "Run all JS tests"
 depends = ["tygo", "test:unit", "test:e2e"]
 
 [tasks."test:js:fast"]
-description = "Run JS tests with chromium e2e only (firefox runs in CI)"
+description = "Run JS tests with Chromium E2E only (all three engines run in CI)"
 depends = ["tygo", "test:unit", "e2e:chromium"]
 
 [tasks."test:unit"]
@@ -121,6 +130,10 @@ run = "mkdir -p ./tmp && go run ./cmd/dev e2e chromium"
 [tasks."e2e:firefox"]
 description = "Run E2E tests in Firefox"
 run = "mkdir -p ./tmp && go run ./cmd/dev e2e firefox"
+
+[tasks."e2e:webkit"]
+description = "Run E2E tests in WebKit"
+run = "mkdir -p ./tmp && go run ./cmd/dev e2e webkit"
 
 [tasks."test:cover"]
 description = "Open coverage report in browser"
@@ -259,9 +272,9 @@ run = '''
 mise install
 pnpm install --frozen-lockfile
 if [ "$(uname -s)" = "Linux" ]; then
-  pnpm exec playwright install --with-deps chromium firefox
+  pnpm exec playwright install --with-deps chromium firefox webkit
 else
-  pnpm exec playwright install chromium firefox
+  pnpm exec playwright install chromium firefox webkit
 fi
 go run ./cmd/dev setup
 mise tygo

@@ -4,12 +4,46 @@
 # Every setting can also be set with its uppercase environment variable.
 # Environment variables take precedence over this file.
 
-# PostgreSQL connection URL.
+# Production authentication is not available until #7 adds Google sign-in.
+# This production example intentionally fails startup in the current release.
+# For local testing only, set APP_ENV=development and AUTH_MODE=fake.
+# Env: APP_ENV. Defaults to production; also accepts development and test.
+app_env: production
+
+# Required. Fake sign-in is permitted only in development and test.
+# Google currently fails startup with a "not available yet" message.
+# Env: AUTH_MODE
+auth_mode: google
+
+# Required public Memento origin. HTTP or HTTPS, with no subpath, credentials,
+# query, or fragment. A trailing slash is accepted and removed.
+# Env: PUBLIC_URL
+public_url: https://memento.example.com
+
+# Required Immich instance base URL, NOT its /api endpoint.
+# HTTP or HTTPS. A reverse-proxy base path such as https://host/photos is
+# supported; Memento appends /api. No credentials, query, or fragment.
+# A trailing slash is accepted and removed.
+# Env: IMMICH_URL
+immich_url: http://immich-server:2283
+
+# Required least-privilege read-only Immich key. Prefer an environment variable.
+# Env: IMMICH_API_KEY
+immich_api_key: ""
+
+# SMTP is optional and is not configured by this release.
+
+# Required PostgreSQL connection URL, including an explicit role and database.
+# Use a separate database and role from Immich, even in a shared container.
+# Both postgres:// and postgresql:// are supported. Query parameters such as
+# sslmode and search_path are passed through to the PostgreSQL driver.
 # Env: DATABASE_URL
 database_url: postgres://app:change-me@postgres:5432/memento?sslmode=disable
 
 # Log SQL queries for contexts wrapped with database.WithLogging.
 # Env: DATABASE_DEBUG
+database_max_open_conns: 10
+database_max_idle_conns: 3
 database_debug: false
 
 # Number of connection attempts during startup.

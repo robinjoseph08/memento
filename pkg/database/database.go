@@ -68,6 +68,8 @@ func open(cfg *config.Config) (*bun.DB, error) {
 		return nil, fmt.Errorf("parse database URL: %w", err)
 	}
 	sqldb := sql.OpenDB(connector)
+	sqldb.SetMaxOpenConns(cfg.DatabaseMaxOpenConns)
+	sqldb.SetMaxIdleConns(cfg.DatabaseMaxIdleConns)
 	db := bun.NewDB(sqldb, pgdialect.New())
 
 	if cfg.DatabaseDebug {

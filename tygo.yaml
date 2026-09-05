@@ -1,11 +1,17 @@
-# Tygo treats an empty package list as the current directory, so keep a
-# placeholder package until there are Go types that the frontend needs.
 type_mappings:
   time.Time: "string /* RFC3339 */"
   time.Duration: "number /* nanoseconds */"
 
 packages:
-  - path: "github.com/robinjoseph08/memento/pkg/config"
-    output_path: "app/types/generated/stub.ts"
+  - path: "github.com/robinjoseph08/memento/pkg/errcodes"
+    output_path: "app/types/generated/errors.ts"
     include_files:
-      - "__tygo_stub__.go"
+      - "types.go"
+  - path: "github.com/robinjoseph08/memento/pkg/identity"
+    output_path: "app/types/generated/identity.ts"
+    include_files:
+      - "types.go"
+  - path: "github.com/robinjoseph08/memento/pkg/immich"
+    output_path: "app/types/generated/immich.ts"
+    include_files:
+      - "types.go"

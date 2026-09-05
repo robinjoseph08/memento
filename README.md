@@ -56,8 +56,8 @@ Run setup from the main Git worktree first:
 mise setup
 ```
 
-This command installs the pinned tools, JavaScript dependencies, Chromium, and
-Firefox. It starts PostgreSQL with Docker Compose, creates a database named
+This command installs the pinned tools, JavaScript dependencies, Chromium,
+Firefox, and WebKit. It starts PostgreSQL with Docker Compose, creates a database named
 after the repository if needed, runs migrations, and generates TypeScript
 types.
 
@@ -105,6 +105,84 @@ mise start:api
 mise start:web
 ```
 
+## Try installation claiming
+
+After `mise setup`, run:
+
+```sh
+mise qa:setup
+```
+
+This builds the frontend, embeds it in the real API binary, and starts a
+loopback-only installation with fake sign-in and a controlled Immich HTTP
+fixture. Open the printed application URL. Immich starts offline so you can
+verify that an outage does not block claiming. No Google credentials or real
+Immich key are needed.
+
+The supervisor creates an empty, randomly named PostgreSQL schema. It never
+resets an existing application database. Ctrl-C stops the API and fixture and
+removes that schema. To reset setup, stop the command and run it again. Use the
+printed restart command to restart only the API while preserving claimed state,
+sessions, and the same URL.
+
+The supervisor reads `TEST_DATABASE_URL` when set. Otherwise, it discovers the
+main development database and PostgreSQL port from Git and the main worktree's
+`tmp/database.env`. It does not start PostgreSQL. To use a dedicated test database,
+create one and export its URL before running QA or tests:
+
+```sh
+export TEST_DATABASE_URL='postgres://memento_test:choose-a-test-password@127.0.0.1:5433/memento_test?sslmode=disable'
+```
+
+Replace the port and credentials with your own. The test role must own the test
+database or have `CREATE` permission on it. CI always supplies this variable.
+Do not point it at Immich's database.
+
+### Manual QA flow
+
+1. Open the printed URL. Read the explanation that the first successful sign-in
+   claims the installation. Confirm the Immich failure is visible and
+   `curl APPLICATION_URL/health` still returns HTTP 200.
+2. Fill Subject and Email with a stable test identity. Enter only spaces in
+   Display name and submit with Enter. Confirm the inline field error appears,
+   focus returns to Display name, and Subject and Email keep their values.
+   Correct the name and submit with Enter. Confirm you reach the Curator's empty
+   library without an import button. An invalid email separately exercises the
+   browser's native validation before any request reaches the server.
+3. Run the printed online command and choose **Check again**. The diagnostic
+   should report Immich `2.7.0`.
+4. Refresh, use the printed restart command, and refresh again. You should remain
+   signed in. Switch the local theme and check keyboard focus.
+5. Sign out. Revisit `/curator` and confirm it requires sign-in. Signing in with
+   the same provider subject returns to the same Person.
+6. Ctrl-C, run `mise qa:setup` again, and confirm installation claiming is available
+   again without touching your development installation.
+
+The printed control commands look like this, with the actual fixture URL:
+
+```sh
+curl FIXTURE_URL/__fixture/state
+curl -X POST -H 'Content-Type: application/json' -d '{"available":false}' FIXTURE_URL/__fixture/state
+curl -X POST -H 'Content-Type: application/json' -d '{"available":true}' FIXTURE_URL/__fixture/state
+curl -X POST -H 'Content-Type: application/json' -d '{"available":true,"unauthorized":true}' FIXTURE_URL/__fixture/state
+curl -X POST FIXTURE_URL/__fixture/restart
+```
+
+These endpoints belong to `cmd/fixture`, not the application or production image.
+The fixture implements only read-only Immich version and authenticated account
+requests. To start it online after building, run `./build/fixture/fixture`.
+
+Check a malformed required setting without starting a server:
+
+```sh
+CONFIG_FILE=app.dev.yaml PUBLIC_URL=not-a-url ./build/api/api
+```
+
+It should exit with a `public_url` error. Missing required values also fail before
+startup. SMTP is optional. Fake authentication requires `APP_ENV=development`
+or `APP_ENV=test`; it is rejected in production. Google sign-in arrives in #7,
+so this slice is not ready for public deployment.
+
 ## Run checks
 
 ```sh
@@ -113,7 +191,8 @@ mise check
 
 This runs Go linting, Go tests, ESLint, Prettier, TypeScript checks, Vitest,
 Chromium E2E tests, and a complete production build. CI also runs the race
-detector, Firefox, a Docker build, and a production smoke test.
+detector, Firefox, WebKit, PostgreSQL 14 compatibility, a Docker build, and a
+production-image smoke test with Immich unavailable.
 
 Other useful commands:
 
@@ -122,7 +201,21 @@ mise check:quiet
 mise test:race
 mise test:e2e
 mise e2e:firefox
+mise e2e:webkit
+go test ./pkg/identity -run TestConcurrentClaim -count=1
 ```
+
+Browser tests build the frontend and API once before starting workers. Each
+worker starts its own compiled API process, isolated schema, fake identity
+provider, and controlled Immich fixture. The focused journey claims during an
+outage, restores connectivity, restarts the API, and verifies server-side session
+revocation after sign-out. Chromium, Firefox, and WebKit run the same journey.
+
+`mise test:e2e` uses `TEST_DATABASE_URL`, or the current worktree database and its
+recorded PostgreSQL port when unset. Direct Go tests also use the current worktree
+database, while `pnpm exec playwright test` uses the main development database.
+All test data stays in temporary schemas with small pools. Export `TEST_DATABASE_URL` to make
+all commands use one dedicated test database instead.
 
 ## Build the production application
 
@@ -143,8 +236,38 @@ mise docker
 
 The image runs one non-root Go process, listens on port `8080`, reads optional
 configuration from `/config/app.yaml`, and stores mutable files under
-`/data/files`. Supply `DATABASE_URL` for a reachable PostgreSQL database. See
-`app.example.yaml` for every setting.
+`/data/files`. Configure `DATABASE_URL`, `PUBLIC_URL`, `IMMICH_URL`,
+`IMMICH_API_KEY`, and `AUTH_MODE` through YAML or environment variables.
+`IMMICH_URL` is the instance base URL without `/api`. Environment values override
+YAML. `PUBLIC_URL` must match the browser origin and controls cookie security and
+mutation origin checks. See `app.example.yaml` for every setting.
+
+### Separate PostgreSQL database and role
+
+Memento can share a PostgreSQL 14 or newer server with Immich, but not Immich's
+database or role. As a PostgreSQL administrator, provision Memento separately:
+
+```sql
+CREATE ROLE memento LOGIN PASSWORD 'choose-a-strong-password';
+CREATE DATABASE memento OWNER memento;
+REVOKE ALL ON DATABASE memento FROM PUBLIC;
+```
+
+Use `postgres://memento:YOUR_URL_ENCODED_PASSWORD@HOST:5432/memento` for
+`DATABASE_URL`, adding the appropriate TLS settings for your deployment. Do not
+grant this role access to Immich tables. Memento talks to Immich only through its
+HTTP API with a read-only API key.
+
+For isolated tests, provision another database and role:
+
+```sql
+CREATE ROLE memento_test LOGIN PASSWORD 'choose-a-test-password';
+CREATE DATABASE memento_test OWNER memento_test;
+REVOKE ALL ON DATABASE memento_test FROM PUBLIC;
+```
+
+Set `TEST_DATABASE_URL` to that test database. Test and QA cleanup drops only the
+random schema allocated by that invocation, never the database.
 
 ## Database migrations
 

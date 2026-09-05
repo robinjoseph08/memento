@@ -37,7 +37,7 @@ func (h *Handler) Handle(c *echo.Context, err error) {
 	}
 }
 
-func (*Handler) generatePayload(err error) (int, map[string]any) {
+func (*Handler) generatePayload(err error) (int, ErrorResponse) {
 	httpCode := http.StatusInternalServerError
 	code := "internal_server_error"
 	message := http.StatusText(httpCode)
@@ -66,11 +66,10 @@ func (*Handler) generatePayload(err error) (int, map[string]any) {
 		code = applicationErr.Code
 	}
 
-	return httpCode, map[string]any{
-		"error": map[string]any{
-			"code":        code,
-			"message":     message,
-			"status_code": httpCode,
-		},
+	detail := ErrorDetail{Code: code, Message: message, StatusCode: httpCode}
+	var fieldErr *FieldError
+	if errors.As(err, &fieldErr) {
+		detail.Fields = fieldErr.Fields
 	}
+	return httpCode, ErrorResponse{Error: detail}
 }

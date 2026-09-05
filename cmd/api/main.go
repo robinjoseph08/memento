@@ -23,6 +23,9 @@ const (
 )
 
 func main() {
+	if os.Getenv("LOG_FORMAT") == "" {
+		logger.SetOutput(os.Stdout)
+	}
 	log := logger.New()
 	if err := run(log); err != nil {
 		log.Err(err).Fatal("application stopped")
@@ -61,7 +64,7 @@ func run(log logger.Logger) error {
 		})
 	}
 
-	srv, err := server.New(cfg)
+	srv, err := server.New(cfg, db)
 	if err != nil {
 		return fmt.Errorf("create server: %w", err)
 	}
