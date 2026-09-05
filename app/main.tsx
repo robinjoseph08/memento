@@ -1,4 +1,4 @@
-import { StrictMode } from "react";
+import { lazy, StrictMode, Suspense } from "react";
 import { createRoot } from "react-dom/client";
 
 import { App } from "./App";
@@ -11,8 +11,19 @@ if (!root) {
   throw new Error("Root element not found");
 }
 
+const ViewerPrototype = import.meta.env.DEV
+  ? lazy(() => import("./components/pages/viewer-prototype/ViewerPrototype"))
+  : null;
+
 createRoot(root).render(
   <StrictMode>
-    <App />
+    {ViewerPrototype &&
+    window.location.pathname.startsWith("/prototype/viewer") ? (
+      <Suspense fallback={<p>Opening album…</p>}>
+        <ViewerPrototype />
+      </Suspense>
+    ) : (
+      <App />
+    )}
   </StrictMode>,
 );
