@@ -12,6 +12,7 @@
     "lint:prettier": "prettier --check .",
     "lint:types": "tsc -b --noEmit && tsc -p tsconfig.test.json --noEmit && tsc -p tsconfig.e2e.json --noEmit",
     "preview": "vite preview",
+    "prototype:curator": "vite --config vite.viewer-prototype.config.ts --port 5176 --strictPort --open '/prototype/curator/album?section=moments'",
     "prototype:viewer": "vite --config vite.viewer-prototype.config.ts --port 5175 --open '/prototype/viewer/album/photos'",
     "start": "vite",
     "test:unit": "vitest run",

@@ -20,9 +20,12 @@ import "./viewer-prototype.css";
 // Throwaway viewer prototype, refined to the selected plain cover and Frames mark.
 const base = "/prototype/viewer/album";
 const albumList = "/prototype/viewer/albums";
+type PreviewPhoto = Omit<(typeof photos)[number], "alt"> & { alt: string };
 type HeaderProps = {
-  cover: string;
+  cover: string | null;
   coverAlt: string;
+  title?: string;
+  dateRange?: string;
   photoCount: number;
   videoCount: number;
 };
@@ -30,10 +33,14 @@ type HeaderProps = {
 function AlbumFacts({
   photoCount,
   videoCount,
-}: Pick<HeaderProps, "photoCount" | "videoCount">) {
+  dateRange,
+}: Pick<HeaderProps, "photoCount" | "videoCount" | "dateRange">) {
   return (
     <div className="album-facts">
-      <span>{photoCount === 0 ? album.videoDateRange : album.dateRange}</span>
+      <span>
+        {dateRange ??
+          (photoCount === 0 ? album.videoDateRange : album.dateRange)}
+      </span>
       <span className="media-counts">
         <span>
           <Icon name="photo" />
@@ -48,20 +55,48 @@ function AlbumFacts({
   );
 }
 
-function AlbumHeader({ cover, coverAlt, photoCount, videoCount }: HeaderProps) {
+export function AlbumHeader({
+  cover,
+  coverAlt,
+  photoCount,
+  videoCount,
+  title = album.title,
+  dateRange,
+}: HeaderProps) {
   return (
     <header className="album-header open-header">
       <div className="album-heading">
-        <h1>{album.title}</h1>
+        <h1>{title}</h1>
         <p className="album-description">{album.description}</p>
-        <AlbumFacts photoCount={photoCount} videoCount={videoCount} />
+        <AlbumFacts
+          dateRange={dateRange}
+          photoCount={photoCount}
+          videoCount={videoCount}
+        />
       </div>
-      <img alt={coverAlt} className="album-cover" src={cover} />
+      {cover ? (
+        <img alt={coverAlt} className="album-cover" src={cover} />
+      ) : (
+        <div
+          aria-label="No accessible Moment cover"
+          className="album-cover neutral-cover"
+        >
+          <Icon name="album" />
+        </div>
+      )}
     </header>
   );
 }
 
-function PhotoGallery({ search }: { search: string }) {
+export function PhotoGallery({
+  search,
+  items = photos,
+  basePath = base,
+}: {
+  search: string;
+  items?: PreviewPhoto[];
+  basePath?: string;
+}) {
   const [rowRatio, setRowRatio] = useState(
     window.innerWidth < 600 ? 1.5 : window.innerWidth < 1000 ? 3 : 4.5,
   );
@@ -75,9 +110,9 @@ function PhotoGallery({ search }: { search: string }) {
   }, []);
   return (
     <div className="photo-gallery">
-      {[...new Set(photos.map((photo) => photo.day))].map((day) => {
-        const dayPhotos = photos.filter((photo) => photo.day === day);
-        const rows = dayPhotos.reduce<(typeof photos)[]>((result, photo) => {
+      {[...new Set(items.map((photo) => photo.day))].map((day) => {
+        const dayPhotos = items.filter((photo) => photo.day === day);
+        const rows = dayPhotos.reduce<PreviewPhoto[][]>((result, photo) => {
           const last = result.at(-1);
           if (
             !last ||
@@ -122,7 +157,7 @@ function PhotoGallery({ search }: { search: string }) {
                         className="photo-tile"
                         key={photo.id}
                         state={{ fromGrid: true }}
-                        to={`${base}/photos/${photo.id}${search}`}
+                        to={`${basePath}/photos/${photo.id}${search}`}
                       >
                         <img
                           alt={photo.alt}
@@ -165,10 +200,18 @@ function EmptyTab({ tab, search }: { tab: string; search: string }) {
   );
 }
 
-function VideoGallery({ search }: { search: string }) {
+export function VideoGallery({
+  search,
+  items = videos,
+  basePath = base,
+}: {
+  search: string;
+  items?: typeof videos;
+  basePath?: string;
+}) {
   return (
     <div className="video-gallery">
-      {[...new Set(videos.map((video) => video.day))].map((day) => (
+      {[...new Set(items.map((video) => video.day))].map((day) => (
         <section
           aria-labelledby={`video-day-${day}`}
           className="day-group"
@@ -177,11 +220,11 @@ function VideoGallery({ search }: { search: string }) {
           <div className="day-heading">
             <h2 id={`video-day-${day}`}>{dayLabel(day)}</h2>
             <span>
-              {videos.filter((video) => video.day === day).length} videos
+              {items.filter((video) => video.day === day).length} videos
             </span>
           </div>
           <div className="video-grid">
-            {videos
+            {items
               .filter((video) => video.day === day)
               .map((video) => (
                 <Link
@@ -189,7 +232,7 @@ function VideoGallery({ search }: { search: string }) {
                   className="video-card"
                   key={video.id}
                   state={{ fromGrid: true }}
-                  to={`${base}/videos/${video.id}${search}`}
+                  to={`${basePath}/videos/${video.id}${search}`}
                 >
                   <div className="video-thumbnail">
                     <img alt="" src={video.poster} />
@@ -210,7 +253,13 @@ function VideoGallery({ search }: { search: string }) {
   );
 }
 
-function VideoPlayer({ video }: { video: (typeof videos)[number] }) {
+function VideoPlayer({
+  video,
+  readOnly = false,
+}: {
+  video: (typeof videos)[number];
+  readOnly?: boolean;
+}) {
   const playerRef = useRef<HTMLVideoElement>(null);
   const chapterPanelRef = useRef<HTMLDialogElement>(null);
   const [position, setPosition] = useState(0);
@@ -229,6 +278,7 @@ function VideoPlayer({ video }: { video: (typeof videos)[number] }) {
         aria-label={videoTitle(video)}
         autoPlay
         controls
+        controlsList={readOnly ? "nodownload" : undefined}
         onTimeUpdate={(event) => setPosition(event.currentTarget.currentTime)}
         playsInline
         poster={video.poster}
@@ -318,14 +368,24 @@ function VideoPlayer({ video }: { video: (typeof videos)[number] }) {
   );
 }
 
-function Lightbox({
+export function Lightbox({
   mediaId,
   tab,
   search,
+  photoItems = photos,
+  videoItems = videos,
+  basePath = base,
+  title = album.title,
+  previewName,
 }: {
   mediaId: string;
   tab: "photos" | "videos";
   search: string;
+  photoItems?: PreviewPhoto[];
+  videoItems?: typeof videos;
+  basePath?: string;
+  title?: string;
+  previewName?: string;
 }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const openerRef = useRef(document.activeElement);
@@ -334,13 +394,13 @@ function Lightbox({
   const location = useLocation();
   const isVideo = tab === "videos";
   const items = isVideo
-    ? videos.map((video) => ({
+    ? videoItems.map((video) => ({
         id: video.id,
         image: video.poster,
         day: video.day,
         label: videoTitle(video),
       }))
-    : photos.map((photo) => ({
+    : photoItems.map((photo) => ({
         id: photo.id,
         image: photo.image,
         day: photo.day,
@@ -349,15 +409,15 @@ function Lightbox({
   const index = items.findIndex((item) => item.id === mediaId);
   const selected = items[index];
   const video = isVideo
-    ? videos.find((item) => item.id === mediaId)
+    ? videoItems.find((item) => item.id === mediaId)
     : undefined;
   const kind = isVideo ? "video" : "photo";
   const close = () =>
     location.state?.fromGrid
       ? navigate(-1)
-      : navigate(`${base}/${tab}${search}`, { replace: true });
+      : navigate(`${basePath}/${tab}${search}`, { replace: true });
   const go = (id: string) =>
-    navigate(`${base}/${tab}/${id}${search}`, {
+    navigate(`${basePath}/${tab}/${id}${search}`, {
       replace: true,
       state: location.state,
     });
@@ -381,7 +441,7 @@ function Lightbox({
       ?.querySelector('.lightbox-filmstrip [aria-current="true"]')
       ?.scrollIntoView({ block: "nearest", inline: "center" });
   }, [mediaId]);
-  if (!selected) return <Navigate replace to={`${base}/${tab}${search}`} />;
+  if (!selected) return <Navigate replace to={`${basePath}/${tab}${search}`} />;
   return (
     <dialog
       aria-label={`${isVideo ? "Video" : "Photo"} ${index + 1} of ${items.length}`}
@@ -417,19 +477,22 @@ function Lightbox({
           <Icon name="close" />
         </button>
         <div>
-          <h2>{video ? videoTitle(video) : album.title}</h2>
+          <h2>{video ? videoTitle(video) : title}</h2>
           <p>
+            {previewName && `Preview as ${previewName}. Read only. `}
             {index + 1} of {items.length}
           </p>
         </div>
-        <a
-          aria-label={`Download ${kind}`}
-          className="icon-button"
-          download={video ? video.filename : `memento-${selected.id}.jpg`}
-          href={video ? video.src : selected.image}
-        >
-          <Icon name="download" />
-        </a>
+        {!previewName && (
+          <a
+            aria-label={`Download ${kind}`}
+            className="icon-button"
+            download={video ? video.filename : `memento-${selected.id}.jpg`}
+            href={video ? video.src : selected.image}
+          >
+            <Icon name="download" />
+          </a>
+        )}
       </header>
       <div
         className="lightbox-stage"
@@ -458,7 +521,7 @@ function Lightbox({
           <Icon height="28" name="back" width="28" />
         </button>
         {video ? (
-          <VideoPlayer key={video.id} video={video} />
+          <VideoPlayer key={video.id} readOnly={!!previewName} video={video} />
         ) : (
           <img alt={selected.label} draggable={false} src={selected.image} />
         )}
@@ -615,7 +678,7 @@ function AlbumPage() {
                   className="album-preview-card"
                   to={`${base}/${photoCount > 0 ? "photos" : "videos"}${search}`}
                 >
-                  <img alt={coverAlt} src={cover} />
+                  <img alt={coverAlt} src={cover ?? undefined} />
                   <h2>{album.title}</h2>
                   <AlbumFacts photoCount={photoCount} videoCount={videoCount} />
                 </Link>
