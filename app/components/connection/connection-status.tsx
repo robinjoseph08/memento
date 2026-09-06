@@ -2,11 +2,19 @@ import { useConnection } from "../../hooks/queries/connection";
 import { errorMessage } from "../../lib/http";
 import { Button } from "../ui/button";
 
-export function ConnectionStatus({ area }: { area: "setup" | "curator" }) {
-  const connection = useConnection(area);
+export function ConnectionStatus() {
   return (
     <section aria-labelledby="connection-title" className="connection-status">
       <h2 id="connection-title">Immich connection</h2>
+      <ConnectionDetails area="setup" />
+    </section>
+  );
+}
+
+export function ConnectionDetails({ area }: { area: "setup" | "curator" }) {
+  const connection = useConnection(area);
+  return (
+    <>
       <div aria-live="polite" className="connection-result">
         {connection.isFetching ? (
           <p role="status">Checking connection…</p>
@@ -41,6 +49,6 @@ export function ConnectionStatus({ area }: { area: "setup" | "curator" }) {
       >
         {connection.isFetching ? "Checking…" : "Check again"}
       </Button>
-    </section>
+    </>
   );
 }

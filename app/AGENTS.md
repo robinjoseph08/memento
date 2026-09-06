@@ -25,6 +25,26 @@
   generated API types rather than recreating Go request and response contracts
   by hand.
 
+## Forms and responsive navigation
+
+- Field errors should tell the person how to correct the input, using plain
+  language such as "Enter a display name." Never show API field names,
+  validator rules, or implementation types as user-facing validation messages.
+  Keep API field keys stable and render the backend's user-facing messages
+  rather than trying to rewrite technical errors in the browser.
+- Show field errors beside their inputs. A form-level validation summary should
+  direct attention to those fields, not repeat the first error. Keep failures
+  unrelated to a field, such as access denial, in a form-level message.
+- Do not discard edited form values when background queries fail or refetch.
+  Keep the form mounted and distinguish initial loading from refresh failures.
+- When header content does not fit, move secondary information and actions into
+  an accessible menu instead of hiding them. Keep the signed-in name and role,
+  theme controls, and Sign out in the account menu on desktop and mobile.
+  Primary navigation needs its own responsive treatment.
+- Use shared menu and dialog primitives for keyboard navigation, Escape,
+  outside-click dismissal, and focus restoration. When a menu opens a dialog,
+  closing the dialog must return focus to a visible trigger.
+
 ## Testing
 
 - Keep tests close to the behavior they cover and query rendered UI through

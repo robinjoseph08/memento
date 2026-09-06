@@ -152,11 +152,14 @@ Do not point it at Immich's database.
    Correct the name and submit with Enter. Confirm you reach the Curator's empty
    library without an import button. An invalid email separately exercises the
    browser's native validation before any request reaches the server.
-3. Run the printed online command and choose **Check again**. The diagnostic
-   should report Immich `2.7.0`.
+3. Open the initials button's account menu and choose **Immich connection**.
+   Run the printed online command and choose **Check again** in the dialog.
+   The diagnostic should report Immich `2.7.0`. Close the dialog and confirm
+   keyboard focus returns to the account button.
 4. Refresh, use the printed restart command, and refresh again. You should remain
-   signed in. Switch the local theme and check keyboard focus.
-5. Sign out. Revisit `/curator` and confirm it requires sign-in. Signing in with
+   signed in. Open the account menu to see your full name and role on mobile and
+   desktop, switch the theme, and check keyboard focus.
+5. Choose **Sign out** in the account menu. Revisit `/curator` and confirm it requires sign-in. Signing in with
    the same email returns to the same Person, ignoring case and surrounding
    whitespace. A different email simulates another identity and is denied unless
    it has access. Existing fake identities migrate automatically; use the email

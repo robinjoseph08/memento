@@ -5,6 +5,19 @@ import (
 	"strings"
 )
 
+// ValidationMessage supplies sign-in guidance for missing fields.
+func (SignInRequest) ValidationMessage(field, rule string) string {
+	if rule == "required" {
+		switch field {
+		case "email":
+			return "Enter an email address."
+		case "display_name":
+			return "Enter a display name."
+		}
+	}
+	return ""
+}
+
 func validateClaims(claims Claims) error {
 	if !claims.EmailVerified {
 		return ErrUnverifiedIdentity

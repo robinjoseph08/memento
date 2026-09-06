@@ -27,6 +27,31 @@ test("claims during an Immich outage, recovers, and revokes the signed-out sessi
   expect(session?.httpOnly).toBe(true);
   expect(session?.sameSite).toBe("Lax");
 
+  const account = page.getByRole("button", { name: "Account menu" });
+  const openConnection = async () => {
+    await account.click();
+    await page.getByRole("menuitem", { name: "Immich connection" }).click();
+    await expect(
+      page.getByRole("dialog", { name: "Immich connection" }),
+    ).toBeVisible();
+  };
+  await expect(
+    page.getByRole("heading", { name: "Immich connection" }),
+  ).toHaveCount(0);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await account.click();
+  await expect(
+    page.getByText("Fixture Curator", { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText("Curator", { exact: true })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(account).toBeFocused();
+  await openConnection();
+  await expect(page.getByText(/Immich is unavailable/)).toBeVisible();
+  await page.getByRole("button", { name: "Close dialog" }).click();
+  await expect(account).toBeFocused();
+  await page.setViewportSize({ width: 1280, height: 720 });
+
   expect(
     (
       await request.post(`${fixtureURL}/__fixture/state`, {
@@ -34,8 +59,10 @@ test("claims during an Immich outage, recovers, and revokes the signed-out sessi
       })
     ).status(),
   ).toBe(200);
+  await openConnection();
   await page.getByRole("button", { name: "Check again" }).click();
   await expect(page.getByText(/2\.7\.0/)).toBeVisible();
+  await page.getByRole("button", { name: "Close dialog" }).click();
 
   expect((await request.post(`${fixtureURL}/__fixture/restart`)).status()).toBe(
     204,
@@ -69,9 +96,11 @@ test("claims during an Immich outage, recovers, and revokes the signed-out sessi
     },
     { times: 1 },
   );
-  await page.getByRole("button", { name: "Check again" }).click();
+  await openConnection();
   await started;
-  await page.getByRole("button", { name: "Sign out" }).click();
+  await page.getByRole("button", { name: "Close dialog" }).click();
+  await account.click();
+  await page.getByRole("menuitem", { name: "Sign out" }).click();
   await expect(page).toHaveURL(/\/sign-in$/);
   await page.getByLabel("Email", { exact: true }).fill("curator@example.com");
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
@@ -92,7 +121,8 @@ test("claims during an Immich outage, recovers, and revokes the signed-out sessi
     )?.value,
   ).toBe(session?.value);
 
-  await page.getByRole("button", { name: "Sign out" }).click();
+  await account.click();
+  await page.getByRole("menuitem", { name: "Sign out" }).click();
   await expect(page).toHaveURL(/\/sign-in$/);
 
   // Replaying the original cookie checks server-side revocation, not just removal.

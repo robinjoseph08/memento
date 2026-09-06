@@ -19,19 +19,19 @@ func TestFormatValidationError(t *testing.T) {
 			value: struct {
 				Name string `json:"name" validate:"required"`
 			}{},
-			expected: `"Name" is required`,
+			expected: "Enter a value.",
 		},
 		"minimum string length": {
 			value: struct {
 				Name string `json:"name" validate:"min=2"`
 			}{Name: "a"},
-			expected: `"Name" length must be greater than or equal to 2 characters`,
+			expected: "Use at least 2 characters.",
 		},
 		"one of": {
 			value: struct {
 				Kind string `json:"kind" validate:"oneof=one two"`
 			}{Kind: "three"},
-			expected: `"Kind" must be one of the following: "one", "two"`,
+			expected: "Check this value.",
 		},
 	}
 

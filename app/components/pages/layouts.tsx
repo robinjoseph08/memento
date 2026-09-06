@@ -95,7 +95,7 @@ export function SetupPage() {
       </div>
       <div className="setup-content">
         <SignInForm claiming />
-        <ConnectionStatus area="setup" />
+        <ConnectionStatus />
       </div>
     </>
   );
@@ -134,16 +134,13 @@ export function CuratorPage() {
           family.
         </p>
       </div>
-      <div className="curator-content">
-        <section className="empty-albums">
-          <h2>No albums yet</h2>
-          <p>
-            Your installation is ready. Album importing will be available in a
-            future update.
-          </p>
-        </section>
-        <ConnectionStatus area="curator" />
-      </div>
+      <section className="empty-albums">
+        <h2>No albums yet</h2>
+        <p>
+          Your installation is ready. Album importing will be available in a
+          future update.
+        </p>
+      </section>
     </>
   );
 }

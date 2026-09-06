@@ -108,23 +108,6 @@
   line-height: 1;
   letter-spacing: -0.7px;
 }
-.header-actions {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 16px;
-  min-width: 0;
-}
-.person-name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 220px;
-}
-.curator-label {
-  color: var(--muted);
-  font-size: 11px;
-}
 
 .public-main,
 .curator-main,
@@ -201,11 +184,6 @@
 .curator-main .page-intro {
   margin-bottom: 38px;
 }
-.curator-content {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 340px);
-  gap: 64px;
-}
 .empty-albums {
   min-height: 280px;
   border-top: 1px solid var(--border);
@@ -215,10 +193,6 @@
   color: var(--muted);
   max-width: 420px;
   margin-top: 16px;
-}
-.shell-error {
-  color: var(--destructive);
-  padding: 12px 32px;
 }
 .state-main p {
   color: var(--muted);
@@ -234,8 +208,7 @@
   .state-main {
     padding: 40px 24px 56px;
   }
-  .setup-content,
-  .curator-content {
+  .setup-content {
     grid-template-columns: minmax(0, 1fr);
     gap: 40px;
   }
@@ -252,13 +225,6 @@
     border-left: 0;
     border-top: 1px solid var(--border);
     padding: 28px 0 0;
-  }
-  .person-name,
-  .curator-label {
-    display: none;
-  }
-  .header-actions {
-    gap: 4px;
   }
   .empty-albums {
     min-height: 180px;

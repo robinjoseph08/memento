@@ -33,12 +33,15 @@ function serveIdentity(
   claimed = false,
   signInResponse?: () => Promise<Response>,
   connectionResponse?: () => Promise<Response>,
+  signOutResponse?: () => Promise<Response>,
 ) {
   vi.stubGlobal(
     "fetch",
     vi.fn(async (path: string, options?: RequestInit) => {
       if (path.endsWith("/sign-out"))
-        return new Response(null, { status: 204 });
+        return signOutResponse
+          ? signOutResponse()
+          : new Response(null, { status: 204 });
       if (path.endsWith("/status"))
         return Response.json({ claimed, person: null, auth_mode: "fake" });
       if (path.endsWith("/fake-sign-in")) {
@@ -90,7 +93,8 @@ it("claims the installation with the edited fake identity using native Enter sub
   expect(
     await screen.findByRole("heading", { name: "Your albums" }),
   ).toBeInTheDocument();
-  expect(screen.getByText("Robin")).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Account menu" }));
+  expect(screen.getByText("Robin")).toBeVisible();
   expect(
     screen.queryByRole("button", { name: /import/i }),
   ).not.toBeInTheDocument();
@@ -102,7 +106,7 @@ it("preserves entered claims and focuses the first field rejected by the server"
     Response.json(
       {
         error: {
-          message: "Check your details.",
+          message: "Check the highlighted fields.",
           fields: {
             display_name: "Choose a display name.",
             email: "Choose a different email.",
@@ -120,7 +124,7 @@ it("preserves entered claims and focuses the first field rejected by the server"
   await user.click(screen.getByRole("button", { name: "Claim installation" }));
 
   expect(await screen.findByRole("alert")).toHaveTextContent(
-    "Check your details.",
+    "Check the highlighted fields.",
   );
   expect(email).toHaveValue("other@example.test");
   expect(email).toHaveFocus();
@@ -186,7 +190,8 @@ it("signs out of the Curator shell and redirects a protected bookmark to sign-in
   expect(
     await screen.findByRole("heading", { name: "Your albums" }),
   ).toBeInTheDocument();
-  await user.click(screen.getByRole("button", { name: "Sign out" }));
+  await user.click(screen.getByRole("button", { name: "Account menu" }));
+  await user.click(screen.getByRole("menuitem", { name: "Sign out" }));
   expect(
     await screen.findByRole("heading", { name: "Welcome back" }),
   ).toBeInTheDocument();
@@ -280,7 +285,84 @@ it("disables the pending form and preserves an unknown identity after access is 
   expect(window.location.pathname).toBe("/sign-in");
 });
 
-it("cancels an in-flight Curator diagnostic when signing out", async () => {
+it("preserves the active theme across authentication when storage is blocked", async () => {
+  vi.stubGlobal("localStorage", {
+    getItem: () => {
+      throw new Error("Storage unavailable");
+    },
+    setItem: () => {
+      throw new Error("Storage unavailable");
+    },
+  });
+  serveIdentity();
+  const user = userEvent.setup();
+  render(<App />);
+  await user.click(
+    screen.getByRole("button", { name: "Switch to light theme" }),
+  );
+  await user.click(
+    await screen.findByRole("button", { name: "Claim installation" }),
+  );
+  await screen.findByRole("heading", { name: "Your albums" });
+  expect(document.documentElement).toHaveAttribute("data-theme", "light");
+  await user.click(screen.getByRole("button", { name: "Account menu" }));
+  expect(screen.getByRole("menuitemradio", { name: "Light" })).toHaveAttribute(
+    "aria-checked",
+    "true",
+  );
+  await user.click(screen.getByRole("menuitem", { name: "Sign out" }));
+  await screen.findByRole("heading", { name: "Welcome back" });
+  expect(document.documentElement).toHaveAttribute("data-theme", "light");
+  expect(
+    screen.getByRole("button", { name: "Switch to dark theme" }),
+  ).toBeVisible();
+});
+
+it("keeps sign-out progress and retryable failures in the account menu", async () => {
+  let finishSignOut: (response: Response) => void = () => {};
+  const signOut = vi.fn(
+    () =>
+      new Promise<Response>((resolve) => {
+        finishSignOut = resolve;
+      }),
+  );
+  serveIdentity(false, undefined, undefined, signOut);
+  const user = userEvent.setup();
+  render(<App />);
+  await user.click(
+    await screen.findByRole("button", { name: "Claim installation" }),
+  );
+  await user.click(await screen.findByRole("button", { name: "Account menu" }));
+  await user.click(screen.getByRole("menuitem", { name: "Sign out" }));
+  expect(
+    await screen.findByRole("menuitem", { name: "Signing out…" }),
+  ).toHaveAttribute("aria-disabled", "true");
+  await user.keyboard("{Enter}");
+  expect(signOut).toHaveBeenCalledTimes(1);
+  await act(async () =>
+    finishSignOut(
+      Response.json(
+        { error: { message: "Could not sign out. Try again." } },
+        { status: 503 },
+      ),
+    ),
+  );
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "Something went wrong. Please try again.",
+  );
+  await user.keyboard("{Escape}");
+  expect(
+    screen.getByRole("heading", { name: "Your albums" }),
+  ).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Account menu" }));
+  await user.click(screen.getByRole("menuitem", { name: "Sign out" }));
+  await act(async () => finishSignOut(new Response(null, { status: 204 })));
+  expect(
+    await screen.findByRole("heading", { name: "Welcome back" }),
+  ).toBeInTheDocument();
+});
+
+it("cancels an in-flight diagnostic when closing its dialog before signing out", async () => {
   let signal: AbortSignal | null | undefined;
   let finish!: (response: Response) => void;
   const response = new Promise<Response>((resolve) => {
@@ -305,9 +387,21 @@ it("cancels an in-flight Curator diagnostic when signing out", async () => {
   const user = userEvent.setup();
   render(<App />);
   await screen.findByRole("heading", { name: "No albums yet" });
-  await user.click(screen.getByRole("button", { name: "Sign out" }));
-  await screen.findByRole("heading", { name: "Welcome back" });
+  expect(
+    screen.queryByRole("heading", { name: "Immich connection" }),
+  ).not.toBeInTheDocument();
+  const account = screen.getByRole("button", { name: "Account menu" });
+  await user.click(account);
+  await user.click(screen.getByRole("menuitem", { name: "Immich connection" }));
+  expect(
+    await screen.findByRole("dialog", { name: "Immich connection" }),
+  ).toBeVisible();
+  await user.click(screen.getByRole("button", { name: "Close dialog" }));
+  expect(account).toHaveFocus();
   expect(signal?.aborted).toBe(true);
+  await user.click(account);
+  await user.click(screen.getByRole("menuitem", { name: "Sign out" }));
+  await screen.findByRole("heading", { name: "Welcome back" });
   await act(async () =>
     finish(
       Response.json({ usable: true, version: "2.7.0", message: "Connected" }),
@@ -357,6 +451,31 @@ it("preserves edited sign-in fields through a failed background status refresh a
   expect(screen.getByRole("textbox", { name: "Email" })).toHaveValue(
     "preserve-this@example.test",
   );
+});
+
+it("keeps identity and secondary actions in a keyboard-accessible account menu", async () => {
+  serveIdentity();
+  const user = userEvent.setup();
+  render(<App />);
+  await user.click(
+    await screen.findByRole("button", { name: "Claim installation" }),
+  );
+  const account = await screen.findByRole("button", { name: "Account menu" });
+  expect(
+    screen.queryByRole("menuitem", { name: "Sign out" }),
+  ).not.toBeInTheDocument();
+  await user.click(account);
+  expect(await screen.findByRole("menu")).toBeInTheDocument();
+  expect(screen.getByText("Local Curator")).toBeVisible();
+  expect(screen.getByText("Curator", { exact: true })).toBeVisible();
+  expect(screen.getByRole("menuitem", { name: "Sign out" })).toBeVisible();
+  await user.keyboard("{Escape}");
+  expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  expect(account).toHaveFocus();
+  await user.keyboard("{Enter}");
+  await user.click(await screen.findByRole("menuitemradio", { name: "Light" }));
+  expect(document.documentElement.dataset.theme).toBe("light");
+  expect(account).toHaveFocus();
 });
 
 it("defaults to dark and remembers an explicit light theme across visits", async () => {

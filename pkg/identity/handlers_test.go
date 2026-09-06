@@ -115,6 +115,52 @@ func TestFakeSignInRejectsSubjectOverride(t *testing.T) {
 	assert.Contains(t, recorder.Body.String(), "unknown_parameter")
 }
 
+func TestSignInActionableFieldErrors(t *testing.T) {
+	t.Parallel()
+
+	for name, test := range map[string]struct {
+		request string
+		fields  map[string]string
+	}{
+		"required fields after trimming": {
+			request: `{"email":"  ","display_name":"  "}`,
+			fields: map[string]string{
+				"email":        "Enter an email address.",
+				"display_name": "Enter a display name.",
+			},
+		},
+		"single missing display name": {
+			request: `{"email":"owner@example.test","display_name":""}`,
+			fields: map[string]string{
+				"display_name": "Enter a display name.",
+			},
+		},
+		"shared defaults for other rules": {
+			request: `{"email":"invalid","display_name":"` + strings.Repeat("é", 101) + `"}`,
+			fields: map[string]string{
+				"email":        "Enter a valid email address.",
+				"display_name": "Use 100 characters or fewer.",
+			},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			e := identityHTTP(t, config.NewForTest(), &fakeIdentity{})
+			req := httptest.NewRequest(http.MethodPost, "/api/identity/fake-sign-in", strings.NewReader(test.request))
+			req.Header.Set("Content-Type", "application/json")
+			recorder := httptest.NewRecorder()
+			e.ServeHTTP(recorder, req)
+			require.Equal(t, http.StatusUnprocessableEntity, recorder.Code)
+			var body errcodes.ErrorResponse
+			require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &body))
+			assert.Equal(t, "validation_error", body.Error.Code)
+			assert.Equal(t, "Check the highlighted fields.", body.Error.Message)
+			assert.Equal(t, test.fields, body.Error.Fields)
+			assert.Empty(t, recorder.Result().Cookies())
+		})
+	}
+}
+
 func TestSignInFieldErrorsAndSignOut(t *testing.T) {
 	t.Parallel()
 	module := &fakeIdentity{}

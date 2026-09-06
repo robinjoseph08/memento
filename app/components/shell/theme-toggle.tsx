@@ -1,25 +1,7 @@
-import { useEffect, useState } from "react";
-
+import type { useTheme } from "../../hooks/use-theme";
 import { Button } from "../ui/button";
 
-export function ThemeToggle() {
-  const [theme, setTheme] = useState(() => {
-    try {
-      return window.localStorage.getItem("memento-theme") === "light"
-        ? "light"
-        : "dark";
-    } catch {
-      return "dark";
-    }
-  });
-  useEffect(() => {
-    document.documentElement.dataset.theme = theme;
-    try {
-      window.localStorage.setItem("memento-theme", theme);
-    } catch {
-      /* The switch still works when browser storage is unavailable. */
-    }
-  }, [theme]);
+export function ThemeToggle({ theme, setTheme }: ReturnType<typeof useTheme>) {
   return (
     <Button
       aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} theme`}
