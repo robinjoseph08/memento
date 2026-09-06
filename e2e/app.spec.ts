@@ -11,8 +11,8 @@ test("claims during an Immich outage, recovers, and revokes the signed-out sessi
   await expect(page.getByText(/first successful sign-in/i)).toBeVisible();
   await expect(page.getByRole("button", { name: "Check again" })).toBeVisible();
   expect((await request.get("/health")).status()).toBe(200);
-  await page.getByLabel("Subject", { exact: true }).fill("fixture-curator");
-  await page.getByLabel("Email", { exact: true }).fill("curator@example.com");
+  await expect(page.getByLabel("Subject", { exact: true })).toHaveCount(0);
+  await page.getByLabel("Email", { exact: true }).fill("Curator@Example.com");
   await page.getByLabel("Display name").fill("Fixture Curator");
   await page.getByLabel("Display name").press("Enter");
   await expect(page).toHaveURL(/\/curator$/);
@@ -73,7 +73,7 @@ test("claims during an Immich outage, recovers, and revokes the signed-out sessi
   await started;
   await page.getByRole("button", { name: "Sign out" }).click();
   await expect(page).toHaveURL(/\/sign-in$/);
-  await page.getByLabel("Subject", { exact: true }).fill("fixture-curator");
+  await page.getByLabel("Email", { exact: true }).fill("curator@example.com");
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
   await expect(page).toHaveURL(/\/curator$/);
   session = (await context.cookies()).find(

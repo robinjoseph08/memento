@@ -53,7 +53,7 @@ func TestIdentityHTTPTranslation(t *testing.T) {
 	session := identity.Session{Person: identity.Person{ID: "person", DisplayName: "Alex", IsCurator: true}, Token: strings.Repeat("x", 43), ExpiresAt: time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)}
 	module := &fakeIdentity{session: session}
 	e := identityHTTP(t, cfg, module)
-	req := httptest.NewRequest(http.MethodPost, "/api/identity/fake-sign-in", strings.NewReader(`{"subject":"owner","email":"owner@example.test","display_name":"Alex"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/identity/fake-sign-in", strings.NewReader(`{"email":"owner@example.test","display_name":"Alex"}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Forwarded-Proto", "http")
 	recorder := httptest.NewRecorder()
@@ -104,18 +104,29 @@ func TestIdentityHTTPTranslation(t *testing.T) {
 	assert.Equal(t, 409, recorder.Code)
 }
 
+func TestFakeSignInRejectsSubjectOverride(t *testing.T) {
+	t.Parallel()
+	e := identityHTTP(t, config.NewForTest(), &fakeIdentity{})
+	req := httptest.NewRequest(http.MethodPost, "/api/identity/fake-sign-in", strings.NewReader(`{"email":"owner@example.test","display_name":"Alex","subject":"another-identity"}`))
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	e.ServeHTTP(recorder, req)
+	assert.Equal(t, 422, recorder.Code)
+	assert.Contains(t, recorder.Body.String(), "unknown_parameter")
+}
+
 func TestSignInFieldErrorsAndSignOut(t *testing.T) {
 	t.Parallel()
 	module := &fakeIdentity{}
 	e := identityHTTP(t, config.NewForTest(), module)
-	req := httptest.NewRequest(http.MethodPost, "/api/identity/fake-sign-in", strings.NewReader(`{"subject":"","email":"invalid","display_name":""}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/identity/fake-sign-in", strings.NewReader(`{"email":"invalid","display_name":""}`))
 	req.Header.Set("Content-Type", "application/json")
 	recorder := httptest.NewRecorder()
 	e.ServeHTTP(recorder, req)
 	require.Equal(t, 422, recorder.Code)
 	var body errcodes.ErrorResponse
 	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &body))
-	assert.Len(t, body.Error.Fields, 3)
+	assert.Len(t, body.Error.Fields, 2)
 	req = httptest.NewRequest(http.MethodPost, "/api/identity/sign-out", strings.NewReader(`{}`))
 	req.Header.Set("Content-Type", "application/json")
 	recorder = httptest.NewRecorder()

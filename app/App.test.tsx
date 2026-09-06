@@ -71,6 +71,10 @@ it("keeps normal routes behind setup while the installation is unclaimed", async
     await screen.findByRole("heading", { name: "Make room for your memories" }),
   ).toBeInTheDocument();
   expect(screen.getByText(/first successful sign-in/i)).toBeInTheDocument();
+  expect(
+    screen.queryByRole("textbox", { name: "Subject" }),
+  ).not.toBeInTheDocument();
+  expect(screen.getAllByRole("textbox")).toHaveLength(2);
   expect(window.location.pathname).toBe("/setup");
 });
 
@@ -101,7 +105,7 @@ it("preserves entered claims and focuses the first field rejected by the server"
           message: "Check your details.",
           fields: {
             display_name: "Choose a display name.",
-            subject: "Choose a different subject.",
+            email: "Choose a different email.",
           },
         },
       },
@@ -110,17 +114,17 @@ it("preserves entered claims and focuses the first field rejected by the server"
   );
   const user = userEvent.setup();
   render(<App />);
-  const subject = await screen.findByRole("textbox", { name: "Subject" });
-  await user.clear(subject);
-  await user.type(subject, "other-subject");
+  const email = await screen.findByRole("textbox", { name: "Email" });
+  await user.clear(email);
+  await user.type(email, "other@example.test");
   await user.click(screen.getByRole("button", { name: "Claim installation" }));
 
   expect(await screen.findByRole("alert")).toHaveTextContent(
     "Check your details.",
   );
-  expect(subject).toHaveValue("other-subject");
-  expect(subject).toHaveFocus();
-  expect(subject).toHaveAccessibleDescription("Choose a different subject.");
+  expect(email).toHaveValue("other@example.test");
+  expect(email).toHaveFocus();
+  expect(email).toHaveAccessibleDescription("Choose a different email.");
   expect(
     screen.getByRole("textbox", { name: "Display name" }),
   ).toHaveAccessibleDescription("Choose a display name.");
@@ -195,12 +199,12 @@ it("protects edited claims from navigation and reload without blocking successfu
   const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
   const user = userEvent.setup();
   render(<App />);
-  const subject = await screen.findByRole("textbox", { name: "Subject" });
-  await user.clear(subject);
-  await user.type(subject, "keep-this-subject");
+  const email = await screen.findByRole("textbox", { name: "Email" });
+  await user.clear(email);
+  await user.type(email, "keep-this@example.test");
   await user.click(screen.getByRole("link", { name: "memento home" }));
   expect(confirm).toHaveBeenCalled();
-  expect(subject).toHaveValue("keep-this-subject");
+  expect(email).toHaveValue("keep-this@example.test");
   expect(window.location.pathname).toBe("/setup");
   const beforeUnload = new Event("beforeunload", { cancelable: true });
   window.dispatchEvent(beforeUnload);
@@ -247,13 +251,13 @@ it("disables the pending form and preserves an unknown identity after access is 
   serveIdentity(true, () => response);
   const user = userEvent.setup();
   render(<App />);
-  const subject = await screen.findByRole("textbox", { name: "Subject" });
-  await user.clear(subject);
-  await user.type(subject, "unknown-person{Enter}");
+  const email = await screen.findByRole("textbox", { name: "Email" });
+  await user.clear(email);
+  await user.type(email, "unknown@example.test{Enter}");
   expect(
     await screen.findByRole("button", { name: "Signing in…" }),
   ).toBeDisabled();
-  expect(subject).toBeDisabled();
+  expect(email).toBeDisabled();
   await act(async () =>
     finish(
       Response.json(
@@ -271,8 +275,8 @@ it("disables the pending form and preserves an unknown identity after access is 
   expect(await screen.findByRole("alert")).toHaveTextContent(
     "This identity does not have access to this installation.",
   );
-  expect(subject).toHaveValue("unknown-person");
-  expect(subject).toBeEnabled();
+  expect(email).toHaveValue("unknown@example.test");
+  expect(email).toBeEnabled();
   expect(window.location.pathname).toBe("/sign-in");
 });
 
@@ -335,9 +339,9 @@ it("preserves edited sign-in fields through a failed background status refresh a
   );
   const user = userEvent.setup();
   render(<App />);
-  const subject = await screen.findByRole("textbox", { name: "Subject" });
-  await user.clear(subject);
-  await user.type(subject, "preserve-this-edit");
+  const email = await screen.findByRole("textbox", { name: "Email" });
+  await user.clear(email);
+  await user.type(email, "preserve-this@example.test");
   failed = true;
   await act(async () => {
     focusManager.setFocused(false);
@@ -345,13 +349,13 @@ it("preserves edited sign-in fields through a failed background status refresh a
     focusManager.setFocused(true);
   });
   expect(await screen.findByRole("alert")).toBeInTheDocument();
-  expect(screen.getByRole("textbox", { name: "Subject" })).toHaveValue(
-    "preserve-this-edit",
+  expect(screen.getByRole("textbox", { name: "Email" })).toHaveValue(
+    "preserve-this@example.test",
   );
   failed = false;
   await user.click(screen.getByRole("button", { name: "Try again" }));
-  expect(screen.getByRole("textbox", { name: "Subject" })).toHaveValue(
-    "preserve-this-edit",
+  expect(screen.getByRole("textbox", { name: "Email" })).toHaveValue(
+    "preserve-this@example.test",
   );
 });
 

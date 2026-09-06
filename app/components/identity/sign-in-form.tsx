@@ -9,12 +9,10 @@ import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 
 const initialClaims: SignInRequest = {
-  subject: "curator-local",
   email: "curator@example.test",
   display_name: "Local Curator",
 };
 const fields = [
-  { name: "subject", label: "Subject", type: "text", maxLength: 255 },
   { name: "email", label: "Email", type: "email", maxLength: 254 },
   { name: "display_name", label: "Display name", type: "text", maxLength: 100 },
 ] as const;
@@ -43,8 +41,9 @@ export function SignInForm({ claiming = false }: { claiming?: boolean }) {
     >
       <h2>Fake development sign-in</h2>
       <p className="form-intro">
-        This development provider trusts the details below. No password is
-        needed. Do not expose this installation to the internet.
+        Use the same email to sign back in. A different email represents a
+        different person. No password is needed in development. Do not expose
+        this installation to the internet.
       </p>
       {signIn.isError && (
         <p className="form-error" role="alert">

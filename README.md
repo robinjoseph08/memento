@@ -146,9 +146,9 @@ Do not point it at Immich's database.
 1. Open the printed URL. Read the explanation that the first successful sign-in
    claims the installation. Confirm the Immich failure is visible and
    `curl APPLICATION_URL/health` still returns HTTP 200.
-2. Fill Subject and Email with a stable test identity. Enter only spaces in
-   Display name and submit with Enter. Confirm the inline field error appears,
-   focus returns to Display name, and Subject and Email keep their values.
+2. Fill Email with a stable test identity. Enter only spaces in Display name
+   and submit with Enter. Confirm the inline field error appears, focus returns
+   to Display name, and Email keeps its value.
    Correct the name and submit with Enter. Confirm you reach the Curator's empty
    library without an import button. An invalid email separately exercises the
    browser's native validation before any request reaches the server.
@@ -157,7 +157,10 @@ Do not point it at Immich's database.
 4. Refresh, use the printed restart command, and refresh again. You should remain
    signed in. Switch the local theme and check keyboard focus.
 5. Sign out. Revisit `/curator` and confirm it requires sign-in. Signing in with
-   the same provider subject returns to the same Person.
+   the same email returns to the same Person, ignoring case and surrounding
+   whitespace. A different email simulates another identity and is denied unless
+   it has access. Existing fake identities migrate automatically; use the email
+   from their original sign-in.
 6. Ctrl-C, run `mise qa:setup` again, and confirm installation claiming is available
    again without touching your development installation.
 

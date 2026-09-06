@@ -3,7 +3,6 @@ package identity
 // SignInRequest supplies claims from the explicitly enabled development provider.
 // Production providers verify their own credentials before calling SignIn.
 type SignInRequest struct {
-	Subject     string `json:"subject" validate:"required,max=255" mod:"trim"`
 	Email       string `json:"email" validate:"required,email,max=254" mod:"trim"`
 	DisplayName string `json:"display_name" validate:"required,max=100" mod:"trim"`
 }
