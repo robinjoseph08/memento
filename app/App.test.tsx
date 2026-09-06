@@ -306,10 +306,9 @@ it("preserves the active theme across authentication when storage is blocked", a
   await screen.findByRole("heading", { name: "Your albums" });
   expect(document.documentElement).toHaveAttribute("data-theme", "light");
   await user.click(screen.getByRole("button", { name: "Account menu" }));
-  expect(screen.getByRole("menuitemradio", { name: "Light" })).toHaveAttribute(
-    "aria-checked",
-    "true",
-  );
+  expect(
+    screen.getByRole("menuitemcheckbox", { name: "Dark mode" }),
+  ).toHaveAttribute("aria-checked", "false");
   await user.click(screen.getByRole("menuitem", { name: "Sign out" }));
   await screen.findByRole("heading", { name: "Welcome back" });
   expect(document.documentElement).toHaveAttribute("data-theme", "light");
@@ -473,9 +472,22 @@ it("keeps identity and secondary actions in a keyboard-accessible account menu",
   expect(screen.queryByRole("menu")).not.toBeInTheDocument();
   expect(account).toHaveFocus();
   await user.keyboard("{Enter}");
-  await user.click(await screen.findByRole("menuitemradio", { name: "Light" }));
+  const darkMode = await screen.findByRole("menuitemcheckbox", {
+    name: "Dark mode",
+  });
+  expect(darkMode).toHaveAttribute("aria-checked", "true");
+  await user.click(darkMode);
   expect(document.documentElement.dataset.theme).toBe("light");
+  expect(darkMode).toHaveAttribute("aria-checked", "false");
+  expect(darkMode).toHaveFocus();
+  await user.keyboard(" ");
+  expect(document.documentElement.dataset.theme).toBe("dark");
+  expect(darkMode).toHaveAttribute("aria-checked", "true");
+  await user.keyboard("{Escape}");
   expect(account).toHaveFocus();
+  await user.click(account);
+  await user.click(account);
+  expect(screen.queryByRole("menu")).not.toBeInTheDocument();
 });
 
 it("defaults to dark and remembers an explicit light theme across visits", async () => {

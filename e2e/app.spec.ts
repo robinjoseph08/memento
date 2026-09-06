@@ -40,6 +40,33 @@ test("claims during an Immich outage, recovers, and revokes the signed-out sessi
   ).toHaveCount(0);
   await page.setViewportSize({ width: 390, height: 844 });
   await account.click();
+  const accountTrigger = page.locator('button[aria-label="Account menu"]');
+  await expect(accountTrigger).toHaveCSS("pointer-events", "auto");
+  await expect(accountTrigger).toHaveCSS("cursor", "pointer");
+  const signOutItem = page.getByRole("menuitem", { name: "Sign out" });
+  await signOutItem.hover();
+  await expect(signOutItem).toHaveCSS("cursor", "pointer");
+  await expect(signOutItem).toHaveCSS("box-shadow", "none");
+  await expect(signOutItem).toHaveCSS("outline-style", "none");
+  const darkMode = page.getByRole("menuitemcheckbox", { name: "Dark mode" });
+  await expect(darkMode).toHaveCSS("cursor", "pointer");
+  const unhighlightedBackground = await darkMode.evaluate(
+    (element) => getComputedStyle(element).backgroundColor,
+  );
+  await darkMode.click();
+  await expect(darkMode).not.toBeChecked();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+  await darkMode.press("Space");
+  await expect(darkMode).toBeChecked();
+  await expect(darkMode).toBeFocused();
+  await expect(darkMode).not.toHaveCSS(
+    "background-color",
+    unhighlightedBackground,
+  );
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await account.click();
+  await expect(page.getByRole("menu")).toHaveCount(0);
+  await account.click();
   await expect(
     page.getByText("Fixture Curator", { exact: true }),
   ).toBeVisible();

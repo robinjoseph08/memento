@@ -17,6 +17,10 @@
   concrete need.
 - Build UI from Tailwind and selectively added shadcn components. Keep shadcn
   source in `app/components/ui`; do not add a second component system.
+  Add available components with `mise exec -- pnpm dlx shadcn@latest add <name>`
+  using the root `components.json`, then adapt imports and styles to this app.
+  Keep the existing individual Radix packages and local `cn` helper rather than
+  retaining redundant dependencies from registry output.
 - Every data-entry interaction must use a real HTML `form` and shared form
   conventions regardless of whether it uses controlled state or React Hook
   Form. Preserve native keyboard submission, consistent pending states, inline
@@ -41,6 +45,10 @@
   an accessible menu instead of hiding them. Keep the signed-in name and role,
   theme controls, and Sign out in the account menu on desktop and mobile.
   Primary navigation needs its own responsive treatment.
+- Clickable controls use `cursor: pointer`, including menu items and open menu
+  triggers. Use a quiet background change for menu hover and keyboard focus,
+  not bright outlines on pointer hover. Account menus should not block their
+  own trigger.
 - Use shared menu and dialog primitives for keyboard navigation, Escape,
   outside-click dismissal, and focus restoration. When a menu opens a dialog,
   closing the dialog must return focus to a visible trigger.

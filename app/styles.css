@@ -8,6 +8,7 @@
   --color-foreground: var(--foreground);
   --color-muted: var(--muted);
   --color-surface: var(--surface);
+  --color-accent: var(--accent);
   --color-border: var(--border);
   --color-primary: #06b6d4;
   --color-primary-foreground: #083344;
@@ -22,6 +23,7 @@
   --foreground: #edeeed;
   --muted: #a8aaa9;
   --surface: #191b1c;
+  --accent: #25282a;
   --border: #2d3032;
   --accent-text: #4ac2d3;
   --focus: #06b6d4;
@@ -38,6 +40,7 @@
   --foreground: #212629;
   --muted: #657077;
   --surface: #f0f2f2;
+  --accent: #e1e6e7;
   --border: #dce2e3;
   --accent-text: #08788d;
   --focus: #08788d;
@@ -74,7 +77,13 @@
     -webkit-tap-highlight-color: transparent;
     touch-action: manipulation;
   }
-  button:not(:disabled) {
+  a[href],
+  button:not(:disabled):not([aria-disabled="true"]),
+  [role="button"]:not([aria-disabled="true"]),
+  [role="menuitem"]:not([aria-disabled="true"]),
+  [role="menuitemcheckbox"]:not([aria-disabled="true"]),
+  [role="menuitemradio"]:not([aria-disabled="true"]),
+  [role="switch"]:not([aria-disabled="true"]) {
     cursor: pointer;
   }
   a:focus-visible {
@@ -82,6 +91,11 @@
     outline-offset: 5px;
     border-radius: 4px;
   }
+}
+
+/* Center Epilogue's uppercase ink, rather than its ascender/descender box. */
+.avatar-initials {
+  transform: translateY(0.1em);
 }
 
 .app-header {

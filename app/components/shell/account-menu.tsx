@@ -5,6 +5,7 @@ import type { useTheme } from "../../hooks/use-theme";
 import { errorMessage } from "../../lib/http";
 import type { Person } from "../../types/generated/identity";
 import { ConnectionDetails } from "../connection/connection-status";
+import { Avatar, AvatarFallback } from "../ui/avatar";
 import { Button } from "../ui/button";
 import {
   Dialog,
@@ -14,11 +15,10 @@ import {
 } from "../ui/dialog";
 import {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
-  DropdownMenuRadioGroup,
-  DropdownMenuRadioItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "../ui/dropdown-menu";
@@ -40,7 +40,7 @@ export function AccountMenu({
     .toLocaleUpperCase();
   return (
     <>
-      <DropdownMenu>
+      <DropdownMenu modal={false}>
         <DropdownMenuTrigger asChild>
           <Button
             aria-label="Account menu"
@@ -48,7 +48,11 @@ export function AccountMenu({
             ref={triggerRef}
             variant="ghost"
           >
-            <span aria-hidden="true">{initials}</span>
+            <Avatar aria-hidden="true" className="size-full">
+              <AvatarFallback>
+                <span className="avatar-initials">{initials}</span>
+              </AvatarFallback>
+            </Avatar>
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent
@@ -65,19 +69,13 @@ export function AccountMenu({
             )}
           </DropdownMenuLabel>
           <DropdownMenuSeparator />
-          <DropdownMenuLabel className="text-xs font-normal text-muted">
-            Theme
-          </DropdownMenuLabel>
-          <DropdownMenuRadioGroup
-            aria-label="Theme"
-            onValueChange={(value) => {
-              if (value === "light" || value === "dark") setTheme(value);
-            }}
-            value={theme}
+          <DropdownMenuCheckboxItem
+            checked={theme === "dark"}
+            onCheckedChange={(checked) => setTheme(checked ? "dark" : "light")}
+            onSelect={(event) => event.preventDefault()}
           >
-            <DropdownMenuRadioItem value="light">Light</DropdownMenuRadioItem>
-            <DropdownMenuRadioItem value="dark">Dark</DropdownMenuRadioItem>
-          </DropdownMenuRadioGroup>
+            Dark mode
+          </DropdownMenuCheckboxItem>
           <DropdownMenuSeparator />
           {person.is_curator && (
             <DropdownMenuItem onSelect={() => setConnectionOpen(true)}>
