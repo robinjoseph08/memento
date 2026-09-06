@@ -113,7 +113,7 @@ mise start:web
 After `mise setup`, run:
 
 ```sh
-mise qa:setup
+mise start:qa
 ```
 
 This builds the frontend, embeds it in the real API binary, and starts a
@@ -161,7 +161,7 @@ Do not point it at Immich's database.
    whitespace. A different email simulates another identity and is denied unless
    it has access. Existing fake identities migrate automatically; use the email
    from their original sign-in.
-6. Ctrl-C, run `mise qa:setup` again, and confirm installation claiming is available
+6. Ctrl-C, run `mise start:qa` again, and confirm installation claiming is available
    again without touching your development installation.
 
 The printed control commands look like this, with the actual fixture URL:
