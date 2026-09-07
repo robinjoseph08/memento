@@ -171,9 +171,14 @@ it("shows a failed Immich diagnostic and checks again only when requested", asyn
       "Immich could not be reached. Check its URL and try again.",
     ),
   ).toBeInTheDocument();
+  expect(screen.getByText("Not connected", { exact: true })).toBeVisible();
   usable = true;
   await user.click(screen.getByRole("button", { name: "Check again" }));
   expect(await screen.findByText("Connected to Immich.")).toBeInTheDocument();
+  expect(screen.getByText("Connected", { exact: true })).toBeVisible();
+  expect(
+    screen.queryByText("Not connected", { exact: true }),
+  ).not.toBeInTheDocument();
   expect(screen.getByText("Version 2.0.0")).toBeInTheDocument();
 });
 

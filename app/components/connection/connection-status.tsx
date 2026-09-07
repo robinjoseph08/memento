@@ -19,13 +19,17 @@ export function ConnectionDetails({ area }: { area: "setup" | "curator" }) {
         {connection.isFetching ? (
           <p role="status">Checking connection…</p>
         ) : connection.isError ? (
-          <p role="alert">{errorMessage(connection.error)}</p>
+          <p className="text-destructive" role="alert">
+            {errorMessage(connection.error)}
+          </p>
         ) : (
           <>
-            <p className={connection.data?.usable ? "connection-ok" : ""}>
-              {connection.data?.usable
-                ? "Connected"
-                : "Connection needs attention"}
+            <p
+              className={
+                connection.data?.usable ? "connection-ok" : "text-destructive"
+              }
+            >
+              {connection.data?.usable ? "Connected" : "Not connected"}
             </p>
             <p>{connection.data?.message}</p>
             {connection.data?.version && (

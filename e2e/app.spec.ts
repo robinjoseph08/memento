@@ -75,6 +75,10 @@ test("claims during an Immich outage, recovers, and revokes the signed-out sessi
   await expect(account).toBeFocused();
   await openConnection();
   await expect(page.getByText(/Immich is unavailable/)).toBeVisible();
+  await expect(page.getByText("Not connected", { exact: true })).toHaveCSS(
+    "color",
+    "rgb(255, 170, 165)",
+  );
   await page.getByRole("button", { name: "Close dialog" }).click();
   await expect(account).toBeFocused();
   await page.setViewportSize({ width: 1280, height: 720 });
@@ -89,6 +93,10 @@ test("claims during an Immich outage, recovers, and revokes the signed-out sessi
   await openConnection();
   await page.getByRole("button", { name: "Check again" }).click();
   await expect(page.getByText(/2\.7\.0/)).toBeVisible();
+  await expect(page.getByText("Connected", { exact: true })).toHaveCSS(
+    "color",
+    "rgb(74, 194, 211)",
+  );
   await page.getByRole("button", { name: "Close dialog" }).click();
 
   expect((await request.post(`${fixtureURL}/__fixture/restart`)).status()).toBe(
