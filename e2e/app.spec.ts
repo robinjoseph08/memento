@@ -56,6 +56,7 @@ test("claims during an Immich outage, recovers, and revokes the signed-out sessi
   await darkMode.click();
   await expect(darkMode).not.toBeChecked();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+  await expect(page.locator("html")).toHaveCSS("color-scheme", "light");
   await darkMode.press("Space");
   await expect(darkMode).toBeChecked();
   await expect(darkMode).toBeFocused();
@@ -64,6 +65,7 @@ test("claims during an Immich outage, recovers, and revokes the signed-out sessi
     unhighlightedBackground,
   );
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await expect(page.locator("html")).toHaveCSS("color-scheme", "dark");
   await account.click();
   await expect(page.getByRole("menu")).toHaveCount(0);
   await account.click();

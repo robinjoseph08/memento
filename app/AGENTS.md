@@ -21,6 +21,9 @@
   using the root `components.json`, then adapt imports and styles to this app.
   Keep the existing individual Radix packages and local `cn` helper rather than
   retaining redundant dependencies from registry output.
+- Use Tailwind utilities for layout, typography, responsive behavior, and
+  interaction styles. Keep `app/styles.css` limited to imports and theme tokens;
+  do not add handwritten component selectors or `@apply` aliases.
 - Every data-entry interaction must use a real HTML `form` and shared form
   conventions regardless of whether it uses controlled state or React Hook
   Form. Preserve native keyboard submission, consistent pending states, inline

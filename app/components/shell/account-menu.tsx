@@ -50,7 +50,7 @@ export function AccountMenu({
           >
             <Avatar aria-hidden="true" className="size-full">
               <AvatarFallback>
-                <span className="avatar-initials">{initials}</span>
+                <span className="translate-y-[0.1em]">{initials}</span>
               </AvatarFallback>
             </Avatar>
           </Button>

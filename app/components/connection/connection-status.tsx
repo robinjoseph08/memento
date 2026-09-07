@@ -4,8 +4,16 @@ import { Button } from "../ui/button";
 
 export function ConnectionStatus() {
   return (
-    <section aria-labelledby="connection-title" className="connection-status">
-      <h2 id="connection-title">Immich connection</h2>
+    <section
+      aria-labelledby="connection-title"
+      className="border-t border-border pt-7 min-[761px]:border-t-0 min-[761px]:border-l min-[761px]:pt-0 min-[761px]:pl-8"
+    >
+      <h2
+        className="font-heading text-[27px]/[1.2] font-normal tracking-[-0.35px]"
+        id="connection-title"
+      >
+        Immich connection
+      </h2>
       <ConnectionDetails area="setup" />
     </section>
   );
@@ -15,7 +23,10 @@ export function ConnectionDetails({ area }: { area: "setup" | "curator" }) {
   const connection = useConnection(area);
   return (
     <>
-      <div aria-live="polite" className="connection-result">
+      <div
+        aria-live="polite"
+        className="mt-5.5 [&>p:first-child]:mb-2 [&>p:first-child]:font-medium"
+      >
         {connection.isFetching ? (
           <p role="status">Checking connection…</p>
         ) : connection.isError ? (
@@ -26,21 +37,23 @@ export function ConnectionDetails({ area }: { area: "setup" | "curator" }) {
           <>
             <p
               className={
-                connection.data?.usable ? "connection-ok" : "text-destructive"
+                connection.data?.usable
+                  ? "text-accent-foreground"
+                  : "text-destructive"
               }
             >
               {connection.data?.usable ? "Connected" : "Not connected"}
             </p>
             <p>{connection.data?.message}</p>
             {connection.data?.version && (
-              <p className="connection-version">
+              <p className="mt-2.5 text-[11px]/[1.8] text-muted">
                 Version {connection.data.version}
               </p>
             )}
           </>
         )}
       </div>
-      <p className="connection-help">
+      <p className="my-5.5 text-xs/[1.8] text-muted">
         The Immich URL and API key are configured on the server. Your key is
         never shown here.
         {area === "setup" &&

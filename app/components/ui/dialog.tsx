@@ -5,7 +5,20 @@ import { cn } from "../../lib/utils";
 import { Button } from "./button";
 
 export const Dialog = DialogPrimitive.Root;
-export const DialogTitle = DialogPrimitive.Title;
+export function DialogTitle({
+  className,
+  ...props
+}: ComponentProps<typeof DialogPrimitive.Title>) {
+  return (
+    <DialogPrimitive.Title
+      className={cn(
+        "font-heading text-[27px]/[1.2] font-normal tracking-[-0.35px]",
+        className,
+      )}
+      {...props}
+    />
+  );
+}
 export const DialogDescription = DialogPrimitive.Description;
 
 export function DialogContent({

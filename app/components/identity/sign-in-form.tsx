@@ -32,28 +32,35 @@ export function SignInForm({ claiming = false }: { claiming?: boolean }) {
     <form
       aria-busy={signIn.isPending}
       aria-label="Fake development sign-in"
-      className="sign-in-form"
+      className="min-[761px]:max-w-95"
       onSubmit={(event) => {
         event.preventDefault();
         if (!signIn.isPending) signIn.mutate(claims);
       }}
       ref={formRef}
     >
-      <h2>Fake development sign-in</h2>
-      <p className="form-intro">
+      <h2 className="font-heading text-[27px]/[1.2] font-normal tracking-[-0.35px]">
+        Fake development sign-in
+      </h2>
+      <p className="mt-3.5 mb-6.5 text-xs/[1.8] text-muted">
         Use the same email to sign back in. A different email represents a
         different person. No password is needed in development. Do not expose
         this installation to the internet.
       </p>
       {signIn.isError && (
-        <p className="form-error" role="alert">
+        <p className="mb-5.5 text-destructive" role="alert">
           {errorMessage(signIn.error)}
         </p>
       )}
       <fieldset disabled={signIn.isPending}>
         {fields.map((field) => (
-          <div className="form-field" key={field.name}>
-            <label htmlFor={field.name}>{field.label}</label>
+          <div className="mb-5" key={field.name}>
+            <label
+              className="mb-1.75 block text-xs/[1.8] font-medium"
+              htmlFor={field.name}
+            >
+              {field.label}
+            </label>
             <Input
               aria-describedby={
                 errors[field.name] ? `${field.name}-error` : undefined
@@ -71,7 +78,10 @@ export function SignInForm({ claiming = false }: { claiming?: boolean }) {
               value={claims[field.name]}
             />
             {errors[field.name] && (
-              <p className="field-error" id={`${field.name}-error`}>
+              <p
+                className="mt-1.75 text-xs/[1.8] text-destructive"
+                id={`${field.name}-error`}
+              >
                 {errors[field.name]}
               </p>
             )}
