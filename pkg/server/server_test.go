@@ -1,9 +1,11 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,7 +13,10 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v5"
+	"github.com/robinjoseph08/golib/logger"
 	"github.com/robinjoseph08/memento/pkg/config"
+	"github.com/robinjoseph08/memento/pkg/errcodes"
+	"github.com/robinjoseph08/memento/pkg/errorstack"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -149,17 +154,80 @@ func TestCORS(t *testing.T) {
 	assert.Empty(t, recorder.Header().Get(echo.HeaderAccessControlAllowOrigin))
 }
 
-func TestRecoveryMiddleware(t *testing.T) {
+func unexpectedErrorAtKnownOrigin() error {
+	return fmt.Errorf("load records: %w", errorstack.Capture(errors.New("database failed")))
+}
+
+func panicErrorAtKnownOrigin() {
+	panic(errors.New("panic failed"))
+}
+
+func TestRecoveryMiddlewareRepanicsAbortHandler(t *testing.T) {
 	t.Parallel()
 
 	srv, err := newServer(config.NewForTest(), nil)
 	require.NoError(t, err)
 	e := srv.Handler.(*echo.Echo)
-	e.GET("/panic", func(_ *echo.Context) error {
-		panic("boom")
-	})
+	e.GET("/abort", func(_ *echo.Context) error { panic(http.ErrAbortHandler) })
 
+	assert.PanicsWithValue(t, http.ErrAbortHandler, func() {
+		srv.Handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/abort", nil))
+	})
+}
+
+func TestRecoveryMiddlewareHandlesWrappedAbortHandler(t *testing.T) {
+	t.Parallel()
+
+	srv, err := newServer(config.NewForTest(), nil)
+	require.NoError(t, err)
+	e := srv.Handler.(*echo.Echo)
+	e.GET("/abort", func(_ *echo.Context) error {
+		panic(fmt.Errorf("unexpected abort: %w", http.ErrAbortHandler))
+	})
 	recorder := httptest.NewRecorder()
-	srv.Handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/panic", nil))
+
+	srv.Handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/abort", nil))
 	assert.Equal(t, http.StatusInternalServerError, recorder.Code)
+}
+
+//nolint:paralleltest // Golib's logger output is process-global.
+func TestUnexpectedErrorLogsCreationSiteStack(t *testing.T) {
+	var output bytes.Buffer
+	previousOutput := logger.Output()
+	logger.SetOutput(&output)
+	t.Cleanup(func() { logger.SetOutput(previousOutput) })
+
+	srv, err := newServer(config.NewForTest(), nil)
+	require.NoError(t, err)
+	e := srv.Handler.(*echo.Echo)
+	e.GET("/error", func(_ *echo.Context) error { return unexpectedErrorAtKnownOrigin() })
+	e.GET("/panic", func(_ *echo.Context) error {
+		panicErrorAtKnownOrigin()
+		return nil
+	})
+	e.GET("/expected", func(_ *echo.Context) error { return errcodes.NotFound("Page") })
+
+	for _, test := range []struct {
+		path   string
+		origin string
+	}{
+		{path: "/error", origin: "server.unexpectedErrorAtKnownOrigin"},
+		{path: "/panic", origin: "server.panicErrorAtKnownOrigin"},
+	} {
+		output.Reset()
+		recorder := httptest.NewRecorder()
+		srv.Handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, test.path, nil))
+
+		assert.Equal(t, http.StatusInternalServerError, recorder.Code)
+		assert.Contains(t, output.String(), `"message":"server error"`)
+		assert.Contains(t, output.String(), test.origin)
+		assert.Contains(t, output.String(), "server_test.go")
+	}
+
+	output.Reset()
+	recorder := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/expected", nil))
+	assert.Equal(t, http.StatusNotFound, recorder.Code)
+	assert.NotContains(t, output.String(), `"message":"server error"`)
+	assert.NotContains(t, output.String(), `"stack":`)
 }

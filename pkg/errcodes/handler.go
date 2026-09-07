@@ -1,7 +1,6 @@
 package errcodes
 
 import (
-	"context"
 	"errors"
 	"net/http"
 
@@ -9,6 +8,7 @@ import (
 	"github.com/labstack/echo/v5"
 	echologger "github.com/robinjoseph08/golib/echo/v5/middleware/logger"
 	"github.com/robinjoseph08/golib/errutils"
+	"github.com/robinjoseph08/memento/pkg/errorstack"
 )
 
 // Handler converts application and Echo errors into the API error envelope.
@@ -20,7 +20,7 @@ func NewHandler() *Handler {
 
 // Handle is an Echo HTTP error handler.
 func (h *Handler) Handle(c *echo.Context, err error) {
-	if errutils.IsIgnorableErr(err) || errors.Is(err, context.Canceled) {
+	if errutils.IsIgnorableErr(err) || errorstack.IsContextCancellation(c.Request().Context(), err) {
 		return
 	}
 	if response, unwrapErr := echo.UnwrapResponse(c.Response()); unwrapErr == nil && response.Committed {
@@ -32,8 +32,8 @@ func (h *Handler) Handle(c *echo.Context, err error) {
 		echologger.FromEchoContext(c).Err(err).Error("server error")
 	}
 
-	if writeErr := c.JSON(httpCode, payload); writeErr != nil {
-		echologger.FromEchoContext(c).Err(writeErr).Error("error handler json error")
+	if writeErr := c.JSON(httpCode, payload); writeErr != nil && !errutils.IsIgnorableErr(writeErr) && !errorstack.IsContextCancellation(c.Request().Context(), writeErr) {
+		echologger.FromEchoContext(c).Err(errorstack.Capture(writeErr)).Error("error handler json error")
 	}
 }
 

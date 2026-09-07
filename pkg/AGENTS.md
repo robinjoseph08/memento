@@ -34,6 +34,16 @@
   `access.go`, rather than splitting every function into its own file.
 - Keep cross-package interfaces narrow and add them only where behavior varies.
   External systems must sit behind adapters that can be replaced in tests.
+- Capture a creation-site stack once when an unexpected database, network,
+  filesystem, process, serialization, or external-adapter error first enters
+  Memento. Use `errorstack.Capture`, which keeps the `github.com/pkg/errors`
+  stack format expected by Golib's logger. Use `errorstack.CaptureContext` for
+  operations whose context controls expected cancellation. Capture each
+  unexpected error before combining errors with `errors.Join`.
+- Do not capture stacks for validation failures, authentication or access
+  outcomes, missing records, request cancellation, or other expected control
+  flow. After capture, add context with `fmt.Errorf("...: %w", err)` so
+  `errors.Is` and `errors.As` keep working. Do not add a new stack at each layer.
 - Commit database state and durable work together. Perform Immich, SMTP, and
   `ffprobe` calls outside database transactions.
 - Keep media bytes in Immich. Serve authorized media through private,

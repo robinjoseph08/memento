@@ -17,6 +17,7 @@ import (
 	"github.com/robinjoseph08/memento/pkg/binder"
 	"github.com/robinjoseph08/memento/pkg/config"
 	"github.com/robinjoseph08/memento/pkg/errcodes"
+	"github.com/robinjoseph08/memento/pkg/errorstack"
 	"github.com/robinjoseph08/memento/pkg/identity"
 	"github.com/robinjoseph08/memento/pkg/immich"
 	"github.com/uptrace/bun"
@@ -58,6 +59,7 @@ func newServer(cfg *config.Config, frontend http.Handler, options ...dependencie
 
 	e.Use(echologger.Middleware())
 	e.Use(recovery.Middleware())
+	e.Use(capturePanicErrorStack())
 	e.Use(browserAPI(cfg.PublicURL))
 
 	health := func(c *echo.Context) error {
@@ -71,7 +73,7 @@ func newServer(cfg *config.Config, frontend http.Handler, options ...dependencie
 		if !healthy {
 			status = http.StatusServiceUnavailable
 		}
-		return c.JSON(status, map[string]bool{"healthy": healthy})
+		return errorstack.CaptureContext(c.Request().Context(), c.JSON(status, map[string]bool{"healthy": healthy}))
 	}
 	e.GET("/health", health)
 	e.HEAD("/health", health)
@@ -95,6 +97,30 @@ func newServer(cfg *config.Config, frontend http.Handler, options ...dependencie
 		Handler:           e,
 		ReadHeaderTimeout: 3 * time.Second,
 	}, nil
+}
+
+// capturePanicErrorStack preserves the panic site before Golib's recovery
+// middleware converts an error panic into a returned error.
+func capturePanicErrorStack() echo.MiddlewareFunc {
+	return func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c *echo.Context) error {
+			defer func() {
+				recovered := recover()
+				if recovered == nil {
+					return
+				}
+				recoveredErr, ok := recovered.(error)
+				if !ok {
+					panic(recovered)
+				}
+				if recoveredErr == http.ErrAbortHandler { //nolint:errorlint // net/http requires the exact sentinel.
+					panic(recoveredErr)
+				}
+				panic(errorstack.Capture(recoveredErr))
+			}()
+			return next(c)
+		}
+	}
 }
 
 // browserAPI enforces same-origin JSON mutations using only the configured URL.

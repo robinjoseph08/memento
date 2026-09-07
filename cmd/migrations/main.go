@@ -9,6 +9,7 @@ import (
 	"github.com/robinjoseph08/golib/logger"
 	"github.com/robinjoseph08/memento/pkg/config"
 	"github.com/robinjoseph08/memento/pkg/database"
+	"github.com/robinjoseph08/memento/pkg/errorstack"
 	"github.com/robinjoseph08/memento/pkg/migrations"
 	"github.com/uptrace/bun"
 	"github.com/uptrace/bun/migrate"
@@ -31,7 +32,7 @@ func run() error {
 				Name:  "init",
 				Usage: "create migration tables",
 				Action: withDatabase(func(c *cli.Context, db *bun.DB) error {
-					return migrations.NewMigrator(db).Init(c.Context)
+					return errorstack.CaptureContext(c.Context, migrations.NewMigrator(db).Init(c.Context))
 				}),
 			},
 			{
@@ -80,7 +81,7 @@ func run() error {
 						migrate.WithGoTemplate(migrationTemplate),
 					)
 					if err != nil {
-						return err
+						return errorstack.CaptureContext(c.Context, err)
 					}
 					fmt.Printf("Created migration %s (%s)\n", file.Name, file.Path)
 					return nil
@@ -92,11 +93,11 @@ func run() error {
 				Action: withDatabase(func(c *cli.Context, db *bun.DB) error {
 					migrator := migrations.NewMigrator(db)
 					if err := migrator.Init(c.Context); err != nil {
-						return err
+						return errorstack.CaptureContext(c.Context, err)
 					}
 					status, err := migrator.MigrationsWithStatus(c.Context)
 					if err != nil {
-						return err
+						return errorstack.CaptureContext(c.Context, err)
 					}
 					fmt.Printf("Migrations: %s\n", status)
 					fmt.Printf("Unapplied migrations: %s\n", status.Unapplied())
@@ -123,7 +124,7 @@ func withDatabase(action func(*cli.Context, *bun.DB) error) cli.ActionFunc {
 		}
 		defer func() {
 			if closeErr := db.Close(); closeErr != nil {
-				returnErr = errors.Join(returnErr, fmt.Errorf("close database: %w", closeErr))
+				returnErr = errors.Join(returnErr, fmt.Errorf("close database: %w", errorstack.Capture(closeErr)))
 			}
 		}()
 
@@ -136,18 +137,19 @@ const migrationTemplate = `package %s
 import (
 	"context"
 
+	"github.com/robinjoseph08/memento/pkg/errorstack"
 	"github.com/uptrace/bun"
 )
 
 func init() {
 	up := func(ctx context.Context, db *bun.DB) error {
 		_, err := db.ExecContext(ctx, "")
-		return err
+		return errorstack.CaptureContext(ctx, err)
 	}
 
 	down := func(ctx context.Context, db *bun.DB) error {
 		_, err := db.ExecContext(ctx, "")
-		return err
+		return errorstack.CaptureContext(ctx, err)
 	}
 
 	Migrations.MustRegister(up, down)

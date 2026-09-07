@@ -8,6 +8,7 @@ import (
 
 	"github.com/robinjoseph08/golib/logger"
 	"github.com/robinjoseph08/memento/pkg/config"
+	"github.com/robinjoseph08/memento/pkg/errorstack"
 	"github.com/uptrace/bun"
 	"github.com/uptrace/bun/dialect/pgdialect"
 	"github.com/uptrace/bun/driver/pgdriver"
@@ -51,6 +52,7 @@ func New(ctx context.Context, cfg *config.Config) (*bun.DB, error) {
 		if err == nil {
 			return db, nil
 		}
+		err = errorstack.CaptureContext(ctx, err)
 		if attempt+1 < cfg.DatabaseConnectRetryCount {
 			if waitErr := waitForRetry(ctx, cfg.DatabaseConnectRetryDelay); waitErr != nil {
 				err = waitErr
@@ -60,7 +62,7 @@ func New(ctx context.Context, cfg *config.Config) (*bun.DB, error) {
 	}
 
 	if closeErr := db.Close(); closeErr != nil {
-		return nil, fmt.Errorf("connect to database: %w; close database: %w", err, closeErr)
+		return nil, fmt.Errorf("connect to database: %w; close database: %w", err, errorstack.Capture(closeErr))
 	}
 	return nil, fmt.Errorf("connect to database: %w", err)
 }

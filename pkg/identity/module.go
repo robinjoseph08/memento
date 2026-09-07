@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/robinjoseph08/memento/pkg/errcodes"
+	"github.com/robinjoseph08/memento/pkg/errorstack"
 	"github.com/robinjoseph08/memento/pkg/models"
 	"github.com/uptrace/bun"
 )
@@ -55,8 +56,10 @@ func New(db *bun.DB, now func() time.Time) *Module {
 
 func (m *Module) Claimed(ctx context.Context) (bool, error) {
 	var claimed bool
-	err := m.db.NewRaw("SELECT claimed_by IS NOT NULL FROM installation WHERE singleton = true").Scan(ctx, &claimed)
-	return claimed, err
+	if err := m.db.NewRaw("SELECT claimed_by IS NOT NULL FROM installation WHERE singleton = true").Scan(ctx, &claimed); err != nil {
+		return false, errorstack.CaptureContext(ctx, err)
+	}
+	return claimed, nil
 }
 
 // SignIn claims an empty installation or authenticates a known provider subject.
@@ -68,7 +71,7 @@ func (m *Module) SignIn(ctx context.Context, claims Claims) (Session, error) {
 	now := m.now().UTC()
 	bytes := make([]byte, 32)
 	if _, err := rand.Read(bytes); err != nil {
-		return Session{}, err
+		return Session{}, errorstack.Capture(err)
 	}
 	token := base64.RawURLEncoding.EncodeToString(bytes)
 	hash := sha256.Sum256([]byte(token))
@@ -76,7 +79,7 @@ func (m *Module) SignIn(ctx context.Context, claims Claims) (Session, error) {
 	err := m.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 		var claimedBy sql.NullString
 		if err := tx.NewRaw("SELECT claimed_by FROM installation WHERE singleton = true FOR UPDATE").Scan(ctx, &claimedBy); err != nil {
-			return err
+			return errorstack.CaptureContext(ctx, err)
 		}
 		var linked models.Identity
 		err := tx.NewSelect().Model(&linked).Where("provider = ? AND subject = ?", claims.Provider, claims.Subject).Scan(ctx)
@@ -90,34 +93,37 @@ func (m *Module) SignIn(ctx context.Context, claims Claims) (Session, error) {
 			person = models.Person{ID: personID, DisplayName: strings.TrimSpace(claims.DisplayName), IsCurator: true, CreatedAt: now}
 			linked = models.Identity{ID: identityID, PersonID: personID, Provider: claims.Provider, Subject: claims.Subject, Email: claims.Email, CreatedAt: now}
 			if _, err := tx.NewInsert().Model(&person).Exec(ctx); err != nil {
-				return err
+				return errorstack.CaptureContext(ctx, err)
 			}
 			if _, err := tx.NewInsert().Model(&linked).Exec(ctx); err != nil {
-				return err
+				return errorstack.CaptureContext(ctx, err)
 			}
 			updated, err := tx.ExecContext(ctx, "UPDATE installation SET claimed_by = ?, claimed_at = ? WHERE singleton = true AND claimed_by IS NULL", person.ID, now)
 			if err != nil {
-				return err
+				return errorstack.CaptureContext(ctx, err)
 			}
 			count, err := updated.RowsAffected()
 			if err != nil {
-				return err
+				return errorstack.Capture(err)
 			}
 			if count != 1 {
 				return ErrAccessDenied
 			}
 		} else if err != nil {
-			return err
+			return errorstack.CaptureContext(ctx, err)
 		} else if err := tx.NewSelect().Model(&person).Where("id = ?", linked.PersonID).Scan(ctx); err != nil {
-			return err
+			return errorstack.CaptureContext(ctx, err)
 		}
 		session := models.Session{TokenHash: hash[:], IdentityID: linked.ID, CreatedAt: now, RenewedAt: now, ExpiresAt: now.Add(SessionLifetime)}
 		if _, err := tx.NewInsert().Model(&session).Exec(ctx); err != nil {
-			return err
+			return errorstack.CaptureContext(ctx, err)
 		}
 		result = Session{Person: projectPerson(person), Token: token, ExpiresAt: session.ExpiresAt}
 		return nil
 	})
+	if err != nil && !errors.Is(err, ErrAccessDenied) {
+		err = errorstack.CaptureContext(ctx, err)
+	}
 	return result, err
 }
 
@@ -133,7 +139,7 @@ func (m *Module) Authenticate(ctx context.Context, token string) (Session, error
 	now := m.now().UTC()
 	hash := sha256.Sum256([]byte(token))
 	if _, err := m.db.NewDelete().Model((*models.Session)(nil)).Where("expires_at <= ?", now).Exec(ctx); err != nil {
-		return Session{}, err
+		return Session{}, errorstack.CaptureContext(ctx, err)
 	}
 	var row struct {
 		ID          models.UUID
@@ -148,14 +154,14 @@ func (m *Module) Authenticate(ctx context.Context, token string) (Session, error
 		return Session{}, ErrUnauthenticated
 	}
 	if err != nil {
-		return Session{}, err
+		return Session{}, errorstack.CaptureContext(ctx, err)
 	}
 	// The condition prevents simultaneous requests from repeatedly extending activity.
 	var expiry time.Time
 	err = m.db.NewRaw(`UPDATE sessions SET renewed_at = ?, expires_at = ?
  WHERE token_hash = ? AND renewed_at <= ? AND expires_at > ? RETURNING expires_at`, now, now.Add(SessionLifetime), hash[:], now.Add(-24*time.Hour), now).Scan(ctx, &expiry)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return Session{}, err
+		return Session{}, errorstack.CaptureContext(ctx, err)
 	}
 	if err == nil {
 		row.ExpiresAt = expiry
@@ -167,5 +173,5 @@ func (m *Module) Authenticate(ctx context.Context, token string) (Session, error
 func (m *Module) SignOut(ctx context.Context, token string) error {
 	hash := sha256.Sum256([]byte(token))
 	_, err := m.db.NewDelete().Model((*models.Session)(nil)).Where("token_hash = ?", hash[:]).Exec(ctx)
-	return err
+	return errorstack.CaptureContext(ctx, err)
 }

@@ -2,16 +2,30 @@ package config
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	pkgerrors "github.com/pkg/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 type mapProvider map[string]any
+
+type errorProvider struct {
+	err error
+}
+
+func (p errorProvider) ReadBytes() ([]byte, error) {
+	return nil, p.err
+}
+
+func (p errorProvider) Read() (map[string]any, error) {
+	return nil, p.err
+}
 
 func (p mapProvider) ReadBytes() ([]byte, error) {
 	return nil, errors.New("not supported")
@@ -205,6 +219,23 @@ func TestLoadRedactsYAMLParseErrors(t *testing.T) {
 	assert.NotContains(t, err.Error(), "secret")
 }
 
+func TestLoadRedactsEnvironmentProviderError(t *testing.T) {
+	t.Parallel()
+
+	cause := errors.New("secret environment provider failure")
+	_, err := load(filepath.Join(t.TempDir(), "missing.yaml"), false, errorProvider{err: cause}, func() (string, error) {
+		return "host", nil
+	})
+
+	require.ErrorIs(t, err, cause)
+	require.EqualError(t, err, "environment: could not load configuration")
+	assert.NotContains(t, err.Error(), "secret")
+	var tracer configStackTracer
+	require.ErrorAs(t, err, &tracer)
+	stack := fmt.Sprintf("%+v", tracer.StackTrace())
+	assert.Contains(t, stack, "config.load")
+}
+
 func TestLoadDefaults(t *testing.T) {
 	t.Parallel()
 
@@ -288,13 +319,19 @@ func TestLoadValidatesConfig(t *testing.T) {
 	assert.Contains(t, err.Error(), "database_url")
 }
 
+type configStackTracer interface {
+	StackTrace() pkgerrors.StackTrace
+}
+
 func TestLoadRequiresExplicitConfigFile(t *testing.T) {
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "missing.yaml")
 	_, err := load(path, true, mapProvider{}, func() (string, error) { return "host", nil })
 	require.Error(t, err)
-	assert.ErrorIs(t, err, os.ErrNotExist)
+	require.ErrorIs(t, err, os.ErrNotExist)
+	var tracer configStackTracer
+	assert.NotErrorAs(t, err, &tracer)
 }
 
 func TestNewForTest(t *testing.T) {
@@ -318,4 +355,9 @@ func TestLoadReturnsHostnameError(t *testing.T) {
 		return "", expected
 	})
 	require.ErrorIs(t, err, expected)
+	var tracer configStackTracer
+	require.ErrorAs(t, err, &tracer)
+	stack := fmt.Sprintf("%+v", tracer.StackTrace())
+	assert.Contains(t, stack, "config.load")
+	assert.Contains(t, stack, "config.go")
 }

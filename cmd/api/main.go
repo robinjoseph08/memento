@@ -12,6 +12,7 @@ import (
 	"github.com/robinjoseph08/golib/signals"
 	"github.com/robinjoseph08/memento/pkg/config"
 	"github.com/robinjoseph08/memento/pkg/database"
+	"github.com/robinjoseph08/memento/pkg/errorstack"
 	"github.com/robinjoseph08/memento/pkg/migrations"
 	"github.com/robinjoseph08/memento/pkg/server"
 	"github.com/robinjoseph08/memento/pkg/version"
@@ -47,7 +48,7 @@ func run(log logger.Logger) error {
 	}
 	defer func() {
 		if closeErr := db.Close(); closeErr != nil {
-			log.Err(closeErr).Error("database close error")
+			log.Err(errorstack.Capture(closeErr)).Error("database close error")
 		}
 	}()
 
@@ -72,7 +73,11 @@ func run(log logger.Logger) error {
 	serverErrors := make(chan error, 1)
 	go func() {
 		log.Info("server started", logger.Data{"address": srv.Addr})
-		serverErrors <- srv.ListenAndServe()
+		err := srv.ListenAndServe()
+		if !errors.Is(err, http.ErrServerClosed) {
+			err = errorstack.Capture(err)
+		}
+		serverErrors <- err
 	}()
 
 	select {
@@ -94,9 +99,9 @@ func run(log logger.Logger) error {
 	shutdownCtx, cancel := context.WithTimeout(ctx, serverShutdownTimeout)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		log.Err(err).Error("server shutdown error")
+		log.Err(errorstack.Capture(err)).Error("server shutdown error")
 		if closeErr := srv.Close(); closeErr != nil {
-			log.Err(closeErr).Error("server force-close error")
+			log.Err(errorstack.Capture(closeErr)).Error("server force-close error")
 		}
 	}
 
