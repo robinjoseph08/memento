@@ -36,7 +36,7 @@ func (d *DockerDatabase) Start(ctx context.Context, env Environment) error {
 		return err
 	}
 
-	for attempt := 0; attempt < 10; attempt++ {
+	for attempt := range 10 {
 		command, err := d.composeCommand(ctx, env, "up", "-d", "--wait", "postgres")
 		if err != nil {
 			return err
@@ -218,7 +218,7 @@ func (d *DockerDatabase) Migrate(ctx context.Context, env Environment, name stri
 	if err != nil {
 		return err
 	}
-	db, err := database.New(cfg)
+	db, err := database.New(ctx, cfg)
 	if err != nil {
 		return fmt.Errorf("open database %s: %w", name, err)
 	}
@@ -234,7 +234,7 @@ func (d *DockerDatabase) Rollback(ctx context.Context, env Environment, name str
 	if err != nil {
 		return err
 	}
-	db, err := database.New(cfg)
+	db, err := database.New(ctx, cfg)
 	if err != nil {
 		return fmt.Errorf("open database %s: %w", name, err)
 	}

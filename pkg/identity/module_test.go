@@ -4,8 +4,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"uuid"
 
-	"github.com/google/uuid"
 	"github.com/robinjoseph08/memento/pkg/identity"
 	"github.com/robinjoseph08/memento/pkg/testdb"
 	"github.com/stretchr/testify/assert"
@@ -22,7 +22,7 @@ func TestConcurrentClaim(t *testing.T) {
 	for range attempts {
 		wg.Go(func() {
 			<-start
-			_, err := module.SignIn(t.Context(), identity.Claims{Provider: "fake", Subject: uuid.NewString(), Email: "same@example.test", EmailVerified: true, DisplayName: "Concurrent Curator"})
+			_, err := module.SignIn(t.Context(), identity.Claims{Provider: "fake", Subject: uuid.New().String(), Email: "same@example.test", EmailVerified: true, DisplayName: "Concurrent Curator"})
 			results <- err
 		})
 	}
@@ -128,7 +128,7 @@ func TestClaimAndReturningSignIn(t *testing.T) {
 	assert.Equal(t, "Alex", session.Person.DisplayName)
 	id, err := uuid.Parse(session.Person.ID)
 	require.NoError(t, err)
-	assert.Equal(t, uuid.Version(7), id.Version())
+	assert.Equal(t, byte(7), id[6]>>4)
 	assert.NotEmpty(t, session.Token)
 	claimed, err = module.Claimed(t.Context())
 	require.NoError(t, err)

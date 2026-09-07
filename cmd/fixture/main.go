@@ -53,7 +53,7 @@ func run(ctx context.Context, binary string, offline bool) error {
 	if err != nil {
 		return fmt.Errorf("allocate fixture schema: %w", err)
 	}
-	defer func() {
+	defer func() { //nolint:contextcheck // Cleanup must outlive cancellation of the run context.
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := schema.Close(cleanupCtx); err != nil {
@@ -66,13 +66,13 @@ func run(ctx context.Context, binary string, offline bool) error {
 	}
 	defer func() { _ = os.RemoveAll(files) }()
 
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", "127.0.0.1:0")
 	if err != nil {
 		return err
 	}
 	fixtureURL := "http://" + listener.Addr().String()
 	// Reserve an ephemeral API port until immediately before spawning the binary.
-	apiListener, err := net.Listen("tcp", "127.0.0.1:0")
+	apiListener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", "127.0.0.1:0")
 	if err != nil {
 		_ = listener.Close()
 		return err
@@ -107,7 +107,7 @@ func run(ctx context.Context, binary string, offline bool) error {
 	server := &http.Server{Handler: fixture, ReadHeaderTimeout: 5 * time.Second}
 	serverDone := make(chan error, 1)
 	go func() { serverDone <- server.Serve(listener) }()
-	defer func() {
+	defer func() { //nolint:contextcheck // Shutdown must outlive cancellation of the run context.
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = server.Shutdown(shutdownCtx)
@@ -168,7 +168,7 @@ func (a *apiSupervisor) restart(ctx context.Context) error {
 		close(process.done)
 		if !process.expected.Load() {
 			select {
-			case a.failed <- fmt.Errorf("API exited unexpectedly: %v", process.err):
+			case a.failed <- processExitError("API exited unexpectedly", process.err):
 			default:
 			}
 		}
@@ -194,10 +194,17 @@ func (a *apiSupervisor) restart(ctx context.Context) error {
 		case <-readyCtx.Done():
 			return fmt.Errorf("API readiness: %w", readyCtx.Err())
 		case <-process.done:
-			return fmt.Errorf("API exited before readiness: %v", process.err)
+			return processExitError("API exited before readiness", process.err)
 		case <-ticker.C:
 		}
 	}
+}
+
+func processExitError(message string, err error) error {
+	if err == nil {
+		return errors.New(message)
+	}
+	return fmt.Errorf("%s: %w", message, err)
 }
 
 func (a *apiSupervisor) close() {

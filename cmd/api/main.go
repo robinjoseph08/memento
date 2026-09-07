@@ -41,7 +41,7 @@ func run(log logger.Logger) error {
 		return fmt.Errorf("load config: %w", err)
 	}
 
-	db, err := database.New(cfg)
+	db, err := database.New(ctx, cfg)
 	if err != nil {
 		return fmt.Errorf("open database: %w", err)
 	}

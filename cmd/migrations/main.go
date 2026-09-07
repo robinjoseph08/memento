@@ -117,7 +117,7 @@ func withDatabase(action func(*cli.Context, *bun.DB) error) cli.ActionFunc {
 			return fmt.Errorf("load config: %w", err)
 		}
 
-		db, err := database.New(cfg)
+		db, err := database.New(c.Context, cfg)
 		if err != nil {
 			return fmt.Errorf("open database: %w", err)
 		}

@@ -12,7 +12,7 @@ concurrency:
 
 jobs:
   go:
-    name: Go
+    name: Go lint and tests
     runs-on: ubuntu-latest
     env:
       TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/memento_test?sslmode=disable
@@ -34,7 +34,7 @@ jobs:
       - run: mise test:race
 
   postgres14:
-    name: PostgreSQL 14 compatibility
+    name: PostgreSQL 14 compatibility tests
     runs-on: ubuntu-latest
     env:
       TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/memento_test?sslmode=disable
@@ -52,10 +52,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: jdx/mise-action@v4
-      - run: go test -race ./pkg/migrations ./pkg/identity
+      - run: mise test:postgres14
 
   javascript:
-    name: JavaScript
+    name: TypeScript lint and tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -66,7 +66,7 @@ jobs:
       - run: mise test:unit
 
   browsers:
-    name: Browsers
+    name: E2E tests
     runs-on: ubuntu-latest
     env:
       TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/memento_test?sslmode=disable
@@ -114,7 +114,7 @@ jobs:
           retention-days: 7
 
   production:
-    name: Production
+    name: Docker smoke test
     runs-on: ubuntu-latest
     services:
       postgres:

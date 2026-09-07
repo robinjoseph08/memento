@@ -31,7 +31,7 @@ func TestConnectionDiagnostic(t *testing.T) {
 			t.Parallel()
 			fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				assert.Equal(t, http.MethodGet, r.Method)
-				assert.Equal(t, "secret-key", r.Header.Get("x-api-key"))
+				assert.Equal(t, "secret-key", r.Header.Get("X-Api-Key"))
 				switch r.URL.Path {
 				case "/base/api/server/version":
 					_, _ = fmt.Fprint(w, tc.version)
@@ -58,9 +58,9 @@ func TestDiagnosticCancellationAndRedirect(t *testing.T) {
 	t.Parallel()
 	reached := false
 	destination := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { reached = true }))
-	defer destination.Close()
+	t.Cleanup(destination.Close)
 	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, destination.URL, http.StatusFound) }))
-	defer source.Close()
+	t.Cleanup(source.Close)
 	result := immich.New(source.URL, "private-key").Check(t.Context())
 	assert.False(t, result.Usable)
 	assert.False(t, reached, "redirects must not forward the API key")

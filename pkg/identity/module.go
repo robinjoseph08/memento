@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/robinjoseph08/memento/pkg/errcodes"
 	"github.com/robinjoseph08/memento/pkg/models"
 	"github.com/uptrace/bun"
@@ -86,14 +85,8 @@ func (m *Module) SignIn(ctx context.Context, claims Claims) (Session, error) {
 			if claimedBy.Valid {
 				return ErrAccessDenied
 			}
-			personID, err := uuid.NewV7()
-			if err != nil {
-				return err
-			}
-			identityID, err := uuid.NewV7()
-			if err != nil {
-				return err
-			}
+			personID := models.NewUUIDv7()
+			identityID := models.NewUUIDv7()
 			person = models.Person{ID: personID, DisplayName: strings.TrimSpace(claims.DisplayName), IsCurator: true, CreatedAt: now}
 			linked = models.Identity{ID: identityID, PersonID: personID, Provider: claims.Provider, Subject: claims.Subject, Email: claims.Email, CreatedAt: now}
 			if _, err := tx.NewInsert().Model(&person).Exec(ctx); err != nil {
@@ -143,7 +136,7 @@ func (m *Module) Authenticate(ctx context.Context, token string) (Session, error
 		return Session{}, err
 	}
 	var row struct {
-		ID          uuid.UUID
+		ID          models.UUID
 		DisplayName string
 		IsCurator   bool
 		ExpiresAt   time.Time

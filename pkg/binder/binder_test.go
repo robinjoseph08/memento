@@ -85,8 +85,6 @@ func TestBindJSONRejectsMalformedAndTrailingPayloads(t *testing.T) {
 		"malformed": `{"name":`,
 		"trailing":  `{"name":"one"}{"name":"two"}`,
 	} {
-		name := name
-		body := body
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			var payload struct {

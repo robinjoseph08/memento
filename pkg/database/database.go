@@ -40,26 +40,40 @@ func (qh *logQueryHook) AfterQuery(ctx context.Context, event *bun.QueryEvent) {
 }
 
 // New opens and verifies a PostgreSQL connection.
-func New(cfg *config.Config) (*bun.DB, error) {
+func New(ctx context.Context, cfg *config.Config) (*bun.DB, error) {
 	db, err := open(cfg)
 	if err != nil {
 		return nil, err
 	}
 
 	for attempt := 0; attempt < cfg.DatabaseConnectRetryCount; attempt++ {
-		err = db.PingContext(context.Background())
+		err = db.PingContext(ctx)
 		if err == nil {
 			return db, nil
 		}
 		if attempt+1 < cfg.DatabaseConnectRetryCount {
-			time.Sleep(cfg.DatabaseConnectRetryDelay)
+			if waitErr := waitForRetry(ctx, cfg.DatabaseConnectRetryDelay); waitErr != nil {
+				err = waitErr
+				break
+			}
 		}
 	}
 
 	if closeErr := db.Close(); closeErr != nil {
-		return nil, fmt.Errorf("connect to database: %w; close database: %v", err, closeErr)
+		return nil, fmt.Errorf("connect to database: %w; close database: %w", err, closeErr)
 	}
 	return nil, fmt.Errorf("connect to database: %w", err)
+}
+
+func waitForRetry(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func open(cfg *config.Config) (*bun.DB, error) {

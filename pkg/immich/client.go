@@ -57,7 +57,7 @@ func (c *Client) get(ctx context.Context, path string, target any) string {
 	if err != nil {
 		return "Check immich_url points to the Immich server."
 	}
-	req.Header.Set("x-api-key", c.apiKey)
+	req.Header.Set("X-Api-Key", c.apiKey)
 	req.Header.Set("Accept", "application/json")
 	response, err := c.http.Do(req)
 	if err != nil {

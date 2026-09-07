@@ -44,8 +44,6 @@ func TestHandlerResponses(t *testing.T) {
 	}
 
 	for name, test := range tests {
-		name := name
-		test := test
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			e := echo.New()

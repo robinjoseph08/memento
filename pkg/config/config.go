@@ -73,8 +73,7 @@ func load(configPath string, requireConfigFile bool, environment koanf.Provider,
 
 	if err := k.Load(file.Provider(configPath), yaml.Parser()); err != nil {
 		if !os.IsNotExist(err) || requireConfigFile {
-			var fileError *os.PathError
-			if errors.As(err, &fileError) {
+			if fileError, ok := errors.AsType[*os.PathError](err); ok {
 				return nil, fmt.Errorf("config_file: %w", fileError)
 			}
 			return nil, fmt.Errorf("config_file: invalid YAML; check syntax and value types")
@@ -221,7 +220,11 @@ func validateConfig(cfg *Config) error {
 	validate := validator.New()
 	validate.RegisterTagNameFunc(func(field reflect.StructField) string { return field.Tag.Get("koanf") })
 	if err := validate.Struct(cfg); err != nil {
-		field := err.(validator.ValidationErrors)[0]
+		var validationErrors validator.ValidationErrors
+		if !errors.As(err, &validationErrors) {
+			return err
+		}
+		field := validationErrors[0]
 		return fmt.Errorf("%s: %s %s", field.Field(), field.Tag(), field.Param())
 	}
 	return nil

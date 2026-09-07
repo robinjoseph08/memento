@@ -107,6 +107,11 @@ description = "Run Go tests with race detection"
 env = { TZ = "America/Chicago", CI = "true" }
 run = "go test -race ./... -coverprofile coverage.out"
 
+[tasks."test:postgres14"]
+description = "Run backend package tests against PostgreSQL 14"
+env = { TZ = "America/Chicago", CI = "true" }
+run = "go test -race ./pkg/..."
+
 [tasks."test:js"]
 description = "Run all JS tests"
 depends = ["tygo", "test:unit", "test:e2e"]

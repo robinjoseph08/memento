@@ -33,7 +33,9 @@ func (f *immichFixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
 			f.mu.RLock()
 			defer f.mu.RUnlock()
-			_ = json.NewEncoder(w).Encode(f.state)
+			if err := json.NewEncoder(w).Encode(f.state); err != nil {
+				return
+			}
 			return
 		}
 		if !controlRequest(w, r) {
@@ -52,7 +54,9 @@ func (f *immichFixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		f.state = fixtureState{Available: *state.Available, Unauthorized: state.Unauthorized}
 		f.mu.Unlock()
-		_ = json.NewEncoder(w).Encode(fixtureState{Available: *state.Available, Unauthorized: state.Unauthorized})
+		if err := json.NewEncoder(w).Encode(fixtureState{Available: *state.Available, Unauthorized: state.Unauthorized}); err != nil {
+			return
+		}
 		return
 	case "/__fixture/restart":
 		if !controlRequest(w, r) {
@@ -84,7 +88,7 @@ func (f *immichFixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Immich fixture is offline", http.StatusServiceUnavailable)
 		return
 	}
-	if r.URL.Path == "/api/users/me" && (state.Unauthorized || r.Header.Get("x-api-key") != fixtureAPIKey) {
+	if r.URL.Path == "/api/users/me" && (state.Unauthorized || r.Header.Get("X-Api-Key") != fixtureAPIKey) {
 		http.Error(w, "Invalid API key", http.StatusUnauthorized)
 		return
 	}
