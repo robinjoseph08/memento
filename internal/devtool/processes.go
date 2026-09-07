@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -91,7 +92,7 @@ func developmentEnvironment(env Environment, apiPort, webPort int) ([]string, er
 		publicHost = "localhost"
 	}
 	if publicPort != 0 {
-		values = append(values, "PUBLIC_URL="+fmt.Sprintf("http://%s:%d", publicHost, publicPort))
+		values = append(values, "PUBLIC_URL=http://"+net.JoinHostPort(publicHost, strconv.Itoa(publicPort)))
 	}
 	return values, nil
 }
@@ -213,7 +214,11 @@ func waitForAPI(ctx context.Context, port int, exited <-chan error) (bool, error
 		case <-deadline.C:
 			return false, fmt.Errorf("API did not become ready at %s within %s", url, serverStartupTimeout)
 		case <-ticker.C:
-			response, err := client.Get(url)
+			request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+			if err != nil {
+				return false, fmt.Errorf("create API health request: %w", err)
+			}
+			response, err := client.Do(request)
 			if err == nil {
 				_ = response.Body.Close()
 				if response.StatusCode >= 200 && response.StatusCode < 300 {

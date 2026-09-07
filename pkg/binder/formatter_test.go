@@ -36,8 +36,6 @@ func TestFormatValidationError(t *testing.T) {
 	}
 
 	for name, test := range tests {
-		name := name
-		test := test
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			validationErr := validator.New().Struct(test.value)

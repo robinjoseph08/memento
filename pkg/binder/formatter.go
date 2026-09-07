@@ -48,6 +48,8 @@ func formatValidationError(err validator.FieldError) string {
 				return fmt.Sprintf("Enter a number greater than %s.", err.Param())
 			}
 			return fmt.Sprintf("Enter a number less than %s.", err.Param())
+		default:
+			return "Check this value."
 		}
 	case "max", "min", "gte", "lte":
 		return formatLimit(err)

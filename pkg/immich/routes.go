@@ -2,8 +2,9 @@ package immich
 
 import (
 	"context"
-	"github.com/labstack/echo/v5"
 	"net/http"
+
+	"github.com/labstack/echo/v5"
 )
 
 type Diagnostic interface {

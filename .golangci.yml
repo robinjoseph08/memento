@@ -1,0 +1,145 @@
+version: "2"
+linters:
+  default: none
+  enable:
+    - asasalint
+    - asciicheck
+    - bidichk
+    - bodyclose
+    - canonicalheader
+    - containedctx
+    - contextcheck
+    - copyloopvar
+    - dogsled
+    - dupword
+    - durationcheck
+    - errcheck
+    - errchkjson
+    - errname
+    - errorlint
+    - exhaustive
+    - fatcontext
+    - forcetypeassert
+    - gocheckcompilerdirectives
+    - gocritic
+    - godot
+    - gomoddirectives
+    - gosec
+    - gosmopolitan
+    - govet
+    - iface
+    - importas
+    - ineffassign
+    - interfacebloat
+    - iotamixing
+    - makezero
+    - mirror
+    - misspell
+    - modernize
+    - musttag
+    - nakedret
+    - nilerr
+    - nilnesserr
+    - nilnil
+    - noctx
+    - nolintlint
+    - nosprintfhostport
+    - paralleltest
+    - predeclared
+    - reassign
+    - rowserrcheck
+    - sqlclosecheck
+    - staticcheck
+    - testifylint
+    - thelper
+    - tparallel
+    - unconvert
+    - unparam
+    - unqueryvet
+    - unused
+    - usestdlibvars
+    - usetesting
+    - wastedassign
+    - whitespace
+  settings:
+    exhaustive:
+      default-signifies-exhaustive: true
+    gocritic:
+      disabled-checks:
+        - appendAssign
+        - exitAfterDefer
+        - ifElseChain
+        - singleCaseSwitch
+    paralleltest:
+      ignore-missing-subtests: true
+      check-cleanup: true
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      - linters:
+          - errcheck
+          - forcetypeassert
+          - gosec
+          - noctx
+        path: _test\.go
+      - linters:
+          - nilerr
+        path: internal/devtool/database\.go
+        text: error is not nil.*but it returns nil
+      - linters:
+          - forcetypeassert
+        path: cmd/fixture/main\.go
+        text: type assertion must be checked
+      - linters:
+          - noctx
+        path: internal/devtool/ports\.go
+        text: net\.Listen must not be called
+      # Child process groups are terminated explicitly so their descendants
+      # do not survive development command cancellation.
+      - linters:
+          - noctx
+        path: internal/devtool/processes\.go
+        text: os/exec\.Command must not be called
+      # The fixture binary path comes from a maintainer-controlled CLI flag.
+      # Its process must outlive the restart request context.
+      - linters:
+          - gosec
+          - noctx
+        path: cmd/fixture/main\.go
+        text: (G204|os/exec\.Command must not be called)
+      # Both indexes are guarded by exact argument-count checks.
+      - linters:
+          - gosec
+        path: internal/devtool/app\.go
+        text: G602
+      # This local development helper intentionally preserves source symlinks.
+      - linters:
+          - gosec
+        path: internal/devtool/files\.go
+        text: G122
+      # Secure depends on whether the configured public URL uses HTTPS.
+      - linters:
+          - gosec
+        path: pkg/identity/handlers\.go
+        text: G124
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+formatters:
+  enable:
+    - goimports
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

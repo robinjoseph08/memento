@@ -14,7 +14,7 @@ func TestImmichFixture(t *testing.T) {
 	fixture := newImmichFixture(true)
 	request := func(method, path, body, key string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(method, path, strings.NewReader(body))
-		req.Header.Set("x-api-key", key)
+		req.Header.Set("X-Api-Key", key)
 		response := httptest.NewRecorder()
 		fixture.ServeHTTP(response, req)
 		return response
@@ -33,7 +33,7 @@ func TestImmichFixture(t *testing.T) {
 	assert.Equal(t, http.StatusMethodNotAllowed, request("POST", "/api/users/me", `{}`, "fixture-only-key").Code)
 	assert.Equal(t, http.StatusNotFound, request("GET", "/api/albums", "", "fixture-only-key").Code)
 	assert.Equal(t, http.StatusBadRequest, request("POST", "/__fixture/state", `{"unauthorized":true}`, "").Code)
-	req := httptest.NewRequest("POST", "/__fixture/state", strings.NewReader(`{"available":true}`))
+	req := httptest.NewRequest(http.MethodPost, "/__fixture/state", strings.NewReader(`{"available":true}`))
 	req.Header.Set("Origin", "https://example.com")
 	response := httptest.NewRecorder()
 	fixture.ServeHTTP(response, req)

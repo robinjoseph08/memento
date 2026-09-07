@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"testing"
 
@@ -449,9 +450,9 @@ func TestWorktreeDatabaseNamesAreStablePostgresIdentifiers(t *testing.T) {
 
 func lastEnvironmentValue(values []string, key string) string {
 	prefix := key + "="
-	for index := len(values) - 1; index >= 0; index-- {
-		if len(values[index]) >= len(prefix) && values[index][:len(prefix)] == prefix {
-			return values[index][len(prefix):]
+	for _, value := range slices.Backward(values) {
+		if len(value) >= len(prefix) && value[:len(prefix)] == prefix {
+			return value[len(prefix):]
 		}
 	}
 	return ""

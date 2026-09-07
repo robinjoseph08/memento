@@ -1,7 +1,6 @@
 package errcodes
 
 import (
-	"errors"
 	"net/http"
 	"testing"
 
@@ -28,8 +27,6 @@ func TestErrorConstructors(t *testing.T) {
 	}
 
 	for name, test := range tests {
-		name := name
-		test := test
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			var apiErr *Error
@@ -38,7 +35,7 @@ func TestErrorConstructors(t *testing.T) {
 			assert.Equal(t, test.code, apiErr.Code)
 			assert.Equal(t, test.message, apiErr.Message)
 			assert.Equal(t, test.message, apiErr.Error())
-			assert.True(t, errors.Is(test.err, &Error{test.httpCode, test.message, test.code}))
+			assert.ErrorIs(t, test.err, &Error{test.httpCode, test.message, test.code})
 		})
 	}
 }

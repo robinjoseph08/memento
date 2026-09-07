@@ -54,7 +54,7 @@ func New() (*Binder, error) {
 
 	validate := validator.New()
 	validate.RegisterTagNameFunc(func(field reflect.StructField) string {
-		name := strings.SplitN(field.Tag.Get("json"), ",", 2)[0]
+		name, _, _ := strings.Cut(field.Tag.Get("json"), ",")
 		if name == "-" {
 			return ""
 		}
@@ -172,8 +172,7 @@ func decodeJSONError(err error) error {
 		return errcodes.UnknownParameter(matches[1])
 	}
 
-	var typeErr *json.UnmarshalTypeError
-	if errors.As(err, &typeErr) {
+	if typeErr, ok := errors.AsType[*json.UnmarshalTypeError](err); ok {
 		return typeValidationError(strings.Trim(typeErr.Field, "."), formatUnmarshalTypeError(typeErr))
 	}
 
@@ -224,12 +223,10 @@ func (b *Binder) decode(target any, params url.Values, decoder *schema.Decoder) 
 			return err
 		}
 		for _, itemErr := range multiError {
-			var conversionErr schema.ConversionError
-			if errors.As(itemErr, &conversionErr) {
+			if conversionErr, ok := errors.AsType[schema.ConversionError](itemErr); ok {
 				return typeValidationError(conversionErr.Key, formatSchemaConversionError(conversionErr))
 			}
-			var unknownKeyErr schema.UnknownKeyError
-			if errors.As(itemErr, &unknownKeyErr) {
+			if unknownKeyErr, ok := errors.AsType[schema.UnknownKeyError](itemErr); ok {
 				return errcodes.UnknownParameter(unknownKeyErr.Key)
 			}
 			return itemErr

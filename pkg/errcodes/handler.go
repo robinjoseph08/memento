@@ -59,16 +59,14 @@ func (*Handler) generatePayload(err error) (int, ErrorResponse) {
 		code = strcase.ToSnake(message)
 	}
 
-	var applicationErr *Error
-	if errors.As(err, &applicationErr) {
+	if applicationErr, ok := errors.AsType[*Error](err); ok {
 		httpCode = applicationErr.HTTPCode
 		message = applicationErr.Message
 		code = applicationErr.Code
 	}
 
 	detail := ErrorDetail{Code: code, Message: message, StatusCode: httpCode}
-	var fieldErr *FieldError
-	if errors.As(err, &fieldErr) {
+	if fieldErr, ok := errors.AsType[*FieldError](err); ok {
 		detail.Fields = fieldErr.Fields
 	}
 	return httpCode, ErrorResponse{Error: detail}
