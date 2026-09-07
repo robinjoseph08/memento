@@ -34,7 +34,7 @@ RUN MODULE=$(go list -m) && \
       -ldflags "-w -s -X $MODULE/pkg/version.Version=$VERSION" \
       -o /out/app ./cmd/api
 
-FROM alpine:3.22.2@sha256:4b7ce07002c69e8f3d704a9c5d6fd3053be500b7f1c69fc0d80990c2ad8dd412
+FROM alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
 RUN apk add --no-cache ca-certificates tzdata && \
     addgroup -S app && adduser -S -G app app && \
     mkdir -p /config /data/files && chown -R app:app /config /data
