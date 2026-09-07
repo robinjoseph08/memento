@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/robinjoseph08/memento/pkg/errorstack"
 	"github.com/uptrace/bun"
 	"github.com/uptrace/bun/migrate"
 )
@@ -39,7 +40,7 @@ func Migrate(ctx context.Context, db *bun.DB) (*migrate.MigrationGroup, error) {
 func migrateRegistered(ctx context.Context, db *bun.DB, registered *migrate.Migrations) (*migrate.MigrationGroup, error) {
 	migrator := newMigrator(db, registered)
 	if err := migrator.Init(ctx); err != nil {
-		return nil, fmt.Errorf("initialize migrations: %w", err)
+		return nil, fmt.Errorf("initialize migrations: %w", errorstack.CaptureContext(ctx, err))
 	}
 	if len(registered.Sorted()) == 0 {
 		return new(migrate.MigrationGroup), nil
@@ -48,7 +49,7 @@ func migrateRegistered(ctx context.Context, db *bun.DB, registered *migrate.Migr
 	return withLock(ctx, migrator, func() (*migrate.MigrationGroup, error) {
 		group, err := migrator.Migrate(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("run migrations: %w", err)
+			return nil, fmt.Errorf("run migrations: %w", errorstack.CaptureContext(ctx, err))
 		}
 		return group, nil
 	})
@@ -63,7 +64,7 @@ func Rollback(ctx context.Context, db *bun.DB) (*migrate.MigrationGroup, error) 
 func rollbackRegistered(ctx context.Context, db *bun.DB, registered *migrate.Migrations) (*migrate.MigrationGroup, error) {
 	migrator := newMigrator(db, registered)
 	if err := migrator.Init(ctx); err != nil {
-		return nil, fmt.Errorf("initialize migrations: %w", err)
+		return nil, fmt.Errorf("initialize migrations: %w", errorstack.CaptureContext(ctx, err))
 	}
 	if len(registered.Sorted()) == 0 {
 		return new(migrate.MigrationGroup), nil
@@ -72,7 +73,7 @@ func rollbackRegistered(ctx context.Context, db *bun.DB, registered *migrate.Mig
 	return withLock(ctx, migrator, func() (*migrate.MigrationGroup, error) {
 		group, err := migrator.Rollback(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("roll back migrations: %w", err)
+			return nil, fmt.Errorf("roll back migrations: %w", errorstack.CaptureContext(ctx, err))
 		}
 		return group, nil
 	})
@@ -84,13 +85,13 @@ func withLock(
 	action func() (*migrate.MigrationGroup, error),
 ) (group *migrate.MigrationGroup, returnErr error) {
 	if err := migrator.Lock(ctx); err != nil {
-		return nil, fmt.Errorf("lock migrations: %w", err)
+		return nil, fmt.Errorf("lock migrations: %w", errorstack.CaptureContext(ctx, err))
 	}
 	defer func() {
 		unlockCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), unlockTimeout)
 		defer cancel()
 		if err := migrator.Unlock(unlockCtx); err != nil {
-			returnErr = errors.Join(returnErr, fmt.Errorf("unlock migrations: %w", err))
+			returnErr = errors.Join(returnErr, fmt.Errorf("unlock migrations: %w", errorstack.Capture(err)))
 		}
 	}()
 

@@ -13,6 +13,7 @@ require (
 	github.com/knadh/koanf/providers/file v1.2.1
 	github.com/knadh/koanf/v2 v2.3.5
 	github.com/labstack/echo/v5 v5.3.1
+	github.com/pkg/errors v0.9.1
 	github.com/robinjoseph08/golib v0.6.0
 	github.com/stretchr/testify v1.11.1
 	github.com/uptrace/bun v1.2.18
@@ -40,7 +41,6 @@ require (
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mitchellh/copystructure v1.2.0 // indirect
 	github.com/mitchellh/reflectwalk v1.0.2 // indirect
-	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/puzpuzpuz/xsync/v3 v3.5.1 // indirect
 	github.com/rs/zerolog v1.34.0 // indirect

@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"path"
 	"strings"
+
+	"github.com/robinjoseph08/memento/pkg/errorstack"
 )
 
 // embedded contains the Vite production build. The tracked placeholder keeps
@@ -21,13 +23,13 @@ var embedded embed.FS
 func Handler() (http.Handler, bool, error) {
 	root, err := fs.Sub(embedded, "dist")
 	if err != nil {
-		return nil, false, err
+		return nil, false, errorstack.Capture(err)
 	}
 	if _, err := fs.Stat(root, "index.html"); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, false, nil
 		}
-		return nil, false, err
+		return nil, false, errorstack.Capture(err)
 	}
 	return newHandler(root), true, nil
 }

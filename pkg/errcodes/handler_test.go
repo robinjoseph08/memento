@@ -91,8 +91,28 @@ func TestHandlerIgnoresCanceledRequests(t *testing.T) {
 	e.HTTPErrorHandler = NewHandler().Handle
 	e.GET("/", func(_ *echo.Context) error { return context.Canceled })
 	recorder := httptest.NewRecorder()
-	e.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	ctx, cancel := context.WithCancel(request.Context())
+	cancel()
+	e.ServeHTTP(recorder, request.WithContext(ctx))
 
 	assert.Equal(t, http.StatusOK, recorder.Code)
 	assert.Empty(t, recorder.Body.String())
+}
+
+func TestHandlerDoesNotHideFailureJoinedWithCancellation(t *testing.T) {
+	t.Parallel()
+
+	e := echo.New()
+	e.HTTPErrorHandler = NewHandler().Handle
+	e.GET("/", func(_ *echo.Context) error {
+		return errors.Join(context.Canceled, errors.New("database failed"))
+	})
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	ctx, cancel := context.WithCancel(request.Context())
+	cancel()
+	e.ServeHTTP(recorder, request.WithContext(ctx))
+
+	assert.Equal(t, http.StatusInternalServerError, recorder.Code)
 }

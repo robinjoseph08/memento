@@ -3,12 +3,13 @@ package migrations
 import (
 	"context"
 
+	"github.com/robinjoseph08/memento/pkg/errorstack"
 	"github.com/uptrace/bun"
 )
 
 func init() {
 	Migrations.MustRegister(func(ctx context.Context, db *bun.DB) error {
-		return db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		err := db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 			_, err := tx.ExecContext(ctx, `
 CREATE TABLE persons (
  id uuid PRIMARY KEY,
@@ -42,10 +43,11 @@ CREATE TABLE sessions (
 CREATE INDEX sessions_identity_id_idx ON sessions(identity_id);
 CREATE INDEX sessions_expires_at_idx ON sessions(expires_at);
 `)
-			return err
+			return errorstack.CaptureContext(ctx, err)
 		})
+		return errorstack.CaptureContext(ctx, err)
 	}, func(ctx context.Context, db *bun.DB) error {
 		_, err := db.ExecContext(ctx, `DROP TABLE sessions, installation, identities, persons`)
-		return err
+		return errorstack.CaptureContext(ctx, err)
 	})
 }

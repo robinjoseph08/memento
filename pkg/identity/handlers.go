@@ -9,6 +9,7 @@ import (
 
 	"github.com/labstack/echo/v5"
 	"github.com/robinjoseph08/memento/pkg/errcodes"
+	"github.com/robinjoseph08/memento/pkg/errorstack"
 )
 
 const CookieName = "memento_session"
@@ -41,7 +42,7 @@ func (h *Handlers) status(c *echo.Context) error {
 			result.Person = &session.Person
 		}
 	}
-	return c.JSON(http.StatusOK, result)
+	return errorstack.CaptureContext(c.Request().Context(), c.JSON(http.StatusOK, result))
 }
 
 func (h *Handlers) fakeSignIn(c *echo.Context) error {
@@ -54,7 +55,7 @@ func (h *Handlers) fakeSignIn(c *echo.Context) error {
 		return err
 	}
 	h.setCookie(c, session.Token, session.ExpiresAt)
-	return c.JSON(http.StatusOK, session.Person)
+	return errorstack.CaptureContext(c.Request().Context(), c.JSON(http.StatusOK, session.Person))
 }
 
 func (h *Handlers) signOut(c *echo.Context) error {
@@ -68,11 +69,11 @@ func (h *Handlers) signOut(c *echo.Context) error {
 		}
 	}
 	h.clearCookie(c)
-	return c.NoContent(http.StatusNoContent)
+	return errorstack.CaptureContext(c.Request().Context(), c.NoContent(http.StatusNoContent))
 }
 
 func (h *Handlers) me(c *echo.Context) error {
-	return c.JSON(http.StatusOK, c.Get("identity.person"))
+	return errorstack.CaptureContext(c.Request().Context(), c.JSON(http.StatusOK, c.Get("identity.person")))
 }
 
 func (h *Handlers) authenticate(c *echo.Context) (Session, error) {

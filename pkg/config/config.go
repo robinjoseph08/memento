@@ -17,9 +17,22 @@ import (
 	"github.com/knadh/koanf/providers/env"
 	"github.com/knadh/koanf/providers/file"
 	"github.com/knadh/koanf/v2"
+	"github.com/robinjoseph08/memento/pkg/errorstack"
 )
 
 const defaultConfigPath = "/config/app.yaml"
+
+type environmentLoadError struct {
+	cause error
+}
+
+func (e *environmentLoadError) Error() string {
+	return "environment: could not load configuration"
+}
+
+func (e *environmentLoadError) Unwrap() error {
+	return e.cause
+}
 
 // Config holds the application configuration. Values can come from a YAML
 // file or environment variables. Environment variables take precedence.
@@ -74,7 +87,10 @@ func load(configPath string, requireConfigFile bool, environment koanf.Provider,
 	if err := k.Load(file.Provider(configPath), yaml.Parser()); err != nil {
 		if !os.IsNotExist(err) || requireConfigFile {
 			if fileError, ok := errors.AsType[*os.PathError](err); ok {
-				return nil, fmt.Errorf("config_file: %w", fileError)
+				if os.IsNotExist(fileError) {
+					return nil, fmt.Errorf("config_file: %w", fileError)
+				}
+				return nil, fmt.Errorf("config_file: %w", errorstack.Capture(fileError))
 			}
 			return nil, fmt.Errorf("config_file: invalid YAML; check syntax and value types")
 		}
@@ -82,7 +98,7 @@ func load(configPath string, requireConfigFile bool, environment koanf.Provider,
 
 	if environment != nil {
 		if err := k.Load(environment, nil); err != nil {
-			return nil, fmt.Errorf("environment: could not load configuration")
+			return nil, errorstack.Capture(&environmentLoadError{cause: err})
 		}
 	}
 
@@ -106,7 +122,7 @@ func load(configPath string, requireConfigFile bool, environment koanf.Provider,
 
 	name, err := hostname()
 	if err != nil {
-		return nil, fmt.Errorf("get hostname: %w", err)
+		return nil, fmt.Errorf("get hostname: %w", errorstack.Capture(err))
 	}
 	cfg.Hostname = name
 
@@ -222,7 +238,7 @@ func validateConfig(cfg *Config) error {
 	if err := validate.Struct(cfg); err != nil {
 		var validationErrors validator.ValidationErrors
 		if !errors.As(err, &validationErrors) {
-			return err
+			return errorstack.Capture(err)
 		}
 		field := validationErrors[0]
 		return fmt.Errorf("%s: %s %s", field.Field(), field.Tag(), field.Param())

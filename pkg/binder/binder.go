@@ -19,6 +19,7 @@ import (
 	"github.com/gorilla/schema"
 	"github.com/labstack/echo/v5"
 	"github.com/robinjoseph08/memento/pkg/errcodes"
+	"github.com/robinjoseph08/memento/pkg/errorstack"
 )
 
 const (
@@ -61,10 +62,10 @@ func New() (*Binder, error) {
 		return name
 	})
 	if err := validate.RegisterValidation("date", dateValidator); err != nil {
-		return nil, err
+		return nil, errorstack.Capture(err)
 	}
 	if err := validate.RegisterValidation("url", urlValidator); err != nil {
-		return nil, err
+		return nil, errorstack.Capture(err)
 	}
 
 	return &Binder{
@@ -116,15 +117,15 @@ func (b *Binder) Bind(c *echo.Context, target any) error {
 	}
 
 	if err := b.conform.Struct(req.Context(), target); err != nil {
-		return err
+		return errorstack.CaptureContext(req.Context(), err)
 	}
 	if err := defaults.Set(target); err != nil {
-		return err
+		return errorstack.Capture(err)
 	}
 	if err := b.validate.Struct(target); err != nil {
 		var validationErrors validator.ValidationErrors
 		if !errors.As(err, &validationErrors) || len(validationErrors) == 0 {
-			return err
+			return errorstack.Capture(err)
 		}
 		fields := make(map[string]string, len(validationErrors))
 		messenger, _ := target.(ValidationMessenger)
@@ -220,7 +221,7 @@ func (b *Binder) decode(target any, params url.Values, decoder *schema.Decoder) 
 	if err := decoder.Decode(target, params); err != nil {
 		var multiError schema.MultiError
 		if !errors.As(err, &multiError) {
-			return err
+			return errorstack.Capture(err)
 		}
 		for _, itemErr := range multiError {
 			if conversionErr, ok := errors.AsType[schema.ConversionError](itemErr); ok {
@@ -229,7 +230,7 @@ func (b *Binder) decode(target any, params url.Values, decoder *schema.Decoder) 
 			if unknownKeyErr, ok := errors.AsType[schema.UnknownKeyError](itemErr); ok {
 				return errcodes.UnknownParameter(unknownKeyErr.Key)
 			}
-			return itemErr
+			return errorstack.Capture(itemErr)
 		}
 	}
 	return nil
