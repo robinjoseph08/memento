@@ -4,78 +4,83 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
-	"strings"
-	"time"
 
 	"github.com/go-playground/validator/v10"
 	"github.com/gorilla/schema"
 )
 
-var timeType = reflect.TypeOf(time.Time{})
-
 func formatUnmarshalTypeError(err *json.UnmarshalTypeError) string {
-	return fmt.Sprintf("%q should be of type %s", strings.Trim(err.Field, "."), err.Type)
+	return formatExpectedType(err.Type)
 }
 
 func formatSchemaConversionError(err schema.ConversionError) string {
-	return fmt.Sprintf("%q should be of type %s", err.Key, err.Type)
+	return formatExpectedType(err.Type)
 }
 
-func formatValidationError(err validator.FieldError) string {
-	field := err.Field()
-
-	switch err.Tag() {
-	case "date":
-		return fmt.Sprintf("%q should be in the format of YYYY-MM-DD", field)
-	case "email":
-		return fmt.Sprintf("%q is not a valid email", field)
-	case "gt":
-		value := err.Param()
-		if value == "" && err.Type() == timeType {
-			value = "now"
-		}
-		return fmt.Sprintf("%q must be greater than %s", field, value)
-	case "gte":
-		value := err.Param()
-		if value == "" && err.Type() == timeType {
-			value = "now"
-		}
-		return fmt.Sprintf("%q must be greater than or equal to %s", field, value)
-	case "gtfield":
-		return fmt.Sprintf("%q must be greater than %s", field, err.Param())
-	case "ltfield":
-		return fmt.Sprintf("%q must be less than %s", field, err.Param())
-	case "max":
-		return formatLimit(field, err, "less than or equal to")
-	case "min":
-		return formatLimit(field, err, "greater than or equal to")
-	case "ne":
-		return fmt.Sprintf("%q can't be %q", field, err.Param())
-	case "oneof":
-		values := make([]string, 0, len(strings.Fields(err.Param())))
-		for _, value := range strings.Fields(err.Param()) {
-			values = append(values, fmt.Sprintf("%q", value))
-		}
-		return fmt.Sprintf("%q must be one of the following: %s", field, strings.Join(values, ", "))
-	case "required":
-		return fmt.Sprintf("%q is required", field)
-	case "url":
-		return fmt.Sprintf("%q is not a valid URL", field)
+func formatExpectedType(kind reflect.Type) string {
+	switch kind.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return "Enter a whole number."
+	case reflect.Float32, reflect.Float64:
+		return "Enter a number."
+	case reflect.String:
+		return "Enter text."
+	case reflect.Bool:
+		return "Choose yes or no."
 	default:
-		return fmt.Sprintf("%q failed validation %q", field, err.Tag())
+		return "Check this value."
 	}
 }
 
-func formatLimit(field string, err validator.FieldError, comparison string) string {
+func formatValidationError(err validator.FieldError) string {
+	switch err.Tag() {
+	case "date":
+		return "Enter a valid date in YYYY-MM-DD format."
+	case "email":
+		return "Enter a valid email address."
+	case "gt", "lt":
+		switch err.Kind() {
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+			reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+			reflect.Float32, reflect.Float64:
+			if err.Tag() == "gt" {
+				return fmt.Sprintf("Enter a number greater than %s.", err.Param())
+			}
+			return fmt.Sprintf("Enter a number less than %s.", err.Param())
+		}
+	case "max", "min", "gte", "lte":
+		return formatLimit(err)
+	case "required":
+		return "Enter a value."
+	case "url":
+		return "Enter a valid web address."
+	}
+	return "Check this value."
+}
+
+func formatLimit(err validator.FieldError) string {
+	minimum := err.Tag() == "min" || err.Tag() == "gte"
 	switch err.Kind() {
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
 		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
 		reflect.Float32, reflect.Float64:
-		return fmt.Sprintf("%q must be %s %s", field, comparison, err.Param())
-	case reflect.Slice, reflect.Array:
-		return fmt.Sprintf("%q length must be %s %s %s", field, comparison, err.Param(), pluralize("element", err.Param()))
+		if minimum {
+			return fmt.Sprintf("Enter %s or more.", err.Param())
+		}
+		return fmt.Sprintf("Enter %s or less.", err.Param())
+	case reflect.Slice, reflect.Array, reflect.Map:
+		if minimum {
+			return fmt.Sprintf("Choose at least %s %s.", err.Param(), pluralize("item", err.Param()))
+		}
+		return fmt.Sprintf("Choose %s %s or fewer.", err.Param(), pluralize("item", err.Param()))
+	case reflect.String:
+		if minimum {
+			return fmt.Sprintf("Use at least %s %s.", err.Param(), pluralize("character", err.Param()))
+		}
+		return fmt.Sprintf("Use %s %s or fewer.", err.Param(), pluralize("character", err.Param()))
 	default:
-		return fmt.Sprintf("%q length must be %s %s %s", field, comparison, err.Param(), pluralize("character", err.Param()))
+		return "Check this value."
 	}
 }
 

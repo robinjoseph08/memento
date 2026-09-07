@@ -37,6 +37,14 @@ type Binder struct {
 	validate     *validator.Validate
 }
 
+// ValidationMessenger optionally supplies feature-specific field messages on a
+// request type. Field is the JSON field name and rule is the failed validator tag.
+// Return an empty string to use the binder's shared message. Messages appear next
+// to the field, so they should explain how to fix it without repeating its name.
+type ValidationMessenger interface {
+	ValidationMessage(field, rule string) string
+}
+
 // New creates a request binder.
 func New() (*Binder, error) {
 	queryDecoder := schema.NewDecoder()
@@ -118,7 +126,19 @@ func (b *Binder) Bind(c *echo.Context, target any) error {
 		if !errors.As(err, &validationErrors) || len(validationErrors) == 0 {
 			return err
 		}
-		return errcodes.ValidationError(formatValidationError(validationErrors[0]))
+		fields := make(map[string]string, len(validationErrors))
+		messenger, _ := target.(ValidationMessenger)
+		for _, field := range validationErrors {
+			message := ""
+			if messenger != nil {
+				message = messenger.ValidationMessage(field.Field(), field.Tag())
+			}
+			if message == "" {
+				message = formatValidationError(field)
+			}
+			fields[field.Field()] = message
+		}
+		return errcodes.ValidationFields("Check the highlighted fields.", fields)
 	}
 
 	return nil
@@ -154,7 +174,7 @@ func decodeJSONError(err error) error {
 
 	var typeErr *json.UnmarshalTypeError
 	if errors.As(err, &typeErr) {
-		return errcodes.ValidationTypeError(formatUnmarshalTypeError(typeErr))
+		return typeValidationError(strings.Trim(typeErr.Field, "."), formatUnmarshalTypeError(typeErr))
 	}
 
 	return errcodes.MalformedPayload()
@@ -206,7 +226,7 @@ func (b *Binder) decode(target any, params url.Values, decoder *schema.Decoder) 
 		for _, itemErr := range multiError {
 			var conversionErr schema.ConversionError
 			if errors.As(itemErr, &conversionErr) {
-				return errcodes.ValidationTypeError(formatSchemaConversionError(conversionErr))
+				return typeValidationError(conversionErr.Key, formatSchemaConversionError(conversionErr))
 			}
 			var unknownKeyErr schema.UnknownKeyError
 			if errors.As(itemErr, &unknownKeyErr) {
@@ -216,6 +236,13 @@ func (b *Binder) decode(target any, params url.Values, decoder *schema.Decoder) 
 		}
 	}
 	return nil
+}
+
+func typeValidationError(field, message string) error {
+	if field == "" {
+		return errcodes.ValidationTypeError("Check the submitted values.")
+	}
+	return &errcodes.FieldError{Cause: errcodes.ValidationTypeError("Check the highlighted fields."), Fields: map[string]string{field: message}}
 }
 
 func contextBool(c *echo.Context, key string, fallback bool) bool {

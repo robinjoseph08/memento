@@ -43,6 +43,11 @@
   its configuration.
 - Return structured field errors for validation failures so every frontend form
   can preserve values, show inline errors, and focus the first invalid field.
+  Keep JSON names as field keys, not in human-facing messages. Use actionable
+  field-local guidance and a generic summary instead of repeating a field error.
+  For feature-specific wording, implement `binder.ValidationMessenger` on the
+  request type in `validation.go`; return an empty string for shared defaults.
+  Keep message selection out of handlers.
 
 ## Testing
 

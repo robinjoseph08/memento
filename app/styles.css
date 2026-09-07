@@ -1,1 +1,44 @@
+@import "@fontsource/epilogue/latin-400.css";
+@import "@fontsource/epilogue/latin-500.css";
+@import "@fontsource/slabo-13px/latin-400.css";
 @import "tailwindcss";
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-surface: var(--surface);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-text);
+  --color-border: var(--border);
+  --color-primary: #06b6d4;
+  --color-primary-foreground: #083344;
+  --color-ring: var(--focus);
+  --color-destructive: var(--destructive);
+  --font-sans: "Epilogue", sans-serif;
+  --font-heading: "Slabo 13px", Georgia, serif;
+}
+
+:root {
+  --background: #101112;
+  --foreground: #edeeed;
+  --muted: #a8aaa9;
+  --surface: #191b1c;
+  --accent: #25282a;
+  --border: #2d3032;
+  --accent-text: #4ac2d3;
+  --focus: #06b6d4;
+  --destructive: #ffaaa5;
+}
+
+:root[data-theme="light"] {
+  --background: #fafbfb;
+  --foreground: #212629;
+  --muted: #657077;
+  --surface: #f0f2f2;
+  --accent: #e1e6e7;
+  --border: #dce2e3;
+  --accent-text: #08788d;
+  --focus: #08788d;
+  --destructive: #b32e2a;
+}

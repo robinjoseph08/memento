@@ -88,5 +88,8 @@ anything here.
 
 ## Additional tips
 
+- The README should only have information that is relevant for the whole repo.
+  It should include things like project overview and commands for an engineer
+  to bootstrap for development.
 - Security is important, but should not be over-indexed on, especially for dev
   mode/maintainer-only features.

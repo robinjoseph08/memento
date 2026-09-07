@@ -51,6 +51,23 @@ func TestBindJSONCanAllowUnknownFields(t *testing.T) {
 	assert.Equal(t, "Example", payload.Name)
 }
 
+func TestBindTypeErrorHasFriendlyField(t *testing.T) {
+	t.Parallel()
+	b, err := New()
+	require.NoError(t, err)
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"count":"many"}`))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	var input struct {
+		Count int `json:"count"`
+	}
+	err = b.Bind(e.NewContext(req, httptest.NewRecorder()), &input)
+	var fieldErr *errcodes.FieldError
+	require.ErrorAs(t, err, &fieldErr)
+	assert.Equal(t, "Enter a whole number.", fieldErr.Fields["count"])
+	assert.Equal(t, "Check the highlighted fields.", fieldErr.Error())
+}
+
 func TestBindJSONRejectsWrongType(t *testing.T) {
 	t.Parallel()
 
@@ -160,6 +177,87 @@ func TestBindMultipartForm(t *testing.T) {
 	assert.Equal(t, "Example", payload.Name)
 	require.Contains(t, payload.FormFiles, "attachment")
 	assert.Equal(t, "note.txt", payload.FormFiles["attachment"].Filename)
+}
+
+func TestBindAllFieldErrors(t *testing.T) {
+	t.Parallel()
+	b, err := New()
+	require.NoError(t, err)
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"email":"bad","display_name":""}`))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	c := e.NewContext(req, httptest.NewRecorder())
+	var body struct {
+		Email string `json:"email" validate:"required,email"`
+		Name  string `json:"display_name" validate:"required"`
+	}
+	err = b.Bind(c, &body)
+	var fields *errcodes.FieldError
+	require.ErrorAs(t, err, &fields)
+	assert.Equal(t, map[string]string{
+		"email":        "Enter a valid email address.",
+		"display_name": "Enter a value.",
+	}, fields.Fields)
+	var apiErr *errcodes.Error
+	require.ErrorAs(t, err, &apiErr)
+	assert.Equal(t, "Check the highlighted fields.", apiErr.Message)
+}
+
+func TestBindReadableLimits(t *testing.T) {
+	t.Parallel()
+
+	var payload struct {
+		DisplayName string   `json:"display_name" validate:"max=100"`
+		ShortName   string   `json:"short_name" validate:"min=2"`
+		Page        int      `json:"page" validate:"min=1"`
+		Count       int      `json:"count" validate:"max=10"`
+		Tags        []string `json:"tags" validate:"min=1"`
+		Choices     []string `json:"choices" validate:"max=2"`
+	}
+	body := `{"display_name":"` + strings.Repeat("é", 101) + `","short_name":"a","page":0,"count":11,"choices":["a","b","c"]}`
+	err := bind(t, http.MethodPost, "/", body, echo.MIMEApplicationJSON, &payload, nil)
+	var fields *errcodes.FieldError
+	require.ErrorAs(t, err, &fields)
+	assert.Equal(t, map[string]string{
+		"display_name": "Use 100 characters or fewer.",
+		"short_name":   "Use at least 2 characters.",
+		"page":         "Enter 1 or more.",
+		"count":        "Enter 10 or less.",
+		"tags":         "Choose at least 1 item.",
+		"choices":      "Choose 2 items or fewer.",
+	}, fields.Fields)
+}
+
+func TestBindReadableFormatsAndComparisons(t *testing.T) {
+	t.Parallel()
+
+	var payload struct {
+		Date     string `json:"capture_date" validate:"date"`
+		URL      string `json:"server_url" validate:"url"`
+		After    int    `json:"after" validate:"gt=1"`
+		AtLeast  int    `json:"at_least" validate:"gte=2"`
+		Before   int    `json:"before" validate:"lt=3"`
+		AtMost   int    `json:"at_most" validate:"lte=4"`
+		Code     string `json:"code" validate:"len=5"`
+		End      int    `json:"end" validate:"gtfield=After"`
+		Kind     string `json:"kind" validate:"oneof=internal_one internal_two"`
+		NotEqual string `json:"not_equal" validate:"ne=internal_value"`
+	}
+	err := bind(t, http.MethodPost, "/", `{"capture_date":"2026-02-31","server_url":"no","after":1,"at_least":1,"before":3,"at_most":5,"not_equal":"internal_value"}`, echo.MIMEApplicationJSON, &payload, nil)
+	var fields *errcodes.FieldError
+	require.ErrorAs(t, err, &fields)
+	assert.Equal(t, map[string]string{
+		"capture_date": "Enter a valid date in YYYY-MM-DD format.",
+		"server_url":   "Enter a valid web address.",
+		"after":        "Enter a number greater than 1.",
+		"at_least":     "Enter 2 or more.",
+		"before":       "Enter a number less than 3.",
+		"at_most":      "Enter 4 or less.",
+		"code":         "Check this value.",
+		"end":          "Check this value.",
+		"kind":         "Check this value.",
+		"not_equal":    "Check this value.",
+	}, fields.Fields)
 }
 
 func TestBindValidation(t *testing.T) {

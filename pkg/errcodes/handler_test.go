@@ -13,6 +13,22 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestStructuredFieldErrors(t *testing.T) {
+	t.Parallel()
+	e := echo.New()
+	e.HTTPErrorHandler = NewHandler().Handle
+	e.GET("/", func(_ *echo.Context) error {
+		return ValidationFields("Check the highlighted fields.", map[string]string{"email": "Enter a valid email address.", "display_name": "Enter a display name."})
+	})
+	recorder := httptest.NewRecorder()
+	e.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
+	assert.Equal(t, 422, recorder.Code)
+	var response ErrorResponse
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &response))
+	assert.Equal(t, "Enter a valid email address.", response.Error.Fields["email"])
+	assert.Equal(t, "Enter a display name.", response.Error.Fields["display_name"])
+}
+
 func TestHandlerResponses(t *testing.T) {
 	t.Parallel()
 

@@ -56,10 +56,10 @@ Run setup from the main Git worktree first:
 mise setup
 ```
 
-This command installs the pinned tools, JavaScript dependencies, Chromium, and
-Firefox. It starts PostgreSQL with Docker Compose, creates a database named
-after the repository if needed, runs migrations, and generates TypeScript
-types.
+This command installs the pinned tools, JavaScript dependencies, Chromium,
+Firefox, and WebKit. It starts PostgreSQL with Docker Compose, creates a
+database named after the repository if needed, runs migrations, and generates
+TypeScript types.
 
 PostgreSQL is shared by every worktree, but each worktree receives a separate
 database. Shared PostgreSQL data lives in the main worktree at `tmp/postgres`.
@@ -95,7 +95,10 @@ mise start
 The command starts the API with Air, waits for it to become ready, and then
 starts Vite. It tries API port `3579` and web port `5173` first. If either port
 is occupied, it uses the next available port. Vite proxies `/api` and `/health`
-to the selected API port.
+to the selected API port. Open the printed `http://localhost:PORT` web URL;
+`PUBLIC_URL` uses that same origin. `localhost` and `127.0.0.1` are different
+browser origins, so substituting one for the other causes mutation requests to
+be rejected.
 
 The following commands start one process when needed:
 
@@ -113,7 +116,8 @@ mise check
 
 This runs Go linting, Go tests, ESLint, Prettier, TypeScript checks, Vitest,
 Chromium E2E tests, and a complete production build. CI also runs the race
-detector, Firefox, a Docker build, and a production smoke test.
+detector, Firefox, WebKit, PostgreSQL 14 compatibility, a Docker build, and a
+production-image smoke test.
 
 Other useful commands:
 
@@ -122,7 +126,15 @@ mise check:quiet
 mise test:race
 mise test:e2e
 mise e2e:firefox
+mise e2e:webkit
 ```
+
+`mise test:e2e` uses `TEST_DATABASE_URL`, or the current worktree database and
+its recorded PostgreSQL port when unset. Direct Go tests also use the current
+worktree database, while `pnpm exec playwright test` uses the main development
+database. All test data stays in temporary schemas with small pools. Export
+`TEST_DATABASE_URL` to make all commands use one dedicated test database
+instead.
 
 ## Build the production application
 
@@ -135,6 +147,9 @@ files into `build/api/api`. The binary serves API routes, static assets, and
 SPA fallback routes from one HTTP port. Development still uses Vite separately
 for hot module replacement.
 
+Production authentication is not implemented yet. Do not expose development
+sign-in publicly.
+
 Build the production container:
 
 ```sh
@@ -143,8 +158,38 @@ mise docker
 
 The image runs one non-root Go process, listens on port `8080`, reads optional
 configuration from `/config/app.yaml`, and stores mutable files under
-`/data/files`. Supply `DATABASE_URL` for a reachable PostgreSQL database. See
-`app.example.yaml` for every setting.
+`/data/files`. Configure `DATABASE_URL`, `PUBLIC_URL`, `IMMICH_URL`,
+`IMMICH_API_KEY`, and `AUTH_MODE` through YAML or environment variables.
+`IMMICH_URL` is the instance base URL without `/api`. Environment values
+override YAML. `PUBLIC_URL` must match the browser origin and controls cookie
+security and mutation origin checks. See `app.example.yaml` for every setting.
+
+### Separate PostgreSQL database and role
+
+Memento can share a PostgreSQL 14 or newer server with Immich, but not Immich's
+database or role. As a PostgreSQL administrator, provision Memento separately:
+
+```sql
+CREATE ROLE memento LOGIN PASSWORD 'choose-a-strong-password';
+CREATE DATABASE memento OWNER memento;
+REVOKE ALL ON DATABASE memento FROM PUBLIC;
+```
+
+Use `postgres://memento:YOUR_URL_ENCODED_PASSWORD@HOST:5432/memento` for
+`DATABASE_URL`, adding the appropriate TLS settings for your deployment. Do not
+grant this role access to Immich tables. Memento talks to Immich only through
+its HTTP API with a read-only API key.
+
+For isolated tests, provision another database and role:
+
+```sql
+CREATE ROLE memento_test LOGIN PASSWORD 'choose-a-test-password';
+CREATE DATABASE memento_test OWNER memento_test;
+REVOKE ALL ON DATABASE memento_test FROM PUBLIC;
+```
+
+Set `TEST_DATABASE_URL` to that test database. Test and QA cleanup drops only
+the random schema allocated by that invocation, never the database.
 
 ## Database migrations
 

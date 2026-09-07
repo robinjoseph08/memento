@@ -44,6 +44,12 @@ func (p *OSProcesses) Start(ctx context.Context, env Environment, mode string, a
 
 func (p *OSProcesses) E2E(ctx context.Context, env Environment, project string, webPort int) error {
 	childEnv := webEnvironment(env, webPort)
+	if os.Getenv("TEST_DATABASE_URL") == "" {
+		if os.Getenv("CI") == "true" {
+			return errors.New("TEST_DATABASE_URL is required in CI")
+		}
+		childEnv = append(childEnv, "TEST_DATABASE_URL="+env.DatabaseURL(env.CurrentDatabase))
+	}
 	args := []string{"exec", "playwright", "test"}
 	if project != "" {
 		args = append(args, "--project="+project)
@@ -77,8 +83,15 @@ func developmentEnvironment(env Environment, apiPort, webPort int) ([]string, er
 			"VITE_API_URL="+fmt.Sprintf("http://127.0.0.1:%d", apiPort),
 		)
 	}
+	publicPort := apiPort
+	publicHost := "127.0.0.1"
 	if webPort != 0 {
 		values = append(values, "WEB_PORT="+strconv.Itoa(webPort))
+		publicPort = webPort
+		publicHost = "localhost"
+	}
+	if publicPort != 0 {
+		values = append(values, "PUBLIC_URL="+fmt.Sprintf("http://%s:%d", publicHost, publicPort))
 	}
 	return values, nil
 }

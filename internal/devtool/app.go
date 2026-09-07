@@ -394,7 +394,7 @@ func (a *App) start(ctx context.Context, env Environment, args []string) error {
 		}
 	}
 	if webPort != 0 {
-		if err := a.printf("Web: http://127.0.0.1:%d\n", webPort); err != nil {
+		if err := a.printf("Web: http://localhost:%d\n", webPort); err != nil {
 			return err
 		}
 	}
