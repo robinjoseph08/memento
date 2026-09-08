@@ -7,6 +7,9 @@
 - Keep Bun table models and small shared value types in `pkg/models`. Models may
   define persistence and serialization shape, but must not contain business
   behavior or orchestration.
+- Prefer Bun's `NewSelect`, `NewInsert`, `NewUpdate`, and `NewDelete` query
+  builders. Reserve `NewRaw` and `ExecContext` for DDL or unsupported constructs,
+  and explain why each exception needs raw SQL.
 - Use application-generated UUIDv7 values for Memento entity IDs and store them
   in PostgreSQL's native `uuid` type. Keep Immich IDs as opaque external
   references.

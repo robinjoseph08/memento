@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { request } from "../../lib/http";
+import { clearPrivateQueries, statusKey } from "../../lib/query-client";
 import type {
   Person,
   SignInRequest,
@@ -8,25 +9,46 @@ import type {
 } from "../../types/generated/identity";
 
 export function useIdentityStatus() {
+  const client = useQueryClient();
   return useQuery({
-    queryKey: ["identity", "status"],
-    queryFn: ({ signal }) =>
-      request<Status>("/api/identity/status", { signal }),
+    queryKey: statusKey,
+    queryFn: async ({ signal }) => {
+      const status = await request<Status>("/api/identity/status", { signal });
+      signal.throwIfAborted();
+      const previous = client.getQueryData<Status>(statusKey);
+      if (
+        previous?.person?.id !== status.person?.id ||
+        previous?.person?.is_curator !== status.person?.is_curator
+      )
+        clearPrivateQueries(client);
+      return status;
+    },
     retry: false,
     staleTime: 30_000,
+    refetchOnWindowFocus: "always",
   });
 }
 
-export function useSignOut() {
+export function useSignOut(everywhere = false) {
   const client = useQueryClient();
+  const { data } = useIdentityStatus();
   return useMutation({
-    mutationFn: () => request<void>("/api/identity/sign-out", { body: {} }),
+    mutationKey: ["private", data?.person?.id, "sign-out"],
+    mutationFn: () =>
+      request<void>(
+        `/api/identity/${everywhere ? "sign-out-everywhere" : "sign-out"}`,
+        { body: {} },
+      ),
     onSuccess: async () => {
+      if (
+        client.getQueryData<Status>(statusKey)?.person?.id !== data?.person?.id
+      )
+        return;
       await client.cancelQueries();
-      client.removeQueries({ queryKey: ["connection"] });
-      client.setQueryData<Status>(["identity", "status"], {
+      clearPrivateQueries(client);
+      client.setQueryData<Status>(statusKey, {
         claimed: true,
-        auth_mode: "fake",
+        auth_mode: data?.auth_mode ?? "google",
       });
     },
   });
@@ -39,8 +61,8 @@ export function useFakeSignIn() {
       request<Person>("/api/identity/fake-sign-in", { body: claims }),
     onSuccess: async (person) => {
       await client.cancelQueries();
-      client.removeQueries({ queryKey: ["connection"] });
-      client.setQueryData<Status>(["identity", "status"], {
+      clearPrivateQueries(client);
+      client.setQueryData<Status>(statusKey, {
         claimed: true,
         person,
         auth_mode: "fake",

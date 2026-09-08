@@ -139,11 +139,15 @@ func TestClaimAndReturningSignIn(t *testing.T) {
 	claims.Email = "new@example.test"
 	returning, err := module.SignIn(t.Context(), claims)
 	require.NoError(t, err)
-	assert.Equal(t, session.Person, returning.Person)
+	expected := session.Person
+	// The selected account changed email, so its notification preference clears.
+	expected.UpdateEmail = ""
+	expected.EmailUpdates = false
+	assert.Equal(t, expected, returning.Person)
 	assert.NotEqual(t, session.Token, returning.Token)
 	authenticated, err := module.Authenticate(t.Context(), session.Token)
 	require.NoError(t, err)
-	assert.Equal(t, session.Person, authenticated.Person)
+	assert.Equal(t, expected, authenticated.Person)
 	claims.Subject = "unknown"
 	_, err = module.SignIn(t.Context(), claims)
 	require.ErrorIs(t, err, identity.ErrAccessDenied)

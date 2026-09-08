@@ -4,21 +4,30 @@
 # Every setting can also be set with its uppercase environment variable.
 # Environment variables take precedence over this file.
 
-# Production authentication is not available until #7 adds Google sign-in.
-# This production example intentionally fails startup in the current release.
-# For local testing only, set APP_ENV=development and AUTH_MODE=fake.
+# For local testing without Google, set APP_ENV=development and AUTH_MODE=fake.
 # Env: APP_ENV. Defaults to production; also accepts development and test.
 app_env: production
 
-# Required. Fake sign-in is permitted only in development and test.
-# Google currently fails startup with a "not available yet" message.
+# Required. Google is the production provider.
+# Fake sign-in is permitted only in development and test.
 # Env: AUTH_MODE
 auth_mode: google
 
-# Required public Memento origin. HTTP or HTTPS, with no subpath, credentials,
-# query, or fragment. A trailing slash is accepted and removed.
+# Required public Memento origin, with no subpath, credentials, query, or fragment.
+# Google requires HTTPS except exact HTTP localhost in development or test.
+# A trailing slash is accepted and removed.
+# Google sign-in appends /api/identity/google/callback to this origin.
+# Register that exact redirect URI on the Google Web application client.
 # Env: PUBLIC_URL
 public_url: https://memento.example.com
+
+# Required when AUTH_MODE=google. See README.md#google-sign-in for console setup.
+# Env: GOOGLE_CLIENT_ID
+google_client_id: ""
+
+# Keep this secret in an environment variable rather than a checked-in file.
+# Env: GOOGLE_CLIENT_SECRET
+google_client_secret: ""
 
 # Required Immich instance base URL, NOT its /api endpoint.
 # HTTP or HTTPS. A reverse-proxy base path such as https://host/photos is

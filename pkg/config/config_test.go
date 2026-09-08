@@ -80,9 +80,9 @@ func TestLoadRestrictsAuthentication(t *testing.T) {
 		{"fake", "test", ""},
 		{"fake", "production", "auth_mode: fake requires app_env development or test"},
 		{"fake", "", "auth_mode: fake requires app_env development or test"},
-		{"google", "production", "auth_mode: google is not available yet"},
-		{"google", "development", "auth_mode: google is not available yet"},
-		{"other", "test", "auth_mode: must be fake"},
+		{"google", "production", "google_client_id: required"},
+		{"google", "development", "google_client_id: required"},
+		{"other", "test", "auth_mode: must be google or fake"},
 		{"fake", "staging", "app_env: must be production, development, or test"},
 	} {
 		t.Run(tc.mode+"/"+tc.environment, func(t *testing.T) {

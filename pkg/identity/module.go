@@ -56,14 +56,15 @@ func New(db *bun.DB, now func() time.Time) *Module {
 
 func (m *Module) Claimed(ctx context.Context) (bool, error) {
 	var claimed bool
-	if err := m.db.NewRaw("SELECT claimed_by IS NOT NULL FROM installation WHERE singleton = true").Scan(ctx, &claimed); err != nil {
+	if err := m.db.NewSelect().Table("installation").
+		ColumnExpr("claimed_by IS NOT NULL").Where("singleton = true").Scan(ctx, &claimed); err != nil {
 		return false, errorstack.CaptureContext(ctx, err)
 	}
 	return claimed, nil
 }
 
-// SignIn claims an empty installation or authenticates a known provider subject.
-// Locking the singleton serializes only sign-in, including concurrent claims.
+// SignIn claims an empty installation, authenticates a known subject, or consumes
+// an exact verified-email preauthorization. Display names never grant access.
 func (m *Module) SignIn(ctx context.Context, claims Claims) (Session, error) {
 	if err := validateClaims(claims); err != nil {
 		return Session{}, err
@@ -76,9 +77,10 @@ func (m *Module) SignIn(ctx context.Context, claims Claims) (Session, error) {
 	token := base64.RawURLEncoding.EncodeToString(bytes)
 	hash := sha256.Sum256([]byte(token))
 	var result Session
-	err := m.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+	err := m.change(ctx, func(ctx context.Context, tx bun.Tx) error {
 		var claimedBy sql.NullString
-		if err := tx.NewRaw("SELECT claimed_by FROM installation WHERE singleton = true FOR UPDATE").Scan(ctx, &claimedBy); err != nil {
+		if err := tx.NewSelect().Table("installation").
+			Column("claimed_by").Where("singleton = true").Scan(ctx, &claimedBy); err != nil {
 			return errorstack.CaptureContext(ctx, err)
 		}
 		var linked models.Identity
@@ -86,49 +88,92 @@ func (m *Module) SignIn(ctx context.Context, claims Claims) (Session, error) {
 		var person models.Person
 		if errors.Is(err, sql.ErrNoRows) {
 			if claimedBy.Valid {
-				return ErrAccessDenied
+				person, err = m.resolvePreauthorization(ctx, tx, claims)
+				if err != nil {
+					return err
+				}
+			} else {
+				person = models.Person{ID: models.NewUUIDv7(), DisplayName: strings.TrimSpace(claims.DisplayName), IsCurator: true, CreatedAt: now}
+				if _, err := tx.NewInsert().Model(&person).Exec(ctx); err != nil {
+					return errorstack.CaptureContext(ctx, err)
+				}
 			}
-			personID := models.NewUUIDv7()
-			identityID := models.NewUUIDv7()
-			person = models.Person{ID: personID, DisplayName: strings.TrimSpace(claims.DisplayName), IsCurator: true, CreatedAt: now}
-			linked = models.Identity{ID: identityID, PersonID: personID, Provider: claims.Provider, Subject: claims.Subject, Email: claims.Email, CreatedAt: now}
-			if _, err := tx.NewInsert().Model(&person).Exec(ctx); err != nil {
+			previousIdentity, err := tx.NewSelect().Model((*models.Identity)(nil)).Where("person_id = ?", person.ID).Exists(ctx)
+			if err != nil {
 				return errorstack.CaptureContext(ctx, err)
 			}
+			linked = models.Identity{ID: models.NewUUIDv7(), PersonID: person.ID, Provider: claims.Provider, Subject: claims.Subject, Email: claims.Email, CreatedAt: now}
 			if _, err := tx.NewInsert().Model(&linked).Exec(ctx); err != nil {
 				return errorstack.CaptureContext(ctx, err)
 			}
-			updated, err := tx.ExecContext(ctx, "UPDATE installation SET claimed_by = ?, claimed_at = ? WHERE singleton = true AND claimed_by IS NULL", person.ID, now)
-			if err != nil {
-				return errorstack.CaptureContext(ctx, err)
+			if !previousIdentity {
+				person.UpdateIdentityID = &linked.ID
+				person.UpdateEmail = linked.Email
+				person.EmailUpdates = true
+				if _, err := tx.NewUpdate().Model(&person).Column("update_identity_id", "email_updates").WherePK().Exec(ctx); err != nil {
+					return errorstack.CaptureContext(ctx, err)
+				}
 			}
-			count, err := updated.RowsAffected()
-			if err != nil {
-				return errorstack.Capture(err)
-			}
-			if count != 1 {
-				return ErrAccessDenied
+			if !claimedBy.Valid {
+				updated, err := tx.NewUpdate().Table("installation").
+					Set("claimed_by = ?", person.ID).Set("claimed_at = ?", now).
+					Where("singleton = true").Where("claimed_by IS NULL").Exec(ctx)
+				if err != nil {
+					return errorstack.CaptureContext(ctx, err)
+				}
+				count, err := updated.RowsAffected()
+				if err != nil {
+					return errorstack.Capture(err)
+				}
+				if count != 1 {
+					return ErrAccessDenied
+				}
 			}
 		} else if err != nil {
 			return errorstack.CaptureContext(ctx, err)
-		} else if err := tx.NewSelect().Model(&person).Where("id = ?", linked.PersonID).Scan(ctx); err != nil {
+		} else {
+			person, err = personByID(ctx, tx, linked.PersonID.String())
+			if err != nil {
+				return err
+			}
+		}
+		if person.DeactivatedAt != nil {
+			return ErrAccessDenied
+		}
+		if linked.UnlinkedAt != nil {
+			approved, err := m.resolvePreauthorization(ctx, tx, claims)
+			if err != nil {
+				return err
+			}
+			if approved.ID != person.ID {
+				return ErrAccessDenied
+			}
+		}
+		if _, err := tx.NewUpdate().Model(&linked).Set("email = ?, unlinked_at = NULL", claims.Email).WherePK().Exec(ctx); err != nil {
 			return errorstack.CaptureContext(ctx, err)
 		}
-		session := models.Session{TokenHash: hash[:], IdentityID: linked.ID, CreatedAt: now, RenewedAt: now, ExpiresAt: now.Add(SessionLifetime)}
+		if linked.Email != claims.Email && person.UpdateIdentityID != nil && *person.UpdateIdentityID == linked.ID {
+			person.UpdateEmail = ""
+			person.UpdateIdentityID = nil
+			person.EmailUpdates = false
+			if _, err := tx.NewUpdate().Model(&person).Column("update_identity_id", "email_updates").WherePK().Exec(ctx); err != nil {
+				return errorstack.CaptureContext(ctx, err)
+			}
+		}
+		session := models.Session{ID: models.NewUUIDv7(), Device: browserDevice(ctx), TokenHash: hash[:], IdentityID: linked.ID, CreatedAt: now, RenewedAt: now, ExpiresAt: now.Add(SessionLifetime)}
 		if _, err := tx.NewInsert().Model(&session).Exec(ctx); err != nil {
 			return errorstack.CaptureContext(ctx, err)
 		}
 		result = Session{Person: projectPerson(person), Token: token, ExpiresAt: session.ExpiresAt}
 		return nil
 	})
-	if err != nil && !errors.Is(err, ErrAccessDenied) {
-		err = errorstack.CaptureContext(ctx, err)
-	}
 	return result, err
 }
 
 func projectPerson(person models.Person) Person {
-	return Person{ID: person.ID.String(), DisplayName: person.DisplayName, IsCurator: person.IsCurator}
+	return Person{ID: person.ID.String(), DisplayName: person.DisplayName, IsCurator: person.IsCurator,
+		OnboardingCompletedAt: person.OnboardingCompletedAt, DeactivatedAt: person.DeactivatedAt,
+		UpdateEmail: person.UpdateEmail, EmailUpdates: person.EmailUpdates}
 }
 
 // Authenticate rejects expired sessions and extends active sessions at most daily.
@@ -136,42 +181,48 @@ func (m *Module) Authenticate(ctx context.Context, token string) (Session, error
 	if len(token) != 43 {
 		return Session{}, ErrUnauthenticated
 	}
-	now := m.now().UTC()
-	hash := sha256.Sum256([]byte(token))
-	if _, err := m.db.NewDelete().Model((*models.Session)(nil)).Where("expires_at <= ?", now).Exec(ctx); err != nil {
-		return Session{}, errorstack.CaptureContext(ctx, err)
-	}
-	var row struct {
-		ID          models.UUID
-		DisplayName string
-		IsCurator   bool
-		ExpiresAt   time.Time
-	}
-	err := m.db.NewRaw(`SELECT p.id, p.display_name, p.is_curator, s.expires_at
- FROM sessions s JOIN identities i ON i.id = s.identity_id JOIN persons p ON p.id = i.person_id
- WHERE s.token_hash = ? AND s.expires_at > ?`, hash[:], now).Scan(ctx, &row)
-	if errors.Is(err, sql.ErrNoRows) {
+	var result Session
+	valid := false
+	err := m.change(ctx, func(ctx context.Context, tx bun.Tx) error {
+		now := m.now().UTC()
+		if _, err := tx.NewDelete().Model((*models.Session)(nil)).Where("expires_at <= ?", now).Exec(ctx); err != nil {
+			return errorstack.CaptureContext(ctx, err)
+		}
+		person, err := m.sessionPerson(ctx, tx, token)
+		if errors.Is(err, ErrUnauthenticated) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		hash := sha256.Sum256([]byte(token))
+		var session models.Session
+		if err := tx.NewSelect().Model(&session).Where("token_hash = ?", hash[:]).Scan(ctx); err != nil {
+			return errorstack.CaptureContext(ctx, err)
+		}
+		renewed := !session.RenewedAt.After(now.Add(-24 * time.Hour))
+		if renewed {
+			session.RenewedAt = now
+			session.ExpiresAt = now.Add(SessionLifetime)
+			if _, err := tx.NewUpdate().Model(&session).Column("renewed_at", "expires_at").WherePK().Exec(ctx); err != nil {
+				return errorstack.CaptureContext(ctx, err)
+			}
+		}
+		result = Session{Person: projectPerson(person), ExpiresAt: session.ExpiresAt, Renewed: renewed}
+		valid = true
+		return nil
+	})
+	if err == nil && !valid {
 		return Session{}, ErrUnauthenticated
 	}
-	if err != nil {
-		return Session{}, errorstack.CaptureContext(ctx, err)
-	}
-	// The condition prevents simultaneous requests from repeatedly extending activity.
-	var expiry time.Time
-	err = m.db.NewRaw(`UPDATE sessions SET renewed_at = ?, expires_at = ?
- WHERE token_hash = ? AND renewed_at <= ? AND expires_at > ? RETURNING expires_at`, now, now.Add(SessionLifetime), hash[:], now.Add(-24*time.Hour), now).Scan(ctx, &expiry)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return Session{}, errorstack.CaptureContext(ctx, err)
-	}
-	if err == nil {
-		row.ExpiresAt = expiry
-	}
-	return Session{Person: Person{ID: row.ID.String(), DisplayName: row.DisplayName, IsCurator: row.IsCurator}, ExpiresAt: row.ExpiresAt, Renewed: err == nil}, nil
+	return result, err
 }
 
 // SignOut removes only the current browser's session and is safe to repeat.
 func (m *Module) SignOut(ctx context.Context, token string) error {
-	hash := sha256.Sum256([]byte(token))
-	_, err := m.db.NewDelete().Model((*models.Session)(nil)).Where("token_hash = ?", hash[:]).Exec(ctx)
-	return errorstack.CaptureContext(ctx, err)
+	return m.change(ctx, func(ctx context.Context, tx bun.Tx) error {
+		hash := sha256.Sum256([]byte(token))
+		_, err := tx.NewDelete().Model((*models.Session)(nil)).Where("token_hash = ?", hash[:]).Exec(ctx)
+		return errorstack.CaptureContext(ctx, err)
+	})
 }
