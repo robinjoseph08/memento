@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-FROM golang:1.27.0-alpine@sha256:4c9fe60190a2a3350ddc51de80d0224b8a6698d12bdfc999fee45ea9d6c46dbc AS typegen
+FROM golang:1.27.1-alpine@sha256:cf6fca6641884b8433441b2b0652976f975e1d0fdd26d177eaaf8596087f3125 AS typegen
 WORKDIR /src
 RUN go install github.com/gzuidhof/tygo@v0.2.21
 COPY go.mod go.sum tygo.yaml ./
@@ -17,7 +17,7 @@ COPY tsconfig*.json vite.config.ts ./
 COPY --from=typegen /src/app/types/generated ./app/types/generated
 RUN pnpm build
 
-FROM golang:1.27.0-alpine@sha256:4c9fe60190a2a3350ddc51de80d0224b8a6698d12bdfc999fee45ea9d6c46dbc AS backend
+FROM golang:1.27.1-alpine@sha256:cf6fca6641884b8433441b2b0652976f975e1d0fdd26d177eaaf8596087f3125 AS backend
 ARG TARGETOS
 ARG TARGETARCH
 ARG VERSION=dev
