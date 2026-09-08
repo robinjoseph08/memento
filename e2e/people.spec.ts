@@ -53,7 +53,7 @@ test("a Curator approves access, a member manages their profile and sessions, an
     await profile(member);
     await expect(
       member.getByRole("combobox", { name: "Email for updates" }),
-    ).toHaveValue("alex@example.test");
+    ).toHaveText("alex@example.test");
     await expect(
       member.getByRole("checkbox", { name: "Email me when there are updates" }),
     ).toBeChecked();
@@ -66,15 +66,16 @@ test("a Curator approves access, a member manages their profile and sessions, an
     await member
       .getByRole("textbox", { name: "Display name" })
       .fill("Alex Updated");
+    await member.getByRole("combobox", { name: "Email for updates" }).click();
     await member
-      .getByRole("combobox", { name: "Email for updates" })
-      .selectOption("alex@example.test");
+      .getByRole("option", { name: "alex@example.test", exact: true })
+      .click();
     await member
       .getByRole("checkbox", { name: "Email me when there are updates" })
       .check();
     await member.getByRole("button", { name: "Save profile" }).click();
     await expect(member.getByRole("status")).toHaveText("Profile saved.");
-    const currentBrowser = member.getByRole("button", {
+    const currentBrowser = member.getByRole("img", {
       name: "This browser",
       exact: true,
     });

@@ -225,6 +225,15 @@ and live in PostgreSQL.
 5. Copy the client ID and secret into Memento's configuration. Keep the secret
    out of source control.
 
+A single Web application client can list both the deployed and localhost
+callback URLs. For a personal installation used by fewer than 100 people, all
+personally known to you, this allows sharing a client for local testing. Google
+classifies that audience as personal use. Apps classified as production under
+[Google's OAuth policies](https://developers.google.com/identity/protocols/oauth2/policies#separate-projects)
+require separate Cloud projects for development and production, not merely
+separate clients. Separate projects also keep credentials and consent settings
+independent.
+
 ### Configure production
 
 Set these alongside `DATABASE_URL`, `IMMICH_URL`, and `IMMICH_API_KEY`:

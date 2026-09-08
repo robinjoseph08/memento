@@ -1,5 +1,3 @@
-import { useState } from "react";
-
 import { formatDate } from "../../lib/utils";
 import type { BrowserSession } from "../../types/generated/identity";
 import {
@@ -24,7 +22,6 @@ export function SessionTable({
   sessions: BrowserSession[];
   showExpiration: boolean;
 }) {
-  const [currentBrowserOpen, setCurrentBrowserOpen] = useState(false);
   if (!sessions.length)
     return <p className="text-sm text-muted">No active browser sessions.</p>;
   return (
@@ -52,40 +49,39 @@ export function SessionTable({
               <div className="flex items-center gap-2">
                 <span>{session.device || "Unknown browser"}</span>
                 {session.current && (
-                  <TooltipProvider>
-                    <Tooltip
-                      onOpenChange={setCurrentBrowserOpen}
-                      open={currentBrowserOpen}
-                    >
-                      <TooltipTrigger asChild>
-                        <button
-                          aria-label="This browser"
-                          className="-my-1 inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-sm text-accent-foreground hover:bg-surface focus-visible:outline-2 focus-visible:outline-ring"
-                          onClick={(event) => {
-                            event.preventDefault();
-                            setCurrentBrowserOpen(true);
-                          }}
-                          type="button"
-                        >
-                          <svg
-                            aria-hidden="true"
-                            fill="none"
-                            height="16"
-                            stroke="currentColor"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            strokeWidth="1.5"
-                            viewBox="0 0 24 24"
-                            width="16"
+                  <>
+                    <TooltipProvider>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <span
+                            aria-label="This browser"
+                            className="-my-1 inline-flex size-6 shrink-0 cursor-default items-center justify-center rounded-sm text-accent-foreground focus-visible:outline-2 focus-visible:outline-ring pointer-coarse:hidden"
+                            role="img"
+                            tabIndex={0}
                           >
-                            <rect height="13" rx="2" width="18" x="3" y="3" />
-                            <path d="M8 21h8m-4-5v5m-4-12 3 3 5-5" />
-                          </svg>
-                        </button>
-                      </TooltipTrigger>
-                      <TooltipContent>This browser</TooltipContent>
-                    </Tooltip>
-                  </TooltipProvider>
+                            <svg
+                              aria-hidden="true"
+                              fill="none"
+                              height="16"
+                              stroke="currentColor"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              strokeWidth="1.5"
+                              viewBox="0 0 24 24"
+                              width="16"
+                            >
+                              <rect height="13" rx="2" width="18" x="3" y="3" />
+                              <path d="M8 21h8m-4-5v5m-4-12 3 3 5-5" />
+                            </svg>
+                          </span>
+                        </TooltipTrigger>
+                        <TooltipContent>This browser</TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
+                    <span className="hidden text-xs whitespace-nowrap text-muted pointer-coarse:inline">
+                      This browser
+                    </span>
+                  </>
                 )}
               </div>
               <p className="mt-2 text-xs text-muted">{session.email}</p>

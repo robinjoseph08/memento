@@ -11,6 +11,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vitest";
 
 import { App } from "./App";
+import type { UpdateProfileRequest } from "./types/generated/identity";
 
 const alex = {
   id: "alex",
@@ -96,7 +97,13 @@ it("keeps profile edits through failed refresh, focuses a rejected email, and sa
     await screen.findByText("Choose a linked email address."),
   ).toBeVisible();
   expect(email).toHaveFocus();
-  expect(screen.getAllByRole("option")).toHaveLength(2);
+  await user.click(email);
+  const choices = screen.getByRole("listbox");
+  expect(within(choices).getAllByRole("option")).toHaveLength(2);
+  await user.click(
+    within(choices).getByRole("option", { name: "alex@example.test" }),
+  );
+  expect(email).toHaveFocus();
   failSave = false;
   await user.click(
     screen.getByRole("checkbox", { name: "Email me when there are updates" }),
@@ -104,6 +111,60 @@ it("keeps profile edits through failed refresh, focuses a rejected email, and sa
   await user.click(screen.getByRole("button", { name: "Save profile" }));
   expect(await screen.findByRole("status")).toHaveTextContent("Profile saved.");
   expect(name).toHaveValue("Alex edited");
+});
+
+it("chooses a linked update email and clears it through the profile menu", async () => {
+  let person = alex;
+  const saved: UpdateProfileRequest[] = [];
+  const identities = [
+    account,
+    { ...account, id: "second", email: "alex.second@example.test" },
+  ];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (path: string, options?: RequestInit) => {
+      if (path.endsWith("/status"))
+        return Response.json({ claimed: true, person, auth_mode: "fake" });
+      if (path.endsWith("/sessions")) return Response.json([]);
+      if (options?.method === "POST") {
+        const request = JSON.parse(
+          String(options.body),
+        ) as UpdateProfileRequest;
+        saved.push(request);
+        person = { ...person, ...request };
+      }
+      return Response.json({ person, identities });
+    }),
+  );
+  window.history.replaceState(null, "", "/profile");
+  const user = userEvent.setup();
+  render(<App />);
+  const email = await screen.findByRole("combobox", {
+    name: "Email for updates",
+  });
+  await user.click(email);
+  await user.click(
+    screen.getByRole("option", { name: "alex.second@example.test" }),
+  );
+  await user.click(screen.getByRole("button", { name: "Save profile" }));
+  expect(await screen.findByRole("status")).toHaveTextContent("Profile saved.");
+  expect(saved[0]).toEqual({
+    display_name: "Alex",
+    update_email: "alex.second@example.test",
+    email_updates: false,
+  });
+  expect(email).toHaveTextContent("alex.second@example.test");
+  await user.click(email);
+  await user.keyboard("{Home}{Enter}");
+  expect(email).toHaveTextContent("No email selected");
+  expect(email).toHaveFocus();
+  await user.click(screen.getByRole("button", { name: "Save profile" }));
+  await waitFor(() => expect(saved).toHaveLength(2));
+  expect(saved[1]).toEqual({
+    display_name: "Alex",
+    update_email: "",
+    email_updates: false,
+  });
 });
 
 it("replaces a private profile on identity refresh and ignores the old in-flight session response", async () => {
@@ -304,7 +365,7 @@ it.each([false, true])(
     const sessions = await screen.findByRole("table", {
       name: "Browser sessions",
     });
-    const currentBrowser = within(sessions).getByRole("button", {
+    const currentBrowser = within(sessions).getByRole("img", {
       name: "This browser",
     });
     expect(currentBrowser).toBeVisible();
@@ -317,10 +378,9 @@ it.each([false, true])(
     await waitFor(() =>
       expect(screen.queryByRole("tooltip")).not.toBeInTheDocument(),
     );
-    await user.click(currentBrowser);
     expect(
-      await screen.findByRole("tooltip", { name: "This browser" }),
-    ).toBeVisible();
+      within(sessions).queryByRole("button", { name: "This browser" }),
+    ).not.toBeInTheDocument();
     expect(within(sessions).getByText("Firefox on Mac")).toBeVisible();
     expect(within(sessions).getByText(account.email)).toBeVisible();
     expect(
@@ -363,7 +423,7 @@ it("uses server notification defaults and preserves an unsaved opt-out on refres
   expect(updates).toBeChecked();
   expect(
     screen.getByRole("combobox", { name: "Email for updates" }),
-  ).toHaveValue("alex@example.test");
+  ).toHaveTextContent("alex@example.test");
   await user.click(updates);
   person = { ...person, display_name: "Alex refreshed" };
   identities = [

@@ -15,8 +15,6 @@ export const headingClass =
   "font-heading text-[clamp(34px,4vw,48px)] leading-[1.2] font-normal tracking-[-1px] text-balance";
 export const sectionHeadingClass =
   "font-heading text-[27px]/[1.2] font-normal tracking-[-0.35px]";
-export const selectClass =
-  "min-h-11 w-full rounded-sm border border-border bg-background px-3 text-sm focus-visible:outline-2 focus-visible:outline-ring";
 
 export function Form({
   error,

@@ -81,7 +81,7 @@ export function PreauthorizationTables({
       {previous.length > 0 && (
         <details className="mt-5">
           <summary className="cursor-pointer list-inside rounded-sm px-4 py-3 text-sm text-muted hover:bg-surface focus-visible:outline-2 focus-visible:outline-ring">
-            Previous emails ({previous.length})
+            <span className="ml-2">Previous emails ({previous.length})</span>
           </summary>
           <div className="mt-3">
             <Table
