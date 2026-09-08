@@ -2,13 +2,14 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 
 import { useImportAlbum, useSources } from "../../hooks/queries/albums";
 import { useConnection } from "../../hooks/queries/connection";
+import { SearchForm } from "../forms/search-form";
 import {
-  Field,
   Form,
   headingClass,
   ReadFailure,
   sectionHeadingClass,
 } from "../people/form-fields";
+import { BackLink } from "../shell/back-link";
 import { PageTitle } from "../shell/page-title";
 import { Button } from "../ui/button";
 import { AlbumImage } from "./album-image";
@@ -44,38 +45,20 @@ export function ImportPage() {
   return (
     <>
       <PageTitle title="Import an album" />
-      <Button asChild className="mb-6" variant="ghost">
-        <Link to="/curator">Back to albums</Link>
-      </Button>
+      <BackLink to="/curator">All albums</BackLink>
       <h1 className={headingClass}>Import an album</h1>
       <p className="mt-5 max-w-150 text-muted">
         Choose an Immich album to bring into Memento. It stays unpublished until
         you choose to share it.
       </p>
-      <Form
-        aria-label="Search albums"
-        className="mt-8 flex max-w-150 items-end gap-3"
-        error={null}
-        onSubmit={(event) => {
-          event.preventDefault();
-          const form = new FormData(event.currentTarget);
-          setParams({ q: String(form.get("q") ?? "").trim(), page: "1" });
-        }}
-      >
-        <div className="min-w-0 flex-1 [&>div]:mb-0">
-          <Field
-            defaultValue={search}
-            key={search}
-            label="Search Immich albums"
-            name="q"
-          />
-        </div>
-        <Button type="submit" variant="outline">
-          Search
-        </Button>
-      </Form>
+      <SearchForm
+        className="mt-9 mb-7"
+        label="Search Immich albums"
+        onSearch={(value) => setParams({ q: value.trim(), page: "1" })}
+        value={search}
+      />
       <ImportWarning />
-      <div className="mt-9">
+      <div>
         {sources.isPending && <p role="status">Loading Immich albums…</p>}
         {sources.isError && (
           <ReadFailure
@@ -103,6 +86,7 @@ export function ImportPage() {
                   <article className="min-w-0" key={source.id}>
                     <AlbumImage
                       alt={source.title}
+                      className="aspect-[4/3] w-full object-contain"
                       fallback="No cover available"
                       src={source.cover_url}
                     />

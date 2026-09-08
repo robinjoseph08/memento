@@ -2,6 +2,12 @@
 
 ## Organization
 
+- Before implementing ticketed UI, read its parent specification and approved
+  prototype decisions, source, and reference captures. Use the prototype as a
+  visual and interaction reference, not production code to merge or copy.
+  Keep future-ticket controls absent rather than presenting working-looking
+  placeholders. The Curator Album editor uses the compact Workbench layout,
+  not the viewer's large browsing header and gallery.
 - Keep route composition in `app/components/pages`, feature UI in focused
   component directories, shared shadcn components in `app/components/ui`,
   TanStack Query definitions in `app/hooks/queries`, and generated API types in

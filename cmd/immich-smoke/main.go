@@ -4,12 +4,14 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"os/signal"
 	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 	"syscall"
@@ -26,24 +28,42 @@ import (
 	"github.com/uptrace/bun"
 )
 
+func parseRelease(args []string) (string, error) {
+	flags := flag.NewFlagSet("immich-smoke", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	release := flags.String("version", fixture.Release, "exact stable Immich release tag")
+	if err := flags.Parse(args); err != nil {
+		return "", err
+	}
+	if flags.NArg() != 0 || !regexp.MustCompile(`^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`).MatchString(*release) {
+		return "", fmt.Errorf("version must be an exact stable tag such as v3.1.0")
+	}
+	return *release, nil
+}
+
 func main() {
+	release, err := parseRelease(os.Args[1:])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	ctx, cancel := context.WithTimeout(ctx, 8*time.Minute)
 	defer cancel()
-	if err := run(ctx); err != nil {
+	if err := run(ctx, release); err != nil {
 		fmt.Fprintln(os.Stderr, "Immich smoke failed:", err)
 		os.Exit(1)
 	}
-	fmt.Printf("PASS Immich %s: EXIF local dates, midnight, ties, shared media, generated thumbnails through production HTTP media routes, and unchanged source albums\n", fixture.Release)
+	fmt.Printf("PASS Immich %s: EXIF local dates, midnight, ties, shared media, generated thumbnails through production HTTP media routes, and unchanged source albums\n", release)
 }
 
-func run(ctx context.Context) (returnErr error) {
+func run(ctx context.Context, release string) (returnErr error) {
 	baseURL, databaseURL := os.Getenv("MEMENTO_SMOKE_IMMICH_URL"), os.Getenv("MEMENTO_SMOKE_DATABASE_URL")
 	if os.Getenv("MEMENTO_SMOKE_DISPOSABLE") != "1" || baseURL == "" || databaseURL == "" {
-		return fmt.Errorf("run mise exec -- bash scripts/immich-smoke.sh to provision disposable services")
+		return fmt.Errorf("run mise test:immich to provision disposable services")
 	}
-	library, err := fixture.Setup(ctx, baseURL, fixture.Release)
+	library, err := fixture.Setup(ctx, baseURL, release)
 	if err != nil {
 		return err
 	}
@@ -51,7 +71,7 @@ func run(ctx context.Context) (returnErr error) {
 	if err := source.CheckImport(ctx); err != nil {
 		return err
 	}
-	fmt.Printf("Immich %s: non-admin fixture key grants only album.read, asset.read, asset.view\n", fixture.Release)
+	fmt.Printf("Immich %s: non-admin fixture key grants only album.read, asset.read, asset.view\n", release)
 	readyCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
 	if err := waitForMedia(readyCtx, source, library.Assets); err != nil {

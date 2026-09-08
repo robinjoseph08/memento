@@ -18,7 +18,9 @@ test("imports an album through a stopped task, browser closure, and API restart"
   await expect(page.getByText("Page 1 of 2", { exact: true })).toBeVisible();
   await page.getByRole("link", { name: "Next page" }).click();
   await expect(page.getByText("Page 2 of 2", { exact: true })).toBeVisible();
-  await page.getByLabel("Search Immich albums").fill("Fixture Album");
+  await page
+    .getByRole("searchbox", { name: "Search Immich albums" })
+    .fill("Fixture Album");
   await page.getByRole("button", { name: "Search", exact: true }).click();
   await expect(page.getByRole("article")).toHaveCount(2);
   const source = page.getByRole("article").filter({
@@ -94,46 +96,57 @@ test("imports an album through a stopped task, browser closure, and API restart"
   await expect(
     completed.getByText("Unpublished", { exact: true }),
   ).toBeVisible();
-  for (const label of ["June 1, 2026", "June 2, 2026", "June 3, 2026"]) {
-    await expect(
-      completed.getByRole("heading", { name: label, exact: true }),
-    ).toBeVisible();
+  await expect(
+    completed.getByRole("heading", { name: "Moments", exact: true }),
+  ).toBeVisible();
+  await expect(
+    completed.getByText("4 photos, 2 videos", { exact: true }),
+  ).toBeVisible();
+  for (const [label, count] of [
+    ["June 1, 2026", 1],
+    ["June 2, 2026", 3],
+    ["June 3, 2026", 2],
+  ] as const) {
+    const toggle = completed.getByRole("button", { name: label, exact: true });
+    if ((await toggle.getAttribute("aria-expanded")) !== "true")
+      await toggle.click();
+    const previews = completed
+      .getByRole("region", { name: label, exact: true })
+      .getByRole("list", { name: "Moment media" })
+      .getByRole("img");
+    await expect(previews).toHaveCount(count);
+    for (const preview of await previews.all()) {
+      await preview.scrollIntoViewIfNeeded();
+      await expect
+        .poll(() =>
+          preview.evaluate(
+            (image: HTMLImageElement) =>
+              image.complete &&
+              image.naturalWidth === 320 &&
+              image.naturalHeight === 240,
+          ),
+        )
+        .toBe(true);
+      await expect(preview).toHaveAttribute("src", /^\/api\/media\//);
+    }
   }
-  const photos = completed
-    .getByRole("list", { name: "Photos", exact: true })
-    .getByRole("img");
-  const videos = completed
-    .getByRole("list", { name: "Videos", exact: true })
-    .getByRole("img");
-  await expect(photos).toHaveCount(4);
-  await expect(videos).toHaveCount(2);
-  for (const preview of await completed
-    .getByRole("main")
-    .getByRole("img")
-    .all()) {
-    await preview.scrollIntoViewIfNeeded();
-    await expect
-      .poll(() =>
-        preview.evaluate(
-          (image: HTMLImageElement) =>
-            image.complete &&
-            image.naturalWidth === 320 &&
-            image.naturalHeight === 240,
-        ),
-      )
-      .toBe(true);
-    await expect(preview).toHaveAttribute("src", /^\/api\/media\//);
-  }
+  await completed
+    .getByRole("button", { name: "June 2, 2026", exact: true })
+    .click();
   const tiedPhotos = completed
     .getByRole("region", { name: "June 2, 2026" })
-    .getByRole("list", { name: "Photos" })
-    .getByRole("img");
+    .getByRole("list", { name: "Moment media" })
+    .getByRole("img", { name: /\.jpg$/ });
+  await expect(tiedPhotos).toHaveCount(2);
   expect(
     await tiedPhotos.evaluateAll((images) =>
       images.map((image) => image.getAttribute("alt")),
     ),
   ).toEqual(["coast-02.jpg", "coast-03.jpg"]);
 
+  await completed
+    .getByRole("link", { name: "Album details", exact: true })
+    .click();
   await completed
     .getByLabel("Album title", { exact: true })
     .fill("Our coast holiday");
@@ -143,7 +156,7 @@ test("imports an album through a stopped task, browser closure, and API restart"
   await expect(
     completed.getByRole("heading", { name: "Our coast holiday", exact: true }),
   ).toBeVisible();
-  await completed.getByRole("link", { name: "Back to albums" }).click();
+  await completed.getByRole("link", { name: "All albums" }).click();
   await expect(
     completed.getByRole("link", {
       name: "Our coast holiday 6 items, unpublished",
@@ -151,7 +164,7 @@ test("imports an album through a stopped task, browser closure, and API restart"
   ).toBeVisible();
   await completed.getByRole("link", { name: "Import an album" }).click();
   await completed
-    .getByLabel("Search Immich albums")
+    .getByRole("searchbox", { name: "Search Immich albums" })
     .fill("Fixture Album - Coast");
   await completed.getByRole("button", { name: "Search", exact: true }).click();
   await expect(completed.getByRole("article")).toHaveCount(1);

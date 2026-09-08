@@ -128,6 +128,10 @@ func Setup(ctx context.Context, baseURL, expectedRelease string) (*Library, erro
 	if actual != expectedRelease || version.Prerelease != nil {
 		return nil, fmt.Errorf("fixture expected stable %s, got %s", expectedRelease, actual)
 	}
+	// An exact version match must not bypass the production import gate.
+	if err := immich.New(baseURL, "").CheckImport(ctx); err != nil {
+		return nil, err
+	}
 	adminPassword, sourcePassword := rand.Text()+"aA1!", rand.Text()+"aA1!"
 	if err := a.json(ctx, "POST", "/auth/admin-sign-up", map[string]string{"email": "admin@memento.invalid", "name": "Smoke admin", "password": adminPassword}, nil); err != nil {
 		return nil, err

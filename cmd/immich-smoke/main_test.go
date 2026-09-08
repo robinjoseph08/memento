@@ -8,6 +8,37 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestParseRelease(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "default", want: "v3.1.0"},
+		{name: "previous minor", args: []string{"--version", "v3.0.3"}, want: "v3.0.3"},
+		{name: "floating", args: []string{"--version", "release"}},
+		{name: "missing value", args: []string{"--version"}},
+		{name: "empty", args: []string{"--version", ""}},
+		{name: "prerelease", args: []string{"--version", "v3.1.0-rc.1"}},
+		{name: "build metadata", args: []string{"--version", "v3.1.0+build"}},
+		{name: "leading zero", args: []string{"--version", "v3.01.0"}},
+		{name: "positional", args: []string{"v3.0.3"}},
+		{name: "unknown flag", args: []string{"--release", "v3.0.3"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := parseRelease(test.args)
+			if test.want == "" {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+				require.Equal(t, test.want, got)
+			}
+		})
+	}
+}
+
 func TestVerifyAlbum(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {

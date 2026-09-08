@@ -46,6 +46,16 @@ func TestJPEG(t *testing.T) {
 
 func TestSetupUsesAdminOnlyToCreateNonAdminSource(t *testing.T) {
 	t.Parallel()
+	for _, release := range []string{"v3.1.0", "v3.0.3"} {
+		t.Run(release, func(t *testing.T) {
+			t.Parallel()
+			testSetup(t, release)
+		})
+	}
+}
+
+func testSetup(t *testing.T, release string) {
+	t.Helper()
 	calls := []string{}
 	uploads := 0
 	albumCount := 0
@@ -54,7 +64,11 @@ func TestSetupUsesAdminOnlyToCreateNonAdminSource(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/api/server/version":
-			_, _ = io.WriteString(w, `{"major":3,"minor":1,"patch":0,"prerelease":null}`)
+			version := `{"major":3,"minor":1,"patch":0,"prerelease":null}`
+			if release == "v3.0.3" {
+				version = `{"major":3,"minor":0,"patch":3,"prerelease":null}`
+			}
+			_, _ = io.WriteString(w, version)
 		case "/api/auth/admin-sign-up":
 			_, _ = io.WriteString(w, `{}`)
 		case "/api/auth/login":
@@ -143,26 +157,38 @@ func TestSetupUsesAdminOnlyToCreateNonAdminSource(t *testing.T) {
 		}
 	}))
 	t.Cleanup(server.Close)
-	library, err := Setup(context.Background(), server.URL, Release)
+	library, err := Setup(context.Background(), server.URL, release)
 	require.NoError(t, err)
 	require.Len(t, library.Assets, 4)
 	require.Len(t, library.Albums, 2)
-	require.Equal(t, []string{"GET /api/server/version", "POST /api/auth/admin-sign-up", "POST /api/auth/login", "POST /api/admin/users", "POST /api/auth/login"}, calls[:5])
+	require.Equal(t, []string{"GET /api/server/version", "GET /api/server/version", "POST /api/auth/admin-sign-up", "POST /api/auth/login", "POST /api/admin/users", "POST /api/auth/login"}, calls[:6])
 	require.Equal(t, "POST /api/api-keys", calls[len(calls)-1])
 	require.NotNil(t, library.Source())
 }
 
 func TestSetupRejectsWrongReleaseBeforeWrites(t *testing.T) {
 	t.Parallel()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet || r.URL.Path != "/api/server/version" {
-			t.Error("wrote before release gate")
-		}
-		_, _ = io.WriteString(w, `{"major":3,"minor":0,"patch":3}`)
-	}))
-	t.Cleanup(server.Close)
-	_, err := Setup(t.Context(), server.URL, Release)
-	require.ErrorContains(t, err, "expected stable v3.1.0")
+	for _, test := range []struct {
+		name, expected, response, failure string
+	}{
+		{"wrong default", "v3.1.0", `{"major":3,"minor":0,"patch":3,"prerelease":null}`, "expected stable v3.1.0"},
+		{"wrong explicit", "v3.0.3", `{"major":3,"minor":1,"patch":0,"prerelease":null}`, "expected stable v3.0.3"},
+		{"prerelease", "v3.0.3", `{"major":3,"minor":0,"patch":3,"prerelease":1}`, "expected stable v3.0.3"},
+		{"unsupported despite exact match", "v3.2.0", `{"major":3,"minor":2,"patch":0,"prerelease":null}`, "Import requires stable Immich"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet || r.URL.Path != "/api/server/version" {
+					t.Error("wrote before release gate")
+				}
+				_, _ = io.WriteString(w, test.response)
+			}))
+			t.Cleanup(server.Close)
+			_, err := Setup(t.Context(), server.URL, test.expected)
+			require.ErrorContains(t, err, test.failure)
+		})
+	}
 }
 
 func TestSetupRejectsProductionOrigin(t *testing.T) {

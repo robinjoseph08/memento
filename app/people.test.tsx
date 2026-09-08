@@ -33,7 +33,7 @@ it.each([true, false])(
   },
 );
 
-it("keeps the people search input focused after Enter and the Search button", async () => {
+it("keeps the same people search input focused when submitting and clearing a search", async () => {
   vi.stubGlobal(
     "fetch",
     vi.fn(async (path: string) =>
@@ -53,13 +53,22 @@ it("keeps the people search input focused after Enter and the Search button", as
   expect(document.title).toBe("People | Memento");
   await user.type(search, "alex{Enter}");
   await waitFor(() => expect(window.location.search).toBe("?q=alex"));
-  expect(
-    screen.getByRole("searchbox", { name: "Search people" }),
-  ).toHaveFocus();
+  expect(search).toHaveFocus();
   await user.click(screen.getByRole("button", { name: "Search" }));
+  expect(search).toHaveFocus();
+  await user.type(search, " draft");
+  await user.click(screen.getByRole("button", { name: "Clear search" }));
+  await waitFor(() => expect(window.location.search).toBe(""));
+  expect(search).toHaveValue("");
+  expect(search).toHaveFocus();
   expect(
-    screen.getByRole("searchbox", { name: "Search people" }),
-  ).toHaveFocus();
+    screen.queryByRole("button", { name: "Clear search" }),
+  ).not.toBeInTheDocument();
+  await user.type(search, "unsubmitted");
+  expect(window.location.search).toBe("");
+  await user.click(screen.getByRole("button", { name: "Clear search" }));
+  expect(search).toHaveValue("");
+  expect(search).toHaveFocus();
 });
 
 it("preserves edits when the server rejects a Person change", async () => {

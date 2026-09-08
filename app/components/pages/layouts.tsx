@@ -129,12 +129,12 @@ export function SignInPage() {
   );
 }
 
-export function CuratorLayout() {
+export function CuratorLayout({ compact = false }: { compact?: boolean }) {
   const { data } = useIdentityStatus();
   if (!data?.person?.is_curator)
     return <Navigate replace to={destination(data?.person)} />;
   return (
-    <main className={pageClassName}>
+    <main className={compact ? "mx-auto max-w-[1440px] pb-10" : pageClassName}>
       <Outlet />
     </main>
   );

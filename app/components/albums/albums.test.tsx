@@ -91,7 +91,7 @@ it("opens the library from an empty collection and links previously imported sou
   ).not.toBeInTheDocument();
 });
 
-it("imports an album, shows progress, then reveals unpublished Moments with separate photos and videos", async () => {
+it("imports an album, shows progress, then reveals unpublished Moments with compact media", async () => {
   let imported = false;
   let completed = false;
   mockAPI((path, options) => {
@@ -130,17 +130,15 @@ it("imports an album, shows progress, then reveals unpublished Moments with sepa
   ).not.toBeInTheDocument();
   completed = true;
   expect(
-    await screen.findByRole(
-      "textbox",
-      { name: "Album title" },
-      { timeout: 4000 },
-    ),
-  ).toHaveValue(album.title);
+    await screen.findByRole("heading", { name: "Moments" }, { timeout: 4000 }),
+  ).toBeVisible();
   expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
   expect(screen.getByText("Unpublished")).toBeVisible();
   const moment = screen.getByRole("region", { name: "First day" });
-  expect(within(moment).getByRole("list", { name: "Photos" })).toBeVisible();
-  expect(within(moment).getByRole("list", { name: "Videos" })).toBeVisible();
+  expect(
+    within(moment).getByRole("list", { name: "Moment media" }),
+  ).toBeVisible();
+  expect(within(moment).getByText("1 photo, 1 video")).toBeVisible();
   expect(screen.getByRole("img", { name: "Beach.jpg" })).toHaveAttribute(
     "src",
     "/media/beach",
@@ -179,6 +177,45 @@ const completeAlbum: AlbumDetail = {
     },
   ],
 };
+
+it("presents distinct Album details and expandable Moments without discarding title edits", async () => {
+  mockAPI(() => Response.json(completeAlbum));
+  window.history.replaceState(null, "", "/curator/albums/album-1");
+  const user = userEvent.setup();
+  render(<App />);
+  const navigation = await screen.findByRole("navigation", {
+    name: "Album sections",
+  });
+  expect(
+    within(navigation).getByRole("link", { name: /Moments/ }),
+  ).toHaveAttribute("aria-current", "page");
+  expect(screen.getByRole("heading", { name: "Moments" })).toBeVisible();
+  const moment = screen.getByRole("button", { name: "First day" });
+  expect(moment).toHaveAttribute("aria-expanded", "true");
+  await user.click(moment);
+  expect(moment).toHaveAttribute("aria-expanded", "false");
+  expect(
+    screen.queryByRole("img", { name: "Beach.jpg" }),
+  ).not.toBeInTheDocument();
+  await user.click(moment);
+  expect(screen.getByRole("img", { name: "Beach.jpg" })).toBeVisible();
+  await user.click(
+    within(navigation).getByRole("link", { name: "Album details" }),
+  );
+  const title = screen.getByRole("textbox", { name: "Album title" });
+  await user.clear(title);
+  await user.type(title, "Unsaved weekend");
+  await user.click(within(navigation).getByRole("link", { name: /Moments/ }));
+  expect(
+    screen.queryByRole("textbox", { name: "Album title" }),
+  ).not.toBeInTheDocument();
+  await user.click(
+    within(navigation).getByRole("link", { name: "Album details" }),
+  );
+  expect(screen.getByRole("textbox", { name: "Album title" })).toHaveValue(
+    "Unsaved weekend",
+  );
+});
 
 it("disables unsupported imports without hiding the library or blocking imported albums", async () => {
   vi.stubGlobal(
@@ -222,6 +259,7 @@ it("disables unsupported imports without hiding the library or blocking imported
   expect(screen.getByRole("button", { name: "Import" })).toBeDisabled();
   expect(screen.getByRole("heading", { name: source.title })).toBeVisible();
   await user.click(screen.getByRole("link", { name: "Open album" }));
+  await user.click(await screen.findByRole("link", { name: "Album details" }));
   expect(
     await screen.findByRole("textbox", { name: "Album title" }),
   ).toHaveValue(album.title);
@@ -246,6 +284,7 @@ it("keeps title edits through failed refresh, focuses field errors, and saves on
   window.history.replaceState(null, "", "/curator/albums/album-1");
   const user = userEvent.setup();
   render(<App />);
+  await user.click(await screen.findByRole("link", { name: "Album details" }));
   const title = await screen.findByRole("textbox", { name: "Album title" });
   await user.clear(title);
   await user.type(title, "Our summer");
@@ -301,8 +340,8 @@ it.each(["complete", "failed"])(
       expect(screen.queryByRole("progressbar")).not.toBeInTheDocument(),
     );
     expect(
-      screen.getByRole(terminal === "complete" ? "textbox" : "button", {
-        name: terminal === "complete" ? "Album title" : "Retry import",
+      screen.getByRole(terminal === "complete" ? "heading" : "button", {
+        name: terminal === "complete" ? "Moments" : "Retry import",
       }),
     ).toBeVisible();
     const stoppedAt = reads;
@@ -325,7 +364,7 @@ it("stops polling when leaving a running import", async () => {
   const user = userEvent.setup();
   render(<App />);
   await screen.findByRole("progressbar");
-  await user.click(screen.getByRole("link", { name: "Back to albums" }));
+  await user.click(screen.getByRole("link", { name: "All albums" }));
   await screen.findByRole("heading", { name: "Your albums" });
   const stoppedAt = reads;
   await act(async () => {
@@ -382,7 +421,7 @@ it("recovers from a source read failure and explains an empty search", async () 
     await screen.findByRole("heading", { name: "No matching albums" }),
   ).toBeVisible();
   expect(
-    screen.getByRole("textbox", { name: "Search Immich albums" }),
+    screen.getByRole("searchbox", { name: "Search Immich albums" }),
   ).toHaveValue("absent");
 });
 
@@ -574,7 +613,7 @@ it("browses source covers, searches in the URL and keeps search when paging", as
   expect(screen.getByText("36 items")).toBeVisible();
   expect(screen.getByText(/Jul 1, 2026.*Jul 7, 2026/)).toBeVisible();
   await user.type(
-    screen.getByRole("textbox", { name: "Search Immich albums" }),
+    screen.getByRole("searchbox", { name: "Search Immich albums" }),
     "Summer{Enter}",
   );
   expect(new URLSearchParams(window.location.search).get("q")).toBe("Summer");

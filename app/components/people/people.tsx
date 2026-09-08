@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { Link, Navigate, useParams, useSearchParams } from "react-router-dom";
 
 import {
@@ -8,6 +8,8 @@ import {
 } from "../../hooks/queries/people";
 import { useUnsavedChanges } from "../../hooks/use-unsaved-changes";
 import { fieldErrors } from "../../lib/http";
+import { SearchForm } from "../forms/search-form";
+import { BackLink } from "../shell/back-link";
 import { PageTitle } from "../shell/page-title";
 import { Button } from "../ui/button";
 import {
@@ -28,11 +30,6 @@ import { PersonDetails } from "./person-details";
 
 export function PeoplePage() {
   const [search, setSearch] = useSearchParams();
-  const searchInputRef = useRef<HTMLInputElement>(null);
-  useEffect(() => {
-    if (searchInputRef.current)
-      searchInputRef.current.value = search.get("q") ?? "";
-  }, [search]);
   const query = usePeople(search.get("q") ?? "");
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
@@ -95,27 +92,12 @@ export function PeoplePage() {
           </DialogContent>
         </Dialog>
       </div>
-      <form
-        className="mb-7 grid max-w-xl grid-cols-[minmax(0,1fr)_auto] items-end gap-2 [&>div]:mb-0"
-        onSubmit={(event) => {
-          event.preventDefault();
-          const values = new FormData(event.currentTarget);
-          setSearch(values.get("q") ? { q: String(values.get("q")) } : {});
-          searchInputRef.current?.focus();
-        }}
-        role="search"
-      >
-        <Field
-          defaultValue={search.get("q") ?? ""}
-          label="Search people"
-          name="q"
-          ref={searchInputRef}
-          type="search"
-        />
-        <Button type="submit" variant="outline">
-          Search
-        </Button>
-      </form>
+      <SearchForm
+        className="mb-7"
+        label="Search people"
+        onSearch={(value) => setSearch(value ? { q: value } : {})}
+        value={search.get("q") ?? ""}
+      />
       {query.isPending && <p role="status">Loading people…</p>}
       {query.isError && (
         <ReadFailure
@@ -179,12 +161,7 @@ export function PersonPage() {
   return (
     <div className="mx-auto max-w-280">
       <PageTitle title={query.data?.person.display_name ?? "Person"} />
-      <Link
-        className="mb-6 inline-block text-sm text-accent-foreground underline underline-offset-4"
-        to="/curator/people"
-      >
-        All people
-      </Link>
+      <BackLink to="/curator/people">All people</BackLink>
       {query.isPending && <p role="status">Loading person…</p>}
       {query.isError && (
         <ReadFailure
