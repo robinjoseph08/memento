@@ -10,6 +10,7 @@ test("mobile navigation uses a dismissible drawer and search keeps keyboard focu
   await trigger.click();
   const drawer = page.getByRole("dialog", { name: "Navigation" });
   await expect(drawer).toBeVisible();
+  await expect(drawer.getByText("memento", { exact: true })).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(drawer).toBeHidden();
   await expect(trigger).toBeFocused();

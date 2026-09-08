@@ -31,7 +31,7 @@ import { SessionTable } from "./session-table";
 export function ProfilePage() {
   const profile = useProfile();
   return (
-    <>
+    <div className="mx-auto max-w-280">
       <h1 className={headingClass}>Your profile</h1>
       {profile.isPending && (
         <p className="mt-6" role="status">
@@ -46,7 +46,7 @@ export function ProfilePage() {
         />
       )}
       {profile.data && <ProfileDetails profile={profile.data} />}
-    </>
+    </div>
   );
 }
 
@@ -69,7 +69,7 @@ function ProfileDetails({ profile }: { profile: Profile }) {
     ...new Set(profile.identities.map((identity) => identity.email)),
   ];
   return (
-    <div className="mt-9 max-w-190 min-w-0">
+    <div className="mt-9 grid min-w-0 gap-x-12 min-[1201px]:grid-cols-[minmax(0,320px)_minmax(0,1fr)]">
       <Form
         aria-busy={update.isPending}
         aria-label="Edit profile"
@@ -142,14 +142,16 @@ function ProfileDetails({ profile }: { profile: Profile }) {
           </p>
         )}
       </Form>
-      <LinkedIdentities
-        canUnlinkLast={false}
-        error={unlink.error}
-        identities={profile.identities}
-        pending={unlink.isPending}
-        unlink={unlink.mutateAsync}
-      />
-      <Sessions />
+      <div className="min-w-0 min-[1201px]:[&>section:first-child]:border-0 min-[1201px]:[&>section:first-child]:pt-0">
+        <LinkedIdentities
+          canUnlinkLast={false}
+          error={unlink.error}
+          identities={profile.identities}
+          pending={unlink.isPending}
+          unlink={unlink.mutateAsync}
+        />
+        <Sessions />
+      </div>
     </div>
   );
 }

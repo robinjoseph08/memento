@@ -19,7 +19,7 @@ auth_mode: google
 # Env: PUBLIC_URL
 public_url: https://memento.example.com
 
-# Required when AUTH_MODE=google. See docs/google-sign-in.md for console setup.
+# Required when AUTH_MODE=google. See README.md#google-sign-in for console setup.
 # Env: GOOGLE_CLIENT_ID
 google_client_id: ""
 

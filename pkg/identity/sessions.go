@@ -78,9 +78,12 @@ func (m *Module) personSessions(ctx context.Context, tx bun.Tx, personID models.
 		ExpiresAt  time.Time
 		Current    bool
 	}
-	err := tx.NewRaw(`SELECT s.id, s.identity_id, i.email, s.device, s.created_at, s.renewed_at, s.expires_at, s.token_hash = ? AS current
- FROM sessions s JOIN identities i ON i.id = s.identity_id
- WHERE i.person_id = ? AND i.unlinked_at IS NULL AND s.expires_at > ? ORDER BY s.created_at, s.id`, hash[:], personID, m.now().UTC()).Scan(ctx, &rows)
+	err := tx.NewSelect().TableExpr("sessions AS s").
+		Column("s.id", "s.identity_id", "i.email", "s.device", "s.created_at", "s.renewed_at", "s.expires_at").
+		ColumnExpr("s.token_hash = ? AS current", hash[:]).
+		Join("JOIN identities AS i ON i.id = s.identity_id").
+		Where("i.person_id = ?", personID).Where("i.unlinked_at IS NULL").
+		Where("s.expires_at > ?", m.now().UTC()).Order("s.created_at", "s.id").Scan(ctx, &rows)
 	if err != nil {
 		return nil, errorstack.CaptureContext(ctx, err)
 	}
@@ -101,7 +104,8 @@ func (m *Module) SignOutEverywhere(ctx context.Context, token string) error {
 }
 
 func revokePersonSessions(ctx context.Context, tx bun.Tx, personID models.UUID) error {
-	_, err := tx.ExecContext(ctx, "DELETE FROM sessions WHERE identity_id IN (SELECT id FROM identities WHERE person_id = ?)", personID)
+	identities := tx.NewSelect().Table("identities").Column("id").Where("person_id = ?", personID)
+	_, err := tx.NewDelete().Model((*models.Session)(nil)).Where("identity_id IN (?)", identities).Exec(ctx)
 	return errorstack.CaptureContext(ctx, err)
 }
 
@@ -112,8 +116,11 @@ func (m *Module) sessionPerson(ctx context.Context, tx bun.Tx, token string) (mo
 		return person, ErrUnauthenticated
 	}
 	hash := sha256.Sum256([]byte(token))
-	err := tx.NewRaw(`SELECT p.id, p.display_name, p.is_curator, p.onboarding_completed_at, p.deactivated_at, p.update_identity_id, COALESCE(updates.email, '') AS update_email, p.email_updates, p.created_at FROM sessions s JOIN identities i ON i.id = s.identity_id
- JOIN persons p ON p.id = i.person_id LEFT JOIN identities updates ON updates.id = p.update_identity_id WHERE s.token_hash = ? AND s.expires_at > ? AND p.deactivated_at IS NULL AND i.unlinked_at IS NULL`, hash[:], m.now().UTC()).Scan(ctx, &person)
+	err := selectPeople(tx, &person).
+		Join("JOIN identities AS i ON i.person_id = person.id").
+		Join("JOIN sessions AS s ON s.identity_id = i.id").
+		Where("s.token_hash = ?", hash[:]).Where("s.expires_at > ?", m.now().UTC()).
+		Where("person.deactivated_at IS NULL").Where("i.unlinked_at IS NULL").Scan(ctx)
 	if errors.Is(err, sql.ErrNoRows) {
 		return person, ErrUnauthenticated
 	}

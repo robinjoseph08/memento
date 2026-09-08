@@ -56,7 +56,8 @@ func New(db *bun.DB, now func() time.Time) *Module {
 
 func (m *Module) Claimed(ctx context.Context) (bool, error) {
 	var claimed bool
-	if err := m.db.NewRaw("SELECT claimed_by IS NOT NULL FROM installation WHERE singleton = true").Scan(ctx, &claimed); err != nil {
+	if err := m.db.NewSelect().Table("installation").
+		ColumnExpr("claimed_by IS NOT NULL").Where("singleton = true").Scan(ctx, &claimed); err != nil {
 		return false, errorstack.CaptureContext(ctx, err)
 	}
 	return claimed, nil
@@ -78,7 +79,8 @@ func (m *Module) SignIn(ctx context.Context, claims Claims) (Session, error) {
 	var result Session
 	err := m.change(ctx, func(ctx context.Context, tx bun.Tx) error {
 		var claimedBy sql.NullString
-		if err := tx.NewRaw("SELECT claimed_by FROM installation WHERE singleton = true").Scan(ctx, &claimedBy); err != nil {
+		if err := tx.NewSelect().Table("installation").
+			Column("claimed_by").Where("singleton = true").Scan(ctx, &claimedBy); err != nil {
 			return errorstack.CaptureContext(ctx, err)
 		}
 		var linked models.Identity
@@ -113,7 +115,9 @@ func (m *Module) SignIn(ctx context.Context, claims Claims) (Session, error) {
 				}
 			}
 			if !claimedBy.Valid {
-				updated, err := tx.ExecContext(ctx, "UPDATE installation SET claimed_by = ?, claimed_at = ? WHERE singleton = true AND claimed_by IS NULL", person.ID, now)
+				updated, err := tx.NewUpdate().Table("installation").
+					Set("claimed_by = ?", person.ID).Set("claimed_at = ?", now).
+					Where("singleton = true").Where("claimed_by IS NULL").Exec(ctx)
 				if err != nil {
 					return errorstack.CaptureContext(ctx, err)
 				}

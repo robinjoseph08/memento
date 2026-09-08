@@ -45,9 +45,6 @@ export function LinkedIdentities({
             <TableRow>
               <TableHead scope="col">Email</TableHead>
               <TableHead className="hidden sm:table-cell" scope="col">
-                Provider
-              </TableHead>
-              <TableHead className="hidden sm:table-cell" scope="col">
                 Linked
               </TableHead>
               <TableHead className="w-28 sm:w-auto" scope="col">
@@ -60,28 +57,19 @@ export function LinkedIdentities({
               <TableRow key={identity.id}>
                 <TableCell className="wrap-anywhere sm:min-w-40">
                   <p>{identity.email}</p>
-                  <div className="mt-2 space-y-1 text-xs text-muted sm:hidden">
-                    <p>
-                      {identity.provider === "google"
-                        ? "Google"
-                        : "Development"}
-                    </p>
-                    <p>
-                      Linked{" "}
-                      <span className="inline-block">
-                        {formatDate(identity.created_at)}
-                      </span>
-                    </p>
-                  </div>
-                </TableCell>
-                <TableCell className="hidden sm:table-cell">
-                  {identity.provider === "google" ? "Google" : "Development"}
+                  <p className="mt-2 text-xs text-muted sm:hidden">
+                    Linked{" "}
+                    <span className="inline-block">
+                      {formatDate(identity.created_at)}
+                    </span>
+                  </p>
                 </TableCell>
                 <TableCell className="hidden text-xs whitespace-nowrap text-muted sm:table-cell">
                   {formatDate(identity.created_at)}
                 </TableCell>
-                <TableCell className="text-right">
+                <TableCell className="py-2.5 text-right">
                   <ConfirmAction
+                    compact
                     description="This account will no longer be able to sign in, and its browser sessions will end."
                     disabled={keepLast}
                     error={error}

@@ -108,6 +108,18 @@ mise start:api
 mise start:web
 ```
 
+### Try a disposable installation
+
+```sh
+mise start:qa
+```
+
+Open the printed URL and keep the command running. This uses fake sign-in, a
+controlled Immich server that starts offline, and a temporary PostgreSQL schema.
+Stop it with Ctrl-C and run it again to reset without erasing development data.
+Use separate browser profiles to try multiple people. Ordinary tabs share the
+same session cookie. Never expose fake development sign-in publicly.
+
 ## Run checks
 
 ```sh
@@ -146,13 +158,6 @@ Vite writes its production output into the Go web package. Go embeds those
 files into `build/api/api`. The binary serves API routes, static assets, and
 SPA fallback routes from one HTTP port. Development still uses Vite separately
 for hot module replacement.
-
-Production sign-in uses Google OpenID Connect. See
-[Google sign-in setup](docs/google-sign-in.md) for credentials and a real
-localhost check. Do not expose fake development sign-in publicly.
-
-Use [People and identity QA](docs/people-qa.md) to test a disposable installation,
-preauthorizations, profiles, sessions, and revocation.
 
 Build the production container:
 
@@ -194,6 +199,110 @@ REVOKE ALL ON DATABASE memento_test FROM PUBLIC;
 
 Set `TEST_DATABASE_URL` to that test database. Test and QA cleanup drops only
 the random schema allocated by that invocation, never the database.
+
+## Google sign-in
+
+Production sign-in uses Google OpenID Connect to verify identity. Memento requests
+only `openid profile email`, not access to Google Photos, Drive, or Gmail. It does
+not retain Google's access or refresh tokens. Browser sessions belong to Memento
+and live in PostgreSQL.
+
+### Create a Google client
+
+1. Open [Google Auth Platform](https://console.cloud.google.com/auth/overview)
+   and select or create a project.
+2. Complete Branding with an app name, support email, and developer contact.
+   Choose an External audience for friends and family outside your Workspace.
+   While testing, add the Google accounts you will use under Audience's test
+   users. Review Audience and Branding before publishing for your intended users.
+3. Under Data Access, use only the basic OpenID, email, and profile scopes. No
+   Google Photos API, sensitive scopes, or offline access are needed.
+4. Under Clients, create a **Web application** client. Add the exact authorized
+   redirect URI, such as `https://photos.example.com/api/identity/google/callback`.
+   For local development, also add
+   `http://localhost:3579/api/identity/google/callback`. This server flow does not
+   need an authorized JavaScript origin.
+5. Copy the client ID and secret into Memento's configuration. Keep the secret
+   out of source control.
+
+### Configure production
+
+Set these alongside `DATABASE_URL`, `IMMICH_URL`, and `IMMICH_API_KEY`:
+
+```sh
+export APP_ENV=production
+export AUTH_MODE=google
+export PUBLIC_URL=https://photos.example.com
+export GOOGLE_CLIENT_ID='your-client-id.apps.googleusercontent.com'
+export GOOGLE_CLIENT_SECRET='your-client-secret'
+export GOOGLE_CALLBACK_URL="$PUBLIC_URL/api/identity/google/callback"
+```
+
+Google requires an exact redirect URI match, including scheme, port, path, and
+trailing slash. Memento requires `GOOGLE_CALLBACK_URL` to equal `PUBLIC_URL` plus
+`/api/identity/google/callback`. Set both explicitly rather than deriving them
+from a proxy's forwarded host header.
+
+Use HTTPS at the browser-facing reverse proxy. Session and login-state cookies
+are Secure, HttpOnly, and SameSite=Lax. Google discovery happens on the first
+sign-in, not at startup. A Google outage does not prevent database health checks
+or use of existing Memento sessions.
+
+The first successful sign-in claims an empty installation and creates its first
+Curator. Keep a new installation private until you have claimed it. For later
+people, a Curator must create the Person and preauthorize the exact email Google
+reports. A verified Google email alone does not grant access. Google's Audience
+test users and Memento's preauthorizations are separate controls.
+
+### Use Google locally
+
+Automated tests use a local OIDC server, not real Google credentials. To develop
+against Google, use a separate database and run the built application on a fixed
+port. Unlike `mise start`, the binary does not select another port or replace
+your database URL. Create the database and role first using the PostgreSQL
+instructions above; startup applies migrations.
+
+```sh
+mise build
+export CONFIG_FILE="$PWD/app.example.yaml"
+export APP_ENV=development
+export AUTH_MODE=google
+export SERVER_HOST=127.0.0.1
+export SERVER_PORT=3579
+export PUBLIC_URL=http://localhost:3579
+export GOOGLE_CALLBACK_URL="$PUBLIC_URL/api/identity/google/callback"
+export GOOGLE_CLIENT_ID='your-client-id.apps.googleusercontent.com'
+export GOOGLE_CLIENT_SECRET='your-client-secret'
+export DATABASE_URL='postgres://memento:YOUR_PASSWORD@localhost:5432/memento_google?sslmode=disable'
+export IMMICH_URL='http://localhost:2283'
+export IMMICH_API_KEY='your-read-only-immich-key'
+export FILES_PATH="$PWD/tmp/google-files"
+./build/api/api
+```
+
+Open `http://localhost:3579`, not `127.0.0.1`. HTTP is permitted only for the exact
+`localhost` hostname in development or test; cookies remain HttpOnly and
+SameSite=Lax but are not Secure on this local HTTP origin. No public tunnel is
+needed. The first account to sign in becomes Curator if the database is empty.
+
+### Troubleshooting
+
+- `redirect_uri_mismatch`: compare the callback with the Google client's
+  authorized redirect URI. Check the port and remove any extra slash.
+- Expired or invalid sign-in: start again from Memento. Login transactions expire
+  after ten minutes and can be used only once. Restarting Memento or starting a
+  newer login in the same browser cancels the previous pending login.
+- Google unavailable: retry later. Discovery and token requests have a timeout;
+  later attempts retry failed discovery.
+- Access denied: use the preauthorized Google account or ask a Curator to
+  preauthorize its exact email. Do not switch production to fake authentication.
+
+Pending Google logins stay in one server process. The normal single-process
+Memento deployment needs no shared login-state store. Multiple processes require
+sticky routing during sign-in.
+
+For protocol details, see [Google OpenID Connect](https://developers.google.com/identity/openid-connect/openid-connect)
+and [Google's web-server OAuth flow](https://developers.google.com/identity/protocols/oauth2/web-server).
 
 ## Database migrations
 

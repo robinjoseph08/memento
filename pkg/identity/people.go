@@ -18,9 +18,11 @@ var ErrFinalCurator = &errcodes.Error{HTTPCode: 409, Code: "final_curator", Mess
 // protectCuratorAccess prevents both role changes and unlinking from leaving
 // an installation that no Curator can sign in to administer.
 func protectCuratorAccess(ctx context.Context, tx bun.Tx, excluding models.UUID) error {
+	linkedIdentities := tx.NewSelect().TableExpr("identities AS i").Column("i.id").
+		Where("i.person_id = person.id").Where("i.unlinked_at IS NULL")
 	remaining, err := tx.NewSelect().Model((*models.Person)(nil)).
 		Where("person.id <> ? AND person.is_curator = true AND person.deactivated_at IS NULL", excluding).
-		Where("EXISTS (SELECT 1 FROM identities i WHERE i.person_id = person.id AND i.unlinked_at IS NULL)").Exists(ctx)
+		Where("EXISTS (?)", linkedIdentities).Exists(ctx)
 	if err != nil {
 		return errorstack.CaptureContext(ctx, err)
 	}
@@ -35,7 +37,8 @@ func protectCuratorAccess(ctx context.Context, tx bun.Tx, excluding models.UUID)
 func (m *Module) change(ctx context.Context, fn func(context.Context, bun.Tx) error) error {
 	err := m.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 		var singleton bool
-		if err := tx.NewRaw("SELECT singleton FROM installation WHERE singleton = true FOR UPDATE").Scan(ctx, &singleton); err != nil {
+		if err := tx.NewSelect().Table("installation").Column("singleton").
+			Where("singleton = true").For("UPDATE").Scan(ctx, &singleton); err != nil {
 			return errorstack.CaptureContext(ctx, err)
 		}
 		return fn(ctx, tx)

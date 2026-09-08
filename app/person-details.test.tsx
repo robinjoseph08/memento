@@ -94,7 +94,7 @@ it("puts linked accounts first and keeps previous emails collapsed outside activ
   expect(
     screen.getByRole("button", { name: "Unlink alex@example.test" }),
   ).toBeEnabled();
-  expect(screen.getByRole("cell", { name: "Development" })).toBeVisible();
+  expect(screen.queryByText("Development")).not.toBeInTheDocument();
   const headings = screen
     .getAllByRole("heading", { level: 2 })
     .map((heading) => heading.textContent);

@@ -18,6 +18,7 @@ export function ConfirmAction({
   error,
   onConfirm,
   disabled = false,
+  compact = false,
 }: {
   label: string;
   triggerLabel?: string;
@@ -26,6 +27,7 @@ export function ConfirmAction({
   error: unknown;
   onConfirm: () => Promise<unknown>;
   disabled?: boolean;
+  compact?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   return (
@@ -39,6 +41,7 @@ export function ConfirmAction({
         <Button
           aria-label={label}
           disabled={disabled || pending}
+          size={compact ? "sm" : "default"}
           variant="outline"
         >
           {triggerLabel}

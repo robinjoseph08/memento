@@ -175,7 +175,7 @@ export function PersonPage() {
   const { id = "" } = useParams();
   const query = usePerson(id);
   return (
-    <>
+    <div className="mx-auto max-w-280">
       <Link
         className="mb-6 inline-block text-sm text-accent-foreground underline underline-offset-4"
         to="/curator/people"
@@ -191,6 +191,6 @@ export function PersonPage() {
         />
       )}
       {query.data && <PersonDetails detail={query.data} key={id} />}
-    </>
+    </div>
   );
 }

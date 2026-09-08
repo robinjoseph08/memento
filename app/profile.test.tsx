@@ -257,8 +257,9 @@ it.each([false, true])(
       name: "Linked accounts",
     });
     expect(
-      within(accounts).getByRole("cell", { name: "Google" }),
-    ).toBeVisible();
+      within(accounts).queryByRole("columnheader", { name: "Provider" }),
+    ).not.toBeInTheDocument();
+    expect(within(accounts).queryByText("Google")).not.toBeInTheDocument();
     expect(
       within(accounts).getByRole("button", {
         name: "Unlink alex@example.test",
@@ -303,7 +304,23 @@ it.each([false, true])(
     const sessions = await screen.findByRole("table", {
       name: "Browser sessions",
     });
-    expect(within(sessions).getByText("This browser")).toBeVisible();
+    const currentBrowser = within(sessions).getByRole("button", {
+      name: "This browser",
+    });
+    expect(currentBrowser).toBeVisible();
+    const user = userEvent.setup({ skipHover: true });
+    await user.hover(currentBrowser);
+    expect(
+      await screen.findByRole("tooltip", { name: "This browser" }),
+    ).toBeVisible();
+    await user.keyboard("{Escape}");
+    await waitFor(() =>
+      expect(screen.queryByRole("tooltip")).not.toBeInTheDocument(),
+    );
+    await user.click(currentBrowser);
+    expect(
+      await screen.findByRole("tooltip", { name: "This browser" }),
+    ).toBeVisible();
     expect(within(sessions).getByText("Firefox on Mac")).toBeVisible();
     expect(within(sessions).getByText(account.email)).toBeVisible();
     expect(

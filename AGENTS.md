@@ -68,8 +68,10 @@ anything here.
 
 ## Plans and work artifacts
 
-- Do not commit implementation plans, research notes, or agent scratch files.
-  Keep temporary working material in `./tmp` since that's gitignored.
+- Do not commit implementation plans, research notes, temporary QA checklists,
+  or agent scratch files. Keep temporary working material in `./tmp` since
+  that's gitignored. Put task-specific verification steps in the PR or issue,
+  not a docs page that will age out.
 - A merged PR is the implementation record. Close or update its tracking item
   when the work lands; do not preserve a second checklist in the repository.
 
@@ -88,8 +90,10 @@ anything here.
 
 ## Additional tips
 
-- The README should only have information that is relevant for the whole repo.
-  It should include things like project overview and commands for an engineer
-  to bootstrap for development.
+- The README is the home for durable information needed by anyone developing
+  or running Memento: project overview, development commands, deployment,
+  configuration, credentials, and third-party setup such as Google sign-in.
+  Keep that information in the README rather than separate feature setup docs.
+  Reserve `docs/` for lasting design records such as ADRs, not task artifacts.
 - Security is important, but should not be over-indexed on, especially for dev
   mode/maintainer-only features.

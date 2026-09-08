@@ -4,6 +4,7 @@ import { NavLink } from "react-router-dom";
 import type { Person } from "../../types/generated/identity";
 import { Button } from "../ui/button";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "../ui/sheet";
+import { Wordmark } from "./wordmark";
 
 export function MobileNavigation({ person }: { person: Person }) {
   const [open, setOpen] = useState(false);
@@ -48,8 +49,8 @@ export function MobileNavigation({ person }: { person: Person }) {
           }
         }}
       >
-        <SheetTitle className="pt-1 pr-10 font-heading text-[27px]">
-          Navigation
+        <SheetTitle aria-label="Navigation" className="pt-1 pr-10">
+          <Wordmark />
         </SheetTitle>
         <nav
           aria-label="Mobile navigation"

@@ -53,7 +53,7 @@ export function PersonDetails({ detail }: { detail: PersonDetail }) {
       {person.deactivated_at && (
         <p className="mt-3 text-destructive">Deactivated</p>
       )}
-      <div className="mt-9 grid gap-x-16 min-[961px]:grid-cols-[minmax(0,380px)_minmax(0,650px)]">
+      <div className="mt-9 grid gap-x-12 min-[1201px]:grid-cols-[minmax(0,320px)_minmax(0,1fr)]">
         <div className="min-w-0 pb-9">
           <section>
             <h2 className={sectionHeadingClass}>Person details</h2>
@@ -156,7 +156,7 @@ export function PersonDetails({ detail }: { detail: PersonDetail }) {
             </p>
           </section>
         </div>
-        <div className="min-w-0 min-[961px]:[&>section:first-child]:border-0 min-[961px]:[&>section:first-child]:pt-0">
+        <div className="min-w-0 min-[1201px]:[&>section:first-child]:border-0 min-[1201px]:[&>section:first-child]:pt-0">
           <LinkedIdentities
             canUnlinkLast={!!identity?.person && !isSelf}
             error={unlink.error}

@@ -74,9 +74,16 @@ test("a Curator approves access, a member manages their profile and sessions, an
       .check();
     await member.getByRole("button", { name: "Save profile" }).click();
     await expect(member.getByRole("status")).toHaveText("Profile saved.");
+    const currentBrowser = member.getByRole("button", {
+      name: "This browser",
+      exact: true,
+    });
+    await currentBrowser.hover();
     await expect(
-      member.getByText("This browser", { exact: true }),
+      member.getByRole("tooltip", { name: "This browser" }),
     ).toBeVisible();
+    await member.keyboard.press("Escape");
+    await expect(member.getByRole("tooltip")).toBeHidden();
 
     await page
       .getByRole("textbox", { name: "Google email address" })

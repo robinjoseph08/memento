@@ -11,6 +11,7 @@ import (
 func init() {
 	Migrations.MustRegister(func(ctx context.Context, db *bun.DB) error {
 		err := db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+			// Keep the multi-statement schema DDL raw; Bun has no general ALTER TABLE builder.
 			_, err := tx.ExecContext(ctx, `
 ALTER TABLE persons ADD COLUMN onboarding_completed_at timestamptz,
  ADD COLUMN deactivated_at timestamptz,
@@ -39,19 +40,22 @@ ALTER TABLE sessions ADD COLUMN id uuid UNIQUE, ADD COLUMN device text NOT NULL 
 			}
 			// Preserve existing browser sessions while assigning public, non-credential IDs.
 			var rows []struct{ TokenHash []byte }
-			if err := tx.NewRaw("SELECT token_hash FROM sessions").Scan(ctx, &rows); err != nil {
+			if err := tx.NewSelect().Table("sessions").Column("token_hash").Scan(ctx, &rows); err != nil {
 				return errorstack.CaptureContext(ctx, err)
 			}
 			for _, row := range rows {
-				if _, err := tx.ExecContext(ctx, "UPDATE sessions SET id = ? WHERE token_hash = ?", models.NewUUIDv7(), row.TokenHash); err != nil {
+				if _, err := tx.NewUpdate().Table("sessions").Set("id = ?", models.NewUUIDv7()).
+					Where("token_hash = ?", row.TokenHash).Exec(ctx); err != nil {
 					return errorstack.CaptureContext(ctx, err)
 				}
 			}
+			// Bun cannot express ALTER COLUMN; require IDs only after every session is backfilled.
 			_, err = tx.ExecContext(ctx, "ALTER TABLE sessions ALTER COLUMN id SET NOT NULL")
 			return errorstack.CaptureContext(ctx, err)
 		})
 		return errorstack.CaptureContext(ctx, err)
 	}, func(ctx context.Context, db *bun.DB) error {
+		// The rollback also uses raw DDL for its ALTER TABLE statements.
 		_, err := db.ExecContext(ctx, `
 DROP TABLE preauthorizations;
 DROP INDEX identities_person_id_idx;
