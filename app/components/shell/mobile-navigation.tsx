@@ -1,3 +1,4 @@
+import { Menu } from "lucide-react";
 import { useEffect, useState } from "react";
 import { NavLink } from "react-router-dom";
 
@@ -24,18 +25,7 @@ export function MobileNavigation({ person }: { person: Person }) {
           className="size-11 p-0 min-[601px]:hidden"
           variant="ghost"
         >
-          <svg
-            aria-hidden="true"
-            fill="none"
-            height="22"
-            stroke="currentColor"
-            strokeLinecap="round"
-            strokeWidth="1.5"
-            viewBox="0 0 24 24"
-            width="22"
-          >
-            <path d="M4 6h16M4 12h16M4 18h16" />
-          </svg>
+          <Menu aria-hidden="true" size={22} strokeWidth={1.5} />
         </Button>
       </SheetTrigger>
       <SheetContent

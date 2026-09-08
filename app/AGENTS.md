@@ -35,6 +35,9 @@
   using the root `components.json`, then adapt imports and styles to this app.
   Keep the existing individual Radix packages and local `cn` helper rather than
   retaining redundant dependencies from registry output.
+- Always use named imports from `lucide-react` for UI icons, not handwritten
+  SVGs or another icon library. The custom Memento wordmark is a brand graphic
+  and remains an exception.
 - Use Tailwind utilities for layout, typography, responsive behavior, and
   interaction styles. Keep `app/styles.css` limited to imports and theme tokens;
   do not add handwritten component selectors or `@apply` aliases.

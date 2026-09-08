@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ComponentProps } from "react";
 
 import { cn } from "../../lib/utils";
 
@@ -7,13 +7,22 @@ type AlbumImageProps = {
   alt: string;
   fallback: string;
   className?: string;
+  onLoad?: ComponentProps<"img">["onLoad"];
+  onError?: ComponentProps<"img">["onError"];
 };
 
 export function AlbumImage(props: AlbumImageProps) {
   return <Image key={props.src} {...props} />;
 }
 
-function Image({ src, alt, fallback, className }: AlbumImageProps) {
+function Image({
+  src,
+  alt,
+  fallback,
+  className,
+  onLoad,
+  onError,
+}: AlbumImageProps) {
   const [failed, setFailed] = useState(false);
   if (!src || failed)
     return (
@@ -34,7 +43,11 @@ function Image({ src, alt, fallback, className }: AlbumImageProps) {
         className,
       )}
       loading="lazy"
-      onError={() => setFailed(true)}
+      onError={(event) => {
+        setFailed(true);
+        onError?.(event);
+      }}
+      onLoad={onLoad}
       src={src}
     />
   );

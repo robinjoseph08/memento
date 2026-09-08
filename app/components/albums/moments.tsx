@@ -1,4 +1,4 @@
-import { Video } from "lucide-react";
+import { ChevronRight } from "lucide-react";
 import { useSearchParams } from "react-router-dom";
 
 import { cn } from "../../lib/utils";
@@ -6,6 +6,7 @@ import type { Entry, Moment } from "../../types/generated/publishing";
 import { sectionHeadingClass } from "../people/form-fields";
 import { Button } from "../ui/button";
 import { AlbumImage } from "./album-image";
+import { EntryPreview } from "./entry-preview";
 
 export function MediaCounts({ entries }: { entries: Entry[] }) {
   const photos = entries.filter((entry) => entry.kind === "IMAGE").length;
@@ -110,16 +111,11 @@ export function Moments({ moments }: { moments: Moment[] }) {
                         <MediaCounts entries={moment.entries} />
                       </span>
                     </span>
-                    <svg
+                    <ChevronRight
                       aria-hidden="true"
                       className={cn("size-4 shrink-0", expanded && "rotate-90")}
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="1.5"
-                      viewBox="0 0 24 24"
-                    >
-                      <path d="m9 6 6 6-6 6" />
-                    </svg>
+                      strokeWidth={1.5}
+                    />
                   </button>
                 </h3>
                 {expanded && (
@@ -129,53 +125,11 @@ export function Moments({ moments }: { moments: Moment[] }) {
                       className="flex flex-wrap items-start gap-x-2 gap-y-4"
                     >
                       {visible.map((entry) => (
-                        <li
-                          className="max-w-full min-w-0 flex-none"
+                        <EntryPreview
+                          cover={entry.id === moment.cover_entry_id}
+                          entry={entry}
                           key={entry.id}
-                        >
-                          <figure className="relative min-w-8 pb-5">
-                            <div className="relative w-fit max-w-full">
-                              <AlbumImage
-                                alt={entry.filename}
-                                className="h-auto max-h-24 w-auto max-w-full rounded-sm min-[1101px]:max-h-28"
-                                fallback={
-                                  entry.available
-                                    ? "No preview available"
-                                    : "Unavailable in Immich"
-                                }
-                                src={entry.available ? entry.thumbnail_url : ""}
-                              />
-                              {entry.id === moment.cover_entry_id && (
-                                <span
-                                  className="absolute top-1 left-1 max-w-[calc(100%-8px)] truncate rounded-sm bg-black/70 px-1.5 py-0.5 text-[10px] text-white"
-                                  title="Moment cover"
-                                >
-                                  Cover
-                                </span>
-                              )}
-                              {entry.kind === "VIDEO" && (
-                                <span
-                                  aria-label="Video"
-                                  className="absolute right-1 bottom-1 rounded-sm bg-black/70 p-1 text-white"
-                                  role="img"
-                                >
-                                  <Video
-                                    aria-hidden="true"
-                                    className="size-3.5"
-                                  />
-                                </span>
-                              )}
-                            </div>
-                            <figcaption className="absolute inset-x-0 bottom-0 truncate text-[10px] text-muted">
-                              <time
-                                dateTime={entry.captured_at}
-                                title={entry.captured_at.replace("T", " ")}
-                              >
-                                {entry.captured_at.slice(11, 16)}
-                              </time>
-                            </figcaption>
-                          </figure>
-                        </li>
+                        />
                       ))}
                     </ul>
                     {moment.entries.length > 24 && (

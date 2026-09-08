@@ -81,76 +81,81 @@ export function ImportPage() {
                 </p>
               </section>
             ) : (
-              <div className="grid gap-x-6 gap-y-10 min-[601px]:grid-cols-2 min-[1001px]:grid-cols-3 min-[1401px]:grid-cols-4">
+              <div className="grid gap-x-8 gap-y-7 min-[1001px]:grid-cols-2">
                 {sources.data.albums.map((source) => (
-                  <article className="min-w-0" key={source.id}>
+                  <article
+                    className="grid min-w-0 grid-cols-[80px_minmax(0,1fr)] items-start gap-4 border-t border-border pt-5 min-[601px]:grid-cols-[112px_minmax(0,1fr)]"
+                    key={source.id}
+                  >
                     <AlbumImage
                       alt={source.title}
-                      className="h-auto max-h-60 w-auto max-w-full"
+                      className="mx-auto h-auto max-h-40 w-auto max-w-full"
                       fallback="No cover available"
                       src={source.cover_url}
                     />
-                    <h2 className="mt-4 font-heading text-2xl break-words">
-                      {source.title}
-                    </h2>
-                    <p className="mt-2 text-sm text-muted">
-                      {source.count} {source.count === 1 ? "item" : "items"}
-                    </p>
-                    {(source.start_date || source.end_date) && (
-                      <p className="mt-1 text-xs text-muted">
-                        {[
-                          dateLabel(source.start_date),
-                          dateLabel(source.end_date),
-                        ]
-                          .filter(Boolean)
-                          .filter(
-                            (date, index, dates) =>
-                              dates.indexOf(date) === index,
-                          )
-                          .join(" to ")}
+                    <div className="min-w-0">
+                      <h2 className="font-heading text-xl break-words">
+                        {source.title}
+                      </h2>
+                      <p className="mt-2 text-sm text-muted">
+                        {source.count} {source.count === 1 ? "item" : "items"}
                       </p>
-                    )}
-                    <div className="mt-4">
-                      {source.album_id ? (
-                        <Button asChild variant="outline">
-                          <Link to={`/curator/albums/${source.album_id}`}>
-                            Open album
-                          </Link>
-                        </Button>
-                      ) : (
-                        <Form
-                          aria-busy={
-                            importing.isPending &&
-                            importing.variables?.source_id === source.id
-                          }
-                          aria-label={`Import ${source.title}`}
-                          error={
-                            importing.variables?.source_id === source.id
-                              ? importing.error
-                              : null
-                          }
-                          onSubmit={(event) => {
-                            event.preventDefault();
-                            if (!importDisabled)
-                              importing.mutate(
-                                { source_id: source.id },
-                                {
-                                  onSuccess: (album) =>
-                                    void navigate(
-                                      `/curator/albums/${album.id}`,
-                                    ),
-                                },
-                              );
-                          }}
-                        >
-                          <Button disabled={importDisabled} type="submit">
-                            {importing.isPending &&
-                            importing.variables?.source_id === source.id
-                              ? "Importing…"
-                              : "Import"}
-                          </Button>
-                        </Form>
+                      {(source.start_date || source.end_date) && (
+                        <p className="mt-1 text-xs text-muted">
+                          {[
+                            dateLabel(source.start_date),
+                            dateLabel(source.end_date),
+                          ]
+                            .filter(Boolean)
+                            .filter(
+                              (date, index, dates) =>
+                                dates.indexOf(date) === index,
+                            )
+                            .join(" to ")}
+                        </p>
                       )}
+                      <div className="mt-4">
+                        {source.album_id ? (
+                          <Button asChild variant="outline">
+                            <Link to={`/curator/albums/${source.album_id}`}>
+                              Open album
+                            </Link>
+                          </Button>
+                        ) : (
+                          <Form
+                            aria-busy={
+                              importing.isPending &&
+                              importing.variables?.source_id === source.id
+                            }
+                            aria-label={`Import ${source.title}`}
+                            error={
+                              importing.variables?.source_id === source.id
+                                ? importing.error
+                                : null
+                            }
+                            onSubmit={(event) => {
+                              event.preventDefault();
+                              if (!importDisabled)
+                                importing.mutate(
+                                  { source_id: source.id },
+                                  {
+                                    onSuccess: (album) =>
+                                      void navigate(
+                                        `/curator/albums/${album.id}`,
+                                      ),
+                                  },
+                                );
+                            }}
+                          >
+                            <Button disabled={importDisabled} type="submit">
+                              {importing.isPending &&
+                              importing.variables?.source_id === source.id
+                                ? "Importing…"
+                                : "Import"}
+                            </Button>
+                          </Form>
+                        )}
+                      </div>
                     </div>
                   </article>
                 ))}

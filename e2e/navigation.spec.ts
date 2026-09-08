@@ -97,6 +97,15 @@ test("Immich search keeps focus, clears immediately, and follows browser history
     }));
     expect(size.width / size.height).toBeCloseTo(size.ratio, 2);
     expect(size.height).toBeLessThanOrEqual(240);
+    const positions = await cover.evaluate((image) => {
+      const cover = image.getBoundingClientRect();
+      const title = image
+        .closest("article")!
+        .querySelector("h2")!
+        .getBoundingClientRect();
+      return { coverRight: cover.right, titleLeft: title.left };
+    });
+    expect(positions.coverRight).toBeLessThan(positions.titleLeft);
   }
   await search.fill("Coast");
   await page.getByRole("button", { name: "Search", exact: true }).click();

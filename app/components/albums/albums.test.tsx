@@ -237,11 +237,11 @@ it("shows weekdays and local capture times without visible filenames, with a vid
   expect(
     await screen.findByRole("button", { name: "Wednesday, July 1, 2026" }),
   ).toBeVisible();
-  expect(screen.getByText("00:30")).toHaveAttribute(
+  expect(screen.getByText("12:30 AM")).toHaveAttribute(
     "datetime",
     "2026-07-01T00:30:00",
   );
-  expect(screen.getByText("23:59")).toBeVisible();
+  expect(screen.getByText("11:59 PM")).toBeVisible();
   expect(screen.queryByText("Beach.jpg")).not.toBeInTheDocument();
   expect(screen.queryByText("Waves.mp4")).not.toBeInTheDocument();
   expect(screen.getByRole("img", { name: "Video" })).toBeVisible();
@@ -564,7 +564,7 @@ it("replaces failed imported thumbnails while keeping capture times and other pr
   render(<App />);
   fireEvent.error(await screen.findByRole("img", { name: "Beach.jpg" }));
   expect(screen.getByText("No preview available")).toBeVisible();
-  expect(screen.getByText("12:00")).toBeVisible();
+  expect(screen.getByText("12:00 PM")).toBeVisible();
   expect(
     screen.queryByRole("img", { name: "Beach.jpg" }),
   ).not.toBeInTheDocument();
