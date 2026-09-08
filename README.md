@@ -213,10 +213,11 @@ and live in PostgreSQL.
    and select or create a project.
 2. Complete Branding with an app name, support email, and developer contact.
    Choose an External audience for friends and family outside your Workspace.
-   While testing, add the Google accounts you will use under Audience's test
-   users. Review Audience and Branding before publishing for your intended users.
-3. Under Data Access, use only the basic OpenID, email, and profile scopes. No
-   Google Photos API, sensitive scopes, or offline access are needed.
+   Review Audience and Branding before publishing for your intended users.
+3. Under Data Access, select `openid`, `https://www.googleapis.com/auth/userinfo.email`,
+   and `https://www.googleapis.com/auth/userinfo.profile`. These are the console
+   equivalents of Memento's `openid email profile` request. No Google Photos API,
+   sensitive scopes, or offline access are needed.
 4. Under Clients, create a **Web application** client. Add the exact authorized
    redirect URI, such as `https://photos.example.com/api/identity/google/callback`.
    For local development, also add
@@ -224,6 +225,15 @@ and live in PostgreSQL.
    need an authorized JavaScript origin.
 5. Copy the client ID and secret into Memento's configuration. Keep the secret
    out of source control.
+
+Google exempts basic-sign-in-only requests from the test-user list requirement,
+even when the app's publishing status is **Testing**. You do not need to add
+Memento users to Google's test-user list or complete sensitive-scope verification
+for these three scopes. Publishing an app and verifying it are separate actions;
+custom consent-screen branding may require brand verification. Google Workspace
+administrators can still restrict their users' access. See
+[Google's audience rules](https://support.google.com/cloud/answer/15549945) and
+[brand verification requirements](https://developers.google.com/identity/verification/authentication-verification).
 
 A single Web application client can list both the deployed and localhost
 callback URLs. For a personal installation used by fewer than 100 people, all
@@ -244,13 +254,13 @@ export AUTH_MODE=google
 export PUBLIC_URL=https://photos.example.com
 export GOOGLE_CLIENT_ID='your-client-id.apps.googleusercontent.com'
 export GOOGLE_CLIENT_SECRET='your-client-secret'
-export GOOGLE_CALLBACK_URL="$PUBLIC_URL/api/identity/google/callback"
 ```
 
 Google requires an exact redirect URI match, including scheme, port, path, and
-trailing slash. Memento requires `GOOGLE_CALLBACK_URL` to equal `PUBLIC_URL` plus
-`/api/identity/google/callback`. Set both explicitly rather than deriving them
-from a proxy's forwarded host header.
+trailing slash. Memento derives the callback by appending
+`/api/identity/google/callback` to the configured `PUBLIC_URL`. Register that
+exact URL on the Google client. There is no separate callback setting, and
+Memento does not derive the origin from request or forwarded host headers.
 
 Use HTTPS at the browser-facing reverse proxy. Session and login-state cookies
 are Secure, HttpOnly, and SameSite=Lax. Google discovery happens on the first
@@ -260,8 +270,8 @@ or use of existing Memento sessions.
 The first successful sign-in claims an empty installation and creates its first
 Curator. Keep a new installation private until you have claimed it. For later
 people, a Curator must create the Person and preauthorize the exact email Google
-reports. A verified Google email alone does not grant access. Google's Audience
-test users and Memento's preauthorizations are separate controls.
+reports. A verified Google email alone does not grant access. Google sign-in
+availability does not bypass Memento's preauthorizations.
 
 ### Use Google locally
 
@@ -279,7 +289,6 @@ export AUTH_MODE=google
 export SERVER_HOST=127.0.0.1
 export SERVER_PORT=3579
 export PUBLIC_URL=http://localhost:3579
-export GOOGLE_CALLBACK_URL="$PUBLIC_URL/api/identity/google/callback"
 export GOOGLE_CLIENT_ID='your-client-id.apps.googleusercontent.com'
 export GOOGLE_CLIENT_SECRET='your-client-secret'
 export DATABASE_URL='postgres://memento:YOUR_PASSWORD@localhost:5432/memento_google?sslmode=disable'

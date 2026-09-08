@@ -16,6 +16,8 @@ auth_mode: google
 # Required public Memento origin, with no subpath, credentials, query, or fragment.
 # Google requires HTTPS except exact HTTP localhost in development or test.
 # A trailing slash is accepted and removed.
+# Google sign-in appends /api/identity/google/callback to this origin.
+# Register that exact redirect URI on the Google Web application client.
 # Env: PUBLIC_URL
 public_url: https://memento.example.com
 
@@ -26,11 +28,6 @@ google_client_id: ""
 # Keep this secret in an environment variable rather than a checked-in file.
 # Env: GOOGLE_CLIENT_SECRET
 google_client_secret: ""
-
-# Must equal PUBLIC_URL + /api/identity/google/callback and exactly match a
-# redirect URI on the Google Web application client. No wildcard or extra slash.
-# Env: GOOGLE_CALLBACK_URL
-google_callback_url: https://memento.example.com/api/identity/google/callback
 
 # Required Immich instance base URL, NOT its /api endpoint.
 # HTTP or HTTPS. A reverse-proxy base path such as https://host/photos is

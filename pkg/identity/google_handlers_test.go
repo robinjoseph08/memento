@@ -44,7 +44,6 @@ func googleHTTP(s *oidcSubstitute, publicURL string, module *googleHTTPModule) *
 	cfg.PublicURL = publicURL
 	cfg.GoogleClientID = "client-id"
 	cfg.GoogleClientSecret = "client-secret"
-	cfg.GoogleCallbackURL = publicURL + "/api/identity/google/callback"
 	identity.RegisterGoogleRoutes(e, cfg, module, identity.WithGoogleIssuer(s.server.URL, s.server.Client()))
 	return e
 }
@@ -81,7 +80,6 @@ func TestGoogleOutageLeavesDatabaseHealthHealthy(t *testing.T) {
 	cfg.AuthMode = "google"
 	cfg.GoogleClientID = "client-id"
 	cfg.GoogleClientSecret = "client-secret"
-	cfg.GoogleCallbackURL = cfg.PublicURL + "/api/identity/google/callback"
 	app, err := server.New(cfg, db)
 	require.NoError(t, err)
 	e, ok := app.Handler.(*echo.Echo)
@@ -214,7 +212,7 @@ func TestGoogleHTTPReplay(t *testing.T) {
 	}
 }
 
-func TestGoogleHTTPLogin(t *testing.T) {
+func TestGoogleHTTPLoginDerivesCallbackFromPublicURL(t *testing.T) {
 	t.Parallel()
 	for _, publicURL := range []string{"https://photos.example.com", "http://localhost:3579"} {
 		t.Run(publicURL, func(t *testing.T) {

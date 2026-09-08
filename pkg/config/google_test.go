@@ -16,7 +16,6 @@ func TestLoadGoogle(t *testing.T) {
 	values["public_url"] = "https://photos.example.com"
 	values["google_client_id"] = "google-client"
 	values["google_client_secret"] = "google-secret"
-	values["google_callback_url"] = "https://photos.example.com/api/identity/google/callback"
 	cfg, err := load(filepath.Join(t.TempDir(), "missing.yaml"), false, values, func() (string, error) { return "host", nil })
 	require.NoError(t, err)
 	require.Equal(t, "google", cfg.AuthMode)
@@ -29,7 +28,7 @@ func TestLoadGoogle(t *testing.T) {
 
 func TestGoogleConfigurationRestrictions(t *testing.T) {
 	t.Parallel()
-	for _, tc := range []struct{ name, publicURL, callback, environment, missing, want string }{
+	for _, tc := range []struct{ name, publicURL, environment, missing, want string }{
 		{name: "production HTTPS", publicURL: "https://photos.example.com", environment: "production"},
 		{name: "manual localhost", publicURL: "http://localhost:3579", environment: "development"},
 		{name: "test localhost", publicURL: "http://localhost:3579", environment: "test"},
@@ -40,11 +39,6 @@ func TestGoogleConfigurationRestrictions(t *testing.T) {
 		{name: "localhost suffix", publicURL: "http://localhost.example.com:3579", environment: "development", want: "public_url:"},
 		{name: "client ID required", publicURL: "https://photos.example.com", environment: "production", missing: "google_client_id", want: "google_client_id: required"},
 		{name: "client secret required", publicURL: "https://photos.example.com", environment: "production", missing: "google_client_secret", want: "google_client_secret: required"},
-		{name: "callback required", publicURL: "https://photos.example.com", environment: "production", missing: "google_callback_url", want: "google_callback_url: required"},
-		{name: "callback origin", publicURL: "https://photos.example.com", environment: "production", callback: "https://evil.example.com/api/identity/google/callback", want: "google_callback_url:"},
-		{name: "callback port", publicURL: "http://localhost:3579", environment: "development", callback: "http://localhost:3000/api/identity/google/callback", want: "google_callback_url:"},
-		{name: "callback query", publicURL: "https://photos.example.com", environment: "production", callback: "https://photos.example.com/api/identity/google/callback?secret", want: "google_callback_url:"},
-		{name: "callback path", publicURL: "https://photos.example.com", environment: "production", callback: "https://photos.example.com/api/identity/google/callback/", want: "google_callback_url:"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -54,10 +48,6 @@ func TestGoogleConfigurationRestrictions(t *testing.T) {
 			values["public_url"] = tc.publicURL
 			values["google_client_id"] = "client"
 			values["google_client_secret"] = "secret"
-			values["google_callback_url"] = tc.publicURL + "/api/identity/google/callback"
-			if tc.callback != "" {
-				values["google_callback_url"] = tc.callback
-			}
 			if tc.missing != "" {
 				values[tc.missing] = " "
 			}

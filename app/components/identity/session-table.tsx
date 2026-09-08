@@ -78,7 +78,7 @@ export function SessionTable({
                         <TooltipContent>This browser</TooltipContent>
                       </Tooltip>
                     </TooltipProvider>
-                    <span className="hidden text-xs whitespace-nowrap text-muted pointer-coarse:inline">
+                    <span className="hidden text-xs whitespace-nowrap text-accent-foreground pointer-coarse:inline">
                       This browser
                     </span>
                   </>
