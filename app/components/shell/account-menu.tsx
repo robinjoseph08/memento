@@ -52,9 +52,7 @@ export function AccountMenu({
             variant="ghost"
           >
             <Avatar aria-hidden="true" className="size-full">
-              <AvatarFallback>
-                <span className="translate-y-[0.1em]">{initials}</span>
-              </AvatarFallback>
+              <AvatarFallback>{initials}</AvatarFallback>
             </Avatar>
           </Button>
         </DropdownMenuTrigger>
