@@ -7,6 +7,7 @@ import { errorMessage } from "../../lib/http";
 import { ConnectionStatus } from "../connection/connection-status";
 import { SignInForm } from "../identity/sign-in-form";
 import { Header } from "../shell/header";
+import { PageTitle } from "../shell/page-title";
 import { Button } from "../ui/button";
 
 const pageClassName =
@@ -96,6 +97,7 @@ export function PublicLayout() {
 export function SetupPage() {
   return (
     <>
+      <PageTitle title="Setup" />
       <div className="mb-9 max-w-160 min-[761px]:mb-12">
         <h1 className={headingClassName}>Make room for your memories</h1>
         <p className="mt-5 max-w-[590px] text-muted">
@@ -115,6 +117,7 @@ export function SetupPage() {
 export function SignInPage() {
   return (
     <>
+      <PageTitle title="Sign in" />
       <div className="mb-9 max-w-160 min-[761px]:mb-12">
         <h1 className={headingClassName}>Welcome back</h1>
         <p className="mt-5 max-w-[590px] text-muted">
@@ -150,6 +153,7 @@ export function SignedInLayout() {
 export function MemberPage() {
   return (
     <>
+      <PageTitle title="Albums" />
       <h1 className={headingClassName}>Your albums</h1>
       <section className="mt-9 border-t border-border py-9">
         <h2 className="font-heading text-[27px]/[1.2]">No albums yet</h2>
@@ -165,6 +169,7 @@ export function MemberPage() {
 export function CuratorPage() {
   return (
     <>
+      <PageTitle title="Albums" />
       <div className="mb-9.5 max-w-160">
         <h1 className={headingClassName}>Your albums</h1>
         <p className="mt-5 max-w-[590px] text-muted">
@@ -187,12 +192,18 @@ export function CuratorPage() {
 
 export function HomePage() {
   const { data } = useIdentityStatus();
-  return <Navigate replace to={destination(data?.person)} />;
+  return (
+    <>
+      <PageTitle />
+      <Navigate replace to={destination(data?.person)} />
+    </>
+  );
 }
 
 export function AccessDeniedPage() {
   return (
     <main className={pageClassName}>
+      <PageTitle title="Access denied" />
       <h1 className={headingClassName}>Access denied</h1>
       <p className="mb-5 text-muted">
         This area is only available to Curators.

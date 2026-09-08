@@ -149,6 +149,7 @@ it.each([false, true])(
     const notifications = await screen.findByRole("region", {
       name: "Notifications",
     });
+    expect(document.title).toBe("Alex | Memento");
     expect(
       within(notifications).getByText("updates@example.test"),
     ).toBeVisible();
@@ -376,6 +377,7 @@ it("lets a Curator rename themselves without removing their own access", async (
   await user.clear(name);
   await user.type(name, "Robin edited{Enter}");
   expect(await screen.findByRole("status")).toHaveTextContent("Person saved.");
+  expect(document.title).toBe("Robin edited | Memento");
   expect(name).toHaveValue("Robin edited");
   expect(role).toBeChecked();
   expect(deactivate).not.toBeChecked();

@@ -8,6 +8,14 @@
   `app/types/generated`.
 - Use nested React Router layouts for public, Onboarding, viewer, and Curator
   shells. Keep bookmarkable tabs, filters, and selected media in URL state.
+- Every user-visible route must render the shared `PageTitle`. Use the page name
+  while data loads, then replace it with the fetched entity name when that is
+  more useful. Keep the `Page | Memento` format rather than setting
+  `document.title` directly.
+- Register every public route with `publicPageMetadata` in
+  `pkg/server/metadata.go` so its title, description, canonical URL, and social
+  card are present in the initial HTML. Do not register authenticated routes or
+  include private data in this metadata.
 - Do not call `fetch` from pages or components. Use the shared HTTP adapter and
   feature-owned TanStack Query definitions. Mutations own their related cache
   invalidation.

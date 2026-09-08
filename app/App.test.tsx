@@ -79,6 +79,7 @@ it("keeps normal routes behind setup while the installation is unclaimed", async
   ).not.toBeInTheDocument();
   expect(screen.getAllByRole("textbox")).toHaveLength(2);
   expect(window.location.pathname).toBe("/setup");
+  expect(document.title).toBe("Setup | Memento");
 });
 
 it("claims the installation with the edited fake identity using native Enter submission", async () => {
@@ -99,6 +100,7 @@ it("claims the installation with the edited fake identity using native Enter sub
     screen.queryByRole("button", { name: /import/i }),
   ).not.toBeInTheDocument();
   expect(window.location.pathname).toBe("/curator");
+  expect(document.title).toBe("Albums | Memento");
 });
 
 it("preserves entered claims and focuses the first field rejected by the server", async () => {

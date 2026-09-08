@@ -23,6 +23,7 @@ import {
   ReadFailure,
   sectionHeadingClass,
 } from "../people/form-fields";
+import { PageTitle } from "../shell/page-title";
 import { Button } from "../ui/button";
 import {
   Select,
@@ -38,6 +39,7 @@ export function ProfilePage() {
   const profile = useProfile();
   return (
     <div className="mx-auto max-w-280">
+      <PageTitle title="Your profile" />
       <h1 className={headingClass}>Your profile</h1>
       {profile.isPending && (
         <p className="mt-6" role="status">

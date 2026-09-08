@@ -1,11 +1,15 @@
 package webapp
 
 import (
+	"bytes"
 	"embed"
 	"errors"
+	"html"
 	"io/fs"
 	"net/http"
+	"net/url"
 	"path"
+	"strconv"
 	"strings"
 
 	"github.com/robinjoseph08/memento/pkg/errorstack"
@@ -17,10 +21,26 @@ import (
 //go:embed all:dist
 var embedded embed.FS
 
+const (
+	titleTag        = "<title>Memento</title>"
+	defaultCardPath = "/og-default-v2.png"
+)
+
+// PageMetadata describes the HTML metadata for a public browser route.
+type PageMetadata struct {
+	Title       string
+	Description string
+}
+
+// MetadataResolver identifies public routes that are safe to describe before
+// the browser has authenticated. Returning false leaves the generic app shell
+// in place.
+type MetadataResolver func(*http.Request) (PageMetadata, bool)
+
 // Handler returns the production frontend handler when a Vite build is
 // embedded. Development uses Vite directly, so a source-only build has no
 // frontend handler.
-func Handler() (http.Handler, bool, error) {
+func Handler(publicURL string, resolve MetadataResolver) (http.Handler, bool, error) {
 	root, err := fs.Sub(embedded, "dist")
 	if err != nil {
 		return nil, false, errorstack.Capture(err)
@@ -31,19 +51,36 @@ func Handler() (http.Handler, bool, error) {
 		}
 		return nil, false, errorstack.Capture(err)
 	}
-	return newHandler(root), true, nil
+	handler, err := newHandler(root, publicURL, resolve)
+	if err != nil {
+		return nil, false, errorstack.Capture(err)
+	}
+	return handler, true, nil
 }
 
 type spaHandler struct {
-	files      fs.FS
-	fileServer http.Handler
+	files       fs.FS
+	fileServer  http.Handler
+	index       []byte
+	publicURL   string
+	resolveMeta MetadataResolver
 }
 
-func newHandler(files fs.FS) http.Handler {
-	return &spaHandler{
-		files:      files,
-		fileServer: http.FileServer(http.FS(files)),
+func newHandler(files fs.FS, publicURL string, resolve MetadataResolver) (http.Handler, error) {
+	index, err := fs.ReadFile(files, "index.html")
+	if err != nil {
+		return nil, err
 	}
+	if !bytes.Contains(index, []byte(titleTag)) {
+		return nil, errors.New("index.html: missing Memento title placeholder")
+	}
+	return &spaHandler{
+		files:       files,
+		fileServer:  http.FileServer(http.FS(files)),
+		index:       index,
+		publicURL:   strings.TrimRight(publicURL, "/"),
+		resolveMeta: resolve,
+	}, nil
 }
 
 func (h *spaHandler) ServeHTTP(response http.ResponseWriter, request *http.Request) {
@@ -59,7 +96,7 @@ func (h *spaHandler) ServeHTTP(response http.ResponseWriter, request *http.Reque
 
 	info, err := fs.Stat(h.files, requested)
 	if err == nil && !info.IsDir() {
-		if strings.HasPrefix(requested, "assets/") {
+		if strings.HasPrefix(requested, "assets/") || requested == strings.TrimPrefix(defaultCardPath, "/") {
 			response.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 		}
 		h.fileServer.ServeHTTP(response, request)
@@ -84,8 +121,46 @@ func (h *spaHandler) ServeHTTP(response http.ResponseWriter, request *http.Reque
 }
 
 func (h *spaHandler) serveIndex(response http.ResponseWriter, request *http.Request) {
-	cloned := request.Clone(request.Context())
-	cloned.URL.Path = "/"
+	index := h.index
+	if h.resolveMeta != nil {
+		if metadata, ok := h.resolveMeta(request); ok {
+			index = h.withMetadata(request, metadata)
+		}
+	}
 	response.Header().Set("Cache-Control", "no-cache")
-	h.fileServer.ServeHTTP(response, cloned)
+	response.Header().Set("Content-Length", strconv.Itoa(len(index)))
+	response.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if request.Method != http.MethodHead {
+		_, _ = response.Write(index)
+	}
+}
+
+func (h *spaHandler) withMetadata(request *http.Request, metadata PageMetadata) []byte {
+	pageTitle := metadata.Title
+	if pageTitle != "" {
+		pageTitle += " | Memento"
+	} else {
+		pageTitle = "Memento"
+	}
+	canonical := &url.URL{Path: path.Clean(request.URL.Path)}
+	pageURL := h.publicURL + canonical.EscapedPath()
+	imageURL := h.publicURL + defaultCardPath
+	escape := html.EscapeString
+	tags := `<title>` + escape(pageTitle) + `</title>
+    <meta name="description" content="` + escape(metadata.Description) + `" />
+    <link rel="canonical" href="` + escape(pageURL) + `" />
+    <meta property="og:site_name" content="Memento" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="` + escape(pageTitle) + `" />
+    <meta property="og:description" content="` + escape(metadata.Description) + `" />
+    <meta property="og:url" content="` + escape(pageURL) + `" />
+    <meta property="og:image" content="` + escape(imageURL) + `" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="Memento" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="` + escape(pageTitle) + `" />
+    <meta name="twitter:description" content="` + escape(metadata.Description) + `" />
+    <meta name="twitter:image" content="` + escape(imageURL) + `" />`
+	return bytes.Replace(h.index, []byte(titleTag), []byte(tags), 1)
 }
