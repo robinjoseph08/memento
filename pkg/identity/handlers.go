@@ -16,10 +16,33 @@ const CookieName = "memento_session"
 
 // UseCases is the HTTP boundary; persistence and claim ordering stay in Module.
 type UseCases interface {
+	AuthenticationUseCases
+	PeopleUseCases
+	ProfileUseCases
+}
+
+type AuthenticationUseCases interface {
 	Claimed(context.Context) (bool, error)
 	SignIn(context.Context, Claims) (Session, error)
 	Authenticate(context.Context, string) (Session, error)
 	SignOut(context.Context, string) error
+}
+
+type PeopleUseCases interface {
+	CreatePerson(context.Context, string, CreatePersonRequest) (Person, error)
+	ListPeople(context.Context, string, string) ([]Person, error)
+	GetPerson(context.Context, string, string) (PersonDetail, error)
+	UpdatePerson(context.Context, string, string, UpdatePersonRequest) (Person, error)
+	Preauthorize(context.Context, string, string, PreauthorizeRequest) (Preauthorization, error)
+	RevokePreauthorization(context.Context, string, string, string) error
+}
+
+type ProfileUseCases interface {
+	Profile(context.Context, string) (Profile, error)
+	UpdateProfile(context.Context, string, UpdateProfileRequest) (Profile, error)
+	Sessions(context.Context, string) ([]BrowserSession, error)
+	SignOutEverywhere(context.Context, string) error
+	UnlinkIdentity(context.Context, string, string, string) error
 }
 
 type Handlers struct {
@@ -50,7 +73,7 @@ func (h *Handlers) fakeSignIn(c *echo.Context) error {
 	if err := c.Bind(&request); err != nil {
 		return err
 	}
-	session, err := h.module.SignIn(c.Request().Context(), FakeClaims(request))
+	session, err := h.module.SignIn(WithBrowser(c.Request().Context(), c.Request().UserAgent()), FakeClaims(request))
 	if err != nil {
 		return err
 	}
@@ -96,8 +119,8 @@ func (h *Handlers) authenticate(c *echo.Context) (Session, error) {
 	return session, nil
 }
 
-// RequireCurator prevents normal application access until setup and sign-in complete.
-func (h *Handlers) RequireCurator(next echo.HandlerFunc) echo.HandlerFunc {
+// RequirePerson admits every active signed-in Person, without inventing onboarding completion.
+func (h *Handlers) RequirePerson(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(c *echo.Context) error {
 		claimed, err := h.module.Claimed(c.Request().Context())
 		if err != nil {
@@ -110,12 +133,20 @@ func (h *Handlers) RequireCurator(next echo.HandlerFunc) echo.HandlerFunc {
 		if err != nil {
 			return err
 		}
-		if !session.Person.IsCurator {
-			return ErrAccessDenied
-		}
 		c.Set("identity.person", session.Person)
 		return next(c)
 	}
+}
+
+// RequireCurator restricts administration to active Curators.
+func (h *Handlers) RequireCurator(next echo.HandlerFunc) echo.HandlerFunc {
+	return h.RequirePerson(func(c *echo.Context) error {
+		person, ok := c.Get("identity.person").(Person)
+		if !ok || !person.IsCurator {
+			return ErrAccessDenied
+		}
+		return next(c)
+	})
 }
 
 // RequireSetupOrCurator exposes installation diagnostics only to installers or Curators.

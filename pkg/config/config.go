@@ -41,6 +41,9 @@ type Config struct {
 	ImmichURL                 string        `koanf:"immich_url" json:"immich_url" validate:"required"`
 	ImmichAPIKey              string        `koanf:"immich_api_key" json:"-" validate:"required"`
 	AuthMode                  string        `koanf:"auth_mode" json:"auth_mode" validate:"required"`
+	GoogleClientID            string        `koanf:"google_client_id" json:"google_client_id"`
+	GoogleClientSecret        string        `koanf:"google_client_secret" json:"-"`
+	GoogleCallbackURL         string        `koanf:"google_callback_url" json:"google_callback_url"`
 	AppEnv                    string        `koanf:"app_env" json:"app_env"`
 	DatabaseURL               string        `koanf:"database_url" json:"database_url" validate:"required"`
 	DatabaseMaxOpenConns      int           `koanf:"database_max_open_conns" json:"database_max_open_conns" validate:"min=1"`
@@ -225,13 +228,28 @@ func validateConfig(cfg *Config) error {
 	}
 	switch cfg.AuthMode {
 	case "google":
-		return fmt.Errorf("auth_mode: google is not available yet; Google authentication arrives in #7")
+		for _, setting := range []struct{ field, value string }{
+			{"google_client_id", cfg.GoogleClientID},
+			{"google_client_secret", cfg.GoogleClientSecret},
+			{"google_callback_url", cfg.GoogleCallbackURL},
+		} {
+			if strings.TrimSpace(setting.value) == "" {
+				return fmt.Errorf("%s: required", setting.field)
+			}
+		}
+		public, _ := url.Parse(cfg.PublicURL)
+		if public.Scheme != "https" && (public.Hostname() != "localhost" || cfg.AppEnv == "production") {
+			return fmt.Errorf("public_url: Google sign-in requires HTTPS, except HTTP localhost in development or test")
+		}
+		if cfg.GoogleCallbackURL != cfg.PublicURL+"/api/identity/google/callback" {
+			return fmt.Errorf("google_callback_url: must equal public_url followed by /api/identity/google/callback")
+		}
 	case "fake":
 		if cfg.AppEnv != "development" && cfg.AppEnv != "test" {
 			return fmt.Errorf("auth_mode: fake requires app_env development or test")
 		}
 	default:
-		return fmt.Errorf("auth_mode: must be fake; Google authentication is not available yet")
+		return fmt.Errorf("auth_mode: must be google or fake")
 	}
 	validate := validator.New()
 	validate.RegisterTagNameFunc(func(field reflect.StructField) string { return field.Tag.Get("koanf") })

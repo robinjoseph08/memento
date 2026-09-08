@@ -1,17 +1,29 @@
-import { useEffect } from "react";
+import { use, useEffect, useLayoutEffect, useRef } from "react";
 import { useBlocker } from "react-router-dom";
+
+import { UnsavedChangesContext } from "../lib/forms";
 
 // Guard router navigation and browser exits only while a form has unsaved work.
 export function useUnsavedChanges(unsaved: boolean) {
+  const sharedRef = use(UnsavedChangesContext);
+  const currentRef = useRef(unsaved);
+  useLayoutEffect(() => {
+    if (!sharedRef) return;
+    sharedRef.current = unsaved;
+    return () => {
+      sharedRef.current = false;
+    };
+  }, [sharedRef, unsaved]);
+  useLayoutEffect(() => {
+    currentRef.current = unsaved;
+  }, [unsaved]);
   const blocker = useBlocker(
     ({ currentLocation, nextLocation }) =>
-      unsaved && currentLocation.pathname !== nextLocation.pathname,
+      currentRef.current && currentLocation.pathname !== nextLocation.pathname,
   );
   useEffect(() => {
     if (blocker.state !== "blocked") return;
-    if (
-      window.confirm("Leave this page? Your sign-in details will not be saved.")
-    )
+    if (window.confirm("Leave this page? Your changes will not be saved."))
       blocker.proceed();
     else blocker.reset();
   }, [blocker]);

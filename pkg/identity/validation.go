@@ -3,6 +3,8 @@ package identity
 import (
 	"net/mail"
 	"strings"
+
+	"github.com/robinjoseph08/memento/pkg/errcodes"
 )
 
 // ValidationMessage supplies sign-in guidance for missing fields.
@@ -16,6 +18,37 @@ func (SignInRequest) ValidationMessage(field, rule string) string {
 		}
 	}
 	return ""
+}
+
+func (CreatePersonRequest) ValidationMessage(field, rule string) string {
+	return SignInRequest{}.ValidationMessage(field, rule)
+}
+func (UpdatePersonRequest) ValidationMessage(field, rule string) string {
+	return SignInRequest{}.ValidationMessage(field, rule)
+}
+func (UpdateProfileRequest) ValidationMessage(field, rule string) string {
+	return SignInRequest{}.ValidationMessage(field, rule)
+}
+func (PreauthorizeRequest) ValidationMessage(field, rule string) string {
+	return SignInRequest{}.ValidationMessage(field, rule)
+}
+
+func displayName(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", fieldError("display_name", "Enter a display name.")
+	}
+	if len([]rune(value)) > 100 {
+		return "", fieldError("display_name", "Use 100 characters or fewer.")
+	}
+	if strings.ContainsRune(value, 0) {
+		return "", fieldError("display_name", "Remove the invalid character.")
+	}
+	return value, nil
+}
+
+func fieldError(field, message string) error {
+	return errcodes.ValidationFields("Check the highlighted fields.", map[string]string{field: message})
 }
 
 func validateClaims(claims Claims) error {

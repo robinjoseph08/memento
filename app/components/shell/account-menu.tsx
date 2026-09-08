@@ -1,7 +1,9 @@
-import { useRef, useState } from "react";
+import { use, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 
 import { useSignOut } from "../../hooks/queries/identity";
 import type { useTheme } from "../../hooks/use-theme";
+import { UnsavedChangesContext } from "../../lib/forms";
 import { errorMessage } from "../../lib/http";
 import type { Person } from "../../types/generated/identity";
 import { ConnectionDetails } from "../connection/connection-status";
@@ -29,6 +31,7 @@ export function AccountMenu({
   setTheme,
 }: { person: Person } & ReturnType<typeof useTheme>) {
   const signOut = useSignOut();
+  const unsavedRef = use(UnsavedChangesContext);
   const [connectionOpen, setConnectionOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const initials = person.display_name
@@ -64,11 +67,14 @@ export function AccountMenu({
         >
           <DropdownMenuLabel>
             <p className="wrap-anywhere">{person.display_name}</p>
-            {person.is_curator && (
-              <p className="text-xs font-normal text-muted">Curator</p>
-            )}
+            <p className="text-xs font-normal text-muted">
+              {person.is_curator ? "Curator" : "Member"}
+            </p>
           </DropdownMenuLabel>
           <DropdownMenuSeparator />
+          <DropdownMenuItem asChild>
+            <Link to="/profile">Profile</Link>
+          </DropdownMenuItem>
           <DropdownMenuCheckboxItem
             checked={theme === "dark"}
             onCheckedChange={(checked) => setTheme(checked ? "dark" : "light")}
@@ -86,7 +92,13 @@ export function AccountMenu({
             disabled={signOut.isPending}
             onSelect={(event) => {
               event.preventDefault();
-              if (!signOut.isPending) signOut.mutate();
+              if (signOut.isPending) return;
+              if (
+                unsavedRef?.current &&
+                !window.confirm("Sign out? Your changes will not be saved.")
+              )
+                return;
+              signOut.mutate();
             }}
           >
             {signOut.isPending ? "Signing out…" : "Sign out"}

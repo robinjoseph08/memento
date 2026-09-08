@@ -1,6 +1,8 @@
+import { useRef } from "react";
 import { Navigate, Outlet, useLocation } from "react-router-dom";
 
 import { useIdentityStatus } from "../../hooks/queries/identity";
+import { UnsavedChangesContext } from "../../lib/forms";
 import { errorMessage } from "../../lib/http";
 import { ConnectionStatus } from "../connection/connection-status";
 import { SignInForm } from "../identity/sign-in-form";
@@ -13,19 +15,19 @@ const headingClassName =
   "font-heading text-[clamp(34px,4vw,48px)] leading-[1.2] font-normal tracking-[-1px] text-balance";
 
 function destination(person: { is_curator: boolean } | null | undefined) {
-  return person
-    ? person.is_curator
-      ? "/curator"
-      : "/access-denied"
-    : "/sign-in";
+  return person ? (person.is_curator ? "/curator" : "/albums") : "/sign-in";
 }
 
 export function AppShell() {
+  const { data } = useIdentityStatus();
+  const unsavedRef = useRef(false);
   return (
-    <>
+    <UnsavedChangesContext value={unsavedRef}>
       <Header />
-      <Outlet />
-    </>
+      <Outlet
+        key={`${data?.person?.id ?? "public"}-${!!data?.person?.is_curator}`}
+      />
+    </UnsavedChangesContext>
   );
 }
 
@@ -56,7 +58,7 @@ export function InstallationLayout() {
       </main>
     );
   if (!status.data.claimed && location.pathname !== "/setup")
-    return <Navigate replace to="/setup" />;
+    return <Navigate replace to={`/setup${location.search}`} />;
   return (
     <>
       {status.isError && (
@@ -116,7 +118,7 @@ export function SignInPage() {
       <div className="mb-9 max-w-160 min-[761px]:mb-12">
         <h1 className={headingClassName}>Welcome back</h1>
         <p className="mt-5 max-w-[590px] text-muted">
-          Sign in with the identity you used to set up memento.
+          Sign in with an account approved by your Curator.
         </p>
       </div>
       <SignInForm />
@@ -132,6 +134,31 @@ export function CuratorLayout() {
     <main className={pageClassName}>
       <Outlet />
     </main>
+  );
+}
+
+export function SignedInLayout() {
+  const { data } = useIdentityStatus();
+  if (!data?.person) return <Navigate replace to="/sign-in" />;
+  return (
+    <main className={pageClassName}>
+      <Outlet />
+    </main>
+  );
+}
+
+export function MemberPage() {
+  return (
+    <>
+      <h1 className={headingClassName}>Your albums</h1>
+      <section className="mt-9 border-t border-border py-9">
+        <h2 className="font-heading text-[27px]/[1.2]">No albums yet</h2>
+        <p className="mt-4 max-w-120 text-muted">
+          There are no albums to view yet. Your Curator will choose what to
+          share with you.
+        </p>
+      </section>
+    </>
   );
 }
 

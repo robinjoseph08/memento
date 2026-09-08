@@ -147,8 +147,12 @@ files into `build/api/api`. The binary serves API routes, static assets, and
 SPA fallback routes from one HTTP port. Development still uses Vite separately
 for hot module replacement.
 
-Production authentication is not implemented yet. Do not expose development
-sign-in publicly.
+Production sign-in uses Google OpenID Connect. See
+[Google sign-in setup](docs/google-sign-in.md) for credentials and a real
+localhost check. Do not expose fake development sign-in publicly.
+
+Use [People and identity QA](docs/people-qa.md) to test a disposable installation,
+preauthorizations, profiles, sessions, and revocation.
 
 Build the production container:
 

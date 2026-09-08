@@ -3,7 +3,9 @@ module github.com/robinjoseph08/memento
 go 1.27.0
 
 require (
+	github.com/coreos/go-oidc/v3 v3.21.0
 	github.com/creasty/defaults v1.8.0
+	github.com/go-jose/go-jose/v4 v4.1.4
 	github.com/go-playground/mold/v4 v4.5.1
 	github.com/go-playground/validator/v10 v10.30.3
 	github.com/gorilla/schema v1.4.1
@@ -20,6 +22,7 @@ require (
 	github.com/uptrace/bun/dialect/pgdialect v1.2.18
 	github.com/uptrace/bun/driver/pgdriver v1.2.18
 	github.com/urfave/cli/v2 v2.27.7
+	golang.org/x/oauth2 v0.36.0
 )
 
 require (

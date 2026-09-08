@@ -15,10 +15,12 @@ function isInstallation(value: unknown): value is Installation {
   );
 }
 
-export const test = base.extend<
-  { fixtureURL: string },
-  { installation: Installation }
->({
+// Workers may run several tests. Allocate a fresh installation for each test
+// so an earlier claim never changes the next test's starting state.
+export const test = base.extend<{
+  fixtureURL: string;
+  installation: Installation;
+}>({
   installation: [
     async ({ browserName }, use) => {
       const child = spawn("./build/fixture/fixture", ["--offline"], {
@@ -76,7 +78,7 @@ export const test = base.extend<
         clearTimeout(timeout);
       }
     },
-    { scope: "worker", timeout: 65_000 },
+    { timeout: 65_000 },
   ],
   baseURL: async ({ installation }, use) => {
     await use(installation.apiURL);

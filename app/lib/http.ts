@@ -62,6 +62,10 @@ export async function request<T>(
   return payload as T;
 }
 
+export function fieldErrors(error: unknown) {
+  return error instanceof HTTPError ? error.fields : {};
+}
+
 export function errorMessage(error: unknown) {
   return error instanceof HTTPError
     ? error.message

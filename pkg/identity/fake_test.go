@@ -14,7 +14,7 @@ func TestFakeSignInUsesEmailIdentity(t *testing.T) {
 	module := identity.New(testdb.New(t), nil)
 	claims := identity.FakeClaims(identity.SignInRequest{Email: "  Curator@Example.test  ", DisplayName: "Alex"})
 	assert.Equal(t, "curator@example.test", claims.Subject)
-	assert.Equal(t, "curator@example.test", claims.Email)
+	assert.Equal(t, "Curator@Example.test", claims.Email)
 	assert.True(t, claims.EmailVerified)
 	first, err := module.SignIn(t.Context(), claims)
 	require.NoError(t, err)

@@ -1,3 +1,5 @@
+import { ProfilePage } from "../identity/profile";
+import { PeoplePage, PersonPage } from "../people/people";
 import {
   AccessDeniedPage,
   AppShell,
@@ -5,8 +7,10 @@ import {
   CuratorPage,
   HomePage,
   InstallationLayout,
+  MemberPage,
   PublicLayout,
   SetupPage,
+  SignedInLayout,
   SignInPage,
 } from "./layouts";
 
@@ -27,7 +31,18 @@ export const routes = [
           {
             path: "/curator",
             element: <CuratorLayout />,
-            children: [{ index: true, element: <CuratorPage /> }],
+            children: [
+              { index: true, element: <CuratorPage /> },
+              { path: "people", element: <PeoplePage /> },
+              { path: "people/:id", element: <PersonPage /> },
+            ],
+          },
+          {
+            element: <SignedInLayout />,
+            children: [
+              { path: "/profile", element: <ProfilePage /> },
+              { path: "/albums", element: <MemberPage /> },
+            ],
           },
           { path: "/access-denied", element: <AccessDeniedPage /> },
           { path: "*", element: <HomePage /> },

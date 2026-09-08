@@ -19,6 +19,7 @@ import (
 )
 
 type fakeIdentity struct {
+	identity.UseCases
 	claimed bool
 	session identity.Session
 	err     error
