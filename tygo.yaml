@@ -3,6 +3,10 @@ type_mappings:
   time.Duration: "number /* nanoseconds */"
 
 packages:
+  - path: "github.com/robinjoseph08/memento/pkg/publishing"
+    output_path: "app/types/generated/publishing.ts"
+    include_files:
+      - "types.go"
   - path: "github.com/robinjoseph08/memento/pkg/errcodes"
     output_path: "app/types/generated/errors.ts"
     include_files:

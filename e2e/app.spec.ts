@@ -94,7 +94,7 @@ test("claims during an Immich outage, recovers, and revokes the signed-out sessi
   ).toBe(200);
   await openConnection();
   await page.getByRole("button", { name: "Check again" }).click();
-  await expect(page.getByText(/2\.7\.0/)).toBeVisible();
+  await expect(page.getByText(/3\.1\.0/)).toBeVisible();
   await expect(page.getByText("Connected", { exact: true })).toHaveCSS(
     "color",
     "rgb(74, 194, 211)",

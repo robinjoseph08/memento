@@ -1,0 +1,40 @@
+# Applied to the exact official release Compose file by immich-smoke.sh.
+services:
+  immich-server:
+    container_name: ${COMPOSE_PROJECT_NAME}-server
+    ports: !override
+      - "127.0.0.1::2283"
+    restart: "no"
+    environment:
+      IMMICH_CONFIG_FILE: /smoke-config.json
+    volumes:
+      - ${SMOKE_WORK_DIR}/immich-config.json:/smoke-config.json:ro
+  immich-machine-learning:
+    container_name: ${COMPOSE_PROJECT_NAME}-machine-learning
+    profiles: [unused-in-smoke]
+    restart: "no"
+  redis:
+    container_name: ${COMPOSE_PROJECT_NAME}-redis
+    restart: "no"
+  database:
+    container_name: ${COMPOSE_PROJECT_NAME}-database
+    restart: "no"
+  memento-db:
+    image: postgres:17.7-alpine3.23
+    environment:
+      POSTGRES_USER: smoke
+      POSTGRES_PASSWORD: smoke
+      POSTGRES_DB: smoke
+    ports:
+      - "127.0.0.1::5432"
+    volumes:
+      - memento-db:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U smoke -d smoke"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+volumes:
+  smoke-upload:
+  smoke-db:
+  memento-db:

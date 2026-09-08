@@ -1,10 +1,12 @@
+import { AlbumPage } from "../albums/album-detail";
+import { CuratorPage } from "../albums/albums";
+import { ImportPage } from "../albums/sources";
 import { ProfilePage } from "../identity/profile";
 import { PeoplePage, PersonPage } from "../people/people";
 import {
   AccessDeniedPage,
   AppShell,
   CuratorLayout,
-  CuratorPage,
   HomePage,
   InstallationLayout,
   MemberPage,
@@ -33,6 +35,8 @@ export const routes = [
             element: <CuratorLayout />,
             children: [
               { index: true, element: <CuratorPage /> },
+              { path: "import", element: <ImportPage /> },
+              { path: "albums/:id", element: <AlbumPage /> },
               { path: "people", element: <PeoplePage /> },
               { path: "people/:id", element: <PersonPage /> },
             ],

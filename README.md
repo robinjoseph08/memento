@@ -120,6 +120,68 @@ Stop it with Ctrl-C and run it again to reset without erasing development data.
 Use separate browser profiles to try multiple people. Ordinary tabs share the
 same session cookie. Never expose fake development sign-in publicly.
 
+### Try a controlled album import
+
+`mise start:qa` also serves an Immich 3.1.0 fixture with 32 source albums. Set
+`FIXTURE_URL` to the printed `fixtureURL`, then bring the source online:
+
+```sh
+export FIXTURE_URL=http://127.0.0.1:PRINTED_FIXTURE_PORT
+curl -X POST -H 'Content-Type: application/json' \
+  -d '{"available":true}' "$FIXTURE_URL/__fixture/state"
+```
+
+Sign in at the printed application URL, choose **Import an album**, and search
+for `Fixture Album`. The Coast album has six items across June 1, 2, and 3,
+including captures either side of local midnight and two photos with the same
+timestamp. The Family album shares a photo and video with Coast. The remaining
+30 albums exercise source pagination. Previews are real generated JPEG and PNG
+images, not original downloads.
+
+These loopback-only controls belong to the fixture, never the production API:
+
+```sh
+# Inspect the two named checkpoints and upstream request counts.
+curl "$FIXTURE_URL/__fixture/checkpoints"
+curl "$FIXTURE_URL/__fixture/requests"
+
+# Hold the second Coast asset's metadata request.
+curl -X POST -H 'Content-Type: application/json' \
+  -d '{"mode":"pause"}' "$FIXTURE_URL/__fixture/checkpoints/asset-metadata"
+
+# Release it, including requests already waiting.
+curl -X POST -H 'Content-Type: application/json' \
+  -d '{"mode":"open"}' "$FIXTURE_URL/__fixture/checkpoints/asset-metadata"
+
+# Fail the last Coast asset's metadata request before import completion.
+curl -X POST -H 'Content-Type: application/json' \
+  -d '{"mode":"fail"}' "$FIXTURE_URL/__fixture/checkpoints/import-release"
+
+# Report an unsupported Immich version to check the import gate.
+curl -X POST -H 'Content-Type: application/json' \
+  -d '{"available":true,"unsupported":true}' "$FIXTURE_URL/__fixture/state"
+
+# Restore the supported version and valid key.
+curl -X POST -H 'Content-Type: application/json' \
+  -d '{"available":true}' "$FIXTURE_URL/__fixture/state"
+
+# Restart only Memento, preserving its schema, sessions, and import task.
+curl -X POST "$FIXTURE_URL/__fixture/restart"
+```
+
+Both checkpoints accept `open`, `pause`, and `fail`. Their status reports `hits`
+and `waiting`; request counts use keys such as `POST /api/search/metadata`.
+A pause still obeys the production adapter's five-second HTTP deadline. Leave
+it paused to exercise timeout and retry handling, or use `fail` for immediate
+HTTP 503 responses. After automatic retries stop, open the checkpoint and
+choose **Retry import**. `import-release` holds the sixth Coast asset, so five
+items are processed before it releases. Checkpoints can also affect thumbnail
+metadata reads for those assets; reopen both before inspecting completed media.
+
+Closing a browser tab does not stop the worker. An orderly API restart preserves
+its work; it is not a crash-recovery simulation. Stop and restart `mise start:qa`
+to reset all data and controls. The fixture cannot touch a real Immich library.
+
 ## Run checks
 
 ```sh
@@ -148,6 +210,35 @@ database. All test data stays in temporary schemas with small pools. Export
 `TEST_DATABASE_URL` to make all commands use one dedicated test database
 instead.
 
+### Smoke-test a real Immich release
+
+```sh
+mise exec -- bash scripts/immich-smoke.sh
+```
+
+This requires Docker Compose 2.24.4 or newer, `curl`, and `shasum`. Allow several
+minutes and enough Docker memory for Immich and two PostgreSQL containers.
+The script downloads the official Immich v3.1.0 Compose file, checks its pinned
+SHA-256, and runs the exact release in a uniquely named disposable project.
+Ports bind only to loopback. Machine learning and reverse geocoding are disabled
+because this check needs only metadata extraction and generated thumbnails.
+
+Fixtures use supported Immich APIs, not database tables. A non-admin source
+owner creates a key with exactly `album.read`, `asset.read`, and `asset.view`.
+The smoke imports two overlapping albums through Memento's production adapter
+and publishing module. It checks EXIF capture dates around midnight, tied entry
+ordering, shared Media Items, generated thumbnails through production media HTTP
+routes, private cache validators, and unchanged source album titles,
+descriptions, and membership. The in-process media check bypasses sign-in and
+does not expose an HTTP listener. Fixture creation helpers live in
+`cmd/immich-smoke/fixture` for reuse by release compatibility tests.
+
+Memento uses a temporary schema in its own disposable PostgreSQL container.
+The script ignores existing application and Immich configuration. On exit it
+removes only its own containers and volumes; it never resets development data.
+The final output records the tested release. A successful run certifies this
+one release, not every version in the supported range.
+
 ## Build the production application
 
 ```sh
@@ -172,6 +263,32 @@ configuration from `/config/app.yaml`, and stores mutable files under
 instance base URL without `/api`. Environment values override YAML.
 `PUBLIC_URL` must match the browser origin and controls cookie security and
 mutation origin checks. See `app.example.yaml` for a deployment example.
+
+### Connect Immich for imports
+
+The initial import gate supports Immich **3.0.x and 3.1.x**. Other versions can
+still be checked during setup, but Memento blocks new imports and shows a
+warning. The pinned smoke command above verifies 3.1.0; this is not a claim that
+every patch in the range has been certified.
+
+Create an API key in the Immich account that owns or can access your source
+albums. Grant only `album.read`, `asset.read`, and `asset.view`, then set
+`IMMICH_API_KEY` on Memento's server. No write or original-download permission is
+needed. Memento uses GET requests plus Immich's read-only `POST /search/metadata`
+endpoint for membership pagination. It never edits source albums or assets.
+
+Imports run inside the API process through River, sharing Memento's PostgreSQL
+pool. Two imports can run at once, with three automatic attempts and a
+15-minute limit per attempt. An orderly shutdown interrupts unfinished work for
+the next startup. After a forced process termination, stale work becomes
+eligible for automatic recovery after 16 minutes. The Album page reports
+missing progress as interrupted; retry remains available after failure.
+
+A completed import is unpublished. Memento owns its title, while the description
+is the last imported Immich description and cannot be edited in Memento. No
+media bytes are stored persistently. Thumbnails use private browser caching;
+source media that changes before synchronization may show an unavailable image
+rather than different bytes under an old content-versioned URL.
 
 ### Separate PostgreSQL database and role
 

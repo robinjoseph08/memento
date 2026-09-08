@@ -1,8 +1,48 @@
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
-import { test as base, expect } from "@playwright/test";
+import { test as base, expect, type APIRequestContext } from "@playwright/test";
 
 type Installation = { apiURL: string; fixtureURL: string };
+type CheckpointName = "asset-metadata" | "import-release";
+type CheckpointState = { mode: string; hits: number; waiting: number };
+
+function immichControls(request: APIRequestContext, url: string) {
+  return {
+    async online() {
+      expect(
+        (
+          await request.post(`${url}/__fixture/state`, {
+            data: { available: true },
+          })
+        ).status(),
+      ).toBe(200);
+    },
+    async checkpoint(name: CheckpointName, mode: "open" | "pause" | "fail") {
+      expect(
+        (
+          await request.post(`${url}/__fixture/checkpoints/${name}`, {
+            data: { mode },
+          })
+        ).status(),
+      ).toBe(200);
+    },
+    async checkpoints() {
+      const response = await request.get(`${url}/__fixture/checkpoints`);
+      expect(response.status()).toBe(200);
+      return (await response.json()) as Record<CheckpointName, CheckpointState>;
+    },
+    async requests() {
+      const response = await request.get(`${url}/__fixture/requests`);
+      expect(response.status()).toBe(200);
+      return (await response.json()) as Record<string, number>;
+    },
+    async restart() {
+      expect((await request.post(`${url}/__fixture/restart`)).status()).toBe(
+        204,
+      );
+    },
+  };
+}
 
 function isInstallation(value: unknown): value is Installation {
   return (
@@ -20,6 +60,7 @@ function isInstallation(value: unknown): value is Installation {
 export const test = base.extend<{
   fixtureURL: string;
   installation: Installation;
+  immich: ReturnType<typeof immichControls>;
 }>({
   installation: [
     async ({ browserName }, use) => {
@@ -73,7 +114,7 @@ export const test = base.extend<{
       } finally {
         lines.close();
         child.kill("SIGTERM");
-        const timeout = setTimeout(() => child.kill("SIGKILL"), 15_000);
+        const timeout = setTimeout(() => child.kill("SIGKILL"), 40_000);
         await exited;
         clearTimeout(timeout);
       }
@@ -85,6 +126,9 @@ export const test = base.extend<{
   },
   fixtureURL: async ({ installation }, use) => {
     await use(installation.fixtureURL);
+  },
+  immich: async ({ request, fixtureURL }, use) => {
+    await use(immichControls(request, fixtureURL));
   },
 });
 

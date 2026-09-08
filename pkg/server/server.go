@@ -20,12 +20,14 @@ import (
 	"github.com/robinjoseph08/memento/pkg/errorstack"
 	"github.com/robinjoseph08/memento/pkg/identity"
 	"github.com/robinjoseph08/memento/pkg/immich"
+	"github.com/robinjoseph08/memento/pkg/media"
+	"github.com/robinjoseph08/memento/pkg/publishing"
 	"github.com/uptrace/bun"
 )
 
 // New constructs the HTTP server and registers the application's routes and
 // middleware.
-func New(cfg *config.Config, db *bun.DB) (*http.Server, error) {
+func New(cfg *config.Config, db *bun.DB, imports ...*publishing.Module) (*http.Server, error) {
 	frontend, available, err := webapp.Handler(cfg.PublicURL, publicPageMetadata)
 	if err != nil {
 		return nil, fmt.Errorf("load embedded frontend: %w", err)
@@ -33,15 +35,20 @@ func New(cfg *config.Config, db *bun.DB) (*http.Server, error) {
 	if !available {
 		frontend = nil
 	}
-	return newServer(cfg, frontend, dependencies{
-		identity: identity.New(db, nil), connection: immich.New(cfg.ImmichURL, cfg.ImmichAPIKey), health: db.PingContext,
-	})
+	source := immich.New(cfg.ImmichURL, cfg.ImmichAPIKey)
+	deps := dependencies{identity: identity.New(db, nil), connection: source, health: db.PingContext, media: media.New(db, source)}
+	if len(imports) > 0 {
+		deps.publishing = imports[0]
+	}
+	return newServer(cfg, frontend, deps)
 }
 
 type dependencies struct {
 	identity   identity.UseCases
 	connection immich.Diagnostic
 	health     func(context.Context) error
+	publishing *publishing.Module
+	media      *media.Module
 }
 
 func newServer(cfg *config.Config, frontend http.Handler, options ...dependencies) (*http.Server, error) {
@@ -80,6 +87,12 @@ func newServer(cfg *config.Config, frontend http.Handler, options ...dependencie
 	if deps.identity != nil {
 		handlers := identity.RegisterRoutes(e, cfg, deps.identity)
 		immich.RegisterRoutes(e, deps.connection, handlers.RequireSetupOrCurator, handlers.RequireCurator)
+		if deps.publishing != nil {
+			publishing.RegisterRoutes(e, deps.publishing, handlers.RequireCurator)
+		}
+		if deps.media != nil {
+			media.RegisterRoutes(e, deps.media, handlers.RequireCurator)
+		}
 	}
 	apiNotFound := func(_ *echo.Context) error { return echo.ErrNotFound }
 	e.Any("/api", apiNotFound)

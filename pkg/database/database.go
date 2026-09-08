@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/robinjoseph08/golib/logger"
 	"github.com/robinjoseph08/memento/pkg/config"
 	"github.com/robinjoseph08/memento/pkg/errorstack"
 	"github.com/uptrace/bun"
 	"github.com/uptrace/bun/dialect/pgdialect"
-	"github.com/uptrace/bun/driver/pgdriver"
 )
 
 type contextKey int
@@ -78,12 +80,27 @@ func waitForRetry(ctx context.Context, delay time.Duration) error {
 	}
 }
 
-func open(cfg *config.Config) (*bun.DB, error) {
-	connector, err := pgdriver.NewDriver().OpenConnector(cfg.DatabaseURL)
+// OpenSQL creates the shared connector used by the application and isolated tests.
+// It decodes system timestamps in UTC without shifting local capture timestamps.
+func OpenSQL(dsn string) (*sql.DB, error) {
+	pgConfig, err := pgx.ParseConfig(dsn)
 	if err != nil {
-		return nil, fmt.Errorf("parse database URL: %w", err)
+		return nil, fmt.Errorf("parse database URL: invalid PostgreSQL URL")
 	}
-	sqldb := sql.OpenDB(connector)
+	return stdlib.OpenDB(*pgConfig, stdlib.OptionAfterConnect(func(_ context.Context, conn *pgx.Conn) error {
+		conn.TypeMap().RegisterType(&pgtype.Type{
+			Name: "timestamptz", OID: pgtype.TimestamptzOID,
+			Codec: &pgtype.TimestamptzCodec{ScanLocation: time.UTC},
+		})
+		return nil
+	})), nil
+}
+
+func open(cfg *config.Config) (*bun.DB, error) {
+	sqldb, err := OpenSQL(cfg.DatabaseURL)
+	if err != nil {
+		return nil, err
+	}
 	sqldb.SetMaxOpenConns(cfg.DatabaseMaxOpenConns)
 	sqldb.SetMaxIdleConns(cfg.DatabaseMaxIdleConns)
 	db := bun.NewDB(sqldb, pgdialect.New())
