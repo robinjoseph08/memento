@@ -40,7 +40,7 @@ type Config struct {
 	PublicURL                 string        `koanf:"public_url" json:"public_url" validate:"required"`
 	ImmichURL                 string        `koanf:"immich_url" json:"immich_url" validate:"required"`
 	ImmichAPIKey              string        `koanf:"immich_api_key" json:"-" validate:"required"`
-	AuthMode                  string        `koanf:"auth_mode" json:"auth_mode" validate:"required"`
+	AuthMode                  string        `koanf:"auth_mode" json:"auth_mode"`
 	GoogleClientID            string        `koanf:"google_client_id" json:"google_client_id"`
 	GoogleClientSecret        string        `koanf:"google_client_secret" json:"-"`
 	AppEnv                    string        `koanf:"app_env" json:"app_env"`
@@ -51,6 +51,7 @@ type Config struct {
 	DatabaseConnectRetryCount int           `koanf:"database_connect_retry_count" json:"database_connect_retry_count" validate:"min=1"`
 	DatabaseConnectRetryDelay time.Duration `koanf:"database_connect_retry_delay" json:"database_connect_retry_delay" validate:"min=0"`
 	FilesPath                 string        `koanf:"files_path" json:"files_path" validate:"required"`
+	CookieNamespace           string        `koanf:"cookie_namespace" json:"-"`
 	ServerHost                string        `koanf:"server_host" json:"server_host" validate:"required"`
 	ServerPort                int           `koanf:"server_port" json:"server_port" validate:"min=0,max=65535"`
 	Hostname                  string        `koanf:"-" json:"-"`
@@ -59,12 +60,14 @@ type Config struct {
 func defaults() *Config {
 	return &Config{
 		AppEnv:                    "production",
+		AuthMode:                  "google",
 		DatabaseMaxOpenConns:      10,
 		DatabaseMaxIdleConns:      3,
 		DatabaseDebug:             false,
 		DatabaseConnectRetryCount: 5,
 		DatabaseConnectRetryDelay: 2 * time.Second,
 		FilesPath:                 "./tmp/files",
+		CookieNamespace:           "memento",
 		ServerHost:                "0.0.0.0",
 		ServerPort:                3579,
 	}
@@ -162,7 +165,6 @@ func validateConfig(cfg *Config) error {
 		{"public_url", cfg.PublicURL},
 		{"immich_url", cfg.ImmichURL},
 		{"immich_api_key", cfg.ImmichAPIKey},
-		{"auth_mode", cfg.AuthMode},
 	} {
 		if strings.TrimSpace(setting.value) == "" {
 			return fmt.Errorf("%s: required", setting.field)
@@ -225,6 +227,9 @@ func validateConfig(cfg *Config) error {
 	if cfg.AppEnv != "production" && cfg.AppEnv != "development" && cfg.AppEnv != "test" {
 		return fmt.Errorf("app_env: must be production, development, or test")
 	}
+	if !validCookieNamespace(cfg.CookieNamespace) {
+		return fmt.Errorf("cookie_namespace: must be 64 characters or fewer and use lowercase letters, numbers, and underscores")
+	}
 	switch cfg.AuthMode {
 	case "google":
 		for _, setting := range []struct{ field, value string }{
@@ -257,6 +262,20 @@ func validateConfig(cfg *Config) error {
 		return fmt.Errorf("%s: %s %s", field.Field(), field.Tag(), field.Param())
 	}
 	return nil
+}
+
+func validCookieNamespace(value string) bool {
+	if value == "" || len(value) > 64 {
+		return false
+	}
+	for i := range len(value) {
+		character := value[i]
+		if (character >= 'a' && character <= 'z') || (character >= '0' && character <= '9') || character == '_' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // parseURL reports the field, never the input, because URLs can contain secrets.

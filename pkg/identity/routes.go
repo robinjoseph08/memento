@@ -7,7 +7,7 @@ import (
 
 // RegisterRoutes registers public authentication routes. Protected features reuse the guards.
 func RegisterRoutes(e *echo.Echo, cfg *config.Config, module UseCases) *Handlers {
-	h := &Handlers{module: module, publicURL: cfg.PublicURL, authMode: cfg.AuthMode}
+	h := newHandlers(cfg, module)
 	RegisterGoogleRoutes(e, cfg, module)
 	e.GET("/api/identity/status", h.status)
 	e.GET("/api/identity/me", h.me, h.RequirePerson)

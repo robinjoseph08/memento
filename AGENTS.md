@@ -60,6 +60,23 @@ changes effectively. Think of these instructions less as "hard rules", more as
 "good defaults". The developer's preferences should be able to override
 anything here.
 
+## Configuration
+
+- Require installation-specific values that cannot have a safe universal
+  default, such as database URLs, external service URLs, API keys, and provider
+  credentials.
+- Values that only select between development and production behavior must
+  default to the production value. A production operator should not have to
+  set them.
+- Keep development-only values in `app.dev.yaml` or inject them through the
+  development tooling. Do not add them to `app.example.yaml` or deployment
+  instructions.
+- Treat `app.example.yaml` as an operator-facing deployment example, not an
+  inventory of internal configuration. Include optional settings only when a
+  production operator may reasonably need to change them.
+- Test both sides of the distinction: installation-specific values fail clearly
+  when absent, while environment-specific values use their production defaults.
+
 ## Directory guidance
 
 - Backend conventions live in `pkg/AGENTS.md`.

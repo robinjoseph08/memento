@@ -14,8 +14,9 @@ func RegisterGoogleRoutes(e *echo.Echo, cfg *config.Config, module UseCases, opt
 		return
 	}
 	h := &googleHandlers{
-		identity:     &Handlers{module: module, publicURL: cfg.PublicURL, authMode: cfg.AuthMode},
+		identity:     newHandlers(cfg, module),
 		provider:     NewGoogleProvider(cfg.GoogleClientID, cfg.GoogleClientSecret, cfg.PublicURL+googleCallbackPath, options...),
+		cookieName:   cfg.CookieNamespace + "_google_login",
 		transactions: make(map[string]googleTransaction),
 	}
 	e.GET("/api/identity/google/start", h.start)

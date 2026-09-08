@@ -73,6 +73,21 @@ func googleCallback(e *echo.Echo, cookie *http.Cookie, query url.Values) *httpte
 	return rec
 }
 
+func TestGoogleLoginUsesCookieNamespace(t *testing.T) {
+	t.Parallel()
+	s := newOIDCSubstitute(t)
+	cfg := config.NewForTest()
+	cfg.AuthMode = "google"
+	cfg.CookieNamespace = "memento_feature_worktree"
+	cfg.GoogleClientID = "client-id"
+	cfg.GoogleClientSecret = "client-secret"
+	e := echo.New()
+	identity.RegisterGoogleRoutes(e, cfg, &googleHTTPModule{}, identity.WithGoogleIssuer(s.server.URL, s.server.Client()))
+
+	cookie, _ := startGoogle(t, e)
+	require.Equal(t, "memento_feature_worktree_google_login", cookie.Name)
+}
+
 func TestGoogleOutageLeavesDatabaseHealthHealthy(t *testing.T) {
 	t.Parallel()
 	db := testdb.New(t)

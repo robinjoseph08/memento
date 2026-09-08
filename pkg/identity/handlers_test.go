@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -20,16 +21,20 @@ import (
 
 type fakeIdentity struct {
 	identity.UseCases
-	claimed bool
-	session identity.Session
-	err     error
+	claimed       bool
+	session       identity.Session
+	expectedToken string
+	err           error
 }
 
 func (f *fakeIdentity) Claimed(context.Context) (bool, error) { return f.claimed, nil }
 func (f *fakeIdentity) SignIn(context.Context, identity.Claims) (identity.Session, error) {
 	return f.session, f.err
 }
-func (f *fakeIdentity) Authenticate(context.Context, string) (identity.Session, error) {
+func (f *fakeIdentity) Authenticate(_ context.Context, token string) (identity.Session, error) {
+	if f.expectedToken != "" && token != f.expectedToken {
+		return identity.Session{}, identity.ErrUnauthenticated
+	}
 	return f.session, f.err
 }
 func (f *fakeIdentity) SignOut(context.Context, string) error { return f.err }
@@ -103,6 +108,49 @@ func TestIdentityHTTPTranslation(t *testing.T) {
 	recorder = httptest.NewRecorder()
 	e.ServeHTTP(recorder, req)
 	assert.Equal(t, 409, recorder.Code)
+}
+
+func TestDevelopmentInstancesKeepIndependentBrowserSessions(t *testing.T) {
+	t.Parallel()
+
+	jar, err := cookiejar.New(nil)
+	require.NoError(t, err)
+	client := &http.Client{Jar: jar}
+	servers := make([]*httptest.Server, 0, 2)
+	for _, instance := range []struct {
+		namespace string
+		token     string
+	}{
+		{namespace: "memento_first_worktree", token: strings.Repeat("a", 43)},
+		{namespace: "memento_second_worktree", token: strings.Repeat("b", 43)},
+	} {
+		cfg := config.NewForTest()
+		cfg.CookieNamespace = instance.namespace
+		module := &fakeIdentity{
+			claimed:       true,
+			expectedToken: instance.token,
+			session: identity.Session{
+				Person:    identity.Person{ID: instance.namespace, DisplayName: instance.namespace, IsCurator: true},
+				Token:     instance.token,
+				ExpiresAt: time.Now().Add(time.Hour),
+			},
+		}
+		server := httptest.NewServer(identityHTTP(t, cfg, module))
+		t.Cleanup(server.Close)
+		servers = append(servers, server)
+
+		response, err := client.Post(server.URL+"/api/identity/fake-sign-in", "application/json", strings.NewReader(`{"email":"owner@example.test","display_name":"Owner"}`))
+		require.NoError(t, err)
+		require.NoError(t, response.Body.Close())
+		require.Equal(t, http.StatusOK, response.StatusCode)
+	}
+
+	for _, server := range servers {
+		response, err := client.Get(server.URL + "/protected")
+		require.NoError(t, err)
+		require.NoError(t, response.Body.Close())
+		assert.Equal(t, http.StatusNoContent, response.StatusCode)
+	}
 }
 
 func TestFakeSignInRejectsSubjectOverride(t *testing.T) {

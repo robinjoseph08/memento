@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v5"
+	"github.com/robinjoseph08/memento/pkg/config"
 	"github.com/robinjoseph08/memento/pkg/errcodes"
 	"github.com/robinjoseph08/memento/pkg/errorstack"
 )
@@ -48,6 +49,16 @@ type ProfileUseCases interface {
 type Handlers struct {
 	module              UseCases
 	publicURL, authMode string
+	cookieName          string
+}
+
+func newHandlers(cfg *config.Config, module UseCases) *Handlers {
+	return &Handlers{
+		module:     module,
+		publicURL:  cfg.PublicURL,
+		authMode:   cfg.AuthMode,
+		cookieName: cfg.CookieNamespace + "_session",
+	}
 }
 
 func (h *Handlers) status(c *echo.Context) error {
@@ -86,7 +97,7 @@ func (h *Handlers) signOut(c *echo.Context) error {
 	if err := c.Bind(&request); err != nil {
 		return err
 	}
-	if cookie, err := c.Cookie(CookieName); err == nil {
+	if cookie, err := c.Cookie(h.cookieName); err == nil {
 		if err := h.module.SignOut(c.Request().Context(), cookie.Value); err != nil {
 			return err
 		}
@@ -100,7 +111,7 @@ func (h *Handlers) me(c *echo.Context) error {
 }
 
 func (h *Handlers) authenticate(c *echo.Context) (Session, error) {
-	cookie, err := c.Cookie(CookieName)
+	cookie, err := c.Cookie(h.cookieName)
 	if err != nil {
 		return Session{}, ErrUnauthenticated
 	}
@@ -164,9 +175,9 @@ func (h *Handlers) RequireSetupOrCurator(next echo.HandlerFunc) echo.HandlerFunc
 }
 
 func (h *Handlers) setCookie(c *echo.Context, token string, expires time.Time) {
-	c.SetCookie(&http.Cookie{Name: CookieName, Value: token, Path: "/", HttpOnly: true, Secure: strings.HasPrefix(h.publicURL, "https://"), SameSite: http.SameSiteLaxMode, Expires: expires})
+	c.SetCookie(&http.Cookie{Name: h.cookieName, Value: token, Path: "/", HttpOnly: true, Secure: strings.HasPrefix(h.publicURL, "https://"), SameSite: http.SameSiteLaxMode, Expires: expires})
 }
 
 func (h *Handlers) clearCookie(c *echo.Context) {
-	c.SetCookie(&http.Cookie{Name: CookieName, Value: "", Path: "/", HttpOnly: true, Secure: strings.HasPrefix(h.publicURL, "https://"), SameSite: http.SameSiteLaxMode, Expires: time.Unix(1, 0), MaxAge: -1})
+	c.SetCookie(&http.Cookie{Name: h.cookieName, Value: "", Path: "/", HttpOnly: true, Secure: strings.HasPrefix(h.publicURL, "https://"), SameSite: http.SameSiteLaxMode, Expires: time.Unix(1, 0), MaxAge: -1})
 }
