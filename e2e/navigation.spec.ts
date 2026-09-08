@@ -90,9 +90,13 @@ test("Immich search keeps focus, clears immediately, and follows browser history
         ),
       )
       .toBe(true);
-    const bounds = await cover.boundingBox();
-    expect(bounds).not.toBeNull();
-    expect(bounds!.height).toBeLessThanOrEqual(bounds!.width);
+    const size = await cover.evaluate((image: HTMLImageElement) => ({
+      width: image.getBoundingClientRect().width,
+      height: image.getBoundingClientRect().height,
+      ratio: image.naturalWidth / image.naturalHeight,
+    }));
+    expect(size.width / size.height).toBeCloseTo(size.ratio, 2);
+    expect(size.height).toBeLessThanOrEqual(240);
   }
   await search.fill("Coast");
   await page.getByRole("button", { name: "Search", exact: true }).click();

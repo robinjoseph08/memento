@@ -22,7 +22,7 @@ func (h *handlers) sources(c *echo.Context) error {
 	return respond(c, result, err)
 }
 func (h *handlers) albums(c *echo.Context) error {
-	result, err := h.module.ListAlbums(c.Request().Context())
+	result, err := h.module.ListAlbums(c.Request().Context(), c.QueryParam("q"))
 	return respond(c, result, err)
 }
 func (h *handlers) album(c *echo.Context) error {

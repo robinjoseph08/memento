@@ -86,7 +86,7 @@ export function ImportPage() {
                   <article className="min-w-0" key={source.id}>
                     <AlbumImage
                       alt={source.title}
-                      className="aspect-[4/3] w-full object-contain"
+                      className="h-auto max-h-60 w-auto max-w-full"
                       fallback="No cover available"
                       src={source.cover_url}
                     />

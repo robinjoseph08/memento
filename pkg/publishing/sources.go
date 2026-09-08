@@ -41,11 +41,11 @@ func (m *Module) ListSources(ctx context.Context, search string, page int) (Sour
 			StartDate: source.StartDate, EndDate: source.EndDate, CoverURL: cover, AlbumID: bySource[source.ID]})
 	}
 	sort.Slice(matches, func(i, j int) bool {
-		a, b := strings.ToLower(matches[i].Title), strings.ToLower(matches[j].Title)
+		a, b := matches[i].StartDate, matches[j].StartDate
 		if a == b {
 			return matches[i].ID < matches[j].ID
 		}
-		return a < b
+		return a > b
 	})
 	pages := max(1, (len(matches)+sourcePageSize-1)/sourcePageSize)
 	page = min(max(page, 1), pages)

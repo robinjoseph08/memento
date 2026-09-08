@@ -103,9 +103,9 @@ test("imports an album through a stopped task, browser closure, and API restart"
     completed.getByText("4 photos, 2 videos", { exact: true }),
   ).toBeVisible();
   for (const [label, count] of [
-    ["June 1, 2026", 1],
-    ["June 2, 2026", 3],
-    ["June 3, 2026", 2],
+    ["Monday, June 1, 2026", 1],
+    ["Tuesday, June 2, 2026", 3],
+    ["Wednesday, June 3, 2026", 2],
   ] as const) {
     const toggle = completed.getByRole("button", { name: label, exact: true });
     if ((await toggle.getAttribute("aria-expanded")) !== "true")
@@ -113,7 +113,7 @@ test("imports an album through a stopped task, browser closure, and API restart"
     const previews = completed
       .getByRole("region", { name: label, exact: true })
       .getByRole("list", { name: "Moment media" })
-      .getByRole("img");
+      .getByRole("img", { name: /\.(jpg|mp4)$/ });
     await expect(previews).toHaveCount(count);
     for (const preview of await previews.all()) {
       await preview.scrollIntoViewIfNeeded();
@@ -131,10 +131,10 @@ test("imports an album through a stopped task, browser closure, and API restart"
     }
   }
   await completed
-    .getByRole("button", { name: "June 2, 2026", exact: true })
+    .getByRole("button", { name: "Tuesday, June 2, 2026", exact: true })
     .click();
   const tiedPhotos = completed
-    .getByRole("region", { name: "June 2, 2026" })
+    .getByRole("region", { name: "Tuesday, June 2, 2026" })
     .getByRole("list", { name: "Moment media" })
     .getByRole("img", { name: /\.jpg$/ });
   await expect(tiedPhotos).toHaveCount(2);
@@ -159,8 +159,21 @@ test("imports an album through a stopped task, browser closure, and API restart"
   await completed.getByRole("link", { name: "All albums" }).click();
   await expect(
     completed.getByRole("link", {
-      name: "Our coast holiday 6 items, unpublished",
+      name: /Our coast holiday.*4 photos, 2 videos.*unpublished/,
     }),
+  ).toBeVisible();
+  const albumSearch = completed.getByRole("searchbox", {
+    name: "Search albums",
+  });
+  await albumSearch.fill("not our album");
+  await albumSearch.press("Enter");
+  await expect(
+    completed.getByRole("heading", { name: "No matching albums" }),
+  ).toBeVisible();
+  await completed.getByRole("button", { name: "Clear search" }).click();
+  await expect(albumSearch).toBeFocused();
+  await expect(
+    completed.getByRole("link", { name: /Our coast holiday/ }),
   ).toBeVisible();
   await completed.getByRole("link", { name: "Import an album" }).click();
   await completed

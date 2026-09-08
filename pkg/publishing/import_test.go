@@ -149,7 +149,7 @@ func TestEnqueueFailureRollsBackAlbumIntent(t *testing.T) {
 	m := publishing.New(testdb.New(t), fixture(), func(context.Context, bun.Tx, string) error { return errors.New("queue unavailable") })
 	_, err := m.StartImport(t.Context(), "source")
 	require.Error(t, err)
-	albums, err := m.ListAlbums(t.Context())
+	albums, err := m.ListAlbums(t.Context(), "")
 	require.NoError(t, err)
 	require.Empty(t, albums)
 }
@@ -262,12 +262,24 @@ func TestDatabaseRetainsRemovedEntryAndEnforcesSameAlbumCovers(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, removed.Moments, 1)
 	require.Len(t, removed.Moments[0].Entries, 2)
+	require.Equal(t, 2, removed.PhotoCount)
+	require.Zero(t, removed.VideoCount)
+	require.Equal(t, "2026-07-05", removed.StartDate)
+	require.Equal(t, "2026-07-05", removed.EndDate)
+	require.Equal(t, removed.Moments[0].Entries[0].ThumbnailURL, removed.CoverURL)
+	listed, err := m.ListAlbums(t.Context(), "Summer")
+	require.NoError(t, err)
+	require.Len(t, listed, 1)
+	require.Equal(t, removed.Album, listed[0])
 	_, err = db.NewUpdate().Model((*models.AlbumEntry)(nil)).Set("removed_at = NULL").Set("moment_id = ?", removed.Moments[0].ID).Where("id = ?", retainedID).Exec(t.Context())
 	require.NoError(t, err)
 	restored, err := m.GetAlbum(t.Context(), a.ID)
 	require.NoError(t, err)
 	require.Len(t, restored.Moments[0].Entries, 3)
 	require.Equal(t, retainedID, restored.Moments[0].Entries[0].ID)
+	require.Equal(t, 3, restored.PhotoCount)
+	require.Equal(t, "2026-07-04", restored.StartDate)
+	require.Equal(t, removed.CoverURL, restored.CoverURL)
 }
 
 func TestMembershipDriftWithUnchangedAlbumCountAndTimestampIsRejected(t *testing.T) {

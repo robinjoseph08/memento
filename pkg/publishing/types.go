@@ -29,6 +29,11 @@ type Album struct {
 	Message     string `json:"message"`
 	Processed   int    `json:"processed"`
 	Total       int    `json:"total"`
+	PhotoCount  int    `json:"photo_count"`
+	VideoCount  int    `json:"video_count"`
+	StartDate   string `json:"start_date"`
+	EndDate     string `json:"end_date"`
+	CoverURL    string `json:"cover_url"`
 }
 
 type AlbumDetail struct {

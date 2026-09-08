@@ -1,3 +1,4 @@
+import { Video } from "lucide-react";
 import { useSearchParams } from "react-router-dom";
 
 import { cn } from "../../lib/utils";
@@ -10,6 +11,26 @@ export function MediaCounts({ entries }: { entries: Entry[] }) {
   const photos = entries.filter((entry) => entry.kind === "IMAGE").length;
   const videos = entries.filter((entry) => entry.kind === "VIDEO").length;
   return `${photos} ${photos === 1 ? "photo" : "photos"}, ${videos} ${videos === 1 ? "video" : "videos"}`;
+}
+
+function momentHeading(moment: Moment) {
+  const date = new Date(`${moment.date}T00:00:00Z`);
+  if (Number.isNaN(date.getTime())) return { title: moment.label, date: "" };
+  const options = {
+    timeZone: "UTC",
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+  } as const;
+  const original = date.toLocaleDateString("en-US", options);
+  const dated = date.toLocaleDateString("en-US", {
+    ...options,
+    weekday: "long",
+  });
+  return {
+    title: moment.label === original ? dated : moment.label,
+    date: moment.label === original || moment.label === dated ? "" : dated,
+  };
 }
 
 export function Moments({ moments }: { moments: Moment[] }) {
@@ -33,7 +54,7 @@ export function Moments({ moments }: { moments: Moment[] }) {
       </div>
       <p className="mt-2 mb-6 max-w-180 text-xs leading-relaxed text-muted">
         Moments are private groups for curation. This import created one per
-        local capture day.
+        local capture day. Times shown below are local capture times.
       </p>
       {moments.length === 0 ? (
         <p className="py-6 text-sm text-muted">
@@ -43,6 +64,7 @@ export function Moments({ moments }: { moments: Moment[] }) {
         <div className="space-y-3">
           {moments.map((moment) => {
             const expanded = moment.id === selected;
+            const heading = momentHeading(moment);
             const cover = moment.entries.find(
               (entry) => entry.id === moment.cover_entry_id,
             );
@@ -68,7 +90,7 @@ export function Moments({ moments }: { moments: Moment[] }) {
                   >
                     <AlbumImage
                       alt=""
-                      className="h-11 w-16 shrink-0 object-contain"
+                      className="h-auto max-h-11 w-auto max-w-20 shrink-0"
                       fallback="No cover"
                       src={cover?.available ? cover.thumbnail_url : ""}
                     />
@@ -77,8 +99,13 @@ export function Moments({ moments }: { moments: Moment[] }) {
                         className="block font-heading text-xl leading-tight min-[761px]:text-2xl"
                         id={`moment-${moment.id}`}
                       >
-                        {moment.label}
+                        {heading.title}
                       </span>
+                      {heading.date && (
+                        <span className="mt-1 block text-xs font-normal text-muted">
+                          {heading.date}
+                        </span>
+                      )}
                       <span className="mt-1 block text-xs font-normal text-muted">
                         <MediaCounts entries={moment.entries} />
                       </span>
@@ -102,12 +129,15 @@ export function Moments({ moments }: { moments: Moment[] }) {
                       className="flex flex-wrap items-start gap-x-2 gap-y-4"
                     >
                       {visible.map((entry) => (
-                        <li className="max-w-44 min-w-0" key={entry.id}>
-                          <figure>
-                            <div className="relative">
+                        <li
+                          className="max-w-full min-w-0 flex-none"
+                          key={entry.id}
+                        >
+                          <figure className="relative min-w-8 pb-5">
+                            <div className="relative w-fit max-w-full">
                               <AlbumImage
                                 alt={entry.filename}
-                                className="h-24 w-auto max-w-44 rounded-sm object-contain min-[1101px]:h-28"
+                                className="h-auto max-h-24 w-auto max-w-full rounded-sm min-[1101px]:max-h-28"
                                 fallback={
                                   entry.available
                                     ? "No preview available"
@@ -116,19 +146,33 @@ export function Moments({ moments }: { moments: Moment[] }) {
                                 src={entry.available ? entry.thumbnail_url : ""}
                               />
                               {entry.id === moment.cover_entry_id && (
-                                <span className="absolute right-1 bottom-1 rounded-sm bg-background/90 px-1.5 py-0.5 text-[10px]">
+                                <span
+                                  className="absolute top-1 left-1 max-w-[calc(100%-8px)] truncate rounded-sm bg-black/70 px-1.5 py-0.5 text-[10px] text-white"
+                                  title="Moment cover"
+                                >
                                   Cover
                                 </span>
                               )}
-                            </div>
-                            <figcaption
-                              className="mt-1 flex max-w-44 items-center gap-2 text-[10px] text-muted"
-                              title={entry.filename}
-                            >
-                              <span className="truncate">{entry.filename}</span>
                               {entry.kind === "VIDEO" && (
-                                <span className="shrink-0">Video</span>
+                                <span
+                                  aria-label="Video"
+                                  className="absolute right-1 bottom-1 rounded-sm bg-black/70 p-1 text-white"
+                                  role="img"
+                                >
+                                  <Video
+                                    aria-hidden="true"
+                                    className="size-3.5"
+                                  />
+                                </span>
                               )}
+                            </div>
+                            <figcaption className="absolute inset-x-0 bottom-0 truncate text-[10px] text-muted">
+                              <time
+                                dateTime={entry.captured_at}
+                                title={entry.captured_at.replace("T", " ")}
+                              >
+                                {entry.captured_at.slice(11, 16)}
+                              </time>
                             </figcaption>
                           </figure>
                         </li>

@@ -53,19 +53,52 @@ func albumRow(ctx context.Context, db bun.IDB, id string, lock bool) (models.Alb
 	return row, errorstack.CaptureContext(ctx, err)
 }
 
-func projectAlbum(row models.Album) Album {
+type albumProjection struct {
+	models.Album `bun:"embed:"`
+	PhotoCount   int
+	VideoCount   int
+	StartDate    string
+	EndDate      string
+	CoverURL     string
+}
+
+// albumSummaries keeps list cards and detail headers on the same projection.
+// Only configured Moment covers are candidates, in capture-day order.
+func (m *Module) albumSummaries() *bun.SelectQuery {
+	stats := m.db.NewSelect().TableExpr("album_entries AS entry").
+		ColumnExpr("entry.album_id, count(*) FILTER (WHERE item.kind = 'IMAGE') AS photo_count, count(*) FILTER (WHERE item.kind = 'VIDEO') AS video_count").
+		ColumnExpr("min(item.captured_at)::date AS start_date, max(item.captured_at)::date AS end_date").
+		Join("JOIN media_items AS item ON item.id = entry.media_item_id").
+		Where("entry.removed_at IS NULL").Group("entry.album_id")
+	covers := m.db.NewSelect().TableExpr("moments AS moment").DistinctOn("moment.album_id").
+		ColumnExpr("moment.album_id, '/api/media/entries/' || entry.id || '/thumbnail?v=' || item.content_version AS cover_url").
+		Join("JOIN album_entries AS entry ON entry.id = moment.cover_entry_id AND entry.album_id = moment.album_id AND entry.moment_id = moment.id").
+		Join("JOIN media_items AS item ON item.id = entry.media_item_id").
+		Where("entry.removed_at IS NULL AND NOT item.offline AND NOT item.trashed").
+		Order("moment.album_id", "moment.capture_date", "moment.id")
+	return m.db.NewSelect().Model((*models.Album)(nil)).Column("album.*").
+		ColumnExpr("coalesce(summary.photo_count, 0) AS photo_count, coalesce(summary.video_count, 0) AS video_count").
+		ColumnExpr("coalesce(to_char(summary.start_date, 'YYYY-MM-DD'), '') AS start_date, coalesce(to_char(summary.end_date, 'YYYY-MM-DD'), '') AS end_date").
+		ColumnExpr("coalesce(cover.cover_url, '') AS cover_url").
+		Join("LEFT JOIN (?) AS summary ON summary.album_id = album.id AND album.import_status = 'complete'", stats).
+		Join("LEFT JOIN (?) AS cover ON cover.album_id = album.id AND album.import_status = 'complete'", covers)
+}
+
+func projectAlbum(row albumProjection) Album {
 	status, message := row.ImportStatus, row.ImportMessage
 	if status == "processing" && time.Since(row.ImportUpdatedAt) > time.Minute {
 		status = "interrupted"
 		message = "Import stopped reporting progress. Memento will recover it automatically after the worker timeout."
 	}
 	return Album{ID: row.ID.String(), SourceID: row.SourceID, Title: row.Title, Description: row.Description,
-		Published: row.PublishedAt != nil, Status: status, Message: message, Processed: row.ImportProcessed, Total: row.ImportTotal}
+		Published: row.PublishedAt != nil, Status: status, Message: message, Processed: row.ImportProcessed, Total: row.ImportTotal,
+		PhotoCount: row.PhotoCount, VideoCount: row.VideoCount, StartDate: row.StartDate, EndDate: row.EndDate, CoverURL: row.CoverURL}
 }
 
-func (m *Module) ListAlbums(ctx context.Context) ([]Album, error) {
-	rows := []models.Album{}
-	if err := m.db.NewSelect().Model(&rows).OrderExpr("created_at DESC, id").Scan(ctx); err != nil {
+func (m *Module) ListAlbums(ctx context.Context, search string) ([]Album, error) {
+	rows := []albumProjection{}
+	if err := m.albumSummaries().Where("strpos(lower(album.title), lower(?)) > 0", strings.TrimSpace(search)).
+		OrderExpr("summary.start_date DESC NULLS LAST, album.id").Scan(ctx, &rows); err != nil {
 		return nil, errorstack.CaptureContext(ctx, err)
 	}
 	result := make([]Album, 0, len(rows))
@@ -77,9 +110,16 @@ func (m *Module) ListAlbums(ctx context.Context) ([]Album, error) {
 
 func (m *Module) GetAlbum(ctx context.Context, id string) (AlbumDetail, error) {
 	result := AlbumDetail{Moments: []Moment{}}
-	row, err := albumRow(ctx, m.db, id, false)
+	if _, err := uuid.Parse(id); err != nil {
+		return result, errcodes.NotFound("Album")
+	}
+	var row albumProjection
+	err := m.albumSummaries().Where("album.id = ?", id).Scan(ctx, &row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return result, errcodes.NotFound("Album")
+	}
 	if err != nil {
-		return result, err
+		return result, errorstack.CaptureContext(ctx, err)
 	}
 	result.Album = projectAlbum(row)
 	if row.ImportStatus != "complete" {

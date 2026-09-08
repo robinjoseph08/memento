@@ -125,6 +125,17 @@ func run(ctx context.Context, release string) (returnErr error) {
 		if err := verifyAlbum(detail, album, library.Assets); err != nil {
 			return err
 		}
+		summaries, err := module.ListAlbums(ctx, album.Name)
+		if err != nil {
+			return err
+		}
+		index := slices.IndexFunc(summaries, func(summary publishing.Album) bool { return summary.ID == detail.ID })
+		if index < 0 || summaries[index] != detail.Album {
+			return fmt.Errorf("album listing summary differs from imported detail header")
+		}
+		if err := checkMediaEndpoint(ctx, handler, detail.CoverURL); err != nil {
+			return err
+		}
 		for _, moment := range detail.Moments {
 			for _, entry := range moment.Entries {
 				if err := checkMediaEndpoint(ctx, handler, entry.ThumbnailURL); err != nil {
@@ -305,6 +316,12 @@ func verifyAlbum(detail publishing.AlbumDetail, album fixture.Album, assets []fi
 	}
 	if count != len(expected) {
 		return fmt.Errorf("import lost entries")
+	}
+	if detail.PhotoCount != len(expected) || detail.VideoCount != 0 {
+		return fmt.Errorf("album summary photo or video count differs from fixture")
+	}
+	if len(expected) > 0 && (detail.StartDate != expected[0].CapturedAt[:10] || detail.EndDate != expected[len(expected)-1].CapturedAt[:10] || detail.CoverURL != detail.Moments[0].Entries[0].ThumbnailURL) {
+		return fmt.Errorf("album summary capture-local dates or configured Moment cover differs")
 	}
 	return nil
 }

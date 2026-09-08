@@ -12,12 +12,17 @@ import type {
 } from "../../types/generated/publishing";
 import { usePrivateScope } from "./people";
 
-export function useAlbums() {
+export function useAlbums(search = "") {
   const scope = usePrivateScope();
   return useQuery({
-    queryKey: [...scope, "albums"],
+    queryKey: [...scope, "albums", search],
     queryFn: ({ signal }) =>
-      request<Album[]>("/api/curator/albums", { signal }),
+      request<Album[]>(
+        search
+          ? `/api/curator/albums?q=${encodeURIComponent(search)}`
+          : "/api/curator/albums",
+        { signal },
+      ),
     retry: false,
     refetchInterval: (query) =>
       query.state.data?.some((album) =>

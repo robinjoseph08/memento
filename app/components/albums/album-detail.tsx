@@ -15,6 +15,8 @@ import {
 import { BackLink } from "../shell/back-link";
 import { PageTitle } from "../shell/page-title";
 import { Button } from "../ui/button";
+import { Textarea } from "../ui/textarea";
+import { AlbumImage } from "./album-image";
 import { ImportProgress } from "./import-progress";
 import { MediaCounts, Moments } from "./moments";
 
@@ -62,22 +64,34 @@ function AlbumContent({ album }: { album: AlbumDetail }) {
         <BackLink className="mb-3" to="/curator">
           All albums
         </BackLink>
-        <h1 className="font-heading text-[clamp(26px,3vw,32px)] leading-tight tracking-[-0.5px] wrap-anywhere">
-          {album.title}
-        </h1>
-        <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted">
-          <p>
-            {complete ? (
-              <MediaCounts
-                entries={album.moments.flatMap((moment) => moment.entries)}
-              />
-            ) : (
-              `${album.total} items`
-            )}
-          </p>
-          {!album.published && (
-            <span className="border-l border-border pl-4">Unpublished</span>
+        <div className="flex items-center gap-4">
+          {complete && (
+            <AlbumImage
+              alt="Album cover"
+              className="h-auto max-h-16 w-auto max-w-24 shrink-0 min-[761px]:max-h-20 min-[761px]:max-w-36"
+              fallback="No cover available"
+              src={album.cover_url}
+            />
           )}
+          <div className="min-w-0">
+            <h1 className="font-heading text-[clamp(26px,3vw,32px)] leading-tight tracking-[-0.5px] wrap-anywhere">
+              {album.title}
+            </h1>
+            <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted">
+              <p>
+                {complete ? (
+                  <MediaCounts
+                    entries={album.moments.flatMap((moment) => moment.entries)}
+                  />
+                ) : (
+                  `${album.total} items`
+                )}
+              </p>
+              {!album.published && (
+                <span className="border-l border-border pl-4">Unpublished</span>
+              )}
+            </div>
+          </div>
         </div>
       </header>
       {complete ? (
@@ -164,18 +178,19 @@ function TitleForm({ album }: { album: AlbumDetail }) {
             value={title}
           />
           <div className="mb-6">
-            <h3
-              className="mb-2 text-xs font-medium"
-              id="source-description-label"
+            <label
+              className="mb-2 block text-xs font-medium"
+              htmlFor="source-description"
             >
               Description from Immich
-            </h3>
-            <p
-              aria-labelledby="source-description-label"
-              className="min-h-24 rounded-md border border-border bg-surface px-3 py-3 text-sm whitespace-pre-wrap"
-            >
-              {album.description || "No description in Immich."}
-            </p>
+            </label>
+            <Textarea
+              className="bg-surface"
+              id="source-description"
+              placeholder="No description in Immich."
+              readOnly
+              value={album.description}
+            />
             <p className="mt-3 text-xs text-muted">
               Read-only. This is the description captured when the Album was
               imported.

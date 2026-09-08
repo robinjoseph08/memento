@@ -63,7 +63,8 @@ func TestVerifyAlbum(t *testing.T) {
 			for i, photo := range fixture.Photos() {
 				assets = append(assets, fixture.Asset{ID: album.AssetIDs[i], Photo: photo})
 			}
-			detail := publishing.AlbumDetail{Title: album.Name, Description: album.Description, Status: "complete", Processed: 4, Total: 4}
+			detail := publishing.AlbumDetail{Title: album.Name, Description: album.Description, Status: "complete", Processed: 4, Total: 4,
+				PhotoCount: 4, StartDate: assets[0].CapturedAt[:10], EndDate: assets[3].CapturedAt[:10], CoverURL: "/api/media/entries/fixture/thumbnail?v=fixture"}
 			for _, indices := range [][]int{{0}, {2, 1}, {3}} {
 				moment := publishing.Moment{Date: assets[indices[0]].CapturedAt[:10], CoverEntryID: assets[indices[0]].ID}
 				for _, i := range indices {

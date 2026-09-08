@@ -106,7 +106,7 @@ func TestDomainImportIntentAndQueueRollbackTogether(t *testing.T) {
 	})
 	_, err = module.StartImport(ctx, "source")
 	require.ErrorIs(t, err, rollback)
-	albums, err := module.ListAlbums(ctx)
+	albums, err := module.ListAlbums(ctx, "")
 	require.NoError(t, err)
 	require.Empty(t, albums)
 	assertJobCount(t, ctx, db, 0)
@@ -304,7 +304,7 @@ func assertCompletedDomainImport(t *testing.T, ctx context.Context, module *publ
 	require.Equal(t, "second.jpg", album.Moments[1].Entries[0].Filename)
 	require.NotEqual(t, album.Moments[0].Entries[0].ID, album.Moments[1].Entries[0].ID)
 	require.NotEqual(t, album.Moments[0].Entries[0].MediaID, album.Moments[1].Entries[0].MediaID)
-	albums, err := module.ListAlbums(ctx)
+	albums, err := module.ListAlbums(ctx, "")
 	require.NoError(t, err)
 	require.Len(t, albums, 1)
 	// Reopening and retrying a completed Album must keep every gallery identity.

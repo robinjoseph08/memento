@@ -24,6 +24,11 @@ const album: Album = {
   message: "",
   processed: 36,
   total: 36,
+  photo_count: 35,
+  video_count: 1,
+  start_date: "2026-07-01",
+  end_date: "2026-07-07",
+  cover_url: "/media/beach",
 };
 
 const person = { id: "robin", display_name: "Robin", is_curator: true };
@@ -148,6 +153,8 @@ it("imports an album, shows progress, then reveals unpublished Moments with comp
 
 const completeAlbum: AlbumDetail = {
   ...album,
+  photo_count: 1,
+  video_count: 1,
   moments: [
     {
       id: "day-1",
@@ -177,6 +184,68 @@ const completeAlbum: AlbumDetail = {
     },
   ],
 };
+
+it("identifies the Album in its compact header with its configured cover", async () => {
+  mockAPI(() => Response.json(completeAlbum));
+  window.history.replaceState(null, "", "/curator/albums/album-1");
+  render(<App />);
+  expect(
+    await screen.findByRole("img", { name: "Album cover" }),
+  ).toHaveAttribute("src", "/media/beach");
+});
+
+it("keeps an absent Immich description empty and shows a read-only placeholder", async () => {
+  mockAPI(() => Response.json({ ...completeAlbum, description: "" }));
+  window.history.replaceState(
+    null,
+    "",
+    "/curator/albums/album-1?section=details",
+  );
+  render(<App />);
+  const description = await screen.findByRole("textbox", {
+    name: "Description from Immich",
+  });
+  expect(description).toHaveValue("");
+  expect(description).toHaveAttribute(
+    "placeholder",
+    "No description in Immich.",
+  );
+  expect(description).toHaveAttribute("readonly");
+});
+
+it("shows weekdays and local capture times without visible filenames, with a video badge", async () => {
+  mockAPI(() =>
+    Response.json({
+      ...completeAlbum,
+      moments: [
+        {
+          ...completeAlbum.moments[0],
+          label: "July 1, 2026",
+          entries: completeAlbum.moments[0].entries.map((entry) => ({
+            ...entry,
+            captured_at:
+              entry.kind === "IMAGE"
+                ? "2026-07-01T00:30:00"
+                : "2026-07-01T23:59:00",
+          })),
+        },
+      ],
+    }),
+  );
+  window.history.replaceState(null, "", "/curator/albums/album-1");
+  render(<App />);
+  expect(
+    await screen.findByRole("button", { name: "Wednesday, July 1, 2026" }),
+  ).toBeVisible();
+  expect(screen.getByText("00:30")).toHaveAttribute(
+    "datetime",
+    "2026-07-01T00:30:00",
+  );
+  expect(screen.getByText("23:59")).toBeVisible();
+  expect(screen.queryByText("Beach.jpg")).not.toBeInTheDocument();
+  expect(screen.queryByText("Waves.mp4")).not.toBeInTheDocument();
+  expect(screen.getByRole("img", { name: "Video" })).toBeVisible();
+});
 
 it("presents distinct Album details and expandable Moments without discarding title edits", async () => {
   mockAPI(() => Response.json(completeAlbum));
@@ -289,7 +358,9 @@ it("keeps title edits through failed refresh, focuses field errors, and saves on
   await user.clear(title);
   await user.type(title, "Our summer");
   expect(screen.getByText("A week away")).toBeVisible();
-  expect(screen.getAllByRole("textbox")).toHaveLength(1);
+  expect(
+    screen.getByRole("textbox", { name: "Description from Immich" }),
+  ).toHaveAttribute("readonly");
   failRead = true;
   await act(async () => {
     focusManager.setFocused(false);
@@ -487,13 +558,13 @@ it("replaces a broken source cover and tries a refreshed cover URL", async () =>
   expect(screen.queryByText("No cover available")).not.toBeInTheDocument();
 });
 
-it("replaces failed imported thumbnails while keeping filenames and other previews", async () => {
+it("replaces failed imported thumbnails while keeping capture times and other previews", async () => {
   mockAPI(() => Response.json(completeAlbum));
   window.history.replaceState(null, "", "/curator/albums/album-1");
   render(<App />);
   fireEvent.error(await screen.findByRole("img", { name: "Beach.jpg" }));
   expect(screen.getByText("No preview available")).toBeVisible();
-  expect(screen.getByText("Beach.jpg")).toBeVisible();
+  expect(screen.getByText("12:00")).toBeVisible();
   expect(
     screen.queryByRole("img", { name: "Beach.jpg" }),
   ).not.toBeInTheDocument();
@@ -536,7 +607,7 @@ it.each(["complete", "failed"])(
     });
     await waitFor(() =>
       expect(link).toHaveTextContent(
-        terminal === "complete" ? "36 items" : "Import failed",
+        terminal === "complete" ? "35 photos, 1 video" : "Import failed",
       ),
     );
     expect(reads).toBe(4);
