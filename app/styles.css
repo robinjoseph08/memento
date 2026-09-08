@@ -1,5 +1,5 @@
-@import "@fontsource/epilogue/latin-400.css";
-@import "@fontsource/epilogue/latin-500.css";
+@import "@fontsource/montserrat/latin-400.css";
+@import "@fontsource/montserrat/latin-500.css";
 @import "@fontsource/slabo-13px/latin-400.css";
 @import "tailwindcss";
 @import "tw-animate-css";
@@ -16,7 +16,7 @@
   --color-primary-foreground: #083344;
   --color-ring: var(--focus);
   --color-destructive: var(--destructive);
-  --font-sans: "Epilogue", sans-serif;
+  --font-sans: "Montserrat", sans-serif;
   --font-heading: "Slabo 13px", Georgia, serif;
 }
 

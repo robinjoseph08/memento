@@ -8,7 +8,7 @@ importers:
 
   .:
     dependencies:
-      '@fontsource/epilogue':
+      '@fontsource/montserrat':
         specifier: ^5.3.0
         version: 5.3.0
       '@fontsource/slabo-13px':
@@ -379,8 +379,8 @@ packages:
   '@floating-ui/utils@0.2.12':
     resolution: {integrity: sha512-HpCo8tmWzLVad5s2d19EhAz5zqrrQ6s69qd6moPMQvkOuSwDT1YgRfWSVuc4ennqrgv3OHppiOGMQ7oC13yIww==}
 
-  '@fontsource/epilogue@5.3.0':
-    resolution: {integrity: sha512-rUyuuIOG8BYkcTCxeekoVW0YKg0EsGBO1RGRd2brP2BGSbN8nUo1tc3PzD7QZB0NomTLdA7Dc6wrPsKCZ4m1aw==}
+  '@fontsource/montserrat@5.3.0':
+    resolution: {integrity: sha512-iQPDtZOnmM5ih4JBGaMSXisRap0ixb9bAUw2hDtY7EjVfaqiiNlKtVuJl9XclxUwtwMMHNcWXfQR6zI9x05+Tg==}
 
   '@fontsource/slabo-13px@5.3.0':
     resolution: {integrity: sha512-vW/wMnbUNr/1rQNuXVrc1+RCbkBRDwrU2mNxQj8KSwiIToihuA19x5H6/KfcLl4C2vAUlzsgjYecl+e04NM0bw==}
@@ -2594,7 +2594,7 @@ snapshots:
 
   '@floating-ui/utils@0.2.12': {}
 
-  '@fontsource/epilogue@5.3.0': {}
+  '@fontsource/montserrat@5.3.0': {}
 
   '@fontsource/slabo-13px@5.3.0': {}
 

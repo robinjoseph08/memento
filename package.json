@@ -18,7 +18,7 @@
     "e2e:firefox": "playwright test --project=firefox"
   },
   "dependencies": {
-    "@fontsource/epilogue": "^5.3.0",
+    "@fontsource/montserrat": "^5.3.0",
     "@fontsource/slabo-13px": "^5.3.0",
     "@radix-ui/react-avatar": "^1.2.6",
     "@radix-ui/react-dialog": "^1.1.23",
