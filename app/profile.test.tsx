@@ -78,6 +78,7 @@ it("keeps profile edits through failed refresh, focuses a rejected email, and sa
   const user = userEvent.setup();
   render(<App />);
   const name = await screen.findByRole("textbox", { name: "Display name" });
+  expect(document.title).toBe("Your profile | Memento");
   await user.clear(name);
   await user.type(name, "Alex edited");
   failRead = true;

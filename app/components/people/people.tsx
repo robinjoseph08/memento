@@ -8,6 +8,7 @@ import {
 } from "../../hooks/queries/people";
 import { useUnsavedChanges } from "../../hooks/use-unsaved-changes";
 import { fieldErrors } from "../../lib/http";
+import { PageTitle } from "../shell/page-title";
 import { Button } from "../ui/button";
 import {
   Dialog,
@@ -54,6 +55,7 @@ export function PeoplePage() {
     return <Navigate to={`/curator/people/${create.data.id}`} />;
   return (
     <>
+      <PageTitle title="People" />
       <div className="mb-9 flex flex-wrap items-center justify-between gap-5">
         <h1 className={headingClass}>People</h1>
         <Dialog onOpenChange={changeOpen} open={open}>
@@ -176,6 +178,7 @@ export function PersonPage() {
   const query = usePerson(id);
   return (
     <div className="mx-auto max-w-280">
+      <PageTitle title={query.data?.person.display_name ?? "Person"} />
       <Link
         className="mb-6 inline-block text-sm text-accent-foreground underline underline-offset-4"
         to="/curator/people"

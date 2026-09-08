@@ -50,6 +50,7 @@ it("keeps the people search input focused after Enter and the Search button", as
   const search = await screen.findByRole("searchbox", {
     name: "Search people",
   });
+  expect(document.title).toBe("People | Memento");
   await user.type(search, "alex{Enter}");
   await waitFor(() => expect(window.location.search).toBe("?q=alex"));
   expect(

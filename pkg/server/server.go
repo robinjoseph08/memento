@@ -26,7 +26,7 @@ import (
 // New constructs the HTTP server and registers the application's routes and
 // middleware.
 func New(cfg *config.Config, db *bun.DB) (*http.Server, error) {
-	frontend, available, err := webapp.Handler()
+	frontend, available, err := webapp.Handler(cfg.PublicURL, publicPageMetadata)
 	if err != nil {
 		return nil, fmt.Errorf("load embedded frontend: %w", err)
 	}
