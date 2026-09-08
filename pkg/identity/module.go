@@ -96,9 +96,21 @@ func (m *Module) SignIn(ctx context.Context, claims Claims) (Session, error) {
 					return errorstack.CaptureContext(ctx, err)
 				}
 			}
+			previousIdentity, err := tx.NewSelect().Model((*models.Identity)(nil)).Where("person_id = ?", person.ID).Exists(ctx)
+			if err != nil {
+				return errorstack.CaptureContext(ctx, err)
+			}
 			linked = models.Identity{ID: models.NewUUIDv7(), PersonID: person.ID, Provider: claims.Provider, Subject: claims.Subject, Email: claims.Email, CreatedAt: now}
 			if _, err := tx.NewInsert().Model(&linked).Exec(ctx); err != nil {
 				return errorstack.CaptureContext(ctx, err)
+			}
+			if !previousIdentity {
+				person.UpdateIdentityID = &linked.ID
+				person.UpdateEmail = linked.Email
+				person.EmailUpdates = true
+				if _, err := tx.NewUpdate().Model(&person).Column("update_identity_id", "email_updates").WherePK().Exec(ctx); err != nil {
+					return errorstack.CaptureContext(ctx, err)
+				}
 			}
 			if !claimedBy.Valid {
 				updated, err := tx.ExecContext(ctx, "UPDATE installation SET claimed_by = ?, claimed_at = ? WHERE singleton = true AND claimed_by IS NULL", person.ID, now)

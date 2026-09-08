@@ -33,7 +33,11 @@ test("a Curator approves access, a member manages their profile and sessions, an
     .getByRole("textbox", { name: "Google email address" })
     .fill("alex@example.test");
   await page.getByRole("button", { name: "Preauthorize email" }).click();
-  await expect(page.getByText("Unused", { exact: true })).toBeVisible();
+  await expect(
+    page
+      .getByRole("table", { name: "Preauthorizations", exact: true })
+      .getByText("alex@example.test", { exact: true }),
+  ).toBeVisible();
 
   const memberContext = await browser.newContext({ baseURL });
   const otherContext = await browser.newContext({ baseURL });
@@ -47,6 +51,18 @@ test("a Curator approves access, a member manages their profile and sessions, an
       member.getByRole("link", { name: "People", exact: true }),
     ).toHaveCount(0);
     await profile(member);
+    await expect(
+      member.getByRole("combobox", { name: "Email for updates" }),
+    ).toHaveValue("alex@example.test");
+    await expect(
+      member.getByRole("checkbox", { name: "Email me when there are updates" }),
+    ).toBeChecked();
+    await expect(
+      member.getByRole("columnheader", { name: "Expires", exact: true }),
+    ).toHaveCount(0);
+    await expect(
+      member.getByRole("button", { name: "Unlink alex@example.test" }),
+    ).toBeDisabled();
     await member
       .getByRole("textbox", { name: "Display name" })
       .fill("Alex Updated");
@@ -73,10 +89,8 @@ test("a Curator approves access, a member manages their profile and sessions, an
       other.getByRole("textbox", { name: "Display name" }),
     ).toHaveValue("Alex Updated");
     await expect(
-      other
-        .getByRole("region", { name: "Browser sessions" })
-        .getByRole("listitem"),
-    ).toHaveCount(2);
+      other.getByRole("table", { name: "Browser sessions" }).getByRole("row"),
+    ).toHaveCount(3);
     await other.getByRole("button", { name: "Sign out everywhere" }).click();
     await other
       .getByRole("dialog")
@@ -161,10 +175,8 @@ test("a Curator approves access, a member manages their profile and sessions, an
       release();
     }
     await expect(
-      page
-        .getByRole("region", { name: "Browser sessions" })
-        .getByRole("listitem"),
-    ).toHaveCount(1);
+      page.getByRole("table", { name: "Browser sessions" }).getByRole("row"),
+    ).toHaveCount(2);
     await expect(
       page.getByText("curator@example.test", { exact: true }),
     ).toHaveCount(0);

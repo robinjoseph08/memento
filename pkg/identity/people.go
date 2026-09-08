@@ -133,6 +133,10 @@ func (m *Module) GetPerson(ctx context.Context, token, id string) (PersonDetail,
 		if err != nil {
 			return err
 		}
+		result.Sessions, err = m.personSessions(ctx, tx, person.ID, token)
+		if err != nil {
+			return err
+		}
 		var approvals []models.Preauthorization
 		if err := tx.NewSelect().Model(&approvals).Where("person_id = ?", person.ID).Order("created_at", "id").Scan(ctx); err != nil {
 			return errorstack.CaptureContext(ctx, err)
@@ -148,7 +152,8 @@ func (m *Module) GetPerson(ctx context.Context, token, id string) (PersonDetail,
 func (m *Module) UpdatePerson(ctx context.Context, token, id string, request UpdatePersonRequest) (Person, error) {
 	var result Person
 	err := m.change(ctx, func(ctx context.Context, tx bun.Tx) error {
-		if _, err := m.actor(ctx, tx, token, true); err != nil {
+		actor, err := m.actor(ctx, tx, token, true)
+		if err != nil {
 			return err
 		}
 		person, err := personByID(ctx, tx, id)
@@ -158,6 +163,18 @@ func (m *Module) UpdatePerson(ctx context.Context, token, id string, request Upd
 		name, err := displayName(request.DisplayName)
 		if err != nil {
 			return err
+		}
+		if person.ID == actor.ID {
+			fields := map[string]string{}
+			if !request.IsCurator {
+				fields["is_curator"] = "Ask another Curator to remove your Curator role."
+			}
+			if request.Deactivated {
+				fields["deactivated"] = "Ask another Curator to deactivate your access."
+			}
+			if len(fields) > 0 {
+				return errcodes.ValidationFields("Check the highlighted fields.", fields)
+			}
 		}
 		if person.IsCurator && person.DeactivatedAt == nil && (!request.IsCurator || request.Deactivated) {
 			if err := protectCuratorAccess(ctx, tx, person.ID); err != nil {

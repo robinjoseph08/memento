@@ -1,10 +1,10 @@
 package identity_test
 
 import (
-	"errors"
-	"sync"
 	"testing"
+	"time"
 
+	"github.com/robinjoseph08/memento/pkg/errcodes"
 	"github.com/robinjoseph08/memento/pkg/identity"
 	"github.com/robinjoseph08/memento/pkg/testdb"
 	"github.com/stretchr/testify/assert"
@@ -93,43 +93,104 @@ func TestPreauthorizationRechecksEmailOwnershipAtConsumption(t *testing.T) {
 	assert.Empty(t, detail.Identities)
 }
 
-func TestFinalActiveCurator(t *testing.T) {
+func requirePersonFieldError(t *testing.T, err error, field string) {
+	t.Helper()
+	var fields *errcodes.FieldError
+	require.ErrorAs(t, err, &fields)
+	assert.NotEmpty(t, fields.Fields[field])
+}
+
+func TestCuratorsCannotDemoteOrDeactivateThemselves(t *testing.T) {
 	t.Parallel()
 	module := identity.New(testdb.New(t), nil)
 	first := claimCurator(t, module)
-	for _, edit := range []identity.UpdatePersonRequest{
-		{DisplayName: "Curator"},
-		{DisplayName: "Curator", IsCurator: true, Deactivated: true},
-	} {
-		_, err := module.UpdatePerson(t.Context(), first.Token, first.Person.ID, edit)
-		require.ErrorIs(t, err, identity.ErrFinalCurator)
-	}
-	second, err := module.CreatePerson(t.Context(), first.Token, identity.CreatePersonRequest{DisplayName: "Second"})
-	require.NoError(t, err)
-	_, err = module.UpdatePerson(t.Context(), first.Token, second.ID, identity.UpdatePersonRequest{DisplayName: "Second", IsCurator: true})
-	require.NoError(t, err)
-	start := make(chan struct{})
-	results := make(chan error, 2)
-	var wg sync.WaitGroup
-	for _, id := range []string{first.Person.ID, second.ID} {
-		wg.Go(func() {
-			<-start
-			_, err := module.UpdatePerson(t.Context(), first.Token, id, identity.UpdatePersonRequest{DisplayName: "Former curator", Deactivated: true})
-			results <- err
-		})
-	}
-	close(start)
-	wg.Wait()
-	close(results)
-	wins := 0
-	for err := range results {
-		if err == nil {
-			wins++
-		} else {
-			require.True(t, errors.Is(err, identity.ErrUnauthenticated) || errors.Is(err, identity.ErrFinalCurator))
+	second := authorizePerson(t, module, first, "Second", "second@example.test")
+	for _, secondIsCurator := range []bool{false, true} {
+		_, err := module.UpdatePerson(t.Context(), first.Token, second.Person.ID, identity.UpdatePersonRequest{DisplayName: "Second", IsCurator: secondIsCurator})
+		require.NoError(t, err)
+		for _, edit := range []struct {
+			request identity.UpdatePersonRequest
+			field   string
+		}{
+			{identity.UpdatePersonRequest{DisplayName: "Changed"}, "is_curator"},
+			{identity.UpdatePersonRequest{DisplayName: "Changed", IsCurator: true, Deactivated: true}, "deactivated"},
+		} {
+			_, err := module.UpdatePerson(t.Context(), first.Token, first.Person.ID, edit.request)
+			requirePersonFieldError(t, err, edit.field)
+			current, err := module.Authenticate(t.Context(), first.Token)
+			require.NoError(t, err)
+			assert.Equal(t, first.Person, current.Person)
 		}
 	}
-	assert.Equal(t, 1, wins)
+	_, err := module.UpdatePerson(t.Context(), first.Token, first.Person.ID, identity.UpdatePersonRequest{DisplayName: "Changed", Deactivated: true})
+	var fields *errcodes.FieldError
+	require.ErrorAs(t, err, &fields)
+	assert.Equal(t, map[string]string{
+		"is_curator":  "Ask another Curator to remove your Curator role.",
+		"deactivated": "Ask another Curator to deactivate your access.",
+	}, fields.Fields)
+	renamed, err := module.UpdatePerson(t.Context(), first.Token, first.Person.ID, identity.UpdatePersonRequest{DisplayName: "New name", IsCurator: true})
+	require.NoError(t, err)
+	assert.Equal(t, "New name", renamed.DisplayName)
+	assert.True(t, renamed.IsCurator)
+	assert.Nil(t, renamed.DeactivatedAt)
+
+	// Another signed-in Curator may change either status.
+	demoted, err := module.UpdatePerson(t.Context(), second.Token, first.Person.ID, identity.UpdatePersonRequest{DisplayName: "New name"})
+	require.NoError(t, err)
+	assert.False(t, demoted.IsCurator)
+	_, err = module.UpdatePerson(t.Context(), first.Token, second.Person.ID, identity.UpdatePersonRequest{DisplayName: "Second"})
+	require.ErrorIs(t, err, identity.ErrAccessDenied)
+	_, err = module.UpdatePerson(t.Context(), second.Token, first.Person.ID, identity.UpdatePersonRequest{DisplayName: "New name", IsCurator: true})
+	require.NoError(t, err)
+	deactivated, err := module.UpdatePerson(t.Context(), second.Token, first.Person.ID, identity.UpdatePersonRequest{DisplayName: "New name", IsCurator: true, Deactivated: true})
+	require.NoError(t, err)
+	assert.NotNil(t, deactivated.DeactivatedAt)
+	_, err = module.Authenticate(t.Context(), first.Token)
+	require.ErrorIs(t, err, identity.ErrUnauthenticated)
+}
+
+func TestCuratorPersonDetailIncludesActiveTargetSessions(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	module := identity.New(testdb.New(t), func() time.Time { return now })
+	curator := claimCurator(t, module)
+	member := authorizePerson(t, module, curator, "Alex", "alex@example.test")
+	now = now.Add(time.Hour)
+	second, err := module.SignIn(identity.WithBrowser(t.Context(), "Firefox/ on Macintosh"), identity.FakeClaims(identity.SignInRequest{Email: "alex@example.test", DisplayName: "Alex"}))
+	require.NoError(t, err)
+	detail, err := module.GetPerson(t.Context(), curator.Token, member.Person.ID)
+	require.NoError(t, err)
+	require.Len(t, detail.Sessions, 2)
+	assert.False(t, detail.Sessions[0].Current)
+	assert.False(t, detail.Sessions[1].Current)
+	assert.Equal(t, "Firefox on Mac", detail.Sessions[1].Device)
+	assert.Equal(t, "alex@example.test", detail.Sessions[1].Email)
+	assert.Equal(t, second.ExpiresAt, detail.Sessions[1].ExpiresAt)
+	own, err := module.GetPerson(t.Context(), curator.Token, curator.Person.ID)
+	require.NoError(t, err)
+	sessions, err := module.Sessions(t.Context(), curator.Token)
+	require.NoError(t, err)
+	assert.Equal(t, sessions, own.Sessions)
+	require.Len(t, own.Sessions, 1)
+	assert.True(t, own.Sessions[0].Current)
+	_, err = module.GetPerson(t.Context(), member.Token, member.Person.ID)
+	require.ErrorIs(t, err, identity.ErrAccessDenied)
+	_, err = module.GetPerson(t.Context(), member.Token, curator.Person.ID)
+	require.ErrorIs(t, err, identity.ErrAccessDenied)
+
+	// Expire the first session without authenticating it, which would delete it.
+	now = member.ExpiresAt
+	curator = claimCurator(t, module)
+	detail, err = module.GetPerson(t.Context(), curator.Token, member.Person.ID)
+	require.NoError(t, err)
+	require.Len(t, detail.Sessions, 1)
+	assert.Equal(t, second.ExpiresAt, detail.Sessions[0].ExpiresAt)
+	require.NoError(t, module.SignOut(t.Context(), second.Token))
+	detail, err = module.GetPerson(t.Context(), curator.Token, member.Person.ID)
+	require.NoError(t, err)
+	assert.NotNil(t, detail.Sessions)
+	assert.Empty(t, detail.Sessions)
 }
 
 func TestPeopleWithoutLogin(t *testing.T) {

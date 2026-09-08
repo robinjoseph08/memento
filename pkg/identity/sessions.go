@@ -59,29 +59,35 @@ func (m *Module) Sessions(ctx context.Context, token string) ([]BrowserSession, 
 		if err != nil {
 			return err
 		}
-		hash := sha256.Sum256([]byte(token))
-		var rows []struct {
-			ID         models.UUID
-			IdentityID models.UUID
-			Email      string
-			Device     string
-			CreatedAt  time.Time
-			RenewedAt  time.Time
-			ExpiresAt  time.Time
-			Current    bool
-		}
-		err = tx.NewRaw(`SELECT s.id, s.identity_id, i.email, s.device, s.created_at, s.renewed_at, s.expires_at, s.token_hash = ? AS current
- FROM sessions s JOIN identities i ON i.id = s.identity_id
- WHERE i.person_id = ? AND i.unlinked_at IS NULL AND s.expires_at > ? ORDER BY s.created_at, s.id`, hash[:], person.ID, m.now().UTC()).Scan(ctx, &rows)
-		if err != nil {
-			return errorstack.CaptureContext(ctx, err)
-		}
-		for _, row := range rows {
-			result = append(result, BrowserSession{ID: row.ID.String(), IdentityID: row.IdentityID.String(), Email: row.Email, Device: row.Device, CreatedAt: row.CreatedAt, LastUsedAt: row.RenewedAt, ExpiresAt: row.ExpiresAt, Current: row.Current})
-		}
-		return nil
+		result, err = m.personSessions(ctx, tx, person.ID, token)
+		return err
 	})
 	return result, err
+}
+
+func (m *Module) personSessions(ctx context.Context, tx bun.Tx, personID models.UUID, token string) ([]BrowserSession, error) {
+	result := []BrowserSession{}
+	hash := sha256.Sum256([]byte(token))
+	var rows []struct {
+		ID         models.UUID
+		IdentityID models.UUID
+		Email      string
+		Device     string
+		CreatedAt  time.Time
+		RenewedAt  time.Time
+		ExpiresAt  time.Time
+		Current    bool
+	}
+	err := tx.NewRaw(`SELECT s.id, s.identity_id, i.email, s.device, s.created_at, s.renewed_at, s.expires_at, s.token_hash = ? AS current
+ FROM sessions s JOIN identities i ON i.id = s.identity_id
+ WHERE i.person_id = ? AND i.unlinked_at IS NULL AND s.expires_at > ? ORDER BY s.created_at, s.id`, hash[:], personID, m.now().UTC()).Scan(ctx, &rows)
+	if err != nil {
+		return nil, errorstack.CaptureContext(ctx, err)
+	}
+	for _, row := range rows {
+		result = append(result, BrowserSession{ID: row.ID.String(), IdentityID: row.IdentityID.String(), Email: row.Email, Device: row.Device, CreatedAt: row.CreatedAt, LastUsedAt: row.RenewedAt, ExpiresAt: row.ExpiresAt, Current: row.Current})
+	}
+	return result, nil
 }
 
 func (m *Module) SignOutEverywhere(ctx context.Context, token string) error {

@@ -2,6 +2,7 @@
 @import "@fontsource/epilogue/latin-500.css";
 @import "@fontsource/slabo-13px/latin-400.css";
 @import "tailwindcss";
+@import "tw-animate-css";
 
 @theme inline {
   --color-background: var(--background);

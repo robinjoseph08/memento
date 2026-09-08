@@ -1,6 +1,6 @@
 import { useId, useState } from "react";
 
-import { useSignOut } from "../../hooks/queries/identity";
+import { useIdentityStatus, useSignOut } from "../../hooks/queries/identity";
 import {
   useProfile,
   useSessions,
@@ -9,7 +9,6 @@ import {
 } from "../../hooks/queries/profile";
 import { useUnsavedChanges } from "../../hooks/use-unsaved-changes";
 import { fieldErrors } from "../../lib/http";
-import { formatDate } from "../../lib/utils";
 import type {
   Profile,
   UpdateProfileRequest,
@@ -27,6 +26,7 @@ import {
 } from "../people/form-fields";
 import { Button } from "../ui/button";
 import { LinkedIdentities } from "./linked-identities";
+import { SessionTable } from "./session-table";
 
 export function ProfilePage() {
   const profile = useProfile();
@@ -69,7 +69,7 @@ function ProfileDetails({ profile }: { profile: Profile }) {
     ...new Set(profile.identities.map((identity) => identity.email)),
   ];
   return (
-    <div className="mt-9 max-w-190">
+    <div className="mt-9 max-w-190 min-w-0">
       <Form
         aria-busy={update.isPending}
         aria-label="Edit profile"
@@ -143,6 +143,7 @@ function ProfileDetails({ profile }: { profile: Profile }) {
         )}
       </Form>
       <LinkedIdentities
+        canUnlinkLast={false}
         error={unlink.error}
         identities={profile.identities}
         pending={unlink.isPending}
@@ -155,6 +156,7 @@ function ProfileDetails({ profile }: { profile: Profile }) {
 
 function Sessions() {
   const sessions = useSessions();
+  const { data: identity } = useIdentityStatus();
   const signOut = useSignOut(true);
   return (
     <section
@@ -175,41 +177,13 @@ function Sessions() {
           retry={sessions.refetch}
         />
       )}
-      {sessions.data?.length === 0 && (
-        <p className="mb-6 text-sm text-muted">No active browser sessions.</p>
-      )}
       {sessions.data && (
-        <ul className="mb-6 divide-y divide-border">
-          {sessions.data.map((session) => (
-            <li className="py-5" key={session.id}>
-              <p className="wrap-anywhere">
-                {session.device || "Unknown browser"}
-              </p>
-              {session.current && (
-                <p className="mt-2 text-sm text-accent-foreground">
-                  This browser
-                </p>
-              )}
-              <p className="mt-2 text-sm wrap-anywhere text-muted">
-                {session.email}
-              </p>
-              <dl className="mt-3 grid gap-2 text-xs text-muted">
-                <div>
-                  <dt className="inline">Signed in: </dt>
-                  <dd className="inline">{formatDate(session.created_at)}</dd>
-                </div>
-                <div>
-                  <dt className="inline">Last used: </dt>
-                  <dd className="inline">{formatDate(session.last_used_at)}</dd>
-                </div>
-                <div>
-                  <dt className="inline">Expires: </dt>
-                  <dd className="inline">{formatDate(session.expires_at)}</dd>
-                </div>
-              </dl>
-            </li>
-          ))}
-        </ul>
+        <div className="mb-6">
+          <SessionTable
+            sessions={sessions.data}
+            showExpiration={!!identity?.person?.is_curator}
+          />
+        </div>
       )}
       <ConfirmAction
         description="You'll be signed out of every browser, including this one. Unsaved profile changes will be lost. Sign in again with a linked account to return."

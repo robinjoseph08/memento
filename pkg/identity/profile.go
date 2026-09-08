@@ -12,6 +12,8 @@ import (
 	"github.com/uptrace/bun"
 )
 
+var ErrLastAccount = &errcodes.Error{HTTPCode: 409, Code: "last_account", Message: "Link another sign-in account before removing your last account, or ask a Curator to remove it for you."}
+
 func (m *Module) Profile(ctx context.Context, token string) (Profile, error) {
 	var result Profile
 	err := m.change(ctx, func(ctx context.Context, tx bun.Tx) error {
@@ -99,12 +101,15 @@ func (m *Module) UnlinkIdentity(ctx context.Context, token, personID, identityID
 		if linked.UnlinkedAt != nil {
 			return nil
 		}
-		if person.IsCurator && person.DeactivatedAt == nil {
-			otherAccount, err := tx.NewSelect().Model((*models.Identity)(nil)).Where("person_id = ? AND id <> ? AND unlinked_at IS NULL", person.ID, linked.ID).Exists(ctx)
-			if err != nil {
-				return errorstack.CaptureContext(ctx, err)
+		otherAccount, err := tx.NewSelect().Model((*models.Identity)(nil)).Where("person_id = ? AND id <> ? AND unlinked_at IS NULL", person.ID, linked.ID).Exists(ctx)
+		if err != nil {
+			return errorstack.CaptureContext(ctx, err)
+		}
+		if !otherAccount {
+			if person.ID == actor.ID {
+				return ErrLastAccount
 			}
-			if !otherAccount {
+			if person.IsCurator && person.DeactivatedAt == nil {
 				if err := protectCuratorAccess(ctx, tx, person.ID); err != nil {
 					return err
 				}

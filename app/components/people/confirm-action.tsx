@@ -12,6 +12,7 @@ import { Form } from "./form-fields";
 
 export function ConfirmAction({
   label,
+  triggerLabel = label,
   description,
   pending,
   error,
@@ -19,6 +20,7 @@ export function ConfirmAction({
   disabled = false,
 }: {
   label: string;
+  triggerLabel?: string;
   description: string;
   pending: boolean;
   error: unknown;
@@ -34,12 +36,16 @@ export function ConfirmAction({
       open={open}
     >
       <DialogTrigger asChild>
-        <Button disabled={disabled} variant="outline">
-          {label}
+        <Button
+          aria-label={label}
+          disabled={disabled || pending}
+          variant="outline"
+        >
+          {triggerLabel}
         </Button>
       </DialogTrigger>
       <DialogContent>
-        <DialogTitle className="pr-8">{label}?</DialogTitle>
+        <DialogTitle className="pr-8 wrap-anywhere">{label}?</DialogTitle>
         <DialogDescription className="my-5 text-sm text-muted">
           {description}
         </DialogDescription>
@@ -55,8 +61,8 @@ export function ConfirmAction({
                 .catch(() => {});
           }}
         >
-          <Button disabled={pending} type="submit">
-            {pending ? "Working…" : label}
+          <Button aria-label={label} disabled={pending} type="submit">
+            {pending ? "Working…" : triggerLabel}
           </Button>
           <Button
             className="ml-3"

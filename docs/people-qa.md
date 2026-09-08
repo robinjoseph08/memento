@@ -21,8 +21,9 @@ checking a second identity without replacing the first identity's session.
   `Curator`. Confirm you reach the Curator page even while Immich is offline.
 - Open People. Create `Alex` with only a display name. Confirm there is no
   required email or avatar field.
-- Search for `alex`, open the Person, and rename them. Clear the search and
-  confirm the change remains after refreshing.
+- Search for `alex` with Enter and with the Search button. The input must keep
+  focus after both submissions. Open the Person and rename them. Clear the
+  search and confirm the change remains after refreshing.
 - Try saving a blank name. Confirm the input gets an actionable error and keeps
   the entered value. Try navigating away with an unsaved name and cancel.
 - Add `alex@example.test` as a preauthorization. Confirm it is unused and has no
@@ -41,7 +42,8 @@ checking a second identity without replacing the first identity's session.
   display name. Confirm the landing page is available and does not pretend
   onboarding has completed or send you to a missing onboarding route.
 - As Curator, inspect Alex. The approval should now be consumed and the identity
-  linked. Consumed and revoked approvals remain visible as history.
+  linked. Consumed and revoked approvals move out of the active table and into
+  the collapsed Previous emails section. Linked accounts appear above approvals.
 - Add `alex.second@example.test` to Alex. Sign in with that address in browser C.
   Confirm it is the same Person and both identities appear under Profile.
 - Reload and restart the API with the fixture's printed Restart command. Both
@@ -52,14 +54,20 @@ checking a second identity without replacing the first identity's session.
 
 - Open Profile as Alex. Change the display name and save. Refresh and confirm the
   name appears in the account menu and the Curator's People list.
-- Select the second linked email for updates, enable email updates, and save.
+- On first sign-in, confirm the first linked email is already selected for
+  updates and email updates are enabled. Select the second linked email and save.
   Refresh and confirm both settings persist. Disable email updates and confirm
   that preference persists too. This ticket stores preferences; it sends no mail.
 - Confirm the destination control offers only linked verified email addresses,
   not an arbitrary address field. Confirm there is no Google avatar or avatar
   picker, only initials.
-- Inspect sessions. Browsers B and C should have separate entries, device labels,
-  email addresses, dates, and exactly one current-session label in each browser.
+- Inspect sessions. Browsers B and C should have separate table rows, device
+  labels, email addresses, dates, and exactly one current-session label in each
+  browser. Members should not see expiration dates. Curators should see them.
+- As Curator, inspect Alex's notification address, subscription state, and
+  sessions. These details are read-only. Other members cannot inspect them.
+- With only one linked account, Alex's Unlink action must be disabled. A Curator
+  can still remove all of another Person's accounts.
 - From browser A, unlink Alex's second identity. Browser C must lose access on
   its next request or refresh. Browser B must remain signed in. The selected
   update address must clear and email updates must turn off.
@@ -72,15 +80,16 @@ checking a second identity without replacing the first identity's session.
 
 ## Roles and deactivation
 
-- With only the original Curator active, try removing their Curator role and
-  try deactivating them. Both must be rejected with an explanation. Unlinking
-  their only sign-in account must also be rejected. Promoting a name-only
-  Person without a linked account must not bypass this protection.
+- Inspect your own Person as Curator. Curator and Deactivate controls must be
+  disabled with an explanation, even when another Curator exists. Your last
+  linked account cannot be removed either. Direct API requests must enforce the
+  same restrictions.
 - Promote Alex, sign in as Alex, and confirm both Curators can manage People.
-  Have Alex remove the original Curator's role and restore it. There is no
+  Have Alex remove the original Curator's role and restore it. A Curator can
+  change another Curator, but cannot demote or deactivate themselves. There is no
   privileged owner role after the installation is claimed.
 - With both promoted, open each Person in separate browser profiles and attempt
-  to demote or deactivate both near-simultaneously. At least one active Curator
+  to demote or deactivate each other near-simultaneously. At least one active Curator
   must remain. The automated race tests below check this deterministically.
 - Ensure browser A is an active Curator. Sign Alex into B and C, then deactivate
   Alex from A. Existing sessions and fresh sign-in must fail. Alex's record,
@@ -98,6 +107,9 @@ checking a second identity without replacing the first identity's session.
   old private view. A previously started private request must not restore it.
 - Check a narrow mobile viewport and dark mode. People navigation, the signed-in
   name and role, Profile, theme controls, and Sign out must remain reachable.
+  Mobile navigation must use a single-row header and a side drawer. Check
+  Escape, outside-click dismissal, focus restoration, and navigation. Confirm
+  table actions stay visible on narrow screens and button text looks centered.
 - Use Tab, Enter, and Escape for forms, menus, and unlink confirmations. Closing
   a dialog should restore focus. Failed saves should preserve edits.
 

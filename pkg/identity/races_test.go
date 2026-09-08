@@ -260,9 +260,68 @@ func TestSignedInCuratorsRaceEachOthersDemotionAndDeactivation(t *testing.T) {
 			}
 			assert.Equal(t, 1, activeCurators)
 			_, err = module.UpdatePerson(t.Context(), survivor.Token, survivor.Person.ID, edit)
-			require.ErrorIs(t, err, identity.ErrFinalCurator)
+			field := "is_curator"
+			if scenario.deactivate {
+				field = "deactivated"
+			}
+			requirePersonFieldError(t, err, field)
 			first = survivor
 		})
+	}
+}
+
+func TestRacingOwnAccountUnlinksLeaveOneLinkedAccount(t *testing.T) {
+	t.Parallel()
+	module := identity.New(testdb.New(t), nil)
+	curator := claimCurator(t, module)
+	for _, scenario := range []struct {
+		name         string
+		curator      bool
+		curatorRoute bool
+	}{
+		{name: "member"},
+		{name: "curator-self", curator: true},
+		{name: "curator-management", curator: true, curatorRoute: true},
+	} {
+		first := authorizePerson(t, module, curator, scenario.name, scenario.name+"@example.test")
+		if scenario.curator {
+			_, err := module.UpdatePerson(t.Context(), curator.Token, first.Person.ID, identity.UpdatePersonRequest{DisplayName: scenario.name, IsCurator: true})
+			require.NoError(t, err)
+		}
+		secondEmail := scenario.name + "-second@example.test"
+		_, err := module.Preauthorize(t.Context(), curator.Token, first.Person.ID, identity.PreauthorizeRequest{Email: secondEmail})
+		require.NoError(t, err)
+		second, err := module.SignIn(t.Context(), identity.FakeClaims(identity.SignInRequest{Email: secondEmail, DisplayName: scenario.name}))
+		require.NoError(t, err)
+		profile, err := module.Profile(t.Context(), first.Token)
+		require.NoError(t, err)
+		require.Len(t, profile.Identities, 2)
+		personID := ""
+		if scenario.curatorRoute {
+			personID = first.Person.ID
+		}
+		var firstErr, secondErr error
+		raceIdentityOperations(
+			func() { firstErr = module.UnlinkIdentity(t.Context(), first.Token, personID, profile.Identities[0].ID) },
+			func() {
+				secondErr = module.UnlinkIdentity(t.Context(), second.Token, personID, profile.Identities[1].ID)
+			},
+		)
+		survivingToken := second.Token
+		if firstErr == nil {
+			require.ErrorIs(t, secondErr, identity.ErrLastAccount, scenario.name)
+		} else {
+			require.NoError(t, secondErr, scenario.name)
+			require.ErrorIs(t, firstErr, identity.ErrLastAccount, scenario.name)
+			survivingToken = first.Token
+		}
+		remaining, err := module.Profile(t.Context(), survivingToken)
+		require.NoError(t, err)
+		require.Len(t, remaining.Identities, 1, scenario.name)
+		sessions, err := module.Sessions(t.Context(), survivingToken)
+		require.NoError(t, err)
+		require.Len(t, sessions, 1)
+		assert.Equal(t, remaining.Identities[0].ID, sessions[0].IdentityID)
 	}
 }
 

@@ -1,5 +1,12 @@
 import { focusManager } from "@tanstack/react-query";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vitest";
 
@@ -229,6 +236,183 @@ it("guards unsaved profile changes when leaving or signing out", async () => {
   expect(confirm).toHaveBeenCalledTimes(2);
   expect(name).toHaveValue("Alex edited");
   expect(window.location.pathname).toBe("/profile");
+});
+
+it.each([false, true])(
+  "protects the last linked account in your profile, Curator=%s",
+  async (isCurator) => {
+    const person = { ...alex, is_curator: isCurator };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (path: string) => {
+        if (path.endsWith("/status"))
+          return Response.json({ claimed: true, person, auth_mode: "google" });
+        if (path.endsWith("/sessions")) return Response.json([]);
+        return Response.json({ person, identities: [account] });
+      }),
+    );
+    window.history.replaceState(null, "", "/profile");
+    render(<App />);
+    const accounts = await screen.findByRole("table", {
+      name: "Linked accounts",
+    });
+    expect(
+      within(accounts).getByRole("cell", { name: "Google" }),
+    ).toBeVisible();
+    expect(
+      within(accounts).getByRole("button", {
+        name: "Unlink alex@example.test",
+      }),
+    ).toBeDisabled();
+    expect(
+      screen.getByText("Keep at least one linked account so you can sign in."),
+    ).toBeVisible();
+  },
+);
+
+it.each([false, true])(
+  "shows session expiration only to a Curator viewer, Curator=%s",
+  async (isCurator) => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (path: string) => {
+        if (path.endsWith("/status"))
+          return Response.json({
+            claimed: true,
+            person: { ...alex, is_curator: isCurator },
+            auth_mode: "fake",
+          });
+        if (path.endsWith("/sessions"))
+          return Response.json([
+            {
+              id: "browser",
+              identity_id: account.id,
+              email: account.email,
+              device: "Firefox on Mac",
+              current: true,
+              created_at: "2026-01-01T00:00:00Z",
+              last_used_at: "2026-01-02T00:00:00Z",
+              expires_at: "2026-02-01T00:00:00Z",
+            },
+          ]);
+        return Response.json({ person: alex, identities: [account] });
+      }),
+    );
+    window.history.replaceState(null, "", "/profile");
+    render(<App />);
+    const sessions = await screen.findByRole("table", {
+      name: "Browser sessions",
+    });
+    expect(within(sessions).getByText("This browser")).toBeVisible();
+    expect(within(sessions).getByText("Firefox on Mac")).toBeVisible();
+    expect(within(sessions).getByText(account.email)).toBeVisible();
+    expect(
+      within(sessions).getByRole("columnheader", { name: "Signed in" }),
+    ).toBeVisible();
+    expect(
+      within(sessions).getByRole("columnheader", { name: "Last used" }),
+    ).toBeVisible();
+    if (isCurator)
+      expect(
+        within(sessions).getByRole("columnheader", { name: "Expires" }),
+      ).toBeVisible();
+    else
+      expect(
+        within(sessions).queryByRole("columnheader", { name: "Expires" }),
+      ).not.toBeInTheDocument();
+  },
+);
+
+it("uses server notification defaults and preserves an unsaved opt-out on refresh", async () => {
+  let person = { ...alex, email_updates: true };
+  let identities = [account];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (path: string, options?: RequestInit) => {
+      if (path.endsWith("/status"))
+        return Response.json({ claimed: true, person, auth_mode: "google" });
+      if (path.endsWith("/sessions")) return Response.json([]);
+      if (options?.method === "POST")
+        person = { ...person, ...JSON.parse(String(options.body)) };
+      return Response.json({ person, identities });
+    }),
+  );
+  window.history.replaceState(null, "", "/profile");
+  const user = userEvent.setup();
+  render(<App />);
+  const updates = await screen.findByRole("checkbox", {
+    name: "Email me when there are updates",
+  });
+  expect(updates).toBeChecked();
+  expect(
+    screen.getByRole("combobox", { name: "Email for updates" }),
+  ).toHaveValue("alex@example.test");
+  await user.click(updates);
+  person = { ...person, display_name: "Alex refreshed" };
+  identities = [
+    account,
+    { ...account, id: "second", email: "second@example.test" },
+  ];
+  await act(async () => {
+    focusManager.setFocused(false);
+    focusManager.setFocused(true);
+  });
+  expect(
+    await screen.findByRole("button", { name: "Unlink second@example.test" }),
+  ).toBeVisible();
+  expect(updates).not.toBeChecked();
+  await user.click(screen.getByRole("button", { name: "Save profile" }));
+  expect(await screen.findByRole("status")).toHaveTextContent("Profile saved.");
+  expect(updates).not.toBeChecked();
+});
+
+it("keeps another linked account available after unlinking one from your profile", async () => {
+  let identities = [
+    account,
+    { ...account, id: "second", email: "second@example.test" },
+  ];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (path: string, options?: RequestInit) => {
+      if (path.endsWith("/status"))
+        return Response.json({
+          claimed: true,
+          person: alex,
+          auth_mode: "google",
+        });
+      if (path.endsWith("/sessions")) return Response.json([]);
+      if (options?.method === "POST") {
+        identities = identities.filter((identity) => identity.id !== "second");
+        return new Response(null, { status: 204 });
+      }
+      return Response.json({ person: alex, identities });
+    }),
+  );
+  window.history.replaceState(null, "", "/profile");
+  const user = userEvent.setup();
+  render(<App />);
+  const unlink = await screen.findByRole("button", {
+    name: "Unlink second@example.test",
+  });
+  expect(unlink).toHaveTextContent(/^Unlink$/);
+  await user.click(unlink);
+  const dialog = screen.getByRole("dialog", {
+    name: "Unlink second@example.test?",
+  });
+  const confirmUnlink = within(dialog).getByRole("button", {
+    name: "Unlink second@example.test",
+  });
+  expect(confirmUnlink).toHaveTextContent(/^Unlink$/);
+  await user.click(confirmUnlink);
+  await waitFor(() =>
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+  );
+  expect(
+    screen.getByRole("button", { name: "Unlink alex@example.test" }),
+  ).toBeDisabled();
+  expect(
+    screen.queryByRole("button", { name: "Unlink second@example.test" }),
+  ).not.toBeInTheDocument();
 });
 
 it("offers full-navigation Google sign-in and explains an account without access", async () => {

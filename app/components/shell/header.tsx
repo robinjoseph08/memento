@@ -3,13 +3,20 @@ import { Link, NavLink } from "react-router-dom";
 import { useIdentityStatus } from "../../hooks/queries/identity";
 import { useTheme } from "../../hooks/use-theme";
 import { AccountMenu } from "./account-menu";
+import { MobileNavigation } from "./mobile-navigation";
 import { ThemeToggle } from "./theme-toggle";
 
 export function Header() {
   const { data } = useIdentityStatus();
   const theme = useTheme();
   return (
-    <header className="flex min-h-16 flex-wrap items-center justify-between gap-4 border-b border-border px-4 py-2 min-[381px]:px-5 min-[761px]:px-8">
+    <header className="flex min-h-16 items-center gap-2 border-b border-border px-3 py-2 min-[381px]:px-4 min-[601px]:gap-4 min-[761px]:px-8">
+      {data?.person && (
+        <MobileNavigation
+          key={`${data.person.id}-${data.person.is_curator}`}
+          person={data.person}
+        />
+      )}
       <Link
         aria-label="memento home"
         className="inline-flex shrink-0 cursor-pointer touch-manipulation items-center gap-1.75 [-webkit-tap-highlight-color:transparent] focus-visible:rounded-sm focus-visible:outline-2 focus-visible:outline-offset-5 focus-visible:outline-ring min-[381px]:gap-2.75"
@@ -37,7 +44,7 @@ export function Header() {
       {data?.person && (
         <nav
           aria-label="Main navigation"
-          className="order-3 flex w-full gap-2 border-t border-border pt-2 min-[601px]:order-none min-[601px]:w-auto min-[601px]:flex-1 min-[601px]:border-0 min-[601px]:pt-0 min-[601px]:pl-8"
+          className="hidden flex-1 gap-2 pl-8 min-[601px]:flex"
         >
           <NavLink
             className="rounded-md px-4 py-3 text-sm hover:bg-surface aria-[current=page]:bg-surface"
@@ -56,11 +63,13 @@ export function Header() {
           )}
         </nav>
       )}
-      {data?.person ? (
-        <AccountMenu key={data.person.id} person={data.person} {...theme} />
-      ) : (
-        <ThemeToggle {...theme} />
-      )}
+      <div className="ml-auto">
+        {data?.person ? (
+          <AccountMenu key={data.person.id} person={data.person} {...theme} />
+        ) : (
+          <ThemeToggle {...theme} />
+        )}
+      </div>
     </header>
   );
 }

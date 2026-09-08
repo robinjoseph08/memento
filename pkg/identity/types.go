@@ -66,6 +66,7 @@ type PersonDetail struct {
 	Person            Person             `json:"person"`
 	Identities        []LinkedIdentity   `json:"identities"`
 	Preauthorizations []Preauthorization `json:"preauthorizations"`
+	Sessions          []BrowserSession   `json:"sessions"`
 }
 
 type Profile struct {

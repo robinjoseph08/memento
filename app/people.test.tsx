@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vitest";
 
@@ -33,7 +33,35 @@ it.each([true, false])(
   },
 );
 
-it("preserves a Curator's edits when the final active Curator cannot be removed", async () => {
+it("keeps the people search input focused after Enter and the Search button", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (path: string) =>
+      Response.json(
+        path.endsWith("/status")
+          ? { claimed: true, person: curator, auth_mode: "fake" }
+          : [],
+      ),
+    ),
+  );
+  window.history.replaceState(null, "", "/curator/people");
+  const user = userEvent.setup();
+  render(<App />);
+  const search = await screen.findByRole("searchbox", {
+    name: "Search people",
+  });
+  await user.type(search, "alex{Enter}");
+  await waitFor(() => expect(window.location.search).toBe("?q=alex"));
+  expect(
+    screen.getByRole("searchbox", { name: "Search people" }),
+  ).toHaveFocus();
+  await user.click(screen.getByRole("button", { name: "Search" }));
+  expect(
+    screen.getByRole("searchbox", { name: "Search people" }),
+  ).toHaveFocus();
+});
+
+it("preserves edits when the server rejects a Person change", async () => {
   vi.stubGlobal(
     "fetch",
     vi.fn(async (path: string, options?: RequestInit) => {
@@ -47,30 +75,30 @@ it("preserves a Curator's edits when the final active Curator cannot be removed"
         return Response.json(
           {
             error: {
-              message:
-                "Keep at least one active Curator before making this change.",
+              message: "This change could not be saved.",
             },
           },
           { status: 409 },
         );
       return Response.json({
-        person: curator,
+        person: { ...curator, id: "other-curator" },
         identities: [],
         preauthorizations: [],
+        sessions: [],
       });
     }),
   );
-  window.history.replaceState(null, "", "/curator/people/curator");
+  window.history.replaceState(null, "", "/curator/people/other-curator");
   const user = userEvent.setup();
   render(<App />);
   const role = await screen.findByRole("checkbox", { name: "Curator" });
   await user.click(role);
   await user.click(screen.getByRole("button", { name: "Save person" }));
   expect(await screen.findByRole("alert")).toHaveTextContent(
-    "Keep at least one active Curator",
+    "This change could not be saved.",
   );
   expect(role).not.toBeChecked();
-  expect(window.location.pathname).toBe("/curator/people/curator");
+  expect(window.location.pathname).toBe("/curator/people/other-curator");
 });
 
 it("keeps successfully saved Person values when the following refresh fails", async () => {

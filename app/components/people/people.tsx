@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, Navigate, useParams, useSearchParams } from "react-router-dom";
 
 import {
@@ -27,6 +27,11 @@ import { PersonDetails } from "./person-details";
 
 export function PeoplePage() {
   const [search, setSearch] = useSearchParams();
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (searchInputRef.current)
+      searchInputRef.current.value = search.get("q") ?? "";
+  }, [search]);
   const query = usePeople(search.get("q") ?? "");
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
@@ -94,14 +99,15 @@ export function PeoplePage() {
           event.preventDefault();
           const values = new FormData(event.currentTarget);
           setSearch(values.get("q") ? { q: String(values.get("q")) } : {});
+          searchInputRef.current?.focus();
         }}
         role="search"
       >
         <Field
           defaultValue={search.get("q") ?? ""}
-          key={search.get("q") ?? ""}
           label="Search people"
           name="q"
+          ref={searchInputRef}
           type="search"
         />
         <Button className="mb-7" type="submit" variant="outline">

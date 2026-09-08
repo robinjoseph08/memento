@@ -20,10 +20,14 @@ func TestFakeSignInUsesEmailIdentity(t *testing.T) {
 	require.NoError(t, err)
 	returning, err := module.SignIn(t.Context(), identity.FakeClaims(identity.SignInRequest{Email: "curator@example.test", DisplayName: "Changed name"}))
 	require.NoError(t, err)
-	assert.Equal(t, first.Person, returning.Person)
+	expected := first.Person
+	// Fake subjects ignore case, but the selected email follows exact claims.
+	expected.UpdateEmail = ""
+	expected.EmailUpdates = false
+	assert.Equal(t, expected, returning.Person)
 	active, err := module.Authenticate(t.Context(), first.Token)
 	require.NoError(t, err)
-	assert.Equal(t, first.Person, active.Person)
+	assert.Equal(t, expected, active.Person)
 	_, err = module.SignIn(t.Context(), identity.FakeClaims(identity.SignInRequest{Email: "different@example.test", DisplayName: "Alex"}))
 	require.ErrorIs(t, err, identity.ErrAccessDenied)
 }
