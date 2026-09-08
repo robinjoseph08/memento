@@ -14,7 +14,6 @@ import (
 	"golang.org/x/oauth2"
 )
 
-const googleCookieName = "memento_google_login"
 const googleLoginLifetime = 10 * time.Minute
 
 type googleTransaction struct {
@@ -25,6 +24,7 @@ type googleTransaction struct {
 type googleHandlers struct {
 	identity     *Handlers
 	provider     *GoogleProvider
+	cookieName   string
 	mu           sync.Mutex
 	transactions map[string]googleTransaction
 }
@@ -47,7 +47,7 @@ func (h *googleHandlers) start(c *echo.Context) error {
 			delete(h.transactions, key)
 		}
 	}
-	if previous, err := c.Cookie(googleCookieName); err == nil {
+	if previous, err := c.Cookie(h.cookieName); err == nil {
 		delete(h.transactions, previous.Value)
 	}
 	// Bound unauthenticated memory use without a cleanup goroutine or durable login state.
@@ -65,7 +65,7 @@ func (h *googleHandlers) callback(c *echo.Context) error {
 	c.Response().Header().Set("Cache-Control", "no-store")
 	c.Response().Header().Set("Referrer-Policy", "no-referrer")
 	h.cookie(c, "", -1, time.Unix(1, 0))
-	cookie, err := c.Cookie(googleCookieName)
+	cookie, err := c.Cookie(h.cookieName)
 	if err != nil {
 		return h.failure(c, "invalid_state")
 	}
@@ -113,7 +113,7 @@ func (h *googleHandlers) callback(c *echo.Context) error {
 
 func (h *googleHandlers) cookie(c *echo.Context, value string, maxAge int, expires time.Time) {
 	// #nosec G124 -- Secure follows the validated public URL, including HTTP localhost in development.
-	c.SetCookie(&http.Cookie{Name: googleCookieName, Value: value, Path: "/api/identity/google", HttpOnly: true, Secure: strings.HasPrefix(h.identity.publicURL, "https://"), SameSite: http.SameSiteLaxMode, MaxAge: maxAge, Expires: expires})
+	c.SetCookie(&http.Cookie{Name: h.cookieName, Value: value, Path: "/api/identity/google", HttpOnly: true, Secure: strings.HasPrefix(h.identity.publicURL, "https://"), SameSite: http.SameSiteLaxMode, MaxAge: maxAge, Expires: expires})
 }
 
 func (h *googleHandlers) failure(c *echo.Context, code string) error {

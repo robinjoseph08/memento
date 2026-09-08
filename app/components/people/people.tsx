@@ -94,7 +94,7 @@ export function PeoplePage() {
         </Dialog>
       </div>
       <form
-        className="max-w-110"
+        className="mb-7 grid max-w-xl grid-cols-[minmax(0,1fr)_auto] items-end gap-2 [&>div]:mb-0"
         onSubmit={(event) => {
           event.preventDefault();
           const values = new FormData(event.currentTarget);
@@ -110,7 +110,7 @@ export function PeoplePage() {
           ref={searchInputRef}
           type="search"
         />
-        <Button className="mb-7" type="submit" variant="outline">
+        <Button type="submit" variant="outline">
           Search
         </Button>
       </form>
@@ -128,12 +128,12 @@ export function PeoplePage() {
             {query.data.map((person) => (
               <li key={person.id}>
                 <Link
-                  className="flex cursor-pointer items-center gap-4 py-5 hover:bg-surface focus-visible:outline-2 focus-visible:outline-ring"
+                  className="flex cursor-pointer items-center gap-3 px-3 py-3 hover:bg-surface focus-visible:outline-2 focus-visible:outline-ring"
                   to={`/curator/people/${person.id}`}
                 >
                   <span
                     aria-hidden="true"
-                    className="flex size-11 shrink-0 items-center justify-center rounded-full bg-surface text-sm"
+                    className="flex size-9 shrink-0 items-center justify-center rounded-full bg-surface text-xs"
                   >
                     {person.display_name
                       .split(/\s+/)

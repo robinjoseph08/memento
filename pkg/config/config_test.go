@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -46,6 +47,32 @@ func requiredConfig() mapProvider {
 	}
 }
 
+func TestLoadUsesProductionDefaults(t *testing.T) {
+	t.Parallel()
+	values := requiredConfig()
+	delete(values, "app_env")
+	delete(values, "auth_mode")
+	values["public_url"] = "https://photos.example.com"
+	values["google_client_id"] = "google-client"
+	values["google_client_secret"] = "google-secret"
+
+	cfg, err := load(filepath.Join(t.TempDir(), "missing.yaml"), false, values, func() (string, error) { return "host", nil })
+	require.NoError(t, err)
+	assert.Equal(t, "production", cfg.AppEnv)
+	assert.Equal(t, "google", cfg.AuthMode)
+	assert.Equal(t, "memento", cfg.CookieNamespace)
+}
+
+func TestLoadRejectsInvalidCookieNamespaces(t *testing.T) {
+	t.Parallel()
+	for _, value := range []string{"", "Memento", "bad-value", "bad value", "bad;value", strings.Repeat("a", 65)} {
+		values := requiredConfig()
+		values["cookie_namespace"] = value
+		_, err := load(filepath.Join(t.TempDir(), "missing.yaml"), false, values, func() (string, error) { return "host", nil })
+		require.ErrorContains(t, err, "cookie_namespace: must be 64 characters or fewer and use lowercase letters, numbers, and underscores")
+	}
+}
+
 func TestLoadRequiresExplicitDatabaseURL(t *testing.T) {
 	t.Parallel()
 	values := requiredConfig()
@@ -56,7 +83,7 @@ func TestLoadRequiresExplicitDatabaseURL(t *testing.T) {
 
 func TestLoadRequiresInstallationSettings(t *testing.T) {
 	t.Parallel()
-	for _, field := range []string{"database_url", "public_url", "immich_url", "immich_api_key", "auth_mode"} {
+	for _, field := range []string{"database_url", "public_url", "immich_url", "immich_api_key"} {
 		t.Run(field, func(t *testing.T) {
 			t.Parallel()
 			for _, missing := range []bool{true, false} {

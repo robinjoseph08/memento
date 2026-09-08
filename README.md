@@ -167,11 +167,11 @@ mise docker
 
 The image runs one non-root Go process, listens on port `8080`, reads optional
 configuration from `/config/app.yaml`, and stores mutable files under
-`/data/files`. Configure `DATABASE_URL`, `PUBLIC_URL`, `IMMICH_URL`,
-`IMMICH_API_KEY`, and `AUTH_MODE` through YAML or environment variables.
-`IMMICH_URL` is the instance base URL without `/api`. Environment values
-override YAML. `PUBLIC_URL` must match the browser origin and controls cookie
-security and mutation origin checks. See `app.example.yaml` for every setting.
+`/data/files`. Configure `DATABASE_URL`, `PUBLIC_URL`, `IMMICH_URL`, and
+`IMMICH_API_KEY` through YAML or environment variables. `IMMICH_URL` is the
+instance base URL without `/api`. Environment values override YAML.
+`PUBLIC_URL` must match the browser origin and controls cookie security and
+mutation origin checks. See `app.example.yaml` for a deployment example.
 
 ### Separate PostgreSQL database and role
 
@@ -249,8 +249,6 @@ independent.
 Set these alongside `DATABASE_URL`, `IMMICH_URL`, and `IMMICH_API_KEY`:
 
 ```sh
-export APP_ENV=production
-export AUTH_MODE=google
 export PUBLIC_URL=https://photos.example.com
 export GOOGLE_CLIENT_ID='your-client-id.apps.googleusercontent.com'
 export GOOGLE_CLIENT_SECRET='your-client-secret'

@@ -77,6 +77,7 @@ func developmentEnvironment(env Environment, apiPort, webPort int) ([]string, er
 		"DATABASE_URL="+fmt.Sprintf("postgres://postgres:postgres@127.0.0.1:%d/%s?sslmode=disable", port, env.CurrentDatabase),
 		"FILES_PATH="+env.CurrentFilesPath(),
 		"CONFIG_FILE="+filepath.Join(env.CurrentRoot, "app.dev.yaml"),
+		"COOKIE_NAMESPACE="+env.CurrentDatabase,
 	)
 	if apiPort != 0 {
 		values = append(values,

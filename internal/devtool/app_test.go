@@ -401,6 +401,7 @@ func TestDevelopmentEnvironmentUsesCurrentWorktreeResources(t *testing.T) {
 	assert.Equal(t, "postgres://postgres:postgres@127.0.0.1:5544/memento_feature_12345678?sslmode=disable", lastEnvironmentValue(values, "DATABASE_URL"))
 	assert.Equal(t, filepath.Join(currentRoot, "tmp", "files"), lastEnvironmentValue(values, "FILES_PATH"))
 	assert.Equal(t, filepath.Join(currentRoot, "app.dev.yaml"), lastEnvironmentValue(values, "CONFIG_FILE"))
+	assert.Equal(t, env.CurrentDatabase, lastEnvironmentValue(values, "COOKIE_NAMESPACE"))
 	assert.Equal(t, "3580", lastEnvironmentValue(values, "SERVER_PORT"))
 	assert.Equal(t, "5174", lastEnvironmentValue(values, "WEB_PORT"))
 }

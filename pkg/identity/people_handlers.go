@@ -7,8 +7,8 @@ import (
 	"github.com/robinjoseph08/memento/pkg/errorstack"
 )
 
-func browserToken(c *echo.Context) string {
-	cookie, err := c.Cookie(CookieName)
+func (h *Handlers) browserToken(c *echo.Context) string {
+	cookie, err := c.Cookie(h.cookieName)
 	if err != nil {
 		return ""
 	}
@@ -30,7 +30,7 @@ func emptyResult(c *echo.Context, err error) error {
 }
 
 func (h *Handlers) listPeople(c *echo.Context) error {
-	result, err := h.module.ListPeople(c.Request().Context(), browserToken(c), c.QueryParam("q"))
+	result, err := h.module.ListPeople(c.Request().Context(), h.browserToken(c), c.QueryParam("q"))
 	return jsonResult(c, result, err)
 }
 
@@ -39,12 +39,12 @@ func (h *Handlers) createPerson(c *echo.Context) error {
 	if err := c.Bind(&request); err != nil {
 		return err
 	}
-	result, err := h.module.CreatePerson(c.Request().Context(), browserToken(c), request)
+	result, err := h.module.CreatePerson(c.Request().Context(), h.browserToken(c), request)
 	return jsonResult(c, result, err)
 }
 
 func (h *Handlers) getPerson(c *echo.Context) error {
-	result, err := h.module.GetPerson(c.Request().Context(), browserToken(c), c.Param("id"))
+	result, err := h.module.GetPerson(c.Request().Context(), h.browserToken(c), c.Param("id"))
 	return jsonResult(c, result, err)
 }
 
@@ -53,7 +53,7 @@ func (h *Handlers) updatePerson(c *echo.Context) error {
 	if err := c.Bind(&request); err != nil {
 		return err
 	}
-	result, err := h.module.UpdatePerson(c.Request().Context(), browserToken(c), c.Param("id"), request)
+	result, err := h.module.UpdatePerson(c.Request().Context(), h.browserToken(c), c.Param("id"), request)
 	return jsonResult(c, result, err)
 }
 
@@ -62,7 +62,7 @@ func (h *Handlers) preauthorize(c *echo.Context) error {
 	if err := c.Bind(&request); err != nil {
 		return err
 	}
-	result, err := h.module.Preauthorize(c.Request().Context(), browserToken(c), c.Param("id"), request)
+	result, err := h.module.Preauthorize(c.Request().Context(), h.browserToken(c), c.Param("id"), request)
 	return jsonResult(c, result, err)
 }
 
@@ -71,11 +71,11 @@ func (h *Handlers) revokePreauthorization(c *echo.Context) error {
 	if err := c.Bind(&request); err != nil {
 		return err
 	}
-	return emptyResult(c, h.module.RevokePreauthorization(c.Request().Context(), browserToken(c), c.Param("id"), c.Param("preauthorizationID")))
+	return emptyResult(c, h.module.RevokePreauthorization(c.Request().Context(), h.browserToken(c), c.Param("id"), c.Param("preauthorizationID")))
 }
 
 func (h *Handlers) profile(c *echo.Context) error {
-	result, err := h.module.Profile(c.Request().Context(), browserToken(c))
+	result, err := h.module.Profile(c.Request().Context(), h.browserToken(c))
 	return jsonResult(c, result, err)
 }
 
@@ -84,12 +84,12 @@ func (h *Handlers) updateProfile(c *echo.Context) error {
 	if err := c.Bind(&request); err != nil {
 		return err
 	}
-	result, err := h.module.UpdateProfile(c.Request().Context(), browserToken(c), request)
+	result, err := h.module.UpdateProfile(c.Request().Context(), h.browserToken(c), request)
 	return jsonResult(c, result, err)
 }
 
 func (h *Handlers) sessions(c *echo.Context) error {
-	result, err := h.module.Sessions(c.Request().Context(), browserToken(c))
+	result, err := h.module.Sessions(c.Request().Context(), h.browserToken(c))
 	return jsonResult(c, result, err)
 }
 
@@ -98,7 +98,7 @@ func (h *Handlers) signOutEverywhere(c *echo.Context) error {
 	if err := c.Bind(&request); err != nil {
 		return err
 	}
-	if err := h.module.SignOutEverywhere(c.Request().Context(), browserToken(c)); err != nil {
+	if err := h.module.SignOutEverywhere(c.Request().Context(), h.browserToken(c)); err != nil {
 		return err
 	}
 	h.clearCookie(c)
@@ -110,5 +110,5 @@ func (h *Handlers) unlinkIdentity(c *echo.Context) error {
 	if err := c.Bind(&request); err != nil {
 		return err
 	}
-	return emptyResult(c, h.module.UnlinkIdentity(c.Request().Context(), browserToken(c), c.Param("id"), c.Param("identityID")))
+	return emptyResult(c, h.module.UnlinkIdentity(c.Request().Context(), h.browserToken(c), c.Param("id"), c.Param("identityID")))
 }

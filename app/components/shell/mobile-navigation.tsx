@@ -54,10 +54,10 @@ export function MobileNavigation({ person }: { person: Person }) {
         </SheetTitle>
         <nav
           aria-label="Mobile navigation"
-          className="mt-8 flex flex-col gap-2"
+          className="mt-5 flex flex-col gap-1"
         >
           <NavLink
-            className="rounded-md px-4 py-4 text-sm hover:bg-surface focus-visible:outline-2 focus-visible:outline-ring aria-[current=page]:bg-surface"
+            className="cursor-pointer rounded-md px-3 py-3 text-sm hover:bg-surface focus-visible:outline-2 focus-visible:outline-ring aria-[current=page]:bg-surface"
             end
             onClick={() => setOpen(false)}
             to={person.is_curator ? "/curator" : "/albums"}
@@ -66,7 +66,7 @@ export function MobileNavigation({ person }: { person: Person }) {
           </NavLink>
           {person.is_curator && (
             <NavLink
-              className="rounded-md px-4 py-4 text-sm hover:bg-surface focus-visible:outline-2 focus-visible:outline-ring aria-[current=page]:bg-surface"
+              className="cursor-pointer rounded-md px-3 py-3 text-sm hover:bg-surface focus-visible:outline-2 focus-visible:outline-ring aria-[current=page]:bg-surface"
               onClick={() => setOpen(false)}
               to="/curator/people"
             >
