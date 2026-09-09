@@ -16,6 +16,7 @@ type Person struct {
 	UpdateIdentityID      *UUID  `bun:"update_identity_id,type:uuid"`
 	UpdateEmail           string `bun:",scanonly"`
 	EmailUpdates          bool
+	AvatarFaceID          *string
 	CreatedAt             time.Time
 }
 
@@ -38,6 +39,14 @@ type Preauthorization struct {
 	CreatedAt     time.Time
 	ConsumedAt    *time.Time
 	RevokedAt     *time.Time
+}
+
+type ImmichFaceLink struct {
+	bun.BaseModel `bun:"table:immich_face_links,alias:face_link"`
+	SourceID      string `bun:"source_id,pk"`
+	PersonID      *UUID  `bun:"type:uuid"`
+	Ignored       bool
+	UpdatedAt     time.Time
 }
 
 type Session struct {

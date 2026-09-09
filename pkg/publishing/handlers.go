@@ -45,6 +45,114 @@ func (h *handlers) updateAlbum(c *echo.Context) error {
 	result, err := h.module.UpdateAlbum(c.Request().Context(), c.Param("id"), request)
 	return respond(c, result, err)
 }
+func (h *handlers) updateMoment(c *echo.Context) error {
+	var request UpdateMomentRequest
+	if err := c.Bind(&request); err != nil {
+		return err
+	}
+	result, err := h.module.UpdateMoment(c.Request().Context(), c.Param("id"), c.Param("momentID"), request)
+	return respond(c, result, err)
+}
+
+func (h *handlers) setMomentCover(c *echo.Context) error {
+	var request SetMomentCoverRequest
+	if err := c.Bind(&request); err != nil {
+		return err
+	}
+	result, err := h.module.SetMomentCover(c.Request().Context(), c.Param("id"), c.Param("momentID"), request)
+	return respond(c, result, err)
+}
+
+func (h *handlers) refreshMomentFaces(c *echo.Context) error {
+	var request struct{}
+	if err := c.Bind(&request); err != nil {
+		return err
+	}
+	result, err := h.module.RefreshMomentFaces(c.Request().Context(), c.Param("id"), c.Param("momentID"))
+	return respond(c, result, err)
+}
+
+func (h *handlers) setMomentAccess(c *echo.Context) error {
+	var request SetMomentAccessRequest
+	if err := c.Bind(&request); err != nil {
+		return err
+	}
+	result, err := h.module.SetMomentAccess(c.Request().Context(), c.Param("id"), c.Param("momentID"), request)
+	return respond(c, result, err)
+}
+
+func (h *handlers) addMomentSuggestions(c *echo.Context) error {
+	var request struct{}
+	if err := c.Bind(&request); err != nil {
+		return err
+	}
+	result, err := h.module.AddMomentSuggestions(c.Request().Context(), c.Param("id"), c.Param("momentID"))
+	return respond(c, result, err)
+}
+
+func (h *handlers) undoMomentAccess(c *echo.Context) error {
+	var request UndoMomentAccessRequest
+	if err := c.Bind(&request); err != nil {
+		return err
+	}
+	result, err := h.module.UndoMomentAccess(c.Request().Context(), c.Param("id"), c.Param("momentID"), request)
+	return respond(c, result, err)
+}
+
+func (h *handlers) previewMove(c *echo.Context) error {
+	var request MoveEntriesRequest
+	if err := c.Bind(&request); err != nil {
+		return err
+	}
+	result, err := h.module.PreviewMove(c.Request().Context(), c.Param("id"), c.Param("momentID"), request)
+	return respond(c, result, err)
+}
+
+func (h *handlers) moveEntries(c *echo.Context) error {
+	var request MoveEntriesRequest
+	if err := c.Bind(&request); err != nil {
+		return err
+	}
+	result, err := h.module.MoveEntries(c.Request().Context(), c.Param("id"), c.Param("momentID"), request)
+	return respond(c, result, err)
+}
+
+func (h *handlers) previewSplit(c *echo.Context) error {
+	var request SplitMomentRequest
+	if err := c.Bind(&request); err != nil {
+		return err
+	}
+	result, err := h.module.PreviewSplit(c.Request().Context(), c.Param("id"), c.Param("momentID"), request)
+	return respond(c, result, err)
+}
+
+func (h *handlers) splitMoment(c *echo.Context) error {
+	var request SplitMomentRequest
+	if err := c.Bind(&request); err != nil {
+		return err
+	}
+	result, err := h.module.SplitMoment(c.Request().Context(), c.Param("id"), c.Param("momentID"), request)
+	return respond(c, result, err)
+}
+
+func (h *handlers) previewMerge(c *echo.Context) error {
+	var request MergeMomentsRequest
+	if err := c.Bind(&request); err != nil {
+		return err
+	}
+	result, err := h.module.PreviewMerge(c.Request().Context(), c.Param("id"), c.Param("momentID"), request)
+	return respond(c, result, err)
+}
+
+func (h *handlers) mergeMoments(c *echo.Context) error {
+	var request MergeMomentsRequest
+	if err := c.Bind(&request); err != nil {
+		return err
+	}
+	result, err := h.module.MergeMoments(c.Request().Context(), c.Param("id"), c.Param("momentID"), request)
+	return respond(c, result, err)
+}
+
 func (h *handlers) retryImport(c *echo.Context) error {
 	var request struct{}
 	if err := c.Bind(&request); err != nil {

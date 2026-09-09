@@ -1,26 +1,38 @@
-import { use, useEffect, useLayoutEffect, useRef } from "react";
+import { use, useEffect, useLayoutEffect, useRef, type RefObject } from "react";
 import { useBlocker } from "react-router-dom";
 
 import { UnsavedChangesContext } from "../lib/forms";
 
-// Guard router navigation and browser exits only while a form has unsaved work.
-export function useUnsavedChanges(unsaved: boolean) {
+// Register a form with the app-wide navigation guard while it has unsaved work.
+export function useUnsavedChanges(unsaved: boolean, includeSearch = false) {
   const sharedRef = use(UnsavedChangesContext);
-  const currentRef = useRef(unsaved);
+  const registrationRef = useRef(Symbol("unsaved changes"));
   useLayoutEffect(() => {
     if (!sharedRef) return;
-    sharedRef.current = unsaved;
+    const registry = sharedRef.current;
+    const registration = registrationRef.current;
+    if (unsaved) registry.set(registration, includeSearch);
+    else registry.delete(registration);
     return () => {
-      sharedRef.current = false;
+      registry.delete(registration);
     };
-  }, [sharedRef, unsaved]);
-  useLayoutEffect(() => {
-    currentRef.current = unsaved;
-  }, [unsaved]);
-  const blocker = useBlocker(
-    ({ currentLocation, nextLocation }) =>
-      currentRef.current && currentLocation.pathname !== nextLocation.pathname,
-  );
+  }, [includeSearch, sharedRef, unsaved]);
+}
+
+// React Router supports one blocker per router, so the shell owns the blocker
+// while individual forms only register their dirty state above.
+export function useUnsavedChangesBlocker(
+  registryRef: RefObject<Map<symbol, boolean>>,
+) {
+  const blocker = useBlocker(({ currentLocation, nextLocation }) => {
+    const registry = registryRef.current;
+    if (registry.size === 0) return false;
+    if (currentLocation.pathname !== nextLocation.pathname) return true;
+    const searchChanged =
+      currentLocation.search !== nextLocation.search ||
+      currentLocation.hash !== nextLocation.hash;
+    return searchChanged && [...registry.values()].some(Boolean);
+  });
   useEffect(() => {
     if (blocker.state !== "blocked") return;
     if (window.confirm("Leave this page? Your changes will not be saved."))
@@ -28,12 +40,12 @@ export function useUnsavedChanges(unsaved: boolean) {
     else blocker.reset();
   }, [blocker]);
   useEffect(() => {
-    if (!unsaved) return;
     const beforeUnload = (event: BeforeUnloadEvent) => {
+      if (registryRef.current.size === 0) return;
       event.preventDefault();
       event.returnValue = "";
     };
     window.addEventListener("beforeunload", beforeUnload);
     return () => window.removeEventListener("beforeunload", beforeUnload);
-  }, [unsaved]);
+  }, [registryRef]);
 }

@@ -7,8 +7,17 @@ import type {
   Album,
   AlbumDetail,
   ImportRequest,
+  MergeMomentsRequest,
+  MomentAccessResult,
+  MoveEntriesRequest,
+  SetMomentAccessRequest,
+  SetMomentCoverRequest,
   SourcePage,
+  SplitMomentRequest,
+  StructurePreview,
+  UndoMomentAccessRequest,
   UpdateAlbumRequest,
+  UpdateMomentRequest,
 } from "../../types/generated/publishing";
 import { usePrivateScope } from "./people";
 
@@ -86,6 +95,143 @@ export function useUpdateAlbum(id: string) {
       request<AlbumDetail>(`/api/curator/albums/${encodeURIComponent(id)}`, {
         body,
       }),
+    onSuccess: cache.save,
+  });
+}
+
+function momentURL(albumID: string, momentID: string, action = "") {
+  const base = `/api/curator/albums/${encodeURIComponent(albumID)}/moments/${encodeURIComponent(momentID)}`;
+  return action ? `${base}/${action}` : base;
+}
+
+export function useUpdateMoment(albumID: string, momentID: string) {
+  const cache = useAlbumCache();
+  return useMutation({
+    mutationKey: cache.scope,
+    mutationFn: (body: UpdateMomentRequest) =>
+      request<AlbumDetail>(momentURL(albumID, momentID), { body }),
+    onSuccess: cache.save,
+  });
+}
+
+export function useSetMomentCover(albumID: string, momentID: string) {
+  const cache = useAlbumCache();
+  return useMutation({
+    mutationKey: cache.scope,
+    mutationFn: (body: SetMomentCoverRequest) =>
+      request<AlbumDetail>(momentURL(albumID, momentID, "cover"), { body }),
+    onSuccess: cache.save,
+  });
+}
+
+export function useRefreshMomentFaces(albumID: string, momentID: string) {
+  const cache = useAlbumCache();
+  return useMutation({
+    mutationKey: cache.scope,
+    mutationFn: () =>
+      request<AlbumDetail>(momentURL(albumID, momentID, "faces/refresh"), {
+        body: {},
+      }),
+    onSuccess: cache.save,
+  });
+}
+
+export function useSetMomentAccess(albumID: string, momentID: string) {
+  const cache = useAlbumCache();
+  return useMutation({
+    mutationKey: cache.scope,
+    mutationFn: (body: SetMomentAccessRequest) =>
+      request<MomentAccessResult>(momentURL(albumID, momentID, "access"), {
+        body,
+      }),
+    onSuccess: (result) => cache.save(result.album),
+  });
+}
+
+export function useAddMomentSuggestions(albumID: string, momentID: string) {
+  const cache = useAlbumCache();
+  return useMutation({
+    mutationKey: cache.scope,
+    mutationFn: () =>
+      request<MomentAccessResult>(
+        momentURL(albumID, momentID, "access/suggestions"),
+        { body: {} },
+      ),
+    onSuccess: (result) => cache.save(result.album),
+  });
+}
+
+export function useUndoMomentAccess(albumID: string, momentID: string) {
+  const cache = useAlbumCache();
+  return useMutation({
+    mutationKey: cache.scope,
+    mutationFn: (body: UndoMomentAccessRequest) =>
+      request<AlbumDetail>(momentURL(albumID, momentID, "access/undo"), {
+        body,
+      }),
+    onSuccess: cache.save,
+  });
+}
+
+export function usePreviewMove(albumID: string, momentID: string) {
+  const scope = usePrivateScope();
+  return useMutation({
+    mutationKey: scope,
+    mutationFn: (body: MoveEntriesRequest) =>
+      request<StructurePreview>(momentURL(albumID, momentID, "move/preview"), {
+        body,
+      }),
+  });
+}
+
+export function useMoveEntries(albumID: string, momentID: string) {
+  const cache = useAlbumCache();
+  return useMutation({
+    mutationKey: cache.scope,
+    mutationFn: (body: MoveEntriesRequest) =>
+      request<AlbumDetail>(momentURL(albumID, momentID, "move"), { body }),
+    onSuccess: cache.save,
+  });
+}
+
+export function usePreviewSplit(albumID: string, momentID: string) {
+  const scope = usePrivateScope();
+  return useMutation({
+    mutationKey: scope,
+    mutationFn: (body: SplitMomentRequest) =>
+      request<StructurePreview>(momentURL(albumID, momentID, "split/preview"), {
+        body,
+      }),
+  });
+}
+
+export function useSplitMoment(albumID: string, momentID: string) {
+  const cache = useAlbumCache();
+  return useMutation({
+    mutationKey: cache.scope,
+    mutationFn: (body: SplitMomentRequest) =>
+      request<AlbumDetail>(momentURL(albumID, momentID, "split"), { body }),
+    onSuccess: cache.save,
+  });
+}
+
+export function usePreviewMerge(albumID: string, momentID: string) {
+  const scope = usePrivateScope();
+  return useMutation({
+    mutationKey: scope,
+    mutationFn: (body: MergeMomentsRequest) =>
+      request<StructurePreview>(momentURL(albumID, momentID, "merge/preview"), {
+        body,
+      }),
+  });
+}
+
+export function useMergeMoments(albumID: string, momentID: string) {
+  const cache = useAlbumCache();
+  return useMutation({
+    mutationKey: cache.scope,
+    mutationFn: (body: MergeMomentsRequest) =>
+      request<AlbumDetail>(momentURL(albumID, momentID, "merge"), { body }),
     onSuccess: cache.save,
   });
 }

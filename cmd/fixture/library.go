@@ -100,11 +100,59 @@ func fixtureLibrary() ([]sourceAlbum, map[string]sourceAsset) {
 		album("fixture-album-coast", "Fixture Album - Coast", "fixture-asset-01", "fixture-asset-02", "fixture-asset-03", "fixture-asset-04", "fixture-asset-05", "fixture-asset-06"),
 		album("fixture-album-family", "Fixture Album - Family", "fixture-asset-02", "fixture-asset-04", "fixture-asset-07"),
 	}
+	largeThumbnail, largeContentType := generatedThumbnail(8)
+	largeMembers := make([]string, 0, 101)
+	for n := 1; n <= 101; n++ {
+		id := fmt.Sprintf("workbench-asset-%03d", n)
+		capture := fmt.Sprintf("2026-06-04T12:%02d:%02d-07:00", (n/60)%60, n%60)
+		local, _ := time.Parse(time.RFC3339, capture)
+		instant := local.UTC().Format(time.RFC3339)
+		checksum := sha1.Sum(append(append([]byte(nil), largeThumbnail...), byte(n))) //nolint:gosec // Match Immich's source checksum format.
+		assets[id] = sourceAsset{ID: id, Checksum: base64.StdEncoding.EncodeToString(checksum[:]),
+			Filename: fmt.Sprintf("workbench-%03d.jpg", n), OriginalPath: "/fixture/not-downloadable/" + id,
+			OwnerID: "fixture-owner", Kind: "IMAGE", LocalDateTime: capture, FileCreatedAt: instant,
+			FileModifiedAt: instant, CreatedAt: instant, UpdatedAt: "2026-06-05T12:00:00Z",
+			HasMetadata: true, Visibility: "timeline", Width: 320, Height: 240,
+			EXIF: map[string]any{"timeZone": "America/Los_Angeles", "orientation": 1}, Thumbnail: largeThumbnail, ContentType: largeContentType}
+		largeMembers = append(largeMembers, id)
+	}
+	albums = append(albums, album("workbench-large-moment", "Workbench - Large Moment", largeMembers...))
 	albums[0].ThumbnailID = "fixture-asset-03"
 	for n := 1; n <= 30; n++ {
 		albums = append(albums, album(fmt.Sprintf("fixture-album-practice-%02d", n), fmt.Sprintf("Practice Album %02d", n), "fixture-asset-07"))
 	}
 	return albums, assets
+}
+
+func fixtureFaces() (map[string][]sourceFace, map[string]sourceAsset) {
+	faces := map[string][]sourceFace{}
+	people := []struct {
+		assetID string
+		faceID  string
+		person  string
+		name    string
+		seed    int
+	}{
+		{"workbench-asset-001", "fixture-face-alex-a", "immich-alex-a", "Immich Alex", 1},
+		{"workbench-asset-002", "fixture-face-alex-a-2", "immich-alex-a", "Immich Alex", 1},
+		{"workbench-asset-003", "fixture-face-alex-b", "immich-alex-b", "Immich Alex duplicate", 2},
+		{"workbench-asset-004", "fixture-face-sam", "immich-sam", "Immich Sam", 3},
+		{"workbench-asset-005", "fixture-face-taylor", "immich-taylor", "Immich Taylor", 4},
+	}
+	thumbnails := map[string]sourceAsset{}
+	for _, value := range people {
+		faces[value.assetID] = []sourceFace{{
+			ID: value.faceID, ImageHeight: 240, ImageWidth: 320,
+			BoundingBoxX1: 100, BoundingBoxX2: 180, BoundingBoxY1: 40, BoundingBoxY2: 140,
+			SourceType: "manual", Person: sourcePerson{ID: value.person, Name: value.name,
+				ThumbnailPath: "/fixture/people/" + value.person, Hidden: false},
+		}}
+		if _, exists := thumbnails[value.person]; !exists {
+			thumbnail, contentType := generatedThumbnail(value.seed)
+			thumbnails[value.person] = sourceAsset{Thumbnail: thumbnail, ContentType: contentType}
+		}
+	}
+	return faces, thumbnails
 }
 
 func generatedThumbnail(seed int) ([]byte, string) {

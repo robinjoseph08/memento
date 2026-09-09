@@ -68,7 +68,7 @@ function AlbumContent({ album }: { album: AlbumDetail }) {
           {complete && (
             <AlbumImage
               alt="Album cover"
-              className="h-auto max-h-16 w-auto max-w-24 shrink-0 min-[761px]:max-h-20 min-[761px]:max-w-36"
+              className="h-16 w-16 shrink-0 object-cover min-[761px]:h-20 min-[761px]:w-20"
               fallback="No cover available"
               src={album.cover_url}
             />
@@ -124,11 +124,17 @@ function AlbumContent({ album }: { album: AlbumDetail }) {
               </Link>
             ))}
           </nav>
-          <div className="min-w-0 px-3 py-6 min-[761px]:px-6 min-[761px]:py-7">
+          <div
+            className={cn(
+              "min-w-0",
+              section === "details" &&
+                "px-3 py-6 min-[761px]:px-6 min-[761px]:py-7",
+            )}
+          >
             <div hidden={section !== "details"}>
               <TitleForm album={album} />
             </div>
-            {section === "moments" && <Moments moments={album.moments} />}
+            {section === "moments" && <Moments album={album} />}
           </div>
         </div>
       ) : (

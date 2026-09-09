@@ -51,7 +51,7 @@ func (m *Module) change(ctx context.Context, fn func(context.Context, bun.Tx) er
 
 func selectPeople(tx bun.Tx, model any) *bun.SelectQuery {
 	return tx.NewSelect().Model(model).
-		Column("person.id", "person.display_name", "person.is_curator", "person.onboarding_completed_at", "person.deactivated_at", "person.update_identity_id", "person.email_updates", "person.created_at").
+		Column("person.id", "person.display_name", "person.is_curator", "person.onboarding_completed_at", "person.deactivated_at", "person.update_identity_id", "person.email_updates", "person.avatar_face_id", "person.created_at").
 		ColumnExpr("COALESCE(updates.email, '') AS update_email").
 		Join("LEFT JOIN identities AS updates ON updates.id = person.update_identity_id")
 }
@@ -122,7 +122,7 @@ func (m *Module) ListPeople(ctx context.Context, token, search string) ([]Person
 }
 
 func (m *Module) GetPerson(ctx context.Context, token, id string) (PersonDetail, error) {
-	result := PersonDetail{Identities: []LinkedIdentity{}, Preauthorizations: []Preauthorization{}}
+	result := PersonDetail{Faces: []LinkedFace{}, Identities: []LinkedIdentity{}, Preauthorizations: []Preauthorization{}, Sessions: []BrowserSession{}}
 	err := m.change(ctx, func(ctx context.Context, tx bun.Tx) error {
 		if _, err := m.actor(ctx, tx, token, true); err != nil {
 			return err
@@ -132,6 +132,10 @@ func (m *Module) GetPerson(ctx context.Context, token, id string) (PersonDetail,
 			return err
 		}
 		result.Person = projectPerson(person)
+		result.Faces, err = linkedFaces(ctx, tx, person)
+		if err != nil {
+			return err
+		}
 		result.Identities, err = linkedIdentities(ctx, tx, person.ID)
 		if err != nil {
 			return err

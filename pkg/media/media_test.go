@@ -7,11 +7,13 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/labstack/echo/v5"
 	"github.com/robinjoseph08/memento/pkg/errcodes"
 	"github.com/robinjoseph08/memento/pkg/immich"
 	"github.com/robinjoseph08/memento/pkg/media"
+	"github.com/robinjoseph08/memento/pkg/models"
 	"github.com/robinjoseph08/memento/pkg/publishing"
 	"github.com/robinjoseph08/memento/pkg/testdb"
 	"github.com/stretchr/testify/require"
@@ -37,6 +39,10 @@ func (s *source) GetAlbum(_ context.Context, id string) (immich.Album, error) {
 func (s *source) Thumbnail(_ context.Context, id string) (immich.Thumbnail, error) {
 	s.requested = id
 	return immich.Thumbnail{Body: io.NopCloser(strings.NewReader("generated image")), ContentType: "image/webp"}, nil
+}
+func (s *source) PersonThumbnail(_ context.Context, id string) (immich.Thumbnail, error) {
+	s.requested = id
+	return immich.Thumbnail{Body: io.NopCloser(strings.NewReader("person image")), ContentType: "image/jpeg"}, nil
 }
 
 func TestImportedThumbnailUsesPrivateVersionAndMementoValidator(t *testing.T) {
@@ -82,6 +88,55 @@ func TestImportedThumbnailUsesPrivateVersionAndMementoValidator(t *testing.T) {
 	allowed = true
 	upstream.asset.UpdatedAt = "2026-07-06T00:00:00Z"
 	require.Equal(t, 404, request(imageURL, "").Code, "a changed source must not serve new bytes under an old URL")
+}
+
+func TestFaceAndAvatarThumbnailsRequireKnownAuthorizedRecords(t *testing.T) {
+	t.Parallel()
+	db := testdb.New(t)
+	now := time.Now().UTC()
+	item := models.MediaItem{ID: models.NewUUIDv7(), SourceID: "asset", Checksum: "face", Filename: "face.jpg", Kind: "IMAGE",
+		CapturedAt: now, SourceCreatedAt: now, SourceUpdatedAt: now, ContentVersion: "face"}
+	_, err := db.NewInsert().Model(&item).Exec(t.Context())
+	require.NoError(t, err)
+	face := models.MediaFaceAssociation{MediaItemID: item.ID, SourceFaceID: "immich-person", SourceName: "Alex"}
+	_, err = db.NewInsert().Model(&face).Exec(t.Context())
+	require.NoError(t, err)
+	person := models.Person{ID: models.NewUUIDv7(), DisplayName: "Alex", CreatedAt: now}
+	_, err = db.NewInsert().Model(&person).Exec(t.Context())
+	require.NoError(t, err)
+	personID := person.ID
+	link := models.ImmichFaceLink{SourceID: "immich-person", PersonID: &personID, UpdatedAt: now}
+	_, err = db.NewInsert().Model(&link).Exec(t.Context())
+	require.NoError(t, err)
+	_, err = db.NewUpdate().Model(&person).Set("avatar_face_id = ?", "immich-person").WherePK().Exec(t.Context())
+	require.NoError(t, err)
+
+	upstream := &source{}
+	authorized := true
+	e := echo.New()
+	e.HTTPErrorHandler = errcodes.NewHandler().Handle
+	media.RegisterRoutes(e, media.New(db, upstream), func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c *echo.Context) error {
+			if !authorized {
+				return echo.ErrForbidden
+			}
+			return next(c)
+		}
+	})
+	get := func(path string) *httptest.ResponseRecorder {
+		response := httptest.NewRecorder()
+		e.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		return response
+	}
+	require.Equal(t, http.StatusOK, get("/api/media/faces/immich-person/thumbnail").Code)
+	require.Equal(t, "immich-person", upstream.requested)
+	require.Equal(t, http.StatusOK, get("/api/media/people/"+person.ID.String()+"/avatar?v=ignored").Code)
+	require.Equal(t, "immich-person", upstream.requested)
+	upstream.requested = ""
+	require.Equal(t, http.StatusNotFound, get("/api/media/faces/arbitrary/thumbnail").Code)
+	require.Empty(t, upstream.requested)
+	authorized = false
+	require.Equal(t, http.StatusForbidden, get("/api/media/faces/immich-person/thumbnail").Code)
 }
 
 func TestSourceCoverUsesAlbumWithoutEntryAndRequiresCurator(t *testing.T) {

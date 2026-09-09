@@ -19,19 +19,42 @@ type fixtureState struct {
 }
 
 type immichFixture struct {
-	mu          sync.RWMutex
-	state       fixtureState
-	restart     func(context.Context) error
-	albums      []sourceAlbum
-	assets      map[string]sourceAsset
-	checkpoints map[string]*checkpoint
-	requests    map[string]int
+	mu               sync.RWMutex
+	state            fixtureState
+	restart          func(context.Context) error
+	albums           []sourceAlbum
+	assets           map[string]sourceAsset
+	faces            map[string][]sourceFace
+	personThumbnails map[string]sourceAsset
+	checkpoints      map[string]*checkpoint
+	requests         map[string]int
+}
+
+type sourceFace struct {
+	ID            string       `json:"id"`
+	ImageHeight   int          `json:"imageHeight"`
+	ImageWidth    int          `json:"imageWidth"`
+	BoundingBoxX1 int          `json:"boundingBoxX1"`
+	BoundingBoxX2 int          `json:"boundingBoxX2"`
+	BoundingBoxY1 int          `json:"boundingBoxY1"`
+	BoundingBoxY2 int          `json:"boundingBoxY2"`
+	SourceType    string       `json:"sourceType"`
+	Person        sourcePerson `json:"person"`
+}
+
+type sourcePerson struct {
+	ID            string  `json:"id"`
+	Name          string  `json:"name"`
+	BirthDate     *string `json:"birthDate"`
+	ThumbnailPath string  `json:"thumbnailPath"`
+	Hidden        bool    `json:"isHidden"`
 }
 
 func newImmichFixture(offline bool) *immichFixture {
 	albums, assets := fixtureLibrary()
+	faces, thumbnails := fixtureFaces()
 	return &immichFixture{state: fixtureState{Available: !offline}, albums: albums, assets: assets,
-		requests: map[string]int{}, checkpoints: map[string]*checkpoint{
+		faces: faces, personThumbnails: thumbnails, requests: map[string]int{}, checkpoints: map[string]*checkpoint{
 			"asset-metadata": {Mode: "open", released: make(chan struct{})},
 			"import-release": {Mode: "open", released: make(chan struct{})},
 		}}
@@ -146,6 +169,23 @@ func (f *immichFixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 	case r.URL.Path == "/api/search/metadata" && r.Method == http.MethodPost:
 		f.searchMembers(w, r)
+	case r.URL.Path == "/api/faces":
+		faces := f.faces[r.URL.Query().Get("id")]
+		if faces == nil {
+			faces = []sourceFace{}
+		}
+		if err := json.NewEncoder(w).Encode(faces); err != nil {
+			return
+		}
+	case strings.HasPrefix(r.URL.Path, "/api/people/") && strings.HasSuffix(r.URL.Path, "/thumbnail"):
+		id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/people/"), "/thumbnail")
+		thumbnail, ok := f.personThumbnails[id]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", thumbnail.ContentType)
+		_, _ = w.Write(thumbnail.Thumbnail)
 	case strings.HasPrefix(r.URL.Path, "/api/assets/"):
 		path := strings.TrimPrefix(r.URL.Path, "/api/assets/")
 		id, thumbnail := strings.CutSuffix(path, "/thumbnail")

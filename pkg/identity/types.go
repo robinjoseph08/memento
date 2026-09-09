@@ -18,6 +18,7 @@ type Person struct {
 	DeactivatedAt         *time.Time `json:"deactivated_at"`
 	UpdateEmail           string     `json:"update_email"`
 	EmailUpdates          bool       `json:"email_updates"`
+	AvatarURL             string     `json:"avatar_url"`
 }
 
 // Status describes installation claiming and the current browser's identity.
@@ -35,6 +36,19 @@ type UpdatePersonRequest struct {
 	DisplayName string `json:"display_name" validate:"required,max=100" mod:"trim"`
 	IsCurator   bool   `json:"is_curator"`
 	Deactivated bool   `json:"deactivated"`
+}
+
+type LinkFaceRequest struct {
+	SourceFaceID string `json:"source_face_id" validate:"required,max=1024" mod:"trim"`
+}
+
+type CreatePersonFromFaceRequest struct {
+	DisplayName  string `json:"display_name" validate:"required,max=100" mod:"trim"`
+	SourceFaceID string `json:"source_face_id" validate:"required,max=1024" mod:"trim"`
+}
+
+type SetPersonAvatarRequest struct {
+	SourceFaceID string `json:"source_face_id" validate:"required,max=1024" mod:"trim"`
 }
 
 type PreauthorizeRequest struct {
@@ -62,8 +76,16 @@ type Preauthorization struct {
 	RevokedAt  *time.Time `json:"revoked_at"`
 }
 
+type LinkedFace struct {
+	SourceFaceID string `json:"source_face_id"`
+	SourceName   string `json:"source_name"`
+	ThumbnailURL string `json:"thumbnail_url"`
+	Avatar       bool   `json:"avatar"`
+}
+
 type PersonDetail struct {
 	Person            Person             `json:"person"`
+	Faces             []LinkedFace       `json:"faces"`
 	Identities        []LinkedIdentity   `json:"identities"`
 	Preauthorizations []Preauthorization `json:"preauthorizations"`
 	Sessions          []BrowserSession   `json:"sessions"`

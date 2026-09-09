@@ -92,7 +92,7 @@ export function AccountMenu({
               event.preventDefault();
               if (signOut.isPending) return;
               if (
-                unsavedRef?.current &&
+                unsavedRef?.current.size &&
                 !window.confirm("Sign out? Your changes will not be saved.")
               )
                 return;

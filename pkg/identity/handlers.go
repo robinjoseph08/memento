@@ -20,6 +20,7 @@ type UseCases interface {
 	AuthenticationUseCases
 	PeopleUseCases
 	ProfileUseCases
+	FaceUseCases
 }
 
 type AuthenticationUseCases interface {
@@ -27,6 +28,13 @@ type AuthenticationUseCases interface {
 	SignIn(context.Context, Claims) (Session, error)
 	Authenticate(context.Context, string) (Session, error)
 	SignOut(context.Context, string) error
+}
+
+type FaceUseCases interface {
+	LinkFace(context.Context, string, string, LinkFaceRequest) (PersonDetail, error)
+	CreatePersonFromFace(context.Context, string, CreatePersonFromFaceRequest) (PersonDetail, error)
+	IgnoreFace(context.Context, string, string) error
+	SetPersonAvatar(context.Context, string, string, SetPersonAvatarRequest) (PersonDetail, error)
 }
 
 type PeopleUseCases interface {

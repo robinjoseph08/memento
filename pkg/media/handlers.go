@@ -21,6 +21,22 @@ func (h *handlers) sourceCover(c *echo.Context) error {
 	return serveImage(c, image, "private, no-store", "")
 }
 
+func (h *handlers) faceThumbnail(c *echo.Context) error {
+	image, err := h.module.FaceThumbnail(c.Request().Context(), c.Param("sourceID"))
+	if err != nil {
+		return err
+	}
+	return serveImage(c, image, "private, no-store", "")
+}
+
+func (h *handlers) personAvatar(c *echo.Context) error {
+	image, err := h.module.PersonAvatar(c.Request().Context(), c.Param("id"))
+	if err != nil {
+		return err
+	}
+	return serveImage(c, image, "private, no-store", "")
+}
+
 func (h *handlers) entryThumbnail(c *echo.Context) error {
 	version := c.QueryParam("v")
 	sourceID, err := h.module.EntryThumbnail(c.Request().Context(), c.Param("id"), version)

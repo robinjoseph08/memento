@@ -32,6 +32,24 @@ func (UpdateProfileRequest) ValidationMessage(field, rule string) string {
 func (PreauthorizeRequest) ValidationMessage(field, rule string) string {
 	return SignInRequest{}.ValidationMessage(field, rule)
 }
+func (LinkFaceRequest) ValidationMessage(field, _ string) string {
+	if field == "source_face_id" {
+		return "Refresh faces and choose one shown in this Album."
+	}
+	return ""
+}
+func (CreatePersonFromFaceRequest) ValidationMessage(field, rule string) string {
+	if field == "display_name" {
+		return SignInRequest{}.ValidationMessage(field, rule)
+	}
+	return LinkFaceRequest{}.ValidationMessage(field, rule)
+}
+func (SetPersonAvatarRequest) ValidationMessage(field, _ string) string {
+	if field == "source_face_id" {
+		return "Choose one of this Person's linked Immich faces."
+	}
+	return ""
+}
 
 func displayName(value string) (string, error) {
 	value = strings.TrimSpace(value)

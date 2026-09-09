@@ -4,6 +4,7 @@ import { useIdentityStatus } from "../../hooks/queries/identity";
 import {
   usePreauthorize,
   useRevokePreauthorization,
+  useSetPersonAvatar,
   useUnlinkPersonIdentity,
   useUpdatePerson,
 } from "../../hooks/queries/people";
@@ -15,15 +16,27 @@ import type {
 } from "../../types/generated/identity";
 import { LinkedIdentities } from "../identity/linked-identities";
 import { SessionTable } from "../identity/session-table";
+import { Avatar, AvatarFallback, AvatarImage } from "../ui/avatar";
 import { Button } from "../ui/button";
 import {
   CheckField,
+  Failure,
   Field,
+  FieldError,
   Form,
   headingClass,
   sectionHeadingClass,
 } from "./form-fields";
 import { PreauthorizationTables } from "./preauthorization-tables";
+
+function initials(name: string) {
+  return name
+    .split(/\s+/)
+    .map((part) => part[0])
+    .join("")
+    .slice(0, 2)
+    .toUpperCase();
+}
 
 export function PersonDetails({ detail }: { detail: PersonDetail }) {
   const { person } = detail;
@@ -129,6 +142,7 @@ export function PersonDetails({ detail }: { detail: PersonDetail }) {
               )}
             </Form>
           </section>
+          <AvatarEditor detail={detail} />
           <section
             aria-labelledby="notification-preferences"
             className="mt-8 border-t border-border pt-8"
@@ -231,5 +245,101 @@ export function PersonDetails({ detail }: { detail: PersonDetail }) {
         </div>
       </div>
     </>
+  );
+}
+
+function AvatarEditor({ detail }: { detail: PersonDetail }) {
+  const { person } = detail;
+  const faces = detail.faces ?? [];
+  const initial = faces.find((face) => face.avatar)?.source_face_id ?? "";
+  const [selected, setSelected] = useState(initial);
+  const update = useSetPersonAvatar(person.id);
+  const dirty = selected !== initial;
+  useUnsavedChanges(dirty || update.isPending);
+  const errors = fieldErrors(update.error);
+
+  return (
+    <section
+      aria-labelledby="person-avatar"
+      className="border-t border-border py-8"
+    >
+      <h2 className={sectionHeadingClass} id="person-avatar">
+        Avatar
+      </h2>
+      <div className="mt-5 flex items-center gap-4">
+        <Avatar className="size-16 border border-border">
+          {person.avatar_url && <AvatarImage alt="" src={person.avatar_url} />}
+          <AvatarFallback className="text-lg">
+            {initials(person.display_name)}
+          </AvatarFallback>
+        </Avatar>
+        <p className="text-xs leading-relaxed text-muted">
+          Choose one linked Immich face. If its thumbnail is unavailable,
+          Memento shows initials.
+        </p>
+      </div>
+      {faces.length === 0 ? (
+        <p className="mt-5 text-sm text-muted">
+          Link a face from an Album's Moment access inspector first.
+        </p>
+      ) : (
+        <Form
+          aria-busy={update.isPending}
+          aria-label="Choose Person avatar"
+          className="mt-5"
+          error={update.error}
+          onSubmit={(event) => {
+            event.preventDefault();
+            update.mutate({ source_face_id: selected });
+          }}
+        >
+          <fieldset disabled={update.isPending}>
+            <legend className="text-xs font-medium">Linked faces</legend>
+            <div className="mt-3 flex flex-wrap gap-3">
+              {faces.map((face) => (
+                <label
+                  className="cursor-pointer text-center text-xs"
+                  key={face.source_face_id}
+                >
+                  <input
+                    aria-label={`Use ${face.source_name || "this face"} as avatar`}
+                    checked={selected === face.source_face_id}
+                    className="peer sr-only"
+                    name="avatar_face"
+                    onChange={() => {
+                      setSelected(face.source_face_id);
+                      update.reset();
+                    }}
+                    type="radio"
+                    value={face.source_face_id}
+                  />
+                  <span className="block rounded-full peer-checked:outline-2 peer-checked:outline-offset-2 peer-checked:outline-primary peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-ring">
+                    <Avatar className="size-14">
+                      <AvatarImage alt="" src={face.thumbnail_url} />
+                      <AvatarFallback>
+                        {initials(person.display_name)}
+                      </AvatarFallback>
+                    </Avatar>
+                  </span>
+                  <span className="mt-2 block max-w-20 truncate">
+                    {face.source_name || "Immich face"}
+                  </span>
+                </label>
+              ))}
+            </div>
+            <FieldError error={errors.source_face_id} id="avatar-face-error" />
+            <Button className="mt-5" disabled={!dirty} type="submit">
+              {update.isPending ? "Saving…" : "Save avatar"}
+            </Button>
+          </fieldset>
+          {update.isSuccess && !dirty && (
+            <p className="mt-4 text-sm text-muted" role="status">
+              Avatar saved.
+            </p>
+          )}
+        </Form>
+      )}
+      <Failure error={faces.length === 0 ? update.error : null} />
+    </section>
   );
 }

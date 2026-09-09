@@ -62,6 +62,29 @@ type Moment struct {
 	ID            UUID `bun:"id,pk,type:uuid"`
 	AlbumID       UUID `bun:"type:uuid"`
 	CaptureDate   string
-	Label         string
+	Title         *string
+	SortOrder     int64
 	CoverEntryID  UUID `bun:"type:uuid"`
+}
+
+type MomentAccessDecision struct {
+	bun.BaseModel `bun:"table:moment_access_decisions,alias:decision"`
+	MomentID      UUID `bun:"moment_id,pk,type:uuid"`
+	AlbumID       UUID `bun:"type:uuid"`
+	PersonID      UUID `bun:"person_id,pk,type:uuid"`
+	Decision      string
+	UpdatedAt     time.Time
+}
+
+type MediaFaceAssociation struct {
+	bun.BaseModel `bun:"table:media_face_associations,alias:face"`
+	MediaItemID   UUID   `bun:"media_item_id,pk,type:uuid"`
+	SourceFaceID  string `bun:"source_face_id,pk"`
+	SourceName    string
+}
+
+type MediaFaceRefresh struct {
+	bun.BaseModel `bun:"table:media_face_refreshes,alias:refresh"`
+	MediaItemID   UUID `bun:"media_item_id,pk,type:uuid"`
+	RefreshedAt   time.Time
 }
