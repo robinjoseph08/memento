@@ -81,20 +81,17 @@ export function ImportPage() {
                 </p>
               </section>
             ) : (
-              <div className="grid gap-x-8 gap-y-7 min-[1001px]:grid-cols-2">
+              <div className="grid grid-cols-2 gap-x-5 gap-y-8 min-[601px]:grid-cols-3 min-[1001px]:grid-cols-4 min-[1401px]:grid-cols-6">
                 {sources.data.albums.map((source) => (
-                  <article
-                    className="grid min-w-0 grid-cols-[80px_minmax(0,1fr)] items-start gap-4 border-t border-border pt-5 min-[601px]:grid-cols-[112px_minmax(0,1fr)]"
-                    key={source.id}
-                  >
+                  <article className="min-w-0" key={source.id}>
                     <AlbumImage
                       alt={source.title}
-                      className="mx-auto h-auto max-h-40 w-auto max-w-full"
+                      className="aspect-square h-auto w-full object-cover"
                       fallback="No cover available"
                       src={source.cover_url}
                     />
-                    <div className="min-w-0">
-                      <h2 className="font-heading text-xl break-words">
+                    <div className="mt-3 min-w-0">
+                      <h2 className="font-heading text-lg break-words">
                         {source.title}
                       </h2>
                       <p className="mt-2 text-sm text-muted">

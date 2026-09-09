@@ -17,7 +17,7 @@ export function EntryPreview({
   const clock = `${hour % 12 || 12}:${entry.captured_at.slice(14, 16)}`;
   const period = hour < 12 ? "AM" : "PM";
   const time = `${clock} ${period}`;
-  const width = Math.max(40, 112 * ratio);
+  const width = Math.max(64, 112 * ratio);
   const narrow = width < 96;
   return (
     <li className="max-w-full min-w-0 flex-none">
@@ -50,14 +50,7 @@ export function EntryPreview({
             dateTime={entry.captured_at}
             title={`${entry.captured_at.slice(0, 10)} ${time}`}
           >
-            {narrow ? (
-              <>
-                {clock} <br />
-                {period}
-              </>
-            ) : (
-              time
-            )}
+            {time}
           </time>
         </figcaption>
         {entry.kind === "VIDEO" && (

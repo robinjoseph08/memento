@@ -38,6 +38,9 @@
 - Always use named imports from `lucide-react` for UI icons, not handwritten
   SVGs or another icon library. The custom Memento wordmark is a brand graphic
   and remains an exception.
+- Album-list covers use square, center-cropped tiles with `object-cover`.
+  Moment media stays uncropped. Capture-time overlays use 12-hour time with
+  AM/PM on the same line.
 - Use Tailwind utilities for layout, typography, responsive behavior, and
   interaction styles. Keep `app/styles.css` limited to imports and theme tokens;
   do not add handwritten component selectors or `@apply` aliases.

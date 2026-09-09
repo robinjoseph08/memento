@@ -58,21 +58,23 @@ export function CuratorPage() {
       )}
       {albums.data &&
         (albums.data.length ? (
-          <ul className="divide-y divide-border border-y border-border">
+          <ul className="grid grid-cols-2 gap-x-5 gap-y-8 min-[601px]:grid-cols-3 min-[1001px]:grid-cols-4 min-[1401px]:grid-cols-6">
             {albums.data.map((album) => (
-              <li key={album.id}>
+              <li className="min-w-0" key={album.id}>
                 <Link
-                  className="flex cursor-pointer items-center gap-3 px-3 py-3 hover:bg-surface focus-visible:outline-2 focus-visible:outline-ring"
+                  className="block cursor-pointer rounded-sm hover:bg-surface focus-visible:outline-2 focus-visible:outline-ring"
                   to={`/curator/albums/${album.id}`}
                 >
                   <AlbumImage
                     alt={album.title}
-                    className="h-auto max-h-20 w-auto max-w-28 shrink-0"
+                    className="aspect-square h-auto w-full object-cover"
                     fallback="No cover available"
                     src={album.cover_url}
                   />
-                  <span className="min-w-0">
-                    <span className="block wrap-anywhere">{album.title}</span>
+                  <span className="mt-3 block min-w-0">
+                    <span className="block font-heading text-lg wrap-anywhere">
+                      {album.title}
+                    </span>
                     <span className="text-xs text-muted">
                       {album.status === "complete"
                         ? `${album.photo_count} ${album.photo_count === 1 ? "photo" : "photos"}, ${album.video_count} ${album.video_count === 1 ? "video" : "videos"}`

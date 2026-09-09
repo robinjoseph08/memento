@@ -72,15 +72,19 @@ for (const [scenario, dimensions] of [
         }));
         expect(size.width / size.height).toBeCloseTo(size.ratio, 1);
         expect(size.tileWidth - size.width).toBeLessThanOrEqual(8);
-        expect(size.height).toBeLessThanOrEqual(161);
+        expect(size.height).toBeLessThanOrEqual(257);
         const caption = await image
           .locator("xpath=ancestor::figure")
           .locator("figcaption")
           .evaluate((caption) => ({
             visible: caption.clientWidth,
             text: caption.scrollWidth,
+            timeHeight: caption.querySelector("time")!.getBoundingClientRect()
+              .height,
+            lineHeight: parseFloat(getComputedStyle(caption).lineHeight),
           }));
         expect(caption.text).toBeLessThanOrEqual(caption.visible);
+        expect(caption.timeHeight).toBeLessThanOrEqual(caption.lineHeight + 1);
         const overlays = await image.evaluate((image) => {
           const bounds = image.getBoundingClientRect();
           const figure = image.closest("figure")!;

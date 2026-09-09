@@ -162,6 +162,16 @@ test("imports an album through a stopped task, browser closure, and API restart"
       name: /Our coast holiday.*4 photos, 2 videos.*unpublished/,
     }),
   ).toBeVisible();
+  const importedCover = completed
+    .getByRole("link", { name: /Our coast holiday/ })
+    .getByRole("img");
+  const coverSize = await importedCover.evaluate((image) => ({
+    width: image.getBoundingClientRect().width,
+    height: image.getBoundingClientRect().height,
+    fit: getComputedStyle(image).objectFit,
+  }));
+  expect(coverSize.width).toBeCloseTo(coverSize.height, 1);
+  expect(coverSize.fit).toBe("cover");
   const albumSearch = completed.getByRole("searchbox", {
     name: "Search albums",
   });

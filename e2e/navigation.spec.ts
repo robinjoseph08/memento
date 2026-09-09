@@ -82,30 +82,43 @@ test("Immich search keeps focus, clears immediately, and follows browser history
   await expect(search).toBeFocused();
   await expect(page).toHaveURL(/q=Fixture\+Album&page=1$/);
   await expect(page.getByRole("article")).toHaveCount(2);
-  for (const cover of await page.getByRole("article").getByRole("img").all()) {
-    await expect
-      .poll(() =>
-        cover.evaluate(
-          (image: HTMLImageElement) => image.complete && image.naturalWidth > 0,
-        ),
-      )
-      .toBe(true);
-    const size = await cover.evaluate((image: HTMLImageElement) => ({
-      width: image.getBoundingClientRect().width,
-      height: image.getBoundingClientRect().height,
-      ratio: image.naturalWidth / image.naturalHeight,
-    }));
-    expect(size.width / size.height).toBeCloseTo(size.ratio, 2);
-    expect(size.height).toBeLessThanOrEqual(240);
-    const positions = await cover.evaluate((image) => {
-      const cover = image.getBoundingClientRect();
-      const title = image
-        .closest("article")!
-        .querySelector("h2")!
-        .getBoundingClientRect();
-      return { coverRight: cover.right, titleLeft: title.left };
-    });
-    expect(positions.coverRight).toBeLessThan(positions.titleLeft);
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: 900 });
+    for (const cover of await page
+      .getByRole("article")
+      .getByRole("img")
+      .all()) {
+      await expect
+        .poll(() =>
+          cover.evaluate(
+            (image: HTMLImageElement) =>
+              image.complete && image.naturalWidth > 0,
+          ),
+        )
+        .toBe(true);
+      const size = await cover.evaluate((image: HTMLImageElement) => ({
+        width: image.getBoundingClientRect().width,
+        height: image.getBoundingClientRect().height,
+        fit: getComputedStyle(image).objectFit,
+      }));
+      expect(size.width).toBeCloseTo(size.height, 1);
+      expect(size.fit).toBe("cover");
+      const positions = await cover.evaluate((image) => {
+        const cover = image.getBoundingClientRect();
+        const title = image
+          .closest("article")!
+          .querySelector("h2")!
+          .getBoundingClientRect();
+        return {
+          coverBottom: cover.bottom,
+          titleTop: title.top,
+          coverLeft: cover.left,
+          titleLeft: title.left,
+        };
+      });
+      expect(positions.coverBottom).toBeLessThan(positions.titleTop);
+      expect(positions.coverLeft).toBeCloseTo(positions.titleLeft, 1);
+    }
   }
   await search.fill("Coast");
   await page.getByRole("button", { name: "Search", exact: true }).click();
