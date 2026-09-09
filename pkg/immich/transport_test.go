@@ -28,8 +28,17 @@ var readOperations = map[string]func(context.Context, *immich.Client) error{
 		return err
 	},
 	"asset": func(ctx context.Context, c *immich.Client) error { _, err := c.GetAsset(ctx, "id"); return err },
+	"faces": func(ctx context.Context, c *immich.Client) error { _, err := c.ListFaces(ctx, "id"); return err },
 	"thumbnail": func(ctx context.Context, c *immich.Client) error {
 		media, err := c.Thumbnail(ctx, "id")
+		if err == nil {
+			defer media.Body.Close()
+			_, err = io.Copy(io.Discard, media.Body)
+		}
+		return err
+	},
+	"person thumbnail": func(ctx context.Context, c *immich.Client) error {
+		media, err := c.PersonThumbnail(ctx, "id")
 		if err == nil {
 			defer media.Body.Close()
 			_, err = io.Copy(io.Discard, media.Body)
@@ -77,7 +86,7 @@ func TestReadErrorsAreSafeAndActionable(t *testing.T) {
 					assert.NotContains(t, fmt.Sprintf("%+v", err), "private-key")
 					assert.NotContains(t, fmt.Sprintf("%+v", err), "/secret-path/password")
 					if tc.status == 403 && name != "version" {
-						scope := map[string]string{"albums": "album.read", "album": "album.read", "members": "asset.read and album.read", "asset": "asset.read", "thumbnail": "asset.view"}[name]
+						scope := map[string]string{"albums": "album.read", "album": "album.read", "members": "asset.read and album.read", "asset": "asset.read", "faces": "face.read", "thumbnail": "asset.view", "person thumbnail": "person.read"}[name]
 						assert.Contains(t, err.Error(), scope)
 					}
 				})
@@ -203,7 +212,11 @@ func TestInvalidReadParametersDoNotReachImmich(t *testing.T) {
 	require.Error(t, err)
 	_, err = client.GetAsset(t.Context(), "")
 	require.Error(t, err)
+	_, err = client.ListFaces(t.Context(), "")
+	require.Error(t, err)
 	_, err = client.Thumbnail(t.Context(), "")
+	require.Error(t, err)
+	_, err = client.PersonThumbnail(t.Context(), "")
 	require.Error(t, err)
 	_, _, err = client.ListMembers(t.Context(), "", 1)
 	require.Error(t, err)

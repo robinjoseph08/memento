@@ -29,6 +29,7 @@ func (s *source) ListMembers(context.Context, string, int) ([]immich.Asset, int,
 	return []immich.Asset{s.asset}, 0, nil
 }
 func (s *source) GetAsset(context.Context, string) (immich.Asset, error) { return s.asset, nil }
+func (*source) ListFaces(context.Context, string) ([]immich.Face, error) { return nil, nil }
 func (s *source) GetAlbum(_ context.Context, id string) (immich.Album, error) {
 	cover := "configured-cover"
 	return immich.Album{ID: id, Name: "Fixture", Count: 1, ThumbnailID: &cover}, nil

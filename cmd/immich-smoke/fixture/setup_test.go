@@ -64,6 +64,7 @@ func testSetup(t *testing.T, release string, assetIDs []string) {
 	calls := []string{}
 	uploads := 0
 	albumCount := 0
+	manualFaceCreated := false
 	covers := map[string]string{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls = append(calls, r.Method+" "+r.URL.Path)
@@ -124,6 +125,32 @@ func testSetup(t *testing.T, release string, assetIDs []string) {
 			}
 			uploads++
 			_ = json.NewEncoder(w).Encode(map[string]string{"id": assetIDs[uploads-1], "status": "created"})
+		case "/api/people":
+			if r.Method != http.MethodPost || r.Header.Get("Authorization") != "Bearer source-token" {
+				t.Error("person creation must use source session")
+			}
+			var body map[string]any
+			if json.NewDecoder(r.Body).Decode(&body) != nil {
+				t.Error("invalid person body")
+			}
+			if !reflect.DeepEqual(map[string]any{"name": "Smoke person", "birthDate": "1990-01-02", "isHidden": false}, body) {
+				t.Errorf("unexpected person body: %#v", body)
+			}
+			_, _ = io.WriteString(w, `{"id":"person-1","name":"Smoke person","birthDate":"1990-01-02","thumbnailPath":"","isHidden":false}`)
+		case "/api/faces":
+			if r.Method != http.MethodPost || r.Header.Get("Authorization") != "Bearer source-token" {
+				t.Error("manual face creation must use source session")
+			}
+			var body map[string]any
+			if json.NewDecoder(r.Body).Decode(&body) != nil {
+				t.Error("invalid face body")
+			}
+			expected := map[string]any{"assetId": assetIDs[0], "personId": "person-1", "imageWidth": float64(64), "imageHeight": float64(48), "x": float64(8), "y": float64(6), "width": float64(20), "height": float64(24)}
+			if !reflect.DeepEqual(expected, body) {
+				t.Errorf("unexpected face body: %#v", body)
+			}
+			manualFaceCreated = true
+			w.WriteHeader(http.StatusCreated)
 		case "/api/albums":
 			if r.Header.Get("Authorization") != "Bearer source-token" {
 				t.Error("album creation must use source session")
@@ -169,7 +196,7 @@ func testSetup(t *testing.T, release string, assetIDs []string) {
 			if !reflect.DeepEqual(readPermissions, body.Permissions) {
 				t.Error("key permissions must be exact")
 			}
-			_, _ = io.WriteString(w, `{"secret":"private-read-key","apiKey":{"permissions":["asset.view","album.read","asset.read"]}}`)
+			_, _ = io.WriteString(w, `{"secret":"private-read-key","apiKey":{"permissions":["person.read","face.read","asset.view","album.read","asset.read"]}}`)
 		default:
 			t.Errorf("unexpected request: %s", r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
@@ -180,6 +207,8 @@ func testSetup(t *testing.T, release string, assetIDs []string) {
 	require.NoError(t, err)
 	require.Len(t, library.Assets, 4)
 	require.Len(t, library.Albums, 2)
+	require.True(t, manualFaceCreated)
+	require.Equal(t, Person{ID: "person-1", Name: "Smoke person", BirthDate: "1990-01-02", AssetID: assetIDs[0], ImageWidth: 64, ImageHeight: 48, X: 8, Y: 6, Width: 20, Height: 24}, library.Person)
 	require.Equal(t, map[string]string{"album-1": "asset-3", "album-2": "asset-3"}, covers)
 	for _, album := range library.Albums {
 		require.Equal(t, "asset-3", album.CoverAssetID)

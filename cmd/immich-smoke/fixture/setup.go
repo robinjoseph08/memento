@@ -21,7 +21,7 @@ import (
 
 const Release = "v3.1.0"
 
-var readPermissions = []string{"album.read", "asset.read", "asset.view"}
+var readPermissions = []string{"album.read", "asset.read", "asset.view", "face.read", "person.read"}
 
 type Album struct {
 	ID           string
@@ -36,10 +36,17 @@ type Asset struct {
 	Photo
 }
 
+type Person struct {
+	ID, Name, BirthDate, AssetID string
+	ImageWidth, ImageHeight      int
+	X, Y, Width, Height          int
+}
+
 // Library retains the read secret privately; bootstrap sessions never reach Memento.
 type Library struct {
 	Albums  []Album
 	Assets  []Asset
+	Person  Person
 	baseURL string
 	secret  string
 }
@@ -160,6 +167,24 @@ func Setup(ctx context.Context, baseURL, expectedRelease string) (*Library, erro
 		}
 		f.Assets = append(f.Assets, Asset{ID: id, Photo: photo})
 	}
+	person := Person{Name: "Smoke person", BirthDate: "1990-01-02", AssetID: f.Assets[0].ID, ImageWidth: 64, ImageHeight: 48, X: 8, Y: 6, Width: 20, Height: 24}
+	var createdPerson struct {
+		ID string `json:"id"`
+	}
+	if err := a.json(ctx, http.MethodPost, "/people", map[string]any{"name": person.Name, "birthDate": person.BirthDate, "isHidden": false}, &createdPerson); err != nil {
+		return nil, err
+	}
+	if createdPerson.ID == "" {
+		return nil, fmt.Errorf("fixture person has no ID")
+	}
+	person.ID = createdPerson.ID
+	if err := a.json(ctx, http.MethodPost, "/faces", map[string]any{
+		"assetId": person.AssetID, "personId": person.ID, "imageWidth": person.ImageWidth, "imageHeight": person.ImageHeight,
+		"x": person.X, "y": person.Y, "width": person.Width, "height": person.Height,
+	}, nil); err != nil {
+		return nil, err
+	}
+	f.Person = person
 	// The equal-time pair shares a Moment. Select its later source ID so neither
 	// album can pass the cover check by keeping that Moment's earliest entry.
 	coverAssetID := max(f.Assets[1].ID, f.Assets[2].ID)
@@ -194,7 +219,7 @@ func Setup(ctx context.Context, baseURL, expectedRelease string) (*Library, erro
 	}
 	slices.Sort(key.APIKey.Permissions)
 	if key.Secret == "" || !slices.Equal(key.APIKey.Permissions, readPermissions) {
-		return nil, fmt.Errorf("fixture key must grant exactly album.read, asset.read, asset.view")
+		return nil, fmt.Errorf("fixture key must grant exactly album.read, asset.read, asset.view, face.read, person.read")
 	}
 	f.secret = key.Secret
 	return f, nil

@@ -7,3 +7,20 @@ type Connection struct {
 	Message         string `json:"message"`
 	ImportSupported *bool  `json:"import_supported,omitempty"`
 }
+
+// Face is an Immich asset face and its assigned person. ID is empty when the
+// face is unassigned; FaceID always identifies the individual face record.
+type Face struct {
+	FaceID        string `json:"faceId"`
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	ThumbnailPath string `json:"thumbnailPath"`
+	Hidden        bool   `json:"isHidden"`
+	ImageHeight   int    `json:"imageHeight"`
+	ImageWidth    int    `json:"imageWidth"`
+	BoundingBoxX1 int    `json:"boundingBoxX1"`
+	BoundingBoxX2 int    `json:"boundingBoxX2"`
+	BoundingBoxY1 int    `json:"boundingBoxY1"`
+	BoundingBoxY2 int    `json:"boundingBoxY2"`
+	SourceType    string `json:"sourceType"`
+}

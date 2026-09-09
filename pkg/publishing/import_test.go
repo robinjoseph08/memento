@@ -40,6 +40,7 @@ func (l *library) ListMembers(ctx context.Context, id string, page int) ([]immic
 	}
 	return l.assets, 0, nil
 }
+func (*library) ListFaces(context.Context, string) ([]immich.Face, error) { return nil, nil }
 func (l *library) GetAsset(ctx context.Context, id string) (immich.Asset, error) {
 	if l.beforeAsset != nil {
 		if err := l.beforeAsset(ctx, id); err != nil {
