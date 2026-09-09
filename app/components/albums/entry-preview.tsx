@@ -61,6 +61,7 @@ export function EntryPreview({
               narrow ? "bottom-9" : "bottom-1",
             )}
             role="img"
+            title="Video"
           >
             <SquarePlay aria-hidden="true" className="size-3.5" />
           </span>

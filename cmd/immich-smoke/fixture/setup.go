@@ -24,10 +24,11 @@ const Release = "v3.1.0"
 var readPermissions = []string{"album.read", "asset.read", "asset.view"}
 
 type Album struct {
-	ID          string
-	Name        string
-	Description string
-	AssetIDs    []string
+	ID           string
+	Name         string
+	Description  string
+	AssetIDs     []string
+	CoverAssetID string
 }
 
 type Asset struct {
@@ -159,8 +160,11 @@ func Setup(ctx context.Context, baseURL, expectedRelease string) (*Library, erro
 		}
 		f.Assets = append(f.Assets, Asset{ID: id, Photo: photo})
 	}
+	// The equal-time pair shares a Moment. Select its later source ID so neither
+	// album can pass the cover check by keeping that Moment's earliest entry.
+	coverAssetID := max(f.Assets[1].ID, f.Assets[2].ID)
 	for i, indices := range [][]int{{0, 1, 2, 3}, {1, 2}} {
-		album := Album{Name: fmt.Sprintf("Smoke album %d", i+1), Description: fmt.Sprintf("Unchanged source description %d", i+1)}
+		album := Album{Name: fmt.Sprintf("Smoke album %d", i+1), Description: fmt.Sprintf("Unchanged source description %d", i+1), CoverAssetID: coverAssetID}
 		for _, index := range indices {
 			album.AssetIDs = append(album.AssetIDs, f.Assets[index].ID)
 		}
@@ -174,6 +178,9 @@ func Setup(ctx context.Context, baseURL, expectedRelease string) (*Library, erro
 			return nil, fmt.Errorf("fixture album has no ID")
 		}
 		album.ID = response.ID
+		if err := a.json(ctx, "PATCH", "/albums/"+album.ID, map[string]string{"albumThumbnailAssetId": album.CoverAssetID}, nil); err != nil {
+			return nil, err
+		}
 		f.Albums = append(f.Albums, album)
 	}
 	var key struct {

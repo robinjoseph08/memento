@@ -5,16 +5,16 @@ for (const [scenario, dimensions] of [
   [
     "portrait cover",
     [
-      [100, 400],
       [300, 200],
+      [100, 400],
       [800, 100],
     ],
   ],
   [
     "panorama cover and portrait video",
     [
-      [800, 100],
       [100, 400],
+      [800, 100],
       [100, 400],
     ],
   ],

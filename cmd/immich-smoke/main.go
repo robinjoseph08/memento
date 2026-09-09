@@ -168,7 +168,7 @@ func run(ctx context.Context, release string) (returnErr error) {
 		return err
 	}
 	if !reflect.DeepEqual(before, after) {
-		return fmt.Errorf("source Immich title, description, or membership changed")
+		return fmt.Errorf("source Immich title, description, cover, or membership changed")
 	}
 	return nil
 }
@@ -231,10 +231,11 @@ func checkThumbnail(ctx context.Context, source *immich.Client, id string) error
 }
 
 type albumSnapshot struct {
-	ID          string
-	Name        string
-	Description string
-	Members     []string
+	ID           string
+	Name         string
+	Description  string
+	Members      []string
+	CoverAssetID string
 }
 
 func snapshot(ctx context.Context, source *immich.Client, expected []fixture.Album) ([]albumSnapshot, error) {
@@ -252,6 +253,9 @@ func snapshot(ctx context.Context, source *immich.Client, expected []fixture.Alb
 			return nil, err
 		}
 		got := albumSnapshot{ID: album.ID, Name: album.Name, Description: album.Description}
+		if album.ThumbnailID != nil {
+			got.CoverAssetID = *album.ThumbnailID
+		}
 		for page := 1; page != 0; {
 			members, next, err := source.ListMembers(ctx, want.ID, page)
 			if err != nil {
@@ -268,8 +272,8 @@ func snapshot(ctx context.Context, source *immich.Client, expected []fixture.Alb
 		slices.Sort(got.Members)
 		ids := slices.Clone(want.AssetIDs)
 		slices.Sort(ids)
-		if got.Name != want.Name || got.Description != want.Description || album.Count != len(ids) || !slices.Equal(got.Members, ids) {
-			return nil, fmt.Errorf("source fixture album title, description, or membership differs")
+		if got.Name != want.Name || got.Description != want.Description || got.CoverAssetID != want.CoverAssetID || album.Count != len(ids) || !slices.Equal(got.Members, ids) {
+			return nil, fmt.Errorf("source fixture album title, description, cover, or membership differs")
 		}
 		snapshots = append(snapshots, got)
 	}
@@ -295,14 +299,13 @@ func verifyAlbum(detail publishing.AlbumDetail, album fixture.Album, assets []fi
 	})
 	count := 0
 	lastDate := ""
-	for _, moment := range detail.Moments {
+	summaryCover := ""
+	for momentIndex, moment := range detail.Moments {
 		if moment.Date <= lastDate || len(moment.Entries) == 0 {
 			return fmt.Errorf("imported Moment dates are unordered or empty")
 		}
 		lastDate = moment.Date
-		if moment.CoverEntryID != moment.Entries[0].ID {
-			return fmt.Errorf("imported Moment cover is not its earliest entry")
-		}
+		cover := moment.Entries[0]
 		for _, entry := range moment.Entries {
 			if count >= len(expected) {
 				return fmt.Errorf("import has extra entries")
@@ -311,7 +314,16 @@ func verifyAlbum(detail publishing.AlbumDetail, album fixture.Album, assets []fi
 			if entry.Filename != want.Filename || moment.Date != want.CapturedAt[:10] || entry.CapturedAt != want.CapturedAt[:19] || !entry.Available || entry.Kind != "IMAGE" || !strings.HasPrefix(entry.ThumbnailURL, "/api/media/") {
 				return fmt.Errorf("capture-local Moment grouping or deterministic entry order differs for %s", want.Filename)
 			}
+			if want.ID == album.CoverAssetID {
+				cover = entry
+			}
 			count++
+		}
+		if moment.CoverEntryID != cover.ID {
+			return fmt.Errorf("imported Moment cover differs from configured seed")
+		}
+		if momentIndex == 0 {
+			summaryCover = cover.ThumbnailURL
 		}
 	}
 	if count != len(expected) {
@@ -320,7 +332,7 @@ func verifyAlbum(detail publishing.AlbumDetail, album fixture.Album, assets []fi
 	if detail.PhotoCount != len(expected) || detail.VideoCount != 0 {
 		return fmt.Errorf("album summary photo or video count differs from fixture")
 	}
-	if len(expected) > 0 && (detail.StartDate != expected[0].CapturedAt[:10] || detail.EndDate != expected[len(expected)-1].CapturedAt[:10] || detail.CoverURL != detail.Moments[0].Entries[0].ThumbnailURL) {
+	if len(expected) > 0 && (detail.StartDate != expected[0].CapturedAt[:10] || detail.EndDate != expected[len(expected)-1].CapturedAt[:10] || detail.CoverURL != summaryCover) {
 		return fmt.Errorf("album summary capture-local dates or configured Moment cover differs")
 	}
 	return nil

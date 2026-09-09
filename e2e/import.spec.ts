@@ -143,6 +143,12 @@ test("imports an album through a stopped task, browser closure, and API restart"
       images.map((image) => image.getAttribute("alt")),
     ),
   ).toEqual(["coast-02.jpg", "coast-03.jpg"]);
+  const selectedCover = completed
+    .getByRole("listitem")
+    .filter({ has: completed.getByText("Cover", { exact: true }) });
+  await expect(
+    selectedCover.getByRole("img", { name: "coast-03.jpg" }),
+  ).toBeVisible();
 
   await completed
     .getByRole("link", { name: "Album details", exact: true })
@@ -162,9 +168,21 @@ test("imports an album through a stopped task, browser closure, and API restart"
       name: /Our coast holiday.*4 photos, 2 videos.*unpublished/,
     }),
   ).toBeVisible();
-  const importedCover = completed
-    .getByRole("link", { name: /Our coast holiday/ })
-    .getByRole("img");
+  const albumCard = completed.getByRole("link", { name: /Our coast holiday/ });
+  await albumCard.hover();
+  const importedCover = albumCard.getByRole("img");
+  const insets = await importedCover.evaluate((image) => {
+    const card = image.closest("a")!.getBoundingClientRect();
+    const cover = image.getBoundingClientRect();
+    const text = image.nextElementSibling!.getBoundingClientRect();
+    return [
+      cover.left - card.left,
+      card.right - cover.right,
+      cover.top - card.top,
+      card.bottom - text.bottom,
+    ];
+  });
+  for (const inset of insets) expect(inset).toBeGreaterThanOrEqual(8);
   const coverSize = await importedCover.evaluate((image) => ({
     width: image.getBoundingClientRect().width,
     height: image.getBoundingClientRect().height,

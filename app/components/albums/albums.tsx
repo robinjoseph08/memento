@@ -62,7 +62,7 @@ export function CuratorPage() {
             {albums.data.map((album) => (
               <li className="min-w-0" key={album.id}>
                 <Link
-                  className="block cursor-pointer rounded-sm hover:bg-surface focus-visible:outline-2 focus-visible:outline-ring"
+                  className="block cursor-pointer rounded-sm p-2 hover:bg-surface focus-visible:outline-2 focus-visible:outline-ring"
                   to={`/curator/albums/${album.id}`}
                 >
                   <AlbumImage

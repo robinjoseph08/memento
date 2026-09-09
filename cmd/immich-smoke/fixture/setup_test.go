@@ -49,16 +49,22 @@ func TestSetupUsesAdminOnlyToCreateNonAdminSource(t *testing.T) {
 	for _, release := range []string{"v3.1.0", "v3.0.3"} {
 		t.Run(release, func(t *testing.T) {
 			t.Parallel()
-			testSetup(t, release)
+			for _, ids := range [][]string{{"asset-1", "asset-2", "asset-3", "asset-4"}, {"asset-1", "asset-3", "asset-2", "asset-4"}} {
+				t.Run(strings.Join(ids, ","), func(t *testing.T) {
+					t.Parallel()
+					testSetup(t, release, ids)
+				})
+			}
 		})
 	}
 }
 
-func testSetup(t *testing.T, release string) {
+func testSetup(t *testing.T, release string, assetIDs []string) {
 	t.Helper()
 	calls := []string{}
 	uploads := 0
 	albumCount := 0
+	covers := map[string]string{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls = append(calls, r.Method+" "+r.URL.Path)
 		w.Header().Set("Content-Type", "application/json")
@@ -117,7 +123,7 @@ func testSetup(t *testing.T, release string) {
 				t.Error("upload timestamp must differ from EXIF")
 			}
 			uploads++
-			_ = json.NewEncoder(w).Encode(map[string]string{"id": fmt.Sprintf("asset-%d", uploads), "status": "created"})
+			_ = json.NewEncoder(w).Encode(map[string]string{"id": assetIDs[uploads-1], "status": "created"})
 		case "/api/albums":
 			if r.Header.Get("Authorization") != "Bearer source-token" {
 				t.Error("album creation must use source session")
@@ -128,15 +134,28 @@ func testSetup(t *testing.T, release string) {
 			if json.NewDecoder(r.Body).Decode(&body) != nil {
 				t.Error("invalid album body")
 			}
-			expected := []string{"asset-1", "asset-2", "asset-3", "asset-4"}
+			expected := assetIDs
 			if albumCount == 1 {
-				expected = []string{"asset-2", "asset-3"}
+				expected = assetIDs[1:3]
 			}
 			if !reflect.DeepEqual(expected, body.AssetIDs) {
 				t.Error("wrong overlapping membership")
 			}
 			albumCount++
 			_ = json.NewEncoder(w).Encode(map[string]string{"id": fmt.Sprintf("album-%d", albumCount)})
+		case "/api/albums/album-1", "/api/albums/album-2":
+			if r.Method != http.MethodPatch || r.Header.Get("Authorization") != "Bearer source-token" {
+				t.Error("album cover must be updated by PATCH using source session")
+			}
+			var body map[string]string
+			if json.NewDecoder(r.Body).Decode(&body) != nil {
+				t.Error("invalid cover body")
+			}
+			if !reflect.DeepEqual(map[string]string{"albumThumbnailAssetId": "asset-3"}, body) {
+				t.Error("cover update must select only the later source ID from the equal-time pair")
+			}
+			covers[strings.TrimPrefix(r.URL.Path, "/api/albums/")] = body["albumThumbnailAssetId"]
+			_, _ = io.WriteString(w, `{}`)
 		case "/api/api-keys":
 			if r.Header.Get("Authorization") != "Bearer source-token" {
 				t.Error("read key must belong to source owner")
@@ -161,6 +180,10 @@ func testSetup(t *testing.T, release string) {
 	require.NoError(t, err)
 	require.Len(t, library.Assets, 4)
 	require.Len(t, library.Albums, 2)
+	require.Equal(t, map[string]string{"album-1": "asset-3", "album-2": "asset-3"}, covers)
+	for _, album := range library.Albums {
+		require.Equal(t, "asset-3", album.CoverAssetID)
+	}
 	require.Equal(t, []string{"GET /api/server/version", "GET /api/server/version", "POST /api/auth/admin-sign-up", "POST /api/auth/login", "POST /api/admin/users", "POST /api/auth/login"}, calls[:6])
 	require.Equal(t, "POST /api/api-keys", calls[len(calls)-1])
 	require.NotNil(t, library.Source())

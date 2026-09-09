@@ -244,7 +244,10 @@ it("shows weekdays and local capture times without visible filenames, with a vid
   expect(screen.getByText("11:59 PM")).toBeVisible();
   expect(screen.queryByText("Beach.jpg")).not.toBeInTheDocument();
   expect(screen.queryByText("Waves.mp4")).not.toBeInTheDocument();
-  expect(screen.getByRole("img", { name: "Video" })).toBeVisible();
+  expect(screen.getByRole("img", { name: "Video" })).toHaveAttribute(
+    "title",
+    "Video",
+  );
 });
 
 it("presents distinct Album details and expandable Moments without discarding title edits", async () => {

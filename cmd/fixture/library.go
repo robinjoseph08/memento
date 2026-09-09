@@ -100,6 +100,7 @@ func fixtureLibrary() ([]sourceAlbum, map[string]sourceAsset) {
 		album("fixture-album-coast", "Fixture Album - Coast", "fixture-asset-01", "fixture-asset-02", "fixture-asset-03", "fixture-asset-04", "fixture-asset-05", "fixture-asset-06"),
 		album("fixture-album-family", "Fixture Album - Family", "fixture-asset-02", "fixture-asset-04", "fixture-asset-07"),
 	}
+	albums[0].ThumbnailID = "fixture-asset-03"
 	for n := 1; n <= 30; n++ {
 		albums = append(albums, album(fmt.Sprintf("fixture-album-practice-%02d", n), fmt.Sprintf("Practice Album %02d", n), "fixture-asset-07"))
 	}

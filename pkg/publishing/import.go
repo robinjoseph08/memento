@@ -302,6 +302,13 @@ func (m *Module) finishImport(ctx context.Context, id string, source immich.Albu
 			if _, err := tx.NewInsert().Model(&entry).Exec(ctx); err != nil {
 				return errorstack.CaptureContext(ctx, err)
 			}
+			if source.ThumbnailID != nil && *source.ThumbnailID == item.SourceID && moment.CoverEntryID != entry.ID {
+				if _, err := tx.NewUpdate().Model((*models.Moment)(nil)).Set("cover_entry_id = ?", entry.ID).Where("id = ?", moment.ID).Exec(ctx); err != nil {
+					return errorstack.CaptureContext(ctx, err)
+				}
+				moment.CoverEntryID = entry.ID
+				moments[date] = moment
+			}
 		}
 		_, err = tx.NewUpdate().Model((*models.Album)(nil)).Set("description = ?", source.Description).Set("import_status = 'complete'").Set("import_message = ''").
 			Set("import_processed = ?", len(items)).Set("import_total = ?", len(items)).Set("import_updated_at = ?", time.Now().UTC()).Where("id = ?", id).Exec(ctx)
