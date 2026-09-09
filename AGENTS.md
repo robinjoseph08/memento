@@ -83,15 +83,6 @@ anything here.
 - Frontend conventions live in `app/AGENTS.md`.
 - Browser-test conventions live in `e2e/AGENTS.md`.
 
-## Immich testing
-
-Every Immich-dependent feature or change must extend the existing
-`mise test:immich` production-adapter black-box suite. Add fixtures through
-supported Immich APIs and assertions for the capability being shipped. The
-suite's scope grows manually; passing only the old import checks does not
-certify new functionality. Keep fast local HTTP fixture tests alongside it,
-not a second live suite.
-
 ## Plans and work artifacts
 
 - Do not commit implementation plans, research notes, temporary QA checklists,
