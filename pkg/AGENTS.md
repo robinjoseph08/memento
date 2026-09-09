@@ -76,9 +76,13 @@
 - Test pure behavior without a database and HTTP handlers with small fake
   modules. Test external adapters against recorded or local test counterparts.
 - Control worker execution in tests. Do not use sleeps to wait for work.
-- Test the Immich adapter quickly with local HTTP fixtures. Keep a separate
-  black-box compatibility suite against exact official Immich release images,
-  create fixtures through supported APIs, and never read or seed Immich tables.
+- Test the Immich adapter quickly with local HTTP fixtures. Every backend
+  change that depends on Immich must extend the existing `mise test:immich`
+  production-adapter black-box suite against exact official release images.
+  Add fixtures through supported Immich APIs and assertions for the capability
+  being shipped; never read or seed Immich tables. Coverage grows manually:
+  passing only the old import checks does not certify new functionality. Keep
+  fast local HTTP fixture tests alongside this suite, not a second live suite.
 - Measure database setup cost as migrations grow. If it becomes material,
   optimize the shared test helper rather than reducing isolation or broadly
   disabling parallelism.

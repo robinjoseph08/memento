@@ -3,14 +3,13 @@ package testdb
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"net/url"
 	"uuid"
 
+	"github.com/robinjoseph08/memento/pkg/database"
 	"github.com/uptrace/bun"
 	"github.com/uptrace/bun/dialect/pgdialect"
-	"github.com/uptrace/bun/driver/pgdriver"
 )
 
 // Schema owns a temporary schema. Close its application pools before Close.
@@ -22,11 +21,10 @@ type Schema struct {
 
 // Open uses a small pool suitable for isolated tests and fixture processes.
 func Open(dsn string) (*bun.DB, error) {
-	connector, err := pgdriver.NewDriver().OpenConnector(dsn)
+	sqlDB, err := database.OpenSQL(dsn)
 	if err != nil {
 		return nil, fmt.Errorf("parse test database URL: invalid PostgreSQL URL")
 	}
-	sqlDB := sql.OpenDB(connector)
 	sqlDB.SetMaxOpenConns(3)
 	sqlDB.SetMaxIdleConns(1)
 	return bun.NewDB(sqlDB, pgdialect.New()), nil

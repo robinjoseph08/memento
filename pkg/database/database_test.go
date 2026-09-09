@@ -20,6 +20,7 @@ func TestOpenUsesPostgreSQL(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.Close()) })
 	assert.Contains(t, fmt.Sprintf("%T", db.Dialect()), "pgdialect")
+	assert.Equal(t, "*stdlib.Driver", fmt.Sprintf("%T", db.Driver()))
 	assert.Equal(t, 3, db.Stats().MaxOpenConnections)
 }
 
@@ -27,11 +28,12 @@ func TestOpenRejectsMalformedDatabaseURL(t *testing.T) {
 	t.Parallel()
 
 	cfg := config.NewForTest()
-	cfg.DatabaseURL = ":bad"
+	cfg.DatabaseURL = "postgres://user:secret@localhost:bad/db"
 	db, err := open(cfg)
 	require.Error(t, err)
 	assert.Nil(t, db)
 	assert.Contains(t, err.Error(), "parse database URL")
+	assert.NotContains(t, err.Error(), "secret")
 }
 
 type stackTracer interface {

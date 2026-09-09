@@ -108,6 +108,24 @@ mise start:api
 mise start:web
 ```
 
+### Develop against your own Immich server
+
+Use a read-only API key from the Immich account that owns or can access your
+source albums. Grant `album.read`, `asset.read`, and `asset.view`, then set these
+in your local shell before starting development:
+
+```sh
+export IMMICH_URL='http://your-immich-host:2283'
+export IMMICH_API_KEY='your-read-only-immich-key'
+mise start
+```
+
+Use the instance base URL without `/api`. Keep the actual key out of source
+control and shared logs. These environment values override development YAML;
+`mise start` still uses the current worktree's Memento database. Imports read
+your real library without changing it. `mise start:qa` instead uses its
+controlled fixture and ignores these values.
+
 ### Try a disposable installation
 
 ```sh
@@ -148,6 +166,46 @@ database. All test data stays in temporary schemas with small pools. Export
 `TEST_DATABASE_URL` to make all commands use one dedicated test database
 instead.
 
+### Smoke-test a real Immich release
+
+```sh
+mise test:immich
+mise test:immich --version v3.0.3
+```
+
+This requires Docker Compose 2.24.4 or newer, `curl`, and `shasum`. Allow several
+minutes and enough Docker memory for Immich and two PostgreSQL containers.
+The default release is v3.1.0. `--version` accepts an exact stable tag, not a
+floating tag or prerelease. The script downloads that release's official Compose
+file and runs its exact image in a uniquely named disposable project. Compose
+SHA-256 checks are pinned for v3.1.0 and v3.0.3. Other patches in the supported
+3.0.x and 3.1.x minors can be tried, but have no pinned checksum or compatibility
+guarantee. Unsupported minors fail before services start; the production import
+version gate remains in force. The fixture checks the actual API version against
+the requested tag before creating users or assets.
+Ports bind only to loopback. Machine learning and reverse geocoding are disabled
+because this check needs only metadata extraction and generated thumbnails.
+
+Fixtures use supported Immich APIs, not database tables. A non-admin source
+owner creates a key with exactly `album.read`, `asset.read`, and `asset.view`.
+The smoke imports two overlapping albums through Memento's production adapter
+and publishing module. It checks EXIF capture dates around midnight, tied entry
+ordering, shared Media Items, generated thumbnails through production media HTTP
+routes, private cache validators, and unchanged source album titles,
+descriptions, and membership. The in-process media check bypasses sign-in and
+does not expose an HTTP listener. Fixture creation helpers live in
+`cmd/immich-smoke/fixture` for reuse by release compatibility tests.
+
+Memento uses a temporary schema in its own disposable PostgreSQL container.
+The script ignores existing application and Immich configuration. On exit it
+removes only its own containers and volumes; it never resets development data.
+The final output records the tested release. A successful run certifies only
+the assertions exercised on that release, not every version in the supported
+range. Coverage grows manually: every Immich-dependent change must extend this
+same suite's fixtures and assertions to cover the capability being shipped.
+Passing the existing import checks alone does not certify new functionality.
+This command is opt-in, not part of `mise check`.
+
 ## Build the production application
 
 ```sh
@@ -172,6 +230,33 @@ configuration from `/config/app.yaml`, and stores mutable files under
 instance base URL without `/api`. Environment values override YAML.
 `PUBLIC_URL` must match the browser origin and controls cookie security and
 mutation origin checks. See `app.example.yaml` for a deployment example.
+
+### Connect Immich for imports
+
+The initial import gate supports Immich **3.0.x and 3.1.x**. Other versions can
+still be checked during setup, but Memento blocks new imports and shows a
+warning. The smoke command above defaults to 3.1.0 and also has a verified
+Compose pin for 3.0.3; this is not a claim that every patch in the range has been
+certified.
+
+Create an API key in the Immich account that owns or can access your source
+albums. Grant only `album.read`, `asset.read`, and `asset.view`, then set
+`IMMICH_API_KEY` on Memento's server. No write or original-download permission is
+needed. Memento uses GET requests plus Immich's read-only `POST /search/metadata`
+endpoint for membership pagination. It never edits source albums or assets.
+
+Imports run inside the API process through River, sharing Memento's PostgreSQL
+pool. Two imports can run at once, with three automatic attempts and a
+15-minute limit per attempt. An orderly shutdown interrupts unfinished work for
+the next startup. After a forced process termination, stale work becomes
+eligible for automatic recovery after 16 minutes. The Album page reports
+missing progress as interrupted; retry remains available after failure.
+
+A completed import is unpublished. Memento owns its title, while the description
+is the last imported Immich description and cannot be edited in Memento. No
+media bytes are stored persistently. Thumbnails use private browser caching;
+source media that changes before synchronization may show an unavailable image
+rather than different bytes under an old content-versioned URL.
 
 ### Separate PostgreSQL database and role
 

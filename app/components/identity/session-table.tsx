@@ -1,3 +1,5 @@
+import { MonitorCheck } from "lucide-react";
+
 import { formatDate } from "../../lib/utils";
 import type { BrowserSession } from "../../types/generated/identity";
 import {
@@ -59,20 +61,11 @@ export function SessionTable({
                             role="img"
                             tabIndex={0}
                           >
-                            <svg
+                            <MonitorCheck
                               aria-hidden="true"
-                              fill="none"
-                              height="16"
-                              stroke="currentColor"
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                              strokeWidth="1.5"
-                              viewBox="0 0 24 24"
-                              width="16"
-                            >
-                              <rect height="13" rx="2" width="18" x="3" y="3" />
-                              <path d="M8 21h8m-4-5v5m-4-12 3 3 5-5" />
-                            </svg>
+                              size={16}
+                              strokeWidth={1.5}
+                            />
                           </span>
                         </TooltipTrigger>
                         <TooltipContent>This browser</TooltipContent>

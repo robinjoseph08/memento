@@ -13,13 +13,16 @@ import (
 	"github.com/robinjoseph08/memento/pkg/config"
 	"github.com/robinjoseph08/memento/pkg/database"
 	"github.com/robinjoseph08/memento/pkg/errorstack"
+	"github.com/robinjoseph08/memento/pkg/immich"
 	"github.com/robinjoseph08/memento/pkg/migrations"
+	"github.com/robinjoseph08/memento/pkg/publishing"
 	"github.com/robinjoseph08/memento/pkg/server"
 	"github.com/robinjoseph08/memento/pkg/version"
+	"github.com/robinjoseph08/memento/pkg/worker"
 )
 
 const (
-	shutdownHardDeadline  = 5 * time.Second
+	shutdownHardDeadline  = 30 * time.Second
 	serverShutdownTimeout = 3 * time.Second
 )
 
@@ -65,10 +68,30 @@ func run(log logger.Logger) error {
 		})
 	}
 
-	srv, err := server.New(cfg, db)
+	var imports *publishing.Module
+	jobs, err := worker.New(db, func(ctx context.Context, id string) error {
+		return imports.ExecuteImport(ctx, id, worker.FinalAttempt(ctx))
+	})
+	if err != nil {
+		return fmt.Errorf("create worker: %w", err)
+	}
+	imports = publishing.New(db, immich.New(cfg.ImmichURL, cfg.ImmichAPIKey), jobs.EnqueueImport)
+	srv, err := server.New(cfg, db, imports)
 	if err != nil {
 		return fmt.Errorf("create server: %w", err)
 	}
+	if err := jobs.Start(ctx); err != nil {
+		return fmt.Errorf("start worker: %w", err)
+	}
+	// Stop confirms that workers released the shared pool before the deferred DB close.
+	defer func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+		defer cancel()
+		if err := jobs.Stop(stopCtx); err != nil {
+			log.Err(err).Error("worker shutdown exceeded deadline")
+			os.Exit(1)
+		}
+	}()
 
 	serverErrors := make(chan error, 1)
 	go func() {

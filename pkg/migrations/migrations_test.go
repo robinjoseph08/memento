@@ -7,12 +7,10 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/robinjoseph08/memento/pkg/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/uptrace/bun"
 	"github.com/uptrace/bun/dialect/pgdialect"
-	"github.com/uptrace/bun/driver/pgdriver"
 	"github.com/uptrace/bun/migrate"
 )
 
@@ -53,8 +51,7 @@ func (acceptingConn) ExecContext(context.Context, string, []driver.NamedValue) (
 func TestNewMigrator(t *testing.T) {
 	t.Parallel()
 
-	connector := pgdriver.NewConnector(pgdriver.WithDSN(config.NewForTest().DatabaseURL))
-	db := bun.NewDB(sql.OpenDB(connector), pgdialect.New())
+	db := bun.NewDB(sql.OpenDB(acceptingConnector{}), pgdialect.New())
 	t.Cleanup(func() { require.NoError(t, db.Close()) })
 
 	assert.NotNil(t, NewMigrator(db))

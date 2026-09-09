@@ -122,6 +122,7 @@ func run(ctx context.Context, binary string, offline bool) error {
 	}
 	fmt.Fprintf(os.Stderr, "Open %s\nReset: stop this command and start it again. Ctrl-C removes only its temporary schema.\n", apiURL)
 	fmt.Fprintf(os.Stderr, "Status:  curl %s/__fixture/state\nOffline: curl -X POST -H 'Content-Type: application/json' -d '{\"available\":false}' %s/__fixture/state\nOnline:  curl -X POST -H 'Content-Type: application/json' -d '{\"available\":true}' %s/__fixture/state\nRestart: curl -X POST %s/__fixture/restart\n", fixtureURL, fixtureURL, fixtureURL, fixtureURL)
+	fmt.Fprintf(os.Stderr, "Import checkpoints: curl %s/__fixture/checkpoints\nPause metadata: curl -X POST -H 'Content-Type: application/json' -d '{\"mode\":\"pause\"}' %s/__fixture/checkpoints/asset-metadata\nRelease: curl -X POST -H 'Content-Type: application/json' -d '{\"mode\":\"open\"}' %s/__fixture/checkpoints/asset-metadata\nRequests: curl %s/__fixture/requests\n", fixtureURL, fixtureURL, fixtureURL, fixtureURL)
 	select {
 	case <-ctx.Done():
 		return nil
@@ -220,7 +221,8 @@ func (a *apiSupervisor) stop() {
 	process := a.process
 	process.expected.Store(true)
 	_ = process.command.Process.Signal(syscall.SIGTERM)
-	timer := time.NewTimer(5 * time.Second)
+	// Allow the API's twenty-five-second shutdown to persist interrupted work.
+	timer := time.NewTimer(35 * time.Second)
 	defer timer.Stop()
 	select {
 	case <-process.done:

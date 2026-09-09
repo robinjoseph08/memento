@@ -1,4 +1,5 @@
 import * as SelectPrimitive from "@radix-ui/react-select";
+import { Check, ChevronDown, ChevronUp } from "lucide-react";
 import * as React from "react";
 
 import { cn } from "../../lib/utils";
@@ -29,7 +30,12 @@ function SelectTrigger({
     >
       {children}
       <SelectPrimitive.Icon asChild>
-        <SelectChevron />
+        <ChevronDown
+          aria-hidden="true"
+          className="size-4 shrink-0 text-muted"
+          size={16}
+          strokeWidth={1.5}
+        />
       </SelectPrimitive.Icon>
     </SelectPrimitive.Trigger>
   );
@@ -57,13 +63,23 @@ function SelectContent({
         {...props}
       >
         <SelectPrimitive.ScrollUpButton className="flex items-center justify-center py-1 text-muted">
-          <SelectChevron up />
+          <ChevronUp
+            aria-hidden="true"
+            className="size-4 shrink-0 text-muted"
+            size={16}
+            strokeWidth={1.5}
+          />
         </SelectPrimitive.ScrollUpButton>
         <SelectPrimitive.Viewport className="p-1">
           {children}
         </SelectPrimitive.Viewport>
         <SelectPrimitive.ScrollDownButton className="flex items-center justify-center py-1 text-muted">
-          <SelectChevron />
+          <ChevronDown
+            aria-hidden="true"
+            className="size-4 shrink-0 text-muted"
+            size={16}
+            strokeWidth={1.5}
+          />
         </SelectPrimitive.ScrollDownButton>
       </SelectPrimitive.Content>
     </SelectPrimitive.Portal>
@@ -86,40 +102,9 @@ function SelectItem({
     >
       <SelectPrimitive.ItemText>{children}</SelectPrimitive.ItemText>
       <SelectPrimitive.ItemIndicator className="absolute right-3 flex items-center">
-        <svg
-          aria-hidden="true"
-          width="16"
-          height="16"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.5"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        >
-          <path d="m5 12 4 4L19 6" />
-        </svg>
+        <Check aria-hidden="true" size={16} strokeWidth={1.5} />
       </SelectPrimitive.ItemIndicator>
     </SelectPrimitive.Item>
-  );
-}
-
-function SelectChevron({ up = false }: { up?: boolean }) {
-  return (
-    <svg
-      aria-hidden="true"
-      className={cn("size-4 shrink-0 text-muted", up && "rotate-180")}
-      width="16"
-      height="16"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <path d="m6 9 6 6 6-6" />
-    </svg>
   );
 }
 

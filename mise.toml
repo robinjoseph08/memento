@@ -102,6 +102,11 @@ description = "Run Go tests with coverage"
 env = { TZ = "America/Chicago", CI = "true" }
 run = "go test ./... -coverprofile coverage.out"
 
+[tasks."test:immich"]
+description = "Smoke-test the production adapter against a disposable official Immich release"
+usage = 'flag "--version <tag>" default="v3.1.0" help="Exact stable Immich release tag"'
+run = 'bash scripts/immich-smoke.sh --version "$usage_version"'
+
 [tasks."test:race"]
 description = "Run Go tests with race detection"
 env = { TZ = "America/Chicago", CI = "true" }

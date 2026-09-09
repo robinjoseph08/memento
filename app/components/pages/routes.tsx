@@ -1,10 +1,12 @@
+import { AlbumPage } from "../albums/album-detail";
+import { CuratorPage } from "../albums/albums";
+import { ImportPage } from "../albums/sources";
 import { ProfilePage } from "../identity/profile";
 import { PeoplePage, PersonPage } from "../people/people";
 import {
   AccessDeniedPage,
   AppShell,
   CuratorLayout,
-  CuratorPage,
   HomePage,
   InstallationLayout,
   MemberPage,
@@ -30,11 +32,20 @@ export const routes = [
           },
           {
             path: "/curator",
-            element: <CuratorLayout />,
             children: [
-              { index: true, element: <CuratorPage /> },
-              { path: "people", element: <PeoplePage /> },
-              { path: "people/:id", element: <PersonPage /> },
+              {
+                element: <CuratorLayout />,
+                children: [
+                  { index: true, element: <CuratorPage /> },
+                  { path: "import", element: <ImportPage /> },
+                  { path: "people", element: <PeoplePage /> },
+                  { path: "people/:id", element: <PersonPage /> },
+                ],
+              },
+              {
+                element: <CuratorLayout compact />,
+                children: [{ path: "albums/:id", element: <AlbumPage /> }],
+              },
             ],
           },
           {

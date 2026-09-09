@@ -129,12 +129,12 @@ export function SignInPage() {
   );
 }
 
-export function CuratorLayout() {
+export function CuratorLayout({ compact = false }: { compact?: boolean }) {
   const { data } = useIdentityStatus();
   if (!data?.person?.is_curator)
     return <Navigate replace to={destination(data?.person)} />;
   return (
-    <main className={pageClassName}>
+    <main className={compact ? "mx-auto max-w-[1440px] pb-10" : pageClassName}>
       <Outlet />
     </main>
   );
@@ -160,30 +160,6 @@ export function MemberPage() {
         <p className="mt-4 max-w-120 text-muted">
           There are no albums to view yet. Your Curator will choose what to
           share with you.
-        </p>
-      </section>
-    </>
-  );
-}
-
-export function CuratorPage() {
-  return (
-    <>
-      <PageTitle title="Albums" />
-      <div className="mb-9.5 max-w-160">
-        <h1 className={headingClassName}>Your albums</h1>
-        <p className="mt-5 max-w-[590px] text-muted">
-          Choose the photos and videos you want to share with friends and
-          family.
-        </p>
-      </div>
-      <section className="min-h-45 border-t border-border py-9 min-[761px]:min-h-70">
-        <h2 className="font-heading text-[27px]/[1.2] font-normal tracking-[-0.35px]">
-          No albums yet
-        </h2>
-        <p className="mt-4 max-w-105 text-muted">
-          Your installation is ready. Album importing will be available in a
-          future update.
         </p>
       </section>
     </>

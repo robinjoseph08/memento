@@ -59,6 +59,7 @@ function serveIdentity(
               version: "2.0.0",
               message: "Connected to Immich.",
             });
+      if (path === "/api/curator/albums") return Response.json([]);
       throw new Error(`Unexpected request: ${path}`);
     }),
   );
@@ -96,9 +97,10 @@ it("claims the installation with the edited fake identity using native Enter sub
   ).toBeInTheDocument();
   await user.click(screen.getByRole("button", { name: "Account menu" }));
   expect(screen.getByText("Robin")).toBeVisible();
-  expect(
-    screen.queryByRole("button", { name: /import/i }),
-  ).not.toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "Import an album" })).toHaveAttribute(
+    "href",
+    "/curator/import",
+  );
   expect(window.location.pathname).toBe("/curator");
   expect(document.title).toBe("Albums | Memento");
 });
@@ -387,6 +389,7 @@ it("cancels an in-flight diagnostic when closing its dialog before signing out",
         signal = options?.signal;
         return response;
       }
+      if (path === "/api/curator/albums") return Response.json([]);
       return new Response(null, { status: 204 });
     }),
   );

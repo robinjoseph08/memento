@@ -2,6 +2,12 @@
 
 ## Organization
 
+- Before implementing ticketed UI, read its parent specification and approved
+  prototype decisions, source, and reference captures. Use the prototype as a
+  visual and interaction reference, not production code to merge or copy.
+  Keep future-ticket controls absent rather than presenting working-looking
+  placeholders. The Curator Album editor uses the compact Workbench layout,
+  not the viewer's large browsing header and gallery.
 - Keep route composition in `app/components/pages`, feature UI in focused
   component directories, shared shadcn components in `app/components/ui`,
   TanStack Query definitions in `app/hooks/queries`, and generated API types in
@@ -29,6 +35,12 @@
   using the root `components.json`, then adapt imports and styles to this app.
   Keep the existing individual Radix packages and local `cn` helper rather than
   retaining redundant dependencies from registry output.
+- Always use named imports from `lucide-react` for UI icons, not handwritten
+  SVGs or another icon library. The custom Memento wordmark is a brand graphic
+  and remains an exception.
+- Album-list covers use square, center-cropped tiles with `object-cover`.
+  Moment media stays uncropped. Capture-time overlays use 12-hour time with
+  AM/PM on the same line.
 - Use Tailwind utilities for layout, typography, responsive behavior, and
   interaction styles. Keep `app/styles.css` limited to imports and theme tokens;
   do not add handwritten component selectors or `@apply` aliases.

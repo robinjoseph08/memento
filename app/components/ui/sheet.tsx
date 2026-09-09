@@ -1,4 +1,5 @@
 import * as DialogPrimitive from "@radix-ui/react-dialog";
+import { X } from "lucide-react";
 import type { ComponentProps } from "react";
 
 import { cn } from "../../lib/utils";
@@ -30,18 +31,7 @@ export function SheetContent({
             className="absolute top-3 right-3 size-11 p-0"
             variant="ghost"
           >
-            <svg
-              aria-hidden="true"
-              fill="none"
-              height="20"
-              stroke="currentColor"
-              strokeLinecap="round"
-              strokeWidth="1.5"
-              viewBox="0 0 24 24"
-              width="20"
-            >
-              <path d="m6 6 12 12M6 18 18 6" />
-            </svg>
+            <X aria-hidden="true" size={20} strokeWidth={1.5} />
           </Button>
         </DialogPrimitive.Close>
       </DialogPrimitive.Content>
