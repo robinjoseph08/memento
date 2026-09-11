@@ -1,6 +1,6 @@
 import { formatDate } from "../../lib/utils";
 import type { LinkedIdentity } from "../../types/generated/identity";
-import { ConfirmAction } from "../people/confirm-action";
+import { ConfirmAction } from "../forms/confirm-action";
 import { sectionHeadingClass } from "../people/form-fields";
 import {
   Table,

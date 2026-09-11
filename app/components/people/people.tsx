@@ -9,6 +9,7 @@ import {
 import { useUnsavedChanges } from "../../hooks/use-unsaved-changes";
 import { fieldErrors } from "../../lib/http";
 import { initials } from "../../lib/initials";
+import { ConfirmDialog } from "../forms/confirm-dialog";
 import { SearchForm } from "../forms/search-form";
 import { BackLink } from "../shell/back-link";
 import { PageTitle } from "../shell/page-title";
@@ -34,21 +35,21 @@ export function PeoplePage() {
   const [search, setSearch] = useSearchParams();
   const query = usePeople(search.get("q") ?? "");
   const [open, setOpen] = useState(false);
+  const [discardOpen, setDiscardOpen] = useState(false);
   const [name, setName] = useState("");
   const create = useCreatePerson();
   useUnsavedChanges((!!name || create.isPending) && !create.isSuccess);
+  function close() {
+    setDiscardOpen(false);
+    setOpen(false);
+    setName("");
+    create.reset();
+  }
   function changeOpen(next: boolean) {
-    if (
-      !next &&
-      (create.isPending ||
-        (name && !window.confirm("Discard this new person?")))
-    )
-      return;
-    setOpen(next);
-    if (!next) {
-      setName("");
-      create.reset();
-    }
+    if (next) setOpen(true);
+    else if (create.isPending) return;
+    else if (name) setDiscardOpen(true);
+    else close();
   }
   if (create.isSuccess)
     return <Navigate to={`/curator/people/${create.data.id}`} />;
@@ -93,6 +94,14 @@ export function PeoplePage() {
             </Form>
           </DialogContent>
         </Dialog>
+        <ConfirmDialog
+          confirmLabel="Discard"
+          description="The name you entered will not be saved."
+          onConfirm={close}
+          onOpenChange={setDiscardOpen}
+          open={discardOpen}
+          title="Discard this new person?"
+        />
       </div>
       <SearchForm
         className="mb-7"

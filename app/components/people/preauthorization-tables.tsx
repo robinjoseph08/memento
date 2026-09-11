@@ -1,5 +1,6 @@
 import { formatDate } from "../../lib/utils";
 import type { Preauthorization } from "../../types/generated/identity";
+import { ConfirmAction } from "../forms/confirm-action";
 import {
   Table,
   TableBody,
@@ -8,7 +9,6 @@ import {
   TableHeader,
   TableRow,
 } from "../ui/table";
-import { ConfirmAction } from "./confirm-action";
 
 export function PreauthorizationTables({
   authorizations,

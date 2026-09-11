@@ -19,6 +19,7 @@ import type {
   SplitMomentRequest,
   StructurePreview,
 } from "../../types/generated/publishing";
+import { ConfirmDialog } from "../forms/confirm-dialog";
 import { Field, FieldError, Form } from "../people/form-fields";
 import { Button } from "../ui/button";
 import { Combobox, type ComboboxOption } from "../ui/combobox";
@@ -167,13 +168,11 @@ export function StructureEditor({
     newCoverID !== defaultCoverID ||
     Object.keys(resolutions).length > 0;
   useUnsavedChanges(dirty, true);
+  const [discardOpen, setDiscardOpen] = useState(false);
   function changeOpen(next: boolean) {
-    if (
-      !next &&
-      (pending || (dirty && !window.confirm("Discard this structural change?")))
-    )
-      return;
-    onClose();
+    if (next || pending) return;
+    if (dirty) setDiscardOpen(true);
+    else onClose();
   }
 
   let request: MoveEntriesRequest | SplitMomentRequest | MergeMomentsRequest;
@@ -263,181 +262,198 @@ export function StructureEditor({
     selectedEntryIDs.length < moment.entries.length;
 
   return (
-    <Dialog onOpenChange={changeOpen} open>
-      <DialogContent className="max-w-xl">
-        <DialogTitle>{titleText}</DialogTitle>
-        <DialogDescription className="mt-3 text-sm text-muted">
-          {operation === "merge"
-            ? `Combine every item in ${moment.label} with another Moment.`
-            : `${selected.length} ${selected.length === 1 ? "item" : "items"} selected from ${moment.label}.`}
-        </DialogDescription>
-        <Form
-          aria-busy={pending}
-          aria-label={titleText}
-          className="mt-6"
-          error={error}
-          onSubmit={(event) => {
-            event.preventDefault();
-            if (preview?.ready && preview.review_token) commit();
-            else review();
-          }}
-        >
-          <fieldset disabled={pending}>
-            {operation !== "split" && (
-              <SelectField
-                error={errors.destination_moment_id ?? errors.target_moment_id}
-                label="Destination Moment"
-                onChange={(value) => {
-                  setTargetID(value);
-                  if (operation === "merge")
-                    setNewCoverID(
-                      others.find((item) => item.id === value)
-                        ?.cover_entry_id ?? "",
-                    );
-                  clearReview();
-                }}
-                options={others.map((item) => ({
-                  value: item.id,
-                  label: item.label,
-                }))}
-                placeholder="Choose a Moment"
-                value={targetID}
-              />
-            )}
-            {operation !== "move" && (
-              <Field
-                error={errors.new_title ?? errors.title}
-                label={
-                  operation === "split"
-                    ? "New Moment title"
-                    : "Merged Moment title"
-                }
-                maxLength={200}
-                onChange={(event) => {
-                  setTitle(event.target.value);
-                  clearReview();
-                }}
-                placeholder={
-                  operation === "merge" ? target?.label : "Generated date label"
-                }
-                value={title}
-              />
-            )}
-            {operation === "merge" && (
-              <fieldset className="mb-5">
-                <legend className="block text-xs font-medium">
-                  Merged Moment cover
-                </legend>
-                <div className="mt-2 flex flex-wrap gap-3">
-                  {mergeCovers.map(({ moment: item, entry }) => (
-                    <label
-                      className="flex max-w-40 cursor-pointer flex-col gap-2 text-xs"
-                      key={item.id}
-                    >
-                      <input
-                        aria-label={`Keep the cover of ${item.label}`}
-                        checked={newCoverID === entry.id}
-                        className="peer sr-only"
-                        name="merged_cover"
-                        onChange={() => {
-                          setNewCoverID(entry.id);
-                          clearReview();
-                        }}
-                        type="radio"
-                        value={entry.id}
-                      />
-                      <span className="block rounded-sm peer-checked:outline-2 peer-checked:outline-offset-2 peer-checked:outline-primary peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-ring">
-                        <AlbumImage
-                          alt={entry.filename}
-                          className="h-auto max-h-28 w-auto max-w-40"
-                          fallback="No preview available"
-                          src={entry.available ? entry.thumbnail_url : ""}
-                        />
-                      </span>
-                      <span className="text-muted">
-                        <span className="block">{item.label}</span>
-                        <span className="block">
-                          {item.id === targetID ? "Destination" : "Merging"}
-                        </span>
-                      </span>
-                    </label>
-                  ))}
-                </div>
-                <FieldError
-                  error={errors.cover_entry_id}
-                  id="merged-cover-error"
+    <>
+      <Dialog onOpenChange={changeOpen} open>
+        <DialogContent className="max-w-xl">
+          <DialogTitle>{titleText}</DialogTitle>
+          <DialogDescription className="mt-3 text-sm text-muted">
+            {operation === "merge"
+              ? `Combine every item in ${moment.label} with another Moment.`
+              : `${selected.length} ${selected.length === 1 ? "item" : "items"} selected from ${moment.label}.`}
+          </DialogDescription>
+          <Form
+            aria-busy={pending}
+            aria-label={titleText}
+            className="mt-6"
+            error={error}
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (preview?.ready && preview.review_token) commit();
+              else review();
+            }}
+          >
+            <fieldset disabled={pending}>
+              {operation !== "split" && (
+                <SelectField
+                  error={
+                    errors.destination_moment_id ?? errors.target_moment_id
+                  }
+                  label="Destination Moment"
+                  onChange={(value) => {
+                    setTargetID(value);
+                    if (operation === "merge")
+                      setNewCoverID(
+                        others.find((item) => item.id === value)
+                          ?.cover_entry_id ?? "",
+                      );
+                    clearReview();
+                  }}
+                  options={others.map((item) => ({
+                    value: item.id,
+                    label: item.label,
+                  }))}
+                  placeholder="Choose a Moment"
+                  value={targetID}
                 />
-              </fieldset>
-            )}
-            <FieldError error={errors.entry_ids} id="entry-ids-error" />
-            {operation === "split" && (
-              <p className="mb-5 text-xs leading-relaxed text-muted">
-                Both Moments keep the existing access decisions, and the new
-                Moment starts with its earliest item as its cover. Splitting
-                alone changes no one's media access.
-              </p>
-            )}
-            {coverLeaves && (
-              <p className="mb-5 text-xs leading-relaxed text-muted">
-                This Moment's cover is leaving, so its earliest remaining item
-                becomes the cover.
-              </p>
-            )}
-            {preview && preview.conflicts.length > 0 && (
-              <fieldset className="mb-6 border-t border-border pt-5">
-                <legend className="font-heading text-xl">
-                  Choose the combined audience
-                </legend>
-                <p className="mt-2 mb-4 text-xs text-muted">
-                  These Moments differ. Choose access for every listed Person.
-                </p>
-                <FieldError error={errors.resolutions} id="resolutions-error" />
-                {preview.conflicts.map((conflict) => (
-                  <SelectField
-                    key={conflict.person_id}
-                    label={conflict.display_name}
-                    onChange={(decision) => {
-                      setResolutions((current) => ({
-                        ...current,
-                        [conflict.person_id]: decision,
-                      }));
-                      setPreview({
-                        ...preview,
-                        ready: false,
-                        review_token: "",
-                      });
-                    }}
-                    options={[
-                      { value: "inherit", label: "No Moment decision" },
-                      { value: "allow", label: "Allow" },
-                      { value: "deny", label: "Exclude" },
-                    ]}
-                    placeholder={`${conflict.source} here, ${conflict.target} there`}
-                    value={resolutions[conflict.person_id] ?? ""}
+              )}
+              {operation !== "move" && (
+                <Field
+                  error={errors.new_title ?? errors.title}
+                  label={
+                    operation === "split"
+                      ? "New Moment title"
+                      : "Merged Moment title"
+                  }
+                  maxLength={200}
+                  onChange={(event) => {
+                    setTitle(event.target.value);
+                    clearReview();
+                  }}
+                  placeholder={
+                    operation === "merge"
+                      ? target?.label
+                      : "Generated date label"
+                  }
+                  value={title}
+                />
+              )}
+              {operation === "merge" && (
+                <fieldset className="mb-5">
+                  <legend className="block text-xs font-medium">
+                    Merged Moment cover
+                  </legend>
+                  <div className="mt-2 flex flex-wrap gap-3">
+                    {mergeCovers.map(({ moment: item, entry }) => (
+                      <label
+                        className="flex max-w-40 cursor-pointer flex-col gap-2 text-xs"
+                        key={item.id}
+                      >
+                        <input
+                          aria-label={`Keep the cover of ${item.label}`}
+                          checked={newCoverID === entry.id}
+                          className="peer sr-only"
+                          name="merged_cover"
+                          onChange={() => {
+                            setNewCoverID(entry.id);
+                            clearReview();
+                          }}
+                          type="radio"
+                          value={entry.id}
+                        />
+                        <span className="block rounded-sm peer-checked:outline-2 peer-checked:outline-offset-2 peer-checked:outline-primary peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-ring">
+                          <AlbumImage
+                            alt={entry.filename}
+                            className="h-auto max-h-28 w-auto max-w-40"
+                            fallback="No preview available"
+                            src={entry.available ? entry.thumbnail_url : ""}
+                          />
+                        </span>
+                        <span className="text-muted">
+                          <span className="block">{item.label}</span>
+                          <span className="block">
+                            {item.id === targetID ? "Destination" : "Merging"}
+                          </span>
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                  <FieldError
+                    error={errors.cover_entry_id}
+                    id="merged-cover-error"
                   />
-                ))}
-              </fieldset>
-            )}
-            {preview?.ready && <VisibilityReview preview={preview} />}
-            <div className="flex flex-wrap gap-2">
-              <Button type="submit">
-                {pending
-                  ? "Saving…"
-                  : preview?.ready
-                    ? `Confirm ${operation}`
-                    : `Review ${operation}`}
-              </Button>
-              <Button
-                onClick={() => changeOpen(false)}
-                type="button"
-                variant="outline"
-              >
-                Cancel
-              </Button>
-            </div>
-          </fieldset>
-        </Form>
-      </DialogContent>
-    </Dialog>
+                </fieldset>
+              )}
+              <FieldError error={errors.entry_ids} id="entry-ids-error" />
+              {operation === "split" && (
+                <p className="mb-5 text-xs leading-relaxed text-muted">
+                  Both Moments keep the existing access decisions, and the new
+                  Moment starts with its earliest item as its cover. Splitting
+                  alone changes no one's media access.
+                </p>
+              )}
+              {coverLeaves && (
+                <p className="mb-5 text-xs leading-relaxed text-muted">
+                  This Moment's cover is leaving, so its earliest remaining item
+                  becomes the cover.
+                </p>
+              )}
+              {preview && preview.conflicts.length > 0 && (
+                <fieldset className="mb-6 border-t border-border pt-5">
+                  <legend className="font-heading text-xl">
+                    Choose the combined audience
+                  </legend>
+                  <p className="mt-2 mb-4 text-xs text-muted">
+                    These Moments differ. Choose access for every listed Person.
+                  </p>
+                  <FieldError
+                    error={errors.resolutions}
+                    id="resolutions-error"
+                  />
+                  {preview.conflicts.map((conflict) => (
+                    <SelectField
+                      key={conflict.person_id}
+                      label={conflict.display_name}
+                      onChange={(decision) => {
+                        setResolutions((current) => ({
+                          ...current,
+                          [conflict.person_id]: decision,
+                        }));
+                        setPreview({
+                          ...preview,
+                          ready: false,
+                          review_token: "",
+                        });
+                      }}
+                      options={[
+                        { value: "inherit", label: "No Moment decision" },
+                        { value: "allow", label: "Allow" },
+                        { value: "deny", label: "Exclude" },
+                      ]}
+                      placeholder={`${conflict.source} here, ${conflict.target} there`}
+                      value={resolutions[conflict.person_id] ?? ""}
+                    />
+                  ))}
+                </fieldset>
+              )}
+              {preview?.ready && <VisibilityReview preview={preview} />}
+              <div className="flex flex-wrap gap-2">
+                <Button type="submit">
+                  {pending
+                    ? "Saving…"
+                    : preview?.ready
+                      ? `Confirm ${operation}`
+                      : `Review ${operation}`}
+                </Button>
+                <Button
+                  onClick={() => changeOpen(false)}
+                  type="button"
+                  variant="outline"
+                >
+                  Cancel
+                </Button>
+              </div>
+            </fieldset>
+          </Form>
+        </DialogContent>
+      </Dialog>
+      <ConfirmDialog
+        confirmLabel="Discard"
+        description="The album stays as it is and your choices here will not be saved."
+        onConfirm={onClose}
+        onOpenChange={setDiscardOpen}
+        open={discardOpen}
+        title="Discard this structural change?"
+      />
+    </>
   );
 }

@@ -341,7 +341,6 @@ it("keeps an exact-email draft through refresh and field errors, then moves a re
       });
     }),
   );
-  const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
   window.history.replaceState(null, "", "/curator/people/alex");
   const user = userEvent.setup();
   render(<App />);
@@ -350,7 +349,14 @@ it("keeps an exact-email draft through refresh and field errors, then moves a re
   });
   await user.type(email, "Exact.Email@example.test");
   await user.click(screen.getByRole("link", { name: "People" }));
-  expect(confirm).toHaveBeenCalledOnce();
+  await user.click(
+    within(
+      await screen.findByRole("dialog", { name: "Leave this page?" }),
+    ).getByRole("button", { name: "Cancel" }),
+  );
+  await waitFor(() =>
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+  );
   expect(email).toHaveValue("Exact.Email@example.test");
   failRead = true;
   await act(async () => {
