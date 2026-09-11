@@ -270,34 +270,96 @@ it("removes a revoked session's private screen on a 401 and refreshes sign-in st
   ).not.toBeInTheDocument();
 });
 
-it("guards unsaved profile changes when leaving or signing out", async () => {
+function serveProfile() {
+  let signedOut = false;
   vi.stubGlobal(
     "fetch",
     vi.fn(async (path: string) => {
       if (path.endsWith("/status"))
-        return Response.json({
-          claimed: true,
-          person: alex,
-          auth_mode: "fake",
-        });
+        return Response.json(
+          signedOut
+            ? { claimed: true, auth_mode: "fake" }
+            : { claimed: true, person: alex, auth_mode: "fake" },
+        );
+      if (path.endsWith("/sign-out")) {
+        signedOut = true;
+        return Response.json({});
+      }
       if (path.endsWith("/sessions")) return Response.json([]);
       return Response.json({ person: alex, identities: [account] });
     }),
   );
-  const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+}
+
+it("guards unsaved profile changes when leaving or signing out", async () => {
+  serveProfile();
   window.history.replaceState(null, "", "/profile");
   const user = userEvent.setup();
   render(<App />);
   const name = await screen.findByRole("textbox", { name: "Display name" });
   await user.type(name, " edited");
-  await user.click(screen.getByRole("link", { name: "Albums" }));
-  expect(confirm).toHaveBeenCalledTimes(1);
-  expect(name).toHaveValue("Alex edited");
-  await user.click(screen.getByRole("button", { name: "Account menu" }));
-  await user.click(screen.getByRole("menuitem", { name: "Sign out" }));
-  expect(confirm).toHaveBeenCalledTimes(2);
+  const albums = screen.getByRole("link", { name: "Albums" });
+  await user.click(albums);
+  await user.click(
+    within(
+      await screen.findByRole("dialog", { name: "Leave this page?" }),
+    ).getByRole("button", { name: "Cancel" }),
+  );
+  await waitFor(() =>
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+  );
+  expect(albums).toHaveFocus();
   expect(name).toHaveValue("Alex edited");
   expect(window.location.pathname).toBe("/profile");
+  const menuTrigger = screen.getByRole("button", { name: "Account menu" });
+  await user.click(menuTrigger);
+  await user.click(screen.getByRole("menuitem", { name: "Sign out" }));
+  await user.click(
+    within(await screen.findByRole("dialog", { name: "Sign out?" })).getByRole(
+      "button",
+      { name: "Cancel" },
+    ),
+  );
+  await waitFor(() =>
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+  );
+  expect(menuTrigger).toHaveFocus();
+  expect(name).toHaveValue("Alex edited");
+  expect(window.location.pathname).toBe("/profile");
+  await user.click(menuTrigger);
+  await user.click(screen.getByRole("menuitem", { name: "Sign out" }));
+  await user.click(
+    within(await screen.findByRole("dialog", { name: "Sign out?" })).getByRole(
+      "button",
+      { name: "Sign out" },
+    ),
+  );
+  expect(
+    await screen.findByRole("heading", { name: "Welcome back" }),
+  ).toBeInTheDocument();
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+});
+
+it("leaves the profile once the person confirms losing their edits", async () => {
+  serveProfile();
+  window.history.replaceState(null, "", "/profile");
+  const user = userEvent.setup();
+  render(<App />);
+  await user.type(
+    await screen.findByRole("textbox", { name: "Display name" }),
+    " edited",
+  );
+  await user.click(screen.getByRole("link", { name: "Albums" }));
+  await user.click(
+    within(
+      await screen.findByRole("dialog", { name: "Leave this page?" }),
+    ).getByRole("button", { name: "Leave page" }),
+  );
+  expect(
+    await screen.findByRole("heading", { name: "Your albums" }),
+  ).toBeInTheDocument();
+  expect(window.location.pathname).toBe("/albums");
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
 });
 
 it.each([false, true])(
@@ -473,6 +535,16 @@ it("keeps another linked account available after unlinking one from your profile
     name: "Unlink second@example.test",
   });
   expect(unlink).toHaveTextContent(/^Unlink$/);
+  await user.click(unlink);
+  await user.click(
+    within(
+      screen.getByRole("dialog", { name: "Unlink second@example.test?" }),
+    ).getByRole("button", { name: "Cancel" }),
+  );
+  await waitFor(() =>
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+  );
+  expect(unlink).toHaveFocus();
   await user.click(unlink);
   const dialog = screen.getByRole("dialog", {
     name: "Unlink second@example.test?",

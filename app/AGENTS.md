@@ -75,6 +75,14 @@
 - Use shared menu and dialog primitives for keyboard navigation, Escape,
   outside-click dismissal, and focus restoration. When a menu opens a dialog,
   closing the dialog must return focus to a visible trigger.
+- Never call `window.alert`, `window.confirm`, or `window.prompt`. They
+  cannot be styled, ignore the app's theme, and trap keyboard focus outside
+  the page. Ask yes-or-no questions with the shared `ConfirmDialog` or, when
+  the prompt belongs to a button, `ConfirmAction`, both in
+  `app/components/forms`. Show outcomes inline with `role="alert"` or
+  `role="status"`. ESLint's `no-alert` rule enforces this.
+  The only exception is the `beforeunload` handler, where the browser owns the
+  prompt.
 - Text-styled buttons and summaries still need a hover surface. Keep real
   padding such as `px-2 py-1` and pull the control back into alignment with
   matching negative margins (`-mx-2`) instead of zeroing the padding, so hover

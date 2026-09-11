@@ -54,6 +54,8 @@ export default tseslint.config(
       "@eslint-react/unsupported-syntax": "off",
       "@eslint-react/use-memo": "off",
 
+      // Native prompts cannot be styled and break focus; use ConfirmDialog.
+      "no-alert": "error",
       "perfectionist/sort-jsx-props": "error",
       "react-refresh/only-export-components": [
         "warn",

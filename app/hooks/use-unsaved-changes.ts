@@ -20,7 +20,8 @@ export function useUnsavedChanges(unsaved: boolean, includeSearch = false) {
 }
 
 // React Router supports one blocker per router, so the shell owns the blocker
-// while individual forms only register their dirty state above.
+// and renders its confirmation dialog while individual forms only register
+// their dirty state above.
 export function useUnsavedChangesBlocker(
   registryRef: RefObject<Map<symbol, boolean>>,
 ) {
@@ -34,12 +35,6 @@ export function useUnsavedChangesBlocker(
     return searchChanged && [...registry.values()].some(Boolean);
   });
   useEffect(() => {
-    if (blocker.state !== "blocked") return;
-    if (window.confirm("Leave this page? Your changes will not be saved."))
-      blocker.proceed();
-    else blocker.reset();
-  }, [blocker]);
-  useEffect(() => {
     const beforeUnload = (event: BeforeUnloadEvent) => {
       if (registryRef.current.size === 0) return;
       event.preventDefault();
@@ -48,4 +43,5 @@ export function useUnsavedChangesBlocker(
     window.addEventListener("beforeunload", beforeUnload);
     return () => window.removeEventListener("beforeunload", beforeUnload);
   }, [registryRef]);
+  return blocker;
 }

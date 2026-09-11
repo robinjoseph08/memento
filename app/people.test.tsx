@@ -1,4 +1,10 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import {
+  cleanup,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vitest";
 
@@ -214,4 +220,43 @@ it("creates a person without losing a rejected display name and opens their acce
   expect(
     screen.getByRole("heading", { name: "Preauthorizations" }),
   ).toBeInTheDocument();
+});
+
+it("asks before discarding a new person and keeps the name when the Curator changes their mind", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (path: string) =>
+      Response.json(
+        path.endsWith("/status")
+          ? { claimed: true, person: curator, auth_mode: "fake" }
+          : [],
+      ),
+    ),
+  );
+  window.history.replaceState(null, "", "/curator/people");
+  const user = userEvent.setup();
+  render(<App />);
+  await user.click(await screen.findByRole("button", { name: "Add person" }));
+  const name = screen.getByRole("textbox", { name: "Display name" });
+  await user.type(name, "Alex");
+  await user.keyboard("{Escape}");
+  const discard = await screen.findByRole("dialog", {
+    name: "Discard this new person?",
+  });
+  await user.click(within(discard).getByRole("button", { name: "Cancel" }));
+  await waitFor(() => expect(discard).not.toBeInTheDocument());
+  expect(screen.getByRole("dialog", { name: "Add person" })).toBeVisible();
+  expect(name).toHaveValue("Alex");
+  expect(name).toHaveFocus();
+  await user.keyboard("{Escape}");
+  await user.click(
+    within(
+      await screen.findByRole("dialog", { name: "Discard this new person?" }),
+    ).getByRole("button", { name: "Discard" }),
+  );
+  await waitFor(() =>
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+  );
+  await user.click(screen.getByRole("button", { name: "Add person" }));
+  expect(screen.getByRole("textbox", { name: "Display name" })).toHaveValue("");
 });

@@ -17,6 +17,7 @@ import type {
   Moment,
   UndoMomentAccessRequest,
 } from "../../types/generated/publishing";
+import { ConfirmDialog } from "../forms/confirm-dialog";
 import { Field, Form, sectionHeadingClass } from "../people/form-fields";
 import { Button } from "../ui/button";
 import {
@@ -552,60 +553,72 @@ function RenameMomentDialog({
 }) {
   const update = useUpdateMoment(albumID, moment.id);
   const [title, setTitle] = useState(moment.title);
+  const [discardOpen, setDiscardOpen] = useState(false);
   const dirty = title !== moment.title;
   useUnsavedChanges(dirty || update.isPending, true);
   const errors = fieldErrors(update.error);
   function changeOpen(next: boolean) {
-    if (
-      !next &&
-      (update.isPending ||
-        (dirty && !window.confirm("Discard this Moment title?")))
-    )
-      return;
-    onOpenChange(next);
+    if (next) onOpenChange(true);
+    else if (update.isPending) return;
+    else if (dirty) setDiscardOpen(true);
+    else onOpenChange(false);
   }
   return (
-    <Dialog onOpenChange={changeOpen} open={open}>
-      <DialogContent>
-        <DialogTitle>Rename Moment</DialogTitle>
-        <DialogDescription className="mt-2 text-sm text-muted">
-          Only Curators see this name. Clear it to use the generated date label.
-        </DialogDescription>
-        <Form
-          aria-busy={update.isPending}
-          aria-label="Rename Moment"
-          className="mt-6"
-          error={update.error}
-          onSubmit={(event) => {
-            event.preventDefault();
-            update.mutate({ title }, { onSuccess: () => onOpenChange(false) });
-          }}
-        >
-          <fieldset disabled={update.isPending}>
-            <Field
-              error={errors.title}
-              label="Moment title"
-              maxLength={200}
-              name="title"
-              onChange={(event) => setTitle(event.target.value)}
-              value={title}
-            />
-            <div className="flex gap-2">
-              <Button type="submit">
-                {update.isPending ? "Saving…" : "Save title"}
-              </Button>
-              <Button
-                onClick={() => changeOpen(false)}
-                type="button"
-                variant="outline"
-              >
-                Cancel
-              </Button>
-            </div>
-          </fieldset>
-        </Form>
-      </DialogContent>
-    </Dialog>
+    <>
+      <Dialog onOpenChange={changeOpen} open={open}>
+        <DialogContent>
+          <DialogTitle>Rename Moment</DialogTitle>
+          <DialogDescription className="mt-2 text-sm text-muted">
+            Only Curators see this name. Clear it to use the generated date
+            label.
+          </DialogDescription>
+          <Form
+            aria-busy={update.isPending}
+            aria-label="Rename Moment"
+            className="mt-6"
+            error={update.error}
+            onSubmit={(event) => {
+              event.preventDefault();
+              update.mutate(
+                { title },
+                { onSuccess: () => onOpenChange(false) },
+              );
+            }}
+          >
+            <fieldset disabled={update.isPending}>
+              <Field
+                error={errors.title}
+                label="Moment title"
+                maxLength={200}
+                name="title"
+                onChange={(event) => setTitle(event.target.value)}
+                value={title}
+              />
+              <div className="flex gap-2">
+                <Button type="submit">
+                  {update.isPending ? "Saving…" : "Save title"}
+                </Button>
+                <Button
+                  onClick={() => changeOpen(false)}
+                  type="button"
+                  variant="outline"
+                >
+                  Cancel
+                </Button>
+              </div>
+            </fieldset>
+          </Form>
+        </DialogContent>
+      </Dialog>
+      <ConfirmDialog
+        confirmLabel="Discard"
+        description="The Moment keeps its current title."
+        onConfirm={() => onOpenChange(false)}
+        onOpenChange={setDiscardOpen}
+        open={discardOpen}
+        title="Discard this Moment title?"
+      />
+    </>
   );
 }
 

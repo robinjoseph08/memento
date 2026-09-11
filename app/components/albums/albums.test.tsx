@@ -549,9 +549,15 @@ it("links an Immich face to an existing Person and derives a suggestion", async 
     screen.getByRole("option", { name: 'Create "Immich Alex"' }),
   ).toBeVisible();
   await user.click(screen.getByRole("option", { name: "Alex" }));
-  const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
   await user.click(screen.getByRole("link", { name: "Album details" }));
-  expect(confirm).toHaveBeenCalledOnce();
+  await user.click(
+    within(
+      await screen.findByRole("dialog", { name: "Leave this page?" }),
+    ).getByRole("button", { name: "Cancel" }),
+  );
+  await waitFor(() =>
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+  );
   expect(screen.getByRole("combobox", { name: "Person" })).toHaveTextContent(
     "Alex",
   );
@@ -977,4 +983,34 @@ it("browses source covers, searches in the URL and keeps search when paging", as
   ).toBeVisible();
   expect(new URLSearchParams(window.location.search).get("q")).toBe("Summer");
   expect(new URLSearchParams(window.location.search).get("page")).toBe("2");
+});
+
+it("asks before discarding an edited Moment title and keeps the field focused when the Curator stays", async () => {
+  mockAPI(() => Response.json(completeAlbum));
+  window.history.replaceState(null, "", "/curator/albums/album-1");
+  const user = userEvent.setup();
+  render(<App />);
+  const moment = await screen.findByRole("region", { name: "First day" });
+  await user.click(within(moment).getByRole("button", { name: "Rename" }));
+  const title = screen.getByRole("textbox", { name: "Moment title" });
+  await user.type(title, " at the beach");
+  await user.keyboard("{Escape}");
+  const discard = await screen.findByRole("dialog", {
+    name: "Discard this Moment title?",
+  });
+  await user.click(within(discard).getByRole("button", { name: "Cancel" }));
+  await waitFor(() => expect(discard).not.toBeInTheDocument());
+  expect(screen.getByRole("dialog", { name: "Rename Moment" })).toBeVisible();
+  expect(title).toHaveValue("First day at the beach");
+  expect(title).toHaveFocus();
+  await user.click(screen.getByRole("button", { name: "Cancel" }));
+  await user.click(
+    within(
+      await screen.findByRole("dialog", { name: "Discard this Moment title?" }),
+    ).getByRole("button", { name: "Discard" }),
+  );
+  await waitFor(() =>
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+  );
+  expect(within(moment).getByRole("button", { name: "Rename" })).toBeVisible();
 });

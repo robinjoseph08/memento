@@ -1,5 +1,12 @@
 import { focusManager } from "@tanstack/react-query";
-import { act, cleanup, render, screen } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
@@ -210,25 +217,30 @@ it("signs out of the Curator shell and redirects a protected bookmark to sign-in
 
 it("protects edited claims from navigation and reload without blocking successful sign-in", async () => {
   serveIdentity();
-  const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
   const user = userEvent.setup();
   render(<App />);
   const email = await screen.findByRole("textbox", { name: "Email" });
   await user.clear(email);
   await user.type(email, "keep-this@example.test");
   await user.click(screen.getByRole("link", { name: "memento home" }));
-  expect(confirm).toHaveBeenCalled();
+  await user.click(
+    within(
+      await screen.findByRole("dialog", { name: "Leave this page?" }),
+    ).getByRole("button", { name: "Cancel" }),
+  );
+  await waitFor(() =>
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+  );
   expect(email).toHaveValue("keep-this@example.test");
   expect(window.location.pathname).toBe("/setup");
   const beforeUnload = new Event("beforeunload", { cancelable: true });
   window.dispatchEvent(beforeUnload);
   expect(beforeUnload.defaultPrevented).toBe(true);
-  confirm.mockClear();
   await user.click(screen.getByRole("button", { name: "Claim installation" }));
   expect(
     await screen.findByRole("heading", { name: "Your albums" }),
   ).toBeInTheDocument();
-  expect(confirm).not.toHaveBeenCalled();
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
 });
 
 it("offers a retry after a server error without showing server details", async () => {

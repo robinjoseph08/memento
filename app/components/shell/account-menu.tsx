@@ -8,6 +8,7 @@ import { errorMessage } from "../../lib/http";
 import { initials } from "../../lib/initials";
 import type { Person } from "../../types/generated/identity";
 import { ConnectionDetails } from "../connection/connection-status";
+import { ConfirmDialog } from "../forms/confirm-dialog";
 import { Avatar, AvatarFallback, AvatarImage } from "../ui/avatar";
 import { Button } from "../ui/button";
 import {
@@ -34,7 +35,12 @@ export function AccountMenu({
   const signOut = useSignOut();
   const unsavedRef = use(UnsavedChangesContext);
   const [connectionOpen, setConnectionOpen] = useState(false);
+  const [signOutOpen, setSignOutOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  function returnFocusToTrigger(event: Event) {
+    event.preventDefault();
+    triggerRef.current?.focus();
+  }
   return (
     <>
       <DropdownMenu modal={false}>
@@ -57,7 +63,7 @@ export function AccountMenu({
           align="end"
           className="w-64 max-w-[calc(100vw-1rem)]"
           onCloseAutoFocus={(event) => {
-            if (connectionOpen) event.preventDefault();
+            if (connectionOpen || signOutOpen) event.preventDefault();
           }}
         >
           <DropdownMenuLabel>
@@ -86,13 +92,13 @@ export function AccountMenu({
           <DropdownMenuItem
             disabled={signOut.isPending}
             onSelect={(event) => {
-              event.preventDefault();
               if (signOut.isPending) return;
-              if (
-                unsavedRef?.current.size &&
-                !window.confirm("Sign out? Your changes will not be saved.")
-              )
+              if (unsavedRef?.current.size) {
+                signOut.reset();
+                setSignOutOpen(true);
                 return;
+              }
+              event.preventDefault();
               signOut.mutate();
             }}
           >
@@ -106,12 +112,7 @@ export function AccountMenu({
         </DropdownMenuContent>
       </DropdownMenu>
       <Dialog onOpenChange={setConnectionOpen} open={connectionOpen}>
-        <DialogContent
-          onCloseAutoFocus={(event) => {
-            event.preventDefault();
-            triggerRef.current?.focus();
-          }}
-        >
+        <DialogContent onCloseAutoFocus={returnFocusToTrigger}>
           <DialogTitle className="pr-10">Immich connection</DialogTitle>
           <DialogDescription className="mt-3 text-sm text-muted">
             Check the connection to your photo library.
@@ -119,6 +120,20 @@ export function AccountMenu({
           <ConnectionDetails area="curator" />
         </DialogContent>
       </Dialog>
+      <ConfirmDialog
+        confirmLabel="Sign out"
+        description="Your changes will not be saved."
+        error={signOut.error}
+        onCloseAutoFocus={returnFocusToTrigger}
+        onConfirm={() =>
+          signOut.mutate(undefined, { onSuccess: () => setSignOutOpen(false) })
+        }
+        onOpenChange={setSignOutOpen}
+        open={signOutOpen}
+        pending={signOut.isPending}
+        pendingLabel="Signing out…"
+        title="Sign out?"
+      />
     </>
   );
 }

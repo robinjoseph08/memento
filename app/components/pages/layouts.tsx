@@ -6,6 +6,7 @@ import { useUnsavedChangesBlocker } from "../../hooks/use-unsaved-changes";
 import { UnsavedChangesContext } from "../../lib/forms";
 import { errorMessage } from "../../lib/http";
 import { ConnectionStatus } from "../connection/connection-status";
+import { ConfirmDialog } from "../forms/confirm-dialog";
 import { SignInForm } from "../identity/sign-in-form";
 import { Header } from "../shell/header";
 import { PageTitle } from "../shell/page-title";
@@ -23,12 +24,22 @@ function destination(person: { is_curator: boolean } | null | undefined) {
 export function AppShell() {
   const { data } = useIdentityStatus();
   const unsavedRef = useRef(new Map<symbol, boolean>());
-  useUnsavedChangesBlocker(unsavedRef);
+  const blocker = useUnsavedChangesBlocker(unsavedRef);
   return (
     <UnsavedChangesContext value={unsavedRef}>
       <Header />
       <Outlet
         key={`${data?.person?.id ?? "public"}-${!!data?.person?.is_curator}`}
+      />
+      <ConfirmDialog
+        confirmLabel="Leave page"
+        description="Your changes will not be saved."
+        onConfirm={() => blocker.proceed?.()}
+        onOpenChange={(open) => {
+          if (!open) blocker.reset?.();
+        }}
+        open={blocker.state === "blocked"}
+        title="Leave this page?"
       />
     </UnsavedChangesContext>
   );

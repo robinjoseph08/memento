@@ -13,7 +13,7 @@ import type {
   Profile,
   UpdateProfileRequest,
 } from "../../types/generated/identity";
-import { ConfirmAction } from "../people/confirm-action";
+import { ConfirmAction } from "../forms/confirm-action";
 import {
   CheckField,
   Field,
