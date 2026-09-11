@@ -181,9 +181,12 @@ func getAlbum(ctx context.Context, db bun.IDB, id, immichURL string) (AlbumDetai
 	if err != nil {
 		return result, err
 	}
+	// Only untitled Moments share a generated label, so only they are numbered.
 	anchorCounts := map[string]int{}
 	for _, moment := range moments {
-		anchorCounts[moment.CaptureDate]++
+		if moment.Title == nil {
+			anchorCounts[moment.CaptureDate]++
+		}
 	}
 	anchorRanks := map[string]int{}
 	for _, moment := range moments {
@@ -196,9 +199,9 @@ func getAlbum(ctx context.Context, db bun.IDB, id, immichURL string) (AlbumDetai
 		if moment.Title != nil {
 			title = *moment.Title
 		}
-		anchorRanks[moment.CaptureDate]++
 		label := title
 		if label == "" {
+			anchorRanks[moment.CaptureDate]++
 			label = generatedMomentLabel(start, end)
 			if anchorCounts[moment.CaptureDate] > 1 {
 				label = fmt.Sprintf("%s (%d)", label, anchorRanks[moment.CaptureDate])

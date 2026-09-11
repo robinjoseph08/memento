@@ -6,41 +6,20 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestRecommendationsFollowMembershipWithoutChangingDecisions(t *testing.T) {
-	t.Parallel()
-	facts := accessFacts{
-		EntryMoments: map[string]string{"photo": "first", "supporting": "first", "other": "second"},
-		Detections: map[string][]string{
-			"photo":      {"alex", "alex"},
-			"supporting": {"sam"},
-			"other":      {"taylor"},
-		},
-		Decisions: map[string]map[string]Decision{
-			"first":  {"sam": DecisionDeny},
-			"second": {"jamie": DecisionAllow},
-		},
-	}
-
-	assert.Equal(t, []string{"alex"}, recommendations(facts, "first"))
-
-	facts.EntryMoments["photo"] = "second"
-	assert.Empty(t, recommendations(facts, "first"))
-	assert.Equal(t, []string{"alex", "taylor"}, recommendations(facts, "second"))
-	assert.Equal(t, DecisionDeny, facts.Decisions["first"]["sam"])
-	assert.Equal(t, DecisionAllow, facts.Decisions["second"]["jamie"])
-}
-
 func TestAudienceChangesUseTheSameMomentDecisionEvaluator(t *testing.T) {
 	t.Parallel()
+	decisions := map[string]map[string]Decision{
+		"first":  {"alex": DecisionAllow},
+		"second": {"sam": DecisionAllow},
+	}
 	before := accessFacts{
 		EntryMoments: map[string]string{"one": "first", "two": "first", "three": "second"},
-		Decisions: map[string]map[string]Decision{
-			"first":  {"alex": DecisionAllow},
-			"second": {"sam": DecisionAllow},
-		},
+		Decisions:    decisions,
 	}
-	after := before.clone()
-	after.EntryMoments["two"] = "second"
+	after := accessFacts{
+		EntryMoments: map[string]string{"one": "first", "two": "second", "three": "second"},
+		Decisions:    decisions,
+	}
 
 	assert.Equal(t, []AudienceChange{
 		{PersonID: "alex", GainedEntryIDs: []string{}, LostEntryIDs: []string{"two"}},

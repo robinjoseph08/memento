@@ -69,13 +69,25 @@ function usePersonDetailMutation(id: string) {
   };
 }
 
-export function useLinkFace(id: string) {
-  const cache = usePersonDetailMutation(id);
+export function useLinkFace() {
+  const client = useQueryClient();
+  const scope = usePrivateScope();
   return useMutation({
-    mutationKey: cache.scope,
-    mutationFn: (body: LinkFaceRequest) =>
-      request<PersonDetail>(`/api/people/${id}/faces`, { body }),
-    onSuccess: cache.save,
+    mutationKey: scope,
+    mutationFn: ({
+      personID,
+      body,
+    }: {
+      personID: string;
+      body: LinkFaceRequest;
+    }) => request<PersonDetail>(`/api/people/${personID}/faces`, { body }),
+    onSuccess: async (detail, { personID }) => {
+      client.setQueryData([...scope, "person", personID], detail);
+      await Promise.all([
+        client.invalidateQueries({ queryKey: [...scope, "people"] }),
+        client.invalidateQueries({ queryKey: [...scope, "album"] }),
+      ]);
+    },
   });
 }
 

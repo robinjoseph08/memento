@@ -483,15 +483,17 @@ export function Moments({ album }: { album: AlbumDetail }) {
           })}
         </div>
       </section>
-      <aside
-        aria-label="Moment access"
-        className="hidden border-l border-border p-5 min-[1000px]:block"
-      >
-        {access}
-      </aside>
+      {inspectorVisible && (
+        <aside
+          aria-label="Moment access"
+          className="border-l border-border p-5"
+        >
+          {access}
+        </aside>
+      )}
       <Sheet
         onOpenChange={(open) => !open && updateURL({ inspect: null })}
-        open={sheetOpen}
+        open={sheetOpen && !inspectorVisible}
       >
         <SheetContent
           className="right-0 left-auto w-[min(25rem,calc(100vw-1rem))] border-r-0 border-l border-border"

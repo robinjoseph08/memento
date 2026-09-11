@@ -28,7 +28,7 @@ func (h *handlers) faceThumbnail(c *echo.Context) error {
 		return err
 	}
 	return serveVersioned(c, version, func() (immich.Thumbnail, error) {
-		return h.module.source.PersonThumbnail(c.Request().Context(), sourceID)
+		return h.module.personThumbnail(c.Request().Context(), sourceID)
 	})
 }
 
@@ -39,7 +39,7 @@ func (h *handlers) personAvatar(c *echo.Context) error {
 		return err
 	}
 	return serveVersioned(c, version, func() (immich.Thumbnail, error) {
-		return h.module.source.PersonThumbnail(c.Request().Context(), sourceID)
+		return h.module.personThumbnail(c.Request().Context(), sourceID)
 	})
 }
 

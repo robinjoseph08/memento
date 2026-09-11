@@ -1,5 +1,5 @@
 import { RefreshCw } from "lucide-react";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 
 import {
   useAddMomentSuggestions,
@@ -45,8 +45,8 @@ function AccessGroup({
   id: string;
   title: string;
   count: number;
-  action?: React.ReactNode;
-  children: React.ReactNode;
+  action?: ReactNode;
+  children: ReactNode;
 }) {
   return (
     <section aria-labelledby={id} className="mt-6 first:mt-0">
@@ -162,7 +162,7 @@ export function MomentAccessInspector({
         <p className="text-xs text-muted">Changes save immediately.</p>
         <Button
           className="-mx-2 h-auto min-h-0 px-2 py-1 text-xs"
-          disabled={!undo || pending}
+          disabled={!undo?.changes.length || pending}
           onClick={() =>
             undo &&
             undoChange.mutate(undo, {

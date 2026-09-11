@@ -170,7 +170,7 @@ func fixtureFaces() (map[string][]sourceFace, map[string]sourceAsset) {
 				ID: fmt.Sprintf("fixture-face-%s-%03d", value.person, n), ImageHeight: 240, ImageWidth: 320,
 				BoundingBoxX1: 100, BoundingBoxX2: 180, BoundingBoxY1: 40, BoundingBoxY2: 140,
 				SourceType: "manual", Person: sourcePerson{ID: value.person, Name: value.name,
-					ThumbnailPath: "/fixture/people/" + value.person, Hidden: false},
+					ThumbnailPath: "/fixture/people/" + value.person, Hidden: false, UpdatedAt: "2026-06-05T12:00:00Z"},
 			})
 		}
 		thumbnail, contentType := generatedThumbnail(value.seed)

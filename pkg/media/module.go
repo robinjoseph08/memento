@@ -58,8 +58,8 @@ func (m *Module) EntryThumbnail(ctx context.Context, id, version string) (string
 }
 
 // FaceThumbnail authorizes a cached Immich face at the requested version and
-// returns the Immich person ID to fetch. Stale versions are not found, so an
-// old URL never serves new bytes under an immutable cache.
+// returns the Immich person ID to fetch. A superseded version is not found, so
+// once a refresh records a newer version the old URL stops serving.
 func (m *Module) FaceThumbnail(ctx context.Context, sourceID, version string) (string, error) {
 	if sourceID == "" {
 		return "", errcodes.NotFound("Face thumbnail")
@@ -89,7 +89,7 @@ func (m *Module) PersonAvatar(ctx context.Context, personID, version string) (st
 		ColumnExpr("person.avatar_face_id AS source_id, coalesce(max(face.source_version), '') AS version").
 		Join("JOIN immich_face_links AS link ON link.source_id = person.avatar_face_id AND link.person_id = person.id AND NOT link.ignored").
 		Join("LEFT JOIN media_face_associations AS face ON face.source_face_id = person.avatar_face_id").
-		Where("person.id = ? AND person.deactivated_at IS NULL", personID).Group("person.avatar_face_id").Scan(ctx, &avatar)
+		Where("person.id = ?", personID).Group("person.avatar_face_id").Scan(ctx, &avatar)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", errcodes.NotFound("Avatar")
 	}
@@ -100,6 +100,11 @@ func (m *Module) PersonAvatar(ctx context.Context, personID, version string) (st
 		return "", errcodes.NotFound("Avatar")
 	}
 	return avatar.SourceID, nil
+}
+
+// personThumbnail opens an authorized Immich person thumbnail.
+func (m *Module) personThumbnail(ctx context.Context, sourceID string) (immich.Thumbnail, error) {
+	return m.source.PersonThumbnail(ctx, sourceID)
 }
 
 func (m *Module) generatedThumbnail(ctx context.Context, sourceID, version string) (immich.Thumbnail, error) {

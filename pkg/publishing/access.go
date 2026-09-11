@@ -135,7 +135,7 @@ func accessByMoment(ctx context.Context, db bun.IDB, albumID string, moments []m
 
 func (m *Module) SetMomentAccess(ctx context.Context, albumID, momentID string, request SetMomentAccessRequest) (MomentAccessResult, error) {
 	if !validDecision(request.Decision) {
-		return MomentAccessResult{}, errcodes.ValidationFields("Check the highlighted fields.", map[string]string{"decision": "Choose allow or deny."})
+		return MomentAccessResult{}, errcodes.ValidationFields("Check the highlighted fields.", map[string]string{"decision": "Choose allow or exclude."})
 	}
 	personID, err := uuid.Parse(request.PersonID)
 	if err != nil {
@@ -236,7 +236,7 @@ func (m *Module) UndoMomentAccess(ctx context.Context, albumID, momentID string,
 		}
 		seen := map[string]bool{}
 		for _, change := range request.Changes {
-			personID, parseErr := uuid.Parse(change.PersonID)
+			_, parseErr := uuid.Parse(change.PersonID)
 			if parseErr != nil || seen[change.PersonID] || !validDecision(change.Current) || change.CurrentUpdatedAt.IsZero() || (change.Previous != "" && !validDecision(change.Previous)) {
 				return errcodes.ValidationError("This access change can no longer be undone.")
 			}
@@ -255,7 +255,6 @@ func (m *Module) UndoMomentAccess(ctx context.Context, albumID, momentID string,
 				}
 				continue
 			}
-			current.PersonID = models.UUID(personID)
 			current.Decision = string(change.Previous)
 			current.UpdatedAt = time.Now().UTC()
 			if _, err := tx.NewUpdate().Model(&current).Column("decision", "updated_at").WherePK().Exec(ctx); err != nil {

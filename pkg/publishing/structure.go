@@ -8,7 +8,6 @@ import (
 	"maps"
 	"net/http"
 	"sort"
-	"strings"
 	"time"
 	"uuid"
 
@@ -189,6 +188,10 @@ func reviewToken(operation string, before structureState, request any, after str
 	return hex.EncodeToString(sum[:]), nil
 }
 
+// previewMomentID stands in for a split's new Moment so the reviewed effect is
+// independent from the UUID generated only when the transaction commits.
+const previewMomentID = "new-moment"
+
 func staleReview() error {
 	return &errcodes.Error{HTTPCode: http.StatusConflict, Code: "audience_changed", Message: "Album access or Moment membership changed after this review. Review the audience again before saving."}
 }
@@ -336,9 +339,6 @@ func previewSplit(state structureState, sourceMomentID string, request SplitMome
 		updated.CoverID = state.firstEntry(state.remainingEntries(sourceMomentID, selected))
 		after.Moments[sourceMomentID] = updated
 	}
-	// A fixed placeholder keeps the reviewed effect independent from the UUID
-	// generated only when the transaction commits.
-	const previewMomentID = "new-moment"
 	maxOrder := int64(0)
 	for _, moment := range state.Moments {
 		maxOrder = max(maxOrder, moment.SortOrder)
@@ -387,7 +387,7 @@ func (m *Module) SplitMoment(ctx context.Context, albumID, sourceMomentID string
 			return staleReview()
 		}
 		source := state.Moments[sourceMomentID]
-		resulting := after.Moments["new-moment"]
+		resulting := after.Moments[previewMomentID]
 		newID := models.NewUUIDv7()
 		coverID, _ := uuid.Parse(resulting.CoverID)
 		row := models.Moment{ID: newID, AlbumID: models.UUID(uuid.MustParse(albumID)), CaptureDate: resulting.CaptureDate, SortOrder: resulting.SortOrder, CoverEntryID: models.UUID(coverID)}
@@ -414,8 +414,8 @@ func (m *Module) SplitMoment(ctx context.Context, albumID, sourceMomentID string
 		if count != int64(len(request.EntryIDs)) {
 			return staleReview()
 		}
-		rows := make([]models.MomentAccessDecision, 0, len(after.Decisions["new-moment"]))
-		for personID, decision := range after.Decisions["new-moment"] {
+		rows := make([]models.MomentAccessDecision, 0, len(after.Decisions[previewMomentID]))
+		for personID, decision := range after.Decisions[previewMomentID] {
 			rows = append(rows, models.MomentAccessDecision{MomentID: newID, AlbumID: row.AlbumID, PersonID: models.UUID(uuid.MustParse(personID)), Decision: string(decision), UpdatedAt: time.Now().UTC()})
 		}
 		if len(rows) > 0 {
@@ -572,7 +572,7 @@ func (m *Module) MergeMoments(ctx context.Context, albumID, sourceMomentID strin
 			return staleReview()
 		}
 		targetUpdate := tx.NewUpdate().Model((*models.Moment)(nil)).Set("cover_entry_id = ?", request.CoverEntryID).Where("id = ? AND album_id = ?", request.TargetMomentID, albumID)
-		if title := strings.TrimSpace(request.Title); title != "" {
+		if title := after.Moments[request.TargetMomentID].Title; title != state.Moments[request.TargetMomentID].Title {
 			targetUpdate = targetUpdate.Set("title = ?", title)
 		}
 		if _, err := targetUpdate.Exec(ctx); err != nil {

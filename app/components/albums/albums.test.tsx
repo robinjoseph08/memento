@@ -43,6 +43,16 @@ const source = {
   album_id: "",
 };
 
+// The access inspector only mounts beside the Moments on wide viewports.
+function desktopViewport() {
+  vi.stubGlobal("matchMedia", (media: string) => ({
+    media,
+    matches: /min-width/.test(media),
+    addEventListener: () => {},
+    removeEventListener: () => {},
+  }));
+}
+
 function mockAPI(
   handler: (
     path: string,
@@ -293,6 +303,7 @@ it("presents distinct Album details and expandable Moments without discarding ti
 });
 
 it("uses the compact Workbench for selection and immediate Moment access with Undo", async () => {
+  desktopViewport();
   const alex = {
     person_id: "alex",
     display_name: "Alex",
@@ -446,6 +457,7 @@ it("uses the compact Workbench for selection and immediate Moment access with Un
 });
 
 it("links an Immich face to an existing Person and derives a suggestion", async () => {
+  desktopViewport();
   const face = {
     source_id: "immich-alex",
     source_name: "Immich Alex",

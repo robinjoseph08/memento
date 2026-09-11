@@ -233,7 +233,7 @@ function LinkFaceForm({
   const choiceId = useId();
   const sourceErrorId = useId();
   const creating = personID === createValue;
-  const link = useLinkFace(creating || !personID ? "missing" : personID);
+  const link = useLinkFace();
   const create = useCreatePersonFromFace();
   const ignore = useIgnoreFace();
   const pending = link.isPending || create.isPending || ignore.isPending;
@@ -285,7 +285,10 @@ function LinkFaceForm({
           );
           return;
         }
-        link.mutate({ source_face_id: face.source_id }, { onSuccess: onClose });
+        link.mutate(
+          { personID, body: { source_face_id: face.source_id } },
+          { onSuccess: onClose },
+        );
       }}
     >
       <fieldset

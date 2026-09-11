@@ -124,15 +124,20 @@ export function useSetMomentCover(albumID: string, momentID: string) {
   });
 }
 
+// A refresh can take a while on a large Moment, so its response may predate a
+// decision saved meanwhile. Invalidating instead of writing the result keeps
+// the newer decision on screen.
 export function useRefreshMomentFaces(albumID: string, momentID: string) {
-  const cache = useAlbumCache();
+  const client = useQueryClient();
+  const scope = usePrivateScope();
   return useMutation({
-    mutationKey: cache.scope,
+    mutationKey: scope,
     mutationFn: () =>
       request<AlbumDetail>(momentURL(albumID, momentID, "faces/refresh"), {
         body: {},
       }),
-    onSuccess: cache.save,
+    onSuccess: () =>
+      client.invalidateQueries({ queryKey: [...scope, "album", albumID] }),
   });
 }
 

@@ -133,6 +133,47 @@ func TestAddAllSuggestedKeepsExplicitExclusionsAndUndoesOnlyItsOwnGrants(t *test
 	assert.Equal(t, publishing.DecisionDeny, decisionFor(undone.Moments[1], sam.ID.String()), "Undo leaves unrelated decisions alone")
 }
 
+func TestMovingSupportingMediaMovesTheSuggestion(t *testing.T) {
+	t.Parallel()
+	db := testdb.New(t)
+	source := fixture()
+	source.faces = func(_ context.Context, assetID string) ([]immich.Face, error) {
+		return []immich.Face{{FaceID: "alex-" + assetID, ID: "immich-alex", Name: "Immich Alex", UpdatedAt: "2026-06-01T00:00:00Z"}}, nil
+	}
+	module := publishing.New(db, source, noQueue)
+	album, err := module.StartImport(t.Context(), "source")
+	require.NoError(t, err)
+	require.NoError(t, module.ExecuteImport(t.Context(), album.ID))
+	album, err = module.GetAlbum(t.Context(), album.ID)
+	require.NoError(t, err)
+	quiet, busy := album.Moments[0], album.Moments[1]
+	require.Len(t, busy.Entries, 2)
+	alex := models.Person{ID: models.NewUUIDv7(), DisplayName: "Alex", CreatedAt: time.Now().UTC()}
+	_, err = db.NewInsert().Model(&alex).Exec(t.Context())
+	require.NoError(t, err)
+	alexID := alex.ID
+	link := models.ImmichFaceLink{SourceID: "immich-alex", PersonID: &alexID, UpdatedAt: time.Now().UTC()}
+	_, err = db.NewInsert().Model(&link).Exec(t.Context())
+	require.NoError(t, err)
+	// Only the busy Moment has been checked, so only it carries detections.
+	refreshed, err := module.RefreshMomentFaces(t.Context(), album.ID, busy.ID)
+	require.NoError(t, err)
+	require.False(t, personFor(refreshed.Moments[0], alex.ID.String()).Suggested)
+	require.Equal(t, 2, personFor(refreshed.Moments[1], alex.ID.String()).SupportingEntries)
+
+	move := publishing.MoveEntriesRequest{EntryIDs: []string{busy.Entries[1].ID}, DestinationMomentID: quiet.ID}
+	preview, err := module.PreviewMove(t.Context(), album.ID, busy.ID, move)
+	require.NoError(t, err)
+	assert.Empty(t, preview.Changes, "a pending suggestion is not an access change")
+	move.ReviewToken = preview.ReviewToken
+	moved, err := module.MoveEntries(t.Context(), album.ID, busy.ID, move)
+	require.NoError(t, err)
+	quietAlex := personFor(moved.Moments[0], alex.ID.String())
+	assert.True(t, quietAlex.Suggested, "the suggestion follows the supporting media")
+	assert.Equal(t, 1, quietAlex.SupportingEntries)
+	assert.Equal(t, 1, personFor(moved.Moments[1], alex.ID.String()).SupportingEntries)
+}
+
 func TestUndoRejectsANewerWriteWithTheSameDecision(t *testing.T) {
 	t.Parallel()
 	db, module, album := importedAlbum(t)

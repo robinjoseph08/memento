@@ -48,6 +48,7 @@ type sourcePerson struct {
 	BirthDate     *string `json:"birthDate"`
 	ThumbnailPath string  `json:"thumbnailPath"`
 	Hidden        bool    `json:"isHidden"`
+	UpdatedAt     string  `json:"updatedAt"`
 }
 
 func newImmichFixture(offline bool) *immichFixture {
