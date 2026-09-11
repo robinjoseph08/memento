@@ -80,6 +80,44 @@ func TestThumbnailResponseSafety(t *testing.T) {
 	})
 }
 
+func TestPersonThumbnailResponseSafety(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		contentType string
+		valid       bool
+	}{
+		{"image/jpeg; private-key=redacted", true},
+		{"application/octet-stream", true},
+		{"image/png", true},
+		{"image/svg+xml", false},
+		{"text/html; private-key=exposed", false},
+		{"private-key", false},
+	} {
+		t.Run(tc.contentType, func(t *testing.T) {
+			t.Parallel()
+			fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				assert.Equal(t, "/api/people/person%2Fopaque%20%3F%23%25/thumbnail", r.RequestURI)
+				assert.Equal(t, "private-key", r.Header.Get("X-Api-Key"))
+				w.Header().Set("Content-Type", tc.contentType)
+				_, _ = fmt.Fprint(w, "person-image")
+			}))
+			defer fixture.Close()
+			thumbnail, err := immich.New(fixture.URL, "private-key").PersonThumbnail(t.Context(), "person/opaque ?#%")
+			if !tc.valid {
+				require.Error(t, err)
+				assert.NotContains(t, fmt.Sprintf("%+v", err), "private-key")
+				return
+			}
+			require.NoError(t, err)
+			defer thumbnail.Body.Close()
+			assert.NotContains(t, thumbnail.ContentType, "private-key")
+			data, err := io.ReadAll(thumbnail.Body)
+			require.NoError(t, err)
+			assert.Equal(t, "person-image", string(data))
+		})
+	}
+}
+
 func TestGeneratedThumbnail(t *testing.T) {
 	t.Parallel()
 	fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

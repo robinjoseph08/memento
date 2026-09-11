@@ -80,7 +80,8 @@ fi
 printf '%s\n' "IMMICH_VERSION=$release" 'UPLOAD_LOCATION=smoke-upload' \
   'DB_DATA_LOCATION=smoke-db' 'DB_USERNAME=postgres' 'DB_PASSWORD=smoke' \
   'DB_DATABASE_NAME=immich' > "$work/.env"
-printf '%s\n' '{"machineLearning":{"enabled":false},"reverseGeocoding":{"enabled":false}}' > "$work/immich-config.json"
+# Immich skips person thumbnail jobs when both facial recognition and face import are disabled.
+printf '%s\n' '{"machineLearning":{"enabled":false},"metadata":{"faces":{"import":true}},"reverseGeocoding":{"enabled":false}}' > "$work/immich-config.json"
 printf 'Starting disposable %s with Immich %s\n' "$COMPOSE_PROJECT_NAME" "$IMMICH_VERSION"
 started=true
 "${compose[@]}" up --detach --wait --wait-timeout 300 immich-server memento-db

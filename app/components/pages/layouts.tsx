@@ -2,6 +2,7 @@ import { useRef } from "react";
 import { Navigate, Outlet, useLocation } from "react-router-dom";
 
 import { useIdentityStatus } from "../../hooks/queries/identity";
+import { useUnsavedChangesBlocker } from "../../hooks/use-unsaved-changes";
 import { UnsavedChangesContext } from "../../lib/forms";
 import { errorMessage } from "../../lib/http";
 import { ConnectionStatus } from "../connection/connection-status";
@@ -21,7 +22,8 @@ function destination(person: { is_curator: boolean } | null | undefined) {
 
 export function AppShell() {
   const { data } = useIdentityStatus();
-  const unsavedRef = useRef(false);
+  const unsavedRef = useRef(new Map<symbol, boolean>());
+  useUnsavedChangesBlocker(unsavedRef);
   return (
     <UnsavedChangesContext value={unsavedRef}>
       <Header />

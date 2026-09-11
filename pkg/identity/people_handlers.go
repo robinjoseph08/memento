@@ -48,6 +48,41 @@ func (h *Handlers) getPerson(c *echo.Context) error {
 	return jsonResult(c, result, err)
 }
 
+func (h *Handlers) linkFace(c *echo.Context) error {
+	var request LinkFaceRequest
+	if err := c.Bind(&request); err != nil {
+		return err
+	}
+	result, err := h.module.LinkFace(c.Request().Context(), h.browserToken(c), c.Param("id"), request)
+	return jsonResult(c, result, err)
+}
+
+func (h *Handlers) createPersonFromFace(c *echo.Context) error {
+	var request CreatePersonFromFaceRequest
+	if err := c.Bind(&request); err != nil {
+		return err
+	}
+	result, err := h.module.CreatePersonFromFace(c.Request().Context(), h.browserToken(c), request)
+	return jsonResult(c, result, err)
+}
+
+func (h *Handlers) ignoreFace(c *echo.Context) error {
+	var request struct{}
+	if err := c.Bind(&request); err != nil {
+		return err
+	}
+	return emptyResult(c, h.module.IgnoreFace(c.Request().Context(), h.browserToken(c), c.Param("sourceID")))
+}
+
+func (h *Handlers) setPersonAvatar(c *echo.Context) error {
+	var request SetPersonAvatarRequest
+	if err := c.Bind(&request); err != nil {
+		return err
+	}
+	result, err := h.module.SetPersonAvatar(c.Request().Context(), h.browserToken(c), c.Param("id"), request)
+	return jsonResult(c, result, err)
+}
+
 func (h *Handlers) updatePerson(c *echo.Context) error {
 	var request UpdatePersonRequest
 	if err := c.Bind(&request); err != nil {

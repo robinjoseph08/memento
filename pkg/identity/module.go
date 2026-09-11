@@ -45,6 +45,9 @@ type Session struct {
 type Module struct {
 	db  *bun.DB
 	now func() time.Time
+	// ImmichURL is the browser-reachable Immich origin used for "Open in
+	// Immich" links on linked faces. Empty hides those links.
+	ImmichURL string
 }
 
 func New(db *bun.DB, now func() time.Time) *Module {
@@ -173,7 +176,7 @@ func (m *Module) SignIn(ctx context.Context, claims Claims) (Session, error) {
 func projectPerson(person models.Person) Person {
 	return Person{ID: person.ID.String(), DisplayName: person.DisplayName, IsCurator: person.IsCurator,
 		OnboardingCompletedAt: person.OnboardingCompletedAt, DeactivatedAt: person.DeactivatedAt,
-		UpdateEmail: person.UpdateEmail, EmailUpdates: person.EmailUpdates}
+		UpdateEmail: person.UpdateEmail, EmailUpdates: person.EmailUpdates, AvatarURL: personAvatarURL(person)}
 }
 
 // Authenticate rejects expired sessions and extends active sessions at most daily.

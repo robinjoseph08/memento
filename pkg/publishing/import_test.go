@@ -21,6 +21,7 @@ type library struct {
 	assets      []immich.Asset
 	beforeAsset func(context.Context, string) error
 	members     func(context.Context, string, int) ([]immich.Asset, int, error)
+	faces       func(context.Context, string) ([]immich.Face, error)
 }
 
 func (l *library) CheckImport(context.Context) error { return nil }
@@ -39,6 +40,12 @@ func (l *library) ListMembers(ctx context.Context, id string, page int) ([]immic
 		return l.members(ctx, id, page)
 	}
 	return l.assets, 0, nil
+}
+func (l *library) ListFaces(ctx context.Context, id string) ([]immich.Face, error) {
+	if l.faces != nil {
+		return l.faces(ctx, id)
+	}
+	return nil, nil
 }
 func (l *library) GetAsset(ctx context.Context, id string) (immich.Asset, error) {
 	if l.beforeAsset != nil {

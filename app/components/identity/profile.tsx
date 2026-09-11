@@ -25,13 +25,7 @@ import {
 } from "../people/form-fields";
 import { PageTitle } from "../shell/page-title";
 import { Button } from "../ui/button";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "../ui/select";
+import { Combobox } from "../ui/combobox";
 import { LinkedIdentities } from "./linked-identities";
 import { SessionTable } from "./session-table";
 
@@ -106,36 +100,26 @@ function ProfileDetails({ profile }: { profile: Profile }) {
             <label className="mb-2 block text-xs font-medium" htmlFor={emailId}>
               Email for updates
             </label>
-            <Select
+            <Combobox
+              aria-describedby={
+                errors.update_email ? `${emailId}-error` : undefined
+              }
+              aria-invalid={!!errors.update_email}
               disabled={update.isPending}
-              name="update_email"
-              onValueChange={(email) => {
+              id={emailId}
+              onChange={(email) => {
                 update.reset();
                 setDraft({
                   ...values,
                   update_email: email === "none" ? "" : email,
                 });
               }}
+              options={[
+                { value: "none", label: "No email selected" },
+                ...emails.map((email) => ({ value: email, label: email })),
+              ]}
               value={values.update_email || "none"}
-            >
-              <SelectTrigger
-                aria-describedby={
-                  errors.update_email ? `${emailId}-error` : undefined
-                }
-                aria-invalid={!!errors.update_email}
-                id={emailId}
-              >
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="none">No email selected</SelectItem>
-                {emails.map((email) => (
-                  <SelectItem key={email} value={email}>
-                    {email}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            />
             <FieldError error={errors.update_email} id={`${emailId}-error`} />
           </div>
           <CheckField

@@ -5,9 +5,10 @@ import { useSignOut } from "../../hooks/queries/identity";
 import type { useTheme } from "../../hooks/use-theme";
 import { UnsavedChangesContext } from "../../lib/forms";
 import { errorMessage } from "../../lib/http";
+import { initials } from "../../lib/initials";
 import type { Person } from "../../types/generated/identity";
 import { ConnectionDetails } from "../connection/connection-status";
-import { Avatar, AvatarFallback } from "../ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "../ui/avatar";
 import { Button } from "../ui/button";
 import {
   Dialog,
@@ -34,13 +35,6 @@ export function AccountMenu({
   const unsavedRef = use(UnsavedChangesContext);
   const [connectionOpen, setConnectionOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
-  const initials = person.display_name
-    .trim()
-    .split(/\s+/)
-    .slice(0, 2)
-    .map((name) => Array.from(name)[0])
-    .join("")
-    .toLocaleUpperCase();
   return (
     <>
       <DropdownMenu modal={false}>
@@ -52,7 +46,10 @@ export function AccountMenu({
             variant="ghost"
           >
             <Avatar aria-hidden="true" className="size-full">
-              <AvatarFallback>{initials}</AvatarFallback>
+              {person.avatar_url && (
+                <AvatarImage alt="" src={person.avatar_url} />
+              )}
+              <AvatarFallback>{initials(person.display_name)}</AvatarFallback>
             </Avatar>
           </Button>
         </DropdownMenuTrigger>
@@ -92,7 +89,7 @@ export function AccountMenu({
               event.preventDefault();
               if (signOut.isPending) return;
               if (
-                unsavedRef?.current &&
+                unsavedRef?.current.size &&
                 !window.confirm("Sign out? Your changes will not be saved.")
               )
                 return;

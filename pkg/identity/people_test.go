@@ -6,9 +6,11 @@ import (
 
 	"github.com/robinjoseph08/memento/pkg/errcodes"
 	"github.com/robinjoseph08/memento/pkg/identity"
+	"github.com/robinjoseph08/memento/pkg/models"
 	"github.com/robinjoseph08/memento/pkg/testdb"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/uptrace/bun"
 )
 
 func claimCurator(t *testing.T, module *identity.Module) identity.Session {
@@ -16,6 +18,61 @@ func claimCurator(t *testing.T, module *identity.Module) identity.Session {
 	session, err := module.SignIn(t.Context(), identity.FakeClaims(identity.SignInRequest{Email: "curator@example.test", DisplayName: "Curator"}))
 	require.NoError(t, err)
 	return session
+}
+
+func cacheFace(t *testing.T, db *bun.DB, sourceID string) {
+	t.Helper()
+	now := time.Now().UTC()
+	item := models.MediaItem{ID: models.NewUUIDv7(), SourceID: "asset-" + sourceID, Checksum: sourceID, Filename: sourceID + ".jpg", Kind: "IMAGE",
+		CapturedAt: now, SourceCreatedAt: now, SourceUpdatedAt: now, ContentVersion: sourceID}
+	require.NoError(t, func() error {
+		_, err := db.NewInsert().Model(&item).Exec(t.Context())
+		return err
+	}())
+	face := models.MediaFaceAssociation{MediaItemID: item.ID, SourceFaceID: sourceID, SourceName: "Immich " + sourceID}
+	_, err := db.NewInsert().Model(&face).Exec(t.Context())
+	require.NoError(t, err)
+}
+
+func TestCuratorLinksMultipleFacesAndSelectsAnAvatar(t *testing.T) {
+	t.Parallel()
+	db := testdb.New(t)
+	module := identity.New(db, nil)
+	curator := claimCurator(t, module)
+	alex, err := module.CreatePerson(t.Context(), curator.Token, identity.CreatePersonRequest{DisplayName: "Alex"})
+	require.NoError(t, err)
+	other, err := module.CreatePerson(t.Context(), curator.Token, identity.CreatePersonRequest{DisplayName: "Other"})
+	require.NoError(t, err)
+	for _, faceID := range []string{"face-one", "face-two", "face-three", "face-four"} {
+		cacheFace(t, db, faceID)
+	}
+
+	first, err := module.LinkFace(t.Context(), curator.Token, alex.ID, identity.LinkFaceRequest{SourceFaceID: "face-one"})
+	require.NoError(t, err)
+	assert.Contains(t, first.Person.AvatarURL, "face-one", "the first linked face becomes the avatar")
+	second, err := module.LinkFace(t.Context(), curator.Token, alex.ID, identity.LinkFaceRequest{SourceFaceID: "face-two"})
+	require.NoError(t, err)
+	assert.Contains(t, second.Person.AvatarURL, "face-one", "later links keep the chosen avatar")
+	updated, err := module.SetPersonAvatar(t.Context(), curator.Token, alex.ID, identity.SetPersonAvatarRequest{SourceFaceID: "face-two"})
+	require.NoError(t, err)
+	assert.Contains(t, updated.Person.AvatarURL, "face-two")
+	require.Len(t, updated.Faces, 2)
+	assert.True(t, updated.Faces[1].Avatar)
+
+	_, err = module.LinkFace(t.Context(), curator.Token, other.ID, identity.LinkFaceRequest{SourceFaceID: "face-one"})
+	require.Error(t, err)
+	_, err = module.SetPersonAvatar(t.Context(), curator.Token, other.ID, identity.SetPersonAvatarRequest{SourceFaceID: "face-one"})
+	require.Error(t, err)
+
+	created, err := module.CreatePersonFromFace(t.Context(), curator.Token, identity.CreatePersonFromFaceRequest{DisplayName: "Sam", SourceFaceID: "face-three"})
+	require.NoError(t, err)
+	assert.Equal(t, "Sam", created.Person.DisplayName)
+	require.Len(t, created.Faces, 1)
+	assert.True(t, created.Faces[0].Avatar)
+
+	require.NoError(t, module.IgnoreFace(t.Context(), curator.Token, "face-four"))
+	_, err = module.LinkFace(t.Context(), curator.Token, alex.ID, identity.LinkFaceRequest{SourceFaceID: "face-four"})
+	require.NoError(t, err)
 }
 
 func TestPreauthorizationLinksExactVerifiedEmail(t *testing.T) {

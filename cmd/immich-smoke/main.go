@@ -2,10 +2,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"flag"
 	"fmt"
+	"image"
 	"io"
 	"net/http"
 	"os"
@@ -55,7 +57,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "Immich smoke failed:", err)
 		os.Exit(1)
 	}
-	fmt.Printf("PASS Immich %s: EXIF local dates, midnight, ties, shared media, generated thumbnails through production HTTP media routes, and unchanged source albums\n", release)
+	fmt.Printf("PASS Immich %s: manual faces, person thumbnails, EXIF local dates, midnight, ties, shared media, generated thumbnails through production HTTP media routes, and unchanged source albums\n", release)
 }
 
 func run(ctx context.Context, release string) (returnErr error) {
@@ -71,10 +73,16 @@ func run(ctx context.Context, release string) (returnErr error) {
 	if err := source.CheckImport(ctx); err != nil {
 		return err
 	}
-	fmt.Printf("Immich %s: non-admin fixture key grants only album.read, asset.read, asset.view\n", release)
-	readyCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
-	defer cancel()
-	if err := waitForMedia(readyCtx, source, library.Assets); err != nil {
+	fmt.Printf("Immich %s: non-admin fixture key grants only album.read, asset.read, asset.view, face.read, person.read\n", release)
+	mediaCtx, cancelMedia := context.WithTimeout(ctx, 3*time.Minute)
+	if err := waitForMedia(mediaCtx, source, library.Assets); err != nil {
+		cancelMedia()
+		return err
+	}
+	cancelMedia()
+	personCtx, cancelPerson := context.WithTimeout(ctx, 3*time.Minute)
+	defer cancelPerson()
+	if err := waitForPerson(personCtx, source, library.Person, library.Assets); err != nil {
 		return err
 	}
 	before, err := snapshot(ctx, source, library.Albums)
@@ -210,6 +218,89 @@ func waitForMedia(ctx context.Context, source *immich.Client, assets []fixture.A
 			case <-timer.C:
 			}
 		}
+	}
+	return nil
+}
+
+func waitForPerson(ctx context.Context, source *immich.Client, expected fixture.Person, assets []fixture.Asset) error {
+	var lastErr error
+	for {
+		faces, err := source.ListFaces(ctx, expected.AssetID)
+		if err == nil {
+			err = verifyManualFace(faces, expected)
+		}
+		if err == nil {
+			err = checkPersonThumbnail(ctx, source, expected.ID)
+		}
+		if err == nil {
+			for _, asset := range assets {
+				if asset.ID == expected.AssetID {
+					continue
+				}
+				otherFaces, listErr := source.ListFaces(ctx, asset.ID)
+				if listErr != nil {
+					err = listErr
+					break
+				}
+				if len(otherFaces) != 0 {
+					err = fmt.Errorf("manual face appeared on another fixture asset")
+					break
+				}
+			}
+		}
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		timer := time.NewTimer(time.Second)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return fmt.Errorf("wait for manual face and person thumbnail: %w; last result: %w", ctx.Err(), lastErr)
+		case <-timer.C:
+		}
+	}
+}
+
+func verifyManualFace(faces []immich.Face, expected fixture.Person) error {
+	if len(faces) != 1 {
+		return fmt.Errorf("fixture asset does not have exactly one face")
+	}
+	face := faces[0]
+	if face.FaceID == "" {
+		return fmt.Errorf("manual face has no face identity")
+	}
+	if face.ImageWidth != expected.ImageWidth || face.ImageHeight != expected.ImageHeight || face.BoundingBoxX1 != expected.X || face.BoundingBoxY1 != expected.Y || face.BoundingBoxX2 != expected.X+expected.Width || face.BoundingBoxY2 != expected.Y+expected.Height {
+		return fmt.Errorf("manual face geometry differs")
+	}
+	if face.SourceType != "manual" {
+		return fmt.Errorf("fixture face is not manual")
+	}
+	if face.ID != expected.ID || face.Name != expected.Name || face.Hidden {
+		return fmt.Errorf("manual face person differs")
+	}
+	if face.ThumbnailPath == "" {
+		return fmt.Errorf("person thumbnail is not ready")
+	}
+	return nil
+}
+
+func checkPersonThumbnail(ctx context.Context, source *immich.Client, id string) error {
+	thumbnail, err := source.PersonThumbnail(ctx, id)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = thumbnail.Body.Close() }()
+	data, err := io.ReadAll(io.LimitReader(thumbnail.Body, 4<<20))
+	if err != nil {
+		return fmt.Errorf("read person thumbnail")
+	}
+	if len(data) == 0 || len(data) == 4<<20 || !strings.HasPrefix(thumbnail.ContentType, "image/") || !strings.HasPrefix(http.DetectContentType(data), "image/") {
+		return fmt.Errorf("person thumbnail did not contain an image")
+	}
+	config, _, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil || config.Width != 26 || config.Height != 26 {
+		return fmt.Errorf("person thumbnail dimensions differ")
 	}
 	return nil
 }

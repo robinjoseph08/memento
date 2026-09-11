@@ -12,8 +12,9 @@ export const SheetTitle = DialogPrimitive.Title;
 export function SheetContent({
   className,
   children,
+  closeLabel = "Close navigation",
   ...props
-}: ComponentProps<typeof DialogPrimitive.Content>) {
+}: ComponentProps<typeof DialogPrimitive.Content> & { closeLabel?: string }) {
   return (
     <DialogPrimitive.Portal>
       <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/55 duration-200 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0 motion-reduce:animate-none" />
@@ -27,7 +28,7 @@ export function SheetContent({
         {children}
         <DialogPrimitive.Close asChild>
           <Button
-            aria-label="Close navigation"
+            aria-label={closeLabel}
             className="absolute top-3 right-3 size-11 p-0"
             variant="ghost"
           >

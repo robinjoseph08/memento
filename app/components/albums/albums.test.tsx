@@ -43,6 +43,16 @@ const source = {
   album_id: "",
 };
 
+// The access inspector only mounts beside the Moments on wide viewports.
+function desktopViewport() {
+  vi.stubGlobal("matchMedia", (media: string) => ({
+    media,
+    matches: /min-width/.test(media),
+    addEventListener: () => {},
+    removeEventListener: () => {},
+  }));
+}
+
 function mockAPI(
   handler: (
     path: string,
@@ -158,9 +168,12 @@ const completeAlbum: AlbumDetail = {
   moments: [
     {
       id: "day-1",
+      title: "First day",
       label: "First day",
       date: "2026-07-01",
+      end_date: "2026-07-01",
       cover_entry_id: "photo",
+      access: { people: [], faces: [] },
       entries: [
         {
           id: "photo",
@@ -287,6 +300,273 @@ it("presents distinct Album details and expandable Moments without discarding ti
   expect(screen.getByRole("textbox", { name: "Album title" })).toHaveValue(
     "Unsaved weekend",
   );
+});
+
+it("uses the compact Workbench for selection and immediate Moment access with Undo", async () => {
+  desktopViewport();
+  const alex = {
+    person_id: "alex",
+    display_name: "Alex",
+    avatar_url: "",
+    decision: "allow",
+    detected: true,
+    suggested: false,
+    supporting_entries: 1,
+  };
+  const sam = {
+    person_id: "sam",
+    display_name: "Sam",
+    avatar_url: "",
+    decision: "",
+    detected: true,
+    suggested: true,
+    supporting_entries: 1,
+  };
+  let current: AlbumDetail = {
+    ...completeAlbum,
+    moments: [
+      {
+        ...completeAlbum.moments[0],
+        access: { people: [alex, sam], faces: [] },
+      },
+      {
+        id: "day-2",
+        title: "",
+        label: "July 2, 2026",
+        date: "2026-07-02",
+        end_date: "2026-07-02",
+        cover_entry_id: "second-photo",
+        entries: [
+          {
+            ...completeAlbum.moments[0].entries[0],
+            id: "second-photo",
+            media_id: "second-media",
+            filename: "Cliffs.jpg",
+          },
+        ],
+        access: { people: [], faces: [] },
+      },
+    ],
+  };
+  const requests: Array<{ path: string; body: unknown }> = [];
+  mockAPI((path, options) => {
+    if (options?.method !== "POST") return Response.json(current);
+    const body: unknown = JSON.parse(String(options.body));
+    requests.push({ path, body });
+    if (path.endsWith("/access")) {
+      current = {
+        ...current,
+        moments: current.moments.map((moment) =>
+          moment.id === "day-1"
+            ? {
+                ...moment,
+                access: {
+                  ...moment.access,
+                  people: moment.access.people.map((person) =>
+                    person.person_id === "sam"
+                      ? {
+                          ...person,
+                          decision: "allow",
+                          suggested: false,
+                        }
+                      : person,
+                  ),
+                },
+              }
+            : moment,
+        ),
+      };
+      return Response.json({
+        album: current,
+        undo: {
+          changes: [{ person_id: "sam", current: "allow", previous: "" }],
+        },
+      });
+    }
+    if (path.endsWith("/access/undo")) {
+      current = {
+        ...current,
+        moments: current.moments.map((moment) =>
+          moment.id === "day-1"
+            ? {
+                ...moment,
+                access: {
+                  ...moment.access,
+                  people: moment.access.people.map((person) =>
+                    person.person_id === "sam"
+                      ? { ...person, decision: "", suggested: true }
+                      : person,
+                  ),
+                },
+              }
+            : moment,
+        ),
+      };
+      return Response.json(current);
+    }
+    return Response.json(current);
+  });
+  window.history.replaceState(
+    null,
+    "",
+    "/curator/albums/album-1?section=moments&moment=day-1",
+  );
+  const user = userEvent.setup();
+  render(<App />);
+
+  const inspector = await screen.findByRole("complementary", {
+    name: "Moment access",
+  });
+  expect(within(inspector).getByText("Allowed")).toBeVisible();
+  expect(within(inspector).getByText("Suggested")).toBeVisible();
+  expect(
+    screen.queryByRole("checkbox", { name: "Select Waves.mp4" }),
+  ).not.toBeInTheDocument();
+  expect(
+    screen.queryByRole("button", { name: "Move" }),
+  ).not.toBeInTheDocument();
+
+  await user.click(screen.getByRole("button", { name: "Select" }));
+  expect(screen.getByRole("button", { name: "Move" })).toBeDisabled();
+  await user.click(screen.getByRole("checkbox", { name: "Select Waves.mp4" }));
+  expect(screen.getByRole("button", { name: "Move" })).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Split" })).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Set as cover" })).toBeVisible();
+  await user.click(screen.getByRole("button", { name: "Done" }));
+  expect(
+    screen.queryByRole("checkbox", { name: "Select Waves.mp4" }),
+  ).not.toBeInTheDocument();
+
+  await user.click(
+    within(inspector).getByRole("checkbox", {
+      name: "Allow Sam for this Moment",
+    }),
+  );
+  await waitFor(() =>
+    expect(requests.at(-1)).toEqual({
+      path: "/api/curator/albums/album-1/moments/day-1/access",
+      body: { person_id: "sam", decision: "allow" },
+    }),
+  );
+  await user.click(within(inspector).getByRole("button", { name: "Undo" }));
+  await waitFor(() =>
+    expect(requests.at(-1)?.path).toBe(
+      "/api/curator/albums/album-1/moments/day-1/access/undo",
+    ),
+  );
+});
+
+it("links an Immich face to an existing Person and derives a suggestion", async () => {
+  desktopViewport();
+  const face = {
+    source_id: "immich-alex",
+    source_name: "Immich Alex",
+    thumbnail_url: "/api/media/faces/immich-alex/thumbnail?v=1",
+    immich_url: "http://immich.test/people/immich-alex",
+    person_id: "",
+    person_name: "",
+    ignored: false,
+    occurrences: 2,
+  };
+  const alex = {
+    id: "alex",
+    display_name: "Alex",
+    is_curator: false,
+    onboarding_completed_at: null,
+    deactivated_at: null,
+    update_email: "",
+    email_updates: true,
+    avatar_url: "",
+  };
+  let current: AlbumDetail = {
+    ...completeAlbum,
+    moments: [
+      {
+        ...completeAlbum.moments[0],
+        access: { people: [], faces: [face] },
+      },
+    ],
+  };
+  const posts: Array<{ path: string; body: unknown }> = [];
+  mockAPI((path, options) => {
+    if (path === "/api/people?q=") return Response.json([alex]);
+    if (options?.method === "POST") {
+      const body: unknown = JSON.parse(String(options.body));
+      posts.push({ path, body });
+      if (path === "/api/people/alex/faces") {
+        current = {
+          ...current,
+          moments: current.moments.map((moment) => ({
+            ...moment,
+            access: {
+              ...moment.access,
+              faces: [{ ...face, person_id: "alex", person_name: "Alex" }],
+              people: [
+                {
+                  person_id: "alex",
+                  display_name: "Alex",
+                  avatar_url: "",
+                  decision: "",
+                  detected: true,
+                  suggested: true,
+                  supporting_entries: 2,
+                },
+              ],
+            },
+          })),
+        };
+        return Response.json({
+          person: alex,
+          faces: [
+            {
+              source_face_id: face.source_id,
+              source_name: face.source_name,
+              thumbnail_url: face.thumbnail_url,
+              avatar: false,
+            },
+          ],
+          identities: [],
+          preauthorizations: [],
+          sessions: [],
+        });
+      }
+    }
+    return Response.json(current);
+  });
+  window.history.replaceState(null, "", "/curator/albums/album-1");
+  const user = userEvent.setup();
+  render(<App />);
+
+  const faces = await screen.findByRole("region", { name: /Unlinked faces/ });
+  expect(
+    screen.queryByRole("combobox", { name: "Person" }),
+  ).not.toBeInTheDocument();
+  await user.click(
+    within(faces).getByRole("button", { name: "Link Immich Alex" }),
+  );
+  await user.click(screen.getByRole("combobox", { name: "Person" }));
+  expect(
+    screen.getByRole("option", { name: 'Create "Immich Alex"' }),
+  ).toBeVisible();
+  await user.click(screen.getByRole("option", { name: "Alex" }));
+  const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+  await user.click(screen.getByRole("link", { name: "Album details" }));
+  expect(confirm).toHaveBeenCalledOnce();
+  expect(screen.getByRole("combobox", { name: "Person" })).toHaveTextContent(
+    "Alex",
+  );
+  await user.click(screen.getByRole("button", { name: "Link face" }));
+  await waitFor(() =>
+    expect(posts).toContainEqual({
+      path: "/api/people/alex/faces",
+      body: { source_face_id: "immich-alex" },
+    }),
+  );
+  const suggested = await screen.findByRole("region", { name: /Suggested/ });
+  expect(within(suggested).getByText("Seen in 2 items")).toBeVisible();
+  expect(
+    screen.queryByRole("region", { name: /Unlinked faces/ }),
+  ).not.toBeInTheDocument();
 });
 
 it("disables unsupported imports without hiding the library or blocking imported albums", async () => {

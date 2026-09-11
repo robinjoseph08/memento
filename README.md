@@ -111,7 +111,8 @@ mise start:web
 ### Develop against your own Immich server
 
 Use a read-only API key from the Immich account that owns or can access your
-source albums. Grant `album.read`, `asset.read`, and `asset.view`, then set these
+source albums. Grant `album.read`, `asset.read`, `asset.view`, `face.read`, and
+`person.read`, then set these
 in your local shell before starting development:
 
 ```sh
@@ -187,7 +188,8 @@ Ports bind only to loopback. Machine learning and reverse geocoding are disabled
 because this check needs only metadata extraction and generated thumbnails.
 
 Fixtures use supported Immich APIs, not database tables. A non-admin source
-owner creates a key with exactly `album.read`, `asset.read`, and `asset.view`.
+owner creates a key with exactly `album.read`, `asset.read`, `asset.view`,
+`face.read`, and `person.read`.
 The smoke imports two overlapping albums through Memento's production adapter
 and publishing module. It checks EXIF capture dates around midnight, tied entry
 ordering, shared Media Items, generated thumbnails through production media HTTP
@@ -240,10 +242,17 @@ Compose pin for 3.0.3; this is not a claim that every patch in the range has bee
 certified.
 
 Create an API key in the Immich account that owns or can access your source
-albums. Grant only `album.read`, `asset.read`, and `asset.view`, then set
-`IMMICH_API_KEY` on Memento's server. No write or original-download permission is
-needed. Memento uses GET requests plus Immich's read-only `POST /search/metadata`
+albums. Grant only `album.read`, `asset.read`, `asset.view`, `face.read`, and
+`person.read`, then set `IMMICH_API_KEY` on Memento's server. The face and person
+permissions let Memento read face associations and person thumbnails for access
+suggestions and avatars. No write or original-download permission is needed.
+Memento uses GET requests plus Immich's read-only `POST /search/metadata`
 endpoint for membership pagination. It never edits source albums or assets.
+
+Face review links each Immich person to its page in Immich so merging duplicate
+faces or changing a featured photo happens there. Those links use `IMMICH_URL`
+unless `IMMICH_PUBLIC_URL` names the address a browser should open instead, for
+example when `IMMICH_URL` is a Compose service name.
 
 Imports run inside the API process through River, sharing Memento's PostgreSQL
 pool. Two imports can run at once, with three automatic attempts and a

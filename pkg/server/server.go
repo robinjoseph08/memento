@@ -36,7 +36,9 @@ func New(cfg *config.Config, db *bun.DB, imports ...*publishing.Module) (*http.S
 		frontend = nil
 	}
 	source := immich.New(cfg.ImmichURL, cfg.ImmichAPIKey)
-	deps := dependencies{identity: identity.New(db, nil), connection: source, health: db.PingContext, media: media.New(db, source)}
+	people := identity.New(db, nil)
+	people.ImmichURL = cfg.ImmichBrowserURL()
+	deps := dependencies{identity: people, connection: source, health: db.PingContext, media: media.New(db, source)}
 	if len(imports) > 0 {
 		deps.publishing = imports[0]
 	}

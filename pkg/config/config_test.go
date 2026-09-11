@@ -168,6 +168,22 @@ func TestLoadValidatesHTTPURLs(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "https://[::1]:3579", cfg.PublicURL)
 	assert.Equal(t, "https://example.com/photos", cfg.ImmichURL)
+	assert.Equal(t, "https://example.com/photos", cfg.ImmichBrowserURL(), "browser links fall back to the server URL")
+}
+
+func TestImmichPublicURLIsOptionalButValidated(t *testing.T) {
+	t.Parallel()
+	values := requiredConfig()
+	values["immich_public_url"] = "https://photos.example.com/"
+	cfg, err := load(filepath.Join(t.TempDir(), "missing.yaml"), false, values, func() (string, error) { return "host", nil })
+	require.NoError(t, err)
+	assert.Equal(t, "https://photos.example.com", cfg.ImmichBrowserURL())
+	for _, value := range []string{"photos.example.com", "https://photos.example.com/api", "https://user:secret@photos.example.com"} {
+		values["immich_public_url"] = value
+		_, err := load(filepath.Join(t.TempDir(), "missing.yaml"), false, values, func() (string, error) { return "host", nil })
+		require.ErrorContains(t, err, "immich_public_url:", value)
+		assert.NotContains(t, err.Error(), "secret")
+	}
 }
 
 func TestPublicURLMatchesBrowserOrigin(t *testing.T) {

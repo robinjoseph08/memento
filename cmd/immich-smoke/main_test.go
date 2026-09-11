@@ -93,6 +93,36 @@ func TestSnapshotProtectsSourceAlbumCover(t *testing.T) {
 	}
 }
 
+func TestVerifyManualFace(t *testing.T) {
+	t.Parallel()
+	expected := fixture.Person{ID: "person-1", Name: "Smoke person", BirthDate: "1990-01-02", AssetID: "asset-1", ImageWidth: 64, ImageHeight: 48, X: 8, Y: 6, Width: 20, Height: 24}
+	valid := immich.Face{FaceID: "face-1", ID: "person-1", Name: "Smoke person", ThumbnailPath: "upload/thumb.jpeg", ImageWidth: 64, ImageHeight: 48, BoundingBoxX1: 8, BoundingBoxX2: 28, BoundingBoxY1: 6, BoundingBoxY2: 30, SourceType: "manual"}
+	for _, test := range []struct {
+		name    string
+		faces   []immich.Face
+		failure string
+	}{
+		{name: "manual face", faces: []immich.Face{valid}},
+		{name: "missing face", failure: "exactly one"},
+		{name: "extra face", faces: []immich.Face{valid, valid}, failure: "exactly one"},
+		{name: "wrong coordinates", faces: []immich.Face{func() immich.Face { face := valid; face.BoundingBoxX2++; return face }()}, failure: "geometry"},
+		{name: "non-manual", faces: []immich.Face{func() immich.Face { face := valid; face.SourceType = "machine-learning"; return face }()}, failure: "manual"},
+		{name: "unassigned", faces: []immich.Face{func() immich.Face { face := valid; face.ID = ""; return face }()}, failure: "person"},
+		{name: "wrong person", faces: []immich.Face{func() immich.Face { face := valid; face.ID = "other"; return face }()}, failure: "person"},
+		{name: "thumbnail not ready", faces: []immich.Face{func() immich.Face { face := valid; face.ThumbnailPath = ""; return face }()}, failure: "thumbnail"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			err := verifyManualFace(test.faces, expected)
+			if test.failure == "" {
+				require.NoError(t, err)
+			} else {
+				require.ErrorContains(t, err, test.failure)
+			}
+		})
+	}
+}
+
 func TestVerifyAlbum(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {

@@ -42,6 +42,71 @@ afterEach(() => {
   window.history.replaceState(null, "", "/");
 });
 
+it("chooses an avatar from a Person's linked Immich faces", async () => {
+  let detail = {
+    person: { ...alex, avatar_url: "/api/media/people/alex/avatar?v=first" },
+    identities: [account],
+    sessions: [],
+    preauthorizations: [],
+    faces: [
+      {
+        source_face_id: "first",
+        source_name: "First face",
+        thumbnail_url: "/api/media/faces/first/thumbnail",
+        immich_url: "http://immich.test/people/first",
+        avatar: true,
+      },
+      {
+        source_face_id: "second",
+        source_name: "Second face",
+        thumbnail_url: "/api/media/faces/second/thumbnail",
+        immich_url: "http://immich.test/people/second",
+        avatar: false,
+      },
+    ],
+  };
+  let avatarBody: unknown;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (path: string, options?: RequestInit) => {
+      if (path.endsWith("/status"))
+        return Response.json({
+          claimed: true,
+          person: robin,
+          auth_mode: "fake",
+        });
+      if (path === "/api/people/alex/avatar") {
+        avatarBody = JSON.parse(String(options?.body));
+        detail = {
+          ...detail,
+          person: {
+            ...detail.person,
+            avatar_url: "/api/media/people/alex/avatar?v=second",
+          },
+          faces: detail.faces.map((face) => ({
+            ...face,
+            avatar: face.source_face_id === "second",
+          })),
+        };
+      }
+      return Response.json(detail);
+    }),
+  );
+  window.history.replaceState(null, "", "/curator/people/alex");
+  const user = userEvent.setup();
+  render(<App />);
+
+  expect(
+    await screen.findByRole("link", { name: "Open Second face in Immich" }),
+  ).toHaveAttribute("href", "http://immich.test/people/second");
+  await user.click(
+    screen.getByRole("radio", { name: "Use Second face as avatar" }),
+  );
+  await user.click(screen.getByRole("button", { name: "Save avatar" }));
+  await waitFor(() => expect(avatarBody).toEqual({ source_face_id: "second" }));
+  expect(await screen.findByRole("status")).toHaveTextContent("Avatar saved.");
+});
+
 it("puts linked accounts first and keeps previous emails collapsed outside active approvals", async () => {
   vi.stubGlobal(
     "fetch",

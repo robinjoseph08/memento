@@ -36,7 +36,8 @@ for (const [scenario, dimensions] of [
     const album = (await (
       await page.request.get(`/api${path}`)
     ).json()) as AlbumDetail;
-    const entries = album.moments[1].entries;
+    const moment = album.moments[1];
+    const entries = moment.entries;
     for (const [index, entry] of entries.entries()) {
       const [width, height] = dimensions[index];
       await page.route(`**${entry.thumbnail_url}`, (route) =>
@@ -46,8 +47,11 @@ for (const [scenario, dimensions] of [
         }),
       );
     }
-    await page.getByRole("button", { name: /June 2, 2026/ }).click();
-    const media = page.getByRole("list", { name: "Moment media" });
+    const momentRegion = page.getByRole("region", {
+      name: new RegExp(`${moment.label}$`),
+    });
+    await momentRegion.getByRole("button", { expanded: false }).click();
+    const media = momentRegion.getByRole("list", { name: "Moment media" });
     await expect(media.getByRole("listitem")).toHaveCount(3);
     for (const width of [1440, 390]) {
       await page.setViewportSize({ width, height: 900 });

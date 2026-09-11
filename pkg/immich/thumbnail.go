@@ -10,12 +10,24 @@ import (
 	"github.com/robinjoseph08/memento/pkg/errcodes"
 )
 
-// Thumbnail opens generated media only. The caller must close Body.
+// Thumbnail opens generated asset media only. The caller must close Body.
 func (c *Client) Thumbnail(ctx context.Context, id string) (Thumbnail, error) {
 	if id == "" {
 		return Thumbnail{}, errcodes.ValidationError("An Immich asset ID is required.")
 	}
-	response, err := c.request(ctx, http.MethodGet, "/api/assets/"+escapeID(id)+"/thumbnail?size=thumbnail", nil, "asset.view")
+	return c.openThumbnail(ctx, "/api/assets/"+escapeID(id)+"/thumbnail?size=thumbnail", "asset.view")
+}
+
+// PersonThumbnail opens the generated thumbnail for a person. The caller must close Body.
+func (c *Client) PersonThumbnail(ctx context.Context, id string) (Thumbnail, error) {
+	if id == "" {
+		return Thumbnail{}, errcodes.ValidationError("An Immich person ID is required.")
+	}
+	return c.openThumbnail(ctx, "/api/people/"+escapeID(id)+"/thumbnail", "person.read")
+}
+
+func (c *Client) openThumbnail(ctx context.Context, path, permission string) (Thumbnail, error) {
+	response, err := c.request(ctx, http.MethodGet, path, nil, permission)
 	if err != nil {
 		return Thumbnail{}, err
 	}

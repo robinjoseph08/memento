@@ -100,11 +100,83 @@ func fixtureLibrary() ([]sourceAlbum, map[string]sourceAsset) {
 		album("fixture-album-coast", "Fixture Album - Coast", "fixture-asset-01", "fixture-asset-02", "fixture-asset-03", "fixture-asset-04", "fixture-asset-05", "fixture-asset-06"),
 		album("fixture-album-family", "Fixture Album - Family", "fixture-asset-02", "fixture-asset-04", "fixture-asset-07"),
 	}
+	largeThumbnail, largeContentType := generatedThumbnail(8)
+	largeMembers := make([]string, 0, 101)
+	for n := 1; n <= 101; n++ {
+		id := fmt.Sprintf("workbench-asset-%03d", n)
+		capture := fmt.Sprintf("2026-06-04T12:%02d:%02d-07:00", (n/60)%60, n%60)
+		local, _ := time.Parse(time.RFC3339, capture)
+		instant := local.UTC().Format(time.RFC3339)
+		checksum := sha1.Sum(append(append([]byte(nil), largeThumbnail...), byte(n))) //nolint:gosec // Match Immich's source checksum format.
+		assets[id] = sourceAsset{ID: id, Checksum: base64.StdEncoding.EncodeToString(checksum[:]),
+			Filename: fmt.Sprintf("workbench-%03d.jpg", n), OriginalPath: "/fixture/not-downloadable/" + id,
+			OwnerID: "fixture-owner", Kind: "IMAGE", LocalDateTime: capture, FileCreatedAt: instant,
+			FileModifiedAt: instant, CreatedAt: instant, UpdatedAt: "2026-06-05T12:00:00Z",
+			HasMetadata: true, Visibility: "timeline", Width: 320, Height: 240,
+			EXIF: map[string]any{"timeZone": "America/Los_Angeles", "orientation": 1}, Thumbnail: largeThumbnail, ContentType: largeContentType}
+		largeMembers = append(largeMembers, id)
+	}
+	albums = append(albums, album("workbench-large-moment", "Workbench - Large Moment", largeMembers...))
 	albums[0].ThumbnailID = "fixture-asset-03"
 	for n := 1; n <= 30; n++ {
 		albums = append(albums, album(fmt.Sprintf("fixture-album-practice-%02d", n), fmt.Sprintf("Practice Album %02d", n), "fixture-asset-07"))
 	}
 	return albums, assets
+}
+
+// fixtureFaces mirrors a real event album: a handful of named Immich people
+// plus many unnamed clusters with uneven counts, so face sorting and the
+// show-more control have something to do. Asset 001 keeps a single face for
+// the adapter contract test.
+func fixtureFaces() (map[string][]sourceFace, map[string]sourceAsset) {
+	faces := map[string][]sourceFace{}
+	people := []struct {
+		person string
+		name   string
+		seed   int
+		assets []int
+	}{
+		{"immich-alex-a", "Immich Alex", 1, []int{1, 2}},
+		{"immich-alex-b", "Immich Alex duplicate", 2, []int{3}},
+		{"immich-sam", "Immich Sam", 3, []int{4}},
+		{"immich-taylor", "Immich Taylor", 4, []int{5}},
+		{"immich-jordan", "Immich Jordan", 5, []int{6, 7, 8, 9, 10, 11, 12}},
+		{"immich-casey", "Immich Casey", 6, []int{13, 14, 15}},
+		{"immich-morgan", "Immich Morgan", 7, []int{16, 17, 18, 19}},
+	}
+	for n := 1; n <= 14; n++ {
+		count := []int{17, 4, 69, 4, 6, 3, 1, 6, 3, 21, 2, 5, 11, 32}[n-1]
+		assets := make([]int, 0, count)
+		for i := range count {
+			assets = append(assets, 20+(n*7+i*3)%82)
+		}
+		people = append(people, struct {
+			person string
+			name   string
+			seed   int
+			assets []int
+		}{fmt.Sprintf("immich-unnamed-%02d", n), "", 8 + n, assets})
+	}
+	thumbnails := map[string]sourceAsset{}
+	for _, value := range people {
+		seen := map[int]bool{}
+		for _, n := range value.assets {
+			if seen[n] {
+				continue
+			}
+			seen[n] = true
+			assetID := fmt.Sprintf("workbench-asset-%03d", n)
+			faces[assetID] = append(faces[assetID], sourceFace{
+				ID: fmt.Sprintf("fixture-face-%s-%03d", value.person, n), ImageHeight: 240, ImageWidth: 320,
+				BoundingBoxX1: 100, BoundingBoxX2: 180, BoundingBoxY1: 40, BoundingBoxY2: 140,
+				SourceType: "manual", Person: sourcePerson{ID: value.person, Name: value.name,
+					ThumbnailPath: "/fixture/people/" + value.person, Hidden: false, UpdatedAt: "2026-06-05T12:00:00Z"},
+			})
+		}
+		thumbnail, contentType := generatedThumbnail(value.seed)
+		thumbnails[value.person] = sourceAsset{Thumbnail: thumbnail, ContentType: contentType}
+	}
+	return faces, thumbnails
 }
 
 func generatedThumbnail(seed int) ([]byte, string) {

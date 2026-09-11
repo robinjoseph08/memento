@@ -1,9 +1,9 @@
 import { createContext, type KeyboardEvent, type RefObject } from "react";
 
 // Account actions consult the same unsaved state as route navigation.
-export const UnsavedChangesContext = createContext<RefObject<boolean> | null>(
-  null,
-);
+export const UnsavedChangesContext = createContext<RefObject<
+  Map<symbol, boolean>
+> | null>(null);
 
 // Call after inline errors render so keyboard users land on the first invalid field.
 export function focusFirstInvalid(form: HTMLFormElement | null) {

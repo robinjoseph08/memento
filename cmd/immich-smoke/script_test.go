@@ -60,6 +60,7 @@ case "${0##*/}" in
     [[ $MEMENTO_SMOKE_IMMICH_URL == http://127.0.0.1:12283 ]]
     [[ $MEMENTO_SMOKE_DATABASE_URL == 'postgres://smoke:smoke@127.0.0.1:15432/smoke?sslmode=disable' ]]
     [[ $(< "$SMOKE_WORK_DIR/.env") == "IMMICH_VERSION=$IMMICH_VERSION"$'\nUPLOAD_LOCATION=smoke-upload\nDB_DATA_LOCATION=smoke-db\nDB_USERNAME=postgres\nDB_PASSWORD=smoke\nDB_DATABASE_NAME=immich' ]]
+    [[ $(< "$SMOKE_WORK_DIR/immich-config.json") == '{"machineLearning":{"enabled":false},"metadata":{"faces":{"import":true}},"reverseGeocoding":{"enabled":false}}' ]]
     ;;
 esac
 `

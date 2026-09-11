@@ -25,6 +25,9 @@ type fakeIdentity struct {
 	session       identity.Session
 	expectedToken string
 	err           error
+	faceAction    string
+	personID      string
+	sourceFaceID  string
 }
 
 func (f *fakeIdentity) Claimed(context.Context) (bool, error) { return f.claimed, nil }
@@ -38,6 +41,22 @@ func (f *fakeIdentity) Authenticate(_ context.Context, token string) (identity.S
 	return f.session, f.err
 }
 func (f *fakeIdentity) SignOut(context.Context, string) error { return f.err }
+func (f *fakeIdentity) LinkFace(_ context.Context, _ string, personID string, request identity.LinkFaceRequest) (identity.PersonDetail, error) {
+	f.faceAction, f.personID, f.sourceFaceID = "link", personID, request.SourceFaceID
+	return identity.PersonDetail{}, f.err
+}
+func (f *fakeIdentity) CreatePersonFromFace(_ context.Context, _ string, request identity.CreatePersonFromFaceRequest) (identity.PersonDetail, error) {
+	f.faceAction, f.sourceFaceID = "create", request.SourceFaceID
+	return identity.PersonDetail{}, f.err
+}
+func (f *fakeIdentity) IgnoreFace(_ context.Context, _ string, sourceID string) error {
+	f.faceAction, f.sourceFaceID = "ignore", sourceID
+	return f.err
+}
+func (f *fakeIdentity) SetPersonAvatar(_ context.Context, _ string, personID string, request identity.SetPersonAvatarRequest) (identity.PersonDetail, error) {
+	f.faceAction, f.personID, f.sourceFaceID = "avatar", personID, request.SourceFaceID
+	return identity.PersonDetail{}, f.err
+}
 
 func identityHTTP(t *testing.T, cfg *config.Config, module *fakeIdentity) *echo.Echo {
 	t.Helper()
@@ -50,6 +69,66 @@ func identityHTTP(t *testing.T, cfg *config.Config, module *fakeIdentity) *echo.
 	e.GET("/protected", func(c *echo.Context) error { return c.NoContent(204) }, h.RequireCurator)
 	e.GET("/setup-only", func(c *echo.Context) error { return c.NoContent(204) }, h.RequireSetupOrCurator)
 	return e
+}
+
+func TestFaceHTTPRoutes(t *testing.T) {
+	t.Parallel()
+
+	for name, test := range map[string]struct {
+		path       string
+		body       string
+		status     int
+		action     string
+		personID   string
+		sourceFace string
+	}{
+		"link": {
+			path:       "/api/people/person-id/faces",
+			body:       `{"source_face_id":"source-face"}`,
+			status:     http.StatusOK,
+			action:     "link",
+			personID:   "person-id",
+			sourceFace: "source-face",
+		},
+		"create": {
+			path:       "/api/people/from-face",
+			body:       `{"display_name":"Alex","source_face_id":"source-face"}`,
+			status:     http.StatusOK,
+			action:     "create",
+			sourceFace: "source-face",
+		},
+		"avatar": {
+			path:       "/api/people/person-id/avatar",
+			body:       `{"source_face_id":"source-face"}`,
+			status:     http.StatusOK,
+			action:     "avatar",
+			personID:   "person-id",
+			sourceFace: "source-face",
+		},
+		"ignore": {
+			path:       "/api/faces/source-face/ignore",
+			body:       `{}`,
+			status:     http.StatusNoContent,
+			action:     "ignore",
+			sourceFace: "source-face",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			cfg := config.NewForTest()
+			module := &fakeIdentity{claimed: true, session: identity.Session{Person: identity.Person{IsCurator: true}, Token: "token"}}
+			e := identityHTTP(t, cfg, module)
+			req := httptest.NewRequest(http.MethodPost, test.path, strings.NewReader(test.body))
+			req.Header.Set("Content-Type", "application/json")
+			req.AddCookie(&http.Cookie{Name: cfg.CookieNamespace + "_session", Value: "token"})
+			recorder := httptest.NewRecorder()
+			e.ServeHTTP(recorder, req)
+			require.Equal(t, test.status, recorder.Code, recorder.Body.String())
+			assert.Equal(t, test.action, module.faceAction)
+			assert.Equal(t, test.personID, module.personID)
+			assert.Equal(t, test.sourceFace, module.sourceFaceID)
+		})
+	}
 }
 
 func TestIdentityHTTPTranslation(t *testing.T) {

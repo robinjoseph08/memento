@@ -39,6 +39,7 @@ func (e *environmentLoadError) Unwrap() error {
 type Config struct {
 	PublicURL                 string        `koanf:"public_url" json:"public_url" validate:"required"`
 	ImmichURL                 string        `koanf:"immich_url" json:"immich_url" validate:"required"`
+	ImmichPublicURL           string        `koanf:"immich_public_url" json:"immich_public_url"`
 	ImmichAPIKey              string        `koanf:"immich_api_key" json:"-" validate:"required"`
 	AuthMode                  string        `koanf:"auth_mode" json:"auth_mode"`
 	GoogleClientID            string        `koanf:"google_client_id" json:"google_client_id"`
@@ -71,6 +72,15 @@ func defaults() *Config {
 		ServerHost:                "0.0.0.0",
 		ServerPort:                3579,
 	}
+}
+
+// ImmichBrowserURL is the Immich origin a Curator's browser can open. It falls
+// back to the server-side URL when no separate public URL is configured.
+func (c *Config) ImmichBrowserURL() string {
+	if c.ImmichPublicURL != "" {
+		return c.ImmichPublicURL
+	}
+	return c.ImmichURL
 }
 
 // New loads the configuration from defaults, a YAML file, and environment
@@ -195,7 +205,11 @@ func validateConfig(cfg *Config) error {
 	}{
 		{"public_url", &cfg.PublicURL},
 		{"immich_url", &cfg.ImmichURL},
+		{"immich_public_url", &cfg.ImmichPublicURL},
 	} {
+		if setting.field == "immich_public_url" && strings.TrimSpace(*setting.value) == "" {
+			continue
+		}
 		u, err := parseURL(setting.field, *setting.value)
 		if err != nil {
 			return err
@@ -209,8 +223,8 @@ func validateConfig(cfg *Config) error {
 		if setting.field == "public_url" && u.Path != "" && u.Path != "/" {
 			return fmt.Errorf("public_url: must be an origin without a path")
 		}
-		if setting.field == "immich_url" && strings.HasSuffix(strings.ToLower(path.Clean(u.Path)), "/api") {
-			return fmt.Errorf("immich_url: use the instance base URL without /api")
+		if strings.HasPrefix(setting.field, "immich") && strings.HasSuffix(strings.ToLower(path.Clean(u.Path)), "/api") {
+			return fmt.Errorf("%s: use the instance base URL without /api", setting.field)
 		}
 		if setting.field == "public_url" {
 			u.Host = strings.ToLower(u.Host)

@@ -287,12 +287,14 @@ func (m *Module) finishImport(ctx context.Context, id string, source immich.Albu
 			}
 		}
 		moments := map[string]models.Moment{}
+		var nextMomentOrder int64
 		for _, item := range items {
 			date := item.CapturedAt.Format("2006-01-02")
 			entry := models.AlbumEntry{ID: models.NewUUIDv7(), AlbumID: row.ID, MediaItemID: item.ID}
 			moment, ok := moments[date]
 			if !ok {
-				moment = models.Moment{ID: models.NewUUIDv7(), AlbumID: row.ID, CaptureDate: date, Label: item.CapturedAt.Format("January 2, 2006"), CoverEntryID: entry.ID}
+				nextMomentOrder++
+				moment = models.Moment{ID: models.NewUUIDv7(), AlbumID: row.ID, CaptureDate: date, SortOrder: nextMomentOrder, CoverEntryID: entry.ID}
 				if _, err := tx.NewInsert().Model(&moment).Exec(ctx); err != nil {
 					return errorstack.CaptureContext(ctx, err)
 				}

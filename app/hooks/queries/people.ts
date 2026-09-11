@@ -2,11 +2,14 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { request } from "../../lib/http";
 import type {
+  CreatePersonFromFaceRequest,
   CreatePersonRequest,
+  LinkFaceRequest,
   Person,
   PersonDetail,
   Preauthorization,
   PreauthorizeRequest,
+  SetPersonAvatarRequest,
   Status,
   UpdatePersonRequest,
 } from "../../types/generated/identity";
@@ -48,6 +51,83 @@ export function useCreatePerson() {
       request<Person>("/api/people", { body }),
     onSuccess: () =>
       client.invalidateQueries({ queryKey: [...scope, "people"] }),
+  });
+}
+
+function usePersonDetailMutation(id: string) {
+  const client = useQueryClient();
+  const scope = usePrivateScope();
+  return {
+    scope,
+    save: async (detail: PersonDetail) => {
+      client.setQueryData([...scope, "person", id], detail);
+      await Promise.all([
+        client.invalidateQueries({ queryKey: [...scope, "people"] }),
+        client.invalidateQueries({ queryKey: [...scope, "album"] }),
+      ]);
+    },
+  };
+}
+
+export function useLinkFace() {
+  const client = useQueryClient();
+  const scope = usePrivateScope();
+  return useMutation({
+    mutationKey: scope,
+    mutationFn: ({
+      personID,
+      body,
+    }: {
+      personID: string;
+      body: LinkFaceRequest;
+    }) => request<PersonDetail>(`/api/people/${personID}/faces`, { body }),
+    onSuccess: async (detail, { personID }) => {
+      client.setQueryData([...scope, "person", personID], detail);
+      await Promise.all([
+        client.invalidateQueries({ queryKey: [...scope, "people"] }),
+        client.invalidateQueries({ queryKey: [...scope, "album"] }),
+      ]);
+    },
+  });
+}
+
+export function useCreatePersonFromFace() {
+  const client = useQueryClient();
+  const scope = usePrivateScope();
+  return useMutation({
+    mutationKey: scope,
+    mutationFn: (body: CreatePersonFromFaceRequest) =>
+      request<PersonDetail>("/api/people/from-face", { body }),
+    onSuccess: async () => {
+      await Promise.all([
+        client.invalidateQueries({ queryKey: [...scope, "people"] }),
+        client.invalidateQueries({ queryKey: [...scope, "album"] }),
+      ]);
+    },
+  });
+}
+
+export function useIgnoreFace() {
+  const client = useQueryClient();
+  const scope = usePrivateScope();
+  return useMutation({
+    mutationKey: scope,
+    mutationFn: (sourceFaceID: string) =>
+      request<void>(`/api/faces/${encodeURIComponent(sourceFaceID)}/ignore`, {
+        body: {},
+      }),
+    onSuccess: () =>
+      client.invalidateQueries({ queryKey: [...scope, "album"] }),
+  });
+}
+
+export function useSetPersonAvatar(id: string) {
+  const cache = usePersonDetailMutation(id);
+  return useMutation({
+    mutationKey: cache.scope,
+    mutationFn: (body: SetPersonAvatarRequest) =>
+      request<PersonDetail>(`/api/people/${id}/avatar`, { body }),
+    onSuccess: cache.save,
   });
 }
 

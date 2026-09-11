@@ -52,6 +52,7 @@ type Library interface {
 	GetAlbum(context.Context, string) (Album, error)
 	ListMembers(context.Context, string, int) ([]Asset, int, error)
 	GetAsset(context.Context, string) (Asset, error)
+	ListFaces(context.Context, string) ([]Face, error)
 }
 
 // Thumbnail is an Immich-generated image. The caller closes Body.

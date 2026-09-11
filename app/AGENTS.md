@@ -75,6 +75,13 @@
 - Use shared menu and dialog primitives for keyboard navigation, Escape,
   outside-click dismissal, and focus restoration. When a menu opens a dialog,
   closing the dialog must return focus to a visible trigger.
+- Text-styled buttons and summaries still need a hover surface. Keep real
+  padding such as `px-2 py-1` and pull the control back into alignment with
+  matching negative margins (`-mx-2`) instead of zeroing the padding, so hover
+  and focus backgrounds have room around the label.
+- Choose between records or options with the shared `Combobox`, never a native
+  select or the Radix `Select`. It always offers search, even for short lists,
+  so typing works the same everywhere.
 
 ## Testing
 

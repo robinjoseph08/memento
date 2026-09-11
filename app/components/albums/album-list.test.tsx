@@ -130,9 +130,12 @@ it.each([
       moments: [
         {
           id: "partial-day",
+          title: "Partial day",
           label: "Partial day",
           date: "2026-07-01",
+          end_date: "2026-07-01",
           cover_entry_id: "partial-photo",
+          access: { people: [], faces: [] },
           entries: [
             {
               id: "partial-photo",

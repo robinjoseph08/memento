@@ -8,9 +8,11 @@ import {
 } from "../../hooks/queries/people";
 import { useUnsavedChanges } from "../../hooks/use-unsaved-changes";
 import { fieldErrors } from "../../lib/http";
+import { initials } from "../../lib/initials";
 import { SearchForm } from "../forms/search-form";
 import { BackLink } from "../shell/back-link";
 import { PageTitle } from "../shell/page-title";
+import { Avatar, AvatarFallback, AvatarImage } from "../ui/avatar";
 import { Button } from "../ui/button";
 import {
   Dialog,
@@ -115,17 +117,14 @@ export function PeoplePage() {
                   className="flex cursor-pointer items-center gap-3 px-3 py-3 hover:bg-surface focus-visible:outline-2 focus-visible:outline-ring"
                   to={`/curator/people/${person.id}`}
                 >
-                  <span
-                    aria-hidden="true"
-                    className="flex size-9 shrink-0 items-center justify-center rounded-full bg-surface text-xs"
-                  >
-                    {person.display_name
-                      .split(/\s+/)
-                      .slice(0, 2)
-                      .map((part) => Array.from(part)[0])
-                      .join("")
-                      .toLocaleUpperCase()}
-                  </span>
+                  <Avatar aria-hidden="true" className="size-9">
+                    {person.avatar_url && (
+                      <AvatarImage alt="" src={person.avatar_url} />
+                    )}
+                    <AvatarFallback className="text-xs">
+                      {initials(person.display_name)}
+                    </AvatarFallback>
+                  </Avatar>
                   <span className="min-w-0">
                     <span className="block wrap-anywhere">
                       {person.display_name}
