@@ -45,6 +45,9 @@ type Session struct {
 type Module struct {
 	db  *bun.DB
 	now func() time.Time
+	// ImmichURL is the browser-reachable Immich origin used for "Open in
+	// Immich" links on linked faces. Empty hides those links.
+	ImmichURL string
 }
 
 func New(db *bun.DB, now func() time.Time) *Module {

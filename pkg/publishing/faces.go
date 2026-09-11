@@ -100,9 +100,10 @@ func (m *Module) RefreshMomentFaces(ctx context.Context, albumID, momentID strin
 				}
 				seen[face.ID] = true
 				associations = append(associations, models.MediaFaceAssociation{
-					MediaItemID:  item.MediaItemID,
-					SourceFaceID: face.ID,
-					SourceName:   face.Name,
+					MediaItemID:   item.MediaItemID,
+					SourceFaceID:  face.ID,
+					SourceName:    face.Name,
+					SourceVersion: face.UpdatedAt,
 				})
 			}
 			if len(associations) > 0 {

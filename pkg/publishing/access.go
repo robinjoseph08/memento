@@ -11,17 +11,19 @@ import (
 
 	"github.com/robinjoseph08/memento/pkg/errcodes"
 	"github.com/robinjoseph08/memento/pkg/errorstack"
+	"github.com/robinjoseph08/memento/pkg/media"
 	"github.com/robinjoseph08/memento/pkg/models"
 	"github.com/uptrace/bun"
 )
 
-func accessByMoment(ctx context.Context, db bun.IDB, albumID string, moments []models.Moment) (map[models.UUID]MomentAccess, error) {
+func accessByMoment(ctx context.Context, db bun.IDB, albumID string, moments []models.Moment, immichURL string) (map[models.UUID]MomentAccess, error) {
 	result := make(map[models.UUID]MomentAccess, len(moments))
 	for _, moment := range moments {
 		result[moment.ID] = MomentAccess{People: []AccessPerson{}, Faces: []FaceRecord{}}
 	}
 	var people []models.Person
-	if err := db.NewSelect().Model(&people).
+	if err := db.NewSelect().Model(&people).ColumnExpr("person.*").
+		ColumnExpr("(SELECT coalesce(max(face.source_version), '') FROM media_face_associations AS face WHERE face.source_face_id = person.avatar_face_id) AS avatar_version").
 		Where("person.deactivated_at IS NULL AND NOT person.is_curator").
 		OrderExpr("lower(person.display_name), person.id").Scan(ctx); err != nil {
 		return nil, errorstack.CaptureContext(ctx, err)
@@ -60,17 +62,18 @@ func accessByMoment(ctx context.Context, db bun.IDB, albumID string, moments []m
 		detected[row.MomentID][row.PersonID] = row.SupportingEntries
 	}
 	type faceRow struct {
-		MomentID    models.UUID
-		SourceID    string
-		SourceName  string
-		PersonID    *models.UUID
-		PersonName  string
-		Ignored     bool
-		Occurrences int
+		MomentID      models.UUID
+		SourceID      string
+		SourceName    string
+		SourceVersion string
+		PersonID      *models.UUID
+		PersonName    string
+		Ignored       bool
+		Occurrences   int
 	}
 	var faces []faceRow
 	if err := db.NewSelect().TableExpr("album_entries AS entry").
-		ColumnExpr("entry.moment_id, face.source_face_id AS source_id, min(face.source_name) AS source_name, link.person_id, coalesce(person.display_name, '') AS person_name, coalesce(link.ignored, false) AS ignored, count(DISTINCT entry.id) AS occurrences").
+		ColumnExpr("entry.moment_id, face.source_face_id AS source_id, min(face.source_name) AS source_name, max(face.source_version) AS source_version, link.person_id, coalesce(person.display_name, '') AS person_name, coalesce(link.ignored, false) AS ignored, count(DISTINCT entry.id) AS occurrences").
 		Join("JOIN media_face_associations AS face ON face.media_item_id = entry.media_item_id").
 		Join("LEFT JOIN immich_face_links AS link ON link.source_id = face.source_face_id").
 		Join("LEFT JOIN persons AS person ON person.id = link.person_id").
@@ -85,8 +88,12 @@ func accessByMoment(ctx context.Context, db bun.IDB, albumID string, moments []m
 		if row.PersonID != nil {
 			personID = row.PersonID.String()
 		}
+		immichLink := ""
+		if immichURL != "" {
+			immichLink = immichURL + "/people/" + url.PathEscape(row.SourceID)
+		}
 		access.Faces = append(access.Faces, FaceRecord{SourceID: row.SourceID, SourceName: row.SourceName,
-			ThumbnailURL: "/api/media/faces/" + url.PathEscape(row.SourceID) + "/thumbnail", PersonID: personID,
+			ThumbnailURL: media.FaceThumbnailURL(row.SourceID, row.SourceVersion), ImmichURL: immichLink, PersonID: personID,
 			PersonName: row.PersonName, Ignored: row.Ignored, Occurrences: row.Occurrences})
 		result[row.MomentID] = access
 	}
@@ -114,7 +121,7 @@ func accessByMoment(ctx context.Context, db bun.IDB, albumID string, moments []m
 		for _, person := range people {
 			avatarURL := ""
 			if person.AvatarFaceID != nil {
-				avatarURL = "/api/media/people/" + person.ID.String() + "/avatar?v=" + url.QueryEscape(*person.AvatarFaceID)
+				avatarURL = media.AvatarURL(person.ID.String(), *person.AvatarFaceID, person.AvatarVersion)
 			}
 			supporting := detected[moment.ID][person.ID]
 			decision := byMomentPerson[moment.ID][person.ID]

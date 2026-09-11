@@ -53,6 +53,7 @@ func selectPeople(tx bun.Tx, model any) *bun.SelectQuery {
 	return tx.NewSelect().Model(model).
 		Column("person.id", "person.display_name", "person.is_curator", "person.onboarding_completed_at", "person.deactivated_at", "person.update_identity_id", "person.email_updates", "person.avatar_face_id", "person.created_at").
 		ColumnExpr("COALESCE(updates.email, '') AS update_email").
+		ColumnExpr("(SELECT coalesce(max(face.source_version), '') FROM media_face_associations AS face WHERE face.source_face_id = person.avatar_face_id) AS avatar_version").
 		Join("LEFT JOIN identities AS updates ON updates.id = person.update_identity_id")
 }
 
@@ -132,7 +133,7 @@ func (m *Module) GetPerson(ctx context.Context, token, id string) (PersonDetail,
 			return err
 		}
 		result.Person = projectPerson(person)
-		result.Faces, err = linkedFaces(ctx, tx, person)
+		result.Faces, err = linkedFaces(ctx, tx, person, m.ImmichURL)
 		if err != nil {
 			return err
 		}

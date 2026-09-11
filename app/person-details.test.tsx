@@ -53,12 +53,14 @@ it("chooses an avatar from a Person's linked Immich faces", async () => {
         source_face_id: "first",
         source_name: "First face",
         thumbnail_url: "/api/media/faces/first/thumbnail",
+        immich_url: "http://immich.test/people/first",
         avatar: true,
       },
       {
         source_face_id: "second",
         source_name: "Second face",
         thumbnail_url: "/api/media/faces/second/thumbnail",
+        immich_url: "http://immich.test/people/second",
         avatar: false,
       },
     ],
@@ -94,8 +96,11 @@ it("chooses an avatar from a Person's linked Immich faces", async () => {
   const user = userEvent.setup();
   render(<App />);
 
+  expect(
+    await screen.findByRole("link", { name: "Open Second face in Immich" }),
+  ).toHaveAttribute("href", "http://immich.test/people/second");
   await user.click(
-    await screen.findByRole("radio", { name: "Use Second face as avatar" }),
+    screen.getByRole("radio", { name: "Use Second face as avatar" }),
   );
   await user.click(screen.getByRole("button", { name: "Save avatar" }));
   await waitFor(() => expect(avatarBody).toEqual({ source_face_id: "second" }));

@@ -1,4 +1,4 @@
-import { ArrowLeft } from "lucide-react";
+import { RefreshCw } from "lucide-react";
 import { useState } from "react";
 
 import {
@@ -6,44 +6,78 @@ import {
   useSetMomentAccess,
   useUndoMomentAccess,
 } from "../../hooks/queries/albums";
+import { initials } from "../../lib/initials";
 import type {
-  Entry,
+  AccessPerson,
   Moment,
   UndoMomentAccessRequest,
 } from "../../types/generated/publishing";
 import { Failure } from "../people/form-fields";
 import { Avatar, AvatarFallback, AvatarImage } from "../ui/avatar";
 import { Button } from "../ui/button";
-import { AlbumImage } from "./album-image";
-import { FaceManagement } from "./face-management";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "../ui/tooltip";
+import { UnlinkedFaces } from "./face-management";
 
-function initials(name: string) {
-  return name
-    .split(/\s+/)
-    .map((part) => part[0])
-    .join("")
-    .slice(0, 2)
-    .toUpperCase();
+// Most-seen people first, then alphabetical, so the busiest rows lead.
+function byPresence(left: AccessPerson, right: AccessPerson) {
+  if (left.supporting_entries !== right.supporting_entries)
+    return right.supporting_entries - left.supporting_entries;
+  return left.display_name.localeCompare(right.display_name);
+}
+
+function detectionDetail(person: AccessPerson) {
+  if (!person.detected) return "Not seen in this Moment";
+  return `Seen in ${person.supporting_entries} ${person.supporting_entries === 1 ? "item" : "items"}`;
+}
+
+function AccessGroup({
+  id,
+  title,
+  count,
+  action,
+  children,
+}: {
+  id: string;
+  title: string;
+  count: number;
+  action?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <section aria-labelledby={id} className="mt-6 first:mt-0">
+      <div className="flex items-center justify-between gap-3">
+        <h3 className="text-sm font-medium" id={id}>
+          {title}{" "}
+          <span className="ml-1 text-xs font-normal text-muted">{count}</span>
+        </h3>
+        {action}
+      </div>
+      <div className="mt-1">{children}</div>
+    </section>
+  );
 }
 
 export function MomentAccessInspector({
   albumID,
   moment,
-  entry,
   undo,
   onUndo,
-  onBack,
   refreshError,
   refreshing,
+  onRefresh,
 }: {
   albumID: string;
   moment: Moment;
-  entry?: Entry;
   undo: UndoMomentAccessRequest | null;
   onUndo: (undo: UndoMomentAccessRequest | null) => void;
-  onBack: () => void;
   refreshError: Error | null;
   refreshing: boolean;
+  onRefresh: () => void;
 }) {
   const change = useSetMomentAccess(albumID, moment.id);
   const [optimistic, setOptimistic] = useState<
@@ -53,30 +87,24 @@ export function MomentAccessInspector({
   const undoChange = useUndoMomentAccess(albumID, moment.id);
   const pending =
     change.isPending || addSuggestions.isPending || undoChange.isPending;
-  const allowed = moment.access.people.filter(
-    (person) => person.decision === "allow",
-  );
-  const suggested = moment.access.people.filter((person) => person.suggested);
-  const excluded = moment.access.people.filter(
-    (person) => person.decision === "deny",
-  );
-  const others = moment.access.people.filter(
+  const people = [...moment.access.people].sort(byPresence);
+  const allowed = people.filter((person) => person.decision === "allow");
+  const suggested = people.filter((person) => person.suggested);
+  const excluded = people.filter((person) => person.decision === "deny");
+  const others = people.filter(
     (person) => !person.decision && !person.suggested,
   );
   const mutationError =
     change.error ?? addSuggestions.error ?? undoChange.error;
+  const refreshedAt = moment.access.refreshed_at
+    ? new Date(moment.access.refreshed_at).toLocaleString(undefined, {
+        dateStyle: "medium",
+        timeStyle: "short",
+      })
+    : "";
 
-  function personRow(person: (typeof moment.access.people)[number]) {
+  function personRow(person: AccessPerson) {
     const pendingDecision = optimistic[person.person_id] ?? person.decision;
-    const detail = person.suggested
-      ? `Detected in ${person.supporting_entries} ${person.supporting_entries === 1 ? "item" : "items"}, not shared yet`
-      : person.decision === "deny"
-        ? person.detected
-          ? "Detected here, explicitly excluded"
-          : "Saved exclusion, no current detection"
-        : person.detected
-          ? `Allowed, detected in ${person.supporting_entries} ${person.supporting_entries === 1 ? "item" : "items"}`
-          : "Saved access, no current detection";
     return (
       <label
         className="flex cursor-pointer items-center gap-3 border-t border-border py-3 text-sm"
@@ -116,8 +144,8 @@ export function MomentAccessInspector({
           <strong className="block truncate font-medium">
             {person.display_name}
           </strong>
-          <small className="mt-0.5 block text-xs leading-relaxed text-muted">
-            {detail}
+          <small className="block text-xs text-muted">
+            {detectionDetail(person)}
           </small>
         </span>
       </label>
@@ -126,30 +154,14 @@ export function MomentAccessInspector({
 
   return (
     <div className="min-w-0">
-      {entry ? (
-        <>
-          <Button className="mb-4 -ml-3" onClick={onBack} variant="ghost">
-            <ArrowLeft aria-hidden="true" className="size-4" />
-            Moment access
-          </Button>
-          <AlbumImage
-            alt={entry.filename}
-            className="mb-4 max-h-44 w-full object-contain"
-            fallback="No preview available"
-            src={entry.available ? entry.thumbnail_url : ""}
-          />
-          <p className="mb-5 truncate text-sm text-muted">{entry.filename}</p>
-        </>
-      ) : (
-        <p className="text-xs text-muted">Moment access</p>
-      )}
+      <p className="text-xs text-muted">Moment access</p>
       <h2 className="mt-1 font-heading text-[27px]/[1.2] font-normal tracking-[-0.35px]">
         {moment.label}
       </h2>
-      <div className="mt-4 flex items-center justify-between gap-3">
+      <div className="mt-3 flex items-center justify-between gap-3">
         <p className="text-xs text-muted">Changes save immediately.</p>
         <Button
-          className="h-auto min-h-0 px-0 py-1 text-xs"
+          className="-mx-2 h-auto min-h-0 px-2 py-1 text-xs"
           disabled={!undo || pending}
           onClick={() =>
             undo &&
@@ -163,53 +175,30 @@ export function MomentAccessInspector({
         </Button>
       </div>
       <Failure error={mutationError} />
-      <Failure error={refreshError} />
-      {refreshing && (
-        <p className="mt-4 text-xs text-muted" role="status">
-          Refreshing faces from Immich…
-        </p>
-      )}
-      {moment.access.refreshed_at && !refreshing && (
-        <p className="mt-4 text-xs text-muted">
-          Faces refreshed{" "}
-          <time dateTime={moment.access.refreshed_at}>
-            {new Date(moment.access.refreshed_at).toLocaleString()}
-          </time>
-        </p>
-      )}
-      {moment.access.refresh_error && (
-        <p className="mt-4 text-xs text-destructive" role="alert">
-          {moment.access.refresh_error}
-        </p>
-      )}
       <form
         aria-label="Quick Moment access"
-        className="mt-7"
+        className="mt-6"
         onSubmit={(event) => event.preventDefault()}
       >
         <fieldset disabled={pending}>
-          <legend className="mb-1 text-sm font-medium">
-            Allowed{" "}
-            <span className="ml-1 text-xs text-muted">{allowed.length}</span>
-          </legend>
-          {allowed.length > 0 ? (
-            allowed.map(personRow)
-          ) : (
-            <p className="border-t border-border py-4 text-xs text-muted">
-              No one is allowed at this Moment yet.
-            </p>
-          )}
+          <AccessGroup
+            count={allowed.length}
+            id="allowed-access"
+            title="Allowed"
+          >
+            {allowed.length > 0 ? (
+              allowed.map(personRow)
+            ) : (
+              <p className="border-t border-border py-3 text-xs text-muted">
+                No one can see this Moment yet.
+              </p>
+            )}
+          </AccessGroup>
           {suggested.length > 0 && (
-            <section aria-labelledby="suggested-access" className="mt-6">
-              <div className="flex items-center justify-between gap-3">
-                <h3 className="text-sm font-medium" id="suggested-access">
-                  Suggested{" "}
-                  <span className="ml-1 text-xs text-muted">
-                    {suggested.length}
-                  </span>
-                </h3>
+            <AccessGroup
+              action={
                 <Button
-                  className="h-auto min-h-0 px-0 py-1 text-xs"
+                  className="-mx-2 h-auto min-h-0 px-2 py-1 text-xs"
                   onClick={() =>
                     addSuggestions.mutate(undefined, {
                       onSuccess: (result) => onUndo(result.undo),
@@ -220,24 +209,26 @@ export function MomentAccessInspector({
                 >
                   Add all suggested
                 </Button>
-              </div>
+              }
+              count={suggested.length}
+              id="suggested-access"
+              title="Suggested"
+            >
               {suggested.map(personRow)}
-            </section>
+            </AccessGroup>
           )}
           {excluded.length > 0 && (
-            <section aria-labelledby="excluded-access" className="mt-6">
-              <h3 className="mb-1 text-sm font-medium" id="excluded-access">
-                Excluded{" "}
-                <span className="ml-1 text-xs text-muted">
-                  {excluded.length}
-                </span>
-              </h3>
+            <AccessGroup
+              count={excluded.length}
+              id="excluded-access"
+              title="Excluded"
+            >
               {excluded.map(personRow)}
-            </section>
+            </AccessGroup>
           )}
           {others.length > 0 && (
-            <details className="mt-5">
-              <summary className="cursor-pointer py-2 text-xs text-accent-foreground">
+            <details className="mt-4">
+              <summary className="-mx-2 cursor-pointer rounded-sm px-2 py-2 text-xs text-accent-foreground hover:bg-surface">
                 Add someone else
               </summary>
               {others.map(personRow)}
@@ -245,16 +236,64 @@ export function MomentAccessInspector({
           )}
         </fieldset>
       </form>
-      <FaceManagement faces={moment.access.faces} />
-      <details className="mt-7 border-t border-border pt-4 text-xs text-muted">
-        <summary className="cursor-pointer py-1 text-foreground">
-          How access works
-        </summary>
-        <p className="mt-3 leading-relaxed">
-          Checking a Person explicitly allows this Moment. Unchecking explicitly
-          excludes them. Face detections only suggest access.
-        </p>
-      </details>
+      <UnlinkedFaces faces={moment.access.faces} />
+      <div className="mt-6 border-t border-border pt-4 text-xs text-muted">
+        <div className="flex items-center justify-between gap-3">
+          {refreshing ? (
+            <p role="status">Checking Immich for faces…</p>
+          ) : refreshError ? (
+            <p className="text-destructive" role="alert">
+              Couldn't check Immich for faces.
+              {refreshedAt && ` Showing faces from ${refreshedAt}.`}
+            </p>
+          ) : (
+            <p>
+              {refreshedAt ? (
+                <>
+                  Faces checked{" "}
+                  <time dateTime={moment.access.refreshed_at ?? undefined}>
+                    {refreshedAt}
+                  </time>
+                </>
+              ) : (
+                "Faces not checked yet."
+              )}
+            </p>
+          )}
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  aria-label="Check Immich for faces again"
+                  className="size-8 shrink-0 p-0"
+                  disabled={refreshing}
+                  onClick={onRefresh}
+                  size="sm"
+                  type="button"
+                  variant="ghost"
+                >
+                  <RefreshCw
+                    aria-hidden="true"
+                    className="size-4"
+                    strokeWidth={1.5}
+                  />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">Check again</TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        </div>
+        <details className="mt-3">
+          <summary className="-mx-2 cursor-pointer rounded-sm px-2 py-1 text-foreground hover:bg-surface">
+            How access works
+          </summary>
+          <p className="mt-2 leading-relaxed">
+            Checking a person allows this Moment. Unchecking excludes them.
+            Faces Immich recognized only suggest access; nothing changes until
+            you choose.
+          </p>
+        </details>
+      </div>
     </div>
   );
 }

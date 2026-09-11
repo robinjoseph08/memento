@@ -29,7 +29,7 @@ func TestListFaces(t *testing.T) {
 	faces, err := immich.New(fixture.URL, "read-key").ListFaces(t.Context(), "asset/opaque ?#%")
 	require.NoError(t, err)
 	require.Equal(t, []immich.Face{
-		{FaceID: "face-1", ID: "person-1", Name: "Smoke person", ThumbnailPath: "upload/thumb.jpeg", Hidden: false, ImageHeight: 48, ImageWidth: 64, BoundingBoxX1: 5, BoundingBoxX2: 25, BoundingBoxY1: 7, BoundingBoxY2: 31, SourceType: "manual"},
+		{FaceID: "face-1", ID: "person-1", Name: "Smoke person", ThumbnailPath: "upload/thumb.jpeg", UpdatedAt: "2024-07-02T07:00:00.123Z", Hidden: false, ImageHeight: 48, ImageWidth: 64, BoundingBoxX1: 5, BoundingBoxX2: 25, BoundingBoxY1: 7, BoundingBoxY2: 31, SourceType: "manual"},
 		{FaceID: "face-2", ID: "person-1", Name: "Smoke person", ThumbnailPath: "upload/thumb.jpeg", Hidden: false, ImageHeight: 48, ImageWidth: 64, BoundingBoxX1: 30, BoundingBoxX2: 40, BoundingBoxY1: 10, BoundingBoxY2: 20},
 		{FaceID: "face-3", ImageHeight: 48, ImageWidth: 64, BoundingBoxX1: 42, BoundingBoxX2: 50, BoundingBoxY1: 11, BoundingBoxY2: 22},
 	}, faces)

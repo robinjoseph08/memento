@@ -26,6 +26,9 @@ type Module struct {
 	db      *bun.DB
 	source  immich.Library
 	enqueue EnqueueImport
+	// ImmichURL is the browser-reachable Immich origin used for "Open in
+	// Immich" links. Empty hides those links.
+	ImmichURL string
 }
 
 func New(db *bun.DB, source immich.Library, enqueue EnqueueImport) *Module {
@@ -114,7 +117,7 @@ func (m *Module) GetAlbum(ctx context.Context, id string) (AlbumDetail, error) {
 	var result AlbumDetail
 	err := m.db.RunInTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true}, func(ctx context.Context, tx bun.Tx) error {
 		var err error
-		result, err = getAlbum(ctx, tx, id)
+		result, err = getAlbum(ctx, tx, id, m.ImmichURL)
 		return err
 	})
 	if err != nil {
@@ -123,7 +126,7 @@ func (m *Module) GetAlbum(ctx context.Context, id string) (AlbumDetail, error) {
 	return result, nil
 }
 
-func getAlbum(ctx context.Context, db bun.IDB, id string) (AlbumDetail, error) {
+func getAlbum(ctx context.Context, db bun.IDB, id, immichURL string) (AlbumDetail, error) {
 	result := AlbumDetail{Moments: []Moment{}}
 	if _, err := uuid.Parse(id); err != nil {
 		return result, errcodes.NotFound("Album")
@@ -174,7 +177,7 @@ func getAlbum(ctx context.Context, db bun.IDB, id string) (AlbumDetail, error) {
 		}
 		return moments[i].ID.String() < moments[j].ID.String()
 	})
-	access, err := accessByMoment(ctx, db, id, moments)
+	access, err := accessByMoment(ctx, db, id, moments, immichURL)
 	if err != nil {
 		return result, err
 	}

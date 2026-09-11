@@ -57,36 +57,49 @@ func (m *Module) EntryThumbnail(ctx context.Context, id, version string) (string
 	return sourceID, errorstack.CaptureContext(ctx, err)
 }
 
-func (m *Module) FaceThumbnail(ctx context.Context, sourceID string) (immich.Thumbnail, error) {
+// FaceThumbnail authorizes a cached Immich face at the requested version and
+// returns the Immich person ID to fetch. Stale versions are not found, so an
+// old URL never serves new bytes under an immutable cache.
+func (m *Module) FaceThumbnail(ctx context.Context, sourceID, version string) (string, error) {
 	if sourceID == "" {
-		return immich.Thumbnail{}, errcodes.NotFound("Face thumbnail")
+		return "", errcodes.NotFound("Face thumbnail")
 	}
 	available, err := m.db.NewSelect().Model((*models.MediaFaceAssociation)(nil)).
-		Where("face.source_face_id = ?", sourceID).Exists(ctx)
+		Where("face.source_face_id = ? AND face.source_version = ?", sourceID, version).Exists(ctx)
 	if err != nil {
-		return immich.Thumbnail{}, errorstack.CaptureContext(ctx, err)
+		return "", errorstack.CaptureContext(ctx, err)
 	}
 	if !available {
-		return immich.Thumbnail{}, errcodes.NotFound("Face thumbnail")
+		return "", errcodes.NotFound("Face thumbnail")
 	}
-	return m.source.PersonThumbnail(ctx, sourceID)
+	return sourceID, nil
 }
 
-func (m *Module) PersonAvatar(ctx context.Context, personID string) (immich.Thumbnail, error) {
+// PersonAvatar authorizes a Person's avatar at the requested version and
+// returns the linked Immich person ID to fetch.
+func (m *Module) PersonAvatar(ctx context.Context, personID, version string) (string, error) {
 	if _, err := uuid.Parse(personID); err != nil {
-		return immich.Thumbnail{}, errcodes.NotFound("Avatar")
+		return "", errcodes.NotFound("Avatar")
 	}
-	var sourceID string
-	err := m.db.NewSelect().TableExpr("persons AS person").Column("person.avatar_face_id").
+	var avatar struct {
+		SourceID string
+		Version  string
+	}
+	err := m.db.NewSelect().TableExpr("persons AS person").
+		ColumnExpr("person.avatar_face_id AS source_id, coalesce(max(face.source_version), '') AS version").
 		Join("JOIN immich_face_links AS link ON link.source_id = person.avatar_face_id AND link.person_id = person.id AND NOT link.ignored").
-		Where("person.id = ? AND person.deactivated_at IS NULL", personID).Scan(ctx, &sourceID)
+		Join("LEFT JOIN media_face_associations AS face ON face.source_face_id = person.avatar_face_id").
+		Where("person.id = ? AND person.deactivated_at IS NULL", personID).Group("person.avatar_face_id").Scan(ctx, &avatar)
 	if errors.Is(err, sql.ErrNoRows) {
-		return immich.Thumbnail{}, errcodes.NotFound("Avatar")
+		return "", errcodes.NotFound("Avatar")
 	}
 	if err != nil {
-		return immich.Thumbnail{}, errorstack.CaptureContext(ctx, err)
+		return "", errorstack.CaptureContext(ctx, err)
 	}
-	return m.source.PersonThumbnail(ctx, sourceID)
+	if avatarVersion(avatar.SourceID, avatar.Version) != version {
+		return "", errcodes.NotFound("Avatar")
+	}
+	return avatar.SourceID, nil
 }
 
 func (m *Module) generatedThumbnail(ctx context.Context, sourceID, version string) (immich.Thumbnail, error) {

@@ -10,13 +10,11 @@ export function EntryPreview({
   cover,
   selected = false,
   onSelect,
-  onInspect,
 }: {
   entry: Entry;
   cover: boolean;
   selected?: boolean;
   onSelect?: (selected: boolean) => void;
-  onInspect?: () => void;
 }) {
   const [ratio, setRatio] = useState(1.5);
   const hour = Number(entry.captured_at.slice(11, 13));
@@ -101,16 +99,6 @@ export function EntryPreview({
           </span>
         )}
       </figure>
-      {onInspect && (
-        <button
-          aria-label={`Inspect ${entry.filename}`}
-          className="mt-1 flex w-full cursor-pointer justify-end text-[10px] text-muted hover:text-foreground focus-visible:rounded-sm focus-visible:outline-2 focus-visible:outline-ring"
-          onClick={onInspect}
-          type="button"
-        >
-          Details
-        </button>
-      )}
     </li>
   );
 }

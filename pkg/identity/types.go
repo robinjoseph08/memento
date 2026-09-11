@@ -80,6 +80,7 @@ type LinkedFace struct {
 	SourceFaceID string `json:"source_face_id"`
 	SourceName   string `json:"source_name"`
 	ThumbnailURL string `json:"thumbnail_url"`
+	ImmichURL    string `json:"immich_url"`
 	Avatar       bool   `json:"avatar"`
 }
 

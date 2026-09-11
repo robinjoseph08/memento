@@ -81,6 +81,7 @@ type MediaFaceAssociation struct {
 	MediaItemID   UUID   `bun:"media_item_id,pk,type:uuid"`
 	SourceFaceID  string `bun:"source_face_id,pk"`
 	SourceName    string
+	SourceVersion string
 }
 
 type MediaFaceRefresh struct {

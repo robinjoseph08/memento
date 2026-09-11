@@ -27,6 +27,12 @@ google_client_secret: ""
 # Env: IMMICH_URL
 immich_url: http://immich-server:2283
 
+# Optional Immich URL that a Curator's browser can open, for "Open in Immich"
+# links. Set it when immich_url is an internal address such as a Compose
+# service name. Same rules as immich_url. Defaults to immich_url.
+# Env: IMMICH_PUBLIC_URL
+immich_public_url: ""
+
 # Required least-privilege read-only Immich key. Prefer an environment variable.
 # Env: IMMICH_API_KEY
 immich_api_key: ""

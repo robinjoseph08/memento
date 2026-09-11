@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 
 import {
   useMergeMoments,
@@ -21,23 +21,16 @@ import type {
 } from "../../types/generated/publishing";
 import { Field, FieldError, Form } from "../people/form-fields";
 import { Button } from "../ui/button";
+import { Combobox, type ComboboxOption } from "../ui/combobox";
 import {
   Dialog,
   DialogContent,
   DialogDescription,
   DialogTitle,
 } from "../ui/dialog";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "../ui/select";
+import { AlbumImage } from "./album-image";
 
 export type StructureOperation = "move" | "split" | "merge";
-
-const selectClass = "mt-2";
 
 function SelectField({
   label,
@@ -50,32 +43,27 @@ function SelectField({
   label: string;
   value: string;
   onChange: (value: string) => void;
-  options: Array<{ value: string; label: string }>;
+  options: ComboboxOption[];
   placeholder: string;
   error?: string;
 }) {
-  const errorID = `${label.toLowerCase().replaceAll(/[^a-z]+/g, "-")}-error`;
+  const id = useId();
   return (
     <div className="mb-5">
-      <label className="block text-xs font-medium">{label}</label>
-      <Select onValueChange={onChange} value={value}>
-        <SelectTrigger
-          aria-describedby={error ? errorID : undefined}
-          aria-invalid={!!error}
-          aria-label={label}
-          className={selectClass}
-        >
-          <SelectValue placeholder={placeholder} />
-        </SelectTrigger>
-        <SelectContent>
-          {options.map((option) => (
-            <SelectItem key={option.value} value={option.value}>
-              {option.label}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-      <FieldError error={error} id={errorID} />
+      <label className="block text-xs font-medium" id={`${id}-label`}>
+        {label}
+      </label>
+      <Combobox
+        aria-describedby={error ? `${id}-error` : undefined}
+        aria-invalid={!!error}
+        aria-labelledby={`${id}-label`}
+        className="mt-2"
+        onChange={onChange}
+        options={options}
+        placeholder={placeholder}
+        value={value}
+      />
+      <FieldError error={error} id={`${id}-error`} />
     </div>
   );
 }
@@ -135,13 +123,12 @@ export function StructureEditor({
   const selected = moment.entries.filter((entry) =>
     selectedEntryIDs.includes(entry.id),
   );
-  const remaining = moment.entries.filter(
-    (entry) => !selectedEntryIDs.includes(entry.id),
-  );
   const [targetID, setTargetID] = useState(others[0]?.id ?? "");
   const [title, setTitle] = useState("");
-  const [newCoverID, setNewCoverID] = useState("");
-  const [replacementCoverID, setReplacementCoverID] = useState("");
+  // A merge keeps one of the two existing covers, so the destination's cover
+  // is the natural default. Moves and splits pick covers on the server.
+  const defaultCoverID = others[0]?.cover_entry_id ?? "";
+  const [newCoverID, setNewCoverID] = useState(defaultCoverID);
   const [resolutions, setResolutions] = useState<Record<string, Decision>>({});
   const [preview, setPreview] = useState<StructurePreview | null>(null);
   const previewMove = usePreviewMove(album.id, moment.id);
@@ -151,9 +138,12 @@ export function StructureEditor({
   const previewMerge = usePreviewMerge(album.id, moment.id);
   const merge = useMergeMoments(album.id, moment.id);
   const target = others.find((item) => item.id === targetID);
-  const mergeEntries = album.moments
-    .filter((item) => item.id === moment.id || item.id === targetID)
-    .flatMap((item) => item.entries);
+  const coverOf = (item: Moment) =>
+    item.entries.find((entry) => entry.id === item.cover_entry_id);
+  const mergeCovers = [moment, ...(target ? [target] : [])].flatMap((item) => {
+    const cover = coverOf(item);
+    return cover ? [{ moment: item, entry: cover }] : [];
+  });
   const pending =
     previewMove.isPending ||
     move.isPending ||
@@ -174,8 +164,7 @@ export function StructureEditor({
     preview !== null ||
     title !== "" ||
     targetID !== (others[0]?.id ?? "") ||
-    newCoverID !== "" ||
-    replacementCoverID !== "" ||
+    newCoverID !== defaultCoverID ||
     Object.keys(resolutions).length > 0;
   useUnsavedChanges(dirty, true);
   function changeOpen(next: boolean) {
@@ -192,15 +181,12 @@ export function StructureEditor({
     request = {
       entry_ids: selectedEntryIDs,
       destination_moment_id: targetID,
-      replacement_cover_entry_id: replacementCoverID,
       review_token: preview?.review_token ?? "",
     };
   } else if (operation === "split") {
     request = {
       entry_ids: selectedEntryIDs,
       new_title: title,
-      new_cover_entry_id: newCoverID,
-      replacement_cover_entry_id: replacementCoverID,
       review_token: preview?.review_token ?? "",
     };
   } else {
@@ -271,10 +257,10 @@ export function StructureEditor({
       : operation === "split"
         ? "Split Moment"
         : "Merge Moments";
-  const selectedCoverMoves = selectedEntryIDs.includes(moment.cover_entry_id);
-  const needsReplacement =
-    operation !== "merge" && selectedCoverMoves && remaining.length > 0;
-  const coverOptions = operation === "merge" ? mergeEntries : selected;
+  const coverLeaves =
+    operation !== "merge" &&
+    selectedEntryIDs.includes(moment.cover_entry_id) &&
+    selectedEntryIDs.length < moment.entries.length;
 
   return (
     <Dialog onOpenChange={changeOpen} open>
@@ -303,7 +289,11 @@ export function StructureEditor({
                 label="Destination Moment"
                 onChange={(value) => {
                   setTargetID(value);
-                  if (operation === "merge") setNewCoverID("");
+                  if (operation === "merge")
+                    setNewCoverID(
+                      others.find((item) => item.id === value)
+                        ?.cover_entry_id ?? "",
+                    );
                   clearReview();
                 }}
                 options={others.map((item) => ({
@@ -333,47 +323,64 @@ export function StructureEditor({
                 value={title}
               />
             )}
-            {operation !== "move" && (
-              <SelectField
-                error={errors.new_cover_entry_id ?? errors.cover_entry_id}
-                label={
-                  operation === "split"
-                    ? "New Moment cover"
-                    : "Merged Moment cover"
-                }
-                onChange={(value) => {
-                  setNewCoverID(value);
-                  clearReview();
-                }}
-                options={coverOptions.map((entry) => ({
-                  value: entry.id,
-                  label: entry.filename,
-                }))}
-                placeholder="Choose a cover"
-                value={newCoverID}
-              />
-            )}
-            {needsReplacement && (
-              <SelectField
-                error={errors.replacement_cover_entry_id}
-                label={`Replacement cover for ${moment.label}`}
-                onChange={(value) => {
-                  setReplacementCoverID(value);
-                  clearReview();
-                }}
-                options={remaining.map((entry) => ({
-                  value: entry.id,
-                  label: entry.filename,
-                }))}
-                placeholder="Choose a replacement cover"
-                value={replacementCoverID}
-              />
+            {operation === "merge" && (
+              <fieldset className="mb-5">
+                <legend className="block text-xs font-medium">
+                  Merged Moment cover
+                </legend>
+                <div className="mt-2 flex flex-wrap gap-3">
+                  {mergeCovers.map(({ moment: item, entry }) => (
+                    <label
+                      className="flex max-w-40 cursor-pointer flex-col gap-2 text-xs"
+                      key={item.id}
+                    >
+                      <input
+                        aria-label={`Keep the cover of ${item.label}`}
+                        checked={newCoverID === entry.id}
+                        className="peer sr-only"
+                        name="merged_cover"
+                        onChange={() => {
+                          setNewCoverID(entry.id);
+                          clearReview();
+                        }}
+                        type="radio"
+                        value={entry.id}
+                      />
+                      <span className="block rounded-sm peer-checked:outline-2 peer-checked:outline-offset-2 peer-checked:outline-primary peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-ring">
+                        <AlbumImage
+                          alt={entry.filename}
+                          className="h-auto max-h-28 w-auto max-w-40"
+                          fallback="No preview available"
+                          src={entry.available ? entry.thumbnail_url : ""}
+                        />
+                      </span>
+                      <span className="text-muted">
+                        <span className="block">{item.label}</span>
+                        <span className="block">
+                          {item.id === targetID ? "Destination" : "Merging"}
+                        </span>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+                <FieldError
+                  error={errors.cover_entry_id}
+                  id="merged-cover-error"
+                />
+              </fieldset>
             )}
             <FieldError error={errors.entry_ids} id="entry-ids-error" />
             {operation === "split" && (
               <p className="mb-5 text-xs leading-relaxed text-muted">
-                Both Moments keep the existing access decisions. Splitting alone
-                changes no one's media access.
+                Both Moments keep the existing access decisions, and the new
+                Moment starts with its earliest item as its cover. Splitting
+                alone changes no one's media access.
+              </p>
+            )}
+            {coverLeaves && (
+              <p className="mb-5 text-xs leading-relaxed text-muted">
+                This Moment's cover is leaving, so its earliest remaining item
+                becomes the cover.
               </p>
             )}
             {preview && preview.conflicts.length > 0 && (

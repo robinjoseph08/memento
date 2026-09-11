@@ -10,6 +10,7 @@ import (
 
 	"github.com/robinjoseph08/memento/pkg/errcodes"
 	"github.com/robinjoseph08/memento/pkg/errorstack"
+	"github.com/robinjoseph08/memento/pkg/media"
 	"github.com/robinjoseph08/memento/pkg/models"
 	"github.com/uptrace/bun"
 )
@@ -18,7 +19,7 @@ func personAvatarURL(person models.Person) string {
 	if person.AvatarFaceID == nil {
 		return ""
 	}
-	return "/api/media/people/" + person.ID.String() + "/avatar?v=" + url.QueryEscape(*person.AvatarFaceID)
+	return media.AvatarURL(person.ID.String(), *person.AvatarFaceID, person.AvatarVersion)
 }
 
 func faceAvailable(ctx context.Context, tx bun.Tx, sourceID string) (bool, error) {
@@ -47,17 +48,25 @@ func linkFace(ctx context.Context, tx bun.Tx, person models.Person, sourceID str
 	row := models.ImmichFaceLink{SourceID: sourceID, PersonID: &personID, UpdatedAt: now}
 	_, err = tx.NewInsert().Model(&row).On("CONFLICT (source_id) DO UPDATE").
 		Set("person_id = EXCLUDED.person_id").Set("ignored = false").Set("updated_at = EXCLUDED.updated_at").Exec(ctx)
+	if err != nil {
+		return errorstack.CaptureContext(ctx, err)
+	}
+	// The first linked face doubles as the avatar so a Person is recognizable
+	// without a separate step. Later links leave an existing choice alone.
+	_, err = tx.NewUpdate().Model((*models.Person)(nil)).Set("avatar_face_id = ?", sourceID).
+		Where("id = ? AND avatar_face_id IS NULL", person.ID).Exec(ctx)
 	return errorstack.CaptureContext(ctx, err)
 }
 
-func linkedFaces(ctx context.Context, tx bun.Tx, person models.Person) ([]LinkedFace, error) {
+func linkedFaces(ctx context.Context, tx bun.Tx, person models.Person, immichURL string) ([]LinkedFace, error) {
 	type linkedFaceRow struct {
-		SourceID   string
-		SourceName string
+		SourceID      string
+		SourceName    string
+		SourceVersion string
 	}
 	rows := []linkedFaceRow{}
 	err := tx.NewSelect().TableExpr("immich_face_links AS link").
-		ColumnExpr("link.source_id, coalesce(min(face.source_name), '') AS source_name").
+		ColumnExpr("link.source_id, coalesce(min(face.source_name), '') AS source_name, coalesce(max(face.source_version), '') AS source_version").
 		Join("LEFT JOIN media_face_associations AS face ON face.source_face_id = link.source_id").
 		Where("link.person_id = ? AND NOT link.ignored", person.ID).
 		Group("link.source_id").Order("link.source_id").Scan(ctx, &rows)
@@ -66,8 +75,13 @@ func linkedFaces(ctx context.Context, tx bun.Tx, person models.Person) ([]Linked
 	}
 	result := make([]LinkedFace, 0, len(rows))
 	for _, row := range rows {
+		immichLink := ""
+		if immichURL != "" {
+			immichLink = immichURL + "/people/" + url.PathEscape(row.SourceID)
+		}
 		result = append(result, LinkedFace{SourceFaceID: row.SourceID, SourceName: row.SourceName,
-			ThumbnailURL: "/api/media/faces/" + url.PathEscape(row.SourceID) + "/thumbnail", Avatar: person.AvatarFaceID != nil && *person.AvatarFaceID == row.SourceID})
+			ThumbnailURL: media.FaceThumbnailURL(row.SourceID, row.SourceVersion), ImmichURL: immichLink,
+			Avatar: person.AvatarFaceID != nil && *person.AvatarFaceID == row.SourceID})
 	}
 	return result, nil
 }

@@ -17,6 +17,7 @@ type Person struct {
 	UpdateEmail           string `bun:",scanonly"`
 	EmailUpdates          bool
 	AvatarFaceID          *string
+	AvatarVersion         string `bun:",scanonly"`
 	CreatedAt             time.Time
 }
 

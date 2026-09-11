@@ -109,16 +109,16 @@ type AccessPerson struct {
 }
 
 type MomentAccess struct {
-	People       []AccessPerson `json:"people"`
-	Faces        []FaceRecord   `json:"faces"`
-	RefreshedAt  *time.Time     `json:"refreshed_at"`
-	RefreshError string         `json:"refresh_error"`
+	People      []AccessPerson `json:"people"`
+	Faces       []FaceRecord   `json:"faces"`
+	RefreshedAt *time.Time     `json:"refreshed_at"`
 }
 
 type FaceRecord struct {
 	SourceID     string `json:"source_id"`
 	SourceName   string `json:"source_name"`
 	ThumbnailURL string `json:"thumbnail_url"`
+	ImmichURL    string `json:"immich_url"`
 	PersonID     string `json:"person_id"`
 	PersonName   string `json:"person_name"`
 	Ignored      bool   `json:"ignored"`
@@ -166,19 +166,19 @@ type StructurePreview struct {
 	Conflicts     []AccessConflict `json:"conflicts"`
 }
 
+// Moves and splits pick covers themselves: a Moment that loses its cover, or a
+// Moment created by a split, starts with its earliest item. Curators change
+// covers afterwards from the Moment itself.
 type MoveEntriesRequest struct {
-	EntryIDs                []string `json:"entry_ids" validate:"required,min=1,dive,uuid"`
-	DestinationMomentID     string   `json:"destination_moment_id" validate:"required,uuid"`
-	ReplacementCoverEntryID string   `json:"replacement_cover_entry_id" validate:"omitempty,uuid"`
-	ReviewToken             string   `json:"review_token"`
+	EntryIDs            []string `json:"entry_ids" validate:"required,min=1,dive,uuid"`
+	DestinationMomentID string   `json:"destination_moment_id" validate:"required,uuid"`
+	ReviewToken         string   `json:"review_token"`
 }
 
 type SplitMomentRequest struct {
-	EntryIDs                []string `json:"entry_ids" validate:"required,min=1,dive,uuid"`
-	NewTitle                string   `json:"new_title" mod:"trim" validate:"max=200"`
-	NewCoverEntryID         string   `json:"new_cover_entry_id" validate:"required,uuid"`
-	ReplacementCoverEntryID string   `json:"replacement_cover_entry_id" validate:"omitempty,uuid"`
-	ReviewToken             string   `json:"review_token"`
+	EntryIDs    []string `json:"entry_ids" validate:"required,min=1,dive,uuid"`
+	NewTitle    string   `json:"new_title" mod:"trim" validate:"max=200"`
+	ReviewToken string   `json:"review_token"`
 }
 
 type MergeMomentsRequest struct {

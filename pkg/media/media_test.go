@@ -98,7 +98,7 @@ func TestFaceAndAvatarThumbnailsRequireKnownAuthorizedRecords(t *testing.T) {
 		CapturedAt: now, SourceCreatedAt: now, SourceUpdatedAt: now, ContentVersion: "face"}
 	_, err := db.NewInsert().Model(&item).Exec(t.Context())
 	require.NoError(t, err)
-	face := models.MediaFaceAssociation{MediaItemID: item.ID, SourceFaceID: "immich-person", SourceName: "Alex"}
+	face := models.MediaFaceAssociation{MediaItemID: item.ID, SourceFaceID: "immich-person", SourceName: "Alex", SourceVersion: "2024-07-02T07:00:00Z"}
 	_, err = db.NewInsert().Model(&face).Exec(t.Context())
 	require.NoError(t, err)
 	person := models.Person{ID: models.NewUUIDv7(), DisplayName: "Alex", CreatedAt: now}
@@ -128,15 +128,21 @@ func TestFaceAndAvatarThumbnailsRequireKnownAuthorizedRecords(t *testing.T) {
 		e.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
 		return response
 	}
-	require.Equal(t, http.StatusOK, get("/api/media/faces/immich-person/thumbnail").Code)
+	faceURL := media.FaceThumbnailURL("immich-person", "2024-07-02T07:00:00Z")
+	first := get(faceURL)
+	require.Equal(t, http.StatusOK, first.Code)
+	require.Equal(t, "private, max-age=31536000, immutable", first.Header().Get("Cache-Control"))
 	require.Equal(t, "immich-person", upstream.requested)
-	require.Equal(t, http.StatusOK, get("/api/media/people/"+person.ID.String()+"/avatar?v=ignored").Code)
+	avatarURL := media.AvatarURL(person.ID.String(), "immich-person", "2024-07-02T07:00:00Z")
+	require.Equal(t, http.StatusOK, get(avatarURL).Code)
 	require.Equal(t, "immich-person", upstream.requested)
 	upstream.requested = ""
-	require.Equal(t, http.StatusNotFound, get("/api/media/faces/arbitrary/thumbnail").Code)
+	require.Equal(t, http.StatusNotFound, get("/api/media/faces/arbitrary/thumbnail?v=2024-07-02T07%3A00%3A00Z").Code)
+	require.Equal(t, http.StatusNotFound, get(media.FaceThumbnailURL("immich-person", "stale")).Code, "a superseded version never serves new bytes")
+	require.Equal(t, http.StatusNotFound, get("/api/media/people/"+person.ID.String()+"/avatar?v=ignored").Code)
 	require.Empty(t, upstream.requested)
 	authorized = false
-	require.Equal(t, http.StatusForbidden, get("/api/media/faces/immich-person/thumbnail").Code)
+	require.Equal(t, http.StatusForbidden, get(faceURL).Code)
 }
 
 func TestSourceCoverUsesAlbumWithoutEntryAndRequiresCurator(t *testing.T) {

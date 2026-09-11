@@ -163,7 +163,7 @@ const completeAlbum: AlbumDetail = {
       date: "2026-07-01",
       end_date: "2026-07-01",
       cover_entry_id: "photo",
-      access: { people: [], faces: [], refresh_error: "" },
+      access: { people: [], faces: [] },
       entries: [
         {
           id: "photo",
@@ -316,7 +316,7 @@ it("uses the compact Workbench for selection and immediate Moment access with Un
     moments: [
       {
         ...completeAlbum.moments[0],
-        access: { people: [alex, sam], faces: [], refresh_error: "" },
+        access: { people: [alex, sam], faces: [] },
       },
       {
         id: "day-2",
@@ -333,7 +333,7 @@ it("uses the compact Workbench for selection and immediate Moment access with Un
             filename: "Cliffs.jpg",
           },
         ],
-        access: { people: [], faces: [], refresh_error: "" },
+        access: { people: [], faces: [] },
       },
     ],
   };
@@ -409,13 +409,22 @@ it("uses the compact Workbench for selection and immediate Moment access with Un
   expect(within(inspector).getByText("Allowed")).toBeVisible();
   expect(within(inspector).getByText("Suggested")).toBeVisible();
   expect(
-    screen.queryByRole("button", { name: "Set as cover" }),
+    screen.queryByRole("checkbox", { name: "Select Waves.mp4" }),
+  ).not.toBeInTheDocument();
+  expect(
+    screen.queryByRole("button", { name: "Move" }),
   ).not.toBeInTheDocument();
 
+  await user.click(screen.getByRole("button", { name: "Select" }));
+  expect(screen.getByRole("button", { name: "Move" })).toBeDisabled();
   await user.click(screen.getByRole("checkbox", { name: "Select Waves.mp4" }));
-  expect(screen.getByRole("button", { name: "Move" })).toBeVisible();
-  expect(screen.getByRole("button", { name: "Split" })).toBeVisible();
+  expect(screen.getByRole("button", { name: "Move" })).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Split" })).toBeEnabled();
   expect(screen.getByRole("button", { name: "Set as cover" })).toBeVisible();
+  await user.click(screen.getByRole("button", { name: "Done" }));
+  expect(
+    screen.queryByRole("checkbox", { name: "Select Waves.mp4" }),
+  ).not.toBeInTheDocument();
 
   await user.click(
     within(inspector).getByRole("checkbox", {
@@ -440,7 +449,8 @@ it("links an Immich face to an existing Person and derives a suggestion", async 
   const face = {
     source_id: "immich-alex",
     source_name: "Immich Alex",
-    thumbnail_url: "/api/media/faces/immich-alex/thumbnail",
+    thumbnail_url: "/api/media/faces/immich-alex/thumbnail?v=1",
+    immich_url: "http://immich.test/people/immich-alex",
     person_id: "",
     person_name: "",
     ignored: false,
@@ -461,7 +471,7 @@ it("links an Immich face to an existing Person and derives a suggestion", async 
     moments: [
       {
         ...completeAlbum.moments[0],
-        access: { people: [], faces: [face], refresh_error: "" },
+        access: { people: [], faces: [face] },
       },
     ],
   };
@@ -515,16 +525,24 @@ it("links an Immich face to an existing Person and derives a suggestion", async 
   const user = userEvent.setup();
   render(<App />);
 
+  const faces = await screen.findByRole("region", { name: /Unlinked faces/ });
+  expect(
+    screen.queryByRole("combobox", { name: "Person" }),
+  ).not.toBeInTheDocument();
   await user.click(
-    await screen.findByRole("combobox", { name: "Existing Person" }),
+    within(faces).getByRole("button", { name: "Link Immich Alex" }),
   );
+  await user.click(screen.getByRole("combobox", { name: "Person" }));
+  expect(
+    screen.getByRole("option", { name: 'Create "Immich Alex"' }),
+  ).toBeVisible();
   await user.click(screen.getByRole("option", { name: "Alex" }));
   const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
   await user.click(screen.getByRole("link", { name: "Album details" }));
   expect(confirm).toHaveBeenCalledOnce();
-  expect(
-    screen.getByRole("combobox", { name: "Existing Person" }),
-  ).toHaveTextContent("Alex");
+  expect(screen.getByRole("combobox", { name: "Person" })).toHaveTextContent(
+    "Alex",
+  );
   await user.click(screen.getByRole("button", { name: "Link face" }));
   await waitFor(() =>
     expect(posts).toContainEqual({
@@ -532,8 +550,11 @@ it("links an Immich face to an existing Person and derives a suggestion", async 
       body: { source_face_id: "immich-alex" },
     }),
   );
-  expect(await screen.findByText("Suggested")).toBeVisible();
-  expect(screen.getByText(/Linked, detected in 2 items/)).toBeVisible();
+  const suggested = await screen.findByRole("region", { name: /Suggested/ });
+  expect(within(suggested).getByText("Seen in 2 items")).toBeVisible();
+  expect(
+    screen.queryByRole("region", { name: /Unlinked faces/ }),
+  ).not.toBeInTheDocument();
 });
 
 it("disables unsupported imports without hiding the library or blocking imported albums", async () => {

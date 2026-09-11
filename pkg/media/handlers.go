@@ -22,19 +22,25 @@ func (h *handlers) sourceCover(c *echo.Context) error {
 }
 
 func (h *handlers) faceThumbnail(c *echo.Context) error {
-	image, err := h.module.FaceThumbnail(c.Request().Context(), c.Param("sourceID"))
+	version := c.QueryParam("v")
+	sourceID, err := h.module.FaceThumbnail(c.Request().Context(), c.Param("sourceID"), version)
 	if err != nil {
 		return err
 	}
-	return serveImage(c, image, "private, no-store", "")
+	return serveVersioned(c, version, func() (immich.Thumbnail, error) {
+		return h.module.source.PersonThumbnail(c.Request().Context(), sourceID)
+	})
 }
 
 func (h *handlers) personAvatar(c *echo.Context) error {
-	image, err := h.module.PersonAvatar(c.Request().Context(), c.Param("id"))
+	version := c.QueryParam("v")
+	sourceID, err := h.module.PersonAvatar(c.Request().Context(), c.Param("id"), version)
 	if err != nil {
 		return err
 	}
-	return serveImage(c, image, "private, no-store", "")
+	return serveVersioned(c, version, func() (immich.Thumbnail, error) {
+		return h.module.source.PersonThumbnail(c.Request().Context(), sourceID)
+	})
 }
 
 func (h *handlers) entryThumbnail(c *echo.Context) error {
@@ -43,6 +49,14 @@ func (h *handlers) entryThumbnail(c *echo.Context) error {
 	if err != nil {
 		return err
 	}
+	return serveVersioned(c, version, func() (immich.Thumbnail, error) {
+		return h.module.generatedThumbnail(c.Request().Context(), sourceID, version)
+	})
+}
+
+// serveVersioned answers an already-authorized, content-versioned image with
+// immutable private caching, skipping the upstream read on a matching ETag.
+func serveVersioned(c *echo.Context, version string, open func() (immich.Thumbnail, error)) error {
 	tag := "\"" + version + "\""
 	const cache = "private, max-age=31536000, immutable"
 	for candidate := range strings.SplitSeq(c.Request().Header.Get("If-None-Match"), ",") {
@@ -53,7 +67,7 @@ func (h *handlers) entryThumbnail(c *echo.Context) error {
 			return c.NoContent(http.StatusNotModified)
 		}
 	}
-	image, err := h.module.generatedThumbnail(c.Request().Context(), sourceID, version)
+	image, err := open()
 	if err != nil {
 		return err
 	}

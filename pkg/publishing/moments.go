@@ -56,12 +56,8 @@ func (m *Module) UpdateMoment(ctx context.Context, albumID, momentID string, req
 		return AlbumDetail{}, errcodes.ValidationFields("Check the highlighted fields.", map[string]string{"title": "Enter a Moment title of 200 characters or fewer."})
 	}
 	err := m.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
-		album, err := albumRow(ctx, tx, albumID, true)
-		if err != nil {
+		if _, err := albumRow(ctx, tx, albumID, true); err != nil {
 			return err
-		}
-		if album.ImportStatus != "complete" {
-			return &errcodes.Error{HTTPCode: 409, Code: "import_incomplete", Message: "Wait for the import to finish before editing Moments."}
 		}
 		moment, err := momentRow(ctx, tx, albumID, momentID, true)
 		if err != nil {

@@ -55,12 +55,15 @@ test("arranges a large Moment and reviews face-based access on desktop and mobil
     ["Immich Alex", "Alex"],
     ["Immich Alex duplicate", "Alex"],
   ] as const) {
+    await page
+      .getByRole("button", { name: `Link ${faceName}`, exact: true })
+      .click({ timeout: 30_000 });
     const form = page.getByRole("form", {
       name: `Link ${faceName}`,
       exact: true,
     });
-    await expect(form).toBeVisible({ timeout: 30_000 });
-    await form.getByRole("combobox", { name: "Existing Person" }).click();
+    await expect(form).toBeVisible();
+    await form.getByRole("combobox", { name: "Person" }).click();
     await page.getByRole("option", { name: personName, exact: true }).click();
     await form.getByRole("button", { name: "Link face" }).click();
     await expect(form).toHaveCount(0);
@@ -80,6 +83,9 @@ test("arranges a large Moment and reviews face-based access on desktop and mobil
   await alexAccess.check();
 
   await firstMoment
+    .getByRole("button", { name: "Select", exact: true })
+    .click();
+  await firstMoment
     .getByRole("checkbox", { name: "Select workbench-002.jpg" })
     .check();
   await firstMoment.getByRole("button", { name: "Set as cover" }).click();
@@ -88,17 +94,19 @@ test("arranges a large Moment and reviews face-based access on desktop and mobil
   });
   await coverDialog.getByRole("button", { name: "Save cover" }).click();
   await expect(coverDialog).toHaveCount(0);
-  await firstMoment.getByRole("button", { name: "Clear" }).click();
+  await firstMoment.getByRole("button", { name: "Done" }).click();
 
+  await firstMoment
+    .getByRole("button", { name: "Select", exact: true })
+    .click();
   await firstMoment
     .getByRole("checkbox", { name: "Select workbench-004.jpg" })
     .check();
   await firstMoment.getByRole("button", { name: "Split" }).click();
   const splitDialog = page.getByRole("dialog", { name: "Split Moment" });
-  await splitDialog.getByRole("combobox", { name: "New Moment cover" }).click();
-  await page
-    .getByRole("option", { name: "workbench-004.jpg", exact: true })
-    .click();
+  await expect(
+    splitDialog.getByRole("combobox", { name: /cover/ }),
+  ).toHaveCount(0);
   await splitDialog.getByRole("button", { name: "Review split" }).click();
   await expect(
     splitDialog.getByRole("region", { name: "Visibility review" }),
@@ -120,6 +128,7 @@ test("arranges a large Moment and reviews face-based access on desktop and mobil
     .uncheck();
   await originalToggle.click();
   const original = page.getByRole("region", { name: "June 4, 2026 (1)" });
+  await original.getByRole("button", { name: "Select", exact: true }).click();
   await original
     .getByRole("checkbox", { name: "Select workbench-006.jpg" })
     .check();
@@ -134,12 +143,21 @@ test("arranges a large Moment and reviews face-based access on desktop and mobil
 
   await original.getByRole("button", { name: "Merge" }).click();
   const mergeDialog = page.getByRole("dialog", { name: "Merge Moments" });
+  const keepOriginalCover = mergeDialog.getByRole("radio", {
+    name: "Keep the cover of June 4, 2026 (1)",
+  });
+  await expect(
+    mergeDialog.getByRole("radio", {
+      name: "Keep the cover of June 4, 2026 (2)",
+    }),
+  ).toBeChecked();
+  // The radio is visually hidden behind its thumbnail label.
   await mergeDialog
-    .getByRole("combobox", { name: "Merged Moment cover" })
+    .locator(
+      'label:has(input[aria-label="Keep the cover of June 4, 2026 (1)"])',
+    )
     .click();
-  await page
-    .getByRole("option", { name: "workbench-004.jpg", exact: true })
-    .click();
+  await expect(keepOriginalCover).toBeChecked();
   await mergeDialog.getByRole("button", { name: "Review merge" }).click();
   await mergeDialog.getByRole("combobox", { name: "Alex" }).click();
   await page.getByRole("option", { name: "Allow", exact: true }).click();

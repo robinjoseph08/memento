@@ -47,10 +47,12 @@ func TestCuratorLinksMultipleFacesAndSelectsAnAvatar(t *testing.T) {
 		cacheFace(t, db, faceID)
 	}
 
-	_, err = module.LinkFace(t.Context(), curator.Token, alex.ID, identity.LinkFaceRequest{SourceFaceID: "face-one"})
+	first, err := module.LinkFace(t.Context(), curator.Token, alex.ID, identity.LinkFaceRequest{SourceFaceID: "face-one"})
 	require.NoError(t, err)
-	_, err = module.LinkFace(t.Context(), curator.Token, alex.ID, identity.LinkFaceRequest{SourceFaceID: "face-two"})
+	assert.Contains(t, first.Person.AvatarURL, "face-one", "the first linked face becomes the avatar")
+	second, err := module.LinkFace(t.Context(), curator.Token, alex.ID, identity.LinkFaceRequest{SourceFaceID: "face-two"})
 	require.NoError(t, err)
+	assert.Contains(t, second.Person.AvatarURL, "face-one", "later links keep the chosen avatar")
 	updated, err := module.SetPersonAvatar(t.Context(), curator.Token, alex.ID, identity.SetPersonAvatarRequest{SourceFaceID: "face-two"})
 	require.NoError(t, err)
 	assert.Contains(t, updated.Person.AvatarURL, "face-two")
@@ -66,6 +68,7 @@ func TestCuratorLinksMultipleFacesAndSelectsAnAvatar(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "Sam", created.Person.DisplayName)
 	require.Len(t, created.Faces, 1)
+	assert.True(t, created.Faces[0].Avatar)
 
 	require.NoError(t, module.IgnoreFace(t.Context(), curator.Token, "face-four"))
 	_, err = module.LinkFace(t.Context(), curator.Token, alex.ID, identity.LinkFaceRequest{SourceFaceID: "face-four"})

@@ -53,8 +53,6 @@ func (MoveEntriesRequest) ValidationMessage(field, _ string) string {
 		return "Select media from this Moment."
 	case "destination_moment_id":
 		return "Choose another Moment in this Album."
-	case "replacement_cover_entry_id":
-		return "Choose a replacement cover from the media staying in this Moment."
 	}
 	return ""
 }
@@ -63,13 +61,8 @@ func (SplitMomentRequest) ValidationMessage(field, rule string) string {
 	if field == "new_title" && rule == "max" {
 		return "Use 200 characters or fewer."
 	}
-	switch field {
-	case "entry_ids":
+	if field == "entry_ids" {
 		return "Select media from this Moment."
-	case "new_cover_entry_id":
-		return "Choose a cover from the selected media."
-	case "replacement_cover_entry_id":
-		return "Choose a replacement cover from the media staying in this Moment."
 	}
 	return ""
 }

@@ -76,6 +76,7 @@ func run(log logger.Logger) error {
 		return fmt.Errorf("create worker: %w", err)
 	}
 	imports = publishing.New(db, immich.New(cfg.ImmichURL, cfg.ImmichAPIKey), jobs.EnqueueImport)
+	imports.ImmichURL = cfg.ImmichBrowserURL()
 	srv, err := server.New(cfg, db, imports)
 	if err != nil {
 		return fmt.Errorf("create server: %w", err)

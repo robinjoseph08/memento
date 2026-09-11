@@ -19,19 +19,45 @@ import (
 )
 
 type structureMoment struct {
-	ID          string `json:"id"`
-	CaptureDate string `json:"capture_date"`
-	Title       string `json:"title"`
-	SortOrder   int64  `json:"sort_order"`
-	CoverID     string `json:"cover_id"`
+	ID          string
+	CaptureDate string
+	Title       string
+	SortOrder   int64
+	CoverID     string
 }
 
 type structureState struct {
-	Moments      map[string]structureMoment     `json:"moments"`
-	EntryMoments map[string]string              `json:"entry_moments"`
-	Decisions    map[string]map[string]Decision `json:"decisions"`
-	People       map[string]string              `json:"people"`
-	PersonOrder  []string                       `json:"person_order"`
+	Moments      map[string]structureMoment
+	EntryMoments map[string]string
+	// EntryOrder ranks entries chronologically, the same order the gallery
+	// uses, so a Moment that loses its cover gets its earliest item instead.
+	EntryOrder  map[string]int
+	Decisions   map[string]map[string]Decision
+	People      map[string]string
+	PersonOrder []string
+}
+
+// firstEntry is the chronologically first of the given entries.
+func (s structureState) firstEntry(entryIDs map[string]bool) string {
+	best, bestRank := "", 0
+	for id := range entryIDs {
+		if rank := s.EntryOrder[id]; best == "" || rank < bestRank {
+			best, bestRank = id, rank
+		}
+	}
+	return best
+}
+
+// remainingEntries is the membership of a Moment after the excluded entries
+// leave it.
+func (s structureState) remainingEntries(momentID string, exclude map[string]bool) map[string]bool {
+	result := map[string]bool{}
+	for entryID, entryMomentID := range s.EntryMoments {
+		if entryMomentID == momentID && !exclude[entryID] {
+			result[entryID] = true
+		}
+	}
+	return result
 }
 
 func (s structureState) facts() accessFacts {
@@ -42,12 +68,14 @@ func (s structureState) clone() structureState {
 	result := structureState{
 		Moments:      make(map[string]structureMoment, len(s.Moments)),
 		EntryMoments: make(map[string]string, len(s.EntryMoments)),
+		EntryOrder:   make(map[string]int, len(s.EntryOrder)),
 		Decisions:    make(map[string]map[string]Decision, len(s.Decisions)),
 		People:       make(map[string]string, len(s.People)),
 		PersonOrder:  append([]string(nil), s.PersonOrder...),
 	}
 	maps.Copy(result.Moments, s.Moments)
 	maps.Copy(result.EntryMoments, s.EntryMoments)
+	maps.Copy(result.EntryOrder, s.EntryOrder)
 	for momentID, decisions := range s.Decisions {
 		result.Decisions[momentID] = make(map[string]Decision, len(decisions))
 		maps.Copy(result.Decisions[momentID], decisions)
@@ -57,7 +85,7 @@ func (s structureState) clone() structureState {
 }
 
 func (m *Module) loadStructure(ctx context.Context, db bun.IDB, albumID string, lock bool) (structureState, error) {
-	state := structureState{Moments: map[string]structureMoment{}, EntryMoments: map[string]string{}, Decisions: map[string]map[string]Decision{}, People: map[string]string{}}
+	state := structureState{Moments: map[string]structureMoment{}, EntryMoments: map[string]string{}, EntryOrder: map[string]int{}, Decisions: map[string]map[string]Decision{}, People: map[string]string{}}
 	var moments []models.Moment
 	momentQuery := db.NewSelect().Model(&moments).Where("moment.album_id = ?", albumID).Order("moment.sort_order", "moment.id")
 	if lock {
@@ -74,17 +102,25 @@ func (m *Module) loadStructure(ctx context.Context, db bun.IDB, albumID string, 
 		state.Moments[moment.ID.String()] = structureMoment{ID: moment.ID.String(), CaptureDate: moment.CaptureDate, Title: title, SortOrder: moment.SortOrder, CoverID: moment.CoverEntryID.String()}
 		state.Decisions[moment.ID.String()] = map[string]Decision{}
 	}
-	var entries []models.AlbumEntry
-	entryQuery := db.NewSelect().Model(&entries).Where("album_entry.album_id = ? AND album_entry.removed_at IS NULL", albumID).Order("album_entry.id")
-	if lock {
-		entryQuery = entryQuery.For("UPDATE")
+	type entryRow struct {
+		ID       models.UUID
+		MomentID *models.UUID
 	}
-	if err := entryQuery.Scan(ctx); err != nil {
+	var entries []entryRow
+	entryQuery := db.NewSelect().TableExpr("album_entries AS album_entry").ColumnExpr("album_entry.id, album_entry.moment_id").
+		Join("JOIN media_items AS item ON item.id = album_entry.media_item_id").
+		Where("album_entry.album_id = ? AND album_entry.removed_at IS NULL", albumID).
+		OrderExpr("item.captured_at, item.source_id COLLATE \"C\", album_entry.id")
+	if lock {
+		entryQuery = entryQuery.For("UPDATE OF album_entry")
+	}
+	if err := entryQuery.Scan(ctx, &entries); err != nil {
 		return state, errorstack.CaptureContext(ctx, err)
 	}
-	for _, entry := range entries {
+	for rank, entry := range entries {
 		if entry.MomentID != nil {
 			state.EntryMoments[entry.ID.String()] = entry.MomentID.String()
+			state.EntryOrder[entry.ID.String()] = rank
 		}
 	}
 	var decisions []models.MomentAccessDecision
@@ -122,13 +158,30 @@ func reviewedChanges(before, after structureState) []AudienceChange {
 	return changes
 }
 
+// reviewedFacts is the part of the structure whose change would alter the
+// reviewed effect: membership, decisions, and covers. Person names and other
+// Moments' titles may change between preview and commit without a new review.
+type reviewedFacts struct {
+	Covers       map[string]string              `json:"covers"`
+	EntryMoments map[string]string              `json:"entry_moments"`
+	Decisions    map[string]map[string]Decision `json:"decisions"`
+}
+
+func (s structureState) reviewed() reviewedFacts {
+	covers := make(map[string]string, len(s.Moments))
+	for id, moment := range s.Moments {
+		covers[id] = moment.CoverID
+	}
+	return reviewedFacts{Covers: covers, EntryMoments: s.EntryMoments, Decisions: s.Decisions}
+}
+
 func reviewToken(operation string, before structureState, request any, after structureState) (string, error) {
 	payload, err := json.Marshal(struct {
-		Operation string         `json:"operation"`
-		Before    structureState `json:"before"`
-		Request   any            `json:"request"`
-		After     structureState `json:"after"`
-	}{Operation: operation, Before: before, Request: request, After: after})
+		Operation string        `json:"operation"`
+		Before    reviewedFacts `json:"before"`
+		Request   any           `json:"request"`
+		After     reviewedFacts `json:"after"`
+	}{Operation: operation, Before: before.reviewed(), Request: request, After: after.reviewed()})
 	if err != nil {
 		return "", errorstack.Capture(err)
 	}
@@ -166,6 +219,8 @@ func canonicalEntries(ids []string) []string {
 	return result
 }
 
+// previewMove describes a move without committing it. When the cover leaves
+// a surviving Moment, its earliest remaining item becomes the cover.
 func previewMove(state structureState, sourceMomentID string, request MoveEntriesRequest) (StructurePreview, structureState, error) {
 	source, sourceOK := state.Moments[sourceMomentID]
 	if !sourceOK {
@@ -178,11 +233,6 @@ func previewMove(state structureState, sourceMomentID string, request MoveEntrie
 	if err != nil {
 		return StructurePreview{}, state, err
 	}
-	if remaining > 0 && selected[source.CoverID] {
-		if request.ReplacementCoverEntryID == "" || selected[request.ReplacementCoverEntryID] || state.EntryMoments[request.ReplacementCoverEntryID] != sourceMomentID {
-			return StructurePreview{}, state, structureField("replacement_cover_entry_id", "Choose a replacement cover from the media staying in this Moment.")
-		}
-	}
 	after := state.clone()
 	for entryID := range selected {
 		after.EntryMoments[entryID] = request.DestinationMomentID
@@ -193,7 +243,7 @@ func previewMove(state structureState, sourceMomentID string, request MoveEntrie
 		delete(after.Decisions, sourceMomentID)
 	} else if selected[source.CoverID] {
 		updated := after.Moments[sourceMomentID]
-		updated.CoverID = request.ReplacementCoverEntryID
+		updated.CoverID = state.firstEntry(state.remainingEntries(sourceMomentID, selected))
 		after.Moments[sourceMomentID] = updated
 	}
 	canonical := request
@@ -232,19 +282,12 @@ func (m *Module) MoveEntries(ctx context.Context, albumID, sourceMomentID string
 		if request.ReviewToken == "" || request.ReviewToken != preview.ReviewToken {
 			return staleReview()
 		}
-		source := state.Moments[sourceMomentID]
-		if !preview.RemovesMoment && source.CoverID != request.ReplacementCoverEntryID {
-			for _, id := range request.EntryIDs {
-				if id == source.CoverID {
-					if _, err := tx.NewUpdate().Model((*models.Moment)(nil)).Set("cover_entry_id = ?", request.ReplacementCoverEntryID).Where("id = ?", sourceMomentID).Exec(ctx); err != nil {
-						return errorstack.CaptureContext(ctx, err)
-					}
-					break
-				}
+		if cover := after.Moments[sourceMomentID].CoverID; !preview.RemovesMoment && cover != state.Moments[sourceMomentID].CoverID {
+			if _, err := tx.NewUpdate().Model((*models.Moment)(nil)).Set("cover_entry_id = ?", cover).Where("id = ?", sourceMomentID).Exec(ctx); err != nil {
+				return errorstack.CaptureContext(ctx, err)
 			}
 		}
-		destinationMomentID := after.EntryMoments[request.EntryIDs[0]]
-		updated, err := tx.NewUpdate().Model((*models.AlbumEntry)(nil)).Set("moment_id = ?", destinationMomentID).
+		updated, err := tx.NewUpdate().Model((*models.AlbumEntry)(nil)).Set("moment_id = ?", request.DestinationMomentID).
 			Where("album_id = ? AND moment_id = ? AND id IN (?)", albumID, sourceMomentID, bun.List(request.EntryIDs)).Exec(ctx)
 		if err != nil {
 			return errorstack.CaptureContext(ctx, err)
@@ -285,16 +328,12 @@ func previewSplit(state structureState, sourceMomentID string, request SplitMome
 	if remaining == 0 {
 		return StructurePreview{}, state, structureField("entry_ids", "Leave at least one item in the original Moment.")
 	}
-	if !selected[request.NewCoverEntryID] {
-		return StructurePreview{}, state, structureField("new_cover_entry_id", "Choose a cover from the selected media.")
-	}
-	if selected[source.CoverID] && (request.ReplacementCoverEntryID == "" || selected[request.ReplacementCoverEntryID] || state.EntryMoments[request.ReplacementCoverEntryID] != sourceMomentID) {
-		return StructurePreview{}, state, structureField("replacement_cover_entry_id", "Choose a replacement cover from the media staying in this Moment.")
-	}
+	// Covers follow the same rule as a move: each resulting Moment starts
+	// with its earliest item unless it keeps the cover it already had.
 	after := state.clone()
-	updated := after.Moments[sourceMomentID]
 	if selected[source.CoverID] {
-		updated.CoverID = request.ReplacementCoverEntryID
+		updated := after.Moments[sourceMomentID]
+		updated.CoverID = state.firstEntry(state.remainingEntries(sourceMomentID, selected))
 		after.Moments[sourceMomentID] = updated
 	}
 	// A fixed placeholder keeps the reviewed effect independent from the UUID
@@ -304,7 +343,7 @@ func previewSplit(state structureState, sourceMomentID string, request SplitMome
 	for _, moment := range state.Moments {
 		maxOrder = max(maxOrder, moment.SortOrder)
 	}
-	after.Moments[previewMomentID] = structureMoment{ID: previewMomentID, CaptureDate: source.CaptureDate, Title: title, SortOrder: maxOrder + 1, CoverID: request.NewCoverEntryID}
+	after.Moments[previewMomentID] = structureMoment{ID: previewMomentID, CaptureDate: source.CaptureDate, Title: title, SortOrder: maxOrder + 1, CoverID: state.firstEntry(selected)}
 	after.Decisions[previewMomentID] = map[string]Decision{}
 	maps.Copy(after.Decisions[previewMomentID], state.Decisions[sourceMomentID])
 	for entryID := range selected {
@@ -358,12 +397,9 @@ func (m *Module) SplitMoment(ctx context.Context, albumID, sourceMomentID string
 		if _, err := tx.NewInsert().Model(&row).Exec(ctx); err != nil {
 			return errorstack.CaptureContext(ctx, err)
 		}
-		for _, entryID := range request.EntryIDs {
-			if entryID == source.CoverID {
-				if _, err := tx.NewUpdate().Model((*models.Moment)(nil)).Set("cover_entry_id = ?", request.ReplacementCoverEntryID).Where("id = ?", sourceMomentID).Exec(ctx); err != nil {
-					return errorstack.CaptureContext(ctx, err)
-				}
-				break
+		if cover := after.Moments[sourceMomentID].CoverID; cover != source.CoverID {
+			if _, err := tx.NewUpdate().Model((*models.Moment)(nil)).Set("cover_entry_id = ?", cover).Where("id = ?", sourceMomentID).Exec(ctx); err != nil {
+				return errorstack.CaptureContext(ctx, err)
 			}
 		}
 		updated, err := tx.NewUpdate().Model((*models.AlbumEntry)(nil)).Set("moment_id = ?", newID).
@@ -411,7 +447,7 @@ func previewMerge(state structureState, sourceMomentID string, request MergeMome
 	if err != nil {
 		return StructurePreview{}, state, err
 	}
-	source, sourceOK := state.Moments[sourceMomentID]
+	_, sourceOK := state.Moments[sourceMomentID]
 	target, targetOK := state.Moments[request.TargetMomentID]
 	if !sourceOK {
 		return StructurePreview{}, state, errcodes.NotFound("Moment")
@@ -492,7 +528,6 @@ func previewMerge(state structureState, sourceMomentID string, request MergeMome
 	sort.Slice(canonical.Resolutions, func(i, j int) bool { return canonical.Resolutions[i].PersonID < canonical.Resolutions[j].PersonID })
 	preview := StructurePreview{Ready: true, Changes: reviewedChanges(state, after), Conflicts: conflicts}
 	preview.ReviewToken, err = reviewToken("merge", state, canonical, after)
-	_ = source
 	return preview, after, err
 }
 

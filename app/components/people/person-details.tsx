@@ -1,3 +1,4 @@
+import { ExternalLink } from "lucide-react";
 import { useState } from "react";
 
 import { useIdentityStatus } from "../../hooks/queries/identity";
@@ -10,6 +11,7 @@ import {
 } from "../../hooks/queries/people";
 import { useUnsavedChanges } from "../../hooks/use-unsaved-changes";
 import { fieldErrors } from "../../lib/http";
+import { initials } from "../../lib/initials";
 import type {
   PersonDetail,
   UpdatePersonRequest,
@@ -28,15 +30,6 @@ import {
   sectionHeadingClass,
 } from "./form-fields";
 import { PreauthorizationTables } from "./preauthorization-tables";
-
-function initials(name: string) {
-  return name
-    .split(/\s+/)
-    .map((part) => part[0])
-    .join("")
-    .slice(0, 2)
-    .toUpperCase();
-}
 
 export function PersonDetails({ detail }: { detail: PersonDetail }) {
   const { person } = detail;
@@ -67,8 +60,8 @@ export function PersonDetails({ detail }: { detail: PersonDetail }) {
         <p className="mt-3 text-destructive">Deactivated</p>
       )}
       <div className="mt-9 grid gap-x-12 min-[1201px]:grid-cols-[minmax(0,320px)_minmax(0,1fr)]">
-        <div className="min-w-0 pb-9">
-          <section>
+        <div className="min-w-0 pb-8">
+          <section className="pb-8">
             <h2 className={sectionHeadingClass}>Person details</h2>
             <Form
               aria-busy={update.isPending}
@@ -145,7 +138,7 @@ export function PersonDetails({ detail }: { detail: PersonDetail }) {
           <AvatarEditor detail={detail} />
           <section
             aria-labelledby="notification-preferences"
-            className="mt-8 border-t border-border pt-8"
+            className="border-t border-border pt-8"
           >
             <h2 className={sectionHeadingClass} id="notification-preferences">
               Notifications
@@ -297,34 +290,52 @@ function AvatarEditor({ detail }: { detail: PersonDetail }) {
             <legend className="text-xs font-medium">Linked faces</legend>
             <div className="mt-3 flex flex-wrap gap-3">
               {faces.map((face) => (
-                <label
-                  className="cursor-pointer text-center text-xs"
+                <div
+                  className="flex flex-col items-center text-center text-xs"
                   key={face.source_face_id}
                 >
-                  <input
-                    aria-label={`Use ${face.source_name || "this face"} as avatar`}
-                    checked={selected === face.source_face_id}
-                    className="peer sr-only"
-                    name="avatar_face"
-                    onChange={() => {
-                      setSelected(face.source_face_id);
-                      update.reset();
-                    }}
-                    type="radio"
-                    value={face.source_face_id}
-                  />
-                  <span className="block rounded-full peer-checked:outline-2 peer-checked:outline-offset-2 peer-checked:outline-primary peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-ring">
-                    <Avatar className="size-14">
-                      <AvatarImage alt="" src={face.thumbnail_url} />
-                      <AvatarFallback>
-                        {initials(person.display_name)}
-                      </AvatarFallback>
-                    </Avatar>
-                  </span>
-                  <span className="mt-2 block max-w-20 truncate">
-                    {face.source_name || "Immich face"}
-                  </span>
-                </label>
+                  <label className="cursor-pointer">
+                    <input
+                      aria-label={`Use ${face.source_name || "this face"} as avatar`}
+                      checked={selected === face.source_face_id}
+                      className="peer sr-only"
+                      name="avatar_face"
+                      onChange={() => {
+                        setSelected(face.source_face_id);
+                        update.reset();
+                      }}
+                      type="radio"
+                      value={face.source_face_id}
+                    />
+                    <span className="inline-block rounded-full peer-checked:outline-2 peer-checked:outline-offset-2 peer-checked:outline-primary peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-ring">
+                      <Avatar className="size-14">
+                        <AvatarImage alt="" src={face.thumbnail_url} />
+                        <AvatarFallback>
+                          {initials(person.display_name)}
+                        </AvatarFallback>
+                      </Avatar>
+                    </span>
+                    <span className="mt-2 block max-w-20 truncate">
+                      {face.source_name || "Immich face"}
+                    </span>
+                  </label>
+                  {face.immich_url && (
+                    <a
+                      aria-label={`Open ${face.source_name || "this face"} in Immich`}
+                      className="mt-1 flex items-center gap-1 rounded-sm px-2 py-1 text-accent-foreground hover:bg-surface focus-visible:outline-2 focus-visible:outline-ring"
+                      href={face.immich_url}
+                      rel="noreferrer"
+                      target="_blank"
+                    >
+                      <ExternalLink
+                        aria-hidden="true"
+                        className="size-3"
+                        strokeWidth={1.5}
+                      />
+                      Immich
+                    </a>
+                  )}
+                </div>
               ))}
             </div>
             <FieldError error={errors.source_face_id} id="avatar-face-error" />

@@ -85,6 +85,9 @@ func decodeFace(data json.RawMessage) (Face, error) {
 			return Face{}, err
 		}
 		face.ID, face.Name, face.ThumbnailPath, face.Hidden = person.ID, person.Name, person.ThumbnailPath, person.Hidden
+		if person.UpdatedAt != nil {
+			face.UpdatedAt = *person.UpdatedAt
+		}
 	}
 	return face, nil
 }

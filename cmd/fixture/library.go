@@ -124,33 +124,57 @@ func fixtureLibrary() ([]sourceAlbum, map[string]sourceAsset) {
 	return albums, assets
 }
 
+// fixtureFaces mirrors a real event album: a handful of named Immich people
+// plus many unnamed clusters with uneven counts, so face sorting and the
+// show-more control have something to do. Asset 001 keeps a single face for
+// the adapter contract test.
 func fixtureFaces() (map[string][]sourceFace, map[string]sourceAsset) {
 	faces := map[string][]sourceFace{}
 	people := []struct {
-		assetID string
-		faceID  string
-		person  string
-		name    string
-		seed    int
+		person string
+		name   string
+		seed   int
+		assets []int
 	}{
-		{"workbench-asset-001", "fixture-face-alex-a", "immich-alex-a", "Immich Alex", 1},
-		{"workbench-asset-002", "fixture-face-alex-a-2", "immich-alex-a", "Immich Alex", 1},
-		{"workbench-asset-003", "fixture-face-alex-b", "immich-alex-b", "Immich Alex duplicate", 2},
-		{"workbench-asset-004", "fixture-face-sam", "immich-sam", "Immich Sam", 3},
-		{"workbench-asset-005", "fixture-face-taylor", "immich-taylor", "Immich Taylor", 4},
+		{"immich-alex-a", "Immich Alex", 1, []int{1, 2}},
+		{"immich-alex-b", "Immich Alex duplicate", 2, []int{3}},
+		{"immich-sam", "Immich Sam", 3, []int{4}},
+		{"immich-taylor", "Immich Taylor", 4, []int{5}},
+		{"immich-jordan", "Immich Jordan", 5, []int{6, 7, 8, 9, 10, 11, 12}},
+		{"immich-casey", "Immich Casey", 6, []int{13, 14, 15}},
+		{"immich-morgan", "Immich Morgan", 7, []int{16, 17, 18, 19}},
+	}
+	for n := 1; n <= 14; n++ {
+		count := []int{17, 4, 69, 4, 6, 3, 1, 6, 3, 21, 2, 5, 11, 32}[n-1]
+		assets := make([]int, 0, count)
+		for i := range count {
+			assets = append(assets, 20+(n*7+i*3)%82)
+		}
+		people = append(people, struct {
+			person string
+			name   string
+			seed   int
+			assets []int
+		}{fmt.Sprintf("immich-unnamed-%02d", n), "", 8 + n, assets})
 	}
 	thumbnails := map[string]sourceAsset{}
 	for _, value := range people {
-		faces[value.assetID] = []sourceFace{{
-			ID: value.faceID, ImageHeight: 240, ImageWidth: 320,
-			BoundingBoxX1: 100, BoundingBoxX2: 180, BoundingBoxY1: 40, BoundingBoxY2: 140,
-			SourceType: "manual", Person: sourcePerson{ID: value.person, Name: value.name,
-				ThumbnailPath: "/fixture/people/" + value.person, Hidden: false},
-		}}
-		if _, exists := thumbnails[value.person]; !exists {
-			thumbnail, contentType := generatedThumbnail(value.seed)
-			thumbnails[value.person] = sourceAsset{Thumbnail: thumbnail, ContentType: contentType}
+		seen := map[int]bool{}
+		for _, n := range value.assets {
+			if seen[n] {
+				continue
+			}
+			seen[n] = true
+			assetID := fmt.Sprintf("workbench-asset-%03d", n)
+			faces[assetID] = append(faces[assetID], sourceFace{
+				ID: fmt.Sprintf("fixture-face-%s-%03d", value.person, n), ImageHeight: 240, ImageWidth: 320,
+				BoundingBoxX1: 100, BoundingBoxX2: 180, BoundingBoxY1: 40, BoundingBoxY2: 140,
+				SourceType: "manual", Person: sourcePerson{ID: value.person, Name: value.name,
+					ThumbnailPath: "/fixture/people/" + value.person, Hidden: false},
+			})
 		}
+		thumbnail, contentType := generatedThumbnail(value.seed)
+		thumbnails[value.person] = sourceAsset{Thumbnail: thumbnail, ContentType: contentType}
 	}
 	return faces, thumbnails
 }

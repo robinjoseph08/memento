@@ -3,6 +3,7 @@ package publishing_test
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -80,6 +81,58 @@ func TestImmediateMomentDecisionsHaveLocalizedUndo(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestAddAllSuggestedKeepsExplicitExclusionsAndUndoesOnlyItsOwnGrants(t *testing.T) {
+	t.Parallel()
+	db := testdb.New(t)
+	source := fixture()
+	source.faces = func(_ context.Context, assetID string) ([]immich.Face, error) {
+		return []immich.Face{
+			{FaceID: "alex-" + assetID, ID: "immich-alex", Name: "Immich Alex"},
+			{FaceID: "sam-" + assetID, ID: "immich-sam", Name: "Immich Sam"},
+		}, nil
+	}
+	module := publishing.New(db, source, noQueue)
+	album, err := module.StartImport(t.Context(), "source")
+	require.NoError(t, err)
+	require.NoError(t, module.ExecuteImport(t.Context(), album.ID))
+	album, err = module.GetAlbum(t.Context(), album.ID)
+	require.NoError(t, err)
+	momentID := album.Moments[1].ID
+	_, err = module.RefreshMomentFaces(t.Context(), album.ID, momentID)
+	require.NoError(t, err)
+
+	alex := models.Person{ID: models.NewUUIDv7(), DisplayName: "Alex", CreatedAt: time.Now().UTC()}
+	sam := models.Person{ID: models.NewUUIDv7(), DisplayName: "Sam", CreatedAt: time.Now().UTC()}
+	taylor := models.Person{ID: models.NewUUIDv7(), DisplayName: "Taylor", CreatedAt: time.Now().UTC()}
+	_, err = db.NewInsert().Model(&[]models.Person{alex, sam, taylor}).Exec(t.Context())
+	require.NoError(t, err)
+	alexID, samID := alex.ID, sam.ID
+	links := []models.ImmichFaceLink{
+		{SourceID: "immich-alex", PersonID: &alexID, UpdatedAt: time.Now().UTC()},
+		{SourceID: "immich-sam", PersonID: &samID, UpdatedAt: time.Now().UTC()},
+	}
+	_, err = db.NewInsert().Model(&links).Exec(t.Context())
+	require.NoError(t, err)
+	excluded, err := module.SetMomentAccess(t.Context(), album.ID, momentID, publishing.SetMomentAccessRequest{PersonID: sam.ID.String(), Decision: publishing.DecisionDeny})
+	require.NoError(t, err)
+	require.True(t, personFor(excluded.Album.Moments[1], alex.ID.String()).Suggested)
+	require.False(t, personFor(excluded.Album.Moments[1], sam.ID.String()).Suggested, "an explicit exclusion is not a suggestion")
+
+	added, err := module.AddMomentSuggestions(t.Context(), album.ID, momentID)
+	require.NoError(t, err)
+	assert.Equal(t, publishing.DecisionAllow, decisionFor(added.Album.Moments[1], alex.ID.String()))
+	assert.Equal(t, publishing.DecisionDeny, decisionFor(added.Album.Moments[1], sam.ID.String()), "Add all suggested keeps existing exclusions")
+	assert.Empty(t, decisionFor(added.Album.Moments[1], taylor.ID.String()), "undetected people gain nothing")
+	require.Len(t, added.Undo.Changes, 1)
+	assert.Equal(t, alex.ID.String(), added.Undo.Changes[0].PersonID)
+
+	undone, err := module.UndoMomentAccess(t.Context(), album.ID, momentID, added.Undo)
+	require.NoError(t, err)
+	assert.Empty(t, decisionFor(undone.Moments[1], alex.ID.String()))
+	assert.True(t, personFor(undone.Moments[1], alex.ID.String()).Suggested, "the suggestion returns after Undo")
+	assert.Equal(t, publishing.DecisionDeny, decisionFor(undone.Moments[1], sam.ID.String()), "Undo leaves unrelated decisions alone")
+}
+
 func TestUndoRejectsANewerWriteWithTheSameDecision(t *testing.T) {
 	t.Parallel()
 	db, module, album := importedAlbum(t)
@@ -103,7 +156,7 @@ func TestUndoRejectsANewerWriteWithTheSameDecision(t *testing.T) {
 	assert.Equal(t, publishing.DecisionAllow, decisionFor(current.Moments[0], person.ID.String()))
 }
 
-func TestMovingACoverRequiresAReplacementForTheSurvivingMoment(t *testing.T) {
+func TestMovingACoverPromotesTheEarliestRemainingEntry(t *testing.T) {
 	t.Parallel()
 	_, module, album := importedAlbum(t)
 	destination, source := album.Moments[0], album.Moments[1]
@@ -112,15 +165,10 @@ func TestMovingACoverRequiresAReplacementForTheSurvivingMoment(t *testing.T) {
 		EntryIDs:            []string{source.CoverEntryID},
 		DestinationMomentID: destination.ID,
 	}
-	_, err := module.PreviewMove(t.Context(), album.ID, source.ID, request)
-	require.Error(t, err)
-	unchanged, getErr := module.GetAlbum(t.Context(), album.ID)
-	require.NoError(t, getErr)
-	assert.Equal(t, source.CoverEntryID, unchanged.Moments[1].CoverEntryID)
-
+	remaining := ""
 	for _, entry := range source.Entries {
 		if entry.ID != source.CoverEntryID {
-			request.ReplacementCoverEntryID = entry.ID
+			remaining = entry.ID
 		}
 	}
 	preview, err := module.PreviewMove(t.Context(), album.ID, source.ID, request)
@@ -128,10 +176,10 @@ func TestMovingACoverRequiresAReplacementForTheSurvivingMoment(t *testing.T) {
 	request.ReviewToken = preview.ReviewToken
 	moved, err := module.MoveEntries(t.Context(), album.ID, source.ID, request)
 	require.NoError(t, err)
-	assert.Equal(t, request.ReplacementCoverEntryID, moved.Moments[1].CoverEntryID)
+	assert.Equal(t, remaining, moved.Moments[1].CoverEntryID, "the surviving Moment keeps a cover without being asked")
 }
 
-func TestSplitReplacesTheOriginalCoverWhenAnotherSelectedEntryBecomesTheNewCover(t *testing.T) {
+func TestSplitGivesBothMomentsTheirEarliestEntryAsCover(t *testing.T) {
 	t.Parallel()
 	_, module, album := importedAlbum(t)
 	first, destination := album.Moments[0], album.Moments[1]
@@ -145,37 +193,35 @@ func TestSplitReplacesTheOriginalCoverWhenAnotherSelectedEntryBecomesTheNewCover
 	source := combined.Moments[0]
 	require.Len(t, source.Entries, 3)
 
-	selected := []string{source.CoverEntryID}
-	remaining := ""
-	for _, entry := range source.Entries {
-		if entry.ID == source.CoverEntryID {
-			continue
-		}
-		if len(selected) == 1 {
-			selected = append(selected, entry.ID)
-		} else {
-			remaining = entry.ID
-		}
-	}
-	require.NotEmpty(t, remaining)
-	split := publishing.SplitMomentRequest{
-		EntryIDs:                selected,
-		NewCoverEntryID:         selected[1],
-		ReplacementCoverEntryID: remaining,
-	}
+	// Entries arrive in capture order. Split off the cover plus the last
+	// entry, listed out of order, so the earliest selected entry must win and
+	// the surviving Moment falls back to its earliest remaining entry.
+	coverIndex := slices.IndexFunc(source.Entries, func(entry publishing.Entry) bool { return entry.ID == source.CoverEntryID })
+	require.NotEqual(t, -1, coverIndex)
+	require.NotEqual(t, 2, coverIndex, "the fixture's cover must not already be the last entry")
+	selected := map[int]bool{2: true, coverIndex: true}
+	split := publishing.SplitMomentRequest{EntryIDs: []string{source.Entries[2].ID, source.CoverEntryID}}
 	splitPreview, err := module.PreviewSplit(t.Context(), album.ID, source.ID, split)
 	require.NoError(t, err)
 	split.ReviewToken = splitPreview.ReviewToken
 	result, err := module.SplitMoment(t.Context(), album.ID, source.ID, split)
 	require.NoError(t, err)
 	require.Len(t, result.Moments, 2)
+	earliest := func(want bool) string {
+		for index, entry := range source.Entries {
+			if selected[index] == want {
+				return entry.ID
+			}
+		}
+		return ""
+	}
 	for _, moment := range result.Moments {
 		if moment.ID == source.ID {
-			assert.Equal(t, remaining, moment.CoverEntryID)
-			return
+			assert.Equal(t, earliest(false), moment.CoverEntryID, "the surviving Moment gets its earliest remaining entry")
+		} else {
+			assert.Equal(t, earliest(true), moment.CoverEntryID, "the new Moment gets its earliest entry")
 		}
 	}
-	t.Fatal("surviving source Moment was not returned")
 }
 
 func TestStructuralChangesPreviewAndRevalidateEffectiveAudience(t *testing.T) {
@@ -206,11 +252,7 @@ func TestStructuralChangesPreviewAndRevalidateEffectiveAudience(t *testing.T) {
 	require.Len(t, moved.Moments[0].Entries, 3)
 
 	current := moved.Moments[0]
-	split := publishing.SplitMomentRequest{
-		EntryIDs:                []string{current.CoverEntryID},
-		NewCoverEntryID:         current.CoverEntryID,
-		ReplacementCoverEntryID: current.Entries[1].ID,
-	}
+	split := publishing.SplitMomentRequest{EntryIDs: []string{current.CoverEntryID}}
 	splitPreview, err := module.PreviewSplit(t.Context(), album.ID, current.ID, split)
 	require.NoError(t, err)
 	assert.Empty(t, splitPreview.Changes)
@@ -361,6 +403,15 @@ func TestOlderFaceRefreshCannotOverwriteNewerCache(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, current.Moments[0].Access.Faces, 1)
 	assert.Equal(t, "new-face", current.Moments[0].Access.Faces[0].SourceID)
+}
+
+func personFor(moment publishing.Moment, personID string) publishing.AccessPerson {
+	for _, person := range moment.Access.People {
+		if person.PersonID == personID {
+			return person
+		}
+	}
+	return publishing.AccessPerson{}
 }
 
 func decisionFor(moment publishing.Moment, personID string) publishing.Decision {

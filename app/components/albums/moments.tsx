@@ -7,6 +7,7 @@ import {
   useSetMomentCover,
   useUpdateMoment,
 } from "../../hooks/queries/albums";
+import { useMediaQuery } from "../../hooks/use-media-query";
 import { useUnsavedChanges } from "../../hooks/use-unsaved-changes";
 import { fieldErrors } from "../../lib/http";
 import { cn } from "../../lib/utils";
@@ -26,6 +27,7 @@ import {
 } from "../ui/dialog";
 import { Sheet, SheetContent, SheetTitle } from "../ui/sheet";
 import { AlbumImage } from "./album-image";
+import { Audience } from "./audience";
 import { EntryPreview } from "./entry-preview";
 import { MomentAccessInspector } from "./moment-access";
 import { StructureEditor, type StructureOperation } from "./structure-editor";
@@ -76,10 +78,10 @@ export function Moments({ album }: { album: AlbumDetail }) {
     album.moments[0];
   const expandedMomentID =
     requestedMomentID === "none" ? null : selectedMoment?.id;
-  const [selection, setSelection] = useState<{
-    momentID: string;
-    entryIDs: string[];
-  }>({ momentID: "", entryIDs: [] });
+  // Selection is a mode a Curator enters for a move, split, or cover change,
+  // so the everyday view stays a plain overview.
+  const noSelection = { momentID: "", active: false, entryIDs: [] as string[] };
+  const [selection, setSelection] = useState(noSelection);
   const [undoState, setUndoState] = useState<{
     momentID: string;
     request: UndoMomentAccessRequest | null;
@@ -95,6 +97,9 @@ export function Moments({ album }: { album: AlbumDetail }) {
     selectedEntryIDs: string[];
   } | null>(null);
   const selectedMomentID = selectedMoment?.id ?? "";
+  // The inspector sits beside the Moments on wide screens, so the access
+  // summary only needs to open the sheet on narrower ones.
+  const inspectorVisible = useMediaQuery("(min-width: 1000px)");
   const refreshFaces = useRefreshMomentFaces(album.id, selectedMomentID);
   const refreshSelectedFaces = refreshFaces.mutate;
   useEffect(() => {
@@ -117,8 +122,9 @@ export function Moments({ album }: { album: AlbumDetail }) {
     );
   }
 
-  const selectedEntries =
-    selection.momentID === selectedMoment.id ? selection.entryIDs : [];
+  const selecting =
+    selection.momentID === selectedMoment.id && selection.active;
+  const selectedEntries = selecting ? selection.entryIDs : [];
   const undo =
     undoState.momentID === selectedMoment.id ? undoState.request : null;
   const setSelectedEntries = (
@@ -129,25 +135,22 @@ export function Moments({ album }: { album: AlbumDetail }) {
         current.momentID === selectedMoment.id ? current.entryIDs : [];
       return {
         momentID: selectedMoment.id,
+        active: true,
         entryIDs:
           typeof update === "function" ? update(currentEntries) : update,
       };
     });
   const setUndo = (request: UndoMomentAccessRequest | null) =>
     setUndoState({ momentID: selectedMoment.id, request });
-  const inspectedEntry = selectedMoment.entries.find(
-    (entry) => entry.id === params.get("entry"),
-  );
   const sheetOpen = params.get("inspect") === "1";
   const updateURL = (values: Record<string, string | null>) =>
     setParams((current) => setURLValues(current, values));
   const access = (
     <MomentAccessInspector
       albumID={album.id}
-      entry={inspectedEntry}
       key={selectedMoment.id}
       moment={selectedMoment}
-      onBack={() => updateURL({ entry: null })}
+      onRefresh={() => refreshSelectedFaces()}
       onUndo={setUndo}
       refreshError={refreshFaces.error}
       refreshing={refreshFaces.isPending}
@@ -190,12 +193,15 @@ export function Moments({ album }: { album: AlbumDetail }) {
             const selected = selectedEntries.filter((id) =>
               moment.entries.some((entry) => entry.id === id),
             );
-            const allowed = moment.access.people
-              .filter((person) => person.decision === "allow")
-              .map((person) => person.display_name);
             const suggestions = moment.access.people.filter(
               (person) => person.suggested,
             ).length;
+            const openSheet = () =>
+              updateURL({
+                moment: moment.id,
+                inspect: "1",
+                media: null,
+              });
             return (
               <article
                 aria-label={heading.title}
@@ -216,7 +222,6 @@ export function Moments({ album }: { album: AlbumDetail }) {
                       onClick={() =>
                         updateURL({
                           moment: expanded ? "none" : moment.id,
-                          entry: null,
                           inspect: null,
                           media: null,
                         })
@@ -256,44 +261,41 @@ export function Moments({ album }: { album: AlbumDetail }) {
                       />
                     </button>
                   </h3>
-                  <button
-                    aria-label={`Access for ${moment.label}`}
-                    className="hidden min-w-28 cursor-pointer border-l border-border px-3 py-2 text-right text-xs hover:bg-accent min-[601px]:block"
-                    onClick={() => {
-                      updateURL({
-                        moment: moment.id,
-                        entry: null,
-                        inspect: window.innerWidth < 1000 ? "1" : null,
-                        media: null,
-                      });
-                    }}
-                    type="button"
-                  >
-                    <span className="block truncate">
-                      {allowed.join(", ") || "No access yet"}
-                    </span>
-                    <span className="mt-1 block text-accent-foreground">
-                      {suggestions ? `${suggestions} suggested` : "Access"}
-                    </span>
-                  </button>
+                  {inspectorVisible ? (
+                    <div className="hidden min-w-28 items-center border-l border-border px-3 py-2 text-xs min-[601px]:flex">
+                      <Audience
+                        interactive={false}
+                        people={moment.access.people}
+                        suggestions={suggestions}
+                      />
+                    </div>
+                  ) : (
+                    <button
+                      aria-label={`Access for ${moment.label}`}
+                      className="hidden min-w-28 cursor-pointer items-center border-l border-border px-3 py-2 text-xs hover:bg-accent min-[601px]:flex"
+                      onClick={openSheet}
+                      type="button"
+                    >
+                      <Audience
+                        interactive
+                        people={moment.access.people}
+                        suggestions={suggestions}
+                      />
+                    </button>
+                  )}
                 </header>
                 <button
                   aria-label={`Access for ${moment.label}`}
-                  className="flex w-full cursor-pointer justify-between border-t border-border bg-surface px-3 py-3 text-left text-xs hover:bg-accent min-[601px]:hidden"
-                  onClick={() =>
-                    updateURL({
-                      moment: moment.id,
-                      entry: null,
-                      inspect: "1",
-                      media: null,
-                    })
-                  }
+                  className="flex w-full cursor-pointer items-center justify-between border-t border-border bg-surface px-3 py-2 text-left text-xs hover:bg-accent min-[601px]:hidden"
+                  onClick={openSheet}
                   type="button"
                 >
-                  <span>{allowed.join(", ") || "No access yet"}</span>
-                  <span className="text-accent-foreground">
-                    {suggestions ? `${suggestions} suggested` : "Access"}
-                  </span>
+                  <span className="text-accent-foreground">Access</span>
+                  <Audience
+                    interactive
+                    people={moment.access.people}
+                    suggestions={suggestions}
+                  />
                 </button>
                 {expanded && (
                   <>
@@ -303,32 +305,46 @@ export function Moments({ album }: { album: AlbumDetail }) {
                       onSubmit={(event) => event.preventDefault()}
                     >
                       <div className="flex min-h-12 flex-wrap items-center justify-between gap-3 border-b border-border px-3 py-2">
-                        <label className="flex cursor-pointer items-center gap-2 text-xs">
-                          <input
-                            aria-label={`Select all ${moment.entries.length} items`}
-                            checked={
-                              moment.entries.length > 0 &&
-                              selected.length === moment.entries.length
-                            }
-                            className="size-4 cursor-pointer accent-primary"
-                            onChange={(event) =>
-                              setSelectedEntries(
-                                event.target.checked
-                                  ? moment.entries.map((entry) => entry.id)
-                                  : [],
-                              )
-                            }
-                            type="checkbox"
-                          />
-                          {selected.length
-                            ? `${selected.length} selected`
-                            : "Select all"}
-                        </label>
+                        {selecting ? (
+                          <label className="flex cursor-pointer items-center gap-2 text-xs">
+                            <input
+                              aria-label={`Select all ${moment.entries.length} items`}
+                              checked={
+                                moment.entries.length > 0 &&
+                                selected.length === moment.entries.length
+                              }
+                              className="size-4 cursor-pointer accent-primary"
+                              onChange={(event) =>
+                                setSelectedEntries(
+                                  event.target.checked
+                                    ? moment.entries.map((entry) => entry.id)
+                                    : [],
+                                )
+                              }
+                              type="checkbox"
+                            />
+                            {selected.length
+                              ? `${selected.length} selected`
+                              : "Select all"}
+                          </label>
+                        ) : (
+                          <Button
+                            onClick={() => setSelectedEntries([])}
+                            size="sm"
+                            type="button"
+                            variant="outline"
+                          >
+                            Select
+                          </Button>
+                        )}
                         <div className="flex flex-wrap items-center justify-end gap-1">
-                          {selected.length > 0 ? (
+                          {selecting ? (
                             <>
                               <Button
-                                disabled={album.moments.length < 2}
+                                disabled={
+                                  album.moments.length < 2 ||
+                                  selected.length === 0
+                                }
                                 onClick={() =>
                                   setStructureState({
                                     moment,
@@ -344,6 +360,7 @@ export function Moments({ album }: { album: AlbumDetail }) {
                               </Button>
                               <Button
                                 disabled={
+                                  selected.length === 0 ||
                                   selected.length === moment.entries.length
                                 }
                                 onClick={() =>
@@ -378,12 +395,12 @@ export function Moments({ album }: { album: AlbumDetail }) {
                                 </Button>
                               )}
                               <Button
-                                onClick={() => setSelectedEntries([])}
+                                onClick={() => setSelection(noSelection)}
                                 size="sm"
                                 type="button"
                                 variant="ghost"
                               >
-                                Clear
+                                Done
                               </Button>
                             </>
                           ) : (
@@ -424,18 +441,17 @@ export function Moments({ album }: { album: AlbumDetail }) {
                             cover={entry.id === moment.cover_entry_id}
                             entry={entry}
                             key={entry.id}
-                            onInspect={() =>
-                              updateURL({
-                                entry: entry.id,
-                                inspect: window.innerWidth < 1000 ? "1" : null,
-                              })
-                            }
-                            onSelect={(checked) =>
-                              setSelectedEntries((current) =>
-                                checked
-                                  ? [...new Set([...current, entry.id])]
-                                  : current.filter((id) => id !== entry.id),
-                              )
+                            onSelect={
+                              selecting
+                                ? (checked) =>
+                                    setSelectedEntries((current) =>
+                                      checked
+                                        ? [...new Set([...current, entry.id])]
+                                        : current.filter(
+                                            (id) => id !== entry.id,
+                                          ),
+                                    )
+                                : undefined
                             }
                             selected={selected.includes(entry.id)}
                           />
@@ -511,7 +527,7 @@ export function Moments({ album }: { album: AlbumDetail }) {
           onClose={() => setStructureState(null)}
           onSaved={() => {
             setStructureState(null);
-            setSelection({ momentID: "", entryIDs: [] });
+            setSelection(noSelection);
           }}
           operation={structureState.operation}
           selectedEntryIDs={structureState.selectedEntryIDs}
@@ -614,9 +630,17 @@ function CoverDialog({
       <DialogContent>
         <DialogTitle>Change Moment cover?</DialogTitle>
         <DialogDescription className="mt-3 text-sm text-muted">
-          Use {entry?.filename} as the cover for {moment.label}. No one gains or
-          loses media.
+          Use this item as the cover for {moment.label}. No one gains or loses
+          media.
         </DialogDescription>
+        {entry && (
+          <AlbumImage
+            alt={entry.filename}
+            className="mt-4 h-auto max-h-48 w-auto max-w-full"
+            fallback="No preview available"
+            src={entry.available ? entry.thumbnail_url : ""}
+          />
+        )}
         <Form
           aria-busy={update.isPending}
           aria-label="Change Moment cover"

@@ -10,11 +10,14 @@ type Connection struct {
 
 // Face is an Immich asset face and its assigned person. ID is empty when the
 // face is unassigned; FaceID always identifies the individual face record.
+// UpdatedAt is the person's last change in Immich, which moves when its
+// featured photo changes, so it versions the person thumbnail.
 type Face struct {
 	FaceID        string `json:"faceId"`
 	ID            string `json:"id"`
 	Name          string `json:"name"`
 	ThumbnailPath string `json:"thumbnailPath"`
+	UpdatedAt     string `json:"updatedAt"`
 	Hidden        bool   `json:"isHidden"`
 	ImageHeight   int    `json:"imageHeight"`
 	ImageWidth    int    `json:"imageWidth"`

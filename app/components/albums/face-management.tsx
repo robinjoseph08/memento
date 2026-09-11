@@ -1,3 +1,4 @@
+import { ExternalLink } from "lucide-react";
 import { useCallback, useEffect, useId, useState } from "react";
 
 import {
@@ -8,20 +9,64 @@ import {
 } from "../../hooks/queries/people";
 import { useUnsavedChanges } from "../../hooks/use-unsaved-changes";
 import { fieldErrors } from "../../lib/http";
+import { initials } from "../../lib/initials";
+import type { Person } from "../../types/generated/identity";
 import type { FaceRecord } from "../../types/generated/publishing";
 import { Field, FieldError, Form } from "../people/form-fields";
+import { Avatar, AvatarFallback, AvatarImage } from "../ui/avatar";
 import { Button } from "../ui/button";
+import { Combobox } from "../ui/combobox";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "../ui/select";
-import { AlbumImage } from "./album-image";
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "../ui/tooltip";
 
-export function FaceManagement({ faces }: { faces: FaceRecord[] }) {
-  const visible = faces.filter((face) => !face.ignored);
+const createValue = "create";
+// Enough rows to show the named faces of a typical event before asking for more.
+const initialFaceCount = 5;
+
+function faceName(face: FaceRecord) {
+  return face.source_name || "Unnamed face";
+}
+
+function occurrences(face: FaceRecord) {
+  return `In ${face.occurrences} ${face.occurrences === 1 ? "item" : "items"}`;
+}
+
+// Named faces first, since they are the quick wins, then by how much of the
+// Moment each face appears in.
+function byUsefulness(left: FaceRecord, right: FaceRecord) {
+  if (!!left.source_name !== !!right.source_name)
+    return left.source_name ? -1 : 1;
+  if (left.occurrences !== right.occurrences)
+    return right.occurrences - left.occurrences;
+  return left.source_name.localeCompare(right.source_name);
+}
+
+// The one person whose display name matches the Immich name exactly, if any.
+function matchingPerson(face: FaceRecord, people: Person[]) {
+  const name = face.source_name.trim().toLowerCase();
+  if (!name) return undefined;
+  const matches = people.filter(
+    (person) => person.display_name.trim().toLowerCase() === name,
+  );
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
+// Faces Immich recognized that Memento cannot yet attribute to a person.
+// Linked faces already appear as people above, so only the unresolved ones
+// need attention here.
+export function UnlinkedFaces({ faces }: { faces: FaceRecord[] }) {
+  const unlinked = faces
+    .filter((face) => !face.person_id && !face.ignored)
+    .sort(byUsefulness);
+  const ignored = faces
+    .filter((face) => !face.person_id && face.ignored)
+    .sort(byUsefulness);
+  const [openID, setOpenID] = useState<string | null>(null);
+  const [showAll, setShowAll] = useState(false);
   const [dirtyFaceIDs, setDirtyFaceIDs] = useState(() => new Set<string>());
   const setFaceDirty = useCallback((sourceID: string, dirty: boolean) => {
     setDirtyFaceIDs((current) => {
@@ -33,72 +78,166 @@ export function FaceManagement({ faces }: { faces: FaceRecord[] }) {
     });
   }, []);
   useUnsavedChanges(dirtyFaceIDs.size > 0, true);
-  if (visible.length === 0) return null;
+  if (unlinked.length === 0 && ignored.length === 0) return null;
+  const visible = showAll ? unlinked : unlinked.slice(0, initialFaceCount);
+  const row = (face: FaceRecord, canIgnore: boolean) => (
+    <FaceRow
+      canIgnore={canIgnore}
+      face={face}
+      key={face.source_id}
+      onDirtyChange={setFaceDirty}
+      onOpenChange={(open) => setOpenID(open ? face.source_id : null)}
+      open={openID === face.source_id}
+    />
+  );
   return (
     <section
-      aria-labelledby="immich-faces"
+      aria-labelledby="unlinked-faces"
       className="mt-8 border-t border-border pt-6"
     >
-      <h3 className="text-sm font-medium" id="immich-faces">
-        Faces from Immich
+      <h3 className="text-sm font-medium" id="unlinked-faces">
+        Unlinked faces{" "}
+        <span className="ml-1 text-xs font-normal text-muted">
+          {unlinked.length}
+        </span>
       </h3>
-      <p className="mt-2 text-xs leading-relaxed text-muted">
-        Link recognized faces to Memento People before using them as access
-        suggestions.
+      <p className="mt-1 text-xs leading-relaxed text-muted">
+        Immich recognized these people. Link each one to a person to get access
+        suggestions. Duplicates are best merged in Immich, then checked again
+        here.
       </p>
-      <div className="mt-4 space-y-4">
-        {visible.map((face) =>
-          face.person_id ? (
-            <div className="flex items-center gap-3" key={face.source_id}>
-              <AlbumImage
-                alt=""
-                className="size-11 shrink-0 rounded-full object-cover"
-                fallback="Face unavailable"
-                src={face.thumbnail_url}
-              />
-              <p className="min-w-0 text-xs">
-                <strong className="block truncate font-medium">
-                  {face.person_name}
-                </strong>
-                <span className="text-muted">
-                  Linked, detected in {face.occurrences}{" "}
-                  {face.occurrences === 1 ? "item" : "items"}
-                </span>
-              </p>
-            </div>
-          ) : (
-            <UnlinkedFace
-              face={face}
-              key={face.source_id}
-              onDirtyChange={setFaceDirty}
-            />
-          ),
-        )}
-      </div>
+      {unlinked.length > 0 ? (
+        <ul className="mt-2">{visible.map((face) => row(face, true))}</ul>
+      ) : (
+        <p className="mt-3 text-xs text-muted">Every face is linked.</p>
+      )}
+      {unlinked.length > initialFaceCount && (
+        <Button
+          className="-mx-2 h-auto min-h-0 px-2 py-1 text-xs"
+          onClick={() => setShowAll(!showAll)}
+          type="button"
+          variant="ghost"
+        >
+          {showAll ? "Show fewer faces" : `Show all ${unlinked.length} faces`}
+        </Button>
+      )}
+      {ignored.length > 0 && (
+        <details className="mt-3">
+          <summary className="-mx-2 cursor-pointer rounded-sm px-2 py-2 text-xs text-accent-foreground hover:bg-surface">
+            Ignored faces ({ignored.length})
+          </summary>
+          <ul>{ignored.map((face) => row(face, false))}</ul>
+        </details>
+      )}
     </section>
   );
 }
 
-function UnlinkedFace({
+function FaceRow({
   face,
+  open,
+  canIgnore,
+  onOpenChange,
   onDirtyChange,
 }: {
   face: FaceRecord;
+  open: boolean;
+  canIgnore: boolean;
+  onOpenChange: (open: boolean) => void;
   onDirtyChange: (sourceID: string, dirty: boolean) => void;
 }) {
-  const { data: people = [], isPending: loadingPeople } = usePeople("");
-  const availablePeople = people.filter((person) => !person.deactivated_at);
-  const [personID, setPersonID] = useState("");
-  const [createMode, setCreateMode] = useState(false);
+  const name = faceName(face);
+  return (
+    <li className="border-t border-border py-3">
+      <div className="flex items-center gap-3">
+        <Avatar className="size-10">
+          <AvatarImage alt="" src={face.thumbnail_url} />
+          <AvatarFallback className="text-xs">{initials(name)}</AvatarFallback>
+        </Avatar>
+        <p className="min-w-0 flex-1 text-sm">
+          <strong className="block truncate font-medium">{name}</strong>
+          <span className="block text-xs text-muted">{occurrences(face)}</span>
+        </p>
+        {face.immich_url && (
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <a
+                  aria-label={`Open ${name} in Immich`}
+                  className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted hover:bg-surface hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring pointer-coarse:size-11"
+                  href={face.immich_url}
+                  rel="noreferrer"
+                  target="_blank"
+                >
+                  <ExternalLink
+                    aria-hidden="true"
+                    className="size-4"
+                    strokeWidth={1.5}
+                  />
+                </a>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">
+                Open in Immich to merge or rename
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        )}
+        {!open && (
+          <Button
+            aria-label={`Link ${name}`}
+            onClick={() => onOpenChange(true)}
+            size="sm"
+            type="button"
+            variant="outline"
+          >
+            Link
+          </Button>
+        )}
+      </div>
+      {open && (
+        <LinkFaceForm
+          canIgnore={canIgnore}
+          face={face}
+          onClose={() => onOpenChange(false)}
+          onDirtyChange={onDirtyChange}
+        />
+      )}
+    </li>
+  );
+}
+
+function LinkFaceForm({
+  face,
+  canIgnore,
+  onClose,
+  onDirtyChange,
+}: {
+  face: FaceRecord;
+  canIgnore: boolean;
+  onClose: () => void;
+  onDirtyChange: (sourceID: string, dirty: boolean) => void;
+}) {
+  const name = faceName(face);
+  const sourceName = face.source_name.trim();
+  const { data: people, isPending: loadingPeople } = usePeople("");
+  const availablePeople = (people ?? []).filter(
+    (person) => !person.deactivated_at,
+  );
+  // An exact name match is the obvious choice, so it starts selected once the
+  // people list has loaded. Otherwise creating a person is the usual outcome.
+  const [choice, setChoice] = useState<string | null>(null);
+  const suggestedID = matchingPerson(face, availablePeople)?.id ?? "";
+  const personID = choice ?? (people ? suggestedID || createValue : "");
   const [displayName, setDisplayName] = useState("");
-  const [personError, setPersonError] = useState("");
-  const linkErrorId = useId();
+  const [choiceError, setChoiceError] = useState("");
+  const choiceId = useId();
   const sourceErrorId = useId();
-  const link = useLinkFace(personID || "missing");
+  const creating = personID === createValue;
+  const link = useLinkFace(creating || !personID ? "missing" : personID);
   const create = useCreatePersonFromFace();
   const ignore = useIgnoreFace();
   const pending = link.isPending || create.isPending || ignore.isPending;
-  const dirty = !!personID || !!displayName || pending;
+  const dirty = choice !== null || !!displayName || pending;
   useEffect(() => {
     onDirtyChange(face.source_id, dirty);
   }, [dirty, face.source_id, onDirtyChange]);
@@ -106,167 +245,123 @@ function UnlinkedFace({
     () => () => onDirtyChange(face.source_id, false),
     [face.source_id, onDirtyChange],
   );
-  const error = link.error ?? create.error ?? ignore.error;
   const createErrors = fieldErrors(create.error);
   const linkErrors = fieldErrors(link.error);
+  const sourceError = creating
+    ? createErrors.source_face_id
+    : linkErrors.source_face_id;
+  const options = availablePeople.map((person) => ({
+    value: person.id,
+    label: person.display_name,
+    leading: (
+      <Avatar className="size-6">
+        {person.avatar_url && <AvatarImage alt="" src={person.avatar_url} />}
+        <AvatarFallback className="text-[10px]">
+          {initials(person.display_name)}
+        </AvatarFallback>
+      </Avatar>
+    ),
+  }));
 
   return (
-    <div className="border-t border-border pt-4">
-      <div className="mb-4 flex items-center gap-3">
-        <AlbumImage
-          alt={face.source_name || "Unlinked face"}
-          className="size-14 shrink-0 rounded-full object-cover"
-          fallback="Face unavailable"
-          src={face.thumbnail_url}
-        />
-        <p className="min-w-0 text-xs">
-          <strong className="block truncate font-medium">
-            {face.source_name || "Unlinked face"}
-          </strong>
-          <span className="text-muted">
-            Detected in {face.occurrences}{" "}
-            {face.occurrences === 1 ? "item" : "items"}
-          </span>
-        </p>
-      </div>
-      {createMode ? (
-        <Form
-          aria-busy={pending}
-          aria-label={`Create Person for ${face.source_name || "face"}`}
-          error={create.error}
-          onSubmit={(event) => {
-            event.preventDefault();
-            create.mutate({
-              display_name: displayName,
+    <Form
+      aria-busy={pending}
+      aria-label={`Link ${name}`}
+      className="mt-3"
+      error={creating ? create.error : (link.error ?? ignore.error)}
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (!personID) {
+          setChoiceError("Choose a person.");
+          return;
+        }
+        if (creating) {
+          create.mutate(
+            {
+              display_name: sourceName || displayName,
               source_face_id: face.source_id,
-            });
-          }}
-        >
-          <fieldset
-            aria-describedby={
-              createErrors.source_face_id
-                ? `${sourceErrorId}-create`
-                : undefined
-            }
-            aria-invalid={!!createErrors.source_face_id}
-            disabled={pending}
-            tabIndex={createErrors.source_face_id ? -1 : undefined}
-          >
-            <FieldError
-              error={createErrors.source_face_id}
-              id={`${sourceErrorId}-create`}
-            />
-            <Field
-              error={createErrors.display_name}
-              label="Display name"
-              maxLength={100}
-              onChange={(event) => {
-                create.reset();
-                setDisplayName(event.target.value);
-              }}
-              required
-              value={displayName}
-            />
-            <div className="flex flex-wrap gap-2">
-              <Button size="sm" type="submit">
-                {create.isPending ? "Creating…" : "Create and link"}
-              </Button>
-              <Button
-                onClick={() => {
-                  setCreateMode(false);
-                  setDisplayName("");
-                  create.reset();
-                }}
-                size="sm"
-                type="button"
-                variant="outline"
-              >
-                Cancel
-              </Button>
-            </div>
-          </fieldset>
-        </Form>
-      ) : (
-        <Form
-          aria-busy={pending}
-          aria-label={`Link ${face.source_name || "face"}`}
-          error={error}
-          onSubmit={(event) => {
-            event.preventDefault();
-            if (!personID) {
-              setPersonError("Choose a Person.");
-              return;
-            }
-            link.mutate({ source_face_id: face.source_id });
-          }}
-        >
-          <fieldset
-            aria-describedby={
-              linkErrors.source_face_id ? `${sourceErrorId}-link` : undefined
-            }
-            aria-invalid={!!linkErrors.source_face_id}
-            disabled={pending}
-            tabIndex={linkErrors.source_face_id ? -1 : undefined}
-          >
-            <FieldError
-              error={linkErrors.source_face_id}
-              id={`${sourceErrorId}-link`}
-            />
-            <label className="block text-xs font-medium">
-              Existing Person
-              <Select
-                onValueChange={(value) => {
-                  setPersonID(value);
-                  setPersonError("");
-                  link.reset();
-                }}
-                value={personID}
-              >
-                <SelectTrigger
-                  aria-describedby={personError ? linkErrorId : undefined}
-                  aria-invalid={!!personError}
-                  className="mt-2"
-                >
-                  <SelectValue
-                    placeholder={
-                      loadingPeople ? "Loading People…" : "Choose a Person"
-                    }
-                  />
-                </SelectTrigger>
-                <SelectContent>
-                  {availablePeople.map((person) => (
-                    <SelectItem key={person.id} value={person.id}>
-                      {person.display_name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </label>
-            <FieldError error={personError} id={linkErrorId} />
-            <div className="flex flex-wrap gap-2">
-              <Button size="sm" type="submit">
-                {link.isPending ? "Linking…" : "Link face"}
-              </Button>
-              <Button
-                onClick={() => setCreateMode(true)}
-                size="sm"
-                type="button"
-                variant="outline"
-              >
-                Create Person
-              </Button>
-              <Button
-                onClick={() => ignore.mutate(face.source_id)}
-                size="sm"
-                type="button"
-                variant="ghost"
-              >
-                {ignore.isPending ? "Ignoring…" : "Ignore"}
-              </Button>
-            </div>
-          </fieldset>
-        </Form>
-      )}
-    </div>
+            },
+            { onSuccess: onClose },
+          );
+          return;
+        }
+        link.mutate({ source_face_id: face.source_id }, { onSuccess: onClose });
+      }}
+    >
+      <fieldset
+        aria-describedby={sourceError ? sourceErrorId : undefined}
+        aria-invalid={!!sourceError}
+        disabled={pending}
+        tabIndex={sourceError ? -1 : undefined}
+      >
+        <FieldError error={sourceError} id={sourceErrorId} />
+        <div className="mb-4">
+          <label className="block text-xs font-medium" id={`${choiceId}-label`}>
+            Person
+          </label>
+          <Combobox
+            action={{
+              value: createValue,
+              label: sourceName
+                ? `Create "${sourceName}"`
+                : "Create a new person",
+            }}
+            aria-describedby={choiceError ? `${choiceId}-error` : undefined}
+            aria-invalid={!!choiceError}
+            aria-labelledby={`${choiceId}-label`}
+            className="mt-2"
+            emptyText="No one by that name yet."
+            onChange={(value) => {
+              setChoice(value);
+              setChoiceError("");
+              link.reset();
+              create.reset();
+            }}
+            options={options}
+            placeholder={loadingPeople ? "Loading people…" : "Choose a person"}
+            searchPlaceholder="Search people"
+            value={personID}
+          />
+          <FieldError error={choiceError} id={`${choiceId}-error`} />
+        </div>
+        {creating && !sourceName && (
+          <Field
+            error={createErrors.display_name}
+            label="Display name"
+            maxLength={100}
+            onChange={(event) => {
+              create.reset();
+              setDisplayName(event.target.value);
+            }}
+            required
+            value={displayName}
+          />
+        )}
+        <div className="flex flex-wrap gap-2">
+          <Button size="sm" type="submit">
+            {creating
+              ? create.isPending
+                ? "Creating…"
+                : "Create and link"
+              : link.isPending
+                ? "Linking…"
+                : "Link face"}
+          </Button>
+          {canIgnore && (
+            <Button
+              onClick={() => ignore.mutate(face.source_id)}
+              size="sm"
+              type="button"
+              variant="ghost"
+            >
+              {ignore.isPending ? "Ignoring…" : "Ignore"}
+            </Button>
+          )}
+          <Button onClick={onClose} size="sm" type="button" variant="ghost">
+            Cancel
+          </Button>
+        </div>
+      </fieldset>
+    </Form>
   );
 }

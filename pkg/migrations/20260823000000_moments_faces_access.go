@@ -52,6 +52,7 @@ CREATE TABLE media_face_associations (
  media_item_id uuid NOT NULL REFERENCES media_items(id) ON DELETE CASCADE,
  source_face_id text NOT NULL CHECK (length(source_face_id) > 0),
  source_name text NOT NULL,
+ source_version text NOT NULL DEFAULT '',
  PRIMARY KEY (media_item_id,source_face_id)
 );
 CREATE INDEX media_face_associations_source_face_idx ON media_face_associations(source_face_id);
