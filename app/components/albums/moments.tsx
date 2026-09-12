@@ -540,7 +540,7 @@ export function Moments({ album }: { album: AlbumDetail }) {
   );
 }
 
-function RenameMomentDialog({
+export function RenameMomentDialog({
   albumID,
   moment,
   open,
@@ -622,7 +622,7 @@ function RenameMomentDialog({
   );
 }
 
-function CoverDialog({
+export function CoverDialog({
   albumID,
   moment,
   entry,

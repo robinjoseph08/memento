@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { lazy, Suspense, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 
 import { useAlbum, useUpdateAlbum } from "../../hooks/queries/albums";
@@ -19,6 +19,17 @@ import { Textarea } from "../ui/textarea";
 import { AlbumImage } from "./album-image";
 import { ImportProgress } from "./import-progress";
 import { MediaCounts, Moments } from "./moments";
+
+// PROTOTYPE. Under `pnpm prototype:curator`, the album editor variants replace
+// the current editor so they can be compared on the real route.
+const PrototypeVariants =
+  import.meta.env.MODE === "prototype"
+    ? lazy(() =>
+        import("../pages/curator-prototype/album-variants").then((module) => ({
+          default: module.AlbumVariants,
+        })),
+      )
+    : null;
 
 export function AlbumPage() {
   const { id = "" } = useParams();
@@ -44,7 +55,14 @@ export function AlbumPage() {
           />
         </div>
       )}
-      {album.data && <AlbumContent album={album.data} key={id} />}
+      {album.data &&
+        (PrototypeVariants ? (
+          <Suspense fallback={null}>
+            <PrototypeVariants album={album.data} key={id} />
+          </Suspense>
+        ) : (
+          <AlbumContent album={album.data} key={id} />
+        ))}
     </>
   );
 }
@@ -146,7 +164,7 @@ function AlbumContent({ album }: { album: AlbumDetail }) {
   );
 }
 
-function TitleForm({ album }: { album: AlbumDetail }) {
+export function TitleForm({ album }: { album: AlbumDetail }) {
   const update = useUpdateAlbum(album.id);
   const [draft, setDraft] = useState<string | null>(null);
   const title = draft ?? album.title;
