@@ -1,10 +1,12 @@
+import { ChevronLeft } from "lucide-react";
 import { useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 
 import { useAlbum, useUpdateAlbum } from "../../hooks/queries/albums";
+import { useMediaQuery } from "../../hooks/use-media-query";
 import { useUnsavedChanges } from "../../hooks/use-unsaved-changes";
 import { fieldErrors } from "../../lib/http";
-import { cn } from "../../lib/utils";
+import { cn, withParams } from "../../lib/utils";
 import type { AlbumDetail } from "../../types/generated/publishing";
 import {
   Field,
@@ -17,8 +19,22 @@ import { PageTitle } from "../shell/page-title";
 import { Button } from "../ui/button";
 import { Textarea } from "../ui/textarea";
 import { AlbumImage } from "./album-image";
+import { Audience } from "./audience";
 import { ImportProgress } from "./import-progress";
-import { MediaCounts, Moments } from "./moments";
+import {
+  countLabel,
+  mediaCounts,
+  momentCover,
+  momentHeading,
+  shortDay,
+} from "./moment-labels";
+import { MomentPane } from "./moments";
+
+const outlineRowClass = (active: boolean) =>
+  cn(
+    "flex min-h-11 items-center gap-3 rounded-sm border-l-2 px-3 text-left hover:bg-surface",
+    active ? "border-primary bg-surface text-foreground" : "border-transparent",
+  );
 
 export function AlbumPage() {
   const { id = "" } = useParams();
@@ -27,8 +43,10 @@ export function AlbumPage() {
     <>
       <PageTitle title={album.data?.title ?? "Album"} />
       {album.isPending && (
-        <div className="px-5 py-6 min-[761px]:px-8">
-          <BackLink to="/curator">All albums</BackLink>
+        <div className="px-5 py-4 min-[761px]:px-8">
+          <BackLink className="mb-2 text-xs" to="/curator">
+            All albums
+          </BackLink>
           <h1 className={sectionHeadingClass}>Album</h1>
           <p className="mt-4" role="status">
             Loading album…
@@ -49,92 +67,164 @@ export function AlbumPage() {
   );
 }
 
+// Master-detail: a header, a left outline of the Album sections and every
+// Moment with its audience, and the selected section or Moment on the right.
+// On narrow screens the outline is the first screen and rows drill into the
+// pane with a back link.
 function AlbumContent({ album }: { album: AlbumDetail }) {
   const [params] = useSearchParams();
+  const desktop = useMediaQuery("(min-width: 761px)");
   const section = params.get("section") === "details" ? "details" : "moments";
-  const sectionLink = (next: string) => {
-    const target = new URLSearchParams(params);
-    target.set("section", next);
-    return `?${target}`;
-  };
+  const moment =
+    album.moments.find((item) => item.id === params.get("moment")) ??
+    album.moments[0];
+  const drilled = params.get("pane") === "detail";
+  const showOutline = desktop || !drilled;
+  const showDetail = desktop || drilled;
+  const link = (values: Record<string, string | null>) =>
+    `?${withParams(params, values)}`;
   const complete = album.status === "complete";
   return (
     <>
-      <header className="border-b border-border px-5 py-5 min-[761px]:px-8">
-        <BackLink className="mb-3" to="/curator">
+      <header className="border-b border-border px-5 py-4 min-[761px]:px-8">
+        <BackLink className="mb-2 text-xs" to="/curator">
           All albums
         </BackLink>
-        <div className="flex items-center gap-4">
-          {complete && (
-            <AlbumImage
-              alt="Album cover"
-              className="h-16 w-16 shrink-0 object-cover min-[761px]:h-20 min-[761px]:w-20"
-              fallback="No cover available"
-              src={album.cover_url}
-            />
+        <h1 className="font-heading text-[clamp(24px,3vw,30px)] leading-tight tracking-[-0.5px] wrap-anywhere">
+          {album.title}
+        </h1>
+        <p className="mt-1 text-xs text-muted">
+          <span>
+            {complete
+              ? mediaCounts(album.moments.flatMap((item) => item.entries))
+              : countLabel(album.total, "item", "items")}
+          </span>
+          {!album.published && (
+            <span className="ml-3 border-l border-border pl-3">
+              Unpublished
+            </span>
           )}
-          <div className="min-w-0">
-            <h1 className="font-heading text-[clamp(26px,3vw,32px)] leading-tight tracking-[-0.5px] wrap-anywhere">
-              {album.title}
-            </h1>
-            <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted">
-              <p>
-                {complete ? (
-                  <MediaCounts
-                    entries={album.moments.flatMap((moment) => moment.entries)}
-                  />
-                ) : (
-                  `${album.total} items`
-                )}
-              </p>
-              {!album.published && (
-                <span className="border-l border-border pl-4">Unpublished</span>
-              )}
-            </div>
-          </div>
-        </div>
+        </p>
       </header>
       {complete ? (
-        <div className="min-[761px]:grid min-[761px]:min-h-[65vh] min-[761px]:grid-cols-[176px_minmax(0,1fr)]">
-          <nav
-            aria-label="Album sections"
-            className="flex gap-1 border-b border-border px-3 min-[761px]:flex-col min-[761px]:border-r min-[761px]:border-b-0 min-[761px]:py-5"
-          >
-            {[
-              { key: "details", label: "Album details" },
-              { key: "moments", label: "Moments" },
-            ].map((item) => (
-              <Link
-                aria-current={section === item.key ? "page" : undefined}
-                className={cn(
-                  "flex min-h-12 items-center justify-between gap-3 border-b-2 border-transparent px-3 text-xs hover:bg-surface min-[761px]:min-h-11 min-[761px]:rounded-sm min-[761px]:border-b-0 min-[761px]:border-l-2",
-                  section === item.key
-                    ? "border-primary bg-surface text-foreground"
-                    : "text-muted",
-                )}
-                key={item.key}
-                to={sectionLink(item.key)}
-              >
-                {item.label}
-                {item.key === "moments" && (
-                  <span className="text-accent-foreground">
-                    {album.moments.length}
-                  </span>
-                )}
-              </Link>
-            ))}
-          </nav>
+        <div className="min-[761px]:grid min-[761px]:min-h-[70vh] min-[761px]:grid-cols-[300px_minmax(0,1fr)]">
+          {showOutline && (
+            <nav
+              aria-label="Album outline"
+              className="px-3 py-5 min-[761px]:sticky min-[761px]:top-0 min-[761px]:max-h-dvh min-[761px]:overflow-y-auto min-[761px]:border-r min-[761px]:border-border"
+            >
+              <p className="px-3 text-xs text-muted">Album</p>
+              <ul className="mt-1 space-y-0.5">
+                <li>
+                  <Link
+                    aria-current={section === "details" ? "page" : undefined}
+                    className={cn(
+                      outlineRowClass(section === "details"),
+                      "text-sm",
+                    )}
+                    to={link({ section: "details", pane: "detail" })}
+                  >
+                    Album details
+                  </Link>
+                </li>
+              </ul>
+              <p className="mt-6 px-3 text-xs text-muted">
+                Moments{" "}
+                <span className="ml-1 text-accent-foreground">
+                  {album.moments.length}
+                </span>
+              </p>
+              {album.moments.length === 0 ? (
+                // The pane carries this explanation on wide screens.
+                <p className="mt-2 px-3 text-xs text-muted min-[761px]:hidden">
+                  This Album had no photos or videos to import.
+                </p>
+              ) : (
+                <ul className="mt-1 space-y-0.5">
+                  {album.moments.map((item) => {
+                    const heading = momentHeading(item);
+                    const cover = momentCover(item);
+                    const day = shortDay(item.date);
+                    const active =
+                      section === "moments" && item.id === moment?.id;
+                    const suggestions = item.access.people.filter(
+                      (person) => person.suggested,
+                    ).length;
+                    return (
+                      <li key={item.id}>
+                        <Link
+                          aria-current={active ? "page" : undefined}
+                          className={cn(
+                            outlineRowClass(active),
+                            "items-start py-2.5",
+                          )}
+                          to={link({
+                            section: null,
+                            moment: item.id,
+                            pane: "detail",
+                            media: null,
+                          })}
+                        >
+                          <AlbumImage
+                            alt=""
+                            className="mt-0.5 h-auto max-h-10 w-auto max-w-14 shrink-0"
+                            fallback="No cover"
+                            src={cover?.available ? cover.thumbnail_url : ""}
+                          />
+                          <span className="min-w-0 flex-1">
+                            <span className="line-clamp-2 text-sm font-medium">
+                              {heading.title}
+                            </span>
+                            <span className="block text-xs text-muted">
+                              {day && `${day}, `}
+                              {mediaCounts(item.entries)}
+                            </span>
+                            <span className="mt-1.5 block">
+                              <Audience
+                                people={item.access.people}
+                                suggestions={suggestions}
+                              />
+                            </span>
+                          </span>
+                        </Link>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </nav>
+          )}
           <div
-            className={cn(
-              "min-w-0",
-              section === "details" &&
-                "px-3 py-6 min-[761px]:px-6 min-[761px]:py-7",
-            )}
+            className="min-w-0 px-3 py-6 min-[761px]:px-6 min-[761px]:py-7"
+            hidden={!showDetail}
           >
-            <div hidden={section !== "details"}>
+            {!desktop && (
+              <Link
+                className="-mx-2 mb-4 inline-flex min-h-9 items-center gap-1 rounded-md px-2 text-sm hover:bg-surface"
+                to={link({ pane: null })}
+              >
+                <ChevronLeft
+                  aria-hidden="true"
+                  className="size-4"
+                  strokeWidth={1.5}
+                />
+                Outline
+              </Link>
+            )}
+            {/* The title form stays mounted while other sections show so an
+                unsaved edit survives a look at a Moment. */}
+            <div className="max-w-180" hidden={section !== "details"}>
               <TitleForm album={album} />
             </div>
-            {section === "moments" && <Moments album={album} />}
+            {showDetail &&
+              section === "moments" &&
+              (moment ? (
+                <MomentPane album={album} key={moment.id} moment={moment} />
+              ) : (
+                <p className="text-sm text-muted">
+                  This Album had no photos or videos to import.
+                </p>
+              ))}
           </div>
         </div>
       ) : (
@@ -154,7 +244,7 @@ function TitleForm({ album }: { album: AlbumDetail }) {
     (draft !== null && draft !== album.title) || update.isPending,
   );
   return (
-    <section aria-labelledby="album-details-heading" className="max-w-180">
+    <section aria-labelledby="album-details-heading">
       <h2 className={sectionHeadingClass} id="album-details-heading">
         Album details
       </h2>

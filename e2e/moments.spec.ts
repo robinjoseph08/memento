@@ -35,9 +35,10 @@ test("arranges a large Moment and reviews face-based access on desktop and mobil
   });
   await source.getByRole("button", { name: "Import", exact: true }).click();
   await expect(
-    page.getByRole("heading", { name: "Moments", exact: true }),
+    page.getByRole("heading", { name: "Thursday, June 4, 2026", exact: true }),
   ).toBeVisible({ timeout: 60_000 });
 
+  const outline = page.getByRole("navigation", { name: "Album outline" });
   const firstMoment = page.getByRole("region", {
     name: "Thursday, June 4, 2026",
   });
@@ -45,12 +46,13 @@ test("arranges a large Moment and reviews face-based access on desktop and mobil
   await expect(
     media.getByRole("img", { name: /workbench-\d+\.jpg/ }),
   ).toHaveCount(24);
-  await firstMoment.getByRole("button", { name: "Show all 101 items" }).click();
+  await firstMoment.getByRole("button", { name: "Show all 101" }).click();
   await expect(
     media.getByRole("img", { name: /workbench-\d+\.jpg/ }),
   ).toHaveCount(101);
-  await firstMoment.getByRole("button", { name: "Show fewer items" }).click();
+  await firstMoment.getByRole("button", { name: "Show fewer" }).click();
 
+  await firstMoment.getByText(/unlinked faces? to link/).click();
   for (const [faceName, personName] of [
     ["Immich Alex", "Alex"],
     ["Immich Alex duplicate", "Alex"],
@@ -69,9 +71,7 @@ test("arranges a large Moment and reviews face-based access on desktop and mobil
     await expect(form).toHaveCount(0);
   }
 
-  const desktopAccess = page.getByRole("complementary", {
-    name: "Moment access",
-  });
+  const desktopAccess = page.getByRole("region", { name: "Moment access" });
   const alexAccess = desktopAccess.getByRole("checkbox", {
     name: "Allow Alex for this Moment",
   });
@@ -114,19 +114,15 @@ test("arranges a large Moment and reviews face-based access on desktop and mobil
   await splitDialog.getByRole("button", { name: "Confirm split" }).click();
   await expect(splitDialog).toHaveCount(0);
 
-  const originalToggle = page.getByRole("button", {
-    name: "June 4, 2026 (1)",
-    exact: true,
+  const originalRow = outline.getByRole("link", {
+    name: /^June 4, 2026 \(1\)/,
   });
-  const splitToggle = page.getByRole("button", {
-    name: "June 4, 2026 (2)",
-    exact: true,
-  });
-  await splitToggle.click();
+  const splitRow = outline.getByRole("link", { name: /^June 4, 2026 \(2\)/ });
+  await splitRow.click();
   await desktopAccess
     .getByRole("checkbox", { name: "Allow Alex for this Moment" })
     .uncheck();
-  await originalToggle.click();
+  await originalRow.click();
   const original = page.getByRole("region", { name: "June 4, 2026 (1)" });
   await original.getByRole("button", { name: "Select", exact: true }).click();
   await original
@@ -171,15 +167,26 @@ test("arranges a large Moment and reviews face-based access on desktop and mobil
     1,
   );
 
+  // Narrow screens keep the drilled-in Moment pane, then go back to the
+  // outline instead of a side sheet.
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.getByRole("button", { name: /Access for June 4, 2026/ }).click();
-  const sheet = page.getByRole("dialog", { name: "Moment access" });
-  const mobileAlex = sheet.getByRole("checkbox", {
+  await expect(outline).toHaveCount(0);
+  const mobileAlex = desktopAccess.getByRole("checkbox", {
     name: "Allow Alex for this Moment",
   });
   await mobileAlex.uncheck();
-  await sheet.getByRole("button", { name: "Undo" }).click();
+  await desktopAccess.getByRole("button", { name: "Undo" }).click();
   await expect(mobileAlex).toBeChecked();
-  await sheet.getByRole("button", { name: "Close panel" }).click();
-  await expect(sheet).toHaveCount(0);
+  await page.getByRole("link", { name: "Outline" }).click();
+  await expect(outline).toBeVisible();
+  await expect(page.getByRole("region", { name: /June 4, 2026/ })).toHaveCount(
+    0,
+  );
+  // The merged Moment carries the plain date label, so its title gains the
+  // weekday.
+  await outline.getByRole("link", { name: "Thursday, June 4, 2026" }).click();
+  await expect(
+    page.getByRole("region", { name: /June 4, 2026/ }),
+  ).toBeVisible();
+  await expect(outline).toHaveCount(0);
 });

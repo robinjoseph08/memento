@@ -22,6 +22,7 @@ import {
   TooltipTrigger,
 } from "../ui/tooltip";
 import { UnlinkedFaces } from "./face-management";
+import { countLabel } from "./moment-labels";
 
 // Most-seen people first, then alphabetical, so the busiest rows lead.
 function byPresence(left: AccessPerson, right: AccessPerson) {
@@ -31,8 +32,9 @@ function byPresence(left: AccessPerson, right: AccessPerson) {
 }
 
 function detectionDetail(person: AccessPerson) {
+  if (person.suggested) return "Detected here, not shared yet";
   if (!person.detected) return "Not seen in this Moment";
-  return `Seen in ${person.supporting_entries} ${person.supporting_entries === 1 ? "item" : "items"}`;
+  return `Seen in ${countLabel(person.supporting_entries, "item", "items")}`;
 }
 
 function AccessGroup({
@@ -49,7 +51,7 @@ function AccessGroup({
   children: ReactNode;
 }) {
   return (
-    <section aria-labelledby={id} className="mt-6 first:mt-0">
+    <section aria-labelledby={id} className="min-w-0">
       <div className="flex items-center justify-between gap-3">
         <h3 className="text-sm font-medium" id={id}>
           {title}{" "}
@@ -62,19 +64,19 @@ function AccessGroup({
   );
 }
 
-export function MomentAccessInspector({
+// The access strip above a Moment's media: Allowed and Suggested side by
+// side, Excluded and Add someone else beneath, unlinked faces collapsed to a
+// count, and the faces-checked line along the bottom. Checking or unchecking
+// a person saves immediately with one-step Undo.
+export function MomentAccessStrip({
   albumID,
   moment,
-  undo,
-  onUndo,
   refreshError,
   refreshing,
   onRefresh,
 }: {
   albumID: string;
   moment: Moment;
-  undo: UndoMomentAccessRequest | null;
-  onUndo: (undo: UndoMomentAccessRequest | null) => void;
   refreshError: Error | null;
   refreshing: boolean;
   onRefresh: () => void;
@@ -83,6 +85,7 @@ export function MomentAccessInspector({
   const [optimistic, setOptimistic] = useState<
     Record<string, "allow" | "deny">
   >({});
+  const [undo, setUndo] = useState<UndoMomentAccessRequest | null>(null);
   const addSuggestions = useAddMomentSuggestions(albumID, moment.id);
   const undoChange = useUndoMomentAccess(albumID, moment.id);
   const pending =
@@ -94,6 +97,12 @@ export function MomentAccessInspector({
   const others = people.filter(
     (person) => !person.decision && !person.suggested,
   );
+  const unlinked = moment.access.faces.filter(
+    (face) => !face.person_id && !face.ignored,
+  ).length;
+  const ignored = moment.access.faces.filter(
+    (face) => !face.person_id && face.ignored,
+  ).length;
   const mutationError =
     change.error ?? addSuggestions.error ?? undoChange.error;
   const refreshedAt = moment.access.refreshed_at
@@ -124,7 +133,7 @@ export function MomentAccessInspector({
             change.mutate(
               { person_id: person.person_id, decision },
               {
-                onSuccess: (result) => onUndo(result.undo),
+                onSuccess: (result) => setUndo(result.undo),
                 onSettled: () =>
                   setOptimistic((current) => {
                     const next = { ...current };
@@ -153,21 +162,17 @@ export function MomentAccessInspector({
   }
 
   return (
-    <div className="min-w-0">
-      <p className="text-xs text-muted">Moment access</p>
-      <h2 className="mt-1 font-heading text-[27px]/[1.2] font-normal tracking-[-0.35px]">
-        {moment.label}
-      </h2>
-      <div className="mt-3 flex items-center justify-between gap-3">
+    <section
+      aria-label="Moment access"
+      className="min-w-0 rounded-md border border-border p-4"
+    >
+      <div className="flex items-center justify-between gap-3">
         <p className="text-xs text-muted">Changes save immediately.</p>
         <Button
           className="-mx-2 h-auto min-h-0 px-2 py-1 text-xs"
           disabled={!undo?.changes.length || pending}
           onClick={() =>
-            undo &&
-            undoChange.mutate(undo, {
-              onSuccess: () => onUndo(null),
-            })
+            undo && undoChange.mutate(undo, { onSuccess: () => setUndo(null) })
           }
           variant="ghost"
         >
@@ -177,10 +182,13 @@ export function MomentAccessInspector({
       <Failure error={mutationError} />
       <form
         aria-label="Quick Moment access"
-        className="mt-6"
+        className="mt-3"
         onSubmit={(event) => event.preventDefault()}
       >
-        <fieldset disabled={pending}>
+        <fieldset
+          className="grid gap-x-8 gap-y-5 min-[1000px]:grid-cols-2"
+          disabled={pending}
+        >
           <AccessGroup
             count={allowed.length}
             id="allowed-access"
@@ -194,14 +202,14 @@ export function MomentAccessInspector({
               </p>
             )}
           </AccessGroup>
-          {suggested.length > 0 && (
-            <AccessGroup
-              action={
+          <AccessGroup
+            action={
+              suggested.length > 0 && (
                 <Button
                   className="-mx-2 h-auto min-h-0 px-2 py-1 text-xs"
                   onClick={() =>
                     addSuggestions.mutate(undefined, {
-                      onSuccess: (result) => onUndo(result.undo),
+                      onSuccess: (result) => setUndo(result.undo),
                     })
                   }
                   type="button"
@@ -209,14 +217,20 @@ export function MomentAccessInspector({
                 >
                   Add all suggested
                 </Button>
-              }
-              count={suggested.length}
-              id="suggested-access"
-              title="Suggested"
-            >
-              {suggested.map(personRow)}
-            </AccessGroup>
-          )}
+              )
+            }
+            count={suggested.length}
+            id="suggested-access"
+            title="Suggested"
+          >
+            {suggested.length > 0 ? (
+              suggested.map(personRow)
+            ) : (
+              <p className="border-t border-border py-3 text-xs text-muted">
+                No new faces to review.
+              </p>
+            )}
+          </AccessGroup>
           {excluded.length > 0 && (
             <AccessGroup
               count={excluded.length}
@@ -227,7 +241,7 @@ export function MomentAccessInspector({
             </AccessGroup>
           )}
           {others.length > 0 && (
-            <details className="mt-4">
+            <details className="min-[1000px]:col-span-2">
               <summary className="-mx-2 cursor-pointer rounded-sm px-2 py-2 text-xs text-accent-foreground hover:bg-surface">
                 Add someone else
               </summary>
@@ -236,8 +250,19 @@ export function MomentAccessInspector({
           )}
         </fieldset>
       </form>
-      <UnlinkedFaces faces={moment.access.faces} />
-      <div className="mt-6 border-t border-border pt-4 text-xs text-muted">
+      {/* Ignored faces stay reachable here so a mistaken Ignore can be undone
+          by linking the face after all. */}
+      {(unlinked > 0 || ignored > 0) && (
+        <details className="mt-3">
+          <summary className="-mx-2 cursor-pointer rounded-sm px-2 py-1 text-xs text-accent-foreground hover:bg-surface">
+            {unlinked > 0
+              ? `${countLabel(unlinked, "unlinked face", "unlinked faces")} to link`
+              : countLabel(ignored, "ignored face", "ignored faces")}
+          </summary>
+          <UnlinkedFaces faces={moment.access.faces} />
+        </details>
+      )}
+      <div className="mt-4 flex flex-wrap items-start gap-x-6 gap-y-2 border-t border-border pt-4 text-xs text-muted">
         <div className="flex items-center justify-between gap-3">
           {refreshing ? (
             <p role="status">Checking Immich for faces…</p>
@@ -283,8 +308,10 @@ export function MomentAccessInspector({
             </Tooltip>
           </TooltipProvider>
         </div>
-        <details className="mt-3">
-          <summary className="-mx-2 cursor-pointer rounded-sm px-2 py-1 text-foreground hover:bg-surface">
+        <details className="min-w-0 flex-1 basis-60">
+          {/* Matches the refresh button's height so the collapsed row reads as
+              one centered line while the open one stays anchored. */}
+          <summary className="-mx-2 cursor-pointer rounded-sm px-2 py-[7px] text-foreground hover:bg-surface">
             How access works
           </summary>
           <p className="mt-2 leading-relaxed">
@@ -294,6 +321,6 @@ export function MomentAccessInspector({
           </p>
         </details>
       </div>
-    </div>
+    </section>
   );
 }

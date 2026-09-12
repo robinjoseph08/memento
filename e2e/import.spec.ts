@@ -96,9 +96,8 @@ test("imports an album through a stopped task, browser closure, and API restart"
   await expect(
     completed.getByText("Unpublished", { exact: true }),
   ).toBeVisible();
-  await expect(
-    completed.getByRole("heading", { name: "Moments", exact: true }),
-  ).toBeVisible();
+  const outline = completed.getByRole("navigation", { name: "Album outline" });
+  await expect(outline).toBeVisible();
   await expect(
     completed.getByText("4 photos, 2 videos", { exact: true }),
   ).toBeVisible();
@@ -107,9 +106,7 @@ test("imports an album through a stopped task, browser closure, and API restart"
     ["Tuesday, June 2, 2026", 3],
     ["Wednesday, June 3, 2026", 2],
   ] as const) {
-    const toggle = completed.getByRole("button", { name: label, exact: true });
-    if ((await toggle.getAttribute("aria-expanded")) !== "true")
-      await toggle.click();
+    await outline.getByRole("link", { name: label }).click();
     const previews = completed
       .getByRole("region", { name: label, exact: true })
       .getByRole("list", { name: "Moment media" })
@@ -130,9 +127,7 @@ test("imports an album through a stopped task, browser closure, and API restart"
       await expect(preview).toHaveAttribute("src", /^\/api\/media\//);
     }
   }
-  await completed
-    .getByRole("button", { name: "Tuesday, June 2, 2026", exact: true })
-    .click();
+  await outline.getByRole("link", { name: "Tuesday, June 2, 2026" }).click();
   const tiedPhotos = completed
     .getByRole("region", { name: "Tuesday, June 2, 2026" })
     .getByRole("list", { name: "Moment media" })

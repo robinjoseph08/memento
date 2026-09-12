@@ -273,7 +273,8 @@ function AvatarEditor({ detail }: { detail: PersonDetail }) {
       </div>
       {faces.length === 0 ? (
         <p className="mt-5 text-sm text-muted">
-          Link a face from an Album's Moment access inspector first.
+          Open a Moment in an Album and link the face under its unlinked faces
+          first.
         </p>
       ) : (
         <Form

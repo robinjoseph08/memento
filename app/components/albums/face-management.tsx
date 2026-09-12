@@ -91,17 +91,8 @@ export function UnlinkedFaces({ faces }: { faces: FaceRecord[] }) {
     />
   );
   return (
-    <section
-      aria-labelledby="unlinked-faces"
-      className="mt-8 border-t border-border pt-6"
-    >
-      <h3 className="text-sm font-medium" id="unlinked-faces">
-        Unlinked faces{" "}
-        <span className="ml-1 text-xs font-normal text-muted">
-          {unlinked.length}
-        </span>
-      </h3>
-      <p className="mt-1 text-xs leading-relaxed text-muted">
+    <section aria-label="Unlinked faces" className="mt-2">
+      <p className="text-xs leading-relaxed text-muted">
         Immich recognized these people. Link each one to a person to get access
         suggestions. Duplicates are best merged in Immich, then checked again
         here.
