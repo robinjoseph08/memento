@@ -65,7 +65,10 @@ export default tseslint.config(
   },
   {
     // PROTOTYPE. Throwaway variants share hooks and components in one file.
-    files: ["app/components/pages/curator-prototype/**/*.{ts,tsx}"],
+    files: [
+      "app/components/pages/curator-prototype/**/*.{ts,tsx}",
+      "app/components/pages/viewer-prototype/**/*.{ts,tsx}",
+    ],
     rules: { "react-refresh/only-export-components": "off" },
   },
   {

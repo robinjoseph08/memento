@@ -28,6 +28,12 @@ const photoFiles = Array.from({ length: 25 }, (_, index) =>
   media(`photo-${String(index + 1).padStart(2, "0")}.jpg`),
 );
 
+// Four of the illustrations are portrait, which keeps mixed aspect ratios in
+// every grid.
+const portraitFiles = new Set(
+  [11, 18, 22, 24].map((index) => media(`photo-${index}.jpg`)),
+);
+
 function stamp(day: string, minutes: number) {
   const date = new Date(`${day}T08:00:00Z`);
   date.setUTCMinutes(date.getUTCMinutes() + minutes);
@@ -76,6 +82,9 @@ function photo(
     captured_at: stamp(day, minutes),
     available: id !== "p110",
     thumbnail_url: file,
+    ...(portraitFiles.has(file)
+      ? { width: 800, height: 1200 }
+      : { width: 1200, height: 800 }),
     faces: facesByPhoto[id] ?? [],
     decisions: id === "p07" ? { alex: "deny" } : {},
   };
@@ -111,6 +120,15 @@ const videos: StoredEntry[] = [
     captured_at: stamp("2025-06-14", 95),
     available: true,
     thumbnail_url: media("video-01.jpg"),
+    width: 1280,
+    height: 720,
+    src: media("clip-01.mp4"),
+    title: "An afternoon by the lake",
+    chapters: [
+      { title: "The shore", time: 0 },
+      { title: "Across the water", time: 10 },
+      { title: "The far hills", time: 20 },
+    ],
     faces: ["face-jamie"],
     decisions: {},
   },
@@ -122,6 +140,9 @@ const videos: StoredEntry[] = [
     captured_at: stamp("2025-06-14", 300),
     available: true,
     thumbnail_url: media("video-02.jpg"),
+    width: 1280,
+    height: 720,
+    src: media("clip-02.mp4"),
     faces: [],
     decisions: {},
   },

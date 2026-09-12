@@ -19,6 +19,7 @@ import {
   preview,
   projectAlbum,
   projectAlbumSummary,
+  projectMemberAlbums,
   projectViewer,
   viewers,
   type Store,
@@ -38,6 +39,19 @@ type Handler = (
 
 let store = initialStore();
 let signedOut = false;
+
+// Who the browser is signed in as. `?as=jamie` on any URL switches it, and the
+// choice sticks in localStorage so reloads keep the same person.
+export const personStorageKey = "memento-prototype-person";
+function currentPerson() {
+  let id = "";
+  try {
+    id = window.localStorage.getItem(personStorageKey) ?? "";
+  } catch {
+    // Fall through to the curator.
+  }
+  return store.people.find((person) => person.id === id) ?? store.curator;
+}
 
 function fail(
   message: string,
@@ -208,7 +222,7 @@ const routes: [string, string, Handler][] = [
     () => ({
       body: signedOut
         ? { claimed: true, auth_mode: "fake" }
-        : { claimed: true, person: store.curator, auth_mode: "fake" },
+        : { claimed: true, person: currentPerson(), auth_mode: "fake" },
     }),
   ],
   [
@@ -230,9 +244,36 @@ const routes: [string, string, Handler][] = [
   [
     "POST",
     "/api/identity/fake-sign-in",
-    () => {
+    (_params, body) => {
       signedOut = false;
-      return { body: store.curator };
+      const match = store.people.find(
+        (person) => person.update_email === String(body.email ?? "").trim(),
+      );
+      if (match) {
+        try {
+          window.localStorage.setItem(personStorageKey, match.id);
+        } catch {
+          // Signing in still works for this page load.
+        }
+      }
+      return { body: currentPerson() };
+    },
+  ],
+  [
+    "GET",
+    "/api/albums",
+    () => ({ body: projectMemberAlbums(store, currentPerson().id) }),
+  ],
+  [
+    "GET",
+    "/api/albums/:album",
+    (params) => {
+      if (params.album !== store.album.id)
+        return fail("This album is not available.", {}, 404);
+      const viewer = projectViewer(store, currentPerson().id);
+      if (viewer.photo_count + viewer.video_count === 0)
+        return fail("This album is not available.", {}, 404);
+      return { body: viewer };
     },
   ],
   [
@@ -709,6 +750,14 @@ function match(method: string, pathname: string) {
 const latency = 160;
 
 export function installPrototypeAPI() {
+  const requested = new URLSearchParams(window.location.search).get("as");
+  if (requested) {
+    try {
+      window.localStorage.setItem(personStorageKey, requested);
+    } catch {
+      // The curator remains signed in.
+    }
+  }
   const original = window.fetch.bind(window);
   window.fetch = async (input, init) => {
     const url = new URL(

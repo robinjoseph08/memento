@@ -1,3 +1,5 @@
+import { lazy, Suspense } from "react";
+
 import { AlbumPage } from "../albums/album-detail";
 import { CuratorPage } from "../albums/albums";
 import { ImportPage } from "../albums/sources";
@@ -15,6 +17,34 @@ import {
   SignedInLayout,
   SignInPage,
 } from "./layouts";
+
+// PROTOTYPE. Under `pnpm prototype:viewer`, the member album routes render the
+// viewer prototype variants instead of the placeholder Albums page.
+const prototypeViewer = import.meta.env.MODE === "prototype";
+const ViewerPrototype = prototypeViewer
+  ? lazy(() =>
+      import("./viewer-prototype/viewer-variants").then((module) => ({
+        default: module.ViewerVariants,
+      })),
+    )
+  : null;
+const viewerRoutes = ViewerPrototype
+  ? [
+      {
+        element: <SignedInLayout bare />,
+        children: [
+          {
+            path: "/albums/:id?/:tab?/:mediaId?",
+            element: (
+              <Suspense fallback={null}>
+                <ViewerPrototype />
+              </Suspense>
+            ),
+          },
+        ],
+      },
+    ]
+  : [];
 
 export const routes = [
   {
@@ -48,11 +78,14 @@ export const routes = [
               },
             ],
           },
+          ...viewerRoutes,
           {
             element: <SignedInLayout />,
             children: [
               { path: "/profile", element: <ProfilePage /> },
-              { path: "/albums", element: <MemberPage /> },
+              ...(prototypeViewer
+                ? []
+                : [{ path: "/albums", element: <MemberPage /> }]),
             ],
           },
           { path: "/access-denied", element: <AccessDeniedPage /> },

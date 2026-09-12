@@ -153,11 +153,11 @@ export function CuratorLayout({ compact = false }: { compact?: boolean }) {
   );
 }
 
-export function SignedInLayout() {
+export function SignedInLayout({ bare = false }: { bare?: boolean }) {
   const { data } = useIdentityStatus();
   if (!data?.person) return <Navigate replace to="/sign-in" />;
   return (
-    <main className={pageClassName}>
+    <main className={bare ? undefined : pageClassName}>
       <Outlet />
     </main>
   );

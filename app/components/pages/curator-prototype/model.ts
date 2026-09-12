@@ -34,6 +34,11 @@ export type StoredEntry = {
   captured_at: string;
   available: boolean;
   thumbnail_url: string;
+  width: number;
+  height: number;
+  src?: string;
+  title?: string;
+  chapters?: { title: string; time: number }[];
   faces: string[];
   decisions: Decisions;
 };
@@ -87,9 +92,28 @@ export type ViewerEntry = {
   kind: string;
   captured_at: string;
   thumbnail_url: string;
+  full_url: string;
+  download_url: string;
   filename: string;
+  title: string;
+  width: number;
+  height: number;
+  src: string;
+  chapters: { title: string; time: number }[];
+};
+export type MemberAlbum = {
+  id: string;
+  title: string;
+  description: string;
+  cover_url: string;
+  start_date: string;
+  end_date: string;
+  photo_count: number;
+  video_count: number;
+  published_at: string;
 };
 export type ViewerAlbum = {
+  id: string;
   person_id: string;
   display_name: string;
   title: string;
@@ -329,6 +353,7 @@ export function projectViewer(store: Store, personID: string): ViewerAlbum {
   );
   const days = [...new Set(entries.map(day))].sort();
   return {
+    id: store.album.id,
     person_id: personID,
     display_name: person?.display_name ?? "",
     title: store.album.title,
@@ -342,15 +367,44 @@ export function projectViewer(store: Store, personID: string): ViewerAlbum {
       date,
       entries: entries
         .filter((entry) => day(entry) === date)
-        .map((entry) => ({
-          id: entry.id,
-          kind: entry.kind,
-          captured_at: entry.captured_at,
-          thumbnail_url: entry.thumbnail_url,
-          filename: entry.filename,
-        })),
+        .map((entry) => viewerEntry(entry)),
     })),
   };
+}
+
+function viewerEntry(entry: StoredEntry): ViewerEntry {
+  return {
+    id: entry.id,
+    kind: entry.kind,
+    captured_at: entry.captured_at,
+    thumbnail_url: entry.thumbnail_url,
+    full_url: entry.thumbnail_url,
+    download_url: entry.src ?? entry.thumbnail_url,
+    filename: entry.filename,
+    title: entry.title || entry.filename.replace(/\.[^.]+$/, ""),
+    width: entry.width,
+    height: entry.height,
+    src: entry.src ?? "",
+    chapters: entry.chapters ?? [],
+  };
+}
+
+// The member-facing album list: one card per album the person can see.
+export function projectMemberAlbums(store: Store, personID: string) {
+  const viewer = projectViewer(store, personID);
+  if (viewer.photo_count + viewer.video_count === 0) return [] as MemberAlbum[];
+  const album: MemberAlbum = {
+    id: store.album.id,
+    title: viewer.title,
+    description: viewer.description,
+    cover_url: viewer.cover_url,
+    start_date: viewer.start_date,
+    end_date: viewer.end_date,
+    photo_count: viewer.photo_count,
+    video_count: viewer.video_count,
+    published_at: "2025-09-08T18:30:00Z",
+  };
+  return [album];
 }
 
 export function audienceChanges(before: Store, after: Store): AudienceChange[] {

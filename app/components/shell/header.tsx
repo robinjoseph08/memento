@@ -1,3 +1,4 @@
+import { lazy, Suspense } from "react";
 import { Link, NavLink } from "react-router-dom";
 
 import { useIdentityStatus } from "../../hooks/queries/identity";
@@ -6,6 +7,16 @@ import { AccountMenu } from "./account-menu";
 import { MobileNavigation } from "./mobile-navigation";
 import { ThemeToggle } from "./theme-toggle";
 import { Wordmark } from "./wordmark";
+
+// PROTOTYPE. The viewer prototype shows the notification bell ticket 14 adds.
+const PrototypeBell =
+  import.meta.env.MODE === "prototype"
+    ? lazy(() =>
+        import("../pages/viewer-prototype/notifications").then((module) => ({
+          default: module.NotificationBell,
+        })),
+      )
+    : null;
 
 export function Header() {
   const { data } = useIdentityStatus();
@@ -47,7 +58,12 @@ export function Header() {
           )}
         </nav>
       )}
-      <div className="ml-auto">
+      <div className="ml-auto flex items-center gap-2">
+        {data?.person && PrototypeBell && (
+          <Suspense fallback={null}>
+            <PrototypeBell />
+          </Suspense>
+        )}
         {data?.person ? (
           <AccountMenu key={data.person.id} person={data.person} {...theme} />
         ) : (
