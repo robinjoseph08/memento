@@ -29,9 +29,8 @@ for (const [scenario, dimensions] of [
     await expect(page).toHaveURL(/\/curator$/);
     await page.goto("/curator/import?q=Coast");
     await page.getByRole("button", { name: "Import", exact: true }).click();
-    await expect(
-      page.getByRole("heading", { name: "Moments", exact: true }),
-    ).toBeVisible();
+    const outline = page.getByRole("navigation", { name: "Album outline" });
+    await expect(outline).toBeVisible();
     const path = new URL(page.url()).pathname;
     const album = (await (
       await page.request.get(`/api${path}`)
@@ -47,10 +46,10 @@ for (const [scenario, dimensions] of [
         }),
       );
     }
+    await outline.getByRole("link", { name: moment.label }).click();
     const momentRegion = page.getByRole("region", {
       name: new RegExp(`${moment.label}$`),
     });
-    await momentRegion.getByRole("button", { expanded: false }).click();
     const media = momentRegion.getByRole("list", { name: "Moment media" });
     await expect(media.getByRole("listitem")).toHaveCount(3);
     for (const width of [1440, 390]) {

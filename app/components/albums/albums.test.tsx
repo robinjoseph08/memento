@@ -43,7 +43,8 @@ const source = {
   album_id: "",
 };
 
-// The access inspector only mounts beside the Moments on wide viewports.
+// Wide viewports show the outline beside the selected Moment. Narrow ones show
+// the outline first and drill into the Moment pane.
 function desktopViewport() {
   vi.stubGlobal("matchMedia", (media: string) => ({
     media,
@@ -107,6 +108,7 @@ it("opens the library from an empty collection and links previously imported sou
 });
 
 it("imports an album, shows progress, then reveals unpublished Moments with compact media", async () => {
+  desktopViewport();
   let imported = false;
   let completed = false;
   mockAPI((path, options) => {
@@ -145,7 +147,11 @@ it("imports an album, shows progress, then reveals unpublished Moments with comp
   ).not.toBeInTheDocument();
   completed = true;
   expect(
-    await screen.findByRole("heading", { name: "Moments" }, { timeout: 4000 }),
+    await screen.findByRole(
+      "heading",
+      { name: "First day" },
+      { timeout: 4000 },
+    ),
   ).toBeVisible();
   expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
   expect(screen.getByText("Unpublished")).toBeVisible();
@@ -198,16 +204,24 @@ const completeAlbum: AlbumDetail = {
   ],
 };
 
-it("identifies the Album in its compact header with its configured cover", async () => {
+it("identifies the Album in its header with counts and publication state", async () => {
   mockAPI(() => Response.json(completeAlbum));
   window.history.replaceState(null, "", "/curator/albums/album-1");
   render(<App />);
+  const heading = await screen.findByRole("heading", {
+    name: "Summer by the sea",
+    level: 1,
+  });
+  const header = within(heading.closest("header")!);
+  expect(header.getByText("1 photo, 1 video")).toBeVisible();
+  expect(header.getByText("Unpublished")).toBeVisible();
   expect(
-    await screen.findByRole("img", { name: "Album cover" }),
-  ).toHaveAttribute("src", "/media/beach");
+    screen.queryByRole("img", { name: "Album cover" }),
+  ).not.toBeInTheDocument();
 });
 
 it("keeps an absent Immich description empty and shows a read-only placeholder", async () => {
+  desktopViewport();
   mockAPI(() => Response.json({ ...completeAlbum, description: "" }));
   window.history.replaceState(
     null,
@@ -227,6 +241,7 @@ it("keeps an absent Immich description empty and shows a read-only placeholder",
 });
 
 it("shows weekdays and local capture times without visible filenames, with a video badge", async () => {
+  desktopViewport();
   mockAPI(() =>
     Response.json({
       ...completeAlbum,
@@ -248,7 +263,7 @@ it("shows weekdays and local capture times without visible filenames, with a vid
   window.history.replaceState(null, "", "/curator/albums/album-1");
   render(<App />);
   expect(
-    await screen.findByRole("button", { name: "Wednesday, July 1, 2026" }),
+    await screen.findByRole("heading", { name: "Wednesday, July 1, 2026" }),
   ).toBeVisible();
   expect(screen.getByText("12:30 AM")).toHaveAttribute(
     "datetime",
@@ -263,46 +278,68 @@ it("shows weekdays and local capture times without visible filenames, with a vid
   );
 });
 
-it("presents distinct Album details and expandable Moments without discarding title edits", async () => {
+it("keeps the outline beside the selected Moment and preserves title edits between sections", async () => {
+  desktopViewport();
   mockAPI(() => Response.json(completeAlbum));
   window.history.replaceState(null, "", "/curator/albums/album-1");
   const user = userEvent.setup();
   render(<App />);
-  const navigation = await screen.findByRole("navigation", {
-    name: "Album sections",
+  const outline = await screen.findByRole("navigation", {
+    name: "Album outline",
   });
-  expect(
-    within(navigation).getByRole("link", { name: /Moments/ }),
-  ).toHaveAttribute("aria-current", "page");
-  expect(screen.getByRole("heading", { name: "Moments" })).toBeVisible();
-  const moment = screen.getByRole("button", { name: "First day" });
-  expect(moment).toHaveAttribute("aria-expanded", "true");
-  await user.click(moment);
-  expect(moment).toHaveAttribute("aria-expanded", "false");
-  expect(
-    screen.queryByRole("img", { name: "Beach.jpg" }),
-  ).not.toBeInTheDocument();
-  await user.click(moment);
+  const momentRow = within(outline).getByRole("link", { name: /First day/ });
+  expect(momentRow).toHaveAttribute("aria-current", "page");
+  expect(within(outline).getByText("No access yet")).toBeVisible();
+  expect(screen.getByRole("region", { name: "First day" })).toBeVisible();
   expect(screen.getByRole("img", { name: "Beach.jpg" })).toBeVisible();
-  await user.click(
-    within(navigation).getByRole("link", { name: "Album details" }),
-  );
+  const details = within(outline).getByRole("link", { name: "Album details" });
+  await user.click(details);
+  expect(details).toHaveAttribute("aria-current", "page");
+  expect(momentRow).not.toHaveAttribute("aria-current");
+  expect(
+    screen.queryByRole("region", { name: "First day" }),
+  ).not.toBeInTheDocument();
   const title = screen.getByRole("textbox", { name: "Album title" });
   await user.clear(title);
   await user.type(title, "Unsaved weekend");
-  await user.click(within(navigation).getByRole("link", { name: /Moments/ }));
+  await user.click(momentRow);
   expect(
     screen.queryByRole("textbox", { name: "Album title" }),
   ).not.toBeInTheDocument();
-  await user.click(
-    within(navigation).getByRole("link", { name: "Album details" }),
-  );
+  expect(screen.getByRole("region", { name: "First day" })).toBeVisible();
+  await user.click(details);
   expect(screen.getByRole("textbox", { name: "Album title" })).toHaveValue(
     "Unsaved weekend",
   );
 });
 
-it("uses the compact Workbench for selection and immediate Moment access with Undo", async () => {
+it("drills from the outline into a Moment and back on narrow screens", async () => {
+  mockAPI(() => Response.json(completeAlbum));
+  window.history.replaceState(null, "", "/curator/albums/album-1");
+  const user = userEvent.setup();
+  render(<App />);
+  const outline = await screen.findByRole("navigation", {
+    name: "Album outline",
+  });
+  expect(
+    screen.queryByRole("region", { name: "First day" }),
+  ).not.toBeInTheDocument();
+  await user.click(within(outline).getByRole("link", { name: /First day/ }));
+  expect(
+    screen.queryByRole("navigation", { name: "Album outline" }),
+  ).not.toBeInTheDocument();
+  expect(screen.getByRole("region", { name: "First day" })).toBeVisible();
+  expect(screen.getByRole("img", { name: "Beach.jpg" })).toBeVisible();
+  await user.click(screen.getByRole("link", { name: "Outline" }));
+  expect(
+    screen.getByRole("navigation", { name: "Album outline" }),
+  ).toBeVisible();
+  expect(
+    screen.queryByRole("region", { name: "First day" }),
+  ).not.toBeInTheDocument();
+});
+
+it("uses the Outline pane for selection and immediate Moment access with Undo", async () => {
   desktopViewport();
   const alex = {
     person_id: "alex",
@@ -414,7 +451,7 @@ it("uses the compact Workbench for selection and immediate Moment access with Un
   const user = userEvent.setup();
   render(<App />);
 
-  const inspector = await screen.findByRole("complementary", {
+  const inspector = await screen.findByRole("region", {
     name: "Moment access",
   });
   expect(within(inspector).getByText("Allowed")).toBeVisible();
@@ -537,7 +574,8 @@ it("links an Immich face to an existing Person and derives a suggestion", async 
   const user = userEvent.setup();
   render(<App />);
 
-  const faces = await screen.findByRole("region", { name: /Unlinked faces/ });
+  await user.click(await screen.findByText("1 unlinked face to link"));
+  const faces = screen.getByRole("region", { name: "Unlinked faces" });
   expect(
     screen.queryByRole("combobox", { name: "Person" }),
   ).not.toBeInTheDocument();
@@ -569,10 +607,47 @@ it("links an Immich face to an existing Person and derives a suggestion", async 
     }),
   );
   const suggested = await screen.findByRole("region", { name: /Suggested/ });
-  expect(within(suggested).getByText("Seen in 2 items")).toBeVisible();
   expect(
-    screen.queryByRole("region", { name: /Unlinked faces/ }),
-  ).not.toBeInTheDocument();
+    within(suggested).getByText("Detected here, not shared yet"),
+  ).toBeVisible();
+  expect(screen.queryByText(/unlinked face/)).not.toBeInTheDocument();
+});
+
+it("keeps ignored faces reachable when no unlinked faces remain", async () => {
+  desktopViewport();
+  mockAPI(() =>
+    Response.json({
+      ...completeAlbum,
+      moments: [
+        {
+          ...completeAlbum.moments[0],
+          access: {
+            people: [],
+            faces: [
+              {
+                source_id: "stranger",
+                source_name: "",
+                thumbnail_url: "",
+                immich_url: "",
+                person_id: "",
+                person_name: "",
+                ignored: true,
+                occurrences: 1,
+              },
+            ],
+          },
+        },
+      ],
+    }),
+  );
+  window.history.replaceState(null, "", "/curator/albums/album-1");
+  const user = userEvent.setup();
+  render(<App />);
+  await user.click(await screen.findByText("1 ignored face"));
+  await user.click(screen.getByText("Ignored faces (1)"));
+  expect(
+    screen.getByRole("button", { name: "Link Unnamed face" }),
+  ).toBeVisible();
 });
 
 it("disables unsupported imports without hiding the library or blocking imported albums", async () => {
@@ -700,9 +775,9 @@ it.each(["complete", "failed"])(
       expect(screen.queryByRole("progressbar")).not.toBeInTheDocument(),
     );
     expect(
-      screen.getByRole(terminal === "complete" ? "heading" : "button", {
-        name: terminal === "complete" ? "Moments" : "Retry import",
-      }),
+      terminal === "complete"
+        ? screen.getByRole("navigation", { name: "Album outline" })
+        : screen.getByRole("button", { name: "Retry import" }),
     ).toBeVisible();
     const stoppedAt = reads;
     await act(async () => {
@@ -848,6 +923,7 @@ it("replaces a broken source cover and tries a refreshed cover URL", async () =>
 });
 
 it("replaces failed imported thumbnails while keeping capture times and other previews", async () => {
+  desktopViewport();
   mockAPI(() => Response.json(completeAlbum));
   window.history.replaceState(null, "", "/curator/albums/album-1");
   render(<App />);
@@ -986,6 +1062,7 @@ it("browses source covers, searches in the URL and keeps search when paging", as
 });
 
 it("asks before discarding an edited Moment title and keeps the field focused when the Curator stays", async () => {
+  desktopViewport();
   mockAPI(() => Response.json(completeAlbum));
   window.history.replaceState(null, "", "/curator/albums/album-1");
   const user = userEvent.setup();

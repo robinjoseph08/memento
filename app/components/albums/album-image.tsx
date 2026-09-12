@@ -28,7 +28,7 @@ function Image({
     return (
       <div
         className={cn(
-          "flex aspect-[4/3] items-center justify-center rounded-sm bg-surface px-3 text-center text-xs text-muted",
+          "flex aspect-[3/2] items-center justify-center rounded-sm bg-surface px-3 text-center text-xs text-muted",
           className,
         )}
       >
