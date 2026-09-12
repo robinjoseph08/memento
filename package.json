@@ -13,7 +13,7 @@
     "lint:types": "tsc -b --noEmit && tsc -p tsconfig.test.json --noEmit && tsc -p tsconfig.e2e.json --noEmit",
     "preview": "vite preview",
     "prototype:curator": "vite --config vite.curator-prototype.config.ts --mode prototype --port 5176 --strictPort --open '/curator/albums/lake?as=morgan'",
-    "prototype:viewer": "vite --config vite.curator-prototype.config.ts --mode prototype --port 5175 --strictPort --open '/albums?as=jamie&variant=A'",
+    "prototype:viewer": "vite --config vite.curator-prototype.config.ts --mode prototype --port 5175 --strictPort --open '/albums?as=jamie'",
     "start": "vite",
     "test:unit": "vitest run",
     "e2e:chromium": "playwright test --project=chromium",

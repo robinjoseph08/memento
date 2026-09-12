@@ -1,10 +1,10 @@
 # Viewer prototype
 
-Throwaway UI prototype for the member-facing viewer in [specification #4](https://github.com/robinjoseph08/memento/issues/4): the album list, the album page with its header, tabs, and galleries, and the routed photo and video lightboxes with chapters. It re-opens the earlier approved viewer at `90ef56d` so it can be compared against two other structures on the real shell.
+Master reference for the member-facing viewer in [specification #4](https://github.com/robinjoseph08/memento/issues/4): the album list, the album page with its header, tabs, and galleries, and the routed photo and video lightboxes with chapters. It supersedes the earlier viewer prototype at `90ef56d`.
 
-Three variants render on the real `/albums` routes, switchable with `?variant=`. The header, account menu, fonts, colors, and Tailwind tokens are the shipped ones. The notification bell is a prototype-only addition to the header for ticket 14.
+The approved design was kept. Two other structures were built and compared on the same routes (a mixed chronological Timeline with a date rail, and a centered Sheet with a square grid) and dropped in favor of it. What changed is the ground it stands on: it now runs on the real shell, fonts, tokens, and primitives that shipped since the original approval.
 
-Do not merge this into `master`. The winning variant gets rebuilt in production code.
+Do not merge this into `master`; production code is rewritten from it.
 
 ## Run
 
@@ -13,38 +13,45 @@ pnpm install --frozen-lockfile
 pnpm prototype:viewer
 ```
 
-Opens <http://127.0.0.1:5175/albums?as=jamie&variant=A> signed in as Jamie, a member with Album access. The same in-memory API as the Curator prototype serves it; `?as=morgan` switches back to the Curator and `?as=alex` shows a narrower audience whose cover falls through to the picnic. The floating bar flips variants and resets the fixture.
+Opens <http://127.0.0.1:5175/albums?as=jamie> signed in as Jamie, a member with Album access. The same in-memory API as the Curator prototype serves it; `?as=morgan` switches back to the Curator and `?as=alex` shows a narrower audience whose cover falls through to the picnic. The floating control resets the fixture.
 
-## The variants
+## The decision
 
-All three share the routed lightbox: close, title, position, download, previous and next, keyboard and swipe navigation, a date line, and an uncropped filmstrip. Videos mount a player only when opened, with a Chapters overlay that highlights the current chapter and seeks on selection. They disagree about the album page.
+- **Album list.** A grid of square, center-cropped covers with the title, counts, and date range beneath, the same card the Curator's album list uses.
+- **Album header.** An explicit All albums action, then a large left-aligned heading with the description, date range, and photo and video counts beneath it. The plain, uncropped cover sits at the right, about 390px wide on desktop. On phones the smaller cover sits beside the title and the description and counts follow underneath. No fades, blur, or framing.
+- **Tabs.** Photos and Videos always show with count badges and a cyan underline, 18px horizontal padding. An empty tab explains itself and links to the other tab.
+- **Galleries.** Justified rows preserve every aspect ratio with a 4px gap, three landscape photos across a desktop row, one across on phones. Oldest to newest under weekday date headings with counts. Videos are cards with a play badge, the title or filename, and a chapter count.
+- **Lightboxes.** Routed and full screen: close, title, position, download, previous and next, keyboard and swipe navigation, a date line, and an uncropped filmstrip with a 2px gap that scrolls the current item into view. Focus lands on the stage, and returns to the grid item on close. Videos mount a player only when opened; Chapters open temporarily over the player, highlight the current chapter, and seek on selection. No chapters is a normal state.
+- **Shell.** The shipped header with its Albums link and account menu, plus the notification bell ticket 14 adds. Opening the Updates list shows the album, its counts, and the Curator's note, and marks it read.
 
-### A, Approved
+## What consistency with the shipped app means
 
-The reference design on the real shell. An explicit All albums action, a large left-aligned heading with description and counts, the plain uncropped cover at the right (beside the title on phones), Photos and Videos tabs with count badges and a cyan underline, and justified rows with a 4px gap under day headings. Videos are cards with a title and chapter count. The album list is a grid of square covers.
+These are the places where the original prototype and the current codebase differed, and how this version resolves them.
 
-Ask of it: does the shipped shell, with its Albums navigation and account menu, sit well under this header, and is the tabbed split still what a family member expects?
+- **Body type is Montserrat**, not Epilogue. Headings stay Slabo 13px. The heading scale follows the shipped `headingClass` and section sizes.
+- **Colors and controls come from `styles.css` and `components/ui`.** Buttons, popovers, and dialogs are the shared primitives, so hover, focus, and pending states match the Curator screens.
+- **The header keeps its Albums link.** The original viewer had none; the shipped shell has one for every signed-in person, and removing it for members would be a special case.
+- **Album-list cards are the Curator's cards.** Square cropped covers on the list, uncropped media everywhere else, as `app/AGENTS.md` already records.
+- **The Curator's Viewer preview should reuse this presentation.** The preview section in the Curator prototype already mirrors the header, tabs, and day sections; production should share the components rather than copy them.
 
-### B, Timeline
+## Reference captures
 
-One chronological stream. Photos and videos share justified rows in capture order, each day has a date rail at the left that stays put while its rows scroll, and a filter row (All, Photos, Videos) in a sticky bar replaces tabs. There is no separate cover; the first day's media is the hero. The album list is a list of rows with a wide cover.
-
-Ask of it: is a mixed stream closer to how people remember a weekend than two separate galleries? Does the date rail read better than headings between rows?
-
-### C, Sheet
-
-A centered gallery-wall presentation. The uncropped cover is the hero with the title beneath it, tabs are pills, and the media is a uniform square grid that fits the most on screen. Squares crop thumbnails; the lightbox shows the full image. The album list is large centered cards.
-
-Ask of it: is density worth cropping thumbnails? Does a centered, cover-first header feel more like an occasion than the left-aligned one?
+- [Album list](reference/albums-desktop.png)
+- [Updates](reference/updates-desktop.png)
+- [Album on desktop](reference/album-desktop.png)
+- [Album on mobile](reference/album-mobile.png)
+- [Videos tab](reference/videos-desktop.png)
+- [Photo lightbox](reference/photo-lightbox-desktop.png)
+- [Photo lightbox on mobile](reference/photo-lightbox-mobile.png)
+- [Video with chapters](reference/video-chapters-desktop.png)
 
 ## URL state
 
-- Variant: `?variant=A|B|C`
 - Album: `/albums/lake`
-- Tab or filter: `/albums/lake/photos`, `/albums/lake/videos`, and for B `/albums/lake/all`
+- Tab: `/albums/lake/photos`, `/albums/lake/videos`
 - Lightbox: `/albums/lake/photos/p11`, `/albums/lake/videos/v01`
 - Signed-in person: `?as=jamie`, kept in local storage
 
 ## Boundaries
 
-Generated illustrations, silent clips, and fictional people only. No backend, storage, or notification delivery; the bell shows one fixed update. Publication state is ignored so the album is visible to members without publishing it first. Preview inside the Curator editor reuses the approved presentation and is not part of this comparison.
+Generated illustrations, silent clips, and fictional people only. No backend, storage, or notification delivery; the bell shows one fixed update. Publication state is ignored so the album is visible to members without publishing it first.

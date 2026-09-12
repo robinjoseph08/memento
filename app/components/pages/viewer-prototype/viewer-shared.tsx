@@ -83,10 +83,6 @@ export function ratio(entry: ViewerEntry) {
   return entry.width && entry.height ? entry.width / entry.height : 1.5;
 }
 
-export function allEntries(album: ViewerAlbum) {
-  return album.days.flatMap((day) => day.entries);
-}
-
 export function entriesOfKind(album: ViewerAlbum, kind: "IMAGE" | "VIDEO") {
   return album.days
     .map((day) => ({

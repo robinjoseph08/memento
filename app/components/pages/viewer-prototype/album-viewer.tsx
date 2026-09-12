@@ -1,6 +1,6 @@
-// PROTOTYPE variant A, "Approved". The reference viewer rebuilt on the real
-// shell: an explicit All albums action, a large left-aligned heading with the
-// plain uncropped cover at the right, Photos and Videos tabs with counts, and
+// PROTOTYPE. The chosen viewer: the approved design rebuilt on the real shell.
+// An explicit All albums action, a large left-aligned heading with the plain
+// uncropped cover at the right, Photos and Videos tabs with counts, and
 // justified rows with a 4px gap under day headings.
 import { ChevronLeft, Image, SquarePlay } from "lucide-react";
 import { Link } from "react-router-dom";
@@ -22,12 +22,10 @@ import {
   type MemberAlbum,
   type ViewerAlbum,
 } from "./viewer-shared";
-import { useVariantLink } from "./viewer-variants";
 
 const container = "mx-auto max-w-[1440px] px-5 min-[761px]:px-12";
 
-export function AlbumListA({ albums }: { albums: MemberAlbum[] }) {
-  const link = useVariantLink();
+export function AlbumList({ albums }: { albums: MemberAlbum[] }) {
   return (
     <div className={cn(container, "pt-10 pb-14 min-[761px]:pt-17")}>
       <h1 className={headingClass}>Your albums</h1>
@@ -45,7 +43,7 @@ export function AlbumListA({ albums }: { albums: MemberAlbum[] }) {
             <li className="min-w-0" key={album.id}>
               <Link
                 className="block cursor-pointer rounded-sm p-2 hover:bg-surface focus-visible:outline-2 focus-visible:outline-ring"
-                to={link(`/albums/${album.id}`)}
+                to={`/albums/${album.id}`}
               >
                 <AlbumImage
                   alt={album.title}
@@ -72,7 +70,7 @@ export function AlbumListA({ albums }: { albums: MemberAlbum[] }) {
   );
 }
 
-export function AlbumA({
+export function AlbumView({
   album,
   tab,
   mediaId,
@@ -81,7 +79,6 @@ export function AlbumA({
   tab: string;
   mediaId: string;
 }) {
-  const link = useVariantLink();
   const kind = tab === "videos" ? "VIDEO" : "IMAGE";
   const days = entriesOfKind(album, kind);
   const items = days.flatMap((day) => day.entries);
@@ -100,7 +97,7 @@ export function AlbumA({
     <div className={cn(container, "pt-6 pb-16")}>
       <Link
         className="-ml-2 inline-flex min-h-9 items-center gap-1 rounded-md px-2 text-sm text-muted hover:bg-surface hover:text-foreground"
-        to={link("/albums")}
+        to={"/albums"}
       >
         <ChevronLeft aria-hidden="true" className="size-4" strokeWidth={1.5} />
         All albums
@@ -168,7 +165,7 @@ export function AlbumA({
                 : "border-transparent text-muted hover:text-foreground",
             )}
             key={item.key}
-            to={link(`${base}/${item.key}`)}
+            to={`${base}/${item.key}`}
           >
             <item.icon
               aria-hidden="true"
@@ -201,7 +198,7 @@ export function AlbumA({
           </p>
           <Link
             className="mt-6 inline-flex min-h-11 items-center rounded-md border border-border px-4 text-sm hover:bg-surface"
-            to={link(`${base}/${kind === "VIDEO" ? "photos" : "videos"}`)}
+            to={`${base}/${kind === "VIDEO" ? "photos" : "videos"}`}
           >
             View {kind === "VIDEO" ? "photos" : "videos"}
           </Link>
@@ -240,7 +237,7 @@ export function AlbumA({
                         aria-label={`Open photo ${entry.filename}`}
                         className="block focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
                         state={{ fromGrid: true }}
-                        to={link(`${base}/photos/${entry.id}`)}
+                        to={`${base}/photos/${entry.id}`}
                       >
                         <img
                           alt={entry.filename}
@@ -263,7 +260,7 @@ export function AlbumA({
                       aria-label={`Open video ${entry.title}`}
                       className="group block rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
                       state={{ fromGrid: true }}
-                      to={link(`${base}/videos/${entry.id}`)}
+                      to={`${base}/videos/${entry.id}`}
                     >
                       <span className="relative block overflow-hidden rounded-[2px] bg-surface">
                         <img
@@ -297,10 +294,10 @@ export function AlbumA({
       )}
       {mediaId && (
         <Lightbox
-          closeTo={link(`${base}/${tab || "photos"}`)}
+          closeTo={`${base}/${tab || "photos"}`}
           current={mediaId}
           items={items}
-          linkTo={(entry) => link(`${base}/${tab || "photos"}/${entry.id}`)}
+          linkTo={(entry) => `${base}/${tab || "photos"}/${entry.id}`}
           title={album.title}
         />
       )}

@@ -23,8 +23,8 @@ import {
 const prototypeViewer = import.meta.env.MODE === "prototype";
 const ViewerPrototype = prototypeViewer
   ? lazy(() =>
-      import("./viewer-prototype/viewer-variants").then((module) => ({
-        default: module.ViewerVariants,
+      import("./viewer-prototype/viewer-routes").then((module) => ({
+        default: module.ViewerPrototype,
       })),
     )
   : null;
