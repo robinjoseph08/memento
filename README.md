@@ -95,10 +95,9 @@ mise start
 The command starts the API with Air, waits for it to become ready, and then
 starts Vite. It tries API port `3579` and web port `5173` first. If either port
 is occupied, it uses the next available port. Vite proxies `/api` and `/health`
-to the selected API port. Open the printed `http://localhost:PORT` web URL;
-`PUBLIC_URL` uses that same origin. `localhost` and `127.0.0.1` are different
-browser origins, so substituting one for the other causes mutation requests to
-be rejected.
+to the selected API port. Open the printed `http://localhost:PORT` web URL, or
+reach it from another machine on your network using this machine's hostname,
+such as `http://my-machine.local:PORT`.
 
 The following commands start one process when needed:
 
