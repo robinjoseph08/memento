@@ -6,13 +6,15 @@ import {
   useSetMomentAccess,
   useUndoMomentAccess,
 } from "../../hooks/queries/albums";
+import { useUnsavedChanges } from "../../hooks/use-unsaved-changes";
+import { fieldErrors } from "../../lib/http";
 import { initials } from "../../lib/initials";
 import type {
   AccessPerson,
   Moment,
   UndoMomentAccessRequest,
 } from "../../types/generated/publishing";
-import { Failure } from "../people/form-fields";
+import { Form } from "../people/form-fields";
 import { Avatar, AvatarFallback, AvatarImage } from "../ui/avatar";
 import { Button } from "../ui/button";
 import {
@@ -21,6 +23,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "../ui/tooltip";
+import { AccessRules } from "./access-rules";
 import { UnlinkedFaces } from "./face-management";
 import { countLabel } from "./moment-labels";
 
@@ -71,31 +74,35 @@ function AccessGroup({
 export function MomentAccessStrip({
   albumID,
   moment,
+  inheritedAllows,
   refreshError,
   refreshing,
   onRefresh,
 }: {
   albumID: string;
   moment: Moment;
+  inheritedAllows: string[];
   refreshError: Error | null;
   refreshing: boolean;
   onRefresh: () => void;
 }) {
   const change = useSetMomentAccess(albumID, moment.id);
-  const [optimistic, setOptimistic] = useState<
-    Record<string, "allow" | "deny">
-  >({});
+  const [rulesOpen, setRulesOpen] = useState(false);
+  const [optimistic, setOptimistic] = useState<Record<string, boolean>>({});
   const [undo, setUndo] = useState<UndoMomentAccessRequest | null>(null);
   const addSuggestions = useAddMomentSuggestions(albumID, moment.id);
   const undoChange = useUndoMomentAccess(albumID, moment.id);
   const pending =
     change.isPending || addSuggestions.isPending || undoChange.isPending;
+  useUnsavedChanges(pending, true);
+  const errors = fieldErrors(change.error);
+  const fieldError = errors.person_id ?? errors.decision;
   const people = [...moment.access.people].sort(byPresence);
-  const allowed = people.filter((person) => person.decision === "allow");
+  const allowed = people.filter((person) => person.effective);
   const suggested = people.filter((person) => person.suggested);
   const excluded = people.filter((person) => person.decision === "deny");
   const others = people.filter(
-    (person) => !person.decision && !person.suggested,
+    (person) => !person.effective && !person.decision && !person.suggested,
   );
   const unlinked = moment.access.faces.filter(
     (face) => !face.person_id && !face.ignored,
@@ -113,22 +120,37 @@ export function MomentAccessStrip({
     : "";
 
   function personRow(person: AccessPerson) {
-    const pendingDecision = optimistic[person.person_id] ?? person.decision;
+    const checked = optimistic[person.person_id] ?? person.effective;
     return (
       <label
         className="flex cursor-pointer items-center gap-3 border-t border-border py-3 text-sm"
         key={person.person_id}
       >
         <input
+          aria-describedby={
+            change.variables?.person_id === person.person_id && fieldError
+              ? `moment-access-error-${person.person_id}`
+              : undefined
+          }
+          aria-invalid={
+            change.variables?.person_id === person.person_id && !!fieldError
+          }
           aria-label={`Allow ${person.display_name} for this Moment`}
-          checked={pendingDecision === "allow"}
+          checked={checked}
           className="size-4 cursor-pointer accent-primary"
           disabled={pending}
           onChange={(event) => {
-            const decision = event.target.checked ? "allow" : "deny";
+            change.reset();
+            addSuggestions.reset();
+            undoChange.reset();
+            const decision = event.target.checked
+              ? "allow"
+              : inheritedAllows.includes(person.person_id)
+                ? "deny"
+                : "inherit";
             setOptimistic((current) => ({
               ...current,
-              [person.person_id]: decision,
+              [person.person_id]: event.target.checked,
             }));
             change.mutate(
               { person_id: person.person_id, decision },
@@ -156,6 +178,29 @@ export function MomentAccessStrip({
           <small className="block text-xs text-muted">
             {detectionDetail(person)}
           </small>
+          <small className="block text-xs text-muted">
+            {person.decision === "deny"
+              ? "Excluded"
+              : person.decision === "allow"
+                ? "Explicit allow"
+                : person.effective
+                  ? "Inherited allow"
+                  : person.suggested
+                    ? "Suggested"
+                    : "Inherited: no access"}
+          </small>
+          <small className="block text-xs text-muted">
+            {person.accessible_count} of {moment.entries.length} items
+            accessible, {person.excluded_count} excluded
+          </small>
+          {change.variables?.person_id === person.person_id && fieldError && (
+            <small
+              className="block text-xs text-destructive"
+              id={`moment-access-error-${person.person_id}`}
+            >
+              {fieldError}
+            </small>
+          )}
         </span>
       </label>
     );
@@ -166,8 +211,16 @@ export function MomentAccessStrip({
       aria-label="Moment access"
       className="min-w-0 rounded-md border border-border p-4"
     >
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="text-xs text-muted">Changes save immediately.</p>
+        <Button
+          disabled={pending}
+          onClick={() => setRulesOpen(true)}
+          size="sm"
+          variant="ghost"
+        >
+          Rules & exceptions
+        </Button>
         <Button
           className="-mx-2 h-auto min-h-0 px-2 py-1 text-xs"
           disabled={!undo?.changes.length || pending}
@@ -179,10 +232,21 @@ export function MomentAccessStrip({
           {undoChange.isPending ? "Undoing…" : "Undo"}
         </Button>
       </div>
-      <Failure error={mutationError} />
-      <form
+      {rulesOpen && (
+        <AccessRules
+          albumID={albumID}
+          inheritedAllows={inheritedAllows}
+          onClose={() => setRulesOpen(false)}
+          people={moment.access.people}
+          target="moments"
+          targetID={moment.id}
+        />
+      )}
+      <Form
+        aria-busy={pending}
         aria-label="Quick Moment access"
         className="mt-3"
+        error={mutationError}
         onSubmit={(event) => event.preventDefault()}
       >
         <fieldset
@@ -198,7 +262,7 @@ export function MomentAccessStrip({
               allowed.map(personRow)
             ) : (
               <p className="border-t border-border py-3 text-xs text-muted">
-                No one can see this Moment yet.
+                No Moment-wide access. Item exceptions may still allow access.
               </p>
             )}
           </AccessGroup>
@@ -249,7 +313,12 @@ export function MomentAccessStrip({
             </details>
           )}
         </fieldset>
-      </form>
+      </Form>
+      {pending && (
+        <p className="mt-3 text-xs text-muted" role="status">
+          Saving access…
+        </p>
+      )}
       {/* Ignored faces stay reachable here so a mistaken Ignore can be undone
           by linking the face after all. */}
       {(unlinked > 0 || ignored > 0) && (
@@ -315,9 +384,11 @@ export function MomentAccessStrip({
             How access works
           </summary>
           <p className="mt-2 leading-relaxed">
-            Checking a person allows this Moment. Unchecking excludes them.
-            Faces Immich recognized only suggest access; nothing changes until
-            you choose.
+            Checking a person allows this Moment. Unchecking removes an explicit
+            allow when broader access is denied, or excludes the person when
+            broader access allows them. Item exceptions still apply. Rules &
+            exceptions can restore inheritance. Detected faces only suggest
+            access; nothing changes until you choose.
           </p>
         </details>
       </div>

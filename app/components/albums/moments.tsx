@@ -25,6 +25,7 @@ import {
 } from "../ui/dialog";
 import { AlbumImage } from "./album-image";
 import { EntryPreview } from "./entry-preview";
+import { ItemEditor } from "./item-editor";
 import { MomentAccessStrip } from "./moment-access";
 import { countLabel, mediaCounts, momentHeading } from "./moment-labels";
 import { StructureEditor, type StructureOperation } from "./structure-editor";
@@ -38,9 +39,11 @@ const initialMediaCount = 24;
 export function MomentPane({
   album,
   moment,
+  onStructuralOpenChange,
 }: {
   album: AlbumDetail;
   moment: Moment;
+  onStructuralOpenChange: (open: boolean) => void;
 }) {
   const [params, setParams] = useSearchParams();
   const heading = momentHeading(moment);
@@ -55,12 +58,22 @@ export function MomentPane({
     selected.length === 1
       ? moment.entries.find((entry) => entry.id === selected[0])
       : undefined;
+  const editingEntry = moment.entries.find(
+    (entry) => entry.id === params.get("entry"),
+  );
+  const editEntry = (entry: string | null) =>
+    setParams((current) => withParams(current, { entry }));
   const [renameOpen, setRenameOpen] = useState(false);
   const [coverEntry, setCoverEntry] = useState<Entry | null>(null);
   const [structure, setStructure] = useState<{
     operation: StructureOperation;
     selectedEntryIDs: string[];
   } | null>(null);
+  const structuralOpen = renameOpen || !!coverEntry || !!structure;
+  useEffect(() => {
+    onStructuralOpenChange(structuralOpen);
+    return () => onStructuralOpenChange(false);
+  }, [structuralOpen, onStructuralOpenChange]);
   const refresh = useRefreshMomentFaces(album.id, moment.id);
   const refreshFaces = refresh.mutate;
   useEffect(() => {
@@ -106,6 +119,9 @@ export function MomentPane({
       <div className="mt-5">
         <MomentAccessStrip
           albumID={album.id}
+          inheritedAllows={album.access
+            .filter((person) => person.decision === "allow")
+            .map((person) => person.person_id)}
           moment={moment}
           onRefresh={() => refreshFaces()}
           refreshError={refresh.error}
@@ -202,6 +218,16 @@ export function MomentPane({
                     Set as cover
                   </Button>
                 )}
+                {single && (
+                  <Button
+                    onClick={() => editEntry(single.id)}
+                    size="sm"
+                    type="button"
+                    variant="outline"
+                  >
+                    Item access
+                  </Button>
+                )}
                 <Button
                   onClick={() => setSelection(null)}
                   size="sm"
@@ -232,6 +258,7 @@ export function MomentPane({
               cover={entry.id === moment.cover_entry_id}
               entry={entry}
               key={entry.id}
+              onOpen={() => editEntry(entry.id)}
               onSelect={
                 selecting
                   ? (checked) =>
@@ -247,6 +274,16 @@ export function MomentPane({
           ))}
         </ul>
       </form>
+      {editingEntry && (
+        <ItemEditor
+          albumID={album.id}
+          entry={editingEntry}
+          inheritedAllows={moment.access.people
+            .filter((person) => person.effective)
+            .map((person) => person.person_id)}
+          onClose={() => editEntry(null)}
+        />
+      )}
       {renameOpen && (
         <RenameMomentDialog
           albumID={album.id}

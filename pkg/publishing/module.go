@@ -1,4 +1,4 @@
-// Package publishing owns reviewed Albums and their initial read-only import.
+// Package publishing owns Album import, curation, access and publication.
 package publishing
 
 import (
@@ -209,6 +209,9 @@ func getAlbum(ctx context.Context, db bun.IDB, id, immichURL string) (AlbumDetai
 		}
 		result.Moments = append(result.Moments, Moment{ID: moment.ID.String(), Title: title, Label: label, Date: start, EndDate: end,
 			CoverEntryID: moment.CoverEntryID.String(), Entries: byMoment[moment.ID], Access: access[moment.ID]})
+	}
+	if err := attachAccess(ctx, db, &result); err != nil {
+		return result, err
 	}
 	return result, nil
 }

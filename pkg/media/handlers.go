@@ -1,6 +1,7 @@
 package media
 
 import (
+	"context"
 	"mime"
 	"net/http"
 	"strings"
@@ -10,6 +11,47 @@ import (
 	"github.com/robinjoseph08/memento/pkg/errorstack"
 	"github.com/robinjoseph08/memento/pkg/immich"
 )
+
+// AuthorizeEntry applies Publishing's evaluator before any media response.
+type AuthorizeEntry func(context.Context, string, string, string) error
+
+type viewerHandlers struct {
+	module    *Module
+	authorize AuthorizeEntry
+}
+
+func (h *viewerHandlers) entryThumbnail(c *echo.Context) error   { return h.thumbnail(c, false) }
+func (h *viewerHandlers) previewThumbnail(c *echo.Context) error { return h.thumbnail(c, true) }
+func (h *viewerHandlers) thumbnail(c *echo.Context, preview bool) error {
+	actorID, _ := c.Get("identity.person_id").(string)
+	selected := ""
+	if actorID == "" {
+		return errcodes.NotFound("Thumbnail")
+	}
+	if preview {
+		selected = c.Param("personID")
+	} else if c.Param("personID") != actorID {
+		return errcodes.NotFound("Thumbnail")
+	}
+	if err := h.authorize(c.Request().Context(), actorID, selected, c.Param("id")); err != nil {
+		return err
+	}
+	version := c.QueryParam("v")
+	sourceID, err := h.module.EntryThumbnail(c.Request().Context(), c.Param("id"), version)
+	if err != nil {
+		return err
+	}
+	if preview {
+		image, err := h.module.viewerThumbnail(c.Request().Context(), sourceID, version)
+		if err != nil {
+			return err
+		}
+		return serveImage(c, image, "private, no-store", "")
+	}
+	return serveVersioned(c, version, func() (immich.Thumbnail, error) {
+		return h.module.viewerThumbnail(c.Request().Context(), sourceID, version)
+	})
+}
 
 type handlers struct{ module *Module }
 

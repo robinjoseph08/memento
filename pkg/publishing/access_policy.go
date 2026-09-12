@@ -2,18 +2,31 @@ package publishing
 
 import "sort"
 
-// accessFacts is the input to structural access review: which Moment each
-// Album Entry belongs to and each Moment's explicit decisions. Recommendations
-// themselves are derived in SQL by accessByMoment from the same membership.
+// entryAllowed resolves the most specific saved rule. Missing rules inherit.
+func entryAllowed(album, moment, entry Decision) bool {
+	for _, decision := range []Decision{entry, moment, album} {
+		if decision == DecisionAllow {
+			return true
+		}
+		if decision == DecisionDeny {
+			return false
+		}
+	}
+	return false
+}
+
+// accessFacts supplies membership and saved rules to structural audience review.
 type accessFacts struct {
-	EntryMoments map[string]string
-	Decisions    map[string]map[string]Decision
+	EntryMoments   map[string]string
+	Decisions      map[string]map[string]Decision
+	AlbumDecisions map[string]Decision
+	EntryDecisions map[string]map[string]Decision
 }
 
 func visibleEntries(facts accessFacts, personID string) []string {
 	result := []string{}
 	for entryID, momentID := range facts.EntryMoments {
-		if facts.Decisions[momentID][personID] == DecisionAllow {
+		if entryAllowed(facts.AlbumDecisions[personID], facts.Decisions[momentID][personID], facts.EntryDecisions[entryID][personID]) {
 			result = append(result, entryID)
 		}
 	}

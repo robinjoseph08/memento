@@ -163,19 +163,13 @@ export function SignedInLayout() {
   );
 }
 
-export function MemberPage() {
+export function ViewerLayout() {
+  const { data } = useIdentityStatus();
+  if (!data?.person) return <Navigate replace to="/sign-in" />;
   return (
-    <>
-      <PageTitle title="Albums" />
-      <h1 className={headingClassName}>Your albums</h1>
-      <section className="mt-9 border-t border-border py-9">
-        <h2 className="font-heading text-[27px]/[1.2]">No albums yet</h2>
-        <p className="mt-4 max-w-120 text-muted">
-          There are no albums to view yet. Your Curator will choose what to
-          share with you.
-        </p>
-      </section>
-    </>
+    <main className="mx-auto max-w-[1440px] px-5 pt-6 pb-16 min-[761px]:px-12">
+      <Outlet />
+    </main>
   );
 }
 

@@ -22,7 +22,7 @@ export function Audience({
   people: AccessPerson[];
   suggestions: number;
 }) {
-  const allowed = people.filter((person) => person.decision === "allow");
+  const allowed = people.filter((person) => person.accessible_count > 0);
   const shown = allowed.slice(0, shownAvatars);
   const overflow = allowed.length - shown.length;
   const names = allowed.map((person) => person.display_name).join(", ");
@@ -62,7 +62,10 @@ export function Audience({
             <TooltipContent align="start" side="bottom">
               <ul className="space-y-1">
                 {allowed.map((person) => (
-                  <li key={person.person_id}>{person.display_name}</li>
+                  <li key={person.person_id}>
+                    {person.display_name}: {person.accessible_count} accessible,{" "}
+                    {person.excluded_count} excluded
+                  </li>
                 ))}
               </ul>
             </TooltipContent>

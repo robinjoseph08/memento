@@ -67,12 +67,41 @@ type Moment struct {
 	CoverEntryID  UUID `bun:"type:uuid"`
 }
 
+type AlbumAccessDecision struct {
+	bun.BaseModel `bun:"table:album_access_decisions,alias:decision"`
+	AlbumID       UUID `bun:"album_id,pk,type:uuid"`
+	PersonID      UUID `bun:"person_id,pk,type:uuid"`
+	Decision      string
+	UpdatedAt     time.Time
+}
+
+type EntryAccessDecision struct {
+	bun.BaseModel `bun:"table:entry_access_decisions,alias:decision"`
+	EntryID       UUID `bun:"entry_id,pk,type:uuid"`
+	AlbumID       UUID `bun:"type:uuid"`
+	PersonID      UUID `bun:"person_id,pk,type:uuid"`
+	Decision      string
+	UpdatedAt     time.Time
+}
+
 type MomentAccessDecision struct {
 	bun.BaseModel `bun:"table:moment_access_decisions,alias:decision"`
 	MomentID      UUID `bun:"moment_id,pk,type:uuid"`
 	AlbumID       UUID `bun:"type:uuid"`
 	PersonID      UUID `bun:"person_id,pk,type:uuid"`
 	Decision      string
+	UpdatedAt     time.Time
+}
+
+// AccessDeletionUndo retains only the latest deletion at a scope so Undo can
+// distinguish an unchanged absence from a later write followed by deletion.
+type AccessDeletionUndo struct {
+	bun.BaseModel `bun:"table:access_deletion_undos,alias:deletion"`
+	ID            UUID  `bun:"id,pk,type:uuid"`
+	AlbumID       UUID  `bun:"type:uuid"`
+	MomentID      *UUID `bun:"type:uuid"`
+	EntryID       *UUID `bun:"type:uuid"`
+	PersonID      UUID  `bun:"type:uuid"`
 	UpdatedAt     time.Time
 }
 

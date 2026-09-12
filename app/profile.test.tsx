@@ -285,7 +285,8 @@ function serveProfile() {
         signedOut = true;
         return Response.json({});
       }
-      if (path.endsWith("/sessions")) return Response.json([]);
+      if (path.endsWith("/sessions") || path === "/api/albums")
+        return Response.json([]);
       return Response.json({ person: alex, identities: [account] });
     }),
   );

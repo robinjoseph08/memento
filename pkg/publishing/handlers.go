@@ -1,6 +1,7 @@
 package publishing
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 
@@ -8,7 +9,77 @@ import (
 	"github.com/robinjoseph08/memento/pkg/errorstack"
 )
 
+// ViewerUseCases keeps HTTP identity selection separate from viewer projections.
+type ViewerUseCases interface {
+	ViewAlbum(context.Context, string, string, string) (ViewerAlbum, error)
+	ViewAlbums(context.Context, string) ([]ViewerAlbum, error)
+	ViewEntries(context.Context, string, string, string, string, string) (ViewerPage, error)
+}
+
+type viewerHandlers struct{ module ViewerUseCases }
+
+func actorID(c *echo.Context) string {
+	id, _ := c.Get("identity.person_id").(string)
+	return id
+}
+func (h *viewerHandlers) album(c *echo.Context) error {
+	result, err := h.module.ViewAlbum(c.Request().Context(), actorID(c), c.Param("personID"), c.Param("id"))
+	return respond(c, result, err)
+}
+func (h *viewerHandlers) albums(c *echo.Context) error {
+	result, err := h.module.ViewAlbums(c.Request().Context(), actorID(c))
+	return respond(c, result, err)
+}
+func (h *viewerHandlers) photos(c *echo.Context) error { return h.entries(c, "IMAGE") }
+func (h *viewerHandlers) videos(c *echo.Context) error { return h.entries(c, "VIDEO") }
+func (h *viewerHandlers) entries(c *echo.Context, kind string) error {
+	result, err := h.module.ViewEntries(c.Request().Context(), actorID(c), c.Param("personID"), c.Param("id"), kind, c.QueryParam("cursor"))
+	return respond(c, result, err)
+}
+
 type handlers struct{ module *Module }
+
+// PublicationUseCases is the HTTP seam for publication and permanent removal.
+type PublicationUseCases interface {
+	ReviewPublication(context.Context, string) (PublicationReview, error)
+	PublishAlbum(context.Context, string, PublishRequest) (AlbumDetail, error)
+	UnpublishAlbum(context.Context, string) (AlbumDetail, error)
+	DeleteAlbum(context.Context, string, DeleteAlbumRequest) error
+}
+
+type publicationHandlers struct{ module PublicationUseCases }
+
+func (h *publicationHandlers) publication(c *echo.Context) error {
+	result, err := h.module.ReviewPublication(c.Request().Context(), c.Param("id"))
+	return respond(c, result, err)
+}
+func (h *publicationHandlers) publish(c *echo.Context) error {
+	var request PublishRequest
+	if err := c.Bind(&request); err != nil {
+		return err
+	}
+	result, err := h.module.PublishAlbum(c.Request().Context(), c.Param("id"), request)
+	return respond(c, result, err)
+}
+func (h *publicationHandlers) deleteAlbum(c *echo.Context) error {
+	var request DeleteAlbumRequest
+	if err := c.Bind(&request); err != nil {
+		return err
+	}
+	if err := h.module.DeleteAlbum(c.Request().Context(), c.Param("id"), request); err != nil {
+		return err
+	}
+	return respond(c, struct{}{}, nil)
+}
+
+func (h *publicationHandlers) unpublish(c *echo.Context) error {
+	var request struct{}
+	if err := c.Bind(&request); err != nil {
+		return err
+	}
+	result, err := h.module.UnpublishAlbum(c.Request().Context(), c.Param("id"))
+	return respond(c, result, err)
+}
 
 func respond(c *echo.Context, result any, err error) error {
 	if err != nil {
@@ -72,7 +143,98 @@ func (h *handlers) refreshMomentFaces(c *echo.Context) error {
 	return respond(c, result, err)
 }
 
-func (h *handlers) setMomentAccess(c *echo.Context) error {
+// AccessUseCases is the HTTP seam for complete Curator access operations.
+//
+//nolint:interfacebloat // One cohesive route group; splitting it would duplicate registration and test setup.
+type AccessUseCases interface {
+	SetAlbumAccess(context.Context, string, SetAlbumAccessRequest) (AccessResult, error)
+	SetMomentAccess(context.Context, string, string, SetMomentAccessRequest) (MomentAccessResult, error)
+	SetEntryAccess(context.Context, string, string, SetEntryAccessRequest) (AccessResult, error)
+	AddMomentSuggestions(context.Context, string, string) (MomentAccessResult, error)
+	UndoAlbumAccess(context.Context, string, UndoMomentAccessRequest) (AlbumDetail, error)
+	UndoMomentAccess(context.Context, string, string, UndoMomentAccessRequest) (AlbumDetail, error)
+	UndoEntryAccess(context.Context, string, string, UndoMomentAccessRequest) (AlbumDetail, error)
+	SaveMomentRules(context.Context, string, string, SaveRulesRequest) (AlbumDetail, error)
+	SaveEntryRules(context.Context, string, string, SaveRulesRequest) (AlbumDetail, error)
+	PreviewRemoveAccess(context.Context, string, RemoveAccessPreviewRequest) (RemoveAccessPreview, error)
+	RemoveAccess(context.Context, string, RemoveAccessRequest) (AlbumDetail, error)
+}
+
+type accessHandlers struct{ module AccessUseCases }
+
+func (h *accessHandlers) setAlbumAccess(c *echo.Context) error {
+	var request SetAlbumAccessRequest
+	if err := c.Bind(&request); err != nil {
+		return err
+	}
+	result, err := h.module.SetAlbumAccess(c.Request().Context(), c.Param("id"), request)
+	return respond(c, result, err)
+}
+
+func (h *accessHandlers) setEntryAccess(c *echo.Context) error {
+	var request SetEntryAccessRequest
+	if err := c.Bind(&request); err != nil {
+		return err
+	}
+	result, err := h.module.SetEntryAccess(c.Request().Context(), c.Param("id"), c.Param("entryID"), request)
+	return respond(c, result, err)
+}
+
+func (h *accessHandlers) undoAlbumAccess(c *echo.Context) error {
+	var request UndoMomentAccessRequest
+	if err := c.Bind(&request); err != nil {
+		return err
+	}
+	result, err := h.module.UndoAlbumAccess(c.Request().Context(), c.Param("id"), request)
+	return respond(c, result, err)
+}
+
+func (h *accessHandlers) undoEntryAccess(c *echo.Context) error {
+	var request UndoMomentAccessRequest
+	if err := c.Bind(&request); err != nil {
+		return err
+	}
+	result, err := h.module.UndoEntryAccess(c.Request().Context(), c.Param("id"), c.Param("entryID"), request)
+	return respond(c, result, err)
+}
+
+func (h *accessHandlers) saveMomentRules(c *echo.Context) error {
+	var request SaveRulesRequest
+	if err := c.Bind(&request); err != nil {
+		return err
+	}
+	result, err := h.module.SaveMomentRules(c.Request().Context(), c.Param("id"), c.Param("momentID"), request)
+	return respond(c, result, err)
+}
+
+func (h *accessHandlers) saveEntryRules(c *echo.Context) error {
+	var request SaveRulesRequest
+	if err := c.Bind(&request); err != nil {
+		return err
+	}
+	result, err := h.module.SaveEntryRules(c.Request().Context(), c.Param("id"), c.Param("entryID"), request)
+	return respond(c, result, err)
+}
+
+func (h *accessHandlers) previewRemoveAccess(c *echo.Context) error {
+	var request RemoveAccessPreviewRequest
+	if err := c.Bind(&request); err != nil {
+		return err
+	}
+	result, err := h.module.PreviewRemoveAccess(c.Request().Context(), c.Param("id"), request)
+	return respond(c, result, err)
+}
+
+func (h *accessHandlers) removeAccess(c *echo.Context) error {
+	var request RemoveAccessRequest
+	if err := c.Bind(&request); err != nil {
+		return err
+	}
+	result, err := h.module.RemoveAccess(c.Request().Context(), c.Param("id"), request)
+	return respond(c, result, err)
+}
+
+func (h *accessHandlers) setMomentAccess(c *echo.Context) error {
 	var request SetMomentAccessRequest
 	if err := c.Bind(&request); err != nil {
 		return err
@@ -81,7 +243,7 @@ func (h *handlers) setMomentAccess(c *echo.Context) error {
 	return respond(c, result, err)
 }
 
-func (h *handlers) addMomentSuggestions(c *echo.Context) error {
+func (h *accessHandlers) addMomentSuggestions(c *echo.Context) error {
 	var request struct{}
 	if err := c.Bind(&request); err != nil {
 		return err
@@ -90,7 +252,7 @@ func (h *handlers) addMomentSuggestions(c *echo.Context) error {
 	return respond(c, result, err)
 }
 
-func (h *handlers) undoMomentAccess(c *echo.Context) error {
+func (h *accessHandlers) undoMomentAccess(c *echo.Context) error {
 	var request UndoMomentAccessRequest
 	if err := c.Bind(&request); err != nil {
 		return err

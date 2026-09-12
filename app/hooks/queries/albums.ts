@@ -10,6 +10,10 @@ import type {
   MergeMomentsRequest,
   MomentAccessResult,
   MoveEntriesRequest,
+  RemoveAccessPreview,
+  RemoveAccessPreviewRequest,
+  RemoveAccessRequest,
+  SaveRulesRequest,
   SetMomentAccessRequest,
   SetMomentCoverRequest,
   SourcePage,
@@ -60,7 +64,7 @@ export function useAlbum(id: string) {
   });
 }
 
-function useAlbumCache() {
+export function useAlbumCache() {
   const client = useQueryClient();
   const scope = usePrivateScope();
   return {
@@ -72,6 +76,10 @@ function useAlbumCache() {
       await Promise.all([
         client.invalidateQueries({ queryKey: [...scope, "albums"] }),
         client.invalidateQueries({ queryKey: [...scope, "sources"] }),
+        client.invalidateQueries({
+          queryKey: [...scope, "publication", album.id],
+        }),
+        client.invalidateQueries({ queryKey: [...scope, "viewer"] }),
       ]);
     },
   };
@@ -174,6 +182,74 @@ export function useUndoMomentAccess(albumID: string, momentID: string) {
       request<AlbumDetail>(momentURL(albumID, momentID, "access/undo"), {
         body,
       }),
+    onSuccess: cache.save,
+  });
+}
+
+function scopeAccessURL(albumID: string, entryID?: string) {
+  const base = `/api/curator/albums/${encodeURIComponent(albumID)}`;
+  return entryID
+    ? `${base}/entries/${encodeURIComponent(entryID)}/access`
+    : `${base}/access`;
+}
+
+export function useSetScopeAccess(albumID: string, entryID?: string) {
+  const cache = useAlbumCache();
+  return useMutation({
+    mutationKey: cache.scope,
+    mutationFn: (body: SetMomentAccessRequest) =>
+      request<MomentAccessResult>(scopeAccessURL(albumID, entryID), { body }),
+    onSuccess: (result) => cache.save(result.album),
+  });
+}
+
+export function useUndoScopeAccess(albumID: string, entryID?: string) {
+  const cache = useAlbumCache();
+  return useMutation({
+    mutationKey: cache.scope,
+    mutationFn: (body: UndoMomentAccessRequest) =>
+      request<AlbumDetail>(`${scopeAccessURL(albumID, entryID)}/undo`, {
+        body,
+      }),
+    onSuccess: cache.save,
+  });
+}
+
+export function usePreviewRemoveAccess(albumID: string) {
+  const scope = usePrivateScope();
+  return useMutation({
+    mutationKey: scope,
+    mutationFn: (body: RemoveAccessPreviewRequest) =>
+      request<RemoveAccessPreview>(
+        `${scopeAccessURL(albumID)}/remove-all/preview`,
+        { body },
+      ),
+  });
+}
+
+export function useRemoveAllAccess(albumID: string) {
+  const cache = useAlbumCache();
+  return useMutation({
+    mutationKey: cache.scope,
+    mutationFn: (body: RemoveAccessRequest) =>
+      request<AlbumDetail>(`${scopeAccessURL(albumID)}/remove-all`, { body }),
+    onSuccess: cache.save,
+  });
+}
+
+export function useSetAccessRules(
+  albumID: string,
+  target: "moments" | "entries",
+  targetID: string,
+) {
+  const cache = useAlbumCache();
+  return useMutation({
+    mutationKey: cache.scope,
+    mutationFn: (body: SaveRulesRequest) =>
+      request<AlbumDetail>(
+        `/api/curator/albums/${encodeURIComponent(albumID)}/${target}/${encodeURIComponent(targetID)}/rules`,
+        { body },
+      ),
     onSuccess: cache.save,
   });
 }

@@ -119,9 +119,15 @@ test("arranges a large Moment and reviews face-based access on desktop and mobil
   });
   const splitRow = outline.getByRole("link", { name: /^June 4, 2026 \(2\)/ });
   await splitRow.click();
-  await desktopAccess
-    .getByRole("checkbox", { name: "Allow Alex for this Moment" })
-    .uncheck();
+  const splitAccess = desktopAccess.getByRole("checkbox", {
+    name: "Allow Alex for this Moment",
+  });
+  await splitAccess.uncheck();
+  // Returning to inherit moves this row under the collapsed people list.
+  // Wait for the save, not the optimistic checkbox state, before navigating.
+  await expect(
+    desktopAccess.getByRole("form", { name: "Quick Moment access" }),
+  ).toHaveAttribute("aria-busy", "false");
   await originalRow.click();
   const original = page.getByRole("region", { name: "June 4, 2026 (1)" });
   await original.getByRole("button", { name: "Select", exact: true }).click();

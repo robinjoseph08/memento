@@ -31,7 +31,8 @@ export function AccountMenu({
   person,
   theme,
   setTheme,
-}: { person: Person } & ReturnType<typeof useTheme>) {
+  preview = false,
+}: { person: Person; preview?: boolean } & ReturnType<typeof useTheme>) {
   const signOut = useSignOut();
   const unsavedRef = use(UnsavedChangesContext);
   const [connectionOpen, setConnectionOpen] = useState(false);
@@ -73,11 +74,16 @@ export function AccountMenu({
             </p>
           </DropdownMenuLabel>
           <DropdownMenuSeparator />
-          <DropdownMenuItem asChild>
-            <Link to="/profile">Profile</Link>
-          </DropdownMenuItem>
+          {preview ? (
+            <DropdownMenuItem disabled>Profile</DropdownMenuItem>
+          ) : (
+            <DropdownMenuItem asChild>
+              <Link to="/profile">Profile</Link>
+            </DropdownMenuItem>
+          )}
           <DropdownMenuCheckboxItem
             checked={theme === "dark"}
+            disabled={preview}
             onCheckedChange={(checked) => setTheme(checked ? "dark" : "light")}
             onSelect={(event) => event.preventDefault()}
           >
@@ -85,12 +91,15 @@ export function AccountMenu({
           </DropdownMenuCheckboxItem>
           <DropdownMenuSeparator />
           {person.is_curator && (
-            <DropdownMenuItem onSelect={() => setConnectionOpen(true)}>
+            <DropdownMenuItem
+              disabled={preview}
+              onSelect={() => setConnectionOpen(true)}
+            >
               Immich connection
             </DropdownMenuItem>
           )}
           <DropdownMenuItem
-            disabled={signOut.isPending}
+            disabled={preview || signOut.isPending}
             onSelect={(event) => {
               if (signOut.isPending) return;
               if (unsavedRef?.current.size) {

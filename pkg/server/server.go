@@ -91,6 +91,10 @@ func newServer(cfg *config.Config, frontend http.Handler, options ...dependencie
 		immich.RegisterRoutes(e, deps.connection, handlers.RequireSetupOrCurator, handlers.RequireCurator)
 		if deps.publishing != nil {
 			publishing.RegisterRoutes(e, deps.publishing, handlers.RequireCurator)
+			publishing.RegisterViewerRoutes(e, deps.publishing, handlers.RequirePerson, handlers.RequireCurator)
+			if deps.media != nil {
+				media.RegisterViewerRoutes(e, deps.media, deps.publishing.AuthorizeViewerEntry, handlers.RequirePerson, handlers.RequireCurator)
+			}
 		}
 		if deps.media != nil {
 			media.RegisterRoutes(e, deps.media, handlers.RequireCurator)

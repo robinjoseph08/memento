@@ -131,6 +131,17 @@ func TestAddAllSuggestedKeepsExplicitExclusionsAndUndoesOnlyItsOwnGrants(t *test
 	assert.Empty(t, decisionFor(undone.Moments[1], alex.ID.String()))
 	assert.True(t, personFor(undone.Moments[1], alex.ID.String()).Suggested, "the suggestion returns after Undo")
 	assert.Equal(t, publishing.DecisionDeny, decisionFor(undone.Moments[1], sam.ID.String()), "Undo leaves unrelated decisions alone")
+
+	_, err = module.SetAlbumAccess(t.Context(), album.ID, publishing.SetAlbumAccessRequest{PersonID: alex.ID.String(), Decision: publishing.DecisionAllow})
+	require.NoError(t, err)
+	_, err = module.SetEntryAccess(t.Context(), album.ID, album.Moments[1].Entries[0].ID, publishing.SetEntryAccessRequest{PersonID: alex.ID.String(), Decision: publishing.DecisionDeny})
+	require.NoError(t, err)
+	inherited, err := module.AddMomentSuggestions(t.Context(), album.ID, momentID)
+	require.NoError(t, err)
+	assert.Empty(t, inherited.Undo.Changes, "inherited allows do not become redundant Moment rules")
+	assert.Empty(t, decisionFor(inherited.Album.Moments[1], alex.ID.String()))
+	assert.False(t, personFor(inherited.Album.Moments[1], alex.ID.String()).Suggested)
+	assert.Equal(t, publishing.DecisionDeny, inherited.Album.Moments[1].Entries[0].Access[0].Decision)
 }
 
 func TestMovingSupportingMediaMovesTheSuggestion(t *testing.T) {

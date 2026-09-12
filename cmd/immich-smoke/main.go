@@ -57,7 +57,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "Immich smoke failed:", err)
 		os.Exit(1)
 	}
-	fmt.Printf("PASS Immich %s: manual faces, person thumbnails, EXIF local dates, midnight, ties, shared media, generated thumbnails through production HTTP media routes, and unchanged source albums\n", release)
+	fmt.Printf("PASS Immich %s: manual faces, local dates, scoped access, preview and viewer thumbnail bytes, publish/unpublish, shared Album deletion, and unchanged source albums\n", release)
 }
 
 func run(ctx context.Context, release string) (returnErr error) {
@@ -107,7 +107,12 @@ func run(ctx context.Context, release string) (returnErr error) {
 	if _, err := migrations.BringUpToDate(ctx, db); err != nil {
 		return err
 	}
-	module := publishing.New(db, source, func(context.Context, bun.Tx, string) error { return nil })
+	enqueued := 0
+	module := publishing.New(db, source, func(context.Context, bun.Tx, string) error {
+		enqueued++
+		return nil
+	})
+	var imported []publishing.AlbumDetail
 	// This in-process HTTP check bypasses sign-in, not the production media module.
 	// It has no listening socket and can only reach this invocation's temporary schema.
 	handler := echo.New()
@@ -166,10 +171,20 @@ func run(ctx context.Context, release string) (returnErr error) {
 		if !reflect.DeepEqual(detail, reopened) {
 			return fmt.Errorf("reopening an import changed its reviewed Album")
 		}
+		imported = append(imported, detail)
 		fmt.Printf("Imported %q: %d Moments, %d entries, unpublished\n", detail.Title, len(detail.Moments), detail.Processed)
 	}
 	if len(mediaIDs) != len(library.Assets) || len(entryIDs) != 6 {
 		return fmt.Errorf("shared media or album-entry counts differ")
+	}
+	if enqueued != 2 {
+		return fmt.Errorf("two imports did not enqueue exactly two tasks")
+	}
+	if err := verifyPublishing(ctx, db, module, media.New(db, source), imported); err != nil {
+		return fmt.Errorf("publishing through production Immich adapter: %w", err)
+	}
+	if enqueued != 2 {
+		return fmt.Errorf("publication, unpublication, or deletion enqueued unexpected durable work")
 	}
 	after, err := snapshot(ctx, source, library.Albums)
 	if err != nil {

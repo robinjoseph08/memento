@@ -1,10 +1,11 @@
-// Package media resolves Curator media requests to fixed Immich-generated variants.
+// Package media resolves authorized media requests to fixed Immich-generated variants.
 package media
 
 import (
 	"context"
 	"database/sql"
 	"errors"
+	"net/http"
 	"uuid"
 
 	"github.com/robinjoseph08/memento/pkg/errcodes"
@@ -105,6 +106,20 @@ func (m *Module) PersonAvatar(ctx context.Context, personID, version string) (st
 // personThumbnail opens an authorized Immich person thumbnail.
 func (m *Module) personThumbnail(ctx context.Context, sourceID string) (immich.Thumbnail, error) {
 	return m.source.PersonThumbnail(ctx, sourceID)
+}
+
+// viewerThumbnail preserves diagnostic causes for local logs while keeping
+// installation details out of ordinary and preview media responses.
+func (m *Module) viewerThumbnail(ctx context.Context, sourceID, version string) (immich.Thumbnail, error) {
+	image, err := m.generatedThumbnail(ctx, sourceID, version)
+	if err == nil || errorstack.IsContextCancellation(ctx, err) {
+		return image, err
+	}
+	var public error = &errcodes.Error{HTTPCode: http.StatusBadGateway, Code: "media_unavailable", Message: "Media is unavailable. Try again later."}
+	if coded, ok := errors.AsType[*errcodes.Error](err); ok && coded.HTTPCode == http.StatusNotFound {
+		public = errcodes.NotFound("Media")
+	}
+	return immich.Thumbnail{}, errors.Join(public, err)
 }
 
 func (m *Module) generatedThumbnail(ctx context.Context, sourceID, version string) (immich.Thumbnail, error) {

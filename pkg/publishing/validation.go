@@ -7,6 +7,20 @@ import (
 	"github.com/robinjoseph08/memento/pkg/errcodes"
 )
 
+func (PublishRequest) ValidationMessage(field, _ string) string {
+	if field == "review_token" {
+		return "Review this Album before publishing."
+	}
+	return ""
+}
+
+func (DeleteAlbumRequest) ValidationMessage(field, _ string) string {
+	if field == "title" {
+		return "Type the Album title exactly to confirm deletion."
+	}
+	return ""
+}
+
 func validDecision(decision Decision) bool {
 	return decision == DecisionAllow || decision == DecisionDeny
 }
@@ -42,7 +56,7 @@ func (SetMomentAccessRequest) ValidationMessage(field, _ string) string {
 	case "person_id":
 		return "Choose a Person."
 	case "decision":
-		return "Choose allow or exclude."
+		return "Choose allow, exclude, or inherit."
 	}
 	return ""
 }
