@@ -37,9 +37,8 @@ export function VideoStage({
 }
 
 // The chapter picker under the player. It names the chapter that is playing,
-// follows the video as it plays, and seeks when another one is chosen. No
-// chapters and failed extraction are plain labels rather than a control that
-// does nothing.
+// follows the video as it plays, and seeks when another one is chosen. A video
+// without chapters, whatever the reason, simply has no picker.
 export function ChapterSelect({
   entry,
   time,
@@ -51,15 +50,7 @@ export function ChapterSelect({
 }) {
   const chapters = entry.chapters;
   const labelId = useId();
-  if (chapters.length === 0) {
-    const label =
-      entry.chapter_status === "failed"
-        ? "Chapters unavailable"
-        : entry.chapter_status === "complete"
-          ? "No chapters"
-          : "";
-    return label ? <p className="text-xs text-muted">{label}</p> : null;
-  }
+  if (chapters.length === 0) return null;
   const activeIndex = chapters.reduce(
     (found, chapter, index) => (time >= chapter.start ? index : found),
     -1,

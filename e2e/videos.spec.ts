@@ -266,22 +266,19 @@ test("videos play with titles, chapters, ranges, downloads, and recover a failed
     expect(download.suggestedFilename()).toBe("birthday-party.webm");
     expect(await download.failure()).toBeNull();
 
-    // Neighbours: a plain clip says so quietly; the broken one is honest too.
+    // Neighbours without chapters, including the broken one, have no picker.
     await member.keyboard.press("ArrowRight");
     await expect(dialog).toHaveAccessibleName("Video 2 of 103");
-    await expect(
-      dialog.getByText("No chapters", { exact: true }),
-    ).toBeVisible();
+    await expect(dialog.getByText("coast-retry")).toBeVisible();
     await expect(dialog.getByRole("combobox", { name: "Chapter" })).toHaveCount(
       0,
     );
+    await expect(dialog.getByText(/chapter/i)).toHaveCount(0);
     await dialog
       .getByRole("button", { name: "Next video", exact: true })
       .click();
     await expect(dialog).toHaveAccessibleName("Video 3 of 103");
-    await expect(
-      dialog.getByText("Chapters unavailable", { exact: true }),
-    ).toBeVisible();
+    await expect(dialog.getByText(/chapter/i)).toHaveCount(0);
 
     // Reload a stable link beyond the first page, then cross the boundary.
     const videos = await readAllVideos(member, albumID);

@@ -536,7 +536,7 @@ function stubMedia() {
   HTMLMediaElement.prototype.pause = vi.fn();
 }
 
-it("opens a video in the routed lightbox, seeks by chapter, and keeps no-chapter and failed states quiet", async () => {
+it("opens a video in the routed lightbox, seeks by chapter, and shows no picker without chapters", async () => {
   stubMedia();
   mockViewer((path) => {
     if (path === "/api/albums/lake") return Response.json(videoAlbum);
@@ -602,7 +602,7 @@ it("opens a video in the routed lightbox, seeks by chapter, and keeps no-chapter
     await screen.findByRole("dialog", { name: "Video 2 of 3" }),
   ).toBeVisible();
   expect(window.location.pathname).toBe("/albums/lake/videos/video-2");
-  expect(screen.getByText("No chapters")).toBeVisible();
+  expect(screen.queryByText(/chapter/i)).not.toBeInTheDocument();
   expect(
     screen.queryByRole("combobox", { name: "Chapter" }),
   ).not.toBeInTheDocument();
@@ -610,7 +610,7 @@ it("opens a video in the routed lightbox, seeks by chapter, and keeps no-chapter
   expect(
     await screen.findByRole("dialog", { name: "Video 3 of 3" }),
   ).toBeVisible();
-  expect(screen.getByText("Chapters unavailable")).toBeVisible();
+  expect(screen.queryByText(/chapter/i)).not.toBeInTheDocument();
   expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   await user.click(screen.getByRole("button", { name: "Close video" }));
   await waitFor(() =>
