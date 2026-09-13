@@ -4,6 +4,8 @@ import (
 	"context"
 	"mime"
 	"net/http"
+	"path"
+	"strconv"
 	"strings"
 
 	"github.com/labstack/echo/v5"
@@ -51,6 +53,57 @@ func (h *viewerHandlers) image(c *echo.Context, preview, large bool) error {
 	})
 }
 
+// entryOriginal streams a photo's uploaded file as an attachment. Downloads
+// are never cached or served in ranges; a preview context has no such route.
+func (h *viewerHandlers) entryOriginal(c *echo.Context) error {
+	actorID, _ := c.Get("identity.person_id").(string)
+	if actorID == "" || c.Param("personID") != actorID {
+		return errcodes.NotFound("Photo")
+	}
+	if err := h.authorize(c.Request().Context(), actorID, "", c.Param("id")); err != nil {
+		return err
+	}
+	version := c.QueryParam("v")
+	item, err := h.module.EntryOriginal(c.Request().Context(), c.Param("id"), version)
+	if err != nil {
+		return err
+	}
+	header := c.Response().Header()
+	header.Set("Cache-Control", "private, no-store")
+	header.Set("X-Content-Type-Options", "nosniff")
+	header.Set("Content-Disposition", attachment(item.Filename))
+	// HEAD confirms the photo is still downloadable without asking Immich to
+	// start sending the file.
+	if c.Request().Method == http.MethodHead {
+		if err := h.module.checkOriginal(c.Request().Context(), item.SourceID, version); err != nil {
+			return err
+		}
+		return c.NoContent(http.StatusOK)
+	}
+	original, err := h.module.viewerOriginal(c.Request().Context(), item.SourceID, version)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = original.Body.Close() }()
+	if original.Length >= 0 {
+		header.Set("Content-Length", strconv.FormatInt(original.Length, 10))
+	}
+	return errorstack.CaptureContext(c.Request().Context(), c.Stream(http.StatusOK, original.ContentType, original.Body))
+}
+
+// attachment names the download after the imported filename, keeping only
+// its base name so an odd source path cannot steer the browser.
+func attachment(filename string) string {
+	name := path.Base(strings.ReplaceAll(filename, "\\", "/"))
+	if name == "." || name == ".." || name == "/" || name == "" {
+		name = "photo"
+	}
+	if value := mime.FormatMediaType("attachment", map[string]string{"filename": name}); value != "" {
+		return value
+	}
+	return "attachment"
+}
+
 type handlers struct{ module *Module }
 
 func (h *handlers) sourceCover(c *echo.Context) error {
@@ -73,6 +126,11 @@ func (h *handlers) faceThumbnail(c *echo.Context) error {
 }
 
 func (h *handlers) personAvatar(c *echo.Context) error {
+	actorID, _ := c.Get("identity.person_id").(string)
+	curator, _ := c.Get("identity.is_curator").(bool)
+	if !curator && (actorID == "" || c.Param("id") != actorID) {
+		return &errcodes.Error{HTTPCode: http.StatusForbidden, Code: "access_denied", Message: "Only Curators can view other people's avatars."}
+	}
 	version := c.QueryParam("v")
 	sourceID, err := h.module.PersonAvatar(c.Request().Context(), c.Param("id"), version)
 	if err != nil {

@@ -28,7 +28,9 @@ func (h *Handler) Handle(c *echo.Context, err error) {
 	}
 
 	httpCode, payload := h.generatePayload(err)
-	if httpCode == http.StatusInternalServerError {
+	// Upstream failures are redacted for the browser, so the log line is the
+	// only place their cause survives (for example a missing Immich permission).
+	if httpCode >= http.StatusInternalServerError {
 		echologger.FromEchoContext(c).Err(err).Error("server error")
 	}
 

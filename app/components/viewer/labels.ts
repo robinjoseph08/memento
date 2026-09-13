@@ -1,4 +1,12 @@
-import type { ViewerAlbum } from "../../types/generated/publishing";
+import type {
+  ViewerAlbum,
+  ViewerEntry,
+} from "../../types/generated/publishing";
+
+// Width-to-height ratio for layout; media without dimensions lays out as 3:2.
+export function aspectRatio(entry: ViewerEntry) {
+  return entry.width > 0 && entry.height > 0 ? entry.width / entry.height : 1.5;
+}
 
 export function captureDate(value: string, weekday = false) {
   if (!value) return "";

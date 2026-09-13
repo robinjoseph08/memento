@@ -20,20 +20,27 @@ import { countLabel } from "../albums/moment-labels";
 import { PageTitle } from "../shell/page-title";
 import { Button } from "../ui/button";
 import { AlbumHeader } from "./album-header";
-import { captureDate } from "./labels";
+import { aspectRatio, captureDate } from "./labels";
+import { Lightbox } from "./lightbox";
 
 // The shared Album presentation for ordinary viewing and Curator preview.
 // personName is set only in preview so empty states can say whose view it is.
+// entryID names the photo open in the lightbox; entryLink builds each photo's
+// stable URL in whatever form the surrounding route uses.
 export function ViewerGallery({
   context,
   tab,
   tabLinks,
   personName,
+  entryID,
+  entryLink,
 }: {
   context: ViewerContext;
   tab: ViewerTab;
   tabLinks: Record<ViewerTab, To>;
   personName?: string;
+  entryID?: string;
+  entryLink: (id: string) => To;
 }) {
   const query = useViewerAlbum(context);
   const noAccess =
@@ -122,6 +129,8 @@ export function ViewerGallery({
           <GalleryEntries
             album={query.data}
             context={context}
+            entryID={entryID}
+            entryLink={entryLink}
             personName={personName}
             tab={tab}
             tabLinks={tabLinks}
@@ -138,12 +147,16 @@ function GalleryEntries({
   tab,
   tabLinks,
   personName,
+  entryID,
+  entryLink,
 }: {
   album: ViewerAlbum;
   context: ViewerContext;
   tab: ViewerTab;
   tabLinks: Record<ViewerTab, To>;
   personName?: string;
+  entryID?: string;
+  entryLink: (id: string) => To;
 }) {
   const query = useViewerEntries(context, tab);
   // Pages arrive one after another in the background until the gallery is
@@ -242,7 +255,7 @@ function GalleryEntries({
               </span>
             </h2>
             {tab === "photos" ? (
-              <PhotoRows entries={items} />
+              <PhotoRows entries={items} entryLink={entryLink} />
             ) : (
               <ul
                 aria-label="Videos"
@@ -271,6 +284,23 @@ function GalleryEntries({
           Loading more {tab}…
         </p>
       )}
+      {tab === "photos" && entryID && (query.data || !query.isError) && (
+        <Lightbox
+          closeTo={tabLinks.photos}
+          currentID={entryID}
+          entries={entries}
+          entryLink={entryLink}
+          loading={
+            query.isPending ||
+            isFetchingNextPage ||
+            (!!hasNextPage && !isFetchNextPageError)
+          }
+          personName={personName}
+          retry={isFetchNextPageError ? () => void fetchNextPage() : undefined}
+          title={album.title}
+          total={album.photo_count}
+        />
+      )}
     </>
   );
 }
@@ -290,10 +320,6 @@ function PlayBadge({ className }: { className?: string }) {
   );
 }
 
-function aspectRatio(entry: ViewerEntry) {
-  return entry.width > 0 && entry.height > 0 ? entry.width / entry.height : 1.5;
-}
-
 function MediaThumbnail({ entry }: { entry: ViewerEntry }) {
   return (
     <div style={{ aspectRatio: aspectRatio(entry) }}>
@@ -310,7 +336,15 @@ function MediaThumbnail({ entry }: { entry: ViewerEntry }) {
 // Rows that preserve every aspect ratio: items join a row until its combined
 // width-to-height ratio would exceed the target, then each item's ratio is its
 // flex share. Short rows keep their natural size instead of stretching.
-function PhotoRows({ entries }: { entries: ViewerEntry[] }) {
+// Each photo is a link to its stable URL; the link remembers that it opened
+// the lightbox so closing can return focus here.
+function PhotoRows({
+  entries,
+  entryLink,
+}: {
+  entries: ViewerEntry[];
+  entryLink: (id: string) => To;
+}) {
   const desktop = useMediaQuery("(min-width: 1001px)");
   const tablet = useMediaQuery("(min-width: 601px)");
   const target = desktop ? 4.5 : tablet ? 3 : 1.5;
@@ -344,7 +378,15 @@ function PhotoRows({ entries }: { entries: ViewerEntry[] }) {
                 key={entry.id}
                 style={{ flex: `${aspectRatio(entry)} 1 0` }}
               >
-                <MediaThumbnail entry={entry} />
+                <Link
+                  aria-label={`Open photo ${entry.title || "Photo"}`}
+                  className="block rounded-[2px] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                  data-entry-id={entry.id}
+                  state={{ origin: entry.id }}
+                  to={entryLink(entry.id)}
+                >
+                  <MediaThumbnail entry={entry} />
+                </Link>
               </div>
             ))}
           </div>

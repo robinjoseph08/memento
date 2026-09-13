@@ -57,7 +57,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "Immich smoke failed:", err)
 		os.Exit(1)
 	}
-	fmt.Printf("PASS Immich %s: manual faces, local dates, scoped access, preview and viewer thumbnail bytes, publish/unpublish, shared Album deletion, and unchanged source albums\n", release)
+	fmt.Printf("PASS Immich %s: manual faces, local dates, scoped access, preview and viewer thumbnail bytes, original photo downloads, publish/unpublish, shared Album deletion, and unchanged source albums\n", release)
 }
 
 func run(ctx context.Context, release string) (returnErr error) {
@@ -73,7 +73,7 @@ func run(ctx context.Context, release string) (returnErr error) {
 	if err := source.CheckImport(ctx); err != nil {
 		return err
 	}
-	fmt.Printf("Immich %s: non-admin fixture key grants only album.read, asset.read, asset.view, face.read, person.read\n", release)
+	fmt.Printf("Immich %s: non-admin fixture key grants only album.read, asset.download, asset.read, asset.view, face.read, person.read\n", release)
 	mediaCtx, cancelMedia := context.WithTimeout(ctx, 3*time.Minute)
 	if err := waitForMedia(mediaCtx, source, library.Assets); err != nil {
 		cancelMedia()
@@ -117,7 +117,8 @@ func run(ctx context.Context, release string) (returnErr error) {
 	// It has no listening socket and can only reach this invocation's temporary schema.
 	handler := echo.New()
 	handler.HTTPErrorHandler = errcodes.NewHandler().Handle
-	media.RegisterRoutes(handler, media.New(db, source), func(next echo.HandlerFunc) echo.HandlerFunc { return next })
+	passthrough := func(next echo.HandlerFunc) echo.HandlerFunc { return next }
+	media.RegisterRoutes(handler, media.New(db, source), passthrough, passthrough)
 	mediaIDs := map[string]string{}
 	entryIDs := map[string]bool{}
 	for _, album := range library.Albums {
@@ -180,7 +181,7 @@ func run(ctx context.Context, release string) (returnErr error) {
 	if enqueued != 2 {
 		return fmt.Errorf("two imports did not enqueue exactly two tasks")
 	}
-	if err := verifyPublishing(ctx, db, module, media.New(db, source), imported); err != nil {
+	if err := verifyPublishing(ctx, db, module, media.New(db, source), imported, library.Assets); err != nil {
 		return fmt.Errorf("publishing through production Immich adapter: %w", err)
 	}
 	if enqueued != 2 {

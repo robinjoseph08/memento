@@ -22,7 +22,8 @@ func TestViewerPagesUseLocalCaptureTimeAndEntryIDWithoutPrivateMetadata(t *testi
 	for i := range 102 {
 		source.assets = append(source.assets, immich.Asset{ID: fmt.Sprintf("photo-%03d", i), Kind: "IMAGE", Filename: fmt.Sprintf("photo-%03d.jpg", i), Checksum: "YQ==", LocalDateTime: "2026-07-05T00:01:00+14:00", FileCreatedAt: "2026-07-04T10:01:00Z", UpdatedAt: "2026-07-06T00:00:00Z"})
 	}
-	source.albums["source"] = immich.Album{ID: "source", Name: "Summer", Count: 102}
+	source.assets = append(source.assets, immich.Asset{ID: "clip", Kind: "VIDEO", Filename: "clip.mp4", Checksum: "Yg==", LocalDateTime: "2026-07-05T00:01:00+14:00", FileCreatedAt: "2026-07-04T10:01:00Z", UpdatedAt: "2026-07-06T00:00:00Z"})
+	source.albums["source"] = immich.Album{ID: "source", Name: "Summer", Count: 103}
 	module := publishing.New(db, source, noQueue)
 	album, err := module.StartImport(t.Context(), "source")
 	require.NoError(t, err)
@@ -42,6 +43,7 @@ func TestViewerPagesUseLocalCaptureTimeAndEntryIDWithoutPrivateMetadata(t *testi
 	for _, entry := range append(first.Entries, second.Entries...) {
 		require.Greater(t, entry.ID, previous)
 		require.Equal(t, "2026-07-05T00:01:00", entry.CapturedAt)
+		require.Equal(t, "/api/media/viewer/"+curator.ID.String()+"/entries/"+entry.ID+"/original?v="+strings.Split(entry.ThumbnailURL, "?v=")[1], entry.DownloadURL)
 		previous = entry.ID
 	}
 	encoded, err := json.Marshal(first)
@@ -51,7 +53,8 @@ func TestViewerPagesUseLocalCaptureTimeAndEntryIDWithoutPrivateMetadata(t *testi
 	}
 	videos, err := module.ViewEntries(t.Context(), curator.ID.String(), "", album.ID, "VIDEO", "")
 	require.NoError(t, err)
-	require.Empty(t, videos.Entries)
+	require.Len(t, videos.Entries, 1)
+	require.Empty(t, videos.Entries[0].DownloadURL, "video originals arrive with playback")
 	_, err = module.ViewEntries(t.Context(), curator.ID.String(), "", album.ID, "IMAGE", strings.Repeat("x", 5000))
 	require.Error(t, err)
 }
@@ -135,6 +138,8 @@ func TestConfiguredCoversSkipDeniedEntriesAndNeverPickAnArbitraryPhoto(t *testin
 	require.NoError(t, err)
 	require.Len(t, page.Entries, 1)
 	require.NotEqual(t, firstCover, page.Entries[0].ID)
+	require.NotEmpty(t, page.Entries[0].PreviewURL)
+	require.Empty(t, page.Entries[0].DownloadURL, "Curator preview cannot download")
 	videos, err := module.ViewEntries(t.Context(), curator.ID.String(), person.ID.String(), album.ID, "VIDEO", "")
 	require.NoError(t, err)
 	require.Empty(t, videos.Entries)

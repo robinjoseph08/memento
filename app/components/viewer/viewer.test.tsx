@@ -3,6 +3,7 @@ import {
   fireEvent,
   render,
   screen,
+  waitFor,
   within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -34,8 +35,27 @@ const photo: ViewerEntry = {
   available: true,
   thumbnail_url: "/media/lake/photo-1/thumb?person=jamie",
   preview_url: "/media/lake/photo-1?person=jamie",
+  download_url: "/media/lake/photo-1/original?person=jamie",
   width: 1200,
   height: 800,
+};
+const cabin: ViewerEntry = {
+  ...photo,
+  id: "photo-2",
+  title: "Cabin",
+  captured_at: "2025-06-14T09:00:00Z",
+  preview_url: "/media/lake/photo-2?person=jamie",
+  thumbnail_url: "/media/lake/photo-2/thumb?person=jamie",
+  download_url: "/media/lake/photo-2/original?person=jamie",
+};
+const dock: ViewerEntry = {
+  ...photo,
+  id: "photo-3",
+  title: "Dock",
+  captured_at: "2025-06-14T18:30:00Z",
+  preview_url: "/media/lake/photo-3?person=jamie",
+  thumbnail_url: "/media/lake/photo-3/thumb?person=jamie",
+  download_url: "/media/lake/photo-3/original?person=jamie",
 };
 function mockViewer(handler: (path: string) => Response) {
   vi.stubGlobal(
@@ -252,4 +272,161 @@ it("preserves loaded photos after a failed next page and retries the cursor rath
   expect(await screen.findByRole("img", { name: "Cabin" })).toBeVisible();
   expect(screen.getByRole("img", { name: "Lake" })).toBeVisible();
   expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+});
+
+it("opens a routed lightbox from the grid, moves with keys and the filmstrip, and returns focus to the opening photo", async () => {
+  mockViewer((path) => {
+    if (path === "/api/albums/lake")
+      return Response.json({ ...album, photo_count: 3 });
+    if (path === "/api/albums/lake/photos")
+      return Response.json({ entries: [photo, cabin, dock], next_cursor: "" });
+    throw new Error(`Unexpected request: ${path}`);
+  });
+  const user = userEvent.setup();
+  window.history.replaceState(null, "", "/albums/lake/photos");
+  render(<App />);
+  const opener = await screen.findByRole("link", { name: "Open photo Cabin" });
+  expect(opener).toHaveAttribute("href", "/albums/lake/photos/photo-2");
+  await user.click(opener);
+  const dialog = await screen.findByRole("dialog", { name: "Photo 2 of 3" });
+  expect(window.location.pathname).toBe("/albums/lake/photos/photo-2");
+  expect(within(dialog).getByRole("img", { name: "Cabin" })).toHaveAttribute(
+    "src",
+    cabin.preview_url,
+  );
+  expect(within(dialog).getByText(album.title)).toBeVisible();
+  expect(within(dialog).getByText("Saturday, June 14, 2025")).toBeVisible();
+  expect(within(dialog).queryByText(/9:00/)).not.toBeInTheDocument();
+  const download = within(dialog).getByRole("link", {
+    name: "Download photo",
+  });
+  expect(download).toHaveAttribute("href", cabin.download_url);
+  expect(download).toHaveAttribute("download");
+  expect(dialog).toHaveFocus();
+  await user.keyboard("{ArrowRight}");
+  expect(
+    await screen.findByRole("dialog", { name: "Photo 3 of 3" }),
+  ).toBeVisible();
+  expect(window.location.pathname).toBe("/albums/lake/photos/photo-3");
+  expect(screen.getByRole("button", { name: "Next photo" })).toBeDisabled();
+  await user.keyboard("{ArrowRight}");
+  expect(window.location.pathname).toBe("/albums/lake/photos/photo-3");
+  const filmstrip = screen.getByRole("navigation", {
+    name: "Photos in album",
+  });
+  expect(
+    within(filmstrip).getByRole("button", { name: "Go to photo 3" }),
+  ).toHaveAttribute("aria-current", "true");
+  await user.click(
+    within(filmstrip).getByRole("button", { name: "Go to photo 1" }),
+  );
+  expect(
+    await screen.findByRole("dialog", { name: "Photo 1 of 3" }),
+  ).toBeVisible();
+  expect(screen.getByRole("button", { name: "Previous photo" })).toBeDisabled();
+  await user.click(screen.getByRole("button", { name: "Next photo" }));
+  expect(
+    await screen.findByRole("dialog", { name: "Photo 2 of 3" }),
+  ).toBeVisible();
+  await user.keyboard("{Escape}");
+  await waitFor(() =>
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+  );
+  expect(window.location.pathname).toBe("/albums/lake/photos");
+  await waitFor(() =>
+    expect(
+      screen.getByRole("link", { name: "Open photo Cabin" }),
+    ).toHaveFocus(),
+  );
+});
+
+it("reloads a stable photo link beyond the first page once its page arrives", async () => {
+  mockViewer((path) => {
+    if (path === "/api/albums/lake")
+      return Response.json({ ...album, photo_count: 3 });
+    if (path === "/api/albums/lake/photos")
+      return Response.json({ entries: [photo, cabin], next_cursor: "more" });
+    if (path === "/api/albums/lake/photos?cursor=more")
+      return Response.json({ entries: [dock], next_cursor: "" });
+    throw new Error(`Unexpected request: ${path}`);
+  });
+  const user = userEvent.setup();
+  window.history.replaceState(null, "", "/albums/lake/photos/photo-3");
+  render(<App />);
+  const dialog = await screen.findByRole("dialog", { name: "Photo 3 of 3" });
+  expect(within(dialog).getByRole("img", { name: "Dock" })).toHaveAttribute(
+    "src",
+    dock.preview_url,
+  );
+  expect(document.title).toBe("A weekend by the lake | Memento");
+  await user.click(screen.getByRole("button", { name: "Close photo" }));
+  await waitFor(() =>
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+  );
+  expect(window.location.pathname).toBe("/albums/lake/photos");
+  await waitFor(() =>
+    expect(screen.getByRole("link", { name: "Open photo Dock" })).toHaveFocus(),
+  );
+});
+
+it("explains a photo link that is not available without opening another photo", async () => {
+  mockViewer((path) => {
+    if (path === "/api/albums/lake") return Response.json(album);
+    if (path === "/api/albums/lake/photos")
+      return Response.json({ entries: [photo, cabin], next_cursor: "" });
+    throw new Error(`Unexpected request: ${path}`);
+  });
+  const user = userEvent.setup();
+  window.history.replaceState(null, "", "/albums/lake/photos/missing");
+  render(<App />);
+  const dialog = await screen.findByRole("dialog", { name: "Photo" });
+  expect(
+    await within(dialog).findByRole("heading", { name: "Photo not available" }),
+  ).toBeVisible();
+  expect(
+    within(dialog).queryByRole("img", { name: /Lake|Cabin/ }),
+  ).not.toBeInTheDocument();
+  expect(
+    within(dialog).queryByRole("link", { name: "Download photo" }),
+  ).not.toBeInTheDocument();
+  await user.click(
+    within(dialog).getByRole("button", { name: "Back to album" }),
+  );
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect(window.location.pathname).toBe("/albums/lake/photos");
+  expect(screen.getByRole("link", { name: "Open photo Lake" })).toBeVisible();
+});
+
+it("keeps the lightbox open when a later page fails and can retry a photo on that page", async () => {
+  let retry = false;
+  mockViewer((path) => {
+    if (path === "/api/albums/lake")
+      return Response.json({ ...album, photo_count: 3 });
+    if (path === "/api/albums/lake/photos")
+      return Response.json({ entries: [photo, cabin], next_cursor: "more" });
+    if (path === "/api/albums/lake/photos?cursor=more")
+      return retry
+        ? Response.json({ entries: [dock], next_cursor: "" })
+        : Response.json({}, { status: 503 });
+    throw new Error(`Unexpected request: ${path}`);
+  });
+  const user = userEvent.setup();
+  window.history.replaceState(null, "", "/albums/lake/photos/photo-3");
+  render(<App />);
+  const dialog = await screen.findByRole("dialog", { name: "Photo" });
+  expect(
+    await within(dialog).findByRole("heading", {
+      name: "Could not load photo",
+    }),
+  ).toBeVisible();
+  expect(within(dialog).queryByRole("status")).not.toBeInTheDocument();
+  retry = true;
+  await user.click(within(dialog).getByRole("button", { name: "Try again" }));
+  expect(
+    await screen.findByRole("dialog", { name: "Photo 3 of 3" }),
+  ).toBeVisible();
+  await user.keyboard("{ArrowLeft}");
+  expect(
+    await screen.findByRole("dialog", { name: "Photo 2 of 3" }),
+  ).toBeVisible();
 });

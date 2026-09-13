@@ -60,3 +60,11 @@ type Thumbnail struct {
 	Body        io.ReadCloser
 	ContentType string
 }
+
+// Original is an asset's uploaded file. Length is -1 when Immich streams it
+// without a Content-Length. The caller closes Body.
+type Original struct {
+	Body        io.ReadCloser
+	ContentType string
+	Length      int64
+}

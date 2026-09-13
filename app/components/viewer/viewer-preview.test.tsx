@@ -1,5 +1,12 @@
 import { QueryClientProvider } from "@tanstack/react-query";
-import { act, cleanup, render, screen } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createBrowserRouter, RouterProvider } from "react-router-dom";
 import { afterEach, expect, it, vi } from "vitest";
@@ -74,6 +81,7 @@ const photo: ViewerEntry = {
   available: true,
   thumbnail_url: "/preview/jamie/one/thumb",
   preview_url: "/preview/jamie/one",
+  download_url: "",
   width: 1200,
   height: 800,
 };
@@ -305,4 +313,49 @@ it("keeps the selected identity and a neutral no-access message for denied or in
   expect(
     screen.queryByRole("link", { name: /Download/i }),
   ).not.toBeInTheDocument();
+});
+
+it("navigates photos inside the preview with the identity notice and no download", async () => {
+  window.history.replaceState(
+    null,
+    "",
+    "/curator/albums/lake?section=preview&person=jamie&tab=photos",
+  );
+  renderPreview((path) =>
+    path.endsWith("/photos")
+      ? Response.json({
+          entries: [photo, { ...photo, id: "two", title: "Second" }],
+          next_cursor: "",
+        })
+      : Response.json(album),
+  );
+  const user = userEvent.setup();
+  const opener = await screen.findByRole("link", {
+    name: "Open photo Jamie's photo",
+  });
+  expect(opener).toHaveAttribute(
+    "href",
+    "/curator/albums/lake?section=preview&person=jamie&tab=photos&entry=one",
+  );
+  await user.click(opener);
+  const dialog = await screen.findByRole("dialog", { name: "Photo 1 of 2" });
+  expect(within(dialog).getByText(/Previewing as Jamie/)).toBeVisible();
+  expect(
+    within(dialog).queryByRole("link", { name: "Download photo" }),
+  ).not.toBeInTheDocument();
+  await user.keyboard("{ArrowRight}");
+  expect(
+    await screen.findByRole("dialog", { name: "Photo 2 of 2" }),
+  ).toBeVisible();
+  expect(new URLSearchParams(window.location.search).get("entry")).toBe("two");
+  await user.keyboard("{Escape}");
+  await waitFor(() =>
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+  );
+  expect(new URLSearchParams(window.location.search).get("entry")).toBeNull();
+  await waitFor(() =>
+    expect(
+      screen.getByRole("link", { name: "Open photo Jamie's photo" }),
+    ).toHaveFocus(),
+  );
 });

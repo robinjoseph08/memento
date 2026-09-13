@@ -18,16 +18,26 @@ import (
 const maxJSONBytes = 8 << 20
 
 // Client reads the configured Immich API. It never follows redirects with its key.
+// Metadata and generated images share a bounded client. Originals stream
+// through a second client whose budget covers only the response headers, so a
+// large file on a slow link is cut off by the caller's context, not a timer.
 type Client struct {
 	baseURL, apiKey string
 	http            *http.Client
+	stream          *http.Client
 }
 
 func New(baseURL, apiKey string) *Client {
-	return &Client{baseURL: strings.TrimRight(baseURL, "/"), apiKey: apiKey, http: &http.Client{
-		Timeout:       5 * time.Second,
-		CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse },
-	}}
+	noRedirect := func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
+	transport := &http.Transport{Proxy: http.ProxyFromEnvironment}
+	if shared, ok := http.DefaultTransport.(*http.Transport); ok {
+		transport = shared.Clone()
+	}
+	transport.ResponseHeaderTimeout = 5 * time.Second
+	return &Client{baseURL: strings.TrimRight(baseURL, "/"), apiKey: apiKey,
+		http:   &http.Client{Timeout: 5 * time.Second, CheckRedirect: noRedirect},
+		stream: &http.Client{Transport: transport, CheckRedirect: noRedirect},
+	}
 }
 
 type serverVersion struct {
@@ -118,6 +128,10 @@ func transportError(ctx context.Context, err error) error {
 }
 
 func (c *Client) request(ctx context.Context, method, path string, body io.Reader, permission string) (*http.Response, error) {
+	return c.send(ctx, c.http, method, path, body, permission)
+}
+
+func (c *Client) send(ctx context.Context, client *http.Client, method, path string, body io.Reader, permission string) (*http.Response, error) {
 	base, err := url.Parse(c.baseURL)
 	if err != nil || base == nil || (base.Scheme != "http" && base.Scheme != "https") || base.Host == "" || base.User != nil || base.RawQuery != "" || base.ForceQuery || strings.Contains(c.baseURL, "#") || base.Opaque != "" {
 		return nil, errcodes.ValidationError("Check immich_url points to the Immich server, without credentials, a query, or a fragment.")
@@ -131,7 +145,7 @@ func (c *Client) request(ctx context.Context, method, path string, body io.Reade
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	response, err := c.http.Do(req)
+	response, err := client.Do(req)
 	if err != nil {
 		return nil, transportError(ctx, err)
 	}

@@ -78,7 +78,7 @@ func fixtureLibrary() ([]sourceAlbum, map[string]sourceAsset) {
 		thumbnail, contentType := generatedThumbnail(n)
 		checksum := sha1.Sum(thumbnail) //nolint:gosec // Match Immich's source checksum format.
 		asset := sourceAsset{ID: id, Checksum: base64.StdEncoding.EncodeToString(checksum[:]),
-			Filename: fmt.Sprintf("coast-%02d.jpg", n), OriginalPath: "/fixture/not-downloadable/" + id,
+			Filename: fmt.Sprintf("coast-%02d.jpg", n), OriginalPath: "/fixture/originals/" + id,
 			OwnerID: "fixture-owner", Kind: "IMAGE", LocalDateTime: capture, FileCreatedAt: instant,
 			FileModifiedAt: instant, CreatedAt: instant, UpdatedAt: "2026-06-05T12:00:00Z",
 			HasMetadata: true, Visibility: "timeline", Width: 320, Height: 240,
@@ -109,7 +109,7 @@ func fixtureLibrary() ([]sourceAlbum, map[string]sourceAsset) {
 		instant := local.UTC().Format(time.RFC3339)
 		checksum := sha1.Sum(append(append([]byte(nil), largeThumbnail...), byte(n))) //nolint:gosec // Match Immich's source checksum format.
 		assets[id] = sourceAsset{ID: id, Checksum: base64.StdEncoding.EncodeToString(checksum[:]),
-			Filename: fmt.Sprintf("workbench-%03d.jpg", n), OriginalPath: "/fixture/not-downloadable/" + id,
+			Filename: fmt.Sprintf("workbench-%03d.jpg", n), OriginalPath: "/fixture/originals/" + id,
 			OwnerID: "fixture-owner", Kind: "IMAGE", LocalDateTime: capture, FileCreatedAt: instant,
 			FileModifiedAt: instant, CreatedAt: instant, UpdatedAt: "2026-06-05T12:00:00Z",
 			HasMetadata: true, Visibility: "timeline", Width: 320, Height: 240,
@@ -117,11 +117,51 @@ func fixtureLibrary() ([]sourceAlbum, map[string]sourceAsset) {
 		largeMembers = append(largeMembers, id)
 	}
 	albums = append(albums, album("workbench-large-moment", "Workbench - Large Moment", largeMembers...))
+	albums = append(albums, browseAlbum(assets))
 	albums[0].ThumbnailID = "fixture-asset-03"
 	for n := 1; n <= 30; n++ {
 		albums = append(albums, album(fmt.Sprintf("fixture-album-practice-%02d", n), fmt.Sprintf("Practice Album %02d", n), "fixture-asset-07"))
 	}
 	return albums, assets
+}
+
+// browseAlbum is the viewer workbench: 220 photos over three days with mixed
+// aspect ratios, a capture-second tie that straddles the 100-entry page
+// boundary, and the Family album's last photo so one Media Item belongs to two
+// differently authorized Albums. It has no videos, so the Videos tab is empty.
+func browseAlbum(assets map[string]sourceAsset) sourceAlbum {
+	shapes := []struct{ width, height int }{{320, 240}, {240, 320}, {480, 160}, {320, 320}}
+	images := make([][]byte, len(shapes))
+	contentTypes := make([]string, len(shapes))
+	for i, shape := range shapes {
+		images[i], contentTypes[i] = generatedImage(9+i, shape.width, shape.height)
+	}
+	members := make([]string, 0, 221)
+	for n := 1; n <= 220; n++ {
+		id := fmt.Sprintf("browse-asset-%03d", n)
+		day, second := 10+(n-1)/80, n
+		// Photos 99 through 102 share one capture second across the page boundary.
+		if n >= 99 && n <= 102 {
+			second = 99
+		}
+		capture := fmt.Sprintf("2026-05-%02dT%02d:%02d:%02d-07:00", day, 9+second/3600, (second/60)%60, second%60)
+		local, _ := time.Parse(time.RFC3339, capture)
+		instant := local.UTC().Format(time.RFC3339)
+		shape := (n * 7) % len(shapes)
+		checksum := sha1.Sum(append(append([]byte(nil), images[shape]...), byte(n), byte(n>>8))) //nolint:gosec // Match Immich's source checksum format.
+		assets[id] = sourceAsset{ID: id, Checksum: base64.StdEncoding.EncodeToString(checksum[:]),
+			Filename: fmt.Sprintf("browse-%03d.jpg", n), OriginalPath: "/fixture/originals/" + id,
+			OwnerID: "fixture-owner", Kind: "IMAGE", LocalDateTime: capture, FileCreatedAt: instant,
+			FileModifiedAt: instant, CreatedAt: instant, UpdatedAt: "2026-06-05T12:00:00Z",
+			HasMetadata: true, Visibility: "timeline", Width: shapes[shape].width, Height: shapes[shape].height,
+			EXIF: map[string]any{"timeZone": "America/Los_Angeles", "orientation": 1}, Thumbnail: images[shape], ContentType: contentTypes[shape]}
+		members = append(members, id)
+	}
+	members = append(members, "fixture-asset-07")
+	first, last := assets[members[0]], assets[members[len(members)-1]]
+	return sourceAlbum{ID: "workbench-browse", Name: "Workbench - Browse", Description: "Three days of mixed shapes for the viewer, ending on a photo the Family album also holds.",
+		ThumbnailID: members[0], Count: len(members), StartDate: first.FileCreatedAt, EndDate: last.FileCreatedAt,
+		UpdatedAt: "2026-06-05T12:00:00Z", CreatedAt: "2026-06-05T12:00:00Z", Users: []string{}, ActivityEnabled: true, Members: members}
 }
 
 // fixtureFaces mirrors a real event album: a handful of named Immich people
@@ -180,15 +220,23 @@ func fixtureFaces() (map[string][]sourceFace, map[string]sourceAsset) {
 }
 
 func generatedThumbnail(seed int) ([]byte, string) {
-	canvas := image.NewRGBA(image.Rect(0, 0, 320, 240))
+	return generatedImage(seed, 320, 240)
+}
+
+// generatedImage paints a horizon, a hill, and a sun at any size. The same
+// bytes serve as the generated variants and the downloadable original.
+func generatedImage(seed, width, height int) ([]byte, string) {
+	canvas := image.NewRGBA(image.Rect(0, 0, width, height))
 	tint := uint8(seed & 7)
-	for y := range 240 {
-		for x := range 320 {
-			shade := color.RGBA{70 + tint*12, uint8(135 + y/4), uint8(190 + x/8), 255}
-			if y > 145+x/8 {
-				shade = color.RGBA{30 + tint*10, uint8(95 + x/8), uint8(120 + y/4), 255}
+	for y := range height {
+		for x := range width {
+			// Scale the 320x240 composition to the requested canvas.
+			sx, sy := x*320/width, y*240/height
+			shade := color.RGBA{70 + tint*12, uint8(135 + sy/4), uint8(190 + sx/8), 255} //nolint:gosec // sx and sy stay within the 320x240 composition.
+			if sy > 145+sx/8 {
+				shade = color.RGBA{30 + tint*10, uint8(95 + sx/8), uint8(120 + sy/4), 255} //nolint:gosec // Same bounded composition.
 			}
-			if (x-250)*(x-250)+(y-55)*(y-55) < 625 {
+			if (sx-250)*(sx-250)+(sy-55)*(sy-55) < 625 {
 				shade = color.RGBA{250, 215, 110 + tint*8, 255}
 			}
 			canvas.SetRGBA(x, y, shade)

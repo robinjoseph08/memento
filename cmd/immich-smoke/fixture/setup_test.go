@@ -196,7 +196,7 @@ func testSetup(t *testing.T, release string, assetIDs []string) {
 			if !reflect.DeepEqual(readPermissions, body.Permissions) {
 				t.Error("key permissions must be exact")
 			}
-			_, _ = io.WriteString(w, `{"secret":"private-read-key","apiKey":{"permissions":["person.read","face.read","asset.view","album.read","asset.read"]}}`)
+			_, _ = io.WriteString(w, `{"secret":"private-read-key","apiKey":{"permissions":["person.read","face.read","asset.view","album.read","asset.download","asset.read"]}}`)
 		default:
 			t.Errorf("unexpected request: %s", r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)

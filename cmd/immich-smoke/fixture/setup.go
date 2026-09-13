@@ -21,7 +21,7 @@ import (
 
 const Release = "v3.1.0"
 
-var readPermissions = []string{"album.read", "asset.read", "asset.view", "face.read", "person.read"}
+var readPermissions = []string{"album.read", "asset.download", "asset.read", "asset.view", "face.read", "person.read"}
 
 type Album struct {
 	ID           string
@@ -219,7 +219,7 @@ func Setup(ctx context.Context, baseURL, expectedRelease string) (*Library, erro
 	}
 	slices.Sort(key.APIKey.Permissions)
 	if key.Secret == "" || !slices.Equal(key.APIKey.Permissions, readPermissions) {
-		return nil, fmt.Errorf("fixture key must grant exactly album.read, asset.read, asset.view, face.read, person.read")
+		return nil, fmt.Errorf("fixture key must grant exactly album.read, asset.download, asset.read, asset.view, face.read, person.read")
 	}
 	f.secret = key.Secret
 	return f, nil

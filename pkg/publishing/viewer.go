@@ -86,6 +86,14 @@ func (v viewerContext) previewURL(entryID, version string) string {
 	return v.mediaURL(entryID, "preview", version)
 }
 
+// downloadURL exists only for a Person's own photos; preview has no download.
+func (v viewerContext) downloadURL(entryID, kind, version string) string {
+	if v.preview || kind != "IMAGE" {
+		return ""
+	}
+	return v.mediaURL(entryID, "original", version)
+}
+
 func (v viewerContext) mediaURL(entryID, variant, version string) string {
 	mode := "viewer"
 	if v.preview {
@@ -213,12 +221,13 @@ func (m *Module) ViewEntries(ctx context.Context, actorID, previewPersonID, albu
 			rows = rows[:100]
 		}
 		for _, row := range rows {
-			thumbnail, preview := "", ""
+			thumbnail, preview, download := "", "", ""
 			if row.Available {
 				thumbnail = viewer.thumbnailURL(row.ID, row.Version)
 				preview = viewer.previewURL(row.ID, row.Version)
+				download = viewer.downloadURL(row.ID, row.Kind, row.Version)
 			}
-			result.Entries = append(result.Entries, ViewerEntry{ID: row.ID, Kind: row.Kind, Title: strings.TrimSuffix(row.Filename, filepath.Ext(row.Filename)), CapturedAt: row.CapturedAt.Format("2006-01-02T15:04:05.999999999"), Available: row.Available, ThumbnailURL: thumbnail, PreviewURL: preview, Width: row.Width, Height: row.Height})
+			result.Entries = append(result.Entries, ViewerEntry{ID: row.ID, Kind: row.Kind, Title: strings.TrimSuffix(row.Filename, filepath.Ext(row.Filename)), CapturedAt: row.CapturedAt.Format("2006-01-02T15:04:05.999999999"), Available: row.Available, ThumbnailURL: thumbnail, PreviewURL: preview, DownloadURL: download, Width: row.Width, Height: row.Height})
 		}
 		if more {
 			last := result.Entries[len(result.Entries)-1]

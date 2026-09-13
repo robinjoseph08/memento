@@ -18,11 +18,20 @@ export function ViewerPreview({ album }: { album: AlbumDetail }) {
     people.find((candidate) => candidate.person_id === search.get("person")) ??
     people[0];
   const tab = search.get("tab") === "videos" ? "videos" : "photos";
+  const entry =
+    tab === "photos" ? (search.get("entry") ?? undefined) : undefined;
   const labelId = useId();
   usePreviewMode();
   function tabLink(value: ViewerTab) {
     const next = new URLSearchParams(search);
     next.set("tab", value);
+    next.delete("entry");
+    return `?${next}`;
+  }
+  function entryLink(id: string) {
+    const next = new URLSearchParams(search);
+    next.set("tab", "photos");
+    next.set("entry", id);
     return `?${next}`;
   }
   return (
@@ -46,6 +55,7 @@ export function ViewerPreview({ album }: { album: AlbumDetail }) {
             onChange={(id) => {
               const next = new URLSearchParams(search);
               next.set("person", id);
+              next.delete("entry");
               setSearch(next);
             }}
             options={people.map((item) => ({
@@ -67,6 +77,8 @@ export function ViewerPreview({ album }: { album: AlbumDetail }) {
         <div className="mt-8">
           <ViewerGallery
             context={{ albumID: album.id, personID: person.person_id }}
+            entryID={entry}
+            entryLink={entryLink}
             key={`${album.id}:${person.person_id}`}
             personName={person.display_name}
             tab={tab}

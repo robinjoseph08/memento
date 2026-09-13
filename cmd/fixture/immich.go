@@ -190,9 +190,18 @@ func (f *immichFixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case strings.HasPrefix(r.URL.Path, "/api/assets/"):
 		path := strings.TrimPrefix(r.URL.Path, "/api/assets/")
 		id, thumbnail := strings.CutSuffix(path, "/thumbnail")
+		id, original := strings.CutSuffix(id, "/original")
 		asset, ok := f.assets[id]
 		if !ok {
 			http.NotFound(w, r)
+			return
+		}
+		if original {
+			// Immich streams the uploaded file as an attachment with its length.
+			w.Header().Set("Content-Type", asset.ContentType)
+			w.Header().Set("Content-Disposition", "attachment; filename="+strconv.Quote(asset.Filename))
+			w.Header().Set("Content-Length", strconv.Itoa(len(asset.Thumbnail)))
+			_, _ = w.Write(asset.Thumbnail)
 			return
 		}
 		if thumbnail {
