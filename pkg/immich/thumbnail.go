@@ -6,6 +6,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"strings"
 
 	"github.com/robinjoseph08/memento/pkg/errcodes"
 )
@@ -26,6 +27,26 @@ func (c *Client) Preview(ctx context.Context, id string) (Thumbnail, error) {
 		return Thumbnail{}, errcodes.ValidationError("An Immich asset ID is required.")
 	}
 	return c.openThumbnail(ctx, "/api/assets/"+escapeID(id)+"/thumbnail?size=preview", "asset.view")
+}
+
+// Original opens an asset's uploaded file for download. Any content type is
+// accepted because RAW and other camera formats vary; types outside image/*
+// are reported as octet-stream so the caller never renders them. The caller
+// must close Body.
+func (c *Client) Original(ctx context.Context, id string) (Original, error) {
+	if id == "" {
+		return Original{}, errcodes.ValidationError("An Immich asset ID is required.")
+	}
+	response, err := c.send(ctx, c.stream, http.MethodGet, "/api/assets/"+escapeID(id)+"/original", nil, "asset.download") //nolint:bodyclose // The caller closes the wrapped body.
+	if err != nil {
+		return Original{}, err
+	}
+	contentType, _, err := mime.ParseMediaType(response.Header.Get("Content-Type"))
+	if err != nil || (!strings.HasPrefix(contentType, "image/") && contentType != "application/octet-stream") {
+		contentType = "application/octet-stream"
+	}
+	body := &thumbnailBody{sanitize: func(err error) error { return transportError(ctx, err) }, body: response.Body}
+	return Original{Body: body, ContentType: contentType, Length: response.ContentLength}, nil
 }
 
 // PersonThumbnail opens the generated thumbnail for a person. The caller must close Body.

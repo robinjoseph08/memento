@@ -110,8 +110,8 @@ mise start:web
 ### Develop against your own Immich server
 
 Use a read-only API key from the Immich account that owns or can access your
-source albums. Grant `album.read`, `asset.read`, `asset.view`, `face.read`, and
-`person.read`, then set these
+source albums. Grant `album.read`, `asset.download`, `asset.read`,
+`asset.view`, `face.read`, and `person.read`, then set these
 in your local shell before starting development:
 
 ```sh
@@ -133,8 +133,10 @@ mise start:qa
 ```
 
 Open the printed URL and keep the command running. This uses fake sign-in, a
-controlled Immich server that starts offline, and a temporary PostgreSQL schema.
-Stop it with Ctrl-C and run it again to reset without erasing development data.
+controlled Immich server that starts online, and a temporary PostgreSQL schema.
+The command prints a curl line that takes the fixture offline for testing the
+disconnected state. Stop it with Ctrl-C and run it again to reset without
+erasing development data.
 Use separate browser profiles to try multiple people. Ordinary tabs share the
 same session cookie. Never expose fake development sign-in publicly.
 
@@ -187,12 +189,13 @@ Ports bind only to loopback. Machine learning and reverse geocoding are disabled
 because this check needs only metadata extraction and generated thumbnails.
 
 Fixtures use supported Immich APIs, not database tables. A non-admin source
-owner creates a key with exactly `album.read`, `asset.read`, `asset.view`,
-`face.read`, and `person.read`.
+owner creates a key with exactly `album.read`, `asset.download`, `asset.read`,
+`asset.view`, `face.read`, and `person.read`.
 The smoke imports two overlapping albums through Memento's production adapter
 and publishing module. It checks EXIF capture dates around midnight, tied entry
-ordering, shared Media Items, generated thumbnails through production media HTTP
-routes, private cache validators, and unchanged source album titles,
+ordering, shared Media Items, generated thumbnails and original downloads
+through production media HTTP routes, private cache validators, and unchanged
+source album titles,
 descriptions, and membership. The in-process media check bypasses sign-in and
 does not expose an HTTP listener. Fixture creation helpers live in
 `cmd/immich-smoke/fixture` for reuse by release compatibility tests.
@@ -241,12 +244,16 @@ Compose pin for 3.0.3; this is not a claim that every patch in the range has bee
 certified.
 
 Create an API key in the Immich account that owns or can access your source
-albums. Grant only `album.read`, `asset.read`, `asset.view`, `face.read`, and
-`person.read`, then set `IMMICH_API_KEY` on Memento's server. The face and person
-permissions let Memento read face associations and person thumbnails for access
-suggestions and avatars. No write or original-download permission is needed.
-Memento uses GET requests plus Immich's read-only `POST /search/metadata`
-endpoint for membership pagination. It never edits source albums or assets.
+albums. Grant only `album.read`, `asset.download`, `asset.read`, `asset.view`,
+`face.read`, and `person.read`, then set `IMMICH_API_KEY` on Memento's server.
+The face and person permissions let Memento read face associations and person
+thumbnails for access suggestions and avatars. `asset.download` lets authorized
+viewers save an original photo; Curator preview never downloads. Installations
+created before downloads existed must add `asset.download` to their key, or
+every download fails with "Media is unavailable" and the server log records the
+missing permission. No write permission is needed. Memento uses GET requests plus Immich's read-only
+`POST /search/metadata` endpoint for membership pagination. It never edits
+source albums or assets.
 
 Face review links each Immich person to its page in Immich so merging duplicate
 faces or changing a featured photo happens there. Those links use `IMMICH_URL`

@@ -49,8 +49,11 @@ type ViewerEntry struct {
 	Available    bool   `json:"available"`
 	ThumbnailURL string `json:"thumbnail_url"`
 	PreviewURL   string `json:"preview_url"`
-	Width        int    `json:"width"`
-	Height       int    `json:"height"`
+	// DownloadURL streams the original photo. It is empty in Curator preview,
+	// for unavailable media, and for videos until playback ships.
+	DownloadURL string `json:"download_url"`
+	Width       int    `json:"width"`
+	Height      int    `json:"height"`
 }
 
 type ViewerPage struct {

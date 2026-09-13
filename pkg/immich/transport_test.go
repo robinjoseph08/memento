@@ -45,6 +45,14 @@ var readOperations = map[string]func(context.Context, *immich.Client) error{
 		}
 		return err
 	},
+	"original": func(ctx context.Context, c *immich.Client) error {
+		media, err := c.Original(ctx, "id")
+		if err == nil {
+			defer media.Body.Close()
+			_, err = io.Copy(io.Discard, media.Body)
+		}
+		return err
+	},
 }
 
 func stackCount(err error) int {
@@ -86,7 +94,7 @@ func TestReadErrorsAreSafeAndActionable(t *testing.T) {
 					assert.NotContains(t, fmt.Sprintf("%+v", err), "private-key")
 					assert.NotContains(t, fmt.Sprintf("%+v", err), "/secret-path/password")
 					if tc.status == 403 && name != "version" {
-						scope := map[string]string{"albums": "album.read", "album": "album.read", "members": "asset.read and album.read", "asset": "asset.read", "faces": "face.read", "thumbnail": "asset.view", "person thumbnail": "person.read"}[name]
+						scope := map[string]string{"albums": "album.read", "album": "album.read", "members": "asset.read and album.read", "asset": "asset.read", "faces": "face.read", "thumbnail": "asset.view", "person thumbnail": "person.read", "original": "asset.download"}[name]
 						assert.Contains(t, err.Error(), scope)
 					}
 				})
@@ -104,7 +112,7 @@ func TestReadsNeverFollowRedirects(t *testing.T) {
 			destination := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { reached.Store(true) }))
 			defer destination.Close()
 			source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.URL.Path == "/api/assets/id/original" {
+				if r.URL.Path == "/api/assets/id/original" && name != "original" {
 					reached.Store(true)
 					return
 				}

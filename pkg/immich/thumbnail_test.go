@@ -147,3 +147,98 @@ func TestGeneratedThumbnailAndPreview(t *testing.T) {
 		})
 	}
 }
+
+func TestOriginalStreamsAuthorizedBytesWithSafeMetadata(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		contentType string
+		want        string
+	}{
+		{"image/jpeg; private-key=redacted", "image/jpeg"},
+		{"image/x-adobe-dng", "image/x-adobe-dng"},
+		{"application/octet-stream", "application/octet-stream"},
+		{"text/html; private-key=exposed", "application/octet-stream"},
+		{"private-key", "application/octet-stream"},
+		{"", "application/octet-stream"},
+	} {
+		t.Run(tc.contentType, func(t *testing.T) {
+			t.Parallel()
+			fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				assert.Equal(t, http.MethodGet, r.Method)
+				assert.Equal(t, "/api/assets/asset%2Fopaque%20%3F%23%25/original", r.RequestURI)
+				assert.Equal(t, "read-key", r.Header.Get("X-Api-Key"))
+				assert.Empty(t, r.Header.Get("Range"), "originals are never requested in ranges")
+				if tc.contentType != "" {
+					w.Header().Set("Content-Type", tc.contentType)
+				}
+				w.Header().Set("Content-Disposition", `attachment; filename="private-key.jpg"`)
+				w.Header().Set("Content-Length", "14")
+				_, _ = fmt.Fprint(w, "original-bytes")
+			}))
+			t.Cleanup(fixture.Close)
+			original, err := immich.New(fixture.URL, "read-key").Original(t.Context(), "asset/opaque ?#%")
+			require.NoError(t, err)
+			defer original.Body.Close()
+			assert.Equal(t, tc.want, original.ContentType)
+			assert.Equal(t, int64(14), original.Length)
+			data, err := io.ReadAll(original.Body)
+			require.NoError(t, err)
+			assert.Equal(t, "original-bytes", string(data))
+		})
+	}
+	t.Run("unknown length", func(t *testing.T) {
+		t.Parallel()
+		fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "image/jpeg")
+			w.(http.Flusher).Flush()
+			_, _ = fmt.Fprint(w, "chunked")
+		}))
+		t.Cleanup(fixture.Close)
+		original, err := immich.New(fixture.URL, "read-key").Original(t.Context(), "asset")
+		require.NoError(t, err)
+		defer original.Body.Close()
+		assert.Equal(t, int64(-1), original.Length)
+	})
+	t.Run("slow body outlives the metadata timeout", func(t *testing.T) {
+		t.Parallel()
+		fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "image/jpeg")
+			w.WriteHeader(http.StatusOK)
+			w.(http.Flusher).Flush()
+			// Immich streams large originals slowly on home networks. The
+			// metadata client's five-second budget must not cut them off.
+			for range 3 {
+				select {
+				case <-r.Context().Done():
+					return
+				case <-time.After(2 * time.Second):
+				}
+				_, _ = fmt.Fprint(w, "chunk")
+				w.(http.Flusher).Flush()
+			}
+		}))
+		t.Cleanup(fixture.Close)
+		original, err := immich.New(fixture.URL, "read-key").Original(t.Context(), "asset")
+		require.NoError(t, err)
+		defer original.Body.Close()
+		data, err := io.ReadAll(original.Body)
+		require.NoError(t, err)
+		assert.Equal(t, "chunkchunkchunk", string(data))
+	})
+	t.Run("missing headers time out", func(t *testing.T) {
+		t.Parallel()
+		fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { <-r.Context().Done() }))
+		t.Cleanup(fixture.Close)
+		started := time.Now()
+		_, err := immich.New(fixture.URL, "private-key").Original(t.Context(), "asset")
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+		assert.Equal(t, 1, stackCount(err))
+		assert.Less(t, time.Since(started), 7*time.Second)
+		assert.NotContains(t, fmt.Sprintf("%+v", err), "private-key")
+	})
+	t.Run("empty id", func(t *testing.T) {
+		t.Parallel()
+		_, err := immich.New("http://127.0.0.1:0", "private-key").Original(t.Context(), "")
+		require.Error(t, err)
+	})
+}

@@ -15,12 +15,13 @@ import (
 	"github.com/uptrace/bun"
 )
 
-// Source exposes only source album lookup and generated image variants.
+// Source exposes source album lookup, generated image variants, and originals.
 type Source interface {
 	GetAlbum(context.Context, string) (immich.Album, error)
 	GetAsset(context.Context, string) (immich.Asset, error)
 	Thumbnail(context.Context, string) (immich.Thumbnail, error)
 	Preview(context.Context, string) (immich.Thumbnail, error)
+	Original(context.Context, string) (immich.Original, error)
 	PersonThumbnail(context.Context, string) (immich.Thumbnail, error)
 }
 
@@ -45,18 +46,40 @@ func (m *Module) SourceCover(ctx context.Context, albumID string) (immich.Thumbn
 // EntryThumbnail resolves a content-versioned entry only after verifying active
 // membership in a completed Album. A stale URL must never serve different bytes.
 func (m *Module) EntryThumbnail(ctx context.Context, id, version string) (string, error) {
-	if _, err := uuid.Parse(id); err != nil {
-		return "", errcodes.NotFound("Thumbnail")
+	item, err := m.entryMedia(ctx, id, version, "Thumbnail")
+	return item.SourceID, err
+}
+
+// EntryOriginal resolves the source asset and filename behind a photo
+// download. Video originals arrive with playback, so they are not found here.
+func (m *Module) EntryOriginal(ctx context.Context, id, version string) (EntryMedia, error) {
+	item, err := m.entryMedia(ctx, id, version, "Photo")
+	if err == nil && item.Kind != "IMAGE" {
+		return EntryMedia{}, errcodes.NotFound("Photo")
 	}
-	var sourceID string
-	err := m.db.NewSelect().TableExpr("album_entries AS entry").Column("item.source_id").
+	return item, err
+}
+
+// EntryMedia is the imported source identity behind one Album Entry.
+type EntryMedia struct {
+	SourceID string
+	Filename string
+	Kind     string
+}
+
+func (m *Module) entryMedia(ctx context.Context, id, version, resource string) (EntryMedia, error) {
+	var item EntryMedia
+	if _, err := uuid.Parse(id); err != nil {
+		return item, errcodes.NotFound(resource)
+	}
+	err := m.db.NewSelect().TableExpr("album_entries AS entry").ColumnExpr("item.source_id, item.filename, item.kind").
 		Join("JOIN albums AS album ON album.id = entry.album_id").Join("JOIN media_items AS item ON item.id = entry.media_item_id").
 		Where("entry.id = ? AND entry.removed_at IS NULL AND album.import_status = 'complete'", id).
-		Where("item.content_version = ? AND NOT item.offline AND NOT item.trashed", version).Scan(ctx, &sourceID)
+		Where("item.content_version = ? AND NOT item.offline AND NOT item.trashed", version).Scan(ctx, &item)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", errcodes.NotFound("Thumbnail")
+		return item, errcodes.NotFound(resource)
 	}
-	return sourceID, errorstack.CaptureContext(ctx, err)
+	return item, errorstack.CaptureContext(ctx, err)
 }
 
 // FaceThumbnail authorizes a cached Immich face at the requested version and
@@ -113,14 +136,33 @@ func (m *Module) personThumbnail(ctx context.Context, sourceID string) (immich.T
 // installation details out of ordinary and preview media responses.
 func (m *Module) viewerImage(ctx context.Context, sourceID, version string, large bool) (immich.Thumbnail, error) {
 	image, err := m.generatedImage(ctx, sourceID, version, large)
+	return image, redactUpstream(ctx, err)
+}
+
+// viewerOriginal opens the uploaded file behind an authorized photo with the
+// same version check and redaction as generated variants.
+func (m *Module) viewerOriginal(ctx context.Context, sourceID, version string) (immich.Original, error) {
+	if err := m.checkVersion(ctx, sourceID, version, "Photo"); err != nil {
+		return immich.Original{}, redactUpstream(ctx, err)
+	}
+	original, err := m.source.Original(ctx, sourceID)
+	return original, redactUpstream(ctx, err)
+}
+
+// checkOriginal answers a HEAD download: the same version check, no stream.
+func (m *Module) checkOriginal(ctx context.Context, sourceID, version string) error {
+	return redactUpstream(ctx, m.checkVersion(ctx, sourceID, version, "Photo"))
+}
+
+func redactUpstream(ctx context.Context, err error) error {
 	if err == nil || errorstack.IsContextCancellation(ctx, err) {
-		return image, err
+		return err
 	}
 	var public error = &errcodes.Error{HTTPCode: http.StatusBadGateway, Code: "media_unavailable", Message: "Media is unavailable. Try again later."}
 	if coded, ok := errors.AsType[*errcodes.Error](err); ok && coded.HTTPCode == http.StatusNotFound {
 		public = errcodes.NotFound("Media")
 	}
-	return immich.Thumbnail{}, errors.Join(public, err)
+	return errors.Join(public, err)
 }
 
 func (m *Module) generatedThumbnail(ctx context.Context, sourceID, version string) (immich.Thumbnail, error) {
@@ -130,15 +172,24 @@ func (m *Module) generatedThumbnail(ctx context.Context, sourceID, version strin
 // generatedImage serves a fixed Immich variant only while the asset still
 // matches the requested content version.
 func (m *Module) generatedImage(ctx context.Context, sourceID, version string, large bool) (immich.Thumbnail, error) {
-	asset, err := m.source.GetAsset(ctx, sourceID)
-	if err != nil {
+	if err := m.checkVersion(ctx, sourceID, version, "Thumbnail"); err != nil {
 		return immich.Thumbnail{}, err
-	}
-	if asset.ID != sourceID || asset.Offline || asset.Trashed || ContentVersion(asset) != version {
-		return immich.Thumbnail{}, errcodes.NotFound("Thumbnail")
 	}
 	if large {
 		return m.source.Preview(ctx, sourceID)
 	}
 	return m.source.Thumbnail(ctx, sourceID)
+}
+
+// checkVersion confirms the live asset still matches the requested content
+// version, so an edited or removed source never serves under an old URL.
+func (m *Module) checkVersion(ctx context.Context, sourceID, version, resource string) error {
+	asset, err := m.source.GetAsset(ctx, sourceID)
+	if err != nil {
+		return err
+	}
+	if asset.ID != sourceID || asset.Offline || asset.Trashed || ContentVersion(asset) != version {
+		return errcodes.NotFound(resource)
+	}
+	return nil
 }

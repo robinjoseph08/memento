@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"mime"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -11,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/labstack/echo/v5"
+	"github.com/robinjoseph08/memento/cmd/immich-smoke/fixture"
 	"github.com/robinjoseph08/memento/pkg/errcodes"
 	"github.com/robinjoseph08/memento/pkg/identity"
 	"github.com/robinjoseph08/memento/pkg/media"
@@ -20,7 +23,7 @@ import (
 
 // verifyPublishing uses Memento's public modules and production media HTTP routes.
 // Only sign-in middleware is replaced, with a fixed actor per in-process handler.
-func verifyPublishing(ctx context.Context, db *bun.DB, module *publishing.Module, delivery *media.Module, imported []publishing.AlbumDetail) error {
+func verifyPublishing(ctx context.Context, db *bun.DB, module *publishing.Module, delivery *media.Module, imported []publishing.AlbumDetail, uploaded []fixture.Asset) error {
 	people := identity.New(db, nil)
 	curator, err := people.SignIn(ctx, identity.Claims{Provider: "fake", Subject: "smoke-curator", Email: "curator@example.test", EmailVerified: true, DisplayName: "Smoke Curator"})
 	if err != nil {
@@ -117,6 +120,9 @@ func verifyPublishing(ctx context.Context, db *bun.DB, module *publishing.Module
 	if err != nil {
 		return err
 	}
+	if err := verifyDownloads(ctx, module, alexHTTP, samHTTP, alex.ID, a.ID, uploaded); err != nil {
+		return fmt.Errorf("original photo downloads: %w", err)
+	}
 	if _, err := verifyViewer(ctx, module, samHTTP, sam.ID, "", a.ID, 1, first.CoverEntryID); err != nil {
 		return err
 	}
@@ -184,7 +190,59 @@ func verifyPublishing(ctx context.Context, db *bun.DB, module *publishing.Module
 	if len(albums) != 1 || albums[0].ID != b.ID {
 		return fmt.Errorf("viewer listing did not retain only the surviving published Album")
 	}
-	fmt.Println("Publishing: two Person previews, configured covers and placeholder, real authorized thumbnail bytes, denial, unpublish, and shared deletion verified")
+	fmt.Println("Publishing: two Person previews, configured covers and placeholder, real authorized thumbnail and original bytes, denial, unpublish, and shared deletion verified")
+	return nil
+}
+
+// verifyDownloads streams every authorized original through the production
+// route and compares it byte for byte with the uploaded fixture file. The
+// same URLs must stay neutral for another Person and in preview.
+func verifyDownloads(ctx context.Context, module *publishing.Module, viewer, other http.Handler, actorID, albumID string, uploaded []fixture.Asset) error {
+	page, err := module.ViewEntries(ctx, actorID, "", albumID, "IMAGE", "")
+	if err != nil {
+		return err
+	}
+	if len(page.Entries) == 0 {
+		return fmt.Errorf("no authorized photos to download")
+	}
+	for _, entry := range page.Entries {
+		if entry.DownloadURL == "" {
+			return fmt.Errorf("authorized photo %q has no download URL", entry.Title)
+		}
+		index := -1
+		for i, asset := range uploaded {
+			if strings.TrimSuffix(asset.Filename, ".jpg") == entry.Title {
+				index = i
+			}
+		}
+		if index < 0 {
+			return fmt.Errorf("photo %q is not an uploaded fixture", entry.Title)
+		}
+		want, err := fixture.JPEG(uploaded[index].Photo, index)
+		if err != nil {
+			return err
+		}
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequestWithContext(ctx, http.MethodGet, entry.DownloadURL, nil)
+		request.Header.Set("Range", "bytes=0-1")
+		viewer.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusOK || !bytes.Equal(recorder.Body.Bytes(), want) {
+			return fmt.Errorf("download of %q returned HTTP %d with %d bytes, want %d uploaded bytes", entry.Title, recorder.Code, recorder.Body.Len(), len(want))
+		}
+		disposition, params, err := mime.ParseMediaType(recorder.Header().Get("Content-Disposition"))
+		if err != nil || disposition != "attachment" || params["filename"] != uploaded[index].Filename {
+			return fmt.Errorf("download of %q is not an attachment named after the source file", entry.Title)
+		}
+		if recorder.Header().Get("Cache-Control") != "private, no-store" || recorder.Header().Get("Content-Range") != "" {
+			return fmt.Errorf("download of %q used shared caching or honored a range", entry.Title)
+		}
+		if recorder.Header().Get("Content-Length") != fmt.Sprint(len(want)) {
+			return fmt.Errorf("download of %q did not announce its length", entry.Title)
+		}
+		if err := deniedMedia(ctx, other, entry.DownloadURL, http.StatusNotFound); err != nil {
+			return fmt.Errorf("download URL crossed Person identity: %w", err)
+		}
+	}
 	return nil
 }
 

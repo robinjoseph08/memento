@@ -16,7 +16,7 @@ export function ViewerAlbumRedirect() {
 }
 
 export function ViewerAlbumPage({ tab }: { tab: ViewerTab }) {
-  const { id = "" } = useParams();
+  const { id = "", entryID } = useParams();
   const base = `/albums/${encodeURIComponent(id)}`;
   return (
     <>
@@ -29,6 +29,8 @@ export function ViewerAlbumPage({ tab }: { tab: ViewerTab }) {
       </Link>
       <ViewerGallery
         context={{ albumID: id }}
+        entryID={entryID}
+        entryLink={(entry) => `${base}/photos/${encodeURIComponent(entry)}`}
         tab={tab}
         tabLinks={{ photos: `${base}/photos`, videos: `${base}/videos` }}
       />

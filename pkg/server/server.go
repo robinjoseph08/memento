@@ -98,7 +98,7 @@ func newServer(cfg *config.Config, frontend http.Handler, options ...dependencie
 			}
 		}
 		if deps.media != nil {
-			media.RegisterRoutes(e, deps.media, handlers.RequireCurator)
+			media.RegisterRoutes(e, deps.media, handlers.RequirePerson, handlers.RequireCurator)
 		}
 	}
 	apiNotFound := func(_ *echo.Context) error { return echo.ErrNotFound }

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"image"
 	"net/http"
 	"net/http/httptest"
@@ -59,7 +60,7 @@ func TestFixtureImportContract(t *testing.T) {
 	require.NoError(t, client.CheckImport(t.Context()))
 	albums, err := client.ListAlbums(t.Context())
 	require.NoError(t, err)
-	require.Len(t, albums, 33)
+	require.Len(t, albums, 34)
 	album, err := client.GetAlbum(t.Context(), "fixture-album-coast")
 	require.NoError(t, err)
 	assert.Equal(t, 6, album.Count)
@@ -104,13 +105,29 @@ func TestFixtureImportContract(t *testing.T) {
 	decoded, _, err := image.Decode(thumbnail.Body)
 	require.NoError(t, err)
 	assert.Equal(t, 320, decoded.Bounds().Dx())
-	for _, path := range []string{"/api/albums/fixture-album-coast/assets", "/api/assets/fixture-asset-01/original"} {
-		req := httptest.NewRequest(http.MethodGet, path, nil)
-		req.Header.Set("X-Api-Key", fixtureAPIKey)
-		response := httptest.NewRecorder()
-		fixture.ServeHTTP(response, req)
-		assert.Equal(t, http.StatusNotFound, response.Code)
+	req := httptest.NewRequest(http.MethodGet, "/api/albums/fixture-album-coast/assets", nil)
+	req.Header.Set("X-Api-Key", fixtureAPIKey)
+	response := httptest.NewRecorder()
+	fixture.ServeHTTP(response, req)
+	assert.Equal(t, http.StatusNotFound, response.Code)
+	original, err := client.Original(t.Context(), "fixture-asset-01")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, original.Body.Close()) })
+	assert.Positive(t, original.Length)
+	_, _, err = image.Decode(original.Body)
+	require.NoError(t, err)
+	browse, next, err := client.ListMembers(t.Context(), "workbench-browse", 1)
+	require.NoError(t, err)
+	require.Len(t, browse, 221)
+	assert.Zero(t, next)
+	assert.Equal(t, browse[98].LocalDateTime, browse[101].LocalDateTime, "a capture tie straddles the page boundary")
+	assert.NotEqual(t, browse[97].LocalDateTime, browse[98].LocalDateTime)
+	assert.Equal(t, "fixture-asset-07", browse[220].ID)
+	shapes := map[string]bool{}
+	for _, member := range browse[:220] {
+		shapes[fmt.Sprintf("%dx%d", *member.Width, *member.Height)] = true
 	}
+	assert.Len(t, shapes, 4)
 }
 
 func TestFixtureMembershipPagination(t *testing.T) {
