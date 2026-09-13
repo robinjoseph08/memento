@@ -4,12 +4,11 @@ export function countLabel(count: number, singular: string, plural: string) {
   return `${count} ${count === 1 ? singular : plural}`;
 }
 
-export function mediaCounts(entries: Entry[]) {
-  const photos = entries.filter((entry) => entry.kind === "IMAGE").length;
-  const videos = entries.filter((entry) => entry.kind === "VIDEO").length;
-  return videos
-    ? `${countLabel(photos, "photo", "photos")}, ${countLabel(videos, "video", "videos")}`
-    : countLabel(photos, "photo", "photos");
+export function countMedia(entries: Entry[]) {
+  return {
+    photos: entries.filter((entry) => entry.kind === "IMAGE").length,
+    videos: entries.filter((entry) => entry.kind === "VIDEO").length,
+  };
 }
 
 // Titled Moments show their date beneath the title; untitled ones use the

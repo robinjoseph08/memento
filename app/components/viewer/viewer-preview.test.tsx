@@ -97,7 +97,12 @@ function renderPreview(
       if (path.endsWith("/status"))
         return Response.json({
           claimed: true,
-          person: { id: "curator", display_name: "Robin", is_curator: true },
+          person: {
+            id: "curator",
+            display_name: "Robin",
+            is_curator: true,
+            onboarding_completed_at: "2026-01-01T00:00:00Z",
+          },
           auth_mode: "fake",
         });
       return handler(path);

@@ -29,5 +29,5 @@ func TestFakeSignInUsesEmailIdentity(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, expected, active.Person)
 	_, err = module.SignIn(t.Context(), identity.FakeClaims(identity.SignInRequest{Email: "different@example.test", DisplayName: "Alex"}))
-	require.ErrorIs(t, err, identity.ErrAccessDenied)
+	require.ErrorIs(t, err, identity.ErrAccessRequested)
 }

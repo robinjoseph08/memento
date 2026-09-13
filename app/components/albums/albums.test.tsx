@@ -31,7 +31,12 @@ const album: Album = {
   cover_url: "/media/beach",
 };
 
-const person = { id: "robin", display_name: "Robin", is_curator: true };
+const person = {
+  id: "robin",
+  display_name: "Robin",
+  is_curator: true,
+  onboarding_completed_at: "2026-01-01T00:00:00Z",
+};
 const source = {
   id: "summer",
   title: "Summer by the sea",
@@ -76,6 +81,9 @@ function mockAPI(
             message: "",
           }),
         );
+      // The shell's Access Request badge is not part of these Album scenarios.
+      if (path.endsWith("/access-requests"))
+        return Promise.resolve(Response.json([]));
       return Promise.resolve(handler(path, options));
     }),
   );
@@ -1530,7 +1538,7 @@ it("links an Immich face to an existing Person and derives a suggestion", async 
     id: "alex",
     display_name: "Alex",
     is_curator: false,
-    onboarding_completed_at: null,
+    onboarding_completed_at: "2026-01-01T00:00:00Z",
     deactivated_at: null,
     update_email: "",
     email_updates: true,

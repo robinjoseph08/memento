@@ -1,5 +1,5 @@
-// Package worker commits import and chapter work with application transactions
-// and runs it through the shared PostgreSQL connection pool.
+// Package worker commits import, chapter, and mail work with application
+// transactions and runs it through the shared PostgreSQL connection pool.
 package worker
 
 import (
@@ -12,6 +12,7 @@ import (
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverdatabasesql"
 	"github.com/riverqueue/river/rivertype"
+	"github.com/robinjoseph08/golib/logger"
 	"github.com/robinjoseph08/memento/pkg/errcodes"
 	"github.com/robinjoseph08/memento/pkg/errorstack"
 	"github.com/uptrace/bun"
@@ -39,10 +40,23 @@ type chapterArgs struct {
 
 func (chapterArgs) Kind() string { return "extract_video_chapters" }
 
+type mailArgs struct {
+	DeliveryID string `json:"delivery_id"`
+}
+
+func (mailArgs) Kind() string { return "deliver_mail" }
+
+const (
+	mailQueue          = "mail"
+	mailMaxAttempts    = 5
+	DefaultMailWorkers = 5
+)
+
 // Runtime shares Bun's pool and never closes it. Stop it before closing Bun.
 type Runtime struct {
 	client   *river.Client[*sql.Tx]
 	chapters bool
+	mail     bool
 }
 
 // Option extends the runtime with another task on its own queue.
@@ -51,6 +65,18 @@ type Option func(*settings)
 type settings struct {
 	chapters     func(context.Context, string, string) error
 	ffprobeSlots int
+	mail         func(context.Context, string) error
+	mailSlots    int
+}
+
+// Mail adds the mail delivery task on its own bounded queue so slow SMTP
+// sessions never occupy import or probe workers. Concurrency below one uses
+// the default of five.
+func Mail(execute func(ctx context.Context, deliveryID string) error, concurrency int) Option {
+	return func(s *settings) {
+		s.mail = execute
+		s.mailSlots = concurrency
+	}
 }
 
 // Chapters adds the chapter extraction task on the bounded ffprobe queue.
@@ -81,9 +107,17 @@ func New(db *bun.DB, execute func(context.Context, string) error, options ...Opt
 		river.AddWorker(workers, &chapterWorker{execute: config.chapters})
 		queues["ffprobe"] = river.QueueConfig{MaxWorkers: config.ffprobeSlots}
 	}
+	if config.mail != nil {
+		if config.mailSlots < 1 {
+			config.mailSlots = DefaultMailWorkers
+		}
+		river.AddWorker(workers, &mailWorker{execute: config.mail})
+		queues[mailQueue] = river.QueueConfig{MaxWorkers: config.mailSlots}
+	}
 	client, err := river.NewClient(riverdatabasesql.New(db.DB), &river.Config{
 		Workers:              workers,
 		Queues:               queues,
+		ErrorHandler:         &errorLogger{log: logger.New()},
 		PollOnly:             true,
 		FetchPollInterval:    time.Second,
 		MaxAttempts:          3,
@@ -94,7 +128,7 @@ func New(db *bun.DB, execute func(context.Context, string) error, options ...Opt
 	if err != nil {
 		return nil, runtimeError(context.Background(), "configure import worker", err)
 	}
-	return &Runtime{client: client, chapters: config.chapters != nil}, nil
+	return &Runtime{client: client, chapters: config.chapters != nil, mail: config.mail != nil}, nil
 }
 
 // Start begins polling. Use the application lifetime, not an HTTP request context.
@@ -157,6 +191,50 @@ func (r *Runtime) EnqueueChapters(ctx context.Context, tx bun.Tx, mediaItemID, c
 		_, err = r.client.JobRetryTx(ctx, tx.Tx, result.Job.ID)
 	}
 	return runtimeError(ctx, "enqueue chapters", err)
+}
+
+// EnqueueMail records one delivery attempt in the caller's transaction. Mail
+// jobs are deliberately not unique in River: the delivery record decides
+// whether work remains, and River's required "running" uniqueness would let a
+// job orphaned by a crash block a Curator's deliberate retry until the rescuer
+// runs. A rescued job finds the record already settled and does nothing.
+func (r *Runtime) EnqueueMail(ctx context.Context, tx bun.Tx, deliveryID string) error {
+	if !r.mail {
+		return fmt.Errorf("mail delivery is not configured on this worker")
+	}
+	if tx.Tx == nil || deliveryID == "" {
+		return fmt.Errorf("enqueue mail requires a transaction and delivery ID")
+	}
+	_, err := r.client.InsertTx(ctx, tx.Tx, mailArgs{DeliveryID: deliveryID}, &river.InsertOpts{Queue: mailQueue, MaxAttempts: mailMaxAttempts})
+	return runtimeError(ctx, "enqueue mail", err)
+}
+
+type mailWorker struct {
+	river.WorkerDefaults[mailArgs]
+	execute func(context.Context, string) error
+}
+
+// Timeout bounds one SMTP session well below the import limit.
+func (*mailWorker) Timeout(*river.Job[mailArgs]) time.Duration { return 2 * time.Minute }
+
+func (w *mailWorker) Work(ctx context.Context, job *river.Job[mailArgs]) error {
+	return work(ctx, "deliver mail", job.Attempt >= job.MaxAttempts, func(ctx context.Context) error {
+		return w.execute(ctx, job.Args.DeliveryID)
+	})
+}
+
+// errorLogger writes job failures to the application log with their captured
+// cause, since River persists only the sanitized message.
+type errorLogger struct{ log logger.Logger }
+
+func (l *errorLogger) HandleError(_ context.Context, job *rivertype.JobRow, err error) *river.ErrorHandlerResult {
+	l.log.Err(err).Error("job attempt failed", logger.Data{"kind": job.Kind, "queue": job.Queue, "attempt": job.Attempt, "max_attempts": job.MaxAttempts})
+	return nil
+}
+
+func (l *errorLogger) HandlePanic(_ context.Context, job *rivertype.JobRow, panicVal any, trace string) *river.ErrorHandlerResult {
+	l.log.Error("job attempt panicked", logger.Data{"kind": job.Kind, "queue": job.Queue, "attempt": job.Attempt, "panic": fmt.Sprint(panicVal), "trace": trace})
+	return nil
 }
 
 type chapterWorker struct {

@@ -6,7 +6,7 @@ import type {
   ViewerEntry,
   ViewerPage,
 } from "../app/types/generated/publishing";
-import { expect, test } from "./fixtures";
+import { expect, finishOnboarding, test } from "./fixtures";
 
 async function readAllVideos(page: Page, albumID: string) {
   const entries: ViewerEntry[] = [];
@@ -56,6 +56,7 @@ test("videos play with titles, chapters, ranges, downloads, and recover a failed
   await immich.checkpoint("chapter-probe", "fail");
   await page.goto("/setup");
   await page.getByRole("button", { name: "Claim installation" }).click();
+  await finishOnboarding(page);
   await page.getByRole("link", { name: "People", exact: true }).click();
   await page.getByRole("button", { name: "Add person", exact: true }).click();
   await page.getByRole("textbox", { name: "Display name" }).fill("Alex");
@@ -206,6 +207,7 @@ test("videos play with titles, chapters, ranges, downloads, and recover a failed
       .getByRole("textbox", { name: "Email", exact: true })
       .fill("alex@example.test");
     await member.getByRole("button", { name: "Sign in", exact: true }).click();
+    await finishOnboarding(member);
     await member.getByRole("link", { name: /Workbench - Videos/ }).click();
     const viewerPath = `/albums/${albumID}/videos`;
     await member

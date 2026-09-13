@@ -186,6 +186,33 @@ func TestImmichPublicURLIsOptionalButValidated(t *testing.T) {
 	}
 }
 
+func TestSMTPIsOptionalButValidatedTogether(t *testing.T) {
+	t.Parallel()
+	values := requiredConfig()
+	cfg, err := load(filepath.Join(t.TempDir(), "missing.yaml"), false, values, func() (string, error) { return "host", nil })
+	require.NoError(t, err)
+	assert.False(t, cfg.MailConfigured())
+	assert.Equal(t, 5, cfg.SMTPConcurrency, "SMTP concurrency defaults to five deliveries")
+	values["smtp_from"] = "memento@example.test"
+	_, err = load(filepath.Join(t.TempDir(), "missing.yaml"), false, values, func() (string, error) { return "host", nil })
+	require.ErrorContains(t, err, "smtp_from: requires smtp_url")
+	values["smtp_url"] = "smtps://user:supersecret@mail.example.test:465"
+	values["smtp_concurrency"] = 2
+	cfg, err = load(filepath.Join(t.TempDir(), "missing.yaml"), false, values, func() (string, error) { return "host", nil })
+	require.NoError(t, err)
+	assert.True(t, cfg.MailConfigured())
+	assert.Equal(t, 2, cfg.SMTPConcurrency)
+	for name, value := range map[string]any{"smtp_url": "http://user:supersecret@mail.example.test", "smtp_from": "not an address", "smtp_concurrency": 0} {
+		invalid := requiredConfig()
+		invalid["smtp_url"] = "smtp://user:supersecret@mail.example.test"
+		invalid["smtp_from"] = "memento@example.test"
+		invalid[name] = value
+		_, err := load(filepath.Join(t.TempDir(), "missing.yaml"), false, invalid, func() (string, error) { return "host", nil })
+		require.ErrorContains(t, err, name+":", name)
+		assert.NotContains(t, err.Error(), "supersecret")
+	}
+}
+
 func TestPublicURLMatchesBrowserOrigin(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct{ input, want string }{

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/mail"
 	"net/url"
 	"os"
 	"path"
@@ -51,6 +52,9 @@ type Config struct {
 	DatabaseDebug             bool          `koanf:"database_debug" json:"database_debug"`
 	DatabaseConnectRetryCount int           `koanf:"database_connect_retry_count" json:"database_connect_retry_count" validate:"min=1"`
 	DatabaseConnectRetryDelay time.Duration `koanf:"database_connect_retry_delay" json:"database_connect_retry_delay" validate:"min=0"`
+	SMTPURL                   string        `koanf:"smtp_url" json:"-"`
+	SMTPFrom                  string        `koanf:"smtp_from" json:"smtp_from"`
+	SMTPConcurrency           int           `koanf:"smtp_concurrency" json:"smtp_concurrency" validate:"min=1"`
 	FilesPath                 string        `koanf:"files_path" json:"files_path" validate:"required"`
 	FFprobePath               string        `koanf:"ffprobe_path" json:"ffprobe_path" validate:"required"`
 	FFprobeConcurrency        int           `koanf:"ffprobe_concurrency" json:"ffprobe_concurrency" validate:"min=1,max=16"`
@@ -69,6 +73,7 @@ func defaults() *Config {
 		DatabaseDebug:             false,
 		DatabaseConnectRetryCount: 5,
 		DatabaseConnectRetryDelay: 2 * time.Second,
+		SMTPConcurrency:           5,
 		FilesPath:                 "./tmp/files",
 		FFprobePath:               "ffprobe",
 		FFprobeConcurrency:        1,
@@ -76,6 +81,12 @@ func defaults() *Config {
 		ServerHost:                "0.0.0.0",
 		ServerPort:                3579,
 	}
+}
+
+// MailConfigured reports whether outbound email has SMTP settings. Email stays
+// optional so an installation runs before a mail server exists.
+func (c *Config) MailConfigured() bool {
+	return strings.TrimSpace(c.SMTPURL) != ""
 }
 
 // ImmichBrowserURL is the Immich origin a Curator's browser can open. It falls
@@ -242,6 +253,9 @@ func validateConfig(cfg *Config) error {
 		}
 		*setting.value = strings.TrimRight(u.String(), "/")
 	}
+	if err := validateSMTP(cfg); err != nil {
+		return err
+	}
 	if cfg.AppEnv != "production" && cfg.AppEnv != "development" && cfg.AppEnv != "test" {
 		return fmt.Errorf("app_env: must be production, development, or test")
 	}
@@ -278,6 +292,31 @@ func validateConfig(cfg *Config) error {
 		}
 		field := validationErrors[0]
 		return fmt.Errorf("%s: %s %s", field.Field(), field.Tag(), field.Param())
+	}
+	return nil
+}
+
+// validateSMTP checks the optional mail settings without connecting. Errors
+// name the setting, never the URL, because it may carry credentials.
+func validateSMTP(cfg *Config) error {
+	if !cfg.MailConfigured() {
+		if strings.TrimSpace(cfg.SMTPFrom) != "" {
+			return fmt.Errorf("smtp_from: requires smtp_url")
+		}
+		return nil
+	}
+	u, err := parseURL("smtp_url", cfg.SMTPURL)
+	if err != nil {
+		return err
+	}
+	if u.Scheme != "smtp" && u.Scheme != "smtps" {
+		return fmt.Errorf("smtp_url: must be smtp://host:port or smtps://host:port")
+	}
+	if (u.Path != "" && u.Path != "/") || u.RawQuery != "" || strings.Contains(cfg.SMTPURL, "#") {
+		return fmt.Errorf("smtp_url: must not contain a path, query, or fragment")
+	}
+	if _, err := mail.ParseAddress(strings.TrimSpace(cfg.SMTPFrom)); err != nil {
+		return fmt.Errorf("smtp_from: must be a valid email address")
 	}
 	return nil
 }

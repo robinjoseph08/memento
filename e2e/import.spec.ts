@@ -1,5 +1,5 @@
 import type { AlbumDetail } from "../app/types/generated/publishing";
-import { expect, test } from "./fixtures";
+import { expect, finishOnboarding, test } from "./fixtures";
 
 test("imports an album through a stopped task, browser closure, and API restart", async ({
   page,
@@ -12,6 +12,7 @@ test("imports an album through a stopped task, browser closure, and API restart"
   await page.getByLabel("Email", { exact: true }).fill("curator@example.com");
   await page.getByLabel("Display name").fill("Fixture Curator");
   await page.getByLabel("Display name").press("Enter");
+  await finishOnboarding(page);
   await expect(page).toHaveURL(/\/curator$/);
   await page.getByRole("link", { name: "Import an album" }).click();
 
@@ -160,7 +161,7 @@ test("imports an album through a stopped task, browser closure, and API restart"
   await completed.getByRole("link", { name: "All albums" }).click();
   await expect(
     completed.getByRole("link", {
-      name: /Our coast holiday.*4 photos, 2 videos.*unpublished/,
+      name: /Our coast holiday.*4 photos, 2 videos.*Unpublished/,
     }),
   ).toBeVisible();
   const albumCard = completed.getByRole("link", { name: /Our coast holiday/ });

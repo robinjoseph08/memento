@@ -90,14 +90,18 @@ func (m *Module) RevokePreauthorization(ctx context.Context, token, personID, id
 	})
 }
 
+// errNoPreauthorization separates "nobody approved this email" from other
+// refusals so SignIn can record an Access Request for it.
+var errNoPreauthorization = errors.New("no preauthorization")
+
 // resolvePreauthorization is the admission decision for an unknown subject.
-// No matching approval means no access; a later Access Request use case can extend this decision.
+// Only an exact, unused, verified-email approval admits it.
 func (m *Module) resolvePreauthorization(ctx context.Context, tx bun.Tx, claims Claims) (models.Person, error) {
 	var person models.Person
 	var approval models.Preauthorization
 	err := tx.NewSelect().Model(&approval).Where("email = ? AND consumed_at IS NULL AND revoked_at IS NULL", claims.Email).Scan(ctx)
 	if errors.Is(err, sql.ErrNoRows) {
-		return person, ErrAccessDenied
+		return person, errNoPreauthorization
 	}
 	if err != nil {
 		return person, errorstack.CaptureContext(ctx, err)

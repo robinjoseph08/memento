@@ -10,7 +10,12 @@ import { afterEach, expect, it, vi } from "vitest";
 
 import { App } from "./App";
 
-const curator = { id: "curator", display_name: "Robin", is_curator: true };
+const curator = {
+  id: "curator",
+  display_name: "Robin",
+  is_curator: true,
+  onboarding_completed_at: "2026-01-01T00:00:00Z",
+};
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
@@ -100,6 +105,8 @@ it("preserves edits when the server rejects a Person change", async () => {
         person: { ...curator, id: "other-curator" },
         identities: [],
         preauthorizations: [],
+        invitations: [],
+        announced: { albums: 0, entries: 0 },
         sessions: [],
       });
     }),
@@ -118,7 +125,12 @@ it("preserves edits when the server rejects a Person change", async () => {
 });
 
 it("keeps successfully saved Person values when the following refresh fails", async () => {
-  const alex = { id: "alex", display_name: "Alex", is_curator: false };
+  const alex = {
+    id: "alex",
+    display_name: "Alex",
+    is_curator: false,
+    onboarding_completed_at: "2026-01-01T00:00:00Z",
+  };
   let saved = false;
   vi.stubGlobal(
     "fetch",
@@ -135,6 +147,7 @@ it("keeps successfully saved Person values when the following refresh fails", as
           ...alex,
           display_name: "Saved Alex",
           is_curator: true,
+          onboarding_completed_at: "2026-01-01T00:00:00Z",
         });
       }
       if (saved)
@@ -146,6 +159,8 @@ it("keeps successfully saved Person values when the following refresh fails", as
         person: alex,
         identities: [],
         preauthorizations: [],
+        invitations: [],
+        announced: { albums: 0, entries: 0 },
       });
     }),
   );
@@ -189,13 +204,21 @@ it("creates a person without losing a rejected display name and opens their acce
           id: "alex",
           display_name: "Alex",
           is_curator: false,
+          onboarding_completed_at: "2026-01-01T00:00:00Z",
         });
       }
       if (path === "/api/people/alex")
         return Response.json({
-          person: { id: "alex", display_name: "Alex", is_curator: false },
+          person: {
+            id: "alex",
+            display_name: "Alex",
+            is_curator: false,
+            onboarding_completed_at: "2026-01-01T00:00:00Z",
+          },
           identities: [],
           preauthorizations: [],
+          invitations: [],
+          announced: { albums: 0, entries: 0 },
         });
       if (path.startsWith("/api/people")) return Response.json([]);
       throw new Error(`Unexpected request: ${path}`);

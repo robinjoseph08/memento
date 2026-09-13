@@ -1,6 +1,10 @@
 import { ExternalLink } from "lucide-react";
 import { useState } from "react";
 
+import {
+  useRetryInvitation,
+  useSendInvitation,
+} from "../../hooks/queries/admission";
 import { useIdentityStatus } from "../../hooks/queries/identity";
 import {
   usePreauthorize,
@@ -10,8 +14,9 @@ import {
   useUpdatePerson,
 } from "../../hooks/queries/people";
 import { useUnsavedChanges } from "../../hooks/use-unsaved-changes";
-import { fieldErrors } from "../../lib/http";
+import { errorMessage, fieldErrors } from "../../lib/http";
 import { initials } from "../../lib/initials";
+import { formatDate } from "../../lib/utils";
 import type {
   PersonDetail,
   UpdatePersonRequest,
@@ -47,6 +52,9 @@ export function PersonDetails({ detail }: { detail: PersonDetail }) {
   const preauthorize = usePreauthorize(person.id);
   const revoke = useRevokePreauthorization(person.id);
   const unlink = useUnlinkPersonIdentity(person.id);
+  const sendInvitation = useSendInvitation(person.id);
+  const retryInvitation = useRetryInvitation(person.id);
+  const inviteError = sendInvitation.error ?? retryInvitation.error;
   const dirty =
     draft !== null && JSON.stringify(draft) !== JSON.stringify(initial);
   useUnsavedChanges(
@@ -145,6 +153,26 @@ export function PersonDetails({ detail }: { detail: PersonDetail }) {
             </h2>
             <dl className="mt-6 space-y-5 text-sm">
               <div>
+                <dt className="text-xs text-muted">Onboarding</dt>
+                <dd className="mt-2">
+                  {person.onboarding_completed_at
+                    ? `Completed ${formatDate(person.onboarding_completed_at)}`
+                    : "Not completed yet"}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-xs text-muted">Announced so far</dt>
+                <dd className="mt-2">
+                  {detail.announced.albums === 1
+                    ? "1 album"
+                    : `${detail.announced.albums} albums`}
+                  ,{" "}
+                  {detail.announced.entries === 1
+                    ? "1 photo or video"
+                    : `${detail.announced.entries} photos and videos`}
+                </dd>
+              </div>
+              <div>
                 <dt className="text-xs text-muted">Email for updates</dt>
                 <dd className="mt-2 wrap-anywhere">
                   {person.update_email || "No email selected"}
@@ -176,7 +204,8 @@ export function PersonDetails({ detail }: { detail: PersonDetail }) {
             <p className="mt-3 mb-6 max-w-150 text-sm text-muted">
               Enter the exact Google email address, including uppercase and
               lowercase letters. Signing in with that address links it to this
-              person. Approval does not expire and does not send an email.
+              person. Approval does not expire and does not send an email; use
+              Invite to send a sign-in email to an approved address.
             </p>
             <Form
               aria-busy={preauthorize.isPending}
@@ -213,9 +242,24 @@ export function PersonDetails({ detail }: { detail: PersonDetail }) {
                 </Button>
               </fieldset>
             </Form>
+            {inviteError && !fieldErrors(inviteError).preauthorization_id && (
+              <p className="mt-4 text-sm text-destructive" role="alert">
+                {errorMessage(inviteError)}
+              </p>
+            )}
             <PreauthorizationTables
               authorizations={detail.preauthorizations}
               error={revoke.error}
+              invitations={detail.invitations ?? []}
+              invite={{
+                send: (preauthorizationID) =>
+                  sendInvitation.mutateAsync({
+                    preauthorization_id: preauthorizationID,
+                  }),
+                retry: retryInvitation.mutateAsync,
+                pending: sendInvitation.isPending || retryInvitation.isPending,
+                error: retryInvitation.error,
+              }}
               pending={revoke.isPending}
               revoke={revoke.mutateAsync}
             />

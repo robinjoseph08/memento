@@ -1,4 +1,3 @@
-import { ChevronLeft } from "lucide-react";
 import { useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 
@@ -24,9 +23,10 @@ import { AlbumImage } from "./album-image";
 import { DangerZone } from "./album-lifecycle";
 import { Audience } from "./audience";
 import { ImportProgress } from "./import-progress";
+import { MediaCounts } from "./media-counts";
 import {
   countLabel,
-  mediaCounts,
+  countMedia,
   momentCover,
   momentHeading,
   shortDay,
@@ -48,7 +48,7 @@ export function AlbumPage() {
       <PageTitle title={album.data?.title ?? "Album"} />
       {album.isPending && (
         <div className="px-5 py-4 min-[761px]:px-8">
-          <BackLink className="mb-2 text-xs" to="/curator">
+          <BackLink className="mb-1 min-h-7 text-xs" to="/curator">
             All albums
           </BackLink>
           <h1 className={sectionHeadingClass}>Album</h1>
@@ -97,18 +97,20 @@ function AlbumContent({ album }: { album: AlbumDetail }) {
     <>
       <header className="flex flex-wrap items-center gap-4 border-b border-border px-5 py-4 min-[761px]:px-8">
         <div className="min-w-0 flex-1">
-          <BackLink className="mb-2 text-xs" to="/curator">
+          <BackLink className="mb-1 min-h-7 text-xs" to="/curator">
             All albums
           </BackLink>
           <h1 className="font-heading text-[clamp(24px,3vw,30px)] leading-tight tracking-[-0.5px] wrap-anywhere">
             {album.title}
           </h1>
           <p className="mt-1 text-xs text-muted">
-            <span>
-              {complete
-                ? mediaCounts(album.moments.flatMap((item) => item.entries))
-                : countLabel(album.total, "item", "items")}
-            </span>
+            {complete ? (
+              <MediaCounts
+                {...countMedia(album.moments.flatMap((item) => item.entries))}
+              />
+            ) : (
+              <span>{countLabel(album.total, "item", "items")}</span>
+            )}
             <span className="ml-3 border-l border-border pl-3">
               {album.published ? "Published" : "Unpublished"}
             </span>
@@ -236,9 +238,9 @@ function AlbumContent({ album }: { album: AlbumDetail }) {
                             <span className="line-clamp-2 text-sm font-medium">
                               {heading.title}
                             </span>
-                            <span className="block text-xs text-muted">
-                              {day && `${day}, `}
-                              {mediaCounts(item.entries)}
+                            <span className="flex flex-wrap items-center gap-x-3 text-xs text-muted">
+                              {day && <span>{day}</span>}
+                              <MediaCounts {...countMedia(item.entries)} />
                             </span>
                             <span className="mt-1.5 block">
                               <Audience
@@ -260,17 +262,9 @@ function AlbumContent({ album }: { album: AlbumDetail }) {
             hidden={!showDetail}
           >
             {!desktop && (
-              <Link
-                className="-mx-2 mb-4 inline-flex min-h-9 items-center gap-1 rounded-md px-2 text-sm hover:bg-surface"
-                to={link({ pane: null })}
-              >
-                <ChevronLeft
-                  aria-hidden="true"
-                  className="size-4"
-                  strokeWidth={1.5}
-                />
+              <BackLink className="mb-4" to={link({ pane: null })}>
                 Outline
-              </Link>
+              </BackLink>
             )}
             {/* The title form stays mounted while other sections show so an
                 unsaved edit survives a look at a Moment. */}

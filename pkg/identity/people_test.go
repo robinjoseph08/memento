@@ -109,7 +109,7 @@ func TestPreauthorizationLinksExactVerifiedEmail(t *testing.T) {
 	require.Len(t, detail.Identities, 1)
 	claims.Subject = "another-subject"
 	_, err = module.SignIn(t.Context(), claims)
-	require.ErrorIs(t, err, identity.ErrAccessDenied)
+	require.ErrorIs(t, err, identity.ErrAccessRequested)
 	claims.Subject = "alex-subject"
 	claims.Email = "changed@example.test"
 	returning, err := module.SignIn(t.Context(), claims)
@@ -123,7 +123,7 @@ func TestPreauthorizationLinksExactVerifiedEmail(t *testing.T) {
 	claims.Subject = "revoked-subject"
 	claims.Email = "revoked@example.test"
 	_, err = module.SignIn(t.Context(), claims)
-	require.ErrorIs(t, err, identity.ErrAccessDenied)
+	require.ErrorIs(t, err, identity.ErrAccessRequested)
 }
 
 func TestPreauthorizationRechecksEmailOwnershipAtConsumption(t *testing.T) {

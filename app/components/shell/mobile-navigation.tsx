@@ -5,9 +5,16 @@ import { NavLink } from "react-router-dom";
 import type { Person } from "../../types/generated/identity";
 import { Button } from "../ui/button";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "../ui/sheet";
+import { PendingBadge } from "./pending-badge";
 import { Wordmark } from "./wordmark";
 
-export function MobileNavigation({ person }: { person: Person }) {
+export function MobileNavigation({
+  person,
+  pendingRequests = 0,
+}: {
+  person: Person;
+  pendingRequests?: number;
+}) {
   const [open, setOpen] = useState(false);
   useEffect(() => {
     const desktop = window.matchMedia("(min-width: 601px)");
@@ -34,7 +41,7 @@ export function MobileNavigation({ person }: { person: Person }) {
           if (window.matchMedia("(min-width: 601px)").matches) {
             event.preventDefault();
             document
-              .querySelector<HTMLAnchorElement>('a[aria-label="memento home"]')
+              .querySelector<HTMLAnchorElement>('a[aria-label="Memento home"]')
               ?.focus();
           }
         }}
@@ -55,13 +62,22 @@ export function MobileNavigation({ person }: { person: Person }) {
             Albums
           </NavLink>
           {person.is_curator && (
-            <NavLink
-              className="cursor-pointer rounded-md px-3 py-3 text-sm hover:bg-surface focus-visible:outline-2 focus-visible:outline-ring aria-[current=page]:bg-surface"
-              onClick={() => setOpen(false)}
-              to="/curator/people"
-            >
-              People
-            </NavLink>
+            <>
+              <NavLink
+                className="cursor-pointer rounded-md px-3 py-3 text-sm hover:bg-surface focus-visible:outline-2 focus-visible:outline-ring aria-[current=page]:bg-surface"
+                onClick={() => setOpen(false)}
+                to="/curator/people"
+              >
+                People
+              </NavLink>
+              <NavLink
+                className="inline-flex cursor-pointer items-center gap-2 rounded-md px-3 py-3 text-sm hover:bg-surface focus-visible:outline-2 focus-visible:outline-ring aria-[current=page]:bg-surface"
+                onClick={() => setOpen(false)}
+                to="/curator/requests"
+              >
+                Requests <PendingBadge count={pendingRequests} />
+              </NavLink>
+            </>
           )}
         </nav>
       </SheetContent>

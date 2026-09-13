@@ -89,7 +89,9 @@ type PersonDetail struct {
 	Faces             []LinkedFace       `json:"faces"`
 	Identities        []LinkedIdentity   `json:"identities"`
 	Preauthorizations []Preauthorization `json:"preauthorizations"`
+	Invitations       []Invitation       `json:"invitations"`
 	Sessions          []BrowserSession   `json:"sessions"`
+	Announced         AnnouncedContent   `json:"announced"`
 }
 
 type Profile struct {
@@ -107,4 +109,63 @@ type BrowserSession struct {
 	LastUsedAt time.Time `json:"last_used_at"`
 	ExpiresAt  time.Time `json:"expires_at"`
 	Current    bool      `json:"current"`
+}
+
+// SendInvitationRequest names the unused Preauthorization the email should describe.
+type SendInvitationRequest struct {
+	PreauthorizationID string `json:"preauthorization_id" validate:"required,uuid"`
+}
+
+// InvitationDelivery is Memento's delivery state; status is queued, sending,
+// delivered, failed, or uncertain.
+type InvitationDelivery struct {
+	Status      string     `json:"status"`
+	Attempts    int        `json:"attempts"`
+	Message     string     `json:"message"`
+	UpdatedAt   time.Time  `json:"updated_at"`
+	DeliveredAt *time.Time `json:"delivered_at"`
+}
+
+type Invitation struct {
+	ID                 string             `json:"id"`
+	PreauthorizationID string             `json:"preauthorization_id"`
+	Email              string             `json:"email"`
+	SentBy             string             `json:"sent_by"`
+	CreatedAt          time.Time          `json:"created_at"`
+	Delivery           InvitationDelivery `json:"delivery"`
+}
+
+// AnnouncedContent counts a Person's notification baseline.
+type AnnouncedContent struct {
+	Albums  int `json:"albums"`
+	Entries int `json:"entries"`
+}
+
+// AccessRequest shows what a Curator may inspect. It never asserts that the
+// identity and any Person are the same human.
+type AccessRequest struct {
+	ID string `json:"id"`
+	// Kind is join for an unknown identity and album for an existing Person's request.
+	Kind          string     `json:"kind"`
+	Provider      string     `json:"provider"`
+	Email         string     `json:"email"`
+	EmailVerified bool       `json:"email_verified"`
+	DisplayName   string     `json:"display_name"`
+	PersonID      string     `json:"person_id"`
+	PersonName    string     `json:"person_name"`
+	AlbumID       string     `json:"album_id"`
+	AlbumTitle    string     `json:"album_title"`
+	Status        string     `json:"status"`
+	SignInCount   int        `json:"sign_in_count"`
+	CreatedAt     time.Time  `json:"created_at"`
+	UpdatedAt     time.Time  `json:"updated_at"`
+	ResolvedAt    *time.Time `json:"resolved_at"`
+	ResolvedBy    string     `json:"resolved_by"`
+}
+
+// ApproveAccessRequestRequest links an unknown identity to an existing Person
+// or creates one. Requests from an existing Person need neither field.
+type ApproveAccessRequestRequest struct {
+	PersonID    string `json:"person_id" validate:"omitempty,uuid"`
+	DisplayName string `json:"display_name" validate:"omitempty,max=100" mod:"trim"`
 }

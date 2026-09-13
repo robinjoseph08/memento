@@ -37,7 +37,21 @@ immich_public_url: ""
 # Env: IMMICH_API_KEY
 immich_api_key: ""
 
-# SMTP is optional and is not configured by this release.
+# Optional outbound email for Invitations. Leave unset to run without email;
+# Curators then see that Invitations cannot be sent. smtp:// connects in plain
+# text and upgrades with STARTTLS when the server offers it; smtps:// uses TLS
+# from the start. Credentials go in the URL, so prefer the environment variable.
+# Env: SMTP_URL
+smtp_url: ""
+
+# Sender address for Memento email, such as "Memento <memento@example.com>".
+# Required when smtp_url is set.
+# Env: SMTP_FROM
+smtp_from: ""
+
+# Concurrent SMTP deliveries. Raise it only if your provider allows more.
+# Env: SMTP_CONCURRENCY
+smtp_concurrency: 5
 
 # Number of videos whose chapters are read at the same time. The bundled
 # ffprobe reads only file headers through HTTP ranges, so one is enough for a

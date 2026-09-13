@@ -10,6 +10,7 @@ import {
 import { PageTitle } from "../shell/page-title";
 import { Button } from "../ui/button";
 import { AlbumImage } from "./album-image";
+import { MediaCounts } from "./media-counts";
 
 function dateLabel(value: string) {
   const date = new Date(`${value.slice(0, 10)}T12:00:00`);
@@ -75,16 +76,9 @@ export function CuratorPage() {
                     <span className="block font-heading text-lg wrap-anywhere">
                       {album.title}
                     </span>
-                    <span className="text-xs text-muted">
-                      {album.status === "complete"
-                        ? `${album.photo_count} ${album.photo_count === 1 ? "photo" : "photos"}, ${album.video_count} ${album.video_count === 1 ? "video" : "videos"}`
-                        : (importLabels[album.status] ??
-                          "Import status unavailable")}
-                      {!album.published && ", unpublished"}
-                    </span>
                     {album.status === "complete" &&
                       (album.start_date || album.end_date) && (
-                        <span className="block text-xs text-muted">
+                        <span className="mt-1 block text-xs/5 text-muted">
                           {[
                             dateLabel(album.start_date),
                             dateLabel(album.end_date),
@@ -97,6 +91,23 @@ export function CuratorPage() {
                             .join(" to ")}
                         </span>
                       )}
+                    {album.status === "complete" ? (
+                      <MediaCounts
+                        className="flex text-xs/5 text-muted"
+                        photos={album.photo_count}
+                        videos={album.video_count}
+                      />
+                    ) : (
+                      <span className="block text-xs/5 text-muted">
+                        {importLabels[album.status] ??
+                          "Import status unavailable"}
+                      </span>
+                    )}
+                    {!album.published && (
+                      <span className="block text-xs/5 text-muted">
+                        Unpublished
+                      </span>
+                    )}
                   </span>
                 </Link>
               </li>

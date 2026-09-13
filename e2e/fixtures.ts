@@ -1,10 +1,20 @@
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
-import { test as base, expect, type APIRequestContext } from "@playwright/test";
+import {
+  test as base,
+  expect,
+  type APIRequestContext,
+  type Page,
+} from "@playwright/test";
 
 type Installation = { apiURL: string; fixtureURL: string };
 type CheckpointName = "asset-metadata" | "import-release" | "chapter-probe";
 type CheckpointState = { mode: string; hits: number; waiting: number };
+type MailState = {
+  mode: string;
+  held: number;
+  messages: { from: string; to: string; data: string }[];
+};
 
 function immichControls(request: APIRequestContext, url: string) {
   return {
@@ -41,6 +51,18 @@ function immichControls(request: APIRequestContext, url: string) {
         204,
       );
     },
+    async mail() {
+      const response = await request.get(`${url}/__fixture/smtp`);
+      expect(response.status()).toBe(200);
+      return (await response.json()) as MailState;
+    },
+    async mailMode(mode: "accept" | "transient" | "permanent" | "hold") {
+      expect(
+        (
+          await request.post(`${url}/__fixture/smtp`, { data: { mode } })
+        ).status(),
+      ).toBe(200);
+    },
   };
 }
 
@@ -61,12 +83,19 @@ export const test = base.extend<{
   fixtureURL: string;
   installation: Installation;
   immich: ReturnType<typeof immichControls>;
+  // Extra flags for the fixture command, such as --no-smtp.
+  fixtureFlags: string[];
 }>({
+  fixtureFlags: [[], { option: true }],
   installation: [
-    async ({ browserName }, use) => {
-      const child = spawn("./build/fixture/fixture", ["--offline"], {
-        stdio: ["ignore", "pipe", "pipe"],
-      });
+    async ({ browserName, fixtureFlags }, use) => {
+      const child = spawn(
+        "./build/fixture/fixture",
+        ["--offline", ...fixtureFlags],
+        {
+          stdio: ["ignore", "pipe", "pipe"],
+        },
+      );
       let logs = "";
       child.stderr.on("data", (chunk: Buffer) => {
         logs = (logs + chunk.toString()).slice(-20_000);
@@ -131,5 +160,15 @@ export const test = base.extend<{
     await use(immichControls(request, fixtureURL));
   },
 });
+
+// Every Person completes Onboarding once after their first sign-in. Journeys
+// that start elsewhere call this right after claiming or signing in.
+export async function finishOnboarding(page: Page, tap = false) {
+  const button = page.getByRole("button", { name: "Continue to Memento" });
+  await expect(button).toBeVisible();
+  if (tap) await button.tap();
+  else await button.click();
+  await expect(page).not.toHaveURL(/\/welcome$/);
+}
 
 export { expect };

@@ -11,7 +11,12 @@ import { afterEach, expect, it, vi } from "vitest";
 import { App } from "../../App";
 import type { AlbumDetail, Entry } from "../../types/generated/publishing";
 
-const person = { id: "robin", display_name: "Robin", is_curator: true };
+const person = {
+  id: "robin",
+  display_name: "Robin",
+  is_curator: true,
+  onboarding_completed_at: "2026-01-01T00:00:00Z",
+};
 const video: Entry = {
   id: "video",
   decisions: {},

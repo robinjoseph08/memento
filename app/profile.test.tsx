@@ -17,6 +17,7 @@ const alex = {
   id: "alex",
   display_name: "Alex",
   is_curator: false,
+  onboarding_completed_at: "2026-01-01T00:00:00Z",
   update_email: "alex@example.test",
   email_updates: false,
 };
@@ -24,6 +25,7 @@ const robin = {
   id: "robin",
   display_name: "Robin",
   is_curator: true,
+  onboarding_completed_at: "2026-01-01T00:00:00Z",
   update_email: "private@example.test",
   email_updates: false,
 };

@@ -34,7 +34,7 @@ func TestConcurrentClaim(t *testing.T) {
 		if err == nil {
 			winners++
 		} else {
-			require.ErrorIs(t, err, identity.ErrAccessDenied)
+			require.ErrorIs(t, err, identity.ErrAccessRequested)
 		}
 	}
 	assert.Equal(t, 1, winners)
@@ -150,5 +150,5 @@ func TestClaimAndReturningSignIn(t *testing.T) {
 	assert.Equal(t, expected, authenticated.Person)
 	claims.Subject = "unknown"
 	_, err = module.SignIn(t.Context(), claims)
-	require.ErrorIs(t, err, identity.ErrAccessDenied)
+	require.ErrorIs(t, err, identity.ErrAccessRequested)
 }

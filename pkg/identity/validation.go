@@ -32,6 +32,21 @@ func (UpdateProfileRequest) ValidationMessage(field, rule string) string {
 func (PreauthorizeRequest) ValidationMessage(field, rule string) string {
 	return SignInRequest{}.ValidationMessage(field, rule)
 }
+func (SendInvitationRequest) ValidationMessage(field, _ string) string {
+	if field == "preauthorization_id" {
+		return "Choose an unused email approval to invite."
+	}
+	return ""
+}
+func (ApproveAccessRequestRequest) ValidationMessage(field, rule string) string {
+	switch field {
+	case "person_id":
+		return "Choose an existing person."
+	case "display_name":
+		return SignInRequest{}.ValidationMessage(field, rule)
+	}
+	return ""
+}
 func (LinkFaceRequest) ValidationMessage(field, _ string) string {
 	if field == "source_face_id" {
 		return "Refresh faces and choose one shown in this Album."

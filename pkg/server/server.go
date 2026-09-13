@@ -22,14 +22,23 @@ import (
 	"github.com/robinjoseph08/memento/pkg/identity"
 	"github.com/robinjoseph08/memento/pkg/immich"
 	"github.com/robinjoseph08/memento/pkg/media"
+	"github.com/robinjoseph08/memento/pkg/notifications"
 	"github.com/robinjoseph08/memento/pkg/publishing"
 	"github.com/uptrace/bun"
 )
 
+// Features are the modules main wires after constructing the worker runtime.
+// Tests pass the zero value to exercise identity routes alone; a nil media
+// module serves media through a client of its own.
+type Features struct {
+	Publishing    *publishing.Module
+	Notifications *notifications.Module
+	Media         *media.Module
+}
+
 // New constructs the HTTP server and registers the application's routes and
-// middleware. imports and library may be nil where those routes are not
-// needed; a nil library serves media through a client of its own.
-func New(cfg *config.Config, db *bun.DB, imports *publishing.Module, library *media.Module) (*http.Server, error) {
+// middleware.
+func New(cfg *config.Config, db *bun.DB, features Features) (*http.Server, error) {
 	frontend, available, err := webapp.Handler(cfg.PublicURL, publicPageMetadata)
 	if err != nil {
 		return nil, fmt.Errorf("load embedded frontend: %w", err)
@@ -40,10 +49,16 @@ func New(cfg *config.Config, db *bun.DB, imports *publishing.Module, library *me
 	source := immich.New(cfg.ImmichURL, cfg.ImmichAPIKey)
 	people := identity.New(db, nil)
 	people.ImmichURL = cfg.ImmichBrowserURL()
+	people.PublicURL = cfg.PublicURL
+	if features.Notifications != nil {
+		people.Mail = features.Notifications
+		people.Announcements = features.Notifications
+	}
+	library := features.Media
 	if library == nil {
 		library = media.New(db, source)
 	}
-	deps := dependencies{identity: people, connection: source, health: db.PingContext, media: library, publishing: imports}
+	deps := dependencies{identity: people, connection: source, health: db.PingContext, media: library, publishing: features.Publishing}
 	return newServer(cfg, frontend, deps)
 }
 

@@ -1,5 +1,5 @@
 import type { AlbumDetail } from "../app/types/generated/publishing";
-import { expect, test } from "./fixtures";
+import { expect, finishOnboarding, test } from "./fixtures";
 
 for (const [scenario, dimensions] of [
   [
@@ -26,6 +26,7 @@ for (const [scenario, dimensions] of [
     await immich.online();
     await page.goto("/setup");
     await page.getByRole("button", { name: "Claim installation" }).click();
+    await finishOnboarding(page);
     await expect(page).toHaveURL(/\/curator$/);
     await page.goto("/curator/import?q=Coast");
     await page.getByRole("button", { name: "Import", exact: true }).click();

@@ -1,4 +1,4 @@
-import { expect, test } from "./fixtures";
+import { expect, finishOnboarding, test } from "./fixtures";
 
 test("a touch user clears their update email and can identify the current browser", async ({
   browser,
@@ -13,6 +13,7 @@ test("a touch user clears their update email and can identify the current browse
     const page = await context.newPage();
     await page.goto("/setup");
     await page.getByRole("button", { name: "Claim installation" }).tap();
+    await finishOnboarding(page, true);
     await expect(
       page.getByRole("heading", { name: "Your albums" }),
     ).toBeVisible();

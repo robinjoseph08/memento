@@ -26,8 +26,8 @@ func TestPreauthorizationRaceAdmitsExactlyOneSubject(t *testing.T) {
 		err    error
 	}{
 		{name: "unverified exact email", claims: identity.Claims{Provider: "google", Subject: "unverified", Email: "alex@example.test", DisplayName: "Alex"}, err: identity.ErrUnverifiedIdentity},
-		{name: "matching name only", claims: identity.Claims{Provider: "google", Subject: "matching-name", Email: "stranger@example.test", EmailVerified: true, DisplayName: "Alex"}, err: identity.ErrAccessDenied},
-		{name: "email case differs", claims: identity.Claims{Provider: "google", Subject: "case-differs", Email: "Alex@example.test", EmailVerified: true, DisplayName: "Alex"}, err: identity.ErrAccessDenied},
+		{name: "matching name only", claims: identity.Claims{Provider: "google", Subject: "matching-name", Email: "stranger@example.test", EmailVerified: true, DisplayName: "Alex"}, err: identity.ErrAccessRequested},
+		{name: "email case differs", claims: identity.Claims{Provider: "google", Subject: "case-differs", Email: "Alex@example.test", EmailVerified: true, DisplayName: "Alex"}, err: identity.ErrAccessRequested},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			_, err := module.SignIn(t.Context(), scenario.claims)
@@ -59,7 +59,7 @@ func TestPreauthorizationRaceAdmitsExactlyOneSubject(t *testing.T) {
 			assert.Equal(t, person.ID, result.session.Person.ID)
 			assert.Equal(t, "Alex", result.session.Person.DisplayName)
 		} else {
-			require.ErrorIs(t, result.err, identity.ErrAccessDenied)
+			require.ErrorIs(t, result.err, identity.ErrAccessRequested)
 		}
 	}
 	require.Equal(t, 1, wins)
@@ -81,7 +81,7 @@ func TestPreauthorizationRaceAdmitsExactlyOneSubject(t *testing.T) {
 	for _, result := range results {
 		if result.err != nil {
 			_, err := module.SignIn(t.Context(), result.claims)
-			require.ErrorIs(t, err, identity.ErrAccessDenied)
+			require.ErrorIs(t, err, identity.ErrAccessRequested)
 		}
 	}
 }

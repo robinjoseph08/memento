@@ -92,6 +92,15 @@ anything here.
 - A merged PR is the implementation record. Close or update its tracking item
   when the work lands; do not preserve a second checklist in the repository.
 
+## Naming the product
+
+The product is written "Memento" wherever it is named in prose: page copy,
+headings, buttons, emails, error messages, documentation, and accessible
+labels. The only lowercase form is the wordmark graphic itself, which renders
+"memento" as a brand mark beside the Frames outline; do not write the lowercase
+form anywhere else. Identifiers such as module paths, cookie names, and
+database names follow their own conventions and are not prose.
+
 ## Taste
 
 - Complexity belongs at the adapter boundary. Orchestration stays pure, UI

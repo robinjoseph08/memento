@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/robinjoseph08/memento/pkg/notifications/smtptest"
 )
 
 const fixtureAPIKey = "fixture-only-key"
@@ -30,6 +32,8 @@ type immichFixture struct {
 	personThumbnails map[string]sourceAsset
 	checkpoints      map[string]*checkpoint
 	requests         map[string]int
+	// smtp is nil when the fixture runs without email.
+	smtp *smtptest.Server
 }
 
 type sourceFace struct {
@@ -70,6 +74,10 @@ func (f *immichFixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	if r.URL.Path == "/__fixture/checkpoints" || strings.HasPrefix(r.URL.Path, "/__fixture/checkpoints/") {
 		f.checkpointControl(w, r)
+		return
+	}
+	if r.URL.Path == "/__fixture/smtp" {
+		f.smtpControl(w, r)
 		return
 	}
 	switch r.URL.Path {
@@ -302,6 +310,37 @@ func (f *immichFixture) searchMembers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.NotFound(w, r)
+}
+
+// smtpControl exposes accepted messages and switches how the next
+// end-of-data reply behaves. Changing the mode also releases held sessions.
+func (f *immichFixture) smtpControl(w http.ResponseWriter, r *http.Request) {
+	if f.smtp == nil {
+		http.Error(w, "SMTP is not configured for this fixture", http.StatusNotFound)
+		return
+	}
+	if r.Method == http.MethodGet {
+		if err := json.NewEncoder(w).Encode(f.smtp.State()); err != nil {
+			return
+		}
+		return
+	}
+	if !controlRequest(w, r) {
+		return
+	}
+	var input struct {
+		Mode smtptest.Mode `json:"mode"`
+	}
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil || (input.Mode != smtptest.ModeAccept && input.Mode != smtptest.ModeTransient && input.Mode != smtptest.ModePermanent && input.Mode != smtptest.ModeHold) {
+		http.Error(w, "mode must be accept, transient, permanent, or hold", http.StatusBadRequest)
+		return
+	}
+	f.smtp.SetMode(input.Mode)
+	if err := json.NewEncoder(w).Encode(f.smtp.State()); err != nil {
+		return
+	}
 }
 
 func controlRequest(w http.ResponseWriter, r *http.Request) bool {
