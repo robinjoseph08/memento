@@ -188,12 +188,12 @@ function AvailableAlbums({ curator }: { curator: boolean }) {
                 <span className="block font-heading text-lg wrap-anywhere">
                   {album.title}
                 </span>
-                <span className="mt-1 flex flex-wrap items-center gap-x-4 text-xs text-muted">
+                <span className="mt-1 flex flex-wrap items-center gap-x-4 text-xs/5 text-muted">
+                  <span>{captureRange(album)}</span>
                   <MediaCounts
                     photos={album.photo_count}
                     videos={album.video_count}
                   />
-                  <span>{captureRange(album)}</span>
                 </span>
               </span>
             </li>

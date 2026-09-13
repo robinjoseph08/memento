@@ -17,12 +17,14 @@ export function AlbumCard({ album }: { album: ViewerAlbum }) {
       <span className="mt-3 block font-heading text-lg wrap-anywhere">
         {album.title}
       </span>
+      <span className="mt-1 block text-xs/5 text-muted">
+        {captureRange(album)}
+      </span>
       <MediaCounts
-        className="mt-1 text-xs text-muted"
+        className="flex text-xs/5 text-muted"
         photos={album.photo_count}
         videos={album.video_count}
       />
-      <span className="block text-xs text-muted">{captureRange(album)}</span>
     </>
   );
 }

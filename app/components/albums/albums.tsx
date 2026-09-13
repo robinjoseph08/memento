@@ -76,7 +76,22 @@ export function CuratorPage() {
                     <span className="block font-heading text-lg wrap-anywhere">
                       {album.title}
                     </span>
-                    <span className="flex flex-wrap items-center gap-x-3 text-xs text-muted">
+                    {album.status === "complete" &&
+                      (album.start_date || album.end_date) && (
+                        <span className="mt-1 block text-xs/5 text-muted">
+                          {[
+                            dateLabel(album.start_date),
+                            dateLabel(album.end_date),
+                          ]
+                            .filter(Boolean)
+                            .filter(
+                              (date, index, dates) =>
+                                dates.indexOf(date) === index,
+                            )
+                            .join(" to ")}
+                        </span>
+                      )}
+                    <span className="flex flex-wrap items-center gap-x-3 text-xs/5 text-muted">
                       {album.status === "complete" ? (
                         <MediaCounts
                           photos={album.photo_count}
@@ -90,21 +105,6 @@ export function CuratorPage() {
                       )}
                       {!album.published && <span>unpublished</span>}
                     </span>
-                    {album.status === "complete" &&
-                      (album.start_date || album.end_date) && (
-                        <span className="block text-xs text-muted">
-                          {[
-                            dateLabel(album.start_date),
-                            dateLabel(album.end_date),
-                          ]
-                            .filter(Boolean)
-                            .filter(
-                              (date, index, dates) =>
-                                dates.indexOf(date) === index,
-                            )
-                            .join(" to ")}
-                        </span>
-                      )}
                   </span>
                 </Link>
               </li>
