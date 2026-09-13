@@ -18,8 +18,7 @@ export function ViewerPreview({ album }: { album: AlbumDetail }) {
     people.find((candidate) => candidate.person_id === search.get("person")) ??
     people[0];
   const tab = search.get("tab") === "videos" ? "videos" : "photos";
-  const entry =
-    tab === "photos" ? (search.get("entry") ?? undefined) : undefined;
+  const entry = search.get("entry") ?? undefined;
   const labelId = useId();
   usePreviewMode();
   function tabLink(value: ViewerTab) {
@@ -30,7 +29,7 @@ export function ViewerPreview({ album }: { album: AlbumDetail }) {
   }
   function entryLink(id: string) {
     const next = new URLSearchParams(search);
-    next.set("tab", "photos");
+    next.set("tab", tab);
     next.set("entry", id);
     return `?${next}`;
   }

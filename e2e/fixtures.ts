@@ -3,7 +3,7 @@ import { createInterface } from "node:readline";
 import { test as base, expect, type APIRequestContext } from "@playwright/test";
 
 type Installation = { apiURL: string; fixtureURL: string };
-type CheckpointName = "asset-metadata" | "import-release";
+type CheckpointName = "asset-metadata" | "import-release" | "chapter-probe";
 type CheckpointState = { mode: string; hits: number; waiting: number };
 
 function immichControls(request: APIRequestContext, url: string) {

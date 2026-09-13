@@ -45,6 +45,28 @@ type MediaItem struct {
 	SourceStackCount     *int
 	EXIF                 map[string]any `bun:"exif,type:jsonb"`
 	ContentVersion       string
+	// VideoTitle is the Curator's optional presentation title. Nil means the
+	// filename without its extension is shown.
+	VideoTitle *string
+}
+
+// Chapter is a read-only navigation segment in seconds from the start.
+type Chapter struct {
+	Title string  `json:"title"`
+	Start float64 `json:"start"`
+	End   float64 `json:"end"`
+}
+
+// MediaChapterResult caches one Media Item's ffprobe outcome for the checksum
+// it was probed at. A changed checksum replaces the row and requeues work.
+type MediaChapterResult struct {
+	bun.BaseModel `bun:"table:media_chapter_results,alias:chapter_result"`
+	MediaItemID   UUID `bun:"media_item_id,pk,type:uuid"`
+	Checksum      string
+	Status        string
+	Message       string
+	Chapters      []Chapter `bun:"chapters,type:jsonb"`
+	UpdatedAt     time.Time
 }
 
 // AlbumEntry retains identity when membership is removed, without keeping an empty Moment.

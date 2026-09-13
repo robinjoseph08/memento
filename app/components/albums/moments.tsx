@@ -29,6 +29,7 @@ import { EntryPreview } from "./entry-preview";
 import { MomentAccessStrip } from "./moment-access";
 import { countLabel, mediaCounts, momentHeading } from "./moment-labels";
 import { StructureEditor, type StructureOperation } from "./structure-editor";
+import { VideoDialog } from "./video-details";
 
 // A bounded overview of a Moment's media before an explicit Show all.
 const initialMediaCount = 24;
@@ -63,6 +64,11 @@ export function MomentPane({
     setParams((current) => withParams(current, { entry }));
   const [renameOpen, setRenameOpen] = useState(false);
   const [coverEntry, setCoverEntry] = useState<Entry | null>(null);
+  const videoEntry = moment.entries.find(
+    (entry) => entry.kind === "VIDEO" && entry.id === params.get("video"),
+  );
+  const editVideo = (entry: string | null) =>
+    setParams((current) => withParams(current, { video: entry }));
   const [structure, setStructure] = useState<{
     operation: StructureOperation;
     selectedEntryIDs: string[];
@@ -218,6 +224,16 @@ export function MomentPane({
                     Item access
                   </Button>
                 )}
+                {single?.kind === "VIDEO" && (
+                  <Button
+                    onClick={() => editVideo(single.id)}
+                    size="sm"
+                    type="button"
+                    variant="outline"
+                  >
+                    Video details
+                  </Button>
+                )}
                 <Button
                   onClick={() => setSelection(null)}
                   size="sm"
@@ -270,6 +286,13 @@ export function MomentPane({
           entry={editingEntry}
           moment={moment}
           onClose={() => editEntry(null)}
+        />
+      )}
+      {videoEntry && (
+        <VideoDialog
+          albumID={album.id}
+          entry={videoEntry}
+          onClose={() => editVideo(null)}
         />
       )}
       {renameOpen && (

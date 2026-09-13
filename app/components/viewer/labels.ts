@@ -28,3 +28,15 @@ export function captureRange(album: ViewerAlbum) {
   const sameYear = album.start_date.slice(0, 4) === album.end_date.slice(0, 4);
   return `${sameYear ? start.replace(/, \d{4}$/, "") : start} to ${end}`;
 }
+
+// clock formats seconds as m:ss, or h:mm:ss past an hour, like player controls.
+export function clock(seconds: number) {
+  const whole = Math.max(0, Math.floor(seconds));
+  const hours = Math.floor(whole / 3600);
+  const minutes = Math.floor((whole % 3600) / 60);
+  const rest = whole % 60;
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return hours > 0
+    ? `${hours}:${pad(minutes)}:${pad(rest)}`
+    : `${minutes}:${pad(rest)}`;
+}

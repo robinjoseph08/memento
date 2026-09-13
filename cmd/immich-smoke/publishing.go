@@ -340,3 +340,124 @@ func isNotFound(err error) bool {
 	var code *errcodes.Error
 	return errors.As(err, &code) && code.HTTPCode == http.StatusNotFound
 }
+
+// verifyVideoPublishing shares the video album with Alex, publishes it, and
+// streams playback through the production route with byte ranges and
+// Memento's validators. Sam has no access and preview cannot download.
+func verifyVideoPublishing(ctx context.Context, db *bun.DB, module *publishing.Module, delivery *media.Module, album publishing.AlbumDetail, video fixture.Video) error {
+	people := identity.New(db, nil)
+	curator, err := people.SignIn(ctx, identity.Claims{Provider: "fake", Subject: "smoke-curator", Email: "curator@example.test", EmailVerified: true, DisplayName: "Smoke Curator"})
+	if err != nil {
+		return err
+	}
+	listed, err := people.ListPeople(ctx, curator.Token, "")
+	if err != nil {
+		return err
+	}
+	var alex, sam identity.Person
+	for _, person := range listed {
+		switch person.DisplayName {
+		case "Alex":
+			alex = person
+		case "Sam":
+			sam = person
+		}
+	}
+	if alex.ID == "" || sam.ID == "" {
+		return fmt.Errorf("publishing fixture people are missing")
+	}
+	if _, err := module.SaveAlbumAccess(ctx, album.ID, publishing.SaveAlbumAccessRequest{People: []publishing.AlbumAccessChoice{{PersonID: alex.ID, Allowed: true}}}); err != nil {
+		return err
+	}
+	review, err := module.ReviewPublication(ctx, album.ID)
+	if err != nil {
+		return err
+	}
+	if len(review.Blockers) != 0 {
+		return fmt.Errorf("video album was blocked from publication: %v", review.Blockers)
+	}
+	if _, err := module.PublishAlbum(ctx, album.ID, publishing.PublishRequest{ReviewToken: review.ReviewToken}); err != nil {
+		return err
+	}
+	alexHTTP := publishingMediaHandler(module, delivery, alex)
+	samHTTP := publishingMediaHandler(module, delivery, sam)
+	curatorHTTP := publishingMediaHandler(module, delivery, curator.Person)
+	page, err := module.ViewEntries(ctx, alex.ID, "", album.ID, "VIDEO", "")
+	if err != nil {
+		return err
+	}
+	if len(page.Entries) != 1 {
+		return fmt.Errorf("viewer sees %d videos, want 1", len(page.Entries))
+	}
+	entry := page.Entries[0]
+	if entry.Title != strings.TrimSuffix(video.Filename, ".webm") || entry.PlaybackURL == "" || entry.DownloadURL == "" || entry.ChapterStatus != "complete" || len(entry.Chapters) != len(video.Chapters) {
+		return fmt.Errorf("viewer video entry differs: %+v", entry)
+	}
+	do := func(handler http.Handler, method, path string, headers map[string]string) *httptest.ResponseRecorder {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequestWithContext(ctx, method, path, nil)
+		for key, value := range headers {
+			request.Header.Set(key, value)
+		}
+		handler.ServeHTTP(recorder, request)
+		return recorder
+	}
+	const cache = "private, max-age=31536000, immutable"
+	full := do(alexHTTP, http.MethodGet, entry.PlaybackURL, nil)
+	if full.Code != http.StatusOK || !strings.HasPrefix(full.Header().Get("Content-Type"), "video/") || full.Header().Get("Cache-Control") != cache || full.Header().Get("ETag") == "" || full.Header().Get("Accept-Ranges") != "bytes" || full.Body.Len() == 0 {
+		return fmt.Errorf("whole playback returned HTTP %d %q", full.Code, full.Header().Get("Content-Type"))
+	}
+	etag := full.Header().Get("ETag")
+	partial := do(alexHTTP, http.MethodGet, entry.PlaybackURL, map[string]string{"Range": "bytes=0-99", "If-Range": etag})
+	if partial.Code != http.StatusPartialContent || !strings.HasPrefix(partial.Header().Get("Content-Range"), "bytes 0-99/") || partial.Body.Len() != 100 || partial.Header().Get("Cache-Control") != cache {
+		return fmt.Errorf("ranged playback returned HTTP %d %q with %d bytes", partial.Code, partial.Header().Get("Content-Range"), partial.Body.Len())
+	}
+	if !bytes.Equal(partial.Body.Bytes(), full.Body.Bytes()[:100]) {
+		return fmt.Errorf("ranged playback bytes differ from the start of the whole stream")
+	}
+	tail := do(alexHTTP, http.MethodGet, entry.PlaybackURL, map[string]string{"Range": fmt.Sprintf("bytes=%d-", full.Body.Len()-10)})
+	if tail.Code != http.StatusPartialContent || tail.Body.Len() != 10 {
+		return fmt.Errorf("seeking to the end returned HTTP %d with %d bytes", tail.Code, tail.Body.Len())
+	}
+	foreign := do(alexHTTP, http.MethodGet, entry.PlaybackURL, map[string]string{"Range": "bytes=0-99", "If-Range": "\"other\""})
+	if foreign.Code != http.StatusOK || foreign.Body.Len() != full.Body.Len() {
+		return fmt.Errorf("a foreign If-Range did not return the whole video: HTTP %d", foreign.Code)
+	}
+	head := do(alexHTTP, http.MethodHead, entry.PlaybackURL, nil)
+	if head.Code != http.StatusOK || head.Body.Len() != 0 || head.Header().Get("ETag") != etag {
+		return fmt.Errorf("playback HEAD differs from GET: HTTP %d", head.Code)
+	}
+	cached := do(alexHTTP, http.MethodGet, entry.PlaybackURL, map[string]string{"If-None-Match": etag})
+	if cached.Code != http.StatusNotModified || cached.Body.Len() != 0 {
+		return fmt.Errorf("conditional playback did not validate the cached stream: HTTP %d", cached.Code)
+	}
+	download := do(alexHTTP, http.MethodGet, entry.DownloadURL, map[string]string{"Range": "bytes=0-1"})
+	if download.Code != http.StatusOK || !bytes.Equal(download.Body.Bytes(), video.Bytes) || download.Header().Get("Content-Range") != "" {
+		return fmt.Errorf("video download returned HTTP %d with %d bytes, want %d uploaded bytes", download.Code, download.Body.Len(), len(video.Bytes))
+	}
+	disposition, params, err := mime.ParseMediaType(download.Header().Get("Content-Disposition"))
+	if err != nil || disposition != "attachment" || params["filename"] != video.Filename {
+		return fmt.Errorf("video download is not an attachment named after the source file")
+	}
+	for _, path := range []string{entry.PlaybackURL, entry.DownloadURL} {
+		if err := deniedMedia(ctx, samHTTP, path, http.StatusNotFound); err != nil {
+			return fmt.Errorf("video URL crossed Person identity: %w", err)
+		}
+	}
+	preview, err := module.ViewEntries(ctx, curator.Person.ID, alex.ID, album.ID, "VIDEO", "")
+	if err != nil {
+		return err
+	}
+	if len(preview.Entries) != 1 || preview.Entries[0].DownloadURL != "" || preview.Entries[0].PlaybackURL == "" {
+		return fmt.Errorf("preview video entry differs: %+v", preview.Entries)
+	}
+	previewPartial := do(curatorHTTP, http.MethodGet, preview.Entries[0].PlaybackURL, map[string]string{"Range": "bytes=0-9"})
+	if previewPartial.Code != http.StatusPartialContent || previewPartial.Body.Len() != 10 {
+		return fmt.Errorf("preview playback range returned HTTP %d", previewPartial.Code)
+	}
+	if err := deniedMedia(ctx, curatorHTTP, strings.Replace(preview.Entries[0].PlaybackURL, "/playback?", "/original?", 1), http.StatusNotFound); err != nil {
+		return fmt.Errorf("preview enabled video download: %w", err)
+	}
+	fmt.Printf("Video: %d-byte playback streams whole and in ranges with Memento validators, downloads match the upload, and preview plays without downloading\n", full.Body.Len())
+	return nil
+}

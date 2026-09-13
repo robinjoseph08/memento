@@ -1,5 +1,5 @@
-// Package worker commits import work with application transactions and runs it
-// through the shared PostgreSQL connection pool.
+// Package worker commits import and chapter work with application transactions
+// and runs it through the shared PostgreSQL connection pool.
 package worker
 
 import (
@@ -32,19 +32,58 @@ type importArgs struct {
 
 func (importArgs) Kind() string { return "import_immich_album" }
 
-// Runtime shares Bun's pool and never closes it. Stop it before closing Bun.
-type Runtime struct{ client *river.Client[*sql.Tx] }
+type chapterArgs struct {
+	MediaItemID string `json:"media_item_id" river:"unique"`
+	Checksum    string `json:"checksum" river:"unique"`
+}
 
-// New binds the import use case without executing work or starting goroutines.
-func New(db *bun.DB, execute func(context.Context, string) error) (*Runtime, error) {
+func (chapterArgs) Kind() string { return "extract_video_chapters" }
+
+// Runtime shares Bun's pool and never closes it. Stop it before closing Bun.
+type Runtime struct {
+	client   *river.Client[*sql.Tx]
+	chapters bool
+}
+
+// Option extends the runtime with another task on its own queue.
+type Option func(*settings)
+
+type settings struct {
+	chapters     func(context.Context, string, string) error
+	ffprobeSlots int
+}
+
+// Chapters adds the chapter extraction task on the bounded ffprobe queue.
+// concurrency is how many probes may run at once; one is the production default.
+func Chapters(execute func(ctx context.Context, mediaItemID, checksum string) error, concurrency int) Option {
+	return func(s *settings) {
+		s.chapters = execute
+		s.ffprobeSlots = concurrency
+	}
+}
+
+// New binds the use cases without executing work or starting goroutines.
+func New(db *bun.DB, execute func(context.Context, string) error, options ...Option) (*Runtime, error) {
 	if db == nil || execute == nil {
 		return nil, fmt.Errorf("worker requires a database and import executor")
 	}
+	var config settings
+	for _, option := range options {
+		option(&config)
+	}
 	workers := river.NewWorkers()
 	river.AddWorker(workers, &importWorker{execute: execute})
+	queues := map[string]river.QueueConfig{"imports": {MaxWorkers: 2}}
+	if config.chapters != nil {
+		if config.ffprobeSlots < 1 {
+			return nil, fmt.Errorf("worker requires a positive ffprobe concurrency")
+		}
+		river.AddWorker(workers, &chapterWorker{execute: config.chapters})
+		queues["ffprobe"] = river.QueueConfig{MaxWorkers: config.ffprobeSlots}
+	}
 	client, err := river.NewClient(riverdatabasesql.New(db.DB), &river.Config{
 		Workers:              workers,
-		Queues:               map[string]river.QueueConfig{"imports": {MaxWorkers: 2}},
+		Queues:               queues,
 		PollOnly:             true,
 		FetchPollInterval:    time.Second,
 		MaxAttempts:          3,
@@ -55,7 +94,7 @@ func New(db *bun.DB, execute func(context.Context, string) error) (*Runtime, err
 	if err != nil {
 		return nil, runtimeError(context.Background(), "configure import worker", err)
 	}
-	return &Runtime{client: client}, nil
+	return &Runtime{client: client, chapters: config.chapters != nil}, nil
 }
 
 // Start begins polling. Use the application lifetime, not an HTTP request context.
@@ -94,19 +133,68 @@ func (r *Runtime) EnqueueImport(ctx context.Context, tx bun.Tx, albumID string) 
 	return runtimeError(ctx, "enqueue import", err)
 }
 
+// EnqueueChapters records chapter extraction for one Media Item at one
+// checksum in the caller's transaction. An active task for the same pair is
+// reused, and a task waiting for an automatic retry runs at once instead.
+func (r *Runtime) EnqueueChapters(ctx context.Context, tx bun.Tx, mediaItemID, checksum string) error {
+	if !r.chapters {
+		return fmt.Errorf("chapter extraction is not configured on this worker")
+	}
+	if tx.Tx == nil || mediaItemID == "" || checksum == "" {
+		return fmt.Errorf("enqueue chapters requires a transaction, media item ID, and checksum")
+	}
+	result, err := r.client.InsertTx(ctx, tx.Tx, chapterArgs{MediaItemID: mediaItemID, Checksum: checksum}, &river.InsertOpts{
+		Queue: "ffprobe", MaxAttempts: 3,
+		UniqueOpts: river.UniqueOpts{ByArgs: true, ByState: []rivertype.JobState{
+			rivertype.JobStateAvailable, rivertype.JobStatePending, rivertype.JobStateRunning,
+			rivertype.JobStateRetryable, rivertype.JobStateScheduled,
+		}},
+	})
+	if err != nil {
+		return runtimeError(ctx, "enqueue chapters", err)
+	}
+	if result.UniqueSkippedAsDuplicate && result.Job.State == rivertype.JobStateRetryable {
+		_, err = r.client.JobRetryTx(ctx, tx.Tx, result.Job.ID)
+	}
+	return runtimeError(ctx, "enqueue chapters", err)
+}
+
+type chapterWorker struct {
+	river.WorkerDefaults[chapterArgs]
+	execute func(context.Context, string, string) error
+}
+
+// Timeout bounds one probe well under the import budget; ffprobe reads only
+// container headers, so minutes mean a stalled connection, not a large file.
+func (*chapterWorker) Timeout(*river.Job[chapterArgs]) time.Duration { return 3 * time.Minute }
+
+func (w *chapterWorker) Work(ctx context.Context, job *river.Job[chapterArgs]) error {
+	return work(ctx, "extract chapters", job.Attempt >= job.MaxAttempts, func(ctx context.Context) error {
+		return w.execute(ctx, job.Args.MediaItemID, job.Args.Checksum)
+	})
+}
+
 type importWorker struct {
 	river.WorkerDefaults[importArgs]
 	execute func(context.Context, string) error
 }
 
-func (w *importWorker) Work(ctx context.Context, job *river.Job[importArgs]) (err error) {
+func (w *importWorker) Work(ctx context.Context, job *river.Job[importArgs]) error {
+	return work(ctx, "execute import", job.Attempt >= job.MaxAttempts, func(ctx context.Context) error {
+		return w.execute(ctx, job.Args.AlbumID)
+	})
+}
+
+// work runs one task body with the final-attempt flag, converting a panic into
+// a redacted failure so River never persists upstream detail.
+func work(ctx context.Context, operation string, finalAttempt bool, execute func(context.Context) error) (err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			err = runtimeError(ctx, "execute import", fmt.Errorf("import executor panicked: %v", recovered))
+			err = runtimeError(ctx, operation, fmt.Errorf("executor panicked: %v", recovered))
 		}
 	}()
-	ctx = context.WithValue(ctx, finalAttemptKey{}, job.Attempt >= job.MaxAttempts)
-	return runtimeError(ctx, "execute import", w.execute(ctx, job.Args.AlbumID))
+	ctx = context.WithValue(ctx, finalAttemptKey{}, finalAttempt)
+	return runtimeError(ctx, operation, execute(ctx))
 }
 
 // Keep adapter and upstream details out of River's persisted error strings while

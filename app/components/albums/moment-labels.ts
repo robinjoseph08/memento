@@ -47,3 +47,9 @@ export function shortDay(day: string) {
 export function momentCover(moment: Moment) {
   return moment.entries.find((entry) => entry.id === moment.cover_entry_id);
 }
+
+// The title a viewer sees when no Memento video title is set: the filename
+// without its extension.
+export function filenameTitle(filename: string) {
+  return filename.replace(/\.[^.]+$/, "");
+}

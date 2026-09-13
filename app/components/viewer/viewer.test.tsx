@@ -37,8 +37,11 @@ const photo: ViewerEntry = {
   thumbnail_url: "/media/lake/photo-1/thumb?person=jamie",
   preview_url: "/media/lake/photo-1?person=jamie",
   download_url: "/media/lake/photo-1/original?person=jamie",
+  playback_url: "",
   width: 1200,
   height: 800,
+  chapters: [],
+  chapter_status: "",
 };
 const cabin: ViewerEntry = {
   ...photo,
@@ -175,7 +178,7 @@ it("paginates photos independently and keeps a truthful zero-count video tab", a
   expect(window.location.pathname).toBe("/albums/lake/videos");
 });
 
-it("shows video titles and neutral indicators without unfinished playback or chapter controls", async () => {
+it("lists videos as links to their lightbox without mounting a player in the grid", async () => {
   mockViewer((path) => {
     if (path === "/api/albums/lake")
       return Response.json({
@@ -206,8 +209,9 @@ it("shows video titles and neutral indicators without unfinished playback or cha
     screen.queryByRole("button", { name: /play|chapters|download/i }),
   ).not.toBeInTheDocument();
   expect(
-    screen.queryByRole("link", { name: /open video|download/i }),
-  ).not.toBeInTheDocument();
+    screen.getByRole("link", { name: "Open video DSC_0123" }),
+  ).toHaveAttribute("href", "/albums/lake/videos/photo-1");
+  expect(document.querySelector("video")).toBeNull();
 });
 
 it("keeps missing covers neutral and marks failed thumbnails unavailable", async () => {
@@ -471,4 +475,189 @@ it("keeps chaining pages in the background until the album is complete", async (
   expect(await screen.findByRole("img", { name: "Dock" })).toBeVisible();
   expect(screen.getAllByRole("link", { name: /Open photo/ })).toHaveLength(3);
   expect(screen.queryByRole("status")).not.toBeInTheDocument();
+});
+
+const videoAlbum: ViewerAlbum = {
+  ...album,
+  photo_count: 0,
+  video_count: 3,
+  days: [{ date: "2025-06-14", photo_count: 0, video_count: 3 }],
+};
+const party: ViewerEntry = {
+  ...photo,
+  id: "video-1",
+  kind: "VIDEO",
+  title: "Birthday party",
+  captured_at: "2025-06-14T10:00:00Z",
+  thumbnail_url: "/media/lake/video-1/thumb?person=jamie",
+  preview_url: "/media/lake/video-1?person=jamie",
+  download_url: "/media/lake/video-1/original?person=jamie",
+  playback_url: "/media/lake/video-1/playback?person=jamie",
+  width: 1920,
+  height: 1080,
+  chapter_status: "complete",
+  chapters: [
+    { title: "Arrival", start: 0, end: 2 },
+    { title: "", start: 2, end: 4 },
+    { title: "Goodbyes", start: 4, end: 6 },
+  ],
+};
+const plain: ViewerEntry = {
+  ...party,
+  id: "video-2",
+  title: "DSC_0123",
+  captured_at: "2025-06-14T11:00:00Z",
+  playback_url: "/media/lake/video-2/playback?person=jamie",
+  chapters: [],
+};
+const broken: ViewerEntry = {
+  ...plain,
+  id: "video-3",
+  title: "DSC_0124",
+  captured_at: "2025-06-14T12:00:00Z",
+  playback_url: "/media/lake/video-3/playback?person=jamie",
+  chapter_status: "failed",
+};
+
+// jsdom has no media pipeline. Seeking is a property write and playing is a
+// promise, which is all the overlay relies on.
+function stubMedia() {
+  const times = new WeakMap<HTMLMediaElement, number>();
+  Object.defineProperty(HTMLMediaElement.prototype, "currentTime", {
+    configurable: true,
+    get() {
+      return times.get(this as HTMLMediaElement) ?? 0;
+    },
+    set(value: number) {
+      times.set(this as HTMLMediaElement, value);
+    },
+  });
+  HTMLMediaElement.prototype.play = vi.fn().mockResolvedValue(undefined);
+  HTMLMediaElement.prototype.pause = vi.fn();
+}
+
+it("opens a video in the routed lightbox, seeks by chapter, and keeps no-chapter and failed states quiet", async () => {
+  stubMedia();
+  mockViewer((path) => {
+    if (path === "/api/albums/lake") return Response.json(videoAlbum);
+    if (path === "/api/albums/lake/videos")
+      return Response.json({
+        entries: [party, plain, broken],
+        next_cursor: "",
+      });
+    throw new Error(`Unexpected request: ${path}`);
+  });
+  const user = userEvent.setup();
+  window.history.replaceState(null, "", "/albums/lake/videos");
+  render(<App />);
+  const opener = await screen.findByRole("link", {
+    name: "Open video Birthday party",
+  });
+  expect(opener).toHaveAttribute("href", "/albums/lake/videos/video-1");
+  expect(document.querySelector("video")).toBeNull();
+  await user.click(opener);
+  const dialog = await screen.findByRole("dialog", { name: "Video 1 of 3" });
+  expect(window.location.pathname).toBe("/albums/lake/videos/video-1");
+  const video =
+    within(dialog).getByLabelText<HTMLVideoElement>("Birthday party");
+  expect(video.tagName).toBe("VIDEO");
+  expect(video).toHaveAttribute("src", party.playback_url);
+  expect(video).toHaveAttribute("controls");
+  expect(within(dialog).getByText("Birthday party")).toBeVisible();
+  expect(
+    within(dialog).getByRole("link", { name: "Download video" }),
+  ).toHaveAttribute("href", party.download_url);
+  const filmstrip = within(dialog).getByRole("navigation", {
+    name: "Videos in album",
+  });
+  expect(
+    within(filmstrip).getByRole("button", { name: "Go to video 1" }),
+  ).toHaveAttribute("aria-current", "true");
+
+  const toggle = within(dialog).getByRole("button", { name: "Chapters" });
+  expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await user.click(toggle);
+  const panel = screen.getByRole("dialog", { name: "Chapters" });
+  const chapters = within(panel).getAllByRole("button", {
+    name: /Arrival|Chapter 2|Goodbyes/,
+  });
+  expect(chapters.map((button) => button.textContent)).toEqual([
+    "Arrival0:00",
+    "Chapter 20:02",
+    "Goodbyes0:04",
+  ]);
+  expect(chapters[0]).toHaveAttribute("aria-current", "true");
+  expect(chapters[0]).toHaveFocus();
+  await user.click(chapters[2]);
+  expect(video.currentTime).toBe(4);
+  expect(HTMLMediaElement.prototype.play).toHaveBeenCalled();
+  await waitFor(() =>
+    expect(
+      screen.queryByRole("dialog", { name: "Chapters" }),
+    ).not.toBeInTheDocument(),
+  );
+  expect(toggle).toHaveFocus();
+  fireEvent.timeUpdate(video);
+  await user.click(toggle);
+  expect(
+    await screen.findByRole("button", { name: /Goodbyes/ }),
+  ).toHaveAttribute("aria-current", "true");
+  await user.keyboard("{Escape}");
+  await waitFor(() =>
+    expect(
+      screen.queryByRole("dialog", { name: "Chapters" }),
+    ).not.toBeInTheDocument(),
+  );
+  expect(screen.getByRole("dialog", { name: "Video 1 of 3" })).toBeVisible();
+
+  await user.keyboard("{ArrowRight}");
+  expect(
+    await screen.findByRole("dialog", { name: "Video 2 of 3" }),
+  ).toBeVisible();
+  expect(window.location.pathname).toBe("/albums/lake/videos/video-2");
+  expect(screen.getByText("No chapters")).toBeVisible();
+  expect(
+    screen.queryByRole("button", { name: "Chapters" }),
+  ).not.toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Next video" }));
+  expect(
+    await screen.findByRole("dialog", { name: "Video 3 of 3" }),
+  ).toBeVisible();
+  expect(screen.getByText("Chapters unavailable")).toBeVisible();
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Close video" }));
+  await waitFor(() =>
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+  );
+  expect(window.location.pathname).toBe("/albums/lake/videos");
+  expect(document.querySelector("video")).toBeNull();
+  await waitFor(() => expect(opener).toHaveFocus());
+});
+
+it("reloads a stable video link and hides downloads in preview-style entries", async () => {
+  stubMedia();
+  mockViewer((path) => {
+    if (path === "/api/albums/lake") return Response.json(videoAlbum);
+    if (path === "/api/albums/lake/videos")
+      return Response.json({
+        entries: [party, { ...plain, download_url: "" }],
+        next_cursor: "more",
+      });
+    if (path === "/api/albums/lake/videos?cursor=more")
+      return Response.json({ entries: [broken], next_cursor: "" });
+    throw new Error(`Unexpected request: ${path}`);
+  });
+  window.history.replaceState(null, "", "/albums/lake/videos/video-2");
+  render(<App />);
+  const dialog = await screen.findByRole("dialog", { name: "Video 2 of 3" });
+  expect(within(dialog).getByLabelText("DSC_0123")).toHaveAttribute(
+    "src",
+    plain.playback_url,
+  );
+  expect(
+    within(dialog).queryByRole("link", { name: "Download video" }),
+  ).not.toBeInTheDocument();
+  expect(
+    await within(dialog).findByRole("button", { name: "Go to video 3" }),
+  ).toBeVisible();
 });

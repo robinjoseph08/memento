@@ -119,6 +119,18 @@ func (m *Module) publicationReview(ctx context.Context, db bun.IDB, album models
 	if unlinked > 0 {
 		result.Warnings = append(result.Warnings, countLabel(unlinked, "unlinked face", "unlinked faces")+". Optional to link.")
 	}
+	// Chapters are optional metadata: a failed probe is worth a mention, and
+	// videos without chapters are ordinary.
+	var failedChapters int
+	err = db.NewSelect().TableExpr("album_entries AS entry").ColumnExpr("count(*)").
+		Join("JOIN media_chapter_results AS chapter_result ON chapter_result.media_item_id = entry.media_item_id").
+		Where("entry.album_id = ? AND entry.removed_at IS NULL AND chapter_result.status = ?", album.ID, media.ChapterStatusFailed).Scan(ctx, &failedChapters)
+	if err != nil {
+		return result, errorstack.CaptureContext(ctx, err)
+	}
+	if failedChapters > 0 {
+		result.Warnings = append(result.Warnings, countLabel(failedChapters, "video", "videos")+" without chapter data after a failed check. Playback works; retry from the video details.")
+	}
 	return result, nil
 }
 

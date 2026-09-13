@@ -52,6 +52,8 @@ type Config struct {
 	DatabaseConnectRetryCount int           `koanf:"database_connect_retry_count" json:"database_connect_retry_count" validate:"min=1"`
 	DatabaseConnectRetryDelay time.Duration `koanf:"database_connect_retry_delay" json:"database_connect_retry_delay" validate:"min=0"`
 	FilesPath                 string        `koanf:"files_path" json:"files_path" validate:"required"`
+	FFprobePath               string        `koanf:"ffprobe_path" json:"ffprobe_path" validate:"required"`
+	FFprobeConcurrency        int           `koanf:"ffprobe_concurrency" json:"ffprobe_concurrency" validate:"min=1,max=16"`
 	CookieNamespace           string        `koanf:"cookie_namespace" json:"-"`
 	ServerHost                string        `koanf:"server_host" json:"server_host" validate:"required"`
 	ServerPort                int           `koanf:"server_port" json:"server_port" validate:"min=0,max=65535"`
@@ -68,6 +70,8 @@ func defaults() *Config {
 		DatabaseConnectRetryCount: 5,
 		DatabaseConnectRetryDelay: 2 * time.Second,
 		FilesPath:                 "./tmp/files",
+		FFprobePath:               "ffprobe",
+		FFprobeConcurrency:        1,
 		CookieNamespace:           "memento",
 		ServerHost:                "0.0.0.0",
 		ServerPort:                3579,
