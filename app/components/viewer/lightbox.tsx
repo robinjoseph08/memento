@@ -56,11 +56,20 @@ export function Lightbox({
       ? String(state.origin)
       : "";
 
+  // The router applies each URL change as a deferred render, so a second
+  // key press or swipe can arrive before the previous one is on screen. Steps
+  // count from the last requested photo, not the last rendered one.
+  const pendingRef = useRef<string | null>(null);
+  useEffect(() => {
+    pendingRef.current = null;
+  }, [currentID]);
   function go(next: ViewerEntry) {
+    pendingRef.current = next.id;
     void navigate(entryLink(next.id), { replace: true, state: location.state });
   }
   function step(delta: number) {
-    const next = entries[index + delta];
+    const from = pendingRef.current ?? currentID;
+    const next = entries[entries.findIndex((item) => item.id === from) + delta];
     if (next) go(next);
   }
   function close() {

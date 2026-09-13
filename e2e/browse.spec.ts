@@ -166,9 +166,10 @@ test("a member browses a published Album, opens photos by link, key, swipe and f
     await expect(
       member.getByRole("heading", { name: "Sunday, May 10, 2026 80 photos" }),
     ).toBeVisible();
+    // Three pages arrive in the background; slow engines need a moment.
     await expect(
       member.getByRole("link", { name: "Open photo browse-220" }),
-    ).toBeAttached();
+    ).toBeAttached({ timeout: 30_000 });
     await expect(
       member.getByRole("link", { name: "Open photo coast-07" }),
     ).toBeAttached();

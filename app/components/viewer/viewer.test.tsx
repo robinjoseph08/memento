@@ -1,4 +1,5 @@
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -429,4 +430,26 @@ it("keeps the lightbox open when a later page fails and can retry a photo on tha
   expect(
     await screen.findByRole("dialog", { name: "Photo 2 of 3" }),
   ).toBeVisible();
+});
+
+it("counts rapid key presses from the last requested photo, not the last rendered one", async () => {
+  mockViewer((path) => {
+    if (path === "/api/albums/lake")
+      return Response.json({ ...album, photo_count: 3 });
+    if (path === "/api/albums/lake/photos")
+      return Response.json({ entries: [photo, cabin, dock], next_cursor: "" });
+    throw new Error(`Unexpected request: ${path}`);
+  });
+  window.history.replaceState(null, "", "/albums/lake/photos/photo-3");
+  render(<App />);
+  const dialog = await screen.findByRole("dialog", { name: "Photo 3 of 3" });
+  // Two presses before React has rendered the first one's result.
+  act(() => {
+    fireEvent.keyDown(dialog, { key: "ArrowLeft" });
+    fireEvent.keyDown(dialog, { key: "ArrowLeft" });
+  });
+  expect(
+    await screen.findByRole("dialog", { name: "Photo 1 of 3" }),
+  ).toBeVisible();
+  expect(window.location.pathname).toBe("/albums/lake/photos/photo-1");
 });
