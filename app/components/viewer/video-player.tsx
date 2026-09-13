@@ -1,4 +1,4 @@
-import type { RefObject } from "react";
+import { useId, type RefObject } from "react";
 
 import type { Chapter, ViewerEntry } from "../../types/generated/publishing";
 import { Combobox } from "../ui/combobox";
@@ -50,6 +50,7 @@ export function ChapterSelect({
   onSeek: (chapter: Chapter) => void;
 }) {
   const chapters = entry.chapters;
+  const labelId = useId();
   if (chapters.length === 0) {
     const label =
       entry.chapter_status === "failed"
@@ -64,18 +65,23 @@ export function ChapterSelect({
     -1,
   );
   return (
-    <Combobox
-      aria-label="Chapter"
-      className="min-h-9 w-64 max-w-full"
-      onChange={(value) => onSeek(chapters[Number(value)])}
-      options={chapters.map((chapter, index) => ({
-        value: String(index),
-        label: chapter.title || `Chapter ${index + 1}`,
-        description: clock(chapter.start),
-      }))}
-      placeholder="Chapters"
-      searchPlaceholder="Search chapters…"
-      value={activeIndex >= 0 ? String(activeIndex) : ""}
-    />
+    <div className="flex max-w-full items-center gap-2">
+      <span className="text-xs text-muted" id={labelId}>
+        Chapter
+      </span>
+      <Combobox
+        aria-labelledby={labelId}
+        className="min-h-9 w-56 max-w-full"
+        onChange={(value) => onSeek(chapters[Number(value)])}
+        options={chapters.map((chapter, index) => ({
+          value: String(index),
+          label: chapter.title || `Chapter ${index + 1}`,
+          description: clock(chapter.start),
+        }))}
+        placeholder="Choose a chapter"
+        searchPlaceholder="Search chapters…"
+        value={activeIndex >= 0 ? String(activeIndex) : ""}
+      />
+    </div>
   );
 }
