@@ -83,7 +83,6 @@ export function AccountMenu({
           )}
           <DropdownMenuCheckboxItem
             checked={theme === "dark"}
-            disabled={preview}
             onCheckedChange={(checked) => setTheme(checked ? "dark" : "light")}
             onSelect={(event) => event.preventDefault()}
           >

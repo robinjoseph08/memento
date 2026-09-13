@@ -31,12 +31,11 @@ func TestEmptyAlbumAccessStillListsActivePeople(t *testing.T) {
 	require.Len(t, album.Access, 1)
 	assert.Equal(t, "Alex", album.Access[0].DisplayName)
 	assert.False(t, album.Access[0].Effective)
-	assert.True(t, album.Access[0].Inherited)
-	saved, err := module.SetAlbumAccess(t.Context(), album.ID, publishing.SetAlbumAccessRequest{PersonID: person.ID.String(), Decision: publishing.DecisionAllow})
+	saved, err := module.SaveAlbumAccess(t.Context(), album.ID, publishing.SaveAlbumAccessRequest{People: []publishing.AlbumAccessChoice{{PersonID: person.ID.String(), Allowed: true}}})
 	require.NoError(t, err)
-	assert.Equal(t, publishing.DecisionAllow, saved.Album.Access[0].Decision)
-	assert.Zero(t, saved.Album.Access[0].AccessibleCount)
-	assert.False(t, saved.Album.Access[0].Effective)
+	assert.Equal(t, publishing.DecisionAllow, saved.Access[0].Decision)
+	assert.Zero(t, saved.Access[0].AccessibleCount)
+	assert.False(t, saved.Access[0].Effective)
 }
 
 func TestSplitAndMergePreserveEntryOverridesWithAlbumInheritance(t *testing.T) {
@@ -46,15 +45,15 @@ func TestSplitAndMergePreserveEntryOverridesWithAlbumInheritance(t *testing.T) {
 	_, err := db.NewInsert().Model(&person).Exec(t.Context())
 	require.NoError(t, err)
 	id, source := person.ID.String(), album.Moments[1]
-	_, err = module.SetMomentAccess(t.Context(), album.ID, source.ID, publishing.SetMomentAccessRequest{PersonID: id, Decision: publishing.DecisionDeny})
+	_, err = module.SaveMomentRules(t.Context(), album.ID, source.ID, publishing.SaveRulesRequest{Decisions: []publishing.AccessResolution{{PersonID: id, Decision: publishing.DecisionDeny}}})
 	require.NoError(t, err)
-	_, err = module.SetEntryAccess(t.Context(), album.ID, source.Entries[0].ID, publishing.SetEntryAccessRequest{PersonID: id, Decision: publishing.DecisionAllow})
+	_, err = module.SaveEntryRules(t.Context(), album.ID, source.Entries[0].ID, publishing.SaveRulesRequest{Decisions: []publishing.AccessResolution{{PersonID: id, Decision: publishing.DecisionAllow}}})
 	require.NoError(t, err)
 	split := publishing.SplitMomentRequest{EntryIDs: []string{source.Entries[0].ID}}
 	preview, err := module.PreviewSplit(t.Context(), album.ID, source.ID, split)
 	require.NoError(t, err)
 	assert.Empty(t, preview.Changes)
-	_, err = module.SetAlbumAccess(t.Context(), album.ID, publishing.SetAlbumAccessRequest{PersonID: id, Decision: publishing.DecisionAllow})
+	_, err = module.SaveAlbumAccess(t.Context(), album.ID, publishing.SaveAlbumAccessRequest{People: []publishing.AlbumAccessChoice{{PersonID: id, Allowed: true}}})
 	require.NoError(t, err)
 	split.ReviewToken = preview.ReviewToken
 	_, err = module.SplitMoment(t.Context(), album.ID, source.ID, split)
@@ -85,32 +84,9 @@ func TestSplitAndMergePreserveEntryOverridesWithAlbumInheritance(t *testing.T) {
 	assert.Equal(t, 2, merged.Access[0].AccessibleCount)
 	for _, entry := range merged.Moments[1].Entries {
 		if entry.ID == source.Entries[0].ID {
-			assert.Equal(t, publishing.DecisionAllow, entry.Access[0].Decision)
+			assert.Equal(t, publishing.DecisionAllow, entry.Decisions[id])
 		}
 	}
-}
-
-func TestMergeResolutionInvalidatesEarlierDeletionUndo(t *testing.T) {
-	t.Parallel()
-	db, module, album := importedAlbum(t)
-	person := models.Person{ID: models.NewUUIDv7(), DisplayName: "Alex", CreatedAt: time.Now().UTC()}
-	_, err := db.NewInsert().Model(&person).Exec(t.Context())
-	require.NoError(t, err)
-	id, target, source := person.ID.String(), album.Moments[0], album.Moments[1]
-	_, err = module.SetMomentAccess(t.Context(), album.ID, target.ID, publishing.SetMomentAccessRequest{PersonID: id, Decision: publishing.DecisionAllow})
-	require.NoError(t, err)
-	deletion, err := module.SetMomentAccess(t.Context(), album.ID, target.ID, publishing.SetMomentAccessRequest{PersonID: id, Decision: publishing.DecisionInherit})
-	require.NoError(t, err)
-	_, err = module.SetMomentAccess(t.Context(), album.ID, source.ID, publishing.SetMomentAccessRequest{PersonID: id, Decision: publishing.DecisionDeny})
-	require.NoError(t, err)
-	merge := publishing.MergeMomentsRequest{TargetMomentID: target.ID, CoverEntryID: target.CoverEntryID, Resolutions: []publishing.AccessResolution{{PersonID: id, Decision: publishing.DecisionInherit}}}
-	preview, err := module.PreviewMerge(t.Context(), album.ID, source.ID, merge)
-	require.NoError(t, err)
-	merge.ReviewToken = preview.ReviewToken
-	_, err = module.MergeMoments(t.Context(), album.ID, source.ID, merge)
-	require.NoError(t, err)
-	_, err = module.UndoMomentAccess(t.Context(), album.ID, target.ID, deletion.Undo)
-	require.Error(t, err, "merge replaced the reviewed rule even though both results inherit")
 }
 
 func TestEntryDetectionIsSpecificToItsOwnMedia(t *testing.T) {
@@ -138,10 +114,8 @@ func TestEntryDetectionIsSpecificToItsOwnMedia(t *testing.T) {
 	refreshed, err := module.RefreshMomentFaces(t.Context(), album.ID, album.Moments[1].ID)
 	require.NoError(t, err)
 	assert.True(t, refreshed.Moments[1].Access.People[0].Detected)
-	for _, entry := range refreshed.Moments[1].Entries {
-		assert.Equal(t, entry.Filename == "first.jpg", entry.Access[0].Detected, entry.Filename)
-		assert.Equal(t, entry.Filename == "first.jpg", entry.Access[0].Suggested, entry.Filename)
-	}
+	assert.Equal(t, 1, refreshed.Moments[1].Access.People[0].SupportingEntries, "only the media carrying the face supports the suggestion")
+	assert.False(t, refreshed.Moments[0].Access.People[0].Detected)
 }
 
 func TestRemoveAllAccessRequiresCurrentReviewAndStaysWithinAlbum(t *testing.T) {
@@ -151,11 +125,11 @@ func TestRemoveAllAccessRequiresCurrentReviewAndStaysWithinAlbum(t *testing.T) {
 	_, err := db.NewInsert().Model(&person).Exec(t.Context())
 	require.NoError(t, err)
 	id := person.ID.String()
-	_, err = module.SetAlbumAccess(t.Context(), album.ID, publishing.SetAlbumAccessRequest{PersonID: id, Decision: publishing.DecisionAllow})
+	_, err = module.SaveAlbumAccess(t.Context(), album.ID, publishing.SaveAlbumAccessRequest{People: []publishing.AlbumAccessChoice{{PersonID: id, Allowed: true}}})
 	require.NoError(t, err)
-	_, err = module.SetMomentAccess(t.Context(), album.ID, album.Moments[1].ID, publishing.SetMomentAccessRequest{PersonID: id, Decision: publishing.DecisionDeny})
+	_, err = module.SaveMomentRules(t.Context(), album.ID, album.Moments[1].ID, publishing.SaveRulesRequest{Decisions: []publishing.AccessResolution{{PersonID: id, Decision: publishing.DecisionDeny}}})
 	require.NoError(t, err)
-	_, err = module.SetEntryAccess(t.Context(), album.ID, album.Moments[1].Entries[0].ID, publishing.SetEntryAccessRequest{PersonID: id, Decision: publishing.DecisionAllow})
+	_, err = module.SaveEntryRules(t.Context(), album.ID, album.Moments[1].Entries[0].ID, publishing.SaveRulesRequest{Decisions: []publishing.AccessResolution{{PersonID: id, Decision: publishing.DecisionAllow}}})
 	require.NoError(t, err)
 	otherSource := fixture()
 	otherSource.albums["other"] = immich.Album{ID: "other", Name: "Other", Count: 3}
@@ -163,15 +137,15 @@ func TestRemoveAllAccessRequiresCurrentReviewAndStaysWithinAlbum(t *testing.T) {
 	other, err := otherModule.StartImport(t.Context(), "other")
 	require.NoError(t, err)
 	require.NoError(t, otherModule.ExecuteImport(t.Context(), other.ID))
-	_, err = otherModule.SetAlbumAccess(t.Context(), other.ID, publishing.SetAlbumAccessRequest{PersonID: id, Decision: publishing.DecisionAllow})
+	_, err = otherModule.SaveAlbumAccess(t.Context(), other.ID, publishing.SaveAlbumAccessRequest{People: []publishing.AlbumAccessChoice{{PersonID: id, Allowed: true}}})
 	require.NoError(t, err)
 	preview, err := module.PreviewRemoveAccess(t.Context(), album.ID, publishing.RemoveAccessPreviewRequest{PersonID: id})
 	require.NoError(t, err)
-	assert.Equal(t, 1, preview.AlbumDecisions)
-	assert.Equal(t, 1, preview.MomentDecisions)
-	assert.Equal(t, 1, preview.EntryDecisions)
-	assert.Equal(t, 2, preview.AccessibleCount)
-	_, err = module.SetEntryAccess(t.Context(), album.ID, album.Moments[1].Entries[1].ID, publishing.SetEntryAccessRequest{PersonID: id, Decision: publishing.DecisionAllow})
+	require.Len(t, preview.Changes, 1)
+	assert.Equal(t, "Alex", preview.Changes[0].DisplayName)
+	assert.Len(t, preview.Changes[0].LostEntryIDs, 2)
+	assert.Empty(t, preview.Changes[0].GainedEntryIDs)
+	_, err = module.SaveEntryRules(t.Context(), album.ID, album.Moments[1].Entries[1].ID, publishing.SaveRulesRequest{Decisions: []publishing.AccessResolution{{PersonID: id, Decision: publishing.DecisionAllow}}})
 	require.NoError(t, err)
 	_, err = module.RemoveAccess(t.Context(), album.ID, publishing.RemoveAccessRequest{PersonID: id, ReviewToken: preview.ReviewToken})
 	require.Error(t, err)
@@ -188,7 +162,7 @@ func TestRemoveAllAccessRequiresCurrentReviewAndStaysWithinAlbum(t *testing.T) {
 	for _, moment := range removed.Moments {
 		assert.Empty(t, moment.Access.People[0].Decision)
 		for _, entry := range moment.Entries {
-			assert.Empty(t, entry.Access[0].Decision)
+			assert.Empty(t, entry.Decisions)
 		}
 	}
 }
@@ -200,7 +174,7 @@ func TestRulesSaveOnlyListedDecisionsAtomically(t *testing.T) {
 	_, err := db.NewInsert().Model(&people).Exec(t.Context())
 	require.NoError(t, err)
 	alex, sam, moment := people[0].ID.String(), people[1].ID.String(), album.Moments[1]
-	_, err = module.SetMomentAccess(t.Context(), album.ID, moment.ID, publishing.SetMomentAccessRequest{PersonID: sam, Decision: publishing.DecisionDeny})
+	_, err = module.SaveMomentRules(t.Context(), album.ID, moment.ID, publishing.SaveRulesRequest{Decisions: []publishing.AccessResolution{{PersonID: sam, Decision: publishing.DecisionDeny}}})
 	require.NoError(t, err)
 	saved, err := module.SaveMomentRules(t.Context(), album.ID, moment.ID, publishing.SaveRulesRequest{Decisions: []publishing.AccessResolution{{PersonID: alex, Decision: publishing.DecisionAllow}}})
 	require.NoError(t, err)
@@ -215,10 +189,12 @@ func TestRulesSaveOnlyListedDecisionsAtomically(t *testing.T) {
 	require.Error(t, err)
 	saved, err = module.SaveEntryRules(t.Context(), album.ID, moment.Entries[0].ID, publishing.SaveRulesRequest{Decisions: []publishing.AccessResolution{{PersonID: alex, Decision: publishing.DecisionDeny}}})
 	require.NoError(t, err)
-	assert.False(t, saved.Moments[1].Entries[0].Access[0].Effective)
+	assert.Equal(t, publishing.DecisionDeny, saved.Moments[1].Entries[0].Decisions[alex])
+	assert.Equal(t, 1, personFor(saved.Moments[1], alex).AccessibleCount)
 	saved, err = module.SaveEntryRules(t.Context(), album.ID, moment.Entries[0].ID, publishing.SaveRulesRequest{Decisions: []publishing.AccessResolution{{PersonID: alex, Decision: publishing.DecisionInherit}}})
 	require.NoError(t, err)
-	assert.True(t, saved.Moments[1].Entries[0].Access[0].Effective)
+	assert.Empty(t, saved.Moments[1].Entries[0].Decisions)
+	assert.Equal(t, 2, personFor(saved.Moments[1], alex).AccessibleCount)
 }
 
 func TestStructuralReviewIncludesAlbumAndEntryRules(t *testing.T) {
@@ -229,16 +205,16 @@ func TestStructuralReviewIncludesAlbumAndEntryRules(t *testing.T) {
 	require.NoError(t, err)
 	id := person.ID.String()
 	source, target := album.Moments[1], album.Moments[0]
-	_, err = module.SetAlbumAccess(t.Context(), album.ID, publishing.SetAlbumAccessRequest{PersonID: id, Decision: publishing.DecisionAllow})
+	_, err = module.SaveAlbumAccess(t.Context(), album.ID, publishing.SaveAlbumAccessRequest{People: []publishing.AlbumAccessChoice{{PersonID: id, Allowed: true}}})
 	require.NoError(t, err)
-	_, err = module.SetMomentAccess(t.Context(), album.ID, target.ID, publishing.SetMomentAccessRequest{PersonID: id, Decision: publishing.DecisionDeny})
+	_, err = module.SaveMomentRules(t.Context(), album.ID, target.ID, publishing.SaveRulesRequest{Decisions: []publishing.AccessResolution{{PersonID: id, Decision: publishing.DecisionDeny}}})
 	require.NoError(t, err)
 	move := publishing.MoveEntriesRequest{EntryIDs: []string{source.Entries[1].ID}, DestinationMomentID: target.ID}
 	preview, err := module.PreviewMove(t.Context(), album.ID, source.ID, move)
 	require.NoError(t, err)
 	require.Len(t, preview.Changes, 1)
 	assert.Equal(t, move.EntryIDs, preview.Changes[0].LostEntryIDs)
-	_, err = module.SetEntryAccess(t.Context(), album.ID, source.Entries[1].ID, publishing.SetEntryAccessRequest{PersonID: id, Decision: publishing.DecisionAllow})
+	_, err = module.SaveEntryRules(t.Context(), album.ID, source.Entries[1].ID, publishing.SaveRulesRequest{Decisions: []publishing.AccessResolution{{PersonID: id, Decision: publishing.DecisionAllow}}})
 	require.NoError(t, err)
 	move.ReviewToken = preview.ReviewToken
 	_, err = module.MoveEntries(t.Context(), album.ID, source.ID, move)
@@ -252,60 +228,36 @@ func TestStructuralReviewIncludesAlbumAndEntryRules(t *testing.T) {
 	assert.Equal(t, 2, moved.Access[0].AccessibleCount)
 }
 
-//nolint:tparallel // Scope cases deliberately reuse one Album and Person sequentially.
-func TestAccessUndoRestoresDeletedRulesAndRejectsReplacedDeletions(t *testing.T) {
+func TestAlbumAccessPreviewMatchesSaveAndKeepsNarrowerRules(t *testing.T) {
 	t.Parallel()
 	db, module, album := importedAlbum(t)
-	person := models.Person{ID: models.NewUUIDv7(), DisplayName: "Alex", CreatedAt: time.Now().UTC()}
-	_, err := db.NewInsert().Model(&person).Exec(t.Context())
+	people := []models.Person{{ID: models.NewUUIDv7(), DisplayName: "Alex", CreatedAt: time.Now().UTC()}, {ID: models.NewUUIDv7(), DisplayName: "Sam", CreatedAt: time.Now().UTC()}}
+	_, err := db.NewInsert().Model(&people).Exec(t.Context())
 	require.NoError(t, err)
-	id, momentID, entryID := person.ID.String(), album.Moments[1].ID, album.Moments[1].Entries[0].ID
-	scopes := []struct {
-		name     string
-		set      func(publishing.Decision) (publishing.AccessResult, error)
-		undo     func(publishing.UndoMomentAccessRequest) (publishing.AlbumDetail, error)
-		decision func(publishing.AlbumDetail) publishing.Decision
-	}{
-		{"album", func(d publishing.Decision) (publishing.AccessResult, error) {
-			return module.SetAlbumAccess(t.Context(), album.ID, publishing.SetAlbumAccessRequest{PersonID: id, Decision: d})
-		}, func(r publishing.UndoMomentAccessRequest) (publishing.AlbumDetail, error) {
-			return module.UndoAlbumAccess(t.Context(), album.ID, r)
-		}, func(a publishing.AlbumDetail) publishing.Decision { return a.Access[0].Decision }},
-		{"moment", func(d publishing.Decision) (publishing.AccessResult, error) {
-			return module.SetMomentAccess(t.Context(), album.ID, momentID, publishing.SetMomentAccessRequest{PersonID: id, Decision: d})
-		}, func(r publishing.UndoMomentAccessRequest) (publishing.AlbumDetail, error) {
-			return module.UndoMomentAccess(t.Context(), album.ID, momentID, r)
-		}, func(a publishing.AlbumDetail) publishing.Decision { return a.Moments[1].Access.People[0].Decision }},
-		{"entry", func(d publishing.Decision) (publishing.AccessResult, error) {
-			return module.SetEntryAccess(t.Context(), album.ID, entryID, publishing.SetEntryAccessRequest{PersonID: id, Decision: d})
-		}, func(r publishing.UndoMomentAccessRequest) (publishing.AlbumDetail, error) {
-			return module.UndoEntryAccess(t.Context(), album.ID, entryID, r)
-		}, func(a publishing.AlbumDetail) publishing.Decision { return a.Moments[1].Entries[0].Access[0].Decision }},
-	}
-	for _, scope := range scopes {
-		t.Run(scope.name, func(t *testing.T) {
-			_, err := scope.set(publishing.DecisionAllow)
-			require.NoError(t, err)
-			removed, err := scope.set(publishing.DecisionInherit)
-			require.NoError(t, err)
-			assert.Empty(t, scope.decision(removed.Album))
-			restored, err := scope.undo(removed.Undo)
-			require.NoError(t, err)
-			assert.Equal(t, publishing.DecisionAllow, scope.decision(restored))
-			_, err = scope.undo(removed.Undo)
-			require.Error(t, err)
-			old, err := scope.set(publishing.DecisionInherit)
-			require.NoError(t, err)
-			_, err = scope.set(publishing.DecisionAllow)
-			require.NoError(t, err)
-			latest, err := scope.set(publishing.DecisionInherit)
-			require.NoError(t, err)
-			_, err = scope.undo(old.Undo)
-			require.Error(t, err)
-			_, err = scope.undo(latest.Undo)
-			require.NoError(t, err)
-		})
-	}
+	alex, sam := people[0].ID.String(), people[1].ID.String()
+	_, err = module.SaveMomentRules(t.Context(), album.ID, album.Moments[1].ID, publishing.SaveRulesRequest{Decisions: []publishing.AccessResolution{{PersonID: alex, Decision: publishing.DecisionDeny}}})
+	require.NoError(t, err)
+	request := publishing.SaveAlbumAccessRequest{People: []publishing.AlbumAccessChoice{{PersonID: alex, Allowed: true}, {PersonID: sam, Allowed: true}}}
+	preview, err := module.PreviewAlbumAccess(t.Context(), album.ID, request)
+	require.NoError(t, err)
+	require.Len(t, preview.Changes, 2)
+	assert.Len(t, preview.Changes[0].GainedEntryIDs, 1, "the Moment exclusion keeps applying")
+	assert.Len(t, preview.Changes[1].GainedEntryIDs, 3)
+	saved, err := module.SaveAlbumAccess(t.Context(), album.ID, request)
+	require.NoError(t, err)
+	assert.Equal(t, 1, saved.Access[0].AccessibleCount)
+	assert.Equal(t, 1, saved.Access[0].Exceptions)
+	assert.Equal(t, 3, saved.Access[1].AccessibleCount)
+	assert.True(t, personFor(saved.Moments[0], alex).Inherited)
+	removed, err := module.SaveAlbumAccess(t.Context(), album.ID, publishing.SaveAlbumAccessRequest{People: []publishing.AlbumAccessChoice{{PersonID: alex}}})
+	require.NoError(t, err)
+	assert.Empty(t, removed.Access[0].Decision)
+	assert.Equal(t, publishing.DecisionDeny, decisionFor(removed.Moments[1], alex), "unchecking keeps narrower rules")
+	assert.Equal(t, publishing.DecisionAllow, removed.Access[1].Decision, "people left out of the request are untouched")
+	_, err = module.PreviewAlbumAccess(t.Context(), album.ID, publishing.SaveAlbumAccessRequest{People: []publishing.AlbumAccessChoice{{PersonID: alex, Allowed: true}, {PersonID: alex}}})
+	require.Error(t, err)
+	_, err = module.SaveAlbumAccess(t.Context(), album.ID, publishing.SaveAlbumAccessRequest{People: []publishing.AlbumAccessChoice{{PersonID: models.NewUUIDv7().String(), Allowed: true}}})
+	require.Error(t, err)
 }
 
 func TestEntryExceptionsOverrideMomentAndAlbumRules(t *testing.T) {
@@ -315,33 +267,33 @@ func TestEntryExceptionsOverrideMomentAndAlbumRules(t *testing.T) {
 	_, err := db.NewInsert().Model(&person).Exec(t.Context())
 	require.NoError(t, err)
 	id := person.ID.String()
-	_, err = module.SetAlbumAccess(t.Context(), album.ID, publishing.SetAlbumAccessRequest{PersonID: id, Decision: publishing.DecisionAllow})
+	_, err = module.SaveAlbumAccess(t.Context(), album.ID, publishing.SaveAlbumAccessRequest{People: []publishing.AlbumAccessChoice{{PersonID: id, Allowed: true}}})
 	require.NoError(t, err)
 	moment := album.Moments[1]
-	denied, err := module.SetEntryAccess(t.Context(), album.ID, moment.Entries[0].ID, publishing.SetEntryAccessRequest{PersonID: id, Decision: publishing.DecisionDeny})
+	denied, err := module.SaveEntryRules(t.Context(), album.ID, moment.Entries[0].ID, publishing.SaveRulesRequest{Decisions: []publishing.AccessResolution{{PersonID: id, Decision: publishing.DecisionDeny}}})
 	require.NoError(t, err)
-	assert.Equal(t, 2, denied.Album.Access[0].AccessibleCount)
-	assert.Equal(t, 1, denied.Album.Moments[1].Access.People[0].AccessibleCount)
-	assert.True(t, denied.Album.Moments[1].Access.People[0].Effective)
-	assert.False(t, denied.Album.Moments[1].Entries[0].Access[0].Effective)
-	_, err = module.SetMomentAccess(t.Context(), album.ID, moment.ID, publishing.SetMomentAccessRequest{PersonID: id, Decision: publishing.DecisionDeny})
+	assert.Equal(t, 2, denied.Access[0].AccessibleCount)
+	assert.Equal(t, 1, denied.Moments[1].Access.People[0].AccessibleCount)
+	assert.True(t, denied.Moments[1].Access.People[0].Effective)
+	assert.Equal(t, publishing.DecisionDeny, denied.Moments[1].Entries[0].Decisions[id])
+	_, err = module.SaveMomentRules(t.Context(), album.ID, moment.ID, publishing.SaveRulesRequest{Decisions: []publishing.AccessResolution{{PersonID: id, Decision: publishing.DecisionDeny}}})
 	require.NoError(t, err)
-	allowed, err := module.SetEntryAccess(t.Context(), album.ID, moment.Entries[1].ID, publishing.SetEntryAccessRequest{PersonID: id, Decision: publishing.DecisionAllow})
+	allowed, err := module.SaveEntryRules(t.Context(), album.ID, moment.Entries[1].ID, publishing.SaveRulesRequest{Decisions: []publishing.AccessResolution{{PersonID: id, Decision: publishing.DecisionAllow}}})
 	require.NoError(t, err)
-	assert.Equal(t, 2, allowed.Album.Access[0].AccessibleCount)
-	assert.False(t, allowed.Album.Moments[1].Access.People[0].Effective)
-	removed, err := module.SetAlbumAccess(t.Context(), album.ID, publishing.SetAlbumAccessRequest{PersonID: id, Decision: publishing.DecisionInherit})
+	assert.Equal(t, 2, allowed.Access[0].AccessibleCount)
+	assert.False(t, allowed.Moments[1].Access.People[0].Effective)
+	removed, err := module.SaveAlbumAccess(t.Context(), album.ID, publishing.SaveAlbumAccessRequest{People: []publishing.AlbumAccessChoice{{PersonID: id}}})
 	require.NoError(t, err)
-	assert.Empty(t, removed.Album.Access[0].Decision)
-	assert.Equal(t, 1, removed.Album.Access[0].AccessibleCount)
-	assert.True(t, removed.Album.Access[0].Effective)
-	assert.Equal(t, publishing.DecisionDeny, removed.Album.Moments[1].Access.People[0].Decision)
+	assert.Empty(t, removed.Access[0].Decision)
+	assert.Equal(t, 1, removed.Access[0].AccessibleCount)
+	assert.True(t, removed.Access[0].Effective)
+	assert.Equal(t, publishing.DecisionDeny, removed.Moments[1].Access.People[0].Decision)
 }
 
 func TestAlbumAccessDefaultsDeniedAndInheritsToEntries(t *testing.T) {
 	t.Parallel()
 	db, module, album := importedAlbum(t)
-	require.NotNil(t, album.Moments[0].Entries[0].Access, "empty audiences serialize as arrays")
+	require.NotNil(t, album.Moments[0].Entries[0].Decisions, "absent entry rules serialize as an empty object")
 	person := models.Person{ID: models.NewUUIDv7(), DisplayName: "Alex", CreatedAt: time.Now().UTC()}
 	_, err := db.NewInsert().Model(&person).Exec(t.Context())
 	require.NoError(t, err)
@@ -349,17 +301,17 @@ func TestAlbumAccessDefaultsDeniedAndInheritsToEntries(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, album.Access, 1)
 	assert.False(t, album.Access[0].Effective)
-	result, err := module.SetAlbumAccess(t.Context(), album.ID, publishing.SetAlbumAccessRequest{PersonID: person.ID.String(), Decision: publishing.DecisionAllow})
+	result, err := module.SaveAlbumAccess(t.Context(), album.ID, publishing.SaveAlbumAccessRequest{People: []publishing.AlbumAccessChoice{{PersonID: person.ID.String(), Allowed: true}}})
 	require.NoError(t, err)
-	assert.Equal(t, publishing.DecisionAllow, result.Album.Access[0].Decision)
-	assert.Equal(t, 3, result.Album.Access[0].AccessibleCount)
-	assert.True(t, result.Album.Moments[1].Access.People[0].Effective)
-	assert.True(t, result.Album.Moments[1].Access.People[0].Inherited)
-	for _, moment := range result.Album.Moments {
+	assert.Equal(t, publishing.DecisionAllow, result.Access[0].Decision)
+	assert.Equal(t, 3, result.Access[0].AccessibleCount)
+	assert.True(t, result.Moments[1].Access.People[0].Effective)
+	assert.True(t, result.Moments[1].Access.People[0].Inherited)
+	for _, moment := range result.Moments {
+		assert.True(t, personFor(moment, person.ID.String()).Effective)
+		assert.Equal(t, len(moment.Entries), personFor(moment, person.ID.String()).AccessibleCount)
 		for _, entry := range moment.Entries {
-			require.Len(t, entry.Access, 1)
-			assert.True(t, entry.Access[0].Effective)
-			assert.True(t, entry.Access[0].Inherited)
+			assert.Empty(t, entry.Decisions, "inheritance is computed, not stored per entry")
 		}
 	}
 }

@@ -21,20 +21,6 @@ func checkMediaEndpoint(ctx context.Context, handler http.Handler, path string) 
 		return fmt.Errorf("production media GET did not serve generated image: HTTP %d", image.Code)
 	}
 	etag := image.Header().Get("ETag")
-	if strings.HasPrefix(path, "/api/media/preview/") {
-		if etag != "" || image.Header().Get("Cache-Control") != "private, no-store" {
-			return fmt.Errorf("selected-Person preview must not retain stale media authorization in browser cache")
-		}
-		head := request(http.MethodHead, "")
-		if head.Code != http.StatusOK || head.Body.Len() != 0 || head.Header().Get("Cache-Control") != "private, no-store" {
-			return fmt.Errorf("preview media HEAD differs from GET")
-		}
-		conditional := request(http.MethodGet, "*")
-		if conditional.Code != http.StatusOK || conditional.Body.Len() == 0 {
-			return fmt.Errorf("preview conditional GET reused stale bytes")
-		}
-		return nil
-	}
 	const cache = "private, max-age=31536000, immutable"
 	if etag == "" || image.Header().Get("Cache-Control") != cache {
 		return fmt.Errorf("production media response is not privately content-versioned")

@@ -20,9 +20,14 @@ type viewerHandlers struct {
 	authorize AuthorizeEntry
 }
 
-func (h *viewerHandlers) entryThumbnail(c *echo.Context) error   { return h.thumbnail(c, false) }
-func (h *viewerHandlers) previewThumbnail(c *echo.Context) error { return h.thumbnail(c, true) }
-func (h *viewerHandlers) thumbnail(c *echo.Context, preview bool) error {
+func (h *viewerHandlers) entryThumbnail(c *echo.Context) error   { return h.image(c, false, false) }
+func (h *viewerHandlers) entryPreview(c *echo.Context) error     { return h.image(c, false, true) }
+func (h *viewerHandlers) previewThumbnail(c *echo.Context) error { return h.image(c, true, false) }
+func (h *viewerHandlers) previewPreview(c *echo.Context) error   { return h.image(c, true, true) }
+
+// image serves one generated variant: the small thumbnail or the large
+// preview. preview selects a Curator's selected-Person context.
+func (h *viewerHandlers) image(c *echo.Context, preview, large bool) error {
 	actorID, _ := c.Get("identity.person_id").(string)
 	selected := ""
 	if actorID == "" {
@@ -41,15 +46,8 @@ func (h *viewerHandlers) thumbnail(c *echo.Context, preview bool) error {
 	if err != nil {
 		return err
 	}
-	if preview {
-		image, err := h.module.viewerThumbnail(c.Request().Context(), sourceID, version)
-		if err != nil {
-			return err
-		}
-		return serveImage(c, image, "private, no-store", "")
-	}
 	return serveVersioned(c, version, func() (immich.Thumbnail, error) {
-		return h.module.viewerThumbnail(c.Request().Context(), sourceID, version)
+		return h.module.viewerImage(c.Request().Context(), sourceID, version, large)
 	})
 }
 

@@ -184,7 +184,7 @@ const completeAlbum: AlbumDetail = {
       entries: [
         {
           id: "photo",
-          access: [],
+          decisions: {},
           media_id: "m-photo",
           filename: "Beach.jpg",
           kind: "IMAGE",
@@ -194,7 +194,7 @@ const completeAlbum: AlbumDetail = {
         },
         {
           id: "video",
-          access: [],
+          decisions: {},
           media_id: "m-video",
           filename: "Waves.mp4",
           kind: "VIDEO",
@@ -342,7 +342,7 @@ it("drills from the outline into a Moment and back on narrow screens", async () 
   ).not.toBeInTheDocument();
 });
 
-it("uses the Outline pane for selection and immediate Moment access with Undo", async () => {
+it("uses the Outline pane for selection and saves Moment access explicitly", async () => {
   desktopViewport();
   const alex = {
     person_id: "alex",
@@ -355,7 +355,8 @@ it("uses the Outline pane for selection and immediate Moment access with Undo", 
     inherited: false,
     effective: true,
     accessible_count: 2,
-    excluded_count: 0,
+    exceptions: 0,
+    moments_detected: 0,
   };
   const sam = {
     person_id: "sam",
@@ -368,7 +369,8 @@ it("uses the Outline pane for selection and immediate Moment access with Undo", 
     inherited: false,
     effective: false,
     accessible_count: 0,
-    excluded_count: 0,
+    exceptions: 0,
+    moments_detected: 0,
   };
   let current: AlbumDetail = {
     ...completeAlbum,
@@ -401,7 +403,7 @@ it("uses the Outline pane for selection and immediate Moment access with Undo", 
     if (options?.method !== "POST") return Response.json(current);
     const body: unknown = JSON.parse(String(options.body));
     requests.push({ path, body });
-    if (path.endsWith("/access")) {
+    if (path.endsWith("/rules")) {
       current = {
         ...current,
         moments: current.moments.map((moment) =>
@@ -418,38 +420,6 @@ it("uses the Outline pane for selection and immediate Moment access with Undo", 
                           effective: true,
                           accessible_count: 2,
                           suggested: false,
-                        }
-                      : person,
-                  ),
-                },
-              }
-            : moment,
-        ),
-      };
-      return Response.json({
-        album: current,
-        undo: {
-          changes: [{ person_id: "sam", current: "allow", previous: "" }],
-        },
-      });
-    }
-    if (path.endsWith("/access/undo")) {
-      current = {
-        ...current,
-        moments: current.moments.map((moment) =>
-          moment.id === "day-1"
-            ? {
-                ...moment,
-                access: {
-                  ...moment.access,
-                  people: moment.access.people.map((person) =>
-                    person.person_id === "sam"
-                      ? {
-                          ...person,
-                          decision: "",
-                          suggested: true,
-                          effective: false,
-                          accessible_count: 0,
                         }
                       : person,
                   ),
@@ -495,32 +465,45 @@ it("uses the Outline pane for selection and immediate Moment access with Undo", 
     screen.queryByRole("checkbox", { name: "Select Waves.mp4" }),
   ).not.toBeInTheDocument();
 
+  const saveAccess = within(inspector).getByRole("button", {
+    name: "Save Moment access",
+  });
+  expect(saveAccess).toBeDisabled();
   await user.click(
+    within(inspector).getByRole("button", { name: "Add all suggested" }),
+  );
+  expect(
     within(inspector).getByRole("checkbox", {
       name: "Allow Sam for this Moment",
     }),
+  ).toBeChecked();
+  expect(requests.filter((request) => request.path.endsWith("/rules"))).toEqual(
+    [],
   );
+  await user.click(saveAccess);
   await waitFor(() =>
     expect(requests.at(-1)).toEqual({
-      path: "/api/curator/albums/album-1/moments/day-1/access",
-      body: { person_id: "sam", decision: "allow" },
+      path: "/api/curator/albums/album-1/moments/day-1/rules",
+      body: { decisions: [{ person_id: "sam", decision: "allow" }] },
     }),
   );
-  await user.click(within(inspector).getByRole("button", { name: "Undo" }));
-  await waitFor(() =>
-    expect(requests.at(-1)?.path).toBe(
-      "/api/curator/albums/album-1/moments/day-1/access/undo",
-    ),
-  );
+  expect(
+    await within(inspector).findByText("Moment access saved."),
+  ).toBeVisible();
+  expect(
+    within(inspector).getByRole("heading", { name: "Allowed 2" }),
+  ).toBeVisible();
 });
 
 it.each([
   { broaderAllowed: false, decision: "allow", expected: "inherit" },
   { broaderAllowed: true, decision: "", expected: "deny" },
   { broaderAllowed: true, decision: "allow", expected: "deny" },
+  { broaderAllowed: true, decision: "deny", expected: "inherit" },
 ])(
-  "unchecks Moment access with $expected for $decision when broader access is $broaderAllowed",
+  "toggles Moment access with $expected for $decision when broader access is $broaderAllowed",
   async ({ broaderAllowed, decision, expected }) => {
+    const effective = decision !== "deny";
     desktopViewport();
     let current = {
       ...completeAlbum,
@@ -534,13 +517,14 @@ it.each([
                 display_name: "Alex",
                 avatar_url: "",
                 decision,
-                inherited: decision === "",
-                effective: true,
+                inherited: broaderAllowed,
+                effective,
                 detected: false,
                 suggested: false,
                 supporting_entries: 0,
-                accessible_count: 1,
-                excluded_count: 1,
+                accessible_count: effective ? 1 : 0,
+                exceptions: 1,
+                moments_detected: 0,
               },
             ],
             faces: [],
@@ -552,12 +536,12 @@ it.each([
       {
         ...current.moments[0].access.people[0],
         decision: broaderAllowed ? "allow" : "",
-        inherited: !broaderAllowed,
+        inherited: false,
       },
     ];
     let saved: unknown;
     mockAPI((path, options) => {
-      if (path.endsWith("/access")) {
+      if (path.endsWith("/rules")) {
         saved = JSON.parse(String(options?.body));
         current = {
           ...current,
@@ -569,8 +553,8 @@ it.each([
                   {
                     ...current.moments[0].access.people[0],
                     decision: expected === "deny" ? "deny" : "",
-                    effective: false,
-                    accessible_count: 0,
+                    effective: !effective,
+                    accessible_count: effective ? 0 : 2,
                   },
                 ],
                 faces: [],
@@ -578,7 +562,7 @@ it.each([
             },
           ],
         };
-        return Response.json({ album: current, undo: { changes: [] } });
+        return Response.json(current);
       }
       return Response.json(current);
     });
@@ -588,26 +572,194 @@ it.each([
     const checkbox = await screen.findByRole("checkbox", {
       name: "Allow Alex for this Moment",
     });
-    expect(checkbox).toBeChecked();
+    if (effective) expect(checkbox).toBeChecked();
+    else expect(checkbox).not.toBeChecked();
+    if (effective)
+      expect(
+        within(
+          screen.getByRole("navigation", { name: "Album outline" }),
+        ).getByRole("img", { name: "Allowed: Alex" }),
+      ).toBeVisible();
     expect(
-      within(
-        screen.getByRole("navigation", { name: "Album outline" }),
-      ).getByRole("img", { name: "Allowed: Alex" }),
-    ).toBeVisible();
-    expect(
-      screen.getByText("1 of 2 items accessible, 1 excluded"),
+      screen.getByText(
+        broaderAllowed
+          ? "Album access, not seen in this Moment"
+          : "Not seen in this Moment",
+      ),
     ).toBeVisible();
     await user.click(checkbox);
-    await waitFor(() =>
-      expect(saved).toEqual({ person_id: "alex", decision: expected }),
+    expect(saved).toBeUndefined();
+    await user.click(
+      screen.getByRole("button", { name: "Save Moment access" }),
     );
-    expect(
-      screen.getByRole("checkbox", { name: "Allow Alex for this Moment" }),
-    ).not.toBeChecked();
+    await waitFor(() =>
+      expect(saved).toEqual({
+        decisions: [{ person_id: "alex", decision: expected }],
+      }),
+    );
+    const toggled = screen.getByRole("checkbox", {
+      name: "Allow Alex for this Moment",
+    });
+    if (effective) expect(toggled).not.toBeChecked();
+    else expect(toggled).toBeChecked();
   },
 );
 
-it("removes only Album-wide access immediately and can Undo while showing narrower access counts", async () => {
+it("asks before leaving Album access with an unsaved draft", async () => {
+  desktopViewport();
+  const alex = {
+    person_id: "alex",
+    display_name: "Alex",
+    avatar_url: "",
+    decision: "",
+    inherited: false,
+    effective: false,
+    detected: true,
+    suggested: false,
+    supporting_entries: 1,
+    moments_detected: 1,
+    accessible_count: 0,
+    exceptions: 0,
+  };
+  mockAPI((path) =>
+    path.endsWith("/access/preview")
+      ? Response.json({ changes: [] })
+      : Response.json({ ...completeAlbum, access: [alex] }),
+  );
+  window.history.replaceState(
+    null,
+    "",
+    "/curator/albums/album-1?section=access&pane=detail",
+  );
+  const user = userEvent.setup();
+  render(<App />);
+  await user.click(
+    await screen.findByRole("checkbox", { name: "Album access for Alex" }),
+  );
+  fireEvent.click(screen.getByRole("link", { name: "Album details" }));
+  const leave = await screen.findByRole("dialog", { name: "Leave this page?" });
+  await user.click(within(leave).getByRole("button", { name: "Cancel" }));
+  expect(
+    screen.getByRole("checkbox", { name: "Album access for Alex" }),
+  ).toBeChecked();
+  expect(new URLSearchParams(window.location.search).get("section")).toBe(
+    "access",
+  );
+});
+
+it("reviews visibility before saving Album access and removes only the Album allow", async () => {
+  desktopViewport();
+  const alex = {
+    person_id: "alex",
+    display_name: "Alex",
+    avatar_url: "",
+    decision: "allow",
+    inherited: false,
+    effective: true,
+    detected: true,
+    suggested: false,
+    supporting_entries: 2,
+    accessible_count: 1,
+    exceptions: 1,
+    moments_detected: 1,
+  };
+  const sam = {
+    ...alex,
+    person_id: "sam",
+    display_name: "Sam",
+    decision: "",
+    effective: false,
+    detected: false,
+    supporting_entries: 0,
+    accessible_count: 0,
+    exceptions: 0,
+    moments_detected: 0,
+  };
+  let current = { ...completeAlbum, access: [alex, sam] };
+  const posts: Array<{ path: string; body: unknown }> = [];
+  mockAPI((path, options) => {
+    if (path.endsWith("/access/preview")) {
+      posts.push({ path, body: JSON.parse(String(options?.body)) });
+      return Response.json({
+        changes: [
+          {
+            person_id: "alex",
+            display_name: "Alex",
+            gained_entry_ids: [],
+            lost_entry_ids: ["photo"],
+          },
+        ],
+      });
+    }
+    if (path.endsWith("/access")) {
+      posts.push({ path, body: JSON.parse(String(options?.body)) });
+      current = {
+        ...current,
+        access: [{ ...alex, decision: "", accessible_count: 0 }],
+      };
+    }
+    return Response.json(current);
+  });
+  window.history.replaceState(
+    null,
+    "",
+    "/curator/albums/album-1?section=access&pane=detail",
+  );
+  const user = userEvent.setup();
+  render(<App />);
+  const checkbox = await screen.findByRole("checkbox", {
+    name: "Album access for Alex",
+  });
+  expect(checkbox).toBeChecked();
+  const everywhere = screen.getByRole("region", { name: "In every Moment 1" });
+  expect(within(everywhere).getByText("Seen in 1 of 1 Moment")).toBeVisible();
+  expect(
+    within(everywhere).getByText("1 of 2 items accessible now, 1 exception"),
+  ).toBeVisible();
+  expect(
+    screen.queryByRole("button", { name: "Allow everyone in every Moment" }),
+  ).not.toBeInTheDocument();
+  const samAccess = screen.getByRole("checkbox", {
+    name: "Album access for Sam",
+  });
+  expect(samAccess).not.toBeVisible();
+  await user.click(screen.getByText("1 person not seen in this album"));
+  expect(samAccess).toBeVisible();
+  expect(samAccess).not.toBeChecked();
+  const save = screen.getByRole("button", { name: "Save Album access" });
+  expect(save).toBeDisabled();
+  expect(screen.getByText("Change access above to review it.")).toBeVisible();
+  await user.click(checkbox);
+  expect(checkbox).not.toBeChecked();
+  await user.click(
+    screen.getByRole("button", { name: "Allow everyone in every Moment" }),
+  );
+  expect(checkbox).toBeChecked();
+  expect(screen.getByText("Change access above to review it.")).toBeVisible();
+  await user.click(checkbox);
+  expect(checkbox).not.toBeChecked();
+  const review = screen.getByRole("region", { name: "Visibility review" });
+  expect(await within(review).findByText("Alex")).toBeVisible();
+  expect(within(review).getByText("loses 1")).toBeVisible();
+  expect(posts.at(-1)).toEqual({
+    path: "/api/curator/albums/album-1/access/preview",
+    body: { people: [{ person_id: "alex", allowed: false }] },
+  });
+  await user.click(save);
+  await waitFor(() =>
+    expect(posts.at(-1)).toEqual({
+      path: "/api/curator/albums/album-1/access",
+      body: { people: [{ person_id: "alex", allowed: false }] },
+    }),
+  );
+  expect(await screen.findByText("Album access saved.")).toBeVisible();
+  expect(
+    screen.getByText("0 of 2 items accessible now, 1 exception"),
+  ).toBeVisible();
+  expect(checkbox).not.toBeChecked();
+});
+
+it("keeps a Moment access draft after a failed save and shows the error", async () => {
   desktopViewport();
   const alex = {
     person_id: "alex",
@@ -619,114 +771,50 @@ it("removes only Album-wide access immediately and can Undo while showing narrow
     detected: false,
     suggested: false,
     supporting_entries: 0,
-    accessible_count: 1,
-    excluded_count: 1,
+    moments_detected: 0,
+    accessible_count: 2,
+    exceptions: 0,
   };
-  let current = { ...completeAlbum, access: [alex] };
-  const posts: unknown[] = [];
-  mockAPI((path, options) => {
-    if (path.endsWith("/access")) {
-      posts.push(JSON.parse(String(options?.body)));
-      current = { ...current, access: [{ ...alex, decision: "" }] };
-      return Response.json({
-        album: current,
-        undo: {
-          changes: [
-            {
-              person_id: "alex",
-              previous: "allow",
-              current: "",
-              current_updated_at: "2026-01-01T00:00:00Z",
-            },
-          ],
-        },
-      });
-    }
-    if (path.endsWith("/access/undo")) current = { ...current, access: [alex] };
-    return Response.json(current);
-  });
-  window.history.replaceState(
-    null,
-    "",
-    "/curator/albums/album-1?section=access&pane=detail",
+  const current = {
+    ...completeAlbum,
+    access: [alex],
+    moments: [
+      { ...completeAlbum.moments[0], access: { people: [alex], faces: [] } },
+    ],
+  };
+  let resolveSave: ((response: Response) => void) | undefined;
+  mockAPI((path) =>
+    path.endsWith("/rules")
+      ? new Promise<Response>((resolve) => {
+          resolveSave = resolve;
+        })
+      : Response.json(current),
   );
+  window.history.replaceState(null, "", "/curator/albums/album-1");
   const user = userEvent.setup();
   render(<App />);
   const checkbox = await screen.findByRole("checkbox", {
-    name: "Allow Alex for this Album",
+    name: "Allow Alex for this Moment",
   });
-  expect(screen.getByText("1 of 2 items accessible, 1 excluded")).toBeVisible();
   await user.click(checkbox);
-  await waitFor(() =>
-    expect(posts).toEqual([{ person_id: "alex", decision: "inherit" }]),
-  );
-  expect(checkbox).not.toBeChecked();
-  expect(screen.getByText("1 of 2 items accessible, 1 excluded")).toBeVisible();
-  await user.click(screen.getByRole("button", { name: "Undo" }));
-  await waitFor(() => expect(checkbox).toBeChecked());
-});
-
-it.each(["Album", "Moment"])(
-  "keeps quick %s access unchanged after failure and shows the error beside the person",
-  async (scope) => {
-    desktopViewport();
-    const alex = {
-      person_id: "alex",
-      display_name: "Alex",
-      avatar_url: "",
-      decision: "allow",
-      inherited: false,
-      effective: true,
-      detected: false,
-      suggested: false,
-      supporting_entries: 0,
-      accessible_count: 2,
-      excluded_count: 0,
-    };
-    const current = {
-      ...completeAlbum,
-      access: [alex],
-      moments: [
-        { ...completeAlbum.moments[0], access: { people: [alex], faces: [] } },
-      ],
-    };
-    let resolveSave: ((response: Response) => void) | undefined;
-    mockAPI((path) =>
-      path.endsWith("/access")
-        ? new Promise<Response>((resolve) => {
-            resolveSave = resolve;
-          })
-        : Response.json(current),
-    );
-    window.history.replaceState(
-      null,
-      "",
-      scope === "Album"
-        ? "/curator/albums/album-1?section=access&pane=detail"
-        : "/curator/albums/album-1",
-    );
-    const user = userEvent.setup();
-    render(<App />);
-    const checkbox = await screen.findByRole("checkbox", {
-      name: `Allow Alex for this ${scope}`,
-    });
-    await user.click(checkbox);
-    expect(checkbox).toBeDisabled();
-    expect(screen.getByRole("status")).toHaveTextContent("Saving access");
-    await act(async () =>
-      resolveSave?.(
-        Response.json(
-          { error: { fields: { person_id: "Choose an active Person." } } },
-          { status: 400 },
-        ),
+  await user.click(screen.getByRole("button", { name: "Save Moment access" }));
+  expect(checkbox).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Saving…" })).toBeDisabled();
+  await act(async () =>
+    resolveSave?.(
+      Response.json(
+        { error: { fields: { decisions: "Choose an active Person." } } },
+        { status: 400 },
       ),
-    );
-    expect(await screen.findByText("Choose an active Person.")).toBeVisible();
-    expect(checkbox).toHaveAttribute("aria-invalid", "true");
-    expect(checkbox).toBeChecked();
-    expect(checkbox).toBeEnabled();
-  },
-);
+    ),
+  );
+  expect(await screen.findByText("Choose an active Person.")).toBeVisible();
+  expect(checkbox).not.toBeChecked();
+  expect(checkbox).toBeEnabled();
+  expect(
+    screen.getByRole("button", { name: "Save Moment access" }),
+  ).toBeEnabled();
+});
 
 it("reviews publication counts and warnings before explicitly publishing without notifications", async () => {
   desktopViewport();
@@ -738,16 +826,17 @@ it("reviews publication counts and warnings before explicitly publishing without
         title: current.title,
         photo_count: 1,
         video_count: 1,
+        moment_count: 1,
         audience: [
           {
             person_id: "alex",
             display_name: "Alex",
-            photo_count: 1,
-            video_count: 0,
+            avatar_url: "",
+            accessible_count: 1,
           },
         ],
         blockers: [],
-        warnings: ["No chapters found."],
+        warnings: ["1 unlinked face. Optional to link."],
         review_token: "reviewed-publication",
       });
     if (path.endsWith("/publish")) {
@@ -763,23 +852,30 @@ it("reviews publication counts and warnings before explicitly publishing without
     await screen.findByRole("button", { name: "Review & publish" }),
   );
   const review = await screen.findByRole("dialog", {
-    name: "Review & publish",
+    name: "Ready to publish?",
   });
   expect(await within(review).findByText("Alex")).toBeVisible();
-  expect(within(review).getByText("1 photo, 0 videos")).toBeVisible();
-  expect(within(review).getByText("No chapters found.")).toBeVisible();
-  expect(within(review).getByText(/does not send notifications/)).toBeVisible();
+  expect(within(review).getByText("1 of 2 items")).toBeVisible();
+  expect(within(review).getByText("2 items in 1 Moment")).toBeVisible();
+  expect(
+    within(review).getByText("1 unlinked face. Optional to link."),
+  ).toBeVisible();
+  expect(within(review).getByText(/sends no notifications/)).toBeVisible();
   expect(published).toBeUndefined();
   await user.click(
-    within(review).getByRole("button", { name: "Publish Album" }),
+    within(review).getByRole("button", { name: "Publish album" }),
   );
   await waitFor(() =>
     expect(published).toEqual({ review_token: "reviewed-publication" }),
   );
   expect(await screen.findByText("Published")).toBeVisible();
+  expect(
+    screen.queryByRole("button", { name: "Review & publish" }),
+  ).not.toBeInTheDocument();
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
 });
 
-it("blocks publication while structural editing is open and displays server blockers", async () => {
+it("displays server blockers as alerts and keeps publishing disabled", async () => {
   desktopViewport();
   mockAPI((path) =>
     path.endsWith("/publication")
@@ -787,6 +883,7 @@ it("blocks publication while structural editing is open and displays server bloc
           title: completeAlbum.title,
           photo_count: 1,
           video_count: 1,
+          moment_count: 1,
           audience: [],
           warnings: [],
           blockers: ["Assign every item to a Moment."],
@@ -797,19 +894,28 @@ it("blocks publication while structural editing is open and displays server bloc
   window.history.replaceState(null, "", "/curator/albums/album-1");
   const user = userEvent.setup();
   render(<App />);
-  await user.click(await screen.findByRole("button", { name: "Rename" }));
+  await user.click(
+    await screen.findByRole("button", { name: "Review & publish" }),
+  );
+  const dialog = await screen.findByRole("dialog", {
+    name: "Ready to publish?",
+  });
   expect(
-    screen.getByRole("button", { name: "Review & publish", hidden: true }),
+    await within(dialog).findByRole("alert", {
+      name: "",
+    }),
+  ).toHaveTextContent("Assign every item to a Moment.");
+  expect(within(dialog).getByText(/No one has access yet/)).toBeVisible();
+  expect(
+    within(dialog).getByRole("button", { name: "Publish album" }),
   ).toBeDisabled();
-  await user.click(screen.getByRole("button", { name: "Cancel" }));
-  await user.click(screen.getByRole("button", { name: "Review & publish" }));
-  expect(
-    await screen.findByText("Assign every item to a Moment."),
-  ).toBeVisible();
-  expect(screen.getByRole("button", { name: "Publish Album" })).toBeDisabled();
+  await user.click(
+    within(dialog).getByRole("button", { name: "Keep editing" }),
+  );
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
 });
 
-it("unpublishes from Album details without losing curation", async () => {
+it("unpublishes from the Danger zone without losing curation", async () => {
   desktopViewport();
   let current = { ...completeAlbum, published: true };
   mockAPI((path) => {
@@ -823,13 +929,33 @@ it("unpublishes from Album details without losing curation", async () => {
   );
   const user = userEvent.setup();
   render(<App />);
+  const danger = await screen.findByRole("region", { name: "Danger zone" });
+  expect(
+    screen.queryByRole("button", { name: "Review & publish" }),
+  ).not.toBeInTheDocument();
+  expect(
+    screen.queryByRole("heading", { name: "Before you publish" }),
+  ).not.toBeInTheDocument();
   await user.click(
-    await screen.findByRole("button", { name: "Unpublish Album" }),
+    within(danger).getByRole("button", { name: "Unpublish Album" }),
   );
-  const confirm = screen.getByRole("dialog", { name: "Unpublish this Album?" });
+  const confirm = screen.getByRole("dialog", { name: "Unpublish Album?" });
   expect(within(confirm).getByText(/Moments, access decisions/)).toBeVisible();
-  await user.click(within(confirm).getByRole("button", { name: "Unpublish" }));
+  await user.click(
+    within(confirm).getByRole("button", { name: "Unpublish Album" }),
+  );
   expect(await screen.findByText("Unpublished")).toBeVisible();
+  expect(
+    screen.getByRole("button", { name: "Review & publish" }),
+  ).toBeVisible();
+  expect(
+    screen.getByRole("heading", { name: "Before you publish" }),
+  ).toBeVisible();
+  expect(screen.getByText("Album has a title")).toBeVisible();
+  expect(screen.getByText("2 items assigned to 1 Moment")).toBeVisible();
+  expect(
+    within(danger).queryByRole("button", { name: "Unpublish Album" }),
+  ).not.toBeInTheDocument();
   expect(screen.getByRole("link", { name: /First day/ })).toBeVisible();
 });
 
@@ -899,7 +1025,8 @@ it("reviews every scope before confirming removal of all a person's access", asy
     suggested: false,
     supporting_entries: 0,
     accessible_count: 1,
-    excluded_count: 1,
+    exceptions: 1,
+    moments_detected: 1,
   };
   let current = { ...completeAlbum, access: [alex] };
   let removed: unknown;
@@ -908,10 +1035,14 @@ it("reviews every scope before confirming removal of all a person's access", asy
       return Response.json({
         person_id: "alex",
         display_name: "Alex",
-        album_decisions: 1,
-        moment_decisions: 2,
-        entry_decisions: 3,
-        accessible_count: 1,
+        changes: [
+          {
+            person_id: "alex",
+            display_name: "Alex",
+            gained_entry_ids: [],
+            lost_entry_ids: ["photo"],
+          },
+        ],
         review_token: "reviewed-removal",
       });
     if (path.endsWith("/remove-all")) {
@@ -924,7 +1055,8 @@ it("reviews every scope before confirming removal of all a person's access", asy
             decision: "",
             effective: false,
             accessible_count: 0,
-            excluded_count: 0,
+            exceptions: 0,
+            moments_detected: 1,
           },
         ],
       };
@@ -939,16 +1071,19 @@ it("reviews every scope before confirming removal of all a person's access", asy
   const user = userEvent.setup();
   render(<App />);
   await user.click(
-    await screen.findByRole("button", { name: "Remove all access for Alex" }),
+    await screen.findByRole("button", { name: "Remove all access…" }),
   );
   const review = await screen.findByRole("dialog", {
     name: "Remove all access for Alex?",
   });
   expect(
-    await within(review).findByText(
-      "1 Album decision, 2 Moment decisions, 3 item decisions. Alex currently has access to 1 item. Removing all decisions leaves no access in this Album.",
-    ),
+    within(review).getByText(/Every Album, Moment, and item decision/),
   ).toBeVisible();
+  const visibility = within(review).getByRole("region", {
+    name: "Visibility review",
+  });
+  expect(await within(visibility).findByText("Alex")).toBeVisible();
+  expect(within(visibility).getByText("loses 1")).toBeVisible();
   expect(removed).toBeUndefined();
   await user.click(
     within(review).getByRole("button", { name: "Remove all access" }),
@@ -959,95 +1094,138 @@ it("reviews every scope before confirming removal of all a person's access", asy
       review_token: "reviewed-removal",
     }),
   );
-  expect(
-    await screen.findByText("0 of 2 items accessible, 0 excluded"),
-  ).toBeVisible();
+  expect(await screen.findByText("0 of 2 items accessible now")).toBeVisible();
 });
 
-it("quick item access excludes an inherited allow and rules can return it to inherit", async () => {
+it("edits item rules with inherit labels that name the Moment or Album source", async () => {
+  desktopViewport();
+  const alex = {
+    person_id: "alex",
+    display_name: "Alex",
+    avatar_url: "",
+    decision: "allow",
+    inherited: false,
+    effective: true,
+    detected: false,
+    suggested: false,
+    supporting_entries: 0,
+    accessible_count: 2,
+    exceptions: 0,
+    moments_detected: 0,
+  };
+  const sam = {
+    ...alex,
+    person_id: "sam",
+    display_name: "Sam",
+    decision: "",
+    inherited: true,
+  };
+  const current = {
+    ...completeAlbum,
+    access: [
+      { ...alex, decision: "" },
+      { ...sam, decision: "allow" },
+    ],
+    moments: [
+      {
+        ...completeAlbum.moments[0],
+        entries: [
+          {
+            ...completeAlbum.moments[0].entries[0],
+            decisions: { sam: "deny" },
+          },
+          completeAlbum.moments[0].entries[1],
+        ],
+        access: { people: [alex, sam], faces: [] },
+      },
+    ],
+  };
+  const posts: unknown[] = [];
+  mockAPI((path, options) => {
+    if (path.endsWith("/entries/photo/rules"))
+      posts.push(JSON.parse(String(options?.body)));
+    return Response.json(current);
+  });
+  window.history.replaceState(null, "", "/curator/albums/album-1?entry=photo");
+  const user = userEvent.setup();
+  render(<App />);
+  const dialog = await screen.findByRole("dialog", { name: "Item access" });
+  expect(
+    within(dialog).getByText(/Decisions for Beach.jpg override/),
+  ).toBeVisible();
+  expect(
+    within(dialog).getByRole("combobox", { name: "Access for Alex" }),
+  ).toHaveTextContent("Inherit: allowed by this Moment");
+  expect(
+    within(dialog).getByRole("combobox", { name: "Access for Sam" }),
+  ).toHaveTextContent("Deny");
+  await user.click(
+    within(dialog).getByRole("combobox", { name: "Access for Sam" }),
+  );
+  expect(
+    screen.getByRole("option", { name: "Inherit: allowed by Album access" }),
+  ).toBeVisible();
+  await user.click(
+    screen.getByRole("option", { name: "Inherit: allowed by Album access" }),
+  );
+  await user.click(
+    within(dialog).getByRole("combobox", { name: "Access for Alex" }),
+  );
+  await user.click(screen.getByRole("option", { name: "Deny" }));
+  await user.click(within(dialog).getByRole("button", { name: "Save access" }));
+  await waitFor(() =>
+    expect(posts).toEqual([
+      {
+        decisions: [
+          { person_id: "alex", decision: "deny" },
+          { person_id: "sam", decision: "inherit" },
+        ],
+      },
+    ]),
+  );
+});
+
+it("discards item rule edits with one prompt and clears the entry from the URL", async () => {
   desktopViewport();
   const alex = {
     person_id: "alex",
     display_name: "Alex",
     avatar_url: "",
     decision: "",
-    inherited: true,
-    effective: true,
+    inherited: false,
+    effective: false,
     detected: false,
     suggested: false,
     supporting_entries: 0,
-    accessible_count: 1,
-    excluded_count: 0,
+    moments_detected: 0,
+    accessible_count: 0,
+    exceptions: 0,
   };
-  let current = {
-    ...completeAlbum,
-    moments: [
-      {
-        ...completeAlbum.moments[0],
-        entries: [{ ...completeAlbum.moments[0].entries[0], access: [alex] }],
-        access: {
-          people: [{ ...alex, decision: "allow", inherited: false }],
-          faces: [],
-        },
-      },
-    ],
-  };
-  const posts: unknown[] = [];
-  mockAPI((path, options) => {
-    if (path.endsWith("/entries/photo/access")) {
-      posts.push(JSON.parse(String(options?.body)));
-      current = {
-        ...current,
-        moments: [
-          {
-            ...current.moments[0],
-            entries: [
-              {
-                ...current.moments[0].entries[0],
-                access: [
-                  {
-                    ...alex,
-                    decision: "deny",
-                    effective: false,
-                    accessible_count: 0,
-                    excluded_count: 1,
-                  },
-                ],
-              },
-            ],
-          },
-        ],
-      };
-      return Response.json({ album: current, undo: { changes: [] } });
-    }
-    if (path.endsWith("/rules")) posts.push(JSON.parse(String(options?.body)));
-    return Response.json(current);
-  });
+  mockAPI(() =>
+    Response.json({
+      ...completeAlbum,
+      moments: [
+        { ...completeAlbum.moments[0], access: { people: [alex], faces: [] } },
+      ],
+    }),
+  );
   window.history.replaceState(null, "", "/curator/albums/album-1?entry=photo");
   const user = userEvent.setup();
   render(<App />);
+  const dialog = await screen.findByRole("dialog", { name: "Item access" });
   await user.click(
-    await screen.findByRole("checkbox", { name: "Allow Alex for this item" }),
+    within(dialog).getByRole("combobox", { name: "Access for Alex" }),
   );
+  await user.click(screen.getByRole("option", { name: "Allow" }));
+  await user.keyboard("{Escape}");
+  const discard = await screen.findByRole("dialog", {
+    name: "Discard these access changes?",
+  });
+  await user.click(within(discard).getByRole("button", { name: "Discard" }));
   await waitFor(() =>
-    expect(posts[0]).toEqual({ person_id: "alex", decision: "deny" }),
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
   );
-  await user.click(
-    within(screen.getByRole("dialog", { name: "Item access" })).getByRole(
-      "button",
-      { name: "Rules & exceptions" },
-    ),
-  );
-  await user.click(screen.getByRole("combobox", { name: "Access for Alex" }));
-  await user.click(
-    screen.getByRole("option", { name: "Inherit: allowed by broader access" }),
-  );
-  await user.click(screen.getByRole("button", { name: "Save access" }));
-  await waitFor(() =>
-    expect(posts[1]).toEqual({
-      decisions: [{ person_id: "alex", decision: "inherit" }],
-    }),
-  );
+  expect(new URLSearchParams(window.location.search).get("entry")).toBeNull();
 });
 
 it("opens item details and access from a tile or a single selection without playback controls", async () => {
@@ -1060,9 +1238,9 @@ it("opens item details and access from a tile or a single selection without play
     await screen.findByRole("button", { name: "Edit Waves.mp4" }),
   );
   const editor = screen.getByRole("dialog", { name: "Item access" });
-  expect(within(editor).getByText("Waves.mp4")).toBeVisible();
+  expect(within(editor).getByRole("img", { name: "Waves.mp4" })).toBeVisible();
   expect(
-    within(editor).getByRole("button", { name: "Rules & exceptions" }),
+    within(editor).getByText(/Decisions for Waves.mp4 override/),
   ).toBeVisible();
   expect(
     within(editor).queryByRole("button", { name: /play|download/i }),
@@ -1090,7 +1268,8 @@ it("opens saved rules without granting detected people and saves only the edited
     inherited: false,
     effective: false,
     accessible_count: 0,
-    excluded_count: 0,
+    exceptions: 0,
+    moments_detected: 0,
   };
   const alex = {
     ...sam,
@@ -1125,8 +1304,19 @@ it("opens saved rules without granting detected people and saves only the edited
     screen.getByRole("combobox", { name: "Access for Sam" }),
   ).toHaveTextContent("Inherit: no access");
   expect(saved).toBeUndefined();
+  expect(
+    screen.getByRole("combobox", { name: "Access for Alex" }),
+  ).toHaveTextContent("Allow");
+  const rulesDialog = screen.getByRole("dialog", {
+    name: "Rules & exceptions",
+  });
+  expect(within(rulesDialog).getByText("Seen in 1 item")).toBeVisible();
+  expect(
+    within(rulesDialog).getByText("Detected here, not shared yet"),
+  ).toBeVisible();
+  expect(screen.getByRole("button", { name: "Save access" })).toBeEnabled();
   await user.click(screen.getByRole("combobox", { name: "Access for Alex" }));
-  await user.click(screen.getByRole("option", { name: "Exclude" }));
+  await user.click(screen.getByRole("option", { name: "Deny" }));
   await user.click(screen.getByRole("button", { name: "Save access" }));
   await waitFor(() =>
     expect(saved).toEqual({
@@ -1151,7 +1341,8 @@ it("keeps a rules draft through refresh and failed save, and asks before discard
     inherited: false,
     effective: false,
     accessible_count: 0,
-    excluded_count: 0,
+    exceptions: 0,
+    moments_detected: 0,
   };
   let current = {
     ...completeAlbum,
@@ -1211,7 +1402,7 @@ it("keeps a rules draft through refresh and failed save, and asks before discard
   await user.click(within(leave).getByRole("button", { name: "Cancel" }));
   await user.keyboard("{Escape}");
   const discard = await screen.findByRole("dialog", {
-    name: "Discard access changes?",
+    name: "Discard these access changes?",
   });
   await user.click(within(discard).getByRole("button", { name: "Cancel" }));
   expect(
@@ -1276,7 +1467,8 @@ it("links an Immich face to an existing Person and derives a suggestion", async 
                   inherited: false,
                   effective: false,
                   accessible_count: 0,
-                  excluded_count: 0,
+                  exceptions: 0,
+                  moments_detected: 0,
                 },
               ],
             },
@@ -1340,7 +1532,11 @@ it("links an Immich face to an existing Person and derives a suggestion", async 
   expect(
     within(suggested).getByText("Detected here, not shared yet"),
   ).toBeVisible();
-  expect(screen.queryByText(/unlinked face/)).not.toBeInTheDocument();
+  expect(
+    within(screen.getByRole("region", { name: "Moment access" })).queryByText(
+      /unlinked face/,
+    ),
+  ).not.toBeInTheDocument();
 });
 
 it("keeps ignored faces reachable when no unlinked faces remain", async () => {

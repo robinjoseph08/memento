@@ -22,7 +22,8 @@ const album: ViewerAlbum = {
   video_count: 0,
   start_date: "2025-06-14",
   end_date: "2025-06-14",
-  cover_url: "/media/lake/cover?person=jamie",
+  cover_url: "/media/lake/cover/thumb?person=jamie",
+  cover_preview_url: "/media/lake/cover?person=jamie",
   days: [{ date: "2025-06-14", photo_count: 2, video_count: 0 }],
 };
 const photo: ViewerEntry = {
@@ -31,7 +32,8 @@ const photo: ViewerEntry = {
   title: "Lake",
   captured_at: "2025-06-14T00:15:00Z",
   available: true,
-  thumbnail_url: "/media/lake/photo-1?person=jamie",
+  thumbnail_url: "/media/lake/photo-1/thumb?person=jamie",
+  preview_url: "/media/lake/photo-1?person=jamie",
   width: 1200,
   height: 800,
 };
@@ -70,7 +72,7 @@ it("opens the authorized photo route with the shared header and local capture-da
   expect(screen.getByText(album.description)).toBeVisible();
   expect(screen.getByRole("img", { name: "Album cover" })).toHaveAttribute(
     "src",
-    album.cover_url,
+    album.cover_preview_url,
   );
   expect(
     await screen.findByRole("heading", {
@@ -79,7 +81,7 @@ it("opens the authorized photo route with the shared header and local capture-da
   ).toBeVisible();
   expect(screen.getByRole("img", { name: "Lake" })).toHaveAttribute(
     "src",
-    photo.thumbnail_url,
+    photo.preview_url,
   );
   const tabs = screen.getByRole("navigation", { name: "Album media" });
   expect(within(tabs).getByRole("link", { name: "Photos 2" })).toHaveAttribute(
@@ -134,13 +136,11 @@ it("paginates photos independently and keeps a truthful zero-count video tab", a
   const user = userEvent.setup();
   window.history.replaceState(null, "", "/albums/lake/photos");
   render(<App />);
-  await user.click(
-    await screen.findByRole("button", { name: "Load more photos" }),
-  );
+  // Later pages arrive in the background, with no click.
   expect(await screen.findByRole("img", { name: "Cabin" })).toBeVisible();
   expect(screen.getByRole("img", { name: "Lake" })).toBeVisible();
   expect(
-    screen.queryByRole("button", { name: "Load more photos" }),
+    screen.queryByRole("button", { name: /Load more/ }),
   ).not.toBeInTheDocument();
   await user.click(screen.getByRole("link", { name: "Videos 0" }));
   expect(
@@ -179,8 +179,8 @@ it("shows video titles and neutral indicators without unfinished playback or cha
     screen.getByRole("heading", { name: "Saturday, June 14, 2025 1 video" }),
   ).toBeVisible();
   expect(
-    within(screen.getByRole("list", { name: "Videos" })).getByText("Video"),
-  ).toBeVisible();
+    within(screen.getByRole("list", { name: "Videos" })).queryByText("Video"),
+  ).not.toBeInTheDocument();
   expect(
     screen.queryByRole("button", { name: /play|chapters|download/i }),
   ).not.toBeInTheDocument();
@@ -192,14 +192,14 @@ it("shows video titles and neutral indicators without unfinished playback or cha
 it("keeps missing covers neutral and marks failed thumbnails unavailable", async () => {
   mockViewer((path) => {
     if (path === "/api/albums/lake")
-      return Response.json({ ...album, cover_url: "" });
+      return Response.json({ ...album, cover_url: "", cover_preview_url: "" });
     if (path === "/api/albums/lake/photos")
       return Response.json({ entries: [photo], next_cursor: "" });
     throw new Error(`Unexpected request: ${path}`);
   });
   window.history.replaceState(null, "", "/albums/lake/photos");
   render(<App />);
-  expect(await screen.findByText("No cover available")).toBeVisible();
+  expect(await screen.findByText("No cover")).toBeVisible();
   expect(
     screen.queryByRole("img", { name: "Album cover" }),
   ).not.toBeInTheDocument();
@@ -217,11 +217,8 @@ it("hides previously loaded thumbnails when the server denies further gallery ac
       return Response.json({}, { status: 404 });
     throw new Error(`Unexpected request: ${path}`);
   });
-  const user = userEvent.setup();
   window.history.replaceState(null, "", "/albums/lake/photos");
   render(<App />);
-  expect(await screen.findByRole("img", { name: "Lake" })).toBeVisible();
-  await user.click(screen.getByRole("button", { name: "Load more photos" }));
   expect(await screen.findByRole("alert")).toHaveTextContent(
     "no longer available",
   );
@@ -246,9 +243,6 @@ it("preserves loaded photos after a failed next page and retries the cursor rath
   const user = userEvent.setup();
   window.history.replaceState(null, "", "/albums/lake/photos");
   render(<App />);
-  await user.click(
-    await screen.findByRole("button", { name: "Load more photos" }),
-  );
   expect(await screen.findByRole("alert")).toHaveTextContent(
     "Could not load photos",
   );

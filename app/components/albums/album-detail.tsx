@@ -1,5 +1,5 @@
 import { ChevronLeft } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 
 import { useAlbum, useUpdateAlbum } from "../../hooks/queries/albums";
@@ -21,7 +21,7 @@ import { Textarea } from "../ui/textarea";
 import { ViewerPreview } from "../viewer/viewer-preview";
 import { AlbumAccess } from "./album-access";
 import { AlbumImage } from "./album-image";
-import { AlbumLifecycle } from "./album-lifecycle";
+import { DangerZone } from "./album-lifecycle";
 import { Audience } from "./audience";
 import { ImportProgress } from "./import-progress";
 import {
@@ -32,7 +32,7 @@ import {
   shortDay,
 } from "./moment-labels";
 import { MomentPane } from "./moments";
-import { PublicationReviewDialog } from "./publication-review";
+import { PublishChecklist, PublishDialog } from "./publication-review";
 
 const outlineRowClass = (active: boolean) =>
   cn(
@@ -78,14 +78,12 @@ export function AlbumPage() {
 function AlbumContent({ album }: { album: AlbumDetail }) {
   const [params] = useSearchParams();
   const [publicationOpen, setPublicationOpen] = useState(false);
-  const [structuralOpen, setStructuralOpen] = useState(false);
-  const [titleDirty, setTitleDirty] = useState(false);
   const desktop = useMediaQuery("(min-width: 761px)");
-  const section = ["details", "access", "preview"].includes(
-    params.get("section") ?? "",
-  )
-    ? params.get("section")
-    : "moments";
+  const requested = params.get("section");
+  const section =
+    requested === "details" || requested === "access" || requested === "preview"
+      ? requested
+      : "moments";
   const moment =
     album.moments.find((item) => item.id === params.get("moment")) ??
     album.moments[0];
@@ -116,17 +114,19 @@ function AlbumContent({ album }: { album: AlbumDetail }) {
             </span>
           </p>
         </div>
-        <Button
-          className="w-full min-[761px]:w-auto"
-          disabled={album.published || structuralOpen || titleDirty}
-          onClick={() => setPublicationOpen(true)}
-        >
-          Review & publish
-        </Button>
+        {!album.published && (
+          <Button
+            className="w-full min-[761px]:w-auto"
+            disabled={!complete}
+            onClick={() => setPublicationOpen(true)}
+          >
+            Review & publish
+          </Button>
+        )}
       </header>
       {publicationOpen && (
-        <PublicationReviewDialog
-          albumID={album.id}
+        <PublishDialog
+          album={album}
           onClose={() => setPublicationOpen(false)}
         />
       )}
@@ -275,23 +275,20 @@ function AlbumContent({ album }: { album: AlbumDetail }) {
             {/* The title form stays mounted while other sections show so an
                 unsaved edit survives a look at a Moment. */}
             <div className="max-w-180" hidden={section !== "details"}>
-              <TitleForm album={album} onDirtyChange={setTitleDirty} />
+              <TitleForm album={album} />
+              {!album.published && <PublishChecklist album={album} />}
+              <DangerZone album={album} />
             </div>
             {showDetail && section === "access" && (
               <AlbumAccess album={album} />
             )}
             {showDetail && section === "preview" && (
-              <ViewerPreview albumID={album.id} people={album.access} />
+              <ViewerPreview album={album} />
             )}
             {showDetail &&
               section === "moments" &&
               (moment ? (
-                <MomentPane
-                  album={album}
-                  key={moment.id}
-                  moment={moment}
-                  onStructuralOpenChange={setStructuralOpen}
-                />
+                <MomentPane album={album} key={moment.id} moment={moment} />
               ) : (
                 <p className="text-sm text-muted">
                   This Album had no photos or videos to import.
@@ -308,22 +305,12 @@ function AlbumContent({ album }: { album: AlbumDetail }) {
   );
 }
 
-function TitleForm({
-  album,
-  onDirtyChange,
-}: {
-  album: AlbumDetail;
-  onDirtyChange: (dirty: boolean) => void;
-}) {
+function TitleForm({ album }: { album: AlbumDetail }) {
   const update = useUpdateAlbum(album.id);
   const [draft, setDraft] = useState<string | null>(null);
   const title = draft ?? album.title;
   const dirty = (draft !== null && draft !== album.title) || update.isPending;
   useUnsavedChanges(dirty);
-  useEffect(() => {
-    onDirtyChange(dirty);
-    return () => onDirtyChange(false);
-  }, [dirty, onDirtyChange]);
   return (
     <section aria-labelledby="album-details-heading">
       <h2 className={sectionHeadingClass} id="album-details-heading">
@@ -389,7 +376,6 @@ function TitleForm({
             ? "Only Curators can see this unpublished Album."
             : "Album details are managed by Curators."}
         </p>
-        <AlbumLifecycle album={album} disabled={dirty} />
       </div>
     </section>
   );

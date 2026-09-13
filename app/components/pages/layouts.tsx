@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Navigate, Outlet, useLocation } from "react-router-dom";
 
 import { useIdentityStatus } from "../../hooks/queries/identity";
@@ -10,6 +10,7 @@ import { ConfirmDialog } from "../forms/confirm-dialog";
 import { SignInForm } from "../identity/sign-in-form";
 import { Header } from "../shell/header";
 import { PageTitle } from "../shell/page-title";
+import { PreviewModeContext } from "../shell/preview-mode";
 import { Button } from "../ui/button";
 
 const pageClassName =
@@ -25,22 +26,29 @@ export function AppShell() {
   const { data } = useIdentityStatus();
   const unsavedRef = useRef(new Map<symbol, boolean>());
   const blocker = useUnsavedChangesBlocker(unsavedRef);
+  const [previewActive, setPreviewActive] = useState(false);
+  const previewMode = useMemo(
+    () => ({ active: previewActive, setActive: setPreviewActive }),
+    [previewActive],
+  );
   return (
     <UnsavedChangesContext value={unsavedRef}>
-      <Header />
-      <Outlet
-        key={`${data?.person?.id ?? "public"}-${!!data?.person?.is_curator}`}
-      />
-      <ConfirmDialog
-        confirmLabel="Leave page"
-        description="Your changes will not be saved."
-        onConfirm={() => blocker.proceed?.()}
-        onOpenChange={(open) => {
-          if (!open) blocker.reset?.();
-        }}
-        open={blocker.state === "blocked"}
-        title="Leave this page?"
-      />
+      <PreviewModeContext value={previewMode}>
+        <Header />
+        <Outlet
+          key={`${data?.person?.id ?? "public"}-${!!data?.person?.is_curator}`}
+        />
+        <ConfirmDialog
+          confirmLabel="Leave page"
+          description="Your changes will not be saved."
+          onConfirm={() => blocker.proceed?.()}
+          onOpenChange={(open) => {
+            if (!open) blocker.reset?.();
+          }}
+          open={blocker.state === "blocked"}
+          title="Leave this page?"
+        />
+      </PreviewModeContext>
     </UnsavedChangesContext>
   );
 }

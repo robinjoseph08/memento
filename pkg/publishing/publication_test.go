@@ -1,6 +1,7 @@
 package publishing_test
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -32,7 +33,7 @@ func TestPermanentAlbumDeletionKeepsSharedMediaAndRequiresTitle(t *testing.T) {
 	person := models.Person{ID: models.NewUUIDv7(), DisplayName: "Alex", CreatedAt: time.Now().UTC()}
 	_, err = db.NewInsert().Model(&[]models.Person{curator, person}).Exec(t.Context())
 	require.NoError(t, err)
-	_, err = module.SetAlbumAccess(t.Context(), other.ID, publishing.SetAlbumAccessRequest{PersonID: person.ID.String(), Decision: publishing.DecisionAllow})
+	_, err = module.SaveAlbumAccess(t.Context(), other.ID, publishing.SaveAlbumAccessRequest{People: []publishing.AlbumAccessChoice{{PersonID: person.ID.String(), Allowed: true}}})
 	require.NoError(t, err)
 	other, err = module.GetAlbum(t.Context(), other.ID)
 	require.NoError(t, err)
@@ -59,7 +60,7 @@ func TestPublicationBlocksMissingTitleAndUnassignedEntries(t *testing.T) {
 	require.NoError(t, err)
 	review, err := module.ReviewPublication(t.Context(), album.ID)
 	require.NoError(t, err)
-	require.Contains(t, review.Blockers, "Enter an Album title.")
+	require.Contains(t, review.Blockers, "Add an album title.")
 	_, err = module.PublishAlbum(t.Context(), album.ID, publishing.PublishRequest{ReviewToken: review.ReviewToken})
 	require.Error(t, err)
 	_, err = module.UpdateAlbum(t.Context(), album.ID, publishing.UpdateAlbumRequest{Title: "Summer"})
@@ -94,7 +95,7 @@ func TestPublicationBlocksEmptyAndIncompleteImportsButNotAbsentAudience(t *testi
 	require.NoError(t, module.ExecuteImport(t.Context(), album.ID))
 	review, err = module.ReviewPublication(t.Context(), album.ID)
 	require.NoError(t, err)
-	require.Equal(t, []string{"Add at least one photo or video."}, review.Blockers)
+	require.Equal(t, []string{"Import at least one photo or video."}, review.Blockers)
 	_, err = module.PublishAlbum(t.Context(), album.ID, publishing.PublishRequest{ReviewToken: review.ReviewToken})
 	require.Error(t, err)
 	_, readyModule, ready := importedAlbum(t)
@@ -116,15 +117,16 @@ func TestPublicationIsExplicitAndUnpublishPreservesCuration(t *testing.T) {
 	review, err := module.ReviewPublication(t.Context(), album.ID)
 	require.NoError(t, err)
 	require.Empty(t, review.Blockers)
-	require.Contains(t, review.Warnings, "No ordinary Person has access yet.")
-	_, err = module.SetMomentAccess(t.Context(), album.ID, album.Moments[0].ID, publishing.SetMomentAccessRequest{PersonID: person.ID.String(), Decision: publishing.DecisionAllow})
+	require.Empty(t, review.Audience, "an absent audience is shown, not warned about")
+	require.Equal(t, 2, review.MomentCount)
+	_, err = module.SaveMomentRules(t.Context(), album.ID, album.Moments[0].ID, publishing.SaveRulesRequest{Decisions: []publishing.AccessResolution{{PersonID: person.ID.String(), Decision: publishing.DecisionAllow}}})
 	require.NoError(t, err)
 	_, err = module.PublishAlbum(t.Context(), album.ID, publishing.PublishRequest{ReviewToken: review.ReviewToken})
 	require.Error(t, err, "changed audience requires another review")
 	review, err = module.ReviewPublication(t.Context(), album.ID)
 	require.NoError(t, err)
 	require.Len(t, review.Audience, 1)
-	require.Equal(t, 1, review.Audience[0].PhotoCount)
+	require.Equal(t, 1, review.Audience[0].AccessibleCount)
 	published, err := module.PublishAlbum(t.Context(), album.ID, publishing.PublishRequest{ReviewToken: review.ReviewToken})
 	require.NoError(t, err)
 	require.True(t, published.Published)
@@ -141,4 +143,61 @@ func TestPublicationIsExplicitAndUnpublishPreservesCuration(t *testing.T) {
 	require.NoError(t, err)
 	_, err = module.PublishAlbum(t.Context(), album.ID, publishing.PublishRequest{ReviewToken: review.ReviewToken})
 	require.NoError(t, err)
+}
+
+func TestPublicationWarningsCountSuggestionsUnlinkedFacesAndUnavailableMedia(t *testing.T) {
+	t.Parallel()
+	db := testdb.New(t)
+	source := fixture()
+	source.faces = func(_ context.Context, assetID string) ([]immich.Face, error) {
+		return []immich.Face{
+			{FaceID: "alex-" + assetID, ID: "immich-alex", Name: "Immich Alex"},
+			{FaceID: "sam-" + assetID, ID: "immich-sam", Name: "Immich Sam"},
+		}, nil
+	}
+	module := publishing.New(db, source, noQueue)
+	album, err := module.StartImport(t.Context(), "source")
+	require.NoError(t, err)
+	require.NoError(t, module.ExecuteImport(t.Context(), album.ID))
+	album, err = module.GetAlbum(t.Context(), album.ID)
+	require.NoError(t, err)
+	for _, moment := range album.Moments {
+		_, err = module.RefreshMomentFaces(t.Context(), album.ID, moment.ID)
+		require.NoError(t, err)
+	}
+	review, err := module.ReviewPublication(t.Context(), album.ID)
+	require.NoError(t, err)
+	require.Equal(t, []string{"2 unlinked faces. Optional to link."}, review.Warnings)
+
+	alex := models.Person{ID: models.NewUUIDv7(), DisplayName: "Alex", CreatedAt: time.Now().UTC()}
+	_, err = db.NewInsert().Model(&alex).Exec(t.Context())
+	require.NoError(t, err)
+	alexID := alex.ID
+	link := models.ImmichFaceLink{SourceID: "immich-alex", PersonID: &alexID, UpdatedAt: time.Now().UTC()}
+	_, err = db.NewInsert().Model(&link).Exec(t.Context())
+	require.NoError(t, err)
+	review, err = module.ReviewPublication(t.Context(), album.ID)
+	require.NoError(t, err)
+	require.Equal(t, []string{"2 access suggestions still waiting. Optional to review.", "1 unlinked face. Optional to link."}, review.Warnings, "one suggestion per Moment the linked Person appears in")
+	require.Empty(t, review.Blockers)
+	token := review.ReviewToken
+
+	// Renaming a Person changes nothing the review token protects.
+	_, err = db.NewUpdate().Model(&alex).Set("display_name = ?", "Alexandra").WherePK().Exec(t.Context())
+	require.NoError(t, err)
+	review, err = module.ReviewPublication(t.Context(), album.ID)
+	require.NoError(t, err)
+	require.Equal(t, token, review.ReviewToken)
+
+	_, err = module.SaveAlbumAccess(t.Context(), album.ID, publishing.SaveAlbumAccessRequest{People: []publishing.AlbumAccessChoice{{PersonID: alex.ID.String(), Allowed: true}}})
+	require.NoError(t, err)
+	_, err = db.NewUpdate().Model((*models.MediaItem)(nil)).Set("offline = TRUE").Where("id = (SELECT media_item_id FROM album_entries WHERE id = ?)", album.Moments[0].Entries[0].ID).Exec(t.Context())
+	require.NoError(t, err)
+	review, err = module.ReviewPublication(t.Context(), album.ID)
+	require.NoError(t, err)
+	require.NotEqual(t, token, review.ReviewToken, "a new rule needs a new review")
+	require.Equal(t, []string{"Some media is unavailable in Immich. Viewers will see an unavailable tile.", "1 unlinked face. Optional to link."}, review.Warnings, "Album access resolves the suggestions")
+	require.Len(t, review.Audience, 1)
+	require.Equal(t, "Alexandra", review.Audience[0].DisplayName)
+	require.Equal(t, 3, review.Audience[0].AccessibleCount)
 }

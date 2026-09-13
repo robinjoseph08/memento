@@ -7,6 +7,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { createQueryClient } from "../../lib/query-client";
 import type {
   AccessPerson,
+  AlbumDetail,
   ViewerAlbum,
   ViewerEntry,
 } from "../../types/generated/publishing";
@@ -25,8 +26,27 @@ const people: AccessPerson[] = ["Jamie", "Alex"].map((name) => ({
   inherited: false,
   effective: false,
   accessible_count: 0,
-  excluded_count: 0,
+  exceptions: 0,
+  moments_detected: 0,
 }));
+const curatorAlbum: AlbumDetail = {
+  id: "lake",
+  source_id: "source",
+  title: "Lake weekend",
+  description: "",
+  published: false,
+  status: "complete",
+  message: "",
+  processed: 2,
+  total: 2,
+  photo_count: 2,
+  video_count: 0,
+  start_date: "2025-06-14",
+  end_date: "2025-06-14",
+  cover_url: "",
+  moments: [],
+  access: people,
+};
 const album: ViewerAlbum = {
   id: "lake",
   title: "Lake weekend",
@@ -35,7 +55,8 @@ const album: ViewerAlbum = {
   video_count: 0,
   start_date: "2025-06-14",
   end_date: "2025-06-14",
-  cover_url: "/preview/jamie/cover",
+  cover_url: "/preview/jamie/cover/thumb",
+  cover_preview_url: "/preview/jamie/cover",
   days: [{ date: "2025-06-14", photo_count: 2, video_count: 0 }],
 };
 const photo: ViewerEntry = {
@@ -44,7 +65,8 @@ const photo: ViewerEntry = {
   title: "Jamie's photo",
   captured_at: "2025-06-14T12:00:00Z",
   available: true,
-  thumbnail_url: "/preview/jamie/one",
+  thumbnail_url: "/preview/jamie/one/thumb",
+  preview_url: "/preview/jamie/one",
   width: 1200,
   height: 800,
 };
@@ -69,7 +91,7 @@ function renderPreview(
       children: [
         {
           path: "/curator/albums/:id",
-          element: <ViewerPreview albumID="lake" people={people} />,
+          element: <ViewerPreview album={curatorAlbum} />,
         },
         {
           path: "/albums/:id/photos",
@@ -118,7 +140,7 @@ it("switches the URL identity without retaining another person's cover, counts, 
           {
             ...photo,
             title: "Alex's photo",
-            thumbnail_url: "/preview/alex/one",
+            preview_url: "/preview/alex/one",
           },
         ],
         next_cursor: "",
@@ -126,28 +148,27 @@ it("switches the URL identity without retaining another person's cover, counts, 
     if (path === "/api/albums/lake")
       return Response.json({
         ...album,
-        cover_url: "/member/cover",
+        cover_preview_url: "/member/cover",
         photo_count: 1,
       });
     if (path === "/api/albums/lake/photos")
       return Response.json({
         entries: [
-          { ...photo, title: "Member photo", thumbnail_url: "/member/one" },
+          { ...photo, title: "Member photo", preview_url: "/member/one" },
         ],
         next_cursor: "",
       });
     throw new Error(`Unexpected request: ${path}`);
   });
   const user = userEvent.setup();
-  await user.click(
-    await screen.findByRole("button", { name: "Load more photos" }),
-  );
   expect(
     await screen.findByRole("img", { name: "Jamie's second photo" }),
   ).toBeVisible();
-  expect(screen.getByText("Previewing as Jamie")).toBeVisible();
-  expect(screen.getByText(/Read-only preview/)).toBeVisible();
-  await user.click(screen.getByRole("combobox", { name: "Preview as person" }));
+  expect(
+    screen.getByRole("combobox", { name: "Preview as" }),
+  ).toHaveTextContent("Jamie");
+  expect(screen.getByText(/Showing the view after publication/)).toBeVisible();
+  await user.click(screen.getByRole("combobox", { name: "Preview as" }));
   await user.type(screen.getByPlaceholderText("Search people…"), "Alex");
   await user.click(screen.getByRole("option", { name: "Alex" }));
   expect(new URLSearchParams(window.location.search).get("person")).toBe(
@@ -167,7 +188,7 @@ it("switches the URL identity without retaining another person's cover, counts, 
       Response.json({
         ...album,
         photo_count: 1,
-        cover_url: "/preview/alex/cover",
+        cover_preview_url: "/preview/alex/cover",
         days: [{ date: "2025-06-14", photo_count: 1, video_count: 0 }],
       }),
     ),
@@ -186,25 +207,32 @@ it("switches the URL identity without retaining another person's cover, counts, 
   expect(
     await screen.findByRole("img", { name: "Member photo" }),
   ).toHaveAttribute("src", "/member/one");
-  expect(screen.queryByText(/Previewing as/)).not.toBeInTheDocument();
+  expect(
+    screen.queryByRole("combobox", { name: "Preview as" }),
+  ).not.toBeInTheDocument();
   expect(
     screen.queryByRole("img", { name: "Alex's photo" }),
   ).not.toBeInTheDocument();
 });
 
-it("keeps the access editor pane open when leaving a mobile preview", async () => {
+it("defaults to the first person when the URL names none", async () => {
   window.history.replaceState(
     null,
     "",
     "/curator/albums/lake?section=preview&pane=detail",
   );
-  renderPreview(() => Response.json(album));
-  const user = userEvent.setup();
-  await screen.findByRole("button", { name: "Account menu" });
-  await user.click(screen.getByRole("link", { name: "Edit album access" }));
-  const params = new URLSearchParams(window.location.search);
-  expect(params.get("section")).toBe("access");
-  expect(params.get("pane")).toBe("detail");
+  renderPreview((path) =>
+    path.endsWith("/photos")
+      ? Response.json({ entries: [], next_cursor: "" })
+      : Response.json(album),
+  );
+  expect(
+    await screen.findByRole("combobox", { name: "Preview as" }),
+  ).toHaveTextContent("Jamie");
+  expect(
+    await screen.findByText("No photos are shared with Jamie yet."),
+  ).toBeVisible();
+  expect(screen.queryByRole("link", { name: /View videos/ })).toBeNull();
 });
 
 it("disables shell account actions only in the Curator preview section", async () => {
@@ -230,7 +258,7 @@ it("disables shell account actions only in the Curator preview section", async (
   );
   expect(
     screen.getByRole("menuitemcheckbox", { name: "Dark mode" }),
-  ).toHaveAttribute("aria-disabled", "true");
+  ).not.toHaveAttribute("aria-disabled");
   expect(
     screen.getByRole("menuitem", { name: "Immich connection" }),
   ).toHaveAttribute("aria-disabled", "true");
@@ -259,10 +287,10 @@ it("keeps the selected identity and a neutral no-access message for denied or in
   expect(
     await screen.findByRole("heading", { name: "Album not available" }),
   ).toBeVisible();
-  expect(screen.getByText("Previewing as Alex")).toBeVisible();
   expect(
-    screen.getByText("This person has no access to this album."),
-  ).toBeVisible();
+    screen.getByRole("combobox", { name: "Preview as" }),
+  ).toHaveTextContent("Alex");
+  expect(screen.getByText("Alex has no access to this album.")).toBeVisible();
   expect(
     screen.queryByRole("img", { name: "Album cover" }),
   ).not.toBeInTheDocument();

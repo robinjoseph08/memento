@@ -140,7 +140,7 @@ it.each([
           entries: [
             {
               id: "partial-photo",
-              access: [],
+              decisions: {},
               media_id: "photo",
               filename: "Partial.jpg",
               kind: "IMAGE",

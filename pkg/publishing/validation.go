@@ -7,6 +7,16 @@ import (
 	"github.com/robinjoseph08/memento/pkg/errcodes"
 )
 
+func (SaveAlbumAccessRequest) ValidationMessage(field, _ string) string {
+	switch field {
+	case "people":
+		return "Choose the people to review."
+	case "person_id":
+		return "Choose active non-Curator Persons."
+	}
+	return ""
+}
+
 func (PublishRequest) ValidationMessage(field, _ string) string {
 	if field == "review_token" {
 		return "Review this Album before publishing."
@@ -14,9 +24,11 @@ func (PublishRequest) ValidationMessage(field, _ string) string {
 	return ""
 }
 
+const deleteTitleMessage = "Type the Album title exactly to confirm deletion."
+
 func (DeleteAlbumRequest) ValidationMessage(field, _ string) string {
 	if field == "title" {
-		return "Type the Album title exactly to confirm deletion."
+		return deleteTitleMessage
 	}
 	return ""
 }
@@ -51,12 +63,14 @@ func (SetMomentCoverRequest) ValidationMessage(field, _ string) string {
 	return ""
 }
 
-func (SetMomentAccessRequest) ValidationMessage(field, _ string) string {
+func (SaveRulesRequest) ValidationMessage(field, _ string) string {
 	switch field {
+	case "decisions":
+		return "Choose one rule for each Person."
 	case "person_id":
 		return "Choose a Person."
 	case "decision":
-		return "Choose allow, exclude, or inherit."
+		return "Choose allow, deny, or inherit."
 	}
 	return ""
 }

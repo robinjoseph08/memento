@@ -1,9 +1,5 @@
 import type { ViewerAlbum } from "../../types/generated/publishing";
 
-export function countLabel(count: number, kind: "photo" | "video") {
-  return `${count} ${kind}${count === 1 ? "" : "s"}`;
-}
-
 export function captureDate(value: string, weekday = false) {
   if (!value) return "";
   const date = new Date(`${value.slice(0, 10)}T12:00:00Z`);

@@ -52,11 +52,12 @@ async function loadedImage(image: Locator) {
 }
 
 async function choosePreview(page: Page, name: string) {
-  await page.getByRole("combobox", { name: "Preview as person" }).click();
+  const chooser = page
+    .getByRole("region", { name: "Preview identity" })
+    .getByRole("combobox", { name: "Preview as" });
+  await chooser.click();
   await page.getByRole("option", { name, exact: true }).click();
-  await expect(
-    page.getByRole("region", { name: "Preview identity" }),
-  ).toContainText(`Previewing as ${name}`);
+  await expect(chooser).toHaveText(name);
 }
 
 async function counts(page: Page, photos: number, videos: number) {
@@ -111,16 +112,26 @@ test("Curator scopes access, previews two people, publishes, and hides the Album
     name: "Album access",
     exact: true,
   });
+  // No faces are linked yet, so everyone sits under the collapsed list.
+  await albumAccess.getByText(/not seen in this album/).click();
   const alexAlbum = albumAccess.getByRole("checkbox", {
-    name: "Allow Alex for this Album",
+    name: "Album access for Alex",
   });
   await expect(alexAlbum).not.toBeChecked();
-  // Quick choices render the committed response, not an optimistic checkbox.
-  await alexAlbum.click();
-  await expect(alexAlbum).toBeChecked();
-  await albumAccess.getByRole("button", { name: "Undo", exact: true }).click();
-  await expect(alexAlbum).not.toBeChecked();
-  await alexAlbum.click();
+  const visibility = albumAccess.getByRole("region", {
+    name: "Visibility review",
+  });
+  await expect(visibility).toContainText("Change access above to review it.");
+  await alexAlbum.check();
+  await expect(visibility).toContainText("Alex");
+  await expect(visibility).toContainText("gains 6");
+  await captureLayouts(page, "album-access");
+  await albumAccess
+    .getByRole("button", { name: "Save Album access", exact: true })
+    .click();
+  await expect(albumAccess.getByRole("status")).toHaveText(
+    "Album access saved.",
+  );
   await expect(alexAlbum).toBeChecked();
 
   await outline.getByRole("link", { name: /Monday, June 1, 2026/ }).click();
@@ -133,15 +144,12 @@ test("Curator scopes access, previews two people, publishes, and hides the Album
   });
   await expect(
     rules.getByRole("combobox", { name: "Access for Alex" }),
-  ).toContainText("Inherit: allowed");
+  ).toContainText("Inherit: allowed by Album access");
   await expect(
     rules.getByRole("combobox", { name: "Access for Sam" }),
   ).toContainText("Inherit: no access");
-  await expect(
-    rules.getByRole("button", { name: "Save access", exact: true }),
-  ).toBeDisabled();
   for (const [person, decision] of [
-    ["Alex", "Exclude"],
+    ["Alex", "Deny"],
     ["Sam", "Allow"],
   ]) {
     await rules.getByRole("combobox", { name: `Access for ${person}` }).click();
@@ -156,17 +164,12 @@ test("Curator scopes access, previews two people, publishes, and hides the Album
   await page.getByRole("img", { name: "coast-03.jpg", exact: true }).click();
   const item = page.getByRole("dialog", { name: "Item access", exact: true });
   await expect(item).toBeVisible();
-  const alexItem = item.getByRole("checkbox", {
-    name: "Allow Alex for this item",
-  });
-  await expect(alexItem).toBeChecked();
+  const alexItem = item.getByRole("combobox", { name: "Access for Alex" });
+  await expect(alexItem).toContainText("Inherit: allowed by Album access");
   await alexItem.click();
-  await expect(alexItem).not.toBeChecked();
-  await item.getByRole("button", { name: "Undo", exact: true }).click();
-  await expect(alexItem).toBeChecked();
-  await alexItem.click();
-  await expect(alexItem).not.toBeChecked();
-  await page.keyboard.press("Escape");
+  await page.getByRole("option", { name: "Deny", exact: true }).click();
+  await captureLayouts(page, "item-access");
+  await item.getByRole("button", { name: "Save access", exact: true }).click();
   await expect(item).toHaveCount(0);
 
   await outline
@@ -195,12 +198,15 @@ test("Curator scopes access, previews two people, publishes, and hides the Album
   await expect(
     page.getByRole("menuitem", { name: "Sign out", exact: true }),
   ).toBeDisabled();
+  await expect(
+    page.getByRole("menuitemcheckbox", { name: "Dark mode", exact: true }),
+  ).toBeEnabled();
   await page.keyboard.press("Escape");
 
   await choosePreview(page, "Sam");
   await counts(page, 1, 0);
   await expect(
-    page.getByRole("heading", { name: "No videos in this album" }),
+    page.getByText("No videos are shared with Sam yet."),
   ).toBeVisible();
   await expect(page.getByRole("img", { name: /coast-0[2456]/ })).toHaveCount(0);
   const samCover = await loadedImage(
@@ -237,9 +243,11 @@ test("Curator scopes access, previews two people, publishes, and hides the Album
       member.getByRole("heading", { name: "Album not available", exact: true }),
     ).toBeVisible();
 
+    // Narrow screens drill back to the outline instead of a side sheet.
     await page.setViewportSize({ width: 390, height: 844 });
-    await page
-      .getByRole("link", { name: "Edit album access", exact: true })
+    await page.getByRole("link", { name: "Outline", exact: true }).click();
+    await outline
+      .getByRole("link", { name: "Album access", exact: true })
       .click();
     await expect(
       page.getByRole("heading", { name: "Album access", exact: true }),
@@ -249,16 +257,17 @@ test("Curator scopes access, previews two people, publishes, and hides the Album
       .getByRole("button", { name: "Review & publish", exact: true })
       .click();
     const publication = page.getByRole("dialog", {
-      name: "Review & publish",
+      name: "Ready to publish?",
       exact: true,
     });
-    await expect(
-      publication.getByRole("listitem").filter({ hasText: "Alex" }),
-    ).toContainText("2 photos, 2 videos");
-    await expect(
-      publication.getByRole("listitem").filter({ hasText: "Sam" }),
-    ).toContainText("1 photo, 0 videos");
-    await expect(publication).toContainText(/notification/i);
+    const audience = publication.getByRole("region", {
+      name: "Audience",
+      exact: true,
+    });
+    await expect(audience).toContainText(/Alex\s*4 of 6 items/);
+    await expect(audience).toContainText(/Sam\s*1 of 6 items/);
+    await expect(publication).toContainText("6 items in 3 Moments");
+    await expect(publication).toContainText("sends no notifications");
     await captureLayouts(page, "publication");
     const publicationWrites: string[] = [];
     const recordPublicationWrite = (request: Request) => {
@@ -270,9 +279,12 @@ test("Curator scopes access, previews two people, publishes, and hides the Album
     };
     page.on("request", recordPublicationWrite);
     await publication
-      .getByRole("button", { name: "Publish Album", exact: true })
+      .getByRole("button", { name: "Publish album", exact: true })
       .click();
     await expect(publication).toHaveCount(0);
+    await expect(
+      page.getByRole("button", { name: "Review & publish", exact: true }),
+    ).toHaveCount(0);
 
     await member.reload();
     await counts(member, 2, 2);
@@ -306,13 +318,17 @@ test("Curator scopes access, previews two people, publishes, and hides the Album
       .getByRole("link", { name: "Album details", exact: true })
       .click();
     await page
+      .getByRole("region", { name: "Danger zone", exact: true })
       .getByRole("button", { name: "Unpublish Album", exact: true })
       .click();
     await page
-      .getByRole("dialog")
-      .getByRole("button", { name: "Unpublish", exact: true })
+      .getByRole("dialog", { name: "Unpublish Album?", exact: true })
+      .getByRole("button", { name: "Unpublish Album", exact: true })
       .click();
     await expect(page.getByRole("dialog")).toHaveCount(0);
+    await expect(
+      page.getByRole("button", { name: "Review & publish", exact: true }),
+    ).toBeVisible();
     await member.reload();
     await expect(
       member.getByRole("heading", { name: "Album not available", exact: true }),
@@ -329,7 +345,65 @@ test("Curator scopes access, previews two people, publishes, and hides the Album
     await choosePreview(page, "Alex");
     await counts(page, 2, 2);
     await loadedImage(page.getByRole("img", { name: "coast-05", exact: true }));
+
+    // Remove all of Sam's decisions after a visibility review, then delete
+    // the Album with a typed title. Immich is never written to.
+    await outline
+      .getByRole("link", { name: "Album access", exact: true })
+      .click();
+    await albumAccess.getByText(/not seen in this album/).click();
+    await albumAccess
+      .getByRole("button", { name: "Remove all access…", exact: true })
+      .nth(1)
+      .click();
+    const removal = page.getByRole("dialog", {
+      name: "Remove all access for Sam?",
+      exact: true,
+    });
+    await expect(
+      removal.getByRole("region", { name: "Visibility review" }),
+    ).toContainText(/Sam\s*loses 1/);
+    await removal
+      .getByRole("button", { name: "Remove all access", exact: true })
+      .click();
+    await expect(removal).toHaveCount(0);
+    await choosePreviewFromOutline(page, outline, "Sam");
+    await expect(
+      page.getByRole("heading", { name: "Album not available", exact: true }),
+    ).toBeVisible();
+
+    await outline
+      .getByRole("link", { name: "Album details", exact: true })
+      .click();
+    await page
+      .getByRole("button", { name: "Delete Album", exact: true })
+      .click();
+    const deletion = page.getByRole("dialog", {
+      name: "Permanently delete this Album?",
+      exact: true,
+    });
+    await deletion
+      .getByRole("textbox", { name: "Type the Album title" })
+      .fill("Fixture Album - Coast");
+    await deletion
+      .getByRole("button", { name: "Permanently delete Album", exact: true })
+      .click();
+    await expect(page).toHaveURL(/\/curator$/);
+    await expect(
+      page.getByRole("heading", { name: "No albums yet", exact: true }),
+    ).toBeVisible();
   } finally {
     await memberContext.close();
   }
 });
+
+async function choosePreviewFromOutline(
+  page: Page,
+  outline: Locator,
+  name: string,
+) {
+  await outline
+    .getByRole("link", { name: "Viewer preview", exact: true })
+    .click();
+  await choosePreview(page, name);
+}

@@ -5,6 +5,11 @@ import type { ViewerAlbum, ViewerPage } from "../../types/generated/publishing";
 import { usePrivateScope } from "./people";
 
 export type ViewerContext = { albumID: string; personID?: string };
+
+// Galleries load every page, so refetching them on each window focus would
+// replay the whole Album. Keys already name the Person, so nothing leaks
+// between identities while pages stay cached.
+const viewerStaleTime = 5 * 60_000;
 export type ViewerTab = "photos" | "videos";
 
 function albumURL({ albumID, personID }: ViewerContext) {
@@ -38,7 +43,7 @@ export function useViewerAlbum(context: ViewerContext) {
     queryKey: [...scope, ...contextKey(context)],
     queryFn: ({ signal }) =>
       request<ViewerAlbum>(albumURL(context), { signal }),
-    gcTime: 0,
+    staleTime: viewerStaleTime,
     retry: false,
   });
 }
@@ -54,7 +59,7 @@ export function useViewerEntries(context: ViewerContext, tab: ViewerTab) {
         { signal },
       ),
     getNextPageParam: (page) => page.next_cursor || undefined,
-    gcTime: 0,
+    staleTime: viewerStaleTime,
     retry: false,
   });
 }

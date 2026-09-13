@@ -93,18 +93,6 @@ type MomentAccessDecision struct {
 	UpdatedAt     time.Time
 }
 
-// AccessDeletionUndo retains only the latest deletion at a scope so Undo can
-// distinguish an unchanged absence from a later write followed by deletion.
-type AccessDeletionUndo struct {
-	bun.BaseModel `bun:"table:access_deletion_undos,alias:deletion"`
-	ID            UUID  `bun:"id,pk,type:uuid"`
-	AlbumID       UUID  `bun:"type:uuid"`
-	MomentID      *UUID `bun:"type:uuid"`
-	EntryID       *UUID `bun:"type:uuid"`
-	PersonID      UUID  `bun:"type:uuid"`
-	UpdatedAt     time.Time
-}
-
 type MediaFaceAssociation struct {
 	bun.BaseModel `bun:"table:media_face_associations,alias:face"`
 	MediaItemID   UUID   `bun:"media_item_id,pk,type:uuid"`

@@ -17,17 +17,12 @@ func RegisterViewerRoutes(e *echo.Echo, module ViewerUseCases, requirePerson, re
 // RegisterAccessRoutes keeps every access mutation behind the Curator guard.
 func RegisterAccessRoutes(e *echo.Echo, module AccessUseCases, requireCurator echo.MiddlewareFunc) {
 	h := &accessHandlers{module: module}
-	e.POST("/api/curator/albums/:id/access", h.setAlbumAccess, requireCurator)
-	e.POST("/api/curator/albums/:id/access/undo", h.undoAlbumAccess, requireCurator)
+	e.POST("/api/curator/albums/:id/access/preview", h.previewAlbumAccess, requireCurator)
+	e.POST("/api/curator/albums/:id/access", h.saveAlbumAccess, requireCurator)
 	e.POST("/api/curator/albums/:id/access/remove-all/preview", h.previewRemoveAccess, requireCurator)
 	e.POST("/api/curator/albums/:id/access/remove-all", h.removeAccess, requireCurator)
-	e.POST("/api/curator/albums/:id/entries/:entryID/access", h.setEntryAccess, requireCurator)
-	e.POST("/api/curator/albums/:id/entries/:entryID/access/undo", h.undoEntryAccess, requireCurator)
 	e.POST("/api/curator/albums/:id/entries/:entryID/rules", h.saveEntryRules, requireCurator)
 	e.POST("/api/curator/albums/:id/moments/:momentID/rules", h.saveMomentRules, requireCurator)
-	e.POST("/api/curator/albums/:id/moments/:momentID/access", h.setMomentAccess, requireCurator)
-	e.POST("/api/curator/albums/:id/moments/:momentID/access/suggestions", h.addMomentSuggestions, requireCurator)
-	e.POST("/api/curator/albums/:id/moments/:momentID/access/undo", h.undoMomentAccess, requireCurator)
 }
 
 func RegisterPublicationRoutes(e *echo.Echo, module PublicationUseCases, requireCurator echo.MiddlewareFunc) {

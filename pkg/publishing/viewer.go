@@ -79,11 +79,19 @@ func viewerEntries(db bun.IDB, viewer viewerContext) *bun.SelectQuery {
 }
 
 func (v viewerContext) thumbnailURL(entryID, version string) string {
+	return v.mediaURL(entryID, "thumbnail", version)
+}
+
+func (v viewerContext) previewURL(entryID, version string) string {
+	return v.mediaURL(entryID, "preview", version)
+}
+
+func (v viewerContext) mediaURL(entryID, variant, version string) string {
 	mode := "viewer"
 	if v.preview {
 		mode = "preview"
 	}
-	return "/api/media/" + mode + "/" + v.personID + "/entries/" + entryID + "/thumbnail?v=" + url.QueryEscape(version)
+	return "/api/media/" + mode + "/" + v.personID + "/entries/" + entryID + "/" + variant + "?v=" + url.QueryEscape(version)
 }
 
 func viewAlbum(ctx context.Context, db bun.IDB, viewer viewerContext, id string) (ViewerAlbum, error) {
@@ -115,6 +123,7 @@ func viewAlbum(ctx context.Context, db bun.IDB, viewer viewerContext, id string)
 	}
 	if err == nil {
 		result.CoverURL = viewer.thumbnailURL(cover.ID, cover.Version)
+		result.CoverPreviewURL = viewer.previewURL(cover.ID, cover.Version)
 	}
 	err = viewerEntries(db, viewer).ColumnExpr("to_char(item.captured_at, 'YYYY-MM-DD') AS date").
 		ColumnExpr("count(*) FILTER (WHERE item.kind = 'IMAGE') AS photo_count, count(*) FILTER (WHERE item.kind = 'VIDEO') AS video_count").
@@ -204,11 +213,12 @@ func (m *Module) ViewEntries(ctx context.Context, actorID, previewPersonID, albu
 			rows = rows[:100]
 		}
 		for _, row := range rows {
-			thumbnail := ""
+			thumbnail, preview := "", ""
 			if row.Available {
 				thumbnail = viewer.thumbnailURL(row.ID, row.Version)
+				preview = viewer.previewURL(row.ID, row.Version)
 			}
-			result.Entries = append(result.Entries, ViewerEntry{ID: row.ID, Kind: row.Kind, Title: strings.TrimSuffix(row.Filename, filepath.Ext(row.Filename)), CapturedAt: row.CapturedAt.Format("2006-01-02T15:04:05.999999999"), Available: row.Available, ThumbnailURL: thumbnail, Width: row.Width, Height: row.Height})
+			result.Entries = append(result.Entries, ViewerEntry{ID: row.ID, Kind: row.Kind, Title: strings.TrimSuffix(row.Filename, filepath.Ext(row.Filename)), CapturedAt: row.CapturedAt.Format("2006-01-02T15:04:05.999999999"), Available: row.Available, ThumbnailURL: thumbnail, PreviewURL: preview, Width: row.Width, Height: row.Height})
 		}
 		if more {
 			last := result.Entries[len(result.Entries)-1]

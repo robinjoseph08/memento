@@ -43,6 +43,10 @@ func (s *source) Thumbnail(_ context.Context, id string) (immich.Thumbnail, erro
 	s.requested = id
 	return immich.Thumbnail{Body: io.NopCloser(strings.NewReader("generated image")), ContentType: "image/webp"}, nil
 }
+func (s *source) Preview(_ context.Context, id string) (immich.Thumbnail, error) {
+	s.requested = "preview:" + id
+	return immich.Thumbnail{Body: io.NopCloser(strings.NewReader("large image")), ContentType: "image/jpeg"}, nil
+}
 func (s *source) PersonThumbnail(_ context.Context, id string) (immich.Thumbnail, error) {
 	s.requested = id
 	return immich.Thumbnail{Body: io.NopCloser(strings.NewReader("person image")), ContentType: "image/jpeg"}, nil
@@ -104,7 +108,12 @@ func TestViewerThumbnailChecksIdentityAndPolicyBeforeConditionalResponse(t *test
 	preview := get("preview", "sam", "")
 	require.Equal(t, 200, preview.Code)
 	require.Equal(t, "sam", selected)
-	require.Equal(t, "private, no-store", preview.Header().Get("Cache-Control"))
+	require.Equal(t, "private, max-age=31536000, immutable", preview.Header().Get("Cache-Control"), "preview URLs name the selected Person, so caching cannot mix identities")
+	large := httptest.NewRecorder()
+	e.ServeHTTP(large, httptest.NewRequest(http.MethodGet, "/api/media/preview/sam/entries/"+entry.ID+"/preview?v="+version, nil))
+	require.Equal(t, 200, large.Code)
+	require.Equal(t, "large image", large.Body.String(), "the preview route serves Immich's larger variant")
+	require.Equal(t, "preview:asset", upstream.requested)
 	upstream.assetError = &errcodes.Error{HTTPCode: 403, Code: "immich_permission_denied", Message: "Enable asset.read on the Immich API key."}
 	failed := get("viewer", "curator", "")
 	require.Equal(t, http.StatusBadGateway, failed.Code)

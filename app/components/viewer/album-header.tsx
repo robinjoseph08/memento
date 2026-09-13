@@ -1,39 +1,60 @@
-import { Image, Video } from "lucide-react";
+import { Image, SquarePlay } from "lucide-react";
 
+import { useMediaQuery } from "../../hooks/use-media-query";
 import type { ViewerAlbum } from "../../types/generated/publishing";
 import { AlbumImage } from "../albums/album-image";
-import { captureRange, countLabel } from "./labels";
+import { countLabel } from "../albums/moment-labels";
+import { captureRange } from "./labels";
 
-export function AlbumHeader({ album }: { album: ViewerAlbum }) {
+// The shared Album header: large plain title, uncropped cover beside it on
+// desktop and next to the title on phones, then description, range and counts.
+export function AlbumHeader({
+  album,
+  coverFallback = "No cover",
+}: {
+  album: ViewerAlbum;
+  coverFallback?: string;
+}) {
+  const desktop = useMediaQuery("(min-width: 761px)");
+  const cover = (className: string) => (
+    <AlbumImage
+      alt="Album cover"
+      className={className}
+      fallback={coverFallback}
+      src={album.cover_preview_url}
+    />
+  );
   return (
-    <header className="grid grid-cols-[minmax(0,1fr)_112px] items-start gap-x-5 gap-y-5 min-[761px]:grid-cols-[minmax(0,1fr)_minmax(0,390px)] min-[761px]:items-center min-[761px]:gap-x-12">
-      <div className="contents min-[761px]:block">
-        <h1 className="col-start-1 row-start-1 min-w-0 font-heading text-[clamp(36px,5vw,64px)] leading-[1.1] tracking-[-1.5px] text-balance">
-          {album.title}
-        </h1>
+    <header className="min-[761px]:grid min-[761px]:grid-cols-[minmax(0,1fr)_minmax(0,390px)] min-[761px]:items-center min-[761px]:gap-12">
+      <div className="min-w-0">
+        <div className="flex items-start gap-5">
+          <h1 className="min-w-0 flex-1 font-heading text-[clamp(36px,5vw,64px)] leading-[1.1] tracking-[-1.5px] text-balance">
+            {album.title}
+          </h1>
+          {!desktop && cover("w-28 shrink-0")}
+        </div>
         {album.description && (
-          <p className="col-span-2 max-w-140 text-sm text-muted min-[761px]:mt-7">
+          <p className="mt-5 max-w-[560px] text-sm text-muted min-[761px]:mt-7">
             {album.description}
           </p>
         )}
-        <p className="col-span-2 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-muted min-[761px]:mt-4">
-          {captureRange(album) && <span>{captureRange(album)}</span>}
+        <p className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-muted">
+          <span>{captureRange(album) || "No accessible media"}</span>
           <span className="inline-flex items-center gap-1.5">
             <Image aria-hidden="true" className="size-3.5" strokeWidth={1.5} />
-            {countLabel(album.photo_count, "photo")}
+            {countLabel(album.photo_count, "photo", "photos")}
           </span>
           <span className="inline-flex items-center gap-1.5">
-            <Video aria-hidden="true" className="size-3.5" strokeWidth={1.5} />
-            {countLabel(album.video_count, "video")}
+            <SquarePlay
+              aria-hidden="true"
+              className="size-3.5"
+              strokeWidth={1.5}
+            />
+            {countLabel(album.video_count, "video", "videos")}
           </span>
         </p>
       </div>
-      <AlbumImage
-        alt="Album cover"
-        className="col-start-2 row-start-1 w-full"
-        fallback="No cover available"
-        src={album.cover_url}
-      />
+      {desktop && cover("w-full")}
     </header>
   );
 }

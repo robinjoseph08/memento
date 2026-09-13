@@ -1,19 +1,18 @@
-import { Link, NavLink, useLocation } from "react-router-dom";
+import { use } from "react";
+import { Link, NavLink } from "react-router-dom";
 
 import { useIdentityStatus } from "../../hooks/queries/identity";
 import { useTheme } from "../../hooks/use-theme";
 import { AccountMenu } from "./account-menu";
 import { MobileNavigation } from "./mobile-navigation";
+import { PreviewModeContext } from "./preview-mode";
 import { ThemeToggle } from "./theme-toggle";
 import { Wordmark } from "./wordmark";
 
 export function Header() {
   const { data } = useIdentityStatus();
   const theme = useTheme();
-  const location = useLocation();
-  const preview =
-    /^\/curator\/albums\/[^/]+\/?$/.test(location.pathname) &&
-    new URLSearchParams(location.search).get("section") === "preview";
+  const preview = use(PreviewModeContext).active;
   return (
     <header className="flex min-h-16 items-center gap-2 border-b border-border px-3 py-2 min-[381px]:px-4 min-[601px]:gap-4 min-[761px]:px-8">
       {data?.person && (
@@ -54,7 +53,7 @@ export function Header() {
       <div className="ml-auto">
         {data?.person ? (
           <AccountMenu
-            key={`${data.person.id}-${preview}`}
+            key={data.person.id}
             person={data.person}
             preview={preview}
             {...theme}

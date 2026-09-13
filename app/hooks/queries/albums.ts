@@ -5,21 +5,20 @@ import { statusKey } from "../../lib/query-client";
 import type { Status } from "../../types/generated/identity";
 import type {
   Album,
+  AlbumAccessPreview,
   AlbumDetail,
   ImportRequest,
   MergeMomentsRequest,
-  MomentAccessResult,
   MoveEntriesRequest,
   RemoveAccessPreview,
   RemoveAccessPreviewRequest,
   RemoveAccessRequest,
+  SaveAlbumAccessRequest,
   SaveRulesRequest,
-  SetMomentAccessRequest,
   SetMomentCoverRequest,
   SourcePage,
   SplitMomentRequest,
   StructurePreview,
-  UndoMomentAccessRequest,
   UpdateAlbumRequest,
   UpdateMomentRequest,
 } from "../../types/generated/publishing";
@@ -149,68 +148,26 @@ export function useRefreshMomentFaces(albumID: string, momentID: string) {
   });
 }
 
-export function useSetMomentAccess(albumID: string, momentID: string) {
-  const cache = useAlbumCache();
+function albumAccessURL(albumID: string, action = "") {
+  const base = `/api/curator/albums/${encodeURIComponent(albumID)}/access`;
+  return action ? `${base}/${action}` : base;
+}
+
+export function usePreviewAlbumAccess(albumID: string) {
+  const scope = usePrivateScope();
   return useMutation({
-    mutationKey: cache.scope,
-    mutationFn: (body: SetMomentAccessRequest) =>
-      request<MomentAccessResult>(momentURL(albumID, momentID, "access"), {
-        body,
-      }),
-    onSuccess: (result) => cache.save(result.album),
+    mutationKey: scope,
+    mutationFn: (body: SaveAlbumAccessRequest) =>
+      request<AlbumAccessPreview>(albumAccessURL(albumID, "preview"), { body }),
   });
 }
 
-export function useAddMomentSuggestions(albumID: string, momentID: string) {
+export function useSaveAlbumAccess(albumID: string) {
   const cache = useAlbumCache();
   return useMutation({
     mutationKey: cache.scope,
-    mutationFn: () =>
-      request<MomentAccessResult>(
-        momentURL(albumID, momentID, "access/suggestions"),
-        { body: {} },
-      ),
-    onSuccess: (result) => cache.save(result.album),
-  });
-}
-
-export function useUndoMomentAccess(albumID: string, momentID: string) {
-  const cache = useAlbumCache();
-  return useMutation({
-    mutationKey: cache.scope,
-    mutationFn: (body: UndoMomentAccessRequest) =>
-      request<AlbumDetail>(momentURL(albumID, momentID, "access/undo"), {
-        body,
-      }),
-    onSuccess: cache.save,
-  });
-}
-
-function scopeAccessURL(albumID: string, entryID?: string) {
-  const base = `/api/curator/albums/${encodeURIComponent(albumID)}`;
-  return entryID
-    ? `${base}/entries/${encodeURIComponent(entryID)}/access`
-    : `${base}/access`;
-}
-
-export function useSetScopeAccess(albumID: string, entryID?: string) {
-  const cache = useAlbumCache();
-  return useMutation({
-    mutationKey: cache.scope,
-    mutationFn: (body: SetMomentAccessRequest) =>
-      request<MomentAccessResult>(scopeAccessURL(albumID, entryID), { body }),
-    onSuccess: (result) => cache.save(result.album),
-  });
-}
-
-export function useUndoScopeAccess(albumID: string, entryID?: string) {
-  const cache = useAlbumCache();
-  return useMutation({
-    mutationKey: cache.scope,
-    mutationFn: (body: UndoMomentAccessRequest) =>
-      request<AlbumDetail>(`${scopeAccessURL(albumID, entryID)}/undo`, {
-        body,
-      }),
+    mutationFn: (body: SaveAlbumAccessRequest) =>
+      request<AlbumDetail>(albumAccessURL(albumID), { body }),
     onSuccess: cache.save,
   });
 }
@@ -221,8 +178,10 @@ export function usePreviewRemoveAccess(albumID: string) {
     mutationKey: scope,
     mutationFn: (body: RemoveAccessPreviewRequest) =>
       request<RemoveAccessPreview>(
-        `${scopeAccessURL(albumID)}/remove-all/preview`,
-        { body },
+        albumAccessURL(albumID, "remove-all/preview"),
+        {
+          body,
+        },
       ),
   });
 }
@@ -232,7 +191,7 @@ export function useRemoveAllAccess(albumID: string) {
   return useMutation({
     mutationKey: cache.scope,
     mutationFn: (body: RemoveAccessRequest) =>
-      request<AlbumDetail>(`${scopeAccessURL(albumID)}/remove-all`, { body }),
+      request<AlbumDetail>(albumAccessURL(albumID, "remove-all"), { body }),
     onSuccess: cache.save,
   });
 }

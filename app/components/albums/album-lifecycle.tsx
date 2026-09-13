@@ -1,13 +1,15 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 import {
   useDeleteAlbum,
   useUnpublishAlbum,
 } from "../../hooks/queries/publication";
+import { useReturnFocus } from "../../hooks/use-return-focus";
 import { useUnsavedChanges } from "../../hooks/use-unsaved-changes";
 import { fieldErrors } from "../../lib/http";
 import type { AlbumDetail } from "../../types/generated/publishing";
+import { ConfirmAction } from "../forms/confirm-action";
 import { ConfirmDialog } from "../forms/confirm-dialog";
 import { Field, Form } from "../people/form-fields";
 import { Button } from "../ui/button";
@@ -18,53 +20,60 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 
-export function AlbumLifecycle({
-  album,
-  disabled,
-}: {
-  album: AlbumDetail;
-  disabled: boolean;
-}) {
+// Rare, consequential actions sit last in Album details: hiding a published
+// Album again, and permanently deleting Memento's copy of it.
+export function DangerZone({ album }: { album: AlbumDetail }) {
   const unpublish = useUnpublishAlbum(album.id);
-  const [unpublishOpen, setUnpublishOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   return (
-    <div className="mt-5">
-      <Button
-        className="text-destructive"
-        disabled={disabled}
-        onClick={() => setDeleteOpen(true)}
-        variant="ghost"
-      >
-        Delete Album
-      </Button>
+    <section
+      aria-labelledby="danger-zone"
+      className="mt-9 border-t border-border pt-6"
+    >
+      <h3 className="font-heading text-xl" id="danger-zone">
+        Danger zone
+      </h3>
+      {album.published && (
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-border py-3">
+          <p className="text-sm">
+            <strong className="block font-medium">Unpublish Album</strong>
+            <span className="text-xs text-muted">
+              Hides the Album from viewers. Moments, access decisions and
+              notification history stay in place.
+            </span>
+          </p>
+          <ConfirmAction
+            compact
+            description="Viewers lose access immediately. Moments, access decisions and notification history stay in place. You can publish again later."
+            error={unpublish.error}
+            label="Unpublish Album"
+            onConfirm={() => unpublish.mutateAsync()}
+            pending={unpublish.isPending}
+          />
+        </div>
+      )}
+      <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-border py-3">
+        <p className="text-sm">
+          <strong className="block font-medium">Delete Album</strong>
+          <span className="text-xs text-muted">
+            Removes Memento's curation and access decisions. Immich is never
+            changed.
+          </span>
+        </p>
+        <Button
+          className="text-destructive"
+          onClick={() => setDeleteOpen(true)}
+          size="sm"
+          type="button"
+          variant="outline"
+        >
+          Delete Album
+        </Button>
+      </div>
       {deleteOpen && (
         <DeleteAlbumDialog album={album} onClose={() => setDeleteOpen(false)} />
       )}
-      {album.published && (
-        <Button
-          disabled={disabled}
-          onClick={() => setUnpublishOpen(true)}
-          variant="outline"
-        >
-          Unpublish Album
-        </Button>
-      )}
-      <ConfirmDialog
-        confirmLabel="Unpublish"
-        description="Viewers lose access immediately. Moments, access decisions and notification history stay in place. You can publish again later."
-        error={unpublish.error}
-        onConfirm={() =>
-          unpublish.mutate(undefined, {
-            onSuccess: () => setUnpublishOpen(false),
-          })
-        }
-        onOpenChange={setUnpublishOpen}
-        open={unpublishOpen}
-        pending={unpublish.isPending}
-        title="Unpublish this Album?"
-      />
-    </div>
+    </section>
   );
 }
 
@@ -86,11 +95,7 @@ function DeleteAlbumDialog({
     (title.length > 0 || remove.isPending) && !remove.isSuccess,
     true,
   );
-  const returnFocusRef = useRef<HTMLElement | null>(null);
-  useLayoutEffect(() => {
-    if (document.activeElement instanceof HTMLElement)
-      returnFocusRef.current = document.activeElement;
-  }, []);
+  const returnFocus = useReturnFocus();
   function close() {
     if (remove.isPending) return;
     if (title) setDiscardOpen(true);
@@ -99,13 +104,7 @@ function DeleteAlbumDialog({
   return (
     <>
       <Dialog onOpenChange={(open) => !open && close()} open>
-        <DialogContent
-          onCloseAutoFocus={(event) => {
-            event.preventDefault();
-            if (returnFocusRef.current?.isConnected)
-              returnFocusRef.current.focus();
-          }}
-        >
+        <DialogContent onCloseAutoFocus={returnFocus}>
           <DialogTitle>Permanently delete this Album?</DialogTitle>
           <DialogDescription className="mt-3 text-sm text-muted">
             This deletes this Album's Memento curation and access decisions.

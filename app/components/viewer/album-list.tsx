@@ -2,9 +2,10 @@ import { Link } from "react-router-dom";
 
 import { useViewerAlbums } from "../../hooks/queries/viewer";
 import { AlbumImage } from "../albums/album-image";
+import { countLabel } from "../albums/moment-labels";
 import { PageTitle } from "../shell/page-title";
 import { Button } from "../ui/button";
-import { captureRange, countLabel } from "./labels";
+import { captureRange } from "./labels";
 
 export function ViewerAlbumList() {
   const query = useViewerAlbums();
@@ -50,15 +51,15 @@ export function ViewerAlbumList() {
                 <AlbumImage
                   alt={album.title}
                   className="aspect-square w-full object-cover"
-                  fallback="No cover available"
+                  fallback="No cover"
                   src={album.cover_url}
                 />
                 <span className="mt-3 block font-heading text-lg wrap-anywhere">
                   {album.title}
                 </span>
                 <span className="block text-xs text-muted">
-                  {countLabel(album.photo_count, "photo")},{" "}
-                  {countLabel(album.video_count, "video")}
+                  {countLabel(album.photo_count, "photo", "photos")},{" "}
+                  {countLabel(album.video_count, "video", "videos")}
                 </span>
                 <span className="block text-xs text-muted">
                   {captureRange(album)}

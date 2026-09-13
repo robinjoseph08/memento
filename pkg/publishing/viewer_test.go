@@ -63,7 +63,7 @@ func TestViewerListingAndMediaAuthorizationRespectPublicationAndAlbumEntry(t *te
 	person := models.Person{ID: models.NewUUIDv7(), DisplayName: "Alex", CreatedAt: time.Now().UTC()}
 	_, err := db.NewInsert().Model(&[]models.Person{curator, person}).Exec(t.Context())
 	require.NoError(t, err)
-	_, err = module.SetMomentAccess(t.Context(), album.ID, album.Moments[1].ID, publishing.SetMomentAccessRequest{PersonID: person.ID.String(), Decision: publishing.DecisionAllow})
+	_, err = module.SaveMomentRules(t.Context(), album.ID, album.Moments[1].ID, publishing.SaveRulesRequest{Decisions: []publishing.AccessResolution{{PersonID: person.ID.String(), Decision: publishing.DecisionAllow}}})
 	require.NoError(t, err)
 	listed, err := module.ViewAlbums(t.Context(), person.ID.String())
 	require.NoError(t, err)
@@ -85,6 +85,15 @@ func TestViewerListingAndMediaAuthorizationRespectPublicationAndAlbumEntry(t *te
 	require.NoError(t, err)
 	require.Error(t, module.AuthorizeViewerEntry(t.Context(), person.ID.String(), "", allowedEntry))
 	require.Error(t, module.AuthorizeViewerEntry(t.Context(), curator.ID.String(), person.ID.String(), allowedEntry))
+	// A deactivated Person sees nothing, and cannot be previewed either.
+	_, err = module.ViewAlbum(t.Context(), person.ID.String(), "", album.ID)
+	require.Error(t, err)
+	_, err = module.ViewAlbums(t.Context(), person.ID.String())
+	require.Error(t, err)
+	_, err = module.ViewEntries(t.Context(), person.ID.String(), "", album.ID, "IMAGE", "")
+	require.Error(t, err)
+	_, err = module.ViewAlbum(t.Context(), curator.ID.String(), person.ID.String(), album.ID)
+	require.Error(t, err)
 }
 
 func TestConfiguredCoversSkipDeniedEntriesAndNeverPickAnArbitraryPhoto(t *testing.T) {
@@ -103,11 +112,11 @@ func TestConfiguredCoversSkipDeniedEntriesAndNeverPickAnArbitraryPhoto(t *testin
 	person := models.Person{ID: models.NewUUIDv7(), DisplayName: "Alex", CreatedAt: time.Now().UTC()}
 	_, err = db.NewInsert().Model(&[]models.Person{curator, person}).Exec(t.Context())
 	require.NoError(t, err)
-	_, err = module.SetAlbumAccess(t.Context(), album.ID, publishing.SetAlbumAccessRequest{PersonID: person.ID.String(), Decision: publishing.DecisionAllow})
+	_, err = module.SaveAlbumAccess(t.Context(), album.ID, publishing.SaveAlbumAccessRequest{People: []publishing.AlbumAccessChoice{{PersonID: person.ID.String(), Allowed: true}}})
 	require.NoError(t, err)
 	firstCover := album.Moments[0].CoverEntryID
 	videoCover := album.Moments[1].CoverEntryID
-	_, err = module.SetEntryAccess(t.Context(), album.ID, firstCover, publishing.SetEntryAccessRequest{PersonID: person.ID.String(), Decision: publishing.DecisionDeny})
+	_, err = module.SaveEntryRules(t.Context(), album.ID, firstCover, publishing.SaveRulesRequest{Decisions: []publishing.AccessResolution{{PersonID: person.ID.String(), Decision: publishing.DecisionDeny}}})
 	require.NoError(t, err)
 	view, err := module.ViewAlbum(t.Context(), curator.ID.String(), person.ID.String(), album.ID)
 	require.NoError(t, err)
@@ -115,7 +124,7 @@ func TestConfiguredCoversSkipDeniedEntriesAndNeverPickAnArbitraryPhoto(t *testin
 	require.Equal(t, 1, view.PhotoCount)
 	require.Equal(t, 1, view.VideoCount)
 	require.NoError(t, module.AuthorizeViewerEntry(t.Context(), curator.ID.String(), person.ID.String(), videoCover))
-	_, err = module.SetEntryAccess(t.Context(), album.ID, videoCover, publishing.SetEntryAccessRequest{PersonID: person.ID.String(), Decision: publishing.DecisionDeny})
+	_, err = module.SaveEntryRules(t.Context(), album.ID, videoCover, publishing.SaveRulesRequest{Decisions: []publishing.AccessResolution{{PersonID: person.ID.String(), Decision: publishing.DecisionDeny}}})
 	require.NoError(t, err)
 	view, err = module.ViewAlbum(t.Context(), curator.ID.String(), person.ID.String(), album.ID)
 	require.NoError(t, err)
@@ -144,13 +153,13 @@ func TestViewerInheritanceMatchesEveryScopedDecisionCombination(t *testing.T) {
 	expected := []bool{false, true, false, true, true, false, false, true, false, true, true, false, true, true, false, false, true, false}
 	index := 0
 	for _, broad := range []publishing.Decision{publishing.DecisionInherit, publishing.DecisionAllow} {
-		_, err := module.SetAlbumAccess(t.Context(), album.ID, publishing.SetAlbumAccessRequest{PersonID: person.ID.String(), Decision: broad})
+		_, err := module.SaveAlbumAccess(t.Context(), album.ID, publishing.SaveAlbumAccessRequest{People: []publishing.AlbumAccessChoice{{PersonID: person.ID.String(), Allowed: broad == publishing.DecisionAllow}}})
 		require.NoError(t, err)
 		for _, moment := range []publishing.Decision{publishing.DecisionInherit, publishing.DecisionAllow, publishing.DecisionDeny} {
-			_, err := module.SetMomentAccess(t.Context(), album.ID, album.Moments[0].ID, publishing.SetMomentAccessRequest{PersonID: person.ID.String(), Decision: moment})
+			_, err := module.SaveMomentRules(t.Context(), album.ID, album.Moments[0].ID, publishing.SaveRulesRequest{Decisions: []publishing.AccessResolution{{PersonID: person.ID.String(), Decision: moment}}})
 			require.NoError(t, err)
 			for _, narrow := range []publishing.Decision{publishing.DecisionInherit, publishing.DecisionAllow, publishing.DecisionDeny} {
-				_, err := module.SetEntryAccess(t.Context(), album.ID, entry.ID, publishing.SetEntryAccessRequest{PersonID: person.ID.String(), Decision: narrow})
+				_, err := module.SaveEntryRules(t.Context(), album.ID, entry.ID, publishing.SaveRulesRequest{Decisions: []publishing.AccessResolution{{PersonID: person.ID.String(), Decision: narrow}}})
 				require.NoError(t, err)
 				allowed := module.AuthorizeViewerEntry(t.Context(), curator.ID.String(), person.ID.String(), entry.ID) == nil
 				require.Equal(t, expected[index], allowed, "Album %s Moment %s Entry %s", broad, moment, narrow)
@@ -168,7 +177,7 @@ func TestViewerAndPreviewUseSelectedPersonsAccess(t *testing.T) {
 	sam := models.Person{ID: models.NewUUIDv7(), DisplayName: "Sam", CreatedAt: time.Now().UTC()}
 	_, err := db.NewInsert().Model(&[]models.Person{curator, alex, sam}).Exec(t.Context())
 	require.NoError(t, err)
-	_, err = module.SetMomentAccess(t.Context(), album.ID, album.Moments[1].ID, publishing.SetMomentAccessRequest{PersonID: alex.ID.String(), Decision: publishing.DecisionAllow})
+	_, err = module.SaveMomentRules(t.Context(), album.ID, album.Moments[1].ID, publishing.SaveRulesRequest{Decisions: []publishing.AccessResolution{{PersonID: alex.ID.String(), Decision: publishing.DecisionAllow}}})
 	require.NoError(t, err)
 	_, err = module.ViewAlbum(t.Context(), alex.ID.String(), "", album.ID)
 	require.Error(t, err, "ordinary access remains denied before publication")
@@ -178,6 +187,7 @@ func TestViewerAndPreviewUseSelectedPersonsAccess(t *testing.T) {
 	require.Equal(t, "2026-07-05", preview.StartDate)
 	require.Contains(t, preview.CoverURL, album.Moments[1].CoverEntryID)
 	require.Contains(t, preview.CoverURL, "/preview/"+alex.ID.String()+"/")
+	require.Contains(t, preview.CoverPreviewURL, "/entries/"+album.Moments[1].CoverEntryID+"/preview?", "the header cover uses the larger variant")
 	_, err = module.ViewAlbum(t.Context(), curator.ID.String(), sam.ID.String(), album.ID)
 	require.Error(t, err, "preview must not use Curator bypass")
 	_, err = module.ViewAlbum(t.Context(), alex.ID.String(), alex.ID.String(), album.ID)

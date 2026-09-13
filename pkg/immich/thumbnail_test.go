@@ -118,21 +118,32 @@ func TestPersonThumbnailResponseSafety(t *testing.T) {
 	}
 }
 
-func TestGeneratedThumbnail(t *testing.T) {
+func TestGeneratedThumbnailAndPreview(t *testing.T) {
 	t.Parallel()
-	fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, http.MethodGet, r.Method)
-		assert.Equal(t, "/api/assets/asset%2Fopaque%20%3F%23%25/thumbnail?size=thumbnail", r.RequestURI)
-		assert.Equal(t, "read-key", r.Header.Get("X-Api-Key"))
-		w.Header().Set("Content-Type", "image/jpeg")
-		_, _ = fmt.Fprint(w, "generated-image")
-	}))
-	t.Cleanup(fixture.Close)
-	thumbnail, err := immich.New(fixture.URL, "read-key").Thumbnail(t.Context(), "asset/opaque ?#%")
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, thumbnail.Body.Close()) })
-	assert.Equal(t, "image/jpeg", thumbnail.ContentType)
-	data, err := io.ReadAll(thumbnail.Body)
-	require.NoError(t, err)
-	assert.Equal(t, "generated-image", string(data))
+	for _, variant := range []struct {
+		size string
+		open func(*immich.Client, context.Context, string) (immich.Thumbnail, error)
+	}{
+		{"thumbnail", (*immich.Client).Thumbnail},
+		{"preview", (*immich.Client).Preview},
+	} {
+		t.Run(variant.size, func(t *testing.T) {
+			t.Parallel()
+			fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				assert.Equal(t, http.MethodGet, r.Method)
+				assert.Equal(t, "/api/assets/asset%2Fopaque%20%3F%23%25/thumbnail?size="+variant.size, r.RequestURI)
+				assert.Equal(t, "read-key", r.Header.Get("X-Api-Key"))
+				w.Header().Set("Content-Type", "image/jpeg")
+				_, _ = fmt.Fprint(w, "generated-image")
+			}))
+			t.Cleanup(fixture.Close)
+			thumbnail, err := variant.open(immich.New(fixture.URL, "read-key"), t.Context(), "asset/opaque ?#%")
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, thumbnail.Body.Close()) })
+			assert.Equal(t, "image/jpeg", thumbnail.ContentType)
+			data, err := io.ReadAll(thumbnail.Body)
+			require.NoError(t, err)
+			assert.Equal(t, "generated-image", string(data))
+		})
+	}
 }

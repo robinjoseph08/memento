@@ -11,9 +11,9 @@ import (
 
 // ViewerUseCases keeps HTTP identity selection separate from viewer projections.
 type ViewerUseCases interface {
-	ViewAlbum(context.Context, string, string, string) (ViewerAlbum, error)
-	ViewAlbums(context.Context, string) ([]ViewerAlbum, error)
-	ViewEntries(context.Context, string, string, string, string, string) (ViewerPage, error)
+	ViewAlbum(ctx context.Context, actorID, previewPersonID, albumID string) (ViewerAlbum, error)
+	ViewAlbums(ctx context.Context, actorID string) ([]ViewerAlbum, error)
+	ViewEntries(ctx context.Context, actorID, previewPersonID, albumID, kind, cursor string) (ViewerPage, error)
 }
 
 type viewerHandlers struct{ module ViewerUseCases }
@@ -144,16 +144,9 @@ func (h *handlers) refreshMomentFaces(c *echo.Context) error {
 }
 
 // AccessUseCases is the HTTP seam for complete Curator access operations.
-//
-//nolint:interfacebloat // One cohesive route group; splitting it would duplicate registration and test setup.
 type AccessUseCases interface {
-	SetAlbumAccess(context.Context, string, SetAlbumAccessRequest) (AccessResult, error)
-	SetMomentAccess(context.Context, string, string, SetMomentAccessRequest) (MomentAccessResult, error)
-	SetEntryAccess(context.Context, string, string, SetEntryAccessRequest) (AccessResult, error)
-	AddMomentSuggestions(context.Context, string, string) (MomentAccessResult, error)
-	UndoAlbumAccess(context.Context, string, UndoMomentAccessRequest) (AlbumDetail, error)
-	UndoMomentAccess(context.Context, string, string, UndoMomentAccessRequest) (AlbumDetail, error)
-	UndoEntryAccess(context.Context, string, string, UndoMomentAccessRequest) (AlbumDetail, error)
+	PreviewAlbumAccess(context.Context, string, SaveAlbumAccessRequest) (AlbumAccessPreview, error)
+	SaveAlbumAccess(context.Context, string, SaveAlbumAccessRequest) (AlbumDetail, error)
 	SaveMomentRules(context.Context, string, string, SaveRulesRequest) (AlbumDetail, error)
 	SaveEntryRules(context.Context, string, string, SaveRulesRequest) (AlbumDetail, error)
 	PreviewRemoveAccess(context.Context, string, RemoveAccessPreviewRequest) (RemoveAccessPreview, error)
@@ -162,39 +155,21 @@ type AccessUseCases interface {
 
 type accessHandlers struct{ module AccessUseCases }
 
-func (h *accessHandlers) setAlbumAccess(c *echo.Context) error {
-	var request SetAlbumAccessRequest
+func (h *accessHandlers) previewAlbumAccess(c *echo.Context) error {
+	var request SaveAlbumAccessRequest
 	if err := c.Bind(&request); err != nil {
 		return err
 	}
-	result, err := h.module.SetAlbumAccess(c.Request().Context(), c.Param("id"), request)
+	result, err := h.module.PreviewAlbumAccess(c.Request().Context(), c.Param("id"), request)
 	return respond(c, result, err)
 }
 
-func (h *accessHandlers) setEntryAccess(c *echo.Context) error {
-	var request SetEntryAccessRequest
+func (h *accessHandlers) saveAlbumAccess(c *echo.Context) error {
+	var request SaveAlbumAccessRequest
 	if err := c.Bind(&request); err != nil {
 		return err
 	}
-	result, err := h.module.SetEntryAccess(c.Request().Context(), c.Param("id"), c.Param("entryID"), request)
-	return respond(c, result, err)
-}
-
-func (h *accessHandlers) undoAlbumAccess(c *echo.Context) error {
-	var request UndoMomentAccessRequest
-	if err := c.Bind(&request); err != nil {
-		return err
-	}
-	result, err := h.module.UndoAlbumAccess(c.Request().Context(), c.Param("id"), request)
-	return respond(c, result, err)
-}
-
-func (h *accessHandlers) undoEntryAccess(c *echo.Context) error {
-	var request UndoMomentAccessRequest
-	if err := c.Bind(&request); err != nil {
-		return err
-	}
-	result, err := h.module.UndoEntryAccess(c.Request().Context(), c.Param("id"), c.Param("entryID"), request)
+	result, err := h.module.SaveAlbumAccess(c.Request().Context(), c.Param("id"), request)
 	return respond(c, result, err)
 }
 
@@ -231,33 +206,6 @@ func (h *accessHandlers) removeAccess(c *echo.Context) error {
 		return err
 	}
 	result, err := h.module.RemoveAccess(c.Request().Context(), c.Param("id"), request)
-	return respond(c, result, err)
-}
-
-func (h *accessHandlers) setMomentAccess(c *echo.Context) error {
-	var request SetMomentAccessRequest
-	if err := c.Bind(&request); err != nil {
-		return err
-	}
-	result, err := h.module.SetMomentAccess(c.Request().Context(), c.Param("id"), c.Param("momentID"), request)
-	return respond(c, result, err)
-}
-
-func (h *accessHandlers) addMomentSuggestions(c *echo.Context) error {
-	var request struct{}
-	if err := c.Bind(&request); err != nil {
-		return err
-	}
-	result, err := h.module.AddMomentSuggestions(c.Request().Context(), c.Param("id"), c.Param("momentID"))
-	return respond(c, result, err)
-}
-
-func (h *accessHandlers) undoMomentAccess(c *echo.Context) error {
-	var request UndoMomentAccessRequest
-	if err := c.Bind(&request); err != nil {
-		return err
-	}
-	result, err := h.module.UndoMomentAccess(c.Request().Context(), c.Param("id"), c.Param("momentID"), request)
 	return respond(c, result, err)
 }
 

@@ -1,12 +1,11 @@
-import { initials } from "../../lib/initials";
 import type { AccessPerson } from "../../types/generated/publishing";
-import { Avatar, AvatarFallback, AvatarImage } from "../ui/avatar";
 import {
   Tooltip,
   TooltipContent,
   TooltipProvider,
   TooltipTrigger,
 } from "../ui/tooltip";
+import { PersonAvatar } from "./person-avatar";
 
 // Avatars shown before the rest collapse into a count.
 const shownAvatars = 4;
@@ -40,17 +39,11 @@ export function Audience({
                 role="img"
               >
                 {shown.map((person) => (
-                  <Avatar
+                  <PersonAvatar
                     className="size-6 border-2 border-background"
                     key={person.person_id}
-                  >
-                    {person.avatar_url && (
-                      <AvatarImage alt="" src={person.avatar_url} />
-                    )}
-                    <AvatarFallback className="text-[10px]">
-                      {initials(person.display_name)}
-                    </AvatarFallback>
-                  </Avatar>
+                    person={person}
+                  />
                 ))}
                 {overflow > 0 && (
                   <span className="flex size-6 items-center justify-center rounded-full border-2 border-background bg-surface text-[10px] font-medium">
@@ -62,10 +55,7 @@ export function Audience({
             <TooltipContent align="start" side="bottom">
               <ul className="space-y-1">
                 {allowed.map((person) => (
-                  <li key={person.person_id}>
-                    {person.display_name}: {person.accessible_count} accessible,{" "}
-                    {person.excluded_count} excluded
-                  </li>
+                  <li key={person.person_id}>{person.display_name}</li>
                 ))}
               </ul>
             </TooltipContent>

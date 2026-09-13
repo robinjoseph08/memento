@@ -606,10 +606,6 @@ func (m *Module) MergeMoments(ctx context.Context, albumID, sourceMomentID strin
 			return errorstack.CaptureContext(ctx, err)
 		}
 		// A merge replaces the target's saved rules, including absent rules.
-		// Earlier deletion Undo must not restore a pre-merge audience.
-		if _, err := tx.NewDelete().Model((*models.AccessDeletionUndo)(nil)).Where("moment_id = ?", request.TargetMomentID).Exec(ctx); err != nil {
-			return errorstack.CaptureContext(ctx, err)
-		}
 		if _, err := tx.NewDelete().Model((*models.MomentAccessDecision)(nil)).Where("moment_id = ?", request.TargetMomentID).Exec(ctx); err != nil {
 			return errorstack.CaptureContext(ctx, err)
 		}

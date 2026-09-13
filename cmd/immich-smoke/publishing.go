@@ -39,19 +39,19 @@ func verifyPublishing(ctx context.Context, db *bun.DB, module *publishing.Module
 		return fmt.Errorf("publishing fixture requires three Moments and an overlapping Album")
 	}
 	first, middle, last := a.Moments[0], a.Moments[1], a.Moments[2]
-	if _, err := module.SetAlbumAccess(ctx, a.ID, publishing.SetAlbumAccessRequest{PersonID: alex.ID, Decision: publishing.DecisionAllow}); err != nil {
+	if _, err := module.SaveAlbumAccess(ctx, a.ID, publishing.SaveAlbumAccessRequest{People: []publishing.AlbumAccessChoice{{PersonID: alex.ID, Allowed: true}}}); err != nil {
 		return err
 	}
-	if _, err := module.SetMomentAccess(ctx, a.ID, first.ID, publishing.SetMomentAccessRequest{PersonID: alex.ID, Decision: publishing.DecisionDeny}); err != nil {
+	if _, err := module.SaveMomentRules(ctx, a.ID, first.ID, publishing.SaveRulesRequest{Decisions: []publishing.AccessResolution{{PersonID: alex.ID, Decision: publishing.DecisionDeny}}}); err != nil {
 		return err
 	}
-	if _, err := module.SetEntryAccess(ctx, a.ID, middle.CoverEntryID, publishing.SetEntryAccessRequest{PersonID: alex.ID, Decision: publishing.DecisionDeny}); err != nil {
+	if _, err := module.SaveEntryRules(ctx, a.ID, middle.CoverEntryID, publishing.SaveRulesRequest{Decisions: []publishing.AccessResolution{{PersonID: alex.ID, Decision: publishing.DecisionDeny}}}); err != nil {
 		return err
 	}
-	if _, err := module.SetMomentAccess(ctx, a.ID, first.ID, publishing.SetMomentAccessRequest{PersonID: sam.ID, Decision: publishing.DecisionAllow}); err != nil {
+	if _, err := module.SaveMomentRules(ctx, a.ID, first.ID, publishing.SaveRulesRequest{Decisions: []publishing.AccessResolution{{PersonID: sam.ID, Decision: publishing.DecisionAllow}}}); err != nil {
 		return err
 	}
-	if _, err := module.SetAlbumAccess(ctx, b.ID, publishing.SetAlbumAccessRequest{PersonID: alex.ID, Decision: publishing.DecisionAllow}); err != nil {
+	if _, err := module.SaveAlbumAccess(ctx, b.ID, publishing.SaveAlbumAccessRequest{People: []publishing.AlbumAccessChoice{{PersonID: alex.ID, Allowed: true}}}); err != nil {
 		return err
 	}
 	curatorHTTP := publishingMediaHandler(module, delivery, curator.Person)
@@ -82,13 +82,13 @@ func verifyPublishing(ctx context.Context, db *bun.DB, module *publishing.Module
 	}
 	// With every configured cover denied, the remaining middle photo must not
 	// become an arbitrary Album cover.
-	if _, err := module.SetEntryAccess(ctx, a.ID, last.CoverEntryID, publishing.SetEntryAccessRequest{PersonID: alex.ID, Decision: publishing.DecisionDeny}); err != nil {
+	if _, err := module.SaveEntryRules(ctx, a.ID, last.CoverEntryID, publishing.SaveRulesRequest{Decisions: []publishing.AccessResolution{{PersonID: alex.ID, Decision: publishing.DecisionDeny}}}); err != nil {
 		return err
 	}
 	if _, err := verifyViewer(ctx, module, curatorHTTP, curator.Person.ID, alex.ID, a.ID, 1, ""); err != nil {
 		return err
 	}
-	if _, err := module.SetEntryAccess(ctx, a.ID, last.CoverEntryID, publishing.SetEntryAccessRequest{PersonID: alex.ID, Decision: publishing.DecisionInherit}); err != nil {
+	if _, err := module.SaveEntryRules(ctx, a.ID, last.CoverEntryID, publishing.SaveRulesRequest{Decisions: []publishing.AccessResolution{{PersonID: alex.ID, Decision: publishing.DecisionInherit}}}); err != nil {
 		return err
 	}
 	for _, album := range []publishing.AlbumDetail{a, b} {
@@ -100,7 +100,7 @@ func verifyPublishing(ctx context.Context, db *bun.DB, module *publishing.Module
 			return fmt.Errorf("valid scoped Album was blocked from publication")
 		}
 		if album.ID == a.ID {
-			want := []publishing.PublicationAudience{{PersonID: alex.ID, DisplayName: "Alex", PhotoCount: 2}, {PersonID: sam.ID, DisplayName: "Sam", PhotoCount: 1}}
+			want := []publishing.PublicationAudience{{PersonID: alex.ID, DisplayName: "Alex", AccessibleCount: 2}, {PersonID: sam.ID, DisplayName: "Sam", AccessibleCount: 1}}
 			if !reflect.DeepEqual(review.Audience, want) {
 				return fmt.Errorf("publication audience did not match scoped previews: %+v", review.Audience)
 			}
@@ -228,6 +228,12 @@ func verifyViewer(ctx context.Context, module *publishing.Module, handler http.H
 		if err := checkMediaEndpoint(ctx, handler, album.CoverURL); err != nil {
 			return album, err
 		}
+		if !strings.Contains(album.CoverPreviewURL, "/entries/"+coverID+"/preview?") {
+			return album, fmt.Errorf("album header cover did not use the larger preview variant")
+		}
+		if err := checkMediaEndpoint(ctx, handler, album.CoverPreviewURL); err != nil {
+			return album, err
+		}
 	}
 	page, err := module.ViewEntries(ctx, actorID, previewID, albumID, "IMAGE", "")
 	if err != nil {
@@ -238,6 +244,9 @@ func verifyViewer(ctx context.Context, module *publishing.Module, handler http.H
 	}
 	for _, entry := range page.Entries {
 		if err := checkMediaEndpoint(ctx, handler, entry.ThumbnailURL); err != nil {
+			return album, err
+		}
+		if err := checkMediaEndpoint(ctx, handler, entry.PreviewURL); err != nil {
 			return album, err
 		}
 	}
