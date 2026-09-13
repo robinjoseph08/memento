@@ -37,6 +37,7 @@ CREATE TABLE invitations (
 CREATE INDEX invitations_person_id_idx ON invitations(person_id);
 CREATE TABLE access_requests (
  id uuid PRIMARY KEY,
+ kind text NOT NULL CHECK (kind IN ('join', 'album')),
  provider text NOT NULL CHECK (provider <> ''),
  subject text NOT NULL CHECK (length(subject) BETWEEN 1 AND 255),
  email text NOT NULL CHECK (email <> ''),
@@ -50,10 +51,11 @@ CREATE TABLE access_requests (
  updated_at timestamptz NOT NULL,
  resolved_at timestamptz,
  resolved_by uuid REFERENCES persons(id),
- CHECK ((status = 'pending') = (resolved_at IS NULL))
+ CHECK ((status = 'pending') = (resolved_at IS NULL)),
+ CHECK (kind = 'join' OR person_id IS NOT NULL)
 );
-CREATE UNIQUE INDEX access_requests_open_identity_idx ON access_requests(provider, subject) WHERE status <> 'approved' AND person_id IS NULL;
-CREATE UNIQUE INDEX access_requests_open_album_idx ON access_requests(person_id, album_id) WHERE status <> 'approved' AND person_id IS NOT NULL;
+CREATE UNIQUE INDEX access_requests_open_identity_idx ON access_requests(provider, subject) WHERE status <> 'approved' AND kind = 'join';
+CREATE UNIQUE INDEX access_requests_open_album_idx ON access_requests(person_id, album_id) WHERE status <> 'approved' AND kind = 'album';
 CREATE TABLE announced_albums (
  person_id uuid NOT NULL REFERENCES persons(id) ON DELETE CASCADE,
  album_id uuid NOT NULL REFERENCES albums(id) ON DELETE CASCADE,

@@ -105,6 +105,7 @@ it("resumes unfinished Onboarding from any signed-in page, hides navigation, and
 it("shows pending Access Requests with a badge and approves one by creating a Person", async () => {
   const request = {
     id: "request-1",
+    kind: "join",
     provider: "google",
     email: "stranger@example.test",
     email_verified: true,

@@ -1,4 +1,4 @@
-import { expect, test } from "./fixtures";
+import { expect, finishOnboarding, test } from "./fixtures";
 
 test("claims during an Immich outage, recovers, and revokes the signed-out session", async ({
   page,
@@ -15,6 +15,7 @@ test("claims during an Immich outage, recovers, and revokes the signed-out sessi
   await page.getByLabel("Email", { exact: true }).fill("Curator@Example.com");
   await page.getByLabel("Display name").fill("Fixture Curator");
   await page.getByLabel("Display name").press("Enter");
+  await finishOnboarding(page);
   await expect(page).toHaveURL(/\/curator$/);
   await expect(
     page.getByRole("heading", { name: "No albums yet" }),

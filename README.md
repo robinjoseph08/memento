@@ -133,10 +133,15 @@ mise start:qa
 ```
 
 Open the printed URL and keep the command running. This uses fake sign-in, a
-controlled Immich server that starts online, and a temporary PostgreSQL schema.
-The command prints a curl line that takes the fixture offline for testing the
-disconnected state. Stop it with Ctrl-C and run it again to reset without
-erasing development data.
+controlled Immich server that starts online, a controlled SMTP server, and a
+temporary PostgreSQL schema. The command prints curl lines that take the
+fixture offline, restart the API, and inspect or steer mail delivery: the SMTP
+fixture lists every accepted message at `/__fixture/smtp`, and its mode can be
+`accept`, `transient` (reply 451), `permanent` (reply 550), or `hold`, which
+records the message but never answers so a restart leaves delivery uncertain.
+Pass `--no-smtp` to start without email and check that Person setup and sign-in
+still work. Stop it with Ctrl-C and run it again to reset without erasing
+development data.
 Use separate browser profiles to try multiple people. Ordinary tabs share the
 same session cookie. Never expose fake development sign-in publicly.
 
@@ -273,6 +278,36 @@ media bytes are stored persistently. Thumbnails use private browser caching;
 source media that changes before synchronization may show an unavailable image
 rather than different bytes under an old content-versioned URL.
 
+### Send Invitations over SMTP
+
+Email is optional. Without it Memento runs normally, Curators still create
+People and approve emails, and the Invite button explains that email is not
+configured. To enable Invitations, set both values:
+
+```sh
+export SMTP_URL='smtp://user:password@mail.example.com:587'
+export SMTP_FROM='Memento <memento@example.com>'
+```
+
+`smtp://` connects in plain text and upgrades with STARTTLS whenever the server
+offers it; `smtps://` uses TLS from the first byte, typically on port 465.
+Credentials stay in the URL, so prefer the environment variable over the YAML
+file. `SMTP_CONCURRENCY` bounds simultaneous deliveries and defaults to five.
+
+Deliveries run through the same in-process River runtime as imports, on a
+separate `mail` queue. Each email has a stable delivery record: a rejected
+connection or a 4xx reply retries automatically up to five times, a 5xx reply
+fails permanently, and a connection lost after the message body was sent is
+marked uncertain because the server may have accepted it. Uncertain and failed
+Invitations show their state on the Person page with a Retry action; the
+uncertain case warns that sending again could deliver a duplicate. Memento never
+resends an ambiguous attempt on its own, including after a restart.
+
+Invitations are outreach only. They name the approved email and link to the
+ordinary sign-in page without any token, so admission still depends on the
+Preauthorization. Invitation email ignores a Person's update-email preference
+because it is transactional.
+
 ### Separate PostgreSQL database and role
 
 Memento can share a PostgreSQL 14 or newer server with Immich, but not Immich's
@@ -371,6 +406,20 @@ people, a Curator must create the Person and preauthorize the exact email Google
 reports. A verified Google email alone does not grant access. Google sign-in
 availability does not bypass Memento's preauthorizations.
 
+A verified Google account that Memento does not know creates one pending Access
+Request instead of an account. Repeated sign-ins refresh that request rather
+than creating more, and a denied request absorbs later attempts silently until
+a Curator reconsiders it. Curators review requests under Requests, where
+approval links the identity to an existing Person or creates one and approves
+the exact email; Album access remains a separate decision in each Album. An
+existing Person who reaches an Album they cannot see gets an explicit Request
+access action, and visiting alone records nothing.
+
+Every Person completes a one-time Onboarding after their first sign-in, whether
+they arrived through an Invitation or signed in directly. It confirms their
+name and email preference and shows the Albums already visible to them, which
+become their notification baseline so later updates only announce new content.
+
 ### Use Google locally
 
 Automated tests use a local OIDC server, not real Google credentials. To develop
@@ -412,6 +461,8 @@ needed. The first account to sign in becomes Curator if the database is empty.
   later attempts retry failed discovery.
 - Access denied: use the preauthorized Google account or ask a Curator to
   preauthorize its exact email. Do not switch production to fake authentication.
+- Access requested: the account is unknown and a Curator now has a pending
+  request for it. Nothing more is needed from the person signing in.
 
 Pending Google logins stay in one server process. The normal single-process
 Memento deployment needs no shared login-state store. Multiple processes require

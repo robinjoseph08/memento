@@ -27,6 +27,7 @@ func TestUnknownIdentityCreatesOneRequestThatCuratorsResolveDeliberately(t *test
 	require.NoError(t, err)
 	require.Len(t, requests, 1, "repeated sign-ins refresh one pending request")
 	pending := requests[0]
+	assert.Equal(t, "join", pending.Kind)
 	assert.Equal(t, "pending", pending.Status)
 	assert.Equal(t, 4, pending.SignInCount)
 	assert.Equal(t, "google", pending.Provider)
@@ -67,6 +68,7 @@ func TestUnknownIdentityCreatesOneRequestThatCuratorsResolveDeliberately(t *test
 	approved, err := module.ApproveAccessRequest(t.Context(), curator.Token, pending.ID, identity.ApproveAccessRequestRequest{DisplayName: "Stranger Person"})
 	require.NoError(t, err)
 	assert.Equal(t, "approved", approved.Status)
+	assert.Equal(t, "join", approved.Kind, "approval keeps the request a join request")
 	assert.Equal(t, "Stranger Person", approved.PersonName)
 	require.NotEmpty(t, approved.PersonID)
 	detail, err := module.GetPerson(t.Context(), curator.Token, approved.PersonID)
@@ -163,6 +165,7 @@ func TestExistingPersonRequestsAlbumAccessExplicitly(t *testing.T) {
 	second, err := module.RequestAlbumAccess(t.Context(), alex.Token, album.ID)
 	require.NoError(t, err)
 	assert.Equal(t, first.ID, second.ID)
+	assert.Equal(t, "album", second.Kind)
 	assert.Equal(t, 2, second.SignInCount)
 	assert.Equal(t, alex.Person.ID, second.PersonID)
 	assert.Equal(t, "Alex", second.PersonName)

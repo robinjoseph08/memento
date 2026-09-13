@@ -1,7 +1,7 @@
 import { mkdir } from "node:fs/promises";
 import type { Locator, Page, Request } from "@playwright/test";
 
-import { expect, test } from "./fixtures";
+import { expect, finishOnboarding, test } from "./fixtures";
 
 async function captureLayouts(page: Page, name: string) {
   if (process.env.QA_CAPTURES !== "1") return;
@@ -80,6 +80,7 @@ test("Curator scopes access, previews two people, publishes, and hides the Album
   await immich.online();
   await page.goto("/setup");
   await page.getByRole("button", { name: "Claim installation" }).click();
+  await finishOnboarding(page);
   await createPerson(page, "Alex", "alex@example.test");
   await createPerson(page, "Sam");
   await page.getByRole("link", { name: "Albums", exact: true }).click();
@@ -235,6 +236,7 @@ test("Curator scopes access, previews two people, publishes, and hides the Album
       .getByRole("textbox", { name: "Email", exact: true })
       .fill("alex@example.test");
     await member.getByRole("button", { name: "Sign in", exact: true }).click();
+    await finishOnboarding(member);
     await expect(
       member.getByRole("heading", { name: "No albums yet", exact: true }),
     ).toBeVisible();

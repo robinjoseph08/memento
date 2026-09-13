@@ -96,11 +96,13 @@ function useAccessRequestAction(action: string) {
       request<AccessRequest>(`/api/access-requests/${id}/${action}`, {
         body: action === "approve" ? body : {},
       }),
-    onSuccess: async () => {
-      await client.invalidateQueries({
+    // Invalidate without awaiting: the row moves between lists once the
+    // refetch lands, and a caller's own onSuccess must run before that unmount.
+    onSuccess: () => {
+      void client.invalidateQueries({
         queryKey: [...scope, "access-requests"],
       });
-      await client.invalidateQueries({ queryKey: [...scope, "people"] });
+      void client.invalidateQueries({ queryKey: [...scope, "people"] });
     },
   });
 }

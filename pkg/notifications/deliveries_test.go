@@ -223,6 +223,27 @@ func TestInterruptedSendBecomesUncertainInsteadOfResending(t *testing.T) {
 	}
 }
 
+func TestStartupRecoveryMarksInterruptedDeliveriesUncertain(t *testing.T) {
+	t.Parallel()
+	db := testdb.New(t)
+	recorder := &notifications.Recorder{}
+	module := notifications.New(db, recorder, (&queue{}).enqueue, noContent{}, nil)
+	interrupted := enqueue(t, db, module, invitation)
+	queued := enqueue(t, db, module, invitation)
+	_, err := db.NewUpdate().Model((*models.MailDelivery)(nil)).Set("status = 'sending', attempts = 1").Where("id = ?", interrupted.ID).Exec(t.Context())
+	require.NoError(t, err)
+	recovered, err := module.RecoverInterrupted(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, 1, recovered)
+	assert.Equal(t, "uncertain", status(t, db, module, interrupted.ID).Status)
+	assert.Equal(t, "queued", status(t, db, module, queued.ID).Status, "queued work is untouched")
+	require.NoError(t, module.Execute(t.Context(), interrupted.ID, false), "the rescued job finds nothing to do")
+	assert.Empty(t, recorder.Sent())
+	recovered, err = module.RecoverInterrupted(t.Context())
+	require.NoError(t, err)
+	assert.Zero(t, recovered)
+}
+
 func TestEnqueueRollsBackWithCallerTransaction(t *testing.T) {
 	t.Parallel()
 	db := testdb.New(t)

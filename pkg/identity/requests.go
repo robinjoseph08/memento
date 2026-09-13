@@ -24,6 +24,9 @@ const (
 	RequestPending  = "pending"
 	RequestApproved = "approved"
 	RequestDenied   = "denied"
+	// RequestJoin asks to join the installation; RequestAlbum asks to view one Album.
+	RequestJoin  = "join"
+	RequestAlbum = "album"
 )
 
 type accessRequestRow struct {
@@ -42,7 +45,7 @@ func selectAccessRequests(db bun.IDB) *bun.SelectQuery {
 }
 
 func projectAccessRequest(row accessRequestRow) AccessRequest {
-	result := AccessRequest{ID: row.ID.String(), Provider: row.Provider, Email: row.Email, EmailVerified: row.EmailVerified, DisplayName: row.DisplayName,
+	result := AccessRequest{ID: row.ID.String(), Kind: row.Kind, Provider: row.Provider, Email: row.Email, EmailVerified: row.EmailVerified, DisplayName: row.DisplayName,
 		PersonName: row.PersonName, AlbumTitle: row.AlbumTitle, Status: row.Status, SignInCount: row.SignInCount,
 		CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt, ResolvedAt: row.ResolvedAt, ResolvedBy: row.ResolvedByName}
 	if row.PersonID != nil {
@@ -59,10 +62,10 @@ func projectAccessRequest(row accessRequestRow) AccessRequest {
 // Curator reconsiders.
 func (m *Module) recordAccessRequest(ctx context.Context, tx bun.Tx, claims Claims) error {
 	now := m.now().UTC()
-	row := models.AccessRequest{ID: models.NewUUIDv7(), Provider: claims.Provider, Subject: claims.Subject, Email: claims.Email, EmailVerified: claims.EmailVerified,
+	row := models.AccessRequest{ID: models.NewUUIDv7(), Kind: RequestJoin, Provider: claims.Provider, Subject: claims.Subject, Email: claims.Email, EmailVerified: claims.EmailVerified,
 		DisplayName: strings.TrimSpace(claims.DisplayName), Status: RequestPending, SignInCount: 1, CreatedAt: now, UpdatedAt: now}
 	_, err := tx.NewInsert().Model(&row).
-		On("CONFLICT (provider, subject) WHERE status <> 'approved' AND person_id IS NULL DO UPDATE").
+		On("CONFLICT (provider, subject) WHERE status <> 'approved' AND kind = 'join' DO UPDATE").
 		Set("email = EXCLUDED.email, display_name = EXCLUDED.display_name, sign_in_count = request.sign_in_count + 1, updated_at = EXCLUDED.updated_at").Exec(ctx)
 	return errorstack.CaptureContext(ctx, err)
 }
@@ -112,16 +115,16 @@ func (m *Module) RequestAlbumAccess(ctx context.Context, token, albumID string) 
 		}
 		albumUUID := models.UUID(album)
 		now := m.now().UTC()
-		row := models.AccessRequest{ID: models.NewUUIDv7(), Provider: identity.Provider, Subject: identity.Subject, Email: identity.Email, EmailVerified: true,
+		row := models.AccessRequest{ID: models.NewUUIDv7(), Kind: RequestAlbum, Provider: identity.Provider, Subject: identity.Subject, Email: identity.Email, EmailVerified: true,
 			DisplayName: person.DisplayName, PersonID: &person.ID, AlbumID: &albumUUID, Status: RequestPending, SignInCount: 1, CreatedAt: now, UpdatedAt: now}
 		_, err = tx.NewInsert().Model(&row).
-			On("CONFLICT (person_id, album_id) WHERE status <> 'approved' AND person_id IS NOT NULL DO UPDATE").
+			On("CONFLICT (person_id, album_id) WHERE status <> 'approved' AND kind = 'album' DO UPDATE").
 			Set("sign_in_count = request.sign_in_count + 1, updated_at = EXCLUDED.updated_at").Exec(ctx)
 		if err != nil {
 			return errorstack.CaptureContext(ctx, err)
 		}
 		var current accessRequestRow
-		err = selectAccessRequests(tx).Where("request.person_id = ? AND request.album_id = ? AND request.status <> 'approved'", person.ID, albumUUID).Scan(ctx, &current)
+		err = selectAccessRequests(tx).Where("request.kind = 'album' AND request.person_id = ? AND request.album_id = ? AND request.status <> 'approved'", person.ID, albumUUID).Scan(ctx, &current)
 		if err != nil {
 			return errorstack.CaptureContext(ctx, err)
 		}
@@ -181,7 +184,7 @@ func (m *Module) ApproveAccessRequest(ctx context.Context, token, id string, req
 			return nil
 		}
 		now := m.now().UTC()
-		if row.PersonID == nil {
+		if row.Kind == RequestJoin {
 			person, err := m.admitRequestedIdentity(ctx, tx, row.AccessRequest, request, now)
 			if err != nil {
 				return err

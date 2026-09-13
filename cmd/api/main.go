@@ -94,6 +94,14 @@ func run(log logger.Logger) error {
 	imports = publishing.New(db, immich.New(cfg.ImmichURL, cfg.ImmichAPIKey), jobs.EnqueueImport)
 	imports.ImmichURL = cfg.ImmichBrowserURL()
 	mail = notifications.New(db, mailer, jobs.EnqueueMail, imports, nil)
+	// Deliveries interrupted by the previous process are uncertain, never resent.
+	recovered, err := mail.RecoverInterrupted(ctx)
+	if err != nil {
+		return fmt.Errorf("recover interrupted deliveries: %w", err)
+	}
+	if recovered > 0 {
+		log.Info("marked interrupted email deliveries uncertain", logger.Data{"count": recovered})
+	}
 	srv, err := server.New(cfg, db, server.Features{Publishing: imports, Notifications: mail})
 	if err != nil {
 		return fmt.Errorf("create server: %w", err)

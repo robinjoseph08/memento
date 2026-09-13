@@ -144,7 +144,9 @@ type AnnouncedContent struct {
 // AccessRequest shows what a Curator may inspect. It never asserts that the
 // identity and any Person are the same human.
 type AccessRequest struct {
-	ID            string     `json:"id"`
+	ID string `json:"id"`
+	// Kind is join for an unknown identity and album for an existing Person's request.
+	Kind          string     `json:"kind"`
 	Provider      string     `json:"provider"`
 	Email         string     `json:"email"`
 	EmailVerified bool       `json:"email_verified"`

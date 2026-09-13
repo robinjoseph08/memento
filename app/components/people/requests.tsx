@@ -1,4 +1,4 @@
-import { useId, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
 import {
@@ -106,7 +106,7 @@ function RequestRow({ request }: { request: AccessRequest }) {
   const approve = useApproveAccessRequest();
   const navigate = useNavigate();
   const [approving, setApproving] = useState(false);
-  const albumRequest = !!request.person_id;
+  const albumRequest = request.kind === "album";
   const count = request.sign_in_count;
   const history = albumRequest
     ? `${count === 1 ? "1 request" : `${count} requests`}`
@@ -270,6 +270,14 @@ function ApproveDialog({
   const personFieldId = useId();
   const errors = fieldErrors(approve.error);
   useUnsavedChanges(open && approve.isPending);
+  // Navigate after the pending state clears, so the shell's leave-page guard
+  // for the in-flight approval no longer blocks the move to the Person page.
+  const approvedPersonID = approve.isSuccess ? approve.data.person_id : "";
+  useEffect(() => {
+    if (!approvedPersonID) return;
+    onOpenChange(false);
+    void navigate(`/curator/people/${approvedPersonID}`);
+  }, [approvedPersonID, navigate, onOpenChange]);
   const options = (people.data ?? [])
     .filter((person) => !person.deactivated_at)
     .map((person) => ({
@@ -302,22 +310,13 @@ function ApproveDialog({
           onSubmit={(event) => {
             event.preventDefault();
             if (approve.isPending) return;
-            approve.mutate(
-              {
-                id: request.id,
-                body:
-                  mode === "create"
-                    ? { person_id: "", display_name: name }
-                    : { person_id: personID, display_name: "" },
-              },
-              {
-                onSuccess: (approved) => {
-                  onOpenChange(false);
-                  if (approved.person_id)
-                    void navigate(`/curator/people/${approved.person_id}`);
-                },
-              },
-            );
+            approve.mutate({
+              id: request.id,
+              body:
+                mode === "create"
+                  ? { person_id: "", display_name: name }
+                  : { person_id: personID, display_name: "" },
+            });
           }}
         >
           <fieldset disabled={approve.isPending}>

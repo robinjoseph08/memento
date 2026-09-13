@@ -1,6 +1,6 @@
 import type { Page } from "@playwright/test";
 
-import { expect, test } from "./fixtures";
+import { expect, finishOnboarding, test } from "./fixtures";
 
 async function createPerson(page: Page, name: string) {
   await page.getByRole("link", { name: "People", exact: true }).click();
@@ -18,6 +18,7 @@ test("arranges a large Moment and reviews face-based access on desktop and mobil
   await immich.online();
   await page.goto("/setup");
   await page.getByRole("button", { name: "Claim installation" }).click();
+  await finishOnboarding(page);
   await createPerson(page, "Alex");
   await createPerson(page, "Sam");
 

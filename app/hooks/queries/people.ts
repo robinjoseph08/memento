@@ -32,6 +32,8 @@ export function usePeople(search: string) {
   });
 }
 
+// Person details poll only while an Invitation is still being delivered, so
+// the Curator sees delivery settle without a manual reload.
 export function usePerson(id: string) {
   const scope = usePrivateScope();
   return useQuery({
@@ -39,6 +41,14 @@ export function usePerson(id: string) {
     queryFn: ({ signal }) =>
       request<PersonDetail>(`/api/people/${id}`, { signal }),
     retry: false,
+    refetchInterval: (query) =>
+      query.state.data?.invitations?.some(
+        (invitation) =>
+          invitation.delivery.status === "queued" ||
+          invitation.delivery.status === "sending",
+      )
+        ? 2000
+        : false,
   });
 }
 

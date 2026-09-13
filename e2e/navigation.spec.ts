@@ -1,4 +1,4 @@
-import { expect, test } from "./fixtures";
+import { expect, finishOnboarding, test } from "./fixtures";
 
 test("mobile navigation uses a dismissible drawer and search keeps keyboard focus", async ({
   page,
@@ -6,6 +6,7 @@ test("mobile navigation uses a dismissible drawer and search keeps keyboard focu
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/setup");
   await page.getByRole("button", { name: "Claim installation" }).click();
+  await finishOnboarding(page);
   const trigger = page.getByRole("button", { name: "Open navigation" });
   await trigger.click();
   const drawer = page.getByRole("dialog", { name: "Navigation" });
@@ -73,6 +74,7 @@ test("Immich search keeps focus, clears immediately, and follows browser history
   });
   await page.goto("/setup");
   await page.getByRole("button", { name: "Claim installation" }).click();
+  await finishOnboarding(page);
   await page.getByRole("link", { name: "Import an album" }).click();
   await page.getByRole("link", { name: "Next page" }).click();
   await expect(page.getByText("Page 2 of 2", { exact: true })).toBeVisible();

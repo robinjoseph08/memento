@@ -168,6 +168,25 @@ func (m *Module) Execute(ctx context.Context, deliveryID string, final bool) err
 	return m.recordOutcome(ctx, row, sendErr, final)
 }
 
+// RecoverInterrupted runs once at startup. A delivery still marked sending
+// belonged to a process that died mid-session, so its outcome is unknown and
+// only a Curator may send it again. River's rescued job later finds nothing to do.
+func (m *Module) RecoverInterrupted(ctx context.Context) (int, error) {
+	result, err := m.db.NewUpdate().Model((*models.MailDelivery)(nil)).
+		Set("status = ?", StatusUncertain).
+		Set("message = ?", "Memento restarted while this email was being sent, so it may already have been delivered.").
+		Set("updated_at = ?", m.now().UTC()).
+		Where("status = ?", StatusSending).Exec(ctx)
+	if err != nil {
+		return 0, errorstack.CaptureContext(ctx, err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return 0, errorstack.Capture(err)
+	}
+	return int(count), nil
+}
+
 // recordOutcome persists a known result even when the worker context is
 // already cancelled, so a safe retry never depends on the dying process.
 func (m *Module) recordOutcome(ctx context.Context, row models.MailDelivery, sendErr error, final bool) error {

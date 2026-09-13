@@ -1,6 +1,6 @@
 import type { Page } from "@playwright/test";
 
-import { expect, test } from "./fixtures";
+import { expect, finishOnboarding, test } from "./fixtures";
 
 async function signIn(page: Page, email: string) {
   await page.goto("/sign-in");
@@ -22,6 +22,7 @@ test("a Curator approves access, a member manages their profile and sessions, an
 }) => {
   await page.goto("/setup");
   await page.getByRole("button", { name: "Claim installation" }).click();
+  await finishOnboarding(page);
   await page.getByRole("link", { name: "People", exact: true }).click();
   await page.getByRole("button", { name: "Add person" }).click();
   await page.getByRole("textbox", { name: "Display name" }).fill("Alex Family");
@@ -44,6 +45,7 @@ test("a Curator approves access, a member manages their profile and sessions, an
   try {
     const member = await memberContext.newPage();
     await signIn(member, "alex@example.test");
+    await finishOnboarding(member);
     await expect(
       member.getByRole("heading", { name: "No albums yet" }),
     ).toBeVisible();

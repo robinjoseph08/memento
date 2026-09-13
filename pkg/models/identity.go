@@ -75,6 +75,7 @@ type Invitation struct {
 type AccessRequest struct {
 	bun.BaseModel `bun:"table:access_requests,alias:request"`
 	ID            UUID `bun:"id,pk,type:uuid"`
+	Kind          string
 	Provider      string
 	Subject       string
 	Email         string

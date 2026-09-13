@@ -6,7 +6,7 @@ import type {
   ViewerEntry,
   ViewerPage,
 } from "../app/types/generated/publishing";
-import { expect, test } from "./fixtures";
+import { expect, finishOnboarding, test } from "./fixtures";
 
 async function captureLayouts(page: Page, name: string) {
   if (process.env.QA_CAPTURES !== "1") return;
@@ -75,6 +75,7 @@ test("a member browses a published Album, opens photos by link, key, swipe and f
   await immich.online();
   await page.goto("/setup");
   await page.getByRole("button", { name: "Claim installation" }).click();
+  await finishOnboarding(page);
   await page.getByRole("link", { name: "People", exact: true }).click();
   await page.getByRole("button", { name: "Add person", exact: true }).click();
   await page.getByRole("textbox", { name: "Display name" }).fill("Alex");
@@ -148,6 +149,7 @@ test("a member browses a published Album, opens photos by link, key, swipe and f
       .getByRole("textbox", { name: "Email", exact: true })
       .fill("alex@example.test");
     await member.getByRole("button", { name: "Sign in", exact: true }).click();
+    await finishOnboarding(member);
 
     // Album list: cover, counts, and date range on the card.
     const card = member.getByRole("link", { name: /Workbench - Browse/ });
