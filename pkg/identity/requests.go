@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 	"uuid"
@@ -12,6 +13,7 @@ import (
 	"github.com/robinjoseph08/memento/pkg/errcodes"
 	"github.com/robinjoseph08/memento/pkg/errorstack"
 	"github.com/robinjoseph08/memento/pkg/models"
+	"github.com/robinjoseph08/memento/pkg/notifications"
 	"github.com/uptrace/bun"
 )
 
@@ -59,15 +61,57 @@ func projectAccessRequest(row accessRequestRow) AccessRequest {
 
 // recordAccessRequest keeps one open request per unknown identity. Repeated
 // sign-ins refresh it, and a denied request absorbs them silently until a
-// Curator reconsiders.
+// Curator reconsiders. Only a brand-new request alerts Curators by email.
 func (m *Module) recordAccessRequest(ctx context.Context, tx bun.Tx, claims Claims) error {
+	open, err := tx.NewSelect().Model((*models.AccessRequest)(nil)).
+		Where("request.provider = ? AND request.subject = ? AND request.status <> 'approved' AND request.kind = 'join'", claims.Provider, claims.Subject).Exists(ctx)
+	if err != nil {
+		return errorstack.CaptureContext(ctx, err)
+	}
 	now := m.now().UTC()
 	row := models.AccessRequest{ID: models.NewUUIDv7(), Kind: RequestJoin, Provider: claims.Provider, Subject: claims.Subject, Email: claims.Email, EmailVerified: claims.EmailVerified,
 		DisplayName: strings.TrimSpace(claims.DisplayName), Status: RequestPending, SignInCount: 1, CreatedAt: now, UpdatedAt: now}
-	_, err := tx.NewInsert().Model(&row).
+	_, err = tx.NewInsert().Model(&row).
 		On("CONFLICT (provider, subject) WHERE status <> 'approved' AND kind = 'join' DO UPDATE").
 		Set("email = EXCLUDED.email, display_name = EXCLUDED.display_name, sign_in_count = request.sign_in_count + 1, updated_at = EXCLUDED.updated_at").Exec(ctx)
-	return errorstack.CaptureContext(ctx, err)
+	if err != nil {
+		return errorstack.CaptureContext(ctx, err)
+	}
+	if open {
+		return nil
+	}
+	return m.alertCurators(ctx, tx, fmt.Sprintf("%s asked to join Memento", claims.Email), fmt.Sprintf(`%s (%s) signed in to Memento with a verified Google account that has no access yet.
+
+Review the request and decide whether to link or create a person:
+%s/curator/requests
+
+Nothing is shared until you approve it and grant album access.
+`, strings.TrimSpace(claims.DisplayName), claims.Email, strings.TrimRight(m.PublicURL, "/")))
+}
+
+// alertCurators emails every active Curator with a selected email once per
+// new Access Request. Missing SMTP is not an error: the in-app badge remains.
+func (m *Module) alertCurators(ctx context.Context, tx bun.Tx, subject, body string) error {
+	if m.Mail == nil {
+		return nil
+	}
+	var recipients []string
+	err := tx.NewSelect().TableExpr("persons AS person").ColumnExpr("updates.email").
+		Join("JOIN identities AS updates ON updates.id = person.update_identity_id AND updates.unlinked_at IS NULL").
+		Where("person.is_curator AND person.deactivated_at IS NULL").OrderExpr("updates.email").Scan(ctx, &recipients)
+	if err != nil {
+		return errorstack.CaptureContext(ctx, err)
+	}
+	for _, recipient := range recipients {
+		_, err := m.Mail.Enqueue(ctx, tx, notifications.Message{Kind: "access_request", To: recipient, Subject: subject, Body: body})
+		if errors.Is(err, notifications.ErrMailUnconfigured) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // sessionIdentity returns the linked identity behind the current browser session.
@@ -111,6 +155,11 @@ func (m *Module) RequestAlbumAccess(ctx context.Context, token, albumID string) 
 		if !exists {
 			return errcodes.NotFound("Album")
 		}
+		open, err := tx.NewSelect().Model((*models.AccessRequest)(nil)).
+			Where("request.kind = 'album' AND request.person_id = ? AND request.album_id = ? AND request.status <> 'approved'", person.ID, albumUUID).Exists(ctx)
+		if err != nil {
+			return errorstack.CaptureContext(ctx, err)
+		}
 		now := m.now().UTC()
 		row := models.AccessRequest{ID: models.NewUUIDv7(), Kind: RequestAlbum, Provider: identity.Provider, Subject: identity.Subject, Email: identity.Email, EmailVerified: true,
 			DisplayName: person.DisplayName, PersonID: &person.ID, AlbumID: &albumUUID, Status: RequestPending, SignInCount: 1, CreatedAt: now, UpdatedAt: now}
@@ -126,7 +175,14 @@ func (m *Module) RequestAlbumAccess(ctx context.Context, token, albumID string) 
 			return errorstack.CaptureContext(ctx, err)
 		}
 		result = projectAccessRequest(current)
-		return nil
+		if open {
+			return nil
+		}
+		return m.alertCurators(ctx, tx, fmt.Sprintf("%s asked to see %s", person.DisplayName, current.AlbumTitle), fmt.Sprintf(`%s asked to see the album "%s", which is not shared with them.
+
+Review the request, then grant access in the album if you agree:
+%s/curator/requests
+`, person.DisplayName, current.AlbumTitle, strings.TrimRight(m.PublicURL, "/")))
 	})
 	return result, err
 }

@@ -24,9 +24,10 @@ import { AlbumImage } from "./album-image";
 import { DangerZone } from "./album-lifecycle";
 import { Audience } from "./audience";
 import { ImportProgress } from "./import-progress";
+import { MediaCounts } from "./media-counts";
 import {
   countLabel,
-  mediaCounts,
+  countMedia,
   momentCover,
   momentHeading,
   shortDay,
@@ -104,11 +105,13 @@ function AlbumContent({ album }: { album: AlbumDetail }) {
             {album.title}
           </h1>
           <p className="mt-1 text-xs text-muted">
-            <span>
-              {complete
-                ? mediaCounts(album.moments.flatMap((item) => item.entries))
-                : countLabel(album.total, "item", "items")}
-            </span>
+            {complete ? (
+              <MediaCounts
+                {...countMedia(album.moments.flatMap((item) => item.entries))}
+              />
+            ) : (
+              <span>{countLabel(album.total, "item", "items")}</span>
+            )}
             <span className="ml-3 border-l border-border pl-3">
               {album.published ? "Published" : "Unpublished"}
             </span>
@@ -236,9 +239,9 @@ function AlbumContent({ album }: { album: AlbumDetail }) {
                             <span className="line-clamp-2 text-sm font-medium">
                               {heading.title}
                             </span>
-                            <span className="block text-xs text-muted">
-                              {day && `${day}, `}
-                              {mediaCounts(item.entries)}
+                            <span className="flex flex-wrap items-center gap-x-3 text-xs text-muted">
+                              {day && <span>{day}</span>}
+                              <MediaCounts {...countMedia(item.entries)} />
                             </span>
                             <span className="mt-1.5 block">
                               <Audience

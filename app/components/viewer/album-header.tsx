@@ -1,9 +1,7 @@
-import { Image, SquarePlay } from "lucide-react";
-
 import { useMediaQuery } from "../../hooks/use-media-query";
 import type { ViewerAlbum } from "../../types/generated/publishing";
 import { AlbumImage } from "../albums/album-image";
-import { countLabel } from "../albums/moment-labels";
+import { MediaCounts } from "../albums/media-counts";
 import { captureRange } from "./labels";
 
 // The shared Album header: large plain title, uncropped cover beside it on
@@ -40,18 +38,11 @@ export function AlbumHeader({
         )}
         <p className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-muted">
           <span>{captureRange(album) || "No accessible media"}</span>
-          <span className="inline-flex items-center gap-1.5">
-            <Image aria-hidden="true" className="size-3.5" strokeWidth={1.5} />
-            {countLabel(album.photo_count, "photo", "photos")}
-          </span>
-          <span className="inline-flex items-center gap-1.5">
-            <SquarePlay
-              aria-hidden="true"
-              className="size-3.5"
-              strokeWidth={1.5}
-            />
-            {countLabel(album.video_count, "video", "videos")}
-          </span>
+          <MediaCounts
+            className="gap-5"
+            photos={album.photo_count}
+            videos={album.video_count}
+          />
         </p>
       </div>
       {desktop && cover("w-full")}

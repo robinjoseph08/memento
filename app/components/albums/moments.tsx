@@ -26,8 +26,9 @@ import {
 import { RulesDialog } from "./access-rules";
 import { AlbumImage } from "./album-image";
 import { EntryPreview } from "./entry-preview";
+import { MediaCounts } from "./media-counts";
 import { MomentAccessStrip } from "./moment-access";
-import { countLabel, mediaCounts, momentHeading } from "./moment-labels";
+import { countLabel, countMedia, momentHeading } from "./moment-labels";
 import { StructureEditor, type StructureOperation } from "./structure-editor";
 
 // A bounded overview of a Moment's media before an explicit Show all.
@@ -84,7 +85,7 @@ export function MomentPane({
           </h2>
           <p className="mt-1 text-xs text-muted">
             {heading.date && <span className="mr-3">{heading.date}</span>}
-            <span>{mediaCounts(moment.entries)}</span>
+            <MediaCounts {...countMedia(moment.entries)} />
           </p>
         </div>
         <div className="flex flex-wrap gap-1">

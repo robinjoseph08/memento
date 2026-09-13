@@ -9,6 +9,8 @@ import type {
   Profile,
   UpdateProfileRequest,
 } from "../../types/generated/identity";
+import { AlbumImage } from "../albums/album-image";
+import { MediaCounts } from "../albums/media-counts";
 import {
   CheckField,
   Field,
@@ -21,7 +23,7 @@ import {
 import { PageTitle } from "../shell/page-title";
 import { Button } from "../ui/button";
 import { Combobox } from "../ui/combobox";
-import { AlbumCard } from "../viewer/album-card";
+import { captureRange } from "../viewer/labels";
 
 // Every Person completes this once, whether they arrived through an Invitation
 // or signed in directly. Completion also fixes their notification baseline, so
@@ -173,10 +175,27 @@ function AvailableAlbums({ curator }: { curator: boolean }) {
         </p>
       )}
       {albums.data && albums.data.length > 0 && (
-        <ul className="mt-5 grid grid-cols-2 gap-x-5 gap-y-6 min-[601px]:grid-cols-3">
+        <ul className="mt-5 divide-y divide-border border-y border-border">
           {albums.data.map((album) => (
-            <li className="min-w-0" key={album.id}>
-              <AlbumCard album={album} />
+            <li className="flex min-w-0 items-center gap-4 py-3" key={album.id}>
+              <AlbumImage
+                alt={album.title}
+                className="size-16 shrink-0 object-cover"
+                fallback="No cover"
+                src={album.cover_url}
+              />
+              <span className="min-w-0 flex-1">
+                <span className="block font-heading text-lg wrap-anywhere">
+                  {album.title}
+                </span>
+                <span className="mt-1 flex flex-wrap items-center gap-x-4 text-xs text-muted">
+                  <MediaCounts
+                    photos={album.photo_count}
+                    videos={album.video_count}
+                  />
+                  <span>{captureRange(album)}</span>
+                </span>
+              </span>
             </li>
           ))}
         </ul>

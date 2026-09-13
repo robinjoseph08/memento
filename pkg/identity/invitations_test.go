@@ -163,9 +163,13 @@ func TestMissingSMTPLeavesClearStateWithoutBlockingPersonSetup(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, detail.Invitations)
 	assert.Equal(t, 0, a.queue.count())
-	// Sign-in through the approval still works without email.
+	// Sign-in through the approval still works without email, and an unknown
+	// identity still records its request without a Curator alert.
 	_, err = module.SignIn(t.Context(), identity.FakeClaims(identity.SignInRequest{Email: "alex@example.test", DisplayName: "Alex"}))
 	require.NoError(t, err)
+	_, err = module.SignIn(t.Context(), identity.FakeClaims(identity.SignInRequest{Email: "stranger@example.test", DisplayName: "Stranger"}))
+	require.ErrorIs(t, err, identity.ErrAccessRequested)
+	assert.Equal(t, 0, a.queue.count())
 	unwired := identity.New(a.db, nil)
 	_, err = unwired.SendInvitation(t.Context(), curator.Token, person.ID, identity.SendInvitationRequest{PreauthorizationID: approval.ID})
 	require.Error(t, err)

@@ -16,7 +16,7 @@ import type {
   ViewerEntry,
 } from "../../types/generated/publishing";
 import { AlbumImage } from "../albums/album-image";
-import { countLabel } from "../albums/moment-labels";
+import { MediaCount } from "../albums/media-counts";
 import { PageTitle } from "../shell/page-title";
 import { Button } from "../ui/button";
 import { AlbumHeader } from "./album-header";
@@ -263,9 +263,7 @@ function GalleryEntries({
             <h2 className="font-heading text-[27px]/[1.2] tracking-[-0.35px]">
               {captureDate(day.date, true)}{" "}
               <span className="ml-3 font-sans text-xs tracking-normal whitespace-nowrap text-muted">
-                {tab === "photos"
-                  ? countLabel(count, "photo", "photos")
-                  : countLabel(count, "video", "videos")}
+                <MediaCount count={count} kind={tab} />
               </span>
             </h2>
             {tab === "photos" ? (

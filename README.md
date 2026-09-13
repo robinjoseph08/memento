@@ -416,7 +416,9 @@ a Curator reconsiders it. Curators review requests under Requests, where
 approval links the identity to an existing Person or creates one and approves
 the exact email; Album access remains a separate decision in each Album. An
 existing Person who reaches an Album they cannot see gets an explicit Request
-access action, and visiting alone records nothing.
+access action, and visiting alone records nothing. Each new request also
+emails every active Curator who has selected an email, when SMTP is
+configured; repeated sign-ins against the same request send nothing more.
 
 Every Person completes a one-time Onboarding after their first sign-in, whether
 they arrived through an Invitation or signed in directly. It confirms their
