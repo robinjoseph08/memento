@@ -28,7 +28,14 @@ const people: AccessPerson[] = ["Jamie", "Alex"].map((name) => ({
   accessible_count: 0,
   exceptions: 0,
   moments_detected: 0,
+  deactivated: false,
 }));
+const frozen: AccessPerson = {
+  ...people[0],
+  person_id: "lee",
+  display_name: "Lee",
+  deactivated: true,
+};
 const curatorAlbum: AlbumDetail = {
   id: "lake",
   source_id: "source",
@@ -45,7 +52,7 @@ const curatorAlbum: AlbumDetail = {
   end_date: "2025-06-14",
   cover_url: "",
   moments: [],
-  access: people,
+  access: [...people, frozen],
 };
 const album: ViewerAlbum = {
   id: "lake",
@@ -169,6 +176,7 @@ it("switches the URL identity without retaining another person's cover, counts, 
   ).toHaveTextContent("Jamie");
   expect(screen.getByText(/Showing the view after publication/)).toBeVisible();
   await user.click(screen.getByRole("combobox", { name: "Preview as" }));
+  expect(screen.queryByRole("option", { name: "Lee" })).not.toBeInTheDocument();
   await user.type(screen.getByPlaceholderText("Search people…"), "Alex");
   await user.click(screen.getByRole("option", { name: "Alex" }));
   expect(new URLSearchParams(window.location.search).get("person")).toBe(

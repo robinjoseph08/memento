@@ -357,6 +357,7 @@ it("uses the Outline pane for selection and saves Moment access explicitly", asy
     accessible_count: 2,
     exceptions: 0,
     moments_detected: 0,
+    deactivated: false,
   };
   const sam = {
     person_id: "sam",
@@ -371,6 +372,7 @@ it("uses the Outline pane for selection and saves Moment access explicitly", asy
     accessible_count: 0,
     exceptions: 0,
     moments_detected: 0,
+    deactivated: false,
   };
   let current: AlbumDetail = {
     ...completeAlbum,
@@ -525,6 +527,7 @@ it.each([
                 accessible_count: effective ? 1 : 0,
                 exceptions: 1,
                 moments_detected: 0,
+                deactivated: false,
               },
             ],
             faces: [],
@@ -618,6 +621,7 @@ it("asks before leaving Album access with an unsaved draft", async () => {
     suggested: false,
     supporting_entries: 1,
     moments_detected: 1,
+    deactivated: false,
     accessible_count: 0,
     exceptions: 0,
   };
@@ -662,6 +666,7 @@ it("reviews visibility before saving Album access and removes only the Album all
     accessible_count: 1,
     exceptions: 1,
     moments_detected: 1,
+    deactivated: false,
   };
   const sam = {
     ...alex,
@@ -674,6 +679,7 @@ it("reviews visibility before saving Album access and removes only the Album all
     accessible_count: 0,
     exceptions: 0,
     moments_detected: 0,
+    deactivated: false,
   };
   let current = { ...completeAlbum, access: [alex, sam] };
   const posts: Array<{ path: string; body: unknown }> = [];
@@ -772,6 +778,7 @@ it("keeps a Moment access draft after a failed save and shows the error", async 
     suggested: false,
     supporting_entries: 0,
     moments_detected: 0,
+    deactivated: false,
     accessible_count: 2,
     exceptions: 0,
   };
@@ -1027,6 +1034,7 @@ it("reviews every scope before confirming removal of all a person's access", asy
     accessible_count: 1,
     exceptions: 1,
     moments_detected: 1,
+    deactivated: false,
   };
   let current = { ...completeAlbum, access: [alex] };
   let removed: unknown;
@@ -1057,6 +1065,7 @@ it("reviews every scope before confirming removal of all a person's access", asy
             accessible_count: 0,
             exceptions: 0,
             moments_detected: 1,
+            deactivated: false,
           },
         ],
       };
@@ -1097,6 +1106,83 @@ it("reviews every scope before confirming removal of all a person's access", asy
   expect(await screen.findByText("0 of 2 items accessible now")).toBeVisible();
 });
 
+it("lists a deactivated person's frozen rules and removes them without offering access", async () => {
+  desktopViewport();
+  const alex = {
+    person_id: "alex",
+    display_name: "Alex",
+    avatar_url: "",
+    decision: "allow",
+    inherited: false,
+    effective: true,
+    detected: false,
+    suggested: false,
+    supporting_entries: 0,
+    moments_detected: 0,
+    accessible_count: 1,
+    exceptions: 1,
+    deactivated: true,
+  };
+  let current = { ...completeAlbum, access: [alex] };
+  let removed: unknown;
+  mockAPI((path, options) => {
+    if (path.endsWith("/remove-all/preview"))
+      return Response.json({
+        person_id: "alex",
+        display_name: "Alex",
+        changes: [
+          {
+            person_id: "alex",
+            display_name: "Alex",
+            gained_entry_ids: [],
+            lost_entry_ids: ["photo"],
+          },
+        ],
+        review_token: "reviewed-removal",
+      });
+    if (path.endsWith("/remove-all")) {
+      removed = JSON.parse(String(options?.body));
+      current = { ...current, access: [] };
+    }
+    return Response.json(current);
+  });
+  window.history.replaceState(
+    null,
+    "",
+    "/curator/albums/album-1?section=access&pane=detail",
+  );
+  const user = userEvent.setup();
+  render(<App />);
+  expect(
+    await screen.findByText("No active viewers to grant access to."),
+  ).toBeVisible();
+  expect(
+    screen.queryByRole("checkbox", { name: "Album access for Alex" }),
+  ).not.toBeInTheDocument();
+  await user.click(
+    screen.getByText("1 deactivated person still has rules here"),
+  );
+  expect(
+    screen.getByText("Deactivated. 2 rules would allow 1 of 2 items."),
+  ).toBeVisible();
+  await user.click(screen.getByRole("button", { name: "Remove all access…" }));
+  const review = await screen.findByRole("dialog", {
+    name: "Remove all access for Alex?",
+  });
+  await user.click(
+    within(review).getByRole("button", { name: "Remove all access" }),
+  );
+  await waitFor(() =>
+    expect(removed).toEqual({
+      person_id: "alex",
+      review_token: "reviewed-removal",
+    }),
+  );
+  await waitFor(() =>
+    expect(screen.queryByText(/deactivated person/)).not.toBeInTheDocument(),
+  );
+});
+
 it("edits item rules with inherit labels that name the Moment or Album source", async () => {
   desktopViewport();
   const alex = {
@@ -1112,6 +1198,7 @@ it("edits item rules with inherit labels that name the Moment or Album source", 
     accessible_count: 2,
     exceptions: 0,
     moments_detected: 0,
+    deactivated: false,
   };
   const sam = {
     ...alex,
@@ -1198,6 +1285,7 @@ it("discards item rule edits with one prompt and clears the entry from the URL",
     suggested: false,
     supporting_entries: 0,
     moments_detected: 0,
+    deactivated: false,
     accessible_count: 0,
     exceptions: 0,
   };
@@ -1270,6 +1358,7 @@ it("opens saved rules without granting detected people and saves only the edited
     accessible_count: 0,
     exceptions: 0,
     moments_detected: 0,
+    deactivated: false,
   };
   const alex = {
     ...sam,
@@ -1343,6 +1432,7 @@ it("keeps a rules draft through refresh and failed save, and asks before discard
     accessible_count: 0,
     exceptions: 0,
     moments_detected: 0,
+    deactivated: false,
   };
   let current = {
     ...completeAlbum,
@@ -1469,6 +1559,7 @@ it("links an Immich face to an existing Person and derives a suggestion", async 
                   accessible_count: 0,
                   exceptions: 0,
                   moments_detected: 0,
+                  deactivated: false,
                 },
               ],
             },

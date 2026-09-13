@@ -13,7 +13,7 @@ import { ViewerGallery } from "./viewer-gallery";
 // person. The identity strip stays above the gallery the whole time.
 export function ViewerPreview({ album }: { album: AlbumDetail }) {
   const [search, setSearch] = useSearchParams();
-  const people = album.access;
+  const people = album.access.filter((person) => !person.deactivated);
   const person =
     people.find((candidate) => candidate.person_id === search.get("person")) ??
     people[0];

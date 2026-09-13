@@ -315,3 +315,49 @@ func TestAlbumAccessDefaultsDeniedAndInheritsToEntries(t *testing.T) {
 		}
 	}
 }
+
+func TestDeactivatedPeopleKeepFrozenRulesUntilRemoved(t *testing.T) {
+	t.Parallel()
+	db, module, album := importedAlbum(t)
+	person := models.Person{ID: models.NewUUIDv7(), DisplayName: "Alex", CreatedAt: time.Now().UTC()}
+	_, err := db.NewInsert().Model(&person).Exec(t.Context())
+	require.NoError(t, err)
+	id := person.ID.String()
+	_, err = module.SaveAlbumAccess(t.Context(), album.ID, publishing.SaveAlbumAccessRequest{People: []publishing.AlbumAccessChoice{{PersonID: id, Allowed: true}}})
+	require.NoError(t, err)
+	_, err = module.SaveEntryRules(t.Context(), album.ID, album.Moments[1].Entries[0].ID, publishing.SaveRulesRequest{Decisions: []publishing.AccessResolution{{PersonID: id, Decision: publishing.DecisionDeny}}})
+	require.NoError(t, err)
+	_, err = db.NewUpdate().Model(&person).Set("deactivated_at = ?", time.Now().UTC()).WherePK().Exec(t.Context())
+	require.NoError(t, err)
+
+	current, err := module.GetAlbum(t.Context(), album.ID)
+	require.NoError(t, err)
+	require.Len(t, current.Access, 1, "frozen rules keep the person visible at Album scope")
+	assert.True(t, current.Access[0].Deactivated)
+	assert.Equal(t, publishing.DecisionAllow, current.Access[0].Decision)
+	assert.Equal(t, 2, current.Access[0].AccessibleCount)
+	assert.Equal(t, 1, current.Access[0].Exceptions)
+	for _, moment := range current.Moments {
+		assert.Empty(t, moment.Access.People, "Moment editing never lists deactivated people")
+	}
+	_, err = module.SaveAlbumAccess(t.Context(), album.ID, publishing.SaveAlbumAccessRequest{People: []publishing.AlbumAccessChoice{{PersonID: id}}})
+	require.Error(t, err, "granting or editing needs an active person")
+
+	preview, err := module.PreviewRemoveAccess(t.Context(), album.ID, publishing.RemoveAccessPreviewRequest{PersonID: id})
+	require.NoError(t, err)
+	require.Len(t, preview.Changes, 1)
+	assert.Equal(t, "Alex", preview.Changes[0].DisplayName)
+	assert.Len(t, preview.Changes[0].LostEntryIDs, 2)
+	removed, err := module.RemoveAccess(t.Context(), album.ID, publishing.RemoveAccessRequest{PersonID: id, ReviewToken: preview.ReviewToken})
+	require.NoError(t, err)
+	assert.Empty(t, removed.Access, "nothing frozen remains to show")
+
+	_, err = db.NewUpdate().Model(&person).Set("deactivated_at = NULL").WherePK().Exec(t.Context())
+	require.NoError(t, err)
+	restored, err := module.GetAlbum(t.Context(), album.ID)
+	require.NoError(t, err)
+	require.Len(t, restored.Access, 1)
+	assert.False(t, restored.Access[0].Deactivated)
+	assert.Empty(t, restored.Access[0].Decision)
+	assert.Zero(t, restored.Access[0].AccessibleCount)
+}

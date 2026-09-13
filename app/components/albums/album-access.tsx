@@ -90,7 +90,9 @@ export function AlbumAccess({ album }: { album: AlbumDetail }) {
     draft[id] ??
     album.access.find((person) => person.person_id === id)?.decision ===
       "allow";
-  const changed = album.access.filter(
+  const active = album.access.filter((person) => !person.deactivated);
+  const frozen = album.access.filter((person) => person.deactivated);
+  const changed = active.filter(
     (person) => (person.decision === "allow") !== allowed(person.person_id),
   );
   const dirty = save.isPending || changed.length > 0;
@@ -99,16 +101,14 @@ export function AlbumAccess({ album }: { album: AlbumDetail }) {
   const saveError = saveErrors.people ?? saveErrors.person_id;
   const errorId = useId();
   const totalMoments = album.moments.length;
-  const everywhere = album.access.filter(
+  const everywhere = active.filter(
     (person) => totalMoments > 0 && person.moments_detected === totalMoments,
   );
-  const somewhere = album.access.filter(
+  const somewhere = active.filter(
     (person) =>
       person.moments_detected > 0 && person.moments_detected < totalMoments,
   );
-  const nowhere = album.access.filter(
-    (person) => person.moments_detected === 0,
-  );
+  const nowhere = active.filter((person) => person.moments_detected === 0);
   function change(next: Record<string, boolean>) {
     setDraft(next);
     save.reset();
@@ -116,7 +116,7 @@ export function AlbumAccess({ album }: { album: AlbumDetail }) {
     else review.reset();
   }
   const payload = (next: Record<string, boolean>) => ({
-    people: album.access
+    people: active
       .filter(
         (person) =>
           person.person_id in next &&
@@ -207,7 +207,7 @@ export function AlbumAccess({ album }: { album: AlbumDetail }) {
           className="space-y-6"
           disabled={save.isPending}
         >
-          {album.access.length > 0 && (
+          {active.length > 0 && (
             <>
               <PeopleGroup
                 action={
@@ -260,10 +260,57 @@ export function AlbumAccess({ album }: { album: AlbumDetail }) {
               )}
             </>
           )}
-          {album.access.length === 0 && (
+          {active.length === 0 && (
             <p className="border-t border-border py-3 text-sm text-muted">
               No active viewers to grant access to.
             </p>
+          )}
+          {frozen.length > 0 && (
+            <details>
+              <summary className="-mx-2 cursor-pointer rounded-sm px-2 py-2 text-xs text-accent-foreground hover:bg-surface">
+                {countLabel(
+                  frozen.length,
+                  "deactivated person",
+                  "deactivated people",
+                )}{" "}
+                still {frozen.length === 1 ? "has" : "have"} rules here
+              </summary>
+              <p className="mt-1 text-xs text-muted">
+                Deactivation stops their access without deleting these rules,
+                which apply again if they are reactivated.
+              </p>
+              {frozen.map((person) => (
+                <div
+                  className="mt-2 flex items-center gap-3 border-t border-border py-3"
+                  key={person.person_id}
+                >
+                  <PersonAvatar person={person} />
+                  <span className="min-w-0 flex-1 text-sm">
+                    <strong className="block truncate font-medium">
+                      {person.display_name}
+                    </strong>
+                    <small className="block text-xs text-muted">
+                      Deactivated.{" "}
+                      {countLabel(
+                        person.exceptions +
+                          (person.decision === "allow" ? 1 : 0),
+                        "rule",
+                        "rules",
+                      )}{" "}
+                      would allow {person.accessible_count} of {total} items.
+                    </small>
+                  </span>
+                  <Button
+                    className="-mx-2 h-auto min-h-0 px-2 py-1 text-xs text-accent-foreground"
+                    onClick={() => setRemoving(person.person_id)}
+                    type="button"
+                    variant="ghost"
+                  >
+                    Remove all access…
+                  </Button>
+                </div>
+              ))}
+            </details>
           )}
           <FieldError error={saveError} id={errorId} />
           <p className="mt-3 text-xs text-muted">

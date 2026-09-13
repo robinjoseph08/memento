@@ -184,6 +184,9 @@ type AccessPerson struct {
 	Effective         bool     `json:"effective"`
 	AccessibleCount   int      `json:"accessible_count"`
 	Exceptions        int      `json:"exceptions"`
+	// Deactivated people appear at Album scope only while they still hold
+	// rules here, so a Curator can see and remove frozen access.
+	Deactivated bool `json:"deactivated"`
 }
 
 type MomentAccess struct {

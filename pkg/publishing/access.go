@@ -222,7 +222,68 @@ func attachAccess(ctx context.Context, db bun.IDB, album *AlbumDetail) error {
 		person.Suggested = person.Detected && person.Decision == "" && !person.Effective
 		album.Access = append(album.Access, person)
 	}
+	return attachFrozenAccess(ctx, db, album, allows)
+}
+
+// attachFrozenAccess lists deactivated people whose rules in this Album would
+// apply again on reactivation. Deactivation stops access without deleting
+// history, so the rules stay until a Curator removes them here.
+func attachFrozenAccess(ctx context.Context, db bun.IDB, album *AlbumDetail, allows map[string]Decision) error {
+	var momentRows []models.MomentAccessDecision
+	if err := db.NewSelect().Model(&momentRows).Where("decision.album_id = ?", album.ID).Scan(ctx); err != nil {
+		return errorstack.CaptureContext(ctx, err)
+	}
+	momentDecisions := map[string]map[string]Decision{}
+	for _, row := range momentRows {
+		person := row.PersonID.String()
+		if momentDecisions[person] == nil {
+			momentDecisions[person] = map[string]Decision{}
+		}
+		momentDecisions[person][row.MomentID.String()] = Decision(row.Decision)
+	}
+	var frozen []models.Person
+	ruled := db.NewSelect().Model((*models.AlbumAccessDecision)(nil)).Column("person_id").Where("album_id = ?", album.ID).
+		UnionAll(db.NewSelect().Model((*models.MomentAccessDecision)(nil)).Column("person_id").Where("album_id = ?", album.ID)).
+		UnionAll(db.NewSelect().Model((*models.EntryAccessDecision)(nil)).Column("person_id").Where("album_id = ?", album.ID))
+	err := db.NewSelect().Model(&frozen).Where("person.deactivated_at IS NOT NULL AND NOT person.is_curator").
+		Where("person.id IN (?)", ruled).OrderExpr("lower(person.display_name), person.id").Scan(ctx)
+	if err != nil {
+		return errorstack.CaptureContext(ctx, err)
+	}
+	for _, row := range frozen {
+		id := row.ID.String()
+		person := AccessPerson{PersonID: id, DisplayName: row.DisplayName, Decision: allows[id], Deactivated: true}
+		for _, moment := range album.Moments {
+			momentDecision := momentDecisions[id][moment.ID]
+			if momentDecision != "" {
+				person.Exceptions++
+			}
+			for _, entry := range moment.Entries {
+				if entryAllowed(person.Decision, momentDecision, entry.Decisions[id]) {
+					person.AccessibleCount++
+				}
+				if entry.Decisions[id] != "" {
+					person.Exceptions++
+				}
+			}
+		}
+		album.Access = append(album.Access, person)
+	}
 	return nil
+}
+
+// ruledPerson admits any non-Curator Person who exists, active or not, so
+// frozen rules can still be removed.
+func ruledPerson(ctx context.Context, db bun.IDB, personID string) (models.Person, error) {
+	var person models.Person
+	if _, err := uuid.Parse(personID); err != nil {
+		return person, structureField("person_id", "Choose a Person.")
+	}
+	err := db.NewSelect().Model(&person).Where("person.id = ? AND NOT person.is_curator", personID).Scan(ctx)
+	if errors.Is(err, sql.ErrNoRows) {
+		return person, structureField("person_id", "Choose a non-Curator Person.")
+	}
+	return person, errorstack.CaptureContext(ctx, err)
 }
 
 func activeAccessPerson(ctx context.Context, db bun.IDB, personID string) error {
@@ -329,8 +390,12 @@ func (m *Module) SaveAlbumAccess(ctx context.Context, albumID string, request Sa
 	return m.GetAlbum(ctx, albumID)
 }
 
-func removalPreview(state structureState, personID string) (RemoveAccessPreview, error) {
-	result := RemoveAccessPreview{PersonID: personID, DisplayName: state.People[personID]}
+// removalPreview describes losing every rule for one Person, active or
+// deactivated. Removal can only take media away, so the change is the current
+// visible set.
+func removalPreview(state structureState, person models.Person) (RemoveAccessPreview, error) {
+	personID := person.ID.String()
+	result := RemoveAccessPreview{PersonID: personID, DisplayName: person.DisplayName, Changes: []AudienceChange{}}
 	after := state.clone()
 	delete(after.AlbumDecisions, personID)
 	for _, decisions := range after.Decisions {
@@ -339,7 +404,9 @@ func removalPreview(state structureState, personID string) (RemoveAccessPreview,
 	for _, decisions := range after.EntryDecisions {
 		delete(decisions, personID)
 	}
-	result.Changes = reviewedChanges(state, after)
+	if lost := visibleEntries(state.facts(), personID); len(lost) > 0 {
+		result.Changes = append(result.Changes, AudienceChange{PersonID: personID, DisplayName: person.DisplayName, GainedEntryIDs: []string{}, LostEntryIDs: lost})
+	}
 	token, err := reviewToken("remove-access", state, personID, after)
 	result.ReviewToken = token
 	return result, err
@@ -351,14 +418,15 @@ func (m *Module) PreviewRemoveAccess(ctx context.Context, albumID string, reques
 		if _, err := albumRow(ctx, tx, albumID, false); err != nil {
 			return err
 		}
-		if err := activeAccessPerson(ctx, tx, request.PersonID); err != nil {
+		person, err := ruledPerson(ctx, tx, request.PersonID)
+		if err != nil {
 			return err
 		}
 		state, err := m.loadStructure(ctx, tx, albumID, false)
 		if err != nil {
 			return err
 		}
-		result, err = removalPreview(state, uuid.MustParse(request.PersonID).String())
+		result, err = removalPreview(state, person)
 		return err
 	})
 	return result, transactionError(ctx, err)
@@ -369,14 +437,15 @@ func (m *Module) RemoveAccess(ctx context.Context, albumID string, request Remov
 		if _, err := albumRow(ctx, tx, albumID, true); err != nil {
 			return err
 		}
-		if err := activeAccessPerson(ctx, tx, request.PersonID); err != nil {
+		person, err := ruledPerson(ctx, tx, request.PersonID)
+		if err != nil {
 			return err
 		}
 		state, err := m.loadStructure(ctx, tx, albumID, true)
 		if err != nil {
 			return err
 		}
-		preview, err := removalPreview(state, uuid.MustParse(request.PersonID).String())
+		preview, err := removalPreview(state, person)
 		if err != nil {
 			return err
 		}
