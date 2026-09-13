@@ -162,16 +162,26 @@ function GalleryEntries({
   // Pages arrive one after another in the background until the gallery is
   // complete, so the scrollbar and every day heading reflect the whole Album
   // without a click. Image bytes still load lazily as rows scroll into view.
+  // The page count is a dependency because a slow renderer can receive the
+  // next page before it ever renders the fetching state, and the chain must
+  // continue from each arrival rather than from that transient flag.
   const {
     hasNextPage,
     isFetchingNextPage,
     isFetchNextPageError,
     fetchNextPage,
   } = query;
+  const pageCount = query.data?.pages.length ?? 0;
   useEffect(() => {
     if (hasNextPage && !isFetchingNextPage && !isFetchNextPageError)
       void fetchNextPage();
-  }, [hasNextPage, isFetchingNextPage, isFetchNextPageError, fetchNextPage]);
+  }, [
+    hasNextPage,
+    isFetchingNextPage,
+    isFetchNextPageError,
+    fetchNextPage,
+    pageCount,
+  ]);
   if (
     query.error instanceof HTTPError &&
     (query.error.status === 403 || query.error.status === 404)

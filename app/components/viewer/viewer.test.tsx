@@ -453,3 +453,22 @@ it("counts rapid key presses from the last requested photo, not the last rendere
   ).toBeVisible();
   expect(window.location.pathname).toBe("/albums/lake/photos/photo-1");
 });
+
+it("keeps chaining pages in the background until the album is complete", async () => {
+  mockViewer((path) => {
+    if (path === "/api/albums/lake")
+      return Response.json({ ...album, photo_count: 3 });
+    if (path === "/api/albums/lake/photos")
+      return Response.json({ entries: [photo], next_cursor: "two" });
+    if (path === "/api/albums/lake/photos?cursor=two")
+      return Response.json({ entries: [cabin], next_cursor: "three" });
+    if (path === "/api/albums/lake/photos?cursor=three")
+      return Response.json({ entries: [dock], next_cursor: "" });
+    throw new Error(`Unexpected request: ${path}`);
+  });
+  window.history.replaceState(null, "", "/albums/lake/photos");
+  render(<App />);
+  expect(await screen.findByRole("img", { name: "Dock" })).toBeVisible();
+  expect(screen.getAllByRole("link", { name: /Open photo/ })).toHaveLength(3);
+  expect(screen.queryByRole("status")).not.toBeInTheDocument();
+});
