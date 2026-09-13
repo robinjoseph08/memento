@@ -15,6 +15,7 @@ import (
 	"github.com/robinjoseph08/memento/pkg/errcodes"
 	"github.com/robinjoseph08/memento/pkg/errorstack"
 	"github.com/robinjoseph08/memento/pkg/models"
+	"github.com/robinjoseph08/memento/pkg/notifications"
 	"github.com/uptrace/bun"
 )
 
@@ -298,4 +299,29 @@ func (m *Module) ViewAlbum(ctx context.Context, actorID, previewPersonID, albumI
 		return err
 	})
 	return result, transactionError(ctx, err)
+}
+
+// VisibleEntries lists every Album Entry the Person can view as an ordinary
+// viewer: published Albums and allowing Access Decisions only. A Curator's
+// administrative bypass is deliberately excluded so announcement baselines never
+// treat unpublished or otherwise viewer-ineligible content as announced.
+func (m *Module) VisibleEntries(ctx context.Context, db bun.IDB, personID string) ([]notifications.VisibleEntry, error) {
+	if _, err := uuid.Parse(personID); err != nil {
+		return nil, errcodes.NotFound("Person")
+	}
+	type row struct {
+		AlbumID string
+		EntryID string
+	}
+	rows := []row{}
+	err := viewerEntries(db, viewerContext{personID: personID}).ColumnExpr("entry.album_id, entry.id AS entry_id").
+		OrderExpr("entry.album_id, entry.id").Scan(ctx, &rows)
+	if err != nil {
+		return nil, errorstack.CaptureContext(ctx, err)
+	}
+	result := make([]notifications.VisibleEntry, 0, len(rows))
+	for _, r := range rows {
+		result = append(result, notifications.VisibleEntry{AlbumID: r.AlbumID, EntryID: r.EntryID})
+	}
+	return result, nil
 }

@@ -1,5 +1,5 @@
-// Package worker commits import work with application transactions and runs it
-// through the shared PostgreSQL connection pool.
+// Package worker commits import and mail work with application transactions
+// and runs it through the shared PostgreSQL connection pool.
 package worker
 
 import (
@@ -32,19 +32,63 @@ type importArgs struct {
 
 func (importArgs) Kind() string { return "import_immich_album" }
 
-// Runtime shares Bun's pool and never closes it. Stop it before closing Bun.
-type Runtime struct{ client *river.Client[*sql.Tx] }
+type mailArgs struct {
+	DeliveryID string `json:"delivery_id" river:"unique"`
+}
 
-// New binds the import use case without executing work or starting goroutines.
-func New(db *bun.DB, execute func(context.Context, string) error) (*Runtime, error) {
+func (mailArgs) Kind() string { return "deliver_mail" }
+
+const (
+	mailQueue          = "mail"
+	mailMaxAttempts    = 5
+	DefaultMailWorkers = 5
+)
+
+// Runtime shares Bun's pool and never closes it. Stop it before closing Bun.
+type Runtime struct {
+	client *river.Client[*sql.Tx]
+	mail   bool
+}
+
+// Option configures optional work kinds. The import executor is always required.
+type Option func(*options)
+
+type options struct {
+	mail        func(context.Context, string) error
+	mailWorkers int
+}
+
+// WithMail binds the mail delivery executor to its own queue so slow SMTP
+// sessions never occupy import workers. Concurrency below one uses the default.
+func WithMail(execute func(context.Context, string) error, concurrency int) Option {
+	return func(o *options) {
+		o.mail = execute
+		o.mailWorkers = concurrency
+	}
+}
+
+// New binds the use cases without executing work or starting goroutines.
+func New(db *bun.DB, execute func(context.Context, string) error, opts ...Option) (*Runtime, error) {
 	if db == nil || execute == nil {
 		return nil, fmt.Errorf("worker requires a database and import executor")
 	}
+	var configured options
+	for _, opt := range opts {
+		opt(&configured)
+	}
 	workers := river.NewWorkers()
 	river.AddWorker(workers, &importWorker{execute: execute})
+	queues := map[string]river.QueueConfig{"imports": {MaxWorkers: 2}}
+	if configured.mail != nil {
+		river.AddWorker(workers, &mailWorker{execute: configured.mail})
+		if configured.mailWorkers < 1 {
+			configured.mailWorkers = DefaultMailWorkers
+		}
+		queues[mailQueue] = river.QueueConfig{MaxWorkers: configured.mailWorkers}
+	}
 	client, err := river.NewClient(riverdatabasesql.New(db.DB), &river.Config{
 		Workers:              workers,
-		Queues:               map[string]river.QueueConfig{"imports": {MaxWorkers: 2}},
+		Queues:               queues,
 		PollOnly:             true,
 		FetchPollInterval:    time.Second,
 		MaxAttempts:          3,
@@ -55,7 +99,7 @@ func New(db *bun.DB, execute func(context.Context, string) error) (*Runtime, err
 	if err != nil {
 		return nil, runtimeError(context.Background(), "configure import worker", err)
 	}
-	return &Runtime{client: client}, nil
+	return &Runtime{client: client, mail: configured.mail != nil}, nil
 }
 
 // Start begins polling. Use the application lifetime, not an HTTP request context.
@@ -92,6 +136,50 @@ func (r *Runtime) EnqueueImport(ctx context.Context, tx bun.Tx, albumID string) 
 		_, err = r.client.JobRetryTx(ctx, tx.Tx, result.Job.ID)
 	}
 	return runtimeError(ctx, "enqueue import", err)
+}
+
+// EnqueueMail records one delivery attempt in the caller's transaction. Active
+// duplicates are skipped, so repeated retry clicks never queue the same
+// delivery twice; the delivery record itself decides whether work remains.
+func (r *Runtime) EnqueueMail(ctx context.Context, tx bun.Tx, deliveryID string) error {
+	if tx.Tx == nil || deliveryID == "" {
+		return fmt.Errorf("enqueue mail requires a transaction and delivery ID")
+	}
+	if !r.mail {
+		return fmt.Errorf("enqueue mail requires a mail executor")
+	}
+	result, err := r.client.InsertTx(ctx, tx.Tx, mailArgs{DeliveryID: deliveryID}, &river.InsertOpts{
+		Queue: mailQueue, MaxAttempts: mailMaxAttempts,
+		UniqueOpts: river.UniqueOpts{ByArgs: true, ByState: []rivertype.JobState{
+			rivertype.JobStateAvailable, rivertype.JobStatePending, rivertype.JobStateRunning,
+			rivertype.JobStateRetryable, rivertype.JobStateScheduled,
+		}},
+	})
+	if err != nil {
+		return runtimeError(ctx, "enqueue mail", err)
+	}
+	if result.UniqueSkippedAsDuplicate && result.Job.State == rivertype.JobStateRetryable {
+		_, err = r.client.JobRetryTx(ctx, tx.Tx, result.Job.ID)
+	}
+	return runtimeError(ctx, "enqueue mail", err)
+}
+
+type mailWorker struct {
+	river.WorkerDefaults[mailArgs]
+	execute func(context.Context, string) error
+}
+
+// Timeout bounds one SMTP session well below the import limit.
+func (w *mailWorker) Timeout(*river.Job[mailArgs]) time.Duration { return 2 * time.Minute }
+
+func (w *mailWorker) Work(ctx context.Context, job *river.Job[mailArgs]) (err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = runtimeError(ctx, "deliver mail", fmt.Errorf("mail executor panicked: %v", recovered))
+		}
+	}()
+	ctx = context.WithValue(ctx, finalAttemptKey{}, job.Attempt >= job.MaxAttempts)
+	return runtimeError(ctx, "deliver mail", w.execute(ctx, job.Args.DeliveryID))
 }
 
 type importWorker struct {

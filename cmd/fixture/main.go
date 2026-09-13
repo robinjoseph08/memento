@@ -20,22 +20,24 @@ import (
 	"time"
 
 	"github.com/robinjoseph08/memento/internal/devtool"
+	"github.com/robinjoseph08/memento/pkg/notifications/smtptest"
 	"github.com/robinjoseph08/memento/pkg/testdb"
 )
 
 func main() {
 	offline := flag.Bool("offline", os.Getenv("FIXTURE_OFFLINE") == "true", "start with Immich unavailable")
+	noSMTP := flag.Bool("no-smtp", os.Getenv("FIXTURE_NO_SMTP") == "true", "start without SMTP configured")
 	binary := flag.String("api", "build/api/api", "compiled API binary")
 	flag.Parse()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if err := run(ctx, *binary, *offline); err != nil {
+	if err := run(ctx, *binary, *offline, !*noSMTP); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
 
-func run(ctx context.Context, binary string, offline bool) error {
+func run(ctx context.Context, binary string, offline, withSMTP bool) error {
 	baseURL := os.Getenv("TEST_DATABASE_URL")
 	if baseURL == "" {
 		if os.Getenv("CI") != "" {
@@ -95,9 +97,25 @@ func run(ctx context.Context, binary string, offline bool) error {
 		"CONFIG_FILE="+configFile, "FILES_PATH="+files,
 		"DATABASE_MAX_OPEN_CONNS=3", "DATABASE_MAX_IDLE_CONNS=1", "DATABASE_DEBUG=false",
 	)
+	// The controlled SMTP server records every accepted Invitation and can hold
+	// its acceptance reply so restarts exercise uncertain delivery.
+	var mail *smtptest.Server
+	if withSMTP {
+		mail, err = smtptest.Start(ctx)
+		if err != nil {
+			_ = listener.Close()
+			_ = apiListener.Close()
+			return err
+		}
+		defer func() { _ = mail.Close() }()
+		environment = append(environment, "SMTP_URL="+mail.URL(), "SMTP_FROM=Memento <memento@example.test>")
+	} else {
+		environment = append(environment, "SMTP_URL=", "SMTP_FROM=")
+	}
 	api := &apiSupervisor{binary: binary, environment: environment, url: apiURL, failed: make(chan error, 1)}
 	defer api.close()
 	fixture := newImmichFixture(offline)
+	fixture.smtp = mail
 	fixture.restart = func(requestCtx context.Context) error {
 		err := api.restart(requestCtx)
 		if err != nil {
@@ -124,6 +142,11 @@ func run(ctx context.Context, binary string, offline bool) error {
 	fmt.Fprintf(os.Stderr, "Open %s\nReset: stop this command and start it again. Ctrl-C removes only its temporary schema.\n", apiURL)
 	fmt.Fprintf(os.Stderr, "Status:  curl %s/__fixture/state\nOffline: curl -X POST -H 'Content-Type: application/json' -d '{\"available\":false}' %s/__fixture/state\nOnline:  curl -X POST -H 'Content-Type: application/json' -d '{\"available\":true}' %s/__fixture/state\nRestart: curl -X POST %s/__fixture/restart\n", fixtureURL, fixtureURL, fixtureURL, fixtureURL)
 	fmt.Fprintf(os.Stderr, "Import checkpoints: curl %s/__fixture/checkpoints\nPause metadata: curl -X POST -H 'Content-Type: application/json' -d '{\"mode\":\"pause\"}' %s/__fixture/checkpoints/asset-metadata\nRelease: curl -X POST -H 'Content-Type: application/json' -d '{\"mode\":\"open\"}' %s/__fixture/checkpoints/asset-metadata\nRequests: curl %s/__fixture/requests\n", fixtureURL, fixtureURL, fixtureURL, fixtureURL)
+	if withSMTP {
+		fmt.Fprintf(os.Stderr, "Mail (accepted messages): curl %s/__fixture/smtp\nMail mode (accept, transient, permanent, hold): curl -X POST -H 'Content-Type: application/json' -d '{\"mode\":\"hold\"}' %s/__fixture/smtp\n", fixtureURL, fixtureURL)
+	} else {
+		fmt.Fprintln(os.Stderr, "SMTP is not configured for this installation.")
+	}
 	select {
 	case <-ctx.Done():
 		return nil

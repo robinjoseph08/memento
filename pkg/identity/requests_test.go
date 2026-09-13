@@ -1,0 +1,207 @@
+package identity_test
+
+import (
+	"testing"
+
+	"github.com/robinjoseph08/memento/pkg/errcodes"
+	"github.com/robinjoseph08/memento/pkg/identity"
+	"github.com/robinjoseph08/memento/pkg/models"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestUnknownIdentityCreatesOneRequestThatCuratorsResolveDeliberately(t *testing.T) {
+	t.Parallel()
+	a := newAdmission(t, true)
+	module := a.identity
+	curator := claimCurator(t, module)
+	stranger := identity.Claims{Provider: "google", Subject: "stranger-subject", Email: "stranger@example.test", EmailVerified: true, DisplayName: "Stranger"}
+	for range 3 {
+		_, err := module.SignIn(t.Context(), stranger)
+		require.ErrorIs(t, err, identity.ErrAccessRequested)
+	}
+	stranger.DisplayName = "Stranger Renamed"
+	_, err := module.SignIn(t.Context(), stranger)
+	require.ErrorIs(t, err, identity.ErrAccessRequested)
+	requests, err := module.ListAccessRequests(t.Context(), curator.Token)
+	require.NoError(t, err)
+	require.Len(t, requests, 1, "repeated sign-ins refresh one pending request")
+	pending := requests[0]
+	assert.Equal(t, "pending", pending.Status)
+	assert.Equal(t, 4, pending.SignInCount)
+	assert.Equal(t, "google", pending.Provider)
+	assert.Equal(t, "stranger@example.test", pending.Email)
+	assert.True(t, pending.EmailVerified)
+	assert.Equal(t, "Stranger Renamed", pending.DisplayName)
+	assert.Empty(t, pending.PersonID)
+	assert.Empty(t, pending.AlbumID)
+	assert.Nil(t, pending.ResolvedAt)
+
+	denied, err := module.DenyAccessRequest(t.Context(), curator.Token, pending.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "denied", denied.Status)
+	assert.Equal(t, "Curator", denied.ResolvedBy)
+	require.NotNil(t, denied.ResolvedAt)
+	_, err = module.SignIn(t.Context(), stranger)
+	require.ErrorIs(t, err, identity.ErrAccessRequested)
+	requests, err = module.ListAccessRequests(t.Context(), curator.Token)
+	require.NoError(t, err)
+	require.Len(t, requests, 1, "a denied request absorbs later sign-ins without a new alert")
+	assert.Equal(t, "denied", requests[0].Status)
+	assert.Equal(t, 5, requests[0].SignInCount)
+	again, err := module.DenyAccessRequest(t.Context(), curator.Token, pending.ID)
+	require.NoError(t, err)
+	assert.Equal(t, denied.ResolvedAt, again.ResolvedAt, "denying twice keeps the first decision")
+
+	reconsidered, err := module.ReconsiderAccessRequest(t.Context(), curator.Token, pending.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "pending", reconsidered.Status)
+	assert.Nil(t, reconsidered.ResolvedAt)
+	assert.Empty(t, reconsidered.ResolvedBy)
+
+	// Approval needs a Person choice and never grants Album access.
+	_, err = module.ApproveAccessRequest(t.Context(), curator.Token, pending.ID, identity.ApproveAccessRequestRequest{})
+	require.Error(t, err)
+	_, err = module.ApproveAccessRequest(t.Context(), curator.Token, pending.ID, identity.ApproveAccessRequestRequest{PersonID: curator.Person.ID, DisplayName: "Both"})
+	require.Error(t, err)
+	approved, err := module.ApproveAccessRequest(t.Context(), curator.Token, pending.ID, identity.ApproveAccessRequestRequest{DisplayName: "Stranger Person"})
+	require.NoError(t, err)
+	assert.Equal(t, "approved", approved.Status)
+	assert.Equal(t, "Stranger Person", approved.PersonName)
+	require.NotEmpty(t, approved.PersonID)
+	detail, err := module.GetPerson(t.Context(), curator.Token, approved.PersonID)
+	require.NoError(t, err)
+	assert.False(t, detail.Person.IsCurator)
+	require.Len(t, detail.Preauthorizations, 1)
+	assert.Equal(t, "stranger@example.test", detail.Preauthorizations[0].Email)
+	assert.Nil(t, detail.Preauthorizations[0].ConsumedAt)
+	assert.Empty(t, detail.Identities, "approval does not link the identity by itself")
+	for _, table := range []any{(*models.AlbumAccessDecision)(nil), (*models.MomentAccessDecision)(nil), (*models.EntryAccessDecision)(nil)} {
+		count, err := a.db.NewSelect().Model(table).Count(t.Context())
+		require.NoError(t, err)
+		assert.Zero(t, count, "approval writes no Access Decision")
+	}
+	same, err := module.ApproveAccessRequest(t.Context(), curator.Token, pending.ID, identity.ApproveAccessRequestRequest{DisplayName: "Ignored"})
+	require.NoError(t, err)
+	assert.Equal(t, approved, same, "approving again is idempotent")
+	_, err = module.DenyAccessRequest(t.Context(), curator.Token, pending.ID)
+	require.ErrorIs(t, err, identity.ErrRequestResolved)
+	_, err = module.ReconsiderAccessRequest(t.Context(), curator.Token, pending.ID)
+	require.ErrorIs(t, err, identity.ErrRequestResolved)
+	admitted, err := module.SignIn(t.Context(), stranger)
+	require.NoError(t, err)
+	assert.Equal(t, approved.PersonID, admitted.Person.ID)
+	assert.Nil(t, admitted.Person.OnboardingCompletedAt)
+	requests, err = module.ListAccessRequests(t.Context(), curator.Token)
+	require.NoError(t, err)
+	require.Len(t, requests, 1)
+	assert.Equal(t, "approved", requests[0].Status)
+
+	// A second identity can be linked to an existing Person without a duplicate Person.
+	alex, err := module.CreatePerson(t.Context(), curator.Token, identity.CreatePersonRequest{DisplayName: "Alex"})
+	require.NoError(t, err)
+	second := identity.Claims{Provider: "google", Subject: "second-subject", Email: "alex@example.test", EmailVerified: true, DisplayName: "Alex G"}
+	_, err = module.SignIn(t.Context(), second)
+	require.ErrorIs(t, err, identity.ErrAccessRequested)
+	requests, err = module.ListAccessRequests(t.Context(), curator.Token)
+	require.NoError(t, err)
+	require.Len(t, requests, 2)
+	assert.Equal(t, "pending", requests[0].Status, "pending requests sort first")
+	secondRequest := requests[0]
+	_, err = module.UpdatePerson(t.Context(), curator.Token, alex.ID, identity.UpdatePersonRequest{DisplayName: "Alex", Deactivated: true})
+	require.NoError(t, err)
+	_, err = module.ApproveAccessRequest(t.Context(), curator.Token, secondRequest.ID, identity.ApproveAccessRequestRequest{PersonID: alex.ID})
+	require.Error(t, err, "a deactivated Person cannot be chosen")
+	_, err = module.UpdatePerson(t.Context(), curator.Token, alex.ID, identity.UpdatePersonRequest{DisplayName: "Alex"})
+	require.NoError(t, err)
+	_, err = module.ApproveAccessRequest(t.Context(), curator.Token, secondRequest.ID, identity.ApproveAccessRequestRequest{PersonID: "not-a-person"})
+	require.Error(t, err)
+	linked, err := module.ApproveAccessRequest(t.Context(), curator.Token, secondRequest.ID, identity.ApproveAccessRequestRequest{PersonID: alex.ID})
+	require.NoError(t, err)
+	assert.Equal(t, alex.ID, linked.PersonID)
+	people, err := module.ListPeople(t.Context(), curator.Token, "")
+	require.NoError(t, err)
+	assert.Len(t, people, 3, "curator, the created Person, and Alex")
+	admittedAlex, err := module.SignIn(t.Context(), second)
+	require.NoError(t, err)
+	assert.Equal(t, alex.ID, admittedAlex.Person.ID)
+
+	// An email already linked to someone else cannot be approved onto another Person.
+	conflict := identity.Claims{Provider: "google", Subject: "conflict-subject", Email: "curator@example.test", EmailVerified: true, DisplayName: "Impostor"}
+	_, err = module.SignIn(t.Context(), conflict)
+	require.ErrorIs(t, err, identity.ErrAccessRequested)
+	requests, err = module.ListAccessRequests(t.Context(), curator.Token)
+	require.NoError(t, err)
+	_, err = module.ApproveAccessRequest(t.Context(), curator.Token, requests[0].ID, identity.ApproveAccessRequestRequest{DisplayName: "Impostor"})
+	require.ErrorIs(t, err, identity.ErrEmailInUse)
+	people, err = module.ListPeople(t.Context(), curator.Token, "")
+	require.NoError(t, err)
+	assert.Len(t, people, 3, "a refused approval creates no Person")
+
+	// Members cannot see or resolve requests.
+	_, err = module.ListAccessRequests(t.Context(), admittedAlex.Token)
+	require.ErrorIs(t, err, identity.ErrAccessDenied)
+	_, err = module.DenyAccessRequest(t.Context(), admittedAlex.Token, requests[0].ID)
+	require.ErrorIs(t, err, identity.ErrAccessDenied)
+	_, err = module.ApproveAccessRequest(t.Context(), curator.Token, "missing", identity.ApproveAccessRequestRequest{DisplayName: "X"})
+	require.ErrorIs(t, err, errcodes.NotFound("Access Request"))
+}
+
+func TestExistingPersonRequestsAlbumAccessExplicitly(t *testing.T) {
+	t.Parallel()
+	a := newAdmission(t, true)
+	module := a.identity
+	curator := claimCurator(t, module)
+	album := a.publishedAlbum(t)
+	alex := authorizePerson(t, module, curator, "Alex", "alex@example.test")
+	requests, err := module.ListAccessRequests(t.Context(), curator.Token)
+	require.NoError(t, err)
+	assert.Empty(t, requests, "signing in and browsing creates nothing")
+
+	first, err := module.RequestAlbumAccess(t.Context(), alex.Token, album.ID)
+	require.NoError(t, err)
+	second, err := module.RequestAlbumAccess(t.Context(), alex.Token, album.ID)
+	require.NoError(t, err)
+	assert.Equal(t, first.ID, second.ID)
+	assert.Equal(t, 2, second.SignInCount)
+	assert.Equal(t, alex.Person.ID, second.PersonID)
+	assert.Equal(t, "Alex", second.PersonName)
+	assert.Equal(t, album.ID, second.AlbumID)
+	assert.Equal(t, "Summer", second.AlbumTitle)
+	assert.Equal(t, "alex@example.test", second.Email)
+	assert.Equal(t, "pending", second.Status)
+	_, err = module.RequestAlbumAccess(t.Context(), alex.Token, "not-an-album")
+	require.ErrorIs(t, err, errcodes.NotFound("Album"))
+	_, err = module.RequestAlbumAccess(t.Context(), alex.Token, models.NewUUIDv7().String())
+	require.ErrorIs(t, err, errcodes.NotFound("Album"))
+
+	denied, err := module.DenyAccessRequest(t.Context(), curator.Token, first.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "denied", denied.Status)
+	suppressed, err := module.RequestAlbumAccess(t.Context(), alex.Token, album.ID)
+	require.NoError(t, err)
+	assert.Equal(t, first.ID, suppressed.ID)
+	assert.Equal(t, "denied", suppressed.Status, "a denied request absorbs repeated clicks")
+	_, err = module.ReconsiderAccessRequest(t.Context(), curator.Token, first.ID)
+	require.NoError(t, err)
+	people, err := module.ListPeople(t.Context(), curator.Token, "")
+	require.NoError(t, err)
+	approved, err := module.ApproveAccessRequest(t.Context(), curator.Token, first.ID, identity.ApproveAccessRequestRequest{})
+	require.NoError(t, err)
+	assert.Equal(t, "approved", approved.Status)
+	assert.Equal(t, alex.Person.ID, approved.PersonID)
+	after, err := module.ListPeople(t.Context(), curator.Token, "")
+	require.NoError(t, err)
+	assert.Equal(t, people, after, "no duplicate Person")
+	detail, err := module.GetPerson(t.Context(), curator.Token, alex.Person.ID)
+	require.NoError(t, err)
+	assert.Len(t, detail.Preauthorizations, 1, "no new Preauthorization")
+	count, err := a.db.NewSelect().Model((*models.AlbumAccessDecision)(nil)).Count(t.Context())
+	require.NoError(t, err)
+	assert.Zero(t, count, "approval never grants Album access by itself")
+	// A closed request lets the Person ask again later.
+	fresh, err := module.RequestAlbumAccess(t.Context(), alex.Token, album.ID)
+	require.NoError(t, err)
+	assert.NotEqual(t, first.ID, fresh.ID)
+	assert.Equal(t, "pending", fresh.Status)
+}

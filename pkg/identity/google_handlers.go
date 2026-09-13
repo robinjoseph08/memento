@@ -99,6 +99,9 @@ func (h *googleHandlers) callback(c *echo.Context) error {
 		if errors.Is(err, ErrAccessDenied) {
 			return h.failure(c, "access_denied")
 		}
+		if errors.Is(err, ErrAccessRequested) {
+			return h.failure(c, "access_requested")
+		}
 		if errors.Is(err, ErrUnverifiedIdentity) {
 			return h.failure(c, "unverified_identity")
 		}

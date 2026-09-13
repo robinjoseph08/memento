@@ -13,6 +13,7 @@ import (
 	"github.com/robinjoseph08/memento/pkg/errcodes"
 	"github.com/robinjoseph08/memento/pkg/errorstack"
 	"github.com/robinjoseph08/memento/pkg/models"
+	"github.com/robinjoseph08/memento/pkg/notifications"
 	"github.com/uptrace/bun"
 )
 
@@ -22,7 +23,23 @@ var (
 	ErrAccessDenied       = &errcodes.Error{HTTPCode: 403, Code: "access_denied", Message: "This identity does not have access to this installation."}
 	ErrUnauthenticated    = &errcodes.Error{HTTPCode: 401, Code: "unauthenticated", Message: "Sign in to continue."}
 	ErrUnverifiedIdentity = &errcodes.Error{HTTPCode: 403, Code: "unverified_identity", Message: "Sign-in requires a verified email address."}
+	// ErrAccessRequested means the verified identity is unknown and a Curator now has one pending request for it.
+	ErrAccessRequested = &errcodes.Error{HTTPCode: 403, Code: "access_requested", Message: "This account does not have access yet. Your Curator has been asked to review your request."}
 )
+
+// Mail is the consumer-owned view of Notifications for Invitations.
+type Mail interface {
+	Configured() bool
+	Enqueue(context.Context, bun.Tx, notifications.Message) (notifications.Delivery, error)
+	Retry(context.Context, bun.Tx, string) (notifications.Delivery, error)
+	Deliveries(context.Context, bun.IDB, []string) (map[string]notifications.Delivery, error)
+}
+
+// Announcements is the consumer-owned view of Notifications for Onboarding baselines.
+type Announcements interface {
+	RecordBaseline(context.Context, bun.Tx, string) (notifications.Baseline, error)
+	Announced(context.Context, bun.IDB, string) (notifications.Baseline, error)
+}
 
 // Claims must come from a trusted provider adapter, never an unchecked browser body.
 type Claims struct {
@@ -48,6 +65,12 @@ type Module struct {
 	// ImmichURL is the browser-reachable Immich origin used for "Open in
 	// Immich" links on linked faces. Empty hides those links.
 	ImmichURL string
+	// PublicURL is the origin Invitation emails point at.
+	PublicURL string
+	// Mail is nil until the server wires Notifications; Invitations then report SMTP as unconfigured.
+	Mail Mail
+	// Announcements records the Onboarding baseline. Completion fails without it.
+	Announcements Announcements
 }
 
 func New(db *bun.DB, now func() time.Time) *Module {
@@ -80,6 +103,7 @@ func (m *Module) SignIn(ctx context.Context, claims Claims) (Session, error) {
 	token := base64.RawURLEncoding.EncodeToString(bytes)
 	hash := sha256.Sum256([]byte(token))
 	var result Session
+	requested := false
 	err := m.change(ctx, func(ctx context.Context, tx bun.Tx) error {
 		var claimedBy sql.NullString
 		if err := tx.NewSelect().Table("installation").
@@ -92,6 +116,11 @@ func (m *Module) SignIn(ctx context.Context, claims Claims) (Session, error) {
 		if errors.Is(err, sql.ErrNoRows) {
 			if claimedBy.Valid {
 				person, err = m.resolvePreauthorization(ctx, tx, claims)
+				if errors.Is(err, errNoPreauthorization) {
+					// Commit the request while refusing the session.
+					requested = true
+					return m.recordAccessRequest(ctx, tx, claims)
+				}
 				if err != nil {
 					return err
 				}
@@ -144,7 +173,11 @@ func (m *Module) SignIn(ctx context.Context, claims Claims) (Session, error) {
 			return ErrAccessDenied
 		}
 		if linked.UnlinkedAt != nil {
+			// A known but unlinked subject is refused outright; only new identities request access.
 			approved, err := m.resolvePreauthorization(ctx, tx, claims)
+			if errors.Is(err, errNoPreauthorization) {
+				return ErrAccessDenied
+			}
 			if err != nil {
 				return err
 			}
@@ -170,6 +203,9 @@ func (m *Module) SignIn(ctx context.Context, claims Claims) (Session, error) {
 		result = Session{Person: projectPerson(person), Token: token, ExpiresAt: session.ExpiresAt}
 		return nil
 	})
+	if err == nil && requested {
+		return Session{}, ErrAccessRequested
+	}
 	return result, err
 }
 

@@ -123,7 +123,7 @@ func (m *Module) ListPeople(ctx context.Context, token, search string) ([]Person
 }
 
 func (m *Module) GetPerson(ctx context.Context, token, id string) (PersonDetail, error) {
-	result := PersonDetail{Faces: []LinkedFace{}, Identities: []LinkedIdentity{}, Preauthorizations: []Preauthorization{}, Sessions: []BrowserSession{}}
+	result := PersonDetail{Faces: []LinkedFace{}, Identities: []LinkedIdentity{}, Preauthorizations: []Preauthorization{}, Invitations: []Invitation{}, Sessions: []BrowserSession{}}
 	err := m.change(ctx, func(ctx context.Context, tx bun.Tx) error {
 		if _, err := m.actor(ctx, tx, token, true); err != nil {
 			return err
@@ -151,6 +151,17 @@ func (m *Module) GetPerson(ctx context.Context, token, id string) (PersonDetail,
 		}
 		for _, approval := range approvals {
 			result.Preauthorizations = append(result.Preauthorizations, projectPreauthorization(approval))
+		}
+		result.Invitations, err = m.personInvitations(ctx, tx, person.ID)
+		if err != nil {
+			return err
+		}
+		if m.Announcements != nil {
+			announced, err := m.Announcements.Announced(ctx, tx, person.ID.String())
+			if err != nil {
+				return err
+			}
+			result.Announced = AnnouncedContent{Albums: announced.Albums, Entries: announced.Entries}
 		}
 		return nil
 	})

@@ -60,3 +60,32 @@ type Session struct {
 	RenewedAt     time.Time
 	ExpiresAt     time.Time
 }
+
+type Invitation struct {
+	bun.BaseModel      `bun:"table:invitations,alias:invitation"`
+	ID                 UUID `bun:"id,pk,type:uuid"`
+	PersonID           UUID `bun:"person_id,type:uuid"`
+	PreauthorizationID UUID `bun:"preauthorization_id,type:uuid"`
+	DeliveryID         UUID `bun:"delivery_id,type:uuid"`
+	SentBy             UUID `bun:"sent_by,type:uuid"`
+	CreatedAt          time.Time
+}
+
+// AccessRequest records who asked, never whether two identities share a human.
+type AccessRequest struct {
+	bun.BaseModel `bun:"table:access_requests,alias:request"`
+	ID            UUID `bun:"id,pk,type:uuid"`
+	Provider      string
+	Subject       string
+	Email         string
+	EmailVerified bool
+	DisplayName   string
+	PersonID      *UUID `bun:"person_id,type:uuid"`
+	AlbumID       *UUID `bun:"album_id,type:uuid"`
+	Status        string
+	SignInCount   int
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+	ResolvedAt    *time.Time
+	ResolvedBy    *UUID `bun:"resolved_by,type:uuid"`
+}

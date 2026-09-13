@@ -21,6 +21,7 @@ type UseCases interface {
 	PeopleUseCases
 	ProfileUseCases
 	FaceUseCases
+	AdmissionUseCases
 }
 
 type AuthenticationUseCases interface {

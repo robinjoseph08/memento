@@ -18,6 +18,7 @@ import (
 	"github.com/knadh/koanf/providers/file"
 	"github.com/knadh/koanf/v2"
 	"github.com/robinjoseph08/memento/pkg/errorstack"
+	"github.com/robinjoseph08/memento/pkg/notifications"
 )
 
 const defaultConfigPath = "/config/app.yaml"
@@ -51,6 +52,9 @@ type Config struct {
 	DatabaseDebug             bool          `koanf:"database_debug" json:"database_debug"`
 	DatabaseConnectRetryCount int           `koanf:"database_connect_retry_count" json:"database_connect_retry_count" validate:"min=1"`
 	DatabaseConnectRetryDelay time.Duration `koanf:"database_connect_retry_delay" json:"database_connect_retry_delay" validate:"min=0"`
+	SMTPURL                   string        `koanf:"smtp_url" json:"-"`
+	SMTPFrom                  string        `koanf:"smtp_from" json:"smtp_from"`
+	SMTPConcurrency           int           `koanf:"smtp_concurrency" json:"smtp_concurrency" validate:"min=1"`
 	FilesPath                 string        `koanf:"files_path" json:"files_path" validate:"required"`
 	CookieNamespace           string        `koanf:"cookie_namespace" json:"-"`
 	ServerHost                string        `koanf:"server_host" json:"server_host" validate:"required"`
@@ -67,11 +71,18 @@ func defaults() *Config {
 		DatabaseDebug:             false,
 		DatabaseConnectRetryCount: 5,
 		DatabaseConnectRetryDelay: 2 * time.Second,
+		SMTPConcurrency:           5,
 		FilesPath:                 "./tmp/files",
 		CookieNamespace:           "memento",
 		ServerHost:                "0.0.0.0",
 		ServerPort:                3579,
 	}
+}
+
+// MailConfigured reports whether outbound email has SMTP settings. Email stays
+// optional so an installation runs before a mail server exists.
+func (c *Config) MailConfigured() bool {
+	return strings.TrimSpace(c.SMTPURL) != ""
 }
 
 // ImmichBrowserURL is the Immich origin a Curator's browser can open. It falls
@@ -237,6 +248,13 @@ func validateConfig(cfg *Config) error {
 			}
 		}
 		*setting.value = strings.TrimRight(u.String(), "/")
+	}
+	if cfg.MailConfigured() {
+		if _, err := notifications.NewSMTPMailer(cfg.SMTPURL, cfg.SMTPFrom); err != nil {
+			return err
+		}
+	} else if strings.TrimSpace(cfg.SMTPFrom) != "" {
+		return fmt.Errorf("smtp_from: requires smtp_url")
 	}
 	if cfg.AppEnv != "production" && cfg.AppEnv != "development" && cfg.AppEnv != "test" {
 		return fmt.Errorf("app_env: must be production, development, or test")

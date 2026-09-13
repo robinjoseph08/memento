@@ -141,6 +141,9 @@ func TestGoogleHTTPFailures(t *testing.T) {
 		{"no access", "access_denied", func(s *oidcSubstitute, m *googleHTTPModule, c *http.Cookie, q url.Values) {
 			m.signInError = identity.ErrAccessDenied
 		}},
+		{"unknown identity requested access", "access_requested", func(s *oidcSubstitute, m *googleHTTPModule, c *http.Cookie, q url.Values) {
+			m.signInError = identity.ErrAccessRequested
+		}},
 		{"database failure", "sign_in_failed", func(s *oidcSubstitute, m *googleHTTPModule, c *http.Cookie, q url.Values) {
 			m.signInError = errors.New("private-detail")
 		}},
