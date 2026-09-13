@@ -76,7 +76,13 @@ func New(db *bun.DB, now func() time.Time) *Module {
 	if now == nil {
 		now = time.Now
 	}
-	return &Module{db: db, now: now}
+	return &Module{db: db, now: microsecondClock(now)}
+}
+
+// microsecondClock matches PostgreSQL's timestamptz precision so a value
+// returned from memory equals the same value read back from the database.
+func microsecondClock(now func() time.Time) func() time.Time {
+	return func() time.Time { return now().UTC().Truncate(time.Microsecond) }
 }
 
 func (m *Module) Claimed(ctx context.Context) (bool, error) {

@@ -39,7 +39,10 @@ func New(db *bun.DB, mailer Mailer, enqueue EnqueueDelivery, content VisibleCont
 	if now == nil {
 		now = time.Now
 	}
-	return &Module{db: db, mailer: mailer, enqueue: enqueue, content: content, now: now}
+	// Truncate to PostgreSQL's timestamptz precision so in-memory values
+	// equal what is read back from the database.
+	clock := func() time.Time { return now().UTC().Truncate(time.Microsecond) }
+	return &Module{db: db, mailer: mailer, enqueue: enqueue, content: content, now: clock}
 }
 
 // Configured reports whether email can be sent from this installation.
