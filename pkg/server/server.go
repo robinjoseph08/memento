@@ -27,8 +27,9 @@ import (
 )
 
 // New constructs the HTTP server and registers the application's routes and
-// middleware.
-func New(cfg *config.Config, db *bun.DB, imports ...*publishing.Module) (*http.Server, error) {
+// middleware. imports and library may be nil where those routes are not
+// needed; a nil library serves media through a client of its own.
+func New(cfg *config.Config, db *bun.DB, imports *publishing.Module, library *media.Module) (*http.Server, error) {
 	frontend, available, err := webapp.Handler(cfg.PublicURL, publicPageMetadata)
 	if err != nil {
 		return nil, fmt.Errorf("load embedded frontend: %w", err)
@@ -39,10 +40,10 @@ func New(cfg *config.Config, db *bun.DB, imports ...*publishing.Module) (*http.S
 	source := immich.New(cfg.ImmichURL, cfg.ImmichAPIKey)
 	people := identity.New(db, nil)
 	people.ImmichURL = cfg.ImmichBrowserURL()
-	deps := dependencies{identity: people, connection: source, health: db.PingContext, media: media.New(db, source)}
-	if len(imports) > 0 {
-		deps.publishing = imports[0]
+	if library == nil {
+		library = media.New(db, source)
 	}
+	deps := dependencies{identity: people, connection: source, health: db.PingContext, media: library, publishing: imports}
 	return newServer(cfg, frontend, deps)
 }
 

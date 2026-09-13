@@ -71,6 +71,10 @@ export const routes = [
                 path: "/albums/:id/videos",
                 element: <ViewerAlbumPage tab="videos" />,
               },
+              {
+                path: "/albums/:id/videos/:entryID",
+                element: <ViewerAlbumPage tab="videos" />,
+              },
             ],
           },
           { path: "/access-denied", element: <AccessDeniedPage /> },

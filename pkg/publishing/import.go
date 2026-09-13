@@ -285,6 +285,12 @@ func (m *Module) finishImport(ctx context.Context, id string, source immich.Albu
 			if err != nil {
 				return errorstack.CaptureContext(ctx, err)
 			}
+			// Every committed video has a committed extraction task at its checksum.
+			if item.Kind == "VIDEO" && m.Chapters != nil {
+				if err := m.Chapters.RequestChapters(ctx, tx, item.ID, item.Checksum); err != nil {
+					return err
+				}
+			}
 		}
 		moments := map[string]models.Moment{}
 		var nextMomentOrder int64

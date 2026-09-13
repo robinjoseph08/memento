@@ -14,9 +14,28 @@ import (
 
 	"github.com/robinjoseph08/memento/pkg/errcodes"
 	"github.com/robinjoseph08/memento/pkg/errorstack"
+	"github.com/robinjoseph08/memento/pkg/media"
 	"github.com/robinjoseph08/memento/pkg/models"
 	"github.com/uptrace/bun"
 )
+
+// presentationTitle is the Curator's video title when set, otherwise the
+// original filename without its extension.
+func presentationTitle(filename string, videoTitle *string) string {
+	if videoTitle != nil && *videoTitle != "" {
+		return *videoTitle
+	}
+	return strings.TrimSuffix(filename, filepath.Ext(filename))
+}
+
+// projectChapters copies stored chapters into the public shape, never nil.
+func projectChapters(stored []models.Chapter) []Chapter {
+	chapters := make([]Chapter, 0, len(stored))
+	for _, chapter := range stored {
+		chapters = append(chapters, Chapter{Title: chapter.Title, Start: chapter.Start, End: chapter.End})
+	}
+	return chapters
+}
 
 // viewerContext can only be constructed after checking the actor and selected
 // Person. Preview ignores publication, but never borrows the actor's bypass.
@@ -86,12 +105,20 @@ func (v viewerContext) previewURL(entryID, version string) string {
 	return v.mediaURL(entryID, "preview", version)
 }
 
-// downloadURL exists only for a Person's own photos; preview has no download.
-func (v viewerContext) downloadURL(entryID, kind, version string) string {
-	if v.preview || kind != "IMAGE" {
+// downloadURL exists only for a Person's own media; preview has no download.
+func (v viewerContext) downloadURL(entryID, version string) string {
+	if v.preview {
 		return ""
 	}
 	return v.mediaURL(entryID, "original", version)
+}
+
+// playbackURL is the ranged stream for a video, in preview as well.
+func (v viewerContext) playbackURL(entryID, kind, version string) string {
+	if kind != "VIDEO" {
+		return ""
+	}
+	return v.mediaURL(entryID, "playback", version)
 }
 
 func (v viewerContext) mediaURL(entryID, variant, version string) string {
@@ -198,17 +225,22 @@ func (m *Module) ViewEntries(ctx context.Context, actorID, previewPersonID, albu
 			return errcodes.NotFound("Album")
 		}
 		type galleryRow struct {
-			ID         string
-			Kind       string
-			Filename   string
-			CapturedAt time.Time
-			Available  bool
-			Version    string
-			Width      int
-			Height     int
+			ID            string
+			Kind          string
+			Filename      string
+			VideoTitle    *string
+			CapturedAt    time.Time
+			Available     bool
+			Version       string
+			Width         int
+			Height        int
+			ChapterStatus string
+			Chapters      []models.Chapter `bun:"chapters,type:jsonb"`
 		}
 		rows := []galleryRow{}
-		query := viewerEntries(tx, viewer).ColumnExpr("entry.id, item.kind, item.filename, item.captured_at, NOT item.offline AND NOT item.trashed AS available, item.content_version AS version, coalesce(item.width,0) AS width, coalesce(item.height,0) AS height").
+		query := viewerEntries(tx, viewer).ColumnExpr("entry.id, item.kind, item.filename, item.video_title, item.captured_at, NOT item.offline AND NOT item.trashed AS available, item.content_version AS version, coalesce(item.width,0) AS width, coalesce(item.height,0) AS height").
+			ColumnExpr("coalesce(chapter_result.status, '') AS chapter_status, coalesce(chapter_result.chapters, '[]'::jsonb) AS chapters").
+			Join("LEFT JOIN media_chapter_results AS chapter_result ON chapter_result.media_item_id = item.id").
 			Where("entry.album_id = ? AND item.kind = ?", albumID, kind).OrderExpr("item.captured_at, entry.id").Limit(101)
 		if cursorValue != "" {
 			query = query.Where("(item.captured_at, entry.id) > (?::timestamp, ?::uuid)", cursor.CapturedAt, cursor.ID)
@@ -221,13 +253,20 @@ func (m *Module) ViewEntries(ctx context.Context, actorID, previewPersonID, albu
 			rows = rows[:100]
 		}
 		for _, row := range rows {
-			thumbnail, preview, download := "", "", ""
+			thumbnail, preview, download, playback := "", "", "", ""
 			if row.Available {
 				thumbnail = viewer.thumbnailURL(row.ID, row.Version)
 				preview = viewer.previewURL(row.ID, row.Version)
-				download = viewer.downloadURL(row.ID, row.Kind, row.Version)
+				download = viewer.downloadURL(row.ID, row.Version)
+				playback = viewer.playbackURL(row.ID, row.Kind, row.Version)
 			}
-			result.Entries = append(result.Entries, ViewerEntry{ID: row.ID, Kind: row.Kind, Title: strings.TrimSuffix(row.Filename, filepath.Ext(row.Filename)), CapturedAt: row.CapturedAt.Format("2006-01-02T15:04:05.999999999"), Available: row.Available, ThumbnailURL: thumbnail, PreviewURL: preview, DownloadURL: download, Width: row.Width, Height: row.Height})
+			entry := ViewerEntry{ID: row.ID, Kind: row.Kind, Title: presentationTitle(row.Filename, row.VideoTitle), CapturedAt: row.CapturedAt.Format("2006-01-02T15:04:05.999999999"), Available: row.Available,
+				ThumbnailURL: thumbnail, PreviewURL: preview, DownloadURL: download, PlaybackURL: playback, Width: row.Width, Height: row.Height, Chapters: []Chapter{}}
+			if row.Kind == "VIDEO" {
+				entry.ChapterStatus = media.PublicChapterStatus(row.ChapterStatus)
+				entry.Chapters = projectChapters(row.Chapters)
+			}
+			result.Entries = append(result.Entries, entry)
 		}
 		if more {
 			last := result.Entries[len(result.Entries)-1]

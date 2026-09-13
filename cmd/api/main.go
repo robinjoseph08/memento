@@ -13,7 +13,9 @@ import (
 	"github.com/robinjoseph08/memento/pkg/config"
 	"github.com/robinjoseph08/memento/pkg/database"
 	"github.com/robinjoseph08/memento/pkg/errorstack"
+	"github.com/robinjoseph08/memento/pkg/ffprobe"
 	"github.com/robinjoseph08/memento/pkg/immich"
+	"github.com/robinjoseph08/memento/pkg/media"
 	"github.com/robinjoseph08/memento/pkg/migrations"
 	"github.com/robinjoseph08/memento/pkg/publishing"
 	"github.com/robinjoseph08/memento/pkg/server"
@@ -68,18 +70,33 @@ func run(log logger.Logger) error {
 		})
 	}
 
+	source := immich.New(cfg.ImmichURL, cfg.ImmichAPIKey)
+	source.Probe = ffprobe.Command{Path: cfg.FFprobePath}
+	library := media.New(db, source)
 	var imports *publishing.Module
 	jobs, err := worker.New(db, func(ctx context.Context, id string) error {
 		return imports.ExecuteImport(ctx, id, worker.FinalAttempt(ctx))
-	})
+	}, worker.Chapters(func(ctx context.Context, mediaItemID, checksum string) error {
+		return library.ExtractChapters(ctx, mediaItemID, checksum, worker.FinalAttempt(ctx))
+	}, cfg.FFprobeConcurrency))
 	if err != nil {
 		return fmt.Errorf("create worker: %w", err)
 	}
-	imports = publishing.New(db, immich.New(cfg.ImmichURL, cfg.ImmichAPIKey), jobs.EnqueueImport)
+	library.EnqueueChapters = jobs.EnqueueChapters
+	imports = publishing.New(db, source, jobs.EnqueueImport)
 	imports.ImmichURL = cfg.ImmichBrowserURL()
-	srv, err := server.New(cfg, db, imports)
+	imports.Chapters = library
+	srv, err := server.New(cfg, db, imports, library)
 	if err != nil {
 		return fmt.Errorf("create server: %w", err)
+	}
+	// Videos imported before chapter extraction existed get their first probe now.
+	queued, err := library.BackfillChapters(ctx)
+	if err != nil {
+		return fmt.Errorf("queue chapter extraction for existing videos: %w", err)
+	}
+	if queued > 0 {
+		log.Info("queued chapter extraction for existing videos", logger.Data{"videos": queued})
 	}
 	if err := jobs.Start(ctx); err != nil {
 		return fmt.Errorf("start worker: %w", err)

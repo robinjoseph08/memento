@@ -10,24 +10,31 @@ import (
 
 	"github.com/robinjoseph08/memento/pkg/errcodes"
 	"github.com/robinjoseph08/memento/pkg/errorstack"
+	"github.com/robinjoseph08/memento/pkg/ffprobe"
 	"github.com/robinjoseph08/memento/pkg/immich"
 	"github.com/robinjoseph08/memento/pkg/models"
 	"github.com/uptrace/bun"
 )
 
-// Source exposes source album lookup, generated image variants, and originals.
+// Source exposes source album lookup, generated image variants, originals,
+// ranged playback, and chapter probing.
 type Source interface {
 	GetAlbum(context.Context, string) (immich.Album, error)
 	GetAsset(context.Context, string) (immich.Asset, error)
 	Thumbnail(context.Context, string) (immich.Thumbnail, error)
 	Preview(context.Context, string) (immich.Thumbnail, error)
 	Original(context.Context, string) (immich.Original, error)
+	Playback(context.Context, string, immich.PlaybackRequest) (immich.Playback, error)
+	Chapters(context.Context, string) ([]ffprobe.Chapter, error)
 	PersonThumbnail(context.Context, string) (immich.Thumbnail, error)
 }
 
 type Module struct {
 	db     *bun.DB
 	source Source
+	// EnqueueChapters commits extraction tasks with their rows. Leave it nil
+	// only where no chapter work is ever requested, such as media-only tests.
+	EnqueueChapters EnqueueChapters
 }
 
 func New(db *bun.DB, source Source) *Module { return &Module{db: db, source: source} }
@@ -50,12 +57,18 @@ func (m *Module) EntryThumbnail(ctx context.Context, id, version string) (string
 	return item.SourceID, err
 }
 
-// EntryOriginal resolves the source asset and filename behind a photo
-// download. Video originals arrive with playback, so they are not found here.
+// EntryOriginal resolves the source asset and filename behind a photo or
+// video download.
 func (m *Module) EntryOriginal(ctx context.Context, id, version string) (EntryMedia, error) {
-	item, err := m.entryMedia(ctx, id, version, "Photo")
-	if err == nil && item.Kind != "IMAGE" {
-		return EntryMedia{}, errcodes.NotFound("Photo")
+	return m.entryMedia(ctx, id, version, "Download")
+}
+
+// EntryPlayback resolves the source asset behind a video stream. Photos have
+// no playback, so they are not found here.
+func (m *Module) EntryPlayback(ctx context.Context, id, version string) (EntryMedia, error) {
+	item, err := m.entryMedia(ctx, id, version, "Video")
+	if err == nil && item.Kind != "VIDEO" {
+		return EntryMedia{}, errcodes.NotFound("Video")
 	}
 	return item, err
 }
@@ -139,10 +152,10 @@ func (m *Module) viewerImage(ctx context.Context, sourceID, version string, larg
 	return image, redactUpstream(ctx, err)
 }
 
-// viewerOriginal opens the uploaded file behind an authorized photo with the
-// same version check and redaction as generated variants.
+// viewerOriginal opens the uploaded file behind an authorized photo or video
+// with the same version check and redaction as generated variants.
 func (m *Module) viewerOriginal(ctx context.Context, sourceID, version string) (immich.Original, error) {
-	if err := m.checkVersion(ctx, sourceID, version, "Photo"); err != nil {
+	if err := m.checkVersion(ctx, sourceID, version, "Download"); err != nil {
 		return immich.Original{}, redactUpstream(ctx, err)
 	}
 	original, err := m.source.Original(ctx, sourceID)
@@ -151,7 +164,17 @@ func (m *Module) viewerOriginal(ctx context.Context, sourceID, version string) (
 
 // checkOriginal answers a HEAD download: the same version check, no stream.
 func (m *Module) checkOriginal(ctx context.Context, sourceID, version string) error {
-	return redactUpstream(ctx, m.checkVersion(ctx, sourceID, version, "Photo"))
+	return redactUpstream(ctx, m.checkVersion(ctx, sourceID, version, "Download"))
+}
+
+// viewerPlayback opens Immich's playback stream for an authorized video after
+// the same version check, forwarding at most one byte range.
+func (m *Module) viewerPlayback(ctx context.Context, sourceID, version string, request immich.PlaybackRequest) (immich.Playback, error) {
+	if err := m.checkVersion(ctx, sourceID, version, "Video"); err != nil {
+		return immich.Playback{}, redactUpstream(ctx, err)
+	}
+	playback, err := m.source.Playback(ctx, sourceID, request)
+	return playback, redactUpstream(ctx, err)
 }
 
 func redactUpstream(ctx context.Context, err error) error {

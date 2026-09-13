@@ -22,6 +22,7 @@ import (
 	"github.com/labstack/echo/v5"
 	"github.com/robinjoseph08/memento/cmd/immich-smoke/fixture"
 	"github.com/robinjoseph08/memento/pkg/errcodes"
+	"github.com/robinjoseph08/memento/pkg/ffprobe"
 	"github.com/robinjoseph08/memento/pkg/immich"
 	"github.com/robinjoseph08/memento/pkg/media"
 	"github.com/robinjoseph08/memento/pkg/migrations"
@@ -57,7 +58,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "Immich smoke failed:", err)
 		os.Exit(1)
 	}
-	fmt.Printf("PASS Immich %s: manual faces, local dates, scoped access, preview and viewer thumbnail bytes, original photo downloads, publish/unpublish, shared Album deletion, and unchanged source albums\n", release)
+	fmt.Printf("PASS Immich %s: manual faces, local dates, scoped access, preview and viewer thumbnail bytes, original downloads, ranged video playback, original-file range probing with bundled ffprobe chapters, publish/unpublish, shared Album deletion, and unchanged source albums\n", release)
 }
 
 func run(ctx context.Context, release string) (returnErr error) {
@@ -70,6 +71,7 @@ func run(ctx context.Context, release string) (returnErr error) {
 		return err
 	}
 	source := library.Source()
+	source.Probe = ffprobe.Command{}
 	if err := source.CheckImport(ctx); err != nil {
 		return err
 	}
@@ -85,7 +87,23 @@ func run(ctx context.Context, release string) (returnErr error) {
 	if err := waitForPerson(personCtx, source, library.Person, library.Assets); err != nil {
 		return err
 	}
-	before, err := snapshot(ctx, source, library.Albums)
+	videoCtx, cancelVideo := context.WithTimeout(ctx, 3*time.Minute)
+	defer cancelVideo()
+	if err := waitForVideo(videoCtx, source, library.Video); err != nil {
+		return err
+	}
+	// Chapter extraction needs byte ranges on the original-file endpoint. Ask
+	// for them directly so a release that streams whole files is caught here.
+	status, contentRange, rangeBody, err := library.OriginalRange(ctx, library.Video.ID)
+	if err != nil {
+		return err
+	}
+	if status != http.StatusPartialContent || contentRange != fmt.Sprintf("bytes 0-1/%d", len(library.Video.Bytes)) || !bytes.Equal(rangeBody, library.Video.Bytes[:2]) {
+		return fmt.Errorf("the Immich %s original-file endpoint did not honor a byte range: HTTP %d %q", release, status, contentRange)
+	}
+	fmt.Printf("Immich %s: original-file endpoint answers Range: bytes=0-1 with 206 %s, so ffprobe can read headers without a whole-original fallback\n", release, contentRange)
+	sourceAlbums := append(append([]fixture.Album{}, library.Albums...), library.VideoAlbum)
+	before, err := snapshot(ctx, source, sourceAlbums)
 	if err != nil {
 		return err
 	}
@@ -112,6 +130,16 @@ func run(ctx context.Context, release string) (returnErr error) {
 		enqueued++
 		return nil
 	})
+	delivery := media.New(db, source)
+	var chapterTasks []string
+	delivery.EnqueueChapters = func(_ context.Context, tx bun.Tx, mediaItemID, checksum string) error {
+		if tx.Tx == nil {
+			return fmt.Errorf("chapter extraction was requested outside the import transaction")
+		}
+		chapterTasks = append(chapterTasks, mediaItemID+":"+checksum)
+		return nil
+	}
+	module.Chapters = delivery
 	var imported []publishing.AlbumDetail
 	// This in-process HTTP check bypasses sign-in, not the production media module.
 	// It has no listening socket and can only reach this invocation's temporary schema.
@@ -181,13 +209,26 @@ func run(ctx context.Context, release string) (returnErr error) {
 	if enqueued != 2 {
 		return fmt.Errorf("two imports did not enqueue exactly two tasks")
 	}
-	if err := verifyPublishing(ctx, db, module, media.New(db, source), imported, library.Assets); err != nil {
+	if len(chapterTasks) != 0 {
+		return fmt.Errorf("photo imports requested chapter extraction")
+	}
+	videoAlbum, err := importVideoAlbum(ctx, module, delivery, library, &chapterTasks)
+	if err != nil {
+		return fmt.Errorf("video import and chapter extraction through production Immich adapter: %w", err)
+	}
+	if enqueued != 3 {
+		return fmt.Errorf("three imports did not enqueue exactly three import tasks")
+	}
+	if err := verifyPublishing(ctx, db, module, delivery, imported, library.Assets); err != nil {
 		return fmt.Errorf("publishing through production Immich adapter: %w", err)
 	}
-	if enqueued != 2 {
+	if err := verifyVideoPublishing(ctx, db, module, delivery, videoAlbum, library.Video); err != nil {
+		return fmt.Errorf("video playback through production Immich adapter: %w", err)
+	}
+	if enqueued != 3 || len(chapterTasks) != 1 {
 		return fmt.Errorf("publication, unpublication, or deletion enqueued unexpected durable work")
 	}
-	after, err := snapshot(ctx, source, library.Albums)
+	after, err := snapshot(ctx, source, sourceAlbums)
 	if err != nil {
 		return err
 	}
@@ -236,6 +277,93 @@ func waitForMedia(ctx context.Context, source *immich.Client, assets []fixture.A
 		}
 	}
 	return nil
+}
+
+// waitForVideo waits for Immich to finish reading the upload: a thumbhash
+// proves the poster exists, and two identical reads prove metadata settled so
+// the content version imported below still matches when media is served.
+func waitForVideo(ctx context.Context, source *immich.Client, video fixture.Video) error {
+	var lastErr error
+	var previous *immich.Asset
+	for {
+		actual, err := source.GetAsset(ctx, video.ID)
+		if err == nil {
+			switch {
+			case actual.Kind != "VIDEO":
+				err = fmt.Errorf("upload %s was not recognized as a video", video.Filename)
+			case actual.Thumbhash == nil || *actual.Thumbhash == "":
+				err = fmt.Errorf("generated poster not ready for %s", video.Filename)
+			case previous != nil && reflect.DeepEqual(actual, *previous):
+				return nil
+			default:
+				previous = &actual
+				err = fmt.Errorf("waiting for stable video metadata for %s", video.Filename)
+			}
+		}
+		lastErr = err
+		timer := time.NewTimer(time.Second)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return fmt.Errorf("wait for video metadata: %w; last result: %w", ctx.Err(), lastErr)
+		case <-timer.C:
+		}
+	}
+}
+
+// importVideoAlbum imports the video album, then runs the committed chapter
+// task through the production adapter and the bundled ffprobe.
+func importVideoAlbum(ctx context.Context, module *publishing.Module, delivery *media.Module, library *fixture.Library, chapterTasks *[]string) (publishing.AlbumDetail, error) {
+	pending, err := module.StartImport(ctx, library.VideoAlbum.ID)
+	if err != nil {
+		return pending, err
+	}
+	if err := module.ExecuteImport(ctx, pending.ID); err != nil {
+		return pending, err
+	}
+	detail, err := module.GetAlbum(ctx, pending.ID)
+	if err != nil {
+		return detail, err
+	}
+	if detail.Status != "complete" || detail.VideoCount != 1 || detail.PhotoCount != 0 || len(detail.Moments) != 1 || len(detail.Moments[0].Entries) != 1 {
+		return detail, fmt.Errorf("video album import differs from its single-video source")
+	}
+	entry := detail.Moments[0].Entries[0]
+	if entry.Kind != "VIDEO" || entry.Filename != library.Video.Filename || !entry.Available || entry.ChapterStatus != "pending" || entry.Title != "" {
+		return detail, fmt.Errorf("imported video entry differs: %+v", entry)
+	}
+	if err := checkMediaEndpoint(ctx, curatorMediaHandler(delivery), entry.ThumbnailURL); err != nil {
+		return detail, fmt.Errorf("video poster: %w", err)
+	}
+	if len(*chapterTasks) != 1 || !strings.HasPrefix((*chapterTasks)[0], entry.MediaID+":") {
+		return detail, fmt.Errorf("import did not commit exactly one chapter task for the video")
+	}
+	checksum := strings.TrimPrefix((*chapterTasks)[0], entry.MediaID+":")
+	if err := delivery.ExtractChapters(ctx, entry.MediaID, checksum, true); err != nil {
+		return detail, fmt.Errorf("ffprobe against the original-file endpoint: %w", err)
+	}
+	detail, err = module.GetAlbum(ctx, pending.ID)
+	if err != nil {
+		return detail, err
+	}
+	entry = detail.Moments[0].Entries[0]
+	titles := []string{}
+	for _, chapter := range entry.Chapters {
+		titles = append(titles, chapter.Title)
+	}
+	if entry.ChapterStatus != "complete" || !slices.Equal(titles, library.Video.Chapters) || entry.Chapters[0].Start != 0 || entry.Chapters[2].Start != 4 {
+		return detail, fmt.Errorf("chapter extraction result differs: status %q chapters %+v", entry.ChapterStatus, entry.Chapters)
+	}
+	fmt.Printf("Imported %q: bundled ffprobe read %d chapters from the authenticated original through HTTP ranges\n", detail.Title, len(entry.Chapters))
+	return detail, nil
+}
+
+func curatorMediaHandler(delivery *media.Module) http.Handler {
+	handler := echo.New()
+	handler.HTTPErrorHandler = errcodes.NewHandler().Handle
+	passthrough := func(next echo.HandlerFunc) echo.HandlerFunc { return next }
+	media.RegisterRoutes(handler, delivery, passthrough, passthrough)
+	return handler
 }
 
 func waitForPerson(ctx context.Context, source *immich.Client, expected fixture.Person, assets []fixture.Asset) error {

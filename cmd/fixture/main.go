@@ -124,6 +124,7 @@ func run(ctx context.Context, binary string, offline bool) error {
 	fmt.Fprintf(os.Stderr, "Open %s\nReset: stop this command and start it again. Ctrl-C removes only its temporary schema.\n", apiURL)
 	fmt.Fprintf(os.Stderr, "Status:  curl %s/__fixture/state\nOffline: curl -X POST -H 'Content-Type: application/json' -d '{\"available\":false}' %s/__fixture/state\nOnline:  curl -X POST -H 'Content-Type: application/json' -d '{\"available\":true}' %s/__fixture/state\nRestart: curl -X POST %s/__fixture/restart\n", fixtureURL, fixtureURL, fixtureURL, fixtureURL)
 	fmt.Fprintf(os.Stderr, "Import checkpoints: curl %s/__fixture/checkpoints\nPause metadata: curl -X POST -H 'Content-Type: application/json' -d '{\"mode\":\"pause\"}' %s/__fixture/checkpoints/asset-metadata\nRelease: curl -X POST -H 'Content-Type: application/json' -d '{\"mode\":\"open\"}' %s/__fixture/checkpoints/asset-metadata\nRequests: curl %s/__fixture/requests\n", fixtureURL, fixtureURL, fixtureURL, fixtureURL)
+	fmt.Fprintf(os.Stderr, "Chapter probe (Workbench - Videos, coast-retry): fail, pause, or open with curl -X POST -H 'Content-Type: application/json' -d '{\"mode\":\"fail\"}' %s/__fixture/checkpoints/chapter-probe\ncoast-broken never serves its original; birthday-party has three chapters.\n", fixtureURL)
 	select {
 	case <-ctx.Done():
 		return nil

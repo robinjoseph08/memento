@@ -31,8 +31,8 @@ func (c *Client) Preview(ctx context.Context, id string) (Thumbnail, error) {
 
 // Original opens an asset's uploaded file for download. Any content type is
 // accepted because RAW and other camera formats vary; types outside image/*
-// are reported as octet-stream so the caller never renders them. The caller
-// must close Body.
+// and video/* are reported as octet-stream so the caller never renders them.
+// The caller must close Body.
 func (c *Client) Original(ctx context.Context, id string) (Original, error) {
 	if id == "" {
 		return Original{}, errcodes.ValidationError("An Immich asset ID is required.")
@@ -42,7 +42,7 @@ func (c *Client) Original(ctx context.Context, id string) (Original, error) {
 		return Original{}, err
 	}
 	contentType, _, err := mime.ParseMediaType(response.Header.Get("Content-Type"))
-	if err != nil || (!strings.HasPrefix(contentType, "image/") && contentType != "application/octet-stream") {
+	if err != nil || (!strings.HasPrefix(contentType, "image/") && !strings.HasPrefix(contentType, "video/") && contentType != "application/octet-stream") {
 		contentType = "application/octet-stream"
 	}
 	body := &thumbnailBody{sanitize: func(err error) error { return transportError(ctx, err) }, body: response.Body}

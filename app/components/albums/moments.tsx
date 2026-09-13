@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 
 import {
   useRefreshMomentFaces,
@@ -8,7 +8,7 @@ import {
 } from "../../hooks/queries/albums";
 import { useUnsavedChanges } from "../../hooks/use-unsaved-changes";
 import { fieldErrors } from "../../lib/http";
-import { withParams } from "../../lib/utils";
+import { cn, withParams } from "../../lib/utils";
 import type {
   AlbumDetail,
   Entry,
@@ -46,9 +46,22 @@ export function MomentPane({
   const [params, setParams] = useSearchParams();
   const heading = momentHeading(moment);
   const all = params.get("media") === "all";
-  const visible = all
-    ? moment.entries
-    : moment.entries.slice(0, initialMediaCount);
+  // The Moment can be narrowed to its photos or its videos, so a Curator can
+  // go through every video's title and chapters without hunting through photos.
+  const kind =
+    params.get("kind") === "photos" || params.get("kind") === "videos"
+      ? params.get("kind")
+      : "all";
+  const photos = moment.entries.filter((entry) => entry.kind === "IMAGE");
+  const videos = moment.entries.filter((entry) => entry.kind === "VIDEO");
+  const entries =
+    kind === "photos" ? photos : kind === "videos" ? videos : moment.entries;
+  const visible = all ? entries : entries.slice(0, initialMediaCount);
+  const tabs = [
+    { key: "all", label: "All", count: moment.entries.length },
+    { key: "photos", label: "Photos", count: photos.length },
+    { key: "videos", label: "Videos", count: videos.length },
+  ] as const;
   const [selection, setSelection] = useState<string[] | null>(null);
   const selecting = selection !== null;
   const selected = selection ?? [];
@@ -118,26 +131,63 @@ export function MomentPane({
           refreshing={refresh.isPending}
         />
       </div>
+      <nav
+        aria-label="Moment media kind"
+        className="mt-6 flex border-b border-border"
+      >
+        {tabs.map((tab) => (
+          <Link
+            aria-current={kind === tab.key ? "page" : undefined}
+            className={cn(
+              "-mb-px inline-flex items-center gap-2 border-b-2 px-3 py-2 text-sm",
+              kind === tab.key
+                ? "border-primary text-foreground"
+                : "border-transparent text-muted hover:text-foreground",
+            )}
+            key={tab.key}
+            to={`?${withParams(params, { kind: tab.key === "all" ? null : tab.key })}`}
+          >
+            {tab.label}{" "}
+            <span
+              className={cn(
+                "rounded-sm px-1.5 text-xs",
+                kind === tab.key
+                  ? "bg-primary/15 text-accent-foreground"
+                  : "bg-surface",
+              )}
+            >
+              {tab.count}
+            </span>
+          </Link>
+        ))}
+      </nav>
       <form
         aria-label={`Select media in ${moment.label}`}
-        className="mt-6"
+        className="mt-3"
         onSubmit={(event) => event.preventDefault()}
       >
         <div className="flex min-h-10 flex-wrap items-center justify-between gap-3">
           {selecting ? (
             <label className="flex cursor-pointer items-center gap-2 text-xs">
               <input
-                aria-label={`Select all ${moment.entries.length} items`}
+                aria-label={`Select all ${entries.length} items`}
                 checked={
-                  moment.entries.length > 0 &&
-                  selected.length === moment.entries.length
+                  entries.length > 0 &&
+                  entries.every((entry) => selected.includes(entry.id))
                 }
                 className="size-4 cursor-pointer accent-primary"
                 onChange={(event) =>
-                  setSelection(
+                  setSelection((current) =>
                     event.target.checked
-                      ? moment.entries.map((entry) => entry.id)
-                      : [],
+                      ? [
+                          ...new Set([
+                            ...(current ?? []),
+                            ...entries.map((entry) => entry.id),
+                          ]),
+                        ]
+                      : (current ?? []).filter(
+                          (id) => !entries.some((entry) => entry.id === id),
+                        ),
                   )
                 }
                 type="checkbox"
@@ -146,14 +196,14 @@ export function MomentPane({
             </label>
           ) : (
             <p className="text-xs text-muted">
-              {visible.length} of{" "}
-              {countLabel(moment.entries.length, "item", "items")} shown
+              {visible.length} of {countLabel(entries.length, "item", "items")}{" "}
+              shown
             </p>
           )}
           <div className="flex flex-wrap items-center gap-1">
             {/* Stays available while selecting so Select all never reaches
                 items the Curator has not seen. */}
-            {moment.entries.length > initialMediaCount && (
+            {entries.length > initialMediaCount && (
               <Button
                 className="text-xs"
                 onClick={() => showAll(!all)}
@@ -161,7 +211,7 @@ export function MomentPane({
                 type="button"
                 variant="ghost"
               >
-                {all ? "Show fewer" : `Show all ${moment.entries.length}`}
+                {all ? "Show fewer" : `Show all ${entries.length}`}
               </Button>
             )}
             {selecting ? (
@@ -215,7 +265,7 @@ export function MomentPane({
                     type="button"
                     variant="outline"
                   >
-                    Item access
+                    {single.kind === "VIDEO" ? "Video details" : "Item access"}
                   </Button>
                 )}
                 <Button
@@ -239,6 +289,11 @@ export function MomentPane({
             )}
           </div>
         </div>
+        {entries.length === 0 && (
+          <p className="mt-3 text-sm text-muted">
+            No {kind === "all" ? "items" : kind} in this Moment.
+          </p>
+        )}
         <ul
           aria-label="Moment media"
           className="mt-3 flex flex-wrap items-start gap-x-2 gap-y-4"

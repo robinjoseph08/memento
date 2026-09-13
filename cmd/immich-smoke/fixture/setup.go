@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/robinjoseph08/memento/internal/testmedia"
 	"github.com/robinjoseph08/memento/pkg/immich"
 )
 
@@ -36,6 +37,15 @@ type Asset struct {
 	Photo
 }
 
+// Video is the uploaded chaptered WebM. Its capture time is the upload
+// timestamp because the file carries no camera metadata.
+type Video struct {
+	ID       string
+	Filename string
+	Bytes    []byte
+	Chapters []string
+}
+
 type Person struct {
 	ID, Name, BirthDate, AssetID string
 	ImageWidth, ImageHeight      int
@@ -43,15 +53,41 @@ type Person struct {
 }
 
 // Library retains the read secret privately; bootstrap sessions never reach Memento.
+// Albums holds the two overlapping photo albums; VideoAlbum holds the video alone.
 type Library struct {
-	Albums  []Album
-	Assets  []Asset
-	Person  Person
-	baseURL string
-	secret  string
+	Albums     []Album
+	Assets     []Asset
+	Person     Person
+	Video      Video
+	VideoAlbum Album
+	baseURL    string
+	secret     string
 }
 
 func (f *Library) Source() *immich.Client { return immich.New(f.baseURL, f.secret) }
+
+// OriginalRange asks Immich's original-file endpoint for the first two bytes
+// with the read key, the way ffprobe does, and reports whether the server
+// honored the range. It exists so the smoke can prove range support directly
+// rather than infer it from a successful probe.
+func (f *Library) OriginalRange(ctx context.Context, id string) (status int, contentRange string, body []byte, err error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, f.baseURL+"/api/assets/"+url.PathEscape(id)+"/original", nil)
+	if err != nil {
+		return 0, "", nil, fmt.Errorf("build range request")
+	}
+	req.Header.Set("X-Api-Key", f.secret)
+	req.Header.Set("Range", "bytes=0-1")
+	response, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+	if err != nil {
+		return 0, "", nil, fmt.Errorf("original range request: transport failure")
+	}
+	defer func() { _ = response.Body.Close() }()
+	body, err = io.ReadAll(io.LimitReader(response.Body, 1<<20))
+	if err != nil {
+		return 0, "", nil, fmt.Errorf("original range request: read failure")
+	}
+	return response.StatusCode, response.Header.Get("Content-Range"), body, nil
+}
 
 type api struct {
 	baseURL string
@@ -161,11 +197,19 @@ func Setup(ctx context.Context, baseURL, expectedRelease string) (*Library, erro
 	}
 	f := &Library{baseURL: baseURL}
 	for i, photo := range Photos() {
-		id, err := a.upload(ctx, photo, i)
+		data, err := JPEG(photo, i)
+		if err != nil {
+			return nil, err
+		}
+		id, err := a.upload(ctx, photo.Filename, data)
 		if err != nil {
 			return nil, err
 		}
 		f.Assets = append(f.Assets, Asset{ID: id, Photo: photo})
+	}
+	f.Video = Video{Filename: "smoke-chapters.webm", Bytes: testmedia.Chaptered, Chapters: []string{"Arrival", "Cake", "Goodbyes"}}
+	if f.Video.ID, err = a.upload(ctx, f.Video.Filename, f.Video.Bytes); err != nil {
+		return nil, err
 	}
 	person := Person{Name: "Smoke person", BirthDate: "1990-01-02", AssetID: f.Assets[0].ID, ImageWidth: 64, ImageHeight: 48, X: 8, Y: 6, Width: 20, Height: 24}
 	var createdPerson struct {
@@ -208,6 +252,20 @@ func Setup(ctx context.Context, baseURL, expectedRelease string) (*Library, erro
 		}
 		f.Albums = append(f.Albums, album)
 	}
+	f.VideoAlbum = Album{Name: "Smoke album 3", Description: "Unchanged source description 3", AssetIDs: []string{f.Video.ID}, CoverAssetID: f.Video.ID}
+	var videoAlbum struct {
+		ID string `json:"id"`
+	}
+	if err := a.json(ctx, "POST", "/albums", map[string]any{"albumName": f.VideoAlbum.Name, "description": f.VideoAlbum.Description, "assetIds": f.VideoAlbum.AssetIDs}, &videoAlbum); err != nil {
+		return nil, err
+	}
+	if videoAlbum.ID == "" {
+		return nil, fmt.Errorf("fixture video album has no ID")
+	}
+	f.VideoAlbum.ID = videoAlbum.ID
+	if err := a.json(ctx, "PATCH", "/albums/"+f.VideoAlbum.ID, map[string]string{"albumThumbnailAssetId": f.VideoAlbum.CoverAssetID}, nil); err != nil {
+		return nil, err
+	}
 	var key struct {
 		Secret string `json:"secret"`
 		APIKey struct {
@@ -225,14 +283,10 @@ func Setup(ctx context.Context, baseURL, expectedRelease string) (*Library, erro
 	return f, nil
 }
 
-func (a *api) upload(ctx context.Context, photo Photo, index int) (string, error) {
-	data, err := JPEG(photo, index)
-	if err != nil {
-		return "", err
-	}
+func (a *api) upload(ctx context.Context, filename string, data []byte) (string, error) {
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
-	file, err := writer.CreateFormFile("assetData", photo.Filename)
+	file, err := writer.CreateFormFile("assetData", filename)
 	if err != nil {
 		return "", err
 	}

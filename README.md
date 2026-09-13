@@ -48,6 +48,10 @@ Install [mise](https://mise.jdx.dev/) and Docker Desktop or another Docker
 engine with Compose support. The development commands use Unix process groups
 and file locks, so native Windows development requires WSL.
 
+Install `ffmpeg` as well (`brew install ffmpeg` on macOS, `apt install ffmpeg`
+on Debian and Ubuntu). Memento runs its `ffprobe` binary to read video
+chapters, and the adapter tests and browser tests skip or fail without it.
+
 ## Set up the main worktree
 
 Run setup from the main Git worktree first:
@@ -191,12 +195,13 @@ because this check needs only metadata extraction and generated thumbnails.
 Fixtures use supported Immich APIs, not database tables. A non-admin source
 owner creates a key with exactly `album.read`, `asset.download`, `asset.read`,
 `asset.view`, `face.read`, and `person.read`.
-The smoke imports two overlapping albums through Memento's production adapter
-and publishing module. It checks EXIF capture dates around midnight, tied entry
-ordering, shared Media Items, generated thumbnails and original downloads
-through production media HTTP routes, private cache validators, and unchanged
-source album titles,
-descriptions, and membership. The in-process media check bypasses sign-in and
+The smoke imports two overlapping photo albums and one video album through
+Memento's production adapter and publishing module. It checks EXIF capture dates
+around midnight, tied entry ordering, shared Media Items, generated thumbnails
+and original downloads through production media HTTP routes, private cache
+validators, ranged video playback, byte-range reads of the original file, real
+`ffprobe` chapter extraction, and unchanged source album titles, descriptions,
+and membership. The in-process media check bypasses sign-in and
 does not expose an HTTP listener. Fixture creation helpers live in
 `cmd/immich-smoke/fixture` for reuse by release compatibility tests.
 
@@ -235,6 +240,11 @@ instance base URL without `/api`. Environment values override YAML.
 `PUBLIC_URL` must match the browser origin and controls cookie security and
 mutation origin checks. See `app.example.yaml` for a deployment example.
 
+The image bundles `ffprobe` from Alpine's `ffmpeg` package for video chapters,
+which adds roughly 110 MB because Alpine ships no ffprobe-only package.
+`FFPROBE_PATH` names another binary when the process runs outside the image,
+and `FFPROBE_CONCURRENCY` (default `1`) bounds how many probes run at once.
+
 ### Connect Immich for imports
 
 The initial import gate supports Immich **3.0.x and 3.1.x**. Other versions can
@@ -248,12 +258,15 @@ albums. Grant only `album.read`, `asset.download`, `asset.read`, `asset.view`,
 `face.read`, and `person.read`, then set `IMMICH_API_KEY` on Memento's server.
 The face and person permissions let Memento read face associations and person
 thumbnails for access suggestions and avatars. `asset.download` lets authorized
-viewers save an original photo; Curator preview never downloads. Installations
-created before downloads existed must add `asset.download` to their key, or
-every download fails with "Media is unavailable" and the server log records the
-missing permission. No write permission is needed. Memento uses GET requests plus Immich's read-only
-`POST /search/metadata` endpoint for membership pagination. It never edits
-source albums or assets.
+viewers save an original photo or video and lets `ffprobe` read chapters from
+the original file; Curator preview never downloads. `asset.view` also serves
+video playback, which proxies Immich's playback stream with byte ranges so a
+long video seeks without downloading first. Installations created before
+downloads existed must add `asset.download` to their key, or every download
+fails with "Media is unavailable" and the server log records the missing
+permission. No write permission is needed. Memento uses GET requests plus
+Immich's read-only `POST /search/metadata` endpoint for membership pagination.
+It never edits source albums or assets.
 
 Face review links each Immich person to its page in Immich so merging duplicate
 faces or changing a featured photo happens there. Those links use `IMMICH_URL`
@@ -266,6 +279,16 @@ pool. Two imports can run at once, with three automatic attempts and a
 the next startup. After a forced process termination, stale work becomes
 eligible for automatic recovery after 16 minutes. The Album page reports
 missing progress as interrupted; retry remains available after failure.
+
+Video chapters use the same runtime on a separate `ffprobe` queue. Every
+imported video is probed once per source checksum, with three attempts, a
+one-minute budget per probe, and a three-minute limit per task, and videos
+imported before this capability existed are queued at the next start. `ffprobe` reads Immich's original-file endpoint
+through HTTP ranges and never downloads a complete original. A video with no
+chapters is a normal, finished result. A failed probe is shown in the Curator's
+video details with a retry, and never blocks playback or publication. Curators
+can also give a video a title there; the filename without its extension shows
+until they do.
 
 A completed import is unpublished. Memento owns its title, while the description
 is the last imported Immich description and cannot be edited in Memento. No

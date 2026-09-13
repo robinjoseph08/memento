@@ -15,12 +15,20 @@ import (
 	"github.com/robinjoseph08/memento/pkg/errcodes"
 	"github.com/robinjoseph08/memento/pkg/errorstack"
 	"github.com/robinjoseph08/memento/pkg/immich"
+	"github.com/robinjoseph08/memento/pkg/media"
 	"github.com/robinjoseph08/memento/pkg/models"
 	"github.com/uptrace/bun"
 )
 
 // EnqueueImport participates in the caller's transaction. It must not execute work inline.
 type EnqueueImport func(context.Context, bun.Tx, string) error
+
+// ChapterService is Media's chapter extraction seam. Requests join the import
+// transaction so a committed video always has its committed task.
+type ChapterService interface {
+	RequestChapters(ctx context.Context, tx bun.Tx, mediaItemID models.UUID, checksum string) error
+	RetryChapters(ctx context.Context, mediaItemID string) error
+}
 
 type Module struct {
 	db      *bun.DB
@@ -29,6 +37,9 @@ type Module struct {
 	// ImmichURL is the browser-reachable Immich origin used for "Open in
 	// Immich" links. Empty hides those links.
 	ImmichURL string
+	// Chapters queues extraction for imported videos. Nil, as in tests that
+	// never look at chapters, imports videos without probing them.
+	Chapters ChapterService
 }
 
 func New(db *bun.DB, source immich.Library, enqueue EnqueueImport) *Module {
@@ -151,10 +162,16 @@ func getAlbum(ctx context.Context, db bun.IDB, id, immichURL string) (AlbumDetai
 		EntryID          models.UUID
 		MomentID         models.UUID
 		models.MediaItem `bun:"embed:"`
+		ChapterStatus    string
+		ChapterMessage   string
+		Chapters         []models.Chapter `bun:"chapters,type:jsonb"`
 	}
 	var entries []galleryEntry
 	err = db.NewSelect().TableExpr("album_entries AS entry").ColumnExpr("entry.id AS entry_id, entry.moment_id, item.*").
-		Join("JOIN media_items AS item ON item.id = entry.media_item_id").Where("entry.album_id = ? AND entry.removed_at IS NULL", id).
+		ColumnExpr("coalesce(chapter_result.status, '') AS chapter_status, coalesce(chapter_result.message, '') AS chapter_message, coalesce(chapter_result.chapters, '[]'::jsonb) AS chapters").
+		Join("JOIN media_items AS item ON item.id = entry.media_item_id").
+		Join("LEFT JOIN media_chapter_results AS chapter_result ON chapter_result.media_item_id = item.id").
+		Where("entry.album_id = ? AND entry.removed_at IS NULL", id).
 		OrderExpr("item.captured_at, item.source_id COLLATE \"C\", entry.id").Scan(ctx, &entries)
 	if err != nil {
 		return result, errorstack.CaptureContext(ctx, err)
@@ -162,9 +179,21 @@ func getAlbum(ctx context.Context, db bun.IDB, id, immichURL string) (AlbumDetai
 	byMoment := map[models.UUID][]Entry{}
 	momentDates := map[models.UUID][]string{}
 	for _, e := range entries {
-		byMoment[e.MomentID] = append(byMoment[e.MomentID], Entry{ID: e.EntryID.String(), MediaID: e.ID.String(), Filename: e.Filename, Kind: e.Kind,
+		entry := Entry{ID: e.EntryID.String(), MediaID: e.ID.String(), Filename: e.Filename, Kind: e.Kind,
 			CapturedAt: e.CapturedAt.Format("2006-01-02T15:04:05.999999999"), Available: !e.Offline && !e.Trashed,
-			ThumbnailURL: "/api/media/entries/" + e.EntryID.String() + "/thumbnail?v=" + e.ContentVersion})
+			ThumbnailURL: "/api/media/entries/" + e.EntryID.String() + "/thumbnail?v=" + e.ContentVersion, Chapters: []Chapter{}}
+		if e.Kind == "VIDEO" {
+			if e.VideoTitle != nil {
+				entry.Title = *e.VideoTitle
+			}
+			if entry.Available {
+				entry.PlaybackURL = "/api/media/entries/" + e.EntryID.String() + "/playback?v=" + e.ContentVersion
+			}
+			entry.ChapterStatus = media.PublicChapterStatus(e.ChapterStatus)
+			entry.ChapterMessage = e.ChapterMessage
+			entry.Chapters = projectChapters(e.Chapters)
+		}
+		byMoment[e.MomentID] = append(byMoment[e.MomentID], entry)
 		momentDates[e.MomentID] = append(momentDates[e.MomentID], e.CapturedAt.Format("2006-01-02"))
 	}
 	sort.Slice(moments, func(i, j int) bool {

@@ -110,21 +110,29 @@ func testSetup(t *testing.T, release string, assetIDs []string) {
 				return
 			}
 			defer func() { _ = r.MultipartForm.RemoveAll() }()
-			file, _, err := r.FormFile("assetData")
+			file, header, err := r.FormFile("assetData")
 			if err != nil {
 				t.Error(err)
 				w.WriteHeader(http.StatusBadRequest)
 				return
 			}
 			defer func() { _ = file.Close() }()
-			if _, err := jpeg.Decode(file); err != nil {
-				t.Error(err)
+			if uploads < len(assetIDs) {
+				if _, err := jpeg.Decode(file); err != nil {
+					t.Error(err)
+				}
+			} else if header.Filename != "smoke-chapters.webm" {
+				t.Errorf("unexpected fifth upload %q", header.Filename)
 			}
 			if r.FormValue("fileCreatedAt") != "2020-01-01T00:00:00Z" {
 				t.Error("upload timestamp must differ from EXIF")
 			}
 			uploads++
-			_ = json.NewEncoder(w).Encode(map[string]string{"id": assetIDs[uploads-1], "status": "created"})
+			id := "video-1"
+			if uploads <= len(assetIDs) {
+				id = assetIDs[uploads-1]
+			}
+			_ = json.NewEncoder(w).Encode(map[string]string{"id": id, "status": "created"})
 		case "/api/people":
 			if r.Method != http.MethodPost || r.Header.Get("Authorization") != "Bearer source-token" {
 				t.Error("person creation must use source session")
@@ -165,12 +173,15 @@ func testSetup(t *testing.T, release string, assetIDs []string) {
 			if albumCount == 1 {
 				expected = assetIDs[1:3]
 			}
+			if albumCount == 2 {
+				expected = []string{"video-1"}
+			}
 			if !reflect.DeepEqual(expected, body.AssetIDs) {
 				t.Error("wrong overlapping membership")
 			}
 			albumCount++
 			_ = json.NewEncoder(w).Encode(map[string]string{"id": fmt.Sprintf("album-%d", albumCount)})
-		case "/api/albums/album-1", "/api/albums/album-2":
+		case "/api/albums/album-1", "/api/albums/album-2", "/api/albums/album-3":
 			if r.Method != http.MethodPatch || r.Header.Get("Authorization") != "Bearer source-token" {
 				t.Error("album cover must be updated by PATCH using source session")
 			}
@@ -178,8 +189,12 @@ func testSetup(t *testing.T, release string, assetIDs []string) {
 			if json.NewDecoder(r.Body).Decode(&body) != nil {
 				t.Error("invalid cover body")
 			}
-			if !reflect.DeepEqual(map[string]string{"albumThumbnailAssetId": "asset-3"}, body) {
-				t.Error("cover update must select only the later source ID from the equal-time pair")
+			want := "asset-3"
+			if r.URL.Path == "/api/albums/album-3" {
+				want = "video-1"
+			}
+			if !reflect.DeepEqual(map[string]string{"albumThumbnailAssetId": want}, body) {
+				t.Error("cover update must select only the later source ID from the equal-time pair, or the video")
 			}
 			covers[strings.TrimPrefix(r.URL.Path, "/api/albums/")] = body["albumThumbnailAssetId"]
 			_, _ = io.WriteString(w, `{}`)
@@ -207,9 +222,11 @@ func testSetup(t *testing.T, release string, assetIDs []string) {
 	require.NoError(t, err)
 	require.Len(t, library.Assets, 4)
 	require.Len(t, library.Albums, 2)
+	require.Equal(t, "video-1", library.Video.ID)
+	require.Equal(t, Album{ID: "album-3", Name: "Smoke album 3", Description: "Unchanged source description 3", AssetIDs: []string{"video-1"}, CoverAssetID: "video-1"}, library.VideoAlbum)
 	require.True(t, manualFaceCreated)
 	require.Equal(t, Person{ID: "person-1", Name: "Smoke person", BirthDate: "1990-01-02", AssetID: assetIDs[0], ImageWidth: 64, ImageHeight: 48, X: 8, Y: 6, Width: 20, Height: 24}, library.Person)
-	require.Equal(t, map[string]string{"album-1": "asset-3", "album-2": "asset-3"}, covers)
+	require.Equal(t, map[string]string{"album-1": "asset-3", "album-2": "asset-3", "album-3": "video-1"}, covers)
 	for _, album := range library.Albums {
 		require.Equal(t, "asset-3", album.CoverAssetID)
 	}

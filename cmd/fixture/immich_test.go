@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/robinjoseph08/memento/internal/testmedia"
 	"github.com/robinjoseph08/memento/pkg/immich"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -60,7 +61,7 @@ func TestFixtureImportContract(t *testing.T) {
 	require.NoError(t, client.CheckImport(t.Context()))
 	albums, err := client.ListAlbums(t.Context())
 	require.NoError(t, err)
-	require.Len(t, albums, 34)
+	require.Len(t, albums, 35)
 	album, err := client.GetAlbum(t.Context(), "fixture-album-coast")
 	require.NoError(t, err)
 	assert.Equal(t, 6, album.Count)
@@ -167,6 +168,7 @@ func TestFixtureCheckpoints(t *testing.T) {
 	for _, test := range []struct{ name, path string }{
 		{"asset-metadata", "/api/assets/fixture-asset-02"},
 		{"import-release", "/api/assets/fixture-asset-06"},
+		{"chapter-probe", "/api/assets/workbench-video-retry/original"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -221,4 +223,60 @@ func TestFixtureCheckpoints(t *testing.T) {
 			fixture.mu.RUnlock()
 		})
 	}
+}
+
+func TestFixtureVideosServeRangedOriginalsAndPlayback(t *testing.T) {
+	t.Parallel()
+	fixture := newImmichFixture(false)
+	server := httptest.NewServer(fixture)
+	t.Cleanup(server.Close)
+	client := immich.New(server.URL, fixtureAPIKey)
+	videos, next, err := client.ListMembers(t.Context(), "workbench-videos", 1)
+	require.NoError(t, err)
+	require.Len(t, videos, 103)
+	assert.Zero(t, next)
+	assert.Equal(t, "workbench-video-party", videos[0].ID)
+	assert.Equal(t, "birthday-party.webm", videos[0].Filename)
+	checksums := map[string]bool{}
+	for _, member := range videos {
+		assert.Equal(t, "VIDEO", member.Kind)
+		checksums[member.Checksum] = true
+	}
+	assert.Len(t, checksums, 103, "every clip is its own Media Item")
+	get := func(path string, headers map[string]string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("X-Api-Key", fixtureAPIKey)
+		for key, value := range headers {
+			req.Header.Set(key, value)
+		}
+		response := httptest.NewRecorder()
+		fixture.ServeHTTP(response, req)
+		return response
+	}
+	full := get("/api/assets/workbench-video-party/original", nil)
+	require.Equal(t, http.StatusOK, full.Code)
+	assert.Equal(t, testmedia.ContentType, full.Header().Get("Content-Type"))
+	assert.Equal(t, testmedia.Chaptered, full.Body.Bytes())
+	assert.Contains(t, full.Header().Get("Content-Disposition"), "birthday-party.webm")
+	partial := get("/api/assets/workbench-video-party/video/playback", map[string]string{"Range": "bytes=0-9"})
+	require.Equal(t, http.StatusPartialContent, partial.Code)
+	assert.Equal(t, testmedia.Chaptered[:10], partial.Body.Bytes())
+	assert.Equal(t, fmt.Sprintf("bytes 0-9/%d", len(testmedia.Chaptered)), partial.Header().Get("Content-Range"))
+	assert.Equal(t, http.StatusInternalServerError, get("/api/assets/workbench-video-broken/original", nil).Code)
+	assert.Equal(t, http.StatusNotFound, get("/api/assets/fixture-asset-01/video/playback", nil).Code, "photos have no playback")
+	photo := get("/api/assets/fixture-asset-01/original", nil)
+	require.Equal(t, http.StatusOK, photo.Code)
+	_, _, err = image.Decode(photo.Body)
+	require.NoError(t, err)
+	coast := get("/api/assets/fixture-asset-04/original", nil)
+	require.Equal(t, http.StatusOK, coast.Code)
+	assert.Equal(t, testmedia.Plain, coast.Body.Bytes(), "the Coast album's videos play too")
+	playback, err := client.Playback(t.Context(), "workbench-video-party", immich.PlaybackRequest{Range: "bytes=2-3"})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, playback.Body.Close()) })
+	assert.Equal(t, http.StatusPartialContent, playback.StatusCode)
+	assert.Equal(t, int64(2), playback.ContentLength)
+	fixture.mu.RLock()
+	assert.Equal(t, 2, fixture.requests["GET /api/assets/workbench-video-party/video/playback (range)"])
+	fixture.mu.RUnlock()
 }
