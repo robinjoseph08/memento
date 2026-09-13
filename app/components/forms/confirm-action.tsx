@@ -8,6 +8,7 @@ import { ConfirmDialog } from "./confirm-dialog";
 export function ConfirmAction({
   label,
   triggerLabel = label,
+  confirmLabel = triggerLabel,
   description,
   pending,
   error,
@@ -17,6 +18,9 @@ export function ConfirmAction({
 }: {
   label: string;
   triggerLabel?: string;
+  // confirmLabel names the dialog's confirm button when the trigger's short
+  // label would not explain what happens next.
+  confirmLabel?: string;
   description: string;
   pending: boolean;
   error: unknown;
@@ -39,7 +43,7 @@ export function ConfirmAction({
         {triggerLabel}
       </Button>
       <ConfirmDialog
-        confirmLabel={triggerLabel}
+        confirmLabel={confirmLabel}
         confirmName={label}
         description={description}
         error={error}

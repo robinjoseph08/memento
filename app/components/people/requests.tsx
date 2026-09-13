@@ -192,7 +192,8 @@ function RequestRow({ request }: { request: AccessRequest }) {
           <div className="flex flex-wrap gap-2">
             {albumRequest ? (
               <ConfirmAction
-                description="This records your decision. It does not change what they can see; open the album to grant access."
+                confirmLabel="Approve and open album"
+                description={`${request.person_name} asked to see ${request.album_title ? `"${request.album_title}"` : "an album"}. Approving closes this request and opens the album so you can decide what ${request.person_name} sees. Nothing is shared until you grant access there.`}
                 error={approve.error}
                 label={`Approve request from ${request.person_name}`}
                 onConfirm={() =>

@@ -161,7 +161,7 @@ test("imports an album through a stopped task, browser closure, and API restart"
   await completed.getByRole("link", { name: "All albums" }).click();
   await expect(
     completed.getByRole("link", {
-      name: /Our coast holiday.*4 photos, 2 videos.*unpublished/,
+      name: /Our coast holiday.*4 photos, 2 videos.*Unpublished/,
     }),
   ).toBeVisible();
   const albumCard = completed.getByRole("link", { name: /Our coast holiday/ });

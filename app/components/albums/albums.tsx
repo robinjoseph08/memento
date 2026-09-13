@@ -91,20 +91,23 @@ export function CuratorPage() {
                             .join(" to ")}
                         </span>
                       )}
-                    <span className="flex flex-wrap items-center gap-x-3 text-xs/5 text-muted">
-                      {album.status === "complete" ? (
-                        <MediaCounts
-                          photos={album.photo_count}
-                          videos={album.video_count}
-                        />
-                      ) : (
-                        <span>
-                          {importLabels[album.status] ??
-                            "Import status unavailable"}
-                        </span>
-                      )}
-                      {!album.published && <span>unpublished</span>}
-                    </span>
+                    {album.status === "complete" ? (
+                      <MediaCounts
+                        className="flex text-xs/5 text-muted"
+                        photos={album.photo_count}
+                        videos={album.video_count}
+                      />
+                    ) : (
+                      <span className="block text-xs/5 text-muted">
+                        {importLabels[album.status] ??
+                          "Import status unavailable"}
+                      </span>
+                    )}
+                    {!album.published && (
+                      <span className="block text-xs/5 text-muted">
+                        Unpublished
+                      </span>
+                    )}
                   </span>
                 </Link>
               </li>
