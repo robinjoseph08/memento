@@ -112,14 +112,25 @@ export function RulesDialog({
                 ? `Decisions for ${entry.filename} override its Moment and the Album.`
                 : `Decisions for ${moment.label} override Album access. Item exceptions still win.`}
           </DialogDescription>
-          {entry && (
-            <AlbumImage
-              alt={entry.filename}
-              className="mt-4 h-auto max-h-40 w-auto max-w-full"
-              fallback="No preview available"
-              src={entry.available ? entry.thumbnail_url : ""}
-            />
-          )}
+          {entry &&
+            (video && entry.playback_url ? (
+              // A Curator can watch the video here before choosing its title.
+              <video
+                aria-label={entry.filename}
+                className="mt-4 max-h-64 w-full rounded-sm bg-black"
+                controls
+                playsInline
+                preload="metadata"
+                src={entry.playback_url}
+              />
+            ) : (
+              <AlbumImage
+                alt={entry.filename}
+                className="mt-4 h-auto max-h-40 w-auto max-w-full"
+                fallback="No preview available"
+                src={entry.available ? entry.thumbnail_url : ""}
+              />
+            ))}
           {video && (
             <VideoDetails
               albumID={album.id}

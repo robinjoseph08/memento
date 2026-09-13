@@ -176,6 +176,19 @@ func TestViewerPlaybackProxiesOneRangeWithMementoValidators(t *testing.T) {
 	require.Equal(t, "private, max-age=31536000, immutable", preview.Header().Get("Cache-Control"))
 	actor = "alex"
 
+	// A Curator reviewing the video streams it through the Curator route with
+	// the same range handling; photos and outsiders are refused.
+	media.RegisterRoutes(e, media.New(db, upstream), person, curator)
+	curatorURL := "/api/media/entries/" + video.ID + "/playback?v=" + version
+	require.Equal(t, http.StatusForbidden, do(http.MethodGet, curatorURL, nil).Code)
+	actor = "curator"
+	reviewed := do(http.MethodGet, curatorURL, map[string]string{"Range": "bytes=4-7"})
+	require.Equal(t, http.StatusPartialContent, reviewed.Code)
+	require.Equal(t, "4567", reviewed.Body.String())
+	require.Equal(t, tag, reviewed.Header().Get("ETag"))
+	require.Equal(t, http.StatusNotFound, do(http.MethodGet, "/api/media/entries/"+photo.ID+"/playback?v="+strings.Split(photo.ThumbnailURL, "?v=")[1], nil).Code)
+	actor = "alex"
+
 	upstream.playback = func(context.Context, immich.PlaybackRequest) (immich.Playback, error) {
 		return immich.Playback{}, &errcodes.Error{HTTPCode: 403, Code: "immich_permission_denied", Message: "Enable asset.view on the Immich API key."}
 	}

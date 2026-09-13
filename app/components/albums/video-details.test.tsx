@@ -25,6 +25,7 @@ const video: Entry = {
   chapters: [],
   chapter_status: "failed",
   chapter_message: "Chapter extraction failed. Playback still works.",
+  playback_url: "/api/media/entries/video/playback?v=1",
 };
 const album: AlbumDetail = {
   id: "album-1",
@@ -103,6 +104,7 @@ function mockAPI(state: { album: AlbumDetail; posts: [string, unknown][] }) {
                     ...state.album.moments[0].entries[0],
                     chapter_status: "pending",
                     chapter_message: "",
+                    playback_url: "",
                   },
                 ],
               },
@@ -143,6 +145,12 @@ it("edits a video title with the filename as fallback and retries failed chapter
   expect(
     within(dialog).getByRole("form", { name: "Item access" }),
   ).toBeVisible();
+  const player =
+    within(dialog).getByLabelText<HTMLVideoElement>("Waves at dusk.mp4");
+  expect(player.tagName).toBe("VIDEO");
+  expect(player).toHaveAttribute("src", video.playback_url);
+  expect(player).toHaveAttribute("controls");
+  expect(player).not.toHaveAttribute("autoplay");
   const title = within(dialog).getByRole("textbox", { name: "Video title" });
   expect(title).toHaveValue("");
   expect(title).toHaveAttribute("placeholder", "Waves at dusk");
@@ -235,6 +243,7 @@ it("narrows a Moment to its photos or videos from the kind tabs", async () => {
     kind: "IMAGE",
     chapter_status: "",
     chapter_message: "",
+    playback_url: "",
   };
   const state = {
     album: {

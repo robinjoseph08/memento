@@ -129,6 +129,11 @@ test("videos play with titles, chapters, ranges, downloads, and recover a failed
   await expect(
     details.getByRole("combobox", { name: "Access for Alex" }),
   ).toBeVisible();
+  // The video plays inside the dialog so a title can be chosen after a look.
+  await expect(details.locator("video")).toHaveAttribute(
+    "src",
+    /\/api\/media\/entries\/[^/]+\/playback\?v=/,
+  );
   const titleField = details.getByRole("textbox", { name: "Video title" });
   await expect(titleField).toHaveValue("");
   await expect(titleField).toHaveAttribute("placeholder", "birthday-party");

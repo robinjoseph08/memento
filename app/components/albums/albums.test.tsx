@@ -195,6 +195,7 @@ const completeAlbum: AlbumDetail = {
           chapters: [],
           chapter_status: "",
           chapter_message: "",
+          playback_url: "",
         },
         {
           id: "video",
@@ -209,6 +210,7 @@ const completeAlbum: AlbumDetail = {
           chapters: [],
           chapter_status: "",
           chapter_message: "",
+          playback_url: "",
         },
       ],
     },

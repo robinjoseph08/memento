@@ -169,6 +169,8 @@ type Entry struct {
 	Decisions map[string]Decision `json:"decisions"`
 	// Title is the global video title override, empty when the filename shows.
 	Title string `json:"title"`
+	// PlaybackURL streams an available video to the Curator; photos have none.
+	PlaybackURL string `json:"playback_url"`
 	// Chapter fields describe the Media Item's extraction: ChapterStatus is
 	// pending, complete, or failed, and ChapterMessage explains a failure.
 	Chapters       []Chapter `json:"chapters"`

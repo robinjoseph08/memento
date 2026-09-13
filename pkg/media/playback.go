@@ -35,12 +35,22 @@ func (h *viewerHandlers) playback(c *echo.Context, preview bool) error {
 	} else if c.Param("personID") != actorID {
 		return errcodes.NotFound("Video")
 	}
-	ctx := c.Request().Context()
-	if err := h.authorize(ctx, actorID, selected, c.Param("id")); err != nil {
+	if err := h.authorize(c.Request().Context(), actorID, selected, c.Param("id")); err != nil {
 		return err
 	}
+	return streamPlayback(c, h.module)
+}
+
+// entryPlayback streams a video to a Curator reviewing it, with the same
+// range and validator semantics as the viewer routes.
+func (h *handlers) entryPlayback(c *echo.Context) error { return streamPlayback(c, h.module) }
+
+// streamPlayback answers an already-authorized playback request for the Album
+// Entry named in the route.
+func streamPlayback(c *echo.Context, m *Module) error {
+	ctx := c.Request().Context()
 	version := c.QueryParam("v")
-	item, err := h.module.EntryPlayback(ctx, c.Param("id"), version)
+	item, err := m.EntryPlayback(ctx, c.Param("id"), version)
 	if err != nil {
 		return err
 	}
@@ -57,7 +67,7 @@ func (h *viewerHandlers) playback(c *echo.Context, preview bool) error {
 	if !singleByteRange.MatchString(byteRange) || !ifRangeAllows(c.Request().Header.Get("If-Range"), tag) {
 		byteRange = ""
 	}
-	playback, err := h.module.viewerPlayback(ctx, item.SourceID, version, immich.PlaybackRequest{Range: byteRange, Head: c.Request().Method == http.MethodHead})
+	playback, err := m.viewerPlayback(ctx, item.SourceID, version, immich.PlaybackRequest{Range: byteRange, Head: c.Request().Method == http.MethodHead})
 	if err != nil {
 		return err
 	}

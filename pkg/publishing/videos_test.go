@@ -3,6 +3,7 @@ package publishing_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 	"uuid"
@@ -84,6 +85,8 @@ func TestImportRequestsChaptersForEveryCommittedVideo(t *testing.T) {
 	require.Equal(t, []chapterRequest{{models.UUID(mustParse(t, video.MediaID)), "Y2xpcA=="}}, chapters.requests, "photos are never probed")
 	require.Equal(t, "pending", video.ChapterStatus)
 	require.Empty(t, video.Title, "no override until a Curator sets one")
+	require.Equal(t, "/api/media/entries/"+video.ID+"/playback?v="+strings.Split(video.ThumbnailURL, "?v=")[1], video.PlaybackURL)
+	require.Empty(t, detail.Moments[0].Entries[0].PlaybackURL, "photos have no playback")
 	// The same Media Item in another Album asks again; Media decides whether
 	// the checksum still has a result.
 	other, err := module.StartImport(t.Context(), "other")

@@ -151,6 +151,7 @@ it.each([
               chapters: [],
               chapter_status: "",
               chapter_message: "",
+              playback_url: "",
             },
           ],
         },

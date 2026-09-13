@@ -186,6 +186,9 @@ func getAlbum(ctx context.Context, db bun.IDB, id, immichURL string) (AlbumDetai
 			if e.VideoTitle != nil {
 				entry.Title = *e.VideoTitle
 			}
+			if entry.Available {
+				entry.PlaybackURL = "/api/media/entries/" + e.EntryID.String() + "/playback?v=" + e.ContentVersion
+			}
 			entry.ChapterStatus = media.PublicChapterStatus(e.ChapterStatus)
 			entry.ChapterMessage = e.ChapterMessage
 			entry.Chapters = projectChapters(e.Chapters)
