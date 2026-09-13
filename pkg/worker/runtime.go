@@ -12,6 +12,7 @@ import (
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverdatabasesql"
 	"github.com/riverqueue/river/rivertype"
+	"github.com/robinjoseph08/golib/logger"
 	"github.com/robinjoseph08/memento/pkg/errcodes"
 	"github.com/robinjoseph08/memento/pkg/errorstack"
 	"github.com/uptrace/bun"
@@ -89,6 +90,7 @@ func New(db *bun.DB, execute func(context.Context, string) error, opts ...Option
 	client, err := river.NewClient(riverdatabasesql.New(db.DB), &river.Config{
 		Workers:              workers,
 		Queues:               queues,
+		ErrorHandler:         &errorLogger{log: logger.New()},
 		PollOnly:             true,
 		FetchPollInterval:    time.Second,
 		MaxAttempts:          3,
@@ -138,9 +140,11 @@ func (r *Runtime) EnqueueImport(ctx context.Context, tx bun.Tx, albumID string) 
 	return runtimeError(ctx, "enqueue import", err)
 }
 
-// EnqueueMail records one delivery attempt in the caller's transaction. Active
-// duplicates are skipped, so repeated retry clicks never queue the same
-// delivery twice; the delivery record itself decides whether work remains.
+// EnqueueMail records one delivery attempt in the caller's transaction. Mail
+// jobs are deliberately not unique in River: the delivery record decides
+// whether work remains, and River's required "running" uniqueness would let a
+// job orphaned by a crash block a Curator's deliberate retry until the rescuer
+// runs. A rescued job finds the record already settled and does nothing.
 func (r *Runtime) EnqueueMail(ctx context.Context, tx bun.Tx, deliveryID string) error {
 	if tx.Tx == nil || deliveryID == "" {
 		return fmt.Errorf("enqueue mail requires a transaction and delivery ID")
@@ -148,19 +152,7 @@ func (r *Runtime) EnqueueMail(ctx context.Context, tx bun.Tx, deliveryID string)
 	if !r.mail {
 		return fmt.Errorf("enqueue mail requires a mail executor")
 	}
-	result, err := r.client.InsertTx(ctx, tx.Tx, mailArgs{DeliveryID: deliveryID}, &river.InsertOpts{
-		Queue: mailQueue, MaxAttempts: mailMaxAttempts,
-		UniqueOpts: river.UniqueOpts{ByArgs: true, ByState: []rivertype.JobState{
-			rivertype.JobStateAvailable, rivertype.JobStatePending, rivertype.JobStateRunning,
-			rivertype.JobStateRetryable, rivertype.JobStateScheduled,
-		}},
-	})
-	if err != nil {
-		return runtimeError(ctx, "enqueue mail", err)
-	}
-	if result.UniqueSkippedAsDuplicate && result.Job.State == rivertype.JobStateRetryable {
-		_, err = r.client.JobRetryTx(ctx, tx.Tx, result.Job.ID)
-	}
+	_, err := r.client.InsertTx(ctx, tx.Tx, mailArgs{DeliveryID: deliveryID}, &river.InsertOpts{Queue: mailQueue, MaxAttempts: mailMaxAttempts})
 	return runtimeError(ctx, "enqueue mail", err)
 }
 
@@ -172,14 +164,36 @@ type mailWorker struct {
 // Timeout bounds one SMTP session well below the import limit.
 func (w *mailWorker) Timeout(*river.Job[mailArgs]) time.Duration { return 2 * time.Minute }
 
-func (w *mailWorker) Work(ctx context.Context, job *river.Job[mailArgs]) (err error) {
+func (w *mailWorker) Work(ctx context.Context, job *river.Job[mailArgs]) error {
+	return work(ctx, job.Attempt, job.MaxAttempts, "deliver mail", func(ctx context.Context) error {
+		return w.execute(ctx, job.Args.DeliveryID)
+	})
+}
+
+// work runs one attempt with panic recovery, the final-attempt flag, and
+// sanitized errors, shared by every job kind.
+func work(ctx context.Context, attempt, maxAttempts int, operation string, fn func(context.Context) error) (err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			err = runtimeError(ctx, "deliver mail", fmt.Errorf("mail executor panicked: %v", recovered))
+			err = runtimeError(ctx, operation, fmt.Errorf("%s executor panicked: %v", operation, recovered))
 		}
 	}()
-	ctx = context.WithValue(ctx, finalAttemptKey{}, job.Attempt >= job.MaxAttempts)
-	return runtimeError(ctx, "deliver mail", w.execute(ctx, job.Args.DeliveryID))
+	ctx = context.WithValue(ctx, finalAttemptKey{}, attempt >= maxAttempts)
+	return runtimeError(ctx, operation, fn(ctx))
+}
+
+// errorLogger writes job failures to the application log with their captured
+// cause, since River persists only the sanitized message.
+type errorLogger struct{ log logger.Logger }
+
+func (l *errorLogger) HandleError(_ context.Context, job *rivertype.JobRow, err error) *river.ErrorHandlerResult {
+	l.log.Err(err).Error("job attempt failed", logger.Data{"kind": job.Kind, "queue": job.Queue, "attempt": job.Attempt, "max_attempts": job.MaxAttempts})
+	return nil
+}
+
+func (l *errorLogger) HandlePanic(_ context.Context, job *rivertype.JobRow, panicVal any, trace string) *river.ErrorHandlerResult {
+	l.log.Error("job attempt panicked", logger.Data{"kind": job.Kind, "queue": job.Queue, "attempt": job.Attempt, "panic": fmt.Sprint(panicVal), "trace": trace})
+	return nil
 }
 
 type importWorker struct {
@@ -187,14 +201,10 @@ type importWorker struct {
 	execute func(context.Context, string) error
 }
 
-func (w *importWorker) Work(ctx context.Context, job *river.Job[importArgs]) (err error) {
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			err = runtimeError(ctx, "execute import", fmt.Errorf("import executor panicked: %v", recovered))
-		}
-	}()
-	ctx = context.WithValue(ctx, finalAttemptKey{}, job.Attempt >= job.MaxAttempts)
-	return runtimeError(ctx, "execute import", w.execute(ctx, job.Args.AlbumID))
+func (w *importWorker) Work(ctx context.Context, job *river.Job[importArgs]) error {
+	return work(ctx, job.Attempt, job.MaxAttempts, "execute import", func(ctx context.Context) error {
+		return w.execute(ctx, job.Args.AlbumID)
+	})
 }
 
 // Keep adapter and upstream details out of River's persisted error strings while

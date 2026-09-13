@@ -3,12 +3,14 @@ package notifications
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
 	"net"
 	"net/mail"
 	"net/smtp"
+	"net/textproto"
 	"net/url"
 	"strconv"
 	"strings"
@@ -100,14 +102,19 @@ func (m *SMTPMailer) Send(ctx context.Context, message Message) error {
 			}
 		}
 	}
-	if m.username != "" {
-		if err := client.Auth(smtp.PlainAuth("", m.username, m.password, m.host)); err != nil {
-			return classifySMTP(errorstack.CaptureContext(ctx, err), false)
-		}
-	}
 	sender, err := mail.ParseAddress(m.from)
 	if err != nil {
 		return classifySMTP(errorstack.Capture(err), false)
+	}
+	if m.username != "" {
+		if err := client.Auth(smtp.PlainAuth("", m.username, m.password, m.host)); err != nil {
+			// Go refuses PLAIN over an unencrypted connection and servers without
+			// AUTH; both are configuration problems that retrying cannot fix.
+			if _, reply := errors.AsType[*textproto.Error](err); !reply {
+				return &DeliveryError{Outcome: OutcomePermanent, Summary: "The mail server did not accept sign-in. Credentials need smtps:// or a server that offers STARTTLS and AUTH.", Cause: errorstack.CaptureContext(ctx, err)}
+			}
+			return classifySMTP(errorstack.CaptureContext(ctx, err), false)
+		}
 	}
 	if err := client.Mail(sender.Address); err != nil {
 		return classifySMTP(errorstack.CaptureContext(ctx, err), false)
@@ -119,7 +126,7 @@ func (m *SMTPMailer) Send(ctx context.Context, message Message) error {
 	if err != nil {
 		return classifySMTP(errorstack.CaptureContext(ctx, err), false)
 	}
-	if _, err := io.WriteString(writer, formatMessage(m.from, message, time.Now())); err != nil {
+	if _, err := io.WriteString(writer, formatMessage(sender, message, time.Now())); err != nil {
 		_ = writer.Close()
 		return classifySMTP(errorstack.CaptureContext(ctx, err), false)
 	}
@@ -131,14 +138,19 @@ func (m *SMTPMailer) Send(ctx context.Context, message Message) error {
 	return nil
 }
 
-// formatMessage renders a plain-text UTF-8 email with CRLF line endings.
-func formatMessage(from string, message Message, now time.Time) string {
+// formatMessage renders a plain-text UTF-8 email with CRLF line endings. The
+// Message-ID uses the sender's domain so receivers see a fully qualified one.
+func formatMessage(sender *mail.Address, message Message, now time.Time) string {
+	domain := "memento"
+	if at := strings.LastIndex(sender.Address, "@"); at >= 0 {
+		domain = sender.Address[at+1:]
+	}
 	var b strings.Builder
-	b.WriteString("From: " + from + "\r\n")
+	b.WriteString("From: " + sender.String() + "\r\n")
 	b.WriteString("To: " + message.To + "\r\n")
 	b.WriteString("Subject: " + mime.QEncoding.Encode("utf-8", message.Subject) + "\r\n")
 	b.WriteString("Date: " + now.UTC().Format(time.RFC1123Z) + "\r\n")
-	b.WriteString("Message-ID: <" + models.NewUUIDv7().String() + "@memento>\r\n")
+	b.WriteString("Message-ID: <" + models.NewUUIDv7().String() + "@" + domain + ">\r\n")
 	b.WriteString("MIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n")
 	body := strings.ReplaceAll(strings.ReplaceAll(message.Body, "\r\n", "\n"), "\n", "\r\n")
 	b.WriteString(body)

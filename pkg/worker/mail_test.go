@@ -92,12 +92,16 @@ func TestEnqueueMailIsTransactionalDeduplicatedAndIsolated(t *testing.T) {
 	require.NoError(t, db.NewSelect().Table("river_job").Column("queue").Order("queue").Scan(ctx, &queues))
 	assert.Equal(t, []string{"imports", "mail"}, queues, "mail never shares the import queue")
 
-	// Repeated retry clicks for one delivery add no work while it is active.
+	// Repeated retry clicks for one delivery add no work while it is active:
+	// the delivery record, not River uniqueness, is the guard.
 	results := make(chan error, 12)
 	var wg sync.WaitGroup
 	for range 12 {
 		wg.Go(func() {
-			results <- db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error { return runtime.EnqueueMail(ctx, tx, delivery.ID) })
+			results <- db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+				_, err := module.Retry(ctx, tx, delivery.ID)
+				return err
+			})
 		})
 	}
 	wg.Wait()
@@ -214,6 +218,36 @@ func TestShutdownAfterAcceptanceIsUncertainAndRestartDoesNotResend(t *testing.T)
 	assert.Equal(t, 2, delivered.Attempts)
 	assert.Len(t, fresh.Sent(), 1)
 	assert.Len(t, recorder.Sent(), 1)
+}
+
+func TestRetryAfterCrashRunsDespiteOrphanedRunningJob(t *testing.T) {
+	t.Parallel()
+	db := testdb.New(t)
+	ctx := deadline(t)
+	recorder := &notifications.Recorder{}
+	module, runtime := mailRuntime(t, db, recorder, 0)
+	delivery := enqueueMail(t, ctx, db, module)
+	// A crashed process left its River job running and the record sending.
+	_, err := db.NewUpdate().Table("river_job").Set("state = 'running', attempt = 1, attempted_at = CURRENT_TIMESTAMP").Where("true").Exec(ctx)
+	require.NoError(t, err)
+	_, err = db.NewUpdate().Model((*models.MailDelivery)(nil)).Set("status = 'sending', attempts = 1").Where("id = ?", delivery.ID).Exec(ctx)
+	require.NoError(t, err)
+	recovered, err := module.RecoverInterrupted(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 1, recovered)
+	require.NoError(t, db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		_, err := module.Retry(ctx, tx, delivery.ID)
+		return err
+	}))
+	assertJobCount(t, ctx, db, 2)
+	completed, unsubscribe := runtime.client.Subscribe(river.EventKindJobCompleted)
+	t.Cleanup(unsubscribe)
+	startRuntime(t, ctx, runtime)
+	receive(t, ctx, completed)
+	result := deliveryStatus(t, ctx, db, module, delivery.ID)
+	assert.Equal(t, "delivered", result.Status)
+	assert.Equal(t, 2, result.Attempts)
+	assert.Len(t, recorder.Sent(), 1, "the deliberate retry runs without waiting for River's rescuer")
 }
 
 func TestRescuedJobAfterProcessDeathMarksDeliveryUncertain(t *testing.T) {

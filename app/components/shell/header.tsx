@@ -9,6 +9,7 @@ import { useIdentityStatus } from "../../hooks/queries/identity";
 import { useTheme } from "../../hooks/use-theme";
 import { AccountMenu } from "./account-menu";
 import { MobileNavigation } from "./mobile-navigation";
+import { PendingBadge } from "./pending-badge";
 import { PreviewModeContext } from "./preview-mode";
 import { ThemeToggle } from "./theme-toggle";
 import { Wordmark } from "./wordmark";
@@ -80,15 +81,5 @@ export function Header() {
         )}
       </div>
     </header>
-  );
-}
-
-export function PendingBadge({ count }: { count: number }) {
-  if (count === 0) return null;
-  return (
-    <span className="inline-flex min-w-5 items-center justify-center rounded-full bg-primary px-1.5 text-xs font-medium text-primary-foreground">
-      {count}
-      <span className="sr-only">{" pending"}</span>
-    </span>
   );
 }

@@ -83,9 +83,10 @@ func TestInvitationsRequireEligiblePreauthorizationAndAreIdempotent(t *testing.T
 	require.ErrorIs(t, err, identity.ErrAccessDenied)
 	_, err = module.UpdatePerson(t.Context(), curator.Token, other.ID, identity.UpdatePersonRequest{DisplayName: "Other", Deactivated: true})
 	require.NoError(t, err)
-	fresh, err := module.Preauthorize(t.Context(), curator.Token, other.ID, identity.PreauthorizeRequest{Email: "fresh@example.test"})
+	_, err = module.Preauthorize(t.Context(), curator.Token, other.ID, identity.PreauthorizeRequest{Email: "fresh@example.test"})
 	require.Error(t, err, "deactivated People cannot be approved")
-	_ = fresh
+	_, err = module.SendInvitation(t.Context(), curator.Token, other.ID, identity.SendInvitationRequest{PreauthorizationID: revoked.ID})
+	require.ErrorIs(t, err, identity.ErrPersonDeactivated)
 	assert.Equal(t, 0, a.queue.count())
 
 	// Invitations ignore the update-email preference: they are transactional.
@@ -141,6 +142,9 @@ func TestInvitationRetryFollowsDeliveryState(t *testing.T) {
 	require.ErrorIs(t, err, notifications.ErrAlreadyDelivered)
 	_, err = module.RetryInvitation(t.Context(), curator.Token, person.ID, "not-an-invitation")
 	require.ErrorIs(t, err, errcodes.NotFound("Invitation"))
+	require.NoError(t, module.RevokePreauthorization(t.Context(), curator.Token, person.ID, approval.ID))
+	_, err = module.RetryInvitation(t.Context(), curator.Token, person.ID, invitation.ID)
+	require.ErrorIs(t, err, identity.ErrPreauthorizationRevoked, "retry keeps the same eligibility as sending")
 	assert.Len(t, a.recorder.Sent(), 2, "the rejected attempt and the deliberate retry both reached the server")
 }
 

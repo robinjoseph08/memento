@@ -95,7 +95,7 @@ func TestGoogleOutageLeavesDatabaseHealthHealthy(t *testing.T) {
 	cfg.AuthMode = "google"
 	cfg.GoogleClientID = "client-id"
 	cfg.GoogleClientSecret = "client-secret"
-	app, err := server.New(cfg, db)
+	app, err := server.New(cfg, db, server.Features{})
 	require.NoError(t, err)
 	e, ok := app.Handler.(*echo.Echo)
 	require.True(t, ok)

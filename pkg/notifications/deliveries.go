@@ -170,7 +170,9 @@ func (m *Module) Execute(ctx context.Context, deliveryID string, final bool) err
 
 // RecoverInterrupted runs once at startup. A delivery still marked sending
 // belonged to a process that died mid-session, so its outcome is unknown and
-// only a Curator may send it again. River's rescued job later finds nothing to do.
+// only a Curator may send it again. River's rescued job later finds nothing to
+// do. This assumes Memento's single-process deployment: a second process
+// starting while the first is mid-send would mark that send uncertain too.
 func (m *Module) RecoverInterrupted(ctx context.Context) (int, error) {
 	result, err := m.db.NewUpdate().Model((*models.MailDelivery)(nil)).
 		Set("status = ?", StatusUncertain).

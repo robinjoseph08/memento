@@ -292,7 +292,10 @@ export SMTP_FROM='Memento <memento@example.com>'
 `smtp://` connects in plain text and upgrades with STARTTLS whenever the server
 offers it; `smtps://` uses TLS from the first byte, typically on port 465.
 Credentials stay in the URL, so prefer the environment variable over the YAML
-file. `SMTP_CONCURRENCY` bounds simultaneous deliveries and defaults to five.
+file. A username and password are only sent over TLS, so pair them with
+`smtps://` or a server that offers STARTTLS; a plain relay without
+authentication needs no credentials at all. `SMTP_CONCURRENCY` bounds
+simultaneous deliveries and defaults to five.
 
 Deliveries run through the same in-process River runtime as imports, on a
 separate `mail` queue. Each email has a stable delivery record: a rejected

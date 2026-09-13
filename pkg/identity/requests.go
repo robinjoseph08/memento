@@ -99,21 +99,18 @@ func (m *Module) RequestAlbumAccess(ctx context.Context, token, albumID string) 
 		if err != nil {
 			return err
 		}
-		if _, err := uuid.Parse(albumID); err != nil {
+		album, err := uuid.Parse(albumID)
+		if err != nil {
 			return errcodes.NotFound("Album")
 		}
-		exists, err := tx.NewSelect().Model((*models.Album)(nil)).Where("album.id = ?", albumID).Exists(ctx)
+		albumUUID := models.UUID(album)
+		exists, err := tx.NewSelect().Model((*models.Album)(nil)).Where("album.id = ?", albumUUID).Exists(ctx)
 		if err != nil {
 			return errorstack.CaptureContext(ctx, err)
 		}
 		if !exists {
 			return errcodes.NotFound("Album")
 		}
-		album, err := uuid.Parse(albumID)
-		if err != nil {
-			return errcodes.NotFound("Album")
-		}
-		albumUUID := models.UUID(album)
 		now := m.now().UTC()
 		row := models.AccessRequest{ID: models.NewUUIDv7(), Kind: RequestAlbum, Provider: identity.Provider, Subject: identity.Subject, Email: identity.Email, EmailVerified: true,
 			DisplayName: person.DisplayName, PersonID: &person.ID, AlbumID: &albumUUID, Status: RequestPending, SignInCount: 1, CreatedAt: now, UpdatedAt: now}

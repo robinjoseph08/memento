@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/mail"
 	"net/url"
 	"os"
 	"path"
@@ -18,7 +19,6 @@ import (
 	"github.com/knadh/koanf/providers/file"
 	"github.com/knadh/koanf/v2"
 	"github.com/robinjoseph08/memento/pkg/errorstack"
-	"github.com/robinjoseph08/memento/pkg/notifications"
 )
 
 const defaultConfigPath = "/config/app.yaml"
@@ -249,12 +249,8 @@ func validateConfig(cfg *Config) error {
 		}
 		*setting.value = strings.TrimRight(u.String(), "/")
 	}
-	if cfg.MailConfigured() {
-		if _, err := notifications.NewSMTPMailer(cfg.SMTPURL, cfg.SMTPFrom); err != nil {
-			return err
-		}
-	} else if strings.TrimSpace(cfg.SMTPFrom) != "" {
-		return fmt.Errorf("smtp_from: requires smtp_url")
+	if err := validateSMTP(cfg); err != nil {
+		return err
 	}
 	if cfg.AppEnv != "production" && cfg.AppEnv != "development" && cfg.AppEnv != "test" {
 		return fmt.Errorf("app_env: must be production, development, or test")
@@ -292,6 +288,31 @@ func validateConfig(cfg *Config) error {
 		}
 		field := validationErrors[0]
 		return fmt.Errorf("%s: %s %s", field.Field(), field.Tag(), field.Param())
+	}
+	return nil
+}
+
+// validateSMTP checks the optional mail settings without connecting. Errors
+// name the setting, never the URL, because it may carry credentials.
+func validateSMTP(cfg *Config) error {
+	if !cfg.MailConfigured() {
+		if strings.TrimSpace(cfg.SMTPFrom) != "" {
+			return fmt.Errorf("smtp_from: requires smtp_url")
+		}
+		return nil
+	}
+	u, err := parseURL("smtp_url", cfg.SMTPURL)
+	if err != nil {
+		return err
+	}
+	if u.Scheme != "smtp" && u.Scheme != "smtps" {
+		return fmt.Errorf("smtp_url: must be smtp://host:port or smtps://host:port")
+	}
+	if (u.Path != "" && u.Path != "/") || u.RawQuery != "" || strings.Contains(cfg.SMTPURL, "#") {
+		return fmt.Errorf("smtp_url: must not contain a path, query, or fragment")
+	}
+	if _, err := mail.ParseAddress(strings.TrimSpace(cfg.SMTPFrom)); err != nil {
+		return fmt.Errorf("smtp_from: must be a valid email address")
 	}
 	return nil
 }

@@ -3,49 +3,11 @@ package identity
 import (
 	"context"
 	"fmt"
-	"uuid"
 
 	"github.com/robinjoseph08/memento/pkg/errorstack"
 	"github.com/robinjoseph08/memento/pkg/models"
 	"github.com/uptrace/bun"
 )
-
-// applyProfile validates and stores the fields a Person controls. Both profile
-// editing and Onboarding completion share it so the two paths cannot drift.
-func applyProfile(ctx context.Context, tx bun.Tx, person *models.Person, request UpdateProfileRequest) ([]LinkedIdentity, error) {
-	name, err := displayName(request.DisplayName)
-	if err != nil {
-		return nil, err
-	}
-	linked, err := linkedIdentities(ctx, tx, person.ID)
-	if err != nil {
-		return nil, err
-	}
-	allowed := request.UpdateEmail == "" && !request.EmailUpdates
-	person.UpdateIdentityID = nil
-	for _, value := range linked {
-		if value.Email == request.UpdateEmail {
-			allowed = true
-			id, err := uuid.Parse(value.ID)
-			if err != nil {
-				return nil, errorstack.Capture(err)
-			}
-			selected := models.UUID(id)
-			person.UpdateIdentityID = &selected
-			break
-		}
-	}
-	if !allowed {
-		return nil, fieldError("update_email", "Choose an email from your linked identities.")
-	}
-	person.DisplayName = name
-	person.UpdateEmail = request.UpdateEmail
-	person.EmailUpdates = request.EmailUpdates
-	if _, err := tx.NewUpdate().Model(person).Column("display_name", "update_identity_id", "email_updates").WherePK().Exec(ctx); err != nil {
-		return nil, errorstack.CaptureContext(ctx, err)
-	}
-	return linked, nil
-}
 
 // CompleteOnboarding is the one-time Person transition. It saves the confirmed
 // profile and records the notification baseline in the same transaction, so a

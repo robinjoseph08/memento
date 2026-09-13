@@ -29,7 +29,6 @@ var (
 
 // Mail is the consumer-owned view of Notifications for Invitations.
 type Mail interface {
-	Configured() bool
 	Enqueue(context.Context, bun.Tx, notifications.Message) (notifications.Delivery, error)
 	Retry(context.Context, bun.Tx, string) (notifications.Delivery, error)
 	Deliveries(context.Context, bun.IDB, []string) (map[string]notifications.Delivery, error)

@@ -50,6 +50,7 @@ type Server struct {
 	held     int
 	released chan struct{}
 	messages []Message
+	holds    chan struct{}
 	wg       sync.WaitGroup
 }
 
@@ -59,7 +60,7 @@ func Start(ctx context.Context) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Server{listener: listener, mode: ModeAccept, released: make(chan struct{})}
+	s := &Server{listener: listener, mode: ModeAccept, released: make(chan struct{}), holds: make(chan struct{}, 64)}
 	s.wg.Go(s.serve)
 	return s, nil
 }
@@ -88,6 +89,10 @@ func (s *Server) Messages() []Message {
 	defer s.mu.Unlock()
 	return append([]Message(nil), s.messages...)
 }
+
+// Holds receives one value each time a session starts waiting in hold mode,
+// so tests can act at that exact point instead of sleeping.
+func (s *Server) Holds() <-chan struct{} { return s.holds }
 
 // Held reports sessions waiting for a reply in hold mode.
 func (s *Server) Held() int {
@@ -204,6 +209,10 @@ func (s *Server) finish(conn net.Conn, message Message) bool {
 	if mode == ModeHold {
 		s.messages = append(s.messages, message)
 		s.held++
+		select {
+		case s.holds <- struct{}{}:
+		default:
+		}
 	}
 	for s.mode == ModeHold {
 		released := s.released

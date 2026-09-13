@@ -18,7 +18,22 @@ import (
 var (
 	ErrPreauthorizationConsumed = &errcodes.Error{HTTPCode: 409, Code: "preauthorization_consumed", Message: "This email has already been used to sign in, so there is nobody left to invite."}
 	ErrPreauthorizationRevoked  = &errcodes.Error{HTTPCode: 409, Code: "preauthorization_revoked", Message: "This email approval was revoked. Approve the email again before inviting."}
+	ErrPersonDeactivated        = &errcodes.Error{HTTPCode: 409, Code: "person_deactivated", Message: "This person is deactivated. Restore their access before inviting them."}
 )
+
+// invitationEligibility is shared by sending and retrying: only an active
+// Person with an unused approval should receive outreach.
+func invitationEligibility(person models.Person, approval models.Preauthorization) error {
+	switch {
+	case person.DeactivatedAt != nil:
+		return ErrPersonDeactivated
+	case approval.ConsumedAt != nil:
+		return ErrPreauthorizationConsumed
+	case approval.RevokedAt != nil:
+		return ErrPreauthorizationRevoked
+	}
+	return nil
+}
 
 // invitationMessage is plain outreach: it names the exact email to sign in
 // with and links to ordinary sign-in. It carries no token or private link.
@@ -95,9 +110,6 @@ func (m *Module) SendInvitation(ctx context.Context, token, personID string, req
 		if err != nil {
 			return err
 		}
-		if person.DeactivatedAt != nil {
-			return ErrAccessDenied
-		}
 		if _, err := uuid.Parse(request.PreauthorizationID); err != nil {
 			return errcodes.NotFound("Preauthorization")
 		}
@@ -119,13 +131,10 @@ func (m *Module) SendInvitation(ctx context.Context, token, personID string, req
 		if !errors.Is(err, sql.ErrNoRows) {
 			return errorstack.CaptureContext(ctx, err)
 		}
-		if approval.ConsumedAt != nil {
-			return ErrPreauthorizationConsumed
+		if err := invitationEligibility(person, approval); err != nil {
+			return err
 		}
-		if approval.RevokedAt != nil {
-			return ErrPreauthorizationRevoked
-		}
-		if m.Mail == nil || !m.Mail.Configured() {
+		if m.Mail == nil {
 			return notifications.ErrMailUnconfigured
 		}
 		delivery, err := m.Mail.Enqueue(ctx, tx, invitationMessage(m.PublicURL, person.DisplayName, curator.DisplayName, approval.Email))
@@ -180,6 +189,13 @@ func (m *Module) RetryInvitation(ctx context.Context, token, personID, invitatio
 		}
 		if err != nil {
 			return errorstack.CaptureContext(ctx, err)
+		}
+		var approval models.Preauthorization
+		if err := tx.NewSelect().Model(&approval).Where("id = ?", row.PreauthorizationID).Scan(ctx); err != nil {
+			return errorstack.CaptureContext(ctx, err)
+		}
+		if err := invitationEligibility(person, approval); err != nil {
+			return err
 		}
 		if m.Mail == nil {
 			return notifications.ErrMailUnconfigured

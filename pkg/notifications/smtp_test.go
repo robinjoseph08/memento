@@ -6,7 +6,6 @@ import (
 	"net"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/robinjoseph08/memento/pkg/notifications"
 	"github.com/robinjoseph08/memento/pkg/notifications/smtptest"
@@ -79,8 +78,9 @@ func TestSMTPMailerContractAgainstLocalServer(t *testing.T) {
 	server.SetMode(smtptest.ModeHold)
 	ctx, cancel := context.WithCancel(t.Context())
 	go func() {
-		for server.Held() == 0 {
-			time.Sleep(5 * time.Millisecond)
+		select {
+		case <-server.Holds():
+		case <-t.Context().Done():
 		}
 		cancel()
 	}()
@@ -100,4 +100,23 @@ func TestSMTPMailerContractAgainstLocalServer(t *testing.T) {
 	assert.Equal(t, "The mail server could not be reached.", failure.Summary)
 	var netErr net.Error
 	assert.True(t, errors.As(err, &netErr) || strings.Contains(err.Error(), "could not be reached"))
+}
+
+func TestSMTPMailerRefusesCredentialsOverPlaintextPermanently(t *testing.T) {
+	t.Parallel()
+	server, err := smtptest.Start(t.Context())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = server.Close() })
+	// A non-localhost host with credentials over a plain connection is a
+	// configuration mistake, not a transient outage.
+	mailer, err := notifications.NewSMTPMailer("smtp://user:secret@mail.example.test:25", "memento@example.test")
+	require.NoError(t, err)
+	notifications.SetSMTPDialForTest(mailer, server.Address())
+	var failure *notifications.DeliveryError
+	err = mailer.Send(t.Context(), notifications.Message{Kind: "invitation", To: "alex@example.test", Subject: "Hi", Body: "Hello"})
+	require.ErrorAs(t, err, &failure)
+	assert.Equal(t, notifications.OutcomePermanent, failure.Outcome)
+	assert.Contains(t, failure.Summary, "did not accept sign-in")
+	assert.NotContains(t, err.Error(), "secret")
+	assert.Empty(t, server.Messages())
 }

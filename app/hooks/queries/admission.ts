@@ -65,8 +65,8 @@ export function pendingRequestCount(
   return requests.filter((request) => request.status === "pending").length;
 }
 
-// Curators poll pending requests only while the page stays open, so a request
-// made in another tab or by a stranger shows up without a manual reload.
+// Curators refresh the request list when they return to the window, so a
+// request made by a stranger shows up without a manual reload.
 export function useAccessRequests() {
   const scope = usePrivateScope();
   const { data } = useIdentityStatus();

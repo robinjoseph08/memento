@@ -5,7 +5,7 @@ import { NavLink } from "react-router-dom";
 import type { Person } from "../../types/generated/identity";
 import { Button } from "../ui/button";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "../ui/sheet";
-import { PendingBadge } from "./header";
+import { PendingBadge } from "./pending-badge";
 import { Wordmark } from "./wordmark";
 
 export function MobileNavigation({

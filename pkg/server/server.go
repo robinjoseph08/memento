@@ -28,7 +28,7 @@ import (
 )
 
 // Features are the modules main wires after constructing the worker runtime.
-// Tests may omit them to exercise identity routes alone.
+// Tests pass the zero value to exercise identity routes alone.
 type Features struct {
 	Publishing    *publishing.Module
 	Notifications *notifications.Module
@@ -36,7 +36,7 @@ type Features struct {
 
 // New constructs the HTTP server and registers the application's routes and
 // middleware.
-func New(cfg *config.Config, db *bun.DB, features ...Features) (*http.Server, error) {
+func New(cfg *config.Config, db *bun.DB, features Features) (*http.Server, error) {
 	frontend, available, err := webapp.Handler(cfg.PublicURL, publicPageMetadata)
 	if err != nil {
 		return nil, fmt.Errorf("load embedded frontend: %w", err)
@@ -49,12 +49,10 @@ func New(cfg *config.Config, db *bun.DB, features ...Features) (*http.Server, er
 	people.ImmichURL = cfg.ImmichBrowserURL()
 	people.PublicURL = cfg.PublicURL
 	deps := dependencies{identity: people, connection: source, health: db.PingContext, media: media.New(db, source)}
-	if len(features) > 0 {
-		deps.publishing = features[0].Publishing
-		if features[0].Notifications != nil {
-			people.Mail = features[0].Notifications
-			people.Announcements = features[0].Notifications
-		}
+	deps.publishing = features.Publishing
+	if features.Notifications != nil {
+		people.Mail = features.Notifications
+		people.Announcements = features.Notifications
 	}
 	return newServer(cfg, frontend, deps)
 }
