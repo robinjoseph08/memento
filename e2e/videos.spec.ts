@@ -121,14 +121,14 @@ test("videos play with titles, chapters, ranges, downloads, and recover a failed
   await expect(
     moment.getByRole("img", { name: "Chapter extraction failed" }),
   ).toHaveCount(2);
-  await moment.getByRole("button", { name: "Select", exact: true }).click();
+  // The tile opens everything about the video: title, chapters, and access.
   await moment
-    .getByRole("checkbox", { name: "Select birthday-party.webm" })
-    .check();
-  await moment
-    .getByRole("button", { name: "Video details", exact: true })
+    .getByRole("button", { name: "Edit birthday-party.webm", exact: true })
     .click();
   const details = page.getByRole("dialog", { name: "Video details" });
+  await expect(
+    details.getByRole("combobox", { name: "Access for Alex" }),
+  ).toBeVisible();
   const titleField = details.getByRole("textbox", { name: "Video title" });
   await expect(titleField).toHaveValue("");
   await expect(titleField).toHaveAttribute("placeholder", "birthday-party");
@@ -142,13 +142,7 @@ test("videos play with titles, chapters, ranges, downloads, and recover a failed
 
   // Retry the recoverable failure without blocking anything else.
   await moment
-    .getByRole("checkbox", { name: "Select birthday-party.webm" })
-    .uncheck();
-  await moment
-    .getByRole("checkbox", { name: "Select coast-retry.webm" })
-    .check();
-  await moment
-    .getByRole("button", { name: "Video details", exact: true })
+    .getByRole("button", { name: "Edit coast-retry.webm", exact: true })
     .click();
   await expect(details.getByRole("alert")).toContainText(
     "Chapter extraction failed",
@@ -236,24 +230,20 @@ test("videos play with titles, chapters, ranges, downloads, and recover a failed
     const playbackURL = await video.getAttribute("src");
     expect(playbackURL).toContain("/playback?v=");
     await expect(dialog).toContainText("Birthday party");
-    await dialog.getByRole("button", { name: "Chapters", exact: true }).click();
-    const panel = member.getByRole("dialog", { name: "Chapters" });
-    await expect(
-      panel.getByRole("button", { name: /Arrival/ }),
-    ).toHaveAttribute("aria-current", "true");
-    await panel.getByRole("button", { name: /Cake/ }).click();
-    await expect(panel).toHaveCount(0);
+    // The chapter picker under the player names the playing chapter and
+    // follows the video; choosing one seeks to its start.
+    const picker = dialog.getByRole("combobox", { name: "Chapter" });
+    await expect(picker).toHaveText(/Arrival/);
+    await picker.click();
+    await member.getByRole("option", { name: /Cake/ }).click();
+    await expect(member.getByRole("option")).toHaveCount(0);
     await expect.poll(() => currentTime(member)).toBeGreaterThanOrEqual(1.9);
+    await expect(picker).toHaveText(/Cake/);
     await video.evaluate((element: HTMLVideoElement) => {
       element.currentTime = 5;
     });
     await expect.poll(() => currentTime(member)).toBeGreaterThanOrEqual(4.9);
-    await dialog.getByRole("button", { name: "Chapters", exact: true }).click();
-    await expect(
-      panel.getByRole("button", { name: /Goodbyes/ }),
-    ).toHaveAttribute("aria-current", "true");
-    await member.keyboard.press("Escape");
-    await expect(panel).toHaveCount(0);
+    await expect(picker).toHaveText(/Goodbyes/);
     await expect(dialog).toHaveAccessibleName("Video 1 of 103");
 
     // Playback proxies byte ranges with Memento's validators.
@@ -282,7 +272,7 @@ test("videos play with titles, chapters, ranges, downloads, and recover a failed
     await expect(
       dialog.getByText("No chapters", { exact: true }),
     ).toBeVisible();
-    await expect(dialog.getByRole("button", { name: "Chapters" })).toHaveCount(
+    await expect(dialog.getByRole("combobox", { name: "Chapter" })).toHaveCount(
       0,
     );
     await dialog
@@ -341,19 +331,10 @@ test("videos play with titles, chapters, ranges, downloads, and recover a failed
     await expect(
       preview.getByRole("link", { name: "Download video" }),
     ).toHaveCount(0);
-    await preview
-      .getByRole("button", { name: "Chapters", exact: true })
-      .click();
-    await page
-      .getByRole("dialog", { name: "Chapters" })
-      .getByRole("button", { name: /Goodbyes/ })
-      .click();
+    await preview.getByRole("combobox", { name: "Chapter" }).click();
+    await page.getByRole("option", { name: /Goodbyes/ }).click();
+    await expect(page.getByRole("option")).toHaveCount(0);
     await expect.poll(() => currentTime(page)).toBeGreaterThanOrEqual(3.9);
-    // The chapter popover finishes closing before Escape reaches the lightbox.
-    await expect(page.getByRole("dialog", { name: "Chapters" })).toHaveCount(0);
-    await expect(
-      preview.getByRole("button", { name: "Chapters", exact: true }),
-    ).toBeFocused();
     await page.keyboard.press("Escape");
     await expect(preview).toHaveCount(0);
 
@@ -361,12 +342,8 @@ test("videos play with titles, chapters, ranges, downloads, and recover a failed
     await outline
       .getByRole("link", { name: /Wednesday, May 20, 2026/ })
       .click();
-    await moment.getByRole("button", { name: "Select", exact: true }).click();
     await moment
-      .getByRole("checkbox", { name: "Select birthday-party.webm" })
-      .check();
-    await moment
-      .getByRole("button", { name: "Video details", exact: true })
+      .getByRole("button", { name: "Edit birthday-party.webm", exact: true })
       .click();
     await expect(titleField).toHaveValue("Birthday party");
     await titleField.fill("");

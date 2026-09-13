@@ -1,157 +1,106 @@
 import { useEffect, useEffectEvent, useState } from "react";
 
 import { useRetryChapters, useUpdateVideo } from "../../hooks/queries/albums";
-import { useReturnFocus } from "../../hooks/use-return-focus";
-import { useUnsavedChanges } from "../../hooks/use-unsaved-changes";
 import { fieldErrors } from "../../lib/http";
 import type { Entry } from "../../types/generated/publishing";
-import { ConfirmDialog } from "../forms/confirm-dialog";
 import { Failure, Field, Form } from "../people/form-fields";
 import { Button } from "../ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogTitle,
-} from "../ui/dialog";
 import { clock } from "../viewer/labels";
-import { AlbumImage } from "./album-image";
 import { filenameTitle } from "./moment-labels";
 
-// One video's Memento title and its chapter state. The title is global to the
-// Media Item, so every Album showing the video changes with it. Chapters are
-// read-only facts from the file; a failed extraction can be retried here and
-// never blocks playback or publication.
-export function VideoDialog({
+// One video's Memento title and its chapter state, shown inside the item
+// dialog above the access rules. The title is global to the Media Item, so
+// every Album showing the video changes with it. Chapters are read-only facts
+// from the file; a failed extraction can be retried here and never blocks
+// playback or publication. onDirty tells the dialog about unsaved edits and
+// onSaved fires once a saved title is reflected in the entry.
+export function VideoDetails({
   albumID,
   entry,
-  onClose,
+  onDirty,
+  onSaved,
 }: {
   albumID: string;
   entry: Entry;
-  onClose: () => void;
+  onDirty: (dirty: boolean) => void;
+  onSaved: () => void;
 }) {
   const update = useUpdateVideo(albumID, entry.id);
   const retry = useRetryChapters(albumID, entry.id);
   const [title, setTitle] = useState(entry.title);
   const dirty = title.trim() !== entry.title;
-  useUnsavedChanges(dirty || update.isPending, true);
-  const [discardOpen, setDiscardOpen] = useState(false);
-  // Close only once nothing is unsaved: the dialog closes by clearing its URL
-  // parameter, which the unsaved-changes guard would otherwise block. A save
-  // reports success one render before the refreshed Album reaches this
-  // dialog, so wait for the entry to carry the saved title.
-  const [discarded, setDiscarded] = useState(false);
-  const closeSettled = useEffectEvent(onClose);
+  const reportDirty = useEffectEvent(onDirty);
   useEffect(() => {
-    if ((update.isSuccess && !dirty) || discarded) closeSettled();
-  }, [update.isSuccess, dirty, discarded]);
-  const returnFocus = useReturnFocus();
+    reportDirty(dirty || update.isPending);
+  }, [dirty, update.isPending]);
+  // A save reports success one render before the refreshed Album reaches this
+  // entry, so wait for the entry to carry the saved title.
+  const saved = useEffectEvent(onSaved);
+  useEffect(() => {
+    if (update.isSuccess && !dirty) saved();
+  }, [update.isSuccess, dirty]);
   const errors = fieldErrors(update.error);
-  function changeOpen(next: boolean) {
-    if (next || update.isPending) return;
-    if (dirty) setDiscardOpen(true);
-    else onClose();
-  }
   return (
     <>
-      <Dialog onOpenChange={changeOpen} open>
-        <DialogContent className="max-w-xl" onCloseAutoFocus={returnFocus}>
-          <DialogTitle className="pr-8">Video details</DialogTitle>
-          <DialogDescription className="mt-3 text-sm text-muted">
-            {entry.filename}. The title shows in every album with this video.
-          </DialogDescription>
-          <AlbumImage
-            alt={entry.filename}
-            className="mt-4 h-auto max-h-40 w-auto max-w-full"
-            fallback="No preview available"
-            src={entry.available ? entry.thumbnail_url : ""}
-          />
-          <Form
-            aria-busy={update.isPending}
-            aria-label="Video title"
-            className="mt-6"
-            error={update.error}
-            onSubmit={(event) => {
-              event.preventDefault();
-              if (update.isPending) return;
-              if (!dirty) {
-                onClose();
-                return;
-              }
-              update.mutate(
-                { title: title.trim() },
-                {
-                  // Keep the field on the stored value so a server-side
-                  // normalization cannot leave the dialog looking unsaved.
-                  onSuccess: (saved) =>
-                    setTitle(
-                      saved.moments
-                        .flatMap((moment) => moment.entries)
-                        .find((item) => item.id === entry.id)?.title ?? "",
-                    ),
-                },
-              );
-            }}
-          >
-            <fieldset disabled={update.isPending}>
-              <Field
-                error={errors.title}
-                label="Video title"
-                maxLength={200}
-                name="title"
-                onChange={(event) => {
-                  update.reset();
-                  setTitle(event.target.value);
-                }}
-                placeholder={filenameTitle(entry.filename)}
-                value={title}
-              />
-              <p className="-mt-3 mb-5 text-xs text-muted">
-                Leave it blank to show the filename,{" "}
-                {filenameTitle(entry.filename)}.
-              </p>
-              <div className="flex flex-wrap gap-2">
-                <Button type="submit">
-                  {update.isPending ? "Saving…" : "Save title"}
-                </Button>
-                <Button
-                  onClick={() => changeOpen(false)}
-                  type="button"
-                  variant="outline"
-                >
-                  Cancel
-                </Button>
-              </div>
-            </fieldset>
-          </Form>
-          <section
-            aria-labelledby="video-chapters-heading"
-            className="mt-8 border-t border-border pt-5"
-          >
-            <h3 className="text-xs font-medium" id="video-chapters-heading">
-              Chapters
-            </h3>
-            <ChapterState
-              entry={entry}
-              onRetry={() => retry.mutate()}
-              retryError={retry.error}
-              retrying={retry.isPending}
-            />
-          </section>
-        </DialogContent>
-      </Dialog>
-      <ConfirmDialog
-        confirmLabel="Discard"
-        description="The video keeps its current title."
-        onConfirm={() => {
-          setTitle(entry.title);
-          setDiscarded(true);
+      <Form
+        aria-busy={update.isPending}
+        aria-label="Video title"
+        className="mt-6"
+        error={update.error}
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (update.isPending || !dirty) return;
+          update.mutate(
+            { title: title.trim() },
+            {
+              // Keep the field on the stored value so a server-side
+              // normalization cannot leave the form looking unsaved.
+              onSuccess: (album) =>
+                setTitle(
+                  album.moments
+                    .flatMap((moment) => moment.entries)
+                    .find((item) => item.id === entry.id)?.title ?? "",
+                ),
+            },
+          );
         }}
-        onOpenChange={setDiscardOpen}
-        open={discardOpen}
-        title="Discard this video title?"
-      />
+      >
+        <fieldset disabled={update.isPending}>
+          <Field
+            error={errors.title}
+            label="Video title"
+            maxLength={200}
+            name="title"
+            onChange={(event) => {
+              update.reset();
+              setTitle(event.target.value);
+            }}
+            placeholder={filenameTitle(entry.filename)}
+            value={title}
+          />
+          <p className="-mt-3 mb-4 text-xs text-muted">
+            Leave it blank to show the filename, {filenameTitle(entry.filename)}
+            .
+          </p>
+          <Button disabled={!dirty} type="submit">
+            {update.isPending ? "Saving…" : "Save title"}
+          </Button>
+        </fieldset>
+      </Form>
+      <section
+        aria-labelledby="video-chapters-heading"
+        className="mt-6 border-t border-border pt-5"
+      >
+        <h3 className="text-xs font-medium" id="video-chapters-heading">
+          Chapters
+        </h3>
+        <ChapterState
+          entry={entry}
+          onRetry={() => retry.mutate()}
+          retryError={retry.error}
+          retrying={retry.isPending}
+        />
+      </section>
     </>
   );
 }

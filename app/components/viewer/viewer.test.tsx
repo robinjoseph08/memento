@@ -564,6 +564,7 @@ it("opens a video in the routed lightbox, seeks by chapter, and keeps no-chapter
   expect(video).toHaveAttribute("src", party.playback_url);
   expect(video).toHaveAttribute("controls");
   expect(within(dialog).getByText("Birthday party")).toBeVisible();
+  expect(video).toHaveClass("h-full", "w-full", "object-contain");
   expect(
     within(dialog).getByRole("link", { name: "Download video" }),
   ).toHaveAttribute("href", party.download_url);
@@ -574,40 +575,26 @@ it("opens a video in the routed lightbox, seeks by chapter, and keeps no-chapter
     within(filmstrip).getByRole("button", { name: "Go to video 1" }),
   ).toHaveAttribute("aria-current", "true");
 
-  const toggle = within(dialog).getByRole("button", { name: "Chapters" });
-  expect(toggle).toHaveAttribute("aria-expanded", "false");
-  await user.click(toggle);
-  const panel = screen.getByRole("dialog", { name: "Chapters" });
-  const chapters = within(panel).getAllByRole("button", {
-    name: /Arrival|Chapter 2|Goodbyes/,
-  });
-  expect(chapters.map((button) => button.textContent)).toEqual([
+  // The chapter picker sits between the title and the date, names the playing
+  // chapter, and seeks when another is chosen.
+  const picker = within(dialog).getByRole("combobox", { name: "Chapter" });
+  expect(picker).toHaveTextContent("Arrival");
+  expect(within(dialog).getByText("Saturday, June 14, 2025")).toBeVisible();
+  await user.click(picker);
+  const options = screen.getAllByRole("option");
+  expect(options.map((option) => option.textContent)).toEqual([
     "Arrival0:00",
     "Chapter 20:02",
     "Goodbyes0:04",
   ]);
-  expect(chapters[0]).toHaveAttribute("aria-current", "true");
-  expect(chapters[0]).toHaveFocus();
-  await user.click(chapters[2]);
+  await user.click(screen.getByRole("option", { name: /Goodbyes/ }));
   expect(video.currentTime).toBe(4);
   expect(HTMLMediaElement.prototype.play).toHaveBeenCalled();
   await waitFor(() =>
-    expect(
-      screen.queryByRole("dialog", { name: "Chapters" }),
-    ).not.toBeInTheDocument(),
+    expect(screen.queryByRole("option")).not.toBeInTheDocument(),
   );
-  expect(toggle).toHaveFocus();
   fireEvent.timeUpdate(video);
-  await user.click(toggle);
-  expect(
-    await screen.findByRole("button", { name: /Goodbyes/ }),
-  ).toHaveAttribute("aria-current", "true");
-  await user.keyboard("{Escape}");
-  await waitFor(() =>
-    expect(
-      screen.queryByRole("dialog", { name: "Chapters" }),
-    ).not.toBeInTheDocument(),
-  );
+  expect(picker).toHaveTextContent("Goodbyes");
   expect(screen.getByRole("dialog", { name: "Video 1 of 3" })).toBeVisible();
 
   await user.keyboard("{ArrowRight}");
@@ -617,7 +604,7 @@ it("opens a video in the routed lightbox, seeks by chapter, and keeps no-chapter
   expect(window.location.pathname).toBe("/albums/lake/videos/video-2");
   expect(screen.getByText("No chapters")).toBeVisible();
   expect(
-    screen.queryByRole("button", { name: "Chapters" }),
+    screen.queryByRole("combobox", { name: "Chapter" }),
   ).not.toBeInTheDocument();
   await user.click(screen.getByRole("button", { name: "Next video" }));
   expect(

@@ -135,14 +135,14 @@ it("edits a video title with the filename as fallback and retries failed chapter
   expect(
     within(moment).getByRole("img", { name: "Chapter extraction failed" }),
   ).toBeVisible();
-  await user.click(within(moment).getByRole("button", { name: "Select" }));
+  // The tile opens everything about the video: title, chapters, and access.
   await user.click(
-    within(moment).getByRole("checkbox", { name: "Select Waves at dusk.mp4" }),
-  );
-  await user.click(
-    within(moment).getByRole("button", { name: "Video details" }),
+    within(moment).getByRole("button", { name: "Edit Waves at dusk.mp4" }),
   );
   const dialog = await screen.findByRole("dialog", { name: "Video details" });
+  expect(
+    within(dialog).getByRole("form", { name: "Item access" }),
+  ).toBeVisible();
   const title = within(dialog).getByRole("textbox", { name: "Video title" });
   expect(title).toHaveValue("");
   expect(title).toHaveAttribute("placeholder", "Waves at dusk");
@@ -179,7 +179,7 @@ it("edits a video title with the filename as fallback and retries failed chapter
   ).not.toBeInTheDocument();
   // Reopening shows the saved title; clearing it sends an empty title.
   await user.click(
-    within(moment).getByRole("button", { name: "Video details" }),
+    within(moment).getByRole("button", { name: "Edit Waves at dusk.mp4" }),
   );
   const reopened = await screen.findByRole("dialog", { name: "Video details" });
   const saved = within(reopened).getByRole("textbox", { name: "Video title" });
@@ -203,7 +203,7 @@ it("asks before discarding an edited title", async () => {
   window.history.replaceState(
     null,
     "",
-    "/curator/albums/album-1?moment=day-1&video=video",
+    "/curator/albums/album-1?moment=day-1&entry=video",
   );
   const user = userEvent.setup();
   render(<App />);
@@ -214,7 +214,7 @@ it("asks before discarding an edited title", async () => {
   );
   await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
   const confirm = await screen.findByRole("dialog", {
-    name: "Discard this video title?",
+    name: "Discard these changes?",
   });
   await user.click(within(confirm).getByRole("button", { name: "Discard" }));
   await waitFor(() =>

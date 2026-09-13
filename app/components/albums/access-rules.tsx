@@ -24,9 +24,12 @@ import {
 import { accessDetail, byPresence } from "./access-labels";
 import { AlbumImage } from "./album-image";
 import { PersonAvatar } from "./person-avatar";
+import { VideoDetails } from "./video-details";
 
 // Detailed allow, deny, and inherit editing for one Moment or one item. It
 // opens on saved decisions only: detected people are listed, never preselected.
+// A video item also carries its title and chapters above the access rules, so
+// one dialog manages everything about the item.
 export function RulesDialog({
   album,
   moment,
@@ -52,15 +55,20 @@ export function RulesDialog({
   const value = (person: AccessPerson) =>
     draft[person.person_id] ?? saved(person);
   const changed = people.filter((person) => value(person) !== saved(person));
-  const dirty = save.isPending || changed.length > 0;
+  const video = entry?.kind === "VIDEO";
+  const [videoDirty, setVideoDirty] = useState(false);
+  const dirty = save.isPending || changed.length > 0 || videoDirty;
   useUnsavedChanges(dirty, true);
   // Close only once the dialog is no longer dirty: an item dialog closes by
-  // clearing ?entry, which the unsaved-changes guard would otherwise block.
+  // clearing ?entry, which the unsaved-changes guard would otherwise block,
+  // and a save reports success one render before the refreshed Album arrives.
   const [discarded, setDiscarded] = useState(false);
+  const [discards, setDiscards] = useState(0);
+  const [videoSaved, setVideoSaved] = useState(false);
   const closeSettled = useEffectEvent(onClose);
   useEffect(() => {
-    if (save.isSuccess || discarded) closeSettled();
-  }, [save.isSuccess, discarded]);
+    if ((save.isSuccess || videoSaved || discarded) && !dirty) closeSettled();
+  }, [save.isSuccess, videoSaved, discarded, dirty]);
   const [discardOpen, setDiscardOpen] = useState(false);
   const returnFocus = useReturnFocus();
   const errors = fieldErrors(save.error);
@@ -91,12 +99,18 @@ export function RulesDialog({
       <Dialog onOpenChange={changeOpen} open>
         <DialogContent className="max-w-xl" onCloseAutoFocus={returnFocus}>
           <DialogTitle className="pr-8">
-            {entry ? "Item access" : "Rules & exceptions"}
+            {video
+              ? "Video details"
+              : entry
+                ? "Item access"
+                : "Rules & exceptions"}
           </DialogTitle>
           <DialogDescription className="mt-3 text-sm text-muted">
-            {entry
-              ? `Decisions for ${entry.filename} override its Moment and the Album.`
-              : `Decisions for ${moment.label} override Album access. Item exceptions still win.`}
+            {video
+              ? `${entry.filename}. The title shows in every album with this video. Access decisions here override its Moment and the Album.`
+              : entry
+                ? `Decisions for ${entry.filename} override its Moment and the Album.`
+                : `Decisions for ${moment.label} override Album access. Item exceptions still win.`}
           </DialogDescription>
           {entry && (
             <AlbumImage
@@ -106,10 +120,24 @@ export function RulesDialog({
               src={entry.available ? entry.thumbnail_url : ""}
             />
           )}
+          {video && (
+            <VideoDetails
+              albumID={album.id}
+              entry={entry}
+              key={discards}
+              onDirty={setVideoDirty}
+              onSaved={() => setVideoSaved(true)}
+            />
+          )}
+          {video && (
+            <h3 className="mt-6 border-t border-border pt-5 text-xs font-medium">
+              Access
+            </h3>
+          )}
           <Form
             aria-busy={save.isPending}
             aria-label={entry ? "Item access" : "Rules & exceptions"}
-            className="mt-6"
+            className={video ? "mt-2" : "mt-6"}
             error={save.error}
             onSubmit={(event) => {
               event.preventDefault();
@@ -118,12 +146,17 @@ export function RulesDialog({
                 onClose();
                 return;
               }
-              save.mutate({
-                decisions: changed.map((person) => ({
-                  person_id: person.person_id,
-                  decision: value(person),
-                })),
-              });
+              save.mutate(
+                {
+                  decisions: changed.map((person) => ({
+                    person_id: person.person_id,
+                    decision: value(person),
+                  })),
+                },
+                // The saved choices are no longer a draft, whatever the
+                // refreshed Album says about them.
+                { onSuccess: () => setDraft({}) },
+              );
             }}
           >
             <fieldset disabled={save.isPending}>
@@ -168,14 +201,21 @@ export function RulesDialog({
       </Dialog>
       <ConfirmDialog
         confirmLabel="Discard"
-        description="Saved access stays as it is."
+        description={
+          video
+            ? "The saved title and access stay as they are."
+            : "Saved access stays as it is."
+        }
         onConfirm={() => {
           setDraft({});
+          setDiscards((count) => count + 1);
           setDiscarded(true);
         }}
         onOpenChange={setDiscardOpen}
         open={discardOpen}
-        title="Discard these access changes?"
+        title={
+          video ? "Discard these changes?" : "Discard these access changes?"
+        }
       />
     </>
   );

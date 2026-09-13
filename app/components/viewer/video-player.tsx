@@ -1,116 +1,81 @@
-import { ListVideo } from "lucide-react";
-import { useRef, useState } from "react";
+import type { RefObject } from "react";
 
-import { cn } from "../../lib/utils";
 import type { Chapter, ViewerEntry } from "../../types/generated/publishing";
-import { Button } from "../ui/button";
-import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
+import { Combobox } from "../ui/combobox";
 import { clock } from "./labels";
 
-// The lightbox stage for one video: the chapter control above the native
-// player. Chapters open a compact temporary popover; choosing one seeks and
-// closes it. No chapters and failed extraction are plain labels, never a
-// warning or a control that does nothing.
-export function VideoPlayer({ entry }: { entry: ViewerEntry }) {
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const [open, setOpen] = useState(false);
-  const [time, setTime] = useState(0);
+// The lightbox stage for one video: the native player filling the stage, so a
+// small clip is enlarged to the screen instead of sitting at its pixel size.
+export function VideoStage({
+  entry,
+  videoRef,
+  onTime,
+}: {
+  entry: ViewerEntry;
+  videoRef: RefObject<HTMLVideoElement | null>;
+  onTime: (seconds: number) => void;
+}) {
+  if (!entry.available)
+    return (
+      <p className="rounded-sm bg-surface px-6 py-10 text-center text-xs text-muted">
+        Media unavailable
+      </p>
+    );
+  return (
+    <video
+      aria-label={entry.title || "Video"}
+      autoPlay
+      className="h-full w-full rounded-sm bg-black object-contain"
+      controls
+      onTimeUpdate={(event) => onTime(event.currentTarget.currentTime)}
+      playsInline
+      preload="metadata"
+      ref={videoRef}
+      src={entry.playback_url}
+    />
+  );
+}
+
+// The chapter picker under the player. It names the chapter that is playing,
+// follows the video as it plays, and seeks when another one is chosen. No
+// chapters and failed extraction are plain labels rather than a control that
+// does nothing.
+export function ChapterSelect({
+  entry,
+  time,
+  onSeek,
+}: {
+  entry: ViewerEntry;
+  time: number;
+  onSeek: (chapter: Chapter) => void;
+}) {
   const chapters = entry.chapters;
+  if (chapters.length === 0) {
+    const label =
+      entry.chapter_status === "failed"
+        ? "Chapters unavailable"
+        : entry.chapter_status === "complete"
+          ? "No chapters"
+          : "";
+    return label ? <p className="text-xs text-muted">{label}</p> : null;
+  }
   const activeIndex = chapters.reduce(
     (found, chapter, index) => (time >= chapter.start ? index : found),
     -1,
   );
-  function seek(chapter: Chapter) {
-    const video = videoRef.current;
-    if (video) {
-      video.currentTime = chapter.start;
-      void video.play()?.catch(() => {});
-    }
-    setOpen(false);
-  }
   return (
-    <div className="relative flex h-full w-full flex-col items-center justify-center gap-3">
-      <div className="flex min-h-8 items-center">
-        {chapters.length > 0 ? (
-          <Popover onOpenChange={setOpen} open={open}>
-            <PopoverTrigger asChild>
-              <Button className="rounded-full" size="sm" variant="outline">
-                <ListVideo
-                  aria-hidden="true"
-                  className="size-4"
-                  strokeWidth={1.5}
-                />
-                Chapters
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent
-              align="center"
-              aria-label="Chapters"
-              className="max-h-[min(70vh,24rem)] overflow-y-auto p-1"
-              // Open on the playing chapter so Enter continues from there.
-              onOpenAutoFocus={(event) => {
-                event.preventDefault();
-                const buttons =
-                  event.currentTarget instanceof HTMLElement
-                    ? event.currentTarget.querySelectorAll("button")
-                    : undefined;
-                buttons?.[Math.max(activeIndex, 0)]?.focus();
-              }}
-            >
-              <ul>
-                {chapters.map((chapter, index) => (
-                  <li key={`${chapter.start}-${chapter.end}-${chapter.title}`}>
-                    <button
-                      aria-current={index === activeIndex ? "true" : undefined}
-                      className={cn(
-                        "flex w-full cursor-pointer items-baseline justify-between gap-3 rounded-sm px-2 py-2 text-left text-sm hover:bg-surface focus-visible:bg-surface focus-visible:outline-none",
-                        index === activeIndex &&
-                          "bg-primary/15 text-accent-foreground",
-                      )}
-                      onClick={() => seek(chapter)}
-                      type="button"
-                    >
-                      <span className="min-w-0 truncate">
-                        {chapter.title || `Chapter ${index + 1}`}
-                      </span>
-                      <span className="shrink-0 text-xs text-muted tabular-nums">
-                        {clock(chapter.start)}
-                      </span>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            </PopoverContent>
-          </Popover>
-        ) : (
-          <p className="text-xs text-muted">
-            {entry.chapter_status === "failed"
-              ? "Chapters unavailable"
-              : entry.chapter_status === "complete"
-                ? "No chapters"
-                : ""}
-          </p>
-        )}
-      </div>
-      <div className="flex min-h-0 w-full flex-1 items-center justify-center">
-        {entry.available ? (
-          <video
-            aria-label={entry.title || "Video"}
-            autoPlay
-            className="max-h-full max-w-full rounded-sm bg-black"
-            controls
-            onTimeUpdate={(event) => setTime(event.currentTarget.currentTime)}
-            playsInline
-            preload="metadata"
-            ref={videoRef}
-            src={entry.playback_url}
-          />
-        ) : (
-          <p className="rounded-sm bg-surface px-6 py-10 text-center text-xs text-muted">
-            Media unavailable
-          </p>
-        )}
-      </div>
-    </div>
+    <Combobox
+      aria-label="Chapter"
+      className="min-h-9 w-64 max-w-full"
+      onChange={(value) => onSeek(chapters[Number(value)])}
+      options={chapters.map((chapter, index) => ({
+        value: String(index),
+        label: chapter.title || `Chapter ${index + 1}`,
+        description: clock(chapter.start),
+      }))}
+      placeholder="Chapters"
+      searchPlaceholder="Search chapters…"
+      value={activeIndex >= 0 ? String(activeIndex) : ""}
+    />
   );
 }

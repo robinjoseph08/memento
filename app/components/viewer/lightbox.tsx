@@ -1,6 +1,6 @@
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { ChevronLeft, ChevronRight, Download, X } from "lucide-react";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate, type To } from "react-router-dom";
 
 import { cn } from "../../lib/utils";
@@ -8,7 +8,7 @@ import type { ViewerEntry } from "../../types/generated/publishing";
 import { AlbumImage } from "../albums/album-image";
 import { Button } from "../ui/button";
 import { aspectRatio, captureDate } from "./labels";
-import { VideoPlayer } from "./video-player";
+import { ChapterSelect, VideoStage } from "./video-player";
 
 // The routed full-screen viewer for one gallery: photos or videos. It composes
 // the Radix dialog directly because the shared DialogContent is a centered
@@ -54,6 +54,18 @@ export function Lightbox({
   const count = Math.max(total, entries.length);
   const stripRef = useRef<HTMLElement>(null);
   const swipeRef = useRef<{ x: number; y: number } | null>(null);
+  // The player lives in the stage while the chapter picker sits beneath it,
+  // so the position it follows is kept here and starts over for each video.
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [progress, setProgress] = useState({ id: "", seconds: 0 });
+  const time = progress.id === currentID ? progress.seconds : 0;
+  const setTime = (seconds: number) => setProgress({ id: currentID, seconds });
+  function seek(chapter: { start: number }) {
+    const video = videoRef.current;
+    if (!video) return;
+    video.currentTime = chapter.start;
+    void video.play()?.catch(() => {});
+  }
   // Opening from the gallery records which photo was clicked, so closing can
   // hand focus back to it even after moving through many photos. A direct
   // link has no origin, so focus lands on the photo that was open instead.
@@ -241,7 +253,11 @@ export function Lightbox({
                   key={entry.id}
                 >
                   {kind === "video" ? (
-                    <VideoPlayer entry={entry} />
+                    <VideoStage
+                      entry={entry}
+                      onTime={setTime}
+                      videoRef={videoRef}
+                    />
                   ) : (
                     <AlbumImage
                       alt={entry.title || "Photo"}
@@ -265,14 +281,21 @@ export function Lightbox({
                   />
                 </Button>
               </div>
-              <p className="pb-3 text-center text-xs text-muted">
-                {kind === "video" && entry.title && (
-                  <span className="mr-3 font-heading text-base text-foreground">
-                    {entry.title}
-                  </span>
-                )}
-                {captureDate(entry.captured_at, true)}
-              </p>
+              {kind === "video" ? (
+                <div className="flex flex-col items-center gap-2 px-3 pb-3 text-center">
+                  <p className="font-heading text-lg leading-tight">
+                    {entry.title || "Video"}
+                  </p>
+                  <ChapterSelect entry={entry} onSeek={seek} time={time} />
+                  <p className="text-xs text-muted">
+                    {captureDate(entry.captured_at, true)}
+                  </p>
+                </div>
+              ) : (
+                <p className="pb-3 text-center text-xs text-muted">
+                  {captureDate(entry.captured_at, true)}
+                </p>
+              )}
               <nav
                 aria-label={`${plural} in album`}
                 className="flex justify-center-safe gap-0.5 overflow-x-auto px-3 pb-4"
