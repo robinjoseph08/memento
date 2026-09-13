@@ -306,7 +306,7 @@ export function Lightbox({
                     aria-current={item.id === currentID ? "true" : undefined}
                     aria-label={`Go to ${lower} ${position + 1}`}
                     className={cn(
-                      "relative h-12 shrink-0 cursor-pointer overflow-hidden rounded-sm bg-surface opacity-60 outline-2 outline-offset-0 outline-transparent hover:opacity-100 focus-visible:outline-ring aria-[current=true]:opacity-100 aria-[current=true]:outline-primary",
+                      "relative h-12 shrink-0 cursor-pointer overflow-hidden rounded-sm bg-surface opacity-60 outline-2 -outline-offset-2 outline-transparent hover:opacity-100 focus-visible:outline-ring aria-[current=true]:opacity-100 aria-[current=true]:outline-primary",
                     )}
                     key={item.id}
                     onClick={() => go(item)}
