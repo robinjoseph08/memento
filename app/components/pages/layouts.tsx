@@ -18,8 +18,23 @@ const pageClassName =
 const headingClassName =
   "font-heading text-[clamp(34px,4vw,48px)] leading-[1.2] font-normal tracking-[-1px] text-balance";
 
-function destination(person: { is_curator: boolean } | null | undefined) {
-  return person ? (person.is_curator ? "/curator" : "/albums") : "/sign-in";
+function destination(
+  person:
+    | { is_curator: boolean; onboarding_completed_at?: string }
+    | null
+    | undefined,
+) {
+  if (!person) return "/sign-in";
+  if (!person.onboarding_completed_at) return "/welcome";
+  return person.is_curator ? "/curator" : "/albums";
+}
+
+// Every signed-in area shares this guard, so a Person with unfinished
+// Onboarding resumes it from any bookmark, old session, or later sign-in.
+function onboardingPending(
+  person: { onboarding_completed_at?: string } | null | undefined,
+) {
+  return !!person && !person.onboarding_completed_at;
 }
 
 export function AppShell() {
@@ -152,7 +167,7 @@ export function SignInPage() {
 
 export function CuratorLayout({ compact = false }: { compact?: boolean }) {
   const { data } = useIdentityStatus();
-  if (!data?.person?.is_curator)
+  if (!data?.person?.is_curator || onboardingPending(data.person))
     return <Navigate replace to={destination(data?.person)} />;
   return (
     <main className={compact ? "mx-auto max-w-[1440px] pb-10" : pageClassName}>
@@ -163,7 +178,19 @@ export function CuratorLayout({ compact = false }: { compact?: boolean }) {
 
 export function SignedInLayout() {
   const { data } = useIdentityStatus();
-  if (!data?.person) return <Navigate replace to="/sign-in" />;
+  if (!data?.person || onboardingPending(data.person))
+    return <Navigate replace to={destination(data?.person)} />;
+  return (
+    <main className={pageClassName}>
+      <Outlet />
+    </main>
+  );
+}
+
+export function OnboardingLayout() {
+  const { data } = useIdentityStatus();
+  if (!data?.person || !onboardingPending(data.person))
+    return <Navigate replace to={destination(data?.person)} />;
   return (
     <main className={pageClassName}>
       <Outlet />
@@ -173,7 +200,8 @@ export function SignedInLayout() {
 
 export function ViewerLayout() {
   const { data } = useIdentityStatus();
-  if (!data?.person) return <Navigate replace to="/sign-in" />;
+  if (!data?.person || onboardingPending(data.person))
+    return <Navigate replace to={destination(data?.person)} />;
   return (
     <main className="mx-auto max-w-[1440px] px-5 pt-6 pb-16 min-[761px]:px-12">
       <Outlet />

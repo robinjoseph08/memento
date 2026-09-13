@@ -17,6 +17,7 @@ const robin = {
   id: "robin",
   display_name: "Robin",
   is_curator: true,
+  onboarding_completed_at: "2026-01-01T00:00:00Z",
   update_email: "robin@example.test",
   email_updates: true,
 };
@@ -24,6 +25,7 @@ const alex = {
   id: "alex",
   display_name: "Alex",
   is_curator: false,
+  onboarding_completed_at: "2026-01-01T00:00:00Z",
   update_email: "updates@example.test",
   email_updates: false,
 };
@@ -48,6 +50,8 @@ it("chooses an avatar from a Person's linked Immich faces", async () => {
     identities: [account],
     sessions: [],
     preauthorizations: [],
+    invitations: [],
+    announced: { albums: 0, entries: 0 },
     faces: [
       {
         source_face_id: "first",
@@ -140,6 +144,8 @@ it("puts linked accounts first and keeps previous emails collapsed outside activ
             revoked_at: "2026-01-02T00:00:00Z",
           },
         ],
+        invitations: [],
+        announced: { albums: 0, entries: 0 },
       });
     }),
   );
@@ -194,6 +200,8 @@ it.each([false, true])(
           person: { ...alex, email_updates: subscribed },
           identities: [account],
           preauthorizations: [],
+          invitations: [],
+          announced: { albums: 0, entries: 0 },
           sessions: [
             {
               id: "browser",
@@ -263,6 +271,8 @@ it("lets a Curator remove another person's final linked account without losing a
         person: alex,
         identities,
         preauthorizations: [],
+        invitations: [],
+        announced: { albums: 0, entries: 0 },
         sessions: [],
       });
     }),
@@ -337,6 +347,8 @@ it("keeps an exact-email draft through refresh and field errors, then moves a re
         person: alex,
         identities: [],
         preauthorizations,
+        invitations: [],
+        announced: { albums: 0, entries: 0 },
         sessions: [],
       });
     }),
@@ -421,6 +433,8 @@ it("lets a Curator rename themselves without removing their own access", async (
         person,
         identities: [{ ...account, email: robin.update_email }],
         preauthorizations: [],
+        invitations: [],
+        announced: { albums: 0, entries: 0 },
         sessions: [],
       });
     }),

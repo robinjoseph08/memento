@@ -1,8 +1,10 @@
 import { AlbumPage } from "../albums/album-detail";
 import { CuratorPage } from "../albums/albums";
 import { ImportPage } from "../albums/sources";
+import { WelcomePage } from "../identity/onboarding";
 import { ProfilePage } from "../identity/profile";
 import { PeoplePage, PersonPage } from "../people/people";
+import { RequestsPage } from "../people/requests";
 import { ViewerAlbumList } from "../viewer/album-list";
 import {
   AccessDeniedPage,
@@ -10,6 +12,7 @@ import {
   CuratorLayout,
   HomePage,
   InstallationLayout,
+  OnboardingLayout,
   PublicLayout,
   SetupPage,
   SignedInLayout,
@@ -42,6 +45,7 @@ export const routes = [
                   { path: "import", element: <ImportPage /> },
                   { path: "people", element: <PeoplePage /> },
                   { path: "people/:id", element: <PersonPage /> },
+                  { path: "requests", element: <RequestsPage /> },
                 ],
               },
               {
@@ -53,6 +57,10 @@ export const routes = [
           {
             element: <SignedInLayout />,
             children: [{ path: "/profile", element: <ProfilePage /> }],
+          },
+          {
+            element: <OnboardingLayout />,
+            children: [{ path: "/welcome", element: <WelcomePage /> }],
           },
           {
             element: <ViewerLayout />,

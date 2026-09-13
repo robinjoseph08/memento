@@ -28,11 +28,13 @@ export function SignInForm({ claiming = false }: { claiming?: boolean }) {
         <p className="mb-6 max-w-110 text-sm text-destructive" role="alert">
           {error === "no_access" || error === "access_denied"
             ? "This Google account does not have access. Ask your Curator to approve your exact Google email address."
-            : error === "provider_unavailable"
-              ? "Google sign-in is unavailable. Try again later."
-              : error === "unverified_identity"
-                ? "Use a Google account with a verified email address."
-                : "Sign-in could not be completed. Start again with Google."}
+            : error === "access_requested"
+              ? "This Google account does not have access yet. Your Curator has been asked to review your request, so there is nothing more to do right now."
+              : error === "provider_unavailable"
+                ? "Google sign-in is unavailable. Try again later."
+                : error === "unverified_identity"
+                  ? "Use a Google account with a verified email address."
+                  : "Sign-in could not be completed. Start again with Google."}
         </p>
       )}
       {data?.auth_mode === "google" ? (

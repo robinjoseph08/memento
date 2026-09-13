@@ -32,7 +32,12 @@ export function AccountMenu({
   theme,
   setTheme,
   preview = false,
-}: { person: Person; preview?: boolean } & ReturnType<typeof useTheme>) {
+  onboarded = true,
+}: {
+  person: Person;
+  preview?: boolean;
+  onboarded?: boolean;
+} & ReturnType<typeof useTheme>) {
   const signOut = useSignOut();
   const unsavedRef = use(UnsavedChangesContext);
   const [connectionOpen, setConnectionOpen] = useState(false);
@@ -74,7 +79,7 @@ export function AccountMenu({
             </p>
           </DropdownMenuLabel>
           <DropdownMenuSeparator />
-          {preview ? (
+          {preview || !onboarded ? (
             <DropdownMenuItem disabled>Profile</DropdownMenuItem>
           ) : (
             <DropdownMenuItem asChild>
@@ -89,7 +94,7 @@ export function AccountMenu({
             Dark mode
           </DropdownMenuCheckboxItem>
           <DropdownMenuSeparator />
-          {person.is_curator && (
+          {person.is_curator && onboarded && (
             <DropdownMenuItem
               disabled={preview}
               onSelect={() => setConnectionOpen(true)}

@@ -22,6 +22,7 @@ import { Button } from "../ui/button";
 import { AlbumHeader } from "./album-header";
 import { aspectRatio, captureDate } from "./labels";
 import { Lightbox } from "./lightbox";
+import { RequestAccess } from "./request-access";
 
 // The shared Album presentation for ordinary viewing and Curator preview.
 // personName is set only in preview so empty states can say whose view it is.
@@ -79,6 +80,9 @@ export function ViewerGallery({
             >
               Try again
             </Button>
+          )}
+          {noAccess && !personName && (
+            <RequestAccess albumID={context.albumID} />
           )}
         </section>
       ) : (
