@@ -71,14 +71,15 @@ func run(ctx context.Context, binary string, offline bool) error {
 		return err
 	}
 	fixtureURL := "http://" + listener.Addr().String()
-	// Reserve an ephemeral API port until immediately before spawning the binary.
-	apiListener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", "127.0.0.1:0")
+	// Reserve an ephemeral API port on every interface until immediately before
+	// spawning the binary, so other machines on the network can open the API.
+	apiListener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", ":0")
 	if err != nil {
 		_ = listener.Close()
 		return err
 	}
 	apiPort := apiListener.Addr().(*net.TCPAddr).Port
-	apiURL := "http://" + apiListener.Addr().String()
+	apiURL := "http://127.0.0.1:" + strconv.Itoa(apiPort)
 	configFile, err := filepath.Abs("app.dev.yaml")
 	if err != nil {
 		_ = listener.Close()
@@ -90,7 +91,7 @@ func run(ctx context.Context, binary string, offline bool) error {
 		"APP_ENV=test", "AUTH_MODE=fake",
 		"PUBLIC_URL="+apiURL,
 		"IMMICH_URL="+fixtureURL, "IMMICH_API_KEY="+fixtureAPIKey,
-		"SERVER_HOST=127.0.0.1", "SERVER_PORT="+strconv.Itoa(apiPort),
+		"SERVER_HOST=0.0.0.0", "SERVER_PORT="+strconv.Itoa(apiPort),
 		"CONFIG_FILE="+configFile, "FILES_PATH="+files,
 		"DATABASE_MAX_OPEN_CONNS=3", "DATABASE_MAX_IDLE_CONNS=1", "DATABASE_DEBUG=false",
 	)

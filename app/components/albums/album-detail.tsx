@@ -18,7 +18,10 @@ import { BackLink } from "../shell/back-link";
 import { PageTitle } from "../shell/page-title";
 import { Button } from "../ui/button";
 import { Textarea } from "../ui/textarea";
+import { ViewerPreview } from "../viewer/viewer-preview";
+import { AlbumAccess } from "./album-access";
 import { AlbumImage } from "./album-image";
+import { DangerZone } from "./album-lifecycle";
 import { Audience } from "./audience";
 import { ImportProgress } from "./import-progress";
 import {
@@ -29,6 +32,7 @@ import {
   shortDay,
 } from "./moment-labels";
 import { MomentPane } from "./moments";
+import { PublishChecklist, PublishDialog } from "./publication-review";
 
 const outlineRowClass = (active: boolean) =>
   cn(
@@ -73,8 +77,13 @@ export function AlbumPage() {
 // pane with a back link.
 function AlbumContent({ album }: { album: AlbumDetail }) {
   const [params] = useSearchParams();
+  const [publicationOpen, setPublicationOpen] = useState(false);
   const desktop = useMediaQuery("(min-width: 761px)");
-  const section = params.get("section") === "details" ? "details" : "moments";
+  const requested = params.get("section");
+  const section =
+    requested === "details" || requested === "access" || requested === "preview"
+      ? requested
+      : "moments";
   const moment =
     album.moments.find((item) => item.id === params.get("moment")) ??
     album.moments[0];
@@ -86,26 +95,41 @@ function AlbumContent({ album }: { album: AlbumDetail }) {
   const complete = album.status === "complete";
   return (
     <>
-      <header className="border-b border-border px-5 py-4 min-[761px]:px-8">
-        <BackLink className="mb-2 text-xs" to="/curator">
-          All albums
-        </BackLink>
-        <h1 className="font-heading text-[clamp(24px,3vw,30px)] leading-tight tracking-[-0.5px] wrap-anywhere">
-          {album.title}
-        </h1>
-        <p className="mt-1 text-xs text-muted">
-          <span>
-            {complete
-              ? mediaCounts(album.moments.flatMap((item) => item.entries))
-              : countLabel(album.total, "item", "items")}
-          </span>
-          {!album.published && (
-            <span className="ml-3 border-l border-border pl-3">
-              Unpublished
+      <header className="flex flex-wrap items-center gap-4 border-b border-border px-5 py-4 min-[761px]:px-8">
+        <div className="min-w-0 flex-1">
+          <BackLink className="mb-2 text-xs" to="/curator">
+            All albums
+          </BackLink>
+          <h1 className="font-heading text-[clamp(24px,3vw,30px)] leading-tight tracking-[-0.5px] wrap-anywhere">
+            {album.title}
+          </h1>
+          <p className="mt-1 text-xs text-muted">
+            <span>
+              {complete
+                ? mediaCounts(album.moments.flatMap((item) => item.entries))
+                : countLabel(album.total, "item", "items")}
             </span>
-          )}
-        </p>
+            <span className="ml-3 border-l border-border pl-3">
+              {album.published ? "Published" : "Unpublished"}
+            </span>
+          </p>
+        </div>
+        {!album.published && (
+          <Button
+            className="w-full min-[761px]:w-auto"
+            disabled={!complete}
+            onClick={() => setPublicationOpen(true)}
+          >
+            Review & publish
+          </Button>
+        )}
       </header>
+      {publicationOpen && (
+        <PublishDialog
+          album={album}
+          onClose={() => setPublicationOpen(false)}
+        />
+      )}
       {complete ? (
         <div className="min-[761px]:grid min-[761px]:min-h-[70vh] min-[761px]:grid-cols-[300px_minmax(0,1fr)]">
           {showOutline && (
@@ -122,9 +146,45 @@ function AlbumContent({ album }: { album: AlbumDetail }) {
                       outlineRowClass(section === "details"),
                       "text-sm",
                     )}
-                    to={link({ section: "details", pane: "detail" })}
+                    to={link({
+                      section: "details",
+                      pane: "detail",
+                      entry: null,
+                    })}
                   >
                     Album details
+                  </Link>
+                </li>
+                <li>
+                  <Link
+                    aria-current={section === "access" ? "page" : undefined}
+                    className={cn(
+                      outlineRowClass(section === "access"),
+                      "text-sm",
+                    )}
+                    to={link({
+                      section: "access",
+                      pane: "detail",
+                      entry: null,
+                    })}
+                  >
+                    Album access
+                  </Link>
+                </li>
+                <li>
+                  <Link
+                    aria-current={section === "preview" ? "page" : undefined}
+                    className={cn(
+                      outlineRowClass(section === "preview"),
+                      "text-sm",
+                    )}
+                    to={link({
+                      section: "preview",
+                      pane: "detail",
+                      entry: null,
+                    })}
+                  >
+                    Viewer preview
                   </Link>
                 </li>
               </ul>
@@ -163,6 +223,7 @@ function AlbumContent({ album }: { album: AlbumDetail }) {
                             moment: item.id,
                             pane: "detail",
                             media: null,
+                            entry: null,
                           })}
                         >
                           <AlbumImage
@@ -215,7 +276,15 @@ function AlbumContent({ album }: { album: AlbumDetail }) {
                 unsaved edit survives a look at a Moment. */}
             <div className="max-w-180" hidden={section !== "details"}>
               <TitleForm album={album} />
+              {!album.published && <PublishChecklist album={album} />}
+              <DangerZone album={album} />
             </div>
+            {showDetail && section === "access" && (
+              <AlbumAccess album={album} />
+            )}
+            {showDetail && section === "preview" && (
+              <ViewerPreview album={album} />
+            )}
             {showDetail &&
               section === "moments" &&
               (moment ? (
@@ -240,9 +309,8 @@ function TitleForm({ album }: { album: AlbumDetail }) {
   const update = useUpdateAlbum(album.id);
   const [draft, setDraft] = useState<string | null>(null);
   const title = draft ?? album.title;
-  useUnsavedChanges(
-    (draft !== null && draft !== album.title) || update.isPending,
-  );
+  const dirty = (draft !== null && draft !== album.title) || update.isPending;
+  useUnsavedChanges(dirty);
   return (
     <section aria-labelledby="album-details-heading">
       <h2 className={sectionHeadingClass} id="album-details-heading">

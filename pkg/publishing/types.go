@@ -2,8 +2,7 @@ package publishing
 
 import "time"
 
-// Decision is an explicit Moment access choice. Missing decisions inherit and
-// currently fall through to denied until Album access arrives in ticket 5.
+// Decision is an explicit access choice. Missing decisions inherit.
 type Decision string
 
 const (
@@ -18,6 +17,73 @@ type AudienceChange struct {
 	DisplayName    string   `json:"display_name"`
 	GainedEntryIDs []string `json:"gained_entry_ids"`
 	LostEntryIDs   []string `json:"lost_entry_ids"`
+}
+
+// ViewerAlbum contains only the selected Person's accessible presentation.
+type ViewerAlbum struct {
+	ID          string `json:"id"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	PhotoCount  int    `json:"photo_count"`
+	VideoCount  int    `json:"video_count"`
+	StartDate   string `json:"start_date"`
+	EndDate     string `json:"end_date"`
+	CoverURL    string `json:"cover_url"`
+	// CoverPreviewURL is the same cover at Immich's larger variant for the
+	// Album header; list cards keep the small thumbnail.
+	CoverPreviewURL string      `json:"cover_preview_url"`
+	Days            []ViewerDay `json:"days"`
+}
+
+type ViewerDay struct {
+	Date       string `json:"date"`
+	PhotoCount int    `json:"photo_count"`
+	VideoCount int    `json:"video_count"`
+}
+
+type ViewerEntry struct {
+	ID           string `json:"id"`
+	Kind         string `json:"kind"`
+	Title        string `json:"title"`
+	CapturedAt   string `json:"captured_at"`
+	Available    bool   `json:"available"`
+	ThumbnailURL string `json:"thumbnail_url"`
+	PreviewURL   string `json:"preview_url"`
+	Width        int    `json:"width"`
+	Height       int    `json:"height"`
+}
+
+type ViewerPage struct {
+	Entries    []ViewerEntry `json:"entries"`
+	NextCursor string        `json:"next_cursor"`
+}
+
+type PublicationAudience struct {
+	PersonID        string `json:"person_id"`
+	DisplayName     string `json:"display_name"`
+	AvatarURL       string `json:"avatar_url"`
+	AccessibleCount int    `json:"accessible_count"`
+}
+
+// PublicationReview lists what publication would expose and why it may wait.
+// Warnings never block; blockers do.
+type PublicationReview struct {
+	Title       string                `json:"title"`
+	PhotoCount  int                   `json:"photo_count"`
+	VideoCount  int                   `json:"video_count"`
+	MomentCount int                   `json:"moment_count"`
+	Audience    []PublicationAudience `json:"audience"`
+	Blockers    []string              `json:"blockers"`
+	Warnings    []string              `json:"warnings"`
+	ReviewToken string                `json:"review_token"`
+}
+
+type PublishRequest struct {
+	ReviewToken string `json:"review_token" validate:"required"`
+}
+
+type DeleteAlbumRequest struct {
+	Title string `json:"title" validate:"required"`
 }
 
 // SourceAlbum describes an Immich Album available for import.
@@ -58,7 +124,8 @@ type Album struct {
 
 type AlbumDetail struct {
 	Album   `tstype:",extends"`
-	Moments []Moment `json:"moments"`
+	Moments []Moment       `json:"moments"`
+	Access  []AccessPerson `json:"access"`
 }
 
 type Moment struct {
@@ -80,6 +147,8 @@ type Entry struct {
 	CapturedAt   string `json:"captured_at"`
 	Available    bool   `json:"available"`
 	ThumbnailURL string `json:"thumbnail_url"`
+	// Decisions holds only this entry's explicit rules by Person ID.
+	Decisions map[string]Decision `json:"decisions"`
 }
 
 type ImportRequest struct {
@@ -98,6 +167,10 @@ type SetMomentCoverRequest struct {
 	EntryID string `json:"entry_id" validate:"required,uuid"`
 }
 
+// AccessPerson summarizes one Person at one scope. At Album scope Decision is
+// the Album allow, Exceptions counts narrower rules, and MomentsDetected says
+// how many Moments recognized them; at Moment scope Inherited reports an Album
+// allow and Decision the Moment rule.
 type AccessPerson struct {
 	PersonID          string   `json:"person_id"`
 	DisplayName       string   `json:"display_name"`
@@ -106,6 +179,14 @@ type AccessPerson struct {
 	Detected          bool     `json:"detected"`
 	Suggested         bool     `json:"suggested"`
 	SupportingEntries int      `json:"supporting_entries"`
+	MomentsDetected   int      `json:"moments_detected"`
+	Inherited         bool     `json:"inherited"`
+	Effective         bool     `json:"effective"`
+	AccessibleCount   int      `json:"accessible_count"`
+	Exceptions        int      `json:"exceptions"`
+	// Deactivated people appear at Album scope only while they still hold
+	// rules here, so a Curator can see and remove frozen access.
+	Deactivated bool `json:"deactivated"`
 }
 
 type MomentAccess struct {
@@ -125,25 +206,37 @@ type FaceRecord struct {
 	Occurrences  int    `json:"occurrences"`
 }
 
-type SetMomentAccessRequest struct {
-	PersonID string   `json:"person_id" validate:"required,uuid"`
-	Decision Decision `json:"decision" validate:"required,oneof=allow deny"`
+type AlbumAccessChoice struct {
+	PersonID string `json:"person_id" validate:"required,uuid"`
+	Allowed  bool   `json:"allowed"`
 }
 
-type UndoAccessChange struct {
-	PersonID         string    `json:"person_id"`
-	Current          Decision  `json:"current"`
-	Previous         Decision  `json:"previous"`
-	CurrentUpdatedAt time.Time `json:"current_updated_at"`
+type SaveAlbumAccessRequest struct {
+	People []AlbumAccessChoice `json:"people" validate:"required,dive"`
 }
 
-type UndoMomentAccessRequest struct {
-	Changes []UndoAccessChange `json:"changes"`
+type AlbumAccessPreview struct {
+	Changes []AudienceChange `json:"changes"`
 }
 
-type MomentAccessResult struct {
-	Album AlbumDetail             `json:"album"`
-	Undo  UndoMomentAccessRequest `json:"undo"`
+type SaveRulesRequest struct {
+	Decisions []AccessResolution `json:"decisions" validate:"required,dive"`
+}
+
+type RemoveAccessPreviewRequest struct {
+	PersonID string `json:"person_id" validate:"required,uuid"`
+}
+
+type RemoveAccessRequest struct {
+	PersonID    string `json:"person_id" validate:"required,uuid"`
+	ReviewToken string `json:"review_token" validate:"required"`
+}
+
+type RemoveAccessPreview struct {
+	PersonID    string           `json:"person_id"`
+	DisplayName string           `json:"display_name"`
+	Changes     []AudienceChange `json:"changes"`
+	ReviewToken string           `json:"review_token"`
 }
 
 type AccessConflict struct {

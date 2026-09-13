@@ -153,6 +153,8 @@ func (h *Handlers) RequirePerson(next echo.HandlerFunc) echo.HandlerFunc {
 			return err
 		}
 		c.Set("identity.person", session.Person)
+		// Feature handlers receive identity only from this authenticated guard.
+		c.Set("identity.person_id", session.Person.ID)
 		return next(c)
 	}
 }

@@ -5,17 +5,20 @@ import { statusKey } from "../../lib/query-client";
 import type { Status } from "../../types/generated/identity";
 import type {
   Album,
+  AlbumAccessPreview,
   AlbumDetail,
   ImportRequest,
   MergeMomentsRequest,
-  MomentAccessResult,
   MoveEntriesRequest,
-  SetMomentAccessRequest,
+  RemoveAccessPreview,
+  RemoveAccessPreviewRequest,
+  RemoveAccessRequest,
+  SaveAlbumAccessRequest,
+  SaveRulesRequest,
   SetMomentCoverRequest,
   SourcePage,
   SplitMomentRequest,
   StructurePreview,
-  UndoMomentAccessRequest,
   UpdateAlbumRequest,
   UpdateMomentRequest,
 } from "../../types/generated/publishing";
@@ -60,7 +63,7 @@ export function useAlbum(id: string) {
   });
 }
 
-function useAlbumCache() {
+export function useAlbumCache() {
   const client = useQueryClient();
   const scope = usePrivateScope();
   return {
@@ -72,6 +75,10 @@ function useAlbumCache() {
       await Promise.all([
         client.invalidateQueries({ queryKey: [...scope, "albums"] }),
         client.invalidateQueries({ queryKey: [...scope, "sources"] }),
+        client.invalidateQueries({
+          queryKey: [...scope, "publication", album.id],
+        }),
+        client.invalidateQueries({ queryKey: [...scope, "viewer"] }),
       ]);
     },
   };
@@ -141,39 +148,67 @@ export function useRefreshMomentFaces(albumID: string, momentID: string) {
   });
 }
 
-export function useSetMomentAccess(albumID: string, momentID: string) {
-  const cache = useAlbumCache();
+function albumAccessURL(albumID: string, action = "") {
+  const base = `/api/curator/albums/${encodeURIComponent(albumID)}/access`;
+  return action ? `${base}/${action}` : base;
+}
+
+export function usePreviewAlbumAccess(albumID: string) {
+  const scope = usePrivateScope();
   return useMutation({
-    mutationKey: cache.scope,
-    mutationFn: (body: SetMomentAccessRequest) =>
-      request<MomentAccessResult>(momentURL(albumID, momentID, "access"), {
-        body,
-      }),
-    onSuccess: (result) => cache.save(result.album),
+    mutationKey: scope,
+    mutationFn: (body: SaveAlbumAccessRequest) =>
+      request<AlbumAccessPreview>(albumAccessURL(albumID, "preview"), { body }),
   });
 }
 
-export function useAddMomentSuggestions(albumID: string, momentID: string) {
+export function useSaveAlbumAccess(albumID: string) {
   const cache = useAlbumCache();
   return useMutation({
     mutationKey: cache.scope,
-    mutationFn: () =>
-      request<MomentAccessResult>(
-        momentURL(albumID, momentID, "access/suggestions"),
-        { body: {} },
+    mutationFn: (body: SaveAlbumAccessRequest) =>
+      request<AlbumDetail>(albumAccessURL(albumID), { body }),
+    onSuccess: cache.save,
+  });
+}
+
+export function usePreviewRemoveAccess(albumID: string) {
+  const scope = usePrivateScope();
+  return useMutation({
+    mutationKey: scope,
+    mutationFn: (body: RemoveAccessPreviewRequest) =>
+      request<RemoveAccessPreview>(
+        albumAccessURL(albumID, "remove-all/preview"),
+        {
+          body,
+        },
       ),
-    onSuccess: (result) => cache.save(result.album),
   });
 }
 
-export function useUndoMomentAccess(albumID: string, momentID: string) {
+export function useRemoveAllAccess(albumID: string) {
   const cache = useAlbumCache();
   return useMutation({
     mutationKey: cache.scope,
-    mutationFn: (body: UndoMomentAccessRequest) =>
-      request<AlbumDetail>(momentURL(albumID, momentID, "access/undo"), {
-        body,
-      }),
+    mutationFn: (body: RemoveAccessRequest) =>
+      request<AlbumDetail>(albumAccessURL(albumID, "remove-all"), { body }),
+    onSuccess: cache.save,
+  });
+}
+
+export function useSetAccessRules(
+  albumID: string,
+  target: "moments" | "entries",
+  targetID: string,
+) {
+  const cache = useAlbumCache();
+  return useMutation({
+    mutationKey: cache.scope,
+    mutationFn: (body: SaveRulesRequest) =>
+      request<AlbumDetail>(
+        `/api/curator/albums/${encodeURIComponent(albumID)}/${target}/${encodeURIComponent(targetID)}/rules`,
+        { body },
+      ),
     onSuccess: cache.save,
   });
 }

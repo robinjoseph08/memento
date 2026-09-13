@@ -10,11 +10,13 @@ export function EntryPreview({
   cover,
   selected = false,
   onSelect,
+  onOpen,
 }: {
   entry: Entry;
   cover: boolean;
   selected?: boolean;
   onSelect?: (selected: boolean) => void;
+  onOpen?: () => void;
 }) {
   const [ratio, setRatio] = useState(1.5);
   const hour = Number(entry.captured_at.slice(11, 13));
@@ -59,13 +61,22 @@ export function EntryPreview({
             />
             {image}
           </label>
+        ) : onOpen ? (
+          <button
+            aria-label={`Edit ${entry.filename}`}
+            className="block w-full cursor-pointer rounded-sm hover:bg-surface focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+            onClick={onOpen}
+            type="button"
+          >
+            {image}
+          </button>
         ) : (
           image
         )}
         {cover && (
           <span
             className={cn(
-              "absolute top-1 rounded-sm bg-black/70 px-1 py-0.5 text-[10px] leading-3 text-white",
+              "pointer-events-none absolute top-1 rounded-sm bg-black/70 px-1 py-0.5 text-[10px] leading-3 text-white",
               onSelect
                 ? "left-8"
                 : ratio >= 4
@@ -77,7 +88,7 @@ export function EntryPreview({
             Cover
           </span>
         )}
-        <figcaption className="absolute bottom-1 left-1 rounded-sm bg-black/70 px-0.5 py-0.5 text-[10px] leading-3 whitespace-nowrap text-white">
+        <figcaption className="pointer-events-none absolute bottom-1 left-1 rounded-sm bg-black/70 px-0.5 py-0.5 text-[10px] leading-3 whitespace-nowrap text-white">
           <time
             dateTime={entry.captured_at}
             title={`${entry.captured_at.slice(0, 10)} ${time}`}
@@ -89,7 +100,7 @@ export function EntryPreview({
           <span
             aria-label="Video"
             className={cn(
-              "absolute right-1 rounded-sm bg-black/70 p-1 text-white",
+              "pointer-events-none absolute right-1 rounded-sm bg-black/70 p-1 text-white",
               narrow ? "bottom-9" : "bottom-1",
             )}
             role="img"

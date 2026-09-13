@@ -1,10 +1,11 @@
-// Package media resolves Curator media requests to fixed Immich-generated variants.
+// Package media resolves authorized media requests to fixed Immich-generated variants.
 package media
 
 import (
 	"context"
 	"database/sql"
 	"errors"
+	"net/http"
 	"uuid"
 
 	"github.com/robinjoseph08/memento/pkg/errcodes"
@@ -14,11 +15,12 @@ import (
 	"github.com/uptrace/bun"
 )
 
-// Source exposes only source album lookup and generated thumbnails.
+// Source exposes only source album lookup and generated image variants.
 type Source interface {
 	GetAlbum(context.Context, string) (immich.Album, error)
 	GetAsset(context.Context, string) (immich.Asset, error)
 	Thumbnail(context.Context, string) (immich.Thumbnail, error)
+	Preview(context.Context, string) (immich.Thumbnail, error)
 	PersonThumbnail(context.Context, string) (immich.Thumbnail, error)
 }
 
@@ -107,13 +109,36 @@ func (m *Module) personThumbnail(ctx context.Context, sourceID string) (immich.T
 	return m.source.PersonThumbnail(ctx, sourceID)
 }
 
+// viewerImage preserves diagnostic causes for local logs while keeping
+// installation details out of ordinary and preview media responses.
+func (m *Module) viewerImage(ctx context.Context, sourceID, version string, large bool) (immich.Thumbnail, error) {
+	image, err := m.generatedImage(ctx, sourceID, version, large)
+	if err == nil || errorstack.IsContextCancellation(ctx, err) {
+		return image, err
+	}
+	var public error = &errcodes.Error{HTTPCode: http.StatusBadGateway, Code: "media_unavailable", Message: "Media is unavailable. Try again later."}
+	if coded, ok := errors.AsType[*errcodes.Error](err); ok && coded.HTTPCode == http.StatusNotFound {
+		public = errcodes.NotFound("Media")
+	}
+	return immich.Thumbnail{}, errors.Join(public, err)
+}
+
 func (m *Module) generatedThumbnail(ctx context.Context, sourceID, version string) (immich.Thumbnail, error) {
+	return m.generatedImage(ctx, sourceID, version, false)
+}
+
+// generatedImage serves a fixed Immich variant only while the asset still
+// matches the requested content version.
+func (m *Module) generatedImage(ctx context.Context, sourceID, version string, large bool) (immich.Thumbnail, error) {
 	asset, err := m.source.GetAsset(ctx, sourceID)
 	if err != nil {
 		return immich.Thumbnail{}, err
 	}
 	if asset.ID != sourceID || asset.Offline || asset.Trashed || ContentVersion(asset) != version {
 		return immich.Thumbnail{}, errcodes.NotFound("Thumbnail")
+	}
+	if large {
+		return m.source.Preview(ctx, sourceID)
 	}
 	return m.source.Thumbnail(ctx, sourceID)
 }

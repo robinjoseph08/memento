@@ -55,33 +55,7 @@ func TestMomentTitleAndCoverEdits(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestImmediateMomentDecisionsHaveLocalizedUndo(t *testing.T) {
-	t.Parallel()
-	db, module, album := importedAlbum(t)
-	alex := models.Person{ID: models.NewUUIDv7(), DisplayName: "Alex", CreatedAt: time.Now().UTC()}
-	sam := models.Person{ID: models.NewUUIDv7(), DisplayName: "Sam", CreatedAt: time.Now().UTC()}
-	_, err := db.NewInsert().Model(&[]models.Person{alex, sam}).Exec(t.Context())
-	require.NoError(t, err)
-	momentID := album.Moments[0].ID
-
-	first, err := module.SetMomentAccess(t.Context(), album.ID, momentID, publishing.SetMomentAccessRequest{PersonID: alex.ID.String(), Decision: publishing.DecisionAllow})
-	require.NoError(t, err)
-	require.Equal(t, publishing.DecisionAllow, decisionFor(first.Album.Moments[0], alex.ID.String()))
-
-	second, err := module.SetMomentAccess(t.Context(), album.ID, momentID, publishing.SetMomentAccessRequest{PersonID: sam.ID.String(), Decision: publishing.DecisionAllow})
-	require.NoError(t, err)
-	require.Equal(t, publishing.DecisionAllow, decisionFor(second.Album.Moments[0], sam.ID.String()))
-
-	undone, err := module.UndoMomentAccess(t.Context(), album.ID, momentID, first.Undo)
-	require.NoError(t, err)
-	assert.Empty(t, decisionFor(undone.Moments[0], alex.ID.String()))
-	assert.Equal(t, publishing.DecisionAllow, decisionFor(undone.Moments[0], sam.ID.String()))
-
-	_, err = module.UndoMomentAccess(t.Context(), album.ID, momentID, first.Undo)
-	require.Error(t, err)
-}
-
-func TestAddAllSuggestedKeepsExplicitExclusionsAndUndoesOnlyItsOwnGrants(t *testing.T) {
+func TestSuggestionsFollowDetectionsAndSavedRules(t *testing.T) {
 	t.Parallel()
 	db := testdb.New(t)
 	source := fixture()
@@ -113,24 +87,21 @@ func TestAddAllSuggestedKeepsExplicitExclusionsAndUndoesOnlyItsOwnGrants(t *test
 	}
 	_, err = db.NewInsert().Model(&links).Exec(t.Context())
 	require.NoError(t, err)
-	excluded, err := module.SetMomentAccess(t.Context(), album.ID, momentID, publishing.SetMomentAccessRequest{PersonID: sam.ID.String(), Decision: publishing.DecisionDeny})
+	excluded, err := module.SaveMomentRules(t.Context(), album.ID, momentID, publishing.SaveRulesRequest{Decisions: []publishing.AccessResolution{{PersonID: sam.ID.String(), Decision: publishing.DecisionDeny}}})
 	require.NoError(t, err)
-	require.True(t, personFor(excluded.Album.Moments[1], alex.ID.String()).Suggested)
-	require.False(t, personFor(excluded.Album.Moments[1], sam.ID.String()).Suggested, "an explicit exclusion is not a suggestion")
+	require.True(t, personFor(excluded.Moments[1], alex.ID.String()).Suggested)
+	require.False(t, personFor(excluded.Moments[1], sam.ID.String()).Suggested, "an explicit exclusion is not a suggestion")
+	assert.Empty(t, decisionFor(excluded.Moments[1], taylor.ID.String()), "undetected people gain nothing")
+	assert.Equal(t, 1, excluded.Access[0].MomentsDetected, "Alex is recognized in one of two Moments")
 
-	added, err := module.AddMomentSuggestions(t.Context(), album.ID, momentID)
+	_, err = module.SaveAlbumAccess(t.Context(), album.ID, publishing.SaveAlbumAccessRequest{People: []publishing.AlbumAccessChoice{{PersonID: alex.ID.String(), Allowed: true}}})
 	require.NoError(t, err)
-	assert.Equal(t, publishing.DecisionAllow, decisionFor(added.Album.Moments[1], alex.ID.String()))
-	assert.Equal(t, publishing.DecisionDeny, decisionFor(added.Album.Moments[1], sam.ID.String()), "Add all suggested keeps existing exclusions")
-	assert.Empty(t, decisionFor(added.Album.Moments[1], taylor.ID.String()), "undetected people gain nothing")
-	require.Len(t, added.Undo.Changes, 1)
-	assert.Equal(t, alex.ID.String(), added.Undo.Changes[0].PersonID)
-
-	undone, err := module.UndoMomentAccess(t.Context(), album.ID, momentID, added.Undo)
+	inherited, err := module.SaveEntryRules(t.Context(), album.ID, album.Moments[1].Entries[0].ID, publishing.SaveRulesRequest{Decisions: []publishing.AccessResolution{{PersonID: alex.ID.String(), Decision: publishing.DecisionDeny}}})
 	require.NoError(t, err)
-	assert.Empty(t, decisionFor(undone.Moments[1], alex.ID.String()))
-	assert.True(t, personFor(undone.Moments[1], alex.ID.String()).Suggested, "the suggestion returns after Undo")
-	assert.Equal(t, publishing.DecisionDeny, decisionFor(undone.Moments[1], sam.ID.String()), "Undo leaves unrelated decisions alone")
+	assert.Empty(t, decisionFor(inherited.Moments[1], alex.ID.String()), "Album access needs no Moment rule")
+	assert.False(t, personFor(inherited.Moments[1], alex.ID.String()).Suggested, "an inherited allow is not a suggestion")
+	assert.True(t, personFor(inherited.Moments[1], alex.ID.String()).Inherited)
+	assert.Equal(t, publishing.DecisionDeny, inherited.Moments[1].Entries[0].Decisions[alex.ID.String()])
 }
 
 func TestMovingSupportingMediaMovesTheSuggestion(t *testing.T) {
@@ -172,29 +143,6 @@ func TestMovingSupportingMediaMovesTheSuggestion(t *testing.T) {
 	assert.True(t, quietAlex.Suggested, "the suggestion follows the supporting media")
 	assert.Equal(t, 1, quietAlex.SupportingEntries)
 	assert.Equal(t, 1, personFor(moved.Moments[1], alex.ID.String()).SupportingEntries)
-}
-
-func TestUndoRejectsANewerWriteWithTheSameDecision(t *testing.T) {
-	t.Parallel()
-	db, module, album := importedAlbum(t)
-	person := models.Person{ID: models.NewUUIDv7(), DisplayName: "Alex", CreatedAt: time.Now().UTC()}
-	_, err := db.NewInsert().Model(&person).Exec(t.Context())
-	require.NoError(t, err)
-	momentID := album.Moments[0].ID
-
-	first, err := module.SetMomentAccess(t.Context(), album.ID, momentID, publishing.SetMomentAccessRequest{PersonID: person.ID.String(), Decision: publishing.DecisionAllow})
-	require.NoError(t, err)
-	_, err = module.SetMomentAccess(t.Context(), album.ID, momentID, publishing.SetMomentAccessRequest{PersonID: person.ID.String(), Decision: publishing.DecisionDeny})
-	require.NoError(t, err)
-	latest, err := module.SetMomentAccess(t.Context(), album.ID, momentID, publishing.SetMomentAccessRequest{PersonID: person.ID.String(), Decision: publishing.DecisionAllow})
-	require.NoError(t, err)
-	require.NotEqual(t, first.Undo.Changes[0].CurrentUpdatedAt, latest.Undo.Changes[0].CurrentUpdatedAt)
-
-	_, err = module.UndoMomentAccess(t.Context(), album.ID, momentID, first.Undo)
-	require.Error(t, err)
-	current, getErr := module.GetAlbum(t.Context(), album.ID)
-	require.NoError(t, getErr)
-	assert.Equal(t, publishing.DecisionAllow, decisionFor(current.Moments[0], person.ID.String()))
 }
 
 func TestMovingACoverPromotesTheEarliestRemainingEntry(t *testing.T) {
@@ -273,9 +221,9 @@ func TestStructuralChangesPreviewAndRevalidateEffectiveAudience(t *testing.T) {
 	_, err := db.NewInsert().Model(&[]models.Person{alex, sam}).Exec(t.Context())
 	require.NoError(t, err)
 	first, second := album.Moments[0], album.Moments[1]
-	_, err = module.SetMomentAccess(t.Context(), album.ID, first.ID, publishing.SetMomentAccessRequest{PersonID: alex.ID.String(), Decision: publishing.DecisionAllow})
+	_, err = module.SaveMomentRules(t.Context(), album.ID, first.ID, publishing.SaveRulesRequest{Decisions: []publishing.AccessResolution{{PersonID: alex.ID.String(), Decision: publishing.DecisionAllow}}})
 	require.NoError(t, err)
-	_, err = module.SetMomentAccess(t.Context(), album.ID, second.ID, publishing.SetMomentAccessRequest{PersonID: sam.ID.String(), Decision: publishing.DecisionAllow})
+	_, err = module.SaveMomentRules(t.Context(), album.ID, second.ID, publishing.SaveRulesRequest{Decisions: []publishing.AccessResolution{{PersonID: sam.ID.String(), Decision: publishing.DecisionAllow}}})
 	require.NoError(t, err)
 
 	move := publishing.MoveEntriesRequest{EntryIDs: []string{second.Entries[0].ID, second.Entries[1].ID}, DestinationMomentID: first.ID}
@@ -307,7 +255,7 @@ func TestStructuralChangesPreviewAndRevalidateEffectiveAudience(t *testing.T) {
 	assert.Equal(t, publishing.DecisionAllow, decisionFor(splitAlbum.Moments[1], alex.ID.String()))
 
 	source, target := splitAlbum.Moments[1], splitAlbum.Moments[0]
-	_, err = module.SetMomentAccess(t.Context(), album.ID, source.ID, publishing.SetMomentAccessRequest{PersonID: sam.ID.String(), Decision: publishing.DecisionAllow})
+	_, err = module.SaveMomentRules(t.Context(), album.ID, source.ID, publishing.SaveRulesRequest{Decisions: []publishing.AccessResolution{{PersonID: sam.ID.String(), Decision: publishing.DecisionAllow}}})
 	require.NoError(t, err)
 	merge := publishing.MergeMomentsRequest{TargetMomentID: target.ID, CoverEntryID: target.CoverEntryID}
 	unresolved, err := module.PreviewMerge(t.Context(), album.ID, source.ID, merge)
@@ -321,7 +269,7 @@ func TestStructuralChangesPreviewAndRevalidateEffectiveAudience(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, mergePreview.Ready)
 	merge.ReviewToken = mergePreview.ReviewToken
-	_, err = module.SetMomentAccess(t.Context(), album.ID, target.ID, publishing.SetMomentAccessRequest{PersonID: alex.ID.String(), Decision: publishing.DecisionDeny})
+	_, err = module.SaveMomentRules(t.Context(), album.ID, target.ID, publishing.SaveRulesRequest{Decisions: []publishing.AccessResolution{{PersonID: alex.ID.String(), Decision: publishing.DecisionDeny}}})
 	require.NoError(t, err)
 	_, err = module.MergeMoments(t.Context(), album.ID, source.ID, merge)
 	require.Error(t, err)

@@ -30,17 +30,22 @@ func TestMutationOriginAndJSON(t *testing.T) {
 	e := srv.Handler.(*echo.Echo)
 	e.POST("/api/mutate", func(c *echo.Context) error { return c.NoContent(204) })
 	for _, tc := range []struct {
-		origin, content string
-		status          int
+		origin, host, content string
+		status                int
 	}{
-		{"https://photos.example.test", "application/json", 204},
-		{"https://evil.test", "application/json", 403},
-		{"", "application/json", 403},
-		{"null", "application/json", 403},
-		{"https://photos.example.test", "application/x-www-form-urlencoded", 415},
-		{"https://photos.example.test", "", 415},
+		{"https://photos.example.test", "photos.example.test", "application/json", 204},
+		{"https://photos.example.test", "internal:3579", "application/json", 204},
+		{"https://evil.test", "photos.example.test", "application/json", 403},
+		{"", "photos.example.test", "application/json", 403},
+		{"null", "photos.example.test", "application/json", 403},
+		{"http://photos.local:5173", "photos.local:5173", "application/json", 204},
+		{"http://photos.local:5173", "photos.local:3579", "application/json", 403},
+		{"https://evil.test", "evil.test:443", "application/json", 403},
+		{"https://photos.example.test", "photos.example.test", "application/x-www-form-urlencoded", 415},
+		{"https://photos.example.test", "photos.example.test", "", 415},
 	} {
 		req := httptest.NewRequest(http.MethodPost, "/api/mutate", strings.NewReader(`{}`))
+		req.Host = tc.host
 		req.Header.Set("Origin", tc.origin)
 		req.Header.Set("Content-Type", tc.content)
 		req.Header.Set("X-Forwarded-Host", "evil.test")

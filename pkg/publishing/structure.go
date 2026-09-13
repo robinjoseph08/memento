@@ -30,10 +30,12 @@ type structureState struct {
 	EntryMoments map[string]string
 	// EntryOrder ranks entries chronologically, the same order the gallery
 	// uses, so a Moment that loses its cover gets its earliest item instead.
-	EntryOrder  map[string]int
-	Decisions   map[string]map[string]Decision
-	People      map[string]string
-	PersonOrder []string
+	EntryOrder     map[string]int
+	Decisions      map[string]map[string]Decision
+	AlbumDecisions map[string]Decision
+	EntryDecisions map[string]map[string]Decision
+	People         map[string]string
+	PersonOrder    []string
 }
 
 // firstEntry is the chronologically first of the given entries.
@@ -60,17 +62,19 @@ func (s structureState) remainingEntries(momentID string, exclude map[string]boo
 }
 
 func (s structureState) facts() accessFacts {
-	return accessFacts{EntryMoments: s.EntryMoments, Decisions: s.Decisions}
+	return accessFacts{EntryMoments: s.EntryMoments, Decisions: s.Decisions, AlbumDecisions: s.AlbumDecisions, EntryDecisions: s.EntryDecisions}
 }
 
 func (s structureState) clone() structureState {
 	result := structureState{
-		Moments:      make(map[string]structureMoment, len(s.Moments)),
-		EntryMoments: make(map[string]string, len(s.EntryMoments)),
-		EntryOrder:   make(map[string]int, len(s.EntryOrder)),
-		Decisions:    make(map[string]map[string]Decision, len(s.Decisions)),
-		People:       make(map[string]string, len(s.People)),
-		PersonOrder:  append([]string(nil), s.PersonOrder...),
+		Moments:        make(map[string]structureMoment, len(s.Moments)),
+		EntryMoments:   make(map[string]string, len(s.EntryMoments)),
+		EntryOrder:     make(map[string]int, len(s.EntryOrder)),
+		Decisions:      make(map[string]map[string]Decision, len(s.Decisions)),
+		AlbumDecisions: maps.Clone(s.AlbumDecisions),
+		EntryDecisions: make(map[string]map[string]Decision, len(s.EntryDecisions)),
+		People:         make(map[string]string, len(s.People)),
+		PersonOrder:    append([]string(nil), s.PersonOrder...),
 	}
 	maps.Copy(result.Moments, s.Moments)
 	maps.Copy(result.EntryMoments, s.EntryMoments)
@@ -79,12 +83,15 @@ func (s structureState) clone() structureState {
 		result.Decisions[momentID] = make(map[string]Decision, len(decisions))
 		maps.Copy(result.Decisions[momentID], decisions)
 	}
+	for entryID, decisions := range s.EntryDecisions {
+		result.EntryDecisions[entryID] = maps.Clone(decisions)
+	}
 	maps.Copy(result.People, s.People)
 	return result
 }
 
 func (m *Module) loadStructure(ctx context.Context, db bun.IDB, albumID string, lock bool) (structureState, error) {
-	state := structureState{Moments: map[string]structureMoment{}, EntryMoments: map[string]string{}, EntryOrder: map[string]int{}, Decisions: map[string]map[string]Decision{}, People: map[string]string{}}
+	state := structureState{Moments: map[string]structureMoment{}, EntryMoments: map[string]string{}, EntryOrder: map[string]int{}, Decisions: map[string]map[string]Decision{}, AlbumDecisions: map[string]Decision{}, EntryDecisions: map[string]map[string]Decision{}, People: map[string]string{}}
 	var moments []models.Moment
 	momentQuery := db.NewSelect().Model(&moments).Where("moment.album_id = ?", albumID).Order("moment.sort_order", "moment.id")
 	if lock {
@@ -133,6 +140,24 @@ func (m *Module) loadStructure(ctx context.Context, db bun.IDB, albumID string, 
 	for _, decision := range decisions {
 		state.Decisions[decision.MomentID.String()][decision.PersonID.String()] = Decision(decision.Decision)
 	}
+	var albumDecisions []models.AlbumAccessDecision
+	if err := db.NewSelect().Model(&albumDecisions).Where("decision.album_id = ?", albumID).Scan(ctx); err != nil {
+		return state, errorstack.CaptureContext(ctx, err)
+	}
+	for _, decision := range albumDecisions {
+		state.AlbumDecisions[decision.PersonID.String()] = Decision(decision.Decision)
+	}
+	var entryDecisions []models.EntryAccessDecision
+	if err := db.NewSelect().Model(&entryDecisions).Where("decision.album_id = ?", albumID).Scan(ctx); err != nil {
+		return state, errorstack.CaptureContext(ctx, err)
+	}
+	for _, decision := range entryDecisions {
+		id := decision.EntryID.String()
+		if state.EntryDecisions[id] == nil {
+			state.EntryDecisions[id] = map[string]Decision{}
+		}
+		state.EntryDecisions[id][decision.PersonID.String()] = Decision(decision.Decision)
+	}
 	var people []models.Person
 	peopleQuery := db.NewSelect().Model(&people).Where("person.deactivated_at IS NULL AND NOT person.is_curator").OrderExpr("lower(person.display_name), person.id")
 	if lock {
@@ -161,9 +186,11 @@ func reviewedChanges(before, after structureState) []AudienceChange {
 // reviewed effect: membership, decisions, and covers. Person names and other
 // Moments' titles may change between preview and commit without a new review.
 type reviewedFacts struct {
-	Covers       map[string]string              `json:"covers"`
-	EntryMoments map[string]string              `json:"entry_moments"`
-	Decisions    map[string]map[string]Decision `json:"decisions"`
+	Covers         map[string]string              `json:"covers"`
+	EntryMoments   map[string]string              `json:"entry_moments"`
+	Decisions      map[string]map[string]Decision `json:"decisions"`
+	AlbumDecisions map[string]Decision            `json:"album_decisions"`
+	EntryDecisions map[string]map[string]Decision `json:"entry_decisions"`
 }
 
 func (s structureState) reviewed() reviewedFacts {
@@ -171,7 +198,7 @@ func (s structureState) reviewed() reviewedFacts {
 	for id, moment := range s.Moments {
 		covers[id] = moment.CoverID
 	}
-	return reviewedFacts{Covers: covers, EntryMoments: s.EntryMoments, Decisions: s.Decisions}
+	return reviewedFacts{Covers: covers, EntryMoments: s.EntryMoments, Decisions: s.Decisions, AlbumDecisions: s.AlbumDecisions, EntryDecisions: s.EntryDecisions}
 }
 
 func reviewToken(operation string, before structureState, request any, after structureState) (string, error) {
@@ -578,6 +605,7 @@ func (m *Module) MergeMoments(ctx context.Context, albumID, sourceMomentID strin
 		if _, err := targetUpdate.Exec(ctx); err != nil {
 			return errorstack.CaptureContext(ctx, err)
 		}
+		// A merge replaces the target's saved rules, including absent rules.
 		if _, err := tx.NewDelete().Model((*models.MomentAccessDecision)(nil)).Where("moment_id = ?", request.TargetMomentID).Exec(ctx); err != nil {
 			return errorstack.CaptureContext(ctx, err)
 		}

@@ -42,6 +42,7 @@ function Image({
         "h-auto w-full rounded-sm bg-surface object-contain",
         className,
       )}
+      decoding="async"
       loading="lazy"
       onError={(event) => {
         setFailed(true);

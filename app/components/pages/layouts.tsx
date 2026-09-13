@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Navigate, Outlet, useLocation } from "react-router-dom";
 
 import { useIdentityStatus } from "../../hooks/queries/identity";
@@ -10,6 +10,7 @@ import { ConfirmDialog } from "../forms/confirm-dialog";
 import { SignInForm } from "../identity/sign-in-form";
 import { Header } from "../shell/header";
 import { PageTitle } from "../shell/page-title";
+import { PreviewModeContext } from "../shell/preview-mode";
 import { Button } from "../ui/button";
 
 const pageClassName =
@@ -25,22 +26,29 @@ export function AppShell() {
   const { data } = useIdentityStatus();
   const unsavedRef = useRef(new Map<symbol, boolean>());
   const blocker = useUnsavedChangesBlocker(unsavedRef);
+  const [previewActive, setPreviewActive] = useState(false);
+  const previewMode = useMemo(
+    () => ({ active: previewActive, setActive: setPreviewActive }),
+    [previewActive],
+  );
   return (
     <UnsavedChangesContext value={unsavedRef}>
-      <Header />
-      <Outlet
-        key={`${data?.person?.id ?? "public"}-${!!data?.person?.is_curator}`}
-      />
-      <ConfirmDialog
-        confirmLabel="Leave page"
-        description="Your changes will not be saved."
-        onConfirm={() => blocker.proceed?.()}
-        onOpenChange={(open) => {
-          if (!open) blocker.reset?.();
-        }}
-        open={blocker.state === "blocked"}
-        title="Leave this page?"
-      />
+      <PreviewModeContext value={previewMode}>
+        <Header />
+        <Outlet
+          key={`${data?.person?.id ?? "public"}-${!!data?.person?.is_curator}`}
+        />
+        <ConfirmDialog
+          confirmLabel="Leave page"
+          description="Your changes will not be saved."
+          onConfirm={() => blocker.proceed?.()}
+          onOpenChange={(open) => {
+            if (!open) blocker.reset?.();
+          }}
+          open={blocker.state === "blocked"}
+          title="Leave this page?"
+        />
+      </PreviewModeContext>
     </UnsavedChangesContext>
   );
 }
@@ -163,19 +171,13 @@ export function SignedInLayout() {
   );
 }
 
-export function MemberPage() {
+export function ViewerLayout() {
+  const { data } = useIdentityStatus();
+  if (!data?.person) return <Navigate replace to="/sign-in" />;
   return (
-    <>
-      <PageTitle title="Albums" />
-      <h1 className={headingClassName}>Your albums</h1>
-      <section className="mt-9 border-t border-border py-9">
-        <h2 className="font-heading text-[27px]/[1.2]">No albums yet</h2>
-        <p className="mt-4 max-w-120 text-muted">
-          There are no albums to view yet. Your Curator will choose what to
-          share with you.
-        </p>
-      </section>
-    </>
+    <main className="mx-auto max-w-[1440px] px-5 pt-6 pb-16 min-[761px]:px-12">
+      <Outlet />
+    </main>
   );
 }
 

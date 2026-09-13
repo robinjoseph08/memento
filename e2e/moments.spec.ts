@@ -78,9 +78,12 @@ test("arranges a large Moment and reviews face-based access on desktop and mobil
   await expect(alexAccess).not.toBeChecked();
   await alexAccess.check();
   await expect(alexAccess).toBeChecked();
-  await desktopAccess.getByRole("button", { name: "Undo" }).click();
-  await expect(alexAccess).not.toBeChecked();
-  await alexAccess.check();
+  await desktopAccess
+    .getByRole("button", { name: "Save Moment access", exact: true })
+    .click();
+  await expect(desktopAccess.getByRole("status")).toHaveText(
+    "Moment access saved.",
+  );
 
   await firstMoment
     .getByRole("button", { name: "Select", exact: true })
@@ -119,9 +122,17 @@ test("arranges a large Moment and reviews face-based access on desktop and mobil
   });
   const splitRow = outline.getByRole("link", { name: /^June 4, 2026 \(2\)/ });
   await splitRow.click();
+  const splitAccess = desktopAccess.getByRole("checkbox", {
+    name: "Allow Alex for this Moment",
+  });
+  await splitAccess.uncheck();
   await desktopAccess
-    .getByRole("checkbox", { name: "Allow Alex for this Moment" })
-    .uncheck();
+    .getByRole("button", { name: "Save Moment access", exact: true })
+    .click();
+  // Returning to inherit moves this row under the collapsed people list.
+  await expect(desktopAccess.getByRole("status")).toHaveText(
+    "Moment access saved.",
+  );
   await originalRow.click();
   const original = page.getByRole("region", { name: "June 4, 2026 (1)" });
   await original.getByRole("button", { name: "Select", exact: true }).click();
@@ -175,8 +186,13 @@ test("arranges a large Moment and reviews face-based access on desktop and mobil
     name: "Allow Alex for this Moment",
   });
   await mobileAlex.uncheck();
-  await desktopAccess.getByRole("button", { name: "Undo" }).click();
-  await expect(mobileAlex).toBeChecked();
+  await expect(
+    desktopAccess.getByRole("button", { name: "Save Moment access" }),
+  ).toBeEnabled();
+  await mobileAlex.check();
+  await expect(
+    desktopAccess.getByRole("button", { name: "Save Moment access" }),
+  ).toBeDisabled();
   await page.getByRole("link", { name: "Outline" }).click();
   await expect(outline).toBeVisible();
   await expect(page.getByRole("region", { name: /June 4, 2026/ })).toHaveCount(

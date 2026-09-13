@@ -1,5 +1,6 @@
-import { useLayoutEffect, useRef, type ComponentProps } from "react";
+import { type ComponentProps } from "react";
 
+import { useReturnFocus } from "../../hooks/use-return-focus";
 import { Form } from "../people/form-fields";
 import { Button } from "../ui/button";
 import {
@@ -40,14 +41,7 @@ export function ConfirmDialog({
   error?: unknown;
   onCloseAutoFocus?: ComponentProps<typeof DialogContent>["onCloseAutoFocus"];
 }) {
-  // There is no Radix trigger to return focus to, so remember the element that
-  // was focused before the dialog took it. Layout effects run before Radix
-  // moves focus into the dialog.
-  const returnFocusRef = useRef<HTMLElement | null>(null);
-  useLayoutEffect(() => {
-    if (open && document.activeElement instanceof HTMLElement)
-      returnFocusRef.current = document.activeElement;
-  }, [open]);
+  const returnFocus = useReturnFocus(open);
   return (
     <Dialog
       onOpenChange={(next) => {
@@ -55,16 +49,7 @@ export function ConfirmDialog({
       }}
       open={open}
     >
-      <DialogContent
-        onCloseAutoFocus={
-          onCloseAutoFocus ??
-          ((event) => {
-            event.preventDefault();
-            const target = returnFocusRef.current;
-            if (target?.isConnected) target.focus();
-          })
-        }
-      >
+      <DialogContent onCloseAutoFocus={onCloseAutoFocus ?? returnFocus}>
         <DialogTitle className="pr-8 wrap-anywhere">{title}</DialogTitle>
         <DialogDescription className="my-5 text-sm text-muted">
           {description}

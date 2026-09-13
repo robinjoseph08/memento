@@ -127,6 +127,7 @@ it.each([
       photo_count: 0,
       video_count: 0,
       cover_url: "",
+      access: [],
       moments: [
         {
           id: "partial-day",
@@ -139,6 +140,7 @@ it.each([
           entries: [
             {
               id: "partial-photo",
+              decisions: {},
               media_id: "photo",
               filename: "Partial.jpg",
               kind: "IMAGE",

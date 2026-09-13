@@ -6,6 +6,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -91,6 +92,10 @@ func newServer(cfg *config.Config, frontend http.Handler, options ...dependencie
 		immich.RegisterRoutes(e, deps.connection, handlers.RequireSetupOrCurator, handlers.RequireCurator)
 		if deps.publishing != nil {
 			publishing.RegisterRoutes(e, deps.publishing, handlers.RequireCurator)
+			publishing.RegisterViewerRoutes(e, deps.publishing, handlers.RequirePerson, handlers.RequireCurator)
+			if deps.media != nil {
+				media.RegisterViewerRoutes(e, deps.media, deps.publishing.AuthorizeViewerEntry, handlers.RequirePerson, handlers.RequireCurator)
+			}
 		}
 		if deps.media != nil {
 			media.RegisterRoutes(e, deps.media, handlers.RequireCurator)
@@ -138,7 +143,9 @@ func capturePanicErrorStack() echo.MiddlewareFunc {
 	}
 }
 
-// browserAPI enforces same-origin JSON mutations using only the configured URL.
+// browserAPI enforces same-origin JSON mutations. A mutation must come from
+// the configured URL, or from the address the browser used to reach this
+// server, which lets a development machine answer by hostname over plain HTTP.
 func browserAPI(publicURL string) echo.MiddlewareFunc {
 	origin := strings.TrimRight(publicURL, "/")
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
@@ -153,7 +160,7 @@ func browserAPI(publicURL string) echo.MiddlewareFunc {
 			case http.MethodGet, http.MethodHead, http.MethodOptions:
 				return next(c)
 			}
-			if req.Header.Get("Origin") != origin {
+			if !sameOrigin(req, origin) {
 				return &errcodes.Error{HTTPCode: 403, Code: "invalid_origin", Message: "This request must come from the configured Memento address."}
 			}
 			contentType, _, err := mime.ParseMediaType(req.Header.Get("Content-Type"))
@@ -164,4 +171,13 @@ func browserAPI(publicURL string) echo.MiddlewareFunc {
 			return next(c)
 		}
 	}
+}
+
+func sameOrigin(req *http.Request, publicOrigin string) bool {
+	origin := req.Header.Get("Origin")
+	if origin == publicOrigin {
+		return true
+	}
+	parsed, err := url.Parse(origin)
+	return err == nil && parsed.Host != "" && parsed.Host == req.Host
 }

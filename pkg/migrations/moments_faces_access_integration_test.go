@@ -49,10 +49,17 @@ func TestMomentsFacesAccessRollbackCollapsesSplitMoments(t *testing.T) {
 	require.NoError(t, err)
 
 	registered := migrations.Migrations.Sorted()
-	latest := registered[len(registered)-1]
 	migrator := migrations.NewMigrator(db)
-	require.Equal(t, "20260823000000", latest.Name)
-	require.NoError(t, latest.Down(t.Context(), migrator, &latest))
+	targetIndex := -1
+	for i := len(registered) - 1; i >= 0; i-- {
+		migration := &registered[i]
+		require.NoError(t, migration.Down(t.Context(), migrator, migration))
+		if migration.Name == "20260823000000" {
+			targetIndex = i
+			break
+		}
+	}
+	require.NotEqual(t, -1, targetIndex, "Moment migration must be registered")
 
 	var moments []struct {
 		ID           models.UUID
@@ -65,7 +72,10 @@ func TestMomentsFacesAccessRollbackCollapsesSplitMoments(t *testing.T) {
 	assert.Equal(t, []models.UUID{moments[0].ID, moments[0].ID}, entryMomentIDs)
 	assert.Contains(t, entryIDs, moments[0].CoverEntryID)
 
-	require.NoError(t, latest.Up(t.Context(), migrator, &latest))
+	for i := targetIndex; i < len(registered); i++ {
+		migration := &registered[i]
+		require.NoError(t, migration.Up(t.Context(), migrator, migration))
+	}
 	count, err := db.NewSelect().Table("moments").Count(t.Context())
 	require.NoError(t, err)
 	assert.Equal(t, 1, count)

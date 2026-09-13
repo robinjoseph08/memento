@@ -1,12 +1,11 @@
-import { initials } from "../../lib/initials";
 import type { AccessPerson } from "../../types/generated/publishing";
-import { Avatar, AvatarFallback, AvatarImage } from "../ui/avatar";
 import {
   Tooltip,
   TooltipContent,
   TooltipProvider,
   TooltipTrigger,
 } from "../ui/tooltip";
+import { PersonAvatar } from "./person-avatar";
 
 // Avatars shown before the rest collapse into a count.
 const shownAvatars = 4;
@@ -22,7 +21,7 @@ export function Audience({
   people: AccessPerson[];
   suggestions: number;
 }) {
-  const allowed = people.filter((person) => person.decision === "allow");
+  const allowed = people.filter((person) => person.accessible_count > 0);
   const shown = allowed.slice(0, shownAvatars);
   const overflow = allowed.length - shown.length;
   const names = allowed.map((person) => person.display_name).join(", ");
@@ -40,17 +39,11 @@ export function Audience({
                 role="img"
               >
                 {shown.map((person) => (
-                  <Avatar
+                  <PersonAvatar
                     className="size-6 border-2 border-background"
                     key={person.person_id}
-                  >
-                    {person.avatar_url && (
-                      <AvatarImage alt="" src={person.avatar_url} />
-                    )}
-                    <AvatarFallback className="text-[10px]">
-                      {initials(person.display_name)}
-                    </AvatarFallback>
-                  </Avatar>
+                    person={person}
+                  />
                 ))}
                 {overflow > 0 && (
                   <span className="flex size-6 items-center justify-center rounded-full border-2 border-background bg-surface text-[10px] font-medium">

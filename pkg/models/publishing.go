@@ -67,6 +67,23 @@ type Moment struct {
 	CoverEntryID  UUID `bun:"type:uuid"`
 }
 
+type AlbumAccessDecision struct {
+	bun.BaseModel `bun:"table:album_access_decisions,alias:decision"`
+	AlbumID       UUID `bun:"album_id,pk,type:uuid"`
+	PersonID      UUID `bun:"person_id,pk,type:uuid"`
+	Decision      string
+	UpdatedAt     time.Time
+}
+
+type EntryAccessDecision struct {
+	bun.BaseModel `bun:"table:entry_access_decisions,alias:decision"`
+	EntryID       UUID `bun:"entry_id,pk,type:uuid"`
+	AlbumID       UUID `bun:"type:uuid"`
+	PersonID      UUID `bun:"person_id,pk,type:uuid"`
+	Decision      string
+	UpdatedAt     time.Time
+}
+
 type MomentAccessDecision struct {
 	bun.BaseModel `bun:"table:moment_access_decisions,alias:decision"`
 	MomentID      UUID `bun:"moment_id,pk,type:uuid"`

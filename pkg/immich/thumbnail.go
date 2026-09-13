@@ -18,6 +18,16 @@ func (c *Client) Thumbnail(ctx context.Context, id string) (Thumbnail, error) {
 	return c.openThumbnail(ctx, "/api/assets/"+escapeID(id)+"/thumbnail?size=thumbnail", "asset.view")
 }
 
+// Preview opens Immich's larger generated variant (1440px by default). Grids
+// that show three images across a desktop row need it; the small thumbnail is
+// generated at 250px and blurs when scaled up. The caller must close Body.
+func (c *Client) Preview(ctx context.Context, id string) (Thumbnail, error) {
+	if id == "" {
+		return Thumbnail{}, errcodes.ValidationError("An Immich asset ID is required.")
+	}
+	return c.openThumbnail(ctx, "/api/assets/"+escapeID(id)+"/thumbnail?size=preview", "asset.view")
+}
+
 // PersonThumbnail opens the generated thumbnail for a person. The caller must close Body.
 func (c *Client) PersonThumbnail(ctx context.Context, id string) (Thumbnail, error) {
 	if id == "" {

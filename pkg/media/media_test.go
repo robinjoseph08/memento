@@ -21,8 +21,9 @@ import (
 )
 
 type source struct {
-	requested string
-	asset     immich.Asset
+	requested  string
+	asset      immich.Asset
+	assetError error
 }
 
 func (s *source) CheckImport(context.Context) error                  { return nil }
@@ -30,7 +31,9 @@ func (s *source) ListAlbums(context.Context) ([]immich.Album, error) { return ni
 func (s *source) ListMembers(context.Context, string, int) ([]immich.Asset, int, error) {
 	return []immich.Asset{s.asset}, 0, nil
 }
-func (s *source) GetAsset(context.Context, string) (immich.Asset, error) { return s.asset, nil }
+func (s *source) GetAsset(context.Context, string) (immich.Asset, error) {
+	return s.asset, s.assetError
+}
 func (*source) ListFaces(context.Context, string) ([]immich.Face, error) { return nil, nil }
 func (s *source) GetAlbum(_ context.Context, id string) (immich.Album, error) {
 	cover := "configured-cover"
@@ -40,9 +43,86 @@ func (s *source) Thumbnail(_ context.Context, id string) (immich.Thumbnail, erro
 	s.requested = id
 	return immich.Thumbnail{Body: io.NopCloser(strings.NewReader("generated image")), ContentType: "image/webp"}, nil
 }
+func (s *source) Preview(_ context.Context, id string) (immich.Thumbnail, error) {
+	s.requested = "preview:" + id
+	return immich.Thumbnail{Body: io.NopCloser(strings.NewReader("large image")), ContentType: "image/jpeg"}, nil
+}
 func (s *source) PersonThumbnail(_ context.Context, id string) (immich.Thumbnail, error) {
 	s.requested = id
 	return immich.Thumbnail{Body: io.NopCloser(strings.NewReader("person image")), ContentType: "image/jpeg"}, nil
+}
+
+func TestViewerThumbnailChecksIdentityAndPolicyBeforeConditionalResponse(t *testing.T) {
+	t.Parallel()
+	upstream := &source{asset: immich.Asset{ID: "asset", Checksum: "YQ==", Filename: "photo.jpg", Kind: "IMAGE", LocalDateTime: "2026-07-04T23:59:00Z", FileCreatedAt: "2026-07-04T23:59:00Z", UpdatedAt: "2026-07-05T00:00:00Z"}}
+	db := testdb.New(t)
+	imports := publishing.New(db, upstream, func(context.Context, bun.Tx, string) error { return nil })
+	album, err := imports.StartImport(t.Context(), "source")
+	require.NoError(t, err)
+	require.NoError(t, imports.ExecuteImport(t.Context(), album.ID))
+	album, err = imports.GetAlbum(t.Context(), album.ID)
+	require.NoError(t, err)
+	entry := album.Moments[0].Entries[0]
+	version := strings.Split(entry.ThumbnailURL, "?v=")[1]
+	actor := "alex"
+	allowed := true
+	var selected string
+	e := echo.New()
+	e.HTTPErrorHandler = errcodes.NewHandler().Handle
+	person := func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c *echo.Context) error { c.Set("identity.person_id", actor); return next(c) }
+	}
+	curator := func(next echo.HandlerFunc) echo.HandlerFunc {
+		return person(func(c *echo.Context) error {
+			if actor != "curator" {
+				return echo.ErrForbidden
+			}
+			return next(c)
+		})
+	}
+	media.RegisterViewerRoutes(e, media.New(db, upstream), func(_ context.Context, actorID, previewID, entryID string) error {
+		require.Equal(t, actor, actorID)
+		require.Equal(t, entry.ID, entryID)
+		selected = previewID
+		if !allowed {
+			return errcodes.NotFound("Thumbnail")
+		}
+		return nil
+	}, person, curator)
+	get := func(mode, id, etag string) *httptest.ResponseRecorder {
+		r := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/media/"+mode+"/"+id+"/entries/"+entry.ID+"/thumbnail?v="+version, nil)
+		req.Header.Set("If-None-Match", etag)
+		e.ServeHTTP(r, req)
+		return r
+	}
+	first := get("viewer", "alex", "")
+	require.Equal(t, 200, first.Code)
+	require.Equal(t, "private, max-age=31536000, immutable", first.Header().Get("Cache-Control"))
+	allowed = false
+	require.Equal(t, 404, get("viewer", "alex", first.Header().Get("ETag")).Code)
+	allowed = true
+	require.Equal(t, 404, get("viewer", "sam", "").Code, "cannot borrow another Person's cache URL")
+	require.Equal(t, 403, get("preview", "sam", "").Code)
+	actor = "curator"
+	preview := get("preview", "sam", "")
+	require.Equal(t, 200, preview.Code)
+	require.Equal(t, "sam", selected)
+	require.Equal(t, "private, max-age=31536000, immutable", preview.Header().Get("Cache-Control"), "preview URLs name the selected Person, so caching cannot mix identities")
+	large := httptest.NewRecorder()
+	e.ServeHTTP(large, httptest.NewRequest(http.MethodGet, "/api/media/preview/sam/entries/"+entry.ID+"/preview?v="+version, nil))
+	require.Equal(t, 200, large.Code)
+	require.Equal(t, "large image", large.Body.String(), "the preview route serves Immich's larger variant")
+	require.Equal(t, "preview:asset", upstream.requested)
+	upstream.assetError = &errcodes.Error{HTTPCode: 403, Code: "immich_permission_denied", Message: "Enable asset.read on the Immich API key."}
+	failed := get("viewer", "curator", "")
+	require.Equal(t, http.StatusBadGateway, failed.Code)
+	require.Contains(t, failed.Body.String(), "Media is unavailable. Try again later.")
+	require.NotContains(t, failed.Body.String(), "Immich")
+	require.NotContains(t, failed.Body.String(), "asset.read")
+	preview = get("preview", "sam", "")
+	require.Equal(t, http.StatusBadGateway, preview.Code)
+	require.NotContains(t, preview.Body.String(), "Immich")
 }
 
 func TestImportedThumbnailUsesPrivateVersionAndMementoValidator(t *testing.T) {

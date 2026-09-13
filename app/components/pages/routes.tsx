@@ -3,18 +3,20 @@ import { CuratorPage } from "../albums/albums";
 import { ImportPage } from "../albums/sources";
 import { ProfilePage } from "../identity/profile";
 import { PeoplePage, PersonPage } from "../people/people";
+import { ViewerAlbumList } from "../viewer/album-list";
 import {
   AccessDeniedPage,
   AppShell,
   CuratorLayout,
   HomePage,
   InstallationLayout,
-  MemberPage,
   PublicLayout,
   SetupPage,
   SignedInLayout,
   SignInPage,
+  ViewerLayout,
 } from "./layouts";
+import { ViewerAlbumPage, ViewerAlbumRedirect } from "./viewer";
 
 export const routes = [
   {
@@ -50,9 +52,21 @@ export const routes = [
           },
           {
             element: <SignedInLayout />,
+            children: [{ path: "/profile", element: <ProfilePage /> }],
+          },
+          {
+            element: <ViewerLayout />,
             children: [
-              { path: "/profile", element: <ProfilePage /> },
-              { path: "/albums", element: <MemberPage /> },
+              { path: "/albums", element: <ViewerAlbumList /> },
+              { path: "/albums/:id", element: <ViewerAlbumRedirect /> },
+              {
+                path: "/albums/:id/photos",
+                element: <ViewerAlbumPage tab="photos" />,
+              },
+              {
+                path: "/albums/:id/videos",
+                element: <ViewerAlbumPage tab="videos" />,
+              },
             ],
           },
           { path: "/access-denied", element: <AccessDeniedPage /> },
