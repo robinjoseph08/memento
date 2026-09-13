@@ -78,7 +78,7 @@ it("keeps normal routes behind setup while the installation is unclaimed", async
   serveIdentity();
   render(<App />);
 
-  expect(screen.getByRole("status")).toHaveTextContent("Loading memento");
+  expect(screen.getByRole("status")).toHaveTextContent("Loading Memento");
   expect(
     await screen.findByRole("heading", { name: "Make room for your memories" }),
   ).toBeInTheDocument();
@@ -223,7 +223,7 @@ it("protects edited claims from navigation and reload without blocking successfu
   const email = await screen.findByRole("textbox", { name: "Email" });
   await user.clear(email);
   await user.type(email, "keep-this@example.test");
-  await user.click(screen.getByRole("link", { name: "memento home" }));
+  await user.click(screen.getByRole("link", { name: "Memento home" }));
   await user.click(
     within(
       await screen.findByRole("dialog", { name: "Leave this page?" }),

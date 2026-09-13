@@ -41,7 +41,7 @@ export function MobileNavigation({
           if (window.matchMedia("(min-width: 601px)").matches) {
             event.preventDefault();
             document
-              .querySelector<HTMLAnchorElement>('a[aria-label="memento home"]')
+              .querySelector<HTMLAnchorElement>('a[aria-label="Memento home"]')
               ?.focus();
           }
         }}

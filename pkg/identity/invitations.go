@@ -40,14 +40,14 @@ func invitationEligibility(person models.Person, approval models.Preauthorizatio
 func invitationMessage(publicURL, personName, curatorName, email string) notifications.Message {
 	body := fmt.Sprintf(`Hi %s,
 
-%s invited you to see photos and videos shared with you on memento.
+%s invited you to see photos and videos shared with you on Memento.
 
 Sign in with Google using %s to get started:
 %s/sign-in
 
 Access is tied to that exact Google account, so signing in with a different email will not work. If you were not expecting this, you can ignore this message.
 `, personName, curatorName, email, strings.TrimRight(publicURL, "/"))
-	return notifications.Message{Kind: "invitation", To: email, Subject: fmt.Sprintf("%s invited you to memento", curatorName), Body: body}
+	return notifications.Message{Kind: "invitation", To: email, Subject: fmt.Sprintf("%s invited you to Memento", curatorName), Body: body}
 }
 
 func projectInvitation(row models.Invitation, email, sentBy string, delivery notifications.Delivery) Invitation {

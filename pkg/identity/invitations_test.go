@@ -47,7 +47,7 @@ func TestInvitationsRequireEligiblePreauthorizationAndAreIdempotent(t *testing.T
 	require.Len(t, sent, 1)
 	assert.Equal(t, "invitation", sent[0].Kind)
 	assert.Equal(t, "alex@example.test", sent[0].To)
-	assert.Equal(t, "Curator invited you to memento", sent[0].Subject)
+	assert.Equal(t, "Curator invited you to Memento", sent[0].Subject)
 	assert.Contains(t, sent[0].Body, "Hi Alex,")
 	assert.Contains(t, sent[0].Body, "https://memento.example.test/sign-in\n")
 	assert.Contains(t, sent[0].Body, "alex@example.test")

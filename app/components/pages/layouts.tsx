@@ -75,7 +75,7 @@ export function InstallationLayout() {
     return (
       <main className={pageClassName}>
         <p className="mb-5 text-muted" role="status">
-          Loading memento…
+          Loading Memento…
         </p>
       </main>
     );

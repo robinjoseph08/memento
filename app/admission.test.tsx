@@ -64,7 +64,7 @@ it("resumes unfinished Onboarding from any signed-in page, hides navigation, and
   const user = userEvent.setup();
   render(<App />);
   expect(
-    await screen.findByRole("heading", { name: "Welcome to memento" }),
+    await screen.findByRole("heading", { name: "Welcome to Memento" }),
   ).toBeVisible();
   expect(window.location.pathname).toBe("/welcome");
   expect(document.title).toBe("Welcome | Memento");
@@ -80,7 +80,7 @@ it("resumes unfinished Onboarding from any signed-in page, hides navigation, and
   await user.click(
     screen.getByRole("checkbox", { name: "Email me when there are updates" }),
   );
-  await user.click(screen.getByRole("button", { name: "Continue to memento" }));
+  await user.click(screen.getByRole("button", { name: "Continue to Memento" }));
   expect(
     await screen.findByRole("heading", { name: "No albums yet" }),
   ).toBeVisible();
@@ -97,7 +97,7 @@ it("resumes unfinished Onboarding from any signed-in page, hides navigation, and
   ).toBeVisible();
   // A completed Person can no longer reach the Onboarding page.
   window.history.pushState(null, "", "/welcome");
-  await user.click(screen.getByRole("link", { name: "memento home" }));
+  await user.click(screen.getByRole("link", { name: "Memento home" }));
   await waitFor(() => expect(window.location.pathname).toBe("/albums"));
   expect(completions).toHaveLength(1);
 });

@@ -36,7 +36,7 @@ test("a Curator invites and onboards a Person, resolves an unknown identity, and
   await page.getByRole("button", { name: "Claim installation" }).click();
   // The first Curator onboards too, with an honest empty Album list.
   await expect(
-    page.getByRole("heading", { name: "Welcome to memento" }),
+    page.getByRole("heading", { name: "Welcome to Memento" }),
   ).toBeVisible();
   await expect(page.getByText(/Nothing is imported yet/)).toBeVisible();
   await finishOnboarding(page);
@@ -73,7 +73,7 @@ test("a Curator invites and onboards a Person, resolves an unknown identity, and
     const member = await memberContext.newPage();
     await signIn(member, "alex@example.test", "Alex");
     await expect(
-      member.getByRole("heading", { name: "Welcome to memento" }),
+      member.getByRole("heading", { name: "Welcome to Memento" }),
     ).toBeVisible();
     await expect(
       member.getByText(/Nothing is shared with you yet/),
@@ -167,7 +167,7 @@ test("a Curator invites and onboards a Person, resolves an unknown identity, and
     ).toBeVisible();
     await signIn(stranger, "stranger@example.test", "Stranger");
     await expect(
-      stranger.getByRole("heading", { name: "Welcome to memento" }),
+      stranger.getByRole("heading", { name: "Welcome to Memento" }),
     ).toBeVisible();
     await finishOnboarding(stranger);
     await expect(

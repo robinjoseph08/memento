@@ -31,7 +31,7 @@ export function Header() {
         />
       )}
       <Link
-        aria-label="memento home"
+        aria-label="Memento home"
         className="inline-flex shrink-0 cursor-pointer touch-manipulation items-center gap-1.75 [-webkit-tap-highlight-color:transparent] focus-visible:rounded-sm focus-visible:outline-2 focus-visible:outline-offset-5 focus-visible:outline-ring min-[381px]:gap-2.75"
         to="/"
       >

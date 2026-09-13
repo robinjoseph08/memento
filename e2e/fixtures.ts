@@ -164,7 +164,7 @@ export const test = base.extend<{
 // Every Person completes Onboarding once after their first sign-in. Journeys
 // that start elsewhere call this right after claiming or signing in.
 export async function finishOnboarding(page: Page, tap = false) {
-  const button = page.getByRole("button", { name: "Continue to memento" });
+  const button = page.getByRole("button", { name: "Continue to Memento" });
   await expect(button).toBeVisible();
   if (tap) await button.tap();
   else await button.click();

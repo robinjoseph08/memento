@@ -31,7 +31,7 @@ export function WelcomePage() {
   return (
     <div className="mx-auto max-w-200">
       <PageTitle title="Welcome" />
-      <h1 className={headingClass}>Welcome to memento</h1>
+      <h1 className={headingClass}>Welcome to Memento</h1>
       <p className="mt-5 max-w-[590px] text-muted">
         Check your name and how you want to hear about new photos. You can
         change these later in your profile.
@@ -135,7 +135,7 @@ function OnboardingForm({ profile }: { profile: Profile }) {
             Email me when there are updates
           </CheckField>
           <Button type="submit">
-            {complete.isPending ? "Finishing…" : "Continue to memento"}
+            {complete.isPending ? "Finishing…" : "Continue to Memento"}
           </Button>
         </fieldset>
       </Form>
