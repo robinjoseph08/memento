@@ -133,8 +133,10 @@ mise start:qa
 ```
 
 Open the printed URL and keep the command running. This uses fake sign-in, a
-controlled Immich server that starts offline, and a temporary PostgreSQL schema.
-Stop it with Ctrl-C and run it again to reset without erasing development data.
+controlled Immich server that starts online, and a temporary PostgreSQL schema.
+The command prints a curl line that takes the fixture offline for testing the
+disconnected state. Stop it with Ctrl-C and run it again to reset without
+erasing development data.
 Use separate browser profiles to try multiple people. Ordinary tabs share the
 same session cookie. Never expose fake development sign-in publicly.
 

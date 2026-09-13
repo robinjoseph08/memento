@@ -58,7 +58,7 @@ run = "go run ./cmd/dev start api"
 [tasks."start:qa"]
 description = "Build and start an empty installation with controlled Immich"
 depends = ["build", "build:fixture"]
-run = "./build/fixture/fixture --offline"
+run = "./build/fixture/fixture"
 
 # === Type Generation ===
 
