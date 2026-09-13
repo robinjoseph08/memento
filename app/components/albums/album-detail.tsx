@@ -1,4 +1,3 @@
-import { ChevronLeft } from "lucide-react";
 import { useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 
@@ -49,7 +48,7 @@ export function AlbumPage() {
       <PageTitle title={album.data?.title ?? "Album"} />
       {album.isPending && (
         <div className="px-5 py-4 min-[761px]:px-8">
-          <BackLink className="mb-2 text-xs" to="/curator">
+          <BackLink className="mb-1 min-h-7 text-xs" to="/curator">
             All albums
           </BackLink>
           <h1 className={sectionHeadingClass}>Album</h1>
@@ -98,7 +97,7 @@ function AlbumContent({ album }: { album: AlbumDetail }) {
     <>
       <header className="flex flex-wrap items-center gap-4 border-b border-border px-5 py-4 min-[761px]:px-8">
         <div className="min-w-0 flex-1">
-          <BackLink className="mb-2 text-xs" to="/curator">
+          <BackLink className="mb-1 min-h-7 text-xs" to="/curator">
             All albums
           </BackLink>
           <h1 className="font-heading text-[clamp(24px,3vw,30px)] leading-tight tracking-[-0.5px] wrap-anywhere">
@@ -263,17 +262,9 @@ function AlbumContent({ album }: { album: AlbumDetail }) {
             hidden={!showDetail}
           >
             {!desktop && (
-              <Link
-                className="-mx-2 mb-4 inline-flex min-h-9 items-center gap-1 rounded-md px-2 text-sm hover:bg-surface"
-                to={link({ pane: null })}
-              >
-                <ChevronLeft
-                  aria-hidden="true"
-                  className="size-4"
-                  strokeWidth={1.5}
-                />
+              <BackLink className="mb-4" to={link({ pane: null })}>
                 Outline
-              </Link>
+              </BackLink>
             )}
             {/* The title form stays mounted while other sections show so an
                 unsaved edit survives a look at a Moment. */}
