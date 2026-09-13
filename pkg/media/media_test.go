@@ -2,6 +2,7 @@ package media_test
 
 import (
 	"context"
+	"errors"
 	"io"
 	"mime"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/labstack/echo/v5"
 	"github.com/robinjoseph08/memento/pkg/errcodes"
+	"github.com/robinjoseph08/memento/pkg/ffprobe"
 	"github.com/robinjoseph08/memento/pkg/immich"
 	"github.com/robinjoseph08/memento/pkg/media"
 	"github.com/robinjoseph08/memento/pkg/models"
@@ -27,6 +29,9 @@ type source struct {
 	assetError     error
 	originalError  error
 	originalLength int64
+	originalType   string
+	playback       func(context.Context, immich.PlaybackRequest) (immich.Playback, error)
+	chapters       func(context.Context, string) ([]ffprobe.Chapter, error)
 }
 
 func (s *source) CheckImport(context.Context) error                  { return nil }
@@ -59,7 +64,25 @@ func (s *source) Original(_ context.Context, id string) (immich.Original, error)
 	if length == 0 {
 		length = 14
 	}
-	return immich.Original{Body: io.NopCloser(strings.NewReader("original bytes")), ContentType: "image/jpeg", Length: length}, nil
+	contentType := s.originalType
+	if contentType == "" {
+		contentType = "image/jpeg"
+	}
+	return immich.Original{Body: io.NopCloser(strings.NewReader("original bytes")), ContentType: contentType, Length: length}, nil
+}
+func (s *source) Playback(ctx context.Context, id string, request immich.PlaybackRequest) (immich.Playback, error) {
+	s.requested = "playback:" + id
+	if s.playback == nil {
+		return immich.Playback{}, errors.New("playback fake not configured")
+	}
+	return s.playback(ctx, request)
+}
+func (s *source) Chapters(ctx context.Context, id string) ([]ffprobe.Chapter, error) {
+	s.requested = "chapters:" + id
+	if s.chapters == nil {
+		return nil, errors.New("chapter fake not configured")
+	}
+	return s.chapters(ctx, id)
 }
 func (s *source) PersonThumbnail(_ context.Context, id string) (immich.Thumbnail, error) {
 	s.requested = id
@@ -292,7 +315,7 @@ func TestSourceCoverUsesAlbumWithoutEntryAndRequiresCurator(t *testing.T) {
 	require.Equal(t, "private, no-store", response.Header().Get("Cache-Control"))
 }
 
-func TestViewerOriginalDownloadsOnlyAuthorizedAlbumEntriesWithoutRanges(t *testing.T) {
+func TestViewerOriginalDownloadsAuthorizedPhotosAndVideosWithoutRanges(t *testing.T) {
 	t.Parallel()
 	upstream := &source{asset: immich.Asset{ID: "asset", Checksum: "YQ==", Filename: "Lake sunset (edited).jpg", Kind: "IMAGE", LocalDateTime: "2026-07-04T23:59:00Z", FileCreatedAt: "2026-07-04T23:59:00Z", UpdatedAt: "2026-07-05T00:00:00Z"}}
 	db := testdb.New(t)
@@ -376,9 +399,23 @@ func TestViewerOriginalDownloadsOnlyAuthorizedAlbumEntriesWithoutRanges(t *testi
 	upstream.requested = ""
 	require.Equal(t, http.StatusNotFound, do(http.MethodGet, "/api/media/viewer/alex/entries/"+denied.ID+"/original?v="+version, nil).Code, "access to the Media Item through another Album does not authorize this Album Entry")
 	require.Equal(t, http.StatusNotFound, do(http.MethodGet, "/api/media/viewer/sam/entries/"+allowed.ID+"/original?v="+version, nil).Code, "another Person's URL is never served")
-	require.Equal(t, http.StatusNotFound, do(http.MethodGet, "/api/media/viewer/alex/entries/"+video.ID+"/original?v="+strings.Split(video.ThumbnailURL, "?v=")[1], nil).Code, "video originals wait for playback")
 	require.Equal(t, http.StatusNotFound, do(http.MethodGet, "/api/media/viewer/alex/entries/"+allowed.ID+"/original?v=wrong", nil).Code)
 	require.Empty(t, upstream.requested)
+	// A video downloads through the same route, named after its file.
+	upstream.asset = immich.Asset{ID: "clip", Checksum: "Yg==", Filename: "clip.mp4", Kind: "VIDEO", LocalDateTime: "2026-07-04T23:59:00Z", FileCreatedAt: "2026-07-04T23:59:00Z", UpdatedAt: "2026-07-05T00:00:00Z"}
+	upstream.originalType = "video/mp4"
+	videoDownload := do(http.MethodGet, "/api/media/viewer/alex/entries/"+video.ID+"/original?v="+strings.Split(video.ThumbnailURL, "?v=")[1], map[string]string{"Range": "bytes=0-3"})
+	require.Equal(t, http.StatusOK, videoDownload.Code)
+	require.Equal(t, "original:clip", upstream.requested)
+	require.Equal(t, "video/mp4", videoDownload.Header().Get("Content-Type"))
+	require.Equal(t, "private, no-store", videoDownload.Header().Get("Cache-Control"))
+	require.Empty(t, videoDownload.Header().Get("Content-Range"), "downloads stay range-independent")
+	_, params, err = mime.ParseMediaType(videoDownload.Header().Get("Content-Disposition"))
+	require.NoError(t, err)
+	require.Equal(t, "clip.mp4", params["filename"])
+	upstream.asset = immich.Asset{ID: "asset", Checksum: "YQ==", Filename: "Lake sunset (edited).jpg", Kind: "IMAGE", LocalDateTime: "2026-07-04T23:59:00Z", FileCreatedAt: "2026-07-04T23:59:00Z", UpdatedAt: "2026-07-05T00:00:00Z"}
+	upstream.originalType = ""
+	upstream.requested = ""
 	actor = "curator"
 	require.Equal(t, http.StatusNotFound, do(http.MethodGet, "/api/media/preview/alex/entries/"+allowed.ID+"/original?v="+version, nil).Code, "Curator preview cannot download")
 	actor = "alex"

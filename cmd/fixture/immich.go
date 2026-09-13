@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -8,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/robinjoseph08/memento/pkg/notifications/smtptest"
 )
@@ -62,6 +64,7 @@ func newImmichFixture(offline bool) *immichFixture {
 		faces: faces, personThumbnails: thumbnails, requests: map[string]int{}, checkpoints: map[string]*checkpoint{
 			"asset-metadata": {Mode: "open", released: make(chan struct{})},
 			"import-release": {Mode: "open", released: make(chan struct{})},
+			"chapter-probe":  {Mode: "open", released: make(chan struct{})},
 		}}
 }
 
@@ -136,6 +139,11 @@ func (f *immichFixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	f.mu.Lock()
 	f.requests[r.Method+" "+r.URL.Path]++
+	if r.Header.Get("Range") != "" {
+		// Ranged reads are counted apart so playback seeking and ffprobe's
+		// header probing can be told from whole-file downloads.
+		f.requests[r.Method+" "+r.URL.Path+" (range)"]++
+	}
 	state := f.state
 	f.mu.Unlock()
 	if r.Method != http.MethodGet && (r.Method != http.MethodPost || r.URL.Path != "/api/search/metadata") {
@@ -199,17 +207,35 @@ func (f *immichFixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/api/assets/")
 		id, thumbnail := strings.CutSuffix(path, "/thumbnail")
 		id, original := strings.CutSuffix(id, "/original")
+		id, playback := strings.CutSuffix(id, "/video/playback")
 		asset, ok := f.assets[id]
 		if !ok {
 			http.NotFound(w, r)
 			return
 		}
-		if original {
-			// Immich streams the uploaded file as an attachment with its length.
-			w.Header().Set("Content-Type", asset.ContentType)
-			w.Header().Set("Content-Disposition", "attachment; filename="+strconv.Quote(asset.Filename))
-			w.Header().Set("Content-Length", strconv.Itoa(len(asset.Thumbnail)))
-			_, _ = w.Write(asset.Thumbnail)
+		if original || playback {
+			if id == "workbench-video-broken" {
+				http.Error(w, "fixture original is permanently unreadable", http.StatusInternalServerError)
+				return
+			}
+			if id == "workbench-video-retry" && !f.reachCheckpoint(w, r, "chapter-probe") {
+				return
+			}
+			if playback && asset.Kind != "VIDEO" {
+				http.NotFound(w, r)
+				return
+			}
+			// Immich serves uploaded files and playback with byte ranges. The
+			// original arrives as an attachment; playback is the same bytes here.
+			content, contentType := asset.Original, asset.OriginalType
+			if content == nil {
+				content, contentType = asset.Thumbnail, asset.ContentType
+			}
+			w.Header().Set("Content-Type", contentType)
+			if original {
+				w.Header().Set("Content-Disposition", "attachment; filename="+strconv.Quote(asset.Filename))
+			}
+			http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(content))
 			return
 		}
 		if thumbnail {

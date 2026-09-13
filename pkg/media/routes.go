@@ -13,10 +13,14 @@ func RegisterViewerRoutes(e *echo.Echo, m *Module, authorize AuthorizeEntry, req
 	e.HEAD("/api/media/viewer/:personID/entries/:id/preview", h.entryPreview, requirePerson)
 	e.GET("/api/media/viewer/:personID/entries/:id/original", h.entryOriginal, requirePerson)
 	e.HEAD("/api/media/viewer/:personID/entries/:id/original", h.entryOriginal, requirePerson)
+	e.GET("/api/media/viewer/:personID/entries/:id/playback", h.entryPlayback, requirePerson)
+	e.HEAD("/api/media/viewer/:personID/entries/:id/playback", h.entryPlayback, requirePerson)
 	e.GET("/api/media/preview/:personID/entries/:id/thumbnail", h.previewThumbnail, requireCurator)
 	e.HEAD("/api/media/preview/:personID/entries/:id/thumbnail", h.previewThumbnail, requireCurator)
 	e.GET("/api/media/preview/:personID/entries/:id/preview", h.previewPreview, requireCurator)
 	e.HEAD("/api/media/preview/:personID/entries/:id/preview", h.previewPreview, requireCurator)
+	e.GET("/api/media/preview/:personID/entries/:id/playback", h.previewPlayback, requireCurator)
+	e.HEAD("/api/media/preview/:personID/entries/:id/playback", h.previewPlayback, requireCurator)
 }
 
 // RegisterRoutes requires the Curator guard for source and imported media.
@@ -28,6 +32,8 @@ func RegisterRoutes(e *echo.Echo, m *Module, requirePerson, requireCurator echo.
 	e.HEAD("/api/media/sources/:id/cover", h.sourceCover, requireCurator)
 	e.GET("/api/media/entries/:id/thumbnail", h.entryThumbnail, requireCurator)
 	e.HEAD("/api/media/entries/:id/thumbnail", h.entryThumbnail, requireCurator)
+	e.GET("/api/media/entries/:id/playback", h.entryPlayback, requireCurator)
+	e.HEAD("/api/media/entries/:id/playback", h.entryPlayback, requireCurator)
 	e.GET("/api/media/faces/:sourceID/thumbnail", h.faceThumbnail, requireCurator)
 	e.HEAD("/api/media/faces/:sourceID/thumbnail", h.faceThumbnail, requireCurator)
 	e.GET("/api/media/people/:id/avatar", h.personAvatar, requirePerson)

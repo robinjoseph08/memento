@@ -41,6 +41,8 @@ type ViewerDay struct {
 	VideoCount int    `json:"video_count"`
 }
 
+// ViewerEntry is one gallery item. Title is the Curator's video title when set,
+// otherwise the original filename without its extension.
 type ViewerEntry struct {
 	ID           string `json:"id"`
 	Kind         string `json:"kind"`
@@ -49,11 +51,24 @@ type ViewerEntry struct {
 	Available    bool   `json:"available"`
 	ThumbnailURL string `json:"thumbnail_url"`
 	PreviewURL   string `json:"preview_url"`
-	// DownloadURL streams the original photo. It is empty in Curator preview,
-	// for unavailable media, and for videos until playback ships.
+	// DownloadURL streams the original photo or video. It is empty in Curator
+	// preview and for unavailable media.
 	DownloadURL string `json:"download_url"`
+	// PlaybackURL is the ranged video stream, also in preview. Photos have none.
+	PlaybackURL string `json:"playback_url"`
 	Width       int    `json:"width"`
 	Height      int    `json:"height"`
+	// Chapters are read-only navigation marks. ChapterStatus is pending,
+	// complete, or failed; photos leave both empty.
+	Chapters      []Chapter `json:"chapters"`
+	ChapterStatus string    `json:"chapter_status"`
+}
+
+// Chapter is one read-only navigation segment, in seconds from the start.
+type Chapter struct {
+	Title string  `json:"title"`
+	Start float64 `json:"start"`
+	End   float64 `json:"end"`
 }
 
 type ViewerPage struct {
@@ -152,6 +167,20 @@ type Entry struct {
 	ThumbnailURL string `json:"thumbnail_url"`
 	// Decisions holds only this entry's explicit rules by Person ID.
 	Decisions map[string]Decision `json:"decisions"`
+	// Title is the global video title override, empty when the filename shows.
+	Title string `json:"title"`
+	// PlaybackURL streams an available video to the Curator; photos have none.
+	PlaybackURL string `json:"playback_url"`
+	// Chapter fields describe the Media Item's extraction: ChapterStatus is
+	// pending, complete, or failed, and ChapterMessage explains a failure.
+	Chapters       []Chapter `json:"chapters"`
+	ChapterStatus  string    `json:"chapter_status"`
+	ChapterMessage string    `json:"chapter_message"`
+}
+
+// UpdateVideoRequest sets or, when blank, clears a video's global title.
+type UpdateVideoRequest struct {
+	Title string `json:"title" mod:"trim" validate:"max=200"`
 }
 
 type ImportRequest struct {

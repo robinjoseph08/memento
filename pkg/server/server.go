@@ -28,10 +28,12 @@ import (
 )
 
 // Features are the modules main wires after constructing the worker runtime.
-// Tests pass the zero value to exercise identity routes alone.
+// Tests pass the zero value to exercise identity routes alone; a nil media
+// module serves media through a client of its own.
 type Features struct {
 	Publishing    *publishing.Module
 	Notifications *notifications.Module
+	Media         *media.Module
 }
 
 // New constructs the HTTP server and registers the application's routes and
@@ -48,12 +50,15 @@ func New(cfg *config.Config, db *bun.DB, features Features) (*http.Server, error
 	people := identity.New(db, nil)
 	people.ImmichURL = cfg.ImmichBrowserURL()
 	people.PublicURL = cfg.PublicURL
-	deps := dependencies{identity: people, connection: source, health: db.PingContext, media: media.New(db, source)}
-	deps.publishing = features.Publishing
 	if features.Notifications != nil {
 		people.Mail = features.Notifications
 		people.Announcements = features.Notifications
 	}
+	library := features.Media
+	if library == nil {
+		library = media.New(db, source)
+	}
+	deps := dependencies{identity: people, connection: source, health: db.PingContext, media: library, publishing: features.Publishing}
 	return newServer(cfg, frontend, deps)
 }
 

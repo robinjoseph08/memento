@@ -1,6 +1,7 @@
 package identity_test
 
 import (
+	"sort"
 	"testing"
 
 	"github.com/robinjoseph08/memento/pkg/errcodes"
@@ -15,22 +16,38 @@ func TestUnknownIdentityCreatesOneRequestThatCuratorsResolveDeliberately(t *test
 	a := newAdmission(t, true)
 	module := a.identity
 	curator := claimCurator(t, module)
+	// Only active Curators with a selected email are alerted: not a member,
+	// not a deactivated Curator, and not a Curator who cleared their email.
+	secondCurator := authorizePerson(t, module, curator, "Second Curator", "second@example.test")
+	_, err := module.UpdatePerson(t.Context(), curator.Token, secondCurator.Person.ID, identity.UpdatePersonRequest{DisplayName: "Second Curator", IsCurator: true})
+	require.NoError(t, err)
+	retired := authorizePerson(t, module, curator, "Retired Curator", "retired@example.test")
+	_, err = module.UpdatePerson(t.Context(), curator.Token, retired.Person.ID, identity.UpdatePersonRequest{DisplayName: "Retired Curator", IsCurator: true, Deactivated: true})
+	require.NoError(t, err)
+	quiet := authorizePerson(t, module, curator, "Quiet Curator", "quiet@example.test")
+	_, err = module.UpdatePerson(t.Context(), curator.Token, quiet.Person.ID, identity.UpdatePersonRequest{DisplayName: "Quiet Curator", IsCurator: true})
+	require.NoError(t, err)
+	_, err = module.UpdateProfile(t.Context(), quiet.Token, identity.UpdateProfileRequest{DisplayName: "Quiet Curator", UpdateEmail: "", EmailUpdates: false})
+	require.NoError(t, err)
+	authorizePerson(t, module, curator, "Member", "member@example.test")
 	stranger := identity.Claims{Provider: "google", Subject: "stranger-subject", Email: "stranger@example.test", EmailVerified: true, DisplayName: "Stranger"}
 	for range 3 {
 		_, err := module.SignIn(t.Context(), stranger)
 		require.ErrorIs(t, err, identity.ErrAccessRequested)
 	}
 	stranger.DisplayName = "Stranger Renamed"
-	_, err := module.SignIn(t.Context(), stranger)
+	_, err = module.SignIn(t.Context(), stranger)
 	require.ErrorIs(t, err, identity.ErrAccessRequested)
 	requests, err := module.ListAccessRequests(t.Context(), curator.Token)
 	require.NoError(t, err)
 	require.Len(t, requests, 1, "repeated sign-ins refresh one pending request")
 	a.deliverAll(t)
 	alerts := a.recorder.Sent()
-	require.Len(t, alerts, 1, "Curators are emailed once per new request, not per sign-in")
+	require.Len(t, alerts, 2, "each eligible Curator is emailed once per new request, not per sign-in")
+	recipients := []string{alerts[0].To, alerts[1].To}
+	sort.Strings(recipients)
+	assert.Equal(t, []string{"curator@example.test", "second@example.test"}, recipients)
 	assert.Equal(t, "access_request", alerts[0].Kind)
-	assert.Equal(t, "curator@example.test", alerts[0].To)
 	assert.Equal(t, "stranger@example.test asked to join Memento", alerts[0].Subject)
 	assert.Contains(t, alerts[0].Body, "https://memento.example.test/curator/requests")
 	pending := requests[0]
@@ -65,7 +82,7 @@ func TestUnknownIdentityCreatesOneRequestThatCuratorsResolveDeliberately(t *test
 	require.NoError(t, err)
 	assert.Equal(t, "pending", reconsidered.Status)
 	a.deliverAll(t)
-	assert.Len(t, a.recorder.Sent(), 1, "denial, later sign-ins, and reconsideration send no further email")
+	assert.Len(t, a.recorder.Sent(), 2, "denial, later sign-ins, and reconsideration send no further email")
 	assert.Nil(t, reconsidered.ResolvedAt)
 	assert.Empty(t, reconsidered.ResolvedBy)
 
@@ -132,7 +149,7 @@ func TestUnknownIdentityCreatesOneRequestThatCuratorsResolveDeliberately(t *test
 	assert.Equal(t, alex.ID, linked.PersonID)
 	people, err := module.ListPeople(t.Context(), curator.Token, "")
 	require.NoError(t, err)
-	assert.Len(t, people, 3, "curator, the created Person, and Alex")
+	assert.Len(t, people, 7, "the four fixture People, the Curator, the created Person, and Alex")
 	admittedAlex, err := module.SignIn(t.Context(), second)
 	require.NoError(t, err)
 	assert.Equal(t, alex.ID, admittedAlex.Person.ID)
@@ -147,7 +164,7 @@ func TestUnknownIdentityCreatesOneRequestThatCuratorsResolveDeliberately(t *test
 	require.ErrorIs(t, err, identity.ErrEmailInUse)
 	people, err = module.ListPeople(t.Context(), curator.Token, "")
 	require.NoError(t, err)
-	assert.Len(t, people, 3, "a refused approval creates no Person")
+	assert.Len(t, people, 7, "a refused approval creates no Person")
 
 	// Members cannot see or resolve requests.
 	_, err = module.ListAccessRequests(t.Context(), admittedAlex.Token)

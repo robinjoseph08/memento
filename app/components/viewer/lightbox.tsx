@@ -1,6 +1,6 @@
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { ChevronLeft, ChevronRight, Download, X } from "lucide-react";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate, type To } from "react-router-dom";
 
 import { cn } from "../../lib/utils";
@@ -8,16 +8,19 @@ import type { ViewerEntry } from "../../types/generated/publishing";
 import { AlbumImage } from "../albums/album-image";
 import { Button } from "../ui/button";
 import { aspectRatio, captureDate } from "./labels";
+import { ChapterSelect, VideoStage } from "./video-player";
 
-// The routed full-screen photo viewer. It composes the Radix dialog directly
-// because the shared DialogContent is a centered card with its own close
-// button; the primitive still provides Escape, the focus trap, and focus
-// return. The URL names the Album Entry, so a
-// reload or a shared link lands on the same photo; previous and next replace
-// that URL so Back returns to the gallery. Photos arrive page by page in the
-// background, which is why a link beyond the loaded pages waits instead of
-// failing, and only reports the photo missing once the gallery is complete.
+// The routed full-screen viewer for one gallery: photos or videos. It composes
+// the Radix dialog directly because the shared DialogContent is a centered
+// card with its own close button; the primitive still provides Escape, the
+// focus trap, and focus return. The URL names the Album Entry, so a reload or
+// a shared link lands on the same item; previous and next replace that URL so
+// Back returns to the gallery. Entries arrive page by page in the background,
+// which is why a link beyond the loaded pages waits instead of failing, and
+// only reports the item missing once the gallery is complete. A video mounts
+// its player only here, so the gallery never plays anything.
 export function Lightbox({
+  kind,
   title,
   total,
   entries,
@@ -28,18 +31,22 @@ export function Lightbox({
   closeTo,
   personName,
 }: {
+  kind: "photo" | "video";
   title: string;
   total: number;
   entries: ViewerEntry[];
   currentID: string;
   loading: boolean;
-  // retry is set while a later page failed to load, so a photo on that page
+  // retry is set while a later page failed to load, so an item on that page
   // can be tried again from inside the dialog.
   retry?: () => void;
   entryLink: (id: string) => To;
   closeTo: To;
   personName?: string;
 }) {
+  const noun = kind === "photo" ? "Photo" : "Video";
+  const lower = kind === "photo" ? "photo" : "video";
+  const plural = kind === "photo" ? "Photos" : "Videos";
   const navigate = useNavigate();
   const location = useLocation();
   const index = entries.findIndex((entry) => entry.id === currentID);
@@ -47,6 +54,34 @@ export function Lightbox({
   const count = Math.max(total, entries.length);
   const stripRef = useRef<HTMLElement>(null);
   const swipeRef = useRef<{ x: number; y: number } | null>(null);
+  // The player lives in the stage while the chapter picker sits beneath it.
+  // Only the playing chapter's index is kept, and only when it changes, so
+  // the frequent time updates do not repaint the header and filmstrip.
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [playing, setPlaying] = useState({ id: "", chapter: -1 });
+  const chapterAt = (seconds: number) =>
+    (entry?.chapters ?? []).reduce(
+      (found, chapter, position) =>
+        seconds >= chapter.start ? position : found,
+      -1,
+    );
+  // A video that has not reported time yet is at its start.
+  const chapterIndex =
+    playing.id === currentID ? playing.chapter : chapterAt(0);
+  const trackChapter = (seconds: number) => {
+    const index = chapterAt(seconds);
+    setPlaying((current) =>
+      current.id === currentID && current.chapter === index
+        ? current
+        : { id: currentID, chapter: index },
+    );
+  };
+  function seek(chapter: { start: number }) {
+    const video = videoRef.current;
+    if (!video) return;
+    video.currentTime = chapter.start;
+    void video.play()?.catch(() => {});
+  }
   // Opening from the gallery records which photo was clicked, so closing can
   // hand focus back to it even after moving through many photos. A direct
   // link has no origin, so focus lands on the photo that was open instead.
@@ -95,16 +130,19 @@ export function Lightbox({
       ?.querySelector('[aria-current="true"]')
       ?.scrollIntoView({ block: "nearest", inline: "center" });
   }, [currentID, entries.length]);
-  // Warm the browser cache for the neighbours so the next step is instant.
-  const previous = entries[index - 1]?.preview_url ?? "";
-  const following = entries[index + 1]?.preview_url ?? "";
+  // Warm the browser cache for neighbouring photos so the next step is
+  // instant. Videos stream on demand, so nothing is fetched ahead for them.
+  const previous =
+    kind === "photo" ? (entries[index - 1]?.preview_url ?? "") : "";
+  const following =
+    kind === "photo" ? (entries[index + 1]?.preview_url ?? "") : "";
   useEffect(() => {
     for (const url of [previous, following]) {
       if (url) new Image().src = url;
     }
   }, [previous, following]);
 
-  const label = entry ? `Photo ${index + 1} of ${count}` : "Photo";
+  const label = entry ? `${noun} ${index + 1} of ${count}` : noun;
 
   return (
     <DialogPrimitive.Root
@@ -119,6 +157,33 @@ export function Lightbox({
           className="fixed inset-0 z-50 flex flex-col text-foreground outline-none"
           onCloseAutoFocus={returnFocus}
           onKeyDown={(event) => {
+            // A focused player keeps its own arrow keys for seeking and
+            // volume, and text fields and an open picker keep theirs.
+            if (
+              event.target instanceof HTMLElement &&
+              event.target.closest(
+                'video, input, textarea, [role=combobox][aria-expanded="true"], [role=option]',
+              )
+            )
+              return;
+            // Space plays or pauses from anywhere that is not a control of its
+            // own, so stepping to the next video with an arrow key never means
+            // reaching for the mouse to pause it.
+            if (
+              kind === "video" &&
+              event.key === " " &&
+              !(
+                event.target instanceof HTMLElement &&
+                event.target.closest("button, a")
+              )
+            ) {
+              event.preventDefault();
+              const video = videoRef.current;
+              if (!video) return;
+              if (video.paused) void video.play()?.catch(() => {});
+              else video.pause();
+              return;
+            }
             if (event.key === "ArrowLeft") {
               event.preventDefault();
               step(-1);
@@ -143,7 +208,7 @@ export function Lightbox({
           <header className="flex flex-wrap items-start gap-3 px-3 pt-3 min-[761px]:px-5">
             <DialogPrimitive.Close asChild>
               <Button
-                aria-label="Close photo"
+                aria-label={`Close ${lower}`}
                 className="size-11 rounded-full p-0"
                 variant="ghost"
               >
@@ -165,7 +230,7 @@ export function Lightbox({
             )}
             {entry?.download_url ? (
               <Button
-                aria-label="Download photo"
+                aria-label={`Download ${lower}`}
                 asChild
                 className="size-11 rounded-full p-0"
                 variant="ghost"
@@ -185,7 +250,7 @@ export function Lightbox({
           {entry ? (
             <>
               <div
-                aria-label="Photo stage"
+                aria-label={`${noun} stage`}
                 className="relative flex min-h-0 flex-1 [touch-action:pan-y_pinch-zoom] items-center justify-center px-14 py-3 select-none"
                 onPointerCancel={() => {
                   swipeRef.current = null;
@@ -208,7 +273,7 @@ export function Lightbox({
                 role="group"
               >
                 <Button
-                  aria-label="Previous photo"
+                  aria-label={`Previous ${lower}`}
                   className="absolute top-1/2 left-2 size-11 -translate-y-1/2 rounded-full p-0"
                   disabled={index === 0}
                   onClick={() => step(-1)}
@@ -224,15 +289,23 @@ export function Lightbox({
                   className="flex h-full w-full items-center justify-center"
                   key={entry.id}
                 >
-                  <AlbumImage
-                    alt={entry.title || "Photo"}
-                    className="h-full w-auto max-w-full bg-transparent object-contain"
-                    fallback="Media unavailable"
-                    src={entry.available ? entry.preview_url : ""}
-                  />
+                  {kind === "video" ? (
+                    <VideoStage
+                      entry={entry}
+                      onTime={trackChapter}
+                      videoRef={videoRef}
+                    />
+                  ) : (
+                    <AlbumImage
+                      alt={entry.title || "Photo"}
+                      className="h-full w-auto max-w-full bg-transparent object-contain"
+                      fallback="Media unavailable"
+                      src={entry.available ? entry.preview_url : ""}
+                    />
+                  )}
                 </div>
                 <Button
-                  aria-label="Next photo"
+                  aria-label={`Next ${lower}`}
                   className="absolute top-1/2 right-2 size-11 -translate-y-1/2 rounded-full p-0"
                   disabled={index === entries.length - 1 && !loading}
                   onClick={() => step(1)}
@@ -245,20 +318,36 @@ export function Lightbox({
                   />
                 </Button>
               </div>
-              <p className="pb-3 text-center text-xs text-muted">
-                {captureDate(entry.captured_at, true)}
-              </p>
+              {kind === "video" ? (
+                <div className="flex flex-col items-center gap-2 px-3 pb-3 text-center">
+                  <p className="font-heading text-lg leading-tight">
+                    {entry.title || "Video"}
+                  </p>
+                  <ChapterSelect
+                    activeIndex={chapterIndex}
+                    entry={entry}
+                    onSeek={seek}
+                  />
+                  <p className="text-xs text-muted">
+                    {captureDate(entry.captured_at, true)}
+                  </p>
+                </div>
+              ) : (
+                <p className="pb-3 text-center text-xs text-muted">
+                  {captureDate(entry.captured_at, true)}
+                </p>
+              )}
               <nav
-                aria-label="Photos in album"
+                aria-label={`${plural} in album`}
                 className="flex justify-center-safe gap-0.5 overflow-x-auto px-3 pb-4"
                 ref={stripRef}
               >
                 {entries.map((item, position) => (
                   <button
                     aria-current={item.id === currentID ? "true" : undefined}
-                    aria-label={`Go to photo ${position + 1}`}
+                    aria-label={`Go to ${lower} ${position + 1}`}
                     className={cn(
-                      "relative h-12 shrink-0 cursor-pointer overflow-hidden rounded-sm bg-surface opacity-60 outline-2 outline-offset-0 outline-transparent hover:opacity-100 focus-visible:outline-ring aria-[current=true]:opacity-100 aria-[current=true]:outline-primary",
+                      "relative h-12 shrink-0 cursor-pointer overflow-hidden rounded-sm bg-surface opacity-60 outline-2 -outline-offset-2 outline-transparent hover:opacity-100 focus-visible:outline-ring aria-[current=true]:opacity-100 aria-[current=true]:outline-primary",
                     )}
                     key={item.id}
                     onClick={() => go(item)}
@@ -283,19 +372,19 @@ export function Lightbox({
               className="flex flex-1 items-center justify-center text-muted"
               role="status"
             >
-              Loading photo…
+              Loading {lower}…
             </p>
           ) : (
             <section className="flex flex-1 flex-col items-center justify-center px-6 text-center">
               <h2 className="font-heading text-[27px]/[1.2]">
-                {retry ? "Could not load photo" : "Photo not available"}
+                {retry ? `Could not load ${lower}` : `${noun} not available`}
               </h2>
               <p className="mt-3 max-w-100 text-sm text-muted" role="alert">
                 {retry
                   ? "Please try again."
                   : personName
-                    ? `This photo is not available to ${personName}.`
-                    : "This photo is not available to you."}
+                    ? `This ${lower} is not available to ${personName}.`
+                    : `This ${lower} is not available to you.`}
               </p>
               <div className="mt-6 flex gap-3">
                 {retry && (

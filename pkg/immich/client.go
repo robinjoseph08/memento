@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -25,6 +25,9 @@ type Client struct {
 	baseURL, apiKey string
 	http            *http.Client
 	stream          *http.Client
+	// Probe reads embedded video chapters from the authenticated original URL.
+	// Leave it nil where chapter extraction never runs.
+	Probe ChapterProbe
 }
 
 func New(baseURL, apiKey string) *Client {
@@ -132,9 +135,18 @@ func (c *Client) request(ctx context.Context, method, path string, body io.Reade
 }
 
 func (c *Client) send(ctx context.Context, client *http.Client, method, path string, body io.Reader, permission string) (*http.Response, error) {
-	base, err := url.Parse(c.baseURL)
-	if err != nil || base == nil || (base.Scheme != "http" && base.Scheme != "https") || base.Host == "" || base.User != nil || base.RawQuery != "" || base.ForceQuery || strings.Contains(c.baseURL, "#") || base.Opaque != "" {
-		return nil, errcodes.ValidationError("Check immich_url points to the Immich server, without credentials, a query, or a fragment.")
+	return c.do(ctx, client, method, path, body, nil, permission, http.StatusOK)
+}
+
+// sendStream opens a streaming request with extra request headers and accepts
+// the listed status codes, so range responses pass through unchanged.
+func (c *Client) sendStream(ctx context.Context, method, path string, headers map[string]string, permission string, accepted ...int) (*http.Response, error) {
+	return c.do(ctx, c.stream, method, path, nil, headers, permission, accepted...)
+}
+
+func (c *Client) do(ctx context.Context, client *http.Client, method, path string, body io.Reader, headers map[string]string, permission string, accepted ...int) (*http.Response, error) {
+	if err := c.validBase(); err != nil {
+		return nil, err
 	}
 	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, body)
 	if err != nil {
@@ -145,11 +157,14 @@ func (c *Client) send(ctx context.Context, client *http.Client, method, path str
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	for name, value := range headers {
+		req.Header.Set(name, value)
+	}
 	response, err := client.Do(req)
 	if err != nil {
 		return nil, transportError(ctx, err)
 	}
-	if response.StatusCode == http.StatusOK {
+	if slices.Contains(accepted, response.StatusCode) {
 		return response, nil
 	}
 	_ = response.Body.Close()

@@ -317,9 +317,26 @@ func TestLoadDefaults(t *testing.T) {
 	assert.Equal(t, 5, cfg.DatabaseConnectRetryCount)
 	assert.Equal(t, 2*time.Second, cfg.DatabaseConnectRetryDelay)
 	assert.Equal(t, "./tmp/files", cfg.FilesPath)
+	assert.Equal(t, "ffprobe", cfg.FFprobePath, "the bundled binary is found on PATH")
+	assert.Equal(t, 1, cfg.FFprobeConcurrency, "chapter extraction runs one probe at a time unless an operator raises it")
 	assert.Equal(t, "0.0.0.0", cfg.ServerHost)
 	assert.Equal(t, 3579, cfg.ServerPort)
 	assert.Equal(t, "example-host", cfg.Hostname)
+}
+
+func TestFFprobeConcurrencyMustBePositive(t *testing.T) {
+	t.Parallel()
+	values := requiredConfig()
+	values["ffprobe_concurrency"] = 0
+	_, err := load(filepath.Join(t.TempDir(), "missing.yaml"), false, values, func() (string, error) { return "host", nil })
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ffprobe_concurrency")
+	values["ffprobe_concurrency"] = 3
+	values["ffprobe_path"] = "/usr/local/bin/ffprobe"
+	cfg, err := load(filepath.Join(t.TempDir(), "missing.yaml"), false, values, func() (string, error) { return "host", nil })
+	require.NoError(t, err)
+	assert.Equal(t, 3, cfg.FFprobeConcurrency)
+	assert.Equal(t, "/usr/local/bin/ffprobe", cfg.FFprobePath)
 }
 
 func TestLoadYAMLFile(t *testing.T) {

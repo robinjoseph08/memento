@@ -30,6 +30,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: jdx/mise-action@v4
+      - name: Install ffprobe
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
       - run: mise lint:go
       - run: mise test:race
 
@@ -52,6 +54,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: jdx/mise-action@v4
+      - name: Install ffprobe
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
       - run: mise test:postgres14
 
   javascript:
@@ -105,6 +109,8 @@ jobs:
         if: steps.browser-cache.outputs.cache-hit == 'true'
         run: pnpm exec playwright install-deps chromium firefox webkit
 
+      - name: Install ffprobe
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
       - run: mise test:e2e
       - uses: actions/upload-artifact@v7
         if: failure()
@@ -165,3 +171,7 @@ jobs:
           test "$asset_status" = 404
           test "$api_status" = 404
           grep --quiet 'not_found' /tmp/api-missing
+          # Chapter extraction runs the bundled binary as the app user.
+          docker exec "$container" ffprobe -version | grep --quiet '^ffprobe version'
+          docker exec "$container" ffprobe -hide_banner -v error -print_format json -show_chapters -i internal/nonexistent 2>&1 | grep --quiet --invert-match 'not found'
+          test "$(docker exec "$container" sh -c 'command -v ffprobe')" = /usr/bin/ffprobe

@@ -53,12 +53,13 @@ func (h *viewerHandlers) image(c *echo.Context, preview, large bool) error {
 	})
 }
 
-// entryOriginal streams a photo's uploaded file as an attachment. Downloads
-// are never cached or served in ranges; a preview context has no such route.
+// entryOriginal streams a photo's or video's uploaded file as an attachment.
+// Downloads are never cached or served in ranges; a preview context has no
+// such route.
 func (h *viewerHandlers) entryOriginal(c *echo.Context) error {
 	actorID, _ := c.Get("identity.person_id").(string)
 	if actorID == "" || c.Param("personID") != actorID {
-		return errcodes.NotFound("Photo")
+		return errcodes.NotFound("Download")
 	}
 	if err := h.authorize(c.Request().Context(), actorID, "", c.Param("id")); err != nil {
 		return err
@@ -96,7 +97,7 @@ func (h *viewerHandlers) entryOriginal(c *echo.Context) error {
 func attachment(filename string) string {
 	name := path.Base(strings.ReplaceAll(filename, "\\", "/"))
 	if name == "." || name == ".." || name == "/" || name == "" {
-		name = "photo"
+		name = "download"
 	}
 	if value := mime.FormatMediaType("attachment", map[string]string{"filename": name}); value != "" {
 		return value

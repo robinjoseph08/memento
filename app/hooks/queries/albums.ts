@@ -21,6 +21,7 @@ import type {
   StructurePreview,
   UpdateAlbumRequest,
   UpdateMomentRequest,
+  UpdateVideoRequest,
 } from "../../types/generated/publishing";
 import { usePrivateScope } from "./people";
 
@@ -45,6 +46,16 @@ export function useAlbums(search = "") {
   });
 }
 
+// Chapter extraction runs after import finishes, so the detail keeps polling
+// while any video is still pending and stops once every result is in.
+function chaptersPending(album: AlbumDetail | undefined) {
+  return (
+    album?.moments.some((moment) =>
+      moment.entries.some((entry) => entry.chapter_status === "pending"),
+    ) ?? false
+  );
+}
+
 export function useAlbum(id: string) {
   const scope = usePrivateScope();
   return useQuery({
@@ -59,7 +70,9 @@ export function useAlbum(id: string) {
         query.state.data?.status ?? "",
       )
         ? 2000
-        : false,
+        : chaptersPending(query.state.data)
+          ? 5000
+          : false,
   });
 }
 
@@ -272,6 +285,32 @@ export function useMergeMoments(albumID: string, momentID: string) {
     mutationKey: cache.scope,
     mutationFn: (body: MergeMomentsRequest) =>
       request<AlbumDetail>(momentURL(albumID, momentID, "merge"), { body }),
+    onSuccess: cache.save,
+  });
+}
+
+function entryURL(albumID: string, entryID: string, action: string) {
+  return `/api/curator/albums/${encodeURIComponent(albumID)}/entries/${encodeURIComponent(entryID)}/${action}`;
+}
+
+export function useUpdateVideo(albumID: string, entryID: string) {
+  const cache = useAlbumCache();
+  return useMutation({
+    mutationKey: cache.scope,
+    mutationFn: (body: UpdateVideoRequest) =>
+      request<AlbumDetail>(entryURL(albumID, entryID, "video"), { body }),
+    onSuccess: cache.save,
+  });
+}
+
+export function useRetryChapters(albumID: string, entryID: string) {
+  const cache = useAlbumCache();
+  return useMutation({
+    mutationKey: cache.scope,
+    mutationFn: () =>
+      request<AlbumDetail>(entryURL(albumID, entryID, "chapters/retry"), {
+        body: {},
+      }),
     onSuccess: cache.save,
   });
 }

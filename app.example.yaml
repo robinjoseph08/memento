@@ -53,6 +53,12 @@ smtp_from: ""
 # Env: SMTP_CONCURRENCY
 smtp_concurrency: 5
 
+# Number of videos whose chapters are read at the same time. The bundled
+# ffprobe reads only file headers through HTTP ranges, so one is enough for a
+# home library; raise it on a fast Immich host with many videos.
+# Env: FFPROBE_CONCURRENCY
+ffprobe_concurrency: 1
+
 # Required PostgreSQL connection URL, including an explicit role and database.
 # Use a separate database and role from Immich, even in a shared container.
 # Both postgres:// and postgresql:// are supported. Query parameters such as

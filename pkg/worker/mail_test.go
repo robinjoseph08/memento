@@ -31,7 +31,7 @@ var invitation = notifications.Message{Kind: "invitation", To: "alex@example.tes
 func mailRuntime(t *testing.T, db *bun.DB, mailer notifications.Mailer, concurrency int) (*notifications.Module, *Runtime) {
 	t.Helper()
 	var module *notifications.Module
-	runtime, err := New(db, func(context.Context, string) error { return nil }, WithMail(func(ctx context.Context, id string) error {
+	runtime, err := New(db, func(context.Context, string) error { return nil }, Mail(func(ctx context.Context, id string) error {
 		return module.Execute(ctx, id, FinalAttempt(ctx))
 	}, concurrency))
 	require.NoError(t, err)

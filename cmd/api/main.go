@@ -13,7 +13,9 @@ import (
 	"github.com/robinjoseph08/memento/pkg/config"
 	"github.com/robinjoseph08/memento/pkg/database"
 	"github.com/robinjoseph08/memento/pkg/errorstack"
+	"github.com/robinjoseph08/memento/pkg/ffprobe"
 	"github.com/robinjoseph08/memento/pkg/immich"
+	"github.com/robinjoseph08/memento/pkg/media"
 	"github.com/robinjoseph08/memento/pkg/migrations"
 	"github.com/robinjoseph08/memento/pkg/notifications"
 	"github.com/robinjoseph08/memento/pkg/publishing"
@@ -69,6 +71,9 @@ func run(log logger.Logger) error {
 		})
 	}
 
+	source := immich.New(cfg.ImmichURL, cfg.ImmichAPIKey)
+	source.Probe = ffprobe.Command{Path: cfg.FFprobePath}
+	library := media.New(db, source)
 	// SMTP is optional. Without it the mail worker still resolves stale queued
 	// deliveries as failed instead of leaving them queued forever.
 	var mailer notifications.Mailer
@@ -85,14 +90,18 @@ func run(log logger.Logger) error {
 	var mail *notifications.Module
 	jobs, err := worker.New(db, func(ctx context.Context, id string) error {
 		return imports.ExecuteImport(ctx, id, worker.FinalAttempt(ctx))
-	}, worker.WithMail(func(ctx context.Context, id string) error {
+	}, worker.Chapters(func(ctx context.Context, mediaItemID, checksum string) error {
+		return library.ExtractChapters(ctx, mediaItemID, checksum, worker.FinalAttempt(ctx))
+	}, cfg.FFprobeConcurrency), worker.Mail(func(ctx context.Context, id string) error {
 		return mail.Execute(ctx, id, worker.FinalAttempt(ctx))
 	}, cfg.SMTPConcurrency))
 	if err != nil {
 		return fmt.Errorf("create worker: %w", err)
 	}
-	imports = publishing.New(db, immich.New(cfg.ImmichURL, cfg.ImmichAPIKey), jobs.EnqueueImport)
+	library.EnqueueChapters = jobs.EnqueueChapters
+	imports = publishing.New(db, source, jobs.EnqueueImport)
 	imports.ImmichURL = cfg.ImmichBrowserURL()
+	imports.Chapters = library
 	mail = notifications.New(db, mailer, jobs.EnqueueMail, imports, nil)
 	// Deliveries interrupted by the previous process are uncertain, never resent.
 	recovered, err := mail.RecoverInterrupted(ctx)
@@ -102,9 +111,17 @@ func run(log logger.Logger) error {
 	if recovered > 0 {
 		log.Info("marked interrupted email deliveries uncertain", logger.Data{"count": recovered})
 	}
-	srv, err := server.New(cfg, db, server.Features{Publishing: imports, Notifications: mail})
+	srv, err := server.New(cfg, db, server.Features{Publishing: imports, Notifications: mail, Media: library})
 	if err != nil {
 		return fmt.Errorf("create server: %w", err)
+	}
+	// Videos imported before chapter extraction existed get their first probe now.
+	queued, err := library.BackfillChapters(ctx)
+	if err != nil {
+		return fmt.Errorf("queue chapter extraction for existing videos: %w", err)
+	}
+	if queued > 0 {
+		log.Info("queued chapter extraction for existing videos", logger.Data{"videos": queued})
 	}
 	if err := jobs.Start(ctx); err != nil {
 		return fmt.Errorf("start worker: %w", err)

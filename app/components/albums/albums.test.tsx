@@ -199,6 +199,11 @@ const completeAlbum: AlbumDetail = {
           captured_at: "2026-07-01T12:00:00",
           available: true,
           thumbnail_url: "/media/beach",
+          title: "",
+          chapters: [],
+          chapter_status: "",
+          chapter_message: "",
+          playback_url: "",
         },
         {
           id: "video",
@@ -209,6 +214,11 @@ const completeAlbum: AlbumDetail = {
           captured_at: "2026-07-01T13:00:00",
           available: true,
           thumbnail_url: "/media/waves",
+          title: "",
+          chapters: [],
+          chapter_status: "",
+          chapter_message: "",
+          playback_url: "",
         },
       ],
     },
@@ -1333,10 +1343,14 @@ it("opens item details and access from a tile or a single selection without play
   await user.click(
     await screen.findByRole("button", { name: "Edit Waves.mp4" }),
   );
-  const editor = screen.getByRole("dialog", { name: "Item access" });
+  const editor = screen.getByRole("dialog", { name: "Video details" });
   expect(within(editor).getByRole("img", { name: "Waves.mp4" })).toBeVisible();
+  expect(within(editor).getByText(/Waves.mp4\. The title shows/)).toBeVisible();
   expect(
-    within(editor).getByText(/Decisions for Waves.mp4 override/),
+    within(editor).getByRole("textbox", { name: "Video title" }),
+  ).toBeVisible();
+  expect(
+    within(editor).getByRole("form", { name: "Item access" }),
   ).toBeVisible();
   expect(
     within(editor).queryByRole("button", { name: /play|download/i }),
@@ -1347,8 +1361,8 @@ it("opens item details and access from a tile or a single selection without play
   await user.keyboard("{Escape}");
   await user.click(screen.getByRole("button", { name: "Select" }));
   await user.click(screen.getByRole("checkbox", { name: "Select Waves.mp4" }));
-  await user.click(screen.getByRole("button", { name: "Item access" }));
-  expect(screen.getByRole("dialog", { name: "Item access" })).toBeVisible();
+  await user.click(screen.getByRole("button", { name: "Video details" }));
+  expect(screen.getByRole("dialog", { name: "Video details" })).toBeVisible();
 });
 
 it("opens saved rules without granting detected people and saves only the edited choice", async () => {

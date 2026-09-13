@@ -54,7 +54,14 @@ func TestViewerPagesUseLocalCaptureTimeAndEntryIDWithoutPrivateMetadata(t *testi
 	videos, err := module.ViewEntries(t.Context(), curator.ID.String(), "", album.ID, "VIDEO", "")
 	require.NoError(t, err)
 	require.Len(t, videos.Entries, 1)
-	require.Empty(t, videos.Entries[0].DownloadURL, "video originals arrive with playback")
+	clip := videos.Entries[0]
+	clipVersion := strings.Split(clip.ThumbnailURL, "?v=")[1]
+	require.Equal(t, "/api/media/viewer/"+curator.ID.String()+"/entries/"+clip.ID+"/original?v="+clipVersion, clip.DownloadURL)
+	require.Equal(t, "/api/media/viewer/"+curator.ID.String()+"/entries/"+clip.ID+"/playback?v="+clipVersion, clip.PlaybackURL)
+	require.Equal(t, "pending", clip.ChapterStatus, "an unprobed video is pending, never failed")
+	require.Empty(t, clip.Chapters)
+	require.Empty(t, first.Entries[0].PlaybackURL, "photos have no playback")
+	require.Empty(t, first.Entries[0].ChapterStatus)
 	_, err = module.ViewEntries(t.Context(), curator.ID.String(), "", album.ID, "IMAGE", strings.Repeat("x", 5000))
 	require.Error(t, err)
 }
@@ -143,6 +150,13 @@ func TestConfiguredCoversSkipDeniedEntriesAndNeverPickAnArbitraryPhoto(t *testin
 	videos, err := module.ViewEntries(t.Context(), curator.ID.String(), person.ID.String(), album.ID, "VIDEO", "")
 	require.NoError(t, err)
 	require.Empty(t, videos.Entries)
+	_, err = module.SaveEntryRules(t.Context(), album.ID, videoCover, publishing.SaveRulesRequest{Decisions: []publishing.AccessResolution{{PersonID: person.ID.String(), Decision: publishing.DecisionInherit}}})
+	require.NoError(t, err)
+	videos, err = module.ViewEntries(t.Context(), curator.ID.String(), person.ID.String(), album.ID, "VIDEO", "")
+	require.NoError(t, err)
+	require.Len(t, videos.Entries, 1)
+	require.Contains(t, videos.Entries[0].PlaybackURL, "/api/media/preview/"+person.ID.String()+"/entries/"+videoCover+"/playback?v=", "preview plays through the selected Person's context")
+	require.Empty(t, videos.Entries[0].DownloadURL, "preview keeps downloads off for videos too")
 }
 
 func TestViewerInheritanceMatchesEveryScopedDecisionCombination(t *testing.T) {

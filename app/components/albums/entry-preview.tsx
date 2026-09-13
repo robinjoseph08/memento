@@ -1,4 +1,4 @@
-import { Check, SquarePlay } from "lucide-react";
+import { Check, SquarePlay, TriangleAlert } from "lucide-react";
 import { useState } from "react";
 
 import { cn } from "../../lib/utils";
@@ -107,6 +107,16 @@ export function EntryPreview({
             title="Video"
           >
             <SquarePlay aria-hidden="true" className="size-3.5" />
+          </span>
+        )}
+        {entry.chapter_status === "failed" && (
+          <span
+            aria-label="Chapter extraction failed"
+            className="pointer-events-none absolute top-1 right-1 rounded-sm bg-black/70 p-1 text-amber-300"
+            role="img"
+            title="Chapter extraction failed"
+          >
+            <TriangleAlert aria-hidden="true" className="size-3.5" />
           </span>
         )}
       </figure>

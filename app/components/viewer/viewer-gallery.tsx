@@ -26,8 +26,8 @@ import { RequestAccess } from "./request-access";
 
 // The shared Album presentation for ordinary viewing and Curator preview.
 // personName is set only in preview so empty states can say whose view it is.
-// entryID names the photo open in the lightbox; entryLink builds each photo's
-// stable URL in whatever form the surrounding route uses.
+// entryID names the item open in the lightbox on the current tab; entryLink
+// builds each item's stable URL in whatever form the surrounding route uses.
 export function ViewerGallery({
   context,
   tab,
@@ -277,15 +277,23 @@ function GalleryEntries({
               >
                 {items.map((entry) => (
                   <li key={entry.id}>
-                    <span className="relative block overflow-hidden rounded-[2px] bg-surface">
-                      <MediaThumbnail entry={entry} />
-                      {entry.available && (
-                        <PlayBadge className="inset-0 m-auto size-12" />
-                      )}
-                    </span>
-                    <h3 className="mt-3 font-heading text-lg leading-tight">
-                      {entry.title}
-                    </h3>
+                    <Link
+                      aria-label={`Open video ${entry.title || "Video"}`}
+                      className="block rounded-[2px] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                      data-entry-id={entry.id}
+                      state={{ origin: entry.id }}
+                      to={entryLink(entry.id)}
+                    >
+                      <span className="relative block overflow-hidden rounded-[2px] bg-surface">
+                        <MediaThumbnail entry={entry} />
+                        {entry.available && (
+                          <PlayBadge className="inset-0 m-auto size-12" />
+                        )}
+                      </span>
+                      <h3 className="mt-3 font-heading text-lg leading-tight">
+                        {entry.title}
+                      </h3>
+                    </Link>
                   </li>
                 ))}
               </ul>
@@ -298,12 +306,13 @@ function GalleryEntries({
           Loading more {tab}…
         </p>
       )}
-      {tab === "photos" && entryID && (query.data || !query.isError) && (
+      {entryID && (query.data || !query.isError) && (
         <Lightbox
-          closeTo={tabLinks.photos}
+          closeTo={tabLinks[tab]}
           currentID={entryID}
           entries={entries}
           entryLink={entryLink}
+          kind={tab === "photos" ? "photo" : "video"}
           loading={
             query.isPending ||
             isFetchingNextPage ||
@@ -312,14 +321,14 @@ function GalleryEntries({
           personName={personName}
           retry={isFetchNextPageError ? () => void fetchNextPage() : undefined}
           title={album.title}
-          total={album.photo_count}
+          total={tab === "photos" ? album.photo_count : album.video_count}
         />
       )}
     </>
   );
 }
 
-// A neutral video marker. Playback arrives with its own controls later.
+// A neutral video marker on gallery tiles. Playback lives in the lightbox.
 function PlayBadge({ className }: { className?: string }) {
   return (
     <span
@@ -338,7 +347,7 @@ function MediaThumbnail({ entry }: { entry: ViewerEntry }) {
   return (
     <div style={{ aspectRatio: aspectRatio(entry) }}>
       <AlbumImage
-        alt={entry.title || "Photo"}
+        alt={entry.title || (entry.kind === "VIDEO" ? "Video" : "Photo")}
         className="h-full w-full"
         fallback="Media unavailable"
         src={entry.available ? entry.preview_url : ""}

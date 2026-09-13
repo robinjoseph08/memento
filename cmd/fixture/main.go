@@ -147,6 +147,7 @@ func run(ctx context.Context, binary string, offline, withSMTP bool) error {
 	} else {
 		fmt.Fprintln(os.Stderr, "SMTP is not configured for this installation.")
 	}
+	fmt.Fprintf(os.Stderr, "Chapter probe (Workbench - Videos, coast-retry): fail, pause, or open with curl -X POST -H 'Content-Type: application/json' -d '{\"mode\":\"fail\"}' %s/__fixture/checkpoints/chapter-probe\ncoast-broken never serves its original; birthday-party has three chapters.\n", fixtureURL)
 	select {
 	case <-ctx.Done():
 		return nil

@@ -10,6 +10,8 @@ import (
 	"image/jpeg"
 	"image/png"
 	"time"
+
+	"github.com/robinjoseph08/memento/internal/testmedia"
 )
 
 type sourceAlbum struct {
@@ -55,6 +57,20 @@ type sourceAsset struct {
 	EXIF           map[string]any `json:"exifInfo"`
 	Thumbnail      []byte         `json:"-"`
 	ContentType    string         `json:"-"`
+	// Original and OriginalType are the uploaded file. Photos reuse their
+	// generated image; videos carry a playable WebM.
+	Original     []byte `json:"-"`
+	OriginalType string `json:"-"`
+}
+
+// video turns a fixture asset into a playable WebM upload with a generated poster.
+func video(asset sourceAsset, filename string, bytes []byte) sourceAsset {
+	duration := testmedia.Duration * 1000
+	asset.Kind, asset.Filename, asset.Duration = "VIDEO", filename, &duration
+	asset.Original, asset.OriginalType = bytes, testmedia.ContentType
+	checksum := sha1.Sum(bytes) //nolint:gosec // Match Immich's source checksum format.
+	asset.Checksum = base64.StdEncoding.EncodeToString(checksum[:])
+	return asset
 }
 
 // fixtureLibrary spans local midnight, timestamp ties, three days, and shared media.
@@ -85,8 +101,7 @@ func fixtureLibrary() ([]sourceAlbum, map[string]sourceAsset) {
 			EXIF:      map[string]any{"timeZone": "America/Los_Angeles", "orientation": 1},
 			Thumbnail: thumbnail, ContentType: contentType}
 		if n == 4 || n == 6 {
-			duration := 12500
-			asset.Kind, asset.Filename, asset.Duration = "VIDEO", fmt.Sprintf("coast-%02d.mp4", n), &duration
+			asset = video(asset, fmt.Sprintf("coast-%02d.mp4", n), testmedia.Plain)
 		}
 		assets[id] = asset
 	}
@@ -118,6 +133,7 @@ func fixtureLibrary() ([]sourceAlbum, map[string]sourceAsset) {
 	}
 	albums = append(albums, album("workbench-large-moment", "Workbench - Large Moment", largeMembers...))
 	albums = append(albums, browseAlbum(assets))
+	albums = append(albums, videosAlbum(assets))
 	albums[0].ThumbnailID = "fixture-asset-03"
 	for n := 1; n <= 30; n++ {
 		albums = append(albums, album(fmt.Sprintf("fixture-album-practice-%02d", n), fmt.Sprintf("Practice Album %02d", n), "fixture-asset-07"))
@@ -160,6 +176,48 @@ func browseAlbum(assets map[string]sourceAsset) sourceAlbum {
 	members = append(members, "fixture-asset-07")
 	first, last := assets[members[0]], assets[members[len(members)-1]]
 	return sourceAlbum{ID: "workbench-browse", Name: "Workbench - Browse", Description: "Three days of mixed shapes for the viewer, ending on a photo the Family album also holds.",
+		ThumbnailID: members[0], Count: len(members), StartDate: first.FileCreatedAt, EndDate: last.FileCreatedAt,
+		UpdatedAt: "2026-06-05T12:00:00Z", CreatedAt: "2026-06-05T12:00:00Z", Users: []string{}, ActivityEnabled: true, Members: members}
+}
+
+// videosAlbum is the video workbench: 103 playable videos over two days so the
+// Videos gallery has a second page. birthday-party carries three chapters,
+// coast-broken's original never serves so its extraction fails for good, and
+// coast-retry's original follows the chapter-probe checkpoint so a failure
+// can be forced before import and cleared for a retry. Every other clip has
+// no chapters, which is the ordinary state.
+func videosAlbum(assets map[string]sourceAsset) sourceAlbum {
+	poster, posterType := generatedImage(14, 320, 180)
+	base := func(id, capture string) sourceAsset {
+		local, _ := time.Parse(time.RFC3339, capture)
+		instant := local.UTC().Format(time.RFC3339)
+		return sourceAsset{ID: id, OriginalPath: "/fixture/originals/" + id, OwnerID: "fixture-owner",
+			LocalDateTime: capture, FileCreatedAt: instant, FileModifiedAt: instant, CreatedAt: instant, UpdatedAt: "2026-06-05T12:00:00Z",
+			HasMetadata: true, Visibility: "timeline", Width: 160, Height: 90,
+			EXIF: map[string]any{"timeZone": "America/Los_Angeles"}, Thumbnail: poster, ContentType: posterType}
+	}
+	members := []string{}
+	add := func(asset sourceAsset) {
+		assets[asset.ID] = asset
+		members = append(members, asset.ID)
+	}
+	add(video(base("workbench-video-party", "2026-05-20T09:00:00-07:00"), "birthday-party.webm", testmedia.Chaptered))
+	add(video(base("workbench-video-retry", "2026-05-20T09:30:00-07:00"), "coast-retry.webm", testmedia.Plain))
+	add(video(base("workbench-video-broken", "2026-05-20T09:45:00-07:00"), "coast-broken.webm", testmedia.Plain))
+	for n := 1; n <= 100; n++ {
+		day, minute := 20+(n-1)/60, 10+(n-1)%60
+		add(video(base(fmt.Sprintf("workbench-video-%03d", n), fmt.Sprintf("2026-05-%02dT%02d:%02d:00-07:00", day, 10+minute/60, minute%60)), fmt.Sprintf("clip-%03d.webm", n), testmedia.Plain))
+	}
+	// One shared checksum would collapse every plain clip into one Media Item
+	// result; the source checksum identifies the upload, so vary it per clip.
+	for _, id := range members[1:] {
+		asset := assets[id]
+		checksum := sha1.Sum([]byte(id + ":" + asset.Checksum)) //nolint:gosec // Match Immich's source checksum format.
+		asset.Checksum = base64.StdEncoding.EncodeToString(checksum[:])
+		assets[id] = asset
+	}
+	first, last := assets[members[0]], assets[members[len(members)-1]]
+	return sourceAlbum{ID: "workbench-videos", Name: "Workbench - Videos", Description: "Two days of short clips: one with chapters, one that cannot be probed, one that recovers on retry.",
 		ThumbnailID: members[0], Count: len(members), StartDate: first.FileCreatedAt, EndDate: last.FileCreatedAt,
 		UpdatedAt: "2026-06-05T12:00:00Z", CreatedAt: "2026-06-05T12:00:00Z", Users: []string{}, ActivityEnabled: true, Members: members}
 }

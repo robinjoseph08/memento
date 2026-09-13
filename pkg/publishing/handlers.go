@@ -263,6 +263,24 @@ func (h *handlers) mergeMoments(c *echo.Context) error {
 	return respond(c, result, err)
 }
 
+func (h *handlers) updateVideo(c *echo.Context) error {
+	var request UpdateVideoRequest
+	if err := c.Bind(&request); err != nil {
+		return err
+	}
+	result, err := h.module.UpdateVideo(c.Request().Context(), c.Param("id"), c.Param("entryID"), request)
+	return respond(c, result, err)
+}
+
+func (h *handlers) retryChapters(c *echo.Context) error {
+	var request struct{}
+	if err := c.Bind(&request); err != nil {
+		return err
+	}
+	result, err := h.module.RetryChapters(c.Request().Context(), c.Param("id"), c.Param("entryID"))
+	return respond(c, result, err)
+}
+
 func (h *handlers) retryImport(c *echo.Context) error {
 	var request struct{}
 	if err := c.Bind(&request); err != nil {

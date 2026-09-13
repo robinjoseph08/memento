@@ -82,8 +82,11 @@ const photo: ViewerEntry = {
   thumbnail_url: "/preview/jamie/one/thumb",
   preview_url: "/preview/jamie/one",
   download_url: "",
+  playback_url: "",
   width: 1200,
   height: 800,
+  chapters: [],
+  chapter_status: "",
 };
 function renderPreview(
   handler: (path: string) => Response | Promise<Response>,
