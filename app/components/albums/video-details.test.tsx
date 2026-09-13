@@ -224,3 +224,69 @@ it("asks before discarding an edited title", async () => {
   );
   expect(state.posts.filter(([path]) => path.endsWith("/video"))).toEqual([]);
 });
+
+it("narrows a Moment to its photos or videos from the kind tabs", async () => {
+  desktopViewport();
+  const photo: Entry = {
+    ...video,
+    id: "photo",
+    media_id: "m-photo",
+    filename: "Beach.jpg",
+    kind: "IMAGE",
+    chapter_status: "",
+    chapter_message: "",
+  };
+  const state = {
+    album: {
+      ...album,
+      photo_count: 1,
+      moments: [{ ...album.moments[0], entries: [photo, video] }],
+    },
+    posts: [] as [string, unknown][],
+  };
+  mockAPI(state);
+  window.history.replaceState(null, "", "/curator/albums/album-1");
+  const user = userEvent.setup();
+  render(<App />);
+  const moment = await screen.findByRole("region", {
+    name: "Wednesday, July 1, 2026",
+  });
+  const tabs = within(moment).getByRole("navigation", {
+    name: "Moment media kind",
+  });
+  expect(within(tabs).getByRole("link", { name: "All 2" })).toHaveAttribute(
+    "aria-current",
+    "page",
+  );
+  expect(within(moment).getByText("2 of 2 items shown")).toBeVisible();
+  await user.click(within(tabs).getByRole("link", { name: "Videos 1" }));
+  expect(new URLSearchParams(window.location.search).get("kind")).toBe(
+    "videos",
+  );
+  expect(
+    within(moment).getByRole("img", { name: "Waves at dusk.mp4" }),
+  ).toBeVisible();
+  expect(
+    within(moment).queryByRole("img", { name: "Beach.jpg" }),
+  ).not.toBeInTheDocument();
+  expect(within(moment).getByText("1 of 1 item shown")).toBeVisible();
+  // Select all reaches only the videos on screen.
+  await user.click(within(moment).getByRole("button", { name: "Select" }));
+  await user.click(
+    within(moment).getByRole("checkbox", { name: "Select all 1 items" }),
+  );
+  expect(within(moment).getByText("1 selected")).toBeVisible();
+  expect(
+    within(moment).getByRole("button", { name: "Video details" }),
+  ).toBeVisible();
+  await user.click(within(tabs).getByRole("link", { name: "Photos 1" }));
+  expect(within(moment).getByRole("img", { name: "Beach.jpg" })).toBeVisible();
+  expect(
+    within(moment).queryByRole("img", { name: "Waves at dusk.mp4" }),
+  ).not.toBeInTheDocument();
+  await user.click(within(tabs).getByRole("link", { name: "All 2" }));
+  expect(new URLSearchParams(window.location.search).get("kind")).toBeNull();
+  expect(
+    within(moment).getAllByRole("img", { name: /\.(jpg|mp4)$/ }),
+  ).toHaveLength(2);
+});
