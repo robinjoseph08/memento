@@ -147,6 +147,26 @@ export function Lightbox({
               event.target.closest("video")
             )
               return;
+            // Space plays or pauses from anywhere that is not a control of its
+            // own, so stepping to the next video with an arrow key never means
+            // reaching for the mouse to pause it.
+            if (
+              kind === "video" &&
+              event.key === " " &&
+              !(
+                event.target instanceof HTMLElement &&
+                event.target.closest(
+                  "button, a, input, textarea, [role=combobox], [role=option]",
+                )
+              )
+            ) {
+              event.preventDefault();
+              const video = videoRef.current;
+              if (!video) return;
+              if (video.paused) void video.play()?.catch(() => {});
+              else video.pause();
+              return;
+            }
             if (event.key === "ArrowLeft") {
               event.preventDefault();
               step(-1);

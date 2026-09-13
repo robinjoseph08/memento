@@ -523,6 +523,7 @@ const broken: ViewerEntry = {
 // promise, which is all the overlay relies on.
 function stubMedia() {
   const times = new WeakMap<HTMLMediaElement, number>();
+  const playing = new WeakSet<HTMLMediaElement>();
   Object.defineProperty(HTMLMediaElement.prototype, "currentTime", {
     configurable: true,
     get() {
@@ -532,8 +533,19 @@ function stubMedia() {
       times.set(this as HTMLMediaElement, value);
     },
   });
-  HTMLMediaElement.prototype.play = vi.fn().mockResolvedValue(undefined);
-  HTMLMediaElement.prototype.pause = vi.fn();
+  Object.defineProperty(HTMLMediaElement.prototype, "paused", {
+    configurable: true,
+    get() {
+      return !playing.has(this as HTMLMediaElement);
+    },
+  });
+  HTMLMediaElement.prototype.play = vi.fn(function (this: HTMLMediaElement) {
+    playing.add(this);
+    return Promise.resolve();
+  });
+  HTMLMediaElement.prototype.pause = vi.fn(function (this: HTMLMediaElement) {
+    playing.delete(this);
+  });
 }
 
 it("opens a video in the routed lightbox, seeks by chapter, and shows no picker without chapters", async () => {
@@ -601,6 +613,14 @@ it("opens a video in the routed lightbox, seeks by chapter, and shows no picker 
   expect(
     await screen.findByRole("dialog", { name: "Video 2 of 3" }),
   ).toBeVisible();
+  expect(window.location.pathname).toBe("/albums/lake/videos/video-2");
+  // Space plays and pauses without the player itself being focused.
+  const next = screen.getByLabelText<HTMLVideoElement>("DSC_0123");
+  expect(next.paused).toBe(true);
+  await user.keyboard(" ");
+  expect(next.paused).toBe(false);
+  await user.keyboard(" ");
+  expect(next.paused).toBe(true);
   expect(window.location.pathname).toBe("/albums/lake/videos/video-2");
   expect(screen.queryByText(/chapter/i)).not.toBeInTheDocument();
   expect(
