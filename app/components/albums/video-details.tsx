@@ -12,17 +12,20 @@ import { filenameTitle } from "./moment-labels";
 // dialog above the access rules. The title is global to the Media Item, so
 // every Album showing the video changes with it. Chapters are read-only facts
 // from the file; a failed extraction can be retried here and never blocks
-// playback or publication. onDirty tells the dialog about unsaved edits and
-// onSaved fires once a saved title is reflected in the entry.
+// playback or publication. onDirty tells the dialog about unsaved edits,
+// onEdit fires on every keystroke, and onSaved fires once a saved title is
+// reflected in the entry.
 export function VideoDetails({
   albumID,
   entry,
   onDirty,
+  onEdit,
   onSaved,
 }: {
   albumID: string;
   entry: Entry;
   onDirty: (dirty: boolean) => void;
+  onEdit: () => void;
   onSaved: () => void;
 }) {
   const update = useUpdateVideo(albumID, entry.id);
@@ -73,6 +76,7 @@ export function VideoDetails({
             name="title"
             onChange={(event) => {
               update.reset();
+              onEdit();
               setTitle(event.target.value);
             }}
             placeholder={filenameTitle(entry.filename)}

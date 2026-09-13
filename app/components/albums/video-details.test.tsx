@@ -299,3 +299,68 @@ it("narrows a Moment to its photos or videos from the kind tabs", async () => {
     within(moment).getAllByRole("img", { name: /\.(jpg|mp4)$/ }),
   ).toHaveLength(2);
 });
+
+it("keeps the dialog open after saving access while a title edit is unsaved", async () => {
+  desktopViewport();
+  const alex = {
+    person_id: "alex",
+    display_name: "Alex",
+    avatar_url: "",
+    decision: "",
+    detected: false,
+    suggested: false,
+    supporting_entries: 0,
+    inherited: false,
+    effective: false,
+    accessible_count: 0,
+    exceptions: 0,
+    moments_detected: 0,
+    deactivated: false,
+  };
+  const state = {
+    album: {
+      ...album,
+      moments: [{ ...album.moments[0], access: { people: [alex], faces: [] } }],
+    },
+    posts: [] as [string, unknown][],
+  };
+  mockAPI(state);
+  window.history.replaceState(
+    null,
+    "",
+    "/curator/albums/album-1?moment=day-1&entry=video",
+  );
+  const user = userEvent.setup();
+  render(<App />);
+  const dialog = await screen.findByRole("dialog", { name: "Video details" });
+  const title = within(dialog).getByRole("textbox", { name: "Video title" });
+  await user.type(title, "Party");
+  // Saving access with nothing changed there behaves like Cancel: it asks
+  // about the unsaved title instead of handing the shell a blocked navigation.
+  await user.click(within(dialog).getByRole("button", { name: "Save access" }));
+  const confirm = await screen.findByRole("dialog", {
+    name: "Discard these changes?",
+  });
+  await user.click(within(confirm).getByRole("button", { name: "Cancel" }));
+  expect(screen.getByRole("dialog", { name: "Video details" })).toBeVisible();
+  expect(
+    screen.queryByRole("dialog", { name: "Leave this page?" }),
+  ).not.toBeInTheDocument();
+  // A real access save keeps the dialog open for the unsaved title, and typing
+  // back to the saved value does not close it either.
+  await user.click(
+    within(dialog).getByRole("combobox", { name: "Access for Alex" }),
+  );
+  await user.click(screen.getByRole("option", { name: "Allow" }));
+  await user.click(within(dialog).getByRole("button", { name: "Save access" }));
+  await waitFor(() =>
+    expect(state.posts.some(([path]) => path.endsWith("/rules"))).toBe(true),
+  );
+  expect(screen.getByRole("dialog", { name: "Video details" })).toBeVisible();
+  await user.clear(title);
+  expect(title).toHaveValue("");
+  expect(screen.getByRole("dialog", { name: "Video details" })).toBeVisible();
+  expect(
+    screen.queryByRole("dialog", { name: "Leave this page?" }),
+  ).not.toBeInTheDocument();
+});

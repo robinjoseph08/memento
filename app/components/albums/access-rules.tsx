@@ -59,16 +59,18 @@ export function RulesDialog({
   const [videoDirty, setVideoDirty] = useState(false);
   const dirty = save.isPending || changed.length > 0 || videoDirty;
   useUnsavedChanges(dirty, true);
-  // Close only once the dialog is no longer dirty: an item dialog closes by
-  // clearing ?entry, which the unsaved-changes guard would otherwise block,
-  // and a save reports success one render before the refreshed Album arrives.
-  const [discarded, setDiscarded] = useState(false);
+  // A save or a discard asks the dialog to close once nothing is unsaved: an
+  // item dialog closes by clearing ?entry, which the unsaved-changes guard
+  // would otherwise block, and a save reports success one render before the
+  // refreshed Album arrives. Any later edit withdraws the request, so a
+  // dialog left open with other unsaved work never closes on its own.
+  const [closeWhenSettled, setCloseWhenSettled] = useState(false);
+  // Counting discards remounts the video section so its title resets.
   const [discards, setDiscards] = useState(0);
-  const [videoSaved, setVideoSaved] = useState(false);
   const closeSettled = useEffectEvent(onClose);
   useEffect(() => {
-    if ((save.isSuccess || videoSaved || discarded) && !dirty) closeSettled();
-  }, [save.isSuccess, videoSaved, discarded, dirty]);
+    if (closeWhenSettled && !dirty) closeSettled();
+  }, [closeWhenSettled, dirty]);
   const [discardOpen, setDiscardOpen] = useState(false);
   const returnFocus = useReturnFocus();
   const errors = fieldErrors(save.error);
@@ -137,7 +139,8 @@ export function RulesDialog({
               entry={entry}
               key={discards}
               onDirty={setVideoDirty}
-              onSaved={() => setVideoSaved(true)}
+              onEdit={() => setCloseWhenSettled(false)}
+              onSaved={() => setCloseWhenSettled(true)}
             />
           )}
           {video && (
@@ -154,7 +157,7 @@ export function RulesDialog({
               event.preventDefault();
               if (save.isPending) return;
               if (changed.length === 0) {
-                onClose();
+                changeOpen(false);
                 return;
               }
               save.mutate(
@@ -166,7 +169,12 @@ export function RulesDialog({
                 },
                 // The saved choices are no longer a draft, whatever the
                 // refreshed Album says about them.
-                { onSuccess: () => setDraft({}) },
+                {
+                  onSuccess: () => {
+                    setDraft({});
+                    setCloseWhenSettled(true);
+                  },
+                },
               );
             }}
           >
@@ -178,6 +186,7 @@ export function RulesDialog({
                   key={person.person_id}
                   onChange={(decision) => {
                     save.reset();
+                    setCloseWhenSettled(false);
                     setDraft((current) => ({
                       ...current,
                       [person.person_id]: decision,
@@ -220,7 +229,7 @@ export function RulesDialog({
         onConfirm={() => {
           setDraft({});
           setDiscards((count) => count + 1);
-          setDiscarded(true);
+          setCloseWhenSettled(true);
         }}
         onOpenChange={setDiscardOpen}
         open={discardOpen}

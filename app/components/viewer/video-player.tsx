@@ -41,20 +41,17 @@ export function VideoStage({
 // without chapters, whatever the reason, simply has no picker.
 export function ChapterSelect({
   entry,
-  time,
+  activeIndex,
   onSeek,
 }: {
   entry: ViewerEntry;
-  time: number;
+  // The chapter that is playing, or -1 before the first one starts.
+  activeIndex: number;
   onSeek: (chapter: Chapter) => void;
 }) {
   const chapters = entry.chapters;
   const labelId = useId();
   if (chapters.length === 0) return null;
-  const activeIndex = chapters.reduce(
-    (found, chapter, index) => (time >= chapter.start ? index : found),
-    -1,
-  );
   return (
     <div className="flex max-w-full items-center gap-2">
       <span className="text-xs text-muted" id={labelId}>

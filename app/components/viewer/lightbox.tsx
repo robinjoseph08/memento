@@ -54,12 +54,28 @@ export function Lightbox({
   const count = Math.max(total, entries.length);
   const stripRef = useRef<HTMLElement>(null);
   const swipeRef = useRef<{ x: number; y: number } | null>(null);
-  // The player lives in the stage while the chapter picker sits beneath it,
-  // so the position it follows is kept here and starts over for each video.
+  // The player lives in the stage while the chapter picker sits beneath it.
+  // Only the playing chapter's index is kept, and only when it changes, so
+  // the frequent time updates do not repaint the header and filmstrip.
   const videoRef = useRef<HTMLVideoElement>(null);
-  const [progress, setProgress] = useState({ id: "", seconds: 0 });
-  const time = progress.id === currentID ? progress.seconds : 0;
-  const setTime = (seconds: number) => setProgress({ id: currentID, seconds });
+  const [playing, setPlaying] = useState({ id: "", chapter: -1 });
+  const chapterAt = (seconds: number) =>
+    (entry?.chapters ?? []).reduce(
+      (found, chapter, position) =>
+        seconds >= chapter.start ? position : found,
+      -1,
+    );
+  // A video that has not reported time yet is at its start.
+  const chapterIndex =
+    playing.id === currentID ? playing.chapter : chapterAt(0);
+  const trackChapter = (seconds: number) => {
+    const index = chapterAt(seconds);
+    setPlaying((current) =>
+      current.id === currentID && current.chapter === index
+        ? current
+        : { id: currentID, chapter: index },
+    );
+  };
   function seek(chapter: { start: number }) {
     const video = videoRef.current;
     if (!video) return;
@@ -141,10 +157,13 @@ export function Lightbox({
           className="fixed inset-0 z-50 flex flex-col text-foreground outline-none"
           onCloseAutoFocus={returnFocus}
           onKeyDown={(event) => {
-            // A focused player keeps its own arrow keys for seeking and volume.
+            // A focused player keeps its own arrow keys for seeking and
+            // volume, and text fields and an open picker keep theirs.
             if (
               event.target instanceof HTMLElement &&
-              event.target.closest("video")
+              event.target.closest(
+                'video, input, textarea, [role=combobox][aria-expanded="true"], [role=option]',
+              )
             )
               return;
             // Space plays or pauses from anywhere that is not a control of its
@@ -155,9 +174,7 @@ export function Lightbox({
               event.key === " " &&
               !(
                 event.target instanceof HTMLElement &&
-                event.target.closest(
-                  "button, a, input, textarea, [role=combobox], [role=option]",
-                )
+                event.target.closest("button, a")
               )
             ) {
               event.preventDefault();
@@ -275,7 +292,7 @@ export function Lightbox({
                   {kind === "video" ? (
                     <VideoStage
                       entry={entry}
-                      onTime={setTime}
+                      onTime={trackChapter}
                       videoRef={videoRef}
                     />
                   ) : (
@@ -306,7 +323,11 @@ export function Lightbox({
                   <p className="font-heading text-lg leading-tight">
                     {entry.title || "Video"}
                   </p>
-                  <ChapterSelect entry={entry} onSeek={seek} time={time} />
+                  <ChapterSelect
+                    activeIndex={chapterIndex}
+                    entry={entry}
+                    onSeek={seek}
+                  />
                   <p className="text-xs text-muted">
                     {captureDate(entry.captured_at, true)}
                   </p>

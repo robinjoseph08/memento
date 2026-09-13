@@ -599,6 +599,11 @@ it("opens a video in the routed lightbox, seeks by chapter, and shows no picker 
     "Chapter 20:02",
     "Goodbyes0:04",
   ]);
+  // Arrow keys inside the picker's search box edit text; they never step
+  // the lightbox to another video underneath the open picker.
+  await user.keyboard("ca{ArrowLeft}{ArrowRight}");
+  expect(window.location.pathname).toBe("/albums/lake/videos/video-1");
+  await user.clear(screen.getByPlaceholderText("Search chapters…"));
   await user.click(screen.getByRole("option", { name: /Goodbyes/ }));
   expect(video.currentTime).toBe(4);
   expect(HTMLMediaElement.prototype.play).toHaveBeenCalled();

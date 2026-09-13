@@ -290,7 +290,9 @@ export function MomentPane({
           </div>
         </div>
         {entries.length === 0 && (
-          <p className="mt-3 text-sm text-muted">No {kind} in this Moment.</p>
+          <p className="mt-3 text-sm text-muted">
+            No {kind === "all" ? "items" : kind} in this Moment.
+          </p>
         )}
         <ul
           aria-label="Moment media"
