@@ -17,6 +17,7 @@ import (
 	"github.com/robinjoseph08/memento/internal/webapp"
 	"github.com/robinjoseph08/memento/pkg/binder"
 	"github.com/robinjoseph08/memento/pkg/config"
+	"github.com/robinjoseph08/memento/pkg/dashboard"
 	"github.com/robinjoseph08/memento/pkg/errcodes"
 	"github.com/robinjoseph08/memento/pkg/errorstack"
 	"github.com/robinjoseph08/memento/pkg/identity"
@@ -62,6 +63,9 @@ func New(cfg *config.Config, db *bun.DB, features Features) (*http.Server, error
 	if features.Notifications != nil {
 		deps.notifications = features.Notifications
 	}
+	if features.Publishing != nil && features.Notifications != nil {
+		deps.dashboard = dashboard.New(people, features.Publishing, features.Notifications)
+	}
 	return newServer(cfg, frontend, deps)
 }
 
@@ -71,8 +75,9 @@ type dependencies struct {
 	health     func(context.Context) error
 	publishing *publishing.Module
 	media      *media.Module
-	// notifications is nil in tests that exercise identity routes alone.
+	// notifications and dashboard are nil in tests that exercise identity routes alone.
 	notifications notifications.UseCases
+	dashboard     dashboard.UseCases
 }
 
 func newServer(cfg *config.Config, frontend http.Handler, options ...dependencies) (*http.Server, error) {
@@ -123,6 +128,9 @@ func newServer(cfg *config.Config, frontend http.Handler, options ...dependencie
 		}
 		if deps.notifications != nil {
 			notifications.RegisterRoutes(e, deps.notifications, handlers.RequirePerson, handlers.RequireCurator)
+		}
+		if deps.dashboard != nil {
+			dashboard.RegisterRoutes(e, deps.dashboard, handlers.RequireCurator)
 		}
 	}
 	apiNotFound := func(_ *echo.Context) error { return echo.ErrNotFound }

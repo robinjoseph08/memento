@@ -38,6 +38,7 @@ const album: AlbumDetail = {
   title: "Summer by the sea",
   description: "",
   published: false,
+  ready: false,
   status: "complete",
   message: "",
   processed: 1,

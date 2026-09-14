@@ -143,6 +143,8 @@ fixture offline, restart the API, and inspect or steer mail delivery: the SMTP
 fixture lists every accepted message at `/__fixture/smtp`, and its mode can be
 `accept`, `transient` (reply 451), `permanent` (reply 550), or `hold`, which
 records the message but never answers so a restart leaves delivery uncertain.
+Accepted messages include the unsubscribe link of each update email, so the
+confirmation page can be opened from the fixture output.
 Pass `--no-smtp` to start without email and check that Person setup and sign-in
 still work. Stop it with Ctrl-C and run it again to reset without erasing
 development data.
@@ -301,11 +303,12 @@ media bytes are stored persistently. Thumbnails use private browser caching;
 source media that changes before synchronization may show an unavailable image
 rather than different bytes under an old content-versioned URL.
 
-### Send Invitations over SMTP
+### Send Invitations and update email over SMTP
 
 Email is optional. Without it Memento runs normally, Curators still create
-People and approve emails, and the Invite button explains that email is not
-configured. To enable Invitations, set both values:
+People and approve emails, Update Notifications stay in app, and the Invite
+button explains that email is not configured. To enable email, set both
+values:
 
 ```sh
 export SMTP_URL='smtp://user:password@mail.example.com:587'
@@ -333,6 +336,17 @@ Invitations are outreach only. They name the approved email and link to the
 ordinary sign-in page without any token, so admission still depends on the
 Preauthorization. Invitation email ignores a Person's update-email preference
 because it is transactional.
+
+Approved Update Notifications are also emailed, but only to an active Person
+who selected a destination and switched update email on. The email is queued
+with the approval and checked again right before it is sent: a Person who was
+deactivated, promoted to Curator, unlinked their destination, or unsubscribed
+in the meantime is skipped, and content revoked since approval is left out
+of the counts. The in-app notification is never changed by any of this.
+Every update email carries a private unsubscribe link that opens a
+confirmation page without signing in; loading the link changes nothing, and
+confirming switches off update email only. Invitations, Access Request
+alerts, and in-app notifications continue.
 
 ### Separate PostgreSQL database and role
 
@@ -450,16 +464,27 @@ become their notification baseline so later updates only announce new content.
 
 Publishing never notifies anyone by itself. The Curator's Updates page lists
 every Person who can now see photos or videos they have not been told about,
-grouped into collapsible rows with the Albums, counts, and video titles each
-would hear about. A Curator can leave out a person or one Album update, add a
-note for everyone, and send. Sending creates an in-app Update Notification for
-each included Person and records exactly which Album Entries were announced, so
-repeated sends, two Curators approving overlapping previews, or revoking and
-restoring access never announce the same media twice. Members see a bell that
+grouped into collapsible rows with the Albums and counts each would hear
+about; photos and videos are counted, never listed. A Curator can leave out a
+person or one Album update, add a note for everyone, and send. Sending creates
+an in-app Update Notification for each included Person and records exactly
+which Album Entries were announced, so repeated sends, two Curators approving
+overlapping previews, or revoking and restoring access never announce the same
+media twice. Members see a bell that
 shows their unread count and lists only new updates, and an Updates page with
 every update they have received. Opening one marks it read and goes to the Album, or
 to the Album list when it covers several. Browsing never changes read state.
-Email delivery of the same notifications is a later addition.
+People who asked for email get the same summary by email; see the SMTP
+section above.
+
+The Curator's home page is a short work list in two groups. Needs attention
+holds pending Access Requests, failed or interrupted imports, failed or
+uncertain email, failed chapter extraction, and an unreachable Immich server.
+Ready when you are lists unpublished Albums and people with changes they have
+not heard about, in neutral words, because waiting is a choice rather than a
+failure. The page polls only while an import or email is still running. The
+Immich diagnostic and its manual check live under Settings in the account
+menu.
 
 ### Use Google locally
 

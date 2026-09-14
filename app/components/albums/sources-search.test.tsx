@@ -62,7 +62,7 @@ it("returns from Immich sources to All albums", async () => {
   const user = userEvent.setup();
   render(<App />);
   const back = await screen.findByRole("link", { name: "All albums" });
-  expect(back).toHaveAttribute("href", "/curator");
+  expect(back).toHaveAttribute("href", "/curator/albums");
   await user.click(back);
   expect(
     await screen.findByRole("heading", { name: "No albums yet" }),

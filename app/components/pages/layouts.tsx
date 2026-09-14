@@ -13,7 +13,7 @@ import { PageTitle } from "../shell/page-title";
 import { PreviewModeContext } from "../shell/preview-mode";
 import { Button } from "../ui/button";
 
-const pageClassName =
+export const pageClassName =
   "mx-auto max-w-[1440px] px-5 pt-10 pb-14 min-[381px]:px-6 min-[761px]:px-12 min-[761px]:pt-17 min-[761px]:pb-20";
 const headingClassName =
   "font-heading text-[clamp(34px,4vw,48px)] leading-[1.2] font-normal tracking-[-1px] text-balance";

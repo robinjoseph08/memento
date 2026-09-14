@@ -45,7 +45,7 @@ export function ImportPage() {
   return (
     <>
       <PageTitle title="Import an album" />
-      <BackLink to="/curator">All albums</BackLink>
+      <BackLink to="/curator/albums">All albums</BackLink>
       <h1 className={headingClass}>Import an album</h1>
       <p className="mt-5 max-w-150 text-muted">
         Choose an Immich album to bring into Memento. It stays unpublished until

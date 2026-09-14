@@ -353,19 +353,17 @@ func (m *Module) VisibleEntries(ctx context.Context, db bun.IDB, personID string
 		AlbumTitle string
 		EntryID    string
 		Kind       string
-		Filename   string
-		VideoTitle *string
 	}
 	rows := []row{}
 	err := viewerEntries(db, viewerContext{personID: personID}).
-		ColumnExpr("entry.album_id, album.title AS album_title, entry.id AS entry_id, item.kind, item.filename, item.video_title").
+		ColumnExpr("entry.album_id, album.title AS album_title, entry.id AS entry_id, item.kind").
 		OrderExpr("entry.album_id, entry.id").Scan(ctx, &rows)
 	if err != nil {
 		return nil, errorstack.CaptureContext(ctx, err)
 	}
 	result := make([]notifications.VisibleEntry, 0, len(rows))
 	for _, r := range rows {
-		result = append(result, notifications.VisibleEntry{AlbumID: r.AlbumID, AlbumTitle: r.AlbumTitle, EntryID: r.EntryID, Kind: r.Kind, Title: presentationTitle(r.Filename, r.VideoTitle)})
+		result = append(result, notifications.VisibleEntry{AlbumID: r.AlbumID, AlbumTitle: r.AlbumTitle, EntryID: r.EntryID, Kind: r.Kind})
 	}
 	return result, nil
 }

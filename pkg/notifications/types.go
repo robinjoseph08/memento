@@ -3,7 +3,7 @@ package notifications
 import "time"
 
 // Delivery is the Curator-facing state of one email. Status is one of queued,
-// sending, delivered, failed, or uncertain.
+// sending, delivered, failed, uncertain, or skipped.
 type Delivery struct {
 	ID          string     `json:"id"`
 	Status      string     `json:"status"`
@@ -21,15 +21,13 @@ type Baseline struct {
 
 // NotificationAlbum is one Album inside an approved summary. Status is new
 // when the Album had never been announced to the Person, otherwise updated.
-// VideoTitles lists the announced videos by presentation title; photos are
-// only counted.
+// Photos and videos are only counted, never listed.
 type NotificationAlbum struct {
-	ID          string   `json:"id"`
-	Title       string   `json:"title"`
-	Status      string   `json:"status"`
-	PhotoCount  int      `json:"photo_count"`
-	VideoCount  int      `json:"video_count"`
-	VideoTitles []string `json:"video_titles"`
+	ID         string `json:"id"`
+	Title      string `json:"title"`
+	Status     string `json:"status"`
+	PhotoCount int    `json:"photo_count"`
+	VideoCount int    `json:"video_count"`
 }
 
 // PreviewPerson is one collapsible row. EmailEligible reports whether a
@@ -45,8 +43,11 @@ type PreviewPerson struct {
 	ReviewToken   string              `json:"review_token"`
 }
 
+// Preview is the batch a Curator reviews. EmailConfigured is false when the
+// installation has no SMTP settings, so every row is in app only.
 type Preview struct {
-	People []PreviewPerson `json:"people"`
+	People          []PreviewPerson `json:"people"`
+	EmailConfigured bool            `json:"email_configured"`
 }
 
 // ApprovePerson names one reviewed row. ExcludedAlbumIDs drops whole Album
@@ -63,16 +64,39 @@ type ApproveRequest struct {
 }
 
 // PersonResult reports one approval outcome. Status is notified or skipped;
-// Message explains a skip in Curator-facing words.
+// Message explains a skip in Curator-facing words. Email and Delivery are set
+// only when an email was queued; otherwise the update is in app only.
 type PersonResult struct {
-	PersonID       string `json:"person_id"`
-	DisplayName    string `json:"display_name"`
-	Status         string `json:"status"`
-	Message        string `json:"message"`
-	NotificationID string `json:"notification_id"`
-	AlbumCount     int    `json:"album_count"`
-	PhotoCount     int    `json:"photo_count"`
-	VideoCount     int    `json:"video_count"`
+	PersonID       string    `json:"person_id"`
+	DisplayName    string    `json:"display_name"`
+	Status         string    `json:"status"`
+	Message        string    `json:"message"`
+	NotificationID string    `json:"notification_id"`
+	AlbumCount     int       `json:"album_count"`
+	PhotoCount     int       `json:"photo_count"`
+	VideoCount     int       `json:"video_count"`
+	Email          string    `json:"email"`
+	Delivery       *Delivery `json:"delivery"`
+}
+
+// DeliveryWork is one email a Curator may need to watch or act on. PersonID
+// and PersonName are set for update and Invitation email; InvitationID is set
+// for Invitations, whose retry lives on the Person page.
+type DeliveryWork struct {
+	Delivery     `tstype:",extends"`
+	Kind         string `json:"kind"`
+	Recipient    string `json:"recipient"`
+	PersonID     string `json:"person_id"`
+	PersonName   string `json:"person_name"`
+	InvitationID string `json:"invitation_id"`
+}
+
+// UnsubscribeStatus describes an unsubscribe link's owner. Subscribed is
+// false once update email is off, or when no destination is selected.
+type UnsubscribeStatus struct {
+	DisplayName string `json:"display_name"`
+	Email       string `json:"email"`
+	Subscribed  bool   `json:"subscribed"`
 }
 
 type Approval struct {

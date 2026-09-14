@@ -354,3 +354,10 @@ func (m *Module) resolve(ctx context.Context, token, id, status string) (AccessR
 	})
 	return result, err
 }
+
+// PendingAccessRequests counts requests waiting for a decision, for the
+// Curator dashboard. The dashboard route already requires a Curator.
+func (m *Module) PendingAccessRequests(ctx context.Context) (int, error) {
+	count, err := m.db.NewSelect().Model((*models.AccessRequest)(nil)).Where("request.status = ?", RequestPending).Count(ctx)
+	return count, errorstack.CaptureContext(ctx, err)
+}

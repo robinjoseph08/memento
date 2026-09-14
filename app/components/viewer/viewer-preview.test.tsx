@@ -49,6 +49,7 @@ const curatorAlbum: AlbumDetail = {
   title: "Lake weekend",
   description: "",
   published: false,
+  ready: false,
   status: "complete",
   message: "",
   processed: 2,
@@ -283,9 +284,10 @@ it("disables shell account actions only in the Curator preview section", async (
   expect(
     screen.getByRole("menuitemcheckbox", { name: "Dark mode" }),
   ).not.toHaveAttribute("aria-disabled");
-  expect(
-    screen.getByRole("menuitem", { name: "Immich connection" }),
-  ).toHaveAttribute("aria-disabled", "true");
+  expect(screen.getByRole("menuitem", { name: "Settings" })).toHaveAttribute(
+    "aria-disabled",
+    "true",
+  );
   await user.keyboard("{Escape}");
   await act(async () => {
     await router.navigate("/albums/lake/photos?section=preview&person=jamie");

@@ -23,3 +23,7 @@ packages:
     output_path: "app/types/generated/notifications.ts"
     include_files:
       - "types.go"
+  - path: "github.com/robinjoseph08/memento/pkg/dashboard"
+    output_path: "app/types/generated/dashboard.ts"
+    include_files:
+      - "types.go"

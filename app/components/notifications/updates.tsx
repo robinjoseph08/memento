@@ -3,6 +3,7 @@ import { useId, useState } from "react";
 
 import {
   useApproveUpdates,
+  useDeliveries,
   useUpdatePreview,
 } from "../../hooks/queries/notifications";
 import { useUnsavedChanges } from "../../hooks/use-unsaved-changes";
@@ -12,6 +13,7 @@ import { cn } from "../../lib/utils";
 import type {
   Approval,
   NotificationAlbum,
+  PersonResult,
   Preview,
   PreviewPerson,
 } from "../../types/generated/notifications";
@@ -27,6 +29,7 @@ import {
 import { PageTitle } from "../shell/page-title";
 import { Button } from "../ui/button";
 import { Textarea } from "../ui/textarea";
+import { DeliveryStatus } from "./delivery-status";
 
 export function UpdatesPage() {
   const preview = useUpdatePreview();
@@ -37,8 +40,8 @@ export function UpdatesPage() {
       <p className="mt-5 max-w-[640px] text-muted">
         Everyone below can now see photos or videos they have not been told
         about. Review what each person would hear about, leave anyone out, add a
-        note, and send. Each person gets an update in Memento; email is noted
-        here for later.
+        note, and send. Each person gets an update in Memento, and an email too
+        when they asked for one.
       </p>
       {preview.isPending && (
         <p className="mt-9" role="status">
@@ -66,10 +69,13 @@ export function UpdatesPage() {
   );
 }
 
-function deliveryLabel(person: PreviewPerson) {
-  if (person.email_eligible) return `Email to ${person.update_email}`;
+function deliveryLabel(person: PreviewPerson, emailConfigured: boolean) {
   if (!person.update_email) return "In app only, no email selected";
-  return `In app only, email updates off for ${person.update_email}`;
+  if (!person.email_eligible)
+    return `In app only, email updates off for ${person.update_email}`;
+  if (!emailConfigured)
+    return `In app only, email is not configured for this installation`;
+  return `Email to ${person.update_email}`;
 }
 
 function albumCounts(albums: NotificationAlbum[]) {
@@ -195,6 +201,7 @@ function PreviewForm({
         <ul className="mt-5 divide-y divide-border border-y border-border">
           {preview.people.map((person) => (
             <PersonRow
+              emailConfigured={preview.email_configured}
               excludedAlbums={excludedAlbums}
               included={!excludedPeople.has(person.person_id)}
               key={person.person_id}
@@ -253,12 +260,14 @@ function PreviewForm({
 function PersonRow({
   person,
   included,
+  emailConfigured,
   excludedAlbums,
   onToggle,
   onToggleAlbum,
 }: {
   person: PreviewPerson;
   included: boolean;
+  emailConfigured: boolean;
   excludedAlbums: Set<string>;
   onToggle: (include: boolean) => void;
   onToggleAlbum: (albumID: string, include: boolean) => void;
@@ -286,7 +295,7 @@ function PersonRow({
               {person.display_name}
             </span>
             <span className="block text-xs wrap-anywhere text-muted">
-              {deliveryLabel(person)}
+              {deliveryLabel(person, emailConfigured)}
             </span>
           </span>
         </label>
@@ -379,6 +388,12 @@ function ApprovalResult({
   const skipped = approval.people.filter(
     (person) => person.status !== "notified",
   );
+  const emailed = sent.filter((person) => person.delivery);
+  // Email settles in the background; watch it here until every message is
+  // sent, failed, or needs a decision.
+  const deliveries = useDeliveries(
+    emailed.map((person) => person.delivery?.id ?? ""),
+  );
   return (
     <section aria-labelledby="updates-result" className="mt-9">
       <h2 className={sectionHeadingClass} id="updates-result">
@@ -389,19 +404,21 @@ function ApprovalResult({
       <p className="mt-3 max-w-[640px] text-sm text-muted" role="status">
         {sent.length === 0
           ? "Nothing new was announced. Check again for the current updates."
-          : "Each person now has an update in Memento."}
+          : emailed.length === 0
+            ? "Each person now has an update in Memento."
+            : `Each person now has an update in Memento. ${countLabel(emailed.length, "email is", "emails are")} on the way; failed or uncertain email also shows on your home page.`}
       </p>
       <ul className="mt-5 divide-y divide-border border-y border-border">
         {sent.map((person) => (
-          <li className="py-3 text-sm" key={person.person_id}>
-            <span className="font-medium">{person.display_name}</span>
-            <span className="text-muted">
-              {" · "}
-              {countLabel(person.album_count, "album", "albums")},{" "}
-              {countLabel(person.photo_count, "photo", "photos")},{" "}
-              {countLabel(person.video_count, "video", "videos")}
-            </span>
-          </li>
+          <SentRow
+            delivery={
+              person.delivery
+                ? (deliveries.data?.[person.delivery.id] ?? person.delivery)
+                : null
+            }
+            key={person.person_id}
+            person={person}
+          />
         ))}
         {skipped.map((person) => (
           <li className="py-3 text-sm" key={person.person_id}>
@@ -421,5 +438,34 @@ function ApprovalResult({
         {refreshing ? "Checking…" : "Check again"}
       </Button>
     </section>
+  );
+}
+
+function SentRow({
+  person,
+  delivery,
+}: {
+  person: PersonResult;
+  delivery: NonNullable<PersonResult["delivery"]> | null;
+}) {
+  return (
+    <li className="py-3 text-sm">
+      <span className="font-medium">{person.display_name}</span>
+      <span className="text-muted">
+        {" · "}
+        {countLabel(person.album_count, "album", "albums")},{" "}
+        {countLabel(person.photo_count, "photo", "photos")},{" "}
+        {countLabel(person.video_count, "video", "videos")}
+      </span>
+      {delivery ? (
+        <DeliveryStatus
+          className="mt-1"
+          delivery={delivery}
+          recipient={person.email}
+        />
+      ) : (
+        <p className="mt-1 text-xs text-muted">In app only</p>
+      )}
+    </li>
   );
 }

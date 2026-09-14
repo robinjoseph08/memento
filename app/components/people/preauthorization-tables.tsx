@@ -4,6 +4,8 @@ import type {
   Preauthorization,
 } from "../../types/generated/identity";
 import { ConfirmAction } from "../forms/confirm-action";
+import { deliveryLabel } from "../notifications/delivery-labels";
+import { DeliveryStatus } from "../notifications/delivery-status";
 import { Button } from "../ui/button";
 import {
   Table,
@@ -13,8 +15,6 @@ import {
   TableHeader,
   TableRow,
 } from "../ui/table";
-import { invitationLabel } from "./invitation-labels";
-import { InvitationStatus } from "./invitation-status";
 
 export function PreauthorizationTables({
   authorizations,
@@ -78,11 +78,16 @@ export function PreauthorizationTables({
                       </span>
                     </p>
                     {invitation && (
-                      <InvitationStatus
-                        error={invite.error}
-                        invitation={invitation}
-                        pending={invite.pending}
-                        retry={invite.retry}
+                      <DeliveryStatus
+                        className="mt-2"
+                        delivery={invitation.delivery}
+                        noun="Invitation"
+                        recipient={invitation.email}
+                        retry={{
+                          run: () => invite.retry(invitation.id),
+                          pending: invite.pending,
+                          error: invite.error,
+                        }}
                       />
                     )}
                   </TableCell>
@@ -160,7 +165,10 @@ export function PreauthorizationTables({
                       {authorization.consumed_at ? "Consumed" : "Revoked"}
                       {invitationFor(authorization) && (
                         <p className="mt-1 text-xs text-muted">
-                          {invitationLabel(invitationFor(authorization)!)}
+                          {deliveryLabel(
+                            invitationFor(authorization)!.delivery,
+                            "Invitation",
+                          )}
                         </p>
                       )}
                     </TableCell>

@@ -48,7 +48,7 @@ export function AlbumPage() {
       <PageTitle title={album.data?.title ?? "Album"} />
       {album.isPending && (
         <div className="px-5 py-4 min-[761px]:px-8">
-          <BackLink className="mb-1 min-h-7 text-xs" to="/curator">
+          <BackLink className="mb-1 min-h-7 text-xs" to="/curator/albums">
             All albums
           </BackLink>
           <h1 className={sectionHeadingClass}>Album</h1>
@@ -97,7 +97,7 @@ function AlbumContent({ album }: { album: AlbumDetail }) {
     <>
       <header className="flex flex-wrap items-center gap-4 border-b border-border px-5 py-4 min-[761px]:px-8">
         <div className="min-w-0 flex-1">
-          <BackLink className="mb-1 min-h-7 text-xs" to="/curator">
+          <BackLink className="mb-1 min-h-7 text-xs" to="/curator/albums">
             All albums
           </BackLink>
           <h1 className="font-heading text-[clamp(24px,3vw,30px)] leading-tight tracking-[-0.5px] wrap-anywhere">

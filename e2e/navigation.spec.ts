@@ -140,7 +140,7 @@ test("Immich search keeps focus, clears immediately, and follows browser history
   await expect(page.getByRole("button", { name: "Clear search" })).toBeHidden();
   await expect(page.getByText("Page 1 of 2", { exact: true })).toBeVisible();
   await page.getByRole("link", { name: "All albums" }).click();
-  await expect(page).toHaveURL(/\/curator$/);
+  await expect(page).toHaveURL(/\/curator\/albums$/);
   await expect(
     page.getByRole("heading", { name: "Your albums", exact: true }),
   ).toBeVisible();

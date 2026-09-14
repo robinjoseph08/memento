@@ -7,6 +7,10 @@ test("claims during an Immich outage, recovers, and revokes the signed-out sessi
   baseURL,
   fixtureURL,
 }) => {
+  // Two dashboard visits and a Settings round trip sit on top of the claim
+  // and sign-out journey, which is more than the default budget on a shared
+  // WebKit runner.
+  test.setTimeout(60_000);
   await page.goto("/setup");
   await expect(page.getByText(/first successful sign-in/i)).toBeVisible();
   await expect(page.getByRole("button", { name: "Check again" })).toBeVisible();
@@ -17,9 +21,11 @@ test("claims during an Immich outage, recovers, and revokes the signed-out sessi
   await page.getByLabel("Display name").press("Enter");
   await finishOnboarding(page);
   await expect(page).toHaveURL(/\/curator$/);
+  await expect(page.getByRole("heading", { name: /^Hi, / })).toBeVisible();
+  // The dashboard reports the outage as work, not as a permanent panel.
   await expect(
-    page.getByRole("heading", { name: "No albums yet" }),
-  ).toBeVisible();
+    page.getByRole("region", { name: "Needs attention" }),
+  ).toContainText("Immich is not connected");
 
   let session = (await context.cookies()).find(
     (cookie) => cookie.name === "memento_session",
@@ -29,12 +35,18 @@ test("claims during an Immich outage, recovers, and revokes the signed-out sessi
   expect(session?.sameSite).toBe("Lax");
 
   const account = page.getByRole("button", { name: "Account menu" });
+  // The full diagnostic lives under Settings, reached from the account menu.
   const openConnection = async () => {
     await account.click();
-    await page.getByRole("menuitem", { name: "Immich connection" }).click();
+    await page.getByRole("menuitem", { name: "Settings" }).click();
+    await expect(page).toHaveURL(/\/curator\/settings$/);
     await expect(
-      page.getByRole("dialog", { name: "Immich connection" }),
+      page.getByRole("heading", { name: "Immich connection" }),
     ).toBeVisible();
+  };
+  const closeConnection = async () => {
+    await page.goto("/curator");
+    await expect(page.getByRole("heading", { name: /^Hi, / })).toBeVisible();
   };
   await expect(
     page.getByRole("heading", { name: "Immich connection" }),
@@ -82,8 +94,7 @@ test("claims during an Immich outage, recovers, and revokes the signed-out sessi
     "color",
     "rgb(255, 170, 165)",
   );
-  await page.getByRole("button", { name: "Close dialog" }).click();
-  await expect(account).toBeFocused();
+  await closeConnection();
   await page.setViewportSize({ width: 1280, height: 720 });
 
   expect(
@@ -100,15 +111,16 @@ test("claims during an Immich outage, recovers, and revokes the signed-out sessi
     "color",
     "rgb(74, 194, 211)",
   );
-  await page.getByRole("button", { name: "Close dialog" }).click();
+  await closeConnection();
+  await expect(
+    page.getByRole("region", { name: "Needs attention" }),
+  ).toContainText("Nothing needs your attention");
 
   expect((await request.post(`${fixtureURL}/__fixture/restart`)).status()).toBe(
     204,
   );
   await page.reload();
-  await expect(
-    page.getByRole("heading", { name: "No albums yet" }),
-  ).toBeVisible();
+  await expect(page.getByRole("heading", { name: /^Hi, / })).toBeVisible();
   // A diagnostic started under an old session must not replace a newer cookie.
   let reportStarted!: () => void;
   let release!: () => void;
@@ -136,7 +148,6 @@ test("claims during an Immich outage, recovers, and revokes the signed-out sessi
   );
   await openConnection();
   await started;
-  await page.getByRole("button", { name: "Close dialog" }).click();
   await account.click();
   await page.getByRole("menuitem", { name: "Sign out" }).click();
   await expect(page).toHaveURL(/\/sign-in$/);
@@ -150,9 +161,7 @@ test("claims during an Immich outage, recovers, and revokes the signed-out sessi
   release();
   await finished;
   await page.reload();
-  await expect(
-    page.getByRole("heading", { name: "No albums yet" }),
-  ).toBeVisible();
+  await expect(page.getByRole("heading", { name: /^Hi, / })).toBeVisible();
   expect(
     (await context.cookies()).find(
       (cookie) => cookie.name === "memento_session",

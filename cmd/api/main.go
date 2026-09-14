@@ -84,7 +84,7 @@ func run(log logger.Logger) error {
 		}
 		mailer = smtpMailer
 	} else {
-		log.Info("SMTP is not configured; Invitations cannot be emailed")
+		log.Info("SMTP is not configured; Invitations and update emails cannot be sent")
 	}
 	var imports *publishing.Module
 	var mail *notifications.Module
@@ -103,6 +103,7 @@ func run(log logger.Logger) error {
 	imports.ImmichURL = cfg.ImmichBrowserURL()
 	imports.Chapters = library
 	mail = notifications.New(db, mailer, jobs.EnqueueMail, imports, nil)
+	mail.PublicURL = cfg.PublicURL
 	// Deliveries interrupted by the previous process are uncertain, never resent.
 	recovered, err := mail.RecoverInterrupted(ctx)
 	if err != nil {

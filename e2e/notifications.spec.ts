@@ -260,7 +260,7 @@ test("Curator previews a mixed batch, excludes one update, adds a note, approves
     await deletion
       .getByRole("button", { name: "Permanently delete Album", exact: true })
       .click();
-    await expect(page).toHaveURL(/\/curator$/);
+    await expect(page).toHaveURL(/\/curator\/albums$/);
 
     // The bell holds only new updates; the read one is on the Updates page.
     await alex.goto("/albums");

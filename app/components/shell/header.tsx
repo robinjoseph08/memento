@@ -43,10 +43,19 @@ export function Header() {
           aria-label="Main navigation"
           className="hidden flex-1 gap-2 pl-8 min-[601px]:flex"
         >
+          {data.person.is_curator && (
+            <NavLink
+              className="rounded-md px-4 py-3 text-sm hover:bg-surface aria-[current=page]:bg-surface"
+              end
+              to="/curator"
+            >
+              Home
+            </NavLink>
+          )}
           <NavLink
             className="rounded-md px-4 py-3 text-sm hover:bg-surface aria-[current=page]:bg-surface"
             end
-            to={data.person.is_curator ? "/curator" : "/albums"}
+            to={data.person.is_curator ? "/curator/albums" : "/albums"}
           >
             Albums
           </NavLink>

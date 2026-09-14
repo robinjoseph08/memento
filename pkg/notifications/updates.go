@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/mail"
 	"sort"
 	"strings"
 	"time"
@@ -44,12 +45,26 @@ type unannouncedAlbum struct {
 	EntryIDs []string
 }
 
-// notifiablePeople selects the fields eligibility and destinations need.
+// notifiablePeople selects the fields eligibility and destinations need. An
+// unlinked destination reads as no destination.
 func notifiablePeople(db bun.IDB, model any) *bun.SelectQuery {
 	return db.NewSelect().Model(model).
 		Column("person.id", "person.display_name", "person.is_curator", "person.onboarding_completed_at", "person.deactivated_at", "person.email_updates").
 		ColumnExpr("coalesce(updates.email, '') AS update_email").
-		Join("LEFT JOIN identities AS updates ON updates.id = person.update_identity_id")
+		Join("LEFT JOIN identities AS updates ON updates.id = person.update_identity_id AND updates.unlinked_at IS NULL")
+}
+
+// emailEligible reports whether an update email could go anywhere for an
+// otherwise eligible Person: a selected, still-linked, well-formed destination
+// and the update-email preference switched on. A malformed address, which a
+// provider should never supply, keeps the update in app rather than failing
+// the whole approval.
+func emailEligible(person models.Person) bool {
+	if !person.EmailUpdates || person.UpdateEmail == "" {
+		return false
+	}
+	_, err := mail.ParseAddress(person.UpdateEmail)
+	return err == nil
 }
 
 // ineligibleReason says why a Person cannot receive viewer Update
@@ -107,13 +122,12 @@ func (m *Module) unannounced(ctx context.Context, db bun.IDB, personID string) (
 			if seenAlbums[entry.AlbumID] {
 				status = AlbumUpdated
 			}
-			album = &unannouncedAlbum{NotificationAlbum{ID: entry.AlbumID, Title: entry.AlbumTitle, Status: status, VideoTitles: []string{}}, nil}
+			album = &unannouncedAlbum{NotificationAlbum{ID: entry.AlbumID, Title: entry.AlbumTitle, Status: status}, nil}
 			byAlbum[entry.AlbumID] = album
 		}
 		album.EntryIDs = append(album.EntryIDs, entry.EntryID)
 		if entry.Kind == "VIDEO" {
 			album.VideoCount++
-			album.VideoTitles = append(album.VideoTitles, entry.Title)
 		} else {
 			album.PhotoCount++
 		}
@@ -159,7 +173,7 @@ func reviewToken(personID string, albums []unannouncedAlbum) (string, error) {
 // PreviewUpdates lists every eligible Person with unannounced content. It
 // changes nothing; approval freezes what each row showed through its token.
 func (m *Module) PreviewUpdates(ctx context.Context) (Preview, error) {
-	result := Preview{People: []PreviewPerson{}}
+	result := Preview{People: []PreviewPerson{}, EmailConfigured: m.mailer != nil}
 	err := m.db.RunInTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true}, func(ctx context.Context, tx bun.Tx) error {
 		var people []models.Person
 		err := notifiablePeople(tx, &people).
@@ -181,7 +195,7 @@ func (m *Module) PreviewUpdates(ctx context.Context) (Preview, error) {
 				return err
 			}
 			row := PreviewPerson{PersonID: person.ID.String(), DisplayName: person.DisplayName, UpdateEmail: person.UpdateEmail,
-				EmailUpdates: person.EmailUpdates, EmailEligible: person.EmailUpdates && person.UpdateEmail != "", Albums: make([]NotificationAlbum, 0, len(albums)), ReviewToken: token}
+				EmailUpdates: person.EmailUpdates, EmailEligible: emailEligible(person), Albums: make([]NotificationAlbum, 0, len(albums)), ReviewToken: token}
 			for _, album := range albums {
 				row.Albums = append(row.Albums, album.NotificationAlbum)
 			}
@@ -305,6 +319,27 @@ func (m *Module) approvePerson(ctx context.Context, tx bun.Tx, row ApprovePerson
 	if err != nil {
 		return outcome, errorstack.Capture(err)
 	}
+	// Email is optional and commits with the notification. The record is
+	// queued now; eligibility and content are checked again when it is sent.
+	if m.mailer != nil && emailEligible(person) {
+		token, err := m.unsubscribeToken(ctx, tx, person.ID, now)
+		if err != nil {
+			return outcome, err
+		}
+		subject, text := renderUpdateEmail(m.PublicURL, person.DisplayName, body.Albums, note, token)
+		delivery, err := m.Enqueue(ctx, tx, Message{Kind: KindUpdate, To: person.UpdateEmail, Subject: subject, Body: text})
+		if err != nil {
+			return outcome, err
+		}
+		deliveryID, err := uuid.Parse(delivery.ID)
+		if err != nil {
+			return outcome, errorstack.Capture(err)
+		}
+		id := models.UUID(deliveryID)
+		notification.DeliveryID = &id
+		outcome.Email = person.UpdateEmail
+		outcome.Delivery = &delivery
+	}
 	if _, err := tx.NewInsert().Model(&notification).Exec(ctx); err != nil {
 		return outcome, errorstack.CaptureContext(ctx, err)
 	}
@@ -332,12 +367,7 @@ func projectNotification(row models.UpdateNotification) (Notification, error) {
 		return result, errorstack.Capture(err)
 	}
 	result.Note = body.Note
-	for _, album := range body.Albums {
-		if album.VideoTitles == nil {
-			album.VideoTitles = []string{}
-		}
-		result.Albums = append(result.Albums, album)
-	}
+	result.Albums = append(result.Albums, body.Albums...)
 	return result, nil
 }
 

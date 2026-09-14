@@ -390,7 +390,7 @@ test("Curator scopes access, previews two people, publishes, and hides the Album
     await deletion
       .getByRole("button", { name: "Permanently delete Album", exact: true })
       .click();
-    await expect(page).toHaveURL(/\/curator$/);
+    await expect(page).toHaveURL(/\/curator\/albums$/);
     await expect(
       page.getByRole("heading", { name: "No albums yet", exact: true }),
     ).toBeVisible();

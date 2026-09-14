@@ -92,6 +92,7 @@ export function useAlbumCache() {
           queryKey: [...scope, "publication", album.id],
         }),
         client.invalidateQueries({ queryKey: [...scope, "viewer"] }),
+        client.invalidateQueries({ queryKey: [...scope, "dashboard"] }),
       ]);
     },
   };

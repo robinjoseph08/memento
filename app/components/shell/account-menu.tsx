@@ -7,16 +7,9 @@ import { UnsavedChangesContext } from "../../lib/forms";
 import { errorMessage } from "../../lib/http";
 import { initials } from "../../lib/initials";
 import type { Person } from "../../types/generated/identity";
-import { ConnectionDetails } from "../connection/connection-status";
 import { ConfirmDialog } from "../forms/confirm-dialog";
 import { Avatar, AvatarFallback, AvatarImage } from "../ui/avatar";
 import { Button } from "../ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogTitle,
-} from "../ui/dialog";
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
@@ -40,7 +33,6 @@ export function AccountMenu({
 } & ReturnType<typeof useTheme>) {
   const signOut = useSignOut();
   const unsavedRef = use(UnsavedChangesContext);
-  const [connectionOpen, setConnectionOpen] = useState(false);
   const [signOutOpen, setSignOutOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   function returnFocusToTrigger(event: Event) {
@@ -69,7 +61,7 @@ export function AccountMenu({
           align="end"
           className="w-64 max-w-[calc(100vw-1rem)]"
           onCloseAutoFocus={(event) => {
-            if (connectionOpen || signOutOpen) event.preventDefault();
+            if (signOutOpen) event.preventDefault();
           }}
         >
           <DropdownMenuLabel>
@@ -94,14 +86,15 @@ export function AccountMenu({
             Dark mode
           </DropdownMenuCheckboxItem>
           <DropdownMenuSeparator />
-          {person.is_curator && onboarded && (
-            <DropdownMenuItem
-              disabled={preview}
-              onSelect={() => setConnectionOpen(true)}
-            >
-              Immich connection
-            </DropdownMenuItem>
-          )}
+          {person.is_curator &&
+            onboarded &&
+            (preview ? (
+              <DropdownMenuItem disabled>Settings</DropdownMenuItem>
+            ) : (
+              <DropdownMenuItem asChild>
+                <Link to="/curator/settings">Settings</Link>
+              </DropdownMenuItem>
+            ))}
           <DropdownMenuItem
             disabled={preview || signOut.isPending}
             onSelect={(event) => {
@@ -124,15 +117,6 @@ export function AccountMenu({
           )}
         </DropdownMenuContent>
       </DropdownMenu>
-      <Dialog onOpenChange={setConnectionOpen} open={connectionOpen}>
-        <DialogContent onCloseAutoFocus={returnFocusToTrigger}>
-          <DialogTitle className="pr-10">Immich connection</DialogTitle>
-          <DialogDescription className="mt-3 text-sm text-muted">
-            Check the connection to your photo library.
-          </DialogDescription>
-          <ConnectionDetails area="curator" />
-        </DialogContent>
-      </Dialog>
       <ConfirmDialog
         confirmLabel="Sign out"
         description="Your changes will not be saved."

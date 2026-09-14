@@ -52,8 +52,12 @@ export function useRetryInvitation(personID: string) {
         `/api/people/${personID}/invitations/${invitationID}/retry`,
         { body: {} },
       ),
-    onSuccess: () =>
-      client.invalidateQueries({ queryKey: [...scope, "person", personID] }),
+    onSuccess: async () => {
+      await Promise.all([
+        client.invalidateQueries({ queryKey: [...scope, "person", personID] }),
+        client.invalidateQueries({ queryKey: [...scope, "dashboard"] }),
+      ]);
+    },
   });
 }
 
@@ -103,6 +107,7 @@ function useAccessRequestAction(action: string) {
         queryKey: [...scope, "access-requests"],
       });
       void client.invalidateQueries({ queryKey: [...scope, "people"] });
+      void client.invalidateQueries({ queryKey: [...scope, "dashboard"] });
     },
   });
 }

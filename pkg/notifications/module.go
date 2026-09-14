@@ -13,15 +13,13 @@ import (
 // EnqueueDelivery records durable work in the caller's transaction. It must not send.
 type EnqueueDelivery func(ctx context.Context, tx bun.Tx, deliveryID string) error
 
-// VisibleEntry is one Album Entry a Person can currently view. Title is the
-// presentation title: the Curator's video title, else the filename without
-// its extension. Kind is IMAGE or VIDEO.
+// VisibleEntry is one Album Entry a Person can currently view. Kind is IMAGE
+// or VIDEO.
 type VisibleEntry struct {
 	AlbumID    string
 	AlbumTitle string
 	EntryID    string
 	Kind       string
-	Title      string
 }
 
 // VisibleContent is the consumer-owned view of Publishing that baselines need.
@@ -39,6 +37,8 @@ type Module struct {
 	enqueue EnqueueDelivery
 	content VisibleContent
 	now     func() time.Time
+	// PublicURL is the origin update emails link to. Empty renders relative links.
+	PublicURL string
 }
 
 func New(db *bun.DB, mailer Mailer, enqueue EnqueueDelivery, content VisibleContent, now func() time.Time) *Module {

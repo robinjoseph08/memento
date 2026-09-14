@@ -123,12 +123,16 @@ type SourcePage struct {
 	Total  int           `json:"total"`
 }
 
+// Album is the Curator's view of one import. Status is queued, processing,
+// interrupted, failed, or complete. Ready is true for a complete, unpublished
+// Album that at least one Person could see once published.
 type Album struct {
 	ID          string `json:"id"`
 	SourceID    string `json:"source_id"`
 	Title       string `json:"title"`
 	Description string `json:"description"`
 	Published   bool   `json:"published"`
+	Ready       bool   `json:"ready"`
 	Status      string `json:"status"`
 	Message     string `json:"message"`
 	Processed   int    `json:"processed"`
@@ -176,6 +180,17 @@ type Entry struct {
 	Chapters       []Chapter `json:"chapters"`
 	ChapterStatus  string    `json:"chapter_status"`
 	ChapterMessage string    `json:"chapter_message"`
+}
+
+// ChapterFailure is one video whose chapter extraction failed, addressed
+// through an Album and Moment so a Curator can open it and retry.
+type ChapterFailure struct {
+	AlbumID    string `json:"album_id"`
+	AlbumTitle string `json:"album_title"`
+	MomentID   string `json:"moment_id"`
+	EntryID    string `json:"entry_id"`
+	Title      string `json:"title"`
+	Message    string `json:"message"`
 }
 
 // UpdateVideoRequest sets or, when blank, clears a video's global title.

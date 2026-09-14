@@ -20,6 +20,7 @@ func TestPublicPageMetadata(t *testing.T) {
 		{path: "/setup", title: "Setup", description: "Set up Memento to start sharing photos and videos from Immich."},
 		{path: "/sign-in", title: "Sign in", description: "Sign in to view photos and videos shared with you."},
 		{path: "/access-denied", title: "Access denied", description: "This account does not have access to the requested Memento page."},
+		{path: "/unsubscribe", title: "Unsubscribe", description: "Stop update emails from Memento."},
 	} {
 		t.Run(test.path, func(t *testing.T) {
 			t.Parallel()

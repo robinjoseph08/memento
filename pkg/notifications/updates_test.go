@@ -64,7 +64,7 @@ func seedAlbum(t *testing.T, db *bun.DB, title string, filenames ...string) seed
 		}
 		items = append(items, item)
 		entries = append(entries, entry)
-		result.Entries = append(result.Entries, notifications.VisibleEntry{AlbumID: album.ID.String(), AlbumTitle: title, EntryID: entry.ID.String(), Kind: kind, Title: filename[:len(filename)-4]})
+		result.Entries = append(result.Entries, notifications.VisibleEntry{AlbumID: album.ID.String(), AlbumTitle: title, EntryID: entry.ID.String(), Kind: kind})
 	}
 	_, err = db.NewInsert().Model(&items).Exec(t.Context())
 	require.NoError(t, err)
@@ -158,10 +158,10 @@ func TestPreviewGroupsPeopleAndApprovalAnnouncesExactlyWhatWasReviewed(t *testin
 	assert.Equal(t, "alex@example.test", preview.People[0].UpdateEmail)
 	assert.False(t, preview.People[1].EmailEligible, "an email without opting in is not eligible")
 	assert.Equal(t, []notifications.NotificationAlbum{
-		{ID: coast.ID, Title: "Coast", Status: notifications.AlbumNew, PhotoCount: 2, VideoCount: 1, VideoTitles: []string{"coast-03"}},
-		{ID: family.ID, Title: "Family", Status: notifications.AlbumNew, PhotoCount: 1, VideoCount: 0, VideoTitles: []string{}},
+		{ID: coast.ID, Title: "Coast", Status: notifications.AlbumNew, PhotoCount: 2, VideoCount: 1},
+		{ID: family.ID, Title: "Family", Status: notifications.AlbumNew, PhotoCount: 1, VideoCount: 0},
 	}, preview.People[0].Albums)
-	assert.Equal(t, []notifications.NotificationAlbum{{ID: coast.ID, Title: "Coast", Status: notifications.AlbumNew, PhotoCount: 1, VideoTitles: []string{}}}, preview.People[1].Albums)
+	assert.Equal(t, []notifications.NotificationAlbum{{ID: coast.ID, Title: "Coast", Status: notifications.AlbumNew, PhotoCount: 1}}, preview.People[1].Albums)
 	assert.NotEqual(t, preview.People[0].ReviewToken, preview.People[1].ReviewToken)
 	_ = pat
 
@@ -185,7 +185,7 @@ func TestPreviewGroupsPeopleAndApprovalAnnouncesExactlyWhatWasReviewed(t *testin
 	assert.Equal(t, 1, list.Unread)
 	assert.Equal(t, approval.People[0].NotificationID, list.Notifications[0].ID)
 	assert.Equal(t, "Enjoy the new photos!", list.Notifications[0].Note)
-	assert.Equal(t, []notifications.NotificationAlbum{{ID: coast.ID, Title: "Coast", Status: notifications.AlbumNew, PhotoCount: 2, VideoCount: 1, VideoTitles: []string{"coast-03"}}}, list.Notifications[0].Albums)
+	assert.Equal(t, []notifications.NotificationAlbum{{ID: coast.ID, Title: "Coast", Status: notifications.AlbumNew, PhotoCount: 2, VideoCount: 1}}, list.Notifications[0].Albums)
 
 	// Submitting the same approval again announces nothing more: Sam's row is
 	// spent, and Alex's row no longer matches because Coast has been sent.
@@ -205,8 +205,8 @@ func TestPreviewGroupsPeopleAndApprovalAnnouncesExactlyWhatWasReviewed(t *testin
 	preview, err = module.PreviewUpdates(t.Context())
 	require.NoError(t, err)
 	require.Len(t, preview.People, 2)
-	assert.Equal(t, []notifications.NotificationAlbum{{ID: family.ID, Title: "Family", Status: notifications.AlbumNew, PhotoCount: 1, VideoTitles: []string{}}}, preview.People[0].Albums)
-	assert.Equal(t, []notifications.NotificationAlbum{{ID: coast.ID, Title: "Coast", Status: notifications.AlbumUpdated, VideoCount: 1, VideoTitles: []string{"coast-03"}}}, preview.People[1].Albums)
+	assert.Equal(t, []notifications.NotificationAlbum{{ID: family.ID, Title: "Family", Status: notifications.AlbumNew, PhotoCount: 1}}, preview.People[0].Albums)
+	assert.Equal(t, []notifications.NotificationAlbum{{ID: coast.ID, Title: "Coast", Status: notifications.AlbumUpdated, VideoCount: 1}}, preview.People[1].Albums)
 
 	_, err = module.ApproveUpdates(t.Context(), notifications.ApproveRequest{})
 	require.ErrorAs(t, err, new(*errcodes.FieldError))
@@ -343,7 +343,7 @@ func TestBaselineAndRevocationKeepAnnouncedContentAnnounced(t *testing.T) {
 	preview, err = module.PreviewUpdates(t.Context())
 	require.NoError(t, err)
 	require.Len(t, preview.People, 1)
-	assert.Equal(t, []notifications.NotificationAlbum{{ID: coast.ID, Title: "Coast", Status: notifications.AlbumUpdated, PhotoCount: 1, VideoTitles: []string{}}}, preview.People[0].Albums)
+	assert.Equal(t, []notifications.NotificationAlbum{{ID: coast.ID, Title: "Coast", Status: notifications.AlbumUpdated, PhotoCount: 1}}, preview.People[0].Albums)
 	_, err = module.ApproveUpdates(t.Context(), approveAll(preview, "", nil))
 	require.NoError(t, err)
 
@@ -393,7 +393,7 @@ func TestNotificationsStayReadableAfterDeletionAndReadStateIsIndependent(t *test
 	require.Len(t, list.Notifications, 2)
 	assert.Equal(t, 2, list.Unread)
 	assert.Equal(t, "Family", list.Notifications[0].Albums[0].Title, "newest first")
-	assert.Equal(t, []notifications.NotificationAlbum{{ID: coast.ID, Title: "Coast", Status: notifications.AlbumNew, PhotoCount: 1, VideoCount: 1, VideoTitles: []string{"coast-02"}}}, list.Notifications[1].Albums)
+	assert.Equal(t, []notifications.NotificationAlbum{{ID: coast.ID, Title: "Coast", Status: notifications.AlbumNew, PhotoCount: 1, VideoCount: 1}}, list.Notifications[1].Albums)
 	assert.Equal(t, "First batch", list.Notifications[1].Note)
 	assert.Equal(t, entryIDs(family.Entries...), announced(t, module, alex.ID.String()), "deleted Album Entries leave the baseline with their Album")
 

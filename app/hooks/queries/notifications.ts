@@ -4,9 +4,11 @@ import { request } from "../../lib/http";
 import type {
   Approval,
   ApproveRequest,
+  Delivery,
   Notification,
   NotificationList,
   Preview,
+  UnsubscribeStatus,
 } from "../../types/generated/notifications";
 import { useIdentityStatus } from "./identity";
 import { usePrivateScope } from "./people";
@@ -88,12 +90,96 @@ export function useUpdatePreview() {
 
 // Approval does not invalidate the preview on purpose: the page keeps the
 // reviewed snapshot and the outcome side by side, and asks for a new preview
-// only when the Curator chooses "Check again".
+// only when the Curator chooses "Check again". The dashboard is refreshed
+// because sending changes what is unannounced and may queue email.
 export function useApproveUpdates() {
+  const client = useQueryClient();
   const scope = usePrivateScope();
   return useMutation({
     mutationKey: scope,
     mutationFn: (body: ApproveRequest) =>
       request<Approval>("/api/curator/notifications/approve", { body }),
+    onSuccess: () =>
+      client.invalidateQueries({ queryKey: [...scope, "dashboard"] }),
+  });
+}
+
+function settling(deliveries: Record<string, Delivery> | undefined) {
+  return Object.values(deliveries ?? {}).some(
+    (delivery) => delivery.status === "queued" || delivery.status === "sending",
+  );
+}
+
+// Watches a batch of deliveries settle after sending, polling only while one
+// is still queued or sending.
+export function useDeliveries(ids: string[]) {
+  const scope = usePrivateScope();
+  const sorted = [...ids].sort();
+  return useQuery({
+    queryKey: [...scope, "deliveries", sorted],
+    queryFn: ({ signal }) =>
+      request<Record<string, Delivery>>(
+        `/api/curator/notifications/deliveries?${sorted
+          .map((id) => `id=${encodeURIComponent(id)}`)
+          .join("&")}`,
+        { signal },
+      ),
+    enabled: sorted.length > 0,
+    retry: false,
+    refetchInterval: (query) => (settling(query.state.data) ? 2000 : false),
+  });
+}
+
+// A deliberate resend for a failed or uncertain update or alert email. The
+// dashboard and any watched batch refresh so the new attempt is visible
+// everywhere. Invitations retry through Identity instead.
+export function useRetryDelivery() {
+  const client = useQueryClient();
+  const scope = usePrivateScope();
+  return useMutation({
+    mutationKey: scope,
+    mutationFn: (id: string) =>
+      request<Delivery>(
+        `/api/curator/notifications/deliveries/${encodeURIComponent(id)}/retry`,
+        { body: {} },
+      ),
+    onSuccess: async (delivery) => {
+      client.setQueriesData<Record<string, Delivery>>(
+        { queryKey: [...scope, "deliveries"] },
+        (current) =>
+          current && current[delivery.id]
+            ? { ...current, [delivery.id]: delivery }
+            : current,
+      );
+      await client.invalidateQueries({ queryKey: [...scope, "dashboard"] });
+    },
+  });
+}
+
+// The unsubscribe link is public: loading it only describes the link's owner.
+export function useUnsubscribeStatus(token: string) {
+  return useQuery({
+    queryKey: ["unsubscribe", token],
+    queryFn: ({ signal }) =>
+      request<UnsubscribeStatus>(
+        `/api/unsubscribe?token=${encodeURIComponent(token)}`,
+        { signal },
+      ),
+    retry: false,
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+  });
+}
+
+// Only this confirmation changes the preference.
+export function useUnsubscribe(token: string) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      request<UnsubscribeStatus>(
+        `/api/unsubscribe?token=${encodeURIComponent(token)}`,
+        { body: {} },
+      ),
+    onSuccess: (status) => client.setQueryData(["unsubscribe", token], status),
   });
 }

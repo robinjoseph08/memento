@@ -10,6 +10,7 @@ import (
 
 	"github.com/robinjoseph08/memento/pkg/errcodes"
 	"github.com/robinjoseph08/memento/pkg/errorstack"
+	"github.com/robinjoseph08/memento/pkg/media"
 	"github.com/robinjoseph08/memento/pkg/models"
 	"github.com/uptrace/bun"
 )
@@ -72,4 +73,35 @@ func (m *Module) RetryChapters(ctx context.Context, albumID, entryID string) (Al
 		return AlbumDetail{}, err
 	}
 	return m.GetAlbum(ctx, albumID)
+}
+
+// ChapterFailures lists every failed chapter extraction that a Curator can
+// still reach through a complete Album. Chapter status belongs to Media; this
+// only addresses each failure by its Album Entry.
+func (m *Module) ChapterFailures(ctx context.Context) ([]ChapterFailure, error) {
+	type row struct {
+		AlbumID    string
+		AlbumTitle string
+		MomentID   string
+		EntryID    string
+		Filename   string
+		VideoTitle *string
+		Message    string
+	}
+	rows := []row{}
+	err := m.db.NewSelect().TableExpr("media_chapter_results AS chapter_result").
+		ColumnExpr("album.id AS album_id, album.title AS album_title, entry.moment_id, entry.id AS entry_id, item.filename, item.video_title, chapter_result.message").
+		Join("JOIN media_items AS item ON item.id = chapter_result.media_item_id").
+		Join("JOIN album_entries AS entry ON entry.media_item_id = item.id AND entry.removed_at IS NULL AND entry.moment_id IS NOT NULL").
+		Join("JOIN albums AS album ON album.id = entry.album_id AND album.import_status = 'complete'").
+		Where("chapter_result.status = ?", media.ChapterStatusFailed).
+		OrderExpr("lower(album.title), album.id, item.captured_at, entry.id").Scan(ctx, &rows)
+	if err != nil {
+		return nil, errorstack.CaptureContext(ctx, err)
+	}
+	result := make([]ChapterFailure, 0, len(rows))
+	for _, r := range rows {
+		result = append(result, ChapterFailure{AlbumID: r.AlbumID, AlbumTitle: r.AlbumTitle, MomentID: r.MomentID, EntryID: r.EntryID, Title: presentationTitle(r.Filename, r.VideoTitle), Message: r.Message})
+	}
+	return result, nil
 }

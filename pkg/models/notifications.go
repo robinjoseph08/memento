@@ -43,7 +43,8 @@ type AnnouncedEntry struct {
 
 // UpdateNotification is one approved, immutable in-app summary. Version names
 // the payload shape so later readers can still render old rows; ReadAt is the
-// only column that changes after creation.
+// only column that changes after creation. DeliveryID names the optional email
+// for the same summary and is nil when the Person gets it in app only.
 type UpdateNotification struct {
 	bun.BaseModel `bun:"table:update_notifications,alias:notification"`
 	ID            UUID `bun:"id,pk,type:uuid"`
@@ -52,4 +53,15 @@ type UpdateNotification struct {
 	Payload       json.RawMessage `bun:"payload,type:jsonb"`
 	CreatedAt     time.Time
 	ReadAt        *time.Time
+	DeliveryID    *UUID `bun:"delivery_id,type:uuid"`
+}
+
+// UnsubscribeToken is a Person's private link secret for stopping update
+// email without signing in. The token itself is stored so every later email
+// can carry the same link.
+type UnsubscribeToken struct {
+	bun.BaseModel `bun:"table:unsubscribe_tokens,alias:unsubscribe"`
+	PersonID      UUID `bun:"person_id,pk,type:uuid"`
+	Token         string
+	CreatedAt     time.Time
 }

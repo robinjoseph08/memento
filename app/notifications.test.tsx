@@ -37,7 +37,6 @@ const coast = {
   status: "new",
   photo_count: 4,
   video_count: 1,
-  video_titles: ["Surf lesson"],
 };
 const family = {
   id: "family",
@@ -45,7 +44,6 @@ const family = {
   status: "updated",
   photo_count: 2,
   video_count: 0,
-  video_titles: [],
 };
 const album = {
   id: "coast",
@@ -129,7 +127,6 @@ it("shows new updates in the bell, keeps the history on the Updates page, and ke
   expect(rows[0]).not.toHaveTextContent(/\d:\d\d/);
   expect(rows[1]).toHaveTextContent("Coast");
   expect(rows[1]).toHaveTextContent("4 photos and 1 video · New album");
-  expect(rows[1]).not.toHaveTextContent("Surf lesson");
   expect(rows[1]).toHaveTextContent("Finally got these together. Enjoy!");
 
   await user.click(within(rows[1]).getByRole("button", { name: "Open Coast" }));
@@ -252,6 +249,7 @@ it("lets a Curator review recipients, leave out an Album update, add a note, and
         review_token: "sam-token",
       },
     ],
+    email_configured: true,
   };
   const approvals: unknown[] = [];
   let previews = 0;
@@ -265,9 +263,22 @@ it("lets a Curator review recipients, leave out an Album update, add a note, and
           auth_mode: "fake",
         });
       if (path === "/api/access-requests") return Response.json([]);
+      if (path.startsWith("/api/curator/notifications/deliveries?"))
+        return Response.json({
+          d1: {
+            id: "d1",
+            status: "delivered",
+            attempts: 1,
+            message: "",
+            updated_at: "2026-06-10T15:31:00Z",
+            delivered_at: "2026-06-10T15:31:00Z",
+          },
+        });
       if (path === "/api/curator/notifications/preview") {
         previews++;
-        return Response.json(previews === 1 ? preview : { people: [] });
+        return Response.json(
+          previews === 1 ? preview : { people: [], email_configured: true },
+        );
       }
       if (path === "/api/curator/notifications/approve") {
         approvals.push(JSON.parse(String(options?.body)));
@@ -282,6 +293,14 @@ it("lets a Curator review recipients, leave out an Album update, add a note, and
               album_count: 1,
               photo_count: 4,
               video_count: 1,
+              email: "alex@example.test",
+              delivery: {
+                id: "d1",
+                status: "queued",
+                attempts: 0,
+                message: "",
+                updated_at: "2026-06-10T15:30:00Z",
+              },
             },
             {
               person_id: "sam",
@@ -292,6 +311,8 @@ it("lets a Curator review recipients, leave out an Album update, add a note, and
               album_count: 0,
               photo_count: 0,
               video_count: 0,
+              email: "",
+              delivery: null,
             },
           ],
         });
@@ -323,7 +344,6 @@ it("lets a Curator review recipients, leave out an Album update, add a note, and
   );
   const details = within(rows[0]).getByRole("list");
   expect(details).toHaveTextContent("Coast · New album · 4 photos, 1 video");
-  expect(details).not.toHaveTextContent("Surf lesson");
   expect(details).toHaveTextContent("Family · Updated · 2 photos, 0 videos");
   await user.click(
     within(details).getByRole("checkbox", { name: "Include Family for Alex" }),
@@ -362,6 +382,8 @@ it("lets a Curator review recipients, leave out an Album update, add a note, and
     screen.getByRole("region", { name: "Updates sent to 1 person" }),
   ).getAllByRole("listitem");
   expect(results[0]).toHaveTextContent("Alex · 1 album, 4 photos, 1 video");
+  // The queued email settles in the background and the row follows it.
+  expect(await within(results[0]).findByText(/^Email sent/)).toBeVisible();
   expect(results[1]).toHaveTextContent(
     "Sam · Not sent. Their updates changed since this preview.",
   );

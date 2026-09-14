@@ -1,11 +1,14 @@
 import { AlbumPage } from "../albums/album-detail";
-import { CuratorPage } from "../albums/albums";
+import { CuratorAlbumsPage } from "../albums/albums";
 import { ImportPage } from "../albums/sources";
+import { DashboardPage } from "../dashboard/dashboard";
 import { WelcomePage } from "../identity/onboarding";
 import { ProfilePage } from "../identity/profile";
+import { UnsubscribePage } from "../notifications/unsubscribe";
 import { UpdatesPage } from "../notifications/updates";
 import { PeoplePage, PersonPage } from "../people/people";
 import { RequestsPage } from "../people/requests";
+import { SettingsPage } from "../settings/settings";
 import { ViewerAlbumList } from "../viewer/album-list";
 import { NotificationsPage } from "../viewer/notifications";
 import {
@@ -43,12 +46,14 @@ export const routes = [
               {
                 element: <CuratorLayout />,
                 children: [
-                  { index: true, element: <CuratorPage /> },
+                  { index: true, element: <DashboardPage /> },
+                  { path: "albums", element: <CuratorAlbumsPage /> },
                   { path: "import", element: <ImportPage /> },
                   { path: "people", element: <PeoplePage /> },
                   { path: "people/:id", element: <PersonPage /> },
                   { path: "requests", element: <RequestsPage /> },
                   { path: "updates", element: <UpdatesPage /> },
+                  { path: "settings", element: <SettingsPage /> },
                 ],
               },
               {
@@ -89,6 +94,7 @@ export const routes = [
               },
             ],
           },
+          { path: "/unsubscribe", element: <UnsubscribePage /> },
           { path: "/access-denied", element: <AccessDeniedPage /> },
           { path: "*", element: <HomePage /> },
         ],
