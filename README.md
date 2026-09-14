@@ -448,6 +448,19 @@ they arrived through an Invitation or signed in directly. It confirms their
 name and email preference and shows the Albums already visible to them, which
 become their notification baseline so later updates only announce new content.
 
+Publishing never notifies anyone by itself. The Curator's Updates page lists
+every Person who can now see photos or videos they have not been told about,
+grouped into collapsible rows with the Albums, counts, and video titles each
+would hear about. A Curator can leave out a person or one Album update, add a
+note for everyone, and send. Sending creates an in-app Update Notification for
+each included Person and records exactly which Album Entries were announced, so
+repeated sends, two Curators approving overlapping previews, or revoking and
+restoring access never announce the same media twice. Members see a bell that
+shows their unread count and lists only new updates, and an Updates page with
+every update they have received. Opening one marks it read and goes to the Album, or
+to the Album list when it covers several. Browsing never changes read state.
+Email delivery of the same notifications is a later addition.
+
 ### Use Google locally
 
 Automated tests use a local OIDC server, not real Google credentials. To develop

@@ -19,3 +19,7 @@ packages:
     output_path: "app/types/generated/immich.ts"
     include_files:
       - "types.go"
+  - path: "github.com/robinjoseph08/memento/pkg/notifications"
+    output_path: "app/types/generated/notifications.ts"
+    include_files:
+      - "types.go"

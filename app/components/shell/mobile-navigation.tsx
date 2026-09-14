@@ -77,6 +77,13 @@ export function MobileNavigation({
               >
                 Requests <PendingBadge count={pendingRequests} />
               </NavLink>
+              <NavLink
+                className="cursor-pointer rounded-md px-3 py-3 text-sm hover:bg-surface focus-visible:outline-2 focus-visible:outline-ring aria-[current=page]:bg-surface"
+                onClick={() => setOpen(false)}
+                to="/curator/updates"
+              >
+                Updates
+              </NavLink>
             </>
           )}
         </nav>

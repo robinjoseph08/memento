@@ -3,9 +3,11 @@ import { CuratorPage } from "../albums/albums";
 import { ImportPage } from "../albums/sources";
 import { WelcomePage } from "../identity/onboarding";
 import { ProfilePage } from "../identity/profile";
+import { UpdatesPage } from "../notifications/updates";
 import { PeoplePage, PersonPage } from "../people/people";
 import { RequestsPage } from "../people/requests";
 import { ViewerAlbumList } from "../viewer/album-list";
+import { NotificationsPage } from "../viewer/notifications";
 import {
   AccessDeniedPage,
   AppShell,
@@ -46,6 +48,7 @@ export const routes = [
                   { path: "people", element: <PeoplePage /> },
                   { path: "people/:id", element: <PersonPage /> },
                   { path: "requests", element: <RequestsPage /> },
+                  { path: "updates", element: <UpdatesPage /> },
                 ],
               },
               {
@@ -66,6 +69,7 @@ export const routes = [
             element: <ViewerLayout />,
             children: [
               { path: "/albums", element: <ViewerAlbumList /> },
+              { path: "/notifications", element: <NotificationsPage /> },
               { path: "/albums/:id", element: <ViewerAlbumRedirect /> },
               {
                 path: "/albums/:id/photos",

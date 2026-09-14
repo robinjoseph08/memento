@@ -59,6 +59,9 @@ func New(cfg *config.Config, db *bun.DB, features Features) (*http.Server, error
 		library = media.New(db, source)
 	}
 	deps := dependencies{identity: people, connection: source, health: db.PingContext, media: library, publishing: features.Publishing}
+	if features.Notifications != nil {
+		deps.notifications = features.Notifications
+	}
 	return newServer(cfg, frontend, deps)
 }
 
@@ -68,6 +71,8 @@ type dependencies struct {
 	health     func(context.Context) error
 	publishing *publishing.Module
 	media      *media.Module
+	// notifications is nil in tests that exercise identity routes alone.
+	notifications notifications.UseCases
 }
 
 func newServer(cfg *config.Config, frontend http.Handler, options ...dependencies) (*http.Server, error) {
@@ -115,6 +120,9 @@ func newServer(cfg *config.Config, frontend http.Handler, options ...dependencie
 		}
 		if deps.media != nil {
 			media.RegisterRoutes(e, deps.media, handlers.RequirePerson, handlers.RequireCurator)
+		}
+		if deps.notifications != nil {
+			notifications.RegisterRoutes(e, deps.notifications, handlers.RequirePerson, handlers.RequireCurator)
 		}
 	}
 	apiNotFound := func(_ *echo.Context) error { return echo.ErrNotFound }

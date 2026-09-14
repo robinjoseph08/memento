@@ -58,6 +58,8 @@ it("keeps profile edits through failed refresh, focuses a rejected email, and sa
           auth_mode: "fake",
         });
       if (path.endsWith("/sessions")) return Response.json([]);
+      if (path === "/api/notifications")
+        return Response.json({ notifications: [], unread: 0 });
       if (options?.method === "POST") {
         if (failSave)
           return Response.json(
@@ -129,6 +131,8 @@ it("chooses a linked update email and clears it through the profile menu", async
       if (path.endsWith("/status"))
         return Response.json({ claimed: true, person, auth_mode: "fake" });
       if (path.endsWith("/sessions")) return Response.json([]);
+      if (path === "/api/notifications")
+        return Response.json({ notifications: [], unread: 0 });
       if (options?.method === "POST") {
         const request = JSON.parse(
           String(options.body),
@@ -250,6 +254,8 @@ it("removes a revoked session's private screen on a 401 and refreshes sign-in st
           auth_mode: "fake",
         });
       if (path.endsWith("/sessions")) return Response.json([]);
+      if (path === "/api/notifications")
+        return Response.json({ notifications: [], unread: 0 });
       if (options?.method === "POST") {
         signedIn = false;
         return Response.json(
@@ -289,6 +295,8 @@ function serveProfile() {
       }
       if (path.endsWith("/sessions") || path === "/api/albums")
         return Response.json([]);
+      if (path === "/api/notifications")
+        return Response.json({ notifications: [], unread: 0 });
       return Response.json({ person: alex, identities: [account] });
     }),
   );
@@ -375,6 +383,8 @@ it.each([false, true])(
         if (path.endsWith("/status"))
           return Response.json({ claimed: true, person, auth_mode: "google" });
         if (path.endsWith("/sessions")) return Response.json([]);
+        if (path === "/api/notifications")
+          return Response.json({ notifications: [], unread: 0 });
         return Response.json({ person, identities: [account] });
       }),
     );
@@ -423,6 +433,8 @@ it.each([false, true])(
               expires_at: "2026-02-01T00:00:00Z",
             },
           ]);
+        if (path === "/api/notifications")
+          return Response.json({ notifications: [], unread: 0 });
         return Response.json({ person: alex, identities: [account] });
       }),
     );
@@ -475,6 +487,8 @@ it("uses server notification defaults and preserves an unsaved opt-out on refres
       if (path.endsWith("/status"))
         return Response.json({ claimed: true, person, auth_mode: "google" });
       if (path.endsWith("/sessions")) return Response.json([]);
+      if (path === "/api/notifications")
+        return Response.json({ notifications: [], unread: 0 });
       if (options?.method === "POST")
         person = { ...person, ...JSON.parse(String(options.body)) };
       return Response.json({ person, identities });
@@ -524,6 +538,8 @@ it("keeps another linked account available after unlinking one from your profile
           auth_mode: "google",
         });
       if (path.endsWith("/sessions")) return Response.json([]);
+      if (path === "/api/notifications")
+        return Response.json({ notifications: [], unread: 0 });
       if (options?.method === "POST") {
         identities = identities.filter((identity) => identity.id !== "second");
         return new Response(null, { status: 204 });
