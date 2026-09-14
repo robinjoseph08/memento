@@ -1,6 +1,10 @@
 import { useEffect, useEffectEvent, useId, useState } from "react";
 
-import { useSetAccessRules } from "../../hooks/queries/albums";
+import {
+  useExcludeEntries,
+  usePreviewExclude,
+  useSetAccessRules,
+} from "../../hooks/queries/albums";
 import { useReturnFocus } from "../../hooks/use-return-focus";
 import { useUnsavedChanges } from "../../hooks/use-unsaved-changes";
 import { fieldErrors } from "../../lib/http";
@@ -23,7 +27,6 @@ import {
 } from "../ui/dialog";
 import { accessDetail, byPresence } from "./access-labels";
 import { AlbumImage } from "./album-image";
-import { ExcludeDialog } from "./exclusions";
 import { PersonAvatar } from "./person-avatar";
 import { VideoDetails } from "./video-details";
 
@@ -73,7 +76,26 @@ export function RulesDialog({
     if (closeWhenSettled && !dirty) closeSettled();
   }, [closeWhenSettled, dirty]);
   const [discardOpen, setDiscardOpen] = useState(false);
-  const [excludeOpen, setExcludeOpen] = useState(false);
+  // Keep out reviews and applies in one click: it is one item, explicit, and
+  // reversible from the Excluded section, so no second dialog is asked.
+  const previewExclude = usePreviewExclude(album.id, moment.id);
+  const excludeEntries = useExcludeEntries(album.id, moment.id);
+  const excluding = previewExclude.isPending || excludeEntries.isPending;
+  const keepOut = async () => {
+    if (!entry || excluding) return;
+    const preview = await previewExclude.mutateAsync({
+      entry_ids: [entry.id],
+      review_token: "",
+    });
+    await excludeEntries.mutateAsync({
+      entry_ids: [entry.id],
+      review_token: preview.review_token,
+    });
+    // The item is gone from this Moment, so any unsaved draft is moot.
+    setDraft({});
+    setDiscards((count) => count + 1);
+    setCloseWhenSettled(true);
+  };
   const returnFocus = useReturnFocus();
   const errors = fieldErrors(save.error);
   const errorId = useId();
@@ -220,9 +242,15 @@ export function RulesDialog({
             </fieldset>
           </Form>
           {entry && (
-            <section
-              aria-label="This album"
+            <Form
+              aria-busy={excluding}
+              aria-label="Keep out of this album"
               className="mt-6 border-t border-border pt-5"
+              error={previewExclude.error ?? excludeEntries.error}
+              onSubmit={(event) => {
+                event.preventDefault();
+                void keepOut().catch(() => {});
+              }}
             >
               <h3 className="text-xs font-medium">This album</h3>
               <p className="mt-1 text-xs text-muted">
@@ -232,31 +260,16 @@ export function RulesDialog({
               </p>
               <Button
                 className="mt-3"
-                onClick={() => setExcludeOpen(true)}
-                type="button"
+                disabled={excluding || save.isPending}
+                type="submit"
                 variant="outline"
               >
-                Keep out of this album
+                {excluding ? "Keeping out…" : "Keep out of this album"}
               </Button>
-            </section>
+            </Form>
           )}
         </DialogContent>
       </Dialog>
-      {entry && excludeOpen && (
-        <ExcludeDialog
-          album={album}
-          entryIDs={[entry.id]}
-          moment={moment}
-          onClose={() => setExcludeOpen(false)}
-          onSaved={() => {
-            // The item is gone from this Moment, so any unsaved draft is moot.
-            setExcludeOpen(false);
-            setDraft({});
-            setDiscards((count) => count + 1);
-            setCloseWhenSettled(true);
-          }}
-        />
-      )}
       <ConfirmDialog
         confirmLabel="Discard"
         description={

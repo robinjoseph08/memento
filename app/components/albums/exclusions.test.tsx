@@ -268,7 +268,7 @@ it("adds excluded media back into a chosen Moment after a review", async () => {
   expect(await screen.findByText(/Nothing is kept out/)).toBeVisible();
 });
 
-it("keeps a photo out from its details dialog", async () => {
+it("keeps a photo out from its details dialog without a second confirmation", async () => {
   desktopViewport();
   let current = album;
   let excluded: ExcludeEntriesRequest | undefined;
@@ -298,15 +298,9 @@ it("keeps a photo out from its details dialog", async () => {
   await user.click(
     within(details).getByRole("button", { name: "Keep out of this album" }),
   );
-  const keepOut = await screen.findByRole("dialog", {
-    name: "Keep 1 item out of this album?",
-  });
-  await waitFor(() =>
-    expect(
-      within(keepOut).getByRole("button", { name: "Keep out" }),
-    ).toBeEnabled(),
-  );
-  await user.click(within(keepOut).getByRole("button", { name: "Keep out" }));
+  expect(
+    screen.queryByRole("dialog", { name: /Keep 1 item out/ }),
+  ).not.toBeInTheDocument();
   await waitFor(() => expect(excluded?.entry_ids).toEqual(["beach"]));
   await waitFor(() =>
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
