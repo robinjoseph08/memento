@@ -130,7 +130,7 @@ func TestVideoTitleIsGlobalWithFilenameFallback(t *testing.T) {
 		photo = detail.Moments[0].Entries[1]
 	}
 	viewerTitle := func(albumID string) string {
-		page, err := module.ViewEntries(t.Context(), curator.ID.String(), "", albumID, "VIDEO", "")
+		page, err := module.ViewEntries(t.Context(), curator.ID.String(), "", albumID, "VIDEO", publishing.EntryPageRequest{})
 		require.NoError(t, err)
 		require.Len(t, page.Entries, 1)
 		return page.Entries[0].Title
@@ -202,7 +202,7 @@ func TestRetryChaptersResolvesTheVideoBehindAnAlbumEntry(t *testing.T) {
 	curator := models.Person{ID: models.NewUUIDv7(), DisplayName: "Curator", IsCurator: true, CreatedAt: time.Now().UTC()}
 	_, err = db.NewInsert().Model(&curator).Exec(t.Context())
 	require.NoError(t, err)
-	page, err := module.ViewEntries(t.Context(), curator.ID.String(), "", album.ID, "VIDEO", "")
+	page, err := module.ViewEntries(t.Context(), curator.ID.String(), "", album.ID, "VIDEO", publishing.EntryPageRequest{})
 	require.NoError(t, err)
 	require.Equal(t, "complete", page.Entries[0].ChapterStatus)
 	require.Equal(t, want, page.Entries[0].Chapters)

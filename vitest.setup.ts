@@ -4,6 +4,7 @@ import { beforeEach, vi } from "vitest";
 
 // jsdom lacks pointer capture and scrolling. Their behavior is exercised in Playwright.
 Element.prototype.hasPointerCapture = () => false;
+Element.prototype.setPointerCapture = () => {};
 Element.prototype.releasePointerCapture = () => {};
 Element.prototype.scrollIntoView = () => {};
 

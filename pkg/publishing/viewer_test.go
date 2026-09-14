@@ -19,11 +19,13 @@ func TestViewerPagesUseLocalCaptureTimeAndEntryIDWithoutPrivateMetadata(t *testi
 	db := testdb.New(t)
 	source := fixture()
 	source.assets = nil
-	for i := range 102 {
+	for i := range 502 {
 		source.assets = append(source.assets, immich.Asset{ID: fmt.Sprintf("photo-%03d", i), Kind: "IMAGE", Filename: fmt.Sprintf("photo-%03d.jpg", i), Checksum: "YQ==", LocalDateTime: "2026-07-05T00:01:00+14:00", FileCreatedAt: "2026-07-04T10:01:00Z", UpdatedAt: "2026-07-06T00:00:00Z"})
 	}
+	width, height := 4032, 3024
+	source.assets[0].Width, source.assets[0].Height = &width, &height
 	source.assets = append(source.assets, immich.Asset{ID: "clip", Kind: "VIDEO", Filename: "clip.mp4", Checksum: "Yg==", LocalDateTime: "2026-07-05T00:01:00+14:00", FileCreatedAt: "2026-07-04T10:01:00Z", UpdatedAt: "2026-07-06T00:00:00Z"})
-	source.albums["source"] = immich.Album{ID: "source", Name: "Summer", Count: 103}
+	source.albums["source"] = immich.Album{ID: "source", Name: "Summer", Count: 503}
 	module := publishing.New(db, source, noQueue)
 	album, err := module.StartImport(t.Context(), "source")
 	require.NoError(t, err)
@@ -31,14 +33,35 @@ func TestViewerPagesUseLocalCaptureTimeAndEntryIDWithoutPrivateMetadata(t *testi
 	curator := models.Person{ID: models.NewUUIDv7(), DisplayName: "Curator", IsCurator: true, CreatedAt: time.Now().UTC()}
 	_, err = db.NewInsert().Model(&curator).Exec(t.Context())
 	require.NoError(t, err)
-	first, err := module.ViewEntries(t.Context(), curator.ID.String(), "", album.ID, "IMAGE", "")
+	first, err := module.ViewEntries(t.Context(), curator.ID.String(), "", album.ID, "IMAGE", publishing.EntryPageRequest{})
 	require.NoError(t, err)
-	require.Len(t, first.Entries, 100)
+	require.Len(t, first.Entries, 500)
 	require.NotEmpty(t, first.NextCursor)
-	second, err := module.ViewEntries(t.Context(), curator.ID.String(), "", album.ID, "IMAGE", first.NextCursor)
+	second, err := module.ViewEntries(t.Context(), curator.ID.String(), "", album.ID, "IMAGE", publishing.EntryPageRequest{Cursor: first.NextCursor})
 	require.NoError(t, err)
 	require.Len(t, second.Entries, 2)
 	require.Empty(t, second.NextCursor)
+	viewed, err := module.ViewAlbum(t.Context(), curator.ID.String(), "", album.ID)
+	require.NoError(t, err)
+	require.Len(t, viewed.Days, 1)
+	require.Len(t, viewed.Days[0].PhotoRatios, 502)
+	require.Contains(t, viewed.Days[0].PhotoRatios, 1.333)
+	require.Contains(t, viewed.Days[0].PhotoRatios, 1.5)
+	// Day bounds select by local capture day, the end exclusive, and a cursor
+	// continues inside them.
+	bounded, err := module.ViewEntries(t.Context(), curator.ID.String(), "", album.ID, "IMAGE", publishing.EntryPageRequest{From: "2026-07-05", To: "2026-07-06"})
+	require.NoError(t, err)
+	require.Len(t, bounded.Entries, 500)
+	rest, err := module.ViewEntries(t.Context(), curator.ID.String(), "", album.ID, "IMAGE", publishing.EntryPageRequest{From: "2026-07-05", To: "2026-07-06", Cursor: bounded.NextCursor})
+	require.NoError(t, err)
+	require.Len(t, rest.Entries, 2)
+	for _, page := range []publishing.EntryPageRequest{{To: "2026-07-05"}, {From: "2026-07-06"}} {
+		empty, err := module.ViewEntries(t.Context(), curator.ID.String(), "", album.ID, "IMAGE", page)
+		require.NoError(t, err)
+		require.Empty(t, empty.Entries)
+	}
+	_, err = module.ViewEntries(t.Context(), curator.ID.String(), "", album.ID, "IMAGE", publishing.EntryPageRequest{From: "yesterday"})
+	require.Error(t, err)
 	previous := ""
 	for _, entry := range append(first.Entries, second.Entries...) {
 		require.Greater(t, entry.ID, previous)
@@ -51,7 +74,7 @@ func TestViewerPagesUseLocalCaptureTimeAndEntryIDWithoutPrivateMetadata(t *testi
 	for _, forbidden := range []string{"source_id", "media_id", "moment_id", "decision", "faces", "exif"} {
 		require.NotContains(t, string(encoded), forbidden)
 	}
-	videos, err := module.ViewEntries(t.Context(), curator.ID.String(), "", album.ID, "VIDEO", "")
+	videos, err := module.ViewEntries(t.Context(), curator.ID.String(), "", album.ID, "VIDEO", publishing.EntryPageRequest{})
 	require.NoError(t, err)
 	require.Len(t, videos.Entries, 1)
 	clip := videos.Entries[0]
@@ -62,7 +85,7 @@ func TestViewerPagesUseLocalCaptureTimeAndEntryIDWithoutPrivateMetadata(t *testi
 	require.Empty(t, clip.Chapters)
 	require.Empty(t, first.Entries[0].PlaybackURL, "photos have no playback")
 	require.Empty(t, first.Entries[0].ChapterStatus)
-	_, err = module.ViewEntries(t.Context(), curator.ID.String(), "", album.ID, "IMAGE", strings.Repeat("x", 5000))
+	_, err = module.ViewEntries(t.Context(), curator.ID.String(), "", album.ID, "IMAGE", publishing.EntryPageRequest{Cursor: strings.Repeat("x", 5000)})
 	require.Error(t, err)
 }
 
@@ -100,7 +123,7 @@ func TestViewerListingAndMediaAuthorizationRespectPublicationAndAlbumEntry(t *te
 	require.Error(t, err)
 	_, err = module.ViewAlbums(t.Context(), person.ID.String())
 	require.Error(t, err)
-	_, err = module.ViewEntries(t.Context(), person.ID.String(), "", album.ID, "IMAGE", "")
+	_, err = module.ViewEntries(t.Context(), person.ID.String(), "", album.ID, "IMAGE", publishing.EntryPageRequest{})
 	require.Error(t, err)
 	_, err = module.ViewAlbum(t.Context(), curator.ID.String(), person.ID.String(), album.ID)
 	require.Error(t, err)
@@ -141,18 +164,18 @@ func TestConfiguredCoversSkipDeniedEntriesAndNeverPickAnArbitraryPhoto(t *testin
 	require.Equal(t, 1, view.PhotoCount)
 	require.Empty(t, view.CoverURL, "an accessible non-cover photo cannot become the Album cover")
 	require.Error(t, module.AuthorizeViewerEntry(t.Context(), curator.ID.String(), person.ID.String(), videoCover))
-	page, err := module.ViewEntries(t.Context(), curator.ID.String(), person.ID.String(), album.ID, "IMAGE", "")
+	page, err := module.ViewEntries(t.Context(), curator.ID.String(), person.ID.String(), album.ID, "IMAGE", publishing.EntryPageRequest{})
 	require.NoError(t, err)
 	require.Len(t, page.Entries, 1)
 	require.NotEqual(t, firstCover, page.Entries[0].ID)
 	require.NotEmpty(t, page.Entries[0].PreviewURL)
 	require.Empty(t, page.Entries[0].DownloadURL, "Curator preview cannot download")
-	videos, err := module.ViewEntries(t.Context(), curator.ID.String(), person.ID.String(), album.ID, "VIDEO", "")
+	videos, err := module.ViewEntries(t.Context(), curator.ID.String(), person.ID.String(), album.ID, "VIDEO", publishing.EntryPageRequest{})
 	require.NoError(t, err)
 	require.Empty(t, videos.Entries)
 	_, err = module.SaveEntryRules(t.Context(), album.ID, videoCover, publishing.SaveRulesRequest{Decisions: []publishing.AccessResolution{{PersonID: person.ID.String(), Decision: publishing.DecisionInherit}}})
 	require.NoError(t, err)
-	videos, err = module.ViewEntries(t.Context(), curator.ID.String(), person.ID.String(), album.ID, "VIDEO", "")
+	videos, err = module.ViewEntries(t.Context(), curator.ID.String(), person.ID.String(), album.ID, "VIDEO", publishing.EntryPageRequest{})
 	require.NoError(t, err)
 	require.Len(t, videos.Entries, 1)
 	require.Contains(t, videos.Entries[0].PlaybackURL, "/api/media/preview/"+person.ID.String()+"/entries/"+videoCover+"/playback?v=", "preview plays through the selected Person's context")

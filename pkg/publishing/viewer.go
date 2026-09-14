@@ -130,7 +130,10 @@ func (v viewerContext) mediaURL(entryID, variant, version string) string {
 	return "/api/media/" + mode + "/" + v.personID + "/entries/" + entryID + "/" + variant + "?v=" + url.QueryEscape(version)
 }
 
-func viewAlbum(ctx context.Context, db bun.IDB, viewer viewerContext, id string) (ViewerAlbum, error) {
+// viewAlbum projects one Album for a viewer. The day breakdown, with every
+// photo ratio, is only gathered for the Album page; the list leaves Days
+// empty.
+func viewAlbum(ctx context.Context, db bun.IDB, viewer viewerContext, id string, days bool) (ViewerAlbum, error) {
 	result := ViewerAlbum{Days: []ViewerDay{}}
 	if _, err := uuid.Parse(id); err != nil {
 		return result, errcodes.NotFound("Album")
@@ -161,8 +164,12 @@ func viewAlbum(ctx context.Context, db bun.IDB, viewer viewerContext, id string)
 		result.CoverURL = viewer.thumbnailURL(cover.ID, cover.Version)
 		result.CoverPreviewURL = viewer.previewURL(cover.ID, cover.Version)
 	}
+	if !days {
+		return result, nil
+	}
 	err = viewerEntries(db, viewer).ColumnExpr("to_char(item.captured_at, 'YYYY-MM-DD') AS date").
 		ColumnExpr("count(*) FILTER (WHERE item.kind = 'IMAGE') AS photo_count, count(*) FILTER (WHERE item.kind = 'VIDEO') AS video_count").
+		ColumnExpr("coalesce(array_agg(CASE WHEN coalesce(item.width, 0) > 0 AND coalesce(item.height, 0) > 0 THEN trunc((item.width::float8 / item.height::float8) * 1000) / 1000 ELSE 1.5 END ORDER BY item.captured_at, entry.id) FILTER (WHERE item.kind = 'IMAGE'), ARRAY[]::float8[]) AS photo_ratios").
 		Where("entry.album_id = ?", id).GroupExpr("to_char(item.captured_at, 'YYYY-MM-DD')").OrderExpr("date").Scan(ctx, &result.Days)
 	return result, errorstack.CaptureContext(ctx, err)
 }
@@ -196,8 +203,18 @@ func parseEntryCursor(value string) (entryCursor, error) {
 	return cursor, nil
 }
 
+// entryPageSize is the most entries one gallery page carries.
+const entryPageSize = 500
+
+func parseEntryDay(field, value string) error {
+	if _, err := time.Parse("2006-01-02", value); err != nil {
+		return errcodes.ValidationFields("Check the highlighted fields.", map[string]string{field: "Reload the gallery to continue."})
+	}
+	return nil
+}
+
 // ViewEntries returns separate cursor-paginated galleries without Curator metadata.
-func (m *Module) ViewEntries(ctx context.Context, actorID, previewPersonID, albumID, kind, cursorValue string) (ViewerPage, error) {
+func (m *Module) ViewEntries(ctx context.Context, actorID, previewPersonID, albumID, kind string, page EntryPageRequest) (ViewerPage, error) {
 	result := ViewerPage{Entries: []ViewerEntry{}}
 	if kind != "IMAGE" && kind != "VIDEO" {
 		return result, errcodes.NotFound("Gallery")
@@ -206,10 +223,20 @@ func (m *Module) ViewEntries(ctx context.Context, actorID, previewPersonID, albu
 		return result, errcodes.NotFound("Album")
 	}
 	var cursor entryCursor
-	if cursorValue != "" {
+	if page.Cursor != "" {
 		var err error
-		cursor, err = parseEntryCursor(cursorValue)
+		cursor, err = parseEntryCursor(page.Cursor)
 		if err != nil {
+			return result, err
+		}
+	}
+	if page.From != "" {
+		if err := parseEntryDay("from", page.From); err != nil {
+			return result, err
+		}
+	}
+	if page.To != "" {
+		if err := parseEntryDay("to", page.To); err != nil {
 			return result, err
 		}
 	}
@@ -242,16 +269,22 @@ func (m *Module) ViewEntries(ctx context.Context, actorID, previewPersonID, albu
 		query := viewerEntries(tx, viewer).ColumnExpr("entry.id, item.kind, item.filename, item.video_title, item.captured_at, NOT item.offline AND NOT item.trashed AS available, item.content_version AS version, coalesce(item.width,0) AS width, coalesce(item.height,0) AS height").
 			ColumnExpr("coalesce(chapter_result.status, '') AS chapter_status, coalesce(chapter_result.chapters, '[]'::jsonb) AS chapters").
 			Join("LEFT JOIN media_chapter_results AS chapter_result ON chapter_result.media_item_id = item.id").
-			Where("entry.album_id = ? AND item.kind = ?", albumID, kind).OrderExpr("item.captured_at, entry.id").Limit(101)
-		if cursorValue != "" {
+			Where("entry.album_id = ? AND item.kind = ?", albumID, kind).OrderExpr("item.captured_at, entry.id").Limit(entryPageSize + 1)
+		if page.Cursor != "" {
 			query = query.Where("(item.captured_at, entry.id) > (?::timestamp, ?::uuid)", cursor.CapturedAt, cursor.ID)
+		}
+		if page.From != "" {
+			query = query.Where("item.captured_at >= ?::timestamp", page.From)
+		}
+		if page.To != "" {
+			query = query.Where("item.captured_at < ?::timestamp", page.To)
 		}
 		if err := query.Scan(ctx, &rows); err != nil {
 			return errorstack.CaptureContext(ctx, err)
 		}
-		more := len(rows) > 100
+		more := len(rows) > entryPageSize
 		if more {
-			rows = rows[:100]
+			rows = rows[:entryPageSize]
 		}
 		for _, row := range rows {
 			thumbnail, preview, download, playback := "", "", "", ""
@@ -315,7 +348,7 @@ func (m *Module) ViewAlbums(ctx context.Context, actorID string) ([]ViewerAlbum,
 			return errorstack.CaptureContext(ctx, err)
 		}
 		for _, id := range ids {
-			album, err := viewAlbum(ctx, tx, viewer, id)
+			album, err := viewAlbum(ctx, tx, viewer, id, false)
 			if err != nil {
 				return err
 			}
@@ -334,7 +367,7 @@ func (m *Module) ViewAlbum(ctx context.Context, actorID, previewPersonID, albumI
 		if err != nil {
 			return err
 		}
-		result, err = viewAlbum(ctx, tx, viewer, albumID)
+		result, err = viewAlbum(ctx, tx, viewer, albumID, true)
 		return err
 	})
 	return result, transactionError(ctx, err)
