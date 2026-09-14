@@ -97,10 +97,17 @@ run = "pnpm lint:types"
 
 # === Testing ===
 
+# Database tests each migrate their own schema, and PostgreSQL slows down
+# sharply once a few dozen of those run at once: schema drops overrun their
+# timeout, stuck connections pile up, and the whole suite fails. Go defaults
+# to one parallel test per core, so an 11-core machine ran over a hundred at
+# once. Four per package measured a peak of 43 connections against the
+# server's default limit of 100 and finished in about 75 seconds, so every
+# Go test task sets it.
 [tasks."test:go"]
 description = "Run Go tests with coverage"
 env = { TZ = "America/Chicago", CI = "true" }
-run = "go test ./... -coverprofile coverage.out"
+run = "go test ./... -parallel 4 -coverprofile coverage.out"
 
 [tasks."test:immich"]
 description = "Smoke-test the production adapter against a disposable official Immich release"
@@ -110,12 +117,12 @@ run = 'bash scripts/immich-smoke.sh --version "$usage_version"'
 [tasks."test:race"]
 description = "Run Go tests with race detection"
 env = { TZ = "America/Chicago", CI = "true" }
-run = "go test -race ./... -coverprofile coverage.out"
+run = "go test -race ./... -parallel 4 -coverprofile coverage.out"
 
 [tasks."test:postgres14"]
 description = "Run backend package tests against PostgreSQL 14"
 env = { TZ = "America/Chicago", CI = "true" }
-run = "go test -race ./pkg/..."
+run = "go test -race ./pkg/... -parallel 4"
 
 [tasks."test:js"]
 description = "Run all JS tests"
