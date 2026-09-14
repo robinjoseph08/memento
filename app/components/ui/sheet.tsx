@@ -4,6 +4,7 @@ import type { ComponentProps } from "react";
 
 import { cn } from "../../lib/utils";
 import { Button } from "./button";
+import { primaryButtonOnly } from "./dialog";
 
 export const Sheet = DialogPrimitive.Root;
 export const SheetTrigger = DialogPrimitive.Trigger;
@@ -13,6 +14,7 @@ export function SheetContent({
   className,
   children,
   closeLabel = "Close navigation",
+  onPointerDownOutside,
   ...props
 }: ComponentProps<typeof DialogPrimitive.Content> & { closeLabel?: string }) {
   return (
@@ -23,6 +25,7 @@ export function SheetContent({
           "fixed inset-y-0 left-0 z-50 w-[min(20rem,calc(100vw-3rem))] overflow-y-auto border-r border-border bg-background p-5 text-foreground shadow-lg duration-200 outline-none data-[state=closed]:animate-out data-[state=closed]:slide-out-to-left data-[state=open]:animate-in data-[state=open]:slide-in-from-left motion-reduce:animate-none",
           className,
         )}
+        onPointerDownOutside={primaryButtonOnly(onPointerDownOutside)}
         {...props}
       >
         {children}
