@@ -1256,7 +1256,7 @@ it("edits item rules with inherit labels that name the Moment or Album source", 
   window.history.replaceState(null, "", "/curator/albums/album-1?entry=photo");
   const user = userEvent.setup();
   render(<App />);
-  const dialog = await screen.findByRole("dialog", { name: "Item access" });
+  const dialog = await screen.findByRole("dialog", { name: "Photo details" });
   expect(
     within(dialog).getByText(/Decisions for Beach.jpg override/),
   ).toBeVisible();
@@ -1320,7 +1320,7 @@ it("discards item rule edits with one prompt and clears the entry from the URL",
   window.history.replaceState(null, "", "/curator/albums/album-1?entry=photo");
   const user = userEvent.setup();
   render(<App />);
-  const dialog = await screen.findByRole("dialog", { name: "Item access" });
+  const dialog = await screen.findByRole("dialog", { name: "Photo details" });
   await user.click(
     within(dialog).getByRole("combobox", { name: "Access for Alex" }),
   );

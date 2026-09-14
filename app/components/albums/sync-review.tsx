@@ -359,7 +359,7 @@ export function SyncDialog({
               </p>
             )}
             {showUpToDate && (
-              <p className="border-t border-border py-4 text-sm" role="status">
+              <p className="text-sm" role="status">
                 This album matches Immich. Nothing to apply.
               </p>
             )}
@@ -476,7 +476,11 @@ export function SyncDialog({
               </ul>
             )}
             <fieldset
-              className="mt-2 flex flex-wrap gap-2 border-t border-border pt-5"
+              className={
+                showUpToDate
+                  ? "mt-6 flex flex-wrap gap-2"
+                  : "mt-2 flex flex-wrap gap-2 border-t border-border pt-5"
+              }
               disabled={pending}
             >
               {!showUpToDate && (

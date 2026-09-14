@@ -277,7 +277,9 @@ export function MomentPane({
                     type="button"
                     variant="outline"
                   >
-                    {single.kind === "VIDEO" ? "Video details" : "Item access"}
+                    {single.kind === "VIDEO"
+                      ? "Video details"
+                      : "Photo details"}
                   </Button>
                 )}
                 <Button

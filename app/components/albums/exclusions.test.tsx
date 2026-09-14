@@ -267,3 +267,54 @@ it("adds excluded media back into a chosen Moment after a review", async () => {
   );
   expect(await screen.findByText(/Nothing is kept out/)).toBeVisible();
 });
+
+it("keeps a photo out from its details dialog", async () => {
+  desktopViewport();
+  let current = album;
+  let excluded: ExcludeEntriesRequest | undefined;
+  mockAPI((path, options) => {
+    if (path.endsWith("/exclude/preview"))
+      return Response.json({
+        ready: true,
+        review_token: "reviewed-exclusion",
+        removes_moment: false,
+        changes: [],
+        conflicts: [],
+      });
+    if (path.endsWith("/exclude")) {
+      excluded = JSON.parse(String(options?.body)) as ExcludeEntriesRequest;
+      current = excludedAlbum;
+    }
+    return Response.json(current);
+  });
+  window.history.replaceState(
+    null,
+    "",
+    "/curator/albums/album-1?moment=day-1&pane=detail&entry=beach",
+  );
+  const user = userEvent.setup();
+  render(<App />);
+  const details = await screen.findByRole("dialog", { name: "Photo details" });
+  await user.click(
+    within(details).getByRole("button", { name: "Keep out of this album" }),
+  );
+  const keepOut = await screen.findByRole("dialog", {
+    name: "Keep 1 item out of this album?",
+  });
+  await waitFor(() =>
+    expect(
+      within(keepOut).getByRole("button", { name: "Keep out" }),
+    ).toBeEnabled(),
+  );
+  await user.click(within(keepOut).getByRole("button", { name: "Keep out" }));
+  await waitFor(() => expect(excluded?.entry_ids).toEqual(["beach"]));
+  await waitFor(() =>
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+  );
+  expect(
+    within(screen.getByRole("navigation", { name: "Album outline" })).getByRole(
+      "link",
+      { name: /Excluded/ },
+    ),
+  ).toHaveTextContent("1");
+});

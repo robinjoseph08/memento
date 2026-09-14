@@ -23,6 +23,7 @@ import {
 } from "../ui/dialog";
 import { accessDetail, byPresence } from "./access-labels";
 import { AlbumImage } from "./album-image";
+import { ExcludeDialog } from "./exclusions";
 import { PersonAvatar } from "./person-avatar";
 import { VideoDetails } from "./video-details";
 
@@ -72,6 +73,7 @@ export function RulesDialog({
     if (closeWhenSettled && !dirty) closeSettled();
   }, [closeWhenSettled, dirty]);
   const [discardOpen, setDiscardOpen] = useState(false);
+  const [excludeOpen, setExcludeOpen] = useState(false);
   const returnFocus = useReturnFocus();
   const errors = fieldErrors(save.error);
   const errorId = useId();
@@ -104,7 +106,7 @@ export function RulesDialog({
             {video
               ? "Video details"
               : entry
-                ? "Item access"
+                ? "Photo details"
                 : "Rules & exceptions"}
           </DialogTitle>
           <DialogDescription className="mt-3 text-sm text-muted">
@@ -217,8 +219,44 @@ export function RulesDialog({
               </div>
             </fieldset>
           </Form>
+          {entry && (
+            <section
+              aria-label="This album"
+              className="mt-6 border-t border-border pt-5"
+            >
+              <h3 className="text-xs font-medium">This album</h3>
+              <p className="mt-1 text-xs text-muted">
+                Keep out leaves the {video ? "video" : "photo"} in Immich but
+                takes it out of this album. It waits in the Excluded section
+                with its access decisions until you add it back.
+              </p>
+              <Button
+                className="mt-3"
+                onClick={() => setExcludeOpen(true)}
+                type="button"
+                variant="outline"
+              >
+                Keep out of this album
+              </Button>
+            </section>
+          )}
         </DialogContent>
       </Dialog>
+      {entry && excludeOpen && (
+        <ExcludeDialog
+          album={album}
+          entryIDs={[entry.id]}
+          moment={moment}
+          onClose={() => setExcludeOpen(false)}
+          onSaved={() => {
+            // The item is gone from this Moment, so any unsaved draft is moot.
+            setExcludeOpen(false);
+            setDraft({});
+            setDiscards((count) => count + 1);
+            setCloseWhenSettled(true);
+          }}
+        />
+      )}
       <ConfirmDialog
         confirmLabel="Discard"
         description={
