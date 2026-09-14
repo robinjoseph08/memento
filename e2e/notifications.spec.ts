@@ -84,7 +84,7 @@ function bell(page: Page, unread: number) {
 
 async function openUpdates(page: Page, unread: number): Promise<Locator> {
   await bell(page, unread).click();
-  const panel = page.getByRole("dialog", { name: "Updates", exact: true });
+  const panel = page.getByRole("dialog", { name: "New updates", exact: true });
   await expect(panel).toBeVisible();
   return panel;
 }
@@ -150,7 +150,6 @@ test("Curator previews a mixed batch, excludes one update, adds a note, approves
     await expect(alexRow).toContainText(
       "Fixture Album - Coast · New album · 4 photos, 2 videos",
     );
-    await expect(alexRow).toContainText("Videos: coast-04, coast-06");
     await alexRow
       .getByRole("checkbox", {
         name: "Include Fixture Album - Family for Alex",
@@ -226,10 +225,9 @@ test("Curator previews a mixed batch, excludes one update, adds a note, approves
       .click();
     await expect(sam).toHaveURL(/\/albums$/);
     await expect(bell(sam, 0)).toBeVisible();
-    await openUpdates(sam, 0);
-    await expect(
-      sam.getByRole("button", { name: "All caught up", exact: true }),
-    ).toBeDisabled();
+    const caughtUp = await openUpdates(sam, 0);
+    await expect(caughtUp).toContainText("all caught up");
+    await expect(caughtUp.getByRole("listitem")).toHaveCount(0);
     await sam.keyboard.press("Escape");
 
     // Rename and then permanently delete the announced Album. The summary
@@ -262,8 +260,15 @@ test("Curator previews a mixed batch, excludes one update, adds a note, approves
       .click();
     await expect(page).toHaveURL(/\/curator$/);
 
+    // The bell holds only new updates; the read one is on the Updates page.
     await alex.goto("/albums");
-    const history = await openUpdates(alex, 0);
+    const caughtUpAlex = await openUpdates(alex, 0);
+    await expect(caughtUpAlex.getByRole("listitem")).toHaveCount(0);
+    await caughtUpAlex
+      .getByRole("link", { name: "See all updates", exact: true })
+      .click();
+    await expect(alex).toHaveURL(/\/notifications$/);
+    const history = alex.getByRole("list");
     await expect(history.getByRole("listitem")).toContainText(
       "Fixture Album - Coast",
     );

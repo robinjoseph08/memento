@@ -352,11 +352,6 @@ function PersonRow({
                       {countLabel(album.photo_count, "photo", "photos")},{" "}
                       {countLabel(album.video_count, "video", "videos")}
                     </span>
-                    {album.video_titles.length > 0 && (
-                      <span className="block text-xs wrap-anywhere text-muted">
-                        Videos: {album.video_titles.join(", ")}
-                      </span>
-                    )}
                     {!albumIncluded && (
                       <span className="block text-xs">Left out</span>
                     )}

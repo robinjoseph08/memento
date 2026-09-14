@@ -60,7 +60,7 @@ const album = {
   days: [],
 };
 
-it("shows the unread count, opens a one-Album update into that Album, and keeps browsing separate from read state", async () => {
+it("shows new updates in the bell, keeps the history on the Updates page, and keeps browsing separate from read state", async () => {
   let notifications = [
     {
       id: "n2",
@@ -120,16 +120,16 @@ it("shows the unread count, opens a one-Album update into that Album, and keeps 
   render(<App />);
   const bell = await screen.findByRole("button", { name: "Updates, 2 unread" });
   await user.click(bell);
-  const panel = await screen.findByRole("dialog", { name: "Updates" });
+  const panel = await screen.findByRole("dialog", { name: "New updates" });
   const rows = within(panel).getAllByRole("listitem");
   expect(rows).toHaveLength(2);
-  // Newest first, with a date but no clock time.
+  // Newest first, with a date but no clock time and no video list.
   expect(rows[0]).toHaveTextContent("2 albums: Coast, Family");
   expect(rows[0]).toHaveTextContent("June 10, 2026");
   expect(rows[0]).not.toHaveTextContent(/\d:\d\d/);
   expect(rows[1]).toHaveTextContent("Coast");
   expect(rows[1]).toHaveTextContent("4 photos and 1 video · New album");
-  expect(rows[1]).toHaveTextContent("Videos: Surf lesson");
+  expect(rows[1]).not.toHaveTextContent("Surf lesson");
   expect(rows[1]).toHaveTextContent("Finally got these together. Enjoy!");
 
   await user.click(within(rows[1]).getByRole("button", { name: "Open Coast" }));
@@ -145,18 +145,38 @@ it("shows the unread count, opens a one-Album update into that Album, and keeps 
   await user.click(screen.getByRole("link", { name: "Albums" }));
   await waitFor(() => expect(window.location.pathname).toBe("/albums"));
   expect(reads).toEqual(["n1"]);
+  // The bell keeps only new updates; the read one lives on the Updates page.
   await user.click(screen.getByRole("button", { name: "Updates, 1 unread" }));
-  const remaining = await screen.findByRole("button", {
-    name: "Open 2 albums: Coast, Family",
-  });
-  await user.click(remaining);
+  const fresh = await screen.findByRole("dialog", { name: "New updates" });
+  expect(within(fresh).getAllByRole("listitem")).toHaveLength(1);
+  expect(
+    within(fresh).queryByRole("button", { name: "Open Coast" }),
+  ).not.toBeInTheDocument();
+  await user.click(
+    within(fresh).getByRole("link", { name: "See all updates" }),
+  );
+  await waitFor(() => expect(window.location.pathname).toBe("/notifications"));
+  expect(document.title).toBe("Updates | Memento");
+  const history = screen.getByRole("list");
+  const all = within(history).getAllByRole("listitem");
+  expect(all).toHaveLength(2);
+  expect(all[1]).toHaveAttribute("data-unread", "false");
+  expect(
+    within(all[1]).queryByRole("button", { name: "Mark Coast as read" }),
+  ).not.toBeInTheDocument();
+  await user.click(
+    within(all[0]).getByRole("button", {
+      name: "Open 2 albums: Coast, Family",
+    }),
+  );
   await waitFor(() => expect(window.location.pathname).toBe("/albums"));
   expect(reads).toEqual(["n1", "n2"]);
   expect(await screen.findByRole("button", { name: "Updates" })).toBeVisible();
   await user.click(screen.getByRole("button", { name: "Updates" }));
+  expect(await screen.findByText(/all caught up/)).toBeVisible();
   expect(
-    await screen.findByRole("button", { name: "All caught up" }),
-  ).toBeDisabled();
+    screen.queryByRole("button", { name: "Mark all as read" }),
+  ).not.toBeInTheDocument();
 });
 
 it("marks every update read at once", async () => {
@@ -204,9 +224,7 @@ it("marks every update read at once", async () => {
   await user.click(
     await screen.findByRole("button", { name: "Mark all as read" }),
   );
-  expect(
-    await screen.findByRole("button", { name: "All caught up" }),
-  ).toBeDisabled();
+  expect(await screen.findByText(/all caught up/)).toBeVisible();
   expect(calls).toEqual(["/api/notifications/read-all"]);
   expect(screen.getByRole("button", { name: "Updates" })).toBeVisible();
 });
@@ -298,14 +316,13 @@ it("lets a Curator review recipients, leave out an Album update, add a note, and
   expect(rows[0]).toHaveTextContent("2 albums");
   expect(rows[0]).toHaveTextContent("6 photos, 1 video");
   expect(rows[1]).toHaveTextContent("In app only, no email selected");
-  expect(within(rows[1]).queryByText("Videos:")).not.toBeInTheDocument();
 
   await user.click(
     within(rows[0]).getByRole("button", { name: "Show albums for Alex" }),
   );
   const details = within(rows[0]).getByRole("list");
   expect(details).toHaveTextContent("Coast · New album · 4 photos, 1 video");
-  expect(details).toHaveTextContent("Videos: Surf lesson");
+  expect(details).not.toHaveTextContent("Surf lesson");
   expect(details).toHaveTextContent("Family · Updated · 2 photos, 0 videos");
   await user.click(
     within(details).getByRole("checkbox", { name: "Include Family for Alex" }),

@@ -1,47 +1,29 @@
 import { Bell } from "lucide-react";
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link } from "react-router-dom";
 
 import {
   useMarkAllNotificationsRead,
-  useMarkNotificationRead,
   useNotifications,
 } from "../../hooks/queries/notifications";
 import { errorMessage } from "../../lib/http";
-import { cn } from "../../lib/utils";
-import type { Notification } from "../../types/generated/notifications";
 import { countLabel } from "../albums/moment-labels";
 import { Button } from "../ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
-import {
-  notificationDate,
-  notificationDestination,
-  notificationTitle,
-} from "./notification-labels";
+import { NotificationRow } from "../viewer/notification-row";
 
+// The bell holds only new updates. Everything ever sent lives on the Updates
+// page, which the popover links to.
 export function NotificationBell() {
   const notifications = useNotifications();
-  const markRead = useMarkNotificationRead();
   const markAllRead = useMarkAllNotificationsRead();
-  const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const unread = notifications.data?.unread ?? 0;
+  const fresh =
+    notifications.data?.notifications.filter((item) => !item.read_at) ?? [];
   const label = unread
     ? `Updates, ${countLabel(unread, "unread", "unread")}`
     : "Updates";
-  const error = markRead.error ?? markAllRead.error;
-  async function openNotification(notification: Notification) {
-    if (!notification.read_at) {
-      try {
-        await markRead.mutateAsync(notification.id);
-      } catch {
-        // The mutation error renders inside the list; stay put.
-        return;
-      }
-    }
-    setOpen(false);
-    await navigate(notificationDestination(notification));
-  }
   return (
     <Popover onOpenChange={setOpen} open={open}>
       <PopoverTrigger asChild>
@@ -63,10 +45,10 @@ export function NotificationBell() {
       </PopoverTrigger>
       <PopoverContent
         align="end"
-        aria-label="Updates"
+        aria-label="New updates"
         className="w-88 max-w-[calc(100vw-1rem)] p-2"
       >
-        <p className="px-2 pt-1 pb-2 font-heading text-lg">Updates</p>
+        <p className="px-2 pt-1 pb-2 font-heading text-lg">New updates</p>
         {notifications.isPending && (
           <p className="px-2 py-2 text-xs text-muted" role="status">
             Loading updates…
@@ -77,121 +59,50 @@ export function NotificationBell() {
             {errorMessage(notifications.error)}
           </p>
         )}
-        {notifications.data?.notifications.length === 0 && (
+        {notifications.data && fresh.length === 0 && (
           <p className="px-2 py-2 text-xs text-muted">
-            No updates yet. Your Curator will let you know when there are new
-            photos to see.
+            You are all caught up. Your Curator will let you know when there are
+            new photos to see.
           </p>
         )}
-        {notifications.data && notifications.data.notifications.length > 0 && (
+        {fresh.length > 0 && (
           <ul className="max-h-[60vh] overflow-y-auto">
-            {notifications.data.notifications.map((notification) => (
+            {fresh.map((notification) => (
               <NotificationRow
                 key={notification.id}
                 notification={notification}
-                onMarkRead={() => markRead.mutate(notification.id)}
-                onOpen={() => void openNotification(notification)}
-                pending={markRead.isPending}
+                onOpened={() => setOpen(false)}
               />
             ))}
           </ul>
         )}
-        {error && (
+        {markAllRead.isError && (
           <p className="px-2 py-2 text-xs text-destructive" role="alert">
-            {errorMessage(error)}
+            {errorMessage(markAllRead.error)}
           </p>
         )}
-        {notifications.data && notifications.data.notifications.length > 0 && (
+        <div className="mt-1 flex flex-wrap items-center justify-between gap-2">
           <Button
-            className="mt-1 h-auto min-h-0 w-full justify-start px-2 py-2 text-xs"
-            disabled={unread === 0 || markAllRead.isPending}
-            onClick={() => markAllRead.mutate()}
+            asChild
+            className="h-auto min-h-0 px-2 py-2 text-xs"
             variant="ghost"
           >
-            {unread === 0
-              ? "All caught up"
-              : markAllRead.isPending
-                ? "Marking as read…"
-                : "Mark all as read"}
+            <Link onClick={() => setOpen(false)} to="/notifications">
+              See all updates
+            </Link>
           </Button>
-        )}
+          {fresh.length > 0 && (
+            <Button
+              className="h-auto min-h-0 px-2 py-2 text-xs"
+              disabled={markAllRead.isPending}
+              onClick={() => markAllRead.mutate()}
+              variant="ghost"
+            >
+              {markAllRead.isPending ? "Marking as read…" : "Mark all as read"}
+            </Button>
+          )}
+        </div>
       </PopoverContent>
     </Popover>
-  );
-}
-
-function NotificationRow({
-  notification,
-  onOpen,
-  onMarkRead,
-  pending,
-}: {
-  notification: Notification;
-  onOpen: () => void;
-  onMarkRead: () => void;
-  pending: boolean;
-}) {
-  const unread = !notification.read_at;
-  const photos = notification.albums.reduce(
-    (sum, album) => sum + album.photo_count,
-    0,
-  );
-  const videos = notification.albums.reduce(
-    (sum, album) => sum + album.video_count,
-    0,
-  );
-  const title = notificationTitle(notification);
-  return (
-    <li
-      className={cn(
-        "flex gap-2 rounded-md p-2 hover:bg-surface",
-        !unread && "text-muted",
-      )}
-      data-unread={unread}
-    >
-      <button
-        aria-label={`Open ${title}`}
-        className="min-w-0 flex-1 cursor-pointer rounded-sm text-left focus-visible:outline-2 focus-visible:outline-ring"
-        disabled={pending}
-        onClick={onOpen}
-        type="button"
-      >
-        <span className="block font-medium wrap-anywhere">{title}</span>
-        <span className="block text-xs text-muted">
-          {countLabel(photos, "photo", "photos")} and{" "}
-          {countLabel(videos, "video", "videos")}
-          {notification.albums.length === 1 &&
-            ` · ${notification.albums[0].status === "new" ? "New album" : "Updated"}`}
-          {" · "}
-          {notificationDate(notification.created_at)}
-        </span>
-        {notification.albums.some((album) => album.video_titles.length > 0) && (
-          <span className="mt-1 block text-xs wrap-anywhere text-muted">
-            Videos:{" "}
-            {notification.albums
-              .flatMap((album) => album.video_titles)
-              .join(", ")}
-          </span>
-        )}
-        {notification.note && (
-          <span className="mt-1 block text-xs wrap-anywhere">
-            {notification.note}
-          </span>
-        )}
-      </button>
-      {unread && (
-        <Button
-          aria-label={`Mark ${title} as read`}
-          className="mt-0.5 h-auto min-h-0 shrink-0 px-2 py-1 text-xs"
-          disabled={pending}
-          onClick={onMarkRead}
-          size="sm"
-          variant="ghost"
-        >
-          <span aria-hidden="true" className="size-2 rounded-full bg-primary" />
-          <span className="sr-only">Mark as read</span>
-        </Button>
-      )}
-    </li>
   );
 }

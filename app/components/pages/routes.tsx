@@ -7,6 +7,7 @@ import { UpdatesPage } from "../notifications/updates";
 import { PeoplePage, PersonPage } from "../people/people";
 import { RequestsPage } from "../people/requests";
 import { ViewerAlbumList } from "../viewer/album-list";
+import { NotificationsPage } from "../viewer/notifications";
 import {
   AccessDeniedPage,
   AppShell,
@@ -68,6 +69,7 @@ export const routes = [
             element: <ViewerLayout />,
             children: [
               { path: "/albums", element: <ViewerAlbumList /> },
+              { path: "/notifications", element: <NotificationsPage /> },
               { path: "/albums/:id", element: <ViewerAlbumRedirect /> },
               {
                 path: "/albums/:id/photos",
