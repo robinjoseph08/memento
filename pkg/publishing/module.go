@@ -76,6 +76,7 @@ type albumProjection struct {
 	StartDate    string
 	EndDate      string
 	CoverURL     string
+	HasAudience  bool
 }
 
 // albumSummaries keeps list cards and detail headers on the same projection.
@@ -92,10 +93,16 @@ func albumSummaries(db bun.IDB) *bun.SelectQuery {
 		Join("JOIN media_items AS item ON item.id = entry.media_item_id").
 		Where("entry.removed_at IS NULL AND NOT item.offline AND NOT item.trashed").
 		OrderExpr("moment.album_id, (SELECT min(order_item.captured_at) FROM album_entries AS order_entry JOIN media_items AS order_item ON order_item.id = order_entry.media_item_id WHERE order_entry.moment_id = moment.id AND order_entry.removed_at IS NULL), moment.sort_order, moment.id")
+	// An Album is ready to publish once at least one allowing decision exists
+	// at any scope; until then publishing would show it to nobody.
+	audience := db.NewSelect().TableExpr("album_access_decisions AS decision").ColumnExpr("1").Where("decision.album_id = album.id AND decision.decision = 'allow'").
+		UnionAll(db.NewSelect().TableExpr("moment_access_decisions AS decision").ColumnExpr("1").Where("decision.album_id = album.id AND decision.decision = 'allow'")).
+		UnionAll(db.NewSelect().TableExpr("entry_access_decisions AS decision").ColumnExpr("1").Where("decision.album_id = album.id AND decision.decision = 'allow'"))
 	return db.NewSelect().Model((*models.Album)(nil)).Column("album.*").
 		ColumnExpr("coalesce(summary.photo_count, 0) AS photo_count, coalesce(summary.video_count, 0) AS video_count").
 		ColumnExpr("coalesce(to_char(summary.start_date, 'YYYY-MM-DD'), '') AS start_date, coalesce(to_char(summary.end_date, 'YYYY-MM-DD'), '') AS end_date").
 		ColumnExpr("coalesce(cover.cover_url, '') AS cover_url").
+		ColumnExpr("EXISTS (?) AS has_audience", audience).
 		Join("LEFT JOIN (?) AS summary ON summary.album_id = album.id AND album.import_status = 'complete'", stats).
 		Join("LEFT JOIN (?) AS cover ON cover.album_id = album.id AND album.import_status = 'complete'", covers)
 }
@@ -107,7 +114,8 @@ func projectAlbum(row albumProjection) Album {
 		message = "Import stopped reporting progress. Memento will recover it automatically after the worker timeout."
 	}
 	return Album{ID: row.ID.String(), SourceID: row.SourceID, Title: row.Title, Description: row.Description,
-		Published: row.PublishedAt != nil, Status: status, Message: message, Processed: row.ImportProcessed, Total: row.ImportTotal,
+		Published: row.PublishedAt != nil, Ready: row.PublishedAt == nil && row.ImportStatus == "complete" && row.HasAudience,
+		Status: status, Message: message, Processed: row.ImportProcessed, Total: row.ImportTotal,
 		PhotoCount: row.PhotoCount, VideoCount: row.VideoCount, StartDate: row.StartDate, EndDate: row.EndDate, CoverURL: row.CoverURL}
 }
 

@@ -20,6 +20,7 @@ const album: Album = {
   title: "Summer by the sea",
   description: "A week away",
   published: false,
+  ready: false,
   status: "complete",
   message: "",
   processed: 36,
@@ -100,7 +101,7 @@ it("opens the library from an empty collection and links previously imported sou
           total: 1,
         }),
   );
-  window.history.replaceState(null, "", "/curator");
+  window.history.replaceState(null, "", "/curator/albums");
   const user = userEvent.setup();
   render(<App />);
   expect(
@@ -1034,7 +1035,7 @@ it("requires the exact Album title for permanent deletion and preserves confirma
     await screen.findByRole("heading", { name: "No albums yet" }),
   ).toBeVisible();
   expect(deleted).toEqual({ title: completeAlbum.title });
-  expect(window.location.pathname).toBe("/curator");
+  expect(window.location.pathname).toBe("/curator/albums");
 });
 
 it("reviews every scope before confirming removal of all a person's access", async () => {
@@ -1901,7 +1902,7 @@ it("recovers from a source read failure and explains an empty search", async () 
 
 it("shows a failed import honestly in the album list and lets the Curator reopen it", async () => {
   mockAPI(() => Response.json([{ ...album, status: "failed" }]));
-  window.history.replaceState(null, "", "/curator");
+  window.history.replaceState(null, "", "/curator/albums");
   render(<App />);
   const link = await screen.findByRole("link", { name: /Summer by the sea/ });
   expect(link).toHaveTextContent("Import failed");
@@ -1988,7 +1989,7 @@ it.each(["complete", "failed"])(
         { ...album, status },
       ]);
     });
-    window.history.replaceState(null, "", "/curator");
+    window.history.replaceState(null, "", "/curator/albums");
     render(<App />);
     const link = await screen.findByRole("link", { name: /Summer by the sea/ });
     expect(link).toHaveTextContent("Waiting to import");
@@ -2032,7 +2033,7 @@ it("stops album-list polling when navigating away from active imports", async ()
     }
     return Response.json({ albums: [], page: 1, pages: 0, total: 0 });
   });
-  window.history.replaceState(null, "", "/curator");
+  window.history.replaceState(null, "", "/curator/albums");
   const user = userEvent.setup();
   render(<App />);
   await screen.findByRole("link", { name: /Summer by the sea/ });

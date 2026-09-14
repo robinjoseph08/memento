@@ -37,6 +37,18 @@ const curator = {
   onboarding_completed_at: "2026-01-01T00:00:00Z",
 };
 
+// A dashboard with nothing to do, so shell tests land somewhere quiet.
+const quiet = {
+  needs_attention: {
+    pending_requests: 0,
+    imports: [],
+    deliveries: [],
+    chapters: [],
+  },
+  ready: { unpublished: [], unannounced_people: 0 },
+  active: false,
+};
+
 function serveIdentity(
   claimed = false,
   signInResponse?: () => Promise<Response>,
@@ -68,6 +80,8 @@ function serveIdentity(
               message: "Connected to Immich.",
             });
       if (path === "/api/curator/albums") return Response.json([]);
+      if (path === "/api/curator/dashboard") return Response.json(quiet);
+      if (path === "/api/access-requests") return Response.json([]);
       throw new Error(`Unexpected request: ${path}`);
     }),
   );
@@ -101,7 +115,7 @@ it("claims the installation with the edited fake identity using native Enter sub
   await user.type(name, "Robin{Enter}");
 
   expect(
-    await screen.findByRole("heading", { name: "Your albums" }),
+    await screen.findByRole("heading", { name: /^Hi, / }),
   ).toBeInTheDocument();
   await user.click(screen.getByRole("button", { name: "Account menu" }));
   expect(screen.getByText("Robin")).toBeVisible();
@@ -110,7 +124,7 @@ it("claims the installation with the edited fake identity using native Enter sub
     "/curator/import",
   );
   expect(window.location.pathname).toBe("/curator");
-  expect(document.title).toBe("Albums | Memento");
+  expect(document.title).toBe("Home | Memento");
 });
 
 it("preserves entered claims and focuses the first field rejected by the server", async () => {
@@ -161,7 +175,7 @@ it("allows claiming while Immich is unreachable", async () => {
   ).toBeInTheDocument();
   await user.click(screen.getByRole("button", { name: "Claim installation" }));
   expect(
-    await screen.findByRole("heading", { name: "No albums yet" }),
+    await screen.findByRole("heading", { name: /^Hi, / }),
   ).toBeInTheDocument();
 });
 
@@ -205,7 +219,7 @@ it("signs out of the Curator shell and redirects a protected bookmark to sign-in
   expect(window.location.pathname).toBe("/sign-in");
   await user.click(screen.getByRole("button", { name: "Sign in" }));
   expect(
-    await screen.findByRole("heading", { name: "Your albums" }),
+    await screen.findByRole("heading", { name: /^Hi, / }),
   ).toBeInTheDocument();
   await user.click(screen.getByRole("button", { name: "Account menu" }));
   await user.click(screen.getByRole("menuitem", { name: "Sign out" }));
@@ -239,7 +253,7 @@ it("protects edited claims from navigation and reload without blocking successfu
   expect(beforeUnload.defaultPrevented).toBe(true);
   await user.click(screen.getByRole("button", { name: "Claim installation" }));
   expect(
-    await screen.findByRole("heading", { name: "Your albums" }),
+    await screen.findByRole("heading", { name: /^Hi, / }),
   ).toBeInTheDocument();
   expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
 });
@@ -325,7 +339,7 @@ it("preserves the active theme across authentication when storage is blocked", a
   await user.click(
     await screen.findByRole("button", { name: "Claim installation" }),
   );
-  await screen.findByRole("heading", { name: "Your albums" });
+  await screen.findByRole("heading", { name: /^Hi, / });
   expect(document.documentElement).toHaveAttribute("data-theme", "light");
   await user.click(screen.getByRole("button", { name: "Account menu" }));
   expect(
@@ -372,9 +386,7 @@ it("keeps sign-out progress and retryable failures in the account menu", async (
     "Something went wrong. Please try again.",
   );
   await user.keyboard("{Escape}");
-  expect(
-    screen.getByRole("heading", { name: "Your albums" }),
-  ).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: /^Hi, / })).toBeInTheDocument();
   await user.click(screen.getByRole("button", { name: "Account menu" }));
   await user.click(screen.getByRole("menuitem", { name: "Sign out" }));
   await act(async () => finishSignOut(new Response(null, { status: 204 })));
@@ -383,7 +395,7 @@ it("keeps sign-out progress and retryable failures in the account menu", async (
   ).toBeInTheDocument();
 });
 
-it("cancels an in-flight diagnostic when closing its dialog before signing out", async () => {
+it("cancels an in-flight diagnostic when leaving Settings before signing out", async () => {
   let signal: AbortSignal | null | undefined;
   let finish!: (response: Response) => void;
   const response = new Promise<Response>((resolve) => {
@@ -402,28 +414,30 @@ it("cancels an in-flight diagnostic when closing its dialog before signing out",
         signal = options?.signal;
         return response;
       }
-      if (path === "/api/curator/albums") return Response.json([]);
+      if (path === "/api/curator/dashboard") return Response.json(quiet);
+      if (path === "/api/access-requests") return Response.json([]);
       return new Response(null, { status: 204 });
     }),
   );
   const user = userEvent.setup();
   render(<App />);
-  await screen.findByRole("heading", { name: "No albums yet" });
+  await screen.findByRole("heading", { name: /^Hi, / });
   expect(
     screen.queryByRole("heading", { name: "Immich connection" }),
   ).not.toBeInTheDocument();
   const account = screen.getByRole("button", { name: "Account menu" });
   await user.click(account);
-  await user.click(screen.getByRole("menuitem", { name: "Immich connection" }));
+  await user.click(screen.getByRole("menuitem", { name: "Settings" }));
   expect(
-    await screen.findByRole("dialog", { name: "Immich connection" }),
+    await screen.findByRole("heading", { name: "Immich connection" }),
   ).toBeVisible();
-  await user.click(screen.getByRole("button", { name: "Close dialog" }));
-  expect(account).toHaveFocus();
-  expect(signal?.aborted).toBe(true);
+  expect(window.location.pathname).toBe("/curator/settings");
+  expect(document.title).toBe("Settings | Memento");
+  expect(screen.getByRole("status")).toHaveTextContent("Checking connection");
   await user.click(account);
   await user.click(screen.getByRole("menuitem", { name: "Sign out" }));
   await screen.findByRole("heading", { name: "Welcome back" });
+  expect(signal?.aborted).toBe(true);
   await act(async () =>
     finish(
       Response.json({ usable: true, version: "2.7.0", message: "Connected" }),

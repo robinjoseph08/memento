@@ -39,6 +39,8 @@ type Module struct {
 	enqueue EnqueueDelivery
 	content VisibleContent
 	now     func() time.Time
+	// PublicURL is the origin update emails link to. Empty renders relative links.
+	PublicURL string
 }
 
 func New(db *bun.DB, mailer Mailer, enqueue EnqueueDelivery, content VisibleContent, now func() time.Time) *Module {

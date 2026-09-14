@@ -42,6 +42,25 @@ func (f *fakeUseCases) MarkAllRead(_ context.Context, personID string) (notifica
 	f.calls = append(f.calls, "read-all:"+personID)
 	return notifications.NotificationList{Notifications: []notifications.Notification{}, Unread: 0}, nil
 }
+func (f *fakeUseCases) DeliveryStates(_ context.Context, ids []string) (map[string]notifications.Delivery, error) {
+	f.calls = append(f.calls, "deliveries:"+strings.Join(ids, ","))
+	return map[string]notifications.Delivery{"d1": {ID: "d1", Status: "delivered"}}, nil
+}
+func (f *fakeUseCases) RetryDelivery(_ context.Context, id string) (notifications.Delivery, error) {
+	f.calls = append(f.calls, "retry:"+id)
+	return notifications.Delivery{ID: id, Status: "queued"}, nil
+}
+func (f *fakeUseCases) UnsubscribeStatus(_ context.Context, token string) (notifications.UnsubscribeStatus, error) {
+	f.calls = append(f.calls, "unsubscribe-status:"+token)
+	if token == "missing" {
+		return notifications.UnsubscribeStatus{}, errcodes.NotFound("Link")
+	}
+	return notifications.UnsubscribeStatus{DisplayName: "Alex", Email: "alex@example.test", Subscribed: true}, nil
+}
+func (f *fakeUseCases) Unsubscribe(_ context.Context, token string) (notifications.UnsubscribeStatus, error) {
+	f.calls = append(f.calls, "unsubscribe:"+token)
+	return notifications.UnsubscribeStatus{DisplayName: "Alex", Email: "alex@example.test", Subscribed: false}, nil
+}
 
 func TestNotificationHTTPRoutesBindAndAuthorize(t *testing.T) {
 	t.Parallel()
@@ -62,6 +81,12 @@ func TestNotificationHTTPRoutesBindAndAuthorize(t *testing.T) {
 		"member marks one read":       {http.MethodPost, "/api/notifications/n1/read", `{}`, false, 200, "read:" + personUUID + ":n1", `"id":"n1"`},
 		"missing notification":        {http.MethodPost, "/api/notifications/missing/read", `{}`, false, 404, "read:" + personUUID + ":missing", "not_found"},
 		"member marks all read":       {http.MethodPost, "/api/notifications/read-all", `{}`, false, 200, "read-all:" + personUUID, `"unread":0`},
+		"curator watches deliveries":  {http.MethodGet, "/api/curator/notifications/deliveries?id=d1&id=d2", "", true, 200, "deliveries:d1,d2", `"status":"delivered"`},
+		"member cannot watch":         {http.MethodGet, "/api/curator/notifications/deliveries?id=d1", "", false, 403, "", "forbidden"},
+		"curator retries delivery":    {http.MethodPost, "/api/curator/notifications/deliveries/d1/retry", `{}`, true, 200, "retry:d1", `"status":"queued"`},
+		"unsubscribe link reads only": {http.MethodGet, "/api/unsubscribe?token=token-1", "", false, 200, "unsubscribe-status:token-1", `"subscribed":true`},
+		"unknown unsubscribe link":    {http.MethodGet, "/api/unsubscribe?token=missing", "", false, 404, "unsubscribe-status:missing", "not_found"},
+		"unsubscribe confirms":        {http.MethodPost, "/api/unsubscribe?token=token-1", `{}`, false, 200, "unsubscribe:token-1", `"subscribed":false`},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()

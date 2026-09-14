@@ -27,6 +27,9 @@ const (
 	StatusDelivered = "delivered"
 	StatusFailed    = "failed"
 	StatusUncertain = "uncertain"
+	// StatusSkipped means send-time validation found no eligible recipient
+	// or content, so nothing was sent and nothing needs a Curator.
+	StatusSkipped = "skipped"
 )
 
 const recordOutcomeTimeout = 10 * time.Second
@@ -34,6 +37,10 @@ const recordOutcomeTimeout = 10 * time.Second
 func projectDelivery(row models.MailDelivery) Delivery {
 	return Delivery{ID: row.ID.String(), Status: row.Status, Attempts: row.Attempts, Message: row.Message, UpdatedAt: row.UpdatedAt, DeliveredAt: row.DeliveredAt}
 }
+
+// deliveryClaimColumns are rewritten when an attempt starts. Update email
+// also refreshes its destination and content at that moment.
+var deliveryClaimColumns = []string{"status", "attempts", "message", "updated_at", "recipient", "subject", "body"}
 
 // Enqueue stores the complete message and commits its durable work with the
 // caller's transaction. Preferences are the caller's concern: transactional
@@ -58,13 +65,19 @@ func (m *Module) Enqueue(ctx context.Context, tx bun.Tx, message Message) (Deliv
 	return projectDelivery(row), nil
 }
 
-// Retry requeues a failed or uncertain delivery. Repeated clicks and concurrent
-// submissions are idempotent: an already queued or sending delivery is returned unchanged.
+// Retry requeues a failed, uncertain, or skipped delivery. Repeated clicks and
+// concurrent submissions are idempotent: an already queued or sending delivery
+// is returned unchanged.
 func (m *Module) Retry(ctx context.Context, tx bun.Tx, deliveryID string) (Delivery, error) {
 	row, err := deliveryRow(ctx, tx, deliveryID, true)
 	if err != nil {
 		return Delivery{}, err
 	}
+	return m.retry(ctx, tx, row)
+}
+
+// retry requeues an already locked row.
+func (m *Module) retry(ctx context.Context, tx bun.Tx, row models.MailDelivery) (Delivery, error) {
 	switch row.Status {
 	case StatusQueued, StatusSending:
 		return projectDelivery(row), nil
@@ -121,7 +134,9 @@ func deliveryRow(ctx context.Context, db bun.IDB, id string, lock bool) (models.
 // Execute is the worker body for one delivery. It claims the record, sends
 // outside any transaction, then records the outcome. A record still marked
 // sending when a new attempt starts means an earlier process died mid-session,
-// so the delivery becomes uncertain instead of being sent again.
+// so the delivery becomes uncertain instead of being sent again. Update email
+// is re-validated while claiming: an ineligible recipient or fully revoked
+// content skips the send without touching the in-app notification.
 func (m *Module) Execute(ctx context.Context, deliveryID string, final bool) error {
 	var row models.MailDelivery
 	send := false
@@ -134,11 +149,23 @@ func (m *Module) Execute(ctx context.Context, deliveryID string, final bool) err
 		now := m.now().UTC()
 		switch row.Status {
 		case StatusQueued:
+			row.UpdatedAt = now
+			if row.Kind == KindUpdate {
+				skip, err := m.prepareUpdate(ctx, tx, &row, now)
+				if err != nil {
+					return err
+				}
+				if skip != "" {
+					row.Status = StatusSkipped
+					row.Message = skip
+					_, err = tx.NewUpdate().Model(&row).Column("status", "message", "updated_at").WherePK().Exec(ctx)
+					return errorstack.CaptureContext(ctx, err)
+				}
+			}
 			row.Status = StatusSending
 			row.Attempts++
-			row.UpdatedAt = now
 			send = true
-			_, err = tx.NewUpdate().Model(&row).Column("status", "attempts", "updated_at").WherePK().Exec(ctx)
+			_, err = tx.NewUpdate().Model(&row).Column(deliveryClaimColumns...).WherePK().Exec(ctx)
 			return errorstack.CaptureContext(ctx, err)
 		case StatusSending:
 			row.Status = StatusUncertain
@@ -154,6 +181,12 @@ func (m *Module) Execute(ctx context.Context, deliveryID string, final bool) err
 		if errors.Is(err, errcodes.NotFound("Delivery")) {
 			return nil
 		}
+		// A claim that keeps failing, such as a broken content query behind
+		// an update email, must not leave the record queued forever with no
+		// Curator action: the final attempt records the failure instead.
+		if final {
+			return errors.Join(transactionError(ctx, err), m.failUnclaimed(ctx, deliveryID))
+		}
 		return transactionError(ctx, err)
 	}
 	if !send {
@@ -166,6 +199,19 @@ func (m *Module) Execute(ctx context.Context, deliveryID string, final bool) err
 		sendErr = m.mailer.Send(ctx, Message{Kind: row.Kind, To: row.Recipient, Subject: row.Subject, Body: row.Body})
 	}
 	return m.recordOutcome(ctx, row, sendErr, final)
+}
+
+// failUnclaimed marks a still-queued delivery failed after its last automatic
+// attempt could not even claim it, so it surfaces for a deliberate retry.
+func (m *Module) failUnclaimed(ctx context.Context, deliveryID string) error {
+	recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), recordOutcomeTimeout)
+	defer cancel()
+	_, err := m.db.NewUpdate().Model((*models.MailDelivery)(nil)).
+		Set("status = ?", StatusFailed).
+		Set("message = ?", "Memento could not prepare this email. Check the application log, then send it again.").
+		Set("updated_at = ?", m.now().UTC()).
+		Where("id = ? AND status = ?", deliveryID, StatusQueued).Exec(recordCtx)
+	return errorstack.CaptureContext(recordCtx, err)
 }
 
 // RecoverInterrupted runs once at startup. A delivery still marked sending

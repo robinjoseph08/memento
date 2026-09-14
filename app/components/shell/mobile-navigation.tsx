@@ -53,11 +53,21 @@ export function MobileNavigation({
           aria-label="Mobile navigation"
           className="mt-5 flex flex-col gap-1"
         >
+          {person.is_curator && (
+            <NavLink
+              className="cursor-pointer rounded-md px-3 py-3 text-sm hover:bg-surface focus-visible:outline-2 focus-visible:outline-ring aria-[current=page]:bg-surface"
+              end
+              onClick={() => setOpen(false)}
+              to="/curator"
+            >
+              Home
+            </NavLink>
+          )}
           <NavLink
             className="cursor-pointer rounded-md px-3 py-3 text-sm hover:bg-surface focus-visible:outline-2 focus-visible:outline-ring aria-[current=page]:bg-surface"
             end
             onClick={() => setOpen(false)}
-            to={person.is_curator ? "/curator" : "/albums"}
+            to={person.is_curator ? "/curator/albums" : "/albums"}
           >
             Albums
           </NavLink>

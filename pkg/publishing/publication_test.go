@@ -33,10 +33,17 @@ func TestPermanentAlbumDeletionKeepsSharedMediaAndRequiresTitle(t *testing.T) {
 	person := models.Person{ID: models.NewUUIDv7(), DisplayName: "Alex", CreatedAt: time.Now().UTC()}
 	_, err = db.NewInsert().Model(&[]models.Person{curator, person}).Exec(t.Context())
 	require.NoError(t, err)
+	require.False(t, other.Ready, "an Album nobody could see is not ready to publish")
 	_, err = module.SaveAlbumAccess(t.Context(), other.ID, publishing.SaveAlbumAccessRequest{People: []publishing.AlbumAccessChoice{{PersonID: person.ID.String(), Allowed: true}}})
 	require.NoError(t, err)
 	other, err = module.GetAlbum(t.Context(), other.ID)
 	require.NoError(t, err)
+	require.True(t, other.Ready, "an allowing decision makes an unpublished Album ready")
+	listed, err := module.ListAlbums(t.Context(), "")
+	require.NoError(t, err)
+	for _, entry := range listed {
+		require.Equal(t, entry.ID == other.ID, entry.Ready)
+	}
 	require.NoError(t, module.AuthorizeViewerEntry(t.Context(), curator.ID.String(), person.ID.String(), other.Moments[0].Entries[0].ID))
 	require.Error(t, module.AuthorizeViewerEntry(t.Context(), curator.ID.String(), person.ID.String(), album.Moments[0].Entries[0].ID), "the same Media Item in another Album grants no access")
 	err = module.DeleteAlbum(t.Context(), album.ID, publishing.DeleteAlbumRequest{Title: "wrong"})

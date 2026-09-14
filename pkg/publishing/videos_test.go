@@ -213,12 +213,26 @@ func TestRetryChaptersResolvesTheVideoBehindAnAlbumEntry(t *testing.T) {
 	video = findVideo(t, detail)
 	require.Equal(t, "failed", video.ChapterStatus)
 	require.Equal(t, "Chapter extraction failed.", video.ChapterMessage)
+	failures, err := module.ChapterFailures(t.Context())
+	require.NoError(t, err)
+	var momentID string
+	for _, moment := range detail.Moments {
+		for _, entry := range moment.Entries {
+			if entry.ID == video.ID {
+				momentID = moment.ID
+			}
+		}
+	}
+	require.Equal(t, []publishing.ChapterFailure{{AlbumID: album.ID, AlbumTitle: detail.Title, MomentID: momentID, EntryID: video.ID, Title: video.Filename[:len(video.Filename)-4], Message: "Chapter extraction failed."}}, failures, "a failed extraction is addressed through its Album Entry")
 	review, err := module.ReviewPublication(t.Context(), album.ID)
 	require.NoError(t, err)
 	require.Empty(t, review.Blockers, "chapter failure never blocks publication")
 	require.Contains(t, review.Warnings, "1 video without chapter data after a failed check. Playback works; retry from the video details.")
 	_, err = db.NewUpdate().Model((*models.MediaChapterResult)(nil)).Set("status = 'complete'").Set("chapters = '[]'::jsonb").Where("media_item_id = ?", row.MediaItemID).Exec(t.Context())
 	require.NoError(t, err)
+	failures, err = module.ChapterFailures(t.Context())
+	require.NoError(t, err)
+	require.Empty(t, failures)
 	review, err = module.ReviewPublication(t.Context(), album.ID)
 	require.NoError(t, err)
 	for _, warning := range review.Warnings {

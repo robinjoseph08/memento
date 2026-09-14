@@ -14,9 +14,7 @@ test("a touch user clears their update email and can identify the current browse
     await page.goto("/setup");
     await page.getByRole("button", { name: "Claim installation" }).tap();
     await finishOnboarding(page, true);
-    await expect(
-      page.getByRole("heading", { name: "Your albums" }),
-    ).toBeVisible();
+    await expect(page.getByRole("heading", { name: /^Hi, / })).toBeVisible();
     await page.goto("/profile");
     const email = page.getByRole("combobox", { name: "Email for updates" });
     await expect(email).toHaveText("curator@example.test");

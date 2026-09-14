@@ -16,6 +16,10 @@ type UseCases interface {
 	ListNotifications(ctx context.Context, personID string) (NotificationList, error)
 	MarkRead(ctx context.Context, personID, notificationID string) (Notification, error)
 	MarkAllRead(ctx context.Context, personID string) (NotificationList, error)
+	DeliveryStates(ctx context.Context, ids []string) (map[string]Delivery, error)
+	RetryDelivery(ctx context.Context, deliveryID string) (Delivery, error)
+	UnsubscribeStatus(ctx context.Context, token string) (UnsubscribeStatus, error)
+	Unsubscribe(ctx context.Context, token string) (UnsubscribeStatus, error)
 }
 
 type handlers struct{ module UseCases }
@@ -70,5 +74,34 @@ func (h *handlers) markAllRead(c *echo.Context) error {
 		return err
 	}
 	result, err := h.module.MarkAllRead(c.Request().Context(), personID(c))
+	return respond(c, result, err)
+}
+
+func (h *handlers) deliveries(c *echo.Context) error {
+	result, err := h.module.DeliveryStates(c.Request().Context(), c.QueryParams()["id"])
+	return respond(c, result, err)
+}
+
+func (h *handlers) retryDelivery(c *echo.Context) error {
+	var request struct{}
+	if err := c.Bind(&request); err != nil {
+		return err
+	}
+	result, err := h.module.RetryDelivery(c.Request().Context(), c.Param("id"))
+	return respond(c, result, err)
+}
+
+func (h *handlers) unsubscribeStatus(c *echo.Context) error {
+	result, err := h.module.UnsubscribeStatus(c.Request().Context(), c.QueryParam("token"))
+	return respond(c, result, err)
+}
+
+// unsubscribe is the confirmation step. Only this POST changes the preference.
+func (h *handlers) unsubscribe(c *echo.Context) error {
+	var request struct{}
+	if err := c.Bind(&request); err != nil {
+		return err
+	}
+	result, err := h.module.Unsubscribe(c.Request().Context(), c.QueryParam("token"))
 	return respond(c, result, err)
 }

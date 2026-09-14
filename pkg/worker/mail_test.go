@@ -269,3 +269,82 @@ func TestRescuedJobAfterProcessDeathMarksDeliveryUncertain(t *testing.T) {
 	assert.Contains(t, result.Message, "restarted")
 	assert.Empty(t, recorder.Sent(), "an ambiguous attempt is never resent automatically")
 }
+
+type staticContent map[string][]notifications.VisibleEntry
+
+func (c staticContent) VisibleEntries(_ context.Context, _ bun.IDB, personID string) ([]notifications.VisibleEntry, error) {
+	return c[personID], nil
+}
+
+// TestApprovedUpdateEmailRunsOnTheMailQueue approves an Update Notification
+// for a subscribed Person and lets the runtime deliver its email: the job
+// commits with the approval on the mail queue, and the delivery record, not
+// River, reports the outcome.
+func TestApprovedUpdateEmailRunsOnTheMailQueue(t *testing.T) {
+	t.Parallel()
+	db := testdb.New(t)
+	ctx := deadline(t)
+	now := time.Now().UTC()
+	album := models.Album{ID: models.NewUUIDv7(), SourceID: "source", Title: "Coast", ImportStatus: "complete", ImportUpdatedAt: now, CreatedAt: now}
+	_, err := db.NewInsert().Model(&album).Exec(ctx)
+	require.NoError(t, err)
+	item := models.MediaItem{ID: models.NewUUIDv7(), SourceID: "asset", Checksum: "sum", Filename: "surf.mp4", Kind: "VIDEO", CapturedAt: now, SourceCreatedAt: now, SourceUpdatedAt: now, ContentVersion: "1"}
+	_, err = db.NewInsert().Model(&item).Exec(ctx)
+	require.NoError(t, err)
+	entry := models.AlbumEntry{ID: models.NewUUIDv7(), AlbumID: album.ID, MediaItemID: item.ID}
+	moment := models.Moment{ID: models.NewUUIDv7(), AlbumID: album.ID, CaptureDate: "2026-01-01", CoverEntryID: entry.ID}
+	entry.MomentID = &moment.ID
+	require.NoError(t, db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if _, err := tx.NewInsert().Model(&moment).Exec(ctx); err != nil {
+			return err
+		}
+		_, err := tx.NewInsert().Model(&entry).Exec(ctx)
+		return err
+	}))
+	person := models.Person{ID: models.NewUUIDv7(), DisplayName: "Alex", OnboardingCompletedAt: &now, CreatedAt: now}
+	_, err = db.NewInsert().Model(&person).Exec(ctx)
+	require.NoError(t, err)
+	identity := models.Identity{ID: models.NewUUIDv7(), PersonID: person.ID, Provider: "fake", Subject: "alex", Email: "alex@example.test", CreatedAt: now}
+	_, err = db.NewInsert().Model(&identity).Exec(ctx)
+	require.NoError(t, err)
+	_, err = db.NewUpdate().Model((*models.Person)(nil)).Set("update_identity_id = ?, email_updates = true", identity.ID).Where("id = ?", person.ID).Exec(ctx)
+	require.NoError(t, err)
+	content := staticContent{person.ID.String(): {{AlbumID: album.ID.String(), AlbumTitle: "Coast", EntryID: entry.ID.String(), Kind: "VIDEO", Title: "surf"}}}
+
+	recorder := &notifications.Recorder{}
+	var module *notifications.Module
+	runtime, err := New(db, func(context.Context, string) error { return nil }, Mail(func(ctx context.Context, id string) error {
+		return module.Execute(ctx, id, FinalAttempt(ctx))
+	}, 0))
+	require.NoError(t, err)
+	module = notifications.New(db, recorder, runtime.EnqueueMail, content, nil)
+	module.PublicURL = "https://memento.example.test"
+	preview, err := module.PreviewUpdates(ctx)
+	require.NoError(t, err)
+	require.Len(t, preview.People, 1)
+	approval, err := module.ApproveUpdates(ctx, notifications.ApproveRequest{People: []notifications.ApprovePerson{{PersonID: person.ID.String(), ReviewToken: preview.People[0].ReviewToken}}})
+	require.NoError(t, err)
+	require.NotNil(t, approval.People[0].Delivery)
+	var job struct {
+		Queue string
+		Kind  string
+	}
+	require.NoError(t, db.NewSelect().Table("river_job").Column("queue", "kind").Scan(ctx, &job))
+	assert.Equal(t, "mail", job.Queue)
+	assert.Equal(t, "deliver_mail", job.Kind)
+
+	completed, unsubscribe := runtime.client.Subscribe(river.EventKindJobCompleted)
+	t.Cleanup(unsubscribe)
+	startRuntime(t, ctx, runtime)
+	receive(t, ctx, completed)
+	delivered := deliveryStatus(t, ctx, db, module, approval.People[0].Delivery.ID)
+	assert.Equal(t, "delivered", delivered.Status)
+	require.Len(t, recorder.Sent(), 1)
+	assert.Equal(t, "alex@example.test", recorder.Sent()[0].To)
+	assert.Equal(t, "Coast was shared with you on Memento", recorder.Sent()[0].Subject)
+	assert.Contains(t, recorder.Sent()[0].Body, "Videos: surf")
+	assert.Contains(t, recorder.Sent()[0].Body, "/albums/"+album.ID.String()+"/photos")
+	open, err := module.OpenDeliveries(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, open)
+}

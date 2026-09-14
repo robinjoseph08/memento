@@ -252,6 +252,7 @@ it("lets a Curator review recipients, leave out an Album update, add a note, and
         review_token: "sam-token",
       },
     ],
+    email_configured: true,
   };
   const approvals: unknown[] = [];
   let previews = 0;
@@ -265,9 +266,22 @@ it("lets a Curator review recipients, leave out an Album update, add a note, and
           auth_mode: "fake",
         });
       if (path === "/api/access-requests") return Response.json([]);
+      if (path.startsWith("/api/curator/notifications/deliveries?"))
+        return Response.json({
+          d1: {
+            id: "d1",
+            status: "delivered",
+            attempts: 1,
+            message: "",
+            updated_at: "2026-06-10T15:31:00Z",
+            delivered_at: "2026-06-10T15:31:00Z",
+          },
+        });
       if (path === "/api/curator/notifications/preview") {
         previews++;
-        return Response.json(previews === 1 ? preview : { people: [] });
+        return Response.json(
+          previews === 1 ? preview : { people: [], email_configured: true },
+        );
       }
       if (path === "/api/curator/notifications/approve") {
         approvals.push(JSON.parse(String(options?.body)));
@@ -282,6 +296,14 @@ it("lets a Curator review recipients, leave out an Album update, add a note, and
               album_count: 1,
               photo_count: 4,
               video_count: 1,
+              email: "alex@example.test",
+              delivery: {
+                id: "d1",
+                status: "queued",
+                attempts: 0,
+                message: "",
+                updated_at: "2026-06-10T15:30:00Z",
+              },
             },
             {
               person_id: "sam",
@@ -292,6 +314,8 @@ it("lets a Curator review recipients, leave out an Album update, add a note, and
               album_count: 0,
               photo_count: 0,
               video_count: 0,
+              email: "",
+              delivery: null,
             },
           ],
         });
@@ -362,6 +386,8 @@ it("lets a Curator review recipients, leave out an Album update, add a note, and
     screen.getByRole("region", { name: "Updates sent to 1 person" }),
   ).getAllByRole("listitem");
   expect(results[0]).toHaveTextContent("Alex · 1 album, 4 photos, 1 video");
+  // The queued email settles in the background and the row follows it.
+  expect(await within(results[0]).findByText(/^Email sent/)).toBeVisible();
   expect(results[1]).toHaveTextContent(
     "Sam · Not sent. Their updates changed since this preview.",
   );

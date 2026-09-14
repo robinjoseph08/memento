@@ -28,6 +28,13 @@ func publicPageMetadata(request *http.Request) (webapp.PageMetadata, bool) {
 			Title:       "Sign in",
 			Description: "Sign in to view photos and videos shared with you.",
 		}, true
+	case "/unsubscribe":
+		// Opened from email without a session; the token is a query value
+		// and never part of this metadata.
+		return webapp.PageMetadata{
+			Title:       "Unsubscribe",
+			Description: "Stop update emails from Memento.",
+		}, true
 	default:
 		return webapp.PageMetadata{}, false
 	}

@@ -87,7 +87,7 @@ function DeleteAlbumDialog({
   const remove = useDeleteAlbum(album.id);
   const navigate = useNavigate();
   useEffect(() => {
-    if (remove.isSuccess) void navigate("/curator", { replace: true });
+    if (remove.isSuccess) void navigate("/curator/albums", { replace: true });
   }, [remove.isSuccess, navigate]);
   const [title, setTitle] = useState("");
   const [discardOpen, setDiscardOpen] = useState(false);

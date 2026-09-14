@@ -19,6 +19,7 @@ const album: Album = {
   title: "Summer by the sea",
   description: "A week away",
   published: false,
+  ready: false,
   status: "complete",
   message: "",
   processed: 36,
@@ -60,7 +61,7 @@ afterEach(() => {
 
 it("lists imported covers, separate photo and video counts, and capture dates", async () => {
   mockAlbums(() => Response.json([album]));
-  window.history.replaceState(null, "", "/curator");
+  window.history.replaceState(null, "", "/curator/albums");
   render(<App />);
   const link = await screen.findByRole("link", { name: /Summer by the sea/ });
   expect(within(link).getByRole("img", { name: album.title })).toHaveAttribute(
@@ -74,7 +75,7 @@ it("lists imported covers, separate photo and video counts, and capture dates", 
 
 it("distinguishes an empty collection from an empty search", async () => {
   mockAlbums(() => Response.json([]));
-  window.history.replaceState(null, "", "/curator");
+  window.history.replaceState(null, "", "/curator/albums");
   render(<App />);
   expect(
     await screen.findByRole("heading", { name: "No albums yet" }),
@@ -105,7 +106,7 @@ it("uses neutral fallbacks for empty and broken covers without inventing capture
       },
     ]),
   );
-  window.history.replaceState(null, "", "/curator");
+  window.history.replaceState(null, "", "/curator/albums");
   render(<App />);
   const noCover = await screen.findByRole("link", { name: /A single photo/ });
   expect(within(noCover).getByText("No cover available")).toBeVisible();
@@ -116,6 +117,63 @@ it("uses neutral fallbacks for empty and broken covers without inventing capture
   const brokenCover = screen.getByRole("link", { name: /Summer by the sea/ });
   expect(within(brokenCover).getByText("No cover available")).toBeVisible();
   expect(within(brokenCover).queryByRole("img")).not.toBeInTheDocument();
+});
+
+it("distinguishes unpublished, ready, published, and failed cards with a direct next step", async () => {
+  const retries: string[] = [];
+  mockAlbums((path) => {
+    if (path === "/api/curator/albums")
+      return Response.json([
+        { ...album, id: "draft", title: "Draft" },
+        { ...album, id: "ready", title: "Ready", ready: true },
+        { ...album, id: "live", title: "Live", published: true },
+        {
+          ...album,
+          id: "broken",
+          title: "Broken",
+          status: "failed",
+          message: "Import failed.",
+          cover_url: "",
+        },
+      ]);
+    if (path === "/api/curator/albums/broken/retry") {
+      retries.push(path);
+      return Response.json({
+        ...album,
+        id: "broken",
+        title: "Broken",
+        status: "queued",
+        moments: [],
+        access: [],
+      });
+    }
+    throw new Error(`Unexpected request: ${path}`);
+  });
+  window.history.replaceState(null, "", "/curator/albums");
+  const user = userEvent.setup();
+  render(<App />);
+  const cards = await screen.findAllByRole("listitem");
+  expect(cards.map((card) => card.getAttribute("data-album-state"))).toEqual([
+    "unpublished",
+    "ready",
+    "published",
+    "failed",
+  ]);
+  expect(cards[0]).toHaveTextContent("Unpublished");
+  expect(
+    within(cards[0]).getByRole("link", { name: "Set up access" }),
+  ).toHaveAttribute("href", "/curator/albums/draft?section=access");
+  expect(cards[1]).toHaveTextContent("Ready to publish");
+  expect(
+    within(cards[1]).getByRole("link", { name: "Review and publish" }),
+  ).toHaveAttribute("href", "/curator/albums/ready");
+  expect(cards[2]).toHaveTextContent("Published");
+  expect(within(cards[2]).getAllByRole("link")).toHaveLength(1);
+  expect(cards[3]).toHaveTextContent("Import failed");
+  await user.click(
+    within(cards[3]).getByRole("button", { name: "Retry import" }),
+  );
+  expect(retries).toEqual(["/api/curator/albums/broken/retry"]);
 });
 
 it.each([
@@ -165,7 +223,7 @@ it.each([
     mockAlbums((path) =>
       Response.json(path === "/api/curator/albums" ? [pending] : pending),
     );
-    window.history.replaceState(null, "", "/curator");
+    window.history.replaceState(null, "", "/curator/albums");
     const user = userEvent.setup();
     render(<App />);
     const link = await screen.findByRole("link", { name: /Summer by the sea/ });
@@ -197,7 +255,7 @@ it("submits literal album searches, clears immediately with focus, and restores 
       return Response.json([]);
     throw new Error(`Unexpected request: ${path}`);
   });
-  window.history.replaceState(null, "", "/curator");
+  window.history.replaceState(null, "", "/curator/albums");
   const user = userEvent.setup();
   render(<App />);
   await screen.findByRole("link", { name: /Summer by the sea/ });
