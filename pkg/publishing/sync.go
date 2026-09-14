@@ -278,7 +278,8 @@ func (m *Module) readSource(ctx context.Context, state syncState) (syncSource, e
 		if err != nil {
 			return syncSource{}, err
 		}
-		if entry, ok := state.entries[asset.ID]; ok && entry.RemovedAt == nil && factsEqual(entry.Item, candidate, false) {
+		// Active and excluded entries both keep source facts worth comparing.
+		if entry, ok := state.entries[asset.ID]; ok && (entry.RemovedAt == nil || entry.ExcludedAt != nil) && factsEqual(entry.Item, candidate, false) {
 			unchanged = append(unchanged, syncMember{item: entry.Item})
 			continue
 		}
@@ -286,7 +287,7 @@ func (m *Module) readSource(ctx context.Context, state syncState) (syncSource, e
 	}
 	missing := []string{}
 	for sourceID, entry := range state.entries {
-		if entry.RemovedAt == nil && !listedSet[sourceID] {
+		if (entry.RemovedAt == nil || entry.ExcludedAt != nil) && !listedSet[sourceID] {
 			missing = append(missing, sourceID)
 		}
 	}
@@ -458,7 +459,18 @@ func planRemovals(state syncState, source syncSource, review *SyncReview, plan *
 	sort.Strings(sourceIDs)
 	for _, sourceID := range sourceIDs {
 		entry, ok := state.entries[sourceID]
-		if !ok || entry.RemovedAt != nil || entry.MomentID == nil {
+		if !ok {
+			continue
+		}
+		// Excluded media that left Immich leaves the Excluded section; the
+		// entry stays retained so a reappearance is a returning addition.
+		if entry.ExcludedAt != nil {
+			plan.removals = append(plan.removals, entry)
+			review.Removals = append(review.Removals, SyncRemoval{EntryID: entry.ID.String(), Filename: entry.Item.Filename, Kind: entry.Item.Kind,
+				CapturedAt: captureLabel(entry.Item.CapturedAt), ThumbnailURL: SourceAssetThumbnailURL(entry.Item.SourceID), Excluded: true, Reason: source.removals[sourceID]})
+			continue
+		}
+		if entry.RemovedAt != nil || entry.MomentID == nil {
 			continue
 		}
 		momentID := entry.MomentID.String()
@@ -479,10 +491,10 @@ func planRemovals(state syncState, source syncSource, review *SyncReview, plan *
 	return removed
 }
 
-// planAdditions walks the source members: an active entry whose facts differ
-// is a change, media the Curator excluded is skipped, and anything else is
-// an addition placed by the request or by suggestion. It returns the Moment
-// keys the review proposes to create.
+// planAdditions walks the source members: an active or excluded entry whose
+// facts differ is a change, and anything else is an addition placed by the
+// request or by suggestion. It returns the Moment keys the review proposes
+// to create.
 func planAdditions(state syncState, source syncSource, request SyncRequest, review *SyncReview, plan *syncPlan) (map[string]bool, error) {
 	placements := map[string]SyncPlacement{}
 	for _, placement := range request.Placements {
@@ -499,7 +511,7 @@ func planAdditions(state syncState, source syncSource, request SyncRequest, revi
 	after := &plan.after
 	for _, member := range source.members {
 		entry, exists := state.entries[member.item.SourceID]
-		if exists && entry.RemovedAt == nil {
+		if exists && (entry.RemovedAt == nil || entry.ExcludedAt != nil) {
 			if factsEqual(entry.Item, member.item, member.full) {
 				continue
 			}
@@ -507,14 +519,16 @@ func planAdditions(state syncState, source syncSource, request SyncRequest, revi
 				return nil, syncStale()
 			}
 			plan.changes = append(plan.changes, member)
+			excluded := entry.ExcludedAt != nil
+			thumbnail := entryThumbnailURL(entry.ID.String(), entry.Item.ContentVersion)
+			if excluded {
+				thumbnail = SourceAssetThumbnailURL(entry.Item.SourceID)
+			}
 			review.Changes = append(review.Changes, SyncChange{EntryID: entry.ID.String(), Filename: entry.Item.Filename, Kind: entry.Item.Kind,
-				ThumbnailURL: entryThumbnailURL(entry.ID.String(), entry.Item.ContentVersion), Fields: changedFields(entry.Item, member.item),
+				ThumbnailURL: thumbnail, Excluded: excluded, Fields: changedFields(entry.Item, member.item),
 				CapturedAt: captureLabel(entry.Item.CapturedAt), NewCapturedAt: captureLabel(member.item.CapturedAt),
 				Available: !entry.Item.Offline && !entry.Item.Trashed, NewAvailable: !member.item.Offline && !member.item.Trashed,
 				OtherAlbums: orEmpty(state.otherAlbums[member.item.SourceID])})
-			continue
-		}
-		if exists && entry.ExcludedAt != nil {
 			continue
 		}
 		if !member.full {
@@ -959,7 +973,8 @@ func (m *Module) commitSync(ctx context.Context, tx bun.Tx, state syncState, sou
 	}
 	for i := range plan.changes {
 		plan.changes[i].item.ID = models.NewUUIDv7()
-		writes = append(writes, mediaWrite{item: &plan.changes[i].item, chapters: true})
+		entry := state.entries[plan.changes[i].item.SourceID]
+		writes = append(writes, mediaWrite{item: &plan.changes[i].item, chapters: entry.ExcludedAt == nil})
 	}
 	sort.Slice(writes, func(i, j int) bool { return writes[i].item.SourceID < writes[j].item.SourceID })
 	for _, write := range writes {
@@ -968,8 +983,13 @@ func (m *Module) commitSync(ctx context.Context, tx bun.Tx, state syncState, sou
 		}
 	}
 	for _, entry := range plan.removals {
-		result, err := tx.NewUpdate().Model((*models.AlbumEntry)(nil)).Set("removed_at = ?", now).Set("moment_id = NULL").
-			Where("id = ? AND album_id = ? AND removed_at IS NULL", entry.ID, albumID).Exec(ctx)
+		update := tx.NewUpdate().Model((*models.AlbumEntry)(nil))
+		if entry.ExcludedAt != nil {
+			update = update.Set("excluded_at = NULL").Where("id = ? AND album_id = ? AND excluded_at IS NOT NULL", entry.ID, albumID)
+		} else {
+			update = update.Set("removed_at = ?", now).Set("moment_id = NULL").Where("id = ? AND album_id = ? AND removed_at IS NULL", entry.ID, albumID)
+		}
+		result, err := update.Exec(ctx)
 		if err != nil {
 			return errorstack.CaptureContext(ctx, err)
 		}

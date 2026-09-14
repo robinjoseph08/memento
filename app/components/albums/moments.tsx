@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useEffectEvent, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 
 import {
@@ -76,6 +76,13 @@ export function MomentPane({
   );
   const editEntry = (entry: string | null) =>
     setParams((current) => withParams(current, { entry }));
+  // An item kept out or moved elsewhere leaves the URL pointing at nothing;
+  // clear it so a refresh does not reopen an empty dialog.
+  const requestedEntry = params.get("entry");
+  const clearEntry = useEffectEvent(() => editEntry(null));
+  useEffect(() => {
+    if (requestedEntry && !editingEntry) clearEntry();
+  }, [requestedEntry, editingEntry]);
   const [renameOpen, setRenameOpen] = useState(false);
   const [coverEntry, setCoverEntry] = useState<Entry | null>(null);
   const [structure, setStructure] = useState<{

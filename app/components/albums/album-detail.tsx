@@ -208,9 +208,6 @@ function AlbumContent({ album }: { album: AlbumDetail }) {
                     Viewer preview
                   </Link>
                 </li>
-              </ul>
-              <p className="mt-6 px-3 text-xs text-muted">Kept out</p>
-              <ul className="mt-1 space-y-0.5">
                 <li>
                   <Link
                     aria-current={section === "excluded" ? "page" : undefined}
@@ -224,7 +221,7 @@ function AlbumContent({ album }: { album: AlbumDetail }) {
                       entry: null,
                     })}
                   >
-                    Excluded
+                    Excluded media
                     <span className="ml-auto text-xs text-accent-foreground">
                       {album.excluded.length}
                     </span>

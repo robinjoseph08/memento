@@ -92,3 +92,78 @@ func TestExcludeAndIncludeExistingMedia(t *testing.T) {
 	_, err = module.IncludeEntry(t.Context(), album.ID, ids["first.jpg"], include)
 	requireCode(t, err, "not_found")
 }
+
+func TestExcludedMediaFollowsImmich(t *testing.T) {
+	t.Parallel()
+	source := syncFixture()
+	chapters := &recordingChapters{}
+	db, module, album, _ := syncedAlbums(t, source, chapters)
+	imported := len(chapters.requests)
+	ids := entryIDs(album)
+	shared := momentOf(album, "first.jpg")
+
+	// Keep the video out, then change it in Immich: the review refreshes its
+	// facts under an Excluded label without probing it.
+	exclude := publishing.ExcludeEntriesRequest{EntryIDs: []string{ids["family reunion.MP4"]}}
+	preview, err := module.PreviewExclude(t.Context(), album.ID, shared.ID, exclude)
+	require.NoError(t, err)
+	exclude.ReviewToken = preview.ReviewToken
+	_, err = module.ExcludeEntries(t.Context(), album.ID, shared.ID, exclude)
+	require.NoError(t, err)
+	clip := source.asset("clip")
+	clip.Checksum, clip.UpdatedAt = "bmV3Y2xpcA==", "2026-07-08T00:00:00Z"
+	review, err := module.CheckSync(t.Context(), album.ID, publishing.SyncRequest{})
+	require.NoError(t, err)
+	require.Len(t, review.Changes, 1)
+	assert.True(t, review.Changes[0].Excluded)
+	assert.Equal(t, "/api/media/sources/assets/clip/thumbnail", review.Changes[0].ThumbnailURL)
+	assert.False(t, review.UpToDate)
+	_, err = module.ApplySync(t.Context(), album.ID, publishing.SyncRequest{ReviewToken: review.ReviewToken})
+	require.NoError(t, err)
+	assert.Len(t, chapters.requests, imported, "excluded media is refreshed but not probed")
+	var item models.MediaItem
+	require.NoError(t, db.NewSelect().Model(&item).Where("source_id = 'clip'").Scan(t.Context()))
+	assert.Equal(t, "bmV3Y2xpcA==", item.Checksum)
+
+	// Adding it back now extracts at the refreshed checksum.
+	include := publishing.IncludeEntryRequest{MomentID: shared.ID}
+	preview, err = module.PreviewInclude(t.Context(), album.ID, ids["family reunion.MP4"], include)
+	require.NoError(t, err)
+	include.ReviewToken = preview.ReviewToken
+	_, err = module.IncludeEntry(t.Context(), album.ID, ids["family reunion.MP4"], include)
+	require.NoError(t, err)
+	require.Len(t, chapters.requests, imported+1)
+	assert.Equal(t, "bmV3Y2xpcA==", chapters.requests[imported].checksum)
+
+	// Excluded media that leaves Immich leaves the Excluded section through
+	// the review, and cannot be added back meanwhile.
+	exclude = publishing.ExcludeEntriesRequest{EntryIDs: []string{ids["second.jpg"]}}
+	preview, err = module.PreviewExclude(t.Context(), album.ID, shared.ID, exclude)
+	require.NoError(t, err)
+	exclude.ReviewToken = preview.ReviewToken
+	detail, err := module.ExcludeEntries(t.Context(), album.ID, shared.ID, exclude)
+	require.NoError(t, err)
+	require.Len(t, detail.Excluded, 1)
+	source.asset("b").Trashed = true
+	review, err = module.CheckSync(t.Context(), album.ID, publishing.SyncRequest{})
+	require.NoError(t, err)
+	require.Len(t, review.Removals, 1)
+	assert.True(t, review.Removals[0].Excluded)
+	assert.Equal(t, "trashed", review.Removals[0].Reason)
+	assert.Empty(t, review.Removals[0].MomentID)
+	assert.Empty(t, review.CoverChoices)
+	detail, err = module.ApplySync(t.Context(), album.ID, publishing.SyncRequest{ReviewToken: review.ReviewToken})
+	require.NoError(t, err)
+	assert.Empty(t, detail.Excluded)
+	assert.False(t, hasEntry(detail, "second.jpg"))
+	_, err = module.PreviewInclude(t.Context(), album.ID, ids["second.jpg"], publishing.IncludeEntryRequest{MomentID: shared.ID})
+	requireCode(t, err, "not_found")
+	source.asset("b").Trashed = false
+	review, err = module.CheckSync(t.Context(), album.ID, publishing.SyncRequest{})
+	require.NoError(t, err)
+	require.Len(t, review.Additions, 1)
+	assert.True(t, review.Additions[0].Returning)
+	detail, err = module.ApplySync(t.Context(), album.ID, publishing.SyncRequest{ReviewToken: review.ReviewToken})
+	require.NoError(t, err)
+	assert.Equal(t, ids["second.jpg"], entryIDs(detail)["second.jpg"], "the same entry returns")
+}

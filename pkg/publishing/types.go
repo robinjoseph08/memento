@@ -412,7 +412,9 @@ type SyncAddition struct {
 
 // SyncRemoval is an Album Entry whose asset is no longer shown by the Immich
 // album. Reason is left_album, trashed, or deleted; a trashed asset returns
-// as a returning addition if it is restored from the Immich trash.
+// as a returning addition if it is restored from the Immich trash. Excluded
+// means the entry was in the Excluded section, which it leaves; Moment
+// fields are empty for it.
 type SyncRemoval struct {
 	EntryID      string `json:"entry_id"`
 	Filename     string `json:"filename"`
@@ -422,16 +424,19 @@ type SyncRemoval struct {
 	MomentID     string `json:"moment_id"`
 	MomentLabel  string `json:"moment_label"`
 	Cover        bool   `json:"cover"`
+	Excluded     bool   `json:"excluded"`
 	Reason       string `json:"reason"`
 }
 
 // SyncChange is a Media Item whose source facts differ. Fields names what
 // changed: checksum, capture_time, availability, filename, or details.
+// Excluded media is refreshed too so Add back never carries stale facts.
 type SyncChange struct {
 	EntryID       string         `json:"entry_id"`
 	Filename      string         `json:"filename"`
 	Kind          string         `json:"kind"`
 	ThumbnailURL  string         `json:"thumbnail_url"`
+	Excluded      bool           `json:"excluded"`
 	Fields        []string       `json:"fields"`
 	CapturedAt    string         `json:"captured_at"`
 	NewCapturedAt string         `json:"new_captured_at"`

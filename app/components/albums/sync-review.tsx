@@ -163,7 +163,7 @@ function RemovalRow({ removal }: { removal: SyncRemoval }) {
             : removal.reason === "trashed"
               ? "In the Immich trash"
               : "Removed from the Immich album"}{" "}
-          · leaves {removal.moment_label}
+          · leaves {removal.excluded ? "Excluded media" : removal.moment_label}
           {removal.cover && " · was the cover"}
         </span>
       </div>
@@ -453,6 +453,7 @@ export function SyncDialog({
                         </span>
                         <span className="block text-muted">
                           {changeSummary(change)}
+                          {change.excluded && " · in Excluded media"}
                         </span>
                         {alsoIn(change.other_albums, "Also updates in")}
                       </div>

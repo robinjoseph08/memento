@@ -206,7 +206,9 @@ it("keeps selected media out after a visibility review and lists it as excluded"
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
   );
   const outline = screen.getByRole("navigation", { name: "Album outline" });
-  const excludedLink = within(outline).getByRole("link", { name: /Excluded/ });
+  const excludedLink = within(outline).getByRole("link", {
+    name: /Excluded media/,
+  });
   expect(excludedLink).toHaveTextContent("1");
   await user.click(excludedLink);
   const list = await screen.findByRole("list", { name: "Excluded media" });

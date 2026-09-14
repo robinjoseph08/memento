@@ -321,7 +321,7 @@ test("Curator reviews Immich changes, cancels, places additions, replaces a cove
     await expect(
       outline.getByRole("link", { name: /Monday, June 1, 2026/ }),
     ).toHaveCount(0);
-    const excludedLink = outline.getByRole("link", { name: /Excluded/ });
+    const excludedLink = outline.getByRole("link", { name: /Excluded media/ });
     await expect(excludedLink).toContainText("1");
     await check.click();
     await expect(dialog).toContainText(

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"net/http"
 	"strings"
 	"time"
 	"uuid"
@@ -19,27 +20,14 @@ import (
 // access rules and announcement history. A Moment that loses its cover gets
 // its earliest remaining item; one that loses everything is removed.
 func previewExclude(state structureState, momentID string, request ExcludeEntriesRequest) (StructurePreview, structureState, error) {
-	source, ok := state.Moments[momentID]
-	if !ok {
+	if _, ok := state.Moments[momentID]; !ok {
 		return StructurePreview{}, state, errcodes.NotFound("Moment")
 	}
 	selected, remaining, err := selectedEntries(state, momentID, request.EntryIDs)
 	if err != nil {
 		return StructurePreview{}, state, err
 	}
-	after := state.clone()
-	for entryID := range selected {
-		delete(after.EntryMoments, entryID)
-	}
-	removes := remaining == 0
-	if removes {
-		delete(after.Moments, momentID)
-		delete(after.Decisions, momentID)
-	} else if selected[source.CoverID] {
-		updated := after.Moments[momentID]
-		updated.CoverID = state.firstEntry(state.remainingEntries(momentID, selected))
-		after.Moments[momentID] = updated
-	}
+	after, removes := detachEntries(state, momentID, selected, remaining)
 	canonical := request
 	canonical.EntryIDs = canonicalEntries(request.EntryIDs)
 	canonical.ReviewToken = ""
@@ -91,7 +79,7 @@ func (m *Module) ExcludeEntries(ctx context.Context, albumID, momentID string, r
 		}
 		count, err := updated.RowsAffected()
 		if err != nil {
-			return errorstack.CaptureContext(ctx, err)
+			return errorstack.Capture(err)
 		}
 		if count != int64(len(request.EntryIDs)) {
 			return staleReview()
@@ -110,13 +98,10 @@ func (m *Module) ExcludeEntries(ctx context.Context, albumID, momentID string, r
 }
 
 // excludedEntry loads the Media Item behind one retained, excluded Album
-// Entry, locking the entry when asked.
+// Entry, locking the entry when asked. Callers have already found the Album.
 func excludedEntry(ctx context.Context, db bun.IDB, albumID, entryID string, lock bool) (models.MediaItem, error) {
 	var entry models.AlbumEntry
 	var item models.MediaItem
-	if _, err := uuid.Parse(albumID); err != nil {
-		return item, errcodes.NotFound("Album")
-	}
 	if _, err := uuid.Parse(entryID); err != nil {
 		return item, errcodes.NotFound("Excluded item")
 	}
@@ -168,6 +153,9 @@ func (m *Module) PreviewInclude(ctx context.Context, albumID, entryID string, re
 	if err != nil {
 		return StructurePreview{}, err
 	}
+	if item.Offline || item.Trashed {
+		return StructurePreview{}, unavailableInclude()
+	}
 	state, err := m.loadStructure(ctx, m.db, albumID, false)
 	if err != nil {
 		return StructurePreview{}, err
@@ -176,8 +164,13 @@ func (m *Module) PreviewInclude(ctx context.Context, albumID, entryID string, re
 	return preview, err
 }
 
+func unavailableInclude() error {
+	return &errcodes.Error{HTTPCode: http.StatusConflict, Code: "media_unavailable", Message: "Immich cannot show this item right now. Check for changes, then try again."}
+}
+
 // IncludeEntry returns excluded media to the Album in the reviewed Moment.
-// A video that was kept out before it was ever probed gets its extraction now.
+// Media Immich reports as missing or trashed waits for a check first. A
+// video that was kept out before it was ever probed gets its extraction now.
 func (m *Module) IncludeEntry(ctx context.Context, albumID, entryID string, request IncludeEntryRequest) (AlbumDetail, error) {
 	err := m.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 		if _, err := albumRow(ctx, tx, albumID, true); err != nil {
@@ -186,6 +179,9 @@ func (m *Module) IncludeEntry(ctx context.Context, albumID, entryID string, requ
 		item, err := excludedEntry(ctx, tx, albumID, entryID, true)
 		if err != nil {
 			return err
+		}
+		if item.Offline || item.Trashed {
+			return unavailableInclude()
 		}
 		state, err := m.loadStructure(ctx, tx, albumID, true)
 		if err != nil {

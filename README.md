@@ -157,8 +157,9 @@ from Immich entirely with `delete`. The printed curl line shows the shape.
 Take the fixture offline to see a check fail without touching the Album, or
 edit the library again between a review and Apply to see the stale review
 refused. Media that should stay in Immich but out of an Album is kept out from
-its Moment with Keep out and listed in the Album's Excluded section, where Add
-back returns it; a check never offers excluded media again.
+its Moment with Keep out and listed in the Album's Excluded media section, where
+Add back returns it; a check never offers excluded media again, though it keeps
+their details current and reports ones that left Immich.
 Use separate browser profiles to try multiple people. Ordinary tabs share the
 same session cookie. Never expose fake development sign-in publicly.
 

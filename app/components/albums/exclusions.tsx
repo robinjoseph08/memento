@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from "react";
+import { useEffect, useState } from "react";
 
 import {
   useExcludeEntries,
@@ -13,14 +13,8 @@ import type {
   ExcludedEntry,
   Moment,
 } from "../../types/generated/publishing";
-import {
-  FieldError,
-  Form,
-  ReadFailure,
-  sectionHeadingClass,
-} from "../people/form-fields";
+import { Form, ReadFailure, sectionHeadingClass } from "../people/form-fields";
 import { Button } from "../ui/button";
-import { Combobox } from "../ui/combobox";
 import {
   Dialog,
   DialogContent,
@@ -30,6 +24,7 @@ import {
 import { VisibilityReview } from "./album-access";
 import { AlbumImage } from "./album-image";
 import { captureClock, countLabel, shortDay } from "./moment-labels";
+import { SelectField } from "./structure-editor";
 
 // Keep out takes selected media out of the Album while it stays in Immich.
 // The review shows who loses it; the media waits in the Excluded section.
@@ -134,16 +129,21 @@ function IncludeDialog({
     })),
     { value: newKey, label: `New Moment: ${shortDay(day)}` },
   ];
+  // The same rule the synchronization review uses: a Moment that already
+  // holds this day, then one whose span covers it, else a new Moment.
   const suggested =
+    album.moments.find((moment) =>
+      moment.entries.some((item) => item.captured_at.slice(0, 10) === day),
+    )?.id ??
     album.moments.find((moment) => moment.date <= day && day <= moment.end_date)
-      ?.id ?? newKey;
+      ?.id ??
+    newKey;
   const [momentID, setMomentID] = useState(suggested);
   const review = preview.mutate;
   useEffect(() => {
     review({ moment_id: momentID, review_token: "" });
   }, [review, momentID]);
   const returnFocus = useReturnFocus();
-  const id = useId();
   const errors = fieldErrors(preview.error);
   const pending = include.isPending;
   return (
@@ -168,20 +168,14 @@ function IncludeDialog({
             );
           }}
         >
-          <label className="block text-xs font-medium" id={`${id}-label`}>
-            Moment
-          </label>
-          <Combobox
-            aria-describedby={errors.moment_id ? `${id}-error` : undefined}
-            aria-invalid={!!errors.moment_id}
-            aria-labelledby={`${id}-label`}
-            className="mt-2"
+          <SelectField
+            error={errors.moment_id}
+            label="Moment"
             onChange={setMomentID}
             options={options}
             placeholder="Choose a Moment"
             value={momentID}
           />
-          <FieldError error={errors.moment_id} id={`${id}-error`} />
           <VisibilityReview
             album={album}
             changes={preview.data?.changes}
@@ -191,6 +185,15 @@ function IncludeDialog({
             <p className="mb-4 text-xs text-muted" role="status">
               Reviewing visibility…
             </p>
+          )}
+          {preview.isError && !errors.moment_id && (
+            <div className="mb-4">
+              <ReadFailure
+                error={preview.error}
+                pending={preview.isPending}
+                retry={() => review({ moment_id: momentID, review_token: "" })}
+              />
+            </div>
           )}
           <fieldset className="flex gap-2" disabled={pending}>
             <Button disabled={!preview.data || preview.isPending} type="submit">
@@ -218,7 +221,7 @@ export function ExcludedPane({ album }: { album: AlbumDetail }) {
       <p className="mt-1 text-xs text-muted">
         {album.excluded.length === 0
           ? "Nothing is kept out. Select media in a Moment and choose Keep out to exclude it while it stays in Immich."
-          : `${countLabel(album.excluded.length, "item", "items")} stay in Immich but not in this album. Checking for changes never adds them back.`}
+          : `${countLabel(album.excluded.length, "item", "items")} stay in Immich but not in this album. Checking for changes never adds them back; it only keeps their details current.`}
       </p>
       {album.excluded.length > 0 && (
         <ul aria-label="Excluded media" className="mt-5 divide-y divide-border">
@@ -246,8 +249,14 @@ export function ExcludedPane({ album }: { album: AlbumDetail }) {
                 </span>
               </div>
               <Button
+                disabled={!entry.available}
                 onClick={() => setIncluding(entry)}
                 size="sm"
+                title={
+                  entry.available
+                    ? undefined
+                    : "Immich cannot show this item. Check for changes first."
+                }
                 type="button"
                 variant="outline"
               >
