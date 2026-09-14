@@ -1,6 +1,10 @@
 import { useEffect, useEffectEvent, useId, useState } from "react";
 
-import { useSetAccessRules } from "../../hooks/queries/albums";
+import {
+  useExcludeEntries,
+  usePreviewExclude,
+  useSetAccessRules,
+} from "../../hooks/queries/albums";
 import { useReturnFocus } from "../../hooks/use-return-focus";
 import { useUnsavedChanges } from "../../hooks/use-unsaved-changes";
 import { fieldErrors } from "../../lib/http";
@@ -72,6 +76,26 @@ export function RulesDialog({
     if (closeWhenSettled && !dirty) closeSettled();
   }, [closeWhenSettled, dirty]);
   const [discardOpen, setDiscardOpen] = useState(false);
+  // Keep out reviews and applies in one click: it is one item, explicit, and
+  // reversible from the Excluded section, so no second dialog is asked.
+  const previewExclude = usePreviewExclude(album.id, moment.id);
+  const excludeEntries = useExcludeEntries(album.id, moment.id);
+  const excluding = previewExclude.isPending || excludeEntries.isPending;
+  const keepOut = async () => {
+    if (!entry || excluding) return;
+    const preview = await previewExclude.mutateAsync({
+      entry_ids: [entry.id],
+      review_token: "",
+    });
+    await excludeEntries.mutateAsync({
+      entry_ids: [entry.id],
+      review_token: preview.review_token,
+    });
+    // The item is gone from this Moment, so any unsaved draft is moot.
+    setDraft({});
+    setDiscards((count) => count + 1);
+    setCloseWhenSettled(true);
+  };
   const returnFocus = useReturnFocus();
   const errors = fieldErrors(save.error);
   const errorId = useId();
@@ -104,7 +128,7 @@ export function RulesDialog({
             {video
               ? "Video details"
               : entry
-                ? "Item access"
+                ? "Photo details"
                 : "Rules & exceptions"}
           </DialogTitle>
           <DialogDescription className="mt-3 text-sm text-muted">
@@ -217,6 +241,33 @@ export function RulesDialog({
               </div>
             </fieldset>
           </Form>
+          {entry && (
+            <Form
+              aria-busy={excluding}
+              aria-label="Keep out of this album"
+              className="mt-6 border-t border-border pt-5"
+              error={previewExclude.error ?? excludeEntries.error}
+              onSubmit={(event) => {
+                event.preventDefault();
+                void keepOut().catch(() => {});
+              }}
+            >
+              <h3 className="text-xs font-medium">This album</h3>
+              <p className="mt-1 text-xs text-muted">
+                Keep out leaves the {video ? "video" : "photo"} in Immich but
+                takes it out of this album. It waits in the Excluded section
+                with its access decisions until you add it back.
+              </p>
+              <Button
+                className="mt-3"
+                disabled={excluding || save.isPending}
+                type="submit"
+                variant="outline"
+              >
+                {excluding ? "Keeping out…" : "Keep out of this album"}
+              </Button>
+            </Form>
+          )}
         </DialogContent>
       </Dialog>
       <ConfirmDialog

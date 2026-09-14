@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/robinjoseph08/memento/pkg/errcodes"
 	"github.com/robinjoseph08/memento/pkg/immich"
 	"github.com/robinjoseph08/memento/pkg/models"
 	"github.com/robinjoseph08/memento/pkg/publishing"
@@ -22,9 +23,27 @@ type library struct {
 	beforeAsset func(context.Context, string) error
 	members     func(context.Context, string, int) ([]immich.Asset, int, error)
 	faces       func(context.Context, string) ([]immich.Face, error)
+	// membership lists asset IDs per album. Nil means every asset is in every album.
+	membership map[string][]string
+	// unsupported makes CheckImport refuse, like an untested Immich release.
+	unsupported bool
+	// offline makes every read fail, like an outage.
+	offline bool
 }
 
-func (l *library) CheckImport(context.Context) error { return nil }
+func (l *library) CheckImport(context.Context) error {
+	if l.offline {
+		return outage()
+	}
+	if l.unsupported {
+		return &errcodes.Error{HTTPCode: 409, Code: "immich_unsupported_version", Message: "Import and synchronization require stable Immich 3.0.x and 3.1.x. Update Immich or Memento first."}
+	}
+	return nil
+}
+
+func outage() error {
+	return &errcodes.Error{HTTPCode: 502, Code: "immich_unavailable", Message: "Immich is unavailable. Check its address and network connection, then retry."}
+}
 func (l *library) ListAlbums(context.Context) ([]immich.Album, error) {
 	a := []immich.Album{}
 	for _, v := range l.albums {
@@ -33,13 +52,34 @@ func (l *library) ListAlbums(context.Context) ([]immich.Album, error) {
 	return a, nil
 }
 func (l *library) GetAlbum(_ context.Context, id string) (immich.Album, error) {
-	return l.albums[id], nil
+	if l.offline {
+		return immich.Album{}, outage()
+	}
+	album, ok := l.albums[id]
+	if !ok {
+		return immich.Album{}, &errcodes.Error{HTTPCode: 404, Code: "not_found", Message: "Immich resource or endpoint not found."}
+	}
+	return album, nil
 }
 func (l *library) ListMembers(ctx context.Context, id string, page int) ([]immich.Asset, int, error) {
+	if l.offline {
+		return nil, 0, outage()
+	}
 	if l.members != nil {
 		return l.members(ctx, id, page)
 	}
-	return l.assets, 0, nil
+	if l.membership == nil {
+		return l.assets, 0, nil
+	}
+	members := []immich.Asset{}
+	for _, assetID := range l.membership[id] {
+		for _, a := range l.assets {
+			if a.ID == assetID && !a.Trashed {
+				members = append(members, a)
+			}
+		}
+	}
+	return members, 0, nil
 }
 func (l *library) ListFaces(ctx context.Context, id string) ([]immich.Face, error) {
 	if l.faces != nil {
@@ -48,6 +88,9 @@ func (l *library) ListFaces(ctx context.Context, id string) ([]immich.Face, erro
 	return nil, nil
 }
 func (l *library) GetAsset(ctx context.Context, id string) (immich.Asset, error) {
+	if l.offline {
+		return immich.Asset{}, outage()
+	}
 	if l.beforeAsset != nil {
 		if err := l.beforeAsset(ctx, id); err != nil {
 			return immich.Asset{}, err
@@ -58,7 +101,7 @@ func (l *library) GetAsset(ctx context.Context, id string) (immich.Asset, error)
 			return a, nil
 		}
 	}
-	panic("unknown fixture asset")
+	return immich.Asset{}, &errcodes.Error{HTTPCode: 404, Code: "not_found", Message: "Immich resource or endpoint not found."}
 }
 func fixture() *library {
 	return &library{albums: map[string]immich.Album{"source": {ID: "source", Name: "Summer", Description: "From Immich", Count: 3}}, assets: []immich.Asset{

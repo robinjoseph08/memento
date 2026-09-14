@@ -228,6 +228,12 @@ func run(ctx context.Context, release string) (returnErr error) {
 	if enqueued != 3 || len(chapterTasks) != 1 {
 		return fmt.Errorf("publication, unpublication, or deletion enqueued unexpected durable work")
 	}
+	if err := verifySynchronization(ctx, module, library, imported[1], &chapterTasks); err != nil {
+		return fmt.Errorf("synchronization through production Immich adapter: %w", err)
+	}
+	if enqueued != 3 || len(chapterTasks) != 1 {
+		return fmt.Errorf("synchronization enqueued unexpected durable work")
+	}
 	after, err := snapshot(ctx, source, sourceAlbums)
 	if err != nil {
 		return err
@@ -570,5 +576,105 @@ func verifyAlbum(detail publishing.AlbumDetail, album fixture.Album, assets []fi
 	if len(expected) > 0 && (detail.StartDate != expected[0].CapturedAt[:10] || detail.EndDate != expected[len(expected)-1].CapturedAt[:10] || detail.CoverURL != summaryCover) {
 		return fmt.Errorf("album summary capture-local dates or configured Moment cover differs")
 	}
+	return nil
+}
+
+// verifySynchronization edits the second source album the way a photographer
+// would, then proves a check reports exactly those edits, an apply commits
+// them atomically, and Immich itself is left as the smoke found it once the
+// edits are reverted.
+func verifySynchronization(ctx context.Context, module *publishing.Module, library *fixture.Library, detail publishing.AlbumDetail, chapterTasks *[]string) error {
+	album := library.Albums[1]
+	unchanged, err := module.CheckSync(ctx, detail.ID, publishing.SyncRequest{})
+	if err != nil {
+		return err
+	}
+	if !unchanged.UpToDate || unchanged.Ready || len(unchanged.Additions)+len(unchanged.Removals)+len(unchanged.Changes) != 0 || unchanged.Description != nil {
+		return fmt.Errorf("an unchanged source album was not reported as up to date")
+	}
+	// Remove the pair member that is not the cover, add the later-day photo,
+	// and edit the description.
+	removed := min(library.Assets[1].ID, library.Assets[2].ID)
+	added := library.Assets[3]
+	if err := library.RemoveAssets(ctx, album.ID, []string{removed}); err != nil {
+		return err
+	}
+	if err := library.AddAssets(ctx, album.ID, []string{added.ID}); err != nil {
+		return err
+	}
+	if err := library.SetDescription(ctx, album.ID, "Edited by the smoke"); err != nil {
+		return err
+	}
+	revert := func() error {
+		if err := library.RemoveAssets(ctx, album.ID, []string{added.ID}); err != nil {
+			return err
+		}
+		if err := library.AddAssets(ctx, album.ID, []string{removed}); err != nil {
+			return err
+		}
+		return library.SetDescription(ctx, album.ID, album.Description)
+	}
+	review, err := module.CheckSync(ctx, detail.ID, publishing.SyncRequest{})
+	if err != nil {
+		return errors.Join(err, revert())
+	}
+	if !review.Ready || review.UpToDate || len(review.Additions) != 1 || len(review.Removals) != 1 || len(review.Changes) != 0 || review.Description == nil || review.Description.After != "Edited by the smoke" {
+		return errors.Join(fmt.Errorf("check did not report one addition, one removal, and the description edit"), revert())
+	}
+	if review.Additions[0].SourceID != added.ID || review.Additions[0].Filename != added.Filename || !strings.HasPrefix(review.Additions[0].SuggestedMomentID, "new:") {
+		return errors.Join(fmt.Errorf("the added later-day photo was not suggested a new Moment"), revert())
+	}
+	if review.Removals[0].Cover || review.Removals[0].Reason != "left_album" || len(review.CoverChoices) != 0 || len(review.RemovedMoments) != 0 {
+		return errors.Join(fmt.Errorf("removing the non-cover pair member should need no cover choice"), revert())
+	}
+	// The first Memento Album was permanently deleted by the publishing check,
+	// so the photo it once shared must not be reported as shared any more.
+	if len(review.Additions[0].OtherAlbums) != 0 {
+		return errors.Join(fmt.Errorf("a deleted Album was reported as sharing the added photo"), revert())
+	}
+	// A check changes nothing.
+	still, err := module.GetAlbum(ctx, detail.ID)
+	if err != nil {
+		return errors.Join(err, revert())
+	}
+	if still.Description != detail.Description || still.PhotoCount != detail.PhotoCount || len(still.Moments) != len(detail.Moments) {
+		return errors.Join(fmt.Errorf("a check changed the Album before apply"), revert())
+	}
+	applied, err := module.ApplySync(ctx, detail.ID, publishing.SyncRequest{ReviewToken: review.ReviewToken})
+	if err != nil {
+		return errors.Join(err, revert())
+	}
+	if applied.Description != "Edited by the smoke" || applied.PhotoCount != 2 || len(applied.Moments) != 2 || len(*chapterTasks) != 1 {
+		return errors.Join(fmt.Errorf("apply did not commit the reviewed membership and description"), revert())
+	}
+	filenames := []string{}
+	for _, moment := range applied.Moments {
+		for _, entry := range moment.Entries {
+			filenames = append(filenames, entry.Filename)
+		}
+	}
+	if slices.Contains(filenames, library.Assets[slices.IndexFunc(library.Assets, func(a fixture.Asset) bool { return a.ID == removed })].Filename) || !slices.Contains(filenames, added.Filename) {
+		return errors.Join(fmt.Errorf("apply did not swap the reviewed members"), revert())
+	}
+	first, err := module.GetAlbum(ctx, detail.ID)
+	if err != nil {
+		return errors.Join(err, revert())
+	}
+	if !reflect.DeepEqual(applied, first) {
+		return errors.Join(fmt.Errorf("apply result differs from a fresh read"), revert())
+	}
+	if err := revert(); err != nil {
+		return err
+	}
+	// The reverted source reads as the reverse diff, and the removed entry
+	// returns with its identity.
+	reversed, err := module.CheckSync(ctx, detail.ID, publishing.SyncRequest{})
+	if err != nil {
+		return err
+	}
+	if !reversed.Ready || len(reversed.Additions) != 1 || !reversed.Additions[0].Returning || len(reversed.Removals) != 1 || reversed.Description == nil || reversed.Description.After != album.Description {
+		return fmt.Errorf("reverting the source edits was not reported as the reverse diff with a returning entry")
+	}
+	fmt.Printf("Synchronized %q: one addition, one removal, and a description edit applied atomically\n", detail.Title)
 	return nil
 }

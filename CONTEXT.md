@@ -14,6 +14,10 @@ _Avoid_: Asset
 **Album Entry**:
 A Media Item's inclusion in one Album and exactly one Moment. Album-specific access applies to the Album Entry rather than globally to the Media Item.
 
+**Excluded Media**:
+An Album Entry a Curator keeps out of one Album while its asset stays in the Immich album. It keeps its identity, Access Decisions, and announcement history, appears in no Moment, and is never offered again by a check for changes. Keep out excludes it and Add back returns it to a reviewed Moment.
+_Avoid_: Hidden, Removed, Deleted
+
 **Moment**:
 A nonempty Curator-only portion of an Album whose media was captured around the same time and usually involves the same people. Moments default to capture days but may be split, merged, or span midnight. Each Moment has a Curator-selected Album Entry as its cover; viewer Album covers are derived from accessible Moment covers rather than stored separately.
 _Avoid_: Access Set, Day Group, Chapter

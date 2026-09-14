@@ -7,7 +7,9 @@ import type {
   Album,
   AlbumAccessPreview,
   AlbumDetail,
+  ExcludeEntriesRequest,
   ImportRequest,
+  IncludeEntryRequest,
   MergeMomentsRequest,
   MoveEntriesRequest,
   RemoveAccessPreview,
@@ -19,6 +21,8 @@ import type {
   SourcePage,
   SplitMomentRequest,
   StructurePreview,
+  SyncRequest,
+  SyncReview,
   UpdateAlbumRequest,
   UpdateMomentRequest,
   UpdateVideoRequest,
@@ -339,5 +343,81 @@ export function useSources(search: string, page: number) {
         { signal },
       ),
     retry: false,
+  });
+}
+
+// Checking is read-only apart from refreshing cached faces, so it caches
+// nothing; the review lives only in the dialog that asked for it.
+export function useCheckSync(albumID: string) {
+  const scope = usePrivateScope();
+  return useMutation({
+    mutationKey: scope,
+    mutationFn: (body: SyncRequest) =>
+      request<SyncReview>(
+        `/api/curator/albums/${encodeURIComponent(albumID)}/sync/check`,
+        { body },
+      ),
+  });
+}
+
+// Applying can change global Media Item facts shown by other Albums, so every
+// cached Album detail is invalidated along with this one.
+export function useApplySync(albumID: string) {
+  const cache = useAlbumCache();
+  const client = useQueryClient();
+  return useMutation({
+    mutationKey: cache.scope,
+    mutationFn: (body: SyncRequest) =>
+      request<AlbumDetail>(
+        `/api/curator/albums/${encodeURIComponent(albumID)}/sync/apply`,
+        { body },
+      ),
+    onSuccess: async (album) => {
+      await cache.save(album);
+      await client.invalidateQueries({ queryKey: [...cache.scope, "album"] });
+    },
+  });
+}
+
+export function usePreviewExclude(albumID: string, momentID: string) {
+  const scope = usePrivateScope();
+  return useMutation({
+    mutationKey: scope,
+    mutationFn: (body: ExcludeEntriesRequest) =>
+      request<StructurePreview>(
+        momentURL(albumID, momentID, "exclude/preview"),
+        { body },
+      ),
+  });
+}
+
+export function useExcludeEntries(albumID: string, momentID: string) {
+  const cache = useAlbumCache();
+  return useMutation({
+    mutationKey: cache.scope,
+    mutationFn: (body: ExcludeEntriesRequest) =>
+      request<AlbumDetail>(momentURL(albumID, momentID, "exclude"), { body }),
+    onSuccess: cache.save,
+  });
+}
+
+export function usePreviewInclude(albumID: string, entryID: string) {
+  const scope = usePrivateScope();
+  return useMutation({
+    mutationKey: scope,
+    mutationFn: (body: IncludeEntryRequest) =>
+      request<StructurePreview>(entryURL(albumID, entryID, "include/preview"), {
+        body,
+      }),
+  });
+}
+
+export function useIncludeEntry(albumID: string, entryID: string) {
+  const cache = useAlbumCache();
+  return useMutation({
+    mutationKey: cache.scope,
+    mutationFn: (body: IncludeEntryRequest) =>
+      request<AlbumDetail>(entryURL(albumID, entryID, "include"), { body }),
+    onSuccess: cache.save,
   });
 }

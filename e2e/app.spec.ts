@@ -119,9 +119,10 @@ test("claims during an Immich outage, recovers, and revokes the signed-out sessi
   expect((await request.post(`${fixtureURL}/__fixture/restart`)).status()).toBe(
     204,
   );
-  await page.reload();
-  await expect(page.getByRole("heading", { name: /^Hi, / })).toBeVisible();
   // A diagnostic started under an old session must not replace a newer cookie.
+  // The connection result is cached for the session, so the request to hold
+  // is the one the dashboard makes on reload; it is registered first so a
+  // slow runner cannot let it through before the hold is in place.
   let reportStarted!: () => void;
   let release!: () => void;
   let reportFinished!: () => void;
@@ -146,6 +147,8 @@ test("claims during an Immich outage, recovers, and revokes the signed-out sessi
     },
     { times: 1 },
   );
+  await page.reload();
+  await expect(page.getByRole("heading", { name: /^Hi, / })).toBeVisible();
   await openConnection();
   await started;
   await account.click();

@@ -69,7 +69,9 @@ type MediaChapterResult struct {
 	UpdatedAt     time.Time
 }
 
-// AlbumEntry retains identity when membership is removed, without keeping an empty Moment.
+// AlbumEntry retains identity when membership is removed, without keeping an
+// empty Moment. ExcludedAt marks a removed entry the Curator keeps out of this
+// Album while the asset stays in the source album.
 type AlbumEntry struct {
 	bun.BaseModel `bun:"table:album_entries,alias:album_entry"`
 	ID            UUID  `bun:"id,pk,type:uuid"`
@@ -77,6 +79,7 @@ type AlbumEntry struct {
 	MediaItemID   UUID  `bun:"type:uuid"`
 	MomentID      *UUID `bun:"type:uuid"`
 	RemovedAt     *time.Time
+	ExcludedAt    *time.Time
 }
 
 type Moment struct {

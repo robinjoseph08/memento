@@ -252,8 +252,7 @@ func canonicalEntries(ids []string) []string {
 // previewMove describes a move without committing it. When the cover leaves
 // a surviving Moment, its earliest remaining item becomes the cover.
 func previewMove(state structureState, sourceMomentID string, request MoveEntriesRequest) (StructurePreview, structureState, error) {
-	source, sourceOK := state.Moments[sourceMomentID]
-	if !sourceOK {
+	if _, sourceOK := state.Moments[sourceMomentID]; !sourceOK {
 		return StructurePreview{}, state, errcodes.NotFound("Moment")
 	}
 	if request.DestinationMomentID == sourceMomentID || state.Moments[request.DestinationMomentID].ID == "" {
@@ -263,18 +262,9 @@ func previewMove(state structureState, sourceMomentID string, request MoveEntrie
 	if err != nil {
 		return StructurePreview{}, state, err
 	}
-	after := state.clone()
+	after, removes := detachEntries(state, sourceMomentID, selected, remaining)
 	for entryID := range selected {
 		after.EntryMoments[entryID] = request.DestinationMomentID
-	}
-	removes := remaining == 0
-	if removes {
-		delete(after.Moments, sourceMomentID)
-		delete(after.Decisions, sourceMomentID)
-	} else if selected[source.CoverID] {
-		updated := after.Moments[sourceMomentID]
-		updated.CoverID = state.firstEntry(state.remainingEntries(sourceMomentID, selected))
-		after.Moments[sourceMomentID] = updated
 	}
 	canonical := request
 	canonical.EntryIDs = canonicalEntries(request.EntryIDs)
@@ -282,6 +272,27 @@ func previewMove(state structureState, sourceMomentID string, request MoveEntrie
 	preview := StructurePreview{Ready: true, RemovesMoment: removes, Changes: reviewedChanges(state, after), Conflicts: []AccessConflict{}}
 	preview.ReviewToken, err = reviewToken("move", state, canonical, after)
 	return preview, after, err
+}
+
+// detachEntries takes the selected entries out of their Moment in a copy of
+// the state. A Moment left empty is removed; one that loses its cover gets
+// its earliest remaining item. Callers place the entries elsewhere or not.
+func detachEntries(state structureState, momentID string, selected map[string]bool, remaining int) (structureState, bool) {
+	source := state.Moments[momentID]
+	after := state.clone()
+	for entryID := range selected {
+		delete(after.EntryMoments, entryID)
+	}
+	removes := remaining == 0
+	if removes {
+		delete(after.Moments, momentID)
+		delete(after.Decisions, momentID)
+	} else if selected[source.CoverID] {
+		updated := after.Moments[momentID]
+		updated.CoverID = state.firstEntry(state.remainingEntries(momentID, selected))
+		after.Moments[momentID] = updated
+	}
+	return after, removes
 }
 
 func (m *Module) PreviewMove(ctx context.Context, albumID, sourceMomentID string, request MoveEntriesRequest) (StructurePreview, error) {

@@ -62,9 +62,27 @@ type Library struct {
 	VideoAlbum Album
 	baseURL    string
 	secret     string
+	// owner is the source owner's session, kept so a smoke can edit albums the
+	// way a photographer does and prove Memento follows those edits.
+	owner *api
 }
 
 func (f *Library) Source() *immich.Client { return immich.New(f.baseURL, f.secret) }
+
+// AddAssets puts assets into a source album through the supported album API.
+func (f *Library) AddAssets(ctx context.Context, albumID string, assetIDs []string) error {
+	return f.owner.json(ctx, http.MethodPut, "/albums/"+url.PathEscape(albumID)+"/assets", map[string]any{"ids": assetIDs}, nil)
+}
+
+// RemoveAssets takes assets out of a source album without deleting them.
+func (f *Library) RemoveAssets(ctx context.Context, albumID string, assetIDs []string) error {
+	return f.owner.json(ctx, http.MethodDelete, "/albums/"+url.PathEscape(albumID)+"/assets", map[string]any{"ids": assetIDs}, nil)
+}
+
+// SetDescription edits a source album's description.
+func (f *Library) SetDescription(ctx context.Context, albumID, description string) error {
+	return f.owner.json(ctx, http.MethodPatch, "/albums/"+url.PathEscape(albumID), map[string]string{"description": description}, nil)
+}
 
 // OriginalRange asks Immich's original-file endpoint for the first two bytes
 // with the read key, the way ffprobe does, and reports whether the server
@@ -280,6 +298,7 @@ func Setup(ctx context.Context, baseURL, expectedRelease string) (*Library, erro
 		return nil, fmt.Errorf("fixture key must grant exactly album.read, asset.download, asset.read, asset.view, face.read, person.read")
 	}
 	f.secret = key.Secret
+	f.owner = a
 	return f, nil
 }
 

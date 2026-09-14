@@ -4,6 +4,7 @@ import { useState } from "react";
 import { cn } from "../../lib/utils";
 import type { Entry } from "../../types/generated/publishing";
 import { AlbumImage } from "./album-image";
+import { captureClock } from "./moment-labels";
 
 export function EntryPreview({
   entry,
@@ -19,10 +20,7 @@ export function EntryPreview({
   onOpen?: () => void;
 }) {
   const [ratio, setRatio] = useState(1.5);
-  const hour = Number(entry.captured_at.slice(11, 13));
-  const clock = `${hour % 12 || 12}:${entry.captured_at.slice(14, 16)}`;
-  const period = hour < 12 ? "AM" : "PM";
-  const time = `${clock} ${period}`;
+  const time = captureClock(entry.captured_at);
   const width = Math.max(64, 112 * ratio);
   const narrow = width < 96;
   const image = (

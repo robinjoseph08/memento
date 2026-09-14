@@ -280,3 +280,53 @@ func TestFixtureVideosServeRangedOriginalsAndPlayback(t *testing.T) {
 	assert.Equal(t, 2, fixture.requests["GET /api/assets/workbench-video-party/video/playback (range)"])
 	fixture.mu.RUnlock()
 }
+
+func TestFixtureLibraryControlEditsSourceLikeImmich(t *testing.T) {
+	t.Parallel()
+	fixture := newImmichFixture(false)
+	server := httptest.NewServer(fixture)
+	t.Cleanup(server.Close)
+	client := immich.New(server.URL, fixtureAPIKey)
+	control := func(body string) int {
+		t.Helper()
+		response, err := http.Post(server.URL+"/__fixture/library", "application/json", strings.NewReader(body))
+		require.NoError(t, err)
+		require.NoError(t, response.Body.Close())
+		return response.StatusCode
+	}
+	assert.Equal(t, http.StatusBadRequest, control(`{}`))
+	assert.Equal(t, http.StatusNotFound, control(`{"album":"missing"}`))
+	assert.Equal(t, http.StatusBadRequest, control(`{"album":"fixture-album-coast","members":["nope"]}`))
+
+	before, err := client.GetAlbum(t.Context(), "fixture-album-coast")
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, control(`{"album":"fixture-album-coast","members":["fixture-asset-01","fixture-asset-03","workbench-video-party"],"description":"Edited",
+		"assets":{"fixture-asset-03":{"checksum":"AAAAAAAAAAAAAAAAAAAAAAAAAAA=","localDateTime":"2026-06-09T08:00:00-07:00"},"fixture-asset-01":{"isTrashed":true}},
+		"delete":["fixture-asset-02"]}`))
+	after, err := client.GetAlbum(t.Context(), "fixture-album-coast")
+	require.NoError(t, err)
+	assert.Equal(t, "Edited", after.Description)
+	assert.Equal(t, 3, after.Count)
+	assert.NotEqual(t, before.UpdatedAt, after.UpdatedAt)
+	members, next, err := client.ListMembers(t.Context(), "fixture-album-coast", 1)
+	require.NoError(t, err)
+	assert.Zero(t, next)
+	ids := []string{}
+	for _, member := range members {
+		ids = append(ids, member.ID)
+	}
+	assert.ElementsMatch(t, []string{"fixture-asset-03", "workbench-video-party"}, ids, "trashed assets leave the listing")
+	trashed, err := client.GetAsset(t.Context(), "fixture-asset-01")
+	require.NoError(t, err)
+	assert.True(t, trashed.Trashed)
+	edited, err := client.GetAsset(t.Context(), "fixture-asset-03")
+	require.NoError(t, err)
+	assert.Equal(t, "AAAAAAAAAAAAAAAAAAAAAAAAAAA=", edited.Checksum)
+	assert.Equal(t, "2026-06-09T08:00:00-07:00", edited.LocalDateTime)
+	assert.NotEqual(t, "2026-06-05T12:00:00Z", edited.UpdatedAt)
+	_, err = client.GetAsset(t.Context(), "fixture-asset-02")
+	assert.True(t, immich.IsNotFound(err), "deleted assets are gone everywhere")
+	family, err := client.GetAlbum(t.Context(), "fixture-album-family")
+	require.NoError(t, err)
+	assert.Equal(t, 2, family.Count, "deletion leaves the other album too")
+}

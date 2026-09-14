@@ -22,6 +22,7 @@ import { AlbumAccess } from "./album-access";
 import { AlbumImage } from "./album-image";
 import { DangerZone } from "./album-lifecycle";
 import { Audience } from "./audience";
+import { ExcludedPane } from "./exclusions";
 import { ImportProgress } from "./import-progress";
 import { MediaCounts } from "./media-counts";
 import {
@@ -33,6 +34,7 @@ import {
 } from "./moment-labels";
 import { MomentPane } from "./moments";
 import { PublishChecklist, PublishDialog } from "./publication-review";
+import { SyncDialog } from "./sync-review";
 
 const outlineRowClass = (active: boolean) =>
   cn(
@@ -78,10 +80,14 @@ export function AlbumPage() {
 function AlbumContent({ album }: { album: AlbumDetail }) {
   const [params] = useSearchParams();
   const [publicationOpen, setPublicationOpen] = useState(false);
+  const [syncOpen, setSyncOpen] = useState(false);
   const desktop = useMediaQuery("(min-width: 761px)");
   const requested = params.get("section");
   const section =
-    requested === "details" || requested === "access" || requested === "preview"
+    requested === "details" ||
+    requested === "access" ||
+    requested === "preview" ||
+    requested === "excluded"
       ? requested
       : "moments";
   const moment =
@@ -116,21 +122,34 @@ function AlbumContent({ album }: { album: AlbumDetail }) {
             </span>
           </p>
         </div>
-        {!album.published && (
+        <div className="flex w-full flex-wrap gap-2 min-[761px]:w-auto">
           <Button
-            className="w-full min-[761px]:w-auto"
+            className="flex-1 min-[761px]:flex-none"
             disabled={!complete}
-            onClick={() => setPublicationOpen(true)}
+            onClick={() => setSyncOpen(true)}
+            variant="outline"
           >
-            Review & publish
+            Check for changes
           </Button>
-        )}
+          {!album.published && (
+            <Button
+              className="flex-1 min-[761px]:flex-none"
+              disabled={!complete}
+              onClick={() => setPublicationOpen(true)}
+            >
+              Review & publish
+            </Button>
+          )}
+        </div>
       </header>
       {publicationOpen && (
         <PublishDialog
           album={album}
           onClose={() => setPublicationOpen(false)}
         />
+      )}
+      {syncOpen && (
+        <SyncDialog album={album} onClose={() => setSyncOpen(false)} />
       )}
       {complete ? (
         <div className="min-[761px]:grid min-[761px]:min-h-[70vh] min-[761px]:grid-cols-[300px_minmax(0,1fr)]">
@@ -187,6 +206,25 @@ function AlbumContent({ album }: { album: AlbumDetail }) {
                     })}
                   >
                     Viewer preview
+                  </Link>
+                </li>
+                <li>
+                  <Link
+                    aria-current={section === "excluded" ? "page" : undefined}
+                    className={cn(
+                      outlineRowClass(section === "excluded"),
+                      "text-sm",
+                    )}
+                    to={link({
+                      section: "excluded",
+                      pane: "detail",
+                      entry: null,
+                    })}
+                  >
+                    Excluded media
+                    <span className="ml-auto text-xs text-accent-foreground">
+                      {album.excluded.length}
+                    </span>
                   </Link>
                 </li>
               </ul>
@@ -278,6 +316,9 @@ function AlbumContent({ album }: { album: AlbumDetail }) {
             )}
             {showDetail && section === "preview" && (
               <ViewerPreview album={album} />
+            )}
+            {showDetail && section === "excluded" && (
+              <ExcludedPane album={album} />
             )}
             {showDetail &&
               section === "moments" &&

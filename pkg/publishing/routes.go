@@ -43,6 +43,8 @@ func RegisterRoutes(e *echo.Echo, module *Module, requireCurator echo.Middleware
 	e.GET("/api/curator/albums/:id", h.album, requireCurator)
 	e.POST("/api/curator/albums/:id", h.updateAlbum, requireCurator)
 	e.POST("/api/curator/albums/:id/retry", h.retryImport, requireCurator)
+	e.POST("/api/curator/albums/:id/sync/check", h.checkSync, requireCurator)
+	e.POST("/api/curator/albums/:id/sync/apply", h.applySync, requireCurator)
 	e.POST("/api/curator/albums/:id/entries/:entryID/video", h.updateVideo, requireCurator)
 	e.POST("/api/curator/albums/:id/entries/:entryID/chapters/retry", h.retryChapters, requireCurator)
 	e.POST("/api/curator/albums/:id/moments/:momentID", h.updateMoment, requireCurator)
@@ -54,4 +56,8 @@ func RegisterRoutes(e *echo.Echo, module *Module, requireCurator echo.Middleware
 	e.POST("/api/curator/albums/:id/moments/:momentID/split", h.splitMoment, requireCurator)
 	e.POST("/api/curator/albums/:id/moments/:momentID/merge/preview", h.previewMerge, requireCurator)
 	e.POST("/api/curator/albums/:id/moments/:momentID/merge", h.mergeMoments, requireCurator)
+	e.POST("/api/curator/albums/:id/moments/:momentID/exclude/preview", h.previewExclude, requireCurator)
+	e.POST("/api/curator/albums/:id/moments/:momentID/exclude", h.excludeEntries, requireCurator)
+	e.POST("/api/curator/albums/:id/entries/:entryID/include/preview", h.previewInclude, requireCurator)
+	e.POST("/api/curator/albums/:id/entries/:entryID/include", h.includeEntry, requireCurator)
 }

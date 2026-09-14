@@ -148,6 +148,18 @@ confirmation page can be opened from the fixture output.
 Pass `--no-smtp` to start without email and check that Person setup and sign-in
 still work. Stop it with Ctrl-C and run it again to reset without erasing
 development data.
+
+The fixture library can be edited while the command runs, which is how to try
+Check for changes on an imported Album: `POST /__fixture/library` replaces an
+album's `members`, sets its `description`, patches asset facts such as
+`checksum`, `localDateTime`, or `isTrashed` under `assets`, and removes assets
+from Immich entirely with `delete`. The printed curl line shows the shape.
+Take the fixture offline to see a check fail without touching the Album, or
+edit the library again between a review and Apply to see the stale review
+refused. Media that should stay in Immich but out of an Album is kept out from
+its Moment with Keep out and listed in the Album's Excluded media section, where
+Add back returns it; a check never offers excluded media again, though it keeps
+their details current and reports ones that left Immich.
 Use separate browser profiles to try multiple people. Ordinary tabs share the
 same session cookie. Never expose fake development sign-in publicly.
 
@@ -207,8 +219,10 @@ Memento's production adapter and publishing module. It checks EXIF capture dates
 around midnight, tied entry ordering, shared Media Items, generated thumbnails
 and original downloads through production media HTTP routes, private cache
 validators, ranged video playback, byte-range reads of the original file, real
-`ffprobe` chapter extraction, and unchanged source album titles, descriptions,
-and membership. The in-process media check bypasses sign-in and
+`ffprobe` chapter extraction, manual synchronization after editing a source
+album's membership and description through the album API, and unchanged
+source album titles, descriptions, and membership once those edits are
+reverted. The in-process media check bypasses sign-in and
 does not expose an HTTP listener. Fixture creation helpers live in
 `cmd/immich-smoke/fixture` for reuse by release compatibility tests.
 

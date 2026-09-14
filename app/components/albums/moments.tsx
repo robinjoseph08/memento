@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useEffectEvent, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 
 import {
@@ -26,6 +26,7 @@ import {
 import { RulesDialog } from "./access-rules";
 import { AlbumImage } from "./album-image";
 import { EntryPreview } from "./entry-preview";
+import { ExcludeDialog } from "./exclusions";
 import { MediaCounts } from "./media-counts";
 import { MomentAccessStrip } from "./moment-access";
 import { countLabel, countMedia, momentHeading } from "./moment-labels";
@@ -75,12 +76,20 @@ export function MomentPane({
   );
   const editEntry = (entry: string | null) =>
     setParams((current) => withParams(current, { entry }));
+  // An item kept out or moved elsewhere leaves the URL pointing at nothing;
+  // clear it so a refresh does not reopen an empty dialog.
+  const requestedEntry = params.get("entry");
+  const clearEntry = useEffectEvent(() => editEntry(null));
+  useEffect(() => {
+    if (requestedEntry && !editingEntry) clearEntry();
+  }, [requestedEntry, editingEntry]);
   const [renameOpen, setRenameOpen] = useState(false);
   const [coverEntry, setCoverEntry] = useState<Entry | null>(null);
   const [structure, setStructure] = useState<{
     operation: StructureOperation;
     selectedEntryIDs: string[];
   } | null>(null);
+  const [excluding, setExcluding] = useState<string[] | null>(null);
   const refresh = useRefreshMomentFaces(album.id, moment.id);
   const refreshFaces = refresh.mutate;
   useEffect(() => {
@@ -248,6 +257,15 @@ export function MomentPane({
                 >
                   Split
                 </Button>
+                <Button
+                  disabled={selected.length === 0}
+                  onClick={() => setExcluding(selected)}
+                  size="sm"
+                  type="button"
+                  variant="outline"
+                >
+                  Keep out
+                </Button>
                 {single && (
                   <Button
                     disabled={single.id === moment.cover_entry_id}
@@ -266,7 +284,9 @@ export function MomentPane({
                     type="button"
                     variant="outline"
                   >
-                    {single.kind === "VIDEO" ? "Video details" : "Item access"}
+                    {single.kind === "VIDEO"
+                      ? "Video details"
+                      : "Photo details"}
                   </Button>
                 )}
                 <Button
@@ -343,6 +363,18 @@ export function MomentPane({
           moment={moment}
           onOpenChange={(open) => !open && setCoverEntry(null)}
           open
+        />
+      )}
+      {excluding && (
+        <ExcludeDialog
+          album={album}
+          entryIDs={excluding}
+          moment={moment}
+          onClose={() => setExcluding(null)}
+          onSaved={() => {
+            setExcluding(null);
+            setSelection(null);
+          }}
         />
       )}
       {structure && (

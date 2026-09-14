@@ -33,7 +33,7 @@ import { AlbumImage } from "./album-image";
 
 export type StructureOperation = "move" | "split" | "merge";
 
-function SelectField({
+export function SelectField({
   label,
   value,
   onChange,

@@ -145,6 +145,7 @@ it("distinguishes unpublished, ready, published, and failed cards with a direct 
         status: "queued",
         moments: [],
         access: [],
+        excluded: [],
       });
     }
     throw new Error(`Unexpected request: ${path}`);
@@ -191,6 +192,7 @@ it.each([
       video_count: 0,
       cover_url: "",
       access: [],
+      excluded: [],
       moments: [
         {
           id: "partial-day",

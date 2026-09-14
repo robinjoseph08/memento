@@ -163,7 +163,7 @@ test("Curator scopes access, previews two people, publishes, and hides the Album
   await outline.getByRole("link", { name: /Tuesday, June 2, 2026/ }).click();
   // Outside Select mode, the tile opens its item access editor.
   await page.getByRole("img", { name: "coast-03.jpg", exact: true }).click();
-  const item = page.getByRole("dialog", { name: "Item access", exact: true });
+  const item = page.getByRole("dialog", { name: "Photo details", exact: true });
   await expect(item).toBeVisible();
   const alexItem = item.getByRole("combobox", { name: "Access for Alex" });
   await expect(alexItem).toContainText("Inherit: allowed by Album access");

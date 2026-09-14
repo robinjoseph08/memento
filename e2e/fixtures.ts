@@ -15,6 +15,26 @@ type MailState = {
   held: number;
   messages: { from: string; to: string; data: string }[];
 };
+// LibraryPatch edits the fake Immich library the way a photographer edits
+// Immich: album membership, description, asset facts, and deletion.
+type LibraryPatch = {
+  album: string;
+  members?: string[];
+  description?: string;
+  assets?: Record<
+    string,
+    {
+      checksum?: string;
+      originalFileName?: string;
+      localDateTime?: string;
+      fileCreatedAt?: string;
+      updatedAt?: string;
+      isTrashed?: boolean;
+      isOffline?: boolean;
+    }
+  >;
+  delete?: string[];
+};
 
 function immichControls(request: APIRequestContext, url: string) {
   return {
@@ -55,6 +75,12 @@ function immichControls(request: APIRequestContext, url: string) {
       const response = await request.get(`${url}/__fixture/smtp`);
       expect(response.status()).toBe(200);
       return (await response.json()) as MailState;
+    },
+    async library(patch: LibraryPatch) {
+      const response = await request.post(`${url}/__fixture/library`, {
+        data: patch,
+      });
+      expect(response.status()).toBe(200);
     },
     async mailMode(mode: "accept" | "transient" | "permanent" | "hold") {
       expect(
