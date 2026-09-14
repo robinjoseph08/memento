@@ -20,8 +20,8 @@ import (
 )
 
 const (
-	StatusNew     = "new"
-	StatusUpdated = "updated"
+	AlbumNew     = "new"
+	AlbumUpdated = "updated"
 
 	ResultNotified = "notified"
 	ResultSkipped  = "skipped"
@@ -44,19 +44,19 @@ type unannouncedAlbum struct {
 	EntryIDs []string
 }
 
-// recipientPeople selects the fields recipient eligibility and destinations need.
-func recipientPeople(db bun.IDB, model any) *bun.SelectQuery {
+// notifiablePeople selects the fields eligibility and destinations need.
+func notifiablePeople(db bun.IDB, model any) *bun.SelectQuery {
 	return db.NewSelect().Model(model).
 		Column("person.id", "person.display_name", "person.is_curator", "person.onboarding_completed_at", "person.deactivated_at", "person.email_updates").
 		ColumnExpr("coalesce(updates.email, '') AS update_email").
 		Join("LEFT JOIN identities AS updates ON updates.id = person.update_identity_id")
 }
 
-// eligible reports why a Person cannot receive viewer Update Notifications,
-// or an empty string. Curators bypass viewer access, so their content is never
-// viewer-visible content; someone who has not completed Onboarding has no
-// baseline yet and will get one from everything visible at completion.
-func eligible(person models.Person) string {
+// ineligibleReason says why a Person cannot receive viewer Update
+// Notifications, or is empty. Curators bypass viewer access, so their content
+// is never viewer-visible content; someone who has not completed Onboarding
+// has no baseline yet and will get one from everything visible at completion.
+func ineligibleReason(person models.Person) string {
 	switch {
 	case person.DeactivatedAt != nil:
 		return "This person is deactivated."
@@ -103,9 +103,9 @@ func (m *Module) unannounced(ctx context.Context, db bun.IDB, personID string) (
 		}
 		album := byAlbum[entry.AlbumID]
 		if album == nil {
-			status := StatusNew
+			status := AlbumNew
 			if seenAlbums[entry.AlbumID] {
-				status = StatusUpdated
+				status = AlbumUpdated
 			}
 			album = &unannouncedAlbum{NotificationAlbum{ID: entry.AlbumID, Title: entry.AlbumTitle, Status: status, VideoTitles: []string{}}, nil}
 			byAlbum[entry.AlbumID] = album
@@ -159,10 +159,10 @@ func reviewToken(personID string, albums []unannouncedAlbum) (string, error) {
 // PreviewUpdates lists every eligible Person with unannounced content. It
 // changes nothing; approval freezes what each row showed through its token.
 func (m *Module) PreviewUpdates(ctx context.Context) (Preview, error) {
-	result := Preview{Recipients: []PreviewRecipient{}}
+	result := Preview{People: []PreviewPerson{}}
 	err := m.db.RunInTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true}, func(ctx context.Context, tx bun.Tx) error {
 		var people []models.Person
-		err := recipientPeople(tx, &people).
+		err := notifiablePeople(tx, &people).
 			Where("person.deactivated_at IS NULL AND NOT person.is_curator AND person.onboarding_completed_at IS NOT NULL").
 			OrderExpr("lower(person.display_name), person.id").Scan(ctx)
 		if err != nil {
@@ -180,64 +180,66 @@ func (m *Module) PreviewUpdates(ctx context.Context) (Preview, error) {
 			if err != nil {
 				return err
 			}
-			recipient := PreviewRecipient{PersonID: person.ID.String(), DisplayName: person.DisplayName, UpdateEmail: person.UpdateEmail,
+			row := PreviewPerson{PersonID: person.ID.String(), DisplayName: person.DisplayName, UpdateEmail: person.UpdateEmail,
 				EmailUpdates: person.EmailUpdates, EmailEligible: person.EmailUpdates && person.UpdateEmail != "", Albums: make([]NotificationAlbum, 0, len(albums)), ReviewToken: token}
 			for _, album := range albums {
-				recipient.Albums = append(recipient.Albums, album.NotificationAlbum)
+				row.Albums = append(row.Albums, album.NotificationAlbum)
 			}
-			result.Recipients = append(result.Recipients, recipient)
+			result.People = append(result.People, row)
 		}
 		return nil
 	})
 	return result, transactionError(ctx, err)
 }
 
-// ApproveUpdates creates one immutable notification per reviewed recipient and
+// ApproveUpdates creates one immutable notification per reviewed Person and
 // records exactly its Album Entries as announced, all in one transaction. A row
 // whose content no longer matches its token is skipped with the reason, never
 // reconciled into something the Curator did not review; the Person rows are
 // locked so two overlapping approvals cannot both announce the same content.
 func (m *Module) ApproveUpdates(ctx context.Context, request ApproveRequest) (Approval, error) {
-	result := Approval{Recipients: []RecipientResult{}}
-	if len(request.Recipients) == 0 {
-		return result, errcodes.ValidationFields("Check the highlighted fields.", map[string]string{"recipients": "Include at least one person."})
+	result := Approval{People: []PersonResult{}}
+	// The binder already checks shape; module callers get the same guard, and
+	// the same Person listed twice is an invariant only the module can see.
+	if len(request.People) == 0 {
+		return result, errcodes.ValidationFields("Check the highlighted fields.", map[string]string{"people": request.ValidationMessage("people", "min")})
 	}
-	ids := make([]string, 0, len(request.Recipients))
+	ids := make([]string, 0, len(request.People))
 	seen := map[string]bool{}
-	for _, recipient := range request.Recipients {
-		if _, err := uuid.Parse(recipient.PersonID); err != nil || seen[recipient.PersonID] {
-			return result, errcodes.ValidationFields("Check the highlighted fields.", map[string]string{"recipients": "Review the updates again before sending."})
+	for _, row := range request.People {
+		if _, err := uuid.Parse(row.PersonID); err != nil || seen[row.PersonID] {
+			return result, errcodes.ValidationFields("Check the highlighted fields.", map[string]string{"people": request.ValidationMessage("people", "dive")})
 		}
-		seen[recipient.PersonID] = true
-		ids = append(ids, recipient.PersonID)
+		seen[row.PersonID] = true
+		ids = append(ids, row.PersonID)
 	}
 	note := strings.TrimSpace(request.Note)
 	err := m.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 		// Lock in ID order so concurrent approvals of overlapping rows queue
 		// instead of deadlocking, then decide each row against committed state.
-		locked := []string{}
-		err := tx.NewSelect().Model((*models.Person)(nil)).ColumnExpr("person.id::text").
-			Where("person.id IN (?)", bun.List(ids)).OrderExpr("person.id").For("UPDATE").Scan(ctx, &locked)
+		// Only the lock matters; the selected IDs are not needed.
+		_, err := tx.NewSelect().Model((*models.Person)(nil)).Column("person.id").
+			Where("person.id IN (?)", bun.List(ids)).OrderExpr("person.id").For("UPDATE").Exec(ctx)
 		if err != nil {
 			return errorstack.CaptureContext(ctx, err)
 		}
 		now := m.now().UTC()
-		for _, recipient := range request.Recipients {
-			outcome, err := m.approveRecipient(ctx, tx, recipient, note, now)
+		for _, row := range request.People {
+			outcome, err := m.approvePerson(ctx, tx, row, note, now)
 			if err != nil {
 				return err
 			}
-			result.Recipients = append(result.Recipients, outcome)
+			result.People = append(result.People, outcome)
 		}
 		return nil
 	})
 	return result, transactionError(ctx, err)
 }
 
-func (m *Module) approveRecipient(ctx context.Context, tx bun.Tx, recipient ApproveRecipient, note string, now time.Time) (RecipientResult, error) {
-	outcome := RecipientResult{PersonID: recipient.PersonID, Status: ResultSkipped}
+func (m *Module) approvePerson(ctx context.Context, tx bun.Tx, row ApprovePerson, note string, now time.Time) (PersonResult, error) {
+	outcome := PersonResult{PersonID: row.PersonID, Status: ResultSkipped}
 	var person models.Person
-	err := recipientPeople(tx, &person).Where("person.id = ?", recipient.PersonID).Scan(ctx)
+	err := notifiablePeople(tx, &person).Where("person.id = ?", row.PersonID).Scan(ctx)
 	if errors.Is(err, sql.ErrNoRows) {
 		outcome.Message = "This person no longer exists."
 		return outcome, nil
@@ -246,11 +248,11 @@ func (m *Module) approveRecipient(ctx context.Context, tx bun.Tx, recipient Appr
 		return outcome, errorstack.CaptureContext(ctx, err)
 	}
 	outcome.DisplayName = person.DisplayName
-	if reason := eligible(person); reason != "" {
+	if reason := ineligibleReason(person); reason != "" {
 		outcome.Message = reason
 		return outcome, nil
 	}
-	albums, err := m.unannounced(ctx, tx, recipient.PersonID)
+	albums, err := m.unannounced(ctx, tx, row.PersonID)
 	if err != nil {
 		return outcome, err
 	}
@@ -258,16 +260,16 @@ func (m *Module) approveRecipient(ctx context.Context, tx bun.Tx, recipient Appr
 		outcome.Message = "Nothing new to announce. These updates were already sent."
 		return outcome, nil
 	}
-	token, err := reviewToken(recipient.PersonID, albums)
+	token, err := reviewToken(row.PersonID, albums)
 	if err != nil {
 		return outcome, err
 	}
-	if token != recipient.ReviewToken {
+	if token != row.ReviewToken {
 		outcome.Message = "Their updates changed since this preview. Review the updates again to send them."
 		return outcome, nil
 	}
 	excluded := map[string]bool{}
-	for _, id := range recipient.ExcludedAlbumIDs {
+	for _, id := range row.ExcludedAlbumIDs {
 		excluded[id] = true
 	}
 	body := payload{Albums: []NotificationAlbum{}, Note: note}
@@ -350,6 +352,11 @@ func listNotifications(ctx context.Context, db bun.IDB, personID string) (Notifi
 		return result, errorstack.CaptureContext(ctx, err)
 	}
 	for _, row := range rows {
+		// A row written by a newer release and left behind by a rollback must
+		// not take the whole list down with it.
+		if row.Version != payloadVersion {
+			continue
+		}
 		notification, err := projectNotification(row)
 		if err != nil {
 			return result, err

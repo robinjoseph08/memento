@@ -86,6 +86,9 @@ export function useUpdatePreview() {
   });
 }
 
+// Approval does not invalidate the preview on purpose: the page keeps the
+// reviewed snapshot and the outcome side by side, and asks for a new preview
+// only when the Curator chooses "Check again".
 export function useApproveUpdates() {
   const scope = usePrivateScope();
   return useMutation({

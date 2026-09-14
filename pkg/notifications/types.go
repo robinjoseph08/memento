@@ -32,10 +32,10 @@ type NotificationAlbum struct {
 	VideoTitles []string `json:"video_titles"`
 }
 
-// PreviewRecipient is one collapsible row. EmailEligible reports whether a
+// PreviewPerson is one collapsible row. EmailEligible reports whether a
 // later email delivery could go anywhere; the in-app notification is created
 // either way. ReviewToken freezes what the row showed for approval.
-type PreviewRecipient struct {
+type PreviewPerson struct {
 	PersonID      string              `json:"person_id"`
 	DisplayName   string              `json:"display_name"`
 	UpdateEmail   string              `json:"update_email"`
@@ -46,25 +46,25 @@ type PreviewRecipient struct {
 }
 
 type Preview struct {
-	Recipients []PreviewRecipient `json:"recipients"`
+	People []PreviewPerson `json:"people"`
 }
 
-// ApproveRecipient names one reviewed row. ExcludedAlbumIDs drops whole Album
-// updates from that row; a recipient the Curator excluded is simply omitted.
-type ApproveRecipient struct {
+// ApprovePerson names one reviewed row. ExcludedAlbumIDs drops whole Album
+// updates from that row; a Person the Curator left out is simply omitted.
+type ApprovePerson struct {
 	PersonID         string   `json:"person_id" validate:"required,uuid"`
 	ReviewToken      string   `json:"review_token" validate:"required"`
 	ExcludedAlbumIDs []string `json:"excluded_album_ids" validate:"dive,uuid"`
 }
 
 type ApproveRequest struct {
-	Note       string             `json:"note" mod:"trim" validate:"max=1000"`
-	Recipients []ApproveRecipient `json:"recipients" validate:"required,min=1,dive"`
+	Note   string          `json:"note" mod:"trim" validate:"max=1000"`
+	People []ApprovePerson `json:"people" validate:"required,min=1,dive"`
 }
 
-// RecipientResult reports one approval outcome. Status is notified or
-// skipped; Message explains a skip in Curator-facing words.
-type RecipientResult struct {
+// PersonResult reports one approval outcome. Status is notified or skipped;
+// Message explains a skip in Curator-facing words.
+type PersonResult struct {
 	PersonID       string `json:"person_id"`
 	DisplayName    string `json:"display_name"`
 	Status         string `json:"status"`
@@ -76,7 +76,7 @@ type RecipientResult struct {
 }
 
 type Approval struct {
-	Recipients []RecipientResult `json:"recipients"`
+	People []PersonResult `json:"people"`
 }
 
 // Notification is a Person's own approved summary. It renders from stored

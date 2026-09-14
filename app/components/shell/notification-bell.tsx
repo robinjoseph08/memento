@@ -31,7 +31,14 @@ export function NotificationBell() {
     : "Updates";
   const error = markRead.error ?? markAllRead.error;
   async function openNotification(notification: Notification) {
-    if (!notification.read_at) await markRead.mutateAsync(notification.id);
+    if (!notification.read_at) {
+      try {
+        await markRead.mutateAsync(notification.id);
+      } catch {
+        // The mutation error renders inside the list; stay put.
+        return;
+      }
+    }
     setOpen(false);
     await navigate(notificationDestination(notification));
   }

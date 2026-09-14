@@ -8,7 +8,7 @@ func (ApproveRequest) ValidationMessage(field, rule string) string {
 		if rule == "max" {
 			return "Keep the note under 1000 characters."
 		}
-	case "recipients":
+	case "people":
 		if rule == "required" || rule == "min" {
 			return "Include at least one person."
 		}

@@ -7,13 +7,13 @@ import {
 } from "../../hooks/queries/notifications";
 import { useUnsavedChanges } from "../../hooks/use-unsaved-changes";
 import { submitOnModEnter } from "../../lib/forms";
-import { fieldErrors } from "../../lib/http";
+import { errorMessage, fieldErrors } from "../../lib/http";
 import { cn } from "../../lib/utils";
 import type {
   Approval,
   NotificationAlbum,
   Preview,
-  PreviewRecipient,
+  PreviewPerson,
 } from "../../types/generated/notifications";
 import { MediaCounts } from "../albums/media-counts";
 import { countLabel } from "../albums/moment-labels";
@@ -45,7 +45,7 @@ export function UpdatesPage() {
           Checking for new updates…
         </p>
       )}
-      {preview.isError && (
+      {preview.isError && !preview.data && (
         <div className="mt-9">
           <ReadFailure
             error={preview.error}
@@ -56,9 +56,9 @@ export function UpdatesPage() {
       )}
       {preview.data && (
         <PreviewForm
-          key={preview.dataUpdatedAt}
           onReview={() => void preview.refetch()}
           preview={preview.data}
+          refreshError={preview.isError ? preview.error : null}
           refreshing={preview.isFetching}
         />
       )}
@@ -66,10 +66,10 @@ export function UpdatesPage() {
   );
 }
 
-function deliveryLabel(recipient: PreviewRecipient) {
-  if (recipient.email_eligible) return `Email to ${recipient.update_email}`;
-  if (!recipient.update_email) return "In app only, no email selected";
-  return `In app only, email updates off for ${recipient.update_email}`;
+function deliveryLabel(person: PreviewPerson) {
+  if (person.email_eligible) return `Email to ${person.update_email}`;
+  if (!person.update_email) return "In app only, no email selected";
+  return `In app only, email updates off for ${person.update_email}`;
 }
 
 function albumCounts(albums: NotificationAlbum[]) {
@@ -82,14 +82,19 @@ function albumCounts(albums: NotificationAlbum[]) {
   );
 }
 
+// Edits survive "Check again": the note stays, and exclusions are keyed by
+// Person and Album IDs so they still apply to rows the new preview repeats.
+// Only sending clears them.
 function PreviewForm({
   preview,
   onReview,
   refreshing,
+  refreshError,
 }: {
   preview: Preview;
   onReview: () => void;
   refreshing: boolean;
+  refreshError: unknown;
 }) {
   const approve = useApproveUpdates();
   const [note, setNote] = useState("");
@@ -101,11 +106,11 @@ function PreviewForm({
   );
   const noteId = useId();
   const errors = fieldErrors(approve.error);
-  const included = preview.recipients.filter(
-    (recipient) =>
-      !excludedPeople.has(recipient.person_id) &&
-      recipient.albums.some(
-        (album) => !excludedAlbums.has(`${recipient.person_id}:${album.id}`),
+  const included = preview.people.filter(
+    (person) =>
+      !excludedPeople.has(person.person_id) &&
+      person.albums.some(
+        (album) => !excludedAlbums.has(`${person.person_id}:${album.id}`),
       ),
   );
   const edited =
@@ -115,12 +120,18 @@ function PreviewForm({
     return (
       <ApprovalResult
         approval={approve.data}
-        onReview={onReview}
+        onReview={() => {
+          approve.reset();
+          setNote("");
+          setExcludedPeople(new Set());
+          setExcludedAlbums(new Set());
+          onReview();
+        }}
         refreshing={refreshing}
       />
     );
   }
-  if (preview.recipients.length === 0) {
+  if (preview.people.length === 0) {
     return (
       <section className="mt-9 border-t border-border py-8">
         <h2 className={sectionHeadingClass}>Everyone is up to date</h2>
@@ -159,40 +170,46 @@ function PreviewForm({
         if (approve.isPending || included.length === 0) return;
         approve.mutate({
           note,
-          recipients: included.map((recipient) => ({
-            person_id: recipient.person_id,
-            review_token: recipient.review_token,
-            excluded_album_ids: recipient.albums
+          people: included.map((person) => ({
+            person_id: person.person_id,
+            review_token: person.review_token,
+            excluded_album_ids: person.albums
               .filter((album) =>
-                excludedAlbums.has(`${recipient.person_id}:${album.id}`),
+                excludedAlbums.has(`${person.person_id}:${album.id}`),
               )
               .map((album) => album.id),
           })),
         });
       }}
     >
+      {refreshError !== null && (
+        <p className="my-4 text-sm text-destructive" role="alert">
+          Could not check for new updates. This list may be out of date.{" "}
+          {errorMessage(refreshError)}
+        </p>
+      )}
       <fieldset disabled={approve.isPending}>
         <legend className={sectionHeadingClass}>
           {countLabel(included.length, "person", "people")} to update
         </legend>
         <ul className="mt-5 divide-y divide-border border-y border-border">
-          {preview.recipients.map((recipient) => (
-            <RecipientRow
+          {preview.people.map((person) => (
+            <PersonRow
               excludedAlbums={excludedAlbums}
-              included={!excludedPeople.has(recipient.person_id)}
-              key={recipient.person_id}
+              included={!excludedPeople.has(person.person_id)}
+              key={person.person_id}
               onToggle={(include) =>
                 setExcludedPeople((current) => {
                   const next = new Set(current);
-                  if (include) next.delete(recipient.person_id);
-                  else next.add(recipient.person_id);
+                  if (include) next.delete(person.person_id);
+                  else next.add(person.person_id);
                   return next;
                 })
               }
               onToggleAlbum={(albumID, include) =>
-                toggleAlbum(recipient.person_id, albumID, include)
+                toggleAlbum(person.person_id, albumID, include)
               }
-              recipient={recipient}
+              person={person}
             />
           ))}
         </ul>
@@ -216,7 +233,7 @@ function PreviewForm({
             value={note}
           />
           <FieldError error={errors.note} id={`${noteId}-error`} />
-          <FieldError error={errors.recipients} id={`${noteId}-recipients`} />
+          <FieldError error={errors.people} id={`${noteId}-people`} />
         </div>
         <div className="mt-6 flex flex-wrap items-center gap-3">
           <Button disabled={included.length === 0} type="submit">
@@ -233,14 +250,14 @@ function PreviewForm({
   );
 }
 
-function RecipientRow({
-  recipient,
+function PersonRow({
+  person,
   included,
   excludedAlbums,
   onToggle,
   onToggleAlbum,
 }: {
-  recipient: PreviewRecipient;
+  person: PreviewPerson;
   included: boolean;
   excludedAlbums: Set<string>;
   onToggle: (include: boolean) => void;
@@ -248,8 +265,8 @@ function RecipientRow({
 }) {
   const [expanded, setExpanded] = useState(false);
   const detailsId = useId();
-  const albums = recipient.albums.filter(
-    (album) => !excludedAlbums.has(`${recipient.person_id}:${album.id}`),
+  const albums = person.albums.filter(
+    (album) => !excludedAlbums.has(`${person.person_id}:${album.id}`),
   );
   const counts = albumCounts(albums);
   const active = included && albums.length > 0;
@@ -258,7 +275,7 @@ function RecipientRow({
       <div className="flex flex-wrap items-start gap-x-6 gap-y-3">
         <label className="flex min-w-0 flex-1 cursor-pointer items-start gap-3">
           <input
-            aria-label={`Include ${recipient.display_name}`}
+            aria-label={`Include ${person.display_name}`}
             checked={included}
             className="mt-1 size-4 shrink-0 cursor-pointer accent-primary"
             onChange={(event) => onToggle(event.target.checked)}
@@ -266,18 +283,18 @@ function RecipientRow({
           />
           <span className="min-w-0">
             <span className="block font-medium wrap-anywhere">
-              {recipient.display_name}
+              {person.display_name}
             </span>
             <span className="block text-xs wrap-anywhere text-muted">
-              {deliveryLabel(recipient)}
+              {deliveryLabel(person)}
             </span>
           </span>
         </label>
         <span className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted">
           <span>
             {countLabel(albums.length, "album", "albums")}
-            {albums.length < recipient.albums.length &&
-              ` (${recipient.albums.length - albums.length} left out)`}
+            {albums.length < person.albums.length &&
+              ` (${person.albums.length - albums.length} left out)`}
           </span>
           <MediaCounts
             className="flex"
@@ -287,13 +304,13 @@ function RecipientRow({
           <Button
             aria-controls={detailsId}
             aria-expanded={expanded}
-            aria-label={`${expanded ? "Hide" : "Show"} albums for ${recipient.display_name}`}
+            aria-label={`${expanded ? "Hide" : "Show"} albums for ${person.display_name}`}
             className="-my-1 h-auto min-h-0 px-2 py-1 text-xs"
             onClick={() => setExpanded((value) => !value)}
             size="sm"
             variant="ghost"
           >
-            {countLabel(recipient.albums.length, "album", "albums")}
+            {countLabel(person.albums.length, "album", "albums")}
             <ChevronDown
               aria-hidden="true"
               className={cn("size-3.5", expanded && "rotate-180")}
@@ -303,9 +320,9 @@ function RecipientRow({
       </div>
       {expanded && (
         <ul className="mt-3 ml-7 flex flex-col gap-2" id={detailsId}>
-          {recipient.albums.map((album) => {
+          {person.albums.map((album) => {
             const albumIncluded = !excludedAlbums.has(
-              `${recipient.person_id}:${album.id}`,
+              `${person.person_id}:${album.id}`,
             );
             return (
               <li
@@ -317,7 +334,7 @@ function RecipientRow({
               >
                 <label className="flex min-w-0 cursor-pointer items-start gap-3">
                   <input
-                    aria-label={`Include ${album.title} for ${recipient.display_name}`}
+                    aria-label={`Include ${album.title} for ${person.display_name}`}
                     checked={albumIncluded}
                     className="mt-1 size-4 shrink-0 cursor-pointer accent-primary"
                     disabled={!included}
@@ -363,11 +380,9 @@ function ApprovalResult({
   onReview: () => void;
   refreshing: boolean;
 }) {
-  const sent = approval.recipients.filter(
-    (recipient) => recipient.status === "notified",
-  );
-  const skipped = approval.recipients.filter(
-    (recipient) => recipient.status !== "notified",
+  const sent = approval.people.filter((person) => person.status === "notified");
+  const skipped = approval.people.filter(
+    (person) => person.status !== "notified",
   );
   return (
     <section aria-labelledby="updates-result" className="mt-9">
@@ -382,23 +397,23 @@ function ApprovalResult({
           : "Each person now has an update in Memento."}
       </p>
       <ul className="mt-5 divide-y divide-border border-y border-border">
-        {sent.map((recipient) => (
-          <li className="py-3 text-sm" key={recipient.person_id}>
-            <span className="font-medium">{recipient.display_name}</span>
+        {sent.map((person) => (
+          <li className="py-3 text-sm" key={person.person_id}>
+            <span className="font-medium">{person.display_name}</span>
             <span className="text-muted">
               {" · "}
-              {countLabel(recipient.album_count, "album", "albums")},{" "}
-              {countLabel(recipient.photo_count, "photo", "photos")},{" "}
-              {countLabel(recipient.video_count, "video", "videos")}
+              {countLabel(person.album_count, "album", "albums")},{" "}
+              {countLabel(person.photo_count, "photo", "photos")},{" "}
+              {countLabel(person.video_count, "video", "videos")}
             </span>
           </li>
         ))}
-        {skipped.map((recipient) => (
-          <li className="py-3 text-sm" key={recipient.person_id}>
+        {skipped.map((person) => (
+          <li className="py-3 text-sm" key={person.person_id}>
             <span className="font-medium">
-              {recipient.display_name || "Someone"}
+              {person.display_name || "Someone"}
             </span>
-            <span className="text-muted"> · Not sent. {recipient.message}</span>
+            <span className="text-muted"> · Not sent. {person.message}</span>
           </li>
         ))}
       </ul>

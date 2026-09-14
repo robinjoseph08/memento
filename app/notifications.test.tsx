@@ -213,7 +213,7 @@ it("marks every update read at once", async () => {
 
 it("lets a Curator review recipients, leave out an Album update, add a note, and send", async () => {
   const preview = {
-    recipients: [
+    people: [
       {
         person_id: "alex",
         display_name: "Alex",
@@ -248,12 +248,12 @@ it("lets a Curator review recipients, leave out an Album update, add a note, and
       if (path === "/api/access-requests") return Response.json([]);
       if (path === "/api/curator/notifications/preview") {
         previews++;
-        return Response.json(previews === 1 ? preview : { recipients: [] });
+        return Response.json(previews === 1 ? preview : { people: [] });
       }
       if (path === "/api/curator/notifications/approve") {
         approvals.push(JSON.parse(String(options?.body)));
         return Response.json({
-          recipients: [
+          people: [
             {
               person_id: "alex",
               display_name: "Alex",
@@ -327,7 +327,7 @@ it("lets a Curator review recipients, leave out an Album update, add a note, and
   expect(approvals).toEqual([
     {
       note: "Enjoy!",
-      recipients: [
+      people: [
         {
           person_id: "alex",
           review_token: "alex-token",
@@ -352,4 +352,50 @@ it("lets a Curator review recipients, leave out an Album update, add a note, and
     await screen.findByRole("heading", { name: "Everyone is up to date" }),
   ).toBeVisible();
   expect(previews).toBe(2);
+});
+
+it("keeps an update unread and stays put when marking it read fails", async () => {
+  const notifications = [
+    {
+      id: "n1",
+      created_at: "2026-06-05T09:00:00Z",
+      read_at: null as string | null,
+      albums: [coast],
+      note: "",
+    },
+  ];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (path: string) => {
+      if (path.endsWith("/status"))
+        return Response.json({
+          claimed: true,
+          person: member,
+          auth_mode: "fake",
+        });
+      if (path === "/api/notifications")
+        return Response.json({ notifications, unread: 1 });
+      if (path === "/api/notifications/n1/read")
+        return Response.json(
+          { error: { message: "Server exploded", code: "internal" } },
+          { status: 500 },
+        );
+      if (path === "/api/albums") return Response.json([]);
+      throw new Error(`Unexpected request: ${path}`);
+    }),
+  );
+  window.history.replaceState(null, "", "/albums");
+  const user = userEvent.setup();
+  render(<App />);
+  await user.click(
+    await screen.findByRole("button", { name: "Updates, 1 unread" }),
+  );
+  await user.click(await screen.findByRole("button", { name: "Open Coast" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "Something went wrong. Please try again.",
+  );
+  expect(window.location.pathname).toBe("/albums");
+  expect(
+    screen.getByRole("button", { name: "Updates, 1 unread" }),
+  ).toBeVisible();
 });

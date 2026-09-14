@@ -21,11 +21,11 @@ type fakeUseCases struct {
 
 func (f *fakeUseCases) PreviewUpdates(context.Context) (notifications.Preview, error) {
 	f.calls = append(f.calls, "preview")
-	return notifications.Preview{Recipients: []notifications.PreviewRecipient{{PersonID: "p1", DisplayName: "Alex", ReviewToken: "token"}}}, nil
+	return notifications.Preview{People: []notifications.PreviewPerson{{PersonID: "p1", DisplayName: "Alex", ReviewToken: "token"}}}, nil
 }
 func (f *fakeUseCases) ApproveUpdates(_ context.Context, request notifications.ApproveRequest) (notifications.Approval, error) {
-	f.calls = append(f.calls, "approve:"+request.Note+":"+request.Recipients[0].PersonID+":"+strings.Join(request.Recipients[0].ExcludedAlbumIDs, ","))
-	return notifications.Approval{Recipients: []notifications.RecipientResult{{PersonID: request.Recipients[0].PersonID, Status: notifications.ResultNotified}}}, nil
+	f.calls = append(f.calls, "approve:"+request.Note+":"+request.People[0].PersonID+":"+strings.Join(request.People[0].ExcludedAlbumIDs, ","))
+	return notifications.Approval{People: []notifications.PersonResult{{PersonID: request.People[0].PersonID, Status: notifications.ResultNotified}}}, nil
 }
 func (f *fakeUseCases) ListNotifications(_ context.Context, personID string) (notifications.NotificationList, error) {
 	f.calls = append(f.calls, "list:"+personID)
@@ -55,9 +55,9 @@ func TestNotificationHTTPRoutesBindAndAuthorize(t *testing.T) {
 	}{
 		"curator previews":            {http.MethodPost, "/api/curator/notifications/preview", `{}`, true, 200, "preview", `"review_token":"token"`},
 		"member cannot preview":       {http.MethodPost, "/api/curator/notifications/preview", `{}`, false, 403, "", "forbidden"},
-		"curator approves":            {http.MethodPost, "/api/curator/notifications/approve", `{"note":" Hi ","recipients":[{"person_id":"` + personUUID + `","review_token":"token","excluded_album_ids":["` + personUUID + `"]}]}`, true, 200, "approve:Hi:" + personUUID + ":" + personUUID, `"status":"notified"`},
-		"approval needs recipients":   {http.MethodPost, "/api/curator/notifications/approve", `{"note":"","recipients":[]}`, true, 422, "", "Include at least one person."},
-		"approval rejects bad person": {http.MethodPost, "/api/curator/notifications/approve", `{"recipients":[{"person_id":"nope","review_token":"token"}]}`, true, 422, "", "Review the updates again before sending."},
+		"curator approves":            {http.MethodPost, "/api/curator/notifications/approve", `{"note":" Hi ","people":[{"person_id":"` + personUUID + `","review_token":"token","excluded_album_ids":["` + personUUID + `"]}]}`, true, 200, "approve:Hi:" + personUUID + ":" + personUUID, `"status":"notified"`},
+		"approval needs people":       {http.MethodPost, "/api/curator/notifications/approve", `{"note":"","people":[]}`, true, 422, "", "Include at least one person."},
+		"approval rejects bad person": {http.MethodPost, "/api/curator/notifications/approve", `{"people":[{"person_id":"nope","review_token":"token"}]}`, true, 422, "", "Review the updates again before sending."},
 		"member lists own":            {http.MethodGet, "/api/notifications", "", false, 200, "list:" + personUUID, `"unread":1`},
 		"member marks one read":       {http.MethodPost, "/api/notifications/n1/read", `{}`, false, 200, "read:" + personUUID + ":n1", `"id":"n1"`},
 		"missing notification":        {http.MethodPost, "/api/notifications/missing/read", `{}`, false, 404, "read:" + personUUID + ":missing", "not_found"},
