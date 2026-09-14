@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 
-import { Dialog, DialogContent, DialogTitle } from "./dialog";
+import { Dialog, DialogContent, DialogTitle } from "./components/ui/dialog";
 
 afterEach(cleanup);
 

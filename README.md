@@ -341,8 +341,9 @@ Approved Update Notifications are also emailed, but only to an active Person
 who selected a destination and switched update email on. The email is queued
 with the approval and checked again right before it is sent: a Person who was
 deactivated, promoted to Curator, unlinked their destination, or unsubscribed
-in the meantime is skipped, and content revoked since approval is left out of
-the counts. The in-app notification is never changed by any of this. Every update email carries a private unsubscribe link that opens a
+in the meantime is skipped, and content revoked since approval is left out
+of the counts. The in-app notification is never changed by any of this.
+Every update email carries a private unsubscribe link that opens a
 confirmation page without signing in; loading the link changes nothing, and
 confirming switches off update email only. Invitations, Access Request
 alerts, and in-app notifications continue.
@@ -464,11 +465,12 @@ become their notification baseline so later updates only announce new content.
 Publishing never notifies anyone by itself. The Curator's Updates page lists
 every Person who can now see photos or videos they have not been told about,
 grouped into collapsible rows with the Albums and counts each would hear
-about; photos and videos are counted, never listed. A Curator can leave out a person or one Album update, add a
-note for everyone, and send. Sending creates an in-app Update Notification for
-each included Person and records exactly which Album Entries were announced, so
-repeated sends, two Curators approving overlapping previews, or revoking and
-restoring access never announce the same media twice. Members see a bell that
+about; photos and videos are counted, never listed. A Curator can leave out a
+person or one Album update, add a note for everyone, and send. Sending creates
+an in-app Update Notification for each included Person and records exactly
+which Album Entries were announced, so repeated sends, two Curators approving
+overlapping previews, or revoking and restoring access never announce the same
+media twice. Members see a bell that
 shows their unread count and lists only new updates, and an Updates page with
 every update they have received. Opening one marks it read and goes to the Album, or
 to the Album list when it covers several. Browsing never changes read state.

@@ -94,11 +94,13 @@ export function DashboardPage() {
 
 // Section is one of the two groups: a heading with the number of items, one
 // line saying what belongs here, and either the cards or a quiet empty state.
+// A check still in flight keeps the list open without counting as an item.
 function Section({
   id,
   title,
   description,
   count,
+  pending = false,
   tone,
   empty,
   children,
@@ -107,6 +109,7 @@ function Section({
   title: string;
   description: string;
   count: number;
+  pending?: boolean;
   tone: "attention" | "ready";
   empty: string;
   children: ReactNode;
@@ -132,7 +135,7 @@ function Section({
         )}
       </div>
       <p className="mt-2 text-sm text-muted">{description}</p>
-      {count === 0 ? (
+      {count === 0 && !pending ? (
         <p className="mt-5 rounded-lg border border-dashed border-border px-5 py-6 text-sm text-muted">
           {empty}
         </p>
@@ -154,7 +157,7 @@ function Item({
   children,
 }: {
   icon: LucideIcon;
-  tone: "attention" | "ready" | "pending";
+  tone: "attention" | "ready";
   title: string;
   detail?: string;
   action?: ReactNode;
@@ -207,7 +210,7 @@ function NeedsAttention({ dashboard }: { dashboard: Dashboard }) {
   // The Immich check is a network call that may take a while to fail, so the
   // group is not declared empty until it has answered.
   const count =
-    (immichProblem || connection.isPending ? 1 : 0) +
+    (immichProblem ? 1 : 0) +
     (attention.pending_requests > 0 ? 1 : 0) +
     attention.imports.length +
     attention.deliveries.length +
@@ -218,15 +221,13 @@ function NeedsAttention({ dashboard }: { dashboard: Dashboard }) {
       description="Failures and decisions that will not resolve on their own."
       empty="Nothing needs your attention right now."
       id="needs-attention"
+      pending={connection.isPending}
       title="Needs attention"
       tone="attention"
     >
       {connection.isPending && (
-        <li
-          className="rounded-lg border border-dashed border-border px-5 py-4 text-sm text-muted"
-          role="status"
-        >
-          Checking the Immich connection…
+        <li className="rounded-lg border border-dashed border-border px-5 py-4 text-sm text-muted">
+          <p role="status">Checking the Immich connection…</p>
         </li>
       )}
       {immichProblem && (
