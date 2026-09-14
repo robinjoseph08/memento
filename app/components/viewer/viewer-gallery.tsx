@@ -1,8 +1,9 @@
 import { Image, Play, SquarePlay } from "lucide-react";
-import { useEffect } from "react";
+import { useRef, type ReactNode } from "react";
 import { Link, type To } from "react-router-dom";
 
 import {
+  dayCount,
   useViewerAlbum,
   useViewerEntries,
   type ViewerContext,
@@ -23,6 +24,7 @@ import { AlbumHeader } from "./album-header";
 import { aspectRatio, captureDate } from "./labels";
 import { Lightbox } from "./lightbox";
 import { RequestAccess } from "./request-access";
+import { Timeline } from "./timeline";
 
 // The shared Album presentation for ordinary viewing and Curator preview.
 // personName is set only in preview so empty states can say whose view it is.
@@ -162,33 +164,16 @@ function GalleryEntries({
   entryID?: string;
   entryLink: (id: string) => To;
 }) {
-  const query = useViewerEntries(context, tab);
-  // Pages arrive one after another in the background until the gallery is
-  // complete, so the scrollbar and every day heading reflect the whole Album
-  // without a click. Image bytes still load lazily as rows scroll into view.
-  // The page count is a dependency because a slow renderer can receive the
-  // next page before it ever renders the fetching state, and the chain must
-  // continue from each arrival rather than from that transient flag.
-  const {
-    hasNextPage,
-    isFetchingNextPage,
-    isFetchNextPageError,
-    fetchNextPage,
-  } = query;
-  const pageCount = query.data?.pages.length ?? 0;
-  useEffect(() => {
-    if (hasNextPage && !isFetchingNextPage && !isFetchNextPageError)
-      void fetchNextPage();
-  }, [
-    hasNextPage,
-    isFetchingNextPage,
-    isFetchNextPageError,
-    fetchNextPage,
-    pageCount,
-  ]);
+  // Every run of days loads at once, and each day keeps its place from the
+  // first paint with a heading, its count, and a block the size its media
+  // should take, so the page height and the timeline are settled before any
+  // entry arrives. Image bytes still load lazily as rows scroll into view.
+  const runs = useViewerEntries(context, tab, album.days);
+  const sectionsRef = useRef<HTMLDivElement>(null);
+  const failure = runs.find((run) => run.result.error)?.result.error;
   if (
-    query.error instanceof HTTPError &&
-    (query.error.status === 403 || query.error.status === 404)
+    failure instanceof HTTPError &&
+    (failure.status === 403 || failure.status === 404)
   ) {
     return (
       <p className="py-10 text-muted" role="alert">
@@ -198,34 +183,40 @@ function GalleryEntries({
       </p>
     );
   }
-  const entries = query.data?.pages.flatMap((page) => page.entries) ?? [];
+  const pending = runs.some((run) => run.result.isPending);
+  const fetching = runs.some((run) => run.result.isFetching);
+  const retry = () => {
+    for (const { result } of runs) if (result.isError) void result.refetch();
+  };
+  // The lightbox walks neighbours, so it only sees the runs loaded in order
+  // from the start; later runs join once the gap before them fills.
+  const loaded: ViewerEntry[] = [];
+  for (const { result } of runs) {
+    if (!result.isSuccess) break;
+    loaded.push(...result.data);
+  }
   const other = tab === "photos" ? "videos" : "photos";
   return (
     <>
-      {query.isPending && (
-        <p className="py-10 text-muted" role="status">
+      {pending && (
+        <p className="sr-only" role="status">
           Loading {tab}…
         </p>
       )}
-      {query.isError && (
+      {failure && (
         <div className="py-8">
           <p role="alert">Could not load {tab}. Please try again.</p>
           <Button
             className="mt-3"
-            disabled={query.isFetching}
-            onClick={() =>
-              void (query.isFetchNextPageError
-                ? query.fetchNextPage()
-                : query.refetch())
-            }
+            disabled={fetching}
+            onClick={retry}
             variant="outline"
           >
             Try again
           </Button>
         </div>
       )}
-      {query.isSuccess &&
-        entries.length === 0 &&
+      {runs.length === 0 &&
         (personName ? (
           <p className="py-8 text-sm text-muted">
             No {tab} are shared with {personName} yet.
@@ -248,83 +239,131 @@ function GalleryEntries({
             </Link>
           </section>
         ))}
-      {album.days.map((day) => {
-        const items = entries.filter(
-          (entry) => entry.captured_at.slice(0, 10) === day.date.slice(0, 10),
-        );
-        if (!items.length) return null;
-        const count = tab === "photos" ? day.photo_count : day.video_count;
-        return (
-          <section
-            aria-label={captureDate(day.date, true)}
-            className="pt-10"
-            key={day.date}
-          >
-            <h2 className="font-heading text-[27px]/[1.2] tracking-[-0.35px]">
-              {captureDate(day.date, true)}{" "}
-              <span className="ml-3 font-sans text-xs tracking-normal whitespace-nowrap text-muted">
-                {tab === "photos"
-                  ? countLabel(count, "photo", "photos")
-                  : countLabel(count, "video", "videos")}
-              </span>
-            </h2>
-            {tab === "photos" ? (
-              <PhotoRows entries={items} entryLink={entryLink} />
-            ) : (
-              <ul
-                aria-label="Videos"
-                className="mt-5 grid grid-cols-1 gap-x-4 gap-y-6 min-[601px]:grid-cols-2 min-[1001px]:grid-cols-3"
+      <div className="@container" ref={sectionsRef}>
+        {runs.map((run) =>
+          run.days.map((day) => {
+            const items = run.result.data?.filter(
+              (entry) =>
+                entry.captured_at.slice(0, 10) === day.date.slice(0, 10),
+            );
+            if (items && items.length === 0) return null;
+            const count = dayCount(day, tab);
+            return (
+              <section
+                aria-label={captureDate(day.date, true)}
+                className="pt-10"
+                data-date={day.date.slice(0, 10)}
+                key={day.date}
               >
-                {items.map((entry) => (
-                  <li key={entry.id}>
-                    <Link
-                      aria-label={`Open video ${entry.title || "Video"}`}
-                      className="block rounded-[2px] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-                      data-entry-id={entry.id}
-                      state={{ origin: entry.id }}
-                      to={entryLink(entry.id)}
-                    >
-                      <span className="relative block overflow-hidden rounded-[2px] bg-surface">
-                        <MediaThumbnail entry={entry} />
-                        {entry.available && (
-                          <PlayBadge className="inset-0 m-auto size-12" />
-                        )}
-                      </span>
-                      <h3 className="mt-3 font-heading text-lg leading-tight">
-                        {entry.title}
-                      </h3>
-                    </Link>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
-        );
-      })}
-      {query.isFetchingNextPage && (
-        <p className="mt-8 text-sm text-muted" role="status">
-          Loading more {tab}…
-        </p>
+                <h2 className="font-heading text-[27px]/[1.2] tracking-[-0.35px]">
+                  {captureDate(day.date, true)}{" "}
+                  <span className="ml-3 font-sans text-xs tracking-normal whitespace-nowrap text-muted">
+                    {tab === "photos"
+                      ? countLabel(count, "photo", "photos")
+                      : countLabel(count, "video", "videos")}
+                  </span>
+                </h2>
+                {tab === "photos" ? (
+                  items ? (
+                    <PhotoRows
+                      ratios={items.map(aspectRatio)}
+                      tile={(index) => (
+                        <PhotoTile entry={items[index]} entryLink={entryLink} />
+                      )}
+                    />
+                  ) : (
+                    <PhotoRows
+                      ratios={day.photo_ratios}
+                      tile={(index) => (
+                        <div
+                          aria-hidden="true"
+                          className="rounded-[2px] bg-surface"
+                          style={{ aspectRatio: day.photo_ratios[index] }}
+                        />
+                      )}
+                    />
+                  )
+                ) : !items ? (
+                  <VideoPlaceholder count={count} />
+                ) : (
+                  <ul
+                    aria-label="Videos"
+                    className="mt-5 grid grid-cols-1 gap-x-4 gap-y-6 min-[601px]:grid-cols-2 min-[1001px]:grid-cols-3"
+                  >
+                    {items.map((entry) => (
+                      <li key={entry.id}>
+                        <Link
+                          aria-label={`Open video ${entry.title || "Video"}`}
+                          className="block rounded-[2px] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                          data-entry-id={entry.id}
+                          state={{ origin: entry.id }}
+                          to={entryLink(entry.id)}
+                        >
+                          <span className="relative block overflow-hidden rounded-[2px] bg-surface">
+                            <MediaThumbnail entry={entry} />
+                            {entry.available && (
+                              <PlayBadge className="inset-0 m-auto size-12" />
+                            )}
+                          </span>
+                          <h3 className="mt-3 font-heading text-lg leading-tight">
+                            {entry.title}
+                          </h3>
+                        </Link>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </section>
+            );
+          }),
+        )}
+      </div>
+      {/* The Curator preview is a pane inside the editor, not its own scrolling
+          page, so the rail that stands in for the page scrollbar stays out. */}
+      {!personName && runs.length > 0 && (
+        <Timeline key={tab} sectionsRef={sectionsRef} />
       )}
-      {entryID && (query.data || !query.isError) && (
+      {entryID && (
         <Lightbox
           closeTo={tabLinks[tab]}
           currentID={entryID}
-          entries={entries}
+          entries={loaded}
           entryLink={entryLink}
           kind={tab === "photos" ? "photo" : "video"}
-          loading={
-            query.isPending ||
-            isFetchingNextPage ||
-            (!!hasNextPage && !isFetchNextPageError)
-          }
+          loading={pending}
           personName={personName}
-          retry={isFetchNextPageError ? () => void fetchNextPage() : undefined}
+          retry={failure ? retry : undefined}
           title={album.title}
           total={tab === "photos" ? album.photo_count : album.video_count}
         />
       )}
     </>
+  );
+}
+
+// The gallery fits photos into rows of the target ratio, and videos into as
+// many columns.
+function useRowLayout() {
+  const desktop = useMediaQuery("(min-width: 1001px)");
+  const tablet = useMediaQuery("(min-width: 601px)");
+  return desktop
+    ? { target: 4.5, columns: 3 }
+    : tablet
+      ? { target: 3, columns: 2 }
+      : { target: 1.5, columns: 1 };
+}
+
+// Holds a day's videos' height while they load, assuming 16:9 tiles with a
+// title.
+function VideoPlaceholder({ count }: { count: number }) {
+  const { columns } = useRowLayout();
+  const rows = Math.ceil(count / columns);
+  return (
+    <div
+      aria-hidden="true"
+      className="mt-5 rounded-[2px] bg-surface"
+      style={{ aspectRatio: `${columns * 16} / ${rows * 10.5}` }}
+    />
   );
 }
 
@@ -358,63 +397,87 @@ function MediaThumbnail({ entry }: { entry: ViewerEntry }) {
 
 // Rows that preserve every aspect ratio: items join a row until its combined
 // width-to-height ratio would exceed the target, then each item's ratio is its
-// flex share. Short rows keep their natural size instead of stretching.
+// flex share, normalised so a lone portrait still fills its row. Short rows
+// keep their natural size instead of stretching. The
+// same ratios lay out a day before its photos arrive, so nothing moves when
+// they do. Rows off screen skip layout and paint; their height is declared
+// from the same arithmetic in container units, gaps included, so the page
+// height is exact before they render.
+function PhotoRows({
+  ratios,
+  tile,
+}: {
+  ratios: number[];
+  tile: (index: number) => ReactNode;
+}) {
+  const { target } = useRowLayout();
+  const rows: { items: number[]; sum: number; share: number }[] = [];
+  ratios.forEach((ratio, index) => {
+    const last = rows.at(-1);
+    if (!last || last.sum + ratio > target + 0.01)
+      rows.push({ items: [index], sum: ratio, share: 1 });
+    else {
+      last.items.push(index);
+      last.sum += ratio;
+    }
+  });
+  for (const [index, row] of rows.entries())
+    if (index === rows.length - 1 || row.sum < target * 0.7)
+      row.share = Math.min(1, row.sum / target);
+  const height = rows
+    .map(
+      (row) =>
+        `(100cqw * ${row.share} - ${(row.items.length - 1) * 4}px) / ${row.sum}`,
+    )
+    .concat(`${Math.max(0, rows.length - 1) * 4}px`)
+    .join(" + ");
+  return (
+    <div
+      className="mt-5 flex flex-col gap-1"
+      style={{
+        contentVisibility: "auto",
+        containIntrinsicHeight: `auto calc(${height})`,
+      }}
+    >
+      {rows.map((row) => (
+        <div
+          className="flex gap-1"
+          key={row.items[0]}
+          style={{ width: `${row.share * 100}%` }}
+        >
+          {row.items.map((index) => (
+            <div
+              className="min-w-0"
+              key={index}
+              style={{ flex: `${ratios[index] / row.sum} 1 0` }}
+            >
+              {tile(index)}
+            </div>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // Each photo is a link to its stable URL; the link remembers that it opened
 // the lightbox so closing can return focus here.
-function PhotoRows({
-  entries,
+function PhotoTile({
+  entry,
   entryLink,
 }: {
-  entries: ViewerEntry[];
+  entry: ViewerEntry;
   entryLink: (id: string) => To;
 }) {
-  const desktop = useMediaQuery("(min-width: 1001px)");
-  const tablet = useMediaQuery("(min-width: 601px)");
-  const target = desktop ? 4.5 : tablet ? 3 : 1.5;
-  const rows: ViewerEntry[][] = [];
-  for (const entry of entries) {
-    const last = rows.at(-1);
-    const sum =
-      last?.reduce((total, item) => total + aspectRatio(item), 0) ?? 0;
-    if (!last || sum + aspectRatio(entry) > target + 0.01) rows.push([entry]);
-    else last.push(entry);
-  }
   return (
-    <div className="mt-5 flex flex-col gap-1">
-      {rows.map((items, index) => {
-        const sum = items.reduce(
-          (value, entry) => value + aspectRatio(entry),
-          0,
-        );
-        const natural = index === rows.length - 1 || sum < target * 0.7;
-        return (
-          <div
-            className="flex gap-1"
-            key={items[0].id}
-            style={{
-              width: `${(natural ? Math.min(1, sum / target) : 1) * 100}%`,
-            }}
-          >
-            {items.map((entry) => (
-              <div
-                className="min-w-0"
-                key={entry.id}
-                style={{ flex: `${aspectRatio(entry)} 1 0` }}
-              >
-                <Link
-                  aria-label={`Open photo ${entry.title || "Photo"}`}
-                  className="block rounded-[2px] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-                  data-entry-id={entry.id}
-                  state={{ origin: entry.id }}
-                  to={entryLink(entry.id)}
-                >
-                  <MediaThumbnail entry={entry} />
-                </Link>
-              </div>
-            ))}
-          </div>
-        );
-      })}
-    </div>
+    <Link
+      aria-label={`Open photo ${entry.title || "Photo"}`}
+      className="block rounded-[2px] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+      data-entry-id={entry.id}
+      state={{ origin: entry.id }}
+      to={entryLink(entry.id)}
+    >
+      <MediaThumbnail entry={entry} />
+    </Link>
   );
 }

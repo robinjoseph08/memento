@@ -73,7 +73,14 @@ const album: ViewerAlbum = {
   end_date: "2025-06-14",
   cover_url: "/preview/jamie/cover/thumb",
   cover_preview_url: "/preview/jamie/cover",
-  days: [{ date: "2025-06-14", photo_count: 2, video_count: 0 }],
+  days: [
+    {
+      date: "2025-06-14",
+      photo_count: 2,
+      video_count: 0,
+      photo_ratios: [1.5, 1.5],
+    },
+  ],
 };
 const photo: ViewerEntry = {
   id: "one",
@@ -193,6 +200,7 @@ it("switches the URL identity without retaining another person's cover, counts, 
     screen.getByRole("combobox", { name: "Preview as" }),
   ).toHaveTextContent("Jamie");
   expect(screen.getByText(/Showing the view after publication/)).toBeVisible();
+  expect(document.querySelector('[aria-label="Timeline"]')).toBeNull();
   await user.click(screen.getByRole("combobox", { name: "Preview as" }));
   expect(screen.queryByRole("option", { name: "Lee" })).not.toBeInTheDocument();
   await user.type(screen.getByPlaceholderText("Search people…"), "Alex");
@@ -215,7 +223,14 @@ it("switches the URL identity without retaining another person's cover, counts, 
         ...album,
         photo_count: 1,
         cover_preview_url: "/preview/alex/cover",
-        days: [{ date: "2025-06-14", photo_count: 1, video_count: 0 }],
+        days: [
+          {
+            date: "2025-06-14",
+            photo_count: 1,
+            video_count: 0,
+            photo_ratios: [1.5],
+          },
+        ],
       }),
     ),
   );
@@ -250,7 +265,7 @@ it("defaults to the first person when the URL names none", async () => {
   renderPreview((path) =>
     path.endsWith("/photos")
       ? Response.json({ entries: [], next_cursor: "" })
-      : Response.json(album),
+      : Response.json({ ...album, photo_count: 0, days: [] }),
   );
   expect(
     await screen.findByRole("combobox", { name: "Preview as" }),

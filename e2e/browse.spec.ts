@@ -168,7 +168,7 @@ test("a member browses a published Album, opens photos by link, key, swipe and f
     await expect(
       member.getByRole("heading", { name: "Sunday, May 10, 2026 80 photos" }),
     ).toBeVisible();
-    // Three pages arrive in the background; slow engines need a moment.
+    // Every day arrives in the background; slow engines need a moment.
     await expect(
       member.getByRole("link", { name: "Open photo browse-220" }),
     ).toBeAttached({ timeout: 30_000 });
@@ -176,6 +176,32 @@ test("a member browses a published Album, opens photos by link, key, swipe and f
       member.getByRole("link", { name: "Open photo coast-07" }),
     ).toBeAttached();
     await expect(member.getByText(/\d:\d\d [AP]M/)).toHaveCount(0);
+
+    // The timeline stands in for the scrollbar: hovering names the month and
+    // clicking near its end jumps down the page.
+    const timeline = member.getByRole("slider", { name: "Timeline" });
+    await expect(timeline).toBeVisible();
+    await timeline.hover({ position: { x: 24, y: 40 } });
+    await expect(timeline.getByText("May 2026")).toBeVisible();
+    const rail = (await timeline.boundingBox())!;
+    await member.mouse.click(rail.x + 24, rail.y + rail.height - 4);
+    expect(await member.evaluate(() => window.scrollY)).toBeGreaterThan(0);
+    await member.evaluate(() => window.scrollTo({ top: 0 }));
+
+    // On a phone the rail gives way to a handle that appears while scrolling
+    // and scrubs from where it is grabbed.
+    await member.setViewportSize({ width: 390, height: 900 });
+    await member.evaluate(() => window.scrollTo({ top: 300 }));
+    const handle = timeline.locator("span.pointer-events-auto");
+    const grip = (await handle.boundingBox())!;
+    const centre = { x: grip.x + grip.width / 2, y: grip.y + grip.height / 2 };
+    await member.mouse.move(centre.x, centre.y);
+    await member.mouse.down();
+    expect(await member.evaluate(() => window.scrollY)).toBe(300);
+    await member.mouse.move(centre.x, centre.y + 200, { steps: 8 });
+    await member.mouse.up();
+    expect(await member.evaluate(() => window.scrollY)).toBeGreaterThan(1000);
+    await member.evaluate(() => window.scrollTo({ top: 0 }));
     await captureLayouts(member, "browse-album");
     for (const width of [1440, 390]) {
       await member.setViewportSize({ width, height: 900 });

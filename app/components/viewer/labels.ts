@@ -3,9 +3,13 @@ import type {
   ViewerEntry,
 } from "../../types/generated/publishing";
 
-// Width-to-height ratio for layout; media without dimensions lays out as 3:2.
+// Width-to-height ratio for layout, truncated to three decimals exactly as
+// the API truncates a day's photo_ratios, so placeholder rows and real rows
+// break at the same places. Media without dimensions lays out as 3:2.
 export function aspectRatio(entry: ViewerEntry) {
-  return entry.width > 0 && entry.height > 0 ? entry.width / entry.height : 1.5;
+  return entry.width > 0 && entry.height > 0
+    ? Math.trunc((entry.width / entry.height) * 1000) / 1000
+    : 1.5;
 }
 
 export function captureDate(value: string, weekday = false) {
@@ -19,6 +23,15 @@ export function captureDate(value: string, weekday = false) {
     year: "numeric",
     ...(weekday ? ({ weekday: "long" } as const) : {}),
   }).format(date);
+}
+
+// monthLabel formats a YYYY-MM key the way the timeline shows it: "Aug 2025".
+export function monthLabel(key: string) {
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: "UTC",
+    month: "short",
+    year: "numeric",
+  }).format(new Date(`${key}-01T12:00:00Z`));
 }
 
 export function captureRange(album: ViewerAlbum) {

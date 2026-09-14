@@ -26,7 +26,14 @@ const album: ViewerAlbum = {
   end_date: "2025-06-14",
   cover_url: "/media/lake/cover/thumb?person=jamie",
   cover_preview_url: "/media/lake/cover?person=jamie",
-  days: [{ date: "2025-06-14", photo_count: 2, video_count: 0 }],
+  days: [
+    {
+      date: "2025-06-14",
+      photo_count: 2,
+      video_count: 0,
+      photo_ratios: [1.5, 1.5],
+    },
+  ],
 };
 const photo: ViewerEntry = {
   id: "photo-1",
@@ -83,6 +90,7 @@ function mockViewer(handler: (path: string) => Response) {
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
   window.history.replaceState(null, "", "/");
 });
 
@@ -190,7 +198,14 @@ it("lists videos as links to their lightbox without mounting a player in the gri
         ...album,
         photo_count: 0,
         video_count: 1,
-        days: [{ date: "2025-06-14", photo_count: 0, video_count: 1 }],
+        days: [
+          {
+            date: "2025-06-14",
+            photo_count: 0,
+            video_count: 1,
+            photo_ratios: [],
+          },
+        ],
       });
     if (path === "/api/albums/lake/videos")
       return Response.json({
@@ -255,16 +270,42 @@ it("hides previously loaded thumbnails when the server denies further gallery ac
   expect(screen.queryByRole("img", { name: "Lake" })).not.toBeInTheDocument();
 });
 
-it("preserves loaded photos after a failed next page and retries the cursor rather than replacing them", async () => {
+it("loads each run of days at once, keeps loaded days after one run fails, and retries only that run", async () => {
   let retry = false;
   mockViewer((path) => {
-    if (path === "/api/albums/lake") return Response.json(album);
-    if (path === "/api/albums/lake/photos")
-      return Response.json({ entries: [photo], next_cursor: "more" });
-    if (path === "/api/albums/lake/photos?cursor=more")
+    if (path === "/api/albums/lake")
+      return Response.json({
+        ...album,
+        photo_count: 501,
+        end_date: "2025-06-15",
+        days: [
+          {
+            date: "2025-06-14",
+            photo_count: 500,
+            video_count: 0,
+            photo_ratios: Array.from({ length: 500 }, () => 1.5),
+          },
+          {
+            date: "2025-06-15",
+            photo_count: 1,
+            video_count: 0,
+            photo_ratios: [1.5],
+          },
+        ],
+      });
+    if (path === "/api/albums/lake/photos?to=2025-06-15")
+      return Response.json({ entries: [photo], next_cursor: "" });
+    if (path === "/api/albums/lake/photos?from=2025-06-15")
       return retry
         ? Response.json({
-            entries: [{ ...photo, id: "photo-2", title: "Cabin" }],
+            entries: [
+              {
+                ...photo,
+                id: "photo-2",
+                title: "Cabin",
+                captured_at: "2025-06-15T09:00:00Z",
+              },
+            ],
             next_cursor: "",
           })
         : Response.json({}, { status: 503 });
@@ -486,7 +527,9 @@ const videoAlbum: ViewerAlbum = {
   ...album,
   photo_count: 0,
   video_count: 3,
-  days: [{ date: "2025-06-14", photo_count: 0, video_count: 3 }],
+  days: [
+    { date: "2025-06-14", photo_count: 0, video_count: 3, photo_ratios: [] },
+  ],
 };
 const party: ViewerEntry = {
   ...photo,
@@ -677,4 +720,123 @@ it("reloads a stable video link and hides downloads in preview-style entries", a
   expect(
     await within(dialog).findByRole("button", { name: "Go to video 3" }),
   ).toBeVisible();
+});
+
+// jsdom has no layout, so a long album is 4000px tall with December at 500px
+// and June at 2000px, and the rail is 800px tall below a 64px header.
+function mockTimelineLayout() {
+  const winter: ViewerEntry = {
+    ...photo,
+    id: "photo-winter",
+    title: "Snow",
+    captured_at: "2024-12-31T15:00:00Z",
+  };
+  mockViewer((path) => {
+    if (path === "/api/albums/lake")
+      return Response.json({
+        ...album,
+        photo_count: 2,
+        start_date: "2024-12-31",
+        days: [
+          {
+            date: "2024-12-31",
+            photo_count: 1,
+            video_count: 0,
+            photo_ratios: [1.5],
+          },
+          {
+            date: "2025-06-14",
+            photo_count: 1,
+            video_count: 0,
+            photo_ratios: [1.5],
+          },
+        ],
+      });
+    if (path === "/api/albums/lake/photos")
+      return Response.json({ entries: [winter, photo], next_cursor: "" });
+    throw new Error(`Unexpected request: ${path}`);
+  });
+  const scrollTo = vi.fn();
+  vi.stubGlobal("scrollTo", scrollTo);
+  vi.spyOn(document.documentElement, "scrollHeight", "get").mockReturnValue(
+    4000,
+  );
+  vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(
+    function (this: Element) {
+      const date = this.getAttribute("data-date");
+      const top =
+        date === "2024-12-31" ? 500 : date === "2025-06-14" ? 2000 : 64;
+      const height = this.getAttribute("role") === "slider" ? 800 : 0;
+      return {
+        x: 0,
+        y: top,
+        top,
+        left: 0,
+        right: 0,
+        bottom: top + height,
+        width: 0,
+        height,
+        toJSON: () => ({}),
+      };
+    },
+  );
+  window.history.replaceState(null, "", "/albums/lake");
+  return scrollTo;
+}
+
+it("scrubs a long album by month from the timeline", async () => {
+  const scrollTo = mockTimelineLayout();
+  render(<App />);
+  const timeline = await screen.findByRole("slider", { name: "Timeline" });
+  await waitFor(() =>
+    expect(timeline).toHaveAttribute("aria-valuetext", "Dec 2024"),
+  );
+  expect(timeline).toHaveAttribute("aria-valuemax", "1");
+  expect(within(timeline).getByText("2024")).toBeInTheDocument();
+  expect(within(timeline).getByText("2025")).toBeInTheDocument();
+  expect(document.documentElement.style.scrollbarWidth).toBe("none");
+
+  fireEvent.pointerMove(timeline, { clientY: 64 + 800 * 0.75 });
+  expect(within(timeline).getByText("Jun 2025")).toBeInTheDocument();
+  fireEvent.pointerDown(timeline, { clientY: 64 + 800 * 0.75, pointerId: 1 });
+  expect(scrollTo).toHaveBeenLastCalledWith({ top: 3000 });
+  fireEvent.pointerUp(timeline, { pointerId: 1, pointerType: "mouse" });
+  fireEvent.pointerLeave(timeline);
+  expect(within(timeline).queryByText("Jun 2025")).not.toBeInTheDocument();
+
+  fireEvent.keyDown(timeline, { key: "ArrowDown" });
+  expect(scrollTo).toHaveBeenLastCalledWith({ top: 500 });
+  fireEvent.keyDown(timeline, { key: "End" });
+  expect(scrollTo).toHaveBeenLastCalledWith({ top: 2000 });
+});
+
+it("shows a phone handle only while scrolling and scrubs from where it was grabbed", async () => {
+  const scrollTo = mockTimelineLayout();
+  vi.stubGlobal("matchMedia", (media: string) => ({
+    media,
+    matches: media === "(max-width: 760px)",
+    addEventListener: () => {},
+    removeEventListener: () => {},
+  }));
+  render(<App />);
+  const timeline = await screen.findByRole("slider", { name: "Timeline" });
+  await waitFor(() =>
+    expect(timeline).toHaveAttribute("aria-valuetext", "Dec 2024"),
+  );
+  expect(within(timeline).queryByText("2024")).not.toBeInTheDocument();
+  expect(timeline).toHaveClass("opacity-0");
+  fireEvent.scroll(window);
+  expect(timeline).not.toHaveClass("opacity-0");
+
+  // The handle sits at the top; a touch at half the rail must not jump, and
+  // dragging a quarter further scrolls that share of the scroll range.
+  fireEvent.pointerDown(timeline, { clientY: 64 + 400, pointerId: 1 });
+  expect(scrollTo).not.toHaveBeenCalled();
+  expect(within(timeline).getByText("Dec 2024")).toBeInTheDocument();
+  fireEvent.pointerMove(timeline, { clientY: 64 + 600, pointerId: 1 });
+  expect(scrollTo).toHaveBeenLastCalledWith({
+    top: 0.25 * (4000 - window.innerHeight),
+  });
+  fireEvent.pointerUp(timeline, { pointerId: 1, pointerType: "touch" });
+  expect(within(timeline).queryByText("Dec 2024")).not.toBeInTheDocument();
 });

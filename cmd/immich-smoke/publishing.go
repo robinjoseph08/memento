@@ -198,7 +198,7 @@ func verifyPublishing(ctx context.Context, db *bun.DB, module *publishing.Module
 // route and compares it byte for byte with the uploaded fixture file. The
 // same URLs must stay neutral for another Person and in preview.
 func verifyDownloads(ctx context.Context, module *publishing.Module, viewer, other http.Handler, actorID, albumID string, uploaded []fixture.Asset) error {
-	page, err := module.ViewEntries(ctx, actorID, "", albumID, "IMAGE", "")
+	page, err := module.ViewEntries(ctx, actorID, "", albumID, "IMAGE", publishing.EntryPageRequest{})
 	if err != nil {
 		return err
 	}
@@ -293,7 +293,7 @@ func verifyViewer(ctx context.Context, module *publishing.Module, handler http.H
 			return album, err
 		}
 	}
-	page, err := module.ViewEntries(ctx, actorID, previewID, albumID, "IMAGE", "")
+	page, err := module.ViewEntries(ctx, actorID, previewID, albumID, "IMAGE", publishing.EntryPageRequest{})
 	if err != nil {
 		return album, err
 	}
@@ -308,7 +308,7 @@ func verifyViewer(ctx context.Context, module *publishing.Module, handler http.H
 			return album, err
 		}
 	}
-	videos, err := module.ViewEntries(ctx, actorID, previewID, albumID, "VIDEO", "")
+	videos, err := module.ViewEntries(ctx, actorID, previewID, albumID, "VIDEO", publishing.EntryPageRequest{})
 	if err != nil {
 		return album, err
 	}
@@ -382,7 +382,7 @@ func verifyVideoPublishing(ctx context.Context, db *bun.DB, module *publishing.M
 	alexHTTP := publishingMediaHandler(module, delivery, alex)
 	samHTTP := publishingMediaHandler(module, delivery, sam)
 	curatorHTTP := publishingMediaHandler(module, delivery, curator.Person)
-	page, err := module.ViewEntries(ctx, alex.ID, "", album.ID, "VIDEO", "")
+	page, err := module.ViewEntries(ctx, alex.ID, "", album.ID, "VIDEO", publishing.EntryPageRequest{})
 	if err != nil {
 		return err
 	}
@@ -444,7 +444,7 @@ func verifyVideoPublishing(ctx context.Context, db *bun.DB, module *publishing.M
 			return fmt.Errorf("video URL crossed Person identity: %w", err)
 		}
 	}
-	preview, err := module.ViewEntries(ctx, curator.Person.ID, alex.ID, album.ID, "VIDEO", "")
+	preview, err := module.ViewEntries(ctx, curator.Person.ID, alex.ID, album.ID, "VIDEO", publishing.EntryPageRequest{})
 	if err != nil {
 		return err
 	}

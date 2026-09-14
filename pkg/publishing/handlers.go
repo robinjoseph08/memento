@@ -13,7 +13,7 @@ import (
 type ViewerUseCases interface {
 	ViewAlbum(ctx context.Context, actorID, previewPersonID, albumID string) (ViewerAlbum, error)
 	ViewAlbums(ctx context.Context, actorID string) ([]ViewerAlbum, error)
-	ViewEntries(ctx context.Context, actorID, previewPersonID, albumID, kind, cursor string) (ViewerPage, error)
+	ViewEntries(ctx context.Context, actorID, previewPersonID, albumID, kind string, page EntryPageRequest) (ViewerPage, error)
 }
 
 type viewerHandlers struct{ module ViewerUseCases }
@@ -33,7 +33,8 @@ func (h *viewerHandlers) albums(c *echo.Context) error {
 func (h *viewerHandlers) photos(c *echo.Context) error { return h.entries(c, "IMAGE") }
 func (h *viewerHandlers) videos(c *echo.Context) error { return h.entries(c, "VIDEO") }
 func (h *viewerHandlers) entries(c *echo.Context, kind string) error {
-	result, err := h.module.ViewEntries(c.Request().Context(), actorID(c), c.Param("personID"), c.Param("id"), kind, c.QueryParam("cursor"))
+	page := EntryPageRequest{Cursor: c.QueryParam("cursor"), From: c.QueryParam("from"), To: c.QueryParam("to")}
+	result, err := h.module.ViewEntries(c.Request().Context(), actorID(c), c.Param("personID"), c.Param("id"), kind, page)
 	return respond(c, result, err)
 }
 
