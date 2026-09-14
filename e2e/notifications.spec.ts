@@ -226,7 +226,9 @@ test("Curator previews a mixed batch, excludes one update, adds a note, approves
     await expect(sam).toHaveURL(/\/albums$/);
     await expect(bell(sam, 0)).toBeVisible();
     const caughtUp = await openUpdates(sam, 0);
-    await expect(caughtUp).toContainText("all caught up");
+    await expect(
+      caughtUp.getByRole("button", { name: "All caught up", exact: true }),
+    ).toBeDisabled();
     await expect(caughtUp.getByRole("listitem")).toHaveCount(0);
     await sam.keyboard.press("Escape");
 

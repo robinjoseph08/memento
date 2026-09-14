@@ -1,5 +1,5 @@
 import { Bell } from "lucide-react";
-import { useState } from "react";
+import { useId, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
 import {
@@ -18,6 +18,8 @@ export function NotificationBell() {
   const notifications = useNotifications();
   const markAllRead = useMarkAllNotificationsRead();
   const [open, setOpen] = useState(false);
+  const headingId = useId();
+  const allLinkRef = useRef<HTMLAnchorElement>(null);
   const unread = notifications.data?.unread ?? 0;
   const fresh =
     notifications.data?.notifications.filter((item) => !item.read_at) ?? [];
@@ -45,10 +47,12 @@ export function NotificationBell() {
       </PopoverTrigger>
       <PopoverContent
         align="end"
-        aria-label="New updates"
+        aria-labelledby={headingId}
         className="w-88 max-w-[calc(100vw-1rem)] p-2"
       >
-        <p className="px-2 pt-1 pb-2 font-heading text-lg">New updates</p>
+        <p className="px-2 pt-1 pb-2 font-heading text-lg" id={headingId}>
+          New updates
+        </p>
         {notifications.isPending && (
           <p className="px-2 py-2 text-xs text-muted" role="status">
             Loading updates…
@@ -61,7 +65,7 @@ export function NotificationBell() {
         )}
         {notifications.data && fresh.length === 0 && (
           <p className="px-2 py-2 text-xs text-muted">
-            You are all caught up. Your Curator will let you know when there are
+            Nothing new right now. Your Curator will let you know when there are
             new photos to see.
           </p>
         )}
@@ -71,6 +75,7 @@ export function NotificationBell() {
               <NotificationRow
                 key={notification.id}
                 notification={notification}
+                onMarkedRead={() => allLinkRef.current?.focus()}
                 onOpened={() => setOpen(false)}
               />
             ))}
@@ -87,20 +92,29 @@ export function NotificationBell() {
             className="h-auto min-h-0 px-2 py-2 text-xs"
             variant="ghost"
           >
-            <Link onClick={() => setOpen(false)} to="/notifications">
+            <Link
+              onClick={() => setOpen(false)}
+              ref={allLinkRef}
+              to="/notifications"
+            >
               See all updates
             </Link>
           </Button>
-          {fresh.length > 0 && (
-            <Button
-              className="h-auto min-h-0 px-2 py-2 text-xs"
-              disabled={markAllRead.isPending}
-              onClick={() => markAllRead.mutate()}
-              variant="ghost"
-            >
-              {markAllRead.isPending ? "Marking as read…" : "Mark all as read"}
-            </Button>
-          )}
+          {notifications.data &&
+            notifications.data.notifications.length > 0 && (
+              <Button
+                className="h-auto min-h-0 px-2 py-2 text-xs"
+                disabled={fresh.length === 0 || markAllRead.isPending}
+                onClick={() => markAllRead.mutate()}
+                variant="ghost"
+              >
+                {fresh.length === 0
+                  ? "All caught up"
+                  : markAllRead.isPending
+                    ? "Marking as read…"
+                    : "Mark all as read"}
+              </Button>
+            )}
         </div>
       </PopoverContent>
     </Popover>

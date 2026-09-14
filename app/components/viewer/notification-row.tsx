@@ -5,12 +5,12 @@ import { errorMessage } from "../../lib/http";
 import { cn } from "../../lib/utils";
 import type { Notification } from "../../types/generated/notifications";
 import { countLabel } from "../albums/moment-labels";
+import { Button } from "../ui/button";
 import {
   notificationDate,
   notificationDestination,
   notificationTitle,
-} from "../shell/notification-labels";
-import { Button } from "../ui/button";
+} from "./notification-labels";
 
 // One update, shared by the bell and the Updates page. Opening marks it read
 // and goes to its Album, or to the Album list when it covers several. A
@@ -18,9 +18,13 @@ import { Button } from "../ui/button";
 export function NotificationRow({
   notification,
   onOpened,
+  onMarkedRead,
 }: {
   notification: Notification;
   onOpened?: () => void;
+  // Called after the dot marks the row read, so a list that hides read rows
+  // can move focus somewhere that still exists.
+  onMarkedRead?: () => void;
 }) {
   const markRead = useMarkNotificationRead();
   const navigate = useNavigate();
@@ -74,18 +78,20 @@ export function NotificationRow({
             {notification.note}
           </span>
         )}
-        {markRead.isError && (
-          <span className="mt-1 block text-xs text-destructive" role="alert">
-            {errorMessage(markRead.error)}
-          </span>
-        )}
       </button>
+      {markRead.isError && (
+        <p className="mt-1 max-w-40 text-xs text-destructive" role="alert">
+          {errorMessage(markRead.error)}
+        </p>
+      )}
       {unread && (
         <Button
           aria-label={`Mark ${title} as read`}
           className="mt-0.5 h-auto min-h-0 shrink-0 px-2 py-1 text-xs"
           disabled={markRead.isPending}
-          onClick={() => markRead.mutate(notification.id)}
+          onClick={() =>
+            markRead.mutate(notification.id, { onSuccess: onMarkedRead })
+          }
           size="sm"
           variant="ghost"
         >

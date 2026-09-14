@@ -1,3 +1,6 @@
+import { Navigate } from "react-router-dom";
+
+import { useIdentityStatus } from "../../hooks/queries/identity";
 import {
   useMarkAllNotificationsRead,
   useNotifications,
@@ -10,9 +13,13 @@ import { NotificationRow } from "./notification-row";
 // Every update ever sent to this person, newest first. The bell shows only
 // the new ones; this page keeps the history and the bulk action.
 export function NotificationsPage() {
+  const { data } = useIdentityStatus();
   const notifications = useNotifications();
   const markAllRead = useMarkAllNotificationsRead();
   const unread = notifications.data?.unread ?? 0;
+  // Curators never receive viewer updates, so their query never runs; send
+  // them to their own home instead of an endless loading line.
+  if (data?.person?.is_curator) return <Navigate replace to="/curator" />;
   return (
     <div className="pt-4 min-[761px]:pt-11">
       <PageTitle title="Updates" />
@@ -20,13 +27,17 @@ export function NotificationsPage() {
         <h1 className="font-heading text-[clamp(34px,4vw,48px)] leading-[1.2] tracking-[-1px]">
           Updates
         </h1>
-        {unread > 0 && (
+        {notifications.data && notifications.data.notifications.length > 0 && (
           <Button
-            disabled={markAllRead.isPending}
+            disabled={unread === 0 || markAllRead.isPending}
             onClick={() => markAllRead.mutate()}
             variant="outline"
           >
-            {markAllRead.isPending ? "Marking as read…" : "Mark all as read"}
+            {unread === 0
+              ? "All caught up"
+              : markAllRead.isPending
+                ? "Marking as read…"
+                : "Mark all as read"}
           </Button>
         )}
       </div>

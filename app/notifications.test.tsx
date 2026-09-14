@@ -173,10 +173,9 @@ it("shows new updates in the bell, keeps the history on the Updates page, and ke
   expect(reads).toEqual(["n1", "n2"]);
   expect(await screen.findByRole("button", { name: "Updates" })).toBeVisible();
   await user.click(screen.getByRole("button", { name: "Updates" }));
-  expect(await screen.findByText(/all caught up/)).toBeVisible();
   expect(
-    screen.queryByRole("button", { name: "Mark all as read" }),
-  ).not.toBeInTheDocument();
+    await screen.findByRole("button", { name: "All caught up" }),
+  ).toBeDisabled();
 });
 
 it("marks every update read at once", async () => {
@@ -224,7 +223,9 @@ it("marks every update read at once", async () => {
   await user.click(
     await screen.findByRole("button", { name: "Mark all as read" }),
   );
-  expect(await screen.findByText(/all caught up/)).toBeVisible();
+  expect(
+    await screen.findByRole("button", { name: "All caught up" }),
+  ).toBeDisabled();
   expect(calls).toEqual(["/api/notifications/read-all"]);
   expect(screen.getByRole("button", { name: "Updates" })).toBeVisible();
 });

@@ -455,9 +455,9 @@ would hear about. A Curator can leave out a person or one Album update, add a
 note for everyone, and send. Sending creates an in-app Update Notification for
 each included Person and records exactly which Album Entries were announced, so
 repeated sends, two Curators approving overlapping previews, or revoking and
-restoring access never announce the same media twice. Members see a bell with
-their unread count that lists only new updates, and an Updates page with every
-update they have received. Opening one marks it read and goes to the Album, or
+restoring access never announce the same media twice. Members see a bell that
+shows their unread count and lists only new updates, and an Updates page with
+every update they have received. Opening one marks it read and goes to the Album, or
 to the Album list when it covers several. Browsing never changes read state.
 Email delivery of the same notifications is a later addition.
 
