@@ -69,9 +69,9 @@ func mediaLabel(photos, videos int) string {
 }
 
 // renderUpdateEmail writes the plain-text email for an approved summary. It
-// lists Albums with their status, counts, and video titles, never every
-// photo. One Album links straight to it; several link to the Album list.
-func renderUpdateEmail(publicURL, personName string, albums []payloadAlbum, note, unsubscribeToken string) (subject, body string) {
+// lists Albums with their status and counts, never individual photos or
+// videos. One Album links straight to it; several link to the Album list.
+func renderUpdateEmail(publicURL, personName string, albums []NotificationAlbum, note, unsubscribeToken string) (subject, body string) {
 	origin := strings.TrimRight(publicURL, "/")
 	var photos, videos int
 	for _, album := range albums {
@@ -98,11 +98,7 @@ func renderUpdateEmail(publicURL, personName string, albums []payloadAlbum, note
 		if album.Status == AlbumNew {
 			status = "new album"
 		}
-		fmt.Fprintf(&b, "%s (%s)\n%s\n", album.Title, status, mediaLabel(album.PhotoCount, album.VideoCount))
-		if len(album.VideoTitles) > 0 {
-			fmt.Fprintf(&b, "Videos: %s\n", strings.Join(album.VideoTitles, ", "))
-		}
-		b.WriteString("\n")
+		fmt.Fprintf(&b, "%s (%s)\n%s\n\n", album.Title, status, mediaLabel(album.PhotoCount, album.VideoCount))
 	}
 	if note != "" {
 		fmt.Fprintf(&b, "A note from your Curator:\n%s\n\n", note)
@@ -189,39 +185,34 @@ func (m *Module) prepareUpdate(ctx context.Context, tx bun.Tx, row *models.MailD
 }
 
 // stillVisible keeps the approved summary's Albums, titles, and statuses while
-// subtracting Album Entries the Person can no longer see. Entries allowed
-// since approval and later title edits never enter the result.
-func stillVisible(albums []payloadAlbum, approved []string, visible []VisibleEntry) []payloadAlbum {
+// recounting only the approved Album Entries the Person can still see.
+// Entries allowed since approval and later Album renames never enter the
+// result.
+func stillVisible(albums []NotificationAlbum, approved []string, visible []VisibleEntry) []NotificationAlbum {
 	approvedSet := make(map[string]bool, len(approved))
 	for _, id := range approved {
 		approvedSet[id] = true
 	}
-	remaining := map[string]map[string]bool{}
+	counts := map[string]NotificationAlbum{}
 	for _, entry := range visible {
 		if !approvedSet[entry.EntryID] {
 			continue
 		}
-		if remaining[entry.AlbumID] == nil {
-			remaining[entry.AlbumID] = map[string]bool{}
+		album := counts[entry.AlbumID]
+		if entry.Kind == "VIDEO" {
+			album.VideoCount++
+		} else {
+			album.PhotoCount++
 		}
-		remaining[entry.AlbumID][entry.EntryID] = true
+		counts[entry.AlbumID] = album
 	}
-	result := []payloadAlbum{}
+	result := []NotificationAlbum{}
 	for _, album := range albums {
-		kept := remaining[album.ID]
-		if len(kept) == 0 {
+		kept := counts[album.ID]
+		if kept.PhotoCount+kept.VideoCount == 0 {
 			continue
 		}
-		filtered := payloadAlbum{NotificationAlbum{ID: album.ID, Title: album.Title, Status: album.Status, VideoTitles: []string{}}, nil}
-		for _, video := range album.Videos {
-			if kept[video.EntryID] {
-				filtered.VideoCount++
-				filtered.VideoTitles = append(filtered.VideoTitles, video.Title)
-				filtered.Videos = append(filtered.Videos, video)
-			}
-		}
-		filtered.PhotoCount = len(kept) - filtered.VideoCount
-		result = append(result, filtered)
+		result = append(result, NotificationAlbum{ID: album.ID, Title: album.Title, Status: album.Status, PhotoCount: kept.PhotoCount, VideoCount: kept.VideoCount})
 	}
 	return result
 }

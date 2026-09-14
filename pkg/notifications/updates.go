@@ -34,21 +34,8 @@ const (
 
 // payload is the immutable body of one Update Notification.
 type payload struct {
-	Albums []payloadAlbum `json:"albums"`
-	Note   string         `json:"note"`
-}
-
-// payloadAlbum keeps the summary shown in app plus each announced video by
-// Album Entry, so a later email can drop a revoked video's frozen title
-// without touching the summary.
-type payloadAlbum struct {
-	NotificationAlbum
-	Videos []payloadVideo `json:"videos"`
-}
-
-type payloadVideo struct {
-	EntryID string `json:"entry_id"`
-	Title   string `json:"title"`
+	Albums []NotificationAlbum `json:"albums"`
+	Note   string              `json:"note"`
 }
 
 // unannouncedAlbum is a preview row's Album with the exact Album Entries that
@@ -56,7 +43,6 @@ type payloadVideo struct {
 type unannouncedAlbum struct {
 	NotificationAlbum
 	EntryIDs []string
-	Videos   []payloadVideo
 }
 
 // notifiablePeople selects the fields eligibility and destinations need. An
@@ -136,14 +122,12 @@ func (m *Module) unannounced(ctx context.Context, db bun.IDB, personID string) (
 			if seenAlbums[entry.AlbumID] {
 				status = AlbumUpdated
 			}
-			album = &unannouncedAlbum{NotificationAlbum{ID: entry.AlbumID, Title: entry.AlbumTitle, Status: status, VideoTitles: []string{}}, nil, nil}
+			album = &unannouncedAlbum{NotificationAlbum{ID: entry.AlbumID, Title: entry.AlbumTitle, Status: status}, nil}
 			byAlbum[entry.AlbumID] = album
 		}
 		album.EntryIDs = append(album.EntryIDs, entry.EntryID)
 		if entry.Kind == "VIDEO" {
 			album.VideoCount++
-			album.VideoTitles = append(album.VideoTitles, entry.Title)
-			album.Videos = append(album.Videos, payloadVideo{EntryID: entry.EntryID, Title: entry.Title})
 		} else {
 			album.PhotoCount++
 		}
@@ -302,7 +286,7 @@ func (m *Module) approvePerson(ctx context.Context, tx bun.Tx, row ApprovePerson
 	for _, id := range row.ExcludedAlbumIDs {
 		excluded[id] = true
 	}
-	body := payload{Albums: []payloadAlbum{}, Note: note}
+	body := payload{Albums: []NotificationAlbum{}, Note: note}
 	notification := models.UpdateNotification{ID: models.NewUUIDv7(), PersonID: person.ID, Version: payloadVersion, CreatedAt: now}
 	albumRows := []models.AnnouncedAlbum{}
 	entryRows := []models.AnnouncedEntry{}
@@ -314,7 +298,7 @@ func (m *Module) approvePerson(ctx context.Context, tx bun.Tx, row ApprovePerson
 		if err != nil {
 			return outcome, errorstack.Capture(err)
 		}
-		body.Albums = append(body.Albums, payloadAlbum{NotificationAlbum: album.NotificationAlbum, Videos: album.Videos})
+		body.Albums = append(body.Albums, album.NotificationAlbum)
 		albumRows = append(albumRows, models.AnnouncedAlbum{PersonID: person.ID, AlbumID: models.UUID(albumID), AnnouncedAt: now})
 		for _, id := range album.EntryIDs {
 			entryID, err := uuid.Parse(id)
@@ -383,12 +367,7 @@ func projectNotification(row models.UpdateNotification) (Notification, error) {
 		return result, errorstack.Capture(err)
 	}
 	result.Note = body.Note
-	for _, album := range body.Albums {
-		if album.VideoTitles == nil {
-			album.VideoTitles = []string{}
-		}
-		result.Albums = append(result.Albums, album.NotificationAlbum)
-	}
+	result.Albums = append(result.Albums, body.Albums...)
 	return result, nil
 }
 

@@ -309,7 +309,7 @@ func TestApprovedUpdateEmailRunsOnTheMailQueue(t *testing.T) {
 	require.NoError(t, err)
 	_, err = db.NewUpdate().Model((*models.Person)(nil)).Set("update_identity_id = ?, email_updates = true", identity.ID).Where("id = ?", person.ID).Exec(ctx)
 	require.NoError(t, err)
-	content := staticContent{person.ID.String(): {{AlbumID: album.ID.String(), AlbumTitle: "Coast", EntryID: entry.ID.String(), Kind: "VIDEO", Title: "surf"}}}
+	content := staticContent{person.ID.String(): {{AlbumID: album.ID.String(), AlbumTitle: "Coast", EntryID: entry.ID.String(), Kind: "VIDEO"}}}
 
 	recorder := &notifications.Recorder{}
 	var module *notifications.Module
@@ -342,7 +342,7 @@ func TestApprovedUpdateEmailRunsOnTheMailQueue(t *testing.T) {
 	require.Len(t, recorder.Sent(), 1)
 	assert.Equal(t, "alex@example.test", recorder.Sent()[0].To)
 	assert.Equal(t, "Coast was shared with you on Memento", recorder.Sent()[0].Subject)
-	assert.Contains(t, recorder.Sent()[0].Body, "Videos: surf")
+	assert.Contains(t, recorder.Sent()[0].Body, "Coast (new album)\n1 video\n")
 	assert.Contains(t, recorder.Sent()[0].Body, "/albums/"+album.ID.String()+"/photos")
 	open, err := module.OpenDeliveries(ctx)
 	require.NoError(t, err)

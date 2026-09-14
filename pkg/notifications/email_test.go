@@ -140,19 +140,17 @@ func TestUpdateEmailMirrorsTheStillVisibleApprovedSubset(t *testing.T) {
 	family := seedAlbum(t, db, "Family", "family-01.jpg", "family-02.jpg")
 	alex := seedPerson(t, db, "Alex", personOptions{email: "alex@example.test", emailUpdates: true})
 	// The fifth Coast item is allowed only after approval.
-	content.set(alex.ID.String(), append(coast.Entries[:4], family.Entries...)...)
+	approvedContent := append(append([]notifications.VisibleEntry{}, coast.Entries[:4]...), family.Entries...)
+	content.set(alex.ID.String(), approvedContent...)
 	result := approveOne(t, module, "Enjoy the new photos!")
 	require.NotNil(t, result.Delivery)
 	stored := storedNotification(t, db, result.NotificationID)
 
 	// After approval: one approved video is revoked, a new photo is allowed,
-	// the Album is renamed, and the remaining video gets a new title.
+	// and the Album is renamed.
 	renamed := []notifications.VisibleEntry{}
 	for _, entry := range append(append([]notifications.VisibleEntry{}, coast.Entries[0], coast.Entries[1], coast.Entries[3], coast.Entries[4]), family.Entries...) {
 		entry.AlbumTitle = strings.Replace(entry.AlbumTitle, "Coast", "Renamed Coast", 1)
-		if entry.Title == "sunset" {
-			entry.Title = "Golden hour"
-		}
 		renamed = append(renamed, entry)
 	}
 	content.set(alex.ID.String(), renamed...)
@@ -162,11 +160,11 @@ func TestUpdateEmailMirrorsTheStillVisibleApprovedSubset(t *testing.T) {
 	sent := recorder.Sent()[0]
 	assert.Equal(t, "New photos and videos in 2 albums on Memento", sent.Subject)
 	assert.Contains(t, sent.Body, "Hi Alex,")
-	assert.Contains(t, sent.Body, "Coast (new album)\n2 photos and 1 video\nVideos: sunset\n", "counts follow the still-visible approved subset with frozen titles")
+	assert.Contains(t, sent.Body, "Coast (new album)\n2 photos and 1 video\n", "counts follow the still-visible approved subset under the frozen title")
 	assert.Contains(t, sent.Body, "Family (new album)\n2 photos\n")
 	assert.NotContains(t, sent.Body, "Renamed Coast", "a later Album rename never enters the email")
-	assert.NotContains(t, sent.Body, "surf-lesson", "a revoked video is left out")
-	assert.NotContains(t, sent.Body, "Golden hour", "a later title edit never enters the email")
+	assert.NotContains(t, sent.Body, "surf-lesson", "videos are counted, never listed")
+	assert.NotContains(t, sent.Body, "sunset")
 	assert.NotContains(t, sent.Body, "coast-0", "photos are counted, never listed")
 	assert.Contains(t, sent.Body, "A note from your Curator:\nEnjoy the new photos!\n")
 	assert.Contains(t, sent.Body, "See them on Memento:\n"+publicURL+"/albums\n", "several Albums open the ordinary Album list")
@@ -178,10 +176,10 @@ func TestUpdateEmailMirrorsTheStillVisibleApprovedSubset(t *testing.T) {
 	list, err := module.ListNotifications(t.Context(), alex.ID.String())
 	require.NoError(t, err)
 	assert.Equal(t, []notifications.NotificationAlbum{
-		{ID: coast.ID, Title: "Coast", Status: notifications.AlbumNew, PhotoCount: 2, VideoCount: 2, VideoTitles: []string{"surf-lesson", "sunset"}},
-		{ID: family.ID, Title: "Family", Status: notifications.AlbumNew, PhotoCount: 2, VideoCount: 0, VideoTitles: []string{}},
+		{ID: coast.ID, Title: "Coast", Status: notifications.AlbumNew, PhotoCount: 2, VideoCount: 2},
+		{ID: family.ID, Title: "Family", Status: notifications.AlbumNew, PhotoCount: 2, VideoCount: 0},
 	}, list.Notifications[0].Albums)
-	assert.ElementsMatch(t, entryIDs(append(coast.Entries[:4], family.Entries...)...), announced(t, module, alex.ID.String()))
+	assert.ElementsMatch(t, entryIDs(approvedContent...), announced(t, module, alex.ID.String()))
 
 	// A single remaining Album opens directly; a fully revoked update is skipped.
 	sam := seedPerson(t, db, "Sam", personOptions{email: "sam@example.test", emailUpdates: true})
@@ -197,7 +195,7 @@ func TestUpdateEmailMirrorsTheStillVisibleApprovedSubset(t *testing.T) {
 	require.NoError(t, module.Execute(t.Context(), samResult.Delivery.ID, false))
 	require.Len(t, recorder.Sent(), 2)
 	assert.Equal(t, "Coast was shared with you on Memento", recorder.Sent()[1].Subject)
-	assert.Contains(t, recorder.Sent()[1].Body, "Coast (new album)\n1 video\nVideos: surf-lesson\n")
+	assert.Contains(t, recorder.Sent()[1].Body, "Coast (new album)\n1 video\n")
 	assert.Contains(t, recorder.Sent()[1].Body, "See them on Memento:\n"+publicURL+"/albums/"+coast.ID+"/photos\n")
 
 	// More content in an announced Album is an update, and the email says so.
@@ -210,7 +208,6 @@ func TestUpdateEmailMirrorsTheStillVisibleApprovedSubset(t *testing.T) {
 	require.Len(t, recorder.Sent(), 3)
 	assert.Equal(t, "New photos in Coast on Memento", recorder.Sent()[2].Subject)
 	assert.Contains(t, recorder.Sent()[2].Body, "Coast (updated)\n1 photo\n")
-	assert.NotContains(t, recorder.Sent()[2].Body, "Videos:")
 
 	// An update whose only content is revoked before sending is skipped.
 	content.set(sam.ID.String(), coast.Entries[2], coast.Entries[0], coast.Entries[3])

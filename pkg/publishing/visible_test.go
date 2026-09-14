@@ -43,8 +43,6 @@ func TestVisibleEntriesUseViewerEligibilityWithoutCuratorBypass(t *testing.T) {
 		assert.Equal(t, album.ID, entry.AlbumID)
 		assert.Equal(t, album.Title, entry.AlbumTitle)
 		assert.Equal(t, "IMAGE", entry.Kind)
-		assert.NotEmpty(t, entry.Title, "the presentation title is the filename without its extension")
-		assert.NotContains(t, entry.Title, ".jpg")
 	}
 	assert.Empty(t, visible(curator.ID.String()), "publication does not make bypass count as viewer visibility")
 	_, err = module.SaveEntryRules(t.Context(), album.ID, album.Moments[0].Entries[0].ID, publishing.SaveRulesRequest{Decisions: []publishing.AccessResolution{{PersonID: person.ID.String(), Decision: publishing.DecisionDeny}}})

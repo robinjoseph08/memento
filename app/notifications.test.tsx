@@ -37,7 +37,6 @@ const coast = {
   status: "new",
   photo_count: 4,
   video_count: 1,
-  video_titles: ["Surf lesson"],
 };
 const family = {
   id: "family",
@@ -45,7 +44,6 @@ const family = {
   status: "updated",
   photo_count: 2,
   video_count: 0,
-  video_titles: [],
 };
 const album = {
   id: "coast",
@@ -129,7 +127,6 @@ it("shows new updates in the bell, keeps the history on the Updates page, and ke
   expect(rows[0]).not.toHaveTextContent(/\d:\d\d/);
   expect(rows[1]).toHaveTextContent("Coast");
   expect(rows[1]).toHaveTextContent("4 photos and 1 video · New album");
-  expect(rows[1]).not.toHaveTextContent("Surf lesson");
   expect(rows[1]).toHaveTextContent("Finally got these together. Enjoy!");
 
   await user.click(within(rows[1]).getByRole("button", { name: "Open Coast" }));
@@ -347,7 +344,6 @@ it("lets a Curator review recipients, leave out an Album update, add a note, and
   );
   const details = within(rows[0]).getByRole("list");
   expect(details).toHaveTextContent("Coast · New album · 4 photos, 1 video");
-  expect(details).not.toHaveTextContent("Surf lesson");
   expect(details).toHaveTextContent("Family · Updated · 2 photos, 0 videos");
   await user.click(
     within(details).getByRole("checkbox", { name: "Include Family for Alex" }),

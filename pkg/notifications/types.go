@@ -21,15 +21,13 @@ type Baseline struct {
 
 // NotificationAlbum is one Album inside an approved summary. Status is new
 // when the Album had never been announced to the Person, otherwise updated.
-// VideoTitles lists the announced videos by presentation title; photos are
-// only counted.
+// Photos and videos are only counted, never listed.
 type NotificationAlbum struct {
-	ID          string   `json:"id"`
-	Title       string   `json:"title"`
-	Status      string   `json:"status"`
-	PhotoCount  int      `json:"photo_count"`
-	VideoCount  int      `json:"video_count"`
-	VideoTitles []string `json:"video_titles"`
+	ID         string `json:"id"`
+	Title      string `json:"title"`
+	Status     string `json:"status"`
+	PhotoCount int    `json:"photo_count"`
+	VideoCount int    `json:"video_count"`
 }
 
 // PreviewPerson is one collapsible row. EmailEligible reports whether a
