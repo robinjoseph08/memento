@@ -307,3 +307,39 @@ func (h *handlers) applySync(c *echo.Context) error {
 	result, err := h.module.ApplySync(c.Request().Context(), c.Param("id"), request)
 	return respond(c, result, err)
 }
+
+func (h *handlers) previewExclude(c *echo.Context) error {
+	var request ExcludeEntriesRequest
+	if err := c.Bind(&request); err != nil {
+		return err
+	}
+	result, err := h.module.PreviewExclude(c.Request().Context(), c.Param("id"), c.Param("momentID"), request)
+	return respond(c, result, err)
+}
+
+func (h *handlers) excludeEntries(c *echo.Context) error {
+	var request ExcludeEntriesRequest
+	if err := c.Bind(&request); err != nil {
+		return err
+	}
+	result, err := h.module.ExcludeEntries(c.Request().Context(), c.Param("id"), c.Param("momentID"), request)
+	return respond(c, result, err)
+}
+
+func (h *handlers) previewInclude(c *echo.Context) error {
+	var request IncludeEntryRequest
+	if err := c.Bind(&request); err != nil {
+		return err
+	}
+	result, err := h.module.PreviewInclude(c.Request().Context(), c.Param("id"), c.Param("entryID"), request)
+	return respond(c, result, err)
+}
+
+func (h *handlers) includeEntry(c *echo.Context) error {
+	var request IncludeEntryRequest
+	if err := c.Bind(&request); err != nil {
+		return err
+	}
+	result, err := h.module.IncludeEntry(c.Request().Context(), c.Param("id"), c.Param("entryID"), request)
+	return respond(c, result, err)
+}

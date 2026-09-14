@@ -156,7 +156,9 @@ album's `members`, sets its `description`, patches asset facts such as
 from Immich entirely with `delete`. The printed curl line shows the shape.
 Take the fixture offline to see a check fail without touching the Album, or
 edit the library again between a review and Apply to see the stale review
-refused.
+refused. Media that should stay in Immich but out of an Album is kept out from
+its Moment with Keep out and listed in the Album's Excluded section, where Add
+back returns it; a check never offers excluded media again.
 Use separate browser profiles to try multiple people. Ordinary tabs share the
 same session cookie. Never expose fake development sign-in publicly.
 

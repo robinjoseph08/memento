@@ -26,6 +26,7 @@ import {
 import { RulesDialog } from "./access-rules";
 import { AlbumImage } from "./album-image";
 import { EntryPreview } from "./entry-preview";
+import { ExcludeDialog } from "./exclusions";
 import { MediaCounts } from "./media-counts";
 import { MomentAccessStrip } from "./moment-access";
 import { countLabel, countMedia, momentHeading } from "./moment-labels";
@@ -81,6 +82,7 @@ export function MomentPane({
     operation: StructureOperation;
     selectedEntryIDs: string[];
   } | null>(null);
+  const [excluding, setExcluding] = useState<string[] | null>(null);
   const refresh = useRefreshMomentFaces(album.id, moment.id);
   const refreshFaces = refresh.mutate;
   useEffect(() => {
@@ -248,6 +250,15 @@ export function MomentPane({
                 >
                   Split
                 </Button>
+                <Button
+                  disabled={selected.length === 0}
+                  onClick={() => setExcluding(selected)}
+                  size="sm"
+                  type="button"
+                  variant="outline"
+                >
+                  Keep out
+                </Button>
                 {single && (
                   <Button
                     disabled={single.id === moment.cover_entry_id}
@@ -343,6 +354,18 @@ export function MomentPane({
           moment={moment}
           onOpenChange={(open) => !open && setCoverEntry(null)}
           open
+        />
+      )}
+      {excluding && (
+        <ExcludeDialog
+          album={album}
+          entryIDs={excluding}
+          moment={moment}
+          onClose={() => setExcluding(null)}
+          onSaved={() => {
+            setExcluding(null);
+            setSelection(null);
+          }}
         />
       )}
       {structure && (

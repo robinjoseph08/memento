@@ -181,6 +181,7 @@ const completeAlbum: AlbumDetail = {
   photo_count: 1,
   video_count: 1,
   access: [],
+  excluded: [],
   moments: [
     {
       id: "day-1",

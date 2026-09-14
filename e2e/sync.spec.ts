@@ -135,7 +135,7 @@ test("Curator reviews Immich changes, cancels, places additions, replaces a cove
     );
     await expect(
       dialog.getByRole("button", { name: "Apply changes" }),
-    ).toBeDisabled();
+    ).toHaveCount(0);
     await dialog.getByRole("button", { name: "Close", exact: true }).click();
     await expect(dialog).toHaveCount(0);
 
@@ -295,6 +295,63 @@ test("Curator reviews Immich changes, cancels, places additions, replaces a cove
     await expect(dialog).toContainText(
       "This album matches Immich. Nothing to apply.",
     );
+    await dialog.getByRole("button", { name: "Close", exact: true }).click();
+
+    // Keeping an existing photo out is a local decision: the June 1 Moment
+    // loses its only item, the Excluded section lists it, and a recheck does
+    // not offer it back.
+    await outline.getByRole("link", { name: /Monday, June 1, 2026/ }).click();
+    const juneFirst = page.getByRole("region", { name: "June 1, 2026" });
+    await juneFirst
+      .getByRole("button", { name: "Select", exact: true })
+      .click();
+    await juneFirst
+      .getByRole("checkbox", { name: "Select coast-01.jpg" })
+      .check();
+    await juneFirst.getByRole("button", { name: "Keep out" }).click();
+    const keepOut = page.getByRole("dialog", {
+      name: "Keep 1 item out of this album?",
+    });
+    await expect(keepOut).toContainText("loses its last item");
+    await expect(
+      keepOut.getByRole("region", { name: "Visibility review" }),
+    ).toContainText("loses 1");
+    await keepOut.getByRole("button", { name: "Keep out" }).click();
+    await expect(keepOut).toHaveCount(0);
+    await expect(
+      outline.getByRole("link", { name: /Monday, June 1, 2026/ }),
+    ).toHaveCount(0);
+    const excludedLink = outline.getByRole("link", { name: /Excluded/ });
+    await expect(excludedLink).toContainText("1");
+    await check.click();
+    await expect(dialog).toContainText(
+      "This album matches Immich. Nothing to apply.",
+    );
+    await dialog.getByRole("button", { name: "Close", exact: true }).click();
+    await alex.goto(`/albums/${albumID}`);
+    await counts(alex, 3, 3);
+
+    // Add back returns it, with its identity, into a new Moment for its day.
+    await excludedLink.click();
+    const excludedList = page.getByRole("list", { name: "Excluded media" });
+    await expect(excludedList).toContainText("coast-01.jpg");
+    await excludedList.getByRole("button", { name: "Add back" }).click();
+    const addBack = page.getByRole("dialog", {
+      name: "Add coast-01.jpg back?",
+    });
+    await expect(addBack.getByRole("combobox", { name: "Moment" })).toHaveText(
+      "New Moment: Jun 1",
+    );
+    await addBack.getByRole("button", { name: "Add back" }).click();
+    await expect(addBack).toHaveCount(0);
+    await expect(
+      outline.getByRole("link", { name: /Monday, June 1, 2026/ }),
+    ).toBeVisible();
+    expect((await curatorEntries(page, albumID)).get("coast-01.jpg")?.id).toBe(
+      before.get("coast-01.jpg")?.id,
+    );
+    await alex.goto(`/albums/${albumID}`);
+    await counts(alex, 4, 3);
   } finally {
     await alexContext.close();
   }

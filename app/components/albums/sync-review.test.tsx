@@ -39,6 +39,7 @@ const album: AlbumDetail = {
   title: "Summer by the sea",
   description: "A week away",
   published: true,
+  ready: true,
   status: "complete",
   message: "",
   processed: 2,
@@ -49,6 +50,7 @@ const album: AlbumDetail = {
   end_date: "2026-07-01",
   cover_url: "/media/beach",
   access: [],
+  excluded: [],
   moments: [
     {
       id: "day-1",
@@ -121,7 +123,6 @@ function reviewFor(request: SyncRequest): SyncReview {
         captured_at: "2026-07-01T20:00:00",
         thumbnail_url: "/api/media/sources/assets/asset-new/thumbnail",
         returning: false,
-        previously_excluded: false,
         suggested_moment_id: "day-1",
         moment_id: exclude ? "day-1" : momentID,
         exclude,
@@ -138,7 +139,7 @@ function reviewFor(request: SyncRequest): SyncReview {
         moment_id: "day-1",
         moment_label: "First day",
         cover: true,
-        deleted: false,
+        reason: "left_album",
       },
     ],
     changes: [
@@ -250,8 +251,8 @@ it("reports an album that already matches Immich", async () => {
     ),
   ).toBeVisible();
   expect(
-    within(dialog).getByRole("button", { name: "Apply changes" }),
-  ).toBeDisabled();
+    within(dialog).queryByRole("button", { name: "Apply changes" }),
+  ).not.toBeInTheDocument();
   await user.click(within(dialog).getByRole("button", { name: "Close" }));
   await waitFor(() =>
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
@@ -335,11 +336,7 @@ it("reviews additions, removals, changes, and covers before applying the reviewe
   expect(checks[2]?.placements).toEqual([
     { source_id: "asset-new", moment_id: "", exclude: true },
   ]);
-  expect(
-    await within(dialog).findByRole("region", {
-      name: "Kept out of this album",
-    }),
-  ).toBeVisible();
+  await waitFor(() => expect(destination).toHaveTextContent("Keep out"));
   expect(within(visibility).queryByText(/gains 1/)).not.toBeInTheDocument();
 
   await user.click(

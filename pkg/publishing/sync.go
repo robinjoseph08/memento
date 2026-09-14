@@ -174,12 +174,19 @@ type syncMember struct {
 	full bool
 }
 
+// Removal reasons a check reports for an active asset the album no longer
+// lists.
+const (
+	removalLeftAlbum = "left_album"
+	removalTrashed   = "trashed"
+	removalDeleted   = "deleted"
+)
+
 type syncSource struct {
 	album   immich.Album
 	members []syncMember
-	// removals maps an active asset the album no longer lists to whether
-	// Immich deleted it outright.
-	removals map[string]bool
+	// removals maps an active asset the album no longer lists to why.
+	removals map[string]string
 }
 
 func sourceMissing() error {
@@ -253,14 +260,15 @@ func (m *Module) listVerifiedMembers(ctx context.Context, sourceID string) (immi
 // readSource reads the Immich album outside any transaction. Assets whose
 // listing facts match the stored Media Item are not re-read; the rest are
 // read completely, in parallel. Active assets missing from the listing are
-// read once more to tell a trashed asset, which stays as unavailable media,
-// from one that left the album or no longer exists.
+// read once more to tell one in the Immich trash from one that left the
+// album or no longer exists; all three are removals for the Curator to
+// approve.
 func (m *Module) readSource(ctx context.Context, state syncState) (syncSource, error) {
 	album, listed, err := m.listVerifiedMembers(ctx, state.album.SourceID)
 	if err != nil {
 		return syncSource{}, err
 	}
-	source := syncSource{album: album, removals: map[string]bool{}}
+	source := syncSource{album: album, removals: map[string]string{}}
 	listedSet := make(map[string]bool, len(listed))
 	unchanged := []syncMember{}
 	reread := []string{}
@@ -284,8 +292,7 @@ func (m *Module) readSource(ctx context.Context, state syncState) (syncSource, e
 	}
 	sort.Strings(missing)
 	full := make([]models.MediaItem, len(reread))
-	trashed := make([]*models.MediaItem, len(missing))
-	deleted := make([]bool, len(missing))
+	reasons := make([]string, len(missing))
 	group, groupContext := errgroup.WithContext(ctx)
 	group.SetLimit(sourceReadConcurrency)
 	for index, sourceID := range reread {
@@ -305,7 +312,7 @@ func (m *Module) readSource(ctx context.Context, state syncState) (syncSource, e
 		group.Go(func() error {
 			asset, err := m.source.GetAsset(groupContext, sourceID)
 			if immich.IsNotFound(err) {
-				deleted[index] = true
+				reasons[index] = removalDeleted
 				return nil
 			}
 			if err != nil {
@@ -314,14 +321,10 @@ func (m *Module) readSource(ctx context.Context, state syncState) (syncSource, e
 			if asset.ID != sourceID {
 				return sourceChanged()
 			}
-			if !asset.Trashed {
-				return nil
+			reasons[index] = removalLeftAlbum
+			if asset.Trashed {
+				reasons[index] = removalTrashed
 			}
-			candidate, err := importItem(asset)
-			if err != nil {
-				return err
-			}
-			trashed[index] = &candidate
 			return nil
 		})
 	}
@@ -333,11 +336,7 @@ func (m *Module) readSource(ctx context.Context, state syncState) (syncSource, e
 		source.members = append(source.members, syncMember{item: item, full: true})
 	}
 	for index, sourceID := range missing {
-		if trashed[index] != nil {
-			source.members = append(source.members, syncMember{item: *trashed[index], full: true})
-			continue
-		}
-		source.removals[sourceID] = deleted[index]
+		source.removals[sourceID] = reasons[index]
 	}
 	sort.SliceStable(source.members, func(i, j int) bool {
 		left, right := source.members[i].item, source.members[j].item
@@ -468,7 +467,7 @@ func planRemovals(state syncState, source syncSource, review *SyncReview, plan *
 		delete(plan.after.EntryMoments, entry.ID.String())
 		review.Removals = append(review.Removals, SyncRemoval{EntryID: entry.ID.String(), Filename: entry.Item.Filename, Kind: entry.Item.Kind,
 			CapturedAt: captureLabel(entry.Item.CapturedAt), ThumbnailURL: entryThumbnailURL(entry.ID.String(), entry.Item.ContentVersion),
-			MomentID: momentID, MomentLabel: state.labels[momentID], Cover: state.structure.Moments[momentID].CoverID == entry.ID.String(), Deleted: source.removals[sourceID]})
+			MomentID: momentID, MomentLabel: state.labels[momentID], Cover: state.structure.Moments[momentID].CoverID == entry.ID.String(), Reason: source.removals[sourceID]})
 	}
 	sort.Slice(review.Removals, func(i, j int) bool {
 		if review.Removals[i].CapturedAt != review.Removals[j].CapturedAt {
@@ -481,8 +480,9 @@ func planRemovals(state syncState, source syncSource, review *SyncReview, plan *
 }
 
 // planAdditions walks the source members: an active entry whose facts differ
-// is a change, anything else is an addition placed by the request or by
-// suggestion. It returns the Moment keys the review proposes to create.
+// is a change, media the Curator excluded is skipped, and anything else is
+// an addition placed by the request or by suggestion. It returns the Moment
+// keys the review proposes to create.
 func planAdditions(state syncState, source syncSource, request SyncRequest, review *SyncReview, plan *syncPlan) (map[string]bool, error) {
 	placements := map[string]SyncPlacement{}
 	for _, placement := range request.Placements {
@@ -514,6 +514,9 @@ func planAdditions(state syncState, source syncSource, request SyncRequest, revi
 				OtherAlbums: orEmpty(state.otherAlbums[member.item.SourceID])})
 			continue
 		}
+		if exists && entry.ExcludedAt != nil {
+			continue
+		}
 		if !member.full {
 			return nil, syncStale()
 		}
@@ -525,9 +528,8 @@ func planAdditions(state syncState, source syncSource, request SyncRequest, revi
 			planned.entryID = entry.ID.String()
 			copied := entry
 			planned.existing = &copied
-			addition.PreviouslyExcluded = entry.ExcludedAt != nil
 		}
-		addition.MomentID, addition.Exclude = addition.SuggestedMomentID, addition.PreviouslyExcluded
+		addition.MomentID = addition.SuggestedMomentID
 		if placement, chosen := placements[member.item.SourceID]; chosen {
 			delete(placements, member.item.SourceID)
 			addition.Exclude = placement.Exclude
@@ -689,21 +691,10 @@ func buildSyncReview(state syncState, source syncSource, request SyncRequest) (S
 		review.Moments = append(review.Moments, SyncMomentOption{ID: key, Label: generatedMomentLabel(date, date), New: true})
 	}
 	review.Audience = reviewedChanges(state.structure, plan.after)
-	review.UpToDate = len(review.Removals) == 0 && len(review.Changes) == 0 && review.Description == nil && !hasEffectiveAddition(plan.additions)
+	review.UpToDate = len(review.Removals) == 0 && len(review.Changes) == 0 && review.Description == nil && len(plan.additions) == 0
 	review.Ready = len(review.Blockers) == 0 && !review.UpToDate
 	review.ReviewToken, err = syncReviewToken(state, plan, review)
 	return review, plan, err
-}
-
-// hasEffectiveAddition ignores an exclusion that already exists, which a
-// recheck must not turn into a change.
-func hasEffectiveAddition(additions []plannedAddition) bool {
-	for _, planned := range additions {
-		if !planned.exclude || planned.existing == nil || planned.existing.ExcludedAt == nil {
-			return true
-		}
-	}
-	return false
 }
 
 func orEmpty(refs []SyncAlbumRef) []SyncAlbumRef {
@@ -1032,9 +1023,6 @@ func (m *Module) commitSync(ctx context.Context, tx bun.Tx, state syncState, sou
 				return errorstack.CaptureContext(ctx, err)
 			}
 		case planned.exclude:
-			if planned.existing.ExcludedAt != nil {
-				continue
-			}
 			result, err := tx.NewUpdate().Model((*models.AlbumEntry)(nil)).Set("excluded_at = ?", now).
 				Where("id = ? AND album_id = ? AND removed_at IS NOT NULL", entryID, albumID).Exec(ctx)
 			if err != nil {

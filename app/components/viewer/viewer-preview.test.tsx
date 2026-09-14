@@ -61,6 +61,7 @@ const curatorAlbum: AlbumDetail = {
   cover_url: "",
   moments: [],
   access: [...people, frozen],
+  excluded: [],
 };
 const album: ViewerAlbum = {
   id: "lake",

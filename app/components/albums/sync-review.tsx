@@ -130,7 +130,6 @@ function AdditionRow({
           {captureLabel(addition.captured_at)}
           {addition.kind === "VIDEO" && " · Video"}
           {addition.returning && " · Previously in this album"}
-          {addition.previously_excluded && " · Kept out earlier"}
         </span>
         {alsoIn(addition.other_albums, "Also in")}
       </div>
@@ -159,9 +158,11 @@ function RemovalRow({ removal }: { removal: SyncRemoval }) {
           {removal.filename}
         </span>
         <span className="block text-muted">
-          {removal.deleted
+          {removal.reason === "deleted"
             ? "Deleted from Immich"
-            : "Removed from the Immich album"}{" "}
+            : removal.reason === "trashed"
+              ? "In the Immich trash"
+              : "Removed from the Immich album"}{" "}
           · leaves {removal.moment_label}
           {removal.cover && " · was the cover"}
         </span>
@@ -308,8 +309,6 @@ export function SyncDialog({
   const canApply =
     !!review && review.ready && !busy && !pending && !check.isError;
   const additions = review?.additions ?? [];
-  const includedAdditions = additions.filter((item) => !item.exclude);
-  const excludedAdditions = additions.filter((item) => item.exclude);
   const showUpToDate = !!review && review.up_to_date;
   return (
     <Dialog onOpenChange={(open) => !open && !pending && onClose()} open>
@@ -360,7 +359,7 @@ export function SyncDialog({
               </p>
             )}
             {showUpToDate && (
-              <p className="text-sm" role="status">
+              <p className="border-t border-border py-4 text-sm" role="status">
                 This album matches Immich. Nothing to apply.
               </p>
             )}
@@ -379,21 +378,15 @@ export function SyncDialog({
               </section>
             )}
             <AdditionSection
-              additions={includedAdditions}
+              additions={additions}
               error={errors.placements}
               label="New in Immich"
               note="Each item joins the suggested Moment unless you choose another one. New Moments get the item's capture day."
               onPlace={place}
               review={review}
-              value={(addition) => addition.moment_id}
-            />
-            <AdditionSection
-              additions={excludedAdditions}
-              label="Kept out of this album"
-              note="These stay in Immich but not here. Choose a Moment to bring one in."
-              onPlace={place}
-              review={review}
-              value={() => EXCLUDE}
+              value={(addition) =>
+                addition.exclude ? EXCLUDE : addition.moment_id
+              }
             />
             {review.removals.length > 0 && (
               <section
@@ -405,7 +398,8 @@ export function SyncDialog({
                 </h3>
                 <p className="mt-1 text-xs text-muted">
                   These leave the album. Access decisions and notification
-                  history are kept in case they return.
+                  history are kept in case they return. To keep something out
+                  that is still in Immich, use Keep out from its Moment.
                 </p>
                 <ul className="mt-2 divide-y divide-border">
                   {review.removals.map((removal) => (
@@ -471,20 +465,25 @@ export function SyncDialog({
               <VisibilityReview
                 album={album}
                 changes={review.audience}
-                className="my-4"
+                className="border-b-0"
               />
             )}
             {review.blockers.length > 0 && (
-              <ul className="mb-4 text-sm text-destructive" role="alert">
+              <ul className="mt-2 mb-2 text-sm text-destructive" role="alert">
                 {review.blockers.map((blocker) => (
                   <li key={blocker}>{blocker}</li>
                 ))}
               </ul>
             )}
-            <fieldset className="flex flex-wrap gap-2" disabled={pending}>
-              <Button disabled={!canApply} type="submit">
-                {pending ? "Applying…" : "Apply changes"}
-              </Button>
+            <fieldset
+              className="mt-2 flex flex-wrap gap-2 border-t border-border pt-5"
+              disabled={pending}
+            >
+              {!showUpToDate && (
+                <Button disabled={!canApply} type="submit">
+                  {pending ? "Applying…" : "Apply changes"}
+                </Button>
+              )}
               <Button onClick={onClose} type="button" variant="outline">
                 {showUpToDate ? "Close" : "Cancel"}
               </Button>

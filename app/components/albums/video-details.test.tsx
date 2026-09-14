@@ -49,6 +49,7 @@ const album: AlbumDetail = {
   end_date: "2026-07-01",
   cover_url: "",
   access: [],
+  excluded: [],
   moments: [
     {
       id: "day-1",

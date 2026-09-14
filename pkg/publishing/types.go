@@ -145,9 +145,35 @@ type Album struct {
 }
 
 type AlbumDetail struct {
-	Album   `tstype:",extends"`
-	Moments []Moment       `json:"moments"`
-	Access  []AccessPerson `json:"access"`
+	Album    `tstype:",extends"`
+	Moments  []Moment        `json:"moments"`
+	Access   []AccessPerson  `json:"access"`
+	Excluded []ExcludedEntry `json:"excluded"`
+}
+
+// ExcludedEntry is media the Curator keeps out of this Album while it stays
+// in the Immich album. It keeps its Album Entry identity for Add back.
+type ExcludedEntry struct {
+	ID           string `json:"id"`
+	Filename     string `json:"filename"`
+	Kind         string `json:"kind"`
+	CapturedAt   string `json:"captured_at"`
+	ThumbnailURL string `json:"thumbnail_url"`
+	Available    bool   `json:"available"`
+	ExcludedAt   string `json:"excluded_at"`
+}
+
+// ExcludeEntriesRequest keeps selected media of one Moment out of the Album.
+type ExcludeEntriesRequest struct {
+	EntryIDs    []string `json:"entry_ids" validate:"required,min=1,dive,uuid"`
+	ReviewToken string   `json:"review_token"`
+}
+
+// IncludeEntryRequest returns excluded media to an existing Moment or to a
+// new Moment for its capture day, keyed "new:YYYY-MM-DD".
+type IncludeEntryRequest struct {
+	MomentID    string `json:"moment_id" validate:"required,max=64"`
+	ReviewToken string `json:"review_token"`
 }
 
 type Moment struct {
@@ -368,25 +394,25 @@ type SyncMomentOption struct {
 }
 
 // SyncAddition is a source asset the Album does not currently show. Returning
-// means a removed Album Entry keeps its identity and announcement history;
-// PreviouslyExcluded means the Curator kept it out before, so it stays out
-// unless a placement includes it.
+// means a removed Album Entry keeps its identity and announcement history.
+// Media the Curator excluded is not listed here; it lives in the Album's
+// Excluded section.
 type SyncAddition struct {
-	SourceID           string         `json:"source_id"`
-	Filename           string         `json:"filename"`
-	Kind               string         `json:"kind"`
-	CapturedAt         string         `json:"captured_at"`
-	ThumbnailURL       string         `json:"thumbnail_url"`
-	Returning          bool           `json:"returning"`
-	PreviouslyExcluded bool           `json:"previously_excluded"`
-	SuggestedMomentID  string         `json:"suggested_moment_id"`
-	MomentID           string         `json:"moment_id"`
-	Exclude            bool           `json:"exclude"`
-	OtherAlbums        []SyncAlbumRef `json:"other_albums"`
+	SourceID          string         `json:"source_id"`
+	Filename          string         `json:"filename"`
+	Kind              string         `json:"kind"`
+	CapturedAt        string         `json:"captured_at"`
+	ThumbnailURL      string         `json:"thumbnail_url"`
+	Returning         bool           `json:"returning"`
+	SuggestedMomentID string         `json:"suggested_moment_id"`
+	MomentID          string         `json:"moment_id"`
+	Exclude           bool           `json:"exclude"`
+	OtherAlbums       []SyncAlbumRef `json:"other_albums"`
 }
 
-// SyncRemoval is an Album Entry whose asset left the Immich album. Deleted
-// means Immich no longer has the asset at all.
+// SyncRemoval is an Album Entry whose asset is no longer shown by the Immich
+// album. Reason is left_album, trashed, or deleted; a trashed asset returns
+// as a returning addition if it is restored from the Immich trash.
 type SyncRemoval struct {
 	EntryID      string `json:"entry_id"`
 	Filename     string `json:"filename"`
@@ -396,7 +422,7 @@ type SyncRemoval struct {
 	MomentID     string `json:"moment_id"`
 	MomentLabel  string `json:"moment_label"`
 	Cover        bool   `json:"cover"`
-	Deleted      bool   `json:"deleted"`
+	Reason       string `json:"reason"`
 }
 
 // SyncChange is a Media Item whose source facts differ. Fields names what

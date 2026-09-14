@@ -22,6 +22,7 @@ import { AlbumAccess } from "./album-access";
 import { AlbumImage } from "./album-image";
 import { DangerZone } from "./album-lifecycle";
 import { Audience } from "./audience";
+import { ExcludedPane } from "./exclusions";
 import { ImportProgress } from "./import-progress";
 import { MediaCounts } from "./media-counts";
 import {
@@ -83,7 +84,10 @@ function AlbumContent({ album }: { album: AlbumDetail }) {
   const desktop = useMediaQuery("(min-width: 761px)");
   const requested = params.get("section");
   const section =
-    requested === "details" || requested === "access" || requested === "preview"
+    requested === "details" ||
+    requested === "access" ||
+    requested === "preview" ||
+    requested === "excluded"
       ? requested
       : "moments";
   const moment =
@@ -205,6 +209,28 @@ function AlbumContent({ album }: { album: AlbumDetail }) {
                   </Link>
                 </li>
               </ul>
+              <p className="mt-6 px-3 text-xs text-muted">Kept out</p>
+              <ul className="mt-1 space-y-0.5">
+                <li>
+                  <Link
+                    aria-current={section === "excluded" ? "page" : undefined}
+                    className={cn(
+                      outlineRowClass(section === "excluded"),
+                      "text-sm",
+                    )}
+                    to={link({
+                      section: "excluded",
+                      pane: "detail",
+                      entry: null,
+                    })}
+                  >
+                    Excluded
+                    <span className="ml-auto text-xs text-accent-foreground">
+                      {album.excluded.length}
+                    </span>
+                  </Link>
+                </li>
+              </ul>
               <p className="mt-6 px-3 text-xs text-muted">
                 Moments{" "}
                 <span className="ml-1 text-accent-foreground">
@@ -293,6 +319,9 @@ function AlbumContent({ album }: { album: AlbumDetail }) {
             )}
             {showDetail && section === "preview" && (
               <ViewerPreview album={album} />
+            )}
+            {showDetail && section === "excluded" && (
+              <ExcludedPane album={album} />
             )}
             {showDetail &&
               section === "moments" &&

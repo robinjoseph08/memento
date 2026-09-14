@@ -153,21 +153,22 @@ func TestSyncNoOpAdditionAndPersistentExclusion(t *testing.T) {
 	review, err = module.CheckSync(t.Context(), album.ID, publishing.SyncRequest{})
 	require.NoError(t, err)
 	assert.True(t, review.UpToDate)
-	require.Len(t, review.Additions, 1)
-	assert.True(t, review.Additions[0].PreviouslyExcluded)
-	assert.True(t, review.Additions[0].Exclude)
+	assert.Empty(t, review.Additions, "excluded media lives in the Excluded section, not the review")
+	require.Len(t, applied.Excluded, 1)
+	assert.Equal(t, "fresh.jpg", applied.Excluded[0].Filename)
+	assert.Equal(t, "/api/media/sources/assets/fresh/thumbnail", applied.Excluded[0].ThumbnailURL)
 	_, err = module.ApplySync(t.Context(), album.ID, publishing.SyncRequest{ReviewToken: review.ReviewToken})
 	requireCode(t, err, "sync_unchanged")
 
-	// Including it later places it into the suggested new Moment.
-	include := publishing.SyncRequest{Placements: []publishing.SyncPlacement{{SourceID: "fresh", MomentID: "new:2026-07-06"}}}
-	review, err = module.CheckSync(t.Context(), album.ID, include)
+	// Add back places it into a new Moment for its capture day.
+	include := publishing.IncludeEntryRequest{MomentID: "new:2026-07-06"}
+	preview, err := module.PreviewInclude(t.Context(), album.ID, applied.Excluded[0].ID, include)
 	require.NoError(t, err)
-	assert.True(t, review.Ready)
-	include.ReviewToken = review.ReviewToken
-	applied, err = module.ApplySync(t.Context(), album.ID, include)
+	include.ReviewToken = preview.ReviewToken
+	applied, err = module.IncludeEntry(t.Context(), album.ID, applied.Excluded[0].ID, include)
 	require.NoError(t, err)
 	require.Len(t, applied.Moments, len(album.Moments)+1)
+	assert.Empty(t, applied.Excluded)
 	placed := momentOf(applied, "fresh.jpg")
 	assert.Equal(t, "2026-07-06", placed.Date)
 	assert.Equal(t, entryIDs(applied)["fresh.jpg"], placed.CoverEntryID)
@@ -235,7 +236,7 @@ func TestSyncRemovalRestartRestoreAndAnnouncements(t *testing.T) {
 	require.Len(t, review.Audience, 1)
 	assert.ElementsMatch(t, []string{ids["first.jpg"], ids["last.jpg"]}, review.Audience[0].LostEntryIDs)
 	for _, removal := range review.Removals {
-		assert.False(t, removal.Deleted, "the assets still exist in Immich")
+		assert.Equal(t, "left_album", removal.Reason, "the assets still exist in Immich")
 	}
 	_, err = module.ApplySync(t.Context(), album.ID, publishing.SyncRequest{ReviewToken: review.ReviewToken})
 	requireCode(t, err, "validation_error")
@@ -315,24 +316,19 @@ func TestSyncTrashedDeletedAndOutageNeverDeleteCuration(t *testing.T) {
 	db, module, album, _ := syncedAlbums(t, source, nil)
 	ids := entryIDs(album)
 
-	// A trashed asset leaves the listing but still exists: it becomes
-	// unavailable and keeps its place.
+	// A trashed asset leaves the listing but still exists: it is a removal the
+	// Curator approves, never a silent one.
 	source.asset("z").Trashed = true
-	source.asset("z").UpdatedAt = "2026-07-08T00:00:00Z"
 	review, err := module.CheckSync(t.Context(), album.ID, publishing.SyncRequest{})
 	require.NoError(t, err)
-	assert.Empty(t, review.Removals)
-	require.Len(t, review.Changes, 1)
-	assert.Equal(t, ids["last.jpg"], review.Changes[0].EntryID)
-	assert.Contains(t, review.Changes[0].Fields, "availability")
-	assert.True(t, review.Changes[0].Available)
-	assert.False(t, review.Changes[0].NewAvailable)
+	assert.Empty(t, review.Changes)
+	require.Len(t, review.Removals, 1)
+	assert.Equal(t, ids["last.jpg"], review.Removals[0].EntryID)
+	assert.Equal(t, "trashed", review.Removals[0].Reason)
 	assert.True(t, review.Ready)
-	applied, err := module.ApplySync(t.Context(), album.ID, publishing.SyncRequest{ReviewToken: review.ReviewToken})
+	still, err := module.GetAlbum(t.Context(), album.ID)
 	require.NoError(t, err)
-	unavailable := momentOf(applied, "last.jpg")
-	require.Len(t, unavailable.Entries, 1)
-	assert.False(t, unavailable.Entries[0].Available)
+	assert.True(t, hasEntry(still, "last.jpg"), "a check never removes membership")
 
 	// An outage fails the check without touching anything.
 	source.offline = true
@@ -348,7 +344,7 @@ func TestSyncTrashedDeletedAndOutageNeverDeleteCuration(t *testing.T) {
 	source.unsupported = false
 	unchanged, err := module.GetAlbum(t.Context(), album.ID)
 	require.NoError(t, err)
-	assert.Equal(t, curation(applied), curation(unchanged))
+	assert.Equal(t, curation(still), curation(unchanged))
 
 	// A missing source album is reported, not treated as removing everything.
 	delete(source.albums, "source")
@@ -356,8 +352,27 @@ func TestSyncTrashedDeletedAndOutageNeverDeleteCuration(t *testing.T) {
 	requireCode(t, err, "source_missing")
 	source.albums["source"] = immich.Album{ID: "source", Name: "Summer", Description: "From Immich", Count: 4, UpdatedAt: "2026-07-06T00:00:00Z"}
 
-	// Deleting the trashed asset from Immich altogether is a removal the
-	// Curator approves; until then the entry stays.
+	// Approving the trashed removal retains the entry; restoring the asset
+	// from the trash brings it back as returning media.
+	applied, err := module.ApplySync(t.Context(), album.ID, publishing.SyncRequest{ReviewToken: review.ReviewToken})
+	require.NoError(t, err)
+	assert.False(t, hasEntry(applied, "last.jpg"))
+	retained, err := db.NewSelect().Model((*models.AlbumEntry)(nil)).Where("id = ? AND removed_at IS NOT NULL AND excluded_at IS NULL", ids["last.jpg"]).Count(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, 1, retained)
+	source.asset("z").Trashed = false
+	review, err = module.CheckSync(t.Context(), album.ID, publishing.SyncRequest{})
+	require.NoError(t, err)
+	require.Len(t, review.Additions, 1)
+	assert.True(t, review.Additions[0].Returning)
+	applied, err = module.ApplySync(t.Context(), album.ID, publishing.SyncRequest{ReviewToken: review.ReviewToken})
+	require.NoError(t, err)
+	assert.Equal(t, ids["last.jpg"], entryIDs(applied)["last.jpg"])
+
+	// Deleting the asset from Immich altogether is a removal too, and a file
+	// Immich cannot find stays as unavailable media.
+	source.asset("a").Offline = true
+	source.asset("a").UpdatedAt = "2026-07-09T00:00:00Z"
 	source.setMembers("a", "b", "clip")
 	for i := range source.assets {
 		if source.assets[i].ID == "z" {
@@ -368,17 +383,18 @@ func TestSyncTrashedDeletedAndOutageNeverDeleteCuration(t *testing.T) {
 	review, err = module.CheckSync(t.Context(), album.ID, publishing.SyncRequest{})
 	require.NoError(t, err)
 	require.Len(t, review.Removals, 1)
-	assert.True(t, review.Removals[0].Deleted)
-	still, err := module.GetAlbum(t.Context(), album.ID)
-	require.NoError(t, err)
-	assert.True(t, hasEntry(still, "last.jpg"), "a check never removes membership")
+	assert.Equal(t, "deleted", review.Removals[0].Reason)
+	require.Len(t, review.Changes, 1)
+	assert.Contains(t, review.Changes[0].Fields, "availability")
+	assert.False(t, review.Changes[0].NewAvailable)
 	applied, err = module.ApplySync(t.Context(), album.ID, publishing.SyncRequest{ReviewToken: review.ReviewToken})
 	require.NoError(t, err)
 	assert.False(t, hasEntry(applied, "last.jpg"))
-	var retained int
-	retained, err = db.NewSelect().Model((*models.AlbumEntry)(nil)).Where("id = ? AND removed_at IS NOT NULL", ids["last.jpg"]).Count(t.Context())
-	require.NoError(t, err)
-	assert.Equal(t, 1, retained)
+	for _, entry := range momentOf(applied, "first.jpg").Entries {
+		if entry.Filename == "first.jpg" {
+			assert.False(t, entry.Available)
+		}
+	}
 }
 
 func TestSyncSharedItemCheckCancelApplyAndExtraction(t *testing.T) {
@@ -620,12 +636,13 @@ func TestSyncExcludedVideoIsNotExtracted(t *testing.T) {
 	assert.False(t, hasEntry(applied, "reel.mov"))
 	assert.Len(t, chapters.requests, imported, "media kept out of every Album is never probed")
 
-	// Bringing it in later extracts it like any newly synchronized video.
-	include := publishing.SyncRequest{Placements: []publishing.SyncPlacement{{SourceID: "reel", MomentID: momentOf(album, "first.jpg").ID}}}
-	review, err = module.CheckSync(t.Context(), album.ID, include)
+	// Adding it back later extracts it like any newly synchronized video.
+	require.Len(t, applied.Excluded, 1)
+	include := publishing.IncludeEntryRequest{MomentID: momentOf(album, "first.jpg").ID}
+	preview, err := module.PreviewInclude(t.Context(), album.ID, applied.Excluded[0].ID, include)
 	require.NoError(t, err)
-	include.ReviewToken = review.ReviewToken
-	applied, err = module.ApplySync(t.Context(), album.ID, include)
+	include.ReviewToken = preview.ReviewToken
+	applied, err = module.IncludeEntry(t.Context(), album.ID, applied.Excluded[0].ID, include)
 	require.NoError(t, err)
 	assert.True(t, hasEntry(applied, "reel.mov"))
 	require.Len(t, chapters.requests, imported+1)

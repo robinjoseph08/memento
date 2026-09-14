@@ -624,7 +624,7 @@ func verifySynchronization(ctx context.Context, module *publishing.Module, libra
 	if review.Additions[0].SourceID != added.ID || review.Additions[0].Filename != added.Filename || !strings.HasPrefix(review.Additions[0].SuggestedMomentID, "new:") {
 		return errors.Join(fmt.Errorf("the added later-day photo was not suggested a new Moment"), revert())
 	}
-	if review.Removals[0].Cover || review.Removals[0].Deleted || len(review.CoverChoices) != 0 || len(review.RemovedMoments) != 0 {
+	if review.Removals[0].Cover || review.Removals[0].Reason != "left_album" || len(review.CoverChoices) != 0 || len(review.RemovedMoments) != 0 {
 		return errors.Join(fmt.Errorf("removing the non-cover pair member should need no cover choice"), revert())
 	}
 	// The first Memento Album was permanently deleted by the publishing check,

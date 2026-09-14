@@ -146,7 +146,7 @@ func (m *Module) GetAlbum(ctx context.Context, id string) (AlbumDetail, error) {
 }
 
 func getAlbum(ctx context.Context, db bun.IDB, id, immichURL string) (AlbumDetail, error) {
-	result := AlbumDetail{Moments: []Moment{}}
+	result := AlbumDetail{Moments: []Moment{}, Excluded: []ExcludedEntry{}}
 	if _, err := uuid.Parse(id); err != nil {
 		return result, errcodes.NotFound("Album")
 	}
@@ -234,6 +234,24 @@ func getAlbum(ctx context.Context, db bun.IDB, id, immichURL string) (AlbumDetai
 	}
 	if err := attachAccess(ctx, db, &result); err != nil {
 		return result, err
+	}
+	type excludedRow struct {
+		EntryID          models.UUID
+		ExcludedAt       time.Time
+		models.MediaItem `bun:"embed:"`
+	}
+	var excluded []excludedRow
+	err = db.NewSelect().TableExpr("album_entries AS entry").ColumnExpr("entry.id AS entry_id, entry.excluded_at, item.*").
+		Join("JOIN media_items AS item ON item.id = entry.media_item_id").
+		Where("entry.album_id = ? AND entry.excluded_at IS NOT NULL", id).
+		OrderExpr("item.captured_at, item.source_id COLLATE \"C\", entry.id").Scan(ctx, &excluded)
+	if err != nil {
+		return result, errorstack.CaptureContext(ctx, err)
+	}
+	for _, e := range excluded {
+		result.Excluded = append(result.Excluded, ExcludedEntry{ID: e.EntryID.String(), Filename: e.Filename, Kind: e.Kind,
+			CapturedAt: e.CapturedAt.Format("2006-01-02T15:04:05.999999999"), ThumbnailURL: SourceAssetThumbnailURL(e.SourceID),
+			Available: !e.Offline && !e.Trashed, ExcludedAt: e.ExcludedAt.UTC().Format(time.RFC3339)})
 	}
 	return result, nil
 }

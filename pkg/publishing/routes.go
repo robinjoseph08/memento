@@ -56,4 +56,8 @@ func RegisterRoutes(e *echo.Echo, module *Module, requireCurator echo.Middleware
 	e.POST("/api/curator/albums/:id/moments/:momentID/split", h.splitMoment, requireCurator)
 	e.POST("/api/curator/albums/:id/moments/:momentID/merge/preview", h.previewMerge, requireCurator)
 	e.POST("/api/curator/albums/:id/moments/:momentID/merge", h.mergeMoments, requireCurator)
+	e.POST("/api/curator/albums/:id/moments/:momentID/exclude/preview", h.previewExclude, requireCurator)
+	e.POST("/api/curator/albums/:id/moments/:momentID/exclude", h.excludeEntries, requireCurator)
+	e.POST("/api/curator/albums/:id/entries/:entryID/include/preview", h.previewInclude, requireCurator)
+	e.POST("/api/curator/albums/:id/entries/:entryID/include", h.includeEntry, requireCurator)
 }
