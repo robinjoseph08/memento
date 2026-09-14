@@ -328,3 +328,127 @@ type MergeMomentsRequest struct {
 	Resolutions    []AccessResolution `json:"resolutions" validate:"dive"`
 	ReviewToken    string             `json:"review_token"`
 }
+
+// SyncPlacement chooses where one source asset joins the Album. MomentID is an
+// existing Moment or a proposed Moment key from the review. Exclude keeps the
+// asset out of this Album while it remains in the Immich album.
+type SyncPlacement struct {
+	SourceID string `json:"source_id" validate:"required,max=1024"`
+	MomentID string `json:"moment_id" validate:"max=64"`
+	Exclude  bool   `json:"exclude"`
+}
+
+// SyncCover replaces a Moment cover that the reviewed removals invalidate.
+// EntryID is an Album Entry ID or, for media joining in the same review, the
+// placeholder the review lists, so it is bounded like a source ID.
+type SyncCover struct {
+	MomentID string `json:"moment_id" validate:"required,max=64"`
+	EntryID  string `json:"entry_id" validate:"required,max=1100"`
+}
+
+// SyncRequest carries the Curator's review decisions. A check accepts it
+// without a token; apply requires the token from the matching review.
+type SyncRequest struct {
+	Placements  []SyncPlacement `json:"placements" validate:"dive"`
+	Covers      []SyncCover     `json:"covers" validate:"dive"`
+	ReviewToken string          `json:"review_token"`
+}
+
+type SyncAlbumRef struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+}
+
+// SyncMomentOption is a destination: an existing Moment or one the apply
+// would create, keyed "new:YYYY-MM-DD".
+type SyncMomentOption struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+	New   bool   `json:"new"`
+}
+
+// SyncAddition is a source asset the Album does not currently show. Returning
+// means a removed Album Entry keeps its identity and announcement history;
+// PreviouslyExcluded means the Curator kept it out before, so it stays out
+// unless a placement includes it.
+type SyncAddition struct {
+	SourceID           string         `json:"source_id"`
+	Filename           string         `json:"filename"`
+	Kind               string         `json:"kind"`
+	CapturedAt         string         `json:"captured_at"`
+	ThumbnailURL       string         `json:"thumbnail_url"`
+	Returning          bool           `json:"returning"`
+	PreviouslyExcluded bool           `json:"previously_excluded"`
+	SuggestedMomentID  string         `json:"suggested_moment_id"`
+	MomentID           string         `json:"moment_id"`
+	Exclude            bool           `json:"exclude"`
+	OtherAlbums        []SyncAlbumRef `json:"other_albums"`
+}
+
+// SyncRemoval is an Album Entry whose asset left the Immich album. Deleted
+// means Immich no longer has the asset at all.
+type SyncRemoval struct {
+	EntryID      string `json:"entry_id"`
+	Filename     string `json:"filename"`
+	Kind         string `json:"kind"`
+	CapturedAt   string `json:"captured_at"`
+	ThumbnailURL string `json:"thumbnail_url"`
+	MomentID     string `json:"moment_id"`
+	MomentLabel  string `json:"moment_label"`
+	Cover        bool   `json:"cover"`
+	Deleted      bool   `json:"deleted"`
+}
+
+// SyncChange is a Media Item whose source facts differ. Fields names what
+// changed: checksum, capture_time, availability, filename, or details.
+type SyncChange struct {
+	EntryID       string         `json:"entry_id"`
+	Filename      string         `json:"filename"`
+	Kind          string         `json:"kind"`
+	ThumbnailURL  string         `json:"thumbnail_url"`
+	Fields        []string       `json:"fields"`
+	CapturedAt    string         `json:"captured_at"`
+	NewCapturedAt string         `json:"new_captured_at"`
+	Available     bool           `json:"available"`
+	NewAvailable  bool           `json:"new_available"`
+	OtherAlbums   []SyncAlbumRef `json:"other_albums"`
+}
+
+type SyncCoverOption struct {
+	EntryID      string `json:"entry_id"`
+	Filename     string `json:"filename"`
+	ThumbnailURL string `json:"thumbnail_url"`
+}
+
+// SyncCoverChoice is a surviving Moment whose configured cover is being
+// removed. EntryID is the Curator's chosen replacement, empty until chosen.
+type SyncCoverChoice struct {
+	MomentID    string            `json:"moment_id"`
+	MomentLabel string            `json:"moment_label"`
+	EntryID     string            `json:"entry_id"`
+	Options     []SyncCoverOption `json:"options"`
+}
+
+type SyncDescription struct {
+	Before string `json:"before"`
+	After  string `json:"after"`
+}
+
+// SyncReview is the temporary diff between the Album and its Immich album.
+// Nothing about it is stored; leaving the review discards it.
+type SyncReview struct {
+	Ready          bool               `json:"ready"`
+	UpToDate       bool               `json:"up_to_date"`
+	ReviewToken    string             `json:"review_token"`
+	Description    *SyncDescription   `json:"description" tstype:"SyncDescription | null"`
+	Additions      []SyncAddition     `json:"additions"`
+	Removals       []SyncRemoval      `json:"removals"`
+	Changes        []SyncChange       `json:"changes"`
+	CoverChoices   []SyncCoverChoice  `json:"cover_choices"`
+	RemovedMoments []SyncMomentOption `json:"removed_moments"`
+	Moments        []SyncMomentOption `json:"moments"`
+	Audience       []AudienceChange   `json:"audience"`
+	Blockers       []string           `json:"blockers"`
+	FacesRefreshed bool               `json:"faces_refreshed"`
+	FacesMessage   string             `json:"faces_message"`
+}

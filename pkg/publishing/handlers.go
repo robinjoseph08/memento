@@ -289,3 +289,21 @@ func (h *handlers) retryImport(c *echo.Context) error {
 	result, err := h.module.RetryImport(c.Request().Context(), c.Param("id"))
 	return respond(c, result, err)
 }
+
+func (h *handlers) checkSync(c *echo.Context) error {
+	var request SyncRequest
+	if err := c.Bind(&request); err != nil {
+		return err
+	}
+	result, err := h.module.CheckSync(c.Request().Context(), c.Param("id"), request)
+	return respond(c, result, err)
+}
+
+func (h *handlers) applySync(c *echo.Context) error {
+	var request SyncRequest
+	if err := c.Bind(&request); err != nil {
+		return err
+	}
+	result, err := h.module.ApplySync(c.Request().Context(), c.Param("id"), request)
+	return respond(c, result, err)
+}

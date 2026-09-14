@@ -236,7 +236,7 @@ func importItem(asset immich.Asset) (models.MediaItem, error) {
 		item.SourceStackCount = &asset.Stack.AssetCount
 	}
 	if asset.Kind != "IMAGE" && asset.Kind != "VIDEO" {
-		return item, &errcodes.Error{HTTPCode: 422, Code: "unsupported_media", Message: "This Album contains media other than photos and videos. Remove those members in Immich before importing."}
+		return item, &errcodes.Error{HTTPCode: 422, Code: "unsupported_media", Message: "This Album contains media other than photos and videos. Remove those members in Immich first."}
 	}
 	local, err := time.Parse(time.RFC3339Nano, asset.LocalDateTime)
 	if err != nil {
@@ -257,6 +257,31 @@ func importItem(asset immich.Asset) (models.MediaItem, error) {
 	return item, nil
 }
 
+// upsertMediaItem writes one asset's source facts, keeping the existing row
+// identity when another Album already imported it. With chapters set it also
+// commits extraction for a video at its current checksum in the same
+// transaction; media kept out of every Album is written without it.
+func (m *Module) upsertMediaItem(ctx context.Context, tx bun.Tx, item *models.MediaItem, chapters bool) error {
+	_, err := tx.NewInsert().Model(item).On("CONFLICT (source_id) DO UPDATE").
+		Set("checksum = EXCLUDED.checksum").Set("filename = EXCLUDED.filename").Set("kind = EXCLUDED.kind").
+		Set("captured_at = EXCLUDED.captured_at").Set("source_created_at = EXCLUDED.source_created_at").Set("source_updated_at = EXCLUDED.source_updated_at").
+		Set("offline = EXCLUDED.offline").Set("trashed = EXCLUDED.trashed").Set("width = EXCLUDED.width").Set("height = EXCLUDED.height").Set("duration = EXCLUDED.duration").
+		Set("thumbhash = EXCLUDED.thumbhash").Set("live_photo_video_id = EXCLUDED.live_photo_video_id").
+		Set("source_stack_id = EXCLUDED.source_stack_id").Set("source_stack_primary_id = EXCLUDED.source_stack_primary_id").Set("source_stack_count = EXCLUDED.source_stack_count").
+		Set("exif = EXCLUDED.exif").Set("content_version = EXCLUDED.content_version").
+		Returning("id").Exec(ctx)
+	if err != nil {
+		return errorstack.CaptureContext(ctx, err)
+	}
+	// Every committed video has a committed extraction task at its checksum.
+	if chapters && item.Kind == "VIDEO" && m.Chapters != nil {
+		if err := m.Chapters.RequestChapters(ctx, tx, item.ID, item.Checksum); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (m *Module) finishImport(ctx context.Context, id string, source immich.Album, items []models.MediaItem) error {
 	err := m.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 		row, err := albumRow(ctx, tx, id, true)
@@ -273,23 +298,8 @@ func (m *Module) finishImport(ctx context.Context, id string, source immich.Albu
 		}
 		sort.Slice(indices, func(i, j int) bool { return items[indices[i]].SourceID < items[indices[j]].SourceID })
 		for _, i := range indices {
-			item := &items[i]
-			_, err := tx.NewInsert().Model(item).On("CONFLICT (source_id) DO UPDATE").
-				Set("checksum = EXCLUDED.checksum").Set("filename = EXCLUDED.filename").Set("kind = EXCLUDED.kind").
-				Set("captured_at = EXCLUDED.captured_at").Set("source_created_at = EXCLUDED.source_created_at").Set("source_updated_at = EXCLUDED.source_updated_at").
-				Set("offline = EXCLUDED.offline").Set("trashed = EXCLUDED.trashed").Set("width = EXCLUDED.width").Set("height = EXCLUDED.height").Set("duration = EXCLUDED.duration").
-				Set("thumbhash = EXCLUDED.thumbhash").Set("live_photo_video_id = EXCLUDED.live_photo_video_id").
-				Set("source_stack_id = EXCLUDED.source_stack_id").Set("source_stack_primary_id = EXCLUDED.source_stack_primary_id").Set("source_stack_count = EXCLUDED.source_stack_count").
-				Set("exif = EXCLUDED.exif").Set("content_version = EXCLUDED.content_version").
-				Returning("id").Exec(ctx)
-			if err != nil {
-				return errorstack.CaptureContext(ctx, err)
-			}
-			// Every committed video has a committed extraction task at its checksum.
-			if item.Kind == "VIDEO" && m.Chapters != nil {
-				if err := m.Chapters.RequestChapters(ctx, tx, item.ID, item.Checksum); err != nil {
-					return err
-				}
+			if err := m.upsertMediaItem(ctx, tx, &items[i], true); err != nil {
+				return err
 			}
 		}
 		moments := map[string]models.Moment{}

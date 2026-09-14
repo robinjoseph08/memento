@@ -71,7 +71,8 @@ func (c *Client) version(ctx context.Context) (serverVersion, error) {
 	return v, nil
 }
 
-// CheckImport gates imports on the supported stable Immich minors. Call before import reads.
+// CheckImport gates imports and synchronization on the supported stable
+// Immich minors. Call before source reads that lead to a write.
 func (c *Client) CheckImport(ctx context.Context) error {
 	version, err := c.version(ctx)
 	if err != nil {
@@ -84,7 +85,7 @@ func (c *Client) CheckImport(ctx context.Context) error {
 }
 
 func unsupportedVersion() error {
-	return &errcodes.Error{HTTPCode: http.StatusConflict, Code: "immich_unsupported_version", Message: "Import requires stable Immich 3.0.x and 3.1.x. Update Immich or Memento before importing."}
+	return &errcodes.Error{HTTPCode: http.StatusConflict, Code: "immich_unsupported_version", Message: "Import and synchronization require stable Immich 3.0.x and 3.1.x. Update Immich or Memento first."}
 }
 
 // Check authenticates through album.read, including on versions too old to import.
@@ -113,6 +114,14 @@ func (c *Client) Check(ctx context.Context) Connection {
 		result.Message = "Immich is connected. " + unsupportedVersion().Error()
 	}
 	return result
+}
+
+// IsNotFound reports that Immich answered 404 for a resource, which is how a
+// permanently deleted asset or album reads. Outages and other failures are
+// not "not found".
+func IsNotFound(err error) bool {
+	typed, ok := errors.AsType[*errcodes.Error](err)
+	return ok && typed.HTTPCode == http.StatusNotFound && typed.Code == "not_found"
 }
 
 func unreadable(part string) error {

@@ -33,6 +33,14 @@ export function momentHeading(moment: Moment) {
   };
 }
 
+// captureClock is the 12-hour clock with AM or PM on the same line that
+// every capture-time overlay and review row shows.
+export function captureClock(capturedAt: string) {
+  const hour = Number(capturedAt.slice(11, 13));
+  const clock = `${hour % 12 || 12}:${capturedAt.slice(14, 16)}`;
+  return `${clock} ${hour < 12 ? "AM" : "PM"}`;
+}
+
 export function shortDay(day: string) {
   const date = new Date(`${day}T00:00:00Z`);
   if (Number.isNaN(date.getTime())) return "";

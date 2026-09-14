@@ -243,7 +243,7 @@ func TestSetupRejectsWrongReleaseBeforeWrites(t *testing.T) {
 		{"wrong default", "v3.1.0", `{"major":3,"minor":0,"patch":3,"prerelease":null}`, "expected stable v3.1.0"},
 		{"wrong explicit", "v3.0.3", `{"major":3,"minor":1,"patch":0,"prerelease":null}`, "expected stable v3.0.3"},
 		{"prerelease", "v3.0.3", `{"major":3,"minor":0,"patch":3,"prerelease":1}`, "expected stable v3.0.3"},
-		{"unsupported despite exact match", "v3.2.0", `{"major":3,"minor":2,"patch":0,"prerelease":null}`, "Import requires stable Immich"},
+		{"unsupported despite exact match", "v3.2.0", `{"major":3,"minor":2,"patch":0,"prerelease":null}`, "Import and synchronization require stable Immich"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()

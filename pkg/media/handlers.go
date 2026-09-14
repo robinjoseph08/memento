@@ -115,6 +115,16 @@ func (h *handlers) sourceCover(c *echo.Context) error {
 	return serveImage(c, image, "private, no-store", "")
 }
 
+// sourceAssetThumbnail previews an Immich asset a synchronization review
+// lists before it belongs to any Album. It is Curator-only and never cached.
+func (h *handlers) sourceAssetThumbnail(c *echo.Context) error {
+	image, err := h.module.SourceAssetThumbnail(c.Request().Context(), c.Param("id"))
+	if err != nil {
+		return err
+	}
+	return serveImage(c, image, "private, no-store", "")
+}
+
 func (h *handlers) faceThumbnail(c *echo.Context) error {
 	version := c.QueryParam("v")
 	sourceID, err := h.module.FaceThumbnail(c.Request().Context(), c.Param("sourceID"), version)

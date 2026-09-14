@@ -218,14 +218,7 @@ func getAlbum(ctx context.Context, db bun.IDB, id, immichURL string) (AlbumDetai
 	if err != nil {
 		return result, err
 	}
-	// Only untitled Moments share a generated label, so only they are numbered.
-	anchorCounts := map[string]int{}
-	for _, moment := range moments {
-		if moment.Title == nil {
-			anchorCounts[moment.CaptureDate]++
-		}
-	}
-	anchorRanks := map[string]int{}
+	labels := momentLabels(moments, momentDates)
 	for _, moment := range moments {
 		dates := momentDates[moment.ID]
 		start, end := moment.CaptureDate, moment.CaptureDate
@@ -236,21 +229,45 @@ func getAlbum(ctx context.Context, db bun.IDB, id, immichURL string) (AlbumDetai
 		if moment.Title != nil {
 			title = *moment.Title
 		}
-		label := title
-		if label == "" {
-			anchorRanks[moment.CaptureDate]++
-			label = generatedMomentLabel(start, end)
-			if anchorCounts[moment.CaptureDate] > 1 {
-				label = fmt.Sprintf("%s (%d)", label, anchorRanks[moment.CaptureDate])
-			}
-		}
-		result.Moments = append(result.Moments, Moment{ID: moment.ID.String(), Title: title, Label: label, Date: start, EndDate: end,
+		result.Moments = append(result.Moments, Moment{ID: moment.ID.String(), Title: title, Label: labels[moment.ID], Date: start, EndDate: end,
 			CoverEntryID: moment.CoverEntryID.String(), Entries: byMoment[moment.ID], Access: access[moment.ID]})
 	}
 	if err := attachAccess(ctx, db, &result); err != nil {
 		return result, err
 	}
 	return result, nil
+}
+
+// momentLabels names Moments in display order: the Curator's title, or a
+// generated date range. Only untitled Moments share a generated label, so
+// only they are numbered.
+func momentLabels(moments []models.Moment, momentDates map[models.UUID][]string) map[models.UUID]string {
+	anchorCounts := map[string]int{}
+	for _, moment := range moments {
+		if moment.Title == nil {
+			anchorCounts[moment.CaptureDate]++
+		}
+	}
+	anchorRanks := map[string]int{}
+	labels := make(map[models.UUID]string, len(moments))
+	for _, moment := range moments {
+		dates := momentDates[moment.ID]
+		start, end := moment.CaptureDate, moment.CaptureDate
+		if len(dates) > 0 {
+			start, end = dates[0], dates[len(dates)-1]
+		}
+		if moment.Title != nil && *moment.Title != "" {
+			labels[moment.ID] = *moment.Title
+			continue
+		}
+		anchorRanks[moment.CaptureDate]++
+		label := generatedMomentLabel(start, end)
+		if anchorCounts[moment.CaptureDate] > 1 {
+			label = fmt.Sprintf("%s (%d)", label, anchorRanks[moment.CaptureDate])
+		}
+		labels[moment.ID] = label
+	}
+	return labels
 }
 
 func (m *Module) UpdateAlbum(ctx context.Context, id string, request UpdateAlbumRequest) (AlbumDetail, error) {

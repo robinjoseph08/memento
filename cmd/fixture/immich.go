@@ -23,12 +23,11 @@ type fixtureState struct {
 }
 
 type immichFixture struct {
-	mu               sync.RWMutex
-	state            fixtureState
-	restart          func(context.Context) error
-	albums           []sourceAlbum
-	assets           map[string]sourceAsset
-	faces            map[string][]sourceFace
+	mu      sync.RWMutex
+	state   fixtureState
+	restart func(context.Context) error
+	// library is immutable once published; control edits install a new one.
+	library          sourceLibrary
 	personThumbnails map[string]sourceAsset
 	checkpoints      map[string]*checkpoint
 	requests         map[string]int
@@ -57,11 +56,18 @@ type sourcePerson struct {
 	UpdatedAt     string  `json:"updatedAt"`
 }
 
+// sourceLibrary is the fake Immich content: albums, assets, and faces.
+type sourceLibrary struct {
+	albums []sourceAlbum
+	assets map[string]sourceAsset
+	faces  map[string][]sourceFace
+}
+
 func newImmichFixture(offline bool) *immichFixture {
 	albums, assets := fixtureLibrary()
 	faces, thumbnails := fixtureFaces()
-	return &immichFixture{state: fixtureState{Available: !offline}, albums: albums, assets: assets,
-		faces: faces, personThumbnails: thumbnails, requests: map[string]int{}, checkpoints: map[string]*checkpoint{
+	return &immichFixture{state: fixtureState{Available: !offline}, library: sourceLibrary{albums: albums, assets: assets, faces: faces},
+		personThumbnails: thumbnails, requests: map[string]int{}, checkpoints: map[string]*checkpoint{
 			"asset-metadata": {Mode: "open", released: make(chan struct{})},
 			"import-release": {Mode: "open", released: make(chan struct{})},
 			"chapter-probe":  {Mode: "open", released: make(chan struct{})},
@@ -78,6 +84,10 @@ func (f *immichFixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.URL.Path == "/__fixture/smtp" {
 		f.smtpControl(w, r)
+		return
+	}
+	if r.URL.Path == "/__fixture/library" {
+		f.libraryControl(w, r)
 		return
 	}
 	switch r.URL.Path {
@@ -145,6 +155,9 @@ func (f *immichFixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.requests[r.Method+" "+r.URL.Path+" (range)"]++
 	}
 	state := f.state
+	// The library is replaced whole by control edits, so one snapshot serves
+	// this request consistently without holding the lock.
+	library := f.library
 	f.mu.Unlock()
 	if r.Method != http.MethodGet && (r.Method != http.MethodPost || r.URL.Path != "/api/search/metadata") {
 		http.Error(w, "fixture supports read-only Immich requests", http.StatusMethodNotAllowed)
@@ -170,12 +183,12 @@ func (f *immichFixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.URL.Path == "/api/users/me":
 		_, _ = w.Write([]byte(`{"id":"fixture-owner"}`))
 	case r.URL.Path == "/api/albums":
-		if err := json.NewEncoder(w).Encode(f.albums); err != nil {
+		if err := json.NewEncoder(w).Encode(library.albums); err != nil {
 			return
 		}
 	case strings.HasPrefix(r.URL.Path, "/api/albums/"):
 		id := strings.TrimPrefix(r.URL.Path, "/api/albums/")
-		for _, album := range f.albums {
+		for _, album := range library.albums {
 			if album.ID == id {
 				if err := json.NewEncoder(w).Encode(album); err != nil {
 					return
@@ -185,9 +198,9 @@ func (f *immichFixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		http.NotFound(w, r)
 	case r.URL.Path == "/api/search/metadata" && r.Method == http.MethodPost:
-		f.searchMembers(w, r)
+		library.searchMembers(w, r)
 	case r.URL.Path == "/api/faces":
-		faces := f.faces[r.URL.Query().Get("id")]
+		faces := library.faces[r.URL.Query().Get("id")]
 		if faces == nil {
 			faces = []sourceFace{}
 		}
@@ -208,7 +221,7 @@ func (f *immichFixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		id, thumbnail := strings.CutSuffix(path, "/thumbnail")
 		id, original := strings.CutSuffix(id, "/original")
 		id, playback := strings.CutSuffix(id, "/video/playback")
-		asset, ok := f.assets[id]
+		asset, ok := library.assets[id]
 		if !ok {
 			http.NotFound(w, r)
 			return
@@ -262,7 +275,7 @@ func (f *immichFixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (f *immichFixture) searchMembers(w http.ResponseWriter, r *http.Request) {
+func (f sourceLibrary) searchMembers(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		AlbumIDs    []string `json:"albumIds"`
 		Page        int      `json:"page"`
@@ -283,7 +296,11 @@ func (f *immichFixture) searchMembers(w http.ResponseWriter, r *http.Request) {
 		}
 		members := make([]sourceAsset, 0, len(album.Members))
 		for _, id := range album.Members {
-			members = append(members, f.assets[id])
+			// Immich's metadata search omits trashed assets; they still answer
+			// on their own asset route.
+			if asset := f.assets[id]; !asset.Trashed {
+				members = append(members, asset)
+			}
 		}
 		sort.Slice(members, func(i, j int) bool {
 			if members[i].FileCreatedAt == members[j].FileCreatedAt {

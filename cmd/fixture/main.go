@@ -148,6 +148,7 @@ func run(ctx context.Context, binary string, offline, withSMTP bool) error {
 		fmt.Fprintln(os.Stderr, "SMTP is not configured for this installation.")
 	}
 	fmt.Fprintf(os.Stderr, "Chapter probe (Workbench - Videos, coast-retry): fail, pause, or open with curl -X POST -H 'Content-Type: application/json' -d '{\"mode\":\"fail\"}' %s/__fixture/checkpoints/chapter-probe\ncoast-broken never serves its original; birthday-party has three chapters.\n", fixtureURL)
+	fmt.Fprintf(os.Stderr, "Edit the library (then Check for changes in Memento): curl -X POST -H 'Content-Type: application/json' -d '{\"album\":\"fixture-album-coast\",\"members\":[\"fixture-asset-01\",\"fixture-asset-02\",\"fixture-asset-04\",\"fixture-asset-05\",\"fixture-asset-06\",\"workbench-video-party\"],\"description\":\"Edited in Immich\",\"assets\":{\"fixture-asset-05\":{\"checksum\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAA=\"},\"fixture-asset-01\":{\"isTrashed\":true}},\"delete\":[]}' %s/__fixture/library\nmembers replaces the album membership; assets patches checksum, originalFileName, localDateTime, fileCreatedAt, updatedAt, isTrashed, isOffline; delete removes assets from Immich entirely.\n", fixtureURL)
 	select {
 	case <-ctx.Done():
 		return nil

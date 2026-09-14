@@ -50,6 +50,15 @@ func (m *Module) SourceCover(ctx context.Context, albumID string) (immich.Thumbn
 	return m.source.Thumbnail(ctx, *album.ThumbnailID)
 }
 
+// SourceAssetThumbnail reads an asset's generated thumbnail straight from
+// Immich for a Curator reviewing source changes.
+func (m *Module) SourceAssetThumbnail(ctx context.Context, sourceID string) (immich.Thumbnail, error) {
+	if sourceID == "" {
+		return immich.Thumbnail{}, errcodes.NotFound("Thumbnail")
+	}
+	return m.source.Thumbnail(ctx, sourceID)
+}
+
 // EntryThumbnail resolves a content-versioned entry only after verifying active
 // membership in a completed Album. A stale URL must never serve different bytes.
 func (m *Module) EntryThumbnail(ctx context.Context, id, version string) (string, error) {

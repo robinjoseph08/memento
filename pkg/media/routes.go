@@ -30,6 +30,8 @@ func RegisterRoutes(e *echo.Echo, m *Module, requirePerson, requireCurator echo.
 	h := &handlers{module: m}
 	e.GET("/api/media/sources/:id/cover", h.sourceCover, requireCurator)
 	e.HEAD("/api/media/sources/:id/cover", h.sourceCover, requireCurator)
+	e.GET("/api/media/sources/assets/:id/thumbnail", h.sourceAssetThumbnail, requireCurator)
+	e.HEAD("/api/media/sources/assets/:id/thumbnail", h.sourceAssetThumbnail, requireCurator)
 	e.GET("/api/media/entries/:id/thumbnail", h.entryThumbnail, requireCurator)
 	e.HEAD("/api/media/entries/:id/thumbnail", h.entryThumbnail, requireCurator)
 	e.GET("/api/media/entries/:id/playback", h.entryPlayback, requireCurator)
