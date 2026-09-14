@@ -156,7 +156,7 @@ func viewAlbum(ctx context.Context, db bun.IDB, viewer viewerContext, id string,
 	err = viewerEntries(db, viewer).ColumnExpr("entry.id, item.content_version AS version").
 		Join("JOIN moments AS moment ON moment.id = entry.moment_id AND moment.cover_entry_id = entry.id").
 		Where("entry.album_id = ? AND NOT item.offline AND NOT item.trashed", id).
-		OrderExpr("(SELECT min(order_item.captured_at) FROM album_entries AS order_entry JOIN media_items AS order_item ON order_item.id = order_entry.media_item_id WHERE order_entry.moment_id = moment.id AND order_entry.removed_at IS NULL), moment.sort_order, moment.id").Limit(1).Scan(ctx, &cover)
+		OrderExpr("moment.cover_position ASC NULLS LAST, "+momentCaptureOrder).Limit(1).Scan(ctx, &cover)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return result, errorstack.CaptureContext(ctx, err)
 	}

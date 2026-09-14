@@ -10,25 +10,32 @@ import { PersonAvatar } from "./person-avatar";
 // Avatars shown before the rest collapse into a count.
 const shownAvatars = 4;
 
-// Who can see a Moment, at a glance: a short stack of avatars with the
-// overflow as a count and the pending suggestions beside it. Hovering the
-// stack lists everyone with access; the names are also its accessible label,
-// so the outline link that contains it needs no second tab stop.
+export type AudiencePerson = Pick<
+  AccessPerson,
+  "person_id" | "display_name" | "avatar_url"
+>;
+
+// A set of People at a glance: a short stack of avatars with the overflow as
+// a count and any pending suggestions beside it. Hovering the stack lists
+// everyone; the names are also its accessible label, so the outline link
+// that contains it needs no second tab stop. Callers pass only the People
+// who belong in the stack.
 export function Audience({
-  people,
-  suggestions,
+  people: allowed,
+  suggestions = 0,
+  emptyLabel = "No access yet",
 }: {
-  people: AccessPerson[];
-  suggestions: number;
+  people: AudiencePerson[];
+  suggestions?: number;
+  emptyLabel?: string;
 }) {
-  const allowed = people.filter((person) => person.accessible_count > 0);
   const shown = allowed.slice(0, shownAvatars);
   const overflow = allowed.length - shown.length;
   const names = allowed.map((person) => person.display_name).join(", ");
   return (
     <span className="flex items-center gap-2 text-xs">
       {allowed.length === 0 ? (
-        <span className="text-muted">No access yet</span>
+        <span className="text-muted">{emptyLabel}</span>
       ) : (
         <TooltipProvider>
           <Tooltip>

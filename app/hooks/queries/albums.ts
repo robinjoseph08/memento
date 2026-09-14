@@ -16,6 +16,7 @@ import type {
   RemoveAccessPreviewRequest,
   RemoveAccessRequest,
   SaveAlbumAccessRequest,
+  SaveCoverOrderRequest,
   SaveRulesRequest,
   SetMomentCoverRequest,
   SourcePage,
@@ -26,6 +27,7 @@ import type {
   UpdateAlbumRequest,
   UpdateMomentRequest,
   UpdateVideoRequest,
+  ViewingGroups,
 } from "../../types/generated/publishing";
 import { usePrivateScope } from "./people";
 
@@ -97,6 +99,9 @@ export function useAlbumCache() {
         }),
         client.invalidateQueries({ queryKey: [...scope, "viewer"] }),
         client.invalidateQueries({ queryKey: [...scope, "dashboard"] }),
+        client.invalidateQueries({
+          queryKey: [...scope, "viewing-groups", album.id],
+        }),
       ]);
     },
   };
@@ -145,6 +150,34 @@ export function useSetMomentCover(albumID: string, momentID: string) {
     mutationKey: cache.scope,
     mutationFn: (body: SetMomentCoverRequest) =>
       request<AlbumDetail>(momentURL(albumID, momentID, "cover"), { body }),
+    onSuccess: cache.save,
+  });
+}
+
+// Viewing Groups follow saved access, so every Album mutation invalidates
+// them through the shared cache save.
+export function useViewingGroups(albumID: string) {
+  const scope = usePrivateScope();
+  return useQuery({
+    queryKey: [...scope, "viewing-groups", albumID],
+    queryFn: ({ signal }) =>
+      request<ViewingGroups>(
+        `/api/curator/albums/${encodeURIComponent(albumID)}/viewing-groups`,
+        { signal },
+      ),
+    retry: false,
+  });
+}
+
+export function useSaveCoverOrder(albumID: string) {
+  const cache = useAlbumCache();
+  return useMutation({
+    mutationKey: cache.scope,
+    mutationFn: (body: SaveCoverOrderRequest) =>
+      request<AlbumDetail>(
+        `/api/curator/albums/${encodeURIComponent(albumID)}/cover-order`,
+        { body },
+      ),
     onSuccess: cache.save,
   });
 }

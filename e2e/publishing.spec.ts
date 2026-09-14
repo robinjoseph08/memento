@@ -228,6 +228,42 @@ test("Curator scopes access, previews two people, publishes, and hides the Album
     page.getByRole("img", { name: "coast-01", exact: true }),
   ).toHaveCount(0);
 
+  // Alex can see only June 3's cover and Sam only June 1's, so preferring
+  // June 3 changes the access-blind Curator list and neither preview.
+  await outline.getByRole("link", { name: "Album cover", exact: true }).click();
+  const coverPane = page.getByRole("region", {
+    name: "Album cover",
+    exact: true,
+  });
+  const whoSees = coverPane.getByRole("region", {
+    name: "Who sees which cover",
+    exact: true,
+  });
+  await expect(whoSees).toContainText(
+    "1 person sees the cover of Wednesday, June 3, 2026",
+  );
+  await expect(whoSees).toContainText(
+    "1 person sees the cover of Monday, June 1, 2026",
+  );
+  await coverPane
+    .getByRole("button", {
+      name: "Prefer Wednesday, June 3, 2026",
+      exact: true,
+    })
+    .click();
+  await captureLayouts(page, "album-cover");
+  await coverPane
+    .getByRole("button", { name: "Save cover order", exact: true })
+    .click();
+  await expect(coverPane.getByRole("status")).toHaveText("Cover order saved.");
+  await page.getByRole("link", { name: "All albums", exact: true }).click();
+  const coastCard = await loadedImage(
+    page.getByRole("img", { name: "Fixture Album - Coast", exact: true }),
+  );
+  expect(coastCard).toContain(alexCover.match(/\/entries\/([^/]+)\//)![1]);
+  await page.goBack();
+  await expect(coverPane).toBeVisible();
+
   const memberContext = await browser.newContext({ baseURL });
   try {
     const member = await memberContext.newPage();

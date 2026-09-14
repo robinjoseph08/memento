@@ -90,6 +90,9 @@ type Moment struct {
 	Title         *string
 	SortOrder     int64
 	CoverEntryID  UUID `bun:"type:uuid"`
+	// CoverPosition is the Moment's place in the Album's Cover Order; nil
+	// leaves it to capture order.
+	CoverPosition *int64
 }
 
 type AlbumAccessDecision struct {

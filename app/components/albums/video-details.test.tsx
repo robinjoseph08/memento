@@ -58,6 +58,7 @@ const album: AlbumDetail = {
       date: "2026-07-01",
       end_date: "2026-07-01",
       cover_entry_id: "video",
+      cover_position: 0,
       access: { people: [], faces: [] },
       entries: [video],
     },

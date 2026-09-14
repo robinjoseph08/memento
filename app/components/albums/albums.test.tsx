@@ -190,6 +190,7 @@ const completeAlbum: AlbumDetail = {
       date: "2026-07-01",
       end_date: "2026-07-01",
       cover_entry_id: "photo",
+      cover_position: 0,
       access: { people: [], faces: [] },
       entries: [
         {
@@ -408,6 +409,7 @@ it("uses the Outline pane for selection and saves Moment access explicitly", asy
         date: "2026-07-02",
         end_date: "2026-07-02",
         cover_entry_id: "second-photo",
+        cover_position: 0,
         entries: [
           {
             ...completeAlbum.moments[0].entries[0],

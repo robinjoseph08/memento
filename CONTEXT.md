@@ -19,7 +19,7 @@ An Album Entry a Curator keeps out of one Album while its asset stays in the Imm
 _Avoid_: Hidden, Removed, Deleted
 
 **Moment**:
-A nonempty Curator-only portion of an Album whose media was captured around the same time and usually involves the same people. Moments default to capture days but may be split, merged, or span midnight. Each Moment has a Curator-selected Album Entry as its cover; viewer Album covers are derived from accessible Moment covers rather than stored separately.
+A nonempty Curator-only portion of an Album whose media was captured around the same time and usually involves the same people. Moments default to capture days but may be split, merged, or span midnight. Each Moment has a Curator-selected Album Entry as its cover; viewer Album covers are derived from accessible Moment covers through the Album's Cover Order rather than stored separately.
 _Avoid_: Access Set, Day Group, Chapter
 
 **Publication**:
@@ -52,6 +52,14 @@ A suggestion to share a Moment with a Person detected in its current media. Reco
 
 **Access Decision**:
 A Curator's explicit access choice for a Person. Albums may allow access, Moments and Album Entries may allow or deny it, and missing decisions inherit from broader scopes before defaulting to denied.
+
+**Cover Order**:
+A Curator's ordered list of preferred Moments for one Album's cover. Each viewer sees the cover of the first Moment in the Cover Order they can access; when none applies, the earliest accessible Moment cover in capture order is used, so an Album with an empty Cover Order behaves as if none existed.
+_Avoid_: Priority, Ranking, Pin, Cover Override
+
+**Viewing Group**:
+The People who can see exactly the same Moment covers in one Album. Viewing Groups are derived from Access Decisions whenever a Curator reviews an Album's cover; they are never stored, named, or shown to viewers. A Person who can see no Moment cover belongs to no Viewing Group.
+_Avoid_: Cohort, Access Set, Segment
 
 **Unannounced Change**:
 An Album or Album Entry that became visible to a Person after that Person's notification baseline. Completing Onboarding or approving an Update Notification advances the baseline, independently of email delivery.

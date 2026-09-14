@@ -59,6 +59,7 @@ const album: AlbumDetail = {
       date: "2026-07-01",
       end_date: "2026-07-01",
       cover_entry_id: "beach",
+      cover_position: 0,
       access: { people: [], faces: [] },
       entries: [
         {
@@ -100,6 +101,7 @@ const excludedAlbum: AlbumDetail = {
     {
       ...album.moments[0]!,
       cover_entry_id: "dunes",
+      cover_position: 0,
       entries: [album.moments[0]!.entries[1]!],
     },
   ],
