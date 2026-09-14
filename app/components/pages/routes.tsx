@@ -3,6 +3,7 @@ import { CuratorPage } from "../albums/albums";
 import { ImportPage } from "../albums/sources";
 import { WelcomePage } from "../identity/onboarding";
 import { ProfilePage } from "../identity/profile";
+import { UpdatesPage } from "../notifications/updates";
 import { PeoplePage, PersonPage } from "../people/people";
 import { RequestsPage } from "../people/requests";
 import { ViewerAlbumList } from "../viewer/album-list";
@@ -46,6 +47,7 @@ export const routes = [
                   { path: "people", element: <PeoplePage /> },
                   { path: "people/:id", element: <PersonPage /> },
                   { path: "requests", element: <RequestsPage /> },
+                  { path: "updates", element: <UpdatesPage /> },
                 ],
               },
               {

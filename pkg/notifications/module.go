@@ -13,10 +13,15 @@ import (
 // EnqueueDelivery records durable work in the caller's transaction. It must not send.
 type EnqueueDelivery func(ctx context.Context, tx bun.Tx, deliveryID string) error
 
-// VisibleEntry is one Album Entry a Person can currently view.
+// VisibleEntry is one Album Entry a Person can currently view. Title is the
+// presentation title: the Curator's video title, else the filename without
+// its extension. Kind is IMAGE or VIDEO.
 type VisibleEntry struct {
-	AlbumID string
-	EntryID string
+	AlbumID    string
+	AlbumTitle string
+	EntryID    string
+	Kind       string
+	Title      string
 }
 
 // VisibleContent is the consumer-owned view of Publishing that baselines need.
@@ -25,8 +30,9 @@ type VisibleContent interface {
 	VisibleEntries(ctx context.Context, db bun.IDB, personID string) ([]VisibleEntry, error)
 }
 
-// Module owns delivery records and announcement baselines. A nil mailer means
-// SMTP is not configured; every other use case still works.
+// Module owns delivery records, announcement baselines, and Update
+// Notifications. A nil mailer means SMTP is not configured; every other use
+// case still works.
 type Module struct {
 	db      *bun.DB
 	mailer  Mailer

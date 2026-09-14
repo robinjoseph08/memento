@@ -9,6 +9,7 @@ import { useIdentityStatus } from "../../hooks/queries/identity";
 import { useTheme } from "../../hooks/use-theme";
 import { AccountMenu } from "./account-menu";
 import { MobileNavigation } from "./mobile-navigation";
+import { NotificationBell } from "./notification-bell";
 import { PendingBadge } from "./pending-badge";
 import { PreviewModeContext } from "./preview-mode";
 import { ThemeToggle } from "./theme-toggle";
@@ -63,11 +64,20 @@ export function Header() {
               >
                 Requests <PendingBadge count={pending} />
               </NavLink>
+              <NavLink
+                className="rounded-md px-4 py-3 text-sm hover:bg-surface aria-[current=page]:bg-surface"
+                to="/curator/updates"
+              >
+                Updates
+              </NavLink>
             </>
           )}
         </nav>
       )}
-      <div className="ml-auto">
+      <div className="ml-auto flex items-center gap-1">
+        {data?.person && onboarded && !data.person.is_curator && !preview && (
+          <NotificationBell key={data.person.id} />
+        )}
         {data?.person ? (
           <AccountMenu
             key={data.person.id}
