@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v5"
+	"github.com/labstack/echo/v5/middleware"
 	echologger "github.com/robinjoseph08/golib/echo/v5/middleware/logger"
 	"github.com/robinjoseph08/golib/echo/v5/middleware/recovery"
 	"github.com/robinjoseph08/memento/internal/webapp"
@@ -96,6 +97,12 @@ func newServer(cfg *config.Config, frontend http.Handler, options ...dependencie
 	e.Use(echologger.Middleware())
 	e.Use(recovery.Middleware())
 	e.Use(capturePanicErrorStack())
+	e.Use(middleware.GzipWithConfig(middleware.GzipConfig{
+		Skipper: func(c *echo.Context) bool {
+			path := c.Request().URL.Path
+			return path == "/api/media" || strings.HasPrefix(path, "/api/media/")
+		},
+	}))
 	e.Use(browserAPI(cfg.PublicURL))
 
 	health := func(c *echo.Context) error {

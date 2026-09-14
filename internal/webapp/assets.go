@@ -85,7 +85,7 @@ func newHandler(files fs.FS, publicURL string, resolve MetadataResolver) (http.H
 
 func (h *spaHandler) ServeHTTP(response http.ResponseWriter, request *http.Request) {
 	requested := strings.TrimPrefix(path.Clean(request.URL.Path), "/")
-	if requested == "." || requested == "" {
+	if requested == "." || requested == "" || requested == "index.html" {
 		h.serveIndex(response, request)
 		return
 	}
@@ -128,9 +128,13 @@ func (h *spaHandler) serveIndex(response http.ResponseWriter, request *http.Requ
 		}
 	}
 	response.Header().Set("Cache-Control", "no-cache")
+	response.Header().Set("Content-Security-Policy", "frame-ancestors 'none'")
+	response.Header().Set("Referrer-Policy", "no-referrer")
 	response.Header().Set("Content-Length", strconv.Itoa(len(index)))
 	response.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if request.Method != http.MethodHead {
+		// Let compression middleware remove the uncompressed Content-Length.
+		response.WriteHeader(http.StatusOK)
 		_, _ = response.Write(index)
 	}
 }
