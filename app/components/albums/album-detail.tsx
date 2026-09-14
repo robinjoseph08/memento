@@ -1,12 +1,14 @@
-import { useState } from "react";
+import { use, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 
 import { useAlbum, useUpdateAlbum } from "../../hooks/queries/albums";
 import { useMediaQuery } from "../../hooks/use-media-query";
 import { useUnsavedChanges } from "../../hooks/use-unsaved-changes";
+import { UnsavedChangesContext } from "../../lib/forms";
 import { fieldErrors } from "../../lib/http";
 import { cn, withParams } from "../../lib/utils";
 import type { AlbumDetail } from "../../types/generated/publishing";
+import { ConfirmDialog } from "../forms/confirm-dialog";
 import {
   Field,
   Form,
@@ -19,6 +21,7 @@ import { Button } from "../ui/button";
 import { Textarea } from "../ui/textarea";
 import { ViewerPreview } from "../viewer/viewer-preview";
 import { AlbumAccess } from "./album-access";
+import { AlbumCover } from "./album-cover";
 import { AlbumImage } from "./album-image";
 import { DangerZone } from "./album-lifecycle";
 import { Audience } from "./audience";
@@ -81,11 +84,22 @@ function AlbumContent({ album }: { album: AlbumDetail }) {
   const [params] = useSearchParams();
   const [publicationOpen, setPublicationOpen] = useState(false);
   const [syncOpen, setSyncOpen] = useState(false);
+  // Publishing and a sync check use saved state, so unsaved work in any
+  // section gets the same prompt as leaving the page.
+  const unsaved = use(UnsavedChangesContext);
+  const [guarded, setGuarded] = useState<"publish" | "sync" | null>(null);
+  const openDialog = (action: "publish" | "sync") =>
+    action === "publish" ? setPublicationOpen(true) : setSyncOpen(true);
+  const guard = (action: "publish" | "sync") => {
+    if ((unsaved?.current.size ?? 0) > 0) setGuarded(action);
+    else openDialog(action);
+  };
   const desktop = useMediaQuery("(min-width: 761px)");
   const requested = params.get("section");
   const section =
     requested === "details" ||
     requested === "access" ||
+    requested === "cover" ||
     requested === "preview" ||
     requested === "excluded"
       ? requested
@@ -126,7 +140,7 @@ function AlbumContent({ album }: { album: AlbumDetail }) {
           <Button
             className="flex-1 min-[761px]:flex-none"
             disabled={!complete}
-            onClick={() => setSyncOpen(true)}
+            onClick={() => guard("sync")}
             variant="outline"
           >
             Check for changes
@@ -135,13 +149,27 @@ function AlbumContent({ album }: { album: AlbumDetail }) {
             <Button
               className="flex-1 min-[761px]:flex-none"
               disabled={!complete}
-              onClick={() => setPublicationOpen(true)}
+              onClick={() => guard("publish")}
             >
               Review & publish
             </Button>
           )}
         </div>
       </header>
+      <ConfirmDialog
+        confirmLabel="Continue"
+        description="You have unsaved changes on this Album. They will not be included until you save them."
+        onConfirm={() => {
+          const action = guarded;
+          setGuarded(null);
+          if (action) openDialog(action);
+        }}
+        onOpenChange={(open) => {
+          if (!open) setGuarded(null);
+        }}
+        open={guarded !== null}
+        title="Continue without saving?"
+      />
       {publicationOpen && (
         <PublishDialog
           album={album}
@@ -190,6 +218,22 @@ function AlbumContent({ album }: { album: AlbumDetail }) {
                     })}
                   >
                     Album access
+                  </Link>
+                </li>
+                <li>
+                  <Link
+                    aria-current={section === "cover" ? "page" : undefined}
+                    className={cn(
+                      outlineRowClass(section === "cover"),
+                      "text-sm",
+                    )}
+                    to={link({
+                      section: "cover",
+                      pane: "detail",
+                      entry: null,
+                    })}
+                  >
+                    Album cover
                   </Link>
                 </li>
                 <li>
@@ -282,7 +326,9 @@ function AlbumContent({ album }: { album: AlbumDetail }) {
                             </span>
                             <span className="mt-1.5 block">
                               <Audience
-                                people={item.access.people}
+                                people={item.access.people.filter(
+                                  (person) => person.accessible_count > 0,
+                                )}
                                 suggestions={suggestions}
                               />
                             </span>
@@ -314,6 +360,7 @@ function AlbumContent({ album }: { album: AlbumDetail }) {
             {showDetail && section === "access" && (
               <AlbumAccess album={album} />
             )}
+            {showDetail && section === "cover" && <AlbumCover album={album} />}
             {showDetail && section === "preview" && (
               <ViewerPreview album={album} />
             )}

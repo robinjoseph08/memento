@@ -23,6 +23,8 @@ type structureMoment struct {
 	Title       string
 	SortOrder   int64
 	CoverID     string
+	// CoverPosition is the Moment's place in the Cover Order, 0 when absent.
+	CoverPosition int64
 }
 
 type structureState struct {
@@ -105,7 +107,11 @@ func (m *Module) loadStructure(ctx context.Context, db bun.IDB, albumID string, 
 		if moment.Title != nil {
 			title = *moment.Title
 		}
-		state.Moments[moment.ID.String()] = structureMoment{ID: moment.ID.String(), CaptureDate: moment.CaptureDate, Title: title, SortOrder: moment.SortOrder, CoverID: moment.CoverEntryID.String()}
+		position := int64(0)
+		if moment.CoverPosition != nil {
+			position = *moment.CoverPosition
+		}
+		state.Moments[moment.ID.String()] = structureMoment{ID: moment.ID.String(), CaptureDate: moment.CaptureDate, Title: title, SortOrder: moment.SortOrder, CoverID: moment.CoverEntryID.String(), CoverPosition: position}
 		state.Decisions[moment.ID.String()] = map[string]Decision{}
 	}
 	type entryRow struct {
@@ -633,10 +639,31 @@ func (m *Module) MergeMoments(ctx context.Context, albumID, sourceMomentID strin
 		if _, err := tx.NewDelete().Model((*models.Moment)(nil)).Where("id = ? AND album_id = ?", sourceMomentID, albumID).Exec(ctx); err != nil {
 			return errorstack.CaptureContext(ctx, err)
 		}
+		// The merged Moment keeps the better Cover Order place of the two, so
+		// merging a preferred Moment into another never loses the preference.
+		// This runs after the source row is gone so the place is free.
+		if position := mergedCoverPosition(state.Moments[sourceMomentID], state.Moments[request.TargetMomentID]); position != state.Moments[request.TargetMomentID].CoverPosition {
+			if _, err := tx.NewUpdate().Model((*models.Moment)(nil)).Set("cover_position = ?", position).Where("id = ? AND album_id = ?", request.TargetMomentID, albumID).Exec(ctx); err != nil {
+				return errorstack.CaptureContext(ctx, err)
+			}
+		}
 		return nil
 	})
 	if err != nil {
 		return AlbumDetail{}, transactionError(ctx, err)
 	}
 	return m.GetAlbum(ctx, albumID)
+}
+
+// mergedCoverPosition is the earlier Cover Order place among two Moments, or
+// 0 when neither is preferred.
+func mergedCoverPosition(source, target structureMoment) int64 {
+	switch {
+	case source.CoverPosition == 0:
+		return target.CoverPosition
+	case target.CoverPosition == 0:
+		return source.CoverPosition
+	default:
+		return min(source.CoverPosition, target.CoverPosition)
+	}
 }

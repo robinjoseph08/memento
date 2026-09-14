@@ -135,6 +135,20 @@ func (h *handlers) setMomentCover(c *echo.Context) error {
 	return respond(c, result, err)
 }
 
+func (h *handlers) saveCoverOrder(c *echo.Context) error {
+	var request SaveCoverOrderRequest
+	if err := c.Bind(&request); err != nil {
+		return err
+	}
+	result, err := h.module.SaveCoverOrder(c.Request().Context(), c.Param("id"), request)
+	return respond(c, result, err)
+}
+
+func (h *handlers) viewingGroups(c *echo.Context) error {
+	result, err := h.module.ViewingGroups(c.Request().Context(), c.Param("id"))
+	return respond(c, result, err)
+}
+
 func (h *handlers) refreshMomentFaces(c *echo.Context) error {
 	var request struct{}
 	if err := c.Bind(&request); err != nil {

@@ -79,8 +79,14 @@ type albumProjection struct {
 	HasAudience  bool
 }
 
+// momentCaptureOrder sorts Moments (aliased "moment") by their earliest
+// capture, the display order and the cover fallback shared by the viewer,
+// the Curator list, and Viewing Groups.
+const momentCaptureOrder = "(SELECT min(order_item.captured_at) FROM album_entries AS order_entry JOIN media_items AS order_item ON order_item.id = order_entry.media_item_id WHERE order_entry.moment_id = moment.id AND order_entry.removed_at IS NULL), moment.sort_order, moment.id"
+
 // albumSummaries keeps list cards and detail headers on the same projection.
-// Only configured Moment covers are candidates, in capture-day order.
+// Only configured Moment covers are candidates, in Cover Order and then
+// capture-day order, the same rule a viewer with full access gets.
 func albumSummaries(db bun.IDB) *bun.SelectQuery {
 	stats := db.NewSelect().TableExpr("album_entries AS entry").
 		ColumnExpr("entry.album_id, count(*) FILTER (WHERE item.kind = 'IMAGE') AS photo_count, count(*) FILTER (WHERE item.kind = 'VIDEO') AS video_count").
@@ -92,7 +98,7 @@ func albumSummaries(db bun.IDB) *bun.SelectQuery {
 		Join("JOIN album_entries AS entry ON entry.id = moment.cover_entry_id AND entry.album_id = moment.album_id AND entry.moment_id = moment.id").
 		Join("JOIN media_items AS item ON item.id = entry.media_item_id").
 		Where("entry.removed_at IS NULL AND NOT item.offline AND NOT item.trashed").
-		OrderExpr("moment.album_id, (SELECT min(order_item.captured_at) FROM album_entries AS order_entry JOIN media_items AS order_item ON order_item.id = order_entry.media_item_id WHERE order_entry.moment_id = moment.id AND order_entry.removed_at IS NULL), moment.sort_order, moment.id")
+		OrderExpr("moment.album_id, moment.cover_position ASC NULLS LAST, " + momentCaptureOrder)
 	// An Album is ready to publish once at least one allowing decision exists
 	// at any scope; until then publishing would show it to nobody.
 	audience := db.NewSelect().TableExpr("album_access_decisions AS decision").ColumnExpr("1").Where("decision.album_id = album.id AND decision.decision = 'allow'").
@@ -229,8 +235,12 @@ func getAlbum(ctx context.Context, db bun.IDB, id, immichURL string) (AlbumDetai
 		if moment.Title != nil {
 			title = *moment.Title
 		}
+		position := 0
+		if moment.CoverPosition != nil {
+			position = int(*moment.CoverPosition)
+		}
 		result.Moments = append(result.Moments, Moment{ID: moment.ID.String(), Title: title, Label: labels[moment.ID], Date: start, EndDate: end,
-			CoverEntryID: moment.CoverEntryID.String(), Entries: byMoment[moment.ID], Access: access[moment.ID]})
+			CoverEntryID: moment.CoverEntryID.String(), CoverPosition: position, Entries: byMoment[moment.ID], Access: access[moment.ID]})
 	}
 	if err := attachAccess(ctx, db, &result); err != nil {
 		return result, err

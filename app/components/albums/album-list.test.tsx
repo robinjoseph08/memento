@@ -201,6 +201,7 @@ it.each([
           date: "2026-07-01",
           end_date: "2026-07-01",
           cover_entry_id: "partial-photo",
+          cover_position: 0,
           access: { people: [], faces: [] },
           entries: [
             {

@@ -110,6 +110,13 @@ func (MergeMomentsRequest) ValidationMessage(field, rule string) string {
 	return ""
 }
 
+func (SaveCoverOrderRequest) ValidationMessage(field, rule string) string {
+	if field == "moment_ids" {
+		return "Choose Moments from this Album."
+	}
+	return ""
+}
+
 func (UpdateVideoRequest) ValidationMessage(field, rule string) string {
 	if field == "title" && rule == "max" {
 		return "Use 200 characters or fewer."

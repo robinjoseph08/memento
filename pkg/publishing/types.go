@@ -191,14 +191,46 @@ type IncludeEntryRequest struct {
 }
 
 type Moment struct {
-	ID           string       `json:"id"`
-	Title        string       `json:"title"`
-	Label        string       `json:"label"`
-	Date         string       `json:"date"`
-	EndDate      string       `json:"end_date"`
-	CoverEntryID string       `json:"cover_entry_id"`
-	Entries      []Entry      `json:"entries"`
-	Access       MomentAccess `json:"access"`
+	ID           string `json:"id"`
+	Title        string `json:"title"`
+	Label        string `json:"label"`
+	Date         string `json:"date"`
+	EndDate      string `json:"end_date"`
+	CoverEntryID string `json:"cover_entry_id"`
+	// CoverPosition is the Moment's place in the Album's Cover Order, 0 when
+	// it only competes in capture order.
+	CoverPosition int          `json:"cover_position"`
+	Entries       []Entry      `json:"entries"`
+	Access        MomentAccess `json:"access"`
+}
+
+// SaveCoverOrderRequest replaces an Album's Cover Order with these Moments in
+// this order. An empty list clears it.
+type SaveCoverOrderRequest struct {
+	MomentIDs []string `json:"moment_ids" validate:"dive,uuid"`
+}
+
+// ViewingGroups previews who will see which Album cover. People who can see
+// exactly the same Moment covers form one Viewing Group; they are derived on
+// every read and never stored. Placeholder lists People with some access but
+// no visible cover, who see the neutral placeholder instead.
+type ViewingGroups struct {
+	Groups      []ViewingGroup  `json:"groups"`
+	Placeholder []ViewingPerson `json:"placeholder"`
+}
+
+// ViewingGroup is one set of People and the Moments whose covers all of them
+// can see, in Album display order. Which of those covers they get follows
+// from the Cover Order, so the frontend can preview an unsaved order.
+type ViewingGroup struct {
+	MomentIDs []string        `json:"moment_ids"`
+	People    []ViewingPerson `json:"people"`
+}
+
+type ViewingPerson struct {
+	PersonID    string `json:"person_id"`
+	DisplayName string `json:"display_name"`
+	AvatarURL   string `json:"avatar_url"`
 }
 
 type Entry struct {

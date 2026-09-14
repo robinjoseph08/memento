@@ -43,6 +43,8 @@ func RegisterRoutes(e *echo.Echo, module *Module, requireCurator echo.Middleware
 	e.GET("/api/curator/albums/:id", h.album, requireCurator)
 	e.POST("/api/curator/albums/:id", h.updateAlbum, requireCurator)
 	e.POST("/api/curator/albums/:id/retry", h.retryImport, requireCurator)
+	e.GET("/api/curator/albums/:id/viewing-groups", h.viewingGroups, requireCurator)
+	e.POST("/api/curator/albums/:id/cover-order", h.saveCoverOrder, requireCurator)
 	e.POST("/api/curator/albums/:id/sync/check", h.checkSync, requireCurator)
 	e.POST("/api/curator/albums/:id/sync/apply", h.applySync, requireCurator)
 	e.POST("/api/curator/albums/:id/entries/:entryID/video", h.updateVideo, requireCurator)
