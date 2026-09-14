@@ -7,6 +7,10 @@ test("claims during an Immich outage, recovers, and revokes the signed-out sessi
   baseURL,
   fixtureURL,
 }) => {
+  // Two dashboard visits and a Settings round trip sit on top of the claim
+  // and sign-out journey, which is more than the default budget on a shared
+  // WebKit runner.
+  test.setTimeout(60_000);
   await page.goto("/setup");
   await expect(page.getByText(/first successful sign-in/i)).toBeVisible();
   await expect(page.getByRole("button", { name: "Check again" })).toBeVisible();
