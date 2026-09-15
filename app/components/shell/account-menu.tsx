@@ -1,3 +1,11 @@
+import {
+  CircleUser,
+  Crown,
+  LogOut,
+  Moon,
+  Settings,
+  type LucideIcon,
+} from "lucide-react";
 import { use, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
@@ -66,16 +74,29 @@ export function AccountMenu({
         >
           <DropdownMenuLabel>
             <p className="wrap-anywhere">{person.display_name}</p>
-            <p className="text-xs font-normal text-muted">
+            <p className="flex items-center gap-1 text-xs font-normal text-muted">
+              {person.is_curator && (
+                <Crown
+                  aria-hidden="true"
+                  className="size-3 text-accent-foreground"
+                  strokeWidth={1.5}
+                />
+              )}
               {person.is_curator ? "Curator" : "Member"}
             </p>
           </DropdownMenuLabel>
           <DropdownMenuSeparator />
           {preview || !onboarded ? (
-            <DropdownMenuItem disabled>Profile</DropdownMenuItem>
+            <DropdownMenuItem disabled>
+              <MenuIcon icon={CircleUser} />
+              Profile
+            </DropdownMenuItem>
           ) : (
             <DropdownMenuItem asChild>
-              <Link to="/profile">Profile</Link>
+              <Link to="/profile">
+                <MenuIcon icon={CircleUser} />
+                Profile
+              </Link>
             </DropdownMenuItem>
           )}
           <DropdownMenuCheckboxItem
@@ -83,16 +104,23 @@ export function AccountMenu({
             onCheckedChange={(checked) => setTheme(checked ? "dark" : "light")}
             onSelect={(event) => event.preventDefault()}
           >
+            <MenuIcon icon={Moon} />
             Dark mode
           </DropdownMenuCheckboxItem>
           <DropdownMenuSeparator />
           {person.is_curator &&
             onboarded &&
             (preview ? (
-              <DropdownMenuItem disabled>Settings</DropdownMenuItem>
+              <DropdownMenuItem disabled>
+                <MenuIcon icon={Settings} />
+                Settings
+              </DropdownMenuItem>
             ) : (
               <DropdownMenuItem asChild>
-                <Link to="/curator/settings">Settings</Link>
+                <Link to="/curator/settings">
+                  <MenuIcon icon={Settings} />
+                  Settings
+                </Link>
               </DropdownMenuItem>
             ))}
           <DropdownMenuItem
@@ -108,6 +136,7 @@ export function AccountMenu({
               signOut.mutate();
             }}
           >
+            <MenuIcon icon={LogOut} />
             {signOut.isPending ? "Signing out…" : "Sign out"}
           </DropdownMenuItem>
           {signOut.isError && (
@@ -132,5 +161,11 @@ export function AccountMenu({
         title="Sign out?"
       />
     </>
+  );
+}
+
+function MenuIcon({ icon: Icon }: { icon: LucideIcon }) {
+  return (
+    <Icon aria-hidden="true" className="size-4 text-muted" strokeWidth={1.5} />
   );
 }

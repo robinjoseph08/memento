@@ -1,4 +1,4 @@
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, PartyPopper, RefreshCw, Send } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 
 import {
@@ -26,6 +26,7 @@ import {
   Form,
   headingClass,
   ReadFailure,
+  SectionHeading,
   sectionHeadingClass,
 } from "../people/form-fields";
 import { PageTitle } from "../shell/page-title";
@@ -151,7 +152,9 @@ function PreviewForm({
   if (preview.people.length === 0) {
     return (
       <section className="mt-9 border-t border-border py-8">
-        <h2 className={sectionHeadingClass}>Everyone is up to date</h2>
+        <SectionHeading icon={PartyPopper}>
+          Everyone is up to date
+        </SectionHeading>
         <p className="mt-3 max-w-120 text-muted">
           Nothing new is waiting to be announced. Publish an album or share more
           photos, then come back here to send updates.
@@ -162,6 +165,7 @@ function PreviewForm({
           onClick={onReview}
           variant="outline"
         >
+          <RefreshCw aria-hidden="true" className="size-4" strokeWidth={1.5} />
           {refreshing ? "Checking…" : "Check again"}
         </Button>
       </section>
@@ -253,6 +257,7 @@ function PreviewForm({
         </div>
         <div className="mt-6 flex flex-wrap items-center gap-3">
           <Button disabled={included.length === 0} type="submit">
+            <Send aria-hidden="true" className="size-4" strokeWidth={1.5} />
             {approve.isPending
               ? "Sending…"
               : `Send updates to ${countLabel(included.length, "person", "people")}`}
@@ -266,6 +271,11 @@ function PreviewForm({
             pending={dismiss.isPending}
           />
           <Button disabled={refreshing} onClick={onReview} variant="ghost">
+            <RefreshCw
+              aria-hidden="true"
+              className="size-4"
+              strokeWidth={1.5}
+            />
             {refreshing ? "Checking…" : "Check again"}
           </Button>
         </div>
@@ -471,6 +481,7 @@ function ApprovalResult({
         onClick={onReview}
         variant="outline"
       >
+        <RefreshCw aria-hidden="true" className="size-4" strokeWidth={1.5} />
         {refreshing ? "Checking…" : "Check again"}
       </Button>
     </section>

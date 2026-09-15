@@ -1,4 +1,4 @@
-import { X } from "lucide-react";
+import { Search, X } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 
 import { cn } from "../../lib/utils";
@@ -43,8 +43,13 @@ export function SearchForm({
           {label}
         </label>
         <div className="relative">
+          <Search
+            aria-hidden="true"
+            className="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-muted"
+            strokeWidth={1.5}
+          />
           <Input
-            className="pr-11 [&::-webkit-search-cancel-button]:appearance-none"
+            className="pr-11 pl-10 [&::-webkit-search-cancel-button]:appearance-none"
             id={id}
             name="q"
             onChange={(event) => setDraft(event.target.value)}

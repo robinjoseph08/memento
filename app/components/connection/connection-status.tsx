@@ -1,5 +1,9 @@
+import { CircleCheck, Plug, RefreshCw, Unplug } from "lucide-react";
+
 import { useConnection } from "../../hooks/queries/connection";
 import { errorMessage } from "../../lib/http";
+import { cn } from "../../lib/utils";
+import { SectionHeading } from "../people/form-fields";
 import { Button } from "../ui/button";
 
 export function ConnectionStatus() {
@@ -8,12 +12,9 @@ export function ConnectionStatus() {
       aria-labelledby="connection-title"
       className="border-t border-border pt-7 min-[761px]:border-t-0 min-[761px]:border-l min-[761px]:pt-0 min-[761px]:pl-8"
     >
-      <h2
-        className="font-heading text-[27px]/[1.2] font-normal tracking-[-0.35px]"
-        id="connection-title"
-      >
+      <SectionHeading icon={Plug} id="connection-title">
         Immich connection
-      </h2>
+      </SectionHeading>
       <ConnectionDetails area="setup" />
     </section>
   );
@@ -36,12 +37,26 @@ export function ConnectionDetails({ area }: { area: "setup" | "curator" }) {
         ) : (
           <>
             <p
-              className={
+              className={cn(
+                "flex items-center gap-2",
                 connection.data?.usable
                   ? "text-accent-foreground"
-                  : "text-destructive"
-              }
+                  : "text-destructive",
+              )}
             >
+              {connection.data?.usable ? (
+                <CircleCheck
+                  aria-hidden="true"
+                  className="size-4"
+                  strokeWidth={1.5}
+                />
+              ) : (
+                <Unplug
+                  aria-hidden="true"
+                  className="size-4"
+                  strokeWidth={1.5}
+                />
+              )}
               {connection.data?.usable ? "Connected" : "Not connected"}
             </p>
             <p>{connection.data?.message}</p>
@@ -64,6 +79,7 @@ export function ConnectionDetails({ area }: { area: "setup" | "curator" }) {
         onClick={() => void connection.refetch()}
         variant="outline"
       >
+        <RefreshCw aria-hidden="true" className="size-4" strokeWidth={1.5} />
         {connection.isFetching ? "Checking…" : "Check again"}
       </Button>
     </>

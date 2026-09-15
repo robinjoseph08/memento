@@ -1,3 +1,5 @@
+import { CalendarDays } from "lucide-react";
+
 import { useMediaQuery } from "../../hooks/use-media-query";
 import type { ViewerAlbum } from "../../types/generated/publishing";
 import { AlbumImage } from "../albums/album-image";
@@ -37,7 +39,14 @@ export function AlbumHeader({
           </p>
         )}
         <p className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-muted">
-          <span>{captureRange(album) || "No accessible media"}</span>
+          <span className="inline-flex items-center gap-1">
+            <CalendarDays
+              aria-hidden="true"
+              className="size-3.5 shrink-0"
+              strokeWidth={1.5}
+            />
+            {captureRange(album) || "No accessible media"}
+          </span>
           <MediaCounts
             className="gap-5"
             photos={album.photo_count}

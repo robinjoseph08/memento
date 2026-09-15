@@ -1,3 +1,12 @@
+import {
+  CircleCheck,
+  Eye,
+  EyeOff,
+  Hourglass,
+  TriangleAlert,
+  type LucideIcon,
+} from "lucide-react";
+
 import type { Album } from "../../types/generated/publishing";
 
 // Every card is in exactly one of these states, each with the one action
@@ -19,6 +28,14 @@ export const stateLabels: Record<AlbumState, string> = {
   unpublished: "Unpublished",
   ready: "Ready to publish",
   published: "Published",
+};
+
+export const stateIcons: Record<AlbumState, LucideIcon> = {
+  processing: Hourglass,
+  failed: TriangleAlert,
+  unpublished: EyeOff,
+  ready: CircleCheck,
+  published: Eye,
 };
 
 // Import statuses that are still moving or need a retry keep the wording the

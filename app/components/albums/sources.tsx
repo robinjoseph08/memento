@@ -1,3 +1,4 @@
+import { FolderOpen, Import, SearchX } from "lucide-react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 
 import { useImportAlbum, useSources } from "../../hooks/queries/albums";
@@ -7,7 +8,7 @@ import {
   Form,
   headingClass,
   ReadFailure,
-  sectionHeadingClass,
+  SectionHeading,
 } from "../people/form-fields";
 import { BackLink } from "../shell/back-link";
 import { PageTitle } from "../shell/page-title";
@@ -71,9 +72,12 @@ export function ImportPage() {
           <>
             {sources.data.albums.length === 0 ? (
               <section className="border-t border-border py-9">
-                <h2 className={sectionHeadingClass}>
+                <SectionHeading
+                  icon={search ? SearchX : FolderOpen}
+                  tone="muted"
+                >
                   {search ? "No matching albums" : "No Immich albums yet"}
-                </h2>
+                </SectionHeading>
                 <p className="mt-4 text-muted">
                   {search
                     ? "Try another search."
@@ -145,6 +149,11 @@ export function ImportPage() {
                             }}
                           >
                             <Button disabled={importDisabled} type="submit">
+                              <Import
+                                aria-hidden="true"
+                                className="size-4"
+                                strokeWidth={1.5}
+                              />
                               {importing.isPending &&
                               importing.variables?.source_id === source.id
                                 ? "Importing…"

@@ -1,3 +1,4 @@
+import { BellOff, CheckCheck } from "lucide-react";
 import { Navigate } from "react-router-dom";
 
 import { useIdentityStatus } from "../../hooks/queries/identity";
@@ -6,6 +7,7 @@ import {
   useNotifications,
 } from "../../hooks/queries/notifications";
 import { errorMessage } from "../../lib/http";
+import { SectionHeading } from "../people/form-fields";
 import { PageTitle } from "../shell/page-title";
 import { Button } from "../ui/button";
 import { NotificationRow } from "./notification-row";
@@ -33,6 +35,11 @@ export function NotificationsPage() {
             onClick={() => markAllRead.mutate()}
             variant="outline"
           >
+            <CheckCheck
+              aria-hidden="true"
+              className="size-4"
+              strokeWidth={1.5}
+            />
             {unread === 0
               ? "All caught up"
               : markAllRead.isPending
@@ -65,7 +72,9 @@ export function NotificationsPage() {
         </section>
       ) : notifications.data?.notifications.length === 0 ? (
         <section className="mt-9 border-t border-border py-9">
-          <h2 className="font-heading text-[27px]/[1.2]">No updates yet</h2>
+          <SectionHeading icon={BellOff} tone="muted">
+            No updates yet
+          </SectionHeading>
           <p className="mt-4 max-w-120 text-muted">
             Your Curator will let you know here when there are new photos or
             videos to see.

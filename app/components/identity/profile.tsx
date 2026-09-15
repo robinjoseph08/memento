@@ -1,3 +1,4 @@
+import { MonitorSmartphone } from "lucide-react";
 import { useId, useState } from "react";
 
 import { useIdentityStatus, useSignOut } from "../../hooks/queries/identity";
@@ -21,7 +22,7 @@ import {
   Form,
   headingClass,
   ReadFailure,
-  sectionHeadingClass,
+  SectionHeading,
 } from "../people/form-fields";
 import { PageTitle } from "../shell/page-title";
 import { Button } from "../ui/button";
@@ -166,9 +167,9 @@ function Sessions() {
       aria-labelledby="browser-sessions"
       className="border-t border-border py-8"
     >
-      <h2 className={sectionHeadingClass} id="browser-sessions">
+      <SectionHeading icon={MonitorSmartphone} id="browser-sessions">
         Browser sessions
-      </h2>
+      </SectionHeading>
       <p className="mt-3 mb-6 text-sm text-muted">
         Browsers currently signed in to your account.
       </p>

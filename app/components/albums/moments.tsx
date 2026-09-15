@@ -1,3 +1,4 @@
+import { Merge, Pencil } from "lucide-react";
 import { useEffect, useEffectEvent, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 
@@ -117,6 +118,7 @@ export function MomentPane({
             type="button"
             variant="ghost"
           >
+            <Pencil aria-hidden="true" className="size-4" strokeWidth={1.5} />
             Rename
           </Button>
           <Button
@@ -128,6 +130,7 @@ export function MomentPane({
             type="button"
             variant="ghost"
           >
+            <Merge aria-hidden="true" className="size-4" strokeWidth={1.5} />
             Merge
           </Button>
         </div>

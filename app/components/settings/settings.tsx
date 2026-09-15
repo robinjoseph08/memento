@@ -1,5 +1,7 @@
+import { Plug } from "lucide-react";
+
 import { ConnectionDetails } from "../connection/connection-status";
-import { headingClass, sectionHeadingClass } from "../people/form-fields";
+import { headingClass, SectionHeading } from "../people/form-fields";
 import { PageTitle } from "../shell/page-title";
 
 // Installation-level checks live here rather than on the dashboard, which
@@ -13,9 +15,9 @@ export function SettingsPage() {
         aria-labelledby="immich-connection"
         className="mt-9 max-w-[640px]"
       >
-        <h2 className={sectionHeadingClass} id="immich-connection">
+        <SectionHeading icon={Plug} id="immich-connection">
           Immich connection
-        </h2>
+        </SectionHeading>
         <ConnectionDetails area="curator" />
       </section>
     </>

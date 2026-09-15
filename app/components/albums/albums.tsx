@@ -1,3 +1,4 @@
+import { CalendarDays, Images, Import, SearchX } from "lucide-react";
 import { Link, useSearchParams } from "react-router-dom";
 
 import { useAlbums, useRetryAlbum } from "../../hooks/queries/albums";
@@ -7,7 +8,7 @@ import {
   Form,
   headingClass,
   ReadFailure,
-  sectionHeadingClass,
+  SectionHeading,
 } from "../people/form-fields";
 import { PageTitle } from "../shell/page-title";
 import { Button } from "../ui/button";
@@ -15,6 +16,7 @@ import { AlbumImage } from "./album-image";
 import {
   albumState,
   importLabels,
+  stateIcons,
   stateLabels,
   type AlbumState,
 } from "./album-state";
@@ -41,7 +43,10 @@ export function CuratorAlbumsPage() {
       <div className="mb-9 flex flex-wrap items-center justify-between gap-5">
         <h1 className={headingClass}>Your albums</h1>
         <Button asChild>
-          <Link to="/curator/import">Import an album</Link>
+          <Link to="/curator/import">
+            <Import aria-hidden="true" className="size-4" strokeWidth={1.5} />
+            Import an album
+          </Link>
         </Button>
       </div>
       <SearchForm
@@ -67,9 +72,12 @@ export function CuratorAlbumsPage() {
           </ul>
         ) : (
           <section className="border-t border-border py-8">
-            <h2 className={sectionHeadingClass}>
+            <SectionHeading
+              icon={search.trim() ? SearchX : Images}
+              tone="muted"
+            >
               {search.trim() ? "No matching albums" : "No albums yet"}
-            </h2>
+            </SectionHeading>
             <p className="mt-3 max-w-120 text-muted">
               {search.trim()
                 ? "Try another search."
@@ -83,6 +91,7 @@ export function CuratorAlbumsPage() {
 
 function AlbumCard({ album }: { album: Album }) {
   const state = albumState(album);
+  const StateIcon = stateIcons[state];
   const dates = [dateLabel(album.start_date), dateLabel(album.end_date)]
     .filter(Boolean)
     .filter((date, index, all) => all.indexOf(date) === index)
@@ -104,7 +113,14 @@ function AlbumCard({ album }: { album: Album }) {
             {album.title}
           </span>
           {album.status === "complete" && dates && (
-            <span className="mt-1 block text-xs/5 text-muted">{dates}</span>
+            <span className="mt-1 flex items-center gap-1 text-xs/5 text-muted">
+              <CalendarDays
+                aria-hidden="true"
+                className="size-3.5 shrink-0"
+                strokeWidth={1.5}
+              />
+              {dates}
+            </span>
           )}
           {album.status === "complete" && (
             <MediaCounts
@@ -114,8 +130,13 @@ function AlbumCard({ album }: { album: Album }) {
             />
           )}
           <span
-            className={`block text-xs/5 ${state === "failed" ? "text-destructive" : "text-muted"}`}
+            className={`flex items-center gap-1 text-xs/5 ${state === "failed" ? "text-destructive" : "text-muted"}`}
           >
+            <StateIcon
+              aria-hidden="true"
+              className="size-3.5 shrink-0"
+              strokeWidth={1.5}
+            />
             {importLabels[album.status] ?? stateLabels[state]}
           </span>
         </span>

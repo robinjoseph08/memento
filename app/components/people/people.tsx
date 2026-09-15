@@ -1,3 +1,4 @@
+import { Crown, SearchX, UserPlus, Users } from "lucide-react";
 import { useState } from "react";
 import { Link, Navigate, useParams, useSearchParams } from "react-router-dom";
 
@@ -27,7 +28,7 @@ import {
   Form,
   headingClass,
   ReadFailure,
-  sectionHeadingClass,
+  SectionHeading,
 } from "./form-fields";
 import { PersonDetails } from "./person-details";
 
@@ -60,7 +61,14 @@ export function PeoplePage() {
         <h1 className={headingClass}>People</h1>
         <Dialog onOpenChange={changeOpen} open={open}>
           <DialogTrigger asChild>
-            <Button>Add person</Button>
+            <Button>
+              <UserPlus
+                aria-hidden="true"
+                className="size-4"
+                strokeWidth={1.5}
+              />
+              Add person
+            </Button>
           </DialogTrigger>
           <DialogContent>
             <DialogTitle>Add person</DialogTitle>
@@ -138,7 +146,14 @@ export function PeoplePage() {
                     <span className="block wrap-anywhere">
                       {person.display_name}
                     </span>
-                    <span className="text-xs text-muted">
+                    <span className="flex items-center gap-1 text-xs text-muted">
+                      {person.is_curator && (
+                        <Crown
+                          aria-hidden="true"
+                          className="size-3 text-accent-foreground"
+                          strokeWidth={1.5}
+                        />
+                      )}
                       {person.is_curator ? "Curator" : "Member"}
                       {person.deactivated_at ? ", deactivated" : ""}
                     </span>
@@ -149,9 +164,12 @@ export function PeoplePage() {
           </ul>
         ) : (
           <section className="border-t border-border py-8">
-            <h2 className={sectionHeadingClass}>
+            <SectionHeading
+              icon={search.get("q") ? SearchX : Users}
+              tone="muted"
+            >
               {search.get("q") ? "No matching people" : "No people yet"}
-            </h2>
+            </SectionHeading>
             <p className="mt-3 text-muted">
               {search.get("q")
                 ? "Try another name."

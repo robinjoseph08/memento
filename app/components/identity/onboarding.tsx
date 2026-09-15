@@ -1,3 +1,4 @@
+import { ArrowRight, Images } from "lucide-react";
 import { useId, useState } from "react";
 
 import { useCompleteOnboarding } from "../../hooks/queries/admission";
@@ -18,7 +19,7 @@ import {
   Form,
   headingClass,
   ReadFailure,
-  sectionHeadingClass,
+  SectionHeading,
 } from "../people/form-fields";
 import { PageTitle } from "../shell/page-title";
 import { Button } from "../ui/button";
@@ -138,6 +139,11 @@ function OnboardingForm({ profile }: { profile: Profile }) {
           </CheckField>
           <Button type="submit">
             {complete.isPending ? "Finishing…" : "Continue to Memento"}
+            <ArrowRight
+              aria-hidden="true"
+              className="size-4"
+              strokeWidth={1.5}
+            />
           </Button>
         </fieldset>
       </Form>
@@ -150,9 +156,9 @@ function AvailableAlbums({ curator }: { curator: boolean }) {
   const albums = useViewerAlbums();
   return (
     <section aria-labelledby="available-albums" className="min-w-0">
-      <h2 className={sectionHeadingClass} id="available-albums">
+      <SectionHeading icon={Images} id="available-albums">
         {curator ? "Albums in this installation" : "Albums shared with you"}
-      </h2>
+      </SectionHeading>
       {albums.isPending && (
         <p className="mt-4 text-muted" role="status">
           Loading albums…
