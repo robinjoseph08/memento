@@ -5,6 +5,9 @@ import "github.com/labstack/echo/v5"
 // RegisterViewerRoutes keeps selected-Person preview behind the Curator guard.
 func RegisterViewerRoutes(e *echo.Echo, module ViewerUseCases, requirePerson, requireCurator echo.MiddlewareFunc) {
 	h := &viewerHandlers{module: module}
+	e.GET("/api/library", h.library, requirePerson)
+	e.GET("/api/library/photos", h.libraryPhotos, requirePerson)
+	e.GET("/api/library/videos", h.libraryVideos, requirePerson)
 	e.GET("/api/albums", h.albums, requirePerson)
 	e.GET("/api/albums/:id", h.album, requirePerson)
 	e.GET("/api/albums/:id/photos", h.photos, requirePerson)

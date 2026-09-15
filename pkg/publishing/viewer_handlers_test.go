@@ -74,6 +74,18 @@ type viewerUseCases struct {
 	actor   string
 	preview string
 	album   string
+	kind    string
+	page    publishing.EntryPageRequest
+}
+
+func (f *viewerUseCases) ViewLibrary(_ context.Context, actor string) (publishing.ViewerLibrary, error) {
+	f.actor = actor
+	return publishing.ViewerLibrary{Days: []publishing.ViewerDay{}}, nil
+}
+
+func (f *viewerUseCases) ViewLibraryEntries(_ context.Context, actor, kind string, page publishing.EntryPageRequest) (publishing.ViewerPage, error) {
+	f.actor, f.kind, f.page = actor, kind, page
+	return publishing.ViewerPage{Entries: []publishing.ViewerEntry{}}, nil
 }
 
 func (f *viewerUseCases) ViewAlbum(_ context.Context, actor, preview, album string) (publishing.ViewerAlbum, error) {
@@ -85,8 +97,15 @@ func TestViewerHTTPUsesOnlyAuthenticatedIdentityAndExplicitCuratorPreview(t *tes
 	module := &viewerUseCases{}
 	e := echo.New()
 	e.HTTPErrorHandler = errcodes.NewHandler().Handle
+	signedIn := true
 	person := func(next echo.HandlerFunc) echo.HandlerFunc {
-		return func(c *echo.Context) error { c.Set("identity.person_id", "signed-in"); return next(c) }
+		return func(c *echo.Context) error {
+			if !signedIn {
+				return echo.ErrUnauthorized
+			}
+			c.Set("identity.person_id", "signed-in")
+			return next(c)
+		}
 	}
 	curator := false
 	guard := func(next echo.HandlerFunc) echo.HandlerFunc {
@@ -103,7 +122,25 @@ func TestViewerHTTPUsesOnlyAuthenticatedIdentityAndExplicitCuratorPreview(t *tes
 		e.ServeHTTP(r, httptest.NewRequest(http.MethodGet, path, nil))
 		return r
 	}
-	response := get("/api/albums/album?person=forged&preview=forged")
+	signedIn = false
+	for _, path := range []string{"/api/library", "/api/library/photos", "/api/library/videos"} {
+		require.Equal(t, 401, get(path).Code)
+	}
+	signedIn = true
+	response := get("/api/library?person=forged&preview=forged")
+	require.Equal(t, 200, response.Code)
+	require.JSONEq(t, `{"photo_count":0,"video_count":0,"days":[]}`, response.Body.String())
+	require.Equal(t, "signed-in", module.actor)
+	for path, kind := range map[string]string{"photos": "IMAGE", "videos": "VIDEO"} {
+		response = get("/api/library/" + path + "?person=forged&preview=forged&cursor=next&from=2026-07-04&to=2026-07-06")
+		require.Equal(t, 200, response.Code)
+		require.JSONEq(t, `{"entries":[],"next_cursor":""}`, response.Body.String())
+		require.Equal(t, "signed-in", module.actor)
+		require.Equal(t, kind, module.kind)
+		require.Equal(t, publishing.EntryPageRequest{Cursor: "next", From: "2026-07-04", To: "2026-07-06"}, module.page)
+	}
+	require.Equal(t, 404, get("/api/curator/library/preview/alex").Code)
+	response = get("/api/albums/album?person=forged&preview=forged")
 	require.Equal(t, 200, response.Code)
 	require.Equal(t, "signed-in", module.actor)
 	require.Empty(t, module.preview)

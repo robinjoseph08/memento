@@ -4,8 +4,8 @@ import { Link, type To } from "react-router-dom";
 
 import {
   dayCount,
-  useViewerAlbum,
   useViewerEntries,
+  useViewerGallery,
   type ViewerContext,
   type ViewerTab,
 } from "../../hooks/queries/viewer";
@@ -13,8 +13,8 @@ import { useMediaQuery } from "../../hooks/use-media-query";
 import { HTTPError } from "../../lib/http";
 import { cn } from "../../lib/utils";
 import type {
-  ViewerAlbum,
   ViewerEntry,
+  ViewerLibrary,
 } from "../../types/generated/publishing";
 import { AlbumImage } from "../albums/album-image";
 import { countLabel } from "../albums/moment-labels";
@@ -26,7 +26,7 @@ import { Lightbox } from "./lightbox";
 import { RequestAccess } from "./request-access";
 import { Timeline } from "./timeline";
 
-// The shared Album presentation for ordinary viewing and Curator preview.
+// Shared presentation for the library, an Album, and Curator preview.
 // personName is set only in preview so empty states can say whose view it is.
 // entryID names the item open in the lightbox on the current tab; entryLink
 // builds each item's stable URL in whatever form the surrounding route uses.
@@ -45,7 +45,16 @@ export function ViewerGallery({
   entryID?: string;
   entryLink: (id: string) => To;
 }) {
-  const query = useViewerAlbum(context);
+  const query = useViewerGallery(context);
+  const library = context.albumID === undefined;
+  const title =
+    query.data && "title" in query.data
+      ? query.data.title
+      : library
+        ? "Library"
+        : personName
+          ? "Viewer preview"
+          : "Album";
   const noAccess =
     query.error instanceof HTTPError && query.error.status === 404;
   const tabs = [
@@ -54,20 +63,26 @@ export function ViewerGallery({
   ] as const;
   return (
     <>
-      <PageTitle
-        title={query.data?.title ?? (personName ? "Viewer preview" : "Album")}
-      />
+      <PageTitle title={title} />
       {query.isPending ? (
         <p role="status">
-          {personName ? "Building the preview…" : "Loading album…"}
+          {personName
+            ? "Building the preview…"
+            : library
+              ? "Loading library…"
+              : "Loading album…"}
         </p>
       ) : query.isError ? (
         <section className="py-10">
           <h1 className="font-heading text-3xl">
-            {noAccess ? "Album not available" : "Could not load album"}
+            {library
+              ? "Could not load library"
+              : noAccess
+                ? "Album not available"
+                : "Could not load album"}
           </h1>
           <p className="mt-3 text-muted">
-            {noAccess
+            {noAccess && !library
               ? personName
                 ? `${personName} has no access to this album.`
                 : "This album is not available to you."
@@ -83,21 +98,36 @@ export function ViewerGallery({
               Try again
             </Button>
           )}
-          {noAccess && !personName && (
+          {noAccess && !personName && context.albumID !== undefined && (
             <RequestAccess albumID={context.albumID} />
           )}
         </section>
       ) : (
         <>
-          <AlbumHeader
-            album={query.data}
-            coverFallback={
-              personName ? `No cover is visible to ${personName}` : "No cover"
-            }
-          />
+          {"title" in query.data ? (
+            <AlbumHeader
+              album={query.data}
+              coverFallback={
+                personName ? `No cover is visible to ${personName}` : "No cover"
+              }
+            />
+          ) : (
+            <header>
+              <h1 className="font-heading text-[clamp(34px,4vw,48px)] leading-[1.2] tracking-[-1px]">
+                Library
+              </h1>
+              <p className="mt-3 text-sm text-muted">
+                You can view all of your photos and videos across all your
+                albums.
+              </p>
+            </header>
+          )}
           <nav
-            aria-label="Album media"
-            className="mt-10 flex border-b border-border min-[761px]:mt-14"
+            aria-label={library ? "Library media" : "Album media"}
+            className={cn(
+              "flex border-b border-border",
+              library ? "mt-8" : "mt-10 min-[761px]:mt-14",
+            )}
           >
             {tabs.map((item) => (
               <Link
@@ -133,13 +163,14 @@ export function ViewerGallery({
             ))}
           </nav>
           <GalleryEntries
-            album={query.data}
             context={context}
             entryID={entryID}
             entryLink={entryLink}
+            gallery={query.data}
             personName={personName}
             tab={tab}
             tabLinks={tabLinks}
+            title={title}
           />
         </>
       )}
@@ -148,15 +179,17 @@ export function ViewerGallery({
 }
 
 function GalleryEntries({
-  album,
+  gallery,
   context,
   tab,
   tabLinks,
   personName,
   entryID,
   entryLink,
+  title,
 }: {
-  album: ViewerAlbum;
+  gallery: ViewerLibrary;
+  title: string;
   context: ViewerContext;
   tab: ViewerTab;
   tabLinks: Record<ViewerTab, To>;
@@ -168,7 +201,8 @@ function GalleryEntries({
   // first paint with a heading, its count, and a block the size its media
   // should take, so the page height and the timeline are settled before any
   // entry arrives. Image bytes still load lazily as rows scroll into view.
-  const runs = useViewerEntries(context, tab, album.days);
+  const library = context.albumID === undefined;
+  const runs = useViewerEntries(context, tab, gallery.days);
   const sectionsRef = useRef<HTMLDivElement>(null);
   const failure = runs.find((run) => run.result.error)?.result.error;
   if (
@@ -179,7 +213,9 @@ function GalleryEntries({
       <p className="py-10 text-muted" role="alert">
         {personName
           ? `This album is no longer available to ${personName}.`
-          : "This album is no longer available to you."}
+          : library
+            ? "This library is no longer available to you."
+            : "This album is no longer available to you."}
       </p>
     );
   }
@@ -196,6 +232,8 @@ function GalleryEntries({
     loaded.push(...result.data);
   }
   const other = tab === "photos" ? "videos" : "photos";
+  const hasOther =
+    (other === "photos" ? gallery.photo_count : gallery.video_count) > 0;
   return (
     <>
       {pending && (
@@ -224,19 +262,27 @@ function GalleryEntries({
         ) : (
           <section className="py-14">
             <h2 className="font-heading text-[27px]/[1.2]">
-              No {tab} in this album
+              {library
+                ? `No ${tab} shared with you yet`
+                : `No ${tab} in this album`}
             </h2>
             <p className="mt-3 max-w-100 text-sm text-muted">
-              {tab === "videos"
-                ? "You can see this album's photos in the Photos tab."
-                : "You can watch this album's videos in the Videos tab."}
+              {library
+                ? `When ${tab} are shared with you, they'll appear here.`
+                : !hasOther
+                  ? "There are no photos or videos to view in this album yet."
+                  : tab === "videos"
+                    ? "You can see this album's photos in the Photos tab."
+                    : "You can watch this album's videos in the Videos tab."}
             </p>
-            <Link
-              className="mt-6 inline-flex min-h-11 items-center rounded-md border border-border px-4 text-sm hover:bg-surface"
-              to={tabLinks[other]}
-            >
-              {other === "photos" ? "View photos" : "Watch videos"}
-            </Link>
+            {hasOther && (
+              <Link
+                className="mt-6 inline-flex min-h-11 items-center rounded-md border border-border px-4 text-sm hover:bg-surface"
+                to={tabLinks[other]}
+              >
+                {other === "photos" ? "View photos" : "Watch videos"}
+              </Link>
+            )}
           </section>
         ))}
       <div className="@container" ref={sectionsRef}>
@@ -333,8 +379,8 @@ function GalleryEntries({
           loading={pending}
           personName={personName}
           retry={failure ? retry : undefined}
-          title={album.title}
-          total={tab === "photos" ? album.photo_count : album.video_count}
+          title={title}
+          total={tab === "photos" ? gallery.photo_count : gallery.video_count}
         />
       )}
     </>

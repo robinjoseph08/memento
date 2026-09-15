@@ -98,6 +98,39 @@ func viewerEntries(db bun.IDB, viewer viewerContext) *bun.SelectQuery {
 	return q
 }
 
+// galleryEntries deduplicates library media only after checking each Entry's access.
+func galleryEntries(db bun.IDB, viewer viewerContext, albumID string) *bun.SelectQuery {
+	if albumID != "" {
+		return viewerEntries(db, viewer).Where("entry.album_id = ?", albumID)
+	}
+	visible := viewerEntries(db, viewer).
+		ColumnExpr("DISTINCT ON (entry.media_item_id) entry.id, entry.media_item_id").
+		OrderExpr("entry.media_item_id, entry.id")
+	return db.NewSelect().With("visible_entries", visible).
+		TableExpr("visible_entries AS entry").
+		Join("JOIN media_items AS item ON item.id = entry.media_item_id")
+}
+
+func galleryOrder(albumID string) string {
+	if albumID == "" {
+		return "item.captured_at DESC, entry.id DESC"
+	}
+	return "item.captured_at, entry.id"
+}
+
+func galleryDays(ctx context.Context, db bun.IDB, viewer viewerContext, albumID string) ([]ViewerDay, error) {
+	days := []ViewerDay{}
+	order := "date"
+	if albumID == "" {
+		order = "date DESC"
+	}
+	err := galleryEntries(db, viewer, albumID).ColumnExpr("to_char(item.captured_at, 'YYYY-MM-DD') AS date").
+		ColumnExpr("count(*) FILTER (WHERE item.kind = 'IMAGE') AS photo_count, count(*) FILTER (WHERE item.kind = 'VIDEO') AS video_count").
+		ColumnExpr("coalesce(array_agg(CASE WHEN coalesce(item.width, 0) > 0 AND coalesce(item.height, 0) > 0 THEN trunc((item.width::float8 / item.height::float8) * 1000) / 1000 ELSE 1.5 END ORDER BY "+galleryOrder(albumID)+") FILTER (WHERE item.kind = 'IMAGE'), ARRAY[]::float8[]) AS photo_ratios").
+		GroupExpr("to_char(item.captured_at, 'YYYY-MM-DD')").OrderExpr(order).Scan(ctx, &days)
+	return days, errorstack.CaptureContext(ctx, err)
+}
+
 func (v viewerContext) thumbnailURL(entryID, version string) string {
 	return v.mediaURL(entryID, "thumbnail", version)
 }
@@ -167,11 +200,8 @@ func viewAlbum(ctx context.Context, db bun.IDB, viewer viewerContext, id string,
 	if !days {
 		return result, nil
 	}
-	err = viewerEntries(db, viewer).ColumnExpr("to_char(item.captured_at, 'YYYY-MM-DD') AS date").
-		ColumnExpr("count(*) FILTER (WHERE item.kind = 'IMAGE') AS photo_count, count(*) FILTER (WHERE item.kind = 'VIDEO') AS video_count").
-		ColumnExpr("coalesce(array_agg(CASE WHEN coalesce(item.width, 0) > 0 AND coalesce(item.height, 0) > 0 THEN trunc((item.width::float8 / item.height::float8) * 1000) / 1000 ELSE 1.5 END ORDER BY item.captured_at, entry.id) FILTER (WHERE item.kind = 'IMAGE'), ARRAY[]::float8[]) AS photo_ratios").
-		Where("entry.album_id = ?", id).GroupExpr("to_char(item.captured_at, 'YYYY-MM-DD')").OrderExpr("date").Scan(ctx, &result.Days)
-	return result, errorstack.CaptureContext(ctx, err)
+	result.Days, err = galleryDays(ctx, db, viewer, id)
+	return result, err
 }
 
 type entryCursor struct {
@@ -215,12 +245,21 @@ func parseEntryDay(field, value string) error {
 
 // ViewEntries returns separate cursor-paginated galleries without Curator metadata.
 func (m *Module) ViewEntries(ctx context.Context, actorID, previewPersonID, albumID, kind string, page EntryPageRequest) (ViewerPage, error) {
+	if _, err := uuid.Parse(albumID); err != nil {
+		return ViewerPage{Entries: []ViewerEntry{}}, errcodes.NotFound("Album")
+	}
+	return m.viewEntries(ctx, actorID, previewPersonID, albumID, kind, page)
+}
+
+// ViewLibraryEntries returns newest-first media with one accessible Entry per item.
+func (m *Module) ViewLibraryEntries(ctx context.Context, actorID, kind string, page EntryPageRequest) (ViewerPage, error) {
+	return m.viewEntries(ctx, actorID, "", "", kind, page)
+}
+
+func (m *Module) viewEntries(ctx context.Context, actorID, previewPersonID, albumID, kind string, page EntryPageRequest) (ViewerPage, error) {
 	result := ViewerPage{Entries: []ViewerEntry{}}
 	if kind != "IMAGE" && kind != "VIDEO" {
 		return result, errcodes.NotFound("Gallery")
-	}
-	if _, err := uuid.Parse(albumID); err != nil {
-		return result, errcodes.NotFound("Album")
 	}
 	var cursor entryCursor
 	if page.Cursor != "" {
@@ -245,12 +284,14 @@ func (m *Module) ViewEntries(ctx context.Context, actorID, previewPersonID, albu
 		if err != nil {
 			return err
 		}
-		exists, err := viewerEntries(tx, viewer).Where("entry.album_id = ?", albumID).Exists(ctx)
-		if err != nil {
-			return errorstack.CaptureContext(ctx, err)
-		}
-		if !exists {
-			return errcodes.NotFound("Album")
+		if albumID != "" {
+			exists, err := viewerEntries(tx, viewer).Where("entry.album_id = ?", albumID).Exists(ctx)
+			if err != nil {
+				return errorstack.CaptureContext(ctx, err)
+			}
+			if !exists {
+				return errcodes.NotFound("Album")
+			}
 		}
 		type galleryRow struct {
 			ID            string
@@ -266,12 +307,16 @@ func (m *Module) ViewEntries(ctx context.Context, actorID, previewPersonID, albu
 			Chapters      []models.Chapter `bun:"chapters,type:jsonb"`
 		}
 		rows := []galleryRow{}
-		query := viewerEntries(tx, viewer).ColumnExpr("entry.id, item.kind, item.filename, item.video_title, item.captured_at, NOT item.offline AND NOT item.trashed AS available, item.content_version AS version, coalesce(item.width,0) AS width, coalesce(item.height,0) AS height").
+		query := galleryEntries(tx, viewer, albumID).ColumnExpr("entry.id, item.kind, item.filename, item.video_title, item.captured_at, NOT item.offline AND NOT item.trashed AS available, item.content_version AS version, coalesce(item.width,0) AS width, coalesce(item.height,0) AS height").
 			ColumnExpr("coalesce(chapter_result.status, '') AS chapter_status, coalesce(chapter_result.chapters, '[]'::jsonb) AS chapters").
 			Join("LEFT JOIN media_chapter_results AS chapter_result ON chapter_result.media_item_id = item.id").
-			Where("entry.album_id = ? AND item.kind = ?", albumID, kind).OrderExpr("item.captured_at, entry.id").Limit(entryPageSize + 1)
+			Where("item.kind = ?", kind).OrderExpr(galleryOrder(albumID)).Limit(entryPageSize + 1)
 		if page.Cursor != "" {
-			query = query.Where("(item.captured_at, entry.id) > (?::timestamp, ?::uuid)", cursor.CapturedAt, cursor.ID)
+			comparison := ">"
+			if albumID == "" {
+				comparison = "<"
+			}
+			query = query.Where("(item.captured_at, entry.id) "+comparison+" (?::timestamp, ?::uuid)", cursor.CapturedAt, cursor.ID)
 		}
 		if page.From != "" {
 			query = query.Where("item.captured_at >= ?::timestamp", page.From)
@@ -333,6 +378,27 @@ func (m *Module) AuthorizeViewerEntry(ctx context.Context, actorID, previewPerso
 		return errcodes.NotFound("Thumbnail")
 	}
 	return nil
+}
+
+// ViewLibrary summarizes accessible media across Albums in newest-first order.
+func (m *Module) ViewLibrary(ctx context.Context, actorID string) (ViewerLibrary, error) {
+	result := ViewerLibrary{Days: []ViewerDay{}}
+	err := m.db.RunInTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true}, func(ctx context.Context, tx bun.Tx) error {
+		viewer, err := resolveViewer(ctx, tx, actorID, "")
+		if err != nil {
+			return err
+		}
+		result.Days, err = galleryDays(ctx, tx, viewer, "")
+		if err != nil {
+			return err
+		}
+		for _, day := range result.Days {
+			result.PhotoCount += day.PhotoCount
+			result.VideoCount += day.VideoCount
+		}
+		return nil
+	})
+	return result, transactionError(ctx, err)
 }
 
 func (m *Module) ViewAlbums(ctx context.Context, actorID string) ([]ViewerAlbum, error) {

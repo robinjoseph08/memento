@@ -363,7 +363,7 @@ it("opens a routed lightbox from the grid, moves with keys and the filmstrip, an
   await user.keyboard("{ArrowRight}");
   expect(window.location.pathname).toBe("/albums/lake/photos/photo-3");
   const filmstrip = screen.getByRole("navigation", {
-    name: "Photos in album",
+    name: "Photos filmstrip",
   });
   expect(
     within(filmstrip).getByRole("button", { name: "Go to photo 3" }),
@@ -389,6 +389,63 @@ it("opens a routed lightbox from the grid, moves with keys and the filmstrip, an
       screen.getByRole("link", { name: "Open photo Cabin" }),
     ).toHaveFocus(),
   );
+});
+
+it("resets photo zoom when navigating or reopening the lightbox", async () => {
+  mockViewer((path) => {
+    if (path === "/api/albums/lake") return Response.json(album);
+    if (path === "/api/albums/lake/photos")
+      return Response.json({ entries: [photo, cabin], next_cursor: "" });
+    throw new Error(`Unexpected request: ${path}`);
+  });
+  const user = userEvent.setup();
+  window.history.replaceState(null, "", "/albums/lake/photos/photo-1");
+  render(<App />);
+  const dialog = await screen.findByRole("dialog", { name: "Photo 1 of 2" });
+  const image = within(dialog).getByRole("img", { name: "Lake" });
+  Object.defineProperties(image, {
+    naturalWidth: { value: 1200 },
+    naturalHeight: { value: 800 },
+  });
+  fireEvent.load(image);
+  const actions = within(dialog).getByRole("group", { name: "Photo actions" });
+  expect(
+    within(actions).getByRole("link", { name: "Download photo" }),
+  ).toBeVisible();
+  await user.click(within(actions).getByRole("button", { name: "Zoom in" }));
+  expect(
+    within(actions).getByRole("button", { name: "Reset zoom" }),
+  ).toBeEnabled();
+  expect(
+    within(dialog).getByRole("group", { name: "Photo zoom" }),
+  ).toHaveFocus();
+  await user.keyboard("{ArrowRight}");
+  expect(
+    await screen.findByRole("dialog", { name: "Photo 2 of 2" }),
+  ).toBeVisible();
+  expect(
+    screen.queryByRole("button", { name: "Reset zoom" }),
+  ).not.toBeInTheDocument();
+  const nextImage = within(dialog).getByRole("img", { name: "Cabin" });
+  Object.defineProperties(nextImage, {
+    naturalWidth: { value: 1200 },
+    naturalHeight: { value: 800 },
+  });
+  fireEvent.load(nextImage);
+  await user.click(within(actions).getByRole("button", { name: "Zoom in" }));
+  await user.keyboard("{ArrowLeft}");
+  expect(
+    await screen.findByRole("dialog", { name: "Photo 1 of 2" }),
+  ).toBeVisible();
+  expect(screen.getByRole("button", { name: "Zoom in" })).toBeVisible();
+  await user.keyboard("{Escape}");
+  await user.click(
+    await screen.findByRole("link", { name: "Open photo Lake" }),
+  );
+  expect(
+    await screen.findByRole("dialog", { name: "Photo 1 of 2" }),
+  ).toBeVisible();
+  expect(screen.getByRole("button", { name: "Zoom in" })).toBeVisible();
 });
 
 it("reloads a stable photo link beyond the first page once its page arrives", async () => {
@@ -441,7 +498,7 @@ it("explains a photo link that is not available without opening another photo", 
     within(dialog).queryByRole("link", { name: "Download photo" }),
   ).not.toBeInTheDocument();
   await user.click(
-    within(dialog).getByRole("button", { name: "Back to album" }),
+    within(dialog).getByRole("button", { name: "Back to photos" }),
   );
   expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   expect(window.location.pathname).toBe("/albums/lake/photos");
@@ -629,7 +686,7 @@ it("opens a video in the routed lightbox, seeks by chapter, and shows no picker 
     within(dialog).getByRole("link", { name: "Download video" }),
   ).toHaveAttribute("href", party.download_url);
   const filmstrip = within(dialog).getByRole("navigation", {
-    name: "Videos in album",
+    name: "Videos filmstrip",
   });
   expect(
     within(filmstrip).getByRole("button", { name: "Go to video 1" }),

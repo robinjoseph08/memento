@@ -24,7 +24,12 @@ import {
   SignInPage,
   ViewerLayout,
 } from "./layouts";
-import { ViewerAlbumPage, ViewerAlbumRedirect } from "./viewer";
+import {
+  ViewerAlbumPage,
+  ViewerAlbumRedirect,
+  ViewerLibraryPage,
+  ViewerLibraryRedirect,
+} from "./viewer";
 
 export const routes = [
   {
@@ -74,6 +79,15 @@ export const routes = [
             element: <ViewerLayout />,
             children: [
               { path: "/albums", element: <ViewerAlbumList /> },
+              { path: "/library", element: <ViewerLibraryRedirect /> },
+              {
+                path: "/library/photos/:entryID?",
+                element: <ViewerLibraryPage tab="photos" />,
+              },
+              {
+                path: "/library/videos/:entryID?",
+                element: <ViewerLibraryPage tab="videos" />,
+              },
               { path: "/notifications", element: <NotificationsPage /> },
               { path: "/albums/:id", element: <ViewerAlbumRedirect /> },
               {

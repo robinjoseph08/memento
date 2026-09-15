@@ -5,9 +5,9 @@ import { useLocation, useNavigate, type To } from "react-router-dom";
 
 import { cn } from "../../lib/utils";
 import type { ViewerEntry } from "../../types/generated/publishing";
-import { AlbumImage } from "../albums/album-image";
 import { Button } from "../ui/button";
 import { aspectRatio, captureDate } from "./labels";
+import { PhotoStage } from "./photo-stage";
 import { ChapterSelect, VideoStage } from "./video-player";
 
 // The routed full-screen viewer for one gallery: photos or videos. It composes
@@ -53,6 +53,7 @@ export function Lightbox({
   const entry = index >= 0 ? entries[index] : undefined;
   const count = Math.max(total, entries.length);
   const stripRef = useRef<HTMLElement>(null);
+  const [photoActions, setPhotoActions] = useState<HTMLDivElement | null>(null);
   const swipeRef = useRef<{ x: number; y: number } | null>(null);
   // The player lives in the stage while the chapter picker sits beneath it.
   // Only the playing chapter's index is kept, and only when it changes, so
@@ -224,28 +225,35 @@ export function Lightbox({
               </p>
             </div>
             {personName && (
-              <p className="order-last basis-full text-xs text-muted min-[601px]:order-none min-[601px]:basis-auto min-[601px]:pt-1.5">
+              <p className="order-last basis-full text-xs text-muted min-[601px]:order-none min-[601px]:basis-auto min-[601px]:self-center">
                 Previewing as {personName}. Read only.
               </p>
             )}
-            {entry?.download_url ? (
-              <Button
-                aria-label={`Download ${lower}`}
-                asChild
-                className="size-11 rounded-full p-0"
-                variant="ghost"
-              >
-                <a download href={entry.download_url}>
-                  <Download
-                    aria-hidden="true"
-                    className="size-5"
-                    strokeWidth={1.5}
-                  />
-                </a>
-              </Button>
-            ) : (
-              <span aria-hidden="true" className="size-11" />
-            )}
+            <div
+              aria-label={`${noun} actions`}
+              className="flex shrink-0 items-center gap-1"
+              role="group"
+            >
+              <div className="contents" ref={setPhotoActions} />
+              {entry?.download_url ? (
+                <Button
+                  aria-label={`Download ${lower}`}
+                  asChild
+                  className="size-11 rounded-full p-0"
+                  variant="ghost"
+                >
+                  <a download href={entry.download_url}>
+                    <Download
+                      aria-hidden="true"
+                      className="size-5"
+                      strokeWidth={1.5}
+                    />
+                  </a>
+                </Button>
+              ) : (
+                <span aria-hidden="true" className="size-11" />
+              )}
+            </div>
           </header>
           {entry ? (
             <>
@@ -257,7 +265,7 @@ export function Lightbox({
                 }}
                 onPointerDown={(event) => {
                   swipeRef.current =
-                    event.pointerType === "touch"
+                    kind === "video" && event.pointerType === "touch"
                       ? { x: event.clientX, y: event.clientY }
                       : null;
                 }}
@@ -296,10 +304,11 @@ export function Lightbox({
                       videoRef={videoRef}
                     />
                   ) : (
-                    <AlbumImage
+                    <PhotoStage
+                      actionsTarget={photoActions}
                       alt={entry.title || "Photo"}
-                      className="h-full w-auto max-w-full bg-transparent object-contain"
-                      fallback="Media unavailable"
+                      key={entry.available ? entry.preview_url : ""}
+                      onStep={step}
                       src={entry.available ? entry.preview_url : ""}
                     />
                   )}
@@ -338,7 +347,7 @@ export function Lightbox({
                 </p>
               )}
               <nav
-                aria-label={`${plural} in album`}
+                aria-label={`${plural} filmstrip`}
                 className="flex justify-center-safe gap-0.5 overflow-x-auto px-3 pb-4"
                 ref={stripRef}
               >
@@ -393,7 +402,7 @@ export function Lightbox({
                   </Button>
                 )}
                 <Button onClick={close} variant="outline">
-                  Back to album
+                  Back to {lower}s
                 </Button>
               </div>
             </section>
