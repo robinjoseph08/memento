@@ -1,4 +1,4 @@
-import { FolderOpen, Import, SearchX } from "lucide-react";
+import { FolderOpen, SearchX } from "lucide-react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 
 import { useImportAlbum, useSources } from "../../hooks/queries/albums";
@@ -140,11 +140,6 @@ export function ImportPage() {
                             }}
                           >
                             <Button disabled={importDisabled} type="submit">
-                              <Import
-                                aria-hidden="true"
-                                className="size-4"
-                                strokeWidth={1.5}
-                              />
                               {importing.isPending &&
                               importing.variables?.source_id === source.id
                                 ? "Importing…"
