@@ -14,7 +14,10 @@ import (
 	"golang.org/x/oauth2"
 )
 
-const googleLoginLifetime = 10 * time.Minute
+const (
+	googleLoginLifetime        = 10 * time.Minute
+	maxGoogleLoginTransactions = 4096
+)
 
 type googleTransaction struct {
 	state, nonce, verifier string
@@ -41,24 +44,37 @@ func (h *googleHandlers) start(c *echo.Context) error {
 		return h.failure(c, "provider_unavailable")
 	}
 	token := oauth2.GenerateVerifier()
+	previous := ""
+	if cookie, err := c.Cookie(h.cookieName); err == nil {
+		previous = cookie.Value
+	}
 	h.mu.Lock()
-	for key, pending := range h.transactions {
-		if !pending.expires.After(time.Now()) {
-			delete(h.transactions, key)
-		}
-	}
-	if previous, err := c.Cookie(h.cookieName); err == nil {
-		delete(h.transactions, previous.Value)
-	}
-	// Bound unauthenticated memory use without a cleanup goroutine or durable login state.
-	if len(h.transactions) >= 4096 {
-		h.mu.Unlock()
-		return h.failure(c, "provider_unavailable")
-	}
-	h.transactions[token] = transaction
+	storeGoogleTransaction(h.transactions, token, transaction, previous, time.Now())
 	h.mu.Unlock()
 	h.cookie(c, token, int(googleLoginLifetime.Seconds()), transaction.expires)
 	return errorstack.CaptureContext(c.Request().Context(), c.Redirect(http.StatusFound, authorization))
+}
+
+func storeGoogleTransaction(transactions map[string]googleTransaction, token string, transaction googleTransaction, previous string, now time.Time) {
+	oldestKey := ""
+	var oldestExpiry time.Time
+	for key, pending := range transactions {
+		if !pending.expires.After(now) {
+			delete(transactions, key)
+			continue
+		}
+		if oldestKey == "" || pending.expires.Before(oldestExpiry) {
+			oldestKey = key
+			oldestExpiry = pending.expires
+		}
+	}
+	delete(transactions, previous)
+	// Keep unauthenticated memory bounded without letting a full transaction
+	// store reject every new sign-in until the ten-minute expiry window passes.
+	if len(transactions) >= maxGoogleLoginTransactions {
+		delete(transactions, oldestKey)
+	}
+	transactions[token] = transaction
 }
 
 func (h *googleHandlers) callback(c *echo.Context) error {

@@ -103,7 +103,7 @@ func newServer(cfg *config.Config, frontend http.Handler, options ...dependencie
 			return path == "/api/media" || strings.HasPrefix(path, "/api/media/")
 		},
 	}))
-	e.Use(browserAPI(cfg.PublicURL))
+	e.Use(browserAPI(cfg.PublicURL, cfg.AppEnv == "development", cfg.Hostname))
 
 	health := func(c *echo.Context) error {
 		healthy := true
@@ -182,10 +182,9 @@ func capturePanicErrorStack() echo.MiddlewareFunc {
 	}
 }
 
-// browserAPI enforces same-origin JSON mutations. A mutation must come from
-// the configured URL, or from the address the browser used to reach this
-// server, which lets a development machine answer by hostname over plain HTTP.
-func browserAPI(publicURL string) echo.MiddlewareFunc {
+// browserAPI enforces same-origin JSON mutations. Development also accepts
+// loopback and this machine's hostname so Vite can be reached over the LAN.
+func browserAPI(publicURL string, development bool, hostname string) echo.MiddlewareFunc {
 	origin := strings.TrimRight(publicURL, "/")
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c *echo.Context) error {
@@ -199,7 +198,7 @@ func browserAPI(publicURL string) echo.MiddlewareFunc {
 			case http.MethodGet, http.MethodHead, http.MethodOptions:
 				return next(c)
 			}
-			if !sameOrigin(req, origin) {
+			if !sameOrigin(req, origin, development, hostname) {
 				return &errcodes.Error{HTTPCode: 403, Code: "invalid_origin", Message: "This request must come from the configured Memento address."}
 			}
 			contentType, _, err := mime.ParseMediaType(req.Header.Get("Content-Type"))
@@ -212,11 +211,25 @@ func browserAPI(publicURL string) echo.MiddlewareFunc {
 	}
 }
 
-func sameOrigin(req *http.Request, publicOrigin string) bool {
+func sameOrigin(req *http.Request, publicOrigin string, development bool, hostname string) bool {
 	origin := req.Header.Get("Origin")
 	if origin == publicOrigin {
 		return true
 	}
+	if !development {
+		return false
+	}
 	parsed, err := url.Parse(origin)
-	return err == nil && parsed.Host != "" && parsed.Host == req.Host
+	if err != nil || parsed.Scheme != "http" || parsed.Host == "" || parsed.User != nil || parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" || !strings.EqualFold(parsed.Host, req.Host) {
+		return false
+	}
+	originHost := strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
+	machineHost := strings.TrimSuffix(strings.ToLower(hostname), ".")
+	if originHost == "localhost" {
+		return true
+	}
+	if ip := net.ParseIP(originHost); ip != nil {
+		return ip.IsLoopback()
+	}
+	return machineHost != "" && (originHost == machineHost || originHost == machineHost+".local")
 }

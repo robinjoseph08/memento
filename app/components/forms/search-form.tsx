@@ -1,5 +1,5 @@
 import { X } from "lucide-react";
-import { useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 
 import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
@@ -19,11 +19,11 @@ export function SearchForm({
   const id = useId();
   const inputRef = useRef<HTMLInputElement>(null);
   const [draft, setDraft] = useState(value);
-  const [previousValue, setPreviousValue] = useState(value);
-  if (value !== previousValue) {
-    setPreviousValue(value);
+  useEffect(() => {
+    // URL history changes arrive after render and must replace any stale draft.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setDraft(value);
-  }
+  }, [value]);
   return (
     <form
       aria-label={label}
