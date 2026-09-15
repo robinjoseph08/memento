@@ -9,7 +9,6 @@ import {
 } from "../../hooks/queries/people";
 import { useUnsavedChanges } from "../../hooks/use-unsaved-changes";
 import { fieldErrors } from "../../lib/http";
-import { initials } from "../../lib/initials";
 import { ConfirmDialog } from "../forms/confirm-dialog";
 import { SearchForm } from "../forms/search-form";
 import { BackLink } from "../shell/back-link";
@@ -138,9 +137,10 @@ export function PeoplePage() {
                     {person.avatar_url && (
                       <AvatarImage alt="" src={person.avatar_url} />
                     )}
-                    <AvatarFallback className="text-xs">
-                      {initials(person.display_name)}
-                    </AvatarFallback>
+                    <AvatarFallback
+                      className="text-xs"
+                      name={person.display_name}
+                    />
                   </Avatar>
                   <span className="min-w-0">
                     <span className="block wrap-anywhere">

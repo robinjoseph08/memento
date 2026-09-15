@@ -15,7 +15,6 @@ import {
 } from "../../hooks/queries/people";
 import { useUnsavedChanges } from "../../hooks/use-unsaved-changes";
 import { errorMessage, fieldErrors } from "../../lib/http";
-import { initials } from "../../lib/initials";
 import { formatDate } from "../../lib/utils";
 import type {
   PersonDetail,
@@ -306,9 +305,7 @@ function AvatarEditor({ detail }: { detail: PersonDetail }) {
       <div className="mt-5 flex items-center gap-4">
         <Avatar className="size-16 border border-border">
           {person.avatar_url && <AvatarImage alt="" src={person.avatar_url} />}
-          <AvatarFallback className="text-lg">
-            {initials(person.display_name)}
-          </AvatarFallback>
+          <AvatarFallback className="text-lg" name={person.display_name} />
         </Avatar>
         <p className="text-xs leading-relaxed text-muted">
           Choose one linked Immich face. If its thumbnail is unavailable,
@@ -355,9 +352,7 @@ function AvatarEditor({ detail }: { detail: PersonDetail }) {
                     <span className="inline-block rounded-full peer-checked:outline-2 peer-checked:outline-offset-2 peer-checked:outline-primary peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-ring">
                       <Avatar className="size-14">
                         <AvatarImage alt="" src={face.thumbnail_url} />
-                        <AvatarFallback>
-                          {initials(person.display_name)}
-                        </AvatarFallback>
+                        <AvatarFallback name={person.display_name} />
                       </Avatar>
                     </span>
                     <span className="mt-2 block max-w-20 truncate">

@@ -13,7 +13,6 @@ import { useSignOut } from "../../hooks/queries/identity";
 import type { useTheme } from "../../hooks/use-theme";
 import { UnsavedChangesContext } from "../../lib/forms";
 import { errorMessage } from "../../lib/http";
-import { initials } from "../../lib/initials";
 import type { Person } from "../../types/generated/identity";
 import { ConfirmDialog } from "../forms/confirm-dialog";
 import { Avatar, AvatarFallback, AvatarImage } from "../ui/avatar";
@@ -61,7 +60,7 @@ export function AccountMenu({
               {person.avatar_url && (
                 <AvatarImage alt="" src={person.avatar_url} />
               )}
-              <AvatarFallback>{initials(person.display_name)}</AvatarFallback>
+              <AvatarFallback name={person.display_name} />
             </Avatar>
           </Button>
         </DropdownMenuTrigger>

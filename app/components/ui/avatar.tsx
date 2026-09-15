@@ -1,6 +1,7 @@
+import { avatarHue, initials } from "@/lib/initials";
 import { cn } from "@/lib/utils";
 import * as AvatarPrimitive from "@radix-ui/react-avatar";
-import type { ComponentProps } from "react";
+import type { ComponentProps, CSSProperties } from "react";
 
 export function Avatar({
   className,
@@ -31,18 +32,33 @@ export function AvatarImage({
   );
 }
 
+// With a name, the fallback shows the person's initials on a tint that is
+// theirs alone: the hue comes from the name, the lightness from the theme.
 export function AvatarFallback({
   className,
+  name,
+  style,
+  children,
   ...props
-}: ComponentProps<typeof AvatarPrimitive.Fallback>) {
+}: ComponentProps<typeof AvatarPrimitive.Fallback> & { name?: string }) {
+  const named = name !== undefined;
   return (
     <AvatarPrimitive.Fallback
       data-slot="avatar-fallback"
       className={cn(
-        "flex size-full items-center justify-center rounded-full bg-surface text-sm leading-none text-foreground",
+        "flex size-full items-center justify-center rounded-full bg-surface text-sm leading-none font-medium text-foreground",
+        named &&
+          "bg-[oklch(var(--avatar-lightness)_var(--avatar-chroma)_var(--avatar-hue))] text-[oklch(var(--avatar-text-lightness)_0.07_var(--avatar-hue))]",
         className,
       )}
+      style={
+        named
+          ? ({ ...style, "--avatar-hue": avatarHue(name) } as CSSProperties)
+          : style
+      }
       {...props}
-    />
+    >
+      {named ? initials(name) : children}
+    </AvatarPrimitive.Fallback>
   );
 }

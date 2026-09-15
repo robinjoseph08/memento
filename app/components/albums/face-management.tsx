@@ -9,7 +9,6 @@ import {
 } from "../../hooks/queries/people";
 import { useUnsavedChanges } from "../../hooks/use-unsaved-changes";
 import { fieldErrors } from "../../lib/http";
-import { initials } from "../../lib/initials";
 import type { Person } from "../../types/generated/identity";
 import type { FaceRecord } from "../../types/generated/publishing";
 import { Field, FieldError, Form } from "../people/form-fields";
@@ -143,7 +142,7 @@ function FaceRow({
       <div className="flex items-center gap-3">
         <Avatar className="size-10">
           <AvatarImage alt="" src={face.thumbnail_url} />
-          <AvatarFallback className="text-xs">{initials(name)}</AvatarFallback>
+          <AvatarFallback className="text-xs" name={name} />
         </Avatar>
         <p className="min-w-0 flex-1 text-sm">
           <strong className="block truncate font-medium">{name}</strong>
@@ -247,9 +246,7 @@ function LinkFaceForm({
     leading: (
       <Avatar className="size-6">
         {person.avatar_url && <AvatarImage alt="" src={person.avatar_url} />}
-        <AvatarFallback className="text-[10px]">
-          {initials(person.display_name)}
-        </AvatarFallback>
+        <AvatarFallback className="text-[10px]" name={person.display_name} />
       </Avatar>
     ),
   }));
