@@ -897,3 +897,80 @@ it("shows a phone handle only while scrolling and scrubs from where it was grabb
   fireEvent.pointerUp(timeline, { pointerId: 1, pointerType: "touch" });
   expect(within(timeline).queryByText("Dec 2024")).not.toBeInTheDocument();
 });
+
+// A short album lays out like the long one, with its two days at 500px and
+// 2000px, so the same rail maths applies while the marks are days.
+function mockShortTimelineLayout(days: string[]) {
+  mockViewer((path) => {
+    if (path === "/api/albums/lake")
+      return Response.json({
+        ...album,
+        photo_count: days.length,
+        start_date: days[0],
+        end_date: days.at(-1),
+        days: days.map((date) => ({
+          date,
+          photo_count: 1,
+          video_count: 0,
+          photo_ratios: [1.5],
+        })),
+      });
+    if (path === "/api/albums/lake/photos")
+      return Response.json({
+        entries: days.map((date, index) => ({
+          ...photo,
+          id: `photo-${index}`,
+          title: `Day ${index}`,
+          captured_at: `${date}T15:00:00Z`,
+        })),
+        next_cursor: "",
+      });
+    throw new Error(`Unexpected request: ${path}`);
+  });
+  vi.stubGlobal("scrollTo", vi.fn());
+  vi.spyOn(document.documentElement, "scrollHeight", "get").mockReturnValue(
+    4000,
+  );
+  vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(
+    function (this: Element) {
+      const date = this.getAttribute("data-date");
+      const top = date === days[0] ? 500 : date === days.at(-1) ? 2000 : 64;
+      const height = this.getAttribute("role") === "slider" ? 800 : 0;
+      return {
+        x: 0,
+        y: top,
+        top,
+        left: 0,
+        right: 0,
+        bottom: top + height,
+        width: 0,
+        height,
+        toJSON: () => ({}),
+      };
+    },
+  );
+  window.history.replaceState(null, "", "/albums/lake");
+}
+
+it("scrubs an album of a few days by day", async () => {
+  mockShortTimelineLayout(["2026-06-01", "2026-06-03"]);
+  render(<App />);
+  const timeline = await screen.findByRole("slider", { name: "Timeline" });
+  await waitFor(() =>
+    expect(timeline).toHaveAttribute("aria-valuetext", "Jun 1, 2026"),
+  );
+  expect(within(timeline).getByText("Jun 1")).toBeInTheDocument();
+  expect(within(timeline).getByText("Jun 3")).toBeInTheDocument();
+  fireEvent.pointerMove(timeline, { clientY: 64 + 800 * 0.75 });
+  expect(within(timeline).getByText("Jun 3, 2026")).toBeInTheDocument();
+});
+
+it("keeps the timeline out of the way for a single day", async () => {
+  mockShortTimelineLayout(["2026-06-01"]);
+  render(<App />);
+  await screen.findByRole("link", { name: "Open photo Day 0" });
+  const timeline = screen.getByRole("slider", { name: "Timeline" });
+  await waitFor(() => expect(timeline).toHaveClass("invisible"));
+  expect(timeline).toHaveAttribute("tabindex", "-1");
+  expect(document.documentElement.style.scrollbarWidth).not.toBe("none");
+});

@@ -3,28 +3,47 @@ import { useEffect, useRef, useState, type RefObject } from "react";
 
 import { useMediaQuery } from "../../hooks/use-media-query";
 import { cn } from "../../lib/utils";
-import { monthLabel } from "./labels";
+import { dayLabel, monthLabel, shortDayLabel } from "./labels";
 
-type Month = { key: string; top: number };
+// A mark is one unit of the timeline: a YYYY-MM month or a YYYY-MM-DD day,
+// with the document position where it begins.
+type Mark = { key: string; top: number };
 
-// lastMonth is the latest month starting at or above a document position.
-function lastMonth(months: Month[], top: number) {
-  for (let index = months.length - 1; index >= 0; index -= 1)
-    if (months[index].top <= top) return months[index];
+// lastMark is the latest mark starting at or above a document position.
+function lastMark(marks: Mark[], top: number) {
+  for (let index = marks.length - 1; index >= 0; index -= 1)
+    if (marks[index].top <= top) return marks[index];
   return undefined;
 }
 
-const emptyLayout = { months: [] as Month[], height: 0, viewport: 0, rail: 0 };
+// An album that spans less than about three months is scrubbed by day; the
+// months would all be the same one, or nearly so, and say nothing.
+const dayUnitLimit = 92 * 24 * 60 * 60 * 1000;
+
+function unitFor(days: string[]) {
+  if (days.length < 2) return "day";
+  const span = Date.parse(days.at(-1)!) - Date.parse(days[0]);
+  return span < dayUnitLimit ? "day" : "month";
+}
+
+const emptyLayout = {
+  unit: "month" as "month" | "day",
+  marks: [] as Mark[],
+  height: 0,
+  viewport: 0,
+  rail: 0,
+};
 
 // The timeline stands in for the scrollbar beside a long gallery, like Immich.
 // On wide screens it maps the whole document onto a rail at the right edge: a
-// dot for each month with a capture day, a year label where each year begins,
-// a marker at the viewport's position, and the month under the pointer.
-// Clicking or dragging scrolls there and arrow keys step between months. On
-// phones there is no rail; a grab handle appears at the scroll position while
-// the page is scrolling and dragging it scrubs with the month beside it. Month
-// positions come from the day sections inside `sectionsRef`, so nothing beyond
-// the rendered gallery is needed.
+// dot for each mark, a label where each year (or, by day, each day that fits)
+// begins, a marker at the viewport's position, and the mark under the
+// pointer. Clicking or dragging scrolls there and arrow keys step between
+// marks. On phones there is no rail; a grab handle appears at the scroll
+// position while the page is scrolling and dragging it scrubs with the mark
+// beside it. Positions come from the day sections inside `sectionsRef`, so
+// nothing beyond the rendered gallery is needed. A single day has nothing to
+// scrub between, so the timeline stays out of the way.
 export function Timeline({
   sectionsRef,
 }: {
@@ -42,8 +61,9 @@ export function Timeline({
   const [scrolling, setScrolling] = useState(false);
   const [pointer, setPointer] = useState<number | null>(null);
   const [dragging, setDragging] = useState(false);
-  const { months, height } = layout;
-  const visible = months.length > 0 && height > layout.viewport + 1;
+  const { unit, marks, height } = layout;
+  const visible = marks.length > 1 && height > layout.viewport + 1;
+  const markLabel = unit === "day" ? dayLabel : monthLabel;
   // The phone handle behaves like a scrollbar thumb and reaches the bottom of
   // the rail at the end of the page; the desktop rail spans the document so
   // its month dots sit where their sections are.
@@ -51,16 +71,23 @@ export function Timeline({
 
   useEffect(() => {
     const measure = () => {
-      const tops = new Map<string, number>();
+      const days = new Map<string, number>();
       for (const section of sectionsRef.current?.querySelectorAll<HTMLElement>(
         "[data-date]",
       ) ?? []) {
-        const key = section.dataset.date?.slice(0, 7) ?? "";
-        if (!tops.has(key))
-          tops.set(key, section.getBoundingClientRect().top + window.scrollY);
+        const key = section.dataset.date ?? "";
+        if (!days.has(key))
+          days.set(key, section.getBoundingClientRect().top + window.scrollY);
+      }
+      const unit = unitFor([...days.keys()]);
+      const tops = new Map<string, number>();
+      for (const [day, top] of days) {
+        const key = unit === "day" ? day : day.slice(0, 7);
+        if (!tops.has(key)) tops.set(key, top);
       }
       setLayout({
-        months: [...tops].map(([key, top]) => ({ key, top })),
+        unit,
+        marks: [...tops].map(([key, top]) => ({ key, top })),
         height: document.documentElement.scrollHeight,
         viewport: window.innerHeight,
         rail: railRef.current?.getBoundingClientRect().height ?? 0,
@@ -107,7 +134,7 @@ export function Timeline({
   // Positions are fractions of the range so the rail can be any height.
   const percent = (top: number) => `${(top / range) * 100}%`;
   const pixels = (top: number) => (top / height) * layout.rail;
-  const monthAt = (top: number) => lastMonth(months, top) ?? months[0];
+  const markAt = (top: number) => lastMark(marks, top) ?? marks[0];
   const fraction = (clientY: number) => {
     const rect = railRef.current?.getBoundingClientRect();
     if (!rect?.height) return 0;
@@ -115,31 +142,34 @@ export function Timeline({
   };
   const scrollTo = (top: number) => window.scrollTo({ top });
 
-  // Dots and year labels that would overlap a placed one are skipped.
-  const dots: Month[] = [];
-  const years: Month[] = [];
-  months.forEach((month, index) => {
+  // Dots and labels that would overlap a placed one are skipped. By month the
+  // labels are the years; by day, every day that fits.
+  const dots: Mark[] = [];
+  const labels: Mark[] = [];
+  marks.forEach((mark, index) => {
     const dot = dots.at(-1);
-    if (!dot || pixels(month.top) - pixels(dot.top) >= 4) dots.push(month);
-    const year = years.at(-1);
-    const starts = month.key.slice(0, 4) !== months[index - 1]?.key.slice(0, 4);
-    if (starts && (!year || pixels(month.top) - pixels(year.top) >= 20))
-      years.push(month);
+    if (!dot || pixels(mark.top) - pixels(dot.top) >= 4) dots.push(mark);
+    const last = labels.at(-1);
+    const starts =
+      unit === "day" ||
+      mark.key.slice(0, 4) !== marks[index - 1]?.key.slice(0, 4);
+    if (starts && (!last || pixels(mark.top) - pixels(last.top) >= 20))
+      labels.push(mark);
   });
-  const current = visible ? monthAt(scrollTop) : undefined;
+  const current = visible ? markAt(scrollTop) : undefined;
   const shown = visible && (!compact || scrolling || dragging);
   const label = compact
-    ? current && monthLabel(current.key)
-    : pointer !== null && monthLabel(monthAt(pointer * range).key);
+    ? current && markLabel(current.key)
+    : pointer !== null && markLabel(markAt(pointer * range).key);
 
   return (
     <div
       aria-label="Timeline"
       aria-orientation="vertical"
-      aria-valuemax={Math.max(0, months.length - 1)}
+      aria-valuemax={Math.max(0, marks.length - 1)}
       aria-valuemin={0}
-      aria-valuenow={current ? months.indexOf(current) : 0}
-      aria-valuetext={current ? monthLabel(current.key) : undefined}
+      aria-valuenow={current ? marks.indexOf(current) : 0}
+      aria-valuetext={current ? markLabel(current.key) : undefined}
       className={cn(
         "fixed top-24 right-0 bottom-8 z-40 w-12 cursor-pointer touch-none select-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring",
         !visible && "invisible",
@@ -151,13 +181,13 @@ export function Timeline({
       onKeyDown={(event) => {
         const target =
           event.key === "ArrowDown" || event.key === "PageDown"
-            ? months.find((month) => month.top > scrollTop + 1)
+            ? marks.find((mark) => mark.top > scrollTop + 1)
             : event.key === "ArrowUp" || event.key === "PageUp"
-              ? lastMonth(months, scrollTop - 1)
+              ? lastMark(marks, scrollTop - 1)
               : event.key === "Home"
-                ? months[0]
+                ? marks[0]
                 : event.key === "End"
-                  ? months.at(-1)
+                  ? marks.at(-1)
                   : undefined;
         if (!target) return;
         event.preventDefault();
@@ -215,22 +245,22 @@ export function Timeline({
         </>
       ) : (
         <>
-          {dots.map((month) => (
+          {dots.map((mark) => (
             <span
               aria-hidden="true"
               className="absolute right-[7px] size-[3px] -translate-y-1/2 rounded-full bg-muted"
-              key={month.key}
-              style={{ top: percent(month.top) }}
+              key={mark.key}
+              style={{ top: percent(mark.top) }}
             />
           ))}
-          {years.map((month) => (
+          {labels.map((mark) => (
             <span
               aria-hidden="true"
-              className="absolute right-3.5 -translate-y-1/2 rounded-sm bg-background/80 px-1 text-[11px] leading-4 text-muted"
-              key={month.key}
-              style={{ top: percent(month.top) }}
+              className="absolute right-3.5 -translate-y-1/2 rounded-sm bg-background/80 px-1 text-[11px] leading-4 whitespace-nowrap text-muted"
+              key={mark.key}
+              style={{ top: percent(mark.top) }}
             >
-              {month.key.slice(0, 4)}
+              {unit === "day" ? shortDayLabel(mark.key) : mark.key.slice(0, 4)}
             </span>
           ))}
           {visible && (

@@ -34,6 +34,25 @@ export function monthLabel(key: string) {
   }).format(new Date(`${key}-01T12:00:00Z`));
 }
 
+// dayLabel and shortDayLabel format a YYYY-MM-DD key for the timeline when it
+// runs by day: "Jun 2, 2026" beside the pointer, "Jun 2" on the rail.
+export function dayLabel(key: string) {
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: "UTC",
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  }).format(new Date(`${key}T12:00:00Z`));
+}
+
+export function shortDayLabel(key: string) {
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: "UTC",
+    month: "short",
+    day: "numeric",
+  }).format(new Date(`${key}T12:00:00Z`));
+}
+
 export function captureRange(album: ViewerAlbum) {
   const start = captureDate(album.start_date);
   const end = captureDate(album.end_date);
