@@ -428,6 +428,11 @@ existing reads remain available when the source APIs work. The smoke command
 above defaults to v3.2.1 and also tests v3.1.0 and v3.0.3; this is not a claim
 that every patch in those minors has been certified.
 
+**Immich 2.x does not work with this release of Memento.** Testing the latest
+2.x release, v2.7.5, confirmed that the shipped adapter rejects its asset metadata.
+Imports and synchronization remain blocked on all 2.x versions. Use a supported
+3.x release instead; `--probe` is a diagnostic tool, not a compatibility workaround.
+
 Create an API key in the Immich account that owns or can access your source
 albums. Grant only `album.read`, `asset.download`, `asset.read`, `asset.view`,
 `face.read`, and `person.read`, then set `IMMICH_API_KEY` on Memento's server.
