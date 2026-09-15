@@ -16,11 +16,11 @@ export function PrintStack({
     <span className={cn("relative block", className)}>
       <span
         aria-hidden="true"
-        className="absolute inset-0 -rotate-4 rounded-sm bg-border transition-transform duration-300 group-hover:-rotate-7 group-focus-visible:-rotate-7 motion-reduce:transition-none"
+        className="absolute inset-0 -rotate-4 rounded-sm bg-muted/30 transition-transform duration-300 group-hover:-rotate-7 group-focus-visible:-rotate-7 motion-reduce:transition-none"
       />
       <span
         aria-hidden="true"
-        className="absolute inset-0 rotate-3 rounded-sm bg-accent transition-transform duration-300 group-hover:rotate-5 group-focus-visible:rotate-5 motion-reduce:transition-none"
+        className="absolute inset-0 rotate-3 rounded-sm bg-muted/50 transition-transform duration-300 group-hover:rotate-5 group-focus-visible:rotate-5 motion-reduce:transition-none"
       />
       <span className="relative block">{children}</span>
     </span>

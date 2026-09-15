@@ -144,7 +144,7 @@ test("a viewer browses photos and videos across albums, newest first without dup
       await member.setViewportSize({ width, height: 900 });
       await member.evaluate(() => window.scrollTo(0, 0));
       const libraryHeading = await member
-        .getByRole("heading", { name: "Library", exact: true })
+        .getByRole("heading", { name: "Your library", exact: true })
         .boundingBox();
       await member.goto("/albums");
       const albumHeading = await member

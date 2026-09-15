@@ -15,6 +15,9 @@ export function ViewerAlbumList() {
       <h1 className="font-heading text-[clamp(34px,4vw,48px)] leading-[1.2] tracking-[-1px]">
         Your albums
       </h1>
+      <p className="mt-3 text-sm text-muted">
+        Here are all the albums that have been shared with you.
+      </p>
       {query.isPending && (
         <p className="mt-9 text-muted" role="status">
           Loading albums…

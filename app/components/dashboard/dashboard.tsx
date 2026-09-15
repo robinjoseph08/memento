@@ -40,6 +40,7 @@ import {
   ReadFailure,
   SectionHeading,
 } from "../people/form-fields";
+import { CountBadge } from "../shell/count-badge";
 import { EmptyState } from "../shell/empty-state";
 import { PageTitle } from "../shell/page-title";
 import { Button } from "../ui/button";
@@ -155,17 +156,11 @@ function Section({
           {title}
         </SectionHeading>
         {count > 0 && (
-          <span
-            className={cn(
-              "rounded-full px-2.5 py-0.5 text-xs font-medium",
-              tone === "attention"
-                ? "bg-destructive/15 text-destructive"
-                : "bg-accent text-accent-foreground",
-            )}
-          >
-            {count}
-            <span className="sr-only">{count === 1 ? " item" : " items"}</span>
-          </span>
+          <CountBadge
+            count={count}
+            label={count === 1 ? "item" : "items"}
+            tone={tone === "attention" ? "attention" : "accent"}
+          />
         )}
       </div>
       <p className="mt-2 text-sm text-muted">{description}</p>

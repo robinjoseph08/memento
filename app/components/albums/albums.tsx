@@ -1,4 +1,4 @@
-import { CalendarDays, Images, Import, SearchX } from "lucide-react";
+import { CalendarDays, Images, SearchX } from "lucide-react";
 import { Link, useSearchParams } from "react-router-dom";
 
 import { useAlbums, useRetryAlbum } from "../../hooks/queries/albums";
@@ -40,10 +40,7 @@ export function CuratorAlbumsPage() {
       <div className="mb-9 flex flex-wrap items-center justify-between gap-5">
         <h1 className={headingClass}>Your albums</h1>
         <Button asChild>
-          <Link to="/curator/import">
-            <Import aria-hidden="true" className="size-4" strokeWidth={1.5} />
-            Import an album
-          </Link>
+          <Link to="/curator/import">Import an album</Link>
         </Button>
       </div>
       <SearchForm

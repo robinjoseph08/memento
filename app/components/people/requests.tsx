@@ -20,6 +20,7 @@ import { errorMessage, fieldErrors } from "../../lib/http";
 import { formatDate } from "../../lib/utils";
 import type { AccessRequest } from "../../types/generated/identity";
 import { ConfirmAction } from "../forms/confirm-action";
+import { CountBadge } from "../shell/count-badge";
 import { EmptyState } from "../shell/empty-state";
 import { PageTitle } from "../shell/page-title";
 import { Button } from "../ui/button";
@@ -75,7 +76,11 @@ export function RequestsPage() {
         <>
           <section aria-labelledby="pending-requests" className="mt-9">
             <SectionHeading icon={Hourglass} id="pending-requests">
-              Waiting for a decision ({pending.length})
+              Waiting for a decision
+              <CountBadge
+                count={pending.length}
+                tone={pending.length > 0 ? "attention" : "muted"}
+              />
             </SectionHeading>
             {pending.length === 0 ? (
               <EmptyState className="mt-5" icon={Inbox}>
@@ -97,7 +102,8 @@ export function RequestsPage() {
                 id="decided-requests"
                 tone="muted"
               >
-                Decided ({decided.length})
+                Decided
+                <CountBadge count={decided.length} />
               </SectionHeading>
               <ul className="mt-5 divide-y divide-border border-y border-border">
                 {decided.map((request) => (

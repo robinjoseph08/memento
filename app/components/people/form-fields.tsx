@@ -38,7 +38,7 @@ export function SectionHeading({
       <Icon
         aria-hidden="true"
         className={cn(
-          "size-6 shrink-0",
+          "relative -top-0.5 size-6 shrink-0",
           tone === "accent" && "text-accent-foreground",
           tone === "attention" && "text-destructive",
           tone === "muted" && "text-muted",

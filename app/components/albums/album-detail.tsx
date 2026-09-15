@@ -37,6 +37,7 @@ import { AlbumCover } from "./album-cover";
 import { AlbumImage } from "./album-image";
 import { DangerZone } from "./album-lifecycle";
 import { Audience } from "./audience";
+import { CoverWash } from "./cover-wash";
 import { ExcludedPane } from "./exclusions";
 import { ImportProgress } from "./import-progress";
 import { MediaCounts } from "./media-counts";
@@ -131,7 +132,8 @@ function AlbumContent({ album }: { album: AlbumDetail }) {
   const complete = album.status === "complete";
   return (
     <>
-      <header className="flex flex-wrap items-center gap-4 border-b border-border px-5 py-4 min-[761px]:px-8">
+      <header className="relative isolate flex flex-wrap items-center gap-4 overflow-hidden border-b border-border px-5 py-4 min-[761px]:px-8">
+        <CoverWash src={album.cover_url} />
         <div className="min-w-0 flex-1">
           <BackLink className="mb-1 min-h-7 text-xs" to="/curator/albums">
             All albums

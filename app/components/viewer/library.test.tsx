@@ -227,7 +227,9 @@ it("offers Library after Albums in mobile navigation and closes the menu on sele
       .map((link) => link.textContent),
   ).toEqual(["Albums", "Library"]);
   await user.click(within(navigation).getByRole("link", { name: "Library" }));
-  expect(await screen.findByRole("heading", { name: "Library" })).toBeVisible();
+  expect(
+    await screen.findByRole("heading", { name: "Your library" }),
+  ).toBeVisible();
   expect(
     screen.queryByRole("navigation", { name: "Mobile navigation" }),
   ).not.toBeInTheDocument();

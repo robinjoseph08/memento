@@ -18,6 +18,7 @@ import type {
 } from "../../types/generated/publishing";
 import { AlbumImage } from "../albums/album-image";
 import { countLabel } from "../albums/moment-labels";
+import { CountBadge } from "../shell/count-badge";
 import { PageTitle } from "../shell/page-title";
 import { Button } from "../ui/button";
 import { AlbumHeader } from "./album-header";
@@ -114,7 +115,7 @@ export function ViewerGallery({
           ) : (
             <header>
               <h1 className="font-heading text-[clamp(34px,4vw,48px)] leading-[1.2] tracking-[-1px]">
-                Library
+                Your library
               </h1>
               <p className="mt-3 text-sm text-muted">
                 You can view all of your photos and videos across all your
@@ -147,18 +148,14 @@ export function ViewerGallery({
                   strokeWidth={1.5}
                 />
                 {item.label}{" "}
-                <span
-                  className={cn(
-                    "rounded-sm px-1.5 text-xs",
-                    tab === item.key
-                      ? "bg-primary/15 text-accent-foreground"
-                      : "bg-surface",
-                  )}
-                >
-                  {item.key === "photos"
-                    ? query.data.photo_count
-                    : query.data.video_count}
-                </span>
+                <CountBadge
+                  count={
+                    item.key === "photos"
+                      ? query.data.photo_count
+                      : query.data.video_count
+                  }
+                  tone={tab === item.key ? "accent" : "muted"}
+                />
               </Link>
             ))}
           </nav>
