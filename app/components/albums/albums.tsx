@@ -4,12 +4,8 @@ import { Link, useSearchParams } from "react-router-dom";
 import { useAlbums, useRetryAlbum } from "../../hooks/queries/albums";
 import type { Album } from "../../types/generated/publishing";
 import { SearchForm } from "../forms/search-form";
-import {
-  Form,
-  headingClass,
-  ReadFailure,
-  SectionHeading,
-} from "../people/form-fields";
+import { Form, headingClass, ReadFailure } from "../people/form-fields";
+import { EmptyState } from "../shell/empty-state";
 import { PageTitle } from "../shell/page-title";
 import { Button } from "../ui/button";
 import { AlbumImage } from "./album-image";
@@ -72,19 +68,14 @@ export function CuratorAlbumsPage() {
             ))}
           </ul>
         ) : (
-          <section className="border-t border-border py-8">
-            <SectionHeading
-              icon={search.trim() ? SearchX : Images}
-              tone="muted"
-            >
-              {search.trim() ? "No matching albums" : "No albums yet"}
-            </SectionHeading>
-            <p className="mt-3 max-w-120 text-muted">
-              {search.trim()
-                ? "Try another search."
-                : "Import an album from Immich to start organizing your photos and videos."}
-            </p>
-          </section>
+          <EmptyState
+            icon={search.trim() ? SearchX : Images}
+            title={search.trim() ? "No matching albums" : "No albums yet"}
+          >
+            {search.trim()
+              ? "Try another search."
+              : "Import an album from Immich to start organizing your photos and videos."}
+          </EmptyState>
         ))}
     </>
   );

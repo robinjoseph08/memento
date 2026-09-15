@@ -7,7 +7,7 @@ import {
   useNotifications,
 } from "../../hooks/queries/notifications";
 import { errorMessage } from "../../lib/http";
-import { SectionHeading } from "../people/form-fields";
+import { EmptyState } from "../shell/empty-state";
 import { PageTitle } from "../shell/page-title";
 import { Button } from "../ui/button";
 import { NotificationRow } from "./notification-row";
@@ -71,15 +71,10 @@ export function NotificationsPage() {
           </Button>
         </section>
       ) : notifications.data?.notifications.length === 0 ? (
-        <section className="mt-9 border-t border-border py-9">
-          <SectionHeading icon={BellOff} tone="muted">
-            No updates yet
-          </SectionHeading>
-          <p className="mt-4 max-w-120 text-muted">
-            Your Curator will let you know here when there are new photos or
-            videos to see.
-          </p>
-        </section>
+        <EmptyState className="mt-9" icon={BellOff} title="No updates yet">
+          Your Curator will let you know here when there are new photos or
+          videos to see.
+        </EmptyState>
       ) : (
         notifications.data && (
           <ul className="mt-9 max-w-[640px] divide-y divide-border border-y border-border">

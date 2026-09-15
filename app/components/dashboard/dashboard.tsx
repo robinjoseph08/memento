@@ -40,6 +40,7 @@ import {
   ReadFailure,
   SectionHeading,
 } from "../people/form-fields";
+import { EmptyState } from "../shell/empty-state";
 import { PageTitle } from "../shell/page-title";
 import { Button } from "../ui/button";
 
@@ -129,7 +130,7 @@ function Section({
   pending = false,
   tone,
   empty,
-  emptyIcon: EmptyIcon,
+  emptyIcon,
   children,
 }: {
   id: string;
@@ -169,14 +170,9 @@ function Section({
       </div>
       <p className="mt-2 text-sm text-muted">{description}</p>
       {count === 0 && !pending ? (
-        <p className="mt-5 flex items-center gap-3 rounded-lg border border-dashed border-border px-5 py-6 text-sm text-muted">
-          <EmptyIcon
-            aria-hidden="true"
-            className="size-5 shrink-0"
-            strokeWidth={1.5}
-          />
+        <EmptyState className="mt-5" icon={emptyIcon}>
           {empty}
-        </p>
+        </EmptyState>
       ) : (
         <ul className="mt-5 flex flex-col gap-3">{children}</ul>
       )}

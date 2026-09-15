@@ -4,13 +4,9 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useImportAlbum, useSources } from "../../hooks/queries/albums";
 import { useConnection } from "../../hooks/queries/connection";
 import { SearchForm } from "../forms/search-form";
-import {
-  Form,
-  headingClass,
-  ReadFailure,
-  SectionHeading,
-} from "../people/form-fields";
+import { Form, headingClass, ReadFailure } from "../people/form-fields";
 import { BackLink } from "../shell/back-link";
+import { EmptyState } from "../shell/empty-state";
 import { PageTitle } from "../shell/page-title";
 import { Button } from "../ui/button";
 import { AlbumImage } from "./album-image";
@@ -71,19 +67,14 @@ export function ImportPage() {
         {sources.data && (
           <>
             {sources.data.albums.length === 0 ? (
-              <section className="border-t border-border py-9">
-                <SectionHeading
-                  icon={search ? SearchX : FolderOpen}
-                  tone="muted"
-                >
-                  {search ? "No matching albums" : "No Immich albums yet"}
-                </SectionHeading>
-                <p className="mt-4 text-muted">
-                  {search
-                    ? "Try another search."
-                    : "Create an album in Immich, then come back to import it."}
-                </p>
-              </section>
+              <EmptyState
+                icon={search ? SearchX : FolderOpen}
+                title={search ? "No matching albums" : "No Immich albums yet"}
+              >
+                {search
+                  ? "Try another search."
+                  : "Create an album in Immich, then come back to import it."}
+              </EmptyState>
             ) : (
               <div className="grid grid-cols-2 gap-x-5 gap-y-8 min-[601px]:grid-cols-3 min-[1001px]:grid-cols-4 min-[1401px]:grid-cols-6">
                 {sources.data.albums.map((source) => (

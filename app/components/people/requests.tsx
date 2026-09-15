@@ -20,6 +20,7 @@ import { errorMessage, fieldErrors } from "../../lib/http";
 import { formatDate } from "../../lib/utils";
 import type { AccessRequest } from "../../types/generated/identity";
 import { ConfirmAction } from "../forms/confirm-action";
+import { EmptyState } from "../shell/empty-state";
 import { PageTitle } from "../shell/page-title";
 import { Button } from "../ui/button";
 import { Combobox } from "../ui/combobox";
@@ -77,17 +78,10 @@ export function RequestsPage() {
               Waiting for a decision ({pending.length})
             </SectionHeading>
             {pending.length === 0 ? (
-              <p className="mt-4 flex items-start gap-3 text-muted">
-                <Inbox
-                  aria-hidden="true"
-                  className="mt-0.5 size-5 shrink-0"
-                  strokeWidth={1.5}
-                />
-                <span>
-                  Nothing is waiting. New requests appear here when someone
-                  signs in without access or asks for an album.
-                </span>
-              </p>
+              <EmptyState className="mt-5" icon={Inbox}>
+                Nothing is waiting. New requests appear here when someone signs
+                in without access or asks for an album.
+              </EmptyState>
             ) : (
               <ul className="mt-5 divide-y divide-border border-y border-border">
                 {pending.map((request) => (

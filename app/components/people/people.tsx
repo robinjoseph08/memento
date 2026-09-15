@@ -12,6 +12,7 @@ import { fieldErrors } from "../../lib/http";
 import { ConfirmDialog } from "../forms/confirm-dialog";
 import { SearchForm } from "../forms/search-form";
 import { BackLink } from "../shell/back-link";
+import { EmptyState } from "../shell/empty-state";
 import { PageTitle } from "../shell/page-title";
 import { Avatar, AvatarFallback, AvatarImage } from "../ui/avatar";
 import { Button } from "../ui/button";
@@ -22,13 +23,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "../ui/dialog";
-import {
-  Field,
-  Form,
-  headingClass,
-  ReadFailure,
-  SectionHeading,
-} from "./form-fields";
+import { Field, Form, headingClass, ReadFailure } from "./form-fields";
 import { PersonDetails } from "./person-details";
 
 export function PeoplePage() {
@@ -163,19 +158,14 @@ export function PeoplePage() {
             ))}
           </ul>
         ) : (
-          <section className="border-t border-border py-8">
-            <SectionHeading
-              icon={search.get("q") ? SearchX : Users}
-              tone="muted"
-            >
-              {search.get("q") ? "No matching people" : "No people yet"}
-            </SectionHeading>
-            <p className="mt-3 text-muted">
-              {search.get("q")
-                ? "Try another name."
-                : "Add friends and family here. Creating a person does not give them sign-in access."}
-            </p>
-          </section>
+          <EmptyState
+            icon={search.get("q") ? SearchX : Users}
+            title={search.get("q") ? "No matching people" : "No people yet"}
+          >
+            {search.get("q")
+              ? "Try another name."
+              : "Add friends and family here. Creating a person does not give them sign-in access."}
+          </EmptyState>
         ))}
     </>
   );

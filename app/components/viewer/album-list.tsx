@@ -2,7 +2,7 @@ import { Images } from "lucide-react";
 import { Link } from "react-router-dom";
 
 import { useViewerAlbums } from "../../hooks/queries/viewer";
-import { SectionHeading } from "../people/form-fields";
+import { EmptyState } from "../shell/empty-state";
 import { PageTitle } from "../shell/page-title";
 import { Button } from "../ui/button";
 import { AlbumCard } from "./album-card";
@@ -33,15 +33,10 @@ export function ViewerAlbumList() {
           </Button>
         </section>
       ) : query.data?.length === 0 ? (
-        <section className="mt-9 border-t border-border py-9">
-          <SectionHeading icon={Images} tone="muted">
-            No albums yet
-          </SectionHeading>
-          <p className="mt-4 max-w-120 text-muted">
-            There are no albums to view yet. Your Curator will choose what to
-            share with you.
-          </p>
-        </section>
+        <EmptyState className="mt-9" icon={Images} title="No albums yet">
+          There are no albums to view yet. Your Curator will choose what to
+          share with you.
+        </EmptyState>
       ) : (
         <ul className="mt-9 grid grid-cols-2 gap-x-5 gap-y-8 min-[601px]:grid-cols-3 min-[1001px]:grid-cols-4">
           {query.data?.map((album) => (

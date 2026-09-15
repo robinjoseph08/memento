@@ -26,9 +26,9 @@ import {
   Form,
   headingClass,
   ReadFailure,
-  SectionHeading,
   sectionHeadingClass,
 } from "../people/form-fields";
+import { EmptyState } from "../shell/empty-state";
 import { PageTitle } from "../shell/page-title";
 import { Button } from "../ui/button";
 import { Textarea } from "../ui/textarea";
@@ -151,24 +151,24 @@ function PreviewForm({
   }
   if (preview.people.length === 0) {
     return (
-      <section className="mt-9 border-t border-border py-8">
-        <SectionHeading icon={PartyPopper}>
-          Everyone is up to date
-        </SectionHeading>
-        <p className="mt-3 max-w-120 text-muted">
-          Nothing new is waiting to be announced. Publish an album or share more
-          photos, then come back here to send updates.
-        </p>
-        <Button
-          className="mt-5"
-          disabled={refreshing}
-          onClick={onReview}
-          variant="outline"
-        >
-          <RefreshCw aria-hidden="true" className="size-4" strokeWidth={1.5} />
-          {refreshing ? "Checking…" : "Check again"}
-        </Button>
-      </section>
+      <EmptyState
+        action={
+          <Button disabled={refreshing} onClick={onReview} variant="outline">
+            <RefreshCw
+              aria-hidden="true"
+              className="size-4"
+              strokeWidth={1.5}
+            />
+            {refreshing ? "Checking…" : "Check again"}
+          </Button>
+        }
+        className="mt-9"
+        icon={PartyPopper}
+        title="Everyone is up to date"
+      >
+        Nothing new is waiting to be announced. Publish an album or share more
+        photos, then come back here to send updates.
+      </EmptyState>
     );
   }
   function toggleAlbum(personID: string, albumID: string, include: boolean) {
