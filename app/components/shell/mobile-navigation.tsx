@@ -71,6 +71,15 @@ export function MobileNavigation({
           >
             Albums
           </NavLink>
+          {!person.is_curator && (
+            <NavLink
+              className="cursor-pointer rounded-md px-3 py-3 text-sm hover:bg-surface focus-visible:outline-2 focus-visible:outline-ring aria-[current=page]:bg-surface"
+              onClick={() => setOpen(false)}
+              to="/library"
+            >
+              Library
+            </NavLink>
+          )}
           {person.is_curator && (
             <>
               <NavLink

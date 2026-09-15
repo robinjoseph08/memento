@@ -363,7 +363,7 @@ it("opens a routed lightbox from the grid, moves with keys and the filmstrip, an
   await user.keyboard("{ArrowRight}");
   expect(window.location.pathname).toBe("/albums/lake/photos/photo-3");
   const filmstrip = screen.getByRole("navigation", {
-    name: "Photos in album",
+    name: "Photos filmstrip",
   });
   expect(
     within(filmstrip).getByRole("button", { name: "Go to photo 3" }),
@@ -498,7 +498,7 @@ it("explains a photo link that is not available without opening another photo", 
     within(dialog).queryByRole("link", { name: "Download photo" }),
   ).not.toBeInTheDocument();
   await user.click(
-    within(dialog).getByRole("button", { name: "Back to album" }),
+    within(dialog).getByRole("button", { name: "Back to photos" }),
   );
   expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   expect(window.location.pathname).toBe("/albums/lake/photos");
@@ -686,7 +686,7 @@ it("opens a video in the routed lightbox, seeks by chapter, and shows no picker 
     within(dialog).getByRole("link", { name: "Download video" }),
   ).toHaveAttribute("href", party.download_url);
   const filmstrip = within(dialog).getByRole("navigation", {
-    name: "Videos in album",
+    name: "Videos filmstrip",
   });
   expect(
     within(filmstrip).getByRole("button", { name: "Go to video 1" }),

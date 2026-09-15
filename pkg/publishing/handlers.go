@@ -11,6 +11,8 @@ import (
 
 // ViewerUseCases keeps HTTP identity selection separate from viewer projections.
 type ViewerUseCases interface {
+	ViewLibrary(ctx context.Context, actorID string) (ViewerLibrary, error)
+	ViewLibraryEntries(ctx context.Context, actorID, kind string, page EntryPageRequest) (ViewerPage, error)
 	ViewAlbum(ctx context.Context, actorID, previewPersonID, albumID string) (ViewerAlbum, error)
 	ViewAlbums(ctx context.Context, actorID string) ([]ViewerAlbum, error)
 	ViewEntries(ctx context.Context, actorID, previewPersonID, albumID, kind string, page EntryPageRequest) (ViewerPage, error)
@@ -28,6 +30,17 @@ func (h *viewerHandlers) album(c *echo.Context) error {
 }
 func (h *viewerHandlers) albums(c *echo.Context) error {
 	result, err := h.module.ViewAlbums(c.Request().Context(), actorID(c))
+	return respond(c, result, err)
+}
+func (h *viewerHandlers) library(c *echo.Context) error {
+	result, err := h.module.ViewLibrary(c.Request().Context(), actorID(c))
+	return respond(c, result, err)
+}
+func (h *viewerHandlers) libraryPhotos(c *echo.Context) error { return h.libraryEntries(c, "IMAGE") }
+func (h *viewerHandlers) libraryVideos(c *echo.Context) error { return h.libraryEntries(c, "VIDEO") }
+func (h *viewerHandlers) libraryEntries(c *echo.Context, kind string) error {
+	page := EntryPageRequest{Cursor: c.QueryParam("cursor"), From: c.QueryParam("from"), To: c.QueryParam("to")}
+	result, err := h.module.ViewLibraryEntries(c.Request().Context(), actorID(c), kind, page)
 	return respond(c, result, err)
 }
 func (h *viewerHandlers) photos(c *echo.Context) error { return h.entries(c, "IMAGE") }

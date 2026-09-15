@@ -59,6 +59,14 @@ export function Header() {
           >
             Albums
           </NavLink>
+          {!data.person.is_curator && (
+            <NavLink
+              className="rounded-md px-4 py-3 text-sm hover:bg-surface aria-[current=page]:bg-surface"
+              to="/library"
+            >
+              Library
+            </NavLink>
+          )}
           {data.person.is_curator && (
             <>
               <NavLink

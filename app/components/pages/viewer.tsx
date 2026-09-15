@@ -5,6 +5,30 @@ import { BackLink } from "../shell/back-link";
 import { PageTitle } from "../shell/page-title";
 import { ViewerGallery } from "../viewer/viewer-gallery";
 
+export function ViewerLibraryPage({ tab }: { tab: ViewerTab }) {
+  const { entryID } = useParams();
+  return (
+    <div className="pt-4 min-[761px]:pt-11">
+      <ViewerGallery
+        context={{}}
+        entryID={entryID}
+        entryLink={(entry) => `/library/${tab}/${encodeURIComponent(entry)}`}
+        tab={tab}
+        tabLinks={{ photos: "/library/photos", videos: "/library/videos" }}
+      />
+    </div>
+  );
+}
+
+export function ViewerLibraryRedirect() {
+  return (
+    <>
+      <PageTitle title="Library" />
+      <Navigate replace to="/library/photos" />
+    </>
+  );
+}
+
 export function ViewerAlbumRedirect() {
   const { id = "" } = useParams();
   return (
