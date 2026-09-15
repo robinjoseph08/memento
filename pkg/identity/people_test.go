@@ -263,7 +263,10 @@ func TestPeopleWithoutLogin(t *testing.T) {
 	people, err := module.ListPeople(t.Context(), curator.Token, "alex")
 	require.NoError(t, err)
 	require.Len(t, people, 1)
-	assert.Equal(t, person, people[0])
+	assert.Equal(t, person, people[0].Person)
+	assert.Equal(t, "none", people[0].Access)
+	assert.Empty(t, people[0].Email)
+	assert.Nil(t, people[0].LastSeenAt)
 	detail, err := module.GetPerson(t.Context(), curator.Token, person.ID)
 	require.NoError(t, err)
 	assert.Empty(t, detail.Identities)
@@ -273,4 +276,51 @@ func TestPeopleWithoutLogin(t *testing.T) {
 	assert.Equal(t, "Alex Smith", renamed.DisplayName)
 	_, err = module.CreatePerson(t.Context(), "invalid", identity.CreatePersonRequest{DisplayName: "Not allowed"})
 	require.ErrorIs(t, err, identity.ErrUnauthenticated)
+}
+
+func TestPeopleListSignInStanding(t *testing.T) {
+	t.Parallel()
+	module := newAdmission(t, false).identity
+	curator := claimCurator(t, module)
+	alex, err := module.CreatePerson(t.Context(), curator.Token, identity.CreatePersonRequest{DisplayName: "Alex"})
+	require.NoError(t, err)
+	standing := func(name string) identity.PersonSummary {
+		t.Helper()
+		people, err := module.ListPeople(t.Context(), curator.Token, name)
+		require.NoError(t, err)
+		require.Len(t, people, 1)
+		return people[0]
+	}
+
+	// Nothing yet, then an approved email that nobody has used.
+	row := standing("Alex")
+	assert.Equal(t, "none", row.Access)
+	assert.Empty(t, row.Email)
+	assert.Nil(t, row.LastSeenAt)
+	_, err = module.Preauthorize(t.Context(), curator.Token, alex.ID, identity.PreauthorizeRequest{Email: "alex@example.test"})
+	require.NoError(t, err)
+	row = standing("Alex")
+	assert.Equal(t, "approved", row.Access)
+	assert.Equal(t, "alex@example.test", row.Email)
+	assert.Nil(t, row.LastSeenAt)
+
+	// A first sign-in links the email and records a session.
+	session, err := module.SignIn(t.Context(), identity.FakeClaims(identity.SignInRequest{Email: "alex@example.test", DisplayName: "Alex"}))
+	require.NoError(t, err)
+	row = standing("Alex")
+	assert.Equal(t, "linked", row.Access)
+	assert.Equal(t, "alex@example.test", row.Email)
+	require.NotNil(t, row.LastSeenAt)
+	assert.WithinDuration(t, time.Now(), *row.LastSeenAt, time.Minute)
+
+	// Finishing Onboarding is the last step.
+	_, err = module.CompleteOnboarding(t.Context(), session.Token, identity.UpdateProfileRequest{DisplayName: "Alex", UpdateEmail: "alex@example.test", EmailUpdates: true})
+	require.NoError(t, err)
+	row = standing("Alex")
+	assert.Equal(t, "onboarded", row.Access)
+
+	// The Curator signed in and finished Onboarding on the claim.
+	me := standing("Curator")
+	assert.Equal(t, "curator@example.test", me.Email)
+	assert.NotNil(t, me.LastSeenAt)
 }

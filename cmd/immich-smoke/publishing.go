@@ -358,9 +358,9 @@ func verifyVideoPublishing(ctx context.Context, db *bun.DB, module *publishing.M
 	for _, person := range listed {
 		switch person.DisplayName {
 		case "Alex":
-			alex = person
+			alex = person.Person
 		case "Sam":
-			sam = person
+			sam = person.Person
 		}
 	}
 	if alex.ID == "" || sam.ID == "" {

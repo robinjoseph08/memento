@@ -21,6 +21,18 @@ type Person struct {
 	AvatarURL             string     `json:"avatar_url"`
 }
 
+// PersonSummary is a People list row: the Person plus where they stand on
+// signing in, so a Curator can see who still needs an email, an approval, or
+// a first visit. Email is the newest linked email, or the newest open
+// Preauthorization when nothing is linked yet. Access is "none",
+// "approved", "linked", or "onboarded"; the last two mean they can sign in.
+type PersonSummary struct {
+	Person     `tstype:",extends"`
+	Email      string     `json:"email"`
+	Access     string     `json:"access"`
+	LastSeenAt *time.Time `json:"last_seen_at"`
+}
+
 // Status describes installation claiming and the current browser's identity.
 type Status struct {
 	Claimed  bool    `json:"claimed"`
