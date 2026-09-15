@@ -69,7 +69,9 @@ func TestImportVersionGate(t *testing.T) {
 		{`{"major":3,"minor":0,"patch":0,"prerelease":null}`, true},
 		{`{"major":3,"minor":0,"patch":3,"prerelease":null}`, true},
 		{`{"major":3,"minor":1,"patch":19,"prerelease":null}`, true},
-		{`{"major":3,"minor":2,"patch":0,"prerelease":null}`, false},
+		{`{"major":3,"minor":2,"patch":0,"prerelease":null}`, true},
+		{`{"major":3,"minor":2,"patch":1,"prerelease":null}`, true},
+		{`{"major":3,"minor":3,"patch":0,"prerelease":null}`, false},
 		{`{"major":2,"minor":7,"patch":5,"prerelease":null}`, false},
 		{`{"major":4,"minor":0,"patch":0,"prerelease":null}`, false},
 		{`{"major":3,"minor":1,"patch":0,"prerelease":1}`, false},
@@ -88,7 +90,7 @@ func TestImportVersionGate(t *testing.T) {
 				var coded *errcodes.Error
 				require.ErrorAs(t, err, &coded)
 				assert.Equal(t, "immich_unsupported_version", coded.Code)
-				assert.Contains(t, err.Error(), "3.0.x and 3.1.x")
+				assert.Contains(t, err.Error(), "3.0.x, 3.1.x, or 3.2.x")
 			}
 		})
 	}

@@ -51,7 +51,7 @@ type serverVersion struct {
 }
 
 func (v serverVersion) supported() bool {
-	return *v.Major == 3 && *v.Minor <= 1 && string(v.Prerelease) == "null"
+	return *v.Major == 3 && *v.Minor <= 2 && string(v.Prerelease) == "null"
 }
 
 func (c *Client) version(ctx context.Context) (serverVersion, error) {
@@ -85,7 +85,7 @@ func (c *Client) CheckImport(ctx context.Context) error {
 }
 
 func unsupportedVersion() error {
-	return &errcodes.Error{HTTPCode: http.StatusConflict, Code: "immich_unsupported_version", Message: "Import and synchronization require stable Immich 3.0.x and 3.1.x. Update Immich or Memento first."}
+	return &errcodes.Error{HTTPCode: http.StatusConflict, Code: "immich_unsupported_version", Message: "Import and synchronization require stable Immich 3.0.x, 3.1.x, or 3.2.x. Update Immich or Memento first."}
 }
 
 // Check authenticates through album.read, including on versions too old to import.

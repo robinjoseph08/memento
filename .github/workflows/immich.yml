@@ -1,0 +1,69 @@
+name: Immich compatibility
+
+on:
+  schedule:
+    - cron: "23 4 * * *"
+  workflow_dispatch:
+    inputs:
+      ml:
+        description: Also run slower ML recognition
+        type: boolean
+        default: true
+  workflow_call:
+    inputs:
+      full_matrix:
+        description: Test every declared minor before release
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  core:
+    name: Immich ${{ matrix.version }} core
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ${{ fromJSON((inputs.full_matrix || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["v3.2.1", "v3.1.0", "v3.0.3"]' || '["v3.2.1"]') }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@v4
+      - name: Install ffprobe
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+      - name: Test official release
+        env:
+          IMMICH_SMOKE_VERSION: ${{ matrix.version }}
+        run: mise test:immich --version "$IMMICH_SMOKE_VERSION"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: immich-${{ matrix.version }}-core
+          path: tmp/immich-smoke.*/artifacts/
+          retention-days: 14
+          if-no-files-found: warn
+
+  ml:
+    name: Immich v3.2.1 ML recognition
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.ml)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@v4
+      - name: Install ffprobe
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+      - run: mise test:immich --version v3.2.1 --ml
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: immich-v3.2.1-ml
+          path: tmp/immich-smoke.*/artifacts/
+          retention-days: 14
+          if-no-files-found: warn

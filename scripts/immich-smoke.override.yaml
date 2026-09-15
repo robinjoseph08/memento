@@ -5,13 +5,18 @@ services:
     ports: !override
       - "127.0.0.1::2283"
     restart: "no"
+    depends_on:
+      database:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
       IMMICH_CONFIG_FILE: /smoke-config.json
     volumes:
       - ${SMOKE_WORK_DIR}/immich-config.json:/smoke-config.json:ro
   immich-machine-learning:
     container_name: ${COMPOSE_PROJECT_NAME}-machine-learning
-    profiles: [unused-in-smoke]
+    profiles: [ml]
     restart: "no"
   redis:
     container_name: ${COMPOSE_PROJECT_NAME}-redis
@@ -19,6 +24,22 @@ services:
   database:
     container_name: ${COMPOSE_PROJECT_NAME}-database
     restart: "no"
+    # initdb's temporary server accepts Unix sockets before TCP is ready.
+    healthcheck:
+      test:
+        [
+          CMD,
+          pg_isready,
+          -h,
+          127.0.0.1,
+          -U,
+          "${DB_USERNAME}",
+          -d,
+          "${DB_DATABASE_NAME}",
+        ]
+      interval: 2s
+      timeout: 5s
+      retries: 30
   memento-db:
     image: postgres:17.7-alpine3.23
     environment:

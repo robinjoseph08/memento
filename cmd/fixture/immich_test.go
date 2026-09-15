@@ -41,7 +41,7 @@ func TestImmichFixture(t *testing.T) {
 	assert.Equal(t, http.StatusMethodNotAllowed, request("POST", "/api/users/me", `{}`, "fixture-only-key").Code)
 	assert.Equal(t, http.StatusUnauthorized, request("GET", "/api/albums", "", "fixture-only-key").Code)
 	assert.Equal(t, http.StatusOK, request("POST", "/__fixture/state", `{"available":true,"unsupported":true}`, "").Code)
-	assert.JSONEq(t, `{"major":3,"minor":2,"patch":0,"prerelease":null}`, request("GET", "/api/server/version", "", "").Body.String())
+	assert.JSONEq(t, `{"major":3,"minor":3,"patch":0,"prerelease":null}`, request("GET", "/api/server/version", "", "").Body.String())
 	assert.Equal(t, http.StatusOK, request("POST", "/__fixture/state", `{"available":true}`, "").Code)
 	assert.JSONEq(t, `{"major":3,"minor":1,"patch":0,"prerelease":null}`, request("GET", "/api/server/version", "", "").Body.String())
 	assert.Equal(t, http.StatusBadRequest, request("POST", "/__fixture/state", `{"unauthorized":true}`, "").Code)

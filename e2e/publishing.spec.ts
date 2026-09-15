@@ -37,6 +37,7 @@ async function createPerson(page: Page, name: string, email?: string) {
 }
 
 async function loadedImage(image: Locator) {
+  await image.scrollIntoViewIfNeeded();
   await expect(image).toBeVisible();
   await expect
     .poll(() =>
@@ -430,6 +431,165 @@ test("Curator scopes access, previews two people, publishes, and hides the Album
     await expect(
       page.getByRole("heading", { name: "No albums yet", exact: true }),
     ).toBeVisible();
+  } finally {
+    await memberContext.close();
+  }
+});
+
+test("Cover Order chooses each viewer's first accessible cover and shows a placeholder when no configured cover is allowed", async ({
+  page,
+  browser,
+  baseURL,
+  immich,
+}) => {
+  test.setTimeout(120_000);
+  await immich.online();
+  await page.goto("/setup");
+  await page.getByRole("button", { name: "Claim installation" }).click();
+  await finishOnboarding(page);
+  await createPerson(page, "Alex");
+  await createPerson(page, "Sam", "sam@example.test");
+  await page.goto("/curator/import?q=Coast");
+  await page.getByRole("button", { name: "Import", exact: true }).click();
+  const outline = page.getByRole("navigation", { name: "Album outline" });
+  await expect(outline).toBeVisible({ timeout: 60_000 });
+  const viewerPath = new URL(page.url()).pathname.replace("/curator", "");
+
+  await outline
+    .getByRole("link", { name: "Album access", exact: true })
+    .click();
+  const albumAccess = page.getByRole("form", {
+    name: "Album access",
+    exact: true,
+  });
+  await albumAccess.getByText(/not seen in this album/).click();
+  await albumAccess
+    .getByRole("checkbox", { name: "Album access for Alex" })
+    .check();
+  await albumAccess.getByRole("button", { name: "Save Album access" }).click();
+  await expect(albumAccess.getByRole("status")).toHaveText(
+    "Album access saved.",
+  );
+
+  // Sam sees only June 2. Alex sees every Moment.
+  await outline.getByRole("link", { name: "Tuesday, June 2, 2026" }).click();
+  await page.getByRole("button", { name: "Rules & exceptions" }).click();
+  const rules = page.getByRole("dialog", { name: "Rules & exceptions" });
+  await rules.getByRole("combobox", { name: "Access for Sam" }).click();
+  await page.getByRole("option", { name: "Allow", exact: true }).click();
+  await rules.getByRole("button", { name: "Save access" }).click();
+  await expect(rules).toHaveCount(0);
+
+  const expectCover = async (name: string, photo: string) => {
+    await choosePreviewFromOutline(page, outline, name);
+    const photoImage = page.getByRole("img", { name: photo, exact: true });
+    await expect(photoImage).toBeVisible();
+    const photoSource = await photoImage.getAttribute("src");
+    expect(photoSource).toBeTruthy();
+    const cover = page.getByRole("img", { name: "Album cover", exact: true });
+    await expect(cover).toHaveAttribute("src", photoSource!);
+    await loadedImage(cover);
+  };
+  await expectCover("Alex", "coast-01");
+  await expectCover("Sam", "coast-03");
+
+  await outline.getByRole("link", { name: "Album cover", exact: true }).click();
+  const coverPane = page.getByRole("region", {
+    name: "Album cover",
+    exact: true,
+  });
+  for (const day of ["Wednesday, June 3, 2026", "Tuesday, June 2, 2026"]) {
+    await coverPane
+      .getByRole("button", { name: `Prefer ${day}`, exact: true })
+      .click();
+  }
+  await coverPane.getByRole("button", { name: "Save cover order" }).click();
+  await expect(coverPane.getByRole("status")).toHaveText("Cover order saved.");
+  // Reload proves the saved order, not just the unsaved editor preview.
+  await page.reload();
+  await expectCover("Alex", "coast-05");
+  await expectCover("Sam", "coast-03");
+
+  const denyPhoto = async (day: string, filename: string, person: string) => {
+    await outline.getByRole("link", { name: day }).click();
+    await page.getByRole("img", { name: filename, exact: true }).click();
+    const details = page.getByRole("dialog", { name: "Photo details" });
+    await details
+      .getByRole("combobox", { name: `Access for ${person}` })
+      .click();
+    await page.getByRole("option", { name: "Deny", exact: true }).click();
+    await details.getByRole("button", { name: "Save access" }).click();
+    await expect(details).toHaveCount(0);
+  };
+  // Denying the preferred cover advances to June 2, not capture-order June 1
+  // or unrelated media from June 3.
+  await denyPhoto("Wednesday, June 3, 2026", "coast-05.jpg", "Alex");
+  await expectCover("Alex", "coast-03");
+  await counts(page, 3, 2);
+
+  await page
+    .getByRole("button", { name: "Review & publish", exact: true })
+    .click();
+  const publication = page.getByRole("dialog", { name: "Ready to publish?" });
+  await publication
+    .getByRole("button", { name: "Publish album", exact: true })
+    .click();
+  await expect(publication).toHaveCount(0);
+
+  const memberContext = await browser.newContext({ baseURL });
+  try {
+    const member = await memberContext.newPage();
+    await member.goto("/sign-in");
+    await member
+      .getByRole("textbox", { name: "Email", exact: true })
+      .fill("sam@example.test");
+    await member.getByRole("button", { name: "Sign in", exact: true }).click();
+    await finishOnboarding(member);
+    const card = member.getByRole("link", { name: /Fixture Album - Coast/ });
+    await loadedImage(card.getByRole("img", { name: "Fixture Album - Coast" }));
+    await card.click();
+    await counts(member, 2, 1);
+    expect(
+      await loadedImage(
+        member.getByRole("img", { name: "Album cover", exact: true }),
+      ),
+    ).toBe(
+      await loadedImage(
+        member.getByRole("img", { name: "coast-03", exact: true }),
+      ),
+    );
+
+    // Sam still has a photo and video, but neither is a configured Moment cover.
+    await denyPhoto("Tuesday, June 2, 2026", "coast-03.jpg", "Sam");
+    await choosePreviewFromOutline(page, outline, "Sam");
+    await counts(page, 1, 1);
+    await expect(
+      page.getByText("No cover is visible to Sam", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("img", { name: "Album cover", exact: true }),
+    ).toHaveCount(0);
+    await loadedImage(page.getByRole("img", { name: "coast-02", exact: true }));
+
+    await member.reload();
+    await counts(member, 1, 1);
+    await expect(member.getByText("No cover", { exact: true })).toBeVisible();
+    await expect(
+      member.getByRole("img", { name: "Album cover", exact: true }),
+    ).toHaveCount(0);
+    await loadedImage(
+      member.getByRole("img", { name: "coast-02", exact: true }),
+    );
+    await expect(
+      member.getByRole("img", { name: "coast-03", exact: true }),
+    ).toHaveCount(0);
+    await member.goto("/albums");
+    await expect(card).toContainText("1 photo, 1 video");
+    await expect(card.getByText("No cover", { exact: true })).toBeVisible();
+    await expect(card.getByRole("img")).toHaveCount(0);
+    await card.click();
+    await expect(member).toHaveURL(new RegExp(`${viewerPath}/photos$`));
+    await counts(member, 1, 1);
   } finally {
     await memberContext.close();
   }

@@ -13,6 +13,8 @@ jobs:
   validate:
     name: Validate
     uses: ./.github/workflows/ci.yml
+    with:
+      pre_release: true
 
   github-release:
     name: GitHub Release
