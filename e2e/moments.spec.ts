@@ -82,9 +82,11 @@ test("arranges a large Moment and reviews face-based access on desktop and mobil
   await desktopAccess
     .getByRole("button", { name: "Save Moment access", exact: true })
     .click();
-  await expect(desktopAccess.getByRole("status")).toHaveText(
-    "Moment access saved.",
-  );
+  await expect(
+    desktopAccess
+      .getByRole("status")
+      .filter({ hasText: "Moment access saved." }),
+  ).toHaveText("Moment access saved.");
 
   await firstMoment
     .getByRole("button", { name: "Select", exact: true })
@@ -131,9 +133,11 @@ test("arranges a large Moment and reviews face-based access on desktop and mobil
     .getByRole("button", { name: "Save Moment access", exact: true })
     .click();
   // Returning to inherit moves this row under the collapsed people list.
-  await expect(desktopAccess.getByRole("status")).toHaveText(
-    "Moment access saved.",
-  );
+  await expect(
+    desktopAccess
+      .getByRole("status")
+      .filter({ hasText: "Moment access saved." }),
+  ).toHaveText("Moment access saved.");
   await originalRow.click();
   const original = page.getByRole("region", { name: "June 4, 2026 (1)" });
   await original.getByRole("button", { name: "Select", exact: true }).click();

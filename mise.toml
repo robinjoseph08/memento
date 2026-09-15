@@ -111,8 +111,19 @@ run = "go test ./... -parallel 4 -coverprofile coverage.out"
 
 [tasks."test:immich"]
 description = "Smoke-test the production adapter against a disposable official Immich release"
-usage = 'flag "--version <tag>" default="v3.1.0" help="Exact stable Immich release tag"'
-run = 'bash scripts/immich-smoke.sh --version "$usage_version"'
+usage = '''
+flag "--version <tag>" default="v3.2.1" help="Exact stable Immich release tag"
+flag "--probe" help="Bypass only the test command import policy"
+flag "--ml" help="Run slower machine-learning recognition smoke"
+flag "--permission-failure <name>" help="Remove one fixture key permission and check the diagnostic"
+'''
+run = '''
+set -- --version "$usage_version"
+if [ "${usage_probe:-false}" = "true" ]; then set -- "$@" --probe; fi
+if [ "${usage_ml:-false}" = "true" ]; then set -- "$@" --ml; fi
+if [ -n "${usage_permission_failure:-}" ]; then set -- "$@" --permission-failure "$usage_permission_failure"; fi
+bash scripts/immich-smoke.sh "$@"
+'''
 
 [tasks."test:race"]
 description = "Run Go tests with race detection"
@@ -120,9 +131,9 @@ env = { TZ = "America/Chicago", CI = "true" }
 run = "go test -race ./... -parallel 4 -coverprofile coverage.out"
 
 [tasks."test:postgres14"]
-description = "Run backend package tests against PostgreSQL 14"
+description = "Run migrations, Identity, Publishing, Media, Notifications, and Worker against PostgreSQL 14"
 env = { TZ = "America/Chicago", CI = "true" }
-run = "go test -race ./pkg/... -parallel 4"
+run = "go test -race ./pkg/migrations ./pkg/identity ./pkg/publishing ./pkg/media ./pkg/notifications ./pkg/worker -parallel 4"
 
 [tasks."test:js"]
 description = "Run all JS tests"

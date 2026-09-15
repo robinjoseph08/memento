@@ -1,0 +1,111 @@
+name: Detect stable Immich releases
+
+on:
+  schedule:
+    - cron: "41 7 * * *"
+  workflow_dispatch:
+    inputs:
+      simulated_release:
+        description: Exact official stable tag to probe, even if already declared, such as v2.7.5
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: immich-release-detector
+  cancel-in-progress: false
+
+jobs:
+  discover:
+    # Dispatch never runs repository code from an arbitrary branch or fork.
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - uses: actions/github-script@v8
+        id: release
+        env:
+          SIMULATED_RELEASE: ${{ inputs.simulated_release }}
+        with:
+          script: |
+            const simulated = process.env.SIMULATED_RELEASE || '';
+            let tag = simulated;
+            if (!tag) {
+              const {data} = await github.rest.repos.getLatestRelease({owner: 'immich-app', repo: 'immich'});
+              if (data.draft || data.prerelease) throw new Error('Latest release is not stable');
+              tag = data.tag_name;
+            }
+            if (!/^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/.test(tag)) {
+              throw new Error('Expected an exact stable release tag');
+            }
+            const declared = ['v3.2.1', 'v3.1.0', 'v3.0.3'];
+            if (simulated || !declared.includes(tag)) core.setOutput('version', tag);
+            await core.summary.addRaw(`Latest requested Immich release: ${tag}. Supported versions were not changed.\n`).write();
+
+  probe:
+    needs: discover
+    if: needs.discover.outputs.version != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      outcome: ${{ steps.smoke.outcome }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: jdx/mise-action@v4
+      - name: Install ffprobe
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+      - name: Probe stable release without expanding support
+        id: smoke
+        continue-on-error: true
+        env:
+          IMMICH_SMOKE_VERSION: ${{ needs.discover.outputs.version }}
+        run: mise test:immich --version "$IMMICH_SMOKE_VERSION" --probe
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: immich-release-probe-${{ needs.discover.outputs.version }}
+          path: tmp/immich-smoke.*/artifacts/
+          retention-days: 30
+          if-no-files-found: warn
+      - name: Preserve failing probe status
+        if: steps.smoke.outcome == 'failure'
+        run: exit 1
+
+  report:
+    needs: [discover, probe]
+    if: always() && needs.discover.outputs.version != '' && needs.probe.result != 'skipped'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      # No checkout, downloaded artifacts, shell interpolation, or execution of
+      # tested code in this write-token job. Only validated tags and run links.
+      - uses: actions/github-script@v8
+        env:
+          IMMICH_SMOKE_VERSION: ${{ needs.discover.outputs.version }}
+          PROBE_OUTCOME: ${{ needs.probe.outputs.outcome }}
+          PROBE_JOB_RESULT: ${{ needs.probe.result }}
+        with:
+          script: |
+            const version = process.env.IMMICH_SMOKE_VERSION;
+            if (!/^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/.test(version)) throw new Error('Invalid tag');
+            const passed = process.env.PROBE_OUTCOME === 'success' && process.env.PROBE_JOB_RESULT === 'success';
+            const run = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = `Core compatibility probe for Immich ${version}: ${passed ? 'PASS' : 'FAIL'}.\n\nRun and redacted evidence: ${run}\n\nThe probe bypasses only the test command import policy. It does not change Memento's supported-version declaration.\n\nInspect the requested version, Compose checksum, running image digests, logs, and result in the run artifacts before changing support.`;
+            await core.summary.addRaw(body).write();
+            if (!passed) {
+              const title = `[Compatibility] Immich ${version} core probe failed`;
+              const issues = await github.paginate(github.rest.issues.listForRepo, {...context.repo, state: 'open', creator: 'github-actions[bot]', per_page: 100});
+              const existing = issues.find(issue => !issue.pull_request && issue.title === title);
+              if (existing) {
+                await github.rest.issues.createComment({...context.repo, issue_number: existing.number, body});
+              } else {
+                await github.rest.issues.create({...context.repo, title, body});
+              }
+            }

@@ -11,7 +11,7 @@ services:
       - ${SMOKE_WORK_DIR}/immich-config.json:/smoke-config.json:ro
   immich-machine-learning:
     container_name: ${COMPOSE_PROJECT_NAME}-machine-learning
-    profiles: [unused-in-smoke]
+    profiles: [ml]
     restart: "no"
   redis:
     container_name: ${COMPOSE_PROJECT_NAME}-redis

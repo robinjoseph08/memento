@@ -20,7 +20,7 @@ import (
 	"github.com/robinjoseph08/memento/pkg/immich"
 )
 
-const Release = "v3.1.0"
+const Release = "v3.2.1"
 
 var readPermissions = []string{"album.read", "asset.download", "asset.read", "asset.view", "face.read", "person.read"}
 
@@ -60,6 +60,15 @@ type Library struct {
 	Person     Person
 	Video      Video
 	VideoAlbum Album
+	// Additional cases are created only by SetupCases, after the original snapshot checks.
+	CasesAlbum Album
+	PNG        Asset
+	PNGBytes   []byte
+	LivePhoto  Asset
+	LiveMotion Video
+	Stack      []Asset
+	StackID    string
+	PlainVideo Video
 	baseURL    string
 	secret     string
 	// owner is the source owner's session, kept so a smoke can edit albums the
@@ -108,9 +117,10 @@ func (f *Library) OriginalRange(ctx context.Context, id string) (status int, con
 }
 
 type api struct {
-	baseURL string
-	token   string
-	http    *http.Client
+	legacyUpload bool
+	baseURL      string
+	token        string
+	http         *http.Client
 }
 
 func (a *api) request(ctx context.Context, method, path, contentType string, body io.Reader, target any) error {
@@ -130,7 +140,7 @@ func (a *api) request(ctx context.Context, method, path, contentType string, bod
 		return fmt.Errorf("fixture %s %s: transport failure", method, path)
 	}
 	defer func() { _ = response.Body.Close() }()
-	if response.StatusCode != http.StatusOK && response.StatusCode != http.StatusCreated {
+	if response.StatusCode != http.StatusOK && response.StatusCode != http.StatusCreated && (response.StatusCode != http.StatusNoContent || target != nil) {
 		// Never print upstream bodies: authentication responses may contain credentials.
 		return fmt.Errorf("fixture %s %s: HTTP %d", method, path, response.StatusCode)
 	}
@@ -172,11 +182,21 @@ func (a *api) login(ctx context.Context, email, password string) error {
 // Setup requires an empty loopback instance. Admin signup fails on an existing installation.
 // The expected release is explicit so future compatibility cases can reuse the fixtures.
 func Setup(ctx context.Context, baseURL, expectedRelease string) (*Library, error) {
+	return setup(ctx, baseURL, expectedRelease, false)
+}
+
+// SetupProbe creates the same disposable fixtures outside the supported range.
+// Only the compatibility command uses it; it does not change Memento's policy.
+func SetupProbe(ctx context.Context, baseURL, expectedRelease string) (*Library, error) {
+	return setup(ctx, baseURL, expectedRelease, true)
+}
+
+func setup(ctx context.Context, baseURL, expectedRelease string, probe bool) (*Library, error) {
 	u, err := url.Parse(baseURL)
 	if err != nil || u.Scheme != "http" || (u.Hostname() != "127.0.0.1" && u.Hostname() != "localhost") || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
 		return nil, fmt.Errorf("fixture requires a disposable loopback HTTP origin")
 	}
-	a := &api{baseURL: baseURL, http: &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}}
+	a := &api{baseURL: baseURL, legacyUpload: strings.HasPrefix(expectedRelease, "v2."), http: &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}}
 	var version struct {
 		Major      int  `json:"major"`
 		Minor      int  `json:"minor"`
@@ -191,8 +211,10 @@ func Setup(ctx context.Context, baseURL, expectedRelease string) (*Library, erro
 		return nil, fmt.Errorf("fixture expected stable %s, got %s", expectedRelease, actual)
 	}
 	// An exact version match must not bypass the production import gate.
-	if err := immich.New(baseURL, "").CheckImport(ctx); err != nil {
-		return nil, err
+	if !probe {
+		if err := immich.New(baseURL, "").CheckImport(ctx); err != nil {
+			return nil, err
+		}
 	}
 	adminPassword, sourcePassword := rand.Text()+"aA1!", rand.Text()+"aA1!"
 	if err := a.json(ctx, "POST", "/auth/admin-sign-up", map[string]string{"email": "admin@memento.invalid", "name": "Smoke admin", "password": adminPassword}, nil); err != nil {
@@ -311,6 +333,16 @@ func (a *api) upload(ctx context.Context, filename string, data []byte) (string,
 	}
 	if _, err := file.Write(data); err != nil {
 		return "", err
+	}
+	// Immich 2.x requires device identity on uploads; v3 removed these fields.
+	// This changes fixture writes only, never the adapter being tested.
+	if a.legacyUpload {
+		if err := writer.WriteField("deviceId", "memento-smoke"); err != nil {
+			return "", err
+		}
+		if err := writer.WriteField("deviceAssetId", filename); err != nil {
+			return "", err
+		}
 	}
 	// Deliberately different from EXIF. Waiting must observe extracted metadata, not upload defaults.
 	for _, field := range []string{"fileCreatedAt", "fileModifiedAt"} {

@@ -191,25 +191,55 @@ database. All test data stays in temporary schemas with small pools. Export
 `TEST_DATABASE_URL` to make all commands use one dedicated test database
 instead.
 
+### Check PostgreSQL 14
+
+The focused job covers migrations, Identity, Publishing, Media, Notifications,
+and Worker behavior. To run it locally against a disposable PostgreSQL 14:
+
+```sh
+(
+  set -e
+  pg14=$(docker run --detach --rm --publish 127.0.0.1::5432 \
+    --env POSTGRES_PASSWORD=smoke --env POSTGRES_DB=memento_test postgres:14-alpine)
+  trap 'docker rm --force "$pg14" >/dev/null' EXIT
+  until docker exec "$pg14" pg_isready -U postgres -d memento_test >/dev/null; do sleep 1; done
+  address=$(docker port "$pg14" 5432)
+  TEST_DATABASE_URL="postgres://postgres:smoke@$address/memento_test?sslmode=disable" mise test:postgres14
+)
+```
+
+`mise test:postgres14` alone does not select a server version; it uses
+`TEST_DATABASE_URL` or the normal worktree database, which remains PostgreSQL 17.
+
 ### Smoke-test a real Immich release
 
 ```sh
-mise test:immich
-mise test:immich --version v3.0.3
+mise test:immich                         # pinned current release
+mise test:immich --version v3.1.0
+mise test:immich --version v3.0.3         # retained support for existing installations
+mise test:immich --version v2.7.5 --probe # exploratory, not declared support
 ```
 
-This requires Docker Compose 2.24.4 or newer, `curl`, and `shasum`. Allow several
-minutes and enough Docker memory for Immich and two PostgreSQL containers.
-The default release is v3.1.0. `--version` accepts an exact stable tag, not a
-floating tag or prerelease. The script downloads that release's official Compose
-file and runs its exact image in a uniquely named disposable project. Compose
-SHA-256 checks are pinned for v3.1.0 and v3.0.3. Other patches in the supported
-3.0.x and 3.1.x minors can be tried, but have no pinned checksum or compatibility
-guarantee. Unsupported minors fail before services start; the production import
-version gate remains in force. The fixture checks the actual API version against
-the requested tag before creating users or assets.
-Ports bind only to loopback. Machine learning and reverse geocoding are disabled
-because this check needs only metadata extraction and generated thumbnails.
+This requires Docker Compose 2.24.4 or newer, `curl`, `shasum`, Python 3, and
+`ffprobe`. Budget 5 to 15 minutes per release after image downloads and enough
+Docker memory for Immich and two PostgreSQL containers. The default release is
+v3.2.1. `--version` accepts an exact stable tag, not a floating tag or prerelease.
+The script downloads the official Compose file and tagged image into a uniquely
+named disposable project. Official Compose SHA-256 checks are pinned for
+v3.2.1, v3.1.0, v3.0.3, and the exploratory v2.7.5. Other exact releases can be
+tried without a pinned Compose checksum. Running container image IDs and registry
+digests are recorded, rather than assuming a tag still resolves to the same image.
+The fixture checks the actual API version against the requested tag before writes.
+Ports bind only to loopback. Core checks disable machine learning and reverse
+geocoding; manual face associations make them deterministic.
+
+The OpenAPI preflight checks consumed endpoints, response types, and required
+search inputs against the release's official document. It never regenerates
+Memento's adapter. `--probe` continues past contract drift and skips only the
+compatibility command's import version gate to collect runtime evidence. All
+source reads still use the shipped adapter. It neither changes the application's
+supported range nor makes an unsupported release work out of the box. Contract
+drift still makes the probe fail even if subsequent runtime checks pass.
 
 Fixtures use supported Immich APIs, not database tables. A non-admin source
 owner creates a key with exactly `album.read`, `asset.download`, `asset.read`,
@@ -224,17 +254,100 @@ album's membership and description through the album API, and unchanged
 source album titles, descriptions, and membership once those edits are
 reverted. The in-process media check bypasses sign-in and
 does not expose an HTTP listener. Fixture creation helpers live in
-`cmd/immich-smoke/fixture` for reuse by release compatibility tests.
+`cmd/immich-smoke/fixture` for reuse by release compatibility tests. Additional
+cases import a non-JPEG photo through generated display variants, a paired Live
+Photo as a still, both stack members as independent photos, and an unchaptered
+video whose extraction finishes with zero chapters. The suite checks each of the
+six required key permissions separately and verifies that diagnostics name the
+missing permission without exposing the key.
 
 Memento uses a temporary schema in its own disposable PostgreSQL container.
 The script ignores existing application and Immich configuration. On exit it
 removes only its own containers and volumes; it never resets development data.
-The final output records the tested release. A successful run certifies only
-the assertions exercised on that release, not every version in the supported
-range. Coverage grows manually: every Immich-dependent change must extend this
+The final output names the evidence directory under
+`tmp/immich-smoke.*/artifacts/`. It retains the requested version and flags,
+Compose/OpenAPI checksums, resolved image digests, redacted service and test logs,
+and the exit code and failure phase. Only upload that `artifacts` directory,
+never the private Compose working files left behind if cleanup fails. A successful
+run certifies only the assertions exercised on that release, not every version
+in the supported range. Coverage grows manually: every Immich-dependent change must extend this
 same suite's fixtures and assertions to cover the capability being shipped.
 Passing the existing import checks alone does not certify new functionality.
-This command is opt-in, not part of `mise check`.
+This command is opt-in, not part of `mise check`. Running it again is the clean
+fixture/reset command; each invocation creates new users, media, and databases.
+
+For an intentional permission failure or the separate slower recognition check:
+
+```sh
+mise test:immich --version v3.0.3 --permission-failure asset.download
+mise test:immich --ml
+```
+
+The first command must exit nonzero and name `asset.download`, not its key.
+The second enables official ML services and uploads a bundled public-domain NASA
+portrait. It requires a machine-learning face rather than a manual association,
+without checking model-specific identity, geometry, scores, or clustering. Budget
+10 to 30 minutes on a cold machine, including image and model downloads.
+
+### Maintain the compatibility declaration
+
+Each release tests the latest stable Immich minor and its predecessor. Memento
+also retains 3.0.x support for existing installations. Pinned representatives are
+v3.2.1, v3.1.0, and v3.0.3. Keep testing 3.0.x until its removal is an explicit
+release decision. The v2.7.5 probe does not pass: fixture creation succeeds, but
+the shipped adapter rejects asset metadata. Its OpenAPI also reports v2 wire
+formats such as string video duration where Memento expects an integer. It does
+not work out of the box, and the production gate continues to block 2.x.
+
+Pull requests run the pinned current version in a separate parallel CI job.
+Nightly and pre-release workflows test every declared minor. Nightly recognition
+is a separate slower job. The release detector probes a newly released stable tag
+and reports success in its run summary or opens a diagnostic issue on failure.
+It never changes the declaration or production gate automatically.
+
+To evaluate a new tag locally, run `mise test:immich --version vX.Y.Z --probe`.
+Inspect `request.txt`, `images.txt`, `checksums.txt`, `result.txt`, `run.log`, and
+`compose.log` in its printed artifact directory. A preflight mismatch identifies
+a wire contract; HTTP permission errors identify the missing grant; startup
+failures point to service logs. Share only redacted evidence, never your real API
+key, a full `docker inspect`, or interpolated Compose configuration.
+
+After proving compatibility, update the gate and message in
+`pkg/immich/client.go`, its boundary tests, `fixture.Release`, the smoke runner's
+default and official Compose checksum, the mise task default, CI matrices and
+release detector pins, and this declaration. Move the controlled fixture's
+unsupported version beyond the range too. Run all declared minors again before
+release; do not generate adapter code from the candidate's OpenAPI document.
+
+Once the detector workflow is on the default branch, simulate either outcome
+without changing support:
+
+```sh
+gh workflow run immich-release-detector.yml -f simulated_release=v3.0.3
+gh workflow run immich-release-detector.yml -f simulated_release=v2.7.5
+```
+
+The first should report success; the second exercises the diagnostic issue path
+for an incompatible release. These commands run GitHub Actions and may create or
+comment on a compatibility issue. Before merging the workflow, use the local
+`--probe` command to inspect the same core evidence without publishing anything.
+
+### Browser certification
+
+Memento supports current Chrome, Firefox, desktop Safari, and iOS Safari.
+`mise test:e2e` builds the frontend and API once, then runs the critical journeys
+in Chromium, Firefox, and WebKit. Each parallel worker gets an isolated API,
+PostgreSQL schema, fake sign-in, and controlled Immich/SMTP fixtures. Budget
+5 to 15 minutes after installing browsers. `mise e2e:chromium`,
+`mise e2e:firefox`, and `mise e2e:webkit` keep focused runs available. Failures
+retain Playwright traces in `test-results/`; CI uploads them.
+
+Playwright WebKit is not a substitute for testing shipped Safari. Before a
+release, use `mise start:qa` or a private test deployment on desktop Safari and
+iOS Safari. Check photo swipes and back navigation, video playback and seeking,
+chapter selection, portrait/landscape layout, and touch controls. On a phone,
+use a reachable private HTTPS deployment for production cookies rather than
+exposing development fake sign-in to the internet.
 
 ## Build the production application
 
@@ -260,6 +373,22 @@ configuration from `/config/app.yaml`, and stores mutable files under
 instance base URL without `/api`. Environment values override YAML.
 `PUBLIC_URL` must match the browser origin and controls cookie security and
 mutation origin checks. See `app.example.yaml` for a deployment example.
+
+To exercise the built image's YAML/environment configuration and outage behavior,
+use a fresh disposable Memento database, never your development or production
+installation:
+
+```sh
+DATABASE_URL='postgres://USER:PASSWORD@127.0.0.1:PORT/DISPOSABLE_DATABASE?sslmode=disable' \
+  bash scripts/production-smoke.sh memento:latest
+```
+
+This check claims that empty database using explicit test-only fake sign-in,
+verifies liveness with Immich offline before and after claiming, and checks the
+embedded UI and bundled `ffprobe`. It uses host networking, which requires Linux
+or Docker Desktop's host-networking setting. It removes its application container
+and retains redacted logs under `tmp/production-smoke.*/artifacts/`; remove the
+disposable database separately afterward.
 
 The image bundles `ffprobe` from Alpine's `ffmpeg` package for video chapters,
 which adds roughly 110 MB because Alpine ships no ffprobe-only package.
@@ -292,11 +421,12 @@ compression to preserve byte ranges and private versioned caching.
 
 ### Connect Immich for imports
 
-The initial import gate supports Immich **3.0.x and 3.1.x**. Other versions can
-still be checked during setup, but Memento blocks new imports and shows a
-warning. The smoke command above defaults to 3.1.0 and also has a verified
-Compose pin for 3.0.3; this is not a claim that every patch in the range has been
-certified.
+The import and synchronization gate supports stable Immich **3.0.x, 3.1.x,
+and 3.2.x**. Other versions still report their detected version during setup,
+but Memento blocks new imports and synchronization and shows a warning. Safe
+existing reads remain available when the source APIs work. The smoke command
+above defaults to v3.2.1 and also tests v3.1.0 and v3.0.3; this is not a claim
+that every patch in those minors has been certified.
 
 Create an API key in the Immich account that owns or can access your source
 albums. Grant only `album.read`, `asset.download`, `asset.read`, `asset.view`,

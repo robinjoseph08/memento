@@ -5,12 +5,25 @@ on:
     branches: [master]
   pull_request:
   workflow_call:
+    inputs:
+      pre_release:
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  immich:
+    name: Official Immich
+    uses: ./.github/workflows/immich.yml
+    with:
+      full_matrix: ${{ inputs.pre_release == true }}
+
   go:
     name: Go lint and tests
     runs-on: ubuntu-latest
@@ -144,34 +157,15 @@ jobs:
       - run: mise docker
 
       - name: Smoke test production image
+        env:
+          DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/memento?sslmode=disable
         run: |
           image_name=$(node -p "require('./package.json').name")
-          container=$(docker run --detach --network host \
-            --env DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/memento?sslmode=disable \
-            --env APP_ENV=test --env AUTH_MODE=fake \
-            --env PUBLIC_URL=http://127.0.0.1:8080 \
-            --env IMMICH_URL=http://127.0.0.1:1 \
-            --env IMMICH_API_KEY=smoke-fixture-only-key \
-            "$image_name:latest")
-          trap 'docker rm --force "$container" >/dev/null 2>&1 || true' EXIT
-          for attempt in $(seq 1 30); do
-            if curl --fail --silent http://127.0.0.1:8080/health >/dev/null; then
-              break
-            fi
-            if [[ "$attempt" == 30 ]]; then
-              docker logs "$container"
-              exit 1
-            fi
-            sleep 1
-          done
-          curl --fail --silent http://127.0.0.1:8080/ >/dev/null
-          curl --fail --silent http://127.0.0.1:8080/setup | grep --quiet '<div id="root"></div>'
-          asset_status=$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:8080/assets/missing.js)
-          api_status=$(curl --silent --output /tmp/api-missing --write-out '%{http_code}' http://127.0.0.1:8080/api/missing)
-          test "$asset_status" = 404
-          test "$api_status" = 404
-          grep --quiet 'not_found' /tmp/api-missing
-          # Chapter extraction runs the bundled binary as the app user.
-          docker exec "$container" ffprobe -version | grep --quiet '^ffprobe version'
-          docker exec "$container" ffprobe -hide_banner -v error -print_format json -show_chapters -i internal/nonexistent 2>&1 | grep --quiet --invert-match 'not found'
-          test "$(docker exec "$container" sh -c 'command -v ffprobe')" = /usr/bin/ffprobe
+          bash scripts/production-smoke.sh "$image_name:latest"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: production-smoke
+          path: tmp/production-smoke.*/artifacts/
+          retention-days: 7
+          if-no-files-found: warn

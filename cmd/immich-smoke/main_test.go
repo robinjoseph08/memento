@@ -19,7 +19,7 @@ func TestParseRelease(t *testing.T) {
 		args []string
 		want string
 	}{
-		{name: "default", want: "v3.1.0"},
+		{name: "default", want: "v3.2.1"},
 		{name: "previous minor", args: []string{"--version", "v3.0.3"}, want: "v3.0.3"},
 		{name: "floating", args: []string{"--version", "release"}},
 		{name: "missing value", args: []string{"--version"}},
@@ -32,15 +32,24 @@ func TestParseRelease(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			got, err := parseRelease(test.args)
+			got, err := parseOptions(test.args)
 			if test.want == "" {
 				require.Error(t, err)
 			} else {
 				require.NoError(t, err)
-				require.Equal(t, test.want, got)
+				require.Equal(t, test.want, got.Release)
 			}
 		})
 	}
+}
+
+func TestProbeOptions(t *testing.T) {
+	t.Parallel()
+	options, err := parseOptions([]string{"--version", "v2.7.5", "--probe", "--openapi", "contract.json"})
+	require.NoError(t, err)
+	require.True(t, options.Probe)
+	require.Equal(t, "v2.7.5", options.Release)
+	require.Equal(t, "contract.json", options.OpenAPI)
 }
 
 func TestSnapshotProtectsSourceAlbumCover(t *testing.T) {

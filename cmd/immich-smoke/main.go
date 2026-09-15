@@ -31,48 +31,98 @@ import (
 	"github.com/uptrace/bun"
 )
 
-func parseRelease(args []string) (string, error) {
+type options struct {
+	Release, OpenAPI, PermissionFailure string
+	Probe, ML                           bool
+}
+
+func parseOptions(args []string) (options, error) {
 	flags := flag.NewFlagSet("immich-smoke", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
-	release := flags.String("version", fixture.Release, "exact stable Immich release tag")
+	var o options
+	flags.StringVar(&o.Release, "version", fixture.Release, "exact stable Immich release tag")
+	flags.StringVar(&o.OpenAPI, "openapi", "", "official release OpenAPI document")
+	flags.StringVar(&o.PermissionFailure, "permission-failure", "", "exercise a missing key permission")
+	flags.BoolVar(&o.Probe, "probe", false, "test APIs outside the declared range without changing production policy")
+	flags.BoolVar(&o.ML, "ml", false, "run the separate machine-learning smoke")
 	if err := flags.Parse(args); err != nil {
-		return "", err
+		return o, err
 	}
-	if flags.NArg() != 0 || !regexp.MustCompile(`^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`).MatchString(*release) {
-		return "", fmt.Errorf("version must be an exact stable tag such as v3.1.0")
+	if flags.NArg() != 0 || !regexp.MustCompile(`^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`).MatchString(o.Release) {
+		return o, fmt.Errorf("version must be an exact stable tag such as v3.2.1")
 	}
-	return *release, nil
+	return o, nil
 }
 
 func main() {
-	release, err := parseRelease(os.Args[1:])
+	o, err := parseOptions(os.Args[1:])
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	ctx, cancel := context.WithTimeout(ctx, 8*time.Minute)
+	budget := 8 * time.Minute
+	if o.ML {
+		budget = 20 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
-	if err := run(ctx, release); err != nil {
+	if err := run(ctx, o); err != nil {
 		fmt.Fprintln(os.Stderr, "Immich smoke failed:", err)
 		os.Exit(1)
 	}
-	fmt.Printf("PASS Immich %s: manual faces, local dates, scoped access, preview and viewer thumbnail bytes, original downloads, ranged video playback, original-file range probing with bundled ffprobe chapters, publish/unpublish, shared Album deletion, and unchanged source albums\n", release)
+	label := "PASS"
+	if o.Probe {
+		label = "PASS PROBE, not a support declaration"
+	}
+	fmt.Printf("%s Immich %s: core compatibility checks completed\n", label, o.Release)
 }
 
-func run(ctx context.Context, release string) (returnErr error) {
+func run(ctx context.Context, o options) (returnErr error) {
+	release := o.Release
 	baseURL, databaseURL := os.Getenv("MEMENTO_SMOKE_IMMICH_URL"), os.Getenv("MEMENTO_SMOKE_DATABASE_URL")
 	if os.Getenv("MEMENTO_SMOKE_DISPOSABLE") != "1" || baseURL == "" || databaseURL == "" {
 		return fmt.Errorf("run mise test:immich to provision disposable services")
 	}
-	library, err := fixture.Setup(ctx, baseURL, release)
+	if o.OpenAPI != "" {
+		document, err := os.Open(o.OpenAPI)
+		if err != nil {
+			return fmt.Errorf("open OpenAPI document")
+		}
+		preflightErr := CheckOpenAPI(document, release)
+		_ = document.Close()
+		if preflightErr != nil {
+			if !o.Probe {
+				return preflightErr
+			}
+			fmt.Println(preflightErr)
+			defer func() { returnErr = errors.Join(preflightErr, returnErr) }()
+		} else {
+			fmt.Printf("PASS OpenAPI %s: shipped adapter contract\n", release)
+		}
+	}
+	setup := fixture.Setup
+	if o.Probe {
+		setup = fixture.SetupProbe
+	}
+	library, err := setup(ctx, baseURL, release)
 	if err != nil {
 		return err
 	}
 	source := library.Source()
 	source.Probe = ffprobe.Command{}
-	if err := source.CheckImport(ctx); err != nil {
+	if o.PermissionFailure != "" {
+		if err := library.PermissionFailure(ctx, o.PermissionFailure); err != nil {
+			return err
+		}
+		return fmt.Errorf("omitting %s unexpectedly permitted the operation", o.PermissionFailure)
+	}
+	var importSource immich.Library = source
+	if o.Probe {
+		fmt.Printf("PROBE %s: production version gate: %v; API results do not declare support\n", release, source.CheckImport(ctx))
+		importSource = probeSource{source}
+	} else if err := source.CheckImport(ctx); err != nil {
 		return err
 	}
 	fmt.Printf("Immich %s: non-admin fixture key grants only album.read, asset.download, asset.read, asset.view, face.read, person.read\n", release)
@@ -126,7 +176,7 @@ func run(ctx context.Context, release string) (returnErr error) {
 		return err
 	}
 	enqueued := 0
-	module := publishing.New(db, source, func(context.Context, bun.Tx, string) error {
+	module := publishing.New(db, importSource, func(context.Context, bun.Tx, string) error {
 		enqueued++
 		return nil
 	})
@@ -240,6 +290,19 @@ func run(ctx context.Context, release string) (returnErr error) {
 	}
 	if !reflect.DeepEqual(before, after) {
 		return fmt.Errorf("source Immich title, description, cover, or membership changed")
+	}
+	if err := library.VerifyPermissions(ctx); err != nil {
+		return err
+	}
+	fmt.Println("Permissions: all six omitted grants produce actionable adapter failures")
+	if err := verifyCases(ctx, db, library, importSource); err != nil {
+		return fmt.Errorf("additional media cases: %w", err)
+	}
+	if o.ML {
+		if err := library.RunML(ctx); err != nil {
+			return err
+		}
+		fmt.Println("ML: a machine-learning face was detected on the known portrait")
 	}
 	return nil
 }
