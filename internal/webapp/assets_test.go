@@ -150,6 +150,21 @@ func TestHandlerReturnsNoIndexBodyForHead(t *testing.T) {
 	assert.Equal(t, "text/html; charset=utf-8", recorder.Header().Get("Content-Type"))
 }
 
+func TestAppShellHeaders(t *testing.T) {
+	t.Parallel()
+	handler := testHandler(t, nil)
+	for _, route := range []string{"/", "/index.html", "/sign-in", "/albums/example"} {
+		for _, method := range []string{http.MethodGet, http.MethodHead} {
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, httptest.NewRequest(method, route, nil))
+			require.Equal(t, http.StatusOK, recorder.Code, route)
+			require.Equal(t, "frame-ancestors 'none'", recorder.Header().Get("Content-Security-Policy"), route)
+			require.Equal(t, "no-referrer", recorder.Header().Get("Referrer-Policy"), route)
+			require.Equal(t, "no-cache", recorder.Header().Get("Cache-Control"), route)
+		}
+	}
+}
+
 func TestHandlerReturnsNotFoundForMissingAsset(t *testing.T) {
 	t.Parallel()
 

@@ -266,6 +266,30 @@ which adds roughly 110 MB because Alpine ships no ffprobe-only package.
 `FFPROBE_PATH` names another binary when the process runs outside the image,
 and `FFPROBE_CONCURRENCY` (default `1`) bounds how many probes run at once.
 
+### Deploy behind a reverse proxy
+
+A reverse proxy that terminates TLS is required for deployment. Set
+`PUBLIC_URL` to the `https://` address served by the proxy, for example
+`https://photos.example.com`. Memento serves HTTP on the internal port;
+the proxy owns certificates, HTTP-to-HTTPS redirects, and HSTS. Plain HTTP
+session cookies are supported only for the exact `localhost` hostname.
+
+For example, with [Nginx Proxy Manager](https://nginxproxymanager.com/guide/):
+
+1. Create a Proxy Host for `photos.example.com` and forward it using the
+   `http` scheme to Memento's container hostname and port `8080` on their
+   shared Docker network.
+2. Select or request a certificate in the SSL tab and enable Force SSL.
+   Configure HSTS there if you want it for this host.
+3. Set `PUBLIC_URL=https://photos.example.com` on Memento.
+
+Memento gzip-compresses API JSON, the app shell, and frontend bundles when
+the browser accepts gzip. No proxy gzip tuning is needed. Nginx's
+[default gzip types](https://nginx.org/en/docs/http/ngx_http_gzip_module.html#gzip_types)
+cover only HTML, which leaves JSON, JavaScript, and CSS uncompressed when
+relying on the proxy alone. Media and playback routes bypass Memento's
+compression to preserve byte ranges and private versioned caching.
+
 ### Connect Immich for imports
 
 The initial import gate supports Immich **3.0.x and 3.1.x**. Other versions can
