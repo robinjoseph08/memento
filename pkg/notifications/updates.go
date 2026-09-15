@@ -24,8 +24,9 @@ const (
 	AlbumNew     = "new"
 	AlbumUpdated = "updated"
 
-	ResultNotified = "notified"
-	ResultSkipped  = "skipped"
+	ResultNotified  = "notified"
+	ResultDismissed = "dismissed"
+	ResultSkipped   = "skipped"
 
 	// payloadVersion names the stored JSON shape. Bump it when the shape
 	// changes and keep decoding the older versions.
@@ -207,11 +208,20 @@ func (m *Module) PreviewUpdates(ctx context.Context) (Preview, error) {
 }
 
 // ApproveUpdates creates one immutable notification per reviewed Person and
-// records exactly its Album Entries as announced, all in one transaction. A row
-// whose content no longer matches its token is skipped with the reason, never
-// reconciled into something the Curator did not review; the Person rows are
-// locked so two overlapping approvals cannot both announce the same content.
+// records exactly its Album Entries as announced, all in one transaction.
 func (m *Module) ApproveUpdates(ctx context.Context, request ApproveRequest) (Approval, error) {
+	return m.resolveUpdates(ctx, request, false)
+}
+
+// DismissUpdates advances the baseline for the selected, reviewed changes
+// without creating a notification or email. Excluded Albums stay pending.
+func (m *Module) DismissUpdates(ctx context.Context, request DismissRequest) (Approval, error) {
+	return m.resolveUpdates(ctx, ApproveRequest{People: request.People}, true)
+}
+
+// resolveUpdates shares the review check and Person locks between sending and
+// dismissing so overlapping actions cannot consume the same changes twice.
+func (m *Module) resolveUpdates(ctx context.Context, request ApproveRequest, dismiss bool) (Approval, error) {
 	result := Approval{People: []PersonResult{}}
 	// The binder already checks shape; module callers get the same guard, and
 	// the same Person listed twice is an invariant only the module can see.
@@ -239,7 +249,7 @@ func (m *Module) ApproveUpdates(ctx context.Context, request ApproveRequest) (Ap
 		}
 		now := m.now().UTC()
 		for _, row := range request.People {
-			outcome, err := m.approvePerson(ctx, tx, row, note, now)
+			outcome, err := m.resolvePerson(ctx, tx, row, note, now, dismiss)
 			if err != nil {
 				return err
 			}
@@ -250,7 +260,7 @@ func (m *Module) ApproveUpdates(ctx context.Context, request ApproveRequest) (Ap
 	return result, transactionError(ctx, err)
 }
 
-func (m *Module) approvePerson(ctx context.Context, tx bun.Tx, row ApprovePerson, note string, now time.Time) (PersonResult, error) {
+func (m *Module) resolvePerson(ctx context.Context, tx bun.Tx, row ApprovePerson, note string, now time.Time, dismiss bool) (PersonResult, error) {
 	outcome := PersonResult{PersonID: row.PersonID, Status: ResultSkipped}
 	var person models.Person
 	err := notifiablePeople(tx, &person).Where("person.id = ?", row.PersonID).Scan(ctx)
@@ -271,7 +281,7 @@ func (m *Module) approvePerson(ctx context.Context, tx bun.Tx, row ApprovePerson
 		return outcome, err
 	}
 	if len(albums) == 0 {
-		outcome.Message = "Nothing new to announce. These updates were already sent."
+		outcome.Message = "Nothing new to announce. These updates were already sent or dismissed."
 		return outcome, nil
 	}
 	token, err := reviewToken(row.PersonID, albums)
@@ -279,7 +289,7 @@ func (m *Module) approvePerson(ctx context.Context, tx bun.Tx, row ApprovePerson
 		return outcome, err
 	}
 	if token != row.ReviewToken {
-		outcome.Message = "Their updates changed since this preview. Review the updates again to send them."
+		outcome.Message = "Their updates changed since this preview. Review the updates again."
 		return outcome, nil
 	}
 	excluded := map[string]bool{}
@@ -288,6 +298,10 @@ func (m *Module) approvePerson(ctx context.Context, tx bun.Tx, row ApprovePerson
 	}
 	body := payload{Albums: []NotificationAlbum{}, Note: note}
 	notification := models.UpdateNotification{ID: models.NewUUIDv7(), PersonID: person.ID, Version: payloadVersion, CreatedAt: now}
+	var notificationID *models.UUID
+	if !dismiss {
+		notificationID = &notification.ID
+	}
 	albumRows := []models.AnnouncedAlbum{}
 	entryRows := []models.AnnouncedEntry{}
 	for _, album := range albums {
@@ -305,7 +319,7 @@ func (m *Module) approvePerson(ctx context.Context, tx bun.Tx, row ApprovePerson
 			if err != nil {
 				return outcome, errorstack.Capture(err)
 			}
-			entryRows = append(entryRows, models.AnnouncedEntry{PersonID: person.ID, EntryID: models.UUID(entryID), NotificationID: &notification.ID, AnnouncedAt: now})
+			entryRows = append(entryRows, models.AnnouncedEntry{PersonID: person.ID, EntryID: models.UUID(entryID), NotificationID: notificationID, AnnouncedAt: now})
 		}
 		outcome.AlbumCount++
 		outcome.PhotoCount += album.PhotoCount
@@ -315,33 +329,10 @@ func (m *Module) approvePerson(ctx context.Context, tx bun.Tx, row ApprovePerson
 		outcome.Message = "Every update for this person was excluded."
 		return outcome, nil
 	}
-	notification.Payload, err = json.Marshal(body)
-	if err != nil {
-		return outcome, errorstack.Capture(err)
-	}
-	// Email is optional and commits with the notification. The record is
-	// queued now; eligibility and content are checked again when it is sent.
-	if m.mailer != nil && emailEligible(person) {
-		token, err := m.unsubscribeToken(ctx, tx, person.ID, now)
-		if err != nil {
+	if !dismiss {
+		if err := m.createNotification(ctx, tx, person, body, &notification, &outcome, now); err != nil {
 			return outcome, err
 		}
-		subject, text := renderUpdateEmail(m.PublicURL, person.DisplayName, body.Albums, note, token)
-		delivery, err := m.Enqueue(ctx, tx, Message{Kind: KindUpdate, To: person.UpdateEmail, Subject: subject, Body: text})
-		if err != nil {
-			return outcome, err
-		}
-		deliveryID, err := uuid.Parse(delivery.ID)
-		if err != nil {
-			return outcome, errorstack.Capture(err)
-		}
-		id := models.UUID(deliveryID)
-		notification.DeliveryID = &id
-		outcome.Email = person.UpdateEmail
-		outcome.Delivery = &delivery
-	}
-	if _, err := tx.NewInsert().Model(&notification).Exec(ctx); err != nil {
-		return outcome, errorstack.CaptureContext(ctx, err)
 	}
 	// An updated Album already has its association; a new one gets it now.
 	if _, err := tx.NewInsert().Model(&albumRows).On("CONFLICT DO NOTHING").Exec(ctx); err != nil {
@@ -352,9 +343,44 @@ func (m *Module) approvePerson(ctx context.Context, tx bun.Tx, row ApprovePerson
 	if _, err := tx.NewInsert().Model(&entryRows).Exec(ctx); err != nil {
 		return outcome, errorstack.CaptureContext(ctx, fmt.Errorf("announce entries for %s: %w", person.ID, err))
 	}
-	outcome.Status = ResultNotified
-	outcome.NotificationID = notification.ID.String()
+	if dismiss {
+		outcome.Status = ResultDismissed
+	} else {
+		outcome.Status = ResultNotified
+		outcome.NotificationID = notification.ID.String()
+	}
 	return outcome, nil
+}
+
+// createNotification stores the in-app summary and queues optional email in
+// the same transaction as the baseline change.
+func (m *Module) createNotification(ctx context.Context, tx bun.Tx, person models.Person, body payload, notification *models.UpdateNotification, outcome *PersonResult, now time.Time) error {
+	data, err := json.Marshal(body)
+	if err != nil {
+		return errorstack.Capture(err)
+	}
+	notification.Payload = data
+	if m.mailer != nil && emailEligible(person) {
+		token, err := m.unsubscribeToken(ctx, tx, person.ID, now)
+		if err != nil {
+			return err
+		}
+		subject, text := renderUpdateEmail(m.PublicURL, person.DisplayName, body.Albums, body.Note, token)
+		delivery, err := m.Enqueue(ctx, tx, Message{Kind: KindUpdate, To: person.UpdateEmail, Subject: subject, Body: text})
+		if err != nil {
+			return err
+		}
+		deliveryID, err := uuid.Parse(delivery.ID)
+		if err != nil {
+			return errorstack.Capture(err)
+		}
+		id := models.UUID(deliveryID)
+		notification.DeliveryID = &id
+		outcome.Email = person.UpdateEmail
+		outcome.Delivery = &delivery
+	}
+	_, err = tx.NewInsert().Model(notification).Exec(ctx)
+	return errorstack.CaptureContext(ctx, err)
 }
 
 func projectNotification(row models.UpdateNotification) (Notification, error) {

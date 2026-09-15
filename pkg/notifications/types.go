@@ -63,9 +63,14 @@ type ApproveRequest struct {
 	People []ApprovePerson `json:"people" validate:"required,min=1,dive"`
 }
 
-// PersonResult reports one approval outcome. Status is notified or skipped;
-// Message explains a skip in Curator-facing words. Email and Delivery are set
-// only when an email was queued; otherwise the update is in app only.
+// DismissRequest selects reviewed changes to add to the baseline silently.
+type DismissRequest struct {
+	People []ApprovePerson `json:"people" validate:"required,min=1,dive"`
+}
+
+// PersonResult reports one review outcome. Status is notified, dismissed, or
+// skipped; Message explains a skip in Curator-facing words. Email and Delivery
+// are set only when an email was queued.
 type PersonResult struct {
 	PersonID       string    `json:"person_id"`
 	DisplayName    string    `json:"display_name"`
@@ -99,6 +104,7 @@ type UnsubscribeStatus struct {
 	Subscribed  bool   `json:"subscribed"`
 }
 
+// Approval reports the outcome of sending or dismissing reviewed updates.
 type Approval struct {
 	People []PersonResult `json:"people"`
 }

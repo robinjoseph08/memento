@@ -5,6 +5,7 @@ import type {
   Approval,
   ApproveRequest,
   Delivery,
+  DismissRequest,
   Notification,
   NotificationList,
   Preview,
@@ -99,6 +100,19 @@ export function useApproveUpdates() {
     mutationKey: scope,
     mutationFn: (body: ApproveRequest) =>
       request<Approval>("/api/curator/notifications/approve", { body }),
+    onSuccess: () =>
+      client.invalidateQueries({ queryKey: [...scope, "dashboard"] }),
+  });
+}
+
+// Like approval, dismissal keeps the reviewed snapshot until "Check again".
+export function useDismissUpdates() {
+  const client = useQueryClient();
+  const scope = usePrivateScope();
+  return useMutation({
+    mutationKey: scope,
+    mutationFn: (body: DismissRequest) =>
+      request<Approval>("/api/curator/notifications/dismiss", { body }),
     onSuccess: () =>
       client.invalidateQueries({ queryKey: [...scope, "dashboard"] }),
   });

@@ -27,6 +27,11 @@ func (f *fakeUseCases) ApproveUpdates(_ context.Context, request notifications.A
 	f.calls = append(f.calls, "approve:"+request.Note+":"+request.People[0].PersonID+":"+strings.Join(request.People[0].ExcludedAlbumIDs, ","))
 	return notifications.Approval{People: []notifications.PersonResult{{PersonID: request.People[0].PersonID, Status: notifications.ResultNotified}}}, nil
 }
+func (f *fakeUseCases) DismissUpdates(_ context.Context, request notifications.DismissRequest) (notifications.Approval, error) {
+	row := request.People[0]
+	f.calls = append(f.calls, "dismiss:"+row.PersonID+":"+row.ReviewToken+":"+strings.Join(row.ExcludedAlbumIDs, ","))
+	return notifications.Approval{People: []notifications.PersonResult{{PersonID: row.PersonID, Status: notifications.ResultDismissed}}}, nil
+}
 func (f *fakeUseCases) ListNotifications(_ context.Context, personID string) (notifications.NotificationList, error) {
 	f.calls = append(f.calls, "list:"+personID)
 	return notifications.NotificationList{Notifications: []notifications.Notification{{ID: "n1"}}, Unread: 1}, nil
@@ -72,21 +77,29 @@ func TestNotificationHTTPRoutesBindAndAuthorize(t *testing.T) {
 		call               string
 		contains           string
 	}{
-		"curator previews":            {http.MethodPost, "/api/curator/notifications/preview", `{}`, true, 200, "preview", `"review_token":"token"`},
-		"member cannot preview":       {http.MethodPost, "/api/curator/notifications/preview", `{}`, false, 403, "", "forbidden"},
-		"curator approves":            {http.MethodPost, "/api/curator/notifications/approve", `{"note":" Hi ","people":[{"person_id":"` + personUUID + `","review_token":"token","excluded_album_ids":["` + personUUID + `"]}]}`, true, 200, "approve:Hi:" + personUUID + ":" + personUUID, `"status":"notified"`},
-		"approval needs people":       {http.MethodPost, "/api/curator/notifications/approve", `{"note":"","people":[]}`, true, 422, "", "Include at least one person."},
-		"approval rejects bad person": {http.MethodPost, "/api/curator/notifications/approve", `{"people":[{"person_id":"nope","review_token":"token"}]}`, true, 422, "", "Review the updates again before sending."},
-		"member lists own":            {http.MethodGet, "/api/notifications", "", false, 200, "list:" + personUUID, `"unread":1`},
-		"member marks one read":       {http.MethodPost, "/api/notifications/n1/read", `{}`, false, 200, "read:" + personUUID + ":n1", `"id":"n1"`},
-		"missing notification":        {http.MethodPost, "/api/notifications/missing/read", `{}`, false, 404, "read:" + personUUID + ":missing", "not_found"},
-		"member marks all read":       {http.MethodPost, "/api/notifications/read-all", `{}`, false, 200, "read-all:" + personUUID, `"unread":0`},
-		"curator watches deliveries":  {http.MethodGet, "/api/curator/notifications/deliveries?id=d1&id=d2", "", true, 200, "deliveries:d1,d2", `"status":"delivered"`},
-		"member cannot watch":         {http.MethodGet, "/api/curator/notifications/deliveries?id=d1", "", false, 403, "", "forbidden"},
-		"curator retries delivery":    {http.MethodPost, "/api/curator/notifications/deliveries/d1/retry", `{}`, true, 200, "retry:d1", `"status":"queued"`},
-		"unsubscribe link reads only": {http.MethodGet, "/api/unsubscribe?token=token-1", "", false, 200, "unsubscribe-status:token-1", `"subscribed":true`},
-		"unknown unsubscribe link":    {http.MethodGet, "/api/unsubscribe?token=missing", "", false, 404, "unsubscribe-status:missing", "not_found"},
-		"unsubscribe confirms":        {http.MethodPost, "/api/unsubscribe?token=token-1", `{}`, false, 200, "unsubscribe:token-1", `"subscribed":false`},
+		"curator previews":                 {http.MethodPost, "/api/curator/notifications/preview", `{}`, true, 200, "preview", `"review_token":"token"`},
+		"member cannot preview":            {http.MethodPost, "/api/curator/notifications/preview", `{}`, false, 403, "", "forbidden"},
+		"curator approves":                 {http.MethodPost, "/api/curator/notifications/approve", `{"note":" Hi ","people":[{"person_id":"` + personUUID + `","review_token":"token","excluded_album_ids":["` + personUUID + `"]}]}`, true, 200, "approve:Hi:" + personUUID + ":" + personUUID, `"status":"notified"`},
+		"approval needs people":            {http.MethodPost, "/api/curator/notifications/approve", `{"note":"","people":[]}`, true, 422, "", "Include at least one person."},
+		"approval rejects bad person":      {http.MethodPost, "/api/curator/notifications/approve", `{"people":[{"person_id":"nope","review_token":"token"}]}`, true, 422, "", "Review the updates again before continuing."},
+		"curator dismisses":                {http.MethodPost, "/api/curator/notifications/dismiss", `{"people":[{"person_id":"` + personUUID + `","review_token":"token","excluded_album_ids":["` + personUUID + `"]}]}`, true, 200, "dismiss:" + personUUID + ":token:" + personUUID, `"status":"dismissed"`},
+		"member cannot dismiss":            {http.MethodPost, "/api/curator/notifications/dismiss", `{}`, false, 403, "", "forbidden"},
+		"dismissal needs people":           {http.MethodPost, "/api/curator/notifications/dismiss", `{"people":[]}`, true, 422, "", "Include at least one person."},
+		"dismissal rejects missing people": {http.MethodPost, "/api/curator/notifications/dismiss", `{}`, true, 422, "", "Include at least one person."},
+		"dismissal rejects bad person":     {http.MethodPost, "/api/curator/notifications/dismiss", `{"people":[{"person_id":"nope","review_token":"token"}]}`, true, 422, "", "Review the updates again before continuing."},
+		"dismissal needs review token":     {http.MethodPost, "/api/curator/notifications/dismiss", `{"people":[{"person_id":"` + personUUID + `"}]}`, true, 422, "", "Review the updates again before continuing."},
+		"dismissal rejects bad exclusion":  {http.MethodPost, "/api/curator/notifications/dismiss", `{"people":[{"person_id":"` + personUUID + `","review_token":"token","excluded_album_ids":["nope"]}]}`, true, 422, "", `"excluded_album_ids[0]"`},
+		"dismissal rejects malformed JSON": {http.MethodPost, "/api/curator/notifications/dismiss", `{"people":`, true, 400, "", ""},
+		"member lists own":                 {http.MethodGet, "/api/notifications", "", false, 200, "list:" + personUUID, `"unread":1`},
+		"member marks one read":            {http.MethodPost, "/api/notifications/n1/read", `{}`, false, 200, "read:" + personUUID + ":n1", `"id":"n1"`},
+		"missing notification":             {http.MethodPost, "/api/notifications/missing/read", `{}`, false, 404, "read:" + personUUID + ":missing", "not_found"},
+		"member marks all read":            {http.MethodPost, "/api/notifications/read-all", `{}`, false, 200, "read-all:" + personUUID, `"unread":0`},
+		"curator watches deliveries":       {http.MethodGet, "/api/curator/notifications/deliveries?id=d1&id=d2", "", true, 200, "deliveries:d1,d2", `"status":"delivered"`},
+		"member cannot watch":              {http.MethodGet, "/api/curator/notifications/deliveries?id=d1", "", false, 403, "", "forbidden"},
+		"curator retries delivery":         {http.MethodPost, "/api/curator/notifications/deliveries/d1/retry", `{}`, true, 200, "retry:d1", `"status":"queued"`},
+		"unsubscribe link reads only":      {http.MethodGet, "/api/unsubscribe?token=token-1", "", false, 200, "unsubscribe-status:token-1", `"subscribed":true`},
+		"unknown unsubscribe link":         {http.MethodGet, "/api/unsubscribe?token=missing", "", false, 404, "unsubscribe-status:missing", "not_found"},
+		"unsubscribe confirms":             {http.MethodPost, "/api/unsubscribe?token=token-1", `{}`, false, 200, "unsubscribe:token-1", `"subscribed":false`},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()

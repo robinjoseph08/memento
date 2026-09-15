@@ -1,9 +1,10 @@
 import { ChevronDown } from "lucide-react";
-import { useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 
 import {
   useApproveUpdates,
   useDeliveries,
+  useDismissUpdates,
   useUpdatePreview,
 } from "../../hooks/queries/notifications";
 import { useUnsavedChanges } from "../../hooks/use-unsaved-changes";
@@ -19,6 +20,7 @@ import type {
 } from "../../types/generated/notifications";
 import { MediaCounts } from "../albums/media-counts";
 import { countLabel } from "../albums/moment-labels";
+import { ConfirmAction } from "../forms/confirm-action";
 import {
   FieldError,
   Form,
@@ -41,7 +43,8 @@ export function UpdatesPage() {
         Everyone below can now see photos or videos they have not been told
         about. Review what each person would hear about, leave anyone out, add a
         note, and send. Each person gets an update in Memento, and an email too
-        when they asked for one.
+        when they asked for one. For changes that do not need an announcement,
+        select them and choose Dismiss instead.
       </p>
       {preview.isPending && (
         <p className="mt-9" role="status">
@@ -90,7 +93,7 @@ function albumCounts(albums: NotificationAlbum[]) {
 
 // Edits survive "Check again": the note stays, and exclusions are keyed by
 // Person and Album IDs so they still apply to rows the new preview repeats.
-// Only sending clears them.
+// Sending clears the note and selections. Dismissing keeps the note for later.
 function PreviewForm({
   preview,
   onReview,
@@ -103,6 +106,8 @@ function PreviewForm({
   refreshError: unknown;
 }) {
   const approve = useApproveUpdates();
+  const dismiss = useDismissUpdates();
+  const pending = approve.isPending || dismiss.isPending;
   const [note, setNote] = useState("");
   const [excludedPeople, setExcludedPeople] = useState<Set<string>>(
     () => new Set(),
@@ -121,14 +126,20 @@ function PreviewForm({
   );
   const edited =
     note.trim() !== "" || excludedPeople.size > 0 || excludedAlbums.size > 0;
-  useUnsavedChanges((edited || approve.isPending) && !approve.isSuccess);
-  if (approve.isSuccess) {
+  useUnsavedChanges(
+    !approve.isSuccess &&
+      (dismiss.isSuccess ? note.trim() !== "" : edited || pending),
+  );
+  const outcome = dismiss.isSuccess ? dismiss.data : approve.data;
+  if (outcome) {
     return (
       <ApprovalResult
-        approval={approve.data}
+        approval={outcome}
+        dismissed={dismiss.isSuccess}
         onReview={() => {
+          if (approve.isSuccess) setNote("");
           approve.reset();
-          setNote("");
+          dismiss.reset();
           setExcludedPeople(new Set());
           setExcludedAlbums(new Set());
           onReview();
@@ -165,27 +176,25 @@ function PreviewForm({
       return next;
     });
   }
+  const selectedPeople = included.map((person) => ({
+    person_id: person.person_id,
+    review_token: person.review_token,
+    excluded_album_ids: person.albums
+      .filter((album) => excludedAlbums.has(`${person.person_id}:${album.id}`))
+      .map((album) => album.id),
+  }));
   return (
     <Form
-      aria-busy={approve.isPending}
+      aria-busy={pending}
       aria-label="Send updates"
       className="mt-9"
       error={approve.error}
       onSubmit={(event) => {
+        // The confirmation form is portalled, but its submit still bubbles here.
+        if (event.target !== event.currentTarget) return;
         event.preventDefault();
-        if (approve.isPending || included.length === 0) return;
-        approve.mutate({
-          note,
-          people: included.map((person) => ({
-            person_id: person.person_id,
-            review_token: person.review_token,
-            excluded_album_ids: person.albums
-              .filter((album) =>
-                excludedAlbums.has(`${person.person_id}:${album.id}`),
-              )
-              .map((album) => album.id),
-          })),
-        });
+        if (pending || included.length === 0) return;
+        approve.mutate({ note, people: selectedPeople });
       }}
     >
       {refreshError !== null && (
@@ -194,7 +203,7 @@ function PreviewForm({
           {errorMessage(refreshError)}
         </p>
       )}
-      <fieldset disabled={approve.isPending}>
+      <fieldset disabled={pending}>
         <legend className={sectionHeadingClass}>
           {countLabel(included.length, "person", "people")} to update
         </legend>
@@ -248,6 +257,14 @@ function PreviewForm({
               ? "Sending…"
               : `Send updates to ${countLabel(included.length, "person", "people")}`}
           </Button>
+          <ConfirmAction
+            description={`Clear the selected updates for ${countLabel(included.length, "person", "people")} without sending an email or creating an update in Memento. Their access stays the same. Unchecked updates stay pending, and newly shared photos and videos can still appear in future updates.`}
+            disabled={included.length === 0 || approve.isPending || refreshing}
+            error={dismiss.error}
+            label="Dismiss selected updates"
+            onConfirm={() => dismiss.mutateAsync({ people: selectedPeople })}
+            pending={dismiss.isPending}
+          />
           <Button disabled={refreshing} onClick={onReview} variant="ghost">
             {refreshing ? "Checking…" : "Check again"}
           </Button>
@@ -377,17 +394,22 @@ function PersonRow({
 
 function ApprovalResult({
   approval,
+  dismissed,
   onReview,
   refreshing,
 }: {
   approval: Approval;
+  dismissed: boolean;
   onReview: () => void;
   refreshing: boolean;
 }) {
-  const sent = approval.people.filter((person) => person.status === "notified");
-  const skipped = approval.people.filter(
-    (person) => person.status !== "notified",
-  );
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  useEffect(() => {
+    headingRef.current?.focus();
+  }, []);
+  const status = dismissed ? "dismissed" : "notified";
+  const sent = approval.people.filter((person) => person.status === status);
+  const skipped = approval.people.filter((person) => person.status !== status);
   const emailed = sent.filter((person) => person.delivery);
   // Email settles in the background; watch it here until every message is
   // sent, failed, or needs a decision.
@@ -396,17 +418,28 @@ function ApprovalResult({
   );
   return (
     <section aria-labelledby="updates-result" className="mt-9">
-      <h2 className={sectionHeadingClass} id="updates-result">
-        {sent.length === 0
-          ? "No updates were sent"
-          : `Updates sent to ${countLabel(sent.length, "person", "people")}`}
+      <h2
+        className={sectionHeadingClass}
+        id="updates-result"
+        ref={headingRef}
+        tabIndex={-1}
+      >
+        {dismissed
+          ? sent.length === 0
+            ? "No updates were dismissed"
+            : `Updates dismissed for ${countLabel(sent.length, "person", "people")}`
+          : sent.length === 0
+            ? "No updates were sent"
+            : `Updates sent to ${countLabel(sent.length, "person", "people")}`}
       </h2>
       <p className="mt-3 max-w-[640px] text-sm text-muted" role="status">
-        {sent.length === 0
-          ? "Nothing new was announced. Check again for the current updates."
-          : emailed.length === 0
-            ? "Each person now has an update in Memento."
-            : `Each person now has an update in Memento. ${countLabel(emailed.length, "email is", "emails are")} on the way; failed or uncertain email also shows on your home page.`}
+        {dismissed
+          ? "No notifications or emails were sent. Access is unchanged. Check again for any remaining updates."
+          : sent.length === 0
+            ? "Nothing new was announced. Check again for the current updates."
+            : emailed.length === 0
+              ? "Each person now has an update in Memento."
+              : `Each person now has an update in Memento. ${countLabel(emailed.length, "email is", "emails are")} on the way; failed or uncertain email also shows on your home page.`}
       </p>
       <ul className="mt-5 divide-y divide-border border-y border-border">
         {sent.map((person) => (
@@ -425,7 +458,10 @@ function ApprovalResult({
             <span className="font-medium">
               {person.display_name || "Someone"}
             </span>
-            <span className="text-muted"> · Not sent. {person.message}</span>
+            <span className="text-muted">
+              {dismissed ? " · Not dismissed. " : " · Not sent. "}
+              {person.message}
+            </span>
           </li>
         ))}
       </ul>
@@ -464,7 +500,11 @@ function SentRow({
           recipient={person.email}
         />
       ) : (
-        <p className="mt-1 text-xs text-muted">In app only</p>
+        <p className="mt-1 text-xs text-muted">
+          {person.status === "dismissed"
+            ? "No notification sent"
+            : "In app only"}
+        </p>
       )}
     </li>
   );

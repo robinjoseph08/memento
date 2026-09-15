@@ -32,7 +32,7 @@ type AnnouncedAlbum struct {
 
 // AnnouncedEntry is the lifetime association between a Person and an Album
 // Entry. NotificationID names the Update Notification that announced it, and is
-// nil for content that entered the Person's Onboarding baseline.
+// nil for content added at Onboarding or dismissed without a notification.
 type AnnouncedEntry struct {
 	bun.BaseModel  `bun:"table:announced_entries,alias:announced_entry"`
 	PersonID       UUID  `bun:"person_id,pk,type:uuid"`

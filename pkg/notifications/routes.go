@@ -11,6 +11,7 @@ func RegisterRoutes(e *echo.Echo, module UseCases, requirePerson, requireCurator
 	h := &handlers{module: module}
 	e.POST("/api/curator/notifications/preview", h.preview, requireCurator)
 	e.POST("/api/curator/notifications/approve", h.approve, requireCurator)
+	e.POST("/api/curator/notifications/dismiss", h.dismiss, requireCurator)
 	e.GET("/api/curator/notifications/deliveries", h.deliveries, requireCurator)
 	e.POST("/api/curator/notifications/deliveries/:id/retry", h.retryDelivery, requireCurator)
 	e.GET("/api/notifications", h.list, requirePerson)
