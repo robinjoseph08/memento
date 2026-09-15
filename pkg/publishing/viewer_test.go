@@ -3,6 +3,7 @@ package publishing_test
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -106,9 +107,9 @@ func TestViewerPagesUseLocalCaptureTimeAndEntryIDWithoutPrivateMetadata(t *testi
 	require.Equal(t, 502, library.PhotoCount)
 	require.Equal(t, 1, library.VideoCount)
 	require.Len(t, library.Days, 1)
-	for i, ratio := range library.Days[0].PhotoRatios {
-		require.Equal(t, viewed.Days[0].PhotoRatios[501-i], ratio)
-	}
+	expectedRatios := slices.Clone(viewed.Days[0].PhotoRatios)
+	slices.Reverse(expectedRatios)
+	require.Equal(t, expectedRatios, library.Days[0].PhotoRatios)
 	libraryVideos, err := module.ViewLibraryEntries(t.Context(), curator.ID.String(), "VIDEO", publishing.EntryPageRequest{})
 	require.NoError(t, err)
 	require.Equal(t, videos, libraryVideos)
