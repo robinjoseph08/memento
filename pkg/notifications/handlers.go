@@ -13,6 +13,7 @@ import (
 type UseCases interface {
 	PreviewUpdates(context.Context) (Preview, error)
 	ApproveUpdates(context.Context, ApproveRequest) (Approval, error)
+	DismissUpdates(context.Context, DismissRequest) (Approval, error)
 	ListNotifications(ctx context.Context, personID string) (NotificationList, error)
 	MarkRead(ctx context.Context, personID, notificationID string) (Notification, error)
 	MarkAllRead(ctx context.Context, personID string) (NotificationList, error)
@@ -51,6 +52,15 @@ func (h *handlers) approve(c *echo.Context) error {
 		return err
 	}
 	result, err := h.module.ApproveUpdates(c.Request().Context(), request)
+	return respond(c, result, err)
+}
+
+func (h *handlers) dismiss(c *echo.Context) error {
+	var request DismissRequest
+	if err := c.Bind(&request); err != nil {
+		return err
+	}
+	result, err := h.module.DismissUpdates(c.Request().Context(), request)
 	return respond(c, result, err)
 }
 

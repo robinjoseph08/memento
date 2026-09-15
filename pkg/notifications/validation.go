@@ -12,9 +12,13 @@ func (ApproveRequest) ValidationMessage(field, rule string) string {
 		if rule == "required" || rule == "min" {
 			return "Include at least one person."
 		}
-		return "Review the updates again before sending."
+		return "Review the updates again before continuing."
 	case "person_id", "review_token", "excluded_album_ids":
-		return "Review the updates again before sending."
+		return "Review the updates again before continuing."
 	}
 	return ""
+}
+
+func (DismissRequest) ValidationMessage(field, rule string) string {
+	return (ApproveRequest{}).ValidationMessage(field, rule)
 }

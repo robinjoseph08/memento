@@ -62,7 +62,7 @@ The People who can see exactly the same Moment covers in one Album. Viewing Grou
 _Avoid_: Cohort, Access Set, Segment
 
 **Unannounced Change**:
-An Album or Album Entry that became visible to a Person after that Person's notification baseline. Completing Onboarding or approving an Update Notification advances the baseline, independently of email delivery.
+An Album or Album Entry that became visible to a Person after that Person's notification baseline. Completing Onboarding, approving an Update Notification, or dismissing selected changes advances the baseline, independently of email delivery.
 
 **Update Notification**:
 A Curator-approved in-app summary of one or more Unannounced Changes for a Person. Email is an optional delivery channel for the same notification and respects the Person's email preference.
