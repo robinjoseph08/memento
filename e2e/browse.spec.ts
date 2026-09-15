@@ -236,6 +236,138 @@ test("a member browses a published Album, opens photos by link, key, swipe and f
     await expect(dialog).toContainText("Monday, May 11, 2026");
     await captureLayouts(member, "browse-lightbox");
 
+    // Zoom changes the rendered photo, and dragging pans without navigating.
+    const zoom = dialog.getByRole("group", { name: "Photo zoom", exact: true });
+    const photo = zoom.getByRole("img");
+    const actions = dialog.getByRole("group", {
+      name: "Photo actions",
+      exact: true,
+    });
+    const zoomIn = actions.getByRole("button", {
+      name: "Zoom in",
+      exact: true,
+    });
+    const resetZoom = actions.getByRole("button", {
+      name: "Reset zoom",
+      exact: true,
+    });
+    const fitted = (await photo.boundingBox())!;
+    await expect(zoomIn).toBeEnabled();
+    await expect(
+      actions.getByRole("link", { name: "Download photo" }),
+    ).toBeVisible();
+    expect((await zoomIn.boundingBox())!.y).toBeLessThan(
+      (await zoom.boundingBox())!.y,
+    );
+    await expect(zoom).toHaveCSS("cursor", "default");
+    await zoomIn.click();
+    await expect(resetZoom).toBeVisible();
+    await expect
+      .poll(async () => (await photo.boundingBox())!.width)
+      .toBeCloseTo(fitted.width * 2);
+    await resetZoom.click();
+    await expect(zoomIn).toBeVisible();
+    await expect
+      .poll(async () => (await photo.boundingBox())!.width)
+      .toBeCloseTo(fitted.width);
+
+    await zoom.dblclick();
+    await expect(resetZoom).toBeVisible();
+    const enlarged = (await photo.boundingBox())!;
+    expect(enlarged.width).toBeCloseTo(fitted.width * 2);
+    const viewport = (await zoom.boundingBox())!;
+    const start = {
+      x: viewport.x + viewport.width / 2,
+      y: viewport.y + viewport.height / 2,
+    };
+    await member.mouse.move(start.x, start.y);
+    await member.mouse.down();
+    await member.mouse.move(start.x + 90, start.y + 70, { steps: 8 });
+    await member.mouse.up();
+    await expect
+      .poll(async () => {
+        const panned = (await photo.boundingBox())!;
+        return Math.hypot(panned.x - enlarged.x, panned.y - enlarged.y);
+      })
+      .toBeGreaterThan(30);
+    await expect(dialog).toHaveAccessibleName("Photo 151 of 221");
+    await resetZoom.click();
+
+    await dialog.focus();
+    await zoom.hover();
+    await member.mouse.wheel(0, -200);
+    await expect(resetZoom).toBeVisible();
+    await expect
+      .poll(async () => (await photo.boundingBox())!.width)
+      .toBeGreaterThan(fitted.width);
+    await expect(zoom).toBeFocused();
+    await swipe(
+      dialog.getByRole("group", { name: "Photo stage", exact: true }),
+      400,
+      200,
+    );
+    await expect(dialog).toHaveAccessibleName("Photo 151 of 221");
+    await member.keyboard.press("0");
+    await expect
+      .poll(async () => (await photo.boundingBox())!.width)
+      .toBeCloseTo(fitted.width);
+
+    // Arrow keys still browse while zoomed, including when the photo has focus.
+    await zoomIn.click();
+    await member.keyboard.press("ArrowRight");
+    await expect(dialog).toHaveAccessibleName("Photo 152 of 221");
+    await expect(resetZoom).toHaveCount(0);
+    await expect(zoomIn).toBeEnabled();
+    await zoomIn.click();
+    await member.keyboard.press("ArrowLeft");
+    await expect(dialog).toHaveAccessibleName("Photo 151 of 221");
+    await expect(resetZoom).toHaveCount(0);
+    await expect(zoomIn).toBeEnabled();
+
+    // Phone zoom stays inside the stage without covering navigation controls.
+    await member.setViewportSize({ width: 390, height: 844 });
+    await zoomIn.click();
+    await expect(resetZoom).toBeVisible();
+    await expect(zoom).toHaveCSS("overflow-x", "hidden");
+    await expect(zoom).toHaveCSS("overflow-y", "hidden");
+    expect((await photo.boundingBox())!.width).toBeGreaterThan(
+      (await zoom.boundingBox())!.width,
+    );
+    expect(
+      await member.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+    ).toBe(true);
+    for (const name of [
+      "Reset zoom",
+      "Previous photo",
+      "Next photo",
+      "Close photo",
+    ]) {
+      const control = dialog.getByRole("button", { name, exact: true });
+      await expect(control).toBeInViewport({ ratio: 1 });
+      await control.click({ trial: true });
+    }
+
+    // Stepping while zoomed opens a fitted photo. Return to 151 for the keys.
+    await dialog
+      .getByRole("button", { name: "Next photo", exact: true })
+      .click();
+    await expect(dialog).toHaveAccessibleName("Photo 152 of 221");
+    await loadedImage(zoom.getByRole("img", { name: "browse-152" }));
+    await expect(zoomIn).toBeEnabled();
+    await expect(resetZoom).toHaveCount(0);
+    await expect
+      .poll(async () => (await photo.boundingBox())!.width)
+      .toBeCloseTo((await zoom.boundingBox())!.width);
+    await dialog
+      .getByRole("button", { name: "Previous photo", exact: true })
+      .click();
+    await expect(dialog).toHaveAccessibleName("Photo 151 of 221");
+    await loadedImage(zoom.getByRole("img", { name: "browse-151" }));
+    await expect(zoomIn).toBeEnabled();
+    await member.setViewportSize({ width: 1280, height: 900 });
+
     // Keys, swipe, and the filmstrip move through the page boundary.
     await member.keyboard.press("ArrowRight");
     await expect(dialog).toHaveAccessibleName("Photo 152 of 221");
@@ -245,7 +377,10 @@ test("a member browses a published Album, opens photos by link, key, swipe and f
     await member.keyboard.press("ArrowLeft");
     await member.keyboard.press("ArrowLeft");
     await expect(dialog).toHaveAccessibleName("Photo 150 of 221");
-    const stage = dialog.getByRole("group", { name: "Photo stage" });
+    const stage = dialog.getByRole("group", {
+      name: "Photo zoom",
+      exact: true,
+    });
     await swipe(stage, 400, 200);
     await expect(dialog).toHaveAccessibleName("Photo 151 of 221");
     await swipe(stage, 200, 420);
@@ -322,7 +457,26 @@ test("a member browses a published Album, opens photos by link, key, swipe and f
       .click();
     const preview = page.getByRole("dialog");
     await expect(preview).toHaveAccessibleName("Photo 101 of 221");
-    await expect(preview).toContainText("Previewing as Alex");
+    const notice = preview.getByText("Previewing as Alex. Read only.");
+    await expect(notice).toBeVisible();
+    for (const width of [1280, 768]) {
+      await page.setViewportSize({ width, height: 900 });
+      const close = (await preview
+        .getByRole("button", { name: "Close photo" })
+        .boundingBox())!;
+      const message = (await notice.boundingBox())!;
+      expect(
+        Math.abs(message.y + message.height / 2 - close.y - close.height / 2),
+      ).toBeLessThan(1);
+    }
+    await page.setViewportSize({ width: 390, height: 844 });
+    const close = (await preview
+      .getByRole("button", { name: "Close photo" })
+      .boundingBox())!;
+    expect((await notice.boundingBox())!.y).toBeGreaterThanOrEqual(
+      close.y + close.height,
+    );
+    await page.setViewportSize({ width: 1280, height: 900 });
     await expect(
       preview.getByRole("link", { name: "Download photo" }),
     ).toHaveCount(0);
