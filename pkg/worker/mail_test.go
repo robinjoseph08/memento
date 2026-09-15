@@ -122,9 +122,11 @@ func TestMailQueueBoundsConcurrencyAndCompletesDeliveries(t *testing.T) {
 	db := testdb.New(t)
 	ctx := deadline(t)
 	var active, peak atomic.Int32
+	started := make(chan struct{}, 5)
 	release := make(chan struct{})
 	recorder := &notifications.Recorder{AfterSend: func(ctx context.Context, _ notifications.Message) error {
 		current := active.Add(1)
+		started <- struct{}{}
 		for {
 			observed := peak.Load()
 			if current <= observed || peak.CompareAndSwap(observed, current) {
@@ -148,13 +150,8 @@ func TestMailQueueBoundsConcurrencyAndCompletesDeliveries(t *testing.T) {
 	t.Cleanup(unsubscribe)
 	startRuntime(t, ctx, runtime)
 	// Wait until the queue is saturated, then let everything finish.
-	for active.Load() < 2 {
-		select {
-		case <-ctx.Done():
-			t.Fatal("mail workers never started")
-		case <-time.After(5 * time.Millisecond):
-		}
-	}
+	receive(t, ctx, started)
+	receive(t, ctx, started)
 	sending, err := db.NewSelect().Model((*models.MailDelivery)(nil)).Where("status = 'sending'").Count(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, 2, sending)

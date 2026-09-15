@@ -25,6 +25,8 @@ func TestMutationOriginAndJSON(t *testing.T) {
 	t.Parallel()
 	cfg := config.NewForTest()
 	cfg.PublicURL = "https://photos.example.test"
+	cfg.AppEnv = "development"
+	cfg.Hostname = "photos-local"
 	srv, err := newServer(cfg, nil)
 	require.NoError(t, err)
 	e := srv.Handler.(*echo.Echo)
@@ -38,8 +40,12 @@ func TestMutationOriginAndJSON(t *testing.T) {
 		{"https://evil.test", "photos.example.test", "application/json", 403},
 		{"", "photos.example.test", "application/json", 403},
 		{"null", "photos.example.test", "application/json", 403},
-		{"http://photos.local:5173", "photos.local:5173", "application/json", 204},
-		{"http://photos.local:5173", "photos.local:3579", "application/json", 403},
+		{"http://localhost:5173", "localhost:5173", "application/json", 204},
+		{"http://127.0.0.1:5173", "127.0.0.1:5173", "application/json", 204},
+		{"http://photos-local:5173", "photos-local:5173", "application/json", 204},
+		{"http://photos-local.local:5173", "photos-local.local:5173", "application/json", 204},
+		{"http://photos-local:5173", "photos-local:3579", "application/json", 403},
+		{"https://photos-local:5173", "photos-local:5173", "application/json", 403},
 		{"https://evil.test", "evil.test:443", "application/json", 403},
 		{"https://photos.example.test", "photos.example.test", "application/x-www-form-urlencoded", 415},
 		{"https://photos.example.test", "photos.example.test", "", 415},
@@ -55,6 +61,25 @@ func TestMutationOriginAndJSON(t *testing.T) {
 		assert.Empty(t, recorder.Header().Get("Access-Control-Allow-Origin"))
 		assert.Equal(t, "no-store", recorder.Header().Get("Cache-Control"))
 	}
+}
+
+func TestProductionMutationOriginRequiresPublicURL(t *testing.T) {
+	t.Parallel()
+	cfg := config.NewForTest()
+	cfg.PublicURL = "https://photos.example.test"
+	cfg.AppEnv = "production"
+	cfg.Hostname = "photos-local"
+	srv, err := newServer(cfg, nil)
+	require.NoError(t, err)
+	e := srv.Handler.(*echo.Echo)
+	e.POST("/api/mutate", func(c *echo.Context) error { return c.NoContent(204) })
+	req := httptest.NewRequest(http.MethodPost, "/api/mutate", strings.NewReader(`{}`))
+	req.Host = "photos-local:5173"
+	req.Header.Set("Origin", "http://photos-local:5173")
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(recorder, req)
+	assert.Equal(t, http.StatusForbidden, recorder.Code)
 }
 
 func TestDatabaseControlsHealth(t *testing.T) {

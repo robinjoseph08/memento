@@ -48,6 +48,18 @@ func (acceptingConn) ExecContext(context.Context, string, []driver.NamedValue) (
 	return driver.RowsAffected(0), nil
 }
 
+func TestMigrationNamesAreUnique(t *testing.T) {
+	t.Parallel()
+
+	seen := make(map[string]string)
+	for _, migration := range Migrations.Sorted() {
+		if previous, exists := seen[migration.Name]; exists {
+			t.Errorf("migration ID %s is shared by %s and %s", migration.Name, previous, migration.Comment)
+		}
+		seen[migration.Name] = migration.Comment
+	}
+}
+
 func TestNewMigrator(t *testing.T) {
 	t.Parallel()
 
