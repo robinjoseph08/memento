@@ -168,9 +168,11 @@ test("imports an album through a stopped task, browser closure, and API restart"
   await albumCard.hover();
   const importedCover = albumCard.getByRole("img");
   const insets = await importedCover.evaluate((image) => {
-    const card = image.closest("a")!.getBoundingClientRect();
+    const link = image.closest("a")!;
+    const card = link.getBoundingClientRect();
     const cover = image.getBoundingClientRect();
-    const text = image.nextElementSibling!.getBoundingClientRect();
+    // The cover sits on a pile of prints; the text block follows the pile.
+    const text = link.lastElementChild!.getBoundingClientRect();
     return [
       cover.left - card.left,
       card.right - cover.right,

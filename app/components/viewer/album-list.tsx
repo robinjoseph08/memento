@@ -47,7 +47,7 @@ export function ViewerAlbumList() {
           {query.data?.map((album) => (
             <li className="min-w-0" key={album.id}>
               <Link
-                className="block rounded-sm p-2 hover:bg-surface focus-visible:outline-2 focus-visible:outline-ring"
+                className="group block rounded-sm p-2 focus-visible:outline-2 focus-visible:outline-ring"
                 to={`/albums/${encodeURIComponent(album.id)}/photos`}
               >
                 <AlbumCard album={album} />

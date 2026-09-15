@@ -21,6 +21,7 @@ import {
   type AlbumState,
 } from "./album-state";
 import { MediaCounts } from "./media-counts";
+import { PrintStack } from "./print-stack";
 
 function dateLabel(value: string) {
   const date = new Date(`${value.slice(0, 10)}T12:00:00`);
@@ -99,15 +100,17 @@ function AlbumCard({ album }: { album: Album }) {
   return (
     <li className="min-w-0" data-album-state={state}>
       <Link
-        className="block cursor-pointer rounded-sm p-2 hover:bg-surface focus-visible:outline-2 focus-visible:outline-ring"
+        className="group block cursor-pointer rounded-sm p-2 focus-visible:outline-2 focus-visible:outline-ring"
         to={`/curator/albums/${album.id}`}
       >
-        <AlbumImage
-          alt={album.title}
-          className="aspect-square h-auto w-full object-cover"
-          fallback="No cover available"
-          src={album.cover_url}
-        />
+        <PrintStack>
+          <AlbumImage
+            alt={album.title}
+            className="aspect-square h-auto w-full object-cover"
+            fallback="No cover available"
+            src={album.cover_url}
+          />
+        </PrintStack>
         <span className="mt-3 block min-w-0">
           <span className="block font-heading text-lg wrap-anywhere">
             {album.title}
