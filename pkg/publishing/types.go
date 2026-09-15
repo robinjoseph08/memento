@@ -19,6 +19,13 @@ type AudienceChange struct {
 	LostEntryIDs   []string `json:"lost_entry_ids"`
 }
 
+// ViewerLibrary counts each accessible media item once across Albums.
+type ViewerLibrary struct {
+	PhotoCount int         `json:"photo_count"`
+	VideoCount int         `json:"video_count"`
+	Days       []ViewerDay `json:"days"`
+}
+
 // ViewerAlbum contains only the selected Person's accessible presentation.
 type ViewerAlbum struct {
 	ID          string `json:"id"`

@@ -6,11 +6,15 @@ import type {
   ViewerAlbum,
   ViewerDay,
   ViewerEntry,
+  ViewerLibrary,
   ViewerPage,
 } from "../../types/generated/publishing";
 import { usePrivateScope } from "./people";
 
-export type ViewerContext = { albumID: string; personID?: string };
+// An omitted Album selects the cross-album library, which has no preview mode.
+export type ViewerContext =
+  | { albumID: string; personID?: string }
+  | { albumID?: never; personID?: never };
 
 // Galleries load every page, so refetching them on each window focus would
 // replay the whole Album. Keys already name the Person, so nothing leaks
@@ -18,7 +22,8 @@ export type ViewerContext = { albumID: string; personID?: string };
 const viewerStaleTime = 5 * 60_000;
 export type ViewerTab = "photos" | "videos";
 
-function albumURL({ albumID, personID }: ViewerContext) {
+function galleryURL({ albumID, personID }: ViewerContext) {
+  if (albumID === undefined) return "/api/library";
   const id = encodeURIComponent(albumID);
   return personID === undefined
     ? `/api/albums/${id}`
@@ -29,7 +34,7 @@ function contextKey({ albumID, personID }: ViewerContext) {
   return [
     "viewer",
     personID === undefined ? "member" : "preview",
-    albumID,
+    albumID ?? "library",
     personID ?? "",
   ] as const;
 }
@@ -43,12 +48,12 @@ export function useViewerAlbums() {
   });
 }
 
-export function useViewerAlbum(context: ViewerContext) {
+export function useViewerGallery(context: ViewerContext) {
   const scope = usePrivateScope();
   return useQuery({
     queryKey: [...scope, ...contextKey(context)],
     queryFn: ({ signal }) =>
-      request<ViewerAlbum>(albumURL(context), { signal }),
+      request<ViewerAlbum | ViewerLibrary>(galleryURL(context), { signal }),
     staleTime: viewerStaleTime,
     retry: false,
   });
@@ -65,20 +70,28 @@ export function dayCount(day: ViewerDay, tab: ViewerTab) {
 // fit one page, so a large Album loads every run at once instead of page by
 // page from the top. Bounds are omitted where nothing lies beyond them, so a
 // small Album asks for the whole gallery with no parameters.
-export function viewerRanges(days: ViewerDay[], tab: ViewerTab) {
+export function viewerRanges(
+  days: ViewerDay[],
+  tab: ViewerTab,
+  newestFirst = false,
+) {
   const runs: ViewerDay[][] = [];
-  for (const day of days) {
+  // Date bounds are always ascending and end-exclusive, even when the
+  // gallery displays the resulting runs and their days newest first.
+  const ascending = newestFirst ? [...days].reverse() : days;
+  for (const day of ascending) {
     if (dayCount(day, tab) === 0) continue;
     const run = runs.at(-1);
     const total = run?.reduce((sum, item) => sum + dayCount(item, tab), 0) ?? 0;
     if (run && total + dayCount(day, tab) <= pageSize) run.push(day);
     else runs.push([day]);
   }
-  return runs.map((run, index) => ({
+  const ranges = runs.map((run, index) => ({
     from: index === 0 ? "" : run[0].date,
     to: runs[index + 1]?.[0].date ?? "",
-    days: run,
+    days: newestFirst ? [...run].reverse() : run,
   }));
+  return newestFirst ? ranges.reverse() : ranges;
 }
 
 export function useViewerEntries(
@@ -87,7 +100,11 @@ export function useViewerEntries(
   days: ViewerDay[],
 ) {
   const scope = usePrivateScope();
-  const ranges = useMemo(() => viewerRanges(days, tab), [days, tab]);
+  const newestFirst = context.albumID === undefined;
+  const ranges = useMemo(
+    () => viewerRanges(days, tab, newestFirst),
+    [days, tab, newestFirst],
+  );
   const results = useQueries({
     queries: ranges.map((range) => ({
       queryKey: [...scope, ...contextKey(context), tab, range.from, range.to],
@@ -101,7 +118,7 @@ export function useViewerEntries(
           if (cursor) params.set("cursor", cursor);
           const query = params.toString();
           const page = await request<ViewerPage>(
-            `${albumURL(context)}/${tab}${query ? `?${query}` : ""}`,
+            `${galleryURL(context)}/${tab}${query ? `?${query}` : ""}`,
             { signal },
           );
           entries.push(...page.entries);

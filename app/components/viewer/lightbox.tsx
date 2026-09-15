@@ -338,7 +338,7 @@ export function Lightbox({
                 </p>
               )}
               <nav
-                aria-label={`${plural} in album`}
+                aria-label={`${plural} filmstrip`}
                 className="flex justify-center-safe gap-0.5 overflow-x-auto px-3 pb-4"
                 ref={stripRef}
               >
@@ -393,7 +393,7 @@ export function Lightbox({
                   </Button>
                 )}
                 <Button onClick={close} variant="outline">
-                  Back to album
+                  Back to {lower}s
                 </Button>
               </div>
             </section>

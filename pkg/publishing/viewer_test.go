@@ -87,6 +87,44 @@ func TestViewerPagesUseLocalCaptureTimeAndEntryIDWithoutPrivateMetadata(t *testi
 	require.Empty(t, first.Entries[0].ChapterStatus)
 	_, err = module.ViewEntries(t.Context(), curator.ID.String(), "", album.ID, "IMAGE", publishing.EntryPageRequest{Cursor: strings.Repeat("x", 5000)})
 	require.Error(t, err)
+
+	libraryFirst, err := module.ViewLibraryEntries(t.Context(), curator.ID.String(), "IMAGE", publishing.EntryPageRequest{From: "2026-07-05", To: "2026-07-06"})
+	require.NoError(t, err)
+	require.Len(t, libraryFirst.Entries, 500)
+	require.NotEmpty(t, libraryFirst.NextCursor)
+	librarySecond, err := module.ViewLibraryEntries(t.Context(), curator.ID.String(), "IMAGE", publishing.EntryPageRequest{From: "2026-07-05", To: "2026-07-06", Cursor: libraryFirst.NextCursor})
+	require.NoError(t, err)
+	require.Len(t, librarySecond.Entries, 2)
+	require.Empty(t, librarySecond.NextCursor)
+	ascending := append(first.Entries, second.Entries...)
+	descending := append(libraryFirst.Entries, librarySecond.Entries...)
+	for i, entry := range descending {
+		require.Equal(t, ascending[len(ascending)-1-i], entry)
+	}
+	library, err := module.ViewLibrary(t.Context(), curator.ID.String())
+	require.NoError(t, err)
+	require.Equal(t, 502, library.PhotoCount)
+	require.Equal(t, 1, library.VideoCount)
+	require.Len(t, library.Days, 1)
+	for i, ratio := range library.Days[0].PhotoRatios {
+		require.Equal(t, viewed.Days[0].PhotoRatios[501-i], ratio)
+	}
+	libraryVideos, err := module.ViewLibraryEntries(t.Context(), curator.ID.String(), "VIDEO", publishing.EntryPageRequest{})
+	require.NoError(t, err)
+	require.Equal(t, videos, libraryVideos)
+	for _, page := range []publishing.EntryPageRequest{{To: "2026-07-05"}, {From: "2026-07-06"}} {
+		empty, err := module.ViewLibraryEntries(t.Context(), curator.ID.String(), "IMAGE", page)
+		require.NoError(t, err)
+		require.Empty(t, empty.Entries)
+	}
+	for _, page := range []publishing.EntryPageRequest{{From: "yesterday"}, {To: "tomorrow"}, {Cursor: strings.Repeat("x", 5000)}} {
+		_, err := module.ViewLibraryEntries(t.Context(), curator.ID.String(), "IMAGE", page)
+		require.Error(t, err)
+	}
+	_, err = module.ViewLibraryEntries(t.Context(), curator.ID.String(), "invalid", publishing.EntryPageRequest{})
+	require.Error(t, err)
+	_, err = module.ViewEntries(t.Context(), curator.ID.String(), "", "", "IMAGE", publishing.EntryPageRequest{})
+	require.Error(t, err, "an empty Album ID must not expose the library")
 }
 
 func TestViewerListingAndMediaAuthorizationRespectPublicationAndAlbumEntry(t *testing.T) {

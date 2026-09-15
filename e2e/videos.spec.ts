@@ -304,7 +304,7 @@ test("videos play with titles, chapters, ranges, downloads, and recover a failed
       new RegExp(`${viewerPath}/${videos[99].id}$`),
     );
     await dialog
-      .getByRole("navigation", { name: "Videos in album" })
+      .getByRole("navigation", { name: "Videos filmstrip" })
       .getByRole("button", { name: "Go to video 1", exact: true })
       .click();
     await expect(dialog).toHaveAccessibleName("Video 1 of 103");

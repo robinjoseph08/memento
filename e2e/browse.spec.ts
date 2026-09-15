@@ -251,7 +251,7 @@ test("a member browses a published Album, opens photos by link, key, swipe and f
     await swipe(stage, 200, 420);
     await expect(dialog).toHaveAccessibleName("Photo 150 of 221");
     const filmstrip = dialog.getByRole("navigation", {
-      name: "Photos in album",
+      name: "Photos filmstrip",
     });
     await expect(
       filmstrip.getByRole("button", { name: "Go to photo 150", exact: true }),
