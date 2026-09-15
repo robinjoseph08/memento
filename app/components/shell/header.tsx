@@ -85,11 +85,11 @@ export function Header() {
       )}
       <div className="ml-auto flex items-center gap-1">
         {data?.person && onboarded && !data.person.is_curator && !preview && (
-          <NotificationBell key={data.person.id} />
+          <NotificationBell key={`notifications-${data.person.id}`} />
         )}
         {data?.person ? (
           <AccountMenu
-            key={data.person.id}
+            key={`account-${data.person.id}`}
             onboarded={onboarded}
             person={data.person}
             preview={preview}
