@@ -40,8 +40,9 @@ func (m *Module) ListSources(ctx context.Context, search string, page int) (Sour
 		matches = append(matches, SourceAlbum{ID: source.ID, Title: source.Name, Description: source.Description, Count: source.Count,
 			StartDate: source.StartDate, EndDate: source.EndDate, CoverURL: cover, AlbumID: bySource[source.ID]})
 	}
+	// Newest end date first, the order every Album list in Memento shares.
 	sort.Slice(matches, func(i, j int) bool {
-		a, b := matches[i].StartDate, matches[j].StartDate
+		a, b := matches[i].EndDate, matches[j].EndDate
 		if a == b {
 			return matches[i].ID < matches[j].ID
 		}

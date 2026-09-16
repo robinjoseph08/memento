@@ -128,7 +128,7 @@ func projectAlbum(row albumProjection) Album {
 func (m *Module) ListAlbums(ctx context.Context, search string) ([]Album, error) {
 	rows := []albumProjection{}
 	if err := albumSummaries(m.db).Where("strpos(lower(album.title), lower(?)) > 0", strings.TrimSpace(search)).
-		OrderExpr("summary.start_date DESC NULLS LAST, album.id").Scan(ctx, &rows); err != nil {
+		OrderExpr("summary.end_date DESC NULLS LAST, album.id").Scan(ctx, &rows); err != nil {
 		return nil, errorstack.CaptureContext(ctx, err)
 	}
 	result := make([]Album, 0, len(rows))

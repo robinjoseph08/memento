@@ -418,7 +418,7 @@ func (m *Module) ViewAlbums(ctx context.Context, actorID string) ([]ViewerAlbum,
 			return err
 		}
 		ids := []string{}
-		err = viewerEntries(tx, viewer).ColumnExpr("entry.album_id").Group("entry.album_id").OrderExpr("min(item.captured_at) DESC, entry.album_id").Scan(ctx, &ids)
+		err = viewerEntries(tx, viewer).ColumnExpr("entry.album_id").Group("entry.album_id").OrderExpr("max(item.captured_at) DESC, entry.album_id").Scan(ctx, &ids)
 		if err != nil {
 			return errorstack.CaptureContext(ctx, err)
 		}
