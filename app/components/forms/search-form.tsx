@@ -5,6 +5,11 @@ import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 
+// The URL is the search. The field shows an unsent edit while the person
+// types and the URL's value otherwise, so submitting, clearing, and browser
+// history all land on the URL without a sync step that could miss a change:
+// a Clear followed at once by Back can render as one update whose value never
+// changed, and a stored draft of "" would then stick.
 export function SearchForm({
   label,
   value,
@@ -18,11 +23,12 @@ export function SearchForm({
 }) {
   const id = useId();
   const inputRef = useRef<HTMLInputElement>(null);
-  const [draft, setDraft] = useState(value);
+  const [draft, setDraft] = useState<string | null>(null);
+  const shown = draft ?? value;
   useEffect(() => {
-    // URL history changes arrive after render and must replace any stale draft.
+    // A history change replaces an unsent edit, like a fresh page would.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setDraft(value);
+    setDraft(null);
   }, [value]);
   return (
     <form
@@ -33,7 +39,8 @@ export function SearchForm({
       )}
       onSubmit={(event) => {
         event.preventDefault();
-        onSearch(draft);
+        setDraft(null);
+        onSearch(shown);
         inputRef.current?.focus();
       }}
       role="search"
@@ -55,14 +62,14 @@ export function SearchForm({
             onChange={(event) => setDraft(event.target.value)}
             ref={inputRef}
             type="search"
-            value={draft}
+            value={shown}
           />
-          {draft && (
+          {shown && (
             <Button
               aria-label="Clear search"
               className="absolute inset-y-0 right-0 w-11 p-0 text-muted"
               onClick={() => {
-                setDraft("");
+                setDraft(null);
                 onSearch("");
                 inputRef.current?.focus();
               }}
