@@ -225,6 +225,24 @@ func TestExtractChaptersFailuresAreVisibleRetryableAndNeverFatal(t *testing.T) {
 	row = chapterRow(t, db, stalled.ID)
 	require.Equal(t, media.ChapterStatusFailed, row.Status)
 	require.Contains(t, row.Message, "Playback still works")
+
+	// A deadline that has already passed when the attempt starts, before the
+	// row is even read, is the same failure, not a row left quietly queued.
+	late := insertVideo(t, db, "sha-e")
+	require.NoError(t, db.RunInTx(t.Context(), nil, func(ctx context.Context, tx bun.Tx) error {
+		return module.RequestChapters(ctx, tx, late.ID, "sha-e")
+	}))
+	expired, expireNow := context.WithTimeout(t.Context(), 0)
+	t.Cleanup(expireNow)
+	<-expired.Done()
+	upstream.chapters = func(context.Context, string) ([]ffprobe.Chapter, error) {
+		t.Fatal("an expired attempt never probes")
+		return nil, nil
+	}
+	require.ErrorIs(t, module.ExtractChapters(expired, late.ID.String(), "sha-e", true), context.DeadlineExceeded)
+	row = chapterRow(t, db, late.ID)
+	require.Equal(t, media.ChapterStatusFailed, row.Status)
+	require.Contains(t, row.Message, "Playback still works")
 }
 
 func TestBackfillChaptersQueuesOnlyUnprobedVideos(t *testing.T) {
