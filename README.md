@@ -231,11 +231,6 @@ docker compose pull
 docker compose up -d
 ```
 
-The 0.1.0 image listened on port `8080`. Later images listen on `3579`, so an
-installation created from the 0.1.0 instructions must update its `ports`
-mapping and proxy target when it upgrades, or set `SERVER_PORT: 8080` on the
-service to keep the old port.
-
 ### Use a separate PostgreSQL container
 
 To give Memento its own PostgreSQL instead of Immich's, change these parts of
