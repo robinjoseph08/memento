@@ -4,11 +4,41 @@ import type { ViewerDay } from "../../types/generated/publishing";
 import { viewerRanges } from "./viewer";
 
 const days: ViewerDay[] = [
-  { date: "2026-07-05", photo_count: 300, video_count: 0, photo_ratios: [] },
-  { date: "2026-07-04", photo_count: 100, video_count: 0, photo_ratios: [] },
-  { date: "2026-07-03", photo_count: 0, video_count: 2, photo_ratios: [] },
-  { date: "2026-07-02", photo_count: 300, video_count: 0, photo_ratios: [] },
-  { date: "2026-07-01", photo_count: 300, video_count: 0, photo_ratios: [] },
+  {
+    date: "2026-07-05",
+    photo_count: 300,
+    video_count: 0,
+    photo_ratios: [],
+    video_ratios: [],
+  },
+  {
+    date: "2026-07-04",
+    photo_count: 100,
+    video_count: 0,
+    photo_ratios: [],
+    video_ratios: [],
+  },
+  {
+    date: "2026-07-03",
+    photo_count: 0,
+    video_count: 2,
+    photo_ratios: [],
+    video_ratios: [],
+  },
+  {
+    date: "2026-07-02",
+    photo_count: 300,
+    video_count: 0,
+    photo_ratios: [],
+    video_ratios: [],
+  },
+  {
+    date: "2026-07-01",
+    photo_count: 300,
+    video_count: 0,
+    photo_ratios: [],
+    video_ratios: [],
+  },
 ];
 
 it("keeps library days newest first inside each run with nonoverlapping ascending bounds", () => {

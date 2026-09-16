@@ -32,6 +32,7 @@ const album: ViewerAlbum = {
       photo_count: 2,
       video_count: 0,
       photo_ratios: [1.5, 1.5],
+      video_ratios: [],
     },
   ],
 };
@@ -204,6 +205,7 @@ it("lists videos as links to their lightbox without mounting a player in the gri
             photo_count: 0,
             video_count: 1,
             photo_ratios: [],
+            video_ratios: [],
           },
         ],
       });
@@ -284,12 +286,14 @@ it("loads each run of days at once, keeps loaded days after one run fails, and r
             photo_count: 500,
             video_count: 0,
             photo_ratios: Array.from({ length: 500 }, () => 1.5),
+            video_ratios: [],
           },
           {
             date: "2025-06-15",
             photo_count: 1,
             video_count: 0,
             photo_ratios: [1.5],
+            video_ratios: [],
           },
         ],
       });
@@ -585,7 +589,13 @@ const videoAlbum: ViewerAlbum = {
   photo_count: 0,
   video_count: 3,
   days: [
-    { date: "2025-06-14", photo_count: 0, video_count: 3, photo_ratios: [] },
+    {
+      date: "2025-06-14",
+      photo_count: 0,
+      video_count: 3,
+      photo_ratios: [],
+      video_ratios: [],
+    },
   ],
 };
 const party: ViewerEntry = {
@@ -800,12 +810,14 @@ function mockTimelineLayout() {
             photo_count: 1,
             video_count: 0,
             photo_ratios: [1.5],
+            video_ratios: [],
           },
           {
             date: "2025-06-14",
             photo_count: 1,
             video_count: 0,
             photo_ratios: [1.5],
+            video_ratios: [],
           },
         ],
       });
@@ -913,6 +925,7 @@ function mockShortTimelineLayout(days: string[]) {
           photo_count: 1,
           video_count: 0,
           photo_ratios: [1.5],
+          video_ratios: [],
         })),
       });
     if (path === "/api/albums/lake/photos")
@@ -973,4 +986,17 @@ it("keeps the timeline out of the way for a single day", async () => {
   await waitFor(() => expect(timeline).toHaveClass("invisible"));
   expect(timeline).toHaveAttribute("tabindex", "-1");
   expect(document.documentElement.style.scrollbarWidth).not.toBe("none");
+});
+
+it("names the year above the first day and where the year changes", async () => {
+  mockShortTimelineLayout(["2025-12-30", "2026-01-02"]);
+  render(<App />);
+  const timeline = await screen.findByRole("slider", { name: "Timeline" });
+  await waitFor(() =>
+    expect(timeline).toHaveAttribute("aria-valuetext", "Dec 30, 2025"),
+  );
+  expect(within(timeline).getByText("2025")).toBeInTheDocument();
+  expect(within(timeline).getByText("2026")).toBeInTheDocument();
+  expect(within(timeline).getByText("Dec 30")).toBeInTheDocument();
+  expect(within(timeline).getByText("Jan 2")).toBeInTheDocument();
 });

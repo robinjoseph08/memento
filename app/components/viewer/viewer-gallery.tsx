@@ -327,7 +327,7 @@ function GalleryEntries({
                     />
                   )
                 ) : !items ? (
-                  <VideoPlaceholder count={count} />
+                  <VideoPlaceholder ratios={day.video_ratios} />
                 ) : (
                   <ul
                     aria-label="Videos"
@@ -396,17 +396,26 @@ function useRowLayout() {
       : { target: 1.5, columns: 1 };
 }
 
-// Holds a day's videos' height while they load, assuming 16:9 tiles with a
-// title.
-function VideoPlaceholder({ count }: { count: number }) {
-  const { columns } = useRowLayout();
-  const rows = Math.ceil(count / columns);
+// Holds a day's videos' place while they load: the same grid as the loaded
+// list, each tile at its video's own ratio with a line for its title, so a
+// day of portrait phone videos is as tall before its thumbnails arrive as
+// after.
+function VideoPlaceholder({ ratios }: { ratios: number[] }) {
   return (
     <div
       aria-hidden="true"
-      className="mt-5 rounded-[2px] bg-surface"
-      style={{ aspectRatio: `${columns * 16} / ${rows * 10.5}` }}
-    />
+      className="mt-5 grid grid-cols-1 gap-x-4 gap-y-6 min-[601px]:grid-cols-2 min-[1001px]:grid-cols-3"
+    >
+      {[...ratios.keys()].map((index) => (
+        <div key={index}>
+          <div
+            className="rounded-[2px] bg-surface"
+            style={{ aspectRatio: ratios[index] }}
+          />
+          <p className="mt-3 font-heading text-lg leading-tight">&nbsp;</p>
+        </div>
+      ))}
+    </div>
   );
 }
 

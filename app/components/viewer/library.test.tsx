@@ -23,12 +23,14 @@ const library: ViewerLibrary = {
       photo_count: 501,
       video_count: 1,
       photo_ratios: Array.from({ length: 501 }, () => 1.5),
+      video_ratios: [],
     },
     {
       date: "2025-06-14",
       photo_count: 1,
       video_count: 0,
       photo_ratios: [1.5],
+      video_ratios: [],
     },
   ],
 };
@@ -264,6 +266,7 @@ it.each([
               photo_count,
               video_count,
               photo_ratios: photo_count ? [1.5] : [],
+              video_ratios: [],
             },
           ],
         });

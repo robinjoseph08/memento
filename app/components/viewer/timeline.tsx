@@ -22,7 +22,8 @@ const dayUnitLimit = 92 * 24 * 60 * 60 * 1000;
 
 function unitFor(days: string[]) {
   if (days.length < 2) return "day";
-  const span = Date.parse(days.at(-1)!) - Date.parse(days[0]);
+  // The library lists days newest first, so the span is a distance.
+  const span = Math.abs(Date.parse(days.at(-1)!) - Date.parse(days[0]));
   return span < dayUnitLimit ? "day" : "month";
 }
 
@@ -143,18 +144,23 @@ export function Timeline({
   const scrollTo = (top: number) => window.scrollTo({ top });
 
   // Dots and labels that would overlap a placed one are skipped. By month the
-  // labels are the years; by day, every day that fits.
+  // labels are the years; by day, every day that fits, with the year above
+  // the first day and wherever the year changes so a span across New Year
+  // reads right.
   const dots: Mark[] = [];
-  const labels: Mark[] = [];
+  const labels: { mark: Mark; year: boolean }[] = [];
   marks.forEach((mark, index) => {
     const dot = dots.at(-1);
     if (!dot || pixels(mark.top) - pixels(dot.top) >= 4) dots.push(mark);
     const last = labels.at(-1);
-    const starts =
-      unit === "day" ||
-      mark.key.slice(0, 4) !== marks[index - 1]?.key.slice(0, 4);
-    if (starts && (!last || pixels(mark.top) - pixels(last.top) >= 20))
-      labels.push(mark);
+    const newYear = mark.key.slice(0, 4) !== marks[index - 1]?.key.slice(0, 4);
+    const year = unit === "day" && newYear;
+    const room = year ? 34 : 20;
+    if (
+      (unit === "day" || newYear) &&
+      (!last || pixels(mark.top) - pixels(last.mark.top) >= room)
+    )
+      labels.push({ mark, year });
   });
   const current = visible ? markAt(scrollTop) : undefined;
   const shown = visible && (!compact || scrolling || dragging);
@@ -253,13 +259,18 @@ export function Timeline({
               style={{ top: percent(mark.top) }}
             />
           ))}
-          {labels.map((mark) => (
+          {labels.map(({ mark, year }) => (
             <span
               aria-hidden="true"
               className="absolute right-3.5 -translate-y-1/2 rounded-sm bg-background/80 px-1 text-[11px] leading-4 whitespace-nowrap text-muted"
               key={mark.key}
               style={{ top: percent(mark.top) }}
             >
+              {year && (
+                <span className="absolute right-1 bottom-full text-[10px] leading-3 font-medium text-accent-foreground">
+                  {mark.key.slice(0, 4)}
+                </span>
+              )}
               {unit === "day" ? shortDayLabel(mark.key) : mark.key.slice(0, 4)}
             </span>
           ))}

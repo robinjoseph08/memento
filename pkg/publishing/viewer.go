@@ -126,9 +126,18 @@ func galleryDays(ctx context.Context, db bun.IDB, viewer viewerContext, albumID 
 	}
 	err := galleryEntries(db, viewer, albumID).ColumnExpr("to_char(item.captured_at, 'YYYY-MM-DD') AS date").
 		ColumnExpr("count(*) FILTER (WHERE item.kind = 'IMAGE') AS photo_count, count(*) FILTER (WHERE item.kind = 'VIDEO') AS video_count").
-		ColumnExpr("coalesce(array_agg(CASE WHEN coalesce(item.width, 0) > 0 AND coalesce(item.height, 0) > 0 THEN trunc((item.width::float8 / item.height::float8) * 1000) / 1000 ELSE 1.5 END ORDER BY "+galleryOrder(albumID)+") FILTER (WHERE item.kind = 'IMAGE'), ARRAY[]::float8[]) AS photo_ratios").
+		ColumnExpr(ratioColumn("IMAGE", "photo_ratios", albumID)).
+		ColumnExpr(ratioColumn("VIDEO", "video_ratios", albumID)).
 		GroupExpr("to_char(item.captured_at, 'YYYY-MM-DD')").OrderExpr(order).Scan(ctx, &days)
 	return days, errorstack.CaptureContext(ctx, err)
+}
+
+// ratioColumn aggregates one kind's width-to-height ratios in gallery order,
+// truncated to three decimals like the browser, with 3:2 for media that has
+// no dimensions.
+func ratioColumn(kind, name, albumID string) string {
+	return "coalesce(array_agg(CASE WHEN coalesce(item.width, 0) > 0 AND coalesce(item.height, 0) > 0 THEN trunc((item.width::float8 / item.height::float8) * 1000) / 1000 ELSE 1.5 END ORDER BY " +
+		galleryOrder(albumID) + ") FILTER (WHERE item.kind = '" + kind + "'), ARRAY[]::float8[]) AS " + name
 }
 
 func (v viewerContext) thumbnailURL(entryID, version string) string {
