@@ -1000,3 +1000,24 @@ it("names the year above the first day and where the year changes", async () => 
   expect(within(timeline).getByText("Dec 30")).toBeInTheDocument();
   expect(within(timeline).getByText("Jan 2")).toBeInTheDocument();
 });
+
+it("ends a timeline drag when the button is released outside the window", async () => {
+  const scrollTo = mockTimelineLayout();
+  render(<App />);
+  const timeline = await screen.findByRole("slider", { name: "Timeline" });
+  await waitFor(() =>
+    expect(timeline).toHaveAttribute("aria-valuetext", "Dec 2024"),
+  );
+  fireEvent.pointerDown(timeline, { clientY: 64 + 400, pointerId: 1 });
+  fireEvent.pointerMove(timeline, { clientY: 64 + 600, pointerId: 1 });
+  expect(scrollTo).toHaveBeenLastCalledWith({ top: 3000 });
+  // The release lands on the browser chrome, so only capture loss arrives.
+  fireEvent.lostPointerCapture(timeline, {
+    pointerId: 1,
+    pointerType: "mouse",
+  });
+  scrollTo.mockClear();
+  fireEvent.pointerMove(timeline, { clientY: 64 + 200, pointerId: 1 });
+  expect(scrollTo).not.toHaveBeenCalled();
+  expect(within(timeline).getByText("Dec 2024")).toBeInTheDocument();
+});

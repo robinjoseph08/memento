@@ -200,6 +200,12 @@ export function Timeline({
         event.preventDefault();
         scrollTo(target.top);
       }}
+      // A button released outside the window, or a cancelled touch, ends the
+      // drag through lost capture without a pointer up.
+      onLostPointerCapture={(event) => {
+        setDragging(false);
+        if (event.pointerType !== "mouse") setPointer(null);
+      }}
       onPointerDown={(event) => {
         event.currentTarget.setPointerCapture(event.pointerId);
         setDragging(true);
