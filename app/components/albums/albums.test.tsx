@@ -109,7 +109,7 @@ it("opens the library from an empty collection and links previously imported sou
   ).toBeVisible();
   await user.click(screen.getByRole("link", { name: "Import an album" }));
   expect(
-    await screen.findByRole("link", { name: "Open album" }),
+    await screen.findByRole("link", { name: /^Open album/ }),
   ).toHaveAttribute("href", "/curator/albums/album-1");
   expect(
     screen.queryByRole("button", { name: "Import" }),
@@ -1730,11 +1730,11 @@ it("disables unsupported imports without hiding the library or blocking imported
     "Imports require Immich 2.7.5 or later.",
   );
   expect(
-    await screen.findByRole("link", { name: "Open album" }),
+    await screen.findByRole("link", { name: /^Open album/ }),
   ).toHaveAttribute("href", "/curator/albums/album-1");
   expect(screen.getByRole("button", { name: "Import" })).toBeDisabled();
   expect(screen.getByRole("heading", { name: source.title })).toBeVisible();
-  await user.click(screen.getByRole("link", { name: "Open album" }));
+  await user.click(screen.getByRole("link", { name: /^Open album/ }));
   await user.click(await screen.findByRole("link", { name: "Album details" }));
   expect(
     await screen.findByRole("textbox", { name: "Album title" }),

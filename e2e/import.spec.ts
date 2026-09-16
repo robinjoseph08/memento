@@ -210,9 +210,7 @@ test("imports an album through a stopped task, browser closure, and API restart"
   const membershipReads = (await immich.requests())[
     "POST /api/search/metadata"
   ];
-  await completed
-    .getByRole("link", { name: "Open album", exact: true })
-    .click();
+  await completed.getByRole("link", { name: /^Open album/ }).click();
   await expect(completed).toHaveURL(albumURL);
   await expect(
     completed.getByRole("heading", { name: "Our coast holiday", exact: true }),
