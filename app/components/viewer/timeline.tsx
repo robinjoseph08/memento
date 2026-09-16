@@ -144,7 +144,7 @@ export function Timeline({
   const scrollTo = (top: number) => window.scrollTo({ top });
 
   // Dots and labels that would overlap a placed one are skipped. By month the
-  // labels are the years; by day, every day that fits, with the year above
+  // labels are the years; by day, every day that fits, with the year under
   // the first day and wherever the year changes so a span across New Year
   // reads right.
   const dots: Mark[] = [];
@@ -155,7 +155,8 @@ export function Timeline({
     const last = labels.at(-1);
     const newYear = mark.key.slice(0, 4) !== marks[index - 1]?.key.slice(0, 4);
     const year = unit === "day" && newYear;
-    const room = year ? 34 : 20;
+    // A label with the year under it needs room below before the next one.
+    const room = last?.year ? 34 : 20;
     if (
       (unit === "day" || newYear) &&
       (!last || pixels(mark.top) - pixels(last.mark.top) >= room)
@@ -267,7 +268,7 @@ export function Timeline({
               style={{ top: percent(mark.top) }}
             >
               {year && (
-                <span className="absolute right-1 bottom-full text-[10px] leading-3 font-medium text-accent-foreground">
+                <span className="absolute top-full right-1 text-[10px] leading-3">
                   {mark.key.slice(0, 4)}
                 </span>
               )}

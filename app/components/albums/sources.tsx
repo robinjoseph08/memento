@@ -164,20 +164,18 @@ function SourceCard({
       />
       <div className="min-w-0 flex-1 px-4 pt-3 pb-4">
         <h2 className="font-heading text-lg break-words">{source.title}</h2>
-        <p className="mt-1 flex flex-wrap items-center gap-x-3 text-xs/5 text-muted">
-          <span>
-            {source.count} {source.count === 1 ? "item" : "items"}
-          </span>
-          {sourceDates(source) && (
-            <span className="inline-flex items-center gap-1">
-              <CalendarDays
-                aria-hidden="true"
-                className="size-3.5 shrink-0"
-                strokeWidth={1.5}
-              />
-              {sourceDates(source)}
-            </span>
-          )}
+        {sourceDates(source) && (
+          <p className="mt-1 flex items-center gap-1 text-xs/5 text-muted">
+            <CalendarDays
+              aria-hidden="true"
+              className="size-3.5 shrink-0"
+              strokeWidth={1.5}
+            />
+            {sourceDates(source)}
+          </p>
+        )}
+        <p className="text-xs/5 text-muted">
+          {source.count} {source.count === 1 ? "item" : "items"}
         </p>
       </div>
     </>
