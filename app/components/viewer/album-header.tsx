@@ -26,7 +26,7 @@ export function AlbumHeader({
     />
   );
   return (
-    <header className="relative isolate min-[761px]:grid min-[761px]:grid-cols-[minmax(0,1fr)_minmax(0,390px)] min-[761px]:items-center min-[761px]:gap-12">
+    <header className="relative isolate overflow-hidden min-[761px]:grid min-[761px]:grid-cols-[minmax(0,1fr)_minmax(0,390px)] min-[761px]:items-center min-[761px]:gap-12">
       <CoverWash src={album.cover_url} />
       <div className="min-w-0">
         <div className="flex items-start gap-5">

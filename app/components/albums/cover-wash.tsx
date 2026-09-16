@@ -7,7 +7,7 @@ export function CoverWash({ src }: { src: string }) {
     <img
       alt=""
       aria-hidden="true"
-      className="pointer-events-none absolute -inset-x-10 -inset-y-12 -z-10 size-auto h-[calc(100%+6rem)] w-[calc(100%+5rem)] rounded-3xl [mask-image:radial-gradient(closest-side,black,transparent)] object-cover opacity-30 blur-3xl saturate-150"
+      className="pointer-events-none absolute -inset-x-10 -inset-y-12 -z-10 h-[calc(100%+6rem)] w-[calc(100%+5rem)] rounded-3xl [mask-image:radial-gradient(closest-side,black,transparent)] object-cover opacity-30 blur-3xl saturate-150"
       decoding="async"
       src={src}
     />

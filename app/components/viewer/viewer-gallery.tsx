@@ -329,10 +329,7 @@ function GalleryEntries({
                 ) : !items ? (
                   <VideoPlaceholder ratios={day.video_ratios} />
                 ) : (
-                  <ul
-                    aria-label="Videos"
-                    className="mt-5 grid grid-cols-1 gap-x-4 gap-y-6 min-[601px]:grid-cols-2 min-[1001px]:grid-cols-3"
-                  >
+                  <ul aria-label="Videos" className={videoGridClass}>
                     {items.map((entry) => (
                       <li key={entry.id}>
                         <Link
@@ -386,6 +383,11 @@ function GalleryEntries({
 
 // The gallery fits photos into rows of the target ratio, and videos into as
 // many columns.
+// The loaded video list and its placeholder share one grid so their heights
+// agree.
+const videoGridClass =
+  "mt-5 grid grid-cols-1 gap-x-4 gap-y-6 min-[601px]:grid-cols-2 min-[1001px]:grid-cols-3";
+
 function useRowLayout() {
   const desktop = useMediaQuery("(min-width: 1001px)");
   const tablet = useMediaQuery("(min-width: 601px)");
@@ -402,10 +404,7 @@ function useRowLayout() {
 // after.
 function VideoPlaceholder({ ratios }: { ratios: number[] }) {
   return (
-    <div
-      aria-hidden="true"
-      className="mt-5 grid grid-cols-1 gap-x-4 gap-y-6 min-[601px]:grid-cols-2 min-[1001px]:grid-cols-3"
-    >
+    <div aria-hidden="true" className={videoGridClass}>
       {[...ratios.keys()].map((index) => (
         <div key={index}>
           <div

@@ -119,7 +119,8 @@ test("Immich search keeps focus, clears immediately, and follows browser history
         };
       });
       expect(positions.coverBottom).toBeLessThan(positions.titleTop);
-      expect(positions.coverLeft).toBeCloseTo(positions.titleLeft, 1);
+      // The cover fills the card's width; the title sits inside its padding.
+      expect(positions.titleLeft - positions.coverLeft).toBeCloseTo(16, 0);
     }
   }
   await search.fill("Coast");

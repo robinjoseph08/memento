@@ -19,6 +19,13 @@ export function Avatar({
   );
 }
 
+function avatarTint(hue: number): CSSProperties {
+  return {
+    backgroundColor: `oklch(var(--avatar-lightness) var(--avatar-chroma) ${hue})`,
+    color: `oklch(var(--avatar-text-lightness) 0.07 ${hue})`,
+  };
+}
+
 export function AvatarImage({
   className,
   ...props
@@ -34,6 +41,7 @@ export function AvatarImage({
 
 // With a name, the fallback shows the person's initials on a tint that is
 // theirs alone: the hue comes from the name, the lightness from the theme.
+// The tint is inline so a browser without oklch() keeps the class colors.
 export function AvatarFallback({
   className,
   name,
@@ -47,15 +55,9 @@ export function AvatarFallback({
       data-slot="avatar-fallback"
       className={cn(
         "flex size-full items-center justify-center rounded-full bg-surface text-sm leading-none font-medium text-foreground",
-        named &&
-          "bg-[oklch(var(--avatar-lightness)_var(--avatar-chroma)_var(--avatar-hue))] text-[oklch(var(--avatar-text-lightness)_0.07_var(--avatar-hue))]",
         className,
       )}
-      style={
-        named
-          ? ({ ...style, "--avatar-hue": avatarHue(name) } as CSSProperties)
-          : style
-      }
+      style={named ? { ...style, ...avatarTint(avatarHue(name)) } : style}
       {...props}
     >
       {named ? initials(name) : children}

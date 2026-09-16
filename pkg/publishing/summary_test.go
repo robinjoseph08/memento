@@ -3,6 +3,7 @@ package publishing_test
 import (
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/robinjoseph08/memento/pkg/immich"
 	"github.com/robinjoseph08/memento/pkg/models"
@@ -165,7 +166,8 @@ func TestAlbumTitleSearchIsTrimmedCaseInsensitiveAndLiteralWithoutImmich(t *test
 func TestAlbumsOrderByNewestCaptureEndWithUndatedLast(t *testing.T) {
 	t.Parallel()
 	source := fixture()
-	m := publishing.New(testdb.New(t), source, noQueue)
+	db := testdb.New(t)
+	m := publishing.New(db, source, noQueue)
 	ids := []string{}
 	for _, scenario := range []struct {
 		id, title string
@@ -196,4 +198,16 @@ func TestAlbumsOrderByNewestCaptureEndWithUndatedLast(t *testing.T) {
 		got = append(got, album.ID)
 	}
 	require.Equal(t, ids, got, "capture end, not title, import time, start date, or UTC conversion, determines order")
+
+	// The viewer's list shares the order; an Album with nothing in it is not listed.
+	curator := models.Person{ID: models.NewUUIDv7(), DisplayName: "Curator", IsCurator: true, CreatedAt: time.Now().UTC()}
+	_, err = db.NewInsert().Model(&curator).Exec(t.Context())
+	require.NoError(t, err)
+	viewed, err := m.ViewAlbums(t.Context(), curator.ID.String())
+	require.NoError(t, err)
+	viewedIDs := []string{}
+	for _, album := range viewed {
+		viewedIDs = append(viewedIDs, album.ID)
+	}
+	require.Equal(t, ids[:3], viewedIDs)
 }

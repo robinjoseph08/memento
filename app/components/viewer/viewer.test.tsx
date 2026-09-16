@@ -988,7 +988,7 @@ it("keeps the timeline out of the way for a single day", async () => {
   expect(document.documentElement.style.scrollbarWidth).not.toBe("none");
 });
 
-it("names the year above the first day and where the year changes", async () => {
+it("names the year under the first day and where the year changes", async () => {
   mockShortTimelineLayout(["2025-12-30", "2026-01-02"]);
   render(<App />);
   const timeline = await screen.findByRole("slider", { name: "Timeline" });

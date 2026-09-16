@@ -19,7 +19,7 @@ import {
 } from "../../hooks/queries/people";
 import { useUnsavedChanges } from "../../hooks/use-unsaved-changes";
 import { fieldErrors } from "../../lib/http";
-import { cn } from "../../lib/utils";
+import { cn, formatDate } from "../../lib/utils";
 import { ConfirmDialog } from "../forms/confirm-dialog";
 import { SearchForm } from "../forms/search-form";
 import { BackLink } from "../shell/back-link";
@@ -44,16 +44,6 @@ const standing: Record<string, { label: string; icon: LucideIcon }> = {
   linked: { label: "Signed in", icon: Link2 },
   onboarded: { label: "Onboarded", icon: CircleCheck },
 };
-
-function lastSeenLabel(value: string) {
-  return new Date(value).toLocaleString(undefined, {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  });
-}
 
 export function PeoplePage() {
   const [search, setSearch] = useSearchParams();
@@ -194,7 +184,7 @@ export function PeoplePage() {
                       <span
                         className={cn(
                           "inline-flex items-center gap-1.5",
-                          person.access === "none" || !person.access
+                          person.access === "none"
                             ? "text-muted"
                             : "text-foreground",
                         )}
@@ -212,7 +202,7 @@ export function PeoplePage() {
                       </span>
                       {person.last_seen_at && (
                         <span className="text-muted">
-                          Last seen {lastSeenLabel(person.last_seen_at)}
+                          Session refreshed {formatDate(person.last_seen_at)}
                         </span>
                       )}
                     </span>

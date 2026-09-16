@@ -11,10 +11,7 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useImportAlbum, useSources } from "../../hooks/queries/albums";
 import { useConnection } from "../../hooks/queries/connection";
 import { cn } from "../../lib/utils";
-import type {
-  AlbumDetail,
-  SourceAlbum,
-} from "../../types/generated/publishing";
+import type { SourceAlbum } from "../../types/generated/publishing";
 import { SearchForm } from "../forms/search-form";
 import { Form, headingClass, ReadFailure } from "../people/form-fields";
 import { BackLink } from "../shell/back-link";
@@ -92,10 +89,24 @@ export function ImportPage() {
                 {sources.data.albums.map((source) => (
                   <SourceCard
                     disabled={importDisabled}
-                    importing={importing}
+                    error={
+                      importing.variables?.source_id === source.id
+                        ? importing.error
+                        : null
+                    }
                     key={source.id}
-                    onImported={(album) =>
-                      void navigate(`/curator/albums/${album.id}`)
+                    onImport={() =>
+                      importing.mutate(
+                        { source_id: source.id },
+                        {
+                          onSuccess: (album) =>
+                            void navigate(`/curator/albums/${album.id}`),
+                        },
+                      )
+                    }
+                    pending={
+                      importing.isPending &&
+                      importing.variables?.source_id === source.id
                     }
                     source={source}
                   />
@@ -144,17 +155,17 @@ function sourceDates(source: SourceAlbum) {
 // the footer kept for what else can happen to a source later.
 function SourceCard({
   source,
-  importing,
+  pending,
+  error,
   disabled,
-  onImported,
+  onImport,
 }: {
   source: SourceAlbum;
-  importing: ReturnType<typeof useImportAlbum>;
+  pending: boolean;
+  error: unknown;
   disabled: boolean;
-  onImported: (album: AlbumDetail) => void;
+  onImport: () => void;
 }) {
-  const pending =
-    importing.isPending && importing.variables?.source_id === source.id;
   const details = (
     <>
       <AlbumImage
@@ -224,22 +235,18 @@ function SourceCard({
       <Form
         aria-busy={pending}
         aria-label={`Import ${source.title}`}
-        className="flex min-h-12 items-center justify-between gap-2 border-t border-border px-3 py-2"
-        error={
-          importing.variables?.source_id === source.id ? importing.error : null
-        }
+        className="border-t border-border px-3 py-2 [&>p]:mx-1 [&>p]:my-2"
+        error={error}
         onSubmit={(event) => {
           event.preventDefault();
-          if (!disabled)
-            importing.mutate(
-              { source_id: source.id },
-              { onSuccess: onImported },
-            );
+          if (!disabled) onImport();
         }}
       >
-        <Button disabled={disabled} size="sm" type="submit">
-          {pending ? "Importing…" : "Import"}
-        </Button>
+        <div className="flex min-h-8 items-center justify-between gap-2">
+          <Button disabled={disabled} size="sm" type="submit">
+            {pending ? "Importing…" : "Import"}
+          </Button>
+        </div>
       </Form>
     </article>
   );

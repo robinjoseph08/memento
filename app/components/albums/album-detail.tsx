@@ -28,6 +28,7 @@ import {
   sectionHeadingClass,
 } from "../people/form-fields";
 import { BackLink } from "../shell/back-link";
+import { CountBadge } from "../shell/count-badge";
 import { PageTitle } from "../shell/page-title";
 import { Button } from "../ui/button";
 import { Textarea } from "../ui/textarea";
@@ -246,9 +247,10 @@ function AlbumContent({ album }: { album: AlbumDetail }) {
                       />
                       {item.label}
                       {item.key === "excluded" && (
-                        <span className="ml-auto text-xs text-accent-foreground">
-                          {album.excluded.length}
-                        </span>
+                        <CountBadge
+                          className="ml-auto"
+                          count={album.excluded.length}
+                        />
                       )}
                     </Link>
                   </li>
