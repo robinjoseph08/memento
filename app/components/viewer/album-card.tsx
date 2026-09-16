@@ -22,10 +22,10 @@ export function AlbumCard({ album }: { album: ViewerAlbum }) {
       <span className="mt-3 block font-heading text-lg wrap-anywhere">
         {album.title}
       </span>
-      <span className="mt-1 flex items-center gap-1 text-xs/5 text-muted">
+      <span className="mt-1 flex items-start gap-1 text-xs/5 text-muted">
         <CalendarDays
           aria-hidden="true"
-          className="size-3.5 shrink-0"
+          className="mt-[3px] size-3.5 shrink-0"
           strokeWidth={1.5}
         />
         {captureRange(album)}

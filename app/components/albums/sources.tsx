@@ -165,10 +165,10 @@ function SourceCard({
       <div className="min-w-0 flex-1 px-4 pt-3 pb-4">
         <h2 className="font-heading text-lg break-words">{source.title}</h2>
         {sourceDates(source) && (
-          <p className="mt-1 flex items-center gap-1 text-xs/5 text-muted">
+          <p className="mt-1 flex items-start gap-1 text-xs/5 text-muted">
             <CalendarDays
               aria-hidden="true"
-              className="size-3.5 shrink-0"
+              className="mt-[3px] size-3.5 shrink-0"
               strokeWidth={1.5}
             />
             {sourceDates(source)}
