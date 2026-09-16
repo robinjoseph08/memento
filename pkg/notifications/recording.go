@@ -32,6 +32,11 @@ func (r *Recorder) Send(ctx context.Context, message Message) error {
 	return nil
 }
 
+// Check reports the recorder as a connected mail server.
+func (r *Recorder) Check(context.Context) MailStatus {
+	return MailStatus{Configured: true, Usable: true, Sender: "Memento <memento@example.test>", Message: "The mail server is connected."}
+}
+
 // Sent returns every message the server would have accepted, in order.
 func (r *Recorder) Sent() []Message {
 	r.mu.Lock()

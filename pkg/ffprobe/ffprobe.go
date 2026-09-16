@@ -46,15 +46,60 @@ func (e *Error) Error() string {
 	return "ffprobe could not read the video: " + e.Detail
 }
 
-const maxOutput = 1 << 20
+const (
+	maxOutput = 1 << 20
+	// checkTimeout bounds the Settings diagnostic, which a person waits on.
+	checkTimeout = 5 * time.Second
+)
+
+// binary is the configured ffprobe, or the one on PATH.
+func (c Command) binary() string {
+	if c.Path == "" {
+		return "ffprobe"
+	}
+	return c.Path
+}
+
+// Check runs the binary once with -version so Settings can show that chapter
+// extraction has a working ffprobe. It reads no video.
+func (c Command) Check(ctx context.Context) Status {
+	ctx, cancel := context.WithTimeout(ctx, checkTimeout)
+	defer cancel()
+	var stdout, stderr bytes.Buffer
+	binary := c.binary()
+	command := exec.CommandContext(ctx, binary, "-version")
+	command.Stdout = &limitedWriter{buffer: &stdout}
+	command.Stderr = &limitedWriter{buffer: &stderr}
+	if err := command.Run(); err != nil {
+		if ctx.Err() != nil {
+			return Status{Message: "ffprobe did not respond in time."}
+		}
+		if _, exited := errors.AsType[*exec.ExitError](err); !exited {
+			return Status{Message: "ffprobe was not found or could not start. Check the ffprobe path on the server."}
+		}
+		return Status{Message: "ffprobe started but did not report its version."}
+	}
+	version := parseVersion(stdout.String())
+	if version == "" {
+		return Status{Message: "ffprobe started but did not report its version."}
+	}
+	return Status{Usable: true, Version: version, Message: "ffprobe is ready to read video chapters."}
+}
+
+// parseVersion reads "ffprobe version 7.1.1 Copyright ..." from the first
+// line. Distribution builds prefix the number with n, which is dropped.
+func parseVersion(output string) string {
+	line, _, _ := strings.Cut(output, "\n")
+	fields := strings.Fields(line)
+	if len(fields) < 3 || fields[0] != "ffprobe" || fields[1] != "version" {
+		return ""
+	}
+	return strings.TrimPrefix(fields[2], "n")
+}
 
 // Chapters probes url with the given request headers. Missing chapters are an
 // empty, successful result.
 func (c Command) Chapters(ctx context.Context, url string, headers map[string]string) ([]Chapter, error) {
-	path := c.Path
-	if path == "" {
-		path = "ffprobe"
-	}
 	timeout := c.Timeout
 	if timeout <= 0 {
 		timeout = time.Minute
@@ -77,7 +122,8 @@ func (c Command) Chapters(ctx context.Context, url string, headers map[string]st
 	// that turns out to be a playlist cannot pull ffprobe into other protocols.
 	args = append(args, "-seekable", "1", "-rw_timeout", strconv.Itoa(int((30*time.Second)/time.Microsecond)),
 		"-protocol_whitelist", "http,https,tcp,tls", "-i", url)
-	command := exec.CommandContext(ctx, path, args...)
+	binary := c.binary()
+	command := exec.CommandContext(ctx, binary, args...)
 	var stdout, stderr bytes.Buffer
 	command.Stdout = &limitedWriter{buffer: &stdout}
 	command.Stderr = &limitedWriter{buffer: &stderr}

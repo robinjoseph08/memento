@@ -433,7 +433,11 @@ it("cancels an in-flight diagnostic when leaving Settings before signing out", a
   ).toBeVisible();
   expect(window.location.pathname).toBe("/curator/settings");
   expect(document.title).toBe("Settings | Memento");
-  expect(screen.getByRole("status")).toHaveTextContent("Checking connection");
+  expect(
+    within(screen.getByRole("region", { name: "Immich connection" })).getByRole(
+      "status",
+    ),
+  ).toHaveTextContent("Checking connection");
   await user.click(account);
   await user.click(screen.getByRole("menuitem", { name: "Sign out" }));
   await screen.findByRole("heading", { name: "Welcome back" });

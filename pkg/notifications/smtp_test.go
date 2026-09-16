@@ -42,6 +42,51 @@ func TestSMTPMailerConfiguration(t *testing.T) {
 	}
 }
 
+func TestSMTPMailerCheckConnectsWithoutSending(t *testing.T) {
+	t.Parallel()
+	server, err := smtptest.Start(t.Context())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = server.Close() })
+	closed, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	unreachable := "smtp://" + closed.Addr().String()
+	require.NoError(t, closed.Close())
+	// Parallel subtests run after this function returns, so the check that
+	// nothing was sent belongs in a cleanup.
+	t.Cleanup(func() { assert.Empty(t, server.Messages(), "a check never sends") })
+	for name, scenario := range map[string]struct {
+		url, from, sender, message string
+		usable                     bool
+	}{
+		"plain relay":         {url: server.URL(), from: "Memento <memento@example.test>", sender: "Memento <memento@example.test>", usable: true, message: "The mail server is connected."},
+		"bare address":        {url: server.URL(), from: "memento@example.test", sender: "memento@example.test", usable: true, message: "The mail server is connected."},
+		"sign-in without TLS": {url: "smtp://user:supersecret@" + server.Address(), from: "memento@example.test", sender: "memento@example.test", message: "The mail server replied 502."},
+		"unreachable":         {url: unreachable, from: "memento@example.test", sender: "memento@example.test", message: "could not be reached"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			mailer, err := notifications.NewSMTPMailer(scenario.url, scenario.from)
+			require.NoError(t, err)
+			status := mailer.Check(t.Context())
+			assert.True(t, status.Configured)
+			assert.Equal(t, scenario.usable, status.Usable)
+			assert.Equal(t, scenario.sender, status.Sender)
+			assert.Contains(t, status.Message, scenario.message)
+			assert.NotContains(t, status.Message, "supersecret")
+			assert.NotContains(t, status.Message, "127.0.0.1")
+		})
+	}
+}
+
+func TestCheckMailReportsMissingSMTPQuietly(t *testing.T) {
+	t.Parallel()
+	status := notifications.New(nil, nil, nil, nil, nil).CheckMail(t.Context())
+	assert.Equal(t, notifications.MailStatus{Message: "Email is not configured for this installation, so Invitations and update emails cannot be sent."}, status)
+	recorded := notifications.New(nil, &notifications.Recorder{}, nil, nil, nil).CheckMail(t.Context())
+	assert.True(t, recorded.Configured)
+	assert.True(t, recorded.Usable)
+}
+
 func TestSMTPMailerContractAgainstLocalServer(t *testing.T) {
 	t.Parallel()
 	server, err := smtptest.Start(t.Context())

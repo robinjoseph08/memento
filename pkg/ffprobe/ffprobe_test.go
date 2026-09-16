@@ -120,6 +120,24 @@ func TestMissingBinaryIsAnActionableError(t *testing.T) {
 	assert.NotContains(t, err.Error(), "127.0.0.1")
 }
 
+func TestCheckReportsTheInstalledVersion(t *testing.T) {
+	t.Parallel()
+	requireFFprobe(t)
+	status := ffprobe.Command{}.Check(t.Context())
+	assert.True(t, status.Usable, status.Message)
+	assert.Regexp(t, `^\d+\.\d+`, status.Version)
+	assert.Equal(t, "ffprobe is ready to read video chapters.", status.Message)
+}
+
+func TestCheckReportsAMissingBinaryWithoutThePath(t *testing.T) {
+	t.Parallel()
+	status := ffprobe.Command{Path: "/nonexistent/ffprobe"}.Check(t.Context())
+	assert.False(t, status.Usable)
+	assert.Empty(t, status.Version)
+	assert.Contains(t, status.Message, "not found")
+	assert.NotContains(t, status.Message, "/nonexistent")
+}
+
 func TestParseRejectsMalformedOutput(t *testing.T) {
 	t.Parallel()
 	for name, output := range map[string]string{

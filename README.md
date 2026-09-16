@@ -302,7 +302,9 @@ Credentials stay in the URL, so keep it in `.env` or the environment rather
 than a checked-in file. A username and password are only sent over TLS, so
 pair them with `smtps://` or a server that offers STARTTLS; a plain relay
 without authentication needs no credentials at all. `SMTP_CONCURRENCY` bounds
-simultaneous deliveries and defaults to five.
+simultaneous deliveries and defaults to five. Settings, in the account menu,
+shows whether the mail server accepts a connection and sign-in; that check
+sends nothing.
 
 Deliveries run through the same in-process River runtime as imports, on a
 separate `mail` queue. Each email has a stable delivery record: a rejected
@@ -461,9 +463,9 @@ holds pending Access Requests, failed or interrupted imports, failed or
 uncertain email, failed chapter extraction, and an unreachable Immich server.
 Ready when you are lists unpublished Albums and people with changes they have
 not heard about, in neutral words, because waiting is a choice rather than a
-failure. The page polls only while an import or email is still running. The
-Immich diagnostic and its manual check live under Settings in the account
-menu.
+failure. The page polls only while an import or email is still running.
+Settings, in the account menu, checks the Immich connection, the mail server,
+and the bundled ffprobe on request.
 
 ### Troubleshooting
 

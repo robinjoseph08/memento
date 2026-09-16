@@ -35,7 +35,12 @@ test("claims during an Immich outage, recovers, and revokes the signed-out sessi
   expect(session?.sameSite).toBe("Lax");
 
   const account = page.getByRole("button", { name: "Account menu" });
-  // The full diagnostic lives under Settings, reached from the account menu.
+  // The full diagnostic lives under Settings, reached from the account menu,
+  // beside the other integration checks.
+  const immich = page.getByRole("region", {
+    name: "Immich connection",
+    exact: true,
+  });
   const openConnection = async () => {
     await account.click();
     await page.getByRole("menuitem", { name: "Settings" }).click();
@@ -89,11 +94,18 @@ test("claims during an Immich outage, recovers, and revokes the signed-out sessi
   await page.keyboard.press("Escape");
   await expect(account).toBeFocused();
   await openConnection();
-  await expect(page.getByText(/Immich is unavailable/)).toBeVisible();
-  await expect(page.getByText("Not connected", { exact: true })).toHaveCSS(
+  await expect(immich.getByText(/Immich is unavailable/)).toBeVisible();
+  await expect(immich.getByText("Not connected", { exact: true })).toHaveCSS(
     "color",
     "rgb(255, 170, 165)",
   );
+  // The mail server is a separate check, so an Immich outage leaves it green.
+  const email = page.getByRole("region", { name: "Email", exact: true });
+  await expect(email.getByText("Connected", { exact: true })).toHaveCSS(
+    "color",
+    "rgb(74, 194, 211)",
+  );
+  await expect(email.getByText(/Sending as/)).toBeVisible();
   await closeConnection();
   await page.setViewportSize({ width: 1280, height: 720 });
 
@@ -105,9 +117,9 @@ test("claims during an Immich outage, recovers, and revokes the signed-out sessi
     ).status(),
   ).toBe(200);
   await openConnection();
-  await page.getByRole("button", { name: "Check again" }).click();
-  await expect(page.getByText(/3\.1\.0/)).toBeVisible();
-  await expect(page.getByText("Connected", { exact: true })).toHaveCSS(
+  await immich.getByRole("button", { name: "Check again" }).click();
+  await expect(immich.getByText(/3\.1\.0/)).toBeVisible();
+  await expect(immich.getByText("Connected", { exact: true })).toHaveCSS(
     "color",
     "rgb(74, 194, 211)",
   );

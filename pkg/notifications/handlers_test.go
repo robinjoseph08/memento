@@ -67,6 +67,11 @@ func (f *fakeUseCases) Unsubscribe(_ context.Context, token string) (notificatio
 	return notifications.UnsubscribeStatus{DisplayName: "Alex", Email: "alex@example.test", Subscribed: false}, nil
 }
 
+func (f *fakeUseCases) CheckMail(context.Context) notifications.MailStatus {
+	f.calls = append(f.calls, "check-mail")
+	return notifications.MailStatus{Configured: true, Usable: true, Sender: "Memento <memento@example.test>", Message: "The mail server is connected."}
+}
+
 func TestNotificationHTTPRoutesBindAndAuthorize(t *testing.T) {
 	t.Parallel()
 	const personUUID = "0192a0f0-0000-7000-8000-000000000001"
@@ -77,6 +82,8 @@ func TestNotificationHTTPRoutesBindAndAuthorize(t *testing.T) {
 		call               string
 		contains           string
 	}{
+		"curator checks email":             {http.MethodGet, "/api/curator/email", "", true, 200, "check-mail", `"usable":true`},
+		"member cannot check email":        {http.MethodGet, "/api/curator/email", "", false, 403, "", "forbidden"},
 		"curator previews":                 {http.MethodPost, "/api/curator/notifications/preview", `{}`, true, 200, "preview", `"review_token":"token"`},
 		"member cannot preview":            {http.MethodPost, "/api/curator/notifications/preview", `{}`, false, 403, "", "forbidden"},
 		"curator approves":                 {http.MethodPost, "/api/curator/notifications/approve", `{"note":" Hi ","people":[{"person_id":"` + personUUID + `","review_token":"token","excluded_album_ids":["` + personUUID + `"]}]}`, true, 200, "approve:Hi:" + personUUID + ":" + personUUID, `"status":"notified"`},
@@ -123,7 +130,7 @@ func TestNotificationHTTPRoutesBindAndAuthorize(t *testing.T) {
 					return next(c)
 				})
 			}
-			notifications.RegisterRoutes(e, module, requirePerson, requireCurator)
+			notifications.RegisterRoutes(e, module, module, requirePerson, requireCurator)
 			var req *http.Request
 			if scenario.body == "" {
 				req = httptest.NewRequest(scenario.method, scenario.path, nil)

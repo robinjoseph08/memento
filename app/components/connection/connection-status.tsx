@@ -1,10 +1,11 @@
-import { CircleCheck, Plug, RefreshCw, Unplug } from "lucide-react";
+import { Plug, Unplug } from "lucide-react";
 
 import { useConnection } from "../../hooks/queries/connection";
-import { errorMessage } from "../../lib/http";
-import { cn } from "../../lib/utils";
 import { SectionHeading } from "../people/form-fields";
-import { Button } from "../ui/button";
+import {
+  IntegrationStatus,
+  type Verdict,
+} from "../settings/integration-status";
 
 export function ConnectionStatus() {
   return (
@@ -22,66 +23,25 @@ export function ConnectionStatus() {
 
 export function ConnectionDetails({ area }: { area: "setup" | "curator" }) {
   const connection = useConnection(area);
+  const verdict: Verdict | undefined = connection.data && {
+    tone: connection.data.usable ? "usable" : "unusable",
+    label: connection.data.usable ? "Connected" : "Not connected",
+    message: connection.data.message,
+    detail: connection.data.version
+      ? `Version ${connection.data.version}`
+      : undefined,
+    icon: connection.data.usable ? undefined : Unplug,
+  };
   return (
-    <>
-      <div
-        aria-live="polite"
-        className="mt-5.5 [&>p:first-child]:mb-2 [&>p:first-child]:font-medium"
-      >
-        {connection.isFetching ? (
-          <p role="status">Checking connection…</p>
-        ) : connection.isError ? (
-          <p className="text-destructive" role="alert">
-            {errorMessage(connection.error)}
-          </p>
-        ) : (
-          <>
-            <p
-              className={cn(
-                "flex items-center gap-2",
-                connection.data?.usable
-                  ? "text-accent-foreground"
-                  : "text-destructive",
-              )}
-            >
-              {connection.data?.usable ? (
-                <CircleCheck
-                  aria-hidden="true"
-                  className="size-4"
-                  strokeWidth={1.5}
-                />
-              ) : (
-                <Unplug
-                  aria-hidden="true"
-                  className="size-4"
-                  strokeWidth={1.5}
-                />
-              )}
-              {connection.data?.usable ? "Connected" : "Not connected"}
-            </p>
-            <p>{connection.data?.message}</p>
-            {connection.data?.version && (
-              <p className="mt-2.5 text-[11px]/[1.8] text-muted">
-                Version {connection.data.version}
-              </p>
-            )}
-          </>
-        )}
-      </div>
-      <p className="my-5.5 text-xs/[1.8] text-muted">
-        The Immich URL and API key are configured on the server. Your key is
-        never shown here.
-        {area === "setup" &&
-          " You can claim this installation even if Immich is unavailable, then fix the connection later."}
-      </p>
-      <Button
-        disabled={connection.isFetching}
-        onClick={() => void connection.refetch()}
-        variant="outline"
-      >
-        <RefreshCw aria-hidden="true" className="size-4" strokeWidth={1.5} />
-        {connection.isFetching ? "Checking…" : "Check again"}
-      </Button>
-    </>
+    <IntegrationStatus
+      checking="Checking connection…"
+      query={connection}
+      verdict={verdict}
+    >
+      The Immich URL and API key are configured on the server. Your key is never
+      shown here.
+      {area === "setup" &&
+        " You can claim this installation even if Immich is unavailable, then fix the connection later."}
+    </IntegrationStatus>
   );
 }

@@ -21,6 +21,7 @@ import (
 	"github.com/robinjoseph08/memento/pkg/dashboard"
 	"github.com/robinjoseph08/memento/pkg/errcodes"
 	"github.com/robinjoseph08/memento/pkg/errorstack"
+	"github.com/robinjoseph08/memento/pkg/ffprobe"
 	"github.com/robinjoseph08/memento/pkg/identity"
 	"github.com/robinjoseph08/memento/pkg/immich"
 	"github.com/robinjoseph08/memento/pkg/media"
@@ -60,7 +61,7 @@ func New(cfg *config.Config, db *bun.DB, features Features) (*http.Server, error
 	if library == nil {
 		library = media.New(db, source)
 	}
-	deps := dependencies{identity: people, connection: source, health: db.PingContext, media: library, publishing: features.Publishing}
+	deps := dependencies{identity: people, connection: source, probe: ffprobe.Command{Path: cfg.FFprobePath}, health: db.PingContext, media: library, publishing: features.Publishing}
 	if features.Notifications != nil {
 		deps.notifications = features.Notifications
 	}
@@ -73,12 +74,17 @@ func New(cfg *config.Config, db *bun.DB, features Features) (*http.Server, error
 type dependencies struct {
 	identity   identity.UseCases
 	connection immich.Diagnostic
+	// probe is nil in tests that exercise identity routes alone.
+	probe      ffprobe.Diagnostic
 	health     func(context.Context) error
 	publishing *publishing.Module
 	media      *media.Module
 	// notifications and dashboard are nil in tests that exercise identity routes alone.
-	notifications notifications.UseCases
-	dashboard     dashboard.UseCases
+	notifications interface {
+		notifications.UseCases
+		notifications.Diagnostic
+	}
+	dashboard dashboard.UseCases
 }
 
 func newServer(cfg *config.Config, frontend http.Handler, options ...dependencies) (*http.Server, error) {
@@ -123,6 +129,9 @@ func newServer(cfg *config.Config, frontend http.Handler, options ...dependencie
 	if deps.identity != nil {
 		handlers := identity.RegisterRoutes(e, cfg, deps.identity)
 		immich.RegisterRoutes(e, deps.connection, handlers.RequireSetupOrCurator, handlers.RequireCurator)
+		if deps.probe != nil {
+			ffprobe.RegisterRoutes(e, deps.probe, handlers.RequireCurator)
+		}
 		if deps.publishing != nil {
 			publishing.RegisterRoutes(e, deps.publishing, handlers.RequireCurator)
 			publishing.RegisterViewerRoutes(e, deps.publishing, handlers.RequirePerson, handlers.RequireCurator)
@@ -134,7 +143,7 @@ func newServer(cfg *config.Config, frontend http.Handler, options ...dependencie
 			media.RegisterRoutes(e, deps.media, handlers.RequirePerson, handlers.RequireCurator)
 		}
 		if deps.notifications != nil {
-			notifications.RegisterRoutes(e, deps.notifications, handlers.RequirePerson, handlers.RequireCurator)
+			notifications.RegisterRoutes(e, deps.notifications, deps.notifications, handlers.RequirePerson, handlers.RequireCurator)
 		}
 		if deps.dashboard != nil {
 			dashboard.RegisterRoutes(e, deps.dashboard, handlers.RequireCurator)
