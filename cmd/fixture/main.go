@@ -62,12 +62,6 @@ func run(ctx context.Context, binary string, offline, withSMTP bool) error {
 			fmt.Fprintln(os.Stderr, "fixture schema cleanup failed:", err)
 		}
 	}()
-	files, err := os.MkdirTemp("", "memento-fixture-")
-	if err != nil {
-		return err
-	}
-	defer func() { _ = os.RemoveAll(files) }()
-
 	listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", "127.0.0.1:0")
 	if err != nil {
 		return err
@@ -94,7 +88,7 @@ func run(ctx context.Context, binary string, offline, withSMTP bool) error {
 		"PUBLIC_URL="+apiURL,
 		"IMMICH_URL="+fixtureURL, "IMMICH_API_KEY="+fixtureAPIKey,
 		"SERVER_HOST=0.0.0.0", "SERVER_PORT="+strconv.Itoa(apiPort),
-		"CONFIG_FILE="+configFile, "FILES_PATH="+files,
+		"CONFIG_FILE="+configFile,
 		"DATABASE_MAX_OPEN_CONNS=3", "DATABASE_MAX_IDLE_CONNS=1", "DATABASE_DEBUG=false",
 	)
 	// The controlled SMTP server records every accepted Invitation and can hold

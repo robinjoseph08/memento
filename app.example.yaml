@@ -12,7 +12,7 @@
 # Env: PUBLIC_URL
 public_url: https://memento.example.com
 
-# Required for Google sign-in. See README.md#google-sign-in for console setup.
+# Required for Google sign-in. See README.md#3-create-the-google-client for console setup.
 # Env: GOOGLE_CLIENT_ID
 google_client_id: ""
 
@@ -64,7 +64,7 @@ ffprobe_concurrency: 1
 # Both postgres:// and postgresql:// are supported. Query parameters such as
 # sslmode and search_path are passed through to the PostgreSQL driver.
 # Env: DATABASE_URL
-database_url: postgres://app:change-me@postgres:5432/memento?sslmode=disable
+database_url: postgres://memento:change-me@database:5432/memento?sslmode=disable
 
 # Log SQL queries for contexts wrapped with database.WithLogging.
 # Env: DATABASE_DEBUG
@@ -79,10 +79,6 @@ database_connect_retry_count: 5
 # Delay between connection attempts.
 # Env: DATABASE_CONNECT_RETRY_DELAY
 database_connect_retry_delay: 2s
-
-# Directory used for application-managed files.
-# Env: FILES_PATH
-files_path: /data/files
 
 # HTTP listener address.
 # Env: SERVER_HOST

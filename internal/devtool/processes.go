@@ -20,7 +20,7 @@ const serverStartupTimeout = 30 * time.Second
 type OSProcesses struct{}
 
 func (p *OSProcesses) Start(ctx context.Context, env Environment, mode string, apiPort, webPort int) error {
-	childEnv := webEnvironment(env, webPort)
+	childEnv := webEnvironment(webPort)
 	if mode != "web" {
 		var err error
 		childEnv, err = developmentEnvironment(env, apiPort, webPort)
@@ -44,7 +44,7 @@ func (p *OSProcesses) Start(ctx context.Context, env Environment, mode string, a
 }
 
 func (p *OSProcesses) E2E(ctx context.Context, env Environment, project string, webPort int) error {
-	childEnv := webEnvironment(env, webPort)
+	childEnv := webEnvironment(webPort)
 	if os.Getenv("TEST_DATABASE_URL") == "" {
 		if os.Getenv("CI") == "true" {
 			return errors.New("TEST_DATABASE_URL is required in CI")
@@ -58,9 +58,8 @@ func (p *OSProcesses) E2E(ctx context.Context, env Environment, project string, 
 	return runSingleProcess(ctx, env.CurrentRoot, childEnv, "pnpm", args...)
 }
 
-func webEnvironment(env Environment, webPort int) []string {
+func webEnvironment(webPort int) []string {
 	values := append([]string{}, os.Environ()...)
-	values = append(values, "FILES_PATH="+env.CurrentFilesPath())
 	if webPort != 0 {
 		values = append(values, "WEB_PORT="+strconv.Itoa(webPort))
 	}
@@ -75,7 +74,6 @@ func developmentEnvironment(env Environment, apiPort, webPort int) ([]string, er
 	values := append([]string{}, os.Environ()...)
 	values = append(values,
 		"DATABASE_URL="+fmt.Sprintf("postgres://postgres:postgres@127.0.0.1:%d/%s?sslmode=disable", port, env.CurrentDatabase),
-		"FILES_PATH="+env.CurrentFilesPath(),
 		"CONFIG_FILE="+filepath.Join(env.CurrentRoot, "app.dev.yaml"),
 		"COOKIE_NAMESPACE="+env.CurrentDatabase,
 	)

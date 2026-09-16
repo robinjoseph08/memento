@@ -316,7 +316,6 @@ func TestLoadDefaults(t *testing.T) {
 	assert.Equal(t, "postgres://test:test@localhost:5432/memento_test?sslmode=disable", cfg.DatabaseURL)
 	assert.Equal(t, 5, cfg.DatabaseConnectRetryCount)
 	assert.Equal(t, 2*time.Second, cfg.DatabaseConnectRetryDelay)
-	assert.Equal(t, "./tmp/files", cfg.FilesPath)
 	assert.Equal(t, "ffprobe", cfg.FFprobePath, "the bundled binary is found on PATH")
 	assert.Equal(t, 1, cfg.FFprobeConcurrency, "chapter extraction runs one probe at a time unless an operator raises it")
 	assert.Equal(t, "0.0.0.0", cfg.ServerHost)
@@ -353,7 +352,6 @@ app_env: development
 database_debug: true
 database_connect_retry_count: 2
 database_connect_retry_delay: 25ms
-files_path: /var/lib/app/files
 server_host: 127.0.0.1
 server_port: 4000
 `), 0o600))
@@ -369,7 +367,6 @@ server_port: 4000
 	assert.True(t, cfg.DatabaseDebug)
 	assert.Equal(t, 2, cfg.DatabaseConnectRetryCount)
 	assert.Equal(t, 25*time.Millisecond, cfg.DatabaseConnectRetryDelay)
-	assert.Equal(t, "/var/lib/app/files", cfg.FilesPath)
 	assert.Equal(t, "127.0.0.1", cfg.ServerHost)
 	assert.Equal(t, 4000, cfg.ServerPort)
 }

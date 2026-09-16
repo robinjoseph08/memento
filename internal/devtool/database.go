@@ -102,16 +102,16 @@ func (d *DockerDatabase) Create(ctx context.Context, env Environment, name strin
 	return d.runCompose(ctx, env, "create database "+name, "exec", "-T", "postgres", "createdb", "-U", "postgres", "--template=template0", name)
 }
 
-func (d *DockerDatabase) Clone(ctx context.Context, env Environment, source, target string) (result DatabaseCloneResult, returnErr error) {
+func (d *DockerDatabase) Clone(ctx context.Context, env Environment, source, target string) (returnErr error) {
 	if source == target {
-		return result, errors.New("source and target databases are the same")
+		return errors.New("source and target databases are the same")
 	}
 	stage, err := stagingDatabaseName()
 	if err != nil {
-		return result, err
+		return err
 	}
 	if err := d.Create(ctx, env, stage); err != nil {
-		return result, fmt.Errorf("create staging database: %w", err)
+		return fmt.Errorf("create staging database: %w", err)
 	}
 	stagePresent := true
 	defer func() {
@@ -121,56 +121,54 @@ func (d *DockerDatabase) Clone(ctx context.Context, env Environment, source, tar
 	}()
 
 	if err := d.dumpAndRestore(ctx, env, source, stage); err != nil {
-		return result, err
+		return err
 	}
 	targetExists, err := d.Exists(ctx, env, target)
 	if err != nil {
-		return result, err
+		return err
 	}
 	backup := ""
 	swapCtx := context.WithoutCancel(ctx)
 	if targetExists {
 		backup, err = stagingDatabaseName()
 		if err != nil {
-			return result, err
+			return err
 		}
 		if err := d.terminateConnections(ctx, env, target); err != nil {
-			return result, fmt.Errorf("disconnect database %s: %w", target, err)
+			return fmt.Errorf("disconnect database %s: %w", target, err)
 		}
 		if err := d.rename(swapCtx, env, target, backup); err != nil {
 			recoveryErr := d.restoreAmbiguousBackup(swapCtx, env, target, backup)
-			return result, errors.Join(fmt.Errorf("back up database %s: %w", target, err), recoveryErr)
+			return errors.Join(fmt.Errorf("back up database %s: %w", target, err), recoveryErr)
 		}
 	}
 
 	if err := d.rename(swapCtx, env, stage, target); err != nil {
 		installed, verifyErr := d.renameCompleted(swapCtx, env, stage, target)
 		if installed {
-			result.Replaced = true
 			stagePresent = false
 			if backup != "" {
 				if cleanupErr := d.drop(swapCtx, env, backup); cleanupErr != nil {
-					return result, fmt.Errorf("remove replaced database: %w", cleanupErr)
+					return fmt.Errorf("remove replaced database: %w", cleanupErr)
 				}
 			}
-			return result, verifyErr
+			return verifyErr
 		}
 		if backup != "" {
 			restoreErr := d.rename(swapCtx, env, backup, target)
 			if restoreErr != nil {
-				return result, errors.Join(err, verifyErr, fmt.Errorf("restore original database: %w", restoreErr))
+				return errors.Join(err, verifyErr, fmt.Errorf("restore original database: %w", restoreErr))
 			}
 		}
-		return result, errors.Join(fmt.Errorf("install cloned database: %w", err), verifyErr)
+		return errors.Join(fmt.Errorf("install cloned database: %w", err), verifyErr)
 	}
-	result.Replaced = true
 	stagePresent = false
 	if backup != "" {
 		if err := d.drop(swapCtx, env, backup); err != nil {
-			return result, fmt.Errorf("remove replaced database: %w", err)
+			return fmt.Errorf("remove replaced database: %w", err)
 		}
 	}
-	return result, nil
+	return nil
 }
 
 func (d *DockerDatabase) restoreAmbiguousBackup(ctx context.Context, env Environment, target, backup string) error {
@@ -394,7 +392,6 @@ func databaseConfig(env Environment, name string) (*config.Config, error) {
 		DatabaseURL:               fmt.Sprintf("postgres://postgres:postgres@127.0.0.1:%d/%s?sslmode=disable", port, name),
 		DatabaseConnectRetryCount: 5,
 		DatabaseConnectRetryDelay: 500 * time.Millisecond,
-		FilesPath:                 env.CurrentFilesPath(),
 		ServerHost:                "127.0.0.1",
 		ServerPort:                0,
 		Hostname:                  "development",

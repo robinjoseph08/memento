@@ -30,22 +30,8 @@ func (e Environment) IsMain() bool {
 	return samePath(e.MainRoot, e.CurrentRoot)
 }
 
-func (e Environment) MainFilesPath() string {
-	return filepath.Join(e.MainRoot, "tmp", "files")
-}
-
-func (e Environment) CurrentFilesPath() string {
-	return filepath.Join(e.CurrentRoot, "tmp", "files")
-}
-
 func (e Environment) DatabaseURL(name string) string {
 	return fmt.Sprintf("postgres://postgres:postgres@127.0.0.1:%d/%s?sslmode=disable", e.PostgresPort, name)
-}
-
-// DatabaseCloneResult reports whether a clone installed the replacement before
-// returning an error during cleanup.
-type DatabaseCloneResult struct {
-	Replaced bool
 }
 
 // DatabaseManager owns the shared PostgreSQL process and its worktree databases.
@@ -54,7 +40,7 @@ type DatabaseManager interface {
 	RequireRunning(context.Context, Environment) error
 	Exists(context.Context, Environment, string) (bool, error)
 	Create(context.Context, Environment, string) error
-	Clone(context.Context, Environment, string, string) (DatabaseCloneResult, error)
+	Clone(context.Context, Environment, string, string) error
 	Reset(context.Context, Environment, string) error
 	Migrate(context.Context, Environment, string) error
 	Rollback(context.Context, Environment, string) error
@@ -127,10 +113,6 @@ func (a *App) Run(ctx context.Context, args []string) error {
 }
 
 func (a *App) setup(ctx context.Context, env Environment) error {
-	if err := os.MkdirAll(env.CurrentFilesPath(), 0o755); err != nil {
-		return fmt.Errorf("create files directory: %w", err)
-	}
-
 	if env.IsMain() {
 		if err := a.Database.Start(ctx, env); err != nil {
 			return err
@@ -165,36 +147,8 @@ func (a *App) setup(ctx context.Context, env Environment) error {
 		if !mainExists {
 			return fmt.Errorf("main database %s does not exist; run mise setup in %s", env.MainDatabase, env.MainRoot)
 		}
-		nonempty, err := directoryNonempty(env.CurrentFilesPath())
-		if err != nil {
-			return err
-		}
-		if nonempty {
-			confirmed, err := a.confirm(fmt.Sprintf("Database %s is missing. Replace this worktree's existing files from main?", env.CurrentDatabase))
-			if err != nil {
-				return err
-			}
-			if !confirmed {
-				return a.printf("Setup cancelled.\n")
-			}
-		}
-		stagedFiles, err := stageDirectory(env.MainFilesPath(), env.CurrentFilesPath())
-		if err != nil {
-			return fmt.Errorf("stage main files: %w", err)
-		}
-		defer stagedFiles.Cleanup()
-		if err := stagedFiles.Install(); err != nil {
-			return fmt.Errorf("install main files: %w", err)
-		}
-		cloneResult, cloneErr := a.Database.Clone(ctx, env, env.MainDatabase, env.CurrentDatabase)
-		if cloneErr != nil {
-			if cloneResult.Replaced {
-				return errors.Join(fmt.Errorf("clone main database: %w", cloneErr), stagedFiles.Finalize())
-			}
-			return errors.Join(fmt.Errorf("clone main database: %w", cloneErr), stagedFiles.Rollback())
-		}
-		if err := stagedFiles.Finalize(); err != nil {
-			return fmt.Errorf("finalize main files: %w", err)
+		if err := a.Database.Clone(ctx, env, env.MainDatabase, env.CurrentDatabase); err != nil {
+			return fmt.Errorf("clone main database: %w", err)
 		}
 	}
 	if err := a.Database.Migrate(ctx, env, env.CurrentDatabase); err != nil {
@@ -204,66 +158,36 @@ func (a *App) setup(ctx context.Context, env Environment) error {
 }
 
 func (a *App) clone(ctx context.Context, env Environment, args []string) error {
-	kind := "all"
 	toMain := false
 	for _, arg := range args {
-		switch arg {
-		case "db", "files":
-			if kind != "all" {
-				return errors.New("only one clone resource may be specified")
-			}
-			kind = arg
-		case "--to-main":
-			toMain = true
-		default:
+		if arg != "--to-main" {
 			return fmt.Errorf("unknown clone argument %q", arg)
 		}
+		toMain = true
 	}
 	if env.IsMain() {
-		return errors.New("clone commands must be run from a linked worktree")
+		return errors.New("clone must be run from a linked worktree")
 	}
-	if kind != "files" {
-		if err := a.Database.RequireRunning(ctx, env); err != nil {
-			return err
-		}
+	if err := a.Database.RequireRunning(ctx, env); err != nil {
+		return err
 	}
 
-	sourceDatabase, targetDatabase := env.MainDatabase, env.CurrentDatabase
-	sourceFiles, targetFiles := env.MainFilesPath(), env.CurrentFilesPath()
+	source, target := env.MainDatabase, env.CurrentDatabase
 	if toMain {
-		sourceDatabase, targetDatabase = targetDatabase, sourceDatabase
-		sourceFiles, targetFiles = targetFiles, sourceFiles
+		source, target = target, source
 	}
-
-	replaceDatabase := kind == "all" || kind == "db"
-	replaceFiles := kind == "all" || kind == "files"
-	needsConfirmation := toMain
-	if replaceDatabase {
-		sourceExists, err := a.Database.Exists(ctx, env, sourceDatabase)
-		if err != nil {
-			return err
-		}
-		if !sourceExists {
-			return fmt.Errorf("source database %s does not exist", sourceDatabase)
-		}
-		targetExists, err := a.Database.Exists(ctx, env, targetDatabase)
-		if err != nil {
-			return err
-		}
-		needsConfirmation = targetExists
+	sourceExists, err := a.Database.Exists(ctx, env, source)
+	if err != nil {
+		return err
 	}
-	if replaceFiles {
-		if _, err := os.Stat(sourceFiles); err != nil {
-			return fmt.Errorf("read source files %s: %w", sourceFiles, err)
-		}
-		nonempty, err := directoryNonempty(targetFiles)
-		if err != nil {
-			return err
-		}
-		needsConfirmation = needsConfirmation || nonempty
+	if !sourceExists {
+		return fmt.Errorf("source database %s does not exist", source)
 	}
-
-	if needsConfirmation {
+	targetExists, err := a.Database.Exists(ctx, env, target)
+	if err != nil {
+		return err
+	}
+	if toMain || targetExists {
 		message := fmt.Sprintf("Replace %s data with data from %s?", targetLabel(env, toMain), sourceLabel(env, toMain))
 		confirmed, err := a.confirm(message)
 		if err != nil {
@@ -273,39 +197,10 @@ func (a *App) clone(ctx context.Context, env Environment, args []string) error {
 			return a.printf("Clone cancelled.\n")
 		}
 	}
-
-	var stagedFiles *stagedDirectory
-	if replaceFiles {
-		var err error
-		stagedFiles, err = stageDirectory(sourceFiles, targetFiles)
-		if err != nil {
-			return err
-		}
-		defer stagedFiles.Cleanup()
+	if err := a.Database.Clone(ctx, env, source, target); err != nil {
+		return err
 	}
-	if stagedFiles != nil {
-		if err := stagedFiles.Install(); err != nil {
-			return err
-		}
-	}
-	if replaceDatabase {
-		cloneResult, cloneErr := a.Database.Clone(ctx, env, sourceDatabase, targetDatabase)
-		if cloneErr != nil {
-			if stagedFiles == nil {
-				return cloneErr
-			}
-			if cloneResult.Replaced {
-				return errors.Join(cloneErr, stagedFiles.Finalize())
-			}
-			return errors.Join(cloneErr, stagedFiles.Rollback())
-		}
-	}
-	if stagedFiles != nil {
-		if err := stagedFiles.Finalize(); err != nil {
-			return err
-		}
-	}
-	return a.printf("Cloned %s from %s to %s.\n", kind, sourceLabel(env, toMain), targetLabel(env, toMain))
+	return a.printf("Cloned database from %s to %s.\n", sourceLabel(env, toMain), targetLabel(env, toMain))
 }
 
 func (a *App) database(ctx context.Context, env Environment, args []string) error {
