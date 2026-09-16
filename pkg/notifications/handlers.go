@@ -8,6 +8,11 @@ import (
 	"github.com/robinjoseph08/memento/pkg/errorstack"
 )
 
+// Diagnostic is the Settings seam: one read-only check of the mail server.
+type Diagnostic interface {
+	CheckMail(context.Context) MailStatus
+}
+
 // UseCases is the HTTP seam. Handlers translate requests; the module owns
 // every transaction and the announcement invariants.
 type UseCases interface {
@@ -23,7 +28,10 @@ type UseCases interface {
 	Unsubscribe(ctx context.Context, token string) (UnsubscribeStatus, error)
 }
 
-type handlers struct{ module UseCases }
+type handlers struct {
+	module     UseCases
+	diagnostic Diagnostic
+}
 
 func personID(c *echo.Context) string {
 	id, _ := c.Get("identity.person_id").(string)
@@ -35,6 +43,10 @@ func respond(c *echo.Context, result any, err error) error {
 		return err
 	}
 	return errorstack.CaptureContext(c.Request().Context(), c.JSON(http.StatusOK, result))
+}
+
+func (h *handlers) checkMail(c *echo.Context) error {
+	return respond(c, h.diagnostic.CheckMail(c.Request().Context()), nil)
 }
 
 func (h *handlers) preview(c *echo.Context) error {

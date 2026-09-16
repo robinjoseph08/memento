@@ -20,7 +20,11 @@ import (
 	"github.com/robinjoseph08/memento/pkg/models"
 )
 
-const smtpSessionTimeout = 60 * time.Second
+const (
+	smtpSessionTimeout = 60 * time.Second
+	// smtpCheckTimeout bounds the Settings diagnostic, which a person waits on.
+	smtpCheckTimeout = 10 * time.Second
+)
 
 // SMTPMailer delivers through one configured server. smtp:// connects in plain
 // text and upgrades with STARTTLS when the server offers it; smtps:// uses TLS
@@ -31,7 +35,7 @@ type SMTPMailer struct {
 	implicitTLS bool
 	username    string
 	password    string
-	from        string
+	from        *mail.Address
 	// dial is replaceable so tests can hand the adapter a paused connection.
 	dial func(context.Context, string) (net.Conn, error)
 }
@@ -60,7 +64,7 @@ func NewSMTPMailer(rawURL, from string) (*SMTPMailer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("smtp_from: must be a valid email address")
 	}
-	m := &SMTPMailer{address: net.JoinHostPort(u.Hostname(), port), host: u.Hostname(), implicitTLS: u.Scheme == "smtps", from: sender.String()}
+	m := &SMTPMailer{address: net.JoinHostPort(u.Hostname(), port), host: u.Hostname(), implicitTLS: u.Scheme == "smtps", from: sender}
 	if u.User != nil {
 		m.username = u.User.Username()
 		m.password, _ = u.User.Password()
@@ -71,52 +75,63 @@ func NewSMTPMailer(rawURL, from string) (*SMTPMailer, error) {
 	return m, nil
 }
 
-// Send performs one complete SMTP session. Every failure before the final
-// end-of-data reply is safe to retry; a lost connection afterwards is not.
-func (m *SMTPMailer) Send(ctx context.Context, message Message) error {
+// connect opens one session: dial, TLS, and sign-in when credentials are
+// configured. The returned function releases the connection; call it once.
+func (m *SMTPMailer) connect(ctx context.Context) (*smtp.Client, func(), error) {
 	conn, err := m.dial(ctx, m.address)
 	if err != nil {
-		return classifySMTP(errorstack.CaptureContext(ctx, err), false)
+		return nil, nil, classifySMTP(errorstack.CaptureContext(ctx, err), false)
 	}
 	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
-	defer stop()
+	release := func() {
+		stop()
+		_ = conn.Close()
+	}
 	_ = conn.SetDeadline(time.Now().Add(smtpSessionTimeout))
 	if m.implicitTLS {
 		tlsConn := tls.Client(conn, &tls.Config{ServerName: m.host, MinVersion: tls.VersionTLS12})
 		if err := tlsConn.HandshakeContext(ctx); err != nil {
-			_ = conn.Close()
-			return classifySMTP(errorstack.CaptureContext(ctx, err), false)
+			release()
+			return nil, nil, classifySMTP(errorstack.CaptureContext(ctx, err), false)
 		}
 		conn = tlsConn
 	}
 	client, err := smtp.NewClient(conn, m.host)
 	if err != nil {
-		_ = conn.Close()
-		return classifySMTP(errorstack.CaptureContext(ctx, err), false)
+		release()
+		return nil, nil, classifySMTP(errorstack.CaptureContext(ctx, err), false)
 	}
-	defer func() { _ = client.Close() }()
 	if !m.implicitTLS {
 		if ok, _ := client.Extension("STARTTLS"); ok {
 			if err := client.StartTLS(&tls.Config{ServerName: m.host, MinVersion: tls.VersionTLS12}); err != nil {
-				return classifySMTP(errorstack.CaptureContext(ctx, err), false)
+				release()
+				return nil, nil, classifySMTP(errorstack.CaptureContext(ctx, err), false)
 			}
 		}
-	}
-	sender, err := mail.ParseAddress(m.from)
-	if err != nil {
-		return classifySMTP(errorstack.Capture(err), false)
 	}
 	if m.username != "" {
 		if err := client.Auth(smtp.PlainAuth("", m.username, m.password, m.host)); err != nil {
+			release()
 			// Go refuses PLAIN over an unencrypted connection and servers without
 			// AUTH; both are configuration problems that retrying cannot fix.
 			if _, reply := errors.AsType[*textproto.Error](err); !reply {
-				return &DeliveryError{Outcome: OutcomePermanent, Summary: "The mail server did not accept sign-in. Credentials need smtps:// or a server that offers STARTTLS and AUTH.", Cause: errorstack.CaptureContext(ctx, err)}
+				return nil, nil, &DeliveryError{Outcome: OutcomePermanent, Summary: "The mail server did not accept sign-in. Credentials need smtps:// or a server that offers STARTTLS and AUTH.", Cause: errorstack.CaptureContext(ctx, err)}
 			}
-			return classifySMTP(errorstack.CaptureContext(ctx, err), false)
+			return nil, nil, classifySMTP(errorstack.CaptureContext(ctx, err), false)
 		}
 	}
-	if err := client.Mail(sender.Address); err != nil {
+	return client, release, nil
+}
+
+// Send performs one complete SMTP session. Every failure before the final
+// end-of-data reply is safe to retry; a lost connection afterwards is not.
+func (m *SMTPMailer) Send(ctx context.Context, message Message) error {
+	client, release, err := m.connect(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+	if err := client.Mail(m.from.Address); err != nil {
 		return classifySMTP(errorstack.CaptureContext(ctx, err), false)
 	}
 	if err := client.Rcpt(message.To); err != nil {
@@ -126,7 +141,7 @@ func (m *SMTPMailer) Send(ctx context.Context, message Message) error {
 	if err != nil {
 		return classifySMTP(errorstack.CaptureContext(ctx, err), false)
 	}
-	if _, err := io.WriteString(writer, formatMessage(sender, message, time.Now())); err != nil {
+	if _, err := io.WriteString(writer, formatMessage(m.from, message, time.Now())); err != nil {
 		_ = writer.Close()
 		return classifySMTP(errorstack.CaptureContext(ctx, err), false)
 	}
@@ -136,6 +151,40 @@ func (m *SMTPMailer) Send(ctx context.Context, message Message) error {
 	}
 	_ = client.Quit()
 	return nil
+}
+
+// Check connects and signs in without sending anything, so Settings can show
+// whether email would work. The result names the sender, never the server or
+// its credentials.
+func (m *SMTPMailer) Check(ctx context.Context) MailStatus {
+	ctx, cancel := context.WithTimeout(ctx, smtpCheckTimeout)
+	defer cancel()
+	status := MailStatus{Configured: true, Sender: m.sender()}
+	client, release, err := m.connect(ctx)
+	if err != nil {
+		status.Message = "The mail server could not be reached."
+		if failure, ok := errors.AsType[*DeliveryError](err); ok {
+			status.Message = failure.Summary
+		}
+		return status
+	}
+	defer release()
+	_ = client.Quit()
+	status.Usable = true
+	status.Message = "The mail server is connected."
+	if m.username != "" {
+		status.Message += " Sign-in succeeded."
+	}
+	return status
+}
+
+// sender is the From address as Settings shows it, without the quoting that
+// mail headers need.
+func (m *SMTPMailer) sender() string {
+	if m.from.Name == "" {
+		return m.from.Address
+	}
+	return m.from.Name + " <" + m.from.Address + ">"
 }
 
 // formatMessage renders a plain-text UTF-8 email with CRLF line endings. The

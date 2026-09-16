@@ -50,6 +50,18 @@ type Preview struct {
 	EmailConfigured bool            `json:"email_configured"`
 }
 
+// MailStatus is the Settings diagnostic for email. Configured is false when
+// the installation has no SMTP settings, which is a quiet state rather than a
+// failure. Usable is true once the mail server accepted a connection and any
+// sign-in. Sender is the configured From address; the server address and
+// credentials are never reported.
+type MailStatus struct {
+	Configured bool   `json:"configured"`
+	Usable     bool   `json:"usable"`
+	Sender     string `json:"sender"`
+	Message    string `json:"message"`
+}
+
 // ApprovePerson names one reviewed row. ExcludedAlbumIDs drops whole Album
 // updates from that row; a Person the Curator left out is simply omitted.
 type ApprovePerson struct {

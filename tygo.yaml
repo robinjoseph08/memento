@@ -15,6 +15,10 @@ packages:
     output_path: "app/types/generated/identity.ts"
     include_files:
       - "types.go"
+  - path: "github.com/robinjoseph08/memento/pkg/ffprobe"
+    output_path: "app/types/generated/ffprobe.ts"
+    include_files:
+      - "types.go"
   - path: "github.com/robinjoseph08/memento/pkg/immich"
     output_path: "app/types/generated/immich.ts"
     include_files:

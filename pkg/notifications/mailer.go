@@ -30,9 +30,11 @@ type Message struct {
 }
 
 // Mailer is the adapter seam for SMTP and its recording test counterpart.
-// Send returns nil when the server accepted the message and a *DeliveryError otherwise.
+// Send returns nil when the server accepted the message and a *DeliveryError
+// otherwise. Check connects and signs in without sending anything.
 type Mailer interface {
 	Send(ctx context.Context, message Message) error
+	Check(ctx context.Context) MailStatus
 }
 
 // DeliveryError carries the outcome and a short operator-safe summary. The
