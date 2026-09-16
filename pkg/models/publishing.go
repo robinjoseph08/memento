@@ -22,6 +22,13 @@ type Album struct {
 	CreatedAt       time.Time
 }
 
+// IgnoredSource is an Immich album a Curator keeps off the import list.
+type IgnoredSource struct {
+	bun.BaseModel `bun:"table:ignored_sources,alias:ignored_source"`
+	SourceID      string `bun:"source_id,pk"`
+	CreatedAt     time.Time
+}
+
 // MediaItem holds shared source facts, never media bytes.
 type MediaItem struct {
 	bun.BaseModel        `bun:"table:media_items,alias:media_item"`

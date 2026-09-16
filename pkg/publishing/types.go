@@ -138,11 +138,15 @@ type SourceAlbum struct {
 	AlbumID     string `json:"album_id"`
 }
 
+// SourcePage is one page of Immich albums, either those offered for import
+// or those a Curator ignored. Ignored counts every ignored album Immich still
+// has, whichever side of the list this page shows.
 type SourcePage struct {
-	Albums []SourceAlbum `json:"albums"`
-	Page   int           `json:"page"`
-	Pages  int           `json:"pages"`
-	Total  int           `json:"total"`
+	Albums  []SourceAlbum `json:"albums"`
+	Page    int           `json:"page"`
+	Pages   int           `json:"pages"`
+	Total   int           `json:"total"`
+	Ignored int           `json:"ignored"`
 }
 
 // Album is the Curator's view of one import. Status is queued, processing,
@@ -279,6 +283,11 @@ type UpdateVideoRequest struct {
 }
 
 type ImportRequest struct {
+	SourceID string `json:"source_id" validate:"required,max=1024"`
+}
+
+// SourceRequest names one Immich album to ignore or restore.
+type SourceRequest struct {
 	SourceID string `json:"source_id" validate:"required,max=1024"`
 }
 

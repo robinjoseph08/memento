@@ -18,6 +18,10 @@ A Media Item's inclusion in one Album and exactly one Moment. Album-specific acc
 An Album Entry a Curator keeps out of one Album while its asset stays in the Immich album. It keeps its identity, Access Decisions, and announcement history, appears in no Moment, and is never offered again by a check for changes. Keep out excludes it and Add back returns it to a reviewed Moment.
 _Avoid_: Hidden, Removed, Deleted
 
+**Ignored Album**:
+An Immich album a Curator keeps off the import list because it should never become an Album, such as a phone's synced Recents. It is listed apart on the import page, and Restore offers it for import again. Ignoring changes nothing in Immich and nothing already imported.
+_Avoid_: Hidden, Blocked, Excluded
+
 **Moment**:
 A nonempty Curator-only portion of an Album whose media was captured around the same time and usually involves the same people. Moments default to capture days but may be split, merged, or span midnight. Each Moment has a Curator-selected Album Entry as its cover; viewer Album covers are derived from accessible Moment covers through the Album's Cover Order rather than stored separately.
 _Avoid_: Access Set, Day Group, Chapter

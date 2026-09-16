@@ -103,8 +103,22 @@ func respond(c *echo.Context, result any, err error) error {
 }
 func (h *handlers) sources(c *echo.Context) error {
 	page, _ := strconv.Atoi(c.QueryParam("page"))
-	result, err := h.module.ListSources(c.Request().Context(), c.QueryParam("q"), page)
+	result, err := h.module.ListSources(c.Request().Context(), c.QueryParam("q"), page, c.QueryParam("ignored") == "true")
 	return respond(c, result, err)
+}
+func (h *handlers) ignoreSource(c *echo.Context) error {
+	var request SourceRequest
+	if err := c.Bind(&request); err != nil {
+		return err
+	}
+	return respond(c, struct{}{}, h.module.IgnoreSource(c.Request().Context(), request.SourceID))
+}
+func (h *handlers) restoreSource(c *echo.Context) error {
+	var request SourceRequest
+	if err := c.Bind(&request); err != nil {
+		return err
+	}
+	return respond(c, struct{}{}, h.module.RestoreSource(c.Request().Context(), request.SourceID))
 }
 func (h *handlers) albums(c *echo.Context) error {
 	result, err := h.module.ListAlbums(c.Request().Context(), c.QueryParam("q"))

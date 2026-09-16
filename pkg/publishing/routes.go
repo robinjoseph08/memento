@@ -41,6 +41,8 @@ func RegisterRoutes(e *echo.Echo, module *Module, requireCurator echo.Middleware
 	RegisterPublicationRoutes(e, module, requireCurator)
 	h := &handlers{module: module}
 	e.GET("/api/curator/sources", h.sources, requireCurator)
+	e.POST("/api/curator/sources/ignore", h.ignoreSource, requireCurator)
+	e.POST("/api/curator/sources/restore", h.restoreSource, requireCurator)
 	e.POST("/api/curator/imports", h.startImport, requireCurator)
 	e.GET("/api/curator/albums", h.albums, requireCurator)
 	e.GET("/api/curator/albums/:id", h.album, requireCurator)
