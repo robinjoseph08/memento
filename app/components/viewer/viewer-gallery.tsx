@@ -452,9 +452,11 @@ function MediaThumbnail({ entry }: { entry: ViewerEntry }) {
 // flex share, normalised so a lone portrait still fills its row. Short rows
 // keep their natural size instead of stretching. The
 // same ratios lay out a day before its photos arrive, so nothing moves when
-// they do. Rows off screen skip layout and paint; their height is declared
-// from the same arithmetic in container units, gaps included, so the page
-// height is exact before they render.
+// they do. Each row off screen skips layout and paint; its height is declared
+// from the same arithmetic in container units, so the page height is exact
+// before it renders. One declaration per row, not per day: browsers cap how
+// many terms a calc() may hold, and a day of a few hundred photos went past
+// it and collapsed to nothing until it scrolled into view.
 function PhotoRows({
   ratios,
   tile,
@@ -476,26 +478,17 @@ function PhotoRows({
   for (const [index, row] of rows.entries())
     if (index === rows.length - 1 || row.sum < target * 0.7)
       row.share = Math.min(1, row.sum / target);
-  const height = rows
-    .map(
-      (row) =>
-        `(100cqw * ${row.share} - ${(row.items.length - 1) * 4}px) / ${row.sum}`,
-    )
-    .concat(`${Math.max(0, rows.length - 1) * 4}px`)
-    .join(" + ");
   return (
-    <div
-      className="mt-5 flex flex-col gap-1"
-      style={{
-        contentVisibility: "auto",
-        containIntrinsicHeight: `auto calc(${height})`,
-      }}
-    >
+    <div className="mt-5 flex flex-col gap-1">
       {rows.map((row) => (
         <div
           className="flex gap-1"
           key={row.items[0]}
-          style={{ width: `${row.share * 100}%` }}
+          style={{
+            width: `${row.share * 100}%`,
+            contentVisibility: "auto",
+            containIntrinsicHeight: `auto calc((100cqw * ${row.share} - ${(row.items.length - 1) * 4}px) / ${row.sum})`,
+          }}
         >
           {row.items.map((index) => (
             <div
