@@ -283,3 +283,72 @@ it("asks before discarding a new person and keeps the name when the Curator chan
   await user.click(screen.getByRole("button", { name: "Add person" }));
   expect(screen.getByRole("textbox", { name: "Display name" })).toHaveValue("");
 });
+
+it("shows where each person stands on signing in", async () => {
+  const member = {
+    is_curator: false,
+    update_email: "",
+    email_updates: false,
+    avatar_url: "",
+  };
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (path: string) => {
+      if (path.endsWith("/status"))
+        return Response.json({
+          claimed: true,
+          person: curator,
+          auth_mode: "fake",
+        });
+      if (path.startsWith("/api/people?"))
+        return Response.json([
+          {
+            ...member,
+            id: "amara",
+            display_name: "Amara",
+            email: "",
+            access: "none",
+          },
+          {
+            ...member,
+            id: "ben",
+            display_name: "Ben",
+            email: "ben@example.test",
+            access: "approved",
+          },
+          {
+            ...member,
+            id: "chloe",
+            display_name: "Chloe",
+            email: "chloe@example.test",
+            access: "linked",
+            last_seen_at: "2026-09-15T21:23:00Z",
+          },
+          {
+            ...member,
+            id: "dev",
+            display_name: "Dev",
+            email: "dev@example.test",
+            access: "onboarded",
+            onboarding_completed_at: "2026-09-15T21:24:00Z",
+            last_seen_at: "2026-09-15T21:25:00Z",
+          },
+        ]);
+      throw new Error(`Unexpected request: ${path}`);
+    }),
+  );
+  window.history.replaceState(null, "", "/curator/people");
+  render(<App />);
+  const amara = await screen.findByRole("link", { name: /^Amara/ });
+  expect(amara).toHaveTextContent("No email yet");
+  expect(amara).not.toHaveTextContent("Session refreshed");
+  const ben = screen.getByRole("link", { name: /^Ben/ });
+  expect(ben).toHaveTextContent("ben@example.test");
+  expect(ben).toHaveTextContent("Approved, not signed in");
+  const chloe = screen.getByRole("link", { name: /^Chloe/ });
+  expect(chloe).toHaveTextContent("Signed in");
+  expect(chloe).toHaveTextContent("Session refreshed");
+  expect(screen.getByRole("link", { name: /^Dev/ })).toHaveTextContent(
+    "Onboarded",
+  );
+});

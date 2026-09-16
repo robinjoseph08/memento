@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"strings"
+	"time"
 	"uuid"
 
 	"github.com/robinjoseph08/memento/pkg/errcodes"
@@ -100,8 +101,8 @@ func (m *Module) CreatePerson(ctx context.Context, token string, request CreateP
 	return result, err
 }
 
-func (m *Module) ListPeople(ctx context.Context, token, search string) ([]Person, error) {
-	result := []Person{}
+func (m *Module) ListPeople(ctx context.Context, token, search string) ([]PersonSummary, error) {
+	result := []PersonSummary{}
 	err := m.change(ctx, func(ctx context.Context, tx bun.Tx) error {
 		if _, err := m.actor(ctx, tx, token, true); err != nil {
 			return err
@@ -114,12 +115,84 @@ func (m *Module) ListPeople(ctx context.Context, token, search string) ([]Person
 		if err := query.Scan(ctx); err != nil {
 			return errorstack.CaptureContext(ctx, err)
 		}
+		standing, err := signInStanding(ctx, tx, people)
+		if err != nil {
+			return err
+		}
 		for _, person := range people {
-			result = append(result, projectPerson(person))
+			row := standing[person.ID]
+			row.Person = projectPerson(person)
+			result = append(result, row)
 		}
 		return nil
 	})
 	return result, err
+}
+
+// signInStanding fills the sign-in fields of a PersonSummary for each Person:
+// the newest linked email or open Preauthorization, how far they have come,
+// and when a browser last used one of their sessions.
+func signInStanding(ctx context.Context, tx bun.Tx, people []models.Person) (map[models.UUID]PersonSummary, error) {
+	result := make(map[models.UUID]PersonSummary, len(people))
+	if len(people) == 0 {
+		return result, nil
+	}
+	ids := make([]models.UUID, 0, len(people))
+	for _, person := range people {
+		ids = append(ids, person.ID)
+		result[person.ID] = PersonSummary{Access: "none"}
+	}
+	var seen []struct {
+		PersonID  models.UUID
+		RenewedAt time.Time
+	}
+	err := tx.NewSelect().TableExpr("sessions AS s").
+		ColumnExpr("i.person_id").ColumnExpr("max(s.renewed_at) AS renewed_at").
+		Join("JOIN identities AS i ON i.id = s.identity_id").
+		Where("i.person_id IN (?)", bun.List(ids)).Where("i.unlinked_at IS NULL").
+		GroupExpr("i.person_id").Scan(ctx, &seen)
+	if err != nil {
+		return nil, errorstack.CaptureContext(ctx, err)
+	}
+	for _, row := range seen {
+		summary := result[row.PersonID]
+		last := row.RenewedAt
+		summary.LastSeenAt = &last
+		result[row.PersonID] = summary
+	}
+	// Oldest first, so the newest of each kind is the one left standing.
+	var approvals []models.Preauthorization
+	err = tx.NewSelect().Model(&approvals).Where("person_id IN (?)", bun.List(ids)).
+		Where("consumed_at IS NULL AND revoked_at IS NULL").Order("created_at", "id").Scan(ctx)
+	if err != nil {
+		return nil, errorstack.CaptureContext(ctx, err)
+	}
+	for _, approval := range approvals {
+		summary := result[approval.PersonID]
+		summary.Email = approval.Email
+		summary.Access = "approved"
+		result[approval.PersonID] = summary
+	}
+	var identities []models.Identity
+	err = tx.NewSelect().Model(&identities).Where("person_id IN (?)", bun.List(ids)).
+		Where("unlinked_at IS NULL").Order("created_at", "id").Scan(ctx)
+	if err != nil {
+		return nil, errorstack.CaptureContext(ctx, err)
+	}
+	onboarded := make(map[models.UUID]bool, len(people))
+	for _, person := range people {
+		onboarded[person.ID] = person.OnboardingCompletedAt != nil
+	}
+	for _, identity := range identities {
+		summary := result[identity.PersonID]
+		summary.Email = identity.Email
+		summary.Access = "linked"
+		if onboarded[identity.PersonID] {
+			summary.Access = "onboarded"
+		}
+		result[identity.PersonID] = summary
+	}
+	return result, nil
 }
 
 func (m *Module) GetPerson(ctx context.Context, token, id string) (PersonDetail, error) {

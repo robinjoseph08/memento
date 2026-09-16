@@ -34,9 +34,9 @@ func TestLibraryOrdersDaysAndRatiosNewestFirst(t *testing.T) {
 	require.Equal(t, 3, summary.PhotoCount)
 	require.Equal(t, 1, summary.VideoCount)
 	require.Equal(t, []publishing.ViewerDay{
-		{Date: "2026-07-06", PhotoCount: 0, VideoCount: 1, PhotoRatios: []float64{}},
-		{Date: "2026-07-05", PhotoCount: 2, VideoCount: 0, PhotoRatios: []float64{1.333, 1}},
-		{Date: "2026-07-04", PhotoCount: 1, VideoCount: 0, PhotoRatios: []float64{1.5}},
+		{Date: "2026-07-06", PhotoCount: 0, VideoCount: 1, PhotoRatios: []float64{}, VideoRatios: []float64{1.5}},
+		{Date: "2026-07-05", PhotoCount: 2, VideoCount: 0, PhotoRatios: []float64{1.333, 1}, VideoRatios: []float64{}},
+		{Date: "2026-07-04", PhotoCount: 1, VideoCount: 0, PhotoRatios: []float64{1.5}, VideoRatios: []float64{}},
 	}, summary.Days)
 	photos, err := module.ViewLibraryEntries(t.Context(), curator.ID.String(), "IMAGE", publishing.EntryPageRequest{})
 	require.NoError(t, err)

@@ -3,6 +3,7 @@ package publishing_test
 import (
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/robinjoseph08/memento/pkg/immich"
 	"github.com/robinjoseph08/memento/pkg/models"
@@ -99,14 +100,15 @@ func TestAlbumSummaryMatchesDetailWithPhotoVideoCountsAndLocalDates(t *testing.T
 	require.Equal(t, want, detail.Album)
 }
 
-func TestSourcePagesOrderByNewestStartWithIDTiesAndUndatedLast(t *testing.T) {
+func TestSourcePagesOrderByNewestEndWithIDTiesAndUndatedLast(t *testing.T) {
 	t.Parallel()
 	source := &library{albums: map[string]immich.Album{}}
 	for i := range 25 {
 		id := fmt.Sprintf("source-%02d", i)
-		source.albums[id] = immich.Album{ID: id, Name: fmt.Sprintf("Trip %02d", 25-i), StartDate: "2026-07-05T00:00:00Z"}
+		source.albums[id] = immich.Album{ID: id, Name: fmt.Sprintf("Trip %02d", 25-i), StartDate: "2026-07-01T00:00:00Z", EndDate: "2026-07-05T00:00:00Z"}
 	}
-	source.albums["older"] = immich.Album{ID: "older", Name: "A older", StartDate: "2025-01-01T00:00:00Z", EndDate: "2027-01-01T00:00:00Z"}
+	// Older ends earlier although it starts later than nothing; the end decides.
+	source.albums["older"] = immich.Album{ID: "older", Name: "A older", StartDate: "2026-07-03T00:00:00Z", EndDate: "2026-07-04T00:00:00Z"}
 	source.albums["empty-a"] = immich.Album{ID: "empty-a", Name: "B empty"}
 	source.albums["empty-b"] = immich.Album{ID: "empty-b", Name: "A empty"}
 	m := publishing.New(testdb.New(t), source, noQueue)
@@ -161,18 +163,19 @@ func TestAlbumTitleSearchIsTrimmedCaseInsensitiveAndLiteralWithoutImmich(t *test
 	}
 }
 
-func TestAlbumsOrderByNewestCaptureStartWithUndatedLast(t *testing.T) {
+func TestAlbumsOrderByNewestCaptureEndWithUndatedLast(t *testing.T) {
 	t.Parallel()
 	source := fixture()
-	m := publishing.New(testdb.New(t), source, noQueue)
+	db := testdb.New(t)
+	m := publishing.New(db, source, noQueue)
 	ids := []string{}
 	for _, scenario := range []struct {
 		id, title string
 		dates     []string
 	}{
-		{"newer", "Z newest start", []string{"2026-07-05T00:01:00+14:00"}},
-		{"tie", "B tied start", []string{"2026-07-05T00:01:00-10:00"}},
-		{"older", "A older start, newest end", []string{"2025-01-01T23:59:00-10:00", "2027-01-01T00:01:00+14:00"}},
+		{"newer", "Z newest end", []string{"2025-01-01T23:59:00-10:00", "2026-07-05T00:01:00+14:00"}},
+		{"tie", "B tied end", []string{"2026-07-05T00:01:00-10:00"}},
+		{"older", "A newest start, older end", []string{"2026-07-04T23:59:00-10:00"}},
 		{"empty", "Empty", nil},
 	} {
 		source.assets = nil
@@ -194,5 +197,17 @@ func TestAlbumsOrderByNewestCaptureStartWithUndatedLast(t *testing.T) {
 	for _, album := range albums {
 		got = append(got, album.ID)
 	}
-	require.Equal(t, ids, got, "capture start, not title, import time, end date, or UTC conversion, determines order")
+	require.Equal(t, ids, got, "capture end, not title, import time, start date, or UTC conversion, determines order")
+
+	// The viewer's list shares the order; an Album with nothing in it is not listed.
+	curator := models.Person{ID: models.NewUUIDv7(), DisplayName: "Curator", IsCurator: true, CreatedAt: time.Now().UTC()}
+	_, err = db.NewInsert().Model(&curator).Exec(t.Context())
+	require.NoError(t, err)
+	viewed, err := m.ViewAlbums(t.Context(), curator.ID.String())
+	require.NoError(t, err)
+	viewedIDs := []string{}
+	for _, album := range viewed {
+		viewedIDs = append(viewedIDs, album.ID)
+	}
+	require.Equal(t, ids[:3], viewedIDs)
 }

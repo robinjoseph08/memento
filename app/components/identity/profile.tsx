@@ -1,3 +1,4 @@
+import { Crown, LogOut, MonitorSmartphone, UserRoundPen } from "lucide-react";
 import { useId, useState } from "react";
 
 import { useIdentityStatus, useSignOut } from "../../hooks/queries/identity";
@@ -21,9 +22,10 @@ import {
   Form,
   headingClass,
   ReadFailure,
-  sectionHeadingClass,
+  SectionHeading,
 } from "../people/form-fields";
 import { PageTitle } from "../shell/page-title";
+import { Avatar, AvatarFallback, AvatarImage } from "../ui/avatar";
 import { Button } from "../ui/button";
 import { Combobox } from "../ui/combobox";
 import { LinkedIdentities } from "./linked-identities";
@@ -34,7 +36,34 @@ export function ProfilePage() {
   return (
     <div className="mx-auto max-w-280">
       <PageTitle title="Your profile" />
-      <h1 className={headingClass}>Your profile</h1>
+      <div className="flex flex-wrap items-center gap-5">
+        {profile.data && (
+          <Avatar aria-hidden="true" className="size-20 min-[761px]:size-24">
+            {profile.data.person.avatar_url && (
+              <AvatarImage alt="" src={profile.data.person.avatar_url} />
+            )}
+            <AvatarFallback
+              className="text-2xl"
+              name={profile.data.person.display_name}
+            />
+          </Avatar>
+        )}
+        <div className="min-w-0">
+          <h1 className={headingClass}>Your profile</h1>
+          {profile.data && (
+            <p className="mt-1 flex items-center gap-1.5 text-sm text-muted">
+              {profile.data.person.is_curator && (
+                <Crown
+                  aria-hidden="true"
+                  className="size-3.5 text-accent-foreground"
+                  strokeWidth={1.5}
+                />
+              )}
+              {profile.data.person.is_curator ? "Curator" : "Member"}
+            </p>
+          )}
+        </div>
+      </div>
       {profile.isPending && (
         <p className="mt-6" role="status">
           Loading profile…
@@ -83,6 +112,9 @@ function ProfileDetails({ profile }: { profile: Profile }) {
             update.mutate(values, { onSuccess: () => setDraft(null) });
         }}
       >
+        <SectionHeading className="mb-6" icon={UserRoundPen}>
+          Your details
+        </SectionHeading>
         <fieldset disabled={update.isPending}>
           <Field
             error={errors.display_name}
@@ -166,9 +198,9 @@ function Sessions() {
       aria-labelledby="browser-sessions"
       className="border-t border-border py-8"
     >
-      <h2 className={sectionHeadingClass} id="browser-sessions">
+      <SectionHeading icon={MonitorSmartphone} id="browser-sessions">
         Browser sessions
-      </h2>
+      </SectionHeading>
       <p className="mt-3 mb-6 text-sm text-muted">
         Browsers currently signed in to your account.
       </p>
@@ -191,6 +223,7 @@ function Sessions() {
       <ConfirmAction
         description="You'll be signed out of every browser, including this one. Unsaved profile changes will be lost. Sign in again with a linked account to return."
         error={signOut.error}
+        icon={LogOut}
         label="Sign out everywhere"
         onConfirm={() => signOut.mutateAsync()}
         pending={signOut.isPending}

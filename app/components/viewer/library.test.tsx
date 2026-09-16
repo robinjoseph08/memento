@@ -23,12 +23,14 @@ const library: ViewerLibrary = {
       photo_count: 501,
       video_count: 1,
       photo_ratios: Array.from({ length: 501 }, () => 1.5),
+      video_ratios: [],
     },
     {
       date: "2025-06-14",
       photo_count: 1,
       video_count: 0,
       photo_ratios: [1.5],
+      video_ratios: [],
     },
   ],
 };
@@ -227,7 +229,9 @@ it("offers Library after Albums in mobile navigation and closes the menu on sele
       .map((link) => link.textContent),
   ).toEqual(["Albums", "Library"]);
   await user.click(within(navigation).getByRole("link", { name: "Library" }));
-  expect(await screen.findByRole("heading", { name: "Library" })).toBeVisible();
+  expect(
+    await screen.findByRole("heading", { name: "Your library" }),
+  ).toBeVisible();
   expect(
     screen.queryByRole("navigation", { name: "Mobile navigation" }),
   ).not.toBeInTheDocument();
@@ -262,6 +266,7 @@ it.each([
               photo_count,
               video_count,
               photo_ratios: photo_count ? [1.5] : [],
+              video_ratios: [],
             },
           ],
         });

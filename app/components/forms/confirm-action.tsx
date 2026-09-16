@@ -1,3 +1,4 @@
+import type { LucideIcon } from "lucide-react";
 import { useState } from "react";
 
 import { Button } from "../ui/button";
@@ -15,6 +16,7 @@ export function ConfirmAction({
   onConfirm,
   disabled = false,
   compact = false,
+  icon: Icon,
 }: {
   label: string;
   triggerLabel?: string;
@@ -27,6 +29,7 @@ export function ConfirmAction({
   onConfirm: () => Promise<unknown>;
   disabled?: boolean;
   compact?: boolean;
+  icon?: LucideIcon;
 }) {
   const [open, setOpen] = useState(false);
   return (
@@ -40,6 +43,9 @@ export function ConfirmAction({
         size={compact ? "sm" : "default"}
         variant="outline"
       >
+        {Icon && (
+          <Icon aria-hidden="true" className="size-4" strokeWidth={1.5} />
+        )}
         {triggerLabel}
       </Button>
       <ConfirmDialog

@@ -40,7 +40,7 @@ type FaceUseCases interface {
 
 type PeopleUseCases interface {
 	CreatePerson(context.Context, string, CreatePersonRequest) (Person, error)
-	ListPeople(context.Context, string, string) ([]Person, error)
+	ListPeople(context.Context, string, string) ([]PersonSummary, error)
 	GetPerson(context.Context, string, string) (PersonDetail, error)
 	UpdatePerson(context.Context, string, string, UpdatePersonRequest) (Person, error)
 	Preauthorize(context.Context, string, string, PreauthorizeRequest) (Preauthorization, error)

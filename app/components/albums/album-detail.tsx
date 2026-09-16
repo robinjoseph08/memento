@@ -1,3 +1,15 @@
+import {
+  Ban,
+  Eye,
+  EyeOff,
+  Glasses,
+  Image,
+  Info,
+  KeyRound,
+  RefreshCw,
+  Rocket,
+  type LucideIcon,
+} from "lucide-react";
 import { use, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 
@@ -16,6 +28,7 @@ import {
   sectionHeadingClass,
 } from "../people/form-fields";
 import { BackLink } from "../shell/back-link";
+import { CountBadge } from "../shell/count-badge";
 import { PageTitle } from "../shell/page-title";
 import { Button } from "../ui/button";
 import { Textarea } from "../ui/textarea";
@@ -25,6 +38,7 @@ import { AlbumCover } from "./album-cover";
 import { AlbumImage } from "./album-image";
 import { DangerZone } from "./album-lifecycle";
 import { Audience } from "./audience";
+import { CoverWash } from "./cover-wash";
 import { ExcludedPane } from "./exclusions";
 import { ImportProgress } from "./import-progress";
 import { MediaCounts } from "./media-counts";
@@ -41,9 +55,20 @@ import { SyncDialog } from "./sync-review";
 
 const outlineRowClass = (active: boolean) =>
   cn(
-    "flex min-h-11 items-center gap-3 rounded-sm border-l-2 px-3 text-left hover:bg-surface",
+    "group flex min-h-11 items-center gap-3 rounded-sm border-l-2 px-3 text-left hover:bg-surface",
     active ? "border-primary bg-surface text-foreground" : "border-transparent",
   );
+
+type Section = "details" | "access" | "cover" | "preview" | "excluded";
+
+// The Album-level sections of the outline, above the Moments.
+const sections: { key: Section; label: string; icon: LucideIcon }[] = [
+  { key: "details", label: "Album details", icon: Info },
+  { key: "access", label: "Album access", icon: KeyRound },
+  { key: "cover", label: "Album cover", icon: Image },
+  { key: "preview", label: "Viewer preview", icon: Glasses },
+  { key: "excluded", label: "Excluded media", icon: Ban },
+];
 
 export function AlbumPage() {
   const { id = "" } = useParams();
@@ -95,15 +120,8 @@ function AlbumContent({ album }: { album: AlbumDetail }) {
     else openDialog(action);
   };
   const desktop = useMediaQuery("(min-width: 761px)");
-  const requested = params.get("section");
-  const section =
-    requested === "details" ||
-    requested === "access" ||
-    requested === "cover" ||
-    requested === "preview" ||
-    requested === "excluded"
-      ? requested
-      : "moments";
+  const requested = sections.find((item) => item.key === params.get("section"));
+  const section = requested?.key ?? "moments";
   const moment =
     album.moments.find((item) => item.id === params.get("moment")) ??
     album.moments[0];
@@ -115,7 +133,8 @@ function AlbumContent({ album }: { album: AlbumDetail }) {
   const complete = album.status === "complete";
   return (
     <>
-      <header className="flex flex-wrap items-center gap-4 border-b border-border px-5 py-4 min-[761px]:px-8">
+      <header className="relative isolate flex flex-wrap items-center gap-4 overflow-hidden border-b border-border px-5 py-4 min-[761px]:px-8">
+        <CoverWash src={album.cover_url} />
         <div className="min-w-0 flex-1">
           <BackLink className="mb-1 min-h-7 text-xs" to="/curator/albums">
             All albums
@@ -131,7 +150,20 @@ function AlbumContent({ album }: { album: AlbumDetail }) {
             ) : (
               <span>{countLabel(album.total, "item", "items")}</span>
             )}
-            <span className="ml-3 border-l border-border pl-3">
+            <span className="ml-3 inline-flex items-center gap-1 border-l border-border pl-3 align-bottom">
+              {album.published ? (
+                <Eye
+                  aria-hidden="true"
+                  className="size-3.5 text-accent-foreground"
+                  strokeWidth={1.5}
+                />
+              ) : (
+                <EyeOff
+                  aria-hidden="true"
+                  className="size-3.5"
+                  strokeWidth={1.5}
+                />
+              )}
               {album.published ? "Published" : "Unpublished"}
             </span>
           </p>
@@ -143,6 +175,11 @@ function AlbumContent({ album }: { album: AlbumDetail }) {
             onClick={() => guard("sync")}
             variant="outline"
           >
+            <RefreshCw
+              aria-hidden="true"
+              className="size-4"
+              strokeWidth={1.5}
+            />
             Check for changes
           </Button>
           {!album.published && (
@@ -151,6 +188,7 @@ function AlbumContent({ album }: { album: AlbumDetail }) {
               disabled={!complete}
               onClick={() => guard("publish")}
             >
+              <Rocket aria-hidden="true" className="size-4" strokeWidth={1.5} />
               Review & publish
             </Button>
           )}
@@ -188,89 +226,35 @@ function AlbumContent({ album }: { album: AlbumDetail }) {
             >
               <p className="px-3 text-xs text-muted">Album</p>
               <ul className="mt-1 space-y-0.5">
-                <li>
-                  <Link
-                    aria-current={section === "details" ? "page" : undefined}
-                    className={cn(
-                      outlineRowClass(section === "details"),
-                      "text-sm",
-                    )}
-                    to={link({
-                      section: "details",
-                      pane: "detail",
-                      entry: null,
-                    })}
-                  >
-                    Album details
-                  </Link>
-                </li>
-                <li>
-                  <Link
-                    aria-current={section === "access" ? "page" : undefined}
-                    className={cn(
-                      outlineRowClass(section === "access"),
-                      "text-sm",
-                    )}
-                    to={link({
-                      section: "access",
-                      pane: "detail",
-                      entry: null,
-                    })}
-                  >
-                    Album access
-                  </Link>
-                </li>
-                <li>
-                  <Link
-                    aria-current={section === "cover" ? "page" : undefined}
-                    className={cn(
-                      outlineRowClass(section === "cover"),
-                      "text-sm",
-                    )}
-                    to={link({
-                      section: "cover",
-                      pane: "detail",
-                      entry: null,
-                    })}
-                  >
-                    Album cover
-                  </Link>
-                </li>
-                <li>
-                  <Link
-                    aria-current={section === "preview" ? "page" : undefined}
-                    className={cn(
-                      outlineRowClass(section === "preview"),
-                      "text-sm",
-                    )}
-                    to={link({
-                      section: "preview",
-                      pane: "detail",
-                      entry: null,
-                    })}
-                  >
-                    Viewer preview
-                  </Link>
-                </li>
-                <li>
-                  <Link
-                    aria-current={section === "excluded" ? "page" : undefined}
-                    className={cn(
-                      outlineRowClass(section === "excluded"),
-                      "text-sm",
-                    )}
-                    to={link({
-                      section: "excluded",
-                      pane: "detail",
-                      entry: null,
-                    })}
-                  >
-                    Excluded media
-                    <span className="ml-auto text-xs text-accent-foreground">
-                      {album.excluded.length}
-                    </span>
-                  </Link>
-                </li>
+                {sections.map((item) => (
+                  <li key={item.key}>
+                    <Link
+                      aria-current={section === item.key ? "page" : undefined}
+                      className={cn(
+                        outlineRowClass(section === item.key),
+                        "text-sm",
+                      )}
+                      to={link({
+                        section: item.key,
+                        pane: "detail",
+                        entry: null,
+                      })}
+                    >
+                      <item.icon
+                        aria-hidden="true"
+                        className="size-4 shrink-0 text-muted group-aria-[current=page]:text-accent-foreground"
+                        strokeWidth={1.5}
+                      />
+                      {item.label}
+                      {item.key === "excluded" && (
+                        <CountBadge
+                          className="ml-auto"
+                          count={album.excluded.length}
+                        />
+                      )}
+                    </Link>
+                  </li>
+                ))}
               </ul>
               <p className="mt-6 px-3 text-xs text-muted">
                 Moments{" "}

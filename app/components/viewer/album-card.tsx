@@ -1,6 +1,9 @@
+import { CalendarDays } from "lucide-react";
+
 import type { ViewerAlbum } from "../../types/generated/publishing";
 import { AlbumImage } from "../albums/album-image";
 import { MediaCounts } from "../albums/media-counts";
+import { PrintStack } from "../albums/print-stack";
 import { captureRange } from "./labels";
 
 // The viewer's Album tile: square cover, title, counts, and capture range.
@@ -8,16 +11,23 @@ import { captureRange } from "./labels";
 export function AlbumCard({ album }: { album: ViewerAlbum }) {
   return (
     <>
-      <AlbumImage
-        alt={album.title}
-        className="aspect-square w-full object-cover"
-        fallback="No cover"
-        src={album.cover_url}
-      />
+      <PrintStack>
+        <AlbumImage
+          alt={album.title}
+          className="aspect-square w-full object-cover"
+          fallback="No cover"
+          src={album.cover_url}
+        />
+      </PrintStack>
       <span className="mt-3 block font-heading text-lg wrap-anywhere">
         {album.title}
       </span>
-      <span className="mt-1 block text-xs/5 text-muted">
+      <span className="mt-1 flex items-start gap-1 text-xs/5 text-muted">
+        <CalendarDays
+          aria-hidden="true"
+          className="mt-[3px] size-3.5 shrink-0"
+          strokeWidth={1.5}
+        />
         {captureRange(album)}
       </span>
       <MediaCounts

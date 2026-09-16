@@ -1,4 +1,4 @@
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, PartyPopper, RefreshCw, Send } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 
 import {
@@ -28,6 +28,7 @@ import {
   ReadFailure,
   sectionHeadingClass,
 } from "../people/form-fields";
+import { EmptyState } from "../shell/empty-state";
 import { PageTitle } from "../shell/page-title";
 import { Button } from "../ui/button";
 import { Textarea } from "../ui/textarea";
@@ -150,21 +151,24 @@ function PreviewForm({
   }
   if (preview.people.length === 0) {
     return (
-      <section className="mt-9 border-t border-border py-8">
-        <h2 className={sectionHeadingClass}>Everyone is up to date</h2>
-        <p className="mt-3 max-w-120 text-muted">
-          Nothing new is waiting to be announced. Publish an album or share more
-          photos, then come back here to send updates.
-        </p>
-        <Button
-          className="mt-5"
-          disabled={refreshing}
-          onClick={onReview}
-          variant="outline"
-        >
-          {refreshing ? "Checking…" : "Check again"}
-        </Button>
-      </section>
+      <EmptyState
+        action={
+          <Button disabled={refreshing} onClick={onReview} variant="outline">
+            <RefreshCw
+              aria-hidden="true"
+              className="size-4"
+              strokeWidth={1.5}
+            />
+            {refreshing ? "Checking…" : "Check again"}
+          </Button>
+        }
+        className="mt-9"
+        icon={PartyPopper}
+        title="Everyone is up to date"
+      >
+        Nothing new is waiting to be announced. Publish an album or share more
+        photos, then come back here to send updates.
+      </EmptyState>
     );
   }
   function toggleAlbum(personID: string, albumID: string, include: boolean) {
@@ -253,6 +257,7 @@ function PreviewForm({
         </div>
         <div className="mt-6 flex flex-wrap items-center gap-3">
           <Button disabled={included.length === 0} type="submit">
+            <Send aria-hidden="true" className="size-4" strokeWidth={1.5} />
             {approve.isPending
               ? "Sending…"
               : `Send updates to ${countLabel(included.length, "person", "people")}`}
@@ -266,6 +271,11 @@ function PreviewForm({
             pending={dismiss.isPending}
           />
           <Button disabled={refreshing} onClick={onReview} variant="ghost">
+            <RefreshCw
+              aria-hidden="true"
+              className="size-4"
+              strokeWidth={1.5}
+            />
             {refreshing ? "Checking…" : "Check again"}
           </Button>
         </div>
@@ -471,6 +481,7 @@ function ApprovalResult({
         onClick={onReview}
         variant="outline"
       >
+        <RefreshCw aria-hidden="true" className="size-4" strokeWidth={1.5} />
         {refreshing ? "Checking…" : "Check again"}
       </Button>
     </section>

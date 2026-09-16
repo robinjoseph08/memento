@@ -1,4 +1,11 @@
-import { ExternalLink } from "lucide-react";
+import {
+  Bell,
+  CircleUser,
+  ExternalLink,
+  Info,
+  MailCheck,
+  MonitorSmartphone,
+} from "lucide-react";
 import { useState } from "react";
 
 import {
@@ -15,7 +22,6 @@ import {
 } from "../../hooks/queries/people";
 import { useUnsavedChanges } from "../../hooks/use-unsaved-changes";
 import { errorMessage, fieldErrors } from "../../lib/http";
-import { initials } from "../../lib/initials";
 import { formatDate } from "../../lib/utils";
 import type {
   PersonDetail,
@@ -32,7 +38,7 @@ import {
   FieldError,
   Form,
   headingClass,
-  sectionHeadingClass,
+  SectionHeading,
 } from "./form-fields";
 import { PreauthorizationTables } from "./preauthorization-tables";
 
@@ -70,7 +76,7 @@ export function PersonDetails({ detail }: { detail: PersonDetail }) {
       <div className="mt-9 grid gap-x-12 min-[1201px]:grid-cols-[minmax(0,320px)_minmax(0,1fr)]">
         <div className="min-w-0 pb-8">
           <section className="pb-8">
-            <h2 className={sectionHeadingClass}>Person details</h2>
+            <SectionHeading icon={Info}>Person details</SectionHeading>
             <Form
               aria-busy={update.isPending}
               aria-label="Edit person"
@@ -148,9 +154,9 @@ export function PersonDetails({ detail }: { detail: PersonDetail }) {
             aria-labelledby="notification-preferences"
             className="border-t border-border pt-8"
           >
-            <h2 className={sectionHeadingClass} id="notification-preferences">
+            <SectionHeading icon={Bell} id="notification-preferences">
               Notifications
-            </h2>
+            </SectionHeading>
             <dl className="mt-6 space-y-5 text-sm">
               <div>
                 <dt className="text-xs text-muted">Onboarding</dt>
@@ -200,7 +206,7 @@ export function PersonDetails({ detail }: { detail: PersonDetail }) {
             unlink={unlink.mutateAsync}
           />
           <section className="border-t border-border py-8">
-            <h2 className={sectionHeadingClass}>Preauthorizations</h2>
+            <SectionHeading icon={MailCheck}>Preauthorizations</SectionHeading>
             <p className="mt-3 mb-6 max-w-150 text-sm text-muted">
               Enter the exact Google email address, including uppercase and
               lowercase letters. Signing in with that address links it to this
@@ -268,9 +274,9 @@ export function PersonDetails({ detail }: { detail: PersonDetail }) {
             aria-labelledby="browser-sessions"
             className="border-t border-border py-8"
           >
-            <h2 className={sectionHeadingClass} id="browser-sessions">
+            <SectionHeading icon={MonitorSmartphone} id="browser-sessions">
               Browser sessions
-            </h2>
+            </SectionHeading>
             <p className="mt-3 mb-6 text-sm text-muted">
               Browsers currently signed in as this person.
             </p>
@@ -300,15 +306,13 @@ function AvatarEditor({ detail }: { detail: PersonDetail }) {
       aria-labelledby="person-avatar"
       className="border-t border-border py-8"
     >
-      <h2 className={sectionHeadingClass} id="person-avatar">
+      <SectionHeading icon={CircleUser} id="person-avatar">
         Avatar
-      </h2>
+      </SectionHeading>
       <div className="mt-5 flex items-center gap-4">
         <Avatar className="size-16 border border-border">
           {person.avatar_url && <AvatarImage alt="" src={person.avatar_url} />}
-          <AvatarFallback className="text-lg">
-            {initials(person.display_name)}
-          </AvatarFallback>
+          <AvatarFallback className="text-lg" name={person.display_name} />
         </Avatar>
         <p className="text-xs leading-relaxed text-muted">
           Choose one linked Immich face. If its thumbnail is unavailable,
@@ -355,9 +359,7 @@ function AvatarEditor({ detail }: { detail: PersonDetail }) {
                     <span className="inline-block rounded-full peer-checked:outline-2 peer-checked:outline-offset-2 peer-checked:outline-primary peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-ring">
                       <Avatar className="size-14">
                         <AvatarImage alt="" src={face.thumbnail_url} />
-                        <AvatarFallback>
-                          {initials(person.display_name)}
-                        </AvatarFallback>
+                        <AvatarFallback name={person.display_name} />
                       </Avatar>
                     </span>
                     <span className="mt-2 block max-w-20 truncate">

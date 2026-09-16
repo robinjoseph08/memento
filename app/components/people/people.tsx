@@ -1,3 +1,14 @@
+import {
+  CircleCheck,
+  Crown,
+  Link2,
+  MailCheck,
+  MailX,
+  SearchX,
+  UserPlus,
+  Users,
+  type LucideIcon,
+} from "lucide-react";
 import { useState } from "react";
 import { Link, Navigate, useParams, useSearchParams } from "react-router-dom";
 
@@ -8,10 +19,11 @@ import {
 } from "../../hooks/queries/people";
 import { useUnsavedChanges } from "../../hooks/use-unsaved-changes";
 import { fieldErrors } from "../../lib/http";
-import { initials } from "../../lib/initials";
+import { cn, formatDate } from "../../lib/utils";
 import { ConfirmDialog } from "../forms/confirm-dialog";
 import { SearchForm } from "../forms/search-form";
 import { BackLink } from "../shell/back-link";
+import { EmptyState } from "../shell/empty-state";
 import { PageTitle } from "../shell/page-title";
 import { Avatar, AvatarFallback, AvatarImage } from "../ui/avatar";
 import { Button } from "../ui/button";
@@ -22,14 +34,16 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "../ui/dialog";
-import {
-  Field,
-  Form,
-  headingClass,
-  ReadFailure,
-  sectionHeadingClass,
-} from "./form-fields";
+import { Field, Form, headingClass, ReadFailure } from "./form-fields";
 import { PersonDetails } from "./person-details";
+
+// Where a person stands on signing in, in the order they get there.
+const standing: Record<string, { label: string; icon: LucideIcon }> = {
+  none: { label: "No email yet", icon: MailX },
+  approved: { label: "Approved, not signed in", icon: MailCheck },
+  linked: { label: "Signed in", icon: Link2 },
+  onboarded: { label: "Onboarded", icon: CircleCheck },
+};
 
 export function PeoplePage() {
   const [search, setSearch] = useSearchParams();
@@ -60,7 +74,14 @@ export function PeoplePage() {
         <h1 className={headingClass}>People</h1>
         <Dialog onOpenChange={changeOpen} open={open}>
           <DialogTrigger asChild>
-            <Button>Add person</Button>
+            <Button>
+              <UserPlus
+                aria-hidden="true"
+                className="size-4"
+                strokeWidth={1.5}
+              />
+              Add person
+            </Button>
           </DialogTrigger>
           <DialogContent>
             <DialogTitle>Add person</DialogTitle>
@@ -120,44 +141,85 @@ export function PeoplePage() {
       {query.data &&
         (query.data.length ? (
           <ul className="divide-y divide-border border-y border-border">
-            {query.data.map((person) => (
-              <li key={person.id}>
-                <Link
-                  className="flex cursor-pointer items-center gap-3 px-3 py-3 hover:bg-surface focus-visible:outline-2 focus-visible:outline-ring"
-                  to={`/curator/people/${person.id}`}
-                >
-                  <Avatar aria-hidden="true" className="size-9">
-                    {person.avatar_url && (
-                      <AvatarImage alt="" src={person.avatar_url} />
-                    )}
-                    <AvatarFallback className="text-xs">
-                      {initials(person.display_name)}
-                    </AvatarFallback>
-                  </Avatar>
-                  <span className="min-w-0">
-                    <span className="block wrap-anywhere">
-                      {person.display_name}
+            {query.data.map((person) => {
+              const access = standing[person.access] ?? standing.none;
+              return (
+                <li key={person.id}>
+                  <Link
+                    className="flex cursor-pointer flex-wrap items-center gap-x-3 gap-y-1 px-3 py-3 hover:bg-surface focus-visible:outline-2 focus-visible:outline-ring"
+                    to={`/curator/people/${person.id}`}
+                  >
+                    <Avatar aria-hidden="true" className="size-9">
+                      {person.avatar_url && (
+                        <AvatarImage alt="" src={person.avatar_url} />
+                      )}
+                      <AvatarFallback
+                        className="text-xs"
+                        name={person.display_name}
+                      />
+                    </Avatar>
+                    <span className="min-w-0 flex-1 basis-48">
+                      <span className="block wrap-anywhere">
+                        {person.display_name}
+                      </span>
+                      <span className="flex flex-wrap items-center gap-x-1 text-xs text-muted">
+                        {person.is_curator && (
+                          <Crown
+                            aria-hidden="true"
+                            className="size-3 text-accent-foreground"
+                            strokeWidth={1.5}
+                          />
+                        )}
+                        {person.is_curator ? "Curator" : "Member"}
+                        {person.deactivated_at ? ", deactivated" : ""}
+                        {person.email && (
+                          <span className="wrap-anywhere">
+                            {" · "}
+                            {person.email}
+                          </span>
+                        )}
+                      </span>
                     </span>
-                    <span className="text-xs text-muted">
-                      {person.is_curator ? "Curator" : "Member"}
-                      {person.deactivated_at ? ", deactivated" : ""}
+                    <span className="ml-12 flex flex-col gap-0.5 text-xs min-[601px]:ml-auto min-[601px]:items-end min-[601px]:text-right">
+                      <span
+                        className={cn(
+                          "inline-flex items-center gap-1.5",
+                          person.access === "none"
+                            ? "text-muted"
+                            : "text-foreground",
+                        )}
+                      >
+                        <access.icon
+                          aria-hidden="true"
+                          className={cn(
+                            "size-3.5 shrink-0",
+                            person.access === "onboarded" &&
+                              "text-accent-foreground",
+                          )}
+                          strokeWidth={1.5}
+                        />
+                        {access.label}
+                      </span>
+                      {person.last_seen_at && (
+                        <span className="text-muted">
+                          Session refreshed {formatDate(person.last_seen_at)}
+                        </span>
+                      )}
                     </span>
-                  </span>
-                </Link>
-              </li>
-            ))}
+                  </Link>
+                </li>
+              );
+            })}
           </ul>
         ) : (
-          <section className="border-t border-border py-8">
-            <h2 className={sectionHeadingClass}>
-              {search.get("q") ? "No matching people" : "No people yet"}
-            </h2>
-            <p className="mt-3 text-muted">
-              {search.get("q")
-                ? "Try another name."
-                : "Add friends and family here. Creating a person does not give them sign-in access."}
-            </p>
-          </section>
+          <EmptyState
+            icon={search.get("q") ? SearchX : Users}
+            title={search.get("q") ? "No matching people" : "No people yet"}
+          >
+            {search.get("q")
+              ? "Try another name."
+              : "Add friends and family here. Creating a person does not give them sign-in access."}
+          </EmptyState>
         ))}
     </>
   );

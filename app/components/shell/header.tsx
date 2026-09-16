@@ -9,6 +9,7 @@ import { useIdentityStatus } from "../../hooks/queries/identity";
 import { useTheme } from "../../hooks/use-theme";
 import { AccountMenu } from "./account-menu";
 import { MobileNavigation } from "./mobile-navigation";
+import { navigationItems } from "./navigation";
 import { NotificationBell } from "./notification-bell";
 import { PendingBadge } from "./pending-badge";
 import { PreviewModeContext } from "./preview-mode";
@@ -41,54 +42,24 @@ export function Header() {
       {data?.person && onboarded && (
         <nav
           aria-label="Main navigation"
-          className="hidden flex-1 gap-2 pl-8 min-[601px]:flex"
+          className="hidden flex-1 gap-1 pl-8 min-[601px]:flex"
         >
-          {data.person.is_curator && (
+          {navigationItems(data.person).map((item) => (
             <NavLink
-              className="rounded-md px-4 py-3 text-sm hover:bg-surface aria-[current=page]:bg-surface"
-              end
-              to="/curator"
+              className="group inline-flex items-center gap-2 rounded-md px-4 py-3 text-sm hover:bg-surface aria-[current=page]:bg-surface"
+              end={item.end}
+              key={item.to}
+              to={item.to}
             >
-              Home
+              <item.icon
+                aria-hidden="true"
+                className="size-4 text-muted group-aria-[current=page]:text-accent-foreground"
+                strokeWidth={1.5}
+              />
+              {item.label}
+              {item.pending && <PendingBadge count={pending} />}
             </NavLink>
-          )}
-          <NavLink
-            className="rounded-md px-4 py-3 text-sm hover:bg-surface aria-[current=page]:bg-surface"
-            end
-            to={data.person.is_curator ? "/curator/albums" : "/albums"}
-          >
-            Albums
-          </NavLink>
-          {!data.person.is_curator && (
-            <NavLink
-              className="rounded-md px-4 py-3 text-sm hover:bg-surface aria-[current=page]:bg-surface"
-              to="/library"
-            >
-              Library
-            </NavLink>
-          )}
-          {data.person.is_curator && (
-            <>
-              <NavLink
-                className="rounded-md px-4 py-3 text-sm hover:bg-surface aria-[current=page]:bg-surface"
-                to="/curator/people"
-              >
-                People
-              </NavLink>
-              <NavLink
-                className="inline-flex items-center gap-2 rounded-md px-4 py-3 text-sm hover:bg-surface aria-[current=page]:bg-surface"
-                to="/curator/requests"
-              >
-                Requests <PendingBadge count={pending} />
-              </NavLink>
-              <NavLink
-                className="rounded-md px-4 py-3 text-sm hover:bg-surface aria-[current=page]:bg-surface"
-                to="/curator/updates"
-              >
-                Updates
-              </NavLink>
-            </>
-          )}
+          ))}
         </nav>
       )}
       <div className="ml-auto flex items-center gap-1">

@@ -1,11 +1,19 @@
 import {
   BellRing,
+  CircleAlert,
+  Coffee,
   Film,
+  Hourglass,
   Image,
+  Import,
+  Inbox,
   MailWarning,
+  PartyPopper,
+  Send,
   ServerOff,
+  Sparkles,
   TriangleAlert,
-  UserPlus,
+  Users,
   type LucideIcon,
 } from "lucide-react";
 import type { ReactNode } from "react";
@@ -30,8 +38,10 @@ import {
   Form,
   headingClass,
   ReadFailure,
-  sectionHeadingClass,
+  SectionHeading,
 } from "../people/form-fields";
+import { CountBadge } from "../shell/count-badge";
+import { EmptyState } from "../shell/empty-state";
 import { PageTitle } from "../shell/page-title";
 import { Button } from "../ui/button";
 
@@ -53,13 +63,22 @@ export function DashboardPage() {
       </p>
       <div className="mt-7 flex flex-wrap gap-3">
         <Button asChild>
-          <Link to="/curator/import">Import an album</Link>
+          <Link to="/curator/import">
+            <Import aria-hidden="true" className="size-4" strokeWidth={1.5} />
+            Import an album
+          </Link>
         </Button>
         <Button asChild variant="outline">
-          <Link to="/curator/updates">Send updates</Link>
+          <Link to="/curator/updates">
+            <Send aria-hidden="true" className="size-4" strokeWidth={1.5} />
+            Send updates
+          </Link>
         </Button>
         <Button asChild variant="outline">
-          <Link to="/curator/people">Manage people</Link>
+          <Link to="/curator/people">
+            <Users aria-hidden="true" className="size-4" strokeWidth={1.5} />
+            Manage people
+          </Link>
         </Button>
       </div>
       {dashboard.isPending && (
@@ -79,7 +98,15 @@ export function DashboardPage() {
       {dashboard.data && (
         <>
           {dashboard.data.active && (
-            <p className="mt-10 text-sm text-muted" role="status">
+            <p
+              className="mt-10 flex items-center gap-2 text-sm text-muted"
+              role="status"
+            >
+              <Hourglass
+                aria-hidden="true"
+                className="size-4 shrink-0"
+                strokeWidth={1.5}
+              />
               Memento is still importing or sending email. This page updates on
               its own.
             </p>
@@ -97,48 +124,50 @@ export function DashboardPage() {
 // A check still in flight keeps the list open without counting as an item.
 function Section({
   id,
+  icon,
   title,
   description,
   count,
   pending = false,
   tone,
   empty,
+  emptyIcon,
   children,
 }: {
   id: string;
+  icon: LucideIcon;
   title: string;
   description: string;
   count: number;
   pending?: boolean;
   tone: "attention" | "ready";
   empty: string;
+  emptyIcon: LucideIcon;
   children: ReactNode;
 }) {
   return (
     <section aria-labelledby={id} className="mt-12">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-        <h2 className={sectionHeadingClass} id={id}>
+        <SectionHeading
+          icon={icon}
+          id={id}
+          tone={tone === "attention" ? "attention" : "accent"}
+        >
           {title}
-        </h2>
+        </SectionHeading>
         {count > 0 && (
-          <span
-            className={cn(
-              "rounded-full px-2.5 py-0.5 text-xs font-medium",
-              tone === "attention"
-                ? "bg-destructive/15 text-destructive"
-                : "bg-accent text-accent-foreground",
-            )}
-          >
-            {count}
-            <span className="sr-only">{count === 1 ? " item" : " items"}</span>
-          </span>
+          <CountBadge
+            count={count}
+            label={count === 1 ? "item" : "items"}
+            tone={tone === "attention" ? "attention" : "accent"}
+          />
         )}
       </div>
       <p className="mt-2 text-sm text-muted">{description}</p>
       {count === 0 && !pending ? (
-        <p className="mt-5 rounded-lg border border-dashed border-border px-5 py-6 text-sm text-muted">
+        <EmptyState className="mt-5" icon={emptyIcon}>
           {empty}
-        </p>
+        </EmptyState>
       ) : (
         <ul className="mt-5 flex flex-col gap-3">{children}</ul>
       )}
@@ -220,6 +249,8 @@ function NeedsAttention({ dashboard }: { dashboard: Dashboard }) {
       count={count}
       description="Failures and decisions that will not resolve on their own."
       empty="Nothing needs your attention right now."
+      emptyIcon={Sparkles}
+      icon={CircleAlert}
       id="needs-attention"
       pending={connection.isPending}
       title="Needs attention"
@@ -251,7 +282,7 @@ function NeedsAttention({ dashboard }: { dashboard: Dashboard }) {
             <ActionLink to="/curator/requests">Review requests</ActionLink>
           }
           detail="People are waiting to find out whether they can see anything."
-          icon={UserPlus}
+          icon={Inbox}
           title={`${countLabel(attention.pending_requests, "access request", "access requests")} waiting for a decision`}
           tone="attention"
         />
@@ -277,6 +308,8 @@ function ReadyWhenYouAre({ ready }: { ready: Dashboard["ready"] }) {
       count={count}
       description="Nothing is wrong here. Finish these whenever you like."
       empty="Everything is published and everyone has heard about it."
+      emptyIcon={PartyPopper}
+      icon={Coffee}
       id="ready-when-you-are"
       title="Ready when you are"
       tone="ready"

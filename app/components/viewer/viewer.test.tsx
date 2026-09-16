@@ -32,6 +32,7 @@ const album: ViewerAlbum = {
       photo_count: 2,
       video_count: 0,
       photo_ratios: [1.5, 1.5],
+      video_ratios: [],
     },
   ],
 };
@@ -204,6 +205,7 @@ it("lists videos as links to their lightbox without mounting a player in the gri
             photo_count: 0,
             video_count: 1,
             photo_ratios: [],
+            video_ratios: [],
           },
         ],
       });
@@ -284,12 +286,14 @@ it("loads each run of days at once, keeps loaded days after one run fails, and r
             photo_count: 500,
             video_count: 0,
             photo_ratios: Array.from({ length: 500 }, () => 1.5),
+            video_ratios: [],
           },
           {
             date: "2025-06-15",
             photo_count: 1,
             video_count: 0,
             photo_ratios: [1.5],
+            video_ratios: [],
           },
         ],
       });
@@ -585,7 +589,13 @@ const videoAlbum: ViewerAlbum = {
   photo_count: 0,
   video_count: 3,
   days: [
-    { date: "2025-06-14", photo_count: 0, video_count: 3, photo_ratios: [] },
+    {
+      date: "2025-06-14",
+      photo_count: 0,
+      video_count: 3,
+      photo_ratios: [],
+      video_ratios: [],
+    },
   ],
 };
 const party: ViewerEntry = {
@@ -800,12 +810,14 @@ function mockTimelineLayout() {
             photo_count: 1,
             video_count: 0,
             photo_ratios: [1.5],
+            video_ratios: [],
           },
           {
             date: "2025-06-14",
             photo_count: 1,
             video_count: 0,
             photo_ratios: [1.5],
+            video_ratios: [],
           },
         ],
       });
@@ -896,4 +908,116 @@ it("shows a phone handle only while scrolling and scrubs from where it was grabb
   });
   fireEvent.pointerUp(timeline, { pointerId: 1, pointerType: "touch" });
   expect(within(timeline).queryByText("Dec 2024")).not.toBeInTheDocument();
+});
+
+// A short album lays out like the long one, with its two days at 500px and
+// 2000px, so the same rail maths applies while the marks are days.
+function mockShortTimelineLayout(days: string[]) {
+  mockViewer((path) => {
+    if (path === "/api/albums/lake")
+      return Response.json({
+        ...album,
+        photo_count: days.length,
+        start_date: days[0],
+        end_date: days.at(-1),
+        days: days.map((date) => ({
+          date,
+          photo_count: 1,
+          video_count: 0,
+          photo_ratios: [1.5],
+          video_ratios: [],
+        })),
+      });
+    if (path === "/api/albums/lake/photos")
+      return Response.json({
+        entries: days.map((date, index) => ({
+          ...photo,
+          id: `photo-${index}`,
+          title: `Day ${index}`,
+          captured_at: `${date}T15:00:00Z`,
+        })),
+        next_cursor: "",
+      });
+    throw new Error(`Unexpected request: ${path}`);
+  });
+  vi.stubGlobal("scrollTo", vi.fn());
+  vi.spyOn(document.documentElement, "scrollHeight", "get").mockReturnValue(
+    4000,
+  );
+  vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(
+    function (this: Element) {
+      const date = this.getAttribute("data-date");
+      const top = date === days[0] ? 500 : date === days.at(-1) ? 2000 : 64;
+      const height = this.getAttribute("role") === "slider" ? 800 : 0;
+      return {
+        x: 0,
+        y: top,
+        top,
+        left: 0,
+        right: 0,
+        bottom: top + height,
+        width: 0,
+        height,
+        toJSON: () => ({}),
+      };
+    },
+  );
+  window.history.replaceState(null, "", "/albums/lake");
+}
+
+it("scrubs an album of a few days by day", async () => {
+  mockShortTimelineLayout(["2026-06-01", "2026-06-03"]);
+  render(<App />);
+  const timeline = await screen.findByRole("slider", { name: "Timeline" });
+  await waitFor(() =>
+    expect(timeline).toHaveAttribute("aria-valuetext", "Jun 1, 2026"),
+  );
+  expect(within(timeline).getByText("Jun 1")).toBeInTheDocument();
+  expect(within(timeline).getByText("Jun 3")).toBeInTheDocument();
+  fireEvent.pointerMove(timeline, { clientY: 64 + 800 * 0.75 });
+  expect(within(timeline).getByText("Jun 3, 2026")).toBeInTheDocument();
+});
+
+it("keeps the timeline out of the way for a single day", async () => {
+  mockShortTimelineLayout(["2026-06-01"]);
+  render(<App />);
+  await screen.findByRole("link", { name: "Open photo Day 0" });
+  const timeline = screen.getByRole("slider", { name: "Timeline" });
+  await waitFor(() => expect(timeline).toHaveClass("invisible"));
+  expect(timeline).toHaveAttribute("tabindex", "-1");
+  expect(document.documentElement.style.scrollbarWidth).not.toBe("none");
+});
+
+it("names the year under the first day and where the year changes", async () => {
+  mockShortTimelineLayout(["2025-12-30", "2026-01-02"]);
+  render(<App />);
+  const timeline = await screen.findByRole("slider", { name: "Timeline" });
+  await waitFor(() =>
+    expect(timeline).toHaveAttribute("aria-valuetext", "Dec 30, 2025"),
+  );
+  expect(within(timeline).getByText("2025")).toBeInTheDocument();
+  expect(within(timeline).getByText("2026")).toBeInTheDocument();
+  expect(within(timeline).getByText("Dec 30")).toBeInTheDocument();
+  expect(within(timeline).getByText("Jan 2")).toBeInTheDocument();
+});
+
+it("ends a timeline drag when the button is released outside the window", async () => {
+  const scrollTo = mockTimelineLayout();
+  render(<App />);
+  const timeline = await screen.findByRole("slider", { name: "Timeline" });
+  await waitFor(() =>
+    expect(timeline).toHaveAttribute("aria-valuetext", "Dec 2024"),
+  );
+  fireEvent.pointerDown(timeline, { clientY: 64 + 400, pointerId: 1 });
+  fireEvent.pointerMove(timeline, { clientY: 64 + 600, pointerId: 1 });
+  expect(scrollTo).toHaveBeenLastCalledWith({ top: 3000 });
+  // The release lands on the browser chrome, so only capture loss arrives.
+  fireEvent.lostPointerCapture(timeline, {
+    pointerId: 1,
+    pointerType: "mouse",
+  });
+  scrollTo.mockClear();
+  fireEvent.pointerMove(timeline, { clientY: 64 + 200, pointerId: 1 });
+  expect(scrollTo).not.toHaveBeenCalled();
+  expect(within(timeline).getByText("Dec 2024")).toBeInTheDocument();
 });

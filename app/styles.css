@@ -30,6 +30,9 @@
   --accent-text: #4ac2d3;
   --focus: #06b6d4;
   --destructive: #ffaaa5;
+  --avatar-lightness: 38%;
+  --avatar-chroma: 0.1;
+  --avatar-text-lightness: 95%;
 }
 
 :root[data-theme="light"] {
@@ -42,4 +45,7 @@
   --accent-text: #08788d;
   --focus: #08788d;
   --destructive: #b32e2a;
+  --avatar-lightness: 90%;
+  --avatar-chroma: 0.07;
+  --avatar-text-lightness: 36%;
 }

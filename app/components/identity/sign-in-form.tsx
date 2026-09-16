@@ -1,3 +1,4 @@
+import { KeyRound, LogIn } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 
@@ -39,7 +40,10 @@ export function SignInForm({ claiming = false }: { claiming?: boolean }) {
       )}
       {data?.auth_mode === "google" ? (
         <Button asChild>
-          <a href="/api/identity/google/start">Continue with Google</a>
+          <a href="/api/identity/google/start">
+            <LogIn aria-hidden="true" className="size-4" strokeWidth={1.5} />
+            Continue with Google
+          </a>
         </Button>
       ) : data?.auth_mode === "fake" ? (
         <FakeSignInForm claiming={claiming} />
@@ -121,6 +125,11 @@ function FakeSignInForm({ claiming }: { claiming: boolean }) {
           </div>
         ))}
         <Button className="mt-2 w-full" type="submit">
+          {claiming ? (
+            <KeyRound aria-hidden="true" className="size-4" strokeWidth={1.5} />
+          ) : (
+            <LogIn aria-hidden="true" className="size-4" strokeWidth={1.5} />
+          )}
           {signIn.isPending
             ? "Signing in…"
             : claiming

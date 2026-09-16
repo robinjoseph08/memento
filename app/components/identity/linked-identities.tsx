@@ -1,7 +1,10 @@
+import { Link2, Unlink } from "lucide-react";
+
 import { formatDate } from "../../lib/utils";
 import type { LinkedIdentity } from "../../types/generated/identity";
 import { ConfirmAction } from "../forms/confirm-action";
-import { sectionHeadingClass } from "../people/form-fields";
+import { SectionHeading } from "../people/form-fields";
+import { EmptyState } from "../shell/empty-state";
 import {
   Table,
   TableBody,
@@ -30,9 +33,9 @@ export function LinkedIdentities({
       aria-labelledby="linked-accounts"
       className="min-w-0 border-t border-border py-8"
     >
-      <h2 className={sectionHeadingClass} id="linked-accounts">
+      <SectionHeading icon={Link2} id="linked-accounts">
         Linked accounts
-      </h2>
+      </SectionHeading>
       <p className="mt-3 mb-5 max-w-150 text-sm text-muted">
         Unlinking an account signs out all browsers using it.
       </p>
@@ -73,6 +76,7 @@ export function LinkedIdentities({
                     description="This account will no longer be able to sign in, and its browser sessions will end."
                     disabled={keepLast}
                     error={error}
+                    icon={Unlink}
                     label={`Unlink ${identity.email}`}
                     onConfirm={() => unlink(identity.id)}
                     pending={pending}
@@ -84,7 +88,7 @@ export function LinkedIdentities({
           </TableBody>
         </Table>
       ) : (
-        <p className="text-sm text-muted">No accounts linked yet.</p>
+        <EmptyState icon={Link2}>No accounts linked yet.</EmptyState>
       )}
       {keepLast && (
         <p className="mt-3 text-xs text-muted">

@@ -177,12 +177,12 @@ test("a member browses a published Album, opens photos by link, key, swipe and f
     ).toBeAttached();
     await expect(member.getByText(/\d:\d\d [AP]M/)).toHaveCount(0);
 
-    // The timeline stands in for the scrollbar: hovering names the month and
-    // clicking near its end jumps down the page.
+    // The timeline stands in for the scrollbar: this album spans a few weeks,
+    // so hovering names the day, and clicking near its end jumps down the page.
     const timeline = member.getByRole("slider", { name: "Timeline" });
     await expect(timeline).toBeVisible();
     await timeline.hover({ position: { x: 24, y: 40 } });
-    await expect(timeline.getByText("May 2026")).toBeVisible();
+    await expect(timeline.getByText(/^May \d+, 2026$/)).toBeVisible();
     const rail = (await timeline.boundingBox())!;
     await member.mouse.click(rail.x + 24, rail.y + rail.height - 4);
     expect(await member.evaluate(() => window.scrollY)).toBeGreaterThan(0);

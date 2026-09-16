@@ -18,6 +18,7 @@ import type {
 } from "../../types/generated/publishing";
 import { AlbumImage } from "../albums/album-image";
 import { countLabel } from "../albums/moment-labels";
+import { CountBadge } from "../shell/count-badge";
 import { PageTitle } from "../shell/page-title";
 import { Button } from "../ui/button";
 import { AlbumHeader } from "./album-header";
@@ -114,7 +115,7 @@ export function ViewerGallery({
           ) : (
             <header>
               <h1 className="font-heading text-[clamp(34px,4vw,48px)] leading-[1.2] tracking-[-1px]">
-                Library
+                Your library
               </h1>
               <p className="mt-3 text-sm text-muted">
                 You can view all of your photos and videos across all your
@@ -147,18 +148,14 @@ export function ViewerGallery({
                   strokeWidth={1.5}
                 />
                 {item.label}{" "}
-                <span
-                  className={cn(
-                    "rounded-sm px-1.5 text-xs",
-                    tab === item.key
-                      ? "bg-primary/15 text-accent-foreground"
-                      : "bg-surface",
-                  )}
-                >
-                  {item.key === "photos"
-                    ? query.data.photo_count
-                    : query.data.video_count}
-                </span>
+                <CountBadge
+                  count={
+                    item.key === "photos"
+                      ? query.data.photo_count
+                      : query.data.video_count
+                  }
+                  tone={tab === item.key ? "accent" : "muted"}
+                />
               </Link>
             ))}
           </nav>
@@ -330,12 +327,9 @@ function GalleryEntries({
                     />
                   )
                 ) : !items ? (
-                  <VideoPlaceholder count={count} />
+                  <VideoPlaceholder ratios={day.video_ratios} />
                 ) : (
-                  <ul
-                    aria-label="Videos"
-                    className="mt-5 grid grid-cols-1 gap-x-4 gap-y-6 min-[601px]:grid-cols-2 min-[1001px]:grid-cols-3"
-                  >
+                  <ul aria-label="Videos" className={videoGridClass}>
                     {items.map((entry) => (
                       <li key={entry.id}>
                         <Link
@@ -389,6 +383,11 @@ function GalleryEntries({
 
 // The gallery fits photos into rows of the target ratio, and videos into as
 // many columns.
+// The loaded video list and its placeholder share one grid so their heights
+// agree.
+const videoGridClass =
+  "mt-5 grid grid-cols-1 gap-x-4 gap-y-6 min-[601px]:grid-cols-2 min-[1001px]:grid-cols-3";
+
 function useRowLayout() {
   const desktop = useMediaQuery("(min-width: 1001px)");
   const tablet = useMediaQuery("(min-width: 601px)");
@@ -399,17 +398,23 @@ function useRowLayout() {
       : { target: 1.5, columns: 1 };
 }
 
-// Holds a day's videos' height while they load, assuming 16:9 tiles with a
-// title.
-function VideoPlaceholder({ count }: { count: number }) {
-  const { columns } = useRowLayout();
-  const rows = Math.ceil(count / columns);
+// Holds a day's videos' place while they load: the same grid as the loaded
+// list, each tile at its video's own ratio with a line for its title, so a
+// day of portrait phone videos is as tall before its thumbnails arrive as
+// after.
+function VideoPlaceholder({ ratios }: { ratios: number[] }) {
   return (
-    <div
-      aria-hidden="true"
-      className="mt-5 rounded-[2px] bg-surface"
-      style={{ aspectRatio: `${columns * 16} / ${rows * 10.5}` }}
-    />
+    <div aria-hidden="true" className={videoGridClass}>
+      {[...ratios.keys()].map((index) => (
+        <div key={index}>
+          <div
+            className="rounded-[2px] bg-surface"
+            style={{ aspectRatio: ratios[index] }}
+          />
+          <p className="mt-3 font-heading text-lg leading-tight">&nbsp;</p>
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -446,9 +451,11 @@ function MediaThumbnail({ entry }: { entry: ViewerEntry }) {
 // flex share, normalised so a lone portrait still fills its row. Short rows
 // keep their natural size instead of stretching. The
 // same ratios lay out a day before its photos arrive, so nothing moves when
-// they do. Rows off screen skip layout and paint; their height is declared
-// from the same arithmetic in container units, gaps included, so the page
-// height is exact before they render.
+// they do. Each row off screen skips layout and paint; its height is declared
+// from the same arithmetic in container units, so the page height is exact
+// before it renders. One declaration per row, not per day: browsers cap how
+// many terms a calc() may hold, and a day of a few hundred photos went past
+// it and collapsed to nothing until it scrolled into view.
 function PhotoRows({
   ratios,
   tile,
@@ -470,26 +477,17 @@ function PhotoRows({
   for (const [index, row] of rows.entries())
     if (index === rows.length - 1 || row.sum < target * 0.7)
       row.share = Math.min(1, row.sum / target);
-  const height = rows
-    .map(
-      (row) =>
-        `(100cqw * ${row.share} - ${(row.items.length - 1) * 4}px) / ${row.sum}`,
-    )
-    .concat(`${Math.max(0, rows.length - 1) * 4}px`)
-    .join(" + ");
   return (
-    <div
-      className="mt-5 flex flex-col gap-1"
-      style={{
-        contentVisibility: "auto",
-        containIntrinsicHeight: `auto calc(${height})`,
-      }}
-    >
+    <div className="mt-5 flex flex-col gap-1">
       {rows.map((row) => (
         <div
           className="flex gap-1"
           key={row.items[0]}
-          style={{ width: `${row.share * 100}%` }}
+          style={{
+            width: `${row.share * 100}%`,
+            contentVisibility: "auto",
+            containIntrinsicHeight: `auto calc((100cqw * ${row.share} - ${(row.items.length - 1) * 4}px) / ${row.sum})`,
+          }}
         >
           {row.items.map((index) => (
             <div

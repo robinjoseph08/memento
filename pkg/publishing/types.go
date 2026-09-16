@@ -42,14 +42,15 @@ type ViewerAlbum struct {
 	Days            []ViewerDay `json:"days"`
 }
 
-// ViewerDay counts one local capture day. PhotoRatios lists each photo's
-// width-to-height ratio in gallery order, truncated to three decimals, so the
-// browser can lay out every day's rows before the photos themselves arrive.
+// ViewerDay counts one local capture day. PhotoRatios and VideoRatios list
+// each item's width-to-height ratio in gallery order, truncated to three
+// decimals, so the browser can lay out every day before the media arrives.
 type ViewerDay struct {
 	Date        string    `json:"date"`
 	PhotoCount  int       `json:"photo_count"`
 	VideoCount  int       `json:"video_count"`
 	PhotoRatios []float64 `json:"photo_ratios" bun:"photo_ratios,array"`
+	VideoRatios []float64 `json:"video_ratios" bun:"video_ratios,array"`
 }
 
 // EntryPageRequest selects one page of a gallery. From and To are local

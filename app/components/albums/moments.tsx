@@ -1,3 +1,4 @@
+import { Merge, Pencil } from "lucide-react";
 import { useEffect, useEffectEvent, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 
@@ -16,6 +17,7 @@ import type {
 } from "../../types/generated/publishing";
 import { ConfirmDialog } from "../forms/confirm-dialog";
 import { Field, Form, sectionHeadingClass } from "../people/form-fields";
+import { CountBadge } from "../shell/count-badge";
 import { Button } from "../ui/button";
 import {
   Dialog,
@@ -117,6 +119,7 @@ export function MomentPane({
             type="button"
             variant="ghost"
           >
+            <Pencil aria-hidden="true" className="size-4" strokeWidth={1.5} />
             Rename
           </Button>
           <Button
@@ -128,6 +131,7 @@ export function MomentPane({
             type="button"
             variant="ghost"
           >
+            <Merge aria-hidden="true" className="size-4" strokeWidth={1.5} />
             Merge
           </Button>
         </div>
@@ -158,16 +162,10 @@ export function MomentPane({
             to={`?${withParams(params, { kind: tab.key === "all" ? null : tab.key })}`}
           >
             {tab.label}{" "}
-            <span
-              className={cn(
-                "rounded-sm px-1.5 text-xs",
-                kind === tab.key
-                  ? "bg-primary/15 text-accent-foreground"
-                  : "bg-surface",
-              )}
-            >
-              {tab.count}
-            </span>
+            <CountBadge
+              count={tab.count}
+              tone={kind === tab.key ? "accent" : "muted"}
+            />
           </Link>
         ))}
       </nav>

@@ -1,6 +1,8 @@
+import { Images } from "lucide-react";
 import { Link } from "react-router-dom";
 
 import { useViewerAlbums } from "../../hooks/queries/viewer";
+import { EmptyState } from "../shell/empty-state";
 import { PageTitle } from "../shell/page-title";
 import { Button } from "../ui/button";
 import { AlbumCard } from "./album-card";
@@ -13,6 +15,9 @@ export function ViewerAlbumList() {
       <h1 className="font-heading text-[clamp(34px,4vw,48px)] leading-[1.2] tracking-[-1px]">
         Your albums
       </h1>
+      <p className="mt-3 text-sm text-muted">
+        Here are all the albums that have been shared with you.
+      </p>
       {query.isPending && (
         <p className="mt-9 text-muted" role="status">
           Loading albums…
@@ -31,19 +36,16 @@ export function ViewerAlbumList() {
           </Button>
         </section>
       ) : query.data?.length === 0 ? (
-        <section className="mt-9 border-t border-border py-9">
-          <h2 className="font-heading text-[27px]/[1.2]">No albums yet</h2>
-          <p className="mt-4 max-w-120 text-muted">
-            There are no albums to view yet. Your Curator will choose what to
-            share with you.
-          </p>
-        </section>
+        <EmptyState className="mt-9" icon={Images} title="No albums yet">
+          There are no albums to view yet. Your Curator will choose what to
+          share with you.
+        </EmptyState>
       ) : (
         <ul className="mt-9 grid grid-cols-2 gap-x-5 gap-y-8 min-[601px]:grid-cols-3 min-[1001px]:grid-cols-4">
           {query.data?.map((album) => (
             <li className="min-w-0" key={album.id}>
               <Link
-                className="block rounded-sm p-2 hover:bg-surface focus-visible:outline-2 focus-visible:outline-ring"
+                className="group block rounded-sm p-2 focus-visible:outline-2 focus-visible:outline-ring"
                 to={`/albums/${encodeURIComponent(album.id)}/photos`}
               >
                 <AlbumCard album={album} />

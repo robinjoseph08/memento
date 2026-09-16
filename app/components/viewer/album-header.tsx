@@ -1,6 +1,9 @@
+import { CalendarDays } from "lucide-react";
+
 import { useMediaQuery } from "../../hooks/use-media-query";
 import type { ViewerAlbum } from "../../types/generated/publishing";
 import { AlbumImage } from "../albums/album-image";
+import { CoverWash } from "../albums/cover-wash";
 import { MediaCounts } from "../albums/media-counts";
 import { captureRange } from "./labels";
 
@@ -23,7 +26,8 @@ export function AlbumHeader({
     />
   );
   return (
-    <header className="min-[761px]:grid min-[761px]:grid-cols-[minmax(0,1fr)_minmax(0,390px)] min-[761px]:items-center min-[761px]:gap-12">
+    <header className="relative isolate overflow-hidden min-[761px]:grid min-[761px]:grid-cols-[minmax(0,1fr)_minmax(0,390px)] min-[761px]:items-center min-[761px]:gap-12">
+      <CoverWash src={album.cover_url} />
       <div className="min-w-0">
         <div className="flex items-start gap-5">
           <h1 className="min-w-0 flex-1 font-heading text-[clamp(36px,5vw,64px)] leading-[1.1] tracking-[-1.5px] text-balance">
@@ -37,7 +41,14 @@ export function AlbumHeader({
           </p>
         )}
         <p className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-muted">
-          <span>{captureRange(album) || "No accessible media"}</span>
+          <span className="inline-flex items-center gap-1">
+            <CalendarDays
+              aria-hidden="true"
+              className="size-3.5 shrink-0"
+              strokeWidth={1.5}
+            />
+            {captureRange(album) || "No accessible media"}
+          </span>
           <MediaCounts
             className="gap-5"
             photos={album.photo_count}

@@ -1,3 +1,10 @@
+import {
+  BadgeCheck,
+  CircleCheck,
+  CircleHelp,
+  Hourglass,
+  Inbox,
+} from "lucide-react";
 import { useEffect, useId, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
@@ -13,6 +20,8 @@ import { errorMessage, fieldErrors } from "../../lib/http";
 import { formatDate } from "../../lib/utils";
 import type { AccessRequest } from "../../types/generated/identity";
 import { ConfirmAction } from "../forms/confirm-action";
+import { CountBadge } from "../shell/count-badge";
+import { EmptyState } from "../shell/empty-state";
 import { PageTitle } from "../shell/page-title";
 import { Button } from "../ui/button";
 import { Combobox } from "../ui/combobox";
@@ -28,7 +37,7 @@ import {
   Form,
   headingClass,
   ReadFailure,
-  sectionHeadingClass,
+  SectionHeading,
 } from "./form-fields";
 
 const providerLabels: Record<string, string> = {
@@ -66,14 +75,18 @@ export function RequestsPage() {
       {requests.data && (
         <>
           <section aria-labelledby="pending-requests" className="mt-9">
-            <h2 className={sectionHeadingClass} id="pending-requests">
-              Waiting for a decision ({pending.length})
-            </h2>
+            <SectionHeading icon={Hourglass} id="pending-requests">
+              Waiting for a decision
+              <CountBadge
+                count={pending.length}
+                tone={pending.length > 0 ? "attention" : "muted"}
+              />
+            </SectionHeading>
             {pending.length === 0 ? (
-              <p className="mt-4 text-muted">
+              <EmptyState className="mt-5" icon={Inbox}>
                 Nothing is waiting. New requests appear here when someone signs
                 in without access or asks for an album.
-              </p>
+              </EmptyState>
             ) : (
               <ul className="mt-5 divide-y divide-border border-y border-border">
                 {pending.map((request) => (
@@ -84,9 +97,14 @@ export function RequestsPage() {
           </section>
           {decided.length > 0 && (
             <section aria-labelledby="decided-requests" className="mt-12">
-              <h2 className={sectionHeadingClass} id="decided-requests">
-                Decided ({decided.length})
-              </h2>
+              <SectionHeading
+                icon={CircleCheck}
+                id="decided-requests"
+                tone="muted"
+              >
+                Decided
+                <CountBadge count={decided.length} />
+              </SectionHeading>
               <ul className="mt-5 divide-y divide-border border-y border-border">
                 {decided.map((request) => (
                   <RequestRow key={request.id} request={request} />
@@ -122,8 +140,23 @@ function RequestRow({ request }: { request: AccessRequest }) {
             </span>{" "}
             <span className="text-muted">
               {request.email} ·{" "}
-              {providerLabels[request.provider] ?? request.provider}
-              {request.email_verified ? " · verified email" : " · unverified"}
+              {providerLabels[request.provider] ?? request.provider} ·{" "}
+              <span className="inline-flex items-center gap-1 align-baseline">
+                {request.email_verified ? (
+                  <BadgeCheck
+                    aria-hidden="true"
+                    className="size-3.5 text-accent-foreground"
+                    strokeWidth={1.5}
+                  />
+                ) : (
+                  <CircleHelp
+                    aria-hidden="true"
+                    className="size-3.5"
+                    strokeWidth={1.5}
+                  />
+                )}
+                {request.email_verified ? "verified email" : "unverified"}
+              </span>
             </span>
           </p>
           {albumRequest ? (

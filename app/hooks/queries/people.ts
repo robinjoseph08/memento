@@ -7,6 +7,7 @@ import type {
   LinkFaceRequest,
   Person,
   PersonDetail,
+  PersonSummary,
   Preauthorization,
   PreauthorizeRequest,
   SetPersonAvatarRequest,
@@ -25,7 +26,7 @@ export function usePeople(search: string) {
   return useQuery({
     queryKey: [...scope, "people", search],
     queryFn: ({ signal }) =>
-      request<Person[]>(`/api/people?q=${encodeURIComponent(search)}`, {
+      request<PersonSummary[]>(`/api/people?q=${encodeURIComponent(search)}`, {
         signal,
       }),
     retry: false,

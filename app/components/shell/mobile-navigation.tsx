@@ -5,6 +5,7 @@ import { NavLink } from "react-router-dom";
 import type { Person } from "../../types/generated/identity";
 import { Button } from "../ui/button";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "../ui/sheet";
+import { navigationItems } from "./navigation";
 import { PendingBadge } from "./pending-badge";
 import { Wordmark } from "./wordmark";
 
@@ -53,58 +54,23 @@ export function MobileNavigation({
           aria-label="Mobile navigation"
           className="mt-5 flex flex-col gap-1"
         >
-          {person.is_curator && (
+          {navigationItems(person).map((item) => (
             <NavLink
-              className="cursor-pointer rounded-md px-3 py-3 text-sm hover:bg-surface focus-visible:outline-2 focus-visible:outline-ring aria-[current=page]:bg-surface"
-              end
+              className="group inline-flex cursor-pointer items-center gap-3 rounded-md px-3 py-3 text-sm hover:bg-surface focus-visible:outline-2 focus-visible:outline-ring aria-[current=page]:bg-surface"
+              end={item.end}
+              key={item.to}
               onClick={() => setOpen(false)}
-              to="/curator"
+              to={item.to}
             >
-              Home
+              <item.icon
+                aria-hidden="true"
+                className="size-5 text-muted group-aria-[current=page]:text-accent-foreground"
+                strokeWidth={1.5}
+              />
+              {item.label}
+              {item.pending && <PendingBadge count={pendingRequests} />}
             </NavLink>
-          )}
-          <NavLink
-            className="cursor-pointer rounded-md px-3 py-3 text-sm hover:bg-surface focus-visible:outline-2 focus-visible:outline-ring aria-[current=page]:bg-surface"
-            end
-            onClick={() => setOpen(false)}
-            to={person.is_curator ? "/curator/albums" : "/albums"}
-          >
-            Albums
-          </NavLink>
-          {!person.is_curator && (
-            <NavLink
-              className="cursor-pointer rounded-md px-3 py-3 text-sm hover:bg-surface focus-visible:outline-2 focus-visible:outline-ring aria-[current=page]:bg-surface"
-              onClick={() => setOpen(false)}
-              to="/library"
-            >
-              Library
-            </NavLink>
-          )}
-          {person.is_curator && (
-            <>
-              <NavLink
-                className="cursor-pointer rounded-md px-3 py-3 text-sm hover:bg-surface focus-visible:outline-2 focus-visible:outline-ring aria-[current=page]:bg-surface"
-                onClick={() => setOpen(false)}
-                to="/curator/people"
-              >
-                People
-              </NavLink>
-              <NavLink
-                className="inline-flex cursor-pointer items-center gap-2 rounded-md px-3 py-3 text-sm hover:bg-surface focus-visible:outline-2 focus-visible:outline-ring aria-[current=page]:bg-surface"
-                onClick={() => setOpen(false)}
-                to="/curator/requests"
-              >
-                Requests <PendingBadge count={pendingRequests} />
-              </NavLink>
-              <NavLink
-                className="cursor-pointer rounded-md px-3 py-3 text-sm hover:bg-surface focus-visible:outline-2 focus-visible:outline-ring aria-[current=page]:bg-surface"
-                onClick={() => setOpen(false)}
-                to="/curator/updates"
-              >
-                Updates
-              </NavLink>
-            </>
-          )}
+          ))}
         </nav>
       </SheetContent>
     </Sheet>
