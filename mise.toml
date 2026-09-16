@@ -252,30 +252,8 @@ run = "go run ./cmd/dev db reset"
 
 # === Cloning ===
 
-[tasks."clone:db"]
-description = "Clone the main database into this worktree"
-usage = 'flag "--to-main" help="Replace main with this worktree instead"'
-run = '''
-if [ "${usage_to_main:-false}" = "true" ]; then
-  go run ./cmd/dev clone db --to-main
-else
-  go run ./cmd/dev clone db
-fi
-'''
-
-[tasks."clone:files"]
-description = "Clone the main files into this worktree"
-usage = 'flag "--to-main" help="Replace main with this worktree instead"'
-run = '''
-if [ "${usage_to_main:-false}" = "true" ]; then
-  go run ./cmd/dev clone files --to-main
-else
-  go run ./cmd/dev clone files
-fi
-'''
-
 [tasks.clone]
-description = "Clone the main database and files into this worktree"
+description = "Clone the main database into this worktree"
 usage = 'flag "--to-main" help="Replace main with this worktree instead"'
 run = '''
 if [ "${usage_to_main:-false}" = "true" ]; then

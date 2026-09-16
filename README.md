@@ -42,7 +42,456 @@ clips start timestamp.
 So in the end, I want to create my own portal that my friends and family can
 log into to see the photos that I've taken of events that they've attended.
 
-## Prerequisites
+## Deploy Memento
+
+Memento ships as one container image, `ghcr.io/robinjoseph08/memento`, built
+for `linux/amd64` and `linux/arm64`. It runs a single non-root process that
+listens on port `3579`, applies its own database migrations at startup, and
+reads settings from environment variables or from a YAML file mounted at
+`/config/app.yaml`. Environment variables win over the file. `app.example.yaml`
+documents the settings an operator may need to change; the walkthrough below
+uses only environment variables.
+
+Memento keeps all of its state in PostgreSQL and stores no media, so the
+container needs no volume. It also ignores the container's time zone, because
+photo dates come from Immich's wall-clock capture times, so no `TZ` setting is
+needed.
+
+You need:
+
+- An Immich server on a supported release. Memento imports from **Immich
+  3.0.x, 3.1.x, and 3.2.x**; 2.x does not work. See
+  [Immich imports](#immich-imports).
+- PostgreSQL 14 or newer. The steps below reuse Immich's PostgreSQL container
+  with a separate database and role. A
+  [separate container](#use-a-separate-postgresql-container) also works.
+- A public HTTPS address served by a reverse proxy, such as
+  `https://photos.example.com`. Memento itself speaks only plain HTTP.
+- A Google OAuth client, because sign-in is Google only.
+- Optionally, an SMTP server for Invitations and update email.
+
+The steps assume Immich runs from its standard Compose file, where the server
+service is `immich-server`, the database service is `database`, and the
+database container is `immich_postgres`.
+
+### 1. Create the database and role
+
+Memento must not share Immich's database or role. Create its own inside
+Immich's PostgreSQL container, connecting as the superuser named by
+`DB_USERNAME` in Immich's `.env` (`postgres` by default):
+
+```sh
+docker exec -it immich_postgres psql -U postgres
+```
+
+```sql
+CREATE ROLE memento LOGIN PASSWORD 'choose-a-strong-password';
+CREATE DATABASE memento OWNER memento;
+REVOKE ALL ON DATABASE memento FROM PUBLIC;
+```
+
+Do not grant this role access to Immich's tables. Memento reads Immich only
+through its HTTP API. The password goes inside `DATABASE_URL`, so use letters
+and digits or URL-encode it.
+
+### 2. Create the Immich API key
+
+In Immich, open Account Settings and then API Keys for the account that owns
+or can access the albums you will share. Create a key with only these
+permissions: `album.read`, `asset.download`, `asset.read`, `asset.view`,
+`face.read`, and `person.read`. No write permission is needed; Memento never
+edits albums or assets. [Immich imports](#immich-imports) explains what each
+permission is used for.
+
+### 3. Create the Google client
+
+1. Open [Google Auth Platform](https://console.cloud.google.com/auth/overview)
+   and select or create a project.
+2. Complete Branding with an app name, support email, and developer contact.
+   Choose an External audience for friends and family outside your Workspace.
+   Review Audience and Branding before publishing for your intended users.
+3. Under Data Access, select `openid`, `https://www.googleapis.com/auth/userinfo.email`,
+   and `https://www.googleapis.com/auth/userinfo.profile`. These are the console
+   equivalents of Memento's `openid email profile` request. No Google Photos API,
+   sensitive scopes, or offline access are needed.
+4. Under Clients, create a **Web application** client. Add the exact authorized
+   redirect URI, which is your public address followed by
+   `/api/identity/google/callback`, such as
+   `https://photos.example.com/api/identity/google/callback`. This server flow
+   does not need an authorized JavaScript origin.
+5. Keep the client ID and secret for the next step.
+
+Google requires an exact redirect URI match, including scheme, port, path, and
+trailing slash. Memento derives the callback by appending
+`/api/identity/google/callback` to `PUBLIC_URL`; there is no separate callback
+setting. You do not need to add people to Google's test-user list or complete
+verification for these three scopes; see [Google sign-in](#google-sign-in) for
+Google's audience and verification rules.
+
+### 4. Write the Compose file
+
+Create a directory for Memento with these two files. The Compose file joins
+Immich's Docker network so Memento reaches Immich and its PostgreSQL by service
+name, and publishes port `3579` for your reverse proxy the same way Immich
+publishes `2283`.
+
+`compose.yaml`:
+
+```yaml
+services:
+  memento:
+    # Pin a release tag instead of :latest to control when Memento upgrades.
+    image: ghcr.io/robinjoseph08/memento:latest
+    container_name: memento
+    restart: unless-stopped
+    environment:
+      # The HTTPS address your reverse proxy serves.
+      PUBLIC_URL: https://photos.example.com
+      # The role and database from step 1, on Immich's database service.
+      DATABASE_URL: postgres://memento:${MEMENTO_DB_PASSWORD}@database:5432/memento?sslmode=disable
+      # Immich's base URL without /api, as seen from inside Docker.
+      IMMICH_URL: http://immich-server:2283
+      # The Immich address a Curator's browser opens from "Open in Immich" links.
+      IMMICH_PUBLIC_URL: https://immich.example.com
+      IMMICH_API_KEY: ${IMMICH_API_KEY}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
+      # Optional. See "Send Invitations and update email over SMTP" below.
+      # SMTP_URL: smtps://user:password@mail.example.com:465
+      # SMTP_FROM: Memento <memento@example.com>
+    ports:
+      - "3579:3579"
+    networks:
+      - immich
+
+networks:
+  immich:
+    # Compose names Immich's network after its directory, usually
+    # immich-app_default. Check with: docker network ls
+    name: immich-app_default
+    external: true
+```
+
+`.env`, which Compose reads for the `${...}` values above. Keep it out of
+source control:
+
+```sh
+MEMENTO_DB_PASSWORD=choose-a-strong-password
+IMMICH_API_KEY=your-read-only-immich-key
+GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=your-client-secret
+```
+
+### 5. Put a reverse proxy in front
+
+A reverse proxy that terminates TLS is required. Set `PUBLIC_URL` to the
+`https://` address served by the proxy. Memento serves HTTP on port `3579`;
+the proxy owns certificates, HTTP-to-HTTPS redirects, and HSTS. Plain HTTP
+session cookies are supported only for the exact `localhost` hostname.
+
+Point the proxy at Memento the same way it already reaches Immich on port
+`2283`: the Docker host's address and port `3579` for a proxy that runs on the
+host or in its own Compose project. A proxy container that shares Immich's
+network can instead use `memento:3579` directly, in which case you can drop
+the `ports` entry. Bind the published port to `127.0.0.1:3579:3579` if the
+proxy runs on the host and you want nothing else on the network to reach it.
+
+For example, with [Nginx Proxy Manager](https://nginxproxymanager.com/guide/):
+
+1. Create a Proxy Host for `photos.example.com` and forward it using the
+   `http` scheme to the same host address you use for Immich and port `3579`.
+2. Select or request a certificate in the SSL tab and enable Force SSL.
+   Configure HSTS there if you want it for this host.
+
+Memento gzip-compresses API JSON, the app shell, and frontend bundles when
+the browser accepts gzip. No proxy gzip tuning is needed. Nginx's
+[default gzip types](https://nginx.org/en/docs/http/ngx_http_gzip_module.html#gzip_types)
+cover only HTML, which leaves JSON, JavaScript, and CSS uncompressed when
+relying on the proxy alone. Media and playback routes bypass Memento's
+compression to preserve byte ranges and private versioned caching.
+
+### 6. Start and claim the installation
+
+```sh
+docker compose up -d
+```
+
+Open your public address and sign in with Google. The first successful
+sign-in claims an empty installation and creates its first Curator, so do this
+yourself before sharing the address with anyone. Everyone else needs a Person
+with a preauthorized email, created by a Curator, or arrives as an Access
+Request for a Curator to approve. [Google sign-in](#google-sign-in) describes
+how access works from there.
+
+To upgrade, pull the new image and recreate the container. Migrations run at
+startup:
+
+```sh
+docker compose pull
+docker compose up -d
+```
+
+The 0.1.0 image listened on port `8080`. Later images listen on `3579`, so an
+installation created from the 0.1.0 instructions must update its `ports`
+mapping and proxy target when it upgrades, or set `SERVER_PORT: 8080` on the
+service to keep the old port.
+
+### Use a separate PostgreSQL container
+
+To give Memento its own PostgreSQL instead of Immich's, change these parts of
+the walkthrough:
+
+- Skip step 1. The official PostgreSQL image creates the role and database
+  from its environment.
+- Add a `postgres` service with a volume and a `depends_on` entry, and point
+  `DATABASE_URL` at the `postgres` service instead of `database`.
+- Put `memento` on the Compose project's `default` network as well, so it can
+  reach `postgres`. Keep the `immich` network for `http://immich-server:2283`,
+  or remove it from both the service and the top-level `networks` block and
+  set `IMMICH_URL` to Immich's public address, such as
+  `https://immich.example.com`.
+
+```yaml
+services:
+  memento:
+    # ...unchanged...
+    environment:
+      DATABASE_URL: postgres://memento:${MEMENTO_DB_PASSWORD}@postgres:5432/memento?sslmode=disable
+      # ...unchanged...
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - default
+      - immich
+
+  postgres:
+    image: postgres:17-alpine
+    container_name: memento_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: memento
+      POSTGRES_PASSWORD: ${MEMENTO_DB_PASSWORD}
+      POSTGRES_DB: memento
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U memento -d memento"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - memento-postgres:/var/lib/postgresql/data
+
+volumes:
+  memento-postgres:
+```
+
+Any PostgreSQL 14 or newer works. The password still goes inside
+`DATABASE_URL`, so the same URL-encoding advice applies.
+
+### Send Invitations and update email over SMTP
+
+Email is optional. Without it Memento runs normally, Curators still create
+People and approve emails, Update Notifications stay in app, and the Invite
+button explains that email is not configured. To enable email, set both
+values on the `memento` service:
+
+```yaml
+environment:
+  SMTP_URL: smtps://user:password@mail.example.com:465
+  SMTP_FROM: Memento <memento@example.com>
+```
+
+`smtp://` connects in plain text and upgrades with STARTTLS whenever the server
+offers it; `smtps://` uses TLS from the first byte, typically on port 465.
+Credentials stay in the URL, so keep it in `.env` or the environment rather
+than a checked-in file. A username and password are only sent over TLS, so
+pair them with `smtps://` or a server that offers STARTTLS; a plain relay
+without authentication needs no credentials at all. `SMTP_CONCURRENCY` bounds
+simultaneous deliveries and defaults to five.
+
+Deliveries run through the same in-process River runtime as imports, on a
+separate `mail` queue. Each email has a stable delivery record: a rejected
+connection or a 4xx reply retries automatically up to five times, a 5xx reply
+fails permanently, and a connection lost after the message body was sent is
+marked uncertain because the server may have accepted it. Uncertain and failed
+Invitations show their state on the Person page with a Retry action; the
+uncertain case warns that sending again could deliver a duplicate. Memento never
+resends an ambiguous attempt on its own, including after a restart.
+
+Invitations are outreach only. They name the approved email and link to the
+ordinary sign-in page without any token, so admission still depends on the
+Preauthorization. Invitation email ignores a Person's update-email preference
+because it is transactional.
+
+Approved Update Notifications are also emailed, but only to an active Person
+who selected a destination and switched update email on. The email is queued
+with the approval and checked again right before it is sent: a Person who was
+deactivated, promoted to Curator, unlinked their destination, or unsubscribed
+in the meantime is skipped, and content revoked since approval is left out
+of the counts. The in-app notification is never changed by any of this.
+Every update email carries a private unsubscribe link that opens a
+confirmation page without signing in; loading the link changes nothing, and
+confirming switches off update email only. Invitations, Access Request
+alerts, and in-app notifications continue.
+
+## Immich imports
+
+The import and synchronization gate supports stable Immich **3.0.x, 3.1.x,
+and 3.2.x**. Other versions still report their detected version during setup,
+but Memento blocks new imports and synchronization and shows a warning. Safe
+existing reads remain available when the source APIs work. The
+[release smoke test](#smoke-test-a-real-immich-release) defaults to v3.2.1 and
+also tests v3.1.0 and v3.0.3; this is not a claim that every patch in those
+minors has been certified.
+
+**Immich 2.x does not work with this release of Memento.** Testing the latest
+2.x release, v2.7.5, confirmed that the shipped adapter rejects its asset metadata.
+Imports and synchronization remain blocked on all 2.x versions. Use a supported
+3.x release instead; `--probe` is a diagnostic tool, not a compatibility workaround.
+
+The API key from [step 2](#2-create-the-immich-api-key) needs only read
+permissions. `album.read` and `asset.read` list albums and their assets. The
+face and person permissions let Memento read face associations and person
+thumbnails for access suggestions and avatars. `asset.download` lets authorized
+viewers save an original photo or video and lets `ffprobe` read chapters from
+the original file; Curator preview never downloads. `asset.view` also serves
+video playback, which proxies Immich's playback stream with byte ranges so a
+long video seeks without downloading first. Installations created before
+downloads existed must add `asset.download` to their key, or every download
+fails with "Media is unavailable" and the server log records the missing
+permission. Memento uses GET requests plus Immich's read-only
+`POST /search/metadata` endpoint for membership pagination. It never edits
+source albums or assets.
+
+Face review links each Immich person to its page in Immich so merging duplicate
+faces or changing a featured photo happens there. Those links use `IMMICH_URL`
+unless `IMMICH_PUBLIC_URL` names the address a browser should open instead, for
+example when `IMMICH_URL` is a Compose service name.
+
+Imports run inside the API process through River, sharing Memento's PostgreSQL
+pool. Two imports can run at once, with three automatic attempts and a
+15-minute limit per attempt. An orderly shutdown interrupts unfinished work for
+the next startup. After a forced process termination, stale work becomes
+eligible for automatic recovery after 16 minutes. The Album page reports
+missing progress as interrupted; retry remains available after failure.
+
+Video chapters use the same runtime on a separate `ffprobe` queue. Every
+imported video is probed once per source checksum, with three attempts, a
+one-minute budget per probe, and a three-minute limit per task, and videos
+imported before this capability existed are queued at the next start. `ffprobe` reads Immich's original-file endpoint
+through HTTP ranges and never downloads a complete original. A video with no
+chapters is a normal, finished result. A failed probe is shown in the Curator's
+video details with a retry, and never blocks playback or publication. Curators
+can also give a video a title there; the filename without its extension shows
+until they do.
+
+A completed import is unpublished. Memento owns its title, while the description
+is the last imported Immich description and cannot be edited in Memento. No
+media bytes are stored persistently. Thumbnails use private browser caching;
+source media that changes before synchronization may show an unavailable image
+rather than different bytes under an old content-versioned URL.
+
+## Google sign-in
+
+Production sign-in uses Google OpenID Connect to verify identity. Memento requests
+only `openid profile email`, not access to Google Photos, Drive, or Gmail. It does
+not retain Google's access or refresh tokens. Browser sessions belong to Memento
+and live in PostgreSQL.
+
+Google exempts basic-sign-in-only requests from the test-user list requirement,
+even when the app's publishing status is **Testing**. You do not need to add
+Memento users to Google's test-user list or complete sensitive-scope verification
+for these three scopes. Publishing an app and verifying it are separate actions;
+custom consent-screen branding may require brand verification. Google Workspace
+administrators can still restrict their users' access. See
+[Google's audience rules](https://support.google.com/cloud/answer/15549945) and
+[brand verification requirements](https://developers.google.com/identity/verification/authentication-verification).
+
+A single Web application client can list both the deployed and localhost
+callback URLs. For a personal installation used by fewer than 100 people, all
+personally known to you, this allows sharing a client for local testing. Google
+classifies that audience as personal use. Apps classified as production under
+[Google's OAuth policies](https://developers.google.com/identity/protocols/oauth2/policies#separate-projects)
+require separate Cloud projects for development and production, not merely
+separate clients. Separate projects also keep credentials and consent settings
+independent.
+
+### Sign-in and access
+
+Memento derives the Google callback from `PUBLIC_URL` and never from request
+or forwarded host headers. Session and login-state cookies are Secure,
+HttpOnly, and SameSite=Lax. Google discovery happens on the first sign-in, not
+at startup. A Google outage does not prevent database health checks or use of
+existing Memento sessions.
+
+The first successful sign-in claims an empty installation and creates its first
+Curator. Keep a new installation private until you have claimed it. For later
+people, a Curator must create the Person and preauthorize the exact email Google
+reports. A verified Google email alone does not grant access. Google sign-in
+availability does not bypass Memento's preauthorizations.
+
+A verified Google account that Memento does not know creates one pending Access
+Request instead of an account. Repeated sign-ins refresh that request rather
+than creating more, and a denied request absorbs later attempts silently until
+a Curator reconsiders it. Curators review requests under Requests, where
+approval links the identity to an existing Person or creates one and approves
+the exact email; Album access remains a separate decision in each Album. An
+existing Person who reaches an Album they cannot see gets an explicit Request
+access action, and visiting alone records nothing. Each new request also
+emails every active Curator who has selected an email, when SMTP is
+configured; repeated sign-ins against the same request send nothing more.
+
+Every Person completes a one-time Onboarding after their first sign-in, whether
+they arrived through an Invitation or signed in directly. It confirms their
+name and email preference and shows the Albums already visible to them, which
+become their notification baseline so later updates only announce new content.
+
+Publishing never notifies anyone by itself. The Curator's Updates page lists
+every Person who can now see photos or videos they have not been told about,
+grouped into collapsible rows with the Albums and counts each would hear
+about; photos and videos are counted, never listed. A Curator can leave out a
+person or one Album update, add a note for everyone, and send. Sending creates
+an in-app Update Notification for each included Person and records exactly
+which Album Entries were announced, so repeated sends, two Curators approving
+overlapping previews, or revoking and restoring access never announce the same
+media twice. Members see a bell that
+shows their unread count and lists only new updates, and an Updates page with
+every update they have received. Opening one marks it read and goes to the Album, or
+to the Album list when it covers several. Browsing never changes read state.
+People who asked for email get the same summary by email; see
+[Send Invitations and update email over SMTP](#send-invitations-and-update-email-over-smtp).
+
+The Curator's home page is a short work list in two groups. Needs attention
+holds pending Access Requests, failed or interrupted imports, failed or
+uncertain email, failed chapter extraction, and an unreachable Immich server.
+Ready when you are lists unpublished Albums and people with changes they have
+not heard about, in neutral words, because waiting is a choice rather than a
+failure. The page polls only while an import or email is still running. The
+Immich diagnostic and its manual check live under Settings in the account
+menu.
+
+### Troubleshooting
+
+- `redirect_uri_mismatch`: compare the callback with the Google client's
+  authorized redirect URI. Check the port and remove any extra slash.
+- Expired or invalid sign-in: start again from Memento. Login transactions expire
+  after ten minutes and can be used only once. Restarting Memento or starting a
+  newer login in the same browser cancels the previous pending login.
+- Google unavailable: retry later. Discovery and token requests have a timeout;
+  later attempts retry failed discovery.
+- Access denied: use the preauthorized Google account or ask a Curator to
+  preauthorize its exact email. Do not switch production to fake authentication.
+- Access requested: the account is unknown and a Curator now has a pending
+  request for it. Nothing more is needed from the person signing in.
+
+Pending Google logins stay in one server process. The normal single-process
+Memento deployment needs no shared login-state store. Multiple processes require
+sticky routing during sign-in.
+
+For protocol details, see [Google OpenID Connect](https://developers.google.com/identity/openid-connect/openid-connect)
+and [Google's web-server OAuth flow](https://developers.google.com/identity/protocols/oauth2/web-server).
+
+## Development prerequisites
 
 Install [mise](https://mise.jdx.dev/) and Docker Desktop or another Docker
 engine with Compose support. The development commands use Unix process groups
@@ -82,13 +531,11 @@ mise setup
 ```
 
 Linked-worktree setup requires the PostgreSQL container started by the main
-worktree. The first setup clones the main database and `tmp/files` into the
-linked worktree. If the worktree database is missing but `tmp/files` is not
-empty, setup asks before replacing those files. Later setup runs preserve an
-existing worktree database and files.
+worktree. The first setup clones the main database into the linked worktree.
+Later setup runs preserve an existing worktree database.
 
 Worktree database names use the repository name, worktree directory, and a path
-hash. Mutable application files live at `tmp/files` inside each worktree.
+hash.
 
 ## Start development
 
@@ -189,7 +636,16 @@ its recorded PostgreSQL port when unset. Direct Go tests also use the current
 worktree database, while `pnpm exec playwright test` uses the main development
 database. All test data stays in temporary schemas with small pools. Export
 `TEST_DATABASE_URL` to make all commands use one dedicated test database
-instead.
+instead. To provision one on a shared server:
+
+```sql
+CREATE ROLE memento_test LOGIN PASSWORD 'choose-a-test-password';
+CREATE DATABASE memento_test OWNER memento_test;
+REVOKE ALL ON DATABASE memento_test FROM PUBLIC;
+```
+
+Test and QA cleanup drops only the random schema allocated by that invocation,
+never the database.
 
 ### Check PostgreSQL 14
 
@@ -366,13 +822,8 @@ Build the production container:
 mise docker
 ```
 
-The image runs one non-root Go process, listens on port `8080`, reads optional
-configuration from `/config/app.yaml`, and stores mutable files under
-`/data/files`. Configure `DATABASE_URL`, `PUBLIC_URL`, `IMMICH_URL`, and
-`IMMICH_API_KEY` through YAML or environment variables. `IMMICH_URL` is the
-instance base URL without `/api`. Environment values override YAML.
-`PUBLIC_URL` must match the browser origin and controls cookie security and
-mutation origin checks. See `app.example.yaml` for a deployment example.
+This builds the same image that releases publish; [Deploy Memento](#deploy-memento)
+describes how it is configured and run.
 
 To exercise the built image's YAML/environment configuration and outage behavior,
 use a fresh disposable Memento database, never your development or production
@@ -395,277 +846,16 @@ which adds roughly 110 MB because Alpine ships no ffprobe-only package.
 `FFPROBE_PATH` names another binary when the process runs outside the image,
 and `FFPROBE_CONCURRENCY` (default `1`) bounds how many probes run at once.
 
-### Deploy behind a reverse proxy
-
-A reverse proxy that terminates TLS is required for deployment. Set
-`PUBLIC_URL` to the `https://` address served by the proxy, for example
-`https://photos.example.com`. Memento serves HTTP on the internal port;
-the proxy owns certificates, HTTP-to-HTTPS redirects, and HSTS. Plain HTTP
-session cookies are supported only for the exact `localhost` hostname.
-
-For example, with [Nginx Proxy Manager](https://nginxproxymanager.com/guide/):
-
-1. Create a Proxy Host for `photos.example.com` and forward it using the
-   `http` scheme to Memento's container hostname and port `8080` on their
-   shared Docker network.
-2. Select or request a certificate in the SSL tab and enable Force SSL.
-   Configure HSTS there if you want it for this host.
-3. Set `PUBLIC_URL=https://photos.example.com` on Memento.
-
-Memento gzip-compresses API JSON, the app shell, and frontend bundles when
-the browser accepts gzip. No proxy gzip tuning is needed. Nginx's
-[default gzip types](https://nginx.org/en/docs/http/ngx_http_gzip_module.html#gzip_types)
-cover only HTML, which leaves JSON, JavaScript, and CSS uncompressed when
-relying on the proxy alone. Media and playback routes bypass Memento's
-compression to preserve byte ranges and private versioned caching.
-
-### Connect Immich for imports
-
-The import and synchronization gate supports stable Immich **3.0.x, 3.1.x,
-and 3.2.x**. Other versions still report their detected version during setup,
-but Memento blocks new imports and synchronization and shows a warning. Safe
-existing reads remain available when the source APIs work. The smoke command
-above defaults to v3.2.1 and also tests v3.1.0 and v3.0.3; this is not a claim
-that every patch in those minors has been certified.
-
-**Immich 2.x does not work with this release of Memento.** Testing the latest
-2.x release, v2.7.5, confirmed that the shipped adapter rejects its asset metadata.
-Imports and synchronization remain blocked on all 2.x versions. Use a supported
-3.x release instead; `--probe` is a diagnostic tool, not a compatibility workaround.
-
-Create an API key in the Immich account that owns or can access your source
-albums. Grant only `album.read`, `asset.download`, `asset.read`, `asset.view`,
-`face.read`, and `person.read`, then set `IMMICH_API_KEY` on Memento's server.
-The face and person permissions let Memento read face associations and person
-thumbnails for access suggestions and avatars. `asset.download` lets authorized
-viewers save an original photo or video and lets `ffprobe` read chapters from
-the original file; Curator preview never downloads. `asset.view` also serves
-video playback, which proxies Immich's playback stream with byte ranges so a
-long video seeks without downloading first. Installations created before
-downloads existed must add `asset.download` to their key, or every download
-fails with "Media is unavailable" and the server log records the missing
-permission. No write permission is needed. Memento uses GET requests plus
-Immich's read-only `POST /search/metadata` endpoint for membership pagination.
-It never edits source albums or assets.
-
-Face review links each Immich person to its page in Immich so merging duplicate
-faces or changing a featured photo happens there. Those links use `IMMICH_URL`
-unless `IMMICH_PUBLIC_URL` names the address a browser should open instead, for
-example when `IMMICH_URL` is a Compose service name.
-
-Imports run inside the API process through River, sharing Memento's PostgreSQL
-pool. Two imports can run at once, with three automatic attempts and a
-15-minute limit per attempt. An orderly shutdown interrupts unfinished work for
-the next startup. After a forced process termination, stale work becomes
-eligible for automatic recovery after 16 minutes. The Album page reports
-missing progress as interrupted; retry remains available after failure.
-
-Video chapters use the same runtime on a separate `ffprobe` queue. Every
-imported video is probed once per source checksum, with three attempts, a
-one-minute budget per probe, and a three-minute limit per task, and videos
-imported before this capability existed are queued at the next start. `ffprobe` reads Immich's original-file endpoint
-through HTTP ranges and never downloads a complete original. A video with no
-chapters is a normal, finished result. A failed probe is shown in the Curator's
-video details with a retry, and never blocks playback or publication. Curators
-can also give a video a title there; the filename without its extension shows
-until they do.
-
-A completed import is unpublished. Memento owns its title, while the description
-is the last imported Immich description and cannot be edited in Memento. No
-media bytes are stored persistently. Thumbnails use private browser caching;
-source media that changes before synchronization may show an unavailable image
-rather than different bytes under an old content-versioned URL.
-
-### Send Invitations and update email over SMTP
-
-Email is optional. Without it Memento runs normally, Curators still create
-People and approve emails, Update Notifications stay in app, and the Invite
-button explains that email is not configured. To enable email, set both
-values:
-
-```sh
-export SMTP_URL='smtp://user:password@mail.example.com:587'
-export SMTP_FROM='Memento <memento@example.com>'
-```
-
-`smtp://` connects in plain text and upgrades with STARTTLS whenever the server
-offers it; `smtps://` uses TLS from the first byte, typically on port 465.
-Credentials stay in the URL, so prefer the environment variable over the YAML
-file. A username and password are only sent over TLS, so pair them with
-`smtps://` or a server that offers STARTTLS; a plain relay without
-authentication needs no credentials at all. `SMTP_CONCURRENCY` bounds
-simultaneous deliveries and defaults to five.
-
-Deliveries run through the same in-process River runtime as imports, on a
-separate `mail` queue. Each email has a stable delivery record: a rejected
-connection or a 4xx reply retries automatically up to five times, a 5xx reply
-fails permanently, and a connection lost after the message body was sent is
-marked uncertain because the server may have accepted it. Uncertain and failed
-Invitations show their state on the Person page with a Retry action; the
-uncertain case warns that sending again could deliver a duplicate. Memento never
-resends an ambiguous attempt on its own, including after a restart.
-
-Invitations are outreach only. They name the approved email and link to the
-ordinary sign-in page without any token, so admission still depends on the
-Preauthorization. Invitation email ignores a Person's update-email preference
-because it is transactional.
-
-Approved Update Notifications are also emailed, but only to an active Person
-who selected a destination and switched update email on. The email is queued
-with the approval and checked again right before it is sent: a Person who was
-deactivated, promoted to Curator, unlinked their destination, or unsubscribed
-in the meantime is skipped, and content revoked since approval is left out
-of the counts. The in-app notification is never changed by any of this.
-Every update email carries a private unsubscribe link that opens a
-confirmation page without signing in; loading the link changes nothing, and
-confirming switches off update email only. Invitations, Access Request
-alerts, and in-app notifications continue.
-
-### Separate PostgreSQL database and role
-
-Memento can share a PostgreSQL 14 or newer server with Immich, but not Immich's
-database or role. As a PostgreSQL administrator, provision Memento separately:
-
-```sql
-CREATE ROLE memento LOGIN PASSWORD 'choose-a-strong-password';
-CREATE DATABASE memento OWNER memento;
-REVOKE ALL ON DATABASE memento FROM PUBLIC;
-```
-
-Use `postgres://memento:YOUR_URL_ENCODED_PASSWORD@HOST:5432/memento` for
-`DATABASE_URL`, adding the appropriate TLS settings for your deployment. Do not
-grant this role access to Immich tables. Memento talks to Immich only through
-its HTTP API with a read-only API key.
-
-For isolated tests, provision another database and role:
-
-```sql
-CREATE ROLE memento_test LOGIN PASSWORD 'choose-a-test-password';
-CREATE DATABASE memento_test OWNER memento_test;
-REVOKE ALL ON DATABASE memento_test FROM PUBLIC;
-```
-
-Set `TEST_DATABASE_URL` to that test database. Test and QA cleanup drops only
-the random schema allocated by that invocation, never the database.
-
-## Google sign-in
-
-Production sign-in uses Google OpenID Connect to verify identity. Memento requests
-only `openid profile email`, not access to Google Photos, Drive, or Gmail. It does
-not retain Google's access or refresh tokens. Browser sessions belong to Memento
-and live in PostgreSQL.
-
-### Create a Google client
-
-1. Open [Google Auth Platform](https://console.cloud.google.com/auth/overview)
-   and select or create a project.
-2. Complete Branding with an app name, support email, and developer contact.
-   Choose an External audience for friends and family outside your Workspace.
-   Review Audience and Branding before publishing for your intended users.
-3. Under Data Access, select `openid`, `https://www.googleapis.com/auth/userinfo.email`,
-   and `https://www.googleapis.com/auth/userinfo.profile`. These are the console
-   equivalents of Memento's `openid email profile` request. No Google Photos API,
-   sensitive scopes, or offline access are needed.
-4. Under Clients, create a **Web application** client. Add the exact authorized
-   redirect URI, such as `https://photos.example.com/api/identity/google/callback`.
-   For local development, also add
-   `http://localhost:3579/api/identity/google/callback`. This server flow does not
-   need an authorized JavaScript origin.
-5. Copy the client ID and secret into Memento's configuration. Keep the secret
-   out of source control.
-
-Google exempts basic-sign-in-only requests from the test-user list requirement,
-even when the app's publishing status is **Testing**. You do not need to add
-Memento users to Google's test-user list or complete sensitive-scope verification
-for these three scopes. Publishing an app and verifying it are separate actions;
-custom consent-screen branding may require brand verification. Google Workspace
-administrators can still restrict their users' access. See
-[Google's audience rules](https://support.google.com/cloud/answer/15549945) and
-[brand verification requirements](https://developers.google.com/identity/verification/authentication-verification).
-
-A single Web application client can list both the deployed and localhost
-callback URLs. For a personal installation used by fewer than 100 people, all
-personally known to you, this allows sharing a client for local testing. Google
-classifies that audience as personal use. Apps classified as production under
-[Google's OAuth policies](https://developers.google.com/identity/protocols/oauth2/policies#separate-projects)
-require separate Cloud projects for development and production, not merely
-separate clients. Separate projects also keep credentials and consent settings
-independent.
-
-### Configure production
-
-Set these alongside `DATABASE_URL`, `IMMICH_URL`, and `IMMICH_API_KEY`:
-
-```sh
-export PUBLIC_URL=https://photos.example.com
-export GOOGLE_CLIENT_ID='your-client-id.apps.googleusercontent.com'
-export GOOGLE_CLIENT_SECRET='your-client-secret'
-```
-
-Google requires an exact redirect URI match, including scheme, port, path, and
-trailing slash. Memento derives the callback by appending
-`/api/identity/google/callback` to the configured `PUBLIC_URL`. Register that
-exact URL on the Google client. There is no separate callback setting, and
-Memento does not derive the origin from request or forwarded host headers.
-
-Use HTTPS at the browser-facing reverse proxy. Session and login-state cookies
-are Secure, HttpOnly, and SameSite=Lax. Google discovery happens on the first
-sign-in, not at startup. A Google outage does not prevent database health checks
-or use of existing Memento sessions.
-
-The first successful sign-in claims an empty installation and creates its first
-Curator. Keep a new installation private until you have claimed it. For later
-people, a Curator must create the Person and preauthorize the exact email Google
-reports. A verified Google email alone does not grant access. Google sign-in
-availability does not bypass Memento's preauthorizations.
-
-A verified Google account that Memento does not know creates one pending Access
-Request instead of an account. Repeated sign-ins refresh that request rather
-than creating more, and a denied request absorbs later attempts silently until
-a Curator reconsiders it. Curators review requests under Requests, where
-approval links the identity to an existing Person or creates one and approves
-the exact email; Album access remains a separate decision in each Album. An
-existing Person who reaches an Album they cannot see gets an explicit Request
-access action, and visiting alone records nothing. Each new request also
-emails every active Curator who has selected an email, when SMTP is
-configured; repeated sign-ins against the same request send nothing more.
-
-Every Person completes a one-time Onboarding after their first sign-in, whether
-they arrived through an Invitation or signed in directly. It confirms their
-name and email preference and shows the Albums already visible to them, which
-become their notification baseline so later updates only announce new content.
-
-Publishing never notifies anyone by itself. The Curator's Updates page lists
-every Person who can now see photos or videos they have not been told about,
-grouped into collapsible rows with the Albums and counts each would hear
-about; photos and videos are counted, never listed. A Curator can leave out a
-person or one Album update, add a note for everyone, and send. Sending creates
-an in-app Update Notification for each included Person and records exactly
-which Album Entries were announced, so repeated sends, two Curators approving
-overlapping previews, or revoking and restoring access never announce the same
-media twice. Members see a bell that
-shows their unread count and lists only new updates, and an Updates page with
-every update they have received. Opening one marks it read and goes to the Album, or
-to the Album list when it covers several. Browsing never changes read state.
-People who asked for email get the same summary by email; see the SMTP
-section above.
-
-The Curator's home page is a short work list in two groups. Needs attention
-holds pending Access Requests, failed or interrupted imports, failed or
-uncertain email, failed chapter extraction, and an unreachable Immich server.
-Ready when you are lists unpublished Albums and people with changes they have
-not heard about, in neutral words, because waiting is a choice rather than a
-failure. The page polls only while an import or email is still running. The
-Immich diagnostic and its manual check live under Settings in the account
-menu.
-
 ### Use Google locally
 
 Automated tests use a local OIDC server, not real Google credentials. To develop
 against Google, use a separate database and run the built application on a fixed
 port. Unlike `mise start`, the binary does not select another port or replace
-your database URL. Create the database and role first using the PostgreSQL
-instructions above; startup applies migrations.
+your database URL. Create the database and role first by running the SQL from
+[Create the database and role](#1-create-the-database-and-role) against the
+development PostgreSQL, naming the database `memento_google`; startup applies
+migrations. Register `http://localhost:3579/api/identity/google/callback` as a
+second redirect URI on the Google client.
 
 ```sh
 mise build
@@ -680,7 +870,6 @@ export GOOGLE_CLIENT_SECRET='your-client-secret'
 export DATABASE_URL='postgres://memento:YOUR_PASSWORD@localhost:5432/memento_google?sslmode=disable'
 export IMMICH_URL='http://localhost:2283'
 export IMMICH_API_KEY='your-read-only-immich-key'
-export FILES_PATH="$PWD/tmp/google-files"
 ./build/api/api
 ```
 
@@ -688,27 +877,6 @@ Open `http://localhost:3579`, not `127.0.0.1`. HTTP is permitted only for the ex
 `localhost` hostname in development or test; cookies remain HttpOnly and
 SameSite=Lax but are not Secure on this local HTTP origin. No public tunnel is
 needed. The first account to sign in becomes Curator if the database is empty.
-
-### Troubleshooting
-
-- `redirect_uri_mismatch`: compare the callback with the Google client's
-  authorized redirect URI. Check the port and remove any extra slash.
-- Expired or invalid sign-in: start again from Memento. Login transactions expire
-  after ten minutes and can be used only once. Restarting Memento or starting a
-  newer login in the same browser cancels the previous pending login.
-- Google unavailable: retry later. Discovery and token requests have a timeout;
-  later attempts retry failed discovery.
-- Access denied: use the preauthorized Google account or ask a Curator to
-  preauthorize its exact email. Do not switch production to fake authentication.
-- Access requested: the account is unknown and a Curator now has a pending
-  request for it. Nothing more is needed from the person signing in.
-
-Pending Google logins stay in one server process. The normal single-process
-Memento deployment needs no shared login-state store. Multiple processes require
-sticky routing during sign-in.
-
-For protocol details, see [Google OpenID Connect](https://developers.google.com/identity/openid-connect/openid-connect)
-and [Google's web-server OAuth flow](https://developers.google.com/identity/protocols/oauth2/web-server).
 
 ## Database migrations
 
@@ -720,31 +888,25 @@ mise db:migrate:create migration_name
 ```
 
 `db:reset` deletes all data in the current worktree database and asks for
-confirmation when the database exists. It does not change `tmp/files`.
+confirmation when the database exists.
 
 ## Clone worktree data
 
-Clone the main worktree's data into the current linked worktree:
+Clone the main worktree's database into the current linked worktree:
 
 ```sh
-mise clone:db
-mise clone:files
 mise clone
 ```
 
-Reverse the direction to replace main-worktree data with the current linked
-worktree's data:
+Reverse the direction to replace the main-worktree database with the current
+linked worktree's database:
 
 ```sh
-mise clone:db --to-main
-mise clone:files --to-main
 mise clone --to-main
 ```
 
-Clone commands must run from a linked worktree. Existing destination data
-requires confirmation. Combined clones stage files and restore the old files if
-database replacement fails. Do not run clone commands while the target
-application is active.
+The command must run from a linked worktree. An existing destination database
+requires confirmation. Do not run it while the target application is active.
 
 ## Releases
 

@@ -55,7 +55,6 @@ type Config struct {
 	SMTPURL                   string        `koanf:"smtp_url" json:"-"`
 	SMTPFrom                  string        `koanf:"smtp_from" json:"smtp_from"`
 	SMTPConcurrency           int           `koanf:"smtp_concurrency" json:"smtp_concurrency" validate:"min=1"`
-	FilesPath                 string        `koanf:"files_path" json:"files_path" validate:"required"`
 	FFprobePath               string        `koanf:"ffprobe_path" json:"ffprobe_path" validate:"required"`
 	FFprobeConcurrency        int           `koanf:"ffprobe_concurrency" json:"ffprobe_concurrency" validate:"min=1,max=16"`
 	CookieNamespace           string        `koanf:"cookie_namespace" json:"-"`
@@ -74,7 +73,6 @@ func defaults() *Config {
 		DatabaseConnectRetryCount: 5,
 		DatabaseConnectRetryDelay: 2 * time.Second,
 		SMTPConcurrency:           5,
-		FilesPath:                 "./tmp/files",
 		FFprobePath:               "ffprobe",
 		FFprobeConcurrency:        1,
 		CookieNamespace:           "memento",

@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"net"
-	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -22,10 +21,8 @@ type databaseCall struct {
 }
 
 type fakeDatabase struct {
-	exists        map[string]bool
-	calls         []databaseCall
-	cloneErr      error
-	cloneReplaced bool
+	exists map[string]bool
+	calls  []databaseCall
 }
 
 func (db *fakeDatabase) Start(context.Context, Environment) error {
@@ -49,13 +46,10 @@ func (db *fakeDatabase) Create(_ context.Context, _ Environment, name string) er
 	return nil
 }
 
-func (db *fakeDatabase) Clone(_ context.Context, _ Environment, source, target string) (DatabaseCloneResult, error) {
+func (db *fakeDatabase) Clone(_ context.Context, _ Environment, source, target string) error {
 	db.calls = append(db.calls, databaseCall{operation: "clone", source: source, target: target})
-	if db.cloneErr != nil {
-		return DatabaseCloneResult{Replaced: db.cloneReplaced}, db.cloneErr
-	}
 	db.exists[target] = true
-	return DatabaseCloneResult{Replaced: true}, nil
+	return nil
 }
 
 func (db *fakeDatabase) Reset(_ context.Context, _ Environment, name string) error {
@@ -119,7 +113,6 @@ func TestSetupMainStartsPostgresAndPreservesExistingData(t *testing.T) {
 	app := testApp(env, db)
 
 	require.NoError(t, app.Run(context.Background(), []string{"setup"}))
-	assert.DirExists(t, filepath.Join(root, "tmp", "files"))
 	assert.Equal(t, []databaseCall{
 		{operation: "start"},
 		{operation: "exists", target: "memento"},
@@ -132,16 +125,11 @@ func TestSetupLinkedWorktreeClonesMissingDataFromMain(t *testing.T) {
 
 	mainRoot := t.TempDir()
 	currentRoot := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(mainRoot, "tmp", "files"), 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(mainRoot, "tmp", "files", "state.txt"), []byte("source"), 0o644))
 	env := testEnvironment(mainRoot, currentRoot)
 	db := &fakeDatabase{exists: map[string]bool{"memento": true}}
 	app := testApp(env, db)
 
 	require.NoError(t, app.Run(context.Background(), []string{"setup"}))
-	contents, err := os.ReadFile(filepath.Join(currentRoot, "tmp", "files", "state.txt"))
-	require.NoError(t, err)
-	assert.Equal(t, "source", string(contents))
 	assert.Equal(t, []databaseCall{
 		{operation: "require-running"},
 		{operation: "exists", target: env.CurrentDatabase},
@@ -149,29 +137,6 @@ func TestSetupLinkedWorktreeClonesMissingDataFromMain(t *testing.T) {
 		{operation: "clone", source: "memento", target: env.CurrentDatabase},
 		{operation: "migrate", target: env.CurrentDatabase},
 	}, db.calls)
-}
-
-func TestSetupLinkedWorktreePreservesFilesWhenDatabaseIsMissing(t *testing.T) {
-	t.Parallel()
-
-	mainRoot := t.TempDir()
-	currentRoot := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(mainRoot, "tmp", "files"), 0o755))
-	require.NoError(t, os.MkdirAll(filepath.Join(currentRoot, "tmp", "files"), 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(mainRoot, "tmp", "files", "state.txt"), []byte("main"), 0o644))
-	require.NoError(t, os.WriteFile(filepath.Join(currentRoot, "tmp", "files", "state.txt"), []byte("local"), 0o644))
-	env := testEnvironment(mainRoot, currentRoot)
-	db := &fakeDatabase{exists: map[string]bool{"memento": true}}
-	app := testApp(env, db)
-	app.Stdin = bytes.NewBufferString("n\n")
-
-	require.NoError(t, app.Run(context.Background(), []string{"setup"}))
-	contents, err := os.ReadFile(filepath.Join(currentRoot, "tmp", "files", "state.txt"))
-	require.NoError(t, err)
-	assert.Equal(t, "local", string(contents))
-	for _, call := range db.calls {
-		assert.NotEqual(t, "clone", call.operation)
-	}
 }
 
 func TestSetupLinkedWorktreeDoesNotReplaceExistingData(t *testing.T) {
@@ -191,109 +156,20 @@ func TestSetupLinkedWorktreeDoesNotReplaceExistingData(t *testing.T) {
 	}, db.calls)
 }
 
-func TestCloneFilesDoesNotRequirePostgres(t *testing.T) {
-	t.Parallel()
-
-	mainRoot := t.TempDir()
-	currentRoot := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(mainRoot, "tmp", "files"), 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(mainRoot, "tmp", "files", "state.txt"), []byte("source"), 0o644))
-	env := testEnvironment(mainRoot, currentRoot)
-	db := &fakeDatabase{exists: map[string]bool{}}
-	app := testApp(env, db)
-
-	require.NoError(t, app.Run(context.Background(), []string{"clone", "files"}))
-	contents, err := os.ReadFile(filepath.Join(currentRoot, "tmp", "files", "state.txt"))
-	require.NoError(t, err)
-	assert.Equal(t, "source", string(contents))
-	assert.Empty(t, db.calls)
-}
-
-func TestCloneAllRestoresFilesWhenDatabaseCloneFails(t *testing.T) {
-	t.Parallel()
-
-	mainRoot := t.TempDir()
-	currentRoot := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(mainRoot, "tmp", "files"), 0o755))
-	require.NoError(t, os.MkdirAll(filepath.Join(currentRoot, "tmp", "files"), 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(mainRoot, "tmp", "files", "state.txt"), []byte("new"), 0o644))
-	require.NoError(t, os.WriteFile(filepath.Join(currentRoot, "tmp", "files", "state.txt"), []byte("old"), 0o644))
-	env := testEnvironment(mainRoot, currentRoot)
-	db := &fakeDatabase{
-		exists:   map[string]bool{"memento": true, env.CurrentDatabase: true},
-		cloneErr: errors.New("clone failed"),
-	}
-	app := testApp(env, db)
-	app.Stdin = bytes.NewBufferString("y\n")
-
-	err := app.Run(context.Background(), []string{"clone"})
-	require.ErrorContains(t, err, "clone failed")
-	contents, readErr := os.ReadFile(filepath.Join(currentRoot, "tmp", "files", "state.txt"))
-	require.NoError(t, readErr)
-	assert.Equal(t, "old", string(contents))
-}
-
-func TestCloneAllKeepsInstalledFilesWhenDatabaseCleanupFails(t *testing.T) {
-	t.Parallel()
-
-	mainRoot := t.TempDir()
-	currentRoot := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(mainRoot, "tmp", "files"), 0o755))
-	require.NoError(t, os.MkdirAll(filepath.Join(currentRoot, "tmp", "files"), 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(mainRoot, "tmp", "files", "state.txt"), []byte("new"), 0o644))
-	require.NoError(t, os.WriteFile(filepath.Join(currentRoot, "tmp", "files", "state.txt"), []byte("old"), 0o644))
-	env := testEnvironment(mainRoot, currentRoot)
-	db := &fakeDatabase{
-		exists:        map[string]bool{"memento": true, env.CurrentDatabase: true},
-		cloneErr:      errors.New("remove database backup"),
-		cloneReplaced: true,
-	}
-	app := testApp(env, db)
-	app.Stdin = bytes.NewBufferString("y\n")
-
-	err := app.Run(context.Background(), []string{"clone"})
-	require.ErrorContains(t, err, "remove database backup")
-	contents, readErr := os.ReadFile(filepath.Join(currentRoot, "tmp", "files", "state.txt"))
-	require.NoError(t, readErr)
-	assert.Equal(t, "new", string(contents))
-}
-
-func TestSetupLinkedWorktreeRestoresFilesWhenDatabaseCloneFails(t *testing.T) {
-	t.Parallel()
-
-	mainRoot := t.TempDir()
-	currentRoot := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(mainRoot, "tmp", "files"), 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(mainRoot, "tmp", "files", "state.txt"), []byte("new"), 0o644))
-	env := testEnvironment(mainRoot, currentRoot)
-	db := &fakeDatabase{
-		exists:   map[string]bool{"memento": true},
-		cloneErr: errors.New("clone failed"),
-	}
-	app := testApp(env, db)
-
-	err := app.Run(context.Background(), []string{"setup"})
-	require.ErrorContains(t, err, "clone failed")
-	entries, readErr := os.ReadDir(filepath.Join(currentRoot, "tmp", "files"))
-	require.NoError(t, readErr)
-	assert.Empty(t, entries)
-}
-
 func TestCloneToMainAlwaysRequiresConfirmation(t *testing.T) {
 	t.Parallel()
 
 	mainRoot := t.TempDir()
 	currentRoot := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(mainRoot, "tmp", "files"), 0o755))
-	require.NoError(t, os.MkdirAll(filepath.Join(currentRoot, "tmp", "files"), 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(currentRoot, "tmp", "files", "state.txt"), []byte("source"), 0o644))
 	env := testEnvironment(mainRoot, currentRoot)
-	app := testApp(env, &fakeDatabase{exists: map[string]bool{}})
+	db := &fakeDatabase{exists: map[string]bool{env.CurrentDatabase: true}}
+	app := testApp(env, db)
 	app.Stdin = bytes.NewBufferString("n\n")
 
-	require.NoError(t, app.Run(context.Background(), []string{"clone", "files", "--to-main"}))
-	_, err := os.Stat(filepath.Join(mainRoot, "tmp", "files", "state.txt"))
-	assert.ErrorIs(t, err, os.ErrNotExist)
+	require.NoError(t, app.Run(context.Background(), []string{"clone", "--to-main"}))
+	for _, call := range db.calls {
+		assert.NotEqual(t, "clone", call.operation)
+	}
 }
 
 func TestCloneDatabaseToMainReversesDirection(t *testing.T) {
@@ -306,7 +182,7 @@ func TestCloneDatabaseToMainReversesDirection(t *testing.T) {
 	app := testApp(env, db)
 	app.Stdin = bytes.NewBufferString("y\n")
 
-	require.NoError(t, app.Run(context.Background(), []string{"clone", "db", "--to-main"}))
+	require.NoError(t, app.Run(context.Background(), []string{"clone", "--to-main"}))
 	assert.Contains(t, db.calls, databaseCall{operation: "clone", source: env.CurrentDatabase, target: "memento"})
 }
 
@@ -320,7 +196,7 @@ func TestCloneDeclinedLeavesDestinationUntouched(t *testing.T) {
 	app := testApp(env, db)
 	app.Stdin = bytes.NewBufferString("n\n")
 
-	require.NoError(t, app.Run(context.Background(), []string{"clone", "db"}))
+	require.NoError(t, app.Run(context.Background(), []string{"clone"}))
 	for _, call := range db.calls {
 		assert.NotEqual(t, "clone", call.operation)
 	}
@@ -399,7 +275,6 @@ func TestDevelopmentEnvironmentUsesCurrentWorktreeResources(t *testing.T) {
 	values, err := developmentEnvironment(env, 3580, 5174)
 	require.NoError(t, err)
 	assert.Equal(t, "postgres://postgres:postgres@127.0.0.1:5544/memento_feature_12345678?sslmode=disable", lastEnvironmentValue(values, "DATABASE_URL"))
-	assert.Equal(t, filepath.Join(currentRoot, "tmp", "files"), lastEnvironmentValue(values, "FILES_PATH"))
 	assert.Equal(t, filepath.Join(currentRoot, "app.dev.yaml"), lastEnvironmentValue(values, "CONFIG_FILE"))
 	assert.Equal(t, env.CurrentDatabase, lastEnvironmentValue(values, "COOKIE_NAMESPACE"))
 	assert.Equal(t, "3580", lastEnvironmentValue(values, "SERVER_PORT"))

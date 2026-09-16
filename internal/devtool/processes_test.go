@@ -28,21 +28,22 @@ func TestDevelopmentPublicURL(t *testing.T) {
 func TestE2EDatabaseEnvironment(t *testing.T) {
 	root := t.TempDir()
 	// Observe the child process environment through a substitute pnpm executable.
-	script := "#!/bin/sh\nprintf '%s' \"$TEST_DATABASE_URL\" > \"$FILES_PATH/database-url\"\n"
+	output := filepath.Join(root, "database-url")
+	script := "#!/bin/sh\nprintf '%s' \"$TEST_DATABASE_URL\" > \"$E2E_TEST_OUTPUT\"\n"
 	require.NoError(t, os.WriteFile(filepath.Join(root, "pnpm"), []byte(script), 0o755))
 	t.Setenv("PATH", root+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("E2E_TEST_OUTPUT", output)
 	t.Setenv("TEST_DATABASE_URL", "")
 	t.Setenv("CI", "")
 	env := Environment{CurrentRoot: root, CurrentDatabase: "memento_worktree", PostgresPort: 5544}
-	require.NoError(t, os.MkdirAll(env.CurrentFilesPath(), 0o755))
 	processes := &OSProcesses{}
 	require.NoError(t, processes.E2E(context.Background(), env, "chromium", 5177))
-	actual, err := os.ReadFile(filepath.Join(env.CurrentFilesPath(), "database-url"))
+	actual, err := os.ReadFile(output)
 	require.NoError(t, err)
 	assert.Equal(t, "postgres://postgres:postgres@127.0.0.1:5544/memento_worktree?sslmode=disable", string(actual))
 	t.Setenv("TEST_DATABASE_URL", "postgres://qa:password@localhost:5545/memento_test")
 	require.NoError(t, processes.E2E(context.Background(), env, "webkit", 5177))
-	actual, err = os.ReadFile(filepath.Join(env.CurrentFilesPath(), "database-url"))
+	actual, err = os.ReadFile(output)
 	require.NoError(t, err)
 	assert.Equal(t, "postgres://qa:password@localhost:5545/memento_test", string(actual))
 	t.Setenv("TEST_DATABASE_URL", "")

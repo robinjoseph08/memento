@@ -7,6 +7,5 @@ immich_url: http://localhost:2283
 immich_api_key: development-placeholder
 database_url: postgres://postgres:postgres@localhost:5432/memento?sslmode=disable
 database_debug: true
-files_path: ./tmp/files
 server_host: 0.0.0.0
 server_port: 3579

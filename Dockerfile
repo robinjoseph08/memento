@@ -38,13 +38,10 @@ FROM alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6ee
 # ffmpeg supplies the ffprobe binary that reads video chapters over HTTP ranges.
 RUN apk add --no-cache ca-certificates tzdata ffmpeg && \
     addgroup -S app && adduser -S -G app app && \
-    mkdir -p /config /data/files && chown -R app:app /config /data
+    mkdir -p /config && chown -R app:app /config
 COPY --from=backend --chown=app:app /out/app /usr/local/bin/app
 USER app
-ENV FILES_PATH=/data/files \
-    SERVER_HOST=0.0.0.0 \
-    SERVER_PORT=8080
-EXPOSE 8080
+EXPOSE 3579
 HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=3 \
-  CMD wget --quiet --output-document=/dev/null http://127.0.0.1:8080/health || exit 1
+  CMD wget --quiet --output-document=/dev/null http://127.0.0.1:3579/health || exit 1
 ENTRYPOINT ["/usr/local/bin/app"]
