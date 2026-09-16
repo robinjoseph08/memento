@@ -220,3 +220,53 @@ test("imports an album through a stopped task, browser closure, and API restart"
   );
   await completed.close();
 });
+
+test("ignores an Immich album and restores it from the ignored list", async ({
+  page,
+  immich,
+}) => {
+  await immich.online();
+  await page.goto("/setup");
+  await page.getByRole("button", { name: "Claim installation" }).click();
+  await finishOnboarding(page);
+  await page.goto("/curator/import?q=Practice+Album+01");
+  const source = page.getByRole("article").filter({
+    has: page.getByRole("heading", { name: "Practice Album 01", exact: true }),
+  });
+  await expect(source).toBeVisible();
+  await expect(page.getByRole("link", { name: /ignored album/ })).toBeHidden();
+
+  await source
+    .getByRole("button", { name: "Ignore Practice Album 01", exact: true })
+    .click();
+  await expect(source).toBeHidden();
+  await expect(
+    page.getByRole("heading", { name: "No matching albums", exact: true }),
+  ).toBeVisible();
+
+  await page
+    .getByRole("link", { name: "1 ignored album", exact: true })
+    .click();
+  await expect(page).toHaveURL(/\/curator\/import\/ignored$/);
+  await expect(
+    page.getByRole("heading", { name: "Ignored albums", exact: true }),
+  ).toBeVisible();
+  await expect(page.getByRole("article")).toHaveCount(1);
+  await page
+    .getByRole("button", { name: "Restore Practice Album 01", exact: true })
+    .click();
+  await expect(
+    page.getByRole("heading", { name: "No ignored albums", exact: true }),
+  ).toBeVisible();
+
+  await page
+    .getByRole("link", { name: "Import an album", exact: true })
+    .click();
+  await expect(page).toHaveURL(/\/curator\/import$/);
+  await expect(page.getByRole("link", { name: /ignored album/ })).toBeHidden();
+  await page
+    .getByRole("searchbox", { name: "Search Immich albums" })
+    .fill("Practice Album 01");
+  await page.getByRole("button", { name: "Search", exact: true }).click();
+  await expect(source).toBeVisible();
+});

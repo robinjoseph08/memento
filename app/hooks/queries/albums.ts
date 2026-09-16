@@ -20,6 +20,7 @@ import type {
   SaveRulesRequest,
   SetMomentCoverRequest,
   SourcePage,
+  SourceRequest,
   SplitMomentRequest,
   StructurePreview,
   SyncRequest,
@@ -366,17 +367,41 @@ export function useRetryAlbum(id: string) {
   });
 }
 
-export function useSources(search: string, page: number) {
+// Ignored lists the albums a Curator keeps off the import list instead of
+// the ones offered for import.
+export function useSources(search: string, page: number, ignored = false) {
   const scope = usePrivateScope();
   return useQuery({
-    queryKey: [...scope, "sources", search, page],
+    queryKey: [...scope, "sources", ignored, search, page],
     queryFn: ({ signal }) =>
       request<SourcePage>(
-        `/api/curator/sources?q=${encodeURIComponent(search)}&page=${page}`,
+        `/api/curator/sources?q=${encodeURIComponent(search)}&page=${page}${ignored ? "&ignored=true" : ""}`,
         { signal },
       ),
     retry: false,
   });
+}
+
+// Ignoring and restoring move an album between the two source lists, so both
+// refetch every sources page rather than patching one.
+function useSourceAction(action: "ignore" | "restore") {
+  const client = useQueryClient();
+  const scope = usePrivateScope();
+  return useMutation({
+    mutationKey: scope,
+    mutationFn: (body: SourceRequest) =>
+      request<void>(`/api/curator/sources/${action}`, { body }),
+    onSuccess: () =>
+      client.invalidateQueries({ queryKey: [...scope, "sources"] }),
+  });
+}
+
+export function useIgnoreSource() {
+  return useSourceAction("ignore");
+}
+
+export function useRestoreSource() {
+  return useSourceAction("restore");
 }
 
 // Checking is read-only apart from refreshing cached faces, so it caches

@@ -122,13 +122,61 @@ func TestSourceSearchPagesAndMarksImportedAlbums(t *testing.T) {
 	m := publishing.New(testdb.New(t), source, noQueue)
 	imported, err := m.StartImport(t.Context(), "other-25")
 	require.NoError(t, err)
-	page, err := m.ListSources(t.Context(), "trip", 2)
+	page, err := m.ListSources(t.Context(), "trip", 2, false)
 	require.NoError(t, err)
 	require.Equal(t, 26, page.Total)
 	require.Equal(t, 2, page.Pages)
 	require.Len(t, page.Albums, 2)
 	require.Equal(t, "Trip 25", page.Albums[1].Title)
 	require.Equal(t, imported.ID, page.Albums[1].AlbumID)
+}
+
+func TestIgnoredSourcesLeaveTheImportListUntilRestored(t *testing.T) {
+	t.Parallel()
+	source := fixture()
+	source.albums["recents"] = immich.Album{ID: "recents", Name: "Recents", Count: 900}
+	source.albums["raws"] = immich.Album{ID: "raws", Name: "RAWs", Count: 40}
+	m := publishing.New(testdb.New(t), source, noQueue)
+	require.NoError(t, m.IgnoreSource(t.Context(), "recents"))
+	require.NoError(t, m.IgnoreSource(t.Context(), "recents"))
+	require.NoError(t, m.IgnoreSource(t.Context(), "raws"))
+	// A stale row for an album Immich no longer has is invisible, not counted.
+	require.NoError(t, m.IgnoreSource(t.Context(), "gone"))
+	// Nor does an ignore reach an album already in Memento; it stays offered.
+	imported, err := m.StartImport(t.Context(), "source")
+	require.NoError(t, err)
+	require.NoError(t, m.IgnoreSource(t.Context(), "source"))
+
+	offered, err := m.ListSources(t.Context(), "", 1, false)
+	require.NoError(t, err)
+	require.Equal(t, []string{"source"}, sourceIDs(offered))
+	require.Equal(t, imported.ID, offered.Albums[0].AlbumID)
+	require.Equal(t, 2, offered.Ignored)
+
+	// The ignored count is the whole set even while a search narrows the page.
+	searched, err := m.ListSources(t.Context(), "raw", 1, true)
+	require.NoError(t, err)
+	require.Equal(t, []string{"raws"}, sourceIDs(searched))
+	require.Equal(t, 1, searched.Total)
+	require.Equal(t, 2, searched.Ignored)
+
+	require.NoError(t, m.RestoreSource(t.Context(), "recents"))
+	require.NoError(t, m.RestoreSource(t.Context(), "never-ignored"))
+	offered, err = m.ListSources(t.Context(), "", 1, false)
+	require.NoError(t, err)
+	require.Equal(t, []string{"recents", "source"}, sourceIDs(offered))
+	require.Equal(t, 1, offered.Ignored)
+	ignored, err := m.ListSources(t.Context(), "", 1, true)
+	require.NoError(t, err)
+	require.Equal(t, []string{"raws"}, sourceIDs(ignored))
+}
+
+func sourceIDs(page publishing.SourcePage) []string {
+	ids := []string{}
+	for _, album := range page.Albums {
+		ids = append(ids, album.ID)
+	}
+	return ids
 }
 
 func TestConcurrentImportsAndReplayKeepIdentities(t *testing.T) {

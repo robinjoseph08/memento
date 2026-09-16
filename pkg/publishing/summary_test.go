@@ -112,20 +112,16 @@ func TestSourcePagesOrderByNewestEndWithIDTiesAndUndatedLast(t *testing.T) {
 	source.albums["empty-a"] = immich.Album{ID: "empty-a", Name: "B empty"}
 	source.albums["empty-b"] = immich.Album{ID: "empty-b", Name: "A empty"}
 	m := publishing.New(testdb.New(t), source, noQueue)
-	first, err := m.ListSources(t.Context(), "", 1)
+	first, err := m.ListSources(t.Context(), "", 1, false)
 	require.NoError(t, err)
 	require.Equal(t, 28, first.Total)
 	require.Equal(t, 2, first.Pages)
 	require.Len(t, first.Albums, 24)
 	require.Equal(t, "source-00", first.Albums[0].ID)
 	require.Equal(t, "source-23", first.Albums[23].ID)
-	second, err := m.ListSources(t.Context(), "", 2)
+	second, err := m.ListSources(t.Context(), "", 2, false)
 	require.NoError(t, err)
-	ids := []string{}
-	for _, album := range second.Albums {
-		ids = append(ids, album.ID)
-	}
-	require.Equal(t, []string{"source-24", "older", "empty-a", "empty-b"}, ids)
+	require.Equal(t, []string{"source-24", "older", "empty-a", "empty-b"}, sourceIDs(second))
 }
 
 func TestAlbumTitleSearchIsTrimmedCaseInsensitiveAndLiteralWithoutImmich(t *testing.T) {

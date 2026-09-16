@@ -54,6 +54,7 @@ export const routes = [
                   { index: true, element: <DashboardPage /> },
                   { path: "albums", element: <CuratorAlbumsPage /> },
                   { path: "import", element: <ImportPage /> },
+                  { path: "import/ignored", element: <ImportPage ignored /> },
                   { path: "people", element: <PeoplePage /> },
                   { path: "people/:id", element: <PersonPage /> },
                   { path: "requests", element: <RequestsPage /> },
