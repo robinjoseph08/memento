@@ -158,6 +158,28 @@ func (m *Module) ExtractChapters(ctx context.Context, mediaItemID, checksum stri
 	if _, err := uuid.Parse(mediaItemID); err != nil || checksum == "" {
 		return nil
 	}
+	// Every failed attempt records its outcome, including one whose deadline
+	// ran out before the probe began, so a task never leaves the row quietly
+	// stuck behind a job that will not come back.
+	defer func() {
+		if returnErr == nil {
+			return
+		}
+		status, message := ChapterStatusQueued, chapterRetryMessage
+		if finalAttempt {
+			status, message = ChapterStatusFailed, chapterFailedMessage+failureReason(returnErr)
+		}
+		// A shutdown cancels the task and River resumes it, so the row stays
+		// quietly queued. A deadline is a real failure that follows the attempt.
+		if errorstack.IsContextCancellation(ctx, returnErr) && !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			status, message = ChapterStatusQueued, ""
+		}
+		recovery, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		if err := m.recordChapters(recovery, mediaItemID, checksum, status, message, nil); err != nil {
+			returnErr = errors.Join(returnErr, err)
+		}
+	}()
 	var row struct {
 		models.MediaChapterResult `bun:"embed:"`
 		SourceID                  string
@@ -178,25 +200,6 @@ func (m *Module) ExtractChapters(ctx context.Context, mediaItemID, checksum stri
 	if err := m.recordChapters(ctx, mediaItemID, checksum, ChapterStatusProcessing, "", nil); err != nil {
 		return err
 	}
-	defer func() {
-		if returnErr == nil {
-			return
-		}
-		status, message := ChapterStatusQueued, chapterRetryMessage
-		if finalAttempt {
-			status, message = ChapterStatusFailed, chapterFailedMessage+failureReason(returnErr)
-		}
-		// A shutdown cancels the task and River resumes it, so the row stays
-		// quietly queued. A deadline is a real failure that follows the attempt.
-		if errorstack.IsContextCancellation(ctx, returnErr) && !errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			status, message = ChapterStatusQueued, ""
-		}
-		recovery, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		defer cancel()
-		if err := m.recordChapters(recovery, mediaItemID, checksum, status, message, nil); err != nil {
-			returnErr = errors.Join(returnErr, err)
-		}
-	}()
 	probed, err := m.source.Chapters(ctx, row.SourceID)
 	if err != nil {
 		return err
