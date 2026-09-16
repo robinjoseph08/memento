@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-16
+
+- [Frontend] Ignore Immich albums on the import page and restore them from an ignored list (#65)
+- [Feature] Show email and video chapter checks on Settings (#64)
+- [Docs] Drop the 0.1.0 port upgrade note from the README (#63)
+- [Feature] Document deployment in one place, listen on 3579, and drop files_path (#62)
+
 ## [0.1.0] - 2026-09-16
 
 - [Fix] Record a chapter attempt's outcome even when its deadline hits early (#60)
