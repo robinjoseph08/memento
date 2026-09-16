@@ -3,6 +3,7 @@ import {
   ChevronRight,
   CircleCheck,
   FolderOpen,
+  Images,
   SearchX,
 } from "lucide-react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
@@ -174,7 +175,12 @@ function SourceCard({
             {sourceDates(source)}
           </p>
         )}
-        <p className="text-xs/5 text-muted">
+        <p className="flex items-start gap-1 text-xs/5 text-muted">
+          <Images
+            aria-hidden="true"
+            className="mt-[3px] size-3.5 shrink-0"
+            strokeWidth={1.5}
+          />
           {source.count} {source.count === 1 ? "item" : "items"}
         </p>
       </div>
