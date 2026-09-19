@@ -1,2 +1,4 @@
 pnpm-lock.yaml
 internal/webapp/dist/
+# The Mobile App is its own package with its own Prettier setup.
+mobile/

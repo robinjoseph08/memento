@@ -364,6 +364,7 @@ Sessionx.vim
 build/
 tmp/
 app/types/generated/*.ts
+mobile/src/types/generated/*.ts
 !internal/webapp/dist/
 internal/webapp/dist/*
 !internal/webapp/dist/.gitkeep

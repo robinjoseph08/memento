@@ -71,12 +71,26 @@ type fakeProcesses struct {
 	apiPort int
 	webPort int
 	mode    string
+	// whileRunning stands in for the time the development servers are up.
+	whileRunning    func()
+	installationURL string
+	mobileHost      string
 }
 
 func (p *fakeProcesses) Start(_ context.Context, _ Environment, mode string, apiPort, webPort int) error {
 	p.mode = mode
 	p.apiPort = apiPort
 	p.webPort = webPort
+	if p.whileRunning != nil {
+		p.whileRunning()
+	}
+	return nil
+}
+
+func (p *fakeProcesses) Mobile(_ context.Context, _ Environment, host, installationURL string) error {
+	p.mode = "mobile"
+	p.mobileHost = host
+	p.installationURL = installationURL
 	return nil
 }
 
@@ -332,6 +346,54 @@ func lastEnvironmentValue(values []string, key string) string {
 		}
 	}
 	return ""
+}
+
+func TestStartMobilePointsTheAppAtThisWorktreesWebServerOnTheNetwork(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	env := testEnvironment(root, root)
+	servers := &fakeProcesses{}
+	mobile := &fakeProcesses{}
+	app := testApp(env, &fakeDatabase{exists: map[string]bool{"memento": true}})
+	app.Ports = &fakePorts{ports: []int{3580, 5174}}
+	app.Processes = servers
+	// The mobile task runs in a second terminal while the servers are up.
+	servers.whileRunning = func() {
+		second := testApp(env, &fakeDatabase{})
+		second.Processes = mobile
+		second.LANAddress = func(context.Context) (string, error) { return "192.168.1.20", nil }
+		require.NoError(t, second.Run(context.Background(), []string{"start", "mobile"}))
+	}
+
+	require.NoError(t, app.Run(context.Background(), []string{"start"}))
+	assert.Equal(t, "mobile", mobile.mode)
+	assert.Equal(t, "192.168.1.20", mobile.mobileHost)
+	assert.Equal(t, "http://192.168.1.20:5174", mobile.installationURL)
+}
+
+func TestStartMobileNeedsTheDevelopmentServers(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	env := testEnvironment(root, root)
+	db := &fakeDatabase{}
+	app := testApp(env, db)
+	mobile := &fakeProcesses{}
+	app.Processes = mobile
+	app.LANAddress = func(context.Context) (string, error) { return "192.168.1.20", nil }
+
+	err := app.Run(context.Background(), []string{"start", "mobile"})
+	require.ErrorContains(t, err, "mise start")
+
+	// The servers run and stop again, and leave nothing behind to point at.
+	servers := testApp(env, &fakeDatabase{exists: map[string]bool{"memento": true}})
+	require.NoError(t, servers.Run(context.Background(), []string{"start"}))
+	err = app.Run(context.Background(), []string{"start", "mobile"})
+	require.ErrorContains(t, err, "mise start")
+
+	assert.Empty(t, mobile.mode)
+	assert.Empty(t, db.calls, "the mobile task talks to the web server, not PostgreSQL")
 }
 
 func testEnvironment(mainRoot, currentRoot string) Environment {

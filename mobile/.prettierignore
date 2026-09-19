@@ -1,0 +1,3 @@
+.expo/
+pnpm-lock.yaml
+src/types/generated/

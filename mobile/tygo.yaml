@@ -1,0 +1,19 @@
+# Payload types for the Mobile App, generated from the same Go structs as the
+# web's. Tygo keeps one output per package in a config, so the Mobile App has
+# its own. Run it from the repository root with `mise tygo`.
+#
+# Tygo includes whole files, so Curator-only types in a listed types.go come
+# along. Only the viewer payloads named in ADR 0013 are the app's to use.
+type_mappings:
+  time.Time: "string /* RFC3339 */"
+  time.Duration: "number /* nanoseconds */"
+
+packages:
+  - path: "github.com/robinjoseph08/memento/pkg/identity"
+    output_path: "mobile/src/types/generated/identity.ts"
+    include_files:
+      - "types.go"
+  - path: "github.com/robinjoseph08/memento/pkg/errcodes"
+    output_path: "mobile/src/types/generated/errors.ts"
+    include_files:
+      - "types.go"

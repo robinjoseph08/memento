@@ -49,6 +49,7 @@ export function useSignOut(everywhere = false) {
       client.setQueryData<Status>(statusKey, {
         claimed: true,
         auth_mode: data?.auth_mode ?? "google",
+        version: data?.version ?? "",
       });
     },
   });
@@ -66,6 +67,7 @@ export function useFakeSignIn() {
         claimed: true,
         person,
         auth_mode: "fake",
+        version: client.getQueryData<Status>(statusKey)?.version ?? "",
       });
     },
   });

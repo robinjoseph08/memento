@@ -1,0 +1,14 @@
+node_modules/
+
+# Expo
+.expo/
+dist/
+expo-env.d.ts
+
+# Native projects are generated. Expo Go is the dev client for now.
+/ios
+/android
+
+.env*.local
+*.tsbuildinfo
+.DS_Store

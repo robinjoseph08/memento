@@ -55,6 +55,10 @@ run = "go run ./cmd/dev start web"
 description = "Start API directly (no hot reload)"
 run = "go run ./cmd/dev start api"
 
+[tasks."start:mobile"]
+description = "Start the Mobile App for Expo Go, pointed at this worktree's running dev servers"
+run = "go run ./cmd/dev start mobile"
+
 [tasks."start:qa"]
 description = "Build and start an empty installation with controlled Immich"
 depends = ["build", "build:fixture"]
@@ -64,9 +68,9 @@ run = "./build/fixture/fixture"
 
 [tasks.tygo]
 description = "Generate TypeScript types from Go structs"
-run = "tygo generate"
-sources = ["tygo.yaml", "pkg/**/types.go", "pkg/**/config.go", "pkg/**/model.go", "pkg/models/*.go"]
-outputs = ["app/types/generated/**/*.ts"]
+run = ["tygo generate", "tygo generate --config mobile/tygo.yaml"]
+sources = ["tygo.yaml", "mobile/tygo.yaml", "pkg/**/types.go", "pkg/**/config.go", "pkg/**/model.go", "pkg/models/*.go"]
+outputs = ["app/types/generated/**/*.ts", "mobile/src/types/generated/**/*.ts"]
 
 # === Linting ===
 
@@ -89,6 +93,11 @@ run = "pnpm lint:eslint"
 [tasks."lint:prettier"]
 description = "Run Prettier check"
 run = "pnpm lint:prettier"
+
+[tasks."lint:mobile"]
+description = "Run ESLint, Prettier, and TypeScript type checking for the Mobile App"
+depends = ["tygo"]
+run = "pnpm --dir mobile lint"
 
 [tasks."lint:types"]
 description = "Run TypeScript type checking"
@@ -147,6 +156,11 @@ depends = ["tygo", "test:unit", "e2e:chromium"]
 description = "Run JS unit tests"
 run = "pnpm test:unit"
 
+[tasks."test:mobile"]
+description = "Run the Mobile App's Jest tests"
+depends = ["tygo"]
+run = "pnpm --dir mobile test"
+
 [tasks."test:e2e"]
 description = "Run E2E tests"
 run = "mkdir -p ./tmp && go run ./cmd/dev e2e"
@@ -171,7 +185,7 @@ run = "go tool cover -html=coverage.out"
 
 [tasks.check]
 description = "Run all validation checks and build the production application"
-depends = ["lint:go", "lint:js", "test:go", "test:js:fast"]
+depends = ["lint:go", "lint:js", "lint:mobile", "test:go", "test:js:fast", "test:mobile"]
 run = "mise build"
 
 [tasks."check:quiet"]
@@ -197,14 +211,14 @@ fi
 echo "Running checks..."
 tmpdir=$(mktemp -d)
 trap 'rm -rf "$tmpdir"' EXIT
-for step in lint:go test:go test:js:fast lint:js; do
+for step in lint:go test:go test:js:fast lint:js lint:mobile test:mobile; do
   echo 1 >"$tmpdir/$step.rc"
   touch "$tmpdir/$step.out"
   ( mise "$step" >"$tmpdir/$step.out" 2>&1; echo $? >"$tmpdir/$step.rc" ) &
 done
 wait
 failed=0
-for step in lint:go test:go test:js:fast lint:js; do
+for step in lint:go test:go test:js:fast lint:js lint:mobile test:mobile; do
   rc=$(cat "$tmpdir/$step.rc" 2>/dev/null || echo 1)
   if [ "$rc" -eq 0 ]; then
     printf '  \033[32mPASS\033[0m  %s\n' "$step"
@@ -277,6 +291,7 @@ description = "Install dependencies and bootstrap this worktree"
 run = '''
 mise install
 pnpm install --frozen-lockfile
+pnpm --dir mobile install --frozen-lockfile
 if [ "$(uname -s)" = "Linux" ]; then
   pnpm exec playwright install --with-deps chromium firefox webkit
 else
