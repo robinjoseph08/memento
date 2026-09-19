@@ -121,7 +121,7 @@ func verifyPublishing(ctx context.Context, db *bun.DB, module *publishing.Module
 	if err != nil {
 		return err
 	}
-	if err := verifyDownloads(ctx, module, alexHTTP, samHTTP, alex.ID, a.ID, uploaded); err != nil {
+	if err := verifyDownloads(ctx, module, alexHTTP, samHTTP, alex.ID, a, uploaded); err != nil {
 		return fmt.Errorf("original photo downloads: %w", err)
 	}
 	if _, err := verifyViewer(ctx, module, samHTTP, sam.ID, "", a.ID, 1, first.CoverEntryID); err != nil {
@@ -198,38 +198,47 @@ func verifyPublishing(ctx context.Context, db *bun.DB, module *publishing.Module
 // verifyDownloads streams every authorized original through the production
 // route and compares it byte for byte with the uploaded fixture file. The
 // same URLs must stay neutral for another Person and in preview.
-func verifyDownloads(ctx context.Context, module *publishing.Module, viewer, other http.Handler, actorID, albumID string, uploaded []fixture.Asset) error {
-	page, err := module.ViewEntries(ctx, actorID, "", albumID, "IMAGE", publishing.EntryPageRequest{})
+func verifyDownloads(ctx context.Context, module *publishing.Module, viewer, other http.Handler, actorID string, album publishing.AlbumDetail, uploaded []fixture.Asset) error {
+	page, err := module.ViewEntries(ctx, actorID, "", album.ID, "IMAGE", publishing.EntryPageRequest{})
 	if err != nil {
 		return err
 	}
 	if len(page.Entries) == 0 {
 		return fmt.Errorf("no authorized photos to download")
 	}
-	expected := make(map[string]int, len(uploaded))
+	uploadedByFilename := make(map[string]int, len(uploaded))
 	for index, asset := range uploaded {
-		data, err := fixture.JPEG(asset.Photo, index)
-		if err != nil {
-			return err
-		}
-		expected[string(data)] = index
+		uploadedByFilename[asset.Filename] = index
 	}
+	uploadedByEntryID := map[string]int{}
+	for _, moment := range album.Moments {
+		for _, entry := range moment.Entries {
+			index, ok := uploadedByFilename[entry.Filename]
+			if entry.Kind == "IMAGE" && ok {
+				uploadedByEntryID[entry.ID] = index
+			}
+		}
+	}
+	seen := map[string]bool{}
 	for _, entry := range page.Entries {
 		if entry.DownloadURL == "" {
 			return fmt.Errorf("authorized photo %s has no download URL", entry.ID)
+		}
+		index, ok := uploadedByEntryID[entry.ID]
+		if !ok || seen[entry.ID] {
+			return fmt.Errorf("authorized photo %s did not match one imported fixture entry", entry.ID)
+		}
+		seen[entry.ID] = true
+		want, err := fixture.JPEG(uploaded[index].Photo, index)
+		if err != nil {
+			return err
 		}
 		recorder := httptest.NewRecorder()
 		request := httptest.NewRequestWithContext(ctx, http.MethodGet, entry.DownloadURL, nil)
 		request.Header.Set("Range", "bytes=0-1")
 		viewer.ServeHTTP(recorder, request)
-		index, ok := expected[recorder.Body.String()]
-		if recorder.Code != http.StatusOK || !ok {
+		if recorder.Code != http.StatusOK || !bytes.Equal(recorder.Body.Bytes(), want) {
 			return fmt.Errorf("download of %s returned HTTP %d with unexpected bytes", entry.ID, recorder.Code)
-		}
-		delete(expected, recorder.Body.String())
-		want, err := fixture.JPEG(uploaded[index].Photo, index)
-		if err != nil {
-			return err
 		}
 		disposition, params, err := mime.ParseMediaType(recorder.Header().Get("Content-Disposition"))
 		captured := uploaded[index].CapturedAt
@@ -246,9 +255,6 @@ func verifyDownloads(ctx context.Context, module *publishing.Module, viewer, oth
 		if err := deniedMedia(ctx, other, entry.DownloadURL, http.StatusNotFound); err != nil {
 			return fmt.Errorf("download URL crossed Person identity: %w", err)
 		}
-	}
-	if len(expected) != 0 {
-		return fmt.Errorf("%d uploaded photos were not downloaded", len(expected))
 	}
 	return nil
 }
