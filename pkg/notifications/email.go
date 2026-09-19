@@ -128,8 +128,8 @@ func mediaKind(photos, videos int) string {
 // prepareUpdate re-validates a queued update email inside the claim
 // transaction, before any network activity. It returns a Curator-facing reason
 // to skip the email, or updates the record's destination and content to the
-// approved entries the Person can still see. Nothing here changes the in-app
-// notification or the announcement records.
+// approved entries the Person can still see. Nothing here changes the Update
+// Notification or the announcement records.
 func (m *Module) prepareUpdate(ctx context.Context, tx bun.Tx, row *models.MailDelivery, now time.Time) (string, error) {
 	var notification models.UpdateNotification
 	err := tx.NewSelect().Model(&notification).Where("delivery_id = ?", row.ID).Scan(ctx)
@@ -228,7 +228,7 @@ func (m *Module) UnsubscribeStatus(ctx context.Context, token string) (Unsubscri
 	return UnsubscribeStatus{DisplayName: person.DisplayName, Email: person.UpdateEmail, Subscribed: emailEligible(person)}, nil
 }
 
-// Unsubscribe switches off update email only. In-app notifications,
+// Unsubscribe switches off update email only. Update Notifications,
 // Invitations, and account-security email are unaffected, and the selected
 // destination stays so the Person can opt back in from their profile.
 func (m *Module) Unsubscribe(ctx context.Context, token string) (UnsubscribeStatus, error) {

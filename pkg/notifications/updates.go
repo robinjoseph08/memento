@@ -352,7 +352,7 @@ func (m *Module) resolvePerson(ctx context.Context, tx bun.Tx, row ApprovePerson
 	return outcome, nil
 }
 
-// createNotification stores the in-app summary and queues optional email in
+// createNotification stores the Update Notification and queues optional email in
 // the same transaction as the baseline change.
 func (m *Module) createNotification(ctx context.Context, tx bun.Tx, person models.Person, body payload, notification *models.UpdateNotification, outcome *PersonResult, now time.Time) error {
 	data, err := json.Marshal(body)

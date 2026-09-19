@@ -90,7 +90,7 @@ Nothing is shared until you approve it and grant album access.
 }
 
 // alertCurators emails every active Curator with a selected email once per
-// new Access Request. Missing SMTP is not an error: the in-app badge remains.
+// new Access Request. Missing SMTP is not an error: the Curator's badge remains.
 func (m *Module) alertCurators(ctx context.Context, tx bun.Tx, subject, body string) error {
 	if m.Mail == nil {
 		return nil
