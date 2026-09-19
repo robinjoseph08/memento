@@ -9,8 +9,9 @@ import { clock } from "./labels";
 // The lightbox stage for a video that is playing on a TV. The player gives
 // way to a remote control, so the video never plays in both places: a poster,
 // play and pause, and a seek bar that follows the TV. Dragging the bar moves
-// only the handle; the TV seeks once, on release. When the video ends, the
-// TV has nothing loaded and the button offers to play it again.
+// only the handle; the TV seeks once, on release. Once the TV
+// reports that the video it was playing is gone, the button offers to play
+// it again.
 export function CastRemote({
   entry,
   receiver,
@@ -55,7 +56,7 @@ export function CastRemote({
         <p className="text-sm">
           {ready ? `Playing on ${receiver}` : `Sending to ${receiver}`}
         </p>
-        {ready && !playback.loaded ? (
+        {ready && playback.ended ? (
           <Button
             aria-label="Play again"
             className="size-14 rounded-full p-0 text-white hover:text-white"

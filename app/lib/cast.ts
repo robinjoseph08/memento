@@ -55,8 +55,12 @@ export function castSnapshot() {
 // Playback on the receiver ticks every second, so it has a store of its own:
 // only the remote control repaints with it, not the whole lightbox.
 export type CastPlayback = {
-  // Whether the receiver still has media; false again once a video ends.
+  // Whether the receiver reports media. It starts false, so on its own it
+  // cannot tell "not yet" from "over".
   loaded: boolean;
+  // Whether media was loaded and then went away, which is how a video that
+  // played to its end looks. Never true just because nothing was reported.
+  ended: boolean;
   paused: boolean;
   currentTime: number;
   duration: number;
@@ -64,6 +68,7 @@ export type CastPlayback = {
 
 const stopped: CastPlayback = {
   loaded: false,
+  ended: false,
   paused: false,
   currentTime: 0,
   duration: 0,
@@ -87,6 +92,11 @@ export function subscribeCastPlayback(listener: () => void) {
 export function castPlayback() {
   return playback;
 }
+
+// The SDK and its remote player bind to the page once, before any session
+// exists. A hot update would run this module again beside a live session and
+// leave the remote player deaf, so an edit here reloads the page instead.
+if (import.meta.hot) import.meta.hot.accept(() => window.location.reload());
 
 let requested = false;
 
@@ -114,6 +124,10 @@ function watch() {
     const state = context.getCastState();
     const session = context.getCurrentSession();
     if (state !== cast.framework.CastState.CONNECTED || !session) {
+      if (playback !== stopped) {
+        playback = stopped;
+        for (const listener of playbackListeners) listener();
+      }
       publish({
         ...idle,
         available: state !== cast.framework.CastState.NO_DEVICES_AVAILABLE,
@@ -143,12 +157,14 @@ function watch() {
     () => {
       const next = {
         loaded: player.isMediaLoaded,
+        ended: !player.isMediaLoaded && (playback.loaded || playback.ended),
         paused: player.isPaused,
         currentTime: player.currentTime,
         duration: player.duration,
       };
       if (
         next.loaded === playback.loaded &&
+        next.ended === playback.ended &&
         next.paused === playback.paused &&
         next.currentTime === playback.currentTime &&
         next.duration === playback.duration
@@ -205,6 +221,10 @@ export async function showOnCast(item: CastItem) {
   media.metadata = metadata;
   media.customData = { entryID: item.id, title: item.title };
   await session.loadMedia(new chrome.cast.media.LoadRequest(media));
+  if (playback.ended) {
+    playback = { ...playback, ended: false };
+    for (const listener of playbackListeners) listener();
+  }
   if (snapshot.receiver)
     publish({
       ...snapshot,

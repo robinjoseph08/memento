@@ -392,4 +392,14 @@ it("offers Cast only with a receiver nearby, follows the lightbox on the TV, and
     "Showing Birthday party on Den TV",
   );
   expect(sdk.loaded).toHaveLength(5);
+  // Until the TV reports on the video, the remote claims nothing about it:
+  // silence is not the end of the video.
+  const joined = within(dialog).getByRole("group", {
+    name: "Playing on Den TV",
+  });
+  expect(within(joined).getByRole("button", { name: "Pause" })).toBeVisible();
+  expect(
+    within(joined).queryByRole("button", { name: "Play again" }),
+  ).not.toBeInTheDocument();
+  expect(within(joined).getByRole("slider", { name: "Seek" })).toBeDisabled();
 });
