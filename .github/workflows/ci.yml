@@ -24,6 +24,18 @@ jobs:
     with:
       full_matrix: ${{ inputs.pre_release == true }}
 
+  # Branch protection requires this job, not the matrix jobs above it, whose
+  # names change with every Immich release.
+  immich-result:
+    name: Official Immich result
+    needs: immich
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          RESULT: ${{ needs.immich.result }}
+        run: test "$RESULT" = "success"
+
   go:
     name: Go lint and tests
     runs-on: ubuntu-latest
