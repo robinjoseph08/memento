@@ -91,9 +91,10 @@ func (m *Module) EntryPlayback(ctx context.Context, id, version string) (EntryMe
 
 // EntryMedia is the imported source identity behind one Album Entry.
 type EntryMedia struct {
-	SourceID string
-	Filename string
-	Kind     string
+	SourceID   string
+	Filename   string
+	Kind       string
+	CapturedAt time.Time
 }
 
 func (m *Module) entryMedia(ctx context.Context, id, version, resource string) (EntryMedia, error) {
@@ -101,7 +102,7 @@ func (m *Module) entryMedia(ctx context.Context, id, version, resource string) (
 	if _, err := uuid.Parse(id); err != nil {
 		return item, errcodes.NotFound(resource)
 	}
-	err := m.db.NewSelect().TableExpr("album_entries AS entry").ColumnExpr("item.source_id, item.filename, item.kind").
+	err := m.db.NewSelect().TableExpr("album_entries AS entry").ColumnExpr("item.source_id, item.filename, item.kind, item.captured_at").
 		Join("JOIN albums AS album ON album.id = entry.album_id").Join("JOIN media_items AS item ON item.id = entry.media_item_id").
 		Where("entry.id = ? AND entry.removed_at IS NULL AND album.import_status = 'complete'", id).
 		Where("item.content_version = ? AND NOT item.offline AND NOT item.trashed", version).Scan(ctx, &item)

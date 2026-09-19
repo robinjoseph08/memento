@@ -125,7 +125,7 @@ test("videos play with titles, chapters, ranges, downloads, and recover a failed
   ).toHaveCount(2);
   // The tile opens everything about the video: title, chapters, and access.
   await moment
-    .getByRole("button", { name: "Edit birthday-party.webm", exact: true })
+    .getByRole("button", { name: "Edit birthday-party", exact: true })
     .click();
   const details = page.getByRole("dialog", { name: "Video details" });
   await expect(
@@ -149,7 +149,7 @@ test("videos play with titles, chapters, ranges, downloads, and recover a failed
 
   // Retry the recoverable failure without blocking anything else.
   await moment
-    .getByRole("button", { name: "Edit coast-retry.webm", exact: true })
+    .getByRole("button", { name: "Edit coast-retry", exact: true })
     .click();
   await expect(details.getByRole("alert")).toContainText(
     "Chapter extraction failed",
@@ -369,7 +369,7 @@ test("videos play with titles, chapters, ranges, downloads, and recover a failed
       .getByRole("link", { name: /Wednesday, May 20, 2026/ })
       .click();
     await moment
-      .getByRole("button", { name: "Edit birthday-party.webm", exact: true })
+      .getByRole("button", { name: "Edit Birthday party", exact: true })
       .click();
     await expect(titleField).toHaveValue("Birthday party");
     await titleField.fill("");

@@ -1,4 +1,7 @@
+import { captureClock, filenameTitle } from "../../lib/media-labels";
 import type { Entry, Moment } from "../../types/generated/publishing";
+
+export { captureClock, filenameTitle };
 
 export function countLabel(count: number, singular: string, plural: string) {
   return `${count} ${count === 1 ? singular : plural}`;
@@ -33,14 +36,6 @@ export function momentHeading(moment: Moment) {
   };
 }
 
-// captureClock is the 12-hour clock with AM or PM on the same line that
-// every capture-time overlay and review row shows.
-export function captureClock(capturedAt: string) {
-  const hour = Number(capturedAt.slice(11, 13));
-  const clock = `${hour % 12 || 12}:${capturedAt.slice(14, 16)}`;
-  return `${clock} ${hour < 12 ? "AM" : "PM"}`;
-}
-
 export function shortDay(day: string) {
   const date = new Date(`${day}T00:00:00Z`);
   if (Number.isNaN(date.getTime())) return "";
@@ -53,10 +48,4 @@ export function shortDay(day: string) {
 
 export function momentCover(moment: Moment) {
   return moment.entries.find((entry) => entry.id === moment.cover_entry_id);
-}
-
-// The title a viewer sees when no Memento video title is set: the filename
-// without its extension.
-export function filenameTitle(filename: string) {
-  return filename.replace(/\.[^.]+$/, "");
 }

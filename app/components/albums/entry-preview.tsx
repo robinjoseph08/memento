@@ -9,12 +9,16 @@ import { captureClock } from "./moment-labels";
 export function EntryPreview({
   entry,
   cover,
+  label,
+  actionLabel,
   selected = false,
   onSelect,
   onOpen,
 }: {
   entry: Entry;
   cover: boolean;
+  label: string;
+  actionLabel: string;
   selected?: boolean;
   onSelect?: (selected: boolean) => void;
   onOpen?: () => void;
@@ -25,7 +29,7 @@ export function EntryPreview({
   const narrow = width < 96;
   const image = (
     <AlbumImage
-      alt={entry.filename}
+      alt={label}
       className={cn(
         "h-auto w-full rounded-sm",
         selected && "outline-2 outline-offset-2 outline-primary",
@@ -46,7 +50,7 @@ export function EntryPreview({
         {onSelect ? (
           <label className="block cursor-pointer touch-manipulation">
             <input
-              aria-label={`Select ${entry.filename}`}
+              aria-label={`Select ${actionLabel}`}
               checked={selected}
               className="peer absolute top-1 left-1 z-10 size-5 cursor-pointer appearance-none rounded-sm border border-white/70 bg-black/65 checked:border-primary checked:bg-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
               onChange={(event) => onSelect(event.target.checked)}
@@ -61,7 +65,7 @@ export function EntryPreview({
           </label>
         ) : onOpen ? (
           <button
-            aria-label={`Edit ${entry.filename}`}
+            aria-label={`Edit ${actionLabel}`}
             className="block w-full cursor-pointer rounded-sm hover:bg-surface focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
             onClick={onOpen}
             type="button"

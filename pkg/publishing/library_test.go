@@ -41,8 +41,8 @@ func TestLibraryOrdersDaysAndRatiosNewestFirst(t *testing.T) {
 	photos, err := module.ViewLibraryEntries(t.Context(), curator.ID.String(), "IMAGE", publishing.EntryPageRequest{})
 	require.NoError(t, err)
 	require.Len(t, photos.Entries, 3)
-	for i, title := range []string{"second", "first", "last"} {
-		require.Equal(t, title, photos.Entries[i].Title)
+	for _, photo := range photos.Entries {
+		require.Empty(t, photo.Title, "photos have no presentation title")
 	}
 	bounded, err := module.ViewLibraryEntries(t.Context(), curator.ID.String(), "IMAGE", publishing.EntryPageRequest{From: "2026-07-05", To: "2026-07-06"})
 	require.NoError(t, err)
@@ -95,12 +95,19 @@ func TestLibraryDeduplicatesOnlyAccessibleEntries(t *testing.T) {
 		page, err := module.ViewLibraryEntries(t.Context(), person.ID.String(), "IMAGE", publishing.EntryPageRequest{})
 		require.NoError(t, err)
 		require.Len(t, page.Entries, len(expected))
+		expectedIDs := make([]string, 0, len(expected))
+		for _, id := range expected {
+			expectedIDs = append(expectedIDs, id)
+		}
+		actualIDs := make([]string, 0, len(page.Entries))
 		for _, entry := range page.Entries {
-			require.Equal(t, expected[entry.Title+".jpg"], entry.ID)
+			require.Empty(t, entry.Title)
+			actualIDs = append(actualIDs, entry.ID)
 			require.Contains(t, entry.ThumbnailURL, "/viewer/"+person.ID.String()+"/entries/"+entry.ID+"/")
 			require.NotEmpty(t, entry.DownloadURL)
 			require.NoError(t, module.AuthorizeViewerEntry(t.Context(), person.ID.String(), "", entry.ID))
 		}
+		require.ElementsMatch(t, expectedIDs, actualIDs)
 		if len(expected) == 0 {
 			require.NotNil(t, summary.Days)
 			require.Empty(t, summary.Days)

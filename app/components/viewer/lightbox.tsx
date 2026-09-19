@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate, type To } from "react-router-dom";
 
 import { useCast } from "../../hooks/use-cast";
+import { mediaLabel } from "../../lib/media-labels";
 import { cn } from "../../lib/utils";
 import type { ViewerEntry } from "../../types/generated/publishing";
 import { Button } from "../ui/button";
@@ -373,7 +374,7 @@ export function Lightbox({
                   ) : (
                     <PhotoStage
                       actionsTarget={stageActions}
-                      alt={entry.title || "Photo"}
+                      alt={mediaLabel(entry)}
                       key={entry.available ? entry.preview_url : ""}
                       onStep={step}
                       src={entry.available ? entry.preview_url : ""}

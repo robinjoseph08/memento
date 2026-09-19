@@ -9,6 +9,7 @@ import {
 } from "../../hooks/queries/albums";
 import { useUnsavedChanges } from "../../hooks/use-unsaved-changes";
 import { fieldErrors } from "../../lib/http";
+import { disambiguatePhotoLabels, mediaLabel } from "../../lib/media-labels";
 import { cn, withParams } from "../../lib/utils";
 import type {
   AlbumDetail,
@@ -61,6 +62,8 @@ export function MomentPane({
   const entries =
     kind === "photos" ? photos : kind === "videos" ? videos : moment.entries;
   const visible = all ? entries : entries.slice(0, initialMediaCount);
+  const visibleLabels = visible.map(mediaLabel);
+  const visibleActionLabels = disambiguatePhotoLabels(visibleLabels);
   const tabs = [
     { key: "all", label: "All", count: moment.entries.length },
     { key: "photos", label: "Photos", count: photos.length },
@@ -317,11 +320,13 @@ export function MomentPane({
           aria-label="Moment media"
           className="mt-3 flex flex-wrap items-start gap-x-2 gap-y-4"
         >
-          {visible.map((entry) => (
+          {visible.map((entry, index) => (
             <EntryPreview
+              actionLabel={visibleActionLabels[index]}
               cover={entry.id === moment.cover_entry_id}
               entry={entry}
               key={entry.id}
+              label={visibleLabels[index]}
               onOpen={() => editEntry(entry.id)}
               onSelect={
                 selecting
@@ -502,7 +507,7 @@ function CoverDialog({
         </DialogDescription>
         {entry && (
           <AlbumImage
-            alt={entry.filename}
+            alt={mediaLabel(entry)}
             className="mt-4 h-auto max-h-48 w-auto max-w-full"
             fallback="No preview available"
             src={entry.available ? entry.thumbnail_url : ""}

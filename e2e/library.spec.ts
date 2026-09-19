@@ -100,11 +100,24 @@ test("a viewer browses photos and videos across albums, newest first without dup
     ).toHaveText(["Albums", "Library"]);
     const photos = member.getByRole("link", { name: /^Open photo/ });
     await expect(photos).toHaveCount(5);
-    await expect(photos.first()).toHaveAccessibleName("Open photo coast-07");
-    await expect(photos.last()).toHaveAccessibleName("Open photo coast-01");
+    await expect(photos.first()).toHaveAccessibleName(
+      "Open photo taken June 4, 2026 at 12:00 PM",
+    );
+    await expect(photos.last()).toHaveAccessibleName(
+      "Open photo taken June 1, 2026 at 11:59 PM",
+    );
     await expect(
-      member.getByRole("link", { name: "Open photo coast-02", exact: true }),
-    ).toHaveCount(1);
+      member.getByRole("link", {
+        name: "Open photo 1 taken June 2, 2026 at 12:00 AM",
+        exact: true,
+      }),
+    ).toBeVisible();
+    await expect(
+      member.getByRole("link", {
+        name: "Open photo 2 taken June 2, 2026 at 12:00 AM",
+        exact: true,
+      }),
+    ).toBeVisible();
     await expect(member.getByRole("heading", { level: 2 }).first()).toHaveText(
       "Thursday, June 4, 2026 1 photo",
     );
@@ -112,15 +125,24 @@ test("a viewer browses photos and videos across albums, newest first without dup
     await photos.first().click();
     const dialog = member.getByRole("dialog");
     await expect(
-      dialog.getByRole("img", { name: "coast-07", exact: true }),
+      dialog.getByRole("img", {
+        name: "Photo taken June 4, 2026 at 12:00 PM",
+        exact: true,
+      }),
     ).toBeVisible();
     await member.reload();
     await expect(
-      dialog.getByRole("img", { name: "coast-07", exact: true }),
+      dialog.getByRole("img", {
+        name: "Photo taken June 4, 2026 at 12:00 PM",
+        exact: true,
+      }),
     ).toBeVisible();
     await member.keyboard.press("ArrowRight");
     await expect(
-      dialog.getByRole("img", { name: "coast-05", exact: true }),
+      dialog.getByRole("img", {
+        name: "Photo taken June 3, 2026 at 10:00 AM",
+        exact: true,
+      }),
     ).toBeVisible();
     await member.keyboard.press("Escape");
     await expect(dialog).toHaveCount(0);
@@ -170,8 +192,12 @@ test("a viewer browses photos and videos across albums, newest first without dup
       .click();
     await expect(member).toHaveURL(/\/albums$/);
     await member.goto(`/albums/${albums[0].id}/photos`);
-    await expect(photos.first()).toHaveAccessibleName("Open photo coast-01");
-    await expect(photos.last()).toHaveAccessibleName("Open photo coast-05");
+    await expect(photos.first()).toHaveAccessibleName(
+      "Open photo taken June 1, 2026 at 11:59 PM",
+    );
+    await expect(photos.last()).toHaveAccessibleName(
+      "Open photo taken June 3, 2026 at 10:00 AM",
+    );
   } finally {
     await memberContext.close();
   }

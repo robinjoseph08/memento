@@ -29,6 +29,13 @@ func presentationTitle(filename string, videoTitle *string) string {
 	return strings.TrimSuffix(filename, filepath.Ext(filename))
 }
 
+func explicitVideoTitle(kind string, videoTitle *string) string {
+	if kind == "VIDEO" && videoTitle != nil {
+		return *videoTitle
+	}
+	return ""
+}
+
 // projectChapters copies stored chapters into the public shape, never nil.
 func projectChapters(stored []models.Chapter) []Chapter {
 	chapters := make([]Chapter, 0, len(stored))
@@ -348,7 +355,11 @@ func (m *Module) viewEntries(ctx context.Context, actorID, previewPersonID, albu
 				download = viewer.downloadURL(row.ID, row.Version)
 				playback = viewer.playbackURL(row.ID, row.Kind, row.Version)
 			}
-			entry := ViewerEntry{ID: row.ID, Kind: row.Kind, Title: presentationTitle(row.Filename, row.VideoTitle), CapturedAt: row.CapturedAt.Format("2006-01-02T15:04:05.999999999"), Available: row.Available,
+			title := ""
+			if row.Kind == "VIDEO" {
+				title = presentationTitle(row.Filename, row.VideoTitle)
+			}
+			entry := ViewerEntry{ID: row.ID, Kind: row.Kind, Title: title, CapturedAt: row.CapturedAt.Format("2006-01-02T15:04:05.999999999"), Available: row.Available,
 				ThumbnailURL: thumbnail, PreviewURL: preview, DownloadURL: download, PlaybackURL: playback, Width: row.Width, Height: row.Height, Chapters: []Chapter{}}
 			if row.Kind == "VIDEO" {
 				entry.ChapterStatus = media.PublicChapterStatus(row.ChapterStatus)

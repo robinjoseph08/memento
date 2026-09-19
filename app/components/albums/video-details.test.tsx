@@ -21,7 +21,7 @@ const video: Entry = {
   id: "video",
   decisions: {},
   media_id: "m-video",
-  filename: "Waves at dusk.mp4",
+  filename: "Waves at dusk",
   kind: "VIDEO",
   captured_at: "2026-07-01T13:00:00",
   available: true,
@@ -147,14 +147,14 @@ it("edits a video title with the filename as fallback and retries failed chapter
   ).toBeVisible();
   // The tile opens everything about the video: title, chapters, and access.
   await user.click(
-    within(moment).getByRole("button", { name: "Edit Waves at dusk.mp4" }),
+    within(moment).getByRole("button", { name: "Edit Waves at dusk" }),
   );
   const dialog = await screen.findByRole("dialog", { name: "Video details" });
   expect(
     within(dialog).getByRole("form", { name: "Item access" }),
   ).toBeVisible();
   const player =
-    within(dialog).getByLabelText<HTMLVideoElement>("Waves at dusk.mp4");
+    within(dialog).getByLabelText<HTMLVideoElement>("Waves at dusk");
   expect(player.tagName).toBe("VIDEO");
   expect(player).toHaveAttribute("src", video.playback_url);
   expect(player).toHaveAttribute("controls");
@@ -195,7 +195,7 @@ it("edits a video title with the filename as fallback and retries failed chapter
   ).not.toBeInTheDocument();
   // Reopening shows the saved title; clearing it sends an empty title.
   await user.click(
-    within(moment).getByRole("button", { name: "Edit Waves at dusk.mp4" }),
+    within(moment).getByRole("button", { name: "Edit Evening waves" }),
   );
   const reopened = await screen.findByRole("dialog", { name: "Video details" });
   const saved = within(reopened).getByRole("textbox", { name: "Video title" });
@@ -281,10 +281,12 @@ it("narrows a Moment to its photos or videos from the kind tabs", async () => {
     "videos",
   );
   expect(
-    within(moment).getByRole("img", { name: "Waves at dusk.mp4" }),
+    within(moment).getByRole("img", { name: "Waves at dusk" }),
   ).toBeVisible();
   expect(
-    within(moment).queryByRole("img", { name: "Beach.jpg" }),
+    within(moment).queryByRole("img", {
+      name: "Photo taken July 1, 2026 at 1:00 PM",
+    }),
   ).not.toBeInTheDocument();
   expect(within(moment).getByText("1 of 1 item shown")).toBeVisible();
   // Select all reaches only the videos on screen.
@@ -297,15 +299,24 @@ it("narrows a Moment to its photos or videos from the kind tabs", async () => {
     within(moment).getByRole("button", { name: "Video details" }),
   ).toBeVisible();
   await user.click(within(tabs).getByRole("link", { name: "Photos 1" }));
-  expect(within(moment).getByRole("img", { name: "Beach.jpg" })).toBeVisible();
   expect(
-    within(moment).queryByRole("img", { name: "Waves at dusk.mp4" }),
+    within(moment).getByRole("img", {
+      name: "Photo taken July 1, 2026 at 1:00 PM",
+    }),
+  ).toBeVisible();
+  expect(
+    within(moment).queryByRole("img", { name: "Waves at dusk" }),
   ).not.toBeInTheDocument();
   await user.click(within(tabs).getByRole("link", { name: "All 2" }));
   expect(new URLSearchParams(window.location.search).get("kind")).toBeNull();
   expect(
-    within(moment).getAllByRole("img", { name: /\.(jpg|mp4)$/ }),
-  ).toHaveLength(2);
+    within(moment).getByRole("img", {
+      name: "Photo taken July 1, 2026 at 1:00 PM",
+    }),
+  ).toBeVisible();
+  expect(
+    within(moment).getByRole("img", { name: "Waves at dusk" }),
+  ).toBeVisible();
 });
 
 it("keeps the dialog open after saving access while a title edit is unsaved", async () => {

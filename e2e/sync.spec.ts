@@ -164,7 +164,7 @@ test("Curator reviews Immich changes, cancels, places additions, replaces a cove
     await check.click();
     await expect(
       dialog.getByRole("region", { name: "New in Immich" }),
-    ).toContainText("birthday-party.webm");
+    ).toContainText("birthday-party");
     await dialog.getByRole("button", { name: "Cancel" }).click();
     await expect(dialog).toHaveCount(0);
     expect(await curatorEntries(page, albumID)).toEqual(before);
@@ -176,15 +176,17 @@ test("Curator reviews Immich changes, cancels, places additions, replaces a cove
 
     await check.click();
     const additions = dialog.getByRole("region", { name: "New in Immich" });
-    await expect(additions).toContainText("birthday-party.webm");
-    await expect(additions).toContainText("workbench-001.jpg");
+    await expect(additions).toContainText("birthday-party");
+    await expect(additions).toContainText(
+      "Photo taken June 4, 2026 at 12:00 PM",
+    );
     await expect(
       additions.getByRole("combobox", {
-        name: "Destination for birthday-party.webm",
+        name: "Destination for birthday-party",
       }),
     ).toHaveText("New Moment: May 20, 2026");
     const photoDestination = additions.getByRole("combobox", {
-      name: "Destination for workbench-001.jpg",
+      name: "Destination for Photo taken June 4, 2026 at 12:00 PM",
     });
     await expect(photoDestination).toHaveText("New Moment: June 4, 2026");
     // The Curator overrides one suggestion; the review recomputes for it.
@@ -194,10 +196,12 @@ test("Curator reviews Immich changes, cancels, places additions, replaces a cove
       .click();
     await expect(photoDestination).toHaveText("June 3, 2026");
     const removals = dialog.getByRole("region", { name: "Removed in Immich" });
-    await expect(removals).toContainText("coast-03.jpg");
+    await expect(removals).toContainText(
+      "Photo taken June 2, 2026 at 12:00 AM",
+    );
     await expect(removals).toContainText("was the cover");
     const changes = dialog.getByRole("region", { name: "Changed in Immich" });
-    await expect(changes).toContainText("coast-05.jpg");
+    await expect(changes).toContainText("Photo taken June 3, 2026 at 10:00 AM");
     await expect(changes).toContainText("new file version");
     await expect(
       dialog.getByRole("region", { name: "Description change" }),
@@ -216,12 +220,12 @@ test("Curator reviews Immich changes, cancels, places additions, replaces a cove
     // The radio is visually hidden behind its thumbnail label.
     await removals
       .locator(
-        'label:has(input[aria-label="Use coast-02.jpg as the cover of June 2, 2026"])',
+        'label:has(input[aria-label="Use Photo taken June 2, 2026 at 12:00 AM as the cover of June 2, 2026"])',
       )
       .click();
     await expect(
       removals.getByRole("radio", {
-        name: "Use coast-02.jpg as the cover of June 2, 2026",
+        name: "Use Photo taken June 2, 2026 at 12:00 AM as the cover of June 2, 2026",
       }),
     ).toBeChecked();
     await expect(apply).toBeEnabled();
@@ -306,7 +310,9 @@ test("Curator reviews Immich changes, cancels, places additions, replaces a cove
       .getByRole("button", { name: "Select", exact: true })
       .click();
     await juneFirst
-      .getByRole("checkbox", { name: "Select coast-01.jpg" })
+      .getByRole("checkbox", {
+        name: "Select Photo taken June 1, 2026 at 11:59 PM",
+      })
       .check();
     await juneFirst.getByRole("button", { name: "Keep out" }).click();
     const keepOut = page.getByRole("dialog", {
@@ -334,10 +340,12 @@ test("Curator reviews Immich changes, cancels, places additions, replaces a cove
     // Add back returns it, with its identity, into a new Moment for its day.
     await excludedLink.click();
     const excludedList = page.getByRole("list", { name: "Excluded media" });
-    await expect(excludedList).toContainText("coast-01.jpg");
+    await expect(excludedList).toContainText(
+      "Photo taken June 1, 2026 at 11:59 PM",
+    );
     await excludedList.getByRole("button", { name: "Add back" }).click();
     const addBack = page.getByRole("dialog", {
-      name: "Add coast-01.jpg back?",
+      name: "Add this photo back?",
     });
     await expect(addBack.getByRole("combobox", { name: "Moment" })).toHaveText(
       "New Moment: Jun 1",

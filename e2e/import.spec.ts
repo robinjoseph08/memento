@@ -111,7 +111,7 @@ test("imports an album through a stopped task, browser closure, and API restart"
     const previews = completed
       .getByRole("region", { name: label, exact: true })
       .getByRole("list", { name: "Moment media" })
-      .getByRole("img", { name: /\.(jpg|mp4)$/ });
+      .locator("img");
     await expect(previews).toHaveCount(count);
     for (const preview of await previews.all()) {
       await preview.scrollIntoViewIfNeeded();
@@ -132,18 +132,26 @@ test("imports an album through a stopped task, browser closure, and API restart"
   const tiedPhotos = completed
     .getByRole("region", { name: "Tuesday, June 2, 2026" })
     .getByRole("list", { name: "Moment media" })
-    .getByRole("img", { name: /\.jpg$/ });
+    .getByRole("img", {
+      name: "Photo taken June 2, 2026 at 12:00 AM",
+      exact: true,
+    });
   await expect(tiedPhotos).toHaveCount(2);
   expect(
     await tiedPhotos.evaluateAll((images) =>
       images.map((image) => image.getAttribute("alt")),
     ),
-  ).toEqual(["coast-02.jpg", "coast-03.jpg"]);
+  ).toEqual([
+    "Photo taken June 2, 2026 at 12:00 AM",
+    "Photo taken June 2, 2026 at 12:00 AM",
+  ]);
   const selectedCover = completed
     .getByRole("listitem")
     .filter({ has: completed.getByText("Cover", { exact: true }) });
   await expect(
-    selectedCover.getByRole("img", { name: "coast-03.jpg" }),
+    selectedCover.getByRole("img", {
+      name: "Photo taken June 2, 2026 at 12:00 AM",
+    }),
   ).toBeVisible();
 
   await completed

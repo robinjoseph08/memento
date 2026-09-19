@@ -91,6 +91,7 @@ const excludedAlbum: AlbumDetail = {
       id: "beach",
       filename: "Beach.jpg",
       kind: "IMAGE",
+      title: "",
       captured_at: "2026-07-01T12:00:00",
       thumbnail_url: "/api/media/sources/assets/beach/thumbnail",
       available: true,
@@ -184,7 +185,9 @@ it("keeps selected media out after a visibility review and lists it as excluded"
   const momentPane = await screen.findByRole("region", { name: "First day" });
   await user.click(within(momentPane).getByRole("button", { name: "Select" }));
   await user.click(
-    within(momentPane).getByRole("checkbox", { name: "Select Beach.jpg" }),
+    within(momentPane).getByRole("checkbox", {
+      name: "Select Photo taken July 1, 2026 at 12:00 PM",
+    }),
   );
   await user.click(
     within(momentPane).getByRole("button", { name: "Keep out" }),
@@ -214,7 +217,9 @@ it("keeps selected media out after a visibility review and lists it as excluded"
   expect(excludedLink).toHaveTextContent("1");
   await user.click(excludedLink);
   const list = await screen.findByRole("list", { name: "Excluded media" });
-  expect(within(list).getByText("Beach.jpg")).toBeVisible();
+  expect(
+    within(list).getByText("Photo taken July 1, 2026 at 12:00 PM"),
+  ).toBeVisible();
 });
 
 it("adds excluded media back into a chosen Moment after a review", async () => {
@@ -250,7 +255,7 @@ it("adds excluded media back into a chosen Moment after a review", async () => {
   const list = await screen.findByRole("list", { name: "Excluded media" });
   await user.click(within(list).getByRole("button", { name: "Add back" }));
   const dialog = await screen.findByRole("dialog", {
-    name: "Add Beach.jpg back?",
+    name: "Add this photo back?",
   });
   const destination = within(dialog).getByRole("combobox", { name: "Moment" });
   await waitFor(() => expect(destination).toHaveTextContent("First day"));

@@ -78,7 +78,7 @@ func (h *viewerHandlers) entryOriginal(c *echo.Context) error {
 	header := c.Response().Header()
 	header.Set("Cache-Control", "private, no-store")
 	header.Set("X-Content-Type-Options", "nosniff")
-	header.Set("Content-Disposition", attachment(item.Filename))
+	header.Set("Content-Disposition", attachment(downloadFilename(item)))
 	// HEAD confirms the photo is still downloadable without asking Immich to
 	// start sending the file.
 	if c.Request().Method == http.MethodHead {
@@ -98,8 +98,29 @@ func (h *viewerHandlers) entryOriginal(c *echo.Context) error {
 	return errorstack.CaptureContext(c.Request().Context(), c.Stream(http.StatusOK, original.ContentType, original.Body))
 }
 
-// attachment names the download after the imported filename, keeping only
-// its base name so an odd source path cannot steer the browser.
+var photoDownloadExtensions = map[string]bool{
+	".arw": true, ".avif": true, ".bmp": true, ".cr2": true, ".cr3": true,
+	".dng": true, ".gif": true, ".heic": true, ".heif": true, ".jpeg": true,
+	".jpg": true, ".nef": true, ".orf": true, ".pef": true, ".png": true,
+	".raf": true, ".rw2": true, ".tif": true, ".tiff": true, ".webp": true,
+}
+
+// downloadFilename keeps video names but gives photos a capture-time name so
+// the browser never exposes a camera filename.
+func downloadFilename(item EntryMedia) string {
+	if item.Kind != "IMAGE" {
+		return item.Filename
+	}
+	name := path.Base(strings.ReplaceAll(item.Filename, "\\", "/"))
+	extension := strings.ToLower(path.Ext(name))
+	if !photoDownloadExtensions[extension] {
+		extension = ""
+	}
+	return "photo-" + item.CapturedAt.Format("2006-01-02-150405") + extension
+}
+
+// attachment keeps only the base name so an odd source path cannot steer the
+// browser.
 func attachment(filename string) string {
 	name := path.Base(strings.ReplaceAll(filename, "\\", "/"))
 	if name == "." || name == ".." || name == "/" || name == "" {

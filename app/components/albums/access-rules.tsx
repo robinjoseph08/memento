@@ -8,6 +8,7 @@ import {
 import { useReturnFocus } from "../../hooks/use-return-focus";
 import { useUnsavedChanges } from "../../hooks/use-unsaved-changes";
 import { fieldErrors } from "../../lib/http";
+import { mediaLabel } from "../../lib/media-labels";
 import type {
   AccessPerson,
   AlbumDetail,
@@ -60,6 +61,7 @@ export function RulesDialog({
     draft[person.person_id] ?? saved(person);
   const changed = people.filter((person) => value(person) !== saved(person));
   const video = entry?.kind === "VIDEO";
+  const entryLabel = entry ? mediaLabel(entry) : "";
   const [videoDirty, setVideoDirty] = useState(false);
   const dirty = save.isPending || changed.length > 0 || videoDirty;
   useUnsavedChanges(dirty, true);
@@ -133,16 +135,16 @@ export function RulesDialog({
           </DialogTitle>
           <DialogDescription className="mt-3 text-sm text-muted">
             {video
-              ? `${entry.filename}. The title shows in every album with this video. Access decisions here override its Moment and the Album.`
+              ? `${entryLabel}. The title shows in every album with this video. Access decisions here override its Moment and the Album.`
               : entry
-                ? `Decisions for ${entry.filename} override its Moment and the Album.`
+                ? "Decisions for this photo override its Moment and the Album."
                 : `Decisions for ${moment.label} override Album access. Item exceptions still win.`}
           </DialogDescription>
           {entry &&
             (video && entry.playback_url ? (
               // A Curator can watch the video here before choosing its title.
               <video
-                aria-label={entry.filename}
+                aria-label={entryLabel}
                 className="mt-4 max-h-64 w-full rounded-sm bg-black"
                 controls
                 playsInline
@@ -151,7 +153,7 @@ export function RulesDialog({
               />
             ) : (
               <AlbumImage
-                alt={entry.filename}
+                alt={entryLabel}
                 className="mt-4 h-auto max-h-40 w-auto max-w-full"
                 fallback="No preview available"
                 src={entry.available ? entry.thumbnail_url : ""}

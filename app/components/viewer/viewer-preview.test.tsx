@@ -163,7 +163,14 @@ it("switches the URL identity without retaining another person's cover, counts, 
       return Response.json({ entries: [photo], next_cursor: "jamie-next" });
     if (path.endsWith("/jamie/photos?cursor=jamie-next"))
       return Response.json({
-        entries: [{ ...photo, id: "two", title: "Jamie's second photo" }],
+        entries: [
+          {
+            ...photo,
+            id: "two",
+            title: "Jamie's second photo",
+            captured_at: "2025-06-14T13:00:00Z",
+          },
+        ],
         next_cursor: "",
       });
     if (path === "/api/curator/albums/lake/preview/alex") return alex;
@@ -173,6 +180,7 @@ it("switches the URL identity without retaining another person's cover, counts, 
           {
             ...photo,
             title: "Alex's photo",
+            captured_at: "2025-06-14T14:00:00Z",
             preview_url: "/preview/alex/one",
           },
         ],
@@ -187,7 +195,12 @@ it("switches the URL identity without retaining another person's cover, counts, 
     if (path === "/api/albums/lake/photos")
       return Response.json({
         entries: [
-          { ...photo, title: "Member photo", preview_url: "/member/one" },
+          {
+            ...photo,
+            title: "Member photo",
+            captured_at: "2025-06-14T15:00:00Z",
+            preview_url: "/member/one",
+          },
         ],
         next_cursor: "",
       });
@@ -195,7 +208,9 @@ it("switches the URL identity without retaining another person's cover, counts, 
   });
   const user = userEvent.setup();
   expect(
-    await screen.findByRole("img", { name: "Jamie's second photo" }),
+    await screen.findByRole("img", {
+      name: "Photo taken June 14, 2025 at 1:00 PM",
+    }),
   ).toBeVisible();
   expect(
     screen.getByRole("combobox", { name: "Preview as" }),
@@ -210,10 +225,14 @@ it("switches the URL identity without retaining another person's cover, counts, 
     "alex",
   );
   expect(
-    screen.queryByRole("img", { name: "Jamie's photo" }),
+    screen.queryByRole("img", {
+      name: "Photo taken June 14, 2025 at 12:00 PM",
+    }),
   ).not.toBeInTheDocument();
   expect(
-    screen.queryByRole("img", { name: "Jamie's second photo" }),
+    screen.queryByRole("img", {
+      name: "Photo taken June 14, 2025 at 1:00 PM",
+    }),
   ).not.toBeInTheDocument();
   expect(
     screen.queryByRole("img", { name: "Album cover" }),
@@ -237,7 +256,9 @@ it("switches the URL identity without retaining another person's cover, counts, 
     ),
   );
   expect(
-    await screen.findByRole("img", { name: "Alex's photo" }),
+    await screen.findByRole("img", {
+      name: "Photo taken June 14, 2025 at 2:00 PM",
+    }),
   ).toHaveAttribute("src", "/preview/alex/one");
   expect(screen.getByRole("link", { name: "Photos 1" })).toBeVisible();
   expect(screen.getByRole("img", { name: "Album cover" })).toHaveAttribute(
@@ -248,13 +269,17 @@ it("switches the URL identity without retaining another person's cover, counts, 
     await router.navigate("/albums/lake/photos");
   });
   expect(
-    await screen.findByRole("img", { name: "Member photo" }),
+    await screen.findByRole("img", {
+      name: "Photo taken June 14, 2025 at 3:00 PM",
+    }),
   ).toHaveAttribute("src", "/member/one");
   expect(
     screen.queryByRole("combobox", { name: "Preview as" }),
   ).not.toBeInTheDocument();
   expect(
-    screen.queryByRole("img", { name: "Alex's photo" }),
+    screen.queryByRole("img", {
+      name: "Photo taken June 14, 2025 at 2:00 PM",
+    }),
   ).not.toBeInTheDocument();
 });
 
@@ -352,14 +377,22 @@ it("navigates photos inside the preview with the identity notice and no download
   renderPreview((path) =>
     path.endsWith("/photos")
       ? Response.json({
-          entries: [photo, { ...photo, id: "two", title: "Second" }],
+          entries: [
+            photo,
+            {
+              ...photo,
+              id: "two",
+              title: "Second",
+              captured_at: "2025-06-14T13:00:00Z",
+            },
+          ],
           next_cursor: "",
         })
       : Response.json(album),
   );
   const user = userEvent.setup();
   const opener = await screen.findByRole("link", {
-    name: "Open photo Jamie's photo",
+    name: "Open photo taken June 14, 2025 at 12:00 PM",
   });
   expect(opener).toHaveAttribute(
     "href",
@@ -383,7 +416,9 @@ it("navigates photos inside the preview with the identity notice and no download
   expect(new URLSearchParams(window.location.search).get("entry")).toBeNull();
   await waitFor(() =>
     expect(
-      screen.getByRole("link", { name: "Open photo Jamie's photo" }),
+      screen.getByRole("link", {
+        name: "Open photo taken June 14, 2025 at 12:00 PM",
+      }),
     ).toHaveFocus(),
   );
 });
