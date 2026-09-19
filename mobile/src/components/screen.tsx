@@ -19,10 +19,10 @@ export function Screen({ children }: { children: ReactNode }) {
       <ScrollView
         contentContainerStyle={{
           flexGrow: 1,
-          gap: 40,
+          gap: 32,
           paddingBottom: insets.bottom + 24,
           paddingHorizontal: 24,
-          paddingTop: insets.top + 48,
+          paddingTop: insets.top + 16,
         }}
         keyboardShouldPersistTaps="handled"
       >
