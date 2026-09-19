@@ -576,6 +576,17 @@ and lockfile. `mise setup` installs its dependencies. Install
 [Expo Go](https://expo.dev/go) on your phone, and put the phone on the same
 network as this machine.
 
+Expo Go on iOS only opens a project when the phone and this machine are signed
+in to the same free Expo account. Sign in once on each side: in Expo Go, tap
+the avatar on the Home tab, and on this machine run:
+
+```sh
+pnpm --dir mobile exec expo login
+```
+
+Without that, Expo Go reports a problem with the project and asks you to log
+in. Android does not require it yet, and simulators never do.
+
 With `mise start` running, start the app from a second terminal in the same
 worktree:
 
