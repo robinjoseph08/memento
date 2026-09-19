@@ -306,22 +306,20 @@ it("offers Cast only with a receiver nearby, follows the lightbox on the TV, and
     "https://memento.example/signed/preview/photo-2",
   );
 
-  // Closing the lightbox takes the photo off the TV: nothing outside the
-  // lightbox could stop it later.
+  // Closing the lightbox leaves the TV alone.
   await user.click(within(dialog).getByRole("button", { name: "Close photo" }));
   await waitFor(() =>
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
   );
-  expect(sdk.context.endCurrentSession).toHaveBeenCalledWith(true);
+  expect(sdk.context.endCurrentSession).not.toHaveBeenCalled();
 
-  // A cast video plays on the TV only: the player here gives way to a remote.
+  // A video opened during the session plays on the TV only: the player here
+  // gives way to a remote.
   await user.click(screen.getByRole("link", { name: /Videos/ }));
   await user.click(
     await screen.findByRole("link", { name: "Open video Birthday party" }),
   );
   dialog = await screen.findByRole("dialog", { name: "Video 1 of 1" });
-  expect(within(dialog).getByLabelText("Birthday party").tagName).toBe("VIDEO");
-  await user.click(within(dialog).getByRole("button", { name: "Cast" }));
   await waitFor(() =>
     expect(sdk.loaded.at(-1)).toEqual({
       url: "https://memento.example/signed/playback/video-1",
@@ -373,7 +371,7 @@ it("offers Cast only with a receiver nearby, follows the lightbox on the TV, and
   await user.click(
     within(dialog).getByRole("button", { name: "Stop casting" }),
   );
-  expect(sdk.context.endCurrentSession).toHaveBeenCalledTimes(2);
+  expect(sdk.context.endCurrentSession).toHaveBeenCalledExactlyOnceWith(true);
   await waitFor(() =>
     expect(within(dialog).queryByRole("status")).not.toBeInTheDocument(),
   );

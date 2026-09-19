@@ -46,16 +46,13 @@ async function show(entry: ViewerEntry) {
 // useCast gives a lightbox its Google Cast controls. While a receiver is
 // connected, whichever entry the lightbox has open is shown on it, so next
 // and previous move the TV too. showingID names the entry on the TV, which is
-// when playOrPause and seek have something to control. The session belongs
-// to the lightbox: closing it ends the session, because nothing outside the
-// lightbox could stop it later. Disabled, it reports and casts nothing.
+// when playOrPause and seek have something to control. Closing the lightbox
+// leaves the session alone; only stop ends it. Disabled, it reports and casts
+// nothing.
 export function useCast(entry: ViewerEntry | undefined, enabled: boolean) {
   const state = useSyncExternalStore(subscribeCast, castSnapshot);
   useEffect(() => {
     if (enabled) connectCast();
-  }, [enabled]);
-  useEffect(() => {
-    if (enabled) return stopCast;
   }, [enabled]);
   const connected = enabled && state.receiver !== "";
   const castable = entry?.available ? entry : undefined;
