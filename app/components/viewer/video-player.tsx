@@ -46,15 +46,11 @@ export function VideoStage({
         autoPlay={autoPlay}
         className="h-full w-full rounded-sm bg-black object-contain"
         controls
-        onLoadedMetadata={(event) => {
-          if (target.resumeAt > 0)
-            event.currentTarget.currentTime = target.resumeAt;
-        }}
         onTimeUpdate={(event) => onTime(event.currentTarget.currentTime)}
         playsInline
         preload="metadata"
         ref={videoRef}
-        src={target.src}
+        src={target.src || undefined}
         x-webkit-airplay={airPlay ? "allow" : "deny"}
       />
       {target.failed && (
@@ -62,7 +58,8 @@ export function VideoStage({
           className="absolute inset-x-0 top-3 mx-auto w-fit rounded-sm bg-surface px-3 py-2 text-xs"
           role="alert"
         >
-          Could not send this video to the TV. Disconnect AirPlay and try again.
+          Could not send this video to the TV. Close the video and open it
+          again.
         </p>
       )}
       {target.available &&

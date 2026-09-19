@@ -4,8 +4,11 @@ import {
   test as base,
   expect,
   type APIRequestContext,
+  type Locator,
   type Page,
 } from "@playwright/test";
+
+import type { ViewerEntry } from "../app/types/generated/publishing";
 
 type Installation = { apiURL: string; fixtureURL: string };
 type CheckpointName = "asset-metadata" | "import-release" | "chapter-probe";
@@ -195,6 +198,20 @@ export async function finishOnboarding(page: Page, tap = false) {
   if (tap) await button.tap();
   else await button.click();
   await expect(page).not.toHaveURL(/\/welcome$/);
+}
+
+// playbackSource waits for a lightbox video to have its source and returns
+// it. Where AirPlay exists (WebKit) the player takes a signed URL from the
+// start, so an Apple TV could fetch it; elsewhere it plays the cookie URL.
+// Both name the Album Entry and end in its content version.
+export async function playbackSource(video: Locator, entry?: ViewerEntry) {
+  await expect(video).toHaveAttribute("src", /\/playback(\/[^/?]+)?\?v=/);
+  const source = (await video.getAttribute("src")) ?? "";
+  if (entry) {
+    expect(source).toContain(entry.id);
+    expect(source.split("?v=")[1]).toBe(entry.playback_url.split("?v=")[1]);
+  }
+  return source;
 }
 
 export { expect };

@@ -9,52 +9,53 @@ type AirPlayVideo = HTMLVideoElement & {
 };
 
 // useAirPlay lets Safari hand one video to an Apple TV. The TV has no session
-// cookie, so it needs a signed URL, and the source must not change while the
+// cookie, so it needs a signed URL, and the source must not change once the
 // video is on the TV: that drops the AirPlay route, Safari rebuilds it, and
-// the two chase each other. So the signed URL goes in once, as soon as Safari
-// reports a target on the network, and stays for the life of the player.
-// resumeAt is where the cookie URL had got to, for the player to seek to once
-// the signed one loads. available is when showPicker is worth offering, and
-// failed says the video reached a TV without a URL the TV can fetch. Disabled,
-// or in any other browser, src is always the cookie URL.
+// the two chase each other. So where AirPlay exists the video plays a signed
+// URL from the start, and src stays empty for the moment it takes to mint
+// one. If none can be had, src is the cookie URL and failed says when that
+// video has reached a TV that cannot fetch it. available is when showPicker
+// is worth offering. Disabled, or in any other browser, src is the cookie URL.
 export function useAirPlay(
   videoRef: RefObject<HTMLVideoElement | null>,
   entryID: string,
   cookieURL: string,
   enabled: boolean,
 ) {
-  const [signed, setSigned] = useState<{ url: string; resumeAt: number }>();
+  const capable =
+    enabled &&
+    cookieURL !== "" &&
+    "WebKitPlaybackTargetAvailabilityEvent" in window;
+  const [signed, setSigned] = useState<{
+    entryID: string;
+    url: string | null;
+  }>();
+  const [wireless, setWireless] = useState(false);
   const [available, setAvailable] = useState(false);
-  const [failed, setFailed] = useState(false);
-  const mounted = enabled && cookieURL !== "";
+  useEffect(() => {
+    if (!capable) return;
+    let cancelled = false;
+    signMedia(entryID, "playback").then(
+      (url) => {
+        if (!cancelled) setSigned({ entryID, url });
+      },
+      () => {
+        if (!cancelled) setSigned({ entryID, url: null });
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [capable, entryID]);
   useEffect(() => {
     const video: AirPlayVideo | null = videoRef.current;
-    if (!video || !mounted) return;
-    let cancelled = false;
-    // A refused mint is tried again the next time Safari reports a target.
-    let minting = false;
-    let ready = false;
-    const onAvailability = (event: Event) => {
-      const found =
-        "availability" in event && event.availability === "available";
-      setAvailable(found);
-      if (!found || minting || ready) return;
-      minting = true;
-      signMedia(entryID, "playback").then(
-        (url) => {
-          minting = false;
-          if (cancelled) return;
-          ready = true;
-          setFailed(false);
-          setSigned({ url, resumeAt: video.currentTime });
-        },
-        () => {
-          minting = false;
-        },
+    if (!video || !capable) return;
+    const onAvailability = (event: Event) =>
+      setAvailable(
+        "availability" in event && event.availability === "available",
       );
-    };
     const onTarget = () =>
-      setFailed(video.webkitCurrentPlaybackTargetIsWireless === true && !ready);
+      setWireless(video.webkitCurrentPlaybackTargetIsWireless === true);
     video.addEventListener(
       "webkitplaybacktargetavailabilitychanged",
       onAvailability,
@@ -64,7 +65,6 @@ export function useAirPlay(
       onTarget,
     );
     return () => {
-      cancelled = true;
       video.removeEventListener(
         "webkitplaybacktargetavailabilitychanged",
         onAvailability,
@@ -74,12 +74,13 @@ export function useAirPlay(
         onTarget,
       );
     };
-  }, [videoRef, mounted, entryID]);
+  }, [videoRef, capable]);
+  // Undefined while minting, null when no signed URL could be had.
+  const minted = signed?.entryID === entryID ? signed.url : undefined;
   return {
-    src: signed?.url ?? cookieURL,
-    resumeAt: signed?.resumeAt ?? 0,
-    available: mounted && available,
-    failed,
+    src: !capable || minted === null ? cookieURL : (minted ?? ""),
+    available: capable && available,
+    failed: capable && wireless && minted === null,
     showPicker: () =>
       (
         videoRef.current as AirPlayVideo | null

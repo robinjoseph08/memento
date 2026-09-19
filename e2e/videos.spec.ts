@@ -6,7 +6,7 @@ import type {
   ViewerEntry,
   ViewerPage,
 } from "../app/types/generated/publishing";
-import { expect, finishOnboarding, test } from "./fixtures";
+import { expect, finishOnboarding, playbackSource, test } from "./fixtures";
 
 async function readAllVideos(page: Page, albumID: string) {
   const entries: ViewerEntry[] = [];
@@ -235,8 +235,7 @@ test("videos play with titles, chapters, ranges, downloads, and recover a failed
     await expect(member).toHaveURL(/\/videos\/[^/]+$/);
     const video = dialog.locator("video");
     await expect(video).toHaveCount(1);
-    const playbackURL = await video.getAttribute("src");
-    expect(playbackURL).toContain("/playback?v=");
+    const playbackURL = await playbackSource(video);
     await expect(dialog).toContainText("Birthday party");
     // The chapter picker under the player names the playing chapter and
     // follows the video; choosing one seeks to its start.
@@ -255,7 +254,7 @@ test("videos play with titles, chapters, ranges, downloads, and recover a failed
     await expect(dialog).toHaveAccessibleName("Video 1 of 103");
 
     // Playback proxies byte ranges with Memento's validators.
-    const partial = await member.request.get(playbackURL!, {
+    const partial = await member.request.get(playbackURL, {
       headers: { Range: "bytes=0-99" },
     });
     expect(partial.status()).toBe(206);
@@ -320,10 +319,7 @@ test("videos play with titles, chapters, ranges, downloads, and recover a failed
     expect(videos[1].title).toBe("coast-retry");
     await member.goto(`${viewerPath}/${videos[100].id}`);
     await expect(dialog).toHaveAccessibleName("Video 101 of 103");
-    await expect(dialog.locator("video")).toHaveAttribute(
-      "src",
-      videos[100].playback_url,
-    );
+    await playbackSource(dialog.locator("video"), videos[100]);
     await member.keyboard.press("ArrowLeft");
     await expect(dialog).toHaveAccessibleName("Video 100 of 103");
     await expect(member).toHaveURL(

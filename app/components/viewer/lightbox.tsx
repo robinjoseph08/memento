@@ -86,10 +86,17 @@ export function Lightbox({
   // stops, the player comes back without starting on its own.
   const casting = cast.receiver !== "";
   const [castID, setCastID] = useState("");
-  if (casting && castID !== currentID) setCastID(currentID);
+  if (casting ? castID !== currentID : castID !== "" && castID !== currentID)
+    setCastID(casting ? currentID : "");
+  // Space and chapters reach the TV only while it has the open video.
+  const onTV = casting && cast.showingID === currentID;
+  // Only photos go to the TV without a title, whatever this lightbox shows.
+  const castStatus = !cast.showingID
+    ? `Connected to ${cast.receiver}`
+    : `Showing ${cast.showing || (onTV ? "this photo" : "a photo")} on ${cast.receiver}`;
   function seek(chapter: { start: number }) {
     if (casting) {
-      cast.seek(chapter.start);
+      if (onTV) cast.seek(chapter.start);
       return;
     }
     const video = videoRef.current;
@@ -194,7 +201,7 @@ export function Lightbox({
             ) {
               event.preventDefault();
               if (casting) {
-                cast.playOrPause();
+                if (onTV) cast.playOrPause();
                 return;
               }
               const video = videoRef.current;
@@ -254,11 +261,7 @@ export function Lightbox({
                     Could not show this {lower} on {cast.receiver}.
                   </p>
                 ) : (
-                  <p role="status">
-                    {cast.showingID
-                      ? `Showing ${cast.showing || (cast.showingID === entry?.id ? `this ${lower}` : `a ${lower}`)} on ${cast.receiver}`
-                      : `Connected to ${cast.receiver}`}
-                  </p>
+                  <p role="status">{castStatus}</p>
                 )}
                 <Button onClick={cast.stop} size="sm" variant="outline">
                   Stop casting
@@ -350,11 +353,12 @@ export function Lightbox({
                   {kind === "video" && casting && entry.available ? (
                     <CastRemote
                       entry={entry}
+                      failed={cast.failed}
                       onPlayOrPause={cast.playOrPause}
                       onReplay={cast.replay}
                       onSeek={cast.seek}
                       onTime={trackChapter}
-                      ready={cast.showingID === entry.id}
+                      ready={onTV}
                       receiver={cast.receiver}
                     />
                   ) : kind === "video" ? (

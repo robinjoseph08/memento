@@ -12,7 +12,9 @@ import (
 )
 
 func TestDevelopmentPublicURL(t *testing.T) {
-	t.Parallel()
+	// A developer casting to a TV has PUBLIC_URL exported; the defaults are
+	// what happens without it.
+	t.Setenv("PUBLIC_URL", "")
 	root := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "tmp"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(root, "tmp", "database.env"), []byte("POSTGRES_PORT=5544\n"), 0o600))

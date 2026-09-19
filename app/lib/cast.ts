@@ -83,6 +83,19 @@ let remote:
     }
   | undefined;
 
+function publishPlayback(next: CastPlayback) {
+  if (
+    next.loaded === playback.loaded &&
+    next.ended === playback.ended &&
+    next.paused === playback.paused &&
+    next.currentTime === playback.currentTime &&
+    next.duration === playback.duration
+  )
+    return;
+  playback = next;
+  for (const listener of playbackListeners) listener();
+}
+
 export function subscribeCastPlayback(listener: () => void) {
   playbackListeners.add(listener);
   return () => {
@@ -125,10 +138,7 @@ function watch() {
     const state = context.getCastState();
     const session = context.getCurrentSession();
     if (state !== cast.framework.CastState.CONNECTED || !session) {
-      if (playback !== stopped) {
-        playback = stopped;
-        for (const listener of playbackListeners) listener();
-      }
+      publishPlayback(stopped);
       publish({
         ...idle,
         available: state !== cast.framework.CastState.NO_DEVICES_AVAILABLE,
@@ -155,25 +165,14 @@ function watch() {
   remote = { player, controller };
   controller.addEventListener(
     cast.framework.RemotePlayerEventType.ANY_CHANGE,
-    () => {
-      const next = {
+    () =>
+      publishPlayback({
         loaded: player.isMediaLoaded,
         ended: !player.isMediaLoaded && (playback.loaded || playback.ended),
         paused: player.isPaused,
         currentTime: player.currentTime,
         duration: player.duration,
-      };
-      if (
-        next.loaded === playback.loaded &&
-        next.ended === playback.ended &&
-        next.paused === playback.paused &&
-        next.currentTime === playback.currentTime &&
-        next.duration === playback.duration
-      )
-        return;
-      playback = next;
-      for (const listener of playbackListeners) listener();
-    },
+      }),
   );
 }
 
@@ -210,6 +209,8 @@ export function seekCast(seconds: number) {
   if (!remote) return;
   remote.player.currentTime = seconds;
   remote.controller.seek();
+  // The TV confirms up to a second later; until then the bar holds the target.
+  publishPlayback({ ...playback, currentTime: seconds });
 }
 
 // showOnCast replaces whatever the connected receiver is showing.
@@ -221,11 +222,9 @@ export async function showOnCast(item: CastItem) {
   if (item.title) metadata.title = item.title;
   media.metadata = metadata;
   media.customData = { entryID: item.id, title: item.title };
+  // The remote starts over with each item, never showing the last one's time.
+  publishPlayback(stopped);
   await session.loadMedia(new chrome.cast.media.LoadRequest(media));
-  if (playback.ended) {
-    playback = { ...playback, ended: false };
-    for (const listener of playbackListeners) listener();
-  }
   if (snapshot.receiver)
     publish({
       ...snapshot,

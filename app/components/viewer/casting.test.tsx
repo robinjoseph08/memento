@@ -21,7 +21,7 @@ const album: ViewerAlbum = {
   title: "A weekend by the lake",
   description: "",
   photo_count: 2,
-  video_count: 1,
+  video_count: 2,
   start_date: "2025-06-14",
   end_date: "2025-06-14",
   cover_url: "",
@@ -30,9 +30,9 @@ const album: ViewerAlbum = {
     {
       date: "2025-06-14",
       photo_count: 2,
-      video_count: 1,
+      video_count: 2,
       photo_ratios: [1.5, 1.5],
-      video_ratios: [1.78],
+      video_ratios: [1.78, 1.78],
     },
   ],
 };
@@ -71,6 +71,13 @@ const party: ViewerEntry = {
     { title: "Arrival", start: 0, end: 2 },
     { title: "Cake", start: 2, end: 6 },
   ],
+};
+const toast: ViewerEntry = {
+  ...party,
+  id: "video-2",
+  title: "Toast",
+  playback_url: "/media/lake/video-2/playback",
+  chapters: [],
 };
 
 // The slice of Google's sender SDK the app touches. The real one is a script
@@ -221,7 +228,7 @@ it("offers Cast only with a receiver nearby, follows the lightbox on the TV, and
       if (path === "/api/albums/lake/photos")
         return Response.json({ entries: [lake, cabin], next_cursor: "" });
       if (path === "/api/albums/lake/videos")
-        return Response.json({ entries: [party], next_cursor: "" });
+        return Response.json({ entries: [party, toast], next_cursor: "" });
       if (path === "/api/media/signed") {
         const body = JSON.parse(String(init?.body)) as {
           entry_id: string;
@@ -317,10 +324,18 @@ it("offers Cast only with a receiver nearby, follows the lightbox on the TV, and
   // A video opened during the session plays on the TV only: the player here
   // gives way to a remote.
   await user.click(screen.getByRole("link", { name: /Videos/ }));
+  // A TV that refuses the video says so on the stage and offers another try,
+  // never an endless "Sending to".
+  sdk.failing.next = true;
   await user.click(
     await screen.findByRole("link", { name: "Open video Birthday party" }),
   );
-  dialog = await screen.findByRole("dialog", { name: "Video 1 of 1" });
+  dialog = await screen.findByRole("dialog", { name: "Video 1 of 2" });
+  const refused = await within(dialog).findByRole("group", {
+    name: "Could not play on Living room TV",
+  });
+  expect(dialog.querySelector("video")).toBeNull();
+  await user.click(within(refused).getByRole("button", { name: "Try again" }));
   await waitFor(() =>
     expect(sdk.loaded.at(-1)).toEqual({
       url: "https://memento.example/signed/playback/video-1",
@@ -349,6 +364,11 @@ it("offers Cast only with a receiver nearby, follows the lightbox on the TV, and
   fireEvent.pointerUp(within(remote).getByRole("slider", { name: "Seek" }));
   expect(sdk.player.currentTime).toBe(3);
   expect(sdk.controller.seek).toHaveBeenCalledOnce();
+  // Scrubbing by touch is not a swipe to the next video.
+  const slider = within(remote).getByRole("slider", { name: "Seek" });
+  fireEvent.pointerDown(slider, { pointerType: "touch", clientX: 300 });
+  fireEvent.pointerUp(slider, { pointerType: "touch", clientX: 100 });
+  expect(screen.getByRole("dialog", { name: "Video 1 of 2" })).toBeVisible();
   // Chapters follow the TV and seek it.
   const picker = within(dialog).getByRole("combobox", { name: "Chapter" });
   expect(picker).toHaveTextContent("Cake");

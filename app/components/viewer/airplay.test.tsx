@@ -67,8 +67,12 @@ afterEach(() => {
   window.history.replaceState(null, "", "/");
 });
 
-it("offers AirPlay where Safari reports a target and gives the video a signed URL before it reaches the TV", async () => {
-  // jsdom has no media pipeline: position is a property and playing a promise.
+type Mint = { entry_id: string; variant: string };
+
+// Opens the video lightbox in a browser that can AirPlay. jsdom has no media
+// pipeline: position is a property and playing a promise.
+async function openVideo(refuse: boolean) {
+  vi.stubGlobal("WebKitPlaybackTargetAvailabilityEvent", class {});
   const times = new WeakMap<HTMLMediaElement, number>();
   Object.defineProperty(HTMLMediaElement.prototype, "currentTime", {
     configurable: true,
@@ -81,8 +85,7 @@ it("offers AirPlay where Safari reports a target and gives the video a signed UR
   });
   HTMLMediaElement.prototype.play = vi.fn(() => Promise.resolve());
   HTMLMediaElement.prototype.pause = vi.fn();
-  const minted: unknown[] = [];
-  let refuse = false;
+  const minted: Mint[] = [];
   vi.stubGlobal(
     "fetch",
     vi.fn(async (path: string, init?: RequestInit) => {
@@ -100,44 +103,73 @@ it("offers AirPlay where Safari reports a target and gives the video a signed UR
       if (path === "/api/albums/lake") return Response.json(album);
       if (path === "/api/albums/lake/videos")
         return Response.json({ entries: [party], next_cursor: "" });
-      if (path === "/api/media/signed" && refuse)
-        return Response.json({ error: {} }, { status: 404 });
       if (path === "/api/media/signed") {
-        minted.push(JSON.parse(String(init?.body)));
-        return Response.json({ url: signedURL });
+        minted.push(JSON.parse(String(init?.body)) as Mint);
+        return refuse
+          ? Response.json({ error: {} }, { status: 404 })
+          : Response.json({ url: signedURL });
       }
       throw new Error(`Unexpected request: ${path}`);
     }),
   );
-  const user = userEvent.setup();
   window.history.replaceState(null, "", "/albums/lake/videos/video-1");
   render(<App />);
   const dialog = await screen.findByRole("dialog", { name: "Video 1 of 1" });
   const video = within(dialog).getByLabelText<AirPlayVideo>("Birthday party");
-  expect(video).toHaveAttribute("x-webkit-airplay", "allow");
-  expect(
-    within(dialog).queryByRole("button", { name: "AirPlay" }),
-  ).not.toBeInTheDocument();
-
-  const announce = () =>
+  const announce = (availability: string) =>
     fireEvent(
       video,
       Object.assign(new Event("webkitplaybacktargetavailabilitychanged"), {
-        availability: "available",
+        availability,
       }),
     );
   const wireless = (on: boolean) => {
     video.webkitCurrentPlaybackTargetIsWireless = on;
     fireEvent(video, new Event("webkitcurrentplaybacktargetiswirelesschanged"));
   };
+  return { dialog, video, minted, announce, wireless };
+}
 
-  // Safari announces a target on the network; other browsers never do. A TV
-  // that cannot be given a URL is reported instead of left spinning.
+it("plays a signed URL from the start where AirPlay exists, so the source never changes on the way to the TV", async () => {
+  const { dialog, video, minted, announce, wireless } = await openVideo(false);
+  const user = userEvent.setup();
+  // The video loads once, from a URL an Apple TV can fetch too. Changing the
+  // source after the video reaches the TV drops the route, which Safari then
+  // rebuilds, in a loop.
+  expect(video).toHaveAttribute("x-webkit-airplay", "allow");
+  await waitFor(() => expect(video).toHaveAttribute("src", signedURL));
+  expect(minted).toEqual([{ entry_id: "video-1", variant: "playback" }]);
+
+  // The button waits for Safari to find a target on the network.
+  expect(
+    within(dialog).queryByRole("button", { name: "AirPlay" }),
+  ).not.toBeInTheDocument();
   video.webkitShowPlaybackTargetPicker = vi.fn();
-  refuse = true;
-  announce();
+  announce("available");
   await user.click(within(dialog).getByRole("button", { name: "AirPlay" }));
   expect(video.webkitShowPlaybackTargetPicker).toHaveBeenCalledOnce();
+
+  wireless(true);
+  expect(video).toHaveAttribute("src", signedURL);
+  expect(within(dialog).queryByRole("alert")).not.toBeInTheDocument();
+  // Chapters still seek the local element, which AirPlay mirrors.
+  await user.click(within(dialog).getByRole("combobox", { name: "Chapter" }));
+  await user.click(screen.getByRole("option", { name: /Goodbyes/ }));
+  expect(video.currentTime).toBe(4);
+  wireless(false);
+  expect(video).toHaveAttribute("src", signedURL);
+  expect(minted).toHaveLength(1);
+
+  announce("not-available");
+  expect(
+    within(dialog).queryByRole("button", { name: "AirPlay" }),
+  ).not.toBeInTheDocument();
+});
+
+it("plays the cookie URL when no signed URL can be had, and says so if that video reaches a TV", async () => {
+  const { dialog, video, wireless } = await openVideo(true);
+  await waitFor(() => expect(video).toHaveAttribute("src", party.playback_url));
+  expect(within(dialog).queryByRole("alert")).not.toBeInTheDocument();
   wireless(true);
   expect(await within(dialog).findByRole("alert")).toHaveTextContent(
     "Could not send this video to the TV.",
@@ -145,40 +177,4 @@ it("offers AirPlay where Safari reports a target and gives the video a signed UR
   expect(video).toHaveAttribute("src", party.playback_url);
   wireless(false);
   expect(within(dialog).queryByRole("alert")).not.toBeInTheDocument();
-
-  // The signed URL goes in as soon as a target exists, at the same position,
-  // so the source never has to change while the video is on the TV: changing
-  // it there drops the route, which Safari then rebuilds, in a loop.
-  refuse = false;
-  video.currentTime = 3;
-  announce();
-  await waitFor(() => expect(video).toHaveAttribute("src", signedURL));
-  expect(minted).toEqual([{ entry_id: "video-1", variant: "playback" }]);
-  video.currentTime = 0;
-  fireEvent.loadedMetadata(video);
-  expect(video.currentTime).toBe(3);
-  announce();
-  wireless(true);
-  expect(video).toHaveAttribute("src", signedURL);
-  expect(within(dialog).queryByRole("alert")).not.toBeInTheDocument();
-
-  // Chapters still seek the local element, which AirPlay mirrors.
-  await user.click(within(dialog).getByRole("combobox", { name: "Chapter" }));
-  await user.click(screen.getByRole("option", { name: /Goodbyes/ }));
-  expect(video.currentTime).toBe(4);
-
-  // Coming back from the TV keeps the same source too.
-  wireless(false);
-  expect(video).toHaveAttribute("src", signedURL);
-  expect(minted).toHaveLength(1);
-
-  fireEvent(
-    video,
-    Object.assign(new Event("webkitplaybacktargetavailabilitychanged"), {
-      availability: "not-available",
-    }),
-  );
-  expect(
-    within(dialog).queryByRole("button", { name: "AirPlay" }),
-  ).not.toBeInTheDocument();
 });
