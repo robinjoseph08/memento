@@ -38,7 +38,7 @@ A real human known to Memento. A Person may exist before gaining login access, m
 _Avoid_: User, Recipient, Immich Person
 
 **Curator**:
-A Person who can organize Albums, manage access, and invite people. One installation may have multiple Curators.
+A Person who can organize Albums, manage access, and invite people. One Installation may have multiple Curators.
 
 **Preauthorization**:
 A Curator's approval for a specific email address to join Memento when its owner signs in with Google.
@@ -66,10 +66,22 @@ The People who can see exactly the same Moment covers in one Album. Viewing Grou
 _Avoid_: Cohort, Access Set, Segment
 
 **Unannounced Change**:
-An Album or Album Entry that became visible to a Person after that Person's notification baseline. Completing Onboarding, approving an Update Notification, or dismissing selected changes advances the baseline, independently of email delivery.
+An Album or Album Entry that became visible to a Person after that Person's notification baseline. Completing Onboarding, approving an Update Notification, or dismissing selected changes advances the baseline, independently of email or Push delivery.
 
 **Update Notification**:
-A Curator-approved in-app summary of one or more Unannounced Changes for a Person. Email is an optional delivery channel for the same notification and respects the Person's email preference.
+A Curator-approved summary of one or more Unannounced Changes for a Person, always readable inside Memento. Email and Push are optional delivery channels for the same notification, and neither creates a notification of its own. Email respects the Person's email preference, and Push follows the phone's own notification setting.
+_Avoid_: In-app notification
+
+**Push**:
+An alert on a Person's phone announcing an Update Notification, delivered through the Mobile App. Opening it leads to what changed.
+
+**Installation**:
+One deployed Memento, serving one Immich library to its own People.
+_Avoid_: Instance, Site
+
+**Mobile App**:
+The viewer-only Memento app for phones. It connects to an Installation and offers viewing and Update Notifications; curation stays on the web.
+_Avoid_: Native app, Client
 
 **Onboarding**:
 The first-time introduction completed by every Person who gains login access. Completion establishes that Person's notification baseline from everything currently visible to them.

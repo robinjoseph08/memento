@@ -136,7 +136,7 @@ func deliveryRow(ctx context.Context, db bun.IDB, id string, lock bool) (models.
 // sending when a new attempt starts means an earlier process died mid-session,
 // so the delivery becomes uncertain instead of being sent again. Update email
 // is re-validated while claiming: an ineligible recipient or fully revoked
-// content skips the send without touching the in-app notification.
+// content skips the send without touching the Update Notification.
 func (m *Module) Execute(ctx context.Context, deliveryID string, final bool) error {
 	var row models.MailDelivery
 	send := false
