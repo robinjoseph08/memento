@@ -255,8 +255,8 @@ export function Lightbox({
                   </p>
                 ) : (
                   <p role="status">
-                    {cast.showing
-                      ? `Showing ${cast.showing} on ${cast.receiver}`
+                    {cast.showingID
+                      ? `Showing ${cast.showing || (cast.showingID === entry?.id ? `this ${lower}` : `a ${lower}`)} on ${cast.receiver}`
                       : `Connected to ${cast.receiver}`}
                   </p>
                 )}

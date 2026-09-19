@@ -12,7 +12,8 @@ export type CastSnapshot = {
   available: boolean;
   // The connected receiver's name, or empty while nothing is connected.
   receiver: string;
-  // What the receiver is showing, as the Album Entry and its title.
+  // What the receiver is showing, as the Album Entry and its title. Photos
+  // have no title, so showingID alone says that something is showing.
   showingID: string;
   showingTitle: string;
   // Whether the last attempt to show something on the receiver failed.
@@ -217,7 +218,7 @@ export async function showOnCast(item: CastItem) {
   if (!session) return;
   const media = new chrome.cast.media.MediaInfo(item.url, item.contentType);
   const metadata = new chrome.cast.media.GenericMediaMetadata();
-  metadata.title = item.title;
+  if (item.title) metadata.title = item.title;
   media.metadata = metadata;
   media.customData = { entryID: item.id, title: item.title };
   await session.loadMedia(new chrome.cast.media.LoadRequest(media));

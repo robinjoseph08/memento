@@ -101,6 +101,17 @@ labels. The only lowercase form is the wordmark graphic itself, which renders
 form anywhere else. Identifiers such as module paths, cookie names, and
 database names follow their own conventions and are not prose.
 
+## Naming media
+
+Never show a photo's filename to anyone, Curator or viewer. Camera filenames
+read as random characters and tell a person nothing, so a photo is identified
+by its thumbnail, its capture time, or plain words such as "this photo". This
+covers page copy, status messages, emails, anything sent to another screen
+such as a TV, and accessible names.
+
+A video shows its Curator-given title. Its filename, without the extension,
+appears only as the fallback when no title is set.
+
 ## Taste
 
 - Complexity belongs at the adapter boundary. Orchestration stays pure, UI

@@ -266,12 +266,13 @@ it("offers Cast only with a receiver nearby, follows the lightbox on the TV, and
       {
         url: "https://memento.example/signed/preview/photo-1",
         contentType: "image/webp",
-        title: "Lake",
+        // A photo's title is only its filename, so the TV is never sent it.
+        title: "",
       },
     ]),
   );
   expect(await within(dialog).findByRole("status")).toHaveTextContent(
-    "Showing Lake on Living room TV",
+    "Showing this photo on Living room TV",
   );
   expect(
     within(dialog).queryByRole("button", { name: "Cast" }),
@@ -290,7 +291,7 @@ it("offers Cast only with a receiver nearby, follows the lightbox on the TV, and
   dialog = await screen.findByRole("dialog", { name: "Photo 1 of 2" });
   await waitFor(() =>
     expect(within(dialog).getByRole("status")).toHaveTextContent(
-      "Showing Lake on Living room TV",
+      "Showing this photo on Living room TV",
     ),
   );
 
@@ -298,12 +299,12 @@ it("offers Cast only with a receiver nearby, follows the lightbox on the TV, and
   await user.keyboard("{ArrowRight}");
   dialog = await screen.findByRole("dialog", { name: "Photo 2 of 2" });
   await waitFor(() =>
-    expect(within(dialog).getByRole("status")).toHaveTextContent(
-      "Showing Cabin on Living room TV",
+    expect(sdk.loaded.at(-1)?.url).toBe(
+      "https://memento.example/signed/preview/photo-2",
     ),
   );
-  expect(sdk.loaded.at(-1)?.url).toBe(
-    "https://memento.example/signed/preview/photo-2",
+  expect(within(dialog).getByRole("status")).toHaveTextContent(
+    "Showing this photo on Living room TV",
   );
 
   // Closing the lightbox leaves the TV alone.
