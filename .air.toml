@@ -6,7 +6,7 @@ tmp_dir = "tmp"
 args_bin = []
 cmd = "mise build:air"
 delay = 1000
-exclude_dir = ["app", "build", "coverage", "node_modules", "test-results"]
+exclude_dir = ["app", "build", "coverage", "mobile", "node_modules", "test-results"]
 exclude_file = []
 exclude_regex = ["_test.go"]
 entrypoint = ["env", "CONFIG_FILE=./app.dev.yaml", "./build/api/api-air"]

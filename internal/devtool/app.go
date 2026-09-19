@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -57,9 +59,13 @@ type PortAllocator interface {
 	Acquire(preferred int) (PortLease, error)
 }
 
-// ProcessManager runs the development servers and browser tests.
+// ProcessManager runs the development servers, the Mobile App's bundler, and
+// browser tests.
 type ProcessManager interface {
 	Start(context.Context, Environment, string, int, int) error
+	// Mobile starts Expo advertising host, with the app's address field
+	// prefilled with installationURL.
+	Mobile(ctx context.Context, env Environment, host, installationURL string) error
 	E2E(context.Context, Environment, string, int) error
 }
 
@@ -72,6 +78,9 @@ type App struct {
 	Database  DatabaseManager
 	Ports     PortAllocator
 	Processes ProcessManager
+	// LANAddress is this machine's address as a phone on the same network
+	// sees it.
+	LANAddress func(context.Context) (string, error)
 }
 
 func NewApp() *App {
@@ -83,6 +92,8 @@ func NewApp() *App {
 		Database:  &DockerDatabase{},
 		Ports:     &FilePortAllocator{},
 		Processes: &OSProcesses{},
+
+		LANAddress: lanAddress,
 	}
 }
 
@@ -247,6 +258,9 @@ func (a *App) start(ctx context.Context, env Environment, args []string) error {
 	if len(args) == 1 {
 		mode = args[0]
 	}
+	if mode == "mobile" {
+		return a.startMobile(ctx, env)
+	}
 	if mode != "all" && mode != "air" && mode != "api" && mode != "web" {
 		return fmt.Errorf("unknown start mode %q", mode)
 	}
@@ -292,8 +306,79 @@ func (a *App) start(ctx context.Context, env Environment, args []string) error {
 		if err := a.printf("Web: http://localhost:%d\n", webPort); err != nil {
 			return err
 		}
+		forget, err := recordWebPort(env, webPort)
+		if err != nil {
+			return err
+		}
+		defer forget()
 	}
 	return a.Processes.Start(ctx, env, mode, apiPort, webPort)
+}
+
+// startMobile runs beside an already running web server. The phone reaches
+// Memento the way a browser on another machine would: through Vite, which
+// proxies the API, at this machine's address on the network.
+func (a *App) startMobile(ctx context.Context, env Environment) error {
+	webPort, err := recordedWebPort(env)
+	if err != nil {
+		return err
+	}
+	host, err := a.LANAddress(ctx)
+	if err != nil {
+		return err
+	}
+	installationURL := "http://" + net.JoinHostPort(host, strconv.Itoa(webPort))
+	if err := a.printf("Memento for the phone: %s\n", installationURL); err != nil {
+		return err
+	}
+	return a.Processes.Mobile(ctx, env, host, installationURL)
+}
+
+func webPortPath(env Environment) string {
+	return filepath.Join(env.CurrentRoot, "tmp", "web-port")
+}
+
+// recordWebPort leaves this worktree's web port where the mobile task can find
+// it. Ports are chosen at start, so there is nowhere else to look it up.
+func recordWebPort(env Environment, port int) (func(), error) {
+	path := webPortPath(env)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, fmt.Errorf("create %s: %w", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, []byte(strconv.Itoa(port)), 0o600); err != nil {
+		return nil, fmt.Errorf("record web port: %w", err)
+	}
+	return func() { _ = os.Remove(path) }, nil
+}
+
+func recordedWebPort(env Environment) (int, error) {
+	contents, err := os.ReadFile(webPortPath(env))
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, errors.New("the web server is not running in this worktree; run mise start first, then run this in a second terminal")
+	}
+	if err != nil {
+		return 0, fmt.Errorf("read web port: %w", err)
+	}
+	port, err := strconv.Atoi(strings.TrimSpace(string(contents)))
+	if err != nil {
+		return 0, fmt.Errorf("read web port: %w", err)
+	}
+	return port, nil
+}
+
+// lanAddress asks the routing table which local address reaches the outside
+// world. Connecting a UDP socket sends nothing.
+func lanAddress(ctx context.Context) (string, error) {
+	connection, err := (&net.Dialer{}).DialContext(ctx, "udp", "192.0.2.1:9")
+	if err != nil {
+		return "", fmt.Errorf("find this machine's network address (is it on Wi-Fi or Ethernet?): %w", err)
+	}
+	defer func() { _ = connection.Close() }()
+	address, ok := connection.LocalAddr().(*net.UDPAddr)
+	if !ok || address.IP.IsLoopback() {
+		return "", errors.New("find this machine's network address: not connected to a network")
+	}
+	return address.IP.String(), nil
 }
 
 func (a *App) e2e(ctx context.Context, env Environment, args []string) error {

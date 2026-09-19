@@ -569,6 +569,64 @@ mise start:api
 mise start:web
 ```
 
+### Run the Mobile App on a phone
+
+The Mobile App lives in `mobile`, an Expo project with its own `package.json`
+and lockfile. `mise setup` installs its dependencies. Install
+[Expo Go](https://expo.dev/go) on your phone, and put the phone on the same
+network as this machine.
+
+Expo Go on iOS only opens a project when the phone and this machine are signed
+in to the same free Expo account. Sign in once on each side: in Expo Go, tap
+the avatar on the Home tab, and on this machine run:
+
+```sh
+pnpm --dir mobile exec expo login
+```
+
+Without that, Expo Go reports a problem with the project and asks you to log
+in. Android does not require it yet, and simulators never do.
+
+With `mise start` running, start the app from a second terminal in the same
+worktree:
+
+```sh
+mise start:mobile
+```
+
+Scan the code Expo prints with the iPhone camera, or from inside Expo Go on
+Android. The app opens with this worktree's web address already filled in, such
+as `http://192.168.1.20:5173`, which is this machine's address on the network
+and the web port `mise start` selected. Tap Connect. The phone reaches the API
+through Vite, the same way a browser on another machine does.
+
+To look at the app without a phone, open the same machine on Expo's port in a
+browser, such as `http://my-machine.local:8081` or `http://192.168.1.20:8081`.
+This works from another machine on the network too, which helps when the dev
+servers run on a machine you are not sitting at, and it needs no Expo account.
+It is a development preview of the same code, not something Memento ships.
+Treat a phone as the truth for layout, gestures, and anything native.
+
+The command fails when `mise start` is not running in the same worktree,
+because it reads the web port from there. If the phone cannot connect, check
+that both devices are on the same network, that the network lets devices talk
+to each other (guest networks often do not), and that the macOS firewall allows
+incoming connections to `node`.
+
+Plain `http` addresses only work in development builds like this one. A store
+build of the app accepts `https` addresses only.
+
+Lint and test the app with:
+
+```sh
+mise lint:mobile
+mise test:mobile
+```
+
+Both are part of `mise check`. CI runs them only when `mobile`, a Go
+`types.go` file, or `mise.toml` changes. `mise tygo` writes the app's payload
+types to `mobile/src/types/generated` from `mobile/tygo.yaml`.
+
 ### Develop against your own Immich server
 
 Use a read-only API key from the Immich account that owns or can access your
@@ -628,7 +686,8 @@ mise check
 ```
 
 This runs Go linting, Go tests, ESLint, Prettier, TypeScript checks, Vitest,
-Chromium E2E tests, and a complete production build. CI also runs the race
+Chromium E2E tests, the Mobile App's lint and Jest tests, and a complete
+production build. CI also runs the race
 detector, Firefox, WebKit, PostgreSQL 14 compatibility, a Docker build, and a
 production-image smoke test.
 
@@ -932,3 +991,9 @@ The release command updates `CHANGELOG.md` and `package.json`, creates a
 `[Release] v1.2.3` commit and annotated tag, then atomically pushes both. The
 tag-triggered workflow validates the repository, creates a GitHub release, and
 publishes `linux/amd64` and `linux/arm64` images to GitHub Container Registry.
+
+Release notes group commits by the category at the start of each title.
+`[Frontend]`, `[Backend]`, `[Feature]`, and `[Feat]` are features, `[Mobile]`
+is the Mobile App, `[Fix]` is a bug fix, `[Docs]` and `[Doc]` are
+documentation, `[Test]` and `[E2E]` are testing, and `[CI]` and `[CD]` are
+CI/CD. Anything else lands under other changes.

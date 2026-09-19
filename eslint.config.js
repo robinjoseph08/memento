@@ -16,6 +16,8 @@ export default tseslint.config(
       "app/types/generated/*",
       "app/components/ui",
       "internal/webapp/dist",
+      // The Mobile App is its own package with its own ESLint setup.
+      "mobile",
       "test-results",
       "tmp",
     ],

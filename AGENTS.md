@@ -82,6 +82,7 @@ anything here.
 - Backend conventions live in `pkg/AGENTS.md`.
 - Frontend conventions live in `app/AGENTS.md`.
 - Browser-test conventions live in `e2e/AGENTS.md`.
+- Mobile App conventions live in `mobile/AGENTS.md`.
 
 ## Plans and work artifacts
 

@@ -15,6 +15,7 @@ import (
 	"github.com/robinjoseph08/memento/pkg/config"
 	"github.com/robinjoseph08/memento/pkg/errcodes"
 	"github.com/robinjoseph08/memento/pkg/identity"
+	"github.com/robinjoseph08/memento/pkg/version"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -129,6 +130,22 @@ func TestFaceHTTPRoutes(t *testing.T) {
 			assert.Equal(t, test.sourceFace, module.sourceFaceID)
 		})
 	}
+}
+
+// The Mobile App reads this endpoint before anyone signs in, so its shape is
+// part of the additive contract in ADR 0013.
+func TestStatusReportsTheServerVersionWithoutASession(t *testing.T) {
+	t.Parallel()
+	e := identityHTTP(t, config.NewForTest(), &fakeIdentity{claimed: true, err: identity.ErrUnauthenticated})
+	recorder := httptest.NewRecorder()
+	e.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/identity/status", nil))
+	require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &body))
+	assert.Equal(t, version.Version, body["version"])
+	assert.Equal(t, true, body["claimed"])
+	assert.Contains(t, body, "person")
+	assert.Contains(t, body, "auth_mode")
 }
 
 func TestIdentityHTTPTranslation(t *testing.T) {

@@ -11,6 +11,7 @@ import (
 	"github.com/robinjoseph08/memento/pkg/config"
 	"github.com/robinjoseph08/memento/pkg/errcodes"
 	"github.com/robinjoseph08/memento/pkg/errorstack"
+	"github.com/robinjoseph08/memento/pkg/version"
 )
 
 const CookieName = "memento_session"
@@ -75,7 +76,7 @@ func (h *Handlers) status(c *echo.Context) error {
 	if err != nil {
 		return err
 	}
-	result := Status{Claimed: claimed, AuthMode: h.authMode}
+	result := Status{Claimed: claimed, AuthMode: h.authMode, Version: version.Version}
 	if claimed {
 		session, err := h.authenticate(c)
 		if err != nil && !errors.Is(err, ErrUnauthenticated) {

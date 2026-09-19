@@ -12,18 +12,21 @@ changelog:
     - title: Features
       regexp: '^.*?\[(?:Frontend|Backend|Feature|Feat)\].*$'
       order: 0
+    - title: Mobile App
+      regexp: '^.*?\[Mobile\].*$'
+      order: 1
     - title: Bug Fixes
       regexp: '^.*?\[Fix\].*$'
-      order: 1
+      order: 2
     - title: Documentation
       regexp: '^.*?\[(?:Docs|Doc)\].*$'
-      order: 2
+      order: 3
     - title: Testing
       regexp: '^.*?\[(?:Test|E2E)\].*$'
-      order: 3
+      order: 4
     - title: CI/CD
       regexp: '^.*?\[(?:CI|CD)\].*$'
-      order: 4
+      order: 5
     - title: Other Changes
       order: 999
 

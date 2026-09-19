@@ -43,6 +43,40 @@ func (p *OSProcesses) Start(ctx context.Context, env Environment, mode string, a
 	}
 }
 
+func (p *OSProcesses) Mobile(ctx context.Context, env Environment, host, installationURL string) error {
+	values := append([]string{}, os.Environ()...)
+	values = append(values,
+		// Expo inlines EXPO_PUBLIC_ variables into the app's JavaScript.
+		"EXPO_PUBLIC_DEV_INSTALLATION_URL="+installationURL,
+		// Keep the code Expo shows on the same address, in case this machine
+		// has more than one.
+		"REACT_NATIVE_PACKAGER_HOSTNAME="+host,
+	)
+	if err := requireMemento(ctx, installationURL); err != nil {
+		return err
+	}
+	return runTerminalProcess(ctx, filepath.Join(env.CurrentRoot, "mobile"), values, "pnpm", "start")
+}
+
+// requireMemento catches a web port recorded by servers that are gone, still
+// starting, or running without the API, before a phone is pointed at it.
+func requireMemento(ctx context.Context, installationURL string) error {
+	unanswered := fmt.Errorf("nothing answers as Memento at %s; run mise start in this worktree first, then run this in a second terminal", installationURL)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, installationURL+"/api/identity/status", nil)
+	if err != nil {
+		return unanswered
+	}
+	response, err := (&http.Client{Timeout: 3 * time.Second}).Do(request)
+	if err != nil {
+		return unanswered
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return unanswered
+	}
+	return nil
+}
+
 func (p *OSProcesses) E2E(ctx context.Context, env Environment, project string, webPort int) error {
 	childEnv := webEnvironment(webPort)
 	if os.Getenv("TEST_DATABASE_URL") == "" {
@@ -146,6 +180,29 @@ func runSingleProcess(ctx context.Context, root string, environment []string, na
 	command := newProcess(root, environment, name, args...)
 	if err := command.Start(); err != nil {
 		return fmt.Errorf("start %s: %w", name, err)
+	}
+	done := waitForProcess(command)
+	select {
+	case err := <-done:
+		return processExitError(name, err)
+	case <-ctx.Done():
+		terminateProcess(command)
+		awaitTermination(command, done)
+		return nil
+	}
+}
+
+// runTerminalProcess runs a command that takes over the terminal, as Expo does
+// to read single keys. Only the terminal's foreground process group may change
+// terminal settings, and any other group that tries is stopped, so the child's
+// group is moved to the foreground. Ctrl-C then goes to the child alone.
+func runTerminalProcess(ctx context.Context, root string, environment []string, name string, args ...string) error {
+	command := newProcess(root, environment, name, args...)
+	command.SysProcAttr.Foreground = true
+	command.SysProcAttr.Ctty = int(os.Stdin.Fd())
+	if err := command.Start(); err != nil {
+		// There is no terminal to take over, as under CI or an agent.
+		return runSingleProcess(ctx, root, environment, name, args...)
 	}
 	done := waitForProcess(command)
 	select {

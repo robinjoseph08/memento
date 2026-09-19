@@ -1,0 +1,4 @@
+# Both packages ship prebuilt binaries, so their fallback build scripts stay off.
+allowBuilds:
+  "@parcel/watcher": false
+  unrs-resolver: false

@@ -26,6 +26,7 @@ tmp
 .air.toml
 .wktr.yaml
 e2e
+mobile
 **/*_test.go
 playwright.config.ts
 vitest.config.ts

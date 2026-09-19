@@ -34,10 +34,13 @@ type PersonSummary struct {
 }
 
 // Status describes installation claiming and the current browser's identity.
+// It is public, and the Mobile App checks Version against the oldest server it
+// supports before sign-in starts.
 type Status struct {
 	Claimed  bool    `json:"claimed"`
 	Person   *Person `json:"person"`
 	AuthMode string  `json:"auth_mode"`
+	Version  string  `json:"version"`
 }
 
 type CreatePersonRequest struct {
