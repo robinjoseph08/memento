@@ -600,6 +600,13 @@ as `http://192.168.1.20:5173`, which is this machine's address on the network
 and the web port `mise start` selected. Tap Connect. The phone reaches the API
 through Vite, the same way a browser on another machine does.
 
+To look at the app without a phone, open the same machine on Expo's port in a
+browser, such as `http://my-machine.local:8081` or `http://192.168.1.20:8081`.
+This works from another machine on the network too, which helps when the dev
+servers run on a machine you are not sitting at, and it needs no Expo account.
+It is a development preview of the same code, not something Memento ships.
+Treat a phone as the truth for layout, gestures, and anything native.
+
 The command fails when `mise start` is not running in the same worktree,
 because it reads the web port from there. If the phone cannot connect, check
 that both devices are on the same network, that the network lets devices talk

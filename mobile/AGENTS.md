@@ -26,6 +26,9 @@ specification in issue #67 and ADR 0013 before adding to it.
   platform instead of imitating the web.
 - Plain `http` is for development. Gate it on `__DEV__` so a store build can
   never accept it.
+- The browser build that Expo serves is a development preview for looking at
+  a screen without a phone. Memento does not ship it. Keep it rendering, but
+  never trade native behavior for it.
 - Install Expo packages with `pnpm expo install` so versions match the SDK.
   Expo Go is the dev client until Push needs a development build, so do not
   add a library that needs custom native code without saying so first.
