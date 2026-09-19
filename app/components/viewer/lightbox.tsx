@@ -7,6 +7,7 @@ import { useCast } from "../../hooks/use-cast";
 import { cn } from "../../lib/utils";
 import type { ViewerEntry } from "../../types/generated/publishing";
 import { Button } from "../ui/button";
+import { CastRemote } from "./cast-remote";
 import { aspectRatio, captureDate } from "./labels";
 import { PhotoStage } from "./photo-stage";
 import { ChapterSelect, VideoStage } from "./video-player";
@@ -80,12 +81,17 @@ export function Lightbox({
   };
   // Curator preview is read only, so it offers neither Cast nor AirPlay.
   const cast = useCast(entry, !personName);
-  // A video on the TV does not also play here.
+  // A video on the TV does not also play here: a remote control takes the
+  // player's place, and chapters and Space reach the TV instead. When casting
+  // stops, the player comes back without starting on its own.
   const casting = cast.receiver !== "";
-  useEffect(() => {
-    if (casting) videoRef.current?.pause();
-  }, [casting]);
+  const [castID, setCastID] = useState("");
+  if (casting && castID !== currentID) setCastID(currentID);
   function seek(chapter: { start: number }) {
+    if (casting) {
+      cast.seek(chapter.start);
+      return;
+    }
     const video = videoRef.current;
     if (!video) return;
     video.currentTime = chapter.start;
@@ -187,6 +193,10 @@ export function Lightbox({
               )
             ) {
               event.preventDefault();
+              if (casting) {
+                cast.playOrPause();
+                return;
+              }
               const video = videoRef.current;
               if (!video) return;
               if (video.paused) void video.play()?.catch(() => {});
@@ -337,11 +347,21 @@ export function Lightbox({
                   className="flex h-full w-full items-center justify-center"
                   key={entry.id}
                 >
-                  {kind === "video" ? (
+                  {kind === "video" && casting && entry.available ? (
+                    <CastRemote
+                      entry={entry}
+                      onPlayOrPause={cast.playOrPause}
+                      onReplay={cast.replay}
+                      onSeek={cast.seek}
+                      onTime={trackChapter}
+                      ready={cast.showingID === entry.id}
+                      receiver={cast.receiver}
+                    />
+                  ) : kind === "video" ? (
                     <VideoStage
                       actionsTarget={stageActions}
                       airPlay={!personName}
-                      autoPlay={!casting}
+                      autoPlay={castID !== entry.id}
                       entry={entry}
                       onTime={trackChapter}
                       videoRef={videoRef}
@@ -375,14 +395,11 @@ export function Lightbox({
                   <p className="font-heading text-lg leading-tight">
                     {entry.title || "Video"}
                   </p>
-                  {/* Chapters seek the player here, which the TV ignores. */}
-                  {!casting && (
-                    <ChapterSelect
-                      activeIndex={chapterIndex}
-                      entry={entry}
-                      onSeek={seek}
-                    />
-                  )}
+                  <ChapterSelect
+                    activeIndex={chapterIndex}
+                    entry={entry}
+                    onSeek={seek}
+                  />
                   <p className="text-xs text-muted">
                     {captureDate(entry.captured_at, true)}
                   </p>

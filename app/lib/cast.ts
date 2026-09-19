@@ -52,6 +52,42 @@ export function castSnapshot() {
   return snapshot;
 }
 
+// Playback on the receiver ticks every second, so it has a store of its own:
+// only the remote control repaints with it, not the whole lightbox.
+export type CastPlayback = {
+  // Whether the receiver still has media; false again once a video ends.
+  loaded: boolean;
+  paused: boolean;
+  currentTime: number;
+  duration: number;
+};
+
+const stopped: CastPlayback = {
+  loaded: false,
+  paused: false,
+  currentTime: 0,
+  duration: 0,
+};
+let playback = stopped;
+const playbackListeners = new Set<() => void>();
+let remote:
+  | {
+      player: cast.framework.RemotePlayer;
+      controller: cast.framework.RemotePlayerController;
+    }
+  | undefined;
+
+export function subscribeCastPlayback(listener: () => void) {
+  playbackListeners.add(listener);
+  return () => {
+    playbackListeners.delete(listener);
+  };
+}
+
+export function castPlayback() {
+  return playback;
+}
+
 let requested = false;
 
 // connectCast loads the SDK once. Only Chromium browsers can cast, so others
@@ -99,6 +135,29 @@ function watch() {
     sync,
   );
   sync();
+  const player = new cast.framework.RemotePlayer();
+  const controller = new cast.framework.RemotePlayerController(player);
+  remote = { player, controller };
+  controller.addEventListener(
+    cast.framework.RemotePlayerEventType.ANY_CHANGE,
+    () => {
+      const next = {
+        loaded: player.isMediaLoaded,
+        paused: player.isPaused,
+        currentTime: player.currentTime,
+        duration: player.duration,
+      };
+      if (
+        next.loaded === playback.loaded &&
+        next.paused === playback.paused &&
+        next.currentTime === playback.currentTime &&
+        next.duration === playback.duration
+      )
+        return;
+      playback = next;
+      for (const listener of playbackListeners) listener();
+    },
+  );
 }
 
 // showing reads back what showOnCast recorded on the receiver's current media.
@@ -119,8 +178,21 @@ export function startCast() {
     .catch(() => {});
 }
 
+// stopCast ends the session and clears the TV. It is safe to call when
+// nothing is connected, including before the SDK has loaded.
 export function stopCast() {
-  cast.framework.CastContext.getInstance().endCurrentSession(true);
+  if (snapshot.receiver)
+    cast.framework.CastContext.getInstance().endCurrentSession(true);
+}
+
+export function playOrPauseCast() {
+  remote?.controller.playOrPause();
+}
+
+export function seekCast(seconds: number) {
+  if (!remote) return;
+  remote.player.currentTime = seconds;
+  remote.controller.seek();
 }
 
 // showOnCast replaces whatever the connected receiver is showing.

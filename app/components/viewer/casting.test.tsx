@@ -1,6 +1,7 @@
 import {
   act,
   cleanup,
+  fireEvent,
   render,
   screen,
   waitFor,
@@ -66,7 +67,10 @@ const party: ViewerEntry = {
   preview_url: "/media/lake/video-1",
   playback_url: "/media/lake/video-1/playback",
   chapter_status: "complete",
-  chapters: [{ title: "Arrival", start: 0, end: 2 }],
+  chapters: [
+    { title: "Arrival", start: 0, end: 2 },
+    { title: "Cake", start: 2, end: 6 },
+  ],
 };
 
 // The slice of Google's sender SDK the app touches. The real one is a script
@@ -83,6 +87,18 @@ function fakeCastSDK() {
     device = name;
     playing = media;
     for (const listener of listeners) listener();
+  };
+  // The remote player mirrors the TV; the controller sends it commands.
+  const player = {
+    isMediaLoaded: false,
+    isPaused: false,
+    currentTime: 0,
+    duration: 0,
+  };
+  const playerListeners = new Set<() => void>();
+  const tv = (next: Partial<typeof player>) => {
+    Object.assign(player, next);
+    for (const listener of playerListeners) listener();
   };
   const session = {
     getCastDevice: () => ({ friendlyName: device }),
@@ -104,9 +120,16 @@ function fakeCastSDK() {
           contentType: request.media.contentType,
           title: request.media.metadata.title,
         });
+        tv({ isMediaLoaded: true, isPaused: false, currentTime: 0 });
         return Promise.resolve();
       },
     ),
+  };
+  const controller = {
+    addEventListener: (_: string, listener: () => void) =>
+      playerListeners.add(listener),
+    playOrPause: vi.fn(() => tv({ isPaused: !player.isPaused })),
+    seek: vi.fn(() => tv({})),
   };
   const context = {
     setOptions: vi.fn(),
@@ -123,6 +146,13 @@ function fakeCastSDK() {
   vi.stubGlobal("cast", {
     framework: {
       CastContext: { getInstance: () => context },
+      RemotePlayer: function () {
+        return player;
+      },
+      RemotePlayerController: function () {
+        return controller;
+      },
+      RemotePlayerEventType: { ANY_CHANGE: "anyChanged" },
       CastContextEventType: { CAST_STATE_CHANGED: "caststatechanged" },
       CastState: {
         NO_DEVICES_AVAILABLE: "NO_DEVICES_AVAILABLE",
@@ -151,7 +181,7 @@ function fakeCastSDK() {
       },
     },
   });
-  return { context, emit, loaded, failing };
+  return { context, controller, player, tv, emit, loaded, failing };
 }
 
 afterEach(() => {
@@ -276,19 +306,22 @@ it("offers Cast only with a receiver nearby, follows the lightbox on the TV, and
     "https://memento.example/signed/preview/photo-2",
   );
 
-  // Closing the lightbox leaves the TV alone.
+  // Closing the lightbox takes the photo off the TV: nothing outside the
+  // lightbox could stop it later.
   await user.click(within(dialog).getByRole("button", { name: "Close photo" }));
   await waitFor(() =>
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
   );
-  expect(sdk.context.endCurrentSession).not.toHaveBeenCalled();
+  expect(sdk.context.endCurrentSession).toHaveBeenCalledWith(true);
 
-  // A video opened during the session plays on the TV, not on both screens.
+  // A cast video plays on the TV only: the player here gives way to a remote.
   await user.click(screen.getByRole("link", { name: /Videos/ }));
   await user.click(
     await screen.findByRole("link", { name: "Open video Birthday party" }),
   );
   dialog = await screen.findByRole("dialog", { name: "Video 1 of 1" });
+  expect(within(dialog).getByLabelText("Birthday party").tagName).toBe("VIDEO");
+  await user.click(within(dialog).getByRole("button", { name: "Cast" }));
   await waitFor(() =>
     expect(sdk.loaded.at(-1)).toEqual({
       url: "https://memento.example/signed/playback/video-1",
@@ -296,26 +329,59 @@ it("offers Cast only with a receiver nearby, follows the lightbox on the TV, and
       title: "Birthday party",
     }),
   );
-  expect(within(dialog).getByLabelText("Birthday party")).not.toHaveAttribute(
-    "autoplay",
-  );
   expect(sdk.loaded).toHaveLength(4);
-  // Chapters would only seek the paused player here, so they wait for stop.
+  const remote = await within(dialog).findByRole("group", {
+    name: "Playing on Living room TV",
+  });
+  expect(dialog.querySelector("video")).toBeNull();
+  act(() => sdk.tv({ currentTime: 1, duration: 6 }));
+  expect(within(remote).getByText("0:01")).toBeVisible();
+  expect(within(remote).getByText("0:06")).toBeVisible();
+  await user.click(within(remote).getByRole("button", { name: "Pause" }));
+  expect(sdk.controller.playOrPause).toHaveBeenCalledOnce();
+  await user.click(within(remote).getByRole("button", { name: "Play" }));
+  expect(sdk.controller.playOrPause).toHaveBeenCalledTimes(2);
+  // Space reaches the TV the same way it reaches the player.
+  await user.keyboard(" ");
+  expect(sdk.controller.playOrPause).toHaveBeenCalledTimes(3);
+  fireEvent.change(within(remote).getByRole("slider", { name: "Seek" }), {
+    target: { value: "3" },
+  });
+  fireEvent.pointerUp(within(remote).getByRole("slider", { name: "Seek" }));
+  expect(sdk.player.currentTime).toBe(3);
+  expect(sdk.controller.seek).toHaveBeenCalledOnce();
+  // Chapters follow the TV and seek it.
+  const picker = within(dialog).getByRole("combobox", { name: "Chapter" });
+  expect(picker).toHaveTextContent("Cake");
+  await user.click(picker);
+  await user.click(screen.getByRole("option", { name: /Arrival/ }));
+  expect(sdk.player.currentTime).toBe(0);
+  expect(sdk.controller.seek).toHaveBeenCalledTimes(2);
+
+  // When the video ends the TV has nothing loaded, so the remote offers it
+  // again instead of a pause button that does nothing.
+  act(() => sdk.tv({ isMediaLoaded: false, currentTime: 0, duration: 0 }));
   expect(
-    within(dialog).queryByRole("combobox", { name: "Chapter" }),
+    within(remote).queryByRole("button", { name: "Pause" }),
   ).not.toBeInTheDocument();
+  await user.click(within(remote).getByRole("button", { name: "Play again" }));
+  await waitFor(() => expect(sdk.loaded).toHaveLength(5));
+  expect(
+    await within(remote).findByRole("button", { name: "Pause" }),
+  ).toBeVisible();
 
   await user.click(
     within(dialog).getByRole("button", { name: "Stop casting" }),
   );
-  expect(sdk.context.endCurrentSession).toHaveBeenCalledWith(true);
+  expect(sdk.context.endCurrentSession).toHaveBeenCalledTimes(2);
   await waitFor(() =>
     expect(within(dialog).queryByRole("status")).not.toBeInTheDocument(),
   );
   expect(within(dialog).getByRole("button", { name: "Cast" })).toBeVisible();
-  expect(
-    within(dialog).getByRole("combobox", { name: "Chapter" }),
-  ).toBeVisible();
+  // The player returns without starting on its own.
+  expect(within(dialog).getByLabelText("Birthday party")).not.toHaveAttribute(
+    "autoplay",
+  );
 
   // A session joined after a reload already shows this video, so it is named
   // and not loaded again from the start.
@@ -327,5 +393,5 @@ it("offers Cast only with a receiver nearby, follows the lightbox on the TV, and
   expect(await within(dialog).findByRole("status")).toHaveTextContent(
     "Showing Birthday party on Den TV",
   );
-  expect(sdk.loaded).toHaveLength(4);
+  expect(sdk.loaded).toHaveLength(5);
 });
