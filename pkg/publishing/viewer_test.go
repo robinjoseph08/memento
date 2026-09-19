@@ -66,6 +66,7 @@ func TestViewerPagesUseLocalCaptureTimeAndEntryIDWithoutPrivateMetadata(t *testi
 	previous := ""
 	for _, entry := range append(first.Entries, second.Entries...) {
 		require.Greater(t, entry.ID, previous)
+		require.Empty(t, entry.Title, "gallery photos have no presentation title")
 		require.Equal(t, "2026-07-05T00:01:00", entry.CapturedAt)
 		require.Equal(t, "/api/media/viewer/"+curator.ID.String()+"/entries/"+entry.ID+"/original?v="+strings.Split(entry.ThumbnailURL, "?v=")[1], entry.DownloadURL)
 		previous = entry.ID

@@ -163,7 +163,14 @@ test("Curator scopes access, previews two people, publishes, and hides the Album
 
   await outline.getByRole("link", { name: /Tuesday, June 2, 2026/ }).click();
   // Outside Select mode, the tile opens its item access editor.
-  await page.getByRole("img", { name: "coast-03.jpg", exact: true }).click();
+  await page
+    .getByRole("region", { name: "Tuesday, June 2, 2026" })
+    .getByRole("img", {
+      name: "Photo taken June 2, 2026 at 12:00 AM",
+      exact: true,
+    })
+    .nth(1)
+    .click();
   const item = page.getByRole("dialog", { name: "Photo details", exact: true });
   await expect(item).toBeVisible();
   const alexItem = item.getByRole("combobox", { name: "Access for Alex" });
@@ -183,11 +190,30 @@ test("Curator scopes access, previews two people, publishes, and hides the Album
     page.getByRole("img", { name: "Album cover", exact: true }),
   );
   const alexPhoto = await loadedImage(
-    page.getByRole("img", { name: "coast-05", exact: true }),
+    page.getByRole("img", {
+      name: "Photo taken June 3, 2026 at 10:00 AM",
+      exact: true,
+    }),
   );
   expect(alexCover).toBe(alexPhoto);
-  await loadedImage(page.getByRole("img", { name: "coast-02", exact: true }));
-  await expect(page.getByRole("img", { name: /coast-0[13]/ })).toHaveCount(0);
+  await loadedImage(
+    page.getByRole("img", {
+      name: "Photo taken June 2, 2026 at 12:00 AM",
+      exact: true,
+    }),
+  );
+  await expect(
+    page.getByRole("img", {
+      name: "Photo taken June 1, 2026 at 11:59 PM",
+      exact: true,
+    }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("img", {
+      name: "Photo taken June 2, 2026 at 12:00 AM",
+      exact: true,
+    }),
+  ).toHaveCount(1);
   await captureLayouts(page, "preview-alex");
   await page.getByRole("link", { name: "Videos 2", exact: true }).click();
   await expect(page).toHaveURL(/tab=videos/);
@@ -210,14 +236,23 @@ test("Curator scopes access, previews two people, publishes, and hides the Album
   await expect(
     page.getByText("No videos are shared with Sam yet."),
   ).toBeVisible();
-  await expect(page.getByRole("img", { name: /coast-0[2456]/ })).toHaveCount(0);
+  await expect(
+    page.getByRole("img", {
+      name: /Photo taken June (2|3), 2026/,
+    }),
+  ).toHaveCount(0);
   const samCover = await loadedImage(
     page.getByRole("img", { name: "Album cover", exact: true }),
   );
   expect(samCover).not.toBe(alexCover);
   await page.getByRole("link", { name: "Photos 1", exact: true }).click();
   expect(
-    await loadedImage(page.getByRole("img", { name: "coast-01", exact: true })),
+    await loadedImage(
+      page.getByRole("img", {
+        name: "Photo taken June 1, 2026 at 11:59 PM",
+        exact: true,
+      }),
+    ),
   ).toBe(samCover);
   await captureLayouts(page, "preview-sam");
   await choosePreview(page, "Alex");
@@ -226,7 +261,10 @@ test("Curator scopes access, previews two people, publishes, and hides the Album
     page.getByRole("img", { name: "Album cover", exact: true }),
   ).toHaveAttribute("src", alexCover);
   await expect(
-    page.getByRole("img", { name: "coast-01", exact: true }),
+    page.getByRole("img", {
+      name: "Photo taken June 1, 2026 at 11:59 PM",
+      exact: true,
+    }),
   ).toHaveCount(0);
 
   // Alex can see only June 3's cover and Sam only June 1's, so preferring
@@ -334,7 +372,10 @@ test("Curator scopes access, previews two people, publishes, and hides the Album
       `POST /api${editorURL.pathname}/publish`,
     ]);
     const memberPhoto = await loadedImage(
-      member.getByRole("img", { name: "coast-05", exact: true }),
+      member.getByRole("img", {
+        name: "Photo taken June 3, 2026 at 10:00 AM",
+        exact: true,
+      }),
     );
     expect(
       await loadedImage(
@@ -343,11 +384,23 @@ test("Curator scopes access, previews two people, publishes, and hides the Album
     ).toBe(memberPhoto);
     expect(memberPhoto).not.toBe(alexCover);
     await loadedImage(
-      member.getByRole("img", { name: "coast-02", exact: true }),
+      member.getByRole("img", {
+        name: "Photo taken June 2, 2026 at 12:00 AM",
+        exact: true,
+      }),
     );
-    await expect(member.getByRole("img", { name: /coast-0[13]/ })).toHaveCount(
-      0,
-    );
+    await expect(
+      member.getByRole("img", {
+        name: "Photo taken June 1, 2026 at 11:59 PM",
+        exact: true,
+      }),
+    ).toHaveCount(0);
+    await expect(
+      member.getByRole("img", {
+        name: "Photo taken June 2, 2026 at 12:00 AM",
+        exact: true,
+      }),
+    ).toHaveCount(1);
     await expect(
       member.getByRole("link", { name: "People", exact: true }),
     ).toHaveCount(0);
@@ -383,7 +436,12 @@ test("Curator scopes access, previews two people, publishes, and hides the Album
       .click();
     await choosePreview(page, "Alex");
     await counts(page, 2, 2);
-    await loadedImage(page.getByRole("img", { name: "coast-05", exact: true }));
+    await loadedImage(
+      page.getByRole("img", {
+        name: "Photo taken June 3, 2026 at 10:00 AM",
+        exact: true,
+      }),
+    );
 
     // Remove all of Sam's decisions after a visibility review, then delete
     // the Album with a typed title. Immich is never written to.
@@ -480,9 +538,11 @@ test("Cover Order chooses each viewer's first accessible cover and shows a place
   await rules.getByRole("button", { name: "Save access" }).click();
   await expect(rules).toHaveCount(0);
 
-  const expectCover = async (name: string, photo: string) => {
+  const expectCover = async (name: string, photo: string, index = 0) => {
     await choosePreviewFromOutline(page, outline, name);
-    const photoImage = page.getByRole("img", { name: photo, exact: true });
+    const photoImage = page
+      .getByRole("img", { name: photo, exact: true })
+      .nth(index);
     await expect(photoImage).toBeVisible();
     const photoSource = await photoImage.getAttribute("src");
     expect(photoSource).toBeTruthy();
@@ -490,8 +550,8 @@ test("Cover Order chooses each viewer's first accessible cover and shows a place
     await expect(cover).toHaveAttribute("src", photoSource!);
     await loadedImage(cover);
   };
-  await expectCover("Alex", "coast-01");
-  await expectCover("Sam", "coast-03");
+  await expectCover("Alex", "Photo taken June 1, 2026 at 11:59 PM");
+  await expectCover("Sam", "Photo taken June 2, 2026 at 12:00 AM", 1);
 
   await outline.getByRole("link", { name: "Album cover", exact: true }).click();
   const coverPane = page.getByRole("region", {
@@ -507,12 +567,20 @@ test("Cover Order chooses each viewer's first accessible cover and shows a place
   await expect(coverPane.getByRole("status")).toHaveText("Cover order saved.");
   // Reload proves the saved order, not just the unsaved editor preview.
   await page.reload();
-  await expectCover("Alex", "coast-05");
-  await expectCover("Sam", "coast-03");
+  await expectCover("Alex", "Photo taken June 3, 2026 at 10:00 AM");
+  await expectCover("Sam", "Photo taken June 2, 2026 at 12:00 AM", 1);
 
-  const denyPhoto = async (day: string, filename: string, person: string) => {
+  const denyPhoto = async (
+    day: string,
+    label: string,
+    person: string,
+    index = 0,
+  ) => {
     await outline.getByRole("link", { name: day }).click();
-    await page.getByRole("img", { name: filename, exact: true }).click();
+    await page
+      .getByRole("img", { name: label, exact: true })
+      .nth(index)
+      .click();
     const details = page.getByRole("dialog", { name: "Photo details" });
     await details
       .getByRole("combobox", { name: `Access for ${person}` })
@@ -523,8 +591,12 @@ test("Cover Order chooses each viewer's first accessible cover and shows a place
   };
   // Denying the preferred cover advances to June 2, not capture-order June 1
   // or unrelated media from June 3.
-  await denyPhoto("Wednesday, June 3, 2026", "coast-05.jpg", "Alex");
-  await expectCover("Alex", "coast-03");
+  await denyPhoto(
+    "Wednesday, June 3, 2026",
+    "Photo taken June 3, 2026 at 10:00 AM",
+    "Alex",
+  );
+  await expectCover("Alex", "Photo taken June 2, 2026 at 12:00 AM", 1);
   await counts(page, 3, 2);
 
   await page
@@ -555,12 +627,22 @@ test("Cover Order chooses each viewer's first accessible cover and shows a place
       ),
     ).toBe(
       await loadedImage(
-        member.getByRole("img", { name: "coast-03", exact: true }),
+        member
+          .getByRole("img", {
+            name: "Photo taken June 2, 2026 at 12:00 AM",
+            exact: true,
+          })
+          .nth(1),
       ),
     );
 
     // Sam still has a photo and video, but neither is a configured Moment cover.
-    await denyPhoto("Tuesday, June 2, 2026", "coast-03.jpg", "Sam");
+    await denyPhoto(
+      "Tuesday, June 2, 2026",
+      "Photo taken June 2, 2026 at 12:00 AM",
+      "Sam",
+      1,
+    );
     await choosePreviewFromOutline(page, outline, "Sam");
     await counts(page, 1, 1);
     await expect(
@@ -569,7 +651,12 @@ test("Cover Order chooses each viewer's first accessible cover and shows a place
     await expect(
       page.getByRole("img", { name: "Album cover", exact: true }),
     ).toHaveCount(0);
-    await loadedImage(page.getByRole("img", { name: "coast-02", exact: true }));
+    await loadedImage(
+      page.getByRole("img", {
+        name: "Photo taken June 2, 2026 at 12:00 AM",
+        exact: true,
+      }),
+    );
 
     await member.reload();
     await counts(member, 1, 1);
@@ -578,11 +665,17 @@ test("Cover Order chooses each viewer's first accessible cover and shows a place
       member.getByRole("img", { name: "Album cover", exact: true }),
     ).toHaveCount(0);
     await loadedImage(
-      member.getByRole("img", { name: "coast-02", exact: true }),
+      member.getByRole("img", {
+        name: "Photo taken June 2, 2026 at 12:00 AM",
+        exact: true,
+      }),
     );
     await expect(
-      member.getByRole("img", { name: "coast-03", exact: true }),
-    ).toHaveCount(0);
+      member.getByRole("img", {
+        name: "Photo taken June 2, 2026 at 12:00 AM",
+        exact: true,
+      }),
+    ).toHaveCount(1);
     await member.goto("/albums");
     await expect(card).toContainText("1 photo, 1 video");
     await expect(card.getByText("No cover", { exact: true })).toBeVisible();

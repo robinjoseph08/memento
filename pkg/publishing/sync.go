@@ -58,10 +58,13 @@ type syncState struct {
 	// otherAlbums lists, by Immich asset ID, the other Albums currently
 	// showing that Media Item.
 	otherAlbums map[string][]SyncAlbumRef
+	// videoTitles preserves the global Curator title when an existing Media
+	// Item is added to this Album for the first time.
+	videoTitles map[string]*string
 }
 
 func (m *Module) loadSyncState(ctx context.Context, db bun.IDB, albumID string, lock bool) (syncState, error) {
-	state := syncState{entries: map[string]syncEntry{}, entriesByID: map[string]syncEntry{}, labels: map[string]string{}, dates: map[string][]string{}, otherAlbums: map[string][]SyncAlbumRef{}}
+	state := syncState{entries: map[string]syncEntry{}, entriesByID: map[string]syncEntry{}, labels: map[string]string{}, dates: map[string][]string{}, otherAlbums: map[string][]SyncAlbumRef{}, videoTitles: map[string]*string{}}
 	album, err := albumRow(ctx, db, albumID, lock)
 	if err != nil {
 		return state, err
@@ -133,7 +136,8 @@ func sortMoments(moments []models.Moment, momentDates map[models.UUID][]string) 
 }
 
 // attachOtherAlbums records which other Albums show each listed asset, so
-// the review can preview shared-metadata consequences.
+// the review can preview shared-metadata consequences. It also keeps the
+// global title of videos that are new to this Album.
 func (state *syncState) attachOtherAlbums(ctx context.Context, db bun.IDB, source syncSource) error {
 	sourceIDs := make([]string, 0, len(source.members)+len(source.removals))
 	for _, member := range source.members {
@@ -143,25 +147,30 @@ func (state *syncState) attachOtherAlbums(ctx context.Context, db bun.IDB, sourc
 		sourceIDs = append(sourceIDs, sourceID)
 	}
 	state.otherAlbums = map[string][]SyncAlbumRef{}
+	state.videoTitles = map[string]*string{}
 	if len(sourceIDs) == 0 {
 		return nil
 	}
 	type otherRow struct {
-		SourceID string
-		AlbumID  models.UUID
-		Title    string
+		SourceID   string
+		VideoTitle *string
+		AlbumID    *models.UUID
+		Title      *string
 	}
 	var others []otherRow
-	err := db.NewSelect().TableExpr("album_entries AS entry").ColumnExpr("item.source_id, album.id AS album_id, album.title").
-		Join("JOIN media_items AS item ON item.id = entry.media_item_id").
-		Join("JOIN albums AS album ON album.id = entry.album_id").
-		Where("item.source_id IN (?) AND entry.album_id <> ? AND entry.removed_at IS NULL", bun.List(sourceIDs), state.album.ID).
-		OrderExpr("lower(album.title), album.id").Scan(ctx, &others)
+	err := db.NewSelect().TableExpr("media_items AS item").ColumnExpr("item.source_id, item.video_title, album.id AS album_id, album.title").
+		Join("LEFT JOIN album_entries AS entry ON entry.media_item_id = item.id AND entry.album_id <> ? AND entry.removed_at IS NULL", state.album.ID).
+		Join("LEFT JOIN albums AS album ON album.id = entry.album_id").
+		Where("item.source_id IN (?)", bun.List(sourceIDs)).
+		OrderExpr("item.source_id, lower(album.title), album.id").Scan(ctx, &others)
 	if err != nil {
 		return errorstack.CaptureContext(ctx, err)
 	}
 	for _, row := range others {
-		state.otherAlbums[row.SourceID] = append(state.otherAlbums[row.SourceID], SyncAlbumRef{ID: row.AlbumID.String(), Title: row.Title})
+		state.videoTitles[row.SourceID] = row.VideoTitle
+		if row.AlbumID != nil && row.Title != nil {
+			state.otherAlbums[row.SourceID] = append(state.otherAlbums[row.SourceID], SyncAlbumRef{ID: row.AlbumID.String(), Title: *row.Title})
+		}
 	}
 	return nil
 }
@@ -466,7 +475,7 @@ func planRemovals(state syncState, source syncSource, review *SyncReview, plan *
 		// entry stays retained so a reappearance is a returning addition.
 		if entry.ExcludedAt != nil {
 			plan.removals = append(plan.removals, entry)
-			review.Removals = append(review.Removals, SyncRemoval{EntryID: entry.ID.String(), Filename: entry.Item.Filename, Kind: entry.Item.Kind,
+			review.Removals = append(review.Removals, SyncRemoval{EntryID: entry.ID.String(), Filename: entry.Item.Filename, Kind: entry.Item.Kind, Title: explicitVideoTitle(entry.Item.Kind, entry.Item.VideoTitle),
 				CapturedAt: captureLabel(entry.Item.CapturedAt), ThumbnailURL: SourceAssetThumbnailURL(entry.Item.SourceID), Excluded: true, Reason: source.removals[sourceID]})
 			continue
 		}
@@ -477,7 +486,7 @@ func planRemovals(state syncState, source syncSource, review *SyncReview, plan *
 		plan.removals = append(plan.removals, entry)
 		removed[entry.ID.String()] = true
 		delete(plan.after.EntryMoments, entry.ID.String())
-		review.Removals = append(review.Removals, SyncRemoval{EntryID: entry.ID.String(), Filename: entry.Item.Filename, Kind: entry.Item.Kind,
+		review.Removals = append(review.Removals, SyncRemoval{EntryID: entry.ID.String(), Filename: entry.Item.Filename, Kind: entry.Item.Kind, Title: explicitVideoTitle(entry.Item.Kind, entry.Item.VideoTitle),
 			CapturedAt: captureLabel(entry.Item.CapturedAt), ThumbnailURL: entryThumbnailURL(entry.ID.String(), entry.Item.ContentVersion),
 			MomentID: momentID, MomentLabel: state.labels[momentID], Cover: state.structure.Moments[momentID].CoverID == entry.ID.String(), Reason: source.removals[sourceID]})
 	}
@@ -524,7 +533,7 @@ func planAdditions(state syncState, source syncSource, request SyncRequest, revi
 			if excluded {
 				thumbnail = SourceAssetThumbnailURL(entry.Item.SourceID)
 			}
-			review.Changes = append(review.Changes, SyncChange{EntryID: entry.ID.String(), Filename: entry.Item.Filename, Kind: entry.Item.Kind,
+			review.Changes = append(review.Changes, SyncChange{EntryID: entry.ID.String(), Filename: entry.Item.Filename, Kind: entry.Item.Kind, Title: explicitVideoTitle(entry.Item.Kind, entry.Item.VideoTitle),
 				ThumbnailURL: thumbnail, Excluded: excluded, Fields: changedFields(entry.Item, member.item),
 				CapturedAt: captureLabel(entry.Item.CapturedAt), NewCapturedAt: captureLabel(member.item.CapturedAt),
 				Available: !entry.Item.Offline && !entry.Item.Trashed, NewAvailable: !member.item.Offline && !member.item.Trashed,
@@ -534,11 +543,17 @@ func planAdditions(state syncState, source syncSource, request SyncRequest, revi
 		if !member.full {
 			return nil, syncStale()
 		}
+		if member.item.Kind == "VIDEO" {
+			member.item.VideoTitle = state.videoTitles[member.item.SourceID]
+		}
 		date := member.item.CapturedAt.Format("2006-01-02")
-		addition := SyncAddition{SourceID: member.item.SourceID, Filename: member.item.Filename, Kind: member.item.Kind, CapturedAt: captureLabel(member.item.CapturedAt),
+		addition := SyncAddition{SourceID: member.item.SourceID, Filename: member.item.Filename, Kind: member.item.Kind, Title: explicitVideoTitle(member.item.Kind, member.item.VideoTitle), CapturedAt: captureLabel(member.item.CapturedAt),
 			ThumbnailURL: SourceAssetThumbnailURL(member.item.SourceID), Returning: exists, SuggestedMomentID: suggestMoment(state, date), OtherAlbums: orEmpty(state.otherAlbums[member.item.SourceID])}
 		planned := plannedAddition{member: member, entryID: placeholderEntryID(member.item.SourceID)}
 		if exists {
+			member.item.VideoTitle = entry.Item.VideoTitle
+			addition.Title = explicitVideoTitle(entry.Item.Kind, entry.Item.VideoTitle)
+			planned.member = member
 			planned.entryID = entry.ID.String()
 			copied := entry
 			planned.existing = &copied
@@ -645,11 +660,13 @@ func planCovers(state syncState, request SyncRequest, removed map[string]bool, r
 			valid[entryID] = true
 			option := SyncCoverOption{EntryID: entryID}
 			if existing, ok := state.entriesByID[entryID]; ok {
-				option.Filename, option.ThumbnailURL = existing.Item.Filename, entryThumbnailURL(entryID, existing.Item.ContentVersion)
+				option.Filename, option.Kind, option.Title = existing.Item.Filename, existing.Item.Kind, explicitVideoTitle(existing.Item.Kind, existing.Item.VideoTitle)
+				option.CapturedAt, option.ThumbnailURL = captureLabel(existing.Item.CapturedAt), entryThumbnailURL(entryID, existing.Item.ContentVersion)
 			}
 			for _, planned := range plan.additions {
 				if planned.entryID == entryID {
-					option.Filename, option.ThumbnailURL = planned.member.item.Filename, SourceAssetThumbnailURL(planned.member.item.SourceID)
+					option.Filename, option.Kind, option.Title = planned.member.item.Filename, planned.member.item.Kind, explicitVideoTitle(planned.member.item.Kind, planned.member.item.VideoTitle)
+					option.CapturedAt, option.ThumbnailURL = captureLabel(planned.member.item.CapturedAt), SourceAssetThumbnailURL(planned.member.item.SourceID)
 				}
 			}
 			choice.Options = append(choice.Options, option)

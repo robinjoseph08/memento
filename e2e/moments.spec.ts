@@ -45,11 +45,11 @@ test("arranges a large Moment and reviews face-based access on desktop and mobil
   });
   const media = firstMoment.getByRole("list", { name: "Moment media" });
   await expect(
-    media.getByRole("img", { name: /workbench-\d+\.jpg/ }),
+    media.getByRole("img", { name: /^Photo taken June 4, 2026 at/ }),
   ).toHaveCount(24);
   await firstMoment.getByRole("button", { name: "Show all 101" }).click();
   await expect(
-    media.getByRole("img", { name: /workbench-\d+\.jpg/ }),
+    media.getByRole("img", { name: /^Photo taken June 4, 2026 at/ }),
   ).toHaveCount(101);
   await firstMoment.getByRole("button", { name: "Show fewer" }).click();
 
@@ -92,7 +92,8 @@ test("arranges a large Moment and reviews face-based access on desktop and mobil
     .getByRole("button", { name: "Select", exact: true })
     .click();
   await firstMoment
-    .getByRole("checkbox", { name: "Select workbench-002.jpg" })
+    .getByRole("checkbox", { name: /^Select Photo(?: \d+)? taken/ })
+    .nth(1)
     .check();
   await firstMoment.getByRole("button", { name: "Set as cover" }).click();
   const coverDialog = page.getByRole("dialog", {
@@ -106,7 +107,8 @@ test("arranges a large Moment and reviews face-based access on desktop and mobil
     .getByRole("button", { name: "Select", exact: true })
     .click();
   await firstMoment
-    .getByRole("checkbox", { name: "Select workbench-004.jpg" })
+    .getByRole("checkbox", { name: /^Select Photo(?: \d+)? taken/ })
+    .nth(3)
     .check();
   await firstMoment.getByRole("button", { name: "Split" }).click();
   const splitDialog = page.getByRole("dialog", { name: "Split Moment" });
@@ -142,7 +144,8 @@ test("arranges a large Moment and reviews face-based access on desktop and mobil
   const original = page.getByRole("region", { name: "June 4, 2026 (1)" });
   await original.getByRole("button", { name: "Select", exact: true }).click();
   await original
-    .getByRole("checkbox", { name: "Select workbench-006.jpg" })
+    .getByRole("checkbox", { name: /^Select Photo(?: \d+)? taken/ })
+    .nth(4)
     .check();
   await original.getByRole("button", { name: "Move" }).click();
   const moveDialog = page.getByRole("dialog", { name: "Move media" });

@@ -121,6 +121,7 @@ function reviewFor(request: SyncRequest): SyncReview {
         source_id: "asset-new",
         filename: "Sunset.jpg",
         kind: "IMAGE",
+        title: "",
         captured_at: "2026-07-01T20:00:00",
         thumbnail_url: "/api/media/sources/assets/asset-new/thumbnail",
         returning: false,
@@ -135,6 +136,7 @@ function reviewFor(request: SyncRequest): SyncReview {
         entry_id: "beach",
         filename: "Beach.jpg",
         kind: "IMAGE",
+        title: "",
         captured_at: "2026-07-01T12:00:00",
         thumbnail_url: "/media/beach",
         moment_id: "day-1",
@@ -149,6 +151,7 @@ function reviewFor(request: SyncRequest): SyncReview {
         entry_id: "dunes",
         filename: "Dunes.jpg",
         kind: "IMAGE",
+        title: "",
         thumbnail_url: "/media/dunes",
         excluded: false,
         fields: ["checksum"],
@@ -168,11 +171,17 @@ function reviewFor(request: SyncRequest): SyncReview {
           {
             entry_id: "dunes",
             filename: "Dunes.jpg",
+            kind: "IMAGE",
+            title: "",
+            captured_at: "2026-07-01T13:00:00",
             thumbnail_url: "/media/dunes",
           },
           {
             entry_id: "source:asset-new",
             filename: "Sunset.jpg",
+            kind: "IMAGE",
+            title: "",
+            captured_at: "2026-07-01T20:00:00",
             thumbnail_url: "/api/media/sources/assets/asset-new/thumbnail",
           },
         ],
@@ -289,15 +298,19 @@ it("reviews additions, removals, changes, and covers before applying the reviewe
   const additions = await within(dialog).findByRole("region", {
     name: "New in Immich",
   });
-  expect(within(additions).getByText("Sunset.jpg")).toBeVisible();
+  expect(
+    within(additions).getByText("Photo taken July 1, 2026 at 8:00 PM"),
+  ).toBeVisible();
   const destination = within(additions).getByRole("combobox", {
-    name: "Destination for Sunset.jpg",
+    name: "Destination for Photo taken July 1, 2026 at 8:00 PM",
   });
   expect(destination).toHaveTextContent("First day");
   const removals = within(dialog).getByRole("region", {
     name: "Removed in Immich",
   });
-  expect(within(removals).getByText(/Beach.jpg/)).toBeVisible();
+  expect(
+    within(removals).getByText("Photo taken July 1, 2026 at 12:00 PM"),
+  ).toBeVisible();
   expect(within(removals).getByText(/was the cover/)).toBeVisible();
   const changes = within(dialog).getByRole("region", {
     name: "Changed in Immich",
@@ -321,7 +334,7 @@ it("reviews additions, removals, changes, and covers before applying the reviewe
   // Choosing the replacement cover re-reviews with that choice and unblocks.
   await user.click(
     within(removals).getByRole("radio", {
-      name: "Use Dunes.jpg as the cover of First day",
+      name: "Use Photo taken July 1, 2026 at 1:00 PM as the cover of First day",
     }),
   );
   await waitFor(() => expect(checks).toHaveLength(2));
@@ -394,7 +407,7 @@ it("shows a stale review and offers to check again", async () => {
   });
   await user.click(
     await within(dialog).findByRole("radio", {
-      name: "Use Dunes.jpg as the cover of First day",
+      name: "Use Photo taken July 1, 2026 at 1:00 PM as the cover of First day",
     }),
   );
   const apply = within(dialog).getByRole("button", { name: "Apply changes" });

@@ -3,6 +3,7 @@ import { useEffect, useId, useState } from "react";
 import { useApplySync, useCheckSync } from "../../hooks/queries/albums";
 import { useReturnFocus } from "../../hooks/use-return-focus";
 import { fieldErrors } from "../../lib/http";
+import { disambiguatePhotoLabels, mediaLabel } from "../../lib/media-labels";
 import type {
   AlbumDetail,
   SyncAddition,
@@ -99,12 +100,16 @@ function Thumbnail({ src, alt }: { src: string; alt: string }) {
 }
 
 function AdditionRow({
+  actionLabel,
   addition,
+  label,
   review,
   value,
   onChange,
 }: {
+  actionLabel: string;
   addition: SyncAddition;
+  label: string;
   review: SyncReview;
   value: string;
   onChange: (value: string) => void;
@@ -121,21 +126,23 @@ function AdditionRow({
   ];
   return (
     <li className="flex flex-wrap items-start gap-3 py-3">
-      <Thumbnail alt={addition.filename} src={addition.thumbnail_url} />
+      <Thumbnail alt={label} src={addition.thumbnail_url} />
       <div className="min-w-0 flex-1 text-sm">
-        <span className="block font-medium wrap-anywhere">
-          {addition.filename}
-        </span>
-        <span className="block text-muted">
-          {captureLabel(addition.captured_at)}
-          {addition.kind === "VIDEO" && " · Video"}
-          {addition.returning && " · Previously in this album"}
-        </span>
+        <span className="block font-medium wrap-anywhere">{label}</span>
+        {(addition.kind === "VIDEO" || addition.returning) && (
+          <span className="block text-muted">
+            {addition.kind === "VIDEO" && (
+              <>{captureLabel(addition.captured_at)} · Video</>
+            )}
+            {addition.kind === "VIDEO" && addition.returning && " · "}
+            {addition.returning && "Previously in this album"}
+          </span>
+        )}
         {alsoIn(addition.other_albums, "Also in")}
       </div>
       <div className="w-full min-[560px]:w-64">
         <label className="sr-only" id={`${id}-label`}>
-          Destination for {addition.filename}
+          Destination for {actionLabel}
         </label>
         <Combobox
           aria-labelledby={`${id}-label`}
@@ -150,13 +157,12 @@ function AdditionRow({
 }
 
 function RemovalRow({ removal }: { removal: SyncRemoval }) {
+  const label = mediaLabel(removal);
   return (
     <li className="flex items-start gap-3 py-3">
-      <Thumbnail alt={removal.filename} src={removal.thumbnail_url} />
+      <Thumbnail alt={label} src={removal.thumbnail_url} />
       <div className="min-w-0 flex-1 text-sm">
-        <span className="block font-medium wrap-anywhere">
-          {removal.filename}
-        </span>
+        <span className="block font-medium wrap-anywhere">{label}</span>
         <span className="block text-muted">
           {removal.reason === "deleted"
             ? "Deleted from Immich"
@@ -183,6 +189,8 @@ function CoverChoiceField({
   error?: string;
 }) {
   const id = useId();
+  const labels = choice.options.map(mediaLabel);
+  const actionLabels = disambiguatePhotoLabels(labels);
   return (
     <fieldset
       aria-describedby={error ? `${id}-error` : undefined}
@@ -193,31 +201,34 @@ function CoverChoiceField({
         Choose a new cover for {choice.moment_label}
       </legend>
       <div className="mt-2 flex flex-wrap gap-3">
-        {choice.options.map((option) => (
-          <label
-            className="flex max-w-40 cursor-pointer flex-col gap-2 text-xs"
-            key={option.entry_id}
-          >
-            <input
-              aria-label={`Use ${option.filename} as the cover of ${choice.moment_label}`}
-              checked={value === option.entry_id}
-              className="peer sr-only"
-              name={`cover-${choice.moment_id}`}
-              onChange={() => onChange(option.entry_id)}
-              type="radio"
-              value={option.entry_id}
-            />
-            <span className="block rounded-sm peer-checked:outline-2 peer-checked:outline-offset-2 peer-checked:outline-primary peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-ring">
-              <AlbumImage
-                alt={option.filename}
-                className="h-auto max-h-28 w-auto max-w-40"
-                fallback="No preview available"
-                src={option.thumbnail_url}
+        {choice.options.map((option, index) => {
+          const label = labels[index];
+          return (
+            <label
+              className="flex max-w-40 cursor-pointer flex-col gap-2 text-xs"
+              key={option.entry_id}
+            >
+              <input
+                aria-label={`Use ${actionLabels[index]} as the cover of ${choice.moment_label}`}
+                checked={value === option.entry_id}
+                className="peer sr-only"
+                name={`cover-${choice.moment_id}`}
+                onChange={() => onChange(option.entry_id)}
+                type="radio"
+                value={option.entry_id}
               />
-            </span>
-            <span className="wrap-anywhere text-muted">{option.filename}</span>
-          </label>
-        ))}
+              <span className="block rounded-sm peer-checked:outline-2 peer-checked:outline-offset-2 peer-checked:outline-primary peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-ring">
+                <AlbumImage
+                  alt={label}
+                  className="h-auto max-h-28 w-auto max-w-40"
+                  fallback="No preview available"
+                  src={option.thumbnail_url}
+                />
+              </span>
+              <span className="wrap-anywhere text-muted">{label}</span>
+            </label>
+          );
+        })}
       </div>
       <FieldError error={error} id={`${id}-error`} />
     </fieldset>
@@ -242,6 +253,8 @@ function AdditionSection({
   error?: string;
 }) {
   if (additions.length === 0) return null;
+  const labels = additions.map(mediaLabel);
+  const actionLabels = disambiguatePhotoLabels(labels);
   return (
     <section aria-label={label} className="border-t border-border py-4">
       <h3 className="font-heading text-xl">
@@ -250,10 +263,12 @@ function AdditionSection({
       <p className="mt-1 text-xs text-muted">{note}</p>
       <FieldError error={error} id={`${label}-error`} />
       <ul className="mt-2 divide-y divide-border">
-        {additions.map((addition) => (
+        {additions.map((addition, index) => (
           <AdditionRow
+            actionLabel={actionLabels[index]}
             addition={addition}
             key={addition.source_id}
+            label={labels[index]}
             onChange={(next) => onPlace(addition.source_id, next)}
             review={review}
             value={value(addition)}
@@ -444,12 +459,12 @@ export function SyncDialog({
                       key={change.entry_id}
                     >
                       <Thumbnail
-                        alt={change.filename}
+                        alt={mediaLabel(change)}
                         src={change.thumbnail_url}
                       />
                       <div className="min-w-0 flex-1 text-sm">
                         <span className="block font-medium wrap-anywhere">
-                          {change.filename}
+                          {mediaLabel(change)}
                         </span>
                         <span className="block text-muted">
                           {changeSummary(change)}

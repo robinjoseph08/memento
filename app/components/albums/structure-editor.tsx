@@ -10,6 +10,7 @@ import {
 } from "../../hooks/queries/albums";
 import { useUnsavedChanges } from "../../hooks/use-unsaved-changes";
 import { fieldErrors } from "../../lib/http";
+import { mediaLabel } from "../../lib/media-labels";
 import type {
   AlbumDetail,
   Decision,
@@ -352,7 +353,7 @@ export function StructureEditor({
                         />
                         <span className="block rounded-sm peer-checked:outline-2 peer-checked:outline-offset-2 peer-checked:outline-primary peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-ring">
                           <AlbumImage
-                            alt={entry.filename}
+                            alt={mediaLabel(entry)}
                             className="h-auto max-h-28 w-auto max-w-40"
                             fallback="No preview available"
                             src={entry.available ? entry.thumbnail_url : ""}

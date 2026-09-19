@@ -34,7 +34,7 @@ async function show(entry: ViewerEntry) {
     if (request !== latest) return;
     await showOnCast({
       id: entry.id,
-      // A photo is never named: its title is only a camera filename.
+      // Photos have no title; videos use the API's title or a neutral fallback.
       title: video ? entry.title || "Video" : "",
       url,
       contentType: type ?? (video ? "video/mp4" : "image/jpeg"),

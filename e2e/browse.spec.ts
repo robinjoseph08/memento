@@ -169,11 +169,13 @@ test("a member browses a published Album, opens photos by link, key, swipe and f
       member.getByRole("heading", { name: "Sunday, May 10, 2026 80 photos" }),
     ).toBeVisible();
     // Every day arrives in the background; slow engines need a moment.
+    const photos = await readAllPhotos(member, albumID);
+    expect(photos).toHaveLength(221);
     await expect(
-      member.getByRole("link", { name: "Open photo browse-220" }),
+      member.locator(`[data-entry-id="${photos[219].id}"]`),
     ).toBeAttached({ timeout: 30_000 });
     await expect(
-      member.getByRole("link", { name: "Open photo coast-07" }),
+      member.locator(`[data-entry-id="${photos[220].id}"]`),
     ).toBeAttached();
     await expect(member.getByText(/\d:\d\d [AP]M/)).toHaveCount(0);
 
@@ -224,14 +226,18 @@ test("a member browses a published Album, opens photos by link, key, swipe and f
     await expect(member).toHaveURL(new RegExp(`${viewerPath}$`));
 
     // Reload a stable link to a photo on the second page.
-    const photos = await readAllPhotos(member, albumID);
-    expect(photos).toHaveLength(221);
     const target = photos[150];
-    expect(target.title).toBe("browse-151");
+    expect(target.title).toBe("");
     await member.goto(`${viewerPath}/${target.id}`);
     const dialog = member.getByRole("dialog");
     await expect(dialog).toHaveAccessibleName("Photo 151 of 221");
-    await loadedImage(dialog.getByRole("img", { name: "browse-151" }));
+    await loadedImage(
+      dialog
+        .getByRole("group", { name: "Photo zoom", exact: true })
+        .getByRole("img", {
+          name: "Photo taken May 11, 2026 at 9:02 AM",
+        }),
+    );
     await expect(dialog).toContainText("Workbench - Browse");
     await expect(dialog).toContainText("Monday, May 11, 2026");
     await captureLayouts(member, "browse-lightbox");
@@ -354,7 +360,11 @@ test("a member browses a published Album, opens photos by link, key, swipe and f
       .getByRole("button", { name: "Next photo", exact: true })
       .click();
     await expect(dialog).toHaveAccessibleName("Photo 152 of 221");
-    await loadedImage(zoom.getByRole("img", { name: "browse-152" }));
+    await loadedImage(
+      zoom.getByRole("img", {
+        name: "Photo taken May 11, 2026 at 9:02 AM",
+      }),
+    );
     await expect(zoomIn).toBeEnabled();
     await expect(resetZoom).toHaveCount(0);
     await expect
@@ -364,7 +374,11 @@ test("a member browses a published Album, opens photos by link, key, swipe and f
       .getByRole("button", { name: "Previous photo", exact: true })
       .click();
     await expect(dialog).toHaveAccessibleName("Photo 151 of 221");
-    await loadedImage(zoom.getByRole("img", { name: "browse-151" }));
+    await loadedImage(
+      zoom.getByRole("img", {
+        name: "Photo taken May 11, 2026 at 9:02 AM",
+      }),
+    );
     await expect(zoomIn).toBeEnabled();
     await member.setViewportSize({ width: 1280, height: 900 });
 
@@ -413,7 +427,7 @@ test("a member browses a published Album, opens photos by link, key, swipe and f
       member.waitForEvent("download"),
       member.getByRole("link", { name: "Download photo", exact: true }).click(),
     ]);
-    expect(download.suggestedFilename()).toBe("browse-101.jpg");
+    expect(download.suggestedFilename()).toBe("photo-2026-05-11-090139.jpg");
     expect(await download.failure()).toBeNull();
     const original = await member.request.get(downloadURL);
     expect(original.status()).toBe(200);
@@ -428,12 +442,18 @@ test("a member browses a published Album, opens photos by link, key, swipe and f
     await expect(dialog).toHaveCount(0);
     await expect(member).toHaveURL(new RegExp(`${viewerPath}$`));
     await expect(
-      member.getByRole("link", { name: "Open photo browse-101" }),
+      member.locator(`[data-entry-id="${photos[100].id}"]`),
     ).toBeFocused();
-    const opener = member.getByRole("link", { name: "Open photo browse-003" });
+    const opener = member.locator(`[data-entry-id="${photos[2].id}"]`);
     await opener.click();
     await expect(dialog).toHaveAccessibleName("Photo 3 of 221");
-    await loadedImage(dialog.getByRole("img", { name: "browse-003" }));
+    await loadedImage(
+      dialog
+        .getByRole("group", { name: "Photo zoom", exact: true })
+        .getByRole("img", {
+          name: "Photo taken May 10, 2026 at 9:00 AM",
+        }),
+    );
     await member.keyboard.press("ArrowRight");
     await expect(dialog).toHaveAccessibleName("Photo 4 of 221");
     await member.goBack();
@@ -452,9 +472,7 @@ test("a member browses a published Album, opens photos by link, key, swipe and f
     await outline
       .getByRole("link", { name: "Viewer preview", exact: true })
       .click();
-    await page
-      .getByRole("link", { name: "Open photo browse-101", exact: true })
-      .click();
+    await page.locator(`[data-entry-id="${photos[100].id}"]`).click();
     const preview = page.getByRole("dialog");
     await expect(preview).toHaveAccessibleName("Photo 101 of 221");
     const notice = preview.getByText("Previewing as Alex. Read only.");

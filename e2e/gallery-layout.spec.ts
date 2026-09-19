@@ -1,3 +1,4 @@
+import { mediaLabel } from "../app/lib/media-labels";
 import type { AlbumDetail } from "../app/types/generated/publishing";
 import { expect, finishOnboarding, test } from "./fixtures";
 
@@ -55,11 +56,14 @@ for (const [scenario, dimensions] of [
     await expect(media.getByRole("listitem")).toHaveCount(3);
     for (const width of [1440, 390]) {
       await page.setViewportSize({ width, height: 900 });
-      for (const entry of entries) {
-        const image = media.getByRole("img", {
-          name: entry.filename,
-          exact: true,
-        });
+      for (const [index, entry] of entries.entries()) {
+        const label = mediaLabel(entry);
+        const occurrence = entries
+          .slice(0, index)
+          .filter((item) => mediaLabel(item) === label).length;
+        const image = media
+          .getByRole("img", { name: label, exact: true })
+          .nth(occurrence);
         await expect
           .poll(() =>
             image.evaluate(

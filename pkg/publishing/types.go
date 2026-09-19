@@ -63,8 +63,9 @@ type EntryPageRequest struct {
 	To     string
 }
 
-// ViewerEntry is one gallery item. Title is the Curator's video title when set,
-// otherwise the original filename without its extension.
+// ViewerEntry is one gallery item. Photos have no title. A video's title is
+// the Curator's title when set, otherwise the original filename without its
+// extension.
 type ViewerEntry struct {
 	ID           string `json:"id"`
 	Kind         string `json:"kind"`
@@ -183,6 +184,7 @@ type ExcludedEntry struct {
 	ID           string `json:"id"`
 	Filename     string `json:"filename"`
 	Kind         string `json:"kind"`
+	Title        string `json:"title"`
 	CapturedAt   string `json:"captured_at"`
 	ThumbnailURL string `json:"thumbnail_url"`
 	Available    bool   `json:"available"`
@@ -464,6 +466,7 @@ type SyncAddition struct {
 	SourceID          string         `json:"source_id"`
 	Filename          string         `json:"filename"`
 	Kind              string         `json:"kind"`
+	Title             string         `json:"title"`
 	CapturedAt        string         `json:"captured_at"`
 	ThumbnailURL      string         `json:"thumbnail_url"`
 	Returning         bool           `json:"returning"`
@@ -482,6 +485,7 @@ type SyncRemoval struct {
 	EntryID      string `json:"entry_id"`
 	Filename     string `json:"filename"`
 	Kind         string `json:"kind"`
+	Title        string `json:"title"`
 	CapturedAt   string `json:"captured_at"`
 	ThumbnailURL string `json:"thumbnail_url"`
 	MomentID     string `json:"moment_id"`
@@ -498,6 +502,7 @@ type SyncChange struct {
 	EntryID       string         `json:"entry_id"`
 	Filename      string         `json:"filename"`
 	Kind          string         `json:"kind"`
+	Title         string         `json:"title"`
 	ThumbnailURL  string         `json:"thumbnail_url"`
 	Excluded      bool           `json:"excluded"`
 	Fields        []string       `json:"fields"`
@@ -511,6 +516,9 @@ type SyncChange struct {
 type SyncCoverOption struct {
 	EntryID      string `json:"entry_id"`
 	Filename     string `json:"filename"`
+	Kind         string `json:"kind"`
+	Title        string `json:"title"`
+	CapturedAt   string `json:"captured_at"`
 	ThumbnailURL string `json:"thumbnail_url"`
 }
 

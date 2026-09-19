@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/robinjoseph08/memento/cmd/immich-smoke/fixture"
@@ -152,12 +151,12 @@ func verifyCaseImport(ctx context.Context, db *bun.DB, library *fixture.Library,
 				return err
 			}
 		}
-		if entry.Title == strings.TrimSuffix(library.PNG.Filename, ".png") {
-			recorder := httptest.NewRecorder()
-			handler.ServeHTTP(recorder, httptest.NewRequestWithContext(ctx, http.MethodGet, entry.DownloadURL, nil))
-			if recorder.Code != http.StatusOK || !bytes.Equal(recorder.Body.Bytes(), library.PNGBytes) {
-				return fmt.Errorf("PNG original download differs from uploaded non-JPEG file")
-			}
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequestWithContext(ctx, http.MethodGet, entry.DownloadURL, nil))
+		if recorder.Code != http.StatusOK {
+			return fmt.Errorf("photo original returned HTTP %d", recorder.Code)
+		}
+		if bytes.Equal(recorder.Body.Bytes(), library.PNGBytes) {
 			pngChecked = true
 		}
 	}

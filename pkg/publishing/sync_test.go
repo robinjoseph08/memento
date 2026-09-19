@@ -397,6 +397,26 @@ func TestSyncTrashedDeletedAndOutageNeverDeleteCuration(t *testing.T) {
 	}
 }
 
+func TestSyncAdditionKeepsSharedVideoTitle(t *testing.T) {
+	t.Parallel()
+	source := syncFixture()
+	source.setMembers("a", "b", "z")
+	_, module, album, other := syncedAlbums(t, source, nil)
+	otherVideo := findVideo(t, other)
+	_, err := module.UpdateVideo(t.Context(), other.ID, otherVideo.ID, publishing.UpdateVideoRequest{Title: "Family toast"})
+	require.NoError(t, err)
+
+	source.setMembers("a", "b", "z", "clip")
+	review, err := module.CheckSync(t.Context(), album.ID, publishing.SyncRequest{})
+	require.NoError(t, err)
+	require.Len(t, review.Additions, 1)
+	assert.Equal(t, "Family toast", review.Additions[0].Title)
+
+	applied, err := module.ApplySync(t.Context(), album.ID, publishing.SyncRequest{ReviewToken: review.ReviewToken})
+	require.NoError(t, err)
+	assert.Equal(t, "Family toast", findVideo(t, applied).Title)
+}
+
 func TestSyncSharedItemCheckCancelApplyAndExtraction(t *testing.T) {
 	t.Parallel()
 	source := syncFixture()

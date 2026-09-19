@@ -8,6 +8,7 @@ import {
 } from "../../hooks/queries/albums";
 import { useReturnFocus } from "../../hooks/use-return-focus";
 import { fieldErrors } from "../../lib/http";
+import { mediaLabel } from "../../lib/media-labels";
 import type {
   AlbumDetail,
   ExcludedEntry,
@@ -144,19 +145,22 @@ function IncludeDialog({
     review({ moment_id: momentID, review_token: "" });
   }, [review, momentID]);
   const returnFocus = useReturnFocus();
+  const label = mediaLabel(entry);
   const errors = fieldErrors(preview.error);
   const pending = include.isPending;
   return (
     <Dialog onOpenChange={(open) => !open && !pending && onClose()} open>
       <DialogContent onCloseAutoFocus={returnFocus}>
-        <DialogTitle className="pr-8">Add {entry.filename} back?</DialogTitle>
+        <DialogTitle className="pr-8">
+          Add {entry.kind === "VIDEO" ? label : "this photo"} back?
+        </DialogTitle>
         <DialogDescription className="mt-3 text-sm text-muted">
           It returns with its access decisions and history. Choose where it
           belongs.
         </DialogDescription>
         <Form
           aria-busy={pending}
-          aria-label={`Add ${entry.filename} back`}
+          aria-label={`Add ${entry.kind === "VIDEO" ? label : "this photo"} back`}
           className="mt-5"
           error={include.error}
           onSubmit={(event) => {
@@ -225,45 +229,49 @@ export function ExcludedPane({ album }: { album: AlbumDetail }) {
       </p>
       {album.excluded.length > 0 && (
         <ul aria-label="Excluded media" className="mt-5 divide-y divide-border">
-          {album.excluded.map((entry) => (
-            <li
-              className="flex flex-wrap items-center gap-3 py-3"
-              key={entry.id}
-            >
-              <AlbumImage
-                alt={entry.filename}
-                className="h-16 w-auto max-w-24 rounded-sm"
-                fallback={
-                  entry.available ? "No preview" : "Unavailable in Immich"
-                }
-                src={entry.available ? entry.thumbnail_url : ""}
-              />
-              <div className="min-w-0 flex-1 text-sm">
-                <span className="block font-medium wrap-anywhere">
-                  {entry.filename}
-                </span>
-                <span className="block text-muted">
-                  {shortDay(entry.captured_at.slice(0, 10))},{" "}
-                  {captureClock(entry.captured_at)}
-                  {entry.kind === "VIDEO" && " · Video"}
-                </span>
-              </div>
-              <Button
-                disabled={!entry.available}
-                onClick={() => setIncluding(entry)}
-                size="sm"
-                title={
-                  entry.available
-                    ? undefined
-                    : "Immich cannot show this item. Check for changes first."
-                }
-                type="button"
-                variant="outline"
+          {album.excluded.map((entry) => {
+            const label = mediaLabel(entry);
+            return (
+              <li
+                className="flex flex-wrap items-center gap-3 py-3"
+                key={entry.id}
               >
-                Add back
-              </Button>
-            </li>
-          ))}
+                <AlbumImage
+                  alt={label}
+                  className="h-16 w-auto max-w-24 rounded-sm"
+                  fallback={
+                    entry.available ? "No preview" : "Unavailable in Immich"
+                  }
+                  src={entry.available ? entry.thumbnail_url : ""}
+                />
+                <div className="min-w-0 flex-1 text-sm">
+                  <span className="block font-medium wrap-anywhere">
+                    {label}
+                  </span>
+                  {entry.kind === "VIDEO" && (
+                    <span className="block text-muted">
+                      {shortDay(entry.captured_at.slice(0, 10))},{" "}
+                      {captureClock(entry.captured_at)} · Video
+                    </span>
+                  )}
+                </div>
+                <Button
+                  disabled={!entry.available}
+                  onClick={() => setIncluding(entry)}
+                  size="sm"
+                  title={
+                    entry.available
+                      ? undefined
+                      : "Immich cannot show this item. Check for changes first."
+                  }
+                  type="button"
+                  variant="outline"
+                >
+                  Add back
+                </Button>
+              </li>
+            );
+          })}
         </ul>
       )}
       {including && (

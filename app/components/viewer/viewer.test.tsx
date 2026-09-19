@@ -117,10 +117,9 @@ it("opens the authorized photo route with the shared header and local capture-da
       name: "Saturday, June 14, 2025 2 photos",
     }),
   ).toBeVisible();
-  expect(screen.getByRole("img", { name: "Lake" })).toHaveAttribute(
-    "src",
-    photo.preview_url,
-  );
+  expect(
+    screen.getByRole("img", { name: "Photo taken June 14, 2025 at 12:15 AM" }),
+  ).toHaveAttribute("src", photo.preview_url);
   const tabs = screen.getByRole("navigation", { name: "Album media" });
   expect(within(tabs).getByRole("link", { name: "Photos 2" })).toHaveAttribute(
     "aria-current",
@@ -174,9 +173,13 @@ it("paginates photos independently and keeps a truthful zero-count video tab", a
   const user = userEvent.setup();
   window.history.replaceState(null, "", "/albums/lake/photos");
   render(<App />);
-  // Later pages arrive in the background, with no click.
-  expect(await screen.findByRole("img", { name: "Cabin" })).toBeVisible();
-  expect(screen.getByRole("img", { name: "Lake" })).toBeVisible();
+  // Later pages arrive in the background, with no click. Two photos taken in
+  // the same minute intentionally share an accessible name.
+  expect(
+    await screen.findAllByRole("img", {
+      name: "Photo taken June 14, 2025 at 12:15 AM",
+    }),
+  ).toHaveLength(2);
   expect(
     screen.queryByRole("button", { name: /Load more/ }),
   ).not.toBeInTheDocument();
@@ -184,7 +187,11 @@ it("paginates photos independently and keeps a truthful zero-count video tab", a
   expect(
     await screen.findByRole("heading", { name: "No videos in this album" }),
   ).toBeVisible();
-  expect(screen.queryByRole("img", { name: "Lake" })).not.toBeInTheDocument();
+  expect(
+    screen.queryByRole("img", {
+      name: "Photo taken June 14, 2025 at 12:15 AM",
+    }),
+  ).not.toBeInTheDocument();
   expect(screen.getByRole("link", { name: "View photos" })).toHaveAttribute(
     "href",
     "/albums/lake/photos",
@@ -250,9 +257,17 @@ it("keeps missing covers neutral and marks failed thumbnails unavailable", async
   expect(
     screen.queryByRole("img", { name: "Album cover" }),
   ).not.toBeInTheDocument();
-  fireEvent.error(await screen.findByRole("img", { name: "Lake" }));
+  fireEvent.error(
+    await screen.findByRole("img", {
+      name: "Photo taken June 14, 2025 at 12:15 AM",
+    }),
+  );
   expect(screen.getByText("Media unavailable")).toBeVisible();
-  expect(screen.queryByRole("img", { name: "Lake" })).not.toBeInTheDocument();
+  expect(
+    screen.queryByRole("img", {
+      name: "Photo taken June 14, 2025 at 12:15 AM",
+    }),
+  ).not.toBeInTheDocument();
 });
 
 it("hides previously loaded thumbnails when the server denies further gallery access", async () => {
@@ -269,7 +284,11 @@ it("hides previously loaded thumbnails when the server denies further gallery ac
   expect(await screen.findByRole("alert")).toHaveTextContent(
     "no longer available",
   );
-  expect(screen.queryByRole("img", { name: "Lake" })).not.toBeInTheDocument();
+  expect(
+    screen.queryByRole("img", {
+      name: "Photo taken June 14, 2025 at 12:15 AM",
+    }),
+  ).not.toBeInTheDocument();
 });
 
 it("loads each run of days at once, keeps loaded days after one run fails, and retries only that run", async () => {
@@ -321,11 +340,21 @@ it("loads each run of days at once, keeps loaded days after one run fails, and r
   expect(await screen.findByRole("alert")).toHaveTextContent(
     "Could not load photos",
   );
-  expect(screen.getByRole("img", { name: "Lake" })).toBeVisible();
+  expect(
+    screen.getByRole("img", { name: "Photo taken June 14, 2025 at 12:15 AM" }),
+  ).toBeVisible();
   retry = true;
   await user.click(screen.getByRole("button", { name: "Try again" }));
-  expect(await screen.findByRole("img", { name: "Cabin" })).toBeVisible();
-  expect(screen.getByRole("img", { name: "Lake" })).toBeVisible();
+  expect(
+    await screen.findByRole("img", {
+      name: "Photo taken June 15, 2025 at 9:00 AM",
+    }),
+  ).toBeVisible();
+  expect(
+    screen.getByRole("img", {
+      name: "Photo taken June 14, 2025 at 12:15 AM",
+    }),
+  ).toBeVisible();
   expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 });
 
@@ -340,15 +369,18 @@ it("opens a routed lightbox from the grid, moves with keys and the filmstrip, an
   const user = userEvent.setup();
   window.history.replaceState(null, "", "/albums/lake/photos");
   render(<App />);
-  const opener = await screen.findByRole("link", { name: "Open photo Cabin" });
+  const opener = await screen.findByRole("link", {
+    name: "Open photo taken June 14, 2025 at 9:00 AM",
+  });
   expect(opener).toHaveAttribute("href", "/albums/lake/photos/photo-2");
   await user.click(opener);
   const dialog = await screen.findByRole("dialog", { name: "Photo 2 of 3" });
   expect(window.location.pathname).toBe("/albums/lake/photos/photo-2");
-  expect(within(dialog).getByRole("img", { name: "Cabin" })).toHaveAttribute(
-    "src",
-    cabin.preview_url,
-  );
+  expect(
+    within(dialog).getByRole("img", {
+      name: "Photo taken June 14, 2025 at 9:00 AM",
+    }),
+  ).toHaveAttribute("src", cabin.preview_url);
   expect(within(dialog).getByText(album.title)).toBeVisible();
   expect(within(dialog).getByText("Saturday, June 14, 2025")).toBeVisible();
   expect(within(dialog).queryByText(/9:00/)).not.toBeInTheDocument();
@@ -390,7 +422,9 @@ it("opens a routed lightbox from the grid, moves with keys and the filmstrip, an
   expect(window.location.pathname).toBe("/albums/lake/photos");
   await waitFor(() =>
     expect(
-      screen.getByRole("link", { name: "Open photo Cabin" }),
+      screen.getByRole("link", {
+        name: "Open photo taken June 14, 2025 at 9:00 AM",
+      }),
     ).toHaveFocus(),
   );
 });
@@ -406,7 +440,9 @@ it("resets photo zoom when navigating or reopening the lightbox", async () => {
   window.history.replaceState(null, "", "/albums/lake/photos/photo-1");
   render(<App />);
   const dialog = await screen.findByRole("dialog", { name: "Photo 1 of 2" });
-  const image = within(dialog).getByRole("img", { name: "Lake" });
+  const image = within(dialog).getByRole("img", {
+    name: "Photo taken June 14, 2025 at 12:15 AM",
+  });
   Object.defineProperties(image, {
     naturalWidth: { value: 1200 },
     naturalHeight: { value: 800 },
@@ -430,7 +466,9 @@ it("resets photo zoom when navigating or reopening the lightbox", async () => {
   expect(
     screen.queryByRole("button", { name: "Reset zoom" }),
   ).not.toBeInTheDocument();
-  const nextImage = within(dialog).getByRole("img", { name: "Cabin" });
+  const nextImage = within(dialog).getByRole("img", {
+    name: "Photo taken June 14, 2025 at 9:00 AM",
+  });
   Object.defineProperties(nextImage, {
     naturalWidth: { value: 1200 },
     naturalHeight: { value: 800 },
@@ -444,7 +482,9 @@ it("resets photo zoom when navigating or reopening the lightbox", async () => {
   expect(screen.getByRole("button", { name: "Zoom in" })).toBeVisible();
   await user.keyboard("{Escape}");
   await user.click(
-    await screen.findByRole("link", { name: "Open photo Lake" }),
+    await screen.findByRole("link", {
+      name: "Open photo taken June 14, 2025 at 12:15 AM",
+    }),
   );
   expect(
     await screen.findByRole("dialog", { name: "Photo 1 of 2" }),
@@ -466,10 +506,11 @@ it("reloads a stable photo link beyond the first page once its page arrives", as
   window.history.replaceState(null, "", "/albums/lake/photos/photo-3");
   render(<App />);
   const dialog = await screen.findByRole("dialog", { name: "Photo 3 of 3" });
-  expect(within(dialog).getByRole("img", { name: "Dock" })).toHaveAttribute(
-    "src",
-    dock.preview_url,
-  );
+  expect(
+    within(dialog).getByRole("img", {
+      name: "Photo taken June 14, 2025 at 6:30 PM",
+    }),
+  ).toHaveAttribute("src", dock.preview_url);
   expect(document.title).toBe("A weekend by the lake | Memento");
   await user.click(screen.getByRole("button", { name: "Close photo" }));
   await waitFor(() =>
@@ -477,7 +518,11 @@ it("reloads a stable photo link beyond the first page once its page arrives", as
   );
   expect(window.location.pathname).toBe("/albums/lake/photos");
   await waitFor(() =>
-    expect(screen.getByRole("link", { name: "Open photo Dock" })).toHaveFocus(),
+    expect(
+      screen.getByRole("link", {
+        name: "Open photo taken June 14, 2025 at 6:30 PM",
+      }),
+    ).toHaveFocus(),
   );
 });
 
@@ -506,7 +551,11 @@ it("explains a photo link that is not available without opening another photo", 
   );
   expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   expect(window.location.pathname).toBe("/albums/lake/photos");
-  expect(screen.getByRole("link", { name: "Open photo Lake" })).toBeVisible();
+  expect(
+    screen.getByRole("link", {
+      name: "Open photo taken June 14, 2025 at 12:15 AM",
+    }),
+  ).toBeVisible();
 });
 
 it("keeps the lightbox open when a later page fails and can retry a photo on that page", async () => {
@@ -579,7 +628,11 @@ it("keeps chaining pages in the background until the album is complete", async (
   });
   window.history.replaceState(null, "", "/albums/lake/photos");
   render(<App />);
-  expect(await screen.findByRole("img", { name: "Dock" })).toBeVisible();
+  expect(
+    await screen.findByRole("img", {
+      name: "Photo taken June 14, 2025 at 6:30 PM",
+    }),
+  ).toBeVisible();
   expect(screen.getAllByRole("link", { name: /Open photo/ })).toHaveLength(3);
   expect(screen.queryByRole("status")).not.toBeInTheDocument();
 });
@@ -981,7 +1034,9 @@ it("scrubs an album of a few days by day", async () => {
 it("keeps the timeline out of the way for a single day", async () => {
   mockShortTimelineLayout(["2026-06-01"]);
   render(<App />);
-  await screen.findByRole("link", { name: "Open photo Day 0" });
+  await screen.findByRole("link", {
+    name: "Open photo taken June 1, 2026 at 3:00 PM",
+  });
   const timeline = screen.getByRole("slider", { name: "Timeline" });
   await waitFor(() => expect(timeline).toHaveClass("invisible"));
   expect(timeline).toHaveAttribute("tabindex", "-1");

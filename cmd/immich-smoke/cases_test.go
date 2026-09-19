@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"image"
 	"image/png"
 	"net/http"
@@ -80,6 +81,15 @@ func TestAdditionalCasesThroughPublishingAndMedia(t *testing.T) {
 		case r.URL.Path == "/api/assets/plain/original" || r.URL.Path == "/api/assets/plain/video/playback":
 			w.Header().Set("Content-Type", "video/webm")
 			http.ServeContent(w, r, "plain.webm", time.Time{}, bytes.NewReader(testmedia.Plain))
+		case strings.HasSuffix(r.URL.Path, "/original"):
+			id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/assets/"), "/original")
+			a, ok := assets[id]
+			if !assert.True(t, ok && a.Kind == "IMAGE", "unexpected original %s", id) {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			w.Header().Set("Content-Type", "image/jpeg")
+			_, _ = fmt.Fprintf(w, "original:%s", id)
 		case strings.HasPrefix(r.URL.Path, "/api/assets/"):
 			id := strings.TrimPrefix(r.URL.Path, "/api/assets/")
 			a, ok := assets[id]

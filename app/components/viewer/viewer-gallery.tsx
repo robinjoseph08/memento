@@ -11,6 +11,7 @@ import {
 } from "../../hooks/queries/viewer";
 import { useMediaQuery } from "../../hooks/use-media-query";
 import { HTTPError } from "../../lib/http";
+import { disambiguatePhotoLabels, mediaLabel } from "../../lib/media-labels";
 import { cn } from "../../lib/utils";
 import type {
   ViewerEntry,
@@ -290,6 +291,8 @@ function GalleryEntries({
                 entry.captured_at.slice(0, 10) === day.date.slice(0, 10),
             );
             if (items && items.length === 0) return null;
+            const labels = items?.map(mediaLabel) ?? [];
+            const actionLabels = disambiguatePhotoLabels(labels);
             const count = dayCount(day, tab);
             return (
               <section
@@ -311,7 +314,12 @@ function GalleryEntries({
                     <PhotoRows
                       ratios={items.map(aspectRatio)}
                       tile={(index) => (
-                        <PhotoTile entry={items[index]} entryLink={entryLink} />
+                        <PhotoTile
+                          actionLabel={actionLabels[index]}
+                          entry={items[index]}
+                          entryLink={entryLink}
+                          label={labels[index]}
+                        />
                       )}
                     />
                   ) : (
@@ -433,11 +441,17 @@ function PlayBadge({ className }: { className?: string }) {
   );
 }
 
-function MediaThumbnail({ entry }: { entry: ViewerEntry }) {
+function MediaThumbnail({
+  entry,
+  label = mediaLabel(entry),
+}: {
+  entry: ViewerEntry;
+  label?: string;
+}) {
   return (
     <div style={{ aspectRatio: aspectRatio(entry) }}>
       <AlbumImage
-        alt={entry.title || (entry.kind === "VIDEO" ? "Video" : "Photo")}
+        alt={label}
         className="h-full w-full"
         fallback="Media unavailable"
         src={entry.available ? entry.preview_url : ""}
@@ -507,21 +521,26 @@ function PhotoRows({
 // Each photo is a link to its stable URL; the link remembers that it opened
 // the lightbox so closing can return focus here.
 function PhotoTile({
+  actionLabel,
   entry,
   entryLink,
+  label,
 }: {
+  actionLabel: string;
   entry: ViewerEntry;
   entryLink: (id: string) => To;
+  label: string;
 }) {
+  const accessibleLabel = actionLabel[0].toLowerCase() + actionLabel.slice(1);
   return (
     <Link
-      aria-label={`Open photo ${entry.title || "Photo"}`}
+      aria-label={`Open ${accessibleLabel}`}
       className="block rounded-[2px] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
       data-entry-id={entry.id}
       state={{ origin: entry.id }}
       to={entryLink(entry.id)}
     >
-      <MediaThumbnail entry={entry} />
+      <MediaThumbnail entry={entry} label={label} />
     </Link>
   );
 }

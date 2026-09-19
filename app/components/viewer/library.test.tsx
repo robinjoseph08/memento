@@ -127,21 +127,25 @@ it("opens Library after Albums in viewer navigation with newest days and entries
       .map((link) => link.textContent),
   ).toEqual(["Albums", "Library"]);
   await user.click(within(navigation).getByRole("link", { name: "Library" }));
-  await screen.findByRole("link", { name: "Open photo Morning" });
+  await screen.findByRole("link", {
+    name: "Open photo taken July 5, 2026 at 8:00 AM",
+  });
   expect(
     screen.getByText(
       "You can view all of your photos and videos across all your albums.",
     ),
   ).toBeVisible();
-  await screen.findByRole("link", { name: "Open photo Last summer" });
+  await screen.findByRole("link", {
+    name: "Open photo taken June 14, 2025 at 9:00 AM",
+  });
   expect(
     screen
       .getAllByRole("link", { name: /^Open photo/ })
       .map((link) => link.getAttribute("aria-label")),
   ).toEqual([
-    "Open photo Sunset",
-    "Open photo Morning",
-    "Open photo Last summer",
+    "Open photo taken July 5, 2026 at 8:00 PM",
+    "Open photo taken July 5, 2026 at 8:00 AM",
+    "Open photo taken June 14, 2025 at 9:00 AM",
   ]);
   expect(
     screen
@@ -179,7 +183,9 @@ it("reloads a library lightbox beyond the first cursor page and walks newest to 
   window.history.replaceState(null, "", "/library/photos/morning");
   render(<App />);
   const dialog = await screen.findByRole("dialog");
-  await within(dialog).findByRole("img", { name: "Morning" });
+  await within(dialog).findByRole("img", {
+    name: "Photo taken July 5, 2026 at 8:00 AM",
+  });
   expect(
     within(dialog).getByRole("navigation", { name: "Photos filmstrip" }),
   ).toBeVisible();

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path"
 	"reflect"
 	"strings"
 
@@ -205,43 +206,49 @@ func verifyDownloads(ctx context.Context, module *publishing.Module, viewer, oth
 	if len(page.Entries) == 0 {
 		return fmt.Errorf("no authorized photos to download")
 	}
-	for _, entry := range page.Entries {
-		if entry.DownloadURL == "" {
-			return fmt.Errorf("authorized photo %q has no download URL", entry.Title)
-		}
-		index := -1
-		for i, asset := range uploaded {
-			if strings.TrimSuffix(asset.Filename, ".jpg") == entry.Title {
-				index = i
-			}
-		}
-		if index < 0 {
-			return fmt.Errorf("photo %q is not an uploaded fixture", entry.Title)
-		}
-		want, err := fixture.JPEG(uploaded[index].Photo, index)
+	expected := make(map[string]int, len(uploaded))
+	for index, asset := range uploaded {
+		data, err := fixture.JPEG(asset.Photo, index)
 		if err != nil {
 			return err
+		}
+		expected[string(data)] = index
+	}
+	for _, entry := range page.Entries {
+		if entry.DownloadURL == "" {
+			return fmt.Errorf("authorized photo %s has no download URL", entry.ID)
 		}
 		recorder := httptest.NewRecorder()
 		request := httptest.NewRequestWithContext(ctx, http.MethodGet, entry.DownloadURL, nil)
 		request.Header.Set("Range", "bytes=0-1")
 		viewer.ServeHTTP(recorder, request)
-		if recorder.Code != http.StatusOK || !bytes.Equal(recorder.Body.Bytes(), want) {
-			return fmt.Errorf("download of %q returned HTTP %d with %d bytes, want %d uploaded bytes", entry.Title, recorder.Code, recorder.Body.Len(), len(want))
+		index, ok := expected[recorder.Body.String()]
+		if recorder.Code != http.StatusOK || !ok {
+			return fmt.Errorf("download of %s returned HTTP %d with unexpected bytes", entry.ID, recorder.Code)
+		}
+		delete(expected, recorder.Body.String())
+		want, err := fixture.JPEG(uploaded[index].Photo, index)
+		if err != nil {
+			return err
 		}
 		disposition, params, err := mime.ParseMediaType(recorder.Header().Get("Content-Disposition"))
-		if err != nil || disposition != "attachment" || params["filename"] != uploaded[index].Filename {
-			return fmt.Errorf("download of %q is not an attachment named after the source file", entry.Title)
+		captured := uploaded[index].CapturedAt
+		photoName := "photo-" + captured[:10] + "-" + strings.ReplaceAll(captured[11:19], ":", "") + path.Ext(uploaded[index].Filename)
+		if err != nil || disposition != "attachment" || params["filename"] != photoName {
+			return fmt.Errorf("download of %s is not a capture-time-named attachment", entry.ID)
 		}
 		if recorder.Header().Get("Cache-Control") != "private, no-store" || recorder.Header().Get("Content-Range") != "" {
-			return fmt.Errorf("download of %q used shared caching or honored a range", entry.Title)
+			return fmt.Errorf("download of %s used shared caching or honored a range", entry.ID)
 		}
 		if recorder.Header().Get("Content-Length") != fmt.Sprint(len(want)) {
-			return fmt.Errorf("download of %q did not announce its length", entry.Title)
+			return fmt.Errorf("download of %s did not announce its length", entry.ID)
 		}
 		if err := deniedMedia(ctx, other, entry.DownloadURL, http.StatusNotFound); err != nil {
 			return fmt.Errorf("download URL crossed Person identity: %w", err)
 		}
+	}
+	if len(expected) != 0 {
+		return fmt.Errorf("%d uploaded photos were not downloaded", len(expected))
 	}
 	return nil
 }

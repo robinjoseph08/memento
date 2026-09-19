@@ -259,7 +259,7 @@ func getAlbum(ctx context.Context, db bun.IDB, id, immichURL string) (AlbumDetai
 		return result, errorstack.CaptureContext(ctx, err)
 	}
 	for _, e := range excluded {
-		result.Excluded = append(result.Excluded, ExcludedEntry{ID: e.EntryID.String(), Filename: e.Filename, Kind: e.Kind,
+		result.Excluded = append(result.Excluded, ExcludedEntry{ID: e.EntryID.String(), Filename: e.Filename, Kind: e.Kind, Title: explicitVideoTitle(e.Kind, e.VideoTitle),
 			CapturedAt: e.CapturedAt.Format("2006-01-02T15:04:05.999999999"), ThumbnailURL: SourceAssetThumbnailURL(e.SourceID),
 			Available: !e.Offline && !e.Trashed, ExcludedAt: e.ExcludedAt.UTC().Format(time.RFC3339)})
 	}

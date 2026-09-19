@@ -169,10 +169,9 @@ it("imports an album, shows progress, then reveals unpublished Moments with comp
     within(moment).getByRole("list", { name: "Moment media" }),
   ).toBeVisible();
   expect(within(moment).getByText("1 photo, 1 video")).toBeVisible();
-  expect(screen.getByRole("img", { name: "Beach.jpg" })).toHaveAttribute(
-    "src",
-    "/media/beach",
-  );
+  expect(
+    screen.getByRole("img", { name: "Photo taken July 1, 2026 at 12:00 PM" }),
+  ).toHaveAttribute("src", "/media/beach");
   expect(document.title).toBe("Summer by the sea | Memento");
 });
 
@@ -212,7 +211,7 @@ const completeAlbum: AlbumDetail = {
           id: "video",
           decisions: {},
           media_id: "m-video",
-          filename: "Waves.mp4",
+          filename: "Waves",
           kind: "VIDEO",
           captured_at: "2026-07-01T13:00:00",
           available: true,
@@ -315,7 +314,9 @@ it("keeps the outline beside the selected Moment and preserves title edits betwe
   expect(momentRow).toHaveAttribute("aria-current", "page");
   expect(within(outline).getByText("No access yet")).toBeVisible();
   expect(screen.getByRole("region", { name: "First day" })).toBeVisible();
-  expect(screen.getByRole("img", { name: "Beach.jpg" })).toBeVisible();
+  expect(
+    screen.getByRole("img", { name: "Photo taken July 1, 2026 at 12:00 PM" }),
+  ).toBeVisible();
   const details = within(outline).getByRole("link", { name: "Album details" });
   await user.click(details);
   expect(details).toHaveAttribute("aria-current", "page");
@@ -353,7 +354,9 @@ it("drills from the outline into a Moment and back on narrow screens", async () 
     screen.queryByRole("navigation", { name: "Album outline" }),
   ).not.toBeInTheDocument();
   expect(screen.getByRole("region", { name: "First day" })).toBeVisible();
-  expect(screen.getByRole("img", { name: "Beach.jpg" })).toBeVisible();
+  expect(
+    screen.getByRole("img", { name: "Photo taken July 1, 2026 at 12:00 PM" }),
+  ).toBeVisible();
   await user.click(screen.getByRole("link", { name: "Outline" }));
   expect(
     screen.getByRole("navigation", { name: "Album outline" }),
@@ -472,7 +475,7 @@ it("uses the Outline pane for selection and saves Moment access explicitly", asy
     within(inspector).getByRole("heading", { name: "Suggested 1" }),
   ).toBeVisible();
   expect(
-    screen.queryByRole("checkbox", { name: "Select Waves.mp4" }),
+    screen.queryByRole("checkbox", { name: "Select Waves" }),
   ).not.toBeInTheDocument();
   expect(
     screen.queryByRole("button", { name: "Move" }),
@@ -480,13 +483,13 @@ it("uses the Outline pane for selection and saves Moment access explicitly", asy
 
   await user.click(screen.getByRole("button", { name: "Select" }));
   expect(screen.getByRole("button", { name: "Move" })).toBeDisabled();
-  await user.click(screen.getByRole("checkbox", { name: "Select Waves.mp4" }));
+  await user.click(screen.getByRole("checkbox", { name: "Select Waves" }));
   expect(screen.getByRole("button", { name: "Move" })).toBeEnabled();
   expect(screen.getByRole("button", { name: "Split" })).toBeEnabled();
   expect(screen.getByRole("button", { name: "Set as cover" })).toBeVisible();
   await user.click(screen.getByRole("button", { name: "Done" }));
   expect(
-    screen.queryByRole("checkbox", { name: "Select Waves.mp4" }),
+    screen.queryByRole("checkbox", { name: "Select Waves" }),
   ).not.toBeInTheDocument();
 
   const saveAccess = within(inspector).getByRole("button", {
@@ -1260,7 +1263,7 @@ it("edits item rules with inherit labels that name the Moment or Album source", 
   render(<App />);
   const dialog = await screen.findByRole("dialog", { name: "Photo details" });
   expect(
-    within(dialog).getByText(/Decisions for Beach.jpg override/),
+    within(dialog).getByText(/Decisions for this photo override/),
   ).toBeVisible();
   expect(
     within(dialog).getByRole("combobox", { name: "Access for Alex" }),
@@ -1344,12 +1347,10 @@ it("opens item details and access from a tile or a single selection without play
   window.history.replaceState(null, "", "/curator/albums/album-1");
   const user = userEvent.setup();
   render(<App />);
-  await user.click(
-    await screen.findByRole("button", { name: "Edit Waves.mp4" }),
-  );
+  await user.click(await screen.findByRole("button", { name: "Edit Waves" }));
   const editor = screen.getByRole("dialog", { name: "Video details" });
-  expect(within(editor).getByRole("img", { name: "Waves.mp4" })).toBeVisible();
-  expect(within(editor).getByText(/Waves.mp4\. The title shows/)).toBeVisible();
+  expect(within(editor).getByRole("img", { name: "Waves" })).toBeVisible();
+  expect(within(editor).getByText(/Waves\. The title shows/)).toBeVisible();
   expect(
     within(editor).getByRole("textbox", { name: "Video title" }),
   ).toBeVisible();
@@ -1364,7 +1365,7 @@ it("opens item details and access from a tile or a single selection without play
   );
   await user.keyboard("{Escape}");
   await user.click(screen.getByRole("button", { name: "Select" }));
-  await user.click(screen.getByRole("checkbox", { name: "Select Waves.mp4" }));
+  await user.click(screen.getByRole("checkbox", { name: "Select Waves" }));
   await user.click(screen.getByRole("button", { name: "Video details" }));
   expect(screen.getByRole("dialog", { name: "Video details" })).toBeVisible();
 });
@@ -1970,13 +1971,17 @@ it("replaces failed imported thumbnails while keeping capture times and other pr
   mockAPI(() => Response.json(completeAlbum));
   window.history.replaceState(null, "", "/curator/albums/album-1");
   render(<App />);
-  fireEvent.error(await screen.findByRole("img", { name: "Beach.jpg" }));
+  fireEvent.error(
+    await screen.findByRole("img", {
+      name: "Photo taken July 1, 2026 at 12:00 PM",
+    }),
+  );
   expect(screen.getByText("No preview available")).toBeVisible();
   expect(screen.getByText("12:00 PM")).toBeVisible();
   expect(
-    screen.queryByRole("img", { name: "Beach.jpg" }),
+    screen.queryByRole("img", { name: "Photo taken July 1, 2026 at 12:00 PM" }),
   ).not.toBeInTheDocument();
-  expect(screen.getByRole("img", { name: "Waves.mp4" })).toBeVisible();
+  expect(screen.getByRole("img", { name: "Waves" })).toBeVisible();
 });
 
 it.each(["complete", "failed"])(
