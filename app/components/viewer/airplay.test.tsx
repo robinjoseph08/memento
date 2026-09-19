@@ -67,7 +67,7 @@ afterEach(() => {
   window.history.replaceState(null, "", "/");
 });
 
-it("offers AirPlay where Safari reports a target and plays a signed URL while the video is on it", async () => {
+it("offers AirPlay where Safari reports a target and gives the video a signed URL before it reaches the TV", async () => {
   // jsdom has no media pipeline: position is a property and playing a promise.
   const times = new WeakMap<HTMLMediaElement, number>();
   Object.defineProperty(HTMLMediaElement.prototype, "currentTime", {
@@ -119,52 +119,58 @@ it("offers AirPlay where Safari reports a target and plays a signed URL while th
     within(dialog).queryByRole("button", { name: "AirPlay" }),
   ).not.toBeInTheDocument();
 
-  // Safari announces a target on the network; other browsers never do.
+  const announce = () =>
+    fireEvent(
+      video,
+      Object.assign(new Event("webkitplaybacktargetavailabilitychanged"), {
+        availability: "available",
+      }),
+    );
+  const wireless = (on: boolean) => {
+    video.webkitCurrentPlaybackTargetIsWireless = on;
+    fireEvent(video, new Event("webkitcurrentplaybacktargetiswirelesschanged"));
+  };
+
+  // Safari announces a target on the network; other browsers never do. A TV
+  // that cannot be given a URL is reported instead of left spinning.
   video.webkitShowPlaybackTargetPicker = vi.fn();
-  fireEvent(
-    video,
-    Object.assign(new Event("webkitplaybacktargetavailabilitychanged"), {
-      availability: "available",
-    }),
-  );
+  refuse = true;
+  announce();
   await user.click(within(dialog).getByRole("button", { name: "AirPlay" }));
   expect(video.webkitShowPlaybackTargetPicker).toHaveBeenCalledOnce();
-  expect(minted).toEqual([]);
+  wireless(true);
+  expect(await within(dialog).findByRole("alert")).toHaveTextContent(
+    "Could not send this video to the TV.",
+  );
+  expect(video).toHaveAttribute("src", party.playback_url);
+  wireless(false);
+  expect(within(dialog).queryByRole("alert")).not.toBeInTheDocument();
 
-  // Moving to the Apple TV swaps in a signed URL at the same position.
+  // The signed URL goes in as soon as a target exists, at the same position,
+  // so the source never has to change while the video is on the TV: changing
+  // it there drops the route, which Safari then rebuilds, in a loop.
+  refuse = false;
   video.currentTime = 3;
-  video.webkitCurrentPlaybackTargetIsWireless = true;
-  fireEvent(video, new Event("webkitcurrentplaybacktargetiswirelesschanged"));
+  announce();
   await waitFor(() => expect(video).toHaveAttribute("src", signedURL));
   expect(minted).toEqual([{ entry_id: "video-1", variant: "playback" }]);
   video.currentTime = 0;
   fireEvent.loadedMetadata(video);
   expect(video.currentTime).toBe(3);
+  announce();
+  wireless(true);
+  expect(video).toHaveAttribute("src", signedURL);
+  expect(within(dialog).queryByRole("alert")).not.toBeInTheDocument();
 
   // Chapters still seek the local element, which AirPlay mirrors.
   await user.click(within(dialog).getByRole("combobox", { name: "Chapter" }));
   await user.click(screen.getByRole("option", { name: /Goodbyes/ }));
   expect(video.currentTime).toBe(4);
+
+  // Coming back from the TV keeps the same source too.
+  wireless(false);
   expect(video).toHaveAttribute("src", signedURL);
-
-  // Disconnecting returns to the cookie URL where the TV left off.
-  video.currentTime = 5;
-  video.webkitCurrentPlaybackTargetIsWireless = false;
-  fireEvent(video, new Event("webkitcurrentplaybacktargetiswirelesschanged"));
-  await waitFor(() => expect(video).toHaveAttribute("src", party.playback_url));
-  video.currentTime = 0;
-  fireEvent.loadedMetadata(video);
-  expect(video.currentTime).toBe(5);
   expect(minted).toHaveLength(1);
-
-  // A TV that cannot be given a URL is reported instead of left spinning.
-  refuse = true;
-  video.webkitCurrentPlaybackTargetIsWireless = true;
-  fireEvent(video, new Event("webkitcurrentplaybacktargetiswirelesschanged"));
-  expect(await within(dialog).findByRole("alert")).toHaveTextContent(
-    "Could not send this video to the TV.",
-  );
-  expect(video).toHaveAttribute("src", party.playback_url);
 
   fireEvent(
     video,
