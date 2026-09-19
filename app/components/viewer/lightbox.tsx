@@ -1,11 +1,13 @@
 import * as DialogPrimitive from "@radix-ui/react-dialog";
-import { ChevronLeft, ChevronRight, Download, X } from "lucide-react";
+import { Cast, ChevronLeft, ChevronRight, Download, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate, type To } from "react-router-dom";
 
+import { useCast } from "../../hooks/use-cast";
 import { cn } from "../../lib/utils";
 import type { ViewerEntry } from "../../types/generated/publishing";
 import { Button } from "../ui/button";
+import { CastRemote } from "./cast-remote";
 import { aspectRatio, captureDate } from "./labels";
 import { PhotoStage } from "./photo-stage";
 import { ChapterSelect, VideoStage } from "./video-player";
@@ -53,7 +55,7 @@ export function Lightbox({
   const entry = index >= 0 ? entries[index] : undefined;
   const count = Math.max(total, entries.length);
   const stripRef = useRef<HTMLElement>(null);
-  const [photoActions, setPhotoActions] = useState<HTMLDivElement | null>(null);
+  const [stageActions, setStageActions] = useState<HTMLDivElement | null>(null);
   const swipeRef = useRef<{ x: number; y: number } | null>(null);
   // The player lives in the stage while the chapter picker sits beneath it.
   // Only the playing chapter's index is kept, and only when it changes, so
@@ -77,7 +79,26 @@ export function Lightbox({
         : { id: currentID, chapter: index },
     );
   };
+  // Curator preview is read only, so it offers neither Cast nor AirPlay.
+  const cast = useCast(entry, !personName);
+  // A video on the TV does not also play here: a remote control takes the
+  // player's place, and chapters and Space reach the TV instead. When casting
+  // stops, the player comes back without starting on its own.
+  const casting = cast.receiver !== "";
+  const [castID, setCastID] = useState("");
+  if (casting ? castID !== currentID : castID !== "" && castID !== currentID)
+    setCastID(casting ? currentID : "");
+  // Space and chapters reach the TV only while it has the open video.
+  const onTV = casting && cast.showingID === currentID;
+  // Only photos go to the TV without a title, whatever this lightbox shows.
+  const castStatus = !cast.showingID
+    ? `Connected to ${cast.receiver}`
+    : `Showing ${cast.showing || (onTV ? "this photo" : "a photo")} on ${cast.receiver}`;
   function seek(chapter: { start: number }) {
+    if (casting) {
+      if (onTV) cast.seek(chapter.start);
+      return;
+    }
     const video = videoRef.current;
     if (!video) return;
     video.currentTime = chapter.start;
@@ -179,6 +200,10 @@ export function Lightbox({
               )
             ) {
               event.preventDefault();
+              if (casting) {
+                if (onTV) cast.playOrPause();
+                return;
+              }
               const video = videoRef.current;
               if (!video) return;
               if (video.paused) void video.play()?.catch(() => {});
@@ -229,12 +254,40 @@ export function Lightbox({
                 Previewing as {personName}. Read only.
               </p>
             )}
+            {casting && (
+              <div className="order-last flex basis-full items-center gap-2 text-xs text-muted min-[601px]:order-none min-[601px]:basis-auto min-[601px]:self-center">
+                {cast.failed ? (
+                  <p role="alert">
+                    Could not show this {lower} on {cast.receiver}.
+                  </p>
+                ) : (
+                  <p role="status">{castStatus}</p>
+                )}
+                <Button onClick={cast.stop} size="sm" variant="outline">
+                  Stop casting
+                </Button>
+              </div>
+            )}
             <div
               aria-label={`${noun} actions`}
               className="flex shrink-0 items-center gap-1"
               role="group"
             >
-              <div className="contents" ref={setPhotoActions} />
+              <div className="contents" ref={setStageActions} />
+              {cast.available && !casting && (
+                <Button
+                  aria-label="Cast"
+                  className="size-11 rounded-full p-0"
+                  onClick={cast.start}
+                  variant="ghost"
+                >
+                  <Cast
+                    aria-hidden="true"
+                    className="size-5"
+                    strokeWidth={1.5}
+                  />
+                </Button>
+              )}
               {entry?.download_url ? (
                 <Button
                   aria-label={`Download ${lower}`}
@@ -297,15 +350,29 @@ export function Lightbox({
                   className="flex h-full w-full items-center justify-center"
                   key={entry.id}
                 >
-                  {kind === "video" ? (
+                  {kind === "video" && casting && entry.available ? (
+                    <CastRemote
+                      entry={entry}
+                      failed={cast.failed}
+                      onPlayOrPause={cast.playOrPause}
+                      onReplay={cast.replay}
+                      onSeek={cast.seek}
+                      onTime={trackChapter}
+                      ready={onTV}
+                      receiver={cast.receiver}
+                    />
+                  ) : kind === "video" ? (
                     <VideoStage
+                      actionsTarget={stageActions}
+                      airPlay={!personName}
+                      autoPlay={castID !== entry.id}
                       entry={entry}
                       onTime={trackChapter}
                       videoRef={videoRef}
                     />
                   ) : (
                     <PhotoStage
-                      actionsTarget={photoActions}
+                      actionsTarget={stageActions}
                       alt={entry.title || "Photo"}
                       key={entry.available ? entry.preview_url : ""}
                       onStep={step}

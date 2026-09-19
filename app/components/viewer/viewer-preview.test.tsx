@@ -387,3 +387,56 @@ it("navigates photos inside the preview with the identity notice and no download
     ).toHaveFocus(),
   );
 });
+
+it("offers neither Cast nor AirPlay while previewing a video", async () => {
+  HTMLMediaElement.prototype.play = vi.fn(() => Promise.resolve());
+  // A browser that could cast: the preview still never loads the SDK.
+  vi.stubGlobal("chrome", {});
+  window.history.replaceState(
+    null,
+    "",
+    "/curator/albums/lake?section=preview&person=jamie&tab=videos&entry=clip",
+  );
+  const clip: ViewerEntry = {
+    ...photo,
+    id: "clip",
+    kind: "VIDEO",
+    title: "Jamie's video",
+    playback_url: "/preview/jamie/clip/playback",
+  };
+  renderPreview((path) =>
+    path.endsWith("/videos")
+      ? Response.json({ entries: [clip], next_cursor: "" })
+      : Response.json({
+          ...album,
+          photo_count: 0,
+          video_count: 1,
+          days: [
+            {
+              date: "2025-06-14",
+              photo_count: 0,
+              video_count: 1,
+              photo_ratios: [],
+              video_ratios: [1.5],
+            },
+          ],
+        }),
+  );
+  const dialog = await screen.findByRole("dialog", { name: "Video 1 of 1" });
+  const video = within(dialog).getByLabelText("Jamie's video");
+  expect(video).toHaveAttribute("x-webkit-airplay", "deny");
+  act(() => {
+    video.dispatchEvent(
+      Object.assign(new Event("webkitplaybacktargetavailabilitychanged"), {
+        availability: "available",
+      }),
+    );
+  });
+  expect(
+    within(dialog).queryByRole("button", { name: "AirPlay" }),
+  ).not.toBeInTheDocument();
+  expect(document.querySelector('script[src*="cast_sender"]')).toBeNull();
+  expect(
+    within(dialog).queryByRole("button", { name: "Cast" }),
+  ).not.toBeInTheDocument();
+});

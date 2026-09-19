@@ -7,6 +7,10 @@ packages:
     output_path: "app/types/generated/publishing.ts"
     include_files:
       - "types.go"
+  - path: "github.com/robinjoseph08/memento/pkg/media"
+    output_path: "app/types/generated/media.ts"
+    include_files:
+      - "types.go"
   - path: "github.com/robinjoseph08/memento/pkg/errcodes"
     output_path: "app/types/generated/errors.ts"
     include_files:

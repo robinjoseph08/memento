@@ -12,7 +12,9 @@ import (
 )
 
 func TestDevelopmentPublicURL(t *testing.T) {
-	t.Parallel()
+	// A developer casting to a TV has PUBLIC_URL exported; the defaults are
+	// what happens without it.
+	t.Setenv("PUBLIC_URL", "")
 	root := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "tmp"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(root, "tmp", "database.env"), []byte("POSTGRES_PORT=5544\n"), 0o600))
@@ -23,6 +25,19 @@ func TestDevelopmentPublicURL(t *testing.T) {
 	values, err = developmentEnvironment(env, 3581, 0)
 	require.NoError(t, err)
 	assert.True(t, slices.Contains(values, "PUBLIC_URL=http://127.0.0.1:3581"), "use the API origin without Vite")
+}
+
+func TestDevelopmentKeepsAnExplicitPublicURL(t *testing.T) {
+	// Casting to a TV needs an address the TV can reach, which only the
+	// developer knows.
+	t.Setenv("PUBLIC_URL", "http://192.168.2.140:5174")
+	root := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "tmp"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "tmp", "database.env"), []byte("POSTGRES_PORT=5544\n"), 0o600))
+	values, err := developmentEnvironment(Environment{MainRoot: root, CurrentRoot: root, CurrentDatabase: "memento_worktree"}, 3581, 5174)
+	require.NoError(t, err)
+	assert.True(t, slices.Contains(values, "PUBLIC_URL=http://192.168.2.140:5174"))
+	assert.False(t, slices.Contains(values, "PUBLIC_URL=http://localhost:5174"), "the last duplicate wins in a child process")
 }
 
 func TestE2EDatabaseEnvironment(t *testing.T) {

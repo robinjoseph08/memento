@@ -6,7 +6,7 @@ import type {
   ViewerEntry,
   ViewerPage,
 } from "../app/types/generated/publishing";
-import { expect, finishOnboarding, test } from "./fixtures";
+import { expect, finishOnboarding, playbackSource, test } from "./fixtures";
 
 async function readAllVideos(page: Page, albumID: string) {
   const entries: ViewerEntry[] = [];
@@ -48,6 +48,7 @@ test("videos play with titles, chapters, ranges, downloads, and recover a failed
   browser,
   baseURL,
   immich,
+  playwright,
 }) => {
   test.setTimeout(300_000);
   await immich.online();
@@ -234,8 +235,7 @@ test("videos play with titles, chapters, ranges, downloads, and recover a failed
     await expect(member).toHaveURL(/\/videos\/[^/]+$/);
     const video = dialog.locator("video");
     await expect(video).toHaveCount(1);
-    const playbackURL = await video.getAttribute("src");
-    expect(playbackURL).toContain("/playback?v=");
+    const playbackURL = await playbackSource(video);
     await expect(dialog).toContainText("Birthday party");
     // The chapter picker under the player names the playing chapter and
     // follows the video; choosing one seeks to its start.
@@ -254,7 +254,7 @@ test("videos play with titles, chapters, ranges, downloads, and recover a failed
     await expect(dialog).toHaveAccessibleName("Video 1 of 103");
 
     // Playback proxies byte ranges with Memento's validators.
-    const partial = await member.request.get(playbackURL!, {
+    const partial = await member.request.get(playbackURL, {
       headers: { Range: "bytes=0-99" },
     });
     expect(partial.status()).toBe(206);
@@ -264,6 +264,31 @@ test("videos play with titles, chapters, ranges, downloads, and recover a failed
     );
     expect(partial.headers()["accept-ranges"]).toBe("bytes");
     expect((await partial.body()).byteLength).toBe(100);
+
+    // A TV has no cookie: a signed URL streams the same ranges on its own,
+    // and a tampered one serves nothing.
+    const entryID = new URL(member.url()).pathname.split("/").pop();
+    const signedURL = await member.evaluate(async (id) => {
+      const response = await fetch("/api/media/signed", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ entry_id: id, variant: "playback" }),
+      });
+      return ((await response.json()) as { url: string }).url;
+    }, entryID);
+    expect(signedURL).toContain(`${baseURL}/api/media/signed/playback/`);
+    const tv = await playwright.request.newContext();
+    const cast = await tv.get(signedURL, { headers: { Range: "bytes=0-99" } });
+    expect(cast.status()).toBe(206);
+    expect(cast.headers()["content-range"]).toBe(
+      partial.headers()["content-range"],
+    );
+    expect(cast.headers()["content-type"]).toBe(
+      partial.headers()["content-type"],
+    );
+    expect(await cast.body()).toEqual(await partial.body());
+    expect((await tv.get(signedURL.replace("?v=", "x?v="))).status()).toBe(404);
+    await tv.dispose();
 
     // Download the original as the authorized member.
     const [download] = await Promise.all([
@@ -294,10 +319,7 @@ test("videos play with titles, chapters, ranges, downloads, and recover a failed
     expect(videos[1].title).toBe("coast-retry");
     await member.goto(`${viewerPath}/${videos[100].id}`);
     await expect(dialog).toHaveAccessibleName("Video 101 of 103");
-    await expect(dialog.locator("video")).toHaveAttribute(
-      "src",
-      videos[100].playback_url,
-    );
+    await playbackSource(dialog.locator("video"), videos[100]);
     await member.keyboard.press("ArrowLeft");
     await expect(dialog).toHaveAccessibleName("Video 100 of 103");
     await expect(member).toHaveURL(

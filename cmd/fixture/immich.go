@@ -159,7 +159,9 @@ func (f *immichFixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// this request consistently without holding the lock.
 	library := f.library
 	f.mu.Unlock()
-	if r.Method != http.MethodGet && (r.Method != http.MethodPost || r.URL.Path != "/api/search/metadata") {
+	// Immich answers HEAD wherever it answers GET, which Memento's media
+	// routes rely on to describe a stream without opening it.
+	if r.Method != http.MethodGet && r.Method != http.MethodHead && (r.Method != http.MethodPost || r.URL.Path != "/api/search/metadata") {
 		http.Error(w, "fixture supports read-only Immich requests", http.StatusMethodNotAllowed)
 		return
 	}

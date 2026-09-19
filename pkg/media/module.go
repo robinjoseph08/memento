@@ -6,6 +6,8 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
+	"sync"
+	"time"
 	"uuid"
 
 	"github.com/robinjoseph08/memento/pkg/errcodes"
@@ -35,6 +37,11 @@ type Module struct {
 	// EnqueueChapters commits extraction tasks with their rows. Leave it nil
 	// only where no chapter work is ever requested, such as media-only tests.
 	EnqueueChapters EnqueueChapters
+	// Now dates signed media URLs. Leave it nil outside tests.
+	Now func() time.Time
+
+	keyLock sync.Mutex
+	key     []byte
 }
 
 func New(db *bun.DB, source Source) *Module { return &Module{db: db, source: source} }

@@ -25,6 +25,7 @@ func TestCompressionSkipsEveryMediaRoute(t *testing.T) {
 	passthrough := func(next echo.HandlerFunc) echo.HandlerFunc { return next }
 	media.RegisterRoutes(e, nil, passthrough, passthrough)
 	media.RegisterViewerRoutes(e, nil, nil, passthrough, passthrough)
+	media.RegisterSignedRoutes(e, nil, nil, "", passthrough)
 	// Exercise the production route inventory through the server middleware,
 	// with a fixed byte source so this test isolates transport behavior.
 	paths := map[string]bool{"/api/media": true, "/api/media/future/stream": true}

@@ -5,7 +5,7 @@ import type {
   AlbumDetail,
   PublicationReview,
 } from "../app/types/generated/publishing";
-import { expect, finishOnboarding, test } from "./fixtures";
+import { expect, finishOnboarding, playbackSource, test } from "./fixtures";
 
 test("a viewer browses photos and videos across albums, newest first without duplicates", async ({
   page,
@@ -133,10 +133,7 @@ test("a viewer browses photos and videos across albums, newest first without dup
     await expect(videos.first()).toHaveAccessibleName("Open video coast-06");
     await expect(videos.last()).toHaveAccessibleName("Open video coast-04");
     await videos.first().click();
-    await expect(dialog.locator("video")).toHaveAttribute(
-      "src",
-      /\/playback\?v=/,
-    );
+    await playbackSource(dialog.locator("video"));
     await member.keyboard.press("Escape");
     await tabs.getByRole("link", { name: "Photos 5" }).click();
 

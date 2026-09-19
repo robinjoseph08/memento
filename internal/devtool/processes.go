@@ -90,7 +90,9 @@ func developmentEnvironment(env Environment, apiPort, webPort int) ([]string, er
 		publicPort = webPort
 		publicHost = "localhost"
 	}
-	if publicPort != 0 {
+	// An explicit PUBLIC_URL wins, so a developer can name the LAN address a
+	// TV needs to fetch cast media from.
+	if publicPort != 0 && os.Getenv("PUBLIC_URL") == "" {
 		values = append(values, "PUBLIC_URL=http://"+net.JoinHostPort(publicHost, strconv.Itoa(publicPort)))
 	}
 	return values, nil

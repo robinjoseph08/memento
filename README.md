@@ -210,6 +210,14 @@ cover only HTML, which leaves JSON, JavaScript, and CSS uncompressed when
 relying on the proxy alone. Media and playback routes bypass Memento's
 compression to preserve byte ranges and private versioned caching.
 
+Casting a video over AirPlay, or a photo or video over Google Cast, hands the
+TV a signed address under `PUBLIC_URL` that works for a few hours, and the TV
+fetches the media from there itself. Casting therefore needs `PUBLIC_URL` to
+be reachable from the TV on the family's network, not only from phones and
+laptops, with a certificate the TV trusts. An address that resolves only
+through one device's hosts file or VPN, or a certificate from a private
+authority, will not cast.
+
 ### 6. Start and claim the installation
 
 ```sh
@@ -546,6 +554,12 @@ is occupied, it uses the next available port. Vite proxies `/api` and `/health`
 to the selected API port. Open the printed `http://localhost:PORT` web URL, or
 reach it from another machine on your network using this machine's hostname,
 such as `http://my-machine.local:PORT`.
+
+Casting hands the TV an address under `PUBLIC_URL`, which defaults to
+`localhost` here. To cast in development, start with an address the TV can
+reach, such as `PUBLIC_URL=http://192.168.1.20:5173 mise start`, using the web
+port the command prints. Chrome only offers Cast on `localhost` or HTTPS, so
+keep browsing at `http://localhost:PORT` there; Safari can use either address.
 
 The following commands start one process when needed:
 
