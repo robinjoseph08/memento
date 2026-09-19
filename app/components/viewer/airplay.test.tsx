@@ -73,6 +73,20 @@ type Mint = { entry_id: string; variant: string };
 // pipeline: position is a property and playing a promise.
 async function openVideo(refuse: boolean) {
   vi.stubGlobal("WebKitPlaybackTargetAvailabilityEvent", class {});
+  // jsdom has no Media Session; browsers name what is playing through it.
+  vi.stubGlobal(
+    "MediaMetadata",
+    class {
+      title: string;
+      constructor(init: { title: string }) {
+        this.title = init.title;
+      }
+    },
+  );
+  Object.defineProperty(navigator, "mediaSession", {
+    configurable: true,
+    value: { metadata: null },
+  });
   const times = new WeakMap<HTMLMediaElement, number>();
   Object.defineProperty(HTMLMediaElement.prototype, "currentTime", {
     configurable: true,
@@ -139,6 +153,8 @@ it("plays a signed URL from the start where AirPlay exists, so the source never 
   expect(video).toHaveAttribute("x-webkit-airplay", "allow");
   await waitFor(() => expect(video).toHaveAttribute("src", signedURL));
   expect(minted).toEqual([{ entry_id: "video-1", variant: "playback" }]);
+  // The TV names the video, not the web page it came from.
+  expect(navigator.mediaSession.metadata?.title).toBe("Birthday party");
 
   // The button waits for Safari to find a target on the network.
   expect(
@@ -164,6 +180,8 @@ it("plays a signed URL from the start where AirPlay exists, so the source never 
   expect(
     within(dialog).queryByRole("button", { name: "AirPlay" }),
   ).not.toBeInTheDocument();
+  await user.click(within(dialog).getByRole("button", { name: "Close video" }));
+  await waitFor(() => expect(navigator.mediaSession.metadata).toBeNull());
 });
 
 it("plays the cookie URL when no signed URL can be had, and says so if that video reaches a TV", async () => {

@@ -1,5 +1,5 @@
 import { Airplay } from "lucide-react";
-import { useId, type RefObject } from "react";
+import { useEffect, useId, type RefObject } from "react";
 import { createPortal } from "react-dom";
 
 import { useAirPlay } from "../../hooks/use-airplay";
@@ -33,6 +33,16 @@ export function VideoStage({
     entry.available ? entry.playback_url : "",
     airPlay,
   );
+  // Tell the browser what is playing. Without this, an Apple TV, the lock
+  // screen, and the browser's media controls name the web page instead.
+  const title = entry.available ? entry.title || "Video" : "";
+  useEffect(() => {
+    if (!title || !("mediaSession" in navigator)) return;
+    navigator.mediaSession.metadata = new MediaMetadata({ title });
+    return () => {
+      navigator.mediaSession.metadata = null;
+    };
+  }, [title]);
   if (!entry.available)
     return (
       <p className="rounded-sm bg-surface px-6 py-10 text-center text-xs text-muted">
