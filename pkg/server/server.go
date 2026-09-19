@@ -137,6 +137,7 @@ func newServer(cfg *config.Config, frontend http.Handler, options ...dependencie
 			publishing.RegisterViewerRoutes(e, deps.publishing, handlers.RequirePerson, handlers.RequireCurator)
 			if deps.media != nil {
 				media.RegisterViewerRoutes(e, deps.media, deps.publishing.AuthorizeViewerEntry, handlers.RequirePerson, handlers.RequireCurator)
+				media.RegisterSignedRoutes(e, deps.media, deps.publishing.AuthorizeViewerEntry, cfg.PublicURL, handlers.RequirePerson)
 			}
 		}
 		if deps.media != nil {

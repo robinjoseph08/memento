@@ -1,6 +1,10 @@
 package media
 
-import "github.com/labstack/echo/v5"
+import (
+	"strings"
+
+	"github.com/labstack/echo/v5"
+)
 
 // RegisterViewerRoutes scopes browser caches to the authenticated Person or an
 // explicit Curator preview. The selected Person is part of every URL, so one
@@ -21,6 +25,18 @@ func RegisterViewerRoutes(e *echo.Echo, m *Module, authorize AuthorizeEntry, req
 	e.HEAD("/api/media/preview/:personID/entries/:id/preview", h.previewPreview, requireCurator)
 	e.GET("/api/media/preview/:personID/entries/:id/playback", h.previewPlayback, requireCurator)
 	e.HEAD("/api/media/preview/:personID/entries/:id/playback", h.previewPlayback, requireCurator)
+}
+
+// RegisterSignedRoutes lets a signed-in Person mint a media URL that a TV can
+// fetch without the session cookie, and serves those URLs. publicURL roots
+// them, because the TV needs a full address. The serving routes sit behind no
+// guard: the token names the Person, and authorize runs for that Person on
+// every request, so removing access stops an unexpired URL.
+func RegisterSignedRoutes(e *echo.Echo, m *Module, authorize AuthorizeEntry, publicURL string, requirePerson echo.MiddlewareFunc) {
+	h := &signedHandlers{module: m, authorize: authorize, publicURL: strings.TrimRight(publicURL, "/")}
+	e.POST("/api/media/signed", h.sign, requirePerson)
+	e.GET("/api/media/signed/:variant/:token", h.serve)
+	e.HEAD("/api/media/signed/:variant/:token", h.serve)
 }
 
 // RegisterRoutes requires the Curator guard for source and imported media.

@@ -43,13 +43,19 @@ func (h *viewerHandlers) image(c *echo.Context, preview, large bool) error {
 	if err := h.authorize(c.Request().Context(), actorID, selected, c.Param("id")); err != nil {
 		return err
 	}
+	return serveEntryImage(c, h.module, c.Param("id"), large)
+}
+
+// serveEntryImage answers an already-authorized request for one Album
+// Entry's thumbnail or large preview at the version named in the query.
+func serveEntryImage(c *echo.Context, m *Module, id string, large bool) error {
 	version := c.QueryParam("v")
-	sourceID, err := h.module.EntryThumbnail(c.Request().Context(), c.Param("id"), version)
+	sourceID, err := m.EntryThumbnail(c.Request().Context(), id, version)
 	if err != nil {
 		return err
 	}
 	return serveVersioned(c, version, func() (immich.Thumbnail, error) {
-		return h.module.viewerImage(c.Request().Context(), sourceID, version, large)
+		return m.viewerImage(c.Request().Context(), sourceID, version, large)
 	})
 }
 

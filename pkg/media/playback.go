@@ -38,19 +38,21 @@ func (h *viewerHandlers) playback(c *echo.Context, preview bool) error {
 	if err := h.authorize(c.Request().Context(), actorID, selected, c.Param("id")); err != nil {
 		return err
 	}
-	return streamPlayback(c, h.module)
+	return streamPlayback(c, h.module, c.Param("id"))
 }
 
 // entryPlayback streams a video to a Curator reviewing it, with the same
 // range and validator semantics as the viewer routes.
-func (h *handlers) entryPlayback(c *echo.Context) error { return streamPlayback(c, h.module) }
+func (h *handlers) entryPlayback(c *echo.Context) error {
+	return streamPlayback(c, h.module, c.Param("id"))
+}
 
-// streamPlayback answers an already-authorized playback request for the Album
-// Entry named in the route.
-func streamPlayback(c *echo.Context, m *Module) error {
+// streamPlayback answers an already-authorized playback request for one Album
+// Entry at the version named in the query.
+func streamPlayback(c *echo.Context, m *Module, id string) error {
 	ctx := c.Request().Context()
 	version := c.QueryParam("v")
-	item, err := m.EntryPlayback(ctx, c.Param("id"), version)
+	item, err := m.EntryPlayback(ctx, id, version)
 	if err != nil {
 		return err
 	}

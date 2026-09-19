@@ -1,20 +1,38 @@
+import { Airplay } from "lucide-react";
 import { useId, type RefObject } from "react";
+import { createPortal } from "react-dom";
 
+import { useAirPlay } from "../../hooks/use-airplay";
 import type { Chapter, ViewerEntry } from "../../types/generated/publishing";
+import { Button } from "../ui/button";
 import { Combobox } from "../ui/combobox";
 import { clock } from "./labels";
 
 // The lightbox stage for one video: the native player filling the stage, so a
 // small clip is enlarged to the screen instead of sitting at its pixel size.
+// With airPlay, Safari may hand the video to an Apple TV, and its button
+// joins the header actions in actionsTarget while a target is on the network.
 export function VideoStage({
   entry,
   videoRef,
   onTime,
+  airPlay,
+  autoPlay,
+  actionsTarget,
 }: {
   entry: ViewerEntry;
   videoRef: RefObject<HTMLVideoElement | null>;
   onTime: (seconds: number) => void;
+  airPlay: boolean;
+  autoPlay: boolean;
+  actionsTarget: HTMLElement | null;
 }) {
+  const target = useAirPlay(
+    videoRef,
+    entry.id,
+    entry.available ? entry.playback_url : "",
+    airPlay,
+  );
   if (!entry.available)
     return (
       <p className="rounded-sm bg-surface px-6 py-10 text-center text-xs text-muted">
@@ -22,17 +40,45 @@ export function VideoStage({
       </p>
     );
   return (
-    <video
-      aria-label={entry.title || "Video"}
-      autoPlay
-      className="h-full w-full rounded-sm bg-black object-contain"
-      controls
-      onTimeUpdate={(event) => onTime(event.currentTarget.currentTime)}
-      playsInline
-      preload="metadata"
-      ref={videoRef}
-      src={entry.playback_url}
-    />
+    <div className="relative h-full w-full">
+      <video
+        aria-label={entry.title || "Video"}
+        autoPlay={autoPlay}
+        className="h-full w-full rounded-sm bg-black object-contain"
+        controls
+        onLoadedMetadata={(event) => {
+          if (target.resumeAt > 0)
+            event.currentTarget.currentTime = target.resumeAt;
+        }}
+        onTimeUpdate={(event) => onTime(event.currentTarget.currentTime)}
+        playsInline
+        preload="metadata"
+        ref={videoRef}
+        src={target.src}
+        x-webkit-airplay={airPlay ? "allow" : "deny"}
+      />
+      {target.failed && (
+        <p
+          className="absolute inset-x-0 top-3 mx-auto w-fit rounded-sm bg-surface px-3 py-2 text-xs"
+          role="alert"
+        >
+          Could not send this video to the TV. Disconnect AirPlay and try again.
+        </p>
+      )}
+      {target.available &&
+        actionsTarget &&
+        createPortal(
+          <Button
+            aria-label="AirPlay"
+            className="size-11 rounded-full p-0"
+            onClick={target.showPicker}
+            variant="ghost"
+          >
+            <Airplay aria-hidden="true" className="size-5" strokeWidth={1.5} />
+          </Button>,
+          actionsTarget,
+        )}
+    </div>
   );
 }
 

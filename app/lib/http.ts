@@ -62,6 +62,18 @@ export async function request<T>(
   return payload as T;
 }
 
+// contentType asks a same-origin media route what it serves without
+// downloading it. It is undefined when the route refuses.
+export async function contentType(path: string) {
+  const response = await fetch(path, {
+    method: "HEAD",
+    credentials: "same-origin",
+  });
+  return response.ok
+    ? (response.headers.get("Content-Type") ?? undefined)
+    : undefined;
+}
+
 export function fieldErrors(error: unknown) {
   return error instanceof HTTPError ? error.fields : {};
 }

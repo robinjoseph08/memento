@@ -48,6 +48,7 @@ test("videos play with titles, chapters, ranges, downloads, and recover a failed
   browser,
   baseURL,
   immich,
+  playwright,
 }) => {
   test.setTimeout(300_000);
   await immich.online();
@@ -264,6 +265,31 @@ test("videos play with titles, chapters, ranges, downloads, and recover a failed
     );
     expect(partial.headers()["accept-ranges"]).toBe("bytes");
     expect((await partial.body()).byteLength).toBe(100);
+
+    // A TV has no cookie: a signed URL streams the same ranges on its own,
+    // and a tampered one serves nothing.
+    const entryID = new URL(member.url()).pathname.split("/").pop();
+    const signedURL = await member.evaluate(async (id) => {
+      const response = await fetch("/api/media/signed", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ entry_id: id, variant: "playback" }),
+      });
+      return ((await response.json()) as { url: string }).url;
+    }, entryID);
+    expect(signedURL).toContain(`${baseURL}/api/media/signed/playback/`);
+    const tv = await playwright.request.newContext();
+    const cast = await tv.get(signedURL, { headers: { Range: "bytes=0-99" } });
+    expect(cast.status()).toBe(206);
+    expect(cast.headers()["content-range"]).toBe(
+      partial.headers()["content-range"],
+    );
+    expect(cast.headers()["content-type"]).toBe(
+      partial.headers()["content-type"],
+    );
+    expect(await cast.body()).toEqual(await partial.body());
+    expect((await tv.get(signedURL.replace("?v=", "x?v="))).status()).toBe(404);
+    await tv.dispose();
 
     // Download the original as the authorized member.
     const [download] = await Promise.all([
