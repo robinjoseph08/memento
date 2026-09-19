@@ -61,7 +61,7 @@ export function useRetryInvitation(personID: string) {
   });
 }
 
-// pendingRequestCount is the Curator's in-app alert for Access Requests.
+// pendingRequestCount is the Curator's badge for Access Requests.
 export function pendingRequestCount(
   requests: { status: string }[] | undefined,
 ) {

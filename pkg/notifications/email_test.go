@@ -120,7 +120,7 @@ func TestUpdateEmailIsRecheckedAgainstEligibilityBeforeSending(t *testing.T) {
 			} else {
 				assert.Empty(t, recorder.Sent(), "a skipped recipient is never emailed")
 			}
-			// Canonical in-app history is untouched by delivery outcomes.
+			// The stored Update Notification is untouched by delivery outcomes.
 			after := storedNotification(t, db, result.NotificationID)
 			assert.Equal(t, stored.Payload, after.Payload)
 			assert.ElementsMatch(t, entryIDs(album.Entries...), announced(t, module, person.ID.String()))
@@ -281,7 +281,7 @@ func TestUnsubscribeLinkChangesNothingUntilConfirmed(t *testing.T) {
 	require.ErrorIs(t, err, errcodes.NotFound("Link"))
 
 	// Confirming stops update email only: the destination stays selected for
-	// transactional mail, and the in-app notification keeps arriving.
+	// transactional mail, and Update Notifications keep arriving.
 	state, err := module.Unsubscribe(t.Context(), token)
 	require.NoError(t, err)
 	assert.False(t, state.Subscribed)

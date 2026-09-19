@@ -31,7 +31,7 @@ type NotificationAlbum struct {
 }
 
 // PreviewPerson is one collapsible row. EmailEligible reports whether a
-// later email delivery could go anywhere; the in-app notification is created
+// later email delivery could go anywhere; the Update Notification is created
 // either way. ReviewToken freezes what the row showed for approval.
 type PreviewPerson struct {
 	PersonID      string              `json:"person_id"`

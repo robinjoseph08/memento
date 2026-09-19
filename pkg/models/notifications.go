@@ -41,7 +41,7 @@ type AnnouncedEntry struct {
 	AnnouncedAt    time.Time
 }
 
-// UpdateNotification is one approved, immutable in-app summary. Version names
+// UpdateNotification is one approved, immutable summary. Version names
 // the payload shape so later readers can still render old rows; ReadAt is the
 // only column that changes after creation. DeliveryID names the optional email
 // for the same summary and is nil when the Person gets it in app only.

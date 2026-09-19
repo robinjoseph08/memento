@@ -33,8 +33,8 @@ async function signInAndOnboard(
   await expect(
     page.getByRole("heading", { name: "Welcome to Memento" }),
   ).toBeVisible();
-  // Onboarding preselects the sign-in email with updates on; an in-app
-  // only Person clears the destination.
+  // Onboarding preselects the sign-in email with updates on; a Person who
+  // wants no update email clears the destination.
   await page.getByRole("combobox", { name: "Email for updates" }).click();
   await page
     .getByRole("option", {
