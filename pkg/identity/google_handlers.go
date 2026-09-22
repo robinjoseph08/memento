@@ -48,7 +48,7 @@ func (h *googleHandlers) start(c *echo.Context) error {
 		if !errorstack.IsContextCancellation(c.Request().Context(), err) {
 			echologger.FromEchoContext(c).Err(err).Error("Google discovery failed")
 		}
-		return h.failure(c, "provider_unavailable")
+		return h.failure(c, "provider_unavailable", transaction.returnTo)
 	}
 	token := oauth2.GenerateVerifier()
 	previous := ""
@@ -90,7 +90,7 @@ func (h *googleHandlers) callback(c *echo.Context) error {
 	h.cookie(c, "", -1, time.Unix(1, 0))
 	cookie, err := c.Cookie(h.cookieName)
 	if err != nil {
-		return h.failure(c, "invalid_state")
+		return h.failure(c, "invalid_state", "")
 	}
 	h.mu.Lock()
 	transaction, found := h.transactions[cookie.Value]
@@ -99,10 +99,10 @@ func (h *googleHandlers) callback(c *echo.Context) error {
 	query := c.Request().URL.Query()
 	state := query.Get("state")
 	if !found || !transaction.expires.After(time.Now()) || len(query["state"]) != 1 || subtle.ConstantTimeCompare([]byte(state), []byte(transaction.state)) != 1 {
-		return h.failure(c, "invalid_state")
+		return h.failure(c, "invalid_state", transaction.returnTo)
 	}
 	if query.Get("error") != "" || len(query["code"]) != 1 || query.Get("code") == "" {
-		return h.failure(c, "sign_in_failed")
+		return h.failure(c, "sign_in_failed", transaction.returnTo)
 	}
 	claims, err := h.provider.Exchange(c.Request().Context(), query.Get("code"), transaction.nonce, transaction.verifier)
 	if err != nil {
@@ -110,28 +110,28 @@ func (h *googleHandlers) callback(c *echo.Context) error {
 			if !errorstack.IsContextCancellation(c.Request().Context(), err) {
 				echologger.FromEchoContext(c).Err(err).Error("Google token exchange failed")
 			}
-			return h.failure(c, "provider_unavailable")
+			return h.failure(c, "provider_unavailable", transaction.returnTo)
 		}
 		if errors.Is(err, ErrUnverifiedIdentity) {
-			return h.failure(c, "unverified_identity")
+			return h.failure(c, "unverified_identity", transaction.returnTo)
 		}
-		return h.failure(c, "sign_in_failed")
+		return h.failure(c, "sign_in_failed", transaction.returnTo)
 	}
 	session, err := h.identity.module.SignIn(WithBrowser(c.Request().Context(), c.Request().UserAgent()), claims)
 	if err != nil {
 		if errors.Is(err, ErrAccessDenied) {
-			return h.failure(c, "access_denied")
+			return h.failure(c, "access_denied", transaction.returnTo)
 		}
 		if errors.Is(err, ErrAccessRequested) {
-			return h.failure(c, "access_requested")
+			return h.failure(c, "access_requested", transaction.returnTo)
 		}
 		if errors.Is(err, ErrUnverifiedIdentity) {
-			return h.failure(c, "unverified_identity")
+			return h.failure(c, "unverified_identity", transaction.returnTo)
 		}
 		if !errors.Is(err, ErrUnauthenticated) && !errorstack.IsContextCancellation(c.Request().Context(), err) {
 			echologger.FromEchoContext(c).Err(err).Error("Google sign-in failed")
 		}
-		return h.failure(c, "sign_in_failed")
+		return h.failure(c, "sign_in_failed", transaction.returnTo)
 	}
 	h.identity.setCookie(c, session.Token, session.ExpiresAt)
 	home := "/"
@@ -146,6 +146,12 @@ func (h *googleHandlers) cookie(c *echo.Context, value string, maxAge int, expir
 	c.SetCookie(&http.Cookie{Name: h.cookieName, Value: value, Path: "/api/identity/google", HttpOnly: true, Secure: strings.HasPrefix(h.identity.publicURL, "https://"), SameSite: http.SameSiteLaxMode, MaxAge: maxAge, Expires: expires})
 }
 
-func (h *googleHandlers) failure(c *echo.Context, code string) error {
-	return errorstack.CaptureContext(c.Request().Context(), c.Redirect(http.StatusFound, "/sign-in?error="+code))
+// failure sends the Person back to sign-in with the Mobile App's return link
+// still attached, so a second attempt from the browser sheet can still return.
+func (h *googleHandlers) failure(c *echo.Context, code, returnTo string) error {
+	location := "/sign-in?error=" + code
+	if returnTo != "" {
+		location += "&return_to=" + url.QueryEscape(returnTo)
+	}
+	return errorstack.CaptureContext(c.Request().Context(), c.Redirect(http.StatusFound, location))
 }

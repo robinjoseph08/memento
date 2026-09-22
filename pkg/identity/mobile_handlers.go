@@ -40,6 +40,12 @@ func (h *Handlers) mobileReturn(c *echo.Context) error {
 	if !ok {
 		return errInvalidReturn
 	}
+	// Onboarding happens on the web; the app has no screen for it. The web
+	// sends a Person there before coming here, and a direct visit is sent
+	// the same way with the return link kept.
+	if person, ok := c.Get("identity.person").(Person); ok && person.OnboardingCompletedAt == nil {
+		return errorstack.CaptureContext(c.Request().Context(), c.Redirect(http.StatusFound, "/welcome?return_to="+url.QueryEscape(returnTo.String())))
+	}
 	token, _ := h.credential(c)
 	code, err := h.module.IssueMobileCode(c.Request().Context(), token)
 	if err != nil {

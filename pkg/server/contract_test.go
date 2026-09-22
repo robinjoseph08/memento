@@ -76,7 +76,14 @@ func TestMobileAppContract(t *testing.T) {
 	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
 	require.Len(t, response.Result().Cookies(), 1)
 	browser := response.Result().Cookies()[0].Value
-	response = call(http.MethodGet, "/api/identity/mobile/return?return_to="+url.QueryEscape("exp://192.168.1.20:8081/--/sign-in"), "", browser)
+	returnPath := "/api/identity/mobile/return?return_to=" + url.QueryEscape("exp://192.168.1.20:8081/--/sign-in")
+	// A first-time Person finishes Onboarding on the web before the hand-off.
+	response = call(http.MethodGet, returnPath, "", browser)
+	require.Equal(t, http.StatusFound, response.Code, response.Body.String())
+	require.Equal(t, "/welcome?return_to="+url.QueryEscape("exp://192.168.1.20:8081/--/sign-in"), response.Header().Get("Location"))
+	_, err = db.NewUpdate().Table("persons").Set("onboarding_completed_at = now()").Where("TRUE").Exec(t.Context())
+	require.NoError(t, err)
+	response = call(http.MethodGet, returnPath, "", browser)
 	require.Equal(t, http.StatusFound, response.Code, response.Body.String())
 	location, err := url.Parse(response.Header().Get("Location"))
 	require.NoError(t, err)
@@ -115,7 +122,7 @@ func TestMobileAppContract(t *testing.T) {
 	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &sessions))
 	devices := []string{}
 	for _, session := range sessions {
-		devices = append(devices, session["device"].(string)) //nolint:forcetypeassert // test JSON
+		devices = append(devices, session["device"].(string))
 	}
 	require.Contains(t, devices, "Memento on iPhone")
 

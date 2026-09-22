@@ -84,7 +84,17 @@ export function AppProviders({
   const [state, setState] = useState<Remembered>();
   const [queryClient] = useState(
     () =>
-      new QueryClient({ defaultOptions: { queries: { staleTime: 60_000 } } }),
+      new QueryClient({
+        defaultOptions: {
+          queries: {
+            staleTime: 60_000,
+            // A failure shows at once, with a way to try again, rather than
+            // after a silent round of retries. A refused session in
+            // particular must reach the watch below immediately.
+            retry: false,
+          },
+        },
+      }),
   );
 
   useEffect(() => {
@@ -101,8 +111,8 @@ export function AppProviders({
         },
         async disconnect() {
           if (state.origin) {
+            await forgetSession(state.origin, queryClient);
             await forgetInstallation(state.origin);
-            queryClient.removeQueries({ queryKey: [state.origin] });
           }
           setState({ origin: null, token: null });
         },

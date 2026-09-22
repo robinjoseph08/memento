@@ -7,12 +7,11 @@ import (
 	"github.com/robinjoseph08/memento/pkg/errorstack"
 )
 
+// browserToken is the session token the guard admitted, from the Mobile App's
+// bearer header or the browser's cookie.
 func (h *Handlers) browserToken(c *echo.Context) string {
-	cookie, err := c.Cookie(h.cookieName)
-	if err != nil {
-		return ""
-	}
-	return cookie.Value
+	token, _ := h.credential(c)
+	return token
 }
 
 func jsonResult(c *echo.Context, result any, err error) error {

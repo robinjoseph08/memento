@@ -31,6 +31,7 @@ type fakeIdentity struct {
 	sourceFaceID  string
 	signedOut     string
 	issuedFor     string
+	listedFor     string
 	exchanged     [2]string
 }
 
@@ -47,6 +48,10 @@ func (f *fakeIdentity) Authenticate(_ context.Context, token string) (identity.S
 func (f *fakeIdentity) SignOut(_ context.Context, token string) error {
 	f.signedOut = token
 	return f.err
+}
+func (f *fakeIdentity) Sessions(_ context.Context, token string) ([]identity.BrowserSession, error) {
+	f.listedFor = token
+	return []identity.BrowserSession{}, f.err
 }
 func (f *fakeIdentity) IssueMobileCode(_ context.Context, token string) (string, error) {
 	f.issuedFor = token

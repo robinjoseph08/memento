@@ -27,19 +27,16 @@ func (m *Module) IssueMobileCode(ctx context.Context, token string) (string, err
 	}
 	err = m.change(ctx, func(ctx context.Context, tx bun.Tx) error {
 		now := m.now().UTC()
-		if _, err := m.sessionPerson(ctx, tx, token); err != nil {
+		linked, err := m.sessionIdentity(ctx, tx, token)
+		if err != nil {
 			return err
 		}
-		tokenHash := sha256.Sum256([]byte(token))
-		var identityID models.UUID
-		if err := tx.NewSelect().Model((*models.Session)(nil)).Column("identity_id").Where("token_hash = ?", tokenHash[:]).Scan(ctx, &identityID); err != nil {
-			return errorstack.CaptureContext(ctx, err)
-		}
+		identityID := linked.ID
 		if _, err := tx.NewDelete().Model((*models.MobileSignInCode)(nil)).Where("expires_at <= ?", now).Exec(ctx); err != nil {
 			return errorstack.CaptureContext(ctx, err)
 		}
 		pending := models.MobileSignInCode{CodeHash: hash, IdentityID: identityID, ExpiresAt: now.Add(MobileCodeLifetime)}
-		_, err := tx.NewInsert().Model(&pending).Exec(ctx)
+		_, err = tx.NewInsert().Model(&pending).Exec(ctx)
 		return errorstack.CaptureContext(ctx, err)
 	})
 	return code, err

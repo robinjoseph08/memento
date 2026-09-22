@@ -14,7 +14,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-var phoneSession = identity.Session{Person: identity.Person{ID: "person", DisplayName: "Alex"}, Token: strings.Repeat("t", 43), ExpiresAt: time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)}
+var (
+	onboarded    = time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	phoneSession = identity.Session{Person: identity.Person{ID: "person", DisplayName: "Alex", OnboardingCompletedAt: &onboarded}, Token: strings.Repeat("t", 43), ExpiresAt: time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)}
+)
 
 func TestMobileReturnRedirectsToTheAppWithACode(t *testing.T) {
 	t.Parallel()
@@ -59,6 +62,22 @@ func TestMobileReturnRequiresASignedInBrowser(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	e.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/identity/mobile/return?return_to=memento://sign-in", nil))
 	assert.Equal(t, 401, recorder.Code)
+}
+
+func TestMobileReturnSendsAnUnfinishedPersonToOnboardingFirst(t *testing.T) {
+	t.Parallel()
+	cfg := config.NewForTest()
+	session := phoneSession
+	session.Person.OnboardingCompletedAt = nil
+	module := &fakeIdentity{claimed: true, expectedToken: "browser-token", session: session}
+	e := identityHTTP(t, cfg, module)
+	req := httptest.NewRequest(http.MethodGet, "/api/identity/mobile/return?return_to=memento://sign-in", nil)
+	req.AddCookie(&http.Cookie{Name: cfg.CookieNamespace + "_session", Value: "browser-token"})
+	recorder := httptest.NewRecorder()
+	e.ServeHTTP(recorder, req)
+	require.Equal(t, 302, recorder.Code, recorder.Body.String())
+	assert.Equal(t, "/welcome?return_to=memento%3A%2F%2Fsign-in", recorder.Header().Get("Location"))
+	assert.Empty(t, module.issuedFor, "no code before Onboarding")
 }
 
 func TestMobileExchangeAnswersWithABearerSessionAndNoCookie(t *testing.T) {
@@ -140,4 +159,13 @@ func TestBearerSessionsNeverTouchCookies(t *testing.T) {
 	assert.Equal(t, 204, recorder.Code)
 	assert.Equal(t, phoneSession.Token, module.signedOut)
 	assert.Empty(t, recorder.Result().Cookies())
+
+	// Handlers that act as the Person receive the bearer token, not an empty cookie.
+	req = httptest.NewRequest(http.MethodGet, "/api/identity/sessions", nil)
+	req.Header.Set("Authorization", "Bearer "+phoneSession.Token)
+	req.AddCookie(&http.Cookie{Name: cfg.CookieNamespace + "_session", Value: "stale-browser-token"})
+	recorder = httptest.NewRecorder()
+	e.ServeHTTP(recorder, req)
+	assert.Equal(t, 200, recorder.Code, recorder.Body.String())
+	assert.Equal(t, phoneSession.Token, module.listedFor)
 }

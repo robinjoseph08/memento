@@ -1,5 +1,6 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 
+import { HTTPError } from "@/lib/http";
 import { openSignIn, platformLabel } from "@/lib/sign-in";
 import { useConnection, useCreateHTTP } from "@/providers";
 import type {
@@ -8,26 +9,33 @@ import type {
 } from "@/types/generated/identity";
 import type { ViewerAlbum } from "@/types/generated/publishing";
 
+export const SIGN_IN_FAILED = "Sign-in could not be completed. Try again.";
+
 // useSignIn runs the web sign-in in the browser sheet and exchanges the code
 // it comes back with for this phone's own session. It resolves to null when
-// the Person closed the sheet instead.
+// the Person closed the sheet instead. Only what Memento itself said is
+// shown; anything the sheet or the network threw becomes SIGN_IN_FAILED.
 export function useSignIn(origin: string) {
   const createHTTP = useCreateHTTP();
   const { startSession } = useConnection();
   return useMutation({
     mutationFn: async () => {
-      const code = await openSignIn(origin);
-      if (code === null) {
-        return null;
+      try {
+        const code = await openSignIn(origin);
+        if (code === null) {
+          return null;
+        }
+        const request: ExchangeMobileCodeRequest = {
+          code,
+          platform: platformLabel(),
+        };
+        return await createHTTP(origin).request<MobileSession>(
+          "/api/identity/mobile/exchange",
+          { body: request },
+        );
+      } catch (error) {
+        throw error instanceof HTTPError ? error : new Error(SIGN_IN_FAILED);
       }
-      const request: ExchangeMobileCodeRequest = {
-        code,
-        platform: platformLabel(),
-      };
-      return createHTTP(origin).request<MobileSession>(
-        "/api/identity/mobile/exchange",
-        { body: request },
-      );
     },
     onSuccess: async (session) => {
       if (session) {
@@ -67,6 +75,5 @@ export function useAlbums(origin: string, token: string) {
       createHTTP(origin, token).request<ViewerAlbum[]>("/api/albums", {
         signal,
       }),
-    retry: false,
   });
 }

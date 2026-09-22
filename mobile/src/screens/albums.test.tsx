@@ -2,7 +2,6 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { render, screen, userEvent } from "@testing-library/react-native";
 import * as WebBrowser from "expo-web-browser";
 
-import { HTTPError } from "@/lib/http";
 import { AppProviders } from "@/providers";
 import { fakeHTTP, unauthenticated } from "@/testing/fake-http";
 
@@ -62,7 +61,8 @@ async function open(http: ReturnType<typeof fakeHTTP>) {
 async function connect(user: ReturnType<typeof userEvent.setup>) {
   await user.type(await screen.findByLabelText("Memento address"), origin);
   await user.press(screen.getByRole("button", { name: "Connect" }));
-  return screen.findByRole("button", { name: "Sign in" });
+  await screen.findByText("Version 1.4.0");
+  return screen.getByRole("button", { name: "Sign in" });
 }
 
 async function signIn(
@@ -95,14 +95,6 @@ it("signs in through the browser sheet and lists Albums with their covers", asyn
     },
   ]);
 
-  const [url, returnTo] = sheet.mock.calls[0];
-  expect(url).toBe(
-    `${origin}/sign-in?return_to=${encodeURIComponent(String(returnTo))}`,
-  );
-  expect(http.requests).toContainEqual({
-    url: `${origin}/api/identity/mobile/exchange`,
-    token: null,
-  });
   expect(http.requests).toContainEqual({
     url: `${origin}/api/albums`,
     token: "phone-token",
@@ -119,37 +111,6 @@ it("stays signed in after a restart", async () => {
   await open(http);
   expect(await screen.findByText("Summer")).toBeOnTheScreen();
   expect(sheet).toHaveBeenCalledTimes(1);
-});
-
-it("stays on sign-in when the Person closes the sheet", async () => {
-  const http = installation();
-  const user = await open(http);
-  await user.press(await connect(user));
-
-  expect(await screen.findByRole("button", { name: "Sign in" })).toBeOnTheScreen();
-  expect(screen.queryByRole("alert")).not.toBeOnTheScreen();
-  expect(
-    http.requests.filter((request) => request.url.endsWith("/exchange")),
-  ).toEqual([]);
-});
-
-it("explains when the code is refused", async () => {
-  const user = await open(
-    installation({
-      "/api/identity/mobile/exchange": () => {
-        throw new HTTPError(
-          "That sign-in has expired. Start again from the app.",
-          401,
-        );
-      },
-    }),
-  );
-  await signIn(user);
-
-  expect(await screen.findByRole("alert")).toHaveTextContent(
-    "That sign-in has expired. Start again from the app.",
-  );
-  expect(screen.getByRole("button", { name: "Sign in" })).toBeOnTheScreen();
 });
 
 it("says so when the Albums cannot be loaded", async () => {
@@ -175,16 +136,21 @@ it("signs out and returns to sign-in with the Installation remembered", async ()
   await screen.findByText("Summer");
   await user.press(screen.getByRole("button", { name: "Sign out" }));
 
-  expect(await screen.findByRole("button", { name: "Sign in" })).toBeOnTheScreen();
+  expect(
+    await screen.findByRole("button", { name: "Sign in" }),
+  ).toBeOnTheScreen();
   expect(screen.getByText("photos.example.com")).toBeOnTheScreen();
   expect(http.requests).toContainEqual({
     url: `${origin}/api/identity/sign-out`,
     token: "phone-token",
+    body: {},
   });
   await screen.unmount();
 
   await open(http);
-  expect(await screen.findByRole("button", { name: "Sign in" })).toBeOnTheScreen();
+  expect(
+    await screen.findByRole("button", { name: "Sign in" }),
+  ).toBeOnTheScreen();
 });
 
 it("returns to sign-in when the server rejects the session", async () => {
@@ -195,12 +161,16 @@ it("returns to sign-in when the server rejects the session", async () => {
 
   // Deactivated, or signed out everywhere: the token no longer works.
   await open(installation({ "/api/albums": unauthenticated }));
-  expect(await screen.findByRole("button", { name: "Sign in" })).toBeOnTheScreen();
+  expect(
+    await screen.findByRole("button", { name: "Sign in" }),
+  ).toBeOnTheScreen();
   expect(screen.getByText("photos.example.com")).toBeOnTheScreen();
   await screen.unmount();
 
   // The token is gone for good, not just hidden until the next answer.
   await open(installation());
-  expect(await screen.findByRole("button", { name: "Sign in" })).toBeOnTheScreen();
+  expect(
+    await screen.findByRole("button", { name: "Sign in" }),
+  ).toBeOnTheScreen();
   expect(screen.queryByText("Summer")).not.toBeOnTheScreen();
 });

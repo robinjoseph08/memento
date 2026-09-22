@@ -21,20 +21,13 @@ const headingClassName =
 // The Mobile App opens sign-in with a return link. It rides along as a query
 // parameter through sign-in and Onboarding, and once the Person is signed in
 // and onboarded, the server sends the browser sheet back to the app with it.
-export const mobileReturnPath = "/api/identity/mobile/return";
+const mobileReturnPath = "/api/identity/mobile/return";
 
-function mobileReturn(search: string) {
-  return new URLSearchParams(search).get("return_to") ?? "";
-}
+type Visitor =
+  { is_curator: boolean; onboarding_completed_at?: string } | null | undefined;
 
-function destination(
-  person:
-    | { is_curator: boolean; onboarding_completed_at?: string }
-    | null
-    | undefined,
-  search: string,
-) {
-  const returnTo = mobileReturn(search);
+function destination(person: Visitor, search: string) {
+  const returnTo = new URLSearchParams(search).get("return_to") ?? "";
   const carried = returnTo ? `?return_to=${encodeURIComponent(returnTo)}` : "";
   if (!person) return `/sign-in${carried}`;
   if (!person.onboarding_completed_at) return `/welcome${carried}`;
@@ -44,7 +37,9 @@ function destination(
 
 // Redirect sends the Person where they belong. The Mobile App's return is
 // served by the server, so it is a full navigation rather than a route change.
-function Redirect({ to }: { to: string }) {
+function Redirect({ person }: { person: Visitor }) {
+  const { search } = useLocation();
+  const to = destination(person, search);
   const external = to.startsWith(mobileReturnPath);
   useEffect(() => {
     if (external) window.location.replace(to);
@@ -154,9 +149,9 @@ export function InstallationLayout() {
 
 export function PublicLayout() {
   const { data } = useIdentityStatus();
-  const { pathname, search } = useLocation();
+  const { pathname } = useLocation();
   if (data?.person || (data?.claimed && pathname === "/setup"))
-    return <Redirect to={destination(data?.person, search)} />;
+    return <Redirect person={data?.person} />;
   return (
     <main className={pageClassName}>
       <Outlet />
@@ -201,9 +196,8 @@ export function SignInPage() {
 
 export function CuratorLayout({ compact = false }: { compact?: boolean }) {
   const { data } = useIdentityStatus();
-  const { search } = useLocation();
   if (!data?.person?.is_curator || onboardingPending(data.person))
-    return <Redirect to={destination(data?.person, search)} />;
+    return <Redirect person={data?.person} />;
   return (
     <main className={compact ? "mx-auto max-w-[1440px] pb-10" : pageClassName}>
       <Outlet />
@@ -213,9 +207,8 @@ export function CuratorLayout({ compact = false }: { compact?: boolean }) {
 
 export function SignedInLayout() {
   const { data } = useIdentityStatus();
-  const { search } = useLocation();
   if (!data?.person || onboardingPending(data.person))
-    return <Redirect to={destination(data?.person, search)} />;
+    return <Redirect person={data?.person} />;
   return (
     <main className={pageClassName}>
       <Outlet />
@@ -225,9 +218,8 @@ export function SignedInLayout() {
 
 export function OnboardingLayout() {
   const { data } = useIdentityStatus();
-  const { search } = useLocation();
   if (!data?.person || !onboardingPending(data.person))
-    return <Redirect to={destination(data?.person, search)} />;
+    return <Redirect person={data?.person} />;
   return (
     <main className={pageClassName}>
       <Outlet />
@@ -237,9 +229,8 @@ export function OnboardingLayout() {
 
 export function ViewerLayout() {
   const { data } = useIdentityStatus();
-  const { search } = useLocation();
   if (!data?.person || onboardingPending(data.person))
-    return <Redirect to={destination(data?.person, search)} />;
+    return <Redirect person={data?.person} />;
   return (
     <main className="mx-auto max-w-[1440px] px-5 pt-6 pb-16 min-[761px]:px-12">
       <Outlet />
@@ -249,11 +240,10 @@ export function ViewerLayout() {
 
 export function HomePage() {
   const { data } = useIdentityStatus();
-  const { search } = useLocation();
   return (
     <>
       <PageTitle />
-      <Redirect to={destination(data?.person, search)} />
+      <Redirect person={data?.person} />
     </>
   );
 }
