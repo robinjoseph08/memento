@@ -4,7 +4,7 @@ go 1.27.0
 
 require (
 	github.com/coreos/go-oidc/v3 v3.21.0
-	github.com/creasty/defaults v1.9.0
+	github.com/creasty/defaults v1.11.0
 	github.com/go-jose/go-jose/v4 v4.1.5
 	github.com/go-playground/mold/v4 v4.5.1
 	github.com/go-playground/validator/v10 v10.30.4
