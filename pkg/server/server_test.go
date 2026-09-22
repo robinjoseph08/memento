@@ -17,6 +17,7 @@ import (
 	"github.com/robinjoseph08/memento/pkg/config"
 	"github.com/robinjoseph08/memento/pkg/errcodes"
 	"github.com/robinjoseph08/memento/pkg/errorstack"
+	"github.com/robinjoseph08/memento/pkg/identity"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -34,30 +35,50 @@ func TestMutationOriginAndJSON(t *testing.T) {
 	for _, tc := range []struct {
 		origin, host, content string
 		status                int
+		// bearer and path are the Mobile App's cases: a session token in the
+		// Authorization header, or the code exchange that precedes one.
+		bearer, path string
 	}{
-		{"https://photos.example.test", "photos.example.test", "application/json", 204},
-		{"https://photos.example.test", "internal:3579", "application/json", 204},
-		{"https://evil.test", "photos.example.test", "application/json", 403},
-		{"", "photos.example.test", "application/json", 403},
-		{"null", "photos.example.test", "application/json", 403},
-		{"http://localhost:5173", "localhost:5173", "application/json", 204},
-		{"http://127.0.0.1:5173", "127.0.0.1:5173", "application/json", 204},
-		{"http://photos-local:5173", "photos-local:5173", "application/json", 204},
-		{"http://photos-local.local:5173", "photos-local.local:5173", "application/json", 204},
-		{"http://photos-local:5173", "photos-local:3579", "application/json", 403},
-		{"https://photos-local:5173", "photos-local:5173", "application/json", 403},
-		{"https://evil.test", "evil.test:443", "application/json", 403},
-		{"https://photos.example.test", "photos.example.test", "application/x-www-form-urlencoded", 415},
-		{"https://photos.example.test", "photos.example.test", "", 415},
+		{"https://photos.example.test", "photos.example.test", "application/json", 204, "", ""},
+		{"https://photos.example.test", "internal:3579", "application/json", 204, "", ""},
+		{"https://evil.test", "photos.example.test", "application/json", 403, "", ""},
+		{"", "photos.example.test", "application/json", 403, "", ""},
+		{"null", "photos.example.test", "application/json", 403, "", ""},
+		{"http://localhost:5173", "localhost:5173", "application/json", 204, "", ""},
+		{"http://127.0.0.1:5173", "127.0.0.1:5173", "application/json", 204, "", ""},
+		{"http://photos-local:5173", "photos-local:5173", "application/json", 204, "", ""},
+		{"http://photos-local.local:5173", "photos-local.local:5173", "application/json", 204, "", ""},
+		{"http://photos-local:5173", "photos-local:3579", "application/json", 403, "", ""},
+		{"https://photos-local:5173", "photos-local:5173", "application/json", 403, "", ""},
+		{"https://evil.test", "evil.test:443", "application/json", 403, "", ""},
+		{"https://photos.example.test", "photos.example.test", "application/x-www-form-urlencoded", 415, "", ""},
+		{"https://photos.example.test", "photos.example.test", "", 415, "", ""},
+		{"", "photos.example.test", "application/json", 204, "Bearer " + strings.Repeat("t", 43), ""},
+		{"https://evil.test", "photos.example.test", "application/json", 204, "Bearer " + strings.Repeat("t", 43), ""},
+		{"", "photos.example.test", "application/x-www-form-urlencoded", 415, "Bearer " + strings.Repeat("t", 43), ""},
+		{"", "photos.example.test", "application/json", 403, "Basic dXNlcjpwYXNz", ""},
+		{"", "photos.example.test", "application/json", 403, "Bearer", ""},
+		// No identity routes are registered here, so passing the Origin check
+		// lands on the API's not-found answer instead of 403.
+		{"", "photos.example.test", "application/json", 404, "", identity.MobileExchangePath},
+		{"https://evil.test", "photos.example.test", "application/json", 404, "", identity.MobileExchangePath},
+		{"", "photos.example.test", "", 415, "", identity.MobileExchangePath},
 	} {
-		req := httptest.NewRequest(http.MethodPost, "/api/mutate", strings.NewReader(`{}`))
+		path := tc.path
+		if path == "" {
+			path = "/api/mutate"
+		}
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{}`))
 		req.Host = tc.host
 		req.Header.Set("Origin", tc.origin)
 		req.Header.Set("Content-Type", tc.content)
+		if tc.bearer != "" {
+			req.Header.Set("Authorization", tc.bearer)
+		}
 		req.Header.Set("X-Forwarded-Host", "evil.test")
 		recorder := httptest.NewRecorder()
 		srv.Handler.ServeHTTP(recorder, req)
-		assert.Equal(t, tc.status, recorder.Code)
+		assert.Equal(t, tc.status, recorder.Code, "%+v", tc)
 		assert.Empty(t, recorder.Header().Get("Access-Control-Allow-Origin"))
 		assert.Equal(t, "no-store", recorder.Header().Get("Cache-Control"))
 	}
@@ -80,6 +101,11 @@ func TestProductionMutationOriginRequiresPublicURL(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	srv.Handler.ServeHTTP(recorder, req)
 	assert.Equal(t, http.StatusForbidden, recorder.Code)
+	// The Mobile App has no Origin to offer in production either.
+	req.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 43))
+	recorder = httptest.NewRecorder()
+	srv.Handler.ServeHTTP(recorder, req)
+	assert.Equal(t, http.StatusNoContent, recorder.Code)
 }
 
 func TestDatabaseControlsHealth(t *testing.T) {

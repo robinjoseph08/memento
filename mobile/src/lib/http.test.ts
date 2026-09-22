@@ -26,6 +26,25 @@ it("requests paths on the Installation origin and returns the JSON reply", async
   expect(network.mock.calls[0][1].method).toBeUndefined();
 });
 
+it("sends the session token as a bearer header on requests and images", async () => {
+  network.mockResolvedValue(reply(200, "[]"));
+  const http = createHTTP(origin, "phone-token");
+  await http.request("/api/albums");
+  expect(network.mock.calls[0][1].headers).toMatchObject({
+    Authorization: "Bearer phone-token",
+  });
+  expect(http.media("/api/media/viewer/alex/entries/1/thumbnail?v=1")).toEqual({
+    uri: `${origin}/api/media/viewer/alex/entries/1/thumbnail?v=1`,
+    headers: { Authorization: "Bearer phone-token" },
+  });
+  // Signed out, nothing is sent that could be mistaken for a credential.
+  await createHTTP(origin).request("/api/identity/status");
+  expect(network.mock.calls[1][1].headers).not.toHaveProperty("Authorization");
+  expect(createHTTP(origin).media("/api/media/x")).toEqual({
+    uri: `${origin}/api/media/x`,
+  });
+});
+
 it("sends a body as a JSON POST", async () => {
   network.mockResolvedValue(reply(204, ""));
   await expect(

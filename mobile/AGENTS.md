@@ -10,11 +10,21 @@ specification in issue #67 and ADR 0013 before adding to it.
   UI in `src/components`, TanStack Query definitions in `src/hooks/queries`,
   and everything without React in `src/lib`.
 - One HTTP adapter, `src/lib/http.ts`, owns every request and holds the
-  Installation origin. Nothing else calls `fetch`, and ESLint enforces it.
-  Screens and components reach the server through query definitions.
+  Installation origin and the session token, which it sends as a bearer
+  header. Nothing else calls `fetch`, and ESLint enforces it. Screens and
+  components reach the server through query definitions, and resolve the
+  relative media URLs in payloads through the adapter's `media`, which adds
+  the address and the header an image component needs.
 - Everything the app stores is keyed by Installation origin, and so is every
-  query key. `src/lib/storage.ts` owns the key format. The app connects to one
-  Installation at a time, but nothing may assume there will only ever be one.
+  query key. `src/lib/storage.ts` owns the key format. The session token is
+  the one value in secure storage; everything else is in async storage. The
+  app connects to one Installation at a time, but nothing may assume there
+  will only ever be one.
+- Sign-in is the Installation's own web sign-in in the system browser sheet,
+  which comes back with a single-use code the app exchanges for its session.
+  `src/lib/sign-in.ts` owns that hand-off. A `401` from any query ends the
+  session on the phone and returns to sign-in; `AppProviders` watches for it,
+  so screens never handle it themselves.
 - What the server says is server state and stays in TanStack Query. Do not
   copy it into storage or React context. Keep query functions free of side
   effects.
@@ -38,7 +48,9 @@ specification in issue #67 and ADR 0013 before adding to it.
 - Tests use Jest and React Native Testing Library. The HTTP adapter is the one
   seam: pass `fakeHTTP` from `src/testing/fake-http.ts` to `AppProviders`.
   Storage and safe-area insets use their libraries' own in-memory versions
-  from `jest.setup.js`. Do not mock the app's own modules.
+  from `jest.setup.js`, which also stands in for secure storage, the app's
+  link scheme, and the browser sheet. A test that signs in tells the faked
+  sheet what link to come back with. Do not mock the app's own modules.
 - Screen tests assert on visible text and accessible roles. Await everything
   the screen goes on to load, so no update lands after the test ends.
 - The real adapter has its own tests against a stubbed network in

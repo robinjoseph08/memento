@@ -29,6 +29,9 @@ type fakeIdentity struct {
 	faceAction    string
 	personID      string
 	sourceFaceID  string
+	signedOut     string
+	issuedFor     string
+	exchanged     [2]string
 }
 
 func (f *fakeIdentity) Claimed(context.Context) (bool, error) { return f.claimed, nil }
@@ -41,7 +44,24 @@ func (f *fakeIdentity) Authenticate(_ context.Context, token string) (identity.S
 	}
 	return f.session, f.err
 }
-func (f *fakeIdentity) SignOut(context.Context, string) error { return f.err }
+func (f *fakeIdentity) SignOut(_ context.Context, token string) error {
+	f.signedOut = token
+	return f.err
+}
+func (f *fakeIdentity) IssueMobileCode(_ context.Context, token string) (string, error) {
+	f.issuedFor = token
+	if f.expectedToken != "" && token != f.expectedToken {
+		return "", identity.ErrUnauthenticated
+	}
+	return strings.Repeat("c", 43), f.err
+}
+func (f *fakeIdentity) ExchangeMobileCode(_ context.Context, code, platform string) (identity.Session, error) {
+	f.exchanged = [2]string{code, platform}
+	if code != strings.Repeat("c", 43) {
+		return identity.Session{}, identity.ErrMobileCodeInvalid
+	}
+	return f.session, f.err
+}
 func (f *fakeIdentity) LinkFace(_ context.Context, _ string, personID string, request identity.LinkFaceRequest) (identity.PersonDetail, error) {
 	f.faceAction, f.personID, f.sourceFaceID = "link", personID, request.SourceFaceID
 	return identity.PersonDetail{}, f.err

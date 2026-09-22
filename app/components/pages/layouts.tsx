@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Navigate, Outlet, useLocation } from "react-router-dom";
 
 import { useIdentityStatus } from "../../hooks/queries/identity";
@@ -18,15 +18,49 @@ export const pageClassName =
 const headingClassName =
   "font-heading text-[clamp(34px,4vw,48px)] leading-[1.2] font-normal tracking-[-1px] text-balance";
 
+// The Mobile App opens sign-in with a return link. It rides along as a query
+// parameter through sign-in and Onboarding, and once the Person is signed in
+// and onboarded, the server sends the browser sheet back to the app with it.
+export const mobileReturnPath = "/api/identity/mobile/return";
+
+function mobileReturn(search: string) {
+  return new URLSearchParams(search).get("return_to") ?? "";
+}
+
 function destination(
   person:
     | { is_curator: boolean; onboarding_completed_at?: string }
     | null
     | undefined,
+  search: string,
 ) {
-  if (!person) return "/sign-in";
-  if (!person.onboarding_completed_at) return "/welcome";
+  const returnTo = mobileReturn(search);
+  const carried = returnTo ? `?return_to=${encodeURIComponent(returnTo)}` : "";
+  if (!person) return `/sign-in${carried}`;
+  if (!person.onboarding_completed_at) return `/welcome${carried}`;
+  if (returnTo) return `${mobileReturnPath}${carried}`;
   return person.is_curator ? "/curator" : "/albums";
+}
+
+// Redirect sends the Person where they belong. The Mobile App's return is
+// served by the server, so it is a full navigation rather than a route change.
+function Redirect({ to }: { to: string }) {
+  const external = to.startsWith(mobileReturnPath);
+  useEffect(() => {
+    if (external) window.location.replace(to);
+  }, [external, to]);
+  if (!external) return <Navigate replace to={to} />;
+  return (
+    <main className={pageClassName}>
+      <PageTitle title="Opening the app" />
+      <p className="mb-5 text-muted" role="status">
+        Opening the Memento app…
+      </p>
+      <Button asChild variant="outline">
+        <a href={to}>Open the Memento app</a>
+      </Button>
+    </main>
+  );
 }
 
 // Every signed-in area shares this guard, so a Person with unfinished
@@ -120,9 +154,9 @@ export function InstallationLayout() {
 
 export function PublicLayout() {
   const { data } = useIdentityStatus();
-  const { pathname } = useLocation();
+  const { pathname, search } = useLocation();
   if (data?.person || (data?.claimed && pathname === "/setup"))
-    return <Navigate replace to={destination(data?.person)} />;
+    return <Redirect to={destination(data?.person, search)} />;
   return (
     <main className={pageClassName}>
       <Outlet />
@@ -167,8 +201,9 @@ export function SignInPage() {
 
 export function CuratorLayout({ compact = false }: { compact?: boolean }) {
   const { data } = useIdentityStatus();
+  const { search } = useLocation();
   if (!data?.person?.is_curator || onboardingPending(data.person))
-    return <Navigate replace to={destination(data?.person)} />;
+    return <Redirect to={destination(data?.person, search)} />;
   return (
     <main className={compact ? "mx-auto max-w-[1440px] pb-10" : pageClassName}>
       <Outlet />
@@ -178,8 +213,9 @@ export function CuratorLayout({ compact = false }: { compact?: boolean }) {
 
 export function SignedInLayout() {
   const { data } = useIdentityStatus();
+  const { search } = useLocation();
   if (!data?.person || onboardingPending(data.person))
-    return <Navigate replace to={destination(data?.person)} />;
+    return <Redirect to={destination(data?.person, search)} />;
   return (
     <main className={pageClassName}>
       <Outlet />
@@ -189,8 +225,9 @@ export function SignedInLayout() {
 
 export function OnboardingLayout() {
   const { data } = useIdentityStatus();
+  const { search } = useLocation();
   if (!data?.person || !onboardingPending(data.person))
-    return <Navigate replace to={destination(data?.person)} />;
+    return <Redirect to={destination(data?.person, search)} />;
   return (
     <main className={pageClassName}>
       <Outlet />
@@ -200,8 +237,9 @@ export function OnboardingLayout() {
 
 export function ViewerLayout() {
   const { data } = useIdentityStatus();
+  const { search } = useLocation();
   if (!data?.person || onboardingPending(data.person))
-    return <Navigate replace to={destination(data?.person)} />;
+    return <Redirect to={destination(data?.person, search)} />;
   return (
     <main className="mx-auto max-w-[1440px] px-5 pt-6 pb-16 min-[761px]:px-12">
       <Outlet />
@@ -211,10 +249,11 @@ export function ViewerLayout() {
 
 export function HomePage() {
   const { data } = useIdentityStatus();
+  const { search } = useLocation();
   return (
     <>
       <PageTitle />
-      <Navigate replace to={destination(data?.person)} />
+      <Redirect to={destination(data?.person, search)} />
     </>
   );
 }

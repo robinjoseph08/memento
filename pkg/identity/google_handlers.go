@@ -4,6 +4,7 @@ import (
 	"crypto/subtle"
 	"errors"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -21,7 +22,10 @@ const (
 
 type googleTransaction struct {
 	state, nonce, verifier string
-	expires                time.Time
+	// returnTo is the Mobile App's return link, kept here because the browser
+	// loses its query string on the way to Google and back.
+	returnTo string
+	expires  time.Time
 }
 
 type googleHandlers struct {
@@ -36,6 +40,9 @@ func (h *googleHandlers) start(c *echo.Context) error {
 	c.Response().Header().Set("Cache-Control", "no-store")
 	c.Response().Header().Set("Referrer-Policy", "no-referrer")
 	transaction := googleTransaction{state: oauth2.GenerateVerifier(), nonce: oauth2.GenerateVerifier(), verifier: oauth2.GenerateVerifier(), expires: time.Now().Add(googleLoginLifetime)}
+	if returnTo, ok := mobileReturnURL(c.QueryParam("return_to"), h.identity.development); ok {
+		transaction.returnTo = returnTo.String()
+	}
 	authorization, err := h.provider.AuthorizationURL(c.Request().Context(), transaction.state, transaction.nonce, transaction.verifier)
 	if err != nil {
 		if !errorstack.IsContextCancellation(c.Request().Context(), err) {
@@ -127,7 +134,11 @@ func (h *googleHandlers) callback(c *echo.Context) error {
 		return h.failure(c, "sign_in_failed")
 	}
 	h.identity.setCookie(c, session.Token, session.ExpiresAt)
-	return errorstack.CaptureContext(c.Request().Context(), c.Redirect(http.StatusFound, "/"))
+	home := "/"
+	if transaction.returnTo != "" {
+		home += "?return_to=" + url.QueryEscape(transaction.returnTo)
+	}
+	return errorstack.CaptureContext(c.Request().Context(), c.Redirect(http.StatusFound, home))
 }
 
 func (h *googleHandlers) cookie(c *echo.Context, value string, maxAge int, expires time.Time) {

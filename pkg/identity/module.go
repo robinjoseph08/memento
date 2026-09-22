@@ -101,15 +101,13 @@ func (m *Module) SignIn(ctx context.Context, claims Claims) (Session, error) {
 		return Session{}, err
 	}
 	now := m.now().UTC()
-	bytes := make([]byte, 32)
-	if _, err := rand.Read(bytes); err != nil {
-		return Session{}, errorstack.Capture(err)
+	token, hash, err := newSecret()
+	if err != nil {
+		return Session{}, err
 	}
-	token := base64.RawURLEncoding.EncodeToString(bytes)
-	hash := sha256.Sum256([]byte(token))
 	var result Session
 	requested := false
-	err := m.change(ctx, func(ctx context.Context, tx bun.Tx) error {
+	err = m.change(ctx, func(ctx context.Context, tx bun.Tx) error {
 		var claimedBy sql.NullString
 		if err := tx.NewSelect().Table("installation").
 			Column("claimed_by").Where("singleton = true").Scan(ctx, &claimedBy); err != nil {
@@ -201,9 +199,9 @@ func (m *Module) SignIn(ctx context.Context, claims Claims) (Session, error) {
 				return errorstack.CaptureContext(ctx, err)
 			}
 		}
-		session := models.Session{ID: models.NewUUIDv7(), Device: browserDevice(ctx), TokenHash: hash[:], IdentityID: linked.ID, CreatedAt: now, RenewedAt: now, ExpiresAt: now.Add(SessionLifetime)}
-		if _, err := tx.NewInsert().Model(&session).Exec(ctx); err != nil {
-			return errorstack.CaptureContext(ctx, err)
+		session, err := insertSession(ctx, tx, linked.ID, browserDevice(ctx), hash, now)
+		if err != nil {
+			return err
 		}
 		result = Session{Person: projectPerson(person), Token: token, ExpiresAt: session.ExpiresAt}
 		return nil
@@ -212,6 +210,25 @@ func (m *Module) SignIn(ctx context.Context, claims Claims) (Session, error) {
 		return Session{}, ErrAccessRequested
 	}
 	return result, err
+}
+
+// newSecret is an opaque credential and the hash that is stored in its place.
+func newSecret() (string, []byte, error) {
+	bytes := make([]byte, 32)
+	if _, err := rand.Read(bytes); err != nil {
+		return "", nil, errorstack.Capture(err)
+	}
+	secret := base64.RawURLEncoding.EncodeToString(bytes)
+	hash := sha256.Sum256([]byte(secret))
+	return secret, hash[:], nil
+}
+
+func insertSession(ctx context.Context, tx bun.Tx, identityID models.UUID, device string, hash []byte, now time.Time) (models.Session, error) {
+	session := models.Session{ID: models.NewUUIDv7(), Device: device, TokenHash: hash, IdentityID: identityID, CreatedAt: now, RenewedAt: now, ExpiresAt: now.Add(SessionLifetime)}
+	if _, err := tx.NewInsert().Model(&session).Exec(ctx); err != nil {
+		return models.Session{}, errorstack.CaptureContext(ctx, err)
+	}
+	return session, nil
 }
 
 func projectPerson(person models.Person) Person {

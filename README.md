@@ -616,6 +616,15 @@ incoming connections to `node`.
 Plain `http` addresses only work in development builds like this one. A store
 build of the app accepts `https` addresses only.
 
+Tap Sign in to open this worktree's web sign-in in the phone's browser sheet.
+It is the same page as on the web, so in development it is the fake sign-in
+form, and a first-time Person completes Onboarding there too. When the page is
+done, Memento sends the sheet back to the app with a single-use code, which the
+app exchanges for a session of its own. The session shows up on the profile
+page as "Memento on iPhone" or "Memento on Android". The return link is the
+app's own; in Expo Go that is Expo Go's `exp://` link, which the server only
+accepts while `app_env` is `development`.
+
 Lint and test the app with:
 
 ```sh

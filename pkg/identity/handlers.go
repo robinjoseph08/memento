@@ -30,6 +30,8 @@ type AuthenticationUseCases interface {
 	SignIn(context.Context, Claims) (Session, error)
 	Authenticate(context.Context, string) (Session, error)
 	SignOut(context.Context, string) error
+	IssueMobileCode(context.Context, string) (string, error)
+	ExchangeMobileCode(context.Context, string, string) (Session, error)
 }
 
 type FaceUseCases interface {
@@ -60,14 +62,16 @@ type Handlers struct {
 	module              UseCases
 	publicURL, authMode string
 	cookieName          string
+	development         bool
 }
 
 func newHandlers(cfg *config.Config, module UseCases) *Handlers {
 	return &Handlers{
-		module:     module,
-		publicURL:  cfg.PublicURL,
-		authMode:   cfg.AuthMode,
-		cookieName: cfg.CookieNamespace + "_session",
+		module:      module,
+		publicURL:   cfg.PublicURL,
+		authMode:    cfg.AuthMode,
+		cookieName:  cfg.CookieNamespace + "_session",
+		development: cfg.AppEnv == "development",
 	}
 }
 
@@ -107,12 +111,15 @@ func (h *Handlers) signOut(c *echo.Context) error {
 	if err := c.Bind(&request); err != nil {
 		return err
 	}
-	if cookie, err := c.Cookie(h.cookieName); err == nil {
-		if err := h.module.SignOut(c.Request().Context(), cookie.Value); err != nil {
+	token, bearer := h.credential(c)
+	if token != "" {
+		if err := h.module.SignOut(c.Request().Context(), token); err != nil {
 			return err
 		}
 	}
-	h.clearCookie(c)
+	if !bearer {
+		h.clearCookie(c)
+	}
 	return errorstack.CaptureContext(c.Request().Context(), c.NoContent(http.StatusNoContent))
 }
 
@@ -120,22 +127,37 @@ func (h *Handlers) me(c *echo.Context) error {
 	return errorstack.CaptureContext(c.Request().Context(), c.JSON(http.StatusOK, c.Get("identity.person")))
 }
 
+// credential is the session token a request carries. The Mobile App sends a
+// bearer header, and it wins over any cookie: a browser can only attach that
+// header through a cross-origin request that CORS already refuses, so the
+// cookie's own checks are never bypassed by a header riding along.
+func (h *Handlers) credential(c *echo.Context) (token string, bearer bool) {
+	if authorization := c.Request().Header.Get("Authorization"); strings.HasPrefix(authorization, "Bearer ") {
+		return strings.TrimSpace(strings.TrimPrefix(authorization, "Bearer ")), true
+	}
+	if cookie, err := c.Cookie(h.cookieName); err == nil {
+		return cookie.Value, false
+	}
+	return "", false
+}
+
 func (h *Handlers) authenticate(c *echo.Context) (Session, error) {
-	cookie, err := c.Cookie(h.cookieName)
-	if err != nil {
+	token, bearer := h.credential(c)
+	if token == "" {
 		return Session{}, ErrUnauthenticated
 	}
-	session, err := h.module.Authenticate(c.Request().Context(), cookie.Value)
-	if errors.Is(err, ErrUnauthenticated) {
+	session, err := h.module.Authenticate(c.Request().Context(), token)
+	if errors.Is(err, ErrUnauthenticated) && !bearer {
 		h.clearCookie(c)
 	}
 	if err != nil {
 		return Session{}, err
 	}
 	// Only a daily renewal needs a new cookie. Ordinary responses must not
-	// overwrite a newer sign-in cookie if they arrive late.
-	if session.Renewed {
-		h.setCookie(c, cookie.Value, session.ExpiresAt)
+	// overwrite a newer sign-in cookie if they arrive late. The app keeps its
+	// token itself, so a bearer session sets nothing.
+	if session.Renewed && !bearer {
+		h.setCookie(c, token, session.ExpiresAt)
 	}
 	return session, nil
 }

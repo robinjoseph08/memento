@@ -267,3 +267,34 @@ func TestGoogleHTTPLoginDerivesCallbackFromPublicURL(t *testing.T) {
 		})
 	}
 }
+
+// The Mobile App's return link rides through Google sign-in on the server,
+// since the browser loses its query string on the way to Google and back.
+func TestGoogleSignInCarriesTheMobileReturnLink(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		returnTo, location string
+	}{
+		{"memento://sign-in", "/?return_to=memento%3A%2F%2Fsign-in"},
+		{"https://evil.test/steal", "/"},
+		{"", "/"},
+	} {
+		t.Run(tc.returnTo, func(t *testing.T) {
+			t.Parallel()
+			s := newOIDCSubstitute(t)
+			e := googleHTTP(s, "https://photos.example.com", &googleHTTPModule{})
+			rec := httptest.NewRecorder()
+			e.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/identity/google/start?return_to="+url.QueryEscape(tc.returnTo), nil))
+			require.Equal(t, http.StatusFound, rec.Code, rec.Body.String())
+			authorization, err := url.Parse(rec.Header().Get("Location"))
+			require.NoError(t, err)
+			require.NotContains(t, authorization.String(), "return_to", "the link stays on this server")
+			cookies := rec.Result().Cookies()
+			require.Len(t, cookies, 1)
+			s.claims["nonce"] = authorization.Query().Get("nonce")
+			rec = googleCallback(e, cookies[0], url.Values{"state": {authorization.Query().Get("state")}, "code": {"code"}})
+			require.Equal(t, http.StatusFound, rec.Code)
+			require.Equal(t, tc.location, rec.Header().Get("Location"))
+		})
+	}
+}
