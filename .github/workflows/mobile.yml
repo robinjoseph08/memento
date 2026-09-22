@@ -1,21 +1,14 @@
 name: Mobile
 
 # The Mobile App is its own package, so it is only checked when it changes.
-# Its payload types are generated from Go, so those files count as well.
+# Its payload types are generated from Go, so those files count as well. The
+# workflow always starts and the job is skipped when nothing relevant changed,
+# because a required check whose workflow never starts blocks the pull request,
+# while a skipped job passes.
 on:
   push:
     branches: [master]
-    paths:
-      - "mobile/**"
-      - "pkg/**/types.go"
-      - "mise.toml"
-      - ".github/workflows/mobile.yml"
   pull_request:
-    paths:
-      - "mobile/**"
-      - "pkg/**/types.go"
-      - "mise.toml"
-      - ".github/workflows/mobile.yml"
 
 permissions:
   contents: read
@@ -25,8 +18,35 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  changes:
+    name: Detect Mobile App changes
+    runs-on: ubuntu-latest
+    outputs:
+      mobile: ${{ steps.diff.outputs.mobile }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: diff
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          # When the base is unknown, such as after a force push, check the app.
+          if ! changed=$(git diff --name-only "$BASE" "$GITHUB_SHA" -- \
+            mobile ':(glob)pkg/**/types.go' mise.toml .github/workflows/mobile.yml); then
+            changed=unknown
+          fi
+          echo "$changed"
+          if [ -n "$changed" ]; then
+            echo "mobile=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "mobile=false" >> "$GITHUB_OUTPUT"
+          fi
+
   mobile:
     name: Mobile lint and tests
+    needs: changes
+    if: needs.changes.outputs.mobile == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
