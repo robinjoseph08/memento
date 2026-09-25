@@ -1,0 +1,222 @@
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import { render, screen, userEvent } from "@testing-library/react-native";
+import * as WebBrowser from "expo-web-browser";
+import { ActionSheetIOS } from "react-native";
+
+import { AppProviders } from "@/providers";
+import { fakeHTTP, unauthenticated } from "@/testing/fake-http";
+
+import { Home } from "./home";
+
+const origin = "https://photos.example.com";
+const status = { claimed: true, auth_mode: "google", version: "v1.4.0" };
+const person = {
+  id: "alex",
+  display_name: "Alex",
+  is_curator: false,
+  onboarding_completed_at: "2026-02-01T00:00:00Z",
+  update_email: "",
+  email_updates: false,
+  avatar_url: "",
+};
+const album = (id: string, title: string, photos: number) => ({
+  id,
+  title,
+  description: "",
+  photo_count: photos,
+  video_count: 1,
+  start_date: "2026-07-04",
+  end_date: "2026-07-05",
+  cover_url: `/api/media/viewer/alex/entries/${id}/thumbnail?v=1`,
+  cover_preview_url: `/api/media/viewer/alex/entries/${id}/preview?v=1`,
+  days: [],
+});
+const summer = album("summer", "Summer", 12);
+const winter = album("winter", "Winter", 1);
+
+// The browser sheet is the one native step. Each test says what it comes
+// back with; the sheet itself is faked by jest.setup.js.
+const sheet = jest.mocked(WebBrowser.openAuthSessionAsync);
+
+function installation(replies: Record<string, unknown> = {}) {
+  return fakeHTTP({
+    [origin]: {
+      "/api/identity/status": status,
+      "/api/identity/mobile/exchange": { token: "phone-token", person },
+      "/api/identity/me": person,
+      "/api/identity/sign-out": undefined,
+      "/api/albums": [summer, winter],
+      ...replies,
+    },
+  });
+}
+
+async function open(http: ReturnType<typeof fakeHTTP>) {
+  await render(
+    <AppProviders createHTTP={http.create}>
+      <Home devAddress="" />
+    </AppProviders>,
+  );
+  return userEvent.setup();
+}
+
+async function connect(user: ReturnType<typeof userEvent.setup>) {
+  await user.type(await screen.findByLabelText("Memento address"), origin);
+  await user.press(screen.getByRole("button", { name: "Connect" }));
+  await screen.findByText("Version 1.4.0");
+  return screen.getByRole("button", { name: "Sign in" });
+}
+
+async function signIn(
+  user: ReturnType<typeof userEvent.setup>,
+  returned = "memento://sign-in?code=single-use-code",
+) {
+  sheet.mockResolvedValueOnce({ type: "success", url: returned });
+  await user.press(await connect(user));
+}
+
+// The account menu is the platform's own sheet. Choosing the first option
+// signs out.
+const accountSheet = jest
+  .spyOn(ActionSheetIOS, "showActionSheetWithOptions")
+  .mockImplementation((_options, choose) => choose(0));
+
+beforeEach(async () => {
+  await AsyncStorage.clear();
+  sheet.mockClear();
+  accountSheet.mockClear();
+});
+
+it("signs in through the browser sheet and lists Albums with their covers", async () => {
+  const http = installation();
+  const user = await open(http);
+  await signIn(user);
+
+  expect(await screen.findByText("Summer")).toBeOnTheScreen();
+  expect(screen.getByLabelText("12 photos, 1 video")).toBeOnTheScreen();
+  expect(screen.getByText("Winter")).toBeOnTheScreen();
+  expect(screen.getByLabelText("1 photo, 1 video")).toBeOnTheScreen();
+  expect(screen.getAllByText("Jul 4 to Jul 5, 2026")).toHaveLength(2);
+  expect(screen.getByLabelText("Memento")).toBeOnTheScreen();
+  expect(await screen.findByLabelText("Alex")).toBeOnTheScreen();
+  // The image component keeps sources as a list of candidates.
+  expect(screen.getByLabelText("Summer")).toHaveProp("source", [
+    {
+      uri: `${origin}/api/media/viewer/alex/entries/summer/thumbnail?v=1`,
+      headers: { Authorization: "Bearer phone-token" },
+    },
+  ]);
+
+  expect(http.requests).toContainEqual({
+    url: `${origin}/api/albums`,
+    token: "phone-token",
+  });
+});
+
+it("stays signed in after a restart", async () => {
+  const http = installation();
+  const user = await open(http);
+  await signIn(user);
+  await screen.findByText("Summer");
+  await screen.unmount();
+
+  await open(http);
+  expect(await screen.findByText("Summer")).toBeOnTheScreen();
+  expect(sheet).toHaveBeenCalledTimes(1);
+});
+
+it("says so when the Albums cannot be loaded", async () => {
+  const user = await open(
+    installation({
+      "/api/albums": () => {
+        throw new TypeError("Network request failed");
+      },
+    }),
+  );
+  await signIn(user);
+
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "We can't reach your Memento right now.",
+  );
+  expect(screen.getByRole("button", { name: "Try again" })).toBeOnTheScreen();
+});
+
+it("signs out and returns to sign-in with the Installation remembered", async () => {
+  const http = installation();
+  const user = await open(http);
+  await signIn(user);
+  await screen.findByText("Summer");
+  await user.press(await screen.findByRole("button", { name: "Account menu" }));
+  expect(accountSheet.mock.calls[0][0]).toMatchObject({
+    options: ["Sign out", "Cancel"],
+    title: "Alex",
+  });
+
+  expect(
+    await screen.findByRole("button", { name: "Sign in" }),
+  ).toBeOnTheScreen();
+  expect(screen.getByText("photos.example.com")).toBeOnTheScreen();
+  expect(http.requests).toContainEqual({
+    url: `${origin}/api/identity/sign-out`,
+    token: "phone-token",
+    body: {},
+  });
+  await screen.unmount();
+
+  await open(http);
+  expect(
+    await screen.findByRole("button", { name: "Sign in" }),
+  ).toBeOnTheScreen();
+});
+
+it("returns to sign-in when the server rejects the session", async () => {
+  const user = await open(installation());
+  await signIn(user);
+  await screen.findByText("Summer");
+  await screen.unmount();
+
+  // Deactivated, or signed out everywhere: the token no longer works.
+  await open(installation({ "/api/albums": unauthenticated }));
+  expect(
+    await screen.findByRole("button", { name: "Sign in" }),
+  ).toBeOnTheScreen();
+  expect(screen.getByText("photos.example.com")).toBeOnTheScreen();
+  await screen.unmount();
+
+  // The token is gone for good, not just hidden until the next answer.
+  await open(installation());
+  expect(
+    await screen.findByRole("button", { name: "Sign in" }),
+  ).toBeOnTheScreen();
+  expect(screen.queryByText("Summer")).not.toBeOnTheScreen();
+});
+
+it("keeps Sign out reachable when the Person cannot be loaded", async () => {
+  const http = installation({
+    "/api/identity/me": () => {
+      throw new TypeError("Network request failed");
+    },
+  });
+  const user = await open(http);
+  await signIn(user);
+  await screen.findByText("Summer");
+  // The exchange already named the Person, so the avatar shows them anyway.
+  expect(screen.getByLabelText("Alex")).toBeOnTheScreen();
+  await screen.unmount();
+
+  // After a restart nothing has named them yet, and Sign out still works.
+  await open(http);
+  await screen.findByText("Summer");
+  await user.press(await screen.findByRole("button", { name: "Account menu" }));
+  expect(
+    await screen.findByRole("button", { name: "Sign in" }),
+  ).toBeOnTheScreen();
+});
+
+it("shows where a cover would be for an Album without one", async () => {
+  const user = await open(
+    installation({ "/api/albums": [{ ...summer, cover_url: "" }] }),
+  );
+  await signIn(user);
+  expect(await screen.findByText("No cover")).toBeOnTheScreen();
+});

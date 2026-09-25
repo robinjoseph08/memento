@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -264,6 +265,48 @@ func TestGoogleHTTPLoginDerivesCallbackFromPublicURL(t *testing.T) {
 			require.Equal(t, http.SameSiteLaxMode, cookies[1].SameSite)
 			require.Equal(t, "/", cookies[1].Path)
 			require.Empty(t, cookies[1].Domain)
+		})
+	}
+}
+
+// The Mobile App's return link rides through Google sign-in on the server,
+// since the browser loses its query string on the way to Google and back.
+func TestGoogleSignInCarriesTheMobileReturnLink(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		returnTo, location string
+	}{
+		{"memento://sign-in", "/?return_to=memento%3A%2F%2Fsign-in"},
+		{"https://evil.test/steal", "/"},
+		{"", "/"},
+	} {
+		t.Run(tc.returnTo, func(t *testing.T) {
+			t.Parallel()
+			s := newOIDCSubstitute(t)
+			e := googleHTTP(s, "https://photos.example.com", &googleHTTPModule{})
+			rec := httptest.NewRecorder()
+			e.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/identity/google/start?return_to="+url.QueryEscape(tc.returnTo), nil))
+			require.Equal(t, http.StatusFound, rec.Code, rec.Body.String())
+			authorization, err := url.Parse(rec.Header().Get("Location"))
+			require.NoError(t, err)
+			require.NotContains(t, authorization.String(), "return_to", "the link stays on this server")
+			cookies := rec.Result().Cookies()
+			require.Len(t, cookies, 1)
+			s.claims["nonce"] = authorization.Query().Get("nonce")
+			// A failed attempt keeps the link, so a retry in the sheet can still return.
+			rec = googleCallback(e, cookies[0], url.Values{"state": {"wrong"}, "code": {"code"}})
+			require.Equal(t, http.StatusFound, rec.Code)
+			require.Equal(t, "/sign-in?error=invalid_state"+strings.TrimPrefix(tc.location, "/"), strings.Replace(rec.Header().Get("Location"), "&return_to", "?return_to", 1))
+
+			rec = httptest.NewRecorder()
+			e.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/identity/google/start?return_to="+url.QueryEscape(tc.returnTo), nil))
+			authorization, err = url.Parse(rec.Header().Get("Location"))
+			require.NoError(t, err)
+			cookies = rec.Result().Cookies()
+			s.claims["nonce"] = authorization.Query().Get("nonce")
+			rec = googleCallback(e, cookies[0], url.Values{"state": {authorization.Query().Get("state")}, "code": {"code"}})
+			require.Equal(t, http.StatusFound, rec.Code)
+			require.Equal(t, tc.location, rec.Header().Get("Location"))
 		})
 	}
 }

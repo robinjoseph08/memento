@@ -23,6 +23,11 @@ export function SignInForm({ claiming = false }: { claiming?: boolean }) {
   const { data } = useIdentityStatus();
   const [search] = useSearchParams();
   const error = search.get("error");
+  // The Mobile App's return link goes with the Person to Google and back.
+  const returnTo = search.get("return_to");
+  const googleStart = returnTo
+    ? `/api/identity/google/start?return_to=${encodeURIComponent(returnTo)}`
+    : "/api/identity/google/start";
   return (
     <div>
       {error && (
@@ -40,7 +45,7 @@ export function SignInForm({ claiming = false }: { claiming?: boolean }) {
       )}
       {data?.auth_mode === "google" ? (
         <Button asChild>
-          <a href="/api/identity/google/start">
+          <a href={googleStart}>
             <LogIn aria-hidden="true" className="size-4" strokeWidth={1.5} />
             Continue with Google
           </a>

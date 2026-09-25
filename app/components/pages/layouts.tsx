@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Navigate, Outlet, useLocation } from "react-router-dom";
 
 import { useIdentityStatus } from "../../hooks/queries/identity";
@@ -18,15 +18,44 @@ export const pageClassName =
 const headingClassName =
   "font-heading text-[clamp(34px,4vw,48px)] leading-[1.2] font-normal tracking-[-1px] text-balance";
 
-function destination(
-  person:
-    | { is_curator: boolean; onboarding_completed_at?: string }
-    | null
-    | undefined,
-) {
-  if (!person) return "/sign-in";
-  if (!person.onboarding_completed_at) return "/welcome";
+// The Mobile App opens sign-in with a return link. It rides along as a query
+// parameter through sign-in and Onboarding, and once the Person is signed in
+// and onboarded, the server sends the browser sheet back to the app with it.
+const mobileReturnPath = "/api/identity/mobile/return";
+
+type Visitor =
+  { is_curator: boolean; onboarding_completed_at?: string } | null | undefined;
+
+function destination(person: Visitor, search: string) {
+  const returnTo = new URLSearchParams(search).get("return_to") ?? "";
+  const carried = returnTo ? `?return_to=${encodeURIComponent(returnTo)}` : "";
+  if (!person) return `/sign-in${carried}`;
+  if (!person.onboarding_completed_at) return `/welcome${carried}`;
+  if (returnTo) return `${mobileReturnPath}${carried}`;
   return person.is_curator ? "/curator" : "/albums";
+}
+
+// Redirect sends the Person where they belong. The Mobile App's return is
+// served by the server, so it is a full navigation rather than a route change.
+function Redirect({ person }: { person: Visitor }) {
+  const { search } = useLocation();
+  const to = destination(person, search);
+  const external = to.startsWith(mobileReturnPath);
+  useEffect(() => {
+    if (external) window.location.replace(to);
+  }, [external, to]);
+  if (!external) return <Navigate replace to={to} />;
+  return (
+    <main className={pageClassName}>
+      <PageTitle title="Opening the app" />
+      <p className="mb-5 text-muted" role="status">
+        Opening the Memento app…
+      </p>
+      <Button asChild variant="outline">
+        <a href={to}>Open the Memento app</a>
+      </Button>
+    </main>
+  );
 }
 
 // Every signed-in area shares this guard, so a Person with unfinished
@@ -122,7 +151,7 @@ export function PublicLayout() {
   const { data } = useIdentityStatus();
   const { pathname } = useLocation();
   if (data?.person || (data?.claimed && pathname === "/setup"))
-    return <Navigate replace to={destination(data?.person)} />;
+    return <Redirect person={data?.person} />;
   return (
     <main className={pageClassName}>
       <Outlet />
@@ -168,7 +197,7 @@ export function SignInPage() {
 export function CuratorLayout({ compact = false }: { compact?: boolean }) {
   const { data } = useIdentityStatus();
   if (!data?.person?.is_curator || onboardingPending(data.person))
-    return <Navigate replace to={destination(data?.person)} />;
+    return <Redirect person={data?.person} />;
   return (
     <main className={compact ? "mx-auto max-w-[1440px] pb-10" : pageClassName}>
       <Outlet />
@@ -179,7 +208,7 @@ export function CuratorLayout({ compact = false }: { compact?: boolean }) {
 export function SignedInLayout() {
   const { data } = useIdentityStatus();
   if (!data?.person || onboardingPending(data.person))
-    return <Navigate replace to={destination(data?.person)} />;
+    return <Redirect person={data?.person} />;
   return (
     <main className={pageClassName}>
       <Outlet />
@@ -190,7 +219,7 @@ export function SignedInLayout() {
 export function OnboardingLayout() {
   const { data } = useIdentityStatus();
   if (!data?.person || !onboardingPending(data.person))
-    return <Navigate replace to={destination(data?.person)} />;
+    return <Redirect person={data?.person} />;
   return (
     <main className={pageClassName}>
       <Outlet />
@@ -201,7 +230,7 @@ export function OnboardingLayout() {
 export function ViewerLayout() {
   const { data } = useIdentityStatus();
   if (!data?.person || onboardingPending(data.person))
-    return <Navigate replace to={destination(data?.person)} />;
+    return <Redirect person={data?.person} />;
   return (
     <main className="mx-auto max-w-[1440px] px-5 pt-6 pb-16 min-[761px]:px-12">
       <Outlet />
@@ -214,7 +243,7 @@ export function HomePage() {
   return (
     <>
       <PageTitle />
-      <Navigate replace to={destination(data?.person)} />
+      <Redirect person={data?.person} />
     </>
   );
 }

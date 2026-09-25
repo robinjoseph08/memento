@@ -9,6 +9,20 @@ type SignInRequest struct {
 	DisplayName string `json:"display_name" validate:"required,max=100" mod:"trim"`
 }
 
+// ExchangeMobileCodeRequest carries the single-use code the web sign-in
+// handed to the Mobile App, and the platform that names its session.
+type ExchangeMobileCodeRequest struct {
+	Code     string `json:"code" validate:"required,max=64" mod:"trim"`
+	Platform string `json:"platform" validate:"required,max=40" mod:"trim"`
+}
+
+// MobileSession is what the Mobile App keeps after exchanging its code. The
+// token goes in a bearer header; the app never sees a cookie.
+type MobileSession struct {
+	Token  string `json:"token"`
+	Person Person `json:"person"`
+}
+
 // Person is a public projection, not a writable database model.
 type Person struct {
 	ID                    string     `json:"id"`

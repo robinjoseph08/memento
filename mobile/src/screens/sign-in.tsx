@@ -4,16 +4,18 @@ import { Button } from "@/components/button";
 import { Screen } from "@/components/screen";
 import { Body, ErrorText, Heading } from "@/components/text";
 import { useInstallationStatus } from "@/hooks/queries/installation";
+import { useSignIn } from "@/hooks/queries/session";
 import { UPDATE_NEEDED } from "@/lib/version";
 import { useConnection } from "@/providers";
 import { fonts, useTheme } from "@/theme";
 
-// ConnectedScreen shows the Installation the app is connected to and checks
-// that it still answers. Sign-in will start from here once it exists.
-export function ConnectedScreen({ origin }: { origin: string }) {
+// SignInScreen shows the Installation the app is connected to, checks that it
+// still answers, and starts the web sign-in in the browser sheet.
+export function SignInScreen({ origin }: { origin: string }) {
   const theme = useTheme();
   const { disconnect } = useConnection();
   const status = useInstallationStatus(origin);
+  const signIn = useSignIn(origin);
 
   return (
     <Screen>
@@ -46,7 +48,19 @@ export function ConnectedScreen({ origin }: { origin: string }) {
             onPress={() => void status.refetch()}
           />
         </View>
-      ) : null}
+      ) : (
+        <View style={{ gap: 12 }}>
+          <Body>Sign in the same way you do on the web.</Body>
+          {signIn.isError ? (
+            <ErrorText>{signIn.error.message}</ErrorText>
+          ) : null}
+          <Button
+            disabled={signIn.isPending || !status.data}
+            label={signIn.isPending ? "Signing in…" : "Sign in"}
+            onPress={() => signIn.mutate()}
+          />
+        </View>
+      )}
       <Button
         label="Use a different address"
         onPress={() => void disconnect()}

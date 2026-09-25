@@ -114,7 +114,8 @@ func (m *Module) alertCurators(ctx context.Context, tx bun.Tx, subject, body str
 	return nil
 }
 
-// sessionIdentity returns the linked identity behind the current browser session.
+// sessionIdentity returns the linked identity behind a live session, under the
+// same checks as sessionPerson.
 func (m *Module) sessionIdentity(ctx context.Context, tx bun.Tx, token string) (models.Identity, error) {
 	var identity models.Identity
 	if len(token) != 43 {
@@ -122,7 +123,9 @@ func (m *Module) sessionIdentity(ctx context.Context, tx bun.Tx, token string) (
 	}
 	hash := sha256.Sum256([]byte(token))
 	err := tx.NewSelect().Model(&identity).Join("JOIN sessions AS s ON s.identity_id = identity.id").
-		Where("s.token_hash = ?", hash[:]).Where("s.expires_at > ?", m.now().UTC()).Where("identity.unlinked_at IS NULL").Scan(ctx)
+		Join("JOIN persons AS person ON person.id = identity.person_id").
+		Where("s.token_hash = ?", hash[:]).Where("s.expires_at > ?", m.now().UTC()).
+		Where("identity.unlinked_at IS NULL").Where("person.deactivated_at IS NULL").Scan(ctx)
 	if errors.Is(err, sql.ErrNoRows) {
 		return identity, ErrUnauthenticated
 	}

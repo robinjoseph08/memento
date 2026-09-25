@@ -13,7 +13,9 @@ describe("findInstallation", () => {
       origin,
       version: "v1.4.0",
     });
-    expect(http.requests).toEqual([`${origin}/api/identity/status`]);
+    expect(http.requests).toEqual([
+      { url: `${origin}/api/identity/status`, token: null },
+    ]);
   });
 
   it.each([
