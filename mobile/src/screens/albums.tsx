@@ -172,9 +172,11 @@ function AlbumCard({
       >
         {album.title}
       </Text>
-      <View style={{ alignItems: "center", flexDirection: "row", gap: 4 }}>
-        <CalendarDays color={theme.muted} size={14} strokeWidth={1.5} />
-        <Text style={detail}>{captureRange(album)}</Text>
+      <View style={{ alignItems: "flex-start", flexDirection: "row", gap: 4 }}>
+        <View style={{ paddingTop: 2 }}>
+          <CalendarDays color={theme.muted} size={14} strokeWidth={1.5} />
+        </View>
+        <Text style={{ ...detail, flex: 1 }}>{captureRange(album)}</Text>
       </View>
       <View
         accessibilityLabel={mediaCounts(album)}
