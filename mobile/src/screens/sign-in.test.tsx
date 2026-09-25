@@ -29,6 +29,7 @@ function installation(replies: Record<string, unknown> = {}) {
     [origin]: {
       "/api/identity/status": status,
       "/api/identity/mobile/exchange": { token: "phone-token", person },
+      "/api/identity/me": person,
       "/api/albums": [],
       ...replies,
     },
@@ -70,9 +71,10 @@ it("opens the Installation's web sign-in and exchanges the code it returns", asy
   await signIn(user);
 
   expect(
-    await screen.findByRole("heading", { name: "Albums" }),
+    await screen.findByRole("heading", { name: "Your albums" }),
   ).toBeOnTheScreen();
   await screen.findByText(/Nothing is shared with you yet/);
+  await screen.findByLabelText("Alex");
   const [url, returnTo] = sheet.mock.calls[0];
   expect(url).toBe(
     `${origin}/sign-in?return_to=${encodeURIComponent(String(returnTo))}`,

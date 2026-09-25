@@ -42,6 +42,7 @@ function installation(replies: Record<string, unknown> = {}) {
     [origin]: {
       "/api/identity/status": status,
       "/api/identity/mobile/exchange": { token: "phone-token", person },
+      "/api/identity/me": person,
       "/api/identity/sign-out": undefined,
       "/api/albums": [summer, winter],
       ...replies,
@@ -84,9 +85,12 @@ it("signs in through the browser sheet and lists Albums with their covers", asyn
   await signIn(user);
 
   expect(await screen.findByText("Summer")).toBeOnTheScreen();
-  expect(screen.getByText("12 photos, 1 video")).toBeOnTheScreen();
+  expect(screen.getByLabelText("12 photos, 1 video")).toBeOnTheScreen();
   expect(screen.getByText("Winter")).toBeOnTheScreen();
-  expect(screen.getByText("1 photo, 1 video")).toBeOnTheScreen();
+  expect(screen.getByLabelText("1 photo, 1 video")).toBeOnTheScreen();
+  expect(screen.getAllByText("July 4 to July 5, 2026")).toHaveLength(2);
+  expect(screen.getByLabelText("Memento")).toBeOnTheScreen();
+  expect(await screen.findByLabelText("Alex")).toBeOnTheScreen();
   // The image component keeps sources as a list of candidates.
   expect(screen.getByLabelText("Summer")).toHaveProp("source", [
     {
@@ -134,7 +138,8 @@ it("signs out and returns to sign-in with the Installation remembered", async ()
   const user = await open(http);
   await signIn(user);
   await screen.findByText("Summer");
-  await user.press(screen.getByRole("button", { name: "Sign out" }));
+  await user.press(await screen.findByRole("button", { name: "Account menu" }));
+  await user.press(screen.getByRole("menuitem", { name: "Sign out" }));
 
   expect(
     await screen.findByRole("button", { name: "Sign in" }),

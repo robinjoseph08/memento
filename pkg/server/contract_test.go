@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -90,6 +89,8 @@ func TestMobileAppContract(t *testing.T) {
 	require.Equal(t, "exp", location.Scheme)
 	code := location.Query().Get("code")
 	require.Len(t, code, 43)
+	response = call(http.MethodGet, "/api/identity/me", "", browser)
+	require.Equal(t, http.StatusUnauthorized, response.Code, "the sheet's session ends with the hand-off")
 
 	response = call(http.MethodPost, "/api/identity/mobile/exchange", `{"code":"`+code+`","platform":"iPhone"}`, "")
 	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
@@ -116,7 +117,7 @@ func TestMobileAppContract(t *testing.T) {
 	require.NotNil(t, status["person"], "status reports the bearer session's Person")
 
 	// The phone shows up in the Person's sessions with a label they recognize.
-	response = call(http.MethodGet, "/api/identity/sessions", "", browser)
+	response = call(http.MethodGet, "/api/identity/sessions", "", bearer)
 	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
 	var sessions []map[string]any
 	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &sessions))
@@ -143,11 +144,6 @@ func TestMobileAppContract(t *testing.T) {
 	require.Empty(t, response.Result().Cookies())
 	response = call(http.MethodGet, "/api/identity/me", "", bearer)
 	require.Equal(t, http.StatusUnauthorized, response.Code)
-	response = call(http.MethodGet, "/api/identity/me", "", browser)
-	require.Equal(t, http.StatusOK, response.Code, "the browser sheet's own session is untouched")
-	response = call(http.MethodGet, "/api/identity/sessions", "", browser)
-	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &sessions))
-	require.False(t, slices.ContainsFunc(sessions, func(session map[string]any) bool { return session["device"] == "Memento on iPhone" }))
 }
 
 // seedAlbum is one complete imported Album with a single photo, enough for

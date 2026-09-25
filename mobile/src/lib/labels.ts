@@ -1,4 +1,5 @@
-// mediaCounts describes what an Album holds, as "12 photos, 1 video".
+// mediaCounts describes what an Album holds, as "12 photos, 1 video", for
+// screen readers; the gallery shows the same counts beside icons.
 export function mediaCounts({
   photo_count,
   video_count,
@@ -14,4 +15,40 @@ export function mediaCounts({
     parts.push(`${video_count} ${video_count === 1 ? "video" : "videos"}`);
   }
   return parts.join(", ");
+}
+
+// captureDate formats a capture day as the web does: "July 4, 2026". The
+// day is taken as written, never shifted into the phone's time zone.
+export function captureDate(value: string) {
+  if (!value) {
+    return "";
+  }
+  const date = new Date(`${value.slice(0, 10)}T12:00:00Z`);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: "UTC",
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+  }).format(date);
+}
+
+// captureRange is the span of an Album's capture days, as "July 4 to July 5,
+// 2026" within one year and with both years otherwise.
+export function captureRange({
+  start_date,
+  end_date,
+}: {
+  start_date: string;
+  end_date: string;
+}) {
+  const start = captureDate(start_date);
+  const end = captureDate(end_date);
+  if (!start || !end || start === end) {
+    return start || end;
+  }
+  const sameYear = start_date.slice(0, 4) === end_date.slice(0, 4);
+  return `${sameYear ? start.replace(/, \d{4}$/, "") : start} to ${end}`;
 }

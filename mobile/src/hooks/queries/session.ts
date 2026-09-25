@@ -6,6 +6,7 @@ import { useConnection, useCreateHTTP } from "@/providers";
 import type {
   ExchangeMobileCodeRequest,
   MobileSession,
+  Person,
 } from "@/types/generated/identity";
 import type { ViewerAlbum } from "@/types/generated/publishing";
 
@@ -73,6 +74,18 @@ export function useAlbums(origin: string, token: string) {
     queryKey: [origin, "albums"],
     queryFn: ({ signal }) =>
       createHTTP(origin, token).request<ViewerAlbum[]>("/api/albums", {
+        signal,
+      }),
+  });
+}
+
+// useMe is the signed-in Person, for their name and avatar.
+export function useMe(origin: string, token: string) {
+  const createHTTP = useCreateHTTP();
+  return useQuery({
+    queryKey: [origin, "me"],
+    queryFn: ({ signal }) =>
+      createHTTP(origin, token).request<Person>("/api/identity/me", {
         signal,
       }),
   });

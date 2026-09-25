@@ -32,8 +32,10 @@ specification in issue #67 and ADR 0013 before adding to it.
   `mobile/tygo.yaml`. Do not restate Go response shapes by hand. Only the
   viewer endpoints in ADR 0013 are the app's to call.
 - Colors and fonts in `src/theme.ts` mirror the web's tokens in
-  `app/styles.css`. Change them together. Navigation and controls follow each
-  platform instead of imitating the web.
+  `app/styles.css`. Change them together. Icons come from
+  `lucide-react-native`, the same set the web uses, so a control looks the
+  same in both places. Navigation and controls follow each platform instead
+  of imitating the web.
 - Plain `http` is for development. Gate it on `__DEV__` so a store build can
   never accept it.
 - The browser build that Expo serves is a development preview for looking at
