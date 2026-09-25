@@ -116,7 +116,7 @@ export function AlbumsScreen({
         }
         numColumns={columns}
         onRefresh={() => void refresh()}
-        refreshing={albums.isRefetching}
+        refreshing={albums.isRefetching && !albums.isError}
         renderItem={({ item }) => (
           <AlbumCard
             album={item}
