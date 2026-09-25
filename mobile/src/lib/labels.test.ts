@@ -12,14 +12,14 @@ it.each([
 it.each([
   [
     { start_date: "2026-07-04", end_date: "2026-07-05" },
-    "July 4 to July 5, 2026",
+    "Jul 4 to Jul 5, 2026",
   ],
   [
     { start_date: "2025-12-31", end_date: "2026-01-01" },
-    "December 31, 2025 to January 1, 2026",
+    "Dec 31, 2025 to Jan 1, 2026",
   ],
-  [{ start_date: "2026-07-04", end_date: "2026-07-04" }, "July 4, 2026"],
-  [{ start_date: "", end_date: "2026-07-04" }, "July 4, 2026"],
+  [{ start_date: "2026-07-04", end_date: "2026-07-04" }, "Jul 4, 2026"],
+  [{ start_date: "", end_date: "2026-07-04" }, "Jul 4, 2026"],
   [{ start_date: "", end_date: "" }, ""],
 ])("spans %o as %s", (album, label) => {
   expect(captureRange(album)).toBe(label);

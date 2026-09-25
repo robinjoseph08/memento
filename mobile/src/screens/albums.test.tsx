@@ -88,7 +88,7 @@ it("signs in through the browser sheet and lists Albums with their covers", asyn
   expect(screen.getByLabelText("12 photos, 1 video")).toBeOnTheScreen();
   expect(screen.getByText("Winter")).toBeOnTheScreen();
   expect(screen.getByLabelText("1 photo, 1 video")).toBeOnTheScreen();
-  expect(screen.getAllByText("July 4 to July 5, 2026")).toHaveLength(2);
+  expect(screen.getAllByText("Jul 4 to Jul 5, 2026")).toHaveLength(2);
   expect(screen.getByLabelText("Memento")).toBeOnTheScreen();
   expect(await screen.findByLabelText("Alex")).toBeOnTheScreen();
   // The image component keeps sources as a list of candidates.

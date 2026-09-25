@@ -17,8 +17,9 @@ export function mediaCounts({
   return parts.join(", ");
 }
 
-// captureDate formats a capture day as the web does: "July 4, 2026". The
-// day is taken as written, never shifted into the phone's time zone.
+// captureDate formats a capture day as "Jul 4, 2026". The month is short
+// because a gallery tile is narrow. The day is taken as written, never
+// shifted into the phone's time zone.
 export function captureDate(value: string) {
   if (!value) {
     return "";
@@ -29,13 +30,13 @@ export function captureDate(value: string) {
   }
   return new Intl.DateTimeFormat("en-US", {
     timeZone: "UTC",
-    month: "long",
+    month: "short",
     day: "numeric",
     year: "numeric",
   }).format(date);
 }
 
-// captureRange is the span of an Album's capture days, as "July 4 to July 5,
+// captureRange is the span of an Album's capture days, as "Jul 4 to Jul 5,
 // 2026" within one year and with both years otherwise.
 export function captureRange({
   start_date,
