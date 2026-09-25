@@ -49,6 +49,14 @@ func TestMutationOriginAndJSON(t *testing.T) {
 		{"http://photos-local:5173", "photos-local:5173", "application/json", 204, "", ""},
 		{"http://photos-local.local:5173", "photos-local.local:5173", "application/json", 204, "", ""},
 		{"http://photos-local:5173", "photos-local:3579", "application/json", 403, "", ""},
+		// The Mobile App's browser sheet reaches Vite by this machine's address on
+		// the network, as mise start:mobile hands it out.
+		{"http://192.168.2.166:5173", "192.168.2.166:5173", "application/json", 204, "", ""},
+		{"http://10.0.0.5:5173", "10.0.0.5:5173", "application/json", 204, "", ""},
+		{"http://172.16.0.5:5173", "172.16.0.5:5173", "application/json", 204, "", ""},
+		{"http://192.168.2.166:5173", "192.168.2.166:3579", "application/json", 403, "", ""},
+		{"http://203.0.113.5:5173", "203.0.113.5:5173", "application/json", 403, "", ""},
+		{"https://192.168.2.166:5173", "192.168.2.166:5173", "application/json", 403, "", ""},
 		{"https://photos-local:5173", "photos-local:5173", "application/json", 403, "", ""},
 		{"https://evil.test", "evil.test:443", "application/json", 403, "", ""},
 		{"https://photos.example.test", "photos.example.test", "application/x-www-form-urlencoded", 415, "", ""},
@@ -101,6 +109,11 @@ func TestProductionMutationOriginRequiresPublicURL(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	srv.Handler.ServeHTTP(recorder, req)
 	assert.Equal(t, http.StatusForbidden, recorder.Code)
+	req.Host = "192.168.2.166:5173"
+	req.Header.Set("Origin", "http://192.168.2.166:5173")
+	recorder = httptest.NewRecorder()
+	srv.Handler.ServeHTTP(recorder, req)
+	assert.Equal(t, http.StatusForbidden, recorder.Code, "a private address is a development allowance only")
 	// The Mobile App has no Origin to offer in production either.
 	req.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 43))
 	recorder = httptest.NewRecorder()

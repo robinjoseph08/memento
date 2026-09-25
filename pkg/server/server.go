@@ -193,7 +193,8 @@ func capturePanicErrorStack() echo.MiddlewareFunc {
 }
 
 // browserAPI enforces same-origin JSON mutations. Development also accepts
-// loopback and this machine's hostname so Vite can be reached over the LAN.
+// loopback, a private network address, and this machine's hostname, so Vite
+// can be reached from a phone or another machine on the LAN.
 // The Origin check exists for cookies, which browsers attach on their own.
 // The Mobile App authenticates with a bearer header that only its own code
 // can set, so a bearer request skips the check, as does the one request that
@@ -247,7 +248,7 @@ func sameOrigin(req *http.Request, publicOrigin string, development bool, hostna
 		return true
 	}
 	if ip := net.ParseIP(originHost); ip != nil {
-		return ip.IsLoopback()
+		return ip.IsLoopback() || ip.IsPrivate()
 	}
 	return machineHost != "" && (originHost == machineHost || originHost == machineHost+".local")
 }
