@@ -30,13 +30,16 @@ export function platformLabel() {
 
 // openSignIn shows the Installation's web sign-in in the system browser sheet
 // and resolves with the code it came back with, or null when the Person
-// closed the sheet instead. The return link is this app's own, so in Expo Go
-// it is Expo Go's, which the server only accepts in development.
+// closed the sheet instead. The sheet keeps no cookies of its own, so it
+// never starts signed in as whoever uses Memento in Safari, and the phone's
+// Safari session is left alone. The return link is this app's own, so in
+// Expo Go it is Expo Go's, which the server only accepts in development.
 export async function openSignIn(origin: string) {
   const returnTo = Linking.createURL("sign-in");
   const result = await WebBrowser.openAuthSessionAsync(
     signInURL(origin, returnTo),
     returnTo,
+    { preferEphemeralSession: true },
   );
   if (result.type !== "success") {
     return null;

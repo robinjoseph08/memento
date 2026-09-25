@@ -34,8 +34,7 @@ func mobileReturnURL(raw string, development bool) (*url.URL, bool) {
 }
 
 // mobileReturn ends the web sign-in for the Mobile App: the browser sheet is
-// sent back to the app with a single-use code, and its own session ends, so
-// the next sign-in from the app starts fresh and can be someone else.
+// sent back to the app with a single-use code in place of its own session.
 func (h *Handlers) mobileReturn(c *echo.Context) error {
 	returnTo, ok := mobileReturnURL(c.QueryParam("return_to"), h.development)
 	if !ok {
@@ -53,9 +52,6 @@ func (h *Handlers) mobileReturn(c *echo.Context) error {
 		return err
 	}
 	if !bearer {
-		if err := h.module.SignOut(c.Request().Context(), token); err != nil {
-			return err
-		}
 		h.clearCookie(c)
 	}
 	if returnTo.RawQuery != "" {

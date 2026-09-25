@@ -1,3 +1,4 @@
+import { useQueryClient } from "@tanstack/react-query";
 import { Image } from "expo-image";
 import { CalendarDays, Image as Photo, SquarePlay } from "lucide-react-native";
 import { FlatList, Text, useWindowDimensions, View } from "react-native";
@@ -8,6 +9,7 @@ import { Button } from "@/components/button";
 import { Body, ErrorText, Heading } from "@/components/text";
 import { Wordmark } from "@/components/wordmark";
 import { useAlbums, useMe, useSignOut } from "@/hooks/queries/session";
+import type { MediaSource } from "@/lib/http";
 import { captureRange, mediaCounts } from "@/lib/labels";
 import { useHTTP } from "@/providers";
 import { fonts, useTheme } from "@/theme";
@@ -30,9 +32,12 @@ export function AlbumsScreen({
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
   const http = useHTTP(origin, token);
+  const queryClient = useQueryClient();
   const albums = useAlbums(origin, token);
   const me = useMe(origin, token);
   const signOut = useSignOut(origin, token);
+  // Pulling down refreshes everything shown here, the Person included.
+  const refresh = () => queryClient.invalidateQueries({ queryKey: [origin] });
   const columns = width >= 600 ? 3 : 2;
   const tile = (width - GUTTER * 2 - GAP * (columns - 1)) / columns;
 
@@ -54,16 +59,14 @@ export function AlbumsScreen({
         }}
       >
         <Wordmark />
-        {me.data ? (
-          <AccountMenu
-            avatar={
-              me.data.avatar_url ? http.media(me.data.avatar_url) : undefined
-            }
-            name={me.data.display_name}
-            onSignOut={() => signOut.mutate()}
-            signingOut={signOut.isPending}
-          />
-        ) : null}
+        <AccountMenu
+          avatar={
+            me.data?.avatar_url ? http.media(me.data.avatar_url) : undefined
+          }
+          name={me.data?.display_name ?? ""}
+          onSignOut={() => signOut.mutate()}
+          signingOut={signOut.isPending}
+        />
       </View>
       <FlatList
         columnWrapperStyle={{ gap: GAP }}
@@ -112,7 +115,7 @@ export function AlbumsScreen({
           </View>
         }
         numColumns={columns}
-        onRefresh={() => void albums.refetch()}
+        onRefresh={() => void refresh()}
         refreshing={albums.isRefetching}
         renderItem={({ item }) => (
           <AlbumCard
@@ -132,7 +135,7 @@ function AlbumCard({
   size,
 }: {
   album: ViewerAlbum;
-  cover?: { uri: string; headers?: Record<string, string> };
+  cover?: MediaSource;
   size: number;
 }) {
   const theme = useTheme();
@@ -160,7 +163,11 @@ function AlbumCard({
           transition={0}
         />
       ) : (
-        <View style={square} />
+        <View
+          style={{ ...square, alignItems: "center", justifyContent: "center" }}
+        >
+          <Text style={detail}>No cover</Text>
+        </View>
       )}
       <Text
         style={{

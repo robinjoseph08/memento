@@ -1,14 +1,12 @@
-import { useState } from "react";
-import { Modal, Pressable, Text, View } from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { ActionSheetIOS, Alert, Platform, Pressable } from "react-native";
 
 import type { MediaSource } from "@/lib/http";
-import { fonts, useTheme } from "@/theme";
 
 import { Avatar } from "./avatar";
 
-// AccountMenu is the avatar in the corner and the small menu behind it, as
-// on the web. Sign out lives here until the app has a settings screen.
+// AccountMenu is the avatar in the corner. Tapping it opens the platform's
+// own sheet with Sign out, which lives here until the app has a settings
+// screen. The name may be empty while the Person is still loading.
 export function AccountMenu({
   avatar,
   name,
@@ -20,86 +18,39 @@ export function AccountMenu({
   onSignOut: () => void;
   signingOut: boolean;
 }) {
-  const theme = useTheme();
-  const insets = useSafeAreaInsets();
-  const [open, setOpen] = useState(false);
+  function open() {
+    if (Platform.OS === "ios") {
+      ActionSheetIOS.showActionSheetWithOptions(
+        {
+          cancelButtonIndex: 1,
+          destructiveButtonIndex: 0,
+          options: ["Sign out", "Cancel"],
+          title: name || undefined,
+        },
+        (index) => {
+          if (index === 0) {
+            onSignOut();
+          }
+        },
+      );
+      return;
+    }
+    Alert.alert(name || "Account", undefined, [
+      { style: "cancel", text: "Cancel" },
+      { onPress: onSignOut, text: "Sign out" },
+    ]);
+  }
   return (
-    <>
-      <Pressable
-        accessibilityLabel="Account menu"
-        accessibilityState={{ expanded: open }}
-        hitSlop={8}
-        onPress={() => setOpen(true)}
-        role="button"
-        style={({ pressed }) => ({ opacity: pressed ? 0.7 : 1 })}
-      >
-        <Avatar name={name} source={avatar} />
-      </Pressable>
-      <Modal
-        animationType="fade"
-        onRequestClose={() => setOpen(false)}
-        transparent
-        visible={open}
-      >
-        <Pressable
-          accessibilityLabel="Close menu"
-          onPress={() => setOpen(false)}
-          style={{ flex: 1 }}
-        >
-          <View
-            role="menu"
-            style={{
-              backgroundColor: theme.surface,
-              borderColor: theme.border,
-              borderRadius: 12,
-              borderWidth: 1,
-              marginRight: 24,
-              marginTop: insets.top + 52,
-              minWidth: 200,
-              paddingVertical: 6,
-              position: "absolute",
-              right: 0,
-              top: 0,
-            }}
-          >
-            <Text
-              style={{
-                color: theme.muted,
-                fontFamily: fonts.medium,
-                fontSize: 13,
-                paddingHorizontal: 16,
-                paddingVertical: 8,
-              }}
-            >
-              {name}
-            </Text>
-            <Pressable
-              accessibilityState={{ disabled: signingOut }}
-              disabled={signingOut}
-              onPress={() => {
-                setOpen(false);
-                onSignOut();
-              }}
-              role="menuitem"
-              style={({ pressed }) => ({
-                backgroundColor: pressed ? theme.border : "transparent",
-                paddingHorizontal: 16,
-                paddingVertical: 12,
-              })}
-            >
-              <Text
-                style={{
-                  color: theme.foreground,
-                  fontFamily: fonts.body,
-                  fontSize: 16,
-                }}
-              >
-                {signingOut ? "Signing out…" : "Sign out"}
-              </Text>
-            </Pressable>
-          </View>
-        </Pressable>
-      </Modal>
-    </>
+    <Pressable
+      accessibilityLabel={signingOut ? "Signing out" : "Account menu"}
+      accessibilityState={{ disabled: signingOut }}
+      disabled={signingOut}
+      hitSlop={8}
+      onPress={open}
+      role="button"
+      style={({ pressed }) => ({ opacity: pressed || signingOut ? 0.6 : 1 })}
+    >
+      <Avatar name={name} source={avatar} />
+    </Pressable>
   );
 }

@@ -1,4 +1,4 @@
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { HTTPError } from "@/lib/http";
 import { openSignIn, platformLabel } from "@/lib/sign-in";
@@ -19,6 +19,7 @@ export const SIGN_IN_FAILED = "Sign-in could not be completed. Try again.";
 export function useSignIn(origin: string) {
   const createHTTP = useCreateHTTP();
   const { startSession } = useConnection();
+  const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async () => {
       try {
@@ -40,6 +41,9 @@ export function useSignIn(origin: string) {
     },
     onSuccess: async (session) => {
       if (session) {
+        // The exchange already said who signed in, so the Person is on
+        // screen before any further request.
+        queryClient.setQueryData([origin, "me"], session.person);
         await startSession(session.token);
       }
     },

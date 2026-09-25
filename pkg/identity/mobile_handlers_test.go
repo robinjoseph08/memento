@@ -50,12 +50,9 @@ func TestMobileReturnRedirectsToTheAppWithACode(t *testing.T) {
 			if test.status == 400 {
 				assert.Empty(t, module.issuedFor, "no code is minted for a link that will not reach the app")
 				assert.Contains(t, recorder.Body.String(), "invalid_return")
-				assert.Empty(t, module.signedOut)
 				return
 			}
-			// The sheet's own session ends with the hand-off, so the next
-			// sign-in from the app starts fresh and can be someone else.
-			assert.Equal(t, "browser-token", module.signedOut)
+			// The module ended the session behind the cookie; the cookie goes too.
 			cookies := recorder.Result().Cookies()
 			require.Len(t, cookies, 1)
 			assert.Equal(t, -1, cookies[0].MaxAge)

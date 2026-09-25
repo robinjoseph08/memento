@@ -26,16 +26,18 @@ func TestMobileCodeExchangeIssuesABearerSessionOnce(t *testing.T) {
 	assert.NotEqual(t, browser.Token, phone.Token)
 	assert.Equal(t, now.Add(identity.SessionLifetime), phone.ExpiresAt)
 
-	// The phone's session is an ordinary one: it authenticates, is listed with
-	// a label the Person recognizes, and signs out on its own.
+	// The phone's session replaces the browser's: it authenticates, is listed
+	// with a label the Person recognizes, and the browser's is gone.
 	active, err := module.Authenticate(t.Context(), phone.Token)
 	require.NoError(t, err)
 	assert.Equal(t, browser.Person, active.Person)
-	sessions, err := module.Sessions(t.Context(), browser.Token)
+	_, err = module.Authenticate(t.Context(), browser.Token)
+	require.ErrorIs(t, err, identity.ErrUnauthenticated, "the session that handed itself off is over")
+	sessions, err := module.Sessions(t.Context(), phone.Token)
 	require.NoError(t, err)
-	require.Len(t, sessions, 2)
-	assert.Equal(t, "Memento on iPhone", sessions[1].Device)
-	assert.False(t, sessions[1].Current)
+	require.Len(t, sessions, 1)
+	assert.Equal(t, "Memento on iPhone", sessions[0].Device)
+	assert.True(t, sessions[0].Current)
 
 	_, err = module.ExchangeMobileCode(t.Context(), code, "iPhone")
 	require.ErrorIs(t, err, identity.ErrMobileCodeInvalid, "a code works once")
@@ -47,8 +49,6 @@ func TestMobileCodeExchangeIssuesABearerSessionOnce(t *testing.T) {
 	require.NoError(t, module.SignOut(t.Context(), phone.Token))
 	_, err = module.Authenticate(t.Context(), phone.Token)
 	require.ErrorIs(t, err, identity.ErrUnauthenticated)
-	_, err = module.Authenticate(t.Context(), browser.Token)
-	require.NoError(t, err, "signing the phone out leaves the browser signed in")
 }
 
 func TestMobileCodeExpiresWithinAMinute(t *testing.T) {
@@ -63,6 +63,8 @@ func TestMobileCodeExpiresWithinAMinute(t *testing.T) {
 	_, err = module.ExchangeMobileCode(t.Context(), code, "Android")
 	require.ErrorIs(t, err, identity.ErrMobileCodeInvalid)
 
+	// The hand-off ended the first browser session, so the retry signs in again.
+	browser = claimCurator(t, module)
 	fresh, err := module.IssueMobileCode(t.Context(), browser.Token)
 	require.NoError(t, err)
 	now = now.Add(identity.MobileCodeLifetime - time.Second)

@@ -1,6 +1,7 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { render, screen, userEvent } from "@testing-library/react-native";
 import * as WebBrowser from "expo-web-browser";
+import { ActionSheetIOS } from "react-native";
 
 import { AppProviders } from "@/providers";
 import { fakeHTTP, unauthenticated } from "@/testing/fake-http";
@@ -74,9 +75,16 @@ async function signIn(
   await user.press(await connect(user));
 }
 
+// The account menu is the platform's own sheet. Choosing the first option
+// signs out.
+const accountSheet = jest
+  .spyOn(ActionSheetIOS, "showActionSheetWithOptions")
+  .mockImplementation((_options, choose) => choose(0));
+
 beforeEach(async () => {
   await AsyncStorage.clear();
   sheet.mockClear();
+  accountSheet.mockClear();
 });
 
 it("signs in through the browser sheet and lists Albums with their covers", async () => {
@@ -139,7 +147,10 @@ it("signs out and returns to sign-in with the Installation remembered", async ()
   await signIn(user);
   await screen.findByText("Summer");
   await user.press(await screen.findByRole("button", { name: "Account menu" }));
-  await user.press(screen.getByRole("menuitem", { name: "Sign out" }));
+  expect(accountSheet.mock.calls[0][0]).toMatchObject({
+    options: ["Sign out", "Cancel"],
+    title: "Alex",
+  });
 
   expect(
     await screen.findByRole("button", { name: "Sign in" }),
@@ -178,4 +189,34 @@ it("returns to sign-in when the server rejects the session", async () => {
     await screen.findByRole("button", { name: "Sign in" }),
   ).toBeOnTheScreen();
   expect(screen.queryByText("Summer")).not.toBeOnTheScreen();
+});
+
+it("keeps Sign out reachable when the Person cannot be loaded", async () => {
+  const http = installation({
+    "/api/identity/me": () => {
+      throw new TypeError("Network request failed");
+    },
+  });
+  const user = await open(http);
+  await signIn(user);
+  await screen.findByText("Summer");
+  // The exchange already named the Person, so the avatar shows them anyway.
+  expect(screen.getByLabelText("Alex")).toBeOnTheScreen();
+  await screen.unmount();
+
+  // After a restart nothing has named them yet, and Sign out still works.
+  await open(http);
+  await screen.findByText("Summer");
+  await user.press(await screen.findByRole("button", { name: "Account menu" }));
+  expect(
+    await screen.findByRole("button", { name: "Sign in" }),
+  ).toBeOnTheScreen();
+});
+
+it("shows where a cover would be for an Album without one", async () => {
+  const user = await open(
+    installation({ "/api/albums": [{ ...summer, cover_url: "" }] }),
+  );
+  await signIn(user);
+  expect(await screen.findByText("No cover")).toBeOnTheScreen();
 });

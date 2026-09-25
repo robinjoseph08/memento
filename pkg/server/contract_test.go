@@ -144,6 +144,13 @@ func TestMobileAppContract(t *testing.T) {
 	require.Empty(t, response.Result().Cookies())
 	response = call(http.MethodGet, "/api/identity/me", "", bearer)
 	require.Equal(t, http.StatusUnauthorized, response.Code)
+	response = call(http.MethodPost, "/api/identity/fake-sign-in", `{"email":"curator@example.test","display_name":"Curator"}`, "")
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	response = call(http.MethodGet, "/api/identity/sessions", "", response.Result().Cookies()[0].Value)
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &sessions))
+	for _, session := range sessions {
+		require.NotEqual(t, "Memento on iPhone", session["device"], "the phone is gone from the Person's sessions")
+	}
 }
 
 // seedAlbum is one complete imported Album with a single photo, enough for

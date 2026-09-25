@@ -11,10 +11,7 @@ module.exports = {
     ...preset.transform,
     "\\.mjs$": preset.transform["\\.[jt]sx?$"],
   },
-  transformIgnorePatterns: preset.transformIgnorePatterns.map((pattern) =>
-    pattern.replace(
-      "standard-navigation",
-      "standard-navigation|lucide-react-native",
-    ),
-  ),
+  transformIgnorePatterns: [
+    "/node_modules/(?!(.pnpm|react-native|@react-native|@react-native-community|expo|@expo|@expo-google-fonts|react-navigation|@react-navigation|lucide-react-native))",
+  ],
 };

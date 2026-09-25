@@ -18,8 +18,10 @@ const MobileCodeLifetime = time.Minute
 
 var ErrMobileCodeInvalid = &errcodes.Error{HTTPCode: 401, Code: "invalid_code", Message: "That sign-in has expired. Start again from the app."}
 
-// IssueMobileCode turns the browser's signed-in session into a single-use code
-// for the Mobile App. Expired codes are removed while a new one is issued.
+// IssueMobileCode hands the browser's signed-in session over to the Mobile
+// App as a single-use code, and ends that session in the same transaction:
+// the phone's session replaces it, so the next sign-in from the app starts
+// fresh and can be someone else. Expired codes are removed on the way.
 func (m *Module) IssueMobileCode(ctx context.Context, token string) (string, error) {
 	code, hash, err := newSecret()
 	if err != nil {
@@ -32,6 +34,10 @@ func (m *Module) IssueMobileCode(ctx context.Context, token string) (string, err
 			return err
 		}
 		identityID := linked.ID
+		tokenHash := sha256.Sum256([]byte(token))
+		if _, err := tx.NewDelete().Model((*models.Session)(nil)).Where("token_hash = ?", tokenHash[:]).Exec(ctx); err != nil {
+			return errorstack.CaptureContext(ctx, err)
+		}
 		if _, err := tx.NewDelete().Model((*models.MobileSignInCode)(nil)).Where("expires_at <= ?", now).Exec(ctx); err != nil {
 			return errorstack.CaptureContext(ctx, err)
 		}
