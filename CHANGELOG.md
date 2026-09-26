@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-26
+
+- [Mobile] Sign in from the Mobile App and see Albums (#88)
+- [CI] Make the Mobile and Official Immich checks safe to require (#82)
+- [Mobile] Run the Mobile App against a local Installation (#80)
+- [Test] Match smoke downloads to authorized entries (#81)
+- [Fix] Stop exposing photo filenames (#79)
+- [Feature] Cast videos over AirPlay and photos and videos over Google Cast with signed media URLs (#78)
+- [Docs] Add Mobile App, Push, and Installation to the glossary and record the viewer API contract (#77)
+
 ## [0.2.0] - 2026-09-16
 
 - [Frontend] Ignore Immich albums on the import page and restore them from an ignored list (#65)
