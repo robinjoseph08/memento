@@ -46,38 +46,36 @@ func TestLinkedEmailsMigrationKeepsSessionsAndRefusesSharedAddresses(t *testing.
 	now := time.Now().UTC()
 	earlier := now.Add(-time.Hour)
 	alex, sam, dup1, dup2 := models.NewUUIDv7(), models.NewUUIDv7(), models.NewUUIDv7(), models.NewUUIDv7()
-	alexGoogle, samGoogle, samFake, samOld, dupOne, dupTwo := models.NewUUIDv7(), models.NewUUIDv7(), models.NewUUIDv7(), models.NewUUIDv7(), models.NewUUIDv7(), models.NewUUIDv7()
+	alexGoogle, samGoogle, samOld, dupOne, dupTwo := models.NewUUIDv7(), models.NewUUIDv7(), models.NewUUIDv7(), models.NewUUIDv7(), models.NewUUIDv7()
 	samApproval, olderRequest, newerRequest := models.NewUUIDv7(), models.NewUUIDv7(), models.NewUUIDv7()
 	// Raw SQL on purpose: the models no longer know about provider or subject.
-	// Sam holds one address through Google and fake sign-in; Dup One and Dup
-	// Two are different Persons holding one address.
+	// Dup One and Dup Two are different Persons holding one address.
 	_, err := db.ExecContext(ctx, `
 INSERT INTO persons (id, display_name, is_curator, created_at) VALUES
  (?, 'Alex', true, ?), (?, 'Sam', false, ?), (?, 'Dup One', false, ?), (?, 'Dup Two', false, ?);
 INSERT INTO identities (id, person_id, provider, subject, email, created_at, unlinked_at) VALUES
  (?, ?, 'google', 'alex-subject', 'Alex@Example.test', ?, NULL),
  (?, ?, 'google', 'sam-subject', 'sam@example.test', ?, NULL),
- (?, ?, 'fake', 'sam@example.test', 'Sam@Example.test', ?, NULL),
  (?, ?, 'google', 'sam-old', 'sam@example.test', ?, ?),
  (?, ?, 'google', 'dup-one', 'dup@example.test', ?, NULL),
  (?, ?, 'google', 'dup-two', 'Dup@example.test', ?, NULL);
 UPDATE persons SET update_identity_id = ?, email_updates = true WHERE id = ?;
 UPDATE persons SET update_identity_id = ?, email_updates = true WHERE id = ?;
 INSERT INTO sessions (id, token_hash, identity_id, device, created_at, renewed_at, expires_at) VALUES
- (?, ?, ?, 'Chrome on Mac', ?, ?, ?), (?, ?, ?, 'Safari on iPhone', ?, ?, ?), (?, ?, ?, 'Firefox on Linux', ?, ?, ?);
-INSERT INTO mobile_sign_in_codes (code_hash, identity_id, expires_at) VALUES (?, ?, ?), (?, ?, ?);
+ (?, ?, ?, 'Chrome on Mac', ?, ?, ?), (?, ?, ?, 'Safari on iPhone', ?, ?, ?);
+INSERT INTO mobile_sign_in_codes (code_hash, identity_id, expires_at) VALUES (?, ?, ?);
 INSERT INTO preauthorizations (id, person_id, email, created_at) VALUES (?, ?, 'Second@Example.test', ?), (?, ?, 'second@example.test', ?);
-INSERT INTO access_requests (id, kind, provider, subject, email, email_verified, display_name, status, sign_in_count, created_at, updated_at, resolved_at) VALUES
- (?, 'join', 'google', 'stranger-old', 'Stranger@Example.test', true, 'Stranger', 'denied', 2, ?, ?, ?),
- (?, 'join', 'google', 'stranger-new', 'stranger@example.test', true, 'Stranger Again', 'pending', 1, ?, ?, NULL);
+INSERT INTO access_requests (id, kind, provider, subject, email, email_verified, display_name, status, created_at, updated_at, resolved_at) VALUES
+ (?, 'join', 'google', 'stranger-old', 'Stranger@Example.test', true, 'Stranger', 'denied', ?, ?, ?),
+ (?, 'join', 'google', 'stranger-new', 'stranger@example.test', true, 'Stranger Again', 'pending', ?, ?, NULL);
 INSERT INTO access_requests (id, kind, provider, subject, email, email_verified, display_name, person_id, status, created_at, updated_at) VALUES
  (?, 'album', 'google', 'sam-subject', 'sam@example.test', true, 'Sam', ?, 'pending', ?, ?);
 `,
 		alex, now, sam, now, dup1, now, dup2, now,
-		alexGoogle, alex, now, samGoogle, sam, earlier, samFake, sam, now, samOld, sam, earlier, earlier, dupOne, dup1, now, dupTwo, dup2, now,
+		alexGoogle, alex, now, samGoogle, sam, earlier, samOld, sam, earlier, earlier, dupOne, dup1, now, dupTwo, dup2, now,
 		alexGoogle, alex, samGoogle, sam,
-		models.NewUUIDv7(), hash(1), alexGoogle, now, now, now.Add(time.Hour), models.NewUUIDv7(), hash(2), samGoogle, now, now, now.Add(time.Hour), models.NewUUIDv7(), hash(3), samFake, now, now, now.Add(time.Hour),
-		hash(4), alexGoogle, now.Add(time.Hour), hash(5), samFake, now.Add(time.Hour),
+		models.NewUUIDv7(), hash(1), alexGoogle, now, now, now.Add(time.Hour), models.NewUUIDv7(), hash(2), samGoogle, now, now, now.Add(time.Hour),
+		hash(3), alexGoogle, now.Add(time.Hour),
 		samApproval, sam, now, models.NewUUIDv7(), sam, now,
 		olderRequest, earlier, earlier, earlier, newerRequest, now, now,
 		models.NewUUIDv7(), sam, now, now,
@@ -85,7 +83,7 @@ INSERT INTO access_requests (id, kind, provider, subject, email, email_verified,
 	require.NoError(t, err)
 
 	err = up()
-	require.ErrorContains(t, err, "more than one Person holds dup@example.test", "two Persons holding one address must stop the upgrade")
+	require.ErrorContains(t, err, "more than one linked sign-in holds dup@example.test", "two sign-ins holding one address must stop the upgrade")
 	require.ErrorContains(t, err, "preauthorizations for second@example.test differ only by letter case")
 	columns, err := db.NewSelect().Table("information_schema.columns").Where("table_schema = current_schema() AND table_name = 'identities' AND column_name IN ('provider', 'subject')").Count(ctx)
 	require.NoError(t, err)
@@ -97,22 +95,19 @@ INSERT INTO access_requests (id, kind, provider, subject, email, email_verified,
 
 	var emails []string
 	require.NoError(t, db.NewSelect().Table("identities").Column("email").Order("email").Scan(ctx, &emails))
-	assert.Equal(t, []string{"alex@example.test", "dup@example.test", "sam@example.test", "sam@example.test", "sam@example.test"}, emails)
+	assert.Equal(t, []string{"alex@example.test", "dup@example.test", "sam@example.test", "sam@example.test"}, emails)
 	var linked []models.UUID
 	require.NoError(t, db.NewSelect().Table("identities").Column("id").Where("unlinked_at IS NULL").Order("email").Scan(ctx, &linked))
-	assert.Equal(t, []models.UUID{alexGoogle, dupOne, samGoogle}, linked, "one Person's duplicate sign-ins fold into the Linked Email their update email points at")
+	assert.Equal(t, []models.UUID{alexGoogle, dupOne, samGoogle}, linked, "an unlinked sign-in may share its address with a linked one")
 	var sessionIdentities []models.UUID
 	require.NoError(t, db.NewSelect().Table("sessions").Column("identity_id").Order("created_at", "id").Scan(ctx, &sessionIdentities))
-	assert.ElementsMatch(t, []models.UUID{alexGoogle, samGoogle, samGoogle}, sessionIdentities, "folding keeps every session signed in")
-	codes, err := db.NewSelect().Table("handoff_codes").Where("identity_id = ?", samGoogle).Count(ctx)
-	require.NoError(t, err)
-	assert.Equal(t, 1, codes)
+	assert.ElementsMatch(t, []models.UUID{alexGoogle, samGoogle}, sessionIdentities, "every session keeps its Linked Email")
 	var person models.Person
 	require.NoError(t, db.NewSelect().Model(&person).Column("update_identity_id", "email_updates").Where("id = ?", alex).Scan(ctx))
 	require.NotNil(t, person.UpdateIdentityID)
 	assert.Equal(t, alexGoogle, *person.UpdateIdentityID)
 	assert.True(t, person.EmailUpdates)
-	codes, err = db.NewSelect().Table("handoff_codes").Where("identity_id = ?", alexGoogle).Count(ctx)
+	codes, err := db.NewSelect().Table("handoff_codes").Where("identity_id = ?", alexGoogle).Count(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, 1, codes)
 	var approved []string
@@ -120,10 +115,8 @@ INSERT INTO access_requests (id, kind, provider, subject, email, email_verified,
 	assert.Equal(t, []string{"second@example.test", "second@example.test"}, approved)
 	var requested []models.AccessRequest
 	require.NoError(t, db.NewSelect().Model(&requested).Where("kind = 'join'").Scan(ctx))
-	require.Len(t, requested, 1, "open join requests for one address fold into the most recent")
+	require.Len(t, requested, 1, "open join requests for one address keep the most recent")
 	assert.Equal(t, newerRequest, requested[0].ID)
-	assert.Equal(t, 3, requested[0].SignInCount, "the folded request keeps every sign-in")
-	assert.Equal(t, earlier, requested[0].CreatedAt.UTC(), "and the earliest first sign-in")
 	assert.Equal(t, "pending", requested[0].Status)
 	var albumRequest string
 	require.NoError(t, db.NewSelect().Table("access_requests").Column("email").Where("kind = 'album'").Scan(ctx, &albumRequest))
