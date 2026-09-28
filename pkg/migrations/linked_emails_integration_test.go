@@ -56,9 +56,9 @@ INSERT INTO sessions (id, token_hash, identity_id, device, created_at, renewed_a
  (?, ?, ?, 'Chrome on Mac', ?, ?, ?), (?, ?, ?, 'Safari on iPhone', ?, ?, ?), (?, ?, ?, 'Firefox on Linux', ?, ?, ?);
 INSERT INTO mobile_sign_in_codes (code_hash, identity_id, expires_at) VALUES (?, ?, ?), (?, ?, ?);
 INSERT INTO preauthorizations (id, person_id, email, created_at) VALUES (?, ?, 'Second@Example.test', ?), (?, ?, 'second@example.test', ?);
-INSERT INTO access_requests (id, kind, provider, subject, email, email_verified, display_name, status, created_at, updated_at, resolved_at) VALUES
- (?, 'join', 'google', 'stranger-old', 'Stranger@Example.test', true, 'Stranger', 'denied', ?, ?, ?),
- (?, 'join', 'google', 'stranger-new', 'stranger@example.test', true, 'Stranger Again', 'pending', ?, ?, NULL);
+INSERT INTO access_requests (id, kind, provider, subject, email, email_verified, display_name, status, sign_in_count, created_at, updated_at, resolved_at) VALUES
+ (?, 'join', 'google', 'stranger-old', 'Stranger@Example.test', true, 'Stranger', 'denied', 2, ?, ?, ?),
+ (?, 'join', 'google', 'stranger-new', 'stranger@example.test', true, 'Stranger Again', 'pending', 1, ?, ?, NULL);
 INSERT INTO access_requests (id, kind, provider, subject, email, email_verified, display_name, person_id, status, created_at, updated_at) VALUES
  (?, 'album', 'google', 'sam-subject', 'sam@example.test', true, 'Sam', ?, 'pending', ?, ?);
 `,
@@ -107,9 +107,13 @@ INSERT INTO access_requests (id, kind, provider, subject, email, email_verified,
 	var approved []string
 	require.NoError(t, db.NewSelect().Table("preauthorizations").Column("email").Scan(ctx, &approved))
 	assert.Equal(t, []string{"second@example.test", "second@example.test"}, approved)
-	var requested []models.UUID
-	require.NoError(t, db.NewSelect().Table("access_requests").Column("id").Where("kind = 'join'").Scan(ctx, &requested))
-	assert.Equal(t, []models.UUID{newerRequest}, requested, "open join requests for one address keep the most recent")
+	var requested []models.AccessRequest
+	require.NoError(t, db.NewSelect().Model(&requested).Where("kind = 'join'").Scan(ctx))
+	require.Len(t, requested, 1, "open join requests for one address fold into the most recent")
+	assert.Equal(t, newerRequest, requested[0].ID)
+	assert.Equal(t, 3, requested[0].SignInCount, "the folded request keeps every sign-in")
+	assert.Equal(t, earlier, requested[0].CreatedAt.UTC(), "and the earliest first sign-in")
+	assert.Equal(t, "pending", requested[0].Status)
 	var albumRequest string
 	require.NoError(t, db.NewSelect().Table("access_requests").Column("email").Where("kind = 'album'").Scan(ctx, &albumRequest))
 	assert.Equal(t, "sam@example.test", albumRequest)

@@ -208,8 +208,8 @@ export function PersonDetails({ detail }: { detail: PersonDetail }) {
           <section className="border-t border-border py-8">
             <SectionHeading icon={MailCheck}>Preauthorizations</SectionHeading>
             <p className="mt-3 mb-6 max-w-150 text-sm text-muted">
-              Enter the exact Google email address, including uppercase and
-              lowercase letters. Signing in with that address links it to this
+              Enter the email address this person will sign in with; letter case
+              does not matter. Signing in with that address links it to this
               person. Approval does not expire and does not send an email; use
               Invite to send a sign-in email to an approved address.
             </p>

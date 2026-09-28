@@ -440,8 +440,8 @@ Person when someone leaves.
 
 The first successful sign-in claims an empty installation and creates its first
 Curator. Keep a new installation private until you have claimed it. For later
-people, a Curator must create the Person and preauthorize the exact email they
-will verify. Signing in with that address links it to the Person and uses up
+people, a Curator must create the Person and preauthorize the email address
+they will verify. Signing in with that address links it to the Person and uses up
 the Preauthorization. A verified email alone does not grant access, and Google
 sign-in availability does not bypass Memento's preauthorizations.
 
