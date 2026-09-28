@@ -466,3 +466,61 @@ it("lets a Curator rename themselves without removing their own access", async (
   expect(role).toBeChecked();
   expect(deactivate).not.toBeChecked();
 });
+
+it("asks before deactivating a person and saves only after confirming", async () => {
+  const saves: unknown[] = [];
+  let person = alex;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (path: string, options?: RequestInit) => {
+      if (path.endsWith("/status"))
+        return Response.json({
+          claimed: true,
+          person: robin,
+          auth_mode: "fake",
+        });
+      if (options?.method === "POST" && path.endsWith("/api/people/alex")) {
+        saves.push(JSON.parse(String(options.body)));
+        person = { ...person, deactivated_at: "2026-03-01T00:00:00Z" };
+        return Response.json(person);
+      }
+      return Response.json({
+        person,
+        identities: [account],
+        preauthorizations: [],
+        invitations: [],
+        announced: { albums: 0, entries: 0 },
+        sessions: [],
+      });
+    }),
+  );
+  window.history.replaceState(null, "", "/curator/people/alex");
+  const user = userEvent.setup();
+  render(<App />);
+  await user.click(
+    await screen.findByRole("checkbox", { name: "Deactivate this person" }),
+  );
+  await user.click(screen.getByRole("button", { name: "Save person" }));
+  const dialog = screen.getByRole("dialog", {
+    name: "Deactivate this person?",
+  });
+  expect(dialog).toHaveTextContent(
+    "Alex will be signed out everywhere and unable to sign in until you reactivate them.",
+  );
+  await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+  expect(saves).toHaveLength(0);
+  expect(
+    screen.getByRole("checkbox", { name: "Deactivate this person" }),
+  ).toBeChecked();
+  await user.click(screen.getByRole("button", { name: "Save person" }));
+  await user.click(
+    within(
+      screen.getByRole("dialog", { name: "Deactivate this person?" }),
+    ).getByRole("button", { name: "Deactivate" }),
+  );
+  expect(await screen.findByRole("status")).toHaveTextContent("Person saved.");
+  expect(saves).toEqual([
+    { display_name: "Alex", is_curator: false, deactivated: true },
+  ]);
+  expect(screen.getByText("Deactivated")).toBeVisible();
+});

@@ -27,6 +27,7 @@ import type {
   PersonDetail,
   UpdatePersonRequest,
 } from "../../types/generated/identity";
+import { ConfirmDialog } from "../forms/confirm-dialog";
 import { LinkedIdentities } from "../identity/linked-identities";
 import { SessionTable } from "../identity/session-table";
 import { Avatar, AvatarFallback, AvatarImage } from "../ui/avatar";
@@ -67,6 +68,8 @@ export function PersonDetails({ detail }: { detail: PersonDetail }) {
     dirty || !!email || update.isPending || preauthorize.isPending,
   );
   const errors = fieldErrors(update.error);
+  const [confirmingDeactivation, setConfirmingDeactivation] = useState(false);
+  const save = () => update.mutate(values, { onSuccess: () => setDraft(null) });
   return (
     <>
       <h1 className={headingClass}>{person.display_name}</h1>
@@ -84,8 +87,12 @@ export function PersonDetails({ detail }: { detail: PersonDetail }) {
               error={update.error}
               onSubmit={(event) => {
                 event.preventDefault();
-                if (!update.isPending)
-                  update.mutate(values, { onSuccess: () => setDraft(null) });
+                if (update.isPending) return;
+                if (values.deactivated && !person.deactivated_at) {
+                  setConfirmingDeactivation(true);
+                  return;
+                }
+                save();
               }}
             >
               <fieldset disabled={update.isPending}>
@@ -148,6 +155,17 @@ export function PersonDetails({ detail }: { detail: PersonDetail }) {
                 </p>
               )}
             </Form>
+            <ConfirmDialog
+              confirmLabel="Deactivate"
+              description={`${values.display_name.trim() || person.display_name} will be signed out everywhere and unable to sign in until you reactivate them.`}
+              onConfirm={() => {
+                setConfirmingDeactivation(false);
+                save();
+              }}
+              onOpenChange={setConfirmingDeactivation}
+              open={confirmingDeactivation}
+              title="Deactivate this person?"
+            />
           </section>
           <AvatarEditor detail={detail} />
           <section

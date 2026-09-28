@@ -122,6 +122,10 @@ test("a Curator approves access, a member manages their profile and sessions, an
       .getByRole("checkbox", { name: "Deactivate this person" })
       .check();
     await page.getByRole("button", { name: "Save person" }).click();
+    await page
+      .getByRole("dialog", { name: "Deactivate this person?" })
+      .getByRole("button", { name: "Deactivate" })
+      .click();
     await expect(page.getByRole("status")).toHaveText("Person saved.");
     await member.reload();
     await expect(
