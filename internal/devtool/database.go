@@ -26,9 +26,6 @@ func (d *DockerDatabase) Start(ctx context.Context, env Environment) error {
 	if !env.IsMain() {
 		return errors.New("the shared PostgreSQL container may only be started from the main worktree")
 	}
-	if err := os.MkdirAll(filepath.Join(env.MainRoot, "tmp", "postgres"), 0o755); err != nil {
-		return fmt.Errorf("create PostgreSQL data directory: %w", err)
-	}
 	if err := os.MkdirAll(filepath.Join(env.MainRoot, "tmp", "ports"), 0o755); err != nil {
 		return fmt.Errorf("create port lock directory: %w", err)
 	}
@@ -307,10 +304,7 @@ func (d *DockerDatabase) composeCommand(ctx context.Context, env Environment, ar
 	commandArgs = append(commandArgs, args...)
 	command := exec.CommandContext(ctx, "docker", commandArgs...)
 	command.Dir = env.MainRoot
-	command.Env = append(os.Environ(),
-		"POSTGRES_PORT="+strconv.Itoa(port),
-		"POSTGRES_DATA_DIR="+filepath.Join(env.MainRoot, "tmp", "postgres"),
-	)
+	command.Env = append(os.Environ(), "POSTGRES_PORT="+strconv.Itoa(port))
 	return command, nil
 }
 

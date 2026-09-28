@@ -314,7 +314,6 @@ func TestComposeCommandsUseTheMainWorktree(t *testing.T) {
 		"ps",
 	}, command.Args)
 	assert.Equal(t, "5544", lastEnvironmentValue(command.Env, "POSTGRES_PORT"))
-	assert.Equal(t, filepath.Join(mainRoot, "tmp", "postgres"), lastEnvironmentValue(command.Env, "POSTGRES_DATA_DIR"))
 }
 
 func TestRepositoryIdentityComesFromMainWorktreeDirectory(t *testing.T) {

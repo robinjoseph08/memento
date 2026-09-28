@@ -520,8 +520,9 @@ database named after the repository if needed, runs migrations, and generates
 TypeScript types.
 
 PostgreSQL is shared by every worktree, but each worktree receives a separate
-database. Shared PostgreSQL data lives in the main worktree at `tmp/postgres`.
-Its selected host port is stored in `tmp/database.env`. Setup prefers port
+database. Shared PostgreSQL data lives in a Docker volume owned by the main
+worktree's Compose project, so `docker compose down --volumes` deletes it. Its
+selected host port is stored in `tmp/database.env`. Setup prefers port
 `5432` and uses the next available port when necessary.
 
 Only setup in the main worktree starts PostgreSQL. Do not run `docker compose

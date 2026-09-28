@@ -12,9 +12,10 @@ services:
       retries: 30
     ports:
       - "127.0.0.1:${POSTGRES_PORT}:5432"
+    # A named volume, not a bind mount: Docker Desktop's file sharing does not
+    # give PostgreSQL reliable fsync, so an unclean stop could corrupt it.
     volumes:
-      - type: bind
-        source: ${POSTGRES_DATA_DIR}
-        target: /var/lib/postgresql/data
-        bind:
-          selinux: Z
+      - postgres:/var/lib/postgresql/data
+
+volumes:
+  postgres:
